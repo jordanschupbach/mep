@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>mep</title>
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background: #1e1e1e;
+      }
+      #canvas {
+        display: block;
+        margin: 0 auto;
+        outline: none;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="canvas" width="900" height="540" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+    <script type="text/javascript">
+      var Module = {
+        canvas: document.getElementById("canvas"),
+        print: function (text) { console.log(text); },
+        printErr: function (text) { console.error(text); },
+        onAbort: function (what) { console.error("wasm aborted:", what); },
+      };
+    </script>
+    {{{ SCRIPT }}}
+  </body>
+</html>

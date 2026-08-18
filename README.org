@@ -1,0 +1,28 @@
+* MEP - An editor where everything is in place
+
+A minimal cross-platform text editor written in C++ with [[https://www.raylib.com/][raylib]],
+built with CMake, compiled to WebAssembly by default, and launched
+as a native window via [[https://deno.com/][Deno]] + [[https://github.com/webview/webview_deno][webview]].
+
+** Requirements
+
+Enter the dev shell (=direnv allow= or =nix develop=) to get cmake,
+emscripten, deno, and just on =PATH=.
+
+** Usage
+
+- =just run= — build the wasm target and open it in a window (default).
+- =just build-web= — build the wasm target only, output in =build/web=.
+- =just build-native= — build a native desktop binary, output in =build/native=.
+- =just clean= — remove build output.
+
+** Layout
+
+- =src/main.cpp= — the editor.
+- =CMakeLists.txt= — fetches raylib and builds =src/main.cpp= for wasm
+  (via emscripten, when invoked with =emcmake=) or natively otherwise.
+- =web/shell.html= — minimal HTML shell the wasm build is embedded into.
+- =launcher/serve.ts= — serves =build/web= over local HTTP and opens it
+  in a native webview window.
+
+

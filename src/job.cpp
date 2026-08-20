@@ -1,0 +1,350 @@
+#include "job.h"
+
+#include <algorithm>
+
+#if !defined(__EMSCRIPTEN__) && !defined(_WIN32)
+#define MEP_JOB_POSIX 1
+#include <fcntl.h>
+#include <poll.h>
+#include <pty.h>
+#include <signal.h>
+#include <sys/ioctl.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
+Job::Job(const std::vector<std::string> &argv, const std::string &cwd, bool raw_stdout, bool use_pty)
+    : raw_stdout_(raw_stdout || use_pty), use_pty_(use_pty) {
+#if MEP_JOB_POSIX
+    if (argv.empty()) {
+        spawn_failed_ = true;
+        finished_ = true;
+        return;
+    }
+    if (use_pty_) {
+        int master_fd = -1;
+        pid_t pid = forkpty(&master_fd, nullptr, nullptr, nullptr);
+        if (pid < 0) {
+            spawn_failed_ = true;
+            finished_ = true;
+            return;
+        }
+        if (pid == 0) {
+            // Child: forkpty() already made the PTY slave our controlling
+            // terminal and stdin/stdout/stderr -- just cwd + exec.
+            setpgid(0, 0);
+            if (!cwd.empty() && chdir(cwd.c_str()) != 0) _exit(127);
+            std::vector<char *> cargv;
+            cargv.reserve(argv.size() + 1);
+            for (const auto &s : argv) cargv.push_back(const_cast<char *>(s.c_str()));
+            cargv.push_back(nullptr);
+            execvp(cargv[0], cargv.data());
+            _exit(127);
+        }
+        // Parent: one fd serves as stdin (write) and the merged
+        // stdout+stderr (read) -- a real PTY has no separate stderr
+        // stream, matching what a terminal emulator would see.
+        pid_ = pid;
+        stdin_fd_ = stdout_fd_ = master_fd;
+        stderr_fd_ = -1;
+        reader_thread_ = std::thread(&Job::ReaderLoop, this);
+        return;
+    }
+    int in_pipe[2], out_pipe[2], err_pipe[2];
+    if (pipe(in_pipe) != 0) {
+        spawn_failed_ = true;
+        finished_ = true;
+        return;
+    }
+    if (pipe(out_pipe) != 0) {
+        close(in_pipe[0]);
+        close(in_pipe[1]);
+        spawn_failed_ = true;
+        finished_ = true;
+        return;
+    }
+    if (pipe(err_pipe) != 0) {
+        close(in_pipe[0]);
+        close(in_pipe[1]);
+        close(out_pipe[0]);
+        close(out_pipe[1]);
+        spawn_failed_ = true;
+        finished_ = true;
+        return;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(in_pipe[0]);
+        close(in_pipe[1]);
+        close(out_pipe[0]);
+        close(out_pipe[1]);
+        close(err_pipe[0]);
+        close(err_pipe[1]);
+        spawn_failed_ = true;
+        finished_ = true;
+        return;
+    }
+    if (pid == 0) {
+        // Child: wire pipes to std streams, cwd, exec. Any failure here
+        // exits 127 (standard "command not found/exec failed" code) --
+        // the parent sees that via waitpid, not via a shared error channel.
+        dup2(in_pipe[0], STDIN_FILENO);
+        dup2(out_pipe[1], STDOUT_FILENO);
+        dup2(err_pipe[1], STDERR_FILENO);
+        close(in_pipe[0]);
+        close(in_pipe[1]);
+        close(out_pipe[0]);
+        close(out_pipe[1]);
+        close(err_pipe[0]);
+        close(err_pipe[1]);
+        setpgid(0, 0);
+        if (!cwd.empty() && chdir(cwd.c_str()) != 0) _exit(127);
+        std::vector<char *> cargv;
+        cargv.reserve(argv.size() + 1);
+        for (const auto &s : argv) cargv.push_back(const_cast<char *>(s.c_str()));
+        cargv.push_back(nullptr);
+        execvp(cargv[0], cargv.data());
+        _exit(127);
+    }
+
+    // Parent.
+    pid_ = pid;
+    close(in_pipe[0]);
+    close(out_pipe[1]);
+    close(err_pipe[1]);
+    stdin_fd_ = in_pipe[1];
+    stdout_fd_ = out_pipe[0];
+    stderr_fd_ = err_pipe[0];
+    reader_thread_ = std::thread(&Job::ReaderLoop, this);
+#else
+    (void)argv;
+    (void)cwd;
+    spawn_failed_ = true;
+    finished_ = true;
+#endif
+}
+
+Job::~Job() {
+#if MEP_JOB_POSIX
+    if (!finished_.load()) Kill();
+    if (reader_thread_.joinable()) reader_thread_.join();
+    if (stdin_fd_ >= 0) close(stdin_fd_);
+#endif
+}
+
+void Job::Kill() {
+#if MEP_JOB_POSIX
+    if (pid_ > 0 && !finished_.load()) {
+        killed_ = true;
+        kill(-pid_, SIGTERM);
+    }
+#endif
+}
+
+bool Job::WriteStdin(const std::string &data) {
+#if MEP_JOB_POSIX
+    if (stdin_fd_ < 0) return false;
+    size_t off = 0;
+    while (off < data.size()) {
+        ssize_t n = write(stdin_fd_, data.data() + off, data.size() - off);
+        if (n <= 0) return false;
+        off += static_cast<size_t>(n);
+    }
+    return true;
+#else
+    (void)data;
+    return false;
+#endif
+}
+
+void Job::CloseStdin() {
+#if MEP_JOB_POSIX
+    // A PTY's stdin/stdout share one fd -- closing it would kill the read
+    // side too, which makes no sense for an interactive terminal (unlike
+    // a one-shot pipe job like `git apply`, nothing here ever wants to
+    // signal EOF to a shell by closing its input).
+    if (use_pty_) return;
+    if (stdin_fd_ >= 0) {
+        close(stdin_fd_);
+        stdin_fd_ = -1;
+    }
+#endif
+}
+
+void Job::ResizePty(int cols, int rows) {
+#if MEP_JOB_POSIX
+    if (!use_pty_ || stdout_fd_ < 0) return;
+    struct winsize ws {};
+    ws.ws_col = static_cast<unsigned short>(std::max(1, cols));
+    ws.ws_row = static_cast<unsigned short>(std::max(1, rows));
+    ioctl(stdout_fd_, TIOCSWINSZ, &ws);
+#endif
+}
+
+std::vector<JobLine> Job::DrainLines() {
+    std::lock_guard<std::mutex> lk(mu_);
+    std::vector<JobLine> out(pending_.begin(), pending_.end());
+    pending_.clear();
+    return out;
+}
+
+std::vector<std::string> Job::DrainRaw() {
+    std::lock_guard<std::mutex> lk(mu_);
+    std::vector<std::string> out(pending_raw_.begin(), pending_raw_.end());
+    pending_raw_.clear();
+    return out;
+}
+
+#if MEP_JOB_POSIX
+namespace {
+// Appends `chunk` to `partial`, splitting on '\n' (stripping a trailing
+// '\r' for CRLF-emitting tools) and pushing each complete line into
+// `pending` under `mu`. Leaves a trailing partial line in `partial` for
+// the next chunk to complete.
+void FeedChunk(std::string &partial, const char *data, size_t len, bool is_stderr, std::mutex &mu,
+               std::deque<JobLine> &pending) {
+    partial.append(data, len);
+    size_t pos;
+    while ((pos = partial.find('\n')) != std::string::npos) {
+        std::string line = partial.substr(0, pos);
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            pending.push_back({is_stderr, line});
+        }
+        partial.erase(0, pos + 1);
+    }
+}
+}  // namespace
+
+void Job::ReaderLoop() {
+    std::string stdout_partial, stderr_partial;
+    bool out_open = true, err_open = (stderr_fd_ >= 0);  // PTY mode has no separate stderr fd
+    char buf[4096];
+
+    while (out_open || err_open) {
+        struct pollfd fds[2];
+        int nfds = 0;
+        int out_idx = -1, err_idx = -1;
+        if (out_open) {
+            fds[nfds] = {stdout_fd_, POLLIN, 0};
+            out_idx = nfds++;
+        }
+        if (err_open) {
+            fds[nfds] = {stderr_fd_, POLLIN, 0};
+            err_idx = nfds++;
+        }
+        int rc = poll(fds, nfds, 200);  // 200ms so a kill mid-read isn't stuck forever
+        if (rc < 0) break;
+
+        if (out_open && (fds[out_idx].revents & (POLLIN | POLLHUP | POLLERR))) {
+            ssize_t n = read(stdout_fd_, buf, sizeof(buf));
+            if (n <= 0) {
+                if (!raw_stdout_ && !stdout_partial.empty()) {
+                    std::lock_guard<std::mutex> lk(mu_);
+                    pending_.push_back({false, stdout_partial});
+                }
+                close(stdout_fd_);
+                out_open = false;
+            } else if (raw_stdout_) {
+                std::lock_guard<std::mutex> lk(mu_);
+                pending_raw_.emplace_back(buf, static_cast<size_t>(n));
+            } else {
+                FeedChunk(stdout_partial, buf, static_cast<size_t>(n), false, mu_, pending_);
+            }
+        }
+        if (err_open && (fds[err_idx].revents & (POLLIN | POLLHUP | POLLERR))) {
+            ssize_t n = read(stderr_fd_, buf, sizeof(buf));
+            if (n <= 0) {
+                if (!stderr_partial.empty()) {
+                    std::lock_guard<std::mutex> lk(mu_);
+                    pending_.push_back({true, stderr_partial});
+                }
+                close(stderr_fd_);
+                err_open = false;
+            } else {
+                FeedChunk(stderr_partial, buf, static_cast<size_t>(n), true, mu_, pending_);
+            }
+        }
+    }
+
+    int status = 0;
+    waitpid(pid_, &status, 0);
+    exit_code_ = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    finished_ = true;
+}
+#endif  // MEP_JOB_POSIX
+
+// --- JobManager --------------------------------------------------------
+
+JobManager &JobManager::Instance() {
+    static JobManager instance;
+    return instance;
+}
+
+int JobManager::Spawn(const std::vector<std::string> &argv, const std::string &cwd, Callbacks callbacks,
+                       bool use_pty) {
+    Entry entry;
+    entry.id = next_id_++;
+    entry.job = std::make_shared<Job>(argv, cwd, callbacks.on_stdout_raw != nullptr, use_pty);
+    entry.callbacks = std::move(callbacks);
+    entry.spawn_failed = entry.job->SpawnFailed();
+    jobs_.push_back(std::move(entry));
+    return jobs_.back().id;
+}
+
+void JobManager::ResizePty(int id, int cols, int rows) {
+    if (Job *j = Find(id)) j->ResizePty(cols, rows);
+}
+
+bool JobManager::WriteStdin(int id, const std::string &data) {
+    Job *j = Find(id);
+    return j ? j->WriteStdin(data) : false;
+}
+
+void JobManager::CloseStdin(int id) {
+    if (Job *j = Find(id)) j->CloseStdin();
+}
+
+void JobManager::Kill(int id) {
+    if (Job *j = Find(id)) j->Kill();
+}
+
+bool JobManager::IsRunning(int id) const {
+    for (const auto &e : jobs_) {
+        if (e.id == id) return !e.job->Finished();
+    }
+    return false;
+}
+
+Job *JobManager::Find(int id) {
+    for (auto &e : jobs_) {
+        if (e.id == id) return e.job.get();
+    }
+    return nullptr;
+}
+
+void JobManager::PollAll() {
+    for (auto &e : jobs_) {
+        if (e.callbacks.on_stdout_raw) {
+            for (const std::string &chunk : e.job->DrainRaw()) e.callbacks.on_stdout_raw(chunk);
+        }
+        for (const JobLine &line : e.job->DrainLines()) {
+            if (line.is_stderr) {
+                if (e.callbacks.on_stderr) e.callbacks.on_stderr(line.text);
+            } else {
+                if (e.callbacks.on_stdout) e.callbacks.on_stdout(line.text);
+            }
+        }
+        if (e.job->Finished() && !e.exit_reported) {
+            e.exit_reported = true;
+            if (e.callbacks.on_exit) {
+                int code = e.job->Killed() || e.job->SpawnFailed() ? -1 : e.job->ExitCode();
+                e.callbacks.on_exit(code);
+            }
+        }
+    }
+    jobs_.erase(std::remove_if(jobs_.begin(), jobs_.end(), [](const Entry &e) { return e.exit_reported; }),
+                jobs_.end());
+}

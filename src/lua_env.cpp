@@ -25,6 +25,7 @@ extern "C" {
 #include "job.h"
 #include "treesitter.h"
 #include "json.h"
+#include "persist.h"
 
 // Defined in main.cpp -- returns the fixed-width glyph advance (in pixels)
 // of the active font, needed below to convert a fraction of the window's
@@ -100,6 +101,19 @@ int l_line_count(lua_State *L) {
     return 1;
 }
 
+// mep.visual_selection() -> string ("" if no Visual selection is active).
+// Charwise/linewise selections join lines with '\n'; a Visual Block
+// selection returns one row's slice per line, also '\n'-joined, matching
+// how a blockwise register's own text looks (see Editor::YankRange).
+// Read-only: unlike y/d in Visual mode, this writes no register and
+// leaves the selection itself untouched, so it's safe to call just to
+// *look* at what's selected (e.g. before sending it to a REPL/AI chat).
+int l_visual_selection(lua_State *L) {
+    std::string text = GetEditor(L)->CurrentVisualSelectionText();
+    lua_pushlstring(L, text.data(), text.size());
+    return 1;
+}
+
 // mep.cursor() -> row, col (both 1-indexed).
 int l_cursor(lua_State *L) {
     int row = 0, col = 0;
@@ -156,17 +170,71 @@ int l_command(lua_State *L) {
     return 0;
 }
 
-// mep.map(mode, key, fn): binds a single key in normal ("n") or visual
-// ("v"/"V") mode to a Lua function. Overrides the builtin for that key.
+// mep.map(mode, key, fn, opts): binds a single key in normal ("n") or
+// visual ("v"/"V") mode to a Lua function. Overrides the builtin for that
+// key. `opts` is optional: {desc = "..."} records a human-readable
+// description (Editor::AllMappingDescriptions()) for the help picker's
+// keybinding introspection (NVIM_PARITY_PLAN.md Phase 25) -- mirrors
+// mep.leader_map's own (positional, not opts-table) description arg;
+// opts here since mep.map already has 3 positional args and more optional
+// fields are plausible later, unlike leader_map's fixed shape.
 int l_map(lua_State *L) {
     const char *mode_str = luaL_checkstring(L, 1);
     const char *key = luaL_checkstring(L, 2);
     luaL_checktype(L, 3, LUA_TFUNCTION);
     lua_pushvalue(L, 3);
     int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    std::string description;
+    if (lua_gettop(L) >= 4 && lua_istable(L, 4)) {
+        lua_getfield(L, 4, "desc");
+        if (lua_isstring(L, -1)) description = lua_tostring(L, -1);
+        lua_pop(L, 1);
+    }
     Mode mode = (mode_str[0] == 'v' || mode_str[0] == 'V') ? Mode::Visual : Mode::Normal;
-    GetEditor(L)->RegisterLuaMapping(mode, std::string(key), ref);
+    GetEditor(L)->RegisterLuaMapping(mode, std::string(key), ref, description);
     return 0;
+}
+
+// mep.mapping_descriptions() -> array of {mode=, key=, desc=} for every
+// mep.map() binding that was given an opts.desc -- what the help picker's
+// keybinding introspection (NVIM_PARITY_PLAN.md Phase 25) reads to list
+// "what does this key do" instead of just "what commands exist" (see
+// kBuiltinDocs's mep.keymaps() picker in main.cpp, the consumer this
+// registry was originally built for but went unconsumed until now).
+int l_mapping_descriptions(lua_State *L) {
+    std::vector<Editor::MappingDescription> descs = GetEditor(L)->AllMappingDescriptions();
+    lua_createtable(L, static_cast<int>(descs.size()), 0);
+    for (size_t i = 0; i < descs.size(); i++) {
+        lua_createtable(L, 0, 3);
+        lua_pushlstring(L, &descs[i].mode, 1);
+        lua_setfield(L, -2, "mode");
+        lua_pushlstring(L, descs[i].key.data(), descs[i].key.size());
+        lua_setfield(L, -2, "key");
+        lua_pushlstring(L, descs[i].description.data(), descs[i].description.size());
+        lua_setfield(L, -2, "desc");
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+    return 1;
+}
+
+// mep.leader_bindings() -> array of {seq=, desc=} for every mep.leader_map()
+// registration, unfiltered by whichkey's own currently-typed prefix (unlike
+// the transient WhichKey overlay, which only ever shows matches for
+// whatever prefix is typed so far). The leader-sequence half of what
+// mep.keymaps() (kBuiltinDocs, main.cpp) lists, alongside
+// mep.mapping_descriptions()'s plain mep.map() side above.
+int l_leader_bindings(lua_State *L) {
+    std::vector<WhichKeyBinding> bindings = GetEditor(L)->AllWhichKeyBindings();
+    lua_createtable(L, static_cast<int>(bindings.size()), 0);
+    for (size_t i = 0; i < bindings.size(); i++) {
+        lua_createtable(L, 0, 2);
+        lua_pushlstring(L, bindings[i].sequence.data(), bindings[i].sequence.size());
+        lua_setfield(L, -2, "seq");
+        lua_pushlstring(L, bindings[i].description.data(), bindings[i].description.size());
+        lua_setfield(L, -2, "desc");
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+    return 1;
 }
 
 // mep.map_mod1(key, fn): binds a single letter key under the mod1 modifier
@@ -326,15 +394,29 @@ int l_job_is_running(lua_State *L) {
     return 1;
 }
 
-// mep.ui_input(title, default_text, on_done): vim.ui.input equivalent.
-// on_done(text) on Enter, on_done() [nil] on Escape.
+// mep.ui_input(title, default_text, on_done [, opts]): vim.ui.input
+// equivalent. on_done(text) on Enter, on_done() [nil] on Escape.
+// opts is optional: {masked = true} (alias: {password = true}) renders
+// the typed text as '*' in the prompt overlay -- for sensitive input
+// like an API key -- while on_done still receives the real, unmasked
+// text (the mask is a display-only substitution in main.cpp's
+// DrawPromptOverlay, never applied to the underlying buffer).
 int l_ui_input(lua_State *L) {
     const char *title = luaL_checkstring(L, 1);
     const char *def = luaL_optstring(L, 2, "");
     luaL_checktype(L, 3, LUA_TFUNCTION);
     lua_pushvalue(L, 3);
     int ref = luaL_ref(L, LUA_REGISTRYINDEX);
-    GetEditor(L)->BeginPrompt(title, def, ref);
+    bool masked = false;
+    if (lua_gettop(L) >= 4 && lua_istable(L, 4)) {
+        lua_getfield(L, 4, "masked");
+        if (lua_toboolean(L, -1)) masked = true;
+        lua_pop(L, 1);
+        lua_getfield(L, 4, "password");
+        if (lua_toboolean(L, -1)) masked = true;
+        lua_pop(L, 1);
+    }
+    GetEditor(L)->BeginPrompt(title, def, ref, masked);
     return 0;
 }
 
@@ -369,6 +451,44 @@ int l_ui_select(lua_State *L) {
     return 0;
 }
 
+// mep.float_preview(title, text): shows `text` (may embed '\n's, one
+// line each) in a centered floating box -- DrawFloatFrame's box style,
+// main.cpp's DrawPreviewOverlay -- dismissed by any keypress or a click.
+// Read-only/informational, unlike ui_input/ui_confirm/ui_select above:
+// no callback, nothing to decide. Added for git-gutter's hunk preview
+// (NVIM_PARITY_PLAN.md Phase 17 gap) but deliberately generic/reusable.
+int l_float_preview(lua_State *L) {
+    const char *title = luaL_optstring(L, 1, "");
+    size_t len = 0;
+    const char *text = luaL_checklstring(L, 2, &len);
+    GetEditor(L)->BeginPreview(title, std::string(text, len));
+    return 0;
+}
+
+// mep.hover_show(title, text): a small floating window anchored near the
+// cursor (NVIM_PARITY_PLAN.md Phase 3's "hover tooltip" gap, closed) --
+// unlike float_preview above, this does *not* take over input/mode: it's
+// a passive overlay (Editor::hover_open_) that main.cpp draws on top of
+// whatever mode is active, auto-dismissed by Editor::MaybeDismissHover
+// the moment the cursor moves, Escape is pressed, or Normal mode is left.
+// First real consumer: mep.lsp_hover() (main.cpp's kBuiltinLsp), which
+// previously only surfaced hover text via mep.notify (a toast, not a
+// floating popup).
+int l_hover_show(lua_State *L) {
+    const char *title = luaL_optstring(L, 1, "");
+    size_t len = 0;
+    const char *text = luaL_checklstring(L, 2, &len);
+    GetEditor(L)->ShowHover(title, std::string(text, len));
+    return 0;
+}
+
+// mep.hover_close(): dismiss an open hover tooltip early (e.g. a new
+// hover request superseding a still-open one).
+int l_hover_close(lua_State *L) {
+    GetEditor(L)->CloseHover();
+    return 0;
+}
+
 // mep.ns_create(name) -> id. Stable per name (nvim_create_namespace-like).
 int l_ns_create(lua_State *L) {
     const char *name = luaL_checkstring(L, 1);
@@ -384,8 +504,10 @@ int l_ns_clear(lua_State *L) {
 
 // mep.deco_add(ns, opts) -> id. opts: row (1-indexed, required),
 // col_start/col_end (1-indexed, exclusive end), whole_line, hl_group,
-// virt_text, virt_text_hl, virt_overlay, sign (single-char string),
-// sign_hl, priority.
+// underline (draw a thin underline under [col_start, col_end) using
+// hl_group's color instead of recoloring the span's text; ignored if
+// whole_line is set), virt_text, virt_text_hl, virt_overlay, sign
+// (single-char string), sign_hl, priority.
 // Shared by l_deco_add and l_buffer_deco_add (Part VI Phase 27 needed the
 // latter -- terminal/Run/REPL output streams into a background buffer
 // that isn't necessarily the active pane's).
@@ -402,6 +524,9 @@ Decoration ReadDecorationTable(lua_State *L, int idx) {
     lua_pop(L, 1);
     lua_getfield(L, idx, "whole_line");
     d.whole_line = lua_toboolean(L, -1);
+    lua_pop(L, 1);
+    lua_getfield(L, idx, "underline");
+    d.underline = lua_toboolean(L, -1);
     lua_pop(L, 1);
     lua_getfield(L, idx, "hl_group");
     if (lua_isstring(L, -1)) d.hl_group = lua_tostring(L, -1);
@@ -483,6 +608,35 @@ int l_ts_captures(lua_State *L) {
         lua_setfield(L, -2, "col_end");
         lua_pushlstring(L, spans[i].capture.c_str(), spans[i].capture.size());
         lua_setfield(L, -2, "capture");
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+    return 1;
+}
+
+// mep.ts_fold_ranges(filetype, text) -> array of {start_row, end_row}
+// (1-indexed, inclusive -- mep.fold_create's own convention), or nil if
+// `filetype` has no Treesitter fold query (see treesitter_queries.h's
+// kFolds* -- only the core compiled-in languages with real block/body
+// grammar nodes have one; markdown/org keep their own heading-based fold
+// providers instead). The caller (kBuiltinSyntax's mep.syntax_fold in
+// main.cpp) feeds each range straight into mep.fold_create under a
+// dedicated 'treesitter' provider.
+int l_ts_fold_ranges(lua_State *L) {
+    const char *filetype = luaL_checkstring(L, 1);
+    size_t len = 0;
+    const char *text = luaL_checklstring(L, 2, &len);
+    if (!TreesitterHasFoldQuery(filetype)) {
+        lua_pushnil(L);
+        return 1;
+    }
+    std::vector<TSFoldRange> ranges = TreesitterFoldRanges(filetype, std::string(text, len));
+    lua_createtable(L, static_cast<int>(ranges.size()), 0);
+    for (size_t i = 0; i < ranges.size(); i++) {
+        lua_createtable(L, 0, 2);
+        lua_pushinteger(L, ranges[i].start_row + 1);
+        lua_setfield(L, -2, "start_row");
+        lua_pushinteger(L, ranges[i].end_row + 1);
+        lua_setfield(L, -2, "end_row");
         lua_rawseti(L, -2, static_cast<int>(i + 1));
     }
     return 1;
@@ -733,10 +887,18 @@ void ReadPickerItems(lua_State *L, int idx, std::vector<PickerItem> &out) {
     }
 }
 
-// mep.picker_open(title, items, on_select [, on_query_change [, on_key]]).
+// mep.picker_open(title, items, on_select [, on_query_change [, on_key [,
+// on_select_change]]]).
 // on_key(key): fires on Ctrl+<letter> for any letter besides N/P (already
 // reserved for next/prev) -- e.g. mep.projects()'s Ctrl-A for "add current
-// directory". Pass nil for on_query_change to reach it without one.
+// directory". Pass nil for on_query_change (or on_key) to reach a later
+// positional arg without one.
+// on_select_change(data): fires with the newly-highlighted item's `data`
+// every time the highlighted row changes -- arrow/Ctrl-N/Ctrl-P navigation,
+// or the query narrowing to a different top match -- *before* Enter/Escape
+// commit or cancel. Lets a picker live-preview each candidate as the cursor
+// moves over it (e.g. mep.themes() re-tinting the UI live while browsing
+// colorschemes), not just once on final selection.
 int l_picker_open(lua_State *L) {
     const char *title = luaL_checkstring(L, 1);
     luaL_checktype(L, 2, LUA_TTABLE);
@@ -755,8 +917,17 @@ int l_picker_open(lua_State *L) {
         lua_pushvalue(L, 5);
         on_key = luaL_ref(L, LUA_REGISTRYINDEX);
     }
+    int on_select_change = LUA_NOREF;
+    if (lua_gettop(L) >= 6 && lua_isfunction(L, 6)) {
+        lua_pushvalue(L, 6);
+        on_select_change = luaL_ref(L, LUA_REGISTRYINDEX);
+    }
+    // 7th arg (optional bool): raw_results -- see Editor::OpenPicker's own
+    // comment. Only mep.live_grep (kBuiltinPickerSources) passes true.
+    bool raw_results = lua_gettop(L) >= 7 && lua_toboolean(L, 7);
     GetEditor(L)->OpenPicker(title, std::move(items), on_select, on_query_change == LUA_NOREF ? 0 : on_query_change,
-                              on_key == LUA_NOREF ? 0 : on_key);
+                              on_key == LUA_NOREF ? 0 : on_key,
+                              on_select_change == LUA_NOREF ? 0 : on_select_change, raw_results);
     return 0;
 }
 
@@ -768,8 +939,90 @@ int l_picker_set_items(lua_State *L) {
     return 0;
 }
 
+// mep.picker_set_preview(text): sets the text shown in the picker's
+// preview column (NVIM_PARITY_PLAN.md Phase 8 gap, closed) -- see
+// Editor::SetPickerPreview's own comment. Pass "" to hide the column
+// again (e.g. a source whose highlighted item has nothing previewable).
+int l_picker_set_preview(lua_State *L) {
+    size_t len = 0;
+    const char *text = luaL_optlstring(L, 1, "", &len);
+    GetEditor(L)->SetPickerPreview(std::string(text, len));
+    return 0;
+}
+
 int l_picker_close(lua_State *L) {
     GetEditor(L)->ClosePickerDiscardingCallbacks();
+    return 0;
+}
+
+// mep.roam_graph_open(title, nodes, edges, on_select): opens the Roam
+// backlink-graph view (NVIM_PARITY_PLAN.md Phase 37's flagged "no fuzzy
+// backlink-graph visualization" gap, closed -- see Editor::OpenRoamGraph's
+// own comment, and main.cpp's DrawRoamGraphOverlay, for the deterministic
+// ring-layout scope decision this makes instead of a full force-directed
+// simulation). `nodes` is an array of {id=, title=, path=, hop=} tables
+// (exactly one node should have hop=0: the note the view is centered on);
+// `edges` is an array of {a=, b=} 1-based indices into `nodes`, one per
+// link between two nodes in the set. `on_select(path)` is called with the
+// chosen node's `path` on Enter, or with no argument if the view is
+// dismissed via Escape -- the same nil-on-cancel convention as
+// mep.picker_open's on_select.
+int l_roam_graph_open(lua_State *L) {
+    const char *title = luaL_checkstring(L, 1);
+    luaL_checktype(L, 2, LUA_TTABLE);
+    luaL_checktype(L, 3, LUA_TTABLE);
+    luaL_checktype(L, 4, LUA_TFUNCTION);
+
+    std::vector<RoamGraphNode> nodes;
+    lua_Integer n_nodes = static_cast<lua_Integer>(lua_rawlen(L, 2));
+    for (lua_Integer i = 1; i <= n_nodes; i++) {
+        lua_rawgeti(L, 2, i);
+        RoamGraphNode node;
+        if (lua_istable(L, -1)) {
+            lua_getfield(L, -1, "id");
+            if (lua_isstring(L, -1)) node.id = lua_tostring(L, -1);
+            lua_pop(L, 1);
+            lua_getfield(L, -1, "title");
+            if (lua_isstring(L, -1)) node.title = lua_tostring(L, -1);
+            lua_pop(L, 1);
+            lua_getfield(L, -1, "path");
+            if (lua_isstring(L, -1)) node.path = lua_tostring(L, -1);
+            lua_pop(L, 1);
+            lua_getfield(L, -1, "hop");
+            if (lua_isnumber(L, -1)) node.hop = static_cast<int>(lua_tointeger(L, -1));
+            lua_pop(L, 1);
+        }
+        nodes.push_back(std::move(node));
+        lua_pop(L, 1);
+    }
+
+    std::vector<RoamGraphEdge> edges;
+    lua_Integer n_edges = static_cast<lua_Integer>(lua_rawlen(L, 3));
+    for (lua_Integer i = 1; i <= n_edges; i++) {
+        lua_rawgeti(L, 3, i);
+        RoamGraphEdge edge;
+        if (lua_istable(L, -1)) {
+            lua_getfield(L, -1, "a");
+            int a = lua_isnumber(L, -1) ? static_cast<int>(lua_tointeger(L, -1)) : 0;
+            lua_pop(L, 1);
+            lua_getfield(L, -1, "b");
+            int b = lua_isnumber(L, -1) ? static_cast<int>(lua_tointeger(L, -1)) : 0;
+            lua_pop(L, 1);
+            edge.a = a - 1;  // Lua is 1-based; RoamGraphEdge indices are 0-based.
+            edge.b = b - 1;
+        }
+        edges.push_back(edge);
+        lua_pop(L, 1);
+    }
+
+    lua_pushvalue(L, 4);
+    int on_select = luaL_ref(L, LUA_REGISTRYINDEX);
+    GetEditor(L)->OpenRoamGraph(title, std::move(nodes), std::move(edges), on_select);
+    return 0;
+}
+
+int l_roam_graph_close(lua_State *L) {
+    GetEditor(L)->CloseRoamGraphDiscardingCallback();
     return 0;
 }
 
@@ -862,7 +1115,7 @@ int l_layout(lua_State *L) {
 
 // mep.list_dir(path) -> array of {name=, is_dir=}, directories first then
 // files, both alphabetical (Phase 15 file tree). Editor::ListDirectory
-// handles native vs. wasm (routed through the `just run` loopback bridge,
+// handles native vs. wasm (routed through the `just run-wasm` loopback bridge,
 // same as :e/:w/:source -- empty when there's no bridge, e.g. a bare
 // browser tab) so this is just the Lua table conversion.
 int l_list_dir(lua_State *L) {
@@ -939,7 +1192,7 @@ int l_fs_delete(lua_State *L) {
 
 // Persisted project-root list (Phase 16), stored at
 // $XDG_DATA_HOME/mep/projects.json as {"projects": [path, ...]} natively,
-// or via the `just run` loopback bridge under wasm (no real filesystem/env
+// or via the `just run-wasm` loopback bridge under wasm (no real filesystem/env
 // vars in that sandbox to compute the path from) -- see
 // Editor::ListProjects/AddProject/RemoveProject for the platform split.
 int l_project_list(lua_State *L) {
@@ -1072,6 +1325,49 @@ Json LuaToJson(lua_State *L, int idx) {
         return obj;
     }
     return Json();
+}
+
+// Persisted babel result cache (NVIM_PARITY_PLAN.md Phase 34 follow-up:
+// on-disk `:cache yes` persistence -- previously in-memory only, lost on
+// restart). Stored at $XDG_DATA_HOME/mep/babel_cache.json as
+// {"entries": {cache_key: [line, ...]}}, same MepDataDir()/ReadJsonFile/
+// WriteJsonFile convention as the persisted project list
+// (Editor::ListProjects/AddProject above) and the same generic
+// PushJson/LuaToJson marshaling LSP already uses -- the cache is just an
+// arbitrary Lua table (string key -> array of strings) from this side of
+// the boundary, so no bespoke per-field (de)serialization is needed.
+// Native-only, like the rest of persist.h; the wasm build's babel cache
+// stays in-memory-only for the session, unchanged from before this
+// change.
+#if !defined(__EMSCRIPTEN__)
+namespace {
+std::string BabelCachePath() { return MepDataDir() + "/babel_cache.json"; }
+}  // namespace
+#endif
+
+int l_babel_cache_load(lua_State *L) {
+#if !defined(__EMSCRIPTEN__)
+    Json doc;
+    if (ReadJsonFile(BabelCachePath(), &doc) && doc.is_object()) {
+        const Json &entries = doc.get("entries");
+        if (entries.is_object()) {
+            PushJson(L, entries);
+            return 1;
+        }
+    }
+#endif
+    lua_newtable(L);
+    return 1;
+}
+
+int l_babel_cache_save(lua_State *L) {
+#if !defined(__EMSCRIPTEN__)
+    luaL_checktype(L, 1, LUA_TTABLE);
+    Json doc = Json::Object();
+    doc["entries"] = LuaToJson(L, 1);
+    WriteJsonFile(BabelCachePath(), doc);
+#endif
+    return 0;
 }
 
 // --- LSP client (NVIM_PARITY_PLAN.md Part V Phase 20) ----------------------
@@ -1266,6 +1562,26 @@ int l_set_completion_source(lua_State *L) {
     lua_pushvalue(L, 1);
     int ref = luaL_ref(L, LUA_REGISTRYINDEX);
     GetEditor(L)->SetCompletionSourceRef(ref);
+    return 0;
+}
+
+// mep.set_completion_accept_hook(fn): see SetCompletionAcceptHookRef's
+// comment (editor.h) -- Phase 23's LSP insertTextFormat=Snippet wiring.
+int l_set_completion_accept_hook(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TFUNCTION);
+    lua_pushvalue(L, 1);
+    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    GetEditor(L)->SetCompletionAcceptHookRef(ref);
+    return 0;
+}
+
+// mep.set_insert_tab_hook(fn): fn(shift) -> bool. Phase 23's Tab/Shift-Tab
+// tabstop cycling -- see SetInsertTabHookRef's comment (editor.h).
+int l_set_insert_tab_hook(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TFUNCTION);
+    lua_pushvalue(L, 1);
+    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    GetEditor(L)->SetInsertTabHookRef(ref);
     return 0;
 }
 
@@ -1483,6 +1799,18 @@ int l_set_statusline(lua_State *L) {
     return 0;
 }
 
+// mep.set_winbar_click(fn): fn(dir_path), called when a directory segment of
+// the per-pane header's path breadcrumb (mep's winbar equivalent) is
+// clicked (Phase 11 click-dispatch gap). kBuiltinPickerSources wires this to
+// mep.winbar_navigate by default.
+int l_set_winbar_click(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TFUNCTION);
+    lua_pushvalue(L, 1);
+    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    GetEditor(L)->SetWinbarClickRef(ref);
+    return 0;
+}
+
 // mep.set_leader(key): single-char string, the whichkey trigger (Phase 11).
 int l_set_leader(lua_State *L) {
     const char *key = luaL_checkstring(L, 1);
@@ -1547,12 +1875,15 @@ const luaL_Reg kMepFuncs[] = {
     {"set_line", l_set_line},
     {"replace_lines", l_replace_lines},
     {"line_count", l_line_count},
+    {"visual_selection", l_visual_selection},
     {"cursor", l_cursor},
     {"set_cursor", l_set_cursor},
     {"insert_text", l_insert_text},
     {"notify", l_notify},
     {"command", l_command},
     {"map", l_map},
+    {"mapping_descriptions", l_mapping_descriptions},
+    {"leader_bindings", l_leader_bindings},
     {"map_mod1", l_map_mod1},
     {"set_mod1", l_set_mod1},
     {"nav_pane", l_nav_pane},
@@ -1570,10 +1901,14 @@ const luaL_Reg kMepFuncs[] = {
     {"ui_input", l_ui_input},
     {"ui_confirm", l_ui_confirm},
     {"ui_select", l_ui_select},
+    {"float_preview", l_float_preview},
+    {"hover_show", l_hover_show},
+    {"hover_close", l_hover_close},
     {"ns_create", l_ns_create},
     {"ns_clear", l_ns_clear},
     {"deco_add", l_deco_add},
     {"ts_captures", l_ts_captures},
+    {"ts_fold_ranges", l_ts_fold_ranges},
     {"buffer_set_lines", l_buffer_set_lines},
     {"buffer_ns_clear", l_buffer_ns_clear},
     {"buffer_deco_add", l_buffer_deco_add},
@@ -1594,7 +1929,10 @@ const luaL_Reg kMepFuncs[] = {
     {"sidebar_cursor_widget_id", l_sidebar_cursor_widget_id},
     {"picker_open", l_picker_open},
     {"picker_set_items", l_picker_set_items},
+    {"picker_set_preview", l_picker_set_preview},
     {"picker_close", l_picker_close},
+    {"roam_graph_open", l_roam_graph_open},
+    {"roam_graph_close", l_roam_graph_close},
     {"fuzzy_score", l_fuzzy_score},
     {"buffer_list", l_buffer_list},
     {"buffer_switch", l_buffer_switch},
@@ -1606,6 +1944,7 @@ const luaL_Reg kMepFuncs[] = {
     {"set_leader", l_set_leader},
     {"leader_map", l_leader_map},
     {"set_statusline", l_set_statusline},
+    {"set_winbar_click", l_set_winbar_click},
     {"scratch", l_scratch},
     {"toggle_zen", l_toggle_zen},
     {"on_frame", l_on_frame},
@@ -1620,11 +1959,15 @@ const luaL_Reg kMepFuncs[] = {
     {"project_list", l_project_list},
     {"project_add", l_project_add},
     {"project_remove", l_project_remove},
+    {"babel_cache_load", l_babel_cache_load},
+    {"babel_cache_save", l_babel_cache_save},
     {"chdir", l_chdir},
     {"getcwd", l_getcwd},
     {"diff_lines", l_diff_lines},
     {"filename", l_filename},
     {"set_completion_source", l_set_completion_source},
+    {"set_completion_accept_hook", l_set_completion_accept_hook},
+    {"set_insert_tab_hook", l_set_insert_tab_hook},
     {"lsp_start", l_lsp_start},
     {"lsp_request", l_lsp_request},
     {"lsp_notify", l_lsp_notify},
@@ -1766,6 +2109,21 @@ bool LuaEnv::CallRefWithStringForStrings(int ref, const std::string &arg, std::v
     }
     lua_pop(L_, 1);
     return true;
+}
+
+bool LuaEnv::CallRefWithBoolForBool(int ref, bool arg) {
+    if (ref == LUA_NOREF || ref == LUA_REFNIL || ref == 0) return false;
+    lua_rawgeti(L_, LUA_REGISTRYINDEX, ref);
+    lua_pushboolean(L_, arg);
+    if (lua_pcall(L_, 1, 1, 0) != LUA_OK) {
+        const char *msg = lua_tostring(L_, -1);
+        if (editor_) editor_->SetStatusMessage(std::string("Lua error: ") + (msg ? msg : "?"));
+        lua_pop(L_, 1);
+        return false;
+    }
+    bool result = lua_toboolean(L_, -1);
+    lua_pop(L_, 1);
+    return result;
 }
 
 void LuaEnv::UnrefFunction(int ref) {

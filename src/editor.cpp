@@ -13,7 +13,10 @@
 #include "json.h"
 #include "persist.h"
 #include "job.h"
+#include "regex.h"
 #include "vterm.h"
+#include "image_doc.h"
+#include "pdf_doc.h"
 
 #if defined(__EMSCRIPTEN__)
 #include <emscripten.h>
@@ -62,7 +65,7 @@ EM_JS(char *, mep_js_read_file, (const char *path_ptr), {
     const path = UTF8ToString(path_ptr);
     let text;
     try {
-        if (!window.__mepBridgeBase) throw new Error("no file bridge (not launched via `just run`)");
+        if (!window.__mepBridgeBase) throw new Error("no file bridge (not launched via `just run-wasm`)");
         const xhr = new XMLHttpRequest();
         xhr.open("GET", window.__mepBridgeBase + "/read?path=" + encodeURIComponent(path), false);
         xhr.send();
@@ -77,12 +80,41 @@ EM_JS(char *, mep_js_read_file, (const char *path_ptr), {
     return ptr;
 });
 
+// Binary-safe counterpart to mep_js_read_file, used only for opening image
+// files (LoadFile's IsImagePath branch): the plain /read endpoint round-
+// trips through Deno.readTextFile + JSON, which corrupts arbitrary binary
+// bytes (invalid UTF-8 sequences get replaced/mangled), so this hits a
+// separate /read-binary endpoint (launcher/serve.ts) that base64-encodes
+// the raw file instead. Same synchronous-XHR shape and "OK\n<payload>" /
+// "ERR\n<message>" contract as mep_js_read_file above (see the comment
+// above it for why this is plain EM_JS, not EM_ASYNC_JS) -- the payload
+// here is base64 text, not raw file content, decoded back to bytes by
+// Base64Decode (image_doc.cpp) on the C++ side.
+EM_JS(char *, mep_js_read_file_binary, (const char *path_ptr), {
+    const path = UTF8ToString(path_ptr);
+    let text;
+    try {
+        if (!window.__mepBridgeBase) throw new Error("no file bridge (not launched via `just run-wasm`)");
+        const xhr = new XMLHttpRequest();
+        xhr.open("GET", window.__mepBridgeBase + "/read-binary?path=" + encodeURIComponent(path), false);
+        xhr.send();
+        const result = JSON.parse(xhr.responseText);
+        text = result.ok ? ("OK\n" + result.content_b64) : ("ERR\n" + result.error);
+    } catch (e) {
+        text = "ERR\n" + String(e);
+    }
+    const len = lengthBytesUTF8(text) + 1;
+    const ptr = _malloc(len);
+    stringToUTF8(text, ptr, len);
+    return ptr;
+});
+
 EM_JS(char *, mep_js_write_file, (const char *path_ptr, const char *content_ptr), {
     const path = UTF8ToString(path_ptr);
     const content = UTF8ToString(content_ptr);
     let text;
     try {
-        if (!window.__mepBridgeBase) throw new Error("no file bridge (not launched via `just run`)");
+        if (!window.__mepBridgeBase) throw new Error("no file bridge (not launched via `just run-wasm`)");
         const xhr = new XMLHttpRequest();
         xhr.open("POST", window.__mepBridgeBase + "/write", false);
         xhr.setRequestHeader("Content-Type", "application/json");
@@ -107,7 +139,7 @@ EM_JS(char *, mep_js_list_dir, (const char *path_ptr), {
     const path = UTF8ToString(path_ptr);
     let text;
     try {
-        if (!window.__mepBridgeBase) throw new Error("no file bridge (not launched via `just run`)");
+        if (!window.__mepBridgeBase) throw new Error("no file bridge (not launched via `just run-wasm`)");
         const xhr = new XMLHttpRequest();
         xhr.open("GET", window.__mepBridgeBase + "/list?path=" + encodeURIComponent(path), false);
         xhr.send();
@@ -131,7 +163,7 @@ EM_JS(char *, mep_js_list_dir, (const char *path_ptr), {
 EM_JS(char *, mep_js_project_list, (), {
     let text;
     try {
-        if (!window.__mepBridgeBase) throw new Error("no file bridge (not launched via `just run`)");
+        if (!window.__mepBridgeBase) throw new Error("no file bridge (not launched via `just run-wasm`)");
         const xhr = new XMLHttpRequest();
         xhr.open("GET", window.__mepBridgeBase + "/projects", false);
         xhr.send();
@@ -154,7 +186,7 @@ EM_JS(char *, mep_js_project_mutate, (const char *action_ptr, const char *path_p
     const path = UTF8ToString(path_ptr);
     let text;
     try {
-        if (!window.__mepBridgeBase) throw new Error("no file bridge (not launched via `just run`)");
+        if (!window.__mepBridgeBase) throw new Error("no file bridge (not launched via `just run-wasm`)");
         const xhr = new XMLHttpRequest();
         xhr.open("POST", window.__mepBridgeBase + "/projects", false);
         xhr.setRequestHeader("Content-Type", "application/json");
@@ -205,7 +237,7 @@ EM_JS(char *, mep_js_project_mutate, (const char *action_ptr, const char *path_p
 EM_JS(int, mep_js_pty_connect_start, (const char *payload_json_ptr), {
     const payloadJson = UTF8ToString(payload_json_ptr);
     if (!window.__mepBridgeBase) {
-        window.__mepLastPtyError = "no file bridge (not launched via `just run`)";
+        window.__mepLastPtyError = "no file bridge (not launched via `just run-wasm`)";
         return -1;
     }
     const wsBase = window.__mepBridgeBase.replace(/^http/, "ws");
@@ -416,8 +448,185 @@ const Palette kPaletteGruvboxLight = {
     {69, 133, 136, 255}, {177, 98, 134, 255}, {104, 157, 106, 255}, {214, 93, 14, 255}, {168, 153, 132, 255},
 };
 
+// NVIM_PARITY_PLAN.md's own "Full theme palette set (28 in mep.nvim)" note
+// says the registry is just data, low-value to front-load, trivial to grow
+// later -- growing it here. Every palette below is a real, published
+// colorscheme's actual hex values (not invented), ported into this
+// compact bg/fg/red/green/yellow/blue/purple/cyan/orange/border shape;
+// `border` is each scheme's own subtle "selection/line-highlight" tone,
+// not a literal border color, matching how the four original palettes
+// above already used that slot.
+const Palette kPaletteDracula = {
+    "dracula",
+    {40, 42, 54, 255}, {248, 248, 242, 255}, {255, 85, 85, 255}, {80, 250, 123, 255}, {241, 250, 140, 255},
+    {98, 114, 164, 255}, {189, 147, 249, 255}, {139, 233, 253, 255}, {255, 184, 108, 255}, {68, 71, 90, 255},
+};
+const Palette kPaletteTokyonightStorm = {
+    "tokyonight-storm",
+    {36, 40, 59, 255}, {192, 202, 245, 255}, {247, 118, 142, 255}, {158, 206, 106, 255}, {224, 175, 104, 255},
+    {122, 162, 247, 255}, {187, 154, 247, 255}, {125, 207, 255, 255}, {255, 158, 100, 255}, {65, 72, 104, 255},
+};
+const Palette kPaletteTokyonightNight = {
+    "tokyonight-night",
+    {26, 27, 38, 255}, {192, 202, 245, 255}, {247, 118, 142, 255}, {158, 206, 106, 255}, {224, 175, 104, 255},
+    {122, 162, 247, 255}, {187, 154, 247, 255}, {125, 207, 255, 255}, {255, 158, 100, 255}, {41, 46, 66, 255},
+};
+const Palette kPaletteTokyonightMoon = {
+    "tokyonight-moon",
+    {34, 36, 54, 255}, {200, 211, 245, 255}, {255, 117, 127, 255}, {195, 232, 141, 255}, {255, 199, 119, 255},
+    {130, 170, 255, 255}, {192, 153, 255, 255}, {134, 225, 252, 255}, {255, 150, 108, 255}, {47, 51, 77, 255},
+};
+const Palette kPaletteCatppuccinMocha = {
+    "catppuccin-mocha",
+    {30, 30, 46, 255}, {205, 214, 244, 255}, {243, 139, 168, 255}, {166, 227, 161, 255}, {249, 226, 175, 255},
+    {137, 180, 250, 255}, {203, 166, 247, 255}, {148, 226, 213, 255}, {250, 179, 135, 255}, {69, 71, 90, 255},
+};
+const Palette kPaletteCatppuccinMacchiato = {
+    "catppuccin-macchiato",
+    {36, 39, 58, 255}, {202, 211, 245, 255}, {237, 135, 150, 255}, {166, 218, 149, 255}, {238, 212, 159, 255},
+    {138, 173, 244, 255}, {198, 160, 246, 255}, {139, 213, 202, 255}, {245, 169, 127, 255}, {73, 77, 100, 255},
+};
+const Palette kPaletteCatppuccinFrappe = {
+    "catppuccin-frappe",
+    {48, 52, 70, 255}, {198, 208, 245, 255}, {231, 130, 132, 255}, {166, 209, 137, 255}, {229, 200, 144, 255},
+    {140, 170, 238, 255}, {202, 158, 230, 255}, {129, 200, 190, 255}, {239, 159, 118, 255}, {81, 87, 109, 255},
+};
+const Palette kPaletteCatppuccinLatte = {
+    "catppuccin-latte",
+    {239, 241, 245, 255}, {76, 79, 105, 255}, {210, 15, 57, 255}, {64, 160, 43, 255}, {223, 142, 29, 255},
+    {30, 102, 245, 255}, {136, 57, 239, 255}, {23, 146, 153, 255}, {254, 100, 11, 255}, {188, 192, 204, 255},
+};
+const Palette kPaletteEverforestDark = {
+    "everforest-dark",
+    {45, 53, 59, 255}, {211, 198, 170, 255}, {230, 126, 128, 255}, {167, 192, 128, 255}, {219, 188, 127, 255},
+    {127, 187, 179, 255}, {214, 153, 182, 255}, {131, 192, 146, 255}, {230, 152, 117, 255}, {79, 88, 94, 255},
+};
+const Palette kPaletteEverforestLight = {
+    "everforest-light",
+    {253, 246, 227, 255}, {92, 106, 114, 255}, {248, 85, 82, 255}, {141, 161, 1, 255}, {223, 160, 0, 255},
+    {58, 148, 197, 255}, {223, 105, 186, 255}, {53, 167, 124, 255}, {245, 125, 38, 255}, {224, 220, 199, 255},
+};
+const Palette kPaletteKanagawa = {
+    "kanagawa",
+    {31, 31, 40, 255}, {220, 215, 186, 255}, {195, 64, 67, 255}, {118, 148, 106, 255}, {192, 163, 110, 255},
+    {126, 156, 216, 255}, {149, 127, 184, 255}, {106, 149, 137, 255}, {255, 160, 102, 255}, {84, 84, 109, 255},
+};
+const Palette kPaletteOnedark = {
+    "one-dark",
+    {40, 44, 52, 255}, {171, 178, 191, 255}, {224, 108, 117, 255}, {152, 195, 121, 255}, {229, 192, 123, 255},
+    {97, 175, 239, 255}, {198, 120, 221, 255}, {86, 182, 194, 255}, {209, 154, 102, 255}, {62, 68, 81, 255},
+};
+const Palette kPaletteOneLight = {
+    "one-light",
+    {250, 250, 250, 255}, {56, 58, 66, 255}, {228, 86, 73, 255}, {80, 161, 79, 255}, {193, 132, 1, 255},
+    {64, 120, 242, 255}, {166, 38, 164, 255}, {1, 132, 188, 255}, {152, 104, 1, 255}, {211, 211, 211, 255},
+};
+const Palette kPaletteSolarizedDark = {
+    "solarized-dark",
+    {0, 43, 54, 255}, {131, 148, 150, 255}, {220, 50, 47, 255}, {133, 153, 0, 255}, {181, 137, 0, 255},
+    {38, 139, 210, 255}, {108, 113, 196, 255}, {42, 161, 152, 255}, {203, 75, 22, 255}, {88, 110, 117, 255},
+};
+const Palette kPaletteSolarizedLight = {
+    "solarized-light",
+    {253, 246, 227, 255}, {101, 123, 131, 255}, {220, 50, 47, 255}, {133, 153, 0, 255}, {181, 137, 0, 255},
+    {38, 139, 210, 255}, {108, 113, 196, 255}, {42, 161, 152, 255}, {203, 75, 22, 255}, {147, 161, 161, 255},
+};
+// The remaining palettes below close out full parity with mep.nvim/lua/
+// mep/theme/palettes.lua's 28-entry set (every name in that file's
+// `M.palettes` table now has a same-named, same-hex-value counterpart
+// here) -- `one-dark`/`onedark` above was also renamed to match that
+// file's hyphenated name exactly.
+const Palette kPaletteNordLight = {
+    "nord-light",
+    {236, 239, 244, 255}, {46, 52, 64, 255}, {191, 97, 106, 255}, {163, 190, 140, 255}, {235, 203, 139, 255},
+    {94, 129, 172, 255}, {180, 142, 173, 255}, {136, 192, 208, 255}, {208, 135, 112, 255}, {216, 222, 233, 255},
+};
+const Palette kPaletteTokyoNight = {
+    "tokyo-night",
+    {26, 27, 38, 255}, {192, 202, 245, 255}, {247, 118, 142, 255}, {158, 206, 106, 255}, {224, 175, 104, 255},
+    {122, 162, 247, 255}, {187, 154, 247, 255}, {125, 207, 255, 255}, {255, 158, 100, 255}, {65, 72, 104, 255},
+};
+const Palette kPaletteRosePine = {
+    "rose-pine",
+    {25, 23, 36, 255}, {224, 222, 244, 255}, {235, 111, 146, 255}, {49, 116, 143, 255}, {246, 193, 119, 255},
+    {156, 207, 216, 255}, {196, 167, 231, 255}, {156, 207, 216, 255}, {235, 188, 186, 255}, {64, 61, 82, 255},
+};
+const Palette kPaletteRosePineDawn = {
+    "rose-pine-dawn",
+    {250, 244, 237, 255}, {87, 82, 121, 255}, {180, 99, 122, 255}, {40, 105, 131, 255}, {234, 157, 52, 255},
+    {86, 148, 159, 255}, {144, 122, 169, 255}, {86, 148, 159, 255}, {215, 130, 126, 255}, {223, 218, 217, 255},
+};
+const Palette kPaletteMonokai = {
+    "monokai",
+    {39, 40, 34, 255}, {248, 248, 242, 255}, {249, 38, 114, 255}, {166, 226, 46, 255}, {230, 219, 116, 255},
+    {102, 217, 239, 255}, {174, 129, 255, 255}, {102, 217, 239, 255}, {253, 151, 31, 255}, {73, 72, 62, 255},
+};
+const Palette kPaletteAyuDark = {
+    "ayu-dark",
+    {10, 14, 20, 255}, {179, 177, 173, 255}, {255, 51, 51, 255}, {194, 217, 76, 255}, {255, 180, 84, 255},
+    {89, 194, 255, 255}, {210, 166, 255, 255}, {149, 230, 203, 255}, {255, 143, 64, 255}, {19, 23, 33, 255},
+};
+const Palette kPaletteAyuMirage = {
+    "ayu-mirage",
+    {33, 39, 51, 255}, {217, 215, 206, 255}, {255, 51, 51, 255}, {187, 230, 126, 255}, {255, 196, 76, 255},
+    {128, 212, 255, 255}, {212, 191, 255, 255}, {92, 207, 230, 255}, {255, 174, 87, 255}, {61, 71, 81, 255},
+};
+const Palette kPaletteGithubDark = {
+    "github-dark",
+    {13, 17, 23, 255}, {201, 209, 217, 255}, {255, 123, 114, 255}, {63, 185, 80, 255}, {210, 153, 34, 255},
+    {88, 166, 255, 255}, {210, 168, 255, 255}, {57, 197, 207, 255}, {255, 166, 87, 255}, {48, 54, 61, 255},
+};
+const Palette kPaletteGithubLight = {
+    "github-light",
+    {255, 255, 255, 255}, {36, 41, 47, 255}, {207, 34, 46, 255}, {26, 127, 55, 255}, {154, 103, 0, 255},
+    {9, 105, 218, 255}, {130, 80, 223, 255}, {27, 124, 131, 255}, {149, 56, 0, 255}, {208, 215, 222, 255},
+};
+const Palette kPaletteNightfox = {
+    "nightfox",
+    {19, 26, 36, 255}, {205, 206, 207, 255}, {201, 79, 109, 255}, {129, 178, 154, 255}, {219, 192, 116, 255},
+    {113, 156, 214, 255}, {157, 121, 214, 255}, {99, 205, 207, 255}, {244, 162, 97, 255}, {43, 59, 81, 255},
+};
+const Palette kPaletteHorizon = {
+    "horizon",
+    {28, 30, 38, 255}, {213, 216, 218, 255}, {233, 86, 120, 255}, {9, 247, 160, 255}, {250, 183, 149, 255},
+    {37, 176, 188, 255}, {184, 119, 219, 255}, {33, 191, 194, 255}, {240, 148, 131, 255}, {46, 48, 62, 255},
+};
+const Palette kPaletteZenburn = {
+    "zenburn",
+    {63, 63, 63, 255}, {220, 220, 204, 255}, {204, 147, 147, 255}, {127, 159, 127, 255}, {240, 223, 175, 255},
+    {140, 176, 211, 255}, {220, 140, 195, 255}, {147, 224, 227, 255}, {223, 175, 143, 255}, {95, 95, 95, 255},
+};
+const Palette kPaletteSynthwave84 = {
+    "synthwave84",
+    {38, 35, 53, 255}, {255, 255, 255, 255}, {254, 68, 80, 255}, {114, 241, 184, 255}, {254, 222, 93, 255},
+    {46, 226, 250, 255}, {255, 126, 219, 255}, {54, 249, 246, 255}, {255, 139, 57, 255}, {64, 61, 78, 255},
+};
+const Palette kPaletteOxocarbonDark = {
+    "oxocarbon-dark",
+    {22, 22, 22, 255}, {242, 244, 248, 255}, {238, 83, 150, 255}, {66, 190, 101, 255}, {255, 126, 182, 255},
+    {120, 169, 255, 255}, {190, 149, 255, 255}, {61, 219, 217, 255}, {255, 126, 182, 255}, {57, 57, 57, 255},
+};
+const Palette kPaletteOxocarbonLight = {
+    "oxocarbon-light",
+    {242, 244, 248, 255}, {22, 22, 22, 255}, {238, 83, 150, 255}, {66, 190, 101, 255}, {255, 171, 145, 255},
+    {15, 98, 254, 255}, {103, 58, 183, 255}, {8, 189, 186, 255}, {255, 111, 0, 255}, {82, 82, 82, 255},
+};
+
 const Palette *FindPalette(const std::string &name) {
-    static const Palette *kAll[] = {&kPaletteMepDark, &kPaletteGruvboxDark, &kPaletteNord, &kPaletteGruvboxLight};
+    static const Palette *kAll[] = {
+        &kPaletteMepDark,        &kPaletteGruvboxDark,          &kPaletteNord,
+        &kPaletteGruvboxLight,   &kPaletteDracula,              &kPaletteTokyonightStorm,
+        &kPaletteTokyonightNight, &kPaletteTokyonightMoon,      &kPaletteCatppuccinMocha,
+        &kPaletteCatppuccinMacchiato, &kPaletteCatppuccinFrappe, &kPaletteCatppuccinLatte,
+        &kPaletteEverforestDark, &kPaletteEverforestLight,      &kPaletteKanagawa,
+        &kPaletteOnedark,        &kPaletteOneLight,             &kPaletteSolarizedDark,
+        &kPaletteSolarizedLight, &kPaletteNordLight,            &kPaletteTokyoNight,
+        &kPaletteRosePine,       &kPaletteRosePineDawn,         &kPaletteMonokai,
+        &kPaletteAyuDark,        &kPaletteAyuMirage,            &kPaletteGithubDark,
+        &kPaletteGithubLight,    &kPaletteNightfox,             &kPaletteHorizon,
+        &kPaletteZenburn,        &kPaletteSynthwave84,          &kPaletteOxocarbonDark,
+        &kPaletteOxocarbonLight,
+    };
     for (const Palette *p : kAll) {
         if (p->name == name) return p;
     }
@@ -465,6 +674,11 @@ std::unordered_map<std::string, ThemeColor> BuildHighlightGroups(const Palette &
     g["BorderInactive"] = p.border;
     g["CursorLine"] = Lighten(p.bg, 8);
     g["Visual"] = Mix(p.blue, p.bg, 0.35f);
+    // incsearch's live match preview (Phase 4 stretch item) -- a span
+    // recolor via the plain Decoration/hl_group pipeline (see
+    // Editor::UpdateIncSearch), so it wants to read as "found" against
+    // either theme rather than blend in like Visual's selection tint does.
+    g["IncSearch"] = Mix(p.orange, p.fg, 0.5f);
     g["LineNr"] = p.border;
     g["FloatBg"] = Lighten(p.bg, 5);
     g["FloatBorder"] = p.border;
@@ -486,11 +700,25 @@ bool Editor::ApplyTheme(const std::string &name) {
     if (!p) return false;
     current_theme_name_ = name;
     current_theme_groups_ = BuildHighlightGroups(*p);
+    theme_epoch_++;
     return true;
 }
 
 std::vector<std::string> Editor::ThemeNames() const {
-    return {kPaletteMepDark.name, kPaletteGruvboxDark.name, kPaletteNord.name, kPaletteGruvboxLight.name};
+    return {
+        kPaletteMepDark.name,        kPaletteGruvboxDark.name,          kPaletteNord.name,
+        kPaletteGruvboxLight.name,   kPaletteDracula.name,              kPaletteTokyonightStorm.name,
+        kPaletteTokyonightNight.name, kPaletteTokyonightMoon.name,      kPaletteCatppuccinMocha.name,
+        kPaletteCatppuccinMacchiato.name, kPaletteCatppuccinFrappe.name, kPaletteCatppuccinLatte.name,
+        kPaletteEverforestDark.name, kPaletteEverforestLight.name,      kPaletteKanagawa.name,
+        kPaletteOnedark.name,        kPaletteOneLight.name,             kPaletteSolarizedDark.name,
+        kPaletteSolarizedLight.name, kPaletteNordLight.name,            kPaletteTokyoNight.name,
+        kPaletteRosePine.name,       kPaletteRosePineDawn.name,         kPaletteMonokai.name,
+        kPaletteAyuDark.name,        kPaletteAyuMirage.name,            kPaletteGithubDark.name,
+        kPaletteGithubLight.name,    kPaletteNightfox.name,             kPaletteHorizon.name,
+        kPaletteZenburn.name,        kPaletteSynthwave84.name,          kPaletteOxocarbonDark.name,
+        kPaletteOxocarbonLight.name,
+    };
 }
 
 bool Editor::ResolveHighlight(const std::string &name, ThemeColor *out) const {
@@ -515,6 +743,7 @@ Editor::Editor() {
 Editor::~Editor() = default;
 
 void Editor::HandleInput() {
+    MaybeDismissHover();
     if (HandleMod1Shortcuts()) return;
     switch (mode_) {
         case Mode::Normal:
@@ -544,11 +773,17 @@ void Editor::HandleInput() {
         case Mode::Select:
             HandleSelectInput();
             break;
+        case Mode::Preview:
+            HandlePreviewInput();
+            break;
         case Mode::Sidebar:
             HandleSidebarInput();
             break;
         case Mode::Picker:
             HandlePickerInput();
+            break;
+        case Mode::RoamGraph:
+            HandleRoamGraphInput();
             break;
         case Mode::WhichKey:
             HandleWhichKeyInput();
@@ -561,6 +796,30 @@ void Editor::HandleInput() {
             break;
         case Mode::Terminal:
             HandleTerminalInput();
+            break;
+        case Mode::Image:
+            HandleImageInput();
+            break;
+        case Mode::Pdf:
+            HandlePdfInput();
+            break;
+        case Mode::OfficeNormal:
+            HandleOfficeNormalInput();
+            break;
+        case Mode::OfficeInsert:
+            HandleOfficeInsertInput();
+            break;
+        case Mode::OfficeVisual:
+            HandleOfficeVisualInput();
+            break;
+        case Mode::SheetNormal:
+            HandleSheetNormalInput();
+            break;
+        case Mode::SheetInsert:
+            HandleSheetInsertInput();
+            break;
+        case Mode::SheetVisual:
+            HandleSheetVisualInput();
             break;
     }
 }
@@ -661,6 +920,31 @@ void Editor::VisualBlockRange(int &top, int &bottom, int &left, int &right) cons
     bottom = std::max(a.row, c.row);
     left = std::min(a.col, c.col);
     right = block_to_eol_ ? -1 : std::max(a.col, c.col);
+}
+
+std::string Editor::CurrentVisualSelectionText() const {
+    if (!HasVisualSelection()) return "";
+    if (IsVisualBlock()) {
+        int top, bottom, left, right;
+        VisualBlockRange(top, bottom, left, right);
+        std::string text;
+        for (int r = top; r <= bottom; r++) {
+            const std::string &line = Buf().lines[r];
+            int a = std::min(static_cast<int>(line.size()), left);
+            int b = (right < 0) ? static_cast<int>(line.size()) : std::min(static_cast<int>(line.size()), right + 1);
+            text += (b > a) ? line.substr(a, b - a) : "";
+            text += "\n";
+        }
+        return text;
+    }
+    CursorPos s, e;
+    VisualRange(s, e);
+    bool linewise = (mode_ == Mode::VisualLine);
+    // VisualRange's end is inclusive; ExtractRangeText's charwise end is
+    // exclusive (same adjustment ApplyOperatorToSelectionOrCurrentLine
+    // already makes before calling into the shared operator/yank path).
+    if (!linewise) e.col += 1;
+    return ExtractRangeText(s, e, linewise);
 }
 
 int Editor::LineLen(int row) const {
@@ -1039,6 +1323,1304 @@ void Editor::ResizeTerminal(int buffer_id, int rows, int cols) {
     if (!sess.exited) TerminalResizeBackend(sess, cols, rows);
 }
 
+// --- Image-viewer panes ----------------------------------------------------
+
+bool Editor::IsImageBuffer(int buffer_id) const { return images_.find(buffer_id) != images_.end(); }
+
+const ImageSession *Editor::GetImage(int buffer_id) const {
+    auto it = images_.find(buffer_id);
+    return it == images_.end() ? nullptr : &it->second;
+}
+
+void Editor::ResizeImageViewport(int buffer_id, int w, int h) {
+    auto it = images_.find(buffer_id);
+    if (it == images_.end()) return;
+    ImageSession &sess = it->second;
+    sess.viewport_w = w;
+    sess.viewport_h = h;
+    int max_pan_x = sess.doc ? std::max(0, static_cast<int>(sess.doc->Width() * sess.zoom) - w) : 0;
+    int max_pan_y = sess.doc ? std::max(0, static_cast<int>(sess.doc->Height() * sess.zoom) - h) : 0;
+    sess.pan_x = std::clamp(sess.pan_x, 0, max_pan_x);
+    sess.pan_y = std::clamp(sess.pan_y, 0, max_pan_y);
+}
+
+void Editor::OpenImageInPlace(const std::string &path, const unsigned char *bytes, size_t len) {
+    int buffer_id = -1;
+    for (size_t i = 0; i < buffers_.size(); i++) {
+        if (!buffers_[i].filename.empty() && buffers_[i].filename == path) {
+            buffer_id = static_cast<int>(i);
+            break;
+        }
+    }
+    if (buffer_id < 0) {
+        auto doc = std::make_unique<ImageDoc>();
+        if (!doc->LoadFromMemory(bytes, len)) {
+            status_message_ = "E-\"" + path + "\": " + doc->Error();
+            return;
+        }
+        buffer_id = CreateEmptyBuffer();
+        buffers_[buffer_id].filename = path;
+        ImageSession sess;
+        sess.buffer_id = buffer_id;
+        sess.doc = std::move(doc);
+        images_[buffer_id] = std::move(sess);
+    }
+    CurPane().buffer_id = buffer_id;
+    CurPane().cursor = {0, 0};
+    CurPane().scroll_row = 0;
+    status_message_.clear();
+}
+
+void Editor::SyncModeToActivePaneBuffer() {
+    if (IsImageBuffer(CurPane().buffer_id)) {
+        mode_ = Mode::Image;
+    } else if (IsPdfBuffer(CurPane().buffer_id)) {
+        mode_ = Mode::Pdf;
+    } else if (IsOfficeBuffer(CurPane().buffer_id)) {
+        // Always re-enters at OfficeNormal, never resumes mid-
+        // OfficeInsert/Visual -- matches every other mode transition here.
+        mode_ = Mode::OfficeNormal;
+    } else if (IsSheetBuffer(CurPane().buffer_id)) {
+        // Always re-enters at SheetNormal, same reasoning as Office above.
+        mode_ = Mode::SheetNormal;
+    } else if (mode_ == Mode::Image || mode_ == Mode::Pdf || mode_ == Mode::OfficeNormal ||
+               mode_ == Mode::OfficeInsert || mode_ == Mode::OfficeVisual || mode_ == Mode::SheetNormal ||
+               mode_ == Mode::SheetInsert || mode_ == Mode::SheetVisual) {
+        mode_ = Mode::Normal;
+    }
+}
+
+void Editor::HandleImageInput() {
+    ImageSession *sess = nullptr;
+    {
+        auto it = images_.find(CurPane().buffer_id);
+        if (it == images_.end()) {
+            mode_ = Mode::Normal;
+            return;
+        }
+        sess = &it->second;
+    }
+
+    constexpr int kPanStep = 40;
+    int max_pan_x = sess->doc ? std::max(0, static_cast<int>(sess->doc->Width() * sess->zoom) - sess->viewport_w) : 0;
+    int max_pan_y = sess->doc ? std::max(0, static_cast<int>(sess->doc->Height() * sess->zoom) - sess->viewport_h) : 0;
+
+    // IsKeyPressed(Repeat) rather than draining GetKeyPressed(): GLFW only
+    // enqueues the initial key-down into the GetKeyPressed() queue, so
+    // holding a key down (OS auto-repeat) would otherwise pan exactly once.
+    auto held = [](int key) { return IsKeyPressed(key) || IsKeyPressedRepeat(key); };
+    if (held(KEY_H) || held(KEY_LEFT)) {
+        sess->pan_x = std::clamp(sess->pan_x - kPanStep, 0, max_pan_x);
+    }
+    if (held(KEY_L) || held(KEY_RIGHT)) {
+        sess->pan_x = std::clamp(sess->pan_x + kPanStep, 0, max_pan_x);
+    }
+    if (held(KEY_K) || held(KEY_UP)) {
+        sess->pan_y = std::clamp(sess->pan_y - kPanStep, 0, max_pan_y);
+    }
+    if (held(KEY_J) || held(KEY_DOWN)) {
+        sess->pan_y = std::clamp(sess->pan_y + kPanStep, 0, max_pan_y);
+    }
+
+    // +/-/= zoom: +/- multiply or divide the zoom factor by kImageZoomStep,
+    // re-anchored on whatever image point is currently at the viewport's
+    // center (so the thing you're looking at stays put instead of the view
+    // snapping back to the image's top-left corner on every keypress); =
+    // fits the whole image into the current viewport and resets pan.
+    constexpr float kImageZoomStep = 1.25f;
+    constexpr float kMinImageZoom = 0.05f;
+    constexpr float kMaxImageZoom = 20.0f;
+    auto apply_zoom = [&](float new_zoom) {
+        if (!sess->doc || sess->doc->Width() <= 0 || sess->doc->Height() <= 0) return;
+        new_zoom = std::clamp(new_zoom, kMinImageZoom, kMaxImageZoom);
+        float ratio = new_zoom / sess->zoom;
+        float center_x = sess->pan_x + sess->viewport_w / 2.0f;
+        float center_y = sess->pan_y + sess->viewport_h / 2.0f;
+        sess->zoom = new_zoom;
+        sess->pan_x = static_cast<int>(center_x * ratio - sess->viewport_w / 2.0f);
+        sess->pan_y = static_cast<int>(center_y * ratio - sess->viewport_h / 2.0f);
+        int mx = std::max(0, static_cast<int>(sess->doc->Width() * sess->zoom) - sess->viewport_w);
+        int my = std::max(0, static_cast<int>(sess->doc->Height() * sess->zoom) - sess->viewport_h);
+        sess->pan_x = std::clamp(sess->pan_x, 0, mx);
+        sess->pan_y = std::clamp(sess->pan_y, 0, my);
+    };
+
+    int cp = GetCharPressed();
+    while (cp > 0) {
+        if (cp == ':') {
+            EnterCommand();
+            return;  // mode_ is no longer Image -- stop draining as this mode
+        } else if (cp == static_cast<int>(leader_key_) && !whichkey_bindings_.empty()) {
+            TriggerWhichKey();
+            return;
+        } else if (cp == '+') {
+            apply_zoom(sess->zoom * kImageZoomStep);
+        } else if (cp == '-') {
+            apply_zoom(sess->zoom / kImageZoomStep);
+        } else if (cp == '=' && sess->doc && sess->doc->Width() > 0 && sess->doc->Height() > 0 &&
+                   sess->viewport_w > 0 && sess->viewport_h > 0) {
+            float fit = std::min(static_cast<float>(sess->viewport_w) / sess->doc->Width(),
+                                  static_cast<float>(sess->viewport_h) / sess->doc->Height());
+            sess->zoom = std::clamp(fit, kMinImageZoom, kMaxImageZoom);
+            sess->pan_x = 0;
+            sess->pan_y = 0;
+        }
+        // Every other printable key is a deliberate no-op -- see
+        // Mode::Image's own comment for why (no text to insert/operate on).
+        cp = GetCharPressed();
+    }
+}
+
+// --- PDF-viewer panes -------------------------------------------------------
+
+namespace {
+// GetCharPressed() yields full Unicode codepoints (raylib's char callback,
+// not a raw keycode), so a PDF search query typed via HandlePdfSearchInput
+// needs to UTF-8-encode anything beyond ASCII itself -- std::string here is
+// always UTF-8 (matching PdfDoc::Search's own expectation, which decodes it
+// back to UTF-16 for PDFium).
+void AppendUtf8(std::string &s, int cp) {
+    if (cp < 0x80) {
+        s.push_back(static_cast<char>(cp));
+    } else if (cp < 0x800) {
+        s.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+        s.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else if (cp < 0x10000) {
+        s.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+        s.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+        s.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else {
+        s.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+        s.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+        s.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+        s.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    }
+}
+}  // namespace
+
+bool Editor::IsPdfBuffer(int buffer_id) const { return pdfs_.find(buffer_id) != pdfs_.end(); }
+
+const PdfSession *Editor::GetPdf(int buffer_id) const {
+    auto it = pdfs_.find(buffer_id);
+    return it == pdfs_.end() ? nullptr : &it->second;
+}
+
+std::pair<double, double> Editor::PdfPageSizePt(PdfSession &sess, int page_index) {
+    auto it = sess.page_size_pt.find(page_index);
+    if (it != sess.page_size_pt.end()) return it->second;
+    double w = 0, h = 0;
+    if (sess.doc) {
+        w = sess.doc->PageWidthPt(page_index);
+        h = sess.doc->PageHeightPt(page_index);
+    }
+    auto result = std::make_pair(w, h);
+    sess.page_size_pt[page_index] = result;
+    return result;
+}
+
+float Editor::PdfPageScreenHeightPx(PdfSession &sess, int page_index) {
+    return static_cast<float>(PdfPageSizePt(sess, page_index).second * sess.rendered_scale * sess.zoom);
+}
+
+void Editor::ResizePdfViewport(int buffer_id, int w, int h) {
+    auto it = pdfs_.find(buffer_id);
+    if (it == pdfs_.end()) return;
+    PdfSession &sess = it->second;
+    sess.viewport_w = w;
+    sess.viewport_h = h;
+    if (!sess.doc || sess.doc->PageCount() <= 0) return;
+    double page_w_pt = PdfPageSizePt(sess, sess.page).first;
+    int page_w_px = static_cast<int>(page_w_pt * sess.rendered_scale * sess.zoom);
+    int max_pan_x = std::max(0, page_w_px - w);
+    sess.pan_x = std::clamp(sess.pan_x, 0, max_pan_x);
+}
+
+void Editor::EnsurePdfPagesRastered(int buffer_id) {
+    auto it = pdfs_.find(buffer_id);
+    if (it == pdfs_.end()) return;
+    PdfSession &sess = it->second;
+    if (!sess.doc) return;
+    int page_count = sess.doc->PageCount();
+    if (page_count <= 0) return;
+
+    int lo = std::max(0, sess.page - 1);
+    int hi = std::min(page_count - 1, sess.page + 1);
+    for (int idx = lo; idx <= hi; idx++) {
+        if (sess.rasters.find(idx) != sess.rasters.end()) continue;
+        PdfSession::PageRaster pr;
+        if (!sess.doc->RenderPage(idx, sess.rendered_scale, pr.rgba, pr.w, pr.h)) continue;
+        pr.generation = sess.next_raster_generation++;
+        if (!sess.search_matches.empty()) pr.highlights = sess.doc->MatchRectsForPage(idx, sess.rendered_scale, sess.search_matches);
+        sess.rasters[idx] = std::move(pr);
+    }
+    for (auto rit = sess.rasters.begin(); rit != sess.rasters.end();) {
+        if (rit->first < lo || rit->first > hi) rit = sess.rasters.erase(rit);
+        else ++rit;
+    }
+}
+
+void Editor::RecomputePdfPageHighlights(PdfSession &sess) {
+    if (!sess.doc) return;
+    for (auto &kv : sess.rasters) {
+        kv.second.highlights =
+            sess.search_matches.empty() ? std::vector<PdfHighlightRect>{}
+                                         : sess.doc->MatchRectsForPage(kv.first, sess.rendered_scale, sess.search_matches);
+    }
+}
+
+void Editor::RunPdfSearch(PdfSession &sess, const std::string &query) {
+    sess.search_query = query;
+    sess.search_matches = sess.doc ? sess.doc->Search(query) : std::vector<PdfTextMatch>{};
+    sess.search_current = -1;
+    RecomputePdfPageHighlights(sess);
+}
+
+void Editor::GotoPdfMatch(PdfSession &sess, int index) {
+    if (sess.search_matches.empty() || !sess.doc) return;
+    int n = static_cast<int>(sess.search_matches.size());
+    index = ((index % n) + n) % n;
+    sess.search_current = index;
+    const PdfTextMatch &m = sess.search_matches[static_cast<size_t>(index)];
+    sess.page = m.page;
+    sess.pan_x = 0;
+    sess.scroll_y = 0;
+    if (!m.rects_pt.empty()) {
+        // One-off conversion (not sess.rasters[m.page].highlights, which
+        // may not be cached -- this jump can land far outside the current
+        // {page-1,page,page+1} window) just to position scroll_y; roughly
+        // centers the match vertically rather than only bringing the page
+        // top into view.
+        std::vector<PdfTextMatch> just_this = {m};
+        auto rects = sess.doc->MatchRectsForPage(m.page, sess.rendered_scale, just_this);
+        if (!rects.empty()) {
+            sess.scroll_y = rects.front().y0 - static_cast<float>(sess.viewport_h) / 2.0f;
+            if (sess.scroll_y < 0) sess.scroll_y = 0;
+        }
+    }
+}
+
+void Editor::OpenPdfInPlace(const std::string &path, const unsigned char *bytes, size_t len) {
+    int buffer_id = -1;
+    for (size_t i = 0; i < buffers_.size(); i++) {
+        if (!buffers_[i].filename.empty() && buffers_[i].filename == path) {
+            buffer_id = static_cast<int>(i);
+            break;
+        }
+    }
+    if (buffer_id < 0) {
+        auto doc = std::make_unique<PdfDoc>();
+        if (!doc->LoadFromMemory(bytes, len)) {
+            status_message_ = "E-\"" + path + "\": " + doc->Error();
+            return;
+        }
+        buffer_id = CreateEmptyBuffer();
+        buffers_[buffer_id].filename = path;
+        PdfSession sess;
+        sess.buffer_id = buffer_id;
+        sess.doc = std::move(doc);
+        sess.rendered_scale = 144.0f / 72.0f;  // baseline ~144dpi, same as before
+        pdfs_[buffer_id] = std::move(sess);
+        // No render call here -- EnsurePdfPagesRastered (called every frame
+        // from DrawPane, including the first) handles it lazily.
+    }
+    CurPane().buffer_id = buffer_id;
+    CurPane().cursor = {0, 0};
+    CurPane().scroll_row = 0;
+    pending_g_ = false;  // avoid gg/G leakage from whatever mode preceded this
+    status_message_.clear();
+}
+
+void Editor::HandlePdfInput() {
+    PdfSession *sess = nullptr;
+    {
+        auto it = pdfs_.find(CurPane().buffer_id);
+        if (it == pdfs_.end()) {
+            mode_ = Mode::Normal;
+            return;
+        }
+        sess = &it->second;
+    }
+    if (sess->search_active) {
+        HandlePdfSearchInput(*sess);
+        return;
+    }
+    int page_count = sess->doc ? sess->doc->PageCount() : 0;
+    if (page_count <= 0) return;
+
+    auto page_screen_h = [&](int idx) { return PdfPageScreenHeightPx(*sess, idx); };
+    // Crosses `page` forward/backward as scroll_y drifts past the current
+    // anchor page's on-screen bounds, re-basing scroll_y relative to the
+    // new anchor each time -- this is what makes j/k held down scroll
+    // smoothly *through* page boundaries instead of stopping dead at each
+    // one. Also called after zoom changes (viewport-relative math can push
+    // scroll_y out of range even without a direct scroll key) and clamps
+    // at the very top of page 0 / bottom of the last page.
+    auto rebase_scroll = [&]() {
+        for (;;) {
+            float cur_h = page_screen_h(sess->page);
+            if (sess->scroll_y >= cur_h + kPdfPageGapPx && sess->page + 1 < page_count) {
+                sess->scroll_y -= (cur_h + kPdfPageGapPx);
+                sess->page += 1;
+            } else if (sess->scroll_y < 0 && sess->page > 0) {
+                sess->page -= 1;
+                sess->scroll_y += (page_screen_h(sess->page) + kPdfPageGapPx);
+            } else {
+                break;
+            }
+        }
+        if (sess->page == 0 && sess->scroll_y < 0) sess->scroll_y = 0;
+        if (sess->page == page_count - 1) {
+            float cur_h = page_screen_h(sess->page);
+            if (sess->scroll_y > cur_h) sess->scroll_y = cur_h;
+        }
+    };
+    auto clamp_pan_x = [&]() {
+        double page_w_pt = PdfPageSizePt(*sess, sess->page).first;
+        int mx = std::max(0, static_cast<int>(page_w_pt * sess->rendered_scale * sess->zoom) - sess->viewport_w);
+        sess->pan_x = std::clamp(sess->pan_x, 0, mx);
+    };
+
+    constexpr int kScrollStep = 40;
+    // Same IsKeyPressed||IsKeyPressedRepeat reasoning as HandleImageInput --
+    // GetKeyPressed() only fires on initial key-down, not OS auto-repeat.
+    auto held = [](int key) { return IsKeyPressed(key) || IsKeyPressedRepeat(key); };
+    bool scrolled = false;
+    if (held(KEY_J) || held(KEY_DOWN)) { sess->scroll_y += kScrollStep; scrolled = true; }
+    if (held(KEY_K) || held(KEY_UP)) { sess->scroll_y -= kScrollStep; scrolled = true; }
+    if (scrolled) rebase_scroll();
+    if (held(KEY_H) || held(KEY_LEFT)) { sess->pan_x -= kScrollStep; clamp_pan_x(); }
+    if (held(KEY_L) || held(KEY_RIGHT)) { sess->pan_x += kScrollStep; clamp_pan_x(); }
+
+    auto goto_page = [&](int new_page) {
+        sess->page = std::clamp(new_page, 0, page_count - 1);
+        sess->scroll_y = 0;
+    };
+
+    // Ctrl-f/Ctrl-b/Ctrl-r: same GetKeyPressed()-drain-while-ctrl-held
+    // pattern as HandleNormalInput's own Ctrl-combos (IsKeyPressed() alone
+    // was found flaky for these under slow/software-rendered frames -- see
+    // its comment at this function's normal-mode counterpart).
+    bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+    bool next_page = false, prev_page = false, toggle_theme = false;
+    for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
+        if (key == KEY_PAGE_DOWN) next_page = true;
+        else if (key == KEY_PAGE_UP) prev_page = true;
+        else if (ctrl && key == KEY_F) next_page = true;
+        else if (ctrl && key == KEY_B) prev_page = true;
+        else if (ctrl && key == KEY_R) toggle_theme = true;
+    }
+    if (next_page) goto_page(sess->page + 1);
+    if (prev_page) goto_page(sess->page - 1);
+    if (toggle_theme) sess->theme_colors = !sess->theme_colors;
+
+    // +/-/= zoom: same center-anchored shape as HandleImageInput's
+    // apply_zoom. Folds drift outside [kZoomSettleLo, kZoomSettleHi] into
+    // rendered_scale and clears the raster cache so every cached page gets
+    // re-rendered at the new native resolution (text stays crisp instead
+    // of blurring) -- scroll_y/pan_x themselves don't need rescaling for
+    // this, since rendered_scale absorbs exactly the zoom drift being
+    // removed, leaving each page's on-screen size unchanged.
+    constexpr float kPdfZoomStep = 1.25f;
+    constexpr float kMinPdfZoom = 0.1f;
+    constexpr float kMaxPdfZoom = 8.0f;
+    constexpr float kZoomSettleLo = 0.5f, kZoomSettleHi = 2.0f;
+    auto settle_zoom = [&]() {
+        if (sess->zoom < kZoomSettleLo || sess->zoom > kZoomSettleHi) {
+            sess->rendered_scale *= sess->zoom;
+            sess->zoom = 1.0f;
+            sess->rasters.clear();
+        }
+    };
+    auto apply_zoom = [&](float new_zoom) {
+        new_zoom = std::clamp(new_zoom, kMinPdfZoom, kMaxPdfZoom);
+        float ratio = new_zoom / sess->zoom;
+        float center_x = sess->pan_x + sess->viewport_w / 2.0f;
+        float center_y = sess->scroll_y + sess->viewport_h / 2.0f;
+        sess->zoom = new_zoom;
+        sess->pan_x = static_cast<int>(center_x * ratio - sess->viewport_w / 2.0f);
+        sess->scroll_y = center_y * ratio - sess->viewport_h / 2.0f;
+        settle_zoom();
+        rebase_scroll();
+        clamp_pan_x();
+    };
+
+    int cp = GetCharPressed();
+    while (cp > 0) {
+        if (cp == ':') {
+            EnterCommand();
+            return;  // mode_ is no longer Pdf -- stop draining as this mode
+        } else if (cp == static_cast<int>(leader_key_) && !whichkey_bindings_.empty()) {
+            TriggerWhichKey();
+            return;
+        } else if (cp == '+') {
+            apply_zoom(sess->zoom * kPdfZoomStep);
+        } else if (cp == '-') {
+            apply_zoom(sess->zoom / kPdfZoomStep);
+        } else if (cp == '=' && sess->viewport_w > 0 && sess->viewport_h > 0) {
+            auto [pw, ph] = PdfPageSizePt(*sess, sess->page);
+            double base_w = pw * sess->rendered_scale, base_h = ph * sess->rendered_scale;
+            if (base_w > 0 && base_h > 0) {
+                float fit = std::min(static_cast<float>(sess->viewport_w) / static_cast<float>(base_w),
+                                      static_cast<float>(sess->viewport_h) / static_cast<float>(base_h));
+                sess->zoom = std::clamp(fit, kMinPdfZoom, kMaxPdfZoom);
+                sess->pan_x = 0;
+                sess->scroll_y = 0;
+                settle_zoom();
+            }
+        } else if (cp == 'g') {
+            // gg -> first page, reusing pending_g_ the same way normal mode's
+            // own gg does (see HandleNormalInput) -- reset on entry to this
+            // mode in OpenPdfInPlace so it can't leak in from elsewhere.
+            if (pending_g_) {
+                pending_g_ = false;
+                goto_page(0);
+            } else {
+                pending_g_ = true;
+            }
+        } else if (cp == 'G') {
+            pending_g_ = false;
+            goto_page(page_count - 1);
+        } else if (cp == '/') {
+            pending_g_ = false;
+            sess->search_active = true;
+            sess->search_input.clear();
+        } else if (cp == 'n' && !sess->search_matches.empty()) {
+            pending_g_ = false;
+            GotoPdfMatch(*sess, sess->search_current + 1);
+        } else if (cp == 'p' && !sess->search_matches.empty()) {
+            pending_g_ = false;
+            GotoPdfMatch(*sess, sess->search_current - 1);
+        } else {
+            pending_g_ = false;
+        }
+        // Every other printable key is a deliberate no-op -- see
+        // Mode::Pdf's own comment for why (read-only content).
+        cp = GetCharPressed();
+    }
+}
+
+void Editor::HandlePdfSearchInput(PdfSession &sess) {
+    if (IsKeyPressed(KEY_ESCAPE)) {
+        // Cancel: discard the in-progress query text, but leave any prior
+        // *completed* search (search_query/search_matches/highlights)
+        // exactly as it was -- matches vim's own '/' escape behavior.
+        sess.search_active = false;
+        return;
+    }
+    if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER)) {
+        sess.search_active = false;
+        RunPdfSearch(sess, sess.search_input);
+        if (!sess.search_matches.empty()) {
+            // First match at/after the current page; wrap to the very
+            // first match in the document if the rest of it has none.
+            int start = 0;
+            for (size_t i = 0; i < sess.search_matches.size(); i++) {
+                if (sess.search_matches[i].page >= sess.page) {
+                    start = static_cast<int>(i);
+                    break;
+                }
+            }
+            GotoPdfMatch(sess, start);
+        }
+        return;
+    }
+    if (IsKeyPressed(KEY_BACKSPACE) || IsKeyPressedRepeat(KEY_BACKSPACE)) {
+        if (!sess.search_input.empty()) sess.search_input.pop_back();
+    }
+    for (int cp = GetCharPressed(); cp > 0; cp = GetCharPressed()) AppendUtf8(sess.search_input, cp);
+}
+
+// --- WYSIWYG office-document panes ------------------------------------------
+
+bool Editor::IsOfficeBuffer(int buffer_id) const { return officedocs_.find(buffer_id) != officedocs_.end(); }
+
+const OfficeSession *Editor::GetOffice(int buffer_id) const {
+    auto it = officedocs_.find(buffer_id);
+    return it == officedocs_.end() ? nullptr : &it->second;
+}
+
+void Editor::ResizeOfficeViewport(int buffer_id, int w, int h) {
+    auto it = officedocs_.find(buffer_id);
+    if (it == officedocs_.end()) return;
+    OfficeSession &sess = it->second;
+    sess.viewport_w = w;
+    sess.viewport_h = h;
+    int max_para = std::max(0, static_cast<int>(sess.doc.paragraphs.size()) - 1);
+    sess.scroll_para = std::clamp(sess.scroll_para, 0, max_para);
+}
+
+void Editor::SetOfficeScroll(int buffer_id, int scroll_para, int scroll_line_in_para) {
+    auto it = officedocs_.find(buffer_id);
+    if (it == officedocs_.end()) return;
+    OfficeSession &sess = it->second;
+    int max_para = std::max(0, static_cast<int>(sess.doc.paragraphs.size()) - 1);
+    sess.scroll_para = std::clamp(scroll_para, 0, max_para);
+    sess.scroll_line_in_para = std::max(0, scroll_line_in_para);
+}
+
+void Editor::OpenOfficeInPlace(const std::string &path, const unsigned char *bytes, size_t len) {
+    int buffer_id = -1;
+    for (size_t i = 0; i < buffers_.size(); i++) {
+        if (!buffers_[i].filename.empty() && buffers_[i].filename == path) {
+            buffer_id = static_cast<int>(i);
+            break;
+        }
+    }
+    if (buffer_id < 0) {
+        OfficeDoc doc;
+        std::string error;
+        bool ok = false;
+        if (IsDocxPath(path)) {
+            ok = LoadDocxFromMemory(bytes, len, doc, error);
+        } else if (IsOdtPath(path)) {
+            ok = LoadOdtFromMemory(bytes, len, doc, error);
+        } else {
+            error = "unsupported office document format";
+        }
+        if (!ok) {
+            status_message_ = "E-\"" + path + "\": " + error;
+            return;
+        }
+        buffer_id = CreateEmptyBuffer();
+        buffers_[buffer_id].filename = path;
+        OfficeSession sess;
+        sess.buffer_id = buffer_id;
+        sess.doc = std::move(doc);
+        sess.original_bytes.assign(bytes, bytes + len);
+        officedocs_[buffer_id] = std::move(sess);
+    }
+    CurPane().buffer_id = buffer_id;
+    CurPane().cursor = {0, 0};
+    CurPane().scroll_row = 0;
+    pending_g_ = false;  // avoid gg/G leakage from whatever mode preceded this
+    status_message_.clear();
+}
+
+void Editor::HandleOfficeNormalInput() {
+    OfficeSession *sess = nullptr;
+    {
+        auto it = officedocs_.find(CurPane().buffer_id);
+        if (it == officedocs_.end()) {
+            mode_ = Mode::Normal;
+            return;
+        }
+        sess = &it->second;
+    }
+    int para_count = static_cast<int>(sess->doc.paragraphs.size());
+    if (para_count <= 0) return;
+
+    auto cur_len = [&]() { return static_cast<int>(sess->doc.paragraphs[sess->cursor_para].text.size()); };
+    auto goto_para = [&](int new_para) {
+        sess->cursor_para = std::clamp(new_para, 0, para_count - 1);
+        sess->cursor_col = std::min(sess->cursor_col, cur_len());
+    };
+
+    // Word-wrap-oblivious navigation -- see Mode::OfficeNormal's own
+    // comment for why: h/l move within the current paragraph's flat text
+    // (like column motion over Buffer::lines[row]), j/k move to the
+    // prev/next *paragraph* (like row motion), not to the next *visual*
+    // (word-wrapped) line, which only main.cpp's renderer knows about.
+    auto held = [](int key) { return IsKeyPressed(key) || IsKeyPressedRepeat(key); };
+    if (held(KEY_H) || held(KEY_LEFT)) sess->cursor_col = std::max(0, sess->cursor_col - 1);
+    if (held(KEY_L) || held(KEY_RIGHT)) sess->cursor_col = std::min(cur_len(), sess->cursor_col + 1);
+    if (held(KEY_J) || held(KEY_DOWN)) goto_para(sess->cursor_para + 1);
+    if (held(KEY_K) || held(KEY_UP)) goto_para(sess->cursor_para - 1);
+
+    int cp = GetCharPressed();
+    while (cp > 0) {
+        if (cp == ':') {
+            EnterCommand();
+            return;  // mode_ is no longer OfficeNormal -- stop draining as this mode
+        } else if (cp == static_cast<int>(leader_key_) && !whichkey_bindings_.empty()) {
+            TriggerWhichKey();
+            return;
+        } else if (cp == 'g') {
+            // gg -> first paragraph, reusing pending_g_ the same way
+            // normal mode's own gg and HandlePdfInput's gg do.
+            if (pending_g_) {
+                pending_g_ = false;
+                goto_para(0);
+                sess->cursor_col = 0;
+            } else {
+                pending_g_ = true;
+            }
+        } else if (cp == 'G') {
+            pending_g_ = false;
+            goto_para(para_count - 1);
+            sess->cursor_col = 0;
+        } else if (cp == '0') {
+            pending_g_ = false;
+            sess->cursor_col = 0;
+        } else if (cp == '$') {
+            pending_g_ = false;
+            sess->cursor_col = cur_len();
+        } else if (cp == 'i') {
+            pending_g_ = false;
+            PushUndoOffice();
+            mode_ = Mode::OfficeInsert;
+            return;
+        } else if (cp == 'a') {
+            pending_g_ = false;
+            PushUndoOffice();
+            sess->cursor_col = std::min(cur_len(), sess->cursor_col + 1);
+            mode_ = Mode::OfficeInsert;
+            return;
+        } else if (cp == 'v') {
+            pending_g_ = false;
+            sess->has_selection = true;
+            sess->sel_anchor_para = sess->cursor_para;
+            sess->sel_anchor_col = sess->cursor_col;
+            mode_ = Mode::OfficeVisual;
+            return;
+        } else if (cp == 'u') {
+            pending_g_ = false;
+            UndoOffice();
+        } else {
+            pending_g_ = false;
+        }
+        cp = GetCharPressed();
+    }
+    if (IsKeyPressed(KEY_R) && (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL))) {
+        RedoOffice();
+    }
+}
+
+void Editor::PushUndoOffice() {
+    auto it = officedocs_.find(CurPane().buffer_id);
+    if (it == officedocs_.end()) return;
+    OfficeSession &sess = it->second;
+    sess.undo_stack.push_back(sess.doc.paragraphs);
+    if (sess.undo_stack.size() > kMaxUndo) sess.undo_stack.erase(sess.undo_stack.begin());
+    sess.redo_stack.clear();
+}
+
+void Editor::UndoOffice() {
+    auto it = officedocs_.find(CurPane().buffer_id);
+    if (it == officedocs_.end()) return;
+    OfficeSession &sess = it->second;
+    if (sess.undo_stack.empty()) {
+        status_message_ = "Already at oldest change";
+        return;
+    }
+    sess.redo_stack.push_back(sess.doc.paragraphs);
+    sess.doc.paragraphs = sess.undo_stack.back();
+    sess.undo_stack.pop_back();
+    sess.modified = true;
+    int max_para = std::max(0, static_cast<int>(sess.doc.paragraphs.size()) - 1);
+    sess.cursor_para = std::clamp(sess.cursor_para, 0, max_para);
+    sess.cursor_col = std::min(sess.cursor_col, static_cast<int>(sess.doc.paragraphs[sess.cursor_para].text.size()));
+}
+
+void Editor::RedoOffice() {
+    auto it = officedocs_.find(CurPane().buffer_id);
+    if (it == officedocs_.end()) return;
+    OfficeSession &sess = it->second;
+    if (sess.redo_stack.empty()) {
+        status_message_ = "Already at newest change";
+        return;
+    }
+    sess.undo_stack.push_back(sess.doc.paragraphs);
+    sess.doc.paragraphs = sess.redo_stack.back();
+    sess.redo_stack.pop_back();
+    sess.modified = true;
+    int max_para = std::max(0, static_cast<int>(sess.doc.paragraphs.size()) - 1);
+    sess.cursor_para = std::clamp(sess.cursor_para, 0, max_para);
+    sess.cursor_col = std::min(sess.cursor_col, static_cast<int>(sess.doc.paragraphs[sess.cursor_para].text.size()));
+}
+
+void Editor::HandleOfficeInsertInput() {
+    OfficeSession *sess = nullptr;
+    {
+        auto it = officedocs_.find(CurPane().buffer_id);
+        if (it == officedocs_.end()) {
+            mode_ = Mode::Normal;
+            return;
+        }
+        sess = &it->second;
+    }
+    auto cur_len = [&]() { return static_cast<int>(sess->doc.paragraphs[sess->cursor_para].text.size()); };
+
+    bool escape = false, enter = false, backspace = false, del = false;
+    for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
+        if (key == KEY_ESCAPE) escape = true;
+        else if (key == KEY_ENTER) enter = true;
+        else if (key == KEY_BACKSPACE) backspace = true;
+        else if (key == KEY_DELETE) del = true;
+    }
+    if (escape) {
+        mode_ = Mode::OfficeNormal;
+        sess->cursor_col = std::max(0, std::min(sess->cursor_col, cur_len()));
+        return;
+    }
+
+    int cp = GetCharPressed();
+    while (cp > 0) {
+        if (cp >= 32 && cp <= 126) {
+            DocParagraph &p = sess->doc.paragraphs[sess->cursor_para];
+            ApplyInsertToParagraph(p, sess->cursor_col, std::string(1, static_cast<char>(cp)));
+            sess->cursor_col++;
+            sess->modified = true;
+        }
+        cp = GetCharPressed();
+    }
+
+    if (enter || IsKeyPressedRepeat(KEY_ENTER)) {
+        DocParagraph &p = sess->doc.paragraphs[sess->cursor_para];
+        DocParagraph second = SplitParagraphAt(p, sess->cursor_col);
+        sess->doc.paragraphs.insert(sess->doc.paragraphs.begin() + sess->cursor_para + 1, std::move(second));
+        sess->cursor_para++;
+        sess->cursor_col = 0;
+        sess->modified = true;
+    }
+    if (backspace || IsKeyPressedRepeat(KEY_BACKSPACE)) {
+        if (sess->cursor_col > 0) {
+            DocParagraph &p = sess->doc.paragraphs[sess->cursor_para];
+            ApplyDeleteToParagraph(p, sess->cursor_col - 1, sess->cursor_col);
+            sess->cursor_col--;
+            sess->modified = true;
+        } else if (sess->cursor_para > 0) {
+            int prev_len = static_cast<int>(sess->doc.paragraphs[sess->cursor_para - 1].text.size());
+            MergeParagraphs(sess->doc.paragraphs[sess->cursor_para - 1], sess->doc.paragraphs[sess->cursor_para]);
+            sess->doc.paragraphs.erase(sess->doc.paragraphs.begin() + sess->cursor_para);
+            sess->cursor_para--;
+            sess->cursor_col = prev_len;
+            sess->modified = true;
+        }
+    }
+    if (del || IsKeyPressedRepeat(KEY_DELETE)) {
+        int len = cur_len();
+        if (sess->cursor_col < len) {
+            DocParagraph &p = sess->doc.paragraphs[sess->cursor_para];
+            ApplyDeleteToParagraph(p, sess->cursor_col, sess->cursor_col + 1);
+            sess->modified = true;
+        } else if (sess->cursor_para + 1 < static_cast<int>(sess->doc.paragraphs.size())) {
+            MergeParagraphs(sess->doc.paragraphs[sess->cursor_para], sess->doc.paragraphs[sess->cursor_para + 1]);
+            sess->doc.paragraphs.erase(sess->doc.paragraphs.begin() + sess->cursor_para + 1);
+            sess->modified = true;
+        }
+    }
+    if (IsKeyPressed(KEY_LEFT) || IsKeyPressedRepeat(KEY_LEFT)) sess->cursor_col = std::max(0, sess->cursor_col - 1);
+    if (IsKeyPressed(KEY_RIGHT) || IsKeyPressedRepeat(KEY_RIGHT)) sess->cursor_col = std::min(cur_len(), sess->cursor_col + 1);
+    if (IsKeyPressed(KEY_UP) || IsKeyPressedRepeat(KEY_UP)) {
+        if (sess->cursor_para > 0) {
+            sess->cursor_para--;
+            sess->cursor_col = std::min(sess->cursor_col, cur_len());
+        }
+    }
+    if (IsKeyPressed(KEY_DOWN) || IsKeyPressedRepeat(KEY_DOWN)) {
+        if (sess->cursor_para + 1 < static_cast<int>(sess->doc.paragraphs.size())) {
+            sess->cursor_para++;
+            sess->cursor_col = std::min(sess->cursor_col, cur_len());
+        }
+    }
+}
+
+void Editor::HandleOfficeVisualInput() {
+    OfficeSession *sess = nullptr;
+    {
+        auto it = officedocs_.find(CurPane().buffer_id);
+        if (it == officedocs_.end()) {
+            mode_ = Mode::Normal;
+            return;
+        }
+        sess = &it->second;
+    }
+    int para_count = static_cast<int>(sess->doc.paragraphs.size());
+    if (para_count <= 0) {
+        mode_ = Mode::OfficeNormal;
+        return;
+    }
+    auto cur_len = [&]() { return static_cast<int>(sess->doc.paragraphs[sess->cursor_para].text.size()); };
+    auto goto_para = [&](int new_para) {
+        sess->cursor_para = std::clamp(new_para, 0, para_count - 1);
+        sess->cursor_col = std::min(sess->cursor_col, cur_len());
+    };
+    auto held = [](int key) { return IsKeyPressed(key) || IsKeyPressedRepeat(key); };
+    if (held(KEY_H) || held(KEY_LEFT)) sess->cursor_col = std::max(0, sess->cursor_col - 1);
+    if (held(KEY_L) || held(KEY_RIGHT)) sess->cursor_col = std::min(cur_len(), sess->cursor_col + 1);
+    if (held(KEY_J) || held(KEY_DOWN)) goto_para(sess->cursor_para + 1);
+    if (held(KEY_K) || held(KEY_UP)) goto_para(sess->cursor_para - 1);
+
+    // Selection extent: (para,col) pairs compared lexicographically by
+    // (para, col), matching VisualRange's own row/col ordering for the
+    // main buffer.
+    auto selection_range = [&](int &pa, int &ca, int &pb, int &cb) {
+        int ap = sess->sel_anchor_para, ac = sess->sel_anchor_col;
+        int cp = sess->cursor_para, cc = sess->cursor_col;
+        if (ap < cp || (ap == cp && ac <= cc)) {
+            pa = ap; ca = ac; pb = cp; cb = cc;
+        } else {
+            pa = cp; ca = cc; pb = ap; cb = ac;
+        }
+    };
+
+    int cp = GetCharPressed();
+    while (cp > 0) {
+        if (cp == 'g') {
+            if (pending_g_) {
+                pending_g_ = false;
+                goto_para(0);
+                sess->cursor_col = 0;
+            } else {
+                pending_g_ = true;
+            }
+        } else if (cp == 'G') {
+            pending_g_ = false;
+            goto_para(para_count - 1);
+            sess->cursor_col = cur_len();
+        } else if (cp == '0') {
+            pending_g_ = false;
+            sess->cursor_col = 0;
+        } else if (cp == '$') {
+            pending_g_ = false;
+            sess->cursor_col = cur_len();
+        } else if (cp == 'b' || cp == 'i' || cp == 'u') {
+            pending_g_ = false;
+            int pa, ca, pb, cb;
+            selection_range(pa, ca, pb, cb);
+            PushUndoOffice();
+            bool DocFormat::*field = (cp == 'b') ? &DocFormat::bold : (cp == 'i') ? &DocFormat::italic : &DocFormat::underline;
+            if (pa == pb) {
+                ToggleFormatOverRange(sess->doc.paragraphs[pa], ca, cb, field);
+            } else {
+                ToggleFormatOverRange(sess->doc.paragraphs[pa], ca, static_cast<int>(sess->doc.paragraphs[pa].text.size()), field);
+                for (int pi = pa + 1; pi < pb; pi++) {
+                    ToggleFormatOverRange(sess->doc.paragraphs[pi], 0, static_cast<int>(sess->doc.paragraphs[pi].text.size()), field);
+                }
+                ToggleFormatOverRange(sess->doc.paragraphs[pb], 0, cb, field);
+            }
+            sess->modified = true;
+            sess->has_selection = false;
+            sess->cursor_para = pa;
+            sess->cursor_col = ca;
+            mode_ = Mode::OfficeNormal;
+            return;
+        } else {
+            pending_g_ = false;
+        }
+        cp = GetCharPressed();
+    }
+
+    for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
+        if (key == KEY_ESCAPE) {
+            sess->has_selection = false;
+            mode_ = Mode::OfficeNormal;
+            return;
+        }
+    }
+}
+
+void Editor::ToggleOfficeFormat(char which) {
+    auto it = officedocs_.find(CurPane().buffer_id);
+    if (it == officedocs_.end()) return;
+    OfficeSession &sess = it->second;
+    int para_count = static_cast<int>(sess.doc.paragraphs.size());
+    if (para_count <= 0) return;
+    bool DocFormat::*field =
+        (which == 'b') ? &DocFormat::bold : (which == 'i') ? &DocFormat::italic : &DocFormat::underline;
+    PushUndoOffice();
+    if (mode_ == Mode::OfficeVisual && sess.has_selection) {
+        int ap = sess.sel_anchor_para, ac = sess.sel_anchor_col;
+        int cp = sess.cursor_para, cc = sess.cursor_col;
+        int pa, ca, pb, cb;
+        if (ap < cp || (ap == cp && ac <= cc)) {
+            pa = ap; ca = ac; pb = cp; cb = cc;
+        } else {
+            pa = cp; ca = cc; pb = ap; cb = ac;
+        }
+        if (pa == pb) {
+            ToggleFormatOverRange(sess.doc.paragraphs[pa], ca, cb, field);
+        } else {
+            ToggleFormatOverRange(sess.doc.paragraphs[pa], ca, static_cast<int>(sess.doc.paragraphs[pa].text.size()),
+                                   field);
+            for (int pi = pa + 1; pi < pb; pi++) {
+                ToggleFormatOverRange(sess.doc.paragraphs[pi], 0, static_cast<int>(sess.doc.paragraphs[pi].text.size()),
+                                       field);
+            }
+            ToggleFormatOverRange(sess.doc.paragraphs[pb], 0, cb, field);
+        }
+        sess.has_selection = false;
+        sess.cursor_para = pa;
+        sess.cursor_col = ca;
+        mode_ = Mode::OfficeNormal;
+    } else {
+        int len = static_cast<int>(sess.doc.paragraphs[sess.cursor_para].text.size());
+        int a = std::clamp(sess.cursor_col, 0, len);
+        int b = std::min(a + 1, len);
+        if (b > a) ToggleFormatOverRange(sess.doc.paragraphs[sess.cursor_para], a, b, field);
+    }
+    sess.modified = true;
+}
+
+bool Editor::OfficeFormatActive(char which) const {
+    auto it = officedocs_.find(CurPane().buffer_id);
+    if (it == officedocs_.end()) return false;
+    const OfficeSession &sess = it->second;
+    int para_count = static_cast<int>(sess.doc.paragraphs.size());
+    if (para_count <= 0) return false;
+    auto field_of = [&](const DocFormat &f) { return which == 'b' ? f.bold : which == 'i' ? f.italic : f.underline; };
+    int cp, col;
+    if (mode_ == Mode::OfficeVisual && sess.has_selection) {
+        int ap = sess.sel_anchor_para, ac = sess.sel_anchor_col;
+        int ccp = sess.cursor_para, ccc = sess.cursor_col;
+        // Samples the format at the selection's first character -- an
+        // approximation of ToggleFormatOverRange's real all-on check,
+        // good enough for a toolbar's pressed-look without re-walking
+        // every span in the selection each frame.
+        if (ap < ccp || (ap == ccp && ac <= ccc)) {
+            cp = ap; col = ac;
+        } else {
+            cp = ccp; col = ccc;
+        }
+    } else {
+        cp = sess.cursor_para;
+        col = sess.cursor_col;
+    }
+    cp = std::clamp(cp, 0, para_count - 1);
+    col = std::min(col, static_cast<int>(sess.doc.paragraphs[cp].text.size()));
+    return field_of(FormatAt(sess.doc.paragraphs[cp], col));
+}
+
+// --- Spreadsheet panes --------------------------------------------------
+
+bool Editor::IsSheetBuffer(int buffer_id) const { return sheetdocs_.find(buffer_id) != sheetdocs_.end(); }
+
+const SheetSession *Editor::GetSheet(int buffer_id) const {
+    auto it = sheetdocs_.find(buffer_id);
+    return it == sheetdocs_.end() ? nullptr : &it->second;
+}
+
+void Editor::ResizeSheetViewport(int buffer_id, int w, int h) {
+    auto it = sheetdocs_.find(buffer_id);
+    if (it == sheetdocs_.end()) return;
+    SheetSession &sess = it->second;
+    sess.viewport_w = w;
+    sess.viewport_h = h;
+    int visible_rows = std::max(1, h / kSheetRowHeight);
+    int visible_cols = std::max(1, (w - kSheetRowHeaderW) / kSheetColWidth);
+    if (sess.cursor_row < sess.scroll_row) sess.scroll_row = sess.cursor_row;
+    if (sess.cursor_row >= sess.scroll_row + visible_rows) sess.scroll_row = sess.cursor_row - visible_rows + 1;
+    if (sess.cursor_col < sess.scroll_col) sess.scroll_col = sess.cursor_col;
+    if (sess.cursor_col >= sess.scroll_col + visible_cols) sess.scroll_col = sess.cursor_col - visible_cols + 1;
+    sess.scroll_row = std::max(0, sess.scroll_row);
+    sess.scroll_col = std::max(0, sess.scroll_col);
+}
+
+CellValue Editor::EvaluateSheetCell(int buffer_id, int row, int col) {
+    auto it = sheetdocs_.find(buffer_id);
+    if (it == sheetdocs_.end()) return CellValue{};
+    SheetSession &sess = it->second;
+    return EvaluateCell(sess.wb, sess.active_sheet, row, col);
+}
+
+void Editor::OpenSheetInPlace(const std::string &path, const unsigned char *bytes, size_t len) {
+    int buffer_id = -1;
+    for (size_t i = 0; i < buffers_.size(); i++) {
+        if (!buffers_[i].filename.empty() && buffers_[i].filename == path) {
+            buffer_id = static_cast<int>(i);
+            break;
+        }
+    }
+    if (buffer_id < 0) {
+        Workbook wb;
+        std::string error;
+        bool ok = false;
+        if (IsCsvPath(path)) {
+            ok = LoadCsvFromMemory(bytes, len, wb, error);
+        } else if (IsXlsxPath(path)) {
+            ok = LoadXlsxFromMemory(bytes, len, wb, error);
+        } else if (IsOdsPath(path)) {
+            ok = LoadOdsFromMemory(bytes, len, wb, error);
+        } else {
+            error = "unsupported spreadsheet format";
+        }
+        if (!ok) {
+            status_message_ = "E-\"" + path + "\": " + error;
+            return;
+        }
+        buffer_id = CreateEmptyBuffer();
+        buffers_[buffer_id].filename = path;
+        SheetSession sess;
+        sess.buffer_id = buffer_id;
+        sess.wb = std::move(wb);
+        sess.original_bytes.assign(bytes, bytes + len);
+        sheetdocs_[buffer_id] = std::move(sess);
+    }
+    CurPane().buffer_id = buffer_id;
+    CurPane().cursor = {0, 0};
+    CurPane().scroll_row = 0;
+    pending_g_ = false;  // avoid gg/G leakage from whatever mode preceded this
+    status_message_.clear();
+}
+
+void Editor::HandleSheetNormalInput() {
+    SheetSession *sess = nullptr;
+    {
+        auto it = sheetdocs_.find(CurPane().buffer_id);
+        if (it == sheetdocs_.end()) {
+            mode_ = Mode::Normal;
+            return;
+        }
+        sess = &it->second;
+    }
+    if (sess->wb.sheets.empty()) return;
+    Sheet &sh = sess->wb.sheets[sess->active_sheet];
+
+    // 2D grid navigation -- h/l move columns, j/k move rows (unlike
+    // Office's 1D paragraph navigation). No upper clamp beyond 0 --
+    // hjkl can freely move past the sheet's current "used range" so the
+    // user can navigate to an empty cell to start typing new data; gg/G/
+    // 0/$ below jump specifically to the used-range corners.
+    auto held = [](int key) { return IsKeyPressed(key) || IsKeyPressedRepeat(key); };
+    if (held(KEY_H) || held(KEY_LEFT)) sess->cursor_col = std::max(0, sess->cursor_col - 1);
+    if (held(KEY_L) || held(KEY_RIGHT)) sess->cursor_col++;
+    if (held(KEY_J) || held(KEY_DOWN)) sess->cursor_row++;
+    if (held(KEY_K) || held(KEY_UP)) sess->cursor_row = std::max(0, sess->cursor_row - 1);
+
+    int cp = GetCharPressed();
+    while (cp > 0) {
+        if (cp == ':') {
+            EnterCommand();
+            return;  // mode_ is no longer SheetNormal -- stop draining as this mode
+        } else if (cp == static_cast<int>(leader_key_) && !whichkey_bindings_.empty()) {
+            TriggerWhichKey();
+            return;
+        } else if (cp == 'g') {
+            if (pending_g_) {
+                pending_g_ = false;
+                sess->cursor_row = 0;
+            } else {
+                pending_g_ = true;
+            }
+        } else if (cp == 'G') {
+            pending_g_ = false;
+            sess->cursor_row = sh.max_row;
+        } else if (cp == '0') {
+            pending_g_ = false;
+            sess->cursor_col = 0;
+        } else if (cp == '$') {
+            pending_g_ = false;
+            sess->cursor_col = sh.max_col;
+        } else if (cp == 'i' || cp == 'a') {
+            pending_g_ = false;
+            PushUndoSheet();
+            const Cell *cell = sh.FindCell(sess->cursor_row, sess->cursor_col);
+            sess->edit_buffer = cell ? cell->raw : "";
+            sess->edit_cursor = static_cast<int>(sess->edit_buffer.size());
+            sess->editing = true;
+            mode_ = Mode::SheetInsert;
+            return;
+        } else if (cp == 'v') {
+            pending_g_ = false;
+            sess->has_selection = true;
+            sess->sel_anchor_row = sess->cursor_row;
+            sess->sel_anchor_col = sess->cursor_col;
+            mode_ = Mode::SheetVisual;
+            return;
+        } else if (cp == 'x' || cp == 'd') {
+            // Both clear the current cell -- no dd/dw-style operator+
+            // motion grammar in v1 (a single key clears one cell), same
+            // simplification the Office pane made by skipping operator-
+            // pending mode entirely.
+            pending_g_ = false;
+            PushUndoSheet();
+            SetCellRaw(sess->wb, sess->active_sheet, sess->cursor_row, sess->cursor_col, "");
+            sess->modified = true;
+        } else if (cp == 'u') {
+            pending_g_ = false;
+            UndoSheet();
+        } else {
+            pending_g_ = false;
+        }
+        cp = GetCharPressed();
+    }
+    if (IsKeyPressed(KEY_R) && (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL))) {
+        RedoSheet();
+    }
+}
+
+void Editor::PushUndoSheet() {
+    auto it = sheetdocs_.find(CurPane().buffer_id);
+    if (it == sheetdocs_.end()) return;
+    SheetSession &sess = it->second;
+    sess.undo_stack.push_back(sess.wb);
+    if (sess.undo_stack.size() > kMaxUndo) sess.undo_stack.erase(sess.undo_stack.begin());
+    sess.redo_stack.clear();
+}
+
+namespace {
+// Shared by UndoSheet/RedoSheet: re-clamps the cursor into the swapped-in
+// Workbook's used range (sheet count/active_sheet stay fixed across
+// undo/redo in v1 -- no structural sheet edits -- so only row/col need
+// clamping).
+void ClampSheetCursorAfterSwap(SheetSession &sess) {
+    if (sess.wb.sheets.empty()) return;
+    sess.active_sheet = std::clamp(sess.active_sheet, 0, static_cast<int>(sess.wb.sheets.size()) - 1);
+    Sheet &sh = sess.wb.sheets[sess.active_sheet];
+    sess.cursor_row = std::clamp(sess.cursor_row, 0, sh.max_row);
+    sess.cursor_col = std::clamp(sess.cursor_col, 0, sh.max_col);
+}
+}  // namespace
+
+void Editor::UndoSheet() {
+    auto it = sheetdocs_.find(CurPane().buffer_id);
+    if (it == sheetdocs_.end()) return;
+    SheetSession &sess = it->second;
+    if (sess.undo_stack.empty()) {
+        status_message_ = "Already at oldest change";
+        return;
+    }
+    sess.redo_stack.push_back(sess.wb);
+    sess.wb = sess.undo_stack.back();
+    sess.undo_stack.pop_back();
+    sess.modified = true;
+    ClampSheetCursorAfterSwap(sess);
+}
+
+void Editor::RedoSheet() {
+    auto it = sheetdocs_.find(CurPane().buffer_id);
+    if (it == sheetdocs_.end()) return;
+    SheetSession &sess = it->second;
+    if (sess.redo_stack.empty()) {
+        status_message_ = "Already at newest change";
+        return;
+    }
+    sess.undo_stack.push_back(sess.wb);
+    sess.wb = sess.redo_stack.back();
+    sess.redo_stack.pop_back();
+    sess.modified = true;
+    ClampSheetCursorAfterSwap(sess);
+}
+
+void Editor::HandleSheetInsertInput() {
+    SheetSession *sess = nullptr;
+    {
+        auto it = sheetdocs_.find(CurPane().buffer_id);
+        if (it == sheetdocs_.end()) {
+            mode_ = Mode::Normal;
+            return;
+        }
+        sess = &it->second;
+    }
+
+    bool escape = false, enter = false, backspace = false, del = false;
+    for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
+        if (key == KEY_ESCAPE) escape = true;
+        else if (key == KEY_ENTER) enter = true;
+        else if (key == KEY_BACKSPACE) backspace = true;
+        else if (key == KEY_DELETE) del = true;
+    }
+    auto commit = [&]() {
+        SetCellRaw(sess->wb, sess->active_sheet, sess->cursor_row, sess->cursor_col, sess->edit_buffer);
+        sess->modified = true;
+        sess->editing = false;
+        mode_ = Mode::SheetNormal;
+    };
+    if (escape) {
+        commit();
+        return;
+    }
+    if (enter) {
+        commit();
+        sess->cursor_row++;  // real-spreadsheet "Enter commits and advances" convention
+        return;
+    }
+
+    int cp = GetCharPressed();
+    while (cp > 0) {
+        if (cp >= 32 && cp <= 126) {
+            sess->edit_buffer.insert(sess->edit_buffer.begin() + sess->edit_cursor, static_cast<char>(cp));
+            sess->edit_cursor++;
+        }
+        cp = GetCharPressed();
+    }
+    if (backspace || IsKeyPressedRepeat(KEY_BACKSPACE)) {
+        if (sess->edit_cursor > 0) {
+            sess->edit_buffer.erase(sess->edit_buffer.begin() + sess->edit_cursor - 1);
+            sess->edit_cursor--;
+        }
+    }
+    if (del || IsKeyPressedRepeat(KEY_DELETE)) {
+        if (sess->edit_cursor < static_cast<int>(sess->edit_buffer.size())) {
+            sess->edit_buffer.erase(sess->edit_buffer.begin() + sess->edit_cursor);
+        }
+    }
+    if (IsKeyPressed(KEY_LEFT) || IsKeyPressedRepeat(KEY_LEFT)) sess->edit_cursor = std::max(0, sess->edit_cursor - 1);
+    if (IsKeyPressed(KEY_RIGHT) || IsKeyPressedRepeat(KEY_RIGHT)) {
+        sess->edit_cursor = std::min(static_cast<int>(sess->edit_buffer.size()), sess->edit_cursor + 1);
+    }
+}
+
+void Editor::HandleSheetVisualInput() {
+    SheetSession *sess = nullptr;
+    {
+        auto it = sheetdocs_.find(CurPane().buffer_id);
+        if (it == sheetdocs_.end()) {
+            mode_ = Mode::Normal;
+            return;
+        }
+        sess = &it->second;
+    }
+    if (sess->wb.sheets.empty()) {
+        mode_ = Mode::SheetNormal;
+        return;
+    }
+    Sheet &sh = sess->wb.sheets[sess->active_sheet];
+
+    auto held = [](int key) { return IsKeyPressed(key) || IsKeyPressedRepeat(key); };
+    if (held(KEY_H) || held(KEY_LEFT)) sess->cursor_col = std::max(0, sess->cursor_col - 1);
+    if (held(KEY_L) || held(KEY_RIGHT)) sess->cursor_col++;
+    if (held(KEY_J) || held(KEY_DOWN)) sess->cursor_row++;
+    if (held(KEY_K) || held(KEY_UP)) sess->cursor_row = std::max(0, sess->cursor_row - 1);
+
+    int cp = GetCharPressed();
+    while (cp > 0) {
+        if (cp == 'g') {
+            if (pending_g_) {
+                pending_g_ = false;
+                sess->cursor_row = 0;
+            } else {
+                pending_g_ = true;
+            }
+        } else if (cp == 'G') {
+            pending_g_ = false;
+            sess->cursor_row = sh.max_row;
+        } else if (cp == '0') {
+            pending_g_ = false;
+            sess->cursor_col = 0;
+        } else if (cp == '$') {
+            pending_g_ = false;
+            sess->cursor_col = sh.max_col;
+        } else if (cp == 'x' || cp == 'd') {
+            pending_g_ = false;
+            PushUndoSheet();
+            int r0 = std::min(sess->sel_anchor_row, sess->cursor_row);
+            int r1 = std::max(sess->sel_anchor_row, sess->cursor_row);
+            int c0 = std::min(sess->sel_anchor_col, sess->cursor_col);
+            int c1 = std::max(sess->sel_anchor_col, sess->cursor_col);
+            for (int r = r0; r <= r1; r++) {
+                for (int c = c0; c <= c1; c++) SetCellRaw(sess->wb, sess->active_sheet, r, c, "");
+            }
+            sess->modified = true;
+            sess->has_selection = false;
+            sess->cursor_row = r0;
+            sess->cursor_col = c0;
+            mode_ = Mode::SheetNormal;
+            return;
+        } else {
+            pending_g_ = false;
+        }
+        cp = GetCharPressed();
+    }
+    for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
+        if (key == KEY_ESCAPE) {
+            sess->has_selection = false;
+            mode_ = Mode::SheetNormal;
+            return;
+        }
+    }
+}
+
 void Editor::HandleTerminalInput() {
     TerminalSession *sess = FindTerminal(CurPane().buffer_id);
     if (!sess) {
@@ -1275,6 +2857,7 @@ void Editor::ClosePane() {
     CollectLeaves(tab.root.get(), ids);
     if (!ids.empty()) tab.active_pane_id = ids.front();
     ReapOrphanedTerminals();
+    SyncModeToActivePaneBuffer();
 }
 
 void Editor::CyclePane(int delta) {
@@ -1309,6 +2892,7 @@ void Editor::PaneOpenBufferInTab(const std::string &path) {
     p.buffer_tab_index++;
     p.buffer_id = buffer_id;
     ClampCursor();
+    SyncModeToActivePaneBuffer();
 }
 
 void Editor::PaneNextBufferTab() {
@@ -1318,6 +2902,7 @@ void Editor::PaneNextBufferTab() {
     p.buffer_tab_index = (p.buffer_tab_index + 1) % static_cast<int>(p.buffer_tabs.size());
     p.buffer_id = p.buffer_tabs[p.buffer_tab_index];
     ClampCursor();
+    SyncModeToActivePaneBuffer();
 }
 
 void Editor::PanePrevBufferTab() {
@@ -1328,6 +2913,7 @@ void Editor::PanePrevBufferTab() {
     p.buffer_tab_index = (p.buffer_tab_index - 1 + n) % n;
     p.buffer_id = p.buffer_tabs[p.buffer_tab_index];
     ClampCursor();
+    SyncModeToActivePaneBuffer();
 }
 
 void Editor::PaneCloseBufferTab() {
@@ -1343,6 +2929,7 @@ void Editor::PaneCloseBufferTab() {
     }
     p.buffer_id = p.buffer_tabs[p.buffer_tab_index];
     ClampCursor();
+    SyncModeToActivePaneBuffer();
 }
 
 void Editor::PaneMoveBufferTabToNeighbor(const std::string &direction) {
@@ -1474,6 +3061,7 @@ void Editor::TabNew(const std::string &file_arg) {
 
     tabs_.insert(tabs_.begin() + active_tab_ + 1, std::move(tab));
     active_tab_++;
+    SyncModeToActivePaneBuffer();
 }
 
 void Editor::TabDelete() {
@@ -1484,17 +3072,32 @@ void Editor::TabDelete() {
     tabs_.erase(tabs_.begin() + active_tab_);
     if (active_tab_ >= static_cast<int>(tabs_.size())) active_tab_ = static_cast<int>(tabs_.size()) - 1;
     ReapOrphanedTerminals();
+    SyncModeToActivePaneBuffer();
 }
 
 void Editor::TabNext() {
     if (tabs_.size() <= 1) return;
     active_tab_ = (active_tab_ + 1) % static_cast<int>(tabs_.size());
+    SyncModeToActivePaneBuffer();
 }
 
 void Editor::TabPrevious() {
     if (tabs_.size() <= 1) return;
     int n = static_cast<int>(tabs_.size());
     active_tab_ = (active_tab_ - 1 + n) % n;
+    SyncModeToActivePaneBuffer();
+}
+
+// Click-to-switch (NVIM_PARITY_PLAN.md Phase 11 gap): jumps directly to a
+// tab by index, unlike TabNext/TabPrevious's relative stepping -- what a
+// mouse click on a specific tab box in the tab bar needs. Out-of-range
+// indices are silently clamped rather than ignored, matching this file's
+// existing tolerant style (e.g. TabDelete's active_tab_ clamp above) since
+// the click hit-testing that calls this only ever passes a valid index
+// anyway.
+void Editor::GoToTab(int index) {
+    if (tabs_.empty()) return;
+    active_tab_ = std::max(0, std::min(index, static_cast<int>(tabs_.size()) - 1));
 }
 
 std::string Editor::TabLabel(int tab_index) const {
@@ -1608,6 +3211,7 @@ void Editor::NavigatePaneDirection(const std::string &direction) {
         // typing into), not just a UX quirk. Drop back to Normal the
         // moment focus actually moves to a different pane.
         if (mode_ == Mode::Terminal) mode_ = Mode::Normal;
+        SyncModeToActivePaneBuffer();
         return;
     }
     if (direction != "left" && direction != "right") return;
@@ -1832,7 +3436,7 @@ void Editor::HandleNormalInput() {
     // Ctrl-W above predate that finding and were left as-is (out of scope
     // here), worth remembering if either is ever reported flaky too.
     bool ctrl_v = false, ctrl_d = false, ctrl_u = false, ctrl_f = false, ctrl_b = false, ctrl_a = false,
-         ctrl_x = false;
+         ctrl_x = false, ctrl_o = false, ctrl_i = false, ctrl_c = false;
     for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
         if (!ctrl) continue;
         if (key == KEY_V) ctrl_v = true;
@@ -1842,9 +3446,18 @@ void Editor::HandleNormalInput() {
         else if (key == KEY_B) ctrl_b = true;
         else if (key == KEY_A) ctrl_a = true;
         else if (key == KEY_X) ctrl_x = true;
+        else if (key == KEY_O) ctrl_o = true;
+        else if (key == KEY_I) ctrl_i = true;
+        else if (key == KEY_C) ctrl_c = true;
     }
     if (ctrl_v) {
-        EnterVisualBlock();
+        // Routed through ProcessNormalKey (via the kReplayCtrlV sentinel --
+        // see its own comment in editor.h) rather than calling
+        // EnterVisualBlock() directly, so Ctrl-V participates in `.`/macro
+        // recording exactly like 'v'/'V' already do (those go through
+        // HandleNormalChar -> ProcessNormalKey normally, since they're plain
+        // printable chars DispatchNormalKey's switch handles).
+        ProcessNormalKey(kReplayCtrlV);
         return;
     }
     if (ctrl_d) {
@@ -1871,18 +3484,115 @@ void Editor::HandleNormalInput() {
         IncrementNumberAtCursor(-std::max(1, TakeRawCount()));
         return;
     }
+    // Normal-mode Ctrl-O/Ctrl-I: jumplist back/forward -- NOT the same
+    // Ctrl-O as Insert mode's one-shot-normal-command (see HandleInsertInput);
+    // Vim itself disambiguates the two purely by which mode you're in.
+    if (ctrl_o) {
+        JumpListBack();
+        return;
+    }
+    if (ctrl_i) {
+        JumpListForward();
+        return;
+    }
+    if (ctrl_c) {
+        if (pending_ctrl_c_ && (now_ - pending_ctrl_c_time_) < kCtrlCChordTimeoutSec) {
+            pending_ctrl_c_ = false;
+            TryRunOrgBabelAtCursor();
+        } else {
+            pending_ctrl_c_ = true;
+            pending_ctrl_c_time_ = now_;
+        }
+        return;
+    }
     if (IsKeyPressed(KEY_ESCAPE)) {
         // A bare Escape while recording only matters as a "cancel whatever
         // was pending" if something actually was -- an Escape with nothing
         // pending is Vim's harmless no-op, not worth a macro-replay entry.
         if (record_raw && IsMidNormalCommand()) macro_recording_buffer_.push_back(kReplayEscape);
         CancelPendingNormalState();
+        // A bare Escape doesn't go through ProcessNormalKey (see above),
+        // so it wouldn't otherwise hit the "one-shot command finished"
+        // check there -- a no-op Escape still counts as finishing
+        // Insert-mode Ctrl-O's one-shot command, matching Vim.
+        if (insert_one_shot_normal_) {
+            insert_one_shot_normal_ = false;
+            EnterInsert();
+            replace_mode_ = insert_one_shot_was_replace_;
+            insert_one_shot_was_replace_ = false;
+        }
         return;
+    }
+
+    // Bare h/j/k/l: confirmed sustained holds move via a per-frame
+    // IsKeyDown() fast path instead of replaying every individual queued
+    // repeat notification in the GetCharPressed() drain loop below.
+    // Native doesn't need this -- a healthy frame keeps up with even a
+    // fast OS repeat rate, so the queue never really backs up -- but
+    // confirmed on the wasm/webview build specifically: holding a motion
+    // key and releasing it still produces a steady trickle of repeat
+    // notifications for several hundred ms afterward (something in
+    // WebKitGTK's own input pipeline apparently coalesces/delays
+    // repeat-keydown delivery; native has no such layer in between and
+    // doesn't show it).
+    //
+    // Two guards keep this from ever dropping a real keystroke, which an
+    // earlier version of this fix got wrong (confirmed empirically: three
+    // separate, deliberate taps could land only one column of movement,
+    // because IsKeyDown() can miss a press/release pair that both happen
+    // to fall within one polling window -- unlike GetCharPressed(), whose
+    // queue is filled straight from the press event and can't miss a tap
+    // that way):
+    //   1. kMotionHoldConfirmSec -- a key only starts being treated as
+    //      "held" (fast path takes over, queue discards its repeats)
+    //      once IsKeyDown() has read continuously true for this long. A
+    //      human tap, even a fast one, doesn't remotely approach this;
+    //      only a genuine sustained hold does. Below this threshold nothing
+    //      here changes anything -- the original, fully-reliable
+    //      queue-driven path handles it exactly as before this fix existed.
+    //   2. kMotionDiscardCooldownSec -- once a *confirmed* hold ends, the
+    //      queue keeps discarding that key's repeats for this long
+    //      afterward too (comfortably above the worst observed trickle,
+    //      measured empirically at a few hundred ms), since those are
+    //      presumed to be the delayed tail rather than a new keystroke.
+    //      The cost is a same-key re-tap inside this window being
+    //      swallowed too -- a minor, self-correcting annoyance (retrying
+    //      once the window passes fixes it), traded against not replaying
+    //      a stale backlog as visible extra motion.
+    constexpr double kMotionHoldConfirmSec = 0.2;
+    constexpr double kMotionDiscardCooldownSec = 0.7;
+    bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+    bool count_pending_now = pending_count_ != 0;
+    bool no_pending_state_now = pending_op_ == 0 && !pending_g_ && !pending_ctrl_w_ && pending_find_ == 0 &&
+                                 !count_pending_now && !awaiting_register_name_;
+    double now = GetTime();
+    static const std::pair<int, char> kMotionKeys[] = {
+        {KEY_H, 'h'},
+        {KEY_J, 'j'},
+        {KEY_K, 'k'},
+        {KEY_L, 'l'},
+    };
+    for (int i = 0; i < 4; i++) {
+        MotionRepeatState &st = motion_repeat_[i];
+        bool down = IsKeyDown(kMotionKeys[i].first);
+        if (down) {
+            if (st.down_since < 0.0) st.down_since = now;
+            bool confirmed = (now - st.down_since) >= kMotionHoldConfirmSec;
+            if (confirmed) {
+                st.discard_until = now + kMotionDiscardCooldownSec;
+                if (no_pending_state_now && !ctrl && !shift) {
+                    HandleNormalChar(static_cast<int>(kMotionKeys[i].second), no_pending_state_now);
+                    if (mode_ != Mode::Normal) return;  // key switched modes
+                }
+            }
+        } else if (st.down_since >= 0.0) {
+            if ((now - st.down_since) >= kMotionHoldConfirmSec) st.discard_until = now + kMotionDiscardCooldownSec;
+            st.down_since = -1.0;
+        }
     }
 
     int cp = GetCharPressed();
     while (cp > 0) {
-        bool consumed = false;
         // Digits (as a pending count) and a pending find/g-prefix always
         // win over a Lua mapping for the same key -- those states consume
         // the very next key literally, and counts are closer to syntax
@@ -1890,24 +3600,43 @@ void Editor::HandleNormalInput() {
         bool is_count_digit = (cp >= '1' && cp <= '9') || (cp == '0' && pending_count_ != 0);
         bool no_pending_state = pending_op_ == 0 && !pending_g_ && !pending_ctrl_w_ && pending_find_ == 0 &&
                                  !is_count_digit && !awaiting_register_name_;
-        // Leader key (Phase 11 whichkey) only actually takes over Normal
-        // mode once at least one <leader>-sequence is registered -- an
-        // unconfigured leader falls through to whatever cp already does
-        // (e.g. space's ordinary cursor-right movement), so nothing steals
-        // a key nobody asked it to.
-        if (no_pending_state && cp == static_cast<int>(leader_key_) && !whichkey_bindings_.empty()) {
-            TriggerWhichKey();
-            consumed = true;
-        } else if (no_pending_state && cp != '"' && cp <= 127) {
-            consumed = TryLuaMapping(Mode::Normal, std::string(1, static_cast<char>(cp)));
+        // A confirmed-held bare h/j/k/l is handled by the fast path above
+        // (or is within its post-release discard window) -- drop the
+        // queued notification here instead of replaying/double-counting
+        // it. Anything below the hold-confirm threshold (ordinary taps),
+        // shifted (H/L), or counted/operator-pending never enters this
+        // window at all and falls through to the normal handling below,
+        // completely unaffected.
+        if (no_pending_state && !ctrl && !shift) {
+            int idx = cp == 'h' ? 0 : cp == 'j' ? 1 : cp == 'k' ? 2 : cp == 'l' ? 3 : -1;
+            if (idx >= 0 && now < motion_repeat_[idx].discard_until) {
+                cp = GetCharPressed();
+                continue;
+            }
         }
-        if (consumed) {
-            if (recording_macro_ && !replaying_change_ && !replaying_macro_) macro_recording_buffer_.push_back(cp);
-        } else {
-            ProcessNormalKey(cp);
-        }
+        HandleNormalChar(cp, no_pending_state);
         if (mode_ != Mode::Normal) break;  // key switched modes mid-loop
         cp = GetCharPressed();
+    }
+}
+
+void Editor::HandleNormalChar(int cp, bool no_pending_state) {
+    bool consumed = false;
+    // Leader key (Phase 11 whichkey) only actually takes over Normal
+    // mode once at least one <leader>-sequence is registered -- an
+    // unconfigured leader falls through to whatever cp already does
+    // (e.g. space's ordinary cursor-right movement), so nothing steals
+    // a key nobody asked it to.
+    if (no_pending_state && cp == static_cast<int>(leader_key_) && !whichkey_bindings_.empty()) {
+        TriggerWhichKey();
+        consumed = true;
+    } else if (no_pending_state && cp != '"' && cp <= 127) {
+        consumed = TryLuaMapping(Mode::Normal, std::string(1, static_cast<char>(cp)));
+    }
+    if (consumed) {
+        if (recording_macro_ && !replaying_change_ && !replaying_macro_) macro_recording_buffer_.push_back(cp);
+    } else {
+        ProcessNormalKey(cp);
     }
 }
 
@@ -1924,7 +3653,22 @@ void Editor::TakeRegisterSpec(char *name, bool *append) {
     pending_register_append_ = false;
 }
 
-Register &Editor::RegisterFor(char name) { return registers_[name != 0 ? name : '"']; }
+Register &Editor::RegisterFor(char name) {
+    if (name == '%') {
+        // "%: current filename, read-only. Refreshed on every read rather
+        // than kept in sync at rename/write time, so it's always current;
+        // writes into it (e.g. "%yy) are guarded out at the call sites
+        // that actually mutate a register (YankRange, ApplyVisualBlockOperator)
+        // and redirected to the unnamed register instead, matching Vim's
+        // silent no-op there.
+        Register &r = registers_['%'];
+        r.text = Buf().filename;
+        r.linewise = false;
+        r.blockwise = false;
+        return r;
+    }
+    return registers_[name != 0 ? name : '"'];
+}
 
 bool Editor::TryLuaMapping(Mode mode, const std::string &key) {
     if (!lua_) return false;
@@ -1957,6 +3701,16 @@ bool Editor::DispatchNormalKey(int cp) {
         mode_ = Mode::Terminal;
         return true;
     }
+    // Defense in depth: Mode::Image (HandleImageInput) is what normally
+    // keeps Normal-mode dispatch from ever running against an image
+    // buffer, but if mode_ somehow ended up Normal here anyway (a missed
+    // SyncModeToActivePaneBuffer() call site), there's still nothing for
+    // insert-entry to do -- an image buffer's Buffer::lines is a dummy
+    // empty line, and typing into it risks SaveBuffer's own guard being
+    // the only thing standing between that and corrupting the real file.
+    if ((c == 'i' || c == 'a') && IsImageBuffer(CurPane().buffer_id)) {
+        return true;
+    }
 
     if (pending_ctrl_w_) {
         pending_ctrl_w_ = false;
@@ -1984,16 +3738,22 @@ bool Editor::DispatchNormalKey(int cp) {
     if (pending_find_ == 0 && !pending_g_ && !pending_ctrl_w_) {
         if (awaiting_register_name_) {
             awaiting_register_name_ = false;
-            if (c >= 'a' && c <= 'z') {
+            if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '%') {
+                // "0-"9 (numbered/last-yank), "- (small-delete), "%
+                // (filename, read-only) -- all single-char names taken
+                // literally, same as "a-"z. Writes to "% silently no-op
+                // (see YankRange/ApplyVisualBlockOperator); "0-"9/"- are
+                // written automatically by ApplyOperator rather than by
+                // naming them explicitly before an operator, but reading
+                // them via "1p etc. works the same as any other register.
                 pending_register_ = c;
                 pending_register_append_ = false;
             } else if (c >= 'A' && c <= 'Z') {
                 pending_register_ = static_cast<char>(c - 'A' + 'a');
                 pending_register_append_ = true;
             }
-            // Anything else (digit, punctuation, ...): not a register
-            // name mep supports (only "a-"z here -- see VIM_PARITY_PLAN.md
-            // for the numbered/"% stretch goals), silently ignored.
+            // Anything else (punctuation not covered above): not a
+            // register name mep supports, silently ignored.
             return true;
         }
         if (c == '"') {
@@ -2239,6 +3999,49 @@ bool Editor::DispatchNormalKey(int cp) {
             pending_mark_jump_ = c;  // keep pending_op_ set; resolved above next keypress
             return true;
         }
+        // Search as an operator motion (VIM_PARITY_PLAN.md Phase 4:
+        // `d/foo<Enter>` deletes from the operator's start up to -- but not
+        // including -- the next match of "foo"; `y?bar<Enter>` yanks
+        // backward to the previous match of "bar", same exclusive-charwise
+        // shape as every other operator+motion here). Unlike f/F/t/T and
+        // `/'` above, the target isn't resolved on the very next keypress:
+        // TakeRawCount() (a count typed between the operator and '/'/'?'
+        // has no meaning for a search motion in Vim either, so it's just
+        // discarded rather than leaking into the next command) and enter
+        // search mode, leaving pending_op_/pending_op_start_ untouched so
+        // HandleSearchInput's Enter handler -- run once the pattern is
+        // typed and confirmed -- can read them back and apply the operator
+        // over the found range instead of just moving the cursor.
+        if (c == '/' || c == '?') {
+            TakeRawCount();
+            EnterSearch(c == '/');
+            return true;
+        }
+        // `dn`/`dN` etc: reuse the last confirmed search pattern as the
+        // motion target, synchronously (no prompt needed) -- same
+        // exclusive-charwise shape as `d/foo<Enter>` above, just skipping
+        // straight to FindNext with whatever direction n/N resolve to.
+        if ((c == 'n' || c == 'N') && !last_search_.empty()) {
+            pending_op_ = 0;
+            pending_op_count_ = 0;
+            TakeRawCount();
+            bool forward = (c == 'n') ? last_search_forward_ : !last_search_forward_;
+            CursorPos saved_cursor = CurPane().cursor;
+            CurPane().cursor = start;
+            CursorPos result;
+            bool wrapped = false;
+            if (FindNext(last_search_, forward, &result, &wrapped)) {
+                ApplyOperator(op, start, result, false);
+                status_message_ = wrapped ? (forward ? "search hit BOTTOM, continuing at TOP"
+                                                       : "search hit TOP, continuing at BOTTOM")
+                                           : "";
+            } else {
+                CurPane().cursor = saved_cursor;
+                ClampCursor();
+                status_message_ = "E486: Pattern not found: " + last_search_;
+            }
+            return true;
+        }
         if (c == 'g') {
             pending_g_ = true;  // keep pending_op_ set
             return true;
@@ -2350,6 +4153,7 @@ bool Editor::DispatchNormalKey(int cp) {
         case 'o':
             PushUndo();
             Buf().lines.insert(Buf().lines.begin() + cursor.row + 1, "");
+            ShiftMarksForLineEdit(cursor.row + 1, 1);
             cursor.row++;
             cursor.col = 0;
             EnterInsert();
@@ -2357,6 +4161,7 @@ bool Editor::DispatchNormalKey(int cp) {
         case 'O':
             PushUndo();
             Buf().lines.insert(Buf().lines.begin() + cursor.row, "");
+            ShiftMarksForLineEdit(cursor.row, 1);
             cursor.col = 0;
             EnterInsert();
             break;
@@ -2519,15 +4324,45 @@ void Editor::ProcessNormalKey(int key) {
     }
 
     int epoch_before = change_epoch_;
-    DispatchNormalKey(key);
+    // kReplayCtrlV never reaches DispatchNormalKey (which rejects <= 0
+    // outright, same as every other ReplayKey sentinel) -- special-cased
+    // here instead so entering Visual Block via Ctrl-V goes through the
+    // exact same was_mid/change_scratch_/macro-buffer bookkeeping as 'v'/'V'
+    // already do (those dispatch normally, since they're plain printable
+    // chars DispatchNormalKey's own switch already handles).
+    if (key == kReplayCtrlV) {
+        EnterVisualBlock();
+    } else {
+        DispatchNormalKey(key);
+    }
 
     if (!replaying_change_ && change_recording_active_) {
         if (change_epoch_ != epoch_before) change_had_edit_ = true;
-        if (mode_ != Mode::Insert && !IsMidNormalCommand()) {
+        // A Visual-mode entry (v/V/Ctrl-V) landing here must NOT finalize
+        // the in-progress change_scratch_ the way any other "nothing
+        // pending, back to a stable mode" key would -- Visual mode has its
+        // own multi-key session (selection motions + operator) that isn't
+        // done yet, and ProcessVisualKey (see HandleVisualInput) is what
+        // actually finalizes it once that session's operator commits.
+        bool visual_like = (mode_ == Mode::Visual || mode_ == Mode::VisualLine || mode_ == Mode::VisualBlock);
+        if (mode_ != Mode::Insert && !visual_like && !IsMidNormalCommand()) {
             if (change_had_edit_) last_change_keys_ = change_scratch_;
             change_scratch_.clear();
             change_recording_active_ = false;
         }
+    }
+
+    // Insert-mode Ctrl-O's one-shot Normal command: once it's actually
+    // finished (not still mid-operator/mid-count/etc. -- same test just
+    // above) and it didn't already switch to Insert itself (i/a/o/c{motion}/
+    // ...), hop back to Insert. If the command left mode_ somewhere other
+    // than Normal/Insert (e.g. `v` into Visual), the flag just stays
+    // pending -- see insert_one_shot_normal_'s own comment in editor.h.
+    if (insert_one_shot_normal_ && mode_ == Mode::Normal && !IsMidNormalCommand()) {
+        insert_one_shot_normal_ = false;
+        EnterInsert();
+        replace_mode_ = insert_one_shot_was_replace_;
+        insert_one_shot_was_replace_ = false;
     }
 }
 
@@ -2595,8 +4430,21 @@ void Editor::RepeatLastChange(int override_count) {
             ProcessInsertKey(keys[i]);
         } else if (mode_ == Mode::Normal) {
             ProcessNormalKey(keys[i]);
+        } else if (mode_ == Mode::Visual || mode_ == Mode::VisualLine || mode_ == Mode::VisualBlock) {
+            // A recorded Visual-mode change (see ProcessVisualKey) is the
+            // literal key sequence from mode entry (v/V/Ctrl-V) through the
+            // operator that committed it, replayed the same way a Normal-
+            // mode change's motions re-resolve at the new cursor position
+            // rather than against stale coordinates -- this is what gives
+            // "." a same-*shaped* selection at the new location for free,
+            // without a bespoke structured repeat representation. kReplayEscape
+            // shouldn't actually appear here in practice (an Escaped-out-of
+            // Visual session never edited anything, so ProcessVisualKey never
+            // commits it to last_change_keys_), but handled defensively.
+            if (keys[i] == kReplayEscape) EnterNormal();
+            else if (keys[i] > 0) ProcessVisualKey(keys[i]);
         } else {
-            break;  // shouldn't happen -- a recorded change never leaves Normal/Insert mid-way
+            break;  // shouldn't happen -- a recorded change never leaves Normal/Insert/Visual mid-way
         }
     }
     if (mode_ == Mode::Insert) EnterNormal();  // an unterminated recording shouldn't leave Insert open
@@ -2640,6 +4488,16 @@ void Editor::PlayMacro(char reg, int count) {
                 ProcessInsertKey(k);
                 continue;
             }
+            if (mode_ == Mode::Visual || mode_ == Mode::VisualLine || mode_ == Mode::VisualBlock) {
+                // A macro can legitimately contain a real "escaped out of
+                // Visual without committing" sequence (unlike RepeatLastChange's
+                // last_change_keys_, which never keeps one) -- e.g. `qa` `v`
+                // `j` `Escape` `q` records exactly that, and @a must reproduce
+                // leaving Visual mode with no edit, not silently drop the key.
+                if (k == kReplayEscape) EnterNormal();
+                else if (k > 0) ProcessVisualKey(k);
+                continue;
+            }
             if (mode_ != Mode::Normal) break;  // Command/Search mode mid-macro: not supported, bail
             switch (k) {
                 case kReplayEscape: CancelPendingNormalState(); break;
@@ -2671,7 +4529,7 @@ void Editor::HandleInsertInput() {
     // from a bare "w" that the GetCharPressed() loop below will see instead.
     bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
     bool escape = false, enter = false, backspace = false, del = false, ctrl_w = false, ctrl_u = false;
-    bool tab_key = false, ctrl_n = false, ctrl_p = false;
+    bool tab_key = false, ctrl_n = false, ctrl_p = false, ctrl_o = false;
     for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
         if (key == KEY_ESCAPE) escape = true;
         else if (key == KEY_ENTER) enter = true;
@@ -2682,6 +4540,7 @@ void Editor::HandleInsertInput() {
         else if (key == KEY_TAB) tab_key = true;
         else if (key == KEY_N && ctrl) ctrl_n = true;
         else if (key == KEY_P && ctrl) ctrl_p = true;
+        else if (key == KEY_O && ctrl) ctrl_o = true;
     }
     // Completion popup (Phase 22): intercepts only its own navigation/
     // accept/dismiss keys, and only while open -- a first Escape closes
@@ -2707,6 +4566,15 @@ void Editor::HandleInsertInput() {
             return;
         }
     }
+    // Phase 23 tabstop-cycling gap: Insert mode has no built-in Tab
+    // behavior of its own (no auto-indent-on-Tab, nothing) to give up, so
+    // this only ever *adds* behavior -- consulted after the completion
+    // popup above (which still wins Tab when open) and before Escape/etc.
+    // below, mirroring the mod1 Tab/S-Tab dispatch's own extra_shift check.
+    if (tab_key && insert_tab_hook_ref_ != 0 && lua_) {
+        bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+        if (lua_->CallRefWithBoolForBool(insert_tab_hook_ref_, shift)) return;
+    }
     if (escape) {
         ProcessInsertKey(kReplayEscape);
         return;
@@ -2717,6 +4585,21 @@ void Editor::HandleInsertInput() {
     }
     if (ctrl_u) {
         ProcessInsertKey(kReplayInsertCtrlU);
+        return;
+    }
+    if (ctrl_o) {
+        // Insert-mode Ctrl-O: drop into Normal for exactly one command,
+        // then hop back to Insert automatically -- see
+        // insert_one_shot_normal_'s own comment in editor.h. Distinct from
+        // Normal-mode Ctrl-O (jumplist back), which HandleNormalInput
+        // handles separately; Vim disambiguates the two by mode too.
+        // Not routed through ProcessInsertKey: it's a mode switch, not a
+        // text edit, and doesn't participate in macro/`.` recording (same
+        // known scope-out as Visual-mode operations, noted in
+        // VIM_PARITY_PLAN.md's Phase 9).
+        insert_one_shot_normal_ = true;
+        insert_one_shot_was_replace_ = replace_mode_;
+        EnterNormal();
         return;
     }
 
@@ -2770,6 +4653,7 @@ void Editor::InsertNewline() {
     std::string remainder = line.substr(cursor.col);
     line.erase(cursor.col);
     Buf().lines.insert(Buf().lines.begin() + cursor.row + 1, remainder);
+    ShiftMarksForLineEdit(cursor.row + 1, 1);
     cursor.row++;
     cursor.col = 0;
     Buf().modified = true;
@@ -2784,6 +4668,7 @@ void Editor::Backspace() {
     } else if (cursor.row > 0) {
         std::string current = Buf().lines[cursor.row];
         Buf().lines.erase(Buf().lines.begin() + cursor.row);
+        ShiftMarksForLineEdit(cursor.row, -1);
         cursor.row--;
         cursor.col = LineLen(cursor.row);
         Buf().lines[cursor.row] += current;
@@ -2799,6 +4684,7 @@ void Editor::DeleteForward() {
     } else if (cursor.row + 1 < Buf().LineCount()) {
         std::string next = Buf().lines[cursor.row + 1];
         Buf().lines.erase(Buf().lines.begin() + cursor.row + 1);
+        ShiftMarksForLineEdit(cursor.row + 1, -1);
         line += next;
     }
     Buf().modified = true;
@@ -2885,6 +4771,8 @@ void Editor::ApplyVisualBlockOperator(char op) {
     char reg_name = 0;
     bool append = false;
     TakeRegisterSpec(&reg_name, &append);
+    // "% is read-only (see YankRange's own comment) -- redirect to unnamed.
+    if (reg_name == '%') reg_name = 0;
     std::vector<std::string> block_lines;
     for (int r = top; r <= bottom; r++) {
         const std::string &line = Buf().lines[r];
@@ -2910,6 +4798,9 @@ void Editor::ApplyVisualBlockOperator(char op) {
     target.blockwise = true;
     // Same unnamed-register mirroring YankRange does.
     if (reg_name != 0) registers_['"'] = target;
+    // "0 mirrors the most recent pure yank here too (block delete below
+    // does NOT touch it, matching Vim -- only op == 'y' counts as a yank).
+    if (op == 'y') registers_['0'] = registers_['"'];
 
     if (op == 'd') {
         PushUndo();
@@ -2978,6 +4869,22 @@ void Editor::PasteBlockAt(CursorPos at, const std::vector<std::string> &block, b
 
 void Editor::HandleVisualInput() {
     if (IsKeyPressed(KEY_ESCAPE)) {
+        // A cancelled Visual session (no operator ever applied) never
+        // becomes a `.`-repeatable change -- ProcessVisualKey only ever
+        // commits change_scratch_ into last_change_keys_ when an operator
+        // actually fires (see its own comment), and this Escape bypasses
+        // ProcessVisualKey entirely (same as Normal mode's own bare Escape,
+        // handled before HandleNormalChar's per-key loop), so the
+        // in-progress change_scratch_/change_recording_active_ here is just
+        // left as stale state for the next real Normal-mode keystroke to
+        // overwrite (ProcessNormalKey resets both at the top of every
+        // fresh, not-mid-command call) -- nothing to clean up explicitly.
+        // Still recorded into an in-progress macro, though: `qa` `v` `j`
+        // `Escape` `q` is a real, meaningful macro (selects then
+        // deliberately cancels), and @a must reproduce leaving Visual mode.
+        if (recording_macro_ && !replaying_change_ && !replaying_macro_) {
+            macro_recording_buffer_.push_back(kReplayEscape);
+        }
         EnterNormal();  // also clears pending_op_/pending_g_/pending_find_/pending_count_/etc.
         return;
     }
@@ -2985,205 +4892,14 @@ void Editor::HandleVisualInput() {
     int cp = GetCharPressed();
     while (cp > 0) {
         if (cp > 0 && cp <= 127) {
-            char c = static_cast<char>(cp);
-            CursorPos &cursor = CurPane().cursor;
-
-            // Same register/count/find/g-prefix handling as Normal mode
-            // (see DispatchNormalKey), minus operator-pending combination
-            // since Visual mode's own operators (d/x/y below) always act
-            // on the whole selection rather than a fresh motion.
-            if (pending_find_ == 0 && !pending_g_) {
-                if (awaiting_register_name_) {
-                    awaiting_register_name_ = false;
-                    if (c >= 'a' && c <= 'z') {
-                        pending_register_ = c;
-                        pending_register_append_ = false;
-                    } else if (c >= 'A' && c <= 'Z') {
-                        pending_register_ = static_cast<char>(c - 'A' + 'a');
-                        pending_register_append_ = true;
-                    }
-                    cp = GetCharPressed();
-                    continue;
-                }
-                if (c == '"') {
-                    awaiting_register_name_ = true;
-                    cp = GetCharPressed();
-                    continue;
-                }
-                if (c >= '1' && c <= '9') {
-                    pending_count_ = pending_count_ * 10 + (c - '0');
-                    cp = GetCharPressed();
-                    continue;
-                }
-                if (c == '0' && pending_count_ != 0) {
-                    pending_count_ = pending_count_ * 10;
-                    cp = GetCharPressed();
-                    continue;
-                }
-            }
-
-            if (pending_find_) {
-                char cmd = pending_find_;
-                pending_find_ = 0;
-                last_find_cmd_ = cmd;
-                last_find_char_ = c;
-                int count = std::max(1, TakeRawCount());
-                CursorPos target;
-                if (ResolveFind(cmd, cursor, c, count, &target)) cursor = target;
-                cp = GetCharPressed();
-                continue;
-            }
-
-            if (pending_g_ && (c == 'u' || c == 'U')) {
-                pending_g_ = false;
-                TakeRawCount();
-                CursorPos s, e;
-                VisualRange(s, e);
-                bool lw = (mode_ == Mode::VisualLine);
-                if (!lw) e.col += 1;
-                ApplyCaseChange(s, e, lw, c);
-                EnterNormal();
-                return;
-            }
-            if (pending_g_) {
-                pending_g_ = false;
-                int count = TakeRawCount();
-                if (c == 'g') {
-                    cursor = FirstNonBlank(count > 0 ? std::min(Buf().LineCount() - 1, count - 1) : 0);
-                } else if (c == 'e' || c == 'E') {
-                    for (int i = 0; i < std::max(1, count); i++) cursor = MoveWordEndBackward(cursor, c == 'E');
-                }
-                cp = GetCharPressed();
-                continue;
-            }
-
-            if (pending_textobj_scope_) {
-                char scope = pending_textobj_scope_;
-                pending_textobj_scope_ = 0;
-                CursorPos tstart, tend;
-                bool linewise = false;
-                if (ResolveTextObject(scope, c, cursor, &tstart, &tend, &linewise)) {
-                    CurPane().visual_anchor = tstart;
-                    if (linewise) {
-                        mode_ = Mode::VisualLine;
-                        cursor = tend;
-                    } else {
-                        // tend is an exclusive charwise end; Visual mode's
-                        // own selection is inclusive on both ends (see
-                        // ApplyOperatorToSelectionOrCurrentLine's `+1`), so
-                        // land the cursor one char before it.
-                        cursor = tend;
-                        if (cursor.col > 0) {
-                            cursor.col--;
-                        } else if (cursor.row > 0) {
-                            cursor.row--;
-                            cursor.col = std::max(0, LineLen(cursor.row) - 1);
-                        }
-                    }
-                }
-                cp = GetCharPressed();
-                continue;
-            }
-
-            if (TryLuaMapping(mode_, std::string(1, c))) {
-                cp = GetCharPressed();
-                continue;
-            }
-
-            if (c == 'i' || c == 'a') {
-                pending_textobj_scope_ = c;
-                cp = GetCharPressed();
-                continue;
-            }
-            if (c == 'f' || c == 'F' || c == 't' || c == 'T') {
-                pending_find_ = c;
-                cp = GetCharPressed();
-                continue;
-            }
-            if (c == 'g') {
-                pending_g_ = true;
-                cp = GetCharPressed();
-                continue;
-            }
-            if (c == ';' || c == ',') {
-                if (last_find_cmd_ != 0) {
-                    char cmd = last_find_cmd_;
-                    if (c == ',') {
-                        switch (cmd) {
-                            case 'f': cmd = 'F'; break;
-                            case 'F': cmd = 'f'; break;
-                            case 't': cmd = 'T'; break;
-                            case 'T': cmd = 't'; break;
-                        }
-                    }
-                    int count = std::max(1, TakeRawCount());
-                    CursorPos target;
-                    if (ResolveFind(cmd, cursor, last_find_char_, count, &target)) cursor = target;
-                }
-                cp = GetCharPressed();
-                continue;
-            }
-
-            {
-                CursorPos target;
-                bool linewise = false, inclusive = false;
-                if (ResolveMotion(c, cursor, pending_count_, &target, &linewise, &inclusive)) {
-                    pending_count_ = 0;
-                    cursor = target;
-                    // Visual Block's own "sticky $" (see block_to_eol_): '$'
-                    // extends every row of the block to its own actual end
-                    // until some other motion changes the column extent.
-                    if (mode_ == Mode::VisualBlock) block_to_eol_ = (c == '$');
-                    cp = GetCharPressed();
-                    continue;
-                }
-            }
-
-            switch (c) {
-                case 'o': {
-                    CursorPos &anchor = CurPane().visual_anchor;
-                    std::swap(anchor, cursor);
-                    cp = GetCharPressed();
-                    continue;
-                }
-                case 'd':
-                case 'x':
-                    if (mode_ == Mode::VisualBlock) ApplyVisualBlockOperator('d');
-                    else ApplyOperatorToSelectionOrCurrentLine('d');
-                    EnterNormal();
-                    return;
-                case 'y':
-                    if (mode_ == Mode::VisualBlock) ApplyVisualBlockOperator('y');
-                    else ApplyOperatorToSelectionOrCurrentLine('y');
-                    EnterNormal();
-                    return;
-                case '~':
-                    ApplyOperatorToSelectionOrCurrentLine('~');
-                    EnterNormal();
-                    return;
-                case 'I':
-                    if (mode_ != Mode::VisualBlock) break;
-                    EnterVisualBlockInsert(false);
-                    return;
-                case 'A':
-                    if (mode_ != Mode::VisualBlock) break;
-                    EnterVisualBlockInsert(true);
-                    return;
-                case '>':
-                case '<': {
-                    CursorPos s, e;
-                    VisualRange(s, e);
-                    IndentLines(s.row, e.row, c == '>' ? 1 : -1);
-                    // Vim keeps the selection active after Visual >/< (unlike
-                    // its other operators) so repeated presses re-indent by
-                    // another level -- deliberately not calling EnterNormal()
-                    // here, and leaving anchor/cursor untouched so the exact
-                    // same range is still selected.
-                    cp = GetCharPressed();
-                    continue;
-                }
-                default: break;
-            }
+            ProcessVisualKey(cp);
+            // An operator that committed the change exits back to Normal
+            // (d/x/y/~/c/u/U) or into Insert (c, Visual Block I/A) --
+            // either way, stop draining this frame's queued chars as
+            // Visual-mode keys (matching the old inline code's own
+            // `return` from those same cases) and let whichever mode is
+            // now active pick up the rest next frame.
+            if (mode_ != Mode::Visual && mode_ != Mode::VisualLine && mode_ != Mode::VisualBlock) return;
         }
         cp = GetCharPressed();
     }
@@ -3192,6 +4908,257 @@ void Editor::HandleVisualInput() {
     cursor.row = std::max(0, std::min(cursor.row, Buf().LineCount() - 1));
     int len = LineLen(cursor.row);
     cursor.col = std::max(0, std::min(cursor.col, std::max(0, len - 1)));
+}
+
+// Wraps DispatchVisualKey with the same macro/`.`-repeat bookkeeping
+// ProcessNormalKey/ProcessInsertKey give Normal/Insert mode -- see this
+// function's own comment in editor.h for the two distinct ways a Visual
+// "session" reaches a commit point (an operator that exits to Normal/Insert,
+// or '>'/'<' which deliberately stays in Visual mode).
+void Editor::ProcessVisualKey(int key) {
+    bool suppress_macro = replaying_change_ || replaying_macro_;
+    if (recording_macro_ && !suppress_macro) macro_recording_buffer_.push_back(key);
+    if (!replaying_change_ && change_recording_active_) change_scratch_.push_back(key);
+
+    int epoch_before = change_epoch_;
+    DispatchVisualKey(key);
+
+    if (!replaying_change_ && change_recording_active_) {
+        bool edited_this_key = (change_epoch_ != epoch_before);
+        if (edited_this_key) change_had_edit_ = true;
+        bool still_visual = (mode_ == Mode::Visual || mode_ == Mode::VisualLine || mode_ == Mode::VisualBlock);
+        bool left_to_normal = (!still_visual && mode_ == Mode::Normal && !IsMidNormalCommand());
+        // still_visual + edited_this_key only happens for '>'/'<' (the only
+        // Visual operators that both edit the buffer and deliberately leave
+        // you in Visual mode afterward -- see DispatchVisualKey's own case)
+        // -- no dedicated "operator just committed" flag needed, this
+        // combination is already unambiguous.
+        bool stayed_and_edited = (still_visual && edited_this_key);
+        if (left_to_normal || stayed_and_edited) {
+            if (change_had_edit_) last_change_keys_ = change_scratch_;
+            if (!still_visual) {
+                change_scratch_.clear();
+                change_had_edit_ = false;
+                change_recording_active_ = false;
+            }
+            // else (stayed_and_edited): leave change_scratch_/
+            // change_had_edit_/change_recording_active_ untouched -- a
+            // further key within the same still-selected session (another
+            // '>' before Escape, say) extends the same accumulated
+            // sequence, so its own eventual commit replays the *whole*
+            // session, not just the latest bare '>'.
+        }
+    }
+}
+
+// The actual per-key Visual-mode dispatch, called once per key by
+// ProcessVisualKey -- formerly HandleVisualInput's own inline loop body
+// before Visual mode was wired into repeat/macro recording; unchanged
+// logic, just extracted so ProcessVisualKey can wrap it uniformly on both
+// real input and replay (RepeatLastChange/PlayMacro).
+void Editor::DispatchVisualKey(int cp) {
+    char c = static_cast<char>(cp);
+    CursorPos &cursor = CurPane().cursor;
+
+    // Same register/count/find/g-prefix handling as Normal mode (see
+    // DispatchNormalKey), minus operator-pending combination since Visual
+    // mode's own operators (d/x/y below) always act on the whole selection
+    // rather than a fresh motion.
+    if (pending_find_ == 0 && !pending_g_) {
+        if (awaiting_register_name_) {
+            awaiting_register_name_ = false;
+            if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '%') {
+                pending_register_ = c;
+                pending_register_append_ = false;
+            } else if (c >= 'A' && c <= 'Z') {
+                pending_register_ = static_cast<char>(c - 'A' + 'a');
+                pending_register_append_ = true;
+            }
+            return;
+        }
+        if (c == '"') {
+            awaiting_register_name_ = true;
+            return;
+        }
+        if (c >= '1' && c <= '9') {
+            pending_count_ = pending_count_ * 10 + (c - '0');
+            return;
+        }
+        if (c == '0' && pending_count_ != 0) {
+            pending_count_ = pending_count_ * 10;
+            return;
+        }
+    }
+
+    if (pending_find_) {
+        char cmd = pending_find_;
+        pending_find_ = 0;
+        last_find_cmd_ = cmd;
+        last_find_char_ = c;
+        int count = std::max(1, TakeRawCount());
+        CursorPos target;
+        if (ResolveFind(cmd, cursor, c, count, &target)) cursor = target;
+        return;
+    }
+
+    if (pending_g_ && (c == 'u' || c == 'U')) {
+        pending_g_ = false;
+        TakeRawCount();
+        CursorPos s, e;
+        VisualRange(s, e);
+        bool lw = (mode_ == Mode::VisualLine);
+        if (!lw) e.col += 1;
+        ApplyCaseChange(s, e, lw, c);
+        EnterNormal();
+        return;
+    }
+    if (pending_g_) {
+        pending_g_ = false;
+        int count = TakeRawCount();
+        if (c == 'g') {
+            cursor = FirstNonBlank(count > 0 ? std::min(Buf().LineCount() - 1, count - 1) : 0);
+        } else if (c == 'e' || c == 'E') {
+            for (int i = 0; i < std::max(1, count); i++) cursor = MoveWordEndBackward(cursor, c == 'E');
+        }
+        return;
+    }
+
+    if (pending_textobj_scope_) {
+        char scope = pending_textobj_scope_;
+        pending_textobj_scope_ = 0;
+        CursorPos tstart, tend;
+        bool linewise = false;
+        if (ResolveTextObject(scope, c, cursor, &tstart, &tend, &linewise)) {
+            CurPane().visual_anchor = tstart;
+            if (linewise) {
+                mode_ = Mode::VisualLine;
+                cursor = tend;
+            } else {
+                // tend is an exclusive charwise end; Visual mode's own
+                // selection is inclusive on both ends (see
+                // ApplyOperatorToSelectionOrCurrentLine's `+1`), so land the
+                // cursor one char before it.
+                cursor = tend;
+                if (cursor.col > 0) {
+                    cursor.col--;
+                } else if (cursor.row > 0) {
+                    cursor.row--;
+                    cursor.col = std::max(0, LineLen(cursor.row) - 1);
+                }
+            }
+        }
+        return;
+    }
+
+    if (TryLuaMapping(mode_, std::string(1, c))) return;
+
+    if (c == 'i' || c == 'a') {
+        pending_textobj_scope_ = c;
+        return;
+    }
+    if (c == 'f' || c == 'F' || c == 't' || c == 'T') {
+        pending_find_ = c;
+        return;
+    }
+    if (c == 'g') {
+        pending_g_ = true;
+        return;
+    }
+    if (c == ';' || c == ',') {
+        if (last_find_cmd_ != 0) {
+            char cmd = last_find_cmd_;
+            if (c == ',') {
+                switch (cmd) {
+                    case 'f': cmd = 'F'; break;
+                    case 'F': cmd = 'f'; break;
+                    case 't': cmd = 'T'; break;
+                    case 'T': cmd = 't'; break;
+                }
+            }
+            int count = std::max(1, TakeRawCount());
+            CursorPos target;
+            if (ResolveFind(cmd, cursor, last_find_char_, count, &target)) cursor = target;
+        }
+        return;
+    }
+
+    {
+        CursorPos target;
+        bool linewise = false, inclusive = false;
+        if (ResolveMotion(c, cursor, pending_count_, &target, &linewise, &inclusive)) {
+            pending_count_ = 0;
+            cursor = target;
+            // Visual Block's own "sticky $" (see block_to_eol_): '$' extends
+            // every row of the block to its own actual end until some other
+            // motion changes the column extent.
+            if (mode_ == Mode::VisualBlock) block_to_eol_ = (c == '$');
+            return;
+        }
+    }
+
+    switch (c) {
+        case 'o': {
+            CursorPos &anchor = CurPane().visual_anchor;
+            std::swap(anchor, cursor);
+            return;
+        }
+        case 'd':
+        case 'x':
+            if (mode_ == Mode::VisualBlock) ApplyVisualBlockOperator('d');
+            else ApplyOperatorToSelectionOrCurrentLine('d');
+            EnterNormal();
+            return;
+        case 'y':
+            if (mode_ == Mode::VisualBlock) ApplyVisualBlockOperator('y');
+            else ApplyOperatorToSelectionOrCurrentLine('y');
+            EnterNormal();
+            return;
+        case 'c':
+            // ApplyOperator's own op == 'c' branch already switches to
+            // Insert mode itself (delete the selection, then EnterInsert())
+            // -- unlike d/x/y/~/u/U below, this must NOT also call
+            // EnterNormal() afterward, or it would immediately undo that
+            // transition. No Visual Block case: Vim doesn't define block-c
+            // as distinct from block-d-then-I, and mep doesn't either.
+            ApplyOperatorToSelectionOrCurrentLine('c');
+            return;
+        case '~':
+            ApplyOperatorToSelectionOrCurrentLine('~');
+            EnterNormal();
+            return;
+        case 'u':
+        case 'U':
+            // Lowercase/uppercase the selection -- distinct from Normal
+            // mode's own 'u' (undo), which HandleVisualInput never reaches
+            // since this dispatch is a completely separate mode.
+            ApplyOperatorToSelectionOrCurrentLine(c);
+            EnterNormal();
+            return;
+        case 'I':
+            if (mode_ != Mode::VisualBlock) break;
+            EnterVisualBlockInsert(false);
+            return;
+        case 'A':
+            if (mode_ != Mode::VisualBlock) break;
+            EnterVisualBlockInsert(true);
+            return;
+        case '>':
+        case '<': {
+            CursorPos s, e;
+            VisualRange(s, e);
+            IndentLines(s.row, e.row, c == '>' ? 1 : -1);
+            // Vim keeps the selection active after Visual >/< (unlike its
+            // other operators) so repeated presses re-indent by another
+            // level -- deliberately not calling EnterNormal() here, and
+            // leaving anchor/cursor untouched so the exact same range is
+            // still selected. ProcessVisualKey detects this "edited but
+            // still in Visual mode" combination itself (see its own
+            // comment) to commit the accumulated change_scratch_ without
+            // ending the recording session.
+            return;
+        }
+        default: break;
+    }
 }
 
 // --- Command-line mode ---------------------------------------------------
@@ -3324,12 +5291,22 @@ void Editor::HandleSearchInput() {
         else if (key == KEY_DOWN) down = true;
     }
     if (escape) {
-        EnterNormal();
+        ClearNamespace(CreateNamespace("__mep_incsearch"));
+        CurPane().cursor = search_anchor_;  // undo incsearch's live preview move
+        EnterNormal();  // also cancels any pending operator ("d/foo<Esc>" applies nothing), matching Vim
         return;
     }
     if (enter) {
         bool forward = (mode_ == Mode::SearchForward);
         std::string query = search_query_;
+        // Search as an operator motion: capture the pending operator
+        // *before* EnterNormal() clears it below -- see the ProcessNormalKey
+        // '/'/'?' case (which entered search mode without touching
+        // pending_op_/pending_op_start_) for how these got here.
+        char op = pending_op_;
+        CursorPos op_start = pending_op_start_;
+        ClearNamespace(CreateNamespace("__mep_incsearch"));
+        CurPane().cursor = search_anchor_;  // undo incsearch's live preview move before the real search runs
         EnterNormal();
         if (!query.empty() && (search_history_.empty() || search_history_.back() != query)) {
             search_history_.push_back(query);
@@ -3340,13 +5317,36 @@ void Editor::HandleSearchInput() {
         // itself doesn't change.
         if (!query.empty()) last_search_ = query;
         last_search_forward_ = forward;
-        if (!last_search_.empty()) PerformSearch(last_search_forward_);
+        if (last_search_.empty()) return;
+        if (op != 0) {
+            CurPane().cursor = op_start;
+            ClampCursor();
+            CursorPos result;
+            bool wrapped = false;
+            if (FindNext(last_search_, last_search_forward_, &result, &wrapped)) {
+                // Exclusive charwise, same as every other operator+motion
+                // (f/`/w/...): ApplyOperator treats [start, end) as the
+                // range and swaps them itself if the match landed before
+                // op_start (a backward `?` search).
+                ApplyOperator(op, op_start, result, false);
+                status_message_ = wrapped ? (last_search_forward_ ? "search hit BOTTOM, continuing at TOP"
+                                                                    : "search hit TOP, continuing at BOTTOM")
+                                           : "";
+            } else {
+                status_message_ = "E486: Pattern not found: " + last_search_;
+            }
+            return;
+        }
+        PerformSearch(last_search_forward_);
         return;
     }
     if (backspace || IsKeyPressedRepeat(KEY_BACKSPACE)) {
         if (!search_query_.empty()) {
             search_query_.pop_back();
+            UpdateIncSearch();
         } else {
+            ClearNamespace(CreateNamespace("__mep_incsearch"));
+            CurPane().cursor = search_anchor_;
             EnterNormal();
         }
         return;
@@ -3362,6 +5362,7 @@ void Editor::HandleSearchInput() {
             search_history_index_--;
             search_query_ = search_history_[search_history_index_];
         }
+        UpdateIncSearch();
         return;
     }
     if (down && search_history_index_ != -1) {
@@ -3372,22 +5373,30 @@ void Editor::HandleSearchInput() {
         } else {
             search_query_ = search_history_[search_history_index_];
         }
+        UpdateIncSearch();
         return;
     }
     int cp = GetCharPressed();
+    bool typed = false;
     while (cp > 0) {
-        if (cp >= 32 && cp < 127) search_query_ += static_cast<char>(cp);
+        if (cp >= 32 && cp < 127) {
+            search_query_ += static_cast<char>(cp);
+            typed = true;
+        }
         cp = GetCharPressed();
     }
+    if (typed) UpdateIncSearch();
 }
 
 // --- Modal overlays (Prompt/Confirm/Select) -------------------------------
 
-void Editor::BeginPrompt(const std::string &title, const std::string &default_text, int on_done_ref) {
+void Editor::BeginPrompt(const std::string &title, const std::string &default_text, int on_done_ref,
+                          bool masked) {
     overlay_previous_mode_ = mode_;
     prompt_title_ = title;
     prompt_input_ = default_text;
     prompt_callback_ref_ = on_done_ref;
+    prompt_masked_ = masked;
     mode_ = Mode::Prompt;
 }
 
@@ -3406,6 +5415,30 @@ void Editor::BeginSelect(const std::string &title, std::vector<std::string> item
     select_index_ = 0;
     select_callback_ref_ = on_done_ref;
     mode_ = Mode::Select;
+}
+
+void Editor::BeginPreview(const std::string &title, const std::string &text) {
+    overlay_previous_mode_ = mode_;
+    preview_title_ = title;
+    preview_text_ = text;
+    mode_ = Mode::Preview;
+}
+
+void Editor::ShowHover(const std::string &title, const std::string &text) {
+    hover_open_ = true;
+    hover_title_ = title;
+    hover_text_ = text;
+    hover_anchor_pos_ = Cursor();
+}
+
+void Editor::MaybeDismissHover() {
+    if (!hover_open_) return;
+    if (mode_ != Mode::Normal || IsKeyPressed(KEY_ESCAPE)) {
+        hover_open_ = false;
+        return;
+    }
+    CursorPos cur = Cursor();
+    if (cur.row != hover_anchor_pos_.row || cur.col != hover_anchor_pos_.col) hover_open_ = false;
 }
 
 void Editor::RestoreFromOverlay() {
@@ -3526,6 +5559,18 @@ void Editor::HandleSelectInput() {
     }
 }
 
+// Preview is purely informational -- no on_done callback to invoke, no
+// text/selection to edit, so unlike the three overlays above there's
+// nothing to decide: any key (Escape included, but not special-cased)
+// or a click just acknowledges and closes it.
+void Editor::HandlePreviewInput() {
+    bool dismiss = false;
+    for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) dismiss = true;
+    for (int cp = GetCharPressed(); cp != 0; cp = GetCharPressed()) dismiss = true;
+    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) dismiss = true;
+    if (dismiss) RestoreFromOverlay();
+}
+
 // --- Decorations -----------------------------------------------------------
 
 int Editor::CreateNamespace(const std::string &name) {
@@ -3568,8 +5613,13 @@ int Editor::AddDecorationToBuffer(int buffer_id, int ns, Decoration deco) {
 
 // --- Folding -----------------------------------------------------------
 
-void Editor::ToggleFoldAtCursor() {
-    int row = CurPane().cursor.row;
+void Editor::ToggleFoldAtCursor() { ToggleFoldAtRow(CurPane().cursor.row); }
+
+// Shared by ToggleFoldAtCursor (keyboard, `za`) and the gutter fold-marker
+// click dispatch (NVIM_PARITY_PLAN.md Phase 11 gap: mouse click on the
+// statuscolumn's fold indicator) -- the latter needs to toggle the fold at
+// whatever row was clicked without first moving the cursor there.
+void Editor::ToggleFoldAtRow(int row) {
     Fold *innermost = nullptr;
     for (Fold &f : Buf().folds) {
         if (row < f.start_row || row > f.end_row) continue;
@@ -3829,7 +5879,7 @@ int FuzzyScore(const std::string &str, const std::string &query, std::vector<int
 }
 
 void Editor::OpenPicker(const std::string &title, std::vector<PickerItem> items, int on_select_ref,
-                         int on_query_change_ref, int on_key_ref) {
+                         int on_query_change_ref, int on_key_ref, int on_select_change_ref, bool raw_results) {
     overlay_previous_mode_ = mode_;
     picker_open_ = true;
     picker_title_ = title;
@@ -3839,6 +5889,9 @@ void Editor::OpenPicker(const std::string &title, std::vector<PickerItem> items,
     picker_on_select_ref_ = on_select_ref;
     picker_on_query_change_ref_ = on_query_change_ref;
     picker_on_key_ref_ = on_key_ref;
+    picker_on_select_change_ref_ = on_select_change_ref;
+    picker_raw_results_ = raw_results;
+    picker_preview_text_.clear();
     mode_ = Mode::Picker;
 }
 
@@ -3851,11 +5904,13 @@ void Editor::ClosePickerDiscardingCallbacks() {
     int select_ref = picker_on_select_ref_;
     int query_ref = picker_on_query_change_ref_;
     int key_ref = picker_on_key_ref_;
+    int select_change_ref = picker_on_select_change_ref_;
     ClosePicker();
     if (!lua_) return;
     if (select_ref != 0) lua_->UnrefFunction(select_ref);
     if (query_ref != 0) lua_->UnrefFunction(query_ref);
     if (key_ref != 0) lua_->UnrefFunction(key_ref);
+    if (select_change_ref != 0) lua_->UnrefFunction(select_change_ref);
 }
 
 void Editor::SetPickerItems(std::vector<PickerItem> items) {
@@ -3865,7 +5920,7 @@ void Editor::SetPickerItems(std::vector<PickerItem> items) {
 }
 
 std::vector<PickerItem> Editor::PickerFilteredResults() const {
-    if (picker_query_.empty()) return picker_items_;
+    if (picker_raw_results_ || picker_query_.empty()) return picker_items_;
     std::vector<std::pair<int, const PickerItem *>> scored;
     for (const PickerItem &it : picker_items_) {
         int score = FuzzyScore(it.display, picker_query_, nullptr);
@@ -3887,16 +5942,31 @@ void Editor::HandlePickerInput() {
         else if (key == KEY_BACKSPACE) backspace = true;
     }
     bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+    // Snapshot the currently-highlighted item's `data` *before* this frame's
+    // navigation/query edits are applied below, so the on_select_change_ref
+    // firing at the bottom of this function can tell whether the effective
+    // selection actually moved to a different item (arrow keys, Ctrl-N/P, or
+    // the query narrowing to a new top match) -- live theme preview and
+    // similar consumers only want to fire on a real change, not every frame.
+    std::string pre_nav_data;
+    if (picker_on_select_change_ref_ != 0) {
+        std::vector<PickerItem> pre_nav = PickerFilteredResults();
+        if (picker_selected_ >= 0 && picker_selected_ < static_cast<int>(pre_nav.size())) {
+            pre_nav_data = pre_nav[picker_selected_].data;
+        }
+    }
     if (escape) {
         int ref = picker_on_select_ref_;
         int qref = picker_on_query_change_ref_;
         int kref = picker_on_key_ref_;
+        int scref = picker_on_select_change_ref_;
         ClosePicker();
         if (lua_) {
             lua_->CallRef(ref);
             lua_->UnrefFunction(ref);
             if (qref != 0) lua_->UnrefFunction(qref);
             if (kref != 0) lua_->UnrefFunction(kref);
+            if (scref != 0) lua_->UnrefFunction(scref);
         }
         return;
     }
@@ -3907,6 +5977,7 @@ void Editor::HandlePickerInput() {
         int ref = picker_on_select_ref_;
         int qref = picker_on_query_change_ref_;
         int kref = picker_on_key_ref_;
+        int scref = picker_on_select_change_ref_;
         ClosePicker();
         if (lua_) {
             if (has_selection) {
@@ -3917,6 +5988,7 @@ void Editor::HandlePickerInput() {
             lua_->UnrefFunction(ref);
             if (qref != 0) lua_->UnrefFunction(qref);
             if (kref != 0) lua_->UnrefFunction(kref);
+            if (scref != 0) lua_->UnrefFunction(scref);
         }
         return;
     }
@@ -3960,6 +6032,147 @@ void Editor::HandlePickerInput() {
     }
     if (query_changed && lua_ && picker_on_query_change_ref_ != 0) {
         lua_->CallRefWithString(picker_on_query_change_ref_, picker_query_);
+    }
+    // Live-preview hook (NVIM_PARITY_PLAN.md Phase 9's theme picker gap):
+    // fires whenever the highlighted item actually changed this frame,
+    // whether from explicit navigation or the query re-filtering to a new
+    // top match. Deliberately compares by `data` rather than by index --
+    // an unchanged index after a query edit can point at a different item.
+    if (lua_ && picker_on_select_change_ref_ != 0) {
+        std::vector<PickerItem> post_nav = PickerFilteredResults();
+        if (picker_selected_ >= 0 && picker_selected_ < static_cast<int>(post_nav.size())) {
+            const std::string &post_nav_data = post_nav[picker_selected_].data;
+            if (post_nav_data != pre_nav_data) {
+                lua_->CallRefWithString(picker_on_select_change_ref_, post_nav_data);
+            }
+        }
+    }
+}
+
+// --- Roam backlink-graph view (NVIM_PARITY_PLAN.md Phase 37's flagged
+// "no fuzzy backlink-graph visualization" gap, closed) ---------------------
+//
+// Scope decision (see NVIM_PARITY_PLAN.md's updated Phase 37 section for
+// the full writeup): a real force-directed/physics graph layout was judged
+// genuinely excessive for this editor, so the layout here is deterministic
+// -- hop distance from the note the view was opened on picks a ring
+// (main.cpp's ComputeRoamGraphPositions), index within that ring picks an
+// angle. No iterative relaxation, no edge-crossing minimization. What *is*
+// real: the node/edge graph itself (parsed straight from every roam note's
+// `[[id:...]]` links by the Lua side, reusing the same file-scanning
+// helpers the flat backlinks sidebar already used), the fuzzy filter
+// (Phase 8's FuzzyScore, same scorer the picker uses), and the
+// navigation/selection/Enter-to-open flow below.
+
+void Editor::OpenRoamGraph(const std::string &title, std::vector<RoamGraphNode> nodes,
+                            std::vector<RoamGraphEdge> edges, int on_select_ref) {
+    overlay_previous_mode_ = mode_;
+    roam_graph_open_ = true;
+    roam_graph_title_ = title;
+    roam_graph_nodes_ = std::move(nodes);
+    roam_graph_edges_ = std::move(edges);
+    roam_graph_query_.clear();
+    // Start on the first non-center node (index 0 is always the note the
+    // view was opened *on* -- re-opening it from its own graph is rarely
+    // what Enter is for), falling back to 0 if it's the only node (an
+    // isolated note with no links either direction). Valid because the
+    // filtered-index list is the identity mapping at open time (query
+    // starts empty).
+    roam_graph_selected_ = roam_graph_nodes_.size() > 1 ? 1 : 0;
+    if (roam_graph_on_select_ref_ != 0 && lua_) lua_->UnrefFunction(roam_graph_on_select_ref_);
+    roam_graph_on_select_ref_ = on_select_ref;
+    mode_ = Mode::RoamGraph;
+}
+
+void Editor::CloseRoamGraphDiscardingCallback() {
+    roam_graph_open_ = false;
+    if (mode_ == Mode::RoamGraph) RestoreFromOverlay();
+    int ref = roam_graph_on_select_ref_;
+    roam_graph_on_select_ref_ = 0;
+    if (ref != 0 && lua_) lua_->UnrefFunction(ref);
+}
+
+std::vector<int> Editor::RoamGraphFilteredIndices() const {
+    std::vector<int> out;
+    for (int i = 0; i < static_cast<int>(roam_graph_nodes_.size()); i++) {
+        // Node 0 (the center note the view was opened on) is always kept
+        // visible/selectable -- it's the anchor, not a search result.
+        if (i == 0 || roam_graph_query_.empty() ||
+            FuzzyScore(roam_graph_nodes_[i].title, roam_graph_query_) >= 0) {
+            out.push_back(i);
+        }
+    }
+    return out;
+}
+
+void Editor::HandleRoamGraphInput() {
+    bool escape = false, enter = false, backspace = false;
+    for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
+        if (key == KEY_ESCAPE) escape = true;
+        else if (key == KEY_ENTER) enter = true;
+        else if (key == KEY_BACKSPACE) backspace = true;
+    }
+    if (escape) {
+        int ref = roam_graph_on_select_ref_;
+        roam_graph_on_select_ref_ = 0;
+        roam_graph_open_ = false;
+        RestoreFromOverlay();
+        if (lua_ && ref != 0) {
+            lua_->CallRef(ref);  // no argument: same nil-on-cancel convention as the picker
+            lua_->UnrefFunction(ref);
+        }
+        return;
+    }
+    if (enter) {
+        std::vector<int> filtered = RoamGraphFilteredIndices();
+        bool has_selection = roam_graph_selected_ >= 0 && roam_graph_selected_ < static_cast<int>(filtered.size());
+        std::string path = has_selection ? roam_graph_nodes_[filtered[roam_graph_selected_]].path : std::string();
+        int ref = roam_graph_on_select_ref_;
+        roam_graph_on_select_ref_ = 0;
+        roam_graph_open_ = false;
+        RestoreFromOverlay();
+        if (lua_ && ref != 0) {
+            if (has_selection) lua_->CallRefWithString(ref, path);
+            else lua_->CallRef(ref);
+            lua_->UnrefFunction(ref);
+        }
+        return;
+    }
+    bool query_changed = false;
+    if (backspace || IsKeyPressedRepeat(KEY_BACKSPACE)) {
+        if (!roam_graph_query_.empty()) {
+            roam_graph_query_.pop_back();
+            query_changed = true;
+        }
+    }
+    // Left/Up and Right/Down cycle through the filtered set in order --
+    // a flat cyclic walk rather than spatial nearest-neighbor search over
+    // the ring layout: simpler, and every node stays reachable in a
+    // bounded number of presses, which is what "arrow keys move a
+    // selected node highlight between graph nodes" actually needs; click-
+    // to-select is deliberately not implemented (see NVIM_PARITY_PLAN.md's
+    // scope-cut note -- the plan's own wording offers "arrow keys or
+    // click", and arrow keys alone already give full node coverage).
+    int filtered_count = static_cast<int>(RoamGraphFilteredIndices().size());
+    if (IsKeyPressed(KEY_RIGHT) || IsKeyPressedRepeat(KEY_RIGHT) || IsKeyPressed(KEY_DOWN) ||
+        IsKeyPressedRepeat(KEY_DOWN)) {
+        if (filtered_count > 0) roam_graph_selected_ = (roam_graph_selected_ + 1) % filtered_count;
+    }
+    if (IsKeyPressed(KEY_LEFT) || IsKeyPressedRepeat(KEY_LEFT) || IsKeyPressed(KEY_UP) ||
+        IsKeyPressedRepeat(KEY_UP)) {
+        if (filtered_count > 0) roam_graph_selected_ = (roam_graph_selected_ - 1 + filtered_count) % filtered_count;
+    }
+    int cp = GetCharPressed();
+    while (cp > 0) {
+        if (cp >= 32 && cp < 127) {
+            roam_graph_query_ += static_cast<char>(cp);
+            query_changed = true;
+        }
+        cp = GetCharPressed();
+    }
+    if (query_changed) {
+        int n = static_cast<int>(RoamGraphFilteredIndices().size());
+        roam_graph_selected_ = std::max(0, std::min(roam_graph_selected_, std::max(0, n - 1)));
     }
 }
 
@@ -4120,8 +6333,34 @@ void Editor::UpdateCompletionPopup() {
     std::string prefix = line.substr(start, cursor.col - start);
     if (prefix.size() < 2) {
         completion_open_ = false;
+        completion_last_query_prefix_.clear();
         return;
     }
+    // The completion source (mep.completion_buffer_words by default) is an
+    // O(buffer size) Lua scan -- re-running it unconditionally every frame
+    // (as this used to) is the single biggest cause of typing feeling
+    // laggy in anything but a tiny file: this function runs every frame
+    // Insert mode is active with a 2+ char prefix, at 60fps, regardless of
+    // whether a character was typed *that* frame. Two guards, mirroring
+    // the "coalesce to an interval, not every trigger" idiom
+    // kBuiltinEditHooks' mep.on_buffer_changed already uses elsewhere:
+    // skip entirely once the prefix stops changing (the overwhelming
+    // majority of frames, since 60fps vastly outpaces keystroke rate --
+    // this alone eliminates nearly all the redundant work), and debounce
+    // genuine prefix changes to a modest interval so a fast typing burst
+    // doesn't demand a full rescan for every single character.
+    // completion_last_query_prefix_ is reset to empty (a value this can
+    // never equal, since prefix is always >= 2 chars here) on Insert-mode
+    // exit (EnterNormal) so a later session can't skip its first query by
+    // coincidentally starting with the same prefix text some earlier,
+    // unrelated session ended on.
+    if (prefix == completion_last_query_prefix_) return;
+    constexpr double kMinQueryIntervalSec = 0.05;
+    double now = GetTime();
+    if (now - completion_last_query_time_ < kMinQueryIntervalSec) return;
+    completion_last_query_prefix_ = prefix;
+    completion_last_query_time_ = now;
+
     std::vector<std::string> words;
     if (!lua_->CallRefWithStringForStrings(completion_source_ref_, prefix, &words) || words.empty()) {
         completion_open_ = false;
@@ -4147,7 +6386,7 @@ void Editor::AcceptCompletion() {
         completion_open_ = false;
         return;
     }
-    const std::string &word = completion_items_[completion_selected_].data;
+    const std::string word = completion_items_[completion_selected_].data;
     CursorPos &cursor = CurPane().cursor;
     std::string &line = Buf().lines[cursor.row];
     PushUndo();
@@ -4156,6 +6395,15 @@ void Editor::AcceptCompletion() {
     cursor.col = completion_word_start_col_ + static_cast<int>(word.size());
     Buf().modified = true;
     completion_open_ = false;
+    // Phase 23 LSP-snippet gap: let a registered Lua hook inspect what was
+    // just inserted (cursor is already at its end) and, if `word` turns out
+    // to be a Snippet-format LSP item's raw insertText rather than plain
+    // text, replace it with a real tabstop expansion. See
+    // SetCompletionAcceptHookRef's comment (editor.h) for why this passes
+    // just the text rather than a richer struct.
+    if (completion_accept_hook_ref_ != 0 && lua_) {
+        lua_->CallRefWithString(completion_accept_hook_ref_, word);
+    }
 }
 
 // --- Command-line completion (`:` command bar) -----------------------------
@@ -4302,6 +6550,11 @@ void Editor::EnterNormal() {
     // here (not PushUndo() -- that would record a second, spurious undo
     // checkpoint) so leaving Insert mode also counts as a change.
     if (mode_ == Mode::Insert) change_epoch_++;
+    // See UpdateCompletionPopup's own comment: without this, a later
+    // insert session could skip its first completion query by
+    // coincidentally starting with the same prefix text this one ended
+    // on, showing stale completions left over from a different context.
+    completion_last_query_prefix_.clear();
     // Remember the selection being left so `gv` can restore it later --
     // must happen before mode_ is overwritten below. Vim's `gv` also
     // restores Visual Block as a block; mep's last-visual memory only has
@@ -4363,6 +6616,58 @@ void Editor::EnterSearch(bool forward) {
     mode_ = forward ? Mode::SearchForward : Mode::SearchBackward;
     search_query_.clear();
     search_history_index_ = -1;
+    // incsearch previews matches from -- and Escape restores the cursor
+    // to -- wherever the cursor was when the prompt opened, not wherever a
+    // pending operator's own start was (the two coincide whenever '/'/'?'
+    // is the very first key of the command, which is every case reachable
+    // today, but keeping them conceptually separate matches how
+    // pending_op_start_ itself is captured independently of the cursor).
+    search_anchor_ = CurPane().cursor;
+    ClearNamespace(CreateNamespace("__mep_incsearch"));
+}
+
+// Live preview for the search prompt (VIM_PARITY_PLAN.md Phase 4's
+// incsearch stretch item): re-searches from search_anchor_ on every
+// keystroke, previewing the cursor at the match (scrolling it into view
+// for free, since the normal per-frame scroll-follows-cursor logic doesn't
+// care why the cursor moved) and highlighting the matched span via the
+// same Decoration/hl_group pipeline every other feature (diagnostics,
+// git-gutter, colorizer, ...) uses. An empty query or a failed search
+// leaves the cursor at the anchor with nothing highlighted, matching Vim's
+// incsearch (it doesn't jump around on a pattern that doesn't match yet).
+void Editor::UpdateIncSearch() {
+    int ns = CreateNamespace("__mep_incsearch");
+    ClearNamespace(ns);
+    CurPane().cursor = search_anchor_;
+    ClampCursor();
+    if (search_query_.empty()) return;
+    bool forward = (mode_ == Mode::SearchForward);
+    CursorPos result;
+    if (!SearchOnce(search_query_, search_anchor_, forward, &result)) return;
+    CurPane().cursor = result;
+    ClampCursor();
+    // SearchOnce only reports the match's start column, not its length --
+    // recompute the length the same way it found the match in the first
+    // place (regex if the pattern compiles as one, else the literal
+    // pattern's own length) purely for the highlight span's extent; the
+    // match itself was already found above.
+    const std::string &line = Buf().lines[result.row];
+    int match_len = static_cast<int>(search_query_.size());
+    mep_regex::Regex re(search_query_, ignore_case_);
+    if (re.ok()) {
+        mep_regex::Match m = re.Search(line, result.col);
+        if (m.ok() && m.start == result.col && m.end > m.start) match_len = m.end - m.start;
+    }
+    int col_end = std::min(static_cast<int>(line.size()), result.col + std::max(1, match_len));
+    if (col_end > result.col) {
+        Decoration deco;
+        deco.row = result.row;
+        deco.col_start = result.col;
+        deco.col_end = col_end;
+        deco.hl_group = "IncSearch";
+        deco.priority = 100;
+        AddDecoration(ns, deco);
+    }
 }
 
 // --- Search --------------------------------------------------------------
@@ -4391,12 +6696,31 @@ size_t Editor::CiRfind(const std::string &hay, const std::string &needle, size_t
 
 bool Editor::SearchOnce(const std::string &pattern, CursorPos from, bool forward, CursorPos *result) const {
     if (pattern.empty()) return false;
+    // Search is regex by default now (matching real Vim -- plain-substring
+    // was an explicit, documented stretch-cut in VIM_PARITY_PLAN.md, kept
+    // only as long as no real regex engine existed yet). A pattern that
+    // fails to *compile* as regex (e.g. an unbalanced '(' or '[' someone
+    // typed meaning it literally, not as regex syntax) falls back to the
+    // original plain-substring CiFind/CiRfind below instead of just
+    // erroring, so every search that already worked before regex support
+    // landed keeps working exactly the same, and "search for a literal
+    // paren" doesn't require learning to escape it.
+    mep_regex::Regex re(pattern, ignore_case_);
+    bool use_regex = re.ok();
     int n = Buf().LineCount();
     if (forward) {
         for (int r = from.row; r < n; r++) {
             const std::string &line = Buf().lines[r];
             size_t start = (r == from.row) ? static_cast<size_t>(from.col) + 1 : 0;
             if (start > line.size()) continue;
+            if (use_regex) {
+                mep_regex::Match m = re.Search(line, static_cast<int>(start));
+                if (m.ok()) {
+                    *result = {r, m.start};
+                    return true;
+                }
+                continue;
+            }
             size_t pos = CiFind(line, pattern, start);
             if (pos != std::string::npos) {
                 *result = {r, static_cast<int>(pos)};
@@ -4409,6 +6733,25 @@ bool Editor::SearchOnce(const std::string &pattern, CursorPos from, bool forward
         const std::string &line = Buf().lines[r];
         int limit = (r == from.row) ? from.col - 1 : static_cast<int>(line.size());
         if (limit < 0) continue;
+        if (use_regex) {
+            // Backward search wants the *rightmost* match at or before
+            // `limit` -- this engine has no native reverse search, so scan
+            // every match left-to-right and keep the last one that still
+            // qualifies. Lines are short enough for this to be cheap.
+            int best = -1;
+            int pos = 0;
+            while (pos <= static_cast<int>(line.size())) {
+                mep_regex::Match m = re.Search(line, pos);
+                if (!m.ok() || m.start > limit) break;
+                best = m.start;
+                pos = (m.end > m.start) ? m.end : m.start + 1;
+            }
+            if (best >= 0) {
+                *result = {r, best};
+                return true;
+            }
+            continue;
+        }
         size_t pos = CiRfind(line, pattern, static_cast<size_t>(limit));
         if (pos != std::string::npos) {
             *result = {r, static_cast<int>(pos)};
@@ -4650,6 +6993,93 @@ CursorPos Editor::MoveParagraphBackward(CursorPos from) const {
     while (row > 0 && !Buf().lines[row].empty()) row--;
     if (row < 0) row = 0;
     return {row, 0};
+}
+
+// Shared by MoveSentenceForward/MoveSentenceBackward: finds the start of
+// the next sentence at-or-after `from`. A sentence ends at '.', '!', or
+// '?', optionally followed by any run of closing ')', ']', '"', '\''
+// characters, followed by end-of-line or a space/tab (Vim's own :help
+// sentence definition) -- the returned position is the first non-blank
+// character after that boundary. A blank line is also a sentence (and
+// paragraph) boundary in its own right, matching `}`'s own treatment of
+// one, and stops the scan even with no punctuation involved.
+CursorPos Editor::NextSentenceStart(CursorPos from) const {
+    int nrows = Buf().LineCount();
+    int row = from.row, col = from.col;
+    while (row < nrows) {
+        int len = LineLen(row);
+        // A blank line is a boundary -- but not the one we started ON
+        // (nothing "new" to stop at there).
+        if (len == 0 && row != from.row) return {row, 0};
+        while (col < len) {
+            char c = Buf().lines[row][col];
+            if (c == '.' || c == '!' || c == '?') {
+                int p = col + 1;
+                while (p < len) {
+                    char cc = Buf().lines[row][p];
+                    if (cc == ')' || cc == ']' || cc == '"' || cc == '\'') {
+                        p++;
+                        continue;
+                    }
+                    break;
+                }
+                if (p >= len || Buf().lines[row][p] == ' ' || Buf().lines[row][p] == '\t') {
+                    // Boundary found. Skip whitespace forward (across
+                    // lines, but stopping AT a blank line rather than
+                    // past it) to land on the next sentence's first
+                    // non-blank character.
+                    int r = row, c2 = p;
+                    while (true) {
+                        int l = LineLen(r);
+                        if (l == 0) return {r, 0};
+                        if (c2 >= l) {
+                            r++;
+                            c2 = 0;
+                            if (r >= nrows) return {nrows - 1, LineLen(nrows - 1)};
+                            continue;
+                        }
+                        char wc = Buf().lines[r][c2];
+                        if (wc == ' ' || wc == '\t') {
+                            c2++;
+                            continue;
+                        }
+                        return {r, c2};
+                    }
+                }
+            }
+            col++;
+        }
+        row++;
+        col = 0;
+    }
+    // No further sentence: clamp to the very end, same as `}` clamping to
+    // the last line.
+    int last = std::max(0, nrows - 1);
+    return {last, LineLen(last)};
+}
+
+// ): sentence forward -- just the next-sentence-start scan above.
+CursorPos Editor::MoveSentenceForward(CursorPos from) const { return NextSentenceStart(from); }
+
+// (: sentence backward. Enumerates sentence-start positions from the top
+// of the buffer via NextSentenceStart (matching a "...punctuation then
+// whitespace" pattern is far easier left-to-right than in reverse), and
+// returns the last one strictly before `from` -- or, if `from` is already
+// sitting exactly on one, the one before THAT, matching Vim's "already at
+// the start: go to the previous sentence" behavior.
+CursorPos Editor::MoveSentenceBackward(CursorPos from) const {
+    auto le_from = [&](CursorPos p) { return p.row < from.row || (p.row == from.row && p.col <= from.col); };
+    CursorPos cur{0, 0};
+    CursorPos prev{0, 0};
+    while (le_from(cur)) {
+        CursorPos next = NextSentenceStart(cur);
+        bool progressed = next.row != cur.row || next.col != cur.col;
+        if (!progressed || !le_from(next)) break;
+        prev = cur;
+        cur = next;
+    }
+    if (cur.row == from.row && cur.col == from.col) return prev;
+    return cur;
 }
 
 // %: jumps from the nearest bracket at-or-after the cursor on the current
@@ -4976,6 +7406,18 @@ bool Editor::ResolveMotion(char c, CursorPos from, int count, CursorPos *target,
             *target = t;
             return true;
         }
+        case '(': {
+            CursorPos t = from;
+            for (int i = 0; i < n; i++) t = MoveSentenceBackward(t);
+            *target = t;
+            return true;
+        }
+        case ')': {
+            CursorPos t = from;
+            for (int i = 0; i < n; i++) t = MoveSentenceForward(t);
+            *target = t;
+            return true;
+        }
         case '%':
             // Vim's {count}% jumps to a percentage of the file instead of
             // matching a bracket; not implemented (low value, easy to
@@ -5073,11 +7515,99 @@ bool Editor::ResolveMark(char cmd, char mark, CursorPos *target, bool *linewise)
     return true;
 }
 
+// Keeps marks pointing at the same TEXT (not the same row number) across
+// edits that insert/delete whole lines -- called right after the
+// Buf().lines.insert/erase that does the actual shifting, so LineCount()
+// already reflects the new state. See the declaration in editor.h for the
+// at_row/count sign convention.
+void Editor::ShiftMarksForLineEdit(int at_row, int count) {
+    if (count == 0 || Buf().marks.empty()) return;
+    int n = Buf().LineCount();
+    for (auto &kv : Buf().marks) {
+        CursorPos &pos = kv.second;
+        if (count > 0) {
+            if (pos.row >= at_row) pos.row += count;
+        } else {
+            int removed = -count;
+            if (pos.row >= at_row + removed) {
+                pos.row += count;  // count already negative
+            } else if (pos.row >= at_row) {
+                // Mark pointed inside the deleted range: clamp to the
+                // deletion point rather than drop it or let it go stale.
+                pos.row = at_row;
+            }
+        }
+        pos.row = std::max(0, std::min(pos.row, n - 1));
+    }
+}
+
 // Records where a "big jump" (G, gg, a mark jump, a search) started from,
 // so `` `` ``/`''` can return to it. Called with the pre-jump cursor.
 void Editor::RecordJumpFrom(CursorPos pos) {
     Buf().last_jump_from = pos;
     Buf().has_last_jump = true;
+    // Same set of call sites also feeds the full jumplist (Ctrl-O/Ctrl-I) --
+    // see PushJump's own comment for why this is a separate structure
+    // rather than replacing last_jump_from above.
+    PushJump(pos, CurPane().buffer_id);
+}
+
+// --- Jumplist (Ctrl-O/Ctrl-I) -----------------------------------------------
+
+void Editor::PushJump(CursorPos pos, int buffer_id) {
+    Pane &p = CurPane();
+    // A new jump truncates any forward ("Ctrl-I-able") history past the
+    // current index, same as a fresh edit truncates redo history.
+    if (p.jumplist_index < static_cast<int>(p.jumplist.size())) {
+        p.jumplist.erase(p.jumplist.begin() + p.jumplist_index, p.jumplist.end());
+    }
+    // Jumping to the exact same spot twice in a row (e.g. repeated `` `` ``
+    // toggling) shouldn't grow the list -- matches Vim.
+    if (!p.jumplist.empty() && p.jumplist.back().buffer_id == buffer_id && p.jumplist.back().pos.row == pos.row &&
+        p.jumplist.back().pos.col == pos.col) {
+        p.jumplist_index = static_cast<int>(p.jumplist.size());
+        return;
+    }
+    p.jumplist.push_back({buffer_id, pos});
+    if (p.jumplist.size() > kMaxJumplist) p.jumplist.erase(p.jumplist.begin());
+    p.jumplist_index = static_cast<int>(p.jumplist.size());
+}
+
+void Editor::GoToJumpEntry(const JumpEntry &entry) {
+    if (entry.buffer_id >= 0 && entry.buffer_id < static_cast<int>(buffers_.size())) {
+        CurPane().buffer_id = entry.buffer_id;
+    }
+    CurPane().cursor = entry.pos;
+    ClampCursor();
+}
+
+void Editor::JumpListBack() {
+    Pane &p = CurPane();
+    if (p.jumplist.empty()) return;
+    if (p.jumplist_index >= static_cast<int>(p.jumplist.size())) {
+        // First Ctrl-O from "live" (never backed up yet): remember where
+        // we are right now so a later Ctrl-I can return here, matching
+        // Vim's own jumplist behavior.
+        p.jumplist.push_back({p.buffer_id, p.cursor});
+        p.jumplist_index = static_cast<int>(p.jumplist.size()) - 1;
+    }
+    if (p.jumplist_index <= 0) return;
+    p.jumplist_index--;
+    GoToJumpEntry(p.jumplist[p.jumplist_index]);
+}
+
+void Editor::JumpListForward() {
+    Pane &p = CurPane();
+    if (p.jumplist_index + 1 >= static_cast<int>(p.jumplist.size())) return;
+    p.jumplist_index++;
+    GoToJumpEntry(p.jumplist[p.jumplist_index]);
+}
+
+void Editor::TryRunOrgBabelAtCursor() {
+    const std::string &filename = Buf().filename;
+    if (filename.size() < 4 || filename.compare(filename.size() - 4, 4, ".org") != 0) return;
+    auto it = lua_commands_.find("MepOrgBabelExecute");
+    if (it != lua_commands_.end() && lua_) lua_->CallRefWithString(it->second, "");
 }
 
 // --- Operators -------------------------------------------------------------
@@ -5101,6 +7631,12 @@ void Editor::ApplyOperator(char op, CursorPos start, CursorPos end, bool linewis
 
     if (op == 'y') {
         YankRange(start, end, linewise, reg_name, append);
+        // "0: last-yank register. Always mirrors the most recent *pure*
+        // yank (never a delete/change) regardless of whether a named
+        // register was also targeted, and never shifts -- matching Vim.
+        // registers_['"'] already holds the final text YankRange just
+        // wrote (see its own comment), so just copy that.
+        registers_['0'] = registers_['"'];
         CurPane().cursor = start;
         ClampCursor();
         return;
@@ -5122,6 +7658,22 @@ void Editor::ApplyOperator(char op, CursorPos start, CursorPos end, bool linewis
     }
 
     PushUndo();
+    // Numbered registers: real Vim shifts "1-"9 down (dropping "9) and
+    // stores the freshly deleted/changed text in "1 -- but only for
+    // deletes of at least a full line (linewise, or charwise spanning
+    // multiple lines). A delete smaller than one line goes to the
+    // small-delete register "- instead and never touches "1-"9, matching
+    // Vim's own documented split between quote1 and quote_ ("-).
+    {
+        std::string deleted_text = ExtractRangeText(start, end, linewise);
+        bool small_delete = !linewise && start.row == end.row;
+        if (small_delete) {
+            if (!deleted_text.empty()) registers_['-'] = Register{deleted_text, false, false};
+        } else {
+            for (char r = '9'; r > '1'; r--) registers_[r] = registers_[r - 1];
+            registers_['1'] = Register{deleted_text, linewise, false};
+        }
+    }
     YankRange(start, end, linewise, reg_name, append);
     DeleteRange(start, end, linewise);
     CurPane().cursor = start;
@@ -5210,6 +7762,7 @@ void Editor::JoinLines(int count, bool with_space) {
     for (int i = 0; i < joins; i++) {
         std::string next = Buf().lines[row + 1];
         Buf().lines.erase(Buf().lines.begin() + row + 1);
+        ShiftMarksForLineEdit(row + 1, -1);
         size_t s = 0;
         while (s < next.size() && std::isspace(static_cast<unsigned char>(next[s]))) s++;
         next = next.substr(s);
@@ -5231,6 +7784,7 @@ void Editor::DeleteRange(CursorPos start, CursorPos end, bool linewise) {
         int first = start.row;
         int last = std::min(end.row, Buf().LineCount() - 1);
         Buf().lines.erase(Buf().lines.begin() + first, Buf().lines.begin() + last + 1);
+        ShiftMarksForLineEdit(first, -(last - first + 1));
         if (Buf().lines.empty()) Buf().lines.push_back("");
         Buf().modified = true;
         return;
@@ -5255,11 +7809,12 @@ void Editor::DeleteRange(CursorPos start, CursorPos end, bool linewise) {
         std::string suffix = last_line.substr(b);
         Buf().lines[start.row] = prefix + suffix;
         Buf().lines.erase(Buf().lines.begin() + start.row + 1, Buf().lines.begin() + end_row + 1);
+        ShiftMarksForLineEdit(start.row + 1, -(end_row - start.row));
     }
     Buf().modified = true;
 }
 
-void Editor::YankRange(CursorPos start, CursorPos end, bool linewise, char reg_name, bool append) {
+std::string Editor::ExtractRangeText(CursorPos start, CursorPos end, bool linewise) const {
     std::string text;
     if (linewise) {
         int last = std::min(end.row, Buf().LineCount() - 1);
@@ -5286,6 +7841,17 @@ void Editor::YankRange(CursorPos start, CursorPos end, bool linewise, char reg_n
         text += "\n";
         text += last_line.substr(0, b);
     }
+    return text;
+}
+
+void Editor::YankRange(CursorPos start, CursorPos end, bool linewise, char reg_name, bool append) {
+    std::string text = ExtractRangeText(start, end, linewise);
+
+    // "% is a read-only pseudo-register (current filename); writing into
+    // it, e.g. via "%yy or "%dd, is a silent no-op in Vim -- fall back to
+    // the unnamed register so the yank/delete itself still behaves
+    // normally otherwise.
+    if (reg_name == '%') reg_name = 0;
 
     Register &target = RegisterFor(reg_name);
     if (append && reg_name != 0) {
@@ -5363,6 +7929,7 @@ CursorPos Editor::InsertCharwiseTextAt(CursorPos pos, const std::string &text) {
     std::vector<std::string> to_insert(parts.begin() + 1, parts.end() - 1);
     to_insert.push_back(new_last);
     Buf().lines.insert(Buf().lines.begin() + pos.row + 1, to_insert.begin(), to_insert.end());
+    ShiftMarksForLineEdit(pos.row + 1, static_cast<int>(to_insert.size()));
 
     int end_row = pos.row + static_cast<int>(parts.size()) - 1;
     int end_col = static_cast<int>(parts.back().size());
@@ -5383,6 +7950,7 @@ void Editor::PasteAfter(int count, char reg_name) {
         for (int i = 0; i < count; i++) new_lines.insert(new_lines.end(), block.begin(), block.end());
         int insert_at = cursor.row + 1;
         Buf().lines.insert(Buf().lines.begin() + insert_at, new_lines.begin(), new_lines.end());
+        ShiftMarksForLineEdit(insert_at, static_cast<int>(new_lines.size()));
         cursor = {insert_at, 0};
     } else {
         std::string text;
@@ -5411,6 +7979,7 @@ void Editor::PasteBefore(int count, char reg_name) {
         for (int i = 0; i < count; i++) new_lines.insert(new_lines.end(), block.begin(), block.end());
         int insert_at = cursor.row;
         Buf().lines.insert(Buf().lines.begin() + insert_at, new_lines.begin(), new_lines.end());
+        ShiftMarksForLineEdit(insert_at, static_cast<int>(new_lines.size()));
         cursor = {insert_at, 0};
     } else {
         std::string text;
@@ -5537,6 +8106,19 @@ void Editor::ExSubstitute(int start_row, int end_row, const std::string &pattern
     start_row = std::max(0, start_row);
     end_row = std::min(end_row, Buf().LineCount() - 1);
     if (start_row > end_row) return;
+    // Regex by default, same reasoning and same literal-pattern fallback
+    // as SearchOnce above (see its own comment) -- :s's pattern is the
+    // same "last search pattern" search itself uses (see last_search_
+    // assignment below), so the two had better agree on what counts as a
+    // match. `replacement` may reference \1-\9/\0/& (Regex::
+    // ExpandReplacement, shared with normal Search()-based :s/normal
+    // substring replace both use the *plain* pattern.size()-based splice
+    // below when regex compilation fails, so \-group references in
+    // `replacement` are only meaningful when the pattern actually
+    // compiled as regex -- matches real Vim, where backreferences in a
+    // replacement only make sense once the search side is regex too).
+    mep_regex::Regex re(pattern, ignore_case_);
+    bool use_regex = re.ok();
     int replacements = 0, lines_changed = 0;
     int last_row = start_row;
     bool pushed_undo = false;
@@ -5545,8 +8127,20 @@ void Editor::ExSubstitute(int start_row, int end_row, const std::string &pattern
         size_t pos = 0;
         bool changed_this_line = false;
         while (true) {
-            size_t found = CiFind(line, pattern, pos);
-            if (found == std::string::npos) break;
+            size_t found;
+            size_t match_len;
+            std::string this_replacement = replacement;
+            if (use_regex) {
+                mep_regex::Match m = re.Search(line, static_cast<int>(pos));
+                if (!m.ok()) break;
+                found = static_cast<size_t>(m.start);
+                match_len = static_cast<size_t>(m.end - m.start);
+                this_replacement = mep_regex::Regex::ExpandReplacement(line, m, replacement);
+            } else {
+                found = CiFind(line, pattern, pos);
+                if (found == std::string::npos) break;
+                match_len = pattern.size();
+            }
             // Deferred until the first real match, not called unconditionally
             // up front -- otherwise a :s with zero matches (which returns
             // "E486: Pattern not found" below and touches nothing) would
@@ -5555,12 +8149,13 @@ void Editor::ExSubstitute(int start_row, int end_row, const std::string &pattern
                 PushUndo();
                 pushed_undo = true;
             }
-            line.replace(found, pattern.size(), replacement);
+            line.replace(found, match_len, this_replacement);
             replacements++;
             changed_this_line = true;
-            pos = found + replacement.size();
+            pos = found + this_replacement.size();
+            if (match_len == 0) pos = found + 1;  // guard against an infinite loop on a zero-width match
             if (!global_flag) break;
-            if (pattern.empty()) break;  // guard against an infinite loop on an empty match
+            if (pattern.empty()) break;
         }
         if (changed_this_line) {
             lines_changed++;
@@ -5803,6 +8398,8 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
             bool value = !negate;
             if (key == "number" || key == "nu") {
                 show_line_numbers_ = value;
+            } else if (key == "cursorline" || key == "cul") {
+                show_cursorline_ = value;
             } else if (key == "ignorecase" || key == "ic") {
                 ignore_case_ = value;
             } else if (key == "wrapscan" || key == "ws") {
@@ -5849,7 +8446,14 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
     } else {
         auto it = lua_commands_.find(name);
         if (it != lua_commands_.end() && lua_) {
-            lua_->CallRef(it->second);
+            // `args` is whatever followed the command name verbatim (""
+            // if nothing did) -- e.g. lets `:MepGitGutter base <ref>`
+            // (Phase 17 gap) be one mep.command('MepGitGutter', fn)
+            // registration that switches on its first word, rather than
+            // needing a second ex-command. Existing zero-arg handlers
+            // (declared `function() ... end`) are unaffected: Lua
+            // silently discards an argument nothing accepts.
+            lua_->CallRefWithString(it->second, args);
         } else {
             status_message_ = "E492: Not an editor command: " + name;
         }
@@ -5924,6 +8528,7 @@ void Editor::SwitchToBufferForLua(int buffer_id) {
     if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
     CurPane().buffer_id = buffer_id;
     ClampCursor();
+    SyncModeToActivePaneBuffer();
 }
 
 std::vector<std::string> Editor::LuaCommandNames() const {
@@ -6028,12 +8633,27 @@ void Editor::RegisterLuaCommand(const std::string &name, int lua_ref) {
     lua_commands_[name] = lua_ref;
 }
 
-void Editor::RegisterLuaMapping(Mode mode, const std::string &key, int lua_ref) {
+void Editor::RegisterLuaMapping(Mode mode, const std::string &key, int lua_ref, const std::string &description) {
+    char mode_char = 'n';
     if (mode == Mode::Normal) {
         normal_mappings_[key] = lua_ref;
     } else if (mode == Mode::Visual || mode == Mode::VisualLine) {
         visual_mappings_[key] = lua_ref;
+        mode_char = 'v';
+    } else {
+        return;
     }
+    if (!description.empty()) mapping_descriptions_[std::string(1, mode_char) + ":" + key] = description;
+}
+
+std::vector<Editor::MappingDescription> Editor::AllMappingDescriptions() const {
+    std::vector<MappingDescription> out;
+    out.reserve(mapping_descriptions_.size());
+    for (const auto &kv : mapping_descriptions_) {
+        // kv.first is "<mode-char>:<key>" -- split back apart.
+        out.push_back({kv.first[0], kv.first.substr(2), kv.second});
+    }
+    return out;
 }
 
 // --- File I/O ------------------------------------------------------------
@@ -6042,6 +8662,81 @@ bool Editor::SaveBuffer(Buffer &buf, const std::string &path) {
     if (path.empty()) {
         status_message_ = "E32: No file name";
         return false;
+    }
+    // `buf` is always a reference to an element of buffers_ (both callers
+    // pass one) -- pointer arithmetic recovers its buffer_id to check
+    // images_/pdfs_ without threading an id through every SaveBuffer call
+    // site. An image/PDF buffer's Buffer::lines is a dummy single empty
+    // line (see OpenImageInPlace/OpenPdfInPlace); writing it out would
+    // silently replace the real file with that instead -- confirmed this
+    // was missing for PDF specifically (only the image guard existed),
+    // meaning `:w` on a focused PDF pane was overwriting the real PDF file
+    // on disk with a blank line.
+    int buffer_id = static_cast<int>(&buf - buffers_.data());
+    if (IsImageBuffer(buffer_id)) {
+        status_message_ = "E382: Cannot write, image buffer";
+        return false;
+    }
+    if (IsPdfBuffer(buffer_id)) {
+        status_message_ = "E382: Cannot write, PDF buffer";
+        return false;
+    }
+    if (IsSheetBuffer(buffer_id)) {
+        // Same guard the Office pane's own Phase 1 added for exactly this
+        // reason: a spreadsheet buffer's Buffer::lines is also a dummy
+        // single empty line, so without this, `:w` here would silently
+        // overwrite the real file with a blank line. Real save-back for
+        // all three formats (csv/xlsx/ods) lands in the spreadsheet
+        // pane's own Phase 5, mirroring Office's Phase 4.
+        status_message_ = "E382: Cannot write, spreadsheet buffer (not implemented yet)";
+        return false;
+    }
+    if (IsOfficeBuffer(buffer_id)) {
+#if defined(__EMSCRIPTEN__)
+        // Native-only for v1 -- the wasm file-bridge has no binary-write
+        // path (mep_js_write_file is string-only), unlike the plain-text
+        // save below; see NVIM_PARITY_PLAN.md's Office phase.
+        status_message_ = "E382: Office documents aren't supported in the web build";
+        return false;
+#else
+        auto it = officedocs_.find(buffer_id);
+        if (it == officedocs_.end()) {
+            status_message_ = "E382: Cannot write, office buffer";
+            return false;
+        }
+        OfficeSession &sess = it->second;
+        std::vector<unsigned char> out_bytes;
+        std::string err;
+        bool ok = false;
+        if (sess.doc.source_format == "docx") {
+            ok = SaveDocxToMemory(sess.doc, sess.original_bytes, out_bytes, err);
+        } else if (sess.doc.source_format == "odt") {
+            ok = SaveOdtToMemory(sess.doc, sess.original_bytes, out_bytes, err);
+        } else {
+            err = "unknown office document format";
+        }
+        if (!ok) {
+            status_message_ = "E212: Can't write \"" + path + "\": " + err;
+            return false;
+        }
+        std::ofstream office_out(path, std::ios::binary);
+        if (!office_out) {
+            status_message_ = "E212: Can't open file for writing";
+            return false;
+        }
+        office_out.write(reinterpret_cast<const char *>(out_bytes.data()), static_cast<std::streamsize>(out_bytes.size()));
+        office_out.close();
+        // Re-baselines original_bytes to what was just written so a later
+        // save in the same session copies untouched ZIP entries from the
+        // latest saved structure, not the file's state from open time.
+        sess.original_bytes = std::move(out_bytes);
+        buf.filename = path;
+        buf.modified = false;
+        sess.modified = false;
+        save_epoch_++;
+        status_message_ = "\"" + path + "\" written";
+        return true;
+#endif
     }
 #if defined(__EMSCRIPTEN__)
     std::string content;
@@ -6235,6 +8930,102 @@ void Editor::LoadFile(const std::string &path) {
         status_message_ = "E32: No file name";
         return;
     }
+    if (IsImagePath(path)) {
+#if defined(__EMSCRIPTEN__)
+        char *result = mep_js_read_file_binary(path.c_str());
+        std::string res(result);
+        std::free(result);
+        if (res.rfind("OK\n", 0) == 0) {
+            std::vector<unsigned char> bytes = Base64Decode(res.substr(3));
+            OpenImageInPlace(path, bytes.data(), bytes.size());
+        } else {
+            status_message_ = "E212: Can't open \"" + path + "\"" +
+                               (res.rfind("ERR\n", 0) == 0 ? " (" + res.substr(4) + ")" : "");
+        }
+#else
+        std::ifstream in(path, std::ios::binary);
+        if (!in) {
+            status_message_ = "E484: Can't open file \"" + path + "\"";
+        } else {
+            std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            OpenImageInPlace(path, bytes.data(), bytes.size());
+        }
+#endif
+        SyncModeToActivePaneBuffer();
+        return;
+    }
+    if (IsPdfPath(path)) {
+#if defined(__EMSCRIPTEN__)
+        char *result = mep_js_read_file_binary(path.c_str());
+        std::string res(result);
+        std::free(result);
+        if (res.rfind("OK\n", 0) == 0) {
+            std::vector<unsigned char> bytes = Base64Decode(res.substr(3));
+            OpenPdfInPlace(path, bytes.data(), bytes.size());
+        } else {
+            status_message_ = "E212: Can't open \"" + path + "\"" +
+                               (res.rfind("ERR\n", 0) == 0 ? " (" + res.substr(4) + ")" : "");
+        }
+#else
+        std::ifstream in(path, std::ios::binary);
+        if (!in) {
+            status_message_ = "E484: Can't open file \"" + path + "\"";
+        } else {
+            std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            OpenPdfInPlace(path, bytes.data(), bytes.size());
+        }
+#endif
+        SyncModeToActivePaneBuffer();
+        return;
+    }
+    if (IsDocxPath(path) || IsOdtPath(path)) {
+#if defined(__EMSCRIPTEN__)
+        char *result = mep_js_read_file_binary(path.c_str());
+        std::string res(result);
+        std::free(result);
+        if (res.rfind("OK\n", 0) == 0) {
+            std::vector<unsigned char> bytes = Base64Decode(res.substr(3));
+            OpenOfficeInPlace(path, bytes.data(), bytes.size());
+        } else {
+            status_message_ = "E212: Can't open \"" + path + "\"" +
+                               (res.rfind("ERR\n", 0) == 0 ? " (" + res.substr(4) + ")" : "");
+        }
+#else
+        std::ifstream in(path, std::ios::binary);
+        if (!in) {
+            status_message_ = "E484: Can't open file \"" + path + "\"";
+        } else {
+            std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            OpenOfficeInPlace(path, bytes.data(), bytes.size());
+        }
+#endif
+        SyncModeToActivePaneBuffer();
+        return;
+    }
+    if (IsCsvPath(path) || IsXlsxPath(path) || IsOdsPath(path)) {
+#if defined(__EMSCRIPTEN__)
+        char *result = mep_js_read_file_binary(path.c_str());
+        std::string res(result);
+        std::free(result);
+        if (res.rfind("OK\n", 0) == 0) {
+            std::vector<unsigned char> bytes = Base64Decode(res.substr(3));
+            OpenSheetInPlace(path, bytes.data(), bytes.size());
+        } else {
+            status_message_ = "E212: Can't open \"" + path + "\"" +
+                               (res.rfind("ERR\n", 0) == 0 ? " (" + res.substr(4) + ")" : "");
+        }
+#else
+        std::ifstream in(path, std::ios::binary);
+        if (!in) {
+            status_message_ = "E484: Can't open file \"" + path + "\"";
+        } else {
+            std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            OpenSheetInPlace(path, bytes.data(), bytes.size());
+        }
+#endif
+        SyncModeToActivePaneBuffer();
+        return;
+    }
     bool existed = false;
     int id = FindOrCreateBuffer(path, &existed);
     if (id < 0) return;  // FindOrCreateBuffer already set status_message_
@@ -6243,6 +9034,7 @@ void Editor::LoadFile(const std::string &path) {
     CurPane().scroll_row = 0;
     status_message_ = existed ? "\"" + path + "\" " + std::to_string(buffers_[id].LineCount()) + "L loaded"
                                : "\"" + path + "\" [New]";
+    SyncModeToActivePaneBuffer();
 }
 
 // --- Menu-facing API -------------------------------------------------------

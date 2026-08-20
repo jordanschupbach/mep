@@ -33,6 +33,20 @@ function mepDataDir(): string {
 }
 const projectListPath = `${mepDataDir()}/projects.json`;
 
+// Base64-encodes arbitrary binary file content for the /read-binary
+// endpoint (src/editor.cpp's mep_js_read_file_binary -- the wasm build's
+// image-open path, which needs raw bytes rather than /read's UTF-8 text).
+// Chunked rather than `btoa(String.fromCharCode(...bytes))` directly: the
+// spread form blows the call stack on anything but small files.
+function encodeBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
 async function loadProjects(): Promise<string[]> {
   try {
     const doc = JSON.parse(await Deno.readTextFile(projectListPath));
@@ -234,6 +248,14 @@ const bridgeServer = Deno.serve(
         const path = url.searchParams.get("path") ?? "";
         const content = await Deno.readTextFile(path);
         return Response.json({ ok: true, content }, { headers: cors });
+      }
+      // Binary-safe counterpart to /read, used only for opening image files
+      // (see the comment above mep_js_read_file_binary in src/editor.cpp) --
+      // Deno.readTextFile above would corrupt arbitrary binary bytes.
+      if (req.method === "GET" && url.pathname === "/read-binary") {
+        const path = url.searchParams.get("path") ?? "";
+        const bytes = await Deno.readFile(path);
+        return Response.json({ ok: true, content_b64: encodeBase64(bytes) }, { headers: cors });
       }
       if (req.method === "POST" && url.pathname === "/write") {
         const { path, content } = await req.json();

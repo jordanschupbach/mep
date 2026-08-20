@@ -40,6 +40,13 @@ public:
     // completion sources). Returns false (out untouched) on error/if ref
     // returned something else.
     bool CallRefWithStringForStrings(int ref, const std::string &arg, std::vector<std::string> *out);
+    // Calls ref(arg_bool) and returns its boolean result (false if ref is
+    // unset, errors, or returns a non-boolean) -- Phase 23's Insert-mode
+    // Tab/Shift-Tab snippet-jump hook: the Lua side decides whether a
+    // snippet is active and, if so, jumps and returns true so the C++ key
+    // handler (editor.cpp HandleInsertInput) knows to swallow the keypress
+    // instead of falling through to ordinary Tab handling.
+    bool CallRefWithBoolForBool(int ref, bool arg);
     // Releases a registered callback so it can be garbage-collected --
     // call once a callback (e.g. a finished job's on_exit) will never
     // fire again.

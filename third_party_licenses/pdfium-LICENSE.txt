@@ -1,0 +1,57 @@
+PDFium -- https://pdfium.googlesource.com/pdfium/
+Used (as a prebuilt shared library, not vendored source) for src/pdf_doc.cpp's
+PDF-viewer backend. Fetched at CMake configure time via FetchContent from
+github.com/bblanchon/pdfium-binaries, a project that publishes Google's own
+PDFium build as ready-to-link release archives -- see CMakeLists.txt's
+PDFIUM_ASSET/PDFIUM_HASH block. Not vendored as source because there is no
+CMake build for PDFium itself (upstream builds it with Google's own GN/ninja
+toolchain); the fetched archive's own licenses/ directory (under
+build/*/_deps/pdfium-src/licenses/ once fetched) has the full text of every
+license summarized below.
+
+------------------------------------------------------------------------------
+pdfium-binaries packaging (github.com/bblanchon/pdfium-binaries) -- MIT
+------------------------------------------------------------------------------
+Copyright 2014-2025 Benoit Blanchon
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+------------------------------------------------------------------------------
+PDFium itself (Copyright 2014 The PDFium Authors) -- BSD-3-Clause, with some
+files under Apache License 2.0 (both permissive; see the fetched archive's
+licenses/pdfium.txt for the full text of both).
+------------------------------------------------------------------------------
+
+------------------------------------------------------------------------------
+Bundled third-party libraries, all permissively licensed -- full texts in the
+fetched archive's licenses/ directory:
+------------------------------------------------------------------------------
+- zlib (zlib license)
+- libpng (libpng license, BSD-style)
+- libjpeg-turbo (IJG/BSD-style)
+- freetype (FreeType License, FTL -- BSD-style)
+- lcms / Little Color Management System (MIT-style)
+- libopenjpeg (2-clause BSD)
+- abseil (Apache License 2.0)
+- ICU (Unicode License v3)
+- simdutf (Apache License 2.0)
+- fast_float (MIT)
+- llvm-libc (Apache License 2.0 with LLVM Exceptions)
+
+None of the above, nor PDFium itself, are copyleft (no GPL/LGPL/AGPL).

@@ -69,6 +69,31 @@ const std::unordered_map<std::string, LangEntry> &LanguageTable() {
     return table;
 }
 
+// Fold queries: only the core compiled-in languages get one (see
+// treesitter_queries.h's kFolds* comment for why markdown/org are
+// excluded), keyed the same way as LanguageTable.
+const std::unordered_map<std::string, LangEntry> &FoldQueryTable() {
+    static const std::unordered_map<std::string, LangEntry> table = {
+        {"c", {tree_sitter_c, kFoldsC}},
+        {"h", {tree_sitter_c, kFoldsC}},
+        {"cpp", {tree_sitter_cpp, kFoldsCpp}},
+        {"cc", {tree_sitter_cpp, kFoldsCpp}},
+        {"cxx", {tree_sitter_cpp, kFoldsCpp}},
+        {"hpp", {tree_sitter_cpp, kFoldsCpp}},
+        {"hh", {tree_sitter_cpp, kFoldsCpp}},
+        {"hxx", {tree_sitter_cpp, kFoldsCpp}},
+        {"lua", {tree_sitter_lua, kFoldsLua}},
+        {"py", {tree_sitter_python, kFoldsPython}},
+        {"js", {tree_sitter_javascript, kFoldsJavascript}},
+        {"mjs", {tree_sitter_javascript, kFoldsJavascript}},
+        {"cjs", {tree_sitter_javascript, kFoldsJavascript}},
+        {"jsx", {tree_sitter_javascript, kFoldsJavascript}},
+        {"r", {tree_sitter_r, kFoldsR}},
+        {"R", {tree_sitter_r, kFoldsR}},
+    };
+    return table;
+}
+
 #if !defined(__EMSCRIPTEN__)
 // Every filetype with a known highlight query but no compiled-in
 // grammar, keyed the same way as LanguageTable -- resolved by
@@ -402,20 +427,131 @@ void CollectRawSpans(const TSQuery *query, TSNode root, const std::string &text,
     ts_query_cursor_delete(cursor);
 }
 
-// Parses `text` from scratch with `language` and collects its `query`'s
-// captures into `out`.
-void ParseAndCollect(const TSLanguage *language, const char *query_source, const std::string &text,
-                      std::vector<RawSpan> &out) {
-    TSQuery *query = QueryFor(language, query_source);
-    if (!query) return;
+// Incremental-reparse cache: one entry per filetype string, holding the
+// last text parsed for that filetype and the TSTree that resulted, so a
+// later call for the same filetype can hand tree-sitter both the old
+// tree (edited via ts_tree_edit) and the old tree's own structure to
+// reuse via ts_parser_parse_string's incremental path, instead of always
+// parsing from scratch (nullptr old_tree). Keyed by filetype string
+// rather than true buffer identity -- see the class-level tradeoff note
+// on TreesitterHighlight in treesitter.h: switching between two
+// same-filetype buffers costs a full-reparse-equivalent that one time
+// (the diff against the "wrong" buffer's old text degenerates to
+// "replace everything"), which is always *safe* (ts_tree_edit's contract
+// only requires the edit region to be a superset of what actually
+// changed, and "the whole text changed" trivially satisfies that), just
+// not the incremental win in that specific case. mep's actual call
+// pattern -- debounced rerun on every edit of the buffer currently being
+// typed in -- hits the fast path on essentially every call.
+struct ParseCache {
+    std::string text;
+    TSTree *tree = nullptr;
+    const TSLanguage *language = nullptr;
+    ~ParseCache() {
+        if (tree) ts_tree_delete(tree);
+    }
+};
+
+std::unordered_map<std::string, ParseCache> &ParseCacheTable() {
+    static std::unordered_map<std::string, ParseCache> table;
+    return table;
+}
+
+// Row/column (TSPoint) of byte offset `off` within `text`, scanning from
+// the start -- tree-sitter points are line/column, not byte offsets.
+TSPoint PointFor(const std::string &text, size_t off) {
+    uint32_t row = 0, col = 0;
+    size_t n = std::min(off, text.size());
+    for (size_t i = 0; i < n; i++) {
+        if (text[i] == '\n') {
+            row++;
+            col = 0;
+        } else {
+            col++;
+        }
+    }
+    return TSPoint{row, col};
+}
+
+// Synthesizes a TSInputEdit describing old_text -> new_text via longest
+// common prefix/suffix -- always a *valid* edit region per tree-sitter's
+// contract (the changed span must be a superset of what actually
+// changed) even though it isn't always the *minimal* one a real
+// character-level diff would find. mep doesn't track precise edit
+// regions through every text-mutating call site in editor.cpp (that
+// would be much more invasive, cross-cutting work -- see NVIM_PARITY_
+// PLAN.md's own Phase 19 note), so this recomputes the region fresh from
+// the two full text snapshots on every call instead. Still linear in the
+// text size, same order as the full reparse this replaces, so it can't
+// make the on-demand/debounced call pattern asymptotically worse.
+TSInputEdit ComputeEdit(const std::string &old_text, const std::string &new_text) {
+    size_t max_common = std::min(old_text.size(), new_text.size());
+    size_t prefix = 0;
+    while (prefix < max_common && old_text[prefix] == new_text[prefix]) prefix++;
+    size_t old_end = old_text.size();
+    size_t new_end = new_text.size();
+    while (old_end > prefix && new_end > prefix && old_text[old_end - 1] == new_text[new_end - 1]) {
+        old_end--;
+        new_end--;
+    }
+    TSInputEdit edit;
+    edit.start_byte = static_cast<uint32_t>(prefix);
+    edit.old_end_byte = static_cast<uint32_t>(old_end);
+    edit.new_end_byte = static_cast<uint32_t>(new_end);
+    edit.start_point = PointFor(old_text, prefix);
+    edit.old_end_point = PointFor(old_text, old_end);
+    edit.new_end_point = PointFor(new_text, new_end);
+    return edit;
+}
+
+// Returns the parsed tree for `text` under `cache_key`/`language`,
+// reparsing incrementally against the previous call's tree when one is
+// cached for the same key and language (or reusing it outright, with no
+// reparse at all, when `text` is byte-identical to last time -- the
+// common case when a highlight pass and a fold pass run back-to-back
+// against the same just-edited buffer, see TreesitterFoldRanges).
+// Ownership stays with the cache: callers must NOT delete the returned
+// tree, and must not hold onto it past their own call (the next GetTree
+// call for the same `cache_key` may ts_tree_edit or replace it).
+TSTree *GetTree(const std::string &cache_key, const TSLanguage *language, const std::string &text) {
+    ParseCache &cache = ParseCacheTable()[cache_key];
+    if (cache.tree && cache.language == language && cache.text == text) {
+        return cache.tree;
+    }
     TSParser *parser = ts_parser_new();
     ts_parser_set_language(parser, language);
-    TSTree *tree = ts_parser_parse_string(parser, nullptr, text.c_str(), static_cast<uint32_t>(text.size()));
-    if (tree) {
-        CollectRawSpans(query, ts_tree_root_node(tree), text, out);
-        ts_tree_delete(tree);
+
+    TSTree *old_tree = nullptr;
+    if (cache.tree && cache.language == language) {
+        TSInputEdit edit = ComputeEdit(cache.text, text);
+        ts_tree_edit(cache.tree, &edit);
+        old_tree = cache.tree;
+    } else if (cache.tree) {
+        // Different language now claims this filetype key (e.g. a
+        // dynamic grammar loaded after this filetype was first seen) --
+        // the cached tree's structure isn't meaningful input for a
+        // different grammar's parser, so discard it and parse fresh.
+        ts_tree_delete(cache.tree);
+        cache.tree = nullptr;
     }
+
+    TSTree *tree = ts_parser_parse_string(parser, old_tree, text.c_str(), static_cast<uint32_t>(text.size()));
+    if (old_tree) ts_tree_delete(old_tree);  // superseded by `tree` (or by nothing, if parsing failed)
+    cache.tree = tree;
+    cache.text = text;
+    cache.language = language;
     ts_parser_delete(parser);
+    return tree;
+}
+
+// Parses `text` with `language` (via GetTree's incremental cache) and
+// collects the `query`'s captures into `out`.
+void ParseAndCollect(const std::string &cache_key, const TSLanguage *language, const char *query_source,
+                      const std::string &text, std::vector<RawSpan> &out) {
+    TSQuery *query = QueryFor(language, query_source);
+    if (!query) return;
+    TSTree *tree = GetTree(cache_key, language, text);
+    if (tree) CollectRawSpans(query, ts_tree_root_node(tree), text, out);
 }
 
 // Markdown's inline formatting (emphasis, links, code spans, inline
@@ -465,19 +601,20 @@ void CollectMarkdownInlineSpans(TSNode block_root, const std::string &text, std:
     ts_query_cursor_delete(cursor);
 }
 
-void HighlightMarkdown(const std::string &text, std::vector<RawSpan> &out) {
+void HighlightMarkdown(const std::string &cache_key, const std::string &text, std::vector<RawSpan> &out) {
     TSQuery *blockQuery = QueryFor(tree_sitter_markdown(), kHighlightsMarkdown);
     if (!blockQuery) return;
-    TSParser *parser = ts_parser_new();
-    ts_parser_set_language(parser, tree_sitter_markdown());
-    TSTree *tree = ts_parser_parse_string(parser, nullptr, text.c_str(), static_cast<uint32_t>(text.size()));
-    if (tree) {
-        TSNode root = ts_tree_root_node(tree);
-        CollectRawSpans(blockQuery, root, text, out);
-        CollectMarkdownInlineSpans(root, text, out);
-        ts_tree_delete(tree);
-    }
-    ts_parser_delete(parser);
+    TSTree *tree = GetTree(cache_key, tree_sitter_markdown(), text);
+    if (!tree) return;
+    // The block tree's own incremental structure comes from GetTree's
+    // cache; the inline injection pass below always re-parses each
+    // `(inline)` node's restricted range from scratch (see its own
+    // comment) -- those parses are already cheap by construction (small,
+    // per-node ranges), so caching them too isn't worth the extra
+    // per-node cache-key bookkeeping it would take.
+    TSNode root = ts_tree_root_node(tree);
+    CollectRawSpans(blockQuery, root, text, out);
+    CollectMarkdownInlineSpans(root, text, out);
 }
 
 }  // namespace
@@ -498,9 +635,9 @@ std::vector<TSHighlightSpan> TreesitterHighlight(const std::string &filetype, co
     if (auto it = LanguageTable().find(filetype); it != LanguageTable().end()) {
         const LangEntry &entry = it->second;
         if (filetype == "md" || filetype == "markdown") {
-            HighlightMarkdown(text, raw);
+            HighlightMarkdown(filetype, text, raw);
         } else {
-            ParseAndCollect(entry.language(), entry.query_source, text, raw);
+            ParseAndCollect(filetype, entry.language(), entry.query_source, text, raw);
         }
     } else {
 #if !defined(__EMSCRIPTEN__)
@@ -508,7 +645,7 @@ std::vector<TSHighlightSpan> TreesitterHighlight(const std::string &filetype, co
         if (dit == DynamicLanguageTable().end()) return out;
         const TSLanguage *language = LoadDynamicLanguage(dit->second.canonical_name);
         if (!language) return out;
-        ParseAndCollect(language, dit->second.query_source, text, raw);
+        ParseAndCollect(filetype, language, dit->second.query_source, text, raw);
 #else
         return out;
 #endif
@@ -547,5 +684,40 @@ std::vector<TSHighlightSpan> TreesitterHighlight(const std::string &filetype, co
             col = 0;
         }
     }
+    return out;
+}
+
+bool TreesitterHasFoldQuery(const std::string &filetype) { return FoldQueryTable().count(filetype) != 0; }
+
+std::vector<TSFoldRange> TreesitterFoldRanges(const std::string &filetype, const std::string &text) {
+    std::vector<TSFoldRange> out;
+    auto it = FoldQueryTable().find(filetype);
+    if (it == FoldQueryTable().end()) return out;
+    const LangEntry &entry = it->second;
+    TSQuery *query = QueryFor(entry.language(), entry.query_source);
+    if (!query) return out;
+    // Same cache_key ("filetype") TreesitterHighlight itself uses --
+    // when a fold pass runs right after a highlight pass for the same
+    // buffer (mep's actual call pattern, see kBuiltinSyntax), this reuses
+    // that already-current tree outright with no reparse at all.
+    TSTree *tree = GetTree(filetype, entry.language(), text);
+    if (!tree) return out;
+
+    TSQueryCursor *cursor = ts_query_cursor_new();
+    ts_query_cursor_exec(cursor, query, ts_tree_root_node(tree));
+    TSQueryMatch match;
+    while (ts_query_cursor_next_match(cursor, &match)) {
+        for (uint16_t c = 0; c < match.capture_count; c++) {
+            TSNode n = match.captures[c].node;
+            TSPoint sp = ts_node_start_point(n);
+            TSPoint ep = ts_node_end_point(n);
+            if (ep.row <= sp.row) continue;  // single-line node: nothing to fold
+            TSFoldRange fr;
+            fr.start_row = static_cast<int>(sp.row);
+            fr.end_row = static_cast<int>(ep.row);
+            out.push_back(fr);
+        }
+    }
+    ts_query_cursor_delete(cursor);
     return out;
 }

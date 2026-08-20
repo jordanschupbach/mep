@@ -6278,11 +6278,31 @@ static const char *kHighlightsOrg = R"TSQ(
 
 static const char *kHighlightsMarkdown = R"TSQ(
 ;From nvim-treesitter/nvim-treesitter
-(atx_heading
-  (inline) @text.title)
+; Per-level heading captures (@text.title.1 .. @text.title.6) so H1..H6
+; can each get a distinct highlight-group color -- the grammar aliases
+; all six ATX heading productions to one visible "atx_heading" node type,
+; but each still has its own distinct marker child node type
+; (atx_h1_marker .. atx_h6_marker) immediately preceding (inline), so a
+; separate pattern per level is enough; no predicate needed. No flat
+; @text.title fallback pattern is kept alongside these -- a heading node
+; matches exactly one of the six marker types, so a generic
+; "(atx_heading (inline) @text.title)" pattern would double-match every
+; heading (once here, once there) and make which color wins
+; non-deterministic (both captures would land on the identical span).
+(atx_heading (atx_h1_marker) (inline) @text.title.1)
+(atx_heading (atx_h2_marker) (inline) @text.title.2)
+(atx_heading (atx_h3_marker) (inline) @text.title.3)
+(atx_heading (atx_h4_marker) (inline) @text.title.4)
+(atx_heading (atx_h5_marker) (inline) @text.title.5)
+(atx_heading (atx_h6_marker) (inline) @text.title.6)
 
 (setext_heading
-  (paragraph) @text.title)
+  (paragraph) @text.title.1
+  (setext_h1_underline))
+
+(setext_heading
+  (paragraph) @text.title.2
+  (setext_h2_underline))
 
 [
   (atx_h1_marker)
@@ -7986,5 +8006,92 @@ static const char *kHighlightsCpp = R"TSQ(
 ; Strings
 
 (raw_string_literal) @string
+)TSQ";
+
+// Fold queries (Phase 19's own noted gap -- "No fold-query support",
+// see main.cpp's kBuiltinSyntax comment): one `@fold` capture per
+// syntactic block worth collapsing, for the core compiled-in languages
+// that have a grammar with distinct block/body node types (markdown and
+// org already have their own heading-depth fold providers in main.cpp's
+// kBuiltinMarkdown/kBuiltinOrg, so they're deliberately not here -- a
+// second, tree-sitter-driven fold provider for the same regions would
+// just double up on org/markdown's existing folds under a different
+// provider name). Every node name below was verified against the actual
+// vendored grammar (third_party/grammars/<lang>) by compiling a real
+// TSQuery against it -- see the incremental-reparse work in
+// treesitter.cpp for how these are executed (TreesitterFoldRanges).
+static const char *kFoldsC = R"TSQ(
+[
+  (compound_statement)
+  (struct_specifier)
+  (enum_specifier)
+  (initializer_list)
+] @fold
+)TSQ";
+
+static const char *kFoldsCpp = R"TSQ(
+[
+  (compound_statement)
+  (class_specifier)
+  (struct_specifier)
+  (namespace_definition)
+  (field_declaration_list)
+  (declaration_list)
+  (enumerator_list)
+  (initializer_list)
+  (lambda_expression)
+] @fold
+)TSQ";
+
+static const char *kFoldsLua = R"TSQ(
+[
+  (function_declaration)
+  (function_definition)
+  (if_statement)
+  (for_statement)
+  (while_statement)
+  (repeat_statement)
+  (do_statement)
+  (table_constructor)
+] @fold
+)TSQ";
+
+static const char *kFoldsPython = R"TSQ(
+[
+  (function_definition)
+  (class_definition)
+  (if_statement)
+  (for_statement)
+  (while_statement)
+  (try_statement)
+  (with_statement)
+  (match_statement)
+  (dictionary)
+  (list)
+] @fold
+)TSQ";
+
+// JS block-bodied constructs (if/for/while/try/catch/finally/functions)
+// all share one `statement_block` node for their body, so that alone
+// covers them uniformly without listing each statement kind separately.
+static const char *kFoldsJavascript = R"TSQ(
+[
+  (function_declaration)
+  (function_expression)
+  (arrow_function)
+  (generator_function)
+  (generator_function_declaration)
+  (class_body)
+  (statement_block)
+  (object)
+  (array)
+  (switch_body)
+] @fold
+)TSQ";
+
+// Likewise every R control structure and function body is a
+// `braced_expression`, so a single capture covers all of them.
+static const char *kFoldsR = R"TSQ(
+(braced_expression) @fold
 )TSQ";
 

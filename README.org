@@ -28,7 +28,8 @@ emscripten, deno, and just on =PATH=.
 
 ** Usage
 
-- =just run= — build the wasm target and open it in a window (default).
+- =just run= — build the native (X11) binary and launch it directly (default).
+- =just run-wasm= — build the wasm target and open it in a window via the Deno-hosted webview.
 - =just build-web= — build the wasm target only, output in =build/web=.
 - =just build-native= — build a native desktop binary, output in =build/native=.
 - =just clean= — remove build output.
@@ -38,11 +39,14 @@ Native builds accept a file to open as the first argument
 on startup if present. Neither is available in the wasm/browser build,
 which has no host filesystem of its own.
 
-When launched through =just run= (the Deno-hosted webview window, not a
-plain browser tab), the wasm build's =:e=/=:w=/=:source= are wired to a
-real-file bridge: the page fetch()es a loopback-only HTTP server
-(=launcher/serve.ts=) that does the actual read/write on disk, via
-=EM_ASYNC_JS= calls in =src/editor.cpp=. Opening =build/web/mep.html=
+When launched through =just run-wasm= (the Deno-hosted webview window, not
+a plain browser tab), the wasm build's =:e=/=:w=/=:source= are wired to a
+real-file bridge: the page does a synchronous =XMLHttpRequest= to a
+loopback-only HTTP server (=launcher/serve.ts=) that does the actual
+read/write on disk, from =EM_JS= calls in =src/editor.cpp= (synchronous
+XHR rather than an awaited =fetch()=, specifically to avoid needing
+Emscripten's Asyncify linked at all -- see that file's own comment above
+=mep_js_read_file= for why). Opening =build/web/mep.html=
 directly in a plain browser tab has no such server behind it and no
 =?bridgePort=...= in its URL, so those commands just fail with an
 ordinary read/write error there, same as the native build's file I/O is

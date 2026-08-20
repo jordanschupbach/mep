@@ -5,7 +5,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
+#include <map>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -18,6 +20,10 @@
 #include "job.h"
 #include "lua_env.h"
 #include "vterm.h"
+#include "image_doc.h"
+#include "pdf_doc.h"
+#include "office_doc.h"
+#include "office_font_data.h"
 
 namespace {
 
@@ -35,6 +41,66 @@ Editor g_editor;
 Font g_font;
 float g_font_size = kDefaultFontSize;
 float g_char_width = 0;
+
+// The 4 Liberation Sans weight/style variants for WYSIWYG office panes
+// (Editor::OfficeSession) -- unlike g_font, these are loaded once at a
+// fixed oversampled base size and never reloaded, since office text is
+// drawn at many different sizes in the same frame (body text, several
+// heading levels, per-session zoom) rather than one global size the way
+// the main buffer's g_font_size is; raylib's DrawTextEx scales a baked
+// atlas to any requested size, just like drawing g_font at other sizes
+// already does elsewhere (e.g. MenuFontSize()).
+Font g_office_font_regular;
+Font g_office_font_bold;
+Font g_office_font_italic;
+Font g_office_font_bolditalic;
+
+// GPU upload cache for image-viewer panes (Editor::ImageSession), keyed by
+// buffer_id -- an ImageDoc is decoded once and never mutated, so its
+// Texture2D is uploaded lazily on first draw and reused every frame after,
+// same lifetime as buffers_ itself (never evicted; see the comment above
+// Editor::images_).
+std::unordered_map<int, Texture2D> g_image_textures;
+
+// GPU upload cache for PDF-viewer panes (Editor::PdfSession), keyed by
+// (buffer_id, page index) -- PdfSession virtualizes its raster cache down
+// to {page-1, page, page+1} (see Editor::EnsurePdfPagesRastered), and this
+// mirrors that: only a handful of entries ever exist per open PDF
+// regardless of document length. Unlike g_image_textures, a page's raster
+// *does* change (rescale re-renders it, or it can be evicted and later
+// re-entered at a different generation), so each entry also tracks the
+// PageRaster::generation, PdfSession::theme_colors, and Editor::ThemeEpoch()
+// it was last uploaded from -- GetOrUpdatePdfPageTexture reuploads whenever
+// any of the three has moved on. theme_epoch is the one that matters most
+// in practice: theme_colors/generation alone missed the case of the active
+// *theme itself* changing (e.g. live-previewing a colorscheme via the theme
+// picker) while a page stayed inside the small rendered-page window the
+// whole time -- that page's raster generation never changed and
+// theme_colors never flipped, so without theme_epoch its stale texture
+// would keep showing the old theme's colors until it happened to scroll
+// out of the window and back. See ThemeEpoch()'s own comment in editor.h.
+struct PdfTextureCacheEntry {
+    Texture2D tex{};
+    int generation = -1;
+    bool theme_colors = false;
+    int theme_epoch = -1;
+    int w = 0, h = 0;
+};
+std::map<std::pair<int, int>, PdfTextureCacheEntry> g_pdf_page_textures;
+
+// PDF "theme colors" mode (default on; Ctrl-R in HandlePdfInput toggles
+// PdfSession::theme_colors): recolors a rendered page to match the
+// editor's own color scheme instead of showing white paper with black
+// text. Maps each pixel's luminance to a point on the gradient between the
+// editor's foreground and background colors -- PDF white background ->
+// editor background, PDF black text -> editor foreground, grays
+// interpolate smoothly. This deliberately desaturates colored content
+// (headings, images, diagrams) the same way most e-reader "night mode"
+// implementations do; it's a text-reading aid, not a color-accurate
+// filter.
+unsigned char ThemedPdfChannel(unsigned char fg, unsigned char bg, float luminance) {
+    return static_cast<unsigned char>(fg + (static_cast<float>(bg) - static_cast<float>(fg)) * luminance);
+}
 
 struct MenuItem {
     std::string label;
@@ -58,6 +124,33 @@ void RecomputeMenuLabelLayout();  // defined below; also called from HandleFontS
 int g_open_menu = -1;
 bool g_show_help_overlay = false;
 std::string g_help_overlay_text;
+
+// Generic click-region registry (NVIM_PARITY_PLAN.md Phase 11's "generic
+// click dispatch on widgets" gap): rebuilt fresh every frame by whichever
+// DrawXxx functions render a clickable region (tab bar, gutter fold
+// markers, pane header breadcrumb) alongside their normal drawing, then
+// consumed once by DispatchChromeClicks() right after DrawEditor() -- one
+// frame of lag between "drawn here" and "clickable here" (identical to the
+// existing g_menu_starts/g_menu_widths cache above), imperceptible at
+// interactive framerates. Deliberately *not* a generic Lua-facing "widget"
+// abstraction (unlike the statusline's {text,hl} schema) -- this wires real
+// clicks onto the existing hardcoded tab/gutter/pane-header rendering
+// rather than rebuilding them on a new customizable widget model, which
+// NVIM_PARITY_PLAN.md documents as a separate, larger, still-deferred
+// refactor.
+struct ClickRegion {
+    Rectangle rect;
+    std::function<void()> action;
+};
+std::vector<ClickRegion> g_click_regions;
+
+void RegisterClickRegion(Rectangle rect, std::function<void()> action) {
+    g_click_regions.push_back({rect, std::move(action)});
+}
+
+bool PointInRect(Vector2 p, const Rectangle &r) {
+    return p.x >= r.x && p.x < r.x + r.width && p.y >= r.y && p.y < r.y + r.height;
+}
 
 int LineHeight() { return static_cast<int>(g_font_size) + 6; }
 int MenuBarHeight() { return static_cast<int>(g_font_size) + 12; }
@@ -115,13 +208,23 @@ const char *ModeName(Mode m, bool replace_mode = false) {
         case Mode::Prompt: return "INPUT";
         case Mode::Confirm: return "CONFIRM";
         case Mode::Select: return "SELECT";
+        case Mode::Preview: return "PREVIEW";
         case Mode::Sidebar: return "SIDEBAR";
         case Mode::Picker: return "PICKER";
+        case Mode::RoamGraph: return "ROAM-GRAPH";
         case Mode::WhichKey: return "WHICHKEY";
         case Mode::HintChar:
         case Mode::HintLabel:
             return "HINT";
         case Mode::Terminal: return "TERMINAL";
+        case Mode::Image: return "IMAGE";
+        case Mode::Pdf: return "PDF";
+        case Mode::OfficeNormal: return "NORMAL";
+        case Mode::OfficeInsert: return "INSERT";
+        case Mode::OfficeVisual: return "VISUAL";
+        case Mode::SheetNormal: return "NORMAL";
+        case Mode::SheetInsert: return "INSERT";
+        case Mode::SheetVisual: return "VISUAL";
     }
     return "?";
 }
@@ -170,6 +273,174 @@ void ApplyFontSize(float size) {
     SetTextureFilter(g_font.texture, TEXTURE_FILTER_BILINEAR);
     g_char_width = MeasureTextEx(g_font, "M", g_font_size, 0).x;
     CacheGlyphIndices();
+}
+
+// Bakes the 4 office-pane fonts once, at startup only (see g_office_font_*'s
+// own comment for why -- no ApplyFontSize-style reload-per-size-change).
+// Baked at a fixed oversampled size (kOfficeFontBasePt * 2, mirroring
+// ApplyFontSize's own 2x-supersample convention) large enough to cover the
+// biggest heading size any session's zoom is likely to reach without
+// visibly blurring when DrawTextEx scales the atlas down.
+void LoadOfficeFonts() {
+    constexpr int kOfficeFontBasePt = 48;
+    // Default ASCII range (32..126, matching raylib's own nullptr-codepoints
+    // default) plus U+2022 BULLET -- office_doc's bullet-list rendering
+    // draws that codepoint directly, which isn't in the ASCII range and
+    // would otherwise fall back to Liberation Sans's "missing glyph" box.
+    static int codepoints[96];
+    for (int c = 32; c <= 126; c++) codepoints[c - 32] = c;
+    codepoints[95] = 0x2022;
+    g_office_font_regular = LoadFontFromMemory(".ttf", kLiberationSansRegularTtf,
+                                                static_cast<int>(kLiberationSansRegularTtfLen),
+                                                kOfficeFontBasePt * 2, codepoints, 96);
+    g_office_font_bold = LoadFontFromMemory(".ttf", kLiberationSansBoldTtf,
+                                             static_cast<int>(kLiberationSansBoldTtfLen),
+                                             kOfficeFontBasePt * 2, codepoints, 96);
+    g_office_font_italic = LoadFontFromMemory(".ttf", kLiberationSansItalicTtf,
+                                               static_cast<int>(kLiberationSansItalicTtfLen),
+                                               kOfficeFontBasePt * 2, codepoints, 96);
+    g_office_font_bolditalic = LoadFontFromMemory(".ttf", kLiberationSansBoldItalicTtf,
+                                                   static_cast<int>(kLiberationSansBoldItalicTtfLen),
+                                                   kOfficeFontBasePt * 2, codepoints, 96);
+    SetTextureFilter(g_office_font_regular.texture, TEXTURE_FILTER_BILINEAR);
+    SetTextureFilter(g_office_font_bold.texture, TEXTURE_FILTER_BILINEAR);
+    SetTextureFilter(g_office_font_italic.texture, TEXTURE_FILTER_BILINEAR);
+    SetTextureFilter(g_office_font_bolditalic.texture, TEXTURE_FILTER_BILINEAR);
+}
+
+// Which of the 4 baked fonts a run of text with this format draws with --
+// strike-through has no dedicated glyph variant, drawn as an overlay line
+// instead (see the office DrawPane branch), so it doesn't affect font
+// selection.
+Font &OfficeFontFor(const DocFormat &fmt) {
+    if (fmt.bold && fmt.italic) return g_office_font_bolditalic;
+    if (fmt.bold) return g_office_font_bold;
+    if (fmt.italic) return g_office_font_italic;
+    return g_office_font_regular;
+}
+
+// Body-text-relative size multiplier for a paragraph's heading level (0 =
+// body). v1 simplification: a handful of fixed ratios, not a real style
+// cascade (see office_doc.h's own exclusion list).
+float OfficeHeadingMultiplier(int heading_level) {
+    switch (heading_level) {
+        case 1: return 1.8f;
+        case 2: return 1.5f;
+        case 3: return 1.3f;
+        case 4: return 1.15f;
+        default: return heading_level > 0 ? 1.1f : 1.0f;
+    }
+}
+
+// One word-wrapped visual line of a paragraph: [start,end) byte range into
+// DocParagraph::text (half-open, like DocSpan). Every paragraph's lines
+// are contiguous and cover the whole text (a wrapped-away trailing space
+// is simply excluded from both the line that dropped it and the next
+// line's start, see the tokenizer loop below) -- contiguity is what lets
+// cursor<->visual-line mapping stay exact.
+struct OfficeWrapLine {
+    int start = 0, end = 0;
+};
+
+// Greedy word-wrap: tokenize into maximal non-whitespace runs ("words")
+// and single whitespace characters (space/tab/newline), then pack tokens
+// onto lines against max_width -- literally the algorithm the design plan
+// specifies ("split on spaces, MeasureTextEx per word"), not a
+// codepoint-precise typesetting engine. A word longer than max_width on
+// its own is never itself split mid-word (an accepted v1 gap: it simply
+// overflows the pane's right edge). Font/size selection for a token uses
+// FormatAt at the token's start -- spans from both parsers already align
+// to word boundaries in practice, so a token straddling a format change
+// is not a case real documents hit.
+std::vector<OfficeWrapLine> WordWrapOfficeParagraph(const DocParagraph &p, float max_width, float font_size) {
+    std::vector<OfficeWrapLine> lines;
+    const std::string &text = p.text;
+    int n = static_cast<int>(text.size());
+    if (max_width < 1.0f) max_width = 1.0f;
+    if (n == 0) {
+        lines.push_back({0, 0});
+        return lines;
+    }
+    auto token_width = [&](int s, int e) -> float {
+        if (e == s + 1 && text[s] == '\t') {
+            Font &f = OfficeFontFor(FormatAt(p, s));
+            return MeasureTextEx(f, " ", font_size, 0).x * 4.0f;
+        }
+        Font &f = OfficeFontFor(FormatAt(p, s));
+        std::string tok = text.substr(s, e - s);
+        return MeasureTextEx(f, tok.c_str(), font_size, 0).x;
+    };
+    int line_start = 0;
+    float cur_width = 0.0f;
+    int i = 0;
+    while (i < n) {
+        unsigned char c = static_cast<unsigned char>(text[i]);
+        if (c == '\n') {
+            lines.push_back({line_start, i});
+            line_start = i + 1;
+            cur_width = 0.0f;
+            i++;
+            continue;
+        }
+        int tok_end;
+        if (c == ' ' || c == '\t') {
+            tok_end = i + 1;
+        } else {
+            tok_end = i;
+            while (tok_end < n) {
+                unsigned char tc = static_cast<unsigned char>(text[tok_end]);
+                if (tc == ' ' || tc == '\t' || tc == '\n') break;
+                tok_end++;
+            }
+        }
+        float w = token_width(i, tok_end);
+        bool is_ws = (c == ' ' || c == '\t');
+        if (cur_width + w > max_width && i > line_start) {
+            if (is_ws) {
+                // Drops the whitespace token that would have overflowed --
+                // it's simply consumed, not carried to the next line
+                // (matches the ordinary "trailing space vanishes at a
+                // wrap point" convention).
+                lines.push_back({line_start, i});
+                line_start = tok_end;
+                cur_width = 0.0f;
+                i = tok_end;
+                continue;
+            }
+            lines.push_back({line_start, i});
+            line_start = i;
+            cur_width = 0.0f;
+        }
+        cur_width += w;
+        i = tok_end;
+    }
+    lines.push_back({line_start, n});
+    return lines;
+}
+
+// One contiguous [start,end) run within a paragraph sharing one DocFormat
+// -- the renderer's unit of a single DrawTextEx call, built by walking
+// p.spans (already sorted/non-overlapping, see office_doc.h) and filling
+// the gaps between them with a default-format run.
+struct OfficeFormatRun {
+    int start = 0, end = 0;
+    DocFormat fmt;
+};
+
+std::vector<OfficeFormatRun> BuildOfficeFormatRuns(const DocParagraph &p, int a, int b) {
+    std::vector<OfficeFormatRun> runs;
+    int pos = a;
+    for (const DocSpan &sp : p.spans) {
+        if (sp.end <= a) continue;
+        if (sp.start >= b) break;
+        int s = std::max(sp.start, a);
+        int e = std::min(sp.end, b);
+        if (s > pos) runs.push_back({pos, s, DocFormat{}});
+        if (e > s) runs.push_back({s, e, sp.fmt});
+        pos = std::max(pos, e);
+    }
+    if (pos < b) runs.push_back({pos, b, DocFormat{}});
+    return runs;
 }
 
 // Draws one line of monospace text, advancing by the app's own fixed
@@ -634,12 +905,21 @@ const char *kBuiltinGit =
     "local mep_git_hunks = {}\n"
     "local mep_git_base_lines = {}\n"
     "local mep_git_status_sidebar_id = nil\n"
+    // Configurable diff base (Phase 17 gap): a single global ref name,
+    // not per-buffer -- same-global convention as mep_git_hunks/
+    // mep_git_base_lines above, and simpler for the common case of
+    // reviewing one buffer's history against a moving point (a branch,
+    // HEAD~1, a SHA) rather than pinning a base per file. Overridable
+    // with `:MepGitGutter base <ref>`; `:MepGitGutter base` with no ref
+    // reports the current one. Every `git show <ref>:<file>` shell-out
+    // in this module reads this instead of a hardcoded 'HEAD'.
+    "mep.git_gutter_base = 'HEAD'\n"
     "function mep.git_gutter_refresh()\n"
     "  local fname = mep.filename()\n"
     "  if fname == '' then return end\n"
     "  if not mep_git_ns then mep_git_ns = mep.ns_create('git') end\n"
     "  local lines = {}\n"
-    "  mep.job_start({'git', 'show', 'HEAD:' .. fname}, {\n"
+    "  mep.job_start({'git', 'show', mep.git_gutter_base .. ':' .. fname}, {\n"
     "    on_stdout = function(l) lines[#lines + 1] = l end,\n"
     "    on_exit = function(code)\n"
     "      mep_git_base_lines = lines\n"
@@ -685,6 +965,22 @@ const char *kBuiltinGit =
     "    local lo, hi = h.new_start, h.new_start + math.max(1, h.new_count) - 1\n"
     "    if row >= lo and row <= hi then return h end\n"
     "  end\n"
+    "end\n"
+    // Preview hunk (Phase 17 gap): shows the hunk under the cursor as a
+    // unified-diff body (old lines '-', new lines '+') in a dismiss-on-
+    // any-key float (mep.float_preview -> Editor::BeginPreview,
+    // DrawPreviewOverlay in main.cpp) *before* mep.git_stage_hunk/
+    // git_reset_hunk act on it -- same hunk-at-cursor lookup and the
+    // same mep_git_base_lines those two already use, just rendered
+    // instead of applied.
+    "function mep.git_preview_hunk()\n"
+    "  local h = mep_git_hunk_at_cursor()\n"
+    "  if not h then mep.notify('No hunk under cursor', 'warn') return end\n"
+    "  local lines = {}\n"
+    "  for i = h.old_start, h.old_start + h.old_count - 1 do lines[#lines + 1] = '-' .. (mep_git_base_lines[i] or '') end\n"
+    "  for i = h.new_start, h.new_start + h.new_count - 1 do lines[#lines + 1] = '+' .. mep.get_line(i) end\n"
+    "  if #lines == 0 then lines[1] = '(empty hunk)' end\n"
+    "  mep.float_preview('Hunk preview  (base: ' .. mep.git_gutter_base .. ')', table.concat(lines, '\\n'))\n"
     "end\n"
     "function mep.git_reset_hunk()\n"
     "  local h = mep_git_hunk_at_cursor()\n"
@@ -773,7 +1069,32 @@ const char *kBuiltinGit =
     "  end\n"
     "end\n"
     "mep.command('MepGitStatus', function() mep.git_status_refresh(); mep.sidebar_open(mep_git_status_sidebar_id) end)\n"
-    "mep.command('MepGitGutter', mep.git_gutter_refresh)\n"
+    // `:MepGitGutter` alone just recomputes against the current base
+    // (unchanged default behavior); `:MepGitGutter base <ref>` (Phase
+    // 17 gap) repoints mep.git_gutter_base at any git revision -- a
+    // branch, a SHA, HEAD~1, etc. -- and immediately recomputes against
+    // it; `:MepGitGutter base` with no ref just reports the current
+    // one. mep.command() callbacks now receive the rest of the command
+    // line verbatim (Editor::ExecuteCommandLine's lua_commands_ lookup),
+    // so one registration covers both forms instead of needing a
+    // separate :MepGitGutterBase command.
+    "function mep.git_gutter_command(args)\n"
+    "  local sub, rest = (args or ''):match('^(%S*)%s*(.*)$')\n"
+    "  if sub == 'base' then\n"
+    "    local ref = rest:match('^%s*(.-)%s*$')\n"
+    "    if ref == '' then\n"
+    "      mep.notify('Git diff base: ' .. mep.git_gutter_base)\n"
+    "    else\n"
+    "      mep.git_gutter_base = ref\n"
+    "      mep.notify('Git diff base set to ' .. ref)\n"
+    "      mep.git_gutter_refresh()\n"
+    "    end\n"
+    "  else\n"
+    "    mep.git_gutter_refresh()\n"
+    "  end\n"
+    "end\n"
+    "mep.command('MepGitGutter', mep.git_gutter_command)\n"
+    "mep.command('MepGitPreviewHunk', mep.git_preview_hunk)\n"
     // Opt-in auto-recompute; :lua mep.git_gutter_auto = true to enable.
     // A longer default debounce interval than colorize/todo_mark since
     // this spawns a git subprocess per recompute.
@@ -787,6 +1108,22 @@ const char *kBuiltinGit =
 // matches with a hint) + live in-buffer marking via decorations.
 const char *kBuiltinTodo =
     "local MEP_TODO_KEYWORDS = {'TODO', 'FIXME', 'HACK', 'NOTE'}\n"
+    // Per-keyword sign glyph + highlight group, keyed by keyword text
+    // (case-sensitive, matching MEP_TODO_KEYWORDS' own case) -- same flat
+    // config-table shape as mep.syntax_keywords/mep.syntax_comment_prefix.
+    // Override an existing entry or add a new one at runtime, e.g.
+    // mep.todoscan_keywords.XXX = {glyph = 'X', hl = 'Purple'} (remember to
+    // also add 'XXX' to MEP_TODO_KEYWORDS above so it's actually scanned
+    // for). A keyword missing from this table -- or a config missing one
+    // of the two fields -- falls back to MEP_TODO_DEFAULT below field by
+    // field, so nothing breaks for keywords the user hasn't customized.
+    "mep.todoscan_keywords = {\n"
+    "  TODO  = {glyph = 'T', hl = 'Yellow'},\n"
+    "  FIXME = {glyph = 'F', hl = 'Red'},\n"
+    "  HACK  = {glyph = 'H', hl = 'Orange'},\n"
+    "  NOTE  = {glyph = 'N', hl = 'Blue'},\n"
+    "}\n"
+    "local MEP_TODO_DEFAULT = {glyph = 'T', hl = 'Warn'}\n"
     "local mep_todo_ns = nil\n"
     "function mep.todo_mark_buffer()\n"
     "  if not mep_todo_ns then mep_todo_ns = mep.ns_create('todoscan') end\n"
@@ -796,7 +1133,10 @@ const char *kBuiltinTodo =
     "    for _, kw in ipairs(MEP_TODO_KEYWORDS) do\n"
     "      local s = line:find(kw, 1, true)\n"
     "      if s then\n"
-    "        mep.deco_add(mep_todo_ns, {row = i, col_start = s, col_end = s + #kw, hl_group = 'Warn', sign = 'T', sign_hl = 'Warn'})\n"
+    "        local cfg = mep.todoscan_keywords[kw] or MEP_TODO_DEFAULT\n"
+    "        local glyph = cfg.glyph or MEP_TODO_DEFAULT.glyph\n"
+    "        local hl = cfg.hl or MEP_TODO_DEFAULT.hl\n"
+    "        mep.deco_add(mep_todo_ns, {row = i, col_start = s, col_end = s + #kw, hl_group = hl, sign = glyph, sign_hl = hl})\n"
     "      end\n"
     "    end\n"
     "  end\n"
@@ -836,6 +1176,43 @@ const char *kBuiltinLsp =
     "  lua = {cmd = {'lua-language-server'}, filetypes = {'lua'}},\n"
     "  clangd = {cmd = {'clangd'}, filetypes = {'c', 'cpp', 'h', 'hpp', 'cc', 'cxx'}},\n"
     "  pyright = {cmd = {'pyright-langserver', '--stdio'}, filetypes = {'py'}},\n"
+    // NVIM_PARITY_PLAN.md's own "LSP server registry ... is just data, add
+    // entries as needed" note (mep.nvim's lua/mep/lsp/servers.lua has 35).
+    // Grown here from the original 3 (lua/clangd/pyright) using the exact
+    // same {cmd, filetypes} shape -- real command names and root-relevant
+    // filetypes for each server, matching how each project actually
+    // invokes it over stdio. Kept to one canonical server per language to
+    // avoid two entries racing to claim the same filetype (see
+    // mep.lsp_attach's filetypes-list fallback below); `basedpyright` is
+    // included as a registered *alternative* to `pyright` with no
+    // filetypes claim of its own for that reason -- select it explicitly
+    // via `mep.lsp_servers.basedpyright.cmd` if preferred over `pyright`.
+    "  gopls = {cmd = {'gopls'}, filetypes = {'go'}},\n"
+    "  rust_analyzer = {cmd = {'rust-analyzer'}, filetypes = {'rs'}},\n"
+    "  typescript_language_server = {cmd = {'typescript-language-server', '--stdio'},\n"
+    "    filetypes = {'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs'}},\n"
+    "  jdtls = {cmd = {'jdtls'}, filetypes = {'java'}},\n"
+    "  solargraph = {cmd = {'solargraph', 'stdio'}, filetypes = {'rb'}},\n"
+    "  intelephense = {cmd = {'intelephense', '--stdio'}, filetypes = {'php'}},\n"
+    "  omnisharp = {cmd = {'omnisharp', '-lsp'}, filetypes = {'cs'}},\n"
+    "  hls = {cmd = {'haskell-language-server-wrapper', '--lsp'}, filetypes = {'hs'}},\n"
+    "  ocamllsp = {cmd = {'ocamllsp'}, filetypes = {'ml', 'mli'}},\n"
+    "  zls = {cmd = {'zls'}, filetypes = {'zig'}},\n"
+    "  elixirls = {cmd = {'elixir-ls'}, filetypes = {'ex', 'exs'}},\n"
+    "  bashls = {cmd = {'bash-language-server', 'start'}, filetypes = {'sh', 'bash'}},\n"
+    "  yamlls = {cmd = {'yaml-language-server', '--stdio'}, filetypes = {'yaml', 'yml'}},\n"
+    "  jsonls = {cmd = {'vscode-json-language-server', '--stdio'}, filetypes = {'json', 'jsonc'}},\n"
+    "  html = {cmd = {'vscode-html-language-server', '--stdio'}, filetypes = {'html', 'htm'}},\n"
+    "  cssls = {cmd = {'vscode-css-language-server', '--stdio'}, filetypes = {'css', 'scss', 'less'}},\n"
+    "  dockerls = {cmd = {'docker-langserver', '--stdio'}, filetypes = {'dockerfile'}},\n"
+    "  terraformls = {cmd = {'terraform-ls', 'serve'}, filetypes = {'tf', 'tfvars'}},\n"
+    "  marksman = {cmd = {'marksman', 'server'}, filetypes = {'md', 'markdown'}},\n"
+    "  taplo = {cmd = {'taplo', 'lsp', 'stdio'}, filetypes = {'toml'}},\n"
+    "  vimls = {cmd = {'vim-language-server', '--stdio'}, filetypes = {'vim'}},\n"
+    "  clojure_lsp = {cmd = {'clojure-lsp'}, filetypes = {'clj', 'cljs', 'cljc'}},\n"
+    "  kotlin_language_server = {cmd = {'kotlin-language-server'}, filetypes = {'kt', 'kts'}},\n"
+    "  svelte = {cmd = {'svelteserver', '--stdio'}, filetypes = {'svelte'}},\n"
+    "  basedpyright = {cmd = {'basedpyright-langserver', '--stdio'}, filetypes = {}},\n"
     "}\n"
     // filetype -> client_id (one client per filetype, workspace-wide)
     "local mep_lsp_clients = {}\n"
@@ -872,7 +1249,24 @@ const char *kBuiltinLsp =
     "  if fname == '' then return end\n"
     "  local ft = mep_lsp_filetype(fname)\n"
     "  if not ft then return end\n"
+    // Direct key lookup first (the fast, pre-existing path -- also what
+    // keeps `mep.lsp_servers.lua`'s key doubling as its own filetype
+    // working unchanged). Real bug found while growing this registry:
+    // most entries are keyed by *server name* (`clangd`, `pyright`, ...),
+    // not by filetype, so a direct `mep.lsp_servers[ft]` lookup silently
+    // never matched them -- every server but `lua` was unreachable from
+    // `mep.lsp_attach` even though its `filetypes` field was right there.
+    // Falls back to scanning every entry's `filetypes` list, which is the
+    // field the registry always documented as the real dispatch key.
     "  local server = mep.lsp_servers[ft]\n"
+    "  if not server then\n"
+    "    for _, s in pairs(mep.lsp_servers) do\n"
+    "      for _, ft2 in ipairs(s.filetypes or {}) do\n"
+    "        if ft2 == ft then server = s break end\n"
+    "      end\n"
+    "      if server then break end\n"
+    "    end\n"
+    "  end\n"
     "  if not server then return end\n"
     "  if mep_lsp_clients[ft] and mep.lsp_is_running(mep_lsp_clients[ft]) then\n"
     "    mep.lsp_did_open()\n"
@@ -893,6 +1287,11 @@ const char *kBuiltinLsp =
     "        completion = {completionItem = {snippetSupport = false}},\n"
     "        publishDiagnostics = {},\n"
     "        documentSymbol = {},\n"
+    "        implementation = {},\n"
+    "        typeDefinition = {},\n"
+    "        signatureHelp = {signatureInformation = {documentationFormat = {'plaintext'}}},\n"
+    "        rename = {},\n"
+    "        codeAction = {},\n"
     "      },\n"
     "    },\n"
     "  }, function(msg)\n"
@@ -962,7 +1361,7 @@ const char *kBuiltinLsp =
     "    if not result then mep.notify('No hover info') return end\n"
     "    local contents = result.contents\n"
     "    local text = type(contents) == 'table' and (contents.value or table.concat(contents, '\\n')) or tostring(contents)\n"
-    "    mep.notify(text)\n"
+    "    mep.hover_show('Hover', text)\n"
     "  end)\n"
     "end\n"
     "function mep.lsp_goto_definition()\n"
@@ -1019,11 +1418,277 @@ const char *kBuiltinLsp =
     "    mep.notify('Formatted')\n"
     "  end)\n"
     "end\n"
+    // Word under the cursor -- rename's own default-prefill (mep.ui_input's
+    // second arg), no existing helper for this anywhere else in the
+    // codebase to reuse.
+    "function mep_lsp_word_at_cursor()\n"
+    "  local row, col = mep.cursor()\n"
+    "  local line = mep.get_line(row)\n"
+    "  local s, e = col, col\n"
+    "  while s > 1 and line:sub(s - 1, s - 1):match('[%w_]') do s = s - 1 end\n"
+    "  while e <= #line and line:sub(e, e):match('[%w_]') do e = e + 1 end\n"
+    "  if s >= e then return nil end\n"
+    "  return line:sub(s, e - 1)\n"
+    "end\n"
+    // Shared by the two new goto-* requests below: same request/response
+    // shape as mep.lsp_goto_definition above (Location | Location[]), just
+    // a different method name and not-found message -- factored out here
+    // rather than duplicated a third/fourth time (mep.lsp_goto_definition
+    // itself is left as its own pre-existing function, untouched).
+    "function mep_lsp_goto(method, not_found_msg)\n"
+    "  local id = mep.lsp_client_for()\n"
+    "  if not id then mep.notify('No LSP attached', 'warn') return end\n"
+    "  mep.lsp_request(id, method, {\n"
+    "    textDocument = {uri = mep_lsp_uri(mep.filename())}, position = mep_lsp_position(),\n"
+    "  }, function(msg)\n"
+    "    local result = mep_lsp_result(msg)\n"
+    "    local loc = result and (result.uri and result or result[1])\n"
+    "    if not loc then mep.notify(not_found_msg) return end\n"
+    "    local f = loc.uri:gsub('^file://', '')\n"
+    "    mep.cmd('e ' .. f)\n"
+    "    mep.set_cursor(loc.range.start.line + 1, loc.range.start.character + 1)\n"
+    "  end)\n"
+    "end\n"
+    "function mep.lsp_goto_implementation()\n"
+    "  mep_lsp_goto('textDocument/implementation', 'No implementation found')\n"
+    "end\n"
+    "function mep.lsp_goto_type_definition()\n"
+    "  mep_lsp_goto('textDocument/typeDefinition', 'No type definition found')\n"
+    "end\n"
+    "function mep.lsp_signature_help()\n"
+    "  local id = mep.lsp_client_for()\n"
+    "  if not id then mep.notify('No LSP attached', 'warn') return end\n"
+    "  mep.lsp_request(id, 'textDocument/signatureHelp', {\n"
+    "    textDocument = {uri = mep_lsp_uri(mep.filename())}, position = mep_lsp_position(),\n"
+    "  }, function(msg)\n"
+    "    local result = mep_lsp_result(msg)\n"
+    "    local sigs = result and result.signatures\n"
+    "    if not sigs or #sigs == 0 then return end\n"
+    "    local active = sigs[(result.activeSignature or 0) + 1] or sigs[1]\n"
+    "    local text = active.label or ''\n"
+    "    local doc = active.documentation\n"
+    "    if doc then\n"
+    "      local doctext = type(doc) == 'table' and doc.value or tostring(doc)\n"
+    "      if doctext and doctext ~= '' then text = text .. '\\n' .. doctext end\n"
+    "    end\n"
+    // mep.hover_show, not mep.notify: a real anchored floating popup now
+    // exists (added for mep.lsp_hover above) and auto-dismisses on cursor
+    // move/mode change, which is exactly the right lifetime for signature
+    // help too -- reused as-is rather than inventing a second widget.
+    "    mep.hover_show('Signature Help', text)\n"
+    "  end)\n"
+    "end\n"
+    // Opt-in-by-default auto-trigger while typing inside a call's argument
+    // list -- unlike hover's other consumers, signature help is only
+    // useful *during* typing, not summoned after the fact, so this
+    // defaults on (mep.lsp_signature_help_auto = true) unlike every other
+    // '_auto' flag elsewhere in this file, which default off. Trigger
+    // heuristic is a cheap same-line scan for an unmatched '(' before the
+    // cursor -- the same "regex/same-line-scan, not a real parser"
+    // tradeoff Phase 25's own doc-gen fallback already made -- riding
+    // kBuiltinEditHooks' existing debounced mep.on_buffer_changed rather
+    // than a new per-keystroke hook.
+    "mep.lsp_signature_help_auto = true\n"
+    "local function mep_lsp_in_call_args()\n"
+    "  local row, col = mep.cursor()\n"
+    "  local line = mep.get_line(row):sub(1, col - 1)\n"
+    "  local depth = 0\n"
+    "  for i = #line, 1, -1 do\n"
+    "    local c = line:sub(i, i)\n"
+    "    if c == ')' then depth = depth + 1\n"
+    "    elseif c == '(' then\n"
+    "      if depth == 0 then return true end\n"
+    "      depth = depth - 1\n"
+    "    end\n"
+    "  end\n"
+    "  return false\n"
+    "end\n"
+    "mep.on_buffer_changed(function()\n"
+    "  if mep.lsp_signature_help_auto and mep.lsp_client_for() and mep_lsp_in_call_args() then\n"
+    "    mep.lsp_signature_help()\n"
+    "  end\n"
+    "end, 0.2)\n"
+    // General TextEdit application, character-range-aware -- unlike
+    // mep.lsp_format's own line-based apply above (which only works
+    // because formatting edits happen to already be whole-line/whole-
+    // file). Rename/code-action edits are typically just a few characters
+    // mid-line, so reusing replace_lines the way mep.lsp_format does would
+    // clobber the rest of the line; this splices newText between the
+    // edit's start/end *character* offsets instead. Splits newText on
+    // '\n' with an explicit pos-cursor loop rather than mep.lsp_format's
+    // own `(e.newText..'\\n'):gmatch('(.-)\\n')` + "drop a trailing empty
+    // element" trick -- that trick silently eats a genuine trailing
+    // newline (e.g. newText = "foo\\n", a whole-new-line insertion) by
+    // merging it back into the following line, which mep.lsp_format never
+    // notices only because its own edits happen to never end in '\\n'
+    // followed by more content. Caught by hand-tracing this function
+    // against a code-action edit that inserts "marker\\n" at column 0
+    // during verification (see report) -- a real bug, fixed before ever
+    // reaching the live test.
+    "function mep_lsp_apply_text_edit(e)\n"
+    "  local sl, sc = e.range.start.line + 1, e.range.start.character + 1\n"
+    "  local el, ec = e.range['end'].line + 1, e.range['end'].character + 1\n"
+    "  local new_lines = {}\n"
+    "  local text, pos = e.newText, 1\n"
+    "  while true do\n"
+    "    local nl = text:find('\\n', pos, true)\n"
+    "    if not nl then new_lines[#new_lines + 1] = text:sub(pos) break end\n"
+    "    new_lines[#new_lines + 1] = text:sub(pos, nl - 1)\n"
+    "    pos = nl + 1\n"
+    "  end\n"
+    "  local first_line = mep.get_line(sl)\n"
+    "  local last_line = (el == sl) and first_line or mep.get_line(el)\n"
+    "  local prefix = first_line:sub(1, sc - 1)\n"
+    "  local suffix = last_line:sub(ec)\n"
+    "  new_lines[1] = prefix .. new_lines[1]\n"
+    "  new_lines[#new_lines] = new_lines[#new_lines] .. suffix\n"
+    "  mep.replace_lines(sl, el + 1, new_lines)\n"
+    "end\n"
+    // Applies a batch of TextEdits to the *currently open* buffer, bottom-
+    // up (descending start position) so an earlier-applied edit's
+    // line/column shift never invalidates a later one still queued.
+    "function mep_lsp_apply_edits_current_buffer(edits)\n"
+    "  table.sort(edits, function(a, b)\n"
+    "    if a.range.start.line ~= b.range.start.line then return a.range.start.line > b.range.start.line end\n"
+    "    return a.range.start.character > b.range.start.character\n"
+    "  end)\n"
+    "  for _, e in ipairs(edits) do mep_lsp_apply_text_edit(e) end\n"
+    "end\n"
+    // Applies an LSP WorkspaceEdit (rename/code-action's own response
+    // shape), possibly spanning multiple files -- normalizes both
+    // `changes` (a plain uri->TextEdit[] map) and `documentChanges`
+    // (TextDocumentEdit[], the shape clangd and other newer servers
+    // prefer) into the same form first. No headless "edit a buffer
+    // without displaying it" path exists anywhere in this codebase
+    // (mep.lsp_format's own edit-apply above is single-buffer-only, and
+    // mep.lsp_goto_definition/references' cross-file jumps are the only
+    // precedent for touching another file at all) -- so a target file
+    // that isn't already the current buffer is opened with the same
+    // `mep.cmd('e ' .. f)` pattern those already use, edited, saved, and
+    // the original buffer + cursor position are restored afterward.
+    // Returns the total edit count actually applied.
+    "function mep.lsp_apply_workspace_edit(edit)\n"
+    "  if not edit then return 0 end\n"
+    "  local changes = edit.changes\n"
+    "  if (not changes or next(changes) == nil) and edit.documentChanges then\n"
+    "    changes = {}\n"
+    "    for _, dc in ipairs(edit.documentChanges) do\n"
+    "      if dc.textDocument and dc.edits then changes[dc.textDocument.uri] = dc.edits end\n"
+    "    end\n"
+    "  end\n"
+    "  if not changes then return 0 end\n"
+    "  local orig_fname = mep.filename()\n"
+    "  local orig_abspath = mep_lsp_abspath(orig_fname)\n"
+    "  local orig_row, orig_col = mep.cursor()\n"
+    "  local switched, total = false, 0\n"
+    "  for uri, edits in pairs(changes) do\n"
+    "    local f = uri:gsub('^file://', '')\n"
+    "    if #edits > 0 then\n"
+    "      if f == orig_abspath then\n"
+    "        mep_lsp_apply_edits_current_buffer(edits)\n"
+    "      else\n"
+    "        mep.cmd('e ' .. f)\n"
+    "        switched = true\n"
+    "        mep_lsp_apply_edits_current_buffer(edits)\n"
+    "        mep.cmd('w')\n"
+    "      end\n"
+    "      total = total + #edits\n"
+    "    end\n"
+    "  end\n"
+    "  if switched then\n"
+    "    mep.cmd('e ' .. orig_fname)\n"
+    "    mep.set_cursor(orig_row, orig_col)\n"
+    "  end\n"
+    "  return total\n"
+    "end\n"
+    "function mep.lsp_rename()\n"
+    "  local id = mep.lsp_client_for()\n"
+    "  if not id then mep.notify('No LSP attached', 'warn') return end\n"
+    "  local default_name = mep_lsp_word_at_cursor() or ''\n"
+    "  mep.ui_input('New name:', default_name, function(new_name)\n"
+    "    if not new_name or new_name == '' or new_name == default_name then return end\n"
+    "    mep.lsp_request(id, 'textDocument/rename', {\n"
+    "      textDocument = {uri = mep_lsp_uri(mep.filename())}, position = mep_lsp_position(),\n"
+    "      newName = new_name,\n"
+    "    }, function(msg)\n"
+    "      local result = mep_lsp_result(msg)\n"
+    "      if not result then mep.notify('Rename: server returned no edits', 'warn') return end\n"
+    "      local n = mep.lsp_apply_workspace_edit(result)\n"
+    "      if n == 0 then\n"
+    "        mep.notify('Rename: server returned no edits', 'warn')\n"
+    "      else\n"
+    "        mep.notify('Renamed to ' .. new_name .. ' (' .. n .. ' edit' .. (n == 1 and '' or 's') .. ')')\n"
+    "      end\n"
+    "    end)\n"
+    "  end)\n"
+    "end\n"
+    // A CodeAction result entry is either a full CodeAction (optional
+    // `edit`/`command`) or a bare Command (`command` is then a string, not
+    // a table) -- both shapes handled here. `codeAction/resolve` (lazy
+    // edit resolution some servers use instead of inlining `edit`
+    // up front) is not implemented -- not hit by any server exercised
+    // during verification, documented as a known gap below.
+    "function mep_lsp_apply_code_action(id, action)\n"
+    "  local applied = false\n"
+    "  if action.edit then\n"
+    "    applied = mep.lsp_apply_workspace_edit(action.edit) > 0\n"
+    "  end\n"
+    "  local cmd = action.command\n"
+    "  if type(cmd) == 'table' then\n"
+    "    mep.lsp_request(id, 'workspace/executeCommand', {command = cmd.command, arguments = cmd.arguments})\n"
+    "    applied = true\n"
+    "  elseif type(cmd) == 'string' then\n"
+    "    mep.lsp_request(id, 'workspace/executeCommand', {command = cmd, arguments = action.arguments})\n"
+    "    applied = true\n"
+    "  end\n"
+    "  mep.notify((applied and 'Applied: ' or 'No-op: ') .. (action.title or 'code action'))\n"
+    "end\n"
+    "function mep.lsp_code_action()\n"
+    "  local id = mep.lsp_client_for()\n"
+    "  if not id then mep.notify('No LSP attached', 'warn') return end\n"
+    "  local row = mep.cursor()\n"
+    "  local diags = mep_lsp_diagnostics[mep_lsp_abspath(mep.filename())] or {}\n"
+    "  local line_diags = {}\n"
+    "  for _, d in ipairs(diags) do\n"
+    "    if d.range.start.line + 1 == row then line_diags[#line_diags + 1] = d end\n"
+    "  end\n"
+    "  mep.lsp_request(id, 'textDocument/codeAction', {\n"
+    "    textDocument = {uri = mep_lsp_uri(mep.filename())},\n"
+    "    range = {start = mep_lsp_position(), ['end'] = mep_lsp_position()},\n"
+    "    context = {diagnostics = line_diags},\n"
+    "  }, function(msg)\n"
+    "    local result = mep_lsp_result(msg)\n"
+    "    if not result or #result == 0 then mep.notify('No code actions available') return end\n"
+    "    if #result == 1 then mep_lsp_apply_code_action(id, result[1]) return end\n"
+    "    local items = {}\n"
+    "    for i, a in ipairs(result) do items[i] = {display = a.title or ('Action ' .. i), data = tostring(i)} end\n"
+    "    mep.picker_open('Code Actions', items, function(sel)\n"
+    "      if sel then mep_lsp_apply_code_action(id, result[tonumber(sel)]) end\n"
+    "    end)\n"
+    "  end)\n"
+    "end\n"
     "mep.command('MepLspAttach', mep.lsp_attach)\n"
     "mep.command('MepLspHover', mep.lsp_hover)\n"
     "mep.command('MepLspDefinition', mep.lsp_goto_definition)\n"
     "mep.command('MepLspReferences', mep.lsp_references)\n"
     "mep.command('MepLspFormat', mep.lsp_format)\n"
+    "mep.command('MepLspImplementation', mep.lsp_goto_implementation)\n"
+    "mep.command('MepLspTypeDefinition', mep.lsp_goto_type_definition)\n"
+    "mep.command('MepLspSignatureHelp', mep.lsp_signature_help)\n"
+    "mep.command('MepLspRename', mep.lsp_rename)\n"
+    "mep.command('MepLspCodeAction', mep.lsp_code_action)\n"
+    // Leader-key defaults: 'lt'/'rn'/'ca' deliberately match mep.nvim's
+    // own keymaps.lua defaults (<leader>lt/rn/ca) for the methods it also
+    // binds under <leader>; implementation/signature-help have no such
+    // precedent there (mep.nvim uses bare 'gi'/'<C-k>' for those instead)
+    // since mep.map only binds single ASCII keys in Normal/Visual mode --
+    // no 'g'-prefixed two-key sequences or Ctrl-modified letters -- so
+    // 'li'/'lk' extend the same 'l' (LSP) leader group by mnemonic instead.
+    "mep.leader_map('li', 'LSP: goto implementation', mep.lsp_goto_implementation)\n"
+    "mep.leader_map('lt', 'LSP: goto type definition', mep.lsp_goto_type_definition)\n"
+    "mep.leader_map('lk', 'LSP: signature help', mep.lsp_signature_help)\n"
+    "mep.leader_map('rn', 'LSP: rename', mep.lsp_rename)\n"
+    "mep.leader_map('ca', 'LSP: code action', mep.lsp_code_action)\n"
     // --- Diagnostics UI (Phase 21) -- built on the publishDiagnostics
     // store kBuiltinLsp already populates (mep_lsp_diagnostics, upvalue-
     // shared since this all lives in the same DoString chunk).
@@ -1040,7 +1705,7 @@ const char *kBuiltinLsp =
     "    local row = d.range.start.line + 1\n"
     "    mep.deco_add(mep_diag_ns, {\n"
     "      row = row, col_start = d.range.start.character + 1, col_end = d.range['end'].character + 1,\n"
-    "      hl_group = hl, sign = MEP_DIAG_GLYPH[sev] or 'E', sign_hl = hl,\n"
+    "      hl_group = hl, underline = true, sign = MEP_DIAG_GLYPH[sev] or 'E', sign_hl = hl,\n"
     "      virt_text = '  ' .. d.message:gsub('\\n.*', ''), virt_text_hl = hl,\n"
     "    })\n"
     "  end\n"
@@ -1082,12 +1747,136 @@ const char *kBuiltinLsp =
     "mep.command('MepDiagShow', mep.lsp_diagnostic_at_cursor)\n";
 
 // Completion sources (Phase 22): buffer-word is the always-available
-// default (registered here); mep.set_completion_source(fn) lets user
-// config or a later phase (LSP, once a completion request wrapper is
-// added) swap in a richer source.
+// default, now joined by two more sources folded into the same function --
+// mep still only has one completion-source *slot*
+// (mep.set_completion_source(fn)), so "multiple sources" here means one
+// registered function that internally merges buffer words, Phase 23
+// snippet trigger names, filesystem paths, and (when an LSP client is
+// attached) textDocument/completion results, all through one seen-set so
+// duplicate text offered by more than one source collapses to a single
+// entry, then caps the combined list to MEP_COMPLETION_MAX_ITEMS.
+// UpdateCompletionPopup (editor.cpp) already throttles how often this
+// whole function runs (skip when the prefix hasn't changed + a 50ms
+// minimum interval between genuine prefix changes) -- everything added
+// below rides that same throttle rather than adding a new one, so none of
+// it reintroduces the per-keystroke cost that throttle exists to prevent
+// (see UpdateCompletionPopup's own comment for the history/motivation).
 const char *kBuiltinCompletion =
+    // Caps the combined candidate list before it ever reaches C++.
+    // DrawCompletionPopup (main.cpp) measures the text width of *every*
+    // item to size the popup box, on every frame the popup is open (not
+    // just on keystrokes) -- an unbounded list (thousands of buffer words
+    // sharing a common 2-char prefix in a huge file, or an LSP server
+    // returning its whole project symbol table) would be an unbounded
+    // per-frame cost even though the visible rows are already capped to 8.
+    // Ranks by length-then-alphabetical (closer matches to the typed
+    // prefix sort first) as a cheap relevance proxy, since none of these
+    // sources hands back a real fuzzy-match score.
+    "MEP_COMPLETION_MAX_ITEMS = 50\n"
+    "function mep_completion_rank(words)\n"
+    "  table.sort(words, function(a, b) if #a ~= #b then return #a < #b end return a < b end)\n"
+    "  if #words <= MEP_COMPLETION_MAX_ITEMS then return words end\n"
+    "  local capped = {}\n"
+    "  for i = 1, MEP_COMPLETION_MAX_ITEMS do capped[i] = words[i] end\n"
+    "  return capped\n"
+    "end\n"
+    // Path completion source (new): returns dir, base if the text right
+    // before the current alnum-prefix (as computed by
+    // UpdateCompletionPopup, editor.cpp) looks like a filesystem path,
+    // nil otherwise. Two triggers:
+    //   1. The character immediately before the prefix is '/' or '.' --
+    //      covers `src/ed`, `./sr`, `../foo/ba` (the prefix scan already
+    //      stops right at that character, so it's exactly the boundary
+    //      to inspect here).
+    //   2. The prefix opens right after a quote that itself follows
+    //      `require(`, `import `, or `from ` earlier on the line -- the
+    //      "typing a path inside an import/require string literal" case
+    //      -- even with no `/` typed yet.
+    // Both resolve relative to the current working directory (matching
+    // :e/:w's own convention), not the edited file's directory -- a
+    // known, documented simplification; a real `dirname(mep.filename())`
+    // base would be a small follow-up.
+    "function mep_completion_path_prefix(prefix, row, col, line)\n"
+    "  local start = col - 1 - #prefix\n"
+    "  local before = line:sub(1, start)\n"
+    "  local trigger = before:sub(-1)\n"
+    "  if trigger == '/' or trigger == '.' then\n"
+    "    local token = before:match('[%w_%.%-/]*$') or ''\n"
+    "    local dir = token:match('^(.*/)') or ''\n"
+    "    return (dir == '' and '.' or dir), prefix\n"
+    "  end\n"
+    "  if trigger == '\"' or trigger == \"'\" then\n"
+    "    local ctx = before:sub(1, -2):sub(-40)\n"
+    "    if ctx:find('require%s*%(%s*$') or ctx:find('import%s') or ctx:find('from%s') then\n"
+    "      return '.', prefix\n"
+    "    end\n"
+    "  end\n"
+    "  return nil\n"
+    "end\n"
+    // LSP completion cache (new source): textDocument/completion is
+    // async, unlike every other source here, so it can't be answered
+    // inline the way buffer words can. Cached by *word start* position
+    // (stable while a word is being typed) rather than by the growing
+    // prefix, so a response that arrives after the word's first
+    // keystroke is still reused -- filtered locally against whatever the
+    // prefix has grown to -- on every later keystroke of that same word,
+    // instead of firing a fresh request each time.
+    // mep_lsp_completion_pending guards against firing a second request
+    // for the same word while the first is still in flight.
+    "mep_lsp_completion_cache = {items = {}, row = nil, start_col = nil}\n"
+    "mep_lsp_completion_pending = {row = nil, start_col = nil}\n"
+    // text -> LSP InsertTextFormat (1 = PlainText, 2 = Snippet) for
+    // whatever candidate text mep_lsp_completion_cache most recently
+    // offered -- Phase 23's completion-accept hook (kBuiltinSnippets)
+    // consults this after AcceptCompletion (editor.cpp) splices the raw
+    // text in, to tell a real `${1:x}`-style Snippet item apart from an
+    // ordinary PlainText one before deciding whether to re-expand it
+    // through the tabstop engine. Keyed by text rather than by
+    // row/start_col like the cache above since that's all the accept hook
+    // is handed back; a global text->format table can only misfire if two
+    // *different* items from the same response resolve to byte-identical
+    // insertText with different formats, which would already be a
+    // pathological server response.
+    "mep_lsp_completion_iformat = {}\n"
+    "function mep_lsp_completion_request(client, row, start_col)\n"
+    "  mep.lsp_request(client, 'textDocument/completion', {\n"
+    "    textDocument = {uri = mep_lsp_uri(mep.filename())}, position = mep_lsp_position(),\n"
+    "  }, function(msg)\n"
+    "    local result = mep_lsp_result(msg)\n"
+    // CompletionList ({isIncomplete=, items=...}) vs a bare
+    // CompletionItem[] -- servers use either shape; `result.items` is
+    // simply absent on the array form, so the `or result` fallback
+    // covers it without needing to distinguish the two explicitly.
+    "    local list = (result and (result.items or result)) or {}\n"
+    "    local items = {}\n"
+    "    for _, it in ipairs(list) do\n"
+    "      local text = it.insertText or it.label\n"
+    "      if text and #text > 0 then\n"
+    "        items[#items + 1] = text\n"
+    "        mep_lsp_completion_iformat[text] = it.insertTextFormat\n"
+    "      end\n"
+    "    end\n"
+    "    mep_lsp_completion_cache = {items = items, row = row, start_col = start_col}\n"
+    "  end)\n"
+    "end\n"
     "function mep.completion_buffer_words(prefix)\n"
     "  local seen, words = {}, {}\n"
+    "  local row, col = mep.cursor()\n"
+    "  local line = mep.get_line(row)\n"
+    // Path context takes over the whole source when detected -- an
+    // identifier match like "function" sitting next to a half-typed
+    // filename would just be noise, so buffer words/snippets/LSP are
+    // skipped rather than merged in this case.
+    "  local path_dir, path_base = mep_completion_path_prefix(prefix, row, col, line)\n"
+    "  if path_dir then\n"
+    "    for _, e in ipairs(mep.list_dir(path_dir)) do\n"
+    "      if #e.name > #path_base and e.name:sub(1, #path_base) == path_base and not seen[e.name] then\n"
+    "        seen[e.name] = true\n"
+    "        words[#words + 1] = e.is_dir and (e.name .. '/') or e.name\n"
+    "      end\n"
+    "    end\n"
+    "    return mep_completion_rank(words)\n"
+    "  end\n"
     // Snippet trigger names for the current filetype (Phase 23) count as
     // completion candidates too -- accepting one inserts the trigger word
     // itself, same as any buffer word; expanding it into the full snippet
@@ -1110,8 +1899,26 @@ const char *kBuiltinCompletion =
     "      end\n"
     "    end\n"
     "  end\n"
-    "  table.sort(words)\n"
-    "  return words\n"
+    // LSP source: merge cached results (filtered against the current
+    // prefix) if they're for this same word, else kick off (or leave in
+    // flight) an async request for it -- see mep_lsp_completion_request's
+    // comment above for the caching scheme.
+    "  local client = mep.lsp_client_for and mep.lsp_client_for()\n"
+    "  if client then\n"
+    "    local start_col = col - 1 - #prefix\n"
+    "    if mep_lsp_completion_cache.row == row and mep_lsp_completion_cache.start_col == start_col then\n"
+    "      for _, w in ipairs(mep_lsp_completion_cache.items) do\n"
+    "        if #w > #prefix and w:sub(1, #prefix) == prefix and not seen[w] then\n"
+    "          seen[w] = true\n"
+    "          words[#words + 1] = w\n"
+    "        end\n"
+    "      end\n"
+    "    elseif not (mep_lsp_completion_pending.row == row and mep_lsp_completion_pending.start_col == start_col) then\n"
+    "      mep_lsp_completion_pending = {row = row, start_col = start_col}\n"
+    "      mep_lsp_completion_request(client, row, start_col)\n"
+    "    end\n"
+    "  end\n"
+    "  return mep_completion_rank(words)\n"
     "end\n"
     "mep.set_completion_source(mep.completion_buffer_words)\n";
 
@@ -1261,22 +2068,236 @@ const char *kBuiltinSymbols =
 // Docs (generate + lookup) + Help picker (Phase 25). Help picker reuses
 // mep.commands() (Phase 8/13's command palette) as-is -- "a live index
 // over registered commands... <CR> runs the selected entry" is exactly
-// what that picker already does; keybinding introspection (the plan's
-// other half of this bullet) is deferred, no keybind-description registry
-// exists to introspect (mep.map's callers never attach one).
+// what that picker already does.
+//
+// Keybinding introspection (the plan's other half of this bullet) now has
+// a real consumer: mep.keymaps()/:MepKeymaps below, a Phase 8-style
+// searchable picker over mep.mapping_descriptions() (plain mep.map()
+// bindings) and mep.leader_bindings() (leader-sequence bindings) --
+// mapping_descriptions_ existed as a registry with nothing reading it
+// (mep.map's own callers rarely attach a desc, and nothing surfaced
+// leader_map's own long-standing WhichKeyBinding descriptions outside the
+// transient which-key overlay either); this is the first thing that reads
+// either as a persistent, filterable list rather than a one-shot popup.
+//
+// Doc-template generation: MEP_DOC_LANG maps a bare file extension (what
+// mep_lsp_filetype returns) to a canonical language key -- note this
+// fixes a real pre-existing bug, not just an extension: the old
+// MEP_DOC_TEMPLATES was keyed directly by mep_lsp_filetype's result
+// ('py', 'js', ...) but its own table used language *names* ('python',
+// 'javascript') as keys, so `MEP_DOC_TEMPLATES[ft]` only ever actually
+// matched for 'lua' (where the extension and the name happen to be
+// spelled the same) -- .py/.js files silently hit "No doc template for
+// this filetype" this whole time. Also extends coverage to every other
+// filetype with a real doc-comment convention this codebase already has
+// LSP or syntax-highlighting support for (c/cpp via clangd, go, rust,
+// java, ruby), beyond the original lua/python/javascript three.
 const char *kBuiltinDocs =
-    "local MEP_DOC_TEMPLATES = {\n"
-    "  lua = function(sig) return {'--- ' .. sig, '-- @param', '-- @return'} end,\n"
-    "  python = function(sig) return {'\"\"\"', sig, '\"\"\"'} end,\n"
-    "  javascript = function(sig) return {'/**', ' * ' .. sig, ' */'} end,\n"
+    "local MEP_DOC_LANG = {\n"
+    "  lua = 'lua',\n"
+    "  py = 'python',\n"
+    "  js = 'javascript', jsx = 'javascript', mjs = 'javascript', cjs = 'javascript',\n"
+    "  ts = 'javascript', tsx = 'javascript',\n"
+    "  c = 'c', h = 'c', cpp = 'c', cc = 'c', cxx = 'c', hpp = 'c', hh = 'c', hxx = 'c',\n"
+    "  go = 'go', rs = 'rust', java = 'java', rb = 'ruby',\n"
     "}\n"
+    // Each template is `function(sig, params, ret)`: `sig` is the raw
+    // signature text (the source line when no LSP data is available, or
+    // the LSP-reported SignatureInformation.label when it is); `params`
+    // is an array of {name=, type=} (type may be nil) -- empty when
+    // there's no LSP-derived breakdown, in which case every template
+    // below degrades to exactly its original lua/python/javascript-only
+    // single-line-signature output (verified line-for-line against the
+    // pre-existing behavior); `ret` is a return-type string or nil.
+    "local MEP_DOC_TEMPLATES = {\n"
+    "  lua = function(sig, params, ret)\n"
+    "    local lines = {'--- ' .. sig}\n"
+    "    if #params > 0 then\n"
+    "      for _, p in ipairs(params) do\n"
+    "        lines[#lines + 1] = '-- @param ' .. p.name .. (p.type and (' ' .. p.type) or '')\n"
+    "      end\n"
+    "    else\n"
+    "      lines[#lines + 1] = '-- @param'\n"
+    "    end\n"
+    "    lines[#lines + 1] = '-- @return' .. (ret and (' ' .. ret) or '')\n"
+    "    return lines\n"
+    "  end,\n"
+    "  python = function(sig, params, ret)\n"
+    "    local lines = {'\"\"\"', sig}\n"
+    "    if #params > 0 then\n"
+    "      lines[#lines + 1] = ''\n"
+    "      lines[#lines + 1] = 'Args:'\n"
+    "      for _, p in ipairs(params) do\n"
+    "        lines[#lines + 1] = '    ' .. p.name .. (p.type and (' (' .. p.type .. ')') or '') .. ': '\n"
+    "      end\n"
+    "    end\n"
+    "    if ret then\n"
+    "      lines[#lines + 1] = ''\n"
+    "      lines[#lines + 1] = 'Returns:'\n"
+    "      lines[#lines + 1] = '    ' .. ret .. ': '\n"
+    "    end\n"
+    "    lines[#lines + 1] = '\"\"\"'\n"
+    "    return lines\n"
+    "  end,\n"
+    "  javascript = function(sig, params, ret)\n"
+    "    local lines = {'/**', ' * ' .. sig}\n"
+    "    for _, p in ipairs(params) do\n"
+    "      lines[#lines + 1] = ' * @param ' .. (p.type and ('{' .. p.type .. '} ') or '') .. p.name\n"
+    "    end\n"
+    "    if ret then lines[#lines + 1] = ' * @returns {' .. ret .. '}' end\n"
+    "    lines[#lines + 1] = ' */'\n"
+    "    return lines\n"
+    "  end,\n"
+    "  c = function(sig, params, ret)\n"
+    "    local lines = {'/**', ' * @brief ' .. sig}\n"
+    "    for _, p in ipairs(params) do\n"
+    "      lines[#lines + 1] = ' * @param ' .. p.name .. (p.type and (' ' .. p.type) or '')\n"
+    "    end\n"
+    "    if ret then lines[#lines + 1] = ' * @return ' .. ret end\n"
+    "    lines[#lines + 1] = ' */'\n"
+    "    return lines\n"
+    "  end,\n"
+    "  java = function(sig, params, ret)\n"
+    "    local lines = {'/**', ' * ' .. sig}\n"
+    "    for _, p in ipairs(params) do\n"
+    "      lines[#lines + 1] = ' * @param ' .. p.name .. (p.type and (' ' .. p.type) or '')\n"
+    "    end\n"
+    "    if ret then lines[#lines + 1] = ' * @return ' .. ret end\n"
+    "    lines[#lines + 1] = ' */'\n"
+    "    return lines\n"
+    "  end,\n"
+    "  rust = function(sig, params, ret)\n"
+    "    local lines = {'/// ' .. sig}\n"
+    "    if #params > 0 then\n"
+    "      lines[#lines + 1] = '///'\n"
+    "      lines[#lines + 1] = '/// # Arguments'\n"
+    "      lines[#lines + 1] = '///'\n"
+    "      for _, p in ipairs(params) do\n"
+    "        lines[#lines + 1] = '/// * `' .. p.name .. '` - ' .. (p.type or '')\n"
+    "      end\n"
+    "    end\n"
+    "    if ret then\n"
+    "      lines[#lines + 1] = '///'\n"
+    "      lines[#lines + 1] = '/// # Returns'\n"
+    "      lines[#lines + 1] = '///'\n"
+    "      lines[#lines + 1] = '/// ' .. ret\n"
+    "    end\n"
+    "    return lines\n"
+    "  end,\n"
+    "  go = function(sig, params, ret)\n"
+    "    local name = sig:match('func%s*%b()%s*([%w_]+)') or sig:match('func%s+([%w_]+)')\n"
+    "    local lines = {'// ' .. (name or sig)}\n"
+    "    for _, p in ipairs(params) do\n"
+    "      lines[#lines + 1] = '// ' .. p.name .. (p.type and (' ' .. p.type) or '')\n"
+    "    end\n"
+    "    if ret then lines[#lines + 1] = '// returns ' .. ret end\n"
+    "    return lines\n"
+    "  end,\n"
+    "  ruby = function(sig, params, ret)\n"
+    "    local lines = {'# ' .. sig}\n"
+    "    for _, p in ipairs(params) do\n"
+    "      lines[#lines + 1] = '# @param ' .. p.name .. (p.type and (' [' .. p.type .. ']') or '')\n"
+    "    end\n"
+    "    if ret then lines[#lines + 1] = '# @return [' .. ret .. ']' end\n"
+    "    return lines\n"
+    "  end,\n"
+    "}\n"
+    // Splits one LSP ParameterInformation label into {name, type}: tries
+    // "name: type" first (python/typescript/rust/kotlin convention), then
+    // falls back to "type name" (c/go/java convention, name = trailing
+    // identifier) -- best-effort on both fronts (a bare "int a" label
+    // returns name='a', type=nil since there's no colon to split on, not
+    // the theoretically-correct type='int'; getting this exactly right
+    // per-language would need a real per-grammar parser, not a two-regex
+    // heuristic) but strictly better than the single opaque signature
+    // line this replaces.\n"
+    "local function mep_doc_split_param(label)\n"
+    "  local name, ptype = label:match('^([%w_]+)%s*:%s*(.+)$')\n"
+    "  if name then return name, ptype end\n"
+    "  ptype, name = label:match('^(.-)%s+([%w_]+)$')\n"
+    "  if name and ptype and ptype ~= '' then return name, ptype end\n"
+    "  return label, nil\n"
+    "end\n"
+    // SignatureInformation.parameters[i].label is either a plain string
+    // (used as-is) or a [start, end] pair of *character offsets into the
+    // signature's own label* (sliced out here) -- both are valid per the
+    // LSP spec, and a server is free to use either.
+    "local function mep_doc_params_from_signature(active)\n"
+    "  local label = active.label or ''\n"
+    "  local params = {}\n"
+    "  for _, p in ipairs(active.parameters or {}) do\n"
+    "    local ptext = nil\n"
+    "    if type(p.label) == 'string' then\n"
+    "      ptext = p.label\n"
+    "    elseif type(p.label) == 'table' then\n"
+    "      ptext = label:sub((p.label[1] or 0) + 1, p.label[2] or #label)\n"
+    "    end\n"
+    "    if ptext and ptext ~= '' then\n"
+    "      local name, ptype = mep_doc_split_param(ptext)\n"
+    "      params[#params + 1] = {name = name, type = ptype}\n"
+    "    end\n"
+    "  end\n"
+    "  return params\n"
+    "end\n"
+    // Best-effort return-type scrape off the trailing "-> Type"
+    // (python/rust) or ": Type" (typescript) after the closing paren --
+    // nil (no @return/Returns line at all) for languages/signatures
+    // where neither shows up, e.g. C/Java's return type leads the
+    // signature instead of trailing it, which this doesn't attempt to
+    // recover.
+    "local function mep_doc_return_type(sig)\n"
+    "  local ret = sig:match('%)%s*%->%s*(.-)%s*$')\n"
+    "  if ret and ret ~= '' then return ret end\n"
+    "  ret = sig:match('%)%s*:%s*(.-)%s*$')\n"
+    "  if ret and ret ~= '' then return ret end\n"
+    "  return nil\n"
+    "end\n"
+    // Phase 25's original regex/same-line-scan generator, kept verbatim
+    // as the always-available fallback (no LSP attached, or the attached
+    // server's signatureHelp response comes back empty/erroring).
+    "local function mep_docs_generate_syntactic(row, sig, tmpl)\n"
+    "  mep.replace_lines(row, row, tmpl(sig, {}, nil))\n"
+    "end\n"
     "function mep.docs_generate()\n"
     "  local ft = mep_lsp_filetype(mep.filename())\n"
-    "  local tmpl = ft and MEP_DOC_TEMPLATES[ft]\n"
+    "  local lang = ft and MEP_DOC_LANG[ft]\n"
+    "  local tmpl = lang and MEP_DOC_TEMPLATES[lang]\n"
     "  if not tmpl then mep.notify('No doc template for this filetype', 'warn') return end\n"
     "  local row = mep.cursor()\n"
     "  local sig = mep.get_line(row):match('^%s*(.-)%s*$')\n"
-    "  mep.replace_lines(row, row, tmpl(sig))\n"
+    "  local client = mep.lsp_client_for()\n"
+    "  if not client then\n"
+    "    mep_docs_generate_syntactic(row, sig, tmpl)\n"
+    "    return\n"
+    "  end\n"
+    // LSP attached: prefer the real signature/parameter/return info from
+    // textDocument/signatureHelp (Phase 20) over the regex scan, for
+    // accurate param names/types and (when the server provides one) a
+    // real return type instead of just echoing the source line back as
+    // one opaque comment. This is necessarily async -- mep.lsp_request
+    // has no blocking mode and, per Phase 20's own documented gap, no
+    // request-timeout mechanism exists anywhere in this file either -- so
+    // the skeleton is inserted once the callback actually fires, whether
+    // that's with real signature data or (on an error/empty result) the
+    // same syntactic fallback used when no LSP is attached at all. If the
+    // server never replies (hangs or dies mid-request), nothing gets
+    // inserted; a real, honest limitation, not one silently masked by a
+    // fake timeout.
+    "  mep.lsp_request(client, 'textDocument/signatureHelp', {\n"
+    "    textDocument = {uri = mep_lsp_uri(mep.filename())}, position = mep_lsp_position(),\n"
+    "  }, function(msg)\n"
+    "    local result = mep_lsp_result(msg)\n"
+    "    local sigs = result and result.signatures\n"
+    "    local active = sigs and (sigs[(result.activeSignature or 0) + 1] or sigs[1])\n"
+    "    if not active then\n"
+    "      mep_docs_generate_syntactic(row, sig, tmpl)\n"
+    "      return\n"
+    "    end\n"
+    "    local label = (active.label and active.label ~= '') and active.label or sig\n"
+    "    local params = mep_doc_params_from_signature(active)\n"
+    "    local ret = mep_doc_return_type(label)\n"
+    "    mep.replace_lines(row, row, tmpl(label, params, ret))\n"
+    "  end)\n"
     "end\n"
     "mep.command('MepDocGen', mep.docs_generate)\n"
     "function mep.docs_lookup()\n"
@@ -1287,7 +2308,35 @@ const char *kBuiltinDocs =
     "  mep.open_url('https://devdocs.io/#q=' .. word)\n"
     "end\n"
     "mep.command('MepDocLookup', mep.docs_lookup)\n"
-    "mep.command('MepHelp', mep.commands)\n";
+    "mep.command('MepHelp', mep.commands)\n"
+    // Keybinding introspection: a Phase 8-style searchable picker (typing
+    // filters, <CR> selects, same as mep.commands()) listing every
+    // described mapping from both registries -- mep.mapping_descriptions()
+    // (plain mep.map() bindings, mode + key) and mep.leader_bindings()
+    // (leader-sequence bindings, prefixed '<leader>' the way the
+    // which-key overlay itself displays them). Unlike mep.commands(),
+    // selecting an entry doesn't *run* it -- these are raw key sequences
+    // read out of context, not named actions safe to fire blind (a
+    // Normal-mode single-key mapping like 'gcc' assumes real buffer/
+    // cursor state a picker selection can't reconstruct) -- so <CR> just
+    // closes the picker once you've found what you were looking for,
+    // matching how e.g. mep.docs_lookup's devdocs-search picker sources
+    // elsewhere in this file are look-not-do too.
+    "local MEP_MODE_NAMES = {n = 'Normal', v = 'Visual'}\n"
+    "function mep.keymaps()\n"
+    "  local items = {}\n"
+    "  for _, m in ipairs(mep.mapping_descriptions()) do\n"
+    "    items[#items + 1] = string.format('%-8s %-14s %s', MEP_MODE_NAMES[m.mode] or m.mode, m.key, m.desc)\n"
+    "  end\n"
+    "  for _, w in ipairs(mep.leader_bindings()) do\n"
+    "    items[#items + 1] = string.format('%-8s %-14s %s', 'Leader', '<leader>' .. w.seq, w.desc)\n"
+    "  end\n"
+    "  if #items == 0 then mep.notify('No described keybindings registered', 'warn') return end\n"
+    "  table.sort(items)\n"
+    "  mep.picker_open('Keymaps', items, function() end)\n"
+    "end\n"
+    "mep.command('MepKeymaps', mep.keymaps)\n"
+    "mep.leader_map('hk', 'Help: keymaps', mep.keymaps)\n";
 
 // DAP client (Phase 26): reuses Phase 20's mep.lsp_start/request/notify
 // wholesale -- despite the name, that's a generic Content-Length-framed
@@ -1307,6 +2356,35 @@ const char *kBuiltinDap =
     "mep.dap_adapters = {\n"
     "  cpp = {cmd = {'lldb-dap'}, filetypes = {'c', 'cpp'}},\n"
     "  python = {cmd = {'python3', '-m', 'debugpy.adapter'}, filetypes = {'py'}},\n"
+    // NVIM_PARITY_PLAN.md's "Full DAP adapter registry ... same
+    // incremental philosophy; the registry is just data, add entries as
+    // needed" -- grown here from the original 2 (cpp/python), same
+    // {cmd, filetypes} shape, keyed by mep.dap_start(lang)'s own `lang`
+    // argument (an arbitrary language id, not a filetype -- unlike
+    // mep.lsp_servers, nothing in this codebase auto-derives it from the
+    // current buffer yet). `rust`/`c` reuse lldb-dap (it's a real
+    // multi-language adapter, not C++-only, LLVM's official DAP server
+    // speaking stdio directly -- no socket hop needed). `go` and
+    // `javascript` are included even though, like the plan's own noted
+    // `delve` stdio gap, their real-world adapters (`dlv dap`,
+    // `js-debug-adapter`) normally listen on a TCP port rather than
+    // stdio -- documented here rather than silently omitted, matching
+    // this file's existing honesty about delve.\n"
+    "  rust = {cmd = {'lldb-dap'}, filetypes = {'rs'}},\n"
+    "  c = {cmd = {'lldb-dap'}, filetypes = {'c'}},\n"
+    // Real, documented stdio gap (like delve): `dlv dap` normally speaks
+    // DAP over a TCP listener (`--listen`), not stdin/stdout, so this
+    // entry -- like mep.nvim's own -- won't actually connect through
+    // mep.lsp_start's stdio-pipe transport without a `dlv`/adapter change
+    // neither side of this registry entry can fix by itself.\n"
+    "  go = {cmd = {'dlv', 'dap'}, filetypes = {'go'}},\n"
+    // Same stdio-vs-socket caveat as `go` above: the real `js-debug`
+    // adapter (`js-debug-adapter`) listens on a TCP port; this entry
+    // documents the intended command, not a verified-working stdio path.\n"
+    "  javascript = {cmd = {'js-debug-adapter'}, filetypes = {'js', 'ts'}},\n"
+    // netcoredbg's `--interpreter=vscode` flag is the one common adapter
+    // here that *does* speak DAP over stdio directly, same as lldb-dap.\n"
+    "  csharp = {cmd = {'netcoredbg', '--interpreter=vscode'}, filetypes = {'cs'}},\n"
     "}\n"
     "local mep_dap_client = nil\n"
     "local mep_dap_ns = nil\n"
@@ -1370,13 +2448,16 @@ const char *kBuiltinDap =
 // vendored -- mep.syntax_highlight() falls back to the original
 // hand-rolled per-line lexer below (comment-prefix / quoted-string /
 // number / keyword-list). Both paths render through the same Phase 4
-// decoration + Phase 9 highlight-group pipeline. Full-buffer reparse on
-// every call: on demand via :MepSyntax, automatically on buffer switch,
-// and debounce-rerun on edits (mep.syntax_auto, on by default -- see the
-// two mep.on_buffer_changed/mep.on_frame hooks after :MepSyntax's
-// registration below) -- rather than an incrementally-updated
-// TSTree kept across edits -- consistent with this codebase's existing
-// "on-demand full rescan" scope decisions elsewhere (see Phase 13's
+// decoration + Phase 9 highlight-group pipeline. Full buffer text handed
+// over on every call: on demand via :MepSyntax, automatically on buffer
+// switch, and debounce-rerun on edits (mep.syntax_auto, on by default --
+// see the two mep.on_buffer_changed/mep.on_frame hooks after
+// :MepSyntax's registration below). mep.ts_captures's own C++ side
+// (treesitter.cpp) reparses each call incrementally against its cached
+// previous TSTree for that filetype rather than from scratch -- but the
+// call *pattern* here is still "hand over the whole current text",
+// consistent with this codebase's existing "on-demand full rescan" scope
+// decisions elsewhere (see Phase 13's
 // colorizer/todo-mark). No fold-query support (Phase 5's fold providers
 // stay org/markdown/manual-only): these are highlight queries only.
 const char *kBuiltinSyntax =
@@ -1434,7 +2515,16 @@ const char *kBuiltinSyntax =
     "  error = 'Red', ['Error'] = 'Red', warn = 'Yellow',\n"
     // Markdown (queries/highlights.scm's own capture convention differs
     // from the dotted nvim-style names above: text.* for prose spans).
-    "  ['text.title'] = 'Purple', ['text.strong'] = 'Yellow', ['text.emphasis'] = 'Cyan',\n"
+    // Per-level heading colors (kHighlightsMarkdown emits
+    // text.title.1..6 for ATX/setext headings, one level = one distinct
+    // highlight group, roughly outermost-to-innermost through the
+    // palette) -- text.title itself is kept as a catch-all in case some
+    // other markdown-like grammar (or a future query edit) still emits
+    // the flat capture.
+    "  ['text.title'] = 'Purple', ['text.title.1'] = 'Purple', ['text.title.2'] = 'Blue',\n"
+    "  ['text.title.3'] = 'Cyan', ['text.title.4'] = 'Green', ['text.title.5'] = 'Yellow',\n"
+    "  ['text.title.6'] = 'Orange',\n"
+    "  ['text.strong'] = 'Yellow', ['text.emphasis'] = 'Cyan',\n"
     "  ['text.literal'] = 'Green', ['text.uri'] = 'Blue', ['text.reference'] = 'Blue',\n"
     // Org (queries/highlights.scm ships only this one example query,
     // using its own Org-prefixed capture names rather than the nvim-style
@@ -1527,6 +2617,35 @@ const char *kBuiltinSyntax =
     "    end\n"
     "  end\n"
     "end\n"
+    // Treesitter fold-query execution (Phase 19's other noted gap,
+    // alongside the highlighter above -- see kFolds* in
+    // treesitter_queries.h): a *separate* function/command/flag from
+    // syntax highlighting, not folded into mep.syntax_highlight itself,
+    // because collapsing code is a much more visible, opinionated side
+    // effect than coloring it -- defaulting *that* to on-by-default the
+    // way syntax highlighting is would surprise every existing user who
+    // just opens a file expecting to see it, not see it partially
+    // collapsed. mep.ts_fold_ranges (lua_env.cpp, backed by
+    // TreesitterFoldRanges in treesitter.cpp) returns nil for filetypes
+    // with no fold query (markdown/org keep their own heading-based fold
+    // providers already registered elsewhere in this file -- running
+    // this too for them would just double up on the same regions under a
+    // different provider name).
+    "function mep.syntax_fold()\n"
+    "  local ft = mep_lsp_filetype(mep.filename())\n"
+    "  if not ft then return end\n"
+    "  local lines = {}\n"
+    "  for i = 1, mep.line_count() do lines[i] = mep.get_line(i) end\n"
+    "  local ranges = mep.ts_fold_ranges(ft, table.concat(lines, '\\n'))\n"
+    "  if not ranges then return end\n"
+    "  mep.fold_clear_provider('treesitter')\n"
+    "  for _, r in ipairs(ranges) do\n"
+    "    mep.fold_create(r.start_row, r.end_row, false, 'treesitter')\n"
+    "  end\n"
+    "end\n"
+    "mep.command('MepSyntaxFold', mep.syntax_fold)\n"
+    "mep.syntax_fold_auto = false\n"
+    "mep.on_buffer_changed(function() if mep.syntax_fold_auto then mep.syntax_fold() end end)\n"
     "mep.command('MepSyntax', mep.syntax_highlight)\n"
     // On by default (unlike colorizer/git-gutter/todoscan's opt-in
     // _auto flags above): a bare "open a file, see colored syntax" is
@@ -1575,10 +2694,68 @@ const char *kBuiltinSyntax =
 const char *kBuiltinRun =
     "mep.run_languages = {\n"
     "  lua = {'lua'}, python = {'python3'}, javascript = {'node'}, sh = {'sh'},\n"
+    // NVIM_PARITY_PLAN.md's "Full babel/run/REPL language matrices (~25/
+    // ~13/~13 languages in mep.nvim) ... start with 2-4 per feature, grow
+    // incrementally" -- grown here. Every entry below is a single
+    // `interpreter [flags] <file>` invocation (mep.run_file appends the
+    // filename as the command's last argument, so anything needing a
+    // separate compile step -- C, C++, Rust, ordinary .kt -- doesn't fit
+    // this table's shape and is deliberately left out, same scope cut
+    // NVIM_PARITY_PLAN.md's babel phase already documents for itself).
+    // `go`/`java`/`swift`/`crystal`/`dart`/`kotlin` (.kts) are the
+    // exceptions that *do* fit: each has a real single-command
+    // compile-and-run or direct-source-execution mode (`go run`, JDK 11+
+    // `java <file>.java`, `swift <file>.swift`, `crystal run`, `dart run`,
+    // `kotlin <file>.kts`).\n"
+    "  ruby = {'ruby'}, perl = {'perl'}, php = {'php'}, r = {'Rscript'},\n"
+    "  go = {'go', 'run'}, java = {'java'}, typescript = {'ts-node'}, julia = {'julia'},\n"
+    "  swift = {'swift'}, crystal = {'crystal', 'run'}, dart = {'dart', 'run'},\n"
+    "  elixir = {'elixir'}, kotlin = {'kotlin'},\n"
     "}\n"
+    // Real, pre-existing bug matching the one already found and fixed for
+    // mep.syntax_keywords/MEP_DOC_TEMPLATES elsewhere in this file:
+    // mep.run_file() looks entries up by mep_lsp_filetype()'s bare
+    // extension ('py', 'js'), but several entries above are keyed by
+    // language *name* (or a name spelled differently from its extension)
+    // -- so those were silently unreachable through mep.run_file (only
+    // entries whose key happens to equal their own extension, like 'lua'/
+    // 'sh'/'go'/'java'/'swift'/'dart', ever actually matched). Aliased the
+    // same way the syntax-keywords table already was, rather than rekeying
+    // the existing entries.\n"
+    "mep.run_languages.py = mep.run_languages.python\n"
+    "mep.run_languages.js = mep.run_languages.javascript\n"
+    "mep.run_languages.mjs = mep.run_languages.javascript\n"
+    "mep.run_languages.cjs = mep.run_languages.javascript\n"
+    "mep.run_languages.rb = mep.run_languages.ruby\n"
+    "mep.run_languages.pl = mep.run_languages.perl\n"
+    "mep.run_languages.R = mep.run_languages.r\n"
+    "mep.run_languages.ts = mep.run_languages.typescript\n"
+    "mep.run_languages.tsx = mep.run_languages.typescript\n"
+    "mep.run_languages.jl = mep.run_languages.julia\n"
+    "mep.run_languages.cr = mep.run_languages.crystal\n"
+    "mep.run_languages.ex = mep.run_languages.elixir\n"
+    "mep.run_languages.kts = mep.run_languages.kotlin\n"
     "mep.repl_languages = {\n"
     "  lua = {'lua'}, python = {'python3', '-u'},\n"
+    // Same growth as mep.run_languages above, but these are the *REPL*
+    // launch command itself (mep.repl_start passes it straight to
+    // mep.term_start with no filename appended), so a language only needs
+    // an interactive prompt to qualify -- 'haskell' (ghci) has one even
+    // though it's absent from mep.run_languages (no fitting single-shot
+    // run-a-file command for a compiled language).\n"
+    "  javascript = {'node'}, ruby = {'irb'}, sh = {'sh'}, php = {'php', '-a'},\n"
+    "  r = {'R', '--no-save'}, julia = {'julia'}, haskell = {'ghci'}, elixir = {'iex'},\n"
     "}\n"
+    "mep.repl_languages.py = mep.repl_languages.python\n"
+    "mep.repl_languages.js = mep.repl_languages.javascript\n"
+    "mep.repl_languages.mjs = mep.repl_languages.javascript\n"
+    "mep.repl_languages.cjs = mep.repl_languages.javascript\n"
+    "mep.repl_languages.rb = mep.repl_languages.ruby\n"
+    "mep.repl_languages.R = mep.repl_languages.r\n"
+    "mep.repl_languages.jl = mep.repl_languages.julia\n"
+    "mep.repl_languages.hs = mep.repl_languages.haskell\n"
+    "mep.repl_languages.ex = mep.repl_languages.elixir\n"
+    "mep.repl_languages.exs = mep.repl_languages.elixir\n"
     "local mep_term_ns = nil\n"
     // job_id -> {raw=, buffer_id=}
     "local mep_term_sessions = {}\n"
@@ -1823,7 +3000,213 @@ const char *kBuiltinMarkdown =
     "  mep.md_highlight()\n"
     "  mep.md_fold()\n"
     "end\n"
-    "mep.command('MepMarkdown', mep.md_render)\n";
+    "mep.command('MepMarkdown', mep.md_render)\n"
+    // GFM pipe tables (mirrors mep.org_table_align's design -- Phase 30's
+    // `mep_org_table_row`/`mep.org_table_align`, kBuiltinOrgLinks below --
+    // but GFM tables carry per-column alignment in the separator row
+    // (`:---`/`---:`/`:---:`/`---`) that org tables don't have, so this
+    // is its own parser/renderer rather than a literal copy-paste).
+    "local function mep_md_table_row(line)\n"
+    "  if not line:match('^%s*|') then return nil end\n"
+    "  local inner = line:match('^%s*|(.-)|?%s*$')\n"
+    "  local cells = {}\n"
+    "  for cell in (inner .. '|'):gmatch('(.-)|') do cells[#cells + 1] = cell:match('^%s*(.-)%s*$') end\n"
+    "  local is_sep = #cells > 0\n"
+    "  for _, c in ipairs(cells) do if not c:match('^:?%-+:?$') then is_sep = false break end end\n"
+    "  if is_sep then\n"
+    "    local aligns = {}\n"
+    "    for i, c in ipairs(cells) do\n"
+    "      local l, r = c:sub(1, 1) == ':', c:sub(-1) == ':'\n"
+    "      aligns[i] = (l and r) and 'center' or (r and 'right') or (l and 'left') or 'none'\n"
+    "    end\n"
+    "    return 'sep', aligns\n"
+    "  end\n"
+    "  return cells\n"
+    "end\n"
+    "local function mep_md_sep_cell(w, al)\n"
+    "  if al == 'left' then return ':' .. string.rep('-', math.max(1, w - 1))\n"
+    "  elseif al == 'right' then return string.rep('-', math.max(1, w - 1)) .. ':'\n"
+    "  elseif al == 'center' then return ':' .. string.rep('-', math.max(1, w - 2)) .. ':'\n"
+    "  else return string.rep('-', w) end\n"
+    "end\n"
+    // Finds the contiguous run of |-lines touching the cursor (same
+    // approach as mep.org_table_align), computes per-column max width
+    // across all data rows, then rewrites every row: data cells padded
+    // per that column's alignment (left default, right, or center-split),
+    // and the separator row rebuilt to the same width while preserving
+    // whichever alignment colons it already carried.
+    "function mep.md_table_align()\n"
+    "  local row = mep.cursor()\n"
+    "  if not mep_md_table_row(mep.get_line(row)) then mep.notify('Not on a table row', 'warn') return end\n"
+    "  local top = row\n"
+    "  while top > 1 and mep_md_table_row(mep.get_line(top - 1)) do top = top - 1 end\n"
+    "  local bot, n = row, mep.line_count()\n"
+    "  while bot < n and mep_md_table_row(mep.get_line(bot + 1)) do bot = bot + 1 end\n"
+    "  local widths, aligns, rows = {}, {}, {}\n"
+    "  for i = top, bot do\n"
+    "    local r, a = mep_md_table_row(mep.get_line(i))\n"
+    "    rows[#rows + 1] = {i, r, a}\n"
+    "    if r == 'sep' then\n"
+    "      for ci, al in pairs(a) do aligns[ci] = al end\n"
+    "    else\n"
+    "      for ci, cell in ipairs(r) do widths[ci] = math.max(widths[ci] or 3, #cell) end\n"
+    "    end\n"
+    "  end\n"
+    "  for _, entry in ipairs(rows) do\n"
+    "    local i, r, a = entry[1], entry[2], entry[3]\n"
+    "    local parts = {}\n"
+    "    if r == 'sep' then\n"
+    "      for ci, w in ipairs(widths) do parts[#parts + 1] = ' ' .. mep_md_sep_cell(w, aligns[ci] or 'none') .. ' ' end\n"
+    "    else\n"
+    "      for ci, w in ipairs(widths) do\n"
+    "        local cell, al = r[ci] or '', aligns[ci] or 'none'\n"
+    "        local pad = math.max(0, w - #cell)\n"
+    "        local padded\n"
+    "        if al == 'right' then padded = string.rep(' ', pad) .. cell\n"
+    "        elseif al == 'center' then\n"
+    "          local lp = math.floor(pad / 2)\n"
+    "          padded = string.rep(' ', lp) .. cell .. string.rep(' ', pad - lp)\n"
+    "        else padded = cell .. string.rep(' ', pad) end\n"
+    "        parts[#parts + 1] = ' ' .. padded .. ' '\n"
+    "      end\n"
+    "    end\n"
+    "    mep.set_line(i, '|' .. table.concat(parts, '|') .. '|')\n"
+    "  end\n"
+    "end\n"
+    "mep.command('MepMdTableAlign', mep.md_table_align)\n"
+    // Insert row/column, mirroring the spirit of the phase-30 tables
+    // feature set (org itself has no insert-row/column commands to
+    // mirror -- align is its only table verb -- so these are new,
+    // scoped-down helpers: insert row goes directly below the cursor's
+    // row with the same column count; insert column always appends a new
+    // empty column at the end of every row in the block, not at the
+    // cursor's column, to avoid needing to parse *which* cell the cursor
+    // is inside of). Both re-run md_table_align afterwards so the table
+    // stays lined up.
+    "function mep.md_table_insert_row()\n"
+    "  local row = mep.cursor()\n"
+    "  local r = mep_md_table_row(mep.get_line(row))\n"
+    "  if not r or r == 'sep' then mep.notify('Not on a table data row', 'warn') return end\n"
+    "  local blank = '|' .. string.rep(' |', #r)\n"
+    "  mep.replace_lines(row, row + 1, {mep.get_line(row), blank})\n"
+    "  mep.set_cursor(row + 1, 2)\n"
+    "  mep.md_table_align()\n"
+    "end\n"
+    "mep.command('MepMdTableInsertRow', mep.md_table_insert_row)\n"
+    "function mep.md_table_insert_col()\n"
+    "  local row = mep.cursor()\n"
+    "  if not mep_md_table_row(mep.get_line(row)) then mep.notify('Not on a table row', 'warn') return end\n"
+    "  local top = row\n"
+    "  while top > 1 and mep_md_table_row(mep.get_line(top - 1)) do top = top - 1 end\n"
+    "  local bot, n = row, mep.line_count()\n"
+    "  while bot < n and mep_md_table_row(mep.get_line(bot + 1)) do bot = bot + 1 end\n"
+    "  local newlines = {}\n"
+    "  for i = top, bot do\n"
+    "    local r = mep_md_table_row(mep.get_line(i))\n"
+    "    local suffix = (r == 'sep') and '---|' or ' |'\n"
+    "    newlines[#newlines + 1] = mep.get_line(i):gsub('%s+$', '') .. suffix\n"
+    "  end\n"
+    "  mep.replace_lines(top, bot + 1, newlines)\n"
+    "  mep.md_table_align()\n"
+    "end\n"
+    "mep.command('MepMdTableInsertCol', mep.md_table_insert_col)\n"
+    // Link/emphasis concealment: hides `**`/`__`/`*`/`_` emphasis markers
+    // and `[`/`]`/`(`/`)`/link-target text, showing plain bold/italic
+    // text and just the link's visible text -- except on the cursor's
+    // own line, which always renders raw so it can be edited normally.
+    // Built on the `virt_overlay` decoration primitive (src/editor.h's
+    // Decoration::virt_overlay, previously wired up but never actually
+    // exercised for concealment by any builtin plugin -- see the
+    // renderer fix alongside this for why it needed one). A hand-rolled
+    // single-pass line scanner, not two independent regexes, specifically
+    // so `**bold**` can't also be misparsed as `*bold*` wrapped in stray
+    // `*`s (deliberately scoped down from a general conceal engine, per
+    // NVIM_PARITY_PLAN.md -- covers emphasis + inline/reference links
+    // only, not code spans, autolinks, or images).
+    "local mep_md_conceal_ns = nil\n"
+    "mep.md_conceal_auto = true\n"
+    "local function mep_md_conceal_spans(line)\n"
+    "  local spans, i, n = {}, 1, #line\n"
+    "  while i <= n do\n"
+    "    local two = line:sub(i, i + 1)\n"
+    "    if two == '**' or two == '__' then\n"
+    "      local close = line:find(two, i + 2, true)\n"
+    "      if close then\n"
+    "        spans[#spans + 1] = {s = i, e = close + 2, text = line:sub(i + 2, close - 1), hl = 'Yellow'}\n"
+    "        i = close + 2\n"
+    "      else i = i + 1 end\n"
+    "    else\n"
+    "      local c = line:sub(i, i)\n"
+    "      if c == '*' or c == '_' then\n"
+    "        local before = (i > 1) and line:sub(i - 1, i - 1) or ''\n"
+    // Avoid treating a mid-identifier '_' (snake_case) as an emphasis
+    // delimiter: only conceal when the char just before the opening
+    // delimiter isn't itself a word character.
+    "        local close = (not before:match('%w')) and line:find(c, i + 1, true) or nil\n"
+    "        if close and close > i + 1 and not line:sub(close + 1, close + 1):match('%w') then\n"
+    "          spans[#spans + 1] = {s = i, e = close + 1, text = line:sub(i + 1, close - 1), hl = 'Cyan'}\n"
+    "          i = close + 1\n"
+    "        else i = i + 1 end\n"
+    "      elseif c == '[' then\n"
+    "        local closeb = line:find(']', i + 1, true)\n"
+    "        local after = closeb and line:sub(closeb + 1, closeb + 1) or ''\n"
+    "        if closeb and after == '(' then\n"
+    "          local closep = line:find(')', closeb + 2, true)\n"
+    "          if closep then\n"
+    "            spans[#spans + 1] = {s = i, e = closep + 1, text = line:sub(i + 1, closeb - 1), hl = 'Blue'}\n"
+    "            i = closep + 1\n"
+    "          else i = i + 1 end\n"
+    "        elseif closeb and after == '[' then\n"
+    "          local closer2 = line:find(']', closeb + 2, true)\n"
+    "          if closer2 then\n"
+    "            spans[#spans + 1] = {s = i, e = closer2 + 1, text = line:sub(i + 1, closeb - 1), hl = 'Blue'}\n"
+    "            i = closer2 + 1\n"
+    "          else i = i + 1 end\n"
+    "        else i = i + 1 end\n"
+    "      else i = i + 1 end\n"
+    "    end\n"
+    "  end\n"
+    "  return spans\n"
+    "end\n"
+    "function mep.md_conceal()\n"
+    "  if not mep_md_conceal_ns then mep_md_conceal_ns = mep.ns_create('markdown-conceal') end\n"
+    "  mep.ns_clear(mep_md_conceal_ns)\n"
+    "  if not mep.md_conceal_auto then return end\n"
+    "  local ft = mep_lsp_filetype(mep.filename())\n"
+    "  if ft ~= 'md' and ft ~= 'markdown' then return end\n"
+    "  local cur_row = mep.cursor()\n"
+    "  local in_fence = false\n"
+    "  for i = 1, mep.line_count() do\n"
+    "    local line = mep.get_line(i)\n"
+    "    if line:match('^```') then\n"
+    "      in_fence = not in_fence\n"
+    "    elseif not in_fence and i ~= cur_row then\n"
+    "      for _, sp in ipairs(mep_md_conceal_spans(line)) do\n"
+    "        mep.deco_add(mep_md_conceal_ns, {\n"
+    "          row = i, col_start = sp.s, col_end = sp.e,\n"
+    "          virt_text = sp.text, virt_text_hl = sp.hl, virt_overlay = true, priority = 10,\n"
+    "        })\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "end\n"
+    "mep.command('MepMdConceal', mep.md_conceal)\n"
+    "mep.on_buffer_changed(function() if mep.md_conceal_auto then mep.md_conceal() end end)\n"
+    "local mep_md_conceal_last_row, mep_md_conceal_last_file = nil, nil\n"
+    // Frame-polled (same idiom as mep.syntax_auto's own file-switch
+    // watcher just above kBuiltinMarkdown's load site): on_buffer_changed
+    // alone only fires on edits, not on plain cursor movement, and
+    // concealment specifically needs to react to the cursor leaving/
+    // entering a line even with zero edits.
+    "mep.on_frame(function()\n"
+    "  if not mep.md_conceal_auto then return end\n"
+    "  local fname = mep.filename()\n"
+    "  local row = mep.cursor()\n"
+    "  if fname ~= mep_md_conceal_last_file or row ~= mep_md_conceal_last_row then\n"
+    "    mep_md_conceal_last_file, mep_md_conceal_last_row = fname, row\n"
+    "    mep.md_conceal()\n"
+    "  end\n"
+    "end)\n";
 
 // Org-mode A: outline, folding, TODO/tags/properties/checkboxes (Phase
 // 29) -- the foundation every later org phase builds on, implemented as a
@@ -1908,6 +3291,42 @@ const char *kBuiltinOrg =
     "  local idx = 0\n"
     "  for i, kw in ipairs(mep.org_todo_keywords) do if kw == h.todo then idx = i end end\n"
     "  local next_kw = mep.org_todo_keywords[idx + 1]\n"
+    // Repeater UI, part 1/2 (part 2 is mep_org_repeater_bump below):
+    // cycling a headline whose SCHEDULED/DEADLINE planning line carries a
+    // repeater (`+1w` etc.) into the *final* configured keyword doesn't
+    // stick as done -- it bumps the repeater to its next occurrence and
+    // resets the state to the *first* keyword instead, matching real
+    // org-mode's org-todo-repeat behavior (marking a recurring TODO done
+    // reschedules it rather than completing it). Only the immediately-
+    // following planning line is checked (the only place this codebase's
+    // own org_set_planning ever writes one), and only the transition INTO
+    // the last keyword is intercepted -- cycling among earlier keywords,
+    // or past the last one to clear it, is unaffected.\n"
+    "  local last_kw = mep.org_todo_keywords[#mep.org_todo_keywords]\n"
+    "  if next_kw and next_kw == last_kw and h.todo ~= last_kw then\n"
+    "    local planning_row = row + 1\n"
+    "    local planning_line = mep.get_line(planning_row) or ''\n"
+    "    local advanced = false\n"
+    "    for _, kind in ipairs({'SCHEDULED', 'DEADLINE'}) do\n"
+    "      local s, e = planning_line:find(kind .. ':%s*<[^>]+>')\n"
+    "      if s then\n"
+    "        local inner = planning_line:match(kind .. ':%s*<([^>]+)>')\n"
+    "        local newbody = mep_org_repeater_bump(inner)\n"
+    "        if newbody then\n"
+    "          planning_line = planning_line:sub(1, s - 1) .. kind .. ': <' .. newbody .. '>' .. planning_line:sub(e + 1)\n"
+    "          advanced = true\n"
+    "        end\n"
+    "      end\n"
+    "    end\n"
+    "    if advanced then\n"
+    "      mep.set_line(planning_row, planning_line)\n"
+    "      local stars, rest = mep.get_line(row):match('^(%*+%s+)(.*)$')\n"
+    "      if h.todo then rest = rest:sub(#h.todo + 2) end\n"
+    "      mep.set_line(row, stars .. mep.org_todo_keywords[1] .. ' ' .. rest)\n"
+    "      mep.notify('Repeating task rescheduled')\n"
+    "      return\n"
+    "    end\n"
+    "  end\n"
     "  local stars, rest = mep.get_line(row):match('^(%*+%s+)(.*)$')\n"
     "  if h.todo then rest = rest:sub(#h.todo + 2) end\n"
     "  if next_kw then rest = next_kw .. ' ' .. rest end\n"
@@ -2267,7 +3686,158 @@ const char *kBuiltinOrg =
     "  local today = (today_str or os.date('%Y-%m-%d')):match('%d%d%d%d%-%d%d%-%d%d')\n"
     "  while os.date('%Y-%m-%d', t) < today do t = t + days * 86400 end\n"
     "  return os.date('%Y-%m-%d', t)\n"
-    "end\n";
+    "end\n"
+    // Repeater UI, part 2/2 (part 1 is org_todo_cycle's repeater-detection
+    // block above): given a timestamp *body* (no brackets, e.g. "2026-08-
+    // 19 Wed +1w"), advance it by exactly one repeater interval, then keep
+    // adding intervals until reaching today-or-later -- unlike
+    // org_next_occurrence (which only "catches up" a date that's already
+    // in the past, and leaves a future date untouched), this always
+    // advances by at least one interval, matching real org-mode's mark-
+    // done behavior of always moving a repeating timestamp forward even
+    // when it's not yet due.
+    "function mep_org_repeater_bump(ts_body)\n"
+    "  local y, mo, d = ts_body:match('(%d%d%d%d)-(%d%d)-(%d%d)')\n"
+    "  if not y then return nil end\n"
+    "  local rep = ts_body:match('([%+%.]+%d+[dwmy])')\n"
+    "  if not rep then return nil end\n"
+    "  local days = mep_org_repeater_days(rep)\n"
+    "  if not days then return nil end\n"
+    "  local t = os.time({year = tonumber(y), month = tonumber(mo), day = tonumber(d), hour = 12}) + days * 86400\n"
+    "  local today = os.date('%Y-%m-%d')\n"
+    "  while os.date('%Y-%m-%d', t) < today do t = t + days * 86400 end\n"
+    "  return os.date('%Y-%m-%d %a', t) .. ' ' .. rep\n"
+    "end\n"
+    // List-editing helpers (bulleted -/+/indented-* and ordered 1./1)
+    // items): pure line-pattern parsing, same style as headlines. A `*`
+    // bullet must be indented (mirrors the headline `*`-at-column-0 rule)
+    // to disambiguate from a headline; `-`/`+` have no such restriction.
+    // Fills the "list-editing helpers" gap this file's own plan notes
+    // flagged as the lowest-value remaining Phase 29 item -- now closed.
+    "local ORG_LIST_ORDERED = '^(%s*)(%d+)([%.%)])%s+(.*)$'\n"
+    "local ORG_LIST_DASH_PLUS = '^(%s*)([%-%+])%s+(.*)$'\n"
+    "local ORG_LIST_STAR = '^(%s+)(%*)%s+(.*)$'\n"
+    "function mep_org_parse_list_item(line)\n"
+    "  local indent, num, sep, content = line:match(ORG_LIST_ORDERED)\n"
+    "  if indent then return {indent = indent, kind = 'ordered', number = tonumber(num), sep = sep, content = content} end\n"
+    "  local dindent, marker, dcontent = line:match(ORG_LIST_DASH_PLUS)\n"
+    "  if dindent then return {indent = dindent, kind = 'bullet', marker = marker, content = dcontent} end\n"
+    "  local sindent, smarker, scontent = line:match(ORG_LIST_STAR)\n"
+    "  if sindent then return {indent = sindent, kind = 'bullet', marker = smarker, content = scontent} end\n"
+    "  return nil\n"
+    "end\n"
+    "local function mep_org_list_render_marker(item)\n"
+    "  if item.kind == 'ordered' then return item.indent .. item.number .. item.sep .. ' ' end\n"
+    "  return item.indent .. item.marker .. ' '\n"
+    "end\n"
+    "local function mep_org_indent_len(line) return #(line:match('^(%s*)') or '') end\n"
+    // Renumber the contiguous run of ordered-list siblings (same indent)
+    // starting at the first one at/before `row`, from 1. A more-deeply-
+    // indented line (nested list/continuation text) is treated as part of
+    // the sibling above it rather than a run-breaking sibling itself.
+    // Deliberately simpler than real org-mode: no blank-line-gap
+    // tolerance, always restarts from 1.
+    "function mep.org_list_renumber(row)\n"
+    "  row = row or mep.cursor()\n"
+    "  local item = mep_org_parse_list_item(mep.get_line(row))\n"
+    "  if not item or item.kind ~= 'ordered' then mep.notify('Not on an ordered list item', 'warn') return nil end\n"
+    "  local indent_len = #item.indent\n"
+    "  local first = row\n"
+    "  while first > 1 do\n"
+    "    local prev_line = mep.get_line(first - 1)\n"
+    "    local prev = mep_org_parse_list_item(prev_line)\n"
+    "    if prev and prev.kind == 'ordered' and prev.indent == item.indent then first = first - 1\n"
+    "    elseif prev_line ~= '' and mep_org_indent_len(prev_line) > indent_len then first = first - 1\n"
+    "    else break end\n"
+    "  end\n"
+    "  local n, i = 0, first\n"
+    "  while i <= mep.line_count() do\n"
+    "    local line = mep.get_line(i)\n"
+    "    local it = mep_org_parse_list_item(line)\n"
+    "    if it and it.kind == 'ordered' and it.indent == item.indent then\n"
+    "      n = n + 1\n"
+    "      local rendered = item.indent .. n .. it.sep .. ' ' .. it.content\n"
+    "      if rendered ~= line then mep.set_line(i, rendered) end\n"
+    "      i = i + 1\n"
+    "    elseif line ~= '' and mep_org_indent_len(line) > indent_len then\n"
+    "      i = i + 1\n"
+    "    else\n"
+    "      break\n"
+    "    end\n"
+    "  end\n"
+    "  return n\n"
+    "end\n"
+    "mep.command('MepOrgListRenumber', function() mep.org_list_renumber() end)\n"
+    // Indent/outdent the item at `row` (default cursor), and any more-
+    // deeply-indented continuation lines directly beneath it, by one unit
+    // (2 spaces) -- distinct from Tab/Shift-Tab's *headline* promote/
+    // demote, this only ever touches plain-list markers.
+    "function mep.org_list_shift_item(row, direction)\n"
+    "  row = row or mep.cursor()\n"
+    "  local item = mep_org_parse_list_item(mep.get_line(row))\n"
+    "  if not item then mep.notify('Not on a list item', 'warn') return nil end\n"
+    "  if direction < 0 and item.indent == '' then mep.notify('Already at left margin', 'warn') return nil end\n"
+    "  local base_indent_len = #item.indent\n"
+    "  local last, i = row, row + 1\n"
+    "  while i <= mep.line_count() do\n"
+    "    local line = mep.get_line(i)\n"
+    "    if line == '' or mep_org_indent_len(line) <= base_indent_len then break end\n"
+    "    last = i\n"
+    "    i = i + 1\n"
+    "  end\n"
+    "  for j = row, last do\n"
+    "    local line = mep.get_line(j)\n"
+    "    mep.set_line(j, direction > 0 and ('  ' .. line) or (line:gsub('^%s%s?', '', 1)))\n"
+    "  end\n"
+    "  return last - row + 1\n"
+    "end\n"
+    "mep.command('MepOrgListIndent', function() mep.org_list_shift_item(mep.cursor(), 1) end)\n"
+    "mep.command('MepOrgListOutdent', function() mep.org_list_shift_item(mep.cursor(), -1) end)\n"
+    // Insert a new list item below the cursor's item, preserving marker
+    // style: same bullet char for -/+/*, next number (+ renumbering the
+    // rest of the run) for an ordered item, a fresh unchecked [ ] for a
+    // checkbox item. An empty current item (no text after its marker)
+    // exits the list instead, matching real org-mode's own Enter-on-
+    // empty-item behavior. Command-triggered rather than an Insert-mode
+    // <CR> intercept -- this engine's mep.map only binds single keys in
+    // Normal/Visual mode, the same constraint org_expand_template's own
+    // comment already documents for easy-templates.\n"
+    "function mep.org_list_new_item()\n"
+    "  local row = mep.cursor()\n"
+    "  local item = mep_org_parse_list_item(mep.get_line(row))\n"
+    "  if not item then mep.notify('Not on a list item', 'warn') return end\n"
+    "  local without_checkbox = item.content:gsub('^%[[ xX]%]%s*', '')\n"
+    "  if without_checkbox:match('^%s*$') then\n"
+    "    mep.set_line(row, '')\n"
+    "    mep.set_cursor(row, 1)\n"
+    "    return\n"
+    "  end\n"
+    "  local new_item = {indent = item.indent, kind = item.kind, marker = item.marker, sep = item.sep,\n"
+    "    number = item.kind == 'ordered' and (item.number + 1) or nil}\n"
+    "  local marker = mep_org_list_render_marker(new_item)\n"
+    "  if item.content:match('^%[[ xX]%]') then marker = marker .. '[ ] ' end\n"
+    "  mep.replace_lines(row + 1, row + 1, {marker})\n"
+    "  mep.set_cursor(row + 1, #marker + 1)\n"
+    "  if item.kind == 'ordered' then mep.org_list_renumber(row + 1) end\n"
+    "end\n"
+    "mep.command('MepOrgListNewItem', mep.org_list_new_item)\n"
+    // Insert-sibling-heading (org-insert-heading[-respect-content]): a new
+    // empty headline at the *same level* as the one containing the
+    // cursor, placed after that headline's whole subtree (not just at the
+    // cursor) so nested children aren't disrupted -- fills the "insert
+    // sibling not bound to a dedicated command" gap this file's own plan
+    // notes flagged.\n"
+    "function mep.org_insert_heading(todo)\n"
+    "  local row = mep_org_current_headline_row()\n"
+    "  if not row then mep.notify('Not on a headline', 'warn') return end\n"
+    "  local level = mep.org_headline_level(row)\n"
+    "  local insert_at = mep_org_subtree_end(row)\n"
+    "  local line = string.rep('*', level) .. (todo and (' ' .. todo .. ' ') or ' ')\n"
+    "  mep.replace_lines(insert_at, insert_at, {line})\n"
+    "  mep.set_cursor(insert_at, #line + 1)\n"
+    "end\n"
+    "mep.command('MepOrgInsertHeading', function() mep.org_insert_heading() end)\n"
+    "mep.command('MepOrgInsertTodoHeading', function() mep.org_insert_heading(mep.org_todo_keywords[1]) end)\n";
 
 // Org-mode B: tables (new design, mep.nvim has none), links, footnotes,
 // timestamps/scheduling (Phase 30). Reuses the (now-global) headline
@@ -2331,8 +3901,11 @@ const char *kBuiltinOrgLinks =
     "    pos = e + 1\n"
     "  end\n"
     "end\n"
+    // The target prompt below defaults to the most recently org_store_
+    // link-ed target, if any -- see mep.org_store_link further down.
     "function mep.org_link_insert()\n"
-    "  mep.ui_input('Link target:', '', function(target)\n"
+    "  local default_target = (mep.org_stored_link and mep.org_stored_link.target) or ''\n"
+    "  mep.ui_input('Link target:', default_target, function(target)\n"
     "    if not target or target == '' then return end\n"
     "    mep.ui_input('Description (optional):', '', function(desc)\n"
     "      local text = (desc and desc ~= '') and ('[[' .. target .. '][' .. desc .. ']]') or ('[[' .. target .. ']]')\n"
@@ -2341,8 +3914,38 @@ const char *kBuiltinOrgLinks =
     "  end)\n"
     "end\n"
     "mep.command('MepOrgLinkInsert', mep.org_link_insert)\n"
-    // Follow: dispatch by target-type prefix.
+    // Store-link (org-store-link): capture a link to the headline
+    // containing the cursor for later recall as org_link_insert's default
+    // target prompt. Prefers a CUSTOM_ID, then an ID, then falls back to
+    // a "*Title" heading-search link -- same preference order real org-
+    // mode uses. Scoped down to a single most-recently-stored slot rather
+    // than a full link ring/history list (documented scope cut -- a real
+    // ring would need its own picker UI with no obvious place to surface
+    // it in this codebase's ex-command-driven org module).\n"
+    "mep.org_stored_link = nil\n"
+    "function mep.org_store_link()\n"
+    "  local row = mep_org_current_headline_row()\n"
+    "  if not row then mep.notify('Not inside a headline', 'warn') return end\n"
+    "  local h = mep_org_parse_headline(mep.get_line(row))\n"
+    "  local custom_id = mep.org_property_get(row, 'CUSTOM_ID')\n"
+    "  local id = not custom_id and mep.org_property_get(row, 'ID')\n"
+    "  local target\n"
+    "  if custom_id then target = '#' .. custom_id\n"
+    "  elseif id then target = 'id:' .. id\n"
+    "  else target = '*' .. h.title end\n"
+    "  mep.org_stored_link = {target = target, description = h.title}\n"
+    "  mep.notify('Stored link: ' .. target)\n"
+    "end\n"
+    "mep.command('MepOrgStoreLink', mep.org_store_link)\n"
+    // Follow: dispatch by target-type prefix. Citations (org-cite
+    // `[cite:@key]` or a legacy org-ref `citeTYPE:key` -- Phase 39's
+    // mep_org_bib_cite_at_cursor, a cross-chunk global defined in
+    // kBuiltinOrgBib, loaded after this chunk but resolved by the time
+    // this function is actually called) are checked first since they
+    // don't use the `[[...]]` bracket form below.
     "function mep.org_link_follow()\n"
+    "  local cite_keys = mep_org_bib_cite_at_cursor and mep_org_bib_cite_at_cursor()\n"
+    "  if cite_keys and #cite_keys > 0 then mep.org_bib_cite_goto() return end\n"
     "  local target = mep.org_link_at_cursor()\n"
     "  if not target then mep.notify('No link under cursor', 'warn') return end\n"
     "  if target:match('^https?://') or target:match('^mailto:') then\n"
@@ -2465,6 +4068,109 @@ const char *kBuiltinOrgLinks =
     "end\n"
     "mep.command('MepOrgTimestampIncr', function() mep.org_timestamp_shift(1) end)\n"
     "mep.command('MepOrgTimestampDecr', function() mep.org_timestamp_shift(-1) end)\n"
+    // Repeater-insert UI: mep.org_timestamp_insert only ever writes a bare
+    // date (no repeater), and org_timestamp_shift only preserves an
+    // *existing* repeater -- there was no way to add one in the first
+    // place. Prompts for a repeater string (e.g. "+1w", "++1d", ".+1m",
+    // or empty to remove one) and rewrites the timestamp under the
+    // cursor with it.\n"
+    "function mep.org_timestamp_set_repeater()\n"
+    "  local row, col = mep.cursor()\n"
+    "  local line = mep.get_line(row)\n"
+    "  local s, e, body, active = mep_org_timestamp_at(line, col)\n"
+    "  if not s then mep.notify('No timestamp under cursor', 'warn') return end\n"
+    "  local base = body:gsub('%s*[%+%.]+%d+[dwmy]%s*$', '')\n"
+    "  local existing = body:match('([%+%.]+%d+[dwmy])') or ''\n"
+    "  mep.ui_input('Repeater (e.g. +1w, ++1d, .+1m; empty to remove):', existing, function(rep)\n"
+    "    if not rep then return end\n"
+    "    if rep ~= '' and not rep:match('^[%+%.]+%d+[dwmy]$') then mep.notify('Invalid repeater syntax', 'warn') return end\n"
+    "    local newbody = base .. (rep ~= '' and (' ' .. rep) or '')\n"
+    "    local openc, closec = active and '<' or '[', active and '>' or ']'\n"
+    "    local cur = mep.get_line(row)\n"
+    "    mep.set_line(row, cur:sub(1, s - 1) .. openc .. newbody .. closec .. cur:sub(e + 1))\n"
+    "  end)\n"
+    "end\n"
+    "mep.command('MepOrgTimestampRepeater', mep.org_timestamp_set_repeater)\n"
+    // Timestamp ranges: <start>--<end> (or [start]--[end]). Each half is
+    // still just an ordinary timestamp for insert/shift purposes --
+    // mep_org_timestamp_at above already matches each bracketed half
+    // independently of the '--' connector between them, so
+    // MepOrgTimestampIncr/Decr already work correctly on either half of a
+    // range with no changes needed there. What's added here: a dedicated
+    // insert command (prompting for both ends) and highlighting that
+    // marks a whole recognized range with a color distinct from a lone
+    // timestamp.\n"
+    "local ORG_TS_RANGE_PATTERNS = {\n"
+    "  '<%d%d%d%d%-%d%d%-%d%d[^>]->%-%-<%d%d%d%d%-%d%d%-%d%d[^>]->',\n"
+    "  '%[%d%d%d%d%-%d%d%-%d%d[^%]]-%]%-%-%[%d%d%d%d%-%d%d%-%d%d[^%]]-%]',\n"
+    "}\n"
+    "function mep_org_timestamp_range_at(line, col)\n"
+    "  for _, pat in ipairs(ORG_TS_RANGE_PATTERNS) do\n"
+    "    local pos = 1\n"
+    "    while true do\n"
+    "      local s, e = line:find(pat, pos)\n"
+    "      if not s then break end\n"
+    "      if col >= s and col <= e then return s, e end\n"
+    "      pos = e + 1\n"
+    "    end\n"
+    "  end\n"
+    "  return nil\n"
+    "end\n"
+    "function mep.org_timestamp_insert_range()\n"
+    "  local row, col = mep.cursor()\n"
+    "  local today = os.date('%Y-%m-%d')\n"
+    "  mep.ui_input('Range start (YYYY-MM-DD):', today, function(startd)\n"
+    "    if not startd then return end\n"
+    "    mep.ui_input('Range end (YYYY-MM-DD):', today, function(endd)\n"
+    "      if not endd then return end\n"
+    "      local sy, sm, sd = startd:match('(%d+)-(%d+)-(%d+)')\n"
+    "      local ey, em, ed = endd:match('(%d+)-(%d+)-(%d+)')\n"
+    "      if not sy or not ey then mep.notify('Invalid date (want YYYY-MM-DD)', 'warn') return end\n"
+    "      local sw = os.date('%a', os.time({year = tonumber(sy), month = tonumber(sm), day = tonumber(sd), hour = 12}))\n"
+    "      local ew = os.date('%a', os.time({year = tonumber(ey), month = tonumber(em), day = tonumber(ed), hour = 12}))\n"
+    "      local text = '<' .. startd .. ' ' .. sw .. '>--<' .. endd .. ' ' .. ew .. '>'\n"
+    "      local line = mep.get_line(row)\n"
+    "      mep.set_line(row, line:sub(1, col - 1) .. text .. line:sub(col))\n"
+    "      mep.set_cursor(row, col + #text)\n"
+    "    end)\n"
+    "  end)\n"
+    "end\n"
+    "mep.command('MepOrgTimestampRange', mep.org_timestamp_insert_range)\n"
+    // Highlighting: a whole recognized range gets one color (Cyan),
+    // any other single active/inactive timestamp gets another (Blue) --
+    // same command-triggered "recolor the span" approach as org_link_
+    // highlight above (not wired to an automatic per-keystroke render
+    // pipeline; run it explicitly, or from wherever a caller already
+    // re-renders org decorations).\n"
+    "local mep_org_ts_ns = nil\n"
+    "function mep.org_timestamp_highlight()\n"
+    "  if not mep_org_ts_ns then mep_org_ts_ns = mep.ns_create('org-timestamps') end\n"
+    "  mep.ns_clear(mep_org_ts_ns)\n"
+    "  for i = 1, mep.line_count() do\n"
+    "    local line = mep.get_line(i)\n"
+    "    local covered = {}\n"
+    "    for _, pat in ipairs(ORG_TS_RANGE_PATTERNS) do\n"
+    "      local pos = 1\n"
+    "      while true do\n"
+    "        local s, e = line:find(pat, pos)\n"
+    "        if not s then break end\n"
+    "        mep.deco_add(mep_org_ts_ns, {row = i, col_start = s, col_end = e + 1, hl = 'Cyan'})\n"
+    "        for k = s, e do covered[k] = true end\n"
+    "        pos = e + 1\n"
+    "      end\n"
+    "    end\n"
+    "    for _, pat in ipairs({'<%d%d%d%d%-%d%d%-%d%d[^>]->', '%[%d%d%d%d%-%d%d%-%d%d[^%]]-%]'}) do\n"
+    "      local pos = 1\n"
+    "      while true do\n"
+    "        local s, e = line:find(pat, pos)\n"
+    "        if not s then break end\n"
+    "        if not covered[s] then mep.deco_add(mep_org_ts_ns, {row = i, col_start = s, col_end = e + 1, hl = 'Blue'}) end\n"
+    "        pos = e + 1\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "end\n"
+    "mep.command('MepOrgTimestampHighlight', mep.org_timestamp_highlight)\n"
     // SCHEDULED:/DEADLINE: planning lines, inserted directly below the
     // current headline (creating or replacing an existing planning line).
     "function mep.org_set_planning(kind)\n"
@@ -2516,6 +4222,15 @@ const char *kBuiltinOrgCapture =
     "      prompts[#prompts + 1] = label\n"
     "      return '\\0PROMPT' .. #prompts .. '\\0'\n"
     "    end)\n"
+    // Review step: the captured entry is inserted immediately (so it's
+    // fully editable in a real buffer -- there's no floating-editable-
+    // popup primitive at the Lua/C++ layer, only single-line ui_input/
+    // modal ui_select/ui_confirm per Phase 3, so this is the closest
+    // faithful adaptation of real org-capture's own insert-then-C-c C-c-
+    // or-C-c C-k review step), but is tracked as *pending* until
+    // explicitly committed or aborted rather than being final the moment
+    // prompts resolve.\n"
+    "mep.org_capture_pending = nil\n"
     "    local function finish(text)\n"
     "      text = text:gsub('%%%?', '')\n"
     "      local target_file = tmpl.file or mep.filename()\n"
@@ -2525,7 +4240,8 @@ const char *kBuiltinOrgCapture =
     "      for line in (text .. '\\n'):gmatch('(.-)\\n') do lines[#lines + 1] = line end\n"
     "      mep.replace_lines(n + 1, n + 1, lines)\n"
     "      mep.set_cursor(n + 1, 1)\n"
-    "      mep.notify('Captured to ' .. target_file)\n"
+    "      mep.org_capture_pending = {file = target_file, start_row = n + 1, end_row = n + 1 + #lines}\n"
+    "      mep.notify('Captured to ' .. target_file .. ' -- review, then :MepOrgCaptureCommit or :MepOrgCaptureAbort')\n"
     "    end\n"
     "    local function resolve_prompts(idx, text)\n"
     "      if idx > #prompts then finish(text) return end\n"
@@ -2538,46 +4254,113 @@ const char *kBuiltinOrgCapture =
     "  end)\n"
     "end\n"
     "mep.command('MepOrgCapture', mep.org_capture)\n"
+    // Commit: keep the pending capture as-is (the buffer already holds
+    // whatever the user edited it to during review) -- just clears the
+    // pending marker. Abort: deletes exactly the inserted line range,
+    // discarding it entirely.\n"
+    "function mep.org_capture_commit()\n"
+    "  if not mep.org_capture_pending then mep.notify('No pending capture', 'warn') return end\n"
+    "  mep.org_capture_pending = nil\n"
+    "  mep.notify('Capture committed')\n"
+    "end\n"
+    "function mep.org_capture_abort()\n"
+    "  local p = mep.org_capture_pending\n"
+    "  if not p then mep.notify('No pending capture', 'warn') return end\n"
+    "  if mep.filename() ~= p.file then mep.pane_open(p.file) end\n"
+    "  mep.replace_lines(p.start_row, p.end_row, {})\n"
+    "  mep.org_capture_pending = nil\n"
+    "  mep.notify('Capture aborted')\n"
+    "end\n"
+    "mep.command('MepOrgCaptureCommit', mep.org_capture_commit)\n"
+    "mep.command('MepOrgCaptureAbort', mep.org_capture_abort)\n"
     // Refile: move the current subtree to become the last child of a
-    // headline chosen via picker, re-leveling it to fit one level deeper.
+    // headline chosen via a fuzzy picker (mep.picker_open, the same
+    // engine find_files/live_grep/buffers use -- already a real
+    // completion-based target picker, not a flat prompt), re-leveling it
+    // to fit one level deeper. Targets include every other headline in
+    // the current buffer *plus* every headline in mep.org_refile_files
+    // (an opt-in list of other paths, empty by default, same convention
+    // as Phase 32's mep.org_agenda_files) read headlessly via Phase 32's
+    // mep_org_read_file_lines -- closing the "same buffer only" scope cut
+    // this file's own plan notes flagged. Cross-file items are prefixed
+    // with their filename; picker `data` can only be a string (see
+    // ReadPickerItems in lua_env.cpp), so the target file (empty string
+    // for same-buffer) and row are packed into one string joined by a
+    // literal \\1 byte that can never appear in a path or line number.
+    // Also "refile and follow": the cursor ends up at the refiled
+    // subtree's new location rather than staying at the (now-empty) old
+    // spot.\n"
+    "mep.org_refile_files = mep.org_refile_files or {}\n"
     "function mep.org_refile()\n"
     "  local row = mep_org_current_headline_row()\n"
     "  if not row then mep.notify('Not on a headline', 'warn') return end\n"
     "  local e = mep_org_subtree_end(row)\n"
+    "  local src_file = mep.filename()\n"
     "  local items = {}\n"
     "  for i = 1, mep.line_count() do\n"
     "    if i < row or i >= e then\n"
     "      local h = mep_org_parse_headline(mep.get_line(i))\n"
-    "      if h then items[#items + 1] = {display = string.rep('  ', h.level - 1) .. h.title, data = tostring(i)} end\n"
+    "      if h then items[#items + 1] = {display = string.rep('  ', h.level - 1) .. h.title, data = '\\1' .. i} end\n"
+    "    end\n"
+    "  end\n"
+    "  for _, path in ipairs(mep.org_refile_files) do\n"
+    "    if path ~= src_file then\n"
+    "      local flines = mep_org_read_file_lines(path)\n"
+    "      if flines then\n"
+    "        for i, line in ipairs(flines) do\n"
+    "          local h = mep_org_parse_headline(line)\n"
+    "          if h then items[#items + 1] = {display = '[' .. path .. '] ' .. string.rep('  ', h.level - 1) .. h.title, data = path .. '\\1' .. i} end\n"
+    "        end\n"
+    "      end\n"
     "    end\n"
     "  end\n"
     "  if #items == 0 then mep.notify('No refile targets', 'warn') return end\n"
     "  local lines = {}\n"
     "  for i = row, e - 1 do lines[#lines + 1] = mep.get_line(i) end\n"
+    "  local src_level = mep_org_parse_headline(lines[1]).level\n"
     "  mep.picker_open('Refile to', items, function(data)\n"
     "    if not data then return end\n"
-    "    local target_row = tonumber(data)\n"
-    "    local target_level = mep.org_headline_level(target_row)\n"
-    "    local target_end = mep_org_subtree_end(target_row)\n"
-    "    local src_level = mep_org_parse_headline(lines[1]).level\n"
-    "    local delta = (target_level + 1) - src_level\n"
-    "    local reindented = {}\n"
-    "    for _, line in ipairs(lines) do\n"
-    "      local stars = line:match('^(%*+)')\n"
-    "      if stars and delta ~= 0 then\n"
-    "        reindented[#reindented + 1] = string.rep('*', math.max(1, #stars + delta)) .. line:sub(#stars + 1)\n"
-    "      else\n"
-    "        reindented[#reindented + 1] = line\n"
+    "    local target_file, target_row_s = data:match('^(.-)\\1(%d+)$')\n"
+    "    local target_row = tonumber(target_row_s)\n"
+    "    local function reindent(target_level)\n"
+    "      local delta = (target_level + 1) - src_level\n"
+    "      local out = {}\n"
+    "      for _, line in ipairs(lines) do\n"
+    "        local stars = line:match('^(%*+)')\n"
+    "        if stars and delta ~= 0 then\n"
+    "          out[#out + 1] = string.rep('*', math.max(1, #stars + delta)) .. line:sub(#stars + 1)\n"
+    "        else\n"
+    "          out[#out + 1] = line\n"
+    "        end\n"
     "      end\n"
+    "      return out\n"
     "    end\n"
-    "    if target_row > row then\n"
-    "      mep.replace_lines(target_end, target_end, reindented)\n"
-    "      mep.replace_lines(row, e, {})\n"
+    "    if target_file == '' then\n"
+    "      local target_level = mep.org_headline_level(target_row)\n"
+    "      local target_end = mep_org_subtree_end(target_row)\n"
+    "      local reindented = reindent(target_level)\n"
+    "      local dest_row\n"
+    "      if target_row > row then\n"
+    "        mep.replace_lines(target_end, target_end, reindented)\n"
+    "        mep.replace_lines(row, e, {})\n"
+    "        dest_row = target_end - (e - row)\n"
+    "      else\n"
+    "        mep.replace_lines(row, e, {})\n"
+    "        mep.replace_lines(target_end, target_end, reindented)\n"
+    "        dest_row = target_end\n"
+    "      end\n"
+    "      mep.set_cursor(dest_row, 1)\n"
+    "      mep.notify('Refiled')\n"
     "    else\n"
     "      mep.replace_lines(row, e, {})\n"
+    "      mep.pane_open(target_file)\n"
+    "      local target_level = mep.org_headline_level(target_row)\n"
+    "      local target_end = mep_org_subtree_end(target_row)\n"
+    "      local reindented = reindent(target_level)\n"
     "      mep.replace_lines(target_end, target_end, reindented)\n"
+    "      mep.set_cursor(target_end, 1)\n"
+    "      mep.notify('Refiled to ' .. target_file)\n"
     "    end\n"
-    "    mep.notify('Refiled')\n"
     "  end)\n"
     "end\n"
     "mep.command('MepOrgRefile', mep.org_refile)\n"
@@ -2859,32 +4642,162 @@ const char *kBuiltinOrgClock =
 const char *kBuiltinOrgBabel =
     "mep.org_babel_langs = {\n"
     "  sh = {'sh'}, bash = {'bash'}, python = {'python3'}, lua = {'lua'},\n"
+    // Grown from the original 4 per NVIM_PARITY_PLAN.md's own "start with
+    // 2-4 ... then grow the table" guidance (mep.nvim supports ~25). Keyed
+    // by the literal `#+begin_src <lang>` header word org files actually
+    // write (not a file extension, so no alias layer is needed the way
+    // mep.run_languages/mep.repl_languages above needed one). Still
+    // interpreted-language-only, matching this phase's own documented
+    // scope cut (no `:tangle`/`compile_cmd` step exists yet for a
+    // compiled language like C/Rust/Go to build before running).\n"
+    "  ruby = {'ruby'}, perl = {'perl'}, php = {'php'}, javascript = {'node'},\n"
+    "  r = {'Rscript'}, julia = {'julia'},\n"
     "}\n"
-    "local mep_org_babel_cache = {}\n"
+    "local mep_org_babel_cache = mep.babel_cache_load()\n"
+    "local function mep_org_babel_cache_save() mep.babel_cache_save(mep_org_babel_cache) end\n"
+    // `:var name=value` parsing (real bug fix): a value may be
+    // double-quoted (`"..."`, with `\"`/`\\` escapes, so it can contain
+    // spaces/quotes) or a bare non-space token, mirroring real Org's
+    // :var syntax closely enough for babel's purposes -- the previous
+    // `%S+`-only pattern silently truncated any value containing a
+    // space.
+    "local function mep_org_parse_vars(args_str)\n"
+    "  local vars = {}\n"
+    "  local pos = 1\n"
+    "  while true do\n"
+    "    local s, e, name = args_str:find(':var%s+([%w_]+)=', pos)\n"
+    "    if not s then break end\n"
+    "    local vstart = e + 1\n"
+    "    if args_str:sub(vstart, vstart) == '\"' then\n"
+    "      local buf, j = {}, vstart + 1\n"
+    "      while j <= #args_str do\n"
+    "        local c = args_str:sub(j, j)\n"
+    "        if c == '\\\\' and j < #args_str then\n"
+    "          buf[#buf + 1] = args_str:sub(j + 1, j + 1)\n"
+    "          j = j + 2\n"
+    "        elseif c == '\"' then\n"
+    "          j = j + 1\n"
+    "          break\n"
+    "        else\n"
+    "          buf[#buf + 1] = c\n"
+    "          j = j + 1\n"
+    "        end\n"
+    "      end\n"
+    "      vars[name] = table.concat(buf)\n"
+    "      pos = j\n"
+    "    else\n"
+    "      local vs, ve, tok = args_str:find('(%S+)', vstart)\n"
+    "      vars[name] = tok or ''\n"
+    "      pos = ve and (ve + 1) or vstart\n"
+    "    end\n"
+    "  end\n"
+    "  return vars\n"
+    "end\n"
+    // Per-language literal-string encoding (real bug fix): the prelude
+    // used to splice a :var value into the generated script via naive
+    // concatenation with no quoting at all (`name = <value>`) -- besides
+    // breaking on spaces/quotes, an unquoted value was live code, i.e. a
+    // code-injection hole (`:var x=os.execute('rm -rf ~')` ran
+    // literally). Every value is now always encoded as that language's
+    // own quoted string-literal syntax, so it can only ever be data.
+    "local function mep_org_quote_value(lang, val)\n"
+    "  val = tostring(val)\n"
+    "  if lang == 'sh' or lang == 'bash' then\n"
+    "    return \"'\" .. val:gsub(\"'\", \"'\\\\''\") .. \"'\"\n"
+    "  elseif lang == 'lua' then\n"
+    "    return string.format('%q', val)\n"
+    "  else\n"
+    "    local esc = val:gsub('\\\\', '\\\\\\\\')\n"
+    "    esc = esc:gsub('\"', '\\\\\"')\n"
+    "    esc = esc:gsub('\\n', '\\\\n')\n"
+    "    esc = esc:gsub('\\r', '\\\\r')\n"
+    "    esc = esc:gsub('\\t', '\\\\t')\n"
+    "    return '\"' .. esc .. '\"'\n"
+    "  end\n"
+    "end\n"
+    // `:results` header-arg (Phase 34 gap): space-separated mode
+    // keywords captured as a set, stopping at the next `:key` header-arg
+    // (or end of string) -- `silent` suppresses the #+RESULTS: block
+    // entirely, `table` reformats tabular output, `value`/`output` pick
+    // the collection strategy (see mep_org_value_wrap below).
+    "local function mep_org_parse_results(args_str)\n"
+    "  local results_str = args_str:match(':results%s+([^:]*)') or ''\n"
+    "  results_str = results_str:gsub('%s+$', '')\n"
+    "  local modes = {}\n"
+    "  for w in results_str:gmatch('%S+') do modes[w] = true end\n"
+    "  return modes\n"
+    "end\n"
     "local function mep_org_src_block_at(row)\n"
     "  local start_row\n"
     "  for i = row, 1, -1 do\n"
-    "    if mep.get_line(i):match('^%s*#%+begin_src') then start_row = i break end\n"
-    "    if mep.get_line(i):match('^%s*#%+end_src') then return nil end\n"
+    "    if mep.get_line(i):match('^%s*#%+[Bb][Ee][Gg][Ii][Nn]_[Ss][Rr][Cc]') then start_row = i break end\n"
+    "    if mep.get_line(i):match('^%s*#%+[Ee][Nn][Dd]_[Ss][Rr][Cc]') then return nil end\n"
     "  end\n"
     "  if not start_row then return nil end\n"
     "  local end_row\n"
     "  for i = start_row + 1, mep.line_count() do\n"
-    "    if mep.get_line(i):match('^%s*#%+end_src') then end_row = i break end\n"
+    "    if mep.get_line(i):match('^%s*#%+[Ee][Nn][Dd]_[Ss][Rr][Cc]') then end_row = i break end\n"
     "  end\n"
     "  if not end_row or end_row < row then return nil end\n"
     "  local header = mep.get_line(start_row)\n"
-    "  local lang = header:match('^%s*#%+begin_src%s+(%S+)')\n"
-    "  local args_str = header:match('^%s*#%+begin_src%s+%S+%s*(.*)$') or ''\n"
-    "  local vars = {}\n"
-    "  for name, val in args_str:gmatch(':var%s+([%w_]+)=(%S+)') do vars[name] = val end\n"
+    // Directive keywords (#+begin_src/#+end_src, above) and the language
+    // tag are both case-insensitive in real org-mode ("#+BEGIN_SRC Lua"
+    // is exactly as valid as "#+begin_src lua") -- lowercased here so
+    // mep.org_babel_langs' lookup (keyed by lowercase "lua"/"python"/etc.,
+    // see mep.org_babel_execute below) still finds it regardless of how
+    // the source file capitalized it. Only the language tag is
+    // lowercased, not args_str -- a :var value's own case must round-trip
+    // untouched.
+    "  local lang = header:match('^%s*#%+[Bb][Ee][Gg][Ii][Nn]_[Ss][Rr][Cc]%s+(%S+)')\n"
+    "  if lang then lang = lang:lower() end\n"
+    "  local args_str = header:match('^%s*#%+[Bb][Ee][Gg][Ii][Nn]_[Ss][Rr][Cc]%s+%S+%s*(.*)$') or ''\n"
+    "  local vars = mep_org_parse_vars(args_str)\n"
     "  local body = {}\n"
     "  for i = start_row + 1, end_row - 1 do body[#body + 1] = mep.get_line(i) end\n"
     "  return {start_row = start_row, end_row = end_row, lang = lang, vars = vars,\n"
     "    tangle = args_str:match(':tangle%s+(%S+)'), cache = args_str:match(':cache%s+(%S+)'),\n"
+    "    results_modes = mep_org_parse_results(args_str),\n"
     "    args_str = args_str, body = table.concat(body, '\\n')}\n"
     "end\n"
-    "function mep.org_babel_insert_results(blk, out_lines)\n"
+    // `:results table` best-effort reformat: tab-separated wins over
+    // comma-separated if both appear anywhere in the output; first row
+    // becomes the header (with a `|---+---|` separator) when there's
+    // more than one row, matching plain Org table syntax.
+    "local function mep_org_format_table(lines)\n"
+    "  if #lines == 0 then return lines end\n"
+    "  local delim\n"
+    "  for _, l in ipairs(lines) do\n"
+    "    if l:find('\\t') then delim = '\\t' break end\n"
+    "  end\n"
+    "  if not delim then\n"
+    "    for _, l in ipairs(lines) do\n"
+    "      if l:find(',') then delim = ',' break end\n"
+    "    end\n"
+    "  end\n"
+    "  if not delim then return lines end\n"
+    "  local rows = {}\n"
+    "  for _, l in ipairs(lines) do\n"
+    "    local cells = {}\n"
+    "    for cell in (l .. delim):gmatch('(.-)' .. delim) do cells[#cells + 1] = cell end\n"
+    "    rows[#rows + 1] = cells\n"
+    "  end\n"
+    "  local function row_line(cells) return '| ' .. table.concat(cells, ' | ') .. ' |' end\n"
+    "  local out = {row_line(rows[1])}\n"
+    "  if #rows > 1 then\n"
+    "    local seps = {}\n"
+    "    for _ = 1, #rows[1] do seps[#seps + 1] = '---' end\n"
+    "    out[2] = '|' .. table.concat(seps, '+') .. '|'\n"
+    "    for i = 2, #rows do out[#out + 1] = row_line(rows[i]) end\n"
+    "  end\n"
+    "  return out\n"
+    "end\n"
+    // `raw` (Phase 34 gap, :results table): when true, out_lines is
+    // already Org table syntax and gets inserted verbatim (no `: `
+    // prefix, no #+begin_example fence) -- and the existing-block
+    // detector below now also recognizes a prior table (lines starting
+    // with `|`) so re-running in place replaces it instead of leaving
+    // stale rows behind.
+    "function mep.org_babel_insert_results(blk, out_lines, raw)\n"
     "  local insert_row = blk.end_row\n"
     "  local existing_start, existing_end\n"
     "  if (mep.get_line(insert_row + 1) or ''):match('^%s*#%+RESULTS:%s*$') then\n"
@@ -2894,15 +4807,18 @@ const char *kBuiltinOrgBabel =
     "    if line_i:match('^%s*#%+begin_example') then\n"
     "      while i <= mep.line_count() and not (mep.get_line(i) or ''):match('^%s*#%+end_example') do i = i + 1 end\n"
     "      existing_end = i\n"
-    "    elseif line_i:match('^%s*:') then\n"
-    "      while i <= mep.line_count() and (mep.get_line(i) or ''):match('^%s*:') do i = i + 1 end\n"
+    "    elseif line_i:match('^%s*:') or line_i:match('^%s*|') then\n"
+    "      while i <= mep.line_count() and ((mep.get_line(i) or ''):match('^%s*:') or (mep.get_line(i) or ''):match('^%s*|')) do i = i + 1 end\n"
     "      existing_end = i - 1\n"
     "    else\n"
     "      existing_end = existing_start\n"
     "    end\n"
     "  end\n"
     "  local block\n"
-    "  if #out_lines <= 1 then\n"
+    "  if raw then\n"
+    "    block = {'#+RESULTS:'}\n"
+    "    for _, l in ipairs(out_lines) do block[#block + 1] = l end\n"
+    "  elseif #out_lines <= 1 then\n"
     "    block = {'#+RESULTS:', ': ' .. (out_lines[1] or '')}\n"
     "  else\n"
     "    block = {'#+RESULTS:', '#+begin_example'}\n"
@@ -2915,6 +4831,37 @@ const char *kBuiltinOrgBabel =
     "    mep.replace_lines(insert_row + 1, insert_row + 1, block)\n"
     "  end\n"
     "end\n"
+    // `:results value` best-effort last-expression capture (Phase 34
+    // gap; python/lua only -- sh/bash have no real value/output
+    // distinction, same as real Org): a heuristic, not a parser -- if
+    // the body's last non-blank line isn't a statement keyword, comment,
+    // or (heuristically) a top-level assignment, re-evaluate it in an
+    // appended `print(...)` so its value lands in the captured output.
+    // Documented as heuristic/best-effort, not full AST-based analysis.
+    "local mep_org_value_stmt_kw = {\n"
+    "  ['if'] = true, ['for'] = true, ['while'] = true, ['def'] = true, ['class'] = true,\n"
+    "  ['with'] = true, ['try'] = true, ['import'] = true, ['from'] = true, ['return'] = true,\n"
+    "  ['print'] = true, ['local'] = true, ['function'] = true, ['do'] = true, ['end'] = true,\n"
+    "  ['break'] = true, ['pass'] = true, ['raise'] = true, ['assert'] = true, ['del'] = true,\n"
+    "  ['global'] = true, ['elif'] = true, ['else'] = true,\n"
+    "}\n"
+    "local function mep_org_value_wrap(lang, body)\n"
+    "  local lines = {}\n"
+    "  for l in (body .. '\\n'):gmatch('(.-)\\n') do lines[#lines + 1] = l end\n"
+    "  local last_idx\n"
+    "  for i = #lines, 1, -1 do\n"
+    "    if lines[i]:match('%S') then last_idx = i break end\n"
+    "  end\n"
+    "  if not last_idx then return body end\n"
+    "  local trimmed = lines[last_idx]:match('^%s*(.-)%s*$')\n"
+    "  local first_word = trimmed:match('^([%a_][%w_]*)')\n"
+    "  if trimmed == '' or trimmed:match('^#') then return body end\n"
+    "  if first_word and mep_org_value_stmt_kw[first_word] then return body end\n"
+    "  local stripped = trimmed:gsub('==', ''):gsub('~=', ''):gsub('<=', ''):gsub('>=', '')\n"
+    "  if stripped:find('=') then return body end\n"
+    "  lines[#lines + 1] = 'print(' .. trimmed .. ')'\n"
+    "  return table.concat(lines, '\\n')\n"
+    "end\n"
     "function mep.org_babel_execute()\n"
     "  local blk = mep_org_src_block_at(mep.cursor())\n"
     "  if not blk then mep.notify('Not in a src block', 'warn') return end\n"
@@ -2922,17 +4869,25 @@ const char *kBuiltinOrgBabel =
     "  if not cmd then mep.notify('No babel support for: ' .. tostring(blk.lang), 'warn') return end\n"
     "  local cache_key = blk.lang .. '|' .. blk.args_str .. '|' .. blk.body\n"
     "  if blk.cache == 'yes' and mep_org_babel_cache[cache_key] then\n"
-    "    mep.org_babel_insert_results(blk, mep_org_babel_cache[cache_key])\n"
+    "    if not blk.results_modes.silent then\n"
+    "      local lines = blk.results_modes.table and mep_org_format_table(mep_org_babel_cache[cache_key]) or mep_org_babel_cache[cache_key]\n"
+    "      mep.org_babel_insert_results(blk, lines, blk.results_modes.table)\n"
+    "    end\n"
     "    mep.notify('Babel: cached result')\n"
     "    return\n"
     "  end\n"
     "  local prelude = ''\n"
     "  for name, val in pairs(blk.vars) do\n"
-    "    prelude = prelude .. name .. ((blk.lang == 'sh' or blk.lang == 'bash') and ('=' .. val) or (' = ' .. val)) .. '\\n'\n"
+    "    local quoted = mep_org_quote_value(blk.lang, val)\n"
+    "    prelude = prelude .. name .. ((blk.lang == 'sh' or blk.lang == 'bash') and ('=' .. quoted) or (' = ' .. quoted)) .. '\\n'\n"
+    "  end\n"
+    "  local body = blk.body\n"
+    "  if blk.results_modes.value and (blk.lang == 'python' or blk.lang == 'lua') then\n"
+    "    body = mep_org_value_wrap(blk.lang, body)\n"
     "  end\n"
     "  local tmpfile = os.tmpname()\n"
     "  local f = io.open(tmpfile, 'w')\n"
-    "  f:write(prelude .. blk.body)\n"
+    "  f:write(prelude .. body)\n"
     "  f:close()\n"
     "  local argv = {}\n"
     "  for _, a in ipairs(cmd) do argv[#argv + 1] = a end\n"
@@ -2943,8 +4898,14 @@ const char *kBuiltinOrgBabel =
     "    on_stdout = function(line) out_lines[#out_lines + 1] = line end,\n"
     "    on_exit = function(code)\n"
     "      os.remove(tmpfile)\n"
-    "      mep.org_babel_insert_results(blk, out_lines)\n"
-    "      if blk.cache == 'yes' then mep_org_babel_cache[cache_key] = out_lines end\n"
+    "      if not blk.results_modes.silent then\n"
+    "        local lines = blk.results_modes.table and mep_org_format_table(out_lines) or out_lines\n"
+    "        mep.org_babel_insert_results(blk, lines, blk.results_modes.table)\n"
+    "      end\n"
+    "      if blk.cache == 'yes' then\n"
+    "        mep_org_babel_cache[cache_key] = out_lines\n"
+    "        mep_org_babel_cache_save()\n"
+    "      end\n"
     "      mep.notify('Babel: executed ' .. blk.lang .. ' block (exit ' .. code .. ')')\n"
     "    end,\n"
     "  })\n"
@@ -2955,7 +4916,7 @@ const char *kBuiltinOrgBabel =
     "function mep.org_babel_tangle()\n"
     "  local targets, order = {}, {}\n"
     "  for i = 1, mep.line_count() do\n"
-    "    if mep.get_line(i):match('^%s*#%+begin_src') then\n"
+    "    if mep.get_line(i):match('^%s*#%+[Bb][Ee][Gg][Ii][Nn]_[Ss][Rr][Cc]') then\n"
     "      local blk = mep_org_src_block_at(i)\n"
     "      if blk and blk.tangle then\n"
     "        if not targets[blk.tangle] then targets[blk.tangle] = {} order[#order + 1] = blk.tangle end\n"
@@ -3016,33 +4977,145 @@ const char *kBuiltinOrgExport =
     "  elseif format == 'markdown' then return string.rep('#', level) .. ' ' .. title\n"
     "  else return string.rep('  ', level - 1) .. title:upper() end\n"
     "end\n"
+    // Lines-array counterpart of mep_org_subtree_end (Phase 35 gap
+    // support): the main export walk operates on a resolved-includes
+    // array rather than the live buffer, so tag-based subtree skipping
+    // (:noexport:) needs a version indexing into that array instead of
+    // calling mep.get_line/mep.line_count.
+    "local function mep_org_subtree_end_lines(lines, row)\n"
+    "  local h = mep_org_parse_headline(lines[row])\n"
+    "  local level = h and h.level\n"
+    "  for i = row + 1, #lines do\n"
+    "    local hi = mep_org_parse_headline(lines[i])\n"
+    "    if hi and hi.level <= level then return i end\n"
+    "  end\n"
+    "  return #lines + 1\n"
+    "end\n"
+    // `#+INCLUDE:` resolution (Phase 35 gap): a pre-pass run before the
+    // rest of export, recursively splicing in referenced files' content
+    // (`"path"` or bare path; optional `:lines "N-M"` slice). Guarded
+    // against runaway/circular includes two ways: `seen` tracks paths
+    // currently on the active inclusion chain (pushed before recursing,
+    // popped after) so a file including itself directly or transitively
+    // is caught and reported inline rather than looping forever, and a
+    // shared `budget` caps total resolved lines across the whole
+    // resolution so a large acyclic chain can't blow up unbounded
+    // either -- both failure modes bail out with a bracketed status
+    // message spliced into the output rather than hanging or crashing.
+    "local function mep_org_resolve_include_line(line, base_dir, depth, seen, budget)\n"
+    "  local target, opts = line:match('^%s*#%+INCLUDE:%s*\"([^\"]+)\"%s*(.*)$')\n"
+    "  if not target then target, opts = line:match('^%s*#%+INCLUDE:%s*(%S+)%s*(.*)$') end\n"
+    "  if not target then return nil end\n"
+    "  if depth > 8 then return {'[include: max depth exceeded: ' .. target .. ']'} end\n"
+    "  local path = target:match('^/') and target or (base_dir .. '/' .. target)\n"
+    "  if seen[path] then return {'[include: cycle detected: ' .. target .. ']'} end\n"
+    "  local lines = mep_org_read_file_lines(path)\n"
+    "  if not lines then return {'[include: file not found: ' .. target .. ']'} end\n"
+    "  local from, to\n"
+    "  local lrange = opts and opts:match(':lines%s+\"?(%d*%-%d*)\"?')\n"
+    "  if lrange then\n"
+    "    local f, t = lrange:match('^(%d*)%-(%d*)$')\n"
+    "    from = tonumber(f)\n"
+    "    to = tonumber(t)\n"
+    "  end\n"
+    "  local selected = {}\n"
+    "  for i, l in ipairs(lines) do\n"
+    "    if (not from or i >= from) and (not to or i <= to) then selected[#selected + 1] = l end\n"
+    "  end\n"
+    "  budget.remaining = budget.remaining - #selected\n"
+    "  if budget.remaining < 0 then return {'[include: size budget exceeded: ' .. target .. ']'} end\n"
+    "  seen[path] = true\n"
+    "  local out = {}\n"
+    "  local sub_dir = path:match('^(.*)/[^/]*$') or '.'\n"
+    "  for _, l in ipairs(selected) do\n"
+    "    local sub = mep_org_resolve_include_line(l, sub_dir, depth + 1, seen, budget)\n"
+    "    if sub then\n"
+    "      for _, sl in ipairs(sub) do out[#out + 1] = sl end\n"
+    "    else\n"
+    "      out[#out + 1] = l\n"
+    "    end\n"
+    "  end\n"
+    "  seen[path] = nil\n"
+    "  return out\n"
+    "end\n"
+    "function mep.org_resolve_includes()\n"
+    "  local base_dir = (mep.filename() or ''):match('^(.*)/[^/]*$') or '.'\n"
+    "  local budget = {remaining = 20000}\n"
+    "  local seen = {}\n"
+    "  local out = {}\n"
+    "  for i = 1, mep.line_count() do\n"
+    "    local sub = mep_org_resolve_include_line(mep.get_line(i), base_dir, 1, seen, budget)\n"
+    "    if sub then\n"
+    "      for _, l in ipairs(sub) do out[#out + 1] = l end\n"
+    "    else\n"
+    "      out[#out + 1] = mep.get_line(i)\n"
+    "    end\n"
+    "  end\n"
+    "  return out\n"
+    "end\n"
+    // `#+MACRO:` collection/expansion (Phase 35 gap): a `#+MACRO: name
+    // body-with-$1-$2` line defines a macro; `{{{name(a,b)}}}` (or
+    // `{{{name}}}` for a no-arg macro) elsewhere expands it, substituting
+    // each `$N` placeholder with the Nth comma-separated argument.
+    // Text-level substitution only -- no escaped-comma support within an
+    // argument, matching the scope of a best-effort implementation.
+    "local function mep_org_split_args(s)\n"
+    "  local args = {}\n"
+    "  for part in (s .. ','):gmatch('(.-),') do args[#args + 1] = part end\n"
+    "  return args\n"
+    "end\n"
+    "local function mep_org_expand_macro_line(line, macros)\n"
+    "  local expanded = line:gsub('{{{([%w_%-]+)%(([^}]*)%)}}}', function(name, argstr)\n"
+    "    local def = macros[name]\n"
+    "    if not def then return '{{{' .. name .. '(' .. argstr .. ')}}}' end\n"
+    "    local args = mep_org_split_args(argstr)\n"
+    "    return (def:gsub('%$(%d+)', function(n) return args[tonumber(n)] or '' end))\n"
+    "  end)\n"
+    "  expanded = expanded:gsub('{{{([%w_%-]+)}}}', function(name) return macros[name] or ('{{{' .. name .. '}}}') end)\n"
+    "  return expanded\n"
+    "end\n"
+    "local function mep_org_collect_macros(get_line, n)\n"
+    "  local macros = {}\n"
+    "  for i = 1, n do\n"
+    "    local name, body = get_line(i):match('^%s*#%+MACRO:%s*([%w_%-]+)%s+(.*)$')\n"
+    "    if name then macros[name] = body end\n"
+    "  end\n"
+    "  return macros\n"
+    "end\n"
     "function mep.org_export(format)\n"
     "  local marks = mep.org_export_marks[format]\n"
-    "  local out, i, n = {}, 1, mep.line_count()\n"
+    "  local lines = mep.org_resolve_includes()\n"
+    "  local macros = mep_org_collect_macros(function(i) return lines[i] end, #lines)\n"
+    "  lines = (function()\n"
+    "    local out = {}\n"
+    "    for i, l in ipairs(lines) do out[i] = mep_org_expand_macro_line(l, macros) end\n"
+    "    return out\n"
+    "  end)()\n"
+    "  local out, i, n = {}, 1, #lines\n"
     "  while i <= n do\n"
-    "    local line = mep.get_line(i)\n"
+    "    local line = lines[i]\n"
     "    local h = mep_org_parse_headline(line)\n"
     "    if h then\n"
     "      if h.tags and h.tags:find('noexport', 1, true) then\n"
-    "        i = mep_org_subtree_end(i)\n"
+    "        i = mep_org_subtree_end_lines(lines, i)\n"
     "      else\n"
     "        local title = mep_org_inline_convert(format == 'html' and mep_org_html_escape(h.title) or h.title, marks)\n"
     "        out[#out + 1] = mep_org_export_heading(format, h.level, title)\n"
     "        i = i + 1\n"
     "      end\n"
-    "    elseif line:match('^%s*#%+begin_src') then\n"
-    "      local lang = line:match('^%s*#%+begin_src%s+(%S+)') or ''\n"
+    "    elseif line:match('^%s*#%+[Bb][Ee][Gg][Ii][Nn]_[Ss][Rr][Cc]') then\n"
+    "      local lang = line:match('^%s*#%+[Bb][Ee][Gg][Ii][Nn]_[Ss][Rr][Cc]%s+(%S+)') or ''\n"
     "      out[#out + 1] = (format == 'html') and ('<pre><code class=\"language-' .. lang .. '\">')\n"
     "        or (format == 'markdown') and ('```' .. lang) or '----'\n"
     "      i = i + 1\n"
-    "      while i <= n and not mep.get_line(i):match('^%s*#%+end_src') do\n"
-    "        out[#out + 1] = (format == 'html') and mep_org_html_escape(mep.get_line(i)) or mep.get_line(i)\n"
+    "      while i <= n and not lines[i]:match('^%s*#%+[Ee][Nn][Dd]_[Ss][Rr][Cc]') do\n"
+    "        out[#out + 1] = (format == 'html') and mep_org_html_escape(lines[i]) or lines[i]\n"
     "        i = i + 1\n"
     "      end\n"
     "      out[#out + 1] = (format == 'html') and '</code></pre>' or (format == 'markdown') and '```' or '----'\n"
     "      i = i + 1\n"
     "    elseif line:match('^%s*:PROPERTIES:%s*$') then\n"
-    "      while i <= n and not mep.get_line(i):match('^%s*:END:%s*$') do i = i + 1 end\n"
+    "      while i <= n and not lines[i]:match('^%s*:END:%s*$') do i = i + 1 end\n"
     "      i = i + 1\n"
     "    elseif line:match('^%s*SCHEDULED:') or line:match('^%s*DEADLINE:') or line:match('^%s*#%+') then\n"
     "      i = i + 1\n"
@@ -3063,13 +5136,17 @@ const char *kBuiltinOrgExport =
     "end\n"
     // Subtree export: same walk, scoped to [row, subtree_end), with
     // headline levels renormalized so the subtree's own headline becomes
-    // level 1.
+    // level 1. Macro expansion applies here too (macros collected from
+    // the whole buffer, since #+MACRO: is typically file-level); include
+    // resolution does not -- kept out of scope for the narrower subtree
+    // path to limit blast radius (documented cut).
     "function mep.org_export_subtree(format)\n"
     "  local row = mep_org_current_headline_row()\n"
     "  if not row then mep.notify('Not on a headline', 'warn') return nil end\n"
+    "  local macros = mep_org_collect_macros(mep.get_line, mep.line_count())\n"
     "  local base_level, marks, out = mep.org_headline_level(row), mep.org_export_marks[format], {}\n"
     "  for i = row, mep_org_subtree_end(row) - 1 do\n"
-    "    local line = mep.get_line(i)\n"
+    "    local line = mep_org_expand_macro_line(mep.get_line(i), macros)\n"
     "    local h = mep_org_parse_headline(line)\n"
     "    if h then\n"
     "      local title = mep_org_inline_convert(format == 'html' and mep_org_html_escape(h.title) or h.title, marks)\n"
@@ -3207,7 +5284,126 @@ const char *kBuiltinOrgRoam =
     "    mep.org_roam_ensure_id()\n"
     "  end)\n"
     "end\n"
-    "mep.command('MepOrgRoamNewNote', mep.org_roam_new_note)\n";
+    "mep.command('MepOrgRoamNewNote', mep.org_roam_new_note)\n"
+    // Backlink-graph view (NVIM_PARITY_PLAN.md Phase 37's flagged "no fuzzy
+    // backlink-graph visualization" gap, closed): a real nodes+edges graph
+    // rooted at the current note, rendered by main.cpp's DrawRoamGraphOverlay
+    // as an actual node-link diagram (not the flat backlinks sidebar above
+    // under a different name). Reuses this file's own link-scanning idea
+    // (mep_org_roam_files/mep_org_read_file_lines/mep_org_roam_title_of,
+    // the same helpers org_roam_backlinks uses above) rather than
+    // reimplementing note discovery -- the only genuinely new parsing here
+    // is extracting *every* `[[id:...]]` target out of a note's lines
+    // (mep_org_roam_index below), where org_roam_backlinks above only ever
+    // checked for one specific id's presence.
+    //
+    // Bounded to 2 hops out from the current note (hop 0) rather than the
+    // whole vault at once: hop 1 is every note the current note directly
+    // links to, plus every note that directly links to the current note
+    // (both directions, matching what the flat backlinks sidebar already
+    // considers "linking here" plus the outgoing links a reader would
+    // also want to see). Hop 2 is deliberately narrower -- only the
+    // *forward* links of hop-1 notes, not also their backlinks -- an
+    // explicit scope cut so this stays one bounded pass over each hop-1
+    // note's own already-parsed link list (O(hop1 count)) instead of a
+    // second full vault scan per hop-1 note (O(hop1 count * vault size)).
+    // A `MAX_NODES` cap on top of that keeps a large, densely-linked vault
+    // from rendering an unreadable ring. See NVIM_PARITY_PLAN.md's Phase
+    // 37 section for the full writeup of this and the ring-layout (vs.
+    // force-directed) decision on the rendering side.
+    "local function mep_org_roam_index()\n"
+    "  local idx = {}\n"
+    "  for _, path in ipairs(mep_org_roam_files()) do\n"
+    "    local lines = mep_org_read_file_lines(path)\n"
+    "    if lines then\n"
+    "      local id\n"
+    "      for i = 1, #lines do\n"
+    "        if mep_org_parse_headline(lines[i]) then break end\n"
+    "        local m = lines[i]:match('^%s*:ID:%s*(%S+)')\n"
+    "        if m then id = m break end\n"
+    "      end\n"
+    "      if id then\n"
+    "        local links, seen = {}, {}\n"
+    "        for _, line in ipairs(lines) do\n"
+    "          for lid in line:gmatch('%[%[id:([%w%-]+)') do\n"
+    "            if not seen[lid] then seen[lid] = true links[#links + 1] = lid end\n"
+    "          end\n"
+    "        end\n"
+    "        idx[id] = {path = path, title = mep_org_roam_title_of(lines) or path, links = links}\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  return idx\n"
+    "end\n"
+    "function mep.org_roam_graph()\n"
+    "  local my_id\n"
+    "  for i = 1, mep.line_count() do\n"
+    "    if mep.org_is_headline(i) then break end\n"
+    "    my_id = mep.get_line(i):match('^%s*:ID:%s*(%S+)')\n"
+    "    if my_id then break end\n"
+    "  end\n"
+    "  if not my_id then mep.notify('This note has no :ID: yet (run :MepOrgRoamEnsureId first)', 'warn') return end\n"
+    "  local idx = mep_org_roam_index()\n"
+    "  local my_lines = {}\n"
+    "  for i = 1, mep.line_count() do my_lines[i] = mep.get_line(i) end\n"
+    "  local my_links, seen = {}, {}\n"
+    "  for _, line in ipairs(my_lines) do\n"
+    "    for lid in line:gmatch('%[%[id:([%w%-]+)') do\n"
+    "      if not seen[lid] then seen[lid] = true my_links[#my_links + 1] = lid end\n"
+    "    end\n"
+    "  end\n"
+    // Override/insert our own entry from the live buffer (not the on-disk
+    // copy mep_org_roam_index() just read) so an unsaved title or link
+    // edit on the *current* note shows up immediately -- other notes keep
+    // the same disk-read limitation org_roam_backlinks above already has.
+    "  local my_title = mep_org_roam_title_of(my_lines) or mep.filename() or my_id\n"
+    "  idx[my_id] = {path = mep.filename(), title = my_title, links = my_links}\n"
+    "  local hop, order = {[my_id] = 0}, {my_id}\n"
+    "  local function add(id, h)\n"
+    "    if idx[id] and hop[id] == nil then hop[id] = h order[#order + 1] = id end\n"
+    "  end\n"
+    "  for _, lid in ipairs(my_links) do add(lid, 1) end\n"
+    "  for oid, entry in pairs(idx) do\n"
+    "    if oid ~= my_id then\n"
+    "      for _, lid in ipairs(entry.links) do\n"
+    "        if lid == my_id then add(oid, 1) break end\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  local hop1_ids = {}\n"
+    "  for id, h in pairs(hop) do if h == 1 then hop1_ids[#hop1_ids + 1] = id end end\n"
+    "  for _, id in ipairs(hop1_ids) do\n"
+    "    for _, lid in ipairs(idx[id].links) do add(lid, 2) end\n"
+    "  end\n"
+    "  local MAX_NODES = 40\n"
+    "  if #order > MAX_NODES then\n"
+    "    local capped = {}\n"
+    "    for i = 1, MAX_NODES do capped[i] = order[i] end\n"
+    "    order = capped\n"
+    "  end\n"
+    "  local id_to_index, nodes = {}, {}\n"
+    "  for i, id in ipairs(order) do\n"
+    "    id_to_index[id] = i\n"
+    "    nodes[i] = {id = id, title = idx[id].title, path = idx[id].path, hop = hop[id]}\n"
+    "  end\n"
+    "  local edges, seen_edge = {}, {}\n"
+    "  for _, id in ipairs(order) do\n"
+    "    for _, lid in ipairs(idx[id].links) do\n"
+    "      local a, b = id_to_index[id], id_to_index[lid]\n"
+    "      if a and b and a ~= b then\n"
+    "        local key = a < b and (a .. ':' .. b) or (b .. ':' .. a)\n"
+    "        if not seen_edge[key] then seen_edge[key] = true edges[#edges + 1] = {a = a, b = b} end\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  if #nodes <= 1 then mep.notify('No linked roam notes found for this note', 'warn') return end\n"
+    "  mep.roam_graph_open('Roam Graph: ' .. my_title, nodes, edges, function(path)\n"
+    "    if not path then return end\n"
+    "    mep.pane_open(path)\n"
+    "  end)\n"
+    "end\n"
+    "mep.command('MepRoamGraph', mep.org_roam_graph)\n"
+    "mep.map('n', '<leader>rg', mep.org_roam_graph, {desc = 'Roam: graph view'})\n";
 
 // Phase 38 -- Flashcards (SM-2 spaced repetition). State lives as org
 // properties in each headline's drawer (Phase 29's property machinery),
@@ -3300,13 +5496,22 @@ const char *kBuiltinOrgDrill =
 // can't handle correctly.
 const char *kBuiltinOrgBib =
     "mep.org_bib_files = {}\n"
+    // Top-level (brace-depth-0, quote-depth-0) splitter: used both for
+    // separating a `@type{...}` body into its comma-delimited fields and
+    // for `#`-concatenation splitting of a single field's value. Quote-
+    // awareness matters for both: a field value like `"A, B"` must not
+    // be split on the comma inside it, and a title like `"A # B"` must
+    // not be split on the `#` as if it were BibTeX's concatenation
+    // operator. Quotes only toggle at brace-depth 0, since a `\"` inside
+    // a `{...}` group is already protected by the braces.
     "local function mep_org_bib_split_top_level(s, sep)\n"
-    "  local parts, depth, start = {}, 0, 1\n"
+    "  local parts, depth, in_quotes, start = {}, 0, false, 1\n"
     "  for i = 1, #s do\n"
     "    local c = s:sub(i, i)\n"
-    "    if c == '{' then depth = depth + 1\n"
-    "    elseif c == '}' then depth = depth - 1\n"
-    "    elseif c == sep and depth == 0 then\n"
+    "    if c == '\"' and depth == 0 then in_quotes = not in_quotes\n"
+    "    elseif c == '{' and not in_quotes then depth = depth + 1\n"
+    "    elseif c == '}' and not in_quotes then depth = depth - 1\n"
+    "    elseif c == sep and depth == 0 and not in_quotes then\n"
     "      parts[#parts + 1] = s:sub(start, i - 1)\n"
     "      start = i + 1\n"
     "    end\n"
@@ -3314,23 +5519,78 @@ const char *kBuiltinOrgBib =
     "  parts[#parts + 1] = s:sub(start)\n"
     "  return parts\n"
     "end\n"
-    "local function mep_org_bib_parse(text)\n"
+    // Expands a raw field-value token against the `@string{...}` macro
+    // table: `{...}`/`\"...\"` literals are unwrapped as before; a bare
+    // identifier (no delimiters) is looked up as a macro; `#`-joined
+    // pieces (`abbrev # \", Supplement\"`) are expanded piecewise and
+    // concatenated, matching BibTeX's string-concatenation operator.
+    // An undefined macro name is left as literal text rather than
+    // erroring, since this is a best-effort hand-rolled parser.
+    "local function mep_org_bib_expand_value(val, strings)\n"
+    "  local parts = mep_org_bib_split_top_level(val, '#')\n"
+    "  if #parts == 1 and (val:sub(1, 1) == '{' or val:sub(1, 1) == '\"') then\n"
+    "    if val:sub(1, 1) == '{' and val:sub(-1) == '}' then return val:sub(2, -2)\n"
+    "    elseif val:sub(1, 1) == '\"' and val:sub(-1) == '\"' then return val:sub(2, -2)\n"
+    "    else return val end\n"
+    "  end\n"
+    "  local buf = {}\n"
+    "  for _, p in ipairs(parts) do\n"
+    "    local t = p:match('^%s*(.-)%s*$')\n"
+    "    if t:sub(1, 1) == '{' and t:sub(-1) == '}' then buf[#buf + 1] = t:sub(2, -2)\n"
+    "    elseif t:sub(1, 1) == '\"' and t:sub(-1) == '\"' then buf[#buf + 1] = t:sub(2, -2)\n"
+    "    else buf[#buf + 1] = strings[t:lower()] or t end\n"
+    "  end\n"
+    "  return table.concat(buf)\n"
+    "end\n"
+    // `strings` accumulates `@string{name = \"value\"}` macro definitions
+    // as entries are scanned in file order (and across files, when the
+    // caller threads the same table through multiple mep_org_bib_parse
+    // calls) -- matching real BibTeX's requirement that a macro be
+    // defined before first use. `@comment`/`@preamble` blocks are
+    // recognized and skipped rather than mis-parsed as entries.
+    "local function mep_org_bib_parse(text, strings)\n"
+    "  strings = strings or {}\n"
     "  local entries = {}\n"
     "  for etype, braced in text:gmatch('@(%a+)%s*(%b{})') do\n"
     "    local body = braced:sub(2, -2)\n"
-    "    local key, fieldstr = body:match('^%s*([^,]+),(.*)$')\n"
-    "    if key then\n"
-    "      local fields = {}\n"
-    "      for _, part in ipairs(mep_org_bib_split_top_level(fieldstr, ',')) do\n"
-    "        local name, val = part:match('^%s*([%w_%-]+)%s*=%s*(.*)$')\n"
-    "        if name then\n"
-    "          val = val:match('^%s*(.-)%s*$')\n"
-    "          if val:sub(1, 1) == '{' and val:sub(-1) == '}' then val = val:sub(2, -2)\n"
-    "          elseif val:sub(1, 1) == '\"' and val:sub(-1) == '\"' then val = val:sub(2, -2) end\n"
-    "          fields[name:lower()] = val\n"
+    "    local lower_type = etype:lower()\n"
+    "    if lower_type == 'string' then\n"
+    "      local name, val = body:match('^%s*([%w_%-]+)%s*=%s*(.-)%s*$')\n"
+    "      if name then strings[name:lower()] = mep_org_bib_expand_value(val, strings) end\n"
+    "    elseif lower_type ~= 'comment' and lower_type ~= 'preamble' then\n"
+    "      local key, fieldstr = body:match('^%s*([^,]+),(.*)$')\n"
+    "      if key then\n"
+    "        local fields = {}\n"
+    "        for _, part in ipairs(mep_org_bib_split_top_level(fieldstr, ',')) do\n"
+    "          local name, val = part:match('^%s*([%w_%-]+)%s*=%s*(.*)$')\n"
+    "          if name then\n"
+    "            val = val:match('^%s*(.-)%s*$')\n"
+    "            fields[name:lower()] = mep_org_bib_expand_value(val, strings)\n"
+    "          end\n"
+    "        end\n"
+    "        entries[#entries + 1] = {type = lower_type, key = key:match('^%s*(.-)%s*$'), fields = fields}\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  return entries\n"
+    "end\n"
+    // `crossref` resolution: run once over the *complete* entry set (all
+    // resolved .bib files combined), since the referenced parent entry
+    // commonly appears later in the file (e.g. an @inproceedings before
+    // its @proceedings). Only fields the child doesn't already define
+    // are filled in from the parent.
+    "local function mep_org_bib_resolve_crossrefs(entries)\n"
+    "  local by_key = {}\n"
+    "  for _, e in ipairs(entries) do by_key[e.key] = e end\n"
+    "  for _, e in ipairs(entries) do\n"
+    "    local xref = e.fields.crossref\n"
+    "    if xref then\n"
+    "      local parent = by_key[xref] or by_key[xref:lower()]\n"
+    "      if parent then\n"
+    "        for fname, fval in pairs(parent.fields) do\n"
+    "          if e.fields[fname] == nil then e.fields[fname] = fval end\n"
     "        end\n"
     "      end\n"
-    "      entries[#entries + 1] = {type = etype:lower(), key = key:match('^%s*(.-)%s*$'), fields = fields}\n"
     "    end\n"
     "  end\n"
     "  return entries\n"
@@ -3360,16 +5620,27 @@ const char *kBuiltinOrgBib =
     "  end\n"
     "  return files\n"
     "end\n"
-    "function mep.org_bib_insert_citation()\n"
-    "  local entries = {}\n"
+    // Loads and parses every resolved .bib file into one combined entry
+    // list: `strings` (the @string macro table) is threaded across all
+    // files in resolution order so a macro defined in one file is
+    // usable by entries in a later one (matching a multi-file BibTeX
+    // run), then mep_org_bib_resolve_crossrefs runs once over the
+    // *complete* set so a crossref target defined in any file (in any
+    // position) is found. Shared by insertion, goto, and preview below.
+    "local function mep_org_bib_load_entries()\n"
+    "  local entries, strings = {}, {}\n"
     "  for _, path in ipairs(mep.org_bib_resolve_files()) do\n"
     "    local f = io.open(path, 'r')\n"
     "    if f then\n"
     "      local text = f:read('*a')\n"
     "      f:close()\n"
-    "      for _, e in ipairs(mep_org_bib_parse(text)) do entries[#entries + 1] = e end\n"
+    "      for _, e in ipairs(mep_org_bib_parse(text, strings)) do entries[#entries + 1] = e end\n"
     "    end\n"
     "  end\n"
+    "  return mep_org_bib_resolve_crossrefs(entries)\n"
+    "end\n"
+    "function mep.org_bib_insert_citation()\n"
+    "  local entries = mep_org_bib_load_entries()\n"
     "  if #entries == 0 then mep.notify('No bibliography entries found', 'warn') return end\n"
     "  local items = {}\n"
     "  for _, e in ipairs(entries) do\n"
@@ -3380,7 +5651,149 @@ const char *kBuiltinOrgBib =
     "    if key then mep.insert_text('[cite:@' .. key .. ']') end\n"
     "  end)\n"
     "end\n"
-    "mep.command('MepOrgBibInsertCitation', mep.org_bib_insert_citation)\n";
+    "mep.command('MepOrgBibInsertCitation', mep.org_bib_insert_citation)\n"
+    // Citation recognition at cursor: modern org-cite `[cite:@key]` /
+    // `[cite/style:@key1;@key2]` (keys `;`-separated, each optionally
+    // `@`-prefixed) *and* legacy org-ref link-type variants --
+    // `cite:key`, `citep:key`, `citet:key`, `citeauthor:key`,
+    // `citeyear:key` (keys `,`-separated, no `@`) -- resolve to the same
+    // key list so goto/preview below work identically for either
+    // syntax. No regex: a manual char-by-char scan, matching this
+    // file's existing hand-rolled-parser convention (see
+    // mep_org_bib_split_top_level above).
+    "local mep_org_bib_legacy_prefixes = {'citeauthor', 'citeyear', 'citep', 'citet', 'cite'}\n"
+    "local function mep_org_bib_is_word_char(c) return c ~= '' and c:match('[%w_]') ~= nil end\n"
+    "local function mep_org_bib_is_key_char(c) return c ~= '' and c:match('[%w_%-:]') ~= nil end\n"
+    "local function mep_org_bib_cite_spans(line)\n"
+    "  local spans = {}\n"
+    // org-cite: [cite:...] / [cite/style:...]
+    "  local pos = 1\n"
+    "  while true do\n"
+    "    local s, e, body = line:find('%[cite[%a/]-:(.-)%]', pos)\n"
+    "    if not s then break end\n"
+    "    local keys = {}\n"
+    "    for _, part in ipairs(mep_org_bib_split_top_level(body, ';')) do\n"
+    "      local k = part:match('^%s*@?(%S+)%s*$')\n"
+    "      if k then keys[#keys + 1] = k end\n"
+    "    end\n"
+    "    if #keys > 0 then spans[#spans + 1] = {s = s, e = e, keys = keys} end\n"
+    "    pos = e + 1\n"
+    "  end\n"
+    // legacy org-ref: citeTYPE:key1,key2 -- not preceded by '[' (that's
+    // the org-cite form above) or another word char, and not itself an
+    // org-cite `@key` (org-ref keys are bare, never `@`-prefixed).
+    "  local i = 1\n"
+    "  while i <= #line do\n"
+    "    local matched = false\n"
+    "    local prev = line:sub(i - 1, i - 1)\n"
+    "    if prev ~= '[' and not mep_org_bib_is_word_char(prev) then\n"
+    "      for _, prefix in ipairs(mep_org_bib_legacy_prefixes) do\n"
+    "        local plen = #prefix\n"
+    "        if line:sub(i, i + plen - 1) == prefix and line:sub(i + plen, i + plen) == ':' then\n"
+    "          local after = i + plen + 1\n"
+    "          if line:sub(after, after) ~= '@' and mep_org_bib_is_key_char(line:sub(after, after)) then\n"
+    "            local j, keys, key_start = after, {}, after\n"
+    "            while j <= #line do\n"
+    "              local c = line:sub(j, j)\n"
+    "              if mep_org_bib_is_key_char(c) then j = j + 1\n"
+    "              elseif c == ',' and mep_org_bib_is_key_char(line:sub(j + 1, j + 1)) then\n"
+    "                keys[#keys + 1] = line:sub(key_start, j - 1)\n"
+    "                j = j + 1\n"
+    "                key_start = j\n"
+    "              else break end\n"
+    "            end\n"
+    "            keys[#keys + 1] = line:sub(key_start, j - 1)\n"
+    "            spans[#spans + 1] = {s = i, e = j - 1, keys = keys}\n"
+    "            i = j\n"
+    "            matched = true\n"
+    "            break\n"
+    "          end\n"
+    "        end\n"
+    "      end\n"
+    "    end\n"
+    "    if not matched then i = i + 1 end\n"
+    "  end\n"
+    "  table.sort(spans, function(a, b) return a.s < b.s end)\n"
+    "  return spans\n"
+    "end\n"
+    // Global (not local) -- called from kBuiltinOrgLinks' org_link_follow
+    // (a separate Lua chunk) the same way that chunk already calls the
+    // other cross-chunk global mep_org_parse_headline.
+    "function mep_org_bib_cite_at_cursor()\n"
+    "  local row, col = mep.cursor()\n"
+    "  local line = mep.get_line(row)\n"
+    "  for _, span in ipairs(mep_org_bib_cite_spans(line)) do\n"
+    "    if col >= span.s and col <= span.e then return span.keys end\n"
+    "  end\n"
+    "  return nil\n"
+    "end\n"
+    // Jump-to-entry: a plain byte-search for `{key` immediately followed
+    // by `,`/whitespace/end-of-file (i.e. the entry's opening line,
+    // `@type{key,`) rather than a full re-parse -- cheap and avoids
+    // teaching the parser to track source positions.
+    "local function mep_org_bib_goto_key(key)\n"
+    "  for _, path in ipairs(mep.org_bib_resolve_files()) do\n"
+    "    local f = io.open(path, 'r')\n"
+    "    if f then\n"
+    "      local text = f:read('*a')\n"
+    "      f:close()\n"
+    "      local pos = 1\n"
+    "      while true do\n"
+    "        local s = text:find(key, pos, true)\n"
+    "        if not s then break end\n"
+    "        local before = text:sub(s - 1, s - 1)\n"
+    "        local after = text:sub(s + #key, s + #key)\n"
+    "        if before == '{' and (after == ',' or after == '' or after:match('%s')) then\n"
+    "          local line = 1\n"
+    "          for _ in text:sub(1, s - 1):gmatch('\\n') do line = line + 1 end\n"
+    "          mep.pane_open(path)\n"
+    "          mep.set_cursor(line, 1)\n"
+    "          return true\n"
+    "        end\n"
+    "        pos = s + 1\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  return false\n"
+    "end\n"
+    "function mep.org_bib_cite_goto()\n"
+    "  local keys = mep_org_bib_cite_at_cursor()\n"
+    "  if not keys or #keys == 0 then mep.notify('No citation under cursor', 'warn') return end\n"
+    "  if #keys == 1 then\n"
+    "    if not mep_org_bib_goto_key(keys[1]) then mep.notify('Citation key not found in bibliography: ' .. keys[1], 'warn') end\n"
+    "    return\n"
+    "  end\n"
+    "  local items = {}\n"
+    "  for _, k in ipairs(keys) do items[#items + 1] = {display = k, data = k} end\n"
+    "  mep.picker_open('Goto Citation', items, function(key)\n"
+    "    if key and not mep_org_bib_goto_key(key) then mep.notify('Citation key not found in bibliography: ' .. key, 'warn') end\n"
+    "  end)\n"
+    "end\n"
+    "mep.command('MepOrgBibCiteGoto', mep.org_bib_cite_goto)\n"
+    // Citation preview / hover info: uses mep.hover_show (NVIM_PARITY_
+    // PLAN.md Phase 3's hover-tooltip gap, closed) -- a real cursor-
+    // anchored floating popup, not a toast.
+    "function mep.org_bib_cite_preview()\n"
+    "  local keys = mep_org_bib_cite_at_cursor()\n"
+    "  if not keys or #keys == 0 then mep.notify('No citation under cursor', 'warn') return end\n"
+    "  local entries = mep_org_bib_load_entries()\n"
+    "  local by_key = {}\n"
+    "  for _, e in ipairs(entries) do by_key[e.key] = e end\n"
+    "  local lines = {}\n"
+    "  for _, k in ipairs(keys) do\n"
+    "    local e = by_key[k]\n"
+    "    if e then\n"
+    "      local f = e.fields\n"
+    "      local venue = f.journal or f.booktitle\n"
+    "      lines[#lines + 1] = k .. ': ' .. (f.author or '?') .. ' (' .. (f.year or 'n.d.') .. ') ' ..\n"
+    "        (f.title or '') .. (venue and (' -- ' .. venue) or '')\n"
+    "    else\n"
+    "      lines[#lines + 1] = k .. ': not found in bibliography'\n"
+    "    end\n"
+    "  end\n"
+    "  mep.hover_show('Citation', table.concat(lines, '\\n'))\n"
+    "end\n"
+    "mep.command('MepOrgBibCitePreview', mep.org_bib_cite_preview)\n";
 
 // Part IX, Phase 40 -- Activity bar (notifications/todo/tests/git).
 // Notifications (:MepNotifyPanel) and Git (:MepGitStatus) panels already
@@ -3543,6 +5956,22 @@ const char *kBuiltinAi =
     "  end\n"
     "  return 'null'\n"
     "end\n"
+    // UTF-8-encodes a single Unicode codepoint (up to the 0x10FFFF max, so
+    // always 1-4 bytes) -- used by mep_ai_json_decode's \\uXXXX handling
+    // below. Lua 5.4's bitwise operators make this a direct transliteration
+    // of the standard UTF-8 encoding table rather than needing bit32/manual
+    // arithmetic shims.
+    "local function mep_ai_utf8_encode(cp)\n"
+    "  if cp < 0x80 then\n"
+    "    return string.char(cp)\n"
+    "  elseif cp < 0x800 then\n"
+    "    return string.char(0xC0 | (cp >> 6), 0x80 | (cp & 0x3F))\n"
+    "  elseif cp < 0x10000 then\n"
+    "    return string.char(0xE0 | (cp >> 12), 0x80 | ((cp >> 6) & 0x3F), 0x80 | (cp & 0x3F))\n"
+    "  else\n"
+    "    return string.char(0xF0 | (cp >> 18), 0x80 | ((cp >> 12) & 0x3F), 0x80 | ((cp >> 6) & 0x3F), 0x80 | (cp & 0x3F))\n"
+    "  end\n"
+    "end\n"
     "function mep_ai_json_decode(s)\n"
     "  local pos = 1\n"
     "  local function skip_ws() while pos <= #s and s:sub(pos, pos):match('%s') do pos = pos + 1 end end\n"
@@ -3557,8 +5986,25 @@ const char *kBuiltinAi =
     "        local n = s:sub(pos + 1, pos + 1)\n"
     "        local map = {n = '\\n', t = '\\t', r = '\\r', ['\"'] = '\"', ['\\\\'] = '\\\\', ['/'] = '/'}\n"
     "        if n == 'u' then\n"
+    // \\uXXXX: decode the 4 hex digits into a codepoint. A high surrogate
+    // (0xD800-0xDBFF) must be combined with an immediately-following low
+    // surrogate (\\uDC00-\\uDFFF) into one real codepoint before UTF-8
+    // encoding it -- JSON (like JS) represents astral characters (e.g.
+    // emoji) as a surrogate *pair* of two \\u escapes, neither of which is
+    // independently a valid standalone codepoint. Decoding each half on
+    // its own (the bug this replaces) would silently corrupt any such
+    // character. A malformed/truncated escape falls back to U+FFFD
+    // (replacement character) rather than erroring the whole decode.
+    "          local cp = tonumber(s:sub(pos + 2, pos + 5), 16) or 0xFFFD\n"
     "          pos = pos + 6\n"
-    "          buf[#buf + 1] = '?'\n"
+    "          if cp >= 0xD800 and cp <= 0xDBFF and s:sub(pos, pos + 1) == '\\\\u' then\n"
+    "            local lo = tonumber(s:sub(pos + 2, pos + 5), 16)\n"
+    "            if lo and lo >= 0xDC00 and lo <= 0xDFFF then\n"
+    "              cp = 0x10000 + (cp - 0xD800) * 0x400 + (lo - 0xDC00)\n"
+    "              pos = pos + 6\n"
+    "            end\n"
+    "          end\n"
+    "          buf[#buf + 1] = mep_ai_utf8_encode(cp)\n"
     "        else\n"
     "          buf[#buf + 1] = map[n] or n\n"
     "          pos = pos + 2\n"
@@ -3615,9 +6061,10 @@ const char *kBuiltinAi =
     "  return nil\n"
     "end\n"
     // API key: explicit override, else env var, else a prompt (kept only
-    // in the Lua variable for the session -- never written to disk).
-    // mep.ui_input has no masked-echo mode, so this prompt is visible;
-    // documented as a scope cut.
+    // in the Lua variable for the session -- never written to disk). The
+    // fallback prompt passes opts.masked so the key is never shown in the
+    // clear while being typed (main.cpp's DrawPromptOverlay renders '*'
+    // in its place; the real text still reaches `cb` below unmasked).
     "local function mep_ai_get_key(cb)\n"
     "  if mep.ai_api_key then cb(mep.ai_api_key) return end\n"
     "  local env_var = mep.ai_provider == 'anthropic' and 'ANTHROPIC_API_KEY' or 'OPENAI_API_KEY'\n"
@@ -3625,7 +6072,36 @@ const char *kBuiltinAi =
     "  if v and v ~= '' then mep.ai_api_key = v cb(v) return end\n"
     "  mep.ui_input('API key (' .. env_var .. ' not set):', '', function(key)\n"
     "    if key and key ~= '' then mep.ai_api_key = key cb(key) end\n"
-    "  end)\n"
+    "  end, {masked = true})\n"
+    "end\n"
+    // mep.ai_agent_messages (and mep_ai_request's own single-shot `messages`
+    // argument) are always kept in one provider-agnostic, OpenAI-Chat-
+    // Completions-shaped form: {role = 'user'|'assistant'|'tool', content =
+    // ..., tool_calls = {...}, tool_call_id = ...}. Anthropic's Messages
+    // API has no 'tool' role and expects tool_use/tool_result as typed
+    // *content blocks* on ordinary user/assistant messages instead of
+    // OpenAI's flat tool_calls/role='tool' shape, so this converts one
+    // shared conversation into Anthropic's wire shape just before sending
+    // -- the only place that needs to know about the difference.
+    "local function mep_ai_to_anthropic_messages(messages)\n"
+    "  local out = {}\n"
+    "  for _, m in ipairs(messages) do\n"
+    "    if m.role == 'tool' then\n"
+    "      out[#out + 1] = {role = 'user', content = {\n"
+    "        {type = 'tool_result', tool_use_id = m.tool_call_id, content = m.content or ''}}}\n"
+    "    elseif m.role == 'assistant' and m.tool_calls then\n"
+    "      local blocks = {}\n"
+    "      if m.content and m.content ~= '' then blocks[#blocks + 1] = {type = 'text', text = m.content} end\n"
+    "      for _, tc in ipairs(m.tool_calls) do\n"
+    "        blocks[#blocks + 1] = {type = 'tool_use', id = tc.id, name = tc['function'].name,\n"
+    "          input = mep_ai_json_decode(tc['function'].arguments) or {}}\n"
+    "      end\n"
+    "      out[#out + 1] = {role = 'assistant', content = blocks}\n"
+    "    else\n"
+    "      out[#out + 1] = {role = m.role, content = m.content or ''}\n"
+    "    end\n"
+    "  end\n"
+    "  return out\n"
     "end\n"
     // Streams a chat turn. on_delta(text) fires per streamed chunk;
     // on_done(tool_calls) fires once, with an array of {id,name,args}
@@ -3636,7 +6112,8 @@ const char *kBuiltinAi =
     "    if mep.ai_provider == 'anthropic' then\n"
     "      url = mep.ai_anthropic_base_url .. '/v1/messages'\n"
     "      headers = {'-H', 'x-api-key: ' .. key, '-H', 'anthropic-version: 2023-06-01', '-H', 'Content-Type: application/json'}\n"
-    "      body = {model = mep.ai_anthropic_model, max_tokens = mep.ai_max_tokens, stream = true, messages = messages}\n"
+    "      body = {model = mep.ai_anthropic_model, max_tokens = mep.ai_max_tokens, stream = true, messages = mep_ai_to_anthropic_messages(messages)}\n"
+    "      if tools then body.tools = tools end\n"
     "    else\n"
     "      url = mep.ai_base_url .. '/chat/completions'\n"
     "      headers = {'-H', 'Authorization: Bearer ' .. key, '-H', 'Content-Type: application/json'}\n"
@@ -3661,6 +6138,20 @@ const char *kBuiltinAi =
     "        if not obj then return end\n"
     "        if mep.ai_provider == 'anthropic' then\n"
     "          if obj.delta and obj.delta.text then on_delta(obj.delta.text) end\n"
+    // Anthropic tool-use streams a content_block_start naming the tool
+    // (id/name, empty input) at the block's index, then zero or more
+    // content_block_delta{delta.type='input_json_delta'} frames whose
+    // partial_json fragments concatenate into the final input JSON --
+    // distinct from OpenAI's tool_calls[].function.arguments delta shape
+    // above, so it needs its own accumulation path into the same shared
+    // `tool_calls` table (still keyed 1-indexed by content-block index).
+    "          if obj.type == 'content_block_start' and obj.content_block and obj.content_block.type == 'tool_use' then\n"
+    "            local idx = (obj.index or 0) + 1\n"
+    "            tool_calls[idx] = {id = obj.content_block.id, name = obj.content_block.name or '', args = ''}\n"
+    "          elseif obj.type == 'content_block_delta' and obj.delta and obj.delta.type == 'input_json_delta' then\n"
+    "            local idx = (obj.index or 0) + 1\n"
+    "            if tool_calls[idx] then tool_calls[idx].args = tool_calls[idx].args .. (obj.delta.partial_json or '') end\n"
+    "          end\n"
     "        else\n"
     "          local choice = obj.choices and obj.choices[1]\n"
     "          local delta = choice and choice.delta\n"
@@ -3714,7 +6205,24 @@ const char *kBuiltinAi =
     "  for i = start_row, end_row do lines[#lines + 1] = mep.get_line(i) end\n"
     "  mep.ai_send_text(table.concat(lines, '\\n'))\n"
     "end\n"
+    // True Visual-mode "send selection": mep.visual_selection() only
+    // returns real text while a Visual selection is still live (it reads
+    // Editor::mode_ directly), and the only way a piece of Lua runs
+    // *while* mep's mode_ is still Visual -- rather than after Escape/':'
+    // has already dropped back to Normal, losing the selection -- is a
+    // mep.map('v', ...) callback (TryLuaMapping calls straight into Lua
+    // without an intervening mode change). So this is bound directly to a
+    // Visual-mode key below, not just left as an ex-command someone has
+    // to type ':' to reach (typing ':' would already have exited Visual
+    // by the time it ran).
+    "function mep.ai_send_selection()\n"
+    "  local sel = mep.visual_selection()\n"
+    "  if sel == '' then mep.notify('No Visual selection', 'warn') return end\n"
+    "  mep.ai_send_text(sel)\n"
+    "end\n"
     "mep.command('MepAiSendBuffer', mep.ai_send_buffer)\n"
+    "mep.command('MepAiSendSelection', mep.ai_send_selection)\n"
+    "mep.map('v', 'K', mep.ai_send_selection, {desc = 'AI: send selection'})\n"
     // Tools: read_file/list_dir/run_command, each gated by a permission
     // prompt. run_command always re-prompts (no blanket approval, per
     // the plan); the other two support an allow-always-this-session
@@ -3765,9 +6273,14 @@ const char *kBuiltinAi =
     "end\n"
     // Agent mode: a persistent sidebar transcript (Phase 7) driven by a
     // floating mep.ui_input prompt (Phase 3), full multi-turn
-    // tool-calling loop. run_command is deliberately NOT advertised to
-    // Anthropic (no tools schema built for that provider yet -- see
-    // scope-cut note), so its tool loop is single-turn (stream only).
+    // tool-calling loop -- for both providers: mep_ai_openai_tools_schema
+    // feeds OpenAI's {type='function', function={name,description,
+    // parameters}} shape, mep_ai_anthropic_tools_schema below feeds
+    // Anthropic's flatter {name,description,input_schema} shape (see
+    // Anthropic's Messages API tool-use docs), and mep_ai_request's own
+    // Anthropic branch (mep_ai_to_anthropic_messages) converts the shared
+    // tool-call/tool-result history into Anthropic's content-block shape
+    // so the recursive turn loop below works unmodified either way.
     "mep.ai_agent_messages = {}\n"
     "local mep_ai_agent_sidebar_id = nil\n"
     "local function mep_ai_agent_render()\n"
@@ -3791,11 +6304,27 @@ const char *kBuiltinAi =
     "    parameters = {type = 'object', properties = {command = {type = 'string'}}, required = {'command'}}}}\n"
     "  return out\n"
     "end\n"
+    // Anthropic's tool schema (Messages API): a flat {name, description,
+    // input_schema} per tool -- no {type='function', function={...}}
+    // wrapper the way OpenAI's Chat Completions API needs, and the JSON
+    // Schema itself is called `input_schema` rather than `parameters`.
+    // Otherwise mirrors mep_ai_openai_tools_schema's shape/purpose 1:1,
+    // built from the same mep.ai_tools list plus run_command.
+    "local function mep_ai_anthropic_tools_schema()\n"
+    "  local out = {}\n"
+    "  for _, t in ipairs(mep.ai_tools) do\n"
+    "    out[#out + 1] = {name = t.name, description = t.description, input_schema = t.parameters}\n"
+    "  end\n"
+    "  out[#out + 1] = {name = 'run_command', description = 'Run a shell command',\n"
+    "    input_schema = {type = 'object', properties = {command = {type = 'string'}}, required = {'command'}}}\n"
+    "  return out\n"
+    "end\n"
     "function mep.ai_agent_turn()\n"
     "  local assistant_msg = {role = 'assistant', content = ''}\n"
     "  mep.ai_agent_messages[#mep.ai_agent_messages + 1] = assistant_msg\n"
     "  mep_ai_agent_render()\n"
-    "  mep_ai_request(mep.ai_agent_messages, mep.ai_provider == 'openai' and mep_ai_openai_tools_schema() or nil,\n"
+    "  local tools_schema = mep.ai_provider == 'anthropic' and mep_ai_anthropic_tools_schema() or mep_ai_openai_tools_schema()\n"
+    "  mep_ai_request(mep.ai_agent_messages, tools_schema,\n"
     "    function(delta)\n"
     "      assistant_msg.content = assistant_msg.content .. delta\n"
     "      mep_ai_agent_render()\n"
@@ -3831,8 +6360,38 @@ const char *kBuiltinAi =
 // Phase 42 -- Leetcode (stretch, lowest priority). Local-only: problems
 // as `.org` files with Prompt/Solution/Tests headline structure, tests
 // run by splicing the Solution src block above the Tests src block and
-// executing via Phase 34's babel language table. Fetch/submit against
-// LeetCode's unofficial API is explicitly deferred, per the plan.
+// executing via Phase 34's babel language table.
+//
+// Live fetch/submit against LeetCode's own unofficial GraphQL+REST API
+// (there is no public/official API for this -- every community LeetCode
+// CLI/editor plugin reverse-engineers the same two surfaces; this mirrors
+// mep.nvim's own mep/leetcode/api.lua closely):
+//  - Fetch (mep.leetcode_fetch_problem / mep.leetcode_fetch /
+//    :MepLeetcodeFetch) needs no credentials -- verified live against
+//    https://leetcode.com/graphql (POST {query, variables={titleSlug}})
+//    for a real, free problem ("two-sum") from this environment. Writes
+//    a local .org file in the same Prompt/Solution/Tests shape
+//    leetcode_run_tests above expects, stashing :SLUG:/:DIFFICULTY:/
+//    :QUESTION_ID: as a property drawer under the Prompt headline
+//    (mep.org_property_get/_set, Phase 32) so a later submit can find
+//    them again without re-fetching.
+//  - Submit (mep.leetcode_submit / :MepLeetcodeSubmit) needs a real
+//    LeetCode session: mep.leetcode_session_cookie holds a raw `Cookie:`
+//    header value (`LEETCODE_SESSION=...; csrftoken=...`) copied out of
+//    a logged-in browser's devtools -- LeetCode has no username/password
+//    login API -- prompted for once via a masked mep.ui_input and kept
+//    only in memory for the session, same convention as Phase 41 AI's
+//    mep_ai_get_key/mep.ai_api_key. POSTs to /problems/<slug>/submit/,
+//    then polls /submissions/detail/<id>/check/ for a verdict, waiting
+//    between attempts via a `sh -c 'sleep N'` job rather than a Lua
+//    timer/defer binding (mep exposes none) so the wait is async instead
+//    of freezing the editor. This half is implemented and its request/
+//    response shapes were cross-checked against a well-known, actively
+//    maintained community implementation (emacs leetcode.el) plus a
+//    real captured GraphQL response, but it was NOT exercised end-to-end
+//    against a live authenticated account -- no LeetCode credentials
+//    were available in this environment. See NVIM_PARITY_PLAN.md's
+//    Phase 42 section for the precise verified/unverified split.
 const char *kBuiltinLeetcode =
     "mep.leetcode_dir = nil\n"
     "local function mep_leetcode_title_of(lines)\n"
@@ -3865,10 +6424,10 @@ const char *kBuiltinLeetcode =
     "    if h and h.title == heading_name then\n"
     "      local e = mep_org_subtree_end(i)\n"
     "      for j = i + 1, e - 1 do\n"
-    "        local lang = mep.get_line(j):match('^%s*#%+begin_src%s+(%S+)')\n"
+    "        local lang = mep.get_line(j):match('^%s*#%+[Bb][Ee][Gg][Ii][Nn]_[Ss][Rr][Cc]%s+(%S+)')\n"
     "        if lang then\n"
     "          local body, k = {}, j + 1\n"
-    "          while k <= e - 1 and not mep.get_line(k):match('^%s*#%+end_src') do\n"
+    "          while k <= e - 1 and not mep.get_line(k):match('^%s*#%+[Ee][Nn][Dd]_[Ss][Rr][Cc]') do\n"
     "            body[#body + 1] = mep.get_line(k)\n"
     "            k = k + 1\n"
     "          end\n"
@@ -3905,14 +6464,275 @@ const char *kBuiltinLeetcode =
     "    end,\n"
     "  })\n"
     "end\n"
-    "mep.command('MepLeetcodeRunTests', mep.leetcode_run_tests)\n";
+    "mep.command('MepLeetcodeRunTests', mep.leetcode_run_tests)\n"
+    "mep.leetcode_fetch_lang = 'python'\n"
+    "mep.leetcode_session_cookie = nil\n"
+    // Shared POST/GET-JSON-over-curl helper for both the GraphQL fetch and
+    // the submit/poll REST calls below. Reuses mep_ai_json_encode/
+    // mep_ai_json_decode (plain globals, not locals -- see kBuiltinAi
+    // above, whose DoString runs immediately before this file's, per the
+    // lua->DoString(...) sequence near the bottom of this file) rather
+    // than hand-rolling a second JSON codec.
+    "local function mep_leetcode_http_json(method, url, headers, body_table, cb)\n"
+    "  local argv = {'curl', '-s', '--fail-with-body', '-X', method, url}\n"
+    "  for _, h in ipairs(headers or {}) do argv[#argv + 1] = h end\n"
+    "  local tmpfile = nil\n"
+    "  if body_table then\n"
+    "    argv[#argv + 1] = '-H'\n"
+    "    argv[#argv + 1] = 'Content-Type: application/json'\n"
+    "    tmpfile = os.tmpname()\n"
+    "    local f = io.open(tmpfile, 'w')\n"
+    "    f:write(mep_ai_json_encode(body_table))\n"
+    "    f:close()\n"
+    "    argv[#argv + 1] = '--data-binary'\n"
+    "    argv[#argv + 1] = '@' .. tmpfile\n"
+    "  end\n"
+    "  local out = {}\n"
+    "  mep.job_start(argv, {\n"
+    "    on_stdout = function(l) out[#out + 1] = l end,\n"
+    "    on_stderr = function(l) out[#out + 1] = l end,\n"
+    "    on_exit = function(code)\n"
+    "      if tmpfile then os.remove(tmpfile) end\n"
+    "      local raw = table.concat(out, '\\n')\n"
+    "      if code ~= 0 then\n"
+    "        local decoded = mep_ai_json_decode(raw)\n"
+    "        local msg = (decoded and (decoded.error or decoded.detail)) or raw\n"
+    "        cb('request failed (exit ' .. code .. '): ' .. tostring(msg), nil)\n"
+    "        return\n"
+    "      end\n"
+    "      local decoded = mep_ai_json_decode(raw)\n"
+    "      if not decoded then cb('could not parse response: ' .. raw, nil) return end\n"
+    "      cb(nil, decoded)\n"
+    "    end,\n"
+    "  })\n"
+    "end\n"
+    // Async sleep for the submit poll loop below, via the job system
+    // rather than a real timer binding (mep exposes no defer/timer API to
+    // Lua) -- a tiny `sh -c 'sleep N'` subprocess whose on_exit is the
+    // resumption, so the wait doesn't block the editor's main loop.
+    "local function mep_leetcode_sleep(seconds, cb)\n"
+    "  mep.job_start({'sh', '-c', 'sleep ' .. tostring(seconds)}, {on_exit = function() cb() end})\n"
+    "end\n"
+    "local LEETCODE_QUESTION_QUERY = 'query questionData($titleSlug: String!) { question(titleSlug: $titleSlug) ' ..\n"
+    "  '{ questionId title titleSlug content difficulty codeSnippets { lang langSlug code } sampleTestCase } }'\n"
+    // Fetching a problem's statement/starter code needs no credentials --
+    // verified live against https://leetcode.com/graphql for a free
+    // problem (two-sum) from this environment. A premium-only problem or
+    // a bad slug both come back as a 200 with a null `question`, handled
+    // the same way below. If mep.leetcode_session_cookie is already set
+    // (e.g. MepLeetcodeSubmit prompted for it earlier this session) it's
+    // forwarded anyway, since a logged-in request only ever sees a
+    // superset of what a logged-out one sees.
+    "function mep.leetcode_fetch_problem(slug, cb)\n"
+    "  local headers = {'-H', 'Referer: https://leetcode.com/problems/' .. slug .. '/'}\n"
+    "  if mep.leetcode_session_cookie then\n"
+    "    headers[#headers + 1] = '-H'\n"
+    "    headers[#headers + 1] = 'Cookie: ' .. mep.leetcode_session_cookie\n"
+    "  end\n"
+    "  mep_leetcode_http_json('POST', 'https://leetcode.com/graphql', headers,\n"
+    "    {query = LEETCODE_QUESTION_QUERY, variables = {titleSlug = slug}, operationName = 'questionData'},\n"
+    "    function(err, decoded)\n"
+    "      if err then cb('mep.leetcode: ' .. err, nil) return end\n"
+    "      local question = decoded.data and decoded.data.question\n"
+    "      if not question then cb('mep.leetcode: no such problem: ' .. slug, nil) return end\n"
+    "      cb(nil, question)\n"
+    "    end)\n"
+    "end\n"
+    // Session cookie: explicit override, else env var, else a masked
+    // prompt -- kept only in the Lua variable for the session, never
+    // written to disk. Same convention as Phase 41 AI's mep_ai_get_key.
+    // The single value is the whole `Cookie:` header (LEETCODE_SESSION
+    // plus csrftoken together) rather than two separate config values, so
+    // it's a straight paste from the browser's Network tab.
+    "local function mep_leetcode_get_cookie(cb)\n"
+    "  if mep.leetcode_session_cookie then cb(mep.leetcode_session_cookie) return end\n"
+    "  local v = os.getenv('LEETCODE_SESSION_COOKIE')\n"
+    "  if v and v ~= '' then mep.leetcode_session_cookie = v cb(v) return end\n"
+    "  mep.ui_input('LeetCode cookie (LEETCODE_SESSION=...; csrftoken=...; $LEETCODE_SESSION_COOKIE not set):', '',\n"
+    "    function(val)\n"
+    "      if val and val ~= '' then mep.leetcode_session_cookie = val cb(val) end\n"
+    "    end, {masked = true})\n"
+    "end\n"
+    "local function mep_leetcode_csrf_of(cookie)\n"
+    "  return cookie:match('csrftoken=([^;%s]+)')\n"
+    "end\n"
+    // Rough HTML -> plain-text pass over LeetCode's own `content` field:
+    // turns <br>/block-closing tags into line breaks, strips every
+    // remaining tag, decodes a handful of common entities, collapses
+    // blank-line runs. Not a real HTML parser -- good enough for a
+    // read-only problem statement dropped into an org buffer, not meant
+    // to round-trip. (Mirrors mep.nvim's mep/leetcode/create.lua
+    // html_to_text almost line for line.)\n"
+    "local function mep_leetcode_html_to_text(html)\n"
+    "  local text = html or ''\n"
+    "  text = text:gsub('<[bB][rR]%s*/?>', '\\n')\n"
+    "  text = text:gsub('</%a+>', '\\n')\n"
+    "  text = text:gsub('<[^>]*>', '')\n"
+    "  text = text:gsub('&lt;', '<'):gsub('&gt;', '>'):gsub('&amp;', '&'):gsub('&nbsp;', ' ')\n"
+    "  text = text:gsub('&quot;', string.char(34)):gsub('&#39;', string.char(39))\n"
+    "  local out = {}\n"
+    "  for line in (text .. '\\n'):gmatch('([^\\n]*)\\n') do\n"
+    "    local trimmed = line:match('^%s*(.-)%s*$')\n"
+    "    if trimmed ~= '' or (out[#out] and out[#out] ~= '') then out[#out + 1] = trimmed end\n"
+    "  end\n"
+    "  while out[1] == '' do table.remove(out, 1) end\n"
+    "  while #out > 0 and out[#out] == '' do table.remove(out) end\n"
+    "  return out\n"
+    "end\n"
+    // LeetCode's own per-language slugs (as seen in codeSnippets[].langSlug
+    // and expected back by submit) mapped to/from mep.org_babel_langs' own
+    // keys -- only the languages that table actually runs (sh/bash/
+    // python/lua) are considered; of those only python/bash have a real
+    // LeetCode counterpart (LeetCode has no sh or Lua submissions), so a
+    // fetched snippet or submit attempt in sh/lua is simply not offered,
+    // the same graceful-miss every other "not in the curated set" case
+    // elsewhere in this project uses.
+    "local mep_leetcode_babel_to_slug = {python = 'python3', bash = 'bash'}\n"
+    "local mep_leetcode_comment_prefix = {python = '# ', sh = '# ', bash = '# ', lua = '-- '}\n"
+    "local function mep_leetcode_snippet_for(question, babel_lang)\n"
+    "  local slug = mep_leetcode_babel_to_slug[babel_lang]\n"
+    "  if not slug then return nil end\n"
+    "  for _, snippet in ipairs(question.codeSnippets or {}) do\n"
+    "    if snippet.langSlug == slug then return snippet.code end\n"
+    "  end\n"
+    "  return nil\n"
+    "end\n"
+    // Fetch a problem by slug or full problem URL and write
+    // mep.leetcode_dir/<slug>.org from it (Prompt/Solution/Tests, same
+    // shape leetcode_run_tests/leetcode_picker above already expect),
+    // then open it. `lang` (default mep.leetcode_fetch_lang) picks which
+    // codeSnippets entry seeds the Solution block.
+    "function mep.leetcode_fetch(slug_or_url, lang)\n"
+    "  lang = lang or mep.leetcode_fetch_lang or 'python'\n"
+    "  local slug = (slug_or_url:match('leetcode%.com/problems/([%w%-]+)') or slug_or_url):match('^%s*(.-)%s*$')\n"
+    "  slug = slug:gsub('/+$', '')\n"
+    "  if not mep.leetcode_dir then mep.notify('mep.leetcode_dir not configured', 'warn') return end\n"
+    "  mep.leetcode_fetch_problem(slug, function(err, question)\n"
+    "    if err then mep.notify(err, 'error') return end\n"
+    "    local lines = {}\n"
+    "    lines[#lines + 1] = '#+TITLE: ' .. question.title\n"
+    "    lines[#lines + 1] = ''\n"
+    "    lines[#lines + 1] = '* Prompt'\n"
+    "    lines[#lines + 1] = ':PROPERTIES:'\n"
+    "    lines[#lines + 1] = ':SLUG: ' .. question.titleSlug\n"
+    "    if question.difficulty and question.difficulty ~= '' then lines[#lines + 1] = ':DIFFICULTY: ' .. question.difficulty end\n"
+    "    if question.questionId then lines[#lines + 1] = ':QUESTION_ID: ' .. tostring(question.questionId) end\n"
+    "    lines[#lines + 1] = ':END:'\n"
+    "    for _, l in ipairs(mep_leetcode_html_to_text(question.content)) do lines[#lines + 1] = l end\n"
+    "    lines[#lines + 1] = ''\n"
+    "    lines[#lines + 1] = '* Solution'\n"
+    "    lines[#lines + 1] = '#+begin_src ' .. lang\n"
+    "    local solution = mep_leetcode_snippet_for(question, lang)\n"
+    "    if solution then\n"
+    "      for sline in (solution .. '\\n'):gmatch('([^\\n]*)\\n') do lines[#lines + 1] = sline end\n"
+    "    end\n"
+    "    lines[#lines + 1] = '#+end_src'\n"
+    "    lines[#lines + 1] = ''\n"
+    "    lines[#lines + 1] = '* Tests'\n"
+    "    lines[#lines + 1] = '#+begin_src ' .. lang\n"
+    "    if question.sampleTestCase and question.sampleTestCase ~= '' then\n"
+    "      local prefix = mep_leetcode_comment_prefix[lang] or '# '\n"
+    "      lines[#lines + 1] = prefix .. 'LeetCode sample test case input (raw, not a runnable harness -- write real assertions here):'\n"
+    "      for sline in (question.sampleTestCase .. '\\n'):gmatch('([^\\n]*)\\n') do lines[#lines + 1] = prefix .. sline end\n"
+    "    end\n"
+    "    lines[#lines + 1] = '#+end_src'\n"
+    "    mep.fs_mkdir(mep.leetcode_dir)\n"
+    "    local path = mep.leetcode_dir .. '/' .. question.titleSlug .. '.org'\n"
+    "    local f = io.open(path, 'w')\n"
+    "    if not f then mep.notify('Could not write ' .. path, 'error') return end\n"
+    "    f:write(table.concat(lines, '\\n') .. '\\n')\n"
+    "    f:close()\n"
+    "    mep.notify('Wrote ' .. path, 'info')\n"
+    "    mep.pane_open(path)\n"
+    "  end)\n"
+    "end\n"
+    "mep.command('MepLeetcodeFetch', function()\n"
+    "  mep.ui_input('LeetCode problem slug or URL:', '', function(v)\n"
+    "    if v and v ~= '' then mep.leetcode_fetch(v) end\n"
+    "  end)\n"
+    "end)\n"
+    // Submit `code`/`lang_slug` for `slug`/`question_id`, then poll the
+    // check endpoint until a verdict lands (`SUCCESS` state) or attempts
+    // run out. `cb(err, result)` -- `result` is the raw check-endpoint
+    // response (status_msg/total_correct/total_testcases/status_runtime/
+    // status_memory) on success.
+    "local function mep_leetcode_api_submit(slug, question_id, lang_slug, code, cookie, cb)\n"
+    "  local csrf = mep_leetcode_csrf_of(cookie)\n"
+    "  if not csrf then cb('mep.leetcode: could not find csrftoken in the configured cookie', nil) return end\n"
+    "  local headers = {'-H', 'Cookie: ' .. cookie, '-H', 'x-csrftoken: ' .. csrf,\n"
+    "    '-H', 'Referer: https://leetcode.com/problems/' .. slug .. '/'}\n"
+    "  mep_leetcode_http_json('POST', 'https://leetcode.com/problems/' .. slug .. '/submit/', headers,\n"
+    "    {lang = lang_slug, question_id = question_id, typed_code = code},\n"
+    "    function(err, decoded)\n"
+    "      if err then cb('mep.leetcode: ' .. err, nil) return end\n"
+    "      local submission_id = decoded.submission_id\n"
+    "      if not submission_id then cb('mep.leetcode: submit did not return a submission id (check credentials)', nil) return end\n"
+    "      local check_url = 'https://leetcode.com/submissions/detail/' .. tostring(submission_id) .. '/check/'\n"
+    "      local attempt = 0\n"
+    "      local function poll()\n"
+    "        attempt = attempt + 1\n"
+    "        mep_leetcode_http_json('GET', check_url, headers, nil, function(gerr, result)\n"
+    "          if gerr then cb('mep.leetcode: ' .. gerr, nil)\n"
+    "          elseif result.state == 'SUCCESS' then cb(nil, result)\n"
+    "          elseif attempt >= 20 then cb('mep.leetcode: timed out waiting for a verdict', nil)\n"
+    "          else mep_leetcode_sleep(1.5, poll) end\n"
+    "        end)\n"
+    "      end\n"
+    "      poll()\n"
+    "    end)\n"
+    "end\n"
+    // Submits the current buffer's Solution block for the problem named
+    // by its own :SLUG: property (under the Prompt headline -- written by
+    // mep.leetcode_fetch above). :QUESTION_ID: is reused if present,
+    // else fetched fresh first (e.g. a file never live-fetched before).
+    "function mep.leetcode_submit()\n"
+    "  local prompt_row = nil\n"
+    "  for i = 1, mep.line_count() do\n"
+    "    local h = mep_org_parse_headline(mep.get_line(i))\n"
+    "    if h and h.title == 'Prompt' then prompt_row = i break end\n"
+    "  end\n"
+    "  if not prompt_row then mep.notify('No Prompt headline in this buffer -- fetch this problem first via :MepLeetcodeFetch', 'warn') return end\n"
+    "  local slug = mep.org_property_get(prompt_row, 'SLUG')\n"
+    "  if not slug then mep.notify('No :SLUG: property under Prompt -- fetch this problem first via :MepLeetcodeFetch', 'warn') return end\n"
+    "  local question_id = mep.org_property_get(prompt_row, 'QUESTION_ID')\n"
+    "  local lang, solution = mep_leetcode_find_src_under('Solution')\n"
+    "  if not solution then mep.notify('Missing Solution src block', 'warn') return end\n"
+    "  local lc_lang = mep_leetcode_babel_to_slug[lang]\n"
+    "  if not lc_lang then mep.notify('No LeetCode language mapping for: ' .. tostring(lang), 'warn') return end\n"
+    "  mep_leetcode_get_cookie(function(cookie)\n"
+    "    local function do_submit(qid)\n"
+    "      mep.notify('Submitting to LeetCode...', 'info')\n"
+    "      mep_leetcode_api_submit(slug, qid, lc_lang, solution, cookie, function(err, result)\n"
+    "        if err then mep.notify(err, 'error') return end\n"
+    "        mep.notify('LeetCode: ' .. (result.status_msg or '?') .. ' (' .. tostring(result.total_correct or '?') ..\n"
+    "          '/' .. tostring(result.total_testcases or '?') .. ')', (result.status_msg == 'Accepted') and 'info' or 'warn')\n"
+    "      end)\n"
+    "    end\n"
+    "    if question_id then\n"
+    "      do_submit(question_id)\n"
+    "    else\n"
+    "      mep.leetcode_fetch_problem(slug, function(err, question)\n"
+    "        if err then mep.notify(err, 'error') return end\n"
+    "        do_submit(question.questionId)\n"
+    "      end)\n"
+    "    end\n"
+    "  end)\n"
+    "end\n"
+    "mep.command('MepLeetcodeSubmit', mep.leetcode_submit)\n";
 
 const char *kBuiltinPickerSources =
     "function mep.themes()\n"
     "  local before = mep.current_theme()\n"
+    // Live preview (NVIM_PARITY_PLAN.md Phase 9 gap): the 6th arg fires on
+    // every highlighted-row change (arrow/Ctrl-N/Ctrl-P, or the query
+    // narrowing to a new top match) and re-tints the whole UI immediately,
+    // *before* Enter/Escape commit or cancel -- on_select below still runs
+    // on Enter (re-applies the same theme, harmless) or Escape (item == nil,
+    // restores `before`), so cancelling always reverts whatever was
+    // previewed while browsing.
     "  mep.picker_open('Colorscheme', mep.theme_names(), function(item)\n"
     "    if item then mep.colorscheme(item) else mep.colorscheme(before) end\n"
-    "  end)\n"
+    "  end, nil, nil, function(item) mep.colorscheme(item) end)\n"
     "end\n"
     "mep.command('MepTheme', mep.themes)\n"
     // mep.nvim's own convention for this exact picker (mep.nvim/lua/mep/
@@ -3920,29 +6740,154 @@ const char *kBuiltinPickerSources =
     // here since mep.themes()/mep.picker_open/mep.leader_map were all
     // already implemented but never actually wired to an entry point.
     "mep.leader_map('ut', 'Theme picker', mep.themes)\n"
+    // mep_picker_preview_file(path, max_lines): reads up to max_lines (40
+    // default) of `path` and hands it to mep.picker_set_preview -- the
+    // Phase 8 preview-pane gap, closed. Shared by find_files below and
+    // (over a matched line's file) live_grep further down. Truncation
+    // note ("...") rather than silently cutting off makes the preview
+    // pane's own scope cut (no scrolling, see DrawPickerOverlay) visible
+    // to the user instead of just quietly showing an incomplete file.\n"
+    "function mep_picker_preview_file(path, max_lines)\n"
+    "  local f = io.open(path, 'r')\n"
+    "  if not f then mep.picker_set_preview('(cannot open ' .. path .. ')') return end\n"
+    "  local lines, truncated = {}, false\n"
+    "  for line in f:lines() do\n"
+    "    if #lines >= (max_lines or 40) then truncated = true break end\n"
+    "    lines[#lines + 1] = line\n"
+    "  end\n"
+    "  f:close()\n"
+    "  if truncated then lines[#lines + 1] = '...' end\n"
+    "  mep.picker_set_preview(table.concat(lines, '\\n'))\n"
+    "end\n"
+    // Asynchronous population (NVIM_PARITY_PLAN.md Phase 8 gap, closed):
+    // the picker now opens as soon as the *first* result line arrives
+    // (ensure_open, below) instead of waiting for rg/find to exit --
+    // real for a large tree, where the old on_exit-only version left the
+    // UI looking unresponsive (no picker at all) until the whole scan
+    // finished. Results still stream in afterward via periodic
+    // mep.picker_set_items flushes (debounced to ~12/sec, mep.now() --
+    // same idiom as mep.on_buffer_changed's interval check above) rather
+    // than one C++ call per line, which would re-copy/re-clamp the
+    // picker's item list thousands of times for a big repo. Preview pane:
+    // on_select_change (5th arg... 4th is nil for "no on_query_change")
+    // shows the highlighted file's first lines via the helper above.\n"
     "function mep.find_files()\n"
     "  local lines = {}\n"
+    "  local last_flush = mep.now()\n"
+    "  local function flush() mep.picker_set_items(lines) end\n"
+    "  local opened = false\n"
+    "  local function ensure_open()\n"
+    "    if opened then return end\n"
+    "    opened = true\n"
+    "    mep.picker_open('Find Files', lines, function(item)\n"
+    "      if item then mep.cmd('e ' .. item) end\n"
+    "    end, nil, nil, function(item)\n"
+    "      if item and item ~= '' then mep_picker_preview_file(item) end\n"
+    "    end)\n"
+    "  end\n"
+    "  local function on_line(line)\n"
+    "    lines[#lines + 1] = line\n"
+    "    ensure_open()\n"
+    "    local now = mep.now()\n"
+    "    if now - last_flush > 0.08 then last_flush = now flush() end\n"
+    "  end\n"
     "  mep.job_start({'rg', '--files', '--hidden', '--glob', '!.git'}, {\n"
-    "    on_stdout = function(line) lines[#lines + 1] = line end,\n"
+    "    on_stdout = on_line,\n"
     "    on_exit = function(code)\n"
     "      if #lines == 0 then\n"
     "        mep.job_start({'find', '.', '-type', 'f', '-not', '-path', '*/.git/*'}, {\n"
-    "          on_stdout = function(line) lines[#lines + 1] = line end,\n"
-    "          on_exit = function()\n"
-    "            mep.picker_open('Find Files', lines, function(item)\n"
-    "              if item then mep.cmd('e ' .. item) end\n"
-    "            end)\n"
-    "          end,\n"
+    "          on_stdout = on_line,\n"
+    "          on_exit = function() ensure_open() flush() end,\n"
     "        })\n"
     "      else\n"
-    "        mep.picker_open('Find Files', lines, function(item)\n"
-    "          if item then mep.cmd('e ' .. item) end\n"
-    "        end)\n"
+    "        ensure_open()\n"
+    "        flush()\n"
     "      end\n"
     "    end,\n"
     "  })\n"
     "end\n"
     "mep.leader_map('pf', 'Find files', mep.find_files)\n"
+    // Live grep (NVIM_PARITY_PLAN.md Phase 8 gap, closed): typing in the
+    // picker's prompt re-runs ripgrep against the *live* pattern and
+    // streams matches in, rather than fuzzy-filtering one static list
+    // gathered up front (that's what find_files/buffers/commands above
+    // still do, correctly, for genuinely static sources). Debounced
+    // (kLiveGrepDebounce) so fast typing doesn't spawn a process per
+    // keystroke -- mep.on_frame polls a "pending query" the on_query_
+    // change callback just stashes a timestamp for, same polling-debounce
+    // shape as mep.on_buffer_changed. A monotonic generation counter
+    // guards against a just-superseded search's late stdout/on_exit
+    // (already-running job killed, but any in-flight callback queued
+    // before the kill still fires once via JobManager::PollAll) from
+    // clobbering a newer search's results. Opened with raw_results=true
+    // (mep.picker_open's 7th arg) since ripgrep already did the
+    // filtering -- Phase 8's own client-side fuzzy re-filter would
+    // otherwise redundantly re-match every line and could even hide a
+    // real regex match whose special characters aren't literally present
+    // in the matched text (see Editor::OpenPicker's comment).\n"
+    "local mep_live_grep_state = {active = false, pending_query = nil, pending_time = 0, job_id = nil, gen = 0}\n"
+    "function mep.live_grep()\n"
+    "  local st = mep_live_grep_state\n"
+    "  st.active = true\n"
+    "  st.pending_query = nil\n"
+    "  st.gen = st.gen + 1\n"
+    "  if st.job_id and mep.job_is_running(st.job_id) then mep.job_kill(st.job_id) end\n"
+    "  st.job_id = nil\n"
+    "  mep.picker_open('Live Grep', {}, function(item)\n"
+    "    st.active = false\n"
+    "    if st.job_id and mep.job_is_running(st.job_id) then mep.job_kill(st.job_id) end\n"
+    "    if item then\n"
+    "      local file, lnum = item:match('^(.*):(%d+)$')\n"
+    "      if file then mep.cmd('e ' .. file) mep.set_cursor(tonumber(lnum), 1) end\n"
+    "    end\n"
+    "  end, function(query)\n"
+    "    st.pending_query = query\n"
+    "    st.pending_time = mep.now()\n"
+    "  end, nil, function(item)\n"
+    "    if item and item ~= '' then\n"
+    "      local file, lnum = item:match('^(.*):(%d+)$')\n"
+    "      if file then mep_picker_preview_file(file, 200) end\n"
+    "    end\n"
+    "  end, true)\n"
+    "end\n"
+    "mep.leader_map('pg', 'Live grep', mep.live_grep)\n"
+    "local kLiveGrepDebounce = 0.12\n"
+    "mep.on_frame(function()\n"
+    "  local st = mep_live_grep_state\n"
+    "  if not st.active or not st.pending_query then return end\n"
+    "  if mep.now() - st.pending_time < kLiveGrepDebounce then return end\n"
+    "  local query = st.pending_query\n"
+    "  st.pending_query = nil\n"
+    "  if st.job_id and mep.job_is_running(st.job_id) then mep.job_kill(st.job_id) end\n"
+    "  st.job_id = nil\n"
+    "  if query == '' then mep.picker_set_items({}) return end\n"
+    "  st.gen = st.gen + 1\n"
+    "  local my_gen = st.gen\n"
+    "  local items = {}\n"
+    "  local last_flush = mep.now()\n"
+    "  local function flush() if my_gen == st.gen then mep.picker_set_items(items) end end\n"
+    // Explicit trailing '.' path (not just relying on rg's "no PATH
+    // argument -> search cwd" default): with no PATH argument at all,
+    // ripgrep instead reads stdin whenever stdin isn't a tty -- true of
+    // every mep.job_start child (job.cpp always wires stdin to a pipe,
+    // never left open+unwritten+unclosed on purpose since mep.job_write/
+    // job_close_stdin exist for callers that *do* want to feed one) -- a
+    // real hang caught during this feature's own Xvfb verification: the
+    // job never produced output or exited, IsRunning() stayed true
+    // forever. Confirmed via a bare reproduction (rg with a pattern, no
+    // path, stdin an open-but-silent pipe) before landing this fix.\n"
+    "  st.job_id = mep.job_start({'rg', '--line-number', '--no-heading', '--color=never', '--', query, '.'}, {\n"
+    "    on_stdout = function(line)\n"
+    "      if my_gen ~= st.gen then return end\n"
+    "      local file, lnum = line:match('^(.-):(%d+):.*$')\n"
+    "      if not file then return end\n"
+    "      items[#items + 1] = {display = line, data = file .. ':' .. lnum}\n"
+    "      local now = mep.now()\n"
+    "      if now - last_flush > 0.08 then last_flush = now flush() end\n"
+    "    end,\n"
+    "    on_exit = function() flush() end,\n"
+    "  })\n"
+    "end)\n"
     "function mep.buffers()\n"
     "  mep.picker_open('Buffers', mep.buffer_list(), function(item)\n"
     "    if item then mep.buffer_switch(tonumber(item)) end\n"
@@ -3953,7 +6898,36 @@ const char *kBuiltinPickerSources =
     "  mep.picker_open('Commands', mep.command_names(), function(item)\n"
     "    if item then mep.cmd(item) end\n"
     "  end)\n"
-    "end\n";
+    "end\n"
+    // Default winbar breadcrumb click handler (Phase 11 click-dispatch
+    // gap): clicking a directory segment of the per-pane header's path
+    // (main.cpp's DrawPane) navigates into it by opening a file picker
+    // scoped to that directory, same rg-with-find-fallback pattern as
+    // mep.find_files above, just rooted at `dir` instead of '.'.
+    "function mep.winbar_navigate(dir)\n"
+    "  if not dir or dir == '' then return end\n"
+    "  local lines = {}\n"
+    "  mep.job_start({'rg', '--files', '--hidden', '--glob', '!.git', dir}, {\n"
+    "    on_stdout = function(line) lines[#lines + 1] = line end,\n"
+    "    on_exit = function(code)\n"
+    "      if #lines == 0 then\n"
+    "        mep.job_start({'find', dir, '-type', 'f', '-not', '-path', '*/.git/*'}, {\n"
+    "          on_stdout = function(line) lines[#lines + 1] = line end,\n"
+    "          on_exit = function()\n"
+    "            mep.picker_open('Files in ' .. dir, lines, function(item)\n"
+    "              if item then mep.cmd('e ' .. item) end\n"
+    "            end)\n"
+    "          end,\n"
+    "        })\n"
+    "      else\n"
+    "        mep.picker_open('Files in ' .. dir, lines, function(item)\n"
+    "          if item then mep.cmd('e ' .. item) end\n"
+    "        end)\n"
+    "      end\n"
+    "    end,\n"
+    "  })\n"
+    "end\n"
+    "mep.set_winbar_click(mep.winbar_navigate)\n";
 
 const char *kAboutText =
     "mep\n"
@@ -4161,7 +7135,16 @@ FloatFrame DrawFloatFrame(int w, int h, const std::string &title) {
 void DrawPromptOverlay() {
     int box_w = std::min(GetScreenWidth() - 80, 560);
     FloatFrame f = DrawFloatFrame(box_w, static_cast<int>(g_font_size) + 60, g_editor.PromptTitle());
-    std::string line = g_editor.PromptInput();
+    const std::string &real = g_editor.PromptInput();
+    // Masked prompts (mep.ui_input's opts.masked/opts.password, e.g. the
+    // AI module's API-key fallback) render '*' in place of the real text
+    // -- Editor::prompt_input_ (what on_done_ref eventually receives)
+    // keeps the real typed text untouched; only this rendered line
+    // substitutes it. One '*' per byte rather than per codepoint, so
+    // multi-byte UTF-8 input renders extra stars -- an accepted
+    // approximation given masked input is realistically ASCII (API keys,
+    // passwords).
+    std::string line = g_editor.PromptMasked() ? std::string(real.size(), '*') : real;
     DrawTextEx(g_font, line.c_str(), Vector2{f.content_x, f.content_y}, g_font_size, 0, ResolveHlGroup("Normal"));
     if (fmodf(static_cast<float>(GetTime()), 1.0f) < 0.6f) {
         float cx = f.content_x + MeasureTextEx(g_font, line.c_str(), g_font_size, 0).x;
@@ -4200,6 +7183,48 @@ void DrawSelectOverlay() {
         }
         DrawTextEx(g_font, items[i].c_str(), Vector2{f.content_x, y}, font_size, 0, ResolveHlGroup("Normal"));
     }
+}
+
+// Read-only informational float (Phase 17 gap: git-gutter's "preview
+// hunk", mep.float_preview) -- same DrawFloatFrame box the overlays
+// above use, sized to fit its (possibly multi-line) text, dismissed by
+// any keypress or click (Editor::HandlePreviewInput). Lines starting
+// with '+'/'-' (a unified-diff hunk body, the mep.float_preview caller
+// this was added for) are tinted with the same Add/Red groups the git
+// gutter's own decorations use, so the preview visually matches the
+// signs the user is previewing.
+void DrawPreviewOverlay() {
+    std::vector<std::string> lines = SplitLines(g_editor.PreviewText());
+    float font_size = g_font_size;
+    int line_h = static_cast<int>(font_size) + 6;
+    float max_w = MeasureTextEx(g_font, g_editor.PreviewTitle().c_str(), MenuFontSize(), 0).x;
+    for (const auto &line : lines) max_w = std::max(max_w, MeasureTextEx(g_font, line.c_str(), font_size, 0).x);
+    int box_w = std::min(GetScreenWidth() - 80, static_cast<int>(max_w) + 40);
+    box_w = std::max(box_w, 260);
+    float hint_size = MenuFontSize();
+    // DrawFloatFrame reserves its own title row (MenuFontSize()+8) on top
+    // of whatever content starts at content_y, and the "press any key"
+    // hint below needs a row of its own too -- omitting either from the
+    // box_h budget let the hint overlap the last content line for
+    // short (e.g. one-line) previews.
+    int title_h = g_editor.PreviewTitle().empty() ? 0 : static_cast<int>(MenuFontSize()) + 8;
+    int box_h = std::min(GetScreenHeight() - 80,
+                          10 + title_h + static_cast<int>(lines.size()) * line_h + static_cast<int>(hint_size) + 24);
+    FloatFrame f = DrawFloatFrame(box_w, box_h, g_editor.PreviewTitle());
+    for (size_t i = 0; i < lines.size(); i++) {
+        float y = f.content_y + i * line_h;
+        const std::string &line = lines[i];
+        Color color = ResolveHlGroup("Normal");
+        if (!line.empty() && line[0] == '+') color = ResolveHlGroup("Add");
+        else if (!line.empty() && line[0] == '-') color = ResolveHlGroup("Red");
+        DrawTextEx(g_font, line.c_str(), Vector2{f.content_x, y}, font_size, 0, color);
+    }
+    std::string hint = "Press any key to close";
+    float hint_w = MeasureTextEx(g_font, hint.c_str(), hint_size, 0).x;
+    DrawTextEx(g_font, hint.c_str(),
+               Vector2{static_cast<float>(f.box_x + f.box_w) - hint_w - 14,
+                       static_cast<float>(f.box_y + f.box_h - hint_size - 10)},
+               hint_size, 0, ResolveHlGroup("Comment"));
 }
 
 Color NotifyLevelColor(Editor::NotifyLevel level) {
@@ -4336,10 +7361,19 @@ void DrawSidebars() {
     }
 }
 
-// Fuzzy picker: prompt line + live-filtered results list (Phase 8). A
-// preview pane is a documented follow-up, not implemented here.
+// Fuzzy picker: prompt line + live-filtered results list (Phase 8).
+// Preview pane (NVIM_PARITY_PLAN.md Phase 8 gap, closed): when a source
+// has called mep.picker_set_preview(text) (currently find_files/
+// live_grep, kBuiltinPickerSources), the box widens and splits into a
+// narrower results column on the left and a scrolled-to-nothing (just
+// top-anchored, not following the cursor -- these are short peeks, not
+// an editable view) text column on the right, divided by a vertical
+// rule. No preview means the box stays exactly the single-column shape
+// it always was -- existing pickers that never call SetPickerPreview
+// (buffers/commands/themes/...) are visually unchanged.
 void DrawPickerOverlay() {
-    int box_w = std::min(GetScreenWidth() - 80, 640);
+    bool has_preview = !g_editor.PickerPreview().empty();
+    int box_w = has_preview ? std::min(GetScreenWidth() - 80, 920) : std::min(GetScreenWidth() - 80, 640);
     int box_h = std::min(GetScreenHeight() - 80, 420);
     FloatFrame f = DrawFloatFrame(box_w, box_h, g_editor.PickerTitle());
 
@@ -4353,21 +7387,167 @@ void DrawPickerOverlay() {
     DrawLine(f.box_x + 4, static_cast<int>(f.content_y + g_font_size + 6), f.box_x + f.box_w - 4,
              static_cast<int>(f.content_y + g_font_size + 6), ResolveHlGroup("PickerBorder"));
 
+    int list_w = has_preview ? static_cast<int>((f.box_x + f.box_w - f.content_x) * 0.42f) : (f.box_x + f.box_w) - static_cast<int>(f.content_x) - 4;
+
     std::vector<PickerItem> results = g_editor.PickerFilteredResults();
     float list_y = f.content_y + g_font_size + 14;
     int line_h = static_cast<int>(g_font_size) + 4;
     int max_rows = std::max(1, static_cast<int>((f.box_y + f.box_h - list_y) / line_h));
     int selected = g_editor.PickerSelected();
     int start = std::max(0, selected - max_rows + 1);
+    BeginScissorMode(f.box_x, static_cast<int>(list_y) - 2, list_w, f.box_y + f.box_h - static_cast<int>(list_y));
     for (int i = start; i < static_cast<int>(results.size()) && i < start + max_rows; i++) {
         float ry = list_y + (i - start) * line_h;
         if (i == selected) {
-            DrawRectangle(f.box_x + 4, static_cast<int>(ry) - 1, f.box_w - 8, line_h, ResolveHlGroup("PickerSelected"));
+            DrawRectangle(f.box_x + 4, static_cast<int>(ry) - 1, list_w - 8, line_h, ResolveHlGroup("PickerSelected"));
         }
         DrawTextEx(g_font, results[i].display.c_str(), Vector2{f.content_x, ry}, g_font_size, 0, ResolveHlGroup("Normal"));
     }
     if (results.empty()) {
         DrawTextEx(g_font, "-- no matches --", Vector2{f.content_x, list_y}, g_font_size, 0, ResolveHlGroup("Comment"));
+    }
+    EndScissorMode();
+
+    if (has_preview) {
+        int div_x = f.box_x + list_w + 6;
+        DrawLine(div_x, static_cast<int>(list_y) - 4, div_x, f.box_y + f.box_h - 6, ResolveHlGroup("PickerBorder"));
+        float px = static_cast<float>(div_x + 10);
+        int preview_w = (f.box_x + f.box_w) - div_x - 20;
+        BeginScissorMode(div_x, static_cast<int>(list_y) - 2, preview_w + 20, f.box_y + f.box_h - static_cast<int>(list_y));
+        int max_chars = std::max(10, static_cast<int>(preview_w / g_char_width));
+        int row = 0;
+        int max_preview_rows = static_cast<int>((f.box_y + f.box_h - list_y) / line_h);
+        for (const std::string &raw_line : SplitLines(g_editor.PickerPreview())) {
+            if (row >= max_preview_rows) break;
+            if (raw_line.empty()) { row++; continue; }
+            size_t pos = 0;
+            while (pos < raw_line.size() && row < max_preview_rows) {
+                size_t take = std::min(raw_line.size() - pos, static_cast<size_t>(max_chars));
+                std::string chunk = raw_line.substr(pos, take);
+                DrawTextEx(g_font, chunk.c_str(), Vector2{px, list_y + row * line_h}, g_font_size, 0,
+                           ResolveHlGroup("Normal"));
+                pos += take;
+                row++;
+            }
+        }
+        EndScissorMode();
+    }
+}
+
+// Roam backlink-graph view (NVIM_PARITY_PLAN.md Phase 37's flagged "no
+// fuzzy backlink-graph visualization" gap, closed). A real 2D node-link
+// diagram, but a deliberately scoped-down one: a deterministic ring
+// layout, not a force-directed physics simulation -- see the writeup above
+// Editor::OpenRoamGraph in editor.cpp and NVIM_PARITY_PLAN.md's Phase 37
+// section for why. Hop 0 (the note the view opened on) sits dead center;
+// hop-1 nodes (its direct links + direct backlinks) ring it at radius r1;
+// hop-2 nodes (links/backlinks of those) ring it at radius r2. Recomputed
+// fresh every frame -- node counts here are small (a few dozen at most,
+// per the Lua side's hop-2 cap), so there's no need to cache it.
+static std::vector<Vector2> ComputeRoamGraphPositions(const std::vector<RoamGraphNode> &nodes, float cx, float cy,
+                                                        float r1, float r2) {
+    constexpr float kTwoPi = 6.28318530718f;
+    std::vector<Vector2> pos(nodes.size(), Vector2{cx, cy});
+    std::vector<int> hop1, hop2;
+    for (int i = 0; i < static_cast<int>(nodes.size()); i++) {
+        if (nodes[i].hop == 1) hop1.push_back(i);
+        else if (nodes[i].hop >= 2) hop2.push_back(i);
+    }
+    for (size_t k = 0; k < hop1.size(); k++) {
+        float ang = kTwoPi * static_cast<float>(k) / static_cast<float>(hop1.size());
+        pos[hop1[k]] = Vector2{cx + r1 * cosf(ang), cy + r1 * sinf(ang)};
+    }
+    for (size_t k = 0; k < hop2.size(); k++) {
+        float ang = kTwoPi * static_cast<float>(k) / static_cast<float>(hop2.size());
+        pos[hop2[k]] = Vector2{cx + r2 * cosf(ang), cy + r2 * sinf(ang)};
+    }
+    return pos;
+}
+
+void DrawRoamGraphOverlay() {
+    int box_w = std::min(GetScreenWidth() - 60, 1100);
+    int box_h = std::min(GetScreenHeight() - 60, 780);
+    FloatFrame f = DrawFloatFrame(box_w, box_h, g_editor.RoamGraphTitle());
+
+    std::string prompt_line = "/ " + g_editor.RoamGraphQuery();
+    DrawTextEx(g_font, prompt_line.c_str(), Vector2{f.content_x, f.content_y}, g_font_size, 0, ResolveHlGroup("Normal"));
+    if (fmodf(static_cast<float>(GetTime()), 1.0f) < 0.6f) {
+        float cx = f.content_x + MeasureTextEx(g_font, prompt_line.c_str(), g_font_size, 0).x;
+        DrawRectangle(static_cast<int>(cx), static_cast<int>(f.content_y), 2, static_cast<int>(g_font_size),
+                      ResolveHlGroup("Normal"));
+    }
+    float divider_y = f.content_y + g_font_size + 6;
+    DrawLine(f.box_x + 4, static_cast<int>(divider_y), f.box_x + f.box_w - 4, static_cast<int>(divider_y),
+             ResolveHlGroup("PickerBorder"));
+
+    const std::vector<RoamGraphNode> &nodes = g_editor.RoamGraphNodes();
+    const std::vector<RoamGraphEdge> &edges = g_editor.RoamGraphEdges();
+    if (nodes.empty()) {
+        DrawTextEx(g_font, "-- no linked notes --", Vector2{f.content_x, divider_y + 14}, g_font_size, 0,
+                   ResolveHlGroup("Comment"));
+        return;
+    }
+
+    float area_top = divider_y + 8;
+    float area_bottom = static_cast<float>(f.box_y + f.box_h) - 10;
+    float area_left = static_cast<float>(f.box_x) + 10;
+    float area_right = static_cast<float>(f.box_x + f.box_w) - 10;
+    float cx = (area_left + area_right) / 2.0f;
+    float cy = (area_top + area_bottom) / 2.0f;
+    float max_r = std::min(area_right - area_left, area_bottom - area_top) / 2.0f - 40.0f;
+    max_r = std::max(max_r, 60.0f);
+    float r1 = max_r * 0.5f;
+    float r2 = max_r;
+
+    std::vector<Vector2> pos = ComputeRoamGraphPositions(nodes, cx, cy, r1, r2);
+    std::vector<int> filtered = g_editor.RoamGraphFilteredIndices();
+    std::vector<bool> visible(nodes.size(), false);
+    for (int i : filtered) visible[i] = true;
+    int selected_idx = -1;
+    if (g_editor.RoamGraphSelected() >= 0 && g_editor.RoamGraphSelected() < static_cast<int>(filtered.size())) {
+        selected_idx = filtered[g_editor.RoamGraphSelected()];
+    }
+
+    // Edges first, so nodes/labels draw on top of them.
+    Color edge_color = ResolveHlGroup("PickerBorder");
+    Color edge_dim = Fade(edge_color, 0.25f);
+    for (const RoamGraphEdge &e : edges) {
+        if (e.a < 0 || e.a >= static_cast<int>(nodes.size()) || e.b < 0 || e.b >= static_cast<int>(nodes.size())) {
+            continue;
+        }
+        bool both_visible = visible[e.a] && visible[e.b];
+        DrawLineEx(pos[e.a], pos[e.b], both_visible ? 1.6f : 1.0f, both_visible ? edge_color : edge_dim);
+    }
+
+    Color normal_c = ResolveHlGroup("Normal");
+    Color center_c = ResolveHlGroup("PickerTitle");
+    Color dim_c = ResolveHlGroup("Comment");
+    Color select_c = ResolveHlGroup("PickerSelected");
+    Color border_c = ResolveHlGroup("FloatBorder");
+    float label_size = std::max(10.0f, g_font_size * 0.8f);
+
+    // The fuzzy filter narrows which nodes are *highlighted* rather than
+    // which are drawn at all (see RoamGraphFilteredIndices' own comment):
+    // a node that doesn't match the current query dims to `dim_c` instead
+    // of disappearing, so the ring layout (and the edges touching it)
+    // stays legible as you type instead of reflowing every keystroke.
+    for (int i = 0; i < static_cast<int>(nodes.size()); i++) {
+        bool is_center = nodes[i].hop == 0;
+        bool is_visible = visible[i];
+        float radius = is_center ? 10.0f : (nodes[i].hop == 1 ? 7.0f : 5.0f);
+        Color fill = !is_visible ? dim_c : (is_center ? center_c : normal_c);
+        if (i == selected_idx) {
+            DrawCircleV(pos[i], radius + 5.0f, Fade(select_c, 0.85f));
+        }
+        DrawCircleV(pos[i], radius, fill);
+        DrawCircleLines(static_cast<int>(pos[i].x), static_cast<int>(pos[i].y), radius, border_c);
+
+        std::string label = nodes[i].title.empty() ? nodes[i].path : nodes[i].title;
+        if (label.size() > 22) label = label.substr(0, 21) + "...";
+        Vector2 msz = MeasureTextEx(g_font, label.c_str(), label_size, 0);
+        Vector2 lp{pos[i].x - msz.x / 2.0f, pos[i].y + radius + 3.0f};
+        Color text_c = !is_visible ? dim_c : (i == selected_idx ? select_c : normal_c);
+        DrawTextEx(g_font, label.c_str(), lp, label_size, 0, text_c);
     }
 }
 
@@ -4505,6 +7685,62 @@ void DrawCompletionPopup(float x, float y) {
                           ResolveHlGroup("PickerSelected"));
         }
         DrawTextEx(g_font, items[i].display.c_str(), Vector2{x + 6, ry}, font_size, 0, ResolveHlGroup("Normal"));
+    }
+}
+
+// Hover tooltip (NVIM_PARITY_PLAN.md Phase 3 gap, closed): a small
+// floating window anchored just below the cursor -- same "coexists with
+// whatever mode is active, doesn't dim the screen" shape as
+// DrawCompletionPopup above (unlike DrawPreviewOverlay/DrawFloatFrame's
+// modal centered box), since a hover tooltip is meant to feel transient
+// and not interrupt editing. Text may be long/markdown-ish (LSP hover
+// contents), so this wraps by character count rather than assuming
+// short single-line items the way the completion list can. Dismissal
+// (cursor move / mode change / Escape) is Editor::MaybeDismissHover's
+// job, not this function's -- it just draws whenever IsHoverOpen().
+void DrawHoverPopup(float x, float y) {
+    if (!g_editor.IsHoverOpen()) return;
+    const std::string &title = g_editor.HoverTitle();
+    const std::string &text = g_editor.HoverText();
+    float font_size = g_font_size;
+    int line_h = static_cast<int>(font_size) + 4;
+    int max_box_w = std::min(GetScreenWidth() - 40, 640);
+    int max_chars_per_line = std::max(20, static_cast<int>((max_box_w - 20) / g_char_width));
+    std::vector<std::string> wrapped;
+    for (const std::string &raw_line : SplitLines(text)) {
+        if (raw_line.empty()) { wrapped.push_back(""); continue; }
+        size_t pos = 0;
+        while (pos < raw_line.size()) {
+            size_t take = std::min(raw_line.size() - pos, static_cast<size_t>(max_chars_per_line));
+            wrapped.push_back(raw_line.substr(pos, take));
+            pos += take;
+        }
+    }
+    // Cap total height so a huge hover payload (e.g. a long docstring)
+    // doesn't run off-screen; not scrollable -- this is a tooltip, not a
+    // picker/sidebar, and truncating is the same tradeoff DrawFloatFrame-
+    // based overlays already make for oversized content.
+    int max_rows = std::min(static_cast<int>(wrapped.size()), 20);
+    float max_w = title.empty() ? 0.0f : MeasureTextEx(g_font, title.c_str(), MenuFontSize(), 0).x;
+    for (int i = 0; i < max_rows; i++) max_w = std::max(max_w, MeasureTextEx(g_font, wrapped[i].c_str(), font_size, 0).x);
+    int box_w = std::min(max_box_w, static_cast<int>(max_w) + 20);
+    int title_h = title.empty() ? 0 : static_cast<int>(MenuFontSize()) + 6;
+    int box_h = title_h + max_rows * line_h + 10;
+    if (x + box_w > GetScreenWidth()) x = GetScreenWidth() - box_w;
+    if (x < 0) x = 0;
+    // Prefer drawing below the cursor (the `y` passed in); flip above it
+    // if there isn't room below, same idea DrawCmdlineCompletionPopup
+    // uses for the command bar's upward-growing list.
+    if (y + box_h > GetScreenHeight()) y = std::max(0.0f, y - box_h - line_h);
+    DrawRectangle(static_cast<int>(x), static_cast<int>(y), box_w, box_h, ResolveHlGroup("Picker"));
+    DrawRectangleLines(static_cast<int>(x), static_cast<int>(y), box_w, box_h, ResolveHlGroup("PickerBorder"));
+    float ty = y + 5;
+    if (!title.empty()) {
+        DrawTextEx(g_font, title.c_str(), Vector2{x + 8, ty}, MenuFontSize(), 0, ResolveHlGroup("PickerTitle"));
+        ty += title_h;
+    }
+    for (int i = 0; i < max_rows; i++) {
+        DrawTextEx(g_font, wrapped[i].c_str(), Vector2{x + 8, ty + i * line_h}, font_size, 0, ResolveHlGroup("Normal"));
     }
 }
 
@@ -4650,32 +7886,232 @@ void DrawTerminalGrid(const TerminalSession &sess, float x, float y, float w, fl
     }
 }
 
+// Lazily uploads (once per buffer id, cached in g_image_textures -- see its
+// own comment) the decoded RGBA8 pixels from an ImageSession's ImageDoc as
+// a GPU texture, and returns it. `sess.doc` is decoded once by
+// Editor::OpenImageInPlace and never mutated, so nothing here ever needs to
+// re-upload once cached.
+Texture2D GetOrLoadImageTexture(int buffer_id, const ImageSession &sess) {
+    auto it = g_image_textures.find(buffer_id);
+    if (it != g_image_textures.end()) return it->second;
+    Image img{};
+    img.data = const_cast<unsigned char *>(sess.doc->Pixels());
+    img.width = sess.doc->Width();
+    img.height = sess.doc->Height();
+    img.mipmaps = 1;
+    img.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
+    Texture2D tex = LoadTextureFromImage(img);  // copies pixel data to the GPU; img.data stays ImageDoc's
+    g_image_textures[buffer_id] = tex;
+    return tex;
+}
+
+// Same idea as GetOrLoadImageTexture, but keyed per (buffer_id, page) --
+// PdfSession virtualizes its own CPU-side raster cache the same way (see
+// Editor::EnsurePdfPagesRastered) -- and re-uploaded whenever that page's
+// raster or the session's theme_colors flag has moved on (see the cache
+// entry struct's comment). When theme_colors is set, the raw RGBA raster
+// is recolored through ThemedPdfChannel into a scratch buffer before
+// upload; the raw raster itself is never mutated, so toggling back to
+// standard colors doesn't need a re-render, just a re-upload.
+Texture2D GetOrUpdatePdfPageTexture(int buffer_id, int page_index, const PdfSession::PageRaster &raster,
+                                     bool theme_colors) {
+    int theme_epoch = g_editor.ThemeEpoch();
+    auto key = std::make_pair(buffer_id, page_index);
+    auto it = g_pdf_page_textures.find(key);
+    if (it != g_pdf_page_textures.end() && it->second.generation == raster.generation &&
+        it->second.theme_colors == theme_colors && it->second.theme_epoch == theme_epoch) {
+        return it->second.tex;
+    }
+
+    const unsigned char *pixels = raster.rgba.data();
+    std::vector<unsigned char> themed;
+    if (theme_colors) {
+        Color fg = ResolveHlGroup("Normal");
+        Color bg = ResolveHlGroup("NormalBg");
+        themed.resize(raster.rgba.size());
+        size_t n = static_cast<size_t>(raster.w) * static_cast<size_t>(raster.h);
+        for (size_t i = 0; i < n; i++) {
+            const unsigned char *src = &raster.rgba[i * 4];
+            float luminance = (0.299f * src[0] + 0.587f * src[1] + 0.114f * src[2]) / 255.0f;
+            unsigned char *dst = &themed[i * 4];
+            dst[0] = ThemedPdfChannel(fg.r, bg.r, luminance);
+            dst[1] = ThemedPdfChannel(fg.g, bg.g, luminance);
+            dst[2] = ThemedPdfChannel(fg.b, bg.b, luminance);
+            dst[3] = 255;
+        }
+        pixels = themed.data();
+    }
+
+    Image img{};
+    img.data = const_cast<unsigned char *>(pixels);
+    img.width = raster.w;
+    img.height = raster.h;
+    img.mipmaps = 1;
+    img.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
+
+    if (it != g_pdf_page_textures.end() && it->second.w == raster.w && it->second.h == raster.h) {
+        UpdateTexture(it->second.tex, img.data);
+        it->second.generation = raster.generation;
+        it->second.theme_colors = theme_colors;
+        it->second.theme_epoch = theme_epoch;
+        return it->second.tex;
+    }
+    if (it != g_pdf_page_textures.end()) UnloadTexture(it->second.tex);
+    PdfTextureCacheEntry entry;
+    entry.tex = LoadTextureFromImage(img);
+    entry.generation = raster.generation;
+    entry.theme_colors = theme_colors;
+    entry.theme_epoch = theme_epoch;
+    entry.w = raster.w;
+    entry.h = raster.h;
+    g_pdf_page_textures[key] = entry;
+    return entry.tex;
+}
+
+// Evicts GPU textures for any page of `buffer_id` that Editor::
+// EnsurePdfPagesRastered no longer keeps a CPU-side raster for (i.e. it
+// scrolled out of the {page-1, page, page+1} window) -- keeps GPU memory
+// bounded the same way the CPU-side cache is bounded, regardless of how
+// many pages of a long document have been scrolled through.
+void PrunePdfPageTextures(int buffer_id, const PdfSession &sess) {
+    for (auto it = g_pdf_page_textures.begin(); it != g_pdf_page_textures.end();) {
+        if (it->first.first == buffer_id && sess.rasters.find(it->first.second) == sess.rasters.end()) {
+            UnloadTexture(it->second.tex);
+            it = g_pdf_page_textures.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
 void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_active) {
     int line_height = LineHeight();
     int header_h = PaneHeaderHeight();
     float font_size = MenuFontSize();
+    // Captured inside the is_active cursor block below, consumed after
+    // EndScissorMode() -- see the hover-tooltip comment down there.
+    float hover_cursor_x = 0, hover_cursor_y = 0;
+    bool hover_cursor_valid = false;
 
     const Buffer &buf = g_editor.GetBuffer(pane.buffer_id);
     Color header_bg = is_active ? ResolveHlGroup("TabActive") : ResolveHlGroup("MenuBar");
     DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), header_h, header_bg);
     const TerminalSession *term_sess = g_editor.GetTerminal(pane.buffer_id);
-    std::string label;
+    const ImageSession *img_sess = g_editor.GetImage(pane.buffer_id);
+    const PdfSession *pdf_sess = g_editor.GetPdf(pane.buffer_id);
+    const OfficeSession *office_sess = g_editor.GetOffice(pane.buffer_id);
+    const SheetSession *sheet_sess = g_editor.GetSheet(pane.buffer_id);
+    // Per-pane buffer tabs (Phase 14) suffix, and the [+] modified marker --
+    // appended as plain text after whatever's drawn below, breadcrumb or not.
+    std::string suffix = buf.modified ? " [+]" : "";
+    if (pane.buffer_tabs.size() > 1) {
+        suffix += "  [" + std::to_string(pane.buffer_tab_index + 1) + "/" + std::to_string(pane.buffer_tabs.size()) +
+                  "]";
+    }
+    float label_y = y + (header_h - font_size) / 2.0f;
     if (term_sess) {
         const std::string &live_title =
             (term_sess->vterm && !term_sess->vterm->Title().empty()) ? term_sess->vterm->Title() : term_sess->title;
-        label = "Terminal: " + live_title;
+        std::string label = "Terminal: " + live_title;
         if (term_sess->exited) label += " [exited: " + std::to_string(term_sess->exit_code) + "]";
+        DrawTextEx(g_font, label.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
+    } else if (img_sess) {
+        std::string label = "Image: " + buf.filename;
+        if (img_sess->doc) {
+            label += " (" + std::to_string(img_sess->doc->Width()) + "x" + std::to_string(img_sess->doc->Height()) +
+                      ") " + std::to_string(static_cast<int>(img_sess->zoom * 100.0f + 0.5f)) + "%";
+        }
+        DrawTextEx(g_font, label.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
+    } else if (pdf_sess && pdf_sess->search_active) {
+        // Takes over the header the same way Mode::Command's cmdline takes
+        // over the bottom bar -- a blinking-cursor '/' input line instead
+        // of the normal "PDF: file (page N/M) zoom%" label while typing.
+        std::string line = "/" + pdf_sess->search_input;
+        DrawTextEx(g_font, line.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
+        if (fmodf(static_cast<float>(GetTime()), 1.0f) < 0.6f) {
+            float cx = x + 6 + MeasureTextEx(g_font, line.c_str(), font_size, 0).x;
+            DrawRectangle(static_cast<int>(cx), static_cast<int>(label_y), 2, static_cast<int>(font_size),
+                          ResolveHlGroup("Normal"));
+        }
+    } else if (pdf_sess) {
+        std::string label = "PDF: " + buf.filename;
+        if (pdf_sess->doc) {
+            label += " (page " + std::to_string(pdf_sess->page + 1) + "/" +
+                     std::to_string(pdf_sess->doc->PageCount()) + ") " +
+                     std::to_string(static_cast<int>(pdf_sess->zoom * 100.0f + 0.5f)) + "%" +
+                     (pdf_sess->theme_colors ? "  [theme, Ctrl-R]" : "  [original, Ctrl-R]");
+            if (!pdf_sess->search_query.empty()) {
+                label += pdf_sess->search_matches.empty()
+                             ? "  /" + pdf_sess->search_query + " (no matches)"
+                             : "  /" + pdf_sess->search_query + " (" +
+                                   std::to_string(pdf_sess->search_current + 1) + "/" +
+                                   std::to_string(pdf_sess->search_matches.size()) + ", n/p)";
+            }
+        }
+        DrawTextEx(g_font, label.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
+    } else if (office_sess) {
+        std::string label = "Office: " + buf.filename;
+        if (!office_sess->doc.paragraphs.empty()) {
+            label += " (para " + std::to_string(office_sess->cursor_para + 1) + "/" +
+                     std::to_string(office_sess->doc.paragraphs.size()) + ") " +
+                     std::to_string(static_cast<int>(office_sess->zoom * 100.0f + 0.5f)) + "%";
+        }
+        if (buf.modified) label += " [+]";
+        DrawTextEx(g_font, label.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
+    } else if (sheet_sess) {
+        std::string label = "Sheet: " + buf.filename;
+        if (!sheet_sess->wb.sheets.empty()) {
+            const Sheet &sh = sheet_sess->wb.sheets[sheet_sess->active_sheet];
+            label += " (" + sh.name + ") " + CellAddressToString(sheet_sess->cursor_row, sheet_sess->cursor_col);
+        }
+        if (buf.modified) label += " [+]";
+        DrawTextEx(g_font, label.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
+    } else if (buf.scratch || buf.filename.empty()) {
+        std::string label = (buf.scratch ? "[Scratch]" : "[No Name]") + suffix;
+        DrawTextEx(g_font, label.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
     } else {
-        label = (buf.scratch ? "[Scratch]" : (buf.filename.empty() ? "[No Name]" : buf.filename)) +
-                (buf.modified ? " [+]" : "");
+        // Winbar-equivalent breadcrumb (Phase 11 click-dispatch gap): each
+        // path component before the filename is its own clickable segment
+        // -- mep has no separate winbar chrome row, so this per-pane header
+        // (already showing the path) is where a breadcrumb naturally lives.
+        // Clicking a directory segment calls the registered winbar-click
+        // Lua ref (mep.winbar_navigate by default, kBuiltinPickerSources)
+        // with the path up to and including that segment; the final
+        // (filename) segment isn't clickable -- it's already the open file.
+        std::vector<std::string> parts;
+        {
+            size_t start = 0;
+            while (start <= buf.filename.size()) {
+                size_t slash = buf.filename.find('/', start);
+                if (slash == std::string::npos) {
+                    parts.push_back(buf.filename.substr(start));
+                    break;
+                }
+                if (slash > start) parts.push_back(buf.filename.substr(start, slash - start));
+                start = slash + 1;
+            }
+        }
+        float seg_x = x + 6;
+        std::string accum;
+        for (size_t pi = 0; pi < parts.size(); pi++) {
+            bool is_last = (pi + 1 == parts.size());
+            std::string seg_text = parts[pi] + (is_last ? "" : "/");
+            float seg_w = MeasureTextEx(g_font, seg_text.c_str(), font_size, 0).x;
+            Color seg_color = is_last ? ResolveHlGroup("Normal") : ResolveHlGroup("Comment");
+            DrawTextEx(g_font, seg_text.c_str(), Vector2{seg_x, label_y}, font_size, 0, seg_color);
+            if (!is_last) {
+                accum = accum.empty() ? parts[pi] : accum + "/" + parts[pi];
+                std::string dir_path = accum;
+                RegisterClickRegion(Rectangle{seg_x, y, seg_w, static_cast<float>(header_h)}, [dir_path] {
+                    if (g_editor.Lua() && g_editor.WinbarClickRef() != 0) {
+                        g_editor.Lua()->CallRefWithString(g_editor.WinbarClickRef(), dir_path);
+                    }
+                });
+            }
+            seg_x += seg_w;
+        }
+        DrawTextEx(g_font, suffix.c_str(), Vector2{seg_x, label_y}, font_size, 0, ResolveHlGroup("Normal"));
     }
-    // Per-pane buffer tabs (Phase 14): shown only once a pane holds more
-    // than one, so a plain single-buffer pane's header looks unchanged.
-    if (pane.buffer_tabs.size() > 1) {
-        label += "  [" + std::to_string(pane.buffer_tab_index + 1) + "/" + std::to_string(pane.buffer_tabs.size()) +
-                 "]";
-    }
-    DrawTextEx(g_font, label.c_str(), Vector2{x + 6, y + (header_h - font_size) / 2.0f}, font_size, 0, ResolveHlGroup("Normal"));
 
     float content_y = y + header_h;
     float content_h = h - header_h;
@@ -4713,6 +8149,418 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // as any other buffer.
     }
 
+    if (img_sess && img_sess->doc) {
+        g_editor.ResizeImageViewport(pane.buffer_id, static_cast<int>(w), static_cast<int>(content_h));
+        Texture2D tex = GetOrLoadImageTexture(pane.buffer_id, *img_sess);
+        BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
+                          static_cast<int>(content_h));
+        DrawTextureEx(tex, Vector2{x - img_sess->pan_x, content_y - img_sess->pan_y}, 0.0f, img_sess->zoom, WHITE);
+        EndScissorMode();
+        Color img_border = is_active ? ResolveHlGroup("BorderActive") : ResolveHlGroup("BorderInactive");
+        DrawRectangleLines(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h),
+                            img_border);
+        return;
+    }
+
+    if (pdf_sess && pdf_sess->doc && pdf_sess->doc->PageCount() > 0) {
+        g_editor.ResizePdfViewport(pane.buffer_id, static_cast<int>(w), static_cast<int>(content_h));
+        g_editor.EnsurePdfPagesRastered(pane.buffer_id);
+        PrunePdfPageTextures(pane.buffer_id, *pdf_sess);
+
+        BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
+                          static_cast<int>(content_h));
+        // Draws up to 3 stacked pages -- the anchor page (pdf_sess->page,
+        // positioned so scroll_y device-pixels have already scrolled past
+        // its top edge) plus whichever of its immediate neighbors
+        // EnsurePdfPagesRastered has cached -- continuously, so scrolling
+        // crosses page boundaries smoothly instead of jumping between
+        // single-page views. Mirrors kPdfPageGapPx from Editor::
+        // HandlePdfInput's scroll-rebase math exactly (see its comment).
+        float anchor_y = content_y - pdf_sess->scroll_y;
+        // Search-match highlights piggyback IncSearch's theme color (the
+        // text buffer's own live-search-preview highlight -- see its
+        // comment in BuildHighlightGroups) rather than a fixed yellow, so
+        // this stays theme-consistent the same way the page recoloring
+        // does: dim alpha for "just another match," brighter for
+        // search_current specifically.
+        Color match_c = ResolveHlGroup("IncSearch");
+        Color match_other = Color{match_c.r, match_c.g, match_c.b, 90};
+        Color match_cur = Color{match_c.r, match_c.g, match_c.b, 190};
+        auto draw_page = [&](int idx, float top_y) -> float {
+            auto rit = pdf_sess->rasters.find(idx);
+            if (rit == pdf_sess->rasters.end()) return 0.0f;
+            const PdfSession::PageRaster &pr = rit->second;
+            Texture2D tex = GetOrUpdatePdfPageTexture(pane.buffer_id, idx, pr, pdf_sess->theme_colors);
+            Vector2 pos{x - pdf_sess->pan_x, top_y};
+            DrawTextureEx(tex, pos, 0.0f, pdf_sess->zoom, WHITE);
+            for (const PdfHighlightRect &hr : pr.highlights) {
+                bool current = hr.match_index == pdf_sess->search_current;
+                DrawRectangle(static_cast<int>(pos.x + hr.x0 * pdf_sess->zoom),
+                              static_cast<int>(pos.y + hr.y0 * pdf_sess->zoom),
+                              static_cast<int>((hr.x1 - hr.x0) * pdf_sess->zoom),
+                              static_cast<int>((hr.y1 - hr.y0) * pdf_sess->zoom), current ? match_cur : match_other);
+            }
+            return static_cast<float>(pr.h) * pdf_sess->zoom;
+        };
+        float anchor_h = draw_page(pdf_sess->page, anchor_y);
+        if (pdf_sess->page > 0) {
+            auto rit = pdf_sess->rasters.find(pdf_sess->page - 1);
+            if (rit != pdf_sess->rasters.end()) {
+                float prev_h = static_cast<float>(rit->second.h) * pdf_sess->zoom;
+                draw_page(pdf_sess->page - 1, anchor_y - kPdfPageGapPx - prev_h);
+            }
+        }
+        draw_page(pdf_sess->page + 1, anchor_y + anchor_h + kPdfPageGapPx);
+        EndScissorMode();
+
+        Color pdf_border = is_active ? ResolveHlGroup("BorderActive") : ResolveHlGroup("BorderInactive");
+        DrawRectangleLines(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h),
+                            pdf_border);
+        return;
+    }
+
+    if (office_sess && !office_sess->doc.paragraphs.empty()) {
+        // Toolbar row (Phase 5): Bold/Italic/Underline buttons reflecting
+        // the format at the cursor (OfficeNormal) or uniformly across the
+        // selection (OfficeVisual) -- the mouse-click equivalent of the
+        // b/i/u keybindings (Editor::ToggleOfficeFormat), satisfying the
+        // "richer top bar" the office pane was asked for up front. Shrinks
+        // content_y/content_h in place (safe: every path through this
+        // office branch ends in `return`, so nothing after it in DrawPane
+        // reads the pre-toolbar values for this call).
+        float toolbar_h = static_cast<float>(header_h);
+        DrawRectangle(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
+                      static_cast<int>(toolbar_h), ResolveHlGroup("MenuBar"));
+        struct ToolbarBtn { char which; const char *label; };
+        static const ToolbarBtn kBtns[] = {{'b', "B"}, {'i', "I"}, {'u', "U"}};
+        float btn_x = x + 6;
+        float btn_w = 28.0f, btn_h = toolbar_h - 6.0f;
+        float btn_y = content_y + 3.0f;
+        for (const ToolbarBtn &btn : kBtns) {
+            bool active = g_editor.OfficeFormatActive(btn.which);
+            Color bg = active ? ResolveHlGroup("Visual") : ResolveHlGroup("TabActive");
+            DrawRectangle(static_cast<int>(btn_x), static_cast<int>(btn_y), static_cast<int>(btn_w),
+                          static_cast<int>(btn_h), bg);
+            Vector2 label_size = MeasureTextEx(g_font, btn.label, font_size, 0);
+            DrawTextEx(g_font, btn.label,
+                      Vector2{btn_x + (btn_w - label_size.x) / 2.0f, btn_y + (btn_h - font_size) / 2.0f}, font_size, 0,
+                      ResolveHlGroup("Normal"));
+            char which = btn.which;
+            RegisterClickRegion(Rectangle{btn_x, btn_y, btn_w, btn_h}, [which] { g_editor.ToggleOfficeFormat(which); });
+            btn_x += btn_w + 6.0f;
+        }
+        content_y += toolbar_h;
+        content_h -= toolbar_h;
+
+        g_editor.ResizeOfficeViewport(pane.buffer_id, static_cast<int>(w), static_cast<int>(content_h));
+        const OfficeDoc &doc = office_sess->doc;
+        int para_count = static_cast<int>(doc.paragraphs.size());
+        float pad = 10.0f;
+        float max_width = std::max(50.0f, w - 2.0f * pad);
+        float body_size = office_sess->base_font_pt * office_sess->zoom;
+
+        auto line_height_for = [&](int heading_level) { return body_size * OfficeHeadingMultiplier(heading_level) * 1.35f; };
+
+        // Wraps the cursor's own paragraph once up front (reused by both
+        // the scroll-follow scan below and the draw loop) to find which of
+        // ITS visual lines holds cursor_col.
+        int cp = std::clamp(office_sess->cursor_para, 0, para_count - 1);
+        float cursor_para_size = body_size * OfficeHeadingMultiplier(doc.paragraphs[cp].heading_level);
+        std::vector<OfficeWrapLine> cursor_wrap = WordWrapOfficeParagraph(doc.paragraphs[cp], max_width, cursor_para_size);
+        int cursor_line_in_para = 0;
+        for (int li = 0; li < static_cast<int>(cursor_wrap.size()); li++) {
+            cursor_line_in_para = li;
+            if (office_sess->cursor_col <= cursor_wrap[li].end) break;
+        }
+
+        // Scroll-follow: word-wrap-aware equivalent of Editor::
+        // UpdateScrollForPane's own "snap up if the cursor is above the
+        // current scroll position, else advance a row at a time until it's
+        // back in view" shape -- can't live in editor.cpp (raylib-free, no
+        // MeasureTextEx), see ResizeOfficeViewport's own comment for why.
+        int scroll_para = office_sess->scroll_para;
+        int scroll_line = office_sess->scroll_line_in_para;
+        bool cursor_before_scroll = (cp < scroll_para) || (cp == scroll_para && cursor_line_in_para < scroll_line);
+        if (cursor_before_scroll) {
+            scroll_para = cp;
+            scroll_line = cursor_line_in_para;
+        } else {
+            for (;;) {
+                float used = 0.0f;
+                bool found = false;
+                for (int pi = scroll_para; pi < para_count; pi++) {
+                    const DocParagraph &para = doc.paragraphs[pi];
+                    float lh = line_height_for(para.heading_level);
+                    std::vector<OfficeWrapLine> wl_scan;
+                    const std::vector<OfficeWrapLine> *wlp;
+                    if (pi == cp) {
+                        wlp = &cursor_wrap;
+                    } else {
+                        wl_scan = WordWrapOfficeParagraph(para, max_width, body_size * OfficeHeadingMultiplier(para.heading_level));
+                        wlp = &wl_scan;
+                    }
+                    const std::vector<OfficeWrapLine> &wl = *wlp;
+                    int start_li = (pi == scroll_para) ? scroll_line : 0;
+                    bool overflowed = false;
+                    for (int li = start_li; li < static_cast<int>(wl.size()); li++) {
+                        if (pi == cp && li == cursor_line_in_para) found = true;
+                        used += lh;
+                        if (used > content_h) {
+                            overflowed = true;
+                            break;
+                        }
+                    }
+                    if (overflowed || found) break;
+                }
+                if (found || scroll_para >= cp) break;
+                const DocParagraph &spara = doc.paragraphs[scroll_para];
+                std::vector<OfficeWrapLine> swl =
+                    WordWrapOfficeParagraph(spara, max_width, body_size * OfficeHeadingMultiplier(spara.heading_level));
+                if (scroll_line + 1 < static_cast<int>(swl.size())) {
+                    scroll_line++;
+                } else if (scroll_para + 1 < para_count) {
+                    scroll_para++;
+                    scroll_line = 0;
+                } else {
+                    break;
+                }
+            }
+        }
+        if (scroll_para != office_sess->scroll_para || scroll_line != office_sess->scroll_line_in_para) {
+            g_editor.SetOfficeScroll(pane.buffer_id, scroll_para, scroll_line);
+        }
+
+        BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
+                          static_cast<int>(content_h));
+        Color text_color = ResolveHlGroup("Normal");
+        Color sel_color = ResolveHlGroup("Visual");
+        bool office_visual = is_active && g_editor.CurrentMode() == Mode::OfficeVisual && office_sess->has_selection;
+        int sel_pa = 0, sel_ca = 0, sel_pb = 0, sel_cb = 0;
+        if (office_visual) {
+            int ap = office_sess->sel_anchor_para, ac = office_sess->sel_anchor_col;
+            int ccp = office_sess->cursor_para, ccc = office_sess->cursor_col;
+            if (ap < ccp || (ap == ccp && ac <= ccc)) {
+                sel_pa = ap; sel_ca = ac; sel_pb = ccp; sel_cb = ccc;
+            } else {
+                sel_pa = ccp; sel_ca = ccc; sel_pb = ap; sel_cb = ac;
+            }
+        }
+        float draw_y = content_y;
+        for (int pi = scroll_para; pi < para_count && draw_y < content_y + content_h; pi++) {
+            const DocParagraph &para = doc.paragraphs[pi];
+            float size = body_size * OfficeHeadingMultiplier(para.heading_level);
+            float lh = size * 1.35f;
+            std::vector<OfficeWrapLine> wl_local = (pi == cp) ? cursor_wrap : WordWrapOfficeParagraph(para, max_width, size);
+            int start_li = (pi == scroll_para) ? scroll_line : 0;
+            for (int li = start_li; li < static_cast<int>(wl_local.size()); li++) {
+                if (draw_y > content_y + content_h) break;
+                const OfficeWrapLine &line = wl_local[li];
+                std::vector<OfficeFormatRun> runs = BuildOfficeFormatRuns(para, line.start, line.end);
+                float line_x = x + pad;
+                if (para.align == DocParagraph::Align::Center || para.align == DocParagraph::Align::Right) {
+                    float total_w = 0.0f;
+                    for (const auto &r : runs) {
+                        std::string t = para.text.substr(r.start, r.end - r.start);
+                        for (auto &ch : t) {
+                            if (ch == '\t') ch = ' ';
+                        }
+                        total_w += MeasureTextEx(OfficeFontFor(r.fmt), t.c_str(), size, 0).x;
+                    }
+                    line_x = para.align == DocParagraph::Align::Center ? x + (w - total_w) / 2.0f : x + w - pad - total_w;
+                }
+                if (para.bullet && li == 0) {
+                    DrawTextEx(OfficeFontFor(DocFormat{}), "\xE2\x80\xA2 ", Vector2{line_x, draw_y}, size, 0, text_color);
+                    line_x += MeasureTextEx(OfficeFontFor(DocFormat{}), "\xE2\x80\xA2 ", size, 0).x;
+                }
+                if (office_visual && pi >= sel_pa && pi <= sel_pb) {
+                    int hl_start = (pi == sel_pa) ? sel_ca : 0;
+                    int hl_end = (pi == sel_pb) ? sel_cb : static_cast<int>(para.text.size());
+                    hl_start = std::max(hl_start, line.start);
+                    hl_end = std::min(hl_end, line.end);
+                    if (hl_end > hl_start) {
+                        std::vector<OfficeFormatRun> pre_runs = BuildOfficeFormatRuns(para, line.start, hl_start);
+                        float hl_x0 = line_x;
+                        for (const auto &r : pre_runs) {
+                            std::string t = para.text.substr(r.start, r.end - r.start);
+                            for (auto &ch : t) {
+                                if (ch == '\t') ch = ' ';
+                            }
+                            hl_x0 += MeasureTextEx(OfficeFontFor(r.fmt), t.c_str(), size, 0).x;
+                        }
+                        std::vector<OfficeFormatRun> hl_runs = BuildOfficeFormatRuns(para, hl_start, hl_end);
+                        float hl_w = 0.0f;
+                        for (const auto &r : hl_runs) {
+                            std::string t = para.text.substr(r.start, r.end - r.start);
+                            for (auto &ch : t) {
+                                if (ch == '\t') ch = ' ';
+                            }
+                            hl_w += MeasureTextEx(OfficeFontFor(r.fmt), t.c_str(), size, 0).x;
+                        }
+                        DrawRectangle(static_cast<int>(hl_x0), static_cast<int>(draw_y), static_cast<int>(hl_w),
+                                      static_cast<int>(size), sel_color);
+                    }
+                }
+                float run_x = line_x;
+                for (const auto &r : runs) {
+                    std::string t = para.text.substr(r.start, r.end - r.start);
+                    for (auto &ch : t) {
+                        if (ch == '\t') ch = ' ';
+                    }
+                    Font &f = OfficeFontFor(r.fmt);
+                    DrawTextEx(f, t.c_str(), Vector2{run_x, draw_y}, size, 0, text_color);
+                    float rw = MeasureTextEx(f, t.c_str(), size, 0).x;
+                    if (r.fmt.underline || r.fmt.strike) {
+                        float uy = draw_y + (r.fmt.strike ? size * 0.5f : size * 0.95f);
+                        DrawLineEx(Vector2{run_x, uy}, Vector2{run_x + rw, uy}, 1.0f, text_color);
+                    }
+                    run_x += rw;
+                }
+                if (is_active && pi == cp && li == cursor_line_in_para) {
+                    std::vector<OfficeFormatRun> pre = BuildOfficeFormatRuns(para, line.start, office_sess->cursor_col);
+                    float cursor_x = line_x;
+                    for (const auto &r : pre) {
+                        std::string t = para.text.substr(r.start, r.end - r.start);
+                        for (auto &ch : t) {
+                            if (ch == '\t') ch = ' ';
+                        }
+                        cursor_x += MeasureTextEx(OfficeFontFor(r.fmt), t.c_str(), size, 0).x;
+                    }
+                    DrawRectangle(static_cast<int>(cursor_x), static_cast<int>(draw_y), 2, static_cast<int>(size),
+                                  text_color);
+                }
+                draw_y += lh;
+            }
+        }
+        EndScissorMode();
+        Color office_border = is_active ? ResolveHlGroup("BorderActive") : ResolveHlGroup("BorderInactive");
+        DrawRectangleLines(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h),
+                            office_border);
+        return;
+    }
+
+    if (sheet_sess && !sheet_sess->wb.sheets.empty()) {
+        g_editor.ResizeSheetViewport(pane.buffer_id, static_cast<int>(w), static_cast<int>(content_h));
+        const Sheet &sh = sheet_sess->wb.sheets[sheet_sess->active_sheet];
+
+        // Formula bar: shows the active cell's raw text (or the live
+        // edit buffer while SheetInsert is active) -- doubles as both a
+        // real-spreadsheet-familiar "what's actually in this cell"
+        // readout and the Insert-mode live-typing display.
+        float bar_h = static_cast<float>(header_h);
+        DrawRectangle(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w), static_cast<int>(bar_h),
+                      ResolveHlGroup("MenuBar"));
+        std::string bar_text;
+        if (sheet_sess->editing) {
+            bar_text = sheet_sess->edit_buffer;
+        } else {
+            const Cell *cur = sh.FindCell(sheet_sess->cursor_row, sheet_sess->cursor_col);
+            bar_text = cur ? cur->raw : "";
+        }
+        DrawTextEx(g_font, bar_text.c_str(), Vector2{x + 6, content_y + (bar_h - font_size) / 2.0f}, font_size, 0,
+                   ResolveHlGroup("Normal"));
+        if (is_active && sheet_sess->editing && fmodf(static_cast<float>(GetTime()), 1.0f) < 0.6f) {
+            std::string pre = bar_text.substr(0, std::min<size_t>(sheet_sess->edit_cursor, bar_text.size()));
+            float cx = x + 6 + MeasureTextEx(g_font, pre.c_str(), font_size, 0).x;
+            DrawRectangle(static_cast<int>(cx), static_cast<int>(content_y + (bar_h - font_size) / 2.0f), 2,
+                          static_cast<int>(font_size), ResolveHlGroup("Normal"));
+        }
+
+        float grid_y = content_y + bar_h;
+        float grid_h = content_h - bar_h;
+        BeginScissorMode(static_cast<int>(x), static_cast<int>(grid_y), static_cast<int>(w), static_cast<int>(grid_h));
+
+        Color header_row_bg = ResolveHlGroup("MenuBar");
+        Color text_color = ResolveHlGroup("Normal");
+        Color cursor_bg = ResolveHlGroup("Visual");
+        Color sel_bg = Color{cursor_bg.r, cursor_bg.g, cursor_bg.b, 90};
+
+        float col_header_h = static_cast<float>(kSheetRowHeight);
+        float row_header_w = static_cast<float>(kSheetRowHeaderW);
+        float col_w = static_cast<float>(kSheetColWidth);
+        float row_h = static_cast<float>(kSheetRowHeight);
+
+        int visible_rows = std::max(1, static_cast<int>((grid_h - col_header_h) / row_h));
+        int visible_cols = std::max(1, static_cast<int>((w - row_header_w) / col_w));
+
+        DrawRectangle(static_cast<int>(x), static_cast<int>(grid_y), static_cast<int>(w), static_cast<int>(col_header_h),
+                      header_row_bg);
+        for (int vc = 0; vc <= visible_cols; vc++) {
+            int col = sheet_sess->scroll_col + vc;
+            float cx = x + row_header_w + vc * col_w;
+            if (cx > x + w) break;
+            std::string letters = ColumnIndexToLetters(col);
+            Vector2 sz = MeasureTextEx(g_font, letters.c_str(), font_size, 0);
+            DrawTextEx(g_font, letters.c_str(),
+                       Vector2{cx + (col_w - sz.x) / 2.0f, grid_y + (col_header_h - font_size) / 2.0f}, font_size, 0,
+                       text_color);
+        }
+
+        float body_y = grid_y + col_header_h;
+        float body_h = grid_h - col_header_h;
+        DrawRectangle(static_cast<int>(x), static_cast<int>(body_y), static_cast<int>(row_header_w),
+                      static_cast<int>(body_h), header_row_bg);
+
+        bool sheet_visual = is_active && g_editor.CurrentMode() == Mode::SheetVisual && sheet_sess->has_selection;
+        int sel_r0 = 0, sel_r1 = -1, sel_c0 = 0, sel_c1 = -1;
+        if (sheet_visual) {
+            sel_r0 = std::min(sheet_sess->sel_anchor_row, sheet_sess->cursor_row);
+            sel_r1 = std::max(sheet_sess->sel_anchor_row, sheet_sess->cursor_row);
+            sel_c0 = std::min(sheet_sess->sel_anchor_col, sheet_sess->cursor_col);
+            sel_c1 = std::max(sheet_sess->sel_anchor_col, sheet_sess->cursor_col);
+        }
+
+        for (int vr = 0; vr <= visible_rows; vr++) {
+            int row = sheet_sess->scroll_row + vr;
+            float ry = body_y + vr * row_h;
+            if (ry > grid_y + grid_h) break;
+            std::string rownum = std::to_string(row + 1);
+            Vector2 sz = MeasureTextEx(g_font, rownum.c_str(), font_size, 0);
+            DrawTextEx(g_font, rownum.c_str(), Vector2{x + row_header_w - sz.x - 6, ry + (row_h - font_size) / 2.0f},
+                       font_size, 0, text_color);
+
+            for (int vc = 0; vc <= visible_cols; vc++) {
+                int col = sheet_sess->scroll_col + vc;
+                float cx = x + row_header_w + vc * col_w;
+                if (cx > x + w) break;
+
+                bool is_cursor = is_active && row == sheet_sess->cursor_row && col == sheet_sess->cursor_col;
+                bool in_sel = sheet_visual && row >= sel_r0 && row <= sel_r1 && col >= sel_c0 && col <= sel_c1;
+                if (is_cursor) {
+                    DrawRectangle(static_cast<int>(cx), static_cast<int>(ry), static_cast<int>(col_w),
+                                  static_cast<int>(row_h), cursor_bg);
+                } else if (in_sel) {
+                    DrawRectangle(static_cast<int>(cx), static_cast<int>(ry), static_cast<int>(col_w),
+                                  static_cast<int>(row_h), sel_bg);
+                }
+
+                if (sh.FindCell(row, col)) {
+                    CellValue v = g_editor.EvaluateSheetCell(pane.buffer_id, row, col);
+                    std::string text = FormatCellValue(v);
+                    // Truncated to the column width, not wrapped/ellipsized
+                    // -- a v1 simplification (no per-column width overrides
+                    // to expand into, unlike a real spreadsheet's
+                    // overflow-into-the-next-empty-cell behavior).
+                    while (!text.empty() && MeasureTextEx(g_font, text.c_str(), font_size, 0).x > col_w - 6) {
+                        text.pop_back();
+                    }
+                    Color cell_color = v.kind == CellKind::Error ? ResolveHlGroup("ErrorText") : text_color;
+                    float text_x = (v.kind == CellKind::Number)
+                                        ? cx + col_w - 6 - MeasureTextEx(g_font, text.c_str(), font_size, 0).x
+                                        : cx + 4;
+                    DrawTextEx(g_font, text.c_str(), Vector2{text_x, ry + (row_h - font_size) / 2.0f}, font_size, 0,
+                               cell_color);
+                }
+                DrawRectangleLines(static_cast<int>(cx), static_cast<int>(ry), static_cast<int>(col_w),
+                                   static_cast<int>(row_h), Color{text_color.r, text_color.g, text_color.b, 40});
+            }
+        }
+        EndScissorMode();
+        Color sheet_border = is_active ? ResolveHlGroup("BorderActive") : ResolveHlGroup("BorderInactive");
+        DrawRectangleLines(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h),
+                            sheet_border);
+        return;
+    }
+
     int visible_lines = std::max(1, static_cast<int>(content_h / line_height));
     g_editor.UpdateScrollForPane(pane.id, visible_lines);
 
@@ -4743,6 +8591,48 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     }
     float text_x = x + kMarginX + gutter_w;
 
+    // buf.decorations is keyed by namespace, not by row -- scanning every
+    // decoration in every namespace for every visible row (as this used
+    // to, inline in the row loop below) is O(total_decorations ×
+    // visible_rows), and syntax highlighting alone adds one decoration
+    // per Treesitter capture for the *whole file*, not just what's on
+    // screen. A file with a few thousand lines can put this well into
+    // the hundreds of thousands of iterations *per frame* -- costly
+    // enough on its own to blow the frame budget, and on the wasm/webview
+    // build (software-rendered WebGL, see flake.nix's own
+    // LIBGL_ALWAYS_SOFTWARE comment) slow frames compound into exactly
+    // the "held key keeps moving after release" symptom: raylib's
+    // key-repeat queue is small (16 slots) and gets fully drained every
+    // poll, so it can't itself hold a backlog -- but a run of slow frames
+    // means several polls' worth of real autorepeat events pile up in
+    // the OS/X11/GLFW layer before mep gets back around to draining any
+    // of them, and each catch-up poll is itself another slow frame. Built
+    // once per pane per frame (O(total_decorations)) instead of inline
+    // per row turns the row loop's own decoration cost into O(rows +
+    // decorations actually on visible rows) -- for everything else in
+    // this function, "visible" already means "cheap"; decorations were
+    // the one exception.
+    std::unordered_map<int, std::vector<const Decoration *>> decos_by_row;
+    for (const auto &ns_decos : buf.decorations) {
+        for (const Decoration &d : ns_decos.second) decos_by_row[d.row].push_back(&d);
+    }
+    // Decorations from different namespaces land in the same per-row
+    // vector above in whatever order buf.decorations (keyed by namespace
+    // id, an unordered_map) happens to iterate in -- not a guarantee
+    // callers can rely on. A stable sort by priority (default 0) means a
+    // namespace that actually needs to draw on top of another one (e.g.
+    // markdown concealment's virt_overlay needing to paint over a
+    // Treesitter-highlighted span underneath it) can do so deterministic-
+    // ally just by setting a higher priority, while everything that
+    // doesn't care about priority (the overwhelming majority of existing
+    // decorations, all defaulting to 0) keeps its original per-namespace
+    // insertion order relative to same-priority decorations.
+    for (auto &row_entry : decos_by_row) {
+        std::stable_sort(row_entry.second.begin(), row_entry.second.end(),
+                          [](const Decoration *a, const Decoration *b) { return a->priority < b->priority; });
+    }
+    static const std::vector<const Decoration *> kNoDecos;
+
     int last_line = std::min(pane.scroll_row + visible_lines, buf.LineCount());
     int visual_slot = 0;  // a closed fold collapses N buffer rows into 1 of these
     for (int row = pane.scroll_row; row < last_line; row++) {
@@ -4761,12 +8651,59 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 }
             }
         }
+
+        // :set cursorline (Phase 11 option) -- a full-width tint drawn
+        // beneath everything else on this visual row, so fold-summary
+        // text, the selection rectangles, and the line-number gutter all
+        // still draw on top of it unchanged. A closed fold's own hidden
+        // rows never reach this loop as their own `row` value (the jump
+        // below skips straight past them), so the cursor being anywhere
+        // inside a closed fold is checked against the fold's [start, end]
+        // range here rather than a plain `pane.cursor.row == row`.
+        if (is_active && g_editor.ShowCursorLine() && !IsCommandLineMode(g_editor.CurrentMode()) &&
+            (pane.cursor.row == row ||
+             (fold_here && pane.cursor.row >= fold_here->start_row && pane.cursor.row <= fold_here->end_row))) {
+            DrawRectangle(static_cast<int>(x), static_cast<int>(ly), static_cast<int>(w), line_height,
+                          ResolveHlGroup("CursorLine"));
+        }
+
         if (fold_here) {
             int hidden = fold_here->end_row - fold_here->start_row;
             std::string summary = "+-- " + std::to_string(hidden + 1) + " lines: " + buf.lines[row] + " ---";
             DrawTextEx(g_font, summary.c_str(), Vector2{text_x, ly}, g_font_size, 0, ResolveHlGroup("SidebarTitle"));
+            // Fold marker click-to-toggle (Phase 11 click-dispatch gap):
+            // mep has no separate statuscolumn widget row, so the fold
+            // marker lives in the number gutter's existing reserved
+            // trailing-space column (only when :set number has reserved
+            // one). Only wired for the active pane -- ToggleFoldAtRow
+            // operates on Buf(), the currently active buffer, so a click on
+            // a background split's gutter would silently toggle the wrong
+            // buffer's fold otherwise.
+            if (gutter_w > 0.0f && is_active) {
+                DrawTextEx(g_font, "+", Vector2{text_x - g_char_width, ly}, g_font_size, 0, ResolveHlGroup("LineNr"));
+                int marker_row = row;
+                RegisterClickRegion(
+                    Rectangle{text_x - g_char_width, ly, g_char_width, static_cast<float>(line_height)},
+                    [marker_row] { g_editor.ToggleFoldAtRow(marker_row); });
+            }
             row = fold_here->end_row;
             continue;
+        }
+        // Open (unclosed) fold starting here: no summary line to replace
+        // the row's own text with, but still worth a gutter marker so
+        // there's something to click to close it (matches vim's
+        // foldcolumn '-' convention for an open fold's start row).
+        if (gutter_w > 0.0f && is_active) {
+            for (const Fold &f : buf.folds) {
+                if (!f.closed && f.start_row == row) {
+                    DrawTextEx(g_font, "-", Vector2{text_x - g_char_width, ly}, g_font_size, 0, ResolveHlGroup("LineNr"));
+                    int marker_row = row;
+                    RegisterClickRegion(
+                        Rectangle{text_x - g_char_width, ly, g_char_width, static_cast<float>(line_height)},
+                        [marker_row] { g_editor.ToggleFoldAtRow(marker_row); });
+                    break;
+                }
+            }
         }
 
         if (block_selection && row >= block_top && row <= block_bottom) {
@@ -4803,54 +8740,81 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         char sign = 0;
         std::string sign_hl;
         int sign_priority = -1;
-        for (const auto &ns_decos : buf.decorations) {
-            for (const Decoration &d : ns_decos.second) {
-                if (d.row != row) continue;
-                if (d.whole_line && !d.hl_group.empty()) {
-                    Color c = ResolveHlGroup(d.hl_group);
-                    DrawRectangle(static_cast<int>(x), static_cast<int>(ly), static_cast<int>(w), line_height,
-                                  Color{c.r, c.g, c.b, 40});
-                }
-                if (d.sign != 0 && d.priority > sign_priority) {
-                    sign = d.sign;
-                    sign_hl = d.sign_hl;
-                    sign_priority = d.priority;
-                }
+        auto row_decos_it = decos_by_row.find(row);
+        const std::vector<const Decoration *> &row_decos =
+            (row_decos_it != decos_by_row.end()) ? row_decos_it->second : kNoDecos;
+        for (const Decoration *dp : row_decos) {
+            const Decoration &d = *dp;
+            if (d.whole_line && !d.hl_group.empty()) {
+                Color c = ResolveHlGroup(d.hl_group);
+                DrawRectangle(static_cast<int>(x), static_cast<int>(ly), static_cast<int>(w), line_height,
+                              Color{c.r, c.g, c.b, 40});
+            }
+            if (d.sign != 0 && d.priority > sign_priority) {
+                sign = d.sign;
+                sign_hl = d.sign_hl;
+                sign_priority = d.priority;
             }
         }
         DrawLineFast(buf.lines[row], text_x, ly, g_font_size, ResolveHlGroup("Normal"));
-        for (const auto &ns_decos : buf.decorations) {
-            for (const Decoration &d : ns_decos.second) {
-                if (d.row != row) continue;
-                if (!d.whole_line && !d.hl_group.empty() && d.col_end > d.col_start) {
-                    const std::string &line = buf.lines[row];
-                    int a = std::min(static_cast<int>(line.size()), d.col_start);
-                    int b = std::min(static_cast<int>(line.size()), d.col_end);
-                    if (b > a) {
-                        std::string span = line.substr(a, b - a);
-                        DrawTextEx(g_font, span.c_str(), Vector2{text_x + a * g_char_width, ly}, g_font_size, 0,
-                                   ResolveHlGroup(d.hl_group));
-                    }
+        for (const Decoration *dp : row_decos) {
+            const Decoration &d = *dp;
+            if (!d.whole_line && !d.underline && !d.hl_group.empty() && d.col_end > d.col_start) {
+                const std::string &line = buf.lines[row];
+                int a = std::min(static_cast<int>(line.size()), d.col_start);
+                int b = std::min(static_cast<int>(line.size()), d.col_end);
+                if (b > a) {
+                    std::string span = line.substr(a, b - a);
+                    DrawTextEx(g_font, span.c_str(), Vector2{text_x + a * g_char_width, ly}, g_font_size, 0,
+                               ResolveHlGroup(d.hl_group));
                 }
-                if (!d.virt_text.empty()) {
-                    float vx = text_x + d.col_start * g_char_width;
-                    if (d.virt_overlay) {
-                        DrawRectangle(static_cast<int>(vx), static_cast<int>(ly),
-                                      static_cast<int>(MeasureTextEx(g_font, d.virt_text.c_str(), g_font_size, 0).x),
-                                      line_height, ResolveHlGroup("NormalBg"));
-                    }
-                    DrawTextEx(g_font, d.virt_text.c_str(), Vector2{vx, ly}, g_font_size, 0,
-                               ResolveHlGroup(d.virt_text_hl));
+            }
+            // Per-span underline (Phase 21 gap): a 1px DrawRectangle at
+            // the text baseline, mirroring how VTermCell::underline is
+            // rendered elsewhere (see the `cell->underline` block in
+            // DrawTerminalGrid) -- same visual, but keyed off a column
+            // range instead of a terminal cell.
+            if (!d.whole_line && d.underline && d.col_end > d.col_start) {
+                const std::string &line = buf.lines[row];
+                int a = std::min(static_cast<int>(line.size()), d.col_start);
+                int b = std::min(static_cast<int>(line.size()), d.col_end);
+                if (b > a) {
+                    Color c = d.hl_group.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(d.hl_group);
+                    float ux = text_x + a * g_char_width;
+                    float uw = (b - a) * g_char_width;
+                    DrawRectangle(static_cast<int>(ux), static_cast<int>(ly + line_height - 2),
+                                  static_cast<int>(uw), 1, c);
                 }
-                // Colorizer swatch (Phase 13): a small filled square in the
-                // literal parsed color, drawn just before col_start.
-                if (d.has_swatch) {
-                    float sx = text_x + d.col_start * g_char_width;
-                    float sw = std::max(4.0f, g_char_width - 2);
-                    DrawRectangle(static_cast<int>(sx), static_cast<int>(ly + (line_height - sw) / 2.0f),
-                                  static_cast<int>(sw), static_cast<int>(sw),
-                                  Color{d.swatch_color.r, d.swatch_color.g, d.swatch_color.b, 255});
+            }
+            if (!d.virt_text.empty()) {
+                float vx = text_x + d.col_start * g_char_width;
+                if (d.virt_overlay) {
+                    // Cover whichever is wider: the replacement text, or
+                    // the original [col_start, col_end) span it's
+                    // standing in for. A caller concealing markup down to
+                    // shorter text (markdown's "**bold**" -> "bold", or a
+                    // whole link down to its link text) sets col_end to
+                    // the *original* markup's end -- using only the
+                    // replacement's own measured width here would leave
+                    // the original span's tail end (anything past the
+                    // replacement's width) undrawn-over and still
+                    // visible, defeating the conceal.
+                    float span_w = (d.col_end > d.col_start) ? (d.col_end - d.col_start) * g_char_width : 0.0f;
+                    float overlay_w = std::max(span_w, MeasureTextEx(g_font, d.virt_text.c_str(), g_font_size, 0).x);
+                    DrawRectangle(static_cast<int>(vx), static_cast<int>(ly), static_cast<int>(overlay_w),
+                                  line_height, ResolveHlGroup("NormalBg"));
                 }
+                DrawTextEx(g_font, d.virt_text.c_str(), Vector2{vx, ly}, g_font_size, 0,
+                           ResolveHlGroup(d.virt_text_hl));
+            }
+            // Colorizer swatch (Phase 13): a small filled square in the
+            // literal parsed color, drawn just before col_start.
+            if (d.has_swatch) {
+                float sx = text_x + d.col_start * g_char_width;
+                float sw = std::max(4.0f, g_char_width - 2);
+                DrawRectangle(static_cast<int>(sx), static_cast<int>(ly + (line_height - sw) / 2.0f),
+                              static_cast<int>(sw), static_cast<int>(sw),
+                              Color{d.swatch_color.r, d.swatch_color.g, d.swatch_color.b, 255});
             }
         }
         if (sign != 0 && gutter_w > 0.0f) {
@@ -4909,6 +8873,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         if (g_editor.CurrentMode() == Mode::Insert && g_editor.IsCompletionOpen()) {
             DrawCompletionPopup(cursor_x, cursor_y + line_height);
         }
+        hover_cursor_x = cursor_x;
+        hover_cursor_y = cursor_y + line_height;
+        hover_cursor_valid = true;
     }
 
     EndScissorMode();
@@ -4916,6 +8883,15 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     Color border_color = is_active ? ResolveHlGroup("BorderActive") : ResolveHlGroup("BorderInactive");
     DrawRectangleLines(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h),
                         border_color);
+    // Hover tooltip (Phase 3 gap): drawn *after* EndScissorMode/the pane
+    // border above, unlike the completion popup a few lines up -- hover
+    // text can be much wider/taller (multi-line LSP docs) than a narrow
+    // split pane, so clipping it to the pane rect the way the completion
+    // list already (harmlessly, for short candidate words) tolerates
+    // would visibly truncate real hover content.
+    if (hover_cursor_valid && g_editor.IsHoverOpen()) {
+        DrawHoverPopup(hover_cursor_x, hover_cursor_y);
+    }
 }
 
 // Recursively lays out a tab's split tree: Horizontal/Vertical nodes divide
@@ -4964,6 +8940,10 @@ void DrawTabBar(int y) {
         Color bg = active ? ResolveHlGroup("TabActive") : ResolveHlGroup("TabInactive");
         DrawRectangle(static_cast<int>(x), y + 2, static_cast<int>(w), bar_h - 4, bg);
         DrawTextEx(g_font, label.c_str(), Vector2{x + 6, y + (bar_h - font_size) / 2.0f}, font_size, 0, ResolveHlGroup("Normal"));
+        // Click-to-switch (Phase 11 click-dispatch gap): a click anywhere on
+        // this tab's box jumps straight to it via GoToTab, same as :tabn N.
+        RegisterClickRegion(Rectangle{x, static_cast<float>(y), w, static_cast<float>(bar_h)},
+                             [i] { g_editor.GoToTab(i); });
         x += w + 3;
     }
 }
@@ -4991,6 +8971,10 @@ void DrawDashboard(float x, float y, float w, float h) {
 }
 
 void DrawEditor() {
+    // Rebuilt fresh this frame by DrawTabBar/DrawPane below -- see the
+    // g_click_regions declaration for why clearing here (rather than after
+    // dispatch) is correct even with the one-frame lag.
+    g_click_regions.clear();
     int screen_w = GetScreenWidth();
     int screen_h = GetScreenHeight();
     int line_height = LineHeight();
@@ -5118,13 +9102,48 @@ void DrawEditor() {
     if (g_editor.CurrentMode() == Mode::Prompt) DrawPromptOverlay();
     if (g_editor.CurrentMode() == Mode::Confirm) DrawConfirmOverlay();
     if (g_editor.CurrentMode() == Mode::Select) DrawSelectOverlay();
+    if (g_editor.CurrentMode() == Mode::Preview) DrawPreviewOverlay();
     if (g_editor.CurrentMode() == Mode::Picker) DrawPickerOverlay();
+    if (g_editor.CurrentMode() == Mode::RoamGraph) DrawRoamGraphOverlay();
     if (g_editor.CurrentMode() == Mode::WhichKey) DrawWhichKeyOverlay();
     if (!zen) DrawSidebars();
     if (g_show_help_overlay) DrawHelpOverlay();
     DrawToastStack();
 
     EndDrawing();
+}
+
+// Consumes this frame's mouse click (if any) against whatever click regions
+// DrawEditor() just registered (tab bar, gutter fold markers, pane header
+// breadcrumb -- see g_click_regions above). Only fires while in a mode where
+// clicking chrome behind an overlay would be surprising: any of the modal
+// overlay modes (Picker/Sidebar/Prompt/Confirm/Select/WhichKey/Preview)
+// already captures input itself and draws over this chrome, so a click
+// meant for the overlay must not also fall through to e.g. switch tabs
+// underneath it. First matching region wins, mirroring the menu bar's own
+// one-hit-per-click dispatch.
+void DispatchChromeClicks() {
+    if (!IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) return;
+    switch (g_editor.CurrentMode()) {
+        case Mode::Picker:
+        case Mode::RoamGraph:
+        case Mode::Sidebar:
+        case Mode::Prompt:
+        case Mode::Confirm:
+        case Mode::Select:
+        case Mode::WhichKey:
+        case Mode::Preview:
+            return;
+        default:
+            break;
+    }
+    Vector2 mouse = GetMousePosition();
+    for (const ClickRegion &r : g_click_regions) {
+        if (PointInRect(mouse, r.rect)) {
+            r.action();
+            return;
+        }
+    }
 }
 
 #if defined(__EMSCRIPTEN__)
@@ -5137,7 +9156,7 @@ void DrawEditor() {
 // never exits -- which is exactly what looks like mep "hanging" on
 // :qa!. launcher/webview_worker.ts binds window.mepQuit (absent when
 // mep.html is opened directly in a plain browser tab, e.g. build/web/
-// without `just run` -- there's no native window to close there, so
+// without `just run-wasm` -- there's no native window to close there, so
 // this is a deliberate no-op in that case).
 EM_JS(void, mep_js_request_native_quit, (), {
     if (window.mepQuit) window.mepQuit();
@@ -5145,15 +9164,40 @@ EM_JS(void, mep_js_request_native_quit, (), {
 #endif
 
 void UpdateDrawFrame() {
-    JobManager::Instance().PollAll();
-    g_editor.PollTerminals();
-    g_editor.PruneExpiredToasts(GetTime());
-    g_editor.SetNow(GetTime());
-    if (g_editor.Lua()) g_editor.Lua()->RunFrameHooks();
-    HandleFontSizeShortcuts();
-    bool menu_consumed = HandleMenuInput();
-    if (!menu_consumed) g_editor.HandleInput();
-    DrawEditor();
+    // Last-resort safety net: this is the sole per-frame entry point (both
+    // the native while-loop and the Emscripten main loop below call
+    // nothing else per frame) -- an uncaught C++ exception ANYWHERE in a
+    // frame's job-poll/input/draw handling would otherwise propagate past
+    // both loops straight into std::terminate, crashing the whole app and
+    // losing every unsaved buffer with no save prompt. Converts that into
+    // a visible error notification instead and lets the *next* frame
+    // proceed normally -- if the throw landed mid-DrawEditor (after its
+    // own BeginDrawing but before EndDrawing), the current frame may render
+    // incompletely/skip its buffer swap, which is a one-frame visual
+    // glitch at worst (raylib's BeginDrawing doesn't require a matching
+    // EndDrawing to have happened first) -- vastly preferable to losing
+    // all open work. Catching std::exception specifically, not `...`: an
+    // unknown non-exception throw (not used anywhere in this codebase)
+    // still terminates, rather than silently swallowing something a
+    // std::exception& can't describe via what().
+    try {
+        JobManager::Instance().PollAll();
+        g_editor.PollTerminals();
+        g_editor.PruneExpiredToasts(GetTime());
+        g_editor.SetNow(GetTime());
+        if (g_editor.Lua()) g_editor.Lua()->RunFrameHooks();
+        HandleFontSizeShortcuts();
+        bool menu_consumed = HandleMenuInput();
+        if (!menu_consumed) g_editor.HandleInput();
+        DrawEditor();
+        // Only after DrawEditor() has (re)populated g_click_regions this
+        // frame, and only when the menu bar didn't already claim this
+        // click (a menu dropdown can overlap the tab bar/pane area
+        // beneath it).
+        if (!menu_consumed) DispatchChromeClicks();
+    } catch (const std::exception &e) {
+        g_editor.Notify(std::string("Internal error (recovered): ") + e.what(), Editor::NotifyLevel::Error);
+    }
 #if defined(__EMSCRIPTEN__)
     if (g_editor.ShouldQuit()) {
         mep_js_request_native_quit();
@@ -5207,6 +9251,7 @@ int main(int argc, char **argv) {
 #endif
 
     ApplyFontSize(kDefaultFontSize);
+    LoadOfficeFonts();
     BuildMenus();
     RecomputeMenuLabelLayout();
 

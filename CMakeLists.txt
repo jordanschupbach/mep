@@ -43,6 +43,35 @@ list(REMOVE_ITEM LUA_SOURCES "${lua_SOURCE_DIR}/src/lua.c" "${lua_SOURCE_DIR}/sr
 add_library(lua STATIC ${LUA_SOURCES})
 target_include_directories(lua PUBLIC "${lua_SOURCE_DIR}/src")
 
+# pugixml (src/office_doc.cpp's DOCX/ODT XML parsing): has its own CMake
+# build exporting a `pugixml` interface target (static by default, see
+# its CMakeLists.txt), so this is a plain FetchContent -- no by-hand
+# static-lib wiring needed, unlike lua/miniz below.
+FetchContent_Declare(
+    pugixml
+    URL https://github.com/zeux/pugixml/releases/download/v1.16/pugixml-1.16.tar.gz
+    URL_HASH SHA256=4cee1ca4aad395170f4c7a07824f3bdd41f28316c6e1e1090a1425b278ec0b4b
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+)
+FetchContent_MakeAvailable(pugixml)
+
+# miniz (src/office_doc.cpp's DOCX/ODT ZIP container reading + writing --
+# both formats are ZIP archives of XML parts): like lua, has no CMake
+# build of its own, fetched as a tarball and built by hand. Unlike the
+# modular source tree in miniz's git repo, its GitHub Release asset is a
+# single pre-amalgamated miniz.c/miniz.h pair (confirmed by inspecting the
+# downloaded archive) -- as easy to vendor as a single-file stb-style
+# library, no glob needed.
+FetchContent_Declare(
+    miniz
+    URL https://github.com/richgel999/miniz/releases/download/3.1.2/miniz-3.1.2.zip
+    URL_HASH SHA256=f0446d863f9c19926ad9483c523fdc42e42b8d4a6a431d27e09d49c79a140d9a
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+)
+FetchContent_MakeAvailable(miniz)
+add_library(miniz STATIC "${miniz_SOURCE_DIR}/miniz.c")
+target_include_directories(miniz PUBLIC "${miniz_SOURCE_DIR}")
+
 # Tree-sitter runtime + a small core set of grammars: vendored locally
 # under third_party/ (source files only -- parser.c, an optional
 # external scanner, and the grammar's own copy of tree_sitter/parser.h;
@@ -95,6 +124,72 @@ foreach(gname ${TS_GRAMMAR_NAMES})
     list(APPEND TS_GRAMMAR_LIBS ts_${gname})
 endforeach()
 
+# PDFium (src/pdf_doc.cpp's PDF-viewer backend): PDFium itself is BSD-3,
+# and every third-party library it bundles (freetype/lcms/openjpeg/zlib/
+# libpng/libjpeg-turbo/abseil/icu/simdutf/fast_float/llvm-libc) is also
+# permissively licensed -- see third_party_licenses/pdfium-LICENSE.txt.
+# There's no CMake build for PDFium itself (upstream uses Google's own
+# GN/ninja toolchain, not CMake), so it's fetched here as a prebuilt
+# shared-library release from github.com/bblanchon/pdfium-binaries (MIT-
+# licensed packaging of Google's own binary builds) rather than vendored
+# as source, the same "prebuilt binary, not a source vendor" tradeoff
+# raylib/lua deliberately avoid elsewhere in this file. Not available for
+# the Emscripten/wasm build -- see the #if defined(__EMSCRIPTEN__) stub in
+# pdf_doc.cpp.
+if(NOT EMSCRIPTEN)
+    set(PDFIUM_RELEASE "chromium/8009")
+    if(APPLE)
+        if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
+            set(PDFIUM_ASSET "pdfium-mac-arm64.tgz")
+            set(PDFIUM_HASH "SHA256=b1f2f17c7432a9942514dda5094ee9822c743bdfd07e7187725efbd34fde941f")
+        else()
+            set(PDFIUM_ASSET "pdfium-mac-x64.tgz")
+            set(PDFIUM_HASH "SHA256=e0afb6905e97438a9159aaa5b6c4fe188d97a7e3be05dc4782422c3ca7e1ce1a")
+        endif()
+    elseif(WIN32)
+        # Only x86_64 Windows is pinned here; pdfium-binaries also
+        # publishes win-x86/win-arm64 if that's ever needed.
+        set(PDFIUM_ASSET "pdfium-win-x64.tgz")
+        set(PDFIUM_HASH "SHA256=c78a8cd51b48abafcb266d868e401afefda1d189aa01ebbe743dc1d144e06031")
+    else()
+        # Only x86_64 glibc Linux is pinned/verified here (this repo's own
+        # dev/build environment); other Linux targets (arm64, musl) would
+        # need their own branch + hash from the same release's assets.
+        set(PDFIUM_ASSET "pdfium-linux-x64.tgz")
+        set(PDFIUM_HASH "SHA256=be513e8021a5bf8eb2116e00d78c3bacb82c5a02b3785156ae14fe5e33084385")
+    endif()
+
+    FetchContent_Declare(
+        pdfium
+        URL "https://github.com/bblanchon/pdfium-binaries/releases/download/${PDFIUM_RELEASE}/${PDFIUM_ASSET}"
+        URL_HASH "${PDFIUM_HASH}"
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    )
+    FetchContent_MakeAvailable(pdfium)
+
+    add_library(pdfium SHARED IMPORTED)
+    if(WIN32)
+        set_target_properties(pdfium PROPERTIES
+            IMPORTED_LOCATION "${pdfium_SOURCE_DIR}/bin/pdfium.dll"
+            IMPORTED_IMPLIB "${pdfium_SOURCE_DIR}/lib/pdfium.dll.lib"
+            INTERFACE_INCLUDE_DIRECTORIES "${pdfium_SOURCE_DIR}/include"
+        )
+        set(PDFIUM_RUNTIME_FILE "${pdfium_SOURCE_DIR}/bin/pdfium.dll")
+    elseif(APPLE)
+        set_target_properties(pdfium PROPERTIES
+            IMPORTED_LOCATION "${pdfium_SOURCE_DIR}/lib/libpdfium.dylib"
+            INTERFACE_INCLUDE_DIRECTORIES "${pdfium_SOURCE_DIR}/include"
+        )
+        set(PDFIUM_RUNTIME_FILE "${pdfium_SOURCE_DIR}/lib/libpdfium.dylib")
+    else()
+        set_target_properties(pdfium PROPERTIES
+            IMPORTED_LOCATION "${pdfium_SOURCE_DIR}/lib/libpdfium.so"
+            INTERFACE_INCLUDE_DIRECTORIES "${pdfium_SOURCE_DIR}/include"
+        )
+        set(PDFIUM_RUNTIME_FILE "${pdfium_SOURCE_DIR}/lib/libpdfium.so")
+    endif()
+endif()
+
 add_executable(mep
     src/main.cpp
     src/editor.cpp
@@ -102,9 +197,16 @@ add_executable(mep
     src/job.cpp
     src/vterm.cpp
     src/treesitter.cpp
+    src/regex.cpp
+    src/image_doc.cpp
+    src/pdf_doc.cpp
+    src/office_doc.cpp
+    src/office_odt.cpp
+    src/formula.cpp
+    src/sheet_doc.cpp
 )
 target_include_directories(mep PRIVATE src)
-target_link_libraries(mep PRIVATE raylib lua tree_sitter ${TS_GRAMMAR_LIBS})
+target_link_libraries(mep PRIVATE raylib lua tree_sitter ${TS_GRAMMAR_LIBS} pugixml miniz)
 if(NOT EMSCRIPTEN AND NOT WIN32)
     find_package(Threads REQUIRED)
     target_link_libraries(mep PRIVATE Threads::Threads)
@@ -113,6 +215,30 @@ if(NOT EMSCRIPTEN AND NOT WIN32)
     # libraries, so that whole path is compiled out there instead of
     # linked against a (nonexistent) libdl.
     target_link_libraries(mep PRIVATE ${CMAKE_DL_LIBS})
+endif()
+
+if(NOT EMSCRIPTEN)
+    target_link_libraries(mep PRIVATE pdfium)
+    # PDFium ships as a shared library, not something that can be linked
+    # statically into a single self-contained binary -- copy it next to
+    # the built executable and point mep's own rpath at its own directory
+    # ($ORIGIN/@loader_path) so a plain `./mep` launch finds it without
+    # needing LD_LIBRARY_PATH/DYLD_LIBRARY_PATH set, matching how an
+    # end-user launch would work.
+    if(WIN32)
+        add_custom_command(TARGET mep POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${PDFIUM_RUNTIME_FILE}" "$<TARGET_FILE_DIR:mep>"
+        )
+    else()
+        if(APPLE)
+            set_target_properties(mep PROPERTIES BUILD_RPATH "@loader_path")
+        else()
+            set_target_properties(mep PROPERTIES BUILD_RPATH "$ORIGIN")
+        endif()
+        add_custom_command(TARGET mep POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${PDFIUM_RUNTIME_FILE}" "$<TARGET_FILE_DIR:mep>"
+        )
+    endif()
 endif()
 
 if(EMSCRIPTEN)

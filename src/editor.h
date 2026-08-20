@@ -7,6 +7,19 @@
 #include <utility>
 #include <vector>
 
+// PdfSession (below) needs PdfTextMatch/PdfHighlightRect by value (search
+// results, held in std::vector members), not just a PdfDoc* -- a forward
+// declaration isn't enough the way it is for ImageDoc/PdfDoc themselves
+// (only ever held via unique_ptr). pdf_doc.h is as dependency-light as
+// this header (no raylib), so including it directly here is safe.
+#include "pdf_doc.h"
+// Same reasoning as pdf_doc.h above -- OfficeSession holds OfficeDoc (and
+// its DocParagraph/DocSpan contents) by value, not behind a unique_ptr, so
+// the full definitions need to be visible here.
+#include "office_doc.h"
+// Same reasoning again -- SheetSession holds a Workbook by value.
+#include "sheet_doc.h"
+
 // editor.h is deliberately raylib-free (editor.cpp includes raylib.h,
 // this header doesn't), so colors are stored as plain RGBA rather than
 // raylib's Color -- main.cpp converts 1:1 when drawing (same layout).
@@ -29,11 +42,20 @@ enum class Mode {
     Prompt,
     Confirm,
     Select,
+    // Read-only informational float (NVIM_PARITY_PLAN.md Phase 17 gap:
+    // git-gutter's "preview hunk"): shows text and closes on the very
+    // next keypress -- no callback, unlike Prompt/Confirm/Select above.
+    Preview,
     // A focused Sidebar (Part I Phase 7) takes over input the same way,
     // navigating its flattened section/widget list.
     Sidebar,
     // The fuzzy picker (Part I Phase 8): prompt + live-filtered list.
     Picker,
+    // Roam backlink-graph view (Part VIII Phase 37's flagged gap, closed):
+    // a full-screen node-link diagram, fuzzy-filterable like Picker but
+    // navigating a 2D ring layout instead of a flat list. See
+    // Editor::OpenRoamGraph.
+    RoamGraph,
     // Whichkey (Part II Phase 11): collects keys after the leader, showing
     // what's registered under the accumulated prefix; executes on an exact
     // unique match.
@@ -48,6 +70,51 @@ enum class Mode {
     // instead of editing a buffer, the way Insert mode edits one. See
     // Editor::HandleTerminalInput.
     Terminal,
+    // A focused image-viewer pane (an ImageSession buffer -- see below):
+    // plain h/j/k/l and the arrow keys pan the decoded image instead of
+    // moving a text cursor over Buffer::lines (which stays a dummy single
+    // empty line for an image buffer, same as a terminal's). Unlike
+    // Mode::Terminal, this does NOT capture every keystroke -- ':' and the
+    // leader key are explicitly forwarded (see Editor::HandleImageInput)
+    // so the command line and whichkey/leader mappings (including the
+    // buffer picker) keep working while parked on an image; there's simply
+    // nothing meaningful for any other key to do.
+    Image,
+    // A focused PDF-viewer pane (a PdfSession buffer -- see below): same
+    // shape as Mode::Image (h/j/k/l pan, ':'/leader forwarded, everything
+    // else a no-op) plus page navigation (Ctrl-f/Ctrl-b/PageDown/PageUp,
+    // gg/G) since PDF content is paginated. See Editor::HandlePdfInput.
+    Pdf,
+    // A focused WYSIWYG office-document pane (an OfficeSession buffer --
+    // see below, opened for .docx/.odt). Unlike Image/Pdf's single flat
+    // mode, this is a real modal editor over rich-text paragraphs -- three
+    // separate Mode values mirroring the main buffer's own Normal/Insert/
+    // Visual split (not a sub-state flag inside one mode), because it has
+    // the same three behaviorally distinct key-handling regimes the main
+    // buffer does. Navigation/motions operate on whole paragraphs as the
+    // "logical line" (h/l move within a paragraph's flat text, j/k move
+    // to the prev/next paragraph, gg/G to the first/last) -- matching how
+    // the main text buffer itself has no soft-wrap-aware motions either,
+    // even though a paragraph is word-wrapped across several *visual*
+    // lines for display; cursor hit-testing for the visual caret position
+    // is a main.cpp rendering concern, not a motion-logic one. See
+    // Editor::HandleOfficeNormalInput/HandleOfficeInsertInput/
+    // HandleOfficeVisualInput.
+    OfficeNormal,
+    OfficeInsert,
+    OfficeVisual,
+    // A focused spreadsheet pane (a SheetSession buffer -- see below,
+    // opened for .xlsx/.ods/.csv). Mirrors the Office pane's three-Mode
+    // Normal/Insert/Visual split for the same reason (a real modal editor,
+    // not a flat single-mode viewer), but SheetVisual selects a
+    // rectangular *cell range* rather than a text span, and unlike
+    // Office's word-wrap-oblivious-but-still-1D paragraph navigation,
+    // grid navigation is genuinely 2D (h/l move columns, j/k move rows).
+    // See Editor::HandleSheetNormalInput/HandleSheetInsertInput/
+    // HandleSheetVisualInput.
+    SheetNormal,
+    SheetInsert,
+    SheetVisual,
 };
 
 struct CursorPos {
@@ -87,6 +154,14 @@ struct Register {
     bool blockwise = false;
 };
 
+// One entry in a Pane's jumplist (Ctrl-O/Ctrl-I) -- unlike the single-slot
+// ``/'' mechanism (Buffer::last_jump_from), the jumplist can span multiple
+// buffers, so each entry records which one it belongs to.
+struct JumpEntry {
+    int buffer_id = 0;
+    CursorPos pos;
+};
+
 // One buffer decoration (NVIM_PARITY_PLAN.md Part I Phase 4 --
 // mep.nvim/Neovim's "extmark", scoped down): a highlight span, virtual
 // text, and/or a gutter sign anchored at a position. Row/col are plain
@@ -106,6 +181,15 @@ struct Decoration {
     int col_end = 0;
     bool whole_line = false;
     std::string hl_group;  // empty = no highlight span
+    // Draw a thin underline under [col_start, col_end) instead of
+    // recoloring the span's text (NVIM_PARITY_PLAN.md Phase 21 gap: LSP
+    // diagnostics want to mark the exact affected columns the way a
+    // squiggly underline would, not tint the whole span/line). When set,
+    // hl_group still supplies the underline's color but no longer swaps
+    // the text's foreground -- ignored if whole_line is set or the span
+    // is empty. Distinct from VTermCell::underline (src/vterm.h), which
+    // is terminal-emulator cell state, not an editor decoration.
+    bool underline = false;
     // Virtual text: inline (drawn before col_start, doesn't touch the
     // buffer) or overlay (drawn *instead of* [col_start, col_start+len)).
     std::string virt_text;
@@ -191,6 +275,28 @@ struct PickerItem {
     std::string data;
 };
 
+// One node in the Roam backlink-graph view (NVIM_PARITY_PLAN.md Phase 37's
+// flagged "no fuzzy backlink-graph visualization" gap, closed). `hop` is
+// graph-distance from the note the view was opened on: 0 = that note
+// itself (always exactly one such node, rendered at the overlay's center),
+// 1 = a note it directly links to or that directly links to it, 2 = a
+// link/backlink of a hop-1 note. DrawRoamGraphOverlay's deterministic ring
+// layout keys directly off `hop` (ring radius = f(hop)) -- no physics
+// simulation, see the comment above Editor::OpenRoamGraph.
+struct RoamGraphNode {
+    std::string id;
+    std::string title;
+    std::string path;
+    int hop = 0;
+};
+
+// One edge between two RoamGraphNode indices (into the same call's nodes
+// vector). Undirected for rendering purposes even though the underlying
+// `[[id:...]]` link it represents is directional.
+struct RoamGraphEdge {
+    int a = 0, b = 0;
+};
+
 // One labeled jump target (NVIM_PARITY_PLAN.md Part III Phase 13 hints).
 struct HintMatch {
     int row = 0, col = 0;
@@ -270,6 +376,16 @@ struct Pane {
     // stale, rather than kept in sync at every `buffer_id` assignment site.
     std::vector<int> buffer_tabs;
     int buffer_tab_index = 0;
+
+    // Full jumplist (Ctrl-O/Ctrl-I), per-window like Vim's own -- distinct
+    // from Buffer::last_jump_from (the single-slot ``/'' mechanism), which
+    // stays as-is. `jumplist_index` follows Vim's own list+index model:
+    // it's the index of the entry Ctrl-I would go to next, so it normally
+    // sits at jumplist.size() ("live", nothing to go forward to) and
+    // decrements/increments as Ctrl-O/Ctrl-I are pressed. See PushJump/
+    // JumpListBack/JumpListForward in editor.cpp for the exact semantics.
+    std::vector<JumpEntry> jumplist;
+    int jumplist_index = 0;
 };
 
 enum class SplitDir { Leaf, Horizontal, Vertical };
@@ -307,6 +423,7 @@ struct PaneRect {
 
 class LuaEnv;
 class VTerm;
+class ImageDoc;
 
 // One `:terminal`/`:term` pane's PTY-backed state (Part VI Phase 27+):
 // keyed by the buffer id standing in for it in the split tree (a terminal
@@ -335,6 +452,250 @@ struct TerminalSession {
     // Mode::Terminal or interrupting keystroke forwarding.
     int scroll_offset = 0;
     int last_rows = 0, last_cols = 0;  // last size ResizePty/VTerm::Resize was called with
+};
+
+// One image-viewer pane's decoded content, keyed by buffer id the same way
+// TerminalSession is (see its own comment) -- an image buffer's
+// Buffer::lines stays a dummy single empty line, real content lives here.
+// ImageDoc (image_doc.h) is a raylib-free decoded RGBA8 pixel buffer, kept
+// as a unique_ptr so this header doesn't need to include image_doc.h;
+// main.cpp is the only place that turns it into a GPU Texture2D.
+struct ImageSession {
+    int buffer_id = 0;
+    std::unique_ptr<ImageDoc> doc;
+    // Top-left pixel of the visible viewport into the *scaled* (zoom
+    // applied) image, panned by Editor::HandleImageInput and clamped
+    // against the scaled image/viewport size by Editor::ResizeImageViewport.
+    int pan_x = 0, pan_y = 0;
+    // Last pane content size (pixels) DrawPane reported via
+    // ResizeImageViewport -- what panning clamps against.
+    int viewport_w = 0, viewport_h = 0;
+    // 1.0 = the decoded image's native pixel size. +/- (Editor::
+    // HandleImageInput) multiply/divide this by kImageZoomStep; = resets it
+    // to whatever ZoomImageToFit computes so the whole image just fits the
+    // current viewport.
+    float zoom = 1.0f;
+};
+
+// Visual gap (screen pixels, unscaled by zoom) drawn between consecutive
+// pages in the PDF viewer's continuous-scroll stack. Shared between
+// Editor::HandlePdfInput's scroll-rebase math (when scroll_y has crossed
+// far enough to cross a page boundary) and main.cpp's DrawPane (where it
+// positions the next/previous page's texture) -- these two computations
+// must agree exactly, or the page boundary rebase_scroll computes and the
+// one DrawPane actually renders at drift apart into a visible jump/overlap.
+inline constexpr float kPdfPageGapPx = 16.0f;
+
+// Fixed spreadsheet grid geometry (screen pixels, unscaled) -- shared
+// between Editor::ResizeSheetViewport's scroll-follow arithmetic and
+// main.cpp's DrawPane sheet-grid renderer, same "must agree exactly"
+// reasoning as kPdfPageGapPx above. Deliberately NOT tied to
+// g_font_size/g_char_width the way the rest of the editor's layout is --
+// sheet cells are fixed-size grid slots, not word-wrapped/font-measured
+// text, which is what lets ResizeSheetViewport do its own scroll-follow
+// entirely in this raylib-free file (see SheetSession::scroll_row's own
+// comment).
+inline constexpr int kSheetRowHeaderW = 50;
+inline constexpr int kSheetColWidth = 90;
+inline constexpr int kSheetRowHeight = 22;
+
+// One PDF-viewer pane's state, keyed by buffer id the same way ImageSession
+// is (see its comment) -- a PDF buffer's Buffer::lines is also a dummy
+// single empty line. Unlike ImageDoc's fixed one-time decode, PdfDoc
+// (pdf_doc.h) content must be *re-rendered* per page/zoom level.
+//
+// Supports zathura-style continuous vertical scrolling across page
+// boundaries (not just panning within one page): `page` is the *anchor*
+// page -- the one `scroll_y` is measured from the top of -- and a small
+// virtualized window of rasters (anchor page, plus its immediate
+// neighbors) is kept rendered at any time via Editor::
+// EnsurePdfPagesRastered, evicting everything else. This keeps memory
+// bounded regardless of document length (a 400-page PDF never rasterizes
+// more than ~3 pages at once) while still letting h/j/k/l scroll smoothly
+// through page boundaries instead of hard-cutting between pages.
+struct PdfSession {
+    int buffer_id = 0;
+    std::unique_ptr<PdfDoc> doc;
+    int page = 0;  // 0-indexed anchor page
+    // Vertical: device pixels (post-zoom, i.e. "on-screen" pixels) scrolled
+    // into `page` from its top -- can transiently go negative or past the
+    // anchor page's on-screen height; Editor::HandlePdfInput re-bases it
+    // (adjusting `page`) back into range after every scroll. Horizontal:
+    // same panning semantics as ImageSession, clamped against the anchor
+    // page's on-screen width.
+    float scroll_y = 0;
+    int pan_x = 0;
+    int viewport_w = 0, viewport_h = 0;
+    // Multiplier on top of each cached raster's already-rasterized pixels
+    // (NOT on a page's native point size -- see Editor::
+    // EnsurePdfPagesRastered). 1.0 = display the last render as-is;
+    // Editor::HandlePdfInput keeps this within roughly [0.5, 2.0] by
+    // folding larger drifts into a fresh render at a new rendered_scale
+    // instead, so text stays crisp. Because rendered_scale absorbs the
+    // drift (rendered_scale *= zoom; zoom = 1), the on-screen size of any
+    // page is unaffected by a rescale -- only scroll_y/pan_x need
+    // reinterpreting across a *page* change, never across a rescale.
+    float zoom = 1.0f;
+    float rendered_scale = 0.0f;  // px per PDF point every cached raster below shares
+    // If false, pages render with PDFium's own colors (the PDF's actual
+    // content); if true (the default), every rendered page is recolored to
+    // match the editor's color scheme (ResolveHlGroup("Normal")/
+    // ("NormalBg")) instead of white-paper-with-black-text. Toggled by
+    // Ctrl-R (HandlePdfInput). The recoloring itself happens in main.cpp
+    // at texture-upload time (see ThemedPdfChannel), not here -- this
+    // struct stays raylib-free like ImageSession.
+    bool theme_colors = true;
+
+    // Lazily rendered, evicted down to {page-1, page, page+1} every frame
+    // by Editor::EnsurePdfPagesRastered. Keyed by page index so it degrades
+    // gracefully at document boundaries (no entry for page-1 at page 0).
+    struct PageRaster {
+        std::vector<unsigned char> rgba;
+        int w = 0, h = 0;
+        // Bumped whenever this specific page is (re)rendered (new page
+        // entered the window, or a rescale invalidated every cached
+        // raster). main.cpp's per-page texture cache compares this (and
+        // theme_colors) against what it last uploaded.
+        int generation = 0;
+        // Device-pixel highlight rects for whichever of `search_matches`
+        // land on this page, at this raster's own scale -- recomputed
+        // alongside rgba (Editor::EnsurePdfPagesRastered) and whenever
+        // search_matches itself changes (Editor::RunPdfSearch), so
+        // main.cpp's draw code never needs to touch PdfDoc/PDFium itself.
+        std::vector<PdfHighlightRect> highlights;
+    };
+    std::unordered_map<int, PageRaster> rasters;
+    int next_raster_generation = 1;
+    // Memoized PdfDoc::PageWidthPt/HeightPt results -- avoids repeated
+    // FPDF_LoadPage/ClosePage round-trips for page-size queries the
+    // scroll/rebase math needs every frame while actively scrolling.
+    std::unordered_map<int, std::pair<double, double>> page_size_pt;
+
+    // --- '/' text search (Editor::HandlePdfInput) ---
+    // True while the user is typing a query after pressing '/' -- captures
+    // all subsequent character/Backspace/Enter/Escape input instead of the
+    // normal pan/zoom/page-nav keys (mirrors Mode::Command's own
+    // input-capture shape, just scoped to this one PdfSession rather than
+    // a separate Mode). search_input is the in-progress query text.
+    bool search_active = false;
+    std::string search_input;
+    // The last *submitted* (Enter-confirmed) query; empty means no active
+    // search / no highlights. Set together with search_matches by
+    // Editor::RunPdfSearch.
+    std::string search_query;
+    std::vector<PdfTextMatch> search_matches;  // document-wide, in page order
+    // Index into search_matches the last `n`/`p`/search-submit jumped to
+    // (Editor::GotoPdfMatch); -1 if there's no current match (e.g. a
+    // search with zero hits). Drawn more prominently than other matches.
+    int search_current = -1;
+};
+
+// One WYSIWYG office-document pane's state, keyed by buffer id the same
+// way Image/PdfSession are (see their comments) -- an office buffer's
+// Buffer::lines also stays a dummy single empty line, real content lives
+// here as an OfficeDoc. Unlike ImageDoc/PdfDoc, OfficeDoc is held *by
+// value* rather than behind a unique_ptr: it's a plain data struct (see
+// office_doc.h) with no opaque C-library handle to hide, so there's
+// nothing gained by the extra indirection.
+struct OfficeSession {
+    int buffer_id = 0;
+    OfficeDoc doc;
+    // The file's own original bytes, kept from open time so a later save
+    // (Phase 4 -- SaveDocx/OdtToMemory) doesn't need to re-read the file
+    // from disk and can copy every untouched ZIP entry straight through
+    // (mirrors how PdfDoc::Impl keeps its source bytes alive).
+    std::vector<unsigned char> original_bytes;
+
+    // Cursor position: paragraph index + a byte offset into that
+    // paragraph's flat text -- deliberately word-wrap-*oblivious*, see
+    // Mode::OfficeNormal's own comment for why this mirrors the main
+    // buffer's own no-soft-wrap motion model rather than being a new
+    // pattern.
+    int cursor_para = 0, cursor_col = 0;
+
+    // Visual-mode selection anchor (Mode::OfficeVisual); the selection
+    // itself is always [min(anchor,cursor), max(anchor,cursor)) by
+    // paragraph+col comparison, not stored separately.
+    bool has_selection = false;
+    int sel_anchor_para = 0, sel_anchor_col = 0;
+
+    bool modified = false;
+    // Snapshot-based undo/redo, mirroring Buffer::undo_stack/redo_stack's
+    // own full-vector-copy convention exactly (not diffs) -- pushed once
+    // per insert-session/operator/format-toggle, never per keystroke.
+    std::vector<std::vector<DocParagraph>> undo_stack, redo_stack;
+
+    int viewport_w = 0, viewport_h = 0;
+    // Scroll position: index of the topmost paragraph currently drawn,
+    // plus which of ITS word-wrapped visual lines to start at (in case a
+    // single paragraph is taller than the viewport). Adjusted a paragraph
+    // at a time to keep cursor_para in view, mirroring Pane::scroll_row's
+    // own per-line adjustment -- not pixel-perfect sub-paragraph
+    // scrolling if one paragraph is dramatically taller than the
+    // viewport, an accepted v1 simplification.
+    int scroll_para = 0;
+    int scroll_line_in_para = 0;
+
+    // Zoom mirrors PdfSession::zoom/rendered_scale's own settle-band
+    // pattern (see its comment): `zoom` is a residual multiplier that
+    // HandleOfficeNormalInput keeps within a settled band, folding larger
+    // drifts into base_font_pt instead -- kept per-session rather than
+    // tied to the global g_font_size the way ImageSession/PdfSession's
+    // zoom is also independent of it.
+    float zoom = 1.0f;
+    float base_font_pt = 15.0f;
+};
+
+// One spreadsheet pane's state, keyed by buffer id the same way
+// Image/Pdf/OfficeSession are -- a sheet buffer's Buffer::lines also
+// stays a dummy single empty line, real content lives here as a
+// Workbook. Held *by value* like OfficeDoc, for the same reason (a plain
+// data struct, no opaque C-library handle to hide).
+struct SheetSession {
+    int buffer_id = 0;
+    Workbook wb;
+    // Kept from open time so a later save doesn't need to re-read the
+    // file from disk and can copy every untouched ZIP entry straight
+    // through -- mirrors OfficeSession::original_bytes exactly.
+    std::vector<unsigned char> original_bytes;
+
+    int active_sheet = 0;
+    int cursor_row = 0, cursor_col = 0;
+
+    // Visual-mode selection anchor (Mode::SheetVisual) -- selects a
+    // rectangular cell *range*, unlike OfficeSession's text span; the
+    // range itself is always [min(anchor,cursor), max(anchor,cursor)] by
+    // row/col comparison on each axis independently, not stored
+    // separately.
+    bool has_selection = false;
+    int sel_anchor_row = 0, sel_anchor_col = 0;
+
+    bool modified = false;
+    // Snapshot-based undo/redo, mirroring OfficeSession's own full-copy
+    // convention -- pushed once per edit commit, never per keystroke.
+    std::vector<Workbook> undo_stack, redo_stack;
+
+    int viewport_w = 0, viewport_h = 0;
+    // Top-left visible cell -- unlike Office's vertical-only scroll_para,
+    // a grid scrolls in both dimensions. A real simplification vs. the
+    // Office pane: sheet cells are fixed-width/height grid slots, not
+    // word-wrapped flowing text, so (unlike ResizeOfficeViewport/
+    // SetOfficeScroll, which had to punt scroll-follow into main.cpp
+    // because it needs MeasureTextEx) ResizeSheetViewport can do the
+    // whole scroll-follow job itself, entirely raylib-free, as ordinary
+    // integer row/col arithmetic -- no main.cpp-side follow-up call
+    // needed.
+    int scroll_row = 0, scroll_col = 0;
+
+    // Insert-mode live edit state (Mode::SheetInsert): editing the
+    // current cell's text as a plain string, seeded from its `raw` on
+    // entry, committed into the cell (SetCellRaw) on Enter/Escape --
+    // mirrors the main Buffer's own insert-in-place editing, not
+    // Office's per-paragraph span model (a cell has no rich-text
+    // formatting to preserve across the edit).
+    bool editing = false;
+    std::string edit_buffer;
+    int edit_cursor = 0;
 };
 
 // A modal (vim-like) text editor: Normal/Insert/Visual/Command modes, a
@@ -374,6 +735,9 @@ public:
     // :set number/nonumber -- whether main.cpp's renderer should draw a
     // line-number gutter.
     bool ShowLineNumbers() const { return show_line_numbers_; }
+    // :set cursorline/nocursorline -- whether main.cpp's renderer should
+    // tint the active pane's cursor row with the "CursorLine" theme group.
+    bool ShowCursorLine() const { return show_cursorline_; }
     // Active pane/buffer -- what most of the UI (statusline, blinking
     // cursor, Visual highlight) cares about.
     const Buffer &CurrentBuffer() const { return Buf(); }
@@ -450,6 +814,14 @@ public:
     // each row" mode -- see block_to_eol_'s comment -- callers should
     // treat that as "the rest of the row", not a literal column).
     void VisualBlockRange(int &top, int &bottom, int &left, int &right) const;
+    // Read-only text of the current Visual selection (charwise/linewise
+    // joined with '\n' between lines, blockwise one row's slice per line
+    // same as a blockwise register's own text) -- "" if none is active.
+    // Shares its extraction logic with YankRange, but writes no register
+    // and pushes no undo state, so it's safe to call from anywhere purely
+    // to *read* the selection (mep.visual_selection(), send-selection
+    // features, ...). See also ExtractRangeText (private).
+    std::string CurrentVisualSelectionText() const;
 
     // --- Multi-pane/tab read access (for main.cpp's renderer) ---
     int TabCount() const { return static_cast<int>(tabs_.size()); }
@@ -478,6 +850,101 @@ public:
     // no-op on native builds, which get this for free via JobManager's
     // own callback-driven PollAll instead.
     void PollTerminals();
+
+    // --- Image-viewer panes (opened via LoadFile for a png/jpg/bmp/gif
+    // path -- see IsImagePath in image_doc.h) ---
+    // main.cpp's DrawPane checks this to render the decoded texture instead
+    // of the (unused, empty) Buffer text an image pane's buffer_id still
+    // nominally points at.
+    bool IsImageBuffer(int buffer_id) const;
+    const ImageSession *GetImage(int buffer_id) const;
+    // Called once per frame by DrawPane with the pane's current content
+    // pixel size; also re-clamps pan_x/pan_y in case the pane shrank since
+    // the last call (mirrors ResizeTerminal's per-frame-refresh pattern).
+    void ResizeImageViewport(int buffer_id, int w, int h);
+
+    // --- PDF-viewer panes (opened via LoadFile for a .pdf path -- see
+    // IsPdfPath in pdf_doc.h). Mirrors the Image-viewer block above; see
+    // PdfSession's own comment for why it additionally owns a re-renderable
+    // raster buffer instead of a fixed decode. ---
+    bool IsPdfBuffer(int buffer_id) const;
+    const PdfSession *GetPdf(int buffer_id) const;
+    // Pure geometry clamp only (mirrors ResizeImageViewport): re-clamps
+    // pan_x against the anchor page's on-screen width. Never triggers a
+    // re-render itself -- that's EnsurePdfPagesRastered's job, called
+    // separately (every frame from DrawPane, after this). Keeping the
+    // resize call side-effect-free avoids thrashing re-renders before
+    // HandlePdfInput's own zoom-band logic has settled.
+    void ResizePdfViewport(int buffer_id, int w, int h);
+    // Renders whichever of {page-1, page, page+1} aren't already cached at
+    // the current rendered_scale (clearing the whole cache first if
+    // rendered_scale changed since the last call), and evicts everything
+    // outside that window. Called once per frame from DrawPane, before
+    // reading pdfs_[...].rasters to draw -- cheap on a cache hit (the
+    // common case), so safe to call unconditionally every frame rather
+    // than only on state-change edges.
+    void EnsurePdfPagesRastered(int buffer_id);
+
+    // --- WYSIWYG office-document panes (opened via LoadFile for a
+    // .docx/.odt path -- see IsDocxPath/IsOdtPath in office_doc.h).
+    // Mirrors the Image/PDF-viewer blocks above. ---
+    bool IsOfficeBuffer(int buffer_id) const;
+    const OfficeSession *GetOffice(int buffer_id) const;
+    // Pure geometry setter (mirrors ResizePdfViewport): records
+    // viewport_w/h only, no scroll-follow logic -- unlike the plain text
+    // buffer, deciding whether cursor_para is currently visible needs
+    // word-wrap info (how many *visual* lines each paragraph occupies at
+    // the pane's width), which requires the loaded fonts/MeasureTextEx
+    // this raylib-free file deliberately doesn't have access to. That
+    // computation lives in main.cpp's DrawPane (which owns the fonts),
+    // computed on-demand each frame scoped to whatever's actually visible
+    // -- not cached here (see OfficeSession's own comment: only
+    // ~viewport-height's worth of paragraphs are ever wrapped in a given
+    // frame, not the whole document) -- which then calls SetOfficeScroll
+    // below if the cursor has scrolled out of view.
+    void ResizeOfficeViewport(int buffer_id, int w, int h);
+    // Toolbar click handler (main.cpp's office DrawPane branch,
+    // Phase 5) -- the same bold/italic/underline toggle
+    // HandleOfficeVisualInput's b/i/u keys perform, reachable from a
+    // mouse click instead. With an active Visual selection, toggles over
+    // it and drops back to OfficeNormal (matching the keybinding path
+    // exactly); with no selection (clicked from OfficeNormal), toggles
+    // just the single character at the cursor as a small but well-defined
+    // fallback rather than a no-op -- no "sticky" insert-mode formatting
+    // either way, consistent with the v1 exclusion.
+    void ToggleOfficeFormat(char which);
+    // True if `which` (b/i/u) is "on" at the cursor (OfficeNormal) or
+    // uniformly on across the current selection (OfficeVisual) -- drives
+    // the toolbar button's pressed-look. Read-only, mirrors
+    // ToggleFormatOverRange's own all-on check but without mutating
+    // anything.
+    bool OfficeFormatActive(char which) const;
+    // Sets scroll_para/scroll_line_in_para directly -- the one mutation
+    // point main.cpp's word-wrap-aware "is the cursor still visible"
+    // check (DrawPane) uses to scroll-follow the cursor, since that
+    // check's own logic must live in main.cpp (see ResizeOfficeViewport's
+    // comment) but the state it adjusts lives here.
+    void SetOfficeScroll(int buffer_id, int scroll_para, int scroll_line_in_para);
+
+    // --- Spreadsheet panes (opened via LoadFile for a .xlsx/.ods/.csv
+    // path -- see IsXlsxPath/IsOdsPath/IsCsvPath in sheet_doc.h). Mirrors
+    // the Office-pane block above. ---
+    bool IsSheetBuffer(int buffer_id) const;
+    const SheetSession *GetSheet(int buffer_id) const;
+    // Unlike ResizeOfficeViewport, this DOES do the full scroll-follow
+    // job itself (see SheetSession::scroll_row's own comment for why --
+    // fixed-size grid cells need no font measurement) -- records
+    // viewport_w/h and clamps scroll_row/scroll_col so the cursor cell
+    // stays visible, no main.cpp-side follow-up call needed.
+    void ResizeSheetViewport(int buffer_id, int w, int h);
+    // Non-const on purpose, called directly from main.cpp's DrawPane
+    // (which only ever sees a `const SheetSession*` via GetSheet) --
+    // mirrors EnsurePdfPagesRastered's own shape: on-demand mutation of
+    // cached state (here, EvaluateCell's memoized CellValue) driven by
+    // what's actually being rendered, not a side effect a const accessor
+    // could hide. Returns an Empty CellValue if buffer_id/row/col don't
+    // resolve to a real cell.
+    CellValue EvaluateSheetCell(int buffer_id, int row, int col);
 
     // --- Lua-facing API (called from lua_env.cpp bindings) ---
     std::string GetLineForLua(int row) const;  // 0-indexed
@@ -508,7 +975,19 @@ public:
     void SetStatusMessage(const std::string &msg);
     void RequestQuit() { should_quit_ = true; }
     void RegisterLuaCommand(const std::string &name, int lua_ref);
-    void RegisterLuaMapping(Mode mode, const std::string &key, int lua_ref);
+    // `description`: optional (empty = none), from mep.map's opts.desc --
+    // recorded in mapping_descriptions_ (private, below) for
+    // AllMappingDescriptions() to expose to the help picker.
+    void RegisterLuaMapping(Mode mode, const std::string &key, int lua_ref, const std::string &description = "");
+    // Every plain mep.map() binding that was given an opts.desc, for the
+    // help picker's keybinding introspection (NVIM_PARITY_PLAN.md Phase
+    // 25) -- separate from whichkey's own leader-sequence-only registry.
+    struct MappingDescription {
+        char mode;  // 'n' or 'v'
+        std::string key;
+        std::string description;
+    };
+    std::vector<MappingDescription> AllMappingDescriptions() const;
     // Binds a single letter key under the mod1 modifier (see SetMod1) to a
     // Lua callback, globally across all modes. `key` is a bare letter
     // ("h") for mod1+letter, or "S-"/"C-" prefixed ("S-h", "C-h") for
@@ -576,7 +1055,7 @@ public:
     // file-tree sidebar's data source) and command-line path completion
     // (UpdateCmdlineCompletion): native builds read the real filesystem;
     // wasm builds go through the same loopback bridge as LoadFile/SaveFile
-    // (empty when not launched via `just run`). Entries aren't sorted or
+    // (empty when not launched via `just run-wasm`). Entries aren't sorted or
     // filtered -- callers that want directories-first-then-alpha order
     // (both current callers do) sort the result themselves.
     struct DirEntry {
@@ -588,7 +1067,7 @@ public:
     // Persisted project-root bookmark list (mep.projects() picker, Phase
     // 16). Same native-vs-wasm-bridge split as ListDirectory: native reads/
     // writes $XDG_DATA_HOME/mep/projects.json directly; wasm routes through
-    // the `just run` loopback bridge (empty/no-op without one, e.g. a bare
+    // the `just run-wasm` loopback bridge (empty/no-op without one, e.g. a bare
     // browser tab).
     std::vector<std::string> ListProjects() const;
     void AddProject(const std::string &path);
@@ -621,27 +1100,49 @@ public:
     //   Prompt:  on_done(text) on Enter, on_done() [nil] on Escape.
     //   Confirm: on_done(true/false) always (Escape counts as false).
     //   Select:  on_done(1-indexed index) on Enter, on_done() [nil] on Escape.
-    void BeginPrompt(const std::string &title, const std::string &default_text, int on_done_ref);
+    void BeginPrompt(const std::string &title, const std::string &default_text, int on_done_ref,
+                      bool masked = false);
     void BeginConfirm(const std::string &message, bool default_yes, int on_done_ref);
     void BeginSelect(const std::string &title, std::vector<std::string> items, int on_done_ref);
+    // Preview: no callback -- purely informational (e.g. git-gutter's
+    // hunk preview), dismissed by any keypress or a click, restoring
+    // whatever mode was active before it opened. `text` may contain
+    // embedded '\n's; the renderer splits and draws one line each.
+    void BeginPreview(const std::string &title, const std::string &text);
 
     // Read access for main.cpp's renderer.
     const std::string &PromptTitle() const { return prompt_title_; }
     const std::string &PromptInput() const { return prompt_input_; }
+    bool PromptMasked() const { return prompt_masked_; }
     const std::string &ConfirmMessage() const { return confirm_message_; }
     bool ConfirmDefaultYes() const { return confirm_default_yes_; }
     const std::string &SelectTitle() const { return select_title_; }
     const std::vector<std::string> &SelectItems() const { return select_items_; }
     int SelectIndex() const { return select_index_; }
+    const std::string &PreviewTitle() const { return preview_title_; }
+    const std::string &PreviewText() const { return preview_text_; }
 
     // --- Theme engine (NVIM_PARITY_PLAN.md Part II Phase 9) ---
     // Applies a registered palette by name; false (no-op) if `name` isn't
     // registered. main.cpp's ResolveHlGroup() reads the resulting group
     // map -- everything colored through a named highlight group repaints
-    // automatically on the next frame, nothing needs to be told.
+    // automatically on the next frame, nothing needs to be told. The one
+    // exception is content baked into a cached GPU texture at draw time
+    // (the PDF viewer's theme-colored recoloring, see ThemedPdfChannel in
+    // main.cpp) -- that can't "just repaint" from a color lookup alone, so
+    // ApplyTheme also bumps ThemeEpoch() for exactly that kind of cache to
+    // key its own invalidation off of.
     bool ApplyTheme(const std::string &name);
     const std::string &CurrentThemeName() const { return current_theme_name_; }
     std::vector<std::string> ThemeNames() const;
+    // Bumped every time ApplyTheme actually changes current_theme_groups_.
+    // Exists for caches that bake a ResolveHighlight-derived color into
+    // something more expensive to redo than a per-frame redraw (currently
+    // just the PDF viewer's recolored page textures) -- comparing this
+    // catches a theme change even when nothing else about the cached
+    // content changed, which comparing only *that* content's own version
+    // (e.g. a PDF page's raster generation) would miss entirely.
+    int ThemeEpoch() const { return theme_epoch_; }
     // Exact-name lookup into the active theme's built group map; returns
     // false if `name` isn't a known group (caller decides the fallback --
     // main.cpp's ResolveHlGroup falls back to its substring heuristic so
@@ -667,6 +1168,11 @@ public:
     // za-equivalent: toggles the innermost fold containing the cursor's
     // row, if any.
     void ToggleFoldAtCursor();
+    // Toggles the innermost fold containing `row` directly, without moving
+    // the cursor there first -- used by the gutter fold-marker click
+    // dispatch (main.cpp's DrawPane), which knows the clicked buffer row
+    // but shouldn't relocate the cursor just to toggle a fold near it.
+    void ToggleFoldAtRow(int row);
     void CreateFold(int start_row, int end_row, bool closed, const std::string &provider = "manual");
     // Removes every fold tagged with `provider` (a provider recomputing
     // its folds calls this before re-adding, mirroring the decoration
@@ -711,8 +1217,27 @@ public:
     // for any letter besides N/P (already reserved for next/prev), so a
     // picker can offer its own shortcuts (e.g. mep.projects()'s Ctrl-A for
     // "add current directory", the same action as selecting that row).
+    // on_select_change_ref (may be 0/none) fires with the newly-highlighted
+    // item's `data` string every time the effective selection changes --
+    // arrow/Ctrl-N/Ctrl-P navigation, or the query narrowing to a different
+    // top match -- *before* Enter/Escape commit or cancel it. This is what
+    // lets a picker like mep.themes() live-preview each candidate as the
+    // cursor moves over it, not just on final selection.
+    // `raw_results`: skip Phase 8's own client-side FuzzyScore re-filter
+    // in PickerFilteredResults() and show `picker_items_` exactly as the
+    // source provided them (NVIM_PARITY_PLAN.md Phase 8's "async
+    // get_items(query, callback)" gap, closed for the one consumer that
+    // actually needs it: mep.live_grep). A dynamic source that already
+    // filtered server-side (ripgrep matching its own regex query) would
+    // otherwise get its results double-filtered by a *different*
+    // matching algorithm (fuzzy-subsequence) that can legitimately hide
+    // a real regex match whose special characters (`.`, `*`, ...) don't
+    // literally appear in the matched line. Static sources (find_files,
+    // buffers, commands, ...) leave this false and keep today's
+    // client-side fuzzy filtering exactly as before.
     void OpenPicker(const std::string &title, std::vector<PickerItem> items, int on_select_ref,
-                     int on_query_change_ref, int on_key_ref = 0);
+                     int on_query_change_ref, int on_key_ref = 0, int on_select_change_ref = 0,
+                     bool raw_results = false);
     void ClosePicker();
     // Unlike bare ClosePicker() (which only flips picker_open_/mode_,
     // leaving ref cleanup to the caller -- HandlePickerInput's Escape/Enter
@@ -728,7 +1253,55 @@ public:
     int PickerSelected() const { return picker_selected_; }
     // Recomputed on demand (not cached) from the current query -- items
     // scoring < 0 (no match) are dropped, the rest sorted by score desc.
+    // Returns `picker_items_` verbatim, unfiltered/unsorted, when the
+    // picker was opened with raw_results (see OpenPicker above).
     std::vector<PickerItem> PickerFilteredResults() const;
+
+    // --- Picker preview pane (NVIM_PARITY_PLAN.md Phase 8 gap, closed) ---
+    // mep.picker_set_preview(text): a source (e.g. find_files' on_select_
+    // change callback, reading the highlighted file) sets the text shown
+    // in a second column beside the results list; main.cpp's
+    // DrawPickerOverlay only draws that column, and only widens the box
+    // for it, when this is non-empty. Cleared on every OpenPicker() so a
+    // *later* unrelated picker doesn't inherit a stale preview from
+    // whatever was open before it.
+    void SetPickerPreview(const std::string &text) { picker_preview_text_ = text; }
+    const std::string &PickerPreview() const { return picker_preview_text_; }
+
+    // --- Roam backlink-graph view (NVIM_PARITY_PLAN.md Phase 37's flagged
+    // "no fuzzy backlink-graph visualization" gap, closed) ---
+    // `nodes[0]` must be the note the view was opened on (hop 0); the rest
+    // are placed by `hop` into concentric rings (see RoamGraphNode) around
+    // it, evenly spaced by angle within their own ring -- computed once
+    // here and left in `roam_graph_nodes_` for main.cpp's draw to consume,
+    // not recomputed per frame. `on_select_ref`, like OpenPicker's
+    // on_select, is called with the chosen node's `path` on Enter, or with
+    // no argument on Escape (mirrors mep.picker_open's nil-on-cancel
+    // convention) -- then unref'd either way by HandleRoamGraphInput.
+    void OpenRoamGraph(const std::string &title, std::vector<RoamGraphNode> nodes,
+                        std::vector<RoamGraphEdge> edges, int on_select_ref);
+    // Unlike bare mode restore, this also unrefs on_select_ref without
+    // calling it -- for mep.roam_graph_close() wanting the view gone with
+    // no callback fired (mirrors ClosePickerDiscardingCallbacks).
+    void CloseRoamGraphDiscardingCallback();
+    bool IsRoamGraphOpen() const { return roam_graph_open_; }
+    const std::string &RoamGraphTitle() const { return roam_graph_title_; }
+    const std::vector<RoamGraphNode> &RoamGraphNodes() const { return roam_graph_nodes_; }
+    const std::vector<RoamGraphEdge> &RoamGraphEdges() const { return roam_graph_edges_; }
+    const std::string &RoamGraphQuery() const { return roam_graph_query_; }
+    int RoamGraphSelected() const { return roam_graph_selected_; }
+    // Indices into RoamGraphNodes() that currently match the fuzzy filter
+    // (FuzzyScore against each node's title, reusing Phase 8's scorer --
+    // the plan's own suggestion to reuse the picker's fuzzy-match
+    // convention). Node 0 (the center note) always matches regardless of
+    // query, so the anchor never disappears. Empty query matches every
+    // node. main.cpp's draw dims/greys out any node *not* in this set
+    // instead of removing it, so the ring layout (and the edges into/out
+    // of a dimmed node) stays legible instead of reflowing every
+    // keystroke -- the "narrows which nodes are... highlighted" half of
+    // the plan's requirement, not the "shown" half, a deliberate choice
+    // documented in NVIM_PARITY_PLAN.md.
+    std::vector<int> RoamGraphFilteredIndices() const;
 
     // --- Whichkey (NVIM_PARITY_PLAN.md Part II Phase 11) ---
     void SetLeaderKey(char key) { leader_key_ = key; }
@@ -741,6 +1314,12 @@ public:
     // with the sequence's remainder (what's still left to type) -- what
     // DrawWhichKeyOverlay lists, and what narrows as the prefix grows.
     std::vector<std::pair<std::string, std::string>> WhichKeyMatches() const;
+    // Every registered leader-sequence binding, unfiltered by any typed
+    // prefix -- the leader-sequence half of the keybinding-introspection
+    // picker (mep.leader_bindings(), NVIM_PARITY_PLAN.md Phase 25), the
+    // other half being AllMappingDescriptions() (above) for plain
+    // mep.map() bindings.
+    std::vector<WhichKeyBinding> AllWhichKeyBindings() const { return whichkey_bindings_; }
 
     // --- Dashboard/scratch/zen (NVIM_PARITY_PLAN.md Part III Phase 12) ---
     // True exactly when the dashboard should render: single tab, single
@@ -797,6 +1376,31 @@ public:
     bool IsCompletionOpen() const { return completion_open_; }
     const std::vector<PickerItem> &CompletionItems() const { return completion_items_; }
     int CompletionSelected() const { return completion_selected_; }
+    // mep.set_completion_accept_hook(fn): fn(text) called (Phase 23
+    // LSP-snippet gap) right after AcceptCompletion splices `text` into the
+    // buffer verbatim, with the cursor already left at the end of it (so the
+    // hook can read mep.cursor()/mep.get_line() itself to find the span it
+    // just wrote). A Lua-side hook can look `text` up against whatever
+    // per-item metadata it cached (e.g. an LSP CompletionItem's
+    // insertTextFormat) and, if it turns out to have been a Snippet-format
+    // item, delete that raw span and re-expand it through
+    // mep.snippet_expand's own tabstop engine instead of leaving literal
+    // `$1`-style placeholder syntax sitting in the buffer. A no-op (word
+    // stays as plain inserted text) for every other completion source,
+    // which never sets this hook up to care.
+    void SetCompletionAcceptHookRef(int lua_ref) { completion_accept_hook_ref_ = lua_ref; }
+    // mep.set_insert_tab_hook(fn): fn(shift) -> bool, asked on every
+    // Insert-mode Tab/Shift-Tab press that the completion popup doesn't
+    // already claim (see HandleInsertInput) -- Phase 23's tabstop-cycling
+    // gap: previously Tab/Shift-Tab had no editor-wide binding at all
+    // (only the explicit :MepSnippetNext/:MepSnippetPrev commands), so a
+    // snippet mid-expansion couldn't be advanced with the key every other
+    // snippet-capable editor uses. Returning true tells HandleInsertInput
+    // the key was consumed (kBuiltinSnippets' hook jumps the tabstop and
+    // returns true only while mep_snippet_state is active); returning
+    // false leaves Tab a no-op, same as before this hook existed, since
+    // Insert mode has no other built-in Tab behavior to fall back to.
+    void SetInsertTabHookRef(int lua_ref) { insert_tab_hook_ref_ = lua_ref; }
 
     // --- Command-line completion (`:` command bar) -----------------------
     // Same Tab/Ctrl-N/Ctrl-P/Enter/Escape shape as the Insert-mode popup
@@ -825,8 +1429,56 @@ public:
     void SetStatuslineRef(int ref) { statusline_ref_ = ref; }
     int StatuslineRef() const { return statusline_ref_; }
 
+    // --- Winbar breadcrumb click hook (Part II Phase 11 click-dispatch gap) ---
+    // The per-pane header (main.cpp's DrawPane) renders the active buffer's
+    // path as clickable breadcrumb segments -- this is mep's winbar
+    // equivalent, just not (yet) a separate Lua-configurable widget row.
+    // `ref`, if set, is called with the clicked directory segment's path
+    // (e.g. "src" or "src/lua") on click; main.cpp's default handler (mep.
+    // winbar_navigate, kBuiltinPickerSources) opens a file picker scoped to
+    // that directory. 0/unset means breadcrumb segments render but clicks
+    // on them do nothing.
+    void SetWinbarClickRef(int ref) { winbar_click_ref_ = ref; }
+    int WinbarClickRef() const { return winbar_click_ref_; }
+
+    // Click-to-switch (Phase 11 click-dispatch gap): jump directly to tab
+    // `index` (clamped into range), unlike TabNext/TabPrevious's relative
+    // stepping -- public (unlike those two, invoked only via ex-commands
+    // through RunCommand) because DrawTabBar's click handler calls it
+    // directly for an immediate response, the same reasoning as
+    // ToggleFoldAtRow below.
+    void GoToTab(int index);
+
+    // --- Hover tooltip (NVIM_PARITY_PLAN.md Phase 3 gap, closed) ---
+    // A small non-modal floating window anchored near the cursor -- unlike
+    // Prompt/Confirm/Select/Preview above, this does *not* change `mode_`
+    // or steal input (mirrors DrawCompletionPopup's "coexists with the
+    // active mode" shape, Phase 22): it's just an overlay main.cpp draws
+    // on top of whatever mode is active whenever IsHoverOpen() is true.
+    // Auto-dismiss-on-move (the plan's literal wording): the cursor
+    // position at the moment ShowHover() was called is snapshotted; the
+    // very next HandleInput() call where the cursor no longer matches (or
+    // Normal mode was left, or Escape was pressed) closes it. Checked once
+    // per frame from the top of HandleInput() via MaybeDismissHover().
+    void ShowHover(const std::string &title, const std::string &text);
+    void CloseHover() { hover_open_ = false; }
+    bool IsHoverOpen() const { return hover_open_; }
+    const std::string &HoverTitle() const { return hover_title_; }
+    const std::string &HoverText() const { return hover_text_; }
+
 private:
+    // Closes an open hover tooltip once the cursor has moved away from
+    // where it was when ShowHover() opened it, or the mode is no longer
+    // Normal, or Escape was just pressed. Called at the top of
+    // HandleInput(), before dispatching to the active mode's handler.
+    void MaybeDismissHover();
     void HandleNormalInput();
+    // The per-character body of HandleNormalInput's own GetCharPressed()
+    // drain loop, factored out so HandleNormalInput's bare-hjkl fast path
+    // (see its own comment) can invoke the exact same leader-key/Lua-
+    // mapping/ProcessNormalKey handling a queued character would have
+    // gotten, without duplicating it.
+    void HandleNormalChar(int cp, bool no_pending_state);
     void HandleInsertInput();
     void HandleVisualInput();
     void HandleCommandInput();
@@ -839,8 +1491,10 @@ private:
     void HandlePromptInput();
     void HandleConfirmInput();
     void HandleSelectInput();
+    void HandlePreviewInput();
     void HandleSidebarInput();
     void HandlePickerInput();
+    void HandleRoamGraphInput();
     void HandleWhichKeyInput();
     void HandleHintCharInput();
     void HandleHintLabelInput();
@@ -880,6 +1534,160 @@ private:
     void TerminalWrite(TerminalSession &sess, const std::string &bytes);
     void TerminalResizeBackend(TerminalSession &sess, int cols, int rows);
     void TerminalKillBackend(TerminalSession &sess);
+    // h/j/k/l and arrow keys pan; ':' and the leader key are forwarded
+    // (EnterCommand/TriggerWhichKey) so the command line and whichkey/
+    // leader mappings keep working; everything else is a no-op -- there's
+    // no text to insert/operate on. See Mode::Image's own comment.
+    void HandleImageInput();
+    // Finds-or-creates the buffer for `path` (same filename dedup
+    // FindOrCreateBuffer uses) and, on a new open, decodes `bytes` via
+    // ImageDoc and registers the ImageSession. Called from LoadFile once it
+    // has read the file's raw bytes (native ifstream or the wasm
+    // mep_js_read_file_binary bridge -- see the comment above that
+    // function). Leaves CurPane()'s buffer switched to it on success; on a
+    // decode failure, sets status_message_ and leaves the current pane
+    // untouched.
+    void OpenImageInPlace(const std::string &path, const unsigned char *bytes, size_t len);
+    // Same shape as HandleImageInput, plus: h/j/k/l + arrows scroll
+    // continuously (h/l pan horizontally within the anchor page; j/k
+    // scroll vertically, crossing page boundaries smoothly rather than
+    // hard-cutting -- see PdfSession's own comment). Ctrl-f/Ctrl-b/
+    // PageDown/PageUp jump a full page, gg/G to the first/last (reusing
+    // pending_g_ -- see OpenPdfInPlace's reset of it). +/-/= zoom like
+    // HandleImageInput's apply_zoom, folding drift into rendered_scale
+    // (clearing the raster cache) when it leaves its settled band.
+    // Ctrl-R toggles PdfSession::theme_colors. '/' starts a text search
+    // (delegates to HandlePdfSearchInput while sess.search_active), n/p
+    // jump to the next/previous match (GotoPdfMatch) once one exists.
+    void HandlePdfInput();
+    // While sess.search_active: captures Escape (cancel, discarding
+    // search_input but leaving any prior completed search's highlights
+    // alone), Enter (submit -- runs RunPdfSearch and jumps to the first
+    // match at/after the current page via GotoPdfMatch), Backspace, and
+    // all other character input into sess.search_input, instead of the
+    // normal pan/zoom/page-nav keys HandlePdfInput handles otherwise.
+    void HandlePdfSearchInput(PdfSession &sess);
+    // Case-insensitive document-wide search (PdfDoc::Search) for `query`,
+    // replacing sess.search_query/search_matches and resetting
+    // search_current to -1 (caller -- HandlePdfSearchInput or a
+    // freshly-changed query -- is responsible for calling GotoPdfMatch to
+    // pick an actual current match afterward). Also refreshes `highlights`
+    // on every currently-cached page raster (RecomputePdfPageHighlights)
+    // so already-rendered pages don't need a full re-render just because
+    // the search changed.
+    void RunPdfSearch(PdfSession &sess, const std::string &query);
+    // Recomputes PageRaster::highlights for every page currently in
+    // sess.rasters from sess.search_matches -- called by RunPdfSearch
+    // (query changed) and by EnsurePdfPagesRastered for a page that just
+    // entered the render window (its raster is new, so it has no
+    // highlights yet even if a search was already active).
+    void RecomputePdfPageHighlights(PdfSession &sess);
+    // Jumps to search_matches[index] (wrapping around either end so n/p
+    // cycle through the whole document): sets page/pan_x/scroll_y so the
+    // match is in view (vertically centered where possible), and updates
+    // search_current. No-op if search_matches is empty.
+    void GotoPdfMatch(PdfSession &sess, int index);
+    // Mirrors OpenImageInPlace exactly (dedup-by-filename, decode, register
+    // the session, explicit pending_g_ reset to avoid gg/G leakage from
+    // whatever mode was active before opening this PDF). Doesn't render
+    // anything itself -- EnsurePdfPagesRastered (called from DrawPane
+    // every frame, including the first) handles that lazily.
+    void OpenPdfInPlace(const std::string &path, const unsigned char *bytes, size_t len);
+    // Looks up (and memoizes into sess.page_size_pt) a page's point-space
+    // size -- PdfPageSizePt(sess, i) -- and its resulting on-screen pixel
+    // height at the session's current rendered_scale/zoom --
+    // PdfPageScreenHeightPx(sess, i). Used by both EnsurePdfPagesRastered
+    // (which pages are in the {page-1,page,page+1} window) and
+    // HandlePdfInput's scroll-rebase math (crossing a page boundary needs
+    // to know how tall the page just scrolled past/into is).
+    std::pair<double, double> PdfPageSizePt(PdfSession &sess, int page_index);
+    float PdfPageScreenHeightPx(PdfSession &sess, int page_index);
+    // Word-wrap-oblivious paragraph navigation (h/l within
+    // doc.paragraphs[cursor_para].text, j/k to the prev/next paragraph,
+    // gg/G to the first/last -- see Mode::OfficeNormal's own comment for
+    // why this doesn't need to know about visual line wrapping at all).
+    // ':' and the leader key are forwarded exactly like HandlePdfInput.
+    // 'i'/'a' enter Mode::OfficeInsert (PushUndoOffice snapshotting first,
+    // vim's own "one undo per insert session" convention), 'v' enters
+    // Mode::OfficeVisual.
+    void HandleOfficeNormalInput();
+    // Char insert, Enter (SplitParagraphAt), Backspace/Delete
+    // (ApplyDeleteToParagraph within a paragraph, MergeParagraphs across a
+    // paragraph boundary) -- mirrors HandleInsertInput's GetKeyPressed()-
+    // for-Escape/Enter/Backspace-then-GetCharPressed()-for-typing split,
+    // but operates on OfficeSession/DocParagraph instead of Buffer, so it
+    // doesn't go through ProcessInsertKey (tightly coupled to
+    // CursorPos/Buffer -- dot-repeat/macro recording, which that owns,
+    // isn't in v1 scope for Office anyway, matching Visual-mode operations'
+    // own noted scope-out in VIM_PARITY_PLAN.md's Phase 9).
+    void HandleOfficeInsertInput();
+    // Selection is [min(anchor,cursor), max(anchor,cursor)) by
+    // paragraph+col comparison (OfficeSession::has_selection/sel_anchor_*).
+    // b/i/u toggle bold/italic/underline over the selection
+    // (ToggleFormatOverRange) and return to OfficeNormal, matching vim's
+    // own "operator over a Visual selection returns to Normal" convention;
+    // hjkl/gg/G extend the selection using the same motions as
+    // HandleOfficeNormalInput.
+    void HandleOfficeVisualInput();
+    // Snapshot-based undo push (mirrors PushUndo()'s own call-site
+    // convention -- once per insert-session/operator, never per
+    // keystroke): copies doc.paragraphs onto undo_stack and clears
+    // redo_stack. Called on entering Mode::OfficeInsert and before a
+    // Visual-mode format toggle.
+    void PushUndoOffice();
+    // 'u'/Ctrl-R in Mode::OfficeNormal -- mirror Undo()/Redo()'s own
+    // push-the-opposite-stack-then-swap shape, operating on
+    // OfficeSession::undo_stack/redo_stack instead of Buffer's.
+    void UndoOffice();
+    void RedoOffice();
+    // Mirrors OpenPdfInPlace exactly (dedup-by-filename, decode, register
+    // the session, explicit pending_g_ reset). Keeps a copy of `bytes` in
+    // the new session's original_bytes for a future save (Phase 4) to
+    // copy untouched ZIP entries from.
+    void OpenOfficeInPlace(const std::string &path, const unsigned char *bytes, size_t len);
+    // 2D grid navigation: hjkl/arrows move the active cell one row/col;
+    // gg/G/0/$ jump to the grid's corners (first/last used row, first/last
+    // used column, per Sheet::max_row/max_col). ':' and the leader key are
+    // forwarded exactly like HandleOfficeNormalInput. 'i'/'a' enter
+    // Mode::SheetInsert seeded with the current cell's raw text
+    // (PushUndoSheet first); 'v' enters Mode::SheetVisual; 'u'/Ctrl-R
+    // undo/redo; a clear-cell/range key (Delete, or a dd-equivalent)
+    // blanks the current cell or Visual selection via SetCellRaw(...,"").
+    void HandleSheetNormalInput();
+    // Edits SheetSession::edit_buffer as a plain string (no rich-text
+    // spans to preserve -- a cell's raw text is either a literal or a
+    // formula, nothing in between); Enter/Escape commits it into the
+    // cell via SetCellRaw and exits to SheetNormal, Enter additionally
+    // moving the cursor down one row (a real spreadsheet's own "Enter
+    // commits and advances" convention, distinct from Office/the main
+    // buffer's Insert-mode Escape/Enter handling).
+    void HandleSheetInsertInput();
+    // Selection is [min(anchor,cursor), max(anchor,cursor)] independently
+    // on each axis (SheetSession::has_selection/sel_anchor_row/col) -- a
+    // rectangular cell range, not a text span. hjkl extend it; a
+    // clear-range key blanks every cell in it.
+    void HandleSheetVisualInput();
+    // Snapshot-based undo push (mirrors PushUndoOffice's own convention):
+    // copies wb onto undo_stack and clears redo_stack. Called once per
+    // edit commit (entering SheetInsert, or a Visual-mode clear), never
+    // per keystroke.
+    void PushUndoSheet();
+    void UndoSheet();
+    void RedoSheet();
+    // Mirrors OpenOfficeInPlace exactly (dedup-by-filename, decode,
+    // register the session, explicit pending_g_ reset). Keeps a copy of
+    // `bytes` in the new session's original_bytes for a future save to
+    // copy untouched ZIP entries from (xlsx/ods only -- csv has no
+    // container to copy through).
+    void OpenSheetInPlace(const std::string &path, const unsigned char *bytes, size_t len);
+    // Sets mode_ to Mode::Image if the active pane's buffer is image-backed,
+    // or drops Mode::Image back to Mode::Normal if it just stopped being
+    // so -- called from every site that can change which buffer/pane is
+    // active (NavigatePaneDirection, buffer/tab switching, pane close) so
+    // plain hjkl always means the right thing for whatever's now focused.
+    // Independent of the analogous Mode::Terminal <-> Mode::Normal checks
+    // already at each of those sites (untouched by this).
+    void SyncModeToActivePaneBuffer();
     SidebarInstance *FindSidebarMut(int id);
     // Shared cleanup for all three overlay modes: restores
     // overlay_previous_mode_. Callers invoke+unref the Lua callback
@@ -917,6 +1725,16 @@ private:
         // on mode_ at replay time.
         kReplayInsertCtrlW = -7,
         kReplayInsertCtrlU = -8,
+        // Ctrl-V (Visual Block entry): unlike every other printable Visual-
+        // mode key, real input reaches it via HandleNormalInput's
+        // GetKeyPressed()-queue Ctrl-combo scan (no char event while Ctrl is
+        // held -- see that function's own comment), not GetCharPressed(), so
+        // it has no natural printable-codepoint encoding of its own. Routed
+        // through ProcessNormalKey with this sentinel (which special-cases
+        // it ahead of DispatchNormalKey, itself never seeing it) so it
+        // participates in `.`/macro recording exactly like plain 'v'/'V'
+        // already did.
+        kReplayCtrlV = -9,
     };
     // Normal-mode key entry point used by both real input (HandleNormalInput)
     // and replay (RepeatLastChange/PlayMacro): wraps DispatchNormalKey with
@@ -927,6 +1745,35 @@ private:
     // InsertNewline/Backspace/DeleteForward/EnterNormal from either a real
     // keystroke or a replayed one (see ReplayKey above).
     void ProcessInsertKey(int key);
+    // Visual-mode (Visual/VisualLine/VisualBlock) equivalent of
+    // ProcessNormalKey/ProcessInsertKey: wraps DispatchVisualKey (the actual
+    // per-key body formerly inlined in HandleVisualInput's own loop) with
+    // the same macro/`.`-repeat bookkeeping. A Visual "change" spans every
+    // key from mode entry (v/V/Ctrl-V, already recorded by ProcessNormalKey
+    // -- see IsMidNormalCommand's Visual-mode carve-out below) through the
+    // operator that finally commits it, so unlike Normal mode's "one
+    // top-level key = one command" boundary, this doesn't reset
+    // change_scratch_ at the start of every call; it only *finalizes* it,
+    // and only at two points: (1) an operator that exits back to Normal
+    // (d/x/y/~/u/U -- c and Visual Block I/A go to Insert instead, deferred
+    // to ProcessInsertKey's own Escape-triggered commit, same as Normal-mode
+    // `c{motion}`), detected as "we're in Normal mode with nothing else
+    // pending right after this key's dispatch"; (2) '>'/'<', which
+    // deliberately keep you in Visual mode afterward (see their own case in
+    // DispatchVisualKey) so further presses can indent again -- detected as
+    // "this exact keystroke edited the buffer and we're still in Visual
+    // mode afterward" (the only way that combination happens), which
+    // commits *without* clearing change_scratch_/change_recording_active_,
+    // so a later `.` of an in-progress multi-`>` session replays the whole
+    // accumulated sequence rather than just the last bare '>'.
+    void ProcessVisualKey(int key);
+    // The actual per-key Visual-mode dispatch (register/count/find/g-prefix/
+    // text-object/motion resolution, then the d/x/y/~/c/u/U/>/</I/A/o
+    // switch) -- called once per key by ProcessVisualKey. Every `codepoint`
+    // must be a plain printable 1-127 char, same restriction DispatchNormalKey
+    // has (no ReplayKey sentinels -- Escape is handled by HandleVisualInput
+    // itself before the char loop, same as Normal mode's own bare Escape).
+    void DispatchVisualKey(int codepoint);
     // True while any pending_* state means the *next* key is a continuation
     // of an in-progress command rather than the start of a new one --
     // shared by ProcessNormalKey's "did a command just finish" check and by
@@ -988,8 +1835,26 @@ private:
     // last line. `before`: true for P-style (insert starting at `at.col`
     // itself), false for p-style (starting one column after).
     void PasteBlockAt(CursorPos at, const std::vector<std::string> &block, bool before);
+    // Lands the current pane on one jumplist entry (see PushJump/
+    // JumpListBack/JumpListForward): switches CurPane().buffer_id first if
+    // the entry belongs to a different buffer than the one currently
+    // shown, then sets and clamps the cursor -- same shape as
+    // SwitchToBufferForLua's own buffer-switch-then-clamp pattern.
+    void GoToJumpEntry(const JumpEntry &entry);
     void EnterCommand();
     void EnterSearch(bool forward);
+    // Live-updates the "__mep_incsearch" decoration namespace (VIM_PARITY_
+    // PLAN.md Phase 4's incsearch stretch item) from the in-progress
+    // search_query_: previews the cursor at the next match of the
+    // in-progress query from search_anchor_ (restoring the cursor to
+    // search_anchor_ first, so each keystroke re-searches from the same
+    // origin rather than drifting off the previous keystroke's preview
+    // position) and highlights it with the "IncSearch" hl group, or shows
+    // nothing if the query is empty or has no match. Called after every
+    // keystroke HandleSearchInput processes; also responsible for clearing
+    // the namespace and restoring the cursor when the caller (Escape/Enter)
+    // is done with the preview.
+    void UpdateIncSearch();
 
     // Plain substring search (no regex -- see VIM_PARITY_PLAN.md's Phase 4
     // stretch item) for `pattern`, one occurrence in the given direction
@@ -1024,8 +1889,48 @@ private:
     // Records `pos` as the current buffer's "previous jump position" --
     // call with the cursor's position *before* moving it, from every
     // "big jump" (G, gg, a search, a mark jump) so ``/'' has somewhere to
-    // return to.
+    // return to. Also pushes onto the current pane's full jumplist (see
+    // PushJump) -- the two mechanisms are recorded together since they
+    // fire from exactly the same set of "big jump" call sites, but kept as
+    // separate storage (has_last_jump/last_jump_from vs. Pane::jumplist)
+    // rather than rebuilding ``/'' on top of the jumplist, per
+    // VIM_PARITY_PLAN.md's "don't replace the existing mechanism" note.
     void RecordJumpFrom(CursorPos pos);
+
+    // Full jumplist (Ctrl-O/Ctrl-I), Vim's list+index model: pushes `pos`
+    // (in buffer `buffer_id`) onto the current pane's jumplist, truncating
+    // any forward ("Ctrl-I-able") history past the current index first,
+    // same as a new undo-able edit truncates redo history.
+    void PushJump(CursorPos pos, int buffer_id);
+    // Ctrl-O / Ctrl-I: step backward/forward through the current pane's
+    // jumplist, switching buffers if the landed-on entry belongs to a
+    // different one. No-ops at either end of the list, matching Vim's
+    // silent (bell-only) behavior there.
+    void JumpListBack();
+    void JumpListForward();
+
+    // Ctrl-C Ctrl-C in a .org buffer: runs the same org-babel
+    // "execute the source block at the cursor" machinery :MepOrgBabelExecute
+    // already calls (mep.org_babel_execute(), registered by src/main.cpp's
+    // embedded Lua) -- looked up in lua_commands_ (the same registry the
+    // ':' command-line's own Lua-command fallback consults) and invoked
+    // directly, rather than constructing and feeding a literal
+    // ":MepOrgBabelExecute" string through the full command-line parser.
+    // A no-op in a non-.org buffer, or (mep_org_src_block_at's own
+    // existing "nil if not in a block" handling) when the cursor isn't
+    // actually inside a #+begin_src block -- neither case is re-checked
+    // here, avoiding a second copy of that logic in C++.
+    void TryRunOrgBabelAtCursor();
+
+    // Shifts every mark in the current buffer to account for `count` lines
+    // having been inserted (count > 0) or removed (count < 0, |count| lines
+    // gone) starting at row `at_row` -- call *after* the underlying
+    // Buf().lines.insert/erase so LineCount() already reflects the new
+    // state. A mark pointing strictly inside a deleted range clamps to
+    // `at_row` rather than going stale or out of bounds (VIM_PARITY_PLAN.md
+    // Phase 5's noted stretch goal: marks otherwise just sit at their
+    // original {row, col} snapshot and drift out from under the text).
+    void ShiftMarksForLineEdit(int at_row, int count);
 
     int LineLen(int row) const;
     void ClampCursor();
@@ -1108,6 +2013,21 @@ private:
     CursorPos FirstNonBlank(int row) const;
     CursorPos MoveParagraphForward(CursorPos from) const;
     CursorPos MoveParagraphBackward(CursorPos from) const;
+    // ( / ): sentence motions. Vim's sentence definition: a sentence ends
+    // at '.', '!', or '?', optionally followed by any number of closing
+    // ')', ']', '"', '\'' characters, followed by end-of-line or a space/
+    // tab -- landing on the first non-blank character of the next
+    // sentence. A blank line is also a sentence (and paragraph) boundary.
+    // Modeled directly on MoveParagraphForward/Backward above (same
+    // row/col walking style, same count-handling in ResolveMotion).
+    CursorPos MoveSentenceForward(CursorPos from) const;
+    CursorPos MoveSentenceBackward(CursorPos from) const;
+    // Shared scan used by both directions above: finds the start of the
+    // next sentence at-or-after `from` (the boundary-matching pattern is
+    // awkward to scan right-to-left but trivial left-to-right, so
+    // MoveSentenceBackward walks this forward from the top of the buffer
+    // instead of implementing a separate backward matcher).
+    CursorPos NextSentenceStart(CursorPos from) const;
     CursorPos MoveMatchingBracket(CursorPos from) const;
 
     // Applies operator `op` ('d', 'y', 'c', 'u'/'U' for gu/gU, or '>'/'<'
@@ -1122,6 +2042,12 @@ private:
     // the final result into the unnamed register too, exactly as Vim does
     // regardless of which named register (if any) was targeted.
     void YankRange(CursorPos start, CursorPos end, bool linewise, char reg_name = 0, bool append = false);
+    // Shared charwise/linewise substring-joining logic behind both
+    // YankRange and the public CurrentVisualSelectionText() -- factored
+    // out so the two can't silently diverge. `end` follows YankRange's
+    // own convention: exclusive column for charwise, inclusive row for
+    // linewise.
+    std::string ExtractRangeText(CursorPos start, CursorPos end, bool linewise) const;
     // Per-character case transform over a range shaped the same way as
     // DeleteRange/YankRange above. `mode`: 'u' lowercase, 'U' uppercase,
     // '~' toggle.
@@ -1288,6 +2214,21 @@ private:
     // after the process exits (so its scrollback stays viewable) until
     // the pane itself closes.
     std::unordered_map<int, TerminalSession> terminals_;
+    // Keyed by buffer_id -- one entry per open image-viewer pane. Unlike
+    // terminals_, never reaped: an image buffer has no live process to
+    // outlive its pane, and (like every other Buffer) staying reachable
+    // from the buffer picker/`:buffers` after its last pane closes matches
+    // how a closed text buffer's entry in buffers_ also just keeps existing.
+    std::unordered_map<int, ImageSession> images_;
+    // Keyed by buffer_id -- one entry per open PDF-viewer pane, same
+    // never-reaped lifetime reasoning as images_ above.
+    std::unordered_map<int, PdfSession> pdfs_;
+    // Keyed by buffer_id -- one entry per open WYSIWYG office-document
+    // pane, same never-reaped lifetime reasoning as images_ above.
+    std::unordered_map<int, OfficeSession> officedocs_;
+    // Keyed by buffer_id -- one entry per open spreadsheet pane, same
+    // never-reaped lifetime reasoning as images_ above.
+    std::unordered_map<int, SheetSession> sheetdocs_;
     // Ctrl-\ Ctrl-N (the exit-terminal-mode chord, matching Vim/Neovim's
     // own convention) needs one key of lookahead: a bare Ctrl-\ has to
     // reach the child (some programs bind it, e.g. SIGQUIT) unless the
@@ -1308,6 +2249,7 @@ private:
     // reads it every frame rather than caching, so it's always current.
     std::string current_theme_name_;
     std::unordered_map<std::string, ThemeColor> current_theme_groups_;
+    int theme_epoch_ = 0;  // bumped by ApplyTheme; see ThemeEpoch()'s own comment
 
     Mode mode_ = Mode::Normal;
     // R (Replace mode): true while Mode::Insert should overwrite instead of
@@ -1321,10 +2263,29 @@ private:
     // (Backspace there removes it instead of "restoring" a character).
     std::vector<char> replace_overwritten_;
 
+    // Insert-mode Ctrl-O (distinct from Normal-mode Ctrl-O's jumplist --
+    // Vim itself disambiguates the two purely by which mode you're in when
+    // you press it): drops into Mode::Normal for exactly one command, then
+    // hops back to Insert automatically. Set when Ctrl-O is pressed in
+    // Insert; ProcessNormalKey checks it after every dispatched key (the
+    // same "is a command still mid-flight" test it already uses for change
+    // recording) and flips back once the one command has actually finished.
+    bool insert_one_shot_normal_ = false;
+    // Remembers whether Replace mode (`R`) was active before the one-shot
+    // started, since EnterNormal() unconditionally clears replace_mode_ --
+    // restored when hopping back to Insert so `R<C-o>...` resumes as Replace,
+    // not plain Insert.
+    bool insert_one_shot_was_replace_ = false;
+
     // --- Modal overlay state (Prompt/Confirm/Select) ---
     Mode overlay_previous_mode_ = Mode::Normal;
     std::string prompt_title_, prompt_input_;
     int prompt_callback_ref_ = 0;
+    // Masked/hidden-echo input (e.g. an API key prompt): the real typed
+    // text still lives in prompt_input_ (and is what on_done_ref receives
+    // unchanged) -- only main.cpp's DrawPromptOverlay renders '*' in its
+    // place when this is set. See mep.ui_input's opts.masked/opts.password.
+    bool prompt_masked_ = false;
     std::string confirm_message_;
     bool confirm_default_yes_ = false;
     int confirm_callback_ref_ = 0;
@@ -1332,6 +2293,7 @@ private:
     std::vector<std::string> select_items_;
     int select_index_ = 0;
     int select_callback_ref_ = 0;
+    std::string preview_title_, preview_text_;
 
     std::vector<SidebarInstance> sidebars_;
     int next_sidebar_id_ = 1;
@@ -1346,26 +2308,53 @@ private:
     int picker_on_select_ref_ = 0;
     int picker_on_query_change_ref_ = 0;
     int picker_on_key_ref_ = 0;
+    int picker_on_select_change_ref_ = 0;
+    bool picker_raw_results_ = false;
+    std::string picker_preview_text_;
+
+    bool roam_graph_open_ = false;
+    std::string roam_graph_title_;
+    std::vector<RoamGraphNode> roam_graph_nodes_;
+    std::vector<RoamGraphEdge> roam_graph_edges_;
+    std::string roam_graph_query_;
+    int roam_graph_selected_ = 0;
+    int roam_graph_on_select_ref_ = 0;
 
     std::vector<WhichKeyBinding> whichkey_bindings_;
     char leader_key_ = ' ';
     std::string whichkey_prefix_;
     int statusline_ref_ = 0;
+    int winbar_click_ref_ = 0;
     bool zen_mode_ = false;
 
     std::vector<HintMatch> hint_matches_;
     std::string hint_typed_;
 
     int completion_source_ref_ = 0;
+    int completion_accept_hook_ref_ = 0;
+    int insert_tab_hook_ref_ = 0;
     bool completion_open_ = false;
     std::vector<PickerItem> completion_items_;
     int completion_selected_ = 0;
     int completion_word_start_col_ = 0;
+    // UpdateCompletionPopup's own throttle state -- see its definition
+    // (editor.cpp) for why: without this, it re-runs the completion
+    // source (an O(buffer size) Lua scan for the default word-based
+    // source) every single frame Insert mode is active with a 2+ char
+    // prefix, not just on frames where a character was actually typed.
+    std::string completion_last_query_prefix_;
+    double completion_last_query_time_ = -1e18;
 
     bool cmdline_completion_open_ = false;
     std::vector<PickerItem> cmdline_completion_items_;
     int cmdline_completion_selected_ = 0;
     int cmdline_completion_word_start_ = 0;
+
+    // --- Hover tooltip state (see ShowHover/MaybeDismissHover above) ---
+    bool hover_open_ = false;
+    std::string hover_title_;
+    std::string hover_text_;
+    CursorPos hover_anchor_pos_{};
 
     std::string command_line_;
     std::string status_message_;
@@ -1392,6 +2381,13 @@ private:
     std::string search_query_;
     std::string last_search_;
     bool last_search_forward_ = true;
+    // The cursor position when the current /{...} or ?{...} prompt was
+    // opened (EnterSearch) -- both the origin incsearch previews matches
+    // from and what Escape restores the cursor to on cancel. Also doubles
+    // as the range start for a search used as an operator motion
+    // (`d/foo<Enter>`) when no operator is pending, mirroring
+    // pending_op_start_ for the case where one is.
+    CursorPos search_anchor_;
 
     // :set options (Phase 11) -- deliberately a small, fixed set of plain
     // bools rather than a general options table, matching the plan's own
@@ -1399,6 +2395,7 @@ private:
     bool ignore_case_ = false;
     bool wrapscan_ = true;
     bool show_line_numbers_ = false;
+    bool show_cursorline_ = true;
 
     // Command-line/search history (Phase 11) -- Up/Down browse
     // command_history_/search_history_ from most-recent backward.
@@ -1460,8 +2457,41 @@ private:
     bool pending_mark_set_ = false;
     // Ctrl-W waiting for a second key (window commands: w/W/c/s/v).
     bool pending_ctrl_w_ = false;
+    // Ctrl-C waiting for a second Ctrl-C (org-babel "execute this source
+    // block", mirroring real Emacs org-mode's own C-c C-c binding).
+    // Unlike pending_g_/pending_ctrl_w_'s second key (an ordinary
+    // unmodified char, consumed via HandleNormalChar's char loop), BOTH
+    // taps of this chord hold Ctrl, so neither ever produces a
+    // GetCharPressed() char event -- both are read from the raw
+    // GetKeyPressed() key-code queue instead (see HandleNormalInput's own
+    // Ctrl-combo comment), which makes a "next different key clears the
+    // pending state" rule impractical to hook in cleanly here; a short
+    // timeout (kCtrlCChordTimeoutSec) is used instead.
+    bool pending_ctrl_c_ = false;
+    double pending_ctrl_c_time_ = 0.0;
     // 'z' waiting for a second key (scroll commands: z/t/b).
     bool pending_z_ = false;
+    // Per-key state for HandleNormalInput's bare-hjkl fast path (see its
+    // own comment for the wasm/webview lag this exists to fix). Index:
+    // 0=h, 1=j, 2=k, 3=l.
+    struct MotionRepeatState {
+        // GetTime() this key was last observed to go down (IsKeyDown
+        // false -> true), or -1 while it's up. A *duration* below some
+        // threshold is deliberately not enough on its own to call this a
+        // "hold" -- see HandleNormalInput's own comment on why -- this
+        // only becomes meaningful once (now - down_since) clears
+        // kMotionHoldConfirmSec.
+        double down_since = -1.0;
+        // GetTime() until which a queued repeat of this key should be
+        // discarded rather than acted on -- extended every frame the key
+        // is down and the hold is confirmed, so it's always fresh at the
+        // moment of release; left alone (not reset) once release starts
+        // it counting down, so a late-arriving stale notification within
+        // that window gets discarded even though the key itself has
+        // already gone back up.
+        double discard_until = -1.0;
+    };
+    MotionRepeatState motion_repeat_[4];
     // Accumulates digits typed before a command (e.g. the "5" in "5j");
     // 0 means no count was typed. See TakeRawCount().
     int pending_count_ = 0;
@@ -1558,11 +2588,16 @@ private:
     std::string block_insert_typed_;
 
     static constexpr size_t kMaxUndo = 200;
+    static constexpr size_t kMaxJumplist = 100;
     // ResizeActivePane's default step when the caller doesn't pass one:
     // 5% of the split's extent per call, and the floor either side of a
     // resize is clamped to so neither pane can be squeezed to nothing.
     static constexpr float kDefaultResizeStep = 0.05f;
     static constexpr float kMinPaneShare = 0.05f;
+    // Max gap (wall-clock seconds, see Now()) between the two Ctrl-C
+    // presses of a Ctrl-C Ctrl-C chord -- see pending_ctrl_c_'s own
+    // comment for why a timeout, not a "next key clears it" rule.
+    static constexpr double kCtrlCChordTimeoutSec = 0.6;
 
     bool should_quit_ = false;
 
@@ -1575,6 +2610,15 @@ private:
     std::unordered_map<std::string, int> normal_mappings_;      // key -> lua ref
     std::unordered_map<std::string, int> visual_mappings_;      // key -> lua ref
     std::unordered_map<std::string, int> mod1_mappings_;        // key -> lua ref
+    // Optional human-readable description for a mep.map() binding, keyed
+    // by "<mode-char>:<key>" (e.g. "n:gcc", "v:gc") so Normal/Visual
+    // mappings of the same key text can't collide. Populated only when
+    // the caller passes opts.desc -- entirely separate from whichkey's
+    // own WhichKeyBinding registry (leader-sequence only), this is the
+    // *general* mep.map registry AllMappingDescriptions() (public, above)
+    // exposes for the help picker's keybinding introspection
+    // (NVIM_PARITY_PLAN.md Phase 25).
+    std::unordered_map<std::string, std::string> mapping_descriptions_;
 };
 
 #endif  // MEP_EDITOR_H

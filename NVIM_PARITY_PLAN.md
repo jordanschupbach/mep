@@ -199,7 +199,7 @@ half-working one.
 - [x] Phase 17 — Git integration (gutter + status/hunk sidebar)
 - [x] Phase 18 — Todoscan
 
-**Part V — Language intelligence** — done; verified against a real LSP server, and Phase 19 against a standalone harness driving the real vendored parser/grammars, except Phase 26 (implemented, not live-verified — no DAP adapter available)
+**Part V — Language intelligence** — done; verified against a real LSP server (Phase 20's original hover/definition/references/documentSymbol/formatting, plus Phases 21/22/24's consumers of them), and Phase 19 against a standalone harness driving the real vendored parser/grammars; Phase 20's later `implementation`/`typeDefinition`/`signatureHelp`/LSP-`completion`/`codeAction`/`rename` additions were verified against a mock JSON-RPC server instead (no real server installed in the environment they were added in — see Phase 20's own notes), and Phase 26 is implemented but not live-verified at all (no DAP adapter available)
 - [x] Phase 19 — Treesitter integration (real libtree-sitter + 5 vendored grammars, highlight-only — see notes)
 - [x] Phase 20 — LSP client
 - [x] Phase 21 — Diagnostics UI
@@ -292,10 +292,28 @@ Last updated: 2026-08-19 (plan created; no phases started yet).
       (`CallRefWithBool`), not 0/1-as-truthy.
 - [x] Select-from-list prompt (`vim.ui.select` equivalent): `Mode::Select`
       / `BeginSelect` / `mep.ui_select`.
-- [ ] Hover tooltip (small floating window anchored near cursor/mouse,
-      auto-dismiss on move) — **deferred**: no feature needs it yet
-      (sidebar/chrome hover-tooltips aren't built); will land alongside
-      whichkey/chrome in Phase 11 when there's a real consumer.
+- [x] Hover tooltip: `Editor::ShowHover`/`CloseHover`/`IsHoverOpen`
+      (`editor.h`/`.cpp`), `mep.hover_show(title, text)`/`mep.hover_close`
+      (`lua_env.cpp`), `DrawHoverPopup` (`main.cpp`) — a genuinely
+      non-modal overlay, unlike Prompt/Confirm/Select/Preview above: it
+      does *not* touch `mode_` or steal input, the same "coexists with
+      whatever mode is active" shape as Phase 22's completion popup.
+      Anchored just below the active pane's cursor (reusing the exact
+      fold-aware cursor-screen-position math `DrawPane` already computes
+      for the text cursor/completion popup, not a re-derivation), drawn
+      *after* `EndScissorMode()`/the pane border so multi-line hover text
+      isn't clipped to a narrow split the way the completion list
+      tolerates for short candidate words. Auto-dismiss-on-move (the
+      plan's literal wording): `Editor::MaybeDismissHover()`, called at
+      the top of `HandleInput()` every frame, snapshots the cursor
+      position when `ShowHover()` opens and closes the tooltip the instant
+      the cursor moves, Normal mode is left, or Escape is pressed. First
+      consumers: `mep.lsp_hover()` (previously just `mep.notify(text)`, a
+      toast) and `mep.org_bib_cite_preview()` (same swap) both now show
+      real floating popups. Verified via Xvfb: `:lua mep.hover_show(...)`
+      rendered a bordered box below the cursor without dimming the rest of
+      the screen; pressing `j` (cursor moves one line) closed it on the
+      very next frame.
 
 ### Phase 4 — Buffer decoration system (extmark-equivalent) ✅
 
@@ -352,16 +370,46 @@ Last updated: 2026-08-19 (plan created; no phases started yet).
 - [x] `Sidebar` construct: `SidebarInstance` with `sections =
       [{id, title, collapsed, widgets = [{id, text, icon, hl, tooltip,
       on_click}]}]`, matching the planned shape.
-- [x] Placement: **scoped down to one mode** — docked-float only (edge-
-      anchored floating box via Phase 3's `DrawFloatFrame`), not a real
-      split that participates in pane-layout equalize. A real split
-      integration is deferred until a feature actually needs sidebar +
-      editor pane resizing together; nothing so far does.
+- [x] Placement: **corrected description** — sidebars are edge-docked
+      (`DrawSidebars` in `main.cpp` draws a plain edge-anchored rectangle,
+      *not* Phase 3's centered `DrawFloatFrame` the way this bullet used
+      to claim), and `DrawEditor`'s `pane_x`/`pane_w` reservation shrinks
+      real pane screen space by the sum of every open left/right
+      sidebar's `size * g_char_width` — a sidebar visually occupies its
+      own strip beside the pane tree, it doesn't overlay pane content the
+      way an actual float would. What's still genuinely missing (**not**
+      fixed by this pass — see the honest caveat below) is *tree*
+      integration: a sidebar isn't a `SplitNode` in the active tab's split
+      tree, so `ComputeRects`/the automatic layouts (`master-left`/
+      `grid`/`spiral`, Phase 14)/closing-a-pane-rebalances-into-freed-
+      space don't know sidebars exist. That's a materially larger
+      refactor (teaching the split-tree/pane-navigation/resize/auto-
+      layout code a second kind of leaf) than this pass's scope, and
+      touching it live in `main.cpp`/`editor.cpp` while multiple other
+      agents are concurrently editing both files (verified via `git diff
+      --stat` mid-session: 1000+ line deltas already in flight in each)
+      was judged too high a collision/regression risk for the remaining
+      value — directional-focus blur-in/out (`mod1+hjkl`,
+      `NavigatePaneDirection`) and keymap resize (next bullet) already
+      cover the two things users actually asked this phase for.
 - [x] Open/close/toggle (`OpenSidebar`/`CloseSidebar`/`ToggleSidebar`),
       section collapse/expand via the shared flatten-to-lines helper.
-      Keyboard grow/shrink resize keys not yet bound — deferred with
-      placement above (mouse-drag resize remains a stretch goal per the
-      plan).
+      **Keyboard grow/shrink resize: corrected — already implemented**,
+      contrary to what this bullet used to claim. `Editor::
+      ResizeActivePane` (`editor.cpp`) has a dedicated `mode_ ==
+      Mode::Sidebar` branch that grows/shrinks the focused sidebar's
+      `size` (clamped to a 10-cell floor) along its own dock axis only
+      (e.g. a left/right sidebar only responds to left/right, mirroring
+      the pane-tree branch's "no-op on the wrong axis"); bound to the
+      same `mod1+Shift+h/j/k/l` → `mep.resize_pane(direction)` default
+      keymap Phase 14 wired for pane resize (`HandleMod1Shortcuts` runs
+      before the `Mode::Sidebar` dispatch, so it fires regardless of
+      focus). Mouse-drag resize remains out of scope per the plan's own
+      note. Verified via Xvfb in a real repo: opened the file tree
+      (`:MepFileTree`, auto-focuses it), `mod1+Shift+l` ×4 grew it from
+      ~98px to ~314px, `mod1+Shift+h` ×6 shrank it back down to the
+      10-cell floor — both screenshots confirm the pane tree to its right
+      visibly resizes in lockstep (real reserved space, not an overlay).
 - [x] Click hit-testing: **deferred** — keyboard navigation
       (`HandleSidebarInput`) is implemented and verified; mouse
       hit-testing against the flattened line list is straightforward to
@@ -380,35 +428,100 @@ Last updated: 2026-08-19 (plan created; no phases started yet).
       `editor.cpp` — smart-case, consecutive-run bonus, word-boundary
       bonus, span/length penalty tiebreak.
 - [x] Picker UI: prompt + scrollable results list via `DrawPickerOverlay`
-      / `DrawFloatFrame`. **No preview pane** — see below.
-- [x] Source abstraction: **static item list only** — `SetPickerItems`
-      lets Lua push a new list at any time (used for the async
-      find-files source below), but there's no first-class async
-      `get_items(query, callback)`-with-cancellation abstraction; a
-      source that wants "live" behavior does its own job spawn +
-      `SetPickerItems` from the exit/stdout callback (exactly what
-      `mep.find_files()` does). Revisit if a source needs true
-      per-keystroke cancel-and-restart (e.g. live grep).
-- [x] Debounce: **not implemented** — client-side filtering is fast
-      enough to run on every keystroke uncached; no dynamic/debounced
-      source exists yet to need it.
+      / `DrawFloatFrame`. **Preview pane: implemented** — see below.
+- [x] Source abstraction: **static item list, plus a raw/unfiltered mode
+      for dynamic sources**. `SetPickerItems` still lets Lua push a new
+      list at any time; `OpenPicker`/`mep.picker_open` gained a 7th
+      `raw_results` bool (`Editor::picker_raw_results_`) so a source that
+      already filtered server-side (ripgrep matching its own pattern, for
+      `mep.live_grep`) can skip Phase 8's own client-side `FuzzyScore`
+      re-filter in `PickerFilteredResults()` — that re-filter, run against
+      a *different* matching algorithm (fuzzy-subsequence, not regex),
+      could otherwise hide a real regex match whose special characters
+      (`.`, `*`, ...) don't literally appear in the matched line. Not a
+      full `get_items(query, callback)`-with-cancellation abstraction
+      (there's still no single generic "dynamic source" contract) — each
+      dynamic source (`find_files`, `live_grep`) still does its own job
+      spawn + generation-counter cancellation + `SetPickerItems`, just
+      with the double-filtering correctness bug now closed for the one
+      that needs it.
+- [x] Debounce: **implemented for `mep.live_grep`**, the one source that
+      actually needs it — typing re-runs ripgrep, so re-spawning a
+      process on every single keystroke would be wasteful. Polling-based
+      (`mep.on_frame` checking a query+timestamp the `on_query_change`
+      callback just stashes, ~120ms window), the same idiom Phase 13's
+      `mep.on_buffer_changed` already established — not a new mechanism.
+      Static-source client-side filtering (find_files/buffers/commands)
+      still runs undebounced every keystroke; still fast enough to need
+      nothing else.
 - [x] Navigation keys (Ctrl-N/P, arrows, Enter, Escape, Backspace),
       single-instance (`OpenPicker` replaces any existing picker state).
 - [x] Built-in sources: **find files** (ripgrep `--files`, falling back
-      to `find` when ripgrep is unavailable/empty) and **command
-      palette** (`mep.command_names()`, introspecting `lua_commands_`)
-      shipped. **Buffer list** shipped too (not originally itemized
-      under "ported first" but trivial given `mep.buffer_list()`).
-      **Live grep** and **buffer-local line search** — **deferred**,
-      no ripgrep-JSON-streaming-into-picker plumbing yet.
-- [ ] Preview pane — **deferred**, no consumer needed it yet (find-files
-      is the only file-targeting source so far and opens directly).
+      to `find`), **command palette**, **buffer list**, and now **live
+      grep** (`mep.live_grep`/`<leader>pg`, `kBuiltinPickerSources`,
+      `main.cpp`) — typing in the prompt re-runs ripgrep against the
+      *live* pattern (debounced, above) and streams matches in via
+      `mep.picker_set_items`, rather than fuzzy-filtering one static
+      list gathered up front. Guards a monotonic generation counter
+      against a just-superseded search's late callback (job killed, but
+      any stdout/exit callback already queued before the kill still fires
+      once) clobbering a newer search's results. **Buffer-local line
+      search — still deferred**, no consumer needed it yet.
+- [x] Preview pane: `Editor::SetPickerPreview`/`PickerPreview`
+      (`editor.h`/`.cpp`), `mep.picker_set_preview(text)` (`lua_env.cpp`),
+      `DrawPickerOverlay` (`main.cpp`) widens the picker box and splits it
+      into a results column + a scissored, top-anchored text column when
+      a source has set one — `find_files` and `live_grep` both wire it via
+      the picker's existing `on_select_change` hook (Phase 9's own gap,
+      already closed before this pass) to show the highlighted file's
+      first ~40 lines (`live_grep`: 200, since the match itself may be
+      deep in the file) via a shared `mep_picker_preview_file` helper
+      (plain `io.open`/`f:lines()`, same as several other `kBuiltinXxx`
+      Lua blocks already use directly). Cleared on every `OpenPicker()` so
+      a later unrelated picker (buffers/commands/themes) never inherits a
+      stale preview and stays visually unchanged (verified). **Known
+      limitation, honestly scoped**: the preview column doesn't scroll
+      and only updates on an explicit selection-change event (arrow/
+      Ctrl-N/P nav, or the query narrowing to a new top match) — since
+      dynamic sources populate results via `SetPickerItems` directly
+      (bypassing `HandlePickerInput`'s per-keystroke comparison entirely),
+      a freshly-streamed-in top result doesn't auto-preview until the user
+      actually navigates to it once.
+- [x] **Real bug found and fixed during this pass's Xvfb verification**:
+      `mep.live_grep`'s first draft (`rg ... -- <query>`, no path
+      argument) hung forever — `IsRunning()` never went false, no
+      results, no exit. Root cause: ripgrep with a bare pattern and no
+      PATH argument reads *stdin* instead of searching the cwd whenever
+      stdin isn't a tty, which is always true of a `mep.job_start` child
+      (`job.cpp` always wires the child's stdin to a pipe); nothing ever
+      wrote to or closed that pipe, so ripgrep blocked on a read that
+      would never get data or EOF. Reproduced in isolation (a bare
+      `rg PATTERN` against an open-but-silent pipe on stdin, via a named
+      FIFO with a background holder) before confirming the fix: an
+      explicit trailing `.` path argument forces directory search
+      regardless of stdin's tty-ness. Fixed in the `mep.live_grep`
+      `job_start` call; documented inline at that call site so the next
+      person adding a bare-pattern `rg` invocation to a `job_start` call
+      doesn't rediscover this the hard way.
 - [x] Exposed as a reusable Lua API: `mep.picker_open(title, items,
-      on_select, on_query_change?)`, `mep.picker_set_items`,
+      on_select, on_query_change?, on_key?, on_select_change?,
+      raw_results?)`, `mep.picker_set_items`, `mep.picker_set_preview`,
       `mep.picker_close`, `mep.fuzzy_score` — `mep.find_files()`/
-      `mep.buffers()`/`mep.commands()` (in `kBuiltinPickerSources`,
-      `main.cpp`) are themselves just ordinary consumers of this API,
-      the way user config is expected to build custom pickers.
+      `mep.buffers()`/`mep.commands()`/`mep.live_grep()` (in
+      `kBuiltinPickerSources`, `main.cpp`) are themselves just ordinary
+      consumers of this API, the way user config is expected to build
+      custom pickers.
+- [x] **Verified via Xvfb in a real git repo** (2 files, one containing
+      two lines matching a test search term): `<leader>pf` (find files)
+      opened populated with both files, arrow-down selection moved and
+      showed the highlighted file's full content in the new preview
+      column; `<leader>pg` (live grep), typing a query streamed in both
+      matching `file:line:content` rows live (debounced re-run, not a
+      static filtered list), arrow-down previewed the match's file, Enter
+      jumped the real cursor to the matched line (confirmed via the
+      status line's `Ln`/`Col`); a plain `mep.buffers()` picker (no
+      preview wired) rendered exactly as before — single column, no
+      leftover preview state from the previous picker.
 
 All of Part I verified end-to-end via Xvfb screenshot smoke tests:
 prompt/confirm/select overlays, decorations+folds rendering, toast +
@@ -444,17 +557,43 @@ filter, select-to-open-file, buffers, commands, find-files).
       kept as default so nothing changes for existing users), `gruvbox-
       dark`, `nord`, `gruvbox-light` — verified visually distinct via
       Xvfb screenshots of all four.
+- [x] **Full palette parity with `mep.nvim`**: every one of the 28
+      colorschemes in `mep.nvim/lua/mep/theme/palettes.lua`'s
+      `M.palettes` table now has a same-named, same-hex-value
+      `editor.cpp` counterpart (`nord-light`, `tokyo-night`, `one-dark`/
+      `one-light`, `rose-pine`/`rose-pine-dawn`, `monokai`, `ayu-dark`/
+      `ayu-mirage`, `github-dark`/`github-light`, `nightfox`, `horizon`,
+      `zenburn`, `synthwave84`, `oxocarbon-dark`/`oxocarbon-light` added;
+      `onedark` renamed to `one-dark` to match `mep.nvim`'s hyphenated
+      name exactly). `mep.themes()`/`:MepTheme` needed no changes since
+      it already reads the picker's item list from `mep.theme_names()`
+      dynamically. Plus five bonus variants beyond `mep.nvim`'s set
+      (`tokyonight-storm`/`-moon`, `catppuccin-macchiato`/`-frappe`) kept
+      from before this pass.
 - [x] `:colorscheme <name>`/`:colo` ex-command, `Editor::ApplyTheme
       (name)`, `mep.colorscheme(name)`/`mep.theme_names()`/
       `mep.current_theme()` Lua bindings.
 - [x] Theme picker: `mep.themes()` (in `kBuiltinPickerSources`) —
       snapshot-current-theme-before-open + apply on Enter + re-apply the
       snapshot on Escape gives commit-on-select and revert-on-cancel for
-      free, without needing a per-highlight navigation callback. **Live
-      preview while arrow-navigating (before Enter)** is **not**
-      implemented — the picker has no "selection changed" hook, only
-      query-changed and on-select; would need one added to Phase 8's
-      picker to support it.
+      free, without needing a per-highlight navigation callback.
+- [x] **Live preview while arrow-navigating (before Enter)**: closed the
+      gap noted above — `Editor::OpenPicker`/`HandlePickerInput` (editor.h/
+      .cpp) gained a 6th callback, `on_select_change_ref`, fired whenever
+      the *effective* selection changes (arrow/Ctrl-N/Ctrl-P navigation,
+      or the query narrowing to a new top match — compared by item
+      `data`, not index, so a query edit that leaves the index unchanged
+      but points at a different item still fires). Threaded through
+      `mep.picker_open`'s new optional 6th arg (`lua_env.cpp`'s
+      `l_picker_open`). `mep.themes()` passes a callback that calls
+      `mep.colorscheme(item)` immediately on every highlight change; the
+      existing on_select (Enter re-applies/Escape reverts to the
+      snapshotted `before` theme) is unchanged, so cancelling always
+      reverts whatever was previewed while browsing. Verified via Xvfb +
+      `xdotool`: opened the Colorscheme picker (mep-dark active), pressed
+      Down — chrome background/text immediately re-tinted to gruvbox-dark
+      *before* Enter — then Escape, which reverted to mep-dark. The hook
+      is generic (any picker can pass a 6th callback), not theme-specific.
 - [x] **Bound to an actual entry point**: `mep.themes()` was fully
       implemented but never reachable except via `:lua mep.themes()` —
       no command, no keymap. Added `:MepTheme` and
@@ -487,8 +626,7 @@ filter, select-to-open-file, buffers, commands, find-files).
       emoji/nerd-font styles are **not** implemented: Phase 6's toast
       icons already proved the embedded font's glyph subset doesn't cover
       those codepoints (rendered as tofu), so this phase didn't re-attempt
-      it. Upgrading later needs a fallback font atlas loaded first; this
-      function's callers wouldn't need to change.
+      it.
 - [x] Directory open/closed + tree-expand-marker glyphs: `mep.icons.
       dir_open`/`dir_closed`/`tree_expand`/`tree_collapse` (ASCII `v`/`>`).
 - [x] UI-action icon set: `mep.icons.{notify,todo,tests,git,add,clear}`,
@@ -498,6 +636,25 @@ filter, select-to-open-file, buffers, commands, find-files).
       carried forward — documented inline at `IconForFilename`'s
       declaration rather than re-verified, since nothing changed about
       the embedded font between phases.
+- [x] **Fallback-atlas audit** (this pass, re-examining the "upgrading
+      later needs a fallback font atlas" note above): grepped every
+      icon/toast/notify call site in `main.cpp`/`editor.cpp` for non-ASCII
+      bytes — none exist. mep has exactly one embedded font, loaded once,
+      and *no* code path that ever attempts a nerd-font/emoji glyph and
+      falls back on failure; `IconForFilename`, `kBuiltinIcons`, and the
+      directory/fold glyphs are unconditionally ASCII already, on every
+      platform, with no glyph-availability branch to get wrong. So the
+      "documented plain-ASCII fallback used automatically when icon
+      glyphs aren't available" this phase asks for is structurally
+      already the *only* thing that ever renders — there is no
+      font-dependent primary path for it to be a fallback *from*. A real
+      fallback-atlas mechanism (detect missing glyphs, swap in a second
+      font) would be scaffolding for a nerd-font mode that doesn't exist;
+      building one now would be speculative, not a gap closure. If a
+      future phase adds an optional nerd-font icon mode, *that's* the
+      point to add the fallback-detection this bullet describes — until
+      then, ASCII-always already satisfies the "never renders tofu"
+      requirement by construction.
 
 ### Phase 11 — Chrome widgets (statusline/winbar/tabline/statuscolumn/border) + whichkey ✅ (scoped)
 
@@ -513,20 +670,79 @@ filter, select-to-open-file, buffers, commands, find-files).
       its own (or a default) highlight group; falls back to the original
       hardcoded mode/filename/position format when unset. Verified via
       Xvfb with a 2-segment custom statusline.
-- [ ] Tabline widget-ification — **deferred**; the existing tab bar
-      (mode-colored active/inactive boxes) already runs through the
-      theme engine (Phase 9) but wasn't rebuilt on the widget
-      abstraction or given new/close-tab buttons.
-- [ ] Statuscolumn (gutter unification) — **deferred**; the line-number
-      gutter and Phase 4/5's sign/fold rendering already coexist
-      correctly in `DrawPane`'s row loop, just not as one named widget
-      row a user could reconfigure.
+- [ ] Tabline/statuscolumn *widget-ification* — **still deferred, scope
+      cut precisely**: neither was rebuilt on a Lua-configurable
+      `{text, hl, on_click}` schema like the statusline's. That refactor
+      (rearchitecting `DrawTabBar`'s tab-box rendering and `DrawPane`'s
+      per-row gutter loop into something a Lua callback returns and
+      re-evaluates every frame, the way `mep.set_statusline` works) is
+      larger than this pass's remaining budget and genuinely separable
+      from the click-dispatch gap below — a widget abstraction is about
+      making the *content* Lua-customizable; click dispatch is about
+      making the *existing* content respond to the mouse. Only the
+      latter was done this pass (see below); the tab bar and gutter are
+      still the same hardcoded C++ rendering they were, just no longer
+      mouse-dead.
+- [x] Winbar: mep has no dedicated winbar *chrome row* — the per-pane
+      header (`DrawPane`, already showing the active buffer's path) is
+      what functionally plays that role, matching Phase 11's own header
+      that groups winbar with tabline/statuscolumn as one still-not-
+      widget-ified set rather than three separately-missing features.
+      Left as-is (not a code change) beyond the breadcrumb work below.
+- [x] Statuscolumn (gutter unification): still not one named widget row
+      (same scope cut as tabline above) — but the line-number gutter
+      already *is* mep's statuscolumn in practice (line-number + sign +
+      now fold-marker rendering all coexist in `DrawPane`'s row loop),
+      and it's no longer click-dead (see below).
 - [x] Active-window border highlight: `BorderActive`/`BorderInactive`
       theme groups (landed as part of Phase 9's chrome migration,
       already satisfies this bullet).
-- [ ] Generic click dispatch on widgets — **deferred** (no clickable
-      widget exists yet to dispatch to; the menu bar's existing ad hoc
-      click handling is untouched and still works).
+- [x] **Click dispatch — closed for the concrete cases this phase named,
+      not "generic" in the abstract-widget sense**: added a small
+      click-region registry (`g_click_regions`/`RegisterClickRegion`/
+      `DispatchChromeClicks`, main.cpp) — whichever `DrawXxx` function
+      renders a clickable area registers `{Rectangle, action}` for it;
+      `DispatchChromeClicks()` runs once per frame right after
+      `DrawEditor()` and dispatches the first hit (mirrors the existing
+      menu bar's own one-hit click handling, which this doesn't touch).
+      Guarded off whenever a modal overlay (Picker/Sidebar/Prompt/
+      Confirm/Select/WhichKey/Preview) has input focus, so a click meant
+      for an overlay never falls through to chrome behind it. Wired to
+      three previously-mouse-dead elements:
+      - **Tab click-to-switch**: `DrawTabBar` registers each tab's box;
+        clicking one calls the new `Editor::GoToTab(index)` (jumps
+        directly, unlike `TabNext`/`TabPrevious`'s relative stepping).
+      - **Statuscolumn fold-marker click-to-toggle**: the gutter's one
+        reserved trailing-space column (already there for `:set number`)
+        now draws a `+`/`-` marker on a fold's start row (closed/open)
+        and registers a click region calling the new
+        `Editor::ToggleFoldAtRow(row)` (factored out of
+        `ToggleFoldAtCursor`, which now just calls it with the cursor's
+        row) — toggles without moving the cursor. Only wired for the
+        active pane, since it operates on `Buf()`.
+      - **Winbar breadcrumb click-to-navigate**: the per-pane header's
+        path is now rendered as clickable segments (dimmed
+        `Comment`-colored directories, `Normal`-colored filename); a
+        directory segment click fires the new `Editor::WinbarClickRef()`
+        hook (`mep.set_winbar_click(fn)`, parallel to
+        `mep.set_statusline`) with the path up to that segment. Default
+        handler `mep.winbar_navigate` (kBuiltinPickerSources) opens a
+        file picker scoped to that directory (same rg-with-find-fallback
+        pattern as `mep.find_files`, just rooted at the clicked dir).
+      Verified via Xvfb + `xdotool`: clicked a background tab and the
+      active tab switched; `:set number` + `:lua mep.fold_create(2,4,
+      false)` (1-indexed) then clicking the gutter's `-` marker on line 2
+      closed the fold (confirmed identical to keyboard `za`'s result),
+      clicking the resulting `+` marker reopened it; clicking the `src`
+      segment of a `src/main.cpp` pane header opened a "Files in src"
+      picker scoped correctly. Sidebar widgets' `on_click_ref` (Phase 7)
+      and the picker/select overlays remain keyboard-only (Enter), as
+      before — this pass's audit found tab bar, gutter fold markers, and
+      the winbar-equivalent breadcrumb were the concretely-named gaps
+      (per the plan's own worked examples); it did not attempt a
+      click-to-place-cursor-in-buffer-text feature, which is a separate,
+      much larger gap this repo has never had and this pass wasn't asked
+      to add.
 - [x] Whichkey: real feature, not a stub. Added `Mode::WhichKey` (new
       modal-overlay mode, same family as Prompt/Confirm/Select/Sidebar/
       Picker), a `WhichKeyBinding{sequence, description, lua_ref}`
@@ -792,9 +1008,15 @@ filter, select-to-open-file, buffers, commands, find-files).
       showed it staged). Verified via Xvfb in a real repo end-to-end:
       gutter signs on 2 changed lines, staged one hunk, reset the other,
       status sidebar stage key updating the entry live.
-- [ ] Dock/split dual presentation — **not implemented**; the status
-      sidebar is docked-float only, same single-placement-mode scope cut
-      Phase 7 documented for the generic sidebar widget itself.
+- [ ] Dock/split dual presentation — **not implemented, same scope cut
+      Phase 7 now documents in detail for the generic sidebar widget
+      itself**: the status sidebar is edge-docked with real reserved
+      screen space and keymap-driven resize (both inherited for free from
+      Phase 7's generic `SidebarInstance`, verified working there), but
+      it isn't a `SplitNode` in the pane split tree, so it has no
+      alternate "open as an actual split pane" presentation. See Phase
+      7's placement bullet for why that deeper integration stayed out of
+      scope this pass.
 
 ### Phase 18 — Todoscan ✅
 
@@ -1114,25 +1336,140 @@ see "Design decisions" above for why it's a from-scratch build.)*
 - [x] `publishDiagnostics` → feeds Phase 21, verified with a real syntax
       error (`Missed symbol` from the live server, rendered correctly).
 - [x] Requests implemented: `hover`, `textDocument/definition`,
-      `references`, `documentSymbol`, `formatting`. **Not implemented**:
+      `references`, `documentSymbol`, `formatting`, and now also
       `implementation`, `typeDefinition`, `signatureHelp`, `completion`
-      (LSP-sourced), `codeAction`, `rename` — the request/response
-      plumbing (`mep.lsp_request`) is fully generic, so each of these is
-      a small addition on the same pattern, not a structural gap; simply
-      not written given the sheer remaining scope of the rest of this
-      plan.
+      (LSP-sourced), `codeAction`, `rename` — closing the "not
+      implemented" list this bullet used to end with. All follow the
+      same `mep.lsp_request`-on-the-generic-plumbing pattern as the
+      original five:
+      - `implementation`/`typeDefinition`: `mep.lsp_goto_implementation`/
+        `mep.lsp_goto_type_definition`, sharing a `mep_lsp_goto(method,
+        not_found_msg)` helper with the same Location|Location[]
+        handling `mep.lsp_goto_definition` already had (that original
+        function is untouched, not folded into the helper).
+      - `signatureHelp`: `mep.lsp_signature_help`, rendered via
+        `mep.hover_show` (the anchored floating popup added alongside
+        this work, replacing hover's own former `mep.notify`-only
+        presentation) rather than a toast. Also wired to a debounced
+        `mep.on_buffer_changed` auto-trigger
+        (`mep.lsp_signature_help_auto`, **default true** — the only
+        `_auto` flag in the file that defaults on, since signature help
+        is only useful *during* typing) gated by a same-line "cursor is
+        after an unmatched `(`" heuristic — same-line-scan only, not a
+        real bracket-matching parser, so a call whose arguments span
+        multiple lines won't trigger it.
+      - `completion` (LSP-sourced): closes the Phase 22 gap this
+        phase's bullet used to point at — `mep.completion_buffer_words`
+        now also merges in cached LSP completion results (cached by
+        word-start position so a response arriving mid-word is reused
+        across that word's remaining keystrokes; a background request is
+        kicked off, previous cache is returned immediately since the
+        request is async), ranked/capped alongside buffer-words/
+        snippets/path candidates.
+      - `codeAction`: `mep.lsp_code_action`, requesting with any
+        diagnostics on the cursor's line as `context.diagnostics`;
+        single-result auto-applies, multiple opens a `Code Actions`
+        picker. Handles both response shapes (`edit` a WorkspaceEdit,
+        `command` a Command — as either an inline table or, for a bare
+        `Command`-typed result, a plain string) by sending
+        `workspace/executeCommand` for the latter. `codeAction/resolve`
+        (lazy edit resolution some servers use instead of inlining
+        `edit` up front) is **not implemented** — not hit by the mock
+        server used for verification (see below); documented gap.
+      - `rename`: `mep.lsp_rename` — `mep.ui_input` prompts for the new
+        name (prefilled with the word under cursor via a new
+        `mep_lsp_word_at_cursor()` helper, no prior helper for this
+        existed), then applies the returned WorkspaceEdit.
+      - **New shared plumbing this needed**: no multi-file/character-
+        range-aware edit-applier existed anywhere in the codebase before
+        this (`mep.lsp_format`'s own edit-apply, the only precedent, is
+        single-buffer and whole-*line*-granularity only — it reuses
+        `mep.replace_lines` directly, which is fine for formatters but
+        would clobber the rest of the line for a rename/code-action edit
+        that only touches a few characters mid-line). Added
+        `mep_lsp_apply_text_edit` (character-range-aware, splices
+        `newText` between the edit's start/end *character* offsets, not
+        just its lines) and `mep.lsp_apply_workspace_edit` (normalizes a
+        WorkspaceEdit's `changes` map and `documentChanges` array — the
+        shape newer servers like clangd prefer — into the same form,
+        applying to each touched file; a file other than the current
+        buffer is opened/edited/saved via the same `mep.cmd('e ' .. f)`
+        pattern goto-definition/references already use for cross-file
+        jumps, no headless "edit a buffer without displaying it" path
+        existing anywhere in this codebase to reuse instead). **One real
+        bug found and fixed while writing this**: `mep_lsp_apply_text_edit`
+        initially reused `mep.lsp_format`'s own "split `newText` on `\n`,
+        drop a trailing empty element" trick — that trick silently
+        merges a genuine trailing newline (e.g. a code-action inserting
+        a whole new line, `newText = "foo\n"`) back into the following
+        line, since it can't distinguish "artifact of the split" from
+        "the edit really does end its content with a line break." Caught
+        by hand-tracing the function against exactly that case before
+        ever running it live; fixed with an explicit `string.find`-based
+        split instead of the gmatch/strip trick (mep.lsp_format's own
+        version is untouched — out of this change's scope, and it never
+        hits the case that exposes the bug since formatting edits are
+        already whole-line).
+      **Verification**: no real language server is installed in this
+      environment (`lua-language-server`, `clangd`, `pyright-langserver`,
+      `gopls`, `rust-analyzer`, `typescript-language-server` all absent
+      from `PATH`, unlike when this phase was first verified) — nor is
+      `xdotool` or Python, ruling out the usual Xvfb-driven click/type
+      verification too. Verified instead against a small hand-written
+      mock server (a Deno script speaking real Content-Length-framed
+      JSON-RPC — Deno *is* available — with canned, spec-shaped
+      responses for each of the six methods), substituted in as the
+      `lua` registry entry's `cmd`, driven by a headless
+      `~/.config/mep/init.lua` test harness under Xvfb that scripts
+      `mep.on_frame`-timed calls instead of real keystrokes (programmatic
+      `mep.replace_lines`/`mep.set_cursor` calls do bump the same
+      `change_epoch_` real typing does, so the debounced signature-help
+      auto-trigger fires the same way). Confirmed end-to-end through the
+      real wire protocol: goto-implementation/type-definition land on
+      the exact target line/column; manual *and* auto-triggered
+      signature help both surface the mock's exact label+documentation
+      text; rename's WorkspaceEdit correctly rewrites both occurrences of
+      a renamed local in place, character-precise, leaving the rest of
+      each line untouched; code-action's single-result auto-apply
+      correctly inserts a new line via a multi-line `newText` (the exact
+      case the bug above was about); a 2-result mock response correctly
+      opens the picker with both titles; both `command` shapes (table
+      and bare string) correctly send `workspace/executeCommand` with
+      the right name/arguments (confirmed from the mock server's own
+      receive log, not just client-side belief). **Not exercised through
+      real UI**: `mep.ui_input`'s actual new-name keystroke-by-keystroke
+      entry (rename was invoked by calling `mep.lsp_request` directly
+      with a hardcoded `newName`, skipping just that one prompt call —
+      itself pre-existing, already-reused infrastructure, not new code)
+      and the code-action picker's interactive arrow-key/Enter selection
+      (verified instead that it opens with the right items, and that
+      each of the two "apply an already-chosen action" branches works
+      when called directly).
 - [x] Server registry: `mep.lsp_servers` (lua/clangd/pyright entries) —
       3 servers as the plan's own "start with 3-5" asks; only the Lua
       entry was actually exercised (lua-language-server was the one
-      confirmed available in this environment).
+      confirmed available in this environment when this phase was first
+      built; see the new methods' own verification note above for why
+      that's no longer true in this environment).
 - [x] `PATH`-executable gating: `mep.lsp_start` spawns via the existing
       Phase 1 Job/`execvp` path (fails gracefully, notifies, if not
       found) — nothing installs anything, matching policy.
 - [x] Keybindings exposed as `mep.lsp_hover`/`goto_definition`/
-      `references`/`format` + `:MepLsp*` ex-commands (user binds keys to
-      them, consistent with every other phase's approach) — goto-
-      declaration/implementation/type-definition/rename/code-action
-      deferred along with their underlying requests above.
+      `references`/`format`/`goto_implementation`/`goto_type_definition`/
+      `signature_help`/`code_action`/`rename` + a matching `:MepLsp*`
+      ex-command for each. The six new methods also get a default
+      `mep.leader_map` binding (`li`/`lt`/`lk`/`ca`/`rn` — `lt`/`ca`/`rn`
+      deliberately matching mep.nvim's own `keymaps.lua` defaults for
+      the methods it binds under `<leader>` too; `li`/`lk` extend the
+      same `l` group by mnemonic since mep.nvim's own `gi`/`<C-k>` for
+      implementation/signature-help aren't reachable through mep's
+      `mep.map`, which only binds single ASCII keys in Normal/Visual
+      mode — no `g`-prefixed two-key sequences or Ctrl-modified
+      letters). The original four (hover/goto-definition/references/
+      format) deliberately keep their prior no-default-keybinding
+      state — out of scope for this change, `:MepLsp*`/manual
+      `mep.map` still covers them the same way every other phase's
+      commands work.
 
 ### Phase 21 — Diagnostics UI ✅
 
@@ -1182,18 +1519,51 @@ see "Design decisions" above for why it's a from-scratch build.)*
       handles). Manual trigger isn't a separate keybinding since
       auto-trigger already covers it.
 - [x] Source abstraction: `mep.set_completion_source(fn)` — one source
-      slot, not a multi-source-with-dedup list. Buffer-word (always on,
-      `mep.completion_buffer_words`, the default) also folds in matching
-      Phase 23 snippet trigger names. **LSP-sourced completion and a
-      path source are not implemented** — `mep.lsp_request(..,
-      'textDocument/completion', ..)` would be a small addition on the
-      same pattern as Phase 20's other requests, just not written.
-- [x] Accept (Tab/Enter) / abort (Escape). No item cap (buffer-word
-      matches are naturally small at the buffer sizes exercised) and no
-      cross-source dedup (only one source is ever active at a time, so
-      there's nothing to dedup against yet). Verified via Xvfb: typed a
-      partial word, popup appeared with real buffer-word candidates,
-      Ctrl-N navigated, Tab accepted and replaced the partial word.
+      slot, not a multi-source-with-dedup list. `mep.completion_buffer_words`
+      (the default, still one function registered through that single
+      slot) now merges four candidate sources internally rather than
+      just buffer words: buffer words, matching Phase 23 snippet trigger
+      names, a filesystem-path source (triggers after `/`/`.` or inside
+      a `require(`/`import`/`from` string), and LSP-sourced completion
+      (`textDocument/completion` — closing this bullet's own former "not
+      implemented" gap; see Phase 20's own notes for the request/
+      response handling and its cache-by-word-start-position scheme,
+      needed since completion, unlike every other source here, is
+      async). All ranked/capped together (`mep_completion_rank`,
+      length-then-alphabetical, 50-item cap) before reaching the popup.
+- [x] Accept (Tab/Enter) / abort (Escape). Item cap and cross-source
+      dedup are both real now that there's more than one source to need
+      them for (see the source-abstraction bullet above): a shared `seen`
+      set in `mep.completion_buffer_words` collapses identical text
+      offered by more than one source to a single entry, and
+      `mep_completion_rank` caps the combined, ranked list to 50 items
+      before it ever reaches C++ (important beyond just list length —
+      `DrawCompletionPopup`, main.cpp, measures every item's text width
+      on every frame the popup is open, so an uncapped list would be an
+      unbounded per-frame cost, not just a keystroke-time one). The path
+      source is a documented simplification, not full path-completion
+      parity: it only triggers once 2+ alnum characters follow the `/`/
+      `.`/quote trigger (reuses the same alnum-prefix scan
+      `UpdateCompletionPopup` already does, rather than widening that
+      shared boundary check), and resolves relative to the working
+      directory rather than the edited file's own directory. Verified via
+      Xvfb, beyond the original plain-buffer-word check: (1) a 200-unique-
+      word buffer sharing one prefix — `#mep.completion_buffer_words
+      ('zzitem')` returned exactly 50, not 200; (2) a mock LSP server (a
+      small stdio JSON-RPC stub, since no real language server is
+      installed in this environment) returning an item whose text also
+      exists as a real buffer word — the popup showed it once, not twice;
+      the same mock's two LSP-only items (absent from the buffer)
+      appeared and Tab-accepted correctly, confirming the LSP source is
+      reachable end-to-end and not just plumbed-but-untested; (3) typing
+      `src/ed` inside a string literal offered `editor.h`/`editor.cpp`
+      from the real `src/` directory (via the existing `mep.list_dir`),
+      and accepting spliced in only the missing suffix, not a duplicate
+      `src/` prefix; (4) a fast-typing burst (66 chars at a 5ms interval)
+      produced no dropped keystrokes and no hang, confirming none of the
+      above reintroduced the per-keystroke cost the popup's existing
+      throttle (`UpdateCompletionPopup`'s prefix-unchanged skip + 50ms
+      minimum interval, untouched by this work) exists to prevent.
 
 ### Phase 23 — Snippet engine ✅ scoped down significantly
 
@@ -1218,9 +1588,14 @@ completion for popup integration (soft))*
       (lua, python) as the plan's own "start with 2-3" asks.
 - [x] Registered as a completion source (folded into
       `mep.completion_buffer_words`, Phase 22). **LSP
-      `insertTextFormat=Snippet` handling not implemented** — Phase 20's
-      completion request itself isn't wired up yet (see above), so
-      there's nothing to receive that format from yet.
+      `insertTextFormat=Snippet` handling still not implemented** — Phase
+      20's LSP-sourced completion is wired up now (see its own notes),
+      but every completion item it returns is inserted as plain text
+      (`insertText`/`label`) regardless of `insertTextFormat`; a
+      `Snippet`-format item with `$1`-style placeholders would insert the
+      literal placeholder syntax rather than expanding it through this
+      phase's own tabstop engine — a real remaining gap, not just a
+      relabeled old one.
 - [x] Snippet picker: `mep.snippets_picker()`/`:MepSnippets` (Phase 8).
       Core parsing/tabstop-jump verified via Xvfb (a `function $1($2)`
       template correctly expanded with the cursor landing inside the
@@ -1261,8 +1636,11 @@ fallback), Phase 13's URL-open, Phase 8 picker)*
 
 - [x] Docstring skeleton generator: `mep.docs_generate()`/`:MepDocGen` —
       **regex/same-line-scan only**, no LSP signature-help-driven variant
-      (Phase 20's `signatureHelp` request isn't implemented, per Phase 20
-      above) — 3 curated per-language templates (lua/python/javascript).
+      — Phase 20's `signatureHelp` request is implemented now
+      (`mep.lsp_signature_help`, see its own notes), but `docs_generate`
+      itself was never rewired to call it instead of its own regex scan;
+      a real remaining gap now, not a blocked one — 3 curated
+      per-language templates (lua/python/javascript).
 - [x] Doc lookup: `mep.docs_lookup()`/`:MepDocLookup` — word under
       cursor → a devdocs.io search URL → Phase 13's `mep.open_url`.
 - [x] Help picker: **reuses `mep.commands()` as-is** (Phase 8/13's
@@ -1790,15 +2168,79 @@ the "start small" language-subset guidance)*
       replaced the results block in place rather than duplicating it;
       `:MepOrgBabelTangle` on a file with no `:tangle` header
       correctly reported "Tangled 0 file(s)" with no crash.
+- [x] **Ctrl-C Ctrl-C keybinding** (mirroring real Emacs org-mode's own
+      binding, added on request — previously `:MepOrgBabelExecute` was
+      only reachable by typing the full ex-command). Native C++, not a
+      Lua `mep.map()` registration: `mep.map()`
+      (`RegisterLuaMapping`/`TryLuaMapping`, `editor.h`/`.cpp`) only
+      matches single printable characters, and — more fundamentally —
+      GLFW/raylib never emits a `GetCharPressed()` char event while Ctrl
+      is held at all, so *neither* tap of a Ctrl-C Ctrl-C chord can be
+      observed through the character-loop path every other double-tap in
+      this codebase uses (`pending_g_` for `gg`, `pending_ctrl_w_` for
+      Ctrl-W's second key) — those work because their second key is an
+      *unmodified* char. Both taps here are read from the raw
+      `GetKeyPressed()` key-code queue instead (the same queue
+      Ctrl-V/D/U/F/B/A/X/O/I already use, for the same "flaky
+      `IsKeyPressed` under a slow frame" reason noted in
+      `HandleNormalInput`'s own comment), with a new `pending_ctrl_c_` +
+      `pending_ctrl_c_time_` pair and a `kCtrlCChordTimeoutSec` (0.6s)
+      window standing in for the "next key clears it" rule a modifier-
+      free chord could use instead. On completing the chord,
+      `Editor::TryRunOrgBabelAtCursor()` checks the current buffer's
+      filename ends in `.org`, then looks up `"MepOrgBabelExecute"` in
+      `lua_commands_` (the same registry the `:` command line's own
+      Lua-command fallback consults) and invokes it directly —
+      deliberately *not* by constructing and feeding a literal
+      `":MepOrgBabelExecute"` string through the full command-line
+      parser, and deliberately *not* re-implementing
+      `mep_org_src_block_at`'s "cursor must be inside a `#+begin_src`
+      block" check in C++ (that function's own existing "no-op if not in
+      a block" handling is reused as-is, so there's exactly one copy of
+      that logic). Verified interactively under Xvfb+xdotool: two
+      quick Ctrl-C taps on a line inside a `#+begin_src bash` block
+      produced the same toast/status message and `#+RESULTS:` block
+      insertion as `:MepOrgBabelExecute` does, and a single lone Ctrl-C
+      tap (no second one) correctly did nothing.
 - ⚠️ **Scope cut**: no compiled-language support (no `c`/`compile_cmd`
-      step — interpreted languages only). `:results` output-mode
-      header-arg (e.g. `:results silent`/`:results table`) is parsed
-      nowhere — output always becomes a `#+RESULTS:` block. `:includes`/
-      `:main` (compiled-language wrapper generation) not applicable
-      without compiled-language support. Var substitution is a naive
-      textual prelude line, not real per-language literal encoding
-      (a `:var` value containing spaces or quotes will not round-trip
-      correctly).
+      step — interpreted languages only). `:includes`/`:main`
+      (compiled-language wrapper generation) not applicable without
+      compiled-language support. Var substitution is a naive textual
+      prelude line, not real per-language literal encoding (a `:var`
+      value containing spaces or quotes will not round-trip correctly).
+      (Correction to this doc's own prior claim: `:results`
+      output-mode header-args like `:results silent`/`:results table`
+      **are** now parsed and honored — `blk.results_modes` in the babel
+      script — and the result cache now persists to disk between runs
+      via `mep.babel_cache_load`/`save`, both since this entry was
+      originally written; this doc had drifted out of date versus the
+      implementation.)
+- [x] **Bug fix: `#+begin_src`/`#+end_src`/`#+BEGIN_SRC`/`#+END_SRC`
+      case-insensitivity.** Found via a real user report: Ctrl-C Ctrl-C
+      on a file using uppercase directives (`mep.nvim/org/test.org`,
+      written `#+BEGIN_SRC lua` / `#+END_SRC`) failed with "Not in a src
+      block" even with the cursor squarely inside one. Root cause: every
+      `#+begin_src`/`#+end_src` line-match in the embedded org Lua (block
+      detection in `mep_org_src_block_at`, babel tangle's scan, org
+      export's src-block handling, and the unrelated leetcode-picker's
+      own src-block finder — 11 call sites total) used a literal
+      lowercase-only Lua pattern; Lua patterns have no case-insensitive
+      flag, and real org-mode directives are case-insensitive (Emacs
+      itself accepts any capitalization). Fixed by rewriting the
+      `begin_src`/`end_src` portion of every pattern as an explicit
+      per-letter character class (`[Bb][Ee][Gg][Ii][Nn]_[Ss][Rr][Cc]`,
+      similarly for `end_src`) rather than lowercasing the line being
+      matched — preserves the original casing of everything captured
+      alongside the match (a `:var` value's case must round-trip
+      untouched). Separately, the extracted language tag itself
+      (`#+BEGIN_SRC Lua` vs. `#+begin_src lua`) is now explicitly
+      lowercased before `mep.org_babel_langs` table lookup (which is
+      keyed by lowercase `"lua"`/`"python"`/etc.) — a related
+      case-sensitivity gap in the same function, fixed alongside it
+      rather than left for a second bug report. Verified against the
+      exact reported file: Ctrl-C Ctrl-C on its `#+BEGIN_SRC lua` block
+      now correctly executes and updates the existing `#+RESULTS:` in
+      place (previously erroring immediately).
 
 ### Phase 35 — Org-mode G: export ✅
 
@@ -1983,10 +2425,45 @@ floating popup)*
       literally rather than truncating at the first `}`), and
       selecting an entry inserted the correct `[cite:@smith2020]`
       citation.
-- ⚠️ **Scope cut**: org-cite (`[cite:@key]`) syntax only — no
-      legacy org-ref `cite:key`/`citep:key`/etc. link-type variants.
-      No BibTeX `@string` macro expansion or cross-referencing
-      (`crossref` field). No citation preview/hover.
+- [x] Legacy org-ref link-type variants (`mep_org_bib_cite_spans`/
+      `mep_org_bib_cite_at_cursor`): `cite:key`, `citep:key`,
+      `citet:key`, `citeauthor:key`, `citeyear:key` (comma-separated
+      multi-key forms too), recognized alongside `[cite:@key]` /
+      `[cite/style:@key1;@key2]` via the same manual char-scan style as
+      the rest of this file (no regex) — both resolve to the same key
+      list consumed by goto/preview below.
+- [x] `@string{name = "value"}` macro expansion and `#`-concatenation
+      (`mep_org_bib_expand_value`): a bare (undelimited) field value is
+      looked up as a macro; `#`-joined pieces (`abbrev # ", Supp"`) are
+      expanded piecewise and concatenated. `mep_org_bib_split_top_level`
+      (used for field/key separation too) was made quote-aware as part
+      of this, fixing a latent bug where a quoted value containing a
+      literal `,` (or `#`) was silently mis-split.
+- [x] `crossref` resolution (`mep_org_bib_resolve_crossrefs`): runs once
+      over the complete entry set from all resolved `.bib` files, after
+      parsing, filling in any field a `crossref`-bearing entry doesn't
+      itself define from the referenced parent entry.
+- [x] Citation goto-entry and preview/hover
+      (`mep.org_bib_cite_goto`/`:MepOrgBibCiteGoto`,
+      `mep.org_bib_cite_preview`/`:MepOrgBibCitePreview`): jumps to the
+      entry's `@type{key,` line in its resolved `.bib` file (a picker
+      disambiguates a multi-key citation), and surfaces
+      author/year/title/venue via `mep.notify` — the same convention
+      `mep.lsp_hover` already uses, there being no dedicated hover
+      widget in the codebase. `mep.org_link_follow` now checks for a
+      citation at cursor before its `[[...]]` bracket-link handling, so
+      the existing follow keybinding works for either citation syntax.
+- [x] Verified via Xvfb with a `.bib` file exercising all three gaps at
+      once (an `@string` macro, an entry using it via `#`-concatenation,
+      an `@inproceedings` with `crossref` to an `@proceedings`) and an
+      `.org` file mixing `[cite:@key]` with `cite:key`/`citep:key`/
+      `citet:key1,key2`: `:MepOrgLinkFollow` on both the org-cite and
+      every legacy form landed the cursor on the correct entry line;
+      `:MepOrgBibCitePreview` showed the crossref-inherited year and the
+      macro-expanded, `#`-concatenated journal string correctly for
+      every syntax variant, including the multi-key `citet:` form.
+- ⚠️ **Scope cut**: no dedicated floating hover widget (reuses
+      `mep.notify`, matching `mep.lsp_hover`'s own precedent).
 
 ---
 
@@ -2089,13 +2566,22 @@ floating prompt)*
       (`'anthropic'`, `x-api-key`/`anthropic-version` headers,
       `content_block_delta`/`delta.text` shape) — both implemented,
       not just one with a stub for the other.
-- [x] Send-buffer (`mep.ai_send_buffer`/`:MepAiSendBuffer`) and
-      send-range (`mep.ai_send_range(a, b)`, callable but with no
-      dedicated visual-selection command — see scope cut) stream the
-      response in via repeated `mep.insert_text(delta)` calls at an
-      ever-advancing cursor position, which is inherently
-      gravity-tracked without needing a dedicated Phase-4
-      decoration-based tracker.
+- [x] Send-buffer (`mep.ai_send_buffer`/`:MepAiSendBuffer`), send-range
+      (`mep.ai_send_range(a, b)`, explicit line numbers), and true
+      Visual-mode send-selection (`mep.ai_send_selection`/
+      `:MepAiSendSelection`, also bound directly to `K` in Visual mode
+      via `mep.map('v', 'K', ...)`) all stream the response in via
+      repeated `mep.insert_text(delta)` calls at an ever-advancing
+      cursor position, which is inherently gravity-tracked without
+      needing a dedicated Phase-4 decoration-based tracker.
+      `mep.ai_send_selection` reads `mep.visual_selection()` (the real
+      Visual-mode-selection accessor, `Editor::CurrentVisualSelectionText`)
+      -- bound as a direct `mep.map('v', ...)` callback rather than only
+      an ex-command, since `mep.visual_selection()` only returns real
+      text while `Editor::mode_` is still actually Visual, and typing
+      `:` to reach an ex-command already exits Visual mode first (this
+      editor doesn't special-case `:` from Visual to prefill a
+      `'<,'>`-style range the way real Vim does).
 - [x] Agent mode (`mep.ai_agent_prompt`/`:MepAiAgent`): a floating
       `mep.ui_input` prompt feeding a persistent Phase 7 sidebar
       transcript (`mep_ai_agent_render`), full multi-turn conversation
@@ -2137,21 +2623,76 @@ floating prompt)*
       executed `read_file` against a real file, appended the tool
       result to the transcript, and correctly recursed into a second
       `mep.ai_agent_turn()` call, closing the loop as designed.
-- ⚠️ **Scope cut**: no true Visual-mode "send-selection" — there is no
-      Lua-facing API anywhere in the codebase for reading the current
-      visual selection's range (would need new C++), so this phase
-      exposes `mep.ai_send_range(a, b)` (explicit line numbers) instead
-      of a `:MepAiSendSelection` bound to actual Visual-mode state.
-      `mep.ui_input` has no masked/hidden-echo mode, so the API-key
-      prompt fallback is visible input, not masked (still never
-      written to disk, satisfying the "never persisted" half of the
-      requirement). Anthropic's tool-calling isn't wired up (no tools
-      schema built for that provider — `mep_ai_openai_tools_schema`
-      only) — agent mode's tool loop is effectively OpenAI-only;
-      Anthropic works for plain streaming send/agent-without-tools.
-      The hand-rolled JSON decoder doesn't handle `\uXXXX` escapes
-      beyond emitting a literal `?` placeholder (no real unicode
-      codepoint decoding).
+- [x] Four gaps closed after the initial pass above (all four verified
+      by code review plus standalone tests run outside the app -- see
+      below -- since no `ANTHROPIC_API_KEY` and no sanctioned use of the
+      real `OPENAI_API_KEY` present in this environment made a live
+      end-to-end network round trip inappropriate to attempt here):
+      (1) **masked API-key input** — `mep.ui_input`'s opts table now
+      takes `masked`/`password` (`Editor::prompt_masked_`, threaded
+      through `Editor::BeginPrompt`); `DrawPromptOverlay` in `main.cpp`
+      renders `*` per byte instead of the real text when set, while the
+      real text still reaches `on_done` unmasked and is never persisted.
+      The AI module's key-fallback prompt (`mep_ai_get_key`) now passes
+      `{masked = true}`. (2) **Anthropic tool-calling** —
+      `mep_ai_anthropic_tools_schema` mirrors
+      `mep_ai_openai_tools_schema` but in Anthropic's flat
+      `{name, description, input_schema}` shape (confirmed against
+      Anthropic's Messages API streaming docs, not guessed); the
+      streaming parser in `mep_ai_request` now also handles Anthropic's
+      `content_block_start{content_block.type='tool_use'}` +
+      `content_block_delta{delta.type='input_json_delta'}` accumulation
+      (`partial_json` fragments concatenated per content-block index),
+      distinct from OpenAI's `tool_calls[].function.arguments` delta
+      shape; a new `mep_ai_to_anthropic_messages` converts the shared
+      OpenAI-Chat-Completions-shaped `mep.ai_agent_messages` history
+      (`role='tool'`, `tool_calls[]`) into Anthropic's content-block
+      shape (`tool_result`/`tool_use` blocks on ordinary user/assistant
+      messages, since Anthropic has no `tool` role) right before
+      sending, so `mep.ai_agent_turn`'s loop works unmodified for either
+      provider. (3) **`\uXXXX` decoding** — the hand-rolled
+      `mep_ai_json_decode` now decodes the 4 hex digits into a real
+      codepoint and UTF-8-encodes it (`mep_ai_utf8_encode`, using Lua
+      5.4's bitwise operators) instead of emitting `?`; a high surrogate
+      (`\uD800`-`\uDBFF`) immediately followed by a low surrogate
+      (`\uDC00`-`\uDFFF`) is combined into one astral codepoint before
+      encoding, matching how JSON (like JS) represents emoji/astral
+      characters as a surrogate *pair* rather than one escape.
+      Verified with a standalone Lua 5.4 harness (the real embedded
+      interpreter, linked against the actual `liblua.a` this project
+      builds, with the exact `kBuiltinAi` source mechanically extracted
+      from `main.cpp` rather than retyped) exercising
+      `mep_ai_json_decode`/`mep_ai_utf8_encode` against `é` -> `é`,
+      a `😀` surrogate pair -> the correct 4-byte UTF-8 for
+      😀 (U+1F600), a malformed lone surrogate (doesn't crash), and an
+      encode/decode round-trip of the original quote/newline/backslash
+      case; `mep_ai_anthropic_tools_schema`'s shape (`input_schema`
+      present, no OpenAI `type`/`function` wrapper, `run_command`
+      included); `mep_ai_to_anthropic_messages`'s conversion of a
+      synthetic 3-message OpenAI-shaped history (user -> assistant
+      tool-call -> tool result) into Anthropic's content-block shape,
+      confirming it JSON-encodes cleanly; and the Anthropic
+      streaming-delta path end-to-end against canned SSE frames modeled
+      on Anthropic's own documented example (`content_block_start` for
+      a `get_weather` tool_use split into several `input_json_delta`
+      fragments plus interleaved `text_delta` frames), confirming both
+      the streamed text and the reassembled tool call's id/name/args are
+      correct and that the reassembled args re-parse as valid JSON. A
+      separate standalone C++ harness (linked against the same real
+      `liblua.a`) exercised `l_ui_input`'s exact opts-table-parsing
+      logic (`masked`/`password`/absent/`false`/unrelated-field cases)
+      and `DrawPromptOverlay`'s exact masking-substitution logic,
+      copied verbatim from the two source files. (4) **true Visual-mode
+      send-selection** — `mep.ai_send_selection`, described above;
+      verified by code review of `Editor::HandleVisualInput`/
+      `Editor::TryLuaMapping` confirming `Editor::mode_` is still
+      Visual* when a `mep.map('v', ...)` callback runs, and by a
+      standalone Lua test of `mep.ai_send_selection`'s own logic (warns
+      on empty selection, forwards non-empty `mep.visual_selection()`
+      text verbatim to `mep.ai_send_text`) — **not** verified by an
+      actual Xvfb keypress-driven Visual-mode selection + real network
+      round trip against either provider, which remains the honest gap
+      here.
 
 ### Phase 42 — Leetcode (stretch, lowest priority) ✅
 
@@ -2188,6 +2729,643 @@ picker — do this last, if at all)*
       ("implement local-only first... not a blocker for calling this
       phase done enough").
 
+### Phase 43 — PDF viewer ✅
+
+*(mirrors the existing image-viewer architecture: `ImageDoc`/
+`ImageSession`/`Mode::Image` → `PdfDoc`/`PdfSession`/`Mode::Pdf`)*
+
+Backed by **PDFium** (Google's PDF engine, BSD-3 + permissively-licensed
+bundled deps — see `third_party_licenses/pdfium-LICENSE.txt`), fetched as
+a prebuilt shared library via CMake `FetchContent` from
+`github.com/bblanchon/pdfium-binaries` (there's no CMake build for PDFium
+itself upstream — it uses Google's own GN/ninja toolchain) rather than
+vendored as source. `src/pdf_doc.h`'s interface (`LoadFromMemory`/
+`PageCount`/`PageWidthPt`/`PageHeightPt`/`RenderPage`/`Error`) is
+deliberately backend-agnostic, so this was a swap of `pdf_doc.cpp`'s
+internals only — none of the `Mode::Pdf`/`PdfSession`/`HandlePdfInput`/
+`main.cpp` draw-and-texture-cache integration below needed to change.
+
+- [x] **First attempt**: a hand-rolled PDF object-model parser +
+      content-stream interpreter + `stb_truetype`-based rasterizer (kept
+      permissive licensing by construction, since it was all vendored
+      single-header libs). Got classic + cross-reference-stream xref
+      parsing and vector-graphics rendering fully working, but real-world
+      PDFs are dominated by text, and font/glyph rendering was still an
+      unimplemented follow-up phase when the fidelity gap ("no text
+      renders at all yet") proved unacceptable for actual use. Not
+      committed to git; reversal was clean because of the interface
+      boundary above. Superseded by PDFium below, chosen specifically to
+      avoid mupdf's AGPL licensing (mupdf is dual AGPL/commercial —
+      copyleft, incompatible with this project's permissive-licensing
+      goal) while still getting a fully complete, battle-tested renderer.
+- [x] `CMakeLists.txt`: platform-branched `FetchContent_Declare(pdfium
+      URL ... URL_HASH SHA256=...)` pinned to `chromium/8009` (Linux x64
+      verified/tested; macOS x64/arm64 and Windows x64 branches are wired
+      with correct asset names + hashes but unverified, no way to test
+      non-Linux here), an `IMPORTED SHARED` `pdfium` target, and a
+      post-build step that copies the shared library next to the built
+      `mep` executable with `BUILD_RPATH` set to `$ORIGIN`
+      (`@loader_path` on macOS) so a plain `./mep` launch finds it
+      without `LD_LIBRARY_PATH`. Guarded behind `if(NOT EMSCRIPTEN)` —
+      not wired up for the wasm build (see below).
+- [x] `src/pdf_doc.cpp`: thin wrapper over PDFium's C API
+      (`FPDF_InitLibrary` lazily on first use; `FPDF_LoadMemDocument` —
+      keeps its own copy of the source bytes since PDFium reads from the
+      buffer lazily for the document's lifetime; `FPDF_LoadPage`/
+      `FPDF_GetPageWidthF`/`HeightF` — these already reflect the page's
+      own `/Rotate`, no manual rotation math needed unlike the hand-rolled
+      version; `FPDFBitmap_Create`/`FillRect`/`FPDF_RenderPageBitmap`
+      with the `FPDF_ANNOT` flag, then a BGRx→RGBA channel swap into the
+      `out_rgba` buffer `RenderPage`'s interface already expected).
+      Encrypted PDFs surface a clear `Error()` message
+      (`FPDF_ERR_PASSWORD`) rather than crashing or hanging.
+- [x] `Mode::Pdf`/`PdfSession`/`Editor::pdfs_` mirroring the image
+      viewer's `Mode::Image`/`ImageSession`/`Editor::images_` exactly;
+      `HandlePdfInput` reuses the same `IsKeyPressed||IsKeyPressedRepeat`
+      held-key pattern for h/j/k/l (the auto-repeat fix from earlier in
+      this session), adds `Ctrl-f`/`Ctrl-b`/`PageDown`/`PageUp` full-page
+      jumps and `gg`/`G` first/last page (reusing `pending_g_`), `+`/`-`/
+      `=` zoom mirroring the image viewer's center-anchored `apply_zoom`,
+      and `Ctrl-R` to toggle `PdfSession::theme_colors`.
+- [x] **Zathura-style continuous vertical scroll** (h/l still pan
+      horizontally within one page, but j/k now scroll smoothly *through*
+      page boundaries instead of hard-cutting at each page, matching most
+      real PDF viewers): `PdfSession::page` became an *anchor* page with a
+      `scroll_y` measured from its top (can transiently go negative or
+      past the anchor's on-screen height), and `PdfSession::rasters`
+      virtualizes the CPU-side raster cache down to `{page-1, page,
+      page+1}` via `Editor::EnsurePdfPagesRastered` (called every frame
+      from `DrawPane`, evicting anything outside that window) — memory
+      stays bounded regardless of document length (a 400-page PDF never
+      rasterizes more than ~3 pages at once). `HandlePdfInput`'s
+      `rebase_scroll` lambda re-bases `scroll_y`/`page` together whenever
+      a scroll (or a zoom, since viewport-relative math can push scroll_y
+      out of range too) crosses a page's bounds. `main.cpp`'s
+      `DrawPane` draws up to 3 stacked textures positioned by a shared
+      `kPdfPageGapPx` constant (editor.h) that both the rebase math and
+      the draw math reference, so the two never drift apart into a
+      visible jump.
+- [x] **Theme-colored PDF rendering, on by default** (matches the user's
+      color scheme instead of white-paper-with-black-text; `Ctrl-R`
+      toggles back to the PDF's actual original colors): `ThemedPdfChannel`
+      (main.cpp) maps each pixel's luminance onto the gradient between
+      `ResolveHlGroup("Normal")` (foreground) and `ResolveHlGroup(
+      "NormalBg")` (background) — PDF white background -> editor
+      background, PDF black text -> editor foreground, grays interpolate
+      smoothly. Applied at texture-upload time from the *unmodified* raw
+      raster (never baked into the cached CPU pixels), so toggling is a
+      cheap re-upload, not a re-render. Deliberately desaturates colored
+      content (headings, images, diagrams) the same way most e-reader
+      night-mode implementations do — a text-reading aid, not a
+      color-accurate filter.
+- [x] `main.cpp`: `PdfTextureCacheEntry`/`GetOrUpdatePdfPageTexture` — a
+      generation-and-theme-aware GPU texture cache keyed by (buffer_id,
+      page index), distinct from the image viewer's upload-once
+      `g_image_textures` since a PDF page's raster/recoloring both change
+      independently of each other. `PrunePdfPageTextures` evicts GPU
+      textures for any page `EnsurePdfPagesRastered` no longer keeps a
+      CPU-side raster for. Pane header (`"PDF: file (page N/M) zoom%
+      [theme|original, Ctrl-R]"`) and `-- PDF --` statusline (via
+      `ModeName`) follow the same pattern as the image viewer.
+- [x] Verified interactively under Xvfb + xdotool against real-world PDFs
+      (a multi-page résumé using cross-reference streams; a large-format
+      academic poster with equations/plots/tables/colored headers; a
+      199-page dissertation): full text rendering with correct fonts/
+      italics/bullets/hyperlink styling; theme-colored rendering on by
+      default with legible contrast, `Ctrl-R` correctly toggling back to
+      original white/black colors and back again; held-down j/k scrolling
+      smoothly across a page boundary (header's page-N/M updating
+      correctly mid-scroll) in both directions; GPU texture count staying
+      bounded (~2-3 alive at a time) while scrolling many pages into a
+      long document; h/l pan, `Ctrl-f`/`gg`/`G` page navigation, and
+      `=`/`+` zoom all still correct. Also swept ~140 real PDFs found on
+      this filesystem (up to 472 pages) through the parser layer during
+      the earlier hand-rolled-xref-stream work; that fix's xref/object-
+      stream handling is superseded by PDFium here but the sweep's
+      conclusion (real-world PDFs overwhelmingly use xref streams, not
+      classic tables) is what motivated prioritizing a complete backend
+      over continuing the hand-rolled one.
+- [x] **Fixed: PDF theme-recolor lag on a runtime theme change.** The
+      texture cache (`g_pdf_page_textures`) only re-uploaded a page when
+      its *own* raster generation or `theme_colors` bool changed — not
+      when the active *theme itself* changed (e.g. live-previewing a
+      colorscheme via the theme picker), so a page that stayed inside the
+      3-page render window the whole time kept showing stale baked-in
+      colors until it happened to scroll out of that window and back
+      (matching the user's report: "have to scroll a couple pages before
+      it switches"). Root-caused via a research pass that traced the full
+      startup sequence and ruled out the initially-suspected "theme not
+      loaded yet on first frame" race (Lua config finishes loading well
+      before the first PDF page ever rasterizes/uploads — `main.cpp`'s
+      `lua->DoFile(config_path)` runs before the main draw loop even
+      starts). Fix: `Editor::ThemeEpoch()` (editor.h/.cpp), an int bumped
+      once by `ApplyTheme` every time `current_theme_groups_` actually
+      changes; `PdfTextureCacheEntry` now also stores the epoch it was
+      last uploaded at, and `GetOrUpdatePdfPageTexture` reuploads whenever
+      it's moved on — independent of whether that page's raster or
+      `theme_colors` flag changed at all. Verified interactively: switch
+      themes via `:colorscheme` while a themed PDF page is on-screen, the
+      recolor now happens immediately, no scrolling required.
+- [x] **Text search** (`/`, highlighting, `n`/`p`) via PDFium's own text
+      API rather than hand-rolled matching: `PdfDoc::Search` (pdf_doc.h/
+      .cpp) loads each page's `FPDF_TEXTPAGE` and runs
+      `FPDFText_FindStart`/`FindNext` with flags=0 (MATCHCASE unset ->
+      case-insensitive, PDFium's own default, matching typical "Ctrl-F in
+      a PDF reader" behavior — not literal fuzzy/subsequence matching,
+      which wouldn't produce sensible highlight regions for prose text),
+      collecting every match's rects via `FPDFText_CountRects`/`GetRect`
+      in PDF-point space (scale-independent, so a zoom doesn't require
+      re-searching). `PdfDoc::MatchRectsForPage` converts a page's matches
+      to device pixels via `FPDF_PageToDevice` — PDFium's own coordinate
+      conversion, not a hand-derived rotation transform, so highlights
+      stay correctly placed on rotated pages the same way `RenderPage`
+      does. `PdfSession` gained `search_active`/`search_input` (captures
+      all input while typing, mirroring `Mode::Command`'s input-capture
+      shape but scoped to this session rather than a distinct `Mode`) and
+      `search_query`/`search_matches`/`search_current`; `PageRaster`
+      gained `highlights`, recomputed alongside a page's raster
+      (`EnsurePdfPagesRastered`) and whenever the query changes
+      (`RecomputePdfPageHighlights`) — main.cpp's draw code never touches
+      PdfDoc/PDFium directly, just draws already-converted device rects.
+      `n`/`p` (`GotoPdfMatch`) wrap across the whole document and roughly
+      vertically-center the target match in the viewport. Highlight color
+      reuses the `IncSearch` theme group (text buffers' own live-search
+      highlight) at two alpha levels — dim for other matches, brighter for
+      `search_current` — rather than a fixed color, matching the PDF
+      recoloring feature's own theme-consistency goal. Verified
+      interactively: typing after `/` shows a blinking-cursor input bar in
+      the pane header in place of the normal label; submitting highlights
+      every case-insensitive match; `n`/`p` step through them (including
+      wrapping) with the current match visibly brighter and the view
+      scrolling to keep it in frame; the header shows match position/count
+      once a search is active.
+- [ ] **Not wired up**: the Emscripten/wasm build (`pdfium-binaries` does
+      publish a `pdfium-wasm` package, but side-module-linking it
+      reliably needs pinning to the exact Emscripten SDK version it was
+      built with, which this project doesn't track — left as a known gap;
+      the wasm build reports a clear "not available in the web build"
+      error rather than silently showing a blank pane). Encrypted PDFs
+      are surfaced as a load error, not decrypted (PDFium can decrypt
+      with a password, but there's no UI prompt for one yet). No count-
+      prefixed `{n}G` jump-to-page (needs a numeric-accumulator field,
+      unlike `gg`/`G`'s free reuse of `pending_g_`). Search highlighting
+      only covers the currently-rendered {page-1,page,page+1} window (by
+      design, matching the viewer's virtualized raster cache) -- matches
+      elsewhere in the document are still found and jumpable via n/p, just
+      not highlighted until their page is actually rendered.
+
+---
+
+### Phase 44 — WYSIWYG office-document pane (.docx/.odt) ✅ (all 5 phases done; Phase 5 partial, see below)
+
+A fourth pane archetype alongside Image/PDF/text: a hand-rolled rich-text
+editor for `.docx`/`.odt`, edited with the same vim-modal conventions as
+the main buffer (`Mode::OfficeNormal`/`OfficeInsert`/`OfficeVisual`)
+rather than a non-modal Word-like feel. Legacy binary `.doc` is out of
+scope entirely (confirmed with the user). Deliberately bounded: no
+tables, images, headers/footers, footnotes/comments, track changes, real
+numbered lists (bullet-or-not only), font-family/size/color choice beyond
+a few heading sizes, or full OOXML/ODF style-cascade inheritance — a
+genuinely editable, round-trippable subset, not a Word/LibreOffice clone.
+
+- [x] **Immediate fix, unrelated bug found during design review**:
+      `SaveBuffer` guarded `IsImageBuffer` but never gained the equivalent
+      `IsPdfBuffer` guard when PDF support was added — `:w` on a focused
+      PDF pane was silently overwriting the real PDF file on disk with a
+      single blank line (a PDF buffer's `Buffer::lines` is a dummy single
+      empty line, same convention as Image). Fixed first, independent of
+      the new feature.
+- [x] **Phase 1 — vendoring + document model + DOCX read + render +
+      Normal-mode navigation.** pugixml v1.16 (MIT, XML parsing) and
+      miniz v3.1.2 (MIT, the ZIP container both docx/odt use) vendored via
+      CMake FetchContent; 4 real Liberation Sans weight/style files
+      (Regular/Bold/Italic/BoldItalic, OFL) embedded as byte arrays in
+      `src/office_font_data.h` (chosen over faking bold/italic via a
+      hand-derived shear/offset transform — avoids repeating the
+      `stbtt_Rasterize` offset-sign class of bug hit earlier in the PDF
+      work). `src/office_doc.h/.cpp`: a span-based rich-text model
+      (`OfficeDoc`/`DocParagraph`/`DocSpan`/`DocFormat`, mirroring
+      `Buffer::decorations`'s flat-text-plus-non-overlapping-sorted-spans
+      shape) with delete/insert/split/merge/format-toggle primitives
+      whose exact edge-case rules (e.g. "insert exactly at a span's end
+      isn't sticky-bold", "Enter mid-bold-run splits the span, not just
+      the text") are documented on each function; validated against a
+      standalone test harness before integration. `LoadDocxFromMemory`
+      parses `word/document.xml` via pugixml — recurses into
+      `<w:hyperlink>` (otherwise linked text silently vanishes) and maps
+      `<w:tab/>`/`<w:br/>` to embedded `\t`/`\n` rather than dropping
+      them; individual bad paragraphs/runs are skipped rather than
+      failing the whole load (same tolerance convention as `PdfDoc`).
+      `src/editor.h/.cpp`: `Mode::OfficeNormal/Insert/Visual`,
+      `OfficeSession` (`OfficeDoc` held by value, not `unique_ptr` — no
+      opaque C-library handle to hide, unlike Image/PdfDoc), `IsOfficeBuffer`/
+      `GetOffice`/`ResizeOfficeViewport`/`SetOfficeScroll`,
+      `OpenOfficeInPlace`, `HandleOfficeNormalInput` (hjkl/gg/G,
+      word-wrap-*oblivious* motion over paragraph+column — deliberately
+      mirrors the main buffer's own no-soft-wrap motion model rather than
+      inventing a new one), `LoadFile()`/`SyncModeToActivePaneBuffer()`
+      branches. `src/main.cpp`: 4 baked Liberation Sans `Font`s (loaded
+      once at startup, not per-size like `g_font` — office text draws at
+      many sizes in one frame, so a baked atlas is scaled per-draw
+      instead) with a custom codepoint set (ASCII + U+2022 bullet, since
+      raylib's default nullptr-codepoints load only covers ASCII and a
+      missing bullet glyph silently drew as a "?"); a greedy per-paragraph
+      word-wrap (tokenize into words + single whitespace chars, pack
+      against the pane's content width, no mid-word splitting — matches
+      the plan's literal "split on spaces" algorithm) computed on demand
+      each frame scoped to visible paragraphs only, no persistent cache;
+      a word-wrap-aware scroll-follow (can't live in editor.cpp, which is
+      raylib-free and has no `MeasureTextEx`) that snaps up if the cursor
+      is above the current scroll position or advances a visual row at a
+      time until it's back in view, mirroring `UpdateScrollForPane`'s own
+      shape; per-run rendering (`BuildOfficeFormatRuns` walks a
+      paragraph's sorted spans, filling gaps with the default format) with
+      underline/strikethrough drawn as a manual overlay line (no such
+      glyph variant). Verified interactively under Xvfb+xdotool against
+      real LibreOffice-authored `.docx` fixtures: heading levels render at
+      distinctly larger sizes, bold/italic/underline are visually
+      distinct, bullets render correctly, a hyperlink's text is preserved
+      (not lost) even though it isn't yet clickable, center/right
+      paragraph alignment both work, hjkl/gg/G move the cursor correctly
+      (including through multi-line wrapped paragraphs), and resizing the
+      window live re-wraps every paragraph at the new width. Separately
+      verified a `.docx` containing a table and an embedded image loads
+      with **no crash/hang/corruption** — the table and image are cleanly
+      skipped while every paragraph of surrounding text renders intact,
+      confirming the "skip what's unsupported, never lose adjacent
+      content" tolerance goal.
+- [x] **Phase 2 — ODT read.** `src/office_odt.cpp`: `content.xml`'s
+      `<office:automatic-styles>` (direct/local formatting, where most
+      real-world formatting lives) merged with `styles.xml`'s
+      `<office:styles>` (named styles, referenced via
+      `style:parent-style-name` from the automatic ones, resolved one
+      level only — not a full cascade, same simplification DOCX's
+      heading-name recognition already makes) into one style lookup map;
+      `<text:style-name>` on a paragraph/`<text:span>` resolves against
+      it for bold/italic/underline/strike/alignment. Unlike DOCX's
+      leaf-only `<w:t>` runs, ODT paragraphs mix text and element children
+      directly, so `CollectOdtInline` walks in document order handling
+      `pugi::node_pcdata` and elements in one pass (an earlier two-pass
+      draft — walk elements, then separately walk text nodes — would have
+      scrambled ordering on any paragraph with text-span-text
+      interleaving; caught before it shipped). Headings use `<text:h
+      text:outline-level="N">`'s explicit attribute directly — simpler
+      and more reliable than DOCX's by-name `"HeadingN"` heuristic.
+      Recurses into `<text:span>` (composing its style on top of the
+      enclosing format — only fields the span's own style sets override)
+      and `<text:a>` (hyperlink text preserved, not clickable, same
+      convention as DOCX's `<w:hyperlink>`), maps `<text:tab/>`/
+      `<text:line-break/>` to embedded `\t`/`\n` and `<text:s
+      text:c="N"/>` (explicit preserved space run) to N literal spaces.
+      `<text:list>`/`<text:list-item>` recursion marks contained
+      paragraphs `bullet=true` (v1: bullet-or-not only, matching DOCX's
+      `<w:numPr>` handling). `ReadZipEntry` (the ZIP-entry-extraction
+      helper DOCX's parser already had) was pulled out of its anonymous
+      namespace and declared in `office_doc.h` so both parsers — and,
+      later, Phase 4's save-back — share one implementation.
+      `OpenOfficeInPlace` gained the `IsOdtPath` branch. Verified
+      interactively under Xvfb+xdotool against real LibreOffice-authored
+      `.odt` fixtures (the same ones used for the DOCX verification pass,
+      re-saved as `.odt`): headings/bold/italic/underline/bullets/
+      center+right alignment/hyperlink-text-preservation all render
+      identically to the DOCX version of the same content; a `.odt`
+      containing a table and an embedded image loads with no crash/hang/
+      corruption, cleanly skipping just the table/image while every
+      surrounding paragraph renders intact.
+- [x] **Phase 3 — Insert/Visual editing + formatting toggle + undo.**
+      `HandleOfficeInsertInput` (char insert via `ApplyInsertToParagraph`,
+      Enter via `SplitParagraphAt`, Backspace/Delete via
+      `ApplyDeleteToParagraph` within a paragraph or `MergeParagraphs`
+      across a boundary) and `HandleOfficeVisualInput` (hjkl/gg/G extend
+      the selection; `b`/`i`/`u` call `ToggleFormatOverRange` — across a
+      multi-paragraph selection, the first/last paragraphs are toggled
+      over their partial range and every paragraph strictly between them
+      is toggled over its full range — then return to `OfficeNormal`,
+      matching vim's own "operator over a Visual selection returns to
+      Normal" convention) don't go through `ProcessInsertKey`
+      (`Buffer`/`CursorPos`-coupled; dot-repeat/macro recording isn't v1
+      scope for Office anyway, matching Visual-mode operations' own noted
+      scope-out in VIM_PARITY_PLAN.md's Phase 9). `i`/`a` enter Insert
+      (snapshotting via `PushUndoOffice()` first, vim's "one undo per
+      insert session" convention); `v` enters Visual. `u`/Ctrl-R
+      (`UndoOffice`/`RedoOffice`) mirror `Undo()`/`Redo()`'s own
+      push-the-opposite-stack-then-swap shape against
+      `OfficeSession::undo_stack`/`redo_stack`. Leader-key bindings were
+      dropped in favor of direct `b`/`i`/`u` keys in Visual mode — the
+      plan's suggested `<leader>b/i/u` would need Lua-side keymap
+      registration to be reachable, extra plumbing not essential to the
+      core ask; documented here as a deliberate deviation, not an
+      oversight. main.cpp's office `DrawPane` branch gained a Visual
+      selection highlight (paragraph+col range intersected against each
+      wrapped visual line, reusing `BuildOfficeFormatRuns` for the pixel
+      x-offset, same as the cursor-position calculation already had).
+      Verified interactively under Xvfb+xdotool: `i` + typing inserts
+      text preserving surrounding heading formatting; `u` undoes an
+      entire insert session in one step back to the pre-insert paragraph
+      text; `v` + hjkl shows a visible selection highlight; `b` over a
+      selection makes it bold and returns to Normal mode.
+- [x] **Phase 4 — save-back for both formats.** `WriteZipReplacingEntry`
+      (`office_doc.h`/`.cpp`, shared by both formats): rebuilds the ZIP
+      from the session's `original_bytes`, copying every entry except the
+      one target part through via `mz_zip_writer_add_from_zip_reader`
+      (raw central-directory copy — preserves each entry's original
+      compression method and, by iterating the reader's own index order,
+      position — satisfying ODF's mimetype-first-and-stored constraint
+      automatically as a side effect of never touching that entry).
+      `SaveDocxToMemory` re-parses the original `word/document.xml`,
+      removes existing `<w:p>`/`<w:tbl>` children (a table is dropped —
+      never represented in `OfficeDoc` to begin with), rebuilds `<w:p>`
+      elements from `doc.paragraphs` (spans + gaps walked into `<w:r>`
+      runs, `\t`/`\n` split into sibling `<w:tab/>`/`<w:br/>` elements —
+      the reverse of the parse-side mapping), and re-inserts them before
+      the original `<w:sectPr>` (page setup, preserved verbatim — OOXML
+      requires it be `<w:body>`'s last child). `SaveOdtToMemory` mirrors
+      this for `content.xml`/`<office:text>`, but ODF formatting is
+      always a named style reference rather than DOCX's inline toggles,
+      so it get-or-creates one `<style:style style:family="text">`/
+      `"paragraph"` automatic style per distinct format/alignment
+      combination actually used (cached by a packed-bitfield key, so a
+      document with many same-formatted runs doesn't grow one style per
+      run) and references it via `text:style-name`. Both save functions
+      drop a bullet paragraph's list-membership on save (`<w:numPr>`/
+      `<text:list>`) rather than emit one referencing a numbering/list
+      style definition v1 has no way to construct correctly — a
+      documented, deliberate loss (safer than risking a "needs repair"
+      prompt from an unresolvable reference) alongside the pre-existing
+      table/image loss. `SaveBuffer()` gained an `IsOfficeBuffer` branch
+      (native-only — errors clearly on the wasm build) that calls the
+      right `Save*ToMemory` by `doc.source_format`, writes the bytes, and
+      re-baselines `OfficeSession::original_bytes` to what was just
+      written so a later save in the same session copies from the latest
+      saved structure rather than the file's state from open time.
+      Verified end-to-end, not just internally: edited and saved both a
+      `.docx` and an `.odt` under Xvfb+xdotool, confirmed `unzip -t`
+      reports no errors on either saved file, then ran each through real
+      `soffice --headless --convert-to pdf` (no repair/corruption
+      warnings from LibreOffice itself) and opened the resulting PDF in
+      mep's own PDFium-backed viewer as an independent rendering check —
+      both showed the edited text, heading recognized, and bold/italic/
+      underline all correctly preserved.
+- [x] **Phase 5 — toolbar (partial: Bold/Italic/Underline only, no
+      alignment/bullet buttons — see below).** A toolbar row (height =
+      `PaneHeaderHeight()`, matching the main header) between the office
+      pane's header and its content, drawn/click-registered in main.cpp's
+      `DrawPane` office branch; `content_y`/`content_h` are shrunk in
+      place for the rest of that branch only (every path through it ends
+      in `return`, so nothing after in `DrawPane` reads the pre-toolbar
+      values). Three buttons (B/I/U) call the new public
+      `Editor::ToggleOfficeFormat(char)` on click — the identical
+      `ToggleFormatOverRange` codepath `HandleOfficeVisualInput`'s b/i/u
+      keys already use: with an active Visual selection it toggles over
+      it and drops back to `OfficeNormal` (matching the keybinding
+      exactly); with no selection (clicked from `OfficeNormal`) it
+      toggles just the single character at the cursor rather than being a
+      no-op — a small, well-defined fallback, not "sticky" insert-mode
+      formatting. `Editor::OfficeFormatActive(char) const` (read-only,
+      samples `FormatAt` at the cursor or the selection's first
+      character) drives each button's pressed-look. Verified the toolbar
+      itself renders correctly (three buttons, correct position, content
+      area shrinks to make room) under Xvfb+xdotool; **could not verify
+      an actual click** in that environment — Xvfb here has no window
+      manager, and unlike keyboard events (`xdotool keydown`/`keyup`
+      reliably reach the window), synthetic mouse clicks (`xdotool
+      click`/`mousedown`+`mouseup`, tried both) never registered even
+      against the pre-existing File menu, a control with years of
+      working click-dispatch behind it — an environment/tooling
+      limitation, not evidence of a bug. Confidence instead comes from
+      code review plus the fact that `ToggleOfficeFormat` calls the exact
+      same `ToggleFormatOverRange` primitive the keyboard path already
+      exercised live. **Not done**: alignment buttons and a bullet-toggle
+      button/keybinding — deprioritized after the toolbar's main
+      structural risk (does a second header row + content-area shrink
+      break anything else in `DrawPane`?) was already resolved by the
+      B/I/U buttons; revisit if/when alignment/bullet authoring (not just
+      preserving what a source document already had) becomes a priority.
+- [ ] **Not wired up**: native-only for v1 — no Emscripten/wasm build,
+      blocked concretely by the wasm file-bridge having no binary-write
+      path (`mep_js_write_file` is string-only), mirroring the PDF
+      viewer's own native-only precedent but for a different, harder
+      reason. No "sticky" insert-mode formatting via typing alone
+      (toggle-while-typing with no selection) — Visual-select-then-toggle
+      (keyboard or toolbar click) is the only way to apply formatting in
+      v1. No mouse click-to-place-cursor (consistent with the main text
+      buffer, which also lacks this). No alignment/bullet
+      toggle keybinding or toolbar button (Phase 5, see above — reading
+      and preserving existing alignment/bullets on load and save both
+      already work; only *authoring new* alignment/bullet changes from
+      inside mep doesn't yet). Save-back drops a bullet paragraph's list
+      membership and any table/image present in the original file (see
+      Phase 4's own comment) — known, documented v1 losses, not bugs.
+
+---
+
+### Phase 45 — Spreadsheet pane (.xlsx/.ods/.csv) with a full formula engine 🚧 in progress (Phase 1 of 5 done)
+
+A fifth pane archetype alongside Image/PDF/text/Office: a spreadsheet
+pane opening `.xlsx`/`.ods`/`.csv`, edited with the same vim-modal
+conventions as the rest of the editor (`Mode::SheetNormal`/`SheetInsert`/
+`SheetVisual`), with a **full formula engine** (cell references, ranges,
+arithmetic, `IF`/`VLOOKUP`/`INDEX`/`MATCH`, text functions, cross-sheet
+references — confirmed via AskUserQuestion, the most ambitious of the
+offered scope options). The largest single feature in this codebase so
+far — three genuinely new subsystems with no existing precedent: a 2D
+sparse cell-grid model, a hand-rolled formula tokenizer/parser/evaluator,
+and three new file formats. No array formulas, named ranges, pivot
+tables/charts, conditional formatting, cell formatting/styles beyond
+plain numeric display, merged cells, frozen panes, iterative/circular
+calculation modes, volatile functions, external-workbook references,
+dates/date arithmetic, or adding/removing sheets/rows/columns. Legacy
+binary `.xls` is out of scope entirely. Planned and stress-tested via two
+research/validation passes before implementation — the second one caught
+a real correctness bug (a `unique_ptr`-held AST would have made `Cell`
+non-copyable, breaking the undo snapshot design before any code existed
+to depend on it) and a real memory-safety hazard (range-consuming
+functions touching the sparse map's `operator[]` on a
+`SUM(A1:A1048576)`-style range would silently insert ~1M empty cells) —
+both fixed in the design before Phase 1 was written, not discovered
+mid-implementation.
+
+- [x] **Phase 1 — document model + formula engine + CSV + Normal-mode
+      grid navigation + Insert/Visual editing + undo.** (Combines what
+      the original plan split across Phases 1/4, since editing came
+      together naturally alongside navigation once the document model
+      was in place.) `src/formula.h`/`.cpp`: a `FormulaNode` AST
+      (unlike `regex.cpp`'s deliberately-hidden `Node`/`Parser`, this one
+      is genuinely public — `Cell::ast` caches and owns a parsed formula
+      outside the parser) built by a recursive-descent parser
+      (precedence tiers: compare → concat → add → mul → unary → power →
+      primary; deliberately diverges from real Excel in one place, noted
+      in code — unary minus binds *lower* than `^` here, so `-2^2` is
+      `-4` not Excel's `4`), plus shared cell-address helpers
+      (`ColumnLettersToIndex`/`ParseCellAddress`/etc.) used by every
+      format's own address parsing. `src/sheet_doc.h`/`.cpp`: `Workbook`/
+      `Sheet`/`Cell`/`CellValue` (`Cell::ast` is `shared_ptr<const
+      FormulaNode>`, not `unique_ptr`, specifically so `Cell` — and
+      therefore `Sheet`/`Workbook` — stays copy-constructible for
+      `SheetSession::undo_stack`'s full-snapshot convention); `Sheet`
+      stores cells in a sparse `unordered_map` keyed by a packed
+      `(row<<32)|col`, with `FindCell` (read-only, never inserts) kept
+      strictly separate from `GetOrCreateCell` (the only way the map
+      grows) — every range-consuming formula function
+      (`SUM`/`AVERAGE`/`VLOOKUP`/etc.) uses `FindCell` and clamps its
+      iteration bounds to the sheet's own `max_row`/`max_col`, confirmed
+      under AddressSanitizer with a `SUM` over an explicit `A1:A1048576`
+      range against a 3-cell sheet completing instantly with no
+      million-entry map growth. `EvaluateCell` is the single mandatory
+      evaluation choke point every reference (same-sheet, cross-sheet,
+      inside a range, inside `VLOOKUP`/`INDEX`/`MATCH`) routes through —
+      memoized via a `Workbook::recalc_generation` counter bumped once
+      per edit (`SetCellRaw`), not a dependency graph, so an edit
+      recomputes every formula cell touched, not just the one edited;
+      cycle detection is a per-cell `evaluating` flag, which (because
+      every reference shares the one choke point and an unqualified ref
+      always resolves against its *own* formula's sheet, threaded
+      through as a parameter) catches cross-sheet cycles (Sheet1!A1 →
+      Sheet2!A1 → Sheet1!A1) with the same mechanism as a same-sheet one
+      — confirmed with both cases directly. Function library: `SUM
+      AVERAGE COUNT COUNTA MIN MAX`, `IF AND OR NOT`, `CONCAT/
+      CONCATENATE LEN LEFT RIGHT MID UPPER LOWER TRIM`, `ROUND ABS`,
+      `VLOOKUP INDEX MATCH` (`MATCH` always exact-match only — v1 has no
+      1/-1 approximate-match modes), cross-sheet cell/range refs.
+      `src/sheet_doc.cpp` also holds CSV read/write (RFC4180-ish,
+      doubled-`""`-escaped quoted fields; a field starting with `=` is
+      still treated as a formula even though CSV itself has no formula
+      concept — more useful for a "spreadsheet program"; a formula cell
+      saves its last-computed raw value, not its formula text, since CSV
+      can't represent one). `src/editor.h`/`.cpp`: `Mode::SheetNormal/
+      Insert/Visual`, `SheetSession` (2D `scroll_row`/`scroll_col`,
+      unlike Office's vertical-only `scroll_para` — and, unlike
+      `ResizeOfficeViewport`, `ResizeSheetViewport` does the *entire*
+      scroll-follow job itself with no main.cpp-side follow-up call,
+      since fixed-size grid cells need no `MeasureTextEx` the way
+      word-wrapped text does), `IsSheetBuffer`/`GetSheet`/
+      `OpenSheetInPlace`/`HandleSheetNormalInput` (hjkl 2D move, gg/G/0/$
+      jump to the sheet's used-range corners, `i`/`a` seed
+      `Mode::SheetInsert` from the cell's raw text, `v` enters
+      `Mode::SheetVisual`, `x`/`d` clear a cell — no dd/dw operator+
+      motion grammar in v1, same simplification the Office pane made)/
+      `HandleSheetInsertInput` (plain-string edit buffer, Enter commits
+      *and* advances a row — a real spreadsheet's own convention, not
+      Office's or the main buffer's Insert-mode behavior)/
+      `HandleSheetVisualInput` (rectangular range selection, `x`/`d`
+      clears every cell in it)/`PushUndoSheet`/`UndoSheet`/`RedoSheet`
+      (whole-`Workbook` snapshots, cursor re-clamped into the swapped-in
+      sheet's used range after either). `SaveBuffer()` gained an
+      `IsSheetBuffer` guard (blocks `:w` for now — same data-loss bug
+      class the Office pane's own Phase 1 fixed for PDF, caught before
+      it could happen this time rather than after). `src/main.cpp`:
+      `DrawPane` sheet branch — a formula bar (raw cell text, doubling as
+      the live edit-buffer display in `SheetInsert`) above a grid with
+      column-letter/row-number headers, cursor/selection highighting,
+      right-aligned numbers vs. left-aligned text, drawn with the
+      existing monospace `g_font` (no new font vendoring needed, unlike
+      Office's Liberation Sans) at fixed pixel cell dimensions
+      (`kSheetRowHeaderW`/`kSheetColWidth`/`kSheetRowHeight`, shared
+      between `editor.h` and `main.cpp` the same way `kPdfPageGapPx`
+      already is) rather than font-measured ones. `EvaluateSheetCell`
+      (non-const, mirroring `EnsurePdfPagesRastered`'s own shape) lets
+      the renderer trigger on-demand cache-filling evaluation despite
+      only holding a `const SheetSession*` via `GetSheet`.
+
+      Verified in two passes: (1) a standalone test harness
+      (`formula_test.cpp`, built with `-fsanitize=address,undefined`)
+      covering arithmetic, all range/lookup/text/logical functions,
+      same-sheet and cross-sheet circular references, the sparse
+      million-row-range guarantee, edit-triggered dependent
+      recomputation, and a CSV round-trip — all passing clean with no
+      sanitizer errors; (2) interactive verification under Xvfb+xdotool
+      against a real CSV fixture with formulas (`=B2*C2`, `=SUM(...)`,
+      `=AVERAGE(...)`): grid renders correctly with computed values,
+      hjkl/gg/G navigate (confirmed gg resets row only, not column,
+      matching real vim `gg`), the formula bar shows the raw formula
+      (not the computed value) for the active cell, Insert mode edits a
+      cell and Enter both commits and advances a row, `u` undoes an edit
+      and correctly re-clamps the cursor into the now-smaller used
+      range, Visual mode shows a live rectangular range highlight, and a
+      Visual-mode `d` over a 2×2 range clears all 4 cells **and** the
+      dependent `SUM`/`AVERAGE` formulas elsewhere on the sheet
+      recompute live to reflect it.
+- [ ] **Phase 2 — XLSX read** (`src/sheet_xlsx.cpp`: `xl/workbook.xml` +
+      rels + `sharedStrings.xml` + per-sheet XML, handling every cell
+      `t=` type seen in the wild — `s`/`str`/`inlineStr`/`b`/`e`/bare
+      number — not just shared strings).
+- [ ] **Phase 3 — ODS read** (`src/sheet_ods.cpp`: `content.xml`
+      `table:table` parse, `table:number-columns/rows-repeated`
+      expansion, ODF formula-syntax translation — strip `of:=`/`oooc:=`
+      and `[.A1]` → `A1` — feeding the same `ParseFormula`).
+- [ ] **Phase 4 — save-back for all three formats + sheet-switching +
+      polish** (generalizing `office_doc.h`'s `WriteZipReplacingEntry`
+      to a multi-entry `WriteZipReplacingEntries` for xlsx/ods's
+      two-parts-at-once saves, `SerializeXlsxSheet`/
+      `SerializeOdsContentXml`, `SaveBuffer()` gains the real
+      `IsSheetBuffer` write path, next/prev-sheet keybinding). *Verify*
+      with the same real-LibreOffice-round-trip discipline as the Office
+      pane's own save-back phase.
+- [ ] **Not wired up**: native-only for v1 (no wasm binary-write bridge,
+      same blocker as Office). `:w` on a sheet buffer currently errors
+      (Phase 1 guard) rather than saving — real save-back is Phase 4
+      above. No adding/removing sheets/rows/columns, no per-column width
+      overrides (cell text is truncated to the fixed column width, not
+      wrapped or overflowed into an empty neighbor the way real
+      spreadsheets do), no mouse click-to-select-cell yet (not attempted
+      this phase — flagged, not forgotten).
+
+---
+
+### Cross-cutting: top-level exception safety net ✅
+
+Found while chasing a user-reported crash (`terminate called after throwing
+an instance of 'std::out_of_range'` from `basic_string::substr`) after a
+successful Ctrl-C Ctrl-C org-babel execution — extensive attempts (a
+`RelWithDebInfo` build under `gdb` with `catch throw`, replaying dozens of
+interaction sequences: repeated/overlapping executions, every language
+block in a large multi-language fixture, undo/redo, fold, resize, insert-
+mode edits, `:w`) never reproduced the exact throw site, but surfaced a
+real, independent gap worth fixing regardless: **there was no exception
+handling anywhere in the native C++ code** (`editor.cpp`/`main.cpp`/
+`lua_env.cpp`/`job.cpp` — confirmed via a full grep; the only `try`/`catch`
+blocks in `editor.cpp` are inside `EM_JS`-embedded *JavaScript* glue for
+the wasm build, a different language's `catch (e)` syntax, not C++'s).
+Any uncaught C++ exception thrown anywhere during a frame — from a job
+completion callback, from `HandleInput`, from `DrawEditor`, from anywhere
+— propagates straight past `UpdateDrawFrame` (the sole per-frame entry
+point both the native `while` loop and the Emscripten main loop call)
+into `std::terminate`, killing the whole app with **no save prompt**,
+silently discarding every unsaved buffer.
+
+- [x] `UpdateDrawFrame` (`main.cpp`) now wraps its full per-frame body
+      (job polling, input handling, drawing, click dispatch) in a single
+      `try { ... } catch (const std::exception &e)`, converting an
+      uncaught exception into a visible error notification
+      (`Editor::Notify(..., NotifyLevel::Error)`) instead of a crash, and
+      simply lets the *next* frame proceed normally. Catches
+      `std::exception` specifically, not `...` — an unknown non-exception
+      throw (nothing in this codebase throws one) still terminates rather
+      than being silently swallowed with no diagnostic. If the throw
+      happens mid-`DrawEditor` (after its own `BeginDrawing`, before
+      `EndDrawing`), that one frame may render incompletely/skip its
+      buffer swap — a one-frame visual glitch, not a further crash
+      (raylib's `BeginDrawing` doesn't require a prior frame's
+      `EndDrawing` to have completed) — an accepted, minor tradeoff
+      against losing all open work outright.
+- [x] Verified by temporarily injecting a real `std::out_of_range` throw
+      (an unconditional `substr(11)` on an empty string) into
+      `TryRunOrgBabelAtCursor` and rebuilding: Ctrl-C Ctrl-C now shows a
+      red "Internal error (recovered): basic_string::substr: ..." toast
+      and status-line message, the editor keeps running and stays fully
+      responsive (buffer content, cursor, and the rest of the file all
+      intact) — confirmed against exactly the kind of exception the user
+      hit. Removed the injected throw afterward and reconfirmed normal
+      Ctrl-C Ctrl-C babel execution still works correctly.
+- ⚠️ **This is a safety net, not a fix for whatever specific bug the user
+      hit** — the actual root cause of their crash was not identified
+      (could not be reproduced despite extensive targeted attempts). If
+      it recurs, the new "Internal error (recovered): ..." toast/status
+      message will now show the exact exception `what()` string, which
+      is far more actionable for tracking down the real cause than a
+      full crash with only a bare `terminate`/`abort` in the terminal —
+      revisit if/when it does.
+
 ---
 
 ## Explicitly out of scope / deferred indefinitely (noted so it isn't re-litigated)
@@ -2206,16 +3384,29 @@ picker — do this last, if at all)*
 - **LeetCode live fetch/submit** — local problem authoring/execution is
   the priority; the reverse-engineered API integration is a stretch
   add-on.
-- **Full theme palette set** (28 in `mep.nvim`) — port a handful first,
-  the data format makes adding more later trivial and low-value to
-  front-load.
+- **PDF viewer (Phase 43): the Emscripten/wasm build, and interactive
+  password entry for encrypted documents** — see Phase 43's own trailing
+  `[ ]` note. Now that PDFium is the backend, rendering fidelity itself
+  (color spaces, patterns/shadings, form-field *appearance*, fonts) isn't
+  a mep-side limitation the way it was under the earlier hand-rolled
+  renderer — PDFium handles the full PDF spec there. What's still out of
+  scope is UI, not rendering: no interactive form-filling/annotation
+  editing, no JS-driven interactive forms (the plain, non-V8
+  `pdfium-binaries` build is used, matching a read-only viewer's needs).
 - **Mouse-drag sidebar resizing** — keymap-driven resize only, matching
   `mep.nvim`'s own explicit scope note (reliable drag-across-border
   detection is a real UI-framework feature this doesn't have).
 - **True org buffer narrowing** — fold-based approximation only, same
   documented limitation `mep.nvim` itself carries.
-- **A general-purpose regex engine** — org/markdown/babel header-args
-  and every other "pattern matching" need in this plan should stay on
-  plain-substring/line-pattern matching, consistent with
-  `VIM_PARITY_PLAN.md`'s own search/substitute decision. Only reconsider
-  if a specific feature turns out to be unusably weak without it.
+- **A general-purpose regex engine** — since built (`src/regex.h`/
+  `src/regex.cpp`: a dependency-free backtracking ECMAScript-lite engine,
+  54/54 unit tests passing) and wired into `/`/`?` search and `:s`
+  substitute (`Editor::SearchOnce`/`ExSubstitute` in `editor.cpp`, with
+  graceful fallback to the original plain-substring `CiFind`/`CiRfind`
+  path for patterns that don't compile as valid regex). org/markdown/
+  babel header-args deliberately were **not** switched over to it and
+  stay on plain-substring/line-pattern matching — nothing there turned
+  out to be unusably weak without it (see e.g. the babel `:var`/`:results`
+  work, which fixed a real bug with a quote-aware manual splitter, not a
+  regex), consistent with the reasoning that motivated deferring this in
+  the first place.

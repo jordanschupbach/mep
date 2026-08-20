@@ -27,7 +27,9 @@ from Phase 0 first).
 
 All phases complete.
 
-Last updated: 2026-08-19 (session that added Phase 11 — all phases now complete).
+Last updated: 2026-08-20 (session that closed out the remaining stretch items:
+numbered/"0/"% registers, `(`/`)` sentence motions, the full jumplist,
+marks surviving line-shifting edits, and Insert-mode Ctrl-O).
 
 ---
 
@@ -143,10 +145,23 @@ Foundation for almost everything else.
 - [x] `%` — jump to matching `()`/`{}`/`[]`.
 - [x] All of the above work as operator motions too (`df.`, `dt,`,
       `d}`, `d%`, `dW`, `de`) and take counts (`3fx`, `2}`).
-- [x] `(` / `)` sentence motions — **skipped**: even a rough
-      "sentence = up to `.`/`!`/`?` + whitespace" heuristic added
-      meaningful edge-case complexity for a motion pair mep's own usage
-      patterns rarely need; revisit only if it turns out to matter.
+- [x] `(` / `)` sentence motions — implemented after all (revisited in the
+      session that closed out the remaining stretch items). Matches Vim's
+      documented sentence definition: ends at `.`/`!`/`?`, optionally
+      followed by any run of closing `)`/`]`/`"`/`'`, followed by
+      end-of-line or a space/tab; lands on the first non-blank of the next
+      sentence. A blank line is also a sentence boundary, same as `}`'s
+      own treatment of one. Modeled directly on `MoveParagraphForward`/
+      `MoveParagraphBackward` (`MoveSentenceForward`/`MoveSentenceBackward`
+      in editor.cpp, sharing a `NextSentenceStart` forward-scan helper --
+      `(` enumerates sentence starts from the top of the buffer via that
+      helper rather than matching the pattern in reverse, since the
+      punctuation-then-whitespace shape is awkward right-to-left).
+      Verified via the actual native build: `)` from the start of a
+      3-sentence line landing on the exact expected column of each next
+      sentence in turn, then on column 1 of the following line once the
+      line's sentences are exhausted; `(` walking back through the same
+      stops in reverse.
 - [x] `H` / `M` / `L` — top/middle/bottom of *visible* screen. Needs
       the pane's visible-line count, which today only `main.cpp`
       computes per-frame; added a small `Editor::SetVisibleLines(pane_id,
@@ -225,10 +240,28 @@ non-letters).
       `"a` holding both lines, pasted together via `"ap`).
 - [x] Status line shows a pending register prefix (`"a`) the same way
       it shows a pending count, and the two compose in the display.
-- [ ] Stretch, not implemented: numbered registers `"1`-`"9` (shifting
-      delete history) and `"0` (last yank, survives intervening
-      deletes).
-- [ ] Stretch, not implemented: `"%` (current filename), read-only.
+- [x] Numbered registers `"1`-`"9` (shifting delete history) and `"0`
+      (last yank, survives intervening deletes) — implemented in the
+      session that closed out the remaining stretch items. `ApplyOperator`
+      shifts `"1`.`"9` down (dropping `"9`) and stores the freshly
+      deleted/changed text in `"1` for any delete/change of at least a
+      full line (linewise, or charwise spanning multiple lines); a delete
+      smaller than one line goes to the small-delete register `"-`
+      instead (also implemented) and never touches `"1`-`"9`, matching
+      Vim's own documented split. `"0` mirrors only pure yanks (never a
+      delete), never shifts, and isn't affected by intervening deletes.
+      Verified via the actual native build: `"1dd` then `"1p` pasting
+      back the just-deleted line; `yy` on one line, then `dd` on another
+      (shifting `"1` but not `"0`), then `"0p` still pasting the
+      *original* yanked line; `x` (a small delete) then `"-p` pasting the
+      deleted character back, confirming it went to `"-` and not `"1`.
+- [x] `"%` (current filename), read-only — implemented alongside the
+      above. `Editor::RegisterFor('%')` refreshes its text from
+      `Buf().filename` on every read; writes to it (`"%yy`/`"%dd`) are a
+      silent no-op (redirected to the unnamed register instead) via a
+      guard in `YankRange`/`ApplyVisualBlockOperator`, matching Vim.
+      Verified via the actual native build: `"%p` pasting the buffer's
+      filename as text.
 
 Register consumption is centralized in `ApplyOperator` (one
 `TakeRegisterSpec` call covers `d`/`y`/`c`/`x`) and in the `p`/`P`
@@ -256,16 +289,65 @@ object code, which just feed ranges into `ApplyOperator` as before.
       matching Vim's wording — verified concretely in both directions.
 - [x] An empty query (bare `/<Enter>` or `?<Enter>`) repeats the last
       search pattern in the newly-given direction, matching Vim.
-- [ ] Not implemented (stretch, as planned): search motions as operator
-      targets (`d/foo<Enter>`), and incremental highlight-while-typing.
-- [ ] Not implemented (explicit stretch, as planned): `std::regex`
-      matching — plain substring only.
+- [x] Search as an operator motion: `/`/`?` (and `n`/`N`) are valid
+      operator targets, exclusive charwise like every other motion
+      (`d/foo<Enter>` deletes from the operator's start up to but not
+      including the next match of "foo"; `y?bar<Enter>` yanks backward to
+      the previous match of "bar"; `dn`/`dN` reuse the last confirmed
+      pattern synchronously, no prompt). Implemented in
+      `ProcessNormalKey`'s `pending_op_ != 0` block (`src/editor.cpp`):
+      `/`/`?` there just call `EnterSearch` without touching
+      `pending_op_`/`pending_op_start_`, so `HandleSearchInput`'s Enter
+      handler can read them back once the pattern is confirmed and call
+      `ApplyOperator(op, op_start, result, false)` over the range
+      `FindNext` found, instead of just moving the cursor the way a
+      standalone search does. Escape cancels the pending operator too
+      (`EnterNormal()` already clears `pending_op_`), matching Vim. A
+      pattern that doesn't match leaves the buffer untouched and shows
+      `E486: Pattern not found: ...`, same as a standalone failed search.
+- [x] Incremental highlight-while-typing (`incsearch`): every keystroke in
+      `HandleSearchInput` calls `Editor::UpdateIncSearch()`, which
+      re-searches from `search_anchor_` (the cursor position when the
+      prompt opened), previews the cursor at the match (for free, this
+      also scrolls the match into view — the ordinary per-frame
+      scroll-follows-cursor logic doesn't care why the cursor moved), and
+      highlights the matched span through the same Decoration/hl_group
+      pipeline every other feature (diagnostics, git-gutter, colorizer,
+      ...) uses, under a dedicated `"__mep_incsearch"` namespace and a new
+      `"IncSearch"` highlight group. An empty query or a failed search
+      shows nothing and leaves the cursor at the anchor. Escape restores
+      the cursor to the anchor and clears the namespace; Enter clears the
+      namespace too (search or operator-apply takes over from there) —
+      verified concretely: `/fox` highlighted the first "fox" live before
+      Enter was pressed, `?fox` highlighted backward the same way, and
+      Escape left no leftover highlight and put the cursor back exactly
+      where it started.
+- [x] `std::regex`-equivalent matching: no longer plain-substring-only —
+      superseded by the dependency-free backtracking regex engine built
+      separately (`src/regex.h`/`src/regex.cpp`) and wired into
+      `Editor::SearchOnce`/`ExSubstitute` (a pattern that fails to compile
+      as regex falls back to the original plain-substring search, so
+      nothing that worked before regressed). See NVIM_PARITY_PLAN.md's own
+      note on the same engine for the fuller writeup; this line just
+      corrects this doc's now-stale "plain substring only" claim.
 
 Verified via the actual native build: typed `/fox<Enter>` landing on the
 first match past the cursor, `n`/`n` advancing through subsequent
 matches, wrap-around in both directions with the exact status message
 text, `*` on a word jumping to its next occurrence, `N` reversing
-correctly, and `?dog<Enter>` wrapping backward with the matching message.
+correctly, `?dog<Enter>` wrapping backward with the matching message,
+`d/fox<Enter>` and `y?fox<Enter>` deleting/yanking exactly the hand-
+computed exclusive range (confirmed via undo/paste), `dN` reusing the
+last search pattern as an operator motion, a non-matching
+`d/zzz<Enter>` leaving the buffer untouched with the `E486` message, and
+incsearch's live highlight tracking every keystroke of both `/` and `?`
+prompts and disappearing cleanly on both Escape and Enter.
+
+One known gap: a count typed between the operator and `/`/`?`/`n`/`N`
+(e.g. `2d/foo<Enter>`) is discarded rather than jumping to the *n*th
+match — Vim supports this, but it's a narrow enough case (compare to how
+often `2dw` is actually typed vs. `2d/foo<Enter>`) that it's being left
+as an honest, documented gap rather than implemented speculatively.
 
 ## Phase 5 — Marks & jumps ✅
 
@@ -288,12 +370,35 @@ correctly, and `?dog<Enter>` wrapping backward with the matching message.
       `VisualLine` (before overwriting `mode_`), so it fires on every
       path out of Visual mode (Escape, an operator, `:`) without each
       of those call sites needing its own capture logic.
-- [ ] Stretch, not implemented: full jumplist (`Ctrl-O` / `Ctrl-I`) — a
-      bounded deque of positions, pushed on any "big" jump.
-- [ ] Stretch, not implemented: marks surviving edits above them
-      shifting line numbers (mep's marks are fixed `{row, col}` and go
-      stale, like a plain snapshot, if lines are inserted/deleted above
-      them).
+- [x] Full jumplist (`Ctrl-O` / `Ctrl-I`) — implemented in the session
+      that closed out the remaining stretch items, as `Pane::jumplist` (a
+      bounded `std::vector<JumpEntry>` capped at `kMaxJumplist`, each
+      entry a buffer id + position) alongside the existing single-slot
+      ``` `` ```/`''` mechanism (`Buffer::last_jump_from`), which is left
+      untouched -- `RecordJumpFrom` now feeds both from the same call
+      sites. Follows Vim's own list+index model: a new jump truncates any
+      forward history past the current index (same as undo/redo);
+      `Ctrl-O` from "live" first remembers the current position so a
+      later `Ctrl-I` can return to it, then steps back; both no-op
+      silently at either end of the list. Bound in Normal mode only
+      (distinct from Insert mode's own, unrelated Ctrl-O -- see Phase 8).
+      Verified via the actual native build: `G` (a "big jump") then
+      `Ctrl-O` returning to the exact pre-`G` position, then `Ctrl-I`
+      returning forward to where `G` had landed.
+- [x] Marks surviving edits above them shifting line numbers —
+      implemented alongside the above via `Editor::ShiftMarksForLineEdit`
+      (editor.cpp), called at every `Buf().lines.insert`/`erase` site that
+      changes the line count on the common editing paths (`o`/`O`,
+      Insert-mode Enter/Backspace/Delete joining or splitting lines, `dd`/
+      any linewise or multi-line charwise delete, `J`, and linewise/
+      multi-line-charwise paste). A mark whose row falls strictly inside a
+      deleted range clamps to the deletion point rather than going
+      negative or past EOF. **Known gap**: `:m`/`:t`/`:co` (ex move/copy)
+      and Visual Block paste's own line-extending-at-EOF path don't call
+      it yet -- lower-traffic call sites left for a future pass.
+      Verified via the actual native build: `ma` on a line, `dd` on two
+      *earlier* lines, then `` `a `` still landing exactly on the marked
+      line's text (not off by two, not stale).
 
 Verified via the actual native build under Xvfb: `ma` at a specific
 position followed by `` `a `` landing on that exact spot; `'a` landing
@@ -462,9 +567,23 @@ the repeat/macro recording machinery).
 - [x] `Ctrl-W` in Insert mode — delete word before cursor (no line-join
       if already at column 0, matching Vim).
 - [x] `Ctrl-U` in Insert mode — delete from cursor to start of line.
-- [ ] `Ctrl-O` in Insert mode — **not implemented, as anticipated**:
-      still a stretch item (low usage, needs a real "one-shot mode"
-      concept mep has no other use for yet).
+- [x] `Ctrl-O` in Insert mode — implemented in the session that closed
+      out the remaining stretch items, via a new `insert_one_shot_normal_`
+      flag: switches to `Mode::Normal` for exactly one command (which may
+      itself be multi-key, e.g. `dw`), then `ProcessNormalKey` flips back
+      to Insert once that command has actually finished (same
+      "mid-command" test already used for `.`-repeat recording). Distinct
+      from Normal-mode `Ctrl-O` (jumplist back, this phase's own item
+      above) -- Vim itself disambiguates the two purely by mode, so both
+      are implemented and dispatched by `mode_`. **Known gap**: not routed
+      through the macro/`.`-repeat recording machinery (same category of
+      gap as Phase 9's Visual-mode operations), so a macro recorded across
+      an Insert-mode Ctrl-O won't replay the one-shot command.
+      Verified via the actual native build: `A` (append) typing text, then
+      `Ctrl-O` `0` (a one-shot Normal motion to column 0), confirmed via
+      the status line reading `-- INSERT --` again immediately after (not
+      stuck in Normal), then typing more text landing at column 0 as
+      expected.
 
 **Implementation note — a real bug caught by testing, not a design
 choice**: the first pass at Ctrl-W/Ctrl-U used `IsKeyPressed(KEY_W/
@@ -548,15 +667,97 @@ it; and Ctrl-U clearing from the cursor back to column 0.
       selection covering the same anchor/cursor, not the actual block
       shape.
 
-**Known gap, not fixed in this phase**: Visual-mode operations
-(charwise/linewise/block alike) don't participate in Phase 7's `.`
-repeat or macro recording -- `HandleVisualInput` is a separate dispatch
-loop from `HandleNormalInput`/`HandleInsertInput` and was never routed
-through `ProcessNormalKey`/`ProcessInsertKey`. Retrofitting it would
-also need real design work, not just plumbing: Vim's own dot-repeat of
-a Visual change reapplies the operator over a same-*shaped* selection
-at the new cursor position, not a literal keystroke replay. Left as an
-explicit gap rather than attempted partially.
+- [x] **Visual-mode participation in `.` repeat and macro recording**
+      (previously an explicit known gap -- see below for the original
+      note, kept for history). `HandleVisualInput` was a separate
+      dispatch loop from `HandleNormalInput`/`HandleInsertInput`, never
+      routed through Phase 7's `ProcessNormalKey`/`ProcessInsertKey`, so
+      a Visual session (mode entry + selection motions + operator) was
+      invisible to both `last_change_keys_` and an in-progress macro's
+      `macro_recording_buffer_`. Fixed by extracting the old inline
+      per-key loop body into `DispatchVisualKey` (unchanged logic) and
+      adding a `ProcessVisualKey` wrapper -- the exact same
+      recording/replay mechanism Phase 7 built for Normal/Insert, reused
+      rather than a parallel structured "operator + shape" repeat
+      representation, per that phase's own design note. This is also
+      what gives "reapply the operator over a same-*shaped* selection at
+      the new cursor position" for free: motions replay relative to the
+      live cursor exactly like a Normal-mode change's motions already do
+      (`dw` then `.` re-resolving at the new position, not stale
+      coordinates) -- there's no special-casing for "shape" at all, it
+      falls out of literal keystroke replay the same way.
+  - A Visual "change" spans every key from mode entry (`v`/`V`/`Ctrl-V`)
+    through the operator that commits it. Unlike Normal mode's "one
+    top-level key = one command" boundary, `ProcessNormalKey`'s own
+    finalize check now has to *skip* closing out the in-progress
+    recording while `mode_` is Visual/V-Line/V-Block (else it would
+    close immediately after the bare `v` keystroke, before any motion or
+    operator ever ran) -- `ProcessVisualKey` is what actually finalizes
+    it, at one of two points: an operator that exits back to Normal
+    (`d`/`x`/`y`/`~`/`u`/`U`) or into Insert (`c`, Visual Block `I`/`A`,
+    deferred to `ProcessInsertKey`'s own Escape-triggered commit, same
+    as Normal-mode `c{motion}` already works); or `>`/`<`, which
+    deliberately stay in Visual mode (this plan's own earlier note,
+    right above) -- detected as "this keystroke edited the buffer and
+    we're still in Visual mode afterward" (the only way that combination
+    happens, so no dedicated flag was needed), committing *without*
+    clearing the accumulated scratch, so a later `.` after several `>`
+    presses in one still-selected session replays the *whole*
+    accumulated sequence, not just the last bare `>`.
+  - `Ctrl-V` (Visual Block entry) had its own smaller pre-existing gap
+    fixed alongside this: it called `EnterVisualBlock()` directly from
+    `HandleNormalInput`, bypassing `ProcessNormalKey` entirely (unlike
+    plain `v`/`V`, which already dispatch through it as ordinary
+    printable chars) -- so `Ctrl-V` sessions were invisible to `.`/macro
+    recording even before Visual mode's own gap is considered. Fixed via
+    a new `kReplayCtrlV` sentinel (`Ctrl-V` has no printable-char
+    encoding of its own -- GLFW/raylib emit no char event while Ctrl is
+    held, same reason every other Ctrl-combo in this codebase reads off
+    the `GetKeyPressed()` queue instead) that `ProcessNormalKey`
+    special-cases ahead of `DispatchNormalKey` (which rejects it, like
+    every other sentinel).
+  - Filled a small pre-existing operator gap surfaced while wiring this
+    up: Visual-mode `c` (change) and lowercase `u`/`U` (case-lower/
+    upper, distinct from `g~`/`gu`/`gU`'s already-working pending-`g`
+    forms) had no case in the dispatch switch at all, silently doing
+    nothing -- `ApplyOperatorToSelectionOrCurrentLine` already supported
+    all three generically (shared with Normal mode's operator+motion
+    path), just never wired to these keys in Visual mode. Added,
+    reusing that same function.
+  - **Known remaining gap**: a macro recorded across a still-open
+    multi-`>`/`<` Visual session (e.g. `qa` `V` `j` `>` `>` `q`, never
+    escaping back to Normal before `q` stops recording) replays fine via
+    `@a` (macros record literal keys regardless of the `.`-repeat
+    commit boundary), but a *live* still-selected `V-LINE` session left
+    open interactively (not inside a macro) has no unfinished-session
+    concept for `.` to fall back on -- pressing `.` mid-session repeats
+    whichever `>`/`<` press most recently committed, same as Normal
+    mode's own count-override non-stickiness note in Phase 7 -- not a
+    new limitation, just this feature inheriting that one.
+
+Verified via the actual native build under Xvfb: `v` + 3 `l` (selecting
+4 chars) + `d` on one line, then moving to a different line and
+pressing `.`, re-deleting the same 4-char shape starting at the new
+cursor position rather than the original text range; `V` `j` `>`
+(select 2 lines, indent, staying in `V-LINE`) then moving elsewhere and
+pressing `.`, correctly re-selecting 2 lines from the new position and
+indenting both; recording macro `a` as `v` `l` `l` `d` (select 3 chars,
+delete) on one line, then `@a` on a different line correctly deleting
+the same 3-char shape there; `Ctrl-V` block-select (2 rows × 4 cols)
+`d` then `.` at a new position re-deleting the same 2×4 block shape
+there; and Visual-mode `c` (change) and `U` each applying correctly
+without crashing (a smaller smoke check, not the focus of this pass).
+
+**Original known-gap note, superseded by the fix above (kept for
+history)**: Visual-mode operations (charwise/linewise/block alike)
+don't participate in Phase 7's `.` repeat or macro recording --
+`HandleVisualInput` is a separate dispatch loop from
+`HandleNormalInput`/`HandleInsertInput` and was never routed through
+`ProcessNormalKey`/`ProcessInsertKey`. Retrofitting it would also need
+real design work, not just plumbing: Vim's own dot-repeat of a Visual
+change reapplies the operator over a same-*shaped* selection at the new
+cursor position, not a literal keystroke replay. Left as an explicit
+gap rather than attempted partially.
 
 **Implementation note -- another real Xvfb-testing-caught bug, not a
 design choice**: `Ctrl-V`'s entry check started out as

@@ -4681,20 +4681,36 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     float content_h = h - header_h;
 
     if (term_sess) {
-        // A terminal pane's content is the VTerm grid, not Buffer::lines
-        // -- see TerminalSession's header comment -- so it skips the
-        // scroll/selection/gutter/decoration machinery below entirely.
+        // Kept sized to the pane's real geometry regardless of which view
+        // (below) is currently drawn, so a full-screen program inside it
+        // (or the live grid itself, once shown again) is never wrapping
+        // against a stale size.
         int cols = std::max(1, static_cast<int>(w / g_char_width));
         int trows = std::max(1, static_cast<int>(content_h / line_height));
         g_editor.ResizeTerminal(pane.buffer_id, trows, cols);
-        BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
-                          static_cast<int>(content_h));
-        DrawTerminalGrid(*term_sess, x, content_y, w, content_h);
-        EndScissorMode();
-        Color term_border = is_active ? ResolveHlGroup("BorderActive") : ResolveHlGroup("BorderInactive");
-        DrawRectangleLines(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h),
-                            term_border);
-        return;
+
+        // Ctrl-\ Ctrl-N (Editor::EnterTerminalNormalMode) snapshots this
+        // pane's terminal text into Buffer::lines and drops to
+        // Mode::Normal so ordinary buffer navigation/Visual-yank/search
+        // work on it -- shown by falling through to the ordinary
+        // buffer-drawing path below instead of the live grid, exactly
+        // while that state applies to *this* (the active) pane. A
+        // background terminal pane always keeps showing its live grid
+        // regardless of the active pane's mode -- you still want to see
+        // it still running while browsing a different one.
+        bool show_live_grid = !is_active || g_editor.CurrentMode() != Mode::Normal;
+        if (show_live_grid) {
+            BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
+                              static_cast<int>(content_h));
+            DrawTerminalGrid(*term_sess, x, content_y, w, content_h);
+            EndScissorMode();
+            Color term_border = is_active ? ResolveHlGroup("BorderActive") : ResolveHlGroup("BorderInactive");
+            DrawRectangleLines(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h),
+                                term_border);
+            return;
+        }
+        // Falls through to the ordinary buffer-drawing path below, same
+        // as any other buffer.
     }
 
     int visible_lines = std::max(1, static_cast<int>(content_h / line_height));

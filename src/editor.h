@@ -855,6 +855,14 @@ private:
     // second key turns out not to be Ctrl-N) can buffer one key before
     // deciding whether to call this.
     void SendTerminalKey(TerminalSession &sess, int key, int codepoint, bool ctrl);
+    // Ctrl-\ Ctrl-N (Neovim's terminal-normal chord): snapshots the
+    // session's current VTerm scrollback+grid into CurPane()'s own buffer
+    // (see the comment above the definition for why this is a snapshot,
+    // not a live view) and drops to Mode::Normal, so every existing
+    // Normal-mode facility -- hjkl/word motions, Ctrl-W pane commands,
+    // Visual-mode selection + yank, search, `:` commands -- works against
+    // real terminal text with no new input-handling code of its own.
+    void EnterTerminalNormalMode(TerminalSession &sess);
     // Platform split for a terminal session's actual process transport:
     // native uses JobManager/Job's existing PTY plumbing (forkpty(),
     // already used by mep.term_start); wasm has no subprocess/PTY concept

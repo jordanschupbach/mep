@@ -13,8 +13,9 @@
 #include <unistd.h>
 #endif
 
-Job::Job(const std::vector<std::string> &argv, const std::string &cwd, bool raw_stdout, bool use_pty)
-    : raw_stdout_(raw_stdout || use_pty), use_pty_(use_pty) {
+Job::Job(const std::vector<std::string> &argv, const std::string &cwd, bool raw_stdout, bool use_pty,
+         std::vector<std::pair<std::string, std::string>> extra_env)
+    : raw_stdout_(raw_stdout || use_pty), use_pty_(use_pty), extra_env_(std::move(extra_env)) {
 #if MEP_JOB_POSIX
     if (argv.empty()) {
         spawn_failed_ = true;
@@ -34,6 +35,7 @@ Job::Job(const std::vector<std::string> &argv, const std::string &cwd, bool raw_
             // terminal and stdin/stdout/stderr -- just cwd + exec.
             setpgid(0, 0);
             if (!cwd.empty() && chdir(cwd.c_str()) != 0) _exit(127);
+            for (const auto &kv : extra_env_) setenv(kv.first.c_str(), kv.second.c_str(), 1);
             std::vector<char *> cargv;
             cargv.reserve(argv.size() + 1);
             for (const auto &s : argv) cargv.push_back(const_cast<char *>(s.c_str()));
@@ -100,6 +102,7 @@ Job::Job(const std::vector<std::string> &argv, const std::string &cwd, bool raw_
         close(err_pipe[1]);
         setpgid(0, 0);
         if (!cwd.empty() && chdir(cwd.c_str()) != 0) _exit(127);
+        for (const auto &kv : extra_env_) setenv(kv.first.c_str(), kv.second.c_str(), 1);
         std::vector<char *> cargv;
         cargv.reserve(argv.size() + 1);
         for (const auto &s : argv) cargv.push_back(const_cast<char *>(s.c_str()));
@@ -284,10 +287,10 @@ JobManager &JobManager::Instance() {
 }
 
 int JobManager::Spawn(const std::vector<std::string> &argv, const std::string &cwd, Callbacks callbacks,
-                       bool use_pty) {
+                       bool use_pty, std::vector<std::pair<std::string, std::string>> extra_env) {
     Entry entry;
     entry.id = next_id_++;
-    entry.job = std::make_shared<Job>(argv, cwd, callbacks.on_stdout_raw != nullptr, use_pty);
+    entry.job = std::make_shared<Job>(argv, cwd, callbacks.on_stdout_raw != nullptr, use_pty, std::move(extra_env));
     entry.callbacks = std::move(callbacks);
     entry.spawn_failed = entry.job->SpawnFailed();
     jobs_.push_back(std::move(entry));

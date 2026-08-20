@@ -51,7 +51,15 @@ public:
     // including mid-stream ANSI escapes, not line-oriented at all) and
     // merges stdout+stderr onto the one PTY stream a real terminal would
     // also merge them onto.
-    Job(const std::vector<std::string> &argv, const std::string &cwd, bool raw_stdout = false, bool use_pty = false);
+    // `extra_env`: name/value pairs set in the child via setenv() (not
+    // execve() with a built envp -- keeps the existing execvp() call and
+    // its "inherit the parent's environ" default intact for everything
+    // not explicitly listed here) after fork/forkpty but before exec, so
+    // they land only in the child, never the caller's own process. Empty
+    // by default -- every existing call site just inherits mep's own
+    // environment unmodified, same as before this parameter existed.
+    Job(const std::vector<std::string> &argv, const std::string &cwd, bool raw_stdout = false, bool use_pty = false,
+        std::vector<std::pair<std::string, std::string>> extra_env = {});
     ~Job();
 
     Job(const Job &) = delete;
@@ -89,6 +97,7 @@ private:
     int stdout_fd_ = -1, stderr_fd_ = -1, stdin_fd_ = -1;
     bool raw_stdout_ = false;
     bool use_pty_ = false;
+    std::vector<std::pair<std::string, std::string>> extra_env_;
     std::thread reader_thread_;
     std::mutex mu_;
     std::deque<JobLine> pending_;
@@ -121,8 +130,9 @@ public:
     // synchronously -- keeps the "callbacks only run from PollAll"
     // invariant simple for callers). `use_pty`: see Job's constructor --
     // implies raw mode regardless of which callback field is set.
+    // `extra_env`: see Job's constructor.
     int Spawn(const std::vector<std::string> &argv, const std::string &cwd, Callbacks callbacks,
-              bool use_pty = false);
+              bool use_pty = false, std::vector<std::pair<std::string, std::string>> extra_env = {});
 
     // Raw write/close access for interactive jobs (REPLs, `git apply`).
     bool WriteStdin(int id, const std::string &data);

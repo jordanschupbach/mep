@@ -935,7 +935,19 @@ void Editor::TerminalSpawn(TerminalSession &sess, const std::vector<std::string>
             s->exit_code = code;
         }
     };
-    sess.job_id = JobManager::Instance().Spawn(argv, "", std::move(cb), /*use_pty=*/true);
+    // Plain execvp() (see job.cpp) means the shell would otherwise inherit
+    // mep's own TERM verbatim -- fine when mep itself was launched from a
+    // real interactive terminal, but silently wrong (typically TERM=dumb
+    // or unset) whenever mep was started some other way (a GUI/.desktop
+    // launcher, an editor's own "open terminal" wrapper, ...), and shows
+    // up downstream as prompt tools like starship refusing to render
+    // ("disabled due to TERM=dumb"). VTerm (see its own class comment)
+    // implements real xterm-class cursor motion/erase/256+truecolor SGR,
+    // so xterm-256color is an honest claim, not just a placeholder value
+    // -- matches what the web build's own launcher/serve.ts pty bridge
+    // already hardcodes for the same reason.
+    sess.job_id =
+        JobManager::Instance().Spawn(argv, "", std::move(cb), /*use_pty=*/true, {{"TERM", "xterm-256color"}});
     if (sess.job_id == 0) status_message_ = "Failed to start terminal";
 #endif
 }
@@ -1053,7 +1065,7 @@ void Editor::HandleTerminalInput() {
         if (terminal_pending_ctrl_bs_) {
             terminal_pending_ctrl_bs_ = false;
             if (key == KEY_N && ctrl) {
-                mode_ = Mode::Normal;
+                EnterTerminalNormalMode(*sess);
                 return;
             }
             // Not the exit chord after all -- the buffered Ctrl-\ (FS,
@@ -1101,6 +1113,75 @@ void Editor::HandleTerminalInput() {
         if (!sess->exited) SendTerminalKey(*sess, 0, cp, false);
         cp = GetCharPressed();
     }
+}
+
+// A *snapshot*, not a live view: VTerm's scrollback+grid is copied into
+// CurPane()'s buffer once, here, rather than re-synced every frame while
+// browsing. A live view would need to keep the user's cursor position
+// meaningful across re-syncs as new output arrives and old scrollback
+// rotates out from under it (VTerm caps scrollback at 5000 lines --
+// vterm.h's kMaxScrollback) -- real surgery for comparatively little
+// payoff here, and out of step with this codebase's explicit "does not
+// attempt full Vim parity" scope (editor.h's own class comment). Ctrl-\
+// Ctrl-N again always re-snapshots, so "stale" is at most one chord away
+// from "current".
+//
+// This is also what makes every other Normal-mode facility (hjkl/word
+// motions, gg/G, Ctrl-W pane commands, Visual-mode selection + yank,
+// search, marks, macros, `:` commands) work here for free: they all
+// operate on Buffer::lines already, and after this call, CurPane()'s
+// buffer genuinely contains the terminal's text as ordinary lines. See
+// DrawPane (main.cpp) for the other half -- it renders this buffer
+// normally instead of the live VTerm grid exactly while this state
+// applies, and switches back to the live grid the instant it doesn't
+// (mode_ != Mode::Normal, or focus moves to a different pane).
+void Editor::EnterTerminalNormalMode(TerminalSession &sess) {
+    Buffer &buf = Buf();
+    buf.lines.clear();
+    buf.undo_stack.clear();
+    buf.redo_stack.clear();
+    buf.marks.clear();
+    buf.modified = false;
+
+    const VTerm *term = sess.vterm.get();
+    int cursor_line = 0, cursor_col = 0;
+    if (term) {
+        int sb_lines = term->ScrollbackLines();
+        int rows = term->Rows(), cols = term->Cols();
+        for (int i = 0; i < sb_lines + rows; i++) {
+            std::string line;
+            line.reserve(static_cast<size_t>(cols));
+            for (int c = 0; c < cols; c++) {
+                const VTermCell &cell = i < sb_lines ? term->ScrollbackAt(i, c) : term->At(i - sb_lines, c);
+                line += cell.ch.empty() ? " " : cell.ch;
+            }
+            // Trailing blanks are real (unused) cells, not meaningful
+            // content -- trimmed for a cleaner view/yank, same as any
+            // other program's "don't pad every line to the terminal
+            // width" convention. Safe as a byte-level trim: an ASCII
+            // space (0x20) never appears as a continuation/lead byte of
+            // a multi-byte UTF-8 cell.
+            size_t end = line.find_last_not_of(' ');
+            buf.lines.push_back(end == std::string::npos ? std::string() : line.substr(0, end + 1));
+        }
+        cursor_line = std::clamp(sb_lines + term->CursorRow(), 0, std::max(0, static_cast<int>(buf.lines.size()) - 1));
+        // Trailing all-blank lines below the live cursor are just unused
+        // screen space (e.g. a shell prompt with most of the window still
+        // empty) -- trimmed the same way, but never past the cursor's own
+        // line, which must survive even when it's itself blank (a fresh
+        // prompt with nothing typed yet).
+        size_t min_lines = static_cast<size_t>(cursor_line + 1);
+        while (buf.lines.size() > min_lines && buf.lines.size() > 1 && buf.lines.back().empty()) {
+            buf.lines.pop_back();
+        }
+        cursor_col = std::clamp(term->CursorCol(), 0, static_cast<int>(buf.lines[cursor_line].size()));
+    }
+    if (buf.lines.empty()) buf.lines.push_back("");
+
+    CursorPos &cur = CurPane().cursor;
+    cur.row = cursor_line;
+    cur.col = cursor_col;
+    mode_ = Mode::Normal;
 }
 
 void Editor::SendTerminalKey(TerminalSession &sess, int key, int codepoint, bool ctrl) {

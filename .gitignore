@@ -4,3 +4,4 @@ compile_commands.json
 mep.nvim
 result
 test/
+.ts-grammars/

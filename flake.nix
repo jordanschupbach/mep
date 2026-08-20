@@ -110,6 +110,16 @@
             tree-sitter-fish
             tree-sitter-elixir
             tree-sitter-erlang
+            # Added alongside org-babel's multi-language port
+            # (mep_org_babel_lang_ts_ft in main.cpp's kBuiltinSyntax) so
+            # every babel-supported language also gets real syntax
+            # highlighting inside its `#+begin_src` blocks, not just the
+            # ones that already had a grammar for some other reason.
+            tree-sitter-crystal
+            tree-sitter-fortran
+            tree-sitter-perl
+            tree-sitter-nim
+            tree-sitter-d
           ]
         );
 
@@ -181,6 +191,65 @@
             # Runtime dep of webview_deno, used by the launcher to open a
             # native window around the wasm build.
             pkgs.webkitgtk_6_0
+
+            # Interpreters/compilers for org-babel (mep.org_babel_langs in
+            # src/main.cpp) code-block execution -- not needed to build mep
+            # itself (only `just build-native`'s own cmake/ninja/gcc chain
+            # is), just to run a `#+begin_src <lang>` block via Ctrl-C
+            # Ctrl-C. Mirrors mep.nvim/flake.nix's own devShell list for the
+            # same language set (see lua/mep/org/babel.lua's `M.languages`
+            # there) so both editors work against the same fixture files
+            # with no toolchain gaps between them; gcc/g++ need no separate
+            # entry here since pkgs.mkShell already puts the default
+            # stdenv's C/C++ compiler on PATH (needed to build mep itself).
+            # Lua 5.4 (not LuaJIT) to match mep's own vendored interpreter
+            # version exactly (see luaTarball above, lua-5.4.7) -- some
+            # `#+begin_src lua` blocks (e.g. integer-division `//`,
+            # bitwise operators) are 5.4 syntax LuaJIT's 5.1-with-
+            # extensions dialect doesn't accept.
+            pkgs.lua5_4
+            pkgs.python3 # Python
+            pkgs.nodejs # JavaScript
+            pkgs.ruby
+            pkgs.perl
+            pkgs.R
+            pkgs.php
+            pkgs.rustc
+            pkgs.cargo
+            pkgs.go
+            pkgs.bun # TypeScript, via `bun <file>` directly
+            pkgs.beamPackages.elixir
+            pkgs.julia-bin
+            pkgs.babashka # Clojure, `bb` -- tried before the full `clojure` CLI below
+            pkgs.clojure
+            pkgs.gfortran
+            # .NET 10, not the default pkgs.dotnet-sdk (.NET 8 as of this
+            # writing) -- the `csharp` babel entry's `dotnet run <file>.cs`
+            # "file-based apps" mode only exists starting .NET 10.
+            pkgs.dotnet-sdk_10
+            pkgs.scala
+            # Zig/Nim/Crystal each compile-and-run a file in one step (`zig
+            # run`/`nim r`/`crystal run`); Java is a real two-step
+            # javac+java (see mep.nvim's own M.languages.java comment on
+            # why its binary_path gets reused as a .class output directory).
+            pkgs.zig
+            pkgs.nim
+            pkgs.crystal
+            pkgs.jdk
+            # Kotlin/Haskell/OCaml each run a script directly (`kotlin
+            # <file>.kts`/`runghc <file>.hs`/`ocaml <file>.ml`); D is a real
+            # two-step dmd compile-then-run.
+            pkgs.kotlin
+            pkgs.ghc
+            pkgs.ocaml
+            # Built with gcc14Stdenv, not the default gcc15: upstream dmd's
+            # own C header importer can't parse gcc 15's system headers,
+            # which now use the C23 `nullptr` keyword (stddef.h) -- a real
+            # nixpkgs-unstable/dmd incompatibility, not specific to this
+            # flake (same override mep.nvim/flake.nix uses, for the same
+            # reason). Drop this once nixpkgs' dmd derivation itself
+            # accounts for gcc 15 headers.
+            (pkgs.dmd.override { stdenv = pkgs.gcc14Stdenv; })
           ];
 
           # MEP_WEBVIEW_LD_LIBRARY_PATH: scoped to a separate variable

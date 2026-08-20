@@ -1,0 +1,97 @@
+# Grammar source list for `just fetch-grammars` (scripts/fetch-grammars.sh).
+#
+# One line per dynamically-loadable grammar (src/treesitter.cpp's own
+# DynamicLanguageTable) -- everything mep can highlight beyond its small
+# compiled-in core set (see third_party/README.md), which this list gets
+# to parity with without needing Nix. Columns, tab-separated:
+#
+#   canonical_name   the grammar's tree_sitter_<canonical_name> symbol --
+#                     must match DynamicLanguageTable's own canonical_name
+#                     exactly, since that's also the .so filename
+#                     LoadDynamicLanguage (treesitter.cpp) searches for.
+#   repo              GitHub "owner/repo", source of truth for every rev
+#                      pinned below (cross-checked against what this
+#                      project's own flake.nix resolves via
+#                      pkgs.tree-sitter.withPlugins, so the Nix and
+#                      non-Nix paths build the same grammars).
+#   rev                a tag or commit SHA -- whatever that repo actually
+#                       has; fetched via GitHub's codeload tarball, which
+#                       accepts either.
+#   subdir             empty for a normal single-grammar repo; set when
+#                       the repo bundles more than one grammar (e.g.
+#                       tree-sitter-typescript's own typescript/ and tsx/
+#                       subtrees, tree-sitter-ocaml's grammars/ocaml and
+#                       grammars/interface, tree-sitter-php's php and
+#                       php_only, tree-sitter-xml's xml and dtd).
+#
+# perl intentionally points at ganezdragon/tree-sitter-perl, not the
+# newer/more actively developed tree-sitter-perl/tree-sitter-perl --  that
+# one ships no committed src/parser.c (would need the tree-sitter CLI to
+# generate one, the exact "not vendorable without extra tooling" case
+# third_party/README.md already documents for sql/latex/swift). mep's own
+# kHighlightsPerl (src/treesitter_queries.h) is written directly against
+# ganezdragon's grammar's own node types for exactly this reason -- don't
+# repoint this line at the other repo without rewriting that query too.
+#
+# vue points at a live default-branch commit, not the tag
+# (tree-sitter-grammars/tree-sitter-vue's own v0.1.0) flake.nix's Nix
+# build resolves -- that tag was deleted upstream after nixpkgs pinned it
+# (Nix still builds it fine, straight from cache.nixos.org's permanent
+# binary cache, but a fresh git/curl fetch of that exact tag 404s live).
+#
+# To add another language: find its grammar repo (cross-check
+# `nix eval nixpkgs#tree-sitter-grammars.tree-sitter-<name>.src` if this
+# project's flake.lock is available -- the most reliable source, since
+# nixpkgs has already done the "does this even ship a committed parser.c"
+# legwork), add a row here, add a highlights.scm to
+# src/treesitter_queries.h, and add a DynamicLanguageTable entry in
+# src/treesitter.cpp.
+bash	tree-sitter/tree-sitter-bash	v0.25.1
+c_sharp	tree-sitter/tree-sitter-c-sharp	v0.23.5
+css	tree-sitter/tree-sitter-css	v0.25.0
+go	tree-sitter/tree-sitter-go	v0.25.0
+haskell	tree-sitter/tree-sitter-haskell	v0.23.1
+html	tree-sitter/tree-sitter-html	v0.23.2
+java	tree-sitter/tree-sitter-java	v0.23.5
+json	tree-sitter/tree-sitter-json	v0.24.8
+julia	tree-sitter/tree-sitter-julia	v0.25.0
+ocaml	tree-sitter/tree-sitter-ocaml	v0.25.0	grammars/ocaml
+ocaml_interface	tree-sitter/tree-sitter-ocaml	v0.25.0	grammars/interface
+php	tree-sitter/tree-sitter-php	v0.24.2	php
+ruby	tree-sitter/tree-sitter-ruby	v0.23.1
+rust	tree-sitter/tree-sitter-rust	v0.24.2
+scala	tree-sitter/tree-sitter-scala	v0.26.0
+typescript	tree-sitter/tree-sitter-typescript	v0.23.2	typescript
+tsx	tree-sitter/tree-sitter-typescript	v0.23.2	tsx
+verilog	tree-sitter/tree-sitter-verilog	v1.0.3
+yaml	tree-sitter-grammars/tree-sitter-yaml	v0.7.2
+toml	tree-sitter-grammars/tree-sitter-toml	342d9be207c2dba869b9967124c679b5e6fd0ebe
+nix	nix-community/tree-sitter-nix	eabf96807ea4ab6d6c7f09b671a88cd483542840
+zig	tree-sitter-grammars/tree-sitter-zig	6479aa13f32f701c383083d8b28360ebd682fb7d
+elm	elm-tooling/tree-sitter-elm	v5.9.4
+kotlin	fwcd/tree-sitter-kotlin	0.3.8
+scss	serenadeai/tree-sitter-scss	v1.0.0
+svelte	Himujjal/tree-sitter-svelte	v0.11.0
+vue	tree-sitter-grammars/tree-sitter-vue	ce8011a414fdf8091f4e4071752efc376f4afb08
+csv	weartist/rainbow-csv-tree-sitter	v1.0.0
+diff	the-mikedavis/tree-sitter-diff	v0.1.0
+hcl	tree-sitter-grammars/tree-sitter-hcl	v1.2.0
+make	tree-sitter-grammars/tree-sitter-make	70613f3d812cbabbd7f38d104d60a409c4008b43
+vim	tree-sitter-grammars/tree-sitter-vim	3092fcd99eb87bbd0fc434aa03650ba58bd5b43b
+xml	tree-sitter-grammars/tree-sitter-xml	5000ae8f22d11fbe93939b05c1e37cf21117162d	xml
+cmake	uyha/tree-sitter-cmake	v0.7.4
+clojure	sogaiu/tree-sitter-clojure	e43eff80d17cf34852dcd92ca5e6986d23a7040f
+dart	usernobody14/tree-sitter-dart	0fc19c3a57b1109802af41d2b8f60d8835c5da3a
+dockerfile	camdencheek/tree-sitter-dockerfile	v0.2.0
+graphql	bkegley/tree-sitter-graphql	5e66e961eee421786bdda8495ed1db045e06b5fe
+proto	coder3101/tree-sitter-proto	d65a18ce7c2242801f702770114ad08056c7f8c9
+ini	justinmk/tree-sitter-ini	e4018b5176132b4f3c5d6e61cea383f42288d0f5
+fish	ram02z/tree-sitter-fish	3.7.0
+groovy	murtaza64/tree-sitter-groovy	deb0dcf8c4544f07564060f6e9b9f6e4b0bfc27d
+elixir	elixir-lang/tree-sitter-elixir	v0.3.5
+erlang	WhatsApp/tree-sitter-erlang	0.1.0
+perl	ganezdragon/tree-sitter-perl	v1.1.1
+fortran	stadelmanma/tree-sitter-fortran	v0.5.1
+d	gdamore/tree-sitter-d	fb028c8f14f4188286c2eef143f105def6fbf24f
+nim	alaviss/tree-sitter-nim	ac72ba30d16edf0be021588a9301ede4accd6cf4
+crystal	crystal-lang-tools/tree-sitter-crystal	50ca9e6fcfb16a2cbcad59203cfd8ad650e25c49

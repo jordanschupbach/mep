@@ -1275,6 +1275,110 @@ grammars" command — activation itself doesn't need it)*
       evaluation; there just isn't a runtime "load an arbitrary
       query-file path" feature (queries are compiled-in constants, not
       read from disk at startup).
+- [x] **Org src-block language injection** (added on request, right after
+      the org-babel multi-language port above: "I'd like syntax
+      highlighting to work in those code blocks"). Previously a
+      `#+begin_src <lang>` block's *body* rendered completely
+      unhighlighted — `kHighlightsOrg`'s own query captures a block's
+      `(contents)` as `@OrgBlockContents`, which `mep.ts_capture_hl` has
+      no entry for, so it silently resolved to nothing. `mep.syntax_highlight()`
+      (`kBuiltinSyntax`, main.cpp) now, only when the buffer's own
+      filetype is `org`, additionally calls
+      `mep_syntax_highlight_org_src_blocks`: a small standalone
+      begin/end-src scanner (mirrors `mep_org_src_block_at`'s
+      case-insensitive pattern, but can't reuse it directly — that
+      function is `local` to `kBuiltinOrgBabel`'s own `DoString` chunk,
+      and Lua chunks don't share locals) that, per block, maps the babel
+      language tag to a `mep.ts_captures`-compatible filetype key via a
+      new `mep_org_babel_lang_ts_ft` table (`"c++"` → `"cpp"`, `"csharp"`
+      → `"cs"`, `"python"` → `"py"`, ... — covering every language
+      `mep.org_babel_langs` itself supports), re-highlights just that
+      block's body text under its own grammar, and translates each
+      capture's row from body-relative back to the block's real position
+      in the buffer (`hdr + cap.row`, where `hdr` is the `#+begin_src`
+      line) before handing it to the same `mep.deco_add` call the
+      whole-buffer pass already uses. A language with no grammar
+      available renders unhighlighted, same as any other filetype with
+      no grammar — not an error. Verified via Xvfb against every babel
+      language in `mep.nvim/org/test.org`: C++/C (real preprocessor/
+      type/function/string coloring inside the block, org's own heading/
+      directive coloring around it undisturbed), C# (`Console.WriteLine`
+      correctly colored, exercising a *dynamically*-loaded grammar from
+      inside the injection path, not just the compiled-in core), and
+      OCaml/D/Nim/Crystal/Fortran (below).
+- [x] **Five more grammars, closing the last org-babel-language gap**:
+      Perl, Fortran, D, Nim, Crystal had no `DynamicLanguageTable` entry
+      at all before this (so a `#+begin_src perl` block, or a plain
+      `.pl`/`.f90`/`.d`/`.nim`/`.cr` file, never got real highlighting,
+      injected or not) — added alongside the injection feature above so
+      *every* language `mep.org_babel_langs` runs also gets to actually
+      look highlighted. Fortran/D/Nim/Crystal's `kHighlights*` queries
+      (`src/treesitter_queries.h`) are vendored verbatim from each
+      grammar's own upstream `queries/highlights.scm`, same as every
+      other dynamic-language entry (Crystal's real query lives at the
+      non-standard `queries/nvim/highlights.scm` path in its own repo).
+      **Perl needed a different approach**: the actively-maintained
+      `tree-sitter-perl/tree-sitter-perl` grammar ships no committed
+      `src/parser.c` at all (would need the tree-sitter CLI to generate
+      one — exactly the "not vendorable without an extra toolchain" case
+      `third_party/README.md` already documents for sql/latex/swift, and
+      exactly why this project avoids that grammar family). The
+      alternative used everywhere else in this addition —
+      `ganezdragon/tree-sitter-perl` — does ship a committed parser, but
+      also ships **no `queries/` directory at all**, so `kHighlightsPerl`
+      is hand-written directly against that grammar's own
+      `src/node-types.json` node names (comments/pod, string/heredoc
+      variants, numeric literals, `$scalar`/`@array`/`%hash` variables,
+      conditional/loop/keyword tokens, `function_definition`'s `name:`
+      field) rather than carrying over a query text that would have
+      quietly matched nothing against a different grammar's AST shape.
+- [x] **`flake.nix`'s `tsGrammars` devShell list** grew the same five
+      (`tree-sitter-crystal`/`-fortran`/`-perl`/`-nim`/`-d`) — all five
+      confirmed present in `pkgs.tree-sitter.withPlugins`'s grammar set
+      for this project's own pinned `nixpkgs` revision (a live check
+      against the *unpinned* registry default `nixpkgs` incorrectly
+      suggested nim/d were missing — this project's own `flake.lock`
+      revision is the only trustworthy source for what
+      `pkgs.tree-sitter.withPlugins` actually offers, not whatever the
+      ambient `nix` CLI's registry happens to resolve to on a given
+      machine). Verified: `direnv exec .` rebuilt the devShell
+      successfully with all five new grammar derivations copied from
+      `cache.nixos.org`, then a live Xvfb run with that environment
+      showed correct highlighting inside `csharp`/`ocaml`/`d`/`nim`/
+      `crystal` src blocks (`ocaml`/`csharp` were already
+      dynamically-loadable before this session; included as a
+      regression check that adding new `DynamicLanguageTable` entries
+      didn't disturb existing ones).
+- [x] **`just fetch-grammars`** (`scripts/fetch-grammars.sh` +
+      `scripts/ts_grammars.tsv`, added on request: "add as much grammars
+      to the justfile ... as possible") — a Nix-free way to get the same
+      breadth: downloads and compiles every one of the ~49 languages
+      `DynamicLanguageTable` has a highlight query for (the pre-existing
+      ~44 plus this session's new five) straight from each grammar's own
+      GitHub tarball into `.ts-grammars/lib/<canonical_name>.so`, no
+      tree-sitter CLI dependency (every listed grammar was individually
+      confirmed, via a live `curl` HEAD check against its pinned rev, to
+      ship an already-generated `src/parser.c` — the CLI-required ones
+      are simply not on the list, same reasoning as Perl's grammar
+      substitution above). `just run` composes this with — rather than
+      replacing — whatever `$MEP_TS_PARSER_PATH` a Nix devShell may have
+      already exported, prepending `.ts-grammars/lib` when it exists.
+      Every repo/rev pin was cross-checked against what this project's
+      own `flake.nix` resolves via Nix (the two paths build the *same*
+      grammars, not just similarly-named ones), with two confirmed,
+      fixed exceptions where nixpkgs' own pin has drifted from what's
+      live on GitHub right now: `tree-sitter-grammars/tree-sitter-vue`'s
+      pinned tag (`v0.1.0`) was deleted upstream after nixpkgs cached it
+      (Nix still builds it fine from `cache.nixos.org`'s permanent
+      store, but a fresh `git`/`curl` fetch of that exact tag 404s live)
+      — repointed at that repo's current default-branch tip instead;
+      `tree-sitter-grammars/tree-sitter-xml` and
+      `tree-sitter-grammars/tree-sitter-vue` also needed an explicit
+      `subdir` (`xml`; PHP/TypeScript/OCaml already did, for the same
+      "monorepo bundling more than one grammar" reason) that a plain
+      root-level `src/parser.c` guess would have missed. Verified: ran
+      the script for real (network fetch + compile, not a dry run) and
+      confirmed real `.so` files landed in `.ts-grammars/lib/`.
 
 ### Phase 20 — LSP client ✅
 
@@ -2202,12 +2306,15 @@ the "start small" language-subset guidance)*
       produced the same toast/status message and `#+RESULTS:` block
       insertion as `:MepOrgBabelExecute` does, and a single lone Ctrl-C
       tap (no second one) correctly did nothing.
-- ⚠️ **Scope cut**: no compiled-language support (no `c`/`compile_cmd`
-      step — interpreted languages only). `:includes`/`:main`
-      (compiled-language wrapper generation) not applicable without
-      compiled-language support. Var substitution is a naive textual
-      prelude line, not real per-language literal encoding (a `:var`
-      value containing spaces or quotes will not round-trip correctly).
+- ⚠️ **Scope cut (superseded below)**: ~~no compiled-language support~~
+      — see "Multi-language babel port" below, which replaced the
+      language table this note originally described. Var substitution
+      is still a per-language *textual* prelude line (now via each
+      language's own `var_stmt`, not a naive shared one), and a `:var`
+      value is now encoded through `mep_org_babel_format_literal`
+      (backslash/quote/newline-escaped double-quoted string, or a bare
+      numeric literal) rather than spliced in unescaped — real values
+      containing spaces/quotes now round-trip correctly.
       (Correction to this doc's own prior claim: `:results`
       output-mode header-args like `:results silent`/`:results table`
       **are** now parsed and honored — `blk.results_modes` in the babel
@@ -2215,6 +2322,112 @@ the "start small" language-subset guidance)*
       via `mep.babel_cache_load`/`save`, both since this entry was
       originally written; this doc had drifted out of date versus the
       implementation.)
+- [x] **Multi-language babel port** (added on request — "Lua works, but
+      c++ doesn't, c doesn't, etc.… support all of the languages in
+      mep.nvim"): `mep.org_babel_langs` rebuilt from a flat
+      `{lang = {argv...}}` table (10 interpreted languages) into a rich
+      per-language descriptor table — `executable`/`fallback_executable`,
+      `extension`, `var_stmt(name, literal)`, `print_stmt(expr)` (for
+      `:results value` mode), and for a compiled or non-default-invocation
+      language: `compiled`, `compile_cmd`/`run_cmd`/`run_compiled_cmd`,
+      `wrap_main(includes, body)`, `detect_class` — ported near-verbatim
+      from `mep.nvim/lua/mep/org/babel.lua`'s own `M.languages`, kept in
+      behavioral lockstep with it deliberately. Covers the same ~27-
+      language/6-alias set mep.nvim supports: `lua python sh/bash
+      javascript/js cpp/c++ c ruby typescript/ts elixir julia clojure perl
+      r php rust go fortran csharp/cs/c# scala zig nim crystal java kotlin
+      haskell ocaml d`.
+    - Execution now has three shapes instead of one, dispatched by
+      `mep_org_babel_spawn`: (1) plain interpreter — unchanged one-job
+      shape; (2) `run_cmd` override — still one job, but a non-default
+      invocation (`dotnet run <file>`, `zig run <file>`, `nim r <file>`,
+      `crystal run <file>`) for a language whose interpreter needs its own
+      subcommand; (3) `compiled` — two *chained* `mep.job_start` calls
+      (compile, then run the resulting binary), only proceeding to the run
+      step on a zero compile exit code, with `on_finish(code, stdout,
+      stderr, failure_verb)` always receiving whatever stdout the run step
+      produced (even partial, on a failed run) so results still get
+      written. Java is the one language needing both a custom
+      `compile_cmd` (`javac -d <dir>`, `binary_path` reused as a
+      `.class`-file output *directory*, not a single executable) and
+      `run_compiled_cmd` (`java -cp <dir> <ClassName>`), with `detect_class`
+      scanning the body for `public class NAME`/`class NAME` (or an
+      explicit `:classname` header-arg) since a `public class Foo` must
+      live in a file literally named `Foo.java`.
+    - `wrap_main` (entry-point wrapping — `int main() {...}` for C/C++,
+      `fn main() {...}` for Rust, `func main() {...}` for Go, etc.) is
+      applied only when `mep_org_babel_should_wrap_main` says so: an
+      explicit `:main yes`/`:main no` header-arg, else each language's own
+      default via `MEP_ORG_BABEL_WRAP_DEFAULT` — every language defaults
+      to "no" (assume a self-contained program, matching how real-world
+      src blocks are usually written) **except PHP**, which defaults to
+      "yes" (a bare PHP snippet needs its own `<?php` tag just to run at
+      all). `:includes <hdr1> <hdr2>` supplies each language's own
+      import/include syntax inside the wrap.
+    - `mep_org_babel_resolve_lang`/`resolve_exe`/`has_exe` (via a
+      `command -v <exe> >/dev/null 2>&1` shellout — mep's embedded Lua has
+      no `vim.fn.executable` equivalent) replace the old table lookup,
+      trying `fallback_executable` second (e.g. `python3` then `python`)
+      and producing a specific "No `<lang>` interpreter found on PATH
+      (looked for `<exe>`)" notification rather than a generic failure.
+    - `flake.nix`'s `devShells.default.packages` grew a matching
+      toolchain list (rustc/cargo, go, zig, nim, crystal, jdk, kotlin, ghc,
+      ocaml, `dmd.override { stdenv = gcc14Stdenv }` — dmd's C-header
+      importer can't parse gcc 15's C23 `nullptr` keyword, same override
+      `mep.nvim/flake.nix` already uses — dotnet-sdk_10 specifically, since
+      the `csharp` entry's `dotnet run <file>.cs` "file-based apps" mode
+      only exists from .NET 10 — plus `lua5_4` so `#+begin_src lua` blocks
+      resolve their own interpreter *inside* the devShell too, matching
+      mep's vendored Lua version exactly rather than relying on some
+      other Lua happening to be on the outer, non-flake `$PATH`), mirroring
+      `mep.nvim/flake.nix`'s own babel-language devShell list so both
+      editors run the same fixture files with no toolchain gap between
+      them. Confirmed every added tool resolves via both `nix develop
+      --command which ...` and `direnv exec . which ...`.
+    - The leetcode feature's own independent `mep.org_babel_langs[lang]`
+      consumer (`mep.leetcode_run_tests`, previously reading it as the old
+      flat argv array) was updated alongside — now resolves via
+      `mep_org_babel_resolve_lang` and runs through the same
+      `mep_org_babel_spawn` chain as `mep.org_babel_execute` — since it
+      would otherwise have silently broken the moment the table's shape
+      changed.
+    - Verified via Xvfb+xdotool against the exact file from the original
+      bug report (`mep.nvim/org/test.org`, every language's src block, run
+      interactively with real Ctrl-C Ctrl-C keypresses — not a synthetic
+      `:lua mep.org_babel_execute()` call): C++, C (a real quicksort
+      program, not a one-liner), Go (custom `compile_cmd`), Rust, Fortran,
+      Scala (all three `wrap_main` + `:main yes`), Java (`:classname
+      HelloWorld`, two-step `javac`/`java`), C# (`dotnet run`), Zig (`zig
+      run`, a real Zig 0.16 buffered-stdout-writer program), Nim
+      (`nim r`), Crystal (`crystal run`), D (two-step `dmd` compile+run),
+      Kotlin, Haskell, OCaml (self-contained script interpreters), plus a
+      Ruby/Python regression pass, all produced a freshly-computed
+      `#+RESULTS:` matching that block's actual source — including two
+      *unambiguous* cases proving real (re-)execution rather than stale
+      leftover text: the C++ block's stale results said `Hellozz, world`
+      (a pre-existing typo mismatched against its own source's `"Hello,
+      world"`) and came back corrected to `Hello, world`; the C block's
+      quicksort program produced the correct sorted `1 5 8 9 11 17`, which
+      only a real compile+run could produce. Also root-caused and fixed a
+      test-harness-only false negative during this same verification pass:
+      `xdotool key ctrl+c` issued twice as two separate invocations
+      doesn't reliably keep Ctrl held across both taps under this
+      sandbox's Xvfb (silently produced zero effect, no error toast even);
+      `xdotool keydown ctrl` / `key c` / `key c` / `keyup ctrl` as one
+      sequence is reliable — a test-tooling note, not a mep bug (found by
+      cross-checking against a direct `:lua mep.org_babel_execute()` call,
+      which worked immediately every time).
+    - ⚠️ **Scope cut**: `:var` + `:main yes` together is broken for
+      Haskell specifically (documented inline in `L.haskell`'s own
+      comment, inherited as-is from mep.nvim: the bare top-level binding
+      lands inside the generated `do` block, where a non-`let` binding is
+      a syntax error) — `:var` alone or `:main yes` alone both work.
+      OCaml has no `print_stmt` (so `:results value` mode silently falls
+      back to running the body as-is for OCaml specifically, same as any
+      language with no `print_stmt`) since there's no single universal
+      print expression across OCaml's types without a matching `Printf`
+      format specifier. No array/vector `:var` values (a `:var` value is
+      always encoded as one scalar literal — string or bare number).
 - [x] **Bug fix: `#+begin_src`/`#+end_src`/`#+BEGIN_SRC`/`#+END_SRC`
       case-insensitivity.** Found via a real user report: Ctrl-C Ctrl-C
       on a file using uppercase directives (`mep.nvim/org/test.org`,

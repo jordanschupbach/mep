@@ -75,8 +75,20 @@ at runtime by `dlopen()`ing a `<canonical-name>.so` and pulling its
 1. `$MEP_TS_PARSER_PATH` (colon-separated, like `$PATH`) — explicit,
    highest priority. `flake.nix`'s devShell exports this pointing at a
    `pkgs.tree-sitter.withPlugins` bundle, so entering this project's own
-   `nix develop` gets ~35 more languages for free with no manual setup —
-   extend the list in `flake.nix` for anything missing.
+   `nix develop` gets ~49 more languages for free with no manual setup —
+   extend the list in `flake.nix` for anything missing. No Nix?
+   `just fetch-grammars` (`scripts/fetch-grammars.sh` +
+   `scripts/ts_grammars.tsv`) gets the same ~49 languages by compiling
+   each one's own already-generated `src/parser.c` straight from its
+   GitHub tarball into `.ts-grammars/lib/<name>.so` — no tree-sitter CLI
+   needed, since every grammar on that list was confirmed to ship a
+   committed parser (the ones that don't, like Perl's own
+   `tree-sitter-perl/tree-sitter-perl`, use a different upstream instead
+   or are left off entirely, same call this file already makes for sql/
+   latex/swift below). `just run` picks these up automatically,
+   prepending `.ts-grammars/lib` to `$MEP_TS_PARSER_PATH` when it exists
+   rather than replacing it, so this composes with the Nix devShell path
+   instead of competing with it.
 2. The tree-sitter CLI's own build cache
    (`$XDG_CACHE_HOME/tree-sitter/lib`, default
    `~/.cache/tree-sitter/lib`) — what `tree-sitter build` populates.

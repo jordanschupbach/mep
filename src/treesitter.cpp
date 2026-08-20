@@ -175,6 +175,18 @@ const std::unordered_map<std::string, DynLangEntry> &DynamicLanguageTable() {
         {"exs", {"elixir", kHighlightsElixir}},
         {"erl", {"erlang", kHighlightsErlang}},
         {"hrl", {"erlang", kHighlightsErlang}},
+        // Added for org-babel src-block highlighting (mep_org_babel_lang_ts_ft
+        // in main.cpp's kBuiltinSyntax) -- mep.org_babel_langs already
+        // supports all five, but no grammar query existed for them until now.
+        {"pl", {"perl", kHighlightsPerl}},
+        {"pm", {"perl", kHighlightsPerl}},
+        {"f90", {"fortran", kHighlightsFortran}},
+        {"f95", {"fortran", kHighlightsFortran}},
+        {"f", {"fortran", kHighlightsFortran}},
+        {"for", {"fortran", kHighlightsFortran}},
+        {"d", {"d", kHighlightsD}},
+        {"nim", {"nim", kHighlightsNim}},
+        {"cr", {"crystal", kHighlightsCrystal}},
     };
     return table;
 }

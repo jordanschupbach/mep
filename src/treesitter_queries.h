@@ -8008,6 +8008,1039 @@ static const char *kHighlightsCpp = R"TSQ(
 (raw_string_literal) @string
 )TSQ";
 
+// Perl/Fortran/D/Nim/Crystal (added for org-babel src-block syntax
+// highlighting -- mep.org_babel_langs supports all five but no grammar
+// query existed for them yet). Fortran/D/Nim/Crystal are vendored
+// verbatim from each grammar's own upstream queries/highlights.scm, same
+// convention as every other dynamically-loaded language above (Crystal's
+// own repo keeps its real highlight query under queries/nvim/
+// highlights.scm rather than the usual path). Perl is a hand-written
+// query, NOT vendored from upstream: the actively-maintained
+// tree-sitter-perl/tree-sitter-perl grammar ships no committed
+// `src/parser.c` (would need the tree-sitter CLI to generate one -- the
+// exact "not vendorable" case this file's own README.md already
+// documents for sql/latex/swift), so flake.nix/the justfile's
+// fetch-grammars recipe both build the older, simpler
+// ganezdragon/tree-sitter-perl instead (which does ship one) --
+// deliberately a *different* grammar than the one this query would have
+// matched, so it's written directly against ganezdragon's own
+// src/node-types.json node names instead of carrying over a query that
+// would have silently matched nothing.
+static const char *kHighlightsPerl = R"TSQ(
+(comments) @comment
+(pod_statement) @comment
+
+[
+  (string_double_quoted)
+  (string_single_quoted)
+  (string_qq_quoted)
+  (string_q_quoted)
+  (heredoc_body_statement)
+  (backtick_quoted)
+  (command_qx_quoted)
+] @string
+
+(escape_sequence) @string.escape
+
+[
+  (integer)
+  (floating_point)
+  (hexadecimal)
+  (octal)
+  (scientific_notation)
+  (version)
+] @number
+
+[ (true) (false) ] @boolean
+
+[
+  (scalar_variable)
+  (array_variable)
+  (hash_variable)
+  (package_variable)
+  (special_scalar_variable)
+  (typeglob)
+] @variable
+
+[ "if" "elsif" "unless" "else" "when" ] @conditional
+
+[ "for" "foreach" "while" "until" ] @repeat
+
+[ "my" "our" "local" "state" ] @keyword
+
+"sub" @keyword.function
+"return" @keyword.return
+[ "use" "no" "require" "import" "package" ] @include
+
+[
+  "and" "or" "not" "xor"
+  "eq" "ne" "lt" "gt" "le" "ge" "cmp" "isa"
+] @keyword.operator
+
+[ "last" "next" "redo" "goto" "continue" ] @keyword
+
+(package_name) @type
+(module_name) @type
+
+(function_definition name: (identifier) @function)
+(label) @label
+
+(ERROR) @error
+)TSQ";
+
+static const char *kHighlightsFortran = R"TSQ(
+[
+ (identifier)
+ (module_name)
+] @variable
+
+(string_literal) @string
+(number_literal) @number
+(statement_label) @number
+(statement_label_reference) @number
+(boolean_literal) @boolean
+(comment) @comment
+(custom_directive) @custom_directive
+
+[
+ (derived_type)
+ (derived_type_statement)
+ (import_statement)
+ (intrinsic_type)
+ (type_name)
+] @type
+
+(intrinsic_type) @type.builtin
+
+(base_type_specifier
+  (identifier) @type)
+
+[
+ (module_statement)
+ (submodule_statement)
+] @module
+
+[
+ (abstract_specifier)
+ (access_specifier)
+ (block_label)
+ (block_label_start_expression)
+ (none)
+ (procedure_attributes)
+ (procedure_qualifier)
+ (type_qualifier)
+] @attribute
+
+[
+ "#define"
+ "#elif"
+ "#endif"
+ "#if"
+ "#ifdef"
+ (base_type_specifier)
+ (block_construct)
+ (contains_statement)
+ (default)
+ (end_associate_statement)
+ (end_block_construct_statement)
+ (end_block_data_statement)
+ (end_coarray_critical_statement)
+ (end_coarray_team_statement)
+ (end_do_loop_statement)
+ (end_enum_statement)
+ (end_enumeration_type_statement)
+ (end_forall_statement)
+ (end_function_statement)
+ (end_if_statement)
+ (end_interface_statement)
+ (end_module_procedure_statement)
+ (end_module_statement)
+ (end_program_statement)
+ (end_select_statement)
+ (end_submodule_statement)
+ (end_subroutine_statement)
+ (end_type_statement)
+ (end_where_statement)
+ (enum_statement)
+ (enumeration_type_statement)
+ (enumerator_statement)
+ (equivalence_statement)
+ (function_statement)
+ (implicit_statement)
+ (interface_statement)
+ (keyword_statement)
+ (language_binding)
+ (namelist_statement)
+ (print_statement)
+ (procedure_statement)
+ (program_statement)
+ (subroutine_statement)
+] @keyword
+
+(use_statement "use" @keyword)
+(use_statement "intrinsic" @keyword)
+(included_items "only" @keyword)
+(allocate_statement "allocate" @keyword)
+(deallocate_statement "deallocate" @keyword)
+(subroutine_call "call" @keyword)
+(do_statement "do" @keyword)
+(while_statement "while" @keyword)
+(if_statement ["if" "then"] @keyword)
+(elseif_clause ["else" "if" "elseif"] @keyword)
+(else_clause "else" @keyword)
+(open_statement "open" @keyword)
+(write_statement "write" @keyword)
+(private_statement "private" @keyword)
+(public_statement "public" @keyword)
+
+
+(select_case_statement "select" @keyword "case" @keyword)
+(select_type_statement "select" @keyword "type" @keyword)
+(select_rank_statement "select" @keyword "rank" @keyword)
+(case_statement "case" @keyword)
+(type_statement "type" @keyword)
+(rank_statement "rank" @keyword)
+
+
+[
+ "*"
+ "+"
+ "-"
+ "/"
+ "="
+ "<"
+ ">"
+ "<="
+ ">="
+ "=="
+ "/="
+ ".and."
+ ".or."
+ ".lt."
+ ".gt."
+ ".ge."
+ ".le."
+ ".eq."
+ ".eqv."
+ ".neqv."
+ ".ne."
+] @operator
+
+;; Brackets
+[
+ "("
+ ")"
+ "["
+ "]"
+ "<<<"
+ ">>>"
+] @punctuation.bracket
+
+;; Delimiter
+[
+ "::"
+ ","
+ "%"
+ ":"
+] @punctuation.delimiter
+
+"&" @punctuation.special
+
+(parameters
+  (identifier) @variable.parameter)
+
+(program_statement
+  (name) @variable)
+
+(module_statement
+  (name) @variable)
+
+(submodule_statement
+  (module_name) (name) @variable)
+
+(function_statement
+  (name) @function)
+
+(subroutine_statement
+  (name) @function)
+
+(module_procedure_statement
+  (name) @function)
+
+(end_program_statement
+  (name) @variable)
+
+(end_module_statement
+  (name) @variable)
+
+(end_submodule_statement
+  (name) @variable)
+
+(end_function_statement
+  (name) @function)
+
+(end_subroutine_statement
+  (name) @function)
+
+(end_module_procedure_statement
+  (name) @function)
+
+(subroutine_call
+  (identifier) @function)
+
+(keyword_argument
+  name: (identifier) @keyword)
+
+(derived_type_member_expression
+  (type_member) @property)
+)TSQ";
+
+static const char *kHighlightsD = R"TSQ(
+; highlights.scm
+;
+; Highlighting queries for D code for use by Tree-Sitter.
+;
+; Copyright 2024 Garrett D'Amore
+;
+; Distributed under the MIT License.
+; (See accompanying file LICENSE.txt or https://opensource.org/licenses/MIT)
+; SPDX-License-Identifier: MIT
+
+(string_literal) @string
+(int_literal) @number
+(float_literal) @number
+(char_literal) @number
+(identifier) @variable
+(at_attribute) @property
+(htmlentity) @string.special
+(escape_sequence) @string.escape
+
+[
+	(lazy)
+	(align)
+	(extern)
+	(static)
+	(abstract)
+	(final)
+	(override)
+	(synchronized)
+	(auto)
+	(scope)
+	(gshared)
+	(ref)
+	(deprecated)
+	(nothrow)
+	(pure)
+	(type_ctor)
+] @keyword.storage
+
+(parameter_attribute (return) @keyword.storage)
+(parameter_attribute (in) @keyword.storage)
+(parameter_attribute (out) @keyword.storage)
+
+(function_declaration (identifier) @function)
+
+(call_expression (identifier) @function)
+(call_expression (type (template_instance (identifier) @function)))
+(template_arguments (identifier) @variable.parameter)
+
+(named_argument (identifier) @variable.parameter)
+
+[
+    (abstract)
+    (alias)
+    (align)
+    (asm)
+    (assert)
+    (auto)
+    (cast)
+    (class)
+    (const)
+    (debug)
+    (delegate)
+    (delete)
+    (deprecated)
+    (enum)
+    (export)
+    (extern)
+    (final)
+    (function)
+    (immutable)
+    (import)
+    (in)
+    (inout)
+    (interface)
+    (invariant)
+    (is)
+    (lazy)
+    ; "macro" - obsolete
+    (mixin)
+    (module)
+    (new)
+    (nothrow)
+    (out)
+    (override)
+    (package)
+    (pragma)
+    (private)
+    (protected)
+    (public)
+    (pure)
+    (ref)
+    (scope)
+    (shared)
+    (static)
+    (struct)
+    (super)
+    (synchronized)
+    (template)
+    (this)
+    (throw)
+    (typeid)
+    (typeof)
+    (union)
+    (unittest)
+    (version)
+    (with)
+    (gshared)
+    (traits)
+    (vector)
+    (parameters_)
+] @keyword
+
+[
+    (break)
+    (case)
+    (catch)
+    (continue)
+    (do)
+    (default)
+    (finally)
+    (else)
+    (for)
+    (foreach)
+    (foreach_reverse)
+    (goto)
+    (if)
+    (switch)
+    (try)
+    (return)
+    (while)
+] @keyword.control
+
+[
+    (not_in)
+    (not_is)
+    "/="
+    "/"
+    ".."
+    "..."
+    "&"
+    "&="
+    "&&"
+    "|"
+    "|="
+    "||"
+    "-"
+    "-="
+    "--"
+    "+"
+    "+="
+    "++"
+    "<"
+    "<="
+    "<<"
+    "<<="
+    ">"
+    ">="
+    ">>="
+    ">>>="
+    ">>"
+    ">>>"
+    "!"
+    "!="
+    "?"
+    "$"
+    "="
+    "=="
+    "*"
+    "*="
+    "%"
+    "%="
+    "^"
+    "^="
+    "^^"
+    "^^="
+    "~"
+    "~="
+    "@"
+    "=>"
+] @operator
+
+[
+    ";"
+    "."
+    ":"
+    ","
+] @punctuation.delimiter
+
+[
+    "("
+    ")"
+    "["
+    "]"
+    "{"
+    "}"
+] @punctuation.bracket
+
+; The delimiters of an interpolation expression inside an interpolated string.
+; Listed after the bracket rule above so the closing ")" is captured here rather
+; than as a plain bracket; this keeps the opening "$(" and closing ")" the same
+; color instead of the opener inheriting the surrounding string color.
+(interpolation_expression
+    "$(" @punctuation.special
+    ")" @punctuation.special)
+
+[
+    (null)
+    (true)
+    (false)
+] @constant.language
+
+(special_keyword) @constant.language
+
+(directive) @keyword.directive
+(shebang) @keyword.directive
+
+(comment) @comment
+
+[
+    (void)
+    (bool)
+    (byte)
+    (ubyte)
+    (char)
+    (short)
+    (ushort)
+    (wchar)
+    (dchar)
+    (int)
+    (uint)
+    (long)
+    (ulong)
+    (real)
+    (double)
+    (float)
+    (size_t)
+    (ptrdiff_t)
+    (string)
+    (cstring)
+    (wstring)
+    (noreturn)
+] @type.builtin
+
+[
+    (cent)
+    (ucent)
+    (ireal)
+    (idouble)
+    (ifloat)
+    (creal)
+    (double)
+    (cfloat)
+] @type.deprecated
+
+(label (identifier) @label)
+(goto_statement (goto) @keyword.control (identifier) @label)
+
+; this covers other cases where the identifier can only
+; be a type (such as in an is-expression on a constraint)
+(type (identifier) @type)
+
+; these are listed last, because they override keyword queries
+(identity_expression (in) @operator)
+(identity_expression (is) @operator)
+
+; everything after __EOF_ is plain text
+(end_file) @text
+)TSQ";
+
+static const char *kHighlightsNim = R"TSQ(
+; SPDX-FileCopyrightText: 2023 Leorize <leorize+oss@disroot.org>
+; SPDX-License-Identifier: MPL-2.0
+
+; Punctuations
+[ "." ";" "," ":" ] @punctuation.delimiter
+[ "(" ")" "[" "]" "{" "}" "{." ".}" ] @punctuation.bracket
+
+; Operator by default, but could be overriden
+[ "=" ] @operator
+
+; Special
+(blank_identifier) @variable.builtin
+
+; Calls
+(call
+  function: [
+    (identifier) @function.call
+    (dot_expression
+      right: (identifier) @function.call)
+  ])
+(generalized_string
+  function: [
+    (identifier) @function.call
+    (dot_expression
+      right: (identifier) @function.call)
+  ])
+
+; Declarations
+(exported_symbol "*" @type.qualifier)
+(_ "=" @punctuation.delimiter [body: (_) value: (_)])
+(proc_declaration name: (_) @function)
+(func_declaration name: (_) @function)
+(converter_declaration name: (_) @function)
+(method_declaration name: (_) @method)
+(template_declaration name: (_) @function.macro)
+(macro_declaration name: (_) @function.macro)
+(symbol_declaration name: (_) @variable)
+(parameter_declaration
+  (symbol_declaration_list
+    (symbol_declaration name: (_) @parameter)))
+(_
+  [
+    type: [
+      (type_expression (identifier))
+      (type_expression (accent_quoted (identifier)))
+    ] @type
+    return_type: [
+      (type_expression (identifier))
+      (type_expression (accent_quoted (identifier)))
+    ] @type
+  ])
+
+; Exceptions
+[
+  "try"
+  "except"
+  "finally"
+  "raise"
+] @exception
+
+(except_branch values: (expression_list
+  [
+    (identifier) @type
+    (infix_expression
+      left: (identifier) @type
+      operator: "as"
+      right: (identifier) @variable)
+  ]))
+
+; Expressions
+(dot_expression
+  right: (identifier) @field)
+
+; Literal/comments
+[
+  (comment)
+  (block_comment)
+] @comment
+
+[
+  (documentation_comment)
+  (block_documentation_comment)
+] @comment.documentation
+
+(interpreted_string_literal) @string
+(long_string_literal) @string
+(raw_string_literal) @string
+(generalized_string) @string
+(char_literal) @character
+(escape_sequence) @string.escape
+(integer_literal) @number
+(float_literal) @float
+(custom_numeric_literal) @number
+(nil_literal) @constant.builtin
+
+; Keyword
+[
+  "if"
+  "when"
+  "case"
+  "elif"
+  "else"
+] @conditional
+
+(of_branch "of" @conditional)
+
+[
+  "import"
+  "include"
+  "export"
+] @include
+
+(import_from_statement "from" @include)
+(except_clause "except" @include)
+
+[
+  "for"
+  "while"
+  "continue"
+  "break"
+] @repeat
+
+(for "in" @repeat)
+
+[
+  "macro"
+  "template"
+  "const"
+  "let"
+  "var"
+  "asm"
+  "bind"
+  "block"
+  "concept"
+  "defer"
+  "discard"
+  "distinct"
+  "do"
+  "enum"
+  "mixin"
+  "nil"
+  "object"
+  "out"
+  "ptr"
+  "ref"
+  "static"
+  "tuple"
+  "type"
+] @keyword
+
+[
+  "proc"
+  "func"
+  "method"
+  "converter"
+  "iterator"
+] @keyword.function
+
+[
+  "and"
+  "or"
+  "xor"
+  "not"
+  "div"
+  "mod"
+  "shl"
+  "shr"
+  "from"
+  "as"
+  "of"
+  "in"
+  "notin"
+  "is"
+  "isnot"
+  "cast"
+] @keyword.operator
+
+[
+  "return"
+  "yield"
+] @keyword.return
+
+; Operators
+(infix_expression operator: _ @operator)
+(prefix_expression operator: _ @operator)
+
+)TSQ";
+
+static const char *kHighlightsCrystal = R"TSQ(
+; Early rules
+; These patterns may be overridden later
+
+[
+  ","
+  ";"
+  "."
+  ":"
+] @punctuation.delimiter
+
+; Keywords
+
+[
+  "alias"
+  "annotation"
+  "asm"
+  "begin"
+  "break"
+  "case"
+  "do"
+  "end"
+  "ensure"
+  "extend"
+  "in"
+  "include"
+  "next"
+  "of"
+  "select"
+  "then"
+  "verbatim"
+  "when"
+] @keyword
+
+[
+  "def"
+  "fun"
+  "macro"
+] @keyword.function
+
+[
+  "class"
+  "enum"
+  "lib"
+  "module"
+  "struct"
+  "type"
+  "union"
+] @keyword.type
+
+"require" @keyword.import
+
+[
+  "return"
+  "yield"
+] @keyword.return
+
+[
+  "if"
+  "else"
+  "elsif"
+  "unless"
+] @keyword.conditional
+
+(conditional
+  [
+    "?"
+    ":"
+  ] @keyword.conditional.ternary)
+
+[
+  "for"
+  "until"
+  "while"
+] @keyword.repeat
+
+"rescue" @keyword.exception
+
+[
+  (private)
+  (protected)
+  "abstract"
+] @keyword.modifier
+
+(pseudo_constant) @constant.builtin
+
+; literals
+(string
+  "\"" @string)
+
+(string
+  (literal_content) @string)
+
+(string
+  (escape_sequence) @string.escape)
+
+(symbol
+  [
+    ":"
+    ":\""
+    "\""
+  ] @string.special.symbol)
+
+(symbol
+  (literal_content) @string.special.symbol)
+
+(symbol
+  (escape_sequence) @character)
+
+(command
+  "`" @string.special)
+
+(command
+  (literal_content) @string.special)
+
+(command
+  (escape_sequence) @character)
+
+(regex
+  "/" @punctuation.bracket)
+
+(regex
+  (literal_content) @string.regexp)
+
+(regex_modifier) @character.special
+
+(heredoc_body
+  (literal_content) @string)
+
+(heredoc_body
+  (escape_sequence) @string.escape)
+
+[
+  (heredoc_start)
+  (heredoc_end)
+] @label
+
+(char
+  "'" @character)
+
+(char
+  (literal_content) @character)
+
+(char
+  (escape_sequence) @string.escape)
+
+(integer) @number
+
+(float) @number.float
+
+[
+  (true)
+  (false)
+] @boolean
+
+(nil) @constant.builtin
+
+((comment) @comment
+  ; Set priority so macro expressions in comments are not grayed out
+  (#set! priority 95))
+
+; Operators and punctuation
+[
+  "="
+  "=>"
+  "->"
+  "&"
+  "*"
+  "**"
+  (operator)
+] @operator
+
+[
+  "("
+  ")"
+  "["
+  "@["
+  "]"
+  "{"
+  "}"
+] @punctuation.bracket
+
+([
+  "{{"
+  "}}"
+] @punctuation.bracket
+  ; Set priority so "a{{b}}" is highlighted as brackets, not string content
+  ;                   ^^
+  (#set! priority 105))
+
+(index_call
+  method: (operator) @punctuation.bracket
+  [
+    "]"
+    "]?"
+  ] @punctuation.bracket)
+
+(block
+  "|" @punctuation.bracket)
+
+[
+  "{%"
+  "%}"
+] @tag.delimiter
+
+(interpolation
+  "#{" @punctuation.special
+  "}" @punctuation.special)
+
+; Types
+[
+  (constant)
+  (generic_instance_type)
+  (generic_type)
+] @type
+
+(nilable_constant
+  "?" @type.builtin)
+
+(nilable_type
+  "?" @type.builtin)
+
+(union_type
+  "|" @operator)
+
+(annotation
+  (constant) @attribute)
+
+(method_def
+  name: (identifier) @function.method)
+
+(macro_def
+  name: (identifier) @function.method)
+
+(abstract_method_def
+  name: (identifier) @function.method)
+
+(fun_def
+  name: (identifier) @function
+  real_name: (identifier)? @function)
+
+(param
+  name: (identifier) @variable.parameter)
+
+(splat_param
+  name: (identifier) @variable.parameter)
+
+(double_splat_param
+  name: (identifier) @variable.parameter)
+
+(block_param
+  name: (identifier) @variable.parameter)
+
+(fun_param
+  name: (identifier) @variable.parameter)
+
+(rescue
+  variable: (identifier) @variable.parameter)
+
+(macro_var
+  name: (identifier) @variable)
+
+[
+  (class_var)
+  (instance_var)
+] @variable.member
+
+(underscore) @variable.parameter.builtin
+
+(self) @variable.builtin
+
+(named_tuple
+  (named_expr
+    name: (identifier) @property))
+
+(argument_list
+  (named_expr
+    name: (identifier) @property))
+
+(named_type
+  name: (identifier) @property)
+
+; function calls
+(call
+  method: (identifier) @function.call)
+)TSQ";
+
 // Fold queries (Phase 19's own noted gap -- "No fold-query support",
 // see main.cpp's kBuiltinSyntax comment): one `@fold` capture per
 // syntactic block worth collapsing, for the core compiled-in languages

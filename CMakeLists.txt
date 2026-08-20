@@ -119,7 +119,13 @@ if(EMSCRIPTEN)
     set(CMAKE_EXECUTABLE_SUFFIX ".html")
     target_link_options(mep PRIVATE
         "-sUSE_GLFW=3"
-        "-sASYNCIFY"
+        # No -sASYNCIFY: src/editor.cpp's file-bridge calls use synchronous
+        # XHR (blocking the JS main thread directly) rather than an
+        # awaited fetch(), specifically to avoid linking Asyncify at all --
+        # see the comment above mep_js_read_file in editor.cpp for the
+        # severe memory leak that caused (Asyncify instruments the entire
+        # reachable call graph, including the per-frame Lua polling loop,
+        # not just the functions that actually need to suspend).
         "-sALLOW_MEMORY_GROWTH=1"
         # Embeds the .wasm as base64 inside mep.js so the launcher can open
         # the build with a plain file:// URL instead of running a local

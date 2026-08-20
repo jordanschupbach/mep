@@ -2,3 +2,4 @@ build/
 .direnv/
 compile_commands.json
 mep.nvim
+result

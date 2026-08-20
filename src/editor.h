@@ -321,6 +321,13 @@ struct TerminalSession {
     int job_id = 0;
     std::unique_ptr<VTerm> vterm;
     std::string title;      // argv[0], overridden by an OSC-title if the program sets one
+    // wasm build only: set by TerminalSpawn right after
+    // mep_js_pty_connect_start() returns a slot id, cleared by
+    // PollTerminals() once mep_js_pty_connect_status() reports ready or
+    // failed. Writes/resizes sent while true are harmless no-ops (the
+    // underlying WebSocket just isn't OPEN yet); output/exit polling is
+    // skipped until it clears.
+    bool connecting = false;
     bool exited = false;
     int exit_code = 0;
     // Lines scrolled back from the live tail (0 = viewing the live

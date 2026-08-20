@@ -46,6 +46,29 @@
         # mep.nvim/tree-sitter's own build cache or nvim-treesitter's
         # install dir are checked too (lower priority) -- see
         # DynamicSearchPaths' doc comment in treesitter.cpp for that list.
+
+        # mep's CMakeLists.txt pulls raylib and Lua in at configure time via
+        # FetchContent (GIT_REPOSITORY/URL), which needs network access --
+        # fine for `just build-native` in the devShell, but Nix's build
+        # sandbox has none. Fetched here instead as regular Nix derivations
+        # (network allowed for fixed-output derivations, verified by hash)
+        # and handed back to the same FetchContent machinery via
+        # FETCHCONTENT_SOURCE_DIR_<NAME>, so CMakeLists.txt itself needs no
+        # changes. raylib has no hash pin in CMakeLists.txt (GIT_TAG "5.5"
+        # floats), so its hash below is only pinned here; the Lua one
+        # mirrors CMakeLists.txt's own URL_HASH and must be kept in sync
+        # with it.
+        raylibSrc = pkgs.fetchFromGitHub {
+          owner = "raysan5";
+          repo = "raylib";
+          rev = "5.5";
+          hash = "sha256-J99i4z4JF7d6mJNuJIB0rHNDhXJ5AEkG0eBvvuBLHrY=";
+        };
+        luaTarball = pkgs.fetchurl {
+          url = "https://www.lua.org/ftp/lua-5.4.7.tar.gz";
+          sha256 = "9fbf5e28ef86c69858f6d3d34eccc32e911c1a28b4120ff3e84aaa70cfbf1e30";
+        };
+
         tsGrammars = pkgs.tree-sitter.withPlugins (
           p: with p; [
             tree-sitter-bash
@@ -89,8 +112,56 @@
             tree-sitter-erlang
           ]
         );
+
+        mepPackage = pkgs.stdenv.mkDerivation {
+          pname = "mep";
+          version = "0.1.0";
+          src = ./.;
+
+          nativeBuildInputs = [
+            pkgs.cmake
+            pkgs.ninja
+            pkgs.pkg-config
+          ];
+          buildInputs = [
+            pkgs.glfw
+            pkgs.libGL
+            pkgs.libx11
+            pkgs.libxrandr
+            pkgs.libxinerama
+            pkgs.libxcursor
+            pkgs.libxi
+          ];
+
+          # Lua isn't a CMake project of its own (see CMakeLists.txt's own
+          # comment: it globs src/*.c by hand), so FetchContent just needs
+          # the tarball extracted somewhere on disk -- unpack it ourselves
+          # since FETCHCONTENT_FULLY_DISCONNECTED skips that step.
+          # cmakeFlagsArray (not cmakeFlags) because $NIX_BUILD_TOP's value
+          # isn't known until the build runs.
+          preConfigure = ''
+            mkdir -p "$NIX_BUILD_TOP/lua-src"
+            tar xzf ${luaTarball} --strip-components=1 -C "$NIX_BUILD_TOP/lua-src"
+            cmakeFlagsArray+=(
+              "-DFETCHCONTENT_SOURCE_DIR_RAYLIB=${raylibSrc}"
+              "-DFETCHCONTENT_SOURCE_DIR_LUA=$NIX_BUILD_TOP/lua-src"
+              "-DFETCHCONTENT_FULLY_DISCONNECTED=ON"
+            )
+          '';
+
+          cmakeFlags = [ "-DCMAKE_BUILD_TYPE=Release" ];
+
+          installPhase = ''
+            runHook preInstall
+            install -Dm755 mep "$out/bin/mep"
+            runHook postInstall
+          '';
+        };
       in
       {
+        packages.default = mepPackage;
+        apps.default = flake-utils.lib.mkApp { drv = mepPackage; };
+
         devShells.default = pkgs.mkShell {
           packages = [
             pkgs.cmake

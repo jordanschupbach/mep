@@ -33,22 +33,40 @@
 // completed for real (the file was actually read/written), but the page's
 // `await` on the bind() call's promise hung forever, reproduced even with
 // a plain non-wasm <script> calling the bound function directly, so it
-// wasn't a wasm/Asyncify bug. fetch()'s promise resolution goes through
-// WebKit's ordinary networking stack instead, sidestepping whatever's
-// broken in that other path.
+// wasn't a wasm bug. fetch()'s promise resolution goes through WebKit's
+// ordinary networking stack instead, sidestepping whatever's broken in
+// that other path.
 //
-// Asyncify (already linked, CMakeLists.txt's -sASYNCIFY) is what makes
-// `await`-ing the fetch() Promise inside these look like a normal blocking
-// call to the C++ caller. Both return a malloc'd C string the caller must
-// free(): "OK\n<content>" / "OK" on success, or "ERR\n<message>" on
-// failure.
-EM_ASYNC_JS(char *, mep_js_read_file, (const char *path_ptr), {
+// These use a *synchronous* XMLHttpRequest rather than fetch()+await, so
+// they're plain EM_JS, not EM_ASYNC_JS -- deliberately, not just style.
+// Emscripten's Asyncify (needed to make an `await` inside EM_ASYNC_JS look
+// like an ordinary blocking call to the C++ caller) instruments the
+// *entire* reachable call graph, not just these functions -- and with the
+// Lua interpreter loop reachable from here (mep.read_file() and friends
+// are Lua-callable), that meant every mep.on_frame Lua callback, called
+// 60x/sec from UpdateDrawFrame regardless of whether any file I/O was
+// happening at all, ran through Asyncify's instrumentation too. Measured
+// directly: an otherwise-idle session with nothing but that per-frame Lua
+// polling leaked from ~900MB to 10GB+ resident in under two minutes,
+// eventually hitting WebKit's own memory-pressure kill of the WebProcess
+// -- see main.cpp's now-removed frame-hook throttle comment (git history)
+// for the isolating measurements. A synchronous XHR blocks the JS main
+// thread for the (sub-millisecond, loopback-only) duration of the
+// request, which looks identical to the C++ caller as a plain blocking
+// call, but needs none of Asyncify's stack-rewinding machinery -- so
+// Asyncify is no longer linked at all (CMakeLists.txt), and this whole
+// class of leak doesn't exist to begin with. All still return a malloc'd C
+// string the caller must free(): "OK\n<content>" / "OK" on success, or
+// "ERR\n<message>" on failure -- same contract as before.
+EM_JS(char *, mep_js_read_file, (const char *path_ptr), {
     const path = UTF8ToString(path_ptr);
     let text;
     try {
         if (!window.__mepBridgeBase) throw new Error("no file bridge (not launched via `just run`)");
-        const resp = await fetch(window.__mepBridgeBase + "/read?path=" + encodeURIComponent(path));
-        const result = await resp.json();
+        const xhr = new XMLHttpRequest();
+        xhr.open("GET", window.__mepBridgeBase + "/read?path=" + encodeURIComponent(path), false);
+        xhr.send();
+        const result = JSON.parse(xhr.responseText);
         text = result.ok ? ("OK\n" + result.content) : ("ERR\n" + result.error);
     } catch (e) {
         text = "ERR\n" + String(e);
@@ -59,18 +77,17 @@ EM_ASYNC_JS(char *, mep_js_read_file, (const char *path_ptr), {
     return ptr;
 });
 
-EM_ASYNC_JS(char *, mep_js_write_file, (const char *path_ptr, const char *content_ptr), {
+EM_JS(char *, mep_js_write_file, (const char *path_ptr, const char *content_ptr), {
     const path = UTF8ToString(path_ptr);
     const content = UTF8ToString(content_ptr);
     let text;
     try {
         if (!window.__mepBridgeBase) throw new Error("no file bridge (not launched via `just run`)");
-        const resp = await fetch(window.__mepBridgeBase + "/write", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ path, content }),
-        });
-        const result = await resp.json();
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", window.__mepBridgeBase + "/write", false);
+        xhr.setRequestHeader("Content-Type", "application/json");
+        xhr.send(JSON.stringify({ path, content }));
+        const result = JSON.parse(xhr.responseText);
         text = result.ok ? "OK" : ("ERR\n" + result.error);
     } catch (e) {
         text = "ERR\n" + String(e);
@@ -86,13 +103,15 @@ EM_ASYNC_JS(char *, mep_js_write_file, (const char *path_ptr, const char *conten
 // by a JSON array of {name, is_dir} objects (parsed with json.h on the C++
 // side) rather than a plain listing, since filenames can contain the
 // newlines/tabs a hand-rolled text format would need to escape.
-EM_ASYNC_JS(char *, mep_js_list_dir, (const char *path_ptr), {
+EM_JS(char *, mep_js_list_dir, (const char *path_ptr), {
     const path = UTF8ToString(path_ptr);
     let text;
     try {
         if (!window.__mepBridgeBase) throw new Error("no file bridge (not launched via `just run`)");
-        const resp = await fetch(window.__mepBridgeBase + "/list?path=" + encodeURIComponent(path));
-        const result = await resp.json();
+        const xhr = new XMLHttpRequest();
+        xhr.open("GET", window.__mepBridgeBase + "/list?path=" + encodeURIComponent(path), false);
+        xhr.send();
+        const result = JSON.parse(xhr.responseText);
         text = result.ok ? ("OK\n" + JSON.stringify(result.entries)) : ("ERR\n" + result.error);
     } catch (e) {
         text = "ERR\n" + String(e);
@@ -109,12 +128,14 @@ EM_ASYNC_JS(char *, mep_js_list_dir, (const char *path_ptr), {
 // server-side (launcher/serve.ts's /projects endpoint) since the wasm
 // sandbox has no env vars of its own to compute it from. Result on success
 // is "OK\n" followed by a JSON array of path strings.
-EM_ASYNC_JS(char *, mep_js_project_list, (), {
+EM_JS(char *, mep_js_project_list, (), {
     let text;
     try {
         if (!window.__mepBridgeBase) throw new Error("no file bridge (not launched via `just run`)");
-        const resp = await fetch(window.__mepBridgeBase + "/projects");
-        const result = await resp.json();
+        const xhr = new XMLHttpRequest();
+        xhr.open("GET", window.__mepBridgeBase + "/projects", false);
+        xhr.send();
+        const result = JSON.parse(xhr.responseText);
         text = result.ok ? ("OK\n" + JSON.stringify(result.projects)) : ("ERR\n" + result.error);
     } catch (e) {
         text = "ERR\n" + String(e);
@@ -128,18 +149,17 @@ EM_ASYNC_JS(char *, mep_js_project_list, (), {
 // action: "add" or "remove". Same result shape as mep_js_project_list --
 // the server returns the list post-mutation so the caller doesn't need a
 // second round trip to refresh it.
-EM_ASYNC_JS(char *, mep_js_project_mutate, (const char *action_ptr, const char *path_ptr), {
+EM_JS(char *, mep_js_project_mutate, (const char *action_ptr, const char *path_ptr), {
     const action = UTF8ToString(action_ptr);
     const path = UTF8ToString(path_ptr);
     let text;
     try {
         if (!window.__mepBridgeBase) throw new Error("no file bridge (not launched via `just run`)");
-        const resp = await fetch(window.__mepBridgeBase + "/projects", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action, path }),
-        });
-        const result = await resp.json();
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", window.__mepBridgeBase + "/projects", false);
+        xhr.setRequestHeader("Content-Type", "application/json");
+        xhr.send(JSON.stringify({ action, path }));
+        const result = JSON.parse(xhr.responseText);
         text = result.ok ? ("OK\n" + JSON.stringify(result.projects)) : ("ERR\n" + result.error);
     } catch (e) {
         text = "ERR\n" + String(e);
@@ -155,13 +175,26 @@ EM_ASYNC_JS(char *, mep_js_project_mutate, (const char *action_ptr, const char *
 // Editor::PollTerminals below): the wasm sandbox has no subprocess/PTY
 // concept at all, so this tunnels through launcher/serve.ts's `/pty`
 // WebSocket endpoint, which spawns the real process server-side. Unlike
-// this file's other bridge calls (request/response HTTP), a WebSocket is
-// long-lived and event-driven, so these are split across five calls
+// this file's other bridge calls (request/response HTTP, now synchronous
+// XHR -- see the comment above mep_js_read_file for why), a WebSocket is
+// long-lived and event-driven and can't be made synchronous the same way,
+// so connecting is split into a start call plus a polled status call
 // rather than one round trip:
-//   - mep_js_pty_connect: opens the connection, sends the spawn request,
-//     and resolves once the server acks (ready) or fails (spawn_error) --
-//     the only async one, so the only EM_ASYNC_JS of the five.
-//   - mep_js_pty_write/_resize: fire-and-forget sends.
+//   - mep_js_pty_connect_start: opens the connection and sends the spawn
+//     request, but returns the slot id immediately without waiting for
+//     the server's ready/spawn_error response.
+//   - mep_js_pty_connect_status: polled from Editor::PollTerminals (once/
+//     frame, already-existing poll loop -- TerminalSession::connecting)
+//     until it reports ready or failed, mirroring how mep_js_pty_poll
+//     below already drains output without blocking. This used to be one
+//     EM_ASYNC_JS call that awaited a Promise across the open/ready round
+//     trip -- the only async bridge call in this file -- but that meant
+//     it was also the only thing requiring Asyncify to be linked at all,
+//     and Asyncify's whole-program instrumentation is what caused the
+//     leak described above mep_js_read_file. Splitting this one call
+//     into start+poll let every EM_ASYNC_JS in this file go away.
+//   - mep_js_pty_write/_resize: fire-and-forget sends (already fine pre-
+//     connect: state.ws.readyState !== OPEN just no-ops until ready).
 //   - mep_js_pty_poll + mep_js_pty_poll_len: drains whatever raw output
 //     bytes have arrived since the last poll. Two calls instead of one
 //     because PTY output is an arbitrary byte stream (may contain
@@ -169,72 +202,72 @@ EM_ASYNC_JS(char *, mep_js_project_mutate, (const char *action_ptr, const char *
 //     handed back as a null-terminated C string without risking silent
 //     truncation, and EM_JS can only return one value.
 //   - mep_js_pty_exited/_exit_code: whether the process has ended.
-EM_ASYNC_JS(int, mep_js_pty_connect, (const char *payload_json_ptr), {
+EM_JS(int, mep_js_pty_connect_start, (const char *payload_json_ptr), {
     const payloadJson = UTF8ToString(payload_json_ptr);
     if (!window.__mepBridgeBase) {
         window.__mepLastPtyError = "no file bridge (not launched via `just run`)";
         return -1;
     }
     const wsBase = window.__mepBridgeBase.replace(/^http/, "ws");
-    return await new Promise((resolve) => {
-        let settled = false;
-        let ws;
-        try {
-            ws = new WebSocket(wsBase + "/pty");
-        } catch (e) {
-            window.__mepLastPtyError = String(e);
-            resolve(-1);
-            return;
-        }
-        ws.binaryType = "arraybuffer";
-        if (!window.__mepPtys) {
-            window.__mepPtys = {};
-            window.__mepPtyNextId = 1;
-        }
-        const id = window.__mepPtyNextId++;
-        const state = { ws, queue: [], exited: false, exitCode: -1 };
-        window.__mepPtys[id] = state;
-        ws.onopen = () => {
-            ws.send(payloadJson);
-        };
-        ws.onmessage = (ev) => {
-            if (typeof ev.data === "string") {
-                try {
-                    const msg = JSON.parse(ev.data);
-                    if (msg.type === "ready") {
-                        if (!settled) {
-                            settled = true;
-                            resolve(id);
-                        }
-                    } else if (msg.type === "spawn_error") {
-                        if (!settled) {
-                            settled = true;
-                            window.__mepLastPtyError = msg.error;
-                            delete window.__mepPtys[id];
-                            resolve(-1);
-                        }
-                    } else if (msg.type === "exit") {
-                        state.exited = true;
-                        state.exitCode = msg.code;
+    let ws;
+    try {
+        ws = new WebSocket(wsBase + "/pty");
+    } catch (e) {
+        window.__mepLastPtyError = String(e);
+        return -1;
+    }
+    ws.binaryType = "arraybuffer";
+    if (!window.__mepPtys) {
+        window.__mepPtys = {};
+        window.__mepPtyNextId = 1;
+    }
+    const id = window.__mepPtyNextId++;
+    // connectStatus: 0 = still connecting, 1 = ready, -1 = failed --
+    // mep_js_pty_connect_status() below reads this each frame.
+    const state = { ws, queue: [], exited: false, exitCode: -1, connectStatus: 0 };
+    window.__mepPtys[id] = state;
+    ws.onopen = () => {
+        ws.send(payloadJson);
+    };
+    ws.onmessage = (ev) => {
+        if (typeof ev.data === "string") {
+            try {
+                const msg = JSON.parse(ev.data);
+                if (msg.type === "ready") {
+                    if (state.connectStatus === 0) state.connectStatus = 1;
+                } else if (msg.type === "spawn_error") {
+                    if (state.connectStatus === 0) {
+                        state.connectStatus = -1;
+                        window.__mepLastPtyError = msg.error;
                     }
-                } catch (e) {
-                    // malformed control message -- ignore
+                } else if (msg.type === "exit") {
+                    state.exited = true;
+                    state.exitCode = msg.code;
                 }
-            } else {
-                state.queue.push(new Uint8Array(ev.data));
+            } catch (e) {
+                // malformed control message -- ignore
             }
-        };
-        ws.onerror = () => {
-            if (!settled) {
-                settled = true;
-                window.__mepLastPtyError = "WebSocket connection to the `/pty` bridge failed";
-                resolve(-1);
-            }
-        };
-        ws.onclose = () => {
-            state.exited = true;
-        };
-    });
+        } else {
+            state.queue.push(new Uint8Array(ev.data));
+        }
+    };
+    ws.onerror = () => {
+        if (state.connectStatus === 0) {
+            state.connectStatus = -1;
+            window.__mepLastPtyError = "WebSocket connection to the `/pty` bridge failed";
+        }
+    };
+    ws.onclose = () => {
+        state.exited = true;
+    };
+    return id;
+});
+
+EM_JS(int, mep_js_pty_connect_status, (int id), {
+    const state = window.__mepPtys && window.__mepPtys[id];
+    if (!state) return -1;
+    if (state.connectStatus === -1) delete window.__mepPtys[id];
+    return state.connectStatus;
 });
 
 // Set by mep_js_pty_connect whenever it resolves to -1 -- read once, right
@@ -880,13 +913,15 @@ void Editor::TerminalSpawn(TerminalSession &sess, const std::vector<std::string>
     Json argv_json = Json::Array();
     for (const std::string &a : remote_argv) argv_json.push_back(Json(a));
     payload["cmd"] = argv_json;
-    sess.job_id = mep_js_pty_connect(payload.dump().c_str());
+    sess.job_id = mep_js_pty_connect_start(payload.dump().c_str());
     if (sess.job_id <= 0) {
         sess.exited = true;
         sess.exit_code = -1;
         char *err = mep_js_pty_last_error();
         status_message_ = std::string("Failed to start terminal: ") + err;
         std::free(err);
+    } else {
+        sess.connecting = true;
     }
 #else
     VTerm *vterm_ptr = sess.vterm.get();
@@ -937,6 +972,19 @@ void Editor::PollTerminals() {
     for (auto &kv : terminals_) {
         TerminalSession &sess = kv.second;
         if (sess.job_id <= 0 || sess.exited) continue;
+        if (sess.connecting) {
+            int status = mep_js_pty_connect_status(sess.job_id);
+            if (status == 0) continue;  // still connecting -- try again next frame
+            sess.connecting = false;
+            if (status < 0) {
+                sess.exited = true;
+                sess.exit_code = -1;
+                char *err = mep_js_pty_last_error();
+                status_message_ = std::string("Failed to start terminal: ") + err;
+                std::free(err);
+                continue;
+            }
+        }
         char *ptr = mep_js_pty_poll(sess.job_id);
         int len = mep_js_pty_poll_len();
         if (ptr) {

@@ -9044,15 +9044,32 @@ static const char *kHighlightsCrystal = R"TSQ(
 // Fold queries (Phase 19's own noted gap -- "No fold-query support",
 // see main.cpp's kBuiltinSyntax comment): one `@fold` capture per
 // syntactic block worth collapsing, for the core compiled-in languages
-// that have a grammar with distinct block/body node types (markdown and
-// org already have their own heading-depth fold providers in main.cpp's
-// kBuiltinMarkdown/kBuiltinOrg, so they're deliberately not here -- a
-// second, tree-sitter-driven fold provider for the same regions would
-// just double up on org/markdown's existing folds under a different
-// provider name). Every node name below was verified against the actual
-// vendored grammar (third_party/grammars/<lang>) by compiling a real
-// TSQuery against it -- see the incremental-reparse work in
+// that have a grammar with distinct block/body node types (markdown
+// still has its own line-based heading-depth fold provider in main.cpp's
+// kBuiltinMarkdown -- a second, tree-sitter-driven fold provider for the
+// same regions would just double up on markdown's existing folds under a
+// different provider name). Every node name below was verified against
+// the actual vendored grammar (third_party/grammars/<lang>) by compiling
+// a real TSQuery against it -- see the incremental-reparse work in
 // treesitter.cpp for how these are executed (TreesitterFoldRanges).
+//
+// Org is the one exception that *does* get a real query here (kFoldsOrg,
+// below) despite also having its own line-based provider (main.cpp's
+// kBuiltinOrg, `mep.org_fold_all`): that provider's headline scan --
+// and Editor::RecomputeOrgFolds' own C++ one (editor.cpp), which used
+// the same approach -- just regex-matched every line against
+// `^(%*+)%s+`, with no idea it might be looking at a `#+begin_src`
+// block's contents rather than real document structure. Source code
+// with a `* comment` or `char *p = ...` sitting at column 0 inside a
+// code block got misparsed as a headline, corrupting the whole nesting
+// stack for the rest of the file -- real headlines merging into far
+// fewer, wrong folds. Org's actual grammar has a context-aware external
+// scanner that already gets this right (a `block`'s `contents` parse as
+// plain text, never as a nested `headline`), so `(section) @fold` -- one
+// capture per headline's own node, an org `section` already spanning
+// exactly that headline through its last nested subsection, body and
+// all -- sidesteps the bug entirely instead of reimplementing block-
+// awareness by hand.
 static const char *kFoldsC = R"TSQ(
 [
   (compound_statement)
@@ -9126,5 +9143,15 @@ static const char *kFoldsJavascript = R"TSQ(
 // `braced_expression`, so a single capture covers all of them.
 static const char *kFoldsR = R"TSQ(
 (braced_expression) @fold
+)TSQ";
+
+// One `section` per headline (recursive: a level-1 headline's `section`
+// already contains its level-2/3/... children's own nested `section`
+// nodes, body and all), so this alone reproduces the full headline-depth
+// nesting mep's org fold providers computed by hand -- see the comment
+// above this block for why org gets a real query here unlike every other
+// filetype with its own line-based provider.
+static const char *kFoldsOrg = R"TSQ(
+(section) @fold
 )TSQ";
 

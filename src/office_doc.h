@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <string>
+#include <utility>
 #include <vector>
 
 // Deliberately raylib-free (same reasoning as image_doc.h/pdf_doc.h): the
@@ -145,6 +146,18 @@ bool ReadZipEntry(const unsigned char *zip_bytes, size_t zip_len, const char *en
 // office_doc.cpp's DOCX save-back and office_odt.cpp's ODT save-back.
 bool WriteZipReplacingEntry(const unsigned char *orig_bytes, size_t orig_len, const char *entry_name,
                              const std::string &new_content, std::vector<unsigned char> &out, std::string &error);
+
+// Same as WriteZipReplacingEntry but replaces every (name, content) pair in
+// `entries` in one pass over the original archive, rather than requiring
+// one full reader/writer round-trip per entry -- needed by XLSX save-back
+// (sheet_xlsx.cpp), which may rewrite several xl/worksheets/sheetN.xml
+// parts (one per sheet) in a single save. Any name in `entries` not found
+// in the original archive is appended at the end (matching
+// WriteZipReplacingEntry's own fallback), though v1's no-add/remove-sheets
+// scope means that path is never actually exercised.
+bool WriteZipReplacingEntries(const unsigned char *orig_bytes, size_t orig_len,
+                               const std::vector<std::pair<std::string, std::string>> &entries,
+                               std::vector<unsigned char> &out, std::string &error);
 
 // Parses a .docx from memory into `out`. Tolerant of malformed/
 // unsupported content the same way PdfDoc is -- individual bad

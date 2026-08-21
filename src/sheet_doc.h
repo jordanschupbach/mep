@@ -100,6 +100,15 @@ struct Workbook {
     // EvaluateCell's own comment for how this drives cache invalidation
     // without a dependency graph.
     int recalc_generation = 0;
+
+    // xlsx-only: sheets[i]'s zip entry path ("xl/worksheets/sheet1.xml"),
+    // parallel to `sheets`, populated by LoadXlsxFromMemory and consumed
+    // by SaveXlsxToMemory to know which zip entry to rewrite for each
+    // sheet -- v1 never adds/removes sheets, so this 1:1 parallel index
+    // relationship is preserved for the Workbook's whole lifetime. Empty
+    // for ods/csv workbooks (ODS keeps every sheet in one content.xml;
+    // CSV is always single-sheet with no container to speak of).
+    std::vector<std::string> xlsx_sheet_paths;
 };
 
 // Sets `raw` on the cell at (sheet,row,col), reparsing it into

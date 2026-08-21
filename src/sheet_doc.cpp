@@ -647,46 +647,6 @@ bool SaveCsvToMemory(Workbook &wb, std::string &out, std::string &error) {
     return true;
 }
 
-// ============================================================================
-// XLSX / ODS -- stubs for Phase 1 (document model + formula engine + CSV
-// + Normal-mode navigation only); real implementations land in Phase 2
-// (XLSX read) / Phase 3 (ODS read) / Phase 5 (save-back for both), per
-// NVIM_PARITY_PLAN.md's spreadsheet-pane phase. Declared now (not left
-// unlinked) so OpenSheetInPlace's IsXlsxPath/IsOdsPath branches, already
-// wired up in editor.cpp, fail with a clear status-line message instead
-// of a link error.
-// ============================================================================
-
-bool LoadXlsxFromMemory(const unsigned char *bytes, size_t len, Workbook &out, std::string &error) {
-    (void)bytes;
-    (void)len;
-    (void)out;
-    error = "reading .xlsx isn't implemented yet";
-    return false;
-}
-
-bool SaveXlsxToMemory(Workbook &wb, const std::vector<unsigned char> &original_bytes, std::vector<unsigned char> &out,
-                       std::string &error) {
-    (void)wb;
-    (void)original_bytes;
-    (void)out;
-    error = "saving .xlsx isn't implemented yet";
-    return false;
-}
-
-bool LoadOdsFromMemory(const unsigned char *bytes, size_t len, Workbook &out, std::string &error) {
-    (void)bytes;
-    (void)len;
-    (void)out;
-    error = "reading .ods isn't implemented yet";
-    return false;
-}
-
-bool SaveOdsToMemory(Workbook &wb, const std::vector<unsigned char> &original_bytes, std::vector<unsigned char> &out,
-                      std::string &error) {
-    (void)wb;
-    (void)original_bytes;
-    (void)out;
-    error = "saving .ods isn't implemented yet";
-    return false;
-}
+// XLSX (src/sheet_xlsx.cpp) and ODS (src/sheet_ods.cpp) load/save live in
+// their own files -- same reasoning as office_doc.cpp/office_odt.cpp
+// staying separate -- declared in sheet_doc.h, implemented there.

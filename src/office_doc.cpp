@@ -266,6 +266,64 @@ bool WriteZipReplacingEntry(const unsigned char *orig_bytes, size_t orig_len, co
     return true;
 }
 
+bool WriteZipReplacingEntries(const unsigned char *orig_bytes, size_t orig_len,
+                               const std::vector<std::pair<std::string, std::string>> &entries,
+                               std::vector<unsigned char> &out, std::string &error) {
+    mz_zip_archive reader{};
+    if (!mz_zip_reader_init_mem(&reader, orig_bytes, orig_len, 0)) {
+        error = "not a valid zip archive";
+        return false;
+    }
+    mz_zip_archive writer{};
+    if (!mz_zip_writer_init_heap(&writer, 0, 0)) {
+        mz_zip_reader_end(&reader);
+        error = "failed to initialize zip writer";
+        return false;
+    }
+    mz_uint n = mz_zip_reader_get_num_files(&reader);
+    std::vector<bool> replaced(entries.size(), false);
+    bool ok = true;
+    for (mz_uint i = 0; i < n && ok; i++) {
+        mz_zip_archive_file_stat stat;
+        if (!mz_zip_reader_file_stat(&reader, i, &stat)) {
+            ok = false;
+            break;
+        }
+        int match = -1;
+        for (size_t j = 0; j < entries.size(); j++) {
+            if (entries[j].first == stat.m_filename) {
+                match = static_cast<int>(j);
+                break;
+            }
+        }
+        if (match >= 0) {
+            ok = mz_zip_writer_add_mem(&writer, entries[match].first.c_str(), entries[match].second.data(),
+                                        entries[match].second.size(), MZ_DEFAULT_COMPRESSION);
+            replaced[static_cast<size_t>(match)] = true;
+        } else {
+            ok = mz_zip_writer_add_from_zip_reader(&writer, &reader, i);
+        }
+    }
+    for (size_t j = 0; ok && j < entries.size(); j++) {
+        if (replaced[j]) continue;
+        ok = mz_zip_writer_add_mem(&writer, entries[j].first.c_str(), entries[j].second.data(),
+                                    entries[j].second.size(), MZ_DEFAULT_COMPRESSION);
+    }
+    void *heap_data = nullptr;
+    size_t heap_size = 0;
+    if (ok) ok = mz_zip_writer_finalize_heap_archive(&writer, &heap_data, &heap_size);
+    mz_zip_writer_end(&writer);
+    mz_zip_reader_end(&reader);
+    if (!ok) {
+        error = "failed to write zip archive";
+        if (heap_data) mz_free(heap_data);
+        return false;
+    }
+    out.assign(static_cast<unsigned char *>(heap_data), static_cast<unsigned char *>(heap_data) + heap_size);
+    mz_free(heap_data);
+    return true;
+}
+
 namespace {
 
 // Maps a DOCX heading paragraph style name ("Heading1".."Heading6", any

@@ -7683,7 +7683,7 @@ void DrawPromptOverlay() {
     // passwords).
     std::string line = g_editor.PromptMasked() ? std::string(real.size(), '*') : real;
     DrawTextEx(g_font, line.c_str(), Vector2{f.content_x, f.content_y}, g_font_size, 0, ResolveHlGroup("Normal"));
-    if (fmodf(static_cast<float>(GetTime()), 1.0f) < 0.6f) {
+    {
         float cx = f.content_x + MeasureTextEx(g_font, line.c_str(), g_font_size, 0).x;
         DrawRectangle(static_cast<int>(cx), static_cast<int>(f.content_y), 2, static_cast<int>(g_font_size),
                       ResolveHlGroup("Normal"));
@@ -7916,7 +7916,7 @@ void DrawPickerOverlay() {
 
     std::string prompt_line = "> " + g_editor.PickerQuery();
     DrawTextEx(g_font, prompt_line.c_str(), Vector2{f.content_x, f.content_y}, g_font_size, 0, ResolveHlGroup("Normal"));
-    if (fmodf(static_cast<float>(GetTime()), 1.0f) < 0.6f) {
+    {
         float cx = f.content_x + MeasureTextEx(g_font, prompt_line.c_str(), g_font_size, 0).x;
         DrawRectangle(static_cast<int>(cx), static_cast<int>(f.content_y), 2, static_cast<int>(g_font_size),
                       ResolveHlGroup("Normal"));
@@ -8008,7 +8008,7 @@ void DrawRoamGraphOverlay() {
 
     std::string prompt_line = "/ " + g_editor.RoamGraphQuery();
     DrawTextEx(g_font, prompt_line.c_str(), Vector2{f.content_x, f.content_y}, g_font_size, 0, ResolveHlGroup("Normal"));
-    if (fmodf(static_cast<float>(GetTime()), 1.0f) < 0.6f) {
+    {
         float cx = f.content_x + MeasureTextEx(g_font, prompt_line.c_str(), g_font_size, 0).x;
         DrawRectangle(static_cast<int>(cx), static_cast<int>(f.content_y), 2, static_cast<int>(g_font_size),
                       ResolveHlGroup("Normal"));
@@ -8409,16 +8409,14 @@ void DrawTerminalGrid(const TerminalSession &sess, float x, float y, float w, fl
     }
 
     if (sess.scroll_offset == 0 && term->CursorVisible() && !sess.exited) {
-        if (fmodf(static_cast<float>(GetTime()), 1.0f) < 0.6f) {
-            float cx = x + term->CursorCol() * cw;
-            float cy = y + term->CursorRow() * lh;
-            Color cursor_bg = ResolveHlGroup("Normal");
-            DrawRectangle(static_cast<int>(cx), static_cast<int>(cy), static_cast<int>(cw), static_cast<int>(lh),
-                          Color{cursor_bg.r, cursor_bg.g, cursor_bg.b, 180});
-            const VTermCell &under = term->At(term->CursorRow(), term->CursorCol());
-            if (under.ch != " " && !under.ch.empty()) {
-                DrawTextEx(g_font, under.ch.c_str(), Vector2{cx, cy}, g_font_size, 0, ResolveHlGroup("NormalBg"));
-            }
+        float cx = x + term->CursorCol() * cw;
+        float cy = y + term->CursorRow() * lh;
+        Color cursor_bg = ResolveHlGroup("Normal");
+        DrawRectangle(static_cast<int>(cx), static_cast<int>(cy), static_cast<int>(cw), static_cast<int>(lh),
+                      Color{cursor_bg.r, cursor_bg.g, cursor_bg.b, 180});
+        const VTermCell &under = term->At(term->CursorRow(), term->CursorCol());
+        if (under.ch != " " && !under.ch.empty()) {
+            DrawTextEx(g_font, under.ch.c_str(), Vector2{cx, cy}, g_font_size, 0, ResolveHlGroup("NormalBg"));
         }
     }
 }
@@ -8565,7 +8563,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // of the normal "PDF: file (page N/M) zoom%" label while typing.
         std::string line = "/" + pdf_sess->search_input;
         DrawTextEx(g_font, line.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
-        if (fmodf(static_cast<float>(GetTime()), 1.0f) < 0.6f) {
+        {
             float cx = x + 6 + MeasureTextEx(g_font, line.c_str(), font_size, 0).x;
             DrawRectangle(static_cast<int>(cx), static_cast<int>(label_y), 2, static_cast<int>(font_size),
                           ResolveHlGroup("Normal"));
@@ -8995,11 +8993,24 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         }
         DrawTextEx(g_font, bar_text.c_str(), Vector2{x + 6, content_y + (bar_h - font_size) / 2.0f}, font_size, 0,
                    ResolveHlGroup("Normal"));
-        if (is_active && sheet_sess->editing && fmodf(static_cast<float>(GetTime()), 1.0f) < 0.6f) {
+        if (is_active && sheet_sess->editing) {
             std::string pre = bar_text.substr(0, std::min<size_t>(sheet_sess->edit_cursor, bar_text.size()));
             float cx = x + 6 + MeasureTextEx(g_font, pre.c_str(), font_size, 0).x;
             DrawRectangle(static_cast<int>(cx), static_cast<int>(content_y + (bar_h - font_size) / 2.0f), 2,
                           static_cast<int>(font_size), ResolveHlGroup("Normal"));
+        }
+        // Sheet indicator: right-aligned in the formula bar, only shown
+        // once there's more than one sheet to disambiguate (Ctrl-PageDown/
+        // Ctrl-PageUp switch between them -- see HandleSheetNormalInput).
+        // No click-to-switch tab strip in v1 -- same "not attempted this
+        // phase" scope cut the plan's own spreadsheet-pane notes make for
+        // mouse click-to-select-cell.
+        if (sheet_sess->wb.sheets.size() > 1) {
+            std::string tab_text = sh.name + "  (" + std::to_string(sheet_sess->active_sheet + 1) + "/" +
+                                    std::to_string(sheet_sess->wb.sheets.size()) + ")";
+            Vector2 tab_sz = MeasureTextEx(g_font, tab_text.c_str(), font_size, 0);
+            DrawTextEx(g_font, tab_text.c_str(), Vector2{x + w - tab_sz.x - 6, content_y + (bar_h - font_size) / 2.0f},
+                       font_size, 0, ResolveHlGroup("Comment"));
         }
 
         float grid_y = content_y + bar_h;
@@ -9170,9 +9181,21 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     }
     static const std::vector<const Decoration *> kNoDecos;
 
-    int last_line = std::min(pane.scroll_row + visible_lines, buf.LineCount());
+    // Bounded by *visual* slots, not buffer rows: `visible_lines` is how
+    // many lines the pane's pixel height fits, but a closed fold collapses
+    // however many buffer rows it hides into one of them, so a row-count
+    // bound here (this used to be `min(scroll_row + visible_lines,
+    // LineCount())`) stopped the loop after only a handful of folds even
+    // though most of the pane's height was still blank -- the fewer than
+    // `visible_lines` rows scanned could each expand into a fold covering
+    // far more than one row apiece. `row` is declared outside the loop so
+    // its value after the last iteration -- one past whatever was actually
+    // drawn, fold-collapsed or not -- gives the cursor-drawing check below
+    // the same visible-range bound this loop itself used, instead of the
+    // stale buffer-row-based `last_line`.
     int visual_slot = 0;  // a closed fold collapses N buffer rows into 1 of these
-    for (int row = pane.scroll_row; row < last_line; row++) {
+    int row = pane.scroll_row;
+    for (; row < buf.LineCount() && visual_slot < visible_lines; row++) {
         float ly = content_y + visual_slot * line_height;
         visual_slot++;
 
@@ -9372,8 +9395,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         }
     }
 
+    // `row` here is the drawing loop's own variable, left at one past
+    // whatever it actually covered (fold-collapsed ranges included) --
+    // the same visible-range bound that loop used, so this stays in sync
+    // with it by construction instead of via a separately-computed value.
     if (is_active && !IsCommandLineMode(g_editor.CurrentMode()) && pane.cursor.row >= pane.scroll_row &&
-        pane.cursor.row < last_line) {
+        pane.cursor.row < row) {
         // Buffer row -> visual slot, accounting for any closed folds
         // between the top of the view and the cursor (each collapses to
         // 1 slot regardless of how many rows it hides) -- the cursor
@@ -9389,24 +9416,20 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         }
         float cursor_y = content_y + cursor_slot * line_height;
         float cursor_x = text_x + pane.cursor.col * g_char_width;
-        if (fmodf(static_cast<float>(GetTime()), 1.0f) < 0.6f) {
-            if (g_editor.CurrentMode() == Mode::Insert) {
-                DrawRectangle(static_cast<int>(cursor_x), static_cast<int>(cursor_y), 2, static_cast<int>(g_font_size),
-                              ResolveHlGroup("Normal"));
-            } else {
-                Color cursor_bg = ResolveHlGroup("Normal");
-                DrawRectangle(static_cast<int>(cursor_x), static_cast<int>(cursor_y), static_cast<int>(g_char_width),
-                              line_height, Color{cursor_bg.r, cursor_bg.g, cursor_bg.b, 180});
-                const std::string &line = buf.lines[pane.cursor.row];
-                if (pane.cursor.col < static_cast<int>(line.size())) {
-                    char ch[2] = {line[pane.cursor.col], '\0'};
-                    DrawTextEx(g_font, ch, Vector2{cursor_x, cursor_y}, g_font_size, 0, ResolveHlGroup("NormalBg"));
-                }
+        if (g_editor.CurrentMode() == Mode::Insert) {
+            DrawRectangle(static_cast<int>(cursor_x), static_cast<int>(cursor_y), 2, static_cast<int>(g_font_size),
+                          ResolveHlGroup("Normal"));
+        } else {
+            Color cursor_bg = ResolveHlGroup("Normal");
+            DrawRectangle(static_cast<int>(cursor_x), static_cast<int>(cursor_y), static_cast<int>(g_char_width),
+                          line_height, Color{cursor_bg.r, cursor_bg.g, cursor_bg.b, 180});
+            const std::string &line = buf.lines[pane.cursor.row];
+            if (pane.cursor.col < static_cast<int>(line.size())) {
+                char ch[2] = {line[pane.cursor.col], '\0'};
+                DrawTextEx(g_font, ch, Vector2{cursor_x, cursor_y}, g_font_size, 0, ResolveHlGroup("NormalBg"));
             }
         }
-        // Completion popup (Phase 22): positioned just below the cursor,
-        // not blink-gated (unlike the cursor glyph above) since a
-        // flickering completion list would be actively distracting.
+        // Completion popup (Phase 22): positioned just below the cursor.
         if (g_editor.CurrentMode() == Mode::Insert && g_editor.IsCompletionOpen()) {
             DrawCompletionPopup(cursor_x, cursor_y + line_height);
         }
@@ -9622,7 +9645,7 @@ void DrawEditor() {
         std::string line = prefix + *text;
         DrawTextEx(g_font, line.c_str(), Vector2{static_cast<float>(kMarginX), static_cast<float>(cmd_y + 3)},
                    g_font_size, 0, ResolveHlGroup("Normal"));
-        if (fmodf(static_cast<float>(GetTime()), 1.0f) < 0.6f) {
+        {
             float cx = kMarginX + MeasureTextEx(g_font, line.c_str(), g_font_size, 0).x;
             DrawRectangle(static_cast<int>(cx), cmd_y + 3, 2, static_cast<int>(g_font_size), ResolveHlGroup("Normal"));
         }
@@ -9871,6 +9894,16 @@ int main(int argc, char **argv) {
     while (!WindowShouldClose() && !g_editor.ShouldQuit()) {
         UpdateDrawFrame();
     }
+
+    // Explicit, bounded teardown of every spawned child (:terminal shells,
+    // git/LSP jobs, ...) before returning -- without this, killing them
+    // fell to JobManager's own static-teardown destructor chain, whose
+    // Job::~Job() does an *unbounded* reader-thread join() after a single
+    // SIGTERM. A child that ignores SIGTERM (or is just slow) left that
+    // join blocked forever, so mep's process never actually exited on
+    // window-close/:qa -- it sat there until something outside mep (e.g.
+    // a couple of Ctrl-C's at the launching shell) killed it by force.
+    JobManager::Instance().ShutdownAll();
 #endif
 
     UnloadFont(g_font);

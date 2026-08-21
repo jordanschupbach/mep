@@ -1,6 +1,7 @@
 #include "formula.h"
 
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
 
 namespace {
@@ -38,6 +39,7 @@ public:
             return LexNumber();
         }
         if (c == '"') return LexString();
+        if (c == '\'') return LexQuotedIdent();
         if (std::isalpha(static_cast<unsigned char>(c)) || c == '_' || c == '$') return LexIdent();
         return LexOp();
     }
@@ -77,6 +79,38 @@ private:
         }
         Token t;
         t.kind = TokKind::String;
+        t.text = out;
+        return t;
+    }
+
+    // Excel-style quoted sheet name: 'My Sheet'!A1 -- needed because a
+    // bare LexIdent stops at the first non-alnum/underscore/$ character,
+    // so a sheet name containing a space or other punctuation (extremely
+    // common in real XLSX/ODS files) could never otherwise be lexed as one
+    // token. Doubled `''` is a literal apostrophe, mirroring LexString's
+    // own `""` convention (this is exactly Excel's own escaping rule for
+    // quoted sheet names). Returns a plain Ident token -- ParsePrimary's
+    // existing IsOp("!") branch after an Ident already builds a
+    // sheet-qualified ref from it, so quoting needs no parser changes.
+    Token LexQuotedIdent() {
+        pos_++;  // opening quote
+        std::string out;
+        while (pos_ < s_.size()) {
+            char c = s_[pos_];
+            if (c == '\'') {
+                if (pos_ + 1 < s_.size() && s_[pos_ + 1] == '\'') {
+                    out.push_back('\'');
+                    pos_ += 2;
+                    continue;
+                }
+                pos_++;  // closing quote
+                break;
+            }
+            out.push_back(c);
+            pos_++;
+        }
+        Token t;
+        t.kind = TokKind::Ident;
         t.text = out;
         return t;
     }
@@ -263,8 +297,27 @@ private:
             std::string ident = cur_.text;
             std::string upper = ToUpperAscii(ident);
             Advance();
-            if (upper == "TRUE") return MakeBool(true);
-            if (upper == "FALSE") return MakeBool(false);
+            if (upper == "TRUE" || upper == "FALSE") {
+                // Real producers write both the bare literal ("TRUE") and
+                // the zero-arg function-call form ("TRUE()") -- confirmed
+                // directly against real LibreOffice XLSX/ODS exports
+                // (LO always emits the call form). Consume an optional
+                // "()" so both parse to the same Bool node; a genuinely
+                // user-defined 0-arg function happening to be named
+                // TRUE/FALSE is not a real-world concern (both are
+                // reserved words in every spreadsheet application this
+                // engine targets).
+                bool v = (upper == "TRUE");
+                if (IsOp("(")) {
+                    Advance();
+                    if (!IsOp(")")) {
+                        Fail("expected ')' after " + upper + "(");
+                        return nullptr;
+                    }
+                    Advance();
+                }
+                return MakeBool(v);
+            }
             if (IsOp("(")) {
                 Advance();
                 std::vector<NodePtr> args;
@@ -434,3 +487,175 @@ bool ParseCellAddress(const std::string &text, int &row, int &col, bool &row_abs
 }
 
 std::string CellAddressToString(int row, int col) { return ColumnIndexToLetters(col) + std::to_string(row + 1); }
+
+// ============================================================================
+// Serialization -- AST back to text. Two consumers: sheet_xlsx.cpp's
+// shared-formula expansion (native style, round-tripping through this
+// engine's own parser) and sheet_ods.cpp's save-back (ods_style, ODF
+// bracket-ref syntax). See formula.h's own comments for why parens are
+// always added rather than computed minimally.
+// ============================================================================
+
+namespace {
+
+std::string FormatNumberForFormula(double n) {
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%.10g", n);
+    return std::string(buf);
+}
+
+std::string QuoteStringLiteral(const std::string &s) {
+    std::string out = "\"";
+    for (char c : s) {
+        if (c == '"') out += "\"\"";
+        else out.push_back(c);
+    }
+    out += "\"";
+    return out;
+}
+
+bool SheetNameNeedsQuote(const std::string &name) {
+    if (name.empty()) return true;
+    for (char c : name) {
+        if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '$')) return true;
+    }
+    return false;
+}
+
+std::string QuoteSheetName(const std::string &name) {
+    std::string out = "'";
+    for (char c : name) {
+        if (c == '\'') out += "''";
+        else out.push_back(c);
+    }
+    out += "'";
+    return out;
+}
+
+std::string FormatSheetName(const std::string &name) { return SheetNameNeedsQuote(name) ? QuoteSheetName(name) : name; }
+
+std::string FormatCellRefText(const FormulaCellRef &ref) {
+    std::string s;
+    if (ref.col_abs) s += "$";
+    s += ColumnIndexToLetters(ref.col);
+    if (ref.row_abs) s += "$";
+    s += std::to_string(ref.row + 1);
+    return s;
+}
+
+std::string OpToText(FormulaOp op) {
+    switch (op) {
+        case FormulaOp::Add: return "+";
+        case FormulaOp::Sub: return "-";
+        case FormulaOp::Mul: return "*";
+        case FormulaOp::Div: return "/";
+        case FormulaOp::Pow: return "^";
+        case FormulaOp::Concat: return "&";
+        case FormulaOp::Eq: return "=";
+        case FormulaOp::Ne: return "<>";
+        case FormulaOp::Lt: return "<";
+        case FormulaOp::Gt: return ">";
+        case FormulaOp::Le: return "<=";
+        case FormulaOp::Ge: return ">=";
+        case FormulaOp::Neg: return "-";
+    }
+    return "";
+}
+
+std::string SerializeCellRefNative(const FormulaCellRef &ref) {
+    std::string s;
+    if (!ref.sheet_name.empty()) s += FormatSheetName(ref.sheet_name) + "!";
+    s += FormatCellRefText(ref);
+    return s;
+}
+
+// ODS bracket form: "[.A1]" (same sheet) or "[Sheet2.A1]" (qualified). A
+// range's end side is always left unqualified ("[Sheet2.A1:.B2]") --
+// range_end.sheet_name always mirrors start's (see FinishRefOrRange), so
+// there's never a genuinely different end-sheet to print here.
+std::string SerializeCellRefOds(const FormulaCellRef &ref) {
+    std::string s = "[";
+    if (!ref.sheet_name.empty()) s += FormatSheetName(ref.sheet_name);
+    s += "." + FormatCellRefText(ref) + "]";
+    return s;
+}
+
+std::string SerializeRangeOds(const FormulaCellRef &start, const FormulaCellRef &end) {
+    std::string s = "[";
+    if (!start.sheet_name.empty()) s += FormatSheetName(start.sheet_name);
+    s += "." + FormatCellRefText(start) + ":." + FormatCellRefText(end) + "]";
+    return s;
+}
+
+std::string SerializeFormulaImpl(const FormulaNode &node, bool ods_style) {
+    switch (node.kind) {
+        case FormulaNodeKind::Number:
+            return FormatNumberForFormula(node.number);
+        case FormulaNodeKind::String:
+            return QuoteStringLiteral(node.text);
+        case FormulaNodeKind::Bool:
+            return node.boolean ? "TRUE" : "FALSE";
+        case FormulaNodeKind::CellRef:
+            return ods_style ? SerializeCellRefOds(node.cell) : SerializeCellRefNative(node.cell);
+        case FormulaNodeKind::Range:
+            return ods_style ? SerializeRangeOds(node.cell, node.range_end)
+                              : (SerializeCellRefNative(node.cell) + ":" + FormatCellRefText(node.range_end));
+        case FormulaNodeKind::UnaryOp:
+            return "-(" + SerializeFormulaImpl(*node.lhs, ods_style) + ")";
+        case FormulaNodeKind::BinaryOp:
+            return "(" + SerializeFormulaImpl(*node.lhs, ods_style) + OpToText(node.op) +
+                   SerializeFormulaImpl(*node.rhs, ods_style) + ")";
+        case FormulaNodeKind::FunctionCall: {
+            std::string s = node.text + "(";
+            const char *sep = ods_style ? ";" : ",";
+            for (size_t i = 0; i < node.args.size(); i++) {
+                if (i) s += sep;
+                s += SerializeFormulaImpl(*node.args[i], ods_style);
+            }
+            s += ")";
+            return s;
+        }
+    }
+    return "";
+}
+
+}  // namespace
+
+std::string SerializeFormula(const std::shared_ptr<const FormulaNode> &node, bool ods_style) {
+    if (!node) return "";
+    return SerializeFormulaImpl(*node, ods_style);
+}
+
+std::shared_ptr<const FormulaNode> ShiftFormulaRefs(const std::shared_ptr<const FormulaNode> &node, int dr, int dc) {
+    if (!node) return node;
+    auto n = std::make_shared<FormulaNode>(*node);  // scalar-field copy; children reassigned below
+    switch (n->kind) {
+        case FormulaNodeKind::CellRef:
+            if (!n->cell.row_abs) n->cell.row += dr;
+            if (!n->cell.col_abs) n->cell.col += dc;
+            break;
+        case FormulaNodeKind::Range:
+            if (!n->cell.row_abs) n->cell.row += dr;
+            if (!n->cell.col_abs) n->cell.col += dc;
+            if (!n->range_end.row_abs) n->range_end.row += dr;
+            if (!n->range_end.col_abs) n->range_end.col += dc;
+            break;
+        case FormulaNodeKind::UnaryOp:
+            n->lhs = ShiftFormulaRefs(n->lhs, dr, dc);
+            break;
+        case FormulaNodeKind::BinaryOp:
+            n->lhs = ShiftFormulaRefs(n->lhs, dr, dc);
+            n->rhs = ShiftFormulaRefs(n->rhs, dr, dc);
+            break;
+        case FormulaNodeKind::FunctionCall: {
+            std::vector<std::shared_ptr<const FormulaNode>> new_args;
+            new_args.reserve(n->args.size());
+            for (auto &a : n->args) new_args.push_back(ShiftFormulaRefs(a, dr, dc));
+            n->args = std::move(new_args);
+            break;
+        }
+        default:
+            break;
+    }
+    return n;
+}

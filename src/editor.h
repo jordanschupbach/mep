@@ -351,6 +351,13 @@ struct Buffer {
     // headline depth, treesitter fold queries, ...) replace this whole
     // vector wholesale each recompute rather than diffing it.
     std::vector<Fold> folds;
+    // vim-style 'foldlevel', stepped by zm/zr and snapped to an extreme by
+    // zM/zR (Editor::AdjustFoldLevel/SetAllFoldsClosed): folds nested no
+    // deeper than this stay open, anything deeper is closed. -1 means
+    // "never explicitly set" -- treated as the deepest level present
+    // (i.e. everything open), matching a freshly loaded/folded file where
+    // nothing's been collapsed yet.
+    int fold_level = -1;
 
     int LineCount() const { return static_cast<int>(lines.size()); }
 };
@@ -1183,6 +1190,26 @@ public:
     // stays visible as the fold's summary line.
     bool IsRowHiddenByFold(int row, int *fold_start_row) const;
     const std::vector<Fold> &CurrentBufferFolds() const { return Buf().folds; }
+    // j/k (ResolveMotion) step by *displayed* lines, not buffer rows: a
+    // closed fold's hidden interior counts as a single line no matter how
+    // many rows it spans. `dir` is +1 (down) or -1 (up).
+    int StepVisibleRow(int row, int dir) const;
+
+    // Org-mode headline folding (za/zm/zr/zR/zM): rebuilds the current
+    // buffer's provider="org" folds from its `*`/`**`/... headline
+    // structure. Cheap enough to call before every z-command rather than
+    // hook every edit site -- see the .cpp definition for the exact
+    // matching rule that preserves open/closed state across a recompute.
+    void RecomputeOrgFolds();
+    bool IsOrgBuffer() const;
+    // zM/zR: force every fold in the current buffer open or closed, and
+    // snap fold_level to the corresponding extreme (0 or the deepest
+    // nesting present).
+    void SetAllFoldsClosed(bool closed);
+    // zm/zr: vim's "one level more/less" fold stepping. `delta` is +1
+    // (zr, open a level) or -1 (zm, close a level); see Buffer::fold_level
+    // for what the stored level means between calls.
+    void AdjustFoldLevel(int delta);
 
     // --- Sidebar/panel widget (NVIM_PARITY_PLAN.md Part I Phase 7) ---
     int CreateSidebar(const std::string &title, const std::string &position, int size);
@@ -1331,6 +1358,16 @@ public:
     // otherwise creates one; switches the current pane to it either way.
     void OpenScratchBuffer();
     void ToggleZenMode() { zen_mode_ = !zen_mode_; }
+    // Switches SheetSession::active_sheet by one, wrapping around at
+    // either end (Ctrl-PageDown/Ctrl-PageUp -- Excel's own convention for
+    // this) -- undo/redo stay per-workbook, not per-sheet, so this doesn't
+    // touch undo_stack/redo_stack at all, just re-clamps the cursor into
+    // the newly-active sheet's used range via the same helper Undo/
+    // RedoSheet's own post-swap clamp uses. Public (unlike Push/Undo/
+    // RedoSheet just above private:) so mep.sheet_next/prev (lua_env.cpp)
+    // and the :MepNextSheet/:MepPrevSheet ex-commands can call it.
+    void NextSheet();
+    void PrevSheet();
     bool IsZenMode() const { return zen_mode_; }
 
     // --- Hints (NVIM_PARITY_PLAN.md Part III Phase 13) ---

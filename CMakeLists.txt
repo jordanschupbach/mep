@@ -204,6 +204,8 @@ add_executable(mep
     src/office_odt.cpp
     src/formula.cpp
     src/sheet_doc.cpp
+    src/sheet_xlsx.cpp
+    src/sheet_ods.cpp
 )
 target_include_directories(mep PRIVATE src)
 target_link_libraries(mep PRIVATE raylib lua tree_sitter ${TS_GRAMMAR_LIBS} pugixml miniz)

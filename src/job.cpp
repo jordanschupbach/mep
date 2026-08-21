@@ -1,6 +1,7 @@
 #include "job.h"
 
 #include <algorithm>
+#include <chrono>
 
 #if !defined(__EMSCRIPTEN__) && !defined(_WIN32)
 #define MEP_JOB_POSIX 1
@@ -141,6 +142,15 @@ void Job::Kill() {
     if (pid_ > 0 && !finished_.load()) {
         killed_ = true;
         kill(-pid_, SIGTERM);
+    }
+#endif
+}
+
+void Job::KillHard() {
+#if MEP_JOB_POSIX
+    if (pid_ > 0 && !finished_.load()) {
+        killed_ = true;
+        kill(-pid_, SIGKILL);
     }
 #endif
 }
@@ -350,4 +360,30 @@ void JobManager::PollAll() {
     }
     jobs_.erase(std::remove_if(jobs_.begin(), jobs_.end(), [](const Entry &e) { return e.exit_reported; }),
                 jobs_.end());
+}
+
+void JobManager::ShutdownAll(int grace_ms) {
+#if MEP_JOB_POSIX
+    for (auto &e : jobs_) {
+        if (e.job && !e.job->Finished()) e.job->Kill();
+    }
+    auto still_running = [this] {
+        for (auto &e : jobs_) {
+            if (e.job && !e.job->Finished()) return true;
+        }
+        return false;
+    };
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(grace_ms);
+    while (still_running() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    for (auto &e : jobs_) {
+        if (e.job && !e.job->Finished()) e.job->KillHard();
+    }
+#endif
+    // Each Job's destructor joins its reader thread; by now every child is
+    // either already dead or has just been SIGKILLed, so those joins
+    // return promptly instead of the unbounded wait a bare SIGTERM alone
+    // could leave behind.
+    jobs_.clear();
 }

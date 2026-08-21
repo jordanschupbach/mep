@@ -1762,6 +1762,17 @@ int l_toggle_zen(lua_State *L) {
     GetEditor(L)->ToggleZenMode();
     return 0;
 }
+// mep.sheet_next() / mep.sheet_prev() -- Lua-reachable equivalent of the
+// Ctrl-PageDown/Ctrl-PageUp keys HandleSheetNormalInput already binds
+// (spreadsheet-pane Phase 4), for whichkey/custom-mapping consumers.
+int l_sheet_next(lua_State *L) {
+    GetEditor(L)->NextSheet();
+    return 0;
+}
+int l_sheet_prev(lua_State *L) {
+    GetEditor(L)->PrevSheet();
+    return 0;
+}
 // mep.on_frame(fn): fn runs once per frame -- the polling-based building
 // block for debounced buffer-changed/buffer-saved consumers (see
 // LuaEnv::RunFrameHooks in lua_env.h for why this is polling, not a
@@ -1947,6 +1958,8 @@ const luaL_Reg kMepFuncs[] = {
     {"set_winbar_click", l_set_winbar_click},
     {"scratch", l_scratch},
     {"toggle_zen", l_toggle_zen},
+    {"sheet_next", l_sheet_next},
+    {"sheet_prev", l_sheet_prev},
     {"on_frame", l_on_frame},
     {"buffer_change_epoch", l_buffer_change_epoch},
     {"buffer_save_epoch", l_buffer_save_epoch},

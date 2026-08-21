@@ -73,6 +73,13 @@ public:
     // Sends SIGTERM to the child's whole process group.
     void Kill();
 
+    // Escalates to SIGKILL, which (unlike SIGTERM) can't be caught,
+    // ignored, or blocked -- used once a prior Kill() has had a grace
+    // period to let the child exit on its own and it still hasn't (e.g. a
+    // REPL/TUI that traps SIGTERM, or simply a slow shutdown). See
+    // JobManager::ShutdownAll.
+    void KillHard();
+
     // Updates the PTY's window size (TIOCSWINSZ) so full-screen terminal
     // programs (a shell running $EDITOR, a pager, ...) wrap/paginate to
     // match the hosting pane. No-op if this isn't a PTY job.
@@ -145,6 +152,17 @@ public:
     // status and invokes its stored callbacks, then reaps finished jobs
     // whose callbacks have all fired.
     void PollAll();
+
+    // Terminates every still-running job: SIGTERM to each, up to
+    // `grace_ms` for them to exit on their own, then SIGKILL to whatever's
+    // left. Called once from main() right after the render loop exits, so
+    // a non-cooperative child (one that ignores SIGTERM) can't leave
+    // Job::~Job()'s reader-thread join() blocking mep's own process exit
+    // indefinitely -- relying on that destructor alone (reached only via
+    // this JobManager singleton's own static teardown) meant a stuck child
+    // held the whole app open until something outside mep (e.g. a repeated
+    // Ctrl-C at the launching shell) killed it by force.
+    void ShutdownAll(int grace_ms = 500);
 
 private:
     struct Entry {

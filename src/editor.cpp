@@ -17,6 +17,7 @@
 #include "vterm.h"
 #include "image_doc.h"
 #include "pdf_doc.h"
+#include "treesitter.h"
 
 #if defined(__EMSCRIPTEN__)
 #include <emscripten.h>
@@ -828,11 +829,41 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines) {
     SplitNode *node = FindNode(tabs_[active_tab_].root.get(), pane_id);
     if (!node) return;
     Pane &pane = node->pane;
-    pane.visible_lines = std::max(1, visible_lines);
+    visible_lines = std::max(1, visible_lines);
+    pane.visible_lines = visible_lines;
+    if (pane.buffer_id < 0 || pane.buffer_id >= static_cast<int>(buffers_.size())) return;
+    const Buffer &buf = buffers_[pane.buffer_id];
+
     if (pane.cursor.row < pane.scroll_row) {
         pane.scroll_row = pane.cursor.row;
-    } else if (pane.cursor.row >= pane.scroll_row + visible_lines) {
-        pane.scroll_row = pane.cursor.row - visible_lines + 1;
+    } else {
+        // How many *visual* slots [scroll_row, cursor.row] takes -- a
+        // closed fold's hidden interior counts as one slot no matter how
+        // many raw rows it spans, mirroring DrawPane's own render loop
+        // (main.cpp) and StepVisibleRow's upward step. The old plain
+        // `cursor.row >= scroll_row + visible_lines` check compared raw
+        // row counts instead: with folds collapsing most of the buffer,
+        // that could both trigger a scroll the pane didn't actually need
+        // (the cursor's fold was still comfortably on screen -- folds
+        // between it and scroll_row make the true visible range cover
+        // *more* raw rows than `visible_lines`, not fewer) and, when it
+        // did scroll, land scroll_row on an arbitrary raw row that could
+        // sit inside some other closed fold's hidden middle -- a state
+        // the render loop never expects, since every other path onto a
+        // fold's rows starts exactly at fold_start.
+        int slots = 1;  // the cursor's own row is always slot 1
+        int row = pane.cursor.row;
+        while (row > pane.scroll_row && slots < visible_lines) {
+            row--;
+            for (const Fold &f : buf.folds) {
+                if (f.closed && row > f.start_row && row <= f.end_row) {
+                    row = f.start_row;
+                    break;
+                }
+            }
+            slots++;
+        }
+        if (row > pane.scroll_row) pane.scroll_row = row;
     }
     if (pane.scroll_row < 0) pane.scroll_row = 0;
 }
@@ -1372,7 +1403,21 @@ void Editor::OpenImageInPlace(const std::string &path, const unsigned char *byte
 }
 
 void Editor::SyncModeToActivePaneBuffer() {
-    if (IsImageBuffer(CurPane().buffer_id)) {
+    if (IsTerminalBuffer(CurPane().buffer_id)) {
+        // Focus landing on a terminal pane always re-enters live keystroke
+        // forwarding, never a stale Ctrl-\ Ctrl-N snapshot (EnterTerminal-
+        // NormalMode) left over from a previous visit -- matches DrawPane's
+        // (main.cpp) own comment that the live grid resumes "the instant
+        // ... focus moves to a different pane [and back]". Without this,
+        // switching focus here while mode_ was already Mode::Normal (e.g.
+        // arriving from an ordinary buffer pane) left mode_ untouched, so
+        // DrawPane's show_live_grid check -- which treats an active pane's
+        // Mode::Normal as "snapshotted" -- rendered this pane's buffer
+        // instead, which for a terminal holds no real text (blank) until
+        // the 'i'/'a' special case in DispatchNormalKey jumped back to
+        // Mode::Terminal.
+        mode_ = Mode::Terminal;
+    } else if (IsImageBuffer(CurPane().buffer_id)) {
         mode_ = Mode::Image;
     } else if (IsPdfBuffer(CurPane().buffer_id)) {
         mode_ = Mode::Pdf;
@@ -1383,9 +1428,9 @@ void Editor::SyncModeToActivePaneBuffer() {
     } else if (IsSheetBuffer(CurPane().buffer_id)) {
         // Always re-enters at SheetNormal, same reasoning as Office above.
         mode_ = Mode::SheetNormal;
-    } else if (mode_ == Mode::Image || mode_ == Mode::Pdf || mode_ == Mode::OfficeNormal ||
-               mode_ == Mode::OfficeInsert || mode_ == Mode::OfficeVisual || mode_ == Mode::SheetNormal ||
-               mode_ == Mode::SheetInsert || mode_ == Mode::SheetVisual) {
+    } else if (mode_ == Mode::Terminal || mode_ == Mode::Image || mode_ == Mode::Pdf ||
+               mode_ == Mode::OfficeNormal || mode_ == Mode::OfficeInsert || mode_ == Mode::OfficeVisual ||
+               mode_ == Mode::SheetNormal || mode_ == Mode::SheetInsert || mode_ == Mode::SheetVisual) {
         mode_ = Mode::Normal;
     }
 }
@@ -2437,6 +2482,14 @@ void Editor::HandleSheetNormalInput() {
     if (IsKeyPressed(KEY_R) && (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL))) {
         RedoSheet();
     }
+    // Excel's own next/prev-sheet convention -- matches real spreadsheet
+    // muscle memory better than inventing a new mep-specific binding.
+    if (IsKeyPressed(KEY_PAGE_DOWN) && (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL))) {
+        NextSheet();
+    }
+    if (IsKeyPressed(KEY_PAGE_UP) && (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL))) {
+        PrevSheet();
+    }
 }
 
 void Editor::PushUndoSheet() {
@@ -2490,6 +2543,27 @@ void Editor::RedoSheet() {
     sess.redo_stack.pop_back();
     sess.modified = true;
     ClampSheetCursorAfterSwap(sess);
+}
+
+void Editor::NextSheet() {
+    auto it = sheetdocs_.find(CurPane().buffer_id);
+    if (it == sheetdocs_.end()) return;
+    SheetSession &sess = it->second;
+    if (sess.wb.sheets.size() < 2) return;
+    sess.active_sheet = (sess.active_sheet + 1) % static_cast<int>(sess.wb.sheets.size());
+    ClampSheetCursorAfterSwap(sess);
+    status_message_ = "-- " + sess.wb.sheets[sess.active_sheet].name + " --";
+}
+
+void Editor::PrevSheet() {
+    auto it = sheetdocs_.find(CurPane().buffer_id);
+    if (it == sheetdocs_.end()) return;
+    SheetSession &sess = it->second;
+    if (sess.wb.sheets.size() < 2) return;
+    int n = static_cast<int>(sess.wb.sheets.size());
+    sess.active_sheet = (sess.active_sheet - 1 + n) % n;
+    ClampSheetCursorAfterSwap(sess);
+    status_message_ = "-- " + sess.wb.sheets[sess.active_sheet].name + " --";
 }
 
 void Editor::HandleSheetInsertInput() {
@@ -3854,8 +3928,16 @@ bool Editor::DispatchNormalKey(int cp) {
 
     // z{z,t,b}: reposition the view without moving the cursor.
     // z{a,o,c}: toggle/open/close the fold at the cursor (Phase 5).
+    // z{m,r,R,M}: vim-style fold-level stepping/extremes (org headlines).
     if (pending_z_) {
         pending_z_ = false;
+        // Org buffers have no persistent fold provider (no watcher re-runs
+        // this on every edit) -- recomputing right before any fold command
+        // touches the buffer means it's always current without paying a
+        // rescan on every keystroke that isn't actually about to use it.
+        if (c == 'a' || c == 'o' || c == 'c' || c == 'm' || c == 'r' || c == 'R' || c == 'M') {
+            if (IsOrgBuffer()) RecomputeOrgFolds();
+        }
         if (c == 'z' || c == 't' || c == 'b') {
             ScrollCursorTo(c);
         } else if (c == 'a') {
@@ -3865,6 +3947,14 @@ bool Editor::DispatchNormalKey(int cp) {
             for (Fold &f : Buf().folds) {
                 if (row >= f.start_row && row <= f.end_row) f.closed = (c == 'c');
             }
+        } else if (c == 'M') {
+            SetAllFoldsClosed(true);
+        } else if (c == 'R') {
+            SetAllFoldsClosed(false);
+        } else if (c == 'm') {
+            AdjustFoldLevel(-1);
+        } else if (c == 'r') {
+            AdjustFoldLevel(1);
         }
         return true;
     }
@@ -5652,6 +5742,123 @@ bool Editor::IsRowHiddenByFold(int row, int *fold_start_row) const {
     return false;
 }
 
+// Sitting on a closed fold's start row and stepping down used to move one
+// *buffer* row at a time -- landing one row into the fold's own hidden
+// interior, which ClampCursor (below) then snapped straight back to
+// fold_start since a cursor can never rest there. Net effect: j on a
+// folded line didn't move at all, however many rows the fold hid. Vim
+// instead steps by *displayed* lines, where a closed fold -- however many
+// rows it spans -- counts as exactly one, so moving off its start row
+// must clear the whole hidden interior in this one step.
+int Editor::StepVisibleRow(int row, int dir) const {
+    if (dir > 0) {
+        // Compares against the original `row`, not the (possibly already
+        // widened) loop variable -- otherwise two closed folds sharing a
+        // start row would only ever apply the first one found, since its
+        // wider end_row would make the second's `f.start_row == row`
+        // check fail.
+        int end = row;
+        for (const Fold &f : Buf().folds) {
+            if (f.closed && f.start_row == row) end = std::max(end, f.end_row);
+        }
+        row = end + 1;
+    } else {
+        row--;
+        int fold_start;
+        if (row >= 0 && IsRowHiddenByFold(row, &fold_start)) row = fold_start;
+    }
+    return std::max(0, std::min(row, Buf().LineCount() - 1));
+}
+
+namespace {
+// Nesting depth of `target` among `folds`: how many other folds strictly
+// contain its row range. There's no explicit fold tree (Buffer::folds'
+// own comment) -- containment is recomputed from the flat row-range list
+// every time, which is fine at the sizes an org outline or a manual fold
+// set actually reaches.
+int FoldNestingDepth(const std::vector<Fold> &folds, const Fold &target) {
+    int depth = 0;
+    for (const Fold &f : folds) {
+        if (&f == &target) continue;
+        bool same_range = f.start_row == target.start_row && f.end_row == target.end_row;
+        if (!same_range && f.start_row <= target.start_row && f.end_row >= target.end_row) depth++;
+    }
+    return depth;
+}
+
+// The deepest nesting level present, 1-indexed to match vim's own
+// 'foldlevel' (foldlevel N shows levels 1..N open) -- 0 if there are no
+// folds at all.
+int MaxFoldNestingDepth(const std::vector<Fold> &folds) {
+    int max_depth = 0;
+    for (const Fold &f : folds) max_depth = std::max(max_depth, FoldNestingDepth(folds, f) + 1);
+    return max_depth;
+}
+}  // namespace
+
+bool Editor::IsOrgBuffer() const {
+    const std::string &f = Buf().filename;
+    return f.size() >= 4 && f.compare(f.size() - 4, 4, ".org") == 0;
+}
+
+// Rebuilds provider="org" folds from the buffer's real headline structure
+// via org's own tree-sitter grammar (kFoldsOrg's `(section) @fold`, one
+// per headline -- see treesitter_queries.h's comment on it): a headline's
+// `section` node already spans exactly itself through its last nested
+// subsection, body included, so this reproduces the same nesting a hand-
+// rolled `^(%*+)%s+` line scan would -- but *correctly* excludes anything
+// inside a `#+begin_src`/`#+begin_example`/etc. block, where such a scan
+// would misparse an asterisk sitting at column 0 of the block's own
+// contents (a `* comment` in the embedded code, `char *p = ...`, ...) as
+// a real headline and corrupt the nesting for the rest of the file. A
+// degenerate headline with no body/children (a single-line node) creates
+// no fold, same as CreateFold's own "<2 lines isn't meaningful" rule --
+// TreesitterFoldRanges already applies that filter.
+//
+// Existing org folds are preserved by matching on start_row: an edit that
+// doesn't move a headline's own line keeps whatever open/closed state the
+// user left it in; anything new defaults open, same as a freshly loaded
+// file where nothing has been folded yet.
+void Editor::RecomputeOrgFolds() {
+    std::vector<Fold> old_folds;
+    for (const Fold &f : Buf().folds) {
+        if (f.provider == "org") old_folds.push_back(f);
+    }
+    ClearFoldsFromProvider("org");
+
+    const std::vector<std::string> &lines = Buf().lines;
+    std::string text;
+    for (size_t i = 0; i < lines.size(); i++) {
+        if (i > 0) text += '\n';
+        text += lines[i];
+    }
+
+    for (const TSFoldRange &r : TreesitterFoldRanges("org", text)) {
+        bool closed = false;
+        for (const Fold &of : old_folds) {
+            if (of.start_row == r.start_row) {
+                closed = of.closed;
+                break;
+            }
+        }
+        Buf().folds.push_back({r.start_row, r.end_row, closed, "org"});
+    }
+}
+
+void Editor::SetAllFoldsClosed(bool closed) {
+    for (Fold &f : Buf().folds) f.closed = closed;
+    Buf().fold_level = closed ? 0 : MaxFoldNestingDepth(Buf().folds);
+}
+
+void Editor::AdjustFoldLevel(int delta) {
+    const std::vector<Fold> &folds = Buf().folds;
+    int max_depth = MaxFoldNestingDepth(folds);
+    int &level = Buf().fold_level;
+    int cur = std::clamp((level < 0 ? max_depth : level) + delta, 0, max_depth);
+    level = cur;
+    for (Fold &f : Buf().folds) f.closed = (FoldNestingDepth(folds, f) + 1 > cur);
+}
+
 // --- Sidebar/panel widget ------------------------------------------------
 
 SidebarInstance *Editor::FindSidebarMut(int id) {
@@ -6423,6 +6630,7 @@ const std::vector<std::string> &BuiltinCommandNames() {
         "close", "tabnew", "tabdelete", "tabclose", "tabnext", "tabn", "tabprevious", "tabp", "tabN",
         "set", "normal", "norm", "normal!", "norm!", "MepNotifyClear", "MepNotifyDismiss",
         "MepNotifyPanel", "MepLayout", "MepScratch", "MepZen", "colorscheme", "colo", "lua", "source",
+        "MepNextSheet", "MepPrevSheet",
     };
     return kNames;
 }
@@ -7337,13 +7545,15 @@ bool Editor::ResolveMotion(char c, CursorPos from, int count, CursorPos *target,
         case 'h': *target = {from.row, std::max(0, from.col - n)}; return true;
         case 'l': *target = {from.row, from.col + n}; return true;
         case 'j': {
-            int row = std::min(Buf().LineCount() - 1, from.row + n);
+            int row = from.row;
+            for (int i = 0; i < n; i++) row = StepVisibleRow(row, 1);
             *target = {row, from.col};  // preserve column, like Vim's "desired column"
             *linewise = true;
             return true;
         }
         case 'k': {
-            int row = std::max(0, from.row - n);
+            int row = from.row;
+            for (int i = 0; i < n; i++) row = StepVisibleRow(row, -1);
             *target = {row, from.col};
             *linewise = true;
             return true;
@@ -8422,6 +8632,10 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
         OpenScratchBuffer();
     } else if (name == "MepZen") {
         ToggleZenMode();
+    } else if (name == "MepNextSheet") {
+        NextSheet();
+    } else if (name == "MepPrevSheet") {
+        PrevSheet();
     } else if (name == "colorscheme" || name == "colo") {
         if (args.empty()) {
             status_message_ = current_theme_name_;
@@ -8682,14 +8896,85 @@ bool Editor::SaveBuffer(Buffer &buf, const std::string &path) {
         return false;
     }
     if (IsSheetBuffer(buffer_id)) {
-        // Same guard the Office pane's own Phase 1 added for exactly this
-        // reason: a spreadsheet buffer's Buffer::lines is also a dummy
-        // single empty line, so without this, `:w` here would silently
-        // overwrite the real file with a blank line. Real save-back for
-        // all three formats (csv/xlsx/ods) lands in the spreadsheet
-        // pane's own Phase 5, mirroring Office's Phase 4.
-        status_message_ = "E382: Cannot write, spreadsheet buffer (not implemented yet)";
+        auto it = sheetdocs_.find(buffer_id);
+        if (it == sheetdocs_.end()) {
+            status_message_ = "E382: Cannot write, spreadsheet buffer";
+            return false;
+        }
+        SheetSession &sess = it->second;
+        if (sess.wb.source_format == "csv") {
+            // Plain text, same as the main-buffer save path below -- works
+            // natively and under wasm alike (no binary-write bridge needed).
+            std::string content;
+            std::string err;
+            if (!SaveCsvToMemory(sess.wb, content, err)) {
+                status_message_ = "E212: Can't write \"" + path + "\": " + err;
+                return false;
+            }
+#if defined(__EMSCRIPTEN__)
+            char *result = mep_js_write_file(path.c_str(), content.c_str());
+            std::string res(result);
+            std::free(result);
+            if (res != "OK") {
+                status_message_ = "E212: Can't open file for writing" +
+                                   (res.rfind("ERR\n", 0) == 0 ? " (" + res.substr(4) + ")" : "");
+                return false;
+            }
+#else
+            std::ofstream csv_out(path, std::ios::binary);
+            if (!csv_out) {
+                status_message_ = "E212: Can't open file for writing";
+                return false;
+            }
+            csv_out << content;
+            csv_out.close();
+#endif
+            buf.filename = path;
+            buf.modified = false;
+            sess.modified = false;
+            save_epoch_++;
+            status_message_ = "\"" + path + "\" written";
+            return true;
+        }
+#if defined(__EMSCRIPTEN__)
+        // Native-only for v1 -- same wasm binary-write-bridge blocker as
+        // the Office pane (mep_js_write_file is string-only).
+        status_message_ = "E382: Spreadsheet documents aren't supported in the web build";
         return false;
+#else
+        std::vector<unsigned char> out_bytes;
+        std::string err;
+        bool ok = false;
+        if (sess.wb.source_format == "xlsx") {
+            ok = SaveXlsxToMemory(sess.wb, sess.original_bytes, out_bytes, err);
+        } else if (sess.wb.source_format == "ods") {
+            ok = SaveOdsToMemory(sess.wb, sess.original_bytes, out_bytes, err);
+        } else {
+            err = "unknown spreadsheet format";
+        }
+        if (!ok) {
+            status_message_ = "E212: Can't write \"" + path + "\": " + err;
+            return false;
+        }
+        std::ofstream sheet_out(path, std::ios::binary);
+        if (!sheet_out) {
+            status_message_ = "E212: Can't open file for writing";
+            return false;
+        }
+        sheet_out.write(reinterpret_cast<const char *>(out_bytes.data()), static_cast<std::streamsize>(out_bytes.size()));
+        sheet_out.close();
+        // Re-baselines original_bytes to what was just written, mirroring
+        // OfficeSession's own save path -- a later save in the same
+        // session copies untouched zip parts from the latest saved
+        // structure, not the file's state from open time.
+        sess.original_bytes = std::move(out_bytes);
+        buf.filename = path;
+        buf.modified = false;
+        sess.modified = false;
+        save_epoch_++;
+        status_message_ = "\"" + path + "\" written";
+        return true;
+#endif
     }
     if (IsOfficeBuffer(buffer_id)) {
 #if defined(__EMSCRIPTEN__)

@@ -70,8 +70,8 @@ const std::unordered_map<std::string, LangEntry> &LanguageTable() {
 }
 
 // Fold queries: only the core compiled-in languages get one (see
-// treesitter_queries.h's kFolds* comment for why markdown/org are
-// excluded), keyed the same way as LanguageTable.
+// treesitter_queries.h's kFolds* comment for why markdown is excluded
+// but org isn't), keyed the same way as LanguageTable.
 const std::unordered_map<std::string, LangEntry> &FoldQueryTable() {
     static const std::unordered_map<std::string, LangEntry> table = {
         {"c", {tree_sitter_c, kFoldsC}},
@@ -90,6 +90,7 @@ const std::unordered_map<std::string, LangEntry> &FoldQueryTable() {
         {"jsx", {tree_sitter_javascript, kFoldsJavascript}},
         {"r", {tree_sitter_r, kFoldsR}},
         {"R", {tree_sitter_r, kFoldsR}},
+        {"org", {tree_sitter_org, kFoldsOrg}},
     };
     return table;
 }
@@ -723,10 +724,19 @@ std::vector<TSFoldRange> TreesitterFoldRanges(const std::string &filetype, const
             TSNode n = match.captures[c].node;
             TSPoint sp = ts_node_start_point(n);
             TSPoint ep = ts_node_end_point(n);
-            if (ep.row <= sp.row) continue;  // single-line node: nothing to fold
+            int end_row = static_cast<int>(ep.row);
+            // A node whose range trails its content with a consumed
+            // newline (org's `section`, e.g.) ends at column 0 of the
+            // row *after* its real last line, not on that line itself --
+            // every brace/indent-delimited node the other fold queries
+            // capture ends mid-line instead, so this was previously
+            // silent for them and only ever mattered once org's own
+            // query (kFoldsOrg) started running through here.
+            if (ep.column == 0 && end_row > 0) end_row--;
+            if (end_row <= static_cast<int>(sp.row)) continue;  // single-line node: nothing to fold
             TSFoldRange fr;
             fr.start_row = static_cast<int>(sp.row);
-            fr.end_row = static_cast<int>(ep.row);
+            fr.end_row = end_row;
             out.push_back(fr);
         }
     }

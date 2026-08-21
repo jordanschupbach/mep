@@ -88,4 +88,23 @@ std::string ColumnIndexToLetters(int col);
 bool ParseCellAddress(const std::string &text, int &row, int &col, bool &row_abs, bool &col_abs);
 std::string CellAddressToString(int row, int col);
 
+// Serializes an AST back into formula text (no leading '='). `ods_style`
+// selects ODF bracket-ref syntax ("[.A1]"/"[Sheet2.A1:.B2]") and ';'
+// function-argument separators for ODS save-back (sheet_ods.cpp); false
+// selects this engine's own native syntax ("A1"/"Sheet2!A1", ','
+// separators), used both for XLSX save-back (whose <f> syntax already
+// matches ours closely enough to reuse directly) and for
+// ShiftFormulaRefs's round-trip below. Always fully parenthesizes every
+// nested BinaryOp/UnaryOp rather than computing minimal precedence-aware
+// parens -- correctness (this only ever feeds back into ParseFormula or a
+// file format, never a human) over prettiness.
+std::string SerializeFormula(const std::shared_ptr<const FormulaNode> &node, bool ods_style = false);
+
+// Returns a deep copy of `node` with every non-absolute ($-less) CellRef/
+// Range endpoint's row/col shifted by (dr,dc), absolute ($) endpoints left
+// untouched -- used to expand an XLSX shared-formula group's one stored
+// master formula into each member cell's own relative formula (see
+// sheet_xlsx.cpp's shared-formula handling).
+std::shared_ptr<const FormulaNode> ShiftFormulaRefs(const std::shared_ptr<const FormulaNode> &node, int dr, int dc);
+
 #endif

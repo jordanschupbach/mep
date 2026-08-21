@@ -235,7 +235,16 @@ half-working one.
 - [x] Phase 41 — AI integration (LLM streaming + tool-calling agent)
 - [x] Phase 42 — Leetcode (stretch, lowest priority)
 
-Last updated: 2026-08-19 (plan created; no phases started yet).
+**Part XI — Document panes beyond plain text** (filed under Part X's
+numbering above since these phases were added after this Status table's
+original write-up — not moved to avoid renumbering everything else)
+- [x] Phase 43 — PDF viewer
+- [x] Phase 44 — WYSIWYG office-document pane (.docx/.odt)
+- [x] Phase 45 — Spreadsheet pane (.xlsx/.ods/.csv) with a full formula engine
+
+Last updated: 2026-08-20 (Phase 45's remaining sub-phases -- XLSX read,
+ODS read, save-back for all three formats + sheet-switching + polish --
+implemented and verified; Phase 45 is now done).
 
 ---
 
@@ -3372,7 +3381,7 @@ genuinely editable, round-trippable subset, not a Word/LibreOffice clone.
 
 ---
 
-### Phase 45 — Spreadsheet pane (.xlsx/.ods/.csv) with a full formula engine 🚧 in progress (Phase 1 of 5 done)
+### Phase 45 — Spreadsheet pane (.xlsx/.ods/.csv) with a full formula engine ✅
 
 A fifth pane archetype alongside Image/PDF/text/Office: a spreadsheet
 pane opening `.xlsx`/`.ods`/`.csv`, edited with the same vim-modal
@@ -3498,30 +3507,188 @@ mid-implementation.
       Visual-mode `d` over a 2×2 range clears all 4 cells **and** the
       dependent `SUM`/`AVERAGE` formulas elsewhere on the sheet
       recompute live to reflect it.
-- [ ] **Phase 2 — XLSX read** (`src/sheet_xlsx.cpp`: `xl/workbook.xml` +
-      rels + `sharedStrings.xml` + per-sheet XML, handling every cell
-      `t=` type seen in the wild — `s`/`str`/`inlineStr`/`b`/`e`/bare
-      number — not just shared strings).
-- [ ] **Phase 3 — ODS read** (`src/sheet_ods.cpp`: `content.xml`
-      `table:table` parse, `table:number-columns/rows-repeated`
-      expansion, ODF formula-syntax translation — strip `of:=`/`oooc:=`
-      and `[.A1]` → `A1` — feeding the same `ParseFormula`).
-- [ ] **Phase 4 — save-back for all three formats + sheet-switching +
-      polish** (generalizing `office_doc.h`'s `WriteZipReplacingEntry`
-      to a multi-entry `WriteZipReplacingEntries` for xlsx/ods's
-      two-parts-at-once saves, `SerializeXlsxSheet`/
-      `SerializeOdsContentXml`, `SaveBuffer()` gains the real
-      `IsSheetBuffer` write path, next/prev-sheet keybinding). *Verify*
-      with the same real-LibreOffice-round-trip discipline as the Office
-      pane's own save-back phase.
-- [ ] **Not wired up**: native-only for v1 (no wasm binary-write bridge,
-      same blocker as Office). `:w` on a sheet buffer currently errors
-      (Phase 1 guard) rather than saving — real save-back is Phase 4
-      above. No adding/removing sheets/rows/columns, no per-column width
-      overrides (cell text is truncated to the fixed column width, not
-      wrapped or overflowed into an empty neighbor the way real
-      spreadsheets do), no mouse click-to-select-cell yet (not attempted
-      this phase — flagged, not forgotten).
+- [x] **Phase 2 — XLSX read** (`src/sheet_xlsx.cpp`). `ParseWorkbookSheetList`
+      joins `xl/workbook.xml`'s `<sheet name= r:id=>` list with
+      `xl/_rels/workbook.xml.rels`'s `r:id -> Target` map (falling back to
+      the conventional `worksheets/sheetN.xml` path if a rels part or
+      r:id is missing, same tolerance convention as `LoadDocxFromMemory`);
+      `ParseSharedStrings` reads the optional `xl/sharedStrings.xml`
+      (concatenating a rich-text `<si><r><t>` run's text, formatting
+      discarded). Per-cell type handling covers every `t=` seen in the
+      wild: `s` (shared-string index), `str`/`e` (a cached formula-string-
+      result or raw error token with no `<f>` backing it — stored as plain
+      text, there's nothing to re-derive a live value from), `inlineStr`
+      (`<is><t>`), `b` (boolean — wrapped as a trivial `=TRUE`/`=FALSE`
+      formula since `SetCellRaw`'s own literal parser treats bare
+      "TRUE"/"FALSE" text as Text, not Bool, by design), and bare/`n`
+      (plain number verbatim). **Shared formulas** (`<f t="shared" ref=
+      si=>`) are expanded, not skipped: a per-sheet `si -> {master row/col,
+      formula text}` map is built as rows are walked in document order;
+      a member cell with no inline formula text re-parses the master's
+      formula (`ParseFormula`), shifts every non-`$` cell/range ref by the
+      member's row/col delta (`ShiftFormulaRefs`, new in `formula.h`/
+      `.cpp`), and re-serializes it (`SerializeFormula`, also new) into
+      the member's own `raw` — skipping this would have silently blanked
+      every non-master cell of a real-world fill-down formula, too common
+      to accept as a v1 loss the way e.g. merged cells were. Also new in
+      `formula.cpp`, needed for `'Sheet 2'!A1`-style cross-sheet refs to
+      sheet names containing a space (extremely common in real files):
+      `Lexer::LexQuotedIdent`, Excel's own single-quoted-sheet-name syntax
+      (`''` = a literal embedded apostrophe, mirroring `LexString`'s `""`)
+      — a genuine, if small, formula-engine grammar addition, not
+      xlsx-specific plumbing (it's reused verbatim by ODS's own
+      sheet-name quoting, see Phase 3).
+- [x] **Phase 3 — ODS read** (`src/sheet_ods.cpp`). `content.xml`'s
+      `office:spreadsheet` > `table:table` (name) > `table:table-row` >
+      `table:table-cell` walked directly via pugixml (same
+      literal-namespace-prefix convention `office_odt.cpp` already
+      established for ODF — `"table:table-row"` is a plain opaque
+      attribute/node name to a non-namespace-aware XML parser, matching
+      what real ODF producers literally write). `table:number-columns/
+      rows-repeated` expansion: an empty repeated run is never
+      materialized (nothing to `SetCellRaw`); a **non-empty** repeated
+      cell/row (essentially never seen in real files — repeats are almost
+      always trailing empty padding) is written to `min(repeat, 10000)`
+      columns/rows and no further, a documented v1 loss mirroring
+      `sheet_doc.cpp`'s own `SUM(A1:A1048576)` sparse-map guard. **ODF
+      formula-syntax translation** (`TranslateOdsFormula`/
+      `TranslateOdsBracketRef`): strips the `of:=`/`oooc:=` prefix,
+      converts every bracketed `[SheetName.A1]`/`[.A1:.B5]` reference into
+      this engine's own `SheetName!A1`/`A1:B5` syntax (quoting the sheet
+      name via the new `LexQuotedIdent` support from Phase 3 when it
+      isn't already quoted and needs to be), and turns `;` argument
+      separators into `,` — a single left-to-right scan that tracks
+      whether it's inside a string literal so an embedded `;`/`[` in a
+      quoted formula string is left alone. **Design pivot found through
+      real-file testing, not guessed**: an early hand-authored fixture
+      using literal `of:=[.A1]*[.B1]` text failed to open in real
+      LibreOffice (`Err:510`) even though that syntax is exactly correct
+      per the ODF spec — the missing piece turned out to be that
+      `xmlns:of="urn:oasis:names:tc:opendocument:xmlns:of:1.2"` must
+      actually be declared on the document root (ODF's `table:formula`
+      datatype grammar requires the prefix to resolve via real XML
+      namespace declarations, not just match a string), confirmed by
+      generating a real ODS via a LibreOffice Basic macro (headless,
+      `-env:UserInstallation=` pointed at a scratch profile since the
+      default one's Basic library files are shipped read-only) and
+      diffing its actual `content.xml` against the hand fixture. No
+      mep-side code needed to change for this — a real-world ODS file
+      always already has that namespace declared on its own root, and
+      `SaveOdsToMemory` reparses (not regenerates) that root — it only
+      exposed that the *test fixture* was wrong, not the parser.
+- [x] **Phase 4 — save-back for all three formats + sheet-switching +
+      polish.** `WriteZipReplacingEntries` (plural, `office_doc.h`/`.cpp`)
+      generalizes the Office pane's own `WriteZipReplacingEntry` to
+      replace several named zip entries in one reader/writer pass —
+      needed because `SaveXlsxToMemory` may rewrite more than one
+      `xl/worksheets/sheetN.xml` part per save (one per sheet); ODS only
+      ever touches the single `content.xml` part so its save still uses
+      the original singular helper. Both save functions follow the same
+      reparse-the-original-and-replace-just-the-data-bearing-children
+      discipline `SaveDocxToMemory` established: xlsx clears and rebuilds
+      each sheet's `<sheetData>` in place (preserving `<cols>`,
+      `<sheetViews>`, `<pageMargins>`, etc. verbatim), ods removes only
+      `<table:table-row>` children and rebuilds them (preserving
+      `<table:table-column>` and any other structural siblings). A text
+      cell saves as XLSX `inlineStr` rather than growing/reindexing
+      `sharedStrings.xml` in lockstep — a real, deliberate size-vs-
+      complexity tradeoff, not an oversight. A formula cell's `raw` text
+      is written directly for XLSX (this engine's native syntax already
+      matches Excel's own closely enough — same `,` separators, same
+      unqualified/`'Sheet 2'!`-qualified ref style — to need no
+      translation); for ODS it's re-derived from the cell's own cached
+      `ast` via `SerializeFormula(ast, /*ods_style=*/true)`, producing
+      `of:=`-prefixed, `;`-separated, bracket-ref formula text. Web build
+      confirmed unaffected (`build/web` still links clean with both new
+      files). `Editor::SaveBuffer`'s `IsSheetBuffer` branch (`editor.cpp`)
+      replaced the Phase 1 "not implemented yet" guard: CSV routes
+      through the same plain-text write path as the main buffer (works
+      under wasm too, no binary-write bridge needed); xlsx/ods are
+      native-only (`#if !defined(__EMSCRIPTEN__)`, same wasm
+      binary-write-bridge blocker as the Office pane) and re-baseline
+      `SheetSession::original_bytes` to what was just written, mirroring
+      `OfficeSession`'s own save path. **Sheet-switching**:
+      `Editor::NextSheet`/`PrevSheet` (public, unlike the private Push/
+      Undo/RedoSheet trio just above them in `editor.h` — `mep.sheet_next`/
+      `mep.sheet_prev` need to call them) wrap `SheetSession::active_sheet`
+      with rollover and re-clamp the cursor via the same
+      `ClampSheetCursorAfterSwap` helper Undo/RedoSheet's own post-swap
+      clamp already used; bound to Ctrl-PageDown/Ctrl-PageUp in
+      `HandleSheetNormalInput` (Excel's own convention — better muscle-
+      memory fit than inventing a mep-specific binding), plus
+      `:MepNextSheet`/`:MepPrevSheet` ex-commands and `mep.sheet_next()`/
+      `mep.sheet_prev()` Lua bindings. **Polish**: the formula bar
+      (`main.cpp`'s sheet `DrawPane` branch) now right-aligns a
+      `"SheetName  (i/N)"` indicator once a workbook has more than one
+      sheet — no click-to-switch tab strip in v1 (same "not attempted
+      this phase" scope cut the plan's own mouse-click-to-select-cell note
+      below already accepts).
+
+      **Real bug found and fixed, in `formula.cpp` itself, not just the
+      new files**: real LibreOffice XLSX/ODS exports both write boolean
+      literals as the zero-arg *function-call* form `TRUE()`/`FALSE()`,
+      not the bare identifier `TRUE`/`FALSE` this engine's parser
+      previously recognized exclusively — confirmed directly by
+      inspecting a real LO-generated file, not guessed. `ParsePrimary`'s
+      `TRUE`/`FALSE` branch now optionally consumes a following `()`
+      before returning the `Bool` node; without this fix, *every* real
+      LibreOffice-exported boolean cell this phase's own test fixture
+      exercised failed to parse (`ParseFormula` returned nullptr on the
+      unconsumed trailing `(`, which `SetCellRaw` correctly but
+      unhelpfully turns into a `#NAME?` error cell) — a pre-existing
+      formula-engine gap Phase 1's own synthetic test cases never
+      happened to exercise, only surfaced once this phase started testing
+      against files an actual spreadsheet application produced.
+
+      **Verified in three passes**: (1) a standalone harness
+      (`sheet_format_test.cpp`, `-fsanitize=address,undefined`, built and
+      run outside the main CMake tree exactly like Phase 1's own
+      `formula_test.cpp`) against fixtures generated two ways —
+      hand-authored minimal XLSX/ODS via a Python `zipfile` script, and a
+      **real** LibreOffice-produced XLSX/ODS pair (headless Basic macro,
+      `oDoc.storeToURL`) covering numbers, shared strings, a real boolean
+      cell, `IF`/`ROUND` (multi-arg + string-literal + comparison), a
+      `SUM` range, a cross-sheet reference to a sheet named `"Sheet 2"`,
+      and — spliced by hand into a copy of the real xlsx's own
+      `sheet1.xml`, then re-validated by re-opening in real LibreOffice
+      before trusting it as a test oracle — an explicit `t="shared"`
+      formula group; all pass clean with no sanitizer errors, including a
+      save→edit→save-again→reload cycle (confirming a *second* save from
+      an already-mep-saved baseline still works) and a full load→save→
+      reload round trip for both formats. (2) Every fixture and every
+      mep-produced save-back output was independently round-tripped
+      through **real** `soffice --headless --convert-to csv` and compared
+      value-for-value against the expected results — not just "does mep
+      agree with itself," but "does a real spreadsheet application agree
+      with mep." (3) Interactive verification under Xvfb+xdotool against
+      the real LibreOffice-generated `.xlsx`/`.ods` fixtures (`keydown`/
+      `keyup`, not `key` — confirmed reliable in this environment,
+      matching Phase 44's own finding): grid rendered with every expected
+      computed value on open; `Ctrl-PageDown` switched from "Data" to
+      "Sheet 2", the pane header/formula-bar sheet indicator and a
+      `-- Sheet 2 --` status message all updated, and the cursor landed
+      correctly on the new sheet's `A1`; editing a cell and `:w` showed
+      `"real_test.xlsx" written` / `"real_test.ods" written`, and the
+      saved files — re-opened independently by real LibreOffice, not just
+      re-parsed by mep's own loader — showed exactly the edit plus every
+      untouched formula/cross-sheet-ref/boolean/`IF`/`ROUND` cell still
+      correct. A follow-up edit that produced a genuinely unparsable
+      formula (`=TRUE()FALSE`, from appending onto an existing cell's raw
+      text rather than replacing it) was confirmed to degrade correctly
+      too: `#NAME?` in the grid, saved as plain display text (the
+      documented Error-kind save fallback), zip still valid, real
+      LibreOffice still opened it with no corruption — an unplanned but
+      welcome stress test of that fallback path.
+- [ ] **Not wired up**: native-only for xlsx/ods `:w` (no wasm binary-
+      write bridge, same blocker as Office — CSV save-back *does* work
+      under wasm, see Phase 4 above). No adding/removing sheets/rows/
+      columns, no per-column width overrides (cell text is truncated to
+      the fixed column width, not wrapped or overflowed into an empty
+      neighbor the way real spreadsheets do), no mouse click-to-select-
+      cell or click-to-switch-sheet-tab (not attempted this phase —
+      flagged, not forgotten; Xvfb here still has no working synthetic-
+      mouse-click path per every earlier phase's own note, so this
+      couldn't have been Xvfb-verified even if implemented).
 
 ---
 

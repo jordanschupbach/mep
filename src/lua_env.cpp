@@ -1,8 +1,11 @@
 #include "lua_env.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -31,6 +34,16 @@ extern "C" {
 // of the active font, needed below to convert a fraction of the window's
 // pixel width into a character-column count for mep.sidebar_default_cols.
 extern float GetCharWidthPx();
+// Defined in main.cpp -- returns the current editor font size in pixels
+// (g_font_size). Needed by kBuiltinOrgLatex's mep.font_size() binding; see
+// its own comment for why.
+extern float GetFontSizePx();
+// Defined in main.cpp -- drops any cached inline-image texture for an
+// already-resolved path, forcing an unconditional reload on next use. See
+// its own comment (EvictOrgInlineImageTexture, main.cpp) for why
+// mep.org_babel_execute (kBuiltinOrgBabel) needs this rather than trusting
+// GetOrLoadOrgInlineImageTexture's own mtime-based cache alone.
+extern void InvalidateOrgInlineImageTexture(const std::string &path);
 
 namespace {
 
@@ -747,6 +760,115 @@ int l_fold_clear_provider(lua_State *L) {
 int l_fold_toggle(lua_State *L) {
     GetEditor(L)->ToggleFoldAtCursor();
     return 0;
+}
+
+// mep.buf_set_image_row(row, path) -- row 1-indexed, matching mep.deco_add/
+// mep.fold_create's own convention. Registers `path` (already resolved by
+// the caller, mep.org_image_scan in kBuiltinOrgImages) as the current
+// buffer's inline-image target for `row`.
+int l_buf_set_image_row(lua_State *L) {
+    int row = static_cast<int>(luaL_checkinteger(L, 1)) - 1;
+    const char *path = luaL_checkstring(L, 2);
+    GetEditor(L)->SetOrgImageRow(row, path);
+    return 0;
+}
+
+// mep.buf_clear_image_rows(): clears the current buffer's whole registry --
+// mep.org_image_scan calls this before rescanning.
+int l_buf_clear_image_rows(lua_State *L) {
+    GetEditor(L)->ClearOrgImageRows();
+    return 0;
+}
+
+// mep.org_images_toggle() -> new visibility (bool). Bound to <leader>oti
+// via kBuiltinOrgImages' own mep.leader_map call.
+int l_org_images_toggle(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->ToggleOrgImages());
+    return 1;
+}
+
+// mep.org_image_invalidate(path): forces the next render of `path` (an
+// already-resolved absolute path, mep_org_resolve_path) to reload from
+// disk unconditionally, instead of trusting the mtime-based cache
+// GetOrLoadOrgInlineImageTexture otherwise uses. Called by
+// mep.org_babel_execute (kBuiltinOrgBabel) right after a :file block
+// finishes -- see InvalidateOrgInlineImageTexture's own comment (main.cpp)
+// for the race this closes.
+int l_org_image_invalidate(lua_State *L) {
+    const char *path = luaL_checkstring(L, 1);
+    InvalidateOrgInlineImageTexture(path);
+    return 0;
+}
+
+// mep.buf_set_latex_row(row, path, slots) -- row 1-indexed, same convention
+// as mep.buf_set_image_row. `path` is a rendered fragment's PNG (already
+// produced by mep_org_latex_render, kBuiltinOrgLatex); `slots` is that
+// fragment's own display height in line-heights (see Buffer::OrgLatexRender).
+int l_buf_set_latex_row(lua_State *L) {
+    int row = static_cast<int>(luaL_checkinteger(L, 1)) - 1;
+    const char *path = luaL_checkstring(L, 2);
+    int slots = static_cast<int>(luaL_checkinteger(L, 3));
+    GetEditor(L)->SetOrgLatexRow(row, path, slots);
+    return 0;
+}
+
+// mep.buf_clear_latex_rows(): clears the current buffer's whole registry --
+// mep.org_latex_scan calls this before rescanning (and when the toggle
+// turns off, since -- unlike images -- a populated entry here implies a
+// 'latex'-provider Fold is also hiding real source text; see
+// Buffer::org_latex_rows' own comment).
+int l_buf_clear_latex_rows(lua_State *L) {
+    GetEditor(L)->ClearOrgLatexRows();
+    return 0;
+}
+
+// mep.org_latex_toggle() -> new visibility (bool). Bound to <leader>otl via
+// kBuiltinOrgLatex's own mep.leader_map call.
+int l_org_latex_toggle(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->ToggleOrgLatex());
+    return 1;
+}
+
+// mep.org_latex_visible() -> bool. Lua-side readable state (unlike
+// OrgImagesVisible(), org_latex_scan itself needs to consult this -- see
+// Buffer::org_latex_rows' own comment for why the two toggles' scan
+// functions differ here).
+int l_org_latex_visible(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->OrgLatexVisible());
+    return 1;
+}
+
+// mep.font_size() -> the current editor pixel font size (g_font_size,
+// main.cpp -- Ctrl+=/Ctrl+- adjust it). kBuiltinOrgLatex uses this to pick
+// a rasterization DPI that keeps a rendered fragment's glyphs visually
+// close to surrounding buffer text, and to replicate LineHeight()'s own
+// `font_size + 6` formula for its own slot-count math (editor.cpp has no
+// pixel/font-metric knowledge of its own to do this instead).
+int l_font_size(lua_State *L) {
+    lua_pushnumber(L, GetFontSizePx());
+    return 1;
+}
+
+// mep.image_size(path) -> width, height (integers) or nil if `path` isn't a
+// readable PNG. Parses just the PNG signature + IHDR chunk (bytes 16-23),
+// not a full decode -- plenty for mep_org_latex_render (kBuiltinOrgLatex) to
+// turn a just-rendered fragment's pixel height into a slot count without
+// pulling in a real image decoder or touching the GPU texture cache
+// (GetOrLoadOrgInlineImageTexture) a frame before DrawPane otherwise would.
+int l_image_size(lua_State *L) {
+    const char *path = luaL_checkstring(L, 1);
+    std::ifstream f(path, std::ios::binary);
+    unsigned char header[24];
+    if (!f || !f.read(reinterpret_cast<char *>(header), sizeof(header))) return 0;
+    static const unsigned char kPngSig[8] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'};
+    if (std::memcmp(header, kPngSig, sizeof(kPngSig)) != 0) return 0;
+    auto be32 = [&](int off) {
+        return (static_cast<uint32_t>(header[off]) << 24) | (static_cast<uint32_t>(header[off + 1]) << 16) |
+               (static_cast<uint32_t>(header[off + 2]) << 8) | static_cast<uint32_t>(header[off + 3]);
+    };
+    lua_pushinteger(L, static_cast<lua_Integer>(be32(16)));
+    lua_pushinteger(L, static_cast<lua_Integer>(be32(20)));
+    return 2;
 }
 
 // mep.sidebar_create(title, position, size) -> id.
@@ -1929,6 +2051,16 @@ const luaL_Reg kMepFuncs[] = {
     {"fold_create", l_fold_create},
     {"fold_clear_provider", l_fold_clear_provider},
     {"fold_toggle", l_fold_toggle},
+    {"buf_set_image_row", l_buf_set_image_row},
+    {"buf_clear_image_rows", l_buf_clear_image_rows},
+    {"org_images_toggle", l_org_images_toggle},
+    {"org_image_invalidate", l_org_image_invalidate},
+    {"buf_set_latex_row", l_buf_set_latex_row},
+    {"buf_clear_latex_rows", l_buf_clear_latex_rows},
+    {"org_latex_toggle", l_org_latex_toggle},
+    {"org_latex_visible", l_org_latex_visible},
+    {"font_size", l_font_size},
+    {"image_size", l_image_size},
     {"sidebar_create", l_sidebar_create},
     {"sidebar_set_sections", l_sidebar_set_sections},
     {"sidebar_open", l_sidebar_open},

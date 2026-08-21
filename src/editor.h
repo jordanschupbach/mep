@@ -359,8 +359,76 @@ struct Buffer {
     // nothing's been collapsed yet.
     int fold_level = -1;
 
+    // Org inline-image rendering: row -> resolved file path, populated by
+    // Lua's mep.org_image_scan() (kBuiltinOrgImages, main.cpp) from
+    // [[file:...]] links whose target is a raster image, consulted by
+    // DrawPane (main.cpp) when Editor::OrgImagesVisible() is on. Kept
+    // fresh regardless of that toggle (rebuilt wholesale on every scan,
+    // same "provider replaces its own entries wholesale" convention as
+    // `folds` above) so switching the toggle on shows correct state
+    // immediately rather than waiting for the next edit.
+    std::unordered_map<int, std::string> org_image_rows;
+
+    // Org LaTeX/math-mode rendering (<leader>otl, Editor::OrgLatexVisible()):
+    // row -> a rendered fragment's PNG path plus how many line-heights tall
+    // to display it, populated by Lua's mep.org_latex_scan() (kBuiltinOrgLatex,
+    // main.cpp) from $$..$$/\[..\]/#+BEGIN_LaTeX (etc.) fragments, each
+    // rendered offline via tectonic+pdftoppm. `slots` is per-entry (unlike
+    // org images' shared compile-time kOrgInlineImageSlots) since a fragment's
+    // rendered height varies hugely -- a bare "$x$" and a multi-line matrix
+    // shouldn't claim the same vertical space -- computed by
+    // mep_org_latex_render (kBuiltinOrgLatex) from the rendered PNG's own
+    // pixel height (mep.image_size) divided by the current line height, so
+    // it's already correct by the time it's stored here; DrawPane (main.cpp),
+    // its own cursor-Y lookup, and Editor::UpdateScrollForPane (editor.cpp)
+    // all just read it back, the same three-site agreement org images'
+    // fixed constant needs, just sourced from data instead of a constant.
+    // Unlike org_image_rows, only ever populated while the toggle is on --
+    // a multi-line fragment's *other* raw source rows are hidden behind a
+    // 'latex'-provider closed Fold (see kBuiltinOrgLatex), a real visible
+    // side effect that must not linger once the toggle is off.
+    struct OrgLatexRender {
+        std::string path;
+        int slots = 1;
+    };
+    std::unordered_map<int, OrgLatexRender> org_latex_rows;
+
     int LineCount() const { return static_cast<int>(lines.size()); }
 };
+
+// Default "line width" org inline images size themselves against, in
+// characters, and the fraction of that width an image targets --
+// GetOrLoadOrgInlineImageTexture's caller (DrawPane, main.cpp) multiplies
+// this by g_char_width to get a target pixel width, mirroring how a
+// LaTeX export's default \includegraphics{width=0.6\linewidth} looks
+// against an 80-column-wrapped paragraph. Images smaller than the target
+// are stretched up to it (not just downscaled), so this is a target
+// width, not just a cap. Still clamped to the pane's
+// actual available width so a narrow pane never overflows.
+constexpr int kOrgImageLineWidthChars = 80;
+constexpr float kOrgImageWidthFraction = 0.6f;
+
+// Fixed visual height (in line-heights) an inline-rendered org image
+// occupies (Editor::OrgImagesVisible()/Buffer::org_image_rows): a fixed
+// slot count, rather than one derived from each image's own pixel aspect
+// ratio, keeps the scroll/cursor visual-slot bookkeeping (DrawPane's row
+// loop and its cursor-Y lookup in main.cpp, and Editor::UpdateScrollForPane
+// in editor.cpp -- three sites that must agree exactly, the same
+// constraint folds' own "closed fold = 1 slot" rule is under) as simple as
+// folds' fixed collapse-to-1 rule, just inverted (expand instead of
+// collapse) -- an image is scaled (aspect-preserved, letterboxed against
+// this many line-heights, upscaled past native size if needed to reach
+// its target width) rather than this dictating the slot count itself.
+//
+// Sized so a square (1:1) image can actually reach kOrgImageLineWidthChars
+// * kOrgImageWidthFraction wide without this vertical budget cutting it
+// short first -- with the built-in JetBrains Mono font, a character's
+// advance width is roughly 0.52 of the line height (font size + 6px, see
+// LineHeight() in main.cpp), so that's 80 * 0.6 * 0.52 =~ 25 line-heights,
+// rounded up. A wider (landscape) image hits its width target well before
+// running into this cap; a taller-than-square one is letterboxed narrower
+// than the width target instead of growing without bound.
+constexpr int kOrgInlineImageSlots = 25;
 
 // One window onto a buffer: its own cursor, scroll position, and Visual
 // selection anchor. Identified by a stable id (not a pointer) since the
@@ -745,6 +813,18 @@ public:
     // :set cursorline/nocursorline -- whether main.cpp's renderer should
     // tint the active pane's cursor row with the "CursorLine" theme group.
     bool ShowCursorLine() const { return show_cursorline_; }
+    // <leader>oti / mep.org_images_toggle -- whether main.cpp's renderer
+    // should substitute a rendered texture for a Buffer::org_image_rows
+    // row instead of its ordinary [[file:...]] text.
+    bool OrgImagesVisible() const { return org_images_visible_; }
+    // <leader>otl / mep.org_latex_toggle -- whether main.cpp's renderer
+    // should substitute a rendered texture for a Buffer::org_latex_rows row
+    // instead of its ordinary math/LaTeX source text. Also consulted by
+    // kBuiltinOrgLatex's own mep.org_latex_scan (Lua has no direct field
+    // access), which no-ops (after clearing any stale rows/folds) while
+    // this is off -- see Buffer::org_latex_rows' own comment for why, unlike
+    // OrgImagesVisible(), this needs a real Lua-visible getter.
+    bool OrgLatexVisible() const { return org_latex_visible_; }
     // Active pane/buffer -- what most of the UI (statusline, blinking
     // cursor, Visual highlight) cares about.
     const Buffer &CurrentBuffer() const { return Buf(); }
@@ -1210,6 +1290,38 @@ public:
     // (zr, open a level) or -1 (zm, close a level); see Buffer::fold_level
     // for what the stored level means between calls.
     void AdjustFoldLevel(int delta);
+
+    // --- Org inline images (<leader>oti / mep.org_images_toggle) ---
+    // Registers/replaces the resolved image path for `row` in the current
+    // buffer's org_image_rows -- called once per match by Lua's
+    // mep.org_image_scan() (kBuiltinOrgImages, main.cpp), mirroring
+    // CreateFold's "one call per range" shape rather than taking a whole
+    // replacement map at once.
+    void SetOrgImageRow(int row, const std::string &path);
+    // Clears every entry -- called by mep.org_image_scan() before
+    // rescanning, mirroring ClearFoldsFromProvider's clear-and-replace
+    // pattern (there's only ever one "provider" of these, so no provider
+    // tag is needed the way folds have one).
+    void ClearOrgImageRows();
+    // <leader>oti: flips org_images_visible_ and returns the new state (so
+    // the Lua-side wrapper can notify the user and, if newly visible,
+    // trigger an immediate mep.org_image_scan() rather than waiting for
+    // the next debounced buffer-changed tick).
+    bool ToggleOrgImages();
+
+    // --- Org LaTeX/math-mode rendering (<leader>otl / mep.org_latex_toggle) ---
+    // Registers/replaces the rendered-PNG path and its slot count (see
+    // Buffer::OrgLatexRender) for `row` -- called once per fragment by
+    // Lua's mep.org_latex_scan() (kBuiltinOrgLatex, main.cpp), mirroring
+    // SetOrgImageRow's "one call per match" shape.
+    void SetOrgLatexRow(int row, const std::string &path, int slots);
+    // Clears every entry -- called by mep.org_latex_scan() before
+    // rescanning (and when the toggle turns off), mirroring
+    // ClearOrgImageRows.
+    void ClearOrgLatexRows();
+    // <leader>otl: flips org_latex_visible_ and returns the new state, same
+    // shape as ToggleOrgImages.
+    bool ToggleOrgLatex();
 
     // --- Sidebar/panel widget (NVIM_PARITY_PLAN.md Part I Phase 7) ---
     int CreateSidebar(const std::string &title, const std::string &position, int size);
@@ -2433,6 +2545,22 @@ private:
     bool wrapscan_ = true;
     bool show_line_numbers_ = false;
     bool show_cursorline_ = true;
+    // Org inline-image rendering (<leader>oti / mep.org_images_toggle):
+    // global, not per-buffer, matching show_line_numbers_/show_cursorline_
+    // above -- gates whether DrawPane (main.cpp) substitutes a rendered
+    // texture for a row registered in Buffer::org_image_rows instead of
+    // drawing its ordinary [[file:...]] text. The registry itself
+    // (Buffer::org_image_rows) is kept fresh regardless of this flag (see
+    // kBuiltinOrgImages' mep.on_buffer_changed hook) so toggling on shows
+    // correct state immediately, with no edit needed first.
+    bool org_images_visible_ = false;
+    // Org LaTeX/math-mode rendering (<leader>otl / mep.org_latex_toggle):
+    // same shape as org_images_visible_ above, but Buffer::org_latex_rows
+    // is only ever populated while this is true -- see that field's own
+    // comment for why (a multi-line fragment's hidden raw source, via a
+    // 'latex'-provider Fold, is a real visible side effect this toggle
+    // must own outright, not just gate the texture substitution).
+    bool org_latex_visible_ = false;
 
     // Command-line/search history (Phase 11) -- Up/Down browse
     // command_history_/search_history_ from most-recent backward.

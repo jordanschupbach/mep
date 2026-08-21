@@ -850,8 +850,23 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines) {
         // did scroll, land scroll_row on an arbitrary raw row that could
         // sit inside some other closed fold's hidden middle -- a state
         // the render loop never expects, since every other path onto a
-        // fold's rows starts exactly at fold_start.
-        int slots = 1;  // the cursor's own row is always slot 1
+        // fold's rows starts exactly at fold_start. An org inline image
+        // (Editor::OrgImagesVisible()/Buffer::org_image_rows) is folds'
+        // own mirror image -- it *expands* one row into kOrgInlineImageSlots
+        // instead of collapsing several into one -- so the row it's
+        // stepped onto here contributes that many slots instead of 1;
+        // must stay in exact agreement with DrawPane's row loop and its
+        // cursor-Y lookup (main.cpp), the same three-way constraint the
+        // comment above already calls out for folds.
+        auto row_slots = [&](int r) {
+            if (org_images_visible_ && buf.org_image_rows.count(r)) return kOrgInlineImageSlots;
+            if (org_latex_visible_) {
+                auto it = buf.org_latex_rows.find(r);
+                if (it != buf.org_latex_rows.end()) return it->second.slots;
+            }
+            return 1;
+        };
+        int slots = row_slots(pane.cursor.row);  // the cursor's own row is always the first slot(s)
         int row = pane.cursor.row;
         while (row > pane.scroll_row && slots < visible_lines) {
             row--;
@@ -861,7 +876,7 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines) {
                     break;
                 }
             }
-            slots++;
+            slots += row_slots(row);
         }
         if (row > pane.scroll_row) pane.scroll_row = row;
     }
@@ -5730,6 +5745,30 @@ void Editor::ClearFoldsFromProvider(const std::string &provider) {
     auto &folds = Buf().folds;
     folds.erase(std::remove_if(folds.begin(), folds.end(), [&](const Fold &f) { return f.provider == provider; }),
                 folds.end());
+}
+
+void Editor::SetOrgImageRow(int row, const std::string &path) {
+    if (row < 0 || row >= Buf().LineCount()) return;
+    Buf().org_image_rows[row] = path;
+}
+
+void Editor::ClearOrgImageRows() { Buf().org_image_rows.clear(); }
+
+bool Editor::ToggleOrgImages() {
+    org_images_visible_ = !org_images_visible_;
+    return org_images_visible_;
+}
+
+void Editor::SetOrgLatexRow(int row, const std::string &path, int slots) {
+    if (row < 0 || row >= Buf().LineCount()) return;
+    Buf().org_latex_rows[row] = Buffer::OrgLatexRender{path, std::max(1, slots)};
+}
+
+void Editor::ClearOrgLatexRows() { Buf().org_latex_rows.clear(); }
+
+bool Editor::ToggleOrgLatex() {
+    org_latex_visible_ = !org_latex_visible_;
+    return org_latex_visible_;
 }
 
 bool Editor::IsRowHiddenByFold(int row, int *fold_start_row) const {

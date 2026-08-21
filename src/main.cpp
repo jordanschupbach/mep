@@ -4,9 +4,11 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <functional>
 #include <map>
 #include <string>
+#include <sys/stat.h>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -4256,6 +4258,105 @@ const char *kBuiltinOrgLinks =
     "mep.command('MepOrgScheduled', function() mep.org_set_planning('SCHEDULED') end)\n"
     "mep.command('MepOrgDeadline', function() mep.org_set_planning('DEADLINE') end)\n";
 
+// Org-mode inline images: renders a `[[file:foo.png]]` link's target
+// directly in the buffer instead of its literal text, toggled via
+// <leader>oti (mep.org_images_toggle_ui, wrapping mep.org_images_toggle --
+// lua_env.cpp's own binding onto Editor::ToggleOrgImages()). Detection
+// lives here in Lua (mirrors kBuiltinOrgLinks' own mep.org_link_highlight,
+// just above, which scans every line for `[[...]]` spans the same way);
+// the C++ side (DrawPane's own image branch, main.cpp) only ever sees the
+// resolved-path -> row registry this populates via mep.buf_set_image_row/
+// buf_clear_image_rows -- the same "Lua decides *what*, C++ decides how to
+// render it fast" split every other decoration-backed org feature in this
+// file already uses (see e.g. mep.syntax_highlight -> mep.deco_add).
+const char *kBuiltinOrgImages =
+    // Resolves any org header-arg/link path (an inline image's own
+    // `[[file:...]]` target, or -- since this is a plain global, reused
+    // cross-chunk by kBuiltinOrgBabel below, which loads after this one --
+    // a src block's `:file`/`:tangle` target too) against the *org file's
+    // own directory* (mep_lsp_abspath(mep.filename()), already defined
+    // above in kBuiltinLsp), real org-mode's own convention for a relative
+    // path -- deliberately *not* the editor's cwd the way :e/:w
+    // (mep_completion_path_prefix's own documented convention above) is.
+    // Confirmed broken otherwise (both directions): opening an org file
+    // from a different directory than mep was launched in left every
+    // relative-path inline image unresolved on read, and a :file/:tangle
+    // block wrote its output next to mep's own cwd instead of the org
+    // file it was run from.
+    "function mep_org_resolve_path(path)\n"
+    "  if path:sub(1, 1) == '/' then return path end\n"
+    "  if path:sub(1, 1) == '~' then\n"
+    "    local home = os.getenv('HOME')\n"
+    "    if home then return home .. path:sub(2) end\n"
+    "    return path\n"
+    "  end\n"
+    "  local dir = mep_lsp_abspath(mep.filename()):match('^(.*)/[^/]*$')\n"
+    "  return dir and (dir .. '/' .. path) or path\n"
+    "end\n"
+    "local MEP_ORG_IMAGE_EXTENSIONS = {png = true, jpg = true, jpeg = true, bmp = true, gif = true}\n"
+    "local function mep_org_image_is_image_target(path)\n"
+    "  local ext = path:match('%.([%a%d]+)$')\n"
+    "  return ext ~= nil and MEP_ORG_IMAGE_EXTENSIONS[ext:lower()] == true\n"
+    "end\n"
+    // Rebuilds the current buffer's whole image-row registry from its
+    // [[file:...]] links -- same split-on-'][' description handling as
+    // mep.org_link_at_cursor above, and the same file:-prefix-only
+    // dispatch mep.org_link_follow uses (a bare, unprefixed target isn't
+    // treated as a file link anywhere else in this codebase either, so it
+    // isn't here). A ::heading/::N suffix (mep.org_link_follow's own
+    // intra-file-jump syntax) is stripped the same way before the
+    // extension check, so `[[file:notes.org::*Setup]]` is never mistaken
+    // for a (nonexistent) `.org::*Setup`-extension image.
+    "function mep.org_image_scan()\n"
+    "  mep.buf_clear_image_rows()\n"
+    "  if mep_lsp_filetype(mep.filename()) ~= 'org' then return end\n"
+    "  for i = 1, mep.line_count() do\n"
+    "    local line, pos = mep.get_line(i), 1\n"
+    "    while true do\n"
+    "      local s, e, inner = line:find('%[%[(.-)%]%]', pos)\n"
+    "      if not s then break end\n"
+    "      pos = e + 1\n"
+    "      local target = inner:match('^([^%]]+)%]%[.+$') or inner\n"
+    "      if target:match('^file:') then\n"
+    "        local path = target:sub(6):match('^([^#]*)') or target:sub(6)\n"
+    "        if mep_org_image_is_image_target(path) then\n"
+    "          mep.buf_set_image_row(i, mep_org_resolve_path(path))\n"
+    "        end\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "end\n"
+    "mep.command('MepOrgImageScan', mep.org_image_scan)\n"
+    // Keeps the registry fresh regardless of the toggle's own on/off state
+    // (see Buffer::org_image_rows' own comment) -- debounce-rerun on edits
+    // (mep.on_buffer_changed) paired with a non-debounced file-switch
+    // watcher, the exact same two-hook shape mep.syntax_highlight uses in
+    // kBuiltinSyntax for the identical "buffer-changed doesn't fire on a
+    // plain :e/:bn/picker switch with no edit" reason.
+    "mep.on_buffer_changed(function()\n"
+    "  if mep_lsp_filetype(mep.filename()) == 'org' then mep.org_image_scan() end\n"
+    "end)\n"
+    "local mep_org_image_last_file = nil\n"
+    "mep.on_frame(function()\n"
+    "  local fname = mep.filename()\n"
+    "  if fname ~= mep_org_image_last_file then\n"
+    "    mep_org_image_last_file = fname\n"
+    "    if mep_lsp_filetype(fname) == 'org' then mep.org_image_scan() end\n"
+    "  end\n"
+    "end)\n"
+    // Toggle: mep.org_images_toggle() (lua_env.cpp) flips Editor's own
+    // org_images_visible_ and returns the new state -- this wrapper just
+    // adds the user-facing notify + an immediate rescan when turning on,
+    // so <leader>oti shows correct images right away instead of waiting
+    // for the next debounced buffer-changed tick.
+    "function mep.org_images_toggle_ui()\n"
+    "  local visible = mep.org_images_toggle()\n"
+    "  mep.notify('Org inline images: ' .. (visible and 'on' or 'off'))\n"
+    "  if visible then mep.org_image_scan() end\n"
+    "end\n"
+    "mep.command('MepOrgImagesToggle', mep.org_images_toggle_ui)\n"
+    "mep.leader_map('oti', 'Org: toggle inline images', mep.org_images_toggle_ui)\n";
+
 // Org-mode C: capture, refile, archive (Phase 31). Capture reuses
 // mep.ui_input for %^{PROMPT} placeholders and mep.picker_open for the
 // template picker; refile/archive both reuse mep.pane_open (Phase 14) to
@@ -4827,6 +4928,18 @@ const char *kBuiltinOrgBabel =
     "  executable = 'Rscript', extension = '.R',\n"
     "  var_stmt = function(n, l) return string.format('%s <- %s', n, l) end,\n"
     "  print_stmt = function(e) return string.format('print(%s)', e) end,\n"
+    // Real org-babel-R's own `:results graphics` convenience: opens the
+    // PNG device at the block's `:file` path before the body and closes
+    // it after, so a `:file plot.png :results graphics file` block's body
+    // can be nothing but plotting calls (plot/hist/...) with no explicit
+    // png()/dev.off() of its own -- applied by mep_org_babel_prepare_script
+    // below, only when both `:file` and `graphics` are present.
+    "  graphics_wrap = function(path, body)\n"
+    "    local lines = { string.format('png(%s)', mep_org_babel_format_literal(path)) }\n"
+    "    mep_org_babel_extend(lines, body)\n"
+    "    lines[#lines + 1] = 'dev.off()'\n"
+    "    return lines\n"
+    "  end,\n"
     "}\n"
     "L.php = {\n"
     "  executable = 'php', extension = '.php',\n"
@@ -5206,6 +5319,7 @@ const char *kBuiltinOrgBabel =
     "  for i = start_row + 1, end_row - 1 do body[#body + 1] = mep.get_line(i) end\n"
     "  return {start_row = start_row, end_row = end_row, lang = lang, vars = vars,\n"
     "    tangle = args_str:match(':tangle%s+(%S+)'), cache = args_str:match(':cache%s+(%S+)'),\n"
+    "    file = args_str:match(':file%s+(%S+)'),\n"
     "    results_modes = mep_org_parse_results(args_str),\n"
     "    args_str = args_str, body = table.concat(body, '\\n')}\n"
     "end\n"
@@ -5241,12 +5355,14 @@ const char *kBuiltinOrgBabel =
     "  end\n"
     "  return out\n"
     "end\n"
-    // `raw` (Phase 34 gap, :results table): when true, out_lines is
-    // already Org table syntax and gets inserted verbatim (no `: `
-    // prefix, no #+begin_example fence) -- and the existing-block
-    // detector below now also recognizes a prior table (lines starting
-    // with `|`) so re-running in place replaces it instead of leaving
-    // stale rows behind.
+    // `raw` (Phase 34 gap, :results table; also used for a `:file`
+    // block's own single-line `[[file:...]]` link result -- see
+    // mep.org_babel_execute below): when true, out_lines is already Org
+    // syntax and gets inserted verbatim (no `: ` prefix, no
+    // #+begin_example fence) -- and the existing-block detector below
+    // now also recognizes a prior table (lines starting with `|`) or
+    // file link (`[[file:`) so re-running in place replaces it instead
+    // of leaving a stale one behind.
     "function mep.org_babel_insert_results(blk, out_lines, raw)\n"
     "  local insert_row = blk.end_row\n"
     "  local existing_start, existing_end\n"
@@ -5257,8 +5373,8 @@ const char *kBuiltinOrgBabel =
     "    if line_i:match('^%s*#%+begin_example') then\n"
     "      while i <= mep.line_count() and not (mep.get_line(i) or ''):match('^%s*#%+end_example') do i = i + 1 end\n"
     "      existing_end = i\n"
-    "    elseif line_i:match('^%s*:') or line_i:match('^%s*|') then\n"
-    "      while i <= mep.line_count() and ((mep.get_line(i) or ''):match('^%s*:') or (mep.get_line(i) or ''):match('^%s*|')) do i = i + 1 end\n"
+    "    elseif line_i:match('^%s*:') or line_i:match('^%s*|') or line_i:match('^%s*%[%[file:') then\n"
+    "      while i <= mep.line_count() and ((mep.get_line(i) or ''):match('^%s*:') or (mep.get_line(i) or ''):match('^%s*|') or (mep.get_line(i) or ''):match('^%s*%[%[file:')) do i = i + 1 end\n"
     "      existing_end = i - 1\n"
     "    else\n"
     "      existing_end = existing_start\n"
@@ -5305,9 +5421,12 @@ const char *kBuiltinOrgBabel =
     "-- treated as an expression and wrapped in print_stmt instead of run as-is.\n"
     "-- Deliberately the same simplification mep.nvim's own build_script makes\n"
     "-- (see its header comment): a bare expression as a block's last line, not\n"
-    "-- real per-language value-capture machinery. wrap_main is applied last, if\n"
-    "-- the language has one and mep_org_babel_should_wrap_main opts in.\n"
-    "function mep_org_babel_prepare_script(lang_key, lang_def, vars, body_lines, args_str, results_modes)\n"
+    "-- real per-language value-capture machinery. graphics_wrap runs next, if\n"
+    "-- the language has one, `resolved_file` (the block's :file target, or nil)\n"
+    "-- was given, and `results_modes.graphics` is set -- see L.r's own\n"
+    "-- graphics_wrap comment. wrap_main is applied last, if the language has\n"
+    "-- one and mep_org_babel_should_wrap_main opts in.\n"
+    "function mep_org_babel_prepare_script(lang_key, lang_def, vars, body_lines, args_str, results_modes, resolved_file)\n"
     "  local prelude = {}\n"
     "  for name, raw in pairs(vars) do\n"
     "    prelude[#prelude + 1] = lang_def.var_stmt(name, mep_org_babel_format_literal(raw))\n"
@@ -5329,6 +5448,10 @@ const char *kBuiltinOrgBabel =
     "    mep_org_babel_extend(script, body_lines)\n"
     "  end\n"
     "\n"
+    "  if lang_def.graphics_wrap and resolved_file and results_modes.graphics then\n"
+    "    script = lang_def.graphics_wrap(resolved_file, script)\n"
+    "  end\n"
+    "\n"
     "  if lang_def.wrap_main and mep_org_babel_should_wrap_main(lang_key, args_str) then\n"
     "    local includes = {}\n"
     "    local includes_str = args_str:match(':includes%s+(.-)%s*:') or args_str:match(':includes%s+(.*)$')\n"
@@ -5348,7 +5471,20 @@ const char *kBuiltinOrgBabel =
     "-- output a failed *run* produced, matching mep.nvim's own M.execute\n"
     "-- contract exactly. `args_str` supplies :classname (Java only, via\n"
     "-- lang_def.detect_class).\n"
-    "function mep_org_babel_spawn(lang_def, exe, script_lines, args_str, on_finish)\n"
+    // `cwd` (optional, defaults to '.' -- mep's own process cwd, the old
+    // unconditional behavior) is the directory the spawned process itself
+    // runs in: mep.org_babel_execute passes the *org file's own
+    // directory* here so a script that saves output via a bare relative
+    // path (R's `png("plot.png")`, however it got there -- L.r's own
+    // graphics_wrap or hand-written; a Python block's own
+    // `plt.savefig("plot.png")`; anything else with no `:file`-awareness
+    // of its own at all) lands next to the org file, not next to wherever
+    // mep happened to be launched from. mep.leetcode_run_tests' own call
+    // site omits it -- a leetcode solution/test pair has no file-output
+    // concept, so '.' (its own process's cwd) is exactly as meaningful as
+    // any other directory would be there.
+    "function mep_org_babel_spawn(lang_def, exe, script_lines, args_str, on_finish, cwd)\n"
+    "  cwd = cwd or '.'\n"
     "  local source_path = os.tmpname() .. lang_def.extension\n"
     "  local f = io.open(source_path, 'w')\n"
     "  f:write(table.concat(script_lines, '\\n'))\n"
@@ -5362,7 +5498,7 @@ const char *kBuiltinOrgBabel =
     "      or { exe, source_path, '-o', binary_path }\n"
     "    local compile_err = {}\n"
     "    mep.job_start(compile_cmd, {\n"
-    "      cwd = '.',\n"
+    "      cwd = cwd,\n"
     "      on_stderr = function(line) compile_err[#compile_err + 1] = line end,\n"
     "      on_exit = function(compile_code)\n"
     "        os.remove(source_path)\n"
@@ -5374,7 +5510,7 @@ const char *kBuiltinOrgBabel =
     "        mep.job_start(\n"
     "          lang_def.run_compiled_cmd and lang_def.run_compiled_cmd(binary_path, class_name) or { binary_path },\n"
     "          {\n"
-    "            cwd = '.',\n"
+    "            cwd = cwd,\n"
     "            on_stdout = function(line) out[#out + 1] = line end,\n"
     "            on_stderr = function(line) err[#err + 1] = line end,\n"
     "            on_exit = function(run_code)\n"
@@ -5390,7 +5526,7 @@ const char *kBuiltinOrgBabel =
     "\n"
     "  local out, err = {}, {}\n"
     "  mep.job_start(lang_def.run_cmd and lang_def.run_cmd(exe, source_path) or { exe, source_path }, {\n"
-    "    cwd = '.',\n"
+    "    cwd = cwd,\n"
     "    on_stdout = function(line) out[#out + 1] = line end,\n"
     "    on_stderr = function(line) err[#err + 1] = line end,\n"
     "    on_exit = function(code)\n"
@@ -5409,27 +5545,93 @@ const char *kBuiltinOrgBabel =
     "  end\n"
     "  return stderr[1]\n"
     "end\n"
+    "\n"
+    "-- Whether `path` exists on disk right now -- called with the *resolved*\n"
+    "-- (mep_org_resolve_path, kBuiltinOrgImages) form of a block's :file\n"
+    "-- target, never the raw header-arg text, so this always checks the same\n"
+    "-- place the block's own subprocess actually ran in (mep_org_babel_spawn's\n"
+    "-- own `cwd` -- see mep.org_babel_execute).\n"
+    "function mep_org_babel_file_exists(path)\n"
+    "  local f = io.open(path, 'r')\n"
+    "  if f then f:close() return true end\n"
+    "  return false\n"
+    "end\n"
+    "\n"
+    "-- Writes a block's results as either its normal text/table result, or --\n"
+    "-- when `blk.file` is set and `resolved_file` (mep_org_resolve_path'd,\n"
+    "-- passed in by mep.org_babel_execute -- nil for the mep_org_babel_cache\n"
+    "-- fallback path below, when the block didn't set :file at all) exists on\n"
+    "-- disk right now -- a single [[file:...]] link (real org-mode's own\n"
+    "-- convention for a `:results file` block; see L.r's own `graphics_wrap`\n"
+    "-- comment for how a block actually produces that file), using `blk.file`\n"
+    "-- itself (not `resolved_file`) as the link text so it stays exactly what\n"
+    "-- the user typed -- portable if the org file and its image both move\n"
+    "-- together, and openable by mep's own inline-image rendering\n"
+    "-- (kBuiltinOrgImages' own mep.org_image_scan, <leader>oti). A :file block\n"
+    "-- whose code didn't actually produce the target (a bug in it, or `:file`\n"
+    "-- set on a block that was never going to write one) falls back to the\n"
+    "-- normal text result instead, with a warning, rather than linking to\n"
+    "-- nothing. mep.org_image_invalidate + a final mep.org_image_scan (both\n"
+    "-- unconditional, whichever branch ran) make a just-finished run's own\n"
+    "-- output show up immediately: invalidate drops any cached texture for\n"
+    "-- `resolved_file` so a re-run's fresh file is *guaranteed* a real reload\n"
+    "-- next frame rather than trusting GetOrLoadOrgInlineImageTexture's own\n"
+    "-- mtime check, which isn't reliable here on its own -- confirmed\n"
+    "-- reproducible in practice: a fast re-run's finished, fully-written file\n"
+    "-- can land on the exact same one-second-granularity mtime a mid-write\n"
+    "-- frame already cached a decode *failure* against (R's/Python's own PNG\n"
+    "-- writer creates/truncates the file immediately and only finishes\n"
+    "-- writing pixels at the very end), which mtime-only checking then never\n"
+    "-- notices changed again -- and re-scanning picks up a row whose link\n"
+    "-- text just changed shape (freshly appeared, or reverted to plain text)\n"
+    "-- without waiting up to mep.on_buffer_changed's own 0.3s debounce.\n"
+    "function mep_org_babel_write_results(blk, out_lines, resolved_file)\n"
+    "  if blk.file and resolved_file and mep_org_babel_file_exists(resolved_file) then\n"
+    "    mep.org_image_invalidate(resolved_file)\n"
+    "    mep.org_babel_insert_results(blk, {'[[file:' .. blk.file .. ']]'}, true)\n"
+    "  else\n"
+    "    if blk.file then\n"
+    "      mep.notify('Babel: :file target was not created (' .. blk.file .. ')', 'warn')\n"
+    "    end\n"
+    "    local lines = blk.results_modes.table and mep_org_format_table(out_lines) or out_lines\n"
+    "    mep.org_babel_insert_results(blk, lines, blk.results_modes.table)\n"
+    "  end\n"
+    "  mep.org_image_scan()\n"
+    "end\n"
     "function mep.org_babel_execute()\n"
     "  local blk = mep_org_src_block_at(mep.cursor())\n"
     "  if not blk then mep.notify('Not in a src block', 'warn') return end\n"
     "  local lang_def, exe_or_err = mep_org_babel_resolve_lang(blk.lang)\n"
     "  if not lang_def then mep.notify(exe_or_err, 'warn') return end\n"
     "  local exe = exe_or_err\n"
+    // `blk_dir` (the org file's own directory) becomes the spawned
+    // subprocess's own cwd (mep_org_babel_spawn's own `cwd` param) --
+    // this, not resolved_file below, is what actually makes a plain
+    // relative save path in the block's *own source code* (Python's
+    // `plt.savefig("plot.png")`, hand-written R that never went through
+    // graphics_wrap, ...) land next to the org file: mep has no way to
+    // rewrite an arbitrary language's own literal string arguments, only
+    // the directory the process that evaluates them runs in.
+    // `resolved_file`, by contrast, is only ever used *within this Lua
+    // process* (graphics_wrap's own png() argument, and the post-run
+    // mep_org_babel_file_exists check below) -- see mep_org_resolve_path's
+    // own comment (kBuiltinOrgImages) for why both matter and neither
+    // alone is enough.
+    "  local blk_dir = mep_lsp_abspath(mep.filename()):match('^(.*)/[^/]*$')\n"
+    "  local resolved_file = blk.file and mep_org_resolve_path(blk.file) or nil\n"
     "\n"
     "  local cache_key = blk.lang .. '|' .. blk.args_str .. '|' .. blk.body\n"
     "  if blk.cache == 'yes' and mep_org_babel_cache[cache_key] then\n"
     "    if not blk.results_modes.silent then\n"
-    "      local lines = blk.results_modes.table and mep_org_format_table(mep_org_babel_cache[cache_key])\n"
-    "        or mep_org_babel_cache[cache_key]\n"
-    "      mep.org_babel_insert_results(blk, lines, blk.results_modes.table)\n"
+    "      mep_org_babel_write_results(blk, mep_org_babel_cache[cache_key], resolved_file)\n"
     "    end\n"
     "    mep.notify('Babel: cached result')\n"
     "    return\n"
     "  end\n"
     "\n"
     "  local body_lines = mep_org_babel_split_lines(blk.body)\n"
-    "  local script_lines =\n"
-    "    mep_org_babel_prepare_script(blk.lang, lang_def, blk.vars, body_lines, blk.args_str, blk.results_modes)\n"
+    "  local script_lines = mep_org_babel_prepare_script(\n"
+    "    blk.lang, lang_def, blk.vars, body_lines, blk.args_str, blk.results_modes, resolved_file)\n"
     "\n"
     "  mep_org_babel_spawn(lang_def, exe, script_lines, blk.args_str, function(code, out_lines, err_lines, failure_verb)\n"
     "    if code ~= 0 then\n"
@@ -5452,22 +5654,31 @@ const char *kBuiltinOrgBabel =
     "      mep.notify('Babel: executed ' .. blk.lang .. ' block (exit ' .. code .. ')')\n"
     "    end\n"
     "    if not blk.results_modes.silent then\n"
-    "      local lines = blk.results_modes.table and mep_org_format_table(out_lines) or out_lines\n"
-    "      mep.org_babel_insert_results(blk, lines, blk.results_modes.table)\n"
+    "      if code == 0 then\n"
+    "        mep_org_babel_write_results(blk, out_lines, resolved_file)\n"
+    "      else\n"
+    "        local lines = blk.results_modes.table and mep_org_format_table(out_lines) or out_lines\n"
+    "        mep.org_babel_insert_results(blk, lines, blk.results_modes.table)\n"
+    "      end\n"
     "    end\n"
-    "  end)\n"
+    "  end, blk_dir)\n"
     "end\n"
     "mep.command('MepOrgBabelExecute', mep.org_babel_execute)\n"
     // Tangle: concatenate same-`:tangle target` blocks in document
-    // order, write to the target file.
+    // order, write to the target file -- resolved (mep_org_resolve_path,
+    // kBuiltinOrgImages) against the org file's own directory, the same
+    // fix mep.org_babel_execute's own :file handling gets just above, and
+    // for the identical reason: a bare relative :tangle target used to
+    // land next to mep's own cwd instead of the org file it came from.
     "function mep.org_babel_tangle()\n"
     "  local targets, order = {}, {}\n"
     "  for i = 1, mep.line_count() do\n"
     "    if mep.get_line(i):match('^%s*#%+[Bb][Ee][Gg][Ii][Nn]_[Ss][Rr][Cc]') then\n"
     "      local blk = mep_org_src_block_at(i)\n"
     "      if blk and blk.tangle then\n"
-    "        if not targets[blk.tangle] then targets[blk.tangle] = {} order[#order + 1] = blk.tangle end\n"
-    "        table.insert(targets[blk.tangle], blk.body)\n"
+    "        local target = mep_org_resolve_path(blk.tangle)\n"
+    "        if not targets[target] then targets[target] = {} order[#order + 1] = target end\n"
+    "        table.insert(targets[target], blk.body)\n"
     "      end\n"
     "    end\n"
     "  end\n"
@@ -5479,6 +5690,229 @@ const char *kBuiltinOrgBabel =
     "  mep.notify('Tangled ' .. #order .. ' file(s)')\n"
     "end\n"
     "mep.command('MepOrgBabelTangle', mep.org_babel_tangle)\n";
+
+// Org LaTeX/math-mode inline rendering, a sibling feature to
+// kBuiltinOrgImages (defined earlier in this file): <leader>otl /
+// mep.org_latex_toggle_ui detects $$..$$/\[..\]/\(..\)/$..$ math fragments
+// and #+BEGIN_LaTeX/#+BEGIN_SRC latex "chunks", each rendered offline to a
+// tightly-cropped PNG (tectonic -> pdftoppm, see flake.nix's devShell)
+// and displayed through the same
+// inline-texture pipeline kBuiltinOrgImages uses (GetOrLoadOrgInlineImageTexture,
+// main.cpp), via a parallel, independently-toggled registry
+// (mep.buf_set_latex_row -> Buffer::org_latex_rows) so the two previews
+// can be on independently. Only *whole-line* fragments are recognized --
+// math mixed into a prose line ("the value $x$ matters here") stays plain
+// text: mep's row renderer (DrawLineFast, main.cpp) draws one row as one
+// run of text with no mechanism to splice a texture into the middle of
+// it, the same "whole row only" constraint org images live under (see
+// kOrgInlineImageSlots' own comment). A multi-line fragment's interior/
+// closing raw-source lines are hidden behind a 'latex'-provider closed
+// Fold, the same collapse machinery org/markdown headings use for their
+// own folds (mep.fold_create/mep.fold_clear_provider) -- rebuilt
+// wholesale on every scan, so a manually-opened "peek at raw source"
+// fold doesn't survive the next debounced rescan, matching how
+// mep.org_fold_all/markdown's own fence folding already behave.
+const char *kBuiltinOrgLatex =
+    "local function mep_org_latex_trim(s) return s:match('^%s*(.-)%s*$') end\n"
+    "\n"
+    "local function mep_org_latex_wrapped(s, open, close)\n"
+    "  return #s > #open + #close and s:sub(1, #open) == open and s:sub(-#close) == close\n"
+    "end\n"
+    "\n"
+    "local MEP_ORG_LATEX_PREAMBLE = table.concat({\n"
+    "  '\\\\documentclass[11pt,preview,border=1pt,varwidth]{standalone}',\n"
+    "  '\\\\usepackage{amsmath}',\n"
+    "  '\\\\usepackage{amssymb}',\n"
+    "  '\\\\begin{document}',\n"
+    "}, '\\n')\n"
+    "\n"
+    "local function mep_org_latex_hash(s)\n"
+    "  local h = 2166136261\n"
+    "  for i = 1, #s do\n"
+    "    h = ((h ~ s:byte(i)) * 16777619) & 0xffffffff\n"
+    "  end\n"
+    "  return string.format('%08x', h)\n"
+    "end\n"
+    "\n"
+    "local function mep_org_latex_cache_dir()\n"
+    "  local dir = (os.getenv('HOME') or '/tmp') .. '/.cache/mep/latex'\n"
+    "  os.execute('mkdir -p ' .. dir)\n"
+    "  return dir\n"
+    "end\n"
+    "local mep_org_latex_inflight = {}\n"
+    "\n"
+    "function mep_org_latex_render(tex_body, on_done)\n"
+    "  local dpi = math.floor(72 * mep.font_size() / 11 + 0.5)\n"
+    "  local key = mep_org_latex_hash(tex_body .. '|' .. dpi)\n"
+    "  local dir = mep_org_latex_cache_dir()\n"
+    "  local png_path = dir .. '/' .. key .. '.png'\n"
+    "  if mep_org_babel_file_exists(png_path) then\n"
+    "    on_done(png_path)\n"
+    "    return\n"
+    "  end\n"
+    "  if mep_org_latex_inflight[key] then\n"
+    "    table.insert(mep_org_latex_inflight[key], on_done)\n"
+    "    return\n"
+    "  end\n"
+    "  mep_org_latex_inflight[key] = {on_done}\n"
+    "  local function finish(result, err)\n"
+    "    local waiters = mep_org_latex_inflight[key] or {}\n"
+    "    mep_org_latex_inflight[key] = nil\n"
+    "    for _, cb in ipairs(waiters) do cb(result, err) end\n"
+    "  end\n"
+    "  if not mep_org_babel_has_exe('tectonic') then\n"
+    "    finish(nil, \"tectonic not found on PATH (see flake.nix's devShell)\")\n"
+    "    return\n"
+    "  end\n"
+    "  local tex_path = dir .. '/' .. key .. '.tex'\n"
+    "  local pdf_path = dir .. '/' .. key .. '.pdf'\n"
+    "  local f = io.open(tex_path, 'w')\n"
+    "  if not f then\n"
+    "    finish(nil, 'could not write ' .. tex_path)\n"
+    "    return\n"
+    "  end\n"
+    "  f:write(MEP_ORG_LATEX_PREAMBLE .. '\\n' .. tex_body .. '\\n\\\\end{document}\\n')\n"
+    "  f:close()\n"
+    "  local compile_err = {}\n"
+    "  mep.job_start({'tectonic', '-X', 'compile', tex_path, '--outfmt', 'pdf'}, {\n"
+    "    on_stderr = function(line) compile_err[#compile_err + 1] = line end,\n"
+    "    on_exit = function(code)\n"
+    "      os.remove(tex_path)\n"
+    "      if code ~= 0 or not mep_org_babel_file_exists(pdf_path) then\n"
+    "        finish(nil, mep_org_babel_first_error_line(compile_err) or 'tectonic compile failed')\n"
+    "        return\n"
+    "      end\n"
+    "      if not mep_org_babel_has_exe('pdftoppm') then\n"
+    "        os.remove(pdf_path)\n"
+    "        finish(nil, \"pdftoppm not found on PATH (see flake.nix's devShell)\")\n"
+    "        return\n"
+    "      end\n"
+    "      local raster_err = {}\n"
+    "      mep.job_start({'pdftoppm', '-png', '-r', tostring(dpi), '-singlefile', pdf_path, dir .. '/' .. key}, {\n"
+    "        on_stderr = function(line) raster_err[#raster_err + 1] = line end,\n"
+    "        on_exit = function(code2)\n"
+    "          os.remove(pdf_path)\n"
+    "          if code2 == 0 and mep_org_babel_file_exists(png_path) then\n"
+    "            finish(png_path)\n"
+    "          else\n"
+    "            finish(nil, mep_org_babel_first_error_line(raster_err) or 'pdftoppm failed')\n"
+    "          end\n"
+    "        end,\n"
+    "      })\n"
+    "    end,\n"
+    "  })\n"
+    "end\n"
+    "\n"
+    "local function mep_org_latex_register(start_row, end_row, tex_body)\n"
+    "  mep_org_latex_render(tex_body, function(png_path, err)\n"
+    "    if not png_path then\n"
+    "      if err then mep.notify('LaTeX: ' .. err, 'warn') end\n"
+    "      return\n"
+    "    end\n"
+    "    local w, h = mep.image_size(png_path)\n"
+    "    if not w then return end\n"
+    "    local line_height = math.floor(mep.font_size()) + 6\n"
+    "    local slots = math.max(1, math.ceil(h / line_height))\n"
+    // No mep.org_image_invalidate call needed here (unlike babel's :file
+    // results, kBuiltinOrgBabel): png_path is content-hashed
+    // (mep_org_latex_render's own key, above) and, once written, is never
+    // rewritten in place under the same name -- GetOrLoadOrgLatexTexture's
+    // own cache (main.cpp) has nothing stale to invalidate. It reloads
+    // for a genuinely new path on its own (first sight of it) and
+    // re-recolors an already-loaded one on a theme change via
+    // Editor::ThemeEpoch(), with no mtime tracking at all.
+    "    mep.buf_set_latex_row(start_row, png_path, slots)\n"
+    "  end)\n"
+    "end\n"
+    "\n"
+    "function mep.org_latex_scan()\n"
+    "  mep.buf_clear_latex_rows()\n"
+    "  mep.fold_clear_provider('latex')\n"
+    "  if not mep.org_latex_visible() then return end\n"
+    "  if mep_lsp_filetype(mep.filename()) ~= 'org' then return end\n"
+    "  local n = mep.line_count()\n"
+    "  local i = 1\n"
+    "  while i <= n do\n"
+    "    local line = mep.get_line(i)\n"
+    "    local trimmed = mep_org_latex_trim(line)\n"
+    "    local body, end_row\n"
+    "\n"
+    "    if line:match('^%s*#%+[Bb][Ee][Gg][Ii][Nn]_[Ll][Aa][Tt][Ee][Xx]%s*$') then\n"
+    "      local lines, j = {}, i + 1\n"
+    "      while j <= n and not mep.get_line(j):match('^%s*#%+[Ee][Nn][Dd]_[Ll][Aa][Tt][Ee][Xx]') do\n"
+    "        lines[#lines + 1] = mep.get_line(j)\n"
+    "        j = j + 1\n"
+    "      end\n"
+    "      if j <= n then body, end_row = table.concat(lines, '\\n'), j end\n"
+    "    elseif line:match('^%s*#%+[Bb][Ee][Gg][Ii][Nn]_[Ss][Rr][Cc]%s+[Ll][Aa][Tt][Ee][Xx]') then\n"
+    // Deliberately not mep_org_src_block_at (kBuiltinOrgBabel) -- that's a
+    // `local function`, invisible from this chunk's own separate DoString
+    // call (each lua->DoString(...) in main() is its own top-level chunk;
+    // Lua locals don't cross that boundary, only true globals do). A
+    // small self-contained #+END_SRC scan instead, mirroring the
+    // #+BEGIN_LaTeX branch just above.
+    "      local lines, j = {}, i + 1\n"
+    "      while j <= n and not mep.get_line(j):match('^%s*#%+[Ee][Nn][Dd]_[Ss][Rr][Cc]') do\n"
+    "        lines[#lines + 1] = mep.get_line(j)\n"
+    "        j = j + 1\n"
+    "      end\n"
+    "      if j <= n then body, end_row = table.concat(lines, '\\n'), j end\n"
+    "    elseif mep_org_latex_wrapped(trimmed, '\\\\[', '\\\\]') then\n"
+    "      body, end_row = trimmed, i\n"
+    "    elseif trimmed == '\\\\[' then\n"
+    "      local lines, j = {}, i + 1\n"
+    "      while j <= n and mep_org_latex_trim(mep.get_line(j)) ~= '\\\\]' do\n"
+    "        lines[#lines + 1] = mep.get_line(j)\n"
+    "        j = j + 1\n"
+    "      end\n"
+    "      if j <= n then body, end_row = '\\\\[' .. table.concat(lines, '\\n') .. '\\\\]', j end\n"
+    "    elseif mep_org_latex_wrapped(trimmed, '$$', '$$') then\n"
+    "      body, end_row = trimmed, i\n"
+    "    elseif trimmed == '$$' then\n"
+    "      local lines, j = {}, i + 1\n"
+    "      while j <= n and mep_org_latex_trim(mep.get_line(j)) ~= '$$' do\n"
+    "        lines[#lines + 1] = mep.get_line(j)\n"
+    "        j = j + 1\n"
+    "      end\n"
+    "      if j <= n then body, end_row = '$$' .. table.concat(lines, '\\n') .. '$$', j end\n"
+    "    elseif mep_org_latex_wrapped(trimmed, '\\\\(', '\\\\)') then\n"
+    "      body, end_row = trimmed, i\n"
+    "    elseif #trimmed > 2 and trimmed:sub(1, 1) == '$' and trimmed:sub(-1) == '$'\n"
+    "        and trimmed:sub(2, 2) ~= '$' and trimmed:sub(-2, -2) ~= '$' then\n"
+    "      body, end_row = trimmed, i\n"
+    "    end\n"
+    "\n"
+    "    if body and body ~= '' then\n"
+    "      mep_org_latex_register(i, end_row, body)\n"
+    "      if end_row > i then mep.fold_create(i + 1, end_row, true, 'latex') end\n"
+    "      i = end_row + 1\n"
+    "    else\n"
+    "      i = i + 1\n"
+    "    end\n"
+    "  end\n"
+    "end\n"
+    "\n"
+    "mep.command('MepOrgLatexScan', mep.org_latex_scan)\n"
+    "\n"
+    "function mep.org_latex_toggle_ui()\n"
+    "  local visible = mep.org_latex_toggle()\n"
+    "  mep.notify('Org LaTeX preview: ' .. (visible and 'on' or 'off'))\n"
+    "  mep.org_latex_scan()\n"
+    "end\n"
+    "mep.command('MepOrgLatexToggle', mep.org_latex_toggle_ui)\n"
+    "mep.leader_map('otl', 'Org: toggle LaTeX/math preview', mep.org_latex_toggle_ui)\n"
+    "\n"
+    "mep.on_buffer_changed(function()\n"
+    "  if mep_lsp_filetype(mep.filename()) == 'org' then mep.org_latex_scan() end\n"
+    "end)\n"
+    "local mep_org_latex_last_file = nil\n"
+    "mep.on_frame(function()\n"
+    "  local fname = mep.filename()\n"
+    "  if fname ~= mep_org_latex_last_file then\n"
+    "    mep_org_latex_last_file = fname\n"
+    "    if mep_lsp_filetype(fname) == 'org' then mep.org_latex_scan() end\n"
+    "  end\n"
+    "end)\n";
 
 // Org-mode G: export (Phase 35). Flat single-pass line walk (no
 // intermediate AST) driving three backends off one shared inline-mark
@@ -8440,6 +8874,191 @@ Texture2D GetOrLoadImageTexture(int buffer_id, const ImageSession &sess) {
     return tex;
 }
 
+// One org-mode inline-image cache slot (see g_org_inline_image_textures
+// below): the uploaded texture plus the file's mtime as of that upload, so
+// GetOrLoadOrgInlineImageTexture can tell a stale entry from a fresh one.
+struct OrgInlineImageCacheEntry {
+    Texture2D tex{};
+    bool ok = false;  // false = load failed (missing file/bad decode)
+    time_t mtime = 0;
+};
+// Keyed by resolved path (not buffer_id, unlike g_image_textures above --
+// the same image path can appear on rows in more than one open buffer, and
+// conversely the *same row* can point at a different path after every
+// mep.org_image_scan() rescan) -- one entry can be shared across every row/
+// buffer that currently links to it. Unlike g_image_textures' own ImageDoc
+// pixels (decoded once at buffer-open time and never mutated again), the
+// file behind one of these paths is a plain path on disk that routinely
+// *does* get regenerated in place -- most commonly by re-running the very
+// org-babel `:file` block (kBuiltinOrgBabel) that produced it, same
+// filename, new content, no buffer edit of its own to trigger anything.
+// GetOrLoadOrgInlineImageTexture below re-stats and, on an mtime change,
+// reloads+re-uploads rather than trusting a stale cache hit forever the
+// way g_image_textures safely can. mtime alone is not a *reliable* change
+// signal, though (only best-effort, for a file that changed with no other
+// warning) -- see EvictOrgInlineImageTexture just below for the case that
+// actually needs a guarantee.
+std::unordered_map<std::string, OrgInlineImageCacheEntry> g_org_inline_image_textures;
+
+// Lazily loads + GPU-uploads an inline org image (a [[file:path]] link's
+// target, resolved by mep.org_image_scan() into Buffer::org_image_rows),
+// mtime-cached in g_org_inline_image_textures. Returns nullptr if `path`
+// can't be stat'd, read, or decoded -- DrawPane's own inline-image branch
+// falls back to showing the raw link text in that case. Native file I/O
+// only (plain std::ifstream/stat, no emscripten binary-file-bridge branch
+// the way Editor::LoadFile's own image-open path has) -- a deliberate,
+// documented scope cut mirroring this project's existing wasm-build
+// narrowings (e.g. the babel results cache's own "native-only" comment):
+// inline images in a text buffer aren't part of the wasm/webview build's
+// own feature surface today.
+Texture2D *GetOrLoadOrgInlineImageTexture(const std::string &path) {
+    struct stat st {};
+    if (stat(path.c_str(), &st) != 0) return nullptr;
+    OrgInlineImageCacheEntry &entry = g_org_inline_image_textures[path];
+    if (entry.mtime == st.st_mtime) return entry.ok ? &entry.tex : nullptr;
+
+    std::ifstream f(path, std::ios::binary);
+    std::vector<unsigned char> bytes;
+    if (f) bytes.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+    ImageDoc doc;
+    if (entry.ok) UnloadTexture(entry.tex);  // replace a stale GPU handle rather than leak it
+    entry.ok = !bytes.empty() && doc.LoadFromMemory(bytes.data(), bytes.size());
+    entry.mtime = st.st_mtime;
+    if (!entry.ok) return nullptr;
+
+    Image img{};
+    img.data = const_cast<unsigned char *>(doc.Pixels());
+    img.width = doc.Width();
+    img.height = doc.Height();
+    img.mipmaps = 1;
+    img.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
+    entry.tex = LoadTextureFromImage(img);  // copies pixel data to the GPU; doc goes out of scope right after
+    return &entry.tex;
+}
+
+// Drops any cached entry for `path` outright (unloading its texture first,
+// if it had one) so the *next* GetOrLoadOrgInlineImageTexture call does an
+// unconditional fresh read+decode+upload -- exposed to Lua as
+// mep.org_image_invalidate (lua_env.cpp), called by mep.org_babel_execute
+// (kBuiltinOrgBabel) right after a :file block finishes successfully.
+//
+// This exists because GetOrLoadOrgInlineImageTexture's own mtime check,
+// while a perfectly fine passive heuristic in general, is provably not
+// enough to guarantee a re-run's output actually gets picked up: a
+// still-running org-babel :file block can rewrite the very file this
+// texture was loaded from *while its subprocess is still executing* --
+// R's/Python's own PNG writer typically creates/truncates the file
+// immediately and only finishes writing real pixel data at the very end
+// (dev.off(), the final savefig() flush, ...). A frame that happens to
+// call GetOrLoadOrgInlineImageTexture in that window sees a real mtime
+// change, attempts a reload, and decode-fails against the still-incomplete
+// file -- caching that *failure* at whatever mtime the file had at that
+// instant. If the whole run finishes within the same one-second mtime
+// granularity most filesystems expose (routine for a fast plot), the
+// final, fully-written file can carry that exact same st_mtime, and
+// GetOrLoadOrgInlineImageTexture's own `entry.mtime == st.st_mtime` check
+// then never notices anything changed again -- the poisoned failure
+// sticks permanently, confirmed reproducible in practice (re-running a
+// block showed "image not found" even after toggling <leader>oti off and
+// on again, which only rebuilds the row registry, Buffer::org_image_rows,
+// not this texture cache). Calling this once mep.org_babel_execute
+// already knows for certain a fresh, fully-written file exists (the
+// subprocess has already exited by then, so there's no more racing left
+// to do) sidesteps the whole problem instead of trying to out-guess it
+// with a finer-grained clock.
+void EvictOrgInlineImageTexture(const std::string &path) {
+    auto it = g_org_inline_image_textures.find(path);
+    if (it == g_org_inline_image_textures.end()) return;
+    if (it->second.ok) UnloadTexture(it->second.tex);
+    g_org_inline_image_textures.erase(it);
+}
+
+// One org-latex texture cache slot (see g_org_latex_textures below): unlike
+// g_org_inline_image_textures, no mtime is tracked -- a rendered fragment's
+// PNG is written once to a content-hashed path (mep_org_latex_render,
+// kBuiltinOrgLatex: the hash covers the fragment's own text *and* the DPI
+// it was rendered at) and never rewritten in place, so the only two reasons
+// to reload are "never loaded this path before" and "the theme changed
+// since the last upload" -- theme_epoch alone (no mtime field at all) is
+// enough to catch both.
+struct OrgLatexTextureCacheEntry {
+    Texture2D tex{};
+    bool ok = false;
+    int theme_epoch = -1;
+    int w = 0, h = 0;
+};
+// Keyed by resolved path, same reasoning as g_org_inline_image_textures
+// (shared across every row/buffer currently pointing at a given rendered
+// fragment).
+std::unordered_map<std::string, OrgLatexTextureCacheEntry> g_org_latex_textures;
+
+// Lazily loads + GPU-uploads a rendered LaTeX/math fragment (org_latex_rows'
+// own path, produced by tectonic+pdftoppm as plain black-on-white), synced
+// to the editor's own color scheme the same way GetOrUpdatePdfPageTexture
+// recolors a PDF page: each pixel's luminance is mapped onto the gradient
+// between ResolveHlGroup("Normal") (black -> editor foreground) and
+// ResolveHlGroup("NormalBg") (white -> editor background) via the same
+// ThemedPdfChannel helper, so a fragment reads as editor text instead of a
+// white index card pasted into a dark buffer. Re-recolors (and
+// re-uploads) whenever Editor::ThemeEpoch() has moved on since the last
+// upload -- see that function's own comment (editor.h) for why a raw
+// generation/mtime check alone would miss a live colorscheme preview.
+// Returns nullptr if `path` can't be stat'd, read, or decoded -- DrawPane's
+// own latex branch falls back to showing a warning in that case, same
+// contract as GetOrLoadOrgInlineImageTexture.
+Texture2D *GetOrLoadOrgLatexTexture(const std::string &path) {
+    struct stat st {};
+    if (stat(path.c_str(), &st) != 0) return nullptr;
+    int theme_epoch = g_editor.ThemeEpoch();
+    OrgLatexTextureCacheEntry &entry = g_org_latex_textures[path];
+    if (entry.ok && entry.theme_epoch == theme_epoch) return &entry.tex;
+
+    std::ifstream f(path, std::ios::binary);
+    std::vector<unsigned char> bytes;
+    if (f) bytes.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+    ImageDoc doc;
+    bool decoded = !bytes.empty() && doc.LoadFromMemory(bytes.data(), bytes.size());
+    if (!decoded) {
+        if (entry.ok) UnloadTexture(entry.tex);
+        entry = OrgLatexTextureCacheEntry{};
+        return nullptr;
+    }
+
+    int w = doc.Width(), h = doc.Height();
+    Color fg = ResolveHlGroup("Normal");
+    Color bg = ResolveHlGroup("NormalBg");
+    std::vector<unsigned char> themed(static_cast<size_t>(w) * static_cast<size_t>(h) * 4);
+    const unsigned char *src_pixels = doc.Pixels();
+    for (size_t i = 0, n = static_cast<size_t>(w) * static_cast<size_t>(h); i < n; i++) {
+        const unsigned char *src = &src_pixels[i * 4];
+        float luminance = (0.299f * src[0] + 0.587f * src[1] + 0.114f * src[2]) / 255.0f;
+        unsigned char *dst = &themed[i * 4];
+        dst[0] = ThemedPdfChannel(fg.r, bg.r, luminance);
+        dst[1] = ThemedPdfChannel(fg.g, bg.g, luminance);
+        dst[2] = ThemedPdfChannel(fg.b, bg.b, luminance);
+        dst[3] = src[3];  // preserve alpha as-is (tectonic's own margin, if any)
+    }
+
+    Image img{};
+    img.data = themed.data();
+    img.width = w;
+    img.height = h;
+    img.mipmaps = 1;
+    img.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
+
+    if (entry.ok && entry.w == w && entry.h == h) {
+        UpdateTexture(entry.tex, img.data);
+    } else {
+        if (entry.ok) UnloadTexture(entry.tex);
+        entry.tex = LoadTextureFromImage(img);
+    }
+    entry.ok = true;
+    entry.theme_epoch = theme_epoch;
+    entry.w = w;
+    entry.h = h;
+    return &entry.tex;
+}
+
 // Same idea as GetOrLoadImageTexture, but keyed per (buffer_id, page) --
 // PdfSession virtualizes its own CPU-side raster cache the same way (see
 // Editor::EnsurePdfPagesRastered) -- and re-uploaded whenever that page's
@@ -9227,6 +9846,67 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                           ResolveHlGroup("CursorLine"));
         }
 
+        // Org inline images (<leader>oti / mep.org_images_toggle,
+        // Editor::OrgImagesVisible()): a row registered by Lua's
+        // mep.org_image_scan() (buf.org_image_rows) renders as a scaled
+        // texture instead of its ordinary [[file:...]] text, claiming
+        // kOrgInlineImageSlots visual slots instead of 1 -- folds' own
+        // mirror image (expand instead of collapse), same "detect on this
+        // row, draw a substitute, advance visual_slot by more than one,
+        // continue" shape. `!fold_here` keeps this mutually exclusive with
+        // the closed-fold branch just below (org's own heading-based
+        // folds never start on a src-block/results line in practice, so
+        // this never actually has to arbitrate between the two).
+        if (!fold_here && g_editor.OrgImagesVisible()) {
+            auto img_it = buf.org_image_rows.find(row);
+            if (img_it != buf.org_image_rows.end()) {
+                float slot_h = static_cast<float>(line_height) * kOrgInlineImageSlots;
+                float pane_avail_w = std::max(40.0f, w - (text_x - x) - kMarginX);
+                float target_w = kOrgImageLineWidthChars * g_char_width * kOrgImageWidthFraction;
+                float avail_w = std::min(pane_avail_w, target_w);
+                Texture2D *tex = GetOrLoadOrgInlineImageTexture(img_it->second);
+                if (tex) {
+                    float scale = std::min(avail_w / static_cast<float>(tex->width),
+                                            slot_h / static_cast<float>(tex->height));
+                    DrawTextureEx(*tex, Vector2{text_x, ly}, 0.0f, scale, WHITE);
+                } else {
+                    std::string msg = "[[file: image not found: " + img_it->second + "]]";
+                    DrawTextEx(g_font, msg.c_str(), Vector2{text_x, ly}, g_font_size, 0, ResolveHlGroup("Warn"));
+                }
+                visual_slot += kOrgInlineImageSlots - 1;  // visual_slot++ above already accounted for 1
+                continue;  // the for-loop's own `row++` advances past this one row
+            }
+        }
+
+        // Org LaTeX/math-mode rendering (<leader>otl / mep.org_latex_toggle,
+        // Editor::OrgLatexVisible()): mirrors the org-image branch just
+        // above, but the target size is the fragment's *own* rendered PNG
+        // dimensions (mep_org_latex_render, kBuiltinOrgLatex, already chose
+        // a DPI matching the current font size -- see its own comment) --
+        // never stretched to a linewidth fraction the way a photo/plot is,
+        // since that would blow a bare "$x$" up to the same width as a full
+        // page-width figure. `slots` is per-entry (buf.org_latex_rows'
+        // OrgLatexRender), not the shared kOrgInlineImageSlots constant.
+        if (!fold_here && g_editor.OrgLatexVisible()) {
+            auto latex_it = buf.org_latex_rows.find(row);
+            if (latex_it != buf.org_latex_rows.end()) {
+                const Buffer::OrgLatexRender &render = latex_it->second;
+                float slot_h = static_cast<float>(line_height) * render.slots;
+                float pane_avail_w = std::max(40.0f, w - (text_x - x) - kMarginX);
+                Texture2D *tex = GetOrLoadOrgLatexTexture(render.path);
+                if (tex) {
+                    float scale = std::min({pane_avail_w / static_cast<float>(tex->width),
+                                             slot_h / static_cast<float>(tex->height), 1.0f});
+                    DrawTextureEx(*tex, Vector2{text_x, ly}, 0.0f, scale, WHITE);
+                } else {
+                    std::string msg = "[LaTeX: render not found -- " + render.path + "]";
+                    DrawTextEx(g_font, msg.c_str(), Vector2{text_x, ly}, g_font_size, 0, ResolveHlGroup("Warn"));
+                }
+                visual_slot += render.slots - 1;  // visual_slot++ above already accounted for 1
+                continue;  // the for-loop's own `row++` advances past this one row
+            }
+        }
+
         if (fold_here) {
             int hidden = fold_here->end_row - fold_here->start_row;
             std::string summary = "+-- " + std::to_string(hidden + 1) + " lines: " + buf.lines[row] + " ---";
@@ -9402,21 +10082,52 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     if (is_active && !IsCommandLineMode(g_editor.CurrentMode()) && pane.cursor.row >= pane.scroll_row &&
         pane.cursor.row < row) {
         // Buffer row -> visual slot, accounting for any closed folds
-        // between the top of the view and the cursor (each collapses to
-        // 1 slot regardless of how many rows it hides) -- the cursor
-        // itself is never hidden inside one (see ClampCursor).
+        // between the top of the view and the cursor (each collapses to 1
+        // slot regardless of how many rows it hides -- the cursor itself
+        // is never hidden inside one, see ClampCursor), any org inline
+        // image (each *expands* to kOrgInlineImageSlots instead -- see the
+        // draw loop's own image branch above), and any org LaTeX fragment
+        // (expands to its own per-entry slots, org_latex_rows -- see the
+        // draw loop's own latex branch above); must stay in exact agreement
+        // with all of it and with Editor::UpdateScrollForPane, editor.cpp.
         int cursor_slot = 0;
         for (int r = pane.scroll_row; r < pane.cursor.row;) {
             const Fold *f = nullptr;
             for (const Fold &fold : buf.folds) {
                 if (fold.closed && fold.start_row == r) f = &fold;
             }
-            r = f ? f->end_row + 1 : r + 1;
-            cursor_slot++;
+            auto latex_it = buf.org_latex_rows.find(r);
+            if (f) {
+                r = f->end_row + 1;
+                cursor_slot += 1;
+            } else if (g_editor.OrgImagesVisible() && buf.org_image_rows.count(r)) {
+                r += 1;
+                cursor_slot += kOrgInlineImageSlots;
+            } else if (g_editor.OrgLatexVisible() && latex_it != buf.org_latex_rows.end()) {
+                r += 1;
+                cursor_slot += latex_it->second.slots;
+            } else {
+                r += 1;
+                cursor_slot += 1;
+            }
         }
         float cursor_y = content_y + cursor_slot * line_height;
         float cursor_x = text_x + pane.cursor.col * g_char_width;
-        if (g_editor.CurrentMode() == Mode::Insert) {
+        // A cursor resting on an image/latex row itself has no meaningful
+        // column position (the row's own text is replaced by the texture,
+        // not drawn at all) -- an outline around the whole reserved slot
+        // stands in for the usual per-character/per-column cursor cell.
+        bool cursor_on_image = g_editor.OrgImagesVisible() && buf.org_image_rows.count(pane.cursor.row) != 0;
+        auto cursor_latex_it = buf.org_latex_rows.find(pane.cursor.row);
+        bool cursor_on_latex = g_editor.OrgLatexVisible() && cursor_latex_it != buf.org_latex_rows.end();
+        int cursor_slots = cursor_on_image ? kOrgInlineImageSlots : (cursor_on_latex ? cursor_latex_it->second.slots : 1);
+        float row_extent = (cursor_on_image || cursor_on_latex) ? static_cast<float>(line_height) * cursor_slots
+                                                                  : static_cast<float>(line_height);
+        if (cursor_on_image || cursor_on_latex) {
+            float avail_w = std::max(40.0f, w - (text_x - x) - kMarginX);
+            DrawRectangleLines(static_cast<int>(text_x), static_cast<int>(cursor_y), static_cast<int>(avail_w),
+                                static_cast<int>(row_extent), ResolveHlGroup("Normal"));
+        } else if (g_editor.CurrentMode() == Mode::Insert) {
             DrawRectangle(static_cast<int>(cursor_x), static_cast<int>(cursor_y), 2, static_cast<int>(g_font_size),
                           ResolveHlGroup("Normal"));
         } else {
@@ -9430,11 +10141,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             }
         }
         // Completion popup (Phase 22): positioned just below the cursor.
-        if (g_editor.CurrentMode() == Mode::Insert && g_editor.IsCompletionOpen()) {
+        if (!cursor_on_image && !cursor_on_latex && g_editor.CurrentMode() == Mode::Insert &&
+            g_editor.IsCompletionOpen()) {
             DrawCompletionPopup(cursor_x, cursor_y + line_height);
         }
         hover_cursor_x = cursor_x;
-        hover_cursor_y = cursor_y + line_height;
+        hover_cursor_y = cursor_y + row_extent;
         hover_cursor_valid = true;
     }
 
@@ -9785,6 +10497,17 @@ std::string ConfigFilePath() {
 // reaches it through this externally-linked accessor instead.
 float GetCharWidthPx() { return g_char_width; }
 
+// Same reasoning: g_font_size lives in the anonymous namespace above;
+// lua_env.cpp's own mep.font_size() binding (kBuiltinOrgLatex's DPI/
+// slot-count math) reaches it through this accessor.
+float GetFontSizePx() { return g_font_size; }
+
+// Same reasoning: EvictOrgInlineImageTexture (and the cache it operates on)
+// live in the anonymous namespace above; lua_env.cpp's own
+// mep.org_image_invalidate binding reaches it through this externally-
+// linked wrapper.
+void InvalidateOrgInlineImageTexture(const std::string &path) { EvictOrgInlineImageTexture(path); }
+
 int main(int argc, char **argv) {
     // Re-applies the default theme, redundantly with Editor::Editor()'s own
     // call: g_editor (this TU) and the palette table (editor.cpp's TU) are
@@ -9851,10 +10574,12 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinMarkdown);
     lua->DoString(kBuiltinOrg);
     lua->DoString(kBuiltinOrgLinks);
+    lua->DoString(kBuiltinOrgImages);
     lua->DoString(kBuiltinOrgCapture);
     lua->DoString(kBuiltinOrgAgenda);
     lua->DoString(kBuiltinOrgClock);
     lua->DoString(kBuiltinOrgBabel);
+    lua->DoString(kBuiltinOrgLatex);
     lua->DoString(kBuiltinOrgExport);
     lua->DoString(kBuiltinOrgRoam);
     lua->DoString(kBuiltinOrgDrill);

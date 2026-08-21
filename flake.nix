@@ -192,6 +192,16 @@
             # native window around the wasm build.
             pkgs.webkitgtk_6_0
 
+            # LaTeX/math-mode inline preview (<leader>otl, mep.org_latex_toggle_ui
+            # in src/main.cpp's kBuiltinOrgLatex): tectonic compiles a fragment's
+            # `\documentclass{standalone}` wrapper straight to a tightly-cropped
+            # PDF (self-contained, no separate TeX Live install -- it fetches
+            # packages into its own cache on first use), and pdftoppm (from
+            # poppler-utils) rasterizes that PDF to the PNG mep.org_latex_scan
+            # then displays via the same inline-image pipeline <leader>oti uses.
+            pkgs.tectonic
+            pkgs.poppler-utils
+
             # Interpreters/compilers for org-babel (mep.org_babel_langs in
             # src/main.cpp) code-block execution -- not needed to build mep
             # itself (only `just build-native`'s own cmake/ninja/gcc chain

@@ -339,22 +339,57 @@ Job *JobManager::Find(int id) {
 }
 
 void JobManager::PollAll() {
-    for (auto &e : jobs_) {
-        if (e.callbacks.on_stdout_raw) {
-            for (const std::string &chunk : e.job->DrainRaw()) e.callbacks.on_stdout_raw(chunk);
+    // Index-based, over a size snapshotted before the loop starts -- a
+    // callback below is free to call mep.job_start again (org-babel's own
+    // compiled-language chaining, kBuiltinOrgBabel, already does this from
+    // its compile job's on_exit; kBuiltinOrgLatex's tectonic->pdftoppm
+    // chain does too), which re-enters Spawn() and can push_back onto
+    // jobs_ *while this very loop is iterating it*. A `for (auto &e :
+    // jobs_)` range-for (this used to be one) keeps a reference into
+    // jobs_'s backing array across that call -- a push_back reallocating
+    // mid-iteration frees that array out from under the still-running
+    // callback, corrupting the heap (confirmed: reproducibly segfaulted,
+    // stack landing in some unrelated later allocation/lock call, exactly
+    // heap-corruption's usual signature) the moment enough jobs were ever
+    // in flight at once to trigger a reallocation -- rare for babel's
+    // usual one-job-at-a-time usage, routine for org-latex rendering
+    // several fragments' tectonic+pdftoppm chains concurrently. Snapshotting
+    // `n` also means a job started *by* a callback this frame is simply
+    // left for next frame's PollAll rather than processed (or not) within
+    // this one -- deterministic either way, and irrelevant in practice (a
+    // freshly spawned job has nothing to drain yet regardless).
+    //
+    // Every callback is copied to a local (`auto on_x = jobs_[i].callbacks.on_x`)
+    // before being invoked, rather than called through a reference straight
+    // into jobs_[i] -- the copy is an independent, stack-owned std::function
+    // that survives jobs_ reallocating during its own invocation; a
+    // reference into jobs_[i] itself would not. jobs_[i] is otherwise only
+    // ever re-indexed fresh (never cached across a callback call), and only
+    // ever grows mid-loop (erasing happens once, after), so `i < n <=
+    // jobs_.size()` holds throughout -- every jobs_[i] access below is in
+    // bounds no matter what a callback did to the tail of the vector.
+    size_t n = jobs_.size();
+    for (size_t i = 0; i < n; i++) {
+        std::shared_ptr<Job> job = jobs_[i].job;
+        auto on_stdout_raw = jobs_[i].callbacks.on_stdout_raw;
+        if (on_stdout_raw) {
+            for (const std::string &chunk : job->DrainRaw()) on_stdout_raw(chunk);
         }
-        for (const JobLine &line : e.job->DrainLines()) {
+        auto on_stdout = jobs_[i].callbacks.on_stdout;
+        auto on_stderr = jobs_[i].callbacks.on_stderr;
+        for (const JobLine &line : job->DrainLines()) {
             if (line.is_stderr) {
-                if (e.callbacks.on_stderr) e.callbacks.on_stderr(line.text);
+                if (on_stderr) on_stderr(line.text);
             } else {
-                if (e.callbacks.on_stdout) e.callbacks.on_stdout(line.text);
+                if (on_stdout) on_stdout(line.text);
             }
         }
-        if (e.job->Finished() && !e.exit_reported) {
-            e.exit_reported = true;
-            if (e.callbacks.on_exit) {
-                int code = e.job->Killed() || e.job->SpawnFailed() ? -1 : e.job->ExitCode();
-                e.callbacks.on_exit(code);
+        if (job->Finished() && !jobs_[i].exit_reported) {
+            jobs_[i].exit_reported = true;
+            auto on_exit = jobs_[i].callbacks.on_exit;
+            if (on_exit) {
+                int code = job->Killed() || job->SpawnFailed() ? -1 : job->ExitCode();
+                on_exit(code);
             }
         }
     }

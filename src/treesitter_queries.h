@@ -9150,8 +9150,21 @@ static const char *kFoldsR = R"TSQ(
 // nodes, body and all), so this alone reproduces the full headline-depth
 // nesting mep's org fold providers computed by hand -- see the comment
 // above this block for why org gets a real query here unlike every other
-// filetype with its own line-based provider.
+// filetype with its own line-based provider. `block` is org's own generic
+// `#+begin_X ... #+end_X` node (kHighlightsOrg's `@OrgBlock` capture is the
+// same node) -- covers `#+begin_src`, but also `#+begin_example`/`_quote`/
+// `_verse`/etc. uniformly, matching real Emacs org-mode's own "every
+// greater block is foldable" behavior rather than singling out src blocks
+// with a name-matching predicate. Nests naturally inside a `section`'s own
+// fold (a block's a few lines inside its enclosing headline's body) --
+// FoldNestingDepth/MaxFoldNestingDepth (editor.cpp) already handle nested
+// folds generically, so za/zm/zr and the gutter marker need no changes at
+// all to pick these up alongside headline folds under the same "org"
+// provider (RecomputeOrgFolds, editor.cpp).
 static const char *kFoldsOrg = R"TSQ(
-(section) @fold
+[
+  (section)
+  (block)
+] @fold
 )TSQ";
 

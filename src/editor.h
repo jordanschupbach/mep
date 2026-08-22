@@ -132,13 +132,25 @@ struct CursorPos {
 // non-null, receives the matched byte offsets in `str` (for highlighting).
 int FuzzyScore(const std::string &str, const std::string &query, std::vector<int> *positions = nullptr);
 
-// Filename/extension -> a short ASCII glyph (NVIM_PARITY_PLAN.md Part II
-// Phase 10). ASCII-only, not emoji/nerd-font codepoints: the embedded font's
-// glyph subset doesn't cover those (confirmed the hard way by Phase 6's
-// notification icons, which rendered as tofu "?" until switched to ASCII) --
-// upgrading to a richer style is possible later if/when a font atlas with
-// those codepoints is loaded, without changing this function's callers.
+// Filename/extension -> a Nerd Font icon glyph, UTF-8 encoded (NVIM_PARITY_
+// PLAN.md Part II Phase 10). Same Private-Use-Area codepoints nvim-web-
+// devicons/mep.nvim's own mep.icons ship (mep.nvim/lua/mep/icons/data.lua's
+// M.nerd_font table) -- a widely-deployed, known-good set. Rendered via
+// main.cpp's g_icon_font (icon_font_data.h, a pyftsubset subset of Symbols
+// Nerd Font Mono covering exactly the codepoints this function and its
+// main.cpp counterparts use), not g_font -- see DrawUiText's own comment.
 std::string IconForFilename(const std::string &name);
+
+// UTF-8-encodes a single Unicode codepoint. Icon tables below list plain hex
+// ints (e.g. 0xf15b) rather than C++ universal-character-name escapes or raw
+// multi-byte UTF-8 bytes directly in source: the short escape form is exactly
+// four hex digits and the long form exactly eight, and a codepoint above the
+// Basic Multilingual Plane (several of mep's own icons are) needs the long
+// form, zero-padded -- easy to get subtly wrong by hand, where a plain int
+// literal can't be. Icon codepoints are always in the Private Use Area or
+// Supplementary PUA-A, never a surrogate half or otherwise invalid scalar,
+// so this doesn't need to handle those cases.
+std::string Utf8FromCodepoint(int cp);
 
 // The contents of one register (yank/delete target). Registers are global
 // to the editor, not per-buffer, matching Vim -- you can yank in one
@@ -190,12 +202,32 @@ struct Decoration {
     // is empty. Distinct from VTermCell::underline (src/vterm.h), which
     // is terminal-emulator cell state, not an editor decoration.
     bool underline = false;
+    // Org emphasis (*bold*/\/italic\//+strike+, kBuiltinOrg): the editor's
+    // single monospace font (g_font, main.cpp) has no real bold/italic
+    // face, so these are faked at draw time -- bold as a double-draw
+    // offset by 1px, italic as an rlgl shear transform around the same
+    // DrawTextEx call recoloring already uses, both drawn over
+    // [col_start, col_end) the same way hl_group's own text-recolor
+    // redraw is (see DrawPane, main.cpp) -- ignored if whole_line is set
+    // or the span is empty, same as underline. strikethrough is a plain
+    // line through the span's vertical middle, the same primitive
+    // underline already uses just at a different y, and the one style
+    // here with a *real* (non-faked) equivalent already elsewhere in this
+    // codebase -- see OfficeFontFor's own comment (main.cpp) on why the
+    // docx/office viewer draws it as an overlay line too rather than a
+    // font variant.
+    bool bold = false;
+    bool italic = false;
+    bool strikethrough = false;
     // Virtual text: inline (drawn before col_start, doesn't touch the
     // buffer) or overlay (drawn *instead of* [col_start, col_start+len)).
     std::string virt_text;
     std::string virt_text_hl;
     bool virt_overlay = false;
-    char sign = 0;  // gutter glyph; 0 = none (single byte for now)
+    std::string sign;  // gutter glyph; empty = none. Multi-byte UTF-8 (a
+                        // Nerd Font icon glyph) is valid here, not just a
+                        // single ASCII char -- main.cpp's DrawUiText is
+                        // what actually renders it.
     std::string sign_hl;
     int priority = 0;
     // Colorizer swatch (Part III Phase 13): a literal RGB drawn as a small
@@ -384,14 +416,48 @@ struct Buffer {
     // all just read it back, the same three-site agreement org images'
     // fixed constant needs, just sourced from data instead of a constant.
     // Unlike org_image_rows, only ever populated while the toggle is on --
-    // a multi-line fragment's *other* raw source rows are hidden behind a
-    // 'latex'-provider closed Fold (see kBuiltinOrgLatex), a real visible
-    // side effect that must not linger once the toggle is off.
+    // a multi-line fragment's *other* raw source rows must not linger
+    // visible once the toggle is off. Unlike an earlier version of this
+    // (which hid those other rows behind a 'latex'-provider closed Fold),
+    // there's no Fold involved any more: `end_row` records the last raw
+    // buffer row the fragment's own source spanned, and DrawPane/its
+    // cursor-Y lookup/Editor::UpdateScrollForPane all jump straight from
+    // `row` to `end_row + 1` themselves (the same "consume more than one
+    // raw row" shape a closed Fold has, just without a fold's own visible
+    // "+-- N lines: ... ---" summary line taking a slot of its own --
+    // there's nothing left to summarize once the image already shows
+    // everything the block ever had to show).
     struct OrgLatexRender {
         std::string path;
         int slots = 1;
+        int end_row = 0;
     };
     std::unordered_map<int, OrgLatexRender> org_latex_rows;
+
+    // Inline math (a `$x^2$`/`\(x^2\)`/etc. fragment sharing its row with
+    // other prose, e.g. "the value $x^2$ matters here"): unlike
+    // org_latex_rows above, this can't replace the *whole* row -- mep's
+    // row renderer (DrawLineFast, main.cpp) draws one row as one run of
+    // text with no notion of a mid-row texture, so surrounding text has to
+    // stay. Instead each span is drawn as a small texture painted directly
+    // over its own [col_start, col_end) column range (paint the background
+    // color first to conceal the raw "$...$" markup, same trick
+    // Decoration's own virt_overlay uses for text), sized to fit *within*
+    // that column range's own pixel width and the line's height -- never
+    // stretched wider, so it can never bleed into whatever text follows it
+    // on the same row, at the cost of an occasional cramped render for a
+    // dense fragment packed into a short span. Populated by
+    // mep_org_latex_register_inline (kBuiltinOrgLatex), only while the
+    // toggle is on (see org_latex_rows' own comment for why that's a hard
+    // requirement here, not just a nicety -- unlike that field this one
+    // has no Fold to also gate on, so this map being non-empty is the
+    // *only* thing hiding the raw source).
+    struct OrgLatexInlineSpan {
+        int col_start = 0;
+        int col_end = 0;  // exclusive
+        std::string path;
+    };
+    std::unordered_map<int, std::vector<OrgLatexInlineSpan>> org_latex_inline;
 
     int LineCount() const { return static_cast<int>(lines.size()); }
 };
@@ -913,9 +979,6 @@ public:
     // --- Multi-pane/tab read access (for main.cpp's renderer) ---
     int TabCount() const { return static_cast<int>(tabs_.size()); }
     int ActiveTabIndex() const { return active_tab_; }
-    // Display label for a tab: the filename (or "[No Name]") of whichever
-    // pane is active within it.
-    std::string TabLabel(int tab_index) const;
     const SplitNode *ActiveTabRoot() const { return tabs_[active_tab_].root.get(); }
     int ActivePaneId() const { return tabs_[active_tab_].active_pane_id; }
     const Buffer &GetBuffer(int buffer_id) const { return buffers_[buffer_id]; }
@@ -1310,11 +1373,12 @@ public:
     bool ToggleOrgImages();
 
     // --- Org LaTeX/math-mode rendering (<leader>otl / mep.org_latex_toggle) ---
-    // Registers/replaces the rendered-PNG path and its slot count (see
-    // Buffer::OrgLatexRender) for `row` -- called once per fragment by
-    // Lua's mep.org_latex_scan() (kBuiltinOrgLatex, main.cpp), mirroring
-    // SetOrgImageRow's "one call per match" shape.
-    void SetOrgLatexRow(int row, const std::string &path, int slots);
+    // Registers/replaces the rendered-PNG path, slot count, and last raw
+    // source row (see Buffer::OrgLatexRender) for `row` -- called once per
+    // fragment by Lua's mep.org_latex_scan() (kBuiltinOrgLatex, main.cpp),
+    // mirroring SetOrgImageRow's "one call per match" shape. `end_row ==
+    // row` for a single-line fragment.
+    void SetOrgLatexRow(int row, const std::string &path, int slots, int end_row);
     // Clears every entry -- called by mep.org_latex_scan() before
     // rescanning (and when the toggle turns off), mirroring
     // ClearOrgImageRows.
@@ -1322,6 +1386,15 @@ public:
     // <leader>otl: flips org_latex_visible_ and returns the new state, same
     // shape as ToggleOrgImages.
     bool ToggleOrgLatex();
+    // Appends one inline-math span (see Buffer::OrgLatexInlineSpan) for
+    // `row` -- called once per match by mep_org_latex_register_inline
+    // (kBuiltinOrgLatex). Appends rather than replaces (unlike
+    // SetOrgLatexRow) since a single row can carry more than one inline
+    // fragment ("$x$ and $y$ are related").
+    void AddOrgLatexInlineSpan(int row, int col_start, int col_end, const std::string &path);
+    // Clears every entry -- called by mep.org_latex_scan() before
+    // rescanning (and when the toggle turns off).
+    void ClearOrgLatexInlineSpans();
 
     // --- Sidebar/panel widget (NVIM_PARITY_PLAN.md Part I Phase 7) ---
     int CreateSidebar(const std::string &title, const std::string &position, int size);
@@ -1404,8 +1477,12 @@ public:
     // for it, when this is non-empty. Cleared on every OpenPicker() so a
     // *later* unrelated picker doesn't inherit a stale preview from
     // whatever was open before it.
-    void SetPickerPreview(const std::string &text) { picker_preview_text_ = text; }
+    void SetPickerPreview(const std::string &text) {
+        picker_preview_text_ = text;
+        picker_preview_scroll_ = 0;
+    }
     const std::string &PickerPreview() const { return picker_preview_text_; }
+    int PickerPreviewScroll() const { return picker_preview_scroll_; }
 
     // --- Roam backlink-graph view (NVIM_PARITY_PLAN.md Phase 37's flagged
     // "no fuzzy backlink-graph visualization" gap, closed) ---
@@ -1498,6 +1575,14 @@ public:
     void PaneOpenBufferInTab(const std::string &path);
     void PaneNextBufferTab();
     void PanePrevBufferTab();
+    // Click-to-switch (same reasoning as GoToTab): jumps directly to buffer
+    // tab `index` in the current pane, unlike PaneNextBufferTab/
+    // PanePrevBufferTab's relative stepping -- DrawPane's own per-pane
+    // buffer-tab strip calls this for an immediate response. Only ever
+    // registered as a click handler while that pane is the active one (see
+    // DrawPane), so CurPane() always resolves back to the same pane the
+    // click was drawn on.
+    void GoToPaneBufferTab(int index);
     // Removes the current pane's active buffer tab; closes the pane itself
     // (existing ClosePane()) once its last tab is removed.
     void PaneCloseBufferTab();
@@ -1597,6 +1682,12 @@ public:
     // directly for an immediate response, the same reasoning as
     // ToggleFoldAtRow below.
     void GoToTab(int index);
+
+    // Same reasoning as GoToTab above: public because DrawTabBar's '+'/'x'
+    // buttons (and HandleTabShortcuts' Ctrl-T) call these directly, unlike
+    // TabNext/TabPrevious which only ever run through ex-commands.
+    void TabNew(const std::string &file_arg);
+    void TabDelete();
 
     // --- Hover tooltip (NVIM_PARITY_PLAN.md Phase 3 gap, closed) ---
     // A small non-modal floating window anchored near the cursor -- unlike
@@ -1846,6 +1937,19 @@ private:
     // Checked first, before mode dispatch: mod1+<letter> is global. Returns
     // true if a mapping fired (mode handlers are skipped that frame).
     bool HandleMod1Shortcuts();
+    // mod1+j/k scrolls the picker's preview column instead of the ordinary
+    // mod1+j/k pane-nav mapping while a picker with an active preview is
+    // open -- see HandleMod1Shortcuts' own Mode::Picker special-case,
+    // mirroring its existing Mode::Sidebar one. Clamped to
+    // [0, line_count-1] so it can't scroll into nothing but also can't
+    // scroll past the last line ever coming back into view.
+    void ScrollPickerPreview(int delta);
+    // Checked alongside HandleMod1Shortcuts, same reasoning: Ctrl-T (new
+    // tab) and Alt-1..Alt-9 (jump to tab by number) are fixed, global
+    // shortcuts independent of whatever mod1_ is currently configured to
+    // (mod1 only ever scans letters/Tab, never digits -- see
+    // HandleMod1Shortcuts), so they can't just be mod1 mappings themselves.
+    bool HandleTabShortcuts();
 
     bool DispatchNormalKey(int codepoint);
     bool TryLuaMapping(Mode mode, const std::string &key);
@@ -2350,8 +2454,6 @@ private:
     void OpenTerminal(const std::string &args);
     void ClosePane();
     void CyclePane(int delta);
-    void TabNew(const std::string &file_arg);
-    void TabDelete();
     void TabNext();
     void TabPrevious();
     // Fills `out` with the normalized rect of every pane in *node's subtree.
@@ -2460,6 +2562,11 @@ private:
     int picker_on_select_change_ref_ = 0;
     bool picker_raw_results_ = false;
     std::string picker_preview_text_;
+    // First preview line drawn (mod1+j/k, see HandleMod1Shortcuts) --
+    // reset to 0 by SetPickerPreview so switching the highlighted result
+    // doesn't leave a later item's preview scrolled to wherever the
+    // previous one happened to be.
+    int picker_preview_scroll_ = 0;
 
     bool roam_graph_open_ = false;
     std::string roam_graph_title_;

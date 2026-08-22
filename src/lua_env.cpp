@@ -541,6 +541,15 @@ Decoration ReadDecorationTable(lua_State *L, int idx) {
     lua_getfield(L, idx, "underline");
     d.underline = lua_toboolean(L, -1);
     lua_pop(L, 1);
+    lua_getfield(L, idx, "bold");
+    d.bold = lua_toboolean(L, -1);
+    lua_pop(L, 1);
+    lua_getfield(L, idx, "italic");
+    d.italic = lua_toboolean(L, -1);
+    lua_pop(L, 1);
+    lua_getfield(L, idx, "strikethrough");
+    d.strikethrough = lua_toboolean(L, -1);
+    lua_pop(L, 1);
     lua_getfield(L, idx, "hl_group");
     if (lua_isstring(L, -1)) d.hl_group = lua_tostring(L, -1);
     lua_pop(L, 1);
@@ -554,10 +563,7 @@ Decoration ReadDecorationTable(lua_State *L, int idx) {
     d.virt_overlay = lua_toboolean(L, -1);
     lua_pop(L, 1);
     lua_getfield(L, idx, "sign");
-    if (lua_isstring(L, -1)) {
-        const char *s = lua_tostring(L, -1);
-        if (s[0]) d.sign = s[0];
-    }
+    if (lua_isstring(L, -1)) d.sign = lua_tostring(L, -1);
     lua_pop(L, 1);
     lua_getfield(L, idx, "sign_hl");
     if (lua_isstring(L, -1)) d.sign_hl = lua_tostring(L, -1);
@@ -800,15 +806,19 @@ int l_org_image_invalidate(lua_State *L) {
     return 0;
 }
 
-// mep.buf_set_latex_row(row, path, slots) -- row 1-indexed, same convention
-// as mep.buf_set_image_row. `path` is a rendered fragment's PNG (already
-// produced by mep_org_latex_render, kBuiltinOrgLatex); `slots` is that
-// fragment's own display height in line-heights (see Buffer::OrgLatexRender).
+// mep.buf_set_latex_row(row, path, slots, end_row) -- row/end_row
+// 1-indexed, same convention as mep.buf_set_image_row. `path` is a
+// rendered fragment's PNG (already produced by mep_org_latex_render,
+// kBuiltinOrgLatex); `slots` is that fragment's own display height in
+// line-heights; `end_row` is the last raw source row the fragment's own
+// text spanned (== row for a single-line fragment) -- see
+// Buffer::OrgLatexRender.
 int l_buf_set_latex_row(lua_State *L) {
     int row = static_cast<int>(luaL_checkinteger(L, 1)) - 1;
     const char *path = luaL_checkstring(L, 2);
     int slots = static_cast<int>(luaL_checkinteger(L, 3));
-    GetEditor(L)->SetOrgLatexRow(row, path, slots);
+    int end_row = static_cast<int>(luaL_checkinteger(L, 4)) - 1;
+    GetEditor(L)->SetOrgLatexRow(row, path, slots, end_row);
     return 0;
 }
 
@@ -836,6 +846,28 @@ int l_org_latex_toggle(lua_State *L) {
 int l_org_latex_visible(lua_State *L) {
     lua_pushboolean(L, GetEditor(L)->OrgLatexVisible());
     return 1;
+}
+
+// mep.buf_add_latex_inline(row, col_start, col_end, path) -- same 1-indexed/
+// exclusive-col_end convention as mep.deco_add's opts table. Appends one
+// inline-math span (Buffer::OrgLatexInlineSpan) for `row`; called once per
+// match by mep_org_latex_register_inline (kBuiltinOrgLatex).
+int l_buf_add_latex_inline(lua_State *L) {
+    int row = static_cast<int>(luaL_checkinteger(L, 1)) - 1;
+    int col_start = static_cast<int>(luaL_checkinteger(L, 2)) - 1;
+    int col_end = static_cast<int>(luaL_checkinteger(L, 3)) - 1;
+    const char *path = luaL_checkstring(L, 4);
+    GetEditor(L)->AddOrgLatexInlineSpan(row, col_start, col_end, path);
+    return 0;
+}
+
+// mep.buf_clear_latex_inline(): clears the current buffer's whole inline-span
+// registry -- mep.org_latex_scan calls this before rescanning (and when the
+// toggle turns off; see Buffer::org_latex_inline's own comment for why that
+// matters here even more than it does for buf_clear_latex_rows).
+int l_buf_clear_latex_inline(lua_State *L) {
+    GetEditor(L)->ClearOrgLatexInlineSpans();
+    return 0;
 }
 
 // mep.font_size() -> the current editor pixel font size (g_font_size,
@@ -2059,6 +2091,8 @@ const luaL_Reg kMepFuncs[] = {
     {"buf_clear_latex_rows", l_buf_clear_latex_rows},
     {"org_latex_toggle", l_org_latex_toggle},
     {"org_latex_visible", l_org_latex_visible},
+    {"buf_add_latex_inline", l_buf_add_latex_inline},
+    {"buf_clear_latex_inline", l_buf_clear_latex_inline},
     {"font_size", l_font_size},
     {"image_size", l_image_size},
     {"sidebar_create", l_sidebar_create},

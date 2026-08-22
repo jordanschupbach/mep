@@ -1,4 +1,5 @@
 #include "raylib.h"
+#include "rlgl.h"  // rlPushMatrix/rlMultMatrixf/rlTranslatef -- org emphasis italic's shear transform
 
 #include <algorithm>
 #include <cmath>
@@ -19,6 +20,7 @@
 
 #include "editor.h"
 #include "font_data.h"
+#include "icon_font_data.h"
 #include "job.h"
 #include "lua_env.h"
 #include "vterm.h"
@@ -43,6 +45,47 @@ Editor g_editor;
 Font g_font;
 float g_font_size = kDefaultFontSize;
 float g_char_width = 0;
+
+// Nerd Font icon glyphs (Private Use Area codepoints), reloaded alongside
+// g_font at the same size in ApplyFontSize -- a *separate* font rather
+// than folding these into g_font's own atlas, since g_font is loaded with
+// no explicit codepoint list (LoadFontFromMemory's default ASCII 32..126
+// range) and raylib bakes one atlas per LoadFontFromMemory call from one
+// font file; there's no "add more glyphs from a second file" API. Backing
+// data is icon_font_data.h, a pyftsubset subset of Symbols Nerd Font Mono
+// covering exactly kIconCodepoints below -- the full font is ~10,000
+// glyphs/2.5MB, tiny fraction of which mep actually draws.
+Font g_icon_font{};
+
+// Every codepoint g_icon_font is loaded with -- doubles as the "does this
+// codepoint have an icon glyph at all" check DrawUiText uses to route a
+// given character to g_icon_font vs g_font, since GetGlyphIndex's "not
+// found" return (0) is indistinguishable from a legitimate index 0 without
+// this. Keep in sync with icon_font_data.h's own codepoint set (its header
+// comment has the regeneration command) -- IconForFilename (editor.cpp)
+// and every kIcon* constant below only ever draw correctly if the
+// codepoint they return is also listed here.
+constexpr int kIconCodepoints[] = {
+    // Generic file/folder (also IconForFilename's own fallback).
+    0xf15b, 0xf07b, 0xf07c,
+    // Per-language/extension (IconForFilename, editor.cpp) -- mirrors
+    // mep.nvim/lua/mep/icons/data.lua's M.nerd_font table.
+    0xe620, 0xe606, 0xe60c, 0xe625, 0xe628, 0xe7ba, 0xe627, 0xe68b, 0xe791, 0xe738, 0xe61e, 0xf0fd, 0xe61d, 0xf031b,
+    0xe608, 0xe795, 0xe760, 0xe60b, 0xe8eb, 0xe6b2, 0xf05c0, 0xe736, 0xe6b8, 0xe603, 0xf48a, 0xe609, 0xf0219, 0xe706,
+    0xe62b, 0xe672, 0xf0331, 0xeaeb, 0xe60d, 0xf0721, 0xf410, 0xe64a, 0xf462, 0xe779, 0xf0868, 0xe702, 0xe652, 0xe60a,
+    0xe633,
+    // UI chrome: tab bar circles/buttons, notify toasts, LSP diagnostics,
+    // todoscan gutter signs, DAP breakpoints (see each's own kIcon*
+    // constant below for which is which).
+    0xf111, 0xf10c, 0xf057, 0xf071, 0xf05a, 0xf0eb, 0xf188, 0xf00c, 0xf0ad, 0xf0e7, 0xf24a, 0xf00d, 0xf067,
+};
+
+bool IsIconCodepoint(int cp) {
+    for (int c : kIconCodepoints) {
+        if (c == cp) return true;
+    }
+    return false;
+}
 
 // The 4 Liberation Sans weight/style variants for WYSIWYG office panes
 // (Editor::OfficeSession) -- unlike g_font, these are loaded once at a
@@ -246,6 +289,48 @@ std::vector<std::string> SplitLines(const std::string &text) {
     return lines;
 }
 
+// The part of `path` after its last '/', or the whole thing if there isn't
+// one -- DrawPane's own pane-header label (both the single-buffer and
+// per-pane buffer-tab-strip cases) shows just this, not the full path.
+std::string Basename(const std::string &path) {
+    size_t slash = path.find_last_of('/');
+    return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+
+// Draws UI chrome text (sidebar widget rows, tab labels, toasts, ...) that
+// may have an icon glyph (IconForFilename et al.) mixed into an otherwise
+// ordinary string -- decodes by Unicode codepoint (GetCodepointNext, same
+// as DrawLineFast's own reasoning) and routes each one to g_icon_font or
+// g_font depending on IsIconCodepoint, since g_font's own atlas is ASCII-
+// only (ApplyFontSize) and would just draw nothing for a PUA codepoint.
+// Proportional advance (MeasureTextEx per glyph), not DrawLineFast's fixed-
+// column grid -- this is chrome text, not a buffer line. `measure_only`
+// skips the actual DrawTextEx calls but still walks/measures every glyph,
+// so MeasureUiText below can share this same implementation instead of
+// duplicating the decode loop. Returns the total width drawn/measured, the
+// same thing a plain MeasureTextEx(g_font, text, ...).x would for an
+// icon-free string, so callers that need it (click-region sizing, right-
+// alignment, toast box width) don't need a second pass.
+float DrawUiText(const std::string &text, Vector2 pos, float font_size, Color tint, bool measure_only = false) {
+    float x = pos.x;
+    const char *s = text.c_str();
+    int len = static_cast<int>(text.size());
+    for (int i = 0; i < len;) {
+        int cp_size = 0;
+        int cp = GetCodepointNext(&s[i], &cp_size);
+        std::string glyph(s + i, cp_size);
+        i += cp_size;
+        const Font &f = IsIconCodepoint(cp) ? g_icon_font : g_font;
+        if (!measure_only) DrawTextEx(f, glyph.c_str(), Vector2{x, pos.y}, font_size, 0, tint);
+        x += MeasureTextEx(f, glyph.c_str(), font_size, 0).x;
+    }
+    return x - pos.x;
+}
+
+float MeasureUiText(const std::string &text, float font_size) {
+    return DrawUiText(text, Vector2{0, 0}, font_size, BLANK, true);
+}
+
 // raylib's GetGlyphIndex(font, codepoint) -- called by DrawTextEx once and
 // then again inside DrawTextCodepoint, so twice per character drawn -- is a
 // linear scan over every loaded glyph (95 of them here: the default ASCII
@@ -275,6 +360,16 @@ void ApplyFontSize(float size) {
     SetTextureFilter(g_font.texture, TEXTURE_FILTER_BILINEAR);
     g_char_width = MeasureTextEx(g_font, "M", g_font_size, 0).x;
     CacheGlyphIndices();
+
+    if (g_icon_font.texture.id != 0) UnloadFont(g_icon_font);
+    // LoadFontFromMemory's codepoints parameter is (non-const) int* even
+    // though it only ever reads from it -- const_cast is safe here since
+    // kIconCodepoints is a compile-time array raylib can't actually
+    // mutate through that pointer regardless of the signature.
+    g_icon_font = LoadFontFromMemory(".ttf", kIconFontTtf, static_cast<int>(kIconFontTtfLen),
+                                      static_cast<int>(g_font_size * 2), const_cast<int *>(kIconCodepoints),
+                                      static_cast<int>(sizeof(kIconCodepoints) / sizeof(kIconCodepoints[0])));
+    SetTextureFilter(g_icon_font.texture, TEXTURE_FILTER_BILINEAR);
 }
 
 // Bakes the 4 office-pane fonts once, at startup only (see g_office_font_*'s
@@ -613,13 +708,16 @@ const char *kBuiltinEditHooks =
 // mep.nvim's picker source set (Phase 8). Defined in Lua rather than C++
 // so they're just ordinary `mep.picker_open()` consumers -- user config
 // can override any of these functions the same way it overrides mappings.
-// Directory/tree/UI-action icon set (Phase 10) -- plain ASCII, same
-// rendering-support-check rationale as IconForFilename (editor.cpp).
+// Directory/tree/UI-action icon set (Phase 10). dir_open/dir_closed (the
+// only two of this table actually consumed, by mep.tree_refresh below) are
+// real Nerd Font glyphs now that g_icon_font exists (main.cpp's
+// kIconCodepoints) -- tree_expand/tree_collapse/notify/todo/tests/git/add/
+// clear stay plain ASCII placeholders since nothing reads them yet.
 // Per-file icons go through mep.icon_for_file() (extension table lives in
 // C++); this small fixed set doesn't need a lookup table, just constants.
 const char *kBuiltinIcons =
     "mep.icons = {\n"
-    "  dir_open = 'v', dir_closed = '>', tree_expand = '>', tree_collapse = 'v',\n"
+    "  dir_open = '', dir_closed = '', tree_expand = '>', tree_collapse = 'v',\n"
     "  notify = 'i', todo = 'o', tests = 'T', git = 'G', add = '+', clear = 'x',\n"
     "}\n";
 
@@ -815,20 +913,24 @@ const char *kBuiltinFileTree =
     "mep.command('MepFileTree', function() mep.tree_toggle() end)\n"
     "mep.leader_map('ff', 'Toggle file tree', function() mep.tree_toggle() end)\n"
     "local MEP_README_NAMES = {'README.md', 'README.org', 'README.txt', 'README'}\n"
+    // Shared by mep.project_open below and mep.projects()'s picker preview
+    // pane further down: first name in MEP_README_NAMES present (as a
+    // file, not a dir) in `dir` wins, so README.org is only preferred over
+    // README.md etc. by its position in that list. nil if none match.
+    "local function mep_project_readme_path(dir)\n"
+    "  local entries = mep.list_dir(dir)\n"
+    "  for _, name in ipairs(MEP_README_NAMES) do\n"
+    "    for _, e in ipairs(entries) do\n"
+    "      if not e.is_dir and e.name == name then return dir .. '/' .. name end\n"
+    "    end\n"
+    "  end\n"
+    "  return nil\n"
+    "end\n"
     "function mep.project_open(dir)\n"
     "  mep.chdir(dir)\n"
-    "  local opened_readme = false\n"
-    "  for _, name in ipairs(MEP_README_NAMES) do\n"
-    "    local entries = mep.list_dir(dir)\n"
-    "    for _, e in ipairs(entries) do\n"
-    "      if not e.is_dir and e.name == name then\n"
-    "        mep.cmd('e ' .. dir .. '/' .. name)\n"
-    "        opened_readme = true\n"
-    "        break\n"
-    "      end\n"
-    "    end\n"
-    "    if opened_readme then break end\n"
-    "  end\n"
+    "  local readme = mep_project_readme_path(dir)\n"
+    "  local opened_readme = readme ~= nil\n"
+    "  if opened_readme then mep.cmd('e ' .. readme) end\n"
     // A bare `:terminal` always opens its new pane above/left of whatever
     // was focused (vim's default split direction) -- so to land the
     // terminal *below* the readme, split first (the readme's own pane
@@ -873,9 +975,28 @@ const char *kBuiltinFileTree =
     "  end\n"
     "  items[#items + 1] = '+ Add current directory'\n"
     "  items[#items + 1] = '- Remove a project...'\n"
+    "  local project_count = #items\n"
     "  local function add_current()\n"
     "    mep.project_add('.')\n"
     "    mep.notify('Added current directory as a project')\n"
+    "  end\n"
+    // Preview pane (project picker's own version of find_files/live_grep's
+    // mep_picker_preview_file usage above): shows the highlighted
+    // project's README, trying MEP_README_NAMES in order so README.org
+    // (this editor's own convention) is picked over README.md etc. when a
+    // project happens to have more than one. The '+'/'-' action rows
+    // aren't project directories, so they just clear the pane instead.
+    "  local function preview_project(item)\n"
+    "    if item == '+ Add current directory' or item == '- Remove a project...' then\n"
+    "      mep.picker_set_preview('')\n"
+    "      return\n"
+    "    end\n"
+    "    local readme = mep_project_readme_path(item)\n"
+    "    if readme then\n"
+    "      mep_picker_preview_file(readme, 60)\n"
+    "    else\n"
+    "      mep.picker_set_preview('(no README found in ' .. item .. ')')\n"
+    "    end\n"
     "  end\n"
     "  mep.picker_open('Projects', items, function(item)\n"
     "    if not item then return end\n"
@@ -891,7 +1012,13 @@ const char *kBuiltinFileTree =
     "      add_current()\n"
     "      mep.picker_close()\n"
     "    end\n"
-    "  end)\n"
+    "  end, preview_project)\n"
+    // on_select_change (just wired above) only fires once the highlighted
+    // row actually *changes*, so the picker would otherwise open on the
+    // first project with an empty preview pane until the user pressed an
+    // arrow key -- preview it immediately here to match the "preview by
+    // default" behavior on_select_change gives every row after the first.
+    "  if project_count > 0 then preview_project(items[1].data) end\n"
     "end\n"
     "mep.command('MepProjects', mep.projects)\n"
     "mep.command('MepProjectAdd', function() mep.project_add('.') end)\n"
@@ -1120,12 +1247,12 @@ const char *kBuiltinTodo =
     // of the two fields -- falls back to MEP_TODO_DEFAULT below field by
     // field, so nothing breaks for keywords the user hasn't customized.
     "mep.todoscan_keywords = {\n"
-    "  TODO  = {glyph = 'T', hl = 'Yellow'},\n"
-    "  FIXME = {glyph = 'F', hl = 'Red'},\n"
-    "  HACK  = {glyph = 'H', hl = 'Orange'},\n"
-    "  NOTE  = {glyph = 'N', hl = 'Blue'},\n"
+    "  TODO  = {glyph = '', hl = 'Yellow'},\n"
+    "  FIXME = {glyph = '', hl = 'Red'},\n"
+    "  HACK  = {glyph = '', hl = 'Orange'},\n"
+    "  NOTE  = {glyph = '', hl = 'Blue'},\n"
     "}\n"
-    "local MEP_TODO_DEFAULT = {glyph = 'T', hl = 'Warn'}\n"
+    "local MEP_TODO_DEFAULT = {glyph = '', hl = 'Warn'}\n"
     "local mep_todo_ns = nil\n"
     "function mep.todo_mark_buffer()\n"
     "  if not mep_todo_ns then mep_todo_ns = mep.ns_create('todoscan') end\n"
@@ -1696,7 +1823,7 @@ const char *kBuiltinLsp =
     // shared since this all lives in the same DoString chunk).
     "local mep_diag_ns = nil\n"
     "local MEP_DIAG_SEVERITY = {[1] = 'Error', [2] = 'Warn', [3] = 'Info', [4] = 'Hint'}\n"
-    "local MEP_DIAG_GLYPH = {[1] = 'E', [2] = 'W', [3] = 'I', [4] = 'H'}\n"
+    "local MEP_DIAG_GLYPH = {[1] = '', [2] = '', [3] = '', [4] = ''}\n"
     "function mep.lsp_render_diagnostics()\n"
     "  if not mep_diag_ns then mep_diag_ns = mep.ns_create('diagnostics') end\n"
     "  mep.ns_clear(mep_diag_ns)\n"
@@ -2400,12 +2527,12 @@ const char *kBuiltinDap =
     "  for i, r in ipairs(bps) do\n"
     "    if r == row then table.remove(bps, i)\n"
     "      mep.ns_clear(mep_dap_ns)\n"
-    "      for _, r2 in ipairs(bps) do mep.deco_add(mep_dap_ns, {row = r2, sign = 'B', sign_hl = 'Red'}) end\n"
+    "      for _, r2 in ipairs(bps) do mep.deco_add(mep_dap_ns, {row = r2, sign = '', sign_hl = 'Red'}) end\n"
     "      return\n"
     "    end\n"
     "  end\n"
     "  bps[#bps + 1] = row\n"
-    "  mep.deco_add(mep_dap_ns, {row = row, sign = 'B', sign_hl = 'Red'})\n"
+    "  mep.deco_add(mep_dap_ns, {row = row, sign = '', sign_hl = 'Red'})\n"
     "end\n"
     "function mep.dap_start(lang)\n"
     "  local adapter = mep.dap_adapters[lang]\n"
@@ -2606,6 +2733,107 @@ const char *kBuiltinSyntax =
     "  scala = 'scala', zig = 'zig', nim = 'nim', crystal = 'cr', java = 'java',\n"
     "  kotlin = 'kt', haskell = 'hs', ocaml = 'ml', d = 'd',\n"
     "}\n"
+    // Org emphasis markup (*bold*/\/italic\//_underline_/+strike+/=verbatim=/
+    // ~code~), a hand-rolled scanner since the vendored org grammar has no
+    // emphasis nodes to query (confirmed against third_party/grammars/org's
+    // own node types -- headlines/tags/properties/timestamps/blocks/etc.
+    // are there, emphasis marks aren't). Markers are left visible (matching
+    // real Emacs org-mode's own default -- org-hide-emphasis-markers is off
+    // by default there too) and the *whole* matched span, markers included,
+    // gets the styling -- simpler than concealing them, and composes
+    // cleanly with the bold/italic/underline/strikethrough Decoration
+    // fields (main.cpp's DrawPane), which style whatever text is actually
+    // in [col_start, col_end) rather than a separate virt_text substitute.
+    //
+    // Matching follows real org's own emphasis rules (org-emphasis-regexp-
+    // components): a marker only opens if preceded by line-start or a
+    // non-word character (rules out mid-identifier characters -- the `_`
+    // in `snake_case`, the `*` in `a*b` multiplication) and immediately
+    // followed by a non-space, non-marker character (rules out `* not
+    // this*` and a headline's own leading `* `/`** `/etc., which always
+    // has a space right after its last asterisk); a marker only closes if
+    // immediately preceded by a non-space character and immediately
+    // followed by line-end or a non-word character (rules out
+    // `x_1`-style LaTeX subscripts and `$5-$10`-style adjacency, though
+    // that specific case is kBuiltinOrgLatex's own problem, not this
+    // scanner's -- included here only because the same rule shape happens
+    // to help). Unlike kBuiltinOrgLatex's inline-math scanner (a different
+    // file, same shape of problem), a real quote character isn't
+    // ambiguous the way bare `$` is, so there's no need for the extra
+    // not-followed-by-digit refinement that scanner has.
+    "local MEP_ORG_EMPHASIS_MARKERS = {\n"
+    "  ['*'] = 'bold', ['/'] = 'italic', ['_'] = 'underline',\n"
+    "  ['+'] = 'strikethrough', ['='] = 'verbatim', ['~'] = 'code',\n"
+    "}\n"
+    "local function mep_org_emphasis_is_word(ch) return ch ~= '' and ch:match('%w') ~= nil end\n"
+    "local function mep_org_scan_emphasis(line)\n"
+    "  local spans = {}\n"
+    "  local i, n = 1, #line\n"
+    "  while i <= n do\n"
+    "    local ch = line:sub(i, i)\n"
+    "    local kind = MEP_ORG_EMPHASIS_MARKERS[ch]\n"
+    "    if kind then\n"
+    "      local pre = line:sub(i - 1, i - 1)\n"
+    "      local nxt = line:sub(i + 1, i + 1)\n"
+    "      if (i == 1 or not mep_org_emphasis_is_word(pre)) and nxt ~= '' and nxt ~= ' ' and nxt ~= ch then\n"
+    "        local search_from = i + 1\n"
+    "        local found_end = nil\n"
+    "        while true do\n"
+    "          local s = line:find(ch, search_from, true)\n"
+    "          if not s then break end\n"
+    "          local prev_char = line:sub(s - 1, s - 1)\n"
+    "          local after_char = line:sub(s + 1, s + 1)\n"
+    "          if prev_char ~= ' ' and prev_char ~= ch and not mep_org_emphasis_is_word(after_char) then\n"
+    "            found_end = s\n"
+    "            break\n"
+    "          end\n"
+    "          search_from = s + 1\n"
+    "        end\n"
+    "        if found_end then\n"
+    "          spans[#spans + 1] = {col_start = i, col_end = found_end + 1, kind = kind}\n"
+    "          i = found_end + 1\n"
+    "        else\n"
+    "          i = i + 1\n"
+    "        end\n"
+    "      else\n"
+    "        i = i + 1\n"
+    "      end\n"
+    "    else\n"
+    "      i = i + 1\n"
+    "    end\n"
+    "  end\n"
+    "  return spans\n"
+    "end\n"
+    // Skips scanning inside any #+begin_X ... #+end_X block (kBuiltinOrgLatex
+    // block-detection, above, uses the same case-insensitive pattern) --
+    // literal block contents (a code block's own `_`/`*` characters, an
+    // example block's prose) were never meant to be re-interpreted as
+    // emphasis, the same reasoning RecomputeOrgFolds' own comment
+    // (editor.cpp) gives for why headline folding needs org's real grammar
+    // instead of a naive line scan.
+    "local function mep_syntax_highlight_org_emphasis(ns, lines)\n"
+    "  local in_block = false\n"
+    "  for i = 1, #lines do\n"
+    "    local line = lines[i]\n"
+    "    if in_block then\n"
+    "      if line:match('^%s*#%+[Ee][Nn][Dd]_%a+') then in_block = false end\n"
+    "    elseif line:match('^%s*#%+[Bb][Ee][Gg][Ii][Nn]_%a+') then\n"
+    "      in_block = true\n"
+    "    else\n"
+    "      for _, span in ipairs(mep_org_scan_emphasis(line)) do\n"
+    "        local d = {row = i, col_start = span.col_start, col_end = span.col_end}\n"
+    "        if span.kind == 'bold' then d.bold = true\n"
+    "        elseif span.kind == 'italic' then d.italic = true\n"
+    "        elseif span.kind == 'underline' then d.underline = true\n"
+    "        elseif span.kind == 'strikethrough' then d.strikethrough = true d.hl_group = 'Comment'\n"
+    "        elseif span.kind == 'verbatim' then d.hl_group = 'Green'\n"
+    "        elseif span.kind == 'code' then d.hl_group = 'Cyan'\n"
+    "        end\n"
+    "        mep.deco_add(ns, d)\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "end\n"
     // Scans `lines` (a 1-indexed array mirroring the current buffer, same
     // shape mep.syntax_highlight already builds) for
     // `#+begin_src <lang>` / `#+end_src` pairs and runs each one's own
@@ -2671,7 +2899,10 @@ const char *kBuiltinSyntax =
     "        mep.deco_add(mep_syntax_ns, {row = cap.row, col_start = cap.col_start, col_end = cap.col_end, hl_group = hl})\n"
     "      end\n"
     "    end\n"
-    "    if ft == 'org' then mep_syntax_highlight_org_src_blocks(mep_syntax_ns, lines) end\n"
+    "    if ft == 'org' then\n"
+    "      mep_syntax_highlight_org_src_blocks(mep_syntax_ns, lines)\n"
+    "      mep_syntax_highlight_org_emphasis(mep_syntax_ns, lines)\n"
+    "    end\n"
     "    return\n"
     "  end\n"
     // No grammar vendored for this filetype: fall back to the
@@ -5719,6 +5950,60 @@ const char *kBuiltinOrgLatex =
     "  return #s > #open + #close and s:sub(1, #open) == open and s:sub(-#close) == close\n"
     "end\n"
     "\n"
+    "-- Finds every $..$/\\(..\\)/\\[..\\]/$$..$$ fragment embedded *within* a line\n"
+    "-- that isn't wholly consumed by one (mep.org_latex_scan's own whole-line\n"
+    "-- forms already handle that case) -- \"the value $x^2$ matters here\".\n"
+    "-- Returns a list of {col_start, col_end, body}, 1-indexed/exclusive-end,\n"
+    "-- same convention as mep.deco_add's opts table.\n"
+    "-- Bare `$` is the only ambiguous delimiter (currency: \"$5\", \"$5-$10\") --\n"
+    "-- applies Pandoc's own tex_math_dollars heuristic: the char right after\n"
+    "-- an opening $ and right before a closing $ must both be non-space, and\n"
+    "-- the char right after a closing $ must not be a digit (rules out\n"
+    "-- \"$5-$10\" and \"$20,$30\", which the naive \"next $ wins\" scan wouldn't).\n"
+    "-- \\(..\\)/\\[..\\]/$$..$$ have unambiguous 2-char delimiters, no such\n"
+    "-- heuristic needed there.\n"
+    "local function mep_org_latex_scan_inline(line)\n"
+    "  local spans = {}\n"
+    "  local i, n = 1, #line\n"
+    "  while i <= n do\n"
+    "    local two = line:sub(i, i + 1)\n"
+    "    local body, span_end\n"
+    "    if two == '\\\\[' then\n"
+    "      local s = line:find('\\\\]', i + 2, true)\n"
+    "      if s then body, span_end = line:sub(i, s + 1), s + 1 end\n"
+    "    elseif two == '$$' then\n"
+    "      local s = line:find('$$', i + 2, true)\n"
+    "      if s then body, span_end = line:sub(i, s + 1), s + 1 end\n"
+    "    elseif two == '\\\\(' then\n"
+    "      local s = line:find('\\\\)', i + 2, true)\n"
+    "      if s then body, span_end = line:sub(i, s + 1), s + 1 end\n"
+    "    elseif line:sub(i, i) == '$' then\n"
+    "      local next_char = line:sub(i + 1, i + 1)\n"
+    "      if next_char ~= '' and next_char ~= ' ' and next_char ~= '$' then\n"
+    "        local search_from = i + 1\n"
+    "        while true do\n"
+    "          local s = line:find('%$', search_from, false)\n"
+    "          if not s then break end\n"
+    "          local prev_char = line:sub(s - 1, s - 1)\n"
+    "          local after_char = line:sub(s + 1, s + 1)\n"
+    "          if prev_char ~= ' ' and not after_char:match('%d') then\n"
+    "            body, span_end = line:sub(i, s), s\n"
+    "            break\n"
+    "          end\n"
+    "          search_from = s + 1\n"
+    "        end\n"
+    "      end\n"
+    "    end\n"
+    "    if body and #body > 2 then\n"
+    "      spans[#spans + 1] = {col_start = i, col_end = span_end + 1, body = body}\n"
+    "      i = span_end + 1\n"
+    "    else\n"
+    "      i = i + 1\n"
+    "    end\n"
+    "  end\n"
+    "  return spans\n"
+    "end\n"
+    "\n"
     "local MEP_ORG_LATEX_PREAMBLE = table.concat({\n"
     "  '\\\\documentclass[11pt,preview,border=1pt,varwidth]{standalone}',\n"
     "  '\\\\usepackage{amsmath}',\n"
@@ -5813,20 +6098,26 @@ const char *kBuiltinOrgLatex =
     "    if not w then return end\n"
     "    local line_height = math.floor(mep.font_size()) + 6\n"
     "    local slots = math.max(1, math.ceil(h / line_height))\n"
-    // No mep.org_image_invalidate call needed here (unlike babel's :file
-    // results, kBuiltinOrgBabel): png_path is content-hashed
-    // (mep_org_latex_render's own key, above) and, once written, is never
-    // rewritten in place under the same name -- GetOrLoadOrgLatexTexture's
-    // own cache (main.cpp) has nothing stale to invalidate. It reloads
-    // for a genuinely new path on its own (first sight of it) and
-    // re-recolors an already-loaded one on a theme change via
-    // Editor::ThemeEpoch(), with no mtime tracking at all.
-    "    mep.buf_set_latex_row(start_row, png_path, slots)\n"
+    "    mep.buf_set_latex_row(start_row, png_path, slots, end_row)\n"
+    "  end)\n"
+    "end\n"
+    "\n"
+    "-- Same idea as mep_org_latex_register, but for one inline span rather than\n"
+    "-- a whole row -- no slot math (an inline fragment is always drawn to fit\n"
+    "-- within one line, see the C++ draw-time scaling, main.cpp).\n"
+    "local function mep_org_latex_register_inline(row, col_start, col_end, tex_body)\n"
+    "  mep_org_latex_render(tex_body, function(png_path, err)\n"
+    "    if not png_path then\n"
+    "      if err then mep.notify('LaTeX: ' .. err, 'warn') end\n"
+    "      return\n"
+    "    end\n"
+    "    mep.buf_add_latex_inline(row, col_start, col_end, png_path)\n"
     "  end)\n"
     "end\n"
     "\n"
     "function mep.org_latex_scan()\n"
     "  mep.buf_clear_latex_rows()\n"
+    "  mep.buf_clear_latex_inline()\n"
     "  mep.fold_clear_provider('latex')\n"
     "  if not mep.org_latex_visible() then return end\n"
     "  if mep_lsp_filetype(mep.filename()) ~= 'org' then return end\n"
@@ -5845,12 +6136,6 @@ const char *kBuiltinOrgLatex =
     "      end\n"
     "      if j <= n then body, end_row = table.concat(lines, '\\n'), j end\n"
     "    elseif line:match('^%s*#%+[Bb][Ee][Gg][Ii][Nn]_[Ss][Rr][Cc]%s+[Ll][Aa][Tt][Ee][Xx]') then\n"
-    // Deliberately not mep_org_src_block_at (kBuiltinOrgBabel) -- that's a
-    // `local function`, invisible from this chunk's own separate DoString
-    // call (each lua->DoString(...) in main() is its own top-level chunk;
-    // Lua locals don't cross that boundary, only true globals do). A
-    // small self-contained #+END_SRC scan instead, mirroring the
-    // #+BEGIN_LaTeX branch just above.
     "      local lines, j = {}, i + 1\n"
     "      while j <= n and not mep.get_line(j):match('^%s*#%+[Ee][Nn][Dd]_[Ss][Rr][Cc]') do\n"
     "        lines[#lines + 1] = mep.get_line(j)\n"
@@ -5884,9 +6169,14 @@ const char *kBuiltinOrgLatex =
     "\n"
     "    if body and body ~= '' then\n"
     "      mep_org_latex_register(i, end_row, body)\n"
-    "      if end_row > i then mep.fold_create(i + 1, end_row, true, 'latex') end\n"
     "      i = end_row + 1\n"
     "    else\n"
+    "      -- No whole-line form matched -- this line isn't *entirely* a\n"
+    "      -- fragment, but may still have one or more embedded inline ones\n"
+    "      -- (\"the value $x^2$ matters here\").\n"
+    "      for _, span in ipairs(mep_org_latex_scan_inline(line)) do\n"
+    "        mep_org_latex_register_inline(i, span.col_start, span.col_end, span.body)\n"
+    "      end\n"
     "      i = i + 1\n"
     "    end\n"
     "  end\n"
@@ -6156,9 +6446,30 @@ const char *kBuiltinOrgExport =
 // headline) per org-roam v2 convention, `[[id:...][title]]` links reuse
 // Phase 30's link machinery (org_link_follow's `id:` branch) unchanged.
 const char *kBuiltinOrgRoam =
-    "mep.org_roam_dirs = {}\n"
+    // Defaults to ~/org-roam/wiki (a user config's own init.lua assignment
+    // to mep.org_roam_dirs, evaluated after this file's own DoString call
+    // in main(), simply overwrites this the same way it already overrides
+    // any other kBuiltin* default) -- the directory itself (both levels,
+    // ~/org-roam and ~/org-roam/wiki) is created lazily, on first actual
+    // write (mep_org_roam_ensure_dir, called from org_roam_new_note/
+    // org_roam_daily below), not eagerly here at startup: a user who never
+    // touches org-roam shouldn't get a new folder under their home
+    // directory just for having launched mep.
+    "local mep_org_roam_default_dir = (os.getenv('HOME') or '.') .. '/org-roam/wiki'\n"
+    "mep.org_roam_dirs = {mep_org_roam_default_dir}\n"
     "mep.org_roam_daily_dir = nil\n"
     "local mep_org_roam_sidebar_id = nil\n"
+    // mep.fs_mkdir only creates one level (std::filesystem::create_directory,
+    // not create_directories) -- recurses up to create any missing parent
+    // (~/org-roam itself, for the ~/org-roam/wiki default) before the leaf,
+    // same as `mkdir -p`. A no-op, not an error, on a dir that already
+    // exists (create_directory's own contract).
+    "local function mep_org_roam_ensure_dir(dir)\n"
+    "  if not dir then return end\n"
+    "  local parent = dir:match('^(.*)/[^/]+$')\n"
+    "  if parent and parent ~= '' then mep_org_roam_ensure_dir(parent) end\n"
+    "  mep.fs_mkdir(dir)\n"
+    "end\n"
     "local function mep_org_roam_gen_id() return os.date('%Y%m%d%H%M%S') .. '-' .. tostring(math.random(1000, 9999)) end\n"
     "local function mep_org_roam_files()\n"
     "  local files = {}\n"
@@ -6180,6 +6491,40 @@ const char *kBuiltinOrgRoam =
     "  end\n"
     "  return nil\n"
     "end\n"
+    // Title-index cache (<leader>ors, mep.org_roam_sync below): find_notes
+    // and insert_link both need every note's title, which means reading
+    // and line-scanning every single file in mep.org_roam_dirs -- fine
+    // for a handful of notes, real work for a large wiki, and pure waste
+    // to redo from scratch on *every* picker invocation when the vault's
+    // contents rarely change between them. Built lazily on first need
+    // (nil cache) and reused after that; mep.org_roam_sync forces a
+    // rebuild (nils it, so the very next accessor call repopulates it) --
+    // an explicit refresh mirrors real org-roam's own org-roam-db-sync
+    // mental model, for when notes were added/renamed/deleted outside
+    // mep (another editor, git pull, ...) since the cache was last built.
+    // org_roam_new_note (below) also nils this after creating a note, so
+    // a brand new note shows up in the very next find/insert-link without
+    // needing an explicit sync first.
+    "local mep_org_roam_notes_cache = nil\n"
+    "local function mep_org_roam_build_notes()\n"
+    "  local notes = {}\n"
+    "  for _, path in ipairs(mep_org_roam_files()) do\n"
+    "    local lines = mep_org_read_file_lines(path)\n"
+    "    local title = lines and mep_org_roam_title_of(lines)\n"
+    "    notes[#notes + 1] = {path = path, title = title}\n"
+    "  end\n"
+    "  return notes\n"
+    "end\n"
+    "local function mep_org_roam_notes()\n"
+    "  if not mep_org_roam_notes_cache then mep_org_roam_notes_cache = mep_org_roam_build_notes() end\n"
+    "  return mep_org_roam_notes_cache\n"
+    "end\n"
+    "function mep.org_roam_sync()\n"
+    "  mep_org_roam_notes_cache = mep_org_roam_build_notes()\n"
+    "  mep.notify('Org-roam: synced ' .. #mep_org_roam_notes_cache .. ' note(s)')\n"
+    "end\n"
+    "mep.command('MepOrgRoamSync', mep.org_roam_sync)\n"
+    "mep.leader_map('ors', 'Org-roam: sync notes', mep.org_roam_sync)\n"
     "function mep.org_roam_ensure_id()\n"
     "  for i = 1, mep.line_count() do\n"
     "    if mep.org_is_headline(i) then break end\n"
@@ -6193,11 +6538,9 @@ const char *kBuiltinOrgRoam =
     "mep.command('MepOrgRoamEnsureId', mep.org_roam_ensure_id)\n"
     "function mep.org_roam_insert_link()\n"
     "  local items = {}\n"
-    "  for _, path in ipairs(mep_org_roam_files()) do\n"
-    "    if path ~= mep.filename() then\n"
-    "      local lines = mep_org_read_file_lines(path)\n"
-    "      local title = lines and mep_org_roam_title_of(lines)\n"
-    "      if title then items[#items + 1] = {display = title, data = path} end\n"
+    "  for _, note in ipairs(mep_org_roam_notes()) do\n"
+    "    if note.path ~= mep.filename() and note.title then\n"
+    "      items[#items + 1] = {display = note.title, data = note.path}\n"
     "    end\n"
     "  end\n"
     "  if #items == 0 then mep.notify('No roam notes found', 'warn') return end\n"
@@ -6213,6 +6556,27 @@ const char *kBuiltinOrgRoam =
     "  end)\n"
     "end\n"
     "mep.command('MepOrgRoamInsertLink', mep.org_roam_insert_link)\n"
+    // Note-browser picker (<leader>orr): same file list/title lookup as
+    // Insert Link just above, but opens the picked note directly in the
+    // current pane (mep.pane_open) instead of inserting a link to it from
+    // wherever the cursor happens to be -- the "find a note" half of
+    // org-roam-node-find, where Insert Link is the "link to a note" half.
+    // Live preview (mep_picker_preview_file, kBuiltinPickerSources) mirrors
+    // mep.find_files' own on_select_change usage.
+    "function mep.org_roam_find_notes()\n"
+    "  local items = {}\n"
+    "  for _, note in ipairs(mep_org_roam_notes()) do\n"
+    "    items[#items + 1] = {display = note.title or note.path, data = note.path}\n"
+    "  end\n"
+    "  if #items == 0 then mep.notify('No roam notes found', 'warn') return end\n"
+    "  mep.picker_open('Roam: Find Note', items, function(path)\n"
+    "    if path then mep.pane_open(path) end\n"
+    "  end, nil, nil, function(path)\n"
+    "    if path then mep_picker_preview_file(path) end\n"
+    "  end)\n"
+    "end\n"
+    "mep.command('MepOrgRoamFindNotes', mep.org_roam_find_notes)\n"
+    "mep.leader_map('orr', 'Org-roam: find note', mep.org_roam_find_notes)\n"
     // Backlinks sidebar: every note whose text contains a `[[id:<my-id>`
     // link, computed by scanning every configured roam file.
     "function mep.org_roam_backlinks()\n"
@@ -6247,6 +6611,7 @@ const char *kBuiltinOrgRoam =
     "function mep.org_roam_daily()\n"
     "  local dir = mep.org_roam_daily_dir or mep.org_roam_dirs[1]\n"
     "  if not dir then mep.notify('No roam directory configured', 'warn') return end\n"
+    "  mep_org_roam_ensure_dir(dir)\n"
     "  mep.pane_open(dir .. '/' .. os.date('%Y-%m-%d') .. '.org')\n"
     "  if mep.line_count() == 1 and mep.get_line(1) == '' then\n"
     "    mep.replace_lines(1, 1, {'#+TITLE: ' .. os.date('%Y-%m-%d')})\n"
@@ -6259,13 +6624,16 @@ const char *kBuiltinOrgRoam =
     "    if not title or title == '' then return end\n"
     "    local dir = mep.org_roam_dirs[1]\n"
     "    if not dir then mep.notify('No roam directory configured', 'warn') return end\n"
+    "    mep_org_roam_ensure_dir(dir)\n"
     "    local slug = title:lower():gsub('[^%w]+', '-'):gsub('^%-+', ''):gsub('%-+$', '')\n"
     "    mep.pane_open(dir .. '/' .. slug .. '.org')\n"
     "    mep.replace_lines(1, 1, {'#+TITLE: ' .. title})\n"
     "    mep.org_roam_ensure_id()\n"
+    "    mep_org_roam_notes_cache = nil\n"  // so the new note shows up next find/insert-link with no explicit sync needed
     "  end)\n"
     "end\n"
     "mep.command('MepOrgRoamNewNote', mep.org_roam_new_note)\n"
+    "mep.leader_map('ora', 'Org-roam: add note', mep.org_roam_new_note)\n"
     // Backlink-graph view (NVIM_PARITY_PLAN.md Phase 37's flagged "no fuzzy
     // backlink-graph visualization" gap, closed): a real nodes+edges graph
     // rooted at the current note, rendered by main.cpp's DrawRoamGraphOverlay
@@ -7714,10 +8082,12 @@ const char *kBuiltinPickerSources =
     // mep_picker_preview_file(path, max_lines): reads up to max_lines (40
     // default) of `path` and hands it to mep.picker_set_preview -- the
     // Phase 8 preview-pane gap, closed. Shared by find_files below and
-    // (over a matched line's file) live_grep further down. Truncation
-    // note ("...") rather than silently cutting off makes the preview
-    // pane's own scope cut (no scrolling, see DrawPickerOverlay) visible
-    // to the user instead of just quietly showing an incomplete file.\n"
+    // (over a matched line's file) live_grep further down. mod1+j/k scrolls
+    // within whatever got loaded (Editor::HandleMod1Shortcuts' Mode::Picker
+    // case), but a file longer than max_lines is still truncated here, not
+    // read in full -- the "..." marker makes that cutoff visible rather
+    // than silently showing an incomplete file with no sign anything's
+    // missing.\n"
     "function mep_picker_preview_file(path, max_lines)\n"
     "  local f = io.open(path, 'r')\n"
     "  if not f then mep.picker_set_preview('(cannot open ' .. path .. ')') return end\n"
@@ -7747,14 +8117,39 @@ const char *kBuiltinPickerSources =
     "  local last_flush = mep.now()\n"
     "  local function flush() mep.picker_set_items(lines) end\n"
     "  local opened = false\n"
+    // Tracks whatever on_select_change last saw highlighted, for Ctrl-I
+    // below (on_key only gets the pressed key, not the current item) --
+    // same idiom as mep.live_grep's own st table further down.\n"
+    "  local highlighted = nil\n"
     "  local function ensure_open()\n"
     "    if opened then return end\n"
     "    opened = true\n"
     "    mep.picker_open('Find Files', lines, function(item)\n"
     "      if item then mep.cmd('e ' .. item) end\n"
-    "    end, nil, nil, function(item)\n"
-    "      if item and item ~= '' then mep_picker_preview_file(item) end\n"
+    "    end, nil, function(key)\n"
+    // Ctrl-I: open the highlighted file as a new buffer tab in the
+    // *current* pane (mep.pane_open, Phase 14) instead of replacing
+    // whatever's already showing there -- picker_close (not letting Enter's
+    // on_select run too) since the file's already open at this point.\n"
+    "      if key == 'i' and highlighted and highlighted ~= '' then\n"
+    "        mep.pane_open(highlighted)\n"
+    "        mep.picker_close()\n"
+    "      end\n"
+    "    end, function(item)\n"
+    "      if item and item ~= '' then\n"
+    "        highlighted = item\n"
+    // 200 lines rather than the 40-line default: with mod1+j/k preview
+    // scrolling now available (see the comment on mep_picker_preview_file
+    // itself), a 40-line cap left almost nothing to actually scroll
+    // through.\n"
+    "        mep_picker_preview_file(item, 200)\n"
+    "      end\n"
     "    end)\n"
+    // on_select_change only fires on an actual highlight *change* -- prime
+    // it with the first result so Ctrl-I (and the preview column) work
+    // immediately, without requiring an arrow-key press first.\n"
+    "    highlighted = lines[1]\n"
+    "    mep_picker_preview_file(lines[1], 200)\n"
     "  end\n"
     "  local function on_line(line)\n"
     "    lines[#lines + 1] = line\n"
@@ -7821,7 +8216,7 @@ const char *kBuiltinPickerSources =
     "    end\n"
     "  end, true)\n"
     "end\n"
-    "mep.leader_map('pg', 'Live grep', mep.live_grep)\n"
+    "mep.leader_map('pr', 'Live grep', mep.live_grep)\n"
     "local kLiveGrepDebounce = 0.12\n"
     "mep.on_frame(function()\n"
     "  local st = mep_live_grep_state\n"
@@ -8208,16 +8603,16 @@ Color NotifyLevelColor(Editor::NotifyLevel level) {
     return ResolveHlGroup("Normal");
 }
 
-const char *NotifyLevelGlyph(Editor::NotifyLevel level) {
-    // Plain ASCII, not Unicode symbol codepoints -- the embedded font's
-    // glyph subset doesn't cover the latter (they rendered as tofu "?"),
-    // and ASCII-first is the plan's own icon-rendering fallback anyway
-    // (Phase 10).
+std::string NotifyLevelGlyph(Editor::NotifyLevel level) {
+    // Nerd Font icon glyphs (g_icon_font, see kIconCodepoints and
+    // DrawUiText's own comment) -- ASCII "X"/"!"/"i"/"." until that font
+    // existed, since g_font's own atlas is ASCII-only and a Unicode symbol
+    // codepoint drawn through it rendered as tofu "?".
     switch (level) {
-        case Editor::NotifyLevel::Error: return "X";
-        case Editor::NotifyLevel::Warn: return "!";
-        case Editor::NotifyLevel::Info: return "i";
-        case Editor::NotifyLevel::Debug: return ".";
+        case Editor::NotifyLevel::Error: return Utf8FromCodepoint(0xf057);  // nf-fa-times_circle
+        case Editor::NotifyLevel::Warn: return Utf8FromCodepoint(0xf071);   // nf-fa-exclamation_triangle
+        case Editor::NotifyLevel::Info: return Utf8FromCodepoint(0xf05a);   // nf-fa-info_circle
+        case Editor::NotifyLevel::Debug: return Utf8FromCodepoint(0xf188);  // nf-fa-bug
     }
     return "";
 }
@@ -8230,8 +8625,8 @@ void DrawToastStack() {
     float font_size = MenuFontSize();
     float y = 8.0f;
     for (auto it = toasts.rbegin(); it != toasts.rend(); ++it) {
-        std::string text = std::string(NotifyLevelGlyph(it->level)) + "  " + it->message;
-        float text_w = MeasureTextEx(g_font, text.c_str(), font_size, 0).x;
+        std::string text = NotifyLevelGlyph(it->level) + "  " + it->message;
+        float text_w = MeasureUiText(text, font_size);
         float box_w = text_w + 24;
         float box_h = font_size + 14;
         float x = screen_w - box_w - 10;
@@ -8239,7 +8634,7 @@ void DrawToastStack() {
                       ResolveHlGroup("FloatBg"));
         DrawRectangleLines(static_cast<int>(x), static_cast<int>(y), static_cast<int>(box_w),
                             static_cast<int>(box_h), NotifyLevelColor(it->level));
-        DrawTextEx(g_font, text.c_str(), Vector2{x + 12, y + 7}, font_size, 0, ResolveHlGroup("Normal"));
+        DrawUiText(text, Vector2{x + 12, y + 7}, font_size, ResolveHlGroup("Normal"));
         y += box_h + 6;
     }
 }
@@ -8261,7 +8656,7 @@ void DrawSidebars() {
     // over the menu bar/tab bar above it or the status/command bars below
     // it, the same way DrawEditor's pane_x/pane_w reservation already
     // keeps it from painting over pane content horizontally.
-    int content_top = MenuBarHeight() + (g_editor.TabCount() > 1 ? TabBarHeight() : 0);
+    int content_top = MenuBarHeight() + TabBarHeight();
     int content_bottom = screen_h - 2 * LineHeight();  // status bar + command bar
     float left_offset = 0, right_offset = 0, top_offset = 0, bottom_offset = 0;
     // FocusedSidebarId() alone isn't enough now that mod1+hjkl can blur a
@@ -8326,7 +8721,7 @@ void DrawSidebars() {
                 DrawRectangle(px + 2, static_cast<int>(ly) - 1, pw - 4, line_h, ResolveHlGroup("PickerSelected"));
             }
             Color color = lines[i].hl.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(lines[i].hl);
-            DrawTextEx(g_font, lines[i].text.c_str(), Vector2{static_cast<float>(px + 8), ly}, font_size, 0, color);
+            DrawUiText(lines[i].text, Vector2{static_cast<float>(px + 8), ly}, font_size, color);
         }
         EndScissorMode();
     }
@@ -8344,8 +8739,14 @@ void DrawSidebars() {
 // (buffers/commands/themes/...) are visually unchanged.
 void DrawPickerOverlay() {
     bool has_preview = !g_editor.PickerPreview().empty();
-    int box_w = has_preview ? std::min(GetScreenWidth() - 80, 920) : std::min(GetScreenWidth() - 80, 640);
-    int box_h = std::min(GetScreenHeight() - 80, 420);
+    // Sized like mep.nvim's own picker (mep.nvim/lua/mep/picker/ui.lua's
+    // create_layout: width = 0.9*columns, height = 0.8*lines, left/results
+    // column = 0.38*width) -- 80% of width rather than mep.nvim's 90%,
+    // since this overlay is one box rather than mep.nvim's three separate
+    // floating windows and reads busier at the same fraction. Floors keep
+    // it usable in a small window.
+    int box_w = std::max(400, static_cast<int>(GetScreenWidth() * 0.8f));
+    int box_h = std::max(300, static_cast<int>(GetScreenHeight() * 0.8f));
     FloatFrame f = DrawFloatFrame(box_w, box_h, g_editor.PickerTitle());
 
     std::string prompt_line = "> " + g_editor.PickerQuery();
@@ -8358,7 +8759,8 @@ void DrawPickerOverlay() {
     DrawLine(f.box_x + 4, static_cast<int>(f.content_y + g_font_size + 6), f.box_x + f.box_w - 4,
              static_cast<int>(f.content_y + g_font_size + 6), ResolveHlGroup("PickerBorder"));
 
-    int list_w = has_preview ? static_cast<int>((f.box_x + f.box_w - f.content_x) * 0.42f) : (f.box_x + f.box_w) - static_cast<int>(f.content_x) - 4;
+    // 0.38 split matches mep.nvim's ui.lua (left_width = 0.38 * width).
+    int list_w = has_preview ? static_cast<int>((f.box_x + f.box_w - f.content_x) * 0.38f) : (f.box_x + f.box_w) - static_cast<int>(f.content_x) - 4;
 
     std::vector<PickerItem> results = g_editor.PickerFilteredResults();
     float list_y = f.content_y + g_font_size + 14;
@@ -8382,13 +8784,25 @@ void DrawPickerOverlay() {
     if (has_preview) {
         int div_x = f.box_x + list_w + 6;
         DrawLine(div_x, static_cast<int>(list_y) - 4, div_x, f.box_y + f.box_h - 6, ResolveHlGroup("PickerBorder"));
+        // Mirrors mep.nvim's own preview window, which carries a " Preview
+        // " title on its border -- this box has no separate border to
+        // caption, so the label sits at the same row as the prompt line.
+        DrawTextEx(g_font, "Preview", Vector2{static_cast<float>(div_x + 10), f.content_y}, g_font_size, 0,
+                   ResolveHlGroup("Comment"));
         float px = static_cast<float>(div_x + 10);
         int preview_w = (f.box_x + f.box_w) - div_x - 20;
         BeginScissorMode(div_x, static_cast<int>(list_y) - 2, preview_w + 20, f.box_y + f.box_h - static_cast<int>(list_y));
         int max_chars = std::max(10, static_cast<int>(preview_w / g_char_width));
         int row = 0;
         int max_preview_rows = static_cast<int>((f.box_y + f.box_h - list_y) / line_h);
-        for (const std::string &raw_line : SplitLines(g_editor.PickerPreview())) {
+        // mod1+j/k (Editor::HandleMod1Shortcuts' own Mode::Picker special
+        // case) scrolls by skipping raw lines here -- PickerPreviewScroll()
+        // counts the same raw lines SplitLines() returns, not the wrapped
+        // rows the loop below further splits a too-long line into.
+        std::vector<std::string> preview_lines = SplitLines(g_editor.PickerPreview());
+        int scroll = std::min(g_editor.PickerPreviewScroll(), std::max(0, static_cast<int>(preview_lines.size()) - 1));
+        for (size_t li = static_cast<size_t>(scroll); li < preview_lines.size(); li++) {
+            const std::string &raw_line = preview_lines[li];
             if (row >= max_preview_rows) break;
             if (raw_line.empty()) { row++; continue; }
             size_t pos = 0;
@@ -9138,6 +9552,34 @@ void PrunePdfPageTextures(int buffer_id, const PdfSession &sess) {
     }
 }
 
+// Active pane gets a thicker outline (still the theme's own BorderActive
+// color, just more of it) so which pane has the cursor reads at a glance --
+// a plain 1px BorderActive/BorderInactive color swap was too subtle to
+// notice in a quick glance across a busy split. Shared by DrawPane's own
+// ordinary-buffer path at the bottom of this function and each special-
+// content branch above it (terminal/image/pdf/office/sheet), which each
+// `return` early with their own border draw instead of falling through.
+//
+// Left/right/bottom are drawn at double the top edge's thickness -- the
+// top edge runs right along the pane header, whose own background color
+// (TabActive/MenuBar) already shows active state there, so thickening it
+// too would just double up against that instead of adding legibility.
+// Four separate DrawRectangle strips rather than one DrawRectangleLinesEx
+// call, since that only ever draws one uniform thickness on all sides.
+void DrawPaneBorder(float x, float y, float w, float h, bool is_active) {
+    Color border_color = is_active ? ResolveHlGroup("BorderActive") : ResolveHlGroup("BorderInactive");
+    float top_thick = is_active ? 3.0f : 1.0f;
+    float side_thick = is_active ? 6.0f : 1.0f;
+    DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(top_thick),
+                  border_color);
+    DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(side_thick), static_cast<int>(h),
+                  border_color);
+    DrawRectangle(static_cast<int>(x + w - side_thick), static_cast<int>(y), static_cast<int>(side_thick),
+                  static_cast<int>(h), border_color);
+    DrawRectangle(static_cast<int>(x), static_cast<int>(y + h - side_thick), static_cast<int>(w),
+                  static_cast<int>(side_thick), border_color);
+}
+
 void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_active) {
     int line_height = LineHeight();
     int header_h = PaneHeaderHeight();
@@ -9149,122 +9591,127 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
 
     const Buffer &buf = g_editor.GetBuffer(pane.buffer_id);
     Color header_bg = is_active ? ResolveHlGroup("TabActive") : ResolveHlGroup("MenuBar");
-    DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), header_h, header_bg);
     const TerminalSession *term_sess = g_editor.GetTerminal(pane.buffer_id);
     const ImageSession *img_sess = g_editor.GetImage(pane.buffer_id);
     const PdfSession *pdf_sess = g_editor.GetPdf(pane.buffer_id);
     const OfficeSession *office_sess = g_editor.GetOffice(pane.buffer_id);
     const SheetSession *sheet_sess = g_editor.GetSheet(pane.buffer_id);
-    // Per-pane buffer tabs (Phase 14) suffix, and the [+] modified marker --
-    // appended as plain text after whatever's drawn below, breadcrumb or not.
     std::string suffix = buf.modified ? " [+]" : "";
-    if (pane.buffer_tabs.size() > 1) {
-        suffix += "  [" + std::to_string(pane.buffer_tab_index + 1) + "/" + std::to_string(pane.buffer_tabs.size()) +
-                  "]";
-    }
     float label_y = y + (header_h - font_size) / 2.0f;
-    if (term_sess) {
-        const std::string &live_title =
-            (term_sess->vterm && !term_sess->vterm->Title().empty()) ? term_sess->vterm->Title() : term_sess->title;
-        std::string label = "Terminal: " + live_title;
-        if (term_sess->exited) label += " [exited: " + std::to_string(term_sess->exit_code) + "]";
-        DrawTextEx(g_font, label.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
-    } else if (img_sess) {
-        std::string label = "Image: " + buf.filename;
-        if (img_sess->doc) {
-            label += " (" + std::to_string(img_sess->doc->Width()) + "x" + std::to_string(img_sess->doc->Height()) +
-                      ") " + std::to_string(static_cast<int>(img_sess->zoom * 100.0f + 0.5f)) + "%";
-        }
-        DrawTextEx(g_font, label.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
-    } else if (pdf_sess && pdf_sess->search_active) {
-        // Takes over the header the same way Mode::Command's cmdline takes
-        // over the bottom bar -- a blinking-cursor '/' input line instead
-        // of the normal "PDF: file (page N/M) zoom%" label while typing.
-        std::string line = "/" + pdf_sess->search_input;
-        DrawTextEx(g_font, line.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
-        {
-            float cx = x + 6 + MeasureTextEx(g_font, line.c_str(), font_size, 0).x;
-            DrawRectangle(static_cast<int>(cx), static_cast<int>(label_y), 2, static_cast<int>(font_size),
-                          ResolveHlGroup("Normal"));
-        }
-    } else if (pdf_sess) {
-        std::string label = "PDF: " + buf.filename;
-        if (pdf_sess->doc) {
-            label += " (page " + std::to_string(pdf_sess->page + 1) + "/" +
-                     std::to_string(pdf_sess->doc->PageCount()) + ") " +
-                     std::to_string(static_cast<int>(pdf_sess->zoom * 100.0f + 0.5f)) + "%" +
-                     (pdf_sess->theme_colors ? "  [theme, Ctrl-R]" : "  [original, Ctrl-R]");
-            if (!pdf_sess->search_query.empty()) {
-                label += pdf_sess->search_matches.empty()
-                             ? "  /" + pdf_sess->search_query + " (no matches)"
-                             : "  /" + pdf_sess->search_query + " (" +
-                                   std::to_string(pdf_sess->search_current + 1) + "/" +
-                                   std::to_string(pdf_sess->search_matches.size()) + ", n/p)";
+    if (pane.buffer_tabs.size() > 1) {
+        // Per-pane buffer-tab strip: more than one buffer open in this pane
+        // splits the header evenly, one filename chip per tab, highlighting
+        // whichever is active -- takes over the header entirely regardless
+        // of the active buffer's content type (the content body below is
+        // still whatever that buffer actually is; only the header changes
+        // shape). Same even-split arithmetic as DrawPaneTree's own child
+        // rects, so segments abut exactly with no rounding gaps.
+        int n = static_cast<int>(pane.buffer_tabs.size());
+        float seg_x = x;
+        for (int i = 0; i < n; i++) {
+            float next_x = (i == n - 1) ? x + w : x + w * (i + 1) / n;
+            float seg_w = next_x - seg_x;
+            const Buffer &tb = g_editor.GetBuffer(pane.buffer_tabs[i]);
+            std::string name = tb.scratch ? "[Scratch]" : (tb.filename.empty() ? "[No Name]" : Basename(tb.filename));
+            if (tb.modified) name += " [+]";
+            bool tab_active = (i == pane.buffer_tab_index);
+            Color seg_bg =
+                tab_active ? ResolveHlGroup("TabActive") : (is_active ? ResolveHlGroup("TabInactive") : ResolveHlGroup("MenuBar"));
+            DrawRectangle(static_cast<int>(seg_x), static_cast<int>(y), static_cast<int>(seg_w), header_h, seg_bg);
+            BeginScissorMode(static_cast<int>(seg_x), static_cast<int>(y), static_cast<int>(seg_w), header_h);
+            float text_w = MeasureTextEx(g_font, name.c_str(), font_size, 0).x;
+            float text_x = seg_x + std::max(0.0f, (seg_w - text_w) / 2.0f);
+            DrawTextEx(g_font, name.c_str(), Vector2{text_x, label_y}, font_size, 0,
+                       ResolveHlGroup(tab_active ? "Normal" : "Comment"));
+            EndScissorMode();
+            if (i > 0) {
+                DrawLine(static_cast<int>(seg_x), static_cast<int>(y), static_cast<int>(seg_x),
+                          static_cast<int>(y + header_h), ResolveHlGroup("Border"));
             }
+            // Only registered on the pane that's already active: clicking a
+            // chip just switches this pane's own current buffer tab, and
+            // CurPane() (what GoToPaneBufferTab acts on) only resolves back
+            // to *this* pane when it's the one with focus.
+            if (is_active) {
+                RegisterClickRegion(Rectangle{seg_x, y, seg_w, static_cast<float>(header_h)},
+                                     [i] { g_editor.GoToPaneBufferTab(i); });
+            }
+            seg_x = next_x;
         }
-        DrawTextEx(g_font, label.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
-    } else if (office_sess) {
-        std::string label = "Office: " + buf.filename;
-        if (!office_sess->doc.paragraphs.empty()) {
-            label += " (para " + std::to_string(office_sess->cursor_para + 1) + "/" +
-                     std::to_string(office_sess->doc.paragraphs.size()) + ") " +
-                     std::to_string(static_cast<int>(office_sess->zoom * 100.0f + 0.5f)) + "%";
-        }
-        if (buf.modified) label += " [+]";
-        DrawTextEx(g_font, label.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
-    } else if (sheet_sess) {
-        std::string label = "Sheet: " + buf.filename;
-        if (!sheet_sess->wb.sheets.empty()) {
-            const Sheet &sh = sheet_sess->wb.sheets[sheet_sess->active_sheet];
-            label += " (" + sh.name + ") " + CellAddressToString(sheet_sess->cursor_row, sheet_sess->cursor_col);
-        }
-        if (buf.modified) label += " [+]";
-        DrawTextEx(g_font, label.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
-    } else if (buf.scratch || buf.filename.empty()) {
-        std::string label = (buf.scratch ? "[Scratch]" : "[No Name]") + suffix;
-        DrawTextEx(g_font, label.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
     } else {
-        // Winbar-equivalent breadcrumb (Phase 11 click-dispatch gap): each
-        // path component before the filename is its own clickable segment
-        // -- mep has no separate winbar chrome row, so this per-pane header
-        // (already showing the path) is where a breadcrumb naturally lives.
-        // Clicking a directory segment calls the registered winbar-click
-        // Lua ref (mep.winbar_navigate by default, kBuiltinPickerSources)
-        // with the path up to and including that segment; the final
-        // (filename) segment isn't clickable -- it's already the open file.
-        std::vector<std::string> parts;
-        {
-            size_t start = 0;
-            while (start <= buf.filename.size()) {
-                size_t slash = buf.filename.find('/', start);
-                if (slash == std::string::npos) {
-                    parts.push_back(buf.filename.substr(start));
-                    break;
+        DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), header_h, header_bg);
+        if (term_sess) {
+            const std::string &live_title =
+                (term_sess->vterm && !term_sess->vterm->Title().empty()) ? term_sess->vterm->Title() : term_sess->title;
+            std::string label = "Terminal: " + live_title;
+            if (term_sess->exited) label += " [exited: " + std::to_string(term_sess->exit_code) + "]";
+            DrawTextEx(g_font, label.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
+        } else if (img_sess) {
+            std::string label = "Image: " + buf.filename;
+            if (img_sess->doc) {
+                label += " (" + std::to_string(img_sess->doc->Width()) + "x" +
+                          std::to_string(img_sess->doc->Height()) + ") " +
+                          std::to_string(static_cast<int>(img_sess->zoom * 100.0f + 0.5f)) + "%";
+            }
+            DrawTextEx(g_font, label.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
+        } else if (pdf_sess && pdf_sess->search_active) {
+            // Takes over the header the same way Mode::Command's cmdline
+            // takes over the bottom bar -- a blinking-cursor '/' input line
+            // instead of the normal "PDF: file (page N/M) zoom%" label
+            // while typing.
+            std::string line = "/" + pdf_sess->search_input;
+            DrawTextEx(g_font, line.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
+            {
+                float cx = x + 6 + MeasureTextEx(g_font, line.c_str(), font_size, 0).x;
+                DrawRectangle(static_cast<int>(cx), static_cast<int>(label_y), 2, static_cast<int>(font_size),
+                              ResolveHlGroup("Normal"));
+            }
+        } else if (pdf_sess) {
+            std::string label = "PDF: " + buf.filename;
+            if (pdf_sess->doc) {
+                label += " (page " + std::to_string(pdf_sess->page + 1) + "/" +
+                         std::to_string(pdf_sess->doc->PageCount()) + ") " +
+                         std::to_string(static_cast<int>(pdf_sess->zoom * 100.0f + 0.5f)) + "%" +
+                         (pdf_sess->theme_colors ? "  [theme, Ctrl-R]" : "  [original, Ctrl-R]");
+                if (!pdf_sess->search_query.empty()) {
+                    label += pdf_sess->search_matches.empty()
+                                 ? "  /" + pdf_sess->search_query + " (no matches)"
+                                 : "  /" + pdf_sess->search_query + " (" +
+                                       std::to_string(pdf_sess->search_current + 1) + "/" +
+                                       std::to_string(pdf_sess->search_matches.size()) + ", n/p)";
                 }
-                if (slash > start) parts.push_back(buf.filename.substr(start, slash - start));
-                start = slash + 1;
             }
-        }
-        float seg_x = x + 6;
-        std::string accum;
-        for (size_t pi = 0; pi < parts.size(); pi++) {
-            bool is_last = (pi + 1 == parts.size());
-            std::string seg_text = parts[pi] + (is_last ? "" : "/");
-            float seg_w = MeasureTextEx(g_font, seg_text.c_str(), font_size, 0).x;
-            Color seg_color = is_last ? ResolveHlGroup("Normal") : ResolveHlGroup("Comment");
-            DrawTextEx(g_font, seg_text.c_str(), Vector2{seg_x, label_y}, font_size, 0, seg_color);
-            if (!is_last) {
-                accum = accum.empty() ? parts[pi] : accum + "/" + parts[pi];
-                std::string dir_path = accum;
-                RegisterClickRegion(Rectangle{seg_x, y, seg_w, static_cast<float>(header_h)}, [dir_path] {
-                    if (g_editor.Lua() && g_editor.WinbarClickRef() != 0) {
-                        g_editor.Lua()->CallRefWithString(g_editor.WinbarClickRef(), dir_path);
-                    }
-                });
+            DrawTextEx(g_font, label.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
+        } else if (office_sess) {
+            std::string label = "Office: " + buf.filename;
+            if (!office_sess->doc.paragraphs.empty()) {
+                label += " (para " + std::to_string(office_sess->cursor_para + 1) + "/" +
+                         std::to_string(office_sess->doc.paragraphs.size()) + ") " +
+                         std::to_string(static_cast<int>(office_sess->zoom * 100.0f + 0.5f)) + "%";
             }
-            seg_x += seg_w;
+            if (buf.modified) label += " [+]";
+            DrawTextEx(g_font, label.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
+        } else if (sheet_sess) {
+            std::string label = "Sheet: " + buf.filename;
+            if (!sheet_sess->wb.sheets.empty()) {
+                const Sheet &sh = sheet_sess->wb.sheets[sheet_sess->active_sheet];
+                label += " (" + sh.name + ") " + CellAddressToString(sheet_sess->cursor_row, sheet_sess->cursor_col);
+            }
+            if (buf.modified) label += " [+]";
+            DrawTextEx(g_font, label.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
+        } else {
+            // Just the filename (or [Scratch]/[No Name]), centered -- not
+            // the full path anymore: the old winbar-equivalent breadcrumb
+            // (each path component its own clickable segment, calling the
+            // registered winbar-click Lua ref -- mep.winbar_navigate by
+            // default, kBuiltinPickerSources) got too noisy for a narrow
+            // split's header. mep.set_winbar_click/WinbarClickRef are still
+            // there for a future consumer; nothing fires them from here now.
+            std::string label = (buf.scratch ? "[Scratch]" : buf.filename.empty() ? "[No Name]" : Basename(buf.filename)) + suffix;
+            float text_w = MeasureTextEx(g_font, label.c_str(), font_size, 0).x;
+            float text_x = x + std::max(0.0f, (w - text_w) / 2.0f);
+            DrawTextEx(g_font, label.c_str(), Vector2{text_x, label_y}, font_size, 0, ResolveHlGroup("Normal"));
         }
-        DrawTextEx(g_font, suffix.c_str(), Vector2{seg_x, label_y}, font_size, 0, ResolveHlGroup("Normal"));
     }
 
     float content_y = y + header_h;
@@ -9294,9 +9741,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                               static_cast<int>(content_h));
             DrawTerminalGrid(*term_sess, x, content_y, w, content_h);
             EndScissorMode();
-            Color term_border = is_active ? ResolveHlGroup("BorderActive") : ResolveHlGroup("BorderInactive");
-            DrawRectangleLines(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h),
-                                term_border);
+            DrawPaneBorder(x, y, w, h, is_active);
             return;
         }
         // Falls through to the ordinary buffer-drawing path below, same
@@ -9310,9 +9755,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                           static_cast<int>(content_h));
         DrawTextureEx(tex, Vector2{x - img_sess->pan_x, content_y - img_sess->pan_y}, 0.0f, img_sess->zoom, WHITE);
         EndScissorMode();
-        Color img_border = is_active ? ResolveHlGroup("BorderActive") : ResolveHlGroup("BorderInactive");
-        DrawRectangleLines(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h),
-                            img_border);
+        DrawPaneBorder(x, y, w, h, is_active);
         return;
     }
 
@@ -9367,9 +9810,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         draw_page(pdf_sess->page + 1, anchor_y + anchor_h + kPdfPageGapPx);
         EndScissorMode();
 
-        Color pdf_border = is_active ? ResolveHlGroup("BorderActive") : ResolveHlGroup("BorderInactive");
-        DrawRectangleLines(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h),
-                            pdf_border);
+        DrawPaneBorder(x, y, w, h, is_active);
         return;
     }
 
@@ -9586,9 +10027,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             }
         }
         EndScissorMode();
-        Color office_border = is_active ? ResolveHlGroup("BorderActive") : ResolveHlGroup("BorderInactive");
-        DrawRectangleLines(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h),
-                            office_border);
+        DrawPaneBorder(x, y, w, h, is_active);
         return;
     }
 
@@ -9722,9 +10161,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             }
         }
         EndScissorMode();
-        Color sheet_border = is_active ? ResolveHlGroup("BorderActive") : ResolveHlGroup("BorderInactive");
-        DrawRectangleLines(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h),
-                            sheet_border);
+        DrawPaneBorder(x, y, w, h, is_active);
         return;
     }
 
@@ -9887,6 +10324,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // since that would blow a bare "$x$" up to the same width as a full
         // page-width figure. `slots` is per-entry (buf.org_latex_rows'
         // OrgLatexRender), not the shared kOrgInlineImageSlots constant.
+        // A multi-line fragment's remaining raw source rows (row+1 ..
+        // render.end_row) are skipped outright -- not shown as a folded
+        // "+-- N lines: ... ---" summary the way an earlier version of
+        // this did, since the image already shows everything those rows
+        // had to show and a summary line here was just dead weight taking
+        // its own slot for no reason.
         if (!fold_here && g_editor.OrgLatexVisible()) {
             auto latex_it = buf.org_latex_rows.find(row);
             if (latex_it != buf.org_latex_rows.end()) {
@@ -9903,6 +10346,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     DrawTextEx(g_font, msg.c_str(), Vector2{text_x, ly}, g_font_size, 0, ResolveHlGroup("Warn"));
                 }
                 visual_slot += render.slots - 1;  // visual_slot++ above already accounted for 1
+                row = render.end_row;             // skip the fragment's remaining raw source rows outright
                 continue;  // the for-loop's own `row++` advances past this one row
             }
         }
@@ -9977,7 +10421,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // the just-drawn text) -- and finally the gutter sign, if there's
         // room for one (only when :set number has already reserved gutter
         // space; an always-on sign column is a documented follow-up).
-        char sign = 0;
+        std::string sign;
         std::string sign_hl;
         int sign_priority = -1;
         auto row_decos_it = decos_by_row.find(row);
@@ -9990,7 +10434,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 DrawRectangle(static_cast<int>(x), static_cast<int>(ly), static_cast<int>(w), line_height,
                               Color{c.r, c.g, c.b, 40});
             }
-            if (d.sign != 0 && d.priority > sign_priority) {
+            if (!d.sign.empty() && d.priority > sign_priority) {
                 sign = d.sign;
                 sign_hl = d.sign_hl;
                 sign_priority = d.priority;
@@ -9999,7 +10443,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         DrawLineFast(buf.lines[row], text_x, ly, g_font_size, ResolveHlGroup("Normal"));
         for (const Decoration *dp : row_decos) {
             const Decoration &d = *dp;
-            if (!d.whole_line && !d.underline && !d.hl_group.empty() && d.col_end > d.col_start) {
+            if (!d.whole_line && !d.underline && !d.bold && !d.italic && !d.hl_group.empty() &&
+                d.col_end > d.col_start) {
                 const std::string &line = buf.lines[row];
                 int a = std::min(static_cast<int>(line.size()), d.col_start);
                 int b = std::min(static_cast<int>(line.size()), d.col_end);
@@ -10024,6 +10469,96 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     float uw = (b - a) * g_char_width;
                     DrawRectangle(static_cast<int>(ux), static_cast<int>(ly + line_height - 2),
                                   static_cast<int>(uw), 1, c);
+                }
+            }
+            // Per-span strikethrough (org emphasis +strike+, kBuiltinOrg):
+            // same primitive as underline just at the span's own vertical
+            // middle instead of its baseline.
+            if (!d.whole_line && d.strikethrough && d.col_end > d.col_start) {
+                const std::string &line = buf.lines[row];
+                int a = std::min(static_cast<int>(line.size()), d.col_start);
+                int b = std::min(static_cast<int>(line.size()), d.col_end);
+                if (b > a) {
+                    Color c = d.hl_group.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(d.hl_group);
+                    float ux = text_x + a * g_char_width;
+                    float uw = (b - a) * g_char_width;
+                    DrawRectangle(static_cast<int>(ux), static_cast<int>(ly + line_height / 2), static_cast<int>(uw),
+                                  1, c);
+                }
+            }
+            // Per-span bold (org emphasis *bold*, kBuiltinOrg): g_font is a
+            // single JetBrains Mono Regular face (ApplyFontSize, this file)
+            // with no real bold weight, so this fakes one the way many
+            // terminal emulators/GUI toolkits do for a font family lacking
+            // a true bold face -- draw the span twice, the second copy
+            // offset 1px right, thickening every stroke slightly.
+            if (!d.whole_line && d.bold && d.col_end > d.col_start) {
+                const std::string &line = buf.lines[row];
+                int a = std::min(static_cast<int>(line.size()), d.col_start);
+                int b = std::min(static_cast<int>(line.size()), d.col_end);
+                if (b > a) {
+                    std::string span = line.substr(a, b - a);
+                    Color c = d.hl_group.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(d.hl_group);
+                    float bx = text_x + a * g_char_width;
+                    DrawTextEx(g_font, span.c_str(), Vector2{bx, ly}, g_font_size, 0, c);
+                    DrawTextEx(g_font, span.c_str(), Vector2{bx + 1, ly}, g_font_size, 0, c);
+                }
+            }
+            // Per-span italic (org emphasis /italic/, kBuiltinOrg): same
+            // "no real face for this weight" problem bold has just above,
+            // but a slant can't be faked with a second offset draw --
+            // instead this pushes a horizontal-shear matrix onto rlgl's
+            // transform stack (rlPushMatrix/rlMultMatrixf, rlgl.h) around
+            // one DrawTextEx call, which is itself just batched rlgl quads
+            // under the hood and so comes out sheared like anything else
+            // drawn under that matrix. Sheared around the span's own
+            // baseline (translate there, shear, translate back) rather
+            // than the world origin, so the glyphs lean without also
+            // drifting away from their own line.
+            if (!d.whole_line && d.italic && d.col_end > d.col_start) {
+                const std::string &line = buf.lines[row];
+                int a = std::min(static_cast<int>(line.size()), d.col_start);
+                int b = std::min(static_cast<int>(line.size()), d.col_end);
+                if (b > a) {
+                    std::string span = line.substr(a, b - a);
+                    Color c = d.hl_group.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(d.hl_group);
+                    float ix = text_x + a * g_char_width;
+                    float span_w = (b - a) * g_char_width;
+                    float baseline_y = ly + line_height;
+                    // Unlike bold's double-draw (which lands its second
+                    // copy 1px from the first, close enough to the
+                    // DrawLineFast-drawn original underneath that the
+                    // overlap is invisible) or a plain color swap (same
+                    // position, same shape), shearing moves the glyph
+                    // shape itself -- the sheared redraw doesn't coincide
+                    // with the still-upright original DrawLineFast already
+                    // drew there, so without covering it first the two
+                    // visibly ghost together. Padded a bit past the span's
+                    // own column bounds since the shear pushes each
+                    // glyph's top edge rightward past its own column
+                    // width. Same NormalBg-cover-then-redraw trick the
+                    // inline-math renderer uses just above in this same
+                    // function, and the same tradeoff: it flattens
+                    // whatever whole-line background tint (CursorLine,
+                    // Visual selection) this row might have underneath,
+                    // just for this span.
+                    float pad = line_height * 0.25f;
+                    DrawRectangle(static_cast<int>(ix - pad), static_cast<int>(ly), static_cast<int>(span_w + pad * 2),
+                                  line_height, ResolveHlGroup("NormalBg"));
+                    rlPushMatrix();
+                    rlTranslatef(ix, baseline_y, 0);
+                    // clang-format off
+                    float shear[16] = {
+                        1.0f,  0.0f, 0.0f, 0.0f,
+                        -0.22f, 1.0f, 0.0f, 0.0f,
+                        0.0f,  0.0f, 1.0f, 0.0f,
+                        0.0f,  0.0f, 0.0f, 1.0f,
+                    };
+                    // clang-format on
+                    rlMultMatrixf(shear);
+                    rlTranslatef(-ix, -baseline_y, 0);
+                    DrawTextEx(g_font, span.c_str(), Vector2{ix, ly}, g_font_size, 0, c);
+                    rlPopMatrix();
                 }
             }
             if (!d.virt_text.empty()) {
@@ -10057,9 +10592,59 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                               Color{d.swatch_color.r, d.swatch_color.g, d.swatch_color.b, 255});
             }
         }
-        if (sign != 0 && gutter_w > 0.0f) {
-            std::string glyph(1, sign);
-            DrawTextEx(g_font, glyph.c_str(), Vector2{x + kMarginX, ly}, g_font_size, 0, ResolveHlGroup(sign_hl));
+        // Org inline math (<leader>otl, Editor::OrgLatexVisible()):
+        // Buffer::org_latex_inline's own comment explains why this can't
+        // reuse the whole-row org_latex_rows path -- a fragment here
+        // shares its row with other text, so instead of replacing the
+        // row it's painted directly over its own [col_start, col_end)
+        // span: first a same-color-as-background rectangle to conceal the
+        // raw "$...$" markup underneath (identical trick to a decoration's
+        // own virt_overlay, just with a texture standing in for text
+        // rather than replacement text), then the fragment's texture.
+        // Sized to the line height *only* (not squeezed to fit inside the
+        // original span's own pixel width the way an earlier version of
+        // this did -- that made a short render look like it was floating,
+        // centered, inside an oversized box whenever the raw "$...$"
+        // source was longer than its typeset form, which is the common
+        // case) and margined by one character-width -- "a single space"
+        // -- on each side. The cover itself still has to span at least
+        // the *original* [col_start, col_end) no matter how compact the
+        // render is, since anything short of col_end is still raw markup
+        // that would otherwise show through, so a render more compact
+        // than its own source leaves extra covered-but-empty space around
+        // it rather than uncovered raw text -- there's no reflowing the
+        // fixed-column text after it to close that gap, so the render is
+        // centered within whatever the cover ends up being (its own
+        // width plus a margin on each side, or the wider original span
+        // when that's the bigger of the two) so any such leftover space
+        // splits evenly across both sides instead of piling up on one.
+        // Only when the render is *wider* than its own source (needs more
+        // room than the "$...$" it's replacing had) does the cover expand
+        // past the original col_end to fit it -- still a "bleeds into
+        // whatever comes next" risk with no reflow to prevent it, but the
+        // narrower, common direction is now handled cleanly.
+        if (g_editor.OrgLatexVisible()) {
+            auto inline_it = buf.org_latex_inline.find(row);
+            if (inline_it != buf.org_latex_inline.end()) {
+                for (const Buffer::OrgLatexInlineSpan &span : inline_it->second) {
+                    float span_x = text_x + span.col_start * g_char_width;
+                    float span_w = (span.col_end - span.col_start) * g_char_width;
+                    Texture2D *tex = GetOrLoadOrgLatexTexture(span.path);
+                    if (!tex) continue;
+                    float scale = (static_cast<float>(line_height) * 0.9f) / static_cast<float>(tex->height);
+                    float draw_w = tex->width * scale;
+                    float draw_h = tex->height * scale;
+                    float margin = g_char_width;
+                    float cover_w = std::max(span_w, draw_w + margin * 2.0f);
+                    float draw_x = span_x + (cover_w - draw_w) / 2.0f;
+                    DrawRectangle(static_cast<int>(span_x), static_cast<int>(ly), static_cast<int>(cover_w),
+                                  line_height, ResolveHlGroup("NormalBg"));
+                    DrawTextureEx(*tex, Vector2{draw_x, ly + (line_height - draw_h) / 2.0f}, 0.0f, scale, WHITE);
+                }
+            }
+        }
+        if (!sign.empty() && gutter_w > 0.0f) {
+            DrawUiText(sign, Vector2{x + kMarginX, ly}, g_font_size, ResolveHlGroup(sign_hl));
         }
         // Hint labels (Phase 13): drawn last so they sit on top of
         // everything else on their row.
@@ -10104,7 +10689,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 r += 1;
                 cursor_slot += kOrgInlineImageSlots;
             } else if (g_editor.OrgLatexVisible() && latex_it != buf.org_latex_rows.end()) {
-                r += 1;
+                r = latex_it->second.end_row + 1;  // skip the fragment's remaining raw source rows outright
                 cursor_slot += latex_it->second.slots;
             } else {
                 r += 1;
@@ -10135,7 +10720,27 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             DrawRectangle(static_cast<int>(cursor_x), static_cast<int>(cursor_y), static_cast<int>(g_char_width),
                           line_height, Color{cursor_bg.r, cursor_bg.g, cursor_bg.b, 180});
             const std::string &line = buf.lines[pane.cursor.row];
-            if (pane.cursor.col < static_cast<int>(line.size())) {
+            // Skip the usual "punch the raw character back through the
+            // cursor block" redraw when the cursor sits inside a
+            // concealed inline-math span (Buffer::org_latex_inline) --
+            // that redraw reads straight from the buffer with no idea
+            // this column's real content is hidden under a texture, so
+            // without this check moving the cursor onto a "$...$" fragment
+            // exposed the very markup it's supposed to stay concealed
+            // behind.
+            bool cursor_in_concealed_latex = false;
+            if (g_editor.OrgLatexVisible()) {
+                auto it = buf.org_latex_inline.find(pane.cursor.row);
+                if (it != buf.org_latex_inline.end()) {
+                    for (const Buffer::OrgLatexInlineSpan &span : it->second) {
+                        if (pane.cursor.col >= span.col_start && pane.cursor.col < span.col_end) {
+                            cursor_in_concealed_latex = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!cursor_in_concealed_latex && pane.cursor.col < static_cast<int>(line.size())) {
                 char ch[2] = {line[pane.cursor.col], '\0'};
                 DrawTextEx(g_font, ch, Vector2{cursor_x, cursor_y}, g_font_size, 0, ResolveHlGroup("NormalBg"));
             }
@@ -10152,9 +10757,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
 
     EndScissorMode();
 
-    Color border_color = is_active ? ResolveHlGroup("BorderActive") : ResolveHlGroup("BorderInactive");
-    DrawRectangleLines(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h),
-                        border_color);
+    DrawPaneBorder(x, y, w, h, is_active);
     // Hover tooltip (Phase 3 gap): drawn *after* EndScissorMode/the pane
     // border above, unlike the completion popup a few lines up -- hover
     // text can be much wider/taller (multi-line LSP docs) than a narrow
@@ -10198,26 +10801,50 @@ void DrawPaneTree(const SplitNode *node, float x, float y, float w, float h, int
 }
 
 // Shown only when there's more than one tab, matching Vim's tabline.
+// Mirrors mep.nvim's own chrome.tabline (mep.nvim/lua/mep/chrome/
+// tabline.lua): a leading mode indicator, then one clickable circle per
+// tab -- filled for the active tab, hollow for the rest -- then '+'/'x'
+// to open a new tab / close the current one. Real Nerd Font circle/plus/
+// times glyphs (g_icon_font via DrawUiText) now that one's loaded --
+// mep.nvim's own Unicode bullets (U+25CF/U+25CB) would've rendered as
+// tofu through g_font's ASCII-only atlas, which is why these used to be
+// plain ASCII '*'/'o' instead.
 void DrawTabBar(int y) {
     int screen_w = GetScreenWidth();
     int bar_h = TabBarHeight();
     float font_size = MenuFontSize();
     DrawRectangle(0, y, screen_w, bar_h, ResolveHlGroup("TabBar"));
+    float cy = y + (bar_h - font_size) / 2.0f;
 
     float x = 4;
+    std::string mode_label = std::string(" ") + ModeName(g_editor.CurrentMode(), g_editor.IsReplaceMode()) + " ";
+    DrawTextEx(g_font, mode_label.c_str(), Vector2{x, cy}, font_size, 0, ResolveHlGroup("StatusLineFg"));
+    x += MeasureTextEx(g_font, mode_label.c_str(), font_size, 0).x + 4;
+
     for (int i = 0; i < g_editor.TabCount(); i++) {
-        std::string label = " " + std::to_string(i + 1) + ": " + g_editor.TabLabel(i) + " ";
-        float w = MeasureTextEx(g_font, label.c_str(), font_size, 0).x + 12;
         bool active = (i == g_editor.ActiveTabIndex());
-        Color bg = active ? ResolveHlGroup("TabActive") : ResolveHlGroup("TabInactive");
-        DrawRectangle(static_cast<int>(x), y + 2, static_cast<int>(w), bar_h - 4, bg);
-        DrawTextEx(g_font, label.c_str(), Vector2{x + 6, y + (bar_h - font_size) / 2.0f}, font_size, 0, ResolveHlGroup("Normal"));
+        std::string glyph = " " + Utf8FromCodepoint(active ? 0xf111 : 0xf10c) + " ";  // nf-fa-circle / circle_o
+        Color c = ResolveHlGroup(active ? "TabActive" : "TabInactive");
+        float w = MeasureUiText(glyph, font_size);
+        DrawUiText(glyph, Vector2{x, cy}, font_size, c);
         // Click-to-switch (Phase 11 click-dispatch gap): a click anywhere on
-        // this tab's box jumps straight to it via GoToTab, same as :tabn N.
+        // this tab's circle jumps straight to it via GoToTab, same as :tabn N.
         RegisterClickRegion(Rectangle{x, static_cast<float>(y), w, static_cast<float>(bar_h)},
                              [i] { g_editor.GoToTab(i); });
-        x += w + 3;
+        x += w;
     }
+
+    std::string add_label = " " + Utf8FromCodepoint(0xf067) + " ";  // nf-fa-plus
+    float add_w = MeasureUiText(add_label, font_size);
+    DrawUiText(add_label, Vector2{x, cy}, font_size, ResolveHlGroup("StatusLineFg"));
+    RegisterClickRegion(Rectangle{x, static_cast<float>(y), add_w, static_cast<float>(bar_h)}, [] { g_editor.TabNew(""); });
+    x += add_w;
+
+    std::string close_label = " " + Utf8FromCodepoint(0xf00d) + " ";  // nf-fa-times
+    float close_w = MeasureUiText(close_label, font_size);
+    DrawUiText(close_label, Vector2{x, cy}, font_size, ResolveHlGroup("StatusLineFg"));
+    RegisterClickRegion(Rectangle{x, static_cast<float>(y), close_w, static_cast<float>(bar_h)},
+                         [] { g_editor.TabDelete(); });
 }
 
 // Startup dashboard (Phase 12): shown in place of the pane tree only while
@@ -10258,7 +10885,11 @@ void DrawEditor() {
     int status_bar_height = zen ? 0 : line_height;
     int command_bar_height = line_height;
     int menu_bar_height = zen ? 0 : MenuBarHeight();
-    bool show_tabs = !zen && g_editor.TabCount() > 1;
+    // Visible by default (mep.nvim's own showtabline=2), not just once a
+    // second tab exists -- Ctrl-T/the tab bar's own '+' button are the
+    // discovery path for tabs at all, which a bar that only appears after
+    // the fact can't provide.
+    bool show_tabs = !zen;
     int tab_bar_height = show_tabs ? TabBarHeight() : 0;
     int content_top = menu_bar_height + tab_bar_height;
     int pane_area_h = screen_h - content_top - status_bar_height - command_bar_height;
@@ -10371,6 +11002,13 @@ void DrawEditor() {
 
     if (show_tabs) DrawTabBar(menu_bar_height);
     if (!zen) DrawMenuBar();
+    // Sidebars are persistent chrome (a neighboring pane you can focus/
+    // resize, per the pane_x/pane_w reservation above) rather than a
+    // transient dialog, so they belong on this same layer -- drawn before
+    // every modal overlay below, not after, so a floating overlay (the
+    // which-key hover included) always sits on top of an open sidebar
+    // instead of being painted over by it.
+    if (!zen) DrawSidebars();
     if (g_editor.CurrentMode() == Mode::Prompt) DrawPromptOverlay();
     if (g_editor.CurrentMode() == Mode::Confirm) DrawConfirmOverlay();
     if (g_editor.CurrentMode() == Mode::Select) DrawSelectOverlay();
@@ -10378,7 +11016,6 @@ void DrawEditor() {
     if (g_editor.CurrentMode() == Mode::Picker) DrawPickerOverlay();
     if (g_editor.CurrentMode() == Mode::RoamGraph) DrawRoamGraphOverlay();
     if (g_editor.CurrentMode() == Mode::WhichKey) DrawWhichKeyOverlay();
-    if (!zen) DrawSidebars();
     if (g_show_help_overlay) DrawHelpOverlay();
     DrawToastStack();
 

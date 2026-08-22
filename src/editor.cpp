@@ -746,6 +746,7 @@ Editor::~Editor() = default;
 void Editor::HandleInput() {
     MaybeDismissHover();
     if (HandleMod1Shortcuts()) return;
+    if (HandleTabShortcuts()) return;
     switch (mode_) {
         case Mode::Normal:
             HandleNormalInput();
@@ -874,6 +875,20 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines) {
                 if (f.closed && row > f.start_row && row <= f.end_row) {
                     row = f.start_row;
                     break;
+                }
+            }
+            // Same containment jump-back as the Fold loop just above, for
+            // a multi-line LaTeX fragment's own raw-row span -- row_slots
+            // only knows how to answer for a fragment's *start* row, so
+            // landing anywhere else inside one (its remaining raw source
+            // rows, skipped outright by DrawPane/the cursor-Y lookup,
+            // main.cpp) needs the same rewind before calling it.
+            if (org_latex_visible_) {
+                for (const auto &kv : buf.org_latex_rows) {
+                    if (row > kv.first && row <= kv.second.end_row) {
+                        row = kv.first;
+                        break;
+                    }
                 }
             }
             slots += row_slots(row);
@@ -3005,6 +3020,16 @@ void Editor::PanePrevBufferTab() {
     SyncModeToActivePaneBuffer();
 }
 
+void Editor::GoToPaneBufferTab(int index) {
+    Pane &p = CurPane();
+    EnsureBufferTabSeeded(p);
+    if (p.buffer_tabs.empty()) return;
+    p.buffer_tab_index = std::max(0, std::min(index, static_cast<int>(p.buffer_tabs.size()) - 1));
+    p.buffer_id = p.buffer_tabs[p.buffer_tab_index];
+    ClampCursor();
+    SyncModeToActivePaneBuffer();
+}
+
 void Editor::PaneCloseBufferTab() {
     Pane &p = CurPane();
     EnsureBufferTabSeeded(p);
@@ -3189,13 +3214,6 @@ void Editor::GoToTab(int index) {
     active_tab_ = std::max(0, std::min(index, static_cast<int>(tabs_.size()) - 1));
 }
 
-std::string Editor::TabLabel(int tab_index) const {
-    const Tab &tab = tabs_[tab_index];
-    SplitNode *node = FindNode(tab.root.get(), tab.active_pane_id);
-    if (!node) return "[No Name]";
-    const Buffer &buf = buffers_[node->pane.buffer_id];
-    return buf.filename.empty() ? "[No Name]" : buf.filename;
-}
 
 void Editor::ComputeRects(const SplitNode *node, float x0, float y0, float x1, float y1,
                            std::vector<PaneRect> &out) const {
@@ -3283,7 +3301,23 @@ void Editor::NavigatePaneDirection(const std::string &direction) {
         if (!sb) return;
         bool into_panes = (sb->position == "left" && direction == "right") ||
                            (sb->position == "right" && direction == "left");
-        if (into_panes) RestoreFromOverlay();
+        if (into_panes) {
+            RestoreFromOverlay();
+            return;
+        }
+        // Smart resize (mirrors ResizeActivePane's own Mode::Sidebar
+        // branch): pressing further *outward* -- away from the pane tree,
+        // into the screen edge the sidebar is already docked against --
+        // has nowhere left to navigate, so shrink the sidebar instead of
+        // just doing nothing. mod1+h against an already-focused, left-
+        // docked file tree (with no pane further left to step back into
+        // either) is the common case; the other three edges follow the
+        // same rule.
+        bool outward = (sb->position == "left" && direction == "left") ||
+                       (sb->position == "right" && direction == "right") ||
+                       (sb->position == "top" && direction == "up") ||
+                       (sb->position == "bottom" && direction == "down");
+        if (outward) ResizeActivePane(direction);
         return;
     }
 
@@ -3471,6 +3505,18 @@ bool Editor::HandleMod1Shortcuts() {
         }
         return true;
     }
+    // mod1+j/k is globally bound to pane-nav (down/up, kDefaultMod1Bindings
+    // in main.cpp), but while a picker with an active preview column is
+    // open, that pane-nav mapping would just blur focus behind the picker
+    // overlay to no visible effect -- so intercept it here and scroll the
+    // preview instead, same reasoning as the Sidebar+D case above.
+    if (mode_ == Mode::Picker && !extra_ctrl && !extra_shift && !PickerPreview().empty() &&
+        (IsKeyPressed(KEY_J) || IsKeyPressed(KEY_K))) {
+        ScrollPickerPreview(IsKeyPressed(KEY_J) ? 1 : -1);
+        while (GetCharPressed() > 0) {
+        }
+        return true;
+    }
     for (int key = KEY_A; key <= KEY_Z; key++) {
         if (!IsKeyPressed(key)) continue;
         std::string base(1, static_cast<char>('a' + (key - KEY_A)));
@@ -3492,6 +3538,41 @@ bool Editor::HandleMod1Shortcuts() {
         auto it = mod1_mappings_.find(k);
         if (it != mod1_mappings_.end() && lua_) {
             lua_->CallRef(it->second);
+            while (GetCharPressed() > 0) {
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+void Editor::ScrollPickerPreview(int delta) {
+    int line_count = 1 + static_cast<int>(std::count(picker_preview_text_.begin(), picker_preview_text_.end(), '\n'));
+    int max_scroll = std::max(0, line_count - 1);
+    picker_preview_scroll_ = std::max(0, std::min(picker_preview_scroll_ + delta, max_scroll));
+}
+
+// Ctrl-T (new tab) / Alt-1..Alt-9 (jump to tab by number) -- fixed global
+// bindings, not user-remappable mod1 mappings (mod1 itself defaults to
+// Alt, so routing these through that system would make mod1=alt users'
+// Alt-1..9 ambiguous with whatever else mod1 might bind there). Checked
+// unconditionally alongside HandleMod1Shortcuts, before mode dispatch, so
+// e.g. Ctrl-T opens a new tab from Insert mode the same way it would in
+// Normal.
+bool Editor::HandleTabShortcuts() {
+    bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+    bool alt = IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT);
+    if (ctrl && IsKeyPressed(KEY_T)) {
+        TabNew("");
+        return true;
+    }
+    if (alt) {
+        for (int key = KEY_ONE; key <= KEY_NINE; key++) {
+            if (!IsKeyPressed(key)) continue;
+            GoToTab(key - KEY_ONE);
+            // Same reasoning as HandleMod1Shortcuts' own drain: Alt-as-
+            // compose on some layouts can still queue a char event for the
+            // digit alongside the key event handled above.
             while (GetCharPressed() > 0) {
             }
             return true;
@@ -5759,9 +5840,9 @@ bool Editor::ToggleOrgImages() {
     return org_images_visible_;
 }
 
-void Editor::SetOrgLatexRow(int row, const std::string &path, int slots) {
+void Editor::SetOrgLatexRow(int row, const std::string &path, int slots, int end_row) {
     if (row < 0 || row >= Buf().LineCount()) return;
-    Buf().org_latex_rows[row] = Buffer::OrgLatexRender{path, std::max(1, slots)};
+    Buf().org_latex_rows[row] = Buffer::OrgLatexRender{path, std::max(1, slots), std::max(row, end_row)};
 }
 
 void Editor::ClearOrgLatexRows() { Buf().org_latex_rows.clear(); }
@@ -5770,6 +5851,13 @@ bool Editor::ToggleOrgLatex() {
     org_latex_visible_ = !org_latex_visible_;
     return org_latex_visible_;
 }
+
+void Editor::AddOrgLatexInlineSpan(int row, int col_start, int col_end, const std::string &path) {
+    if (row < 0 || row >= Buf().LineCount()) return;
+    Buf().org_latex_inline[row].push_back({col_start, col_end, path});
+}
+
+void Editor::ClearOrgLatexInlineSpans() { Buf().org_latex_inline.clear(); }
 
 bool Editor::IsRowHiddenByFold(int row, int *fold_start_row) const {
     for (const Fold &f : Buf().folds) {
@@ -5840,24 +5928,28 @@ bool Editor::IsOrgBuffer() const {
     return f.size() >= 4 && f.compare(f.size() - 4, 4, ".org") == 0;
 }
 
-// Rebuilds provider="org" folds from the buffer's real headline structure
-// via org's own tree-sitter grammar (kFoldsOrg's `(section) @fold`, one
-// per headline -- see treesitter_queries.h's comment on it): a headline's
-// `section` node already spans exactly itself through its last nested
-// subsection, body included, so this reproduces the same nesting a hand-
-// rolled `^(%*+)%s+` line scan would -- but *correctly* excludes anything
-// inside a `#+begin_src`/`#+begin_example`/etc. block, where such a scan
-// would misparse an asterisk sitting at column 0 of the block's own
-// contents (a `* comment` in the embedded code, `char *p = ...`, ...) as
-// a real headline and corrupt the nesting for the rest of the file. A
-// degenerate headline with no body/children (a single-line node) creates
-// no fold, same as CreateFold's own "<2 lines isn't meaningful" rule --
+// Rebuilds provider="org" folds from the buffer's real headline *and*
+// greater-block structure via org's own tree-sitter grammar (kFoldsOrg's
+// `[(section) (block)] @fold` -- see treesitter_queries.h's comment on
+// it): a headline's `section` node already spans exactly itself through
+// its last nested subsection, body included, so this reproduces the same
+// nesting a hand-rolled `^(%*+)%s+` line scan would -- but *correctly*
+// excludes anything inside a `#+begin_src`/`#+begin_example`/etc. block,
+// where such a scan would misparse an asterisk sitting at column 0 of the
+// block's own contents (a `* comment` in the embedded code, `char *p =
+// ...`, ...) as a real headline and corrupt the nesting for the rest of
+// the file. `block` folds (one per `#+begin_X ... #+end_X`, whatever X
+// is) come from the very same query and land in the very same
+// Buf().folds list, nesting inside their enclosing section automatically
+// -- no separate code-block-folding pass needed. A degenerate node with
+// no body (a single-line section, or an empty block) creates no fold,
+// same as CreateFold's own "<2 lines isn't meaningful" rule --
 // TreesitterFoldRanges already applies that filter.
 //
-// Existing org folds are preserved by matching on start_row: an edit that
-// doesn't move a headline's own line keeps whatever open/closed state the
-// user left it in; anything new defaults open, same as a freshly loaded
-// file where nothing has been folded yet.
+// Existing org folds (headline or block alike) are preserved by matching
+// on start_row: an edit that doesn't move a fold's own opening line keeps
+// whatever open/closed state the user left it in; anything new defaults
+// open, same as a freshly loaded file where nothing has been folded yet.
 void Editor::RecomputeOrgFolds() {
     std::vector<Fold> old_folds;
     for (const Fold &f : Buf().folds) {
@@ -6061,34 +6153,61 @@ void Editor::HandleSidebarInput() {
 
 // --- Icons (NVIM_PARITY_PLAN.md Part II Phase 10) -------------------------
 
+std::string Utf8FromCodepoint(int cp) {
+    std::string out;
+    if (cp <= 0x7F) {
+        out += static_cast<char>(cp);
+    } else if (cp <= 0x7FF) {
+        out += static_cast<char>(0xC0 | (cp >> 6));
+        out += static_cast<char>(0x80 | (cp & 0x3F));
+    } else if (cp <= 0xFFFF) {
+        out += static_cast<char>(0xE0 | (cp >> 12));
+        out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+        out += static_cast<char>(0x80 | (cp & 0x3F));
+    } else {
+        out += static_cast<char>(0xF0 | (cp >> 18));
+        out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+        out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+        out += static_cast<char>(0x80 | (cp & 0x3F));
+    }
+    return out;
+}
+
 std::string IconForFilename(const std::string &name) {
     // Full-name special cases checked before falling back to extension.
-    static const std::unordered_map<std::string, std::string> kByName = {
-        {"Makefile", "M"},     {"makefile", "M"},   {"CMakeLists.txt", "M"},
-        {"Dockerfile", "D"},   {".gitignore", "G"}, {".gitmodules", "G"},
-        {"README.md", "R"},    {"README.org", "R"}, {"README", "R"},
-        {"LICENSE", "!"},      {".env", "*"},
+    // Codepoints match mep.nvim/lua/mep/icons/data.lua's own M.nerd_font
+    // table (nvim-web-devicons' defaults) so both editors show the same
+    // icon for the same file; LICENSE/.env weren't in the C++ side's old
+    // ASCII table's mep.nvim counterpart either, so they fall back to
+    // generic file/lock icons below instead of inventing new codepoints.
+    static const std::unordered_map<std::string, int> kByName = {
+        {"Makefile", 0xe779},        {"makefile", 0xe779},        {"CMakeLists.txt", 0xf15b},
+        {"Dockerfile", 0xf0868},     {".gitignore", 0xe702},      {".gitmodules", 0xe702},
+        {"README.md", 0xf48a},       {"README.org", 0xe633},      {"README", 0xf48a},
+        {"LICENSE", 0xe60a},         {".env", 0xf462},            {".editorconfig", 0xe652},
     };
     auto by_name = kByName.find(name);
-    if (by_name != kByName.end()) return by_name->second;
+    if (by_name != kByName.end()) return Utf8FromCodepoint(by_name->second);
 
     size_t dot = name.find_last_of('.');
-    if (dot == std::string::npos || dot == name.size() - 1) return "-";
+    if (dot == std::string::npos || dot == name.size() - 1) return Utf8FromCodepoint(0xf15b);  // nf-fa-file
     std::string ext = name.substr(dot + 1);
     for (char &c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 
-    static const std::unordered_map<std::string, std::string> kByExt = {
-        {"c", "C"},    {"h", "H"},    {"cpp", "C"},  {"cc", "C"},   {"cxx", "C"},  {"hpp", "H"},
-        {"lua", "L"},  {"py", "P"},   {"js", "J"},   {"ts", "T"},   {"jsx", "J"},  {"tsx", "T"},
-        {"rs", "R"},   {"go", "G"},   {"java", "J"}, {"rb", "R"},   {"sh", "$"},   {"bash", "$"},
-        {"zsh", "$"},  {"md", "M"},   {"org", "O"},  {"txt", "T"},  {"json", "{"}, {"yaml", "Y"},
-        {"yml", "Y"},  {"toml", "T"}, {"xml", "X"},  {"html", "H"}, {"css", "S"},  {"sql", "Q"},
-        {"git", "G"},  {"png", "I"},  {"jpg", "I"},  {"jpeg", "I"}, {"gif", "I"},  {"svg", "I"},
-        {"pdf", "F"},  {"zip", "Z"},  {"tar", "Z"},  {"gz", "Z"},
+    static const std::unordered_map<std::string, int> kByExt = {
+        {"c", 0xe61e},    {"h", 0xf0fd},    {"cpp", 0xe61d},  {"cc", 0xe61d},   {"cxx", 0xe61d},  {"hpp", 0xf0fd},
+        {"lua", 0xe620},  {"py", 0xe606},   {"js", 0xe60c},   {"ts", 0xe628},   {"jsx", 0xe625},  {"tsx", 0xe7ba},
+        {"rs", 0xe68b},   {"go", 0xe627},   {"java", 0xe738}, {"rb", 0xe791},   {"sh", 0xe795},   {"bash", 0xe760},
+        {"zsh", 0xe795},  {"md", 0xf48a},   {"markdown", 0xe609}, {"org", 0xe633}, {"txt", 0xf0219}, {"json", 0xe60b},
+        {"yaml", 0xe8eb}, {"yml", 0xe8eb},  {"toml", 0xe6b2}, {"xml", 0xf05c0}, {"html", 0xe736}, {"css", 0xe6b8},
+        {"scss", 0xe603}, {"sql", 0xe706},  {"vim", 0xe62b},  {"lock", 0xe672}, {"log", 0xf0331}, {"cs", 0xf031b},
+        {"php", 0xe608},  {"csv", 0xe64a},  {"env", 0xf462},
+        {"git", 0xe702},  {"png", 0xe60d},  {"jpg", 0xe60d},  {"jpeg", 0xe60d}, {"gif", 0xe60d},  {"svg", 0xf0721},
+        {"pdf", 0xeaeb},  {"zip", 0xf410},  {"tar", 0xf410},  {"gz", 0xf410},
     };
     auto by_ext = kByExt.find(ext);
-    if (by_ext != kByExt.end()) return by_ext->second;
-    return "-";
+    if (by_ext != kByExt.end()) return Utf8FromCodepoint(by_ext->second);
+    return Utf8FromCodepoint(0xf15b);  // nf-fa-file, generic fallback
 }
 
 // --- Fuzzy picker ----------------------------------------------------------
@@ -6138,6 +6257,7 @@ void Editor::OpenPicker(const std::string &title, std::vector<PickerItem> items,
     picker_on_select_change_ref_ = on_select_change_ref;
     picker_raw_results_ = raw_results;
     picker_preview_text_.clear();
+    picker_preview_scroll_ = 0;
     mode_ = Mode::Picker;
 }
 

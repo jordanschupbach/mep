@@ -69,6 +69,49 @@
           sha256 = "9fbf5e28ef86c69858f6d3d34eccc32e911c1a28b4120ff3e84aaa70cfbf1e30";
         };
 
+        # pugixml/miniz/pdfium (office_doc.cpp/pdf_doc.cpp) were added to
+        # CMakeLists.txt's FetchContent set after raylib/lua were already
+        # wired up above, and this file wasn't updated to match -- with
+        # FETCHCONTENT_FULLY_DISCONNECTED=ON below, CMake never downloads
+        # them, leaving pugixml/miniz/pdfium_SOURCE_DIR empty and failing
+        # configure (pugixml has no sources, `add_library(miniz ...)` has
+        # no sources, and the pdfium imported-target paths don't exist).
+        # fetchzip (unlike fetchurl+manual tar for lua above) unpacks the
+        # archive itself and hands back a ready source directory, so no
+        # preConfigure extraction step is needed for any of the three.
+        # Unlike fetchurl, fetchzip's fixed-output hash is of the
+        # *unpacked* tree (post stripRoot), not the raw archive -- so
+        # these hashes are NOT the same as CMakeLists.txt's own URL_HASH
+        # pins and had to be computed separately (`nix hash path` /
+        # `nix-prefetch-url --unpack` against each archive).
+        pugixmlSrc = pkgs.fetchzip {
+          url = "https://github.com/zeux/pugixml/releases/download/v1.16/pugixml-1.16.tar.gz";
+          hash = "sha256-h2LGUgdr2wcDoz6DosFU3fELSNtiRwNWiod0Cbnvhcc=";
+        };
+        # miniz's release zip is a flat file:file pair (miniz.c/miniz.h,
+        # no wrapping directory) rather than the single wrapping directory
+        # fetchzip's default stripRoot=true expects -- pass stripRoot=false
+        # to keep it as a flat unpack instead of erroring.
+        minizSrc = pkgs.fetchzip {
+          url = "https://github.com/richgel999/miniz/releases/download/3.1.2/miniz-3.1.2.zip";
+          hash = "sha256-rG5ndTc+oiCqmSZE2+VgIBsItBDpCuLQsRR14C6UoWg=";
+          stripRoot = false;
+        };
+
+        # Only the Linux x86_64 asset/hash is verified (mirrors
+        # CMakeLists.txt's own `else()` branch, which is likewise the only
+        # one it pins a real build/dev environment against); extend with
+        # Darwin's arm64/x64 hashes from CMakeLists.txt if this flake ever
+        # targets aarch64-linux or Darwin.
+        pdfiumSrc = pkgs.fetchzip {
+          url = "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/8009/pdfium-linux-x64.tgz";
+          hash = "sha256-/TbTmcM7FRmCXpk42WXYTT/Mw1I4WscLmFMWTLr/ZTo=";
+          # Release tarball has multiple top-level entries (LICENSE,
+          # include/, lib/, ...), not one wrapping directory -- same
+          # flat-layout case as miniz above.
+          stripRoot = false;
+        };
+
         tsGrammars = pkgs.tree-sitter.withPlugins (
           p: with p; [
             tree-sitter-bash
@@ -155,6 +198,9 @@
             cmakeFlagsArray+=(
               "-DFETCHCONTENT_SOURCE_DIR_RAYLIB=${raylibSrc}"
               "-DFETCHCONTENT_SOURCE_DIR_LUA=$NIX_BUILD_TOP/lua-src"
+              "-DFETCHCONTENT_SOURCE_DIR_PUGIXML=${pugixmlSrc}"
+              "-DFETCHCONTENT_SOURCE_DIR_MINIZ=${minizSrc}"
+              "-DFETCHCONTENT_SOURCE_DIR_PDFIUM=${pdfiumSrc}"
               "-DFETCHCONTENT_FULLY_DISCONNECTED=ON"
             )
           '';

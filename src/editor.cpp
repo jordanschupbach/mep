@@ -16,6 +16,7 @@
 #include "regex.h"
 #include "vterm.h"
 #include "image_doc.h"
+#include "js_engine.h"
 #include "pdf_doc.h"
 #include "treesitter.h"
 
@@ -745,6 +746,10 @@ Editor::~Editor() = default;
 
 void Editor::HandleInput() {
     MaybeDismissHover();
+    {
+        Vector2 wheel = GetMouseWheelMoveV();
+        if (wheel.x != 0.0f || wheel.y != 0.0f) HandleMouseWheel(wheel.x, wheel.y);
+    }
     if (HandleMod1Shortcuts()) return;
     if (HandleTabShortcuts()) return;
     switch (mode_) {
@@ -805,6 +810,9 @@ void Editor::HandleInput() {
         case Mode::Pdf:
             HandlePdfInput();
             break;
+        case Mode::Html:
+            HandleHtmlInput();
+            break;
         case Mode::OfficeNormal:
             HandleOfficeNormalInput();
             break;
@@ -835,8 +843,19 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines) {
     if (pane.buffer_id < 0 || pane.buffer_id >= static_cast<int>(buffers_.size())) return;
     const Buffer &buf = buffers_[pane.buffer_id];
 
+    // How far the cursor's own row moved since the last call -- feeds the
+    // smoothing cap below. A pane that's never run this before (-1) is
+    // "just arrived here" (a fresh buffer switch, which already resets
+    // cursor/scroll_row together in LoadFile) rather than mid-navigation,
+    // so its first-ever catch-up isn't throttled.
+    int cursor_delta = (pane.scroll_follow_last_cursor_row < 0)
+                            ? std::max(1, visible_lines)
+                            : std::abs(pane.cursor.row - pane.scroll_follow_last_cursor_row);
+    pane.scroll_follow_last_cursor_row = pane.cursor.row;
+
+    int target;
     if (pane.cursor.row < pane.scroll_row) {
-        pane.scroll_row = pane.cursor.row;
+        target = pane.cursor.row;
     } else {
         // How many *visual* slots [scroll_row, cursor.row] takes -- a
         // closed fold's hidden interior counts as one slot no matter how
@@ -893,8 +912,30 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines) {
             }
             slots += row_slots(row);
         }
-        if (row > pane.scroll_row) pane.scroll_row = row;
+        target = std::max(row, pane.scroll_row);
     }
+
+    // Smooth catch-up: advance scroll_row toward `target` by at most
+    // cursor_delta rows this call instead of snapping straight there.
+    // An ordinary single-row step (j/k) only ever needs scroll_row to
+    // move by 1 anyway UNLESS the row just stepped onto/off is an org
+    // inline image or LaTeX fragment (row_slots, many slots tall for one
+    // buffer row) -- that's the one case `target` can land far from
+    // scroll_row despite cursor_delta staying 1, and capping the advance
+    // to cursor_delta turns it into a multi-frame slide instead of an
+    // instant jump: UpdateScrollForPane runs every rendered frame (see
+    // its DrawPane call site, main.cpp), so the remaining distance keeps
+    // closing at this same rate even across frames with no further
+    // input, until scroll_row reaches target. A genuinely large cursor
+    // jump (G, gg, a search, a counted motion like 15j) moves
+    // cursor_delta by roughly the same amount target needs to move, so
+    // it stays effectively uncapped and still lands in a single frame.
+    int cap = std::max(1, cursor_delta);
+    int jump = target - pane.scroll_row;
+    if (jump > cap) pane.scroll_row += cap;
+    else if (jump < -cap) pane.scroll_row -= cap;
+    else pane.scroll_row = target;
+
     if (pane.scroll_row < 0) pane.scroll_row = 0;
 }
 
@@ -930,6 +971,254 @@ void Editor::ScrollCursorTo(char where) {
         p.scroll_row = p.cursor.row - p.visible_lines + 1;
     }
     p.scroll_row = std::max(0, std::min(p.scroll_row, std::max(0, Buf().LineCount() - 1)));
+}
+
+// --- Mouse-wheel / trackpad scrolling ---------------------------------------
+//
+// Sign convention: for every content type below except WheelScrollTerminal,
+// "forward" (revealing later content -- a row/scroll position that
+// increases) is `-dy`. This matches GLFW/raylib's own mouse-wheel
+// convention, where scrolling the wheel *down* (or a trackpad two-finger
+// swipe up, i.e. "content follows your fingers") reports a *negative*
+// yoffset. WheelScrollTerminal inverts this on purpose -- see its own
+// comment, since TerminalSession::scroll_offset counts backward from the
+// live tail rather than forward through the content.
+namespace {
+constexpr float kWheelLinesPerNotch = 3.0f;   // text/office/sheet/terminal row-or-paragraph step
+constexpr float kWheelColsPerNotch = 6.0f;    // text/office column step
+constexpr float kWheelPixelsPerNotch = 50.0f; // pdf/image/html pixel step
+// Ctrl-scroll zoom (HandleMouseWheel's Image/Pdf/Html/Office branches):
+// one full notch (dy = 1.0) multiplies zoom by this, same "feel" as one
+// press of the +/- zoom key each viewer already has. A trackpad's
+// fractional per-frame dy values compound the same way exponentially
+// (pow(step, dy)), so a two-finger pinch/scroll zooms smoothly instead
+// of snapping in whole-notch jumps.
+constexpr float kWheelZoomStepPerNotch = 1.25f;
+// Shared by HandleImageInput's own +/-/= keys and ApplyImageZoom (this
+// function used to be a local lambda inside HandleImageInput; hoisted
+// out, along with these three constants, so HandleMouseWheel's Image
+// branch can call the exact same math -- see ApplyImageZoom's own
+// header, editor.h).
+constexpr float kImageZoomStep = 1.25f;
+constexpr float kMinImageZoom = 0.05f;
+constexpr float kMaxImageZoom = 20.0f;
+// Same reasoning as the three above, for HandlePdfInput/ApplyPdfZoom/
+// SettlePdfZoom.
+constexpr float kPdfZoomStep = 1.25f;
+constexpr float kMinPdfZoom = 0.1f;
+constexpr float kMaxPdfZoom = 8.0f;
+constexpr float kZoomSettleLo = 0.5f, kZoomSettleHi = 2.0f;
+}  // namespace
+
+int Editor::WheelSteps(float &accum, float delta, float units_per_notch) {
+    accum += delta * units_per_notch;
+    int steps = static_cast<int>(accum);  // truncates toward zero
+    accum -= static_cast<float>(steps);
+    return steps;
+}
+
+void Editor::WheelScrollTextBuffer(float dx, float dy) {
+    Pane &p = CurPane();
+    if (dy != 0.0f) {
+        int steps = WheelSteps(wheel_accum_text_row_, -dy, kWheelLinesPerNotch);
+        if (steps != 0) {
+            int row = p.cursor.row;
+            int dir = steps > 0 ? 1 : -1;
+            for (int i = 0; i < std::abs(steps); i++) row = StepVisibleRow(row, dir);
+            p.cursor.row = row;
+            ClampCursor();
+        }
+    }
+    if (dx != 0.0f) {
+        int steps = WheelSteps(wheel_accum_text_col_, dx, kWheelColsPerNotch);
+        if (steps != 0) {
+            p.cursor.col = std::max(0, p.cursor.col + steps);
+            ClampCursor();
+        }
+    }
+}
+
+void Editor::WheelScrollOffice(float dx, float dy) {
+    auto it = officedocs_.find(CurPane().buffer_id);
+    if (it == officedocs_.end()) return;
+    OfficeSession &sess = it->second;
+    int para_count = static_cast<int>(sess.doc.paragraphs.size());
+    if (para_count <= 0) return;
+    // Ctrl-scroll zooms instead of moving the cursor -- same clamped
+    // multiplier as the toolbar's Z-/Z+ buttons (SetOfficeZoom), just
+    // driven by the wheel's vertical delta. See WheelScrollPdf's own
+    // comment for the sign convention. Checked before the table-nav-exit
+    // side effect below so a zoom gesture doesn't also drop out of an
+    // active table cell the way a real scroll deliberately does.
+    if ((IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) && dy != 0.0f) {
+        SetOfficeZoom(std::pow(kWheelZoomStepPerNotch, dy));
+        return;
+    }
+    if (sess.in_table_edit >= 0) {
+        // Scrolling away from a table naturally exits cell/table nav --
+        // otherwise the highlighted "active cell" would keep pointing at
+        // a table_ref the cursor paragraph no longer anchors once wheel
+        // scroll moves cursor_para elsewhere (same reasoning Escape's own
+        // ExitOfficeTable call has in HandleOfficeNormalInput).
+        sess.in_table_edit = -1;
+        sess.table_cell_editing = false;
+    }
+    auto cur_len = [&]() { return static_cast<int>(sess.doc.paragraphs[sess.cursor_para].text.size()); };
+    if (dy != 0.0f) {
+        int steps = WheelSteps(wheel_accum_office_para_, -dy, kWheelLinesPerNotch);
+        if (steps != 0) {
+            sess.cursor_para = std::clamp(sess.cursor_para + steps, 0, para_count - 1);
+            sess.cursor_col = std::min(sess.cursor_col, cur_len());
+        }
+    }
+    if (dx != 0.0f) {
+        int steps = WheelSteps(wheel_accum_office_col_, dx, kWheelColsPerNotch);
+        if (steps != 0) sess.cursor_col = std::clamp(sess.cursor_col + steps, 0, cur_len());
+    }
+}
+
+void Editor::WheelScrollSheet(float dx, float dy) {
+    auto it = sheetdocs_.find(CurPane().buffer_id);
+    if (it == sheetdocs_.end()) return;
+    SheetSession &sess = it->second;
+    if (sess.wb.sheets.empty()) return;
+    // No upper clamp beyond 0, matching HandleSheetNormalInput's own hjkl
+    // (a sheet has no fixed bottom-right corner to stop at -- see its own
+    // comment).
+    if (dy != 0.0f) {
+        int steps = WheelSteps(wheel_accum_sheet_row_, -dy, kWheelLinesPerNotch);
+        if (steps != 0) sess.cursor_row = std::max(0, sess.cursor_row + steps);
+    }
+    if (dx != 0.0f) {
+        int steps = WheelSteps(wheel_accum_sheet_col_, dx, kWheelColsPerNotch);
+        if (steps != 0) sess.cursor_col = std::max(0, sess.cursor_col + steps);
+    }
+}
+
+void Editor::WheelScrollPdf(float dx, float dy) {
+    auto it = pdfs_.find(CurPane().buffer_id);
+    if (it == pdfs_.end()) return;
+    PdfSession &sess = it->second;
+    if (sess.search_active) return;  // don't fight the search-input overlay
+    int page_count = sess.doc ? sess.doc->PageCount() : 0;
+    if (page_count <= 0) return;
+    // Ctrl-scroll zooms instead of scrolling/panning -- same center-
+    // anchored math as the +/- zoom keys (HandlePdfInput's apply_zoom),
+    // just driven by the wheel's vertical delta. Positive dy (scroll up/
+    // away, or a trackpad two-finger swipe down) zooms in, matching a
+    // browser's own Ctrl-scroll convention. Stray dx from a diagonal
+    // trackpad gesture is ignored while ctrl is held, same as the pan
+    // below being ignored during the pinch itself -- this IS the zoom
+    // gesture, not a scroll.
+    if ((IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) && dy != 0.0f) {
+        ApplyPdfZoom(sess, sess.zoom * std::pow(kWheelZoomStepPerNotch, dy));
+        return;
+    }
+    if (dy != 0.0f) {
+        sess.scroll_y += -dy * kWheelPixelsPerNotch;
+        RebasePdfScroll(sess);
+    }
+    if (dx != 0.0f) {
+        sess.pan_x += static_cast<int>(dx * kWheelPixelsPerNotch);
+        ClampPdfPanX(sess);
+    }
+}
+
+void Editor::WheelScrollImage(float dx, float dy) {
+    auto it = images_.find(CurPane().buffer_id);
+    if (it == images_.end()) return;
+    ImageSession &sess = it->second;
+    // Ctrl-scroll zooms instead of panning -- see WheelScrollPdf's own
+    // comment for the sign/dx-ignored reasoning (identical here).
+    if ((IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) && dy != 0.0f) {
+        ApplyImageZoom(sess, sess.zoom * std::pow(kWheelZoomStepPerNotch, dy));
+        return;
+    }
+    int max_pan_x = sess.doc ? std::max(0, static_cast<int>(sess.doc->Width() * sess.zoom) - sess.viewport_w) : 0;
+    int max_pan_y = sess.doc ? std::max(0, static_cast<int>(sess.doc->Height() * sess.zoom) - sess.viewport_h) : 0;
+    if (dy != 0.0f) {
+        sess.pan_y = std::clamp(sess.pan_y + static_cast<int>(-dy * kWheelPixelsPerNotch), 0, max_pan_y);
+    }
+    if (dx != 0.0f) {
+        sess.pan_x = std::clamp(sess.pan_x + static_cast<int>(dx * kWheelPixelsPerNotch), 0, max_pan_x);
+    }
+}
+
+void Editor::WheelScrollHtml(float dx, float dy) {
+    (void)dx;  // no horizontal scroll model for html -- HandleHtmlInput's own hjkl only binds j/k
+    auto it = htmldocs_.find(CurPane().buffer_id);
+    if (it == htmldocs_.end()) return;
+    HtmlSession &sess = it->second;
+    // Ctrl-scroll zooms instead of scrolling -- same +/-/= range
+    // (HandleHtmlInput) as the keyboard shortcuts, just driven by the
+    // wheel's vertical delta. See WheelScrollPdf's own comment for the
+    // sign convention.
+    if ((IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) && dy != 0.0f) {
+        sess.zoom = std::clamp(sess.zoom * std::pow(kWheelZoomStepPerNotch, dy), 0.3f, 3.0f);
+        return;
+    }
+    if (dy != 0.0f) sess.scroll_y = std::max(0.0f, sess.scroll_y + (-dy * kWheelPixelsPerNotch));
+}
+
+void Editor::WheelScrollTerminal(float dy) {
+    TerminalSession *sess = FindTerminal(CurPane().buffer_id);
+    if (!sess || !sess->vterm) return;
+    // scroll_offset counts lines *back* from the live tail (0 = live), the
+    // opposite sense of every other content type's forward-increasing
+    // scroll position above -- so unlike them, this uses +dy directly:
+    // scrolling up increases scroll_offset (further into history),
+    // scrolling down decreases it (back toward the live tail). Mirrors
+    // Shift+PageUp/PageDown's own direction (HandleTerminalInput).
+    int steps = WheelSteps(wheel_accum_term_, dy, kWheelLinesPerNotch);
+    if (steps != 0) sess->scroll_offset = std::clamp(sess->scroll_offset + steps, 0, sess->vterm->ScrollbackLines());
+}
+
+// Dispatched once per frame from HandleInput(), before the mode-specific
+// handler -- see this method's own declaration (editor.h) for why. Modal
+// overlays (Picker/Sidebar/Prompt/Command/etc.) and the Insert-family
+// modes (Insert/OfficeInsert/SheetInsert) are deliberately excluded: an
+// overlay has its own separate input focus the wheel isn't wired into yet,
+// and every content type's scroll position here is cursor-derived (see
+// UpdateScrollForPane/the Office and Sheet scroll-follow passes in
+// main.cpp) -- silently relocating the actual text-insertion point out
+// from under an actively-typing user via a passive scroll gesture would be
+// far more surprising than the wheel simply doing nothing while typing.
+void Editor::HandleMouseWheel(float dx, float dy) {
+    switch (mode_) {
+        case Mode::Normal:
+        case Mode::Visual:
+        case Mode::VisualLine:
+        case Mode::VisualBlock:
+            WheelScrollTextBuffer(dx, dy);
+            break;
+        case Mode::OfficeNormal:
+        case Mode::OfficeVisual:
+            WheelScrollOffice(dx, dy);
+            break;
+        case Mode::SheetNormal:
+        case Mode::SheetVisual:
+            WheelScrollSheet(dx, dy);
+            break;
+        case Mode::Pdf:
+            WheelScrollPdf(dx, dy);
+            break;
+        case Mode::Image:
+            WheelScrollImage(dx, dy);
+            break;
+        case Mode::Html:
+            WheelScrollHtml(dx, dy);
+            break;
+        case Mode::Terminal:
+            // Only affects TerminalSession::scroll_offset (the scrollback
+            // view), never forwarded to the child process -- safe
+            // regardless of what program is running, unlike Ctrl-D/Ctrl-U
+            // (see HandleTerminalInput's own comment on why those stay as
+            // plain forwarded keystrokes here instead).
+            WheelScrollTerminal(dy);
+            break;
+        default:
+            break;
+    }
 }
 
 void Editor::IncrementNumberAtCursor(long long delta) {
@@ -1055,27 +1344,6 @@ void Editor::CollectLeaves(const SplitNode *node, std::vector<int> &ids) const {
         return;
     }
     for (auto &child : node->children) CollectLeaves(child.get(), ids);
-}
-
-void Editor::CollectBufferIds(const SplitNode *node, std::vector<int> &ids) const {
-    if (node->dir == SplitDir::Leaf) {
-        ids.push_back(node->pane.buffer_id);
-        return;
-    }
-    for (auto &child : node->children) CollectBufferIds(child.get(), ids);
-}
-
-void Editor::ReapOrphanedTerminals() {
-    std::vector<int> live_buffer_ids;
-    for (const Tab &t : tabs_) CollectBufferIds(t.root.get(), live_buffer_ids);
-    for (auto it = terminals_.begin(); it != terminals_.end();) {
-        if (std::find(live_buffer_ids.begin(), live_buffer_ids.end(), it->first) == live_buffer_ids.end()) {
-            if (!it->second.exited) TerminalKillBackend(it->second);
-            it = terminals_.erase(it);
-        } else {
-            ++it;
-        }
-    }
 }
 
 bool Editor::RemovePaneNode(std::unique_ptr<SplitNode> &node_ptr, int pane_id) {
@@ -1315,15 +1583,6 @@ void Editor::TerminalResizeBackend(TerminalSession &sess, int cols, int rows) {
 #endif
 }
 
-void Editor::TerminalKillBackend(TerminalSession &sess) {
-    if (sess.job_id <= 0) return;
-#if defined(__EMSCRIPTEN__)
-    mep_js_pty_close(sess.job_id);
-#else
-    JobManager::Instance().Kill(sess.job_id);
-#endif
-}
-
 void Editor::PollTerminals() {
 #if defined(__EMSCRIPTEN__)
     for (auto &kv : terminals_) {
@@ -1451,6 +1710,8 @@ void Editor::SyncModeToActivePaneBuffer() {
         mode_ = Mode::Image;
     } else if (IsPdfBuffer(CurPane().buffer_id)) {
         mode_ = Mode::Pdf;
+    } else if (IsHtmlBuffer(CurPane().buffer_id)) {
+        mode_ = Mode::Html;
     } else if (IsOfficeBuffer(CurPane().buffer_id)) {
         // Always re-enters at OfficeNormal, never resumes mid-
         // OfficeInsert/Visual -- matches every other mode transition here.
@@ -1458,11 +1719,26 @@ void Editor::SyncModeToActivePaneBuffer() {
     } else if (IsSheetBuffer(CurPane().buffer_id)) {
         // Always re-enters at SheetNormal, same reasoning as Office above.
         mode_ = Mode::SheetNormal;
-    } else if (mode_ == Mode::Terminal || mode_ == Mode::Image || mode_ == Mode::Pdf ||
+    } else if (mode_ == Mode::Terminal || mode_ == Mode::Image || mode_ == Mode::Pdf || mode_ == Mode::Html ||
                mode_ == Mode::OfficeNormal || mode_ == Mode::OfficeInsert || mode_ == Mode::OfficeVisual ||
                mode_ == Mode::SheetNormal || mode_ == Mode::SheetInsert || mode_ == Mode::SheetVisual) {
         mode_ = Mode::Normal;
     }
+}
+
+void Editor::ApplyImageZoom(ImageSession &sess, float new_zoom) {
+    if (!sess.doc || sess.doc->Width() <= 0 || sess.doc->Height() <= 0) return;
+    new_zoom = std::clamp(new_zoom, kMinImageZoom, kMaxImageZoom);
+    float ratio = new_zoom / sess.zoom;
+    float center_x = sess.pan_x + sess.viewport_w / 2.0f;
+    float center_y = sess.pan_y + sess.viewport_h / 2.0f;
+    sess.zoom = new_zoom;
+    sess.pan_x = static_cast<int>(center_x * ratio - sess.viewport_w / 2.0f);
+    sess.pan_y = static_cast<int>(center_y * ratio - sess.viewport_h / 2.0f);
+    int mx = std::max(0, static_cast<int>(sess.doc->Width() * sess.zoom) - sess.viewport_w);
+    int my = std::max(0, static_cast<int>(sess.doc->Height() * sess.zoom) - sess.viewport_h);
+    sess.pan_x = std::clamp(sess.pan_x, 0, mx);
+    sess.pan_y = std::clamp(sess.pan_y, 0, my);
 }
 
 void Editor::HandleImageInput() {
@@ -1496,29 +1772,18 @@ void Editor::HandleImageInput() {
     if (held(KEY_J) || held(KEY_DOWN)) {
         sess->pan_y = std::clamp(sess->pan_y + kPanStep, 0, max_pan_y);
     }
+    bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+    if (ctrl && IsKeyPressed(KEY_D)) sess->pan_y = std::clamp(sess->pan_y + sess->viewport_h / 2, 0, max_pan_y);
+    if (ctrl && IsKeyPressed(KEY_U)) sess->pan_y = std::clamp(sess->pan_y - sess->viewport_h / 2, 0, max_pan_y);
 
     // +/-/= zoom: +/- multiply or divide the zoom factor by kImageZoomStep,
     // re-anchored on whatever image point is currently at the viewport's
     // center (so the thing you're looking at stays put instead of the view
     // snapping back to the image's top-left corner on every keypress); =
     // fits the whole image into the current viewport and resets pan.
-    constexpr float kImageZoomStep = 1.25f;
-    constexpr float kMinImageZoom = 0.05f;
-    constexpr float kMaxImageZoom = 20.0f;
-    auto apply_zoom = [&](float new_zoom) {
-        if (!sess->doc || sess->doc->Width() <= 0 || sess->doc->Height() <= 0) return;
-        new_zoom = std::clamp(new_zoom, kMinImageZoom, kMaxImageZoom);
-        float ratio = new_zoom / sess->zoom;
-        float center_x = sess->pan_x + sess->viewport_w / 2.0f;
-        float center_y = sess->pan_y + sess->viewport_h / 2.0f;
-        sess->zoom = new_zoom;
-        sess->pan_x = static_cast<int>(center_x * ratio - sess->viewport_w / 2.0f);
-        sess->pan_y = static_cast<int>(center_y * ratio - sess->viewport_h / 2.0f);
-        int mx = std::max(0, static_cast<int>(sess->doc->Width() * sess->zoom) - sess->viewport_w);
-        int my = std::max(0, static_cast<int>(sess->doc->Height() * sess->zoom) - sess->viewport_h);
-        sess->pan_x = std::clamp(sess->pan_x, 0, mx);
-        sess->pan_y = std::clamp(sess->pan_y, 0, my);
-    };
+    // ApplyImageZoom (editor.h) does the actual work -- also reused by
+    // HandleMouseWheel's Image branch for Ctrl-scroll.
+    auto apply_zoom = [&](float new_zoom) { ApplyImageZoom(*sess, new_zoom); };
 
     int cp = GetCharPressed();
     while (cp > 0) {
@@ -1572,6 +1837,244 @@ void AppendUtf8(std::string &s, int cp) {
     }
 }
 }  // namespace
+
+bool Editor::IsHtmlBuffer(int buffer_id) const { return htmldocs_.find(buffer_id) != htmldocs_.end(); }
+
+const HtmlSession *Editor::GetHtml(int buffer_id) const {
+    auto it = htmldocs_.find(buffer_id);
+    return it == htmldocs_.end() ? nullptr : &it->second;
+}
+
+void Editor::ResizeHtmlViewport(int buffer_id, int w, int h) {
+    auto it = htmldocs_.find(buffer_id);
+    if (it == htmldocs_.end()) return;
+    it->second.viewport_w = w;
+    it->second.viewport_h = h;
+}
+
+void Editor::ClampHtmlScroll(int buffer_id, float max_scroll) {
+    auto it = htmldocs_.find(buffer_id);
+    if (it == htmldocs_.end()) return;
+    it->second.scroll_y = std::clamp(it->second.scroll_y, 0.0f, max_scroll);
+}
+
+// Parses `bytes` into `sess`'s DOM and runs its scripts -- shared by
+// OpenHtmlInPlace's create-branch (a fresh HtmlSession) and
+// ReloadHtmlBuffer (an existing one, overwritten in place). Runs any
+// <script> content once, synchronously, right after parsing -- see
+// RunScripts' own header (js_engine.h) for why a textContent mutation it
+// makes doesn't need ComputeStyles re-run, and why a failing script can't
+// leave the DOM half-mutated in a way that matters here.
+void Editor::PopulateHtmlSession(HtmlSession &sess, const std::string &origin, const std::string &source,
+                                  const unsigned char *bytes, size_t len) {
+    sess.origin = origin;
+    sess.source = source;
+    sess.doc = HtmlDoc();
+    ParseHtml(std::string(reinterpret_cast<const char *>(bytes), len), sess.doc);
+    RunScripts(
+        sess.doc, [this](const std::string &msg) { Notify(msg, NotifyLevel::Info); },
+        [this, source](const std::string &msg) { Notify(source + ": " + msg, NotifyLevel::Error); });
+    sess.scroll_y = 0;
+}
+
+// Dedup is by `source`, not by Buffer::filename the way OpenImageInPlace/
+// OpenPdfInPlace dedup by their own `path` -- for a real local .html file
+// they're the same string anyway, but mep.browse_command (kBuiltinTextTools)
+// fetches a remote URL to a fresh temp file per open specifically so this
+// dedup can never mistake stale cached content for a re-fetch: reusing the
+// same temp path across two different fetches would otherwise silently
+// show the *first* fetch's content again, since (like Image/Pdf) an
+// existing session is reused as-is rather than re-parsed.
+void Editor::OpenHtmlInPlace(const std::string &origin, const std::string &source, const unsigned char *bytes,
+                              size_t len) {
+    int buffer_id = -1;
+    for (const auto &[id, sess] : htmldocs_) {
+        if (sess.source == source) {
+            buffer_id = id;
+            break;
+        }
+    }
+    if (buffer_id < 0) {
+        // A plain-text buffer may already exist for this exact path (the
+        // Ctrl-E/Ctrl-V view toggle, or `:e` force_text -- see
+        // ConvertHtmlBufferToText/LoadFile's own comments) -- reuse it
+        // instead of pushing a second buffer with the same filename,
+        // which FindOrCreateBuffer's dedup (by Buffer::filename alone)
+        // couldn't tell apart from this one afterward.
+        for (size_t i = 0; i < buffers_.size(); i++) {
+            if (buffers_[i].filename == source) {
+                buffer_id = static_cast<int>(i);
+                break;
+            }
+        }
+    }
+    if (buffer_id < 0) {
+        buffer_id = CreateEmptyBuffer();
+        buffers_[buffer_id].filename = source;
+    }
+    if (!IsHtmlBuffer(buffer_id)) {
+        buffers_[buffer_id].lines.clear();
+        HtmlSession sess;
+        sess.buffer_id = buffer_id;
+        PopulateHtmlSession(sess, origin, source, bytes, len);
+        htmldocs_[buffer_id] = std::move(sess);
+    }
+    CurPane().buffer_id = buffer_id;
+    CurPane().cursor = {0, 0};
+    CurPane().scroll_row = 0;
+    status_message_.clear();
+    // Unlike OpenImageInPlace/OpenPdfInPlace (whose only caller, LoadFile,
+    // already calls this right afterward itself), this has exactly one
+    // caller (l_html_open, lua_env.cpp) that's outside the Editor class
+    // and so can't reach this private method directly -- simplest to just
+    // call it here instead of also exposing a public wrapper for one use.
+    SyncModeToActivePaneBuffer();
+}
+
+// Reload (mep.browse_reload) and address-bar navigation
+// (mep.browse_open_bar) both funnel through this -- see its own header
+// in editor.h. Unlike OpenHtmlInPlace, no dedup lookup and no new
+// buffer/pane switch: `buffer_id` must already be a live HTML session, or
+// this is a silent no-op (the Lua caller already checked via
+// mep.html_current_origin() before getting here, so this shouldn't
+// normally happen -- but the pane could in principle have been closed
+// between that check and a slow curl fetch completing).
+void Editor::ReloadHtmlBuffer(int buffer_id, const std::string &origin, const std::string &source,
+                               const unsigned char *bytes, size_t len) {
+    auto it = htmldocs_.find(buffer_id);
+    if (it == htmldocs_.end()) return;
+    buffers_[buffer_id].filename = source;
+    PopulateHtmlSession(it->second, origin, source, bytes, len);
+}
+
+void Editor::ConvertHtmlBufferToText(int buffer_id) {
+    auto it = htmldocs_.find(buffer_id);
+    if (it == htmldocs_.end()) return;
+    std::string path = buffers_[buffer_id].filename;
+    std::vector<std::string> lines;
+#if defined(__EMSCRIPTEN__)
+    char *result = mep_js_read_file(path.c_str());
+    std::string res(result);
+    std::free(result);
+    if (res.rfind("OK\n", 0) == 0) lines = SplitIntoLines(res.substr(3));
+#else
+    std::ifstream in(path, std::ios::binary);
+    if (in) {
+        std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        lines = SplitIntoLines(content);
+    }
+#endif
+    htmldocs_.erase(it);
+    buffers_[buffer_id].lines = std::move(lines);
+    // Bumps mep.buffer_change_epoch() so the polling mep.on_buffer_changed
+    // hooks (syntax highlighting, colorizer, folds, ...) notice this
+    // buffer now has real content -- without it they stay silent, since
+    // the buffer_id/filename are unchanged across the toggle (nothing
+    // else about this looks like the "switched to a different file"
+    // event those hooks otherwise key on) and this bypasses the normal
+    // edit path (PushUndo) that would bump it. Deliberately not routed
+    // through PushUndo itself: this isn't a user edit, so it shouldn't
+    // add an undo-stack entry a later 'u' would land on.
+    change_epoch_++;
+}
+
+void Editor::ConvertTextBufferToHtml(int buffer_id) {
+    if (IsHtmlBuffer(buffer_id)) return;
+    std::string content;
+    for (const auto &l : buffers_[buffer_id].lines) {
+        content += l;
+        content += "\n";
+    }
+    const std::string &path = buffers_[buffer_id].filename;
+    HtmlSession sess;
+    sess.buffer_id = buffer_id;
+    PopulateHtmlSession(sess, path, path, reinterpret_cast<const unsigned char *>(content.data()), content.size());
+    htmldocs_[buffer_id] = std::move(sess);
+    buffers_[buffer_id].lines.clear();
+    // See ConvertHtmlBufferToText's own comment on this bump.
+    change_epoch_++;
+}
+
+void Editor::HandleHtmlInput() {
+    HtmlSession *sess = nullptr;
+    {
+        auto it = htmldocs_.find(CurPane().buffer_id);
+        if (it == htmldocs_.end()) {
+            mode_ = Mode::Normal;
+            return;
+        }
+        sess = &it->second;
+    }
+
+    constexpr float kScrollStep = 60.0f;
+    bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+    // IsKeyPressed(Repeat) rather than draining GetKeyPressed(): GLFW only
+    // enqueues the initial key-down into the GetKeyPressed() queue, so
+    // holding a key down (OS auto-repeat) would otherwise scroll exactly
+    // once -- same reasoning as HandleImageInput's own `held` helper.
+    auto held = [](int key) { return IsKeyPressed(key) || IsKeyPressedRepeat(key); };
+    if (held(KEY_J) || held(KEY_DOWN)) sess->scroll_y += kScrollStep;
+    if (held(KEY_K) || held(KEY_UP)) sess->scroll_y = std::max(0.0f, sess->scroll_y - kScrollStep);
+    if ((ctrl && IsKeyPressed(KEY_D)) || IsKeyPressed(KEY_PAGE_DOWN)) {
+        sess->scroll_y += static_cast<float>(sess->viewport_h) * 0.5f;
+    }
+    if ((ctrl && IsKeyPressed(KEY_U)) || IsKeyPressed(KEY_PAGE_UP)) {
+        sess->scroll_y = std::max(0.0f, sess->scroll_y - static_cast<float>(sess->viewport_h) * 0.5f);
+    }
+    // Mirrors PdfSession::theme_colors' own Ctrl-R toggle (HandlePdfInput) --
+    // same key, same "the editor's color scheme takes over" meaning, and
+    // same default (true; see HtmlSession::theme_colors' own comment for
+    // why). The actual recoloring is entirely a DrawPane concern
+    // (main.cpp); this just flips the flag.
+    if (ctrl && IsKeyPressed(KEY_R)) sess->theme_colors = !sess->theme_colors;
+    // Ctrl-E: escape hatch to the plain-text view of this same file --
+    // the opposite direction of HandleNormalInput's own Ctrl-V on an
+    // .html/.htm buffer (see ConvertHtmlBufferToText's own comment).
+    // `sess` is dangling after this (its HtmlSession got erased), so
+    // nothing below may touch it -- return immediately.
+    if (ctrl && IsKeyPressed(KEY_E)) {
+        ConvertHtmlBufferToText(CurPane().buffer_id);
+        CurPane().cursor = {0, 0};
+        CurPane().scroll_row = 0;
+        status_message_.clear();
+        SyncModeToActivePaneBuffer();
+        return;
+    }
+
+    // ':' and the leader key still work while parked on an html pane, same
+    // as every other flat single-mode viewer (Mode::Image's own comment);
+    // +/-/= zoom mirrors HandleImageInput's own char-drain convention for
+    // those three keys. 'r'/'o' dispatch to a registered Lua command
+    // (MepBrowseReload/MepBrowseOpen, kBuiltinTextTools) the same
+    // lua_commands_ lookup + CallRefWithString pattern
+    // TryRunOrgBabelAtCursor/TryRunOrgExport use -- the actual reload
+    // (re-fetch if remote) / address-bar (mep.ui_input prompt) logic
+    // lives in Lua, this just triggers it. Every other printable key is a
+    // deliberate no-op -- there's no text to insert/operate on.
+    int cp = GetCharPressed();
+    while (cp > 0) {
+        if (cp == ':') {
+            EnterCommand();
+            return;  // mode_ is no longer Html -- stop draining as this mode
+        } else if (cp == static_cast<int>(leader_key_) && !whichkey_bindings_.empty()) {
+            TriggerWhichKey();
+            return;
+        } else if (cp == '+') {
+            sess->zoom = std::min(3.0f, sess->zoom + 0.1f);
+        } else if (cp == '-') {
+            sess->zoom = std::max(0.3f, sess->zoom - 0.1f);
+        } else if (cp == '=') {
+            sess->zoom = 1.0f;
+        } else if (cp == 'r') {
+            auto it = lua_commands_.find("MepBrowseReload");
+            if (it != lua_commands_.end() && lua_) lua_->CallRefWithString(it->second, "");
+        } else if (cp == 'o') {
+            auto it = lua_commands_.find("MepBrowseOpen");
+            if (it != lua_commands_.end() && lua_) lua_->CallRefWithString(it->second, "");
+        }
+        cp = GetCharPressed();
+    }
+}
 
 bool Editor::IsPdfBuffer(int buffer_id) const { return pdfs_.find(buffer_id) != pdfs_.end(); }
 
@@ -1705,6 +2208,66 @@ void Editor::OpenPdfInPlace(const std::string &path, const unsigned char *bytes,
     status_message_.clear();
 }
 
+// Crosses `page` forward/backward as scroll_y drifts past the current
+// anchor page's on-screen bounds, re-basing scroll_y relative to the new
+// anchor each time -- this is what makes j/k (or the mouse wheel) held
+// down scroll smoothly *through* page boundaries instead of stopping dead
+// at each one. Also called after zoom changes (viewport-relative math can
+// push scroll_y out of range even without a direct scroll key) and clamps
+// at the very top of page 0 / bottom of the last page. A no-op if the
+// document has no pages.
+void Editor::RebasePdfScroll(PdfSession &sess) {
+    int page_count = sess.doc ? sess.doc->PageCount() : 0;
+    if (page_count <= 0) return;
+    auto page_screen_h = [&](int idx) { return PdfPageScreenHeightPx(sess, idx); };
+    for (;;) {
+        float cur_h = page_screen_h(sess.page);
+        if (sess.scroll_y >= cur_h + kPdfPageGapPx && sess.page + 1 < page_count) {
+            sess.scroll_y -= (cur_h + kPdfPageGapPx);
+            sess.page += 1;
+        } else if (sess.scroll_y < 0 && sess.page > 0) {
+            sess.page -= 1;
+            sess.scroll_y += (page_screen_h(sess.page) + kPdfPageGapPx);
+        } else {
+            break;
+        }
+    }
+    if (sess.page == 0 && sess.scroll_y < 0) sess.scroll_y = 0;
+    if (sess.page == page_count - 1) {
+        float cur_h = page_screen_h(sess.page);
+        if (sess.scroll_y > cur_h) sess.scroll_y = cur_h;
+    }
+}
+
+// Clamps pan_x against the anchor page's on-screen width at the current
+// zoom/rendered_scale.
+void Editor::ClampPdfPanX(PdfSession &sess) {
+    double page_w_pt = PdfPageSizePt(sess, sess.page).first;
+    int mx = std::max(0, static_cast<int>(page_w_pt * sess.rendered_scale * sess.zoom) - sess.viewport_w);
+    sess.pan_x = std::clamp(sess.pan_x, 0, mx);
+}
+
+void Editor::SettlePdfZoom(PdfSession &sess) {
+    if (sess.zoom < kZoomSettleLo || sess.zoom > kZoomSettleHi) {
+        sess.rendered_scale *= sess.zoom;
+        sess.zoom = 1.0f;
+        sess.rasters.clear();
+    }
+}
+
+void Editor::ApplyPdfZoom(PdfSession &sess, float new_zoom) {
+    new_zoom = std::clamp(new_zoom, kMinPdfZoom, kMaxPdfZoom);
+    float ratio = new_zoom / sess.zoom;
+    float center_x = sess.pan_x + sess.viewport_w / 2.0f;
+    float center_y = sess.scroll_y + sess.viewport_h / 2.0f;
+    sess.zoom = new_zoom;
+    sess.pan_x = static_cast<int>(center_x * ratio - sess.viewport_w / 2.0f);
+    sess.scroll_y = center_y * ratio - sess.viewport_h / 2.0f;
+    SettlePdfZoom(sess);
+    RebasePdfScroll(sess);
+    ClampPdfPanX(sess);
+}
+
 void Editor::HandlePdfInput() {
     PdfSession *sess = nullptr;
     {
@@ -1722,38 +2285,8 @@ void Editor::HandlePdfInput() {
     int page_count = sess->doc ? sess->doc->PageCount() : 0;
     if (page_count <= 0) return;
 
-    auto page_screen_h = [&](int idx) { return PdfPageScreenHeightPx(*sess, idx); };
-    // Crosses `page` forward/backward as scroll_y drifts past the current
-    // anchor page's on-screen bounds, re-basing scroll_y relative to the
-    // new anchor each time -- this is what makes j/k held down scroll
-    // smoothly *through* page boundaries instead of stopping dead at each
-    // one. Also called after zoom changes (viewport-relative math can push
-    // scroll_y out of range even without a direct scroll key) and clamps
-    // at the very top of page 0 / bottom of the last page.
-    auto rebase_scroll = [&]() {
-        for (;;) {
-            float cur_h = page_screen_h(sess->page);
-            if (sess->scroll_y >= cur_h + kPdfPageGapPx && sess->page + 1 < page_count) {
-                sess->scroll_y -= (cur_h + kPdfPageGapPx);
-                sess->page += 1;
-            } else if (sess->scroll_y < 0 && sess->page > 0) {
-                sess->page -= 1;
-                sess->scroll_y += (page_screen_h(sess->page) + kPdfPageGapPx);
-            } else {
-                break;
-            }
-        }
-        if (sess->page == 0 && sess->scroll_y < 0) sess->scroll_y = 0;
-        if (sess->page == page_count - 1) {
-            float cur_h = page_screen_h(sess->page);
-            if (sess->scroll_y > cur_h) sess->scroll_y = cur_h;
-        }
-    };
-    auto clamp_pan_x = [&]() {
-        double page_w_pt = PdfPageSizePt(*sess, sess->page).first;
-        int mx = std::max(0, static_cast<int>(page_w_pt * sess->rendered_scale * sess->zoom) - sess->viewport_w);
-        sess->pan_x = std::clamp(sess->pan_x, 0, mx);
-    };
+    auto rebase_scroll = [&]() { RebasePdfScroll(*sess); };
+    auto clamp_pan_x = [&]() { ClampPdfPanX(*sess); };
 
     constexpr int kScrollStep = 40;
     // Same IsKeyPressed||IsKeyPressedRepeat reasoning as HandleImageInput --
@@ -1777,6 +2310,8 @@ void Editor::HandlePdfInput() {
     // its comment at this function's normal-mode counterpart).
     bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
     bool next_page = false, prev_page = false, toggle_theme = false;
+    if (ctrl && IsKeyPressed(KEY_D)) { sess->scroll_y += static_cast<float>(sess->viewport_h) * 0.5f; rebase_scroll(); }
+    if (ctrl && IsKeyPressed(KEY_U)) { sess->scroll_y -= static_cast<float>(sess->viewport_h) * 0.5f; rebase_scroll(); }
     for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
         if (key == KEY_PAGE_DOWN) next_page = true;
         else if (key == KEY_PAGE_UP) prev_page = true;
@@ -1794,30 +2329,11 @@ void Editor::HandlePdfInput() {
     // re-rendered at the new native resolution (text stays crisp instead
     // of blurring) -- scroll_y/pan_x themselves don't need rescaling for
     // this, since rendered_scale absorbs exactly the zoom drift being
-    // removed, leaving each page's on-screen size unchanged.
-    constexpr float kPdfZoomStep = 1.25f;
-    constexpr float kMinPdfZoom = 0.1f;
-    constexpr float kMaxPdfZoom = 8.0f;
-    constexpr float kZoomSettleLo = 0.5f, kZoomSettleHi = 2.0f;
-    auto settle_zoom = [&]() {
-        if (sess->zoom < kZoomSettleLo || sess->zoom > kZoomSettleHi) {
-            sess->rendered_scale *= sess->zoom;
-            sess->zoom = 1.0f;
-            sess->rasters.clear();
-        }
-    };
-    auto apply_zoom = [&](float new_zoom) {
-        new_zoom = std::clamp(new_zoom, kMinPdfZoom, kMaxPdfZoom);
-        float ratio = new_zoom / sess->zoom;
-        float center_x = sess->pan_x + sess->viewport_w / 2.0f;
-        float center_y = sess->scroll_y + sess->viewport_h / 2.0f;
-        sess->zoom = new_zoom;
-        sess->pan_x = static_cast<int>(center_x * ratio - sess->viewport_w / 2.0f);
-        sess->scroll_y = center_y * ratio - sess->viewport_h / 2.0f;
-        settle_zoom();
-        rebase_scroll();
-        clamp_pan_x();
-    };
+    // removed, leaving each page's on-screen size unchanged. SettlePdfZoom/
+    // ApplyPdfZoom (editor.h) do the actual work -- also reused by
+    // HandleMouseWheel's Pdf branch for Ctrl-scroll.
+    auto settle_zoom = [&]() { SettlePdfZoom(*sess); };
+    auto apply_zoom = [&](float new_zoom) { ApplyPdfZoom(*sess, new_zoom); };
 
     int cp = GetCharPressed();
     while (cp > 0) {
@@ -1933,6 +2449,12 @@ void Editor::SetOfficeScroll(int buffer_id, int scroll_para, int scroll_line_in_
     sess.scroll_line_in_para = std::max(0, scroll_line_in_para);
 }
 
+void Editor::SetOfficeScrollFollowCursorPara(int buffer_id, int cursor_para) {
+    auto it = officedocs_.find(buffer_id);
+    if (it == officedocs_.end()) return;
+    it->second.scroll_follow_last_cursor_para = cursor_para;
+}
+
 void Editor::OpenOfficeInPlace(const std::string &path, const unsigned char *bytes, size_t len) {
     int buffer_id = -1;
     for (size_t i = 0; i < buffers_.size(); i++) {
@@ -1986,16 +2508,105 @@ void Editor::HandleOfficeNormalInput() {
 
     auto cur_len = [&]() { return static_cast<int>(sess->doc.paragraphs[sess->cursor_para].text.size()); };
     auto goto_para = [&](int new_para) {
-        sess->cursor_para = std::clamp(new_para, 0, para_count - 1);
+        int clamped = std::clamp(new_para, 0, para_count - 1);
+        // Only auto-enter a table on an actual paragraph change -- a
+        // no-op goto_para (already at the first/last paragraph, so the
+        // clamp lands back where the cursor already was) must NOT
+        // re-trigger entry, otherwise Escape-ing out of a table anchored
+        // at the very start/end of the document, then pressing k/j to
+        // leave, would immediately re-trap the cursor right back inside
+        // it since there's nowhere left to clamp to.
+        bool moved = clamped != sess->cursor_para;
+        sess->cursor_para = clamped;
         sess->cursor_col = std::min(sess->cursor_col, cur_len());
+        // A table/image anchor is a single paragraph-motion step, never
+        // entered implicitly by landing on it -- but a *table* anchor is
+        // immediately enterable (hjkl/Tab over cells) the moment the
+        // cursor lands on its paragraph, since there's no other content on
+        // that paragraph to edit; an image anchor has nothing further to
+        // "enter" (no per-image editing in v1).
+        if (moved) {
+            int tref = sess->doc.paragraphs[sess->cursor_para].table_ref;
+            if (tref >= 0) EnterOfficeTable(tref);
+        }
     };
+
+    auto held = [](int key) { return IsKeyPressed(key) || IsKeyPressedRepeat(key); };
+
+    // Table-cell navigation mode: while the cursor is anchored on a table
+    // (in_table_edit >= 0) and not currently editing one cell's text,
+    // hjkl/arrows/Tab move between cells instead of moving the paragraph
+    // cursor; stepping off the table's top/bottom row exits it and resumes
+    // normal paragraph motion on the neighboring paragraph (so the table
+    // still acts like a single step from outside, matching office_doc.h's
+    // own "anchored table/image is a single step" comment) while stepping
+    // off its left/right edge simply clamps in place, matching this
+    // codebase's existing column-motion-clamps-at-line-ends convention.
+    if (sess->in_table_edit >= 0 && !sess->table_cell_editing) {
+        if (IsKeyPressed(KEY_ESCAPE)) {
+            ExitOfficeTable();
+            return;
+        }
+        const DocTable &t = sess->doc.tables[static_cast<size_t>(sess->in_table_edit)];
+        if (held(KEY_J) || held(KEY_DOWN)) {
+            if (sess->table_cursor_row + 1 < t.rows) {
+                MoveOfficeTableCell(1, 0);
+            } else {
+                ExitOfficeTable();
+                goto_para(sess->cursor_para + 1);
+                sess->cursor_col = 0;
+            }
+        } else if (held(KEY_K) || held(KEY_UP)) {
+            if (sess->table_cursor_row > 0) {
+                MoveOfficeTableCell(-1, 0);
+            } else {
+                ExitOfficeTable();
+                goto_para(sess->cursor_para - 1);
+                sess->cursor_col = cur_len();
+            }
+        } else if (held(KEY_H) || held(KEY_LEFT)) {
+            MoveOfficeTableCell(0, -1);
+        } else if (held(KEY_L) || held(KEY_RIGHT)) {
+            MoveOfficeTableCell(0, 1);
+        } else if (held(KEY_TAB)) {
+            bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+            if (!shift) {
+                if (sess->table_cursor_col + 1 < t.cols) MoveOfficeTableCell(0, 1);
+                else if (sess->table_cursor_row + 1 < t.rows) MoveOfficeTableCell(1, -sess->table_cursor_col);
+            } else {
+                if (sess->table_cursor_col > 0) MoveOfficeTableCell(0, -1);
+                else if (sess->table_cursor_row > 0) MoveOfficeTableCell(-1, t.cols - 1 - sess->table_cursor_col);
+            }
+        }
+        int tcp = GetCharPressed();
+        while (tcp > 0) {
+            if (tcp == 'i') {
+                PushUndoOffice();
+                sess->table_cell_editing = true;
+                sess->table_cell_col = 0;
+                mode_ = Mode::OfficeInsert;
+                return;
+            } else if (tcp == 'a') {
+                PushUndoOffice();
+                sess->table_cell_editing = true;
+                sess->table_cell_col =
+                    static_cast<int>(t.Cell(sess->table_cursor_row, sess->table_cursor_col).size());
+                mode_ = Mode::OfficeInsert;
+                return;
+            } else if (tcp == ':') {
+                EnterCommand();
+                return;
+            }
+            tcp = GetCharPressed();
+        }
+        return;
+    }
 
     // Word-wrap-oblivious navigation -- see Mode::OfficeNormal's own
     // comment for why: h/l move within the current paragraph's flat text
     // (like column motion over Buffer::lines[row]), j/k move to the
     // prev/next *paragraph* (like row motion), not to the next *visual*
     // (word-wrapped) line, which only main.cpp's renderer knows about.
-    auto held = [](int key) { return IsKeyPressed(key) || IsKeyPressedRepeat(key); };
     if (held(KEY_H) || held(KEY_LEFT)) sess->cursor_col = std::max(0, sess->cursor_col - 1);
     if (held(KEY_L) || held(KEY_RIGHT)) sess->cursor_col = std::min(cur_len(), sess->cursor_col + 1);
     if (held(KEY_J) || held(KEY_DOWN)) goto_para(sess->cursor_para + 1);
@@ -2055,8 +2666,22 @@ void Editor::HandleOfficeNormalInput() {
         }
         cp = GetCharPressed();
     }
-    if (IsKeyPressed(KEY_R) && (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL))) {
+    bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+    if (IsKeyPressed(KEY_R) && ctrl) {
         RedoOffice();
+    }
+    if (ctrl && (IsKeyPressed(KEY_D) || IsKeyPressed(KEY_U))) {
+        bool down = IsKeyPressed(KEY_D);
+        // Paragraph count, not visual line count -- word-wrap needs
+        // main.cpp's MeasureTextEx, which this raylib-model-level function
+        // can't call (see ResizeOfficeViewport's own comment on why
+        // scroll-follow itself lives in main.cpp), so "half a screen" is
+        // approximated from the body font's line height instead of an
+        // exact wrapped-line count. Reuses goto_para so it gets the same
+        // clamp-without-re-entering-a-table behavior as j/k.
+        float line_h = std::max(1.0f, sess->base_font_pt * sess->zoom * 1.35f);
+        int half_page = std::max(1, static_cast<int>(sess->viewport_h / (2.0f * line_h)));
+        goto_para(sess->cursor_para + (down ? half_page : -half_page));
     }
 }
 
@@ -2113,6 +2738,50 @@ void Editor::HandleOfficeInsertInput() {
         }
         sess = &it->second;
     }
+
+    // Table-cell text editing: a cell is plain text (DocTable::cells has
+    // no spans/paragraphs), so this is a much smaller edit loop than the
+    // paragraph one below -- no split/merge, and Enter just ends the edit
+    // (same as Escape) rather than inserting a line break, since a cell
+    // stays single-line in v1 (matches office_doc.h's own DocTable scope
+    // note: plain text, no per-cell rich formatting).
+    if (sess->in_table_edit >= 0 && sess->table_cell_editing) {
+        DocTable &t = sess->doc.tables[static_cast<size_t>(sess->in_table_edit)];
+        std::string &cell = t.Cell(sess->table_cursor_row, sess->table_cursor_col);
+        int &cc = sess->table_cell_col;
+        cc = std::clamp(cc, 0, static_cast<int>(cell.size()));
+        for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
+            if (key == KEY_ESCAPE || key == KEY_ENTER) {
+                sess->table_cell_editing = false;
+                mode_ = Mode::OfficeNormal;
+                return;
+            } else if (key == KEY_BACKSPACE) {
+                if (cc > 0) {
+                    cell.erase(static_cast<size_t>(cc - 1), 1);
+                    cc--;
+                    sess->modified = true;
+                }
+            } else if (key == KEY_DELETE) {
+                if (cc < static_cast<int>(cell.size())) {
+                    cell.erase(static_cast<size_t>(cc), 1);
+                    sess->modified = true;
+                }
+            } else if (key == KEY_LEFT) {
+                cc = std::max(0, cc - 1);
+            } else if (key == KEY_RIGHT) {
+                cc = std::min(static_cast<int>(cell.size()), cc + 1);
+            }
+        }
+        for (int cp2 = GetCharPressed(); cp2 > 0; cp2 = GetCharPressed()) {
+            if (cp2 >= 32 && cp2 <= 126) {
+                cell.insert(cell.begin() + cc, static_cast<char>(cp2));
+                cc++;
+                sess->modified = true;
+            }
+        }
+        return;
+    }
+
     auto cur_len = [&]() { return static_cast<int>(sess->doc.paragraphs[sess->cursor_para].text.size()); };
 
     bool escape = false, enter = false, backspace = false, del = false;
@@ -2216,19 +2885,6 @@ void Editor::HandleOfficeVisualInput() {
     if (held(KEY_J) || held(KEY_DOWN)) goto_para(sess->cursor_para + 1);
     if (held(KEY_K) || held(KEY_UP)) goto_para(sess->cursor_para - 1);
 
-    // Selection extent: (para,col) pairs compared lexicographically by
-    // (para, col), matching VisualRange's own row/col ordering for the
-    // main buffer.
-    auto selection_range = [&](int &pa, int &ca, int &pb, int &cb) {
-        int ap = sess->sel_anchor_para, ac = sess->sel_anchor_col;
-        int cp = sess->cursor_para, cc = sess->cursor_col;
-        if (ap < cp || (ap == cp && ac <= cc)) {
-            pa = ap; ca = ac; pb = cp; cb = cc;
-        } else {
-            pa = cp; ca = cc; pb = ap; cb = ac;
-        }
-    };
-
     int cp = GetCharPressed();
     while (cp > 0) {
         if (cp == 'g') {
@@ -2249,26 +2905,31 @@ void Editor::HandleOfficeVisualInput() {
         } else if (cp == '$') {
             pending_g_ = false;
             sess->cursor_col = cur_len();
-        } else if (cp == 'b' || cp == 'i' || cp == 'u') {
+        } else if (cp == 'b' || cp == 'i' || cp == 'u' || cp == 's') {
+            // ToggleOfficeFormat does the identical Visual-selection
+            // range-toggle + PushUndoOffice + return-to-OfficeNormal this
+            // branch used to inline -- also reachable from the toolbar's
+            // B/I/U/S buttons (main.cpp), now shared instead of duplicated.
             pending_g_ = false;
-            int pa, ca, pb, cb;
-            selection_range(pa, ca, pb, cb);
-            PushUndoOffice();
-            bool DocFormat::*field = (cp == 'b') ? &DocFormat::bold : (cp == 'i') ? &DocFormat::italic : &DocFormat::underline;
-            if (pa == pb) {
-                ToggleFormatOverRange(sess->doc.paragraphs[pa], ca, cb, field);
-            } else {
-                ToggleFormatOverRange(sess->doc.paragraphs[pa], ca, static_cast<int>(sess->doc.paragraphs[pa].text.size()), field);
-                for (int pi = pa + 1; pi < pb; pi++) {
-                    ToggleFormatOverRange(sess->doc.paragraphs[pi], 0, static_cast<int>(sess->doc.paragraphs[pi].text.size()), field);
-                }
-                ToggleFormatOverRange(sess->doc.paragraphs[pb], 0, cb, field);
-            }
-            sess->modified = true;
-            sess->has_selection = false;
-            sess->cursor_para = pa;
-            sess->cursor_col = ca;
-            mode_ = Mode::OfficeNormal;
+            ToggleOfficeFormat(static_cast<char>(cp));
+            return;
+        } else if (cp == 'c' || cp == 'L' || cp == 'r' || cp == 'f') {
+            // Alignment: c=center, L=left (capital -- lowercase l is
+            // cursor-right), r=right, f=full/justify (not j -- cursor-down).
+            pending_g_ = false;
+            DocParagraph::Align align = cp == 'c'   ? DocParagraph::Align::Center
+                                         : cp == 'L' ? DocParagraph::Align::Left
+                                         : cp == 'r' ? DocParagraph::Align::Right
+                                                      : DocParagraph::Align::Justify;
+            SetOfficeAlignment(align);
+            return;
+        } else if (cp == '*' || cp == '#') {
+            pending_g_ = false;
+            SetOfficeListKind(cp == '*' ? DocParagraph::ListKind::Bullet : DocParagraph::ListKind::Numbered);
+            return;
+        } else if (cp == '^' || cp == '_') {
+            pending_g_ = false;
+            if (cp == '^') ToggleOfficeSuperscript(); else ToggleOfficeSubscript();
             return;
         } else {
             pending_g_ = false;
@@ -2291,8 +2952,10 @@ void Editor::ToggleOfficeFormat(char which) {
     OfficeSession &sess = it->second;
     int para_count = static_cast<int>(sess.doc.paragraphs.size());
     if (para_count <= 0) return;
-    bool DocFormat::*field =
-        (which == 'b') ? &DocFormat::bold : (which == 'i') ? &DocFormat::italic : &DocFormat::underline;
+    bool DocFormat::*field = (which == 'b')   ? &DocFormat::bold
+                              : (which == 'i') ? &DocFormat::italic
+                              : (which == 's') ? &DocFormat::strike
+                                                : &DocFormat::underline;
     PushUndoOffice();
     if (mode_ == Mode::OfficeVisual && sess.has_selection) {
         int ap = sess.sel_anchor_para, ac = sess.sel_anchor_col;
@@ -2333,7 +2996,9 @@ bool Editor::OfficeFormatActive(char which) const {
     const OfficeSession &sess = it->second;
     int para_count = static_cast<int>(sess.doc.paragraphs.size());
     if (para_count <= 0) return false;
-    auto field_of = [&](const DocFormat &f) { return which == 'b' ? f.bold : which == 'i' ? f.italic : f.underline; };
+    auto field_of = [&](const DocFormat &f) {
+        return which == 'b' ? f.bold : which == 'i' ? f.italic : which == 's' ? f.strike : f.underline;
+    };
     int cp, col;
     if (mode_ == Mode::OfficeVisual && sess.has_selection) {
         int ap = sess.sel_anchor_para, ac = sess.sel_anchor_col;
@@ -2354,6 +3019,303 @@ bool Editor::OfficeFormatActive(char which) const {
     cp = std::clamp(cp, 0, para_count - 1);
     col = std::min(col, static_cast<int>(sess.doc.paragraphs[cp].text.size()));
     return field_of(FormatAt(sess.doc.paragraphs[cp], col));
+}
+
+void Editor::ApplyOfficeFormatFieldOverSelection(const std::function<void(DocFormat &)> &apply) {
+    auto it = officedocs_.find(CurPane().buffer_id);
+    if (it == officedocs_.end()) return;
+    OfficeSession &sess = it->second;
+    int para_count = static_cast<int>(sess.doc.paragraphs.size());
+    if (para_count <= 0) return;
+    PushUndoOffice();
+    if (mode_ == Mode::OfficeVisual && sess.has_selection) {
+        int ap = sess.sel_anchor_para, ac = sess.sel_anchor_col;
+        int cp = sess.cursor_para, cc = sess.cursor_col;
+        int pa, ca, pb, cb;
+        if (ap < cp || (ap == cp && ac <= cc)) {
+            pa = ap; ca = ac; pb = cp; cb = cc;
+        } else {
+            pa = cp; ca = cc; pb = ap; cb = ac;
+        }
+        if (pa == pb) {
+            SetFormatFieldOverRange(sess.doc.paragraphs[pa], ca, cb, apply);
+        } else {
+            SetFormatFieldOverRange(sess.doc.paragraphs[pa], ca, static_cast<int>(sess.doc.paragraphs[pa].text.size()),
+                                     apply);
+            for (int pi = pa + 1; pi < pb; pi++) {
+                SetFormatFieldOverRange(sess.doc.paragraphs[pi], 0, static_cast<int>(sess.doc.paragraphs[pi].text.size()),
+                                         apply);
+            }
+            SetFormatFieldOverRange(sess.doc.paragraphs[pb], 0, cb, apply);
+        }
+        sess.has_selection = false;
+        sess.cursor_para = pa;
+        sess.cursor_col = ca;
+        mode_ = Mode::OfficeNormal;
+    } else {
+        int len = static_cast<int>(sess.doc.paragraphs[sess.cursor_para].text.size());
+        int a = std::clamp(sess.cursor_col, 0, len);
+        int b = std::min(a + 1, len);
+        if (b > a) SetFormatFieldOverRange(sess.doc.paragraphs[sess.cursor_para], a, b, apply);
+    }
+    sess.modified = true;
+}
+
+void Editor::SetOfficeFontFamily(OfficeFontFamily family) {
+    ApplyOfficeFormatFieldOverSelection([family](DocFormat &f) { f.font_family = family; });
+}
+
+void Editor::SetOfficeFontSizePt(float pt) {
+    ApplyOfficeFormatFieldOverSelection([pt](DocFormat &f) { f.font_size_pt = pt; });
+}
+
+void Editor::SetOfficeColor(unsigned char r, unsigned char g, unsigned char b) {
+    ApplyOfficeFormatFieldOverSelection([r, g, b](DocFormat &f) {
+        f.has_color = true;
+        f.color_r = r; f.color_g = g; f.color_b = b;
+    });
+}
+
+void Editor::ClearOfficeColor() {
+    ApplyOfficeFormatFieldOverSelection([](DocFormat &f) { f.has_color = false; });
+}
+
+void Editor::SetOfficeHighlight(unsigned char r, unsigned char g, unsigned char b) {
+    ApplyOfficeFormatFieldOverSelection([r, g, b](DocFormat &f) {
+        f.has_highlight = true;
+        f.highlight_r = r; f.highlight_g = g; f.highlight_b = b;
+    });
+}
+
+void Editor::ClearOfficeHighlight() {
+    ApplyOfficeFormatFieldOverSelection([](DocFormat &f) { f.has_highlight = false; });
+}
+
+void Editor::ToggleOfficeSuperscript() {
+    // Reads the current state once (single-char/first-selection-char
+    // sample, same approximation OfficeFormatActive's own comment
+    // documents) so the whole selection ends up in one consistent
+    // resulting state rather than each character flipping independently.
+    bool active = OfficeSuperscriptActiveInternal(true);
+    ApplyOfficeFormatFieldOverSelection([active](DocFormat &f) {
+        f.superscript = !active;
+        f.subscript = false;
+    });
+}
+
+void Editor::ToggleOfficeSubscript() {
+    bool active = OfficeSuperscriptActiveInternal(false);
+    ApplyOfficeFormatFieldOverSelection([active](DocFormat &f) {
+        f.subscript = !active;
+        f.superscript = false;
+    });
+}
+
+bool Editor::OfficeSuperscriptActiveInternal(bool super) const {
+    auto it = officedocs_.find(CurPane().buffer_id);
+    if (it == officedocs_.end()) return false;
+    const OfficeSession &sess = it->second;
+    int para_count = static_cast<int>(sess.doc.paragraphs.size());
+    if (para_count <= 0) return false;
+    int cp, col;
+    if (mode_ == Mode::OfficeVisual && sess.has_selection) {
+        int ap = sess.sel_anchor_para, ac = sess.sel_anchor_col;
+        int ccp = sess.cursor_para, ccc = sess.cursor_col;
+        if (ap < ccp || (ap == ccp && ac <= ccc)) { cp = ap; col = ac; } else { cp = ccp; col = ccc; }
+    } else {
+        cp = sess.cursor_para;
+        col = sess.cursor_col;
+    }
+    cp = std::clamp(cp, 0, para_count - 1);
+    col = std::min(col, static_cast<int>(sess.doc.paragraphs[cp].text.size()));
+    DocFormat f = FormatAt(sess.doc.paragraphs[cp], col);
+    return super ? f.superscript : f.subscript;
+}
+
+void Editor::SetOfficeAlignment(DocParagraph::Align align) {
+    auto it = officedocs_.find(CurPane().buffer_id);
+    if (it == officedocs_.end()) return;
+    OfficeSession &sess = it->second;
+    if (sess.doc.paragraphs.empty()) return;
+    PushUndoOffice();
+    int first = sess.cursor_para, last = sess.cursor_para;
+    if (mode_ == Mode::OfficeVisual && sess.has_selection) {
+        first = std::min(sess.sel_anchor_para, sess.cursor_para);
+        last = std::max(sess.sel_anchor_para, sess.cursor_para);
+        sess.has_selection = false;
+        mode_ = Mode::OfficeNormal;
+    }
+    SetParagraphAlignment(sess.doc.paragraphs, first, last, align);
+    sess.modified = true;
+}
+
+bool Editor::OfficeAlignmentActive(DocParagraph::Align align) const {
+    auto it = officedocs_.find(CurPane().buffer_id);
+    if (it == officedocs_.end()) return false;
+    const OfficeSession &sess = it->second;
+    int cp = std::clamp(sess.cursor_para, 0, static_cast<int>(sess.doc.paragraphs.size()) - 1);
+    return cp >= 0 && sess.doc.paragraphs[cp].align == align;
+}
+
+void Editor::SetOfficeListKind(DocParagraph::ListKind kind) {
+    auto it = officedocs_.find(CurPane().buffer_id);
+    if (it == officedocs_.end()) return;
+    OfficeSession &sess = it->second;
+    if (sess.doc.paragraphs.empty()) return;
+    PushUndoOffice();
+    int first = sess.cursor_para, last = sess.cursor_para;
+    if (mode_ == Mode::OfficeVisual && sess.has_selection) {
+        first = std::min(sess.sel_anchor_para, sess.cursor_para);
+        last = std::max(sess.sel_anchor_para, sess.cursor_para);
+        sess.has_selection = false;
+        mode_ = Mode::OfficeNormal;
+    }
+    // Click/press-again-to-undo: if every paragraph in range already has
+    // `kind`, clear back to None instead of re-applying it.
+    bool all_already = true;
+    for (int i = first; i <= last && all_already; i++) {
+        if (sess.doc.paragraphs[static_cast<size_t>(i)].list_kind != kind) all_already = false;
+    }
+    SetParagraphListKind(sess.doc.paragraphs, first, last,
+                          all_already ? DocParagraph::ListKind::None : kind);
+    sess.modified = true;
+}
+
+bool Editor::OfficeListKindActive(DocParagraph::ListKind kind) const {
+    auto it = officedocs_.find(CurPane().buffer_id);
+    if (it == officedocs_.end()) return false;
+    const OfficeSession &sess = it->second;
+    int cp = std::clamp(sess.cursor_para, 0, static_cast<int>(sess.doc.paragraphs.size()) - 1);
+    return cp >= 0 && sess.doc.paragraphs[cp].list_kind == kind;
+}
+
+void Editor::InsertOfficeText(const std::string &utf8) {
+    auto it = officedocs_.find(CurPane().buffer_id);
+    if (it == officedocs_.end()) return;
+    OfficeSession &sess = it->second;
+    if (sess.doc.paragraphs.empty() || utf8.empty()) return;
+    PushUndoOffice();
+    DocParagraph &p = sess.doc.paragraphs[sess.cursor_para];
+    ApplyInsertToParagraph(p, sess.cursor_col, utf8);
+    sess.cursor_col += static_cast<int>(utf8.size());
+    sess.modified = true;
+}
+
+void Editor::InsertOfficeMath() {
+    if (!IsOfficeBuffer(CurPane().buffer_id)) return;
+    int buffer_id = CurPane().buffer_id;
+    BeginPromptNative("Insert math (LaTeX):", "", [this, buffer_id](const std::string &latex) {
+        if (latex.empty()) return;
+        auto it = officedocs_.find(buffer_id);
+        if (it == officedocs_.end()) return;
+        OfficeSession &sess = it->second;
+        if (sess.doc.paragraphs.empty()) return;
+        PushUndoOffice();
+        DocParagraph &p = sess.doc.paragraphs[sess.cursor_para];
+        int start = sess.cursor_col;
+        ApplyInsertToParagraph(p, start, latex);
+        DocFormat fmt;
+        fmt.math = true;
+        // ApplyInsertToParagraph already shifted every span at/after
+        // `start`; a fresh math span for exactly the inserted range is
+        // added directly (not via SetFormatFieldOverRange, which expects
+        // the range to already exist as plain/other-formatted text) then
+        // coalesced same as any parser-built span list.
+        p.spans.push_back({start, start + static_cast<int>(latex.size()), fmt});
+        CoalesceSpans(p.spans);
+        sess.cursor_col = start + static_cast<int>(latex.size());
+        sess.modified = true;
+    });
+}
+
+void Editor::InsertOfficeTablePrompt() {
+    if (!IsOfficeBuffer(CurPane().buffer_id)) return;
+    int buffer_id = CurPane().buffer_id;
+    BeginPromptNative("Insert table (rows):", "2", [this, buffer_id](const std::string &rows_str) {
+        int rows = std::clamp(std::atoi(rows_str.c_str()), 1, 50);
+        BeginPromptNative("Insert table (cols):", "2", [this, buffer_id, rows](const std::string &cols_str) {
+            int cols = std::clamp(std::atoi(cols_str.c_str()), 1, 20);
+            auto it = officedocs_.find(buffer_id);
+            if (it == officedocs_.end()) return;
+            OfficeSession &sess = it->second;
+            if (sess.doc.paragraphs.empty()) return;
+            PushUndoOffice();
+            DocTable table;
+            table.rows = rows;
+            table.cols = cols;
+            table.cells.assign(static_cast<size_t>(rows) * static_cast<size_t>(cols), std::string());
+            sess.doc.tables.push_back(std::move(table));
+            int table_ref = static_cast<int>(sess.doc.tables.size()) - 1;
+            sess.doc.paragraphs[sess.cursor_para].table_ref = table_ref;
+            sess.modified = true;
+            EnterOfficeTable(table_ref);
+        });
+    });
+}
+
+void Editor::InsertOfficeImagePrompt() {
+    if (!IsOfficeBuffer(CurPane().buffer_id)) return;
+    int buffer_id = CurPane().buffer_id;
+    BeginPromptNative("Insert image (path):", "", [this, buffer_id](const std::string &path) {
+        if (path.empty()) return;
+        std::ifstream f(path, std::ios::binary);
+        if (!f) {
+            Notify("Insert image: can't read \"" + path + "\"", NotifyLevel::Error);
+            return;
+        }
+        std::string bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        ImageDoc probe;
+        if (!probe.LoadFromMemory(reinterpret_cast<const unsigned char *>(bytes.data()), bytes.size())) {
+            Notify("Insert image: \"" + path + "\" isn't a decodable image", NotifyLevel::Error);
+            return;
+        }
+        auto it = officedocs_.find(buffer_id);
+        if (it == officedocs_.end()) return;
+        OfficeSession &sess = it->second;
+        if (sess.doc.paragraphs.empty()) return;
+        PushUndoOffice();
+        DocImage img;
+        img.bytes = std::move(bytes);
+        img.natural_w = probe.Width();
+        img.natural_h = probe.Height();
+        sess.doc.images.push_back(std::move(img));
+        sess.doc.paragraphs[sess.cursor_para].image_ref = static_cast<int>(sess.doc.images.size()) - 1;
+        sess.modified = true;
+    });
+}
+
+void Editor::EnterOfficeTable(int table_ref) {
+    auto it = officedocs_.find(CurPane().buffer_id);
+    if (it == officedocs_.end()) return;
+    OfficeSession &sess = it->second;
+    if (table_ref < 0 || table_ref >= static_cast<int>(sess.doc.tables.size())) return;
+    sess.in_table_edit = table_ref;
+    sess.table_cursor_row = 0;
+    sess.table_cursor_col = 0;
+    sess.table_cell_editing = false;
+}
+
+void Editor::ExitOfficeTable() {
+    auto it = officedocs_.find(CurPane().buffer_id);
+    if (it == officedocs_.end()) return;
+    it->second.in_table_edit = -1;
+    it->second.table_cell_editing = false;
+}
+
+void Editor::MoveOfficeTableCell(int dr, int dc) {
+    auto it = officedocs_.find(CurPane().buffer_id);
+    if (it == officedocs_.end()) return;
+    OfficeSession &sess = it->second;
+    if (sess.in_table_edit < 0 || sess.in_table_edit >= static_cast<int>(sess.doc.tables.size())) return;
+    const DocTable &t = sess.doc.tables[static_cast<size_t>(sess.in_table_edit)];
+    sess.table_cursor_row = std::clamp(sess.table_cursor_row + dr, 0, t.rows - 1);
+    sess.table_cursor_col = std::clamp(sess.table_cursor_col + dc, 0, t.cols - 1);
+}
+
+void Editor::SetOfficeZoom(float factor) {
+    auto it = officedocs_.find(CurPane().buffer_id);
+    if (it == officedocs_.end()) return;
+    it->second.zoom = std::clamp(it->second.zoom * factor, 0.5f, 3.0f);
 }
 
 // --- Spreadsheet panes --------------------------------------------------
@@ -2509,16 +3471,23 @@ void Editor::HandleSheetNormalInput() {
         }
         cp = GetCharPressed();
     }
-    if (IsKeyPressed(KEY_R) && (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL))) {
+    bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+    if (IsKeyPressed(KEY_R) && ctrl) {
         RedoSheet();
     }
     // Excel's own next/prev-sheet convention -- matches real spreadsheet
     // muscle memory better than inventing a new mep-specific binding.
-    if (IsKeyPressed(KEY_PAGE_DOWN) && (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL))) {
+    if (IsKeyPressed(KEY_PAGE_DOWN) && ctrl) {
         NextSheet();
     }
-    if (IsKeyPressed(KEY_PAGE_UP) && (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL))) {
+    if (IsKeyPressed(KEY_PAGE_UP) && ctrl) {
         PrevSheet();
+    }
+    if (ctrl && IsKeyPressed(KEY_D)) {
+        sess->cursor_row += std::max(1, sess->viewport_h / kSheetRowHeight / 2);
+    }
+    if (ctrl && IsKeyPressed(KEY_U)) {
+        sess->cursor_row = std::max(0, sess->cursor_row - std::max(1, sess->viewport_h / kSheetRowHeight / 2));
     }
 }
 
@@ -2960,7 +3929,10 @@ void Editor::ClosePane() {
     std::vector<int> ids;
     CollectLeaves(tab.root.get(), ids);
     if (!ids.empty()) tab.active_pane_id = ids.front();
-    ReapOrphanedTerminals();
+    // A terminal's buffer/PTY session outlives the pane that showed it,
+    // same as any other buffer type -- switchable back into view later via
+    // mep.buffers() (l_buffer_switch), not killed just because its one
+    // pane closed.
     SyncModeToActivePaneBuffer();
 }
 
@@ -3185,7 +4157,6 @@ void Editor::TabDelete() {
     }
     tabs_.erase(tabs_.begin() + active_tab_);
     if (active_tab_ >= static_cast<int>(tabs_.size())) active_tab_ = static_cast<int>(tabs_.size()) - 1;
-    ReapOrphanedTerminals();
     SyncModeToActivePaneBuffer();
 }
 
@@ -3451,6 +4422,149 @@ void Editor::SetActivePaneShare(float fraction) {
     node->shares[other_index] = 1.0f - fraction;
 }
 
+void Editor::FocusPaneById(int pane_id) {
+    Tab &tab = tabs_[active_tab_];
+    if (!FindNode(tab.root.get(), pane_id)) return;
+    tab.active_pane_id = pane_id;
+    // Mirrors NavigatePaneDirection's own same guard: focus genuinely
+    // moving to a different pane must drop Terminal mode's keystroke-
+    // forwarding, or stray keys typed afterward would leak into a live
+    // shell/program the user no longer meant to be typing into.
+    if (mode_ == Mode::Terminal) mode_ = Mode::Normal;
+    // Clicking into a pane while a sidebar has focus is the mouse
+    // equivalent of NavigatePaneDirection's into_panes branch -- leave
+    // the overlay the same way (RestoreFromOverlay), not just Sidebar
+    // mode's own bookkeeping, since overlay_previous_mode_ may itself be
+    // something other than Normal (e.g. Insert, resumed below via
+    // SyncModeToActivePaneBuffer as usual).
+    if (mode_ == Mode::Sidebar) RestoreFromOverlay();
+    SyncModeToActivePaneBuffer();
+}
+
+// Removes buffer_id from source_pane_id's own buffer_tabs (erasing at the
+// tab's own index -- a drag can start from any chip, not just the pane's
+// currently-active one -- and fixing up buffer_tab_index/buffer_id the
+// same way PaneMoveBufferTabToNeighbor does), then ClosePane()s the
+// source pane if that was its last tab. Shared by MoveBufferTabToPane and
+// SplitPaneWithBufferTab, both of which need this exact removal+fixup
+// before touching the destination side. Returns false (nothing removed,
+// nothing to do) if buffer_id isn't actually one of source's tabs.
+bool Editor::RemoveBufferTabFromPane(int source_pane_id, int buffer_id) {
+    Tab &tab = tabs_[active_tab_];
+    SplitNode *src_node = FindNode(tab.root.get(), source_pane_id);
+    if (!src_node) return false;
+    Pane &src = src_node->pane;
+    EnsureBufferTabSeeded(src);
+    auto it = std::find(src.buffer_tabs.begin(), src.buffer_tabs.end(), buffer_id);
+    if (it == src.buffer_tabs.end()) return false;
+    int removed_index = static_cast<int>(it - src.buffer_tabs.begin());
+    bool was_active_tab = (removed_index == src.buffer_tab_index);
+    bool was_last_tab = src.buffer_tabs.size() <= 1;
+    src.buffer_tabs.erase(it);
+    if (!src.buffer_tabs.empty()) {
+        if (was_active_tab) {
+            if (src.buffer_tab_index >= static_cast<int>(src.buffer_tabs.size())) {
+                src.buffer_tab_index = static_cast<int>(src.buffer_tabs.size()) - 1;
+            }
+            src.buffer_id = src.buffer_tabs[src.buffer_tab_index];
+            ClampCursor();
+        } else if (removed_index < src.buffer_tab_index) {
+            src.buffer_tab_index--;  // shift left to keep pointing at the same still-active tab
+        }
+    }
+    if (was_last_tab) {
+        tab.active_pane_id = source_pane_id;
+        ClosePane();  // restructures the tree -- any raw SplitNode* obtained before this call is no longer trustworthy
+    }
+    return true;
+}
+
+void Editor::MoveBufferTabToPane(int source_pane_id, int buffer_id, int dest_pane_id) {
+    if (source_pane_id == dest_pane_id) return;
+    if (!RemoveBufferTabFromPane(source_pane_id, buffer_id)) return;
+
+    Tab &tab = tabs_[active_tab_];
+    // Re-found *after* RemoveBufferTabFromPane, never reused from before
+    // it -- ClosePane() may have restructured the tree.
+    SplitNode *dst_node = FindNode(tab.root.get(), dest_pane_id);
+    if (!dst_node) return;
+    Pane &dst = dst_node->pane;
+    EnsureBufferTabSeeded(dst);
+    dst.buffer_tabs.insert(dst.buffer_tabs.begin() + dst.buffer_tab_index + 1, buffer_id);
+    dst.buffer_tab_index++;
+    dst.buffer_id = buffer_id;
+    tab.active_pane_id = dest_pane_id;
+    ClampCursor();
+    SyncModeToActivePaneBuffer();
+}
+
+void Editor::SplitPaneWithBufferTab(int source_pane_id, int buffer_id, int dest_pane_id, SplitDir dir, bool before) {
+    // Unlike MoveBufferTabToPane, source_pane_id == dest_pane_id is a real
+    // case here, not a no-op to guard against: dragging a chip out to an
+    // edge zone of its own pane (dropping it back in the pane's center is
+    // still the merge-into-self no-op MoveBufferTabToPane skips) means
+    // "split this pane, keep my other tabs on one side, this tab on the
+    // other" -- RemoveBufferTabFromPane below leaves the remaining tabs
+    // behind in dst_node->pane (re-found afterward, same as the cross-pane
+    // case), which is exactly the "existing_pane" this function already
+    // moves into its own leaf below.
+    if (!RemoveBufferTabFromPane(source_pane_id, buffer_id)) return;
+
+    Tab &tab = tabs_[active_tab_];
+    // Re-found *after* RemoveBufferTabFromPane, same reasoning as
+    // MoveBufferTabToPane above.
+    SplitNode *dst_node = FindNode(tab.root.get(), dest_pane_id);
+    if (!dst_node) return;
+
+    Pane new_pane;
+    new_pane.id = next_pane_id_++;
+    new_pane.buffer_id = buffer_id;
+    new_pane.buffer_tabs = {buffer_id};
+    new_pane.buffer_tab_index = 0;
+
+    Pane existing_pane = dst_node->pane;  // keeps its own id/buffer_tabs/cursor/scroll/jumplist
+
+    auto new_leaf = std::make_unique<SplitNode>();
+    new_leaf->dir = SplitDir::Leaf;
+    new_leaf->pane = std::move(new_pane);
+
+    auto existing_leaf = std::make_unique<SplitNode>();
+    existing_leaf->dir = SplitDir::Leaf;
+    existing_leaf->pane = std::move(existing_pane);
+
+    int new_pane_id = new_leaf->pane.id;
+    dst_node->dir = dir;
+    dst_node->pane = Pane{};
+    dst_node->children.clear();
+    dst_node->shares.clear();  // fresh split -- equal shares, same as SplitCurrentPane leaves it
+    if (before) {
+        dst_node->children.push_back(std::move(new_leaf));
+        dst_node->children.push_back(std::move(existing_leaf));
+    } else {
+        dst_node->children.push_back(std::move(existing_leaf));
+        dst_node->children.push_back(std::move(new_leaf));
+    }
+
+    tab.active_pane_id = new_pane_id;
+    ClampCursor();
+    SyncModeToActivePaneBuffer();
+}
+
+void Editor::SetPaneBorderShare(SplitNode *node, int child_index, float new_share) {
+    if (!node || child_index < 0 || child_index + 1 >= static_cast<int>(node->children.size())) return;
+    EnsureShares(node);
+    float pair_total = node->shares[child_index] + node->shares[child_index + 1];
+    new_share = std::clamp(new_share, kMinPaneShare, pair_total - kMinPaneShare);
+    node->shares[child_index] = new_share;
+    node->shares[child_index + 1] = pair_total - new_share;
+}
+
+float Editor::PaneBorderPairTotal(SplitNode *node, int child_index) {
+    if (!node || child_index < 0 || child_index + 1 >= static_cast<int>(node->children.size())) return 0.0f;
+    EnsureShares(node);
+    return node->shares[child_index] + node->shares[child_index + 1];
+}
+
 // --- Global (mod1) shortcuts ------------------------------------------------
 
 bool Editor::IsMod1Down() const {
@@ -3606,7 +4720,7 @@ void Editor::HandleNormalInput() {
     // Ctrl-W above predate that finding and were left as-is (out of scope
     // here), worth remembering if either is ever reported flaky too.
     bool ctrl_v = false, ctrl_d = false, ctrl_u = false, ctrl_f = false, ctrl_b = false, ctrl_a = false,
-         ctrl_x = false, ctrl_o = false, ctrl_i = false, ctrl_c = false;
+         ctrl_x = false, ctrl_o = false, ctrl_i = false, ctrl_c = false, ctrl_e = false;
     for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
         if (!ctrl) continue;
         if (key == KEY_V) ctrl_v = true;
@@ -3619,8 +4733,22 @@ void Editor::HandleNormalInput() {
         else if (key == KEY_O) ctrl_o = true;
         else if (key == KEY_I) ctrl_i = true;
         else if (key == KEY_C) ctrl_c = true;
+        else if (key == KEY_E) ctrl_e = true;
     }
     if (ctrl_v) {
+        // On an .html/.htm buffer, Ctrl-V is repurposed as the escape
+        // hatch back to the rendered browser view instead of Vim's usual
+        // Visual Block -- the opposite direction of HandleHtmlInput's own
+        // Ctrl-E (see ConvertTextBufferToHtml's own comment). Every other
+        // buffer keeps plain Visual Block, unaffected.
+        if (IsHtmlPath(Buf().filename)) {
+            ConvertTextBufferToHtml(CurPane().buffer_id);
+            CurPane().cursor = {0, 0};
+            CurPane().scroll_row = 0;
+            status_message_.clear();
+            SyncModeToActivePaneBuffer();
+            return;
+        }
         // Routed through ProcessNormalKey (via the kReplayCtrlV sentinel --
         // see its own comment in editor.h) rather than calling
         // EnterVisualBlock() directly, so Ctrl-V participates in `.`/macro
@@ -3672,6 +4800,18 @@ void Editor::HandleNormalInput() {
         } else {
             pending_ctrl_c_ = true;
             pending_ctrl_c_time_ = now_;
+        }
+        return;
+    }
+    // Ctrl-E completing a Ctrl-C Ctrl-E chord -- org export-format
+    // dispatch (mirrors real Emacs org-mode's own C-c C-e). A bare
+    // Ctrl-E with no preceding Ctrl-C (or after the chord timeout) is
+    // unbound, same "silently absorbed" treatment an unrecognized second
+    // key gets everywhere else in this function.
+    if (ctrl_e) {
+        if (pending_ctrl_c_ && (now_ - pending_ctrl_c_time_) < kCtrlCChordTimeoutSec) {
+            pending_ctrl_c_ = false;
+            pending_org_export_ = true;
         }
         return;
     }
@@ -3733,7 +4873,7 @@ void Editor::HandleNormalInput() {
     constexpr double kMotionDiscardCooldownSec = 0.7;
     bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
     bool count_pending_now = pending_count_ != 0;
-    bool no_pending_state_now = pending_op_ == 0 && !pending_g_ && !pending_ctrl_w_ && pending_find_ == 0 &&
+    bool no_pending_state_now = pending_op_ == 0 && !pending_g_ && !pending_ctrl_w_ && !pending_org_export_ && pending_find_ == 0 &&
                                  !count_pending_now && !awaiting_register_name_;
     double now = GetTime();
     static const std::pair<int, char> kMotionKeys[] = {
@@ -3768,7 +4908,7 @@ void Editor::HandleNormalInput() {
         // the very next key literally, and counts are closer to syntax
         // than to a remappable command.
         bool is_count_digit = (cp >= '1' && cp <= '9') || (cp == '0' && pending_count_ != 0);
-        bool no_pending_state = pending_op_ == 0 && !pending_g_ && !pending_ctrl_w_ && pending_find_ == 0 &&
+        bool no_pending_state = pending_op_ == 0 && !pending_g_ && !pending_ctrl_w_ && !pending_org_export_ && pending_find_ == 0 &&
                                  !is_count_digit && !awaiting_register_name_;
         // A confirmed-held bare h/j/k/l is handled by the fast path above
         // (or is within its post-release discard window) -- drop the
@@ -3879,6 +5019,12 @@ bool Editor::DispatchNormalKey(int cp) {
     // empty line, and typing into it risks SaveBuffer's own guard being
     // the only thing standing between that and corrupting the real file.
     if ((c == 'i' || c == 'a') && IsImageBuffer(CurPane().buffer_id)) {
+        return true;
+    }
+
+    if (pending_org_export_) {
+        pending_org_export_ = false;
+        TryRunOrgExport(c);
         return true;
     }
 
@@ -4458,9 +5604,9 @@ bool Editor::DispatchNormalKey(int cp) {
 
 bool Editor::IsMidNormalCommand() const {
     return pending_op_ != 0 || pending_g_ || pending_find_ != 0 || pending_textobj_scope_ != 0 ||
-           pending_mark_jump_ != 0 || pending_mark_set_ || pending_ctrl_w_ || pending_z_ || pending_count_ != 0 ||
-           awaiting_register_name_ || pending_register_ != 0 || pending_macro_record_ || awaiting_macro_play_ ||
-           pending_replace_;
+           pending_mark_jump_ != 0 || pending_mark_set_ || pending_ctrl_w_ || pending_org_export_ || pending_z_ ||
+           pending_count_ != 0 || awaiting_register_name_ || pending_register_ != 0 || pending_macro_record_ ||
+           awaiting_macro_play_ || pending_replace_;
 }
 
 void Editor::CancelPendingNormalState() {
@@ -4472,6 +5618,7 @@ void Editor::CancelPendingNormalState() {
     pending_mark_set_ = false;
     pending_textobj_scope_ = 0;
     pending_ctrl_w_ = false;
+    pending_org_export_ = false;
     pending_z_ = false;
     pending_count_ = 0;
     awaiting_register_name_ = false;
@@ -5582,7 +6729,19 @@ void Editor::BeginPrompt(const std::string &title, const std::string &default_te
     prompt_title_ = title;
     prompt_input_ = default_text;
     prompt_callback_ref_ = on_done_ref;
+    prompt_native_callback_ = nullptr;
     prompt_masked_ = masked;
+    mode_ = Mode::Prompt;
+}
+
+void Editor::BeginPromptNative(const std::string &title, const std::string &default_text,
+                                std::function<void(const std::string &)> on_done) {
+    overlay_previous_mode_ = mode_;
+    prompt_title_ = title;
+    prompt_input_ = default_text;
+    prompt_callback_ref_ = 0;
+    prompt_native_callback_ = std::move(on_done);
+    prompt_masked_ = false;
     mode_ = Mode::Prompt;
 }
 
@@ -5642,8 +6801,9 @@ void Editor::HandlePromptInput() {
     }
     if (escape) {
         int ref = prompt_callback_ref_;
+        prompt_native_callback_ = nullptr;  // cancel: never invoked, matches the Lua path's own on_done() case
         RestoreFromOverlay();
-        if (lua_) {
+        if (ref != 0 && lua_) {
             lua_->CallRef(ref);  // no args -> nil, matches vim.ui.input's cancel behavior
             lua_->UnrefFunction(ref);
         }
@@ -5652,8 +6812,12 @@ void Editor::HandlePromptInput() {
     if (enter) {
         int ref = prompt_callback_ref_;
         std::string text = prompt_input_;
+        auto native_cb = std::move(prompt_native_callback_);
+        prompt_native_callback_ = nullptr;
         RestoreFromOverlay();
-        if (lua_) {
+        if (native_cb) {
+            native_cb(text);
+        } else if (ref != 0 && lua_) {
             lua_->CallRefWithString(ref, text);
             lua_->UnrefFunction(ref);
         }
@@ -6020,6 +7184,52 @@ std::string Editor::SidebarCursorWidgetId(int id) const {
     return sb->sections[line.section_index].widgets[line.widget_index].id;
 }
 
+void Editor::FocusSidebarRow(int id, int line_index) {
+    SidebarInstance *sb = FindSidebarMut(id);
+    if (!sb || !sb->open) return;
+    // Unlike OpenSidebar (called once, when focus actually transitions into
+    // a sidebar), this fires on every single mouse click on a row -- most of
+    // which land while mode_ is ALREADY Mode::Sidebar (clicking a different
+    // row of the same focused sidebar, or a double-click's own first half).
+    // Capturing overlay_previous_mode_ unconditionally there would clobber
+    // the real pre-sidebar mode with Sidebar itself, permanently breaking
+    // RestoreFromOverlay (Escape, and pane-body click-to-focus) until the
+    // sidebar is closed some other way. Only capture on the genuine
+    // transition into sidebar focus, same as OpenSidebar's own guard.
+    if (mode_ != Mode::Sidebar) overlay_previous_mode_ = mode_;
+    focused_sidebar_id_ = id;
+    mode_ = Mode::Sidebar;
+    std::vector<SidebarLine> lines = FlattenSidebar(id);
+    sidebar_cursor_ = std::clamp(line_index, 0, std::max(0, static_cast<int>(lines.size()) - 1));
+}
+
+void Editor::ActivateSidebarLine(int id, int line_index) {
+    std::vector<SidebarLine> lines = FlattenSidebar(id);
+    if (line_index < 0 || line_index >= static_cast<int>(lines.size())) return;
+    const SidebarLine &line = lines[line_index];
+    SidebarInstance *sb = FindSidebarMut(id);
+    if (!sb) return;
+    if (line.kind == SidebarLine::Kind::SectionHeader) {
+        sb->sections[line.section_index].collapsed = !sb->sections[line.section_index].collapsed;
+        if (id == focused_sidebar_id_) {
+            int max_idx = static_cast<int>(FlattenSidebar(id).size()) - 1;
+            sidebar_cursor_ = std::min(sidebar_cursor_, std::max(0, max_idx));
+        }
+    } else if (line.kind == SidebarLine::Kind::Widget) {
+        int ref = sb->sections[line.section_index].widgets[line.widget_index].on_click_ref;
+        if (ref != 0 && lua_) lua_->CallRef(ref);
+    }
+}
+
+void Editor::SetSidebarSize(int id, int size) {
+    SidebarInstance *sb = FindSidebarMut(id);
+    if (!sb) return;
+    // 10 mirrors ResizeActivePane's own local kSidebarMinSize (a function-
+    // local constant there, not shared class scope -- not worth a bigger
+    // refactor to share a single named constant for one duplicated literal).
+    sb->size = std::max(10, size);
+}
+
 int Editor::CreateSidebar(const std::string &title, const std::string &position, int size) {
     SidebarInstance sb;
     sb.id = next_sidebar_id_++;
@@ -6111,19 +7321,29 @@ void Editor::HandleSidebarInput() {
         return;
     }
     if (enter) {
-        if (sidebar_cursor_ >= 0 && sidebar_cursor_ < static_cast<int>(lines.size())) {
-            const SidebarLine &line = lines[sidebar_cursor_];
-            SidebarInstance *sb = FindSidebarMut(focused_sidebar_id_);
-            if (sb && line.kind == SidebarLine::Kind::SectionHeader) {
-                sb->sections[line.section_index].collapsed = !sb->sections[line.section_index].collapsed;
-                int max_idx = static_cast<int>(FlattenSidebar(focused_sidebar_id_).size()) - 1;
-                sidebar_cursor_ = std::min(sidebar_cursor_, std::max(0, max_idx));
-            } else if (sb && line.kind == SidebarLine::Kind::Widget) {
-                int ref = sb->sections[line.section_index].widgets[line.widget_index].on_click_ref;
-                if (ref != 0 && lua_) lua_->CallRef(ref);
-            }
-        }
+        ActivateSidebarLine(focused_sidebar_id_, sidebar_cursor_);
         return;
+    }
+    // Ctrl-E/Ctrl-V: html view-toggle escape hatch (see LoadFile's own
+    // force_text param) -- GLFW/raylib doesn't emit a char event while
+    // Ctrl is held (same reasoning as HandleNormalInput's own Ctrl-combo
+    // comment), so these can't reach mep.tree_on_key's fn(char) through
+    // the GetCharPressed() drain below the way every other binding
+    // (R/H/o/a/r/d/?) does. Passed through as the sentinels "C-e"/"C-v",
+    // never produced by GetCharPressed() (only single printable-ASCII
+    // chars), so on_key can tell a Ctrl-combo apart from a bare keypress
+    // via the same callback.
+    {
+        bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+        bool ce = ctrl && IsKeyPressed(KEY_E);
+        bool cv = ctrl && IsKeyPressed(KEY_V);
+        if (ce || cv) {
+            const SidebarInstance *sb = FindSidebar(focused_sidebar_id_);
+            if (sb && sb->on_key_ref != 0 && lua_) {
+                lua_->CallRefWithString(sb->on_key_ref, ce ? "C-e" : "C-v");
+            }
+            return;
+        }
     }
     int cp = GetCharPressed();
     while (cp > 0) {
@@ -6946,6 +8166,7 @@ void Editor::EnterNormal() {
     pending_mark_set_ = false;
     pending_textobj_scope_ = 0;
     pending_ctrl_w_ = false;
+    pending_org_export_ = false;
     pending_z_ = false;
     pending_count_ = 0;
     awaiting_register_name_ = false;
@@ -7979,6 +9200,22 @@ void Editor::TryRunOrgBabelAtCursor() {
     if (it != lua_commands_.end() && lua_) lua_->CallRefWithString(it->second, "");
 }
 
+void Editor::TryRunOrgExport(char format_key) {
+    const std::string &filename = Buf().filename;
+    if (filename.size() < 4 || filename.compare(filename.size() - 4, 4, ".org") != 0) return;
+    const char *command = nullptr;
+    switch (format_key) {
+        case 'h': command = "MepOrgExportHtml"; break;
+        case 'p': command = "MepOrgExportPdf"; break;
+        case 'o': command = "MepOrgExportOdt"; break;
+        case 'm': command = "MepOrgExportMarkdown"; break;
+        case 'a': command = "MepOrgExportAscii"; break;
+        default: return;
+    }
+    auto it = lua_commands_.find(command);
+    if (it != lua_commands_.end() && lua_) lua_->CallRefWithString(it->second, "");
+}
+
 // --- Operators -------------------------------------------------------------
 
 void Editor::ApplyOperator(char op, CursorPos start, CursorPos end, bool linewise) {
@@ -8737,7 +9974,13 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
     } else if (name == "wqa" || name == "xa" || name == "wqall" || name == "xall") {
         if (WriteAllModified()) QuitAll(true);
     } else if (name == "e" || name == "edit") {
-        LoadFile(args);
+        // force_text=true: the literal `:e`/`:edit` ex-command is the one
+        // deliberate escape hatch back to plain-text for an .html/.htm
+        // file (LoadFile's own comment) -- every other file-open path in
+        // this editor (Enter in the file tree/pickers, LSP jumps, etc.)
+        // goes through mep.open instead, which always opens the default
+        // (rendered) view.
+        LoadFile(args, true);
     } else if (name == "split" || name == "sp") {
         SplitCurrentPane(SplitDir::Horizontal, args);
     } else if (name == "vsplit" || name == "vs") {
@@ -8891,6 +10134,19 @@ void Editor::SetBufferLinesForLua(int buffer_id, const std::vector<std::string> 
 
 std::string Editor::BufferLabelForLua(int buffer_id) const {
     if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return "";
+    // Terminal buffers have no filename (they're never saved), so without
+    // this they'd all show as the same indistinguishable "[No Name]" --
+    // defeating the point of surfacing them here at all now that closing
+    // their pane no longer kills them (see ClosePane/TabDelete): this is
+    // how a backgrounded terminal actually gets found again to switch back
+    // into view. Same live-title-over-argv[0] preference as DrawPane's own
+    // pane-header label, for the same reason (a shell's OSC title update).
+    if (const TerminalSession *sess = GetTerminal(buffer_id)) {
+        const std::string &live_title = (sess->vterm && !sess->vterm->Title().empty()) ? sess->vterm->Title() : sess->title;
+        std::string label = "[Terminal] " + live_title;
+        if (sess->exited) label += " [exited: " + std::to_string(sess->exit_code) + "]";
+        return label;
+    }
     const Buffer &buf = buffers_[buffer_id];
     std::string label = buf.filename.empty() ? "[No Name]" : buf.filename;
     if (buf.modified) label += " [+]";
@@ -9369,7 +10625,7 @@ void Editor::QuitAll(bool force) {
     should_quit_ = true;
 }
 
-void Editor::LoadFile(const std::string &path) {
+void Editor::LoadFile(const std::string &path, bool force_text) {
     if (path.empty()) {
         status_message_ = "E32: No file name";
         return;
@@ -9445,6 +10701,68 @@ void Editor::LoadFile(const std::string &path) {
 #endif
         SyncModeToActivePaneBuffer();
         return;
+    }
+    if (IsHtmlPath(path)) {
+        // Mirrors the IsPdfPath/IsImagePath branches above -- opening a
+        // .html/.htm file renders it in the same viewer :Browse uses
+        // (OpenHtmlInPlace) instead of showing raw markup as plain text,
+        // UNLESS force_text (the literal `:e`/`:edit` ex-command's own
+        // escape hatch -- RunCommand; mep.open, what every picker/
+        // sidebar/LSP jump uses instead, always passes force_text=false).
+        // `origin`/`source` are both just `path` here (no remote-fetch
+        // indirection -- that only applies to mep.browse_command's own
+        // curl-to-tempfile path, kBuiltinTextTools).
+        int existing_id = -1;
+        for (size_t i = 0; i < buffers_.size(); i++) {
+            if (buffers_[i].filename == path) {
+                existing_id = static_cast<int>(i);
+                break;
+            }
+        }
+        if (existing_id >= 0) {
+            // Already have a buffer for this exact path, in one view or
+            // the other -- convert it in place if the requested view
+            // doesn't match what it already is (both Convert* helpers
+            // are no-ops when it's already the requested view) rather
+            // than creating a second buffer with the same filename,
+            // which FindOrCreateBuffer's dedup (by Buffer::filename
+            // alone) couldn't tell apart from this one afterward.
+            if (force_text) ConvertHtmlBufferToText(existing_id);
+            else ConvertTextBufferToHtml(existing_id);
+            CurPane().buffer_id = existing_id;
+            CurPane().cursor = {0, 0};
+            CurPane().scroll_row = 0;
+            status_message_.clear();
+            SyncModeToActivePaneBuffer();
+            return;
+        }
+        if (!force_text) {
+#if defined(__EMSCRIPTEN__)
+            char *result = mep_js_read_file_binary(path.c_str());
+            std::string res(result);
+            std::free(result);
+            if (res.rfind("OK\n", 0) == 0) {
+                std::vector<unsigned char> bytes = Base64Decode(res.substr(3));
+                OpenHtmlInPlace(path, path, bytes.data(), bytes.size());
+            } else {
+                status_message_ = "E212: Can't open \"" + path + "\"" +
+                                   (res.rfind("ERR\n", 0) == 0 ? " (" + res.substr(4) + ")" : "");
+            }
+#else
+            std::ifstream in(path, std::ios::binary);
+            if (!in) {
+                status_message_ = "E484: Can't open file \"" + path + "\"";
+            } else {
+                std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+                OpenHtmlInPlace(path, path, bytes.data(), bytes.size());
+            }
+#endif
+            SyncModeToActivePaneBuffer();
+            return;
+        }
+        // force_text with no existing buffer for this path yet: fall
+        // through to the ordinary plain-text open below (FindOrCreateBuffer
+        // reads it fresh, same as any other file).
     }
     if (IsCsvPath(path) || IsXlsxPath(path) || IsOdsPath(path)) {
 #if defined(__EMSCRIPTEN__)

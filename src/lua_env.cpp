@@ -24,6 +24,7 @@ extern "C" {
 
 #include "raylib.h"
 
+#include "doc_export.h"
 #include "editor.h"
 #include "job.h"
 #include "treesitter.h"
@@ -306,6 +307,21 @@ int l_cmd(lua_State *L) {
     size_t len = 0;
     const char *s = luaL_checklstring(L, 1, &len);
     GetEditor(L)->RunCommand(std::string(s, len));
+    return 0;
+}
+
+// mep.open(path): opens `path` in its default view -- for an .html/.htm
+// file, that's the rendered :Browse viewer, not plain text (Editor::
+// LoadFile's own force_text comment). Every picker/sidebar/LSP jump that
+// just wants to "open this file" (file tree, find_files, buffers,
+// live_grep, LSP goto/references, todos, git status, roam, leetcode)
+// calls this instead of mep.cmd('e ' .. path), so the literal `:e`/
+// `:edit` ex-command can stay the one deliberate force-text escape hatch
+// without every other open path inheriting it too.
+int l_open(lua_State *L) {
+    size_t len = 0;
+    const char *s = luaL_checklstring(L, 1, &len);
+    GetEditor(L)->LoadFile(std::string(s, len));
     return 0;
 }
 
@@ -1744,6 +1760,142 @@ int l_filename(lua_State *L) {
     return 1;
 }
 
+// mep.html_open(path [, origin]): opens `path` (a real local .html file's
+// path -- see html_doc.h) as a rendered HtmlSession preview pane in the
+// current pane, parsing+running its scripts (Editor::OpenHtmlInPlace).
+// Deliberately not reachable from :e's own LoadFile dispatch (see
+// Mode::Html's own comment in editor.h) -- mep.browse_command's in-pane
+// default (kBuiltinTextTools, main.cpp) is the only intended caller; a
+// remote URL goes through that same function too, but only after
+// mep.browse_command has already fetched it to a local temp file via
+// curl, since this function itself never does any network I/O. `origin`
+// (HtmlSession::origin) is the user-facing URL/path to remember for
+// reload/the address bar -- defaults to `path` itself, correct for a
+// plain local-file open; mep.browse_open_in_pane passes the real URL
+// explicitly for its own curl-fetched-tempfile case.
+int l_html_open(lua_State *L) {
+    const char *path = luaL_checkstring(L, 1);
+    const char *origin = luaL_optstring(L, 2, path);
+#if !defined(__EMSCRIPTEN__)
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        GetEditor(L)->Notify("Can't open \"" + std::string(path) + "\"", Editor::NotifyLevel::Error);
+        return 0;
+    }
+    std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    // Absolute-ized (rather than stored as whatever relative/absolute
+    // string the caller passed) so a <img src="relative/path"> inside the
+    // page can be resolved against this file's own directory regardless of
+    // what mep's cwd is by the time DrawPane's HTML branch (main.cpp) lays
+    // that out -- cwd can change (mep.fs_chdir) any time after this open
+    // call, well before the next frame's own layout pass runs.
+    std::error_code abs_ec;
+    std::filesystem::path abs_path = std::filesystem::absolute(path, abs_ec);
+    std::string source = abs_ec ? path : abs_path.string();
+    GetEditor(L)->OpenHtmlInPlace(origin, source, bytes.data(), bytes.size());
+#else
+    // The wasm sandbox has no local filesystem of its own to read a
+    // fetched/local html file from outside the bridge (see serve.ts's own
+    // header) -- out of scope for the same reason mep.browse's external
+    // WebKitGTK window already is on that build.
+    GetEditor(L)->Notify("mep.html_open: not supported in the wasm build", Editor::NotifyLevel::Error);
+#endif
+    return 0;
+}
+
+// mep.html_current_origin(): the current pane's HtmlSession::origin, or
+// nil if the current pane isn't an HTML pane -- lets mep.browse_reload/
+// mep.browse_open_bar (kBuiltinTextTools) know what to re-fetch/prefill
+// without a numeric buffer-id round-trip through Lua (both this and
+// mep.html_reload below always act on "whatever pane is current", the
+// same implicit-current-buffer convention mep.filename()/mep.line_count()
+// already use throughout).
+int l_html_current_origin(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    const HtmlSession *sess = ed->GetHtml(ed->CurrentBufferId());
+    if (!sess) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_pushlstring(L, sess->origin.data(), sess->origin.size());
+    return 1;
+}
+
+// mep.html_reload(path [, origin]): re-reads local file `path` and
+// re-parses it INTO the current pane's existing HtmlSession in place
+// (Editor::ReloadHtmlBuffer) -- unlike mep.html_open, never creates a new
+// buffer/session or does a dedup-by-source lookup; a hard overwrite of
+// whichever HTML pane is currently active. `origin` defaults to `path`,
+// same convention as mep.html_open. A no-op (with a notification) if the
+// current pane isn't an HTML pane, or if `path` can't be read.
+int l_html_reload(lua_State *L) {
+    const char *path = luaL_checkstring(L, 1);
+    const char *origin = luaL_optstring(L, 2, path);
+#if !defined(__EMSCRIPTEN__)
+    Editor *ed = GetEditor(L);
+    int buffer_id = ed->CurrentBufferId();
+    if (!ed->GetHtml(buffer_id)) {
+        ed->Notify("Not an HTML pane", Editor::NotifyLevel::Warn);
+        return 0;
+    }
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        ed->Notify("Can't open \"" + std::string(path) + "\"", Editor::NotifyLevel::Error);
+        return 0;
+    }
+    std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    ed->ReloadHtmlBuffer(buffer_id, origin, path, bytes.data(), bytes.size());
+#else
+    GetEditor(L)->Notify("mep.html_reload: not supported in the wasm build", Editor::NotifyLevel::Error);
+#endif
+    return 0;
+}
+
+// mep.doc_export_html_to_latex(html, title, author, base_dir): thin
+// binding over doc_export.h's ExportHtmlToLatex -- see its own header for
+// the actual conversion. Pure string in, string out, no I/O of its own
+// (kBuiltinOrgExport, main.cpp, writes the returned LaTeX to a .tex file
+// itself, then spawns tectonic the same way mep_org_latex_render already
+// does for math-fragment previews). Native + wasm both fine here -- no
+// filesystem access except reading a local <img src>, guarded the same
+// way ExportHtmlToOdt below already is.
+int l_doc_export_html_to_latex(lua_State *L) {
+    const char *html = luaL_checkstring(L, 1);
+    const char *title = luaL_optstring(L, 2, "");
+    const char *author = luaL_optstring(L, 3, "");
+    const char *base_dir = luaL_optstring(L, 4, "");
+    std::string latex = ExportHtmlToLatex(html, title, author, base_dir);
+    lua_pushlstring(L, latex.data(), latex.size());
+    return 1;
+}
+
+// mep.doc_export_html_to_odt(html, out_path, title, author, base_dir):
+// thin binding over doc_export.h's ExportHtmlToOdt. Returns true on
+// success; on failure returns false plus an error string (so a caller
+// can `local ok, err = mep.doc_export_html_to_odt(...)`).
+int l_doc_export_html_to_odt(lua_State *L) {
+    const char *html = luaL_checkstring(L, 1);
+    const char *out_path = luaL_checkstring(L, 2);
+    const char *title = luaL_optstring(L, 3, "");
+    const char *author = luaL_optstring(L, 4, "");
+    const char *base_dir = luaL_optstring(L, 5, "");
+#if !defined(__EMSCRIPTEN__)
+    std::string error;
+    bool ok = ExportHtmlToOdt(html, out_path, title, author, base_dir, error);
+    lua_pushboolean(L, ok);
+    if (ok) return 1;
+    lua_pushlstring(L, error.data(), error.size());
+    return 2;
+#else
+    // Same "no local filesystem outside the bridge" constraint as
+    // mep.html_open above -- writing an arbitrary .odt to a native path
+    // isn't meaningful in the wasm sandbox.
+    lua_pushboolean(L, false);
+    lua_pushliteral(L, "mep.doc_export_html_to_odt: not supported in the wasm build");
+    return 2;
+#endif
+}
+
 // Myers diff (NVIM_PARITY_PLAN.md Part IV Phase 17): the equivalent of
 // Neovim's built-in vim.diff(), needed so git-gutter hunks don't have to
 // shell `git diff` per keystroke -- everything else git-specific (gutter
@@ -2055,6 +2207,7 @@ const luaL_Reg kMepFuncs[] = {
     {"resize_pane", l_resize_pane},
     {"pane_set_share", l_pane_set_share},
     {"cmd", l_cmd},
+    {"open", l_open},
     {"terminal_here", l_terminal_here},
     {"sidebar_default_cols", l_sidebar_default_cols},
     {"quit", l_quit},
@@ -2144,6 +2297,11 @@ const luaL_Reg kMepFuncs[] = {
     {"getcwd", l_getcwd},
     {"diff_lines", l_diff_lines},
     {"filename", l_filename},
+    {"html_open", l_html_open},
+    {"html_current_origin", l_html_current_origin},
+    {"html_reload", l_html_reload},
+    {"doc_export_html_to_latex", l_doc_export_html_to_latex},
+    {"doc_export_html_to_odt", l_doc_export_html_to_odt},
     {"set_completion_source", l_set_completion_source},
     {"set_completion_accept_hook", l_set_completion_accept_hook},
     {"set_insert_tab_hook", l_set_insert_tab_hook},

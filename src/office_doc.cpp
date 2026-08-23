@@ -2,9 +2,13 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <sstream>
+#include <unordered_map>
 
+#include "image_doc.h"
 #include "miniz.h"
 #include "pugixml.hpp"
 
@@ -68,7 +72,16 @@ DocParagraph SplitParagraphAt(DocParagraph &p, int col) {
     DocParagraph second;
     second.align = p.align;
     second.heading_level = p.heading_level;
-    second.bullet = p.bullet;
+    second.list_kind = p.list_kind;
+    // A table/image anchor stays with whichever half still ends at the
+    // paragraph's own end (always the second half, since an anchor renders
+    // *after* the paragraph's text -- splitting mid-text never moves what
+    // comes after the whole paragraph); the first half is a genuinely new
+    // paragraph boundary with nothing anchored to it yet.
+    second.table_ref = p.table_ref;
+    second.image_ref = p.image_ref;
+    p.table_ref = -1;
+    p.image_ref = -1;
     second.text = p.text.substr(static_cast<size_t>(col));
     p.text.resize(static_cast<size_t>(col));
 
@@ -93,7 +106,14 @@ void MergeParagraphs(DocParagraph &p, const DocParagraph &next) {
     int base = static_cast<int>(p.text.size());
     p.text += next.text;
     for (auto &s : next.spans) p.spans.push_back({s.start + base, s.end + base, s.fmt});
-    // p keeps its own align/heading_level/bullet (matches Word's own merge behavior).
+    // p keeps its own align/heading_level/list_kind (matches Word's own
+    // merge behavior). `next`'s own table/image anchor (if any) carries
+    // over only when p doesn't already have one of its own -- the rare
+    // case of merging two paragraphs that both anchor something loses
+    // `next`'s anchor rather than either one silently overwriting the
+    // other's index into OfficeDoc::tables/images.
+    if (p.table_ref < 0) p.table_ref = next.table_ref;
+    if (p.image_ref < 0) p.image_ref = next.image_ref;
 }
 
 void CoalesceSpans(std::vector<DocSpan> &spans) {
@@ -178,6 +198,61 @@ void ToggleFormatOverRange(DocParagraph &p, int a, int b, bool DocFormat::*field
     CoalesceSpans(p.spans);
 }
 
+void SetFormatFieldOverRange(DocParagraph &p, int a, int b, const std::function<void(DocFormat &)> &apply) {
+    a = std::clamp(a, 0, static_cast<int>(p.text.size()));
+    b = std::clamp(b, 0, static_cast<int>(p.text.size()));
+    if (b <= a) return;
+
+    // Same "keep everything strictly outside [a,b) untouched, clip a span
+    // that only partially overlaps" shape as ToggleFormatOverRange, minus
+    // the "detect uniform on/off first" step that only makes sense for a
+    // boolean.
+    std::vector<DocSpan> out;
+    for (auto &s : p.spans) {
+        if (s.end <= a || s.start >= b) { out.push_back(s); continue; }
+        if (s.start < a) out.push_back({s.start, a, s.fmt});
+        if (s.end > b) out.push_back({b, s.end, s.fmt});
+    }
+
+    int cursor = a;
+    for (auto &s : p.spans) {
+        if (s.end <= a || s.start >= b) continue;
+        int seg_s = std::max(s.start, a), seg_e = std::min(s.end, b);
+        if (seg_s > cursor) {
+            DocFormat gap_fmt;
+            apply(gap_fmt);
+            out.push_back({cursor, seg_s, gap_fmt});
+        }
+        DocFormat f = s.fmt;
+        apply(f);
+        out.push_back({seg_s, seg_e, f});
+        cursor = seg_e;
+    }
+    if (cursor < b) {
+        DocFormat gap_fmt;
+        apply(gap_fmt);
+        out.push_back({cursor, b, gap_fmt});
+    }
+
+    std::sort(out.begin(), out.end(), [](const DocSpan &x, const DocSpan &y) { return x.start < y.start; });
+    p.spans = std::move(out);
+    CoalesceSpans(p.spans);
+}
+
+void SetParagraphAlignment(std::vector<DocParagraph> &paragraphs, int first, int last, DocParagraph::Align align) {
+    first = std::clamp(first, 0, static_cast<int>(paragraphs.size()) - 1);
+    last = std::clamp(last, 0, static_cast<int>(paragraphs.size()) - 1);
+    if (first > last) std::swap(first, last);
+    for (int i = first; i <= last; i++) paragraphs[static_cast<size_t>(i)].align = align;
+}
+
+void SetParagraphListKind(std::vector<DocParagraph> &paragraphs, int first, int last, DocParagraph::ListKind kind) {
+    first = std::clamp(first, 0, static_cast<int>(paragraphs.size()) - 1);
+    last = std::clamp(last, 0, static_cast<int>(paragraphs.size()) - 1);
+    if (first > last) std::swap(first, last);
+    for (int i = first; i <= last; i++) paragraphs[static_cast<size_t>(i)].list_kind = kind;
+}
+
 // ============================================================================
 // File path helpers
 // ============================================================================
@@ -194,6 +269,22 @@ std::string LowerExt(const std::string &path) {
 
 bool IsDocxPath(const std::string &path) { return LowerExt(path) == "docx"; }
 bool IsOdtPath(const std::string &path) { return LowerExt(path) == "odt"; }
+
+std::string SniffImageExtension(const std::string &bytes) {
+    auto starts_with = [&](std::initializer_list<unsigned char> sig) {
+        if (bytes.size() < sig.size()) return false;
+        size_t i = 0;
+        for (unsigned char b : sig) {
+            if (static_cast<unsigned char>(bytes[i++]) != b) return false;
+        }
+        return true;
+    };
+    if (starts_with({0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A})) return "png";
+    if (starts_with({0xFF, 0xD8, 0xFF})) return "jpeg";
+    if (bytes.size() >= 4 && bytes[0] == 'G' && bytes[1] == 'I' && bytes[2] == 'F' && bytes[3] == '8') return "gif";
+    if (bytes.size() >= 2 && bytes[0] == 'B' && bytes[1] == 'M') return "bmp";
+    return "png";
+}
 
 // ============================================================================
 // DOCX parsing (word/document.xml via pugixml, word/document.xml's bytes
@@ -377,6 +468,29 @@ int AppendDocxRunText(const pugi::xml_node &run, std::string &text) {
     return static_cast<int>(text.size()) - start;
 }
 
+// Maps a DOCX <w:rFonts w:ascii="..."> value to one of the 3 embedded
+// families -- exact-name match against Liberation's own family names,
+// plus the handful of metric-compatible substitutes those names are
+// commonly used as drop-in replacements for (Arial/Helvetica -> Sans,
+// Times New Roman/Times/Georgia/Cambria -> Serif, Courier New/Consolas ->
+// Mono) so a document authored in real Word still gets a *sensible*
+// mep-side family rather than silently falling back to Sans for every
+// font name it doesn't recognize verbatim.
+OfficeFontFamily DocxFontFamilyFromName(const std::string &name) {
+    std::string lower;
+    for (char c : name) lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    if (lower.find("serif") != std::string::npos || lower.find("times") != std::string::npos ||
+        lower.find("georgia") != std::string::npos || lower.find("cambria") != std::string::npos ||
+        lower.find("garamond") != std::string::npos) {
+        return OfficeFontFamily::Serif;
+    }
+    if (lower.find("mono") != std::string::npos || lower.find("courier") != std::string::npos ||
+        lower.find("consolas") != std::string::npos) {
+        return OfficeFontFamily::Mono;
+    }
+    return OfficeFontFamily::Sans;
+}
+
 // Walks a <w:p>'s children collecting run text/spans -- recurses into
 // <w:hyperlink> (which wraps <w:r> runs) so hyperlinked text isn't
 // silently dropped; hyperlink *behavior* (click/navigate) isn't modeled.
@@ -395,10 +509,43 @@ void CollectDocxParagraphRuns(const pugi::xml_node &p_node, DocParagraph &out) {
                     fmt.underline = (uval != "none");
                 }
                 fmt.strike = OoxmlBoolOn(rpr.child("w:strike"));
+                if (pugi::xml_node va = rpr.child("w:vertAlign")) {
+                    std::string v = va.attribute("w:val").as_string();
+                    fmt.superscript = (v == "superscript");
+                    fmt.subscript = (v == "subscript");
+                }
+                if (pugi::xml_node rfonts = rpr.child("w:rFonts")) {
+                    pugi::xml_attribute ascii = rfonts.attribute("w:ascii");
+                    if (ascii) fmt.font_family = DocxFontFamilyFromName(ascii.as_string());
+                }
+                if (pugi::xml_node sz = rpr.child("w:sz")) {
+                    // w:sz is in half-points.
+                    fmt.font_size_pt = static_cast<float>(sz.attribute("w:val").as_int()) / 2.0f;
+                }
+                if (pugi::xml_node color = rpr.child("w:color")) {
+                    std::string v = color.attribute("w:val").as_string();
+                    unsigned int rgb = 0;
+                    if (v.size() == 6 && v != "auto" && std::sscanf(v.c_str(), "%x", &rgb) == 1) {
+                        fmt.has_color = true;
+                        fmt.color_r = static_cast<unsigned char>((rgb >> 16) & 0xff);
+                        fmt.color_g = static_cast<unsigned char>((rgb >> 8) & 0xff);
+                        fmt.color_b = static_cast<unsigned char>(rgb & 0xff);
+                    }
+                }
+                if (pugi::xml_node shd = rpr.child("w:shd")) {
+                    std::string v = shd.attribute("w:fill").as_string();
+                    unsigned int rgb = 0;
+                    if (v.size() == 6 && v != "auto" && std::sscanf(v.c_str(), "%x", &rgb) == 1) {
+                        fmt.has_highlight = true;
+                        fmt.highlight_r = static_cast<unsigned char>((rgb >> 16) & 0xff);
+                        fmt.highlight_g = static_cast<unsigned char>((rgb >> 8) & 0xff);
+                        fmt.highlight_b = static_cast<unsigned char>(rgb & 0xff);
+                    }
+                }
             }
             int start = static_cast<int>(out.text.size());
             int len = AppendDocxRunText(child, out.text);
-            if (len > 0 && (fmt.bold || fmt.italic || fmt.underline || fmt.strike)) {
+            if (len > 0 && fmt != DocFormat{}) {
                 out.spans.push_back({start, start + len, fmt});
             }
         } else if (name == "w:hyperlink") {
@@ -406,6 +553,88 @@ void CollectDocxParagraphRuns(const pugi::xml_node &p_node, DocParagraph &out) {
         }
         // Other paragraph children (bookmarks, fields, etc.) skipped.
     }
+}
+
+// Extracts one <w:tc> cell's plain text: concatenates every <w:r>/<w:t> run
+// across the cell's <w:p> children (a cell is required by OOXML to hold at
+// least one paragraph), joining multiple paragraphs with '\n' -- DocTable
+// cells are a single flat string (no per-paragraph structure), matching
+// this file's own "plain text only" scope note for tables. <w:tab>/<w:br>
+// map to '\t'/'\n' the same way CollectDocxParagraphRuns does for ordinary
+// paragraph text; run-level formatting (bold/color/etc.) inside a cell is
+// dropped, also matching DocTable's documented scope.
+std::string DocxCellText(const pugi::xml_node &tc_node) {
+    std::string text;
+    bool first_p = true;
+    for (pugi::xml_node p : tc_node.children("w:p")) {
+        if (!first_p) text += "\n";
+        first_p = false;
+        for (pugi::xml_node r : p.children("w:r")) {
+            for (pugi::xml_node t_node : r.children("w:t")) text += t_node.text().get();
+            if (r.child("w:tab")) text += "\t";
+            if (r.child("w:br")) text += "\n";
+        }
+    }
+    return text;
+}
+
+// Parses a <w:tbl> into a DocTable. Column count is taken from the widest
+// <w:tr> (not <w:tblGrid>, which can disagree with actual cell counts in
+// the wild) -- shorter rows are padded with empty cells.
+DocTable ParseDocxTable(const pugi::xml_node &tbl_node) {
+    std::vector<std::vector<std::string>> rows;
+    int max_cols = 0;
+    for (pugi::xml_node tr : tbl_node.children("w:tr")) {
+        std::vector<std::string> row;
+        for (pugi::xml_node tc : tr.children("w:tc")) row.push_back(DocxCellText(tc));
+        max_cols = std::max(max_cols, static_cast<int>(row.size()));
+        rows.push_back(std::move(row));
+    }
+    DocTable t;
+    t.rows = static_cast<int>(rows.size());
+    t.cols = std::max(1, max_cols);
+    t.cells.assign(static_cast<size_t>(t.rows) * static_cast<size_t>(t.cols), std::string());
+    for (int r = 0; r < t.rows; r++) {
+        for (int c = 0; c < static_cast<int>(rows[static_cast<size_t>(r)].size()) && c < t.cols; c++) {
+            t.Cell(r, c) = rows[static_cast<size_t>(r)][static_cast<size_t>(c)];
+        }
+    }
+    return t;
+}
+
+// Recursively searches a <w:p> for an embedded inline image's
+// <a:blip r:embed="rIdN"/> (inside <w:r><w:drawing>...) and returns its
+// relationship id. Plain tag-name string matching, not real namespace
+// resolution -- consistent with how every other w:/a:/pic: element in this
+// file is matched (pugixml here is never configured namespace-aware).
+bool FindDocxBlipRelId(const pugi::xml_node &node, std::string &rel_id) {
+    for (pugi::xml_node child : node.children()) {
+        if (std::string(child.name()) == "a:blip") {
+            if (pugi::xml_attribute embed = child.attribute("r:embed")) {
+                rel_id = embed.as_string();
+                return true;
+            }
+        }
+        if (FindDocxBlipRelId(child, rel_id)) return true;
+    }
+    return false;
+}
+
+// Loads word/_rels/document.xml.rels (if present -- a docx with no
+// relationships at all, e.g. one that never had an image/hyperlink, simply
+// yields an empty map) into an Id -> Target lookup, used to resolve an
+// <a:blip r:embed="rIdN"/> to its word/media/... zip entry path.
+std::unordered_map<std::string, std::string> LoadDocxRelationships(const unsigned char *bytes, size_t len) {
+    std::unordered_map<std::string, std::string> out;
+    std::vector<unsigned char> rel_bytes;
+    if (!ReadZipEntry(bytes, len, "word/_rels/document.xml.rels", rel_bytes)) return out;
+    pugi::xml_document rel_doc;
+    if (!rel_doc.load_buffer(rel_bytes.data(), rel_bytes.size(), pugi::parse_default, pugi::encoding_utf8)) return out;
+    for (pugi::xml_node rel : rel_doc.child("Relationships").children("Relationship")) {
+        std::string id = rel.attribute("Id").as_string();
+        if (!id.empty()) out[id] = rel.attribute("Target").as_string();
+    }
+    return out;
 }
 
 void ParseDocxParagraph(const pugi::xml_node &p_node, DocParagraph &out) {
@@ -420,7 +649,16 @@ void ParseDocxParagraph(const pugi::xml_node &p_node, DocParagraph &out) {
             else if (v == "right" || v == "end") out.align = DocParagraph::Align::Right;
             else if (v == "both" || v == "distribute") out.align = DocParagraph::Align::Justify;
         }
-        if (ppr.child("w:numPr")) out.bullet = true;
+        // v1: any <w:numPr> reads as a bullet list -- distinguishing
+        // bullet vs. numbered would need resolving numbering.xml's
+        // abstractNum format (out of scope, same simplification this file
+        // already documents for w:basedOn style cascades). Authoring a
+        // *new* Numbered list from inside mep still works (SetOfficeListKind/
+        // ListKind::Numbered) -- it just doesn't survive a save/reload
+        // round-trip as "numbered" specifically (see SerializeDocxParagraph's
+        // own comment on why list membership isn't re-emitted on save at
+        // all yet).
+        if (ppr.child("w:numPr")) out.list_kind = DocParagraph::ListKind::Bullet;
     }
     CollectDocxParagraphRuns(p_node, out);
     CoalesceSpans(out.spans);
@@ -447,11 +685,52 @@ bool LoadDocxFromMemory(const unsigned char *bytes, size_t len, OfficeDoc &out, 
         return false;
     }
     out.paragraphs.clear();
+    out.tables.clear();
+    out.images.clear();
     out.source_format = "docx";
-    for (pugi::xml_node p_node : body.children("w:p")) {
-        DocParagraph p;
-        ParseDocxParagraph(p_node, p);
-        out.paragraphs.push_back(std::move(p));
+    std::unordered_map<std::string, std::string> rels = LoadDocxRelationships(bytes, len);
+    // Walks every direct <w:body> child in document order (not just <w:p>)
+    // so a <w:tbl>'s position relative to surrounding paragraphs is
+    // preserved -- a table isn't itself a paragraph, so it gets its own
+    // fresh empty anchor paragraph pointing at it (DocParagraph::table_ref),
+    // matching how Editor::InsertOfficeTablePrompt anchors a freshly
+    // inserted table to the (usually empty) paragraph the cursor was on.
+    // An inline image lives *inside* one of the paragraph's own <w:r>
+    // elements (<w:r><w:drawing>...<a:blip r:embed="rIdN"/>...), so unlike
+    // a table it needs no synthetic anchor -- the paragraph it's already
+    // part of becomes the anchor via DocParagraph::image_ref.
+    for (pugi::xml_node child : body.children()) {
+        std::string name = child.name();
+        if (name == "w:p") {
+            DocParagraph p;
+            ParseDocxParagraph(child, p);
+            std::string rel_id;
+            if (FindDocxBlipRelId(child, rel_id)) {
+                auto rel_it = rels.find(rel_id);
+                if (rel_it != rels.end()) {
+                    std::string target = rel_it->second;
+                    std::string media_path = (!target.empty() && target[0] == '/') ? target.substr(1) : "word/" + target;
+                    std::vector<unsigned char> img_bytes;
+                    if (ReadZipEntry(bytes, len, media_path.c_str(), img_bytes)) {
+                        ImageDoc probe;
+                        if (probe.LoadFromMemory(img_bytes.data(), img_bytes.size())) {
+                            DocImage img;
+                            img.bytes.assign(img_bytes.begin(), img_bytes.end());
+                            img.natural_w = probe.Width();
+                            img.natural_h = probe.Height();
+                            out.images.push_back(std::move(img));
+                            p.image_ref = static_cast<int>(out.images.size()) - 1;
+                        }
+                    }
+                }
+            }
+            out.paragraphs.push_back(std::move(p));
+        } else if (name == "w:tbl") {
+            out.tables.push_back(ParseDocxTable(child));
+            DocParagraph anchor;
+            anchor.table_ref = static_cast<int>(out.tables.size()) - 1;
+            out.paragraphs.push_back(std::move(anchor));
+        }
     }
     if (out.paragraphs.empty()) out.paragraphs.push_back(DocParagraph{});  // never render a zero-paragraph doc
     return true;
@@ -487,12 +766,38 @@ void SerializeDocxParagraph(const DocParagraph &p, pugi::xml_node &p_node) {
     auto emit_run = [&](int s, int e, const DocFormat &fmt) {
         if (e <= s) return;
         pugi::xml_node r = p_node.append_child("w:r");
-        if (fmt.bold || fmt.italic || fmt.underline || fmt.strike) {
+        if (fmt != DocFormat{}) {
             pugi::xml_node rpr = r.append_child("w:rPr");
+            if (fmt.font_family != OfficeFontFamily::Sans) {
+                const char *fam = fmt.font_family == OfficeFontFamily::Serif ? "Liberation Serif" : "Liberation Mono";
+                pugi::xml_node rfonts = rpr.append_child("w:rFonts");
+                rfonts.append_attribute("w:ascii").set_value(fam);
+                rfonts.append_attribute("w:hAnsi").set_value(fam);
+            }
             if (fmt.bold) rpr.append_child("w:b");
             if (fmt.italic) rpr.append_child("w:i");
             if (fmt.underline) rpr.append_child("w:u").append_attribute("w:val").set_value("single");
             if (fmt.strike) rpr.append_child("w:strike");
+            if (fmt.superscript) rpr.append_child("w:vertAlign").append_attribute("w:val").set_value("superscript");
+            else if (fmt.subscript) rpr.append_child("w:vertAlign").append_attribute("w:val").set_value("subscript");
+            if (fmt.font_size_pt > 0.0f) {
+                // w:sz is in half-points.
+                int half_pt = std::max(1, static_cast<int>(std::lround(fmt.font_size_pt * 2.0f)));
+                rpr.append_child("w:sz").append_attribute("w:val").set_value(half_pt);
+            }
+            if (fmt.has_color) {
+                char hex[7];
+                std::snprintf(hex, sizeof(hex), "%02X%02X%02X", fmt.color_r, fmt.color_g, fmt.color_b);
+                rpr.append_child("w:color").append_attribute("w:val").set_value(hex);
+            }
+            if (fmt.has_highlight) {
+                char hex[7];
+                std::snprintf(hex, sizeof(hex), "%02X%02X%02X", fmt.highlight_r, fmt.highlight_g, fmt.highlight_b);
+                pugi::xml_node shd = rpr.append_child("w:shd");
+                shd.append_attribute("w:val").set_value("clear");
+                shd.append_attribute("w:color").set_value("auto");
+                shd.append_attribute("w:fill").set_value(hex);
+            }
         }
         // Splits on embedded '\t'/'\n' -- the reverse of AppendDocxRunText's
         // <w:tab/>/<w:br/> -> character mapping -- so multiple sibling
@@ -527,7 +832,136 @@ void SerializeDocxParagraph(const DocParagraph &p, pugi::xml_node &p_node) {
     // with zero <w:r> children -- Word tolerates a bare <w:p/>.
 }
 
+// Builds a <w:tbl> from a DocTable: explicit single-line borders on every
+// edge (so the grid mep itself always draws is visible when the file is
+// reopened elsewhere too, rather than depending on a table style being
+// present) and equal-width columns via a fixed <w:tblGrid> -- DocTable has
+// no per-column width model (office_doc.h's own scope note), so this is a
+// deliberate v1 simplification, not a preserved original width. Every cell
+// gets exactly one <w:p> (OOXML requires at least one), with a run per
+// non-empty '\t'/'\n'-delimited segment, mirroring emit_run's own
+// segmentation above but without per-run <w:rPr> since DocTable cells carry
+// no formatting.
+void SerializeDocxTable(const DocTable &t, pugi::xml_node &tbl_node) {
+    pugi::xml_node tbl_pr = tbl_node.append_child("w:tblPr");
+    pugi::xml_node borders = tbl_pr.append_child("w:tblBorders");
+    for (const char *edge : {"w:top", "w:left", "w:bottom", "w:right", "w:insideH", "w:insideV"}) {
+        pugi::xml_node b = borders.append_child(edge);
+        b.append_attribute("w:val").set_value("single");
+        b.append_attribute("w:sz").set_value(4);
+        b.append_attribute("w:space").set_value(0);
+        b.append_attribute("w:color").set_value("000000");
+    }
+    constexpr int kColWidthTwips = 2000;
+    pugi::xml_node grid = tbl_node.append_child("w:tblGrid");
+    for (int c = 0; c < t.cols; c++) {
+        grid.append_child("w:gridCol").append_attribute("w:w").set_value(kColWidthTwips);
+    }
+    for (int r = 0; r < t.rows; r++) {
+        pugi::xml_node tr = tbl_node.append_child("w:tr");
+        for (int c = 0; c < t.cols; c++) {
+            pugi::xml_node tc = tr.append_child("w:tc");
+            pugi::xml_node tc_pr = tc.append_child("w:tcPr");
+            pugi::xml_node tc_w = tc_pr.append_child("w:tcW");
+            tc_w.append_attribute("w:w").set_value(kColWidthTwips);
+            tc_w.append_attribute("w:type").set_value("dxa");
+            pugi::xml_node p_node = tc.append_child("w:p");
+            const std::string &txt = t.Cell(r, c);
+            if (txt.empty()) continue;
+            pugi::xml_node run = p_node.append_child("w:r");
+            size_t seg_start = 0;
+            for (size_t i = 0; i <= txt.size(); i++) {
+                bool at_end = i == txt.size();
+                bool is_tab = !at_end && txt[i] == '\t';
+                bool is_br = !at_end && txt[i] == '\n';
+                if (is_tab || is_br || at_end) {
+                    if (i > seg_start) {
+                        pugi::xml_node t_node = run.append_child("w:t");
+                        t_node.append_attribute("xml:space").set_value("preserve");
+                        t_node.text().set(txt.substr(seg_start, i - seg_start).c_str());
+                    }
+                    if (is_tab) run.append_child("w:tab");
+                    else if (is_br) run.append_child("w:br");
+                    seg_start = i + 1;
+                }
+            }
+        }
+    }
+}
+
+// Builds a minimal-but-valid inline <w:drawing> (WordprocessingML's
+// wp:inline shape, wrapping a:graphic/a:graphicData/pic:pic) referencing
+// `rel_id` inside `r_node` (a fresh <w:r> the caller already appended to
+// the paragraph). Every namespace this needs (wp/a/pic/r) is declared
+// directly on the elements that introduce them rather than relying on the
+// document root already declaring them -- self-contained regardless of
+// what the original document.xml's root happened to declare. Width/height
+// are converted px -> EMU at a 96 DPI assumption (the same implicit
+// assumption DocImage::natural_w/h's pixel dimensions carry everywhere
+// else in this codebase) and capped to 6 inches wide, matching main.cpp's
+// own render-time "cap to the pane's content width" behavior.
+void SerializeDocxDrawing(const DocImage &img, pugi::xml_node &r_node, const std::string &rel_id) {
+    constexpr long long kEmuPerPx = 9525;
+    constexpr long long kMaxWidthEmu = 5486400;  // 6 inches
+    long long w = static_cast<long long>(img.natural_w) * kEmuPerPx;
+    long long h = static_cast<long long>(img.natural_h) * kEmuPerPx;
+    if (w > kMaxWidthEmu && w > 0) {
+        h = h * kMaxWidthEmu / w;
+        w = kMaxWidthEmu;
+    }
+    std::string w_str = std::to_string(std::max(1LL, w)), h_str = std::to_string(std::max(1LL, h));
+
+    pugi::xml_node drawing = r_node.append_child("w:drawing");
+    pugi::xml_node inline_node = drawing.append_child("wp:inline");
+    inline_node.append_attribute("xmlns:wp")
+        .set_value("http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing");
+    inline_node.append_attribute("distT").set_value("0");
+    inline_node.append_attribute("distB").set_value("0");
+    inline_node.append_attribute("distL").set_value("0");
+    inline_node.append_attribute("distR").set_value("0");
+    pugi::xml_node extent = inline_node.append_child("wp:extent");
+    extent.append_attribute("cx").set_value(w_str.c_str());
+    extent.append_attribute("cy").set_value(h_str.c_str());
+    pugi::xml_node doc_pr = inline_node.append_child("wp:docPr");
+    doc_pr.append_attribute("id").set_value("1");
+    doc_pr.append_attribute("name").set_value("Picture");
+    pugi::xml_node graphic = inline_node.append_child("a:graphic");
+    graphic.append_attribute("xmlns:a").set_value("http://schemas.openxmlformats.org/drawingml/2006/main");
+    pugi::xml_node graphic_data = graphic.append_child("a:graphicData");
+    graphic_data.append_attribute("uri").set_value("http://schemas.openxmlformats.org/drawingml/2006/picture");
+    pugi::xml_node pic = graphic_data.append_child("pic:pic");
+    pic.append_attribute("xmlns:pic").set_value("http://schemas.openxmlformats.org/drawingml/2006/picture");
+    pugi::xml_node nv_pic_pr = pic.append_child("pic:nvPicPr");
+    pugi::xml_node cnv_pr = nv_pic_pr.append_child("pic:cNvPr");
+    cnv_pr.append_attribute("id").set_value("0");
+    cnv_pr.append_attribute("name").set_value("Picture");
+    nv_pic_pr.append_child("pic:cNvPicPr");
+    pugi::xml_node blip_fill = pic.append_child("pic:blipFill");
+    pugi::xml_node blip = blip_fill.append_child("a:blip");
+    blip.append_attribute("xmlns:r").set_value("http://schemas.openxmlformats.org/officeDocument/2006/relationships");
+    blip.append_attribute("r:embed").set_value(rel_id.c_str());
+    blip_fill.append_child("a:stretch").append_child("a:fillRect");
+    pugi::xml_node sp_pr = pic.append_child("pic:spPr");
+    pugi::xml_node xfrm = sp_pr.append_child("a:xfrm");
+    pugi::xml_node off = xfrm.append_child("a:off");
+    off.append_attribute("x").set_value("0");
+    off.append_attribute("y").set_value("0");
+    pugi::xml_node ext = xfrm.append_child("a:ext");
+    ext.append_attribute("cx").set_value(w_str.c_str());
+    ext.append_attribute("cy").set_value(h_str.c_str());
+    pugi::xml_node prst_geom = sp_pr.append_child("a:prstGeom");
+    prst_geom.append_attribute("prst").set_value("rect");
+    prst_geom.append_child("a:avLst");
+}
+
 }  // namespace
+
+std::string MimeForImageExt(const std::string &ext) {
+    if (ext == "jpeg") return "image/jpeg";
+    if (ext == "gif") return "image/gif";
+    if (ext == "bmp") return "image/bmp";
+    return "image/png";
+}
 
 bool SaveDocxToMemory(const OfficeDoc &doc, const std::vector<unsigned char> &original_bytes,
                       std::vector<unsigned char> &out, std::string &error) {
@@ -549,11 +983,10 @@ bool SaveDocxToMemory(const OfficeDoc &doc, const std::vector<unsigned char> &or
         return false;
     }
 
-    // Removes every existing <w:p>/<w:tbl> (a table is dropped -- never
-    // represented in OfficeDoc to begin with, see the V1 scope exclusions),
-    // remembering the first <w:sectPr> (page setup) as the insertion
-    // anchor so freshly-built paragraphs land before it -- OOXML requires
-    // w:sectPr, if present, to be w:body's last child.
+    // Removes every existing <w:p>/<w:tbl>, remembering the first <w:sectPr>
+    // (page setup) as the insertion anchor so freshly-built paragraphs/
+    // tables land before it -- OOXML requires w:sectPr, if present, to be
+    // w:body's last child.
     pugi::xml_node anchor;
     for (pugi::xml_node child = body.first_child(); child;) {
         pugi::xml_node next = child.next_sibling();
@@ -565,13 +998,117 @@ bool SaveDocxToMemory(const OfficeDoc &doc, const std::vector<unsigned char> &or
         }
         child = next;
     }
+    // Every image in doc.images gets a fresh word/media/ part + relationship
+    // this save, in index order -- rel_id/filename are namespaced with a
+    // "mep" prefix specifically so they can never collide with whatever
+    // Word-generated rIds/media names the original document.xml.rels
+    // already has, sidestepping the need to scan for the highest existing
+    // rId. A pre-existing (round-tripped, unchanged) image gets re-added as
+    // a new part too rather than reusing its original one -- simpler than
+    // tracking per-image provenance, at the cost of leaving the original
+    // now-unreferenced media part+relationship behind as harmless (if
+    // slightly wasteful) dead weight in the saved file, a documented v1
+    // simplification.
+    struct NewImage {
+        std::string rel_id, media_filename;
+        const DocImage *img;
+    };
+    std::vector<NewImage> new_images;
+    new_images.reserve(doc.images.size());
+    for (size_t i = 0; i < doc.images.size(); i++) {
+        std::string ext = SniffImageExtension(doc.images[i].bytes);
+        new_images.push_back({"rIdMep" + std::to_string(i + 1), "mepimage" + std::to_string(i + 1) + "." + ext,
+                              &doc.images[i]});
+    }
+
     for (const DocParagraph &p : doc.paragraphs) {
         pugi::xml_node p_node = anchor ? body.insert_child_before("w:p", anchor) : body.append_child("w:p");
         SerializeDocxParagraph(p, p_node);
+        if (p.table_ref >= 0 && p.table_ref < static_cast<int>(doc.tables.size())) {
+            pugi::xml_node tbl_node = anchor ? body.insert_child_before("w:tbl", anchor) : body.append_child("w:tbl");
+            SerializeDocxTable(doc.tables[static_cast<size_t>(p.table_ref)], tbl_node);
+        }
+        if (p.image_ref >= 0 && p.image_ref < static_cast<int>(new_images.size())) {
+            const NewImage &ni = new_images[static_cast<size_t>(p.image_ref)];
+            pugi::xml_node r_node = p_node.append_child("w:r");
+            SerializeDocxDrawing(*ni.img, r_node, ni.rel_id);
+        }
     }
 
     std::ostringstream ss;
     xml.save(ss, "", pugi::format_raw);
-    return WriteZipReplacingEntry(original_bytes.data(), original_bytes.size(), "word/document.xml", ss.str(), out,
-                                   error);
+    std::vector<std::pair<std::string, std::string>> entries;
+    entries.emplace_back("word/document.xml", ss.str());
+
+    if (!new_images.empty()) {
+        // word/_rels/document.xml.rels: load the original (if the document
+        // never had any relationships at all -- no hyperlinks, no styles
+        // reference, vanishingly rare but possible -- build a fresh minimal
+        // one) and append one <Relationship> per new image.
+        std::vector<unsigned char> rels_bytes;
+        bool have_rels =
+            ReadZipEntry(original_bytes.data(), original_bytes.size(), "word/_rels/document.xml.rels", rels_bytes);
+        pugi::xml_document rels_doc;
+        pugi::xml_node rels_root;
+        if (have_rels &&
+            rels_doc.load_buffer(rels_bytes.data(), rels_bytes.size(), pugi::parse_default, pugi::encoding_utf8)) {
+            rels_root = rels_doc.child("Relationships");
+        }
+        if (!rels_root) {
+            rels_doc.reset();
+            rels_root = rels_doc.append_child("Relationships");
+            rels_root.append_attribute("xmlns").set_value("http://schemas.openxmlformats.org/package/2006/relationships");
+        }
+        for (const NewImage &ni : new_images) {
+            pugi::xml_node rel = rels_root.append_child("Relationship");
+            rel.append_attribute("Id").set_value(ni.rel_id.c_str());
+            rel.append_attribute("Type").set_value(
+                "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image");
+            rel.append_attribute("Target").set_value(("media/" + ni.media_filename).c_str());
+        }
+        std::ostringstream rss;
+        rels_doc.save(rss, "", pugi::format_raw);
+        entries.emplace_back("word/_rels/document.xml.rels", rss.str());
+
+        // [Content_Types].xml: add a <Default Extension="..."> for any
+        // image extension not already declared (a docx that never had an
+        // image before commonly lacks these entirely).
+        std::vector<unsigned char> ct_bytes;
+        bool have_ct = ReadZipEntry(original_bytes.data(), original_bytes.size(), "[Content_Types].xml", ct_bytes);
+        pugi::xml_document ct_doc;
+        pugi::xml_node types_root;
+        if (have_ct &&
+            ct_doc.load_buffer(ct_bytes.data(), ct_bytes.size(), pugi::parse_default, pugi::encoding_utf8)) {
+            types_root = ct_doc.child("Types");
+        }
+        if (types_root) {
+            std::vector<std::string> seen_exts;
+            for (const NewImage &ni : new_images) {
+                std::string ext = ni.media_filename.substr(ni.media_filename.find_last_of('.') + 1);
+                if (std::find(seen_exts.begin(), seen_exts.end(), ext) != seen_exts.end()) continue;
+                seen_exts.push_back(ext);
+                bool found = false;
+                for (pugi::xml_node d : types_root.children("Default")) {
+                    if (std::string(d.attribute("Extension").as_string()) == ext) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    pugi::xml_node d = types_root.append_child("Default");
+                    d.append_attribute("Extension").set_value(ext.c_str());
+                    d.append_attribute("ContentType").set_value(MimeForImageExt(ext).c_str());
+                }
+            }
+            std::ostringstream css;
+            ct_doc.save(css, "", pugi::format_raw);
+            entries.emplace_back("[Content_Types].xml", css.str());
+        }
+
+        for (const NewImage &ni : new_images) {
+            entries.emplace_back("word/media/" + ni.media_filename, ni.img->bytes);
+        }
+    }
+
+    return WriteZipReplacingEntries(original_bytes.data(), original_bytes.size(), entries, out, error);
 }

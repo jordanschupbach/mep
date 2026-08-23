@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <map>
@@ -28,6 +29,8 @@
 #include "pdf_doc.h"
 #include "office_doc.h"
 #include "office_font_data.h"
+#include "office_font_data_mono.h"
+#include "office_font_data_serif.h"
 
 namespace {
 
@@ -87,6 +90,42 @@ bool IsIconCodepoint(int cp) {
     return false;
 }
 
+// Same "separate atlas, same reload point" pattern as g_icon_font just
+// above, for LaTeX-math rendering (main.cpp's own HTML-pane math layout,
+// further down): g_font's baked set is ASCII-only, and Greek letters/math
+// operators aren't in it. Baked from the *same* embedded TTF
+// (kJetBrainsMonoRegularTtf) rather than a second font file, just with a
+// wider explicit codepoint list -- JetBrains Mono already covers this
+// range, no new embed needed. Kept separate from g_font itself (rather
+// than widening g_font's own bake) specifically so g_glyph_index's
+// ASCII-only fast path (see its own comment, just above ApplyFontSize)
+// never has to change.
+Font g_math_font{};
+
+// Greek letters (lower+upper) + a curated set of common LaTeX math
+// operators/relations/arrows, *beyond* the ASCII 32..126 range ApplyFontSize
+// prepends when baking g_math_font (below) -- covers \alpha.. \omega,
+// \Gamma.. \Omega, \times \div \pm \leq \geq \neq \approx \infty \sum
+// \prod \int \sqrt \to \Rightarrow \in \subset \cup \cap and friends. Not
+// exhaustive (real LaTeX has thousands of symbol macros) -- an unmapped
+// command falls back to showing its own name as plain text (see
+// LayoutMathCommand), a legible degradation rather than a missing glyph.
+constexpr int kMathCodepoints[] = {
+    // Greek lowercase alpha..omega (includes the rarely-used final-sigma).
+    0x3b1, 0x3b2, 0x3b3, 0x3b4, 0x3b5, 0x3b6, 0x3b7, 0x3b8, 0x3b9, 0x3ba, 0x3bb, 0x3bc, 0x3bd, 0x3be, 0x3bf, 0x3c0,
+    0x3c1, 0x3c2, 0x3c3, 0x3c4, 0x3c5, 0x3c6, 0x3c7, 0x3c8, 0x3c9,
+    // Greek uppercase Alpha..Omega.
+    0x391, 0x392, 0x393, 0x394, 0x395, 0x396, 0x397, 0x398, 0x399, 0x39a, 0x39b, 0x39c, 0x39d, 0x39e, 0x39f, 0x3a0,
+    0x3a1, 0x3a3, 0x3a4, 0x3a5, 0x3a6, 0x3a7, 0x3a8, 0x3a9,
+    // Operators/relations/misc.
+    0xd7, 0xf7, 0xb1, 0xb7, 0xb0, 0x2213, 0x2264, 0x2265, 0x2260, 0x2248, 0x2261, 0x223c, 0x221d, 0x221e, 0x2202,
+    0x2207, 0x2211, 0x220f, 0x222b, 0x221a, 0x2032, 0x2033, 0x2234, 0x2235, 0x22a5, 0x2225, 0x2218, 0x2297, 0x2295,
+    0x230a, 0x230b, 0x2308, 0x2309, 0x22ef, 0x2026,
+    // Arrows/logic/set theory.
+    0x2192, 0x2190, 0x2194, 0x21d2, 0x21d0, 0x21d4, 0x2200, 0x2203, 0x2208, 0x2209, 0x2282, 0x2286, 0x2283, 0x2287,
+    0x222a, 0x2229, 0x2205,
+};
+
 // The 4 Liberation Sans weight/style variants for WYSIWYG office panes
 // (Editor::OfficeSession) -- unlike g_font, these are loaded once at a
 // fixed oversampled base size and never reloaded, since office text is
@@ -99,6 +138,19 @@ Font g_office_font_regular;
 Font g_office_font_bold;
 Font g_office_font_italic;
 Font g_office_font_bolditalic;
+// Liberation Serif/Mono: the other 2 selectable font families
+// (DocFormat::font_family, office_doc.h) -- real, distinct glyph atlases
+// (office_font_data_serif.h/office_font_data_mono.h), same OFL-licensed
+// family and baking convention as the Sans set above, not just a stored
+// label with no visual effect.
+Font g_office_font_serif_regular;
+Font g_office_font_serif_bold;
+Font g_office_font_serif_italic;
+Font g_office_font_serif_bolditalic;
+Font g_office_font_mono_regular;
+Font g_office_font_mono_bold;
+Font g_office_font_mono_italic;
+Font g_office_font_mono_bolditalic;
 
 // GPU upload cache for image-viewer panes (Editor::ImageSession), keyed by
 // buffer_id -- an ImageDoc is decoded once and never mutated, so its
@@ -170,6 +222,23 @@ int g_open_menu = -1;
 bool g_show_help_overlay = false;
 std::string g_help_overlay_text;
 
+// Which office-toolbar dropdown/popup is open (main.cpp's DrawPane office
+// branch) -- same single-int convention as g_open_menu above (a real
+// dropdown widget infra doesn't exist outside the purpose-built top menu
+// bar, so this mirrors that pattern rather than building a second one).
+// -1 = none; otherwise one of the kOfficeDropdown* IDs below. No
+// click-away-closes handling (v1 simplification) -- a dropdown closes only
+// when its own toggle button is clicked again or one of its items is
+// picked.
+enum {
+    kOfficeDropdownFontFamily = 1,
+    kOfficeDropdownFontSize,
+    kOfficeDropdownTextColor,
+    kOfficeDropdownHighlight,
+    kOfficeDropdownSpecialChars,
+};
+int g_office_dropdown_open = -1;
+
 // Generic click-region registry (NVIM_PARITY_PLAN.md Phase 11's "generic
 // click dispatch on widgets" gap): rebuilt fresh every frame by whichever
 // DrawXxx functions render a clickable region (tab bar, gutter fold
@@ -196,6 +265,194 @@ void RegisterClickRegion(Rectangle rect, std::function<void()> action) {
 bool PointInRect(Vector2 p, const Rectangle &r) {
     return p.x >= r.x && p.x < r.x + r.width && p.y >= r.y && p.y < r.y + r.height;
 }
+
+// --- Pane/tab mouse interaction --------------------------------------------
+//
+// Three features share this: (1) click any pane's header/tab chip to
+// focus that pane (and switch to that tab, for a multi-tab chip) -- goes
+// through g_click_regions/RegisterClickRegion like everything else in
+// that system, no new machinery needed; (2) drag a chip out and drop it
+// on another pane -- center merges it in as a new tab there, an edge
+// zone splits that pane and inserts a fresh leaf for it, with a live
+// highlight showing which zone the mouse is over; (3) drag a pane border
+// to resize the two panes on either side. (2) and (3) need real drag
+// state (press, then motion over possibly many frames, then release) --
+// g_click_regions has no notion of that (see its own header), so this is
+// a second, parallel mouse-interaction system rather than an extension
+// of it. All three read the SAME per-frame geometry capture
+// (ComputePaneScreenRects, called from DrawEditor right alongside
+// DrawPaneTree, whose layout math it mirrors exactly) since there's no
+// other cached pixel-space pane geometry to hit-test against --
+// Editor::ComputeRects is the same math but normalized-space-only and
+// not captured per-frame, so it can't answer "which pane/border is the
+// mouse over right now" without redoing the walk anyway.
+
+// One leaf pane's on-screen rect this frame.
+struct PaneScreenRect {
+    int pane_id;
+    Rectangle rect;
+};
+std::vector<PaneScreenRect> g_pane_screen_rects;
+
+// One draggable header/tab-chip region this frame -- pushed for every
+// chip in a multi-tab pane's strip AND for a single-buffer pane's whole
+// plain header (dragging that pane's sole buffer counts too; see
+// DrawPane's own two call sites for why both count as "a tab").
+struct PaneTabChipRect {
+    int pane_id;
+    int buffer_id;
+    Rectangle rect;
+};
+std::vector<PaneTabChipRect> g_pane_tab_chip_rects;
+
+// One resizable border's on-screen extent this frame -- `node`/
+// `child_index` identify which two adjacent SplitNode children
+// (node->children[child_index] and [child_index+1]) this border sits
+// between, for Editor::SetPaneBorderShare. `node` is a raw pointer into
+// the live pane tree, safe to hold only for the remainder of THIS frame
+// or the duration of one continuous drag gesture (nothing else can
+// restructure the tree while the mouse holds a drag) -- never carried
+// across a tree-mutating call.
+struct PaneBorderRect {
+    SplitNode *node;
+    int child_index;
+    bool vertical;       // true = a left/right (Vertical-split) border, dragged horizontally; false = top/bottom (Horizontal-split), dragged vertically
+    Rectangle grab_rect;  // thin strip, for hover/drag-start hit-testing
+    Rectangle pair_rect;  // combined on-screen extent of children[child_index] and [child_index+1] (NOT node's own full rect, which may span more siblings) -- for converting drag mouse position into a share fraction
+};
+std::vector<PaneBorderRect> g_pane_border_rects;
+
+// Mirrors DrawPaneTree's own layout recursion (main.cpp, further down --
+// keep any change to one in sync with the other) to capture this frame's
+// pixel-space geometry for every leaf pane and every resizable border,
+// without duplicating drawing work. Called from DrawEditor, right before
+// DrawPaneTree itself.
+void ComputePaneScreenRects(SplitNode *node, float x, float y, float w, float h) {
+    if (node->dir == SplitDir::Leaf) {
+        g_pane_screen_rects.push_back({node->pane.id, Rectangle{x, y, w, h}});
+        return;
+    }
+    int n = static_cast<int>(node->children.size());
+    if (n == 0) return;
+    bool has_shares = node->shares.size() == static_cast<size_t>(n);
+    constexpr float kBorderGrabPx = 6.0f;
+    if (node->dir == SplitDir::Horizontal) {
+        float cy = y;
+        for (int i = 0; i < n; i++) {
+            float ch = has_shares ? h * node->shares[i] : h / n;
+            float next_y = (i == n - 1) ? y + h : cy + ch;
+            ComputePaneScreenRects(node->children[i].get(), x, cy, w, next_y - cy);
+            if (i < n - 1) {
+                float ch_next = has_shares ? h * node->shares[i + 1] : h / n;
+                g_pane_border_rects.push_back({node, i, false, Rectangle{x, next_y - kBorderGrabPx / 2.0f, w, kBorderGrabPx},
+                                                Rectangle{x, cy, w, ch + ch_next}});
+            }
+            cy = next_y;
+        }
+    } else {
+        float cx = x;
+        for (int i = 0; i < n; i++) {
+            float cw = has_shares ? w * node->shares[i] : w / n;
+            float next_x = (i == n - 1) ? x + w : cx + cw;
+            ComputePaneScreenRects(node->children[i].get(), cx, y, next_x - cx, h);
+            if (i < n - 1) {
+                float cw_next = has_shares ? w * node->shares[i + 1] : w / n;
+                g_pane_border_rects.push_back({node, i, true, Rectangle{next_x - kBorderGrabPx / 2.0f, y, kBorderGrabPx, h},
+                                                Rectangle{cx, y, cw + cw_next, h}});
+            }
+            cx = next_x;
+        }
+    }
+}
+
+// One sidebar row's on-screen rect this frame -- captured directly inside
+// DrawSidebars (a flat per-sidebar loop, unlike the pane tree, so no
+// separate recursion is needed the way ComputePaneScreenRects mirrors
+// DrawPaneTree). Used for click-to-select-and-focus and double-click-to-
+// activate hit-testing.
+struct SidebarRowRect {
+    int sidebar_id;
+    int line_index;
+    Rectangle rect;
+};
+std::vector<SidebarRowRect> g_sidebar_row_rects;
+
+// One sidebar's resizable inner edge (the border facing the pane tree,
+// not the screen edge -- there's nothing to drag the outer edge against)
+// this frame, also captured directly inside DrawSidebars. `sign` is +1 if
+// dragging in the increasing-x/y direction *grows* the sidebar, -1 if it
+// shrinks it -- differs by dock position (see DrawSidebars' own comment
+// at its push site for the reasoning per edge).
+struct SidebarBorderRect {
+    int sidebar_id;
+    bool horizontal;  // true = left/right sidebar (dragged horizontally, resizes width); false = top/bottom (dragged vertically, resizes height)
+    int sign;
+    Rectangle grab_rect;
+};
+std::vector<SidebarBorderRect> g_sidebar_border_rects;
+
+// Double-click detection state for sidebar rows -- GLFW/raylib has no
+// built-in notion of a double-click, so this is the same "two presses
+// within a short wall-clock window" idiom Editor::pending_ctrl_c_ already
+// uses for its own Ctrl-C Ctrl-C chord (see its own header comment for
+// why a timeout, not "next event clears it", is the right tool once
+// timing rather than an intervening keystroke is what distinguishes the
+// two cases).
+double g_last_sidebar_click_time = -1.0;
+int g_last_sidebar_click_id = -1;
+int g_last_sidebar_click_row = -1;
+constexpr double kDoubleClickThresholdSec = 0.4;
+
+enum class PaneDropZone { Center, Left, Right, Top, Bottom };
+
+// Which zone of `rect` (mouse-drag drop target) `mouse` is closest to --
+// the middle kCenterThreshold-sized region is Center (merge as a new
+// tab), otherwise whichever edge the point is nearest wins (split that
+// direction), giving the familiar VSCode-style pinwheel of drop zones.
+PaneDropZone ComputePaneDropZone(Vector2 mouse, const Rectangle &rect) {
+    float fx = std::clamp((mouse.x - rect.x) / rect.width, 0.0f, 1.0f);
+    float fy = std::clamp((mouse.y - rect.y) / rect.height, 0.0f, 1.0f);
+    constexpr float kCenterThreshold = 0.25f;
+    float m = fx;
+    PaneDropZone zone = PaneDropZone::Left;
+    if (1.0f - fx < m) { m = 1.0f - fx; zone = PaneDropZone::Right; }
+    if (fy < m) { m = fy; zone = PaneDropZone::Top; }
+    if (1.0f - fy < m) { m = 1.0f - fy; zone = PaneDropZone::Bottom; }
+    return (m > kCenterThreshold) ? PaneDropZone::Center : zone;
+}
+
+enum class PaneDragKind { None, TabMove, BorderResize, SidebarResize };
+
+struct PaneDragState {
+    PaneDragKind kind = PaneDragKind::None;
+    Vector2 start_pos{};
+    bool threshold_passed = false;  // false until the mouse has moved far enough to count as a real drag, not just a click-in-place
+
+    // TabMove fields.
+    int source_pane_id = 0;
+    int dragged_buffer_id = 0;
+    int target_pane_id = -1;
+    PaneDropZone drop_zone = PaneDropZone::Center;
+
+    // BorderResize fields.
+    SplitNode *border_node = nullptr;
+    int border_child_index = 0;
+    bool border_vertical = false;
+    float border_pair_total = 0.0f;  // shares[child_index]+shares[child_index+1] at drag start, held constant through the drag
+    Rectangle border_pair_rect{};    // pixel extent that pair spans, captured at drag start (for mouse position -> fraction)
+
+    // SidebarResize fields.
+    int sidebar_id = 0;
+    bool sidebar_horizontal = false;
+    int sidebar_sign = 1;
+    int sidebar_size_start = 0;    // SidebarInstance::size (cells) at drag start
+    float sidebar_mouse_start = 0;  // mouse.x (horizontal) or mouse.y (vertical) at drag start
+};
+PaneDragState g_pane_drag;
+
+constexpr float kPaneDragThresholdPx = 4.0f;
+
+void DrawPaneDragOverlay();  // defined below, alongside UpdatePaneMouseInteraction; called from DrawEditor
 
 int LineHeight() { return static_cast<int>(g_font_size) + 6; }
 int MenuBarHeight() { return static_cast<int>(g_font_size) + 12; }
@@ -264,6 +521,7 @@ const char *ModeName(Mode m, bool replace_mode = false) {
         case Mode::Terminal: return "TERMINAL";
         case Mode::Image: return "IMAGE";
         case Mode::Pdf: return "PDF";
+        case Mode::Html: return "HTML";
         case Mode::OfficeNormal: return "NORMAL";
         case Mode::OfficeInsert: return "INSERT";
         case Mode::OfficeVisual: return "VISUAL";
@@ -370,7 +628,33 @@ void ApplyFontSize(float size) {
                                       static_cast<int>(g_font_size * 2), const_cast<int *>(kIconCodepoints),
                                       static_cast<int>(sizeof(kIconCodepoints) / sizeof(kIconCodepoints[0])));
     SetTextureFilter(g_icon_font.texture, TEXTURE_FILTER_BILINEAR);
+
+    if (g_math_font.texture.id != 0) UnloadFont(g_math_font);
+    constexpr int kMathExtraCount = sizeof(kMathCodepoints) / sizeof(kMathCodepoints[0]);
+    static int math_codepoints[95 + kMathExtraCount];
+    for (int c = 32; c <= 126; c++) math_codepoints[c - 32] = c;
+    for (int i = 0; i < kMathExtraCount; i++) math_codepoints[95 + i] = kMathCodepoints[i];
+    g_math_font = LoadFontFromMemory(".ttf", kJetBrainsMonoRegularTtf, static_cast<int>(kJetBrainsMonoRegularTtfLen),
+                                      static_cast<int>(g_font_size * 2), math_codepoints,
+                                      95 + kMathExtraCount);
+    SetTextureFilter(g_math_font.texture, TEXTURE_FILTER_BILINEAR);
 }
+
+// The office pane's special-character insert palette (main.cpp's DrawPane
+// office toolbar) -- also fed into LoadOfficeFonts' own codepoint list
+// below so these actually render as their real glyphs, not raylib's
+// missing-glyph fallback box, both in the palette popup itself and once
+// inserted into a paragraph's own text (Editor::InsertOfficeText). U+2022
+// BULLET is listed separately (kOfficeExtraCodepoints doesn't repeat it)
+// since office_doc's own bullet-list rendering already needed it before
+// this palette existed.
+constexpr int kOfficeSpecialChars[] = {
+    0x00A9, 0x00AE, 0x2122, 0x20AC, 0x00A3, 0x00A5, 0x00A7, 0x00B6,  // (c)(r)(tm) EUR GBP YEN section pilcrow
+    0x00B0, 0x00B1, 0x00D7, 0x00F7, 0x2248, 0x2260, 0x2264, 0x2265,  // deg +- x div ~= != <= >=
+    0x2026, 0x2013, 0x2014, 0x00BD, 0x00BC, 0x00BE, 0x2192, 0x2190,  // ... en-dash em-dash 1/2 1/4 3/4 -> <-
+    0x2191, 0x2193, 0x03B1, 0x03B2, 0x03B3, 0x03B4, 0x03C0, 0x03A9,  // up down alpha beta gamma delta pi Omega
+};
+constexpr int kOfficeSpecialCharCount = sizeof(kOfficeSpecialChars) / sizeof(kOfficeSpecialChars[0]);
 
 // Bakes the 4 office-pane fonts once, at startup only (see g_office_font_*'s
 // own comment for why -- no ApplyFontSize-style reload-per-size-change).
@@ -381,35 +665,78 @@ void ApplyFontSize(float size) {
 void LoadOfficeFonts() {
     constexpr int kOfficeFontBasePt = 48;
     // Default ASCII range (32..126, matching raylib's own nullptr-codepoints
-    // default) plus U+2022 BULLET -- office_doc's bullet-list rendering
-    // draws that codepoint directly, which isn't in the ASCII range and
-    // would otherwise fall back to Liberation Sans's "missing glyph" box.
-    static int codepoints[96];
+    // default) plus U+2022 BULLET (office_doc's bullet-list rendering draws
+    // it directly) plus the special-character palette's own set -- none of
+    // those are in the ASCII range either, and would otherwise fall back to
+    // Liberation Sans's "missing glyph" box both in the palette popup and
+    // once actually inserted into a paragraph.
+    constexpr int kCodepointCount = 96 + kOfficeSpecialCharCount;
+    static int codepoints[kCodepointCount];
     for (int c = 32; c <= 126; c++) codepoints[c - 32] = c;
     codepoints[95] = 0x2022;
+    for (int i = 0; i < kOfficeSpecialCharCount; i++) codepoints[96 + i] = kOfficeSpecialChars[i];
     g_office_font_regular = LoadFontFromMemory(".ttf", kLiberationSansRegularTtf,
                                                 static_cast<int>(kLiberationSansRegularTtfLen),
-                                                kOfficeFontBasePt * 2, codepoints, 96);
+                                                kOfficeFontBasePt * 2, codepoints, kCodepointCount);
     g_office_font_bold = LoadFontFromMemory(".ttf", kLiberationSansBoldTtf,
                                              static_cast<int>(kLiberationSansBoldTtfLen),
-                                             kOfficeFontBasePt * 2, codepoints, 96);
+                                             kOfficeFontBasePt * 2, codepoints, kCodepointCount);
     g_office_font_italic = LoadFontFromMemory(".ttf", kLiberationSansItalicTtf,
                                                static_cast<int>(kLiberationSansItalicTtfLen),
-                                               kOfficeFontBasePt * 2, codepoints, 96);
+                                               kOfficeFontBasePt * 2, codepoints, kCodepointCount);
     g_office_font_bolditalic = LoadFontFromMemory(".ttf", kLiberationSansBoldItalicTtf,
                                                    static_cast<int>(kLiberationSansBoldItalicTtfLen),
-                                                   kOfficeFontBasePt * 2, codepoints, 96);
-    SetTextureFilter(g_office_font_regular.texture, TEXTURE_FILTER_BILINEAR);
-    SetTextureFilter(g_office_font_bold.texture, TEXTURE_FILTER_BILINEAR);
-    SetTextureFilter(g_office_font_italic.texture, TEXTURE_FILTER_BILINEAR);
-    SetTextureFilter(g_office_font_bolditalic.texture, TEXTURE_FILTER_BILINEAR);
+                                                   kOfficeFontBasePt * 2, codepoints, kCodepointCount);
+    g_office_font_serif_regular = LoadFontFromMemory(".ttf", kLiberationSerifRegularTtf,
+                                                       static_cast<int>(kLiberationSerifRegularTtfLen),
+                                                       kOfficeFontBasePt * 2, codepoints, kCodepointCount);
+    g_office_font_serif_bold = LoadFontFromMemory(".ttf", kLiberationSerifBoldTtf,
+                                                    static_cast<int>(kLiberationSerifBoldTtfLen),
+                                                    kOfficeFontBasePt * 2, codepoints, kCodepointCount);
+    g_office_font_serif_italic = LoadFontFromMemory(".ttf", kLiberationSerifItalicTtf,
+                                                      static_cast<int>(kLiberationSerifItalicTtfLen),
+                                                      kOfficeFontBasePt * 2, codepoints, kCodepointCount);
+    g_office_font_serif_bolditalic = LoadFontFromMemory(".ttf", kLiberationSerifBoldItalicTtf,
+                                                          static_cast<int>(kLiberationSerifBoldItalicTtfLen),
+                                                          kOfficeFontBasePt * 2, codepoints, kCodepointCount);
+    g_office_font_mono_regular = LoadFontFromMemory(".ttf", kLiberationMonoRegularTtf,
+                                                      static_cast<int>(kLiberationMonoRegularTtfLen),
+                                                      kOfficeFontBasePt * 2, codepoints, kCodepointCount);
+    g_office_font_mono_bold = LoadFontFromMemory(".ttf", kLiberationMonoBoldTtf,
+                                                   static_cast<int>(kLiberationMonoBoldTtfLen),
+                                                   kOfficeFontBasePt * 2, codepoints, kCodepointCount);
+    g_office_font_mono_italic = LoadFontFromMemory(".ttf", kLiberationMonoItalicTtf,
+                                                     static_cast<int>(kLiberationMonoItalicTtfLen),
+                                                     kOfficeFontBasePt * 2, codepoints, kCodepointCount);
+    g_office_font_mono_bolditalic = LoadFontFromMemory(".ttf", kLiberationMonoBoldItalicTtf,
+                                                         static_cast<int>(kLiberationMonoBoldItalicTtfLen),
+                                                         kOfficeFontBasePt * 2, codepoints, kCodepointCount);
+    Font *all_office_fonts[] = {&g_office_font_regular,       &g_office_font_bold,
+                                 &g_office_font_italic,        &g_office_font_bolditalic,
+                                 &g_office_font_serif_regular, &g_office_font_serif_bold,
+                                 &g_office_font_serif_italic,  &g_office_font_serif_bolditalic,
+                                 &g_office_font_mono_regular,  &g_office_font_mono_bold,
+                                 &g_office_font_mono_italic,   &g_office_font_mono_bolditalic};
+    for (Font *f : all_office_fonts) SetTextureFilter(f->texture, TEXTURE_FILTER_BILINEAR);
 }
 
-// Which of the 4 baked fonts a run of text with this format draws with --
-// strike-through has no dedicated glyph variant, drawn as an overlay line
-// instead (see the office DrawPane branch), so it doesn't affect font
-// selection.
+// Which of the 12 baked fonts (3 families x 4 weight/style) a run of text
+// with this format draws with -- strike-through has no dedicated glyph
+// variant, drawn as an overlay line instead (see the office DrawPane
+// branch), so it doesn't affect font selection.
 Font &OfficeFontFor(const DocFormat &fmt) {
+    if (fmt.font_family == OfficeFontFamily::Serif) {
+        if (fmt.bold && fmt.italic) return g_office_font_serif_bolditalic;
+        if (fmt.bold) return g_office_font_serif_bold;
+        if (fmt.italic) return g_office_font_serif_italic;
+        return g_office_font_serif_regular;
+    }
+    if (fmt.font_family == OfficeFontFamily::Mono) {
+        if (fmt.bold && fmt.italic) return g_office_font_mono_bolditalic;
+        if (fmt.bold) return g_office_font_mono_bold;
+        if (fmt.italic) return g_office_font_mono_italic;
+        return g_office_font_mono_regular;
+    }
     if (fmt.bold && fmt.italic) return g_office_font_bolditalic;
     if (fmt.bold) return g_office_font_bold;
     if (fmt.italic) return g_office_font_italic;
@@ -513,6 +840,40 @@ std::vector<OfficeWrapLine> WordWrapOfficeParagraph(const DocParagraph &p, float
     }
     lines.push_back({line_start, n});
     return lines;
+}
+
+// Extra vertical space a paragraph's anchored table/image (DocParagraph::
+// table_ref/image_ref) adds *below* its own wrapped text lines -- shared
+// by the scroll-follow scan and the real draw loop (both in DrawPane's
+// Office branch) so they can't drift apart. Previously only the draw loop
+// knew about this (the scan summed wrapped-line heights alone), so a
+// paragraph with a tall image/table below it made the scroll-follow scan
+// think less screen space was used than really was -- the cursor could
+// walk visibly off-screen with no scroll happening at all ("stays
+// fixed"), then the eventual catch-up (once the *undercounted* running
+// total finally tripped content_h on its own) had to cover the whole
+// missed distance in one shot ("jumps to the end of it"). Mirrors the
+// draw loop's own height math exactly (image scaled down to fit
+// max_width, same +8.0f gaps) without touching a Texture2D -- natural_w/
+// natural_h come straight from DocImage, so this needs no GPU load.
+float OfficeParagraphExtraHeight(const OfficeDoc &doc, const DocParagraph &para, float max_width, float body_size) {
+    float extra = 0.0f;
+    if (para.table_ref >= 0 && para.table_ref < static_cast<int>(doc.tables.size())) {
+        const DocTable &tbl = doc.tables[static_cast<size_t>(para.table_ref)];
+        float cell_font = body_size * 0.85f;
+        float cell_h = cell_font + 12.0f;
+        extra += cell_h * static_cast<float>(tbl.rows) + 8.0f;
+    }
+    if (para.image_ref >= 0 && para.image_ref < static_cast<int>(doc.images.size())) {
+        const DocImage &img = doc.images[static_cast<size_t>(para.image_ref)];
+        if (img.natural_w > 0 && img.natural_h > 0) {
+            float draw_w = static_cast<float>(img.natural_w);
+            float draw_h = static_cast<float>(img.natural_h);
+            if (draw_w > max_width) draw_h *= max_width / draw_w;
+            extra += draw_h + 8.0f;
+        }
+    }
+    return extra;
 }
 
 // One contiguous [start,end) run within a paragraph sharing one DocFormat
@@ -802,7 +1163,151 @@ const char *kBuiltinTextTools =
     "  mep.picker_open('URLs', items, function(item)\n"
     "    if item then mep.open_url(item) end\n"
     "  end)\n"
-    "end\n";
+    "end\n"
+    // External browser window: unlike mep.open_url (shells out to
+    // xdg-open/open/start, whatever the OS's own default browser is),
+    // mep.browse opens `target` (a real URL, or a local path -- e.g. an
+    // .html file under edit) in a dedicated native window mep itself
+    // controls, with full JS execution -- launcher/browser.ts, running the
+    // same jsr:@webview/webview + WebKitGTK stack the wasm build's own
+    // launcher/webview_worker.ts already uses to host mep.html, just
+    // pointed at arbitrary content instead. $MEP_BROWSER_LAUNCHER (set by
+    // the justfile's `run` recipe to launcher/browser.ts's absolute path)
+    // locates that script; a bare relative fallback below still works for
+    // anyone running the built binary straight from a repo checkout
+    // without `just run`. The inner `sh -c` promotes
+    // $MEP_WEBVIEW_LD_LIBRARY_PATH (a Nix devShell export, see flake.nix)
+    // to LD_LIBRARY_PATH for just this child process -- needed for
+    // browser.ts's own libwebview.so dlopen (see its own header comment on
+    // why that can't happen from inside browser.ts itself) -- mirroring
+    // justfile's run-wasm recipe rather than exporting it globally, which
+    // would risk shadowing libraries for mep's own native build tools.
+    // Requires deno + WebKitGTK on the machine (same as `just run-wasm`);
+    // on_exit surfaces a clear error instead of a silent no-op if either's
+    // missing. This is the *explicit opt-out* path now -- mep.browse_command
+    // (:Browse's own handler, below) defaults to the in-house in-pane
+    // renderer (mep.html_open, lua_env.cpp) instead, since the whole point
+    // of building one was to not need a real WebKitGTK/deno dependency for
+    // the common case.\n"
+    "function mep.browse(target)\n"
+    "  local script = os.getenv('MEP_BROWSER_LAUNCHER') or 'launcher/browser.ts'\n"
+    "  local ld_path = os.getenv('MEP_WEBVIEW_LD_LIBRARY_PATH') or ''\n"
+    "  mep.notify('Opening ' .. target .. ' in external browser...')\n"
+    "  mep.job_start({\n"
+    "    'sh', '-c',\n"
+    "    'ld=\"$1\"; script=\"$2\"; target=\"$3\"; ' ..\n"
+    "      'if [ -n \"$ld\" ]; then export LD_LIBRARY_PATH=\"$ld${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\"; fi; ' ..\n"
+    "      'exec deno run --allow-net --allow-read --allow-write --allow-env --allow-ffi --unstable-ffi \"$script\" \"$target\"',\n"
+    "    'mep-browse', ld_path, script, target,\n"
+    "  }, {\n"
+    "    on_exit = function(code)\n"
+    "      if code ~= 0 then\n"
+    "        mep.notify('mep.browse: failed to launch (needs deno + WebKitGTK -- see launcher/browser.ts)', 'error')\n"
+    "      end\n"
+    "    end,\n"
+    "  })\n"
+    "end\n"
+    // In-pane default: a real URL is fetched (curl, no TLS/redirect
+    // handling of mep's own -- curl does all of that) to a *fresh* temp
+    // file every call (os.tmpname(), never reused) specifically so
+    // Editor::OpenHtmlInPlace's dedup-by-source can't mistake a re-fetch
+    // for the same stale page (see its own .cpp comment); a local path
+    // just opens directly, no fetch needed.
+    "function mep.browse_open_in_pane(target)\n"
+    "  if target:match('^https?://') then\n"
+    "    local tmpfile = os.tmpname()\n"
+    "    mep.notify('Fetching ' .. target .. '...')\n"
+    "    mep.job_start({'curl', '-sL', '-o', tmpfile, target}, {\n"
+    "      on_exit = function(code)\n"
+    "        if code == 0 then mep.html_open(tmpfile, target)\n"
+    "        else mep.notify('mep.browse: failed to fetch ' .. target, 'error') end\n"
+    "      end,\n"
+    "    })\n"
+    "  else\n"
+    "    mep.html_open(target)\n"
+    "  end\n"
+    "end\n"
+    // Fetches `target` (curl, if it looks like a remote URL) or just
+    // passes it straight through (a local path, nothing to fetch), then
+    // calls `land_fn(local_path, target)` -- shared by mep.browse_reload
+    // (same origin, fresh fetch/re-read) and mep.browse_open_bar (a new
+    // origin the user just typed), both of which pass mep.html_reload as
+    // `land_fn` so the result lands in the *current* pane's existing
+    // session (Editor::ReloadHtmlBuffer) rather than opening a new
+    // buffer the way mep.browse_open_in_pane's own mep.html_open call
+    // does -- matching a real browser's address bar, which navigates the
+    // current tab in place rather than opening a new one.
+    "local function mep_browse_fetch_then(target, land_fn)\n"
+    "  if target:match('^https?://') then\n"
+    "    local tmpfile = os.tmpname()\n"
+    "    mep.notify('Fetching ' .. target .. '...')\n"
+    "    mep.job_start({'curl', '-sL', '-o', tmpfile, target}, {\n"
+    "      on_exit = function(code)\n"
+    "        if code == 0 then land_fn(tmpfile, target)\n"
+    "        else mep.notify('mep.browse: failed to fetch ' .. target, 'error') end\n"
+    "      end,\n"
+    "    })\n"
+    "  else\n"
+    "    land_fn(target, target)\n"
+    "  end\n"
+    "end\n"
+    // 'r' while parked on the in-pane browser (Editor::HandleHtmlInput)
+    // dispatches here via MepBrowseReload: re-fetches HtmlSession::origin
+    // if it's a remote URL, or just re-reads the local file otherwise --
+    // either way picks up whatever changed since the page was first
+    // opened. A no-op if the current pane isn't an HTML pane
+    // (mep.html_current_origin returns nil).
+    "function mep.browse_reload()\n"
+    "  local origin = mep.html_current_origin()\n"
+    "  if not origin then return end\n"
+    "  mep_browse_fetch_then(origin, mep.html_reload)\n"
+    "end\n"
+    "mep.command('MepBrowseReload', mep.browse_reload)\n"
+    // 'o' while parked on the in-pane browser dispatches here: a small
+    // address-bar-style prompt (mep.ui_input, prefilled with the current
+    // page's own origin so a quick edit -- adding a path segment, say --
+    // is a couple keystrokes) that navigates the *current* pane to
+    // whatever's entered. A no-op if the current pane isn't an HTML pane.
+    "function mep.browse_open_bar()\n"
+    "  local current = mep.html_current_origin()\n"
+    "  if not current then return end\n"
+    "  mep.ui_input('Open:', current, function(input)\n"
+    "    if input and input ~= '' then mep_browse_fetch_then(input, mep.html_reload) end\n"
+    "  end)\n"
+    "end\n"
+    "mep.command('MepBrowseOpen', mep.browse_open_bar)\n"
+    // Shared target-resolution for :Browse/:BrowseExternal alike: an
+    // explicit argument wins; otherwise the URL under the cursor;
+    // otherwise the current buffer's own file if it looks like an HTML
+    // file (previewing whatever you're editing); otherwise prompt for one
+    // -- same fallback chain shape as mep.open_url_under_cursor, just
+    // extended with the current-file case since that's the common
+    // "preview this page I'm writing" path. `open_fn` is which of
+    // mep.browse_open_in_pane/mep.browse actually opens the resolved
+    // target.
+    "local function mep_browse_resolve(args, open_fn)\n"
+    "  local target = args and args ~= '' and args or nil\n"
+    "  target = target or mep.url_under_cursor()\n"
+    "  if not target then\n"
+    "    local fname = mep.filename()\n"
+    "    if fname ~= '' and fname:match('%.html?$') then target = fname end\n"
+    "  end\n"
+    "  if not target then\n"
+    "    mep.ui_input('Browse:', 'https://', function(input)\n"
+    "      if input and input ~= '' then open_fn(input) end\n"
+    "    end)\n"
+    "    return\n"
+    "  end\n"
+    "  open_fn(target)\n"
+    "end\n"
+    "function mep.browse_command(args) mep_browse_resolve(args, mep.browse_open_in_pane) end\n"
+    "function mep.browse_external_command(args) mep_browse_resolve(args, mep.browse) end\n"
+    "mep.command('MepBrowse', mep.browse_command)\n"
+    "mep.command('Browse', mep.browse_command)\n"
+    "mep.command('MepBrowseExternal', mep.browse_external_command)\n"
+    "mep.command('BrowseExternal', mep.browse_external_command)\n"
+    "mep.leader_map('bo', 'Browse', mep.browse_command)\n"
+    "mep.leader_map('bO', 'Browse (external window)', mep.browse_external_command)\n";
 
 // File tree sidebar (Phase 15): built entirely in Lua atop the Phase 7
 // sidebar widget (mep.sidebar_*), Phase 10 icons, and the new
@@ -851,7 +1356,7 @@ const char *kBuiltinFileTree =
     "      else\n"
     "        widgets[#widgets + 1] = {\n"
     "          id = full, text = indent .. mep.icon_for_file(e.name) .. ' ' .. e.name,\n"
-    "          on_click = function() mep.cmd('e ' .. full) end,\n"
+    "          on_click = function() mep.open(full) end,\n"
     "        }\n"
     "      end\n"
     "    end\n"
@@ -906,8 +1411,17 @@ const char *kBuiltinFileTree =
     "    mep.ui_confirm('Delete ' .. target .. '?', false, function(yes)\n"
     "      if yes then mep.fs_delete(target); mep.tree_refresh() end\n"
     "    end)\n"
+    // Html view-toggle escape hatch (Editor::HandleSidebarInput's own
+    // Ctrl-E/Ctrl-V comment) -- Enter (on_click, mep.open above) already
+    // opens the default view (rendered for .html/.htm), so these only
+    // matter for forcing the *other* view. `:e`, not mep.open, is what
+    // gives Ctrl-E force-text semantics (LoadFile's own comment).\n"
+    "  elseif k == 'C-e' and target then\n"
+    "    mep.cmd('e ' .. target)\n"
+    "  elseif k == 'C-v' and target then\n"
+    "    mep.open(target)\n"
     "  elseif k == '?' then\n"
-    "    mep.notify('Files: Enter=open/toggle  a=create  r=rename  d=delete  R=refresh  H=hidden  o=open-with-OS')\n"
+    "    mep.notify('Files: Enter=open/toggle  a=create  r=rename  d=delete  R=refresh  H=hidden  o=open-with-OS  Ctrl-E/Ctrl-V=text/browser view')\n"
     "  end\n"
     "end\n"
     "mep.command('MepFileTree', function() mep.tree_toggle() end)\n"
@@ -930,7 +1444,7 @@ const char *kBuiltinFileTree =
     "  mep.chdir(dir)\n"
     "  local readme = mep_project_readme_path(dir)\n"
     "  local opened_readme = readme ~= nil\n"
-    "  if opened_readme then mep.cmd('e ' .. readme) end\n"
+    "  if opened_readme then mep.open(readme) end\n"
     // A bare `:terminal` always opens its new pane above/left of whatever
     // was focused (vim's default split direction) -- so to land the
     // terminal *below* the readme, split first (the readme's own pane
@@ -1152,7 +1666,7 @@ const char *kBuiltinGit =
     "      local status, path = line:sub(1, 2), line:sub(4)\n"
     "      widgets[#widgets + 1] = {\n"
     "        id = path, text = status .. '  ' .. path,\n"
-    "        on_click = function() mep.cmd('e ' .. path) end,\n"
+    "        on_click = function() mep.open(path) end,\n"
     "      }\n"
     "    end,\n"
     "    on_exit = function()\n"
@@ -1287,7 +1801,7 @@ const char *kBuiltinTodo =
     "      mep.picker_open('Todos', items, function(item)\n"
     "        if not item then return end\n"
     "        local file, lnum = item:match('^([^:]+):(%d+):')\n"
-    "        if file then mep.cmd('e ' .. file); mep.set_cursor(tonumber(lnum), 1) end\n"
+    "        if file then mep.open(file); mep.set_cursor(tonumber(lnum), 1) end\n"
     "      end)\n"
     "    end,\n"
     "  })\n"
@@ -1503,7 +2017,7 @@ const char *kBuiltinLsp =
     "    local loc = result and (result.uri and result or result[1])\n"
     "    if not loc then mep.notify('No definition found') return end\n"
     "    local f = loc.uri:gsub('^file://', '')\n"
-    "    mep.cmd('e ' .. f)\n"
+    "    mep.open(f)\n"
     "    mep.set_cursor(loc.range.start.line + 1, loc.range.start.character + 1)\n"
     "  end)\n"
     "end\n"
@@ -1524,7 +2038,7 @@ const char *kBuiltinLsp =
     "    mep.picker_open('References', items, function(item)\n"
     "      if not item then return end\n"
     "      local f, lnum = item:match('^(.*):(%d+)$')\n"
-    "      if f then mep.cmd('e ' .. f); mep.set_cursor(tonumber(lnum), 1) end\n"
+    "      if f then mep.open(f); mep.set_cursor(tonumber(lnum), 1) end\n"
     "    end)\n"
     "  end)\n"
     "end\n"
@@ -1574,7 +2088,7 @@ const char *kBuiltinLsp =
     "    local loc = result and (result.uri and result or result[1])\n"
     "    if not loc then mep.notify(not_found_msg) return end\n"
     "    local f = loc.uri:gsub('^file://', '')\n"
-    "    mep.cmd('e ' .. f)\n"
+    "    mep.open(f)\n"
     "    mep.set_cursor(loc.range.start.line + 1, loc.range.start.character + 1)\n"
     "  end)\n"
     "end\n"
@@ -1693,7 +2207,7 @@ const char *kBuiltinLsp =
     // mep.lsp_goto_definition/references' cross-file jumps are the only
     // precedent for touching another file at all) -- so a target file
     // that isn't already the current buffer is opened with the same
-    // `mep.cmd('e ' .. f)` pattern those already use, edited, saved, and
+    // `mep.open(f)` primitive those already use, edited, saved, and
     // the original buffer + cursor position are restored afterward.
     // Returns the total edit count actually applied.
     "function mep.lsp_apply_workspace_edit(edit)\n"
@@ -1716,7 +2230,7 @@ const char *kBuiltinLsp =
     "      if f == orig_abspath then\n"
     "        mep_lsp_apply_edits_current_buffer(edits)\n"
     "      else\n"
-    "        mep.cmd('e ' .. f)\n"
+    "        mep.open(f)\n"
     "        switched = true\n"
     "        mep_lsp_apply_edits_current_buffer(edits)\n"
     "        mep.cmd('w')\n"
@@ -1725,7 +2239,7 @@ const char *kBuiltinLsp =
     "    end\n"
     "  end\n"
     "  if switched then\n"
-    "    mep.cmd('e ' .. orig_fname)\n"
+    "    mep.open(orig_fname)\n"
     "    mep.set_cursor(orig_row, orig_col)\n"
     "  end\n"
     "  return total\n"
@@ -5594,6 +6108,27 @@ const char *kBuiltinOrgBabel =
     // now also recognizes a prior table (lines starting with `|`) or
     // file link (`[[file:`) so re-running in place replaces it instead
     // of leaving a stale one behind.
+    // Pure formatting: out_lines/raw -> the literal '#+RESULTS:'-headed
+    // block of lines to insert -- no buffer access. Factored out of
+    // mep.org_babel_insert_results (below, its only caller before this
+    // change) so mep_org_babel_splice_results (kBuiltinOrgExport, this
+    // file, added for export-time babel execution) can build the exact
+    // same shape against a scratch lines array instead of the live
+    // buffer, without duplicating the value/table/example-fence rules.
+    "function mep_org_babel_format_results_block(out_lines, raw)\n"
+    "  if raw then\n"
+    "    local block = {'#+RESULTS:'}\n"
+    "    for _, l in ipairs(out_lines) do block[#block + 1] = l end\n"
+    "    return block\n"
+    "  elseif #out_lines <= 1 then\n"
+    "    return {'#+RESULTS:', ': ' .. (out_lines[1] or '')}\n"
+    "  else\n"
+    "    local block = {'#+RESULTS:', '#+begin_example'}\n"
+    "    for _, l in ipairs(out_lines) do block[#block + 1] = l end\n"
+    "    block[#block + 1] = '#+end_example'\n"
+    "    return block\n"
+    "  end\n"
+    "end\n"
     "function mep.org_babel_insert_results(blk, out_lines, raw)\n"
     "  local insert_row = blk.end_row\n"
     "  local existing_start, existing_end\n"
@@ -5611,17 +6146,7 @@ const char *kBuiltinOrgBabel =
     "      existing_end = existing_start\n"
     "    end\n"
     "  end\n"
-    "  local block\n"
-    "  if raw then\n"
-    "    block = {'#+RESULTS:'}\n"
-    "    for _, l in ipairs(out_lines) do block[#block + 1] = l end\n"
-    "  elseif #out_lines <= 1 then\n"
-    "    block = {'#+RESULTS:', ': ' .. (out_lines[1] or '')}\n"
-    "  else\n"
-    "    block = {'#+RESULTS:', '#+begin_example'}\n"
-    "    for _, l in ipairs(out_lines) do block[#block + 1] = l end\n"
-    "    block[#block + 1] = '#+end_example'\n"
-    "  end\n"
+    "  local block = mep_org_babel_format_results_block(out_lines, raw)\n"
     "  if existing_start then\n"
     "    mep.replace_lines(existing_start, existing_end + 1, block)\n"
     "  else\n"
@@ -5816,17 +6341,33 @@ const char *kBuiltinOrgBabel =
     "-- notices changed again -- and re-scanning picks up a row whose link\n"
     "-- text just changed shape (freshly appeared, or reverted to plain text)\n"
     "-- without waiting up to mep.on_buffer_changed's own 0.3s debounce.\n"
-    "function mep_org_babel_write_results(blk, out_lines, resolved_file)\n"
+    // Pure decision logic (no buffer/image-cache access): what a
+    // finished block's results should look like -- a :file result whose
+    // target now actually exists on disk becomes a raw [[file:...]]
+    // link line; everything else becomes its (optionally table-
+    // formatted) plain output lines. Split out of
+    // mep_org_babel_write_results (below, its only caller before this
+    // change) so mep.org_babel_run_for_export (kBuiltinOrgExport, this
+    // file, added for export-time babel execution) can reuse the exact
+    // same decision when building a scratch #+RESULTS: block, without
+    // ever touching mep.org_image_invalidate/scan or the live buffer --
+    // those stay in mep_org_babel_write_results itself, gated on the new
+    // third return value so it doesn't have to re-derive the :file
+    // condition a second time.
+    "function mep_org_babel_result_lines(blk, out_lines, resolved_file)\n"
     "  if blk.file and resolved_file and mep_org_babel_file_exists(resolved_file) then\n"
-    "    mep.org_image_invalidate(resolved_file)\n"
-    "    mep.org_babel_insert_results(blk, {'[[file:' .. blk.file .. ']]'}, true)\n"
-    "  else\n"
-    "    if blk.file then\n"
-    "      mep.notify('Babel: :file target was not created (' .. blk.file .. ')', 'warn')\n"
-    "    end\n"
-    "    local lines = blk.results_modes.table and mep_org_format_table(out_lines) or out_lines\n"
-    "    mep.org_babel_insert_results(blk, lines, blk.results_modes.table)\n"
+    "    return {'[[file:' .. blk.file .. ']]'}, true, true\n"
     "  end\n"
+    "  if blk.file then\n"
+    "    mep.notify('Babel: :file target was not created (' .. blk.file .. ')', 'warn')\n"
+    "  end\n"
+    "  local lines = blk.results_modes.table and mep_org_format_table(out_lines) or out_lines\n"
+    "  return lines, blk.results_modes.table, false\n"
+    "end\n"
+    "function mep_org_babel_write_results(blk, out_lines, resolved_file)\n"
+    "  local lines, raw, is_file = mep_org_babel_result_lines(blk, out_lines, resolved_file)\n"
+    "  if is_file then mep.org_image_invalidate(resolved_file) end\n"
+    "  mep.org_babel_insert_results(blk, lines, raw)\n"
     "  mep.org_image_scan()\n"
     "end\n"
     "function mep.org_babel_execute()\n"
@@ -5920,7 +6461,138 @@ const char *kBuiltinOrgBabel =
     "  end\n"
     "  mep.notify('Tangled ' .. #order .. ' file(s)')\n"
     "end\n"
-    "mep.command('MepOrgBabelTangle', mep.org_babel_tangle)\n";
+    "mep.command('MepOrgBabelTangle', mep.org_babel_tangle)\n"
+    // Export-time babel execution (kBuiltinOrgExport's mep_org_export_
+    // prepare is the only caller): runs every #+BEGIN_SRC block in the
+    // CURRENT buffer, in document order, sequentially -- each waits for
+    // the previous mep.job_start call to actually finish, since spawning
+    // is async -- via the exact same resolve/prepare/spawn/cache
+    // pipeline mep.org_babel_execute uses for a single block, but WITHOUT
+    // touching the live buffer: `callback(lines)` fires once with a
+    // fresh COPY of the buffer's lines, with a formatted #+RESULTS: block
+    // spliced in (replacing any stale one already there) right after
+    // each executed block. `:eval no`/`never`/`query`/anything ending in
+    // `-export` skips a block, matching real org's own eval-gating header
+    // arg (a query can't be interactively answered during a batch
+    // export, so it's treated as a skip rather than a hang). A block
+    // whose language can't be resolved (missing interpreter) is skipped
+    // with a warning notification rather than aborting the whole export.
+    // Known gap, documented rather than silently wrong: operates on this
+    // buffer's own lines only, before #+INCLUDE:/macro resolution (that
+    // happens afterward, in mep_org_export_prepare) -- a code block
+    // living inside an #+INCLUDE:'d file is never evaluated, only
+    // whatever static content that file already had is spliced in
+    // (unchanged from every other #+INCLUDE:'d line). Extending this to
+    // resolve+evaluate includes first would need a lines-array variant
+    // of mep_org_src_block_at (which reads mep.get_line by row today),
+    // not just of the include-resolution step itself.
+    "function mep.org_babel_run_for_export(callback)\n"
+    "  local base_lines = {}\n"
+    "  for i = 1, mep.line_count() do base_lines[i] = mep.get_line(i) end\n"
+    "  local blocks = {}\n"
+    "  for i = 1, #base_lines do\n"
+    "    if base_lines[i]:match('^%s*#%+[Bb][Ee][Gg][Ii][Nn]_[Ss][Rr][Cc]') then\n"
+    "      local blk = mep_org_src_block_at(i)\n"
+    "      if blk then blocks[#blocks + 1] = blk end\n"
+    "    end\n"
+    "  end\n"
+    "  if #blocks == 0 then\n"
+    "    callback(base_lines)\n"
+    "    return\n"
+    "  end\n"
+    "  local blk_dir = mep_lsp_abspath(mep.filename()):match('^(.*)/[^/]*$') or '.'\n"
+    "  local results = {}\n"
+    "  local function run_index(idx)\n"
+    "    if idx > #blocks then\n"
+    "      callback(mep_org_babel_splice_results(base_lines, blocks, results))\n"
+    "      return\n"
+    "    end\n"
+    "    local blk = blocks[idx]\n"
+    "    local eval_arg = blk.args_str:match(':eval%s+(%S+)')\n"
+    "    local skip = eval_arg and (eval_arg == 'no' or eval_arg == 'never' or eval_arg:match('%-export$') or eval_arg:match('^query'))\n"
+    "    if skip then\n"
+    "      run_index(idx + 1)\n"
+    "      return\n"
+    "    end\n"
+    "    local lang_def, exe_or_err = mep_org_babel_resolve_lang(blk.lang)\n"
+    "    if not lang_def then\n"
+    "      mep.notify('Babel (export): ' .. exe_or_err, 'warn')\n"
+    "      run_index(idx + 1)\n"
+    "      return\n"
+    "    end\n"
+    "    local resolved_file = blk.file and mep_org_resolve_path(blk.file) or nil\n"
+    "    local cache_key = blk.lang .. '|' .. blk.args_str .. '|' .. blk.body\n"
+    "    if blk.cache == 'yes' and mep_org_babel_cache[cache_key] then\n"
+    "      local lines, raw = mep_org_babel_result_lines(blk, mep_org_babel_cache[cache_key], resolved_file)\n"
+    "      results[blk.end_row] = {lines = lines, raw = raw}\n"
+    "      run_index(idx + 1)\n"
+    "      return\n"
+    "    end\n"
+    "    local body_lines = mep_org_babel_split_lines(blk.body)\n"
+    "    local script_lines = mep_org_babel_prepare_script(\n"
+    "      blk.lang, lang_def, blk.vars, body_lines, blk.args_str, blk.results_modes, resolved_file)\n"
+    "    mep_org_babel_spawn(lang_def, exe_or_err, script_lines, blk.args_str, function(code, out_lines, err_lines, failure_verb)\n"
+    "      if code ~= 0 then\n"
+    "        mep.notify(\n"
+    "          'Babel (export): ' .. failure_verb .. ' failed (' .. blk.lang .. ', exit ' .. code .. '): '\n"
+    "            .. (mep_org_babel_first_error_line(err_lines) or 'no error output'),\n"
+    "          'warn'\n"
+    "        )\n"
+    "        results[blk.end_row] = {lines = err_lines, raw = false}\n"
+    "      else\n"
+    "        if blk.cache == 'yes' then\n"
+    "          mep_org_babel_cache[cache_key] = out_lines\n"
+    "          mep_org_babel_cache_save()\n"
+    "        end\n"
+    "        local lines, raw = mep_org_babel_result_lines(blk, out_lines, resolved_file)\n"
+    "        results[blk.end_row] = {lines = lines, raw = raw}\n"
+    "      end\n"
+    "      run_index(idx + 1)\n"
+    "    end, blk_dir)\n"
+    "  end\n"
+    "  run_index(1)\n"
+    "end\n"
+    // Returns a NEW lines array: base_lines with, right after each block
+    // in `blocks` that has a `results[blk.end_row]` entry, a formatted
+    // #+RESULTS: block spliced in -- replacing (not duplicating) any
+    // existing #+RESULTS: block already following that src block in
+    // base_lines, mirroring mep.org_babel_insert_results' own existing-
+    // block detection, ported to array indexing instead of
+    // mep.get_line/mep.replace_lines.
+    "function mep_org_babel_splice_results(base_lines, blocks, results)\n"
+    "  local by_row = {}\n"
+    "  for _, blk in ipairs(blocks) do\n"
+    "    local r = results[blk.end_row]\n"
+    "    if r then by_row[blk.end_row] = mep_org_babel_format_results_block(r.lines, r.raw) end\n"
+    "  end\n"
+    "  local out, i, n = {}, 1, #base_lines\n"
+    "  while i <= n do\n"
+    "    out[#out + 1] = base_lines[i]\n"
+    "    local formatted = by_row[i]\n"
+    "    if formatted then\n"
+    "      local j = i + 1\n"
+    "      if (base_lines[j] or ''):match('^%s*#%+RESULTS:%s*$') then\n"
+    "        local k = j + 1\n"
+    "        local line_k = base_lines[k] or ''\n"
+    "        if line_k:match('^%s*#%+begin_example') then\n"
+    "          while k <= n and not (base_lines[k] or ''):match('^%s*#%+end_example') do k = k + 1 end\n"
+    "        elseif line_k:match('^%s*:') or line_k:match('^%s*|') or line_k:match('^%s*%[%[file:') then\n"
+    "          while k <= n and ((base_lines[k] or ''):match('^%s*:') or (base_lines[k] or ''):match('^%s*|') or (base_lines[k] or ''):match('^%s*%[%[file:')) do k = k + 1 end\n"
+    "          k = k - 1\n"
+    "        else\n"
+    "          k = j\n"  // no example fence/table/file-link follows -- only the bare '#+RESULTS:' line itself belongs to the old block, matching mep.org_babel_insert_results' own "existing_end = existing_start" fallback
+    "        end\n"
+    "        i = k + 1\n"
+    "      else\n"
+    "        i = i + 1\n"
+    "      end\n"
+    "      for _, l in ipairs(formatted) do out[#out + 1] = l end\n"
+    "    else\n"
+    "      i = i + 1\n"
+    "    end\n"
+    "  end\n"
+    "  return out\n"
+    "end\n";
 
 // Org LaTeX/math-mode inline rendering, a sibling feature to
 // kBuiltinOrgImages (defined earlier in this file): <leader>otl /
@@ -6210,9 +6882,29 @@ const char *kBuiltinOrgLatex =
 // during export), matching the plan's own "ship without eval first"
 // guidance.
 const char *kBuiltinOrgExport =
+    // A babel `:file` result inserts a plain org file link
+    // ([[file:plot.png]], mep_org_babel_result_lines above) the same way
+    // a hand-written [[file:...]] figure link does -- html_link strips
+    // the 'file:' scheme (org's own link syntax, meaningless as a
+    // literal HTML src/href) and auto-embeds an image-extension target
+    // as <img> instead of a clickable <a>, matching real org-mode's own
+    // ox-html behavior: a plot a code block just produced should show up
+    // as a picture in the exported page, not a link to click through to.
+    "local function mep_org_html_link_target(u) return (u:gsub('^file:', '')) end\n"
+    "local function mep_org_is_image_link(u)\n"
+    "  local ext = u:match('%.([%a]+)$')\n"
+    "  ext = ext and ext:lower()\n"
+    "  return ext == 'png' or ext == 'jpg' or ext == 'jpeg' or ext == 'gif' or ext == 'bmp' or ext == 'svg'\n"
+    "end\n"
     "mep.org_export_marks = {\n"
     "  html = {bold_open = '<b>', bold_close = '</b>', italic_open = '<i>', italic_close = '</i>',\n"
-    "    code_open = '<code>', code_close = '</code>', link = function(u, d) return '<a href=\"' .. u .. '\">' .. d .. '</a>' end},\n"
+    "    code_open = '<code>', code_close = '</code>', link = function(u, d)\n"
+    "      local target = mep_org_html_link_target(u)\n"
+    "      if mep_org_is_image_link(target) then\n"
+    "        return '<img src=\"' .. target .. '\" alt=\"' .. mep_org_html_link_target(d) .. '\">'\n"
+    "      end\n"
+    "      return '<a href=\"' .. target .. '\">' .. d .. '</a>'\n"
+    "    end},\n"
     "  markdown = {bold_open = '**', bold_close = '**', italic_open = '_', italic_close = '_',\n"
     "    code_open = '`', code_close = '`', link = function(u, d) return '[' .. d .. '](' .. u .. ')' end},\n"
     "  ascii = {bold_open = '', bold_close = '', italic_open = '', italic_close = '',\n"
@@ -6247,6 +6939,120 @@ const char *kBuiltinOrgExport =
     "  if format == 'html' then return '<h' .. level .. '>' .. title .. '</h' .. level .. '>'\n"
     "  elseif format == 'markdown' then return string.rep('#', level) .. ' ' .. title\n"
     "  else return string.rep('  ', level - 1) .. title:upper() end\n"
+    "end\n"
+    // Same capture -> highlight-group resolution as kBuiltinSyntax's own
+    // (local, chunk-private) mep_ts_resolve_hl -- duplicated rather than
+    // shared since Lua chunks loaded via separate DoString calls don't
+    // share locals, same reasoning mep_syntax_highlight_org_src_blocks'
+    // own header gives for its light rescan duplication. mep.ts_capture_hl
+    // itself (kBuiltinSyntax) is a real `mep.*` global, so the *table* is
+    // shared -- only this lookup wrapper needs its own copy.
+    "local function mep_org_export_resolve_hl(capture)\n"
+    "  local hl = mep.ts_capture_hl[capture]\n"
+    "  if hl then return hl end\n"
+    "  local base = capture:match('^([^.]+)')\n"
+    "  return base and mep.ts_capture_hl[base]\n"
+    "end\n"
+    // Renders one already-HTML-escaped-as-needed source line, wrapping any
+    // Treesitter-captured ranges (mep.ts_captures' own convention: 1-
+    // indexed col_start, exclusive col_end) in <span class=\"tok-X\">, X
+    // being the same highlight-group name (Purple/Green/Cyan/...)
+    // mep.ts_capture_hl already maps captures to -- doc_export.cpp's own
+    // WalkLatexNode (PDF export) recognizes these exact class names too,
+    // via mepTok<X> LaTeX colors sharing the same X suffix, so HTML and
+    // PDF export end up with identical highlighting from one computation.
+    // Overlapping/nested captures are resolved by keeping whichever one
+    // reaches a position first and skipping any later span that starts
+    // before text already emitted -- reproducing a real editor's
+    // decoration-priority rules isn't worth it for a one-shot export.
+    "local function mep_org_html_highlight_line(line, spans)\n"
+    "  if not spans or #spans == 0 then return mep_org_html_escape(line) end\n"
+    "  table.sort(spans, function(a, b) return a.col_start < b.col_start end)\n"
+    "  local out, pos = {}, 1\n"
+    "  for _, sp in ipairs(spans) do\n"
+    "    if sp.col_start >= pos then\n"
+    "      if sp.col_start > pos then out[#out + 1] = mep_org_html_escape(line:sub(pos, sp.col_start - 1)) end\n"
+    "      local hl = mep_org_export_resolve_hl(sp.capture)\n"
+    "      local text = mep_org_html_escape(line:sub(sp.col_start, sp.col_end - 1))\n"
+    // Lowercased in the class value itself, not just the CSS rule below --
+    // html_doc.cpp's CollectStyleRules lowercases every selector it parses
+    // (tag names are case-insensitive in real HTML, so that's correct for
+    // those, but it applies to .class/#id selectors too, which real CSS
+    // keeps case-sensitive) while DomNode::attrs (ParseHtml) keeps
+    // attribute *values* verbatim -- mep.ts_capture_hl's own highlight-
+    // group names (Purple/Green/Comment/...) are capitalized, so a class
+    // built from one directly would never match its own lowercased
+    // selector in mep's own in-pane viewer. RenderOrgCodeBlockLatex
+    // (doc_export.cpp) reads this same lowercase suffix back out of the
+    // class attribute, and its own mepTok<X> LaTeX colors are named to
+    // match (lowercase), so both backends stay in sync off this one
+    // lowercasing point.
+    "      out[#out + 1] = hl and ('<span class=\"tok-' .. hl:lower() .. '\">' .. text .. '</span>') or text\n"
+    "      pos = sp.col_end\n"
+    "    end\n"
+    "  end\n"
+    "  if pos <= #line then out[#out + 1] = mep_org_html_escape(line:sub(pos)) end\n"
+    "  return table.concat(out)\n"
+    "end\n"
+    // Full HTML rendering for one #+begin_src/#+end_src block: a bordered,
+    // headered wrapper (default CSS lives in mep_org_html_wrap_document,
+    // below) around a <pre><code> whose body is Treesitter-highlighted the
+    // same way mep_syntax_highlight_org_src_blocks (kBuiltinSyntax)
+    // already highlights it live in the editor -- mep_org_babel_lang_ts_ft
+    // (also kBuiltinSyntax) bridges the babel language tag on the
+    // #+begin_src line to a Treesitter filetype. A tag with no grammar (or
+    // no entry in that table) just renders unhighlighted, same fallback
+    // every other Treesitter consumer in this codebase already has.
+    //
+    // Markup shape is deliberately constrained to what mep's own in-pane
+    // HTML viewer (html_doc.cpp/main.cpp's renderer, not just real
+    // browsers) can actually lay out -- that renderer's CSS selector
+    // matcher (html_doc.cpp's ApplyMatchingRules) only ever matches a bare
+    // ".class", "#id", or "tag" selector, never a descendant combinator
+    // like ".org-code-block pre", so a rule written that way would just
+    // silently never match anything there. <pre>/<code> get their own
+    // dedicated classes (org-code-pre/org-code-body) instead of relying on
+    // overriding the generic pre{}/code{} tag rules from within
+    // .org-code-block -- those tag rules still apply to <pre>/<code>
+    // anywhere else in the document (an ordinary ~verbatim~ span, say),
+    // but class beats tag in this engine's own stated specificity order,
+    // so the dedicated classes win inside a code block. The language tag
+    // moves to a data-lang attribute rather than living in <code>'s own
+    // class (doc_export.cpp's RenderOrgCodeBlockLatex reads it from
+    // there) -- a per-block-varying class value could never be targeted
+    // by a single CSS rule anyway. The copy control is a <span> (inline by
+    // that renderer's own TagDefaults), not a <button> (defaults to block,
+    // which would force it onto its own line below the language label,
+    // breaking the one-line header) -- a literal space between the two
+    // spans keeps them readably apart even without flexbox (unsupported
+    // there; still declared in the CSS below as a real browser's own
+    // progressive enhancement). mepCopyCode itself (onclick, defined in
+    // mep_org_html_wrap_document's own <script>) is inert in mep's own
+    // renderer -- js_engine.h's own header lists its entire DOM/BOM
+    // binding surface, and it has no click/event dispatch of any kind --
+    // but that's a silent no-op there, not a rendering break, so the
+    // control is left in place for the real-browser case this was built
+    // for.
+    "local function mep_org_html_code_block(lang, body)\n"
+    "  local embed_ft = lang ~= '' and mep_org_babel_lang_ts_ft[lang:lower()]\n"
+    "  local spans_by_row = {}\n"
+    "  if embed_ft and #body > 0 then\n"
+    "    local captures = mep.ts_captures(embed_ft, table.concat(body, '\\n'))\n"
+    "    if captures then\n"
+    "      for _, cap in ipairs(captures) do\n"
+    "        spans_by_row[cap.row] = spans_by_row[cap.row] or {}\n"
+    "        table.insert(spans_by_row[cap.row], cap)\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  local rendered = {}\n"
+    "  for idx, l in ipairs(body) do rendered[idx] = mep_org_html_highlight_line(l, spans_by_row[idx]) end\n"
+    "  local lang_label = mep_org_html_escape(lang ~= '' and lang or 'text')\n"
+    "  return '<div class=\"org-code-block\">'\n"
+    "    .. '<div class=\"org-code-header\"><span class=\"org-code-lang\">' .. lang_label .. '</span> '\n"
+    "    .. '<span class=\"org-code-copy\" role=\"button\" tabindex=\"0\" onclick=\"mepCopyCode(this)\">Copy</span></div>'\n"
+    "    .. '<pre class=\"org-code-pre\"><code class=\"org-code-body\" data-lang=\"' .. mep_org_html_escape(lang) .. '\">'\n"
+    "    .. table.concat(rendered, '\\n') .. '</code></pre></div>'\n"
     "end\n"
     // Lines-array counterpart of mep_org_subtree_end (Phase 35 gap
     // support): the main export walk operates on a resolved-includes
@@ -6309,20 +7115,31 @@ const char *kBuiltinOrgExport =
     "  seen[path] = nil\n"
     "  return out\n"
     "end\n"
-    "function mep.org_resolve_includes()\n"
-    "  local base_dir = (mep.filename() or ''):match('^(.*)/[^/]*$') or '.'\n"
+    // Array-input counterpart of mep.org_resolve_includes below (its own
+    // body is now just this, snapshotting the live buffer first) --
+    // mep_org_export_prepare (further down) also calls this directly
+    // against a babel-results-spliced scratch array, so #+INCLUDE:
+    // resolution still applies to the code-execution export path exactly
+    // as it already did to the plain one.
+    "function mep_org_resolve_includes_lines(lines, base_dir)\n"
     "  local budget = {remaining = 20000}\n"
     "  local seen = {}\n"
     "  local out = {}\n"
-    "  for i = 1, mep.line_count() do\n"
-    "    local sub = mep_org_resolve_include_line(mep.get_line(i), base_dir, 1, seen, budget)\n"
+    "  for i = 1, #lines do\n"
+    "    local sub = mep_org_resolve_include_line(lines[i], base_dir, 1, seen, budget)\n"
     "    if sub then\n"
     "      for _, l in ipairs(sub) do out[#out + 1] = l end\n"
     "    else\n"
-    "      out[#out + 1] = mep.get_line(i)\n"
+    "      out[#out + 1] = lines[i]\n"
     "    end\n"
     "  end\n"
     "  return out\n"
+    "end\n"
+    "function mep.org_resolve_includes()\n"
+    "  local base_dir = (mep.filename() or ''):match('^(.*)/[^/]*$') or '.'\n"
+    "  local lines = {}\n"
+    "  for i = 1, mep.line_count() do lines[i] = mep.get_line(i) end\n"
+    "  return mep_org_resolve_includes_lines(lines, base_dir)\n"
     "end\n"
     // `#+MACRO:` collection/expansion (Phase 35 gap): a `#+MACRO: name
     // body-with-$1-$2` line defines a macro; `{{{name(a,b)}}}` (or
@@ -6353,9 +7170,19 @@ const char *kBuiltinOrgExport =
     "  end\n"
     "  return macros\n"
     "end\n"
-    "function mep.org_export(format)\n"
+    // `lines_override`, when given, is used verbatim in place of
+    // mep.org_resolve_includes()'s own live-buffer read --
+    // mep_org_export_prepare (further down) passes an already
+    // include-resolved, macro-expanded, babel-results-spliced scratch
+    // array here so code-block output can be substituted into the
+    // export without ever touching the real buffer. Macro expansion
+    // below still runs either way (a second, idempotent pass over an
+    // already-expanded array is a harmless no-op scan, not a
+    // correctness risk) so a caller passing a raw lines array (not run
+    // through mep_org_export_prepare) still gets correct behavior.
+    "function mep.org_export(format, lines_override)\n"
     "  local marks = mep.org_export_marks[format]\n"
-    "  local lines = mep.org_resolve_includes()\n"
+    "  local lines = lines_override or mep.org_resolve_includes()\n"
     "  local macros = mep_org_collect_macros(function(i) return lines[i] end, #lines)\n"
     "  lines = (function()\n"
     "    local out = {}\n"
@@ -6363,10 +7190,28 @@ const char *kBuiltinOrgExport =
     "    return out\n"
     "  end)()\n"
     "  local out, i, n = {}, 1, #lines\n"
+    // HTML needs a real <ul>/<ol> wrapper around a run of consecutive
+    // <li>s for the DOM-consuming backends (doc_export.h's ExportHtmlTo
+    // Latex/ExportHtmlToOdt, and this file's own ExtractMathSpans-fed
+    // renderer) to recognize it as a list at all -- a bare, unwrapped
+    // <li> parses as a generic block element instead (html_doc.cpp's
+    // TagDefaults has no special list-context handling for one seen
+    // outside a <ul>/<ol>), silently losing the bullet/numbering.
+    // `list_open` tracks which wrapper (if any) is currently open;
+    // close_list() is called at the start of every OTHER branch so a
+    // heading/blank line/etc. immediately closes a list run in progress.
+    "  local list_open = nil\n"
+    "  local function close_list()\n"
+    "    if format == 'html' and list_open then\n"
+    "      out[#out + 1] = '</' .. list_open .. '>'\n"
+    "      list_open = nil\n"
+    "    end\n"
+    "  end\n"
     "  while i <= n do\n"
     "    local line = lines[i]\n"
     "    local h = mep_org_parse_headline(line)\n"
     "    if h then\n"
+    "      close_list()\n"
     "      if h.tags and h.tags:find('noexport', 1, true) then\n"
     "        i = mep_org_subtree_end_lines(lines, i)\n"
     "      else\n"
@@ -6375,15 +7220,25 @@ const char *kBuiltinOrgExport =
     "        i = i + 1\n"
     "      end\n"
     "    elseif line:match('^%s*#%+[Bb][Ee][Gg][Ii][Nn]_[Ss][Rr][Cc]') then\n"
+    "      close_list()\n"
     "      local lang = line:match('^%s*#%+[Bb][Ee][Gg][Ii][Nn]_[Ss][Rr][Cc]%s+(%S+)') or ''\n"
-    "      out[#out + 1] = (format == 'html') and ('<pre><code class=\"language-' .. lang .. '\">')\n"
-    "        or (format == 'markdown') and ('```' .. lang) or '----'\n"
     "      i = i + 1\n"
+    "      local body = {}\n"
     "      while i <= n and not lines[i]:match('^%s*#%+[Ee][Nn][Dd]_[Ss][Rr][Cc]') do\n"
-    "        out[#out + 1] = (format == 'html') and mep_org_html_escape(lines[i]) or lines[i]\n"
+    "        body[#body + 1] = lines[i]\n"
     "        i = i + 1\n"
     "      end\n"
-    "      out[#out + 1] = (format == 'html') and '</code></pre>' or (format == 'markdown') and '```' or '----'\n"
+    "      if format == 'html' then\n"
+    "        out[#out + 1] = mep_org_html_code_block(lang, body)\n"
+    "      elseif format == 'markdown' then\n"
+    "        out[#out + 1] = '```' .. lang\n"
+    "        for _, l in ipairs(body) do out[#out + 1] = l end\n"
+    "        out[#out + 1] = '```'\n"
+    "      else\n"
+    "        out[#out + 1] = '----'\n"
+    "        for _, l in ipairs(body) do out[#out + 1] = l end\n"
+    "        out[#out + 1] = '----'\n"
+    "      end\n"
     "      i = i + 1\n"
     "    elseif line:match('^%s*:PROPERTIES:%s*$') then\n"
     "      while i <= n and not lines[i]:match('^%s*:END:%s*$') do i = i + 1 end\n"
@@ -6391,18 +7246,63 @@ const char *kBuiltinOrgExport =
     "    elseif line:match('^%s*SCHEDULED:') or line:match('^%s*DEADLINE:') or line:match('^%s*#%+') then\n"
     "      i = i + 1\n"
     "    elseif line:match('^%s*$') then\n"
+    "      close_list()\n"
     "      out[#out + 1] = ''\n"
     "      i = i + 1\n"
+    // Org's own pipe-table syntax ("| a | b |", a "|---+---|" separator
+    // row marking the header/body boundary) happens to already BE valid
+    // GFM markdown table syntax verbatim -- markdown/ascii both fall
+    // through to the generic line-copy branch below unchanged, which is
+    // already correct for them. HTML needs a real <table> built here
+    // though: without it, this row would just fall through as literal
+    // '|'-delimited text (the pre-existing gap, before this change --
+    // org tables were never HTML-ized at all), and more importantly
+    // doc_export.h's DOM-consuming ExportHtmlToLatex/ExportHtmlToOdt
+    // (main.cpp's CollectTableRows/TableMaxCols) have nothing to walk
+    // without a real <table>/<tr>/<td> in the HTML this produces.
+    "    elseif format == 'html' and line:match('^%s*|.-|%s*$') then\n"
+    "      close_list()\n"
+    "      out[#out + 1] = '<table>'\n"
+    "      local header_done = false\n"
+    "      while i <= n and lines[i]:match('^%s*|.-|%s*$') do\n"
+    "        local row = lines[i]\n"
+    "        if row:match('^%s*|[%s%-%+]*|?%s*$') then\n"
+    "          header_done = true\n"
+    "        else\n"
+    "          local trimmed = row:match('^%s*|(.-)|%s*$') or ''\n"
+    "          local cells = {}\n"
+    "          for cell in (trimmed .. '|'):gmatch('(.-)|') do cells[#cells + 1] = cell:match('^%s*(.-)%s*$') end\n"
+    "          local tag = header_done and 'td' or 'th'\n"
+    "          local cells_html = {}\n"
+    "          for _, c in ipairs(cells) do\n"
+    "            cells_html[#cells_html + 1] = '<' .. tag .. '>' .. mep_org_inline_convert(mep_org_html_escape(c), marks) .. '</' .. tag .. '>'\n"
+    "          end\n"
+    "          out[#out + 1] = '<tr>' .. table.concat(cells_html) .. '</tr>'\n"
+    "        end\n"
+    "        i = i + 1\n"
+    "      end\n"
+    "      out[#out + 1] = '</table>'\n"
     "    else\n"
     "      local converted = mep_org_inline_convert(format == 'html' and mep_org_html_escape(line) or line, marks)\n"
-    "      if format == 'html' and line:match('^%s*[%-%*%+]%s') then\n"
-    "        out[#out + 1] = '<li>' .. (converted:gsub('^%s*[%-%*%+]%s*', '')) .. '</li>'\n"
+    "      local is_bullet = line:match('^%s*[%-%*%+]%s')\n"
+    "      local is_ordered = line:match('^%s*%d+[%.%)]%s')\n"
+    "      if format == 'html' and (is_bullet or is_ordered) then\n"
+    "        local want = is_bullet and 'ul' or 'ol'\n"
+    "        if list_open and list_open ~= want then close_list() end\n"
+    "        if not list_open then\n"
+    "          out[#out + 1] = '<' .. want .. '>'\n"
+    "          list_open = want\n"
+    "        end\n"
+    "        local item = is_bullet and converted:gsub('^%s*[%-%*%+]%s*', '') or converted:gsub('^%s*%d+[%.%)]%s*', '')\n"
+    "        out[#out + 1] = '<li>' .. item .. '</li>'\n"
     "      else\n"
+    "        close_list()\n"
     "        out[#out + 1] = converted\n"
     "      end\n"
     "      i = i + 1\n"
     "    end\n"
     "  end\n"
+    "  close_list()\n"
     "  return table.concat(out, '\\n')\n"
     "end\n"
     // Subtree export: same walk, scoped to [row, subtree_end), with
@@ -6434,12 +7334,251 @@ const char *kBuiltinOrgExport =
     "  f:write(text)\n"
     "  f:close()\n"
     "  mep.notify('Exported to ' .. out_file)\n"
+    "  return out_file\n"
     "end\n"
-    "mep.command('MepOrgExportHtml', function() mep_org_export_to_file(mep.org_export('html'), 'html') end)\n"
-    "mep.command('MepOrgExportMarkdown', function() mep_org_export_to_file(mep.org_export('markdown'), 'md') end)\n"
-    "mep.command('MepOrgExportAscii', function() mep_org_export_to_file(mep.org_export('ascii'), 'txt') end)\n"
+    // #+TITLE:/#+AUTHOR:/#+DATE: -- used by all three "real document"
+    // backends (HTML's own <title>/skeleton, and passed straight through
+    // to doc_export.h's ExportHtmlToLatex/ExportHtmlToOdt for their own
+    // \title{}/\author{} and dc:title/dc:creator). Scans `lines` rather
+    // than the live buffer so it sees the same already-#+INCLUDE:-
+    // resolved view mep_org_export_prepare hands to mep.org_export
+    // itself -- a title set via an included file resolves the same way
+    // it already did before this existed.
+    "function mep_org_extract_meta(lines)\n"
+    "  local meta = {}\n"
+    "  for _, l in ipairs(lines) do\n"
+    // Org keywords are case-insensitive in real org-mode (#+title:/
+    // #+TITLE:/#+Title: all equivalent -- Emacs org-roam's own default
+    // capture template writes the lowercase form), so each keyword below
+    // is matched letter-by-letter as a [Xx] class rather than a literal
+    // uppercase run -- a plain line:lower() would work for detecting the
+    // keyword but would also lowercase the *captured* title/author/date
+    // text itself.
+    "    local t = l:match('^%s*#%+[Tt][Ii][Tt][Ll][Ee]:%s*(.*)$')\n"
+    "    if t then meta.title = t end\n"
+    "    local a = l:match('^%s*#%+[Aa][Uu][Tt][Hh][Oo][Rr]:%s*(.*)$')\n"
+    "    if a then meta.author = a end\n"
+    "    local d = l:match('^%s*#%+[Dd][Aa][Tt][Ee]:%s*(.*)$')\n"
+    "    if d then meta.date = d end\n"
+    "  end\n"
+    "  return meta\n"
+    "end\n"
+    // mep.org_export('html', ...) itself still returns a bare body
+    // fragment (unchanged -- other callers, e.g. a future embed-into-
+    // another-page use, still want just that) -- this wraps it into a
+    // real, standalone .html file (doctype/charset/<title>/a small
+    // readable default stylesheet) for MepOrgExportHtml's own output,
+    // the same way a real org-mode HTML export always produces a
+    // complete document, never a bare fragment.
+    // Code-block CSS below (.org-code-block and friends) matches the
+    // ambient page rather than dropping in a dark editor-pane-style box --
+    // same white background as body{}, a light gray header bar
+    // (.org-code-header) as the only real color break, and a colored
+    // left border as the block's own accent/boundary marker.
+    // .tok-<Name> classes share their exact names with mep.ts_capture_hl's
+    // own highlight-group values (mep_org_html_highlight_line, above) --
+    // this is a fixed light-on-white palette tuned for that background
+    // (not a straight reuse of the colors a dark-background version would
+    // use, several of which -- pastel greens/yellows especially -- have
+    // poor contrast against white), not a live readout of mep's own active
+    // colorscheme (this file has no colorscheme state at all; it only ever
+    // runs once, offline, at export time).
+    //
+    // Every rule here is a bare "tag"/".class" selector -- no descendant
+    // combinators (".org-code-block pre"), no :hover-style pseudo-classes
+    // doing load-bearing work, and no property this stylesheet actually
+    // depends on being set *only* via "background:transparent"/
+    // "color:inherit" tricks -- mep's own in-pane HTML viewer (not just a
+    // real browser) has to render this same markup (see
+    // mep_org_html_code_block's own comment for the specifics of that
+    // renderer's own, much smaller, CSS support), and both of those don't
+    // survive there: a descendant selector never matches anything in its
+    // own selector engine, and "transparent"/"inherit" aren't real color
+    // values its color parser recognizes, so a property set to either is
+    // simply never applied at all rather than resolving to the fallback a
+    // real browser would give it. .org-code-pre/.org-code-body (used by
+    // mep_org_html_code_block instead of relying on the generic pre{}/
+    // code{} rules below while inside a code block) spell out the same
+    // background/foreground literally for exactly that reason -- that
+    // renderer's own stated precedence rule (its own class beats tag)
+    // still makes them win over the plain pre{}/code{} rules below, unlike
+    // a descendant-selector override attempt. body{} explicitly sets a
+    // white background, not just relying on an implicit page-white canvas
+    // real browsers provide -- mep's own viewer paints its host pane's
+    // (dark-themed) background behind an HTML doc with no explicit one,
+    // which made every one of these light-palette colors (color:#222
+    // included) nearly illegible against it before this line existed.
+    "function mep_org_html_wrap_document(fragment, meta)\n"
+    "  local title = meta.title and mep_org_html_escape(meta.title) or 'Untitled'\n"
+    "  return '<!DOCTYPE html>\\n<html lang=\"en\">\\n<head>\\n<meta charset=\"utf-8\">\\n'\n"
+    "    .. '<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\\n'\n"
+    "    .. '<title>' .. title .. '</title>\\n'\n"
+    "    .. '<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;'\n"
+    "    .. 'font-family:sans-serif;line-height:1.5;color:#222}'\n"
+    "    .. 'pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}'\n"
+    "    .. 'code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}'\n"
+    "    .. 'img{max-width:100%}'\n"
+    "    .. 'h1,h2,h3{line-height:1.25}'\n"
+    "    .. '.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;'\n"
+    "    .. 'border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;'\n"
+    "    .. 'overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}'\n"
+    "    .. '.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;'\n"
+    "    .. 'padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;'\n"
+    "    .. 'font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}'\n"
+    "    .. '.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}'\n"
+    "    .. '.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;'\n"
+    "    .. 'padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}'\n"
+    "    .. '.org-code-copy:hover{background:#d0d7de}'\n"
+    "    .. '.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;'\n"
+    "    .. 'border-radius:0;overflow:auto}'\n"
+    "    .. '.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;'\n"
+    "    .. 'font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}'\n"
+    "    .. '.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}'\n"
+    "    .. '.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}'\n"
+    "    .. '.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}'\n"
+    "    .. '</style>\\n'\n"
+    // Clipboard write needs a real button-click event, which is why this
+    // is a plain onclick handler (mep_org_html_code_block, above) rather
+    // than an addEventListener pass over .org-code-copy after load --
+    // either works, but onclick needs no DOMContentLoaded wiring at all.
+    // navigator.clipboard is only available in a secure context (https,
+    // or localhost) -- an exported .html opened directly via file:// (the
+    // common case right after export) has neither, so the execCommand
+    // fallback below is the path that actually fires for most users, not
+    // a rarely-hit edge case.
+    "    .. '<script>function mepCopyCode(btn){'\n"
+    "    .. 'var block=btn.closest(\".org-code-block\");'\n"
+    "    .. 'var code=block&&block.querySelector(\"code\");'\n"
+    "    .. 'if(!code)return;'\n"
+    "    .. 'var text=code.innerText;'\n"
+    "    .. 'var restore=function(){setTimeout(function(){btn.textContent=\"Copy\";},1200);};'\n"
+    "    .. 'btn.textContent=\"Copied!\";'\n"
+    "    .. 'if(navigator.clipboard&&navigator.clipboard.writeText){'\n"
+    "    .. 'navigator.clipboard.writeText(text).then(restore,restore);'\n"
+    "    .. '}else{'\n"
+    "    .. 'var ta=document.createElement(\"textarea\");'\n"
+    "    .. 'ta.value=text;ta.style.position=\"fixed\";ta.style.opacity=\"0\";'\n"
+    "    .. 'document.body.appendChild(ta);ta.select();'\n"
+    "    .. 'try{document.execCommand(\"copy\");}catch(e){}'\n"
+    "    .. 'document.body.removeChild(ta);restore();'\n"
+    "    .. '}}</script>\\n</head>\\n<body>\\n'\n"
+    "    .. (meta.title and ('<h1>' .. title .. '</h1>\\n') or '')\n"
+    "    .. fragment .. '\\n</body>\\n</html>\\n'\n"
+    "end\n"
+    // Every MepOrgExport*/MepOrgCompile* command below funnels through
+    // this: runs every code block in the buffer (mep.org_babel_run_for_
+    // export, kBuiltinOrgBabel), then resolves #+INCLUDE:/#+MACRO: on
+    // the resulting babel-results-spliced scratch array exactly the way
+    // mep.org_resolve_includes always has for the live buffer, and hands
+    // the fully-prepared lines array to `on_lines`. Code execution is
+    // the *default* for every export backend (html/markdown/ascii/pdf/
+    // odt alike, matching real org-mode's own org-export-use-babel
+    // default) -- a block can still opt out per-block via :eval no (see
+    // mep.org_babel_run_for_export's own header for the exact skip set).
+    "function mep_org_export_prepare(on_lines)\n"
+    "  mep.notify('Org export: running code blocks...')\n"
+    "  mep.org_babel_run_for_export(function(spliced_lines)\n"
+    "    local base_dir = (mep.filename() or ''):match('^(.*)/[^/]*$') or '.'\n"
+    "    local resolved = mep_org_resolve_includes_lines(spliced_lines, base_dir)\n"
+    "    local macros = mep_org_collect_macros(function(i) return resolved[i] end, #resolved)\n"
+    "    local expanded = {}\n"
+    "    for i, l in ipairs(resolved) do expanded[i] = mep_org_expand_macro_line(l, macros) end\n"
+    "    on_lines(expanded)\n"
+    "  end)\n"
+    "end\n"
+    // Named (not anonymous) so the same function reference can be passed
+    // to both mep.command and mep.leader_map below -- mep.commands is
+    // the command-palette *function*, not a name->handler lookup table,
+    // so a leader binding can't route through a registered command name
+    // the way it might in some other plugin ecosystems; every other
+    // org leader binding in this codebase (mep.org_images_toggle_ui,
+    // mep.org_latex_toggle_ui, ...) already follows this same named-
+    // global-function pattern for exactly that reason.
+    "function mep.org_export_html()\n"
+    "  mep_org_export_prepare(function(lines)\n"
+    "    mep_org_export_to_file(mep_org_html_wrap_document(mep.org_export('html', lines), mep_org_extract_meta(lines)), 'html')\n"
+    "  end)\n"
+    "end\n"
+    "function mep.org_export_markdown()\n"
+    "  mep_org_export_prepare(function(lines) mep_org_export_to_file(mep.org_export('markdown', lines), 'md') end)\n"
+    "end\n"
+    "function mep.org_export_ascii()\n"
+    "  mep_org_export_prepare(function(lines) mep_org_export_to_file(mep.org_export('ascii', lines), 'txt') end)\n"
+    "end\n"
+    // PDF: org -> HTML (in-process) -> LaTeX (doc_export.h's
+    // ExportHtmlToLatex, C++) -> a real .tex file next to the org file
+    // -> tectonic (same devShell dependency + invocation shape
+    // kBuiltinOrgLatex's own mep_org_latex_render already uses for
+    // math-fragment previews, just compiling the *whole* document here
+    // instead of one \documentclass{standalone} snippet, and keeping the
+    // resulting PDF itself rather than rasterizing+discarding it). The
+    // .tex file is deliberately left on disk afterward -- a legitimate
+    // export artifact of its own, not just scratch.
+    "function mep.org_export_pdf()\n"
+    "  mep_org_export_prepare(function(lines)\n"
+    "    local meta = mep_org_extract_meta(lines)\n"
+    "    local html = mep.org_export('html', lines)\n"
+    "    local base_dir = mep_lsp_abspath(mep.filename()):match('^(.*)/[^/]*$') or '.'\n"
+    "    local latex = mep.doc_export_html_to_latex(html, meta.title or '', meta.author or '', base_dir)\n"
+    "    local base = (mep.filename():gsub('%.org$', ''))\n"
+    "    local tex_path = base .. '.tex'\n"
+    "    local f = io.open(tex_path, 'w')\n"
+    "    f:write(latex)\n"
+    "    f:close()\n"
+    "    mep.notify('Org export: compiling PDF (tectonic)...')\n"
+    "    local tex_err = {}\n"
+    "    mep.job_start({'tectonic', '-X', 'compile', tex_path, '--outfmt', 'pdf'}, {\n"
+    "      cwd = base_dir,\n"
+    "      on_stderr = function(line) tex_err[#tex_err + 1] = line end,\n"
+    "      on_exit = function(code)\n"
+    "        if code == 0 then\n"
+    "          mep.notify('Exported to ' .. base .. '.pdf')\n"
+    "        else\n"
+    "          mep.notify('PDF export failed (tectonic exit ' .. code .. '): '\n"
+    "            .. (tex_err[#tex_err] or 'see ' .. tex_path), 'error')\n"
+    "        end\n"
+    "      end,\n"
+    "    })\n"
+    "  end)\n"
+    "end\n"
+    // ODT: org -> HTML (in-process) -> a real .odt written directly by
+    // doc_export.h's ExportHtmlToOdt (C++, zipped via miniz) -- no
+    // external tool/subprocess needed for this backend, unlike PDF.
+    "function mep.org_export_odt()\n"
+    "  mep_org_export_prepare(function(lines)\n"
+    "    local meta = mep_org_extract_meta(lines)\n"
+    "    local html = mep.org_export('html', lines)\n"
+    "    local base_dir = mep_lsp_abspath(mep.filename()):match('^(.*)/[^/]*$') or '.'\n"
+    "    local base = (mep.filename():gsub('%.org$', ''))\n"
+    "    local ok, err = mep.doc_export_html_to_odt(html, base .. '.odt', meta.title or '', meta.author or '', base_dir)\n"
+    "    if ok then\n"
+    "      mep.notify('Exported to ' .. base .. '.odt')\n"
+    "    else\n"
+    "      mep.notify('ODT export failed: ' .. (err or '?'), 'error')\n"
+    "    end\n"
+    "  end)\n"
+    "end\n"
+    "mep.command('MepOrgExportHtml', mep.org_export_html)\n"
+    "mep.command('MepOrgExportMarkdown', mep.org_export_markdown)\n"
+    "mep.command('MepOrgExportAscii', mep.org_export_ascii)\n"
+    "mep.command('MepOrgExportPdf', mep.org_export_pdf)\n"
+    "mep.command('MepOrgExportOdt', mep.org_export_odt)\n"
+    // Subtree export deliberately keeps its pre-existing, narrower
+    // behavior (no babel execution, no #+INCLUDE: resolution -- see
+    // mep.org_export_subtree's own header) rather than being folded into
+    // mep_org_export_prepare: it already reads the live buffer directly
+    // by row range, and generalizing it to the babel-results-spliced
+    // scratch-array model above would need its own lines-array variant
+    // of mep_org_subtree_end/mep_org_current_headline_row, a real but
+    // separate follow-up, not required for the whole-buffer export the
+    // user actually asked for.
     "mep.command('MepOrgExportSubtreeHtml', function() mep_org_export_to_file(mep.org_export_subtree('html'), 'html') end)\n"
-    "mep.command('MepOrgExportSubtreeMarkdown', function() mep_org_export_to_file(mep.org_export_subtree('markdown'), 'md') end)\n";
+    "mep.command('MepOrgExportSubtreeMarkdown', function() mep_org_export_to_file(mep.org_export_subtree('markdown'), 'md') end)\n"
+    "mep.leader_map('oeh', 'Org: export to HTML', mep.org_export_html)\n"
+    "mep.leader_map('oep', 'Org: export to PDF', mep.org_export_pdf)\n"
+    "mep.leader_map('oeo', 'Org: export to ODT', mep.org_export_odt)\n"
+    "mep.leader_map('oem', 'Org: export to Markdown', mep.org_export_markdown)\n"
+    "mep.leader_map('oea', 'Org: export to ASCII', mep.org_export_ascii)\n";
 
 // Part VIII, Phase 37 -- Roam (zettelkasten note linking). One-note-per-
 // file, file-level :ID: property drawer at the very top (before any
@@ -6480,9 +7619,15 @@ const char *kBuiltinOrgRoam =
     "  end\n"
     "  return files\n"
     "end\n"
+    // #+title:/#+TITLE:/#+Title: are all the same keyword in real
+    // org-mode (case-insensitive) -- Emacs org-roam's own default
+    // capture template writes the lowercase form, so matching only the
+    // uppercase spelling here silently missed it and fell through to
+    // the first-headline fallback below for any note using that
+    // template, showing the wrong entry name in the roam pickers.
     "local function mep_org_roam_title_of(lines)\n"
     "  for _, line in ipairs(lines) do\n"
-    "    local t = line:match('^#%+TITLE:%s*(.*)$')\n"
+    "    local t = line:match('^#%+[Tt][Ii][Tt][Ll][Ee]:%s*(.*)$')\n"
     "    if t then return t end\n"
     "  end\n"
     "  for _, line in ipairs(lines) do\n"
@@ -7745,7 +8890,11 @@ const char *kBuiltinLeetcode =
     "mep.leetcode_dir = nil\n"
     "local function mep_leetcode_title_of(lines)\n"
     "  for _, line in ipairs(lines) do\n"
-    "    local t = line:match('^#%+TITLE:%s*(.*)$')\n"
+    // Case-insensitive keyword match -- see mep_org_roam_title_of's own
+    // comment (kBuiltinOrgRoam) for why (org keywords are case-
+    // insensitive; a plain uppercase-only match misses the lowercase
+    // #+title: form real org-roam/many hand-written notes use).
+    "    local t = line:match('^#%+[Tt][Ii][Tt][Ll][Ee]:%s*(.*)$')\n"
     "    if t then return t end\n"
     "  end\n"
     "  return nil\n"
@@ -8125,14 +9274,24 @@ const char *kBuiltinPickerSources =
     "    if opened then return end\n"
     "    opened = true\n"
     "    mep.picker_open('Find Files', lines, function(item)\n"
-    "      if item then mep.cmd('e ' .. item) end\n"
+    "      if item then mep.open(item) end\n"
     "    end, nil, function(key)\n"
     // Ctrl-I: open the highlighted file as a new buffer tab in the
     // *current* pane (mep.pane_open, Phase 14) instead of replacing
     // whatever's already showing there -- picker_close (not letting Enter's
-    // on_select run too) since the file's already open at this point.\n"
+    // on_select run too) since the file's already open at this point.
+    // Ctrl-E/Ctrl-V: html view-toggle escape hatch, same meaning as
+    // Editor::HandleSidebarInput's own Ctrl-E/Ctrl-V (mep.tree_on_key) --
+    // `:e` (mep.cmd), not mep.open, is what gives Ctrl-E force-text
+    // semantics (LoadFile's own comment).\n"
     "      if key == 'i' and highlighted and highlighted ~= '' then\n"
     "        mep.pane_open(highlighted)\n"
+    "        mep.picker_close()\n"
+    "      elseif key == 'e' and highlighted and highlighted ~= '' then\n"
+    "        mep.cmd('e ' .. highlighted)\n"
+    "        mep.picker_close()\n"
+    "      elseif key == 'v' and highlighted and highlighted ~= '' then\n"
+    "        mep.open(highlighted)\n"
     "        mep.picker_close()\n"
     "      end\n"
     "    end, function(item)\n"
@@ -8204,7 +9363,7 @@ const char *kBuiltinPickerSources =
     "    if st.job_id and mep.job_is_running(st.job_id) then mep.job_kill(st.job_id) end\n"
     "    if item then\n"
     "      local file, lnum = item:match('^(.*):(%d+)$')\n"
-    "      if file then mep.cmd('e ' .. file) mep.set_cursor(tonumber(lnum), 1) end\n"
+    "      if file then mep.open(file) mep.set_cursor(tonumber(lnum), 1) end\n"
     "    end\n"
     "  end, function(query)\n"
     "    st.pending_query = query\n"
@@ -8281,13 +9440,13 @@ const char *kBuiltinPickerSources =
     "          on_stdout = function(line) lines[#lines + 1] = line end,\n"
     "          on_exit = function()\n"
     "            mep.picker_open('Files in ' .. dir, lines, function(item)\n"
-    "              if item then mep.cmd('e ' .. item) end\n"
+    "              if item then mep.open(item) end\n"
     "            end)\n"
     "          end,\n"
     "        })\n"
     "      else\n"
     "        mep.picker_open('Files in ' .. dir, lines, function(item)\n"
-    "          if item then mep.cmd('e ' .. item) end\n"
+    "          if item then mep.open(item) end\n"
     "        end)\n"
     "      end\n"
     "    end,\n"
@@ -8700,6 +9859,25 @@ void DrawSidebars() {
             right_offset += px_w;
         }
 
+        // Resizable inner edge (the one facing the pane tree, not the
+        // screen edge -- there's nothing to drag the outer one against):
+        // grab strip centered on that edge, `sign` set so "dragging in
+        // the direction that widens/heightens the on-screen gap between
+        // this edge and the sidebar's own outer edge" always *shrinks*
+        // toward zero the same intuitive way border-dragging between two
+        // panes already does.
+        {
+            constexpr float kBorderGrabPx = 6.0f;
+            bool horizontal = sb.position == "left" || sb.position == "right";
+            int sign = (sb.position == "left" || sb.position == "top") ? 1 : -1;
+            Rectangle grab;
+            if (sb.position == "left") grab = Rectangle{px + pw - kBorderGrabPx / 2.0f, static_cast<float>(py), kBorderGrabPx, static_cast<float>(ph)};
+            else if (sb.position == "right") grab = Rectangle{px - kBorderGrabPx / 2.0f, static_cast<float>(py), kBorderGrabPx, static_cast<float>(ph)};
+            else if (sb.position == "top") grab = Rectangle{static_cast<float>(px), py + ph - kBorderGrabPx / 2.0f, static_cast<float>(pw), kBorderGrabPx};
+            else grab = Rectangle{static_cast<float>(px), py - kBorderGrabPx / 2.0f, static_cast<float>(pw), kBorderGrabPx};
+            g_sidebar_border_rects.push_back({sb.id, horizontal, sign, grab});
+        }
+
         DrawRectangle(px, py, pw, ph, ResolveHlGroup("Sidebar"));
         DrawRectangleLines(px, py, pw, ph, ResolveHlGroup("SidebarBorder"));
 
@@ -8722,6 +9900,8 @@ void DrawSidebars() {
             }
             Color color = lines[i].hl.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(lines[i].hl);
             DrawUiText(lines[i].text, Vector2{static_cast<float>(px + 8), ly}, font_size, color);
+            g_sidebar_row_rects.push_back(
+                {sb.id, static_cast<int>(i), Rectangle{static_cast<float>(px), ly - 1, static_cast<float>(pw), static_cast<float>(line_h)}});
         }
         EndScissorMode();
     }
@@ -9288,6 +10468,45 @@ Texture2D GetOrLoadImageTexture(int buffer_id, const ImageSession &sess) {
     return tex;
 }
 
+// One embedded-office-image cache slot (see g_office_image_textures below).
+struct OfficeImageCacheEntry {
+    Texture2D tex{};
+    bool ok = false;  // false = the stored bytes didn't decode
+};
+// Keyed by (buffer_id, image_ref) packed into one int64 -- unlike a real
+// file on disk (g_org_inline_image_textures' mtime-recheck reasoning),
+// DocImage::bytes is immutable once inserted (InsertOfficeImagePrompt only
+// ever appends a new DocImage, never mutates an existing one), so a
+// buffer_id+index pair is a stable cache key for the life of that buffer id
+// -- same "decoded once, never re-uploaded" assumption g_image_textures
+// above already makes for a whole ImageSession.
+std::unordered_map<long long, OfficeImageCacheEntry> g_office_image_textures;
+
+// Lazily decodes + GPU-uploads one embedded office-document image (DocImage::
+// bytes), cached in g_office_image_textures. Returns nullptr if the bytes
+// don't decode (shouldn't happen -- InsertOfficeImagePrompt already
+// validated them at insert time -- but a table/image dropped in from a
+// round-tripped file could in principle hold anything).
+Texture2D *GetOrLoadOfficeImageTexture(int buffer_id, int image_ref, const DocImage &img) {
+    long long key = (static_cast<long long>(buffer_id) << 32) | static_cast<unsigned int>(image_ref);
+    auto it = g_office_image_textures.find(key);
+    if (it != g_office_image_textures.end()) return it->second.ok ? &it->second.tex : nullptr;
+    OfficeImageCacheEntry entry;
+    ImageDoc doc;
+    entry.ok = doc.LoadFromMemory(reinterpret_cast<const unsigned char *>(img.bytes.data()), img.bytes.size());
+    if (entry.ok) {
+        Image ri{};
+        ri.data = const_cast<unsigned char *>(doc.Pixels());
+        ri.width = doc.Width();
+        ri.height = doc.Height();
+        ri.mipmaps = 1;
+        ri.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
+        entry.tex = LoadTextureFromImage(ri);  // copies pixel data to the GPU; doc goes out of scope right after
+    }
+    OfficeImageCacheEntry &stored = g_office_image_textures[key] = entry;
+    return stored.ok ? &stored.tex : nullptr;
+}
+
 // One org-mode inline-image cache slot (see g_org_inline_image_textures
 // below): the uploaded texture plus the file's mtime as of that upload, so
 // GetOrLoadOrgInlineImageTexture can tell a stale entry from a fresh one.
@@ -9385,6 +10604,76 @@ void EvictOrgInlineImageTexture(const std::string &path) {
     if (it == g_org_inline_image_textures.end()) return;
     if (it->second.ok) UnloadTexture(it->second.tex);
     g_org_inline_image_textures.erase(it);
+}
+
+// One HtmlSession::theme_colors-recolored <img> cache slot -- a separate
+// cache from g_org_inline_image_textures (not a themed variant folded into
+// that one) since org-mode inline images have no theme toggle of their own
+// and shouldn't pay for tracking theme_epoch at all. Same mtime-cached
+// "reload on change" convention as GetOrLoadOrgInlineImageTexture, plus a
+// theme_epoch check (Editor::ThemeEpoch(), same reasoning as
+// PdfTextureCacheEntry's own field) so switching color schemes while an
+// html pane is already in theme mode re-recolors instead of keeping a
+// stale palette.
+struct ThemedHtmlImageCacheEntry {
+    Texture2D tex{};
+    bool ok = false;
+    time_t mtime = 0;
+    int theme_epoch = -1;
+};
+std::unordered_map<std::string, ThemedHtmlImageCacheEntry> g_themed_html_image_textures;
+
+// Lazily loads, luminance-recolors (ThemedPdfChannel -- same "PDF page
+// recoloring" transform, reused verbatim here), and GPU-uploads a local
+// <img> for HtmlSession::theme_colors mode. Returns nullptr on the same
+// conditions GetOrLoadOrgInlineImageTexture does (missing/unreadable/
+// undecodable file). A fresh decode per cache miss (not reusing
+// GetOrLoadOrgInlineImageTexture's own cached texture) since that one
+// never retains CPU-side pixels past upload -- recoloring needs the raw
+// pixels, so this keeps its own independent decode rather than growing
+// the shared org-image cache entry with a field org-mode itself never
+// needs.
+Texture2D *GetOrLoadThemedHtmlImageTexture(const std::string &path) {
+    struct stat st {};
+    if (stat(path.c_str(), &st) != 0) return nullptr;
+    int theme_epoch = g_editor.ThemeEpoch();
+    ThemedHtmlImageCacheEntry &entry = g_themed_html_image_textures[path];
+    if (entry.mtime == st.st_mtime && entry.theme_epoch == theme_epoch) return entry.ok ? &entry.tex : nullptr;
+
+    std::ifstream f(path, std::ios::binary);
+    std::vector<unsigned char> bytes;
+    if (f) bytes.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+    ImageDoc doc;
+    if (entry.ok) UnloadTexture(entry.tex);  // replace a stale GPU handle rather than leak it
+    entry.ok = !bytes.empty() && doc.LoadFromMemory(bytes.data(), bytes.size());
+    entry.mtime = st.st_mtime;
+    entry.theme_epoch = theme_epoch;
+    if (!entry.ok) return nullptr;
+
+    int iw = doc.Width(), ih = doc.Height();
+    Color fg = ResolveHlGroup("Normal");
+    Color bg = ResolveHlGroup("NormalBg");
+    std::vector<unsigned char> themed(static_cast<size_t>(iw) * static_cast<size_t>(ih) * 4);
+    const unsigned char *src_pixels = doc.Pixels();
+    size_t n = static_cast<size_t>(iw) * static_cast<size_t>(ih);
+    for (size_t i = 0; i < n; i++) {
+        const unsigned char *src = &src_pixels[i * 4];
+        float luminance = (0.299f * src[0] + 0.587f * src[1] + 0.114f * src[2]) / 255.0f;
+        unsigned char *dst = &themed[i * 4];
+        dst[0] = ThemedPdfChannel(fg.r, bg.r, luminance);
+        dst[1] = ThemedPdfChannel(fg.g, bg.g, luminance);
+        dst[2] = ThemedPdfChannel(fg.b, bg.b, luminance);
+        dst[3] = src[3];  // alpha untouched -- only color channels ride the theme gradient
+    }
+
+    Image img{};
+    img.data = themed.data();
+    img.width = iw;
+    img.height = ih;
+    img.mipmaps = 1;
+    img.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
+    entry.tex = LoadTextureFromImage(img);  // copies pixel data to the GPU; `themed` goes out of scope right after
+    return &entry.tex;
 }
 
 // One org-latex texture cache slot (see g_org_latex_textures below): unlike
@@ -9580,6 +10869,1090 @@ void DrawPaneBorder(float x, float y, float w, float h, bool is_active) {
                   static_cast<int>(side_thick), border_color);
 }
 
+// --- Mini LaTeX math layout -------------------------------------------------
+//
+// A from-scratch, intentionally small LaTeX-math typesetter for the
+// \(..\)/\[..\]/$..$/$$..$$ spans html_doc.cpp's ExtractMathSpans pulls out
+// of org-mode's (and any other MathJax-targeting page's) exported HTML into
+// synthetic <math> DOM nodes. Not real TeX math typesetting (no proper
+// italic-correction/kerning tables, no real radical-stretching, no matrix/
+// align environments) -- just enough of superscript/subscript/fraction/
+// sqrt/Greek-and-operator-symbol layout that a real equation reads as an
+// equation rather than raw "\alpha^2 + \beta^2" source text. Lives here
+// rather than html_doc.h/.cpp for the same reason the rest of this file's
+// own HTML layout does (see that section's header, just below): it needs
+// real font metrics (MeasureTextEx against g_math_font), which the
+// raylib-free DOM layer doesn't have access to.
+enum class MathKind { Text, Row, Frac, Sqrt };
+
+// One node in a parsed (but not yet laid-out) math expression tree. A
+// std::vector<MathNode> member on a type that also contains MathNode
+// members is fine in C++17 (vector supports incomplete element types) --
+// no indirection/unique_ptr needed for this self-referential shape.
+struct MathNode {
+    MathKind kind = MathKind::Text;
+    std::string text;                // Text kind only: literal glyph(s) to draw
+    bool italic = true;              // Text kind only: bare variables slant, digits/operators/symbols stay upright
+    std::vector<MathNode> children;  // Row: the sequence; Frac: [numerator, denominator]; Sqrt: [radicand]
+    std::vector<MathNode> sup;       // trailing ^{...} attached to *this* node, 0 or 1 element (itself Row-kind)
+    std::vector<MathNode> sub;       // trailing _{...} attached to *this* node, 0 or 1 element (itself Row-kind)
+};
+
+// Recursive-descent parser over the raw LaTeX source between the \(../\[..
+// delimiters ExtractMathSpans already stripped -- no separate tokenizer,
+// the grammar is small enough to scan character-by-character directly.
+struct MathParser {
+    const std::string &s;
+    size_t i = 0;
+    explicit MathParser(const std::string &src) : s(src) {}
+
+    void SkipSpace() {
+        while (i < s.size() && std::isspace(static_cast<unsigned char>(s[i]))) i++;
+    }
+
+    // One command name's macro-expansion, name -> Unicode codepoint (must
+    // also be in kMathCodepoints above, or it'll draw as a missing glyph).
+    static const std::unordered_map<std::string, int> &SymbolTable() {
+        static const std::unordered_map<std::string, int> kTable = {
+            {"alpha", 0x3b1},    {"beta", 0x3b2},     {"gamma", 0x3b3},   {"delta", 0x3b4},
+            {"epsilon", 0x3b5},  {"varepsilon", 0x3b5}, {"zeta", 0x3b6},  {"eta", 0x3b7},
+            {"theta", 0x3b8},    {"iota", 0x3b9},      {"kappa", 0x3ba},  {"lambda", 0x3bb},
+            {"mu", 0x3bc},       {"nu", 0x3bd},         {"xi", 0x3be},     {"pi", 0x3c0},
+            {"rho", 0x3c1},      {"sigma", 0x3c3},      {"tau", 0x3c4},    {"upsilon", 0x3c5},
+            {"phi", 0x3c6},      {"varphi", 0x3c6},     {"chi", 0x3c7},    {"psi", 0x3c8},
+            {"omega", 0x3c9},
+            {"Gamma", 0x393},    {"Delta", 0x394},      {"Theta", 0x398},  {"Lambda", 0x39b},
+            {"Xi", 0x39e},       {"Pi", 0x3a0},          {"Sigma", 0x3a3},  {"Upsilon", 0x3a5},
+            {"Phi", 0x3a6},      {"Psi", 0x3a8},         {"Omega", 0x3a9},
+            {"times", 0xd7},     {"div", 0xf7},          {"pm", 0xb1},      {"mp", 0x2213},
+            {"cdot", 0xb7},      {"circ", 0x2218},       {"leq", 0x2264},   {"le", 0x2264},
+            {"geq", 0x2265},     {"ge", 0x2265},         {"neq", 0x2260},   {"ne", 0x2260},
+            {"approx", 0x2248},  {"equiv", 0x2261},      {"sim", 0x223c},   {"propto", 0x221d},
+            {"infty", 0x221e},   {"partial", 0x2202},    {"nabla", 0x2207}, {"sum", 0x2211},
+            {"prod", 0x220f},    {"int", 0x222b},        {"degree", 0xb0},  {"circ", 0x2218},
+            {"to", 0x2192},      {"rightarrow", 0x2192}, {"gets", 0x2190},  {"leftarrow", 0x2190},
+            {"leftrightarrow", 0x2194}, {"Rightarrow", 0x21d2}, {"Leftarrow", 0x21d0},
+            {"Leftrightarrow", 0x21d4}, {"iff", 0x21d4},
+            {"forall", 0x2200},  {"exists", 0x2203},     {"in", 0x2208},    {"notin", 0x2209},
+            {"subset", 0x2282},  {"subseteq", 0x2286},   {"supset", 0x2283}, {"supseteq", 0x2287},
+            {"cup", 0x222a},     {"cap", 0x2229},        {"emptyset", 0x2205}, {"varnothing", 0x2205},
+            {"cdots", 0x22ef},   {"ldots", 0x2026},      {"dots", 0x2026},
+            {"therefore", 0x2234}, {"because", 0x2235},  {"perp", 0x22a5},  {"parallel", 0x2225},
+            {"otimes", 0x2297},  {"oplus", 0x2295},      {"lfloor", 0x230a}, {"rfloor", 0x230b},
+            {"lceil", 0x2308},   {"rceil", 0x2309},      {"prime", 0x2032},
+        };
+        return kTable;
+    }
+
+    // Parses "{ row }" (consuming both braces) or, absent a brace, a single
+    // ParseAtom() -- used for both sup/sub arguments and \frac/\sqrt args,
+    // matching real LaTeX's "one token or a braced group" argument rule.
+    MathNode ParseGroupOrAtom() {
+        SkipSpace();
+        if (i < s.size() && s[i] == '{') {
+            i++;
+            MathNode row = ParseRow('}');
+            if (i < s.size() && s[i] == '}') i++;
+            return row;
+        }
+        return ParseAtom();
+    }
+
+    MathNode ParseCommand() {
+        i++;  // consume '\'
+        size_t start = i;
+        while (i < s.size() && std::isalpha(static_cast<unsigned char>(s[i]))) i++;
+        std::string name = s.substr(start, i - start);
+        if (name.empty()) {
+            // "\\{", "\\}", "\\%", "\\,", "\\;", "\\ ", a literal-escape or
+            // a spacing command -- neither has a dedicated glyph here, so
+            // render the escaped char itself (harmless for the common
+            // "\{"/"\}"/"\%" case; spacing commands like "\," just show as
+            // a small stray character, an accepted cosmetic gap).
+            MathNode n;
+            n.kind = MathKind::Text;
+            n.italic = false;
+            if (i < s.size()) n.text = std::string(1, s[i++]);
+            return n;
+        }
+        if (name == "left" || name == "right") return ParseAtom();  // sizing hint -- render the delimiter plain
+        if (name == "frac" || name == "dfrac" || name == "tfrac") {
+            MathNode n;
+            n.kind = MathKind::Frac;
+            n.children.push_back(ParseGroupOrAtom());
+            n.children.push_back(ParseGroupOrAtom());
+            return n;
+        }
+        if (name == "sqrt") {
+            MathNode n;
+            n.kind = MathKind::Sqrt;
+            n.children.push_back(ParseGroupOrAtom());
+            return n;
+        }
+        if (name == "text" || name == "mathrm" || name == "operatorname" || name == "mathbf") {
+            MathNode grp = ParseGroupOrAtom();
+            MathNode n;
+            n.kind = MathKind::Row;
+            auto upright_copy = [](MathNode m) {
+                m.italic = false;
+                return m;
+            };
+            if (grp.kind == MathKind::Row) {
+                for (auto &c : grp.children) n.children.push_back(upright_copy(c));
+            } else {
+                n.children.push_back(upright_copy(grp));
+            }
+            return n;
+        }
+        auto it = SymbolTable().find(name);
+        if (it != SymbolTable().end()) {
+            MathNode n;
+            n.kind = MathKind::Text;
+            n.italic = false;
+            n.text = Utf8FromCodepoint(it->second);
+            return n;
+        }
+        // Unknown command -- show its name literally rather than dropping
+        // it silently, so an unrecognized macro is at least legible/
+        // debuggable instead of just vanishing from the equation.
+        MathNode n;
+        n.kind = MathKind::Text;
+        n.italic = false;
+        n.text = name;
+        return n;
+    }
+
+    // One atom, *without* consuming a trailing ^/_ (ParseRow attaches
+    // those to whatever atom precedes them).
+    MathNode ParseAtom() {
+        SkipSpace();
+        if (i >= s.size()) return MathNode{};
+        if (s[i] == '\\') return ParseCommand();
+        char c = s[i++];
+        MathNode n;
+        n.kind = MathKind::Text;
+        n.text = std::string(1, c);
+        n.italic = std::isalpha(static_cast<unsigned char>(c)) != 0;
+        return n;
+    }
+
+    // A left-to-right sequence of atoms (each optionally followed by ^/_),
+    // stopping at `end` (or end-of-string if `end` is '\0', the top-level
+    // call's own sentinel).
+    MathNode ParseRow(char end) {
+        MathNode row;
+        row.kind = MathKind::Row;
+        while (true) {
+            SkipSpace();
+            if (i >= s.size() || (end != '\0' && s[i] == end)) break;
+            MathNode atom = ParseGroupOrAtom();
+            for (;;) {
+                SkipSpace();
+                if (i < s.size() && s[i] == '^') {
+                    i++;
+                    atom.sup.push_back(ParseGroupOrAtom());
+                } else if (i < s.size() && s[i] == '_') {
+                    i++;
+                    atom.sub.push_back(ParseGroupOrAtom());
+                } else {
+                    break;
+                }
+            }
+            row.children.push_back(std::move(atom));
+        }
+        return row;
+    }
+};
+
+// A relative glyph run inside a laid-out math expression -- (rel_x, rel_y)
+// are offsets from the expression's own top-left, filled in once and never
+// touched again once placed inline (mirrors HtmlRun's own "fixed at
+// placement time" contract, just nested one level deeper).
+struct MathGlyphRun {
+    float rel_x = 0, rel_y = 0, font_size = 0;
+    std::string text;
+    bool italic = false;
+};
+// A horizontal bar (a fraction's rule, or a sqrt's overline), same
+// relative-offset convention as MathGlyphRun.
+struct MathBarRun {
+    float rel_x = 0, rel_y = 0, w = 0;
+};
+struct MathLayoutResult {
+    float width = 0, height = 0;
+    // Distance from this box's top edge to its "alignment line" -- the row
+    // this expression sits within (LayoutMathRow) shifts every sibling so
+    // their own baselines line up on one shared value, the same way real
+    // text baselines align across mixed inline font sizes.
+    float baseline = 0;
+    std::vector<MathGlyphRun> glyphs;
+    std::vector<MathBarRun> bars;
+};
+
+MathLayoutResult LayoutMathAtom(const MathNode &n, float font_size);
+
+// Composes `terms` left-to-right, each already carrying its own optional
+// sup/sub (see MathNode::sup/sub), aligning every term's own baseline to
+// the row's shared (tallest-above-baseline) value.
+MathLayoutResult LayoutMathRow(const std::vector<MathNode> &terms, float font_size) {
+    constexpr float kScriptScale = 0.7f;    // sup/sub shrink factor, roughly TeX's own scriptstyle ratio
+    constexpr float kScriptRaise = 0.55f;   // superscript raised this fraction of font_size above the baseline
+    constexpr float kScriptDrop = 0.18f;    // subscript dropped this fraction of font_size below the baseline
+    struct Placed {
+        MathLayoutResult layout;
+        float x = 0;
+    };
+    std::vector<Placed> placed;
+    float x = 0;
+    float shared_baseline = 0;
+    for (const MathNode &t : terms) {
+        MathLayoutResult core = LayoutMathAtom(t, font_size);
+        if (t.sup.empty() && t.sub.empty()) {
+            shared_baseline = std::max(shared_baseline, core.baseline);
+            placed.push_back({std::move(core), x});
+            x += placed.back().layout.width;
+            continue;
+        }
+        MathLayoutResult combined;
+        float script_x = core.width + 1.0f;
+        float max_script_w = 0;
+        for (auto &g : core.glyphs) combined.glyphs.push_back(g);
+        for (auto &b : core.bars) combined.bars.push_back(b);
+        if (!t.sup.empty()) {
+            MathLayoutResult sup = LayoutMathAtom(t.sup[0], font_size * kScriptScale);
+            float sup_y = core.baseline - font_size * kScriptRaise - sup.baseline;
+            for (auto g : sup.glyphs) {
+                g.rel_x += script_x;
+                g.rel_y += sup_y;
+                combined.glyphs.push_back(g);
+            }
+            for (auto b : sup.bars) {
+                b.rel_x += script_x;
+                b.rel_y += sup_y;
+                combined.bars.push_back(b);
+            }
+            max_script_w = std::max(max_script_w, sup.width);
+        }
+        if (!t.sub.empty()) {
+            MathLayoutResult sub = LayoutMathAtom(t.sub[0], font_size * kScriptScale);
+            float sub_y = core.baseline + font_size * kScriptDrop - sub.baseline;
+            for (auto g : sub.glyphs) {
+                g.rel_x += script_x;
+                g.rel_y += sub_y;
+                combined.glyphs.push_back(g);
+            }
+            for (auto b : sub.bars) {
+                b.rel_x += script_x;
+                b.rel_y += sub_y;
+                combined.bars.push_back(b);
+            }
+            max_script_w = std::max(max_script_w, sub.width);
+        }
+        combined.width = script_x + max_script_w;
+        combined.baseline = core.baseline;
+        combined.height = core.height;
+        for (auto &g : combined.glyphs) combined.height = std::max(combined.height, g.rel_y + g.font_size);
+        shared_baseline = std::max(shared_baseline, combined.baseline);
+        placed.push_back({std::move(combined), x});
+        x += placed.back().layout.width;
+    }
+    MathLayoutResult row;
+    row.width = x;
+    float max_below = 0;
+    for (Placed &p : placed) {
+        float dy = shared_baseline - p.layout.baseline;
+        for (auto g : p.layout.glyphs) {
+            g.rel_x += p.x;
+            g.rel_y += dy;
+            row.glyphs.push_back(g);
+        }
+        for (auto b : p.layout.bars) {
+            b.rel_x += p.x;
+            b.rel_y += dy;
+            row.bars.push_back(b);
+        }
+        max_below = std::max(max_below, p.layout.height - p.layout.baseline + dy);
+    }
+    row.baseline = shared_baseline;
+    row.height = shared_baseline + max_below;
+    return row;
+}
+
+// Lays out `n` itself (ignoring any sup/sub attached to it -- LayoutMathRow
+// composes those onto whichever row this atom is a term of).
+MathLayoutResult LayoutMathAtom(const MathNode &n, float font_size) {
+    switch (n.kind) {
+        case MathKind::Row:
+            return LayoutMathRow(n.children, font_size);
+        case MathKind::Frac: {
+            constexpr float kFracScale = 0.92f;
+            float sub_fs = font_size * kFracScale;
+            MathLayoutResult num = n.children.size() > 0 ? LayoutMathAtom(n.children[0], sub_fs) : MathLayoutResult{};
+            MathLayoutResult den = n.children.size() > 1 ? LayoutMathAtom(n.children[1], sub_fs) : MathLayoutResult{};
+            float gap = std::max(2.0f, font_size * 0.12f);
+            float w = std::max(num.width, den.width) + 6.0f;
+            MathLayoutResult r;
+            r.width = w;
+            float num_x = (w - num.width) / 2.0f;
+            float den_x = (w - den.width) / 2.0f;
+            for (auto g : num.glyphs) {
+                g.rel_x += num_x;
+                r.glyphs.push_back(g);
+            }
+            for (auto b : num.bars) {
+                b.rel_x += num_x;
+                r.bars.push_back(b);
+            }
+            float bar_y = num.height + gap;
+            r.bars.push_back({0, bar_y, w});
+            float den_y = bar_y + gap;
+            for (auto g : den.glyphs) {
+                g.rel_x += den_x;
+                g.rel_y += den_y;
+                r.glyphs.push_back(g);
+            }
+            for (auto b : den.bars) {
+                b.rel_x += den_x;
+                b.rel_y += den_y;
+                r.bars.push_back(b);
+            }
+            r.height = den_y + den.height;
+            r.baseline = bar_y + gap * 0.4f;
+            return r;
+        }
+        case MathKind::Sqrt: {
+            MathLayoutResult inner = n.children.empty() ? MathLayoutResult{} : LayoutMathAtom(n.children[0], font_size);
+            std::string radical = Utf8FromCodepoint(0x221a);
+            float rad_w = MeasureTextEx(g_math_font, radical.c_str(), font_size, 0).x;
+            constexpr float kOverlineGap = 3.0f;
+            MathLayoutResult r;
+            float pad = 3.0f;
+            r.width = rad_w + pad + inner.width + pad;
+            r.glyphs.push_back({0, kOverlineGap, font_size, radical, false});
+            for (auto g : inner.glyphs) {
+                g.rel_x += rad_w + pad;
+                g.rel_y += kOverlineGap;
+                r.glyphs.push_back(g);
+            }
+            for (auto b : inner.bars) {
+                b.rel_x += rad_w + pad;
+                b.rel_y += kOverlineGap;
+                r.bars.push_back(b);
+            }
+            r.bars.push_back({rad_w, kOverlineGap, inner.width + pad});
+            r.height = kOverlineGap + std::max(font_size, inner.height);
+            r.baseline = kOverlineGap + inner.baseline;
+            return r;
+        }
+        case MathKind::Text:
+        default: {
+            MathLayoutResult r;
+            if (n.text.empty()) return r;
+            Vector2 sz = MeasureTextEx(g_math_font, n.text.c_str(), font_size, 0);
+            r.width = sz.x;
+            r.height = font_size;
+            r.baseline = font_size * 0.78f;  // approximates cap-height-to-baseline for this bake
+            r.glyphs.push_back({0, 0, font_size, n.text, n.italic});
+            return r;
+        }
+    }
+}
+
+// Entry point: parses+lays out one \(..\)/\[..\]/$..$/$$..$$ span's raw
+// LaTeX source (delimiters already stripped by ExtractMathSpans) at
+// `font_size`. Always succeeds -- an unparseable/unknown construct
+// degrades to plain-looking text (see ParseCommand's own fallback) rather
+// than failing outright, same tolerance as the rest of this HTML renderer.
+MathLayoutResult LayoutMathExpression(const std::string &latex, float font_size) {
+    MathParser parser(latex);
+    MathNode top = parser.ParseRow('\0');
+    return LayoutMathAtom(top, font_size);
+}
+
+// Same shear-for-italic technique as DrawHtmlRun (below) -- bare variables
+// (MathNode::italic) draw slanted, matching standard math-mode convention;
+// symbols/digits/operators stay upright.
+void DrawMathLayout(float x, float y, const MathLayoutResult &m, Color color) {
+    for (const MathGlyphRun &g : m.glyphs) {
+        if (g.text.empty()) continue;
+        Vector2 pos{x + g.rel_x, y + g.rel_y};
+        if (!g.italic) {
+            DrawTextEx(g_math_font, g.text.c_str(), pos, g.font_size, 0, color);
+            continue;
+        }
+        rlPushMatrix();
+        float baseline_y = pos.y + g.font_size;
+        rlTranslatef(pos.x, baseline_y, 0);
+        // clang-format off
+        float shear[16] = {
+            1.0f,   0.0f, 0.0f, 0.0f,
+            -0.22f, 1.0f, 0.0f, 0.0f,
+            0.0f,   0.0f, 1.0f, 0.0f,
+            0.0f,   0.0f, 0.0f, 1.0f,
+        };
+        // clang-format on
+        rlMultMatrixf(shear);
+        rlTranslatef(-pos.x, -baseline_y, 0);
+        DrawTextEx(g_math_font, g.text.c_str(), pos, g.font_size, 0, color);
+        rlPopMatrix();
+    }
+    for (const MathBarRun &b : m.bars) {
+        DrawRectangle(static_cast<int>(x + b.rel_x), static_cast<int>(y + b.rel_y), static_cast<int>(std::max(1.0f, b.w)),
+                      1, color);
+    }
+}
+
+// --- HTML-preview pane layout ---------------------------------------------
+//
+// Word-wrap/positioning for an HtmlDoc, mirroring the exact split
+// OfficeDoc's own paragraphs/rendering has: html_doc.h's DOM+ComputedStyle
+// model is raylib-free and knows nothing about pixels, so turning it into
+// positioned, word-wrapped runs (which needs real font metrics --
+// MeasureTextEx) lives here instead. Recomputed fresh every DrawPane call
+// rather than cached on HtmlSession (see its own comment) -- the small
+// hand-written pages this renderer targets are cheap enough to lay out
+// every frame that a cache-invalidation scheme (width changed? DOM
+// mutated by a script? both are easy to miss) isn't worth the complexity.
+//
+// Remote/local <img> is out of scope for actual pixel rendering (see
+// html_doc.h's own header) -- shown as a bracketed [image: alt-or-
+// filename] text marker instead of decoding it, deliberately: real image
+// support needs a texture cache with its own load/eviction lifecycle
+// (compare ImageSession/GetOrLoadImageTexture), a second subsystem this
+// already-large feature doesn't also take on in v1.
+struct HtmlRun {
+    float x = 0, y = 0;
+    float font_size = 0;
+    std::string text;
+    Color color{};
+    bool bold = false, italic = false, underline = false, strikethrough = false;
+};
+struct HtmlRule {
+    float x = 0, y = 0, w = 0;
+};
+// A resolved-and-sized local <img>, positioned the same way an HtmlRun is
+// -- (x,y) in the laid-out document's own coordinate space, fixed once at
+// placement time. `path` is re-resolved to a texture at draw time via
+// GetOrLoadOrgInlineImageTexture (mtime-cached, already used for org
+// inline images -- see that function's own header) rather than carrying a
+// Texture2D here directly, since a fresh HtmlLayout is built every frame
+// and shouldn't itself own GPU handles.
+struct HtmlImageRun {
+    float x = 0, y = 0, w = 0, h = 0;
+    std::string path;
+};
+// A positioned \(..\)/\[..\]/$..$/$$..$$ span, already laid out by
+// LayoutMathExpression -- `layout` is drawn via DrawMathLayout at (x,y).
+struct HtmlMathRun {
+    float x = 0, y = 0;
+    Color color{};
+    MathLayoutResult layout;
+};
+// A block element's own background-color box (ComputedStyle.has_bg,
+// html_doc.cpp's ApplyDeclarations -- parsed there but never actually
+// drawn anywhere before this struct existed). Pushed in document order
+// (HtmlLayoutBlock pushes a parent's entry *before* recursing into its
+// children, filling in `h` only once that child layout is known), so
+// drawing this vector front-to-back naturally paints an ancestor's box
+// first and a more specific descendant's box (e.g. mep_org_html_code_
+// block's own two-tone header-over-body split, main.cpp's kBuiltinOrgExport)
+// on top of it, not the other way around.
+struct HtmlBgRect {
+    float x = 0, y = 0, w = 0, h = 0;
+    Color color{};
+};
+// A block element's own border box (ComputedStyle.border_top/right/bottom/
+// left, html_doc.cpp's ApplyDeclarations) -- same "pushed by HtmlLayoutBlock
+// before recursing, height filled in once known" shape as HtmlBgRect right
+// above, and drawn the same front-to-back-in-document-order way so a
+// descendant's border (e.g. mep_org_html_code_block's own header/body
+// split having its own border-bottom, main.cpp's kBuiltinOrgExport) never
+// gets painted over by an ancestor's. Each edge's width is 0 when that
+// side has no border, which both DrawPane's draw loop and this struct's
+// own producer treat as "don't draw this edge" rather than a separate
+// per-edge bool.
+struct HtmlBorderRect {
+    float x = 0, y = 0, w = 0, h = 0;
+    float top_w = 0, right_w = 0, bottom_w = 0, left_w = 0;
+    Color top_c{}, right_c{}, bottom_c{}, left_c{};
+};
+struct HtmlLayout {
+    std::vector<HtmlRun> runs;
+    std::vector<HtmlRule> rules;
+    std::vector<HtmlImageRun> images;
+    std::vector<HtmlMathRun> math_runs;
+    std::vector<HtmlBgRect> backgrounds;
+    std::vector<HtmlBorderRect> borders;
+    float total_height = 0;
+};
+
+struct HtmlLayoutCtx {
+    float layout_width;
+    float base_font_size;
+    Color default_color;
+    // Directory <img src="relative/path"> is resolved against -- the open
+    // HtmlSession's own source file's parent dir (empty for a page with no
+    // real on-disk source, in which case only absolute local paths resolve).
+    std::string base_dir;
+    float zoom = 1.0f;  // matches HtmlSession::zoom -- local images scale with the same pane zoom as text does
+};
+
+float HtmlLineHeight(float font_size) { return font_size + 6.0f; }
+
+Color HtmlResolveColor(const ComputedStyle &s, const HtmlLayoutCtx &ctx) {
+    if (!s.has_color) return ctx.default_color;
+    return Color{s.color_r, s.color_g, s.color_b, 255};
+}
+
+struct HtmlPendingWord {
+    std::string text;  // "\n" is a sentinel forced line break (from <br>), never real text
+    float font_size;
+    Color color;
+    bool bold, italic, underline, strikethrough;
+    // Set for a local <img> or a \(..\)/\[..\] math span placed inline --
+    // at most one of the two is ever true. `text` is unused for either
+    // (kept empty by their own construction sites below).
+    bool is_image = false;
+    std::string image_path;
+    float image_w = 0, image_h = 0;
+    bool is_math = false;
+    MathLayoutResult math;
+};
+
+// Resolves an <img src> value against ctx.base_dir -- absolute local paths
+// pass through unchanged; a remote (http/https) src has no local file to
+// fetch here (WEBKIT_PARITY_PLAN.md Part IV Phase 13 is where subresource
+// fetching would land) and returns "" so callers fall back to the
+// existing [image: ...] placeholder text instead of a broken texture load.
+std::string ResolveHtmlImagePath(const std::string &src, const std::string &base_dir) {
+    if (src.empty()) return "";
+    if (src.compare(0, 7, "http://") == 0 || src.compare(0, 8, "https://") == 0) return "";
+    if (src[0] == '/') return src;
+    if (base_dir.empty()) return src;
+    return base_dir + "/" + src;
+}
+
+// Places `words` left-to-right starting at `indent_x`, wrapping to a new
+// line (advancing `cursor_y` by that completed line's own tallest word --
+// lines can mix font sizes/images/math, e.g. a <span style="font-size:...">
+// or an inline equation) whenever the next word wouldn't fit within
+// ctx.layout_width. Returns the cursor_y just past the last line. A run's
+// own (x,y) is fixed at the moment it's placed -- unlike a real reflow
+// engine, nothing here revisits an earlier run once its line is decided.
+// Every word on a line is vertically centered within that line's own
+// height (word_line_height's tallest entry) rather than all sharing the
+// line's top y -- a real browser's inline layout keeps mixed-size content
+// baseline-aligned, which (absent real font-metrics/ascent-descent
+// tracking here) centering approximates far better than top-alignment
+// does: a smaller run next to a taller one visually sits mid-row instead
+// of looking pinned to the row's top edge. This is why runs/images/math
+// can't be pushed to `out` as each word is placed (the old shape) -- a
+// line's height, and therefore every word's centering offset within it,
+// isn't known until the *last* word on that line is seen, so placement is
+// buffered per-line and only pushed once flush_line() knows `lh`.
+float HtmlFlushWords(std::vector<HtmlPendingWord> &words, float indent_x, float cursor_y, const HtmlLayoutCtx &ctx,
+                      HtmlLayout &out) {
+    if (words.empty()) return cursor_y;
+    auto word_width = [](const HtmlPendingWord &w) -> float {
+        if (w.is_image) return w.image_w;
+        if (w.is_math) return w.math.width;
+        return MeasureTextEx(g_font, w.text.c_str(), w.font_size, 0).x;
+    };
+    auto word_line_height = [](const HtmlPendingWord &w) -> float {
+        if (w.is_image) return w.image_h + 6.0f;
+        if (w.is_math) return std::max(w.math.height, w.font_size) + 6.0f;
+        return HtmlLineHeight(w.font_size);
+    };
+    float x = indent_x;
+    struct PlacedWord {
+        const HtmlPendingWord *w;
+        float x;
+    };
+    std::vector<PlacedWord> line;
+    auto flush_line = [&]() {
+        if (line.empty()) return;
+        float lh = 0;
+        for (const PlacedWord &pw : line) lh = std::max(lh, word_line_height(*pw.w));
+        for (const PlacedWord &pw : line) {
+            const HtmlPendingWord &w = *pw.w;
+            float y = cursor_y + (lh - word_line_height(w)) / 2.0f;
+            if (w.is_image) {
+                out.images.push_back({pw.x, y, w.image_w, w.image_h, w.image_path});
+            } else if (w.is_math) {
+                out.math_runs.push_back({pw.x, y, w.color, w.math});
+            } else {
+                out.runs.push_back(
+                    {pw.x, y, w.font_size, w.text, w.color, w.bold, w.italic, w.underline, w.strikethrough});
+            }
+        }
+        cursor_y += lh;
+        line.clear();
+        x = indent_x;
+    };
+    for (const HtmlPendingWord &w : words) {
+        if (w.text == "\n" && !w.is_image && !w.is_math) {
+            flush_line();
+            continue;
+        }
+        float word_w = word_width(w);
+        float space_w = line.empty() ? 0 : MeasureTextEx(g_font, " ", w.font_size, 0).x;
+        // ctx.layout_width is the page's absolute right edge (measured
+        // from the same x=0 indent_x itself is), constant regardless of
+        // indent -- matching every box-width formula elsewhere in this
+        // file (e.g. HtmlLayoutBlock's `ctx.layout_width - indent_x`
+        // background/border width). NOT indent_x + layout_width: that
+        // would treat layout_width as a *width* to add on top of indent_x,
+        // silently growing the right edge (and therefore the wrap column)
+        // the more a line is indented -- invisible at the small indents
+        // nested lists produce, but badly wrong for a deliberately
+        // narrowed+centered block (ComputedStyle::has_max_width), whose
+        // indent_x can be hundreds of pixels.
+        if (!line.empty() && x + space_w + word_w > ctx.layout_width) flush_line();
+        if (!line.empty()) x += MeasureTextEx(g_font, " ", w.font_size, 0).x;
+        line.push_back({&w, x});
+        x += word_w;
+    }
+    flush_line();
+    return cursor_y;
+}
+
+// Splits `text` on whitespace into words appended to `out`, each stamped
+// with `style`'s resolved formatting -- the DOM has no per-word style (a
+// Text node's effective style is always its parent element's, already
+// fully cascaded by ComputeStyles), so every word from the same text node
+// shares one HtmlPendingWord template. Known limitation: a word is always
+// drawn with a space before it once it's not the line's first (HtmlFlush
+// Words) -- source markup like "<span>word</span>." (no whitespace before
+// the '.') ends up with a space there anyway, since which two *sibling*
+// text nodes/elements had no whitespace between them in the original
+// source isn't tracked across this function's own per-text-node calls.
+// Correctly tracking that needs a shared "did the previous emitted content
+// end without trailing whitespace" flag threaded through every caller
+// (HtmlCollectInlineChild's element recursion too, not just adjacent text
+// nodes) -- judged not worth the added bookkeeping/regression risk for a
+// cosmetic-only gap.
+void HtmlCollectTextWords(const std::string &text, const ComputedStyle &style, const HtmlLayoutCtx &ctx,
+                           std::vector<HtmlPendingWord> &out) {
+    float fs = ctx.base_font_size * style.font_scale;
+    Color color = HtmlResolveColor(style, ctx);
+    size_t i = 0, n = text.size();
+    while (i < n) {
+        while (i < n && std::isspace(static_cast<unsigned char>(text[i]))) i++;
+        size_t start = i;
+        while (i < n && !std::isspace(static_cast<unsigned char>(text[i]))) i++;
+        if (i > start) {
+            out.push_back({text.substr(start, i - start), fs, color, style.bold, style.italic, style.underline,
+                            style.strikethrough});
+        }
+    }
+}
+
+void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlLayoutCtx &ctx, HtmlLayout &out);
+
+// Concatenates every descendant Text node's raw content in document order
+// -- <pre>'s own layout and a <math> node's own raw LaTeX source (both
+// below) need the literal text, not word-split.
+void HtmlCollectRawText(DomNode *node, std::string &out) {
+    for (auto &c : node->children) {
+        if (c->type == DomNodeType::Text) out += c->text;
+        else if (!c->style.display_none)
+            HtmlCollectRawText(c.get(), out);
+    }
+}
+
+// Handles exactly one inline-flow child `c` of some container (its
+// cascaded style already resolved onto c->style by ComputeStyles;
+// `parent_style` is only needed for the plain-Text case, whose own style
+// is its *parent* element's). Recurses into a container child (<span>,
+// <a>, <b>, ...) by calling itself over that child's own children --
+// stops descending at a nested block element (shouldn't normally occur
+// inside genuinely inline markup, but malformed pages do happen; treated
+// as inline anyway rather than breaking the flow, same tolerance
+// html_doc.cpp's own parser already extends to bad markup). Both
+// HtmlLayoutBlock's per-child dispatch (further down, for an inline child
+// of a block container) and this function's own container-recursion call
+// it the same way, so a leaf inline element (<img>, a <math> span, <br>)
+// is handled identically regardless of whether it's nested inside another
+// inline container or a *direct* child of a block element -- e.g.
+// "<p><img src=...></p>", exactly org-mode's own figure-export shape.
+// (An earlier version of this dispatch split those two call sites, and
+// the block-child one silently collected nothing for a childless element
+// like <img> in that position -- not even the bracketed placeholder.)
+void HtmlCollectInlineChild(DomNode *c, const ComputedStyle &parent_style, const HtmlLayoutCtx &ctx,
+                             std::vector<HtmlPendingWord> &out) {
+    if (c->type == DomNodeType::Text) {
+        HtmlCollectTextWords(c->text, parent_style, ctx, out);
+        return;
+    }
+    if (c->style.display_none) return;
+    if (c->tag == "br") {
+        out.push_back({"\n", ctx.base_font_size, ctx.default_color, false, false, false, false});
+        return;
+    }
+    if (c->tag == "img") {
+        auto alt_it = c->attrs.find("alt");
+        auto src_it = c->attrs.find("src");
+        std::string src = src_it != c->attrs.end() ? src_it->second : std::string();
+        std::string resolved = ResolveHtmlImagePath(src, ctx.base_dir);
+        Texture2D *tex = resolved.empty() ? nullptr : GetOrLoadOrgInlineImageTexture(resolved);
+        if (tex) {
+            float natural_w = static_cast<float>(tex->width) * ctx.zoom;
+            float natural_h = static_cast<float>(tex->height) * ctx.zoom;
+            auto attr_px = [&](const char *name) -> float {
+                auto it = c->attrs.find(name);
+                if (it == c->attrs.end()) return 0;
+                char *end = nullptr;
+                double v = std::strtod(it->second.c_str(), &end);
+                return end != it->second.c_str() ? static_cast<float>(v) : 0;
+            };
+            float want_w = attr_px("width"), want_h = attr_px("height");
+            float w, h;
+            if (want_w > 0 && want_h > 0) {
+                w = want_w;
+                h = want_h;
+            } else if (want_w > 0) {
+                w = want_w;
+                h = natural_h * (want_w / natural_w);
+            } else if (want_h > 0) {
+                h = want_h;
+                w = natural_w * (want_h / natural_h);
+            } else {
+                w = natural_w;
+                h = natural_h;
+            }
+            if (w > ctx.layout_width) {
+                float scale = ctx.layout_width / w;
+                w *= scale;
+                h *= scale;
+            }
+            HtmlPendingWord word;
+            word.font_size = ctx.base_font_size * c->style.font_scale;
+            word.color = HtmlResolveColor(c->style, ctx);
+            word.is_image = true;
+            word.image_path = resolved;
+            word.image_w = w;
+            word.image_h = h;
+            out.push_back(std::move(word));
+            return;
+        }
+        std::string label = "[image: " +
+                             (alt_it != c->attrs.end() && !alt_it->second.empty()
+                                  ? alt_it->second
+                                  : (src_it != c->attrs.end() ? Basename(src_it->second) : std::string("?"))) +
+                             "]";
+        out.push_back({label, ctx.base_font_size * c->style.font_scale, HtmlResolveColor(c->style, ctx), false,
+                        true, false, false});
+        return;
+    }
+    if (c->tag == "math") {
+        std::string latex;
+        HtmlCollectRawText(c, latex);
+        HtmlPendingWord word;
+        word.font_size = ctx.base_font_size * c->style.font_scale;
+        word.color = HtmlResolveColor(c->style, ctx);
+        word.is_math = true;
+        word.math = LayoutMathExpression(latex, word.font_size);
+        out.push_back(std::move(word));
+        return;
+    }
+    for (auto &gc : c->children) HtmlCollectInlineChild(gc.get(), c->style, ctx, out);
+}
+
+// Per-line cursor state HtmlLayoutPreNode (below) mutates as it walks a
+// <pre>'s descendant tree in document order -- line_index (not a running y,
+// so a text node that starts mid-line and ends after several more '\n's
+// doesn't need to hand a partially-advanced y back to its caller) times
+// line_h against start_y gives each emitted run's actual y, matching
+// HtmlLayoutPreformatted's own final cursor_y update below exactly.
+struct HtmlPreCursor {
+    float x = 0;
+    int line_index = 0;
+    float indent_x = 0;
+    float start_y = 0;
+    float font_size = 0;
+    float line_h = 0;
+    bool stripped_leading_newline = false;
+};
+
+// Recurses through a <pre>'s subtree carrying each element's own resolved
+// style down to whatever text it directly contains -- unlike a flattened
+// single-style render, a <span class="tok-X"> child (mep_org_html_code_
+// block's own per-token syntax-highlighting markup, kBuiltinOrgExport)
+// keeps its own color here instead of losing it to <pre>'s single ambient
+// style. Splits only on literal '\n' bytes within each text node (never on
+// width -- still no word-wrap); cur.x carries across sibling text/span
+// boundaries on the same line and only resets at indent_x on a real '\n',
+// so a highlighted token flows immediately after the plain text before it
+// with no gap, exactly like one flat run of that whole line would have.
+void HtmlLayoutPreNode(DomNode *node, const ComputedStyle &style, HtmlPreCursor &cur, const HtmlLayoutCtx &ctx,
+                        HtmlLayout &out) {
+    if (node->type == DomNodeType::Text) {
+        std::string text = node->text;
+        if (!cur.stripped_leading_newline) {
+            cur.stripped_leading_newline = true;
+            if (!text.empty() && text.front() == '\n') text.erase(text.begin());
+        }
+        Color color = HtmlResolveColor(style, ctx);
+        size_t start = 0, n = text.size();
+        while (start <= n) {
+            size_t nl = text.find('\n', start);
+            std::string piece = text.substr(start, (nl == std::string::npos ? n : nl) - start);
+            if (!piece.empty()) {
+                float y = cur.start_y + static_cast<float>(cur.line_index) * cur.line_h;
+                out.runs.push_back({cur.x, y, cur.font_size, piece, color, style.bold, style.italic, false, false});
+                cur.x += MeasureTextEx(g_font, piece.c_str(), cur.font_size, 0).x;
+            }
+            if (nl == std::string::npos) break;
+            cur.x = cur.indent_x;
+            cur.line_index++;
+            start = nl + 1;
+        }
+        return;
+    }
+    if (node->style.display_none) return;
+    for (auto &c : node->children) HtmlLayoutPreNode(c.get(), node->style, cur, ctx, out);
+}
+
+// <pre>: one run per contiguous same-styled span per source line,
+// positioned verbatim with no word-wrap -- wrapping would require either
+// truncating or re-flowing whitespace-significant content (code
+// indentation), neither of which stays "preformatted".
+void HtmlLayoutPreformatted(DomNode *node, float indent_x, float &cursor_y, const HtmlLayoutCtx &ctx,
+                             HtmlLayout &out) {
+    HtmlPreCursor cur;
+    cur.x = indent_x;
+    cur.indent_x = indent_x;
+    cur.start_y = cursor_y;
+    cur.font_size = ctx.base_font_size * node->style.font_scale;
+    cur.line_h = HtmlLineHeight(cur.font_size);
+    for (auto &c : node->children) HtmlLayoutPreNode(c.get(), node->style, cur, ctx, out);
+    // +1: matches the old flattened version's own loop, which always
+    // advanced cursor_y once more for the final (possibly unterminated)
+    // line after the last real '\n' -- line_index only counts '\n's
+    // actually seen, one short of the true line count.
+    cursor_y = cur.start_y + static_cast<float>(cur.line_index + 1) * cur.line_h;
+}
+
+constexpr float kHtmlListIndentPx = 24.0f;
+
+void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlLayoutCtx &ctx, HtmlLayout &out) {
+    if (node->style.display_none) return;
+    float line_h = HtmlLineHeight(ctx.base_font_size * node->style.font_scale);
+    cursor_y += node->style.margin_top_lines * line_h;
+
+    // "max-width: Nem" + a horizontal auto margin (ComputedStyle::
+    // has_max_width/margin_h_auto, html_doc.cpp) -- the standard idiom a
+    // real page (including this renderer's own kBuiltinOrgExport output)
+    // uses to center a readable column narrower than the viewport, most
+    // commonly on <body>. Narrows `indent_x` (centered within whatever
+    // width was already available at this nesting level) and `eff_ctx`'s
+    // layout_width for this node's own boxes AND its entire subtree below
+    // -- every remaining reference in this function reads `eff_ctx`/the
+    // adjusted `indent_x`, not the original `ctx` parameter, including the
+    // recursive HtmlLayoutBlock calls further down, which is what actually
+    // propagates the narrower width to children. Doesn't nest specially
+    // (an already-narrowed descendant with its own max-width just narrows
+    // further from whatever it was handed) -- consistent with real CSS,
+    // and the only case that matters in practice since % isn't supported.
+    HtmlLayoutCtx narrowed_ctx = ctx;
+    bool narrowed = false;
+    float unnarrowed_indent_x = indent_x;
+    if (node->style.has_max_width && node->style.margin_h_auto) {
+        float max_w_px = ctx.base_font_size * node->style.font_scale * node->style.max_width_em;
+        float avail = std::max(0.0f, ctx.layout_width - indent_x);
+        if (max_w_px < avail) {
+            indent_x += (avail - max_w_px) / 2.0f;
+            // ctx.layout_width is the page's absolute right-edge x
+            // (constant regardless of indent -- see HtmlFlushWords' own
+            // comment on this same convention), so the narrowed column's
+            // right edge is the *new* indent_x plus its own width, not
+            // max_w_px alone -- every box-width formula below (`eff_ctx.
+            // layout_width - indent_x`) would otherwise double-subtract
+            // this centering offset and draw a column narrower than
+            // intended, off-center toward the left.
+            narrowed_ctx.layout_width = indent_x + max_w_px;
+            narrowed = true;
+        }
+    }
+    const HtmlLayoutCtx &eff_ctx = narrowed ? narrowed_ctx : ctx;
+
+    // Pushed *before* this node's own content is laid out (a child's own
+    // background, pushed during the recursion below, lands at a later
+    // vector index than this one) so drawing HtmlLayout::backgrounds
+    // front-to-back paints this box first and a more specific descendant's
+    // on top of it, not the other way -- see HtmlBgRect's own comment.
+    // `h` is only known once cursor_y reflects this node's full content
+    // height, so it's filled in by finish_bg() at every one of this
+    // function's own return points instead of at push time.
+    float block_top = cursor_y;
+    size_t bg_index = node->style.has_bg ? out.backgrounds.size() : static_cast<size_t>(-1);
+    if (bg_index != static_cast<size_t>(-1)) {
+        // A centered max-width element's *background* still spans the full
+        // width it would have without the constraint (unnarrowed_indent_x/
+        // ctx.layout_width, not the narrowed column) -- real CSS special-
+        // cases exactly this for <body> (its background paints the whole
+        // canvas even though its box is narrower), which is what keeps a
+        // centered page's side margins showing the page's own background
+        // instead of this pane's dark theme color bleeding through. Every
+        // other box (border, content wrap) still uses the narrowed column
+        // -- only the background fill gets the wider canvas treatment.
+        float bg_x = narrowed ? unnarrowed_indent_x : indent_x;
+        float bg_w = narrowed ? (ctx.layout_width - unnarrowed_indent_x) : (eff_ctx.layout_width - indent_x);
+        out.backgrounds.push_back(
+            {bg_x, block_top, bg_w, 0.0f, Color{node->style.bg_r, node->style.bg_g, node->style.bg_b, 255}});
+    }
+    auto finish_bg = [&]() {
+        if (bg_index != static_cast<size_t>(-1)) out.backgrounds[bg_index].h = cursor_y - block_top;
+    };
+    const ComputedStyle &cs = node->style;
+    bool has_border = cs.border_top.present || cs.border_right.present || cs.border_bottom.present ||
+                       cs.border_left.present;
+    size_t border_index = has_border ? out.borders.size() : static_cast<size_t>(-1);
+    if (border_index != static_cast<size_t>(-1)) {
+        HtmlBorderRect br;
+        br.x = indent_x;
+        br.y = block_top;
+        br.w = eff_ctx.layout_width - indent_x;
+        if (cs.border_top.present) {
+            br.top_w = cs.border_top.width_px;
+            br.top_c = Color{cs.border_top.r, cs.border_top.g, cs.border_top.b, 255};
+        }
+        if (cs.border_right.present) {
+            br.right_w = cs.border_right.width_px;
+            br.right_c = Color{cs.border_right.r, cs.border_right.g, cs.border_right.b, 255};
+        }
+        if (cs.border_bottom.present) {
+            br.bottom_w = cs.border_bottom.width_px;
+            br.bottom_c = Color{cs.border_bottom.r, cs.border_bottom.g, cs.border_bottom.b, 255};
+        }
+        if (cs.border_left.present) {
+            br.left_w = cs.border_left.width_px;
+            br.left_c = Color{cs.border_left.r, cs.border_left.g, cs.border_left.b, 255};
+        }
+        out.borders.push_back(br);
+    }
+    auto finish_border = [&]() {
+        if (border_index != static_cast<size_t>(-1)) out.borders[border_index].h = cursor_y - block_top;
+    };
+
+    if (node->tag == "hr") {
+        cursor_y += line_h / 2.0f;
+        out.rules.push_back({indent_x, cursor_y, eff_ctx.layout_width - indent_x});
+        cursor_y += line_h / 2.0f;
+        finish_bg();
+        finish_border();
+        cursor_y += node->style.margin_bottom_lines * line_h;
+        return;
+    }
+    if (node->style.preserve_whitespace) {
+        HtmlLayoutPreformatted(node, indent_x, cursor_y, eff_ctx, out);
+        finish_bg();
+        finish_border();
+        cursor_y += node->style.margin_bottom_lines * line_h;
+        return;
+    }
+    if (node->tag == "math") {
+        // Display math (block per WalkAndStyle's own "display" attr
+        // override, html_doc.cpp) -- centered on its own line, same
+        // treatment real browsers give \[..\]/$$..$$.
+        std::string latex;
+        HtmlCollectRawText(node, latex);
+        float fs = eff_ctx.base_font_size * node->style.font_scale;
+        MathLayoutResult ml = LayoutMathExpression(latex, fs);
+        float box_x = indent_x + std::max(0.0f, (eff_ctx.layout_width - indent_x - ml.width) / 2.0f);
+        out.math_runs.push_back({box_x, cursor_y, HtmlResolveColor(node->style, eff_ctx), std::move(ml)});
+        cursor_y += out.math_runs.back().layout.height;
+        finish_bg();
+        finish_border();
+        cursor_y += node->style.margin_bottom_lines * line_h;
+        return;
+    }
+
+    float my_indent = indent_x + static_cast<float>(node->style.list_depth) * kHtmlListIndentPx;
+    std::vector<HtmlPendingWord> words;
+    if (node->style.is_list_item) {
+        std::string marker =
+            node->style.ordered_list_item ? (std::to_string(node->style.list_item_index) + ". ") : "* ";
+        words.push_back({marker, eff_ctx.base_font_size * node->style.font_scale, HtmlResolveColor(node->style, eff_ctx),
+                          node->style.bold, node->style.italic, false, false});
+    }
+    auto flush_words = [&]() {
+        if (words.empty()) return;
+        cursor_y = HtmlFlushWords(words, my_indent, cursor_y, eff_ctx, out);
+        words.clear();
+    };
+
+    for (auto &c : node->children) {
+        if (c->type == DomNodeType::Text) {
+            HtmlCollectTextWords(c->text, node->style, eff_ctx, words);
+            continue;
+        }
+        if (c->style.display_none) continue;
+        if (c->style.block) {
+            flush_words();
+            HtmlLayoutBlock(c.get(), my_indent, cursor_y, eff_ctx, out);
+        } else {
+            HtmlCollectInlineChild(c.get(), node->style, eff_ctx, words);
+        }
+    }
+    flush_words();
+    finish_bg();
+    finish_border();
+    cursor_y += node->style.margin_bottom_lines * line_h;
+}
+
+HtmlLayout LayoutHtmlDoc(const HtmlDoc &doc, const HtmlLayoutCtx &ctx) {
+    HtmlLayout out;
+    if (!doc.root) return out;
+    float cursor_y = 0;
+    for (auto &c : doc.root->children) {
+        if (c->type != DomNodeType::Element || c->style.display_none) continue;
+        HtmlLayoutBlock(c.get(), 0, cursor_y, ctx, out);
+    }
+    out.total_height = cursor_y;
+    return out;
+}
+
+// One run's bold/italic/underline/strikethrough, at that run's own
+// font_size -- unlike the org-emphasis decoration renderer this mirrors
+// (DrawPane's main per-row decoration loop, further down), there's no
+// already-drawn-upright copy underneath to erase-and-redraw over first:
+// each HtmlRun is only ever drawn once, here, so italic's shear can wrap
+// the actual draw call directly with no background-cover step.
+void DrawHtmlRun(float x, float y, const HtmlRun &run) {
+    bool sheared = run.italic;
+    if (sheared) {
+        rlPushMatrix();
+        float baseline_y = y + run.font_size;
+        rlTranslatef(x, baseline_y, 0);
+        // clang-format off
+        float shear[16] = {
+            1.0f,   0.0f, 0.0f, 0.0f,
+            -0.22f, 1.0f, 0.0f, 0.0f,
+            0.0f,   0.0f, 1.0f, 0.0f,
+            0.0f,   0.0f, 0.0f, 1.0f,
+        };
+        // clang-format on
+        rlMultMatrixf(shear);
+        rlTranslatef(-x, -baseline_y, 0);
+    }
+    DrawTextEx(g_font, run.text.c_str(), Vector2{x, y}, run.font_size, 0, run.color);
+    // Same double-draw-offset-1px bold fake as org emphasis (g_font has no
+    // real bold face) -- drawn inside the same shear so a bold+italic run
+    // doesn't end up half-sheared.
+    if (run.bold) DrawTextEx(g_font, run.text.c_str(), Vector2{x + 1, y}, run.font_size, 0, run.color);
+    if (sheared) rlPopMatrix();
+    if (run.underline || run.strikethrough) {
+        int text_w = std::max(1, static_cast<int>(MeasureTextEx(g_font, run.text.c_str(), run.font_size, 0).x));
+        if (run.underline) {
+            DrawRectangle(static_cast<int>(x), static_cast<int>(y + run.font_size + 2), text_w, 1, run.color);
+        }
+        if (run.strikethrough) {
+            DrawRectangle(static_cast<int>(x), static_cast<int>(y + run.font_size / 2), text_w, 1, run.color);
+        }
+    }
+}
+
 void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_active) {
     int line_height = LineHeight();
     int header_h = PaneHeaderHeight();
@@ -9596,6 +11969,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     const PdfSession *pdf_sess = g_editor.GetPdf(pane.buffer_id);
     const OfficeSession *office_sess = g_editor.GetOffice(pane.buffer_id);
     const SheetSession *sheet_sess = g_editor.GetSheet(pane.buffer_id);
+    const HtmlSession *html_sess = g_editor.GetHtml(pane.buffer_id);
     std::string suffix = buf.modified ? " [+]" : "";
     float label_y = y + (header_h - font_size) / 2.0f;
     if (pane.buffer_tabs.size() > 1) {
@@ -9628,18 +12002,39 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 DrawLine(static_cast<int>(seg_x), static_cast<int>(y), static_cast<int>(seg_x),
                           static_cast<int>(y + header_h), ResolveHlGroup("Border"));
             }
-            // Only registered on the pane that's already active: clicking a
-            // chip just switches this pane's own current buffer tab, and
-            // CurPane() (what GoToPaneBufferTab acts on) only resolves back
-            // to *this* pane when it's the one with focus.
-            if (is_active) {
-                RegisterClickRegion(Rectangle{seg_x, y, seg_w, static_cast<float>(header_h)},
-                                     [i] { g_editor.GoToPaneBufferTab(i); });
+            // Registered regardless of is_active now (not just the
+            // already-focused pane): the click action focuses `pane.id`
+            // *first*, so CurPane() (what GoToPaneBufferTab acts on)
+            // always resolves to this pane by the time it runs, whether
+            // or not it already had focus -- lets clicking a chip on any
+            // pane both switch to and jump straight into that tab in one
+            // click. Also pushed to g_pane_tab_chip_rects (main.cpp's own
+            // pane-mouse-interaction system, not g_click_regions) so it's
+            // draggable too.
+            {
+                Rectangle chip_rect{seg_x, y, seg_w, static_cast<float>(header_h)};
+                g_pane_tab_chip_rects.push_back({pane.id, pane.buffer_tabs[i], chip_rect});
+                int pane_id = pane.id;
+                RegisterClickRegion(chip_rect, [pane_id, i] {
+                    g_editor.FocusPaneById(pane_id);
+                    g_editor.GoToPaneBufferTab(i);
+                });
             }
             seg_x = next_x;
         }
     } else {
         DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), header_h, header_bg);
+        // A single-buffer pane's whole plain header counts as "the tab"
+        // for click-to-focus and drag-and-drop purposes too, not just a
+        // multi-tab strip's own chips -- there's still exactly one
+        // buffer to drag out, it's just not drawn as a chip when there's
+        // nothing else to distinguish it from.
+        {
+            Rectangle header_rect{x, y, w, static_cast<float>(header_h)};
+            g_pane_tab_chip_rects.push_back({pane.id, pane.buffer_id, header_rect});
+            int pane_id = pane.id;
+            RegisterClickRegion(header_rect, [pane_id] { g_editor.FocusPaneById(pane_id); });
+        }
         if (term_sess) {
             const std::string &live_title =
                 (term_sess->vterm && !term_sess->vterm->Title().empty()) ? term_sess->vterm->Title() : term_sess->title;
@@ -9653,6 +12048,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                           std::to_string(img_sess->doc->Height()) + ") " +
                           std::to_string(static_cast<int>(img_sess->zoom * 100.0f + 0.5f)) + "%";
             }
+            DrawTextEx(g_font, label.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
+        } else if (html_sess) {
+            std::string title = html_sess->doc.title.empty() ? html_sess->source : html_sess->doc.title;
+            std::string label = "HTML: " + title + "  " + std::to_string(static_cast<int>(html_sess->zoom * 100.0f + 0.5f)) + "%" +
+                                 (html_sess->theme_colors ? "  [theme, Ctrl-R]" : "  [page colors, Ctrl-R]");
             DrawTextEx(g_font, label.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
         } else if (pdf_sess && pdf_sess->search_active) {
             // Takes over the header the same way Mode::Command's cmdline
@@ -9717,6 +12117,43 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     float content_y = y + header_h;
     float content_h = h - header_h;
 
+    // Click anywhere in the pane's own content area (below the header,
+    // which already has its own focus-on-click handling above) to focus
+    // this pane -- deliberately focus-only, not click-to-place-cursor
+    // (no such feature exists yet in any content-type branch below; this
+    // register call doesn't interfere with one being added later, since
+    // g_click_regions just fires every matching region's action, and a
+    // future click-to-place-cursor handler would be a second, more
+    // specific region layered on top). Registered unconditionally,
+    // regardless of buffer/content type, same as the header registration.
+    //
+    // Excludes the office pane's own toolbar rows (its own real height
+    // computed the identical way the office branch below computes
+    // toolbar_h, before that branch's own more specific button regions
+    // register): g_click_regions is first-match-wins by registration
+    // order, and this catch-all registers *before* any content-type
+    // branch's own buttons -- left covering the toolbar's own pixels, it
+    // would silently win over every toolbar button underneath it,
+    // dispatching FocusPaneById instead (a real, latent bug caught live
+    // under Xvfb -- clicking any toolbar button just no-op'd invisibly).
+    // While an office toolbar dropdown is open, its popup (content-area
+    // pixels, but registered much later -- after the document's own paint
+    // pass) would otherwise lose every click to this earlier-registered
+    // catch-all under the same first-match-wins ordering as the toolbar-vs-
+    // catch-all bug above. Skip registering it entirely in that case so
+    // popup item clicks (registered later) are the only match.
+    bool office_dropdown_open = office_sess && !office_sess->doc.paragraphs.empty() && g_office_dropdown_open != -1;
+    if (!office_dropdown_open) {
+        float focus_click_y = content_y, focus_click_h = content_h;
+        if (office_sess && !office_sess->doc.paragraphs.empty()) {
+            float office_toolbar_h = static_cast<float>(header_h) * 2.0f;
+            focus_click_y += office_toolbar_h;
+            focus_click_h = std::max(0.0f, focus_click_h - office_toolbar_h);
+        }
+        RegisterClickRegion(Rectangle{x, focus_click_y, w, focus_click_h},
+                            [pane_id = pane.id] { g_editor.FocusPaneById(pane_id); });
+    }
+
     if (term_sess) {
         // Kept sized to the pane's real geometry regardless of which view
         // (below) is currently drawn, so a full-screen program inside it
@@ -9754,6 +12191,111 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
                           static_cast<int>(content_h));
         DrawTextureEx(tex, Vector2{x - img_sess->pan_x, content_y - img_sess->pan_y}, 0.0f, img_sess->zoom, WHITE);
+        EndScissorMode();
+        DrawPaneBorder(x, y, w, h, is_active);
+        return;
+    }
+
+    if (html_sess) {
+        g_editor.ResizeHtmlViewport(pane.buffer_id, static_cast<int>(w), static_cast<int>(content_h));
+        constexpr float kHtmlPad = 12.0f;
+        HtmlLayoutCtx ctx{std::max(50.0f, w - kHtmlPad * 2.0f), g_font_size * html_sess->zoom, ResolveHlGroup("Normal")};
+        // <img src="relative/path"> resolves against the open file's own
+        // directory (a remote source -- opened via mep.browse_command's own
+        // curl-to-tempfile fetch -- has no useful "directory" of its own for
+        // this, so its images just fall back to the bracketed placeholder;
+        // see ResolveHtmlImagePath's own header).
+        ctx.base_dir = std::filesystem::path(html_sess->source).parent_path().string();
+        ctx.zoom = html_sess->zoom;
+        HtmlLayout layout = LayoutHtmlDoc(html_sess->doc, ctx);
+        // Layout depends on real font metrics (MeasureTextEx), so unlike
+        // ResizePdfViewport's pure-geometry clamp, the max scroll_y this
+        // frame's own content actually supports can only be known here,
+        // after LayoutHtmlDoc runs -- see ClampHtmlScroll's own comment.
+        g_editor.ClampHtmlScroll(pane.buffer_id, std::max(0.0f, layout.total_height - content_h));
+
+        BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
+                          static_cast<int>(content_h));
+        DrawRectangle(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
+                      static_cast<int>(content_h), ResolveHlGroup("NormalBg"));
+        float top = content_y - html_sess->scroll_y;
+        bool theme = html_sess->theme_colors;
+        // Element background-color boxes (layout.backgrounds, pushed in
+        // document order by HtmlLayoutBlock) -- drawn before every other
+        // layer below so glyphs/rules/images always land on top of their
+        // own box, never under it. Front-to-back in document order also
+        // means a nested box with its own distinct background (e.g.
+        // mep_org_html_code_block's own header-over-body split, main.cpp's
+        // kBuiltinOrgExport) paints over its ancestor's, matching real
+        // stacking order despite this renderer having no z-index concept.
+        // Skipped entirely in theme mode -- the base NormalBg fill just
+        // above already covers the whole pane, so a page's own background
+        // boxes would otherwise paint page-colored islands over it.
+        if (!theme) {
+            for (const HtmlBgRect &bg : layout.backgrounds) {
+                float ry = top + bg.y;
+                if (ry + bg.h < content_y || ry > content_y + content_h) continue;
+                DrawRectangle(static_cast<int>(x + kHtmlPad + bg.x), static_cast<int>(ry), static_cast<int>(bg.w),
+                              static_cast<int>(bg.h), bg.color);
+            }
+        }
+        // Element border boxes (layout.borders, same document-order/paint-
+        // order reasoning as layout.backgrounds just above) -- each edge is
+        // its own filled rectangle rather than DrawRectangleLines, since
+        // the four widths/colors can all differ (a plain DrawRectangleLines
+        // call has one uniform width/color for all four sides). In theme
+        // mode every edge uses the same theme border color instead of its
+        // own CSS color, matching HtmlRule's ("<hr>") own always-theme-
+        // colored line just below (which never had a CSS color to begin
+        // with, so it needs no such branch itself).
+        Color theme_border = ResolveHlGroup("Border");
+        for (const HtmlBorderRect &br : layout.borders) {
+            float ry = top + br.y;
+            if (ry + br.h < content_y || ry > content_y + content_h) continue;
+            float bx = x + kHtmlPad + br.x;
+            if (br.top_w > 0.0f) DrawRectangle(static_cast<int>(bx), static_cast<int>(ry), static_cast<int>(br.w),
+                                                static_cast<int>(br.top_w), theme ? theme_border : br.top_c);
+            if (br.bottom_w > 0.0f)
+                DrawRectangle(static_cast<int>(bx), static_cast<int>(ry + br.h - br.bottom_w), static_cast<int>(br.w),
+                              static_cast<int>(br.bottom_w), theme ? theme_border : br.bottom_c);
+            if (br.left_w > 0.0f) DrawRectangle(static_cast<int>(bx), static_cast<int>(ry), static_cast<int>(br.left_w),
+                                                 static_cast<int>(br.h), theme ? theme_border : br.left_c);
+            if (br.right_w > 0.0f)
+                DrawRectangle(static_cast<int>(bx + br.w - br.right_w), static_cast<int>(ry),
+                              static_cast<int>(br.right_w), static_cast<int>(br.h), theme ? theme_border : br.right_c);
+        }
+        for (const HtmlRule &r : layout.rules) {
+            float ry = top + r.y;
+            if (ry < content_y - 4 || ry > content_y + content_h + 4) continue;
+            DrawLine(static_cast<int>(x + kHtmlPad + r.x), static_cast<int>(ry),
+                      static_cast<int>(x + kHtmlPad + r.x + r.w), static_cast<int>(ry), ResolveHlGroup("Border"));
+        }
+        Color theme_fg = ResolveHlGroup("Normal");
+        for (const HtmlRun &run : layout.runs) {
+            float ry = top + run.y;
+            if (ry + run.font_size < content_y || ry > content_y + content_h) continue;  // cheap vertical culling
+            if (!theme) {
+                DrawHtmlRun(x + kHtmlPad + run.x, ry, run);
+            } else {
+                HtmlRun themed_run = run;
+                themed_run.color = theme_fg;
+                DrawHtmlRun(x + kHtmlPad + run.x, ry, themed_run);
+            }
+        }
+        for (const HtmlImageRun &img : layout.images) {
+            float ry = top + img.y;
+            if (ry + img.h < content_y || ry > content_y + content_h) continue;
+            Texture2D *tex = theme ? GetOrLoadThemedHtmlImageTexture(img.path) : GetOrLoadOrgInlineImageTexture(img.path);
+            if (!tex) continue;  // e.g. the file was removed/moved since layout ran this same frame
+            Rectangle src{0, 0, static_cast<float>(tex->width), static_cast<float>(tex->height)};
+            Rectangle dst{x + kHtmlPad + img.x, ry, img.w, img.h};
+            DrawTexturePro(*tex, src, dst, Vector2{0, 0}, 0.0f, WHITE);
+        }
+        for (const HtmlMathRun &m : layout.math_runs) {
+            float ry = top + m.y;
+            if (ry + m.layout.height < content_y || ry > content_y + content_h) continue;
+            DrawMathLayout(x + kHtmlPad + m.x, ry, m.layout, theme ? theme_fg : m.color);
+        }
         EndScissorMode();
         DrawPaneBorder(x, y, w, h, is_active);
         return;
@@ -9815,35 +12357,94 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     }
 
     if (office_sess && !office_sess->doc.paragraphs.empty()) {
-        // Toolbar row (Phase 5): Bold/Italic/Underline buttons reflecting
-        // the format at the cursor (OfficeNormal) or uniformly across the
-        // selection (OfficeVisual) -- the mouse-click equivalent of the
-        // b/i/u keybindings (Editor::ToggleOfficeFormat), satisfying the
-        // "richer top bar" the office pane was asked for up front. Shrinks
-        // content_y/content_h in place (safe: every path through this
-        // office branch ends in `return`, so nothing after it in DrawPane
-        // reads the pre-toolbar values for this call).
-        float toolbar_h = static_cast<float>(header_h);
+        // Toolbar: 2 rows (row 1 formatting -- font family/size, B/I/U/S,
+        // alignment, superscript/subscript, text/highlight color; row 2
+        // insert/actions -- bullet/numbered list, special chars, math,
+        // table, image, undo/redo, zoom) reflecting the format at the
+        // cursor (OfficeNormal) or uniformly across the selection
+        // (OfficeVisual), same mouse-click-equivalent-of-a-keybinding
+        // shape the original single-row B/I/U toolbar established.
+        // Shrinks content_y/content_h in place (safe: every path through
+        // this office branch ends in `return`, so nothing after it in
+        // DrawPane reads the pre-toolbar values for this call).
+        float row_h = static_cast<float>(header_h);
+        float toolbar_h = row_h * 2.0f;
         DrawRectangle(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
                       static_cast<int>(toolbar_h), ResolveHlGroup("MenuBar"));
-        struct ToolbarBtn { char which; const char *label; };
-        static const ToolbarBtn kBtns[] = {{'b', "B"}, {'i', "I"}, {'u', "U"}};
-        float btn_x = x + 6;
-        float btn_w = 28.0f, btn_h = toolbar_h - 6.0f;
-        float btn_y = content_y + 3.0f;
-        for (const ToolbarBtn &btn : kBtns) {
-            bool active = g_editor.OfficeFormatActive(btn.which);
+        float btn_h = row_h - 6.0f;
+        float row1_y = content_y + 3.0f;
+        float row2_y = content_y + row_h + 3.0f;
+        float row1_x = x + 6, row2_x = x + 6;
+
+        // Draws one text-label button at (*bx, by), advancing *bx past it;
+        // returns the button's own rect (callers open a dropdown directly
+        // below it).
+        auto draw_btn = [&](float *bx, float by, const std::string &label, bool active,
+                             const std::function<void()> &on_click) -> Rectangle {
+            Vector2 ls = MeasureTextEx(g_font, label.c_str(), font_size, 0);
+            float bw = ls.x + 12.0f;
+            Rectangle rect{*bx, by, bw, btn_h};
             Color bg = active ? ResolveHlGroup("Visual") : ResolveHlGroup("TabActive");
-            DrawRectangle(static_cast<int>(btn_x), static_cast<int>(btn_y), static_cast<int>(btn_w),
-                          static_cast<int>(btn_h), bg);
-            Vector2 label_size = MeasureTextEx(g_font, btn.label, font_size, 0);
-            DrawTextEx(g_font, btn.label,
-                      Vector2{btn_x + (btn_w - label_size.x) / 2.0f, btn_y + (btn_h - font_size) / 2.0f}, font_size, 0,
-                      ResolveHlGroup("Normal"));
+            DrawRectangle(static_cast<int>(rect.x), static_cast<int>(rect.y), static_cast<int>(rect.width),
+                          static_cast<int>(rect.height), bg);
+            DrawTextEx(g_font, label.c_str(),
+                      Vector2{rect.x + (rect.width - ls.x) / 2.0f, rect.y + (rect.height - font_size) / 2.0f},
+                      font_size, 0, ResolveHlGroup("Normal"));
+            RegisterClickRegion(rect, on_click);
+            *bx += bw + 4.0f;
+            return rect;
+        };
+
+        // --- Row 1: font family/size, B/I/U/S, alignment, super/subscript, colors ---
+        Rectangle font_family_btn =
+            draw_btn(&row1_x, row1_y, "Font", g_office_dropdown_open == kOfficeDropdownFontFamily, [] {
+                g_office_dropdown_open = g_office_dropdown_open == kOfficeDropdownFontFamily ? -1 : kOfficeDropdownFontFamily;
+            });
+        Rectangle font_size_btn =
+            draw_btn(&row1_x, row1_y, "Size", g_office_dropdown_open == kOfficeDropdownFontSize, [] {
+                g_office_dropdown_open = g_office_dropdown_open == kOfficeDropdownFontSize ? -1 : kOfficeDropdownFontSize;
+            });
+        struct SimpleBtn { char which; const char *label; };
+        static const SimpleBtn kFmtBtns[] = {{'b', "B"}, {'i', "I"}, {'u', "U"}, {'s', "S"}};
+        for (const SimpleBtn &btn : kFmtBtns) {
             char which = btn.which;
-            RegisterClickRegion(Rectangle{btn_x, btn_y, btn_w, btn_h}, [which] { g_editor.ToggleOfficeFormat(which); });
-            btn_x += btn_w + 6.0f;
+            draw_btn(&row1_x, row1_y, btn.label, g_editor.OfficeFormatActive(which),
+                      [which] { g_editor.ToggleOfficeFormat(which); });
         }
+        struct AlignBtn { DocParagraph::Align align; const char *label; };
+        static const AlignBtn kAlignBtns[] = {
+            {DocParagraph::Align::Left, "L"}, {DocParagraph::Align::Center, "C"},
+            {DocParagraph::Align::Right, "R"}, {DocParagraph::Align::Justify, "J"}};
+        for (const AlignBtn &btn : kAlignBtns) {
+            DocParagraph::Align align = btn.align;
+            draw_btn(&row1_x, row1_y, btn.label, g_editor.OfficeAlignmentActive(align),
+                      [align] { g_editor.SetOfficeAlignment(align); });
+        }
+        draw_btn(&row1_x, row1_y, "Sup", false, [] { g_editor.ToggleOfficeSuperscript(); });
+        draw_btn(&row1_x, row1_y, "Sub", false, [] { g_editor.ToggleOfficeSubscript(); });
+        Rectangle text_color_btn = draw_btn(&row1_x, row1_y, "Tc", g_office_dropdown_open == kOfficeDropdownTextColor, [] {
+            g_office_dropdown_open = g_office_dropdown_open == kOfficeDropdownTextColor ? -1 : kOfficeDropdownTextColor;
+        });
+        Rectangle highlight_btn = draw_btn(&row1_x, row1_y, "Hi", g_office_dropdown_open == kOfficeDropdownHighlight, [] {
+            g_office_dropdown_open = g_office_dropdown_open == kOfficeDropdownHighlight ? -1 : kOfficeDropdownHighlight;
+        });
+
+        // --- Row 2: lists, special chars, math, table, image, undo/redo, zoom ---
+        draw_btn(&row2_x, row2_y, "Bul", g_editor.OfficeListKindActive(DocParagraph::ListKind::Bullet),
+                  [] { g_editor.SetOfficeListKind(DocParagraph::ListKind::Bullet); });
+        draw_btn(&row2_x, row2_y, "Num", g_editor.OfficeListKindActive(DocParagraph::ListKind::Numbered),
+                  [] { g_editor.SetOfficeListKind(DocParagraph::ListKind::Numbered); });
+        Rectangle special_btn = draw_btn(&row2_x, row2_y, "Sym", g_office_dropdown_open == kOfficeDropdownSpecialChars, [] {
+            g_office_dropdown_open = g_office_dropdown_open == kOfficeDropdownSpecialChars ? -1 : kOfficeDropdownSpecialChars;
+        });
+        draw_btn(&row2_x, row2_y, "fx", false, [] { g_editor.InsertOfficeMath(); });
+        draw_btn(&row2_x, row2_y, "Tbl", false, [] { g_editor.InsertOfficeTablePrompt(); });
+        draw_btn(&row2_x, row2_y, "Img", false, [] { g_editor.InsertOfficeImagePrompt(); });
+        draw_btn(&row2_x, row2_y, "Un", false, [] { g_editor.UndoOffice(); });
+        draw_btn(&row2_x, row2_y, "Re", false, [] { g_editor.RedoOffice(); });
+        draw_btn(&row2_x, row2_y, "Z-", false, [] { g_editor.SetOfficeZoom(1.0f / 1.1f); });
+        draw_btn(&row2_x, row2_y, "Z+", false, [] { g_editor.SetOfficeZoom(1.1f); });
+
         content_y += toolbar_h;
         content_h -= toolbar_h;
 
@@ -9873,14 +12474,48 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // current scroll position, else advance a row at a time until it's
         // back in view" shape -- can't live in editor.cpp (raylib-free, no
         // MeasureTextEx), see ResizeOfficeViewport's own comment for why.
+        // steps_left mirrors UpdateScrollForPane's own cursor_delta/cap
+        // smoothing (its comment has the full reasoning): capped to how
+        // far cursor_para itself moved since the last call, so a
+        // paragraph's anchored image/table -- OfficeParagraphExtraHeight,
+        // added to `used` below; the scan used to ignore it completely, a
+        // documented v1 gap that let the cursor walk visibly off-screen
+        // with no scroll happening at all before an eventual multi-step
+        // catch-up -- slides into view over a few frames (this scan reruns
+        // every rendered frame) instead of jumping in one, while a
+        // genuinely large cursor move (a picker jump, Ctrl-Home-equivalent)
+        // still lands in a single frame since steps_left grows with it too.
+        int para_delta = (office_sess->scroll_follow_last_cursor_para < 0)
+                              ? para_count
+                              : std::abs(cp - office_sess->scroll_follow_last_cursor_para);
+        g_editor.SetOfficeScrollFollowCursorPara(pane.buffer_id, cp);
+        int steps_left = std::max(1, para_delta);
+
         int scroll_para = office_sess->scroll_para;
         int scroll_line = office_sess->scroll_line_in_para;
         bool cursor_before_scroll = (cp < scroll_para) || (cp == scroll_para && cursor_line_in_para < scroll_line);
         if (cursor_before_scroll) {
-            scroll_para = cp;
-            scroll_line = cursor_line_in_para;
+            // Steps scroll_para/scroll_line backward one wrap-line (or, at
+            // a paragraph's own first line, one paragraph) at a time until
+            // it reaches (cp, cursor_line_in_para) or steps_left runs out
+            // -- can never step past it into a lower paragraph, since this
+            // check runs before every decrement and cp/cursor_line_in_para
+            // is itself a coordinate this same stepping scheme visits.
+            for (; steps_left > 0 && !(scroll_para == cp && scroll_line <= cursor_line_in_para); steps_left--) {
+                if (scroll_line > 0) {
+                    scroll_line--;
+                } else if (scroll_para > 0) {
+                    scroll_para--;
+                    const DocParagraph &ppara = doc.paragraphs[scroll_para];
+                    std::vector<OfficeWrapLine> pwl = WordWrapOfficeParagraph(
+                        ppara, max_width, body_size * OfficeHeadingMultiplier(ppara.heading_level));
+                    scroll_line = std::max(0, static_cast<int>(pwl.size()) - 1);
+                } else {
+                    break;
+                }
+            }
         } else {
-            for (;;) {
+            for (; steps_left > 0; steps_left--) {
                 float used = 0.0f;
                 bool found = false;
                 for (int pi = scroll_para; pi < para_count; pi++) {
@@ -9904,6 +12539,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                             overflowed = true;
                             break;
                         }
+                    }
+                    if (!overflowed && !found) {
+                        used += OfficeParagraphExtraHeight(doc, para, max_width, body_size);
+                        if (used > content_h) overflowed = true;
                     }
                     if (overflowed || found) break;
                 }
@@ -9963,9 +12602,19 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     }
                     line_x = para.align == DocParagraph::Align::Center ? x + (w - total_w) / 2.0f : x + w - pad - total_w;
                 }
-                if (para.bullet && li == 0) {
+                if (para.list_kind == DocParagraph::ListKind::Bullet && li == 0) {
                     DrawTextEx(OfficeFontFor(DocFormat{}), "\xE2\x80\xA2 ", Vector2{line_x, draw_y}, size, 0, text_color);
                     line_x += MeasureTextEx(OfficeFontFor(DocFormat{}), "\xE2\x80\xA2 ", size, 0).x;
+                } else if (para.list_kind == DocParagraph::ListKind::Numbered && li == 0) {
+                    // Displayed number is "position within the current run
+                    // of consecutive Numbered paragraphs", computed here
+                    // rather than stored -- see DocParagraph::ListKind's
+                    // own comment (office_doc.h) for why.
+                    int num = 1;
+                    for (int k = pi - 1; k >= 0 && doc.paragraphs[k].list_kind == DocParagraph::ListKind::Numbered; k--) num++;
+                    std::string marker = std::to_string(num) + ". ";
+                    DrawTextEx(OfficeFontFor(DocFormat{}), marker.c_str(), Vector2{line_x, draw_y}, size, 0, text_color);
+                    line_x += MeasureTextEx(OfficeFontFor(DocFormat{}), marker.c_str(), size, 0).x;
                 }
                 if (office_visual && pi >= sel_pa && pi <= sel_pb) {
                     int hl_start = (pi == sel_pa) ? sel_ca : 0;
@@ -10001,12 +12650,50 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     for (auto &ch : t) {
                         if (ch == '\t') ch = ' ';
                     }
-                    Font &f = OfficeFontFor(r.fmt);
-                    DrawTextEx(f, t.c_str(), Vector2{run_x, draw_y}, size, 0, text_color);
-                    float rw = MeasureTextEx(f, t.c_str(), size, 0).x;
-                    if (r.fmt.underline || r.fmt.strike) {
-                        float uy = draw_y + (r.fmt.strike ? size * 0.5f : size * 0.95f);
-                        DrawLineEx(Vector2{run_x, uy}, Vector2{run_x + rw, uy}, 1.0f, text_color);
+                    // Explicit font_size_pt overrides the paragraph's own
+                    // heading/body size; superscript/subscript additionally
+                    // scale down and shift the baseline. Only this draw
+                    // loop uses the per-run size -- the cursor-position and
+                    // selection-highlight measurement loops just below
+                    // still use the outer uniform `size`, so a mixed-size
+                    // line's cursor/highlight pixel position can be
+                    // slightly approximate; never a correctness issue
+                    // (cursor *column* is character-index-based, not
+                    // pixel-based) but a documented v1 cosmetic gap.
+                    float run_size = r.fmt.font_size_pt > 0.0f ? r.fmt.font_size_pt * office_sess->zoom : size;
+                    if (r.fmt.superscript || r.fmt.subscript) run_size *= 0.65f;
+                    float run_y = draw_y;
+                    if (r.fmt.superscript) run_y -= size * 0.3f;
+                    else if (r.fmt.subscript) run_y += size * 0.25f;
+                    Color run_color = r.fmt.has_color ? Color{r.fmt.color_r, r.fmt.color_g, r.fmt.color_b, 255} : text_color;
+                    float rw;
+                    if (r.fmt.math) {
+                        // DrawMathLayout's own y is the top of its bounding
+                        // box (matching how HtmlLayoutBlock's math branch
+                        // stores/advances a top-down cursor_y by ml.height),
+                        // same convention DrawTextEx already uses for
+                        // `position` here -- no baseline adjustment needed.
+                        MathLayoutResult ml = LayoutMathExpression(t, run_size);
+                        if (r.fmt.has_highlight) {
+                            DrawRectangle(static_cast<int>(run_x), static_cast<int>(run_y), static_cast<int>(ml.width),
+                                          static_cast<int>(ml.height),
+                                          Color{r.fmt.highlight_r, r.fmt.highlight_g, r.fmt.highlight_b, 255});
+                        }
+                        DrawMathLayout(run_x, run_y, ml, run_color);
+                        rw = ml.width;
+                    } else {
+                        Font &f = OfficeFontFor(r.fmt);
+                        rw = MeasureTextEx(f, t.c_str(), run_size, 0).x;
+                        if (r.fmt.has_highlight) {
+                            DrawRectangle(static_cast<int>(run_x), static_cast<int>(draw_y), static_cast<int>(rw),
+                                          static_cast<int>(size),
+                                          Color{r.fmt.highlight_r, r.fmt.highlight_g, r.fmt.highlight_b, 255});
+                        }
+                        DrawTextEx(f, t.c_str(), Vector2{run_x, run_y}, run_size, 0, run_color);
+                        if (r.fmt.underline || r.fmt.strike) {
+                            float uy = run_y + (r.fmt.strike ? run_size * 0.5f : run_size * 0.95f);
+                            DrawLineEx(Vector2{run_x, uy}, Vector2{run_x + rw, uy}, 1.0f, run_color);
+                        }
                     }
                     run_x += rw;
                 }
@@ -10025,8 +12712,192 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 }
                 draw_y += lh;
             }
+
+            // A table/image anchored to this paragraph (DocParagraph::
+            // table_ref/image_ref) renders immediately below its text, as
+            // its own block -- not word-wrapped/flowed inline with the
+            // paragraph's own text the way a real inline object would be,
+            // a deliberate v1 simplification (matches DocTable/DocImage's
+            // own scope notes in office_doc.h). Not accounted for by the
+            // scroll-follow scan above (which only sums wrapped-line
+            // heights), so a very tall table/image can still push the
+            // cursor below the viewport before scroll catches up -- a
+            // known, documented v1 gap rather than a silent one.
+            if (para.table_ref >= 0 && para.table_ref < static_cast<int>(doc.tables.size())) {
+                const DocTable &tbl = doc.tables[static_cast<size_t>(para.table_ref)];
+                bool in_this_table = office_sess->in_table_edit == para.table_ref;
+                float cell_font = body_size * 0.85f;
+                float cell_h = cell_font + 12.0f;
+                float col_w = tbl.cols > 0 ? std::max(50.0f, max_width / static_cast<float>(tbl.cols)) : max_width;
+                Font &cell_fontobj = OfficeFontFor(DocFormat{});
+                for (int r = 0; r < tbl.rows; r++) {
+                    float ry = draw_y;
+                    if (ry <= content_y + content_h) {
+                        for (int c = 0; c < tbl.cols; c++) {
+                            float cx = x + pad + col_w * static_cast<float>(c);
+                            bool cell_active = is_active && in_this_table && r == office_sess->table_cursor_row &&
+                                               c == office_sess->table_cursor_col;
+                            DrawRectangle(static_cast<int>(cx), static_cast<int>(ry), static_cast<int>(col_w),
+                                          static_cast<int>(cell_h),
+                                          cell_active ? ResolveHlGroup("Visual") : ResolveHlGroup("MenuBar"));
+                            DrawRectangleLines(static_cast<int>(cx), static_cast<int>(ry), static_cast<int>(col_w),
+                                                static_cast<int>(cell_h), ResolveHlGroup("Border"));
+                            const std::string &full = tbl.Cell(r, c);
+                            std::string shown = full;
+                            while (!shown.empty() &&
+                                   MeasureTextEx(cell_fontobj, shown.c_str(), cell_font, 0).x > col_w - 8.0f) {
+                                shown.pop_back();
+                            }
+                            DrawTextEx(cell_fontobj, shown.c_str(),
+                                      Vector2{cx + 4.0f, ry + (cell_h - cell_font) / 2.0f}, cell_font, 0, text_color);
+                            if (cell_active && office_sess->table_cell_editing) {
+                                int cc = std::clamp(office_sess->table_cell_col, 0, static_cast<int>(full.size()));
+                                float cur_x =
+                                    cx + 4.0f + MeasureTextEx(cell_fontobj, full.substr(0, static_cast<size_t>(cc)).c_str(),
+                                                              cell_font, 0).x;
+                                DrawRectangle(static_cast<int>(cur_x), static_cast<int>(ry), 2,
+                                              static_cast<int>(cell_h), text_color);
+                            }
+                        }
+                    }
+                    draw_y += cell_h;
+                }
+                draw_y += 8.0f;
+            }
+            if (para.image_ref >= 0 && para.image_ref < static_cast<int>(doc.images.size())) {
+                const DocImage &img = doc.images[static_cast<size_t>(para.image_ref)];
+                Texture2D *tex = GetOrLoadOfficeImageTexture(pane.buffer_id, para.image_ref, img);
+                if (tex && img.natural_w > 0 && img.natural_h > 0) {
+                    float draw_w = static_cast<float>(img.natural_w);
+                    float draw_h = static_cast<float>(img.natural_h);
+                    if (draw_w > max_width) {
+                        float scale = max_width / draw_w;
+                        draw_w *= scale;
+                        draw_h *= scale;
+                    }
+                    if (draw_y <= content_y + content_h) {
+                        DrawTexturePro(*tex, Rectangle{0.0f, 0.0f, static_cast<float>(img.natural_w), static_cast<float>(img.natural_h)},
+                                      Rectangle{x + pad, draw_y, draw_w, draw_h}, Vector2{0.0f, 0.0f}, 0.0f, WHITE);
+                    }
+                    draw_y += draw_h + 8.0f;
+                }
+            }
         }
         EndScissorMode();
+
+        // --- Dropdown popups (drawn last, after the document content, so
+        // they paint over it -- opened by whichever toggle button above is
+        // active). Deliberately outside the scissored content region above
+        // so a popup isn't clipped to the content area. content_y here is
+        // already past the toolbar (incremented above), so popups anchor
+        // directly at content_y rather than content_y + toolbar_h.
+        auto draw_popup_bg = [&](Rectangle r) {
+            DrawRectangle(static_cast<int>(r.x), static_cast<int>(r.y), static_cast<int>(r.width),
+                          static_cast<int>(r.height), ResolveHlGroup("TabActive"));
+            DrawRectangleLinesEx(r, 1.0f, ResolveHlGroup("Border"));
+        };
+        if (g_office_dropdown_open == kOfficeDropdownFontFamily) {
+            struct FamItem { OfficeFontFamily fam; const char *label; };
+            static const FamItem items[] = {
+                {OfficeFontFamily::Sans, "Sans (Liberation Sans)"}, {OfficeFontFamily::Serif, "Serif (Liberation Serif)"},
+                {OfficeFontFamily::Mono, "Mono (Liberation Mono)"}};
+            float pw = 220.0f, item_h = row_h;
+            Rectangle popup{font_family_btn.x, content_y, pw, item_h * 3};
+            draw_popup_bg(popup);
+            float iy = popup.y;
+            for (const FamItem &it : items) {
+                Rectangle rect{popup.x, iy, pw, item_h};
+                DrawTextEx(g_font, it.label, Vector2{rect.x + 6, rect.y + (item_h - font_size) / 2.0f}, font_size, 0,
+                          ResolveHlGroup("Normal"));
+                OfficeFontFamily fam = it.fam;
+                RegisterClickRegion(rect, [fam] {
+                    g_editor.SetOfficeFontFamily(fam);
+                    g_office_dropdown_open = -1;
+                });
+                iy += item_h;
+            }
+        } else if (g_office_dropdown_open == kOfficeDropdownFontSize) {
+            static const float sizes[] = {8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48};
+            float pw = 70.0f, item_h = row_h * 0.85f;
+            int n = static_cast<int>(sizeof(sizes) / sizeof(sizes[0]));
+            Rectangle popup{font_size_btn.x, content_y, pw, item_h * n};
+            draw_popup_bg(popup);
+            float iy = popup.y;
+            for (float sz : sizes) {
+                Rectangle rect{popup.x, iy, pw, item_h};
+                std::string label = std::to_string(static_cast<int>(sz));
+                DrawTextEx(g_font, label.c_str(), Vector2{rect.x + 8, rect.y + (item_h - font_size) / 2.0f}, font_size,
+                          0, ResolveHlGroup("Normal"));
+                RegisterClickRegion(rect, [sz] {
+                    g_editor.SetOfficeFontSizePt(sz);
+                    g_office_dropdown_open = -1;
+                });
+                iy += item_h;
+            }
+        } else if (g_office_dropdown_open == kOfficeDropdownTextColor || g_office_dropdown_open == kOfficeDropdownHighlight) {
+            bool is_highlight = g_office_dropdown_open == kOfficeDropdownHighlight;
+            struct Swatch { unsigned char r, g, b; };
+            static const Swatch swatches[] = {
+                {0, 0, 0},       {220, 50, 50},   {230, 140, 30}, {220, 200, 40},
+                {40, 160, 70},   {50, 110, 220},  {130, 70, 200}, {150, 150, 150},
+                {255, 255, 255}, {255, 240, 150}, {180, 230, 180}, {180, 220, 255}};
+            float cell = 24.0f, gap = 4.0f, cols = 4.0f;
+            int n = static_cast<int>(sizeof(swatches) / sizeof(swatches[0]));
+            int rows = (n + static_cast<int>(cols) - 1) / static_cast<int>(cols);
+            Rectangle anchor = is_highlight ? highlight_btn : text_color_btn;
+            float pw = cols * (cell + gap) + gap;
+            float ph = static_cast<float>(rows) * (cell + gap) + gap + row_h * 0.7f;
+            Rectangle popup{anchor.x, content_y, pw, ph};
+            draw_popup_bg(popup);
+            // "Clear" row above the swatch grid -- removes any explicit
+            // color/highlight override, falling back to the default.
+            Rectangle clear_rect{popup.x, popup.y, pw, row_h * 0.7f};
+            DrawTextEx(g_font, "Clear", Vector2{clear_rect.x + 6, clear_rect.y + 4}, font_size * 0.85f, 0,
+                      ResolveHlGroup("Normal"));
+            RegisterClickRegion(clear_rect, [is_highlight] {
+                if (is_highlight) g_editor.ClearOfficeHighlight(); else g_editor.ClearOfficeColor();
+                g_office_dropdown_open = -1;
+            });
+            for (int i = 0; i < n; i++) {
+                int col = i % static_cast<int>(cols);
+                int row = i / static_cast<int>(cols);
+                float sx = popup.x + gap + static_cast<float>(col) * (cell + gap);
+                float sy = clear_rect.y + clear_rect.height + gap + static_cast<float>(row) * (cell + gap);
+                Color c{swatches[i].r, swatches[i].g, swatches[i].b, 255};
+                DrawRectangle(static_cast<int>(sx), static_cast<int>(sy), static_cast<int>(cell), static_cast<int>(cell), c);
+                DrawRectangleLines(static_cast<int>(sx), static_cast<int>(sy), static_cast<int>(cell), static_cast<int>(cell),
+                                    ResolveHlGroup("Border"));
+                unsigned char r = swatches[i].r, gc = swatches[i].g, b = swatches[i].b;
+                RegisterClickRegion(Rectangle{sx, sy, cell, cell}, [is_highlight, r, gc, b] {
+                    if (is_highlight) g_editor.SetOfficeHighlight(r, gc, b); else g_editor.SetOfficeColor(r, gc, b);
+                    g_office_dropdown_open = -1;
+                });
+            }
+        } else if (g_office_dropdown_open == kOfficeDropdownSpecialChars) {
+            float cell = 32.0f, gap = 4.0f, cols = 8.0f;
+            int n = kOfficeSpecialCharCount;
+            int rows = (n + static_cast<int>(cols) - 1) / static_cast<int>(cols);
+            float pw = cols * (cell + gap) + gap;
+            float ph = static_cast<float>(rows) * (cell + gap) + gap;
+            Rectangle popup{special_btn.x, content_y, pw, ph};
+            draw_popup_bg(popup);
+            Font &sym_font = g_office_font_regular;
+            for (int i = 0; i < n; i++) {
+                int col = i % static_cast<int>(cols);
+                int row = i / static_cast<int>(cols);
+                float sx = popup.x + gap + static_cast<float>(col) * (cell + gap);
+                float sy = popup.y + gap + static_cast<float>(row) * (cell + gap);
+                std::string glyph = Utf8FromCodepoint(kOfficeSpecialChars[i]);
+                Vector2 gs = MeasureTextEx(sym_font, glyph.c_str(), cell * 0.7f, 0);
+                DrawTextEx(sym_font, glyph.c_str(), Vector2{sx + (cell - gs.x) / 2.0f, sy + (cell - gs.y) / 2.0f},
+                          cell * 0.7f, 0, ResolveHlGroup("Normal"));
+                RegisterClickRegion(Rectangle{sx, sy, cell, cell}, [glyph] {
+                    g_editor.InsertOfficeText(glyph);
+                    g_office_dropdown_open = -1;
+                });
+            }
+        }
+
         DrawPaneBorder(x, y, w, h, is_active);
         return;
     }
@@ -10872,8 +13743,14 @@ void DrawDashboard(float x, float y, float w, float h) {
 void DrawEditor() {
     // Rebuilt fresh this frame by DrawTabBar/DrawPane below -- see the
     // g_click_regions declaration for why clearing here (rather than after
-    // dispatch) is correct even with the one-frame lag.
+    // dispatch) is correct even with the one-frame lag. Same reasoning for
+    // the pane/tab mouse-interaction geometry lists just below.
     g_click_regions.clear();
+    g_pane_screen_rects.clear();
+    g_pane_tab_chip_rects.clear();
+    g_pane_border_rects.clear();
+    g_sidebar_row_rects.clear();
+    g_sidebar_border_rects.clear();
     int screen_w = GetScreenWidth();
     int screen_h = GetScreenHeight();
     int line_height = LineHeight();
@@ -10927,8 +13804,11 @@ void DrawEditor() {
         if (g_editor.ShouldShowDashboard()) {
             DrawDashboard(pane_x, static_cast<float>(content_top), pane_w, static_cast<float>(pane_area_h));
         } else {
+            ComputePaneScreenRects(g_editor.MutableActiveTabRoot(), pane_x, static_cast<float>(content_top), pane_w,
+                                    static_cast<float>(pane_area_h));
             DrawPaneTree(g_editor.ActiveTabRoot(), pane_x, static_cast<float>(content_top), pane_w,
                          static_cast<float>(pane_area_h), g_editor.ActivePaneId());
+            DrawPaneDragOverlay();
         }
     }
 
@@ -11022,18 +13902,13 @@ void DrawEditor() {
     EndDrawing();
 }
 
-// Consumes this frame's mouse click (if any) against whatever click regions
-// DrawEditor() just registered (tab bar, gutter fold markers, pane header
-// breadcrumb -- see g_click_regions above). Only fires while in a mode where
-// clicking chrome behind an overlay would be surprising: any of the modal
-// overlay modes (Picker/Sidebar/Prompt/Confirm/Select/WhichKey/Preview)
-// already captures input itself and draws over this chrome, so a click
-// meant for the overlay must not also fall through to e.g. switch tabs
-// underneath it. First matching region wins, mirroring the menu bar's own
-// one-hit-per-click dispatch.
-void DispatchChromeClicks() {
-    if (!IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) return;
-    switch (g_editor.CurrentMode()) {
+// Shared by DispatchChromeClicks and UpdatePaneMouseInteraction: any of
+// these modal overlay modes already captures input itself and draws over
+// the normal pane/chrome content beneath it, so a click/drag meant for
+// the overlay must not also fall through to e.g. switch tabs or start
+// resizing a border underneath it.
+bool IsModalOverlayMode(Mode m) {
+    switch (m) {
         case Mode::Picker:
         case Mode::RoamGraph:
         case Mode::Sidebar:
@@ -11042,10 +13917,24 @@ void DispatchChromeClicks() {
         case Mode::Select:
         case Mode::WhichKey:
         case Mode::Preview:
-            return;
+            return true;
         default:
-            break;
+            return false;
     }
+}
+
+// Consumes this frame's mouse click (if any) against whatever click regions
+// DrawEditor() just registered (tab bar, gutter fold markers, pane header
+// breadcrumb, pane-body focus -- see g_click_regions above). First matching
+// region wins, mirroring the menu bar's own one-hit-per-click dispatch.
+// Same modal-overlay gate as UpdatePaneMouseInteraction, EXCEPT for
+// Mode::Sidebar (see that function's own comment for why): a pane-body
+// click region is exactly how focus leaves a sidebar back into the pane
+// tree, so this dispatcher must still run while a sidebar has focus.
+void DispatchChromeClicks() {
+    if (!IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) return;
+    Mode mode = g_editor.CurrentMode();
+    if (IsModalOverlayMode(mode) && mode != Mode::Sidebar) return;
     Vector2 mouse = GetMousePosition();
     for (const ClickRegion &r : g_click_regions) {
         if (PointInRect(mouse, r.rect)) {
@@ -11053,6 +13942,244 @@ void DispatchChromeClicks() {
             return;
         }
     }
+}
+
+// Drives the pane-border-resize and tab-chip-drag-and-drop state machines
+// (g_pane_drag) every frame: starts a drag on mouse-down over a border/
+// chip (once the mouse has moved past kPaneDragThresholdPx -- short of
+// that, it might still just be a plain click, which g_click_regions/
+// DispatchChromeClicks already handles independently), updates it every
+// frame the button stays down, and commits it on release. Also owns
+// cursor-shape feedback (hover, not just mid-drag) -- reset to
+// MOUSE_CURSOR_DEFAULT every frame first since raylib never does that on
+// its own. Same modal-overlay gate as DispatchChromeClicks, EXCEPT for
+// Mode::Sidebar: that mode means a sidebar has keyboard focus, which is
+// precisely when its rows/border need to keep responding to the mouse
+// (unlike the other modal modes here, a focused sidebar isn't drawn over
+// separately from -- it *is* -- the chrome this function targets). If a
+// genuinely modal mode is somehow entered mid-drag (some keybinding fired
+// while the mouse was still down), the in-progress drag is simply
+// abandoned rather than left to resolve against stale geometry.
+void UpdatePaneMouseInteraction() {
+    Mode mode = g_editor.CurrentMode();
+    if (IsModalOverlayMode(mode) && mode != Mode::Sidebar) {
+        g_pane_drag = PaneDragState{};
+        SetMouseCursor(MOUSE_CURSOR_DEFAULT);
+        return;
+    }
+
+    Vector2 mouse = GetMousePosition();
+    MouseCursor want_cursor = MOUSE_CURSOR_DEFAULT;
+
+    if (g_pane_drag.kind == PaneDragKind::None) {
+        bool over_border = false;
+        for (const PaneBorderRect &b : g_pane_border_rects) {
+            if (PointInRect(mouse, b.grab_rect)) {
+                over_border = true;
+                want_cursor = b.vertical ? MOUSE_CURSOR_RESIZE_EW : MOUSE_CURSOR_RESIZE_NS;
+                break;
+            }
+        }
+        if (!over_border) {
+            for (const SidebarBorderRect &sb : g_sidebar_border_rects) {
+                if (PointInRect(mouse, sb.grab_rect)) {
+                    over_border = true;
+                    want_cursor = sb.horizontal ? MOUSE_CURSOR_RESIZE_EW : MOUSE_CURSOR_RESIZE_NS;
+                    break;
+                }
+            }
+        }
+        if (!over_border) {
+            for (const PaneTabChipRect &c : g_pane_tab_chip_rects) {
+                if (PointInRect(mouse, c.rect)) {
+                    want_cursor = MOUSE_CURSOR_POINTING_HAND;
+                    break;
+                }
+            }
+        }
+        if (!over_border && want_cursor == MOUSE_CURSOR_DEFAULT) {
+            for (const SidebarRowRect &r : g_sidebar_row_rects) {
+                if (PointInRect(mouse, r.rect)) {
+                    want_cursor = MOUSE_CURSOR_POINTING_HAND;
+                    break;
+                }
+            }
+        }
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            for (const PaneBorderRect &b : g_pane_border_rects) {
+                if (!PointInRect(mouse, b.grab_rect)) continue;
+                g_pane_drag.kind = PaneDragKind::BorderResize;
+                g_pane_drag.start_pos = mouse;
+                g_pane_drag.threshold_passed = false;
+                g_pane_drag.border_node = b.node;
+                g_pane_drag.border_child_index = b.child_index;
+                g_pane_drag.border_vertical = b.vertical;
+                g_pane_drag.border_pair_total = g_editor.PaneBorderPairTotal(b.node, b.child_index);
+                g_pane_drag.border_pair_rect = b.pair_rect;
+                break;
+            }
+            if (g_pane_drag.kind == PaneDragKind::None) {
+                for (const SidebarBorderRect &sb : g_sidebar_border_rects) {
+                    if (!PointInRect(mouse, sb.grab_rect)) continue;
+                    g_pane_drag.kind = PaneDragKind::SidebarResize;
+                    g_pane_drag.start_pos = mouse;
+                    g_pane_drag.threshold_passed = false;
+                    g_pane_drag.sidebar_id = sb.sidebar_id;
+                    g_pane_drag.sidebar_horizontal = sb.horizontal;
+                    g_pane_drag.sidebar_sign = sb.sign;
+                    g_pane_drag.sidebar_size_start = 0;
+                    for (const SidebarInstance &inst : g_editor.Sidebars()) {
+                        if (inst.id == sb.sidebar_id) {
+                            g_pane_drag.sidebar_size_start = inst.size;
+                            break;
+                        }
+                    }
+                    g_pane_drag.sidebar_mouse_start = sb.horizontal ? mouse.x : mouse.y;
+                    break;
+                }
+            }
+            if (g_pane_drag.kind == PaneDragKind::None) {
+                for (const PaneTabChipRect &c : g_pane_tab_chip_rects) {
+                    if (!PointInRect(mouse, c.rect)) continue;
+                    g_pane_drag.kind = PaneDragKind::TabMove;
+                    g_pane_drag.start_pos = mouse;
+                    g_pane_drag.threshold_passed = false;
+                    g_pane_drag.source_pane_id = c.pane_id;
+                    g_pane_drag.dragged_buffer_id = c.buffer_id;
+                    g_pane_drag.target_pane_id = -1;
+                    break;
+                }
+            }
+            // Sidebar rows don't drag (only click-to-select and double-
+            // click-to-activate) -- handled directly here rather than via
+            // g_click_regions/DispatchChromeClicks, since double-click
+            // detection needs to compare against the *previous* click's
+            // own time/position, state g_click_regions' plain fire-once
+            // closures have no way to carry.
+            if (g_pane_drag.kind == PaneDragKind::None) {
+                for (const SidebarRowRect &r : g_sidebar_row_rects) {
+                    if (!PointInRect(mouse, r.rect)) continue;
+                    double now = GetTime();
+                    bool is_double = g_last_sidebar_click_id == r.sidebar_id && g_last_sidebar_click_row == r.line_index &&
+                                      (now - g_last_sidebar_click_time) < kDoubleClickThresholdSec;
+                    g_editor.FocusSidebarRow(r.sidebar_id, r.line_index);
+                    if (is_double) {
+                        g_editor.ActivateSidebarLine(r.sidebar_id, r.line_index);
+                        // A third rapid click starts fresh rather than
+                        // counting as yet another double-click against
+                        // this same activation.
+                        g_last_sidebar_click_time = -1.0;
+                        g_last_sidebar_click_id = -1;
+                        g_last_sidebar_click_row = -1;
+                    } else {
+                        g_last_sidebar_click_time = now;
+                        g_last_sidebar_click_id = r.sidebar_id;
+                        g_last_sidebar_click_row = r.line_index;
+                    }
+                    break;
+                }
+            }
+        }
+    } else if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+        if (!g_pane_drag.threshold_passed) {
+            float dx = mouse.x - g_pane_drag.start_pos.x, dy = mouse.y - g_pane_drag.start_pos.y;
+            if (dx * dx + dy * dy > kPaneDragThresholdPx * kPaneDragThresholdPx) g_pane_drag.threshold_passed = true;
+        }
+        if (g_pane_drag.threshold_passed) {
+            if (g_pane_drag.kind == PaneDragKind::BorderResize) {
+                want_cursor = g_pane_drag.border_vertical ? MOUSE_CURSOR_RESIZE_EW : MOUSE_CURSOR_RESIZE_NS;
+                const Rectangle &r = g_pane_drag.border_pair_rect;
+                float frac = g_pane_drag.border_vertical ? (mouse.x - r.x) / r.width : (mouse.y - r.y) / r.height;
+                g_editor.SetPaneBorderShare(g_pane_drag.border_node, g_pane_drag.border_child_index,
+                                             std::clamp(frac, 0.0f, 1.0f) * g_pane_drag.border_pair_total);
+            } else if (g_pane_drag.kind == PaneDragKind::SidebarResize) {
+                want_cursor = g_pane_drag.sidebar_horizontal ? MOUSE_CURSOR_RESIZE_EW : MOUSE_CURSOR_RESIZE_NS;
+                float mouse_now = g_pane_drag.sidebar_horizontal ? mouse.x : mouse.y;
+                float delta_px = (mouse_now - g_pane_drag.sidebar_mouse_start) * g_pane_drag.sidebar_sign;
+                float unit = g_pane_drag.sidebar_horizontal ? g_char_width : static_cast<float>(LineHeight());
+                int new_size = g_pane_drag.sidebar_size_start + static_cast<int>(std::lround(delta_px / unit));
+                g_editor.SetSidebarSize(g_pane_drag.sidebar_id, new_size);
+            } else if (g_pane_drag.kind == PaneDragKind::TabMove) {
+                want_cursor = MOUSE_CURSOR_POINTING_HAND;
+                g_pane_drag.target_pane_id = -1;
+                for (const PaneScreenRect &p : g_pane_screen_rects) {
+                    if (PointInRect(mouse, p.rect)) {
+                        g_pane_drag.target_pane_id = p.pane_id;
+                        g_pane_drag.drop_zone = ComputePaneDropZone(mouse, p.rect);
+                        break;
+                    }
+                }
+            }
+        }
+    } else if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
+        if (g_pane_drag.threshold_passed && g_pane_drag.kind == PaneDragKind::TabMove &&
+            g_pane_drag.target_pane_id >= 0) {
+            if (g_pane_drag.drop_zone == PaneDropZone::Center) {
+                g_editor.MoveBufferTabToPane(g_pane_drag.source_pane_id, g_pane_drag.dragged_buffer_id,
+                                              g_pane_drag.target_pane_id);
+            } else {
+                bool side = g_pane_drag.drop_zone == PaneDropZone::Left || g_pane_drag.drop_zone == PaneDropZone::Right;
+                bool before = g_pane_drag.drop_zone == PaneDropZone::Left || g_pane_drag.drop_zone == PaneDropZone::Top;
+                g_editor.SplitPaneWithBufferTab(g_pane_drag.source_pane_id, g_pane_drag.dragged_buffer_id,
+                                                 g_pane_drag.target_pane_id, side ? SplitDir::Vertical : SplitDir::Horizontal,
+                                                 before);
+            }
+        }
+        // A plain click (threshold never passed) needs no handling here --
+        // g_click_regions/DispatchChromeClicks already fires that
+        // independently for a press-then-release-in-place.
+        g_pane_drag = PaneDragState{};
+    }
+
+    SetMouseCursor(want_cursor);
+}
+
+// Highlights which drop zone (center/left/right/top/bottom) a tab-chip
+// drag currently in progress would land in, drawn over the target pane's
+// own content -- called from DrawEditor right after DrawPaneTree, using
+// g_pane_drag/g_pane_screen_rects as of the end of the *previous*
+// frame's UpdatePaneMouseInteraction (that one-frame lag is the same
+// "imperceptible at interactive framerates" tradeoff g_click_regions
+// already makes, see its own header).
+void DrawPaneDragOverlay() {
+    if (g_pane_drag.kind != PaneDragKind::TabMove || !g_pane_drag.threshold_passed || g_pane_drag.target_pane_id < 0) {
+        return;
+    }
+    Rectangle target{};
+    bool found = false;
+    for (const PaneScreenRect &p : g_pane_screen_rects) {
+        if (p.pane_id == g_pane_drag.target_pane_id) {
+            target = p.rect;
+            found = true;
+            break;
+        }
+    }
+    if (!found) return;
+    Rectangle hl = target;
+    switch (g_pane_drag.drop_zone) {
+        case PaneDropZone::Left: hl.width /= 2.0f; break;
+        case PaneDropZone::Right: hl.x += hl.width / 2.0f; hl.width /= 2.0f; break;
+        case PaneDropZone::Top: hl.height /= 2.0f; break;
+        case PaneDropZone::Bottom: hl.y += hl.height / 2.0f; hl.height /= 2.0f; break;
+        case PaneDropZone::Center: default: break;  // full target rect
+    }
+    Color base = ResolveHlGroup("IncSearch");  // reuse an existing theme-derived highlight color rather than a hardcoded one
+    DrawRectangle(static_cast<int>(hl.x), static_cast<int>(hl.y), static_cast<int>(hl.width), static_cast<int>(hl.height),
+                  Color{base.r, base.g, base.b, 90});
+    DrawRectangleLinesEx(hl, 2.0f, Color{base.r, base.g, base.b, 220});
+
+    // A small floating label near the cursor naming the dragged buffer,
+    // so it's clear what's being moved once the source pane's own chip
+    // is out of view/covered by other panes.
+    const Buffer &db = g_editor.GetBuffer(g_pane_drag.dragged_buffer_id);
+    std::string label = db.scratch ? "[Scratch]" : (db.filename.empty() ? "[No Name]" : Basename(db.filename));
+    Vector2 mp = GetMousePosition();
+    float fs = MenuFontSize();
+    float tw = MeasureTextEx(g_font, label.c_str(), fs, 0).x;
+    Rectangle label_bg{mp.x + 12, mp.y + 12, tw + 12, fs + 8};
+    DrawRectangleRec(label_bg, ResolveHlGroup("MenuBar"));
+    DrawRectangleLinesEx(label_bg, 1.0f, ResolveHlGroup("Border"));
+    DrawTextEx(g_font, label.c_str(), Vector2{label_bg.x + 6, label_bg.y + 4}, fs, 0, ResolveHlGroup("Normal"));
 }
 
 #if defined(__EMSCRIPTEN__)
@@ -11104,6 +14231,13 @@ void UpdateDrawFrame() {
         // click (a menu dropdown can overlap the tab bar/pane area
         // beneath it).
         if (!menu_consumed) DispatchChromeClicks();
+        // Same reasoning (needs this frame's freshly (re)populated pane/
+        // border/chip geometry, and shouldn't fire under an open menu
+        // dropdown either) -- also runs every frame regardless of a
+        // fresh click, unlike DispatchChromeClicks, since a drag already
+        // in progress needs its own continuous per-frame update even
+        // when IsMouseButtonPressed() is false this frame.
+        if (!menu_consumed) UpdatePaneMouseInteraction();
     } catch (const std::exception &e) {
         g_editor.Notify(std::string("Internal error (recovered): ") + e.what(), Editor::NotifyLevel::Error);
     }

@@ -1,6 +1,7 @@
 #ifndef MEP_EDITOR_H
 #define MEP_EDITOR_H
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -19,6 +20,9 @@
 #include "office_doc.h"
 // Same reasoning again -- SheetSession holds a Workbook by value.
 #include "sheet_doc.h"
+// Same reasoning again -- HtmlSession holds an HtmlDoc (its DOM tree) by
+// value.
+#include "html_doc.h"
 
 // editor.h is deliberately raylib-free (editor.cpp includes raylib.h,
 // this header doesn't), so colors are stored as plain RGBA rather than
@@ -85,6 +89,16 @@ enum class Mode {
     // else a no-op) plus page navigation (Ctrl-f/Ctrl-b/PageDown/PageUp,
     // gg/G) since PDF content is paginated. See Editor::HandlePdfInput.
     Pdf,
+    // A focused HTML-preview pane (an HtmlSession buffer -- see below,
+    // opened by mep.browse_command's in-pane default via mep.html_open,
+    // kBuiltinTextTools). Same shape as Mode::Image/Pdf (h/j/k/l scroll,
+    // ':'/leader forwarded, everything else a no-op): a read-only rendered
+    // view, not an editor over the page's markup -- plain :e on the same
+    // .html file still opens it as ordinary editable text (this pane is
+    // never reachable from LoadFile's extension dispatch the way Image/
+    // Pdf/Office/Sheet are, precisely so :e keeps editing the source).
+    // See Editor::HandleHtmlInput.
+    Html,
     // A focused WYSIWYG office-document pane (an OfficeSession buffer --
     // see below, opened for .docx/.odt). Unlike Image/Pdf's single flat
     // mode, this is a real modal editor over rich-text paragraphs -- three
@@ -527,6 +541,16 @@ struct Pane {
     // JumpListBack/JumpListForward in editor.cpp for the exact semantics.
     std::vector<JumpEntry> jumplist;
     int jumplist_index = 0;
+
+    // Last cursor.row Editor::UpdateScrollForPane saw (-1 = never run
+    // yet). Lets it tell "the cursor itself moved a lot this frame" (G,
+    // gg, a search, a counted motion) from "the cursor barely moved but
+    // scroll_row suddenly needs to move a lot anyway" (stepping onto/off
+    // an org inline image or LaTeX fragment, which claim many visual
+    // slots for one buffer row -- kOrgInlineImageSlots) -- see
+    // UpdateScrollForPane's own comment for how this drives its
+    // smoothing.
+    int scroll_follow_last_cursor_row = -1;
 };
 
 enum class SplitDir { Leaf, Horizontal, Vertical };
@@ -731,6 +755,50 @@ struct PdfSession {
     int search_current = -1;
 };
 
+// One HTML-preview pane's state, keyed by buffer id the same way Image/
+// PdfSession are (see their comments) -- an html buffer's Buffer::lines
+// also stays a dummy single empty line, real content lives here as an
+// HtmlDoc. Unlike PdfSession's paginated continuous-scroll, layout here is
+// one continuous flow (main.cpp's own word-wrap pass, not cached here --
+// see html_doc.h's own header on why layout stays out of the raylib-free
+// doc model, and DrawPane's html branch for why recomputing it fresh every
+// frame is fine at the page sizes this renderer targets); `scroll_y` is
+// just a plain pixel offset into that flow, clamped by DrawPane against
+// whatever total content height that frame's layout pass computed.
+struct HtmlSession {
+    int buffer_id = 0;
+    HtmlDoc doc;
+    // The path/URL this was opened from, for the pane header label and
+    // for resolving a local <img src="relative/path"> against the page's
+    // own directory (DrawPane's html branch) -- not necessarily the same
+    // as Buffer::filename, which mep.browse_command may point at a throw-
+    // away curl-fetched temp file for a remote URL (kBuiltinTextTools).
+    std::string source;
+    // The user-facing URL/path this page was actually opened *from* --
+    // for a remote page `source` is a throwaway curl-fetched temp file
+    // (a fresh one per fetch, see OpenHtmlInPlace's own comment), so
+    // reload (mep.browse_reload, kBuiltinTextTools -- needs to know what
+    // to re-fetch) and the address bar's own prefill (mep.browse_open_bar)
+    // both read this instead. Equal to `source` for a plain local-file
+    // open, where there's no such indirection.
+    std::string origin;
+    float scroll_y = 0;
+    int viewport_w = 0, viewport_h = 0;
+    // Multiplies the pane's base font size -- same +/-/= convention as
+    // ImageSession::zoom/PdfSession::zoom (Editor::HandleHtmlInput).
+    float zoom = 1.0f;
+    // If true (the default, matching PdfSession::theme_colors' own
+    // default), the editor's own color scheme takes over: DrawPane skips
+    // every element's own background/border color, forces all text to
+    // ResolveHlGroup("Normal"), and recolors local <img> textures the same
+    // luminance-to-theme-gradient way PdfSession::theme_colors already
+    // does for a PDF page (see ThemedPdfChannel's own comment) -- a
+    // reading-mode default, not a color-accurate filter. If false, the
+    // page renders with its own CSS colors/images instead, same as a real
+    // browser. Toggled by Ctrl-R (Editor::HandleHtmlInput).
+    bool theme_colors = true;
+};
+
 // One WYSIWYG office-document pane's state, keyed by buffer id the same
 // way Image/PdfSession are (see their comments) -- an office buffer's
 // Buffer::lines also stays a dummy single empty line, real content lives
@@ -776,6 +844,13 @@ struct OfficeSession {
     // viewport, an accepted v1 simplification.
     int scroll_para = 0;
     int scroll_line_in_para = 0;
+    // Last cursor_para DrawPane's scroll-follow scan (main.cpp) saw (-1 =
+    // never run yet) -- same "was this a deliberate far jump or an
+    // incidental one" role as Pane::scroll_follow_last_cursor_row plays
+    // for the plain text editor, driving the same per-frame catch-up cap
+    // so a paragraph's anchored image/table (OfficeParagraphExtraHeight)
+    // slides into view over a few frames instead of jumping in one.
+    int scroll_follow_last_cursor_para = -1;
 
     // Zoom mirrors PdfSession::zoom/rendered_scale's own settle-band
     // pattern (see its comment): `zoom` is a residual multiplier that
@@ -785,6 +860,27 @@ struct OfficeSession {
     // zoom is also independent of it.
     float zoom = 1.0f;
     float base_font_pt = 15.0f;
+
+    // Table-cell navigation (Editor::EnterOfficeTable/ExitOfficeTable/
+    // MoveOfficeTableCell): -1 means "not currently inside a table",
+    // otherwise an index into doc.tables. Deliberately separate from
+    // cursor_para/cursor_col rather than reusing them for a cell address --
+    // a table doesn't get its own paragraph-flow position (it's anchored
+    // to one via DocParagraph::table_ref instead), so overloading
+    // cursor_para/col to sometimes mean "row/col within this table" would
+    // make every other piece of paragraph-cursor logic (word-wrap,
+    // rendering, undo) need to know which meaning currently applies.
+    int in_table_edit = -1;
+    int table_cursor_row = 0, table_cursor_col = 0;
+    // While editing one cell's text (i/a inside a table, mirroring
+    // Mode::OfficeInsert's own paragraph-text editing) -- true means
+    // char-by-char edits go to the cell at table_cursor_row/col instead of
+    // a paragraph.
+    bool table_cell_editing = false;
+    // Byte offset into the cell currently being edited -- a table cell is
+    // plain text (no spans), so this is a plain int cursor, not a
+    // paragraph-style col that also has to account for spans.
+    int table_cell_col = 0;
 };
 
 // One spreadsheet pane's state, keyed by buffer id the same way
@@ -894,6 +990,12 @@ public:
     // Active pane/buffer -- what most of the UI (statusline, blinking
     // cursor, Visual highlight) cares about.
     const Buffer &CurrentBuffer() const { return Buf(); }
+    // The active pane's own buffer id -- CurPane() itself is private
+    // (most of the editor reaches it as `this`'s own member, no need for
+    // a public accessor), but a couple of lua_env.cpp bindings that
+    // aren't Editor members (mep.html_current_origin/mep.html_reload)
+    // need the raw id to key into htmldocs_ via GetHtml/ReloadHtmlBuffer.
+    int CurrentBufferId() const { return CurPane().buffer_id; }
     CursorPos Cursor() const { return CurPane().cursor; }
     int ScrollRow() const { return CurPane().scroll_row; }
     const std::string &CommandLine() const { return command_line_; }
@@ -980,6 +1082,12 @@ public:
     int TabCount() const { return static_cast<int>(tabs_.size()); }
     int ActiveTabIndex() const { return active_tab_; }
     const SplitNode *ActiveTabRoot() const { return tabs_[active_tab_].root.get(); }
+    // Non-const sibling of ActiveTabRoot -- main.cpp's own per-frame pane-
+    // geometry capture (mirroring DrawPaneTree's layout math) stashes raw
+    // SplitNode* pointers for its border-drag hit-testing (SetPaneBorderShare
+    // takes one directly), which needs mutable access; DrawPaneTree/drawing
+    // itself stays on the const overload above, unchanged.
+    SplitNode *MutableActiveTabRoot() { return tabs_[active_tab_].root.get(); }
     int ActivePaneId() const { return tabs_[active_tab_].active_pane_id; }
     const Buffer &GetBuffer(int buffer_id) const { return buffers_[buffer_id]; }
 
@@ -1035,6 +1143,58 @@ public:
     // than only on state-change edges.
     void EnsurePdfPagesRastered(int buffer_id);
 
+    // --- HTML-preview panes (opened via mep.html_open, kBuiltinTextTools
+    // -- deliberately *not* reachable from LoadFile's extension dispatch,
+    // see Mode::Html's own comment on why). Mirrors the Image-viewer block
+    // above. ---
+    bool IsHtmlBuffer(int buffer_id) const;
+    const HtmlSession *GetHtml(int buffer_id) const;
+    void ResizeHtmlViewport(int buffer_id, int w, int h);
+    // Clamps scroll_y into [0, max_scroll] -- called from DrawPane's html
+    // branch *after* that frame's own LayoutHtmlDoc call, since max_scroll
+    // (total layout height minus viewport height) depends on real font
+    // metrics this raylib-free file has no access to, the same reasoning
+    // OfficeSession's own comment gives for why its scroll-follow math
+    // lives in main.cpp instead of here.
+    void ClampHtmlScroll(int buffer_id, float max_scroll);
+    // Parses `bytes` (already-read HTML text) and opens it as a new
+    // HtmlSession in the *current* pane (mirrors OpenImageInPlace/
+    // OpenPdfInPlace exactly: dedup-by-`source` reuses an existing session
+    // rather than re-parsing -- see this function's own .cpp comment for
+    // why a re-fetched URL needs a fresh `source` string, not the same one
+    // reused, to actually pick up new content). `source` is what
+    // HtmlSession::source and the pane header end up showing; it's a
+    // display/dedup key, not necessarily read from disk itself (the
+    // caller already did that, or fetched it via curl into a temp file).
+    // `origin` is HtmlSession::origin -- see its own comment.
+    void OpenHtmlInPlace(const std::string &origin, const std::string &source, const unsigned char *bytes,
+                          size_t len);
+    // Re-parses `bytes` INTO the existing HtmlSession at `buffer_id` --
+    // unlike OpenHtmlInPlace, never creates a new buffer/session and never
+    // does a dedup-by-source lookup; a hard in-place overwrite (fresh DOM,
+    // scripts re-run, scroll reset to 0), used for both "reload this page"
+    // (mep.browse_reload, kBuiltinTextTools -- same origin/source, fresh
+    // bytes) and "navigate this pane to a different address" (the address
+    // bar, mep.browse_open_bar -- a new origin/source entirely). A no-op
+    // if `buffer_id` isn't a live HTML session.
+    void ReloadHtmlBuffer(int buffer_id, const std::string &origin, const std::string &source,
+                           const unsigned char *bytes, size_t len);
+    // Converts `buffer_id` in place between the rendered HTML view and a
+    // plain-text view of the same underlying file, keeping the same
+    // buffer_id both ways (so :w/undo/the pane's tab all keep working
+    // across the toggle) -- the pair behind the Ctrl-E/Ctrl-V view-toggle
+    // (HandleHtmlInput/HandleNormalInput) and LoadFile's force_text
+    // param. ConvertHtmlBufferToText re-reads the file from disk (an
+    // HtmlSession only retains the parsed DOM, never the original source
+    // text, so there's nothing "live" to convert from) and is a no-op if
+    // buffer_id isn't currently an HTML buffer. ConvertTextBufferToHtml
+    // parses the buffer's *current* in-memory lines instead of the disk
+    // copy, so unsaved edits show up in the rendered view, and is a
+    // no-op if buffer_id is already an HTML buffer. Both are pure data
+    // conversions -- callers handle CurPane()/mode_/status_message_.
+    void ConvertHtmlBufferToText(int buffer_id);
+    void ConvertTextBufferToHtml(int buffer_id);
+
     // --- WYSIWYG office-document panes (opened via LoadFile for a
     // .docx/.odt path -- see IsDocxPath/IsOdtPath in office_doc.h).
     // Mirrors the Image/PDF-viewer blocks above. ---
@@ -1069,12 +1229,94 @@ public:
     // ToggleFormatOverRange's own all-on check but without mutating
     // anything.
     bool OfficeFormatActive(char which) const;
+    // Non-boolean-field counterparts of ToggleOfficeFormat/OfficeFormatActive
+    // -- same Visual-selection-vs-single-char-at-cursor dispatch, but a
+    // toolbar dropdown/color swatch already knows the exact value to set
+    // (no "detect uniform on/off, then flip" step), so these always set
+    // rather than toggle. SetOfficeFontFamily/SetOfficeFontSizePt/
+    // SetOfficeColor/SetOfficeHighlight go through SetFormatFieldOverRange;
+    // ClearOfficeColor/ClearOfficeHighlight turn has_color/has_highlight
+    // back off. ToggleOfficeSuperscript/ToggleOfficeSubscript are still a
+    // genuine toggle (mirrors ToggleOfficeFormat's own on/off convention)
+    // but need their own function since setting one must also clear the
+    // other (mutually exclusive, unlike bold/italic/underline/strike).
+    void SetOfficeFontFamily(OfficeFontFamily family);
+    void SetOfficeFontSizePt(float pt);
+    void SetOfficeColor(unsigned char r, unsigned char g, unsigned char b);
+    void ClearOfficeColor();
+    void SetOfficeHighlight(unsigned char r, unsigned char g, unsigned char b);
+    void ClearOfficeHighlight();
+    void ToggleOfficeSuperscript();
+    void ToggleOfficeSubscript();
+    // Paragraph-level (not span/char-range) setters: alignment and list
+    // membership apply to every paragraph the Visual selection touches (or
+    // just the cursor's own paragraph outside Visual mode), unlike the
+    // span-level setters above. SetOfficeListKind toggles off (back to
+    // ListKind::None) when the target paragraph(s) already uniformly have
+    // `kind` -- lets one button/key double as both "make this a bulleted
+    // list" and "un-bullet it", matching ToggleOfficeFormat's own
+    // click-again-to-undo convention.
+    void SetOfficeAlignment(DocParagraph::Align align);
+    bool OfficeAlignmentActive(DocParagraph::Align align) const;
+    void SetOfficeListKind(DocParagraph::ListKind kind);
+    bool OfficeListKindActive(DocParagraph::ListKind kind) const;
+    // Inserts `utf8` (a special character, or any literal text) at the
+    // cursor -- the toolbar's special-character-grid click handler; not
+    // format-related at all, just ApplyInsertToParagraph plus cursor
+    // advance, same as a typed character in Mode::OfficeInsert.
+    void InsertOfficeText(const std::string &utf8);
+    // Opens a native prompt (BeginPromptNative) for a LaTeX-subset math
+    // expression, then inserts it as a new span with DocFormat::math set
+    // (main.cpp's office DrawPane branch renders a math=true run via
+    // LayoutMathExpression/DrawMathLayout instead of literal glyphs).
+    void InsertOfficeMath();
+    // Opens two chained native prompts (rows, then cols), then inserts a
+    // DocTable anchored to the paragraph at the cursor (OfficeDoc::tables
+    // grows by one; the cursor paragraph's table_ref points at it). Cells
+    // start empty.
+    void InsertOfficeTablePrompt();
+    // Opens a native prompt for a local image file path, decodes it
+    // (ImageDoc::LoadFromMemory) to confirm it's a real image and capture
+    // its pixel dimensions, then inserts a DocImage anchored the same way
+    // InsertOfficeTablePrompt anchors a DocTable. Silently no-ops (a
+    // status message, not a crash) if the path doesn't decode.
+    void InsertOfficeImagePrompt();
+    // Table-cell navigation/editing while OfficeSession::in_table_edit is
+    // set (see that field's own comment) -- Tab/Shift-Tab or hjkl move
+    // between cells, i/a edit the current cell's plain text, Escape exits
+    // back to normal paragraph navigation. Called from
+    // HandleOfficeNormalInput/HandleOfficeInsertInput once a table anchor
+    // is the cursor paragraph's own table_ref and the user has entered it.
+    void EnterOfficeTable(int table_ref);
+    void ExitOfficeTable();
+    void MoveOfficeTableCell(int dr, int dc);
     // Sets scroll_para/scroll_line_in_para directly -- the one mutation
     // point main.cpp's word-wrap-aware "is the cursor still visible"
     // check (DrawPane) uses to scroll-follow the cursor, since that
     // check's own logic must live in main.cpp (see ResizeOfficeViewport's
     // comment) but the state it adjusts lives here.
     void SetOfficeScroll(int buffer_id, int scroll_para, int scroll_line_in_para);
+    // Sets OfficeSession::scroll_follow_last_cursor_para directly -- same
+    // reasoning/pairing as SetOfficeScroll just above (the value the scan
+    // reacts to lives in main.cpp, the state itself lives here).
+    void SetOfficeScrollFollowCursorPara(int buffer_id, int cursor_para);
+    // Toolbar zoom +/- buttons (and now Ctrl-scroll, HandleMouseWheel's
+    // Office branch): multiplies OfficeSession::zoom by `factor` (>1 to
+    // grow, <1 to shrink), clamped to [0.5, 3.0] -- a plain direct
+    // multiplier, not the "settle-band folding into base_font_pt" pattern
+    // OfficeSession::zoom's own comment describes PdfSession using. No
+    // pan to re-center (unlike ApplyImageZoom/ApplyPdfZoom): an office
+    // pane's position is cursor_para/cursor_col-derived, not a separate
+    // pan_x/pan_y, so zooming doesn't need to touch it.
+    void SetOfficeZoom(float factor);
+    // 'u'/Ctrl-R in Mode::OfficeNormal (and now the toolbar's Undo/Redo
+    // buttons, main.cpp) -- mirror Undo()/Redo()'s own push-the-opposite-
+    // stack-then-swap shape, operating on OfficeSession::undo_stack/
+    // redo_stack instead of Buffer's. Moved up to this file's public
+    // section (was private) since a toolbar button click, unlike a
+    // keybinding, calls it from outside the class.
+    void UndoOffice();
+    void RedoOffice();
 
     // --- Spreadsheet panes (opened via LoadFile for a .xlsx/.ods/.csv
     // path -- see IsXlsxPath/IsOdsPath/IsCsvPath in sheet_doc.h). Mirrors
@@ -1185,6 +1427,57 @@ public:
     // Lua as mep.pane_set_share().
     void SetActivePaneShare(float fraction);
 
+    // --- Mouse-driven pane/tab interaction (main.cpp's own per-frame hit-
+    // testing against pane/border/tab-chip rects calls into these; there's
+    // no Lua binding for any of them, this is chrome, not scriptable
+    // editing state) ---
+    //
+    // Makes `pane_id` the active pane within the current tab (a no-op if
+    // it isn't a real leaf pane in this tab) -- unlike NavigatePaneDirection,
+    // jumps straight to an explicit target instead of walking a direction,
+    // since a mouse click/drop already knows exactly which pane it landed
+    // on. Used for "click any pane's header/tab chip to focus it" and by
+    // the drag-and-drop methods below's own "you're now looking at where
+    // you dropped it" convention.
+    void FocusPaneById(int pane_id);
+    // Drag-and-drop "drop in the pane's center": moves buffer_id's tab out
+    // of source_pane_id's buffer_tabs and into dest_pane_id's, then
+    // focuses dest_pane_id. Mirrors PaneMoveBufferTabToNeighbor's exact
+    // fixup/ClosePane-if-empty logic (erasing at the tab's own index, not
+    // assuming it's the pane's currently-active tab -- a drag can start
+    // from any chip, not just the focused one), parameterized by an
+    // explicit destination pane id (resolved by mouse position) instead of
+    // FindNeighborPaneId's direction-based lookup. Unlike that function,
+    // this DOES move focus to the destination -- real drag-and-drop UX,
+    // not a keyboard-driven move that deliberately leaves you in place.
+    // A no-op if source_pane_id == dest_pane_id, buffer_id isn't actually
+    // one of source's tabs, or either pane can't be found.
+    void MoveBufferTabToPane(int source_pane_id, int buffer_id, int dest_pane_id);
+    // Drag-and-drop "drop on an edge": removes buffer_id from
+    // source_pane_id (same fixup/ClosePane-if-empty as MoveBufferTabToPane
+    // above), then splits dest_pane_id's own leaf node along `dir`
+    // (Vertical = left/right, Horizontal = top/bottom -- matches
+    // SplitCurrentPane's own axis convention), placing a *new* leaf for
+    // buffer_id `before` (left/top) or after (right/bottom) dest's
+    // existing content, mirroring SplitCurrentPane's exact node-mutation
+    // shape. Focuses the new leaf. A no-op if source_pane_id ==
+    // dest_pane_id or either pane can't be found.
+    void SplitPaneWithBufferTab(int source_pane_id, int buffer_id, int dest_pane_id, SplitDir dir, bool before);
+    // Border-drag resize: sets node->shares[child_index] to `new_share`
+    // (clamped so both it and shares[child_index+1] stay >= kMinPaneShare),
+    // taking the difference out of shares[child_index+1] so their combined
+    // total is preserved -- the N-ary-sibling-aware analog of
+    // SetActivePaneShare (which only ever touches a node with exactly 2
+    // children, its own immediate parent). Calls EnsureShares itself, so
+    // it's safe to call on a node whose shares aren't populated yet.
+    void SetPaneBorderShare(SplitNode *node, int child_index, float new_share);
+    // Ensures node->shares is populated (EnsureShares) and returns the
+    // combined share of children[child_index] and [child_index+1] -- used
+    // to capture a border-drag's fixed pair total at drag *start*, before
+    // any dragging/SetPaneBorderShare call has happened yet. 0 if
+    // child_index is out of range.
+    float PaneBorderPairTotal(SplitNode *node, int child_index);
+
     // `args`: same contract as OpenTerminal (empty = interactive shell,
     // non-empty = `shell -c args`), but attaches the terminal to the
     // currently active pane in place instead of splitting -- for callers
@@ -1196,7 +1489,16 @@ public:
 
     // Also used directly by main.cpp to open a file passed on argv (native
     // builds only -- a no-op with a status message under Emscripten).
-    void LoadFile(const std::string &path);
+    // `force_text`: for an .html/.htm path, opens the plain-text view
+    // instead of the rendered :Browse view -- the escape hatch behind the
+    // literal `:e`/`:edit` ex-command (RunCommand), which is the only
+    // caller that passes true. mep.open (Lua, the "just open this file,
+    // default view" primitive every picker/sidebar/LSP jump uses instead
+    // of `mep.cmd('e ' .. path)`) always passes false. See
+    // ConvertHtmlBufferToText/ConvertTextBufferToHtml's own comments for
+    // how an existing buffer for the same path gets reused across a
+    // force_text mismatch instead of duplicated.
+    void LoadFile(const std::string &path, bool force_text = false);
     // Returns true on success; false (with a status message set) if the
     // path is empty or the write failed.
     bool SaveFile(const std::string &path);
@@ -1252,6 +1554,14 @@ public:
     //   Select:  on_done(1-indexed index) on Enter, on_done() [nil] on Escape.
     void BeginPrompt(const std::string &title, const std::string &default_text, int on_done_ref,
                       bool masked = false);
+    // Same as BeginPrompt, but for a native C++ caller (a toolbar button's
+    // own click handler in main.cpp, not Lua) that has no Lua function ref
+    // to hand it -- HandlePromptInput calls `on_done` directly instead of
+    // through lua_->CallRefWithString when this is set, and does NOT call
+    // it on Escape (cancel), matching BeginPrompt's own on_done() case
+    // simply being skipped rather than called with an empty string.
+    void BeginPromptNative(const std::string &title, const std::string &default_text,
+                            std::function<void(const std::string &)> on_done);
     void BeginConfirm(const std::string &message, bool default_yes, int on_done_ref);
     void BeginSelect(const std::string &title, std::vector<std::string> items, int on_done_ref);
     // Preview: no callback -- purely informational (e.g. git-gutter's
@@ -1417,6 +1727,25 @@ public:
     // invalid) -- what a Phase 15-style on_key handler uses to know which
     // row a key like "rename" or "delete" applies to.
     std::string SidebarCursorWidgetId(int id) const;
+    // Mouse click-through (main.cpp's own row/border hit-testing calls
+    // into these -- see SidebarWidget's own header, which flagged this as
+    // a deliberate follow-up): FocusSidebarRow focuses `id` and moves its
+    // cursor to `line_index` (clamped in range) -- a single click's whole
+    // job, mirroring OpenSidebar's own focus bookkeeping exactly, just
+    // without forcing sidebar_cursor_ back to 0. ActivateSidebarLine runs
+    // whatever `line_index` itself would do on Enter (toggle a section
+    // header's collapsed state, or fire a widget's on_click_ref) --
+    // shared by HandleSidebarInput's own Enter handling and a mouse
+    // double-click, both just resolving to "activate the line at index N"
+    // by a different route.
+    void FocusSidebarRow(int id, int line_index);
+    void ActivateSidebarLine(int id, int line_index);
+    // Absolute cell-count resize (border-drag's own per-frame update) --
+    // the mouse-driven sibling of ResizeActivePane's Mode::Sidebar branch,
+    // which only ever nudges by a fixed step. Clamped to the same minimum
+    // that branch's own local kSidebarMinSize enforces (kept as a literal
+    // here rather than a shared constant -- see this .cpp's own comment).
+    void SetSidebarSize(int id, int size);
 
     // --- Fuzzy picker (NVIM_PARITY_PLAN.md Part I Phase 8) ---
     // Opens the picker over `items` (a *static* list -- a Lua-side
@@ -1773,12 +2102,18 @@ private:
     void TerminalSpawn(TerminalSession &sess, const std::vector<std::string> &argv);
     void TerminalWrite(TerminalSession &sess, const std::string &bytes);
     void TerminalResizeBackend(TerminalSession &sess, int cols, int rows);
-    void TerminalKillBackend(TerminalSession &sess);
     // h/j/k/l and arrow keys pan; ':' and the leader key are forwarded
     // (EnterCommand/TriggerWhichKey) so the command line and whichkey/
     // leader mappings keep working; everything else is a no-op -- there's
     // no text to insert/operate on. See Mode::Image's own comment.
     void HandleImageInput();
+    // Center-anchored zoom (clamped, re-centers pan on whatever image
+    // point was at the viewport's center so it stays put) -- extracted
+    // from HandleImageInput's own local apply_zoom lambda so
+    // HandleMouseWheel's Image branch (Ctrl-scroll) can reuse the exact
+    // same math instead of duplicating it, same reasoning as
+    // RebasePdfScroll/ClampPdfPanX's own extraction.
+    void ApplyImageZoom(ImageSession &sess, float new_zoom);
     // Finds-or-creates the buffer for `path` (same filename dedup
     // FindOrCreateBuffer uses) and, on a new open, decodes `bytes` via
     // ImageDoc and registers the ImageSession. Called from LoadFile once it
@@ -1788,6 +2123,20 @@ private:
     // decode failure, sets status_message_ and leaves the current pane
     // untouched.
     void OpenImageInPlace(const std::string &path, const unsigned char *bytes, size_t len);
+    // Same shape as HandleImageInput (h/j/k/l + arrows scroll vertically/
+    // pan horizontally, ':'/leader forwarded, everything else a no-op)
+    // plus +/-/= zoom (HtmlSession::zoom, same convention as ImageSession's
+    // own), 'r' reload and 'o' open-address-bar (both dispatch to a
+    // registered Lua command, MepBrowseReload/MepBrowseOpen -- the actual
+    // curl-fetch-if-remote logic lives in Lua, kBuiltinTextTools). No page
+    // concept to navigate (Ctrl-f/gg/G etc, unlike HandlePdfInput) -- an
+    // HTML page is one continuous flow.
+    void HandleHtmlInput();
+    // Shared by OpenHtmlInPlace's create-branch and ReloadHtmlBuffer:
+    // (re)parses `bytes` into `sess` (fresh HtmlDoc, scripts re-run,
+    // scroll reset to 0) and sets its origin/source.
+    void PopulateHtmlSession(HtmlSession &sess, const std::string &origin, const std::string &source,
+                              const unsigned char *bytes, size_t len);
     // Same shape as HandleImageInput, plus: h/j/k/l + arrows scroll
     // continuously (h/l pan horizontally within the anchor page; j/k
     // scroll vertically, crossing page boundaries smoothly rather than
@@ -1842,6 +2191,29 @@ private:
     // to know how tall the page just scrolled past/into is).
     std::pair<double, double> PdfPageSizePt(PdfSession &sess, int page_index);
     float PdfPageScreenHeightPx(PdfSession &sess, int page_index);
+    // Crosses `page` forward/backward as scroll_y drifts past the current
+    // anchor page's on-screen bounds, re-basing scroll_y relative to the
+    // new anchor each time -- extracted from HandlePdfInput's own local
+    // lambda of the same name so HandleMouseWheel's Pdf branch can reuse
+    // the exact same page-boundary-crossing math instead of duplicating
+    // it. See HandlePdfInput's call site for the original comment.
+    void RebasePdfScroll(PdfSession &sess);
+    // Clamps pan_x against the anchor page's on-screen width at the
+    // current zoom/rendered_scale -- same extraction reasoning as
+    // RebasePdfScroll.
+    void ClampPdfPanX(PdfSession &sess);
+    // Folds zoom drift outside its settled band into rendered_scale
+    // (clearing the raster cache so cached pages re-render crisp at the
+    // new resolution) -- extracted from HandlePdfInput's own local
+    // settle_zoom lambda, same reasoning as RebasePdfScroll's own
+    // extraction above.
+    void SettlePdfZoom(PdfSession &sess);
+    // Center-anchored zoom (same shape as ApplyImageZoom, centered on
+    // (pan_x, scroll_y) instead of (pan_x, pan_y) since a PDF pane
+    // scrolls vertically through scroll_y rather than a separate pan_y)
+    // -- extracted from HandlePdfInput's own local apply_zoom lambda so
+    // HandleMouseWheel's Pdf branch (Ctrl-scroll) can reuse it.
+    void ApplyPdfZoom(PdfSession &sess, float new_zoom);
     // Word-wrap-oblivious paragraph navigation (h/l within
     // doc.paragraphs[cursor_para].text, j/k to the prev/next paragraph,
     // gg/G to the first/last -- see Mode::OfficeNormal's own comment for
@@ -1875,11 +2247,23 @@ private:
     // redo_stack. Called on entering Mode::OfficeInsert and before a
     // Visual-mode format toggle.
     void PushUndoOffice();
-    // 'u'/Ctrl-R in Mode::OfficeNormal -- mirror Undo()/Redo()'s own
-    // push-the-opposite-stack-then-swap shape, operating on
-    // OfficeSession::undo_stack/redo_stack instead of Buffer's.
-    void UndoOffice();
-    void RedoOffice();
+    // Shared by SetOfficeFontFamily/SetOfficeFontSizePt/SetOfficeColor/
+    // ClearOfficeColor/SetOfficeHighlight/ClearOfficeHighlight/
+    // ToggleOfficeSuperscript/ToggleOfficeSubscript -- the same Visual-
+    // selection-vs-single-char-at-cursor dispatch ToggleOfficeFormat does
+    // inline (editor.cpp), factored out once rather than repeated per
+    // setter. Calls PushUndoOffice, applies `apply` to the current
+    // buffer's OfficeSession via SetFormatFieldOverRange, and returns to
+    // OfficeNormal if a Visual selection was consumed -- a no-op if the
+    // active pane isn't an office buffer or has no paragraphs.
+    void ApplyOfficeFormatFieldOverSelection(const std::function<void(DocFormat &)> &apply);
+    // Read-only sample (cursor, or a Visual selection's first character)
+    // of superscript/subscript state -- shared by ToggleOfficeSuperscript/
+    // ToggleOfficeSubscript (decide on vs. off before applying) exactly
+    // the way OfficeFormatActive's own inline sampling logic works for
+    // bold/italic/underline/strike, factored out here since two callers
+    // need the identical read.
+    bool OfficeSuperscriptActiveInternal(bool super) const;
     // Mirrors OpenPdfInPlace exactly (dedup-by-filename, decode, register
     // the session, explicit pending_g_ reset). Keeps a copy of `bytes` in
     // the new session's original_bytes for a future save (Phase 4) to
@@ -2175,6 +2559,16 @@ private:
     // here, avoiding a second copy of that logic in C++.
     void TryRunOrgBabelAtCursor();
 
+    // Ctrl-C Ctrl-E <format_key>: dispatches to whichever MepOrgExport*
+    // Lua command `format_key` selects (see the .cpp for the exact
+    // letter->command mapping), the same lua_commands_ lookup +
+    // CallRefWithString pattern TryRunOrgBabelAtCursor uses just above.
+    // A no-op in a non-.org buffer or for an unrecognized letter --
+    // silently absorbed rather than erroring, matching how an
+    // unrecognized key after pending_ctrl_w_/pending_g_ is also just
+    // dropped.
+    void TryRunOrgExport(char format_key);
+
     // Shifts every mark in the current buffer to account for `count` lines
     // having been inserted (count > 0) or removed (count < 0, |count| lines
     // gone) starting at row `at_row` -- call *after* the underlying
@@ -2329,6 +2723,45 @@ private:
     // zz/zt/zb: reposition the view so the cursor's line ends up
     // centered/at the top/at the bottom, without moving the cursor itself.
     void ScrollCursorTo(char where);
+
+    // Mouse-wheel/trackpad scrolling, dispatched once per frame from
+    // HandleInput() (before the mode-specific handler, so it applies
+    // regardless of which sub-mode the current content type is in --
+    // e.g. OfficeNormal/Insert/Visual all get the same office scroll
+    // behavior). `dx`/`dy` are this frame's raw GetMouseWheelMoveV()
+    // components -- fractional for a trackpad's smooth scroll, closer to
+    // +/-1 per notch for a real mouse wheel. Every content type reuses
+    // whatever single-step primitive its own keyboard handler already
+    // uses (StepVisibleRow, goto_page, pan clamps, etc.) so wheel
+    // scrolling can never drift out of sync with keyboard scrolling.
+    void HandleMouseWheel(float dx, float dy);
+    // Accumulates fractional wheel input into whole-unit steps for a
+    // content type whose scroll position is fundamentally discrete (a
+    // text/paragraph/grid row or column, not a pixel offset) -- without
+    // this, most individual trackpad-scroll frames contribute less than
+    // one line and would otherwise round away to nothing, making a slow
+    // two-finger swipe feel unresponsive. `accum` is one of the
+    // wheel_accum_*_ members below; `delta` is the raw wheel component;
+    // `units_per_notch` is how many rows/cols one full mouse-wheel notch
+    // (a delta of 1.0) should move. Returns the (possibly zero) whole
+    // number of steps to apply this frame and leaves the leftover
+    // fraction in `accum` for next frame.
+    int WheelSteps(float &accum, float delta, float units_per_notch);
+    void WheelScrollTextBuffer(float dx, float dy);
+    void WheelScrollOffice(float dx, float dy);
+    void WheelScrollSheet(float dx, float dy);
+    void WheelScrollPdf(float dx, float dy);
+    void WheelScrollImage(float dx, float dy);
+    void WheelScrollHtml(float dx, float dy);
+    void WheelScrollTerminal(float dy);
+    // Fractional-notch carry-over for each discrete-stepping content
+    // type's WheelScroll* above -- see WheelSteps' own comment. Pixel-
+    // based content (Pdf/Image/Html scroll_y/pan_x/pan_y) needs no
+    // accumulator since it can apply a fractional wheel delta directly.
+    float wheel_accum_text_row_ = 0.0f, wheel_accum_text_col_ = 0.0f;
+    float wheel_accum_office_para_ = 0.0f, wheel_accum_office_col_ = 0.0f;
+    float wheel_accum_sheet_row_ = 0.0f, wheel_accum_sheet_col_ = 0.0f;
+    float wheel_accum_term_ = 0.0f;
     // Ctrl-A/Ctrl-X: adds `delta` (negative for Ctrl-X) to the first
     // number at or after the cursor on the current line, preserving
     // leading-zero padding the way Vim's default nrformats does, and
@@ -2397,12 +2830,6 @@ private:
     const Pane &CurPane() const;
     SplitNode *FindNode(SplitNode *node, int pane_id) const;
     void CollectLeaves(const SplitNode *node, std::vector<int> &ids) const;
-    void CollectBufferIds(const SplitNode *node, std::vector<int> &ids) const;
-    // Kills and forgets any TerminalSession whose buffer_id no longer
-    // backs a pane in any tab -- called after anything that can actually
-    // remove panes (ClosePane, TabDelete), since a terminal's PTY process
-    // has no other owner to tell it to die once its only pane is gone.
-    void ReapOrphanedTerminals();
     // Shared by NavigatePaneDirection and PaneMoveBufferTabToNeighbor: the
     // best-overlap-then-nearest pane id in `direction` from `from_pane_id`,
     // or -1 if none.
@@ -2416,6 +2843,13 @@ private:
     // one per child (see SplitNode::shares).
     static void EnsureShares(SplitNode *node);
     void EnsureBufferTabSeeded(Pane &p) const;
+    // Shared by MoveBufferTabToPane/SplitPaneWithBufferTab: removes
+    // buffer_id from source_pane_id's own buffer_tabs (fixing up
+    // buffer_tab_index/buffer_id, ClosePane()-ing source_pane_id if that
+    // was its last tab) -- see its own .cpp comment for the exact
+    // erase-at-the-tab's-own-index fixup rules. Returns false if buffer_id
+    // isn't actually one of source_pane_id's tabs.
+    bool RemoveBufferTabFromPane(int source_pane_id, int buffer_id);
     // Rebuilds a leaf's Pane list into a fresh tree per ApplyLayout's `kind`.
     std::unique_ptr<SplitNode> BuildSpiralLayout(std::vector<Pane> panes, bool horizontal_next) const;
     void UpdateCompletionPopup();
@@ -2474,6 +2908,9 @@ private:
     // Keyed by buffer_id -- one entry per open PDF-viewer pane, same
     // never-reaped lifetime reasoning as images_ above.
     std::unordered_map<int, PdfSession> pdfs_;
+    // Keyed by buffer_id -- one entry per open HTML-preview pane, same
+    // never-reaped lifetime reasoning as images_ above.
+    std::unordered_map<int, HtmlSession> htmldocs_;
     // Keyed by buffer_id -- one entry per open WYSIWYG office-document
     // pane, same never-reaped lifetime reasoning as images_ above.
     std::unordered_map<int, OfficeSession> officedocs_;
@@ -2532,6 +2969,11 @@ private:
     Mode overlay_previous_mode_ = Mode::Normal;
     std::string prompt_title_, prompt_input_;
     int prompt_callback_ref_ = 0;
+    // Set only by BeginPromptNative; HandlePromptInput checks this first
+    // (and clears it right after, whichever branch fires) so a *later*
+    // BeginPrompt(Lua-ref) call reusing the same overlay doesn't
+    // accidentally also invoke a stale native callback from an earlier one.
+    std::function<void(const std::string &)> prompt_native_callback_;
     // Masked/hidden-echo input (e.g. an API key prompt): the real typed
     // text still lives in prompt_input_ (and is what on_done_ref receives
     // unchanged) -- only main.cpp's DrawPromptOverlay renders '*' in its
@@ -2729,18 +3171,26 @@ private:
     bool pending_mark_set_ = false;
     // Ctrl-W waiting for a second key (window commands: w/W/c/s/v).
     bool pending_ctrl_w_ = false;
-    // Ctrl-C waiting for a second Ctrl-C (org-babel "execute this source
-    // block", mirroring real Emacs org-mode's own C-c C-c binding).
-    // Unlike pending_g_/pending_ctrl_w_'s second key (an ordinary
-    // unmodified char, consumed via HandleNormalChar's char loop), BOTH
-    // taps of this chord hold Ctrl, so neither ever produces a
-    // GetCharPressed() char event -- both are read from the raw
-    // GetKeyPressed() key-code queue instead (see HandleNormalInput's own
-    // Ctrl-combo comment), which makes a "next different key clears the
-    // pending state" rule impractical to hook in cleanly here; a short
-    // timeout (kCtrlCChordTimeoutSec) is used instead.
+    // Ctrl-C waiting for a second chord key -- Ctrl-C (org-babel "execute
+    // this source block") or Ctrl-E (org export-format dispatch, see
+    // pending_org_export_ below), mirroring real Emacs org-mode's own
+    // C-c C-c / C-c C-e bindings. Unlike pending_g_/pending_ctrl_w_'s
+    // second key (an ordinary unmodified char, consumed via
+    // HandleNormalChar's char loop), every key in a Ctrl-C-led chord
+    // holds Ctrl, so none of them ever produce a GetCharPressed() char
+    // event -- all are read from the raw GetKeyPressed() key-code queue
+    // instead (see HandleNormalInput's own Ctrl-combo comment), which
+    // makes a "next different key clears the pending state" rule
+    // impractical to hook in cleanly here; a short timeout
+    // (kCtrlCChordTimeoutSec) is used instead.
     bool pending_ctrl_c_ = false;
     double pending_ctrl_c_time_ = 0.0;
+    // Ctrl-C Ctrl-E waiting for the export-format letter (h/p/o/m/a --
+    // TryRunOrgExport's own switch has the exact mapping). Unlike
+    // pending_ctrl_c_ above, this final key is a bare, unmodified letter
+    // -- back to the ordinary pending_g_/pending_ctrl_w_ shape, consumed
+    // via HandleNormalChar's char loop with no timeout needed.
+    bool pending_org_export_ = false;
     // 'z' waiting for a second key (scroll commands: z/t/b).
     bool pending_z_ = false;
     // Per-key state for HandleNormalInput's bare-hjkl fast path (see its

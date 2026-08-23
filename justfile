@@ -39,6 +39,11 @@ run: build-native
     if [ -d "{{ts_grammar_dir}}" ]; then
         export MEP_TS_PARSER_PATH="$(realpath {{ts_grammar_dir}})${MEP_TS_PARSER_PATH:+:$MEP_TS_PARSER_PATH}"
     fi
+    # mep.browse() (kBuiltinTextTools, src/main.cpp) shells out to this --
+    # an absolute path since mep.chdir()/:cd (a real chdir(2)) can move the
+    # process's own cwd away from the repo root at any point in the session,
+    # same reasoning as MEP_TS_PARSER_PATH above needing a resolved path.
+    export MEP_BROWSER_LAUNCHER="$(realpath launcher/browser.ts)"
     exec ./{{native_build_dir}}/mep
 
 # Build the wasm target and open it in a native window via deno + webview.

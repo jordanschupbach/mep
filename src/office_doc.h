@@ -2,6 +2,7 @@
 #define MEP_OFFICE_DOC_H
 
 #include <cstddef>
+#include <functional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -12,18 +13,53 @@
 // place that turns a paragraph's spans into rendered/word-wrapped text.
 //
 // A hand-rolled, intentionally partial rich-text model for .docx/.odt --
-// not a general-purpose office-document library. No tables, images,
-// headers/footers, footnotes/comments, track changes, real numbered
-// lists (bullet-or-not only), font-family/size/color choice beyond a few
-// heading sizes, or full OOXML/ODF style-cascade inheritance. Legacy
-// binary .doc is out of scope entirely. See NVIM_PARITY_PLAN.md's Office
-// pane phase for the full exclusion list and rationale.
+// not a general-purpose office-document library. Tables round-trip as
+// plain-text cells (no per-cell formatting/merged cells/nested tables);
+// images render inline and insert, but don't yet round-trip through save
+// (DocImage isn't written back to word/media//Pictures -- see
+// SaveDocxToMemory/SaveOdtToMemory). No headers/footers, footnotes/
+// comments, track changes, real numbered lists (bullet-or-not only), or
+// full OOXML/ODF style-cascade inheritance. Legacy binary .doc is out of
+// scope entirely. See WYSIWYG_TOOLBAR_PLAN.md and NVIM_PARITY_PLAN.md's
+// Office pane phase for the full exclusion list and rationale.
+
+// Logical font family a run draws with -- Sans is the pre-existing (and
+// still default) Liberation Sans; Serif/Mono are Liberation Serif/Mono,
+// same OFL-licensed family, embedded the same way (office_font_data_serif.h/
+// office_font_data_mono.h). All three are real, distinct glyph atlases, not
+// just a stored label -- a font-family *picker* genuinely changes what's
+// drawn, unlike a v1 that would only round-trip the name.
+enum class OfficeFontFamily { Sans, Serif, Mono };
 
 struct DocFormat {
     bool bold = false, italic = false, underline = false, strike = false;
+    bool superscript = false, subscript = false;  // mutually exclusive in practice; toggling one clears the other
+    // Inline math (Editor::InsertOfficeMath): the run's own text is literal
+    // LaTeX-subset source (mep's existing math engine, LayoutMathExpression/
+    // DrawMathLayout -- the same one org-mode/HTML <math> spans use), drawn
+    // as a typeset expression instead of literal glyphs. Round-trips as
+    // plain formatted text in DOCX/ODT (no OMML/MathML v1) -- opening the
+    // saved file elsewhere shows the raw LaTeX source, a documented loss.
+    bool math = false;
+    OfficeFontFamily font_family = OfficeFontFamily::Sans;
+    // 0 = inherit the paragraph's own default size (body text size, or a
+    // heading's larger size) -- matches font_scale's own "0 means unset"
+    // convention elsewhere in this codebase (html_doc.h's ComputedStyle).
+    float font_size_pt = 0.0f;
+    bool has_color = false;
+    unsigned char color_r = 0, color_g = 0, color_b = 0;
+    bool has_highlight = false;
+    unsigned char highlight_r = 255, highlight_g = 255, highlight_b = 0;
+
     bool operator==(const DocFormat &o) const {
-        return bold == o.bold && italic == o.italic && underline == o.underline && strike == o.strike;
+        return bold == o.bold && italic == o.italic && underline == o.underline && strike == o.strike &&
+               superscript == o.superscript && subscript == o.subscript && math == o.math &&
+               font_family == o.font_family && font_size_pt == o.font_size_pt && has_color == o.has_color &&
+               color_r == o.color_r && color_g == o.color_g && color_b == o.color_b &&
+               has_highlight == o.has_highlight && highlight_r == o.highlight_r && highlight_g == o.highlight_g &&
+               highlight_b == o.highlight_b;
     }
+    bool operator!=(const DocFormat &o) const { return !(*this == o); }
 };
 
 // Half-open [start,end) character range into DocParagraph::text. Spans in
@@ -46,11 +82,53 @@ struct DocParagraph {
     enum class Align { Left, Center, Right, Justify };
     Align align = Align::Left;
     int heading_level = 0;  // 0 = body text, 1-6 = heading
-    bool bullet = false;    // v1: bullet-or-not only, no real numbering
+    // v1: one flat list level, bullet-or-numbered-or-neither -- no real
+    // multi-level list-style definitions (matches this file's own
+    // documented scope exclusion). Numbered's displayed number is always
+    // "position within the current run of consecutive Numbered paragraphs"
+    // (computed at render/save time, not stored), so inserting/deleting a
+    // list item never leaves stale numbers behind.
+    enum class ListKind { None, Bullet, Numbered };
+    ListKind list_kind = ListKind::None;
+    // Anchors a table/image (OfficeDoc::tables/images, below) to render
+    // immediately after this paragraph -- -1 means none. A paragraph with
+    // an anchor may still hold its own text (usually empty, e.g. right
+    // after inserting a table at the cursor) so the anchor never has to be
+    // its own zero-width paragraph type; paragraph-level cursor motion
+    // treats an anchored table/image as a single step, never entering it
+    // via the normal per-character column motions.
+    int table_ref = -1;
+    int image_ref = -1;
+};
+
+// A table's cells hold plain text only -- no per-cell rich formatting/
+// nested tables/merged cells in v1 (this file's own documented scope
+// exclusion). `cells` is always exactly rows*cols, row-major.
+struct DocTable {
+    int rows = 0, cols = 0;
+    std::vector<std::string> cells;
+    std::string &Cell(int r, int c) { return cells[static_cast<size_t>(r) * static_cast<size_t>(cols) + static_cast<size_t>(c)]; }
+    const std::string &Cell(int r, int c) const {
+        return cells[static_cast<size_t>(r) * static_cast<size_t>(cols) + static_cast<size_t>(c)];
+    }
+};
+
+// An embedded image: `bytes` is the original encoded (PNG/JPEG/...) file
+// content, decoded on demand into a texture by the renderer (main.cpp),
+// not eagerly here (this file is deliberately raylib-free, same reasoning
+// as image_doc.h/pdf_doc.h). `natural_w`/`natural_h` are the decoded pixel
+// dimensions, cached at insert/load time so layout doesn't need to decode
+// just to know the aspect ratio. No resize handles/cropping in v1 -- always
+// drawn at its natural size, capped to the pane's content width.
+struct DocImage {
+    std::string bytes;
+    int natural_w = 0, natural_h = 0;
 };
 
 struct OfficeDoc {
     std::vector<DocParagraph> paragraphs;
+    std::vector<DocTable> tables;
+    std::vector<DocImage> images;
     std::string source_format;  // "docx" or "odt", drives which Save* to use
 };
 
@@ -118,12 +196,47 @@ void CoalesceSpans(std::vector<DocSpan> &spans);
 // on/off state).
 DocFormat FormatAt(const DocParagraph &p, int col);
 
+// Sets one non-boolean DocFormat field to an explicit value over [a,b) --
+// the font-family/size/color/highlight counterpart of ToggleFormatOverRange
+// (which only makes sense for a bool: "on"/"off" has no equivalent for
+// "what size"). Unlike toggling, there's no "already uniform" state to
+// detect first -- the caller (a toolbar dropdown/color-swatch click)
+// already knows the exact value to apply, so this always sets it.
+// `apply` receives a mutable DocFormat& to set the one field it closes
+// over, mirroring ToggleFormatOverRange's pointer-to-member dispatch but
+// generalized to a lambda since a non-bool field can't be toggled through
+// a single shared code path the same way.
+void SetFormatFieldOverRange(DocParagraph &p, int a, int b, const std::function<void(DocFormat &)> &apply);
+
+// Sets every paragraph in [first,last] (inclusive paragraph indices) to
+// `align`/`kind` -- the paragraph-level counterpart of the span-level
+// setters above (alignment and list membership are whole-paragraph
+// properties, not character-range ones, so there's no span math here at
+// all, just a direct field assignment per paragraph).
+void SetParagraphAlignment(std::vector<DocParagraph> &paragraphs, int first, int last, DocParagraph::Align align);
+void SetParagraphListKind(std::vector<DocParagraph> &paragraphs, int first, int last, DocParagraph::ListKind kind);
+
 // ============================================================================
 // File I/O
 // ============================================================================
 
 bool IsDocxPath(const std::string &path);
 bool IsOdtPath(const std::string &path);
+
+// Sniffs `bytes` (a DocImage's raw encoded content) by magic-number prefix
+// to get a lowercase extension ("png"/"jpeg"/"gif"/"bmp") -- ImageDoc::
+// LoadFromMemory already validated the bytes decode as one of these at
+// insert/load time, so this never needs to fail; unrecognized content
+// falls back to "png" (a mismatched extension is cosmetic -- word/media/
+// part names don't have to match their actual encoding -- not a
+// correctness issue). Shared by SaveDocxToMemory's word/media/ part naming
+// and SaveOdtToMemory's Pictures/ part naming, and their respective
+// Content-Types/manifest MIME-type declarations.
+std::string SniffImageExtension(const std::string &bytes);
+
+// Maps a SniffImageExtension result ("png"/"jpeg"/"gif"/"bmp"/anything
+// else) to its MIME type, for Content-Types/manifest declarations.
+std::string MimeForImageExt(const std::string &ext);
 
 // Reads a named entry out of an in-memory ZIP archive (both .docx and
 // .odt are ZIP containers of XML parts). Returns false (out left empty)
@@ -166,18 +279,18 @@ bool WriteZipReplacingEntries(const unsigned char *orig_bytes, size_t orig_len,
 // no `word/document.xml` part.
 bool LoadDocxFromMemory(const unsigned char *bytes, size_t len, OfficeDoc &out, std::string &error);
 
-// Serializes `doc.paragraphs` back into `word/document.xml` (re-parsing
-// `original_bytes`'s copy of that part first, so the original root
-// element's namespace declarations and a trailing <w:sectPr> -- page
+// Serializes `doc.paragraphs`/`doc.tables` back into `word/document.xml`
+// (re-parsing `original_bytes`'s copy of that part first, so the original
+// root element's namespace declarations and a trailing <w:sectPr> -- page
 // setup, which this model doesn't represent -- are preserved verbatim;
-// only the <w:p> paragraph children are replaced) and rebuilds the full
-// .docx ZIP via WriteZipReplacingEntry. Known v1 loss: a <w:tbl>/image
-// present in `original_bytes` is dropped on save (never represented in
-// OfficeDoc in the first place -- see the V1 scope exclusions), and a
-// bullet paragraph's <w:numPr> isn't re-emitted (no numbering.xml
-// list-definition tracking in v1 -- safer to drop the bullet's list
-// formatting on save than guess an unresolvable numId that could trigger
-// a "needs repair" prompt).
+// only the <w:p>/<w:tbl> children are replaced) and rebuilds the full
+// .docx ZIP via WriteZipReplacingEntry. A table round-trips (plain cell
+// text only -- no per-cell formatting/merged cells, matching DocTable's own
+// scope note); an image anchor is still dropped on save (DocImage isn't
+// written back to word/media/ yet). A bullet paragraph's <w:numPr> also
+// isn't re-emitted (no numbering.xml list-definition tracking in v1 --
+// safer to drop the bullet's list formatting on save than guess an
+// unresolvable numId that could trigger a "needs repair" prompt).
 bool SaveDocxToMemory(const OfficeDoc &doc, const std::vector<unsigned char> &original_bytes,
                       std::vector<unsigned char> &out, std::string &error);
 
@@ -188,12 +301,13 @@ bool SaveDocxToMemory(const OfficeDoc &doc, const std::vector<unsigned char> &or
 // or has no `content.xml` part.
 bool LoadOdtFromMemory(const unsigned char *bytes, size_t len, OfficeDoc &out, std::string &error);
 
-// Serializes `doc.paragraphs` back into `content.xml` (same
+// Serializes `doc.paragraphs`/`doc.tables` back into `content.xml` (same
 // preserve-everything-else-via-reparse approach as SaveDocxToMemory,
 // scoped to <office:text>'s children) and rebuilds the full .odt ZIP via
-// WriteZipReplacingEntry. Same known v1 losses as SaveDocxToMemory: a
-// table/image in the original is dropped, and bullet paragraphs lose
-// their <text:list> wrapping on save (no list-style tracking in v1).
+// WriteZipReplacingEntry. Same known v1 losses as SaveDocxToMemory: an
+// image anchor is dropped, and bullet paragraphs lose their <text:list>
+// wrapping on save (no list-style tracking in v1) -- a table round-trips
+// (plain cell text only, same scope as the DOCX path).
 bool SaveOdtToMemory(const OfficeDoc &doc, const std::vector<unsigned char> &original_bytes,
                      std::vector<unsigned char> &out, std::string &error);
 

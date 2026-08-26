@@ -184,6 +184,7 @@
             pkgs.libxinerama
             pkgs.libxcursor
             pkgs.libxi
+            pkgs.openssl
           ];
 
           # Lua isn't a CMake project of its own (see CMakeLists.txt's own
@@ -234,6 +235,7 @@
             pkgs.libxinerama
             pkgs.libxcursor
             pkgs.libxi
+            pkgs.openssl
             # Runtime dep of webview_deno, used by the launcher to open a
             # native window around the wasm build.
             pkgs.webkitgtk_6_0

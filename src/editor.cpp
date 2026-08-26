@@ -1391,6 +1391,20 @@ void Editor::CollectLeaves(const SplitNode *node, std::vector<int> &ids) const {
     for (auto &child : node->children) CollectLeaves(child.get(), ids);
 }
 
+void Editor::CollectLeafBuffers(const SplitNode *node, std::vector<int> &ids) const {
+    if (node->dir == SplitDir::Leaf) {
+        ids.push_back(node->pane.buffer_id);
+        return;
+    }
+    for (auto &child : node->children) CollectLeafBuffers(child.get(), ids);
+}
+
+std::vector<int> Editor::PaneBuffersInActiveTab() const {
+    std::vector<int> ids;
+    CollectLeafBuffers(tabs_[active_tab_].root.get(), ids);
+    return ids;
+}
+
 bool Editor::RemovePaneNode(std::unique_ptr<SplitNode> &node_ptr, int pane_id) {
     SplitNode *node = node_ptr.get();
     for (size_t i = 0; i < node->children.size(); i++) {
@@ -1675,6 +1689,13 @@ bool Editor::IsTerminalBuffer(int buffer_id) const {
 const TerminalSession *Editor::GetTerminal(int buffer_id) const {
     auto it = terminals_.find(buffer_id);
     return it == terminals_.end() ? nullptr : &it->second;
+}
+
+bool Editor::WriteToTerminalBuffer(int buffer_id, const std::string &text) {
+    TerminalSession *sess = FindTerminal(buffer_id);
+    if (!sess || sess->exited) return false;
+    TerminalWrite(*sess, text);
+    return true;
 }
 
 void Editor::ResizeTerminal(int buffer_id, int rows, int cols) {
@@ -5747,6 +5768,22 @@ bool Editor::HandleMod1Shortcuts() {
     // separately for mod1+Tab / mod1+Shift+Tab (pane buffer-tab cycling).
     if (IsKeyPressed(KEY_TAB)) {
         std::string k = extra_shift ? "S-Tab" : "Tab";
+        auto it = mod1_mappings_.find(k);
+        if (it != mod1_mappings_.end() && lua_) {
+            lua_->CallRef(it->second);
+            while (GetCharPressed() > 0) {
+            }
+            return true;
+        }
+    }
+    // Return isn't a letter key either -- same "falls outside the A-Z
+    // scan" reasoning as Tab above. Checked in every mode (this whole
+    // function runs before mode dispatch -- see its own call site in
+    // HandleInput), which is what lets a "CR" mapping tell Normal from
+    // Visual apart itself via mep.visual_selection() rather than needing
+    // two separate registrations here.
+    if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER)) {
+        std::string k = extra_shift ? "S-CR" : "CR";
         auto it = mod1_mappings_.find(k);
         if (it != mod1_mappings_.end() && lua_) {
             lua_->CallRef(it->second);

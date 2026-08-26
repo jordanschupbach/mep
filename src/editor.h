@@ -1184,6 +1184,12 @@ public:
     // aren't Editor members (mep.html_current_origin/mep.html_reload)
     // need the raw id to key into htmldocs_ via GetHtml/ReloadHtmlBuffer.
     int CurrentBufferId() const { return CurPane().buffer_id; }
+    // Buffer ids currently shown by a pane in the active tab's own split
+    // layout, in that tab's leaf-traversal order (CollectLeafBuffers) --
+    // what mep.pane_buffers() exposes for a Lua-side feature that wants
+    // to "find an already-open terminal pane" (mirrors mep.nvim's
+    // nvim_tabpage_list_wins()/nvim_win_get_buf combination).
+    std::vector<int> PaneBuffersInActiveTab() const;
     CursorPos Cursor() const { return CurPane().cursor; }
     int ScrollRow() const { return CurPane().scroll_row; }
     const std::string &CommandLine() const { return command_line_; }
@@ -1285,6 +1291,11 @@ public:
     // terminal pane's buffer_id still nominally points at.
     bool IsTerminalBuffer(int buffer_id) const;
     const TerminalSession *GetTerminal(int buffer_id) const;
+    // Writes `text` into a real terminal buffer's own PTY (mep.terminal_write,
+    // the "send this line to whichever :terminal pane I designated"
+    // primitive a Lua-side vim-slime-style feature needs) -- false if
+    // `buffer_id` isn't a live terminal (never one, or already exited).
+    bool WriteToTerminalBuffer(int buffer_id, const std::string &text);
     // Called once per frame by DrawPane with the terminal pane's current
     // character-cell size; no-ops if unchanged since the last call
     // (cheap to call unconditionally rather than threading a "did this
@@ -3223,6 +3234,10 @@ private:
     const Pane &CurPane() const;
     SplitNode *FindNode(SplitNode *node, int pane_id) const;
     void CollectLeaves(const SplitNode *node, std::vector<int> &ids) const;
+    // Same traversal as CollectLeaves, collecting each leaf's own
+    // buffer_id instead of its pane id -- PaneBuffersInActiveTab's own
+    // helper.
+    void CollectLeafBuffers(const SplitNode *node, std::vector<int> &ids) const;
     // Shared by NavigatePaneDirection and PaneMoveBufferTabToNeighbor: the
     // best-overlap-then-nearest pane id in `direction` from `from_pane_id`,
     // or -1 if none.

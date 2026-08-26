@@ -4106,6 +4106,126 @@ const char *kBuiltinRun =
     "mep.command('MepReplSendLine', mep.repl_send_line)\n"
     "mep.command('MepReplSendBuffer', mep.repl_send_buffer)\n";
 
+// vim-slime-style "send to a terminal buffer of your own choosing"
+// (distinct from mep.repl_start above, which spawns and owns one REPL
+// job per filetype): mod1+CR sends the current line then advances the
+// cursor, or -- in Visual mode -- sends the whole selection. Registration
+// is per *source* buffer (mep_termsend_targets, keyed by mep.
+// current_buffer()), so several source buffers can each target a
+// different terminal at once. The first send from a buffer -- or any
+// send once its previously-registered target buffer has stopped being a
+// terminal (closed, or repurposed) -- prompts (mep.ui_input) for a
+// terminal buffer id, pre-filled with the first terminal buffer found
+// among mep.pane_buffers() (panes in the *active tab*), so accepting it
+// is just pressing Enter a second time. "Terminal buffer" here means
+// either flavor mep has: a real `:terminal` (mep.is_terminal_buffer/
+// mep.terminal_write, added alongside this feature) or one of this same
+// file's own mep.run_file/mep.repl_start output buffers would *not*
+// qualify (they're plain buffers Lua renders into, never registered
+// with Editor::terminals_) -- deliberately scoped to genuine `:terminal`
+// panes only, the ones a user would actually open to run something
+// interactively and want code sent into.
+const char *kBuiltinTermSend =
+    // source bufnr -> target (terminal) bufnr
+    "local mep_termsend_targets = {}\n"
+    "local function mep_termsend_alive(bufnr)\n"
+    "  return bufnr ~= nil and mep.is_terminal_buffer(bufnr)\n"
+    "end\n"
+    // Every terminal buffer currently shown by a pane in the active tab,
+    // in mep.pane_buffers()'s own order -- what a fresh registration
+    // prompt offers as its default (its first entry).
+    "local function mep_termsend_candidates()\n"
+    "  local out = {}\n"
+    "  for _, id in ipairs(mep.pane_buffers()) do\n"
+    "    if mep.is_terminal_buffer(id) then out[#out + 1] = id end\n"
+    "  end\n"
+    "  return out\n"
+    "end\n"
+    "function mep.termsend_register(source, target)\n"
+    "  if not mep_termsend_alive(target) then\n"
+    "    mep.notify('mep.termsend: buffer ' .. tostring(target) .. ' is not a terminal buffer', 'error')\n"
+    "    return false\n"
+    "  end\n"
+    "  mep_termsend_targets[source] = target\n"
+    "  return true\n"
+    "end\n"
+    // Resolves `source`'s own send target, prompting for one first if it
+    // has none yet (or its previous one has stopped existing). Calls
+    // on_ready(target_bufnr) once a target is known; a no-op if the
+    // prompt is cancelled or the typed id isn't a terminal buffer.
+    "local function mep_termsend_ensure(source, on_ready)\n"
+    "  local target = mep_termsend_targets[source]\n"
+    "  if mep_termsend_alive(target) then on_ready(target) return end\n"
+    "  local candidates = mep_termsend_candidates()\n"
+    "  local default = candidates[1] and tostring(candidates[1]) or ''\n"
+    "  mep.ui_input('mep.termsend: terminal buffer id to send to', default, function(input)\n"
+    "    if not input or input == '' then return end\n"
+    "    local id = tonumber(input)\n"
+    "    if not id then\n"
+    "      mep.notify('mep.termsend: \"' .. input .. '\" is not a buffer id', 'error')\n"
+    "      return\n"
+    "    end\n"
+    "    if mep.termsend_register(source, math.floor(id)) then\n"
+    "      on_ready(mep_termsend_targets[source])\n"
+    "    end\n"
+    "  end)\n"
+    "end\n"
+    "local function mep_termsend_send(source, text, after)\n"
+    "  mep_termsend_ensure(source, function(target)\n"
+    "    mep.terminal_write(target, text .. '\\n')\n"
+    "    if after then after() end\n"
+    "  end)\n"
+    "end\n"
+    // Sends the line at the cursor, then moves the cursor down one line
+    // -- REPL-cell-style "run and advance".
+    "function mep.termsend_line()\n"
+    "  local source = mep.current_buffer()\n"
+    "  local row = mep.cursor()\n"
+    "  local line = mep.get_line(row)\n"
+    "  mep_termsend_send(source, line, function()\n"
+    "    local target_row = math.min(row + 1, mep.line_count())\n"
+    "    local _, col = mep.cursor()\n"
+    "    mep.set_cursor(target_row, col)\n"
+    "  end)\n"
+    "end\n"
+    // Sends the active Visual selection as one submission, then leaves
+    // Visual mode (mep.cmd('normal!') from Visual mode always drops
+    // straight to Normal -- Editor::RunNormalKeys bails out of its own
+    // keystroke loop on a non-Normal/Insert mode and then unconditionally
+    // calls EnterNormal(), regardless of what -- if anything -- args
+    // contains). No cursor movement afterwards: with a manually-
+    // highlighted range there's no single "next line" to advance to.
+    "function mep.termsend_selection()\n"
+    "  local source = mep.current_buffer()\n"
+    "  local text = mep.visual_selection()\n"
+    "  mep.cmd('normal!')\n"
+    "  if text == '' then return end\n"
+    "  mep_termsend_send(source, text, nil)\n"
+    "end\n"
+    // One binding for both modes: HandleMod1Shortcuts fires before mode
+    // dispatch regardless of mode_, so this closure tells Normal from
+    // Visual apart itself via mep.visual_selection() rather than needing
+    // two separate mep.map registrations (mep.map only covers plain "n"/
+    // "v" single-ASCII keys, not mod1 combos or Enter -- see mep.map_mod1's
+    // own doc comment).
+    "mep.map_mod1('CR', function()\n"
+    "  if mep.visual_selection() ~= '' then\n"
+    "    mep.termsend_selection()\n"
+    "  else\n"
+    "    mep.termsend_line()\n"
+    "  end\n"
+    "end)\n"
+    "mep.command('MepTermSendLine', mep.termsend_line)\n"
+    "mep.command('MepTermSendRegister', function(args)\n"
+    "  local source = mep.current_buffer()\n"
+    "  if args and args ~= '' then\n"
+    "    mep.termsend_register(source, tonumber(args))\n"
+    "  else\n"
+    "    mep_termsend_targets[source] = nil\n"
+    "    mep_termsend_ensure(source, function() end)\n"
+    "  end\n"
+    "end)\n";
+
 // Markdown rendering (Phase 28), **scoped down**: heading colors + sign-
 // column level glyph, checkbox toggle, fenced-code-block shading + Phase
 // 5 folding (heading-depth folding too), link/emphasis concealment,

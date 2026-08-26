@@ -187,6 +187,7 @@ Available to =:lua=, =:source=, and =init.lua=:
 - =mep.get_line(row)= / =mep.set_line(row, text)= — 1-indexed.
 - =mep.line_count()=
 - =mep.cursor()= -> row, col / =mep.set_cursor(row, col)=
+- =mep.current_buffer()= -> the active pane's own buffer id.
 - =mep.insert_text(text)=
 - =mep.notify(msg)= — also what Lua's own =print()= is routed through.
 - =mep.command(name, fn)= — defines a =:name= ex-command.
@@ -195,8 +196,10 @@ Available to =:lua=, =:source=, and =init.lua=:
 - =mep.map_mod1(key, fn)= — binds a letter under =mod1=, globally across
   all modes: a bare letter (=\"h\"=) for =mod1+letter=, or =\"S-\"=/
   =\"C-\"=-prefixed (=\"S-h\"=, =\"C-h\"=) for =mod1+Shift+letter= /
-  =mod1+Ctrl+letter=. Overrides any prior mapping for that exact key,
-  including the startup defaults.
+  =mod1+Ctrl+letter=. Two non-letter keys also work, each their own
+  special case since neither is a letter: =\"Tab\"=/=\"S-Tab\"=, and
+  =\"CR\"=/=\"S-CR\"= (Enter). Overrides any prior mapping for that exact
+  key, including the startup defaults.
 - =mep.set_mod1(name)= — =\"alt\"= (default), =\"ctrl\"=, =\"shift\"=, or
   =\"super\"=/=\"cmd\"=/=\"meta\"=.
 - =mep.nav_pane(direction)= — =\"left\"=/=\"down\"=/=\"up\"=/=\"right\"=;

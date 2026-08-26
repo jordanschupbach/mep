@@ -144,6 +144,12 @@ int l_set_cursor(lua_State *L) {
     return 0;
 }
 
+// mep.current_buffer() -> the active pane's own buffer id.
+int l_current_buffer(lua_State *L) {
+    lua_pushinteger(L, GetEditor(L)->CurrentBufferId());
+    return 1;
+}
+
 int l_insert_text(lua_State *L) {
     size_t len = 0;
     const char *s = luaL_checklstring(L, 1, &len);
@@ -254,8 +260,11 @@ int l_leader_bindings(lua_State *L) {
 // mep.map_mod1(key, fn): binds a single letter key under the mod1 modifier
 // (see mep.set_mod1), globally across all modes. `key` is a bare letter
 // ("h") for mod1+letter, or "S-"/"C-" prefixed ("S-h", "C-h") for
-// mod1+Shift+letter / mod1+Ctrl+letter. Overrides any prior mapping for
-// that exact key, including the startup defaults.
+// mod1+Shift+letter / mod1+Ctrl+letter. Two non-letter keys are also
+// recognized, each its own special case in HandleMod1Shortcuts since
+// neither falls in the A-Z scan the letter case uses: "Tab"/"S-Tab", and
+// "CR"/"S-CR" (Enter -- no Ctrl variant, matching Tab). Overrides any
+// prior mapping for that exact key, including the startup defaults.
 int l_map_mod1(lua_State *L) {
     const char *key = luaL_checkstring(L, 1);
     luaL_checktype(L, 2, LUA_TFUNCTION);
@@ -349,6 +358,28 @@ int l_sidebar_default_cols(lua_State *L) {
 int l_terminal_here(lua_State *L) {
     GetEditor(L)->OpenTerminalInPlace(luaL_optstring(L, 1, ""));
     return 0;
+}
+
+// mep.is_terminal_buffer(buffer_id) -> bool: true for a real `:terminal`
+// buffer (Editor::terminals_), false for anything else -- including a
+// mep.term_start-backed Run/REPL output buffer (kBuiltinRun), which is a
+// plain buffer Lua renders into and the C++ side never tracks as one.
+int l_is_terminal_buffer(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    lua_pushboolean(L, GetEditor(L)->IsTerminalBuffer(buffer_id));
+    return 1;
+}
+
+// mep.terminal_write(buffer_id, text) -> bool: writes `text` verbatim
+// (no newline appended -- callers wanting one write it themselves, same
+// convention as mep.job_write) into a real `:terminal` buffer's own
+// PTY. False if `buffer_id` isn't a live terminal.
+int l_terminal_write(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    size_t len = 0;
+    const char *s = luaL_checklstring(L, 2, &len);
+    lua_pushboolean(L, GetEditor(L)->WriteToTerminalBuffer(buffer_id, std::string(s, len)));
+    return 1;
 }
 
 // mep.job_start(argv, opts) -> id. `argv` is an array of strings (argv[1]
@@ -1219,6 +1250,20 @@ int l_buffer_switch(lua_State *L) {
     int id = static_cast<int>(luaL_checkinteger(L, 1));
     GetEditor(L)->SwitchToBufferForLua(id);
     return 0;
+}
+
+// mep.pane_buffers() -> array of buffer ids currently shown by a pane in
+// the active tab's own split layout (Editor::PaneBuffersInActiveTab) --
+// for a script that wants to "find an already-open terminal pane"
+// without spawning one itself (kBuiltinTermSend).
+int l_pane_buffers(lua_State *L) {
+    std::vector<int> ids = GetEditor(L)->PaneBuffersInActiveTab();
+    lua_createtable(L, static_cast<int>(ids.size()), 0);
+    for (size_t i = 0; i < ids.size(); i++) {
+        lua_pushinteger(L, ids[i]);
+        lua_rawseti(L, -2, static_cast<int>(i) + 1);
+    }
+    return 1;
 }
 
 // mep.command_names() -> array of registered mep.command() names.
@@ -2195,6 +2240,7 @@ const luaL_Reg kMepFuncs[] = {
     {"visual_selection", l_visual_selection},
     {"cursor", l_cursor},
     {"set_cursor", l_set_cursor},
+    {"current_buffer", l_current_buffer},
     {"insert_text", l_insert_text},
     {"notify", l_notify},
     {"command", l_command},
@@ -2209,6 +2255,8 @@ const luaL_Reg kMepFuncs[] = {
     {"cmd", l_cmd},
     {"open", l_open},
     {"terminal_here", l_terminal_here},
+    {"is_terminal_buffer", l_is_terminal_buffer},
+    {"terminal_write", l_terminal_write},
     {"sidebar_default_cols", l_sidebar_default_cols},
     {"quit", l_quit},
     {"job_start", l_job_start},
@@ -2266,6 +2314,7 @@ const luaL_Reg kMepFuncs[] = {
     {"fuzzy_score", l_fuzzy_score},
     {"buffer_list", l_buffer_list},
     {"buffer_switch", l_buffer_switch},
+    {"pane_buffers", l_pane_buffers},
     {"command_names", l_command_names},
     {"colorscheme", l_colorscheme},
     {"theme_names", l_theme_names},

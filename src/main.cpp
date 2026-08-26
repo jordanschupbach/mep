@@ -5,10 +5,14 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iterator>
 #include <map>
+#include <sstream>
 #include <string>
 #include <sys/stat.h>
 #include <unordered_map>
@@ -239,6 +243,78 @@ enum {
 };
 int g_office_dropdown_open = -1;
 
+// Populated by DrawPane's office branch (a full-document wrap-height scan
+// -- see the comment where it's filled in) and consumed by that same
+// pane's own Docs-style status footer (word/page count, zoom) right after,
+// and by UpdateOfficeScrollbarInteraction (scrollbar hit-testing/drag)
+// later the same frame. A reused scratch struct, not a persistent one: if
+// several office panes are visible (a split), each one's DrawPane call
+// fills it in and fully consumes it before the next pane's call reuses it
+// -- so the only cross-pane sharing is UpdateOfficeScrollbarInteraction/
+// the zoom-drag state only ever tracking whichever office pane was drawn
+// last that frame, same "one active thing at a time" convention as
+// g_office_dropdown_open.
+struct OfficeStatusInfo {
+    bool valid = false;
+    int buffer_id = 0;
+    int word_count = 0;
+    int page_estimate = 1;
+    int page_total_estimate = 1;
+    float zoom = 1.0f;
+    // Scrollbar geometry/state, screen pixels: `track` is the vertical
+    // strip the thumb travels in; scroll_fraction/visible_fraction locate
+    // the thumb within it (0..1, top-of-viewport / visible-height, both as
+    // a fraction of the total document height).
+    Rectangle track{};
+    Rectangle thumb{};
+    float scroll_fraction = 0.0f;
+    float visible_fraction = 1.0f;
+    float total_height = 0.0f;
+    // Cached layout inputs (this frame's pane width/zoom-derived values) so
+    // UpdateOfficeScrollbarInteraction can redo the same paragraph-height
+    // walk DrawPane's own full-document scan does, without needing pane
+    // pixel geometry of its own.
+    float max_width = 0.0f;
+    float body_size = 0.0f;
+    // Scratch space for the Outline panel's two-pass row draw (position
+    // first, then look up which one is "active" before redrawing that
+    // row's highlight) -- cleared and repopulated fresh each time
+    // DrawOfficeSidePanels draws the panel, not carried across frames.
+    std::vector<std::pair<int, Rectangle>> outline_rows;
+};
+OfficeStatusInfo g_office_status;
+
+// Scrollbar drag state -- same "global struct, threshold-free since a
+// scrollbar thumb has no click-vs-drag ambiguity" idiom as g_pane_drag,
+// but kept separate: dragging a scroll position is a different action
+// shape (target a fraction, not resize a split/sidebar) from anything
+// PaneDragState already models.
+struct OfficeScrollDragState {
+    bool active = false;
+    float grab_offset_y = 0.0f;  // mouse.y - thumb.y at drag start, kept constant through the drag
+};
+OfficeScrollDragState g_office_scroll_drag;
+
+// Docs-style status line's zoom-slider drag state -- same "continuous drag,
+// handled directly where it's drawn rather than via a separate Update*"
+// shape as the slider itself (self-contained, unlike the scrollbar which
+// needed this frame's DrawPane geometry so it lives in a sibling Update*
+// function instead).
+bool g_office_zoom_drag = false;
+
+// Outline (left) / Format-Insert (right) panel open/tab state -- plain
+// globals, same "one office pane in view at a time" convention as
+// g_office_dropdown_open, rather than per-buffer OfficeSession fields:
+// this is transient UI chrome state, not document state worth persisting
+// per buffer.
+bool g_office_outline_open = false;
+bool g_office_format_open = false;
+int g_office_format_tab = 0;  // 0 = Format, 1 = Insert
+constexpr float kOfficeRailW = 40.0f;
+constexpr float kOfficeOutlineW = 240.0f;
+constexpr float kOfficeFormatW = 260.0f;
+constexpr float kOfficeFooterH = 32.0f;
+
 // Generic click-region registry (NVIM_PARITY_PLAN.md Phase 11's "generic
 // click dispatch on widgets" gap): rebuilt fresh every frame by whichever
 // DrawXxx functions render a clickable region (tab bar, gutter fold
@@ -403,6 +479,30 @@ int g_last_sidebar_click_id = -1;
 int g_last_sidebar_click_row = -1;
 constexpr double kDoubleClickThresholdSec = 0.4;
 
+// Same double-click idiom, for double-clicking a Gantt row's label to
+// rename it in place (UpdateGanttMouseInteraction). Keyed by headline
+// index rather than a (sidebar id, row) pair since only one Gantt view is
+// ever being interacted with at a time.
+double g_last_gantt_click_time = -1.0;
+int g_last_gantt_click_headline = -1;
+
+// Which Kanban column (if any) has its "..." rename/delete popup open --
+// (buffer_id, column_index) so two panes each showing a different board
+// can't cross-talk through a single shared index, mirroring
+// g_office_dropdown_open's single-open-popup convention otherwise.
+int g_kanban_col_menu_buffer = -1;
+int g_kanban_col_menu_col = -1;
+
+// Raster Gantt exports are captured on the frame after their button click.
+// That lets DrawGantt paint a clean chart (without the interactive focus
+// row) before LoadImageFromScreen reads the framebuffer.
+struct PendingGanttRasterExport {
+    int buffer_id = -1;
+    std::string format;
+};
+PendingGanttRasterExport g_pending_gantt_raster_export;
+int g_clean_gantt_export_buffer = -1;
+
 enum class PaneDropZone { Center, Left, Right, Top, Bottom };
 
 // Which zone of `rect` (mouse-drag drop target) `mouse` is closest to --
@@ -460,6 +560,52 @@ int MenuItemHeight() { return static_cast<int>(g_font_size) + 8; }
 float MenuFontSize() { return std::max(kMinFontSize, g_font_size - 2); }
 int TabBarHeight() { return static_cast<int>(MenuFontSize()) + 10; }
 int PaneHeaderHeight() { return static_cast<int>(MenuFontSize()) + 8; }
+// A Gantt row's height, derived from the live font size rather than a
+// fixed constant (kGanttRowHeight used to be 28px flat) so a row's label
+// never clips regardless of zoom -- same +16 padding proportion that
+// constant was tuned at around the default font size. DrawGantt and
+// UpdateGanttMouseInteraction both call this independently rather than
+// sharing a cached value, matching how they already both call
+// PaneHeaderHeight() separately.
+// Each Gantt row carries both a task title and its visible scheduled/deadline
+// range, so reserve a compact second line for the latter.
+int GanttRowHeight() { return static_cast<int>(g_font_size * 2.0f) + 16; }
+
+std::string GanttDateLabel(const OrgTimestamp &date) {
+    if (!date.present) return "";
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d", date.year, date.month, date.day);
+    return buf;
+}
+
+const char *GanttRulerScaleName(GanttSession::RulerScale scale) {
+    switch (scale) {
+        case GanttSession::RulerScale::Days: return "Days";
+        case GanttSession::RulerScale::Months: return "Months";
+        case GanttSession::RulerScale::Years: return "Years";
+    }
+    return "Days";
+}
+
+int GanttRulerHeight(const GanttSession &sess) {
+    // Month cells need a dedicated year band above their labels; the other
+    // scales retain the compact one-line ruler.
+    return PaneHeaderHeight() * (sess.ruler_scale == GanttSession::RulerScale::Months ? 2 : 1);
+}
+
+constexpr float kGanttBarHeight = 12.0f;
+
+const char *GanttMonthAbbrev(int month) {
+    static constexpr const char *kMonths[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                               "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    return month >= 1 && month <= 12 ? kMonths[month - 1] : "";
+}
+
+long long GanttTodayDay() {
+    std::time_t now = std::time(nullptr);
+    std::tm *local = std::localtime(&now);
+    return local ? OrgDayNumber(local->tm_year + 1900, local->tm_mon + 1, local->tm_mday) : 0;
+}
 
 // Command mode and the two search modes all show a text-editing line in
 // the command bar instead of the buffer's own blinking cursor, so this is
@@ -494,6 +640,181 @@ Color ResolveHlGroup(const std::string &name) {
     if (contains("Cyan")) return ToRaylib(get("Cyan", {86, 182, 194, 255}));
     if (contains("Comment") || contains("Gray") || contains("Grey")) return ToRaylib(get("Border", {130, 130, 135, 255}));
     return ToRaylib(get("Normal", {200, 200, 200, 255}));
+}
+
+std::string GanttExportPath(int buffer_id, const char *extension) {
+    std::filesystem::path path(g_editor.GetBuffer(buffer_id).filename);
+    if (path.empty()) path = "gantt";
+    path.replace_extension();
+    return path.string() + ".gantt." + extension;
+}
+
+std::string SvgEscape(const std::string &text) {
+    std::string out;
+    for (char c : text) {
+        switch (c) {
+            case '&': out += "&amp;"; break;
+            case '<': out += "&lt;"; break;
+            case '>': out += "&gt;"; break;
+            case '"': out += "&quot;"; break;
+            default: out += c; break;
+        }
+    }
+    return out;
+}
+
+std::string SvgColor(Color color) {
+    char out[8];
+    std::snprintf(out, sizeof(out), "#%02x%02x%02x", color.r, color.g, color.b);
+    return out;
+}
+
+// Writes the currently visible Gantt canvas as editable SVG. It deliberately
+// uses the session's rendered viewport (rather than inventing pagination), so
+// exported grid lines, scale and labels match exactly what the user sees.
+bool ExportGanttSvg(int buffer_id, const std::string &path) {
+    const GanttSession *sess = g_editor.GetGantt(buffer_id);
+    if (!sess || sess->content_w <= 0 || sess->content_h <= 0) return false;
+    int width = static_cast<int>(sess->content_w), height = static_cast<int>(sess->content_h);
+    float label_w = sess->label_col_w;
+    float timeline_w = std::max(0.0f, sess->content_w - label_w);
+    float ruler_h = static_cast<float>(GanttRulerHeight(*sess));
+    int row_h = GanttRowHeight();
+    std::ofstream out(path);
+    if (!out) return false;
+    Color bg = ResolveHlGroup("NormalBg"), border = ResolveHlGroup("Border"), accent = ResolveHlGroup("BorderActive");
+    Color normal = ResolveHlGroup("Normal"), comment = ResolveHlGroup("Comment");
+    out << "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"" << width << "\" height=\"" << height
+        << "\" viewBox=\"0 0 " << width << " " << height << "\"><rect width=\"100%\" height=\"100%\" fill=\""
+        << SvgColor(bg) << "\"/>\n";
+    int visible_days = std::max(1, static_cast<int>(timeline_w / sess->pixels_per_day) + 2);
+    for (int i = 0; i < visible_days; ++i) {
+        int yy, mm, dd;
+        OrgDateFromDayNumber(sess->anchor_day + i, yy, mm, dd);
+        bool month = dd == 1, year = month && mm == 1;
+        bool show = sess->ruler_scale == GanttSession::RulerScale::Days ||
+                    (sess->ruler_scale == GanttSession::RulerScale::Months && month) ||
+                    (sess->ruler_scale == GanttSession::RulerScale::Years && year);
+        if (!show) continue;
+        float gx = label_w + i * sess->pixels_per_day;
+        out << "<path d=\"M " << gx << " " << ruler_h << " V " << height << "\" stroke=\""
+            << SvgColor(sess->ruler_scale == GanttSession::RulerScale::Days ? border : accent) << "\"/>\n";
+        char label[16] = {};
+        if (sess->ruler_scale == GanttSession::RulerScale::Days && sess->pixels_per_day > 14.0f) std::snprintf(label, sizeof(label), "%02d", dd);
+        if (sess->ruler_scale == GanttSession::RulerScale::Months) std::snprintf(label, sizeof(label), "%04d-%02d", yy, mm);
+        if (sess->ruler_scale == GanttSession::RulerScale::Years) std::snprintf(label, sizeof(label), "%04d", yy);
+        if (*label) out << "<text x=\"" << gx + 2 << "\" y=\"" << ruler_h - 7
+                         << "\" font-family=\"monospace\" font-size=\"12\" fill=\"" << SvgColor(comment)
+                         << "\">" << label << "</text>\n";
+    }
+    out << "<path d=\"M " << label_w << " " << ruler_h << " H " << width << "\" stroke=\"" << SvgColor(border)
+        << "\"/><path d=\"M " << label_w << " 0 V " << height << "\" stroke=\"" << SvgColor(border) << "\"/>\n";
+    std::vector<int> rows = g_editor.GanttRows(buffer_id);
+    std::unordered_map<std::string, int> id_to_headline;
+    std::unordered_map<int, int> headline_to_row;
+    for (int ri = 0; ri < static_cast<int>(rows.size()); ++ri) {
+        headline_to_row[rows[ri]] = ri;
+        if (!sess->outline.headlines[rows[ri]].id.empty()) id_to_headline[sess->outline.headlines[rows[ri]].id] = rows[ri];
+    }
+    for (int target_hi : rows) {
+        const OrgHeadline &target = sess->outline.headlines[target_hi];
+        for (const std::string &blocker : target.blockers) {
+            auto source_it = id_to_headline.find(blocker);
+            if (source_it == id_to_headline.end()) continue;
+            const OrgHeadline &source = sess->outline.headlines[source_it->second];
+            long long source_end = source.deadline.present ? OrgDayNumber(source.deadline.year, source.deadline.month, source.deadline.day)
+                                                            : OrgDayNumber(source.scheduled.year, source.scheduled.month, source.scheduled.day);
+            long long target_start = OrgDayNumber(target.scheduled.year, target.scheduled.month, target.scheduled.day);
+            float sx = label_w + static_cast<float>(source_end - sess->anchor_day) * sess->pixels_per_day;
+            float tx = label_w + static_cast<float>(target_start - sess->anchor_day) * sess->pixels_per_day;
+            float sy = ruler_h + headline_to_row[source_it->second] * row_h + row_h / 2.0f;
+            float ty = ruler_h + headline_to_row[target_hi] * row_h + row_h / 2.0f;
+            float bend = std::max(sx + 12.0f, tx - 12.0f);
+            out << "<path d=\"M " << sx << " " << sy << " H " << bend << " V " << ty << " H " << tx
+                << "\" fill=\"none\" stroke=\"" << SvgColor(accent) << "\" stroke-width=\"2\"/>\n";
+            out << "<path d=\"M " << tx << " " << ty << " L " << tx - 7 << " " << ty - 4 << " L " << tx - 7 << " "
+                << ty + 4 << " Z\" fill=\"" << SvgColor(accent) << "\"/>\n";
+        }
+    }
+    for (int ri = 0; ri < static_cast<int>(rows.size()); ++ri) {
+        int hi = rows[ri];
+        const OrgHeadline &hd = sess->outline.headlines[hi];
+        float row_y = ruler_h + ri * row_h;
+        long long start = OrgDayNumber(hd.scheduled.year, hd.scheduled.month, hd.scheduled.day);
+        float bar_x = label_w + static_cast<float>(start - sess->anchor_day) * sess->pixels_per_day;
+        float bar_w = hd.deadline.present
+                          ? std::max(4.0f, static_cast<float>(OrgDayNumber(hd.deadline.year, hd.deadline.month, hd.deadline.day) - start) * sess->pixels_per_day)
+                          : 8.0f;
+        std::string dates = "Start " + GanttDateLabel(hd.scheduled) + (hd.deadline.present ? "  →  Due " + GanttDateLabel(hd.deadline) : "  →  Due —");
+        out << "<text x=\"6\" y=\"" << row_y + 16 << "\" font-family=\"monospace\" font-size=\"14\" fill=\""
+            << SvgColor(normal) << "\">" << SvgEscape(hd.title) << "</text><text x=\"6\" y=\"" << row_y + 31
+            << "\" font-family=\"monospace\" font-size=\"11\" fill=\"" << SvgColor(comment) << "\">"
+            << SvgEscape(dates) << "</text>\n";
+        out << "<rect x=\"" << bar_x << "\" y=\"" << row_y + 5 << "\" width=\"" << bar_w << "\" height=\""
+            << row_h - 10 << "\" rx=\"2\" fill=\"" << SvgColor(hd.is_done_keyword ? comment : accent) << "\"/>\n";
+    }
+    out << "</svg>\n";
+    return static_cast<bool>(out);
+}
+
+bool ExportJpegPdf(Image image, const std::string &path) {
+    // ExportImageToMemory in raylib 5 only implements PNG, even when the
+    // regular file exporter supports JPEG. Use a short-lived JPEG next to
+    // the destination and embed its bytes in the PDF, then remove it.
+    std::string jpeg_path = path + ".mep-export.jpg";
+    if (!ExportImage(image, jpeg_path.c_str())) return false;
+    std::ifstream jpeg_file(jpeg_path, std::ios::binary);
+    std::vector<unsigned char> jpeg((std::istreambuf_iterator<char>(jpeg_file)), std::istreambuf_iterator<char>());
+    jpeg_file.close();
+    std::error_code remove_error;
+    std::filesystem::remove(jpeg_path, remove_error);
+    if (jpeg.empty()) return false;
+    int bytes = static_cast<int>(jpeg.size());
+    int width = image.width, height = image.height;
+    std::ostringstream objects;
+    std::vector<long long> offsets;
+    auto object = [&](int id, const std::string &body) {
+        offsets.push_back(static_cast<long long>(objects.tellp()));
+        objects << id << " 0 obj\n" << body << "\nendobj\n";
+    };
+    object(1, "<< /Type /Catalog /Pages 2 0 R >>");
+    object(2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    object(3, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 " + std::to_string(width) + " " + std::to_string(height) +
+                  "] /Resources << /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >>");
+    offsets.push_back(static_cast<long long>(objects.tellp()));
+    objects << "4 0 obj\n<< /Type /XObject /Subtype /Image /Width " << width << " /Height " << height
+            << " /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length " << bytes << " >>\nstream\n";
+    objects.write(reinterpret_cast<const char *>(jpeg.data()), bytes);
+    objects << "\nendstream\nendobj\n";
+    // The JPEG stream emitted by raylib is already oriented for PDF image
+    // painting; using a positive Y scale avoids vertically flipping it.
+    std::string content = "q\n" + std::to_string(width) + " 0 0 " + std::to_string(height) + " 0 0 cm\n/Im0 Do\nQ\n";
+    object(5, "<< /Length " + std::to_string(content.size()) + " >>\nstream\n" + content + "endstream");
+    std::ofstream out(path, std::ios::binary);
+    if (!out) return false;
+    out << "%PDF-1.4\n";
+    std::string body = objects.str();
+    out.write(body.data(), static_cast<std::streamsize>(body.size()));
+    long long xref = static_cast<long long>(std::strlen("%PDF-1.4\n")) + static_cast<long long>(body.size());
+    out << "xref\n0 6\n0000000000 65535 f \n";
+    for (long long offset : offsets) {
+        char entry[32];
+        std::snprintf(entry, sizeof(entry), "%010lld 00000 n \n", offset + static_cast<long long>(std::strlen("%PDF-1.4\n")));
+        out << entry;
+    }
+    out << "trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n" << xref << "\n%%EOF\n";
+    return static_cast<bool>(out);
+}
+
+void ExportGanttRaster(int buffer_id, const char *extension) {
+    const GanttSession *sess = g_editor.GetGantt(buffer_id);
+    if (!sess) return;
+    Image image = LoadImageFromScreen();
+    ImageCrop(&image, Rectangle{sess->content_x, sess->content_y, sess->content_w, sess->content_h});
+    std::string path = GanttExportPath(buffer_id, extension);
+    bool ok = std::string(extension) == "pdf" ? ExportJpegPdf(image, path) : ExportImage(image, path.c_str());
+    UnloadImage(image);
+    g_editor.SetStatusMessage(ok ? "Exported Gantt to " + path : "Gantt export failed: " + path);
 }
 
 const char *ModeName(Mode m, bool replace_mode = false) {
@@ -883,6 +1204,10 @@ float OfficeParagraphExtraHeight(const OfficeDoc &doc, const DocParagraph &para,
 struct OfficeFormatRun {
     int start = 0, end = 0;
     DocFormat fmt;
+    // Presentation-only flag: this run came from an ordinary `$...$`
+    // delimiter pair, not a persisted DocSpan. The delimiters are omitted
+    // while typeset but remain in DocParagraph::text for source editing.
+    bool dollar_delimited_math = false;
 };
 
 std::vector<OfficeFormatRun> BuildOfficeFormatRuns(const DocParagraph &p, int a, int b) {
@@ -899,6 +1224,47 @@ std::vector<OfficeFormatRun> BuildOfficeFormatRuns(const DocParagraph &p, int a,
     }
     if (pos < b) runs.push_back({pos, b, DocFormat{}});
     return runs;
+}
+
+// Builds the WYSIWYG runs for one visual line. Plain text may opt into the
+// editor's small MathJax-compatible subset with `$...$`; escaped dollars and
+// `$$` display blocks deliberately remain literal here. Persisted math spans
+// (created by the fx command) already carry DocFormat::math and pass through.
+std::vector<OfficeFormatRun> BuildOfficeDisplayRuns(const DocParagraph &p, int a, int b,
+                                                     bool reveal_active_source, int cursor_col) {
+    std::vector<OfficeFormatRun> out;
+    for (const OfficeFormatRun &base : BuildOfficeFormatRuns(p, a, b)) {
+        if (base.fmt.math) { out.push_back(base); continue; }
+        int pos = base.start;
+        while (pos < base.end) {
+            int open = -1;
+            for (int i = pos; i < base.end; ++i) {
+                if (p.text[i] != '$' || (i > base.start && p.text[i - 1] == '\\')) continue;
+                if ((i + 1 < base.end && p.text[i + 1] == '$') || (i > base.start && p.text[i - 1] == '$')) continue;
+                open = i; break;
+            }
+            if (open < 0) { if (pos < base.end) out.push_back({pos, base.end, base.fmt}); break; }
+            int close = -1;
+            for (int i = open + 1; i < base.end; ++i) {
+                if (p.text[i] != '$' || p.text[i - 1] == '\\') continue;
+                if ((i + 1 < base.end && p.text[i + 1] == '$') || p.text[i - 1] == '$') continue;
+                close = i; break;
+            }
+            if (close < 0) { out.push_back({pos, base.end, base.fmt}); break; }
+            if (open > pos) out.push_back({pos, open, base.fmt});
+            // Cursor at either delimiter counts as being inside the chunk;
+            // this makes it possible to correct/remove the delimiters too.
+            if (reveal_active_source && cursor_col >= open && cursor_col <= close + 1) {
+                out.push_back({open, close + 1, base.fmt});
+            } else {
+                DocFormat math_format = base.fmt;
+                math_format.math = true;
+                out.push_back({open + 1, close, math_format, true});
+            }
+            pos = close + 1;
+        }
+    }
+    return out;
 }
 
 // Draws one line of monospace text, advancing by the app's own fixed
@@ -942,6 +1308,29 @@ void DrawLineFast(const std::string &line, float x, float y, float font_size, Co
                       g_font.recs[index].width + 2.0f * pad, g_font.recs[index].height + 2.0f * pad};
         DrawTexturePro(g_font.texture, src, dst, Vector2{0, 0}, 0.0f, tint);
     }
+}
+
+// Converts a character-column index into a byte offset within `line`,
+// walking codepoint-by-codepoint the same way DrawLineFast (above) does --
+// needed wherever a column index (Decoration::col_start/col_end, e.g.
+// Editor::EnterTerminalNormalMode's captured terminal-color runs) has to
+// become a std::string::substr byte range instead. Only coincides with the
+// column index itself for pure-ASCII content (every other decoration
+// consumer already assumes that, which holds for typical source code, but
+// not for terminal output, which routinely isn't ASCII-only).
+size_t ColumnToByteOffset(const std::string &line, int col) {
+    if (col <= 0) return 0;
+    const char *text = line.c_str();
+    int byte_len = static_cast<int>(line.size());
+    int column = 0;
+    int i = 0;
+    while (i < byte_len && column < col) {
+        int codepoint_size = 0;
+        GetCodepointNext(&text[i], &codepoint_size);
+        i += codepoint_size;
+        column++;
+    }
+    return static_cast<size_t>(i);
 }
 
 void HandleFontSizeShortcuts() {
@@ -9907,6 +10296,275 @@ void DrawSidebars() {
     }
 }
 
+// Office pane's own left icon-rail/Outline panel and right Format/Insert
+// panel -- hand-drawn (not routed through SidebarInstance/DrawSidebars
+// above; see the WYSIWYG restyle plan for why: the Format panel needs
+// richer controls -- toggle icon buttons, tab switching -- than that
+// generic text-row system models). Docked to the sides of *this specific
+// pane* (pane_x/pane_w/content_y/content_h, its own screen rect) rather
+// than the app window -- called from inside DrawPane's own office branch,
+// same as the toolbar, so every office pane gets its own rail/panels
+// regardless of which pane currently has focus. Draws into (ocx, ocw) on
+// return: the horizontal band left over after reserving the rail (and
+// Outline/Format panel widths, if open) for the toolbar/page to use.
+void DrawOfficeSidePanels(float pane_x, float pane_w, float content_y, float content_h, int buffer_id,
+                          const OfficeSession *office_sess, float &ocx, float &ocw) {
+    ocx = pane_x;
+    ocw = pane_w;
+
+    // --- Left: icon rail (always shown for an office pane) ---
+    Rectangle rail{ocx, content_y, kOfficeRailW, content_h};
+    DrawRectangle(static_cast<int>(rail.x), static_cast<int>(rail.y), static_cast<int>(rail.width), static_cast<int>(rail.height),
+                  ResolveHlGroup("MenuBar"));
+    DrawLineEx(Vector2{rail.width, rail.y}, Vector2{rail.width, rail.y + rail.height}, 1.0f, ResolveHlGroup("Border"));
+
+    auto rail_icon = [&](float cy, bool active, const std::function<void(Vector2, Color)> &draw, const std::function<void()> &on_click) {
+        Rectangle hit{rail.x + 4.0f, cy - 14.0f, rail.width - 8.0f, 28.0f};
+        Vector2 mouse = GetMousePosition();
+        bool hovered = CheckCollisionPointRec(mouse, hit);
+        if (active) DrawRectangleRounded(hit, 0.3f, 6, ResolveHlGroup("AccentTint"));
+        else if (hovered) DrawRectangleRounded(hit, 0.3f, 6, ResolveHlGroup("CursorLine"));
+        Color color = active ? ResolveHlGroup("Accent") : ResolveHlGroup("MutedFg");
+        draw(Vector2{rail.x + rail.width / 2.0f, cy}, color);
+        if (on_click) RegisterClickRegion(hit, on_click);
+    };
+
+    // Outline toggle -- a little "page with lines" glyph. The only
+    // functional icon on this rail; the rest below are drawn for visual
+    // fidelity with the reference design but intentionally not wired to
+    // anything yet (no on_click), same documented tradeoff as the format
+    // panel's margins/page-color controls.
+    rail_icon(rail.y + 30.0f, g_office_outline_open,
+        [](Vector2 c, Color color) {
+            Rectangle page{c.x - 7.0f, c.y - 9.0f, 14.0f, 18.0f};
+            DrawRectangleLinesEx(page, 1.3f, color);
+            for (int i = 0; i < 3; i++) {
+                float ly = page.y + 4.0f + static_cast<float>(i) * 4.5f;
+                DrawLineEx(Vector2{page.x + 2.5f, ly}, Vector2{page.x + page.width - 2.5f, ly}, 1.1f, color);
+            }
+        },
+        [] { g_office_outline_open = !g_office_outline_open; });
+    rail_icon(rail.y + 72.0f, false,
+        [](Vector2 c, Color color) {
+            DrawCircleLines(static_cast<int>(c.x - 2.0f), static_cast<int>(c.y - 2.0f), 5.0f, color);
+            DrawLineEx(Vector2{c.x + 1.5f, c.y + 1.5f}, Vector2{c.x + 6.0f, c.y + 6.0f}, 1.4f, color);
+        },
+        nullptr);
+    rail_icon(rail.y + 108.0f, false,
+        [](Vector2 c, Color color) {
+            Rectangle rb{c.x - 5.0f, c.y - 8.0f, 10.0f, 16.0f};
+            DrawRectangleLinesEx(rb, 1.2f, color);
+            DrawTriangle(Vector2{rb.x + rb.width, rb.y + rb.height}, Vector2{rb.x, rb.y + rb.height},
+                        Vector2{rb.x + rb.width / 2.0f, rb.y + rb.height - 6.0f}, ResolveHlGroup("MenuBar"));
+        },
+        nullptr);
+    rail_icon(rail.y + 144.0f, false,
+        [](Vector2 c, Color color) {
+            DrawCircleLines(static_cast<int>(c.x), static_cast<int>(c.y), 7.0f, color);
+            DrawLineEx(c, Vector2{c.x, c.y - 4.0f}, 1.2f, color);
+            DrawLineEx(c, Vector2{c.x + 3.0f, c.y}, 1.2f, color);
+        },
+        nullptr);
+    rail_icon(rail.y + rail.height - 26.0f, false,
+        [](Vector2 c, Color color) {
+            DrawCircleLines(static_cast<int>(c.x), static_cast<int>(c.y), 7.0f, color);
+            DrawCircleLines(static_cast<int>(c.x), static_cast<int>(c.y), 3.0f, color);
+        },
+        nullptr);
+    ocx += kOfficeRailW;
+    ocw -= kOfficeRailW;
+
+    // --- Outline panel (left, when toggled open) ---
+    if (g_office_outline_open && ocw - kOfficeOutlineW > 100.0f) {
+        Rectangle panel{ocx, content_y, kOfficeOutlineW, content_h};
+        DrawRectangle(static_cast<int>(panel.x), static_cast<int>(panel.y), static_cast<int>(panel.width),
+                      static_cast<int>(panel.height), ResolveHlGroup("OfficePage"));
+        DrawLineEx(Vector2{panel.x + panel.width, panel.y}, Vector2{panel.x + panel.width, panel.y + panel.height}, 1.0f,
+                  ResolveHlGroup("Border"));
+        float py = panel.y + 10.0f;
+        DrawTextEx(g_font, "Outline", Vector2{panel.x + 14.0f, py}, MenuFontSize(), 0, ResolveHlGroup("Normal"));
+        Rectangle close_rect{panel.x + panel.width - 28.0f, py - 2.0f, 20.0f, 20.0f};
+        Vector2 cc{close_rect.x + close_rect.width / 2.0f, close_rect.y + close_rect.height / 2.0f};
+        DrawLineEx(Vector2{cc.x - 4.0f, cc.y - 4.0f}, Vector2{cc.x + 4.0f, cc.y + 4.0f}, 1.3f, ResolveHlGroup("MutedFg"));
+        DrawLineEx(Vector2{cc.x - 4.0f, cc.y + 4.0f}, Vector2{cc.x + 4.0f, cc.y - 4.0f}, 1.3f, ResolveHlGroup("MutedFg"));
+        RegisterClickRegion(close_rect, [] { g_office_outline_open = false; });
+        py += MenuFontSize() + 12.0f;
+        // Search box: visual only in this pass -- filtering headings by
+        // typed text would need its own text-input focus mode (mirroring
+        // Mode::Prompt), a larger addition deferred out of this restyle.
+        Rectangle search{panel.x + 12.0f, py, panel.width - 24.0f, 26.0f};
+        DrawRectangleRounded(search, 0.3f, 6, ResolveHlGroup("MenuBar"));
+        DrawTextEx(g_font, "Search document", Vector2{search.x + 8.0f, search.y + 5.0f}, g_font_size * 0.8f, 0, ResolveHlGroup("MutedFg"));
+        py += search.height + 10.0f;
+
+        BeginScissorMode(static_cast<int>(panel.x), static_cast<int>(py), static_cast<int>(panel.width),
+                          static_cast<int>(panel.y + panel.height - py));
+        if (office_sess) {
+            const OfficeDoc &doc = office_sess->doc;
+            g_office_status.outline_rows.clear();
+            int active_heading_para = -1;
+            float row_h = g_font_size + 12.0f;
+            float ry = py;
+            for (int pi = 0; pi < static_cast<int>(doc.paragraphs.size()); pi++) {
+                const DocParagraph &para = doc.paragraphs[pi];
+                if (para.heading_level <= 0) continue;
+                if (pi <= office_sess->cursor_para) active_heading_para = pi;
+                bool active = false;  // resolved after the loop once the last heading <= cursor is known
+                Rectangle row{panel.x, ry, panel.width, row_h};
+                std::string text = para.text.empty() ? "(untitled heading)" : para.text;
+                float indent = 14.0f + static_cast<float>(para.heading_level - 1) * 14.0f;
+                float fsize = g_font_size * (para.heading_level == 1 ? 0.95f : 0.85f);
+                while (!text.empty() && MeasureTextEx(g_font, text.c_str(), fsize, 0).x > panel.width - indent - 12.0f) text.pop_back();
+                RegisterClickRegion(row, [buffer_id, pi] {
+                    g_editor.SetOfficeCursorPara(buffer_id, pi);
+                    g_editor.SetOfficeScroll(buffer_id, pi, 0);
+                });
+                g_office_status.outline_rows.push_back({pi, row});
+                ry += row_h;
+                (void)active;
+            }
+            // Highlight pass: now that active_heading_para is known, redraw
+            // just that row's background before its text -- simplest way to
+            // avoid a second full doc scan only to find the same index.
+            for (const auto &entry : g_office_status.outline_rows) {
+                if (entry.first != active_heading_para) continue;
+                DrawRectangleRec(entry.second, ResolveHlGroup("AccentTint"));
+            }
+            ry = py;
+            for (int pi = 0; pi < static_cast<int>(doc.paragraphs.size()); pi++) {
+                const DocParagraph &para = doc.paragraphs[pi];
+                if (para.heading_level <= 0) continue;
+                std::string text = para.text.empty() ? "(untitled heading)" : para.text;
+                float indent = 14.0f + static_cast<float>(para.heading_level - 1) * 14.0f;
+                float fsize = g_font_size * (para.heading_level == 1 ? 0.95f : 0.85f);
+                while (!text.empty() && MeasureTextEx(g_font, text.c_str(), fsize, 0).x > panel.width - indent - 12.0f) text.pop_back();
+                Color tc = (pi == active_heading_para) ? ResolveHlGroup("Accent") : ResolveHlGroup("Normal");
+                DrawTextEx(g_font, text.c_str(), Vector2{panel.x + indent, ry + (row_h - fsize) / 2.0f}, fsize, 0, tc);
+                ry += row_h;
+            }
+        }
+        EndScissorMode();
+        ocx += kOfficeOutlineW;
+        ocw -= kOfficeOutlineW;
+    }
+
+    // --- Format/Insert panel (right, when toggled open) ---
+    if (g_office_format_open && ocw - kOfficeFormatW > 100.0f) {
+        Rectangle panel{ocx + ocw - kOfficeFormatW, content_y, kOfficeFormatW, content_h};
+        DrawRectangle(static_cast<int>(panel.x), static_cast<int>(panel.y), static_cast<int>(panel.width),
+                      static_cast<int>(panel.height), ResolveHlGroup("OfficePage"));
+        DrawLineEx(Vector2{panel.x, panel.y}, Vector2{panel.x, panel.y + panel.height}, 1.0f, ResolveHlGroup("Border"));
+        float py = panel.y + 10.0f;
+        float tab_w = 70.0f, tab_h = 26.0f;
+        for (int t = 0; t < 2; t++) {
+            Rectangle tab{panel.x + 14.0f + static_cast<float>(t) * (tab_w + 6.0f), py, tab_w, tab_h};
+            bool active = g_office_format_tab == t;
+            if (active) DrawRectangleRounded(tab, 0.3f, 6, ResolveHlGroup("AccentTint"));
+            const char *label = t == 0 ? "Format" : "Insert";
+            Vector2 ts = MeasureTextEx(g_font, label, g_font_size * 0.85f, 0);
+            DrawTextEx(g_font, label, Vector2{tab.x + (tab.width - ts.x) / 2.0f, tab.y + (tab.height - ts.y * 0.85f) / 2.0f},
+                      g_font_size * 0.85f, 0, active ? ResolveHlGroup("Accent") : ResolveHlGroup("Normal"));
+            RegisterClickRegion(tab, [t] { g_office_format_tab = t; });
+        }
+        Rectangle close_rect{panel.x + panel.width - 28.0f, py - 2.0f, 20.0f, 20.0f};
+        Vector2 cc{close_rect.x + close_rect.width / 2.0f, close_rect.y + close_rect.height / 2.0f};
+        DrawLineEx(Vector2{cc.x - 4.0f, cc.y - 4.0f}, Vector2{cc.x + 4.0f, cc.y + 4.0f}, 1.3f, ResolveHlGroup("MutedFg"));
+        DrawLineEx(Vector2{cc.x - 4.0f, cc.y + 4.0f}, Vector2{cc.x + 4.0f, cc.y - 4.0f}, 1.3f, ResolveHlGroup("MutedFg"));
+        RegisterClickRegion(close_rect, [] { g_office_format_open = false; });
+        py += tab_h + 14.0f;
+
+        auto section_label = [&](const char *label) {
+            DrawTextEx(g_font, label, Vector2{panel.x + 14.0f, py}, g_font_size * 0.85f, 0, ResolveHlGroup("MutedFg"));
+            py += g_font_size * 0.85f + 8.0f;
+        };
+        auto icon_row_btn = [&](float *bx, bool active, float w, const std::function<void(Rectangle, Color)> &draw,
+                                 const std::function<void()> &on_click) {
+            Rectangle rect{*bx, py, w, 28.0f};
+            Vector2 mouse = GetMousePosition();
+            bool hovered = CheckCollisionPointRec(mouse, rect);
+            if (active) DrawRectangleRounded(rect, 0.25f, 6, ResolveHlGroup("AccentTint"));
+            else if (hovered) DrawRectangleRounded(rect, 0.25f, 6, ResolveHlGroup("CursorLine"));
+            Color color = active ? ResolveHlGroup("Accent") : ResolveHlGroup("Normal");
+            draw(rect, color);
+            RegisterClickRegion(rect, on_click);
+            *bx += w + 4.0f;
+        };
+
+        if (g_office_format_tab == 0) {
+            section_label("Text");
+            float bx = panel.x + 14.0f;
+            struct SB { char which; const char *ch; };
+            static const SB kSB[] = {{'b', "B"}, {'i', "I"}, {'u', "U"}, {'s', "S"}};
+            for (const SB &sb : kSB) {
+                char which = sb.which;
+                icon_row_btn(&bx, office_sess && g_editor.OfficeFormatActive(which), 28.0f,
+                    [&](Rectangle rect, Color color) {
+                        Vector2 ts = MeasureTextEx(g_font, sb.ch, g_font_size, 0);
+                        DrawTextEx(g_font, sb.ch, Vector2{rect.x + (rect.width - ts.x) / 2.0f, rect.y + (rect.height - g_font_size) / 2.0f},
+                                  g_font_size, 0, color);
+                    },
+                    [which] { g_editor.ToggleOfficeFormat(which); });
+            }
+            py += 28.0f + 16.0f;
+
+            section_label("Paragraph");
+            bx = panel.x + 14.0f;
+            struct AB { DocParagraph::Align align; int kind; };
+            static const AB kAB[] = {
+                {DocParagraph::Align::Left, 0}, {DocParagraph::Align::Center, 1},
+                {DocParagraph::Align::Right, 2}, {DocParagraph::Align::Justify, 3}};
+            for (const AB &ab : kAB) {
+                DocParagraph::Align align = ab.align;
+                int kind = ab.kind;
+                icon_row_btn(&bx, office_sess && g_editor.OfficeAlignmentActive(align), 28.0f,
+                    [kind](Rectangle rect, Color color) {
+                        float pad = rect.width * 0.22f;
+                        float full = rect.width - 2.0f * pad, bar_h = 2.0f;
+                        float gap = (rect.height - 4.0f * bar_h) / 5.0f;
+                        float widths[4] = {full, full * 0.62f, full, full * 0.8f};
+                        for (int i = 0; i < 4; i++) {
+                            float bw = (kind == 3) ? full : widths[i];
+                            float by = rect.y + gap * static_cast<float>(i + 1) + bar_h * static_cast<float>(i);
+                            float bx0 = rect.x + pad;
+                            if (kind == 1) bx0 = rect.x + (rect.width - bw) / 2.0f;
+                            else if (kind == 2) bx0 = rect.x + rect.width - pad - bw;
+                            DrawRectangle(static_cast<int>(bx0), static_cast<int>(by), static_cast<int>(bw), static_cast<int>(bar_h), color);
+                        }
+                    },
+                    [align] { g_editor.SetOfficeAlignment(align); });
+            }
+            py += 28.0f + 16.0f;
+
+            section_label("Page");
+            Rectangle margins{panel.x + 14.0f, py, panel.width - 28.0f, 26.0f};
+            DrawRectangleRounded(margins, 0.2f, 6, ResolveHlGroup("MenuBar"));
+            DrawTextEx(g_font, "Margins: Normal", Vector2{margins.x + 8.0f, margins.y + 5.0f}, g_font_size * 0.8f, 0, ResolveHlGroup("MutedFg"));
+            py += margins.height + 8.0f;
+            DrawTextEx(g_font, "Page color", Vector2{panel.x + 14.0f, py + 5.0f}, g_font_size * 0.8f, 0, ResolveHlGroup("MutedFg"));
+            Rectangle swatch{panel.x + panel.width - 42.0f, py, 28.0f, 18.0f};
+            DrawRectangleRec(swatch, ResolveHlGroup("OfficePage"));
+            DrawRectangleLinesEx(swatch, 1.0f, ResolveHlGroup("Border"));
+        } else {
+            section_label("Insert");
+            struct InsB { const char *label; std::function<void()> action; };
+            const InsB items[] = {
+                {"Image", [] { g_editor.InsertOfficeImagePrompt(); }},
+                {"Table", [] { g_editor.InsertOfficeTablePrompt(); }},
+                {"Equation", [] { g_editor.InsertOfficeMath(); }},
+            };
+            for (const InsB &it : items) {
+                Rectangle row{panel.x + 12.0f, py, panel.width - 24.0f, 30.0f};
+                Vector2 mouse = GetMousePosition();
+                if (CheckCollisionPointRec(mouse, row)) DrawRectangleRounded(row, 0.2f, 6, ResolveHlGroup("CursorLine"));
+                DrawTextEx(g_font, it.label, Vector2{row.x + 10.0f, row.y + (row.height - g_font_size) / 2.0f}, g_font_size, 0, ResolveHlGroup("Normal"));
+                RegisterClickRegion(row, it.action);
+                py += row.height + 4.0f;
+            }
+        }
+        ocw -= kOfficeFormatW;
+    }
+}
+
 // Fuzzy picker: prompt line + live-filtered results list (Phase 8).
 // Preview pane (NVIM_PARITY_PLAN.md Phase 8 gap, closed): when a source
 // has called mep.picker_set_preview(text) (currently find_files/
@@ -9916,9 +10574,19 @@ void DrawSidebars() {
 // an editable view) text column on the right, divided by a vertical
 // rule. No preview means the box stays exactly the single-column shape
 // it always was -- existing pickers that never call SetPickerPreview
-// (buffers/commands/themes/...) are visually unchanged.
+// (buffers/commands/...) are visually unchanged.
+//
+// The colorscheme picker gets its own always-on preview column of color
+// swatches instead: it has no text worth previewing, and unlike the
+// text-preview sources it doesn't need on_select_change to push anything
+// -- the highlighted row's Palette is looked up fresh every frame below,
+// so it's never a stale item behind.
+bool IsSwatchPreviewPicker() { return g_editor.PickerTitle() == "Colorscheme"; }
+
 void DrawPickerOverlay() {
-    bool has_preview = !g_editor.PickerPreview().empty();
+    std::vector<PickerItem> results = g_editor.PickerFilteredResults();
+    int selected = g_editor.PickerSelected();
+    bool has_preview = !g_editor.PickerPreview().empty() || IsSwatchPreviewPicker();
     // Sized like mep.nvim's own picker (mep.nvim/lua/mep/picker/ui.lua's
     // create_layout: width = 0.9*columns, height = 0.8*lines, left/results
     // column = 0.38*width) -- 80% of width rather than mep.nvim's 90%,
@@ -9942,11 +10610,9 @@ void DrawPickerOverlay() {
     // 0.38 split matches mep.nvim's ui.lua (left_width = 0.38 * width).
     int list_w = has_preview ? static_cast<int>((f.box_x + f.box_w - f.content_x) * 0.38f) : (f.box_x + f.box_w) - static_cast<int>(f.content_x) - 4;
 
-    std::vector<PickerItem> results = g_editor.PickerFilteredResults();
     float list_y = f.content_y + g_font_size + 14;
     int line_h = static_cast<int>(g_font_size) + 4;
     int max_rows = std::max(1, static_cast<int>((f.box_y + f.box_h - list_y) / line_h));
-    int selected = g_editor.PickerSelected();
     int start = std::max(0, selected - max_rows + 1);
     BeginScissorMode(f.box_x, static_cast<int>(list_y) - 2, list_w, f.box_y + f.box_h - static_cast<int>(list_y));
     for (int i = start; i < static_cast<int>(results.size()) && i < start + max_rows; i++) {
@@ -9972,30 +10638,65 @@ void DrawPickerOverlay() {
         float px = static_cast<float>(div_x + 10);
         int preview_w = (f.box_x + f.box_w) - div_x - 20;
         BeginScissorMode(div_x, static_cast<int>(list_y) - 2, preview_w + 20, f.box_y + f.box_h - static_cast<int>(list_y));
-        int max_chars = std::max(10, static_cast<int>(preview_w / g_char_width));
-        int row = 0;
-        int max_preview_rows = static_cast<int>((f.box_y + f.box_h - list_y) / line_h);
-        // mod1+j/k (Editor::HandleMod1Shortcuts' own Mode::Picker special
-        // case) scrolls by skipping raw lines here -- PickerPreviewScroll()
-        // counts the same raw lines SplitLines() returns, not the wrapped
-        // rows the loop below further splits a too-long line into.
-        std::vector<std::string> preview_lines = SplitLines(g_editor.PickerPreview());
-        int scroll = std::min(g_editor.PickerPreviewScroll(), std::max(0, static_cast<int>(preview_lines.size()) - 1));
-        for (size_t li = static_cast<size_t>(scroll); li < preview_lines.size(); li++) {
-            const std::string &raw_line = preview_lines[li];
-            if (row >= max_preview_rows) break;
-            if (raw_line.empty()) { row++; continue; }
-            size_t pos = 0;
-            while (pos < raw_line.size() && row < max_preview_rows) {
-                size_t take = std::min(raw_line.size() - pos, static_cast<size_t>(max_chars));
-                std::string chunk = raw_line.substr(pos, take);
-                DrawTextEx(g_font, chunk.c_str(), Vector2{px, list_y + row * line_h}, g_font_size, 0,
-                           ResolveHlGroup("Normal"));
-                pos += take;
-                row++;
+        if (IsSwatchPreviewPicker()) {
+            // One row per named palette role: a filled swatch of that
+            // role's color, its hex value, and the role name -- looked up
+            // fresh from the highlighted row every frame (no stale state
+            // to prime or clear, unlike the text preview below).
+            std::string theme_name =
+                (selected >= 0 && selected < static_cast<int>(results.size())) ? results[selected].data : std::string();
+            Palette pal;
+            if (g_editor.ThemePalette(theme_name, &pal)) {
+                struct SwatchRow { const char *label; ThemeColor color; };
+                SwatchRow rows[] = {
+                    {"bg", pal.bg},     {"fg", pal.fg},     {"red", pal.red},       {"green", pal.green},
+                    {"yellow", pal.yellow}, {"blue", pal.blue}, {"purple", pal.purple}, {"cyan", pal.cyan},
+                    {"orange", pal.orange}, {"border", pal.border},
+                };
+                int swatch_size = static_cast<int>(g_font_size);
+                for (int i = 0; i < static_cast<int>(sizeof(rows) / sizeof(rows[0])); i++) {
+                    float ry = list_y + i * line_h;
+                    DrawRectangle(static_cast<int>(px), static_cast<int>(ry), swatch_size, swatch_size,
+                                  ToRaylib(rows[i].color));
+                    DrawRectangleLines(static_cast<int>(px), static_cast<int>(ry), swatch_size, swatch_size,
+                                        ResolveHlGroup("PickerBorder"));
+                    char hex[8];
+                    std::snprintf(hex, sizeof(hex), "#%02X%02X%02X", rows[i].color.r, rows[i].color.g, rows[i].color.b);
+                    std::string label = std::string(hex) + "  " + rows[i].label;
+                    DrawTextEx(g_font, label.c_str(),
+                               Vector2{px + swatch_size + 8, ry + (swatch_size - g_font_size) / 2.0f}, g_font_size, 0,
+                               ResolveHlGroup("Normal"));
+                }
+            } else {
+                DrawTextEx(g_font, "-- no preview --", Vector2{px, list_y}, g_font_size, 0, ResolveHlGroup("Comment"));
             }
+            EndScissorMode();
+        } else {
+            int max_chars = std::max(10, static_cast<int>(preview_w / g_char_width));
+            int row = 0;
+            int max_preview_rows = static_cast<int>((f.box_y + f.box_h - list_y) / line_h);
+            // mod1+j/k (Editor::HandleMod1Shortcuts' own Mode::Picker special
+            // case) scrolls by skipping raw lines here -- PickerPreviewScroll()
+            // counts the same raw lines SplitLines() returns, not the wrapped
+            // rows the loop below further splits a too-long line into.
+            std::vector<std::string> preview_lines = SplitLines(g_editor.PickerPreview());
+            int scroll = std::min(g_editor.PickerPreviewScroll(), std::max(0, static_cast<int>(preview_lines.size()) - 1));
+            for (size_t li = static_cast<size_t>(scroll); li < preview_lines.size(); li++) {
+                const std::string &raw_line = preview_lines[li];
+                if (row >= max_preview_rows) break;
+                if (raw_line.empty()) { row++; continue; }
+                size_t pos = 0;
+                while (pos < raw_line.size() && row < max_preview_rows) {
+                    size_t take = std::min(raw_line.size() - pos, static_cast<size_t>(max_chars));
+                    std::string chunk = raw_line.substr(pos, take);
+                    DrawTextEx(g_font, chunk.c_str(), Vector2{px, list_y + row * line_h}, g_font_size, 0,
+                               ResolveHlGroup("Normal"));
+                    pos += take;
+                    row++;
+                }
+            }
+            EndScissorMode();
         }
-        EndScissorMode();
     }
 }
 
@@ -10340,38 +11041,16 @@ void DrawCmdlineCompletionPopup(float x, float bottom_y) {
 }
 
 // Maps a VTerm cell color to an actual raylib Color (vterm.h itself has no
-// rendering dependency -- see its header comment -- so this mapping lives
-// here instead). Default defers to mep's own theme so a terminal pane
-// still matches whatever colorscheme is active; Indexed covers both the
-// classic 16-color ANSI palette (fixed, standard-ish xterm values) and the
-// 16-255 6x6x6 color cube + grayscale ramp most modern CLI tools (ls
-// --color, git, npm, ripgrep, ...) actually use; Rgb is 24-bit true color.
+// rendering dependency -- see its header comment -- so this mapping can't
+// live there). The actual resolution (Default/Indexed/Rgb, ANSI-16/256-cube
+// math) lives in Editor::ResolveVTermColor (editor.cpp) instead of here now
+// -- shared with Editor::EnterTerminalNormalMode, which needs the exact
+// same resolution once, up front, to snapshot into Decorations that outlive
+// the live TerminalSession's own per-cell data (see that function's own
+// comment) -- this is just the raylib::Color wrapper around it.
 Color VTermColorToRaylib(const VTermColor &c, bool is_fg) {
-    static const Color kAnsi16[16] = {
-        Color{0, 0, 0, 255},       Color{205, 49, 49, 255},   Color{13, 188, 121, 255}, Color{229, 229, 16, 255},
-        Color{36, 114, 200, 255},  Color{188, 63, 188, 255},  Color{17, 168, 205, 255}, Color{229, 229, 229, 255},
-        Color{102, 102, 102, 255}, Color{241, 76, 76, 255},   Color{35, 209, 139, 255}, Color{245, 245, 67, 255},
-        Color{59, 142, 234, 255},  Color{214, 112, 214, 255}, Color{41, 184, 219, 255}, Color{255, 255, 255, 255},
-    };
-    switch (c.kind) {
-        case VTermColorKind::Default:
-            return ResolveHlGroup(is_fg ? "Normal" : "NormalBg");
-        case VTermColorKind::Rgb:
-            return Color{c.r, c.g, c.b, 255};
-        case VTermColorKind::Indexed:
-        default: {
-            int idx = c.index;
-            if (idx < 16) return kAnsi16[idx];
-            if (idx < 232) {
-                int n = idx - 16;
-                int r = n / 36, g = (n / 6) % 6, b = n % 6;
-                auto ramp = [](int v) { return static_cast<unsigned char>(v == 0 ? 0 : v * 40 + 55); };
-                return Color{ramp(r), ramp(g), ramp(b), 255};
-            }
-            unsigned char v = static_cast<unsigned char>(8 + (idx - 232) * 10);
-            return Color{v, v, v, 255};
-        }
-    }
+    ThemeColor tc = g_editor.ResolveVTermColor(c, is_fg);
+    return Color{tc.r, tc.g, tc.b, tc.a};
 }
 
 // Renders a `:terminal` pane straight from its VTerm grid (Editor::
@@ -11045,7 +11724,21 @@ struct MathParser {
         while (true) {
             SkipSpace();
             if (i >= s.size() || (end != '\0' && s[i] == end)) break;
+            // Every parser branch is expected to consume input, but this is
+            // also exercised continuously while an Office user is typing an
+            // incomplete LaTeX expression. Keep that transient, malformed
+            // state fail-safe: one byte of literal text is better than an
+            // accidental non-progressing render loop freezing the UI.
+            const size_t before_atom = i;
             MathNode atom = ParseGroupOrAtom();
+            if (i == before_atom) {
+                MathNode literal;
+                literal.kind = MathKind::Text;
+                literal.italic = false;
+                literal.text = std::string(1, s[i++]);
+                row.children.push_back(std::move(literal));
+                continue;
+            }
             for (;;) {
                 SkipSpace();
                 if (i < s.size() && s[i] == '^') {
@@ -11953,6 +12646,495 @@ void DrawHtmlRun(float x, float y, const HtmlRun &run) {
     }
 }
 
+// --- Kanban board / Gantt chart panes ---------------------------------------
+//
+// Rendering only -- these never mutate KanbanSession/GanttSession's outline
+// or Buf().lines directly (aside from the content_x/y/w/h geometry cache
+// they refresh every frame for UpdateKanbanMouseInteraction/
+// UpdateGanttMouseInteraction, called once per frame from the same site
+// UpdatePaneMouseInteraction() is). A card/bar click that doesn't cross the
+// drag threshold registers its own plain ClickRegion (focus + set focused
+// card/row); an actual drag past the threshold is entirely the Update*
+// functions' job, since they alone see mouse state across frames.
+
+void DrawKanban(const Pane &pane, float x, float y, float w, float h, bool is_active) {
+    KanbanSession *sess = g_editor.GetKanbanMutable(pane.buffer_id);
+    if (!sess) return;
+    sess->content_x = x;
+    sess->content_y = y;
+    sess->content_w = w;
+    sess->content_h = h;
+
+    std::vector<std::string> columns = g_editor.KanbanColumns(pane.buffer_id);
+    BeginScissorMode(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h));
+    DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h),
+                  ResolveHlGroup("NormalBg"));
+    int header_h = PaneHeaderHeight();
+    // A toolbar row above the per-column headers -- "+ New Card" (a
+    // draggable chip, hit-tested directly by UpdateKanbanMouseInteraction
+    // rather than a RegisterClickRegion, since a drag needs continuous
+    // IsMouseButtonDown polling) and "+ Column" (a plain click). Pushes
+    // everything below down by one extra header_h; UpdateKanbanMouseInteraction
+    // mirrors this offset exactly the same way it already independently
+    // calls PaneHeaderHeight() rather than sharing a cached value.
+    DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), header_h, ResolveHlGroup("MenuBar"));
+    sess->new_card_chip_x = x + 8;
+    sess->new_card_chip_y = y + 4;
+    sess->new_card_chip_w = 120;
+    sess->new_card_chip_h = static_cast<float>(header_h) - 8;
+    bool new_card_being_dragged = sess->dragging && sess->drag_threshold_passed && sess->drag_is_new_card;
+    if (!new_card_being_dragged) {
+        Rectangle chip_rect{sess->new_card_chip_x, sess->new_card_chip_y, sess->new_card_chip_w, sess->new_card_chip_h};
+        DrawRectangleRec(chip_rect, ResolveHlGroup("CursorLine"));
+        DrawRectangleLinesEx(chip_rect, 1, ResolveHlGroup("Border"));
+        DrawTextEx(g_font, "+ New Card", Vector2{chip_rect.x + 6, chip_rect.y + 3}, g_font_size * 0.9f, 0,
+                   ResolveHlGroup("Normal"));
+    }
+    Rectangle add_col_rect{sess->new_card_chip_x + sess->new_card_chip_w + 8, y + 4, 90,
+                            static_cast<float>(header_h) - 8};
+    DrawRectangleRec(add_col_rect, ResolveHlGroup("CursorLine"));
+    DrawRectangleLinesEx(add_col_rect, 1, ResolveHlGroup("Border"));
+    DrawTextEx(g_font, "+ Column", Vector2{add_col_rect.x + 6, add_col_rect.y + 3}, g_font_size * 0.9f, 0,
+               ResolveHlGroup("Normal"));
+    int pane_id_for_add = pane.id;
+    RegisterClickRegion(add_col_rect, [pane_id_for_add] {
+        g_editor.FocusPaneById(pane_id_for_add);
+        g_editor.BeginPromptNative("New column name", "", [](const std::string &name) {
+            if (!name.empty()) g_editor.KanbanAddColumn(name);
+        });
+    });
+
+    float col_header_y = y + header_h;
+    float col_x = x;
+    for (int ci = 0; ci < static_cast<int>(columns.size()); ci++) {
+        float col_w = static_cast<float>(kKanbanColumnWidth);
+        std::vector<int> cards = g_editor.KanbanCardsInColumn(pane.buffer_id, ci);
+
+        bool column_being_dragged = sess->dragging && sess->drag_threshold_passed && sess->drag_is_column &&
+                                    sess->drag_column_index == ci;
+        DrawRectangle(static_cast<int>(col_x), static_cast<int>(col_header_y), static_cast<int>(col_w) - 4, header_h,
+                      ResolveHlGroup(column_being_dragged ? "CursorLine" : "MenuBar"));
+        std::string header_text = columns[ci] + " (" + std::to_string(cards.size()) + ")";
+        BeginScissorMode(static_cast<int>(col_x), static_cast<int>(col_header_y), static_cast<int>(col_w) - 24,
+                          header_h);
+        DrawTextEx(g_font, header_text.c_str(), Vector2{col_x + 6, col_header_y + 4}, g_font_size, 0,
+                   ResolveHlGroup("Normal"));
+        EndScissorMode();
+        if (ci > 0) {
+            DrawLine(static_cast<int>(col_x), static_cast<int>(y), static_cast<int>(col_x), static_cast<int>(y + h),
+                      ResolveHlGroup("Border"));
+        }
+
+        // Column menu ("..." -> Rename/Delete).
+        Rectangle kebab_rect{col_x + col_w - 24, col_header_y + 4, 18, static_cast<float>(header_h) - 8};
+        DrawTextEx(g_font, "...", Vector2{kebab_rect.x + 2, kebab_rect.y}, g_font_size, 0, ResolveHlGroup("Comment"));
+        int pane_id_for_col = pane.id, col_i = ci;
+        RegisterClickRegion(kebab_rect, [pane_id_for_col, col_i] {
+            g_editor.FocusPaneById(pane_id_for_col);
+            int buffer_id = g_editor.CurrentBufferId();
+            if (g_kanban_col_menu_buffer == buffer_id && g_kanban_col_menu_col == col_i) {
+                g_kanban_col_menu_buffer = -1;
+                g_kanban_col_menu_col = -1;
+            } else {
+                g_kanban_col_menu_buffer = buffer_id;
+                g_kanban_col_menu_col = col_i;
+            }
+        });
+        if (g_kanban_col_menu_buffer == pane.buffer_id && g_kanban_col_menu_col == ci) {
+            int item_h = MenuItemHeight();
+            Rectangle popup_rect{col_x, col_header_y + header_h, 130, static_cast<float>(item_h) * 2};
+            DrawRectangleRec(popup_rect, ResolveHlGroup("MenuBar"));
+            DrawRectangleLinesEx(popup_rect, 1, ResolveHlGroup("Border"));
+            Rectangle rename_row{col_x, col_header_y + header_h, 130, static_cast<float>(item_h)};
+            Rectangle delete_row{col_x, col_header_y + header_h + item_h, 130, static_cast<float>(item_h)};
+            DrawTextEx(g_font, "Rename", Vector2{rename_row.x + 8, rename_row.y + 4}, g_font_size, 0,
+                       ResolveHlGroup("Normal"));
+            DrawTextEx(g_font, "Delete", Vector2{delete_row.x + 8, delete_row.y + 4}, g_font_size, 0,
+                       ResolveHlGroup("Normal"));
+            std::string col_name = columns[ci];
+            RegisterClickRegion(rename_row, [pane_id_for_col, col_i, col_name] {
+                g_editor.FocusPaneById(pane_id_for_col);
+                g_kanban_col_menu_buffer = -1;
+                g_kanban_col_menu_col = -1;
+                g_editor.BeginPromptNative("Rename column", col_name, [col_i](const std::string &name) {
+                    if (!name.empty()) g_editor.KanbanRenameColumn(col_i, name);
+                });
+            });
+            RegisterClickRegion(delete_row, [pane_id_for_col, col_i] {
+                g_editor.FocusPaneById(pane_id_for_col);
+                g_kanban_col_menu_buffer = -1;
+                g_kanban_col_menu_col = -1;
+                g_editor.KanbanDeleteColumn(col_i);
+            });
+        }
+
+        float card_y = y + header_h * 2 + kKanbanCardGap;
+        for (int ri = 0; ri < static_cast<int>(cards.size()); ri++) {
+            int hi = cards[ri];
+            const OrgHeadline &hd = sess->outline.headlines[hi];
+            bool is_focused = is_active && ci == sess->focused_column && ri == sess->focused_row &&
+                               g_editor.CurrentMode() == Mode::KanbanNormal;
+            bool is_being_dragged = sess->dragging && sess->drag_threshold_passed && sess->drag_headline_index == hi;
+
+            Rectangle card_rect{col_x + 4, card_y, col_w - 12, static_cast<float>(kKanbanCardHeight)};
+            if (!is_being_dragged) {
+                DrawRectangleRec(card_rect, ResolveHlGroup(is_focused ? "Visual" : "CursorLine"));
+                if (is_focused) DrawRectangleLinesEx(card_rect, 2, ResolveHlGroup("BorderActive"));
+
+                bool editing_this =
+                    sess->editing && sess->editing_headline_index == hi && g_editor.CurrentMode() == Mode::KanbanInsert;
+                std::string title_text = editing_this ? sess->edit_buffer : hd.title;
+                std::string prio = hd.priority ? (std::string("[#") + hd.priority + "] ") : "";
+                std::string line1 = prio + title_text;
+                // Clipped to the card's own rect -- a title longer than the
+                // column is wide would otherwise bleed into the next
+                // column rather than just being cut off.
+                BeginScissorMode(static_cast<int>(card_rect.x), static_cast<int>(card_rect.y),
+                                  static_cast<int>(card_rect.width), static_cast<int>(card_rect.height));
+                DrawTextEx(g_font, line1.c_str(), Vector2{card_rect.x + 6, card_rect.y + 4}, g_font_size, 0,
+                           ResolveHlGroup("Normal"));
+                if (!hd.tags.empty()) {
+                    std::string tag_text;
+                    for (const auto &t : hd.tags) tag_text += ":" + t;
+                    tag_text += ":";
+                    DrawTextEx(g_font, tag_text.c_str(), Vector2{card_rect.x + 6, card_rect.y + 4 + g_font_size + 4},
+                               g_font_size * 0.85f, 0, ResolveHlGroup("Comment"));
+                }
+                if (editing_this && is_active) {
+                    std::string pre = sess->edit_buffer.substr(0, std::min<size_t>(sess->edit_cursor, sess->edit_buffer.size()));
+                    float cx = card_rect.x + 6 + MeasureTextEx(g_font, (prio + pre).c_str(), g_font_size, 0).x;
+                    DrawRectangle(static_cast<int>(cx), static_cast<int>(card_rect.y + 4), 2,
+                                  static_cast<int>(g_font_size), ResolveHlGroup("Normal"));
+                }
+                EndScissorMode();
+
+                int pane_id = pane.id, col_i = ci, row_i = ri;
+                RegisterClickRegion(card_rect, [pane_id, col_i, row_i] {
+                    g_editor.FocusPaneById(pane_id);
+                    if (KanbanSession *s = g_editor.GetKanbanMutable(g_editor.CurrentBufferId())) {
+                        s->focused_column = col_i;
+                        s->focused_row = row_i;
+                    }
+                });
+            }
+            card_y += kKanbanCardHeight + kKanbanCardGap;
+        }
+
+        // Drop-target preview strip while a card is dragged over this column.
+        if (sess->dragging && sess->drag_threshold_passed && !sess->drag_is_column && sess->drop_column == ci) {
+            float preview_y = y + header_h * 2 + kKanbanCardGap +
+                               sess->drop_row * (kKanbanCardHeight + kKanbanCardGap) - kKanbanCardGap / 2.0f;
+            DrawRectangle(static_cast<int>(col_x + 4), static_cast<int>(preview_y), static_cast<int>(col_w - 12), 3,
+                          ResolveHlGroup("BorderActive"));
+        }
+
+        col_x += col_w;
+    }
+
+    // A column target is a gap, not another column: the vertical marker
+    // makes it unambiguous whether the release will insert before or after
+    // the header under the pointer.
+    if (sess->dragging && sess->drag_threshold_passed && sess->drag_is_column &&
+        sess->column_drop_slot >= 0 && sess->column_drop_slot <= static_cast<int>(columns.size())) {
+        float marker_x = x + sess->column_drop_slot * kKanbanColumnWidth;
+        DrawRectangle(static_cast<int>(marker_x) - 2, static_cast<int>(col_header_y), 4, header_h,
+                      ResolveHlGroup("BorderActive"));
+    }
+
+    // The dragged card (or new-card ghost) itself, following the live mouse
+    // position.
+    if (sess->dragging && sess->drag_threshold_passed && !sess->drag_is_column) {
+        std::string ghost_title = "New card";
+        bool have_title = sess->drag_is_new_card;
+        if (!have_title && sess->drag_headline_index >= 0 &&
+            sess->drag_headline_index < static_cast<int>(sess->outline.headlines.size())) {
+            ghost_title = sess->outline.headlines[sess->drag_headline_index].title;
+            have_title = true;
+        }
+        if (have_title) {
+            Vector2 mouse = GetMousePosition();
+            Rectangle card_rect{mouse.x - 20, mouse.y - 12, static_cast<float>(kKanbanColumnWidth) - 12,
+                                 static_cast<float>(kKanbanCardHeight)};
+            DrawRectangleRec(card_rect, ResolveHlGroup("Visual"));
+            DrawRectangleLinesEx(card_rect, 2, ResolveHlGroup("BorderActive"));
+            BeginScissorMode(static_cast<int>(card_rect.x), static_cast<int>(card_rect.y),
+                              static_cast<int>(card_rect.width), static_cast<int>(card_rect.height));
+            DrawTextEx(g_font, ghost_title.c_str(), Vector2{card_rect.x + 6, card_rect.y + 4}, g_font_size, 0,
+                       ResolveHlGroup("Normal"));
+            EndScissorMode();
+        }
+    }
+    if (sess->dragging && sess->drag_threshold_passed && sess->drag_is_column &&
+        sess->drag_column_index >= 0 && sess->drag_column_index < static_cast<int>(columns.size())) {
+        Vector2 mouse = GetMousePosition();
+        Rectangle header_ghost{mouse.x - 20, mouse.y - static_cast<float>(header_h) / 2,
+                               static_cast<float>(kKanbanColumnWidth) - 4, static_cast<float>(header_h)};
+        DrawRectangleRec(header_ghost, ResolveHlGroup("Visual"));
+        DrawRectangleLinesEx(header_ghost, 2, ResolveHlGroup("BorderActive"));
+        DrawTextEx(g_font, columns[sess->drag_column_index].c_str(), Vector2{header_ghost.x + 6, header_ghost.y + 4},
+                   g_font_size, 0, ResolveHlGroup("Normal"));
+    }
+
+    // Lowest-priority fallback: focus the pane and dismiss any open column
+    // menu on a click that missed everything more specific above
+    // (registered last, so first-match-wins ordering still gives every
+    // card/button/popup-row its own click priority -- see DrawPane's own
+    // kanban_or_gantt_active exclusion comment for why the generic
+    // pane-body catch-all is skipped there instead of double-registering).
+    RegisterClickRegion(Rectangle{x, y, w, h}, [pane_id = pane.id] {
+        g_editor.FocusPaneById(pane_id);
+        g_kanban_col_menu_buffer = -1;
+        g_kanban_col_menu_col = -1;
+    });
+
+    EndScissorMode();
+}
+
+void DrawGanttDependencies(const GanttSession &sess, const std::vector<int> &rows, float timeline_x, float y, int row_h,
+                           float ruler_h) {
+    std::unordered_map<std::string, int> id_to_headline;
+    std::unordered_map<int, int> headline_to_row;
+    for (int ri = 0; ri < static_cast<int>(rows.size()); ++ri) {
+        headline_to_row[rows[ri]] = ri;
+        const std::string &id = sess.outline.headlines[rows[ri]].id;
+        if (!id.empty()) id_to_headline[id] = rows[ri];
+    }
+    Color arrow_color = Fade(ResolveHlGroup("BorderActive"), 0.8f);
+    for (int target_hi : rows) {
+        const OrgHeadline &target = sess.outline.headlines[target_hi];
+        for (const std::string &blocker : target.blockers) {
+            auto source_it = id_to_headline.find(blocker);
+            if (source_it == id_to_headline.end()) continue;  // dependency outside this Gantt view
+            const OrgHeadline &source = sess.outline.headlines[source_it->second];
+            long long source_end = source.deadline.present ? OrgDayNumber(source.deadline.year, source.deadline.month, source.deadline.day)
+                                                            : OrgDayNumber(source.scheduled.year, source.scheduled.month, source.scheduled.day);
+            long long target_start = OrgDayNumber(target.scheduled.year, target.scheduled.month, target.scheduled.day);
+            float sx = timeline_x + static_cast<float>(source_end - sess.anchor_day) * sess.pixels_per_day;
+            float tx = timeline_x + static_cast<float>(target_start - sess.anchor_day) * sess.pixels_per_day;
+            float sy = y + ruler_h + headline_to_row[source_it->second] * row_h + row_h / 2.0f;
+            float ty = y + ruler_h + headline_to_row[target_hi] * row_h + row_h / 2.0f;
+            float bend = std::max(sx + 12.0f, tx - 12.0f);
+            DrawLineEx(Vector2{sx, sy}, Vector2{bend, sy}, 2, arrow_color);
+            DrawLineEx(Vector2{bend, sy}, Vector2{bend, ty}, 2, arrow_color);
+            DrawLineEx(Vector2{bend, ty}, Vector2{tx, ty}, 2, arrow_color);
+            DrawTriangle(Vector2{tx, ty}, Vector2{tx - 7, ty - 4}, Vector2{tx - 7, ty + 4}, arrow_color);
+        }
+    }
+}
+
+void DrawGantt(const Pane &pane, float x, float y, float w, float h, bool is_active) {
+    GanttSession *sess = g_editor.GetGanttMutable(pane.buffer_id);
+    if (!sess) return;
+    sess->content_x = x;
+    sess->content_y = y;
+    sess->content_w = w;
+    sess->content_h = h;
+
+    std::vector<int> rows = g_editor.GanttRows(pane.buffer_id);
+    BeginScissorMode(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h));
+    DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h),
+                  ResolveHlGroup("NormalBg"));
+
+    float label_w = sess->label_col_w;
+    float timeline_x = x + label_w;
+    float timeline_w = std::max(0.0f, w - label_w);
+    float ruler_h = static_cast<float>(GanttRulerHeight(*sess));
+    int row_h = GanttRowHeight();
+
+    int visible_days = std::max(1, static_cast<int>(timeline_w / sess->pixels_per_day) + 2);
+    if (sess->ruler_scale == GanttSession::RulerScale::Months) {
+        int anchor_year, anchor_month, anchor_date;
+        OrgDateFromDayNumber(sess->anchor_day, anchor_year, anchor_month, anchor_date);
+        long long last_day = sess->anchor_day + visible_days;
+        long long month_start = OrgDayNumber(anchor_year, anchor_month, 1);
+        for (int yy = anchor_year, mm = anchor_month; month_start <= last_day;) {
+            int next_year = yy, next_month = mm + 1;
+            if (next_month == 13) { next_month = 1; next_year++; }
+            long long next_start = OrgDayNumber(next_year, next_month, 1);
+            float gx = timeline_x + static_cast<float>(month_start - sess->anchor_day) * sess->pixels_per_day;
+            float next_x = timeline_x + static_cast<float>(next_start - sess->anchor_day) * sess->pixels_per_day;
+            DrawLine(static_cast<int>(gx), static_cast<int>(y), static_cast<int>(gx), static_cast<int>(y + h),
+                     ResolveHlGroup("BorderActive"));
+            const char *month_name = GanttMonthAbbrev(mm);
+            float month_text_w = MeasureTextEx(g_font, month_name, g_font_size * 0.8f, 0).x;
+            DrawTextEx(g_font, month_name, Vector2{(gx + next_x - month_text_w) / 2.0f, y + PaneHeaderHeight() + 4},
+                       g_font_size * 0.8f, 0, ResolveHlGroup("Comment"));
+            yy = next_year;
+            mm = next_month;
+            month_start = next_start;
+        }
+        // The year-cell loop starts one January before the viewport, so a
+        // partially visible current year still gets a centered label.
+        for (int yy = anchor_year; OrgDayNumber(yy, 1, 1) <= last_day; ++yy) {
+            long long year_start = OrgDayNumber(yy, 1, 1), next_year_start = OrgDayNumber(yy + 1, 1, 1);
+            float gx = timeline_x + static_cast<float>(year_start - sess->anchor_day) * sess->pixels_per_day;
+            float next_x = timeline_x + static_cast<float>(next_year_start - sess->anchor_day) * sess->pixels_per_day;
+            char year_text[8];
+            std::snprintf(year_text, sizeof(year_text), "%04d", yy);
+            float year_text_w = MeasureTextEx(g_font, year_text, g_font_size * 0.8f, 0).x;
+            DrawTextEx(g_font, year_text, Vector2{(gx + next_x - year_text_w) / 2.0f, y + 4}, g_font_size * 0.8f, 0,
+                       ResolveHlGroup("Comment"));
+        }
+        DrawLine(static_cast<int>(timeline_x), static_cast<int>(y + PaneHeaderHeight()), static_cast<int>(x + w),
+                 static_cast<int>(y + PaneHeaderHeight()), ResolveHlGroup("Border"));
+    } else {
+        for (int i = 0; i < visible_days; i++) {
+            long long day = sess->anchor_day + i;
+            float gx = timeline_x + i * sess->pixels_per_day;
+            int yy, mm, dd;
+            OrgDateFromDayNumber(day, yy, mm, dd);
+            bool year_boundary = dd == 1 && mm == 1;
+            bool draw_gridline = sess->ruler_scale == GanttSession::RulerScale::Days || year_boundary;
+            if (!draw_gridline) continue;
+            DrawLine(static_cast<int>(gx), static_cast<int>(y + ruler_h), static_cast<int>(gx), static_cast<int>(y + h),
+                     ResolveHlGroup(sess->ruler_scale == GanttSession::RulerScale::Days ? "Border" : "BorderActive"));
+            if (sess->ruler_scale == GanttSession::RulerScale::Days && sess->pixels_per_day > 14.0f) {
+                char buf[8];
+                std::snprintf(buf, sizeof(buf), "%02d", dd);
+                DrawTextEx(g_font, buf, Vector2{gx + 2, y + 4}, g_font_size * 0.8f, 0, ResolveHlGroup("Comment"));
+            } else if (sess->ruler_scale == GanttSession::RulerScale::Years) {
+                char buf[8];
+                std::snprintf(buf, sizeof(buf), "%04d", yy);
+                DrawTextEx(g_font, buf, Vector2{gx + 2, y + 4}, g_font_size * 0.8f, 0, ResolveHlGroup("Comment"));
+            }
+        }
+    }
+    // Label/timeline divider -- draggable (UpdateGanttMouseInteraction) to
+    // resize label_col_w, drawn a bit heavier than the plain day-gridlines
+    // above so it reads as a handle.
+    DrawLine(static_cast<int>(timeline_x), static_cast<int>(y + ruler_h), static_cast<int>(x + w),
+              static_cast<int>(y + ruler_h), ResolveHlGroup("Border"));
+    long long today = GanttTodayDay();
+    float today_x = timeline_x + static_cast<float>(today - sess->anchor_day) * sess->pixels_per_day;
+    if (today_x >= timeline_x && today_x <= x + w) {
+        Color today_color = ResolveHlGroup("Red");
+        DrawRectangle(static_cast<int>(today_x) - 1, static_cast<int>(y), 3, static_cast<int>(h), Fade(today_color, 0.85f));
+        DrawTextEx(g_font, "Today", Vector2{today_x + 4, y + 4}, g_font_size * 0.7f, 0, today_color);
+    }
+    bool divider_hot = sess->resizing_label_col;
+    DrawRectangle(static_cast<int>(timeline_x) - 1, static_cast<int>(y), divider_hot ? 3 : 1, static_cast<int>(h),
+                  ResolveHlGroup(divider_hot ? "BorderActive" : "Border"));
+
+    // Draw below bars/labels so dependency arrows stay visible in the open
+    // chart space but never cover a task's own interval or text.
+    DrawGanttDependencies(*sess, rows, timeline_x, y, row_h, ruler_h);
+
+    for (int ri = 0; ri < static_cast<int>(rows.size()); ri++) {
+        int hi = rows[ri];
+        const OrgHeadline &hd = sess->outline.headlines[hi];
+        float row_y = y + ruler_h + ri * row_h;
+        bool is_group = false;
+        for (const OrgHeadline &candidate : sess->outline.headlines) {
+            if (candidate.parent_index == hi) { is_group = true; break; }
+        }
+        bool is_focused = g_clean_gantt_export_buffer != pane.buffer_id && is_active && ri == sess->focused_row &&
+                           (g_editor.CurrentMode() == Mode::GanttNormal || g_editor.CurrentMode() == Mode::GanttInsert);
+        if (is_focused) {
+            DrawRectangle(static_cast<int>(x), static_cast<int>(row_y), static_cast<int>(w), row_h,
+                          ResolveHlGroup("CursorLine"));
+        }
+
+        bool editing_this =
+            sess->editing && sess->editing_headline_index == hi && g_editor.CurrentMode() == Mode::GanttInsert;
+        float indent = static_cast<float>(std::max(0, hd.level - 1)) * 14.0f;
+        std::string label = is_group ? (sess->collapsed_headlines.count(hi) ? "+ " : "- ") : "  ";
+        label += editing_this ? sess->edit_buffer : hd.title;
+        BeginScissorMode(static_cast<int>(x), static_cast<int>(row_y), static_cast<int>(label_w), row_h);
+        DrawTextEx(g_font, label.c_str(), Vector2{x + 6 + indent, row_y + 4}, g_font_size, 0, ResolveHlGroup("Normal"));
+        if (is_group) DrawTextEx(g_font, label.c_str(), Vector2{x + 7 + indent, row_y + 4}, g_font_size, 0, ResolveHlGroup("Normal"));
+        std::string date_range = "Start " + GanttDateLabel(hd.scheduled);
+        if (hd.deadline.present) date_range += "  →  Due " + GanttDateLabel(hd.deadline);
+        else date_range += "  →  Due —";
+        if (!hd.assignee.empty()) date_range += "  |  " + hd.assignee;
+        date_range += "  |  " + std::to_string(hd.progress) + "%";
+        DrawTextEx(g_font, date_range.c_str(), Vector2{x + 6 + indent, row_y + g_font_size + 7}, g_font_size * 0.78f, 0,
+                   ResolveHlGroup("Comment"));
+        if (editing_this && is_active) {
+            std::string indent(static_cast<size_t>(std::max(0, hd.level - 1)) * 2, ' ');
+            std::string pre = sess->edit_buffer.substr(0, std::min<size_t>(sess->edit_cursor, sess->edit_buffer.size()));
+            float cx = x + 6 + MeasureTextEx(g_font, (indent + pre).c_str(), g_font_size, 0).x;
+            DrawRectangle(static_cast<int>(cx), static_cast<int>(row_y + 4), 2, static_cast<int>(g_font_size),
+                          ResolveHlGroup("Normal"));
+        }
+        EndScissorMode();
+
+        bool being_dragged = sess->dragging && sess->drag_headline_index == hi;
+        OrgTimestamp live_scheduled = hd.scheduled, live_deadline = hd.deadline;
+        if (being_dragged) {
+            // Live preview follows the mouse -- computed the same way
+            // UpdateGanttMouseInteraction commits it on release, so the
+            // bar never visibly "snaps" at drop time.
+            float dx = GetMousePosition().x - sess->drag_start_x;
+            int delta_days = static_cast<int>(std::lround(dx / sess->pixels_per_day));
+            if (sess->drag_mode == GanttSession::DragMode::Move) {
+                live_scheduled = ShiftTimestamp(sess->drag_orig_scheduled, delta_days);
+                if (sess->drag_orig_deadline.present) live_deadline = ShiftTimestamp(sess->drag_orig_deadline, delta_days);
+            } else if (sess->drag_mode == GanttSession::DragMode::ResizeStart) {
+                live_scheduled = ShiftTimestamp(sess->drag_orig_scheduled, delta_days);
+            } else {
+                OrgTimestamp base = sess->drag_orig_deadline.present ? sess->drag_orig_deadline : sess->drag_orig_scheduled;
+                live_deadline = ShiftTimestamp(base, delta_days);
+            }
+        }
+
+        long long start_day = OrgDayNumber(live_scheduled.year, live_scheduled.month, live_scheduled.day);
+        float bar_x = timeline_x + static_cast<float>(start_day - sess->anchor_day) * sess->pixels_per_day;
+        Color bar_color = hd.is_done_keyword ? ResolveHlGroup("Comment") : ResolveHlGroup("BorderActive");
+
+        if (live_deadline.present) {
+            long long end_day = OrgDayNumber(live_deadline.year, live_deadline.month, live_deadline.day);
+            float bar_w = std::max(4.0f, static_cast<float>(end_day - start_day) * sess->pixels_per_day);
+            Rectangle bar_rect{bar_x, row_y + (row_h - kGanttBarHeight) / 2.0f, bar_w, kGanttBarHeight};
+            DrawRectangleRounded(bar_rect, 0.45f, 6, Fade(bar_color, 0.35f));
+            if (hd.progress > 0) {
+                Rectangle completed = bar_rect;
+                completed.width = std::max(2.0f, bar_rect.width * hd.progress / 100.0f);
+                DrawRectangleRounded(completed, 0.45f, 6, bar_color);
+            }
+            DrawRectangleRoundedLines(bar_rect, 0.45f, 6, is_group ? ResolveHlGroup("Normal") : bar_color);
+            if (is_focused) DrawRectangleRoundedLinesEx(bar_rect, 0.45f, 6, 2, ResolveHlGroup("BorderActive"));
+            if (bar_w >= 44.0f) {
+                std::string progress = std::to_string(hd.progress) + "%";
+                DrawTextEx(g_font, progress.c_str(), Vector2{bar_rect.x + 5, bar_rect.y - 2}, g_font_size * 0.58f, 0,
+                           ResolveHlGroup("Normal"));
+            }
+            if (!being_dragged) {
+                int pane_id = pane.id, row_i = ri;
+                RegisterClickRegion(bar_rect, [pane_id, row_i] {
+                    g_editor.FocusPaneById(pane_id);
+                    if (GanttSession *s = g_editor.GetGanttMutable(g_editor.CurrentBufferId())) s->focused_row = row_i;
+                });
+            }
+        } else if (hd.effort.has_value()) {
+            // Effort-only duration -- read-only in v1 (documented gap: no
+            // drag-resize since editing "H:MM" isn't supported yet).
+            Rectangle bar_rect{bar_x, row_y + (row_h - kGanttBarHeight) / 2.0f, 40, kGanttBarHeight};
+            DrawRectangleRounded(bar_rect, 0.45f, 6, Fade(bar_color, 0.6f));
+        } else {
+            // Milestone: SCHEDULED only, no duration info at all -- a
+            // small filled circle (DrawCircle, not a hand-rolled diamond
+            // via DrawTriangleFan: raylib's triangle winding-order
+            // requirement made an earlier version of this invisible),
+            // matching org-mode gantt exporters' own convention for a
+            // zero-length task.
+            float cy = row_y + row_h / 2.0f;
+            DrawCircle(static_cast<int>(bar_x), static_cast<int>(cy), 6.0f, bar_color);
+            if (!being_dragged) {
+                int pane_id = pane.id, row_i = ri;
+                Rectangle hit{bar_x - 6, cy - 6, 12, 12};
+                RegisterClickRegion(hit, [pane_id, row_i] {
+                    g_editor.FocusPaneById(pane_id);
+                    if (GanttSession *s = g_editor.GetGanttMutable(g_editor.CurrentBufferId())) s->focused_row = row_i;
+                });
+            }
+        }
+    }
+
+    RegisterClickRegion(Rectangle{x, y, w, h}, [pane_id = pane.id] { g_editor.FocusPaneById(pane_id); });
+
+    EndScissorMode();
+}
+
 void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_active) {
     int line_height = LineHeight();
     int header_h = PaneHeaderHeight();
@@ -11968,8 +13150,17 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     const ImageSession *img_sess = g_editor.GetImage(pane.buffer_id);
     const PdfSession *pdf_sess = g_editor.GetPdf(pane.buffer_id);
     const OfficeSession *office_sess = g_editor.GetOffice(pane.buffer_id);
+    if (office_sess) header_bg = ResolveHlGroup("MenuBar");
     const SheetSession *sheet_sess = g_editor.GetSheet(pane.buffer_id);
     const HtmlSession *html_sess = g_editor.GetHtml(pane.buffer_id);
+    // Unlike every session pointer above (each keyed by buffer *identity*
+    // -- a buffer can only ever be one of these), a Kanban/Gantt view is a
+    // buffer *state* (org_view_mode_) layered over an ordinary org text
+    // buffer -- hence gating on IsKanbanViewActive/IsGanttViewActive, not
+    // just whether a cached session happens to exist for this buffer id
+    // (see OrgViewMode's own comment, editor.h).
+    KanbanSession *kanban_sess = g_editor.IsKanbanViewActive(pane.buffer_id) ? g_editor.GetKanbanMutable(pane.buffer_id) : nullptr;
+    GanttSession *gantt_sess = g_editor.IsGanttViewActive(pane.buffer_id) ? g_editor.GetGanttMutable(pane.buffer_id) : nullptr;
     std::string suffix = buf.modified ? " [+]" : "";
     float label_y = y + (header_h - font_size) / 2.0f;
     if (pane.buffer_tabs.size() > 1) {
@@ -12030,7 +13221,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // buffer to drag out, it's just not drawn as a chip when there's
         // nothing else to distinguish it from.
         {
-            Rectangle header_rect{x, y, w, static_cast<float>(header_h)};
+            // Gantt's later SVG/PNG/PDF controls occupy the rightmost 132px
+            // and must not be shadowed by this generic focus/tab chip.
+            float header_click_w = gantt_sess ? std::max(0.0f, w - 132.0f) : w;
+            Rectangle header_rect{x, y, header_click_w, static_cast<float>(header_h)};
             g_pane_tab_chip_rects.push_back({pane.id, pane.buffer_id, header_rect});
             int pane_id = pane.id;
             RegisterClickRegion(header_rect, [pane_id] { g_editor.FocusPaneById(pane_id); });
@@ -12083,14 +13277,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             }
             DrawTextEx(g_font, label.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
         } else if (office_sess) {
-            std::string label = "Office: " + buf.filename;
-            if (!office_sess->doc.paragraphs.empty()) {
-                label += " (para " + std::to_string(office_sess->cursor_para + 1) + "/" +
-                         std::to_string(office_sess->doc.paragraphs.size()) + ") " +
-                         std::to_string(static_cast<int>(office_sess->zoom * 100.0f + 0.5f)) + "%";
-            }
-            if (buf.modified) label += " [+]";
-            DrawTextEx(g_font, label.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
+            // Just the filename -- no more "(para X/Y) Z%" (the Docs-style
+            // status line below now carries page/word-count/zoom instead).
+            std::string label = (buf.filename.empty() ? "Untitled Document" : buf.filename) + (buf.modified ? " [+]" : "");
+            Vector2 ts = MeasureTextEx(g_font, label.c_str(), font_size, 0);
+            DrawTextEx(g_font, label.c_str(), Vector2{x + std::max(6.0f, (w - ts.x) / 2.0f), label_y}, font_size, 0,
+                       ResolveHlGroup("Normal"));
         } else if (sheet_sess) {
             std::string label = "Sheet: " + buf.filename;
             if (!sheet_sess->wb.sheets.empty()) {
@@ -12099,6 +13291,41 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             }
             if (buf.modified) label += " [+]";
             DrawTextEx(g_font, label.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
+        } else if (kanban_sess) {
+            std::string label = "Kanban: " + buf.filename;
+            if (buf.modified) label += " [+]";
+            DrawTextEx(g_font, label.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
+        } else if (gantt_sess) {
+            char zoom_buf[16];
+            std::snprintf(zoom_buf, sizeof(zoom_buf), "%.0fpx/day", gantt_sess->pixels_per_day);
+            std::string label = "Gantt: " + buf.filename + "  " + GanttRulerScaleName(gantt_sess->ruler_scale) +
+                                " grid (t)  " + zoom_buf + "  f:fit p:progress za/zm:fold";
+            if (buf.modified) label += " [+]";
+            DrawTextEx(g_font, label.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
+            // Export controls live in the pane header, outside the Gantt
+            // canvas itself, so PNG/PDF screenshots contain only the chart.
+            constexpr const char *formats[] = {"SVG", "PNG", "PDF"};
+            float export_x = x + w - 132;
+            for (int i = 0; i < 3; ++i) {
+                Rectangle button{export_x + i * 44.0f, static_cast<float>(y) + 3, 40, static_cast<float>(header_h) - 6};
+                DrawRectangleRec(button, ResolveHlGroup("CursorLine"));
+                DrawRectangleLinesEx(button, 1, ResolveHlGroup("Border"));
+                DrawTextEx(g_font, formats[i], Vector2{button.x + 4, button.y + 2}, font_size * 0.75f, 0,
+                           ResolveHlGroup("Normal"));
+                int export_buffer_id = pane.buffer_id;
+                std::string format = i == 0 ? "svg" : (i == 1 ? "png" : "pdf");
+                RegisterClickRegion(button, [export_buffer_id, format] {
+                    if (format == "svg") {
+                        std::string path = GanttExportPath(export_buffer_id, "svg");
+                        bool ok = ExportGanttSvg(export_buffer_id, path);
+                        g_editor.SetStatusMessage(ok ? "Exported Gantt to " + path : "Gantt export failed: " + path);
+                    } else {
+                        g_pending_gantt_raster_export = {export_buffer_id, format};
+                        g_clean_gantt_export_buffer = export_buffer_id;
+                        g_editor.SetStatusMessage("Exporting Gantt...");
+                    }
+                });
+            }
         } else {
             // Just the filename (or [Scratch]/[No Name]), centered -- not
             // the full path anymore: the old winbar-equivalent breadcrumb
@@ -12143,14 +13370,32 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // catch-all bug above. Skip registering it entirely in that case so
     // popup item clicks (registered later) are the only match.
     bool office_dropdown_open = office_sess && !office_sess->doc.paragraphs.empty() && g_office_dropdown_open != -1;
-    if (!office_dropdown_open) {
-        float focus_click_y = content_y, focus_click_h = content_h;
+    // Same reasoning as office_dropdown_open just above: DrawKanban/
+    // DrawGantt (below) register their own per-card/per-bar click regions,
+    // *and* their own whole-content-area fallback focus click (registered
+    // last, so it only wins where nothing more specific does) -- this
+    // catch-all registering first here would otherwise shadow every one of
+    // those under the same first-match-wins ordering.
+    bool kanban_or_gantt_active = kanban_sess || gantt_sess;
+    if (!office_dropdown_open && !kanban_or_gantt_active) {
+        float focus_click_x = x, focus_click_y = content_y, focus_click_w = w, focus_click_h = content_h;
         if (office_sess && !office_sess->doc.paragraphs.empty()) {
             float office_toolbar_h = static_cast<float>(header_h) * 2.0f;
             focus_click_y += office_toolbar_h;
             focus_click_h = std::max(0.0f, focus_click_h - office_toolbar_h);
+            // Also exclude the footer bar (bottom) and the rail/Outline/
+            // Format panels (left/right) -- same reasoning as the toolbar
+            // exclusion just above: this catch-all registers before those
+            // widgets' own more specific click regions (inside the real
+            // office branch below), so first-match-wins would otherwise
+            // swallow every click on them.
+            focus_click_h = std::max(0.0f, focus_click_h - kOfficeFooterH);
+            float left_excl = kOfficeRailW + (g_office_outline_open ? kOfficeOutlineW : 0.0f);
+            float right_excl = g_office_format_open ? kOfficeFormatW : 0.0f;
+            focus_click_x += left_excl;
+            focus_click_w = std::max(0.0f, focus_click_w - left_excl - right_excl);
         }
-        RegisterClickRegion(Rectangle{x, focus_click_y, w, focus_click_h},
+        RegisterClickRegion(Rectangle{focus_click_x, focus_click_y, focus_click_w, focus_click_h},
                             [pane_id = pane.id] { g_editor.FocusPaneById(pane_id); });
     }
 
@@ -12183,6 +13428,23 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         }
         // Falls through to the ordinary buffer-drawing path below, same
         // as any other buffer.
+    }
+
+    // Unlike Sheet/Office (whose Buffer::lines is a dummy single empty
+    // line, so falling through to the ordinary text-drawing path at the
+    // end of this function is harmless), a Kanban/Gantt buffer's `lines`
+    // is the real, multi-line org text -- so these draw their own content
+    // and return early, exactly like the Terminal/Image blocks above,
+    // rather than letting the plain-text renderer draw underneath/after.
+    if (kanban_sess) {
+        DrawKanban(pane, x, content_y, w, content_h, is_active);
+        DrawPaneBorder(x, y, w, h, is_active);
+        return;
+    }
+    if (gantt_sess) {
+        DrawGantt(pane, x, content_y, w, content_h, is_active);
+        DrawPaneBorder(x, y, w, h, is_active);
+        return;
     }
 
     if (img_sess && img_sess->doc) {
@@ -12367,92 +13629,383 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // Shrinks content_y/content_h in place (safe: every path through
         // this office branch ends in `return`, so nothing after it in
         // DrawPane reads the pre-toolbar values for this call).
-        float row_h = static_cast<float>(header_h);
+        // Keep the command ribbon deliberately compact: it should support
+        // writing without competing with the page for vertical space.
+        //
+        // Docs-style status footer: reserved from the BOTTOM of *this
+        // pane's own* content area, not the app's global status line --
+        // each office pane gets its own, the same way its toolbar already
+        // is per-pane rather than shared chrome.
+        content_h = std::max(0.0f, content_h - kOfficeFooterH);
+        float office_footer_y = y + h - kOfficeFooterH;
+        // Outline (left) icon-rail/panel and Format/Insert (right) panel --
+        // docked to the sides of *this pane*, not the app window (same
+        // reasoning as the footer above). Returns the horizontal band
+        // (ocx/ocw) left over for the toolbar and page to actually use.
+        float ocx = x, ocw = w;
+        DrawOfficeSidePanels(x, w, content_y, content_h, pane.buffer_id, office_sess, ocx, ocw);
+
+        float row_h = std::clamp(static_cast<float>(header_h) * 0.78f, 30.0f, 38.0f);
         float toolbar_h = row_h * 2.0f;
-        DrawRectangle(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
+        DrawRectangle(static_cast<int>(ocx), static_cast<int>(content_y), static_cast<int>(ocw),
                       static_cast<int>(toolbar_h), ResolveHlGroup("MenuBar"));
+        DrawRectangle(static_cast<int>(ocx), static_cast<int>(content_y + toolbar_h - 1.0f), static_cast<int>(ocw), 1,
+                      ResolveHlGroup("Border"));
         float btn_h = row_h - 6.0f;
         float row1_y = content_y + 3.0f;
         float row2_y = content_y + row_h + 3.0f;
-        float row1_x = x + 6, row2_x = x + 6;
+        float row1_x = ocx + 8, row2_x = ocx + 8;
+
+        // Shared button chrome: no fill at rest, a light hover tint, a
+        // blue tint when toggled on -- draws the background and returns
+        // the color the caller's own content (text or hand-drawn icon)
+        // should use, so every button (text-label or icon) stays visually
+        // consistent without duplicating this logic per button kind.
+        auto btn_bg = [&](Rectangle rect, bool active) -> Color {
+            bool hovered = CheckCollisionPointRec(GetMousePosition(), rect);
+            if (active) DrawRectangleRounded(rect, 0.25f, 6, ResolveHlGroup("AccentTint"));
+            else if (hovered) DrawRectangleRounded(rect, 0.25f, 6, ResolveHlGroup("CursorLine"));
+            return active ? ResolveHlGroup("Accent") : ResolveHlGroup("Normal");
+        };
 
         // Draws one text-label button at (*bx, by), advancing *bx past it;
         // returns the button's own rect (callers open a dropdown directly
         // below it).
         auto draw_btn = [&](float *bx, float by, const std::string &label, bool active,
                              const std::function<void()> &on_click) -> Rectangle {
-            Vector2 ls = MeasureTextEx(g_font, label.c_str(), font_size, 0);
-            float bw = ls.x + 12.0f;
+            Vector2 ls = MeasureTextEx(g_font, label.c_str(), font_size * 0.92f, 0);
+            float bw = ls.x + 14.0f;
             Rectangle rect{*bx, by, bw, btn_h};
-            Color bg = active ? ResolveHlGroup("Visual") : ResolveHlGroup("TabActive");
-            DrawRectangle(static_cast<int>(rect.x), static_cast<int>(rect.y), static_cast<int>(rect.width),
-                          static_cast<int>(rect.height), bg);
+            Color content = btn_bg(rect, active);
             DrawTextEx(g_font, label.c_str(),
-                      Vector2{rect.x + (rect.width - ls.x) / 2.0f, rect.y + (rect.height - font_size) / 2.0f},
-                      font_size, 0, ResolveHlGroup("Normal"));
+                      Vector2{rect.x + (rect.width - ls.x) / 2.0f, rect.y + (rect.height - font_size * 0.92f) / 2.0f},
+                      font_size * 0.92f, 0, content);
             RegisterClickRegion(rect, on_click);
-            *bx += bw + 4.0f;
+            *bx += bw + 2.0f;
             return rect;
+        };
+
+        // Same button chrome, but the content is hand-drawn (raylib
+        // primitives) rather than text -- no icon font glyphs exist for
+        // any of these (checked before writing this: the embedded icon
+        // font only has file-type + a dozen status glyphs, see the WYSIWYG
+        // restyle plan), so bold/italic/underline/strike still draw as
+        // real styled letters, and align/list/undo/redo/color/table/image
+        // draw as small vector shapes sized to the button rect.
+        auto draw_icon_btn = [&](float *bx, float by, float bw, bool active,
+                                  const std::function<void(Rectangle, Color)> &draw_content,
+                                  const std::function<void()> &on_click) -> Rectangle {
+            Rectangle rect{*bx, by, bw, btn_h};
+            Color content = btn_bg(rect, active);
+            draw_content(rect, content);
+            RegisterClickRegion(rect, on_click);
+            *bx += bw + 2.0f;
+            return rect;
+        };
+
+        auto add_sep = [&](float *bx, float by) {
+            *bx += 5.0f;
+            DrawLineEx(Vector2{*bx, by + 4.0f}, Vector2{*bx, by + btn_h - 4.0f}, 1.0f, ResolveHlGroup("Border"));
+            *bx += 9.0f;
+        };
+
+        // Text-label button with a small hand-drawn chevron -- g_font only
+        // has ASCII glyphs loaded (LoadFontFromMemory with nullptr
+        // codepoints, ApplyFontSize above), so a unicode "\xE2\x96\xBE"
+        // chevron in the label string rendered as a tofu '?' glyph; a
+        // drawn triangle sidesteps font coverage entirely.
+        auto draw_dropdown_btn = [&](float *bx, float by, const std::string &label, bool active,
+                                      const std::function<void()> &on_click) -> Rectangle {
+            Vector2 ls = MeasureTextEx(g_font, label.c_str(), font_size * 0.92f, 0);
+            float bw = ls.x + 22.0f;
+            return draw_icon_btn(bx, by, bw, active,
+                [&, label, ls](Rectangle rect, Color color) {
+                    DrawTextEx(g_font, label.c_str(),
+                              Vector2{rect.x + 7.0f, rect.y + (rect.height - font_size * 0.92f) / 2.0f},
+                              font_size * 0.92f, 0, color);
+                    float tx = rect.x + rect.width - 12.0f, ty = rect.y + rect.height / 2.0f;
+                    // Vertex order matters here -- DrawTriangle culls the
+                    // "wrong" winding (verified against this file's other,
+                    // already-working DrawTriangle calls): (right, left,
+                    // bottom) renders, (left, right, bottom) silently does
+                    // not.
+                    DrawTriangle(Vector2{tx + 4.0f, ty - 2.0f}, Vector2{tx - 4.0f, ty - 2.0f}, Vector2{tx, ty + 3.0f}, color);
+                },
+                on_click);
         };
 
         // --- Row 1: font family/size, B/I/U/S, alignment, super/subscript, colors ---
         Rectangle font_family_btn =
-            draw_btn(&row1_x, row1_y, "Font", g_office_dropdown_open == kOfficeDropdownFontFamily, [] {
+            draw_dropdown_btn(&row1_x, row1_y, "Font", g_office_dropdown_open == kOfficeDropdownFontFamily, [] {
                 g_office_dropdown_open = g_office_dropdown_open == kOfficeDropdownFontFamily ? -1 : kOfficeDropdownFontFamily;
             });
         Rectangle font_size_btn =
-            draw_btn(&row1_x, row1_y, "Size", g_office_dropdown_open == kOfficeDropdownFontSize, [] {
+            draw_dropdown_btn(&row1_x, row1_y, "Size", g_office_dropdown_open == kOfficeDropdownFontSize, [] {
                 g_office_dropdown_open = g_office_dropdown_open == kOfficeDropdownFontSize ? -1 : kOfficeDropdownFontSize;
             });
-        struct SimpleBtn { char which; const char *label; };
-        static const SimpleBtn kFmtBtns[] = {{'b', "B"}, {'i', "I"}, {'u', "U"}, {'s', "S"}};
-        for (const SimpleBtn &btn : kFmtBtns) {
-            char which = btn.which;
-            draw_btn(&row1_x, row1_y, btn.label, g_editor.OfficeFormatActive(which),
-                      [which] { g_editor.ToggleOfficeFormat(which); });
+        add_sep(&row1_x, row1_y);
+        // B/I/U/S: real styled glyphs, not just letters -- bold draws a
+        // faux-bold double-strike, italic reuses the same rlgl shear
+        // technique DrawMathLayout/DrawHtmlRun already use for slanted
+        // text, underline/strike draw a line at the letter's own width.
+        struct StyleBtn { char which; const char *ch; bool bold, italic, underline, strike; };
+        static const StyleBtn kStyleBtns[] = {
+            {'b', "B", true, false, false, false}, {'i', "I", false, true, false, false},
+            {'u', "U", false, false, true, false}, {'s', "S", false, false, false, true}};
+        for (const StyleBtn &sb : kStyleBtns) {
+            char which = sb.which;
+            draw_icon_btn(&row1_x, row1_y, btn_h, g_editor.OfficeFormatActive(which),
+                [&, sb](Rectangle rect, Color color) {
+                    Vector2 ts = MeasureTextEx(g_font, sb.ch, font_size, 0);
+                    Vector2 pos{rect.x + (rect.width - ts.x) / 2.0f, rect.y + (rect.height - font_size) / 2.0f};
+                    if (sb.italic) {
+                        rlPushMatrix();
+                        float baseline_y = pos.y + font_size;
+                        rlTranslatef(pos.x, baseline_y, 0);
+                        float shear[16] = {1.0f, 0.0f, 0.0f, 0.0f, -0.22f, 1.0f, 0.0f, 0.0f,
+                                           0.0f, 0.0f, 1.0f, 0.0f, 0.0f,   0.0f, 0.0f, 1.0f};
+                        rlMultMatrixf(shear);
+                        rlTranslatef(-pos.x, -baseline_y, 0);
+                        DrawTextEx(g_font, sb.ch, pos, font_size, 0, color);
+                        rlPopMatrix();
+                    } else {
+                        DrawTextEx(g_font, sb.ch, pos, font_size, 0, color);
+                        if (sb.bold) DrawTextEx(g_font, sb.ch, Vector2{pos.x + 0.7f, pos.y}, font_size, 0, color);
+                    }
+                    if (sb.underline) {
+                        float uy = pos.y + font_size * 0.95f;
+                        DrawLineEx(Vector2{pos.x, uy}, Vector2{pos.x + ts.x, uy}, 1.3f, color);
+                    }
+                    if (sb.strike) {
+                        float sy = pos.y + font_size * 0.52f;
+                        DrawLineEx(Vector2{pos.x, sy}, Vector2{pos.x + ts.x, sy}, 1.3f, color);
+                    }
+                },
+                [which] { g_editor.ToggleOfficeFormat(which); });
         }
-        struct AlignBtn { DocParagraph::Align align; const char *label; };
+        add_sep(&row1_x, row1_y);
+        // Alignment: four small horizontal bars, shaped/positioned per
+        // kind (left/center/right-anchored, or all full-width for justify)
+        // -- the standard alignment-icon visual language, hand-drawn since
+        // no icon font glyph exists for it.
+        struct AlignBtn { DocParagraph::Align align; int kind; };
         static const AlignBtn kAlignBtns[] = {
-            {DocParagraph::Align::Left, "L"}, {DocParagraph::Align::Center, "C"},
-            {DocParagraph::Align::Right, "R"}, {DocParagraph::Align::Justify, "J"}};
-        for (const AlignBtn &btn : kAlignBtns) {
-            DocParagraph::Align align = btn.align;
-            draw_btn(&row1_x, row1_y, btn.label, g_editor.OfficeAlignmentActive(align),
-                      [align] { g_editor.SetOfficeAlignment(align); });
+            {DocParagraph::Align::Left, 0}, {DocParagraph::Align::Center, 1},
+            {DocParagraph::Align::Right, 2}, {DocParagraph::Align::Justify, 3}};
+        for (const AlignBtn &ab : kAlignBtns) {
+            DocParagraph::Align align = ab.align;
+            int kind = ab.kind;
+            draw_icon_btn(&row1_x, row1_y, btn_h, g_editor.OfficeAlignmentActive(align),
+                [kind](Rectangle rect, Color color) {
+                    float pad = rect.width * 0.2f;
+                    float full = rect.width - 2.0f * pad;
+                    float bar_h = 2.0f;
+                    float gap = (rect.height - 4.0f * bar_h) / 5.0f;
+                    float widths[4] = {full, full * 0.62f, full, full * 0.8f};
+                    for (int i = 0; i < 4; i++) {
+                        float bw = (kind == 3) ? full : widths[i];
+                        float by = rect.y + gap * static_cast<float>(i + 1) + bar_h * static_cast<float>(i);
+                        float bx0 = rect.x + pad;
+                        if (kind == 1) bx0 = rect.x + (rect.width - bw) / 2.0f;
+                        else if (kind == 2) bx0 = rect.x + rect.width - pad - bw;
+                        DrawRectangle(static_cast<int>(bx0), static_cast<int>(by), static_cast<int>(bw),
+                                      static_cast<int>(bar_h), color);
+                    }
+                },
+                [align] { g_editor.SetOfficeAlignment(align); });
         }
-        draw_btn(&row1_x, row1_y, "Sup", false, [] { g_editor.ToggleOfficeSuperscript(); });
-        draw_btn(&row1_x, row1_y, "Sub", false, [] { g_editor.ToggleOfficeSubscript(); });
-        Rectangle text_color_btn = draw_btn(&row1_x, row1_y, "Tc", g_office_dropdown_open == kOfficeDropdownTextColor, [] {
-            g_office_dropdown_open = g_office_dropdown_open == kOfficeDropdownTextColor ? -1 : kOfficeDropdownTextColor;
-        });
-        Rectangle highlight_btn = draw_btn(&row1_x, row1_y, "Hi", g_office_dropdown_open == kOfficeDropdownHighlight, [] {
-            g_office_dropdown_open = g_office_dropdown_open == kOfficeDropdownHighlight ? -1 : kOfficeDropdownHighlight;
-        });
+        add_sep(&row1_x, row1_y);
+        // Superscript/subscript: a plain "x" plus a smaller raised/lowered
+        // "2", drawn rather than using unicode superscript/subscript
+        // digits (U+00B2/U+2082) -- g_font is ASCII-only (see
+        // draw_dropdown_btn's own comment on why), so those rendered as
+        // tofu '?' glyphs.
+        draw_icon_btn(&row1_x, row1_y, btn_h, false,
+            [&](Rectangle rect, Color color) {
+                Vector2 xs = MeasureTextEx(g_font, "x", font_size * 0.85f, 0);
+                float small = font_size * 0.6f;
+                float total_w = xs.x + small * 0.7f;
+                float x0 = rect.x + (rect.width - total_w) / 2.0f;
+                DrawTextEx(g_font, "x", Vector2{x0, rect.y + (rect.height - font_size * 0.85f) / 2.0f + 3.0f}, font_size * 0.85f, 0, color);
+                DrawTextEx(g_font, "2", Vector2{x0 + xs.x, rect.y + (rect.height - small) / 2.0f - 4.0f}, small, 0, color);
+            },
+            [] { g_editor.ToggleOfficeSuperscript(); });
+        draw_icon_btn(&row1_x, row1_y, btn_h, false,
+            [&](Rectangle rect, Color color) {
+                Vector2 xs = MeasureTextEx(g_font, "x", font_size * 0.85f, 0);
+                float small = font_size * 0.6f;
+                float total_w = xs.x + small * 0.7f;
+                float x0 = rect.x + (rect.width - total_w) / 2.0f;
+                DrawTextEx(g_font, "x", Vector2{x0, rect.y + (rect.height - font_size * 0.85f) / 2.0f - 3.0f}, font_size * 0.85f, 0, color);
+                DrawTextEx(g_font, "2", Vector2{x0 + xs.x, rect.y + (rect.height - small) / 2.0f + 4.0f}, small, 0, color);
+            },
+            [] { g_editor.ToggleOfficeSubscript(); });
+        add_sep(&row1_x, row1_y);
+        // Text color / highlight: an "A" glyph with a colored bar under it
+        // -- the bar is a static representative swatch (red / yellow), not
+        // a live reflection of the current run's actual color (that state
+        // isn't cheaply sampled the way OfficeFormatActive's bool toggles
+        // are), same documented simplification as the format panel's
+        // margins/page-color controls.
+        Rectangle text_color_btn = draw_icon_btn(&row1_x, row1_y, btn_h,
+            g_office_dropdown_open == kOfficeDropdownTextColor,
+            [&](Rectangle rect, Color color) {
+                Vector2 ts = MeasureTextEx(g_font, "A", font_size * 0.85f, 0);
+                DrawTextEx(g_font, "A", Vector2{rect.x + (rect.width - ts.x) / 2.0f, rect.y + 2.0f}, font_size * 0.85f, 0, color);
+                float bw = rect.width * 0.55f;
+                DrawRectangle(static_cast<int>(rect.x + (rect.width - bw) / 2.0f), static_cast<int>(rect.y + rect.height - 6.0f),
+                              static_cast<int>(bw), 3, Color{211, 47, 47, 255});
+            },
+            [] { g_office_dropdown_open = g_office_dropdown_open == kOfficeDropdownTextColor ? -1 : kOfficeDropdownTextColor; });
+        Rectangle highlight_btn = draw_icon_btn(&row1_x, row1_y, btn_h,
+            g_office_dropdown_open == kOfficeDropdownHighlight,
+            [&](Rectangle rect, Color color) {
+                Vector2 ts = MeasureTextEx(g_font, "A", font_size * 0.85f, 0);
+                DrawTextEx(g_font, "A", Vector2{rect.x + (rect.width - ts.x) / 2.0f, rect.y + 2.0f}, font_size * 0.85f, 0, color);
+                float bw = rect.width * 0.55f;
+                DrawRectangle(static_cast<int>(rect.x + (rect.width - bw) / 2.0f), static_cast<int>(rect.y + rect.height - 6.0f),
+                              static_cast<int>(bw), 3, Color{255, 212, 42, 255});
+            },
+            [] { g_office_dropdown_open = g_office_dropdown_open == kOfficeDropdownHighlight ? -1 : kOfficeDropdownHighlight; });
 
-        // --- Row 2: lists, special chars, math, table, image, undo/redo, zoom ---
-        draw_btn(&row2_x, row2_y, "Bul", g_editor.OfficeListKindActive(DocParagraph::ListKind::Bullet),
-                  [] { g_editor.SetOfficeListKind(DocParagraph::ListKind::Bullet); });
-        draw_btn(&row2_x, row2_y, "Num", g_editor.OfficeListKindActive(DocParagraph::ListKind::Numbered),
-                  [] { g_editor.SetOfficeListKind(DocParagraph::ListKind::Numbered); });
-        Rectangle special_btn = draw_btn(&row2_x, row2_y, "Sym", g_office_dropdown_open == kOfficeDropdownSpecialChars, [] {
+        // --- Row 2: lists, special chars, math, table, image, undo/redo ---
+        draw_icon_btn(&row2_x, row2_y, btn_h, g_editor.OfficeListKindActive(DocParagraph::ListKind::Bullet),
+            [](Rectangle rect, Color color) {
+                float pad = rect.width * 0.16f;
+                float gap = rect.height / 4.0f;
+                for (int i = 0; i < 3; i++) {
+                    float cy = rect.y + gap * static_cast<float>(i + 1);
+                    DrawCircle(static_cast<int>(rect.x + pad), static_cast<int>(cy), 1.6f, color);
+                    DrawRectangle(static_cast<int>(rect.x + pad * 2.4f), static_cast<int>(cy - 1.0f),
+                                  static_cast<int>(rect.width - pad * 3.4f), 2, color);
+                }
+            },
+            [] { g_editor.SetOfficeListKind(DocParagraph::ListKind::Bullet); });
+        draw_icon_btn(&row2_x, row2_y, btn_h, g_editor.OfficeListKindActive(DocParagraph::ListKind::Numbered),
+            [&](Rectangle rect, Color color) {
+                float pad = rect.width * 0.14f;
+                float gap = rect.height / 4.0f;
+                float num_size = std::max(7.0f, rect.height * 0.3f);
+                for (int i = 0; i < 3; i++) {
+                    float cy = rect.y + gap * static_cast<float>(i + 1);
+                    std::string d = std::to_string(i + 1) + ".";
+                    DrawTextEx(g_font, d.c_str(), Vector2{rect.x + pad * 0.4f, cy - num_size * 0.5f}, num_size, 0, color);
+                    DrawRectangle(static_cast<int>(rect.x + pad * 3.0f), static_cast<int>(cy - 1.0f),
+                                  static_cast<int>(rect.width - pad * 4.0f), 2, color);
+                }
+            },
+            [] { g_editor.SetOfficeListKind(DocParagraph::ListKind::Numbered); });
+        add_sep(&row2_x, row2_y);
+        Rectangle special_btn = draw_dropdown_btn(&row2_x, row2_y, "Sym", g_office_dropdown_open == kOfficeDropdownSpecialChars, [] {
             g_office_dropdown_open = g_office_dropdown_open == kOfficeDropdownSpecialChars ? -1 : kOfficeDropdownSpecialChars;
         });
         draw_btn(&row2_x, row2_y, "fx", false, [] { g_editor.InsertOfficeMath(); });
-        draw_btn(&row2_x, row2_y, "Tbl", false, [] { g_editor.InsertOfficeTablePrompt(); });
-        draw_btn(&row2_x, row2_y, "Img", false, [] { g_editor.InsertOfficeImagePrompt(); });
-        draw_btn(&row2_x, row2_y, "Un", false, [] { g_editor.UndoOffice(); });
-        draw_btn(&row2_x, row2_y, "Re", false, [] { g_editor.RedoOffice(); });
-        draw_btn(&row2_x, row2_y, "Z-", false, [] { g_editor.SetOfficeZoom(1.0f / 1.1f); });
-        draw_btn(&row2_x, row2_y, "Z+", false, [] { g_editor.SetOfficeZoom(1.1f); });
+        add_sep(&row2_x, row2_y);
+        draw_icon_btn(&row2_x, row2_y, btn_h, false,
+            [](Rectangle rect, Color color) {
+                float pad = rect.width * 0.18f;
+                Rectangle grid{rect.x + pad, rect.y + pad * 0.6f, rect.width - 2.0f * pad, rect.height - 1.2f * pad};
+                DrawRectangleLinesEx(grid, 1.2f, color);
+                DrawLineEx(Vector2{grid.x, grid.y + grid.height / 2.0f}, Vector2{grid.x + grid.width, grid.y + grid.height / 2.0f}, 1.0f, color);
+                DrawLineEx(Vector2{grid.x + grid.width / 2.0f, grid.y}, Vector2{grid.x + grid.width / 2.0f, grid.y + grid.height}, 1.0f, color);
+            },
+            [] { g_editor.InsertOfficeTablePrompt(); });
+        draw_icon_btn(&row2_x, row2_y, btn_h, false,
+            [](Rectangle rect, Color color) {
+                float pad = rect.width * 0.16f;
+                Rectangle frame{rect.x + pad, rect.y + pad * 0.7f, rect.width - 2.0f * pad, rect.height - 1.4f * pad};
+                DrawRectangleLinesEx(frame, 1.2f, color);
+                DrawCircle(static_cast<int>(frame.x + frame.width * 0.3f), static_cast<int>(frame.y + frame.height * 0.32f),
+                          std::max(1.2f, frame.height * 0.11f), color);
+                Vector2 p1{frame.x + 1.5f, frame.y + frame.height - 1.5f};
+                Vector2 p2{frame.x + frame.width * 0.4f, frame.y + frame.height * 0.42f};
+                Vector2 p3{frame.x + frame.width - 1.5f, frame.y + frame.height - 1.5f};
+                DrawTriangle(p2, p1, p3, color);
+            },
+            [] { g_editor.InsertOfficeImagePrompt(); });
+        add_sep(&row2_x, row2_y);
+        // Undo/redo: an arced ring (DrawRing) with a triangular arrowhead
+        // at its open end, mirrored for redo -- the standard curved-arrow
+        // shape, built from primitives rather than an icon glyph.
+        auto draw_undo_redo_icon = [](Rectangle rect, Color color, bool redo) {
+            float cx = rect.x + rect.width / 2.0f;
+            float cy = rect.y + rect.height / 2.0f + 1.0f;
+            float r = rect.height * 0.28f;
+            float a0 = redo ? 200.0f : -20.0f;
+            float a1 = redo ? 470.0f : 250.0f;
+            DrawRing(Vector2{cx, cy}, r - 1.3f, r + 1.3f, a0, a1, 20, color);
+            float tip_ang = (redo ? a0 : a1) * DEG2RAD;
+            float tipx = cx + r * cosf(tip_ang), tipy = cy + r * sinf(tip_ang);
+            float tangent = tip_ang + (redo ? -1.5708f : 1.5708f);
+            Vector2 dir{cosf(tangent), sinf(tangent)};
+            Vector2 normal{-dir.y, dir.x};
+            float s = r * 0.7f;
+            Vector2 p1{tipx + dir.x * s, tipy + dir.y * s};
+            Vector2 p2{tipx - normal.x * s * 0.7f, tipy - normal.y * s * 0.7f};
+            Vector2 p3{tipx + normal.x * s * 0.7f, tipy + normal.y * s * 0.7f};
+            DrawTriangle(p1, p2, p3, color);
+        };
+        draw_icon_btn(&row2_x, row2_y, btn_h, false,
+            [&](Rectangle rect, Color color) { draw_undo_redo_icon(rect, color, false); },
+            [] { g_editor.UndoOffice(); });
+        draw_icon_btn(&row2_x, row2_y, btn_h, false,
+            [&](Rectangle rect, Color color) { draw_undo_redo_icon(rect, color, true); },
+            [] { g_editor.RedoOffice(); });
 
         content_y += toolbar_h;
         content_h -= toolbar_h;
 
-        g_editor.ResizeOfficeViewport(pane.buffer_id, static_cast<int>(w), static_cast<int>(content_h));
+        // A document is a page, not an edge-to-edge terminal buffer.  Keep
+        // the work surface quiet and center a bounded paper sheet within it
+        // so reading long-form DOCX/ODT content has the same visual anchor
+        // as the reference editor, even in a very wide pane. Sized/centered
+        // against ocx/ocw (the band left over after DrawOfficeSidePanels'
+        // rail/Outline/Format reservation above), not the pane's raw x/w.
+        const float canvas_pad = std::max(14.0f, std::min(34.0f, ocw * 0.035f));
+        const float page_w = std::max(160.0f, std::min(ocw - 2.0f * canvas_pad, 900.0f * office_sess->zoom));
+        const float page_x = ocx + (ocw - page_w) * 0.5f;
+        // Ruler (this pane had none before this restyle -- see WYSIWYG
+        // restyle plan): a thin bar between the toolbar and the page,
+        // spanning the page's own width so its tick marks/margin markers
+        // line up with the text column below it. Reserves ruler_h out of
+        // the vertical space page_top/page_h used to have all to
+        // themselves.
+        const float ruler_h = 20.0f;
+        const float page_top = content_y + ruler_h + canvas_pad * 0.4f;
+        const float page_h = std::max(40.0f, content_h - ruler_h - canvas_pad * 0.85f);
+        const Color canvas = ResolveHlGroup("NormalBg");
+        const Color paper = ResolveHlGroup("OfficePage");
+        DrawRectangle(static_cast<int>(ocx), static_cast<int>(content_y), static_cast<int>(ocw), static_cast<int>(content_h), canvas);
+        {
+            float pad = std::max(24.0f, page_w * 0.09f);
+            Rectangle ruler{page_x, content_y + 2.0f, page_w, ruler_h - 4.0f};
+            DrawRectangleRounded(ruler, 0.3f, 4, ResolveHlGroup("MenuBar"));
+            // One tick per inch-equivalent unit (matches the page's own
+            // canonical 900px-wide-at-100%-zoom convention above, so ticks
+            // stay aligned with the text column as zoom changes) plus
+            // triangular margin markers at the left/right text inset.
+            float unit_px = 100.0f * office_sess->zoom;
+            int unit = 1;
+            for (float ux = unit_px; ux < page_w - 1.0f; ux += unit_px, unit++) {
+                float tx = ruler.x + ux;
+                DrawLineEx(Vector2{tx, ruler.y + ruler.height * 0.35f}, Vector2{tx, ruler.y + ruler.height}, 1.0f, ResolveHlGroup("MutedFg"));
+            }
+            auto margin_marker = [&](float mx) {
+                DrawTriangle(Vector2{mx - 4.0f, ruler.y + ruler.height}, Vector2{mx + 4.0f, ruler.y + ruler.height},
+                            Vector2{mx, ruler.y + ruler.height * 0.4f}, ResolveHlGroup("Accent"));
+            };
+            margin_marker(ruler.x + pad);
+            margin_marker(ruler.x + page_w - pad);
+        }
+        DrawRectangleRounded(Rectangle{page_x + 2.0f, page_top + 3.0f, page_w, page_h}, 0.012f, 8, Fade(BLACK, 0.16f));
+        DrawRectangleRounded(Rectangle{page_x, page_top, page_w, page_h}, 0.012f, 8, paper);
+        DrawRectangleRoundedLines(Rectangle{page_x, page_top, page_w, page_h}, 0.012f, 8, ResolveHlGroup("Border"));
+
+        g_editor.ResizeOfficeViewport(pane.buffer_id, static_cast<int>(page_w), static_cast<int>(page_h));
         const OfficeDoc &doc = office_sess->doc;
         int para_count = static_cast<int>(doc.paragraphs.size());
-        float pad = 10.0f;
-        float max_width = std::max(50.0f, w - 2.0f * pad);
+        float pad = std::max(24.0f, page_w * 0.09f);
+        float max_width = std::max(50.0f, page_w - 2.0f * pad);
         float body_size = office_sess->base_font_pt * office_sess->zoom;
 
         auto line_height_for = [&](int heading_level) { return body_size * OfficeHeadingMultiplier(heading_level) * 1.35f; };
@@ -12463,10 +14016,36 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         int cp = std::clamp(office_sess->cursor_para, 0, para_count - 1);
         float cursor_para_size = body_size * OfficeHeadingMultiplier(doc.paragraphs[cp].heading_level);
         std::vector<OfficeWrapLine> cursor_wrap = WordWrapOfficeParagraph(doc.paragraphs[cp], max_width, cursor_para_size);
+        // Picks the LAST line whose start the cursor has reached, not the
+        // first whose end it hasn't exceeded -- those differ exactly when a
+        // wrap point is contiguous (WordWrapOfficeParagraph's own non-
+        // whitespace-overflow branch: line[k].end == line[k+1].start, no
+        // dropped separator between them, e.g. wrapping mid-sentence on an
+        // ordinary word boundary). A cursor_col sitting exactly on that
+        // shared boundary value is honestly ambiguous, but "first line
+        // whose end it doesn't exceed" always resolves it to the EARLIER
+        // line -- so moving the cursor to a wrapped line's own start
+        // (MoveOfficeCursorVisualLine, editor.cpp's j/k) always rendered on
+        // the line *above* instead, at that line's rightmost edge, looking
+        // like the motion silently failed. "Last start reached" resolves
+        // the same tie to the line actually moved to, and still resolves a
+        // *dropped*-whitespace wrap point (a real one-byte gap: line[k].end
+        // + 1 == line[k+1].start) to the earlier line, same as before,
+        // since line[k+1].start > cursor_col there.
         int cursor_line_in_para = 0;
         for (int li = 0; li < static_cast<int>(cursor_wrap.size()); li++) {
+            if (cursor_wrap[li].start > office_sess->cursor_col) break;
             cursor_line_in_para = li;
-            if (office_sess->cursor_col <= cursor_wrap[li].end) break;
+        }
+        // Feeds Editor::MoveOfficeCursorVisualLine (editor.cpp's j/k) the
+        // same wrap it just computed -- see OfficeSession::cursor_wrap_lines'
+        // own comment for why that state has to be pushed in from here
+        // rather than computed where it's read.
+        {
+            std::vector<std::pair<int, int>> wrap_pairs;
+            wrap_pairs.reserve(cursor_wrap.size());
+            for (const OfficeWrapLine &wl : cursor_wrap) wrap_pairs.emplace_back(wl.start, wl.end);
+            g_editor.SetOfficeCursorWrapLines(pane.buffer_id, cp, std::move(wrap_pairs));
         }
 
         // Scroll-follow: word-wrap-aware equivalent of Editor::
@@ -12535,14 +14114,14 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     for (int li = start_li; li < static_cast<int>(wl.size()); li++) {
                         if (pi == cp && li == cursor_line_in_para) found = true;
                         used += lh;
-                        if (used > content_h) {
+                        if (used > page_h) {
                             overflowed = true;
                             break;
                         }
                     }
                     if (!overflowed && !found) {
                         used += OfficeParagraphExtraHeight(doc, para, max_width, body_size);
-                        if (used > content_h) overflowed = true;
+                        if (used > page_h) overflowed = true;
                     }
                     if (overflowed || found) break;
                 }
@@ -12564,10 +14143,105 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             g_editor.SetOfficeScroll(pane.buffer_id, scroll_para, scroll_line);
         }
 
-        BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
-                          static_cast<int>(content_h));
+        // Docs-style status line (word/page-of estimate, zoom) and
+        // scrollbar both need the *whole* document's wrapped height, unlike
+        // the scroll-follow scan above (which only ever walks forward/
+        // backward from the current scroll position). A fresh top-to-
+        // bottom pass every frame is simplest and cheap enough for
+        // realistic doc sizes (word-wrap is O(text length), and this frame
+        // already pays a comparable cost drawing the visible portion) --
+        // no cache, see WYSIWYG restyle plan for why that's an accepted
+        // v1 tradeoff rather than a perf bug.
+        {
+            float total_h = 0.0f, height_at_scroll = 0.0f;
+            int words = 0;
+            for (int pi = 0; pi < para_count; pi++) {
+                const DocParagraph &para = doc.paragraphs[pi];
+                float plh = line_height_for(para.heading_level);
+                int line_count = static_cast<int>(
+                    ((pi == cp) ? cursor_wrap : WordWrapOfficeParagraph(para, max_width, body_size * OfficeHeadingMultiplier(para.heading_level)))
+                        .size());
+                float ph = plh * static_cast<float>(std::max(1, line_count)) +
+                           OfficeParagraphExtraHeight(doc, para, max_width, body_size);
+                if (pi < scroll_para) height_at_scroll += ph;
+                else if (pi == scroll_para) height_at_scroll += plh * static_cast<float>(scroll_line);
+                total_h += ph;
+                bool in_word = false;
+                for (char ch : para.text) {
+                    bool space = ch == ' ' || ch == '\t' || ch == '\n';
+                    if (!space && !in_word) words++;
+                    in_word = !space;
+                }
+            }
+            total_h = std::max(total_h, 1.0f);
+            g_office_status.valid = true;
+            g_office_status.buffer_id = pane.buffer_id;
+            g_office_status.word_count = words;
+            g_office_status.zoom = office_sess->zoom;
+            g_office_status.total_height = total_h;
+            g_office_status.visible_fraction = std::clamp(page_h / total_h, 0.02f, 1.0f);
+            g_office_status.scroll_fraction = std::clamp(height_at_scroll / total_h, 0.0f, 1.0f);
+            g_office_status.page_estimate = static_cast<int>(height_at_scroll / page_h) + 1;
+            g_office_status.page_total_estimate = std::max(1, static_cast<int>(std::ceil(total_h / page_h)));
+            // Right edge of ocx/ocw (the toolbar/page band, not the pane's
+            // raw x/w) so the scrollbar sits just left of the Format panel
+            // when it's open, rather than under it. Inset a little further
+            // when it's ocx+ocw that coincides with the pane's own right
+            // edge, to clear DrawPaneBorder's own 6px active-pane border
+            // strip (drawn later, over that same edge) -- otherwise the
+            // border paints right over the track.
+            g_office_status.track = Rectangle{ocx + ocw - 17.0f, content_y, 8.0f, content_h - 4.0f};
+            g_office_status.max_width = max_width;
+            g_office_status.body_size = body_size;
+
+            // Docs-style status footer: page/word-count estimate + language
+            // on the left, a zoom slider + percentage on the right --
+            // anchored to *this pane's own* bottom edge (office_footer_y,
+            // computed above), not the app's global status line.
+            float status_font_size = std::max(kMinFontSize, g_font_size - 2.0f);
+            DrawRectangle(static_cast<int>(x), static_cast<int>(office_footer_y), static_cast<int>(w),
+                          static_cast<int>(kOfficeFooterH), ResolveHlGroup("MenuBar"));
+            DrawRectangle(static_cast<int>(x), static_cast<int>(office_footer_y), static_cast<int>(w), 1,
+                          ResolveHlGroup("Border"));
+            std::string left_label = "Page ~" + std::to_string(g_office_status.page_estimate) + " of ~" +
+                                std::to_string(g_office_status.page_total_estimate) + "    " +
+                                std::to_string(g_office_status.word_count) + " words    English (US)";
+            DrawTextEx(g_font, left_label.c_str(), Vector2{x + 12.0f, office_footer_y + (kOfficeFooterH - status_font_size) / 2.0f},
+                      status_font_size, 0, ResolveHlGroup("MutedFg"));
+
+            int zoom_pct = static_cast<int>(g_office_status.zoom * 100.0f + 0.5f);
+            std::string pct_label = std::to_string(zoom_pct) + "%";
+            float pct_w = MeasureTextEx(g_font, pct_label.c_str(), status_font_size, 0).x;
+            float pct_x = x + w - 12.0f - pct_w;
+            DrawTextEx(g_font, pct_label.c_str(), Vector2{pct_x, office_footer_y + (kOfficeFooterH - status_font_size) / 2.0f},
+                      status_font_size, 0, ResolveHlGroup("MutedFg"));
+
+            constexpr float kSliderW = 90.0f, kZoomMin = 0.5f, kZoomMax = 2.0f;
+            Rectangle slider{pct_x - kSliderW - 16.0f, office_footer_y + kOfficeFooterH / 2.0f - 2.0f, kSliderW, 4.0f};
+            DrawRectangleRounded(slider, 0.5f, 4, ResolveHlGroup("Border"));
+            float zfrac = std::clamp((g_office_status.zoom - kZoomMin) / (kZoomMax - kZoomMin), 0.0f, 1.0f);
+            Vector2 thumb_c{slider.x + slider.width * zfrac, slider.y + slider.height / 2.0f};
+            DrawCircle(static_cast<int>(thumb_c.x), static_cast<int>(thumb_c.y), 6.0f, ResolveHlGroup("Accent"));
+            Rectangle slider_hit{slider.x - 6.0f, slider.y - 8.0f, slider.width + 12.0f, 20.0f};
+            Vector2 zmouse = GetMousePosition();
+            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && CheckCollisionPointRec(zmouse, slider_hit)) {
+                g_office_zoom_drag = true;
+            }
+            if (g_office_zoom_drag) {
+                if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+                    float f = std::clamp((zmouse.x - slider.x) / slider.width, 0.0f, 1.0f);
+                    float target = kZoomMin + f * (kZoomMax - kZoomMin);
+                    if (g_office_status.zoom > 0.001f) g_editor.SetOfficeZoom(target / g_office_status.zoom);
+                } else {
+                    g_office_zoom_drag = false;
+                }
+            }
+        }
+
+        BeginScissorMode(static_cast<int>(page_x), static_cast<int>(page_top), static_cast<int>(page_w),
+                          static_cast<int>(page_h));
         Color text_color = ResolveHlGroup("Normal");
-        Color sel_color = ResolveHlGroup("Visual");
+        Color sel_color = ResolveHlGroup("AccentTint");
         bool office_visual = is_active && g_editor.CurrentMode() == Mode::OfficeVisual && office_sess->has_selection;
         int sel_pa = 0, sel_ca = 0, sel_pb = 0, sel_cb = 0;
         if (office_visual) {
@@ -12579,18 +14253,46 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 sel_pa = ccp; sel_ca = ccc; sel_pb = ap; sel_cb = ac;
             }
         }
-        float draw_y = content_y;
-        for (int pi = scroll_para; pi < para_count && draw_y < content_y + content_h; pi++) {
+        // Math is the default presentation for a math-formatted run. While
+        // actively inserting *inside* one, reveal its LaTeX source as a
+        // single editable unit; using the same source width for layout and
+        // cursor placement keeps the caret from drifting over a typeset
+        // fraction/superscript while the user is changing its code.
+        const bool office_insert = is_active && g_editor.CurrentMode() == Mode::OfficeInsert;
+        auto run_size_for = [&](const OfficeFormatRun &run, float paragraph_size) {
+            float run_size = run.fmt.font_size_pt > 0.0f ? run.fmt.font_size_pt * office_sess->zoom : paragraph_size;
+            if (run.fmt.superscript || run.fmt.subscript) run_size *= 0.65f;
+            return run_size;
+        };
+        auto math_source_is_active = [&](int paragraph, const OfficeFormatRun &run) {
+            if (!run.fmt.math || !office_insert || paragraph != cp) return false;
+            // A long math run can be split into multiple OfficeFormatRuns
+            // by visual wrapping. Locate its original document span so all
+            // wrapped fragments reveal source together while editing.
+            for (const DocSpan &span : doc.paragraphs[paragraph].spans) {
+                if (!span.fmt.math || office_sess->cursor_col < span.start || office_sess->cursor_col > span.end) continue;
+                if (run.start < span.end && run.end > span.start) return true;
+            }
+            return false;
+        };
+        auto run_width = [&](int paragraph, const OfficeFormatRun &run, const std::string &text, float paragraph_size) {
+            const float run_size = run_size_for(run, paragraph_size);
+            if (run.fmt.math && !math_source_is_active(paragraph, run)) return LayoutMathExpression(text, run_size).width;
+            return MeasureTextEx(OfficeFontFor(run.fmt), text.c_str(), run_size, 0).x;
+        };
+        float draw_y = page_top + pad * 0.75f;
+        for (int pi = scroll_para; pi < para_count && draw_y < page_top + page_h - pad * 0.5f; pi++) {
             const DocParagraph &para = doc.paragraphs[pi];
             float size = body_size * OfficeHeadingMultiplier(para.heading_level);
             float lh = size * 1.35f;
             std::vector<OfficeWrapLine> wl_local = (pi == cp) ? cursor_wrap : WordWrapOfficeParagraph(para, max_width, size);
             int start_li = (pi == scroll_para) ? scroll_line : 0;
             for (int li = start_li; li < static_cast<int>(wl_local.size()); li++) {
-                if (draw_y > content_y + content_h) break;
+                if (draw_y > page_top + page_h - pad * 0.5f) break;
                 const OfficeWrapLine &line = wl_local[li];
-                std::vector<OfficeFormatRun> runs = BuildOfficeFormatRuns(para, line.start, line.end);
-                float line_x = x + pad;
+                std::vector<OfficeFormatRun> runs = BuildOfficeDisplayRuns(
+                    para, line.start, line.end, office_insert && pi == cp, office_sess->cursor_col);
+                float line_x = page_x + pad;
                 if (para.align == DocParagraph::Align::Center || para.align == DocParagraph::Align::Right) {
                     float total_w = 0.0f;
                     for (const auto &r : runs) {
@@ -12598,9 +14300,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                         for (auto &ch : t) {
                             if (ch == '\t') ch = ' ';
                         }
-                        total_w += MeasureTextEx(OfficeFontFor(r.fmt), t.c_str(), size, 0).x;
+                        total_w += run_width(pi, r, t, size);
                     }
-                    line_x = para.align == DocParagraph::Align::Center ? x + (w - total_w) / 2.0f : x + w - pad - total_w;
+                    line_x = para.align == DocParagraph::Align::Center ? page_x + (page_w - total_w) / 2.0f
+                                                                          : page_x + page_w - pad - total_w;
                 }
                 if (para.list_kind == DocParagraph::ListKind::Bullet && li == 0) {
                     DrawTextEx(OfficeFontFor(DocFormat{}), "\xE2\x80\xA2 ", Vector2{line_x, draw_y}, size, 0, text_color);
@@ -12622,29 +14325,33 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     hl_start = std::max(hl_start, line.start);
                     hl_end = std::min(hl_end, line.end);
                     if (hl_end > hl_start) {
-                        std::vector<OfficeFormatRun> pre_runs = BuildOfficeFormatRuns(para, line.start, hl_start);
+                        std::vector<OfficeFormatRun> pre_runs = BuildOfficeDisplayRuns(
+                            para, line.start, hl_start, office_insert && pi == cp, office_sess->cursor_col);
                         float hl_x0 = line_x;
                         for (const auto &r : pre_runs) {
                             std::string t = para.text.substr(r.start, r.end - r.start);
                             for (auto &ch : t) {
                                 if (ch == '\t') ch = ' ';
                             }
-                            hl_x0 += MeasureTextEx(OfficeFontFor(r.fmt), t.c_str(), size, 0).x;
+                            hl_x0 += run_width(pi, r, t, size);
                         }
-                        std::vector<OfficeFormatRun> hl_runs = BuildOfficeFormatRuns(para, hl_start, hl_end);
+                        std::vector<OfficeFormatRun> hl_runs = BuildOfficeDisplayRuns(
+                            para, hl_start, hl_end, office_insert && pi == cp, office_sess->cursor_col);
                         float hl_w = 0.0f;
                         for (const auto &r : hl_runs) {
                             std::string t = para.text.substr(r.start, r.end - r.start);
                             for (auto &ch : t) {
                                 if (ch == '\t') ch = ' ';
                             }
-                            hl_w += MeasureTextEx(OfficeFontFor(r.fmt), t.c_str(), size, 0).x;
+                            hl_w += run_width(pi, r, t, size);
                         }
                         DrawRectangle(static_cast<int>(hl_x0), static_cast<int>(draw_y), static_cast<int>(hl_w),
                                       static_cast<int>(size), sel_color);
                     }
                 }
                 float run_x = line_x;
+                bool cursor_on_rendered_math = false;
+                float rendered_math_cursor_x = 0.0f, rendered_math_cursor_w = 0.0f, rendered_math_cursor_h = size;
                 for (const auto &r : runs) {
                     std::string t = para.text.substr(r.start, r.end - r.start);
                     for (auto &ch : t) {
@@ -12660,14 +14367,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     // slightly approximate; never a correctness issue
                     // (cursor *column* is character-index-based, not
                     // pixel-based) but a documented v1 cosmetic gap.
-                    float run_size = r.fmt.font_size_pt > 0.0f ? r.fmt.font_size_pt * office_sess->zoom : size;
-                    if (r.fmt.superscript || r.fmt.subscript) run_size *= 0.65f;
+                    float run_size = run_size_for(r, size);
                     float run_y = draw_y;
                     if (r.fmt.superscript) run_y -= size * 0.3f;
                     else if (r.fmt.subscript) run_y += size * 0.25f;
                     Color run_color = r.fmt.has_color ? Color{r.fmt.color_r, r.fmt.color_g, r.fmt.color_b, 255} : text_color;
                     float rw;
-                    if (r.fmt.math) {
+                    if (r.fmt.math && !math_source_is_active(pi, r)) {
                         // DrawMathLayout's own y is the top of its bounding
                         // box (matching how HtmlLayoutBlock's math branch
                         // stores/advances a top-down cursor_y by ml.height),
@@ -12695,20 +14401,78 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                             DrawLineEx(Vector2{run_x, uy}, Vector2{run_x + rw, uy}, 1.0f, run_color);
                         }
                     }
+                    const bool cursor_in_run = office_sess->cursor_col >= r.start && office_sess->cursor_col <= r.end;
+                    const bool cursor_on_delimiter = r.dollar_delimited_math &&
+                        office_sess->cursor_col >= r.start - 1 && office_sess->cursor_col <= r.end;
+                    if (is_active && pi == cp && li == cursor_line_in_para && !office_insert && r.fmt.math &&
+                        (cursor_in_run || cursor_on_delimiter)) {
+                        cursor_on_rendered_math = true;
+                        rendered_math_cursor_x = run_x;
+                        rendered_math_cursor_w = rw;
+                        rendered_math_cursor_h = std::max(size, r.fmt.math ? LayoutMathExpression(t, run_size).height : size);
+                    }
                     run_x += rw;
                 }
                 if (is_active && pi == cp && li == cursor_line_in_para) {
-                    std::vector<OfficeFormatRun> pre = BuildOfficeFormatRuns(para, line.start, office_sess->cursor_col);
-                    float cursor_x = line_x;
-                    for (const auto &r : pre) {
-                        std::string t = para.text.substr(r.start, r.end - r.start);
-                        for (auto &ch : t) {
-                            if (ch == '\t') ch = ' ';
+                    if (cursor_on_rendered_math) {
+                        DrawRectangleLines(static_cast<int>(rendered_math_cursor_x - 2.0f), static_cast<int>(draw_y - 2.0f),
+                                           static_cast<int>(rendered_math_cursor_w + 4.0f),
+                                           static_cast<int>(rendered_math_cursor_h + 4.0f), text_color);
+                    } else {
+                        std::vector<OfficeFormatRun> pre = BuildOfficeDisplayRuns(
+                            para, line.start, office_sess->cursor_col, office_insert && pi == cp, office_sess->cursor_col);
+                        float cursor_x = line_x;
+                        for (const auto &r : pre) {
+                            std::string t = para.text.substr(r.start, r.end - r.start);
+                            for (auto &ch : t) {
+                                if (ch == '\t') ch = ' ';
+                            }
+                            cursor_x += run_width(pi, r, t, size);
                         }
-                        cursor_x += MeasureTextEx(OfficeFontFor(r.fmt), t.c_str(), size, 0).x;
+                        if (office_insert) {
+                            DrawRectangle(static_cast<int>(cursor_x), static_cast<int>(draw_y), 2, static_cast<int>(size),
+                                          text_color);
+                        } else {
+                            // Block cursor (OfficeNormal/OfficeVisual) --
+                            // same block-in-Normal/line-in-Insert
+                            // convention as the plain-text editor's own
+                            // cursor (DrawEditor), sized to the next
+                            // character's own measured width (rich text
+                            // isn't monospace, unlike Buffer's g_char_width)
+                            // rather than a fixed pixel width, with that
+                            // character's glyph redrawn on top in the
+                            // page's own background so it stays legible
+                            // instead of vanishing under a solid block --
+                            // same "punch the character back through"
+                            // touch the plain editor's block cursor does.
+                            int next_col = std::min(static_cast<int>(para.text.size()), office_sess->cursor_col + 1);
+                            std::vector<OfficeFormatRun> at_cursor =
+                                BuildOfficeDisplayRuns(para, office_sess->cursor_col, next_col, false, office_sess->cursor_col);
+                            float block_w = size * 0.55f;  // fallback: end of paragraph/line, no next character
+                            if (!at_cursor.empty() && at_cursor[0].end > at_cursor[0].start) {
+                                const OfficeFormatRun &r = at_cursor[0];
+                                std::string t = para.text.substr(r.start, r.end - r.start);
+                                for (auto &ch : t) {
+                                    if (ch == '\t') ch = ' ';
+                                }
+                                block_w = std::max(4.0f, run_width(pi, r, t, size));
+                            }
+                            DrawRectangle(static_cast<int>(cursor_x), static_cast<int>(draw_y), static_cast<int>(block_w),
+                                          static_cast<int>(size), Fade(text_color, 0.55f));
+                            if (!at_cursor.empty() && at_cursor[0].end > at_cursor[0].start && !at_cursor[0].fmt.math) {
+                                const OfficeFormatRun &r = at_cursor[0];
+                                std::string t = para.text.substr(r.start, r.end - r.start);
+                                for (auto &ch : t) {
+                                    if (ch == '\t') ch = ' ';
+                                }
+                                float run_size2 = run_size_for(r, size);
+                                float ry2 = draw_y;
+                                if (r.fmt.superscript) ry2 -= size * 0.3f;
+                                else if (r.fmt.subscript) ry2 += size * 0.25f;
+                                DrawTextEx(OfficeFontFor(r.fmt), t.c_str(), Vector2{cursor_x, ry2}, run_size2, 0, paper);
+                            }
+                        }
                     }
-                    DrawRectangle(static_cast<int>(cursor_x), static_cast<int>(draw_y), 2, static_cast<int>(size),
-                                  text_color);
                 }
                 draw_y += lh;
             }
@@ -12732,14 +14496,14 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 Font &cell_fontobj = OfficeFontFor(DocFormat{});
                 for (int r = 0; r < tbl.rows; r++) {
                     float ry = draw_y;
-                    if (ry <= content_y + content_h) {
+                    if (ry <= page_top + page_h - pad * 0.5f) {
                         for (int c = 0; c < tbl.cols; c++) {
-                            float cx = x + pad + col_w * static_cast<float>(c);
+                            float cx = page_x + pad + col_w * static_cast<float>(c);
                             bool cell_active = is_active && in_this_table && r == office_sess->table_cursor_row &&
                                                c == office_sess->table_cursor_col;
                             DrawRectangle(static_cast<int>(cx), static_cast<int>(ry), static_cast<int>(col_w),
                                           static_cast<int>(cell_h),
-                                          cell_active ? ResolveHlGroup("Visual") : ResolveHlGroup("MenuBar"));
+                                          cell_active ? ResolveHlGroup("AccentTint") : ResolveHlGroup("MenuBar"));
                             DrawRectangleLines(static_cast<int>(cx), static_cast<int>(ry), static_cast<int>(col_w),
                                                 static_cast<int>(cell_h), ResolveHlGroup("Border"));
                             const std::string &full = tbl.Cell(r, c);
@@ -12775,15 +14539,35 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                         draw_w *= scale;
                         draw_h *= scale;
                     }
-                    if (draw_y <= content_y + content_h) {
+                    if (draw_y <= page_top + page_h - pad * 0.5f) {
                         DrawTexturePro(*tex, Rectangle{0.0f, 0.0f, static_cast<float>(img.natural_w), static_cast<float>(img.natural_h)},
-                                      Rectangle{x + pad, draw_y, draw_w, draw_h}, Vector2{0.0f, 0.0f}, 0.0f, WHITE);
+                                      Rectangle{page_x + pad, draw_y, draw_w, draw_h}, Vector2{0.0f, 0.0f}, 0.0f, WHITE);
                     }
                     draw_y += draw_h + 8.0f;
                 }
             }
         }
         EndScissorMode();
+
+        // --- Scrollbar: real vertical scrollbar (this pane had none before
+        // this restyle -- see WYSIWYG restyle plan) at the pane's right
+        // edge, track spanning the whole content area (not just the page
+        // rect) so it stays reachable regardless of zoom/page width.
+        // Geometry/fractions computed into g_office_status just above;
+        // dragging is handled by UpdateOfficeScrollbarInteraction (mirrors
+        // UpdateKanbanMouseInteraction/UpdateGanttMouseInteraction's own
+        // "Draw computes this frame's geometry, a sibling Update* consumes
+        // it next" split).
+        {
+            const Rectangle &track = g_office_status.track;
+            DrawRectangleRounded(track, 0.5f, 6, ResolveHlGroup("MenuBar"));
+            float thumb_h = std::max(24.0f, track.height * g_office_status.visible_fraction);
+            float thumb_y = track.y + (track.height - thumb_h) * g_office_status.scroll_fraction;
+            g_office_status.thumb = Rectangle{track.x, thumb_y, track.width, thumb_h};
+            bool hovered = CheckCollisionPointRec(GetMousePosition(), Rectangle{track.x - 2, track.y, track.width + 4, track.height});
+            DrawRectangleRounded(g_office_status.thumb, 0.5f, 6,
+                                 hovered || g_office_scroll_drag.active ? ResolveHlGroup("MutedFg") : Color{189, 193, 198, 255});
+        }
 
         // --- Dropdown popups (drawn last, after the document content, so
         // they paint over it -- opened by whichever toggle button above is
@@ -12793,7 +14577,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // directly at content_y rather than content_y + toolbar_h.
         auto draw_popup_bg = [&](Rectangle r) {
             DrawRectangle(static_cast<int>(r.x), static_cast<int>(r.y), static_cast<int>(r.width),
-                          static_cast<int>(r.height), ResolveHlGroup("TabActive"));
+                          static_cast<int>(r.height), ResolveHlGroup("OfficePage"));
             DrawRectangleLinesEx(r, 1.0f, ResolveHlGroup("Border"));
         };
         if (g_office_dropdown_open == kOfficeDropdownFontFamily) {
@@ -12807,6 +14591,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             float iy = popup.y;
             for (const FamItem &it : items) {
                 Rectangle rect{popup.x, iy, pw, item_h};
+                if (CheckCollisionPointRec(GetMousePosition(), rect)) DrawRectangleRec(rect, ResolveHlGroup("CursorLine"));
                 DrawTextEx(g_font, it.label, Vector2{rect.x + 6, rect.y + (item_h - font_size) / 2.0f}, font_size, 0,
                           ResolveHlGroup("Normal"));
                 OfficeFontFamily fam = it.fam;
@@ -12825,6 +14610,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             float iy = popup.y;
             for (float sz : sizes) {
                 Rectangle rect{popup.x, iy, pw, item_h};
+                if (CheckCollisionPointRec(GetMousePosition(), rect)) DrawRectangleRec(rect, ResolveHlGroup("CursorLine"));
                 std::string label = std::to_string(static_cast<int>(sz));
                 DrawTextEx(g_font, label.c_str(), Vector2{rect.x + 8, rect.y + (item_h - font_size) / 2.0f}, font_size,
                           0, ResolveHlGroup("Normal"));
@@ -13314,15 +15100,42 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         DrawLineFast(buf.lines[row], text_x, ly, g_font_size, ResolveHlGroup("Normal"));
         for (const Decoration *dp : row_decos) {
             const Decoration &d = *dp;
-            if (!d.whole_line && !d.underline && !d.bold && !d.italic && !d.hl_group.empty() &&
+            if (!d.whole_line && !d.underline && !d.bold && !d.italic && (!d.hl_group.empty() || d.has_fg_color) &&
                 d.col_end > d.col_start) {
                 const std::string &line = buf.lines[row];
-                int a = std::min(static_cast<int>(line.size()), d.col_start);
-                int b = std::min(static_cast<int>(line.size()), d.col_end);
+                int a, b;
+                if (d.has_fg_color) {
+                    // A terminal-color run's col_start/col_end are column
+                    // indices (see Decoration::has_fg_color's own
+                    // comment), not byte offsets -- convert before
+                    // substr-ing, unlike the hl_group branch below, which
+                    // keeps the existing byte-offset-as-column assumption
+                    // every other decoration producer (tree-sitter, LSP)
+                    // already relies on for its own (typically ASCII)
+                    // content.
+                    a = std::min(static_cast<int>(line.size()), static_cast<int>(ColumnToByteOffset(line, d.col_start)));
+                    b = std::min(static_cast<int>(line.size()), static_cast<int>(ColumnToByteOffset(line, d.col_end)));
+                } else {
+                    a = std::min(static_cast<int>(line.size()), d.col_start);
+                    b = std::min(static_cast<int>(line.size()), d.col_end);
+                }
                 if (b > a) {
                     std::string span = line.substr(a, b - a);
-                    DrawTextEx(g_font, span.c_str(), Vector2{text_x + a * g_char_width, ly}, g_font_size, 0,
-                               ResolveHlGroup(d.hl_group));
+                    // has_fg_color (Editor::EnterTerminalNormalMode's
+                    // snapshotted terminal-cell colors) is a literal RGB,
+                    // bypassing the named hl_group lookup entirely -- see
+                    // Decoration::has_fg_color's own comment for why.
+                    Color c = d.has_fg_color ? Color{d.fg_color.r, d.fg_color.g, d.fg_color.b, d.fg_color.a}
+                                              : ResolveHlGroup(d.hl_group);
+                    // x-position: has_fg_color's `a` is already a byte
+                    // offset converted *from* the column index above, so
+                    // recovering the column back out of it would just be
+                    // undoing that conversion -- use d.col_start (the
+                    // column index) directly instead. The hl_group branch
+                    // keeps using `a` unchanged (== d.col_start already,
+                    // for the byte-offset-as-column content it assumes).
+                    float span_x = text_x + (d.has_fg_color ? d.col_start : a) * g_char_width;
+                    DrawTextEx(g_font, span.c_str(), Vector2{span_x, ly}, g_font_size, 0, c);
                 }
             }
             // Per-span underline (Phase 21 gap): a 1px DrawRectangle at
@@ -13796,6 +15609,11 @@ void DrawEditor() {
             if (sb.position == "left") left_w += sb.size * g_char_width;
             else if (sb.position == "right") right_w += sb.size * g_char_width;
         }
+        // NOTE: the office pane's own Outline/Format rail+panels are NOT
+        // reserved here -- unlike SidebarInstances (app-wide chrome), they
+        // dock to the sides of *that specific pane* and are drawn/reserved
+        // entirely within DrawPane's own office branch (DrawOfficeSidePanels,
+        // called there), the same way its toolbar is per-pane already.
         pane_x = left_w;
         pane_w = std::max(100.0f, screen_w - left_w - right_w);
     }
@@ -13816,7 +15634,10 @@ void DrawEditor() {
     // active pane) -- or, if mep.set_statusline() registered a widget-list
     // callback (Phase 11), that instead: segments drawn left-to-right, each
     // through its own `hl` (falling back to "StatusLineFg"). Hidden
-    // entirely in zen mode.
+    // entirely in zen mode. An office (docx/odt) pane draws its own Docs-
+    // style status footer inside DrawPane instead (scoped to that pane, not
+    // this app-wide bar), so this stays the plain vim-style line always --
+    // see DrawPane's office branch for the footer.
     if (!zen) {
         const Buffer &buf = g_editor.CurrentBuffer();
         CursorPos cursor = g_editor.Cursor();
@@ -13843,6 +15664,23 @@ void DrawEditor() {
                                 " --  " + register_indicator + count_indicator + buf_label +
                                 (buf.modified ? " [+]" : "");
             std::string right = "Ln " + std::to_string(cursor.row + 1) + ", Col " + std::to_string(cursor.col + 1);
+            // Collaboration presence stays in the editor's ordinary chrome,
+            // not a modal: each compact chip identifies a peer and their
+            // shared cursor location. Clicking a chip jumps there.
+            const auto collaborators = g_editor.CollaborationPeers();
+            float peer_x = static_cast<float>(kMarginX) + MeasureTextEx(g_font, left.c_str(), status_font_size, 0).x + 18.0f;
+            for (const auto &peer : collaborators) {
+                std::string chip = peer.name.empty() ? "Anonymous" : peer.name;
+                chip += peer.has_location ? " @" + std::to_string(peer.row + 1) + ":" + std::to_string(peer.col + 1) : " connecting";
+                float chip_w = MeasureTextEx(g_font, chip.c_str(), status_font_size, 0).x + 14.0f;
+                const float right_start = static_cast<float>(screen_w - kMarginX) - MeasureTextEx(g_font, right.c_str(), status_font_size, 0).x;
+                if (peer_x + chip_w + 8.0f >= right_start) break;
+                Rectangle chip_rect{peer_x, static_cast<float>(status_y + 2), chip_w, static_cast<float>(status_bar_height - 4)};
+                DrawRectangleRec(chip_rect, ResolveHlGroup("Visual"));
+                DrawTextEx(g_font, chip.c_str(), Vector2{peer_x + 7.0f, static_cast<float>(status_y + 3)}, status_font_size, 0, ResolveHlGroup("StatusLineFg"));
+                RegisterClickRegion(chip_rect, [peer_id = peer.id] { g_editor.JumpToCollaborator(peer_id); });
+                peer_x += chip_w + 5.0f;
+            }
             DrawTextEx(g_font, left.c_str(), Vector2{static_cast<float>(kMarginX), static_cast<float>(status_y + 3)},
                        status_font_size, 0, ResolveHlGroup("StatusLineFg"));
             float right_w = MeasureTextEx(g_font, right.c_str(), status_font_size, 0).x;
@@ -13872,16 +15710,12 @@ void DrawEditor() {
             float cx = kMarginX + MeasureTextEx(g_font, line.c_str(), g_font_size, 0).x;
             DrawRectangle(static_cast<int>(cx), cmd_y + 3, 2, static_cast<int>(g_font_size), ResolveHlGroup("Normal"));
         }
-        if (g_editor.CurrentMode() == Mode::Command && g_editor.IsCmdlineCompletionOpen()) {
-            DrawCmdlineCompletionPopup(static_cast<float>(kMarginX), static_cast<float>(cmd_y));
-        }
     } else if (!g_editor.StatusMessage().empty()) {
         DrawTextEx(g_font, g_editor.StatusMessage().c_str(),
                    Vector2{static_cast<float>(kMarginX), static_cast<float>(cmd_y + 3)}, g_font_size, 0, ResolveHlGroup("Normal"));
     }
 
     if (show_tabs) DrawTabBar(menu_bar_height);
-    if (!zen) DrawMenuBar();
     // Sidebars are persistent chrome (a neighboring pane you can focus/
     // resize, per the pane_x/pane_w reservation above) rather than a
     // transient dialog, so they belong on this same layer -- drawn before
@@ -13889,6 +15723,25 @@ void DrawEditor() {
     // which-key hover included) always sits on top of an open sidebar
     // instead of being painted over by it.
     if (!zen) DrawSidebars();
+    // DrawMenuBar draws both the bar itself *and* its open dropdown (if
+    // any) in one call -- moved here, after DrawSidebars, for the
+    // dropdown's sake: same reasoning as the comment above (a File/Edit/...
+    // dropdown is exactly this kind of floating overlay, and the File menu
+    // in particular opens right where a left-docked file tree sits, so it
+    // used to paint underneath one). The bar row itself (y in
+    // [0, menu_bar_height)) is never touched by DrawSidebars either way --
+    // sidebars start at content_top, below both the menu bar and tab bar --
+    // so moving the whole call has no effect on the bar's own draw order.
+    if (!zen) DrawMenuBar();
+    // Same reasoning as the comment just above (drawn after sidebars, not
+    // before, so it sits on top instead of being painted over by one) --
+    // this used to be drawn inline with the command-line text itself,
+    // *before* DrawSidebars, so an open sidebar (a file tree, most
+    // visibly) would paint right over the left edge of this popup, e.g.
+    // ":e <Tab>"'s path completion cut off mid-list.
+    if (g_editor.CurrentMode() == Mode::Command && g_editor.IsCmdlineCompletionOpen()) {
+        DrawCmdlineCompletionPopup(static_cast<float>(kMarginX), static_cast<float>(cmd_y));
+    }
     if (g_editor.CurrentMode() == Mode::Prompt) DrawPromptOverlay();
     if (g_editor.CurrentMode() == Mode::Confirm) DrawConfirmOverlay();
     if (g_editor.CurrentMode() == Mode::Select) DrawSelectOverlay();
@@ -13960,6 +15813,387 @@ void DispatchChromeClicks() {
 // genuinely modal mode is somehow entered mid-drag (some keybinding fired
 // while the mouse was still down), the in-progress drag is simply
 // abandoned rather than left to resolve against stale geometry.
+// Drives KanbanSession's own press/move-threshold/release drag state
+// (scoped per-buffer inside the session itself, unlike g_pane_drag above --
+// see KanbanSession's own comment for why) every frame the Kanban view is
+// the focused pane's active mode. Hit-testing uses the exact same column-
+// width/card-height layout constants DrawKanban lays cards out with,
+// against KanbanSession::content_x/y/w/h (refreshed every frame DrawKanban
+// runs), so the two can never drift apart.
+void UpdateKanbanMouseInteraction() {
+    if (g_editor.CurrentMode() != Mode::KanbanNormal) return;
+    int buffer_id = g_editor.CurrentBufferId();
+    KanbanSession *sess = g_editor.GetKanbanMutable(buffer_id);
+    if (!sess || sess->content_w <= 0 || sess->content_h <= 0) return;
+    Vector2 mouse = GetMousePosition();
+    Rectangle content{sess->content_x, sess->content_y, sess->content_w, sess->content_h};
+    int header_h = PaneHeaderHeight();
+
+    // A card area row's top, in Y offset from content_y -- two header_h
+    // rows (the toolbar + the per-column headers) plus the card gap, must
+    // match DrawKanban's own `card_y = y + header_h * 2 + kKanbanCardGap`
+    // exactly.
+    float card_area_top = static_cast<float>(header_h) * 2.0f + kKanbanCardGap;
+
+    if (!sess->dragging) {
+        if (!IsMouseButtonPressed(MOUSE_BUTTON_LEFT) || !PointInRect(mouse, content)) return;
+        Rectangle chip_rect{sess->new_card_chip_x, sess->new_card_chip_y, sess->new_card_chip_w,
+                             sess->new_card_chip_h};
+        if (sess->new_card_chip_w > 0 && PointInRect(mouse, chip_rect)) {
+            sess->dragging = true;
+            sess->drag_is_new_card = true;
+            sess->drag_headline_index = -1;
+            sess->drag_start_x = mouse.x;
+            sess->drag_start_y = mouse.y;
+            sess->drag_threshold_passed = false;
+            sess->drop_column = -1;
+            sess->drop_row = 0;
+            return;
+        }
+        std::vector<std::string> columns = g_editor.KanbanColumns(buffer_id);
+        int col_i = static_cast<int>((mouse.x - sess->content_x) / kKanbanColumnWidth);
+        if (col_i < 0 || col_i >= static_cast<int>(columns.size())) return;
+        float rel_content_y = mouse.y - sess->content_y;
+        // Start column drags only from the header label, never from its
+        // kebab menu (which remains an ordinary click target).
+        if (rel_content_y >= header_h && rel_content_y < header_h * 2 &&
+            mouse.x < sess->content_x + (col_i + 1) * kKanbanColumnWidth - 24) {
+            sess->dragging = true;
+            sess->drag_is_column = true;
+            sess->drag_column_index = col_i;
+            sess->drag_start_x = mouse.x;
+            sess->drag_start_y = mouse.y;
+            sess->drag_threshold_passed = false;
+            sess->column_drop_slot = col_i;
+            return;
+        }
+        std::vector<int> cards = g_editor.KanbanCardsInColumn(buffer_id, col_i);
+        float rel_y = mouse.y - sess->content_y - card_area_top;
+        int row_i = static_cast<int>(rel_y / (kKanbanCardHeight + kKanbanCardGap));
+        if (row_i < 0 || row_i >= static_cast<int>(cards.size())) return;
+        float card_top = card_area_top + row_i * (kKanbanCardHeight + kKanbanCardGap);
+        float rel_y_in_card = mouse.y - sess->content_y - card_top;
+        if (rel_y_in_card < 0 || rel_y_in_card > kKanbanCardHeight) return;
+        sess->dragging = true;
+        sess->drag_is_new_card = false;
+        sess->drag_headline_index = cards[row_i];
+        sess->drag_start_x = mouse.x;
+        sess->drag_start_y = mouse.y;
+        sess->drag_threshold_passed = false;
+        sess->drop_column = col_i;
+        sess->drop_row = row_i;
+        return;
+    }
+
+    constexpr float kDragThresholdPx = 4.0f;
+    if (!sess->drag_threshold_passed) {
+        float dx = mouse.x - sess->drag_start_x, dy = mouse.y - sess->drag_start_y;
+        if (dx * dx + dy * dy > kDragThresholdPx * kDragThresholdPx) sess->drag_threshold_passed = true;
+    }
+    if (sess->drag_threshold_passed) {
+        std::vector<std::string> columns = g_editor.KanbanColumns(buffer_id);
+        if (sess->drag_is_column) {
+            // Snap to the nearest column edge. The resulting slot is in the
+            // pre-move order, exactly what KanbanMoveColumn accepts.
+            float relative_x = mouse.x - sess->content_x;
+            sess->column_drop_slot = std::clamp(
+                static_cast<int>(std::floor((relative_x + kKanbanColumnWidth / 2.0f) / kKanbanColumnWidth)), 0,
+                static_cast<int>(columns.size()));
+        } else {
+        int col_i = std::clamp(static_cast<int>((mouse.x - sess->content_x) / kKanbanColumnWidth), 0,
+                                 static_cast<int>(columns.size()) - 1);
+        std::vector<int> cards = g_editor.KanbanCardsInColumn(buffer_id, col_i);
+        float rel_y = mouse.y - sess->content_y - card_area_top + (kKanbanCardHeight + kKanbanCardGap) / 2.0f;
+        int row_i = std::clamp(static_cast<int>(rel_y / (kKanbanCardHeight + kKanbanCardGap)), 0,
+                                 static_cast<int>(cards.size()));
+        sess->drop_column = col_i;
+        sess->drop_row = row_i;
+        }
+    }
+
+    if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
+        std::vector<std::string> columns = g_editor.KanbanColumns(buffer_id);
+        if (sess->drag_threshold_passed && sess->drag_is_column) {
+            g_editor.KanbanMoveColumn(sess->drag_column_index, sess->column_drop_slot);
+        } else if (sess->drag_threshold_passed && sess->drag_is_new_card && sess->drop_column >= 0 &&
+            sess->drop_column < static_cast<int>(columns.size())) {
+            int hi = g_editor.KanbanNewCard(columns[sess->drop_column], "New card");
+            if (hi >= 0) g_editor.KanbanBeginRenameNewCard(hi);
+        } else if (sess->drag_threshold_passed && !sess->drag_is_new_card && sess->drag_headline_index >= 0 &&
+                   sess->drag_headline_index < static_cast<int>(sess->outline.headlines.size()) &&
+                   sess->drop_column >= 0) {
+            int hi = sess->drag_headline_index;
+            std::string old_keyword = sess->outline.headlines[hi].todo_keyword;
+            std::string new_keyword =
+                (sess->drop_column < static_cast<int>(columns.size())) ? columns[sess->drop_column] : old_keyword;
+            if (new_keyword != old_keyword) {
+                // Cross-column drop: changes status only -- the card's
+                // position within its new column follows natural document
+                // order rather than the exact drop_row (a documented v1
+                // simplification; only a same-column drag gets an exact
+                // reorder, just below).
+                g_editor.KanbanSetCardColumn(hi, new_keyword);
+            } else {
+                std::vector<int> cards = g_editor.KanbanCardsInColumn(buffer_id, sess->drop_column);
+                int before;
+                if (sess->drop_row >= 0 && sess->drop_row < static_cast<int>(cards.size())) {
+                    before = cards[sess->drop_row];
+                } else if (!cards.empty() && cards.back() + 1 < static_cast<int>(sess->outline.headlines.size())) {
+                    // Dropped past this column's last card: land right
+                    // after it (the next headline in *document* order,
+                    // regardless of its own column) rather than jumping to
+                    // the very end of the file -- KanbanMoveCardBefore's
+                    // own -1 case is reserved for "there's nothing after
+                    // it at all".
+                    before = cards.back() + 1;
+                } else {
+                    before = -1;
+                }
+                if (before != hi) g_editor.KanbanMoveCardBefore(hi, before);
+            }
+        }
+        sess->dragging = false;
+        sess->drag_is_new_card = false;
+        sess->drag_is_column = false;
+        sess->drag_headline_index = -1;
+        sess->drag_column_index = -1;
+        sess->drag_threshold_passed = false;
+        sess->drop_column = -1;
+        sess->drop_row = -1;
+        sess->column_drop_slot = -1;
+    }
+}
+
+// Same shape as UpdateKanbanMouseInteraction, for a Gantt bar's body
+// (Move), either edge (ResizeStart/ResizeEnd), or -- for a milestone with
+// no DEADLINE yet -- the last edge_zone px of its 40px virtual hit-box,
+// which starts a ResizeEnd drag that *creates* one (GanttSetHeadlineDate
+// already writes a brand-new DEADLINE: line for this case; DrawGantt's own
+// live-preview math already falls back to drag_orig_scheduled when
+// drag_orig_deadline is absent, mirrored below at release time). Unlike
+// Kanban's column/row snap-to-slot drop, the live delta is continuous
+// pixels-to-days (rounded), matching DrawGantt's own live preview math
+// exactly so the bar never visibly jumps at release.
+void UpdateGanttMouseInteraction() {
+    if (g_editor.CurrentMode() != Mode::GanttNormal) return;
+    int buffer_id = g_editor.CurrentBufferId();
+    GanttSession *sess = g_editor.GetGanttMutable(buffer_id);
+    if (!sess || sess->content_w <= 0 || sess->content_h <= 0) return;
+    Vector2 mouse = GetMousePosition();
+    Rectangle content{sess->content_x, sess->content_y, sess->content_w, sess->content_h};
+    float label_w = sess->label_col_w;
+    float divider_x = sess->content_x + label_w;
+    float ruler_h = static_cast<float>(GanttRulerHeight(*sess));
+    int row_h = GanttRowHeight();
+
+    // The label/timeline divider takes priority over everything else --
+    // resizing it while a bar happens to sit right at that x would
+    // otherwise be ambiguous.
+    if (sess->resizing_label_col) {
+        SetMouseCursor(MOUSE_CURSOR_RESIZE_EW);
+        if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+            sess->label_col_w = std::clamp(mouse.x - sess->content_x, 80.0f, sess->content_w - 120.0f);
+        } else {
+            sess->resizing_label_col = false;
+        }
+        return;
+    }
+    if (!sess->dragging && PointInRect(mouse, content) && std::abs(mouse.x - divider_x) <= 4.0f &&
+        mouse.y >= sess->content_y + ruler_h) {
+        SetMouseCursor(MOUSE_CURSOR_RESIZE_EW);
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            sess->resizing_label_col = true;
+            return;
+        }
+    }
+
+    if (!sess->dragging) {
+        bool left_pressed = IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
+        bool right_pressed = IsMouseButtonPressed(MOUSE_BUTTON_RIGHT);
+        if ((!left_pressed && !right_pressed) || !PointInRect(mouse, content)) return;
+        if (mouse.y < sess->content_y + ruler_h) return;
+        std::vector<int> rows = g_editor.GanttRows(buffer_id);
+        int row_i = static_cast<int>((mouse.y - sess->content_y - ruler_h) / row_h);
+        if (row_i < 0 || row_i >= static_cast<int>(rows.size())) return;
+        int hi = rows[row_i];
+
+        // A click in the label column (left of the divider): double-click
+        // renames the row inline, otherwise it's just a focus click --
+        // either way it's not a bar drag, so handle and return.
+        if (mouse.x < divider_x) {
+            if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) return;
+            bool has_children = false;
+            for (const OrgHeadline &candidate : sess->outline.headlines) {
+                if (candidate.parent_index == hi) { has_children = true; break; }
+            }
+            float toggle_right = sess->content_x + 6 + std::max(0, sess->outline.headlines[hi].level - 1) * 14.0f + 14;
+            if (has_children && mouse.x <= toggle_right) {
+                if (sess->collapsed_headlines.count(hi)) sess->collapsed_headlines.erase(hi);
+                else sess->collapsed_headlines.insert(hi);
+                return;
+            }
+            double now = GetTime();
+            bool is_double =
+                g_last_gantt_click_headline == hi && (now - g_last_gantt_click_time) < kDoubleClickThresholdSec;
+            sess->focused_row = row_i;
+            if (is_double) {
+                g_editor.GanttBeginRename(hi);
+                g_last_gantt_click_time = -1.0;
+                g_last_gantt_click_headline = -1;
+            } else {
+                g_last_gantt_click_time = now;
+                g_last_gantt_click_headline = hi;
+            }
+            return;
+        }
+
+        const OrgHeadline &hd = sess->outline.headlines[hi];
+        long long start_day = OrgDayNumber(hd.scheduled.year, hd.scheduled.month, hd.scheduled.day);
+        long long clicked_day = sess->anchor_day + static_cast<long long>(std::floor((mouse.x - divider_x) / sess->pixels_per_day));
+        sess->focused_row = row_i;
+        // Right-click is a direct deadline picker, including for a
+        // milestone with no deadline yet. The editor primitive validates
+        // that it remains after the scheduled start date.
+        if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
+            g_editor.GanttSetHeadlineDate(hi, /*is_deadline=*/true, clicked_day);
+            return;
+        }
+        float bar_x = divider_x + static_cast<float>(start_day - sess->anchor_day) * sess->pixels_per_day;
+        float bar_w = 40.0f;
+        if (hd.deadline.present) {
+            long long end_day = OrgDayNumber(hd.deadline.year, hd.deadline.month, hd.deadline.day);
+            bar_w = std::max(4.0f, static_cast<float>(end_day - start_day) * sess->pixels_per_day);
+        }
+        // A left-click anywhere on a row's timeline directly chooses its
+        // scheduled start. Starting on the existing bar still enters the
+        // drag path below, so a horizontal drag continues to move/resize it.
+        if (mouse.x < bar_x - 6 || mouse.x > bar_x + bar_w + 6) {
+            g_editor.GanttSetHeadlineDate(hi, /*is_deadline=*/false, clicked_day);
+            return;
+        }
+        float edge_zone = std::min(8.0f, bar_w / 3.0f);
+        sess->dragging = true;
+        sess->drag_headline_index = hi;
+        sess->drag_start_x = mouse.x;
+        sess->drag_orig_scheduled = hd.scheduled;
+        sess->drag_orig_deadline = hd.deadline;
+        if (mouse.x >= bar_x + bar_w - edge_zone) {
+            // Right edge, whether or not a DEADLINE exists yet -- with none
+            // yet, this is how one gets created (see GanttSetHeadlineDate).
+            sess->drag_mode = GanttSession::DragMode::ResizeEnd;
+        } else if (hd.deadline.present && mouse.x <= bar_x + edge_zone) {
+            sess->drag_mode = GanttSession::DragMode::ResizeStart;
+        } else {
+            sess->drag_mode = GanttSession::DragMode::Move;
+        }
+        return;
+    }
+
+    if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
+        constexpr float kDragThresholdPx = 4.0f;
+        bool threshold_passed = std::abs(mouse.x - sess->drag_start_x) > kDragThresholdPx;
+        if (threshold_passed && sess->drag_headline_index >= 0) {
+            int delta_days = static_cast<int>(std::lround((mouse.x - sess->drag_start_x) / sess->pixels_per_day));
+            if (delta_days != 0) {
+                if (sess->drag_mode == GanttSession::DragMode::Move) {
+                    g_editor.GanttShiftHeadline(sess->drag_headline_index, delta_days);
+                } else {
+                    // ResizeEnd falls back to drag_orig_scheduled when no
+                    // DEADLINE existed at drag-start (creating one from
+                    // scratch) -- drag_orig_deadline would otherwise be an
+                    // absent/zeroed timestamp (day 0), matching DrawGantt's
+                    // own live-preview fallback so the bar never jumps.
+                    const OrgTimestamp &orig =
+                        (sess->drag_mode == GanttSession::DragMode::ResizeStart)
+                            ? sess->drag_orig_scheduled
+                            : (sess->drag_orig_deadline.present ? sess->drag_orig_deadline : sess->drag_orig_scheduled);
+                    long long orig_day = OrgDayNumber(orig.year, orig.month, orig.day);
+                    g_editor.GanttSetHeadlineDate(sess->drag_headline_index,
+                                                    sess->drag_mode == GanttSession::DragMode::ResizeEnd,
+                                                    orig_day + delta_days);
+                }
+            }
+        } else if (sess->drag_headline_index >= 0) {
+            // A short left click on an existing bar is the direct start-date
+            // picker counterpart to the right-click deadline picker above.
+            long long clicked_day = sess->anchor_day + static_cast<long long>(
+                std::floor((sess->drag_start_x - divider_x) / sess->pixels_per_day));
+            g_editor.GanttSetHeadlineDate(sess->drag_headline_index, /*is_deadline=*/false, clicked_day);
+        }
+        sess->dragging = false;
+        sess->drag_headline_index = -1;
+    }
+}
+
+// Scrollbar drag/click-to-jump for the office pane -- same "Draw computes
+// this frame's geometry into a global, a sibling Update* consumes it"
+// split as UpdateKanbanMouseInteraction/UpdateGanttMouseInteraction, since
+// this scrollbar (like those two) needs freshly-refreshed per-frame
+// geometry (g_office_status, set by DrawPane's office branch) rather than
+// its own independently-tracked layout.
+void UpdateOfficeScrollbarInteraction() {
+    if (!g_office_status.valid) {
+        g_office_scroll_drag.active = false;
+        return;
+    }
+    const OfficeSession *office_sess = g_editor.GetOffice(g_office_status.buffer_id);
+    if (!office_sess || office_sess->doc.paragraphs.empty()) {
+        g_office_scroll_drag.active = false;
+        return;
+    }
+    const Rectangle &track = g_office_status.track;
+    const Rectangle &thumb = g_office_status.thumb;
+    Vector2 mouse = GetMousePosition();
+
+    // Converts a target 0..1 fraction of the document's total wrapped
+    // height into a (scroll_para, scroll_line_in_para) pair by walking
+    // paragraphs from the top -- the inverse of DrawPane's own
+    // height-at-scroll accumulation, reusing the same cached max_width/
+    // body_size layout inputs (g_office_status) so both walks agree.
+    auto scroll_to_fraction = [&](float fraction) {
+        fraction = std::clamp(fraction, 0.0f, 1.0f);
+        float target_h = fraction * g_office_status.total_height;
+        const OfficeDoc &doc = office_sess->doc;
+        int para_count = static_cast<int>(doc.paragraphs.size());
+        float acc = 0.0f;
+        for (int pi = 0; pi < para_count; pi++) {
+            const DocParagraph &para = doc.paragraphs[pi];
+            float size = g_office_status.body_size * OfficeHeadingMultiplier(para.heading_level);
+            float plh = size * 1.35f;
+            int line_count = std::max(
+                1, static_cast<int>(WordWrapOfficeParagraph(para, g_office_status.max_width, size).size()));
+            float para_h = plh * static_cast<float>(line_count) +
+                           OfficeParagraphExtraHeight(doc, para, g_office_status.max_width, g_office_status.body_size);
+            if (acc + para_h > target_h || pi == para_count - 1) {
+                int line = std::clamp(static_cast<int>((target_h - acc) / plh), 0, line_count - 1);
+                g_editor.SetOfficeScroll(g_office_status.buffer_id, pi, line);
+                return;
+            }
+            acc += para_h;
+        }
+    };
+
+    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+        if (CheckCollisionPointRec(mouse, thumb)) {
+            g_office_scroll_drag.active = true;
+            g_office_scroll_drag.grab_offset_y = mouse.y - thumb.y;
+        } else if (CheckCollisionPointRec(mouse, track)) {
+            float target_top_y = mouse.y - thumb.height * 0.5f;
+            float fraction = (track.height > thumb.height) ? (target_top_y - track.y) / (track.height - thumb.height) : 0.0f;
+            scroll_to_fraction(fraction);
+        }
+    }
+    if (g_office_scroll_drag.active) {
+        if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+            float new_top_y = mouse.y - g_office_scroll_drag.grab_offset_y;
+            float fraction = (track.height > thumb.height) ? (new_top_y - track.y) / (track.height - thumb.height) : 0.0f;
+            scroll_to_fraction(fraction);
+        } else {
+            g_office_scroll_drag.active = false;
+        }
+    }
+}
+
 void UpdatePaneMouseInteraction() {
     Mode mode = g_editor.CurrentMode();
     if (IsModalOverlayMode(mode) && mode != Mode::Sidebar) {
@@ -14226,6 +16460,11 @@ void UpdateDrawFrame() {
         bool menu_consumed = HandleMenuInput();
         if (!menu_consumed) g_editor.HandleInput();
         DrawEditor();
+        if (g_pending_gantt_raster_export.buffer_id >= 0) {
+            ExportGanttRaster(g_pending_gantt_raster_export.buffer_id, g_pending_gantt_raster_export.format.c_str());
+            g_pending_gantt_raster_export = {};
+            g_clean_gantt_export_buffer = -1;
+        }
         // Only after DrawEditor() has (re)populated g_click_regions this
         // frame, and only when the menu bar didn't already claim this
         // click (a menu dropdown can overlap the tab bar/pane area
@@ -14238,6 +16477,14 @@ void UpdateDrawFrame() {
         // in progress needs its own continuous per-frame update even
         // when IsMouseButtonPressed() is false this frame.
         if (!menu_consumed) UpdatePaneMouseInteraction();
+        // Same reasoning again -- needs this frame's freshly-refreshed
+        // KanbanSession/GanttSession::content_x/y/w/h (set by DrawKanban/
+        // DrawGantt), and a drag already in progress needs its own
+        // continuous per-frame update the same way pane-chrome dragging
+        // does above.
+        if (!menu_consumed) UpdateKanbanMouseInteraction();
+        if (!menu_consumed) UpdateGanttMouseInteraction();
+        if (!menu_consumed) UpdateOfficeScrollbarInteraction();
     } catch (const std::exception &e) {
         g_editor.Notify(std::string("Internal error (recovered): ") + e.what(), Editor::NotifyLevel::Error);
     }

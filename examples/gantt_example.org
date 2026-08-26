@@ -1,0 +1,86 @@
+#+TODO: TODO(t) IN-PROGRESS(i) | DONE(d)
+
+# Gantt properties: :ID:, :BLOCKER: (one or more predecessor IDs),
+# :ASSIGNEE: or :TEAM:, and :PROGRESS: (0-100).
+# Press Space (or click +/-) on a summary task to fold it; p edits progress;
+# f fits the whole schedule.
+
+* IN-PROGRESS Product launch program
+SCHEDULED: <2026-08-24 Mon> DEADLINE: <2026-09-27 Sun>
+:PROPERTIES:
+:ID: launch-program
+:TEAM: Platform
+:PROGRESS: 42
+:END:
+
+** DONE Kickoff and requirements gathering
+SCHEDULED: <2026-08-24 Mon> DEADLINE: <2026-08-26 Wed>
+:PROPERTIES:
+:ID: kickoff
+:ASSIGNEE: Maya
+:PROGRESS: 100
+:END:
+
+** IN-PROGRESS Design and implementation
+SCHEDULED: <2026-08-26 Wed> DEADLINE: <2026-09-18 Fri>
+:PROPERTIES:
+:ID: build-phase
+:BLOCKER: kickoff
+:TEAM: Product Engineering
+:PROGRESS: 45
+:END:
+
+*** IN-PROGRESS Design mockups
+SCHEDULED: <2026-08-26 Wed> DEADLINE: <2026-08-29 Sat>
+:PROPERTIES:
+:ID: design
+:BLOCKER: kickoff
+:ASSIGNEE: Avery
+:EFFORT: 16:00
+:PROGRESS: 75
+:END:
+
+*** TODO Backend API implementation
+SCHEDULED: <2026-08-31 Mon> DEADLINE: <2026-09-02 Wed>
+:PROPERTIES:
+:ID: backend
+:BLOCKER: design
+:ASSIGNEE: Priya
+:PROGRESS: 35
+:END:
+
+*** TODO Frontend implementation
+SCHEDULED: <2026-09-07 Mon> DEADLINE: <2026-09-11 Fri>
+:PROPERTIES:
+:ID: frontend
+:BLOCKER: design
+:ASSIGNEE: Jordan
+:PROGRESS: 20
+:END:
+
+** TODO Validation and release
+SCHEDULED: <2026-09-18 Fri> DEADLINE: <2026-09-27 Sun>
+:PROPERTIES:
+:ID: release-phase
+:BLOCKER: build-phase
+:TEAM: Quality and Release
+:PROGRESS: 0
+:END:
+
+*** TODO Integration testing
+SCHEDULED: <2026-09-18 Fri> DEADLINE: <2026-09-22 Tue>
+:PROPERTIES:
+:ID: integration
+:BLOCKER: backend frontend
+:ASSIGNEE: Chen
+:PROGRESS: 0
+:END:
+
+*** TODO Launch
+SCHEDULED: <2026-09-24 Thu> DEADLINE: <2026-09-27 Sun>
+:PROPERTIES:
+:ID: launch
+:BLOCKER: integration
+:ASSIGNEE: Release team
+:PROGRESS: 0
+:END:

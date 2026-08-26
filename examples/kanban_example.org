@@ -1,0 +1,21 @@
+#+TODO: TODO(t) IN-PROGRESS(i) | DONE(d)
+
+* TODO Design new landing page :design:
+Sketch out the hero section and pick a color palette.
+
+* TODO Write onboarding email sequence :marketing:
+[#B] Three emails: welcome, day-3 tip, day-7 upgrade nudge.
+
+* IN-PROGRESS Fix login redirect bug :bug:
+:PROPERTIES:
+:EFFORT: 2:00
+:END:
+Users bounce to /404 after SSO login on mobile Safari.
+
+* IN-PROGRESS Migrate CI to new runners :infra:
+[#A]
+
+* DONE Set up error tracking :infra:
+Sentry wired up for the API and the web client.
+
+* DONE Ship v1.2 release notes :marketing:

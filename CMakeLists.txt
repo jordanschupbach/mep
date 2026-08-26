@@ -209,9 +209,13 @@ add_executable(mep
     src/html_doc.cpp
     src/js_engine.cpp
     src/doc_export.cpp
+    src/org_doc.cpp
 )
 target_include_directories(mep PRIVATE src)
 target_link_libraries(mep PRIVATE raylib lua tree_sitter ${TS_GRAMMAR_LIBS} pugixml miniz)
+if(EMSCRIPTEN)
+    target_sources(mep PRIVATE src/collab_crdt.cpp src/collab_web_session.cpp)
+endif()
 if(NOT EMSCRIPTEN AND NOT WIN32)
     find_package(Threads REQUIRED)
     target_link_libraries(mep PRIVATE Threads::Threads)
@@ -220,6 +224,33 @@ if(NOT EMSCRIPTEN AND NOT WIN32)
     # libraries, so that whole path is compiled out there instead of
     # linked against a (nonexistent) libdl.
     target_link_libraries(mep PRIVATE ${CMAKE_DL_LIBS})
+endif()
+
+# Collaboration's WebSocket handshake needs SHA-1.  OpenSSL is the one
+# deliberate native-only dependency permitted for secure transport support;
+# the framing, session protocol, and relay remain mep's own C++ code.
+if(NOT EMSCRIPTEN)
+    find_package(OpenSSL REQUIRED)
+    target_sources(mep PRIVATE src/collab_crdt.cpp src/collab_session.cpp src/collab_websocket.cpp)
+    target_link_libraries(mep PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    add_executable(mep-collabd src/collab_relay.cpp src/collab_websocket.cpp)
+    target_include_directories(mep-collabd PRIVATE src)
+    target_link_libraries(mep-collabd PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    if(NOT WIN32)
+        target_link_libraries(mep-collabd PRIVATE Threads::Threads)
+    else()
+        target_link_libraries(mep-collabd PRIVATE ws2_32)
+    endif()
+    add_executable(mep-collab-crdt-test src/collab_crdt_test.cpp src/collab_crdt.cpp)
+    target_include_directories(mep-collab-crdt-test PRIVATE src)
+    add_executable(mep-collab-session-test src/collab_session_test.cpp src/collab_session.cpp src/collab_crdt.cpp src/collab_websocket.cpp)
+    target_include_directories(mep-collab-session-test PRIVATE src)
+    target_link_libraries(mep-collab-session-test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    if(NOT WIN32)
+        target_link_libraries(mep-collab-session-test PRIVATE Threads::Threads)
+    else()
+        target_link_libraries(mep-collab-session-test PRIVATE ws2_32)
+    endif()
 endif()
 
 if(NOT EMSCRIPTEN)

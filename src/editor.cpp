@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 
 #include "raylib.h"
 #include "lua_env.h"
@@ -19,6 +20,7 @@
 #include "js_engine.h"
 #include "pdf_doc.h"
 #include "treesitter.h"
+#include "collab_session.h"
 
 #if defined(__EMSCRIPTEN__)
 #include <emscripten.h>
@@ -692,6 +694,28 @@ std::unordered_map<std::string, ThemeColor> BuildHighlightGroups(const Palette &
     g["PickerBorder"] = p.border;
     g["PickerTitle"] = Mix(p.blue, p.fg, 0.4f);
     g["PickerSelected"] = Mix(p.blue, p.bg, 0.45f);
+    // Office (docx/odt WYSIWYG) pane's own chrome -- kept as its own small
+    // group of names, rather than reusing e.g. TabActive/Visual for the
+    // page/active-button fill the way the pane's toolbar briefly hardcoded
+    // a fixed light palette, so :colorscheme still governs it like
+    // everything else. "Accent" is deliberately the palette's raw blue
+    // (not blended toward bg/fg like BorderActive/MenuHighlight/Visual
+    // already are) so an active toolbar/format-panel control reads clearly
+    // as "the accent color" against any theme; "AccentTint" is that same
+    // blue blended toward the current bg for its active-state fill, so the
+    // tint stays subtle in both light and dark palettes instead of a fixed
+    // light-blue that would glow against a dark one.
+    g["Accent"] = p.blue;
+    g["AccentTint"] = Mix(p.blue, p.bg, 0.18f);
+    // A dimmer foreground than Normal for secondary text (word/page count,
+    // placeholder text, inert rail icons) -- Comment (p.border) already
+    // fills a similar role for syntax comments, but that's tuned for
+    // against-code contrast, not this UI's own chrome.
+    g["MutedFg"] = Mix(p.fg, p.bg, 0.55f);
+    // The page itself: lighter than the surrounding canvas/chrome in every
+    // palette (light or dark) so it still reads as "a sheet of paper" set
+    // against the work surface, without hardcoding an actual white.
+    g["OfficePage"] = Lighten(p.bg, 14);
     return g;
 }
 
@@ -730,6 +754,13 @@ bool Editor::ResolveHighlight(const std::string &name, ThemeColor *out) const {
     return true;
 }
 
+bool Editor::ThemePalette(const std::string &name, Palette *out) const {
+    const Palette *p = FindPalette(name);
+    if (!p) return false;
+    *out = *p;
+    return true;
+}
+
 Editor::Editor() {
     buffers_.push_back(Buffer{});
     Tab tab;
@@ -745,6 +776,7 @@ Editor::Editor() {
 Editor::~Editor() = default;
 
 void Editor::HandleInput() {
+    TickCollaboration();
     MaybeDismissHover();
     {
         Vector2 wheel = GetMouseWheelMoveV();
@@ -831,7 +863,20 @@ void Editor::HandleInput() {
         case Mode::SheetVisual:
             HandleSheetVisualInput();
             break;
+        case Mode::KanbanNormal:
+            HandleKanbanNormalInput();
+            break;
+        case Mode::KanbanInsert:
+            HandleKanbanInsertInput();
+            break;
+        case Mode::GanttNormal:
+            HandleGanttNormalInput();
+            break;
+        case Mode::GanttInsert:
+            HandleGanttInsertInput();
+            break;
     }
+    TickCollaboration();
 }
 
 void Editor::UpdateScrollForPane(int pane_id, int visible_lines) {
@@ -1719,9 +1764,20 @@ void Editor::SyncModeToActivePaneBuffer() {
     } else if (IsSheetBuffer(CurPane().buffer_id)) {
         // Always re-enters at SheetNormal, same reasoning as Office above.
         mode_ = Mode::SheetNormal;
+    } else if (IsKanbanViewActive(CurPane().buffer_id)) {
+        // Unlike every branch above, this isn't a buffer *identity* check
+        // (a Kanban/Gantt view sits over an ordinary org text buffer) --
+        // see org_view_mode_'s own comment. Always re-enters at
+        // KanbanNormal, never resumes mid-KanbanInsert, same reasoning as
+        // Office/Sheet above.
+        mode_ = Mode::KanbanNormal;
+    } else if (IsGanttViewActive(CurPane().buffer_id)) {
+        mode_ = Mode::GanttNormal;
     } else if (mode_ == Mode::Terminal || mode_ == Mode::Image || mode_ == Mode::Pdf || mode_ == Mode::Html ||
                mode_ == Mode::OfficeNormal || mode_ == Mode::OfficeInsert || mode_ == Mode::OfficeVisual ||
-               mode_ == Mode::SheetNormal || mode_ == Mode::SheetInsert || mode_ == Mode::SheetVisual) {
+               mode_ == Mode::SheetNormal || mode_ == Mode::SheetInsert || mode_ == Mode::SheetVisual ||
+               mode_ == Mode::KanbanNormal || mode_ == Mode::KanbanInsert || mode_ == Mode::GanttNormal ||
+               mode_ == Mode::GanttInsert) {
         mode_ = Mode::Normal;
     }
 }
@@ -1773,8 +1829,8 @@ void Editor::HandleImageInput() {
         sess->pan_y = std::clamp(sess->pan_y + kPanStep, 0, max_pan_y);
     }
     bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
-    if (ctrl && IsKeyPressed(KEY_D)) sess->pan_y = std::clamp(sess->pan_y + sess->viewport_h / 2, 0, max_pan_y);
-    if (ctrl && IsKeyPressed(KEY_U)) sess->pan_y = std::clamp(sess->pan_y - sess->viewport_h / 2, 0, max_pan_y);
+    if (ctrl && held(KEY_D)) sess->pan_y = std::clamp(sess->pan_y + sess->viewport_h / 2, 0, max_pan_y);
+    if (ctrl && held(KEY_U)) sess->pan_y = std::clamp(sess->pan_y - sess->viewport_h / 2, 0, max_pan_y);
 
     // +/-/= zoom: +/- multiply or divide the zoom factor by kImageZoomStep,
     // re-anchored on whatever image point is currently at the viewport's
@@ -2015,10 +2071,10 @@ void Editor::HandleHtmlInput() {
     auto held = [](int key) { return IsKeyPressed(key) || IsKeyPressedRepeat(key); };
     if (held(KEY_J) || held(KEY_DOWN)) sess->scroll_y += kScrollStep;
     if (held(KEY_K) || held(KEY_UP)) sess->scroll_y = std::max(0.0f, sess->scroll_y - kScrollStep);
-    if ((ctrl && IsKeyPressed(KEY_D)) || IsKeyPressed(KEY_PAGE_DOWN)) {
+    if ((ctrl && held(KEY_D)) || held(KEY_PAGE_DOWN)) {
         sess->scroll_y += static_cast<float>(sess->viewport_h) * 0.5f;
     }
-    if ((ctrl && IsKeyPressed(KEY_U)) || IsKeyPressed(KEY_PAGE_UP)) {
+    if ((ctrl && held(KEY_U)) || held(KEY_PAGE_UP)) {
         sess->scroll_y = std::max(0.0f, sess->scroll_y - static_cast<float>(sess->viewport_h) * 0.5f);
     }
     // Mirrors PdfSession::theme_colors' own Ctrl-R toggle (HandlePdfInput) --
@@ -2310,8 +2366,8 @@ void Editor::HandlePdfInput() {
     // its comment at this function's normal-mode counterpart).
     bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
     bool next_page = false, prev_page = false, toggle_theme = false;
-    if (ctrl && IsKeyPressed(KEY_D)) { sess->scroll_y += static_cast<float>(sess->viewport_h) * 0.5f; rebase_scroll(); }
-    if (ctrl && IsKeyPressed(KEY_U)) { sess->scroll_y -= static_cast<float>(sess->viewport_h) * 0.5f; rebase_scroll(); }
+    if (ctrl && held(KEY_D)) { sess->scroll_y += static_cast<float>(sess->viewport_h) * 0.5f; rebase_scroll(); }
+    if (ctrl && held(KEY_U)) { sess->scroll_y -= static_cast<float>(sess->viewport_h) * 0.5f; rebase_scroll(); }
     for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
         if (key == KEY_PAGE_DOWN) next_page = true;
         else if (key == KEY_PAGE_UP) prev_page = true;
@@ -2455,6 +2511,68 @@ void Editor::SetOfficeScrollFollowCursorPara(int buffer_id, int cursor_para) {
     it->second.scroll_follow_last_cursor_para = cursor_para;
 }
 
+// Jumps the cursor to the start of a given paragraph -- used by the
+// Outline panel's click-to-jump (main.cpp's DrawOfficeSidePanels).
+// Without also moving the cursor, DrawPane's own scroll-follow-cursor scan
+// would just walk scroll_para back toward wherever the cursor still sits,
+// one paragraph a frame, undoing the jump right after it happened.
+void Editor::SetOfficeCursorPara(int buffer_id, int para) {
+    auto it = officedocs_.find(buffer_id);
+    if (it == officedocs_.end()) return;
+    OfficeSession &sess = it->second;
+    int max_para = std::max(0, static_cast<int>(sess.doc.paragraphs.size()) - 1);
+    sess.cursor_para = std::clamp(para, 0, max_para);
+    sess.cursor_col = 0;
+    sess.has_selection = false;
+}
+
+void Editor::SetOfficeCursorWrapLines(int buffer_id, int cursor_para, std::vector<std::pair<int, int>> lines) {
+    auto it = officedocs_.find(buffer_id);
+    if (it == officedocs_.end()) return;
+    it->second.cursor_wrap_lines_para = cursor_para;
+    it->second.cursor_wrap_lines = std::move(lines);
+}
+
+bool Editor::MoveOfficeCursorVisualLine(OfficeSession *sess, int dir) {
+    const std::vector<std::pair<int, int>> &lines = sess->cursor_wrap_lines;
+    bool cache_fresh = sess->cursor_wrap_lines_para == sess->cursor_para && !lines.empty();
+    if (cache_fresh) {
+        // Which cached visual line cursor_col is currently on -- the LAST
+        // line whose start it has reached, same tie-break as main.cpp's
+        // own cursor_line_in_para (see that comment for why: a contiguous
+        // wrap point has line[k].end == line[k+1].start, and "first line
+        // whose end it doesn't exceed" would always resolve that shared
+        // value to line k, one line short of where the cursor actually is).
+        int line_index = 0;
+        for (int i = 0; i < static_cast<int>(lines.size()); i++) {
+            if (lines[i].first > sess->cursor_col) break;
+            line_index = i;
+        }
+        int target_index = line_index + (dir < 0 ? -1 : 1);
+        if (target_index >= 0 && target_index < static_cast<int>(lines.size())) {
+            // Preserve cursor_col's offset *into* its current visual line
+            // (like a screen-column goal) rather than an absolute byte
+            // offset, so moving through a run of same-width wrapped lines
+            // tracks the same visual column, the way plain h/l-adjacent
+            // vertical motion should.
+            int offset = sess->cursor_col - lines[line_index].first;
+            const std::pair<int, int> &target = lines[target_index];
+            sess->cursor_col = std::clamp(target.first + offset, target.first, target.second);
+            return false;  // stayed within the same paragraph
+        }
+    }
+    // Off the paragraph's own first/last visual line (or no fresh wrap
+    // cache yet, e.g. the very first frame) -- fall back to the plain
+    // prev/next-paragraph step every mode's j/k/Up/Down already had before
+    // visual-line stepping existed.
+    int para_count = static_cast<int>(sess->doc.paragraphs.size());
+    int new_para = std::clamp(sess->cursor_para + dir, 0, para_count - 1);
+    bool moved = new_para != sess->cursor_para;
+    sess->cursor_para = new_para;
+    sess->cursor_col = std::min(sess->cursor_col, static_cast<int>(sess->doc.paragraphs[sess->cursor_para].text.size()));
+    return moved;
+}
+
 void Editor::OpenOfficeInPlace(const std::string &path, const unsigned char *bytes, size_t len) {
     int buffer_id = -1;
     for (size_t i = 0; i < buffers_.size(); i++) {
@@ -2505,6 +2623,21 @@ void Editor::HandleOfficeNormalInput() {
     }
     int para_count = static_cast<int>(sess->doc.paragraphs.size());
     if (para_count <= 0) return;
+
+    // Document-viewer zoom is intentionally available before table/nav
+    // handling, so Ctrl+= and Ctrl+- work from every ordinary office
+    // reading state rather than becoming table-specific commands.
+    const bool ctrl_down = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+    if (ctrl_down && (IsKeyPressed(KEY_EQUAL) || IsKeyPressedRepeat(KEY_EQUAL))) {
+        SetOfficeZoom(1.1f);
+        status_message_ = "Document zoom: " + std::to_string(static_cast<int>(sess->zoom * 100.0f + 0.5f)) + "%";
+        return;
+    }
+    if (ctrl_down && (IsKeyPressed(KEY_MINUS) || IsKeyPressedRepeat(KEY_MINUS))) {
+        SetOfficeZoom(1.0f / 1.1f);
+        status_message_ = "Document zoom: " + std::to_string(static_cast<int>(sess->zoom * 100.0f + 0.5f)) + "%";
+        return;
+    }
 
     auto cur_len = [&]() { return static_cast<int>(sess->doc.paragraphs[sess->cursor_para].text.size()); };
     auto goto_para = [&](int new_para) {
@@ -2602,15 +2735,28 @@ void Editor::HandleOfficeNormalInput() {
         return;
     }
 
-    // Word-wrap-oblivious navigation -- see Mode::OfficeNormal's own
-    // comment for why: h/l move within the current paragraph's flat text
-    // (like column motion over Buffer::lines[row]), j/k move to the
-    // prev/next *paragraph* (like row motion), not to the next *visual*
-    // (word-wrapped) line, which only main.cpp's renderer knows about.
+    // h/l move within the current paragraph's flat text (like column
+    // motion over Buffer::lines[row]); j/k move by *visual* (word-wrapped)
+    // line when MoveOfficeCursorVisualLine has fresh wrap data for the
+    // current paragraph, falling back to a plain prev/next-paragraph step
+    // at its first/last visual line -- see that function's own comment.
+    // Reproduces goto_para's table-auto-entry on an actual paragraph
+    // change (MoveOfficeCursorVisualLine returning true) since it's
+    // bypassing goto_para itself for the visual-line-internal case.
     if (held(KEY_H) || held(KEY_LEFT)) sess->cursor_col = std::max(0, sess->cursor_col - 1);
     if (held(KEY_L) || held(KEY_RIGHT)) sess->cursor_col = std::min(cur_len(), sess->cursor_col + 1);
-    if (held(KEY_J) || held(KEY_DOWN)) goto_para(sess->cursor_para + 1);
-    if (held(KEY_K) || held(KEY_UP)) goto_para(sess->cursor_para - 1);
+    if (held(KEY_J) || held(KEY_DOWN)) {
+        if (MoveOfficeCursorVisualLine(sess, 1)) {
+            int tref = sess->doc.paragraphs[sess->cursor_para].table_ref;
+            if (tref >= 0) EnterOfficeTable(tref);
+        }
+    }
+    if (held(KEY_K) || held(KEY_UP)) {
+        if (MoveOfficeCursorVisualLine(sess, -1)) {
+            int tref = sess->doc.paragraphs[sess->cursor_para].table_ref;
+            if (tref >= 0) EnterOfficeTable(tref);
+        }
+    }
 
     int cp = GetCharPressed();
     while (cp > 0) {
@@ -2670,8 +2816,8 @@ void Editor::HandleOfficeNormalInput() {
     if (IsKeyPressed(KEY_R) && ctrl) {
         RedoOffice();
     }
-    if (ctrl && (IsKeyPressed(KEY_D) || IsKeyPressed(KEY_U))) {
-        bool down = IsKeyPressed(KEY_D);
+    if (ctrl && (held(KEY_D) || held(KEY_U))) {
+        bool down = held(KEY_D);
         // Paragraph count, not visual line count -- word-wrap needs
         // main.cpp's MeasureTextEx, which this raylib-model-level function
         // can't call (see ResizeOfficeViewport's own comment on why
@@ -2737,6 +2883,18 @@ void Editor::HandleOfficeInsertInput() {
             return;
         }
         sess = &it->second;
+    }
+
+    const bool ctrl_down = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+    if (ctrl_down && (IsKeyPressed(KEY_EQUAL) || IsKeyPressedRepeat(KEY_EQUAL))) {
+        SetOfficeZoom(1.1f);
+        status_message_ = "Document zoom: " + std::to_string(static_cast<int>(sess->zoom * 100.0f + 0.5f)) + "%";
+        return;
+    }
+    if (ctrl_down && (IsKeyPressed(KEY_MINUS) || IsKeyPressedRepeat(KEY_MINUS))) {
+        SetOfficeZoom(1.0f / 1.1f);
+        status_message_ = "Document zoom: " + std::to_string(static_cast<int>(sess->zoom * 100.0f + 0.5f)) + "%";
+        return;
     }
 
     // Table-cell text editing: a cell is plain text (DocTable::cells has
@@ -2845,18 +3003,10 @@ void Editor::HandleOfficeInsertInput() {
     }
     if (IsKeyPressed(KEY_LEFT) || IsKeyPressedRepeat(KEY_LEFT)) sess->cursor_col = std::max(0, sess->cursor_col - 1);
     if (IsKeyPressed(KEY_RIGHT) || IsKeyPressedRepeat(KEY_RIGHT)) sess->cursor_col = std::min(cur_len(), sess->cursor_col + 1);
-    if (IsKeyPressed(KEY_UP) || IsKeyPressedRepeat(KEY_UP)) {
-        if (sess->cursor_para > 0) {
-            sess->cursor_para--;
-            sess->cursor_col = std::min(sess->cursor_col, cur_len());
-        }
-    }
-    if (IsKeyPressed(KEY_DOWN) || IsKeyPressedRepeat(KEY_DOWN)) {
-        if (sess->cursor_para + 1 < static_cast<int>(sess->doc.paragraphs.size())) {
-            sess->cursor_para++;
-            sess->cursor_col = std::min(sess->cursor_col, cur_len());
-        }
-    }
+    // Visual-line-aware, like HandleOfficeNormalInput's own j/k -- see
+    // MoveOfficeCursorVisualLine's comment.
+    if (IsKeyPressed(KEY_UP) || IsKeyPressedRepeat(KEY_UP)) MoveOfficeCursorVisualLine(sess, -1);
+    if (IsKeyPressed(KEY_DOWN) || IsKeyPressedRepeat(KEY_DOWN)) MoveOfficeCursorVisualLine(sess, 1);
 }
 
 void Editor::HandleOfficeVisualInput() {
@@ -2868,6 +3018,17 @@ void Editor::HandleOfficeVisualInput() {
             return;
         }
         sess = &it->second;
+    }
+    const bool ctrl_down = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+    if (ctrl_down && (IsKeyPressed(KEY_EQUAL) || IsKeyPressedRepeat(KEY_EQUAL))) {
+        SetOfficeZoom(1.1f);
+        status_message_ = "Document zoom: " + std::to_string(static_cast<int>(sess->zoom * 100.0f + 0.5f)) + "%";
+        return;
+    }
+    if (ctrl_down && (IsKeyPressed(KEY_MINUS) || IsKeyPressedRepeat(KEY_MINUS))) {
+        SetOfficeZoom(1.0f / 1.1f);
+        status_message_ = "Document zoom: " + std::to_string(static_cast<int>(sess->zoom * 100.0f + 0.5f)) + "%";
+        return;
     }
     int para_count = static_cast<int>(sess->doc.paragraphs.size());
     if (para_count <= 0) {
@@ -2882,8 +3043,12 @@ void Editor::HandleOfficeVisualInput() {
     auto held = [](int key) { return IsKeyPressed(key) || IsKeyPressedRepeat(key); };
     if (held(KEY_H) || held(KEY_LEFT)) sess->cursor_col = std::max(0, sess->cursor_col - 1);
     if (held(KEY_L) || held(KEY_RIGHT)) sess->cursor_col = std::min(cur_len(), sess->cursor_col + 1);
-    if (held(KEY_J) || held(KEY_DOWN)) goto_para(sess->cursor_para + 1);
-    if (held(KEY_K) || held(KEY_UP)) goto_para(sess->cursor_para - 1);
+    // Visual-line-aware, like HandleOfficeNormalInput's own j/k -- see
+    // MoveOfficeCursorVisualLine's comment. No table-auto-entry follow-up
+    // here, matching this mode's own goto_para (above), which never had it
+    // either.
+    if (held(KEY_J) || held(KEY_DOWN)) MoveOfficeCursorVisualLine(sess, 1);
+    if (held(KEY_K) || held(KEY_UP)) MoveOfficeCursorVisualLine(sess, -1);
 
     int cp = GetCharPressed();
     while (cp > 0) {
@@ -3483,10 +3648,10 @@ void Editor::HandleSheetNormalInput() {
     if (IsKeyPressed(KEY_PAGE_UP) && ctrl) {
         PrevSheet();
     }
-    if (ctrl && IsKeyPressed(KEY_D)) {
+    if (ctrl && held(KEY_D)) {
         sess->cursor_row += std::max(1, sess->viewport_h / kSheetRowHeight / 2);
     }
-    if (ctrl && IsKeyPressed(KEY_U)) {
+    if (ctrl && held(KEY_U)) {
         sess->cursor_row = std::max(0, sess->cursor_row - std::max(1, sess->viewport_h / kSheetRowHeight / 2));
     }
 }
@@ -3694,6 +3859,809 @@ void Editor::HandleSheetVisualInput() {
     }
 }
 
+// --- Kanban board / Gantt chart panes -----------------------------------
+//
+// Unlike every doc-type block above, a Kanban/Gantt "session" does NOT
+// stand in for Buffer::lines the way SheetSession/OfficeSession/PdfSession
+// do (those buffers' `lines` stay a dummy single empty line forever) --
+// Buf().lines here stays the buffer's real, saved org text throughout; a
+// KanbanSession/GanttSession is a disposable parsed-OrgOutline + UI-state
+// cache layered over it (see org_doc.h's top comment). Every mutation
+// method below therefore goes through the SAME PushUndo()-backed
+// primitives an ordinary text edit would (ReplaceLinesForLua, ExMoveOrCopy)
+// rather than a separate snapshot stack like PushUndoSheet/PushUndoOffice,
+// and always finishes by re-parsing `outline` from the fresh Buf().lines --
+// never a partial in-memory patch, so a stray index can't drift out of
+// sync with the text it describes.
+
+bool Editor::IsKanbanViewActive(int buffer_id) const {
+    auto it = org_view_mode_.find(buffer_id);
+    return it != org_view_mode_.end() && it->second == OrgViewMode::Kanban;
+}
+
+bool Editor::IsGanttViewActive(int buffer_id) const {
+    auto it = org_view_mode_.find(buffer_id);
+    return it != org_view_mode_.end() && it->second == OrgViewMode::Gantt;
+}
+
+const KanbanSession *Editor::GetKanban(int buffer_id) const {
+    auto it = kanban_views_.find(buffer_id);
+    return it == kanban_views_.end() ? nullptr : &it->second;
+}
+
+KanbanSession *Editor::GetKanbanMutable(int buffer_id) {
+    auto it = kanban_views_.find(buffer_id);
+    return it == kanban_views_.end() ? nullptr : &it->second;
+}
+
+const GanttSession *Editor::GetGantt(int buffer_id) const {
+    auto it = gantt_views_.find(buffer_id);
+    return it == gantt_views_.end() ? nullptr : &it->second;
+}
+
+GanttSession *Editor::GetGanttMutable(int buffer_id) {
+    auto it = gantt_views_.find(buffer_id);
+    return it == gantt_views_.end() ? nullptr : &it->second;
+}
+
+std::vector<std::string> Editor::KanbanColumns(int buffer_id) const {
+    auto it = kanban_views_.find(buffer_id);
+    if (it == kanban_views_.end()) return {};
+    std::vector<std::string> cols = it->second.outline.todo_keywords;
+    cols.insert(cols.end(), it->second.outline.done_keywords.begin(), it->second.outline.done_keywords.end());
+    return cols;
+}
+
+std::vector<int> Editor::KanbanCardsInColumn(int buffer_id, int column_index) const {
+    std::vector<int> out;
+    auto it = kanban_views_.find(buffer_id);
+    if (it == kanban_views_.end()) return out;
+    std::vector<std::string> cols = KanbanColumns(buffer_id);
+    if (column_index < 0 || column_index >= static_cast<int>(cols.size())) return out;
+    const std::string &kw = cols[column_index];
+    const OrgOutline &outline = it->second.outline;
+    for (size_t i = 0; i < outline.headlines.size(); i++) {
+        if (outline.headlines[i].todo_keyword == kw) out.push_back(static_cast<int>(i));
+    }
+    return out;
+}
+
+std::vector<int> Editor::GanttRows(int buffer_id) const {
+    std::vector<int> out;
+    auto it = gantt_views_.find(buffer_id);
+    if (it == gantt_views_.end()) return out;
+    const OrgOutline &outline = it->second.outline;
+    for (size_t i = 0; i < outline.headlines.size(); i++) {
+        if (!outline.headlines[i].scheduled.present) continue;
+        bool hidden = false;
+        for (int parent = outline.headlines[i].parent_index; parent >= 0; parent = outline.headlines[parent].parent_index) {
+            if (it->second.collapsed_headlines.count(parent)) { hidden = true; break; }
+        }
+        if (!hidden) out.push_back(static_cast<int>(i));
+    }
+    return out;
+}
+
+void Editor::OpenKanbanView() {
+    if (!IsOrgBuffer()) {
+        status_message_ = "Kanban view requires a .org buffer";
+        return;
+    }
+    int buffer_id = CurPane().buffer_id;
+    KanbanSession &sess = kanban_views_[buffer_id];  // keeps prior UI state if this buffer's already been viewed
+    sess.buffer_id = buffer_id;
+    sess.outline = ParseOrgOutline(Buf().lines);
+    sess.editing = false;
+    org_view_mode_[buffer_id] = OrgViewMode::Kanban;
+    pending_g_ = false;
+    status_message_.clear();
+    SyncModeToActivePaneBuffer();
+}
+
+void Editor::OpenGanttView() {
+    if (!IsOrgBuffer()) {
+        status_message_ = "Gantt view requires a .org buffer";
+        return;
+    }
+    int buffer_id = CurPane().buffer_id;
+    GanttSession &sess = gantt_views_[buffer_id];
+    sess.buffer_id = buffer_id;
+    sess.outline = ParseOrgOutline(Buf().lines);
+    if (sess.anchor_day == 0) {
+        // First-ever open for this buffer (a freshly default-constructed
+        // session): center the initial view a few days before the
+        // earliest SCHEDULED date found, rather than the 1970 epoch. A
+        // later toggle back in (sess already existed) keeps whatever
+        // anchor_day the user had already panned to.
+        long long earliest = 0;
+        bool found = false;
+        for (const auto &h : sess.outline.headlines) {
+            if (!h.scheduled.present) continue;
+            long long d = OrgDayNumber(h.scheduled.year, h.scheduled.month, h.scheduled.day);
+            if (!found || d < earliest) {
+                earliest = d;
+                found = true;
+            }
+        }
+        if (found) sess.anchor_day = earliest - 3;
+    }
+    org_view_mode_[buffer_id] = OrgViewMode::Gantt;
+    pending_g_ = false;
+    status_message_.clear();
+    SyncModeToActivePaneBuffer();
+}
+
+void Editor::CloseOrgView() {
+    org_view_mode_[CurPane().buffer_id] = OrgViewMode::Text;
+    pending_g_ = false;
+    SyncModeToActivePaneBuffer();
+}
+
+void Editor::KanbanSetCardColumn(int headline_index, const std::string &new_keyword) {
+    auto it = kanban_views_.find(CurPane().buffer_id);
+    if (it == kanban_views_.end()) return;
+    KanbanSession &sess = it->second;
+    if (headline_index < 0 || headline_index >= static_cast<int>(sess.outline.headlines.size())) return;
+    const OrgHeadline &h = sess.outline.headlines[headline_index];
+    std::string new_line = RewriteHeadlineKeyword(Buf().lines[h.line_start], new_keyword, sess.outline.todo_keywords,
+                                                   sess.outline.done_keywords);
+    ReplaceLinesForLua(h.line_start, h.line_start + 1, {new_line});
+    sess.outline = ParseOrgOutline(Buf().lines);
+}
+
+void Editor::KanbanMoveCardBefore(int headline_index, int before_headline_index) {
+    auto it = kanban_views_.find(CurPane().buffer_id);
+    if (it == kanban_views_.end()) return;
+    KanbanSession &sess = it->second;
+    int n = static_cast<int>(sess.outline.headlines.size());
+    if (headline_index < 0 || headline_index >= n || before_headline_index == headline_index) return;
+    const OrgHeadline &h = sess.outline.headlines[headline_index];
+    int dest_row;
+    if (before_headline_index < 0 || before_headline_index >= n) {
+        dest_row = Buf().LineCount() - 1;
+    } else {
+        const OrgHeadline &target = sess.outline.headlines[before_headline_index];
+        if (target.line_start >= h.line_start && target.line_start <= h.line_end) return;  // inside its own subtree
+        dest_row = target.line_start - 1;
+    }
+    ExMoveOrCopy(h.line_start, h.line_end, dest_row, /*is_copy=*/false);
+    sess.outline = ParseOrgOutline(Buf().lines);
+}
+
+void Editor::KanbanRenameCard(int headline_index, const std::string &new_title) {
+    auto it = kanban_views_.find(CurPane().buffer_id);
+    if (it == kanban_views_.end()) return;
+    KanbanSession &sess = it->second;
+    if (headline_index < 0 || headline_index >= static_cast<int>(sess.outline.headlines.size())) return;
+    const OrgHeadline &h = sess.outline.headlines[headline_index];
+    std::string new_line = FormatHeadlineLine(h.level, h.todo_keyword, h.priority, new_title, h.tags);
+    ReplaceLinesForLua(h.line_start, h.line_start + 1, {new_line});
+    sess.outline = ParseOrgOutline(Buf().lines);
+}
+
+int Editor::KanbanNewCard(const std::string &column_keyword, const std::string &title) {
+    auto it = kanban_views_.find(CurPane().buffer_id);
+    if (it == kanban_views_.end()) return -1;
+    KanbanSession &sess = it->second;
+    std::string new_line = FormatHeadlineLine(1, column_keyword, 0, title, {});
+    int end = Buf().LineCount();
+    ReplaceLinesForLua(end, end, {new_line});
+    sess.outline = ParseOrgOutline(Buf().lines);
+    return static_cast<int>(sess.outline.headlines.size()) - 1;
+}
+
+void Editor::KanbanBeginRenameNewCard(int headline_index) {
+    KanbanSession *sess = GetKanbanMutable(CurPane().buffer_id);
+    if (!sess || headline_index < 0 || headline_index >= static_cast<int>(sess->outline.headlines.size())) return;
+    sess->editing_headline_index = headline_index;
+    sess->edit_buffer.clear();
+    sess->edit_cursor = 0;
+    sess->editing = true;
+    mode_ = Mode::KanbanInsert;
+}
+
+void Editor::KanbanDeleteCard(int headline_index) {
+    auto it = kanban_views_.find(CurPane().buffer_id);
+    if (it == kanban_views_.end()) return;
+    KanbanSession &sess = it->second;
+    if (headline_index < 0 || headline_index >= static_cast<int>(sess.outline.headlines.size())) return;
+    const OrgHeadline &h = sess.outline.headlines[headline_index];
+    ReplaceLinesForLua(h.line_start, h.line_end + 1, {});
+    sess.outline = ParseOrgOutline(Buf().lines);
+}
+
+void Editor::EnsureOrgTodoLine() {
+    auto it = kanban_views_.find(CurPane().buffer_id);
+    if (it == kanban_views_.end()) return;
+    if (FindOrgTodoLineIndex(Buf().lines) >= 0) return;
+    ReplaceLinesForLua(0, 0, {FormatTodoLine({"TODO"}, {"DONE"})});
+    it->second.outline = ParseOrgOutline(Buf().lines);
+}
+
+int Editor::KanbanAddColumn(const std::string &name) {
+    EnsureOrgTodoLine();
+    auto it = kanban_views_.find(CurPane().buffer_id);
+    if (it == kanban_views_.end()) return -1;
+    KanbanSession &sess = it->second;
+    for (const auto &kw : KanbanColumns(CurPane().buffer_id)) {
+        if (kw == name) {
+            status_message_ = "Column \"" + name + "\" already exists";
+            return -1;
+        }
+    }
+    int line_idx = FindOrgTodoLineIndex(Buf().lines);
+    if (line_idx < 0) return -1;
+    std::vector<std::string> new_todo = sess.outline.todo_keywords;
+    new_todo.push_back(name);
+    ReplaceLinesForLua(line_idx, line_idx + 1, {FormatTodoLine(new_todo, sess.outline.done_keywords)});
+    sess.outline = ParseOrgOutline(Buf().lines);
+    status_message_.clear();
+    return static_cast<int>(new_todo.size()) - 1;
+}
+
+void Editor::KanbanRenameColumn(int column_index, const std::string &new_name) {
+    EnsureOrgTodoLine();
+    auto it = kanban_views_.find(CurPane().buffer_id);
+    if (it == kanban_views_.end()) return;
+    KanbanSession &sess = it->second;
+    std::vector<std::string> columns = KanbanColumns(CurPane().buffer_id);
+    if (column_index < 0 || column_index >= static_cast<int>(columns.size()) || new_name.empty()) return;
+    const std::string old_name = columns[column_index];
+    if (old_name == new_name) return;
+    for (const auto &kw : columns) {
+        if (kw == new_name) {
+            status_message_ = "Column \"" + new_name + "\" already exists";
+            return;
+        }
+    }
+
+    // Capture the OLD keyword lists before mutating anything -- every
+    // existing headline's line still literally contains the old token, so
+    // RewriteHeadlineKeyword needs the OLD lists to recognize and relocate
+    // it (same reasoning KanbanSetCardColumn already relies on).
+    const std::vector<std::string> old_todo = sess.outline.todo_keywords;
+    const std::vector<std::string> old_done = sess.outline.done_keywords;
+    for (const OrgHeadline &h : sess.outline.headlines) {
+        if (h.todo_keyword != old_name) continue;
+        std::string new_line = RewriteHeadlineKeyword(Buf().lines[h.line_start], new_name, old_todo, old_done);
+        ReplaceLinesForLua(h.line_start, h.line_start + 1, {new_line});
+    }
+
+    bool todo_side = column_index < static_cast<int>(old_todo.size());
+    std::vector<std::string> new_todo = old_todo, new_done = old_done;
+    if (todo_side) {
+        new_todo[column_index] = new_name;
+    } else {
+        new_done[column_index - static_cast<int>(old_todo.size())] = new_name;
+    }
+    int line_idx = FindOrgTodoLineIndex(Buf().lines);
+    if (line_idx >= 0) ReplaceLinesForLua(line_idx, line_idx + 1, {FormatTodoLine(new_todo, new_done)});
+    sess.outline = ParseOrgOutline(Buf().lines);
+    status_message_.clear();
+}
+
+void Editor::KanbanMoveColumn(int column_index, int before_column) {
+    // A board with no explicit sequence still renders the default TODO/DONE
+    // columns. Materialize that sequence before reordering it so the drag is
+    // persistent for those ordinary Org files too.
+    EnsureOrgTodoLine();
+    auto it = kanban_views_.find(CurPane().buffer_id);
+    if (it == kanban_views_.end()) return;
+    KanbanSession &sess = it->second;
+    std::vector<std::string> columns = KanbanColumns(CurPane().buffer_id);
+    int count = static_cast<int>(columns.size());
+    if (column_index < 0 || column_index >= count || before_column < 0 || before_column > count ||
+        before_column == column_index || before_column == column_index + 1) {
+        return;
+    }
+
+    // `before_column` names a gap in the pre-move ordering. Erasing an item
+    // to its left shifts that gap left by one.
+    std::string moved = columns[column_index];
+    columns.erase(columns.begin() + column_index);
+    if (before_column > column_index) --before_column;
+    columns.insert(columns.begin() + before_column, std::move(moved));
+
+    // Org's TODO syntax has one fixed separator. Keeping it at the same
+    // display position lets the board represent the exact dragged order;
+    // a keyword crossing that separator intentionally becomes TODO/DONE.
+    int todo_count = static_cast<int>(sess.outline.todo_keywords.size());
+    std::vector<std::string> new_todo(columns.begin(), columns.begin() + todo_count);
+    std::vector<std::string> new_done(columns.begin() + todo_count, columns.end());
+    int line_idx = FindOrgTodoLineIndex(Buf().lines);
+    if (line_idx < 0) return;
+    ReplaceLinesForLua(line_idx, line_idx + 1, {FormatTodoLine(new_todo, new_done)});
+    sess.outline = ParseOrgOutline(Buf().lines);
+    sess.focused_column = before_column;
+    sess.focused_row = 0;
+    status_message_.clear();
+}
+
+void Editor::KanbanDeleteColumn(int column_index) {
+    EnsureOrgTodoLine();
+    int buffer_id = CurPane().buffer_id;
+    auto it = kanban_views_.find(buffer_id);
+    if (it == kanban_views_.end()) return;
+    KanbanSession &sess = it->second;
+    std::vector<std::string> columns = KanbanColumns(buffer_id);
+    if (column_index < 0 || column_index >= static_cast<int>(columns.size())) return;
+    if (columns.size() <= 1) {
+        status_message_ = "Can't delete the last column";
+        return;
+    }
+    std::vector<int> cards = KanbanCardsInColumn(buffer_id, column_index);
+    if (!cards.empty()) {
+        status_message_ = "Move " + std::to_string(cards.size()) + " card(s) out of \"" + columns[column_index] +
+                           "\" before deleting it";
+        return;
+    }
+    std::vector<std::string> new_todo = sess.outline.todo_keywords, new_done = sess.outline.done_keywords;
+    bool todo_side = column_index < static_cast<int>(new_todo.size());
+    if (todo_side) {
+        new_todo.erase(new_todo.begin() + column_index);
+    } else {
+        new_done.erase(new_done.begin() + (column_index - static_cast<int>(sess.outline.todo_keywords.size())));
+    }
+    int line_idx = FindOrgTodoLineIndex(Buf().lines);
+    if (line_idx < 0) return;
+    ReplaceLinesForLua(line_idx, line_idx + 1, {FormatTodoLine(new_todo, new_done)});
+    sess.outline = ParseOrgOutline(Buf().lines);
+    status_message_.clear();
+}
+
+void Editor::GanttShiftHeadline(int headline_index, int delta_days) {
+    auto it = gantt_views_.find(CurPane().buffer_id);
+    if (it == gantt_views_.end()) return;
+    GanttSession &sess = it->second;
+    if (headline_index < 0 || headline_index >= static_cast<int>(sess.outline.headlines.size())) return;
+    const OrgHeadline &h = sess.outline.headlines[headline_index];
+    if (h.planning_line < 0) return;
+    std::string line = Buf().lines[h.planning_line];
+    if (h.scheduled.present) line = RewriteTimestampInLine(line, false, ShiftTimestamp(h.scheduled, delta_days));
+    if (h.deadline.present) line = RewriteTimestampInLine(line, true, ShiftTimestamp(h.deadline, delta_days));
+    ReplaceLinesForLua(h.planning_line, h.planning_line + 1, {line});
+    sess.outline = ParseOrgOutline(Buf().lines);
+}
+
+void Editor::GanttSetHeadlineDate(int headline_index, bool is_deadline, long long new_day) {
+    auto it = gantt_views_.find(CurPane().buffer_id);
+    if (it == gantt_views_.end()) return;
+    GanttSession &sess = it->second;
+    if (headline_index < 0 || headline_index >= static_cast<int>(sess.outline.headlines.size())) return;
+    const OrgHeadline &h = sess.outline.headlines[headline_index];
+    if (h.planning_line < 0 || !h.scheduled.present) return;
+
+    if (!is_deadline) {
+        if (h.deadline.present) {
+            long long deadline_day = OrgDayNumber(h.deadline.year, h.deadline.month, h.deadline.day);
+            if (new_day >= deadline_day) return;  // start can't cross past the end
+        }
+        OrgTimestamp new_ts = h.scheduled;
+        OrgDateFromDayNumber(new_day, new_ts.year, new_ts.month, new_ts.day);
+        std::string line = RewriteTimestampInLine(Buf().lines[h.planning_line], false, new_ts);
+        ReplaceLinesForLua(h.planning_line, h.planning_line + 1, {line});
+    } else {
+        long long scheduled_day = OrgDayNumber(h.scheduled.year, h.scheduled.month, h.scheduled.day);
+        if (new_day <= scheduled_day) return;  // end can't cross before the start
+        OrgTimestamp new_ts = h.deadline.present ? h.deadline : OrgTimestamp{};
+        OrgDateFromDayNumber(new_day, new_ts.year, new_ts.month, new_ts.day);
+        new_ts.present = true;
+        std::string line = Buf().lines[h.planning_line];
+        line = h.deadline.present ? RewriteTimestampInLine(line, true, new_ts)
+                                   : (line + " DEADLINE: " + FormatOrgTimestamp(new_ts));
+        ReplaceLinesForLua(h.planning_line, h.planning_line + 1, {line});
+    }
+    sess.outline = ParseOrgOutline(Buf().lines);
+}
+
+void Editor::GanttSetHeadlineProgress(int headline_index, int progress) {
+    auto it = gantt_views_.find(CurPane().buffer_id);
+    if (it == gantt_views_.end()) return;
+    GanttSession &sess = it->second;
+    if (headline_index < 0 || headline_index >= static_cast<int>(sess.outline.headlines.size())) return;
+    progress = std::clamp(progress, 0, 100);
+    const OrgHeadline &h = sess.outline.headlines[headline_index];
+    int insert_at = h.line_start + 1;
+    if (h.planning_line >= 0) insert_at = h.planning_line + 1;
+    auto stripped = [](const std::string &line) {
+        size_t first = line.find_first_not_of(' ');
+        return first == std::string::npos ? std::string() : line.substr(first);
+    };
+    auto is_progress_property = [&](const std::string &line) {
+        std::string text = stripped(line);
+        return text.rfind(":PROGRESS:", 0) == 0 || text.rfind(":progress:", 0) == 0;
+    };
+    if (insert_at < Buf().LineCount() && stripped(Buf().lines[insert_at]) == ":PROPERTIES:") {
+        for (int line = insert_at + 1; line < Buf().LineCount() && stripped(Buf().lines[line]) != ":END:"; ++line) {
+            if (is_progress_property(Buf().lines[line])) {
+                ReplaceLinesForLua(line, line + 1, {":PROGRESS: " + std::to_string(progress)});
+                sess.outline = ParseOrgOutline(Buf().lines);
+                return;
+            }
+        }
+        int end = insert_at + 1;
+        while (end < Buf().LineCount() && stripped(Buf().lines[end]) != ":END:") ++end;
+        ReplaceLinesForLua(end, end, {":PROGRESS: " + std::to_string(progress)});
+    } else {
+        ReplaceLinesForLua(insert_at, insert_at, {":PROPERTIES:", ":PROGRESS: " + std::to_string(progress), ":END:"});
+    }
+    sess.outline = ParseOrgOutline(Buf().lines);
+}
+
+void Editor::HandleKanbanNormalInput() {
+    KanbanSession *sess = nullptr;
+    {
+        auto it = kanban_views_.find(CurPane().buffer_id);
+        if (it == kanban_views_.end()) {
+            mode_ = Mode::Normal;
+            return;
+        }
+        sess = &it->second;
+    }
+    int buffer_id = CurPane().buffer_id;
+    std::vector<std::string> columns = KanbanColumns(buffer_id);
+    if (columns.empty()) return;
+    sess->focused_column = std::clamp(sess->focused_column, 0, static_cast<int>(columns.size()) - 1);
+    std::vector<int> cards = KanbanCardsInColumn(buffer_id, sess->focused_column);
+    sess->focused_row = cards.empty() ? 0 : std::clamp(sess->focused_row, 0, static_cast<int>(cards.size()) - 1);
+
+    auto held = [](int key) { return IsKeyPressed(key) || IsKeyPressedRepeat(key); };
+    bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+    // Shift+H/L moves the focused *card* into the adjacent column (the same
+    // KanbanSetCardColumn a cross-column drag-release already commits);
+    // plain H/L (or the arrows, which have no shift variant to conflict
+    // with) just moves focus. Checked as its own branch rather than
+    // alongside the plain moves below since both would otherwise fire off
+    // the same physical H/L keypress.
+    if (shift && held(KEY_H) && !cards.empty() && sess->focused_column > 0) {
+        int hi = cards[sess->focused_row];
+        int desired_row = sess->focused_row;
+        int new_column = sess->focused_column - 1;
+        KanbanSetCardColumn(hi, columns[new_column]);
+        sess->focused_column = new_column;
+        std::vector<int> moved_cards = KanbanCardsInColumn(buffer_id, new_column);
+        // Horizontal movement keeps the cursor's board row. The moved card
+        // may occupy a different document-order slot in its new column, but
+        // navigating the board should not jump the user's focus to row 0.
+        sess->focused_row = moved_cards.empty() ? 0 : std::min(desired_row, static_cast<int>(moved_cards.size()) - 1);
+        return;
+    }
+    if (shift && held(KEY_L) && !cards.empty() && sess->focused_column + 1 < static_cast<int>(columns.size())) {
+        int hi = cards[sess->focused_row];
+        int desired_row = sess->focused_row;
+        int new_column = sess->focused_column + 1;
+        KanbanSetCardColumn(hi, columns[new_column]);
+        sess->focused_column = new_column;
+        std::vector<int> moved_cards = KanbanCardsInColumn(buffer_id, new_column);
+        sess->focused_row = moved_cards.empty() ? 0 : std::min(desired_row, static_cast<int>(moved_cards.size()) - 1);
+        return;
+    }
+    if (!shift && (held(KEY_H) || held(KEY_LEFT))) {
+        sess->focused_column = std::max(0, sess->focused_column - 1);
+        sess->focused_row = 0;
+    }
+    if (!shift && (held(KEY_L) || held(KEY_RIGHT))) {
+        sess->focused_column = std::min(static_cast<int>(columns.size()) - 1, sess->focused_column + 1);
+        sess->focused_row = 0;
+    }
+    if (held(KEY_J) || held(KEY_DOWN)) {
+        if (!cards.empty()) sess->focused_row = std::min(static_cast<int>(cards.size()) - 1, sess->focused_row + 1);
+    }
+    if (held(KEY_K) || held(KEY_UP)) sess->focused_row = std::max(0, sess->focused_row - 1);
+
+    int cp = GetCharPressed();
+    while (cp > 0) {
+        if (cp == ':') {
+            EnterCommand();
+            return;
+        } else if (cp == static_cast<int>(leader_key_) && !whichkey_bindings_.empty()) {
+            TriggerWhichKey();
+            return;
+        } else if (cp == 'i' && !cards.empty()) {
+            int hi = cards[sess->focused_row];
+            sess->editing_headline_index = hi;
+            sess->edit_buffer = sess->outline.headlines[hi].title;
+            sess->edit_cursor = static_cast<int>(sess->edit_buffer.size());
+            sess->editing = true;
+            mode_ = Mode::KanbanInsert;
+            return;
+        } else if (cp == 'n') {
+            std::string column_keyword = columns[sess->focused_column];
+            BeginPromptNative("New card title", "", [this, column_keyword](const std::string &title) {
+                if (!title.empty()) KanbanNewCard(column_keyword, title);
+            });
+            return;
+        } else if ((cp == 'x' || cp == 'd') && !cards.empty()) {
+            KanbanDeleteCard(cards[sess->focused_row]);
+            cards = KanbanCardsInColumn(buffer_id, sess->focused_column);
+            sess->focused_row = cards.empty() ? 0 : std::clamp(sess->focused_row, 0, static_cast<int>(cards.size()) - 1);
+        } else if (cp == 'u') {
+            Undo();
+            sess->outline = ParseOrgOutline(Buf().lines);
+        }
+        cp = GetCharPressed();
+    }
+    bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+    if (ctrl && IsKeyPressed(KEY_R)) {
+        Redo();
+        sess->outline = ParseOrgOutline(Buf().lines);
+    }
+}
+
+void Editor::HandleKanbanInsertInput() {
+    KanbanSession *sess = nullptr;
+    {
+        auto it = kanban_views_.find(CurPane().buffer_id);
+        if (it == kanban_views_.end()) {
+            mode_ = Mode::Normal;
+            return;
+        }
+        sess = &it->second;
+    }
+
+    bool escape = false, enter = false, backspace = false, del = false;
+    for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
+        if (key == KEY_ESCAPE) escape = true;
+        else if (key == KEY_ENTER) enter = true;
+        else if (key == KEY_BACKSPACE) backspace = true;
+        else if (key == KEY_DELETE) del = true;
+    }
+    if (escape) {
+        sess->editing = false;
+        mode_ = Mode::KanbanNormal;
+        return;
+    }
+    if (enter) {
+        int hi = sess->editing_headline_index;
+        std::string title = sess->edit_buffer;
+        sess->editing = false;
+        mode_ = Mode::KanbanNormal;
+        if (hi >= 0) KanbanRenameCard(hi, title);
+        return;
+    }
+
+    int cp = GetCharPressed();
+    while (cp > 0) {
+        if (cp >= 32 && cp <= 126) {
+            sess->edit_buffer.insert(sess->edit_buffer.begin() + sess->edit_cursor, static_cast<char>(cp));
+            sess->edit_cursor++;
+        }
+        cp = GetCharPressed();
+    }
+    if (backspace || IsKeyPressedRepeat(KEY_BACKSPACE)) {
+        if (sess->edit_cursor > 0) {
+            sess->edit_buffer.erase(sess->edit_buffer.begin() + sess->edit_cursor - 1);
+            sess->edit_cursor--;
+        }
+    }
+    if (del || IsKeyPressedRepeat(KEY_DELETE)) {
+        if (sess->edit_cursor < static_cast<int>(sess->edit_buffer.size())) {
+            sess->edit_buffer.erase(sess->edit_buffer.begin() + sess->edit_cursor);
+        }
+    }
+    if (IsKeyPressed(KEY_LEFT) || IsKeyPressedRepeat(KEY_LEFT)) sess->edit_cursor = std::max(0, sess->edit_cursor - 1);
+    if (IsKeyPressed(KEY_RIGHT) || IsKeyPressedRepeat(KEY_RIGHT)) {
+        sess->edit_cursor = std::min(static_cast<int>(sess->edit_buffer.size()), sess->edit_cursor + 1);
+    }
+}
+
+void Editor::HandleGanttNormalInput() {
+    GanttSession *sess = nullptr;
+    {
+        auto it = gantt_views_.find(CurPane().buffer_id);
+        if (it == gantt_views_.end()) {
+            mode_ = Mode::Normal;
+            return;
+        }
+        sess = &it->second;
+    }
+    int buffer_id = CurPane().buffer_id;
+    std::vector<int> rows = GanttRows(buffer_id);
+    if (!rows.empty()) sess->focused_row = std::clamp(sess->focused_row, 0, static_cast<int>(rows.size()) - 1);
+
+    auto held = [](int key) { return IsKeyPressed(key) || IsKeyPressedRepeat(key); };
+    if (held(KEY_J) || held(KEY_DOWN)) {
+        if (!rows.empty()) sess->focused_row = std::min(static_cast<int>(rows.size()) - 1, sess->focused_row + 1);
+    }
+    if (held(KEY_K) || held(KEY_UP)) sess->focused_row = std::max(0, sess->focused_row - 1);
+    if (held(KEY_H) || held(KEY_LEFT)) sess->anchor_day -= 1;
+    if (held(KEY_L) || held(KEY_RIGHT)) sess->anchor_day += 1;
+
+    auto has_children = [&](int headline_index) {
+        for (const OrgHeadline &candidate : sess->outline.headlines) {
+            if (candidate.parent_index == headline_index) return true;
+        }
+        return false;
+    };
+    auto toggle_fold = [&](int headline_index) {
+        if (!has_children(headline_index)) return;
+        if (sess->collapsed_headlines.count(headline_index)) sess->collapsed_headlines.erase(headline_index);
+        else sess->collapsed_headlines.insert(headline_index);
+    };
+
+    int cp = GetCharPressed();
+    while (cp > 0) {
+        if (sess->pending_fold_command) {
+            sess->pending_fold_command = false;
+            int focused = rows.empty() ? -1 : rows[sess->focused_row];
+            if ((cp == 'a' || cp == 'A') && focused >= 0) toggle_fold(focused);          // za
+            else if (cp == 'c' && focused >= 0) { if (has_children(focused)) sess->collapsed_headlines.insert(focused); } // zc
+            else if (cp == 'o' && focused >= 0) sess->collapsed_headlines.erase(focused); // zo
+            else if (cp == 'M') {
+                for (int i = 0; i < static_cast<int>(sess->outline.headlines.size()); ++i) {
+                    if (has_children(i)) sess->collapsed_headlines.insert(i);
+                }
+            } else if (cp == 'R') {
+                sess->collapsed_headlines.clear();
+            } else if (cp == 'm') {
+                int level = std::numeric_limits<int>::max();
+                for (int i = 0; i < static_cast<int>(sess->outline.headlines.size()); ++i) {
+                    if (has_children(i) && !sess->collapsed_headlines.count(i)) level = std::min(level, sess->outline.headlines[i].level);
+                }
+                if (level != std::numeric_limits<int>::max()) {
+                    for (int i = 0; i < static_cast<int>(sess->outline.headlines.size()); ++i) {
+                        if (has_children(i) && sess->outline.headlines[i].level == level) sess->collapsed_headlines.insert(i);
+                    }
+                }
+            } else if (cp == 'r') {
+                int level = std::numeric_limits<int>::max();
+                for (int i : sess->collapsed_headlines) level = std::min(level, sess->outline.headlines[i].level);
+                if (level != std::numeric_limits<int>::max()) {
+                    for (auto it = sess->collapsed_headlines.begin(); it != sess->collapsed_headlines.end();) {
+                        if (sess->outline.headlines[*it].level == level) it = sess->collapsed_headlines.erase(it);
+                        else ++it;
+                    }
+                }
+            }
+        } else if (cp == 'z') {
+            sess->pending_fold_command = true;
+        } else if (cp == ':') {
+            EnterCommand();
+            return;
+        } else if (cp == static_cast<int>(leader_key_) && !whichkey_bindings_.empty()) {
+            TriggerWhichKey();
+            return;
+        } else if (cp == '+' || cp == '=') {
+            sess->pixels_per_day = std::clamp(sess->pixels_per_day * 1.25f, 2.0f, 400.0f);
+        } else if (cp == '-' || cp == '_') {
+            sess->pixels_per_day = std::clamp(sess->pixels_per_day / 1.25f, 2.0f, 400.0f);
+        } else if (cp == 'f') {
+            long long first = 0, last = 0;
+            bool have_dates = false;
+            for (const OrgHeadline &h : sess->outline.headlines) {
+                if (!h.scheduled.present) continue;
+                long long start = OrgDayNumber(h.scheduled.year, h.scheduled.month, h.scheduled.day);
+                long long end = h.deadline.present ? OrgDayNumber(h.deadline.year, h.deadline.month, h.deadline.day) : start;
+                if (!have_dates) { first = start; last = end; have_dates = true; }
+                else { first = std::min(first, start); last = std::max(last, end); }
+            }
+            if (have_dates && sess->content_w > sess->label_col_w) {
+                sess->anchor_day = first - 2;
+                sess->pixels_per_day = std::clamp((sess->content_w - sess->label_col_w) /
+                                                       static_cast<float>(std::max(1LL, last - first + 5)),
+                                                   2.0f, 400.0f);
+                status_message_ = "Gantt: fit schedule";
+            }
+        } else if (cp == ' ' && !rows.empty()) {
+            toggle_fold(rows[sess->focused_row]);
+        } else if (cp == 'p' && !rows.empty()) {
+            int hi = rows[sess->focused_row];
+            std::string current = std::to_string(sess->outline.headlines[hi].progress);
+            BeginPromptNative("Progress (0-100)", current, [this, hi](const std::string &value) {
+                char *end = nullptr;
+                long parsed = std::strtol(value.c_str(), &end, 10);
+                if (end != value.c_str() && *end == '\0') GanttSetHeadlineProgress(hi, static_cast<int>(parsed));
+            });
+            return;
+        } else if (cp == 't') {
+            switch (sess->ruler_scale) {
+                case GanttSession::RulerScale::Days:
+                    sess->ruler_scale = GanttSession::RulerScale::Months;
+                    status_message_ = "Gantt scale: months";
+                    break;
+                case GanttSession::RulerScale::Months:
+                    sess->ruler_scale = GanttSession::RulerScale::Years;
+                    status_message_ = "Gantt scale: years";
+                    break;
+                case GanttSession::RulerScale::Years:
+                    sess->ruler_scale = GanttSession::RulerScale::Days;
+                    status_message_ = "Gantt scale: days";
+                    break;
+            }
+        } else if (cp == 'i' && !rows.empty()) {
+            GanttBeginRename(rows[sess->focused_row]);
+            return;
+        } else if (cp == 'u') {
+            Undo();
+            sess->outline = ParseOrgOutline(Buf().lines);
+        }
+        cp = GetCharPressed();
+    }
+    bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+    if (ctrl && IsKeyPressed(KEY_R)) {
+        Redo();
+        sess->outline = ParseOrgOutline(Buf().lines);
+    }
+}
+
+void Editor::GanttBeginRename(int headline_index) {
+    GanttSession *sess = GetGanttMutable(CurPane().buffer_id);
+    if (!sess || headline_index < 0 || headline_index >= static_cast<int>(sess->outline.headlines.size())) return;
+    sess->editing_headline_index = headline_index;
+    sess->edit_buffer = sess->outline.headlines[headline_index].title;
+    sess->edit_cursor = static_cast<int>(sess->edit_buffer.size());
+    sess->editing = true;
+    mode_ = Mode::GanttInsert;
+}
+
+void Editor::GanttRenameHeadline(int headline_index, const std::string &new_title) {
+    auto it = gantt_views_.find(CurPane().buffer_id);
+    if (it == gantt_views_.end()) return;
+    GanttSession &sess = it->second;
+    if (headline_index < 0 || headline_index >= static_cast<int>(sess.outline.headlines.size())) return;
+    const OrgHeadline &h = sess.outline.headlines[headline_index];
+    std::string new_line = FormatHeadlineLine(h.level, h.todo_keyword, h.priority, new_title, h.tags);
+    ReplaceLinesForLua(h.line_start, h.line_start + 1, {new_line});
+    sess.outline = ParseOrgOutline(Buf().lines);
+}
+
+void Editor::HandleGanttInsertInput() {
+    GanttSession *sess = nullptr;
+    {
+        auto it = gantt_views_.find(CurPane().buffer_id);
+        if (it == gantt_views_.end()) {
+            mode_ = Mode::Normal;
+            return;
+        }
+        sess = &it->second;
+    }
+
+    bool escape = false, enter = false, backspace = false, del = false;
+    for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
+        if (key == KEY_ESCAPE) escape = true;
+        else if (key == KEY_ENTER) enter = true;
+        else if (key == KEY_BACKSPACE) backspace = true;
+        else if (key == KEY_DELETE) del = true;
+    }
+    if (escape) {
+        sess->editing = false;
+        mode_ = Mode::GanttNormal;
+        return;
+    }
+    if (enter) {
+        int hi = sess->editing_headline_index;
+        std::string title = sess->edit_buffer;
+        sess->editing = false;
+        mode_ = Mode::GanttNormal;
+        if (hi >= 0) GanttRenameHeadline(hi, title);
+        return;
+    }
+
+    int cp = GetCharPressed();
+    while (cp > 0) {
+        if (cp >= 32 && cp <= 126) {
+            sess->edit_buffer.insert(sess->edit_buffer.begin() + sess->edit_cursor, static_cast<char>(cp));
+            sess->edit_cursor++;
+        }
+        cp = GetCharPressed();
+    }
+    if (backspace || IsKeyPressedRepeat(KEY_BACKSPACE)) {
+        if (sess->edit_cursor > 0) {
+            sess->edit_buffer.erase(sess->edit_buffer.begin() + sess->edit_cursor - 1);
+            sess->edit_cursor--;
+        }
+    }
+    if (del || IsKeyPressedRepeat(KEY_DELETE)) {
+        if (sess->edit_cursor < static_cast<int>(sess->edit_buffer.size())) {
+            sess->edit_buffer.erase(sess->edit_buffer.begin() + sess->edit_cursor);
+        }
+    }
+    if (IsKeyPressed(KEY_LEFT) || IsKeyPressedRepeat(KEY_LEFT)) sess->edit_cursor = std::max(0, sess->edit_cursor - 1);
+    if (IsKeyPressed(KEY_RIGHT) || IsKeyPressedRepeat(KEY_RIGHT)) {
+        sess->edit_cursor = std::min(static_cast<int>(sess->edit_buffer.size()), sess->edit_cursor + 1);
+    }
+}
+
 void Editor::HandleTerminalInput() {
     TerminalSession *sess = FindTerminal(CurPane().buffer_id);
     if (!sess) {
@@ -3770,6 +4738,42 @@ void Editor::HandleTerminalInput() {
     }
 }
 
+// Default defers to mep's own active theme so a terminal pane still
+// matches whatever colorscheme is active; Indexed covers both the classic
+// 16-color ANSI palette (fixed, standard-ish xterm values) and the
+// 16-255 6x6x6 color cube + grayscale ramp most modern CLI tools (ls
+// --color, git, npm, ripgrep, ...) actually use; Rgb is 24-bit true color.
+ThemeColor Editor::ResolveVTermColor(const VTermColor &c, bool is_fg) const {
+    static const ThemeColor kAnsi16[16] = {
+        {0, 0, 0, 255},       {205, 49, 49, 255},   {13, 188, 121, 255}, {229, 229, 16, 255},
+        {36, 114, 200, 255},  {188, 63, 188, 255},  {17, 168, 205, 255}, {229, 229, 229, 255},
+        {102, 102, 102, 255}, {241, 76, 76, 255},   {35, 209, 139, 255}, {245, 245, 67, 255},
+        {59, 142, 234, 255},  {214, 112, 214, 255}, {41, 184, 219, 255}, {255, 255, 255, 255},
+    };
+    switch (c.kind) {
+        case VTermColorKind::Default: {
+            ThemeColor tc;
+            ResolveHighlight(is_fg ? "Normal" : "NormalBg", &tc);
+            return tc;
+        }
+        case VTermColorKind::Rgb:
+            return ThemeColor{c.r, c.g, c.b, 255};
+        case VTermColorKind::Indexed:
+        default: {
+            int idx = c.index;
+            if (idx < 16) return kAnsi16[idx];
+            if (idx < 232) {
+                int n = idx - 16;
+                int r = n / 36, g = (n / 6) % 6, b = n % 6;
+                auto ramp = [](int v) { return static_cast<unsigned char>(v == 0 ? 0 : v * 40 + 55); };
+                return ThemeColor{ramp(r), ramp(g), ramp(b), 255};
+            }
+            unsigned char v = static_cast<unsigned char>(8 + (idx - 232) * 10);
+            return ThemeColor{v, v, v, 255};
+        }
+    }
+}
+
 // A *snapshot*, not a live view: VTerm's scrollback+grid is copied into
 // CurPane()'s buffer once, here, rather than re-synced every frame while
 // browsing. A live view would need to keep the user's cursor position
@@ -3798,6 +4802,20 @@ void Editor::EnterTerminalNormalMode(TerminalSession &sess) {
     buf.marks.clear();
     buf.modified = false;
 
+    // Snapshotted cell colors are carried as Decorations in a namespace of
+    // their own -- without this, the plain Normal-mode buffer this
+    // function builds has no way to know a cell was colored at all
+    // (VTermCell::fg/bg live on the TerminalSession, which this buffer
+    // isn't attached to), so every ANSI color a shell prompt/CLI tool used
+    // would otherwise vanish the instant Ctrl-\ Ctrl-N converted the live
+    // grid into ordinary text. Cleared and rebuilt every call (a fresh
+    // chord always describes exactly *this* snapshot, never a stale one).
+    int buffer_id = CurPane().buffer_id;
+    int color_ns = CreateNamespace("terminal_normal_colors");
+    ClearNamespaceInBuffer(buffer_id, color_ns);
+    ThemeColor default_fg;
+    ResolveHighlight("Normal", &default_fg);
+
     const VTerm *term = sess.vterm.get();
     int cursor_line = 0, cursor_col = 0;
     if (term) {
@@ -3806,18 +4824,79 @@ void Editor::EnterTerminalNormalMode(TerminalSession &sess) {
         for (int i = 0; i < sb_lines + rows; i++) {
             std::string line;
             line.reserve(static_cast<size_t>(cols));
+            // One resolved foreground color per *cell* (i.e. per on-screen
+            // column), not per byte -- Decoration::col_start/col_end are
+            // character-column indices everywhere else they're consumed
+            // (DrawPane's decoration rendering positions text at
+            // text_x + col*g_char_width, one draw call per column, the
+            // same convention DrawLineFast's own codepoint-at-a-time walk
+            // uses for the base text under it), and a cell's glyph can be
+            // more than one byte -- indexing by byte here would drift out
+            // of alignment with every decoration draw call after the
+            // first multi-byte cell on the line, recoloring (and re-
+            // positioning) the wrong stretch of text for the rest of it.
+            std::vector<ThemeColor> cell_fg;
+            cell_fg.reserve(static_cast<size_t>(cols));
             for (int c = 0; c < cols; c++) {
                 const VTermCell &cell = i < sb_lines ? term->ScrollbackAt(i, c) : term->At(i - sb_lines, c);
-                line += cell.ch.empty() ? " " : cell.ch;
+                const std::string &ch = cell.ch.empty() ? " " : cell.ch;
+                // Same reverse-video/faint handling DrawTerminalGrid
+                // (main.cpp) applies live -- reverse swaps which of the
+                // cell's two colors is "foreground" for display purposes,
+                // faint halves its brightness.
+                const VTermColor &fg_c = cell.reverse ? cell.bg : cell.fg;
+                ThemeColor fg = ResolveVTermColor(fg_c, true);
+                if (cell.faint) {
+                    fg.r = static_cast<unsigned char>(fg.r / 2);
+                    fg.g = static_cast<unsigned char>(fg.g / 2);
+                    fg.b = static_cast<unsigned char>(fg.b / 2);
+                }
+                line += ch;
+                cell_fg.push_back(fg);
             }
             // Trailing blanks are real (unused) cells, not meaningful
             // content -- trimmed for a cleaner view/yank, same as any
             // other program's "don't pad every line to the terminal
-            // width" convention. Safe as a byte-level trim: an ASCII
-            // space (0x20) never appears as a continuation/lead byte of
-            // a multi-byte UTF-8 cell.
+            // width" convention. Safe as a byte-level trim on `line`
+            // itself (an ASCII space (0x20) never appears as a
+            // continuation/lead byte of a multi-byte UTF-8 cell) -- but
+            // since each trimmed trailing space is exactly one cell too,
+            // the number of *bytes* trimmed off `line` still equals the
+            // number of trailing *cells* to drop from cell_fg.
             size_t end = line.find_last_not_of(' ');
-            buf.lines.push_back(end == std::string::npos ? std::string() : line.substr(0, end + 1));
+            if (end == std::string::npos) {
+                buf.lines.push_back(std::string());
+                continue;
+            }
+            size_t trimmed_bytes = line.size() - (end + 1);
+            buf.lines.push_back(line.substr(0, end + 1));
+            cell_fg.resize(cell_fg.size() - trimmed_bytes);
+            // Run-length-encode into one Decoration per contiguous same-
+            // color run of columns, skipping runs that already match the
+            // plain default foreground -- most terminal text is
+            // uncolored, and skipping those keeps the decoration count
+            // (and DrawPane's own per-row decoration-scan cost) down to
+            // just what's actually colored.
+            int row = static_cast<int>(buf.lines.size()) - 1;
+            size_t run_start = 0;
+            while (run_start < cell_fg.size()) {
+                size_t run_end = run_start + 1;
+                while (run_end < cell_fg.size() && cell_fg[run_end].r == cell_fg[run_start].r &&
+                       cell_fg[run_end].g == cell_fg[run_start].g && cell_fg[run_end].b == cell_fg[run_start].b) {
+                    run_end++;
+                }
+                const ThemeColor &fg = cell_fg[run_start];
+                if (fg.r != default_fg.r || fg.g != default_fg.g || fg.b != default_fg.b) {
+                    Decoration d;
+                    d.row = row;
+                    d.col_start = static_cast<int>(run_start);
+                    d.col_end = static_cast<int>(run_end);
+                    d.has_fg_color = true;
+                    d.fg_color = fg;
+                    AddDecorationToBuffer(buffer_id, color_ns, d);
+                }
+                run_start = run_end;
+            }
         }
         cursor_line = std::clamp(sb_lines + term->CursorRow(), 0, std::max(0, static_cast<int>(buf.lines.size()) - 1));
         // Trailing all-blank lines below the live cursor are just unused
@@ -4276,19 +5355,13 @@ void Editor::NavigatePaneDirection(const std::string &direction) {
             RestoreFromOverlay();
             return;
         }
-        // Smart resize (mirrors ResizeActivePane's own Mode::Sidebar
-        // branch): pressing further *outward* -- away from the pane tree,
-        // into the screen edge the sidebar is already docked against --
-        // has nowhere left to navigate, so shrink the sidebar instead of
-        // just doing nothing. mod1+h against an already-focused, left-
-        // docked file tree (with no pane further left to step back into
-        // either) is the common case; the other three edges follow the
-        // same rule.
-        bool outward = (sb->position == "left" && direction == "left") ||
-                       (sb->position == "right" && direction == "right") ||
-                       (sb->position == "top" && direction == "up") ||
-                       (sb->position == "bottom" && direction == "down");
-        if (outward) ResizeActivePane(direction);
+        // Pressing further *outward* -- away from the pane tree, into the
+        // screen edge the sidebar is already docked against -- has nowhere
+        // left to navigate, so this is a no-op. Resizing that edge is
+        // mod1+Shift+hjkl's job (ResizeActivePane's own Mode::Sidebar
+        // branch) exclusively -- bare mod1+hjkl must stay navigate-only,
+        // matching the same convention used everywhere else in the pane
+        // tree, so it must NOT also fall through to ResizeActivePane here.
         return;
     }
 
@@ -4338,31 +5411,35 @@ void Editor::EnsureShares(SplitNode *node) {
 }
 
 void Editor::ResizeActivePane(const std::string &direction, float step) {
-    // A focused sidebar isn't a node in the split tree, so it can't go
-    // through FindPathToPane/EnsureShares below -- grow/shrink its fixed
-    // cell size directly instead, only on the axis matching its own dock
-    // edge (mirrors the pane-tree branch's "no-op on the wrong axis" when
-    // a leaf is alone on that axis).
-    if (mode_ == Mode::Sidebar) {
-        SidebarInstance *sb = FindSidebarMut(focused_sidebar_id_);
+    // Shared by both the Mode::Sidebar branch (a focused sidebar isn't a
+    // node in the split tree, so it can't go through FindPathToPane/
+    // EnsureShares below) and the pane-tree branch's own "nothing to
+    // negotiate space with" fallback further down -- growing/shrinking a
+    // sidebar's fixed cell size directly, only on the axis matching its own
+    // dock edge (a no-op if `direction` doesn't match either edge of that
+    // axis).
+    auto resize_sidebar = [](SidebarInstance *sb, const std::string &dir) {
         if (!sb) return;
         constexpr int kSidebarResizeStep = 4;
         constexpr int kSidebarMinSize = 10;
         int delta = 0;
         if (sb->position == "left") {
-            if (direction == "right") delta = kSidebarResizeStep;
-            else if (direction == "left") delta = -kSidebarResizeStep;
+            if (dir == "right") delta = kSidebarResizeStep;
+            else if (dir == "left") delta = -kSidebarResizeStep;
         } else if (sb->position == "right") {
-            if (direction == "left") delta = kSidebarResizeStep;
-            else if (direction == "right") delta = -kSidebarResizeStep;
+            if (dir == "left") delta = kSidebarResizeStep;
+            else if (dir == "right") delta = -kSidebarResizeStep;
         } else if (sb->position == "top") {
-            if (direction == "down") delta = kSidebarResizeStep;
-            else if (direction == "up") delta = -kSidebarResizeStep;
+            if (dir == "down") delta = kSidebarResizeStep;
+            else if (dir == "up") delta = -kSidebarResizeStep;
         } else if (sb->position == "bottom") {
-            if (direction == "up") delta = kSidebarResizeStep;
-            else if (direction == "down") delta = -kSidebarResizeStep;
+            if (dir == "up") delta = kSidebarResizeStep;
+            else if (dir == "down") delta = -kSidebarResizeStep;
         }
         sb->size = std::max(kSidebarMinSize, sb->size + delta);
+    };
+    if (mode_ == Mode::Sidebar) {
+        resize_sidebar(FindSidebarMut(focused_sidebar_id_), direction);
         return;
     }
 
@@ -4374,38 +5451,59 @@ void Editor::ResizeActivePane(const std::string &direction, float step) {
 
     Tab &tab = tabs_[active_tab_];
     std::vector<std::pair<SplitNode *, int>> path;  // leaf-to-root order (see FindPathToPane)
-    if (!FindPathToPane(tab.root.get(), tab.active_pane_id, path)) return;
+    if (FindPathToPane(tab.root.get(), tab.active_pane_id, path)) {
+        for (auto &[node, child_index] : path) {
+            if (node->dir != want_dir || node->children.size() < 2) continue;
+            EnsureShares(node);
+            int n = static_cast<int>(node->children.size());
+            bool has_next = child_index + 1 < n;
+            bool has_prev = child_index > 0;
+            // "right"/"down" push the active child's far edge further that
+            // way (growing it) when it has a next sibling to push into;
+            // "left"/"up" retract that same edge (shrinking it). With no
+            // next sibling, the roles flip against the previous one
+            // instead -- see ResizeActivePane's header.
+            bool towards_next = (direction == "right" || direction == "down");
+            int other_index;
+            bool grow;
+            if (has_next) {
+                other_index = child_index + 1;
+                grow = towards_next;
+            } else if (has_prev) {
+                other_index = child_index - 1;
+                grow = !towards_next;
+            } else {
+                break;  // alone on this axis -- fall through to the sidebar check below
+            }
 
-    for (auto &[node, child_index] : path) {
-        if (node->dir != want_dir || node->children.size() < 2) continue;
-        EnsureShares(node);
-        int n = static_cast<int>(node->children.size());
-        bool has_next = child_index + 1 < n;
-        bool has_prev = child_index > 0;
-        // "right"/"down" push the active child's far edge further that
-        // way (growing it) when it has a next sibling to push into;
-        // "left"/"up" retract that same edge (shrinking it). With no next
-        // sibling, the roles flip against the previous one instead -- see
-        // ResizeActivePane's header.
-        bool towards_next = (direction == "right" || direction == "down");
-        int other_index;
-        bool grow;
-        if (has_next) {
-            other_index = child_index + 1;
-            grow = towards_next;
-        } else if (has_prev) {
-            other_index = child_index - 1;
-            grow = !towards_next;
-        } else {
-            return;  // alone on this axis
+            float delta = grow ? step : -step;
+            delta = std::clamp(delta, kMinPaneShare - node->shares[child_index],
+                                node->shares[other_index] - kMinPaneShare);
+            node->shares[child_index] += delta;
+            node->shares[other_index] -= delta;
+            return;
         }
+    }
 
-        float delta = grow ? step : -step;
-        delta = std::clamp(delta, kMinPaneShare - node->shares[child_index],
-                            node->shares[other_index] - kMinPaneShare);
-        node->shares[child_index] += delta;
-        node->shares[other_index] -= delta;
-        return;
+    // No sibling pane to negotiate space with on this axis (a lone unsplit
+    // pane is the common case, same as the user's report -- "only one pane
+    // to its right"), so there's nowhere in the split tree for this resize
+    // to go. Treat any open sidebar docked on this same axis (both edges,
+    // not just the one `direction` points at -- unlike
+    // NavigatePaneDirection's own "step into a sidebar" fallback, which
+    // only cares about the edge being moved *towards*) as if it were just
+    // another pane to negotiate space with: resize_sidebar's own
+    // direction-vs-position sign logic (identical to the Mode::Sidebar
+    // branch above) already does the right thing for either edge --
+    // e.g. with only a left-docked file tree open, "left" shrinks it and
+    // "right" grows it, matching the same h-shrinks-the-left-side/
+    // l-grows-the-left-side convention the pane-tree branch above already
+    // uses between two ordinary panes.
+    for (SidebarInstance &sb : sidebars_) {
+        if (!sb.open) continue;
+        bool on_axis = wants_columns ? (sb.position == "left" || sb.position == "right")
+                                      : (sb.position == "top" || sb.position == "bottom");
+        if (on_axis) resize_sidebar(&sb, direction);
     }
 }
 
@@ -4734,6 +5832,25 @@ void Editor::HandleNormalInput() {
         else if (key == KEY_I) ctrl_i = true;
         else if (key == KEY_C) ctrl_c = true;
         else if (key == KEY_E) ctrl_e = true;
+    }
+    // Held-repeat for the four page-scroll combos only (D/U/F/B) -- not
+    // the queue-drained loop above (which only ever sees a key's initial
+    // down-transition, by design: see this block's own comment; raylib's
+    // GetKeyPressed() queue never emits a second event for an OS/GLFW
+    // auto-repeat of an already-held key), so without this, holding
+    // Ctrl-D/U/F/B down scrolled once and then stopped. IsKeyPressedRepeat
+    // reads a distinct signal (a key already known to be down re-firing on
+    // its own repeat timer) than the single-frame press/release transition
+    // IsKeyPressed missed under a slow frame -- adding it here doesn't
+    // reintroduce that flakiness. The other Ctrl-combos in this same
+    // batch (V/A/X/O/I/C) are one-shot actions (enter a mode, jump once,
+    // nudge a number) where holding the key down repeating doesn't apply,
+    // so they're deliberately left on the queue-only path above.
+    if (ctrl) {
+        if (IsKeyPressedRepeat(KEY_D)) ctrl_d = true;
+        if (IsKeyPressedRepeat(KEY_U)) ctrl_u = true;
+        if (IsKeyPressedRepeat(KEY_F)) ctrl_f = true;
+        if (IsKeyPressedRepeat(KEY_B)) ctrl_b = true;
     }
     if (ctrl_v) {
         // On an .html/.htm buffer, Ctrl-V is repurposed as the escape
@@ -6219,6 +7336,25 @@ void Editor::HandleVisualInput() {
             macro_recording_buffer_.push_back(kReplayEscape);
         }
         EnterNormal();  // also clears pending_op_/pending_g_/pending_find_/pending_count_/etc.
+        return;
+    }
+
+    // Ctrl-D/Ctrl-U half-page scroll, same as Normal mode (HandleNormalInput)
+    // -- GLFW/raylib doesn't emit a char event while Ctrl is held, so these
+    // can never be reached via the GetCharPressed() loop below and need
+    // their own check. ScrollHalfPage moves CurPane().cursor.row directly,
+    // which naturally extends the Visual selection (anchor stays put) same
+    // as any other cursor-moving motion in Visual mode. IsKeyPressedRepeat
+    // is checked too so holding the combo down scrolls repeatedly, matching
+    // the fix already applied to HandleNormalInput/HandleOfficeNormalInput/
+    // HandleSheetNormalInput/HandleImageInput/HandleHtmlInput/HandlePdfInput.
+    bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+    if (ctrl && (IsKeyPressed(KEY_D) || IsKeyPressedRepeat(KEY_D))) {
+        ScrollHalfPage(true);
+        return;
+    }
+    if (ctrl && (IsKeyPressed(KEY_U) || IsKeyPressedRepeat(KEY_U))) {
+        ScrollHalfPage(false);
         return;
     }
 
@@ -8009,7 +9145,7 @@ const std::vector<std::string> &BuiltinCommandNames() {
         "close", "tabnew", "tabdelete", "tabclose", "tabnext", "tabn", "tabprevious", "tabp", "tabN",
         "set", "normal", "norm", "normal!", "norm!", "MepNotifyClear", "MepNotifyDismiss",
         "MepNotifyPanel", "MepLayout", "MepScratch", "MepZen", "colorscheme", "colo", "lua", "source",
-        "MepNextSheet", "MepPrevSheet",
+        "MepNextSheet", "MepPrevSheet", "Kanban", "Gantt", "Org", "Text", "CollabJoin", "CollabLeave", "CollabStatus",
     };
     return kNames;
 }
@@ -10038,6 +11174,22 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
         NextSheet();
     } else if (name == "MepPrevSheet") {
         PrevSheet();
+    } else if (name == "Kanban") {
+        OpenKanbanView();
+    } else if (name == "Gantt") {
+        OpenGanttView();
+    } else if (name == "Org" || name == "Text") {
+        CloseOrgView();
+    } else if (name == "CollabJoin") {
+        const size_t split = args.find(' ');
+        const std::string url = split == std::string::npos ? args : args.substr(0, split);
+        const std::string participant = split == std::string::npos ? "" : args.substr(split + 1);
+        JoinCollaboration(url, participant);
+    } else if (name == "CollabLeave") {
+        LeaveCollaboration();
+    } else if (name == "CollabStatus") {
+        if (!CollaborationActive()) status_message_ = "Collaboration: disconnected";
+        else status_message_ = "Collaboration: " + std::to_string(CollaborationPeers().size()) + " collaborator(s)";
     } else if (name == "colorscheme" || name == "colo") {
         if (args.empty()) {
             status_message_ = current_theme_name_;
@@ -10823,3 +11975,52 @@ void Editor::BeginCommand(const std::string &prefix) {
 }
 
 void Editor::RunCommand(const std::string &cmd) { ExecuteCommandLine(cmd); }
+
+namespace {
+std::string BufferText(const Buffer &buffer) {
+    std::string text;
+    for (size_t i = 0; i < buffer.lines.size(); ++i) { if (i) text.push_back('\n'); text += buffer.lines[i]; }
+    return text;
+}
+std::vector<std::string> BufferLines(const std::string &text) {
+    std::vector<std::string> lines; size_t begin = 0;
+    while (begin <= text.size()) { const size_t end = text.find('\n', begin); lines.push_back(text.substr(begin, end == std::string::npos ? std::string::npos : end - begin)); if (end == std::string::npos) break; begin = end + 1; }
+    if (lines.empty()) lines.push_back(""); return lines;
+}
+}  // namespace
+
+void Editor::JoinCollaboration(const std::string &url, const std::string &name) {
+    if (url.empty()) { status_message_ = "Usage: :CollabJoin wss://host/v1/session/<id>?secret=<secret> [name]"; return; }
+    LeaveCollaboration();
+    collaboration_ = std::make_unique<mep::collab::CollabSession>(url, name, BufferText(Buf()));
+    collaboration_buffer_id_ = CurrentBufferId();
+    collaboration_->Start();
+    status_message_ = "Collaboration: connecting…";
+}
+void Editor::LeaveCollaboration() {
+    if (collaboration_) { collaboration_->Stop(); collaboration_.reset(); collaboration_buffer_id_ = -1; status_message_ = "Collaboration: disconnected"; }
+}
+void Editor::TickCollaboration() {
+    if (!collaboration_) return;
+    if (CurrentBufferId() != collaboration_buffer_id_) return;
+    std::string merged;
+    if (collaboration_->Synchronize(BufferText(Buf()), &merged)) {
+        Buf().lines = BufferLines(merged); Buf().modified = true; ClampCursor();
+        status_message_ = "Collaboration: remote changes applied";
+    }
+    collaboration_->SetPresence(CurPane().cursor.row, CurPane().cursor.col);
+    const std::string error = collaboration_->error();
+    if (!error.empty()) status_message_ = "Collaboration: " + error;
+}
+bool Editor::CollaborationActive() const {
+    return collaboration_ && collaboration_->connected();
+}
+std::vector<Editor::CollaborationPeerInfo> Editor::CollaborationPeers() const {
+    std::vector<CollaborationPeerInfo> result;
+    if (collaboration_) for (const auto &peer : collaboration_->Collaborators()) result.push_back({peer.id, peer.name, peer.row, peer.col, peer.has_location});
+    return result;
+}
+bool Editor::JumpToCollaborator(const std::string &peer_id) {
+    for (const auto &peer : CollaborationPeers()) if (peer.id == peer_id && peer.has_location) { CurPane().cursor = {peer.row, peer.col}; ClampCursor(); status_message_ = "Collaboration: jumped to " + peer.name; return true; }
+    status_message_ = "Collaboration: collaborator has no shared location"; return false;
+}

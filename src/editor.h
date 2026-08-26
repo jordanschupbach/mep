@@ -5,6 +5,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -23,6 +24,11 @@
 // Same reasoning again -- HtmlSession holds an HtmlDoc (its DOM tree) by
 // value.
 #include "html_doc.h"
+// Same reasoning again -- KanbanSession/GanttSession hold an OrgOutline by
+// value.
+#include "org_doc.h"
+
+namespace mep::collab { class CollabSession; }
 
 // editor.h is deliberately raylib-free (editor.cpp includes raylib.h,
 // this header doesn't), so colors are stored as plain RGBA rather than
@@ -129,6 +135,27 @@ enum class Mode {
     SheetNormal,
     SheetInsert,
     SheetVisual,
+    // A focused Kanban-board pane (a KanbanSession, see below -- opened via
+    // ":Kanban" on a .org buffer, closed back to plain text via ":Org").
+    // Unlike Image/Pdf/Sheet/Office, the underlying Buffer::lines is NOT a
+    // dummy stand-in for a separate binary model -- it's the buffer's real,
+    // saved org text the whole time (see org_doc.h's top comment); a
+    // KanbanSession is a disposable parsed-outline + UI-state cache layered
+    // over it. hjkl move focus across columns/cards; 'i'/Enter enters
+    // KanbanInsert to rename the focused card's title; 'n' appends a new
+    // card; 'x'/'dd' deletes the focused card's whole subtree. See
+    // Editor::HandleKanbanNormalInput/HandleKanbanInsertInput.
+    KanbanNormal,
+    KanbanInsert,
+    // A focused Gantt-chart pane (a GanttSession, see below -- opened via
+    // ":Gantt"). Same "real org text, disposable outline cache" model as
+    // Kanban. Up/down moves the focused row, left/right pans the date
+    // axis, +/- zooms; card/bar dragging (main.cpp's
+    // UpdateGanttMouseInteraction) reschedules/resizes/creates a deadline;
+    // double-clicking a row's label (or 'i') enters GanttInsert to rename
+    // it. See Editor::HandleGanttNormalInput/HandleGanttInsertInput.
+    GanttNormal,
+    GanttInsert,
 };
 
 struct CursorPos {
@@ -250,6 +277,15 @@ struct Decoration {
     // color, not its nearest theme role.
     bool has_swatch = false;
     ThemeColor swatch_color;
+    // Literal RGB text-color override, bypassing the named hl_group lookup
+    // entirely -- distinct from has_swatch/swatch_color (which draws a
+    // small square *next to* col_start, not a text recolor). Used by
+    // Editor::EnterTerminalNormalMode to carry a snapshotted terminal
+    // cell's actual ANSI color, which (256-color/truecolor especially)
+    // doesn't map onto any of the theme's own named roles the way
+    // hl_group's other consumers (syntax highlighting, diagnostics) do.
+    bool has_fg_color = false;
+    ThemeColor fg_color;
 };
 
 // A fold range (NVIM_PARITY_PLAN.md Part I Phase 5). `provider` is a free-
@@ -588,6 +624,7 @@ struct PaneRect {
 
 class LuaEnv;
 class VTerm;
+struct VTermColor;
 class ImageDoc;
 
 // One `:terminal`/`:term` pane's PTY-backed state (Part VI Phase 27+):
@@ -881,6 +918,21 @@ struct OfficeSession {
     // plain text (no spans), so this is a plain int cursor, not a
     // paragraph-style col that also has to account for spans.
     int table_cell_col = 0;
+
+    // Word-wrap of the cursor's own paragraph, cached from the last time
+    // DrawPane (main.cpp) rendered it -- editor.cpp is raylib-free and
+    // can't word-wrap itself (needs MeasureTextEx), so
+    // Editor::MoveOfficeCursorVisualLine (j/k's "move to the visual line
+    // above/below", not just the prev/next paragraph) reads this
+    // last-frame answer instead, via Editor::SetOfficeCursorWrapLines --
+    // same "main.cpp computes, a plain setter bridges it into state here"
+    // split ResizeOfficeViewport/SetOfficeScroll already establish for the
+    // same underlying reason. cursor_wrap_lines_para guards against
+    // trusting stale data left over from a different paragraph (e.g. right
+    // after a jump that skipped a Draw cycle); callers must check it
+    // against cursor_para before trusting cursor_wrap_lines.
+    int cursor_wrap_lines_para = -1;
+    std::vector<std::pair<int, int>> cursor_wrap_lines;  // [start,end) byte range per visual line
 };
 
 // One spreadsheet pane's state, keyed by buffer id the same way
@@ -933,6 +985,142 @@ struct SheetSession {
     bool editing = false;
     std::string edit_buffer;
     int edit_cursor = 0;
+};
+
+// Fixed Kanban card/column geometry (screen pixels, unscaled) -- shared
+// between main.cpp's DrawKanban/UpdateKanbanMouseInteraction, same "must
+// agree exactly" reasoning as kSheetRowHeaderW/kSheetColWidth above.
+inline constexpr int kKanbanColumnWidth = 260;
+inline constexpr int kKanbanCardHeight = 64;
+inline constexpr int kKanbanCardGap = 10;
+
+// Gantt label-column width's *default* (screen pixels, unscaled) -- the
+// user can drag it wider/narrower per-buffer afterward (GanttSession::
+// label_col_w below). Row height isn't listed here at all: main.cpp's
+// GanttRowHeight() derives it from the live font size instead of a fixed
+// constant, so a row never clips its label regardless of zoom. Pixels-per-
+// day is also not fixed (it's GanttSession::pixels_per_day, the user's
+// zoom level).
+inline constexpr int kGanttLabelColW = 220;
+
+// Which overlay (if any) a .org buffer is currently being shown/edited
+// through -- see org_doc.h's top comment for why this is a thin render/
+// interaction overlay rather than an alternate storage model the way
+// Sheet/Office/Pdf are. Absent from Editor::org_view_mode_ (the default
+// map lookup) means Text -- the buffer's ordinary text-editing view.
+enum class OrgViewMode { Text, Kanban, Gantt };
+
+// One Kanban-board pane's state, keyed by buffer id (Editor::
+// kanban_views_) the same way SheetSession is. `outline` is a disposable
+// cache: every mutation method (Editor::KanbanSetCardColumn and friends)
+// re-parses it from Buf().lines right after splicing the edited line(s)
+// in, rather than patching it incrementally -- see org_doc.h's top
+// comment for why.
+struct KanbanSession {
+    int buffer_id = 0;
+    OrgOutline outline;
+    int focused_column = 0;
+    int focused_row = 0;
+
+    // Mode::KanbanInsert live rename state -- mirrors SheetSession::
+    // editing/edit_buffer/edit_cursor exactly (a card title is plain text,
+    // nothing rich to preserve across the edit).
+    bool editing = false;
+    std::string edit_buffer;
+    int edit_cursor = 0;
+    int editing_headline_index = -1;
+
+    // Press/move-threshold/release drag state, main.cpp's
+    // UpdateKanbanMouseInteraction's own PaneDragState-style convention
+    // (main.cpp:424-451's kind/threshold/start-pos shape), scoped per-
+    // buffer here instead of one shared global since more than one pane
+    // could show a Kanban view at once.
+    bool dragging = false;
+    int drag_headline_index = -1;
+    float drag_start_x = 0, drag_start_y = 0;
+    bool drag_threshold_passed = false;
+    // True when this drag started from the "+ New Card" chip rather than an
+    // existing card -- drag_headline_index is meaningless (-1) in that
+    // case; DrawKanban draws a "New card" ghost instead of indexing
+    // outline.headlines, and release creates the card via KanbanNewCard
+    // (into drop_column) instead of moving one.
+    bool drag_is_new_card = false;
+    // A header drag is deliberately separate from a card/new-card drag:
+    // its target is a gap between columns rather than a card row.
+    bool drag_is_column = false;
+    int drag_column_index = -1;
+    int column_drop_slot = -1;
+    // Live drop-target preview while dragging past the threshold -- only
+    // committed (KanbanSetCardColumn/KanbanMoveCardBefore/KanbanNewCard) on
+    // release.
+    int drop_column = -1;
+    int drop_row = -1;
+
+    // The content area DrawKanban (main.cpp) most recently rendered this
+    // board into -- refreshed every frame it's drawn, read back by
+    // UpdateKanbanMouseInteraction (called afterward, once per frame, same
+    // as main.cpp's own UpdatePaneMouseInteraction) so hit-testing a click/
+    // drag never needs its own separate geometry computation.
+    float content_x = 0, content_y = 0, content_w = 0, content_h = 0;
+    // The "+ New Card" chip's own screen rect (same raylib-free float-quad
+    // convention as content_x/y/w/h just above, not a Rectangle), same
+    // refresh/read-back split -- UpdateKanbanMouseInteraction hit-tests a
+    // press against it directly (a drag needs continuous IsMouseButtonDown
+    // polling, not a RegisterClickRegion fire-once callback).
+    float new_card_chip_x = 0, new_card_chip_y = 0, new_card_chip_w = 0, new_card_chip_h = 0;
+};
+
+// One Gantt-chart pane's state, keyed by buffer id (Editor::gantt_views_).
+// Same disposable-outline-cache convention as KanbanSession.
+struct GanttSession {
+    int buffer_id = 0;
+    OrgOutline outline;
+
+    // Zoom (pixels drawn per calendar day) and pan (the day-ordinal --
+    // OrgDayNumber's return value -- shown at the timeline's left edge).
+    // ruler_scale only changes the calendar grid/labels; task placement
+    // remains day-accurate at every scale.
+    enum class RulerScale { Days, Months, Years };
+    float pixels_per_day = 24.0f;
+    long long anchor_day = 0;
+    RulerScale ruler_scale = RulerScale::Days;
+    int focused_row = 0;
+    // Summary tasks can be folded without mutating the Org hierarchy.
+    std::unordered_set<int> collapsed_headlines;
+    bool pending_fold_command = false;  // leading `z` for Vim-style Gantt folds
+
+    // Label column width, user-resizable by dragging the divider at
+    // content_x + label_col_w (main.cpp's UpdateGanttMouseInteraction) --
+    // starts at the old fixed kGanttLabelColW but is per-buffer mutable
+    // from there on, unlike kGanttLabelColW itself.
+    float label_col_w = static_cast<float>(kGanttLabelColW);
+    bool resizing_label_col = false;
+
+    enum class DragMode { Move, ResizeStart, ResizeEnd };
+    bool dragging = false;
+    int drag_headline_index = -1;
+    DragMode drag_mode = DragMode::Move;
+    float drag_start_x = 0;
+    // Original (pre-drag) timestamps to diff the live mouse position
+    // against every frame, and to fall back to if the drag is released
+    // before crossing the drag threshold. drag_orig_deadline may be
+    // !present (dragging a milestone's virtual right edge to create a
+    // brand-new deadline) -- callers computing an "orig day" from it must
+    // fall back to drag_orig_scheduled in that case (see DrawGantt's own
+    // live-preview fallback).
+    OrgTimestamp drag_orig_scheduled, drag_orig_deadline;
+
+    // Mode::GanttInsert live rename state -- mirrors KanbanSession::
+    // editing/edit_buffer/edit_cursor/editing_headline_index exactly (a
+    // headline title is plain text here too).
+    bool editing = false;
+    std::string edit_buffer;
+    int edit_cursor = 0;
+    int editing_headline_index = -1;
+
+    // Same purpose as KanbanSession::content_x/y/w/h above -- refreshed by
+    // DrawGantt every frame, read back by UpdateGanttMouseInteraction.
+    float content_x = 0, content_y = 0, content_w = 0, content_h = 0;
 };
 
 // A modal (vim-like) text editor: Normal/Insert/Visual/Command modes, a
@@ -1300,6 +1488,19 @@ public:
     // reasoning/pairing as SetOfficeScroll just above (the value the scan
     // reacts to lives in main.cpp, the state itself lives here).
     void SetOfficeScrollFollowCursorPara(int buffer_id, int cursor_para);
+    // Jumps the cursor to the start of `para` (column 0, selection
+    // cleared) -- the Outline panel's click-to-jump (main.cpp's
+    // DrawOfficeSidePanels) needs this alongside SetOfficeScroll itself,
+    // see its own comment (editor.cpp) for why moving only the scroll
+    // position isn't enough.
+    void SetOfficeCursorPara(int buffer_id, int para);
+    // Sets OfficeSession::cursor_wrap_lines(_para) directly -- same
+    // main.cpp-computes/editor.cpp-stores pairing as SetOfficeScroll just
+    // above, feeding MoveOfficeCursorVisualLine (below) the word-wrap
+    // geometry it can't compute itself. Called once per frame from
+    // DrawPane, right where it already word-wraps the cursor's own
+    // paragraph for rendering (main.cpp).
+    void SetOfficeCursorWrapLines(int buffer_id, int cursor_para, std::vector<std::pair<int, int>> lines);
     // Toolbar zoom +/- buttons (and now Ctrl-scroll, HandleMouseWheel's
     // Office branch): multiplies OfficeSession::zoom by `factor` (>1 to
     // grow, <1 to shrink), clamped to [0.5, 3.0] -- a plain direct
@@ -1337,6 +1538,130 @@ public:
     // could hide. Returns an Empty CellValue if buffer_id/row/col don't
     // resolve to a real cell.
     CellValue EvaluateSheetCell(int buffer_id, int row, int col);
+
+    // --- Kanban board / Gantt chart panes (opened via ":Kanban"/":Gantt"
+    // on a .org buffer -- see IsOrgBuffer). Unlike every doc-type block
+    // above, these do NOT store an alternate binary model that blocks the
+    // ordinary text-save path -- Buf().lines stays the buffer's real,
+    // saved org text throughout (see org_doc.h's top comment); ":w" needs
+    // no Kanban/Gantt-specific code at all, and undo/redo is the ordinary
+    // PushUndo()/Undo()/Redo() every ReplaceLinesForLua-based mutation
+    // below already goes through -- no separate snapshot stack like
+    // PushUndoSheet/PushUndoOffice. ---
+    bool IsKanbanViewActive(int buffer_id) const;
+    bool IsGanttViewActive(int buffer_id) const;
+    const KanbanSession *GetKanban(int buffer_id) const;
+    // Non-const on purpose -- main.cpp's UpdateKanbanMouseInteraction
+    // writes drag/focus/drop-target UI state directly (mirrors
+    // EvaluateSheetCell's own non-const-for-main.cpp-driven-mutation
+    // shape), reserving the Kanban*/Gantt* methods below for the actual
+    // org-text-mutating actions.
+    KanbanSession *GetKanbanMutable(int buffer_id);
+    const GanttSession *GetGantt(int buffer_id) const;
+    GanttSession *GetGanttMutable(int buffer_id);
+
+    // Column keyword list a Kanban board renders/navigates -- the parsed
+    // outline's todo_keywords then done_keywords concatenated, in that
+    // order. A plain read helper over KanbanSession::outline, so main.cpp's
+    // DrawKanban/UpdateKanbanMouseInteraction and
+    // HandleKanbanNormalInput/HandleKanbanInsertInput don't each duplicate
+    // the concatenation.
+    std::vector<std::string> KanbanColumns(int buffer_id) const;
+    // Document-order indices into KanbanSession::outline.headlines whose
+    // todo_keyword matches KanbanColumns(buffer_id)[column_index] -- i.e.
+    // "which cards are in this column, top to bottom".
+    std::vector<int> KanbanCardsInColumn(int buffer_id, int column_index) const;
+    // Document-order indices into GanttSession::outline.headlines that
+    // have a SCHEDULED date (see org_doc.h/the plan's documented v1 gap:
+    // a headline with no SCHEDULED at all isn't shown in the Gantt view).
+    std::vector<int> GanttRows(int buffer_id) const;
+
+    // ":Kanban"/":Gantt" ex-command bodies: parses (or re-parses, if a
+    // session already exists for this buffer) Buf().lines into a fresh
+    // OrgOutline and switches org_view_mode_ for CurrentBufferId(). A
+    // status-message no-op if the current buffer isn't IsOrgBuffer().
+    void OpenKanbanView();
+    void OpenGanttView();
+    // ":Org"/":Text" ex-command body -- sets org_view_mode_ back to Text
+    // for CurrentBufferId(); the cached KanbanSession/GanttSession (if any)
+    // is left in place so toggling back in doesn't lose scroll/zoom state.
+    void CloseOrgView();
+
+    // Every method below performs exactly one PushUndo() + Buf().lines
+    // splice (via ReplaceLinesForLua's own erase/insert+PushUndo shape, or
+    // a direct equivalent for a same-buffer line *move*), then re-parses
+    // `outline` from the fresh lines -- see org_doc.h's top comment for
+    // why the parsed outline is always rebuilt, never incrementally
+    // patched. All operate on CurPane().buffer_id via Buf(), same
+    // convention as PushUndoSheet/ReplaceLinesForLua -- callers (main.cpp)
+    // must ensure the relevant pane is focused first.
+    void KanbanSetCardColumn(int headline_index, const std::string &new_keyword);
+    // Moves headline_index's whole subtree to sit immediately before
+    // before_headline_index's subtree (or to the end of the buffer if
+    // before_headline_index < 0). A no-op if either index is out of range
+    // or before_headline_index falls *within* headline_index's own
+    // subtree (would corrupt the move).
+    void KanbanMoveCardBefore(int headline_index, int before_headline_index);
+    void KanbanRenameCard(int headline_index, const std::string &new_title);
+    // Appends "* <column_keyword> <title>" as a new top-level headline at
+    // the end of the buffer (v1 gap: no attempt to infer nesting
+    // placement -- see the plan's documented scope boundaries). Returns the
+    // new headline's index into KanbanSession::outline.headlines (always
+    // the last entry, since it's appended at end-of-file) so a caller (the
+    // "+ New Card" drag-drop handler) can immediately open it for rename.
+    int KanbanNewCard(const std::string &column_keyword, const std::string &title);
+    void KanbanDeleteCard(int headline_index);
+    // Enters Mode::KanbanInsert targeting a just-created card with an empty
+    // edit buffer -- same end state as HandleKanbanNormalInput's 'i' path,
+    // but callable from main.cpp's drag-and-drop-create flow (which must
+    // enter insert mode itself right on drop, not wait for a key event).
+    void KanbanBeginRenameNewCard(int headline_index);
+
+    // Column management: all three rewrite the file's single "#+TODO:"
+    // line (inserting one, defaulting to {"TODO"}/{"DONE"}, if the file
+    // has none yet -- EnsureOrgTodoLine below).
+    //
+    // No-op + status_message_ if `name` already names a column. Otherwise
+    // appends to the TODO side (a new mid-pipeline stage, before any DONE
+    // keywords) and returns its column index (KanbanColumns' concatenated
+    // ordering).
+    int KanbanAddColumn(const std::string &name);
+    // column_index into KanbanColumns' concatenated ordering. Rewrites
+    // every headline currently in this column (todo_keyword == the old
+    // name) to the new keyword, then the "#+TODO:" line itself -- both
+    // must happen together or a headline's keyword token would no longer
+    // match anything ParseOrgOutline recognizes.
+    void KanbanRenameColumn(int column_index, const std::string &new_name);
+    // Moves a column to the gap `before_column` in KanbanColumns' current
+    // ordering (0 = before the first column; size() = after the last).
+    // The TODO/DONE split stays at its existing position in that ordering,
+    // so moving a column across it also changes whether Org treats it as a
+    // done keyword.
+    void KanbanMoveColumn(int column_index, int before_column);
+    // No-op + status_message_ if the column still has cards (deliberately
+    // not auto-migrated or destructive -- see the plan) or if deleting it
+    // would leave zero columns.
+    void KanbanDeleteColumn(int column_index);
+
+    // Shifts both SCHEDULED and DEADLINE (whichever are present) by
+    // delta_days -- a drag on the bar's body, preserving its duration.
+    void GanttShiftHeadline(int headline_index, int delta_days);
+    // Resizes one edge (is_deadline=false moves SCHEDULED, true moves
+    // DEADLINE) to land on new_day (an OrgDayNumber-style day-ordinal) --
+    // a drag on the bar's left/right edge, or (is_deadline=true on a
+    // headline with no DEADLINE yet) dragging a milestone's virtual right
+    // edge to create one from scratch. A no-op for a headline with no
+    // SCHEDULED at all (nothing to anchor a resize against) or (when
+    // is_deadline is false) if new_day would land at or after the
+    // existing DEADLINE.
+    void GanttSetHeadlineDate(int headline_index, bool is_deadline, long long new_day);
+    // Rewrites/creates a :PROGRESS: property in the headline's immediate
+    // property drawer. Used by GanttNormal's `p` prompt.
+    void GanttSetHeadlineProgress(int headline_index, int progress);
+    // Enters Mode::GanttInsert to rename headline_index's title inline --
+    // double-click on its label (or 'i') in the Gantt view.
+    void GanttBeginRename(int headline_index);
+    void GanttRenameHeadline(int headline_index, const std::string &new_title);
 
     // --- Lua-facing API (called from lua_env.cpp bindings) ---
     std::string GetLineForLua(int row) const;  // 0-indexed
@@ -1543,6 +1868,13 @@ public:
     // Runs a command line as if the user typed ":<cmd>" and pressed Enter.
     void RunCommand(const std::string &cmd);
 
+    // :CollabJoin / :CollabLeave. Collaboration follows the active text
+    // buffer and merges remote CRDT operations at the next input frame.
+    struct CollaborationPeerInfo { std::string id, name; int row = 0, col = 0; bool has_location = false; };
+    bool CollaborationActive() const;
+    std::vector<CollaborationPeerInfo> CollaborationPeers() const;
+    bool JumpToCollaborator(const std::string &peer_id);
+
     // --- Modal overlays (NVIM_PARITY_PLAN.md Part I Phase 3) ---
     // vim.ui.input/vim.ui.select/confirm-dialog equivalents: each takes
     // over input until confirmed/cancelled, restores whatever mode was
@@ -1608,6 +1940,21 @@ public:
     // main.cpp's ResolveHlGroup falls back to its substring heuristic so
     // ad hoc decoration hl_group names keep working un-migrated).
     bool ResolveHighlight(const std::string &name, ThemeColor *out) const;
+    // Raw palette lookup by theme name (not necessarily the active theme) --
+    // for previews that want to show a theme's colors without switching the
+    // whole app to it, e.g. the colorscheme picker's swatch preview. Returns
+    // false if `name` isn't a registered theme.
+    bool ThemePalette(const std::string &name, Palette *out) const;
+    // Resolves a VTermCell's fg color to a concrete ThemeColor -- shared by
+    // main.cpp's VTermColorToRaylib (the live :terminal pane's own per-
+    // frame render, which just wraps this and converts to a raylib Color)
+    // and EnterTerminalNormalMode (which needs the exact same resolution
+    // once, up front, to snapshot into Decorations that outlive the live
+    // TerminalSession's own per-cell data). Defined here rather than
+    // vterm.h/.cpp since it needs ResolveHighlight for the Default case
+    // (defer to mep's own active theme) -- vterm.h itself stays free of
+    // any such dependency, per its own header comment.
+    ThemeColor ResolveVTermColor(const VTermColor &c, bool is_fg) const;
 
     // --- Decorations (NVIM_PARITY_PLAN.md Part I Phase 4) ---
     // Returns a stable id for `name`, creating one on first use (mirrors
@@ -2036,6 +2383,9 @@ public:
     const std::string &HoverText() const { return hover_text_; }
 
 private:
+    void JoinCollaboration(const std::string &url, const std::string &name);
+    void LeaveCollaboration();
+    void TickCollaboration();
     // Closes an open hover tooltip once the cursor has moved away from
     // where it was when ShowHover() opened it, or the mode is no longer
     // Normal, or Escape was just pressed. Called at the top of
@@ -2214,10 +2564,22 @@ private:
     // -- extracted from HandlePdfInput's own local apply_zoom lambda so
     // HandleMouseWheel's Pdf branch (Ctrl-scroll) can reuse it.
     void ApplyPdfZoom(PdfSession &sess, float new_zoom);
-    // Word-wrap-oblivious paragraph navigation (h/l within
-    // doc.paragraphs[cursor_para].text, j/k to the prev/next paragraph,
-    // gg/G to the first/last -- see Mode::OfficeNormal's own comment for
-    // why this doesn't need to know about visual line wrapping at all).
+    // j/k (and Insert-mode Up/Down)'s shared motion: moves within the
+    // cursor's *visual* (word-wrapped) line when OfficeSession::
+    // cursor_wrap_lines has fresh data for the current paragraph (dir -1 =
+    // up/k, +1 = down/j), preserving cursor_col's offset into that line the
+    // way column motion normally preserves screen column; otherwise (the
+    // paragraph's own first/last visual line, or no fresh cache yet) falls
+    // back to stepping to the prev/next *paragraph*, clamping cursor_col
+    // the same way the old paragraph-only motion always did. Returns true
+    // if it crossed into a different paragraph, so HandleOfficeNormalInput
+    // can still do its own table-auto-entry check on that transition (see
+    // its old goto_para lambda) -- Visual/Insert callers ignore it, exactly
+    // matching their own pre-existing goto_para/Up/Down behavior, which
+    // never auto-entered a table either. h/l don't need an equivalent: they
+    // already move cursor_col one byte at a time regardless of visual line
+    // boundaries, which already reads as normal cross-wrap motion.
+    bool MoveOfficeCursorVisualLine(OfficeSession *sess, int dir);
     // ':' and the leader key are forwarded exactly like HandlePdfInput.
     // 'i'/'a' enter Mode::OfficeInsert (PushUndoOffice snapshotting first,
     // vim's own "one undo per insert session" convention), 'v' enters
@@ -2304,6 +2666,37 @@ private:
     // copy untouched ZIP entries from (xlsx/ods only -- csv has no
     // container to copy through).
     void OpenSheetInPlace(const std::string &path, const unsigned char *bytes, size_t len);
+    // hjkl/arrows move focus across columns/cards (columns = the parsed
+    // outline's todo_keywords then done_keywords, in that order); ':' and
+    // the leader key are forwarded exactly like HandleSheetNormalInput.
+    // Enter/'i' seeds KanbanSession::edit_buffer from the focused card's
+    // title and enters Mode::KanbanInsert; 'n' prompts for a new card's
+    // title (Mode::Prompt) and appends it via KanbanNewCard; 'x'/'dd'
+    // deletes the focused card's subtree via KanbanDeleteCard.
+    void HandleKanbanNormalInput();
+    // Mirrors HandleSheetInsertInput's plain-string edit_buffer editing;
+    // Enter commits via KanbanRenameCard and returns to KanbanNormal,
+    // Escape discards.
+    void HandleKanbanInsertInput();
+    // If Buf().lines has no "#+TODO:" line yet (FindOrgTodoLineIndex
+    // returns -1), inserts FormatTodoLine({"TODO"}, {"DONE"}) at line 0 --
+    // the same implicit default ParseOrgOutline already falls back to when
+    // parsing a file with none -- and reparses the current Kanban session's
+    // outline, so KanbanAddColumn/RenameColumn/DeleteColumn can all assume
+    // the line exists. A no-op if it already does.
+    void EnsureOrgTodoLine();
+    // Up/down moves the focused row (one per outline headline with a
+    // SCHEDULED date); left/right pans GanttSession::anchor_day; +/- zooms
+    // pixels_per_day; 't' cycles the day/month/year ruler grid; double-click
+    // (or 'i') on a row's label enters
+    // GanttInsert. ':' and the leader key are forwarded. Bar/edge dragging
+    // (main.cpp's UpdateGanttMouseInteraction calling GanttShiftHeadline/
+    // GanttSetHeadlineDate) and direct timeline clicks reschedule/resize.
+    void HandleGanttNormalInput();
+    // Mirrors HandleKanbanInsertInput's plain-string edit_buffer editing;
+    // Enter commits via GanttRenameHeadline and returns to GanttNormal,
+    // Escape discards.
+    void HandleGanttInsertInput();
     // Sets mode_ to Mode::Image if the active pane's buffer is image-backed,
     // or drops Mode::Image back to Mode::Normal if it just stopped being
     // so -- called from every site that can change which buffer/pane is
@@ -2917,6 +3310,21 @@ private:
     // Keyed by buffer_id -- one entry per open spreadsheet pane, same
     // never-reaped lifetime reasoning as images_ above.
     std::unordered_map<int, SheetSession> sheetdocs_;
+    // Which overlay (if any) each .org buffer is currently being shown
+    // through -- absent means Text (see OrgViewMode's own comment).
+    // Deliberately separate from kanban_views_/gantt_views_'s own
+    // presence: a buffer can accumulate a cached KanbanSession AND a
+    // cached GanttSession (the user toggled through both at some point)
+    // while only one, or neither, is the buffer's *active* view.
+    std::unordered_map<int, OrgViewMode> org_view_mode_;
+    // Keyed by buffer_id -- one cached parsed-outline+UI-state entry per
+    // .org buffer that's ever been shown as a Kanban board, same never-
+    // reaped lifetime reasoning as images_ above (kept even while
+    // org_view_mode_ has since switched back to Text, so toggling back in
+    // doesn't lose scroll/focus state).
+    std::unordered_map<int, KanbanSession> kanban_views_;
+    // Same as kanban_views_, for the Gantt-chart view.
+    std::unordered_map<int, GanttSession> gantt_views_;
     // Ctrl-\ Ctrl-N (the exit-terminal-mode chord, matching Vim/Neovim's
     // own convention) needs one key of lookahead: a bare Ctrl-\ has to
     // reach the child (some programs bind it, e.g. SIGQUIT) unless the
@@ -3056,6 +3464,9 @@ private:
 
     std::string command_line_;
     std::string status_message_;
+
+    std::unique_ptr<mep::collab::CollabSession> collaboration_;
+    int collaboration_buffer_id_ = -1;
 
     // --- Notification state ---
     std::vector<NotifyEntry> toasts_;

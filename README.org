@@ -249,4 +249,35 @@ it keeps the window openable with zero server setup for the page itself.
 The file-bridge server is a separate, small HTTP server bound to
 =127.0.0.1= only, unrelated to serving the page.
 
+*** Self-hosted collaboration relay
 
+=mep-collabd= is the native C++ internet-facing relay. It has no runtime
+dependency on Deno, Node, or a WebSocket framework; the protocol framing is
+implemented in =src/collab_websocket.cpp=. It keeps transient rooms and
+presence only, forwarding opaque CRDT operations without inspecting document
+contents. Build and run it with:
+
+#+begin_src sh
+MEP_COLLAB_ADMIN_TOKEN=replace-with-a-long-secret \
+MEP_COLLAB_PUBLIC_URL=wss://collab.example.com \
+./build/native/mep-collabd --port 8787
+
+curl -X POST http://127.0.0.1:8787/v1/sessions \
+  -H "Authorization: Bearer replace-with-a-long-secret"
+#+end_src
+
+The response includes =id=, =secret=, and (when =MEP_COLLAB_PUBLIC_URL= is
+set) a ready-to-share =link=. Participants may append =?= parameters only as
+needed; MEP adds the display =name= when joining.
+For an internet deployment, terminate TLS at Caddy/nginx/Apache and proxy
+WebSocket upgrade requests to =127.0.0.1:8787=. Native MEP's transport
+validates =wss://= certificates and hostnames. Treat the capability link as
+private: anyone holding it can join that transient room.
+
+In MEP, open the same document for each participant, then run
+=:CollabJoin <link> [display-name]=. =:CollabStatus= reports the current
+roster and =:CollabLeave= disconnects. Connected participants appear as
+clickable status-line chips (for example, =Ada @12:4=); clicking a chip
+jumps to that participant's shared cursor. The relay is intentionally
+stateless: keeping the document open in at least one participant preserves
+its CRDT history, while reconnecting clients exchange operation snapshots.

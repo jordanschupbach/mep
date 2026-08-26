@@ -5,3 +5,4 @@ mep.nvim
 result
 test/
 .ts-grammars/
+examples/gantt_example.gantt.*

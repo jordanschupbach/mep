@@ -221,7 +221,7 @@ half-working one.
 - [x] Phase 33 — Org-mode E: sort/narrow/sparse-tree, clocking
 - [x] Phase 34 — Org-mode F: babel (code execution)
 - [x] Phase 35 — Org-mode G: export
-- [x] Phase 36 — Org-mode H: polyglot (LSP-in-src-blocks) — deferred/stretch (explicitly skipped)
+- [x] Phase 36 — Org-mode H: polyglot (LSP-in-src-blocks)
 
 **Part VIII — PKM extras (built on org)**
 - [x] Phase 37 — Roam (zettelkasten note linking)
@@ -2310,8 +2310,10 @@ the "start small" language-subset guidance)*
 - [x] In-memory result cache keyed by `lang|args|body`
       (`mep_org_babel_cache`, `:cache yes`) — no disk persistence, no
       staleness detection, matching the plan's own documented scope.
-- [x] Polyglot/LSP-bridging for src blocks **deferred to Phase 36**
-      as instructed — not attempted here.
+- [x] Polyglot/LSP-bridging for src blocks **implemented in Phase 36**
+      (a follow-up pass, not attempted in this phase) — reuses this
+      phase's own `mep.org_babel_langs` registry (`compile_cmd`,
+      `wrap_main`, `detect_class`) directly rather than a parallel one.
 - [x] Verified via Xvfb: a `#+begin_src sh :var name=World` block
       executing `echo "Hello, $name!"` + a second echo produced a
       correct multi-line `#+RESULTS:`/`#+begin_example` block with
@@ -2567,18 +2569,50 @@ during-export is wanted — can ship without it first)*
       handled: src blocks always render their code in export output
       regardless of `:exports none`/`:exports results`.
 
-### Phase 36 — Org-mode H: polyglot (LSP-in-src-blocks) — deferred/stretch ⏭️ SKIPPED
+### Phase 36 — Org-mode H: polyglot (LSP-in-src-blocks) ✅
 
-- [ ] **Deferred indefinitely, per the plan's own recommendation.**
-      Requires Phase 20 (LSP) fully working plus per-language shadow-
-      buffer/shadow-file synchronization, generated
-      `compile_commands.json`/`Cargo.toml`/`go.mod` scaffolding, and
-      LSP-client-restart-on-config-change handling. Worst complexity-
-      to-value ratio in the whole plan, and every other Part VII phase
-      (28-35) is now done without it — LSP itself (Phase 20) and babel
-      (Phase 34) both work standalone; only the *bridge* between them
-      inside src blocks is skipped. Revisit only if there's appetite
-      left after every other phase (37-42) is done.
+*(depends on: Phase 20 LSP, Phase 34 babel — reuses both directly rather
+than reimplementing a parallel registry)*
+
+- [x] **Correction — implemented, not skipped.** Previously deferred
+      indefinitely as the worst complexity-to-value ratio in the plan;
+      ported from mep.nvim/lua/mep/org/polyglot.lua. While the cursor
+      sits inside a `#+begin_src` block, hover/completion/diagnostics/
+      goto-definition/implementation/type-definition/references/rename
+      talk to that block's own real language server. Real on-disk
+      shadow file per language (or per block for a compiled/wrapped
+      language), blank-padded at real org-buffer line numbers so most
+      features need zero position math — mep's LSP client has no
+      buffer-autostart convention to fake out the way Neovim's
+      `vim.lsp.enable` needs a real scratch buffer for, so the shadow
+      collapses to a plain temp file `mep.lsp_request` talks to
+      directly. c/cpp gets a real `compile_commands.json` generated
+      *before* the client starts (from `mep.org_babel_langs`' own
+      `compile_cmd`, Phase 34) rather than only after first execution;
+      rust/go get a scaffolded `Cargo.toml`/`go.mod`; java's shadow is
+      named after its detected public class.
+- ⚠️ **Deliberate simplifications versus mep.nvim's own polyglot.lua**:
+      per-block shadows keyed by start_row (not a stable ordinal, so
+      re-executing a block can spawn a fresh shadow+client rather than
+      reuse one); every per-block language gets its own independent LSP
+      client rather than one shared process across blocks; `:var`
+      header-args aren't consumed (matches mep.nvim's own documented
+      gap); no code actions/formatting/symbols bridging (mep.nvim's own
+      polyglot doesn't have these either); no client teardown on buffer
+      close.
+- [x] Verified: 24 unit tests against the actual extracted embedded Lua
+      source for block-finding, shadow content generation, wrap-offset
+      math, and line translation in both directions. Real end-to-end
+      round trip against `pyright-langserver` (generated shadow content
+      via the real Lua logic, wrote it to disk, drove the server
+      directly): 624 real completions including numpy's `array`, zero
+      false-positive diagnostics on the blank-padded file, and a real
+      "undefined_name_xyz is not defined" diagnostic correctly
+      translating from shadow line 6 back to org buffer line 6. **Not
+      verified**: the per-block `compile_commands.json`/`Cargo.toml`
+      path against a real clangd/rust_analyzer process (the wrap-offset
+      math itself is unit-tested; the scaffolding-plus-real-server
+      interaction isn't).
 
 ---
 
@@ -3805,9 +3839,6 @@ silently discarding every unsaved buffer.
 
 ## Explicitly out of scope / deferred indefinitely (noted so it isn't re-litigated)
 
-- **Org polyglot mode** (Phase 36) — worst complexity-to-value ratio in
-  the plan; needs LSP fully working plus per-language project-file
-  scaffolding. Revisit only if everything else is done.
 - **Full babel/run/REPL language matrices** (~25/~13/~13 languages in
   `mep.nvim`) — start with 2-4 per feature, grow incrementally forever;
   never treat "match every language `mep.nvim` supports" as a phase

@@ -9227,9 +9227,18 @@ void Editor::UpdateCompletionPopup() {
     int start = cursor.col;
     while (start > 0 && (std::isalnum(static_cast<unsigned char>(line[start - 1])) || line[start - 1] == '_')) start--;
     std::string prefix = line.substr(start, cursor.col - start);
-    if (prefix.size() < 2) {
+    // Member-access trigger: cursor sits right after a bare '.' with
+    // nothing typed since (prefix empty, since '.' isn't alnum/'_' so the
+    // backward scan above stops on it immediately) -- e.g. "np." for
+    // numpy's own exported names. Recognized the same way any other
+    // prefix is, just with an empty one, rather than requiring 2+ chars
+    // the way a plain identifier-word query does (NVIM_PARITY_PLAN.md
+    // Phase 22 gap: dotted/member completion never reached the
+    // completion source at all before this).
+    bool dot_trigger = prefix.empty() && start > 0 && line[start - 1] == '.';
+    if (prefix.size() < 2 && !dot_trigger) {
         completion_open_ = false;
-        completion_last_query_prefix_.clear();
+        completion_last_query_prefix_ = "\x01";
         return;
     }
     // The completion source (mep.completion_buffer_words by default) is an
@@ -9245,11 +9254,13 @@ void Editor::UpdateCompletionPopup() {
     // this alone eliminates nearly all the redundant work), and debounce
     // genuine prefix changes to a modest interval so a fast typing burst
     // doesn't demand a full rescan for every single character.
-    // completion_last_query_prefix_ is reset to empty (a value this can
-    // never equal, since prefix is always >= 2 chars here) on Insert-mode
-    // exit (EnterNormal) so a later session can't skip its first query by
-    // coincidentally starting with the same prefix text some earlier,
-    // unrelated session ended on.
+    // completion_last_query_prefix_ is reset to "\x01" (a value prefix can
+    // never equal -- it's always either "" for a dot-trigger or >=2 chars
+    // otherwise, never a single byte) on Insert-mode exit (EnterNormal) so
+    // a later session can't skip its first query by coincidentally
+    // starting with the same prefix text some earlier, unrelated session
+    // ended on -- "" specifically can't be reused as that sentinel once a
+    // dot-trigger's own real prefix is "".
     if (prefix == completion_last_query_prefix_) return;
     constexpr double kMinQueryIntervalSec = 0.05;
     double now = GetTime();
@@ -9452,7 +9463,7 @@ void Editor::EnterNormal() {
     // insert session could skip its first completion query by
     // coincidentally starting with the same prefix text this one ended
     // on, showing stale completions left over from a different context.
-    completion_last_query_prefix_.clear();
+    completion_last_query_prefix_ = "\x01";
     // Remember the selection being left so `gv` can restore it later --
     // must happen before mode_ is overwritten below. Vim's `gv` also
     // restores Visual Block as a block; mep's last-visual memory only has

@@ -3567,7 +3567,10 @@ private:
     // source (an O(buffer size) Lua scan for the default word-based
     // source) every single frame Insert mode is active with a 2+ char
     // prefix, not just on frames where a character was actually typed.
-    std::string completion_last_query_prefix_;
+    // "\x01" (not a valid word-prefix -- always either empty for a dot/
+    // member-access trigger or >=2 chars otherwise -- see
+    // UpdateCompletionPopup) marks "no query yet", distinct from either.
+    std::string completion_last_query_prefix_ = "\x01";
     double completion_last_query_time_ = -1e18;
 
     bool cmdline_completion_open_ = false;

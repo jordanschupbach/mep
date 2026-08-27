@@ -3169,9 +3169,16 @@ const char *kBuiltinCompletion =
     // insertText with different formats, which would already be a
     // pathological server response.
     "mep_lsp_completion_iformat = {}\n"
-    "function mep_lsp_completion_request(client, row, start_col)\n"
+    // trigger_char: nil for an ordinary identifier-prefix query (LSP
+    // CompletionTriggerKind.Invoked = 1), or e.g. '.' for a member-access
+    // dot-trigger (TriggerKind.TriggerCharacter = 2) -- previously no
+    // `context` was ever sent at all, leaving every server unable to tell
+    // "user is typing a word" apart from "user just typed a trigger
+    // character" (NVIM_PARITY_PLAN.md Phase 22 gap).
+    "function mep_lsp_completion_request(client, row, start_col, trigger_char)\n"
+    "  local context = trigger_char and {triggerKind = 2, triggerCharacter = trigger_char} or {triggerKind = 1}\n"
     "  mep.lsp_request(client, 'textDocument/completion', {\n"
-    "    textDocument = {uri = mep_lsp_uri(mep.filename())}, position = mep_lsp_position(),\n"
+    "    textDocument = {uri = mep_lsp_uri(mep.filename())}, position = mep_lsp_position(), context = context,\n"
     "  }, function(msg)\n"
     "    local result = mep_lsp_result(msg)\n"
     // CompletionList ({isIncomplete=, items=...}) vs a bare
@@ -3208,25 +3215,40 @@ const char *kBuiltinCompletion =
     "    end\n"
     "    return mep_completion_rank(words)\n"
     "  end\n"
+    // Member-access trigger (NVIM_PARITY_PLAN.md Phase 22 gap: "np." never
+    // reached any completion source at all -- Editor::UpdateCompletionPopup
+    // used to require a 2+ char alnum/_ prefix, which a bare '.' can never
+    // produce). Independently re-derived here from the live buffer rather
+    // than passed in from C++, same as row/col above -- `prefix == ''`
+    // alone isn't enough to detect it (an empty prefix could mean lots of
+    // things); specifically checking for '.' is what distinguishes real
+    // member access. Buffer words and snippet triggers are skipped in this
+    // case -- with prefix '' every word in the whole buffer would
+    // otherwise match trivially (`#w > 0` is true for any word), flooding
+    // the popup with irrelevant identifiers instead of showing only the
+    // LSP's own member list.
+    "  local dot_trigger = prefix == '' and col > 1 and line:sub(col - 1, col - 1) == '.'\n"
+    "  if not dot_trigger then\n"
     // Snippet trigger names for the current filetype (Phase 23) count as
     // completion candidates too -- accepting one inserts the trigger word
     // itself, same as any buffer word; expanding it into the full snippet
     // body still needs the separate explicit mep.snippet_trigger() key.
-    "  local ft = mep_lsp_filetype and mep_lsp_filetype(mep.filename())\n"
-    "  local snip_set = ft and mep.snippets and mep.snippets[ft]\n"
-    "  if snip_set then\n"
-    "    for name, _ in pairs(snip_set) do\n"
-    "      if #name > #prefix and name:sub(1, #prefix) == prefix then\n"
-    "        seen[name] = true\n"
-    "        words[#words + 1] = name\n"
+    "    local ft = mep_lsp_filetype and mep_lsp_filetype(mep.filename())\n"
+    "    local snip_set = ft and mep.snippets and mep.snippets[ft]\n"
+    "    if snip_set then\n"
+    "      for name, _ in pairs(snip_set) do\n"
+    "        if #name > #prefix and name:sub(1, #prefix) == prefix then\n"
+    "          seen[name] = true\n"
+    "          words[#words + 1] = name\n"
+    "        end\n"
     "      end\n"
     "    end\n"
-    "  end\n"
-    "  for i = 1, mep.line_count() do\n"
-    "    for w in mep.get_line(i):gmatch('[%w_]+') do\n"
-    "      if #w > #prefix and w:sub(1, #prefix) == prefix and not seen[w] then\n"
-    "        seen[w] = true\n"
-    "        words[#words + 1] = w\n"
+    "    for i = 1, mep.line_count() do\n"
+    "      for w in mep.get_line(i):gmatch('[%w_]+') do\n"
+    "        if #w > #prefix and w:sub(1, #prefix) == prefix and not seen[w] then\n"
+    "          seen[w] = true\n"
+    "          words[#words + 1] = w\n"
+    "        end\n"
     "      end\n"
     "    end\n"
     "  end\n"
@@ -3246,7 +3268,7 @@ const char *kBuiltinCompletion =
     "      end\n"
     "    elseif not (mep_lsp_completion_pending.row == row and mep_lsp_completion_pending.start_col == start_col) then\n"
     "      mep_lsp_completion_pending = {row = row, start_col = start_col}\n"
-    "      mep_lsp_completion_request(client, row, start_col)\n"
+    "      mep_lsp_completion_request(client, row, start_col, dot_trigger and '.' or nil)\n"
     "    end\n"
     "  end\n"
     "  return mep_completion_rank(words)\n"

@@ -1760,6 +1760,13 @@ const char *kBuiltinTextTools =
 const char *kBuiltinFileTree =
     "local mep_tree_root = nil\n"
     "local mep_tree_expanded = {}\n"
+    // Populated by mep_tree_build_widgets alongside mep_tree_expanded, keyed
+    // by the same full path -- lets tree_on_key's 'a' handler below tell a
+    // directory target from a file target so it can create *inside* the
+    // former but as a *sibling* of the latter (mep.nvim's filetree.lua has
+    // always drawn this distinction via node.is_dir; this table gives the
+    // built-in tree the same information without a full node object).\n"
+    "local mep_tree_is_dir = {}\n"
     "local mep_tree_sidebar_id = nil\n"
     "local mep_tree_show_hidden = false\n"
     "local mep_tree_ignored = {}\n"
@@ -1784,6 +1791,7 @@ const char *kBuiltinFileTree =
     "    local relpath = (rel ~= '' and (rel .. '/') or '') .. e.name\n"
     "    if (mep_tree_show_hidden or not hidden) and not mep_tree_ignored[relpath] then\n"
     "      local full = mep_tree_join(dir, e.name)\n"
+    "      mep_tree_is_dir[full] = e.is_dir\n"
     "      local indent = string.rep('  ', depth)\n"
     "      if e.is_dir then\n"
     "        local marker = mep_tree_expanded[full] and mep.icons.dir_open or mep.icons.dir_closed\n"
@@ -1837,11 +1845,27 @@ const char *kBuiltinFileTree =
     "  elseif k == 'o' and target then\n"
     "    mep.open_url('file://' .. target)\n"
     "  elseif k == 'a' then\n"
-    "    local base = target or mep_tree_root\n"
+    // `target` is the widget id under the cursor, which for a *file* is
+    // that file's own full path, not its containing directory -- using it
+    // directly as `base` (the previous behavior) tried to create the new
+    // entry *inside* the file (e.g. "…/existing.txt/new.txt"), which
+    // fs_mkdir/fs_create_file below can never succeed at: every intervening
+    // filesystem call sees a non-directory component and fails silently
+    // (both return a boolean the caller used to just ignore), so pressing
+    // 'a' on a file looked like the tree had locked up -- the prompt
+    // appeared and accepted a name, but no entry ever showed up. Mirrors
+    // mep.nvim/lua/mep/filetree/filetree.lua's add_node: create inside a
+    // directory target, but as a sibling of a file target.\n"
+    "    local base = mep_tree_root\n"
+    "    if target then\n"
+    "      base = mep_tree_is_dir[target] and target or (target:match('^(.*)/[^/]+$') or mep_tree_root)\n"
+    "    end\n"
     "    mep.ui_input('New file/dir (end with / for dir):', '', function(name)\n"
     "      if not name or name == '' then return end\n"
     "      local full = mep_tree_join(base, name)\n"
-    "      if name:sub(-1) == '/' then mep.fs_mkdir(full:sub(1, -2)) else mep.fs_create_file(full) end\n"
+    "      local ok\n"
+    "      if name:sub(-1) == '/' then ok = mep.fs_mkdir(full:sub(1, -2)) else ok = mep.fs_create_file(full) end\n"
+    "      if not ok then mep.notify('mep.filetree: failed to create ' .. full, 'error') end\n"
     "      mep.tree_refresh()\n"
     "    end)\n"
     "  elseif k == 'r' and target then\n"
@@ -3460,45 +3484,234 @@ const char *kBuiltinCompletion =
     "end\n"
     "mep.set_completion_resolve_hook(mep_completion_resolve_info)\n";
 
-// Snippet engine (Phase 23), **scoped down significantly** from the plan:
-// tabstops are numbered ($1, $2, $0) only -- no `${1:placeholder}` default-
-// text syntax -- and tabstop positions are computed *once* at expand time
-// as fixed {row, col} offsets, not tracked live through further edits via
-// Phase 4 decoration gravity like the plan calls for (a real gravity-
-// tracked implementation needs the decoration system extended with
-// insert/delete-aware position updates, which nothing has needed yet).
-// Practically: jumping between tabstops immediately after expansion works
-// correctly; editing heavily *before* jumping to a later tabstop can leave
-// it stale. A curated 2-language starter set (lua, python) rather than
-// the full mep.nvim registry.
+// Snippet engine (Phase 23): tabstop parser supports `$N` (bare), `${N}`
+// (braced), and `${N:default}` (braced with default placeholder text --
+// cursor lands at the *start* of the default text, matching mep.nvim's
+// own mep.snippet.parse), plus `\$` for a literal dollar sign. Tabstop
+// positions are still computed *once* at expand time as fixed {row, col}
+// offsets, not tracked live through further edits via Phase 4 decoration
+// gravity like the plan calls for (a real gravity-tracked implementation
+// needs the decoration system extended with insert/delete-aware position
+// updates, which nothing has needed yet). Practically: jumping between
+// tabstops immediately after expansion works correctly; editing heavily
+// *before* jumping to a later tabstop can leave it stale. The full curated
+// per-language registry ported from mep.nvim/lua/mep/snippet/langs/*.lua
+// (c, go, javascript/typescript, lua, python, rust, shell) rather than a
+// 2-language starter set. Registered under this codebase's own "filetype"
+// convention (mep_lsp_filetype -- the raw file extension, e.g. 'py'/'rs',
+// not a collapsed vim-style filetype name like 'python'/'rust').
 const char *kBuiltinSnippets =
+    "local mep_snippets_js = {\n"
+    "  func = {'function ${1:name}(${2:args}) {', '\\t${0}', '}'},\n"
+    "  arrow = {'const ${1:name} = (${2:args}) => {', '\\t${0}', '}'},\n"
+    "  class = {'class ${1:Name} {', '\\tconstructor(${2:args}) {', '\\t\\t${0}', '\\t}', '}'},\n"
+    "  imp = {\"import ${1:name} from '${2:module}'\"},\n"
+    "  exp = {'export ${1:default} ${0}'},\n"
+    "  try = {'try {', '\\t${1}', '} catch (${2:err}) {', '\\t${0}', '}'},\n"
+    "  ['for'] = {'for (const ${1:item} of ${2:iterable}) {', '\\t${0}', '}'},\n"
+    "  log = {'console.log(${0})'},\n"
+    "}\n"
+    "local mep_snippets_sh = {\n"
+    "  sh = {'#!/usr/bin/env bash', 'set -euo pipefail', '', '${0}'},\n"
+    "  ['if'] = {'if ${1:condition}; then', '\\t${0}', 'fi'},\n"
+    "  ['for'] = {'for ${1:item} in ${2:list}; do', '\\t${0}', 'done'},\n"
+    "  ['while'] = {'while ${1:condition}; do', '\\t${0}', 'done'},\n"
+    "  func = {'${1:name}() {', '\\t${0}', '}'},\n"
+    "  case = {'case ${1:value} in', '\\t${2:pattern})', '\\t\\t${0}', '\\t\\t;;', 'esac'},\n"
+    "}\n"
     "mep.snippets = {\n"
+    "  c = {\n"
+    "    main = {'int main(${1:void}) {', '\\t${0}', '\\treturn 0;', '}'},\n"
+    "    inc = {'#include <${1:stdio.h}>'},\n"
+    "    incq = {'#include \"${1:header.h}\"'},\n"
+    "    struct = {'typedef struct {', '\\t${0}', '} ${1:Name};'},\n"
+    "    ['for'] = {'for (int ${1:i} = 0; $1 < ${2:n}; $1++) {', '\\t${0}', '}'},\n"
+    "    ['if'] = {'if (${1:condition}) {', '\\t${0}', '}'},\n"
+    "    func = {'${1:void} ${2:name}(${3:void}) {', '\\t${0}', '}'},\n"
+    "  },\n"
+    "  go = {\n"
+    "    func = {'func ${1:name}(${2:args}) ${3:error} {', '\\t${0}', '}'},\n"
+    "    main = {'func main() {', '\\t${0}', '}'},\n"
+    "    iferr = {'if err != nil {', '\\treturn ${1:err}', '}'},\n"
+    "    struct = {'type ${1:Name} struct {', '\\t${0}', '}'},\n"
+    "    iface = {'type ${1:Name} interface {', '\\t${0}', '}'},\n"
+    "    ['for'] = {'for ${1:i} := 0; $1 < ${2:n}; $1++ {', '\\t${0}', '}'},\n"
+    "    method = {'func (${1:r} ${2:Receiver}) ${3:Name}(${4:args}) ${0} {', '}'},\n"
+    "  },\n"
     "  lua = {\n"
-    "    func = {'function $1($2)', '  $0', 'end'},\n"
-    "    loc = {'local $1 = $2'},\n"
-    "    forpairs = {'for $1, $2 in pairs($3) do', '  $0', 'end'},\n"
+    "    fun = {'function ${1:name}(${2:...})', '\\t${0}', 'end'},\n"
+    "    lfun = {'local function ${1:name}(${2:...})', '\\t${0}', 'end'},\n"
+    "    loc = {'local ${1:name} = ${0}'},\n"
+    "    req = {\"local ${1:name} = require('${2:module}')\"},\n"
+    "    ['if'] = {'if ${1:condition} then', '\\t${0}', 'end'},\n"
+    "    ife = {'if ${1:condition} then', '\\t${2}', 'else', '\\t${0}', 'end'},\n"
+    "    ['for'] = {'for ${1:i} = ${2:1}, ${3:n} do', '\\t${0}', 'end'},\n"
+    "    forp = {'for ${1:k}, ${2:v} in pairs(${3:t}) do', '\\t${0}', 'end'},\n"
+    "    fori = {'for ${1:i}, ${2:v} in ipairs(${3:t}) do', '\\t${0}', 'end'},\n"
+    "    pcall = {'local ok, ${1:err} = pcall(function()', '\\t${0}', 'end)'},\n"
+    // Ported from ~/projects/nvim's plugin/luasnip.lua (personal config,
+    // not mep.nvim) -- the other snippets in that file are either
+    // LuaSnip's own upstream tutorial/example content (dynamic/choice/
+    // function nodes this engine's static tabstop parser has no
+    // equivalent for) or project-specific AI-prompt text tied to an
+    // unrelated personal project, neither of which belongs in a builtin
+    // registry shipped with the editor.
+    "    ['new-module'] = {'local M = {}', '', '$1', '', 'return M'},\n"
+    "    ['lowercase-global'] = {'---@diagnostic disable-next-line: lowercase-global'},\n"
+    "    ['unused-local'] = {'---@diagnostic disable-next-line: unused-local'},\n"
     "  },\n"
-    "  python = {\n"
-    "    def = {'def $1($2):', '    $0'},\n"
-    "    class = {'class $1:', '    def __init__(self$2):', '        $0'},\n"
+    "  py = {\n"
+    "    def = {'def ${1:name}(${2:args}):', '\\t${0}'},\n"
+    "    class = {'class ${1:Name}:', '\\tdef __init__(self${2:, args}):', '\\t\\t${0}'},\n"
+    "    main = {\"if __name__ == '__main__':\", '\\t${0}'},\n"
+    "    try = {'try:', '\\t${1}', 'except ${2:Exception} as ${3:e}:', '\\t${0}'},\n"
+    "    ['for'] = {'for ${1:item} in ${2:iterable}:', '\\t${0}'},\n"
+    "    with = {'with open(${1:path}) as ${2:f}:', '\\t${0}'},\n"
+    "    lambda = {'lambda ${1:args}: ${0}'},\n"
+    "    ifmain = {'if ${1:condition}:', '\\t${0}'},\n"
     "  },\n"
+    "  rs = {\n"
+    "    fn = {'fn ${1:name}(${2:args}) -> ${3:()} {', '\\t${0}', '}'},\n"
+    "    main = {'fn main() {', '\\t${0}', '}'},\n"
+    "    struct = {'struct ${1:Name} {', '\\t${0}', '}'},\n"
+    "    impl = {'impl ${1:Name} {', '\\t${0}', '}'},\n"
+    "    derive = {'#[derive(${1:Debug, Clone})]'},\n"
+    "    match = {'match ${1:expr} {', '\\t${2:pattern} => ${0},', '}'},\n"
+    "    test = {'#[test]', 'fn ${1:it_works}() {', '\\t${0}', '}'},\n"
+    "    iferr = {'if let Err(${1:e}) = ${2:result} {', '\\t${0}', '}'},\n"
+    "  },\n"
+    // cpp/nix/envrc: also ported from ~/projects/nvim's plugin/luasnip.lua
+    // (see the header comment on the lua table's own additions above for
+    // what was deliberately left out and why). None of these three
+    // bodies use any insert-node placeholder text in the source LuaSnip
+    // config -- they're pure boilerplate, so they expand with zero
+    // tabstops here (mep_snippet_jump(1) immediately clears
+    // mep_snippet_state right back out, same as any other tabstop-free
+    // snippet).
+    "  cpp = {\n"
+    "    ponce = {'#pragma once'},\n"
+    "    iostream = {'#include <iostream>'},\n"
+    "    memory = {'#include <memory>'},\n"
+    "    helloworld = {'#include <iostream>', '', 'int main(void) {', '  std::cout << \"Hello World!\" << std::endl;', '  return 0;', '}'},\n"
+    "  },\n"
+    "  nix = {\n"
+    "    module = {\n"
+    "      '# https://nix.dev/tutorials/module-system/index.html',\n"
+    "      '{lib, ...}:',\n"
+    "      '{',\n"
+    "      '  imports = [',\n"
+    "      '    # Paths to other modules.',\n"
+    "      '    # Compose this module out of smaller ones.',\n"
+    "      '  ];',\n"
+    "      '',\n"
+    "      '  options = {',\n"
+    "      '    # Option declarations.',\n"
+    "      '    # Declare what settings a user of this module can set.',\n"
+    "      '    # Usually this includes a global \"enable\" option which defaults to false.',\n"
+    "      '  };',\n"
+    "      '',\n"
+    "      '  config = {',\n"
+    "      '    # Option definitions.',\n"
+    "      '    # Define what other settings, services and resources should be active.',\n"
+    "      '    # Usually these depend on whether a user of this module chose to \"enable\" it',\n"
+    "      '    # using the \"option\" above.',\n"
+    "      '    # Options for modules imported in \"imports\" can be set here.',\n"
+    "      '  };',\n"
+    "      '}',\n"
+    "    },\n"
+    "    ['basic-shell'] = {\n"
+    "      '# my-env shell',\n"
+    "      'with import <nixpkgs> { };',\n"
+    "      '',\n"
+    "      'mkShell {',\n"
+    "      '  name = \"my-env\";',\n"
+    "      '  packages = [',\n"
+    "      '    hello',\n"
+    "      '  ];',\n"
+    "      '}',\n"
+    "    },\n"
+    "    ['basic-flake'] = {\n"
+    "      '{',\n"
+    "      '  description = \"A basic flake\";',\n"
+    "      '  inputs.nixpkgs.url = \"github:NixOS/nixpkgs/nixpkgs-unstable\";',\n"
+    "      '  inputs.systems.url = \"github:nix-systems/default\";',\n"
+    "      '  inputs.flake-utils = {',\n"
+    "      '    url = \"github:numtide/flake-utils\";',\n"
+    "      '    inputs.systems.follows = \"systems\";',\n"
+    "      '  };',\n"
+    "      '',\n"
+    "      '  outputs =',\n"
+    "      '    { nixpkgs, flake-utils, ... }:',\n"
+    "      '    flake-utils.lib.eachDefaultSystem (',\n"
+    "      '      system:',\n"
+    "      '      let',\n"
+    "      '        pkgs = nixpkgs.legacyPackages.${system};',\n"
+    "      '      in',\n"
+    "      '      {',\n"
+    "      '        devShells.default = pkgs.mkShell { ',\n"
+    "      '          packages = [',\n"
+    "      '            pkgs.hello',\n"
+    "      '          ]; ',\n"
+    "      '        };',\n"
+    "      '      }',\n"
+    "      '    );',\n"
+    "      '}',\n"
+    "    },\n"
+    "  },\n"
+    "  envrc = {\n"
+    "    envrc = {\n"
+    "      '# shellcheck shell=bash',\n"
+    "      'if ! has nix_direnv_version || ! nix_direnv_version 3.1.0; then',\n"
+    "      \"  source_url 'https://raw.githubusercontent.com/nix-community/nix-direnv/3.1.0/direnvrc' 'sha256-yMJ2OVMzrFaDPn7q8nCBZFRYpL/f0RcHzhmw/i6btJM='\",\n"
+    "      'fi',\n"
+    "      'watch_file flake.nix',\n"
+    "      'use flake',\n"
+    "    },\n"
+    "  },\n"
+    "  js = mep_snippets_js, jsx = mep_snippets_js, mjs = mep_snippets_js, cjs = mep_snippets_js,\n"
+    "  ts = mep_snippets_js, tsx = mep_snippets_js,\n"
+    "  sh = mep_snippets_sh, bash = mep_snippets_sh, zsh = mep_snippets_sh,\n"
     "}\n"
     "local mep_snippet_state = nil\n"
     "local function mep_snippet_scan_line(tmpl)\n"
-    "  local out, tabstops, i = {}, {}, 1\n"
-    "  while i <= #tmpl do\n"
+    "  local out, tabstops, i, n, len = {}, {}, 1, #tmpl, 0\n"
+    "  local function emit(s)\n"
+    "    out[#out + 1] = s\n"
+    "    len = len + #s\n"
+    "  end\n"
+    "  while i <= n do\n"
     "    local c = tmpl:sub(i, i)\n"
-    "    if c == '$' then\n"
-    "      local numstr = tmpl:match('^%d+', i + 1)\n"
+    "    if c == '\\\\' and tmpl:sub(i + 1, i + 1) == '$' then\n"
+    "      emit('$')\n"
+    "      i = i + 2\n"
+    "    elseif c == '$' and i < n then\n"
+    "      local rest = tmpl:sub(i + 1)\n"
+    "      local numstr = rest:match('^%d+')\n"
     "      if numstr then\n"
-    "        tabstops[#tabstops + 1] = {col = #out + 1, num = tonumber(numstr)}\n"
+    "        tabstops[#tabstops + 1] = {col = len + 1, num = tonumber(numstr)}\n"
     "        i = i + 1 + #numstr\n"
+    "      elseif rest:sub(1, 1) == '{' then\n"
+    "        local close = tmpl:find('}', i + 2, true)\n"
+    "        local inner = close and tmpl:sub(i + 2, close - 1) or nil\n"
+    "        local idx, default\n"
+    "        if inner then\n"
+    "          idx, default = inner:match('^(%d+):(.*)$')\n"
+    "          if not idx then idx = inner:match('^(%d+)$') end\n"
+    "        end\n"
+    "        if idx then\n"
+    "          tabstops[#tabstops + 1] = {col = len + 1, num = tonumber(idx)}\n"
+    "          if default then emit(default) end\n"
+    "          i = close + 1\n"
+    "        else\n"
+    "          emit(c)\n"
+    "          i = i + 1\n"
+    "        end\n"
     "      else\n"
-    "        out[#out + 1] = c\n"
+    "        emit(c)\n"
     "        i = i + 1\n"
     "      end\n"
     "    else\n"
-    "      out[#out + 1] = c\n"
+    "      emit(c)\n"
     "      i = i + 1\n"
     "    end\n"
     "  end\n"
@@ -3587,7 +3800,8 @@ const char *kBuiltinSnippets =
     "end\n"
     "mep.command('MepSnippets', mep.snippets_picker)\n"
     "mep.command('MepSnippetNext', function() mep.snippet_jump(1) end)\n"
-    "mep.command('MepSnippetPrev', function() mep.snippet_jump(-1) end)\n";
+    "mep.command('MepSnippetPrev', function() mep.snippet_jump(-1) end)\n"
+    "mep.leader_map('yy', 'Snippets picker', mep.snippets_picker)\n";
 
 // Symbols outline (Phase 24): textDocument/documentSymbol into a Phase 7
 // sidebar, reusing exactly the LSP request wrapper and mep_lsp_result/

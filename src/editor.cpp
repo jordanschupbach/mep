@@ -6249,8 +6249,14 @@ bool Editor::DispatchNormalKey(int cp) {
     // with a count in either order ("a2dd or 2"add) since it doesn't
     // touch pending_count_. Checked before the digit-accumulation block
     // below for the same reason: neither should fire while the other's
-    // mid-sequence.
-    if (pending_find_ == 0 && !pending_g_ && !pending_ctrl_w_) {
+    // mid-sequence. Also gated off while pending_textobj_scope_ is set --
+    // real Vim only ever accepts the register prefix *before* the whole
+    // command, never in the middle of it, and without this guard `ci"`/
+    // `di"`/`da"`/`yi"` (an "i"/"a" scope waiting on its object char) had
+    // their closing '"' swallowed here as a fresh register-name prefix
+    // instead of ever reaching ResolveTextObject below -- `ci'` never hit
+    // this because '\'' has no such collision with register-prefix syntax.
+    if (pending_find_ == 0 && !pending_g_ && !pending_ctrl_w_ && pending_textobj_scope_ == 0) {
         if (awaiting_register_name_) {
             awaiting_register_name_ = false;
             if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '%') {
@@ -6736,6 +6742,7 @@ bool Editor::DispatchNormalKey(int cp) {
             PushUndo();
             Buf().lines.insert(Buf().lines.begin() + cursor.row + 1, "");
             ShiftMarksForLineEdit(cursor.row + 1, 1);
+            ShiftFoldsForLineEdit(cursor.row + 1, 1);
             cursor.row++;
             cursor.col = 0;
             EnterInsert();
@@ -6744,6 +6751,7 @@ bool Editor::DispatchNormalKey(int cp) {
             PushUndo();
             Buf().lines.insert(Buf().lines.begin() + cursor.row, "");
             ShiftMarksForLineEdit(cursor.row, 1);
+            ShiftFoldsForLineEdit(cursor.row, 1);
             cursor.col = 0;
             EnterInsert();
             break;
@@ -7239,6 +7247,7 @@ void Editor::InsertNewline() {
     line.erase(cursor.col);
     Buf().lines.insert(Buf().lines.begin() + cursor.row + 1, remainder);
     ShiftMarksForLineEdit(cursor.row + 1, 1);
+    ShiftFoldsForLineEdit(cursor.row + 1, 1);
     cursor.row++;
     cursor.col = 0;
     Buf().modified = true;
@@ -7254,6 +7263,7 @@ void Editor::Backspace() {
         std::string current = Buf().lines[cursor.row];
         Buf().lines.erase(Buf().lines.begin() + cursor.row);
         ShiftMarksForLineEdit(cursor.row, -1);
+        ShiftFoldsForLineEdit(cursor.row, -1);
         cursor.row--;
         cursor.col = LineLen(cursor.row);
         Buf().lines[cursor.row] += current;
@@ -7270,6 +7280,7 @@ void Editor::DeleteForward() {
         std::string next = Buf().lines[cursor.row + 1];
         Buf().lines.erase(Buf().lines.begin() + cursor.row + 1);
         ShiftMarksForLineEdit(cursor.row + 1, -1);
+        ShiftFoldsForLineEdit(cursor.row + 1, -1);
         line += next;
     }
     Buf().modified = true;
@@ -7567,8 +7578,11 @@ void Editor::DispatchVisualKey(int cp) {
     // Same register/count/find/g-prefix handling as Normal mode (see
     // DispatchNormalKey), minus operator-pending combination since Visual
     // mode's own operators (d/x/y below) always act on the whole selection
-    // rather than a fresh motion.
-    if (pending_find_ == 0 && !pending_g_) {
+    // rather than a fresh motion. Still gated off pending_textobj_scope_
+    // though (vi"/va" etc. -- Visual mode's own i/a text objects, resolved
+    // below): same '"'-vs-register-prefix collision as DispatchNormalKey's
+    // own guard, see its comment.
+    if (pending_find_ == 0 && !pending_g_ && pending_textobj_scope_ == 0) {
         if (awaiting_register_name_) {
             awaiting_register_name_ = false;
             if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '%') {
@@ -10459,6 +10473,43 @@ void Editor::ShiftMarksForLineEdit(int at_row, int count) {
     }
 }
 
+// Same shifting rule as ShiftMarksForLineEdit, applied independently to
+// each fold's start_row and end_row so the range as a whole grows/shrinks
+// correctly when the edit lands inside it rather than before it -- e.g.
+// inserting a line inside an open `#+begin_src` block extends end_row
+// without moving start_row, while inserting before the block shifts both.
+// Keeps org src-block/headline fold ranges (and any other provider's)
+// accurate between edits instead of only at the next z-fold command's
+// RecomputeOrgFolds(), which previously left StepVisibleRow/ClampCursor
+// checking stale ranges and made j/k seem to stick at a block boundary
+// until a second press caught up.
+void Editor::ShiftFoldsForLineEdit(int at_row, int count) {
+    if (count == 0 || Buf().folds.empty()) return;
+    int n = Buf().LineCount();
+    auto shift_row = [&](int row) {
+        if (count > 0) {
+            if (row >= at_row) row += count;
+        } else {
+            int removed = -count;
+            if (row >= at_row + removed) {
+                row += count;  // count already negative
+            } else if (row >= at_row) {
+                row = at_row;
+            }
+        }
+        return std::max(0, std::min(row, n - 1));
+    };
+    for (Fold &f : Buf().folds) {
+        f.start_row = shift_row(f.start_row);
+        f.end_row = shift_row(f.end_row);
+    }
+    // A fold collapsed to <2 lines by a deletion isn't meaningful anymore
+    // (same rule CreateFold applies when one is first created).
+    auto &folds = Buf().folds;
+    folds.erase(std::remove_if(folds.begin(), folds.end(), [](const Fold &f) { return f.start_row >= f.end_row; }),
+                folds.end());
+}
+
 // Records where a "big jump" (G, gg, a mark jump, a search) started from,
 // so `` `` ``/`''` can return to it. Called with the pre-jump cursor.
 void Editor::RecordJumpFrom(CursorPos pos) {
@@ -10697,6 +10748,7 @@ void Editor::JoinLines(int count, bool with_space) {
         std::string next = Buf().lines[row + 1];
         Buf().lines.erase(Buf().lines.begin() + row + 1);
         ShiftMarksForLineEdit(row + 1, -1);
+        ShiftFoldsForLineEdit(row + 1, -1);
         size_t s = 0;
         while (s < next.size() && std::isspace(static_cast<unsigned char>(next[s]))) s++;
         next = next.substr(s);
@@ -10719,6 +10771,7 @@ void Editor::DeleteRange(CursorPos start, CursorPos end, bool linewise) {
         int last = std::min(end.row, Buf().LineCount() - 1);
         Buf().lines.erase(Buf().lines.begin() + first, Buf().lines.begin() + last + 1);
         ShiftMarksForLineEdit(first, -(last - first + 1));
+        ShiftFoldsForLineEdit(first, -(last - first + 1));
         if (Buf().lines.empty()) Buf().lines.push_back("");
         Buf().modified = true;
         return;
@@ -10744,6 +10797,7 @@ void Editor::DeleteRange(CursorPos start, CursorPos end, bool linewise) {
         Buf().lines[start.row] = prefix + suffix;
         Buf().lines.erase(Buf().lines.begin() + start.row + 1, Buf().lines.begin() + end_row + 1);
         ShiftMarksForLineEdit(start.row + 1, -(end_row - start.row));
+        ShiftFoldsForLineEdit(start.row + 1, -(end_row - start.row));
     }
     Buf().modified = true;
 }
@@ -10864,6 +10918,7 @@ CursorPos Editor::InsertCharwiseTextAt(CursorPos pos, const std::string &text) {
     to_insert.push_back(new_last);
     Buf().lines.insert(Buf().lines.begin() + pos.row + 1, to_insert.begin(), to_insert.end());
     ShiftMarksForLineEdit(pos.row + 1, static_cast<int>(to_insert.size()));
+    ShiftFoldsForLineEdit(pos.row + 1, static_cast<int>(to_insert.size()));
 
     int end_row = pos.row + static_cast<int>(parts.size()) - 1;
     int end_col = static_cast<int>(parts.back().size());
@@ -10885,6 +10940,7 @@ void Editor::PasteAfter(int count, char reg_name) {
         int insert_at = cursor.row + 1;
         Buf().lines.insert(Buf().lines.begin() + insert_at, new_lines.begin(), new_lines.end());
         ShiftMarksForLineEdit(insert_at, static_cast<int>(new_lines.size()));
+        ShiftFoldsForLineEdit(insert_at, static_cast<int>(new_lines.size()));
         cursor = {insert_at, 0};
     } else {
         std::string text;
@@ -10914,6 +10970,7 @@ void Editor::PasteBefore(int count, char reg_name) {
         int insert_at = cursor.row;
         Buf().lines.insert(Buf().lines.begin() + insert_at, new_lines.begin(), new_lines.end());
         ShiftMarksForLineEdit(insert_at, static_cast<int>(new_lines.size()));
+        ShiftFoldsForLineEdit(insert_at, static_cast<int>(new_lines.size()));
         cursor = {insert_at, 0};
     } else {
         std::string text;

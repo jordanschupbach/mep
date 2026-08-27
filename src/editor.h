@@ -3105,6 +3105,14 @@ private:
     // original {row, col} snapshot and drift out from under the text).
     void ShiftMarksForLineEdit(int at_row, int count);
 
+    // Same idea as ShiftMarksForLineEdit, but for Buf().folds' row ranges
+    // (org src-block/headline folds included). Without this, a fold's
+    // start_row/end_row only gets corrected the next time a z-fold command
+    // runs RecomputeOrgFolds(); any edit in between leaves it pointing at
+    // the wrong rows, which made j/k appear to stick or need a second
+    // press right at a now-misaligned block boundary.
+    void ShiftFoldsForLineEdit(int at_row, int count);
+
     int LineLen(int row) const;
     void ClampCursor();
 

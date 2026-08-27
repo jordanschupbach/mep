@@ -1690,10 +1690,12 @@ see "Design decisions" above for why it's a from-scratch build.)*
 *(depends on: Phase 4 decorations for tabstop-range tracking, Phase 22
 completion for popup integration (soft))*
 
-- [x] Snippet body parser: **`$1`/`$0` numbered tabstops only** — no
-      `${1}` braced form and no `${1:default}` placeholder-text syntax.
-      A real, working per-line scanner (`mep_snippet_scan_line`), not a
-      stub.
+- [x] Snippet body parser: **`$1`/`${1}`/`${1:default}`/`$0` tabstops**,
+      plus `\$` for a literal dollar sign — matching mep.nvim's own
+      `mep.snippet.parse` syntax. A real, working per-line scanner
+      (`mep_snippet_scan_line`), not a stub. Same-index tabstops (`$1`
+      used twice) are **not mirrored/linked**, matching mep.nvim's own
+      documented scope cut — each occurrence navigates independently.
 - [ ] Tabstop range tracking via Phase 4's gravity-aware decorations —
       **not implemented**; positions are computed *once* at expand time
       as fixed `{row, col}` offsets, not live-tracked through further
@@ -1704,8 +1706,30 @@ completion for popup integration (soft))*
 - [x] Expand (`mep.snippet_trigger`/`mep.snippet_expand`) and jump-
       forward/backward (`mep.snippet_jump(1|-1)`/`:MepSnippetNext`/
       `:MepSnippetPrev`).
-- [x] Per-filetype registry (`mep.snippets`), **2 curated languages**
-      (lua, python) as the plan's own "start with 2-3" asks.
+- [x] Per-filetype registry (`mep.snippets`), now the **full curated
+      registry ported from mep.nvim/lua/mep/snippet/langs/*.lua** (c, go,
+      javascript/typescript, lua, python, rust, shell) rather than the
+      original 2-language (lua, python) starter set. Keyed by this
+      codebase's own filetype convention (`mep_lsp_filetype` — the raw
+      file extension, e.g. `py`/`rs`, not a collapsed vim-style filetype
+      like `python`/`rust`) — the pre-port registry had used `python`/
+      `rust` as keys, which `mep_lsp_filetype` never actually produces,
+      silently making those two languages' snippets unreachable; fixed
+      as part of this port. Also picked up a small `lua`/`cpp`/`nix`/
+      `envrc` set ported from the user's personal (non-mep.nvim) Neovim
+      config at `~/projects/nvim/nvim/plugin/luasnip.lua` — only the
+      handful of genuinely static, project-agnostic boilerplate entries
+      there (`new-module`/`lowercase-global`/`unused-local` for lua;
+      `ponce`/`iostream`/`memory`/`helloworld` for cpp; `module`/
+      `basic-shell`/`basic-flake` for nix; the `.envrc` template). Left
+      out: LuaSnip's own upstream tutorial/example snippets in that file
+      (`fn`, `class`, `fmt1`-`fmt6`, `novel`, `lspsyn`, `te`, `cond`-
+      `cond4`, `transform`/`transform2`, `link_url`, `repeat`, `part`,
+      `mat`-`mat4`, `nempty`, `dl1`/`dl2`, java's `fn`), which lean on
+      choice/function/dynamic nodes this engine's static-tabstop-only
+      parser has no way to represent; and the personal `charm*`/
+      `javatocpp` entries, which are AI-prompt text tied to an unrelated
+      side project, not portable code boilerplate.
 - [x] Registered as a completion source (folded into
       `mep.completion_buffer_words`, Phase 22). **LSP
       `insertTextFormat=Snippet` handling still not implemented** — Phase
@@ -1716,7 +1740,10 @@ completion for popup integration (soft))*
       literal placeholder syntax rather than expanding it through this
       phase's own tabstop engine — a real remaining gap, not just a
       relabeled old one.
-- [x] Snippet picker: `mep.snippets_picker()`/`:MepSnippets` (Phase 8).
+- [x] Snippet picker: `mep.snippets_picker()`/`:MepSnippets` (Phase 8),
+      now also bound directly to `<leader>yy` (`mep.leader_map('yy', ...)`)
+      — matching mep.nvim's own `mep.snippet.config.defaults.keymaps.
+      picker`, which the picker command alone hadn't covered before.
       Core parsing/tabstop-jump verified via Xvfb (a `function $1($2)`
       template correctly expanded with the cursor landing inside the
       parens); the prefix-stripping edge case around exactly where the
@@ -1725,7 +1752,12 @@ completion for popup integration (soft))*
       Insert-mode invocation (Vim's cursor-moves-back-on-Escape
       semantics shift the column by one) — one real latent bug found this
       way (a negative-index `string.sub` mishandling) and fixed
-      regardless of the test-harness caveat.
+      regardless of the test-harness caveat. The expanded parser/registry
+      themselves were verified against a standalone Lua interpreter with
+      a stubbed `mep` API (expand/jump through every ported trigger,
+      shared-table identity across js/ts and sh/bash/zsh, reserved-Lua-
+      keyword trigger names like `for`/`if`/`while`), not re-run through
+      Xvfb.
 
 ### Phase 24 — Symbols outline ✅
 

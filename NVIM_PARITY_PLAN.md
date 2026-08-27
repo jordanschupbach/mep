@@ -419,11 +419,12 @@ implemented and verified; Phase 45 is now done).
       ~98px to ~314px, `mod1+Shift+h` ×6 shrank it back down to the
       10-cell floor — both screenshots confirm the pane tree to its right
       visibly resizes in lockstep (real reserved space, not an overlay).
-- [x] Click hit-testing: **deferred** — keyboard navigation
-      (`HandleSidebarInput`) is implemented and verified; mouse
-      hit-testing against the flattened line list is straightforward to
-      add (the flatten function already exists) but no test covered it
-      yet.
+- [x] Click hit-testing: **corrected — already implemented**, contrary
+      to what this bullet used to claim as deferred. `main.cpp` builds
+      `g_sidebar_row_rects`/`g_sidebar_border_rects` and does full hit-
+      testing over them: click-to-select, double-click-to-activate
+      (`FocusSidebarRow`/`ActivateSidebarLine`), and drag-to-resize
+      (`PaneDragKind::SidebarResize`).
 - [x] Focus-restore tracking: `overlay_previous_mode_` /
       `RestoreFromOverlay()` — same mechanism Phase 3's prompts use,
       reused here so closing a sidebar always returns focus correctly.
@@ -626,16 +627,22 @@ filter, select-to-open-file, buffers, commands, find-files).
       by re-applying the theme explicitly at the top of `main()`, which
       is only ever reached after *all* global constructors have run.
 
-### Phase 10 — Icons ✅ (ASCII only, by design)
+### Phase 10 — Icons ✅ (nerd-font, added after this phase's own notes below were written)
 
+- [x] **Correction superseding every "ASCII only, by design" note in this
+      phase**: a real Nerd Font mode now exists. `g_icon_font` (main.cpp)
+      loads an embedded subset of Symbols Nerd Font Mono with real PUA
+      codepoints (`kIconCodepoints`), routed per-glyph via
+      `IsIconCodepoint`/`DrawUiText` and used by `IconForFilename`
+      (editor.cpp) and the tab-bar/diagnostics/todoscan/DAP glyphs. The
+      "embedded font's glyph subset doesn't cover those codepoints"
+      finding below was true when written; a subsequent pass added the
+      dedicated icon-font atlas this phase's own bullets said would be
+      needed to lift that limit.
 - [x] Filename/extension → icon glyph lookup table: `IconForFilename()`
       (editor.cpp) — full-name special cases (Makefile, Dockerfile,
       .gitignore, README, LICENSE, ...) checked before ~30 extension
-      mappings, exposed as `mep.icon_for_file(name)`. **ASCII only** —
-      emoji/nerd-font styles are **not** implemented: Phase 6's toast
-      icons already proved the embedded font's glyph subset doesn't cover
-      those codepoints (rendered as tofu), so this phase didn't re-attempt
-      it.
+      mappings, exposed as `mep.icon_for_file(name)`.
 - [x] Directory open/closed + tree-expand-marker glyphs: `mep.icons.
       dir_open`/`dir_closed`/`tree_expand`/`tree_collapse` (ASCII `v`/`>`).
 - [x] UI-action icon set: `mep.icons.{notify,todo,tests,git,add,clear}`,
@@ -1005,9 +1012,13 @@ filter, select-to-open-file, buffers, commands, find-files).
       (see above). Reset hunk: `mep.git_reset_hunk()`, pure
       `mep.replace_lines` in-buffer edit (a new generic multi-line-splice
       primitive, not git-specific) using the cached base-file lines, no
-      git call. **Preview hunk is not implemented** — no consumer needed
-      it yet (stage/reset don't require seeing the hunk rendered
-      separately first).
+      git call. **Correction: preview hunk is implemented.**
+      `mep.git_preview_hunk()`/`:MepGitPreviewHunk` renders the hunk under
+      the cursor as a unified diff via `mep.float_preview`. Also added
+      since: `mep.git_hunk_preview_on_jump` (opt-in) auto-shows it after
+      `]c`/`[c`-style navigation — off by default since `float_preview`
+      dismisses on any keypress, which would otherwise cost an extra
+      press per subsequent jump.
 - [x] Status sidebar: `mep.git_status_refresh()`/`:MepGitStatus`
       (`git status --porcelain`), stage/unstage/discard(confirm)/commit
       all via the same `on_key`-extension mechanism Phase 15's tree
@@ -1242,17 +1253,12 @@ grammars" command — activation itself doesn't need it)*
       fallback entries would ever match. Verified visually via Xvfb:
       TODO/DONE, stars, a checkbox, and a property drawer value all render
       in distinct colors on a real sample.
-- [ ] Incremental re-parse on edit — **not implemented**: no `TSTree`
-      is kept across edits and fed `ts_tree_edit`/an old-tree reparse;
-      every `mep.ts_captures` call reparses the full buffer from
-      scratch. This is a deliberate, documented scope cut (an
-      incrementally-updated tree per buffer, invalidated correctly
-      across every edit path — typed input, undo/redo, macros, LSP
-      `textDocument/didChange` sync — is real additional surface, not a
-      small add-on), consistent with this codebase's existing
-      "on-demand full rescan" scope decisions elsewhere (Phase 13's
-      colorizer/todo-mark are cheap regex scans; git-gutter backs off to
-      a 0.6s debounce).
+- [x] **Correction: incremental re-parse is implemented.** `GetTree()`
+      (treesitter.cpp) caches the previous `TSTree` per filetype,
+      computes a `TSInputEdit` via prefix/suffix diff (`ComputeEdit`),
+      calls `ts_tree_edit()`, and passes the edited tree as `old_tree`
+      into `ts_parser_parse_string` — real incremental reuse across
+      every edit path, not a full reparse per call.
 - [x] **Bug found and fixed**: opening a file showed no highlighting at
       all — `mep.syntax_highlight()` was reachable only via `:MepSyntax`,
       never invoked automatically. `mep.syntax_auto` (unlike colorizer/
@@ -1275,10 +1281,12 @@ grammars" command — activation itself doesn't need it)*
       suppresses all of it — then confirmed visually via Xvfb, opening a
       real `.cpp` file from this repo and seeing colored output
       immediately with no `:MepSyntax` needed.
-- [ ] Fold-query execution — **not implemented**, no query language in
-      play at all here (Phase 5's fold providers stay org/markdown/
-      manual-only). The grammars/queries vendored are highlights.scm
-      only; folds.scm isn't fetched or wired up.
+- [x] **Correction: fold-query execution is implemented.**
+      `TreesitterFoldRanges()` (treesitter.cpp) runs `FoldQueryTable()`
+      entries through a real `TSQueryCursor`, exposed to Lua via
+      `mep.ts_fold_ranges` and consumed by `mep.syntax_fold()`
+      (`:MepSyntaxFold` + an on-change auto-fold hook) — treesitter-based
+      folding is a real fold provider alongside org/markdown/manual.
 - [x] Query-file handling — upstream `.scm` query sources are vendored
       and actually executed (see above), including real predicate
       evaluation; there just isn't a runtime "load an arbitrary
@@ -1747,22 +1755,22 @@ completion for popup integration (soft))*
 fallback), Phase 13's URL-open, Phase 8 picker)*
 
 - [x] Docstring skeleton generator: `mep.docs_generate()`/`:MepDocGen` —
-      **regex/same-line-scan only**, no LSP signature-help-driven variant
-      — Phase 20's `signatureHelp` request is implemented now
-      (`mep.lsp_signature_help`, see its own notes), but `docs_generate`
-      itself was never rewired to call it instead of its own regex scan;
-      a real remaining gap now, not a blocked one — 3 curated
-      per-language templates (lua/python/javascript).
+      **correction: already rewired to `signatureHelp`.** It calls
+      `textDocument/signatureHelp` when an LSP is attached, using the
+      real `signatures`/`activeSignature`/param data, falling back to
+      the syntactic regex scanner (`mep_docs_generate_syntactic`) only
+      when no LSP is attached or the response is empty/erroring — 3
+      curated per-language templates (lua/python/javascript) either way.
 - [x] Doc lookup: `mep.docs_lookup()`/`:MepDocLookup` — word under
       cursor → a devdocs.io search URL → Phase 13's `mep.open_url`.
 - [x] Help picker: **reuses `mep.commands()` as-is** (Phase 8/13's
       command palette already *is* "a live index over registered
       commands, `<CR>` runs the selected entry") rather than building a
-      parallel picker — `:MepHelp` is a thin alias. Keybinding
-      introspection (the other half of the plan's bullet) is **not
-      implemented** — no registry of key→description exists anywhere
-      `mep.map`'s callers could have attached one to, so there's nothing
-      to introspect yet.
+      parallel picker — `:MepHelp` is a thin alias. **Correction:
+      keybinding introspection is implemented.** `mep.mapping_
+      descriptions()`/`mep.leader_bindings()` return `{mode, key,
+      desc}`/`{seq, desc}` arrays; `mep.keymaps()` builds a searchable
+      picker over both, bound to `:MepKeymaps` and `<leader>hk`.
 
 ### Phase 26 — DAP client ✅ implemented, **not verified against a live adapter**
 
@@ -1823,27 +1831,23 @@ from plain pipe-based process spawning)*
       readline-style line editing, buffering). Verified: a shell spawned
       this way showed a real `sh-5.3$` prompt (pipe-spawned shells don't
       print an interactive prompt at all).
-- [x] Output rendering: **scoped down from a real terminal emulator** to
-      "basic ANSI handling: colors" (the plan's own stated floor) — SGR
-      color codes (30-37/90-97) parse into real decoration spans through
-      the same Phase 4/9 pipeline everything else colors text through;
-      every *other* escape sequence (cursor movement, clear-screen, ...)
-      is silently discarded rather than interpreted. This is genuinely
-      *not* a cursor-addressable terminal grid: a full-screen TUI program
-      (vim, htop, a fancier REPL prompt) will render as garbled scrolling
-      text, not a real screen. Output is re-parsed from the full
-      accumulated byte stream on every chunk (simpler/more obviously
-      correct than incremental line-append, at the cost of O(output size)
-      per chunk — fine at Run/REPL output sizes). Verified via Xvfb: a
-      `sh -c 'printf "\033[31mred text\033[0m normal line\nline2\n"'`
-      run showed "red text" in red and the rest in the default color.
-- [x] **No raw-keystroke-by-keystroke input forwarding** ("forward
-      keystrokes to it") — scoped to line-oriented send (vim-slime style)
-      via `mep.job_write`/`mep.repl_send`, which covers the real
-      "run code and see output" / "send an expression to a REPL"
-      workflows without a full terminal-emulator input model. A REPL
-      session's own shell/interpreter still reads and responds to each
-      line normally since it's a real PTY underneath.
+- [x] **Correction — superseded by a full VT100/ANSI emulator.** The
+      "SGR colors only, cursor movement/clear-screen discarded" scope cut
+      described here was true when written but no longer matches
+      `src/vterm.cpp`: it now handles CSI cursor movement (`A/B/C/D/E/F/
+      G/d`, `H`/`f` CUP), erase (`J`→`EraseInDisplay`, `K`→
+      `EraseInLine`), scroll regions (`r`/`S`/`T`), insert/delete
+      line/char (`L`/`M`/`P`/`@`/`X`), save/restore cursor (`s`/`u`,
+      DECSC/DECRC `ESC 7`/`8`), alt-screen switching (modes 47/1047/
+      1049), and scrollback — a real cursor-addressable terminal grid,
+      not line-append color parsing. A full-screen TUI program (vim,
+      htop) renders correctly now.
+- [x] **Correction — raw keystroke forwarding is implemented.**
+      `Editor::HandleTerminalInput` forwards individual keystrokes
+      (arrows, Home/End/PageUp/Down, Backspace/Tab/Enter/Escape/Delete/
+      Insert, Ctrl+A-Z, with auto-repeat for held keys) to the PTY —
+      genuine interactive character-by-character terminal input, not
+      only line-oriented `mep.job_write`/`mep.repl_send`.
 - [x] Split-pane hosting: `mep_term_open_pane()` — `:split` + a fresh
       dedicated buffer (`mep.buffer_new()`, a new primitive: create a
       buffer without switching any pane to it) switched into the new
@@ -1857,11 +1861,17 @@ from plain pipe-based process spawning)*
       way). Verified end-to-end via Xvfb (see above).
 - [x] REPL: `mep.repl_start(lang)`/`mep.repl_send`/`send_line`/
       `send_buffer`, `mep.repl_languages` registry (2 languages, the
-      plan's own "start with 2-3"). **`send_selection` not implemented**
-      (no Lua-facing "get the current Visual selection's text" primitive
-      exists yet to build it on) and **no jump-to-REPL/jump-back
-      keybindings** beyond the existing `mep.nav_pane` directional focus
-      (Phase 14) already reaching a REPL's pane like any other. Verified
+      plan's own "start with 2-3"). **Correction: selection-send is
+      implemented** as `mep.termsend_selection()` (sends `mep.
+      visual_selection()`, bound to `mod1+CR` in Visual mode, dispatching
+      to it vs. `termsend_line` based on whether a selection is active)
+      — different name than the plan's `send_selection`, same
+      capability. **Jump-to-REPL/jump-back**: added as `mep.term_jump()`
+      (`:MepTermJump`, `<leader>rj`), toggling between the most recently
+      opened Run/REPL pane and wherever focus was before it opened, via
+      a new `Editor::FocusPaneShowingBuffer`/`mep.pane_focus_buffer`
+      direct jump-by-buffer-identity (distinct from directional `hjkl`,
+      which only reaches an *already-focus-adjacent* pane). Verified
       end-to-end via Xvfb: started a shell REPL, `repl_send` from the
       source buffer, watched `echo hello_from_repl` execute and its
       output stream into the REPL's buffer live.
@@ -1908,16 +1918,24 @@ folding, Phase 19 treesitter (soft — can ship line-pattern-only first))*
       showing purple heading tint + glyph, yellow bold text, blue
       link, independently-folded fenced code block, and checkbox
       toggle `- [ ]` → `- [x]`.
-- ⚠️ **Scope cut**: no GFM pipe-table → box-drawn table renderer (the
-      phase's hardest, most novel piece) and no per-level heading
-      *color* differentiation (H1 vs H2 vs H3 all share one heading
-      highlight group) — both deferred as lower-value than getting
-      org-mode's outline working, per the standing time-budget
-      tradeoff. Link/emphasis concealment (hiding `[`/`]`/`*` marker
-      characters, vs. just recoloring the whole span) also not done —
-      current implementation highlights markers in place rather than
-      concealing them. Italics not distinguished from bold (single
-      `**...**`/`*...*` bold pattern only).
+- ⚠️ **Scope cut, still real**: no GFM pipe-table → box-drawn table
+      renderer (the phase's hardest, most novel piece) — deferred as
+      lower-value than getting org-mode's outline working, per the
+      standing time-budget tradeoff. `mep.md_table_align` does parse and
+      column-align pipe tables (padding cells, preserving `:---`/`---:`
+      markers), so tables aren't purely inert literal text, just not
+      box-drawn.
+- ✅ **Addressed in a follow-up pass**: per-level heading color
+      differentiation (`MEP_MD_HEADING_HL`, Red→Purple hottest-to-coolest
+      by depth) and italics (single-`*`/`_` spans now get the same
+      rlgl-shear `italic = true` rendering org's own emphasis already
+      used, previously left completely undecorated).
+- ✅ **Correction — link/emphasis concealment was already implemented**,
+      contrary to this bullet's old claim: `mep.md_conceal` hides `**`/
+      `__`/`*`/`_` markers and link syntax via `Decoration.virt_overlay`,
+      hooked to `on_buffer_changed`/`on_frame`, showing raw markup only
+      on the cursor's own line. (Org-mode has an analogous conceal-like
+      emphasis rendering of its own, separately.)
 
 ### Phase 29 — Org-mode A: outline, folding, TODO/tags/properties/checkboxes ✅
 
@@ -1996,11 +2014,17 @@ org, per the research agents' recommended internal build order)*
       inclusive slice first, falling back to the exclusive one, so the
       command works whether it's invoked mid-Insert or (the normal
       case) after Escape.
-- ⚠️ **Still not implemented**: list-editing helpers (item
-      continuation, indent/outdent, renumbering) — genuinely lowest-
-      value item in the phase per its own ordering. "Insert sibling"
-      (plain/pre-filled-TODO) not bound to a dedicated command — use
-      normal-mode `o`/`O` plus `:MepOrgTodo`.
+- ✅ **Correction — list-editing helpers are implemented.**
+      Indent/outdent: `mep.org_list_shift_item`/`MepOrgListIndent`/
+      `MepOrgListOutdent`. Enter-continuation with marker/checkbox
+      handling and ordered-list renumbering: `mep.org_list_new_item`/
+      `MepOrgListNewItem`, calling `mep.org_list_renumber` (also its own
+      `:MepOrgListRenumber`). Insert-sibling-headline:
+      `mep.org_insert_heading`/`:MepOrgInsertHeading`+
+      `:MepOrgInsertTodoHeading`. Like every other org command in this
+      codebase these are Ex-style `mep.command(...)` registrations, not
+      bound to a literal `<CR>`/`<Tab>` keypress — that's this codebase's
+      general design pattern, not a gap specific to lists.
 
 ### Phase 30 — Org-mode B: tables (new), links, footnotes, timestamps/scheduling ✅
 
@@ -2054,9 +2078,12 @@ Phase 13's URL-open for link-follow, Phase 29)*
       `rest` already captures everything after the weekday abbreviation
       via `(.*)$`, which includes any trailing repeater/time text, so
       `<2026-08-19 Wed +1w>` → increment → `<2026-08-20 Thu +1w>`
-      correctly, verified via Xvfb. What's genuinely missing: no UI to
-      *insert* a repeater (`mep.org_timestamp_insert` only ever writes a
-      bare date). (Timestamp *ranges* were also marked unparsed here —
+      correctly, verified via Xvfb. (Repeater-insert UI was also marked
+      missing here — also stale: `mep.org_timestamp_set_repeater`/
+      `:MepOrgTimestampRepeater` prompts via `mep.ui_input` for a
+      repeater string, `+1w`/`++1d`/`.+1m`, or empty to remove one, and
+      rewrites the timestamp under the cursor.) (Timestamp *ranges* were
+      also marked unparsed here —
       also stale: `mep_org_timestamp_range_at`/`ORG_TS_RANGE_PATTERNS`
       recognize `<start>--<end>`/`[start]--[end]`, plus a dedicated
       `mep.org_timestamp_insert_range` and range-distinct highlighting.)
@@ -2130,14 +2157,19 @@ Phase 30's timestamp placeholders)*
       stray leading blank line from the auto-created single-empty-
       line buffer; fixed by treating a lone empty first line as
       "nothing to append after."
-- ⚠️ **Scope cut**: no floating review-popup with explicit
-      commit/abort keys — the captured entry commits immediately once
-      all prompts resolve (no final "review, then C-c C-c" step).
-      Refile does not attempt to promote/demote the *target*
-      selection list to a narrower picker experience beyond flat
-      indentation; sibling-position choice within the target (e.g.
-      "as first child" vs "as last child") isn't offered — always
-      appends as last child.
+- ✅ **Correction — capture has a commit/abort step.** Not a floating
+      review-popup, but not immediate-commit either: `mep.org_capture`
+      inserts into the real buffer and holds it as `mep.org_capture_
+      pending` until `mep.org_capture_commit`/`:MepOrgCaptureCommit` or
+      `mep.org_capture_abort`/`:MepOrgCaptureAbort` (which deletes
+      exactly the inserted line range) — a real review-then-decide step,
+      just via the buffer itself rather than a separate popup.
+- ⚠️ **Scope cut, still real**: refile does not attempt to promote/
+      demote the *target* selection list to a narrower picker experience
+      beyond flat indentation; sibling-position choice within the target
+      (e.g. "as first child" vs "as last child") isn't offered — always
+      appends as last child (`target_end = mep_org_subtree_end
+      (target_row)`, both same-buffer and cross-file paths).
 
 ### Phase 32 — Org-mode D: agenda ✅
 
@@ -2518,14 +2550,22 @@ during-export is wanted — can ship without it first)*
       moment it's produced, with all placeholders restored in one
       final pass after every pattern has run — so no pass ever sees
       another pass's generated markup.
-- ⚠️ **Scope cut**: no `#+INCLUDE:` resolution or `#+MACRO:`
-      collection (single-file export only). No underline/strikethrough
-      inline marks (bold/italic/code/link only). Subtree export has no
-      title-override prompt (always uses the headline's own title). No
-      `:exports code/results/none`/`:eval never` header-arg handling —
-      src blocks are always shown, never hidden or executed, which is
-      the documented "ship without eval first" baseline rather than a
-      gap to close later in this pass.
+- ✅ **Correction — `#+INCLUDE:` and `#+MACRO:` are both implemented.**
+      `mep.org_resolve_includes`/`mep_org_resolve_includes_lines` wire
+      into `mep_org_export_prepare`; `mep_org_collect_macros`/
+      `mep_org_expand_macro_line` run in both full export and
+      `mep.org_export_subtree`.
+- ✅ **Addressed in a follow-up pass**: underline/strikethrough inline
+      marks (`_underline_`/`+strike+` → `<u>`/`<del>` HTML, `<u>`/`~~~~`
+      GFM markdown, stripped ASCII), matching bold/italic/code.
+- ⚠️ **Scope cut, still real**: subtree export has no title-override
+      prompt (always uses the headline's own title). `:eval never`/
+      `no`/`query*`/`*-export` IS honored (`mep.org_babel_run_for_
+      export` skips execution) — **correction**, that half of the old
+      claim was wrong — but `:exports code/results/none` (which output
+      to *render*, independent of whether it executes) is genuinely not
+      handled: src blocks always render their code in export output
+      regardless of `:exports none`/`:exports results`.
 
 ### Phase 36 — Org-mode H: polyglot (LSP-in-src-blocks) — deferred/stretch ⏭️ SKIPPED
 

@@ -1299,6 +1299,20 @@ int l_buffer_switch(lua_State *L) {
     return 0;
 }
 
+// mep.buffer_filename(id) -> raw path, '' for a terminal/unsaved buffer.
+int l_buffer_filename(lua_State *L) {
+    int id = static_cast<int>(luaL_checkinteger(L, 1));
+    lua_pushstring(L, GetEditor(L)->BufferFilenameForLua(id).c_str());
+    return 1;
+}
+
+// mep.buffer_count() -> number of open buffers (cheap poll target, unlike
+// mep.buffer_list() which allocates a full label table every call).
+int l_buffer_count(lua_State *L) {
+    lua_pushinteger(L, GetEditor(L)->BufferCountForLua());
+    return 1;
+}
+
 // mep.pane_buffers() -> array of buffer ids currently shown by a pane in
 // the active tab's own split layout (Editor::PaneBuffersInActiveTab) --
 // for a script that wants to "find an already-open terminal pane"
@@ -2364,6 +2378,8 @@ const luaL_Reg kMepFuncs[] = {
     {"fuzzy_score", l_fuzzy_score},
     {"buffer_list", l_buffer_list},
     {"buffer_switch", l_buffer_switch},
+    {"buffer_filename", l_buffer_filename},
+    {"buffer_count", l_buffer_count},
     {"pane_buffers", l_pane_buffers},
     {"command_names", l_command_names},
     {"colorscheme", l_colorscheme},

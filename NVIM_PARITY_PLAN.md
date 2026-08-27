@@ -1594,13 +1594,12 @@ see "Design decisions" above for why it's a from-scratch build.)*
       caught during verification: the first version compared a relative
       `mep.filename()` directly against the always-absolute URI-derived
       key and the two silently never matched, so nothing ever rendered.
-- [x] Gutter sign + whole-line highlight (severity-colored via the
-      existing Error/Warn theme groups) + inline virtual-text summary of
-      the message. **No separate underline decoration** on the exact
-      affected span — the whole-line highlight already marks it, and
-      Decoration doesn't have an "underline" style distinct from a
-      background tint (documented pre-existing limit from Phase 4, not
-      new here).
+- [x] Gutter sign + inline virtual-text summary of the message, plus a
+      **dedicated underline decoration** on each diagnostic's exact
+      `[col_start, col_end)` span (`Decoration::underline`, editor.h) —
+      the earlier "no separate underline style, whole-line tint only"
+      note here is stale; that gap was closed directly in service of
+      this phase.
 - [x] Diagnostic-at-cursor: `mep.lsp_diagnostic_at_cursor()`/
       `:MepDiagShow` — **via `mep.notify` rather than a dedicated Phase 3
       floating popup** (same scope call as Phase 15's tree help: a toast
@@ -2670,9 +2669,9 @@ floating popup)*
       `mep.org_bib_cite_preview`/`:MepOrgBibCitePreview`): jumps to the
       entry's `@type{key,` line in its resolved `.bib` file (a picker
       disambiguates a multi-key citation), and surfaces
-      author/year/title/venue via `mep.notify` — the same convention
-      `mep.lsp_hover` already uses, there being no dedicated hover
-      widget in the codebase. `mep.org_link_follow` now checks for a
+      author/year/title/venue via `mep.hover_show` — a real
+      cursor-anchored floating popup (see Phase 3's hover-tooltip gap,
+      closed), not `mep.notify`. `mep.org_link_follow` now checks for a
       citation at cursor before its `[[...]]` bracket-link handling, so
       the existing follow keybinding works for either citation syntax.
 - [x] Verified via Xvfb with a `.bib` file exercising all three gaps at
@@ -2684,8 +2683,11 @@ floating popup)*
       `:MepOrgBibCitePreview` showed the crossref-inherited year and the
       macro-expanded, `#`-concatenated journal string correctly for
       every syntax variant, including the multi-key `citet:` form.
-- ⚠️ **Scope cut**: no dedicated floating hover widget (reuses
-      `mep.notify`, matching `mep.lsp_hover`'s own precedent).
+- [x] **Correction to an earlier note in this file**: this used to say
+      there was no dedicated floating hover widget and citation preview
+      fell back to `mep.notify` — stale. `mep.hover_show` (lua_env.cpp)
+      is a real anchored floating popup, already wired to LSP hover,
+      signature help, and this citation preview alike.
 
 ---
 

@@ -11441,6 +11441,12 @@ std::string Editor::BufferLabelForLua(int buffer_id) const {
     return label;
 }
 
+std::string Editor::BufferFilenameForLua(int buffer_id) const {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return "";
+    if (GetTerminal(buffer_id)) return "";
+    return buffers_[buffer_id].filename;
+}
+
 void Editor::SwitchToBufferForLua(int buffer_id) {
     if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
     CurPane().buffer_id = buffer_id;

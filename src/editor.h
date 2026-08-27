@@ -1721,6 +1721,12 @@ public:
     int CreateBufferForLua() { return CreateEmptyBuffer(); }
     int BufferCountForLua() const { return static_cast<int>(buffers_.size()); }
     std::string BufferLabelForLua(int buffer_id) const;
+    // Raw filename (empty for a terminal buffer or an unsaved "[No Name]"
+    // buffer) -- unlike BufferLabelForLua, no "[+]"/"[Terminal] " display
+    // decoration, so callers needing the real path (e.g. LSP didClose's
+    // buffer-closed sweep, kBuiltinLsp) can match it back to their own
+    // filename-keyed state.
+    std::string BufferFilenameForLua(int buffer_id) const;
     void SwitchToBufferForLua(int buffer_id);
     std::vector<std::string> LuaCommandNames() const;
     void GetCursorForLua(int *row, int *col) const;

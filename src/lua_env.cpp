@@ -1327,6 +1327,14 @@ int l_pane_buffers(lua_State *L) {
     return 1;
 }
 
+// mep.pane_focus_buffer(id) -> bool (true if some pane in the active tab
+// already shows buffer id, now focused; false, no-op, otherwise).
+int l_pane_focus_buffer(lua_State *L) {
+    int id = static_cast<int>(luaL_checkinteger(L, 1));
+    lua_pushboolean(L, GetEditor(L)->FocusPaneShowingBuffer(id));
+    return 1;
+}
+
 // mep.command_names() -> array of registered mep.command() names.
 int l_command_names(lua_State *L) {
     std::vector<std::string> names = GetEditor(L)->LuaCommandNames();
@@ -2409,6 +2417,7 @@ const luaL_Reg kMepFuncs[] = {
     {"buffer_filename", l_buffer_filename},
     {"buffer_count", l_buffer_count},
     {"pane_buffers", l_pane_buffers},
+    {"pane_focus_buffer", l_pane_focus_buffer},
     {"command_names", l_command_names},
     {"colorscheme", l_colorscheme},
     {"theme_names", l_theme_names},

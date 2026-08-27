@@ -4327,12 +4327,30 @@ const char *kBuiltinRun =
     "end\n"
     // Opens a fresh split, switches it to a new dedicated buffer, and
     // returns that buffer's id -- the shared setup both Run and REPL use.
+    // Also remembers the (source, target) pane pair for mep.term_jump
+    // (NVIM_PARITY_PLAN.md Phase 27 gap: no way back to a Run/REPL pane,
+    // or back from it to where you started, short of manual hjkl) --
+    // last-opened-wins, same single-slot scope cut as mep.org_stored_link.
+    "local mep_term_jump_source, mep_term_jump_target = nil, nil\n"
     "local function mep_term_open_pane(title)\n"
+    "  mep_term_jump_source = mep.current_buffer()\n"
     "  local buf_id = mep.buffer_new()\n"
     "  mep.cmd('split')\n"
     "  mep.buffer_switch(buf_id)\n"
+    "  mep_term_jump_target = buf_id\n"
     "  return buf_id\n"
     "end\n"
+    // Toggles between the most recently opened Run/REPL pane and whatever
+    // buffer was focused right before it was opened.
+    "function mep.term_jump()\n"
+    "  if not mep_term_jump_target then mep.notify('No Run/REPL pane opened yet', 'warn') return end\n"
+    "  local dest = (mep.current_buffer() == mep_term_jump_target) and mep_term_jump_source or mep_term_jump_target\n"
+    "  if not dest or not mep.pane_focus_buffer(dest) then\n"
+    "    mep.notify('That pane is no longer open', 'warn')\n"
+    "  end\n"
+    "end\n"
+    "mep.command('MepTermJump', mep.term_jump)\n"
+    "mep.leader_map('rj', 'Jump to/from Run/REPL pane', mep.term_jump)\n"
     "function mep.run_file()\n"
     "  local ft = mep_lsp_filetype(mep.filename())\n"
     "  local cmd = ft and mep.run_languages[ft]\n"
@@ -4585,6 +4603,12 @@ const char *kBuiltinMarkdown =
     "    if top.row < n then mep.fold_create(top.row, n, true, 'markdown') end\n"
     "  end\n"
     "end\n"
+    // Level 1 hottest -> level 6 coolest, same "distinguish nesting depth
+    // by color temperature" idea org's own headline levels use elsewhere
+    // in this codebase -- NVIM_PARITY_PLAN.md Phase 28 gap: every level
+    // used to render identically as Purple, only the sign-column digit
+    // told them apart.
+    "local MEP_MD_HEADING_HL = {'Red', 'Orange', 'Yellow', 'Green', 'Blue', 'Purple'}\n"
     "function mep.md_highlight()\n"
     "  local ns = mep_md_ns_get()\n"
     "  mep.ns_clear(ns)\n"
@@ -4608,10 +4632,26 @@ const char *kBuiltinMarkdown =
     "      if hashes then\n"
     "        local level = math.min(#hashes, 6)\n"
     "        local glyph = tostring(level)\n"
-    "        mep.deco_add(ns, {row = i, whole_line = true, hl_group = 'Purple', sign = glyph, sign_hl = 'Purple'})\n"
+    "        local hl = MEP_MD_HEADING_HL[level]\n"
+    "        mep.deco_add(ns, {row = i, whole_line = true, hl_group = hl, sign = glyph, sign_hl = hl})\n"
     "      else\n"
+    "        local covered = {}\n"
     "        for s, e in line:gmatch('()%*%*[^%*]+%*%*()') do\n"
     "          mep.deco_add(ns, {row = i, col_start = s, col_end = e, hl_group = 'Yellow'})\n"
+    "          for k = s, e - 1 do covered[k] = true end\n"
+    "        end\n"
+    // Single-*/_ italic: NVIM_PARITY_PLAN.md Phase 28 gap -- md_highlight
+    // never marked these at all (only **bold** and links), so italic text
+    // rendered as plain, undecorated body text. `italic = true` reuses the
+    // same rlgl-shear renderer org's own *Erm*/_italic_ emphasis already
+    // drives (Decoration.italic, editor.h) rather than adding a second one.
+    // `covered` skips single-*-flanking-bold spans already claimed above
+    // (Lua patterns can't tell "**" from two adjacent unmatched "*"s).
+    "        for s, e in line:gmatch('()%*[^%*\\n]+%*()') do\n"
+    "          if not covered[s] then mep.deco_add(ns, {row = i, col_start = s, col_end = e, hl_group = 'Cyan', italic = true}) end\n"
+    "        end\n"
+    "        for s, e in line:gmatch('()_[^_\\n]+_()') do\n"
+    "          mep.deco_add(ns, {row = i, col_start = s, col_end = e, hl_group = 'Cyan', italic = true})\n"
     "        end\n"
     "        for s, e in line:gmatch('()%[[^%]]*%]%([^%)]*%)()') do\n"
     "          mep.deco_add(ns, {row = i, col_start = s, col_end = e, hl_group = 'Blue'})\n"

@@ -1405,6 +1405,29 @@ std::vector<int> Editor::PaneBuffersInActiveTab() const {
     return ids;
 }
 
+int Editor::FindPaneIdForBuffer(const SplitNode *node, int buffer_id) const {
+    if (node->dir == SplitDir::Leaf) {
+        return node->pane.buffer_id == buffer_id ? node->pane.id : -1;
+    }
+    for (auto &child : node->children) {
+        int found = FindPaneIdForBuffer(child.get(), buffer_id);
+        if (found >= 0) return found;
+    }
+    return -1;
+}
+
+bool Editor::FocusPaneShowingBuffer(int buffer_id) {
+    Tab &tab = tabs_[active_tab_];
+    int pane_id = FindPaneIdForBuffer(tab.root.get(), buffer_id);
+    if (pane_id < 0) return false;
+    tab.active_pane_id = pane_id;
+    // Same "leaving a live terminal's keystroke-forwarding mode behind
+    // when focus actually moves" rule as NavigatePaneDirection's own.
+    if (mode_ == Mode::Terminal) mode_ = Mode::Normal;
+    SyncModeToActivePaneBuffer();
+    return true;
+}
+
 bool Editor::RemovePaneNode(std::unique_ptr<SplitNode> &node_ptr, int pane_id) {
     SplitNode *node = node_ptr.get();
     for (size_t i = 0; i < node->children.size(); i++) {

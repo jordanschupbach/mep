@@ -1216,6 +1216,14 @@ public:
     // to "find an already-open terminal pane" (mirrors mep.nvim's
     // nvim_tabpage_list_wins()/nvim_win_get_buf combination).
     std::vector<int> PaneBuffersInActiveTab() const;
+    // Moves focus straight to whichever pane in the active tab already
+    // shows buffer_id (false, no-op, if none does) -- unlike
+    // NavigatePaneDirection's spatial hjkl, a direct jump by buffer
+    // identity. NVIM_PARITY_PLAN.md Phase 27 gap: mep.run_file/
+    // mep.repl_start open their output in a new split and focus it once,
+    // on creation, but there was no way back to it (or back to the
+    // source buffer) afterward short of manual hjkl.
+    bool FocusPaneShowingBuffer(int buffer_id);
     CursorPos Cursor() const { return CurPane().cursor; }
     int ScrollRow() const { return CurPane().scroll_row; }
     const std::string &CommandLine() const { return command_line_; }
@@ -3302,6 +3310,10 @@ private:
     // buffer_id instead of its pane id -- PaneBuffersInActiveTab's own
     // helper.
     void CollectLeafBuffers(const SplitNode *node, std::vector<int> &ids) const;
+    // Same traversal again, stopping at the first leaf showing buffer_id
+    // and returning its pane id (-1 if none) -- FocusPaneShowingBuffer's
+    // own helper.
+    int FindPaneIdForBuffer(const SplitNode *node, int buffer_id) const;
     // Shared by NavigatePaneDirection and PaneMoveBufferTabToNeighbor: the
     // best-overlap-then-nearest pane id in `direction` from `from_pane_id`,
     // or -1 if none.

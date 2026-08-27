@@ -2343,6 +2343,51 @@ const char *kBuiltinLsp =
     // interactive banner/echo commands onto that same stream first.
     "  r_languageserver = {cmd = {'R', '--no-save', '--slave', '-e', 'languageserver::run()'},\n"
     "    filetypes = {'R', 'r'}},\n"
+    // The remaining babel languages that had no server registered at
+    // all (same gap R was in) -- perl/fortran/scala/nim/crystal/d, all
+    // verified end-to-end (real initialize handshake, real capabilities)
+    // against each real server; julia is the one exception (below).
+    //
+    // Perl::LanguageServer is a pure library (no standalone binary of
+    // its own) -- always invoked by loading it into a real `perl`, same
+    // shape as R's own `-e 'languageserver::run()'` above. flake.nix
+    // provides this via `perl.withPackages`, not plain `pkgs.perl`, for
+    // the same reason rWrapper replaced plain pkgs.R.
+    "  perl_languageserver = {cmd = {'perl', '-MPerl::LanguageServer', '-e', 'Perl::LanguageServer::run()'},\n"
+    "    filetypes = {'pl', 'pm'}},\n"
+    "  fortls = {cmd = {'fortls'}, filetypes = {'f90', 'f', 'for'}},\n"
+    // metals needs at least one real file already present in its rootUri
+    // directory to report full capabilities -- an empty/nonexistent
+    // workspace silently degrades to an empty capabilities response
+    // instead of erroring, caught during verification (a bare /tmp
+    // rootUri with no .scala file in it returned {}, no hover/
+    // completion/etc keys at all; the exact same request against a
+    // directory containing one real .scala file returned the full set).
+    // Not a problem for polyglot's own per-block shadow files, which are
+    // always written to disk before the client ever starts -- worth
+    // documenting since it would silently misbehave for any other would-
+    // be caller that starts the client before its first file exists.
+    "  metals = {cmd = {'metals'}, filetypes = {'scala', 'sbt'}},\n"
+    "  nimlsp = {cmd = {'nimlsp'}, filetypes = {'nim'}},\n"
+    "  crystalline = {cmd = {'crystalline'}, filetypes = {'cr'}},\n"
+    "  served = {cmd = {'serve-d'}, filetypes = {'d'}},\n"
+    // Julia's LanguageServer.jl is a package, not a nixpkgs-packaged
+    // binary -- unlike every other server registered in this file
+    // (verified via the exact devShell flake.nix provisions), this one
+    // needs a one-time `julia -e 'using Pkg; Pkg.add(\"LanguageServer\")'`
+    // by whoever's running mep first, since nixpkgs has no equivalent of
+    // rWrapper/perl.withPackages for Julia's own package ecosystem.
+    // Invocation itself verified correct once installed (a real
+    // initialize round trip against a manually provisioned depot
+    // returned full hover/completion/definition/etc capabilities) --
+    // `runserver()` with no arguments is deliberately simpler than most
+    // documented invocations elsewhere (which pass explicit pipe/env-
+    // path arguments): it already defaults to stdin/stdout and
+    // auto-detects env_path from pwd(), and passing them positionally
+    // wrong (tried during verification) fails with a confusing multiple-
+    // dispatch error rather than a clear one.
+    "  julials = {cmd = {'julia', '--startup-file=no', '--history-file=no', '-e', 'using LanguageServer; runserver()'},\n"
+    "    filetypes = {'jl'}},\n"
     "  yamlls = {cmd = {'yaml-language-server', '--stdio'}, filetypes = {'yaml', 'yml'}},\n"
     "  jsonls = {cmd = {'vscode-json-language-server', '--stdio'}, filetypes = {'json', 'jsonc'}},\n"
     "  html = {cmd = {'vscode-html-language-server', '--stdio'}, filetypes = {'html', 'htm'}},\n"

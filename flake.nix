@@ -269,7 +269,12 @@
             (pkgs.python3.withPackages (ps: [ ps.numpy ])) # Python
             pkgs.nodejs # JavaScript
             pkgs.ruby
-            pkgs.perl
+            # perl.withPackages, not bare pkgs.perl -- Perl::LanguageServer
+            # (mep.lsp_servers.perl_languageserver) is a pure Perl module
+            # with no standalone binary of its own; `perl -MPerl::
+            # LanguageServer` needs it on @INC, same reasoning as
+            # rWrapper/languageserver below.
+            (pkgs.perl.withPackages (ps: [ ps.PerlLanguageServer ]))
             # rWrapper (not the bare pkgs.R) with the `languageserver`
             # package built in -- R is otherwise one of the babel
             # languages with no LSP server registered at all
@@ -359,6 +364,22 @@
             # here yourself (plus `nixpkgs.config.allowUnfree = true` for
             # this flake, e.g. via NIXPKGS_ALLOW_UNFREE=1 or a
             # config.nix override) if you want php polyglot support.
+            pkgs.fortls # fortran
+            pkgs.metals # scala
+            pkgs.nimlsp # nim
+            pkgs.crystalline # crystal
+            pkgs.serve-d # d -- provides the `serve-d` binary
+            # Julia's LanguageServer.jl is a real language *package*, not
+            # a nixpkgs binary -- unlike every other server above, the
+            # pkgs.julia-bin already listed above (for babel execution)
+            # isn't enough on its own; run this once yourself after
+            # entering the shell (a real Julia package install, so it
+            # needs network access, same as any language's own package
+            # manager -- not something a hermetic Nix build can do for
+            # you the way rWrapper/perl.withPackages could for R/Perl):
+            #   julia -e 'using Pkg; Pkg.add("LanguageServer")'
+            # mep.lsp_servers.julials's own invocation is verified
+            # correct once that's done.
           ];
 
           # MEP_WEBVIEW_LD_LIBRARY_PATH: scoped to a separate variable

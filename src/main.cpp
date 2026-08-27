@@ -11623,7 +11623,7 @@ void DrawCompletionDetailPanel(int box_x, int box_y, int box_w, int box_h, const
     }
     float font_size = g_font_size;
     int line_h = static_cast<int>(font_size) + 4;
-    int panel_w = std::min(GetScreenWidth() / 3, 420);
+    int panel_w = std::min(GetScreenWidth() / 2, 640);
     int max_chars_per_line = std::max(20, static_cast<int>((panel_w - 20) / g_char_width));
     std::vector<std::string> lines;
     int detail_line_count = 0;

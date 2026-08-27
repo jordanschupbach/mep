@@ -1887,6 +1887,16 @@ int l_set_completion_accept_hook(lua_State *L) {
     return 0;
 }
 
+// mep.set_completion_resolve_hook(fn): see SetCompletionResolveHookRef's
+// comment (editor.h) -- Phase 22 follow-up's completionItem/resolve gap.
+int l_set_completion_resolve_hook(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TFUNCTION);
+    lua_pushvalue(L, 1);
+    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    GetEditor(L)->SetCompletionResolveHookRef(ref);
+    return 0;
+}
+
 // mep.set_insert_tab_hook(fn): fn(shift) -> bool. Phase 23's Tab/Shift-Tab
 // tabstop cycling -- see SetInsertTabHookRef's comment (editor.h).
 int l_set_insert_tab_hook(lua_State *L) {
@@ -2467,6 +2477,7 @@ const luaL_Reg kMepFuncs[] = {
     {"doc_export_html_to_odt", l_doc_export_html_to_odt},
     {"set_completion_source", l_set_completion_source},
     {"set_completion_accept_hook", l_set_completion_accept_hook},
+    {"set_completion_resolve_hook", l_set_completion_resolve_hook},
     {"set_insert_tab_hook", l_set_insert_tab_hook},
     {"lsp_start", l_lsp_start},
     {"lsp_request", l_lsp_request},
@@ -2607,6 +2618,72 @@ bool LuaEnv::CallRefWithStringForStrings(int ref, const std::string &arg, std::v
         if (lua_isstring(L_, -1)) out->push_back(lua_tostring(L_, -1));
         lua_pop(L_, 1);
     }
+    lua_pop(L_, 1);
+    return true;
+}
+
+bool LuaEnv::CallRefWithStringForCompletionItems(int ref, const std::string &arg, std::vector<std::string> *texts,
+                                                  std::vector<std::string> *kinds, std::vector<std::string> *details,
+                                                  std::vector<std::string> *docs) {
+    if (ref == LUA_NOREF || ref == LUA_REFNIL || ref == 0) return false;
+    lua_rawgeti(L_, LUA_REGISTRYINDEX, ref);
+    lua_pushlstring(L_, arg.data(), arg.size());
+    if (lua_pcall(L_, 1, 1, 0) != LUA_OK) {
+        const char *msg = lua_tostring(L_, -1);
+        if (editor_) editor_->SetStatusMessage(std::string("Lua error: ") + (msg ? msg : "?"));
+        lua_pop(L_, 1);
+        return false;
+    }
+    if (!lua_istable(L_, -1)) {
+        lua_pop(L_, 1);
+        return false;
+    }
+    auto string_field = [this](const char *field) -> std::string {
+        lua_getfield(L_, -1, field);
+        std::string s = lua_isstring(L_, -1) ? lua_tostring(L_, -1) : "";
+        lua_pop(L_, 1);
+        return s;
+    };
+    lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L_, -1));
+    for (lua_Integer i = 1; i <= n; i++) {
+        lua_rawgeti(L_, -1, i);
+        if (lua_istable(L_, -1)) {
+            texts->push_back(string_field("text"));
+            kinds->push_back(string_field("kind"));
+            details->push_back(string_field("detail"));
+            docs->push_back(string_field("doc"));
+        } else if (lua_isstring(L_, -1)) {
+            texts->push_back(lua_tostring(L_, -1));
+            kinds->push_back("");
+            details->push_back("");
+            docs->push_back("");
+        }
+        lua_pop(L_, 1);
+    }
+    lua_pop(L_, 1);
+    return true;
+}
+
+bool LuaEnv::CallRefWithStringForDetailDoc(int ref, const std::string &arg, std::string *detail, std::string *doc) {
+    if (ref == LUA_NOREF || ref == LUA_REFNIL || ref == 0) return false;
+    lua_rawgeti(L_, LUA_REGISTRYINDEX, ref);
+    lua_pushlstring(L_, arg.data(), arg.size());
+    if (lua_pcall(L_, 1, 1, 0) != LUA_OK) {
+        const char *msg = lua_tostring(L_, -1);
+        if (editor_) editor_->SetStatusMessage(std::string("Lua error: ") + (msg ? msg : "?"));
+        lua_pop(L_, 1);
+        return false;
+    }
+    if (!lua_istable(L_, -1)) {
+        lua_pop(L_, 1);
+        return false;
+    }
+    lua_getfield(L_, -1, "detail");
+    *detail = lua_isstring(L_, -1) ? lua_tostring(L_, -1) : "";
+    lua_pop(L_, 1);
+    lua_getfield(L_, -1, "doc");
+    *doc = lua_isstring(L_, -1) ? lua_tostring(L_, -1) : "";
+    lua_pop(L_, 1);
     lua_pop(L_, 1);
     return true;
 }

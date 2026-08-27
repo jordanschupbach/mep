@@ -373,6 +373,19 @@ struct PickerItem {
     std::string data;
 };
 
+// One insert-mode completion candidate (NVIM_PARITY_PLAN.md Phase 22
+// follow-up: show which source a candidate came from, and an LSP item's
+// signature/doc alongside it). `kind` is a short source tag ("lsp",
+// "file", "snippet", "buffer") the popup renders as a badge; `detail`/
+// `doc` come from LSP CompletionItem.detail/.documentation and drive the
+// side info panel -- both empty for every non-LSP source.
+struct CompletionCandidate {
+    std::string text;
+    std::string kind;
+    std::string detail;
+    std::string doc;
+};
+
 // One node in the Roam backlink-graph view (NVIM_PARITY_PLAN.md Phase 37's
 // flagged "no fuzzy backlink-graph visualization" gap, closed). `hop` is
 // graph-distance from the note the view was opened on: 0 = that note
@@ -2378,11 +2391,18 @@ public:
     // keystroke against a single buffer is cheap enough that no separate
     // timer/thread was needed to keep it feeling instant).
     // mep.set_completion_source(fn): fn(prefix) -> array of candidate
-    // words, called after each insert-mode edit with the word prefix
-    // immediately before the cursor (empty string closes the popup).
+    // items, called after each insert-mode edit with the word prefix
+    // immediately before the cursor (empty string closes the popup unless
+    // it's a dot-trigger, see UpdateCompletionPopup). Each item is either
+    // a plain string (kind/detail/doc left blank, for backward
+    // compatibility with a custom source that predates this) or a table
+    // {text=, kind=, detail=, doc=} -- kind is a short source tag ("lsp",
+    // "file", "snippet", "buffer") shown as a badge in the popup; detail/
+    // doc (LSP CompletionItem.detail/.documentation, usually a type
+    // signature and a docstring) drive the side info panel next to it.
     void SetCompletionSourceRef(int lua_ref) { completion_source_ref_ = lua_ref; }
     bool IsCompletionOpen() const { return completion_open_; }
-    const std::vector<PickerItem> &CompletionItems() const { return completion_items_; }
+    const std::vector<CompletionCandidate> &CompletionItems() const { return completion_items_; }
     int CompletionSelected() const { return completion_selected_; }
     // mep.set_completion_accept_hook(fn): fn(text) called (Phase 23
     // LSP-snippet gap) right after AcceptCompletion splices `text` into the
@@ -2397,6 +2417,21 @@ public:
     // stays as plain inserted text) for every other completion source,
     // which never sets this hook up to care.
     void SetCompletionAcceptHookRef(int lua_ref) { completion_accept_hook_ref_ = lua_ref; }
+    // mep.set_completion_resolve_hook(fn): fn(text) -> {detail=, doc=} or
+    // nil. Most LSP items arrive from textDocument/completion nearly
+    // empty (pyright, e.g., sends label/kind/sortText/data only) -- detail/
+    // documentation are usually filled in lazily via a follow-up
+    // completionItem/resolve request. DrawCompletionDetailPanel (main.cpp)
+    // calls this once per frame it's drawing the panel for a given item
+    // that had no detail/doc in CompletionItems()' own snapshot; a Lua
+    // hook can kick off (or check on) that async resolve itself and
+    // return nil until the response lands, same "poll every frame, cheap
+    // since it's only ever the one selected item" shape as
+    // Editor::MaybeDismissHover.
+    void SetCompletionResolveHookRef(int lua_ref) { completion_resolve_hook_ref_ = lua_ref; }
+    // Calls the resolve hook (if set) for `text`; returns false (detail/
+    // doc untouched) if there's no hook or it returned nil this frame.
+    bool CompletionResolveInfo(const std::string &text, std::string *detail, std::string *doc) const;
     // mep.set_insert_tab_hook(fn): fn(shift) -> bool, asked on every
     // Insert-mode Tab/Shift-Tab press that the completion popup doesn't
     // already claim (see HandleInsertInput) -- Phase 23's tabstop-cycling
@@ -3557,9 +3592,10 @@ private:
 
     int completion_source_ref_ = 0;
     int completion_accept_hook_ref_ = 0;
+    int completion_resolve_hook_ref_ = 0;
     int insert_tab_hook_ref_ = 0;
     bool completion_open_ = false;
-    std::vector<PickerItem> completion_items_;
+    std::vector<CompletionCandidate> completion_items_;
     int completion_selected_ = 0;
     int completion_word_start_col_ = 0;
     // UpdateCompletionPopup's own throttle state -- see its definition

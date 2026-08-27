@@ -40,6 +40,24 @@ public:
     // completion sources). Returns false (out untouched) on error/if ref
     // returned something else.
     bool CallRefWithStringForStrings(int ref, const std::string &arg, std::vector<std::string> *out);
+    // Calls ref(arg) and reads back an array of completion candidates
+    // (Phase 22 follow-up: kind/detail/doc alongside each item's text).
+    // Each array element may be a plain string (kinds/details/docs get a
+    // matching "" entry, for a custom completion source predating this)
+    // or a table {text=, kind=, detail=, doc=} -- four parallel out
+    // vectors rather than a struct so this header doesn't need editor.h's
+    // CompletionCandidate type; Editor::UpdateCompletionPopup zips them
+    // back together. Returns false (vectors untouched) on error/if ref
+    // returned something else.
+    bool CallRefWithStringForCompletionItems(int ref, const std::string &arg, std::vector<std::string> *texts,
+                                              std::vector<std::string> *kinds, std::vector<std::string> *details,
+                                              std::vector<std::string> *docs);
+    // Calls ref(arg) and reads back {detail=, doc=} (Phase 22 completion-
+    // resolve hook). Returns false (detail/doc untouched) if ref is
+    // unset, errors, or returns nil/anything else -- "no info yet",
+    // distinct from "info is the empty string", which callers should
+    // treat identically (skip rendering it).
+    bool CallRefWithStringForDetailDoc(int ref, const std::string &arg, std::string *detail, std::string *doc);
     // Calls ref(arg_bool) and returns its boolean result (false if ref is
     // unset, errors, or returns a non-boolean) -- Phase 23's Insert-mode
     // Tab/Shift-Tab snippet-jump hook: the Lua side decides whether a

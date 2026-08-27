@@ -2345,6 +2345,15 @@ const char *kBuiltinLsp =
     "local mep_lsp_diagnostics = {}\n"
     // filename -> version counter
     "local mep_lsp_doc_versions = {}\n"
+    // client_id -> the server's own `initialize` response capabilities
+    // object. Global (not local), same reason as mep_lsp_filetype below:
+    // kBuiltinCompletion's completion-resolve hook (a separate DoString
+    // chunk) needs to check completionProvider.resolveProvider before
+    // attempting completionItem/resolve (NVIM_PARITY_PLAN.md Phase 22
+    // follow-up) -- most servers, pyright included, send textDocument/
+    // completion items nearly empty and only fill in detail/documentation
+    // lazily via that follow-up request.
+    "mep_lsp_server_capabilities = {}\n"
     // Global (not local): shared with kBuiltinSnippets, a separate
     // DoString chunk that also needs filetype detection -- a `local`
     // here would only be visible within this chunk's own closures.
@@ -2420,6 +2429,8 @@ const char *kBuiltinLsp =
     "      },\n"
     "    },\n"
     "  }, function(msg)\n"
+    "    local init_result = mep_lsp_result(msg)\n"
+    "    mep_lsp_server_capabilities[id] = init_result and init_result.capabilities\n"
     "    mep.lsp_notify(id, 'initialized', {})\n"
     "    mep.notify('LSP attached: ' .. server.cmd[1])\n"
     "    mep.lsp_on_notification(id, 'textDocument/publishDiagnostics', function(params)\n"
@@ -3103,12 +3114,19 @@ const char *kBuiltinCompletion =
     // Ranks by length-then-alphabetical (closer matches to the typed
     // prefix sort first) as a cheap relevance proxy, since none of these
     // sources hands back a real fuzzy-match score.
+    // Each item is {text=, kind=, detail=, doc=} (NVIM_PARITY_PLAN.md
+    // Phase 22 follow-up: kind badge + LSP detail/doc side panel) rather
+    // than a bare string -- sorted/capped by .text, same ranking as
+    // before.
     "MEP_COMPLETION_MAX_ITEMS = 50\n"
-    "function mep_completion_rank(words)\n"
-    "  table.sort(words, function(a, b) if #a ~= #b then return #a < #b end return a < b end)\n"
-    "  if #words <= MEP_COMPLETION_MAX_ITEMS then return words end\n"
+    "function mep_completion_rank(items)\n"
+    "  table.sort(items, function(a, b)\n"
+    "    if #a.text ~= #b.text then return #a.text < #b.text end\n"
+    "    return a.text < b.text\n"
+    "  end)\n"
+    "  if #items <= MEP_COMPLETION_MAX_ITEMS then return items end\n"
     "  local capped = {}\n"
-    "  for i = 1, MEP_COMPLETION_MAX_ITEMS do capped[i] = words[i] end\n"
+    "  for i = 1, MEP_COMPLETION_MAX_ITEMS do capped[i] = items[i] end\n"
     "  return capped\n"
     "end\n"
     // Path completion source (new): returns dir, base if the text right
@@ -3131,7 +3149,17 @@ const char *kBuiltinCompletion =
     "  local start = col - 1 - #prefix\n"
     "  local before = line:sub(1, start)\n"
     "  local trigger = before:sub(-1)\n"
-    "  if trigger == '/' or trigger == '.' then\n"
+    // A bare '.' only starts a *path* token ("./foo", "../foo", a
+    // ".dotfile") when nothing identifier-like precedes it -- "np."/
+    // "self."/"os.path." are member access, not paths, and must fall
+    // through to the LSP dot-trigger below instead. Real bug caught by
+    // this exact scenario: adding the LSP dot-trigger made this function
+    // reachable with an empty prefix for the first time (previously
+    // gated out at 2+ chars), and "np." satisfied `trigger == '.'`
+    // unconditionally, silently swallowing every member-access query as
+    // a "list the current directory" file completion instead.
+    "  local is_path_dot = trigger == '.' and not before:sub(-2, -2):match('[%w_]')\n"
+    "  if trigger == '/' or is_path_dot then\n"
     "    local token = before:match('[%w_%.%-/]*$') or ''\n"
     "    local dir = token:match('^(.*/)') or ''\n"
     "    return (dir == '' and '.' or dir), prefix\n"
@@ -3169,6 +3197,16 @@ const char *kBuiltinCompletion =
     // insertText with different formats, which would already be a
     // pathological server response.
     "mep_lsp_completion_iformat = {}\n"
+    // text -> {detail=, doc=} (LSP CompletionItem.detail/.documentation --
+    // detail is usually a short type/signature summary, documentation a
+    // longer description) for the completion-detail side panel
+    // (NVIM_PARITY_PLAN.md Phase 22 follow-up). Same keyed-by-text/same
+    // misfire caveat as mep_lsp_completion_iformat just above.
+    // .documentation is either a plain string or a MarkupContent object
+    // ({kind=, value=} per the LSP spec) -- either way this stores just
+    // the display text, never the kind tag (mep has no markdown-flavored
+    // renderer for this popup, only DrawHoverPopup-style plain wrapping).
+    "mep_lsp_completion_meta = {}\n"
     // trigger_char: nil for an ordinary identifier-prefix query (LSP
     // CompletionTriggerKind.Invoked = 1), or e.g. '.' for a member-access
     // dot-trigger (TriggerKind.TriggerCharacter = 2) -- previously no
@@ -3192,6 +3230,17 @@ const char *kBuiltinCompletion =
     "      if text and #text > 0 then\n"
     "        items[#items + 1] = text\n"
     "        mep_lsp_completion_iformat[text] = it.insertTextFormat\n"
+    "        local doc = it.documentation\n"
+    "        if type(doc) == 'table' then doc = doc.value end\n"
+    // `raw`/`client` kept for a later completionItem/resolve (this
+    // response's own item, sent back verbatim -- some servers round-trip
+    // an opaque `data` field on it to know which item they're being asked
+    // to resolve); `resolved` short-circuits ever re-requesting once
+    // either an eager detail/doc arrived here or a resolve already ran.
+    "        mep_lsp_completion_meta[text] = {\n"
+    "          detail = it.detail, doc = doc, raw = it, client = client,\n"
+    "          resolved = (it.detail ~= nil or doc ~= nil),\n"
+    "        }\n"
     "      end\n"
     "    end\n"
     "    mep_lsp_completion_cache = {items = items, row = row, start_col = start_col}\n"
@@ -3210,7 +3259,8 @@ const char *kBuiltinCompletion =
     "    for _, e in ipairs(mep.list_dir(path_dir)) do\n"
     "      if #e.name > #path_base and e.name:sub(1, #path_base) == path_base and not seen[e.name] then\n"
     "        seen[e.name] = true\n"
-    "        words[#words + 1] = e.is_dir and (e.name .. '/') or e.name\n"
+    "        local text = e.is_dir and (e.name .. '/') or e.name\n"
+    "        words[#words + 1] = {text = text, kind = 'file'}\n"
     "      end\n"
     "    end\n"
     "    return mep_completion_rank(words)\n"
@@ -3239,7 +3289,7 @@ const char *kBuiltinCompletion =
     "      for name, _ in pairs(snip_set) do\n"
     "        if #name > #prefix and name:sub(1, #prefix) == prefix then\n"
     "          seen[name] = true\n"
-    "          words[#words + 1] = name\n"
+    "          words[#words + 1] = {text = name, kind = 'snippet'}\n"
     "        end\n"
     "      end\n"
     "    end\n"
@@ -3247,7 +3297,7 @@ const char *kBuiltinCompletion =
     "      for w in mep.get_line(i):gmatch('[%w_]+') do\n"
     "        if #w > #prefix and w:sub(1, #prefix) == prefix and not seen[w] then\n"
     "          seen[w] = true\n"
-    "          words[#words + 1] = w\n"
+    "          words[#words + 1] = {text = w, kind = 'buffer'}\n"
     "        end\n"
     "      end\n"
     "    end\n"
@@ -3263,7 +3313,8 @@ const char *kBuiltinCompletion =
     "      for _, w in ipairs(mep_lsp_completion_cache.items) do\n"
     "        if #w > #prefix and w:sub(1, #prefix) == prefix and not seen[w] then\n"
     "          seen[w] = true\n"
-    "          words[#words + 1] = w\n"
+    "          local meta = mep_lsp_completion_meta[w] or {}\n"
+    "          words[#words + 1] = {text = w, kind = 'lsp', detail = meta.detail, doc = meta.doc}\n"
     "        end\n"
     "      end\n"
     "    elseif not (mep_lsp_completion_pending.row == row and mep_lsp_completion_pending.start_col == start_col) then\n"
@@ -3273,7 +3324,40 @@ const char *kBuiltinCompletion =
     "  end\n"
     "  return mep_completion_rank(words)\n"
     "end\n"
-    "mep.set_completion_source(mep.completion_buffer_words)\n";
+    "mep.set_completion_source(mep.completion_buffer_words)\n"
+    // Completion-resolve hook (NVIM_PARITY_PLAN.md Phase 22 follow-up):
+    // DrawCompletionDetailPanel (main.cpp) calls this once per frame it's
+    // showing the panel for an LSP item whose initial detail/doc came up
+    // empty. Returns {detail=, doc=} the moment they're known (either
+    // already resolved, or the async completionItem/resolve response has
+    // landed since a previous frame's call kicked it off) -- nil every
+    // frame in between, which the C++ side treats as "nothing to show
+    // yet" rather than an error.
+    "function mep_completion_resolve_info(text)\n"
+    "  local meta = mep_lsp_completion_meta[text]\n"
+    "  if not meta then return nil end\n"
+    "  if meta.resolved then return {detail = meta.detail, doc = meta.doc} end\n"
+    "  if meta.resolve_pending then return nil end\n"
+    "  local caps = mep_lsp_server_capabilities[meta.client]\n"
+    "  if not (caps and caps.completionProvider and caps.completionProvider.resolveProvider) then\n"
+    "    meta.resolved = true\n"
+    "    return {detail = meta.detail, doc = meta.doc}\n"
+    "  end\n"
+    "  meta.resolve_pending = true\n"
+    "  mep.lsp_request(meta.client, 'completionItem/resolve', meta.raw, function(msg)\n"
+    "    local result = mep_lsp_result(msg)\n"
+    "    if result then\n"
+    "      meta.detail = result.detail or meta.detail\n"
+    "      local doc = result.documentation\n"
+    "      if type(doc) == 'table' then doc = doc.value end\n"
+    "      meta.doc = doc or meta.doc\n"
+    "    end\n"
+    "    meta.resolved = true\n"
+    "    meta.resolve_pending = false\n"
+    "  end)\n"
+    "  return nil\n"
+    "end\n"
+    "mep.set_completion_resolve_hook(mep_completion_resolve_info)\n";
 
 // Snippet engine (Phase 23), **scoped down significantly** from the plan:
 // tabstops are numbered ($1, $2, $0) only -- no `${1:placeholder}` default-
@@ -11499,14 +11583,95 @@ void DrawHelpOverlay() {
 // screen position -- deliberately not a Phase 3 float (those dim/center the
 // whole screen, wrong for something meant to sit unobtrusively next to the
 // cursor while the user keeps typing).
+// Short source tag shown as a dim badge in front of each completion row
+// (NVIM_PARITY_PLAN.md Phase 22 follow-up: which source a candidate came
+// from -- lsp/file/snippet/buffer -- wasn't shown at all before). Fixed-
+// width labels, all 4 chars or fewer, so the badge column doesn't jitter
+// row to row.
+const char *CompletionKindBadge(const std::string &kind) {
+    if (kind == "lsp") return "lsp ";
+    if (kind == "file") return "file";
+    if (kind == "snippet") return "snip";
+    if (kind == "buffer") return "buf ";
+    return "    ";
+}
+
+// Side info panel for the selected completion item's LSP detail/doc (a
+// signature summary and a description, NVIM_PARITY_PLAN.md Phase 22
+// follow-up) -- positioned to the right of the completion box, flipped to
+// its left if there's no room, same idea DrawHoverPopup uses for
+// flipping above the cursor when there's no room below. Plain wrapping,
+// no markdown rendering (see mep_lsp_completion_meta's own comment on
+// why): this is a quick glance, not a rendered doc viewer.
+void DrawCompletionDetailPanel(int box_x, int box_y, int box_w, int box_h, const CompletionCandidate &item) {
+    if (item.kind != "lsp") return;
+    // Most real servers (pyright included) send textDocument/completion
+    // items nearly empty -- detail/documentation only show up via a
+    // follow-up completionItem/resolve, which the snapshot in
+    // CompletionItems() was already taken before could ever have
+    // happened. Falls back to the resolve hook (kicks off/checks on that
+    // async request itself) only when the snapshot came up empty, so a
+    // server that *does* answer eagerly skips the extra Lua call.
+    const std::string *detail = &item.detail;
+    const std::string *doc = &item.doc;
+    std::string resolved_detail, resolved_doc;
+    if (detail->empty() && doc->empty()) {
+        if (!g_editor.CompletionResolveInfo(item.text, &resolved_detail, &resolved_doc)) return;
+        detail = &resolved_detail;
+        doc = &resolved_doc;
+        if (detail->empty() && doc->empty()) return;
+    }
+    float font_size = g_font_size;
+    int line_h = static_cast<int>(font_size) + 4;
+    int panel_w = std::min(GetScreenWidth() / 3, 420);
+    int max_chars_per_line = std::max(20, static_cast<int>((panel_w - 20) / g_char_width));
+    std::vector<std::string> lines;
+    int detail_line_count = 0;
+    if (!detail->empty()) {
+        for (const std::string &raw : SplitLines(*detail)) {
+            size_t pos = 0;
+            do {
+                size_t take = std::min(raw.size() - pos, static_cast<size_t>(max_chars_per_line));
+                lines.push_back(raw.substr(pos, take));
+                pos += take;
+            } while (pos < raw.size());
+        }
+        detail_line_count = static_cast<int>(lines.size());
+        if (!doc->empty()) lines.push_back("");
+    }
+    for (const std::string &raw : SplitLines(*doc)) {
+        if (raw.empty()) { lines.push_back(""); continue; }
+        size_t pos = 0;
+        while (pos < raw.size()) {
+            size_t take = std::min(raw.size() - pos, static_cast<size_t>(max_chars_per_line));
+            lines.push_back(raw.substr(pos, take));
+            pos += take;
+        }
+    }
+    int max_rows = std::min(static_cast<int>(lines.size()), 16);
+    int panel_h = max_rows * line_h + 12;
+    int panel_x = box_x + box_w + 4;
+    if (panel_x + panel_w > GetScreenWidth()) panel_x = box_x - panel_w - 4;
+    if (panel_x < 0) return;  // no room on either side -- skip rather than overlap the completion box itself
+    int panel_y = std::min(box_y, GetScreenHeight() - panel_h);
+    DrawRectangle(panel_x, panel_y, panel_w, panel_h, ResolveHlGroup("Picker"));
+    DrawRectangleLines(panel_x, panel_y, panel_w, panel_h, ResolveHlGroup("PickerBorder"));
+    for (int i = 0; i < max_rows; i++) {
+        Color c = (i < detail_line_count) ? ResolveHlGroup("PickerTitle") : ResolveHlGroup("Normal");
+        DrawTextEx(g_font, lines[i].c_str(), Vector2{static_cast<float>(panel_x + 8), static_cast<float>(panel_y + 6 + i * line_h)},
+                   font_size, 0, c);
+    }
+}
+
 void DrawCompletionPopup(float x, float y) {
-    const std::vector<PickerItem> &items = g_editor.CompletionItems();
+    const std::vector<CompletionCandidate> &items = g_editor.CompletionItems();
     if (items.empty()) return;
     float font_size = g_font_size;
     int line_h = static_cast<int>(font_size) + 4;
+    float badge_w = MeasureTextEx(g_font, "snip ", font_size, 0).x;
     float max_w = 60;
-    for (const auto &it : items) max_w = std::max(max_w, MeasureTextEx(g_font, it.display.c_str(), font_size, 0).x);
-    int box_w = static_cast<int>(max_w) + 16;
+    for (const auto &it : items) max_w = std::max(max_w, MeasureTextEx(g_font, it.text.c_str(), font_size, 0).x);
+    int box_w = static_cast<int>(badge_w + max_w) + 16;
     int max_rows = std::min(static_cast<int>(items.size()), 8);
     int box_h = max_rows * line_h + 6;
     if (x + box_w > GetScreenWidth()) x = GetScreenWidth() - box_w;
@@ -11520,8 +11685,10 @@ void DrawCompletionPopup(float x, float y) {
             DrawRectangle(static_cast<int>(x) + 1, static_cast<int>(ry), box_w - 2, line_h,
                           ResolveHlGroup("PickerSelected"));
         }
-        DrawTextEx(g_font, items[i].display.c_str(), Vector2{x + 6, ry}, font_size, 0, ResolveHlGroup("Normal"));
+        DrawTextEx(g_font, CompletionKindBadge(items[i].kind), Vector2{x + 6, ry}, font_size, 0, ResolveHlGroup("Comment"));
+        DrawTextEx(g_font, items[i].text.c_str(), Vector2{x + 6 + badge_w, ry}, font_size, 0, ResolveHlGroup("Normal"));
     }
+    DrawCompletionDetailPanel(static_cast<int>(x), static_cast<int>(y), box_w, box_h, items[selected]);
 }
 
 // Hover tooltip (NVIM_PARITY_PLAN.md Phase 3 gap, closed): a small

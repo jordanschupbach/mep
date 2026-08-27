@@ -9268,13 +9268,14 @@ void Editor::UpdateCompletionPopup() {
     completion_last_query_prefix_ = prefix;
     completion_last_query_time_ = now;
 
-    std::vector<std::string> words;
-    if (!lua_->CallRefWithStringForStrings(completion_source_ref_, prefix, &words) || words.empty()) {
+    std::vector<std::string> texts, kinds, details, docs;
+    if (!lua_->CallRefWithStringForCompletionItems(completion_source_ref_, prefix, &texts, &kinds, &details, &docs) ||
+        texts.empty()) {
         completion_open_ = false;
         return;
     }
     completion_items_.clear();
-    for (const std::string &w : words) completion_items_.push_back({w, w});
+    for (size_t i = 0; i < texts.size(); i++) completion_items_.push_back({texts[i], kinds[i], details[i], docs[i]});
     completion_selected_ = 0;
     completion_word_start_col_ = start;
     completion_open_ = true;
@@ -9293,7 +9294,7 @@ void Editor::AcceptCompletion() {
         completion_open_ = false;
         return;
     }
-    const std::string word = completion_items_[completion_selected_].data;
+    const std::string word = completion_items_[completion_selected_].text;
     CursorPos &cursor = CurPane().cursor;
     std::string &line = Buf().lines[cursor.row];
     PushUndo();
@@ -9311,6 +9312,11 @@ void Editor::AcceptCompletion() {
     if (completion_accept_hook_ref_ != 0 && lua_) {
         lua_->CallRefWithString(completion_accept_hook_ref_, word);
     }
+}
+
+bool Editor::CompletionResolveInfo(const std::string &text, std::string *detail, std::string *doc) const {
+    if (completion_resolve_hook_ref_ == 0 || !lua_) return false;
+    return lua_->CallRefWithStringForDetailDoc(completion_resolve_hook_ref_, text, detail, doc);
 }
 
 // --- Command-line completion (`:` command bar) -----------------------------

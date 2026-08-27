@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -17831,6 +17832,22 @@ float GetFontSizePx() { return g_font_size; }
 void InvalidateOrgInlineImageTexture(const std::string &path) { EvictOrgInlineImageTexture(path); }
 
 int main(int argc, char **argv) {
+#if !defined(__EMSCRIPTEN__)
+    // Writing to a subprocess's stdin pipe after that process has already
+    // exited (an LSP server that failed to start, crashed, or exited
+    // between spawn and mep's own first write to it -- Phase 36 polyglot
+    // made this a realistic, easy-to-hit case by spawning several
+    // servers automatically and writing an `initialize` request the
+    // moment each one's job id comes back) raises SIGPIPE, whose default
+    // disposition is to terminate the *whole process* -- not just fail
+    // that one write. Every write in this codebase already goes through
+    // JobManager::WriteStdin, which is perfectly able to detect and
+    // report a failed write on its own (return value/errno) without a
+    // signal ever needing to fire; nothing here relies on the SIGPIPE
+    // default, so ignoring it is strictly a robustness fix, not a
+    // behavior change.
+    std::signal(SIGPIPE, SIG_IGN);
+#endif
     // Re-applies the default theme, redundantly with Editor::Editor()'s own
     // call: g_editor (this TU) and the palette table (editor.cpp's TU) are
     // separate translation units, and C++ doesn't guarantee global

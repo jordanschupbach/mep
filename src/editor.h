@@ -2286,9 +2286,24 @@ public:
     void TriggerWhichKey();
     const std::string &WhichKeyPrefix() const { return whichkey_prefix_; }
     // Bindings whose sequence starts with the current prefix, each paired
-    // with the sequence's remainder (what's still left to type) -- what
-    // DrawWhichKeyOverlay lists, and what narrows as the prefix grows.
+    // with the sequence's remainder (what's still left to type) -- the raw
+    // leaf list HandleWhichKeyInput's exact-match/dead-end checks use.
     std::vector<std::pair<std::string, std::string>> WhichKeyMatches() const;
+    // mep.leader_group(prefix, label): names a group of bindings that
+    // share `prefix` (e.g. "o" -> "org") so DrawWhichKeyOverlay can show
+    // one collapsed "o  +org" row instead of every leaf under it spelled
+    // out in full -- real which-key.nvim requires the same explicit
+    // per-group naming (there's no reliable way to auto-derive "org" from
+    // a mix of "Org: ..."/"Org-roam: ..." descriptions in general).
+    void RegisterWhichKeyGroup(const std::string &prefix, const std::string &label) { whichkey_groups_[prefix] = label; }
+    // What DrawWhichKeyOverlay actually lists: WhichKeyMatches() bucketed
+    // by their next character, collapsed to one "+label" row per bucket
+    // that both has more than one leaf *and* a registered group label;
+    // every other bucket (a lone leaf, or an unlabeled multi-leaf one)
+    // falls through to listing its own leaf/leaves exactly as before, so
+    // an unnamed group degrades to today's flat behavior rather than
+    // hiding anything.
+    std::vector<std::pair<std::string, std::string>> WhichKeyDisplayEntries() const;
     // Every registered leader-sequence binding, unfiltered by any typed
     // prefix -- the leader-sequence half of the keybinding-introspection
     // picker (mep.leader_bindings(), NVIM_PARITY_PLAN.md Phase 25), the
@@ -3529,6 +3544,10 @@ private:
     std::vector<WhichKeyBinding> whichkey_bindings_;
     char leader_key_ = ' ';
     std::string whichkey_prefix_;
+    // Sequence prefix (e.g. "o", "oe") -> group label (e.g. "org",
+    // "export"), registered via mep.leader_group -- WhichKeyDisplayEntries'
+    // own lookup table.
+    std::unordered_map<std::string, std::string> whichkey_groups_;
     int statusline_ref_ = 0;
     int winbar_click_ref_ = 0;
     bool zen_mode_ = false;

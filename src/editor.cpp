@@ -8,6 +8,7 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <map>
 
 #include "raylib.h"
 #include "lua_env.h"
@@ -9068,6 +9069,27 @@ std::vector<std::pair<std::string, std::string>> Editor::WhichKeyMatches() const
         if (b.sequence.size() >= whichkey_prefix_.size() &&
             b.sequence.compare(0, whichkey_prefix_.size(), whichkey_prefix_) == 0) {
             out.push_back({b.sequence.substr(whichkey_prefix_.size()), b.description});
+        }
+    }
+    return out;
+}
+
+std::vector<std::pair<std::string, std::string>> Editor::WhichKeyDisplayEntries() const {
+    // Bucket the raw (remaining-suffix, description) matches by their very
+    // next character -- a "()" (empty-remainder) entry can't occur here,
+    // since HandleWhichKeyInput fires and leaves WhichKey mode the instant
+    // whichkey_prefix_ exactly equals some binding's full sequence.
+    std::map<char, std::vector<std::pair<std::string, std::string>>> by_next_char;
+    for (const auto &m : WhichKeyMatches()) by_next_char[m.first[0]].push_back(m);
+
+    std::vector<std::pair<std::string, std::string>> out;
+    for (const auto &bucket : by_next_char) {
+        const auto &leaves = bucket.second;
+        auto group_it = leaves.size() > 1 ? whichkey_groups_.find(whichkey_prefix_ + bucket.first) : whichkey_groups_.end();
+        if (group_it != whichkey_groups_.end()) {
+            out.push_back({std::string(1, bucket.first), "+" + group_it->second});
+        } else {
+            for (const auto &leaf : leaves) out.push_back(leaf);
         }
     }
     return out;

@@ -10120,6 +10120,31 @@ const char *kBuiltinLeetcode =
     "end\n"
     "mep.command('MepLeetcodeSubmit', mep.leetcode_submit)\n";
 
+// Whichkey group labels (NVIM_PARITY_PLAN.md Phase 11 follow-up): named
+// after inspecting every mep.leader_map call's own description text above,
+// grouped by shared prefix -- not an automatic guess at runtime (no
+// reliable way to derive "org" from a mix of "Org: "/"Org-roam: "
+// descriptions in general), just this file's own leader_map calls read by
+// hand once and named here. Loaded last (after every leader_map site
+// above has already registered its bindings) so this reads as a single
+// index of what's been grouped, and so a user's own init.lua loaded after
+// it can override or add to these the same way.
+//
+// 'b' is a real naming collision worth flagging, not silently smoothed
+// over: bo/bO ("Browse"/"Browse (external window)") outnumber bb
+// ("Buffers") 2-to-1, so this labels the group "browse" to match the
+// actual majority of what's bound there -- if "buffer" was the intended
+// meaning of <leader>b, bo/bO should move to a different prefix (e.g.
+// <leader>wo for "web") to free it up.
+const char *kBuiltinWhichKeyGroups =
+    "mep.leader_group('o', 'org')\n"
+    "mep.leader_group('oe', 'export')\n"
+    "mep.leader_group('ot', 'toggle')\n"
+    "mep.leader_group('or', 'roam')\n"
+    "mep.leader_group('l', 'lsp')\n"
+    "mep.leader_group('p', 'project')\n"
+    "mep.leader_group('b', 'browse')\n";
+
 const char *kBuiltinPickerSources =
     "function mep.themes()\n"
     "  local before = mep.current_theme()\n"
@@ -11348,7 +11373,7 @@ void DrawRoamGraphOverlay() {
 // the other floats -- DrawFloatFrame always centers, so this positions its
 // own box instead of going through it.
 void DrawWhichKeyOverlay() {
-    std::vector<std::pair<std::string, std::string>> matches = g_editor.WhichKeyMatches();
+    std::vector<std::pair<std::string, std::string>> matches = g_editor.WhichKeyDisplayEntries();
     float font_size = g_font_size;
     int line_h = static_cast<int>(font_size) + 6;
 
@@ -17174,6 +17199,7 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinActivityBar);
     lua->DoString(kBuiltinAi);
     lua->DoString(kBuiltinLeetcode);
+    lua->DoString(kBuiltinWhichKeyGroups);
 
 #if !defined(__EMSCRIPTEN__)
     if (argc > 1) {

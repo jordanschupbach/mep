@@ -2289,6 +2289,16 @@ int l_leader_map(lua_State *L) {
     return 0;
 }
 
+// mep.leader_group(prefix, label): names a group of leader.map bindings
+// sharing `prefix` (e.g. mep.leader_group('o', 'org')) so the whichkey
+// popup shows one collapsed "o  +org" row instead of every leaf under it.
+int l_leader_group(lua_State *L) {
+    const char *prefix = luaL_checkstring(L, 1);
+    const char *label = luaL_checkstring(L, 2);
+    GetEditor(L)->RegisterWhichKeyGroup(prefix, label);
+    return 0;
+}
+
 // mep.icon_for_file(name) -> a short ASCII glyph (Phase 10).
 int l_icon_for_file(lua_State *L) {
     const char *name = luaL_checkstring(L, 1);
@@ -2425,6 +2435,7 @@ const luaL_Reg kMepFuncs[] = {
     {"icon_for_file", l_icon_for_file},
     {"set_leader", l_set_leader},
     {"leader_map", l_leader_map},
+    {"leader_group", l_leader_group},
     {"set_statusline", l_set_statusline},
     {"set_winbar_click", l_set_winbar_click},
     {"scratch", l_scratch},

@@ -2495,11 +2495,22 @@ const char *kBuiltinLsp =
     "  if r == mep.json_null then return nil end\n"
     "  return r\n"
     "end\n"
+    // Polyglot bridging (NVIM_PARITY_PLAN.md Phase 36): every LSP feature
+    // below checks mep_polyglot_context_at_cursor() first (a no-op,
+    // returning nil immediately, when the cursor isn't inside a tracked
+    // #+begin_src block or org_polyglot isn't loaded/enabled) and
+    // redirects its client/URI/position to the block's own shadow file
+    // when it is -- kBuiltinOrgPolyglot itself is loaded after this
+    // chunk, so the function is only ever actually defined by the time
+    // any of these run, not by the time this file's own load order
+    // reaches this line.
     "function mep.lsp_hover()\n"
-    "  local id = mep.lsp_client_for()\n"
+    "  local poly = mep_polyglot_context_at_cursor and mep_polyglot_context_at_cursor()\n"
+    "  local id = poly and poly.client or mep.lsp_client_for()\n"
     "  if not id then mep.notify('No LSP attached', 'warn') return end\n"
     "  mep.lsp_request(id, 'textDocument/hover', {\n"
-    "    textDocument = {uri = mep_lsp_uri(mep.filename())}, position = mep_lsp_position(),\n"
+    "    textDocument = {uri = poly and poly.uri or mep_lsp_uri(mep.filename())},\n"
+    "    position = poly and poly.position or mep_lsp_position(),\n"
     "  }, function(msg)\n"
     "    local result = mep_lsp_result(msg)\n"
     "    if not result then mep.notify('No hover info') return end\n"
@@ -2509,30 +2520,36 @@ const char *kBuiltinLsp =
     "  end)\n"
     "end\n"
     "function mep.lsp_goto_definition()\n"
-    "  local id = mep.lsp_client_for()\n"
+    "  local poly = mep_polyglot_context_at_cursor and mep_polyglot_context_at_cursor()\n"
+    "  local id = poly and poly.client or mep.lsp_client_for()\n"
     "  if not id then mep.notify('No LSP attached', 'warn') return end\n"
     "  mep.lsp_request(id, 'textDocument/definition', {\n"
-    "    textDocument = {uri = mep_lsp_uri(mep.filename())}, position = mep_lsp_position(),\n"
+    "    textDocument = {uri = poly and poly.uri or mep_lsp_uri(mep.filename())},\n"
+    "    position = poly and poly.position or mep_lsp_position(),\n"
     "  }, function(msg)\n"
     "    local result = mep_lsp_result(msg)\n"
     "    local loc = result and (result.uri and result or result[1])\n"
     "    if not loc then mep.notify('No definition found') return end\n"
+    "    if mep_polyglot_translate_location then loc = mep_polyglot_translate_location(loc) end\n"
     "    local f = loc.uri:gsub('^file://', '')\n"
     "    mep.open(f)\n"
     "    mep.set_cursor(loc.range.start.line + 1, loc.range.start.character + 1)\n"
     "  end)\n"
     "end\n"
     "function mep.lsp_references()\n"
-    "  local id = mep.lsp_client_for()\n"
+    "  local poly = mep_polyglot_context_at_cursor and mep_polyglot_context_at_cursor()\n"
+    "  local id = poly and poly.client or mep.lsp_client_for()\n"
     "  if not id then mep.notify('No LSP attached', 'warn') return end\n"
     "  mep.lsp_request(id, 'textDocument/references', {\n"
-    "    textDocument = {uri = mep_lsp_uri(mep.filename())}, position = mep_lsp_position(),\n"
+    "    textDocument = {uri = poly and poly.uri or mep_lsp_uri(mep.filename())},\n"
+    "    position = poly and poly.position or mep_lsp_position(),\n"
     "    context = {includeDeclaration = true},\n"
     "  }, function(msg)\n"
     "    local result = mep_lsp_result(msg)\n"
     "    if not result or #result == 0 then mep.notify('No references found') return end\n"
     "    local items = {}\n"
     "    for _, loc in ipairs(result) do\n"
+    "      if mep_polyglot_translate_location then loc = mep_polyglot_translate_location(loc) end\n"
     "      local f = loc.uri:gsub('^file://', '')\n"
     "      items[#items + 1] = {display = f .. ':' .. (loc.range.start.line + 1), data = f .. ':' .. (loc.range.start.line + 1)}\n"
     "    end\n"
@@ -2580,14 +2597,17 @@ const char *kBuiltinLsp =
     // rather than duplicated a third/fourth time (mep.lsp_goto_definition
     // itself is left as its own pre-existing function, untouched).
     "function mep_lsp_goto(method, not_found_msg)\n"
-    "  local id = mep.lsp_client_for()\n"
+    "  local poly = mep_polyglot_context_at_cursor and mep_polyglot_context_at_cursor()\n"
+    "  local id = poly and poly.client or mep.lsp_client_for()\n"
     "  if not id then mep.notify('No LSP attached', 'warn') return end\n"
     "  mep.lsp_request(id, method, {\n"
-    "    textDocument = {uri = mep_lsp_uri(mep.filename())}, position = mep_lsp_position(),\n"
+    "    textDocument = {uri = poly and poly.uri or mep_lsp_uri(mep.filename())},\n"
+    "    position = poly and poly.position or mep_lsp_position(),\n"
     "  }, function(msg)\n"
     "    local result = mep_lsp_result(msg)\n"
     "    local loc = result and (result.uri and result or result[1])\n"
     "    if not loc then mep.notify(not_found_msg) return end\n"
+    "    if mep_polyglot_translate_location then loc = mep_polyglot_translate_location(loc) end\n"
     "    local f = loc.uri:gsub('^file://', '')\n"
     "    mep.open(f)\n"
     "    mep.set_cursor(loc.range.start.line + 1, loc.range.start.character + 1)\n"
@@ -2600,10 +2620,12 @@ const char *kBuiltinLsp =
     "  mep_lsp_goto('textDocument/typeDefinition', 'No type definition found')\n"
     "end\n"
     "function mep.lsp_signature_help()\n"
-    "  local id = mep.lsp_client_for()\n"
+    "  local poly = mep_polyglot_context_at_cursor and mep_polyglot_context_at_cursor()\n"
+    "  local id = poly and poly.client or mep.lsp_client_for()\n"
     "  if not id then mep.notify('No LSP attached', 'warn') return end\n"
     "  mep.lsp_request(id, 'textDocument/signatureHelp', {\n"
-    "    textDocument = {uri = mep_lsp_uri(mep.filename())}, position = mep_lsp_position(),\n"
+    "    textDocument = {uri = poly and poly.uri or mep_lsp_uri(mep.filename())},\n"
+    "    position = poly and poly.position or mep_lsp_position(),\n"
     "  }, function(msg)\n"
     "    local result = mep_lsp_result(msg)\n"
     "    local sigs = result and result.signatures\n"
@@ -2746,17 +2768,22 @@ const char *kBuiltinLsp =
     "  return total\n"
     "end\n"
     "function mep.lsp_rename()\n"
-    "  local id = mep.lsp_client_for()\n"
+    "  local poly = mep_polyglot_context_at_cursor and mep_polyglot_context_at_cursor()\n"
+    "  local id = poly and poly.client or mep.lsp_client_for()\n"
     "  if not id then mep.notify('No LSP attached', 'warn') return end\n"
     "  local default_name = mep_lsp_word_at_cursor() or ''\n"
     "  mep.ui_input('New name:', default_name, function(new_name)\n"
     "    if not new_name or new_name == '' or new_name == default_name then return end\n"
     "    mep.lsp_request(id, 'textDocument/rename', {\n"
-    "      textDocument = {uri = mep_lsp_uri(mep.filename())}, position = mep_lsp_position(),\n"
+    "      textDocument = {uri = poly and poly.uri or mep_lsp_uri(mep.filename())},\n"
+    "      position = poly and poly.position or mep_lsp_position(),\n"
     "      newName = new_name,\n"
     "    }, function(msg)\n"
     "      local result = mep_lsp_result(msg)\n"
     "      if not result then mep.notify('Rename: server returned no edits', 'warn') return end\n"
+    "      if poly and mep_polyglot_translate_workspace_edit then\n"
+    "        result = mep_polyglot_translate_workspace_edit(result)\n"
+    "      end\n"
     "      local n = mep.lsp_apply_workspace_edit(result)\n"
     "      if n == 0 then\n"
     "        mep.notify('Rename: server returned no edits', 'warn')\n"
@@ -3213,10 +3240,16 @@ const char *kBuiltinCompletion =
     // `context` was ever sent at all, leaving every server unable to tell
     // "user is typing a word" apart from "user just typed a trigger
     // character" (NVIM_PARITY_PLAN.md Phase 22 gap).
-    "function mep_lsp_completion_request(client, row, start_col, trigger_char)\n"
+    // uri_override/position_override: the polyglot bridge's own shadow
+    // URI/position (NVIM_PARITY_PLAN.md Phase 36), when the completion
+    // request is for a src-block context rather than the real current
+    // buffer -- nil for the ordinary case, falling back to the same
+    // mep_lsp_uri(mep.filename())/mep_lsp_position() this always used.
+    "function mep_lsp_completion_request(client, row, start_col, trigger_char, uri_override, position_override)\n"
     "  local context = trigger_char and {triggerKind = 2, triggerCharacter = trigger_char} or {triggerKind = 1}\n"
     "  mep.lsp_request(client, 'textDocument/completion', {\n"
-    "    textDocument = {uri = mep_lsp_uri(mep.filename())}, position = mep_lsp_position(), context = context,\n"
+    "    textDocument = {uri = uri_override or mep_lsp_uri(mep.filename())},\n"
+    "    position = position_override or mep_lsp_position(), context = context,\n"
     "  }, function(msg)\n"
     "    local result = mep_lsp_result(msg)\n"
     // CompletionList ({isIncomplete=, items=...}) vs a bare
@@ -3306,7 +3339,11 @@ const char *kBuiltinCompletion =
     // prefix) if they're for this same word, else kick off (or leave in
     // flight) an async request for it -- see mep_lsp_completion_request's
     // comment above for the caching scheme.
-    "  local client = mep.lsp_client_for and mep.lsp_client_for()\n"
+    // Polyglot bridging (NVIM_PARITY_PLAN.md Phase 36): inside a tracked
+    // src block, talk to that block's own shadow-file client instead of
+    // whatever's attached to the org buffer itself (normally nothing).
+    "  local poly = mep_polyglot_context_at_cursor and mep_polyglot_context_at_cursor()\n"
+    "  local client = (poly and poly.client) or (mep.lsp_client_for and mep.lsp_client_for())\n"
     "  if client then\n"
     "    local start_col = col - 1 - #prefix\n"
     "    if mep_lsp_completion_cache.row == row and mep_lsp_completion_cache.start_col == start_col then\n"
@@ -3319,7 +3356,8 @@ const char *kBuiltinCompletion =
     "      end\n"
     "    elseif not (mep_lsp_completion_pending.row == row and mep_lsp_completion_pending.start_col == start_col) then\n"
     "      mep_lsp_completion_pending = {row = row, start_col = start_col}\n"
-    "      mep_lsp_completion_request(client, row, start_col, dot_trigger and '.' or nil)\n"
+    "      mep_lsp_completion_request(client, row, start_col, dot_trigger and '.' or nil,\n"
+    "        poly and poly.uri, poly and poly.position)\n"
     "    end\n"
     "  end\n"
     "  return mep_completion_rank(words)\n"
@@ -7038,7 +7076,9 @@ const char *kBuiltinOrgBabel =
     "  for w in results_str:gmatch('%S+') do modes[w] = true end\n"
     "  return modes\n"
     "end\n"
-    "local function mep_org_src_block_at(row)\n"
+    // Global (not local): shared with kBuiltinOrgPolyglot, a separate
+    // DoString chunk that needs to find/enumerate src blocks too.
+    "function mep_org_src_block_at(row)\n"
     "  local start_row\n"
     "  for i = row, 1, -1 do\n"
     "    if mep.get_line(i):match('^%s*#%+[Bb][Ee][Gg][Ii][Nn]_[Ss][Rr][Cc]') then start_row = i break end\n"
@@ -7596,6 +7636,488 @@ const char *kBuiltinOrgBabel =
     "  end\n"
     "  return out\n"
     "end\n";
+
+// Org-babel "polyglot" mode, ported from mep.nvim/lua/mep/org/polyglot.lua
+// (NVIM_PARITY_PLAN.md Phase 36, previously skipped as the worst
+// complexity-to-value item in the whole plan): while the cursor sits
+// inside a #+begin_src block, real LSP features (hover/completion/
+// diagnostics/goto-definition/references/rename/signature-help) come
+// from that block's own language server, exactly as if the block's body
+// were its own file.
+//
+// mep.nvim's own trick (itself borrowed from otter.nvim): keep a hidden
+// "shadow" buffer per language, blank everywhere except that language's
+// block bodies, copied in *verbatim at their real org-buffer line
+// numbers* -- so hover/completion need zero position math, only a URI
+// rewrite back to the org file for anything that returns a location.
+// mep has no buffer-autostart-by-filetype convention to fake out the way
+// Neovim's vim.lsp.enable does, so the "shadow buffer" collapses to
+// something simpler here: a real on-disk temp file mep's own LSP client
+// (already just a generic JSON-RPC-over-stdio wrapper) is told to
+// didOpen/didChange directly -- no buffer object, no filetype-autostart
+// dance, no scratch-buffer flag tricks.
+//
+// Two shadow granularities, gated purely on whether a language needs
+// synthesis that would shift line numbers (mep_polyglot_per_block):
+//  - Most languages share ONE shadow across every same-language block in
+//    the file (the blank-padding trick above, real line numbers as-is).
+//  - A compiled language, or one with an entry-point wrap_main (already
+//    defined per-language in mep.org_babel_langs, Phase 34 -- reused
+//    directly rather than reimplementing mep.nvim's own separate
+//    ENTRY_WRAPPERS table), gets its OWN shadow file per block instead,
+//    since wrapping shifts every body line by a constant offset
+//    (mep_polyglot_wrap_offsets, found generically by probing wrap_main
+//    with a sentinel line rather than hardcoding each language's own
+//    wrapper shape).
+//
+// Deliberate simplifications versus mep.nvim's own polyglot.lua (each
+// disclosed rather than silently different):
+//  - Per-block shadows are keyed by the block's *start_row*, not a
+//    stable "Nth block of this language" ordinal -- re-executing a block
+//    (which inserts/resizes a #+RESULTS: block, shifting every later
+//    line) can therefore spawn a fresh shadow+client for a block whose
+//    position shifted, rather than reusing the same one. Acceptable
+//    here since re-execution of a *compiled* block (the only case that
+//    matters, since only compiled/wrapped languages are per-block at
+//    all) is inherently an occasional, deliberate action, not a
+//    per-keystroke one.
+//  - Every per-block language (including c/cpp) gets its OWN independent
+//    LSP client, never a shared process across blocks the way mep.nvim's
+//    clangd ends up being (an artifact of Neovim's own client-dedup-by-
+//    root-dir, not a deliberate design there either) -- avoids that
+//    design's own "restarting one block's client detaches every other
+//    c/cpp block" complexity entirely, at the cost of one process per
+//    open compiled block instead of one per language.
+//  - :var header-args are not consumed here, matching mep.nvim's own
+//    documented gap exactly (a block's :var bindings are invisible to
+//    the shadow/LSP server; only real execution, mep.org_babel_execute,
+//    renders them as a prelude assignment).
+//  - No code actions/formatting/symbols bridging -- mep.nvim's own
+//    polyglot doesn't have these either.
+//  - No teardown on buffer close -- a polyglot client, once started,
+//    stays running until mep exits, rather than being torn down when
+//    its org buffer is. Simpler, and consistent with mep.nvim's own
+//    "don't autostart eagerly, do nothing clever about stopping" bias.
+const char *kBuiltinOrgPolyglot =
+    "mep.org_polyglot_enabled = true\n"
+    // key -> {path, dir, lang, per_block, start_row, end_row, prefix_len,
+    // org_abspath, version, client, compile_argv}. key is
+    // "<org_abspath>|<lang>" for a shared shadow, or
+    // "<org_abspath>|<lang>|<start_row>" for a per-block one.
+    "mep_polyglot_shadows = {}\n"
+    // shadow's own real absolute path -> its key, for translating a
+    // returned location/diagnostic back to the org file that owns it.
+    "mep_polyglot_shadow_by_path = {}\n"
+    // org_abspath -> array of every shadow key currently tracked for it
+    // (a shared shadow appears once per language; a per-block language
+    // can contribute several).
+    "mep_polyglot_shadows_by_file = {}\n"
+    // shadow.path -> its most recently published diagnostics (already
+    // org-line-translated) -- kept separately per shadow so one
+    // language's fresh publish doesn't have to guess at, and accidentally
+    // drop, another language's own most recent contribution when both
+    // get merged into mep_lsp_diagnostics.
+    "mep_polyglot_diag_by_shadow = {}\n"
+    "local function mep_polyglot_sanitize(path)\n"
+    "  return (path:gsub('[/%.]', '_'))\n"
+    "end\n"
+    "local function mep_polyglot_root_dir()\n"
+    "  return mep_lsp_abspath('.') .. '/.mep-polyglot'\n"
+    "end\n"
+    "local function mep_polyglot_ensure_dir(dir)\n"
+    "  os.execute('mkdir -p ' .. dir)\n"
+    "end\n"
+    "local function mep_polyglot_per_block(lang_def)\n"
+    "  return lang_def.compiled or lang_def.wrap_main ~= nil\n"
+    "end\n"
+    // Resolves a server registry entry for `lang` the same way
+    // mep.lsp_attach does for the current buffer's own filetype (direct
+    // key, else scan every entry's filetypes) -- kept separate since
+    // mep.lsp_attach itself is hardwired to mep.filename()/the current
+    // buffer's own single-slot client, neither of which apply here.
+    "local function mep_polyglot_server_for(lang)\n"
+    "  local server = mep.lsp_servers[lang]\n"
+    "  if server then return server end\n"
+    "  for _, s in pairs(mep.lsp_servers) do\n"
+    "    for _, ft in ipairs(s.filetypes or {}) do\n"
+    "      if ft == lang then return s end\n"
+    "    end\n"
+    "  end\n"
+    "  return nil\n"
+    "end\n"
+    "local function mep_polyglot_key(org_abspath, lang, blk)\n"
+    "  if blk then return org_abspath .. '|' .. lang .. '|' .. blk.start_row end\n"
+    "  return org_abspath .. '|' .. lang\n"
+    "end\n"
+    // Every #+begin_src block in the buffer -- mep_org_src_block_at
+    // (Phase 34) only ever needed the one under the cursor; a shared
+    // shadow needs every same-language block's body, not just the
+    // nearest one.
+    "function mep_org_src_blocks_all()\n"
+    "  local blocks = {}\n"
+    "  for i = 1, mep.line_count() do\n"
+    "    if mep.get_line(i):match('^%s*#%+[Bb][Ee][Gg][Ii][Nn]_[Ss][Rr][Cc]') then\n"
+    "      local blk = mep_org_src_block_at(i)\n"
+    "      if blk then blocks[#blocks + 1] = blk end\n"
+    "    end\n"
+    "  end\n"
+    "  return blocks\n"
+    "end\n"
+    // How many lines lang_def.wrap_main(includes, body) prepends/appends
+    // around `body` verbatim -- found generically (works for any
+    // wrap_main implementation without parsing its source) by wrapping a
+    // one-line sentinel and locating it in the result. Returns
+    // prefix_len, suffix_len.
+    "local MEP_POLYGLOT_MARKER = '\\0MEP_POLYGLOT_MARKER\\0'\n"
+    "local function mep_polyglot_wrap_offsets(lang_def, includes)\n"
+    "  local probe = lang_def.wrap_main(includes, {MEP_POLYGLOT_MARKER})\n"
+    "  for i, l in ipairs(probe) do\n"
+    "    if l == MEP_POLYGLOT_MARKER then return i - 1, #probe - i end\n"
+    "  end\n"
+    "  return 0, 0\n"
+    "end\n"
+    "local function mep_polyglot_includes(args_str)\n"
+    "  local includes = {}\n"
+    "  local includes_str = args_str:match(':includes%s+(.-)%s*:') or args_str:match(':includes%s+(.*)$')\n"
+    "  if includes_str then\n"
+    "    for inc in includes_str:gmatch('%S+') do includes[#includes + 1] = inc end\n"
+    "  end\n"
+    "  return includes\n"
+    "end\n"
+    "local function mep_polyglot_shared_content(lang)\n"
+    "  local lines = {}\n"
+    "  for i = 1, mep.line_count() do lines[i] = '' end\n"
+    "  for _, blk in ipairs(mep_org_src_blocks_all()) do\n"
+    "    if blk.lang == lang then\n"
+    "      for i = blk.start_row + 1, blk.end_row - 1 do lines[i] = mep.get_line(i) end\n"
+    "    end\n"
+    "  end\n"
+    "  return table.concat(lines, '\\n')\n"
+    "end\n"
+    // Returns content, prefix_len -- prefix_len is 0 (no synthesis) when
+    // the block doesn't need wrap_main (an explicit :main no, or the
+    // language's own default -- mep_org_babel_should_wrap_main, Phase 34,
+    // shared verbatim with mep.org_babel_execute so a block previews
+    // exactly what it would actually compile as).
+    "local function mep_polyglot_per_block_content(blk, lang_def)\n"
+    "  local body_lines = {}\n"
+    "  for i = blk.start_row + 1, blk.end_row - 1 do body_lines[#body_lines + 1] = mep.get_line(i) end\n"
+    "  if lang_def.wrap_main and mep_org_babel_should_wrap_main(blk.lang, blk.args_str) then\n"
+    "    local includes = mep_polyglot_includes(blk.args_str)\n"
+    "    local prefix_len = mep_polyglot_wrap_offsets(lang_def, includes)\n"
+    "    return table.concat(lang_def.wrap_main(includes, body_lines), '\\n'), prefix_len\n"
+    "  end\n"
+    "  return table.concat(body_lines, '\\n'), 0\n"
+    "end\n"
+    // shadow_line -> the org-buffer row it corresponds to, or nil if it
+    // falls on blank padding (shared) / a synthetic wrap prefix/suffix
+    // line (per-block) -- diagnostics-filtering's own reason for
+    // existing: some servers report against the whole "file" including
+    // its padding (mep.nvim's own documented lintr/R war story).
+    "function mep_polyglot_shadow_line_to_org(shadow, shadow_line)\n"
+    "  if not shadow.per_block then\n"
+    // Re-derives from the *current* buffer rather than trusting a stale
+    // start_row/end_row -- a shared shadow's own fields are only ever
+    // set once, at creation, but any block of that language could have
+    // moved since.
+    "    for _, blk in ipairs(mep_org_src_blocks_all()) do\n"
+    "      if blk.lang == shadow.lang and shadow_line > blk.start_row and shadow_line < blk.end_row then\n"
+    "        return shadow_line\n"
+    "      end\n"
+    "    end\n"
+    "    return nil\n"
+    "  end\n"
+    "  local body_len = shadow.end_row - shadow.start_row - 1\n"
+    "  if shadow_line <= shadow.prefix_len or shadow_line > shadow.prefix_len + body_len then return nil end\n"
+    "  return shadow_line - shadow.prefix_len + shadow.start_row\n"
+    "end\n"
+    // c/cpp only: a single-entry compile_commands.json in the shadow's
+    // own directory, built from the exact compiler+flags
+    // mep.org_babel_execute would actually use (lang_def.compile_cmd,
+    // Phase 34) -- generated *before* the client ever starts (unlike
+    // mep.nvim's own polyglot, which only has real flags to offer after
+    // the block has actually been executed once) so clangd never has to
+    // notice a compilation database appearing after the fact, the one
+    // caching behavior confirmed to need a full client restart to react
+    // to at all. Restarts (only) when the resolved argv actually changes
+    // from what was last written -- an :includes/:flags edit, mainly.
+    "local function mep_polyglot_write_compile_db(shadow, lang_def)\n"
+    "  local exe = mep_org_babel_resolve_exe(lang_def) or lang_def.executable\n"
+    "  local dummy_bin = shadow.dir .. '/a.out'\n"
+    "  local argv = lang_def.compile_cmd and lang_def.compile_cmd(exe, shadow.path, dummy_bin)\n"
+    "    or {exe, shadow.path, '-o', dummy_bin}\n"
+    "  local argv_key = table.concat(argv, '\\1')\n"
+    "  if shadow.compile_argv == argv_key then return end\n"
+    "  local restart = shadow.compile_argv ~= nil\n"
+    "  shadow.compile_argv = argv_key\n"
+    "  local args_json = {}\n"
+    "  for _, a in ipairs(argv) do\n"
+    "    args_json[#args_json + 1] = '\"' .. a:gsub('\\\\', '\\\\\\\\'):gsub('\"', '\\\\\"') .. '\"'\n"
+    "  end\n"
+    "  local entry = '[{\"directory\": \"' .. shadow.dir .. '\", \"arguments\": [' ..\n"
+    "    table.concat(args_json, ', ') .. '], \"file\": \"' .. shadow.path .. '\"}]'\n"
+    "  local f = io.open(shadow.dir .. '/compile_commands.json', 'w')\n"
+    "  if f then f:write(entry) f:close() end\n"
+    "  if restart and shadow.client then mep_polyglot_restart_shadow_client(shadow, lang_def) end\n"
+    "end\n"
+    "function mep_polyglot_on_diagnostics(shadow, params)\n"
+    "  local translated = {}\n"
+    "  for _, d in ipairs(params.diagnostics or {}) do\n"
+    "    local org_start = mep_polyglot_shadow_line_to_org(shadow, d.range.start.line + 1)\n"
+    "    local org_end = mep_polyglot_shadow_line_to_org(shadow, d.range['end'].line + 1)\n"
+    "    if org_start and org_end then\n"
+    "      local dd = {}\n"
+    "      for k, v in pairs(d) do dd[k] = v end\n"
+    "      dd.range = {\n"
+    "        start = {line = org_start - 1, character = d.range.start.character},\n"
+    "        ['end'] = {line = org_end - 1, character = d.range['end'].character},\n"
+    "      }\n"
+    "      translated[#translated + 1] = dd\n"
+    "    end\n"
+    "  end\n"
+    "  mep_polyglot_diag_by_shadow[shadow.path] = translated\n"
+    "  local merged = {}\n"
+    "  for _, key in ipairs(mep_polyglot_shadows_by_file[shadow.org_abspath] or {}) do\n"
+    "    local s = mep_polyglot_shadows[key]\n"
+    "    if s then\n"
+    "      for _, d in ipairs(mep_polyglot_diag_by_shadow[s.path] or {}) do merged[#merged + 1] = d end\n"
+    "    end\n"
+    "  end\n"
+    "  mep_lsp_diagnostics[shadow.org_abspath] = merged\n"
+    "  if shadow.org_abspath == mep_lsp_abspath(mep.filename()) then mep.lsp_render_diagnostics() end\n"
+    "end\n"
+    "function mep_polyglot_start_client(shadow, lang_def, server)\n"
+    "  local id = mep.lsp_start(server.cmd, {cwd = shadow.dir})\n"
+    "  if id <= 0 then return end\n"
+    "  shadow.client = id\n"
+    "  shadow.version = 1\n"
+    "  mep.lsp_request(id, 'initialize', {\n"
+    "    processId = mep.platform() == 'wasm' and mep.json_null or nil,\n"
+    "    rootUri = mep_lsp_uri(shadow.dir),\n"
+    "    capabilities = {\n"
+    "      textDocument = {\n"
+    "        hover = {contentFormat = {'plaintext'}},\n"
+    "        completion = {completionItem = {snippetSupport = false}},\n"
+    "        publishDiagnostics = {},\n"
+    "        signatureHelp = {signatureInformation = {documentationFormat = {'plaintext'}}},\n"
+    "        rename = {},\n"
+    "      },\n"
+    "    },\n"
+    "  }, function(msg)\n"
+    "    local init_result = mep_lsp_result(msg)\n"
+    "    mep_lsp_server_capabilities[id] = init_result and init_result.capabilities\n"
+    "    mep.lsp_notify(id, 'initialized', {})\n"
+    "    mep.lsp_on_notification(id, 'textDocument/publishDiagnostics', function(params)\n"
+    "      mep_polyglot_on_diagnostics(shadow, params)\n"
+    "    end)\n"
+    "    local f = io.open(shadow.path, 'r')\n"
+    "    local text = f and f:read('a') or ''\n"
+    "    if f then f:close() end\n"
+    "    mep.lsp_notify(id, 'textDocument/didOpen', {\n"
+    "      textDocument = {uri = mep_lsp_uri(shadow.path), languageId = shadow.lang, version = 1, text = text},\n"
+    "    })\n"
+    "  end)\n"
+    "end\n"
+    "function mep_polyglot_restart_shadow_client(shadow, lang_def)\n"
+    "  local server = mep_polyglot_server_for(shadow.lang)\n"
+    "  if not server then return end\n"
+    "  if shadow.client then mep.lsp_stop(shadow.client) end\n"
+    "  mep_polyglot_start_client(shadow, lang_def, server)\n"
+    "end\n"
+    "local function mep_polyglot_create_shadow(key, org_abspath, blk, lang_def, server, per_block)\n"
+    "  local dir = mep_polyglot_root_dir() .. '/' .. mep_polyglot_sanitize(org_abspath) .. '/' .. blk.lang\n"
+    "  if per_block then dir = dir .. '/block_' .. blk.start_row end\n"
+    "  mep_polyglot_ensure_dir(dir)\n"
+    "  local basename = 'shadow' .. (lang_def.extension or ('.' .. blk.lang))\n"
+    "  local content, prefix_len = '', 0\n"
+    "  if per_block then\n"
+    "    content, prefix_len = mep_polyglot_per_block_content(blk, lang_def)\n"
+    // Java needs no wrap_main synthesis (a block is expected to already
+    // be a complete `class X { ... }`), but jdt-ls/javac both require a
+    // `public class X` to live in a file literally named X.java --
+    // detect_class (Phase 34, shared with mep.org_babel_execute) finds
+    // that name the same way real compilation would.
+    "    if blk.lang == 'java' then\n"
+    "      local class_name = blk.args_str:match(':classname%s+(%S+)')\n"
+    "      if not class_name and lang_def.detect_class then\n"
+    "        local body_lines = {}\n"
+    "        for i = blk.start_row + 1, blk.end_row - 1 do body_lines[#body_lines + 1] = mep.get_line(i) end\n"
+    "        class_name = lang_def.detect_class(body_lines)\n"
+    "      end\n"
+    "      basename = (class_name or 'Main') .. '.java'\n"
+    "    end\n"
+    "  else\n"
+    "    content = mep_polyglot_shared_content(blk.lang)\n"
+    "  end\n"
+    "  local path = dir .. '/' .. basename\n"
+    "  local f = io.open(path, 'w')\n"
+    "  if not f then return nil end\n"
+    "  f:write(content)\n"
+    "  f:close()\n"
+    "  local gi = io.open(dir .. '/.gitignore', 'w')\n"
+    "  if gi then gi:write('*\\n') gi:close() end\n"
+    // rust/go: a real Cargo.toml/go.mod next to the shadow so rust_
+    // analyzer/gopls can resolve it as a project at all -- mep.nvim's own
+    // MANIFESTS table found empty hover/diagnostics otherwise (both
+    // servers separately validate a real on-disk project via their own
+    // build tooling, independent of what the LSP client says in-memory).
+    "  if blk.lang == 'rust' then\n"
+    "    local f2 = io.open(dir .. '/Cargo.toml', 'w')\n"
+    "    if f2 then\n"
+    "      f2:write('[package]\\nname = \"mep_polyglot\"\\nversion = \"0.1.0\"\\nedition = \"2021\"\\n\\n' ..\n"
+    "        '[[bin]]\\nname = \"mep_polyglot\"\\npath = \"' .. basename .. '\"\\n')\n"
+    "      f2:close()\n"
+    "    end\n"
+    "  elseif blk.lang == 'go' then\n"
+    "    local f2 = io.open(dir .. '/go.mod', 'w')\n"
+    "    if f2 then f2:write('module mep_polyglot\\n\\ngo 1.21\\n') f2:close() end\n"
+    "  end\n"
+    "  local shadow = {\n"
+    "    path = path, dir = dir, lang = blk.lang, per_block = per_block,\n"
+    "    start_row = blk.start_row, end_row = blk.end_row, prefix_len = prefix_len,\n"
+    "    org_abspath = org_abspath, client = nil, compile_argv = nil,\n"
+    "  }\n"
+    "  mep_polyglot_shadows[key] = shadow\n"
+    "  mep_polyglot_shadow_by_path[mep_lsp_abspath(path)] = key\n"
+    "  mep_polyglot_shadows_by_file[org_abspath] = mep_polyglot_shadows_by_file[org_abspath] or {}\n"
+    "  table.insert(mep_polyglot_shadows_by_file[org_abspath], key)\n"
+    "  if blk.lang == 'c' or blk.lang == 'cpp' then mep_polyglot_write_compile_db(shadow, lang_def) end\n"
+    "  mep_polyglot_start_client(shadow, lang_def, server)\n"
+    "  return shadow\n"
+    "end\n"
+    // Entry point: called from every polyglot-aware LSP feature below.
+    // Returns {client=, uri=, position=} translated for the block under
+    // the cursor, or nil if the cursor isn't in a src block, that
+    // language has no babel entry, or no LSP server is registered for it
+    // (every unsupported case just falls through to the caller's own
+    // normal, non-polyglot behavior).
+    "function mep_polyglot_context_at_cursor()\n"
+    "  if not mep.org_polyglot_enabled then return nil end\n"
+    "  if mep_lsp_filetype(mep.filename()) ~= 'org' then return nil end\n"
+    "  local row, col = mep.cursor()\n"
+    "  local blk = mep_org_src_block_at(row)\n"
+    "  if not blk or not blk.lang or blk.lang == '' then return nil end\n"
+    "  local lang_def = mep.org_babel_langs[blk.lang]\n"
+    "  if not lang_def then return nil end\n"
+    "  local server = mep_polyglot_server_for(blk.lang)\n"
+    "  if not server then return nil end\n"
+    "  local org_abspath = mep_lsp_abspath(mep.filename())\n"
+    "  local per_block = mep_polyglot_per_block(lang_def)\n"
+    "  local key = mep_polyglot_key(org_abspath, blk.lang, per_block and blk or nil)\n"
+    "  local shadow = mep_polyglot_shadows[key]\n"
+    "  if not shadow then\n"
+    "    shadow = mep_polyglot_create_shadow(key, org_abspath, blk, lang_def, server, per_block)\n"
+    "    if not shadow then return nil end\n"
+    "  end\n"
+    "  local shadow_line = per_block and (row - blk.start_row + shadow.prefix_len) or row\n"
+    "  return {\n"
+    "    client = shadow.client, uri = mep_lsp_uri(shadow.path),\n"
+    "    position = {line = shadow_line - 1, character = col - 1},\n"
+    "  }\n"
+    "end\n"
+    // Translates one Location's URI/range back to the org file that owns
+    // it -- a no-op (returns loc unchanged) if its URI isn't a tracked
+    // shadow path (e.g. a definition that legitimately lives in a real
+    // project file the language server also knows about).
+    "function mep_polyglot_translate_location(loc)\n"
+    "  if not loc or not loc.uri then return loc end\n"
+    "  local key = mep_polyglot_shadow_by_path[loc.uri:gsub('^file://', '')]\n"
+    "  if not key then return loc end\n"
+    "  local shadow = mep_polyglot_shadows[key]\n"
+    "  if not shadow then return loc end\n"
+    "  local org_start = mep_polyglot_shadow_line_to_org(shadow, loc.range.start.line + 1)\n"
+    "  local org_end = mep_polyglot_shadow_line_to_org(shadow, loc.range['end'].line + 1)\n"
+    "  if not org_start then return loc end\n"
+    "  return {\n"
+    "    uri = mep_lsp_uri(shadow.org_abspath),\n"
+    "    range = {\n"
+    "      start = {line = org_start - 1, character = loc.range.start.character},\n"
+    "      ['end'] = {line = (org_end or org_start) - 1, character = loc.range['end'].character},\n"
+    "    },\n"
+    "  }\n"
+    "end\n"
+    // Translates a WorkspaceEdit's URIs/ranges the same way (rename,
+    // NVIM_PARITY_PLAN.md polyglot follow-up) -- handles both shapes a
+    // server can use (flat `changes` keyed by URI, or `documentChanges`
+    // wrapping each file's edits with its own textDocument identifier).
+    "local function mep_polyglot_translate_edits(uri, edits)\n"
+    "  local key = mep_polyglot_shadow_by_path[uri:gsub('^file://', '')]\n"
+    "  local shadow = key and mep_polyglot_shadows[key]\n"
+    "  if not shadow then return uri, edits end\n"
+    "  local out = {}\n"
+    "  for _, e in ipairs(edits) do\n"
+    "    local org_start = mep_polyglot_shadow_line_to_org(shadow, e.range.start.line + 1)\n"
+    "    local org_end = mep_polyglot_shadow_line_to_org(shadow, e.range['end'].line + 1)\n"
+    "    if org_start then\n"
+    "      out[#out + 1] = {newText = e.newText, range = {\n"
+    "        start = {line = org_start - 1, character = e.range.start.character},\n"
+    "        ['end'] = {line = (org_end or org_start) - 1, character = e.range['end'].character},\n"
+    "      }}\n"
+    "    end\n"
+    "  end\n"
+    "  return mep_lsp_uri(shadow.org_abspath), out\n"
+    "end\n"
+    "function mep_polyglot_translate_workspace_edit(edit)\n"
+    "  local out = {}\n"
+    "  if edit.changes then\n"
+    "    out.changes = {}\n"
+    "    for uri, edits in pairs(edit.changes) do\n"
+    "      local target_uri, translated = mep_polyglot_translate_edits(uri, edits)\n"
+    "      out.changes[target_uri] = translated\n"
+    "    end\n"
+    "  end\n"
+    "  if edit.documentChanges then\n"
+    "    out.documentChanges = {}\n"
+    "    for _, dc in ipairs(edit.documentChanges) do\n"
+    "      if dc.textDocument and dc.edits then\n"
+    "        local target_uri, translated = mep_polyglot_translate_edits(dc.textDocument.uri, dc.edits)\n"
+    "        out.documentChanges[#out.documentChanges + 1] =\n"
+    "          {textDocument = {uri = target_uri, version = dc.textDocument.version}, edits = translated}\n"
+    "      else\n"
+    "        out.documentChanges[#out.documentChanges + 1] = dc\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  return out\n"
+    "end\n"
+    // Resyncs every polyglot shadow tracked for the *current* org buffer
+    // (mirrors kBuiltinLsp's own single-active-buffer convention, e.g.
+    // mep.lsp_did_change) -- debounced the same way via
+    // mep.on_buffer_changed below.
+    "function mep_polyglot_resync()\n"
+    "  local org_file = mep.filename()\n"
+    "  if mep_lsp_filetype(org_file) ~= 'org' then return end\n"
+    "  local org_abspath = mep_lsp_abspath(org_file)\n"
+    "  for _, key in ipairs(mep_polyglot_shadows_by_file[org_abspath] or {}) do\n"
+    "    local shadow = mep_polyglot_shadows[key]\n"
+    "    local lang_def = shadow and mep.org_babel_langs[shadow.lang]\n"
+    "    if shadow and lang_def then\n"
+    "      local content\n"
+    "      if shadow.per_block then\n"
+    "        local blk = mep_org_src_block_at(shadow.start_row + 1)\n"
+    "        if blk and blk.lang == shadow.lang then\n"
+    "          content, shadow.prefix_len = mep_polyglot_per_block_content(blk, lang_def)\n"
+    "          shadow.end_row = blk.end_row\n"
+    "        end\n"
+    "      else\n"
+    "        content = mep_polyglot_shared_content(shadow.lang)\n"
+    "      end\n"
+    "      if content then\n"
+    "        local f = io.open(shadow.path, 'w')\n"
+    "        if f then f:write(content) f:close() end\n"
+    "        if shadow.lang == 'c' or shadow.lang == 'cpp' then mep_polyglot_write_compile_db(shadow, lang_def) end\n"
+    "        if shadow.client and mep.lsp_is_running(shadow.client) then\n"
+    "          shadow.version = shadow.version + 1\n"
+    "          mep.lsp_notify(shadow.client, 'textDocument/didChange', {\n"
+    "            textDocument = {uri = mep_lsp_uri(shadow.path), version = shadow.version},\n"
+    "            contentChanges = {{text = content}},\n"
+    "          })\n"
+    "        end\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "end\n"
+    "mep.on_buffer_changed(mep_polyglot_resync)\n";
 
 // Org LaTeX/math-mode inline rendering, a sibling feature to
 // kBuiltinOrgImages (defined earlier in this file): <leader>otl /
@@ -17380,6 +17902,7 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinOrgAgenda);
     lua->DoString(kBuiltinOrgClock);
     lua->DoString(kBuiltinOrgBabel);
+    lua->DoString(kBuiltinOrgPolyglot);
     lua->DoString(kBuiltinOrgLatex);
     lua->DoString(kBuiltinOrgExport);
     lua->DoString(kBuiltinOrgRoam);

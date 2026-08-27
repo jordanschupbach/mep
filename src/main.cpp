@@ -2041,21 +2041,32 @@ const char *kBuiltinGit =
     "    end,\n"
     "  })\n"
     "end\n"
+    // Opt-in (off by default, same convention as mep.git_gutter_auto/
+    // mep.colorize_auto): mep.float_preview dismisses on *any* keypress,
+    // so auto-popping the hunk preview on every jump would make repeated
+    // ]c/]c-style navigation need two presses per hop (one to dismiss the
+    // still-open preview, one to actually jump) -- opt-in keeps that the
+    // user's choice instead of a surprise default (NVIM_PARITY_PLAN.md
+    // Phase 17 gap: hunk-jump never previewed the hunk it landed on).
+    "mep.git_hunk_preview_on_jump = false\n"
+    "local function mep_git_maybe_preview_hunk()\n"
+    "  if mep.git_hunk_preview_on_jump then mep.git_preview_hunk() end\n"
+    "end\n"
     "function mep.git_next_hunk()\n"
     "  local row = mep.cursor()\n"
     "  for _, h in ipairs(mep_git_hunks) do\n"
-    "    if h.new_start > row then mep.set_cursor(h.new_start, 1) return end\n"
+    "    if h.new_start > row then mep.set_cursor(h.new_start, 1) mep_git_maybe_preview_hunk() return end\n"
     "  end\n"
-    "  if mep_git_hunks[1] then mep.set_cursor(mep_git_hunks[1].new_start, 1) end\n"
+    "  if mep_git_hunks[1] then mep.set_cursor(mep_git_hunks[1].new_start, 1) mep_git_maybe_preview_hunk() end\n"
     "end\n"
     "function mep.git_prev_hunk()\n"
     "  local row = mep.cursor()\n"
     "  for i = #mep_git_hunks, 1, -1 do\n"
     "    local h = mep_git_hunks[i]\n"
-    "    if h.new_start < row then mep.set_cursor(h.new_start, 1) return end\n"
+    "    if h.new_start < row then mep.set_cursor(h.new_start, 1) mep_git_maybe_preview_hunk() return end\n"
     "  end\n"
     "  local last = mep_git_hunks[#mep_git_hunks]\n"
-    "  if last then mep.set_cursor(last.new_start, 1) end\n"
+    "  if last then mep.set_cursor(last.new_start, 1) mep_git_maybe_preview_hunk() end\n"
     "end\n"
     "local function mep_git_hunk_at_cursor()\n"
     "  local row = mep.cursor()\n"

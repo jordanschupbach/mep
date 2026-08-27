@@ -1665,6 +1665,7 @@ int l_babel_cache_save(lua_State *L) {
 // framed protocol actually calls for.
 struct LspClientState {
     LuaEnv *env = nullptr;
+    int client_id = 0;      // set right after JobManager::Spawn returns (l_lsp_start)
     std::string buffer;     // raw bytes accumulated, header+body(es) consumed as they complete
     int expected_len = -1;  // -1 = still accumulating headers for the next message
     int next_request_id = 1;
@@ -1751,8 +1752,35 @@ int l_lsp_start(lua_State *L) {
         state->buffer += chunk;
         PumpLspBuffer(*state);
     };
+    // NVIM_PARITY_PLAN.md Phase 20 gap: a request pending when the server
+    // process dies used to never fire its callback at all (no on_exit was
+    // registered here) -- state->pending's callback refs, and the Lua
+    // coroutines/closures waiting on them, just leaked/hung forever. Fires
+    // each with a synthetic JSON-RPC error response (same shape a real
+    // error reply would have, so callers already checking `.error` need
+    // no new code path) and mirrors l_lsp_stop's own g_lsp_clients cleanup
+    // so a later mep.lsp_is_running/lsp_request against this client_id
+    // correctly sees it as gone rather than silently queuing forever.
+    cb.on_exit = [state](int) {
+        for (auto &kv : state->pending) {
+            Json err = Json::Object();
+            err["jsonrpc"] = Json("2.0");
+            err["id"] = Json(kv.first);
+            Json err_obj = Json::Object();
+            err_obj["code"] = Json(-32000);
+            err_obj["message"] = Json("LSP server exited");
+            err["error"] = err_obj;
+            state->env->CallRefWithJson(kv.second, err);
+            state->env->UnrefFunction(kv.second);
+        }
+        state->pending.clear();
+        if (state->client_id != 0) g_lsp_clients.erase(state->client_id);
+    };
     int id = JobManager::Instance().Spawn(argv, cwd, std::move(cb));
-    if (id != 0) g_lsp_clients[id] = state;
+    if (id != 0) {
+        state->client_id = id;
+        g_lsp_clients[id] = state;
+    }
     lua_pushinteger(L, id);
     return 1;
 }

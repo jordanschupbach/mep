@@ -270,7 +270,15 @@
             pkgs.nodejs # JavaScript
             pkgs.ruby
             pkgs.perl
-            pkgs.R
+            # rWrapper (not the bare pkgs.R) with the `languageserver`
+            # package built in -- R is otherwise one of the babel
+            # languages with no LSP server registered at all
+            # (mep.lsp_servers.r_languageserver, `languageserver::run()`)
+            # since nixpkgs' plain pkgs.R has no packages preinstalled and
+            # `library(languageserver)` would fail without this. Still
+            # provides the same `R`/`Rscript` binaries babel's own
+            # execution already used.
+            (pkgs.rWrapper.override { packages = with pkgs.rPackages; [ languageserver ]; })
             pkgs.php
             pkgs.rustc
             pkgs.cargo
@@ -315,13 +323,42 @@
             # per-language shape: those run a `#+begin_src` block's own
             # body, this is a long-lived `--stdio` JSON-RPC server process
             # mep talks textDocument/* requests to for hover (K)/goto-
-            # definition (gd)/diagnostics/completion/etc. Starting with
-            # just Python's (pyright, providing `pyright-langserver` --
-            # matches the `cmd` already registered under
-            # mep.lsp_servers.pyright) since that's the one this flake
-            # currently exercises; add more of mep.lsp_servers' own
-            # entries here the same way as each gets covered.
-            pkgs.pyright
+            # definition (gd)/diagnostics/completion/etc, including
+            # inside a src block (Phase 36 polyglot). Every entry here
+            # matches an mep.lsp_servers `cmd[1]` exactly -- covers every
+            # babel language with a real, freely-licensed server
+            # available in nixpkgs.
+            pkgs.pyright # python
+            pkgs.lua-language-server # lua
+            pkgs.bash-language-server # sh
+            pkgs.typescript-language-server # javascript, typescript
+            pkgs.clang-tools # c, cpp -- provides clangd (plus clang-tidy/
+            # -format etc, harmless extras from the same derivation)
+            pkgs.solargraph # ruby
+            pkgs.rust-analyzer # rust
+            pkgs.gopls # go
+            # omnisharp-roslyn's own binary is `OmniSharp` (capitalized) --
+            # mep.lsp_servers.omnisharp's cmd was fixed to match (was
+            # lowercase 'omnisharp', which every csharp block silently
+            # failed to spawn against, same class of bug as the earlier
+            # python filetype/language-name mismatch).
+            pkgs.omnisharp-roslyn # csharp
+            pkgs.haskell-language-server # haskell -- provides both a GHC-
+            # version-suffixed binary and haskell-language-server-wrapper
+            # (what mep.lsp_servers.hls's cmd actually invokes, resolving
+            # the right version itself)
+            pkgs.ocamlPackages.ocaml-lsp # ocaml -- provides `ocamllsp`
+            pkgs.zls # zig
+            pkgs.elixir-ls # elixir
+            pkgs.clojure-lsp # clojure
+            pkgs.kotlin-language-server # kotlin
+            # php's server (intelephense) is proprietary-licensed --
+            # nixpkgs' own package refuses to build without a separate
+            # `allowUnfree = true` opt-in this flake deliberately doesn't
+            # make on anyone's behalf. Add `pkgs.nodePackages.intelephense`
+            # here yourself (plus `nixpkgs.config.allowUnfree = true` for
+            # this flake, e.g. via NIXPKGS_ALLOW_UNFREE=1 or a
+            # config.nix override) if you want php polyglot support.
           ];
 
           # MEP_WEBVIEW_LD_LIBRARY_PATH: scoped to a separate variable

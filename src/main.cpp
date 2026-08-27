@@ -2320,12 +2320,29 @@ const char *kBuiltinLsp =
     "  jdtls = {cmd = {'jdtls'}, filetypes = {'java'}},\n"
     "  solargraph = {cmd = {'solargraph', 'stdio'}, filetypes = {'rb'}},\n"
     "  intelephense = {cmd = {'intelephense', '--stdio'}, filetypes = {'php'}},\n"
-    "  omnisharp = {cmd = {'omnisharp', '-lsp'}, filetypes = {'cs'}},\n"
+    // 'OmniSharp' (capitalized), not 'omnisharp' -- the binary nixpkgs'
+    // own omnisharp-roslyn package (flake.nix) actually installs under
+    // that exact name; the lowercase form was never on PATH under any
+    // real install of it, so every csharp block silently failed to spawn
+    // a server at all.
+    "  omnisharp = {cmd = {'OmniSharp', '-lsp'}, filetypes = {'cs'}},\n"
     "  hls = {cmd = {'haskell-language-server-wrapper', '--lsp'}, filetypes = {'hs'}},\n"
     "  ocamllsp = {cmd = {'ocamllsp'}, filetypes = {'ml', 'mli'}},\n"
     "  zls = {cmd = {'zls'}, filetypes = {'zig'}},\n"
     "  elixirls = {cmd = {'elixir-ls'}, filetypes = {'ex', 'exs'}},\n"
     "  bashls = {cmd = {'bash-language-server', 'start'}, filetypes = {'sh', 'bash'}},\n"
+    // R's own babel entry (mep.org_babel_langs.r) uses extension '.R'
+    // (capital -- what `Rscript` itself expects for a script file), so
+    // that's what mep_polyglot_server_for's extension-based lookup
+    // resolves to for a `#+begin_src R`/`#+begin_src r` block either way
+    // (org's own language tag is lowercased on parse, but the extension
+    // conversion here isn't) -- both cases listed so the direct-key
+    // fallback also matches regardless. No dedicated `--stdio` flag the
+    // way most servers have: languageserver::run() always talks over
+    // stdio once invoked, and R itself needs telling not to print its own
+    // interactive banner/echo commands onto that same stream first.
+    "  r_languageserver = {cmd = {'R', '--no-save', '--slave', '-e', 'languageserver::run()'},\n"
+    "    filetypes = {'R', 'r'}},\n"
     "  yamlls = {cmd = {'yaml-language-server', '--stdio'}, filetypes = {'yaml', 'yml'}},\n"
     "  jsonls = {cmd = {'vscode-json-language-server', '--stdio'}, filetypes = {'json', 'jsonc'}},\n"
     "  html = {cmd = {'vscode-html-language-server', '--stdio'}, filetypes = {'html', 'htm'}},\n"

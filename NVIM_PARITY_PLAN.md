@@ -2627,8 +2627,14 @@ picker, Phase 7 sidebar)*
 - ⚠️ **Scope cut**: `mep_org_expand_template`/`mep_org_read_file_lines`
       (originally `local` inside their Phase 31/32 chunks) were made
       global to be reusable here — the same recurring cross-chunk
-      scoping fix as every other phase in this session. No fuzzy
-      backlink-graph visualization (list only, not a graph view).
+      scoping fix as every other phase in this session.
+- ✅ **Addressed in a follow-up pass — correction**: a real graph view
+      now exists, contrary to "list only, not a graph view" above.
+      `mep.org_roam_graph`/`:MepRoamGraph` builds nodes+edges and
+      `DrawRoamGraphOverlay`/`ComputeRoamGraphPositions` render an actual
+      2D node-link diagram (hop-1/hop-2 rings around the current note);
+      the flat backlinks sidebar still exists separately for the
+      list view.
 
 ### Phase 38 — Flashcards (SM2 spaced repetition) ✅
 
@@ -3406,12 +3412,11 @@ genuinely editable, round-trippable subset, not a Word/LibreOffice clone.
       limitation, not evidence of a bug. Confidence instead comes from
       code review plus the fact that `ToggleOfficeFormat` calls the exact
       same `ToggleFormatOverRange` primitive the keyboard path already
-      exercised live. **Not done**: alignment buttons and a bullet-toggle
-      button/keybinding — deprioritized after the toolbar's main
-      structural risk (does a second header row + content-area shrink
-      break anything else in `DrawPane`?) was already resolved by the
-      B/I/U buttons; revisit if/when alignment/bullet authoring (not just
-      preserving what a source document already had) becomes a priority.
+      exercised live. **Correction — alignment and bullet/numbered-list
+      toggling are implemented**, contrary to "not done" above:
+      `HandleOfficeVisualInput` maps `c`/`L`/`r`/`f` → `SetOfficeAlignment`
+      and `*`/`#` → `SetOfficeListKind`, also reachable from toolbar
+      buttons.
 - [ ] **Not wired up**: native-only for v1 — no Emscripten/wasm build,
       blocked concretely by the wasm file-bridge having no binary-write
       path (`mep_js_write_file` is string-only), mirroring the PDF
@@ -3420,13 +3425,14 @@ genuinely editable, round-trippable subset, not a Word/LibreOffice clone.
       (toggle-while-typing with no selection) — Visual-select-then-toggle
       (keyboard or toolbar click) is the only way to apply formatting in
       v1. No mouse click-to-place-cursor (consistent with the main text
-      buffer, which also lacks this). No alignment/bullet
-      toggle keybinding or toolbar button (Phase 5, see above — reading
-      and preserving existing alignment/bullets on load and save both
-      already work; only *authoring new* alignment/bullet changes from
-      inside mep doesn't yet). Save-back drops a bullet paragraph's list
-      membership and any table/image present in the original file (see
-      Phase 4's own comment) — known, documented v1 losses, not bugs.
+      buffer, which also lacks this — deliberately focus-only, per
+      main.cpp's own comment on office-pane clicks). Save-back drops a
+      bullet paragraph's list membership on save (`SerializeDocxParagraph`
+      never emits `w:numPr`; ODT's own save comment says `<text:list>`
+      wrapping is dropped) — a known, documented v1 loss, not a bug.
+      **Correction**: table/image are *not* dropped — both
+      `SaveDocxToMemory`/`SaveOdtToMemory` actively re-serialize
+      `doc.tables`/`doc.images` from the in-memory model on save.
 
 ---
 

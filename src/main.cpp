@@ -6323,14 +6323,30 @@ const char *kBuiltinOrgAgenda =
     // today-or-later, so a repeater is by definition never "overdue" in
     // the backlog sense; it just shows on its next due date instead
     // (Agenda Day/Week above).
+    // Graduated deadline-warning window (org-deadline-warning-days'
+    // equivalent, NVIM_PARITY_PLAN.md Phase 32 gap) -- 0 by default,
+    // meaning "past-due only", the same binary behavior this command had
+    // before the window existed; set higher (e.g. 3) to also surface
+    // deadlines due within that many days.
+    "mep.org_deadline_warning_days = 0\n"
+    "local function mep_org_days_until(date_str)\n"
+    "  local y, mo, d = date_str:match('(%d+)-(%d+)-(%d+)')\n"
+    "  if not y then return nil end\n"
+    "  local target_t = os.time({year = tonumber(y), month = tonumber(mo), day = tonumber(d), hour = 12})\n"
+    "  local ty, tmo, td = os.date('%Y'), os.date('%m'), os.date('%d')\n"
+    "  local today_t = os.time({year = tonumber(ty), month = tonumber(tmo), day = tonumber(td), hour = 12})\n"
+    "  return math.floor((target_t - today_t) / 86400 + 0.5)\n"
+    "end\n"
     "function mep.org_agenda_overdue()\n"
-    "  local today, items = os.date('%Y-%m-%d'), {}\n"
+    "  local items = {}\n"
     "  local done_kw = mep.org_todo_keywords[#mep.org_todo_keywords]\n"
     "  for _, e in ipairs(mep.org_agenda_collect()) do\n"
     "    if e.deadline and not mep_org_has_repeater(e.deadline) then\n"
     "      local dd = mep_org_date_of(e.deadline)\n"
-    "      if dd and dd < today and e.todo ~= done_kw then\n"
-    "        items[#items + 1] = {display = 'OVERDUE ' .. dd .. '  ' .. (e.todo or '') .. ' ' .. e.title .. '  (' .. e.file .. ':' .. e.line .. ')',\n"
+    "      local days_until = dd and mep_org_days_until(dd)\n"
+    "      if days_until and days_until <= mep.org_deadline_warning_days and e.todo ~= done_kw then\n"
+    "        local tag = days_until <= 0 and 'OVERDUE' or ('DUE IN ' .. days_until .. 'd')\n"
+    "        items[#items + 1] = {display = tag .. ' ' .. dd .. '  ' .. (e.todo or '') .. ' ' .. e.title .. '  (' .. e.file .. ':' .. e.line .. ')',\n"
     "          data = e.file .. ':' .. e.line}\n"
     "      end\n"
     "    end\n"

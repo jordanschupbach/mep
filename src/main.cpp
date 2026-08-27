@@ -7731,17 +7731,33 @@ const char *kBuiltinOrgPolyglot =
     "local function mep_polyglot_per_block(lang_def)\n"
     "  return lang_def.compiled or lang_def.wrap_main ~= nil\n"
     "end\n"
-    // Resolves a server registry entry for `lang` the same way
-    // mep.lsp_attach does for the current buffer's own filetype (direct
-    // key, else scan every entry's filetypes) -- kept separate since
-    // mep.lsp_attach itself is hardwired to mep.filename()/the current
-    // buffer's own single-slot client, neither of which apply here.
-    "local function mep_polyglot_server_for(lang)\n"
-    "  local server = mep.lsp_servers[lang]\n"
+    // Resolves a server registry entry the same way mep.lsp_attach does
+    // for a real file's own filetype (direct key, else scan every
+    // entry's filetypes) -- kept separate since mep.lsp_attach itself is
+    // hardwired to mep.filename()/the current buffer's own single-slot
+    // client, neither of which apply here.
+    //
+    // Real bug caught while first trying this against a python block:
+    // mep.lsp_servers' own filetypes are real file *extensions* ('py',
+    // 'rs', 'cs', ...) -- what mep_lsp_filetype(fname) extracts from an
+    // actual file's own name -- but org's `#+begin_src LANG` tag is a
+    // *language name* ('python', 'rust', 'csharp', ...), the vocabulary
+    // mep.org_babel_langs itself is keyed by. Looking either up directly
+    // against the other silently misses every language whose name and
+    // extension differ (which is most of them) -- mep_polyglot_server_for
+    // used to take the bare babel language key and would never match
+    // pyright's own 'py' this way, so a python block always resolved as
+    // "no server", not "pyright". Fixed by first converting through
+    // lang_def.extension (already known-correct, since babel needs it to
+    // write a real interpreter-recognizable temp file), falling back to
+    // the bare language key only for languages with no extension entry.
+    "local function mep_polyglot_server_for(lang, lang_def)\n"
+    "  local ft = (lang_def and lang_def.extension and lang_def.extension:gsub('^%.', '')) or lang\n"
+    "  local server = mep.lsp_servers[ft] or mep.lsp_servers[lang]\n"
     "  if server then return server end\n"
     "  for _, s in pairs(mep.lsp_servers) do\n"
-    "    for _, ft in ipairs(s.filetypes or {}) do\n"
-    "      if ft == lang then return s end\n"
+    "    for _, sft in ipairs(s.filetypes or {}) do\n"
+    "      if sft == ft or sft == lang then return s end\n"
     "    end\n"
     "  end\n"
     "  return nil\n"
@@ -8000,7 +8016,7 @@ const char *kBuiltinOrgPolyglot =
     "  if not blk or not blk.lang or blk.lang == '' then return nil end\n"
     "  local lang_def = mep.org_babel_langs[blk.lang]\n"
     "  if not lang_def then return nil end\n"
-    "  local server = mep_polyglot_server_for(blk.lang)\n"
+    "  local server = mep_polyglot_server_for(blk.lang, lang_def)\n"
     "  if not server then return nil end\n"
     "  local org_abspath = mep_lsp_abspath(mep.filename())\n"
     "  local per_block = mep_polyglot_per_block(lang_def)\n"

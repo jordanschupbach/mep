@@ -52,6 +52,12 @@ const std::unordered_map<std::string, LangEntry> &LanguageTable() {
         {"hxx", {tree_sitter_cpp, kHighlightsCpp}},
         {"lua", {tree_sitter_lua, kHighlightsLua}},
         {"py", {tree_sitter_python, kHighlightsPython}},
+        // .pyi stub files are a strict syntactic subset of regular Python
+        // (no runtime statements, just signatures/annotations) -- the same
+        // grammar/query pairing parses them fine, this was just a missing
+        // table entry (mep_lsp_filetype in main.cpp already resolves
+        // "foo.pyi" to the bare extension "pyi", same as any other file).
+        {"pyi", {tree_sitter_python, kHighlightsPython}},
         {"js", {tree_sitter_javascript, kHighlightsJavascript}},
         {"mjs", {tree_sitter_javascript, kHighlightsJavascript}},
         {"cjs", {tree_sitter_javascript, kHighlightsJavascript}},
@@ -84,6 +90,7 @@ const std::unordered_map<std::string, LangEntry> &FoldQueryTable() {
         {"hxx", {tree_sitter_cpp, kFoldsCpp}},
         {"lua", {tree_sitter_lua, kFoldsLua}},
         {"py", {tree_sitter_python, kFoldsPython}},
+        {"pyi", {tree_sitter_python, kFoldsPython}},
         {"js", {tree_sitter_javascript, kFoldsJavascript}},
         {"mjs", {tree_sitter_javascript, kFoldsJavascript}},
         {"cjs", {tree_sitter_javascript, kFoldsJavascript}},

@@ -135,10 +135,18 @@ delete/yank/move/copy line ranges as ex commands, not just from Normal
 mode. All plain-substring, like search -- no regex, so no backreferences
 in a replacement either.
 
-=:set number= (=nonumber=) shows a line-number gutter; =:set
-ignorecase= (=noignorecase=) makes search and =:s=/=:g= case-
-insensitive; =:set wrapscan= (=nowrapscan=, on by default) controls
-whether search wraps around the buffer.
+=:set number= (=nonumber=) shows a line-number gutter, and =:set
+relativenumber= (=norelativenumber=) makes every row but the cursor's
+own show its distance from it instead -- both on by default (the
+cursor's own line still shows its real, left-aligned line number, the
+usual Vim/Neovim "hybrid" look), so a plain =:set nonumber
+norelativenumber= is what turns them off entirely. The same gutter
+column also always carries fold markers and any git-gutter/LSP-
+diagnostic/DAP-breakpoint/TODO-scan sign for that line (one glyph per
+row, highest-priority sign wins), regardless of whether either number
+option is on. =:set ignorecase= (=noignorecase=) makes search and
+=:s=/=:g= case-insensitive; =:set wrapscan= (=nowrapscan=, on by
+default) controls whether search wraps around the buffer.
 
 =:q= closes the current pane, quitting the application only if it's the
 last pane in the last tab (matching Vim); it refuses if that pane's
@@ -157,7 +165,13 @@ close/split-horizontal/split-vertical the current one. =:tabnew [file]=,
 =:tabdelete=, =:tabnext=, =:tabprevious= manage tabs -- each tab has its
 own independent split-pane layout. Two panes split from the same buffer
 (no filename given) share it, including undo history; the tab bar only
-appears once there's more than one tab.
+appears once there's more than one tab. =:bnext=/=:bn= and
+=:bprevious=/=:bprev=/=:bp= cycle the current pane through every open
+buffer (not just the ones already opened in that pane's own tab strip),
+wrapping at either end. =Ctrl-O=/=Ctrl-I= walk backward/forward through
+the jumplist (populated by searches, =gg=/=G=, and mark jumps) -- per
+pane, and able to span buffers, distinct from the single-slot =``=/='''=
+mechanism.
 
 =mod1= (=Alt= by default, any mode): =mod1+s= / =mod1+v= split
 horizontal/vertical; =mod1+h/j/k/l= move focus to the pane spatially

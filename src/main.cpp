@@ -1950,8 +1950,21 @@ const char *kBuiltinGit =
     "  local fname = mep.filename()\n"
     "  if fname == '' then return end\n"
     "  if not mep_git_ns then mep_git_ns = mep.ns_create('git') end\n"
+    // `HEAD:<path>` is a pathspec, resolved by git relative to *its own*
+    // cwd (same as any other git path argument) -- run with cwd set to
+    // the buffer's own directory and just its basename, rather than
+    // mep's own process cwd (which need not have any relationship to
+    // where the file lives, or even be inside a git repo at all) and
+    // fname's own full path (which, being absolute whenever mep was
+    // opened with one, git would refuse outright: a pathspec can't be
+    // absolute). Without this, `git show` silently fails, the "old"
+    // side of the diff comes back empty, and every line in the buffer
+    // shows as a brand new addition -- confirmed exactly this way.
+    "  local dir = fname:match('^(.*)/[^/]+$') or '.'\n"
+    "  local base = fname:match('([^/]+)$') or fname\n"
     "  local lines = {}\n"
-    "  mep.job_start({'git', 'show', mep.git_gutter_base .. ':' .. fname}, {\n"
+    "  mep.job_start({'git', 'show', mep.git_gutter_base .. ':' .. base}, {\n"
+    "    cwd = dir,\n"
     "    on_stdout = function(l) lines[#lines + 1] = l end,\n"
     "    on_exit = function(code)\n"
     "      mep_git_base_lines = lines\n"
@@ -2721,62 +2734,235 @@ const char *kBuiltinLsp =
     "mep.leader_map('lk', 'LSP: signature help', mep.lsp_signature_help)\n"
     "mep.leader_map('rn', 'LSP: rename', mep.lsp_rename)\n"
     "mep.leader_map('ca', 'LSP: code action', mep.lsp_code_action)\n"
+    // Real Vim's own bindings for these two specifically (not leader-key
+    // ones, unlike the newer methods above) -- both free today: K has no
+    // built-in meaning anywhere in Normal mode, and mep.map_g (this
+    // library's own new primitive, added alongside this) reaches "d"
+    // after a pending "g" the way plain mep.map never could (see its own
+    // doc comment on why gd was unreachable before it existed).
+    "mep.map('n', 'K', mep.lsp_hover, {desc = 'LSP: hover'})\n"
+    "mep.map_g('d', mep.lsp_goto_definition)\n"
     // --- Diagnostics UI (Phase 21) -- built on the publishDiagnostics
     // store kBuiltinLsp already populates (mep_lsp_diagnostics, upvalue-
     // shared since this all lives in the same DoString chunk).
     "local mep_diag_ns = nil\n"
     "local MEP_DIAG_SEVERITY = {[1] = 'Error', [2] = 'Warn', [3] = 'Info', [4] = 'Hint'}\n"
-    "local MEP_DIAG_GLYPH = {[1] = '', [2] = '', [3] = '', [4] = ''}\n"
+    "local MEP_DIAG_WRAP_WIDTH = 70\n"
+    "local function mep_diag_wrap(text, width)\n"
+    "  local out, line = {}, ''\n"
+    "  for word in text:gmatch('%S+') do\n"
+    "    if line == '' then\n"
+    "      line = word\n"
+    "    elseif #line + 1 + #word <= width then\n"
+    "      line = line .. ' ' .. word\n"
+    "    else\n"
+    "      out[#out + 1] = line\n"
+    "      line = word\n"
+    "    end\n"
+    "  end\n"
+    "  if line ~= '' then out[#out + 1] = line end\n"
+    "  if #out == 0 then out[1] = '' end\n"
+    "  return out\n"
+    "end\n"
+    "local function mep_diag_at_row(row)\n"
+    "  local diags = mep_lsp_diagnostics[mep_lsp_abspath(mep.filename())] or {}\n"
+    "  local row_diags = {}\n"
+    "  for _, d in ipairs(diags) do\n"
+    "    if d.range.start.line + 1 == row then row_diags[#row_diags + 1] = d end\n"
+    "  end\n"
+    "  table.sort(row_diags, function(a, b) return (a.severity or 1) < (b.severity or 1) end)\n"
+    "  return row_diags\n"
+    "end\n"
+    // More than 2 diagnostics on one line can't be conveyed by a single
+    // gutter badge + one line of virt_text -- pop up all of them
+    // instead, word-wrapped (mep.float_preview itself does not wrap --
+    // see mep_diag_wrap's own comment) so a long message is actually
+    // readable rather than running off the edge of the box.
+    "local function mep_diag_popup(row_diags)\n"
+    "  local wrapped = {}\n"
+    "  for i, d in ipairs(row_diags) do\n"
+    "    if i > 1 then wrapped[#wrapped + 1] = '' end\n"
+    "    local sev = MEP_DIAG_SEVERITY[d.severity or 1] or 'Error'\n"
+    "    for _, l in ipairs(mep_diag_wrap(i .. '. [' .. sev .. '] ' .. d.message, MEP_DIAG_WRAP_WIDTH)) do\n"
+    "      wrapped[#wrapped + 1] = l\n"
+    "    end\n"
+    "  end\n"
+    "  mep.float_preview('Diagnostics on this line (' .. #row_diags .. ')', table.concat(wrapped, '\\n'))\n"
+    "end\n"
+    // One underline decoration per diagnostic (its own exact span, as
+    // before), but only *one* sign+virt_text decoration per row instead
+    // of one per diagnostic -- previously every diagnostic on a line
+    // added its own virt_text, all independently col_start-anchored to
+    // their own (often differing) columns, several of which could end
+    // up drawn overlapping each other and the buffer's real text with no
+    // background cover at all. Now: a single badge (sign_badge, filled
+    // circle colored by the *worst* severity present, digit = how many)
+    // plus one virt_text line (that worst diagnostic's own message,
+    // "(N) " prefixed when there's more than one) anchored past the end
+    // of the line's real text (virt_text_eol) instead of at any
+    // diagnostic's own column.
     "function mep.lsp_render_diagnostics()\n"
     "  if not mep_diag_ns then mep_diag_ns = mep.ns_create('diagnostics') end\n"
     "  mep.ns_clear(mep_diag_ns)\n"
     "  local diags = mep_lsp_diagnostics[mep_lsp_abspath(mep.filename())] or {}\n"
+    "  local by_row, row_order = {}, {}\n"
     "  for _, d in ipairs(diags) do\n"
     "    local sev = d.severity or 1\n"
     "    local hl = MEP_DIAG_SEVERITY[sev] or 'Error'\n"
     "    local row = d.range.start.line + 1\n"
     "    mep.deco_add(mep_diag_ns, {\n"
     "      row = row, col_start = d.range.start.character + 1, col_end = d.range['end'].character + 1,\n"
-    "      hl_group = hl, underline = true, sign = MEP_DIAG_GLYPH[sev] or 'E', sign_hl = hl,\n"
-    "      virt_text = '  ' .. d.message:gsub('\\n.*', ''), virt_text_hl = hl,\n"
+    "      hl_group = hl, underline = true,\n"
+    "    })\n"
+    "    if not by_row[row] then by_row[row] = {}; row_order[#row_order + 1] = row end\n"
+    "    table.insert(by_row[row], d)\n"
+    "  end\n"
+    "  for _, row in ipairs(row_order) do\n"
+    "    local row_diags = by_row[row]\n"
+    "    table.sort(row_diags, function(a, b) return (a.severity or 1) < (b.severity or 1) end)\n"
+    "    local worst = row_diags[1]\n"
+    "    local hl = MEP_DIAG_SEVERITY[worst.severity or 1] or 'Error'\n"
+    "    mep.deco_add(mep_diag_ns, {\n"
+    "      row = row, sign = tostring(#row_diags), sign_hl = hl, sign_badge = true,\n"
+    "      virt_text = '  ' .. (#row_diags > 1 and ('(' .. #row_diags .. ') ') or '') .. worst.message:gsub('\\n.*', ''),\n"
+    "      virt_text_hl = hl, virt_text_eol = true, priority = 10,\n"
     "    })\n"
     "  end\n"
     "end\n"
+    // :MepDiagShow: pop up the full (wrapped) list once there are more
+    // than 2 diagnostics on the cursor's own line (matching the same
+    // threshold mep_diag_nav's own jump-then-maybe-popup uses below),
+    // otherwise the original one-line notify is still plenty.
     "function mep.lsp_diagnostic_at_cursor()\n"
-    "  local row = mep.cursor()\n"
-    "  local diags = mep_lsp_diagnostics[mep_lsp_abspath(mep.filename())] or {}\n"
-    "  for _, d in ipairs(diags) do\n"
-    "    if d.range.start.line + 1 == row then\n"
-    "      mep.notify((MEP_DIAG_SEVERITY[d.severity or 1]) .. ': ' .. d.message,\n"
-    "                 (d.severity == 1 and 'error') or (d.severity == 2 and 'warn') or 'info')\n"
-    "      return\n"
-    "    end\n"
+    "  local row_diags = mep_diag_at_row(mep.cursor())\n"
+    "  if #row_diags == 0 then mep.notify('No diagnostic on this line') return end\n"
+    "  if #row_diags > 2 then\n"
+    "    mep_diag_popup(row_diags)\n"
+    "    return\n"
     "  end\n"
-    "  mep.notify('No diagnostic on this line')\n"
+    "  local d = row_diags[1]\n"
+    "  mep.notify((MEP_DIAG_SEVERITY[d.severity or 1] or 'Error') .. ': ' .. d.message,\n"
+    "             (d.severity == 1 and 'error') or (d.severity == 2 and 'warn') or 'info')\n"
     "end\n"
+    // Unlike mep.lsp_diagnostic_at_cursor above (popup only past the
+    // 2-diagnostic threshold, else a one-line notify), this always pops
+    // up the full list -- the point of a dedicated "show me everything
+    // on this line" key.
+    "function mep.lsp_line_diagnostics_popup()\n"
+    "  local row_diags = mep_diag_at_row(mep.cursor())\n"
+    "  if #row_diags == 0 then mep.notify('No diagnostics on this line') return end\n"
+    "  mep_diag_popup(row_diags)\n"
+    "end\n"
+    // Jump to the next/previous row with a (matching) diagnostic -- rows
+    // deduped (a real, if minor, pre-existing gap: multiple diagnostics
+    // sharing a row used to make that row count once per diagnostic, so
+    // "next" could re-land on the same row more than once in a row
+    // before actually advancing) -- then, once landed, pop up the full
+    // list if that line turns out to have more than 2 (errors_only
+    // narrows which diagnostics count toward that threshold too, so "[e"
+    // popping up means more than 2 *errors*, not diagnostics of any
+    // severity, matching what "next/previous error" itself already means).
     "local function mep_diag_nav(delta, errors_only)\n"
     "  local diags = mep_lsp_diagnostics[mep_lsp_abspath(mep.filename())] or {}\n"
     "  if #diags == 0 then mep.notify('No diagnostics') return end\n"
-    "  local rows = {}\n"
+    "  local rows, seen = {}, {}\n"
     "  for _, d in ipairs(diags) do\n"
-    "    if not errors_only or (d.severity or 1) == 1 then rows[#rows + 1] = d.range.start.line + 1 end\n"
+    "    if not errors_only or (d.severity or 1) == 1 then\n"
+    "      local row = d.range.start.line + 1\n"
+    "      if not seen[row] then\n"
+    "        seen[row] = true\n"
+    "        rows[#rows + 1] = row\n"
+    "      end\n"
+    "    end\n"
     "  end\n"
     "  table.sort(rows)\n"
     "  if #rows == 0 then mep.notify('No matching diagnostics') return end\n"
     "  local cur = mep.cursor()\n"
+    "  local target\n"
     "  if delta > 0 then\n"
-    "    for _, r in ipairs(rows) do if r > cur then mep.set_cursor(r, 1) return end end\n"
-    "    mep.set_cursor(rows[1], 1)\n"
+    "    for _, r in ipairs(rows) do\n"
+    "      if r > cur then\n"
+    "        target = r\n"
+    "        break\n"
+    "      end\n"
+    "    end\n"
+    "    target = target or rows[1]\n"
     "  else\n"
-    "    for i = #rows, 1, -1 do if rows[i] < cur then mep.set_cursor(rows[i], 1) return end end\n"
-    "    mep.set_cursor(rows[#rows], 1)\n"
+    "    for i = #rows, 1, -1 do\n"
+    "      if rows[i] < cur then\n"
+    "        target = rows[i]\n"
+    "        break\n"
+    "      end\n"
+    "    end\n"
+    "    target = target or rows[#rows]\n"
     "  end\n"
+    "  mep.set_cursor(target, 1)\n"
+    "  local row_diags = mep_diag_at_row(target)\n"
+    "  if errors_only then\n"
+    "    local errors_here = {}\n"
+    "    for _, d in ipairs(row_diags) do\n"
+    "      if (d.severity or 1) == 1 then errors_here[#errors_here + 1] = d end\n"
+    "    end\n"
+    "    row_diags = errors_here\n"
+    "  end\n"
+    "  if #row_diags > 2 then mep_diag_popup(row_diags) end\n"
     "end\n"
     "function mep.lsp_next_diagnostic() mep_diag_nav(1, false) end\n"
     "function mep.lsp_prev_diagnostic() mep_diag_nav(-1, false) end\n"
     "function mep.lsp_next_error() mep_diag_nav(1, true) end\n"
     "function mep.lsp_prev_error() mep_diag_nav(-1, true) end\n"
-    "mep.command('MepDiagShow', mep.lsp_diagnostic_at_cursor)\n";
+    "mep.command('MepDiagShow', mep.lsp_diagnostic_at_cursor)\n"
+    // 'L' is already vim's screen-bottom motion (H/M/L), so it can't be
+    // reused here without silently breaking that motion -- 'Q' is free
+    // (mep has no Ex-mode) and pairs naturally with 'K' for hover above.
+    "mep.map('n', 'Q', mep.lsp_line_diagnostics_popup, {desc = 'LSP: diagnostics popup for current line'})\n"
+    // Real Vim's own bracket-motion convention ("[x"/"]x" for
+    // previous/next of some category), applied to mep's own error
+    // navigation via mep.map_bracket_prev/next (this library's new
+    // primitive -- see its own doc comment on why a bare mep.map can't
+    // reach a key typed after a pending "["/"]").
+    "mep.map_bracket_prev('e', mep.lsp_prev_error)\n"
+    "mep.map_bracket_next('e', mep.lsp_next_error)\n"
+    // Keeps the server's own copy of the document in sync with unsaved
+    // edits -- mep.lsp_did_change/did_save were previously defined but
+    // never actually wired to anything, so diagnostics/hover would only
+    // ever reflect a file's on-disk state as of its last didOpen. Both
+    // are already self-gating (mep.lsp_client_for() -> nil is a no-op),
+    // so no separate on/off flag is needed here the way mep.lsp_auto_
+    // attach below has one.
+    "mep.on_buffer_changed(mep.lsp_did_change)\n"
+    "mep.on_buffer_saved(mep.lsp_did_save)\n"
+    // Auto-attach (mep.lsp_auto_attach, on by default) + re-render
+    // already-cached diagnostics whenever the active *file* changes --
+    // mirrors mep.syntax_auto's own mep_syntax_last_file watcher just
+    // above in kBuiltinSyntax (mep.on_buffer_changed only fires on an
+    // actual edit, not a plain buffer switch with none, e.g. :e/the file
+    // tree/:bn/:bp/Ctrl-W onto a different buffer -- so a second,
+    // non-debounced mep.on_frame watcher keyed on mep.filename() itself
+    // is what catches "opened/switched to a new file" the same way that
+    // one does for syntax highlighting).
+    //
+    // mep_lsp_seen_files guards against re-sending didOpen for a file
+    // already attached: mep.lsp_attach()/lsp_did_open() unconditionally
+    // resets that file's own version counter to 1 and sends a fresh
+    // didOpen every time they're called (fine for the original one-shot
+    // :MepLspAttach this was designed for) -- called again on every
+    // revisit to an already-open file, as this watcher would without the
+    // guard, that's a second didOpen for the same still-open URI, which
+    // the LSP spec doesn't define and some servers reject outright.
+    "mep.lsp_auto_attach = true\n"
+    "local mep_lsp_last_file = nil\n"
+    "local mep_lsp_seen_files = {}\n"
+    "mep.on_frame(function()\n"
+    "  local fname = mep.filename()\n"
+    "  if fname == mep_lsp_last_file then return end\n"
+    "  mep_lsp_last_file = fname\n"
+    "  mep.lsp_render_diagnostics()\n"
+    "  if not mep.lsp_auto_attach or fname == '' or mep_lsp_seen_files[fname] then return end\n"
+    "  if not mep_lsp_filetype(fname) then return end\n"
+    "  mep_lsp_seen_files[fname] = true\n"
+    "  mep.lsp_attach()\n"
+    "end)\n";
 
 // Completion sources (Phase 22): buffer-word is the always-available
 // default, now joined by two more sources folded into the same function --
@@ -3517,11 +3703,12 @@ const char *kBuiltinSyntax =
     // fallback lexer still serves; py/js themselves are handled by
     // Treesitter now and never fall through to this path).
     "mep.syntax_keywords.py = mep.syntax_keywords.python\n"
+    "mep.syntax_keywords.pyi = mep.syntax_keywords.python\n"
     "mep.syntax_keywords.js = mep.syntax_keywords.javascript\n"
     "mep.syntax_keywords.mjs = mep.syntax_keywords.javascript\n"
     "mep.syntax_keywords.cjs = mep.syntax_keywords.javascript\n"
     "mep.syntax_comment_prefix = {lua = '--', python = '#', javascript = '//', c = '//', cpp = '//', h = '//', hpp = '//',\n"
-    "  py = '#', js = '//', mjs = '//', cjs = '//'}\n"
+    "  py = '#', pyi = '#', js = '//', mjs = '//', cjs = '//'}\n"
     // Treesitter capture name -> mep highlight group, checked full-name
     // first then by the capture's first dot-segment (e.g.
     // 'function.builtin' falls back to the 'function' entry if it's not
@@ -14959,17 +15146,26 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         g_editor.VisualRange(sel_start, sel_end);
     }
 
-    // :set number -- a right-aligned gutter wide enough for the buffer's
-    // largest line number plus one trailing space, drawn once here and
-    // used to shift every other x-coordinate below (selection highlight,
-    // cursor, and the line text itself) rather than threading it through
-    // each of them individually.
-    float gutter_w = 0.0f;
-    if (g_editor.ShowLineNumbers()) {
+    // Sign column: one character wide, *always* reserved (unlike
+    // number_w below) for git/LSP-diagnostic/DAP-breakpoint/todo signs
+    // (Decoration::sign, set via mep.deco_add) and fold markers, so
+    // those stay visible even with both :set number and :set
+    // relativenumber off. Previously this whole gutter only existed at
+    // all once :set number had reserved it, so every sign-producing
+    // feature was invisible unless line numbers happened to be on too.
+    float sign_w = g_char_width;
+    // :set number/relativenumber -- a right-aligned gutter wide enough
+    // for the buffer's largest line number plus one trailing space,
+    // drawn once here and used to shift every other x-coordinate below
+    // (selection highlight, cursor, and the line text itself) rather
+    // than threading it through each of them individually.
+    float number_w = 0.0f;
+    if (g_editor.ShowLineNumbers() || g_editor.ShowRelativeNumbers()) {
         int digits = 1;
         for (int n = buf.LineCount(); n >= 10; n /= 10) digits++;
-        gutter_w = (digits + 1) * g_char_width;
+        number_w = (digits + 1) * g_char_width;
     }
+    float gutter_w = sign_w + number_w;
     float text_x = x + kMarginX + gutter_w;
 
     // buf.decorations is keyed by namespace, not by row -- scanning every
@@ -15134,13 +15330,14 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             DrawTextEx(g_font, summary.c_str(), Vector2{text_x, ly}, g_font_size, 0, ResolveHlGroup("SidebarTitle"));
             // Fold marker click-to-toggle (Phase 11 click-dispatch gap):
             // mep has no separate statuscolumn widget row, so the fold
-            // marker lives in the number gutter's existing reserved
-            // trailing-space column (only when :set number has reserved
-            // one). Only wired for the active pane -- ToggleFoldAtRow
-            // operates on Buf(), the currently active buffer, so a click on
-            // a background split's gutter would silently toggle the wrong
+            // marker lives in the gutter's own trailing-space column
+            // (sign_w's slot when number/relativenumber are both off,
+            // otherwise number_w's -- either way, always reserved now).
+            // Only wired for the active pane -- ToggleFoldAtRow operates
+            // on Buf(), the currently active buffer, so a click on a
+            // background split's gutter would silently toggle the wrong
             // buffer's fold otherwise.
-            if (gutter_w > 0.0f && is_active) {
+            if (is_active) {
                 DrawTextEx(g_font, "+", Vector2{text_x - g_char_width, ly}, g_font_size, 0, ResolveHlGroup("LineNr"));
                 int marker_row = row;
                 RegisterClickRegion(
@@ -15154,7 +15351,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // the row's own text with, but still worth a gutter marker so
         // there's something to click to close it (matches vim's
         // foldcolumn '-' convention for an open fold's start row).
-        if (gutter_w > 0.0f && is_active) {
+        if (is_active) {
             for (const Fold &f : buf.folds) {
                 if (!f.closed && f.start_row == row) {
                     DrawTextEx(g_font, "-", Vector2{text_x - g_char_width, ly}, g_font_size, 0, ResolveHlGroup("LineNr"));
@@ -15186,20 +15383,32 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             DrawRectangle(static_cast<int>(x0), static_cast<int>(ly), static_cast<int>(x1 - x0), line_height,
                           Color{sel_color.r, sel_color.g, sel_color.b, 160});
         }
-        if (gutter_w > 0.0f) {
-            std::string num = std::to_string(row + 1);
+        if (number_w > 0.0f) {
+            // :set relativenumber: every row but the cursor's own shows
+            // its distance from it instead of an absolute number: the
+            // cursor line itself still shows its real absolute number
+            // (left-aligned -- a "you are here" anchor distinct from
+            // every right-aligned relative row around it), matching
+            // real Vim/Neovim's "number relativenumber together" look.
+            bool current_line = row == pane.cursor.row;
+            bool relative = g_editor.ShowRelativeNumbers();
+            std::string num = (relative && !current_line) ? std::to_string(std::abs(row - pane.cursor.row))
+                                                            : std::to_string(row + 1);
             float num_w = MeasureTextEx(g_font, num.c_str(), g_font_size, 0).x;
-            DrawTextEx(g_font, num.c_str(), Vector2{text_x - g_char_width - num_w, ly}, g_font_size, 0, ResolveHlGroup("LineNr"));
+            float num_x = (relative && current_line) ? (text_x - number_w) : (text_x - g_char_width - num_w);
+            DrawTextEx(g_font, num.c_str(), Vector2{num_x, ly}, g_font_size, 0, ResolveHlGroup("LineNr"));
         }
 
         // Decorations (Phase 4): whole-line tint first (background,
         // beneath the text), then the base line, then per-span highlight
         // recolor + virtual text on top (foreground, so it's visible over
-        // the just-drawn text) -- and finally the gutter sign, if there's
-        // room for one (only when :set number has already reserved gutter
-        // space; an always-on sign column is a documented follow-up).
+        // the just-drawn text) -- and finally the gutter sign, drawn into
+        // sign_w's always-reserved column (no longer gated on :set
+        // number having reserved gutter space -- this was the "always-on
+        // sign column" this comment used to call a documented follow-up).
         std::string sign;
         std::string sign_hl;
+        bool sign_badge = false;
         int sign_priority = -1;
         auto row_decos_it = decos_by_row.find(row);
         const std::vector<const Decoration *> &row_decos =
@@ -15214,6 +15423,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             if (!d.sign.empty() && d.priority > sign_priority) {
                 sign = d.sign;
                 sign_hl = d.sign_hl;
+                sign_badge = d.sign_badge;
                 sign_priority = d.priority;
             }
         }
@@ -15366,7 +15576,15 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 }
             }
             if (!d.virt_text.empty()) {
-                float vx = text_x + d.col_start * g_char_width;
+                // virt_text_eol: anchored just past the row's own last
+                // character (plus one char of breathing room) rather than
+                // d.col_start, for an annotation describing the whole
+                // line (a diagnostic message) instead of concealing/
+                // replacing a specific span -- see the field's own
+                // comment (editor.h) for why col_start-anchoring alone
+                // painted diagnostic text directly over real buffer text.
+                float vx = d.virt_text_eol ? text_x + (static_cast<float>(buf.lines[row].size()) + 1) * g_char_width
+                                            : text_x + d.col_start * g_char_width;
                 if (d.virt_overlay) {
                     // Cover whichever is wider: the replacement text, or
                     // the original [col_start, col_end) span it's
@@ -15447,8 +15665,22 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 }
             }
         }
-        if (!sign.empty() && gutter_w > 0.0f) {
-            DrawUiText(sign, Vector2{x + kMarginX, ly}, g_font_size, ResolveHlGroup(sign_hl));
+        if (!sign.empty()) {
+            if (sign_badge) {
+                // A filled circle (sign_hl's own color) behind the sign
+                // glyph -- e.g. a diagnostic count -- centered in the
+                // sign column (sign_w's own one-char width) and on the
+                // row's own line height. Text drawn in "NormalBg" punches
+                // a legible hole in it, the same contrast trick
+                // virt_overlay's own cover rectangle already uses.
+                float cx = x + kMarginX + g_char_width / 2.0f;
+                float cy = ly + static_cast<float>(line_height) / 2.0f;
+                DrawCircle(static_cast<int>(cx), static_cast<int>(cy), g_char_width * 0.58f, ResolveHlGroup(sign_hl));
+                float sign_w_text = MeasureUiText(sign, g_font_size);
+                DrawUiText(sign, Vector2{cx - sign_w_text / 2.0f, ly}, g_font_size, ResolveHlGroup("NormalBg"));
+            } else {
+                DrawUiText(sign, Vector2{x + kMarginX, ly}, g_font_size, ResolveHlGroup(sign_hl));
+            }
         }
         // Hint labels (Phase 13): drawn last so they sit on top of
         // everything else on their row.
@@ -16709,6 +16941,7 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinDap);
     lua->DoString(kBuiltinSyntax);
     lua->DoString(kBuiltinRun);
+    lua->DoString(kBuiltinTermSend);
     lua->DoString(kBuiltinMarkdown);
     lua->DoString(kBuiltinOrg);
     lua->DoString(kBuiltinOrgLinks);
@@ -16729,6 +16962,7 @@ int main(int argc, char **argv) {
 #if !defined(__EMSCRIPTEN__)
     if (argc > 1) {
         g_editor.LoadFile(argv[1]);
+        g_editor.DropUnusedInitialBuffer();
     }
     std::string config_path = ConfigFilePath();
     if (!config_path.empty()) {

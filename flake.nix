@@ -266,7 +266,7 @@
             # bitwise operators) are 5.4 syntax LuaJIT's 5.1-with-
             # extensions dialect doesn't accept.
             pkgs.lua5_4
-            pkgs.python3 # Python
+            (pkgs.python3.withPackages (ps: [ ps.numpy ])) # Python
             pkgs.nodejs # JavaScript
             pkgs.ruby
             pkgs.perl
@@ -308,6 +308,20 @@
             # reason). Drop this once nixpkgs' dmd derivation itself
             # accounts for gcc 15 headers.
             (pkgs.dmd.override { stdenv = pkgs.gcc14Stdenv; })
+
+            # LSP servers (mep.lsp_servers in src/main.cpp's kBuiltinLsp,
+            # mep.lsp_attach) -- a completely separate concern from the
+            # org-babel interpreters/compilers above despite the shared
+            # per-language shape: those run a `#+begin_src` block's own
+            # body, this is a long-lived `--stdio` JSON-RPC server process
+            # mep talks textDocument/* requests to for hover (K)/goto-
+            # definition (gd)/diagnostics/completion/etc. Starting with
+            # just Python's (pyright, providing `pyright-langserver` --
+            # matches the `cmd` already registered under
+            # mep.lsp_servers.pyright) since that's the one this flake
+            # currently exercises; add more of mep.lsp_servers' own
+            # entries here the same way as each gets covered.
+            pkgs.pyright
           ];
 
           # MEP_WEBVIEW_LD_LIBRARY_PATH: scoped to a separate variable

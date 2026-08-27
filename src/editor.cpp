@@ -5273,6 +5273,19 @@ void Editor::TabPrevious() {
     SyncModeToActivePaneBuffer();
 }
 
+void Editor::BufferNext() {
+    if (buffers_.size() <= 1) return;
+    int next = (CurPane().buffer_id + 1) % static_cast<int>(buffers_.size());
+    SwitchToBufferForLua(next);
+}
+
+void Editor::BufferPrevious() {
+    if (buffers_.size() <= 1) return;
+    int n = static_cast<int>(buffers_.size());
+    int prev = (CurPane().buffer_id - 1 + n) % n;
+    SwitchToBufferForLua(prev);
+}
+
 // Click-to-switch (NVIM_PARITY_PLAN.md Phase 11 gap): jumps directly to a
 // tab by index, unlike TabNext/TabPrevious's relative stepping -- what a
 // mouse click on a specific tab box in the tab bar needs. Out-of-range
@@ -5715,6 +5728,12 @@ void Editor::SetMod1(const std::string &name) {
 
 void Editor::RegisterMod1Mapping(const std::string &key, int lua_ref) { mod1_mappings_[key] = lua_ref; }
 
+void Editor::RegisterGMapping(const std::string &key, int lua_ref) { g_mappings_[key] = lua_ref; }
+
+void Editor::RegisterBracketPrevMapping(const std::string &key, int lua_ref) { bracket_prev_mappings_[key] = lua_ref; }
+
+void Editor::RegisterBracketNextMapping(const std::string &key, int lua_ref) { bracket_next_mappings_[key] = lua_ref; }
+
 bool Editor::HandleMod1Shortcuts() {
     if (!IsMod1Down() || mod1_mappings_.empty()) return false;
     // A held Ctrl/Shift alongside mod1 (e.g. mod1+Shift+h for resize,
@@ -6027,8 +6046,9 @@ void Editor::HandleNormalInput() {
     constexpr double kMotionDiscardCooldownSec = 0.7;
     bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
     bool count_pending_now = pending_count_ != 0;
-    bool no_pending_state_now = pending_op_ == 0 && !pending_g_ && !pending_ctrl_w_ && !pending_org_export_ && pending_find_ == 0 &&
-                                 !count_pending_now && !awaiting_register_name_;
+    bool no_pending_state_now = pending_op_ == 0 && !pending_g_ && !pending_bracket_prev_ && !pending_bracket_next_ &&
+                                 !pending_ctrl_w_ && !pending_org_export_ && pending_find_ == 0 && !count_pending_now &&
+                                 !awaiting_register_name_;
     double now = GetTime();
     static const std::pair<int, char> kMotionKeys[] = {
         {KEY_H, 'h'},
@@ -6062,8 +6082,9 @@ void Editor::HandleNormalInput() {
         // the very next key literally, and counts are closer to syntax
         // than to a remappable command.
         bool is_count_digit = (cp >= '1' && cp <= '9') || (cp == '0' && pending_count_ != 0);
-        bool no_pending_state = pending_op_ == 0 && !pending_g_ && !pending_ctrl_w_ && !pending_org_export_ && pending_find_ == 0 &&
-                                 !is_count_digit && !awaiting_register_name_;
+        bool no_pending_state = pending_op_ == 0 && !pending_g_ && !pending_bracket_prev_ && !pending_bracket_next_ &&
+                                 !pending_ctrl_w_ && !pending_org_export_ && pending_find_ == 0 && !is_count_digit &&
+                                 !awaiting_register_name_;
         // A confirmed-held bare h/j/k/l is handled by the fast path above
         // (or is within its post-release discard window) -- drop the
         // queued notification here instead of replaying/double-counting
@@ -6408,6 +6429,26 @@ bool Editor::DispatchNormalKey(int cp) {
         }
         return true;
     }
+    // g-prefixed actions registered from Lua (mep.map_g -- e.g. "d" for
+    // mep.lsp_goto_definition's "gd"): checked before the built-in
+    // gg/ge/gE fallback below so a Lua binding can claim any letter
+    // those don't already use. Unlike gg/ge/gE, these are never
+    // resolved as a motion for a pending operator to act on -- an LSP
+    // goto-definition is fundamentally asynchronous (a round-trip away),
+    // so there's no target position to hand ApplyOperator synchronously
+    // the way "dgg"/"dge" get one. Any pending operator is silently
+    // cancelled instead, the same "freestanding action, not a motion"
+    // shape gu/gU/gJ/gv above already use.
+    if (pending_g_ && lua_) {
+        auto git = g_mappings_.find(std::string(1, c));
+        if (git != g_mappings_.end()) {
+            pending_g_ = false;
+            pending_op_ = 0;
+            TakeRawCount();
+            lua_->CallRef(git->second);
+            return true;
+        }
+    }
     if (pending_g_) {
         pending_g_ = false;
         CursorPos from = pending_op_ ? pending_op_start_ : CurPane().cursor;
@@ -6440,6 +6481,29 @@ bool Editor::DispatchNormalKey(int cp) {
         }
         return true;
     }
+    // [-prefixed / ]-prefixed actions registered from Lua (mep.map_
+    // bracket_prev/mep.map_bracket_next -- e.g. "e" for LSP diagnostic
+    // navigation's "[e"/"]e"). Modeled directly on pending_g_'s own
+    // Lua-mapping block just above: freestanding actions only, never
+    // resolved as a motion for a pending operator (this is reached only
+    // once no operator is already pending -- see this whole function's
+    // top-to-bottom "already-consumed" structure), any unrecognized
+    // second key quietly cancels rather than falling through to whatever
+    // that bare key would otherwise do (matching "unknown g-motion:
+    // cancel quietly" above, not vim's own real `[`/`]` motion family,
+    // none of which mep implements here beyond mep.map_g's own `i[`/`a[`
+    // text objects -- a wholly separate mechanism, pending_textobj_scope_).
+    if ((pending_bracket_prev_ || pending_bracket_next_) && lua_) {
+        std::unordered_map<std::string, int> &table = pending_bracket_prev_ ? bracket_prev_mappings_ : bracket_next_mappings_;
+        pending_bracket_prev_ = false;
+        pending_bracket_next_ = false;
+        auto bit = table.find(std::string(1, c));
+        TakeRawCount();
+        if (bit != table.end()) lua_->CallRef(bit->second);
+        return true;
+    }
+    pending_bracket_prev_ = false;
+    pending_bracket_next_ = false;
 
     if (pending_op_ != 0) {
         char op = pending_op_;
@@ -6572,6 +6636,14 @@ bool Editor::DispatchNormalKey(int cp) {
     }
     if (c == 'g') {
         pending_g_ = true;
+        return true;
+    }
+    if (c == '[') {
+        pending_bracket_prev_ = true;
+        return true;
+    }
+    if (c == ']') {
+        pending_bracket_next_ = true;
         return true;
     }
     if (c == 'z') {
@@ -6757,16 +6829,18 @@ bool Editor::DispatchNormalKey(int cp) {
 }
 
 bool Editor::IsMidNormalCommand() const {
-    return pending_op_ != 0 || pending_g_ || pending_find_ != 0 || pending_textobj_scope_ != 0 ||
-           pending_mark_jump_ != 0 || pending_mark_set_ || pending_ctrl_w_ || pending_org_export_ || pending_z_ ||
-           pending_count_ != 0 || awaiting_register_name_ || pending_register_ != 0 || pending_macro_record_ ||
-           awaiting_macro_play_ || pending_replace_;
+    return pending_op_ != 0 || pending_g_ || pending_bracket_prev_ || pending_bracket_next_ || pending_find_ != 0 ||
+           pending_textobj_scope_ != 0 || pending_mark_jump_ != 0 || pending_mark_set_ || pending_ctrl_w_ ||
+           pending_org_export_ || pending_z_ || pending_count_ != 0 || awaiting_register_name_ ||
+           pending_register_ != 0 || pending_macro_record_ || awaiting_macro_play_ || pending_replace_;
 }
 
 void Editor::CancelPendingNormalState() {
     pending_op_ = 0;
     pending_op_count_ = 0;
     pending_g_ = false;
+    pending_bracket_prev_ = false;
+    pending_bracket_next_ = false;
     pending_find_ = 0;
     pending_mark_jump_ = 0;
     pending_mark_set_ = false;
@@ -8531,6 +8605,24 @@ void Editor::HandleSidebarInput() {
             const SidebarInstance *sb = FindSidebar(focused_sidebar_id_);
             if (sb && sb->on_key_ref != 0 && cp >= 32 && cp < 127) {
                 lua_->CallRefWithString(sb->on_key_ref, std::string(1, static_cast<char>(cp)));
+                // The callback just run (e.g. mep.tree_on_key's 'a'/'r'/'d')
+                // may have opened a Prompt/Confirm overlay, which leaves
+                // this sidebar's own mode -- stop draining the char queue
+                // the instant that happens, rather than keep feeding
+                // whatever's left in it to tree_on_key as more single-key
+                // commands. Left undrained, a still-queued 'a'/'r'/'d'/'o'
+                // (e.g. the leading letters of a filename typed quickly
+                // right after the 'a' that opened this very prompt) would
+                // re-enter mep.ui_input/ui_confirm while one is already
+                // open, capturing Mode::Prompt itself as
+                // overlay_previous_mode_ instead of the real prior mode --
+                // an unrecoverable stuck prompt (Escape/Enter restore back
+                // into Mode::Prompt) that was reproduced exactly this way.
+                // Any characters left in the queue roll over to next
+                // frame's dispatch, which by then reads the *new* mode and
+                // routes them to the right handler (e.g. HandlePromptInput,
+                // so they land in the prompt's own text instead).
+                if (mode_ != Mode::Sidebar) return;
             }
         }
         cp = GetCharPressed();
@@ -9180,6 +9272,7 @@ const std::vector<std::string> &BuiltinCommandNames() {
         "wq", "x", "wqa", "xa", "wqall", "xall", "e", "edit", "split", "sp", "vsplit", "vs",
         "terminal", "term",
         "close", "tabnew", "tabdelete", "tabclose", "tabnext", "tabn", "tabprevious", "tabp", "tabN",
+        "bnext", "bn", "bprevious", "bprev", "bp", "bNext", "bN",
         "set", "normal", "norm", "normal!", "norm!", "MepNotifyClear", "MepNotifyDismiss",
         "MepNotifyPanel", "MepLayout", "MepScratch", "MepZen", "colorscheme", "colo", "lua", "source",
         "MepNextSheet", "MepPrevSheet", "Kanban", "Gantt", "Org", "Text", "CollabJoin", "CollabLeave", "CollabStatus",
@@ -11170,6 +11263,10 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
         TabNext();
     } else if (name == "tabprevious" || name == "tabp" || name == "tabN") {
         TabPrevious();
+    } else if (name == "bnext" || name == "bn") {
+        BufferNext();
+    } else if (name == "bprevious" || name == "bprev" || name == "bp" || name == "bNext" || name == "bN") {
+        BufferPrevious();
     } else if (name == "set") {
         size_t pos = 0;
         while (pos < args.size()) {
@@ -11183,6 +11280,8 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
             bool value = !negate;
             if (key == "number" || key == "nu") {
                 show_line_numbers_ = value;
+            } else if (key == "relativenumber" || key == "rnu") {
+                show_relative_numbers_ = value;
             } else if (key == "cursorline" || key == "cul") {
                 show_cursorline_ = value;
             } else if (key == "ignorecase" || key == "ic") {
@@ -11986,6 +12085,14 @@ void Editor::LoadFile(const std::string &path, bool force_text) {
     status_message_ = existed ? "\"" + path + "\" " + std::to_string(buffers_[id].LineCount()) + "L loaded"
                                : "\"" + path + "\" [New]";
     SyncModeToActivePaneBuffer();
+}
+
+void Editor::DropUnusedInitialBuffer() {
+    if (buffers_.size() < 2 || CurPane().buffer_id == 0) return;
+    const Buffer &first = buffers_[0];
+    if (!first.filename.empty() || first.modified || first.lines.size() != 1 || !first.lines[0].empty()) return;
+    buffers_.erase(buffers_.begin());
+    CurPane().buffer_id--;
 }
 
 // --- Menu-facing API -------------------------------------------------------

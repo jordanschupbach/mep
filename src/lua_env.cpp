@@ -274,6 +274,47 @@ int l_map_mod1(lua_State *L) {
     return 0;
 }
 
+// mep.map_g(key, fn): binds a single letter key after a leading "g" in
+// Normal mode (e.g. "d" for "gd") to a Lua callback -- for g-prefixed
+// actions mep's own built-in motions don't already claim (gg/ge/gE/gu/
+// gU/gJ/gv). A bare mep.map only ever sees a single already-unprefixed
+// keystroke, so it can't reach anything typed after a pending "g" the
+// way this can. Fires as a freestanding action, never composed with a
+// pending operator (see Editor::DispatchNormalKey's own comment on why:
+// unlike gg/ge/gE, a Lua-side g-action -- e.g. an LSP goto-definition --
+// can't resolve a target position synchronously for ApplyOperator).
+int l_map_g(lua_State *L) {
+    const char *key = luaL_checkstring(L, 1);
+    luaL_checktype(L, 2, LUA_TFUNCTION);
+    lua_pushvalue(L, 2);
+    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    GetEditor(L)->RegisterGMapping(key, ref);
+    return 0;
+}
+
+// mep.map_bracket_prev(key, fn) / mep.map_bracket_next(key, fn): same
+// shape as mep.map_g, but for a leading "[" / "]" instead of "g" (e.g.
+// "e" for "[e"/"]e" LSP diagnostic navigation) -- mep has no built-in
+// bracket motion of its own beyond the unrelated i[/a[ text objects, so
+// there's nothing these could collide with.
+int l_map_bracket_prev(lua_State *L) {
+    const char *key = luaL_checkstring(L, 1);
+    luaL_checktype(L, 2, LUA_TFUNCTION);
+    lua_pushvalue(L, 2);
+    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    GetEditor(L)->RegisterBracketPrevMapping(key, ref);
+    return 0;
+}
+
+int l_map_bracket_next(lua_State *L) {
+    const char *key = luaL_checkstring(L, 1);
+    luaL_checktype(L, 2, LUA_TFUNCTION);
+    lua_pushvalue(L, 2);
+    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    GetEditor(L)->RegisterBracketNextMapping(key, ref);
+    return 0;
+}
+
 // mep.set_mod1(name): "alt" (default), "ctrl", "shift", or "super".
 int l_set_mod1(lua_State *L) {
     const char *name = luaL_checkstring(L, 1);
@@ -609,11 +650,17 @@ Decoration ReadDecorationTable(lua_State *L, int idx) {
     lua_getfield(L, idx, "virt_overlay");
     d.virt_overlay = lua_toboolean(L, -1);
     lua_pop(L, 1);
+    lua_getfield(L, idx, "virt_text_eol");
+    d.virt_text_eol = lua_toboolean(L, -1);
+    lua_pop(L, 1);
     lua_getfield(L, idx, "sign");
     if (lua_isstring(L, -1)) d.sign = lua_tostring(L, -1);
     lua_pop(L, 1);
     lua_getfield(L, idx, "sign_hl");
     if (lua_isstring(L, -1)) d.sign_hl = lua_tostring(L, -1);
+    lua_pop(L, 1);
+    lua_getfield(L, idx, "sign_badge");
+    d.sign_badge = lua_toboolean(L, -1);
     lua_pop(L, 1);
     lua_getfield(L, idx, "priority");
     d.priority = static_cast<int>(luaL_optinteger(L, -1, 0));
@@ -2248,6 +2295,9 @@ const luaL_Reg kMepFuncs[] = {
     {"mapping_descriptions", l_mapping_descriptions},
     {"leader_bindings", l_leader_bindings},
     {"map_mod1", l_map_mod1},
+    {"map_g", l_map_g},
+    {"map_bracket_prev", l_map_bracket_prev},
+    {"map_bracket_next", l_map_bracket_next},
     {"set_mod1", l_set_mod1},
     {"nav_pane", l_nav_pane},
     {"resize_pane", l_resize_pane},

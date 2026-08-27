@@ -265,11 +265,27 @@ struct Decoration {
     std::string virt_text;
     std::string virt_text_hl;
     bool virt_overlay = false;
+    // Anchors virt_text to just past the *end of this row's own text*
+    // (buf.lines[row].size()) instead of col_start -- for an annotation
+    // that describes the whole line (e.g. a diagnostic message) rather
+    // than concealing/replacing a specific span the way virt_overlay's
+    // col_start-anchored text does. Without this, a line-describing
+    // virt_text drawn at its diagnostic's own (usually mid-line) column
+    // paints directly over whatever real buffer text follows it, with no
+    // background cover -- confirmed exactly this bug report ("diagnostic
+    // text shows up overtop of the text") before this field existed.
+    bool virt_text_eol = false;
     std::string sign;  // gutter glyph; empty = none. Multi-byte UTF-8 (a
                         // Nerd Font icon glyph) is valid here, not just a
                         // single ASCII char -- main.cpp's DrawUiText is
                         // what actually renders it.
     std::string sign_hl;
+    // Draws a small filled circle (sign_hl's own color) behind `sign` in
+    // the gutter instead of just plain colored text -- a "badge" look
+    // for e.g. a diagnostic count, so more than one stacked signal on a
+    // line (2 errors vs. 1) is visually distinguishable at a glance, not
+    // just by which single glyph happened to win priority.
+    bool sign_badge = false;
     int priority = 0;
     // Colorizer swatch (Part III Phase 13): a literal RGB drawn as a small
     // filled square at col_start, bypassing the named-highlight-group
@@ -1160,6 +1176,16 @@ public:
     // :set number/nonumber -- whether main.cpp's renderer should draw a
     // line-number gutter.
     bool ShowLineNumbers() const { return show_line_numbers_; }
+    // :set relativenumber/norelativenumber -- whether each row's own
+    // number is its distance from the cursor line rather than its
+    // absolute line number. Independent of ShowLineNumbers() (real Vim
+    // allows relativenumber with nonumber, showing "0" on the cursor
+    // line) -- main.cpp's renderer reserves gutter space whenever
+    // *either* is on, and shows the cursor line's own number as its
+    // real absolute one (left-aligned, the Vim/Neovim "hybrid" look)
+    // whenever this is on, matching the everyday "number relativenumber
+    // together" setup this editor now defaults to.
+    bool ShowRelativeNumbers() const { return show_relative_numbers_; }
     // :set cursorline/nocursorline -- whether main.cpp's renderer should
     // tint the active pane's cursor row with the "CursorLine" theme group.
     bool ShowCursorLine() const { return show_cursorline_; }
@@ -1724,6 +1750,23 @@ public:
     // key, including the startup defaults (mod1+v/s/h/j/k/l/S-h/j/k/l/
     // C-h/j/k/l/d).
     void RegisterMod1Mapping(const std::string &key, int lua_ref);
+    // mep.map_g(key, fn): binds a single letter key after a leading "g"
+    // in Normal mode (e.g. "d" for "gd") to a Lua callback -- for
+    // g-prefixed actions mep's own built-in motions don't already claim
+    // (gg/ge/gE/gu/gU/gJ/gv), since a bare mep.map only ever sees a
+    // single already-unprefixed keystroke (RegisterLuaMapping's own doc
+    // comment) and can't reach anything typed after a pending "g".
+    void RegisterGMapping(const std::string &key, int lua_ref);
+    // mep.map_bracket_prev(key, fn) / mep.map_bracket_next(key, fn):
+    // same shape as RegisterGMapping, but for a leading "[" / "]"
+    // instead of "g" (e.g. "e" for "[e"/"]e" LSP diagnostic navigation).
+    // Kept as two separate tables/entry points (mirroring pending_g_'s
+    // own single table) rather than one keyed by "[e"/"]e" strings, so
+    // the consuming dispatch doesn't need to reconstruct which bracket
+    // was pressed from state that's already been cleared by the time it
+    // runs.
+    void RegisterBracketPrevMapping(const std::string &key, int lua_ref);
+    void RegisterBracketNextMapping(const std::string &key, int lua_ref);
     // name: "alt" (default), "ctrl", "shift", or "super"/"cmd"/"meta".
     void SetMod1(const std::string &name);
     // direction: "left"/"down"/"up"/"right". Moves focus to the pane best
@@ -1835,6 +1878,21 @@ public:
     // how an existing buffer for the same path gets reused across a
     // force_text mismatch instead of duplicated.
     void LoadFile(const std::string &path, bool force_text = false);
+    // Startup-only cleanup for main()'s own `LoadFile(argv[1])` call:
+    // every LoadFile branch acquires a buffer via FindOrCreateBuffer or
+    // an OpenXInPlace helper, none of which special-case "there's
+    // currently exactly one buffer and it's still the pristine, never-
+    // edited one Editor::Editor() made" the way a real `vim file.txt`
+    // reuses buffer 1 for the file named on its own command line -- so
+    // opening a file this way always left that first buffer behind,
+    // empty and reachable only by cycling into it via :bn/:bp. A no-op
+    // unless buffer 0 is still exactly that pristine placeholder *and*
+    // isn't the active buffer (i.e. LoadFile did create a new one to
+    // switch to). Only safe to call this early in startup: it shifts
+    // every remaining buffer's id down by one, and the active pane's own
+    // buffer_id is the sole reference to any of them at this point (no
+    // splits/tabs/terminals/other buffers exist yet to also fix up).
+    void DropUnusedInitialBuffer();
     // Returns true on success; false (with a status message set) if the
     // path is empty or the write failed.
     bool SaveFile(const std::string &path);
@@ -3298,6 +3356,15 @@ private:
     void CyclePane(int delta);
     void TabNext();
     void TabPrevious();
+    // :bnext/:bn, :bprevious/:bp/:bprev -- cycle CurPane()'s own buffer_id
+    // through the flat, ids-are-indices buffers_ vector (SwitchToBufferForLua's
+    // own indexing, also what mep.buffer_list()/mep.buffer_switch use),
+    // wrapping at either end. Unlike TabNext/TabPrevious's tabs_ (which can
+    // shrink -- :tabdelete), buffers_ only ever grows (there's no :bdelete),
+    // so there's no need to skip a since-removed id the way that wrap
+    // arithmetic would otherwise have to.
+    void BufferNext();
+    void BufferPrevious();
     // Fills `out` with the normalized rect of every pane in *node's subtree.
     void ComputeRects(const SplitNode *node, float x0, float y0, float x1, float y1,
                        std::vector<PaneRect> &out) const;
@@ -3518,7 +3585,13 @@ private:
     // "a small, real set of options mep can actually honor" scope.
     bool ignore_case_ = false;
     bool wrapscan_ = true;
-    bool show_line_numbers_ = false;
+    // On by default (hybrid "number relativenumber"), unlike every other
+    // :set option here -- a plain, unmodified mep should already look
+    // like a real editor's default layout (line numbers + a gutter for
+    // git/LSP/DAP signs, see ShowRelativeNumbers' own comment) rather
+    // than needing an init.lua just to turn on what most users expect.
+    bool show_line_numbers_ = true;
+    bool show_relative_numbers_ = true;
     bool show_cursorline_ = true;
     // Org inline-image rendering (<leader>oti / mep.org_images_toggle):
     // global, not per-buffer, matching show_line_numbers_/show_cursorline_
@@ -3578,6 +3651,12 @@ private:
     int pending_op_count_ = 0;
     // 'g' waiting for a second key (gg / ge / gE).
     bool pending_g_ = false;
+    // '[' / ']' waiting for a second key -- Lua-registered only
+    // (mep.map_bracket_prev/mep.map_bracket_next, e.g. "[e"/"]e" for LSP
+    // diagnostic navigation); mep has no built-in bracket motion of its
+    // own beyond the unrelated i[/a[ text objects (pending_textobj_scope_).
+    bool pending_bracket_prev_ = false;
+    bool pending_bracket_next_ = false;
     // 'f'/'F'/'t'/'T' waiting for the target character.
     char pending_find_ = 0;
     // 'i' or 'a' waiting for the object key (w, ", (, p, ...) -- set after
@@ -3758,6 +3837,9 @@ private:
     std::unordered_map<std::string, int> normal_mappings_;      // key -> lua ref
     std::unordered_map<std::string, int> visual_mappings_;      // key -> lua ref
     std::unordered_map<std::string, int> mod1_mappings_;        // key -> lua ref
+    std::unordered_map<std::string, int> g_mappings_;            // g-prefixed key -> lua ref
+    std::unordered_map<std::string, int> bracket_prev_mappings_;  // [-prefixed key -> lua ref
+    std::unordered_map<std::string, int> bracket_next_mappings_;  // ]-prefixed key -> lua ref
     // Optional human-readable description for a mep.map() binding, keyed
     // by "<mode-char>:<key>" (e.g. "n:gcc", "v:gc") so Normal/Visual
     // mappings of the same key text can't collide. Populated only when

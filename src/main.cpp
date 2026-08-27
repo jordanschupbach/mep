@@ -2246,18 +2246,34 @@ const char *kBuiltinTodo =
     "function mep.todoscan()\n"
     "  local pattern = table.concat(MEP_TODO_KEYWORDS, '|')\n"
     "  local items = {}\n"
+    "  local function on_stdout(line) items[#items + 1] = line end\n"
+    "  local function open_results()\n"
+    "    if #items == 0 then\n"
+    "      mep.notify('No TODO/FIXME/HACK/NOTE matches found')\n"
+    "      return\n"
+    "    end\n"
+    "    mep.picker_open('Todos', items, function(item)\n"
+    "      if not item then return end\n"
+    "      local file, lnum = item:match('^([^:]+):(%d+):')\n"
+    "      if file then mep.open(file); mep.set_cursor(tonumber(lnum), 1) end\n"
+    "    end)\n"
+    "  end\n"
     "  mep.job_start({'rg', '-n', '--no-heading', pattern, '.'}, {\n"
-    "    on_stdout = function(line) items[#items + 1] = line end,\n"
+    "    on_stdout = on_stdout,\n"
     "    on_exit = function(code)\n"
-    "      if #items == 0 then\n"
-    "        mep.notify('No TODO/FIXME/HACK/NOTE matches found (or ripgrep not installed)')\n"
+    // 127 is job.cpp's own exec-failed convention (see job.cpp) -- means
+    // ripgrep isn't installed, not just "no matches" (a real 0-match run
+    // also exits with a nonzero, non-127 code). NVIM_PARITY_PLAN.md Phase
+    // 18 gap: previously just reported "no matches (or rg not installed)"
+    // and gave up -- GNU grep's -n output is the same 'file:line:text'
+    // shape rg's own --no-heading produces, so open_results()/the picker's
+    // item parsing doesn't need to know which one ran.
+    "      if code == 127 and #items == 0 then\n"
+    "        mep.job_start({'grep', '-rn', '-E', '--exclude-dir=.git', pattern, '.'},\n"
+    "          {on_stdout = on_stdout, on_exit = open_results})\n"
     "        return\n"
     "      end\n"
-    "      mep.picker_open('Todos', items, function(item)\n"
-    "        if not item then return end\n"
-    "        local file, lnum = item:match('^([^:]+):(%d+):')\n"
-    "        if file then mep.open(file); mep.set_cursor(tonumber(lnum), 1) end\n"
-    "      end)\n"
+    "      open_results()\n"
     "    end,\n"
     "  })\n"
     "end\n"
@@ -7678,9 +7694,19 @@ const char *kBuiltinOrgExport =
     "  ext = ext and ext:lower()\n"
     "  return ext == 'png' or ext == 'jpg' or ext == 'jpeg' or ext == 'gif' or ext == 'bmp' or ext == 'svg'\n"
     "end\n"
+    // underline/strike: NVIM_PARITY_PLAN.md Phase 35 gap -- org's own
+    // _underline_/+strikethrough+ syntax had no exporter marks at all
+    // before this, so they fell through the generic line-copy branch and
+    // reached the output as literal underscores/pluses. Markdown has no
+    // native underline (raw <u> passthrough, same as most CommonMark
+    // renderers accept for constructs the spec doesn't cover), but GFM's
+    // own '~~text~~' *is* real strikethrough syntax, unlike bold/italic's
+    // plain-Markdown equivalents above.
     "mep.org_export_marks = {\n"
     "  html = {bold_open = '<b>', bold_close = '</b>', italic_open = '<i>', italic_close = '</i>',\n"
-    "    code_open = '<code>', code_close = '</code>', link = function(u, d)\n"
+    "    code_open = '<code>', code_close = '</code>',\n"
+    "    underline_open = '<u>', underline_close = '</u>', strike_open = '<del>', strike_close = '</del>',\n"
+    "    link = function(u, d)\n"
     "      local target = mep_org_html_link_target(u)\n"
     "      if mep_org_is_image_link(target) then\n"
     "        return '<img src=\"' .. target .. '\" alt=\"' .. mep_org_html_link_target(d) .. '\">'\n"
@@ -7688,9 +7714,12 @@ const char *kBuiltinOrgExport =
     "      return '<a href=\"' .. target .. '\">' .. d .. '</a>'\n"
     "    end},\n"
     "  markdown = {bold_open = '**', bold_close = '**', italic_open = '_', italic_close = '_',\n"
-    "    code_open = '`', code_close = '`', link = function(u, d) return '[' .. d .. '](' .. u .. ')' end},\n"
+    "    code_open = '`', code_close = '`',\n"
+    "    underline_open = '<u>', underline_close = '</u>', strike_open = '~~', strike_close = '~~',\n"
+    "    link = function(u, d) return '[' .. d .. '](' .. u .. ')' end},\n"
     "  ascii = {bold_open = '', bold_close = '', italic_open = '', italic_close = '',\n"
-    "    code_open = '', code_close = '', link = function(u, d) return d .. ' <' .. u .. '>' end},\n"
+    "    code_open = '', code_close = '', underline_open = '', underline_close = '', strike_open = '', strike_close = '',\n"
+    "    link = function(u, d) return d .. ' <' .. u .. '>' end},\n"
     "}\n"
     "local function mep_org_html_escape(s) return (s:gsub('&', '&amp;'):gsub('<', '&lt;'):gsub('>', '&gt;')) end\n"
     // Every construct's generated markup is stashed behind a `\0M<n>\0`
@@ -7711,6 +7740,8 @@ const char *kBuiltinOrgExport =
     "  text = text:gsub('%[%[([^%]]+)%]%]', function(u) return stash_out(marks.link(u, u)) end)\n"
     "  text = text:gsub('%*([^%*\\n]+)%*', function(t) return stash_out(marks.bold_open .. t .. marks.bold_close) end)\n"
     "  text = text:gsub('/([^/\\n]+)/', function(t) return stash_out(marks.italic_open .. t .. marks.italic_close) end)\n"
+    "  text = text:gsub('_([^_\\n]+)_', function(t) return stash_out(marks.underline_open .. t .. marks.underline_close) end)\n"
+    "  text = text:gsub('%+([^%+\\n]+)%+', function(t) return stash_out(marks.strike_open .. t .. marks.strike_close) end)\n"
     "  text = text:gsub('=([^=\\n]+)=', function(t) return stash_out(marks.code_open .. t .. marks.code_close) end)\n"
     "  for idx, html in ipairs(stash) do\n"
     "    text = text:gsub('\\0M' .. idx .. '\\0', function() return html end)\n"

@@ -2056,11 +2056,17 @@ Phase 13's URL-open for link-follow, Phase 29)*
       `<2026-08-19 Wed +1w>` → increment → `<2026-08-20 Thu +1w>`
       correctly, verified via Xvfb. What's genuinely missing: no UI to
       *insert* a repeater (`mep.org_timestamp_insert` only ever writes a
-      bare date) and timestamp *ranges* (`<start>--<end>`) aren't
-      parsed at all. "Store link for later recall"
-      (`org-store-link` global capture, vs. this phase's direct
-      insert-with-prompt) not implemented. A real bug was caught and
-      fixed during verification: the table-cell splitter's naive
+      bare date). (Timestamp *ranges* were also marked unparsed here —
+      also stale: `mep_org_timestamp_range_at`/`ORG_TS_RANGE_PATTERNS`
+      recognize `<start>--<end>`/`[start]--[end]`, plus a dedicated
+      `mep.org_timestamp_insert_range` and range-distinct highlighting.)
+      (Another correction: "store link for later recall"
+      was also marked missing here, but `mep.org_store_link`/
+      `:MepOrgStoreLink` is implemented — captures the enclosing
+      headline's CUSTOM_ID/ID/title as `mep.org_stored_link`, offered
+      as `mep.org_link_insert`'s default target; scoped to one slot,
+      not a full link ring.) A real bug was caught and fixed during
+      verification: the table-cell splitter's naive
       `line:gmatch('|([^|]*)')` produced a spurious empty trailing
       cell because Lua's `gmatch` treats the line's closing `|` as
       the start of one more (empty) capture — fixed by stripping the
@@ -2204,8 +2210,9 @@ making it the active editor buffer)*
       works; editing an entry means jumping to it and using Phase 29's
       normal TODO-cycle/timestamp commands there. No separate
       "deadline warning window" (e.g. "remind starting 3 days before
-      due") — only binary overdue-or-not. Timestamp *ranges* still
-      aren't parsed (Phase 30's own gap, inherited here).
+      due") — only binary overdue-or-not. (Timestamp *ranges* were
+      marked as an inherited Phase 30 gap here too — also stale, see
+      that phase's own correction above.)
 
 ### Phase 33 — Org-mode E: sort/narrow/sparse-tree, clocking ✅
 

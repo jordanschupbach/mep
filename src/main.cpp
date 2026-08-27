@@ -3305,16 +3305,11 @@ const char *kBuiltinSnippets =
     "  local ts = st.tabstops[st.index]\n"
     "  mep.set_cursor(st.base_row + ts.line_idx - 1, ts.col)\n"
     "end\n"
-    "function mep.snippet_expand(name)\n"
-    "  local ft = mep_lsp_filetype(mep.filename())\n"
-    "  local set = ft and mep.snippets[ft]\n"
-    "  local body = set and set[name]\n"
-    "  if not body then mep.notify('No snippet: ' .. tostring(name), 'warn') return end\n"
-    "  local row, col = mep.cursor()\n"
-    "  local line = mep.get_line(row)\n"
-    "  local trig_start = math.max(1, col - #name)\n"
-    "  local before = line:sub(1, trig_start - 1)\n"
-    "  local after = line:sub(col)\n"
+    // Factored out of mep.snippet_expand so the LSP-completion accept hook
+    // below can splice a raw insertText body the same way, without a
+    // registry-lookup-by-name step it has no use for (the body's already
+    // known -- it's the completion item's own text).
+    "local function mep_snippet_splice(row, before, after, body)\n"
     "  local out_lines, all_tabstops = {}, {}\n"
     "  for li, tmpl in ipairs(body) do\n"
     "    local cleaned, stops = mep_snippet_scan_line(tmpl)\n"
@@ -3332,6 +3327,43 @@ const char *kBuiltinSnippets =
     "  mep_snippet_state = {tabstops = all_tabstops, index = 0, base_row = row}\n"
     "  mep.snippet_jump(1)\n"
     "end\n"
+    "function mep.snippet_expand(name)\n"
+    "  local ft = mep_lsp_filetype(mep.filename())\n"
+    "  local set = ft and mep.snippets[ft]\n"
+    "  local body = set and set[name]\n"
+    "  if not body then mep.notify('No snippet: ' .. tostring(name), 'warn') return end\n"
+    "  local row, col = mep.cursor()\n"
+    "  local line = mep.get_line(row)\n"
+    "  local trig_start = math.max(1, col - #name)\n"
+    "  local before = line:sub(1, trig_start - 1)\n"
+    "  local after = line:sub(col)\n"
+    "  mep_snippet_splice(row, before, after, body)\n"
+    "end\n"
+    // NVIM_PARITY_PLAN.md Phase 23 gap: an LSP completion item with
+    // insertTextFormat=Snippet (2, per the LSP spec's InsertTextFormat
+    // enum -- 1 is PlainText) got its raw `$1`/`$0' placeholder syntax
+    // spliced in verbatim by AcceptCompletion, with no re-expansion
+    // through the tabstop engine -- the C++ hook this consumes
+    // (Editor::completion_accept_hook_ref_) and the iformat cache it
+    // reads (mep_lsp_completion_iformat, kBuiltinCompletion) both already
+    // existed; nothing had ever called mep.set_completion_accept_hook to
+    // wire them together. Deletes exactly the span AcceptCompletion just
+    // spliced in (computed from `text`'s own line count/last-line length,
+    // not a trigger-word guess -- `text` can be multi-line, unlike a
+    // registry snippet's fixed trigger word) and re-splices it as a real
+    // snippet body via the same mep_snippet_splice this file's own
+    // mep.snippet_expand uses.\n"
+    "mep.set_completion_accept_hook(function(text)\n"
+    "  if mep_lsp_completion_iformat[text] ~= 2 then return end\n"
+    "  local row, col = mep.cursor()\n"
+    "  local body = {}\n"
+    "  for l in (text .. '\\n'):gmatch('(.-)\\n') do body[#body + 1] = l end\n"
+    "  local start_row = row - (#body - 1)\n"
+    "  local start_col = col - #body[#body]\n"
+    "  local before = mep.get_line(start_row):sub(1, start_col - 1)\n"
+    "  local after = mep.get_line(row):sub(col)\n"
+    "  mep_snippet_splice(start_row, before, after, body)\n"
+    "end)\n"
     "function mep.snippet_trigger()\n"
     "  local row, col = mep.cursor()\n"
     "  local word = mep.get_line(row):sub(1, col - 1):match('[%w_]+$')\n"

@@ -18654,6 +18654,27 @@ int main(int argc, char **argv) {
     // default, so ignoring it is strictly a robustness fix, not a
     // behavior change.
     std::signal(SIGPIPE, SIG_IGN);
+#if !defined(_WIN32)
+    // Whatever launched mep (a desktop entry, a window-manager keybind, a
+    // systemd unit, a login shell with `trap '' CHLD`, ...) may have done
+    // so with SIGCHLD's disposition already set to SIG_IGN. exec()
+    // preserves an *ignored* disposition (unlike an installed handler,
+    // which always resets to default on exec) -- so that ignore silently
+    // rides along through every fork/exec chain mep spawns and doesn't
+    // control: job.cpp's forkpty()'d :terminal shell, and then whatever
+    // that shell goes on to run. glibc's posix_spawn() -- what `just`,
+    // being Rust, uses via std::process::Command to launch a recipe's `sh`
+    // -- internally waitpid()s its own intermediate helper process to
+    // relay an exec failure back to the caller; with SIGCHLD ignored the
+    // kernel auto-reaps that helper first, so posix_spawn() finds nothing
+    // to wait for and fails with ECHILD ("No child processes"), which is
+    // exactly the "IO error while launching the shell `sh`" `just` reports
+    // when this happens inside mep's :terminal. Resetting to SIG_DFL here
+    // gives mep -- and everything it spawns, transitively -- a sane
+    // starting disposition regardless of how mep itself was launched; it's
+    // also what job.cpp's own waitpid(pid_, ...) calls assume.
+    std::signal(SIGCHLD, SIG_DFL);
+#endif
 #endif
     // Re-applies the default theme, redundantly with Editor::Editor()'s own
     // call: g_editor (this TU) and the palette table (editor.cpp's TU) are

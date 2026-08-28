@@ -2,6 +2,7 @@
 #include "rlgl.h"  // rlPushMatrix/rlMultMatrixf/rlTranslatef -- org emphasis italic's shear transform
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <csignal>
 #include <cstdio>
@@ -16,6 +17,7 @@
 #include <sstream>
 #include <string>
 #include <sys/stat.h>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -24,9 +26,11 @@
 #include <emscripten/emscripten.h>
 #endif
 
+#include "agent_rpc.h"
 #include "editor.h"
 #include "font_data.h"
 #include "icon_font_data.h"
+#include "symbol_font_data.h"
 #include "job.h"
 #include "lua_env.h"
 #include "vterm.h"
@@ -36,6 +40,7 @@
 #include "office_font_data.h"
 #include "office_font_data_mono.h"
 #include "office_font_data_serif.h"
+#include "persist.h"
 
 namespace {
 
@@ -61,36 +66,154 @@ float g_char_width = 0;
 // range) and raylib bakes one atlas per LoadFontFromMemory call from one
 // font file; there's no "add more glyphs from a second file" API. Backing
 // data is icon_font_data.h, a pyftsubset subset of Symbols Nerd Font Mono
-// covering exactly kIconCodepoints below -- the full font is ~10,000
-// glyphs/2.5MB, tiny fraction of which mep actually draws.
+// covering kIconCodepointRanges/kIconCodepointExtras below -- the full
+// font is ~10,000 glyphs/2.5MB; this subset is ~2,600 glyphs/~1.1MB.
 Font g_icon_font{};
 
-// Every codepoint g_icon_font is loaded with -- doubles as the "does this
-// codepoint have an icon glyph at all" check DrawUiText uses to route a
-// given character to g_icon_font vs g_font, since GetGlyphIndex's "not
-// found" return (0) is indistinguishable from a legitimate index 0 without
-// this. Keep in sync with icon_font_data.h's own codepoint set (its header
-// comment has the regeneration command) -- IconForFilename (editor.cpp)
-// and every kIcon* constant below only ever draw correctly if the
-// codepoint they return is also listed here.
-constexpr int kIconCodepoints[] = {
-    // Generic file/folder (also IconForFilename's own fallback).
-    0xf15b, 0xf07b, 0xf07c,
-    // Per-language/extension (IconForFilename, editor.cpp) -- mirrors
-    // mep.nvim/lua/mep/icons/data.lua's M.nerd_font table.
-    0xe620, 0xe606, 0xe60c, 0xe625, 0xe628, 0xe7ba, 0xe627, 0xe68b, 0xe791, 0xe738, 0xe61e, 0xf0fd, 0xe61d, 0xf031b,
-    0xe608, 0xe795, 0xe760, 0xe60b, 0xe8eb, 0xe6b2, 0xf05c0, 0xe736, 0xe6b8, 0xe603, 0xf48a, 0xe609, 0xf0219, 0xe706,
-    0xe62b, 0xe672, 0xf0331, 0xeaeb, 0xe60d, 0xf0721, 0xf410, 0xe64a, 0xf462, 0xe779, 0xf0868, 0xe702, 0xe652, 0xe60a,
-    0xe633,
-    // UI chrome: tab bar circles/buttons, notify toasts, LSP diagnostics,
-    // todoscan gutter signs, DAP breakpoints (see each's own kIcon*
-    // constant below for which is which).
-    0xf111, 0xf10c, 0xf057, 0xf071, 0xf05a, 0xf0eb, 0xf188, 0xf00c, 0xf0ad, 0xf0e7, 0xf24a, 0xf00d, 0xf067,
+// Every Nerd Font icon *set* g_icon_font is baked with, as contiguous
+// PUA ranges -- broadened well past mep's own original ~90-glyph UI
+// palette (Devicons, Font Awesome (+Extension), Octicons, Powerline
+// (+Extra), Seti-UI + Custom, Weather Icons, Pomicons, Codicons) so
+// future UI code -- and, via g_terminal_font's own PUA fallback (see its
+// own comment), real CLI tools running inside :terminal that emit these
+// icons directly (starship, eza/lsd, git-aware prompts, lazygit, yazi,
+// k9s, ...) -- has a broad icon palette available without needing a new
+// pyftsubset regeneration for every single new glyph. Doubles as (with
+// kIconCodepointExtras) the "does this codepoint have an icon glyph at
+// all" check IsIconCodepoint/DrawUiText uses to route a character to
+// g_icon_font vs g_font, since GetGlyphIndex's "not found" return (0) is
+// indistinguishable from a legitimate index 0 without it.
+//
+// Deliberately EXCLUDES the rest of Material Design Icons (U+F0001-
+// U+F1AF0, a ~6,900-codepoint supplementary-plane block bigger than
+// every range below combined) -- kIconCodepointExtras below carries the
+// handful of individual Material Design codepoints mep's own per-
+// language file-type icons already used before this broader set existed.
+// Add a new individual codepoint there (not a new giant range here) if a
+// specific one is ever needed; regenerate icon_font_data.h's embedded
+// subset with pyftsubset (its own header comment has the exact command)
+// if this set changes.
+constexpr std::pair<int, int> kIconCodepointRanges[] = {
+    {0x23fb, 0x23fe}, {0x2630, 0x2630}, {0x2665, 0x2665}, {0x26a1, 0x26a1}, {0x276c, 0x2771}, {0x2b58, 0x2b58},
+    {0xe000, 0xe00a},  // Pomicons
+    {0xe0a0, 0xe0a3},  // Powerline
+    {0xe0b0, 0xe0c8}, {0xe0ca, 0xe0ca}, {0xe0cc, 0xe0d2}, {0xe0d4, 0xe0d4}, {0xe0d6, 0xe0d7},  // Powerline Extra
+    {0xe200, 0xe2a9},  // Font Awesome Extension
+    {0xe300, 0xe3e3},  // Weather Icons
+    {0xe5fa, 0xe6b8},  // Seti-UI + Custom
+    {0xe700, 0xe8ef},  // Devicons
+    {0xea60, 0xeac7}, {0xeac9, 0xeac9}, {0xeacc, 0xec1e},  // Codicons
+    {0xed00, 0xefce}, {0xf000, 0xf381},                    // Font Awesome
+    {0xf400, 0xf533},                                      // Octicons
 };
 
+// See kIconCodepointRanges's own comment -- individual Material Design
+// Icons codepoints mep's IconForFilename (editor.cpp) already used for
+// specific per-language file-type icons, kept as exact singletons rather
+// than pulling in the whole Material Design block they live in.
+constexpr int kIconCodepointExtras[] = {0xf0219, 0xf031b, 0xf0331, 0xf05c0, 0xf0721, 0xf0868};
+
 bool IsIconCodepoint(int cp) {
-    for (int c : kIconCodepoints) {
+    for (const auto &range : kIconCodepointRanges) {
+        if (cp >= range.first && cp <= range.second) return true;
+    }
+    for (int c : kIconCodepointExtras) {
         if (c == cp) return true;
+    }
+    return false;
+}
+
+// Flattens kIconCodepointRanges + kIconCodepointExtras into the actual
+// codepoint list LoadFontData/LoadFontFromMemory need -- shared by
+// ApplyFontSize's synchronous path and StartIconFontBakeAsync's
+// background one below, so the two can never drift out of sync.
+std::vector<int> BuildIconCodepoints() {
+    std::vector<int> out;
+    int range_total = 0;
+    for (const auto &range : kIconCodepointRanges) range_total += range.second - range.first + 1;
+    out.reserve(range_total + sizeof(kIconCodepointExtras) / sizeof(kIconCodepointExtras[0]));
+    for (const auto &range : kIconCodepointRanges) {
+        for (int c = range.first; c <= range.second; c++) out.push_back(c);
+    }
+    for (int c : kIconCodepointExtras) out.push_back(c);
+    return out;
+}
+
+#if !defined(__EMSCRIPTEN__)
+// Baking g_icon_font's atlas (~3,500 glyphs, rasterized via stb_truetype
+// inside LoadFontData/GenImageFontAtlas) measured at ~90ms on this
+// machine -- by far the single largest chunk of mep's own startup time
+// once this font grew past its original ~90-glyph curated set. Both
+// LoadFontData and GenImageFontAtlas are pure CPU work with no GL calls
+// at all (raylib's own decomposed API -- see rtext.c's LoadFontFromMemory
+// for the exact steps this mirrors), unlike LoadTextureFromImage (the
+// actual GPU upload), which must stay on the main thread since GL
+// contexts aren't thread-safe here. StartIconFontBakeAsync is called as
+// the very first thing main() does, before InitWindow itself, so this
+// ~90ms of CPU work overlaps with InitWindow's own GL/driver setup and
+// every other startup step ahead of ApplyFontSize instead of adding to
+// them serially. ApplyFontSize's own icon-font block joins this thread
+// (an instant no-op if it already finished) and does only the remaining
+// GPU-upload step. Emscripten-only-gated: wasm's single-threaded model
+// doesn't support this, so that build keeps the plain synchronous
+// LoadFontFromMemory call it already used.
+struct IconFontBakeResult {
+    GlyphInfo *glyphs = nullptr;
+    Rectangle *recs = nullptr;
+    Image atlas{};
+    int glyph_count = 0;
+    int base_size = 0;  // the exact LoadFontData/GenImageFontAtlas fontSize this was baked for
+};
+std::thread g_icon_font_bake_thread;
+IconFontBakeResult g_icon_font_bake_result;
+
+// FONT_TTF_DEFAULT_CHARS_PADDING (rtext.c) -- not part of raylib's public
+// API, so mirrored here; LoadFontFromMemory's own padding for the exact
+// same TTF/OTF path this bypasses.
+constexpr int kFontTtfDefaultCharsPadding = 4;
+
+void StartIconFontBakeAsync(int base_size) {
+    g_icon_font_bake_thread = std::thread([base_size] {
+        std::vector<int> codepoints = BuildIconCodepoints();
+        GlyphInfo *glyphs = LoadFontData(kIconFontTtf, static_cast<int>(kIconFontTtfLen), base_size, codepoints.data(),
+                                          static_cast<int>(codepoints.size()), FONT_DEFAULT);
+        Rectangle *recs = nullptr;
+        Image atlas = GenImageFontAtlas(glyphs, &recs, static_cast<int>(codepoints.size()), base_size,
+                                         kFontTtfDefaultCharsPadding, 0);
+        g_icon_font_bake_result = {glyphs, recs, atlas, static_cast<int>(codepoints.size()), base_size};
+    });
+}
+#endif
+
+// Third-tier fallback font, below g_font/g_terminal_font (JetBrains Mono)
+// and g_icon_font (Symbols Nerd Font Mono) -- for ordinary (non-PUA)
+// Unicode symbols that are in *neither* of those. Found empirically, not
+// speculatively: a real captured Claude Code TUI session running inside
+// :terminal used U+23F5 (doubled, its "auto mode on" indicator) and
+// U+2733, and `fc-query --format='%{charset}\n'` against both embedded
+// fonts confirmed neither has either codepoint at all -- widening their
+// requested codepoint list can't fix a glyph the source font simply
+// doesn't contain. Backing data (symbol_font_data.h) is a pyftsubset
+// subset of Noto Sans Symbols 2 covering Miscellaneous Symbols/Dingbats/
+// media-control-symbols -- broad enough to also preempt likely-similar
+// future gaps (star/weather/card-suit/media-transport glyphs some other
+// TUI reaches for) without embedding the much larger full Noto Sans
+// Symbols family.
+Font g_symbol_font{};
+
+constexpr std::pair<int, int> kSymbolCodepointRanges[] = {
+    {0x23e9, 0x23ea}, {0x23ed, 0x23ef}, {0x23f1, 0x23fa},  // media control symbols
+    {0x2600, 0x2609}, {0x260e, 0x2612}, {0x2614, 0x2623}, {0x2630, 0x2637}, {0x263c, 0x263c},
+    {0x2654, 0x2668}, {0x267f, 0x268f}, {0x269e, 0x26a1}, {0x26aa, 0x26ac}, {0x26bd, 0x26cd},
+    {0x26cf, 0x26e1},  // miscellaneous symbols
+    {0x2700, 0x2704}, {0x2706, 0x2709}, {0x270b, 0x271c}, {0x2722, 0x2727}, {0x2729, 0x274b},
+    {0x274d, 0x274d}, {0x274f, 0x2753}, {0x2756, 0x2775}, {0x2794, 0x2794}, {0x2798, 0x27af},
+    {0x27b1, 0x27be},  // dingbats
+};
+
+bool IsSymbolCodepoint(int cp) {
+    for (const auto &range : kSymbolCodepointRanges) {
+        if (cp >= range.first && cp <= range.second) return true;
     }
     return false;
 }
@@ -129,6 +252,39 @@ constexpr int kMathCodepoints[] = {
     // Arrows/logic/set theory.
     0x2192, 0x2190, 0x2194, 0x21d2, 0x21d0, 0x21d4, 0x2200, 0x2203, 0x2208, 0x2209, 0x2282, 0x2286, 0x2283, 0x2287,
     0x222a, 0x2229, 0x2205,
+};
+
+// Same "separate atlas, same reload point" pattern as g_icon_font/
+// g_math_font above -- for VTerm cell rendering (DrawTerminalGrid,
+// further down). A real shell prompt (starship et al., already the
+// motivating case for TERM=xterm-256color -- see Editor::TerminalSpawn's
+// own comment) and most full-screen TUIs lean heavily on box-drawing/
+// block-element glyphs for borders and progress bars, general-purpose
+// arrows/punctuation, and Powerline's own separator glyphs for prompt
+// segments -- none of which are in g_font's ASCII-only bake, so every
+// cell using one silently drew as a blank/missing-glyph box: unlike
+// plain scrolling text, a full-screen program repaints its *entire*
+// UI chrome out of these on every redraw, so the effect wasn't a rare
+// missing character here and there, it was borders, spinners, and
+// prompt segments looking broken or invisible throughout the whole
+// pane. Confirmed present in the embedded JetBrains Mono TTF via
+// `fc-query --format='%{charset}\n'` before adding each range below --
+// requesting a codepoint the font doesn't actually have is harmless
+// (raylib just skips it), but there's no point bloating the atlas with
+// ranges verified absent (Braille patterns U+2800-28FF, used by some
+// spinner styles, are NOT in this font at all -- a real, currently
+// unfixed gap, not merely unrequested).
+Font g_terminal_font{};
+
+// Individual extra codepoints for g_terminal_font that aren't part of a
+// contiguous range worth its own loop in ApplyFontSize: check/cross
+// marks (common in TUI status output), the warning sign, and Powerline's
+// four separator/status glyphs (the triangle/arrow prompt-segment
+// dividers e0b0-e0b3, plus the branch/lock/line glyphs e0a0-e0a2 many
+// prompts pair with them) -- all confirmed present in the embedded font.
+constexpr int kTerminalExtraCodepoints[] = {
+    0x2713, 0x2715, 0x2717, 0x26a0, 0x26a1,
+    0xe0a0, 0xe0a1, 0xe0a2, 0xe0a3, 0xe0b0, 0xe0b1, 0xe0b2, 0xe0b3,
 };
 
 // The 4 Liberation Sans weight/style variants for WYSIWYG office panes
@@ -818,41 +974,6 @@ void ExportGanttRaster(int buffer_id, const char *extension) {
     g_editor.SetStatusMessage(ok ? "Exported Gantt to " + path : "Gantt export failed: " + path);
 }
 
-const char *ModeName(Mode m, bool replace_mode = false) {
-    switch (m) {
-        case Mode::Normal: return "NORMAL";
-        case Mode::Insert: return replace_mode ? "REPLACE" : "INSERT";
-        case Mode::Visual: return "VISUAL";
-        case Mode::VisualLine: return "V-LINE";
-        case Mode::VisualBlock: return "V-BLOCK";
-        case Mode::Command: return "COMMAND";
-        case Mode::SearchForward:
-        case Mode::SearchBackward:
-            return "SEARCH";
-        case Mode::Prompt: return "INPUT";
-        case Mode::Confirm: return "CONFIRM";
-        case Mode::Select: return "SELECT";
-        case Mode::Preview: return "PREVIEW";
-        case Mode::Sidebar: return "SIDEBAR";
-        case Mode::Picker: return "PICKER";
-        case Mode::RoamGraph: return "ROAM-GRAPH";
-        case Mode::WhichKey: return "WHICHKEY";
-        case Mode::HintChar:
-        case Mode::HintLabel:
-            return "HINT";
-        case Mode::Terminal: return "TERMINAL";
-        case Mode::Image: return "IMAGE";
-        case Mode::Pdf: return "PDF";
-        case Mode::Html: return "HTML";
-        case Mode::OfficeNormal: return "NORMAL";
-        case Mode::OfficeInsert: return "INSERT";
-        case Mode::OfficeVisual: return "VISUAL";
-        case Mode::SheetNormal: return "NORMAL";
-        case Mode::SheetInsert: return "INSERT";
-        case Mode::SheetVisual: return "VISUAL";
-    }
-    return "?";
-}
 
 std::vector<std::string> SplitLines(const std::string &text) {
     std::vector<std::string> lines;
@@ -900,7 +1021,7 @@ float DrawUiText(const std::string &text, Vector2 pos, float font_size, Color ti
         int cp = GetCodepointNext(&s[i], &cp_size);
         std::string glyph(s + i, cp_size);
         i += cp_size;
-        const Font &f = IsIconCodepoint(cp) ? g_icon_font : g_font;
+        const Font &f = IsIconCodepoint(cp) ? g_icon_font : (IsSymbolCodepoint(cp) ? g_symbol_font : g_font);
         if (!measure_only) DrawTextEx(f, glyph.c_str(), Vector2{x, pos.y}, font_size, 0, tint);
         x += MeasureTextEx(f, glyph.c_str(), font_size, 0).x;
     }
@@ -942,13 +1063,74 @@ void ApplyFontSize(float size) {
     CacheGlyphIndices();
 
     if (g_icon_font.texture.id != 0) UnloadFont(g_icon_font);
-    // LoadFontFromMemory's codepoints parameter is (non-const) int* even
-    // though it only ever reads from it -- const_cast is safe here since
-    // kIconCodepoints is a compile-time array raylib can't actually
-    // mutate through that pointer regardless of the signature.
-    g_icon_font = LoadFontFromMemory(".ttf", kIconFontTtf, static_cast<int>(kIconFontTtfLen),
-                                      static_cast<int>(g_font_size * 2), const_cast<int *>(kIconCodepoints),
-                                      static_cast<int>(sizeof(kIconCodepoints) / sizeof(kIconCodepoints[0])));
+    // UnloadFont takes Font *by value* -- it frees the GPU texture and
+    // CPU glyphs/recs it was handed, but can never reset g_icon_font's
+    // own fields back to zero (it has no reference/pointer to this
+    // global to write through). Without this, g_icon_font.texture.id
+    // stays at its stale, now-freed value on every call after the very
+    // first one, which made the "already loaded via the async path,
+    // skip the synchronous fallback below" check further down
+    // permanently false-negative past the first (startup) call --
+    // silently skipping every zoom-triggered reload (mod1+=/mod1+-) and
+    // leaving g_icon_font pointing at already-freed GPU/CPU memory: a
+    // real use-after-free on the very next icon glyph drawn. Caught by
+    // re-deriving the UnloadFont-takes-by-value fact from raylib.h
+    // itself while double-checking this code, not by reproducing the
+    // crash live (a same-session real-keyboard test aimed at the wrong
+    // window first, so it couldn't be trusted either way).
+    g_icon_font = Font{};
+    const int icon_base_size = static_cast<int>(g_font_size * 2);
+#if !defined(__EMSCRIPTEN__)
+    // Consume StartIconFontBakeAsync's background work if it's there --
+    // join() is an instant no-op once the thread has already finished
+    // (the common case: ~90ms of CPU work easily fits inside everything
+    // main() does between spawning it and reaching here). The size check
+    // is defensive, not load-bearing in practice: the only call site that
+    // can ever observe g_icon_font_bake_thread.joinable() as true is the
+    // startup ApplyFontSize(kDefaultFontSize) call StartIconFontBakeAsync
+    // itself was sized for -- every later call (mod1+=/mod1+- zoom) finds
+    // the thread already joined-and-cleared from that first call and
+    // falls straight through to the plain synchronous path below, same
+    // as before this existed.
+    if (g_icon_font_bake_thread.joinable()) {
+        g_icon_font_bake_thread.join();
+        if (g_icon_font_bake_result.base_size == icon_base_size) {
+            g_icon_font.baseSize = icon_base_size;
+            g_icon_font.glyphCount = g_icon_font_bake_result.glyph_count;
+            g_icon_font.glyphPadding = kFontTtfDefaultCharsPadding;
+            g_icon_font.glyphs = g_icon_font_bake_result.glyphs;
+            g_icon_font.recs = g_icon_font_bake_result.recs;
+            g_icon_font.texture = LoadTextureFromImage(g_icon_font_bake_result.atlas);
+            // Mirrors LoadFontFromMemory's own post-atlas step (rtext.c):
+            // each glyph's individual image is replaced with an alpha
+            // crop of the atlas, required for ImageDrawText even though
+            // mep itself never calls that -- kept for exact behavioral
+            // parity with the synchronous path below.
+            for (int i = 0; i < g_icon_font.glyphCount; i++) {
+                UnloadImage(g_icon_font.glyphs[i].image);
+                g_icon_font.glyphs[i].image = ImageFromImage(g_icon_font_bake_result.atlas, g_icon_font.recs[i]);
+            }
+            UnloadImage(g_icon_font_bake_result.atlas);
+            g_icon_font_bake_result = {};
+        } else {
+            // Never actually reached given the call pattern above, but
+            // cheap insurance against a future refactor breaking that
+            // invariant: discard the mismatched-size bake and fall
+            // through to baking g_icon_font fresh, synchronously.
+            UnloadFontData(g_icon_font_bake_result.glyphs, g_icon_font_bake_result.glyph_count);
+            MemFree(g_icon_font_bake_result.recs);
+            UnloadImage(g_icon_font_bake_result.atlas);
+            g_icon_font_bake_result = {};
+        }
+    }
+    if (g_icon_font.texture.id == 0) {
+#endif
+        std::vector<int> icon_codepoints = BuildIconCodepoints();
+        g_icon_font = LoadFontFromMemory(".ttf", kIconFontTtf, static_cast<int>(kIconFontTtfLen), icon_base_size,
+                                          icon_codepoints.data(), static_cast<int>(icon_codepoints.size()));
+#if !defined(__EMSCRIPTEN__)
+    }
+#endif
     SetTextureFilter(g_icon_font.texture, TEXTURE_FILTER_BILINEAR);
 
     if (g_math_font.texture.id != 0) UnloadFont(g_math_font);
@@ -960,6 +1142,59 @@ void ApplyFontSize(float size) {
                                       static_cast<int>(g_font_size * 2), math_codepoints,
                                       95 + kMathExtraCount);
     SetTextureFilter(g_math_font.texture, TEXTURE_FILTER_BILINEAR);
+
+    if (g_terminal_font.texture.id != 0) UnloadFont(g_terminal_font);
+    // ASCII + several contiguous Unicode block ranges (box drawing, block
+    // elements, geometric shapes, general punctuation, arrows) + the
+    // sparse kTerminalExtraCodepoints extras -- see g_terminal_font's own
+    // comment for why these specific ranges. Built as ranges rather than
+    // spelling out ~400 individual codepoints (kMathCodepoints' style)
+    // purely because these particular additions really are contiguous
+    // Unicode blocks, not a hand-picked scattered set. ASCII goes first
+    // in the array deliberately: DrawTerminalGrid draws plain ASCII for
+    // the overwhelming majority of any real terminal session's cells, and
+    // GetGlyphIndex's linear scan (this array isn't behind a g_glyph_
+    // index-style O(1) cache the way g_font's ASCII fast path is) finds
+    // those within the first 95 entries regardless of how much else
+    // follows -- only the comparatively rare box-drawing/symbol cell
+    // pays for scanning further in.
+    constexpr std::pair<int, int> kTerminalRanges[] = {
+        {0x00a0, 0x017f},  // Latin-1 Supplement + Latin Extended-A (accents, middle dot, ...)
+        {0x2500, 0x257f},  // box drawing
+        {0x2580, 0x259f},  // block elements
+        {0x25a0, 0x25ff},  // geometric shapes
+        {0x2010, 0x2027},  // general punctuation (dashes, quotes, bullet, ellipsis)
+        {0x2190, 0x21ff},  // arrows
+    };
+    constexpr int kTerminalExtraCount = sizeof(kTerminalExtraCodepoints) / sizeof(kTerminalExtraCodepoints[0]);
+    int terminal_range_total = 0;
+    for (const auto &range : kTerminalRanges) terminal_range_total += range.second - range.first + 1;
+    static std::vector<int> terminal_codepoints;
+    terminal_codepoints.clear();
+    terminal_codepoints.reserve(95 + terminal_range_total + kTerminalExtraCount);
+    for (int c = 32; c <= 126; c++) terminal_codepoints.push_back(c);
+    for (const auto &range : kTerminalRanges) {
+        for (int c = range.first; c <= range.second; c++) terminal_codepoints.push_back(c);
+    }
+    for (int c : kTerminalExtraCodepoints) terminal_codepoints.push_back(c);
+    g_terminal_font = LoadFontFromMemory(".ttf", kJetBrainsMonoRegularTtf, static_cast<int>(kJetBrainsMonoRegularTtfLen),
+                                          static_cast<int>(g_font_size * 2), terminal_codepoints.data(),
+                                          static_cast<int>(terminal_codepoints.size()));
+    SetTextureFilter(g_terminal_font.texture, TEXTURE_FILTER_BILINEAR);
+
+    if (g_symbol_font.texture.id != 0) UnloadFont(g_symbol_font);
+    int symbol_range_total = 0;
+    for (const auto &range : kSymbolCodepointRanges) symbol_range_total += range.second - range.first + 1;
+    static std::vector<int> symbol_codepoints;
+    symbol_codepoints.clear();
+    symbol_codepoints.reserve(symbol_range_total);
+    for (const auto &range : kSymbolCodepointRanges) {
+        for (int c = range.first; c <= range.second; c++) symbol_codepoints.push_back(c);
+    }
+    g_symbol_font = LoadFontFromMemory(".ttf", kSymbolFontTtf, static_cast<int>(kSymbolFontTtfLen),
+                                        static_cast<int>(g_font_size * 2), symbol_codepoints.data(),
+                                        static_cast<int>(symbol_codepoints.size()));
+    SetTextureFilter(g_symbol_font.texture, TEXTURE_FILTER_BILINEAR);
 }
 
 // The office pane's special-character insert palette (main.cpp's DrawPane
@@ -12610,6 +12845,24 @@ Color VTermColorToRaylib(const VTermColor &c, bool is_fg) {
 // no real text, see TerminalSession's header comment. scroll_offset > 0
 // (Shift+PageUp/PageDown, HandleTerminalInput) blends scrollback lines in
 // from the top instead of the live screen.
+// Same g_icon_font-vs-other-font routing DrawUiText already does for
+// mep's own UI chrome (see IsIconCodepoint's comment), applied to a
+// single terminal cell's glyph: a real CLI tool running inside
+// :terminal (starship, eza/lsd, git-aware prompts, lazygit, yazi, k9s,
+// ...) commonly emits literal Nerd Font PUA icon codepoints directly in
+// its output, assuming the terminal's own font is Nerd-Font-patched --
+// g_terminal_font (JetBrains Mono + a curated non-PUA symbol set) has no
+// coverage for those at all, so without this every such icon drew as a
+// missing-glyph box exactly like the box-drawing/arrow gap fixed
+// earlier. `ch` is one cell's worth of UTF-8 (usually 1-4 bytes).
+const Font &TerminalCellFont(const std::string &ch) {
+    int cp_size = 0;
+    int cp = GetCodepointNext(ch.c_str(), &cp_size);
+    if (IsIconCodepoint(cp)) return g_icon_font;
+    if (IsSymbolCodepoint(cp)) return g_symbol_font;  // see g_symbol_font's own comment
+    return g_terminal_font;
+}
+
 void DrawTerminalGrid(const TerminalSession &sess, float x, float y, float w, float h) {
     const VTerm *term = sess.vterm.get();
     if (!term) return;
@@ -12654,12 +12907,18 @@ void DrawTerminalGrid(const TerminalSession &sess, float x, float y, float w, fl
                               static_cast<int>(lh), bg);
             }
             if (cell->ch != " " && !cell->ch.empty()) {
-                DrawTextEx(g_font, cell->ch.c_str(), Vector2{cx, ry}, g_font_size, 0, fg);
+                // g_terminal_font (or g_icon_font for a PUA codepoint --
+                // see TerminalCellFont's own comment), not g_font: box-
+                // drawing/block-element/arrow/punctuation/Nerd-Font-icon
+                // glyphs a real shell prompt or full-screen TUI leans on
+                // aren't in g_font's ASCII-only bake.
+                const Font &cell_font = TerminalCellFont(cell->ch);
+                DrawTextEx(cell_font, cell->ch.c_str(), Vector2{cx, ry}, g_font_size, 0, fg);
                 // Bold approximated by a 1px-offset second draw (no bold
                 // glyph variant of the loaded font is guaranteed to
                 // exist) rather than a brighter color -- keeps bold
                 // readable even for colors already at full brightness.
-                if (cell->bold) DrawTextEx(g_font, cell->ch.c_str(), Vector2{cx + 1, ry}, g_font_size, 0, fg);
+                if (cell->bold) DrawTextEx(cell_font, cell->ch.c_str(), Vector2{cx + 1, ry}, g_font_size, 0, fg);
             }
             if (cell->underline) {
                 DrawRectangle(static_cast<int>(cx), static_cast<int>(ry + lh - 2), static_cast<int>(cw), 1, fg);
@@ -12675,7 +12934,7 @@ void DrawTerminalGrid(const TerminalSession &sess, float x, float y, float w, fl
                       Color{cursor_bg.r, cursor_bg.g, cursor_bg.b, 180});
         const VTermCell &under = term->At(term->CursorRow(), term->CursorCol());
         if (under.ch != " " && !under.ch.empty()) {
-            DrawTextEx(g_font, under.ch.c_str(), Vector2{cx, cy}, g_font_size, 0, ResolveHlGroup("NormalBg"));
+            DrawTextEx(TerminalCellFont(under.ch), under.ch.c_str(), Vector2{cx, cy}, g_font_size, 0, ResolveHlGroup("NormalBg"));
         }
     }
 }
@@ -14685,6 +14944,87 @@ void DrawGantt(const Pane &pane, float x, float y, float w, float h, bool is_act
     RegisterClickRegion(Rectangle{x, y, w, h}, [pane_id = pane.id] { g_editor.FocusPaneById(pane_id); });
 
     EndScissorMode();
+}
+
+// A small hand-drawn robot glyph (COLLAB_CURSORS_PLAN.md) for AI-agent
+// participants -- raylib primitives, not a font glyph: the embedded icon
+// font (icon_font_data.h) is a hard-subsetted ~59-glyph set with no robot
+// codepoint in it, and regenerating it needs fonttools/pyftsubset (not
+// available in this environment, and not worth a new build-time
+// dependency for one icon -- confirmed with the user before building
+// this instead). `pos` is the icon's top-left corner; `size` is its
+// overall square footprint (head + antenna included).
+void DrawRobotIcon(Vector2 pos, float size, Color color) {
+    const float antenna_h = size * 0.18f;
+    const float head_y = pos.y + antenna_h;
+    const float head_size = size - antenna_h;
+    const float antenna_x = pos.x + size / 2.0f;
+
+    DrawLineEx(Vector2{antenna_x, pos.y}, Vector2{antenna_x, head_y}, std::max(1.0f, size * 0.06f), color);
+    DrawCircle(static_cast<int>(antenna_x), static_cast<int>(pos.y), std::max(1.0f, size * 0.07f), color);
+
+    DrawRectangleRounded(Rectangle{pos.x, head_y, head_size, head_size}, 0.3f, 4, color);
+
+    // Eyes: two small dark dots punched through the head, so they read
+    // clearly against the head's own (participant-identity) color rather
+    // than needing a second color parameter.
+    const float eye_r = head_size * 0.09f;
+    const float eye_y = head_y + head_size * 0.42f;
+    DrawCircle(static_cast<int>(pos.x + head_size * 0.32f), static_cast<int>(eye_y), eye_r, BLACK);
+    DrawCircle(static_cast<int>(pos.x + head_size * 0.68f), static_cast<int>(eye_y), eye_r, BLACK);
+}
+
+// Small status badge overlaid on an AI agent's tab-bar chip
+// (COLLAB_CURSORS_PLAN.md Phase 1g) -- a distinct shape/symbol per
+// status, not color alone, so it stays legible in a static screenshot
+// and for colorblind users. No badge at all for "" (idle/never
+// reported) -- an agent that predates this feature, or hasn't called
+// session.setStatus / made an edit yet, renders exactly as it did
+// before this feature existed. `center` is the badge's own center, not
+// the chip's -- callers position it (bottom-right corner of the chip).
+void DrawAgentStatusBadge(Vector2 center, float radius, const std::string &status) {
+    if (status.empty() || status == "idle") return;
+    const int cx = static_cast<int>(center.x);
+    const int cy = static_cast<int>(center.y);
+    // Dark outline first so the badge pops against any of the chip's own
+    // per-identity FNV-hash background color (ParticipantColor) behind
+    // it, regardless of hue.
+    DrawCircle(cx, cy, radius + 1.5f, BLACK);
+    if (status == "thinking") {
+        // A slowly pulsing dot -- deliberating, no observable output yet.
+        const float pulse = 0.6f + 0.4f * sinf(static_cast<float>(GetTime()) * 3.0f);
+        Color c = Color{255, 193, 7, 255};
+        c.a = static_cast<unsigned char>(255 * pulse);
+        DrawCircle(cx, cy, radius, c);
+    } else if (status == "writing") {
+        // A solid dot with a diagonal pencil-stroke through it -- actively
+        // producing edits right now (set automatically by any
+        // buffer.insertText/setLine/replaceLines call, see agent_rpc.cpp).
+        Color c = Color{76, 175, 80, 255};
+        DrawCircle(cx, cy, radius, c);
+        const float r = radius * 0.6f;
+        DrawLineEx(Vector2{center.x - r, center.y + r}, Vector2{center.x + r, center.y - r}, std::max(1.0f, radius * 0.28f), WHITE);
+    } else if (status == "awaiting_input") {
+        // A question mark -- needs the human to respond to something
+        // (elsewhere, in the agent's own conversation -- not observable
+        // by mep itself, always explicitly reported via session.setStatus).
+        Color c = Color{229, 57, 53, 255};
+        DrawCircle(cx, cy, radius, c);
+        const std::string q = "?";
+        const float qs = radius * 1.7f;
+        const Vector2 qsz = MeasureTextEx(g_font, q.c_str(), qs, 0);
+        DrawTextEx(g_font, q.c_str(), Vector2{center.x - qsz.x / 2.0f, center.y - qsz.y / 2.0f}, qs, 0, WHITE);
+    } else if (status == "done") {
+        // A checkmark -- finished whatever it was doing.
+        Color c = Color{66, 165, 245, 255};
+        DrawCircle(cx, cy, radius, c);
+        Vector2 p1{center.x - radius * 0.5f, center.y};
+        Vector2 p2{center.x - radius * 0.1f, center.y + radius * 0.45f};
+        Vector2 p3{center.x + radius * 0.55f, center.y - radius * 0.4f};
+        const float t = std::max(1.0f, radius * 0.28f);
+        DrawLineEx(p1, p2, t, WHITE);
+        DrawLineEx(p2, p3, t, WHITE);
+    }
 }
 
 void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_active) {
@@ -16710,7 +17050,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     // keeps using `a` unchanged (== d.col_start already,
                     // for the byte-offset-as-column content it assumes).
                     float span_x = text_x + (d.has_fg_color ? d.col_start : a) * g_char_width;
-                    DrawTextEx(g_font, span.c_str(), Vector2{span_x, ly}, g_font_size, 0, c);
+                    // has_fg_color spans are EnterTerminalNormalMode's own
+                    // snapshotted terminal-cell text (see its comment just
+                    // above) -- same box-drawing/arrow/punctuation glyph
+                    // coverage gap as live DrawTerminalGrid rendering
+                    // applies here too, so g_terminal_font, not g_font.
+                    DrawTextEx(d.has_fg_color ? g_terminal_font : g_font, span.c_str(), Vector2{span_x, ly}, g_font_size, 0, c);
                 }
             }
             // Per-span underline (Phase 21 gap): a 1px DrawRectangle at
@@ -17036,6 +17381,51 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         hover_cursor_valid = true;
     }
 
+    // Remote participant cursors (COLLAB_CURSORS_PLAN.md): every human
+    // collaborator or AI agent whose own independent cursor is currently
+    // positioned in *this* pane's buffer, drawn as a colored bar plus a
+    // floating name label (with a robot icon for an agent). Runs for
+    // every pane (not just the active one) since DrawPane itself does --
+    // a participant can be in a buffer shown by a background split.
+    // Deliberately simpler than the local cursor's own row->slot math
+    // above: no fold/org-image/latex slot-awareness (a remote
+    // participant's position doesn't interact with this pane's fold/
+    // image state the way local navigation does -- an accepted v1 scope
+    // limit, matching ClampPositionInBuffer's own fold-unaware clamping
+    // in editor.cpp).
+    for (const Editor::ParticipantInfo &participant : g_editor.Participants()) {
+        if (!participant.has_location || participant.buffer_id != pane.buffer_id) continue;
+        if (participant.row < pane.scroll_row || participant.row >= pane.scroll_row + pane.visible_lines) continue;
+
+        const float py = content_y + static_cast<float>(participant.row - pane.scroll_row) * line_height;
+        const float px = text_x + participant.col * g_char_width;
+        const Color color = ToRaylib(ParticipantColor(participant.id));
+
+        DrawRectangle(static_cast<int>(px), static_cast<int>(py), std::max(2, static_cast<int>(g_char_width * 0.25f)), line_height, color);
+
+        const bool is_agent = participant.kind == Editor::ParticipantKind::Agent;
+        const std::string &label_text = participant.name.empty() ? participant.id : participant.name;
+        const float label_icon_w = is_agent ? line_height * 0.8f + 4.0f : 0.0f;
+        const float label_text_w = MeasureTextEx(g_font, label_text.c_str(), g_font_size, 0).x;
+        const float label_pad = 4.0f;
+        const float label_w = label_icon_w + label_text_w + label_pad * 2.0f;
+        const float label_h = static_cast<float>(line_height);
+        const float label_x = px;
+        // Float the label just above the cursor, same as a real
+        // collaborative editor's cursor tag -- unless there's no room
+        // above (the participant is on the pane's own top visible row),
+        // in which case flip it below instead of letting it draw off the
+        // top of the pane.
+        const float label_y = (py - label_h < content_y) ? (py + line_height) : (py - label_h);
+        DrawRectangleRounded(Rectangle{label_x, label_y, label_w, label_h}, 0.3f, 4, Fade(color, 0.92f));
+        float text_draw_x = label_x + label_pad;
+        if (is_agent) {
+            DrawRobotIcon(Vector2{text_draw_x, label_y + (label_h - line_height * 0.8f) / 2.0f}, line_height * 0.8f, WHITE);
+            text_draw_x += label_icon_w;
+        }
+        DrawTextEx(g_font, label_text.c_str(), Vector2{text_draw_x, label_y + (label_h - g_font_size) / 2.0f}, g_font_size, 0, WHITE);
+    }
+
     EndScissorMode();
 
     DrawPaneBorder(x, y, w, h, is_active);
@@ -17126,6 +17516,57 @@ void DrawTabBar(int y) {
     DrawUiText(close_label, Vector2{x, cy}, font_size, ResolveHlGroup("StatusLineFg"));
     RegisterClickRegion(Rectangle{x, static_cast<float>(y), close_w, static_cast<float>(bar_h)},
                          [] { g_editor.TabDelete(); });
+
+    // Participant chips (COLLAB_CURSORS_PLAN.md): who's currently editing
+    // this project -- human collaborators and connected AI agents (robot
+    // icon) -- docked to the tab bar's right edge, growing leftward, so
+    // they don't collide with however many buffer/split tabs are open to
+    // the left. Hovering a chip shows its full name -- immediate-mode
+    // (checked and drawn in the same frame, no persistent hover-state
+    // object) since this is the only place needing a lightweight generic
+    // hover tooltip like this; the existing DrawHoverPopup/IsHoverOpen
+    // machinery is LSP-hover-specific, driven by its own keypress/
+    // debounce state machine, not a fit here.
+    float chip_x = static_cast<float>(screen_w) - 4.0f;
+    const Vector2 mouse = GetMousePosition();
+    for (const Editor::ParticipantInfo &participant : g_editor.Participants()) {
+        const bool is_agent = participant.kind == Editor::ParticipantKind::Agent;
+        const float chip_size = static_cast<float>(bar_h) - 6.0f;
+        chip_x -= chip_size + 4.0f;
+        const Rectangle chip_rect{chip_x, y + 3.0f, chip_size, chip_size};
+        const Color color = ToRaylib(ParticipantColor(participant.id));
+        DrawRectangleRounded(chip_rect, 0.3f, 4, color);
+        if (is_agent) {
+            const float pad = chip_size * 0.15f;
+            DrawRobotIcon(Vector2{chip_x + pad, y + 3.0f + pad}, chip_size - pad * 2.0f, WHITE);
+            const float badge_r = chip_size * 0.24f;
+            DrawAgentStatusBadge(Vector2{chip_x + chip_size - badge_r * 0.75f, y + 3.0f + chip_size - badge_r * 0.75f}, badge_r,
+                                  participant.status);
+        } else {
+            const std::string initial = participant.name.empty() ? "?" : participant.name.substr(0, 1);
+            const float iw = MeasureTextEx(g_font, initial.c_str(), font_size, 0).x;
+            DrawTextEx(g_font, initial.c_str(), Vector2{chip_x + (chip_size - iw) / 2.0f, y + 3.0f + (chip_size - font_size) / 2.0f},
+                       font_size, 0, WHITE);
+        }
+        if (CheckCollisionPointRec(mouse, chip_rect)) {
+            std::string tooltip_text = participant.name.empty() ? participant.id : participant.name;
+            if (is_agent && !participant.status.empty() && participant.status != "idle") {
+                std::string status_label = participant.status;
+                std::replace(status_label.begin(), status_label.end(), '_', ' ');  // "awaiting_input" -> "awaiting input"
+                tooltip_text += " \xe2\x80\x94 " + status_label;  // U+2014 EM DASH
+            }
+            const float tw = MeasureTextEx(g_font, tooltip_text.c_str(), font_size, 0).x;
+            Rectangle tooltip_rect{chip_x + chip_size / 2.0f - tw / 2.0f - 4.0f, static_cast<float>(y + bar_h), tw + 8.0f,
+                                    static_cast<float>(bar_h)};
+            // Keep the tooltip on-screen even for a chip near either edge.
+            if (tooltip_rect.x < 0) tooltip_rect.x = 0;
+            if (tooltip_rect.x + tooltip_rect.width > screen_w) tooltip_rect.x = screen_w - tooltip_rect.width;
+            DrawRectangleRounded(tooltip_rect, 0.3f, 4, ResolveHlGroup("PickerSelected"));
+            DrawTextEx(g_font, tooltip_text.c_str(), Vector2{tooltip_rect.x + 4.0f, tooltip_rect.y + (bar_h - font_size) / 2.0f}, font_size,
+                       0, ResolveHlGroup("StatusLineFg"));
+        }
+        RegisterClickRegion(chip_rect, [id = participant.id] { g_editor.JumpToParticipant(id); });
+    }
 }
 
 // Startup dashboard (Phase 12): shown in place of the pane tree only while
@@ -17275,7 +17716,7 @@ void DrawEditor() {
                 Rectangle chip_rect{peer_x, static_cast<float>(status_y + 2), chip_w, static_cast<float>(status_bar_height - 4)};
                 DrawRectangleRec(chip_rect, ResolveHlGroup("Visual"));
                 DrawTextEx(g_font, chip.c_str(), Vector2{peer_x + 7.0f, static_cast<float>(status_y + 3)}, status_font_size, 0, ResolveHlGroup("StatusLineFg"));
-                RegisterClickRegion(chip_rect, [peer_id = peer.id] { g_editor.JumpToCollaborator(peer_id); });
+                RegisterClickRegion(chip_rect, [peer_id = peer.id] { g_editor.JumpToParticipant(peer_id); });
                 peer_x += chip_w + 5.0f;
             }
             DrawTextEx(g_font, left.c_str(), Vector2{static_cast<float>(kMarginX), static_cast<float>(status_y + 3)},
@@ -18049,6 +18490,7 @@ void UpdateDrawFrame() {
     // std::exception& can't describe via what().
     try {
         JobManager::Instance().PollAll();
+        mep::agent::PollOnce(g_editor);
         g_editor.PollTerminals();
         g_editor.PruneExpiredToasts(GetTime());
         g_editor.SetNow(GetTime());
@@ -18123,8 +18565,81 @@ float GetFontSizePx() { return g_font_size; }
 // linked wrapper.
 void InvalidateOrgInlineImageTexture(const std::string &path) { EvictOrgInlineImageTexture(path); }
 
+// mep never calls TraceLog itself -- every message that reaches here is
+// raylib's own internal diagnostic chatter (texture/shader/font load
+// confirmations, and, since embedding a much broader icon/symbol font
+// set, several thousand "Character [...] size is bigger than expected
+// font size" warnings per launch: one per icon-style glyph whose
+// rasterized bitmap happens to exceed the nominal font size, which is
+// harmless -- confirmed those glyphs still draw correctly, it's just how
+// icon/symbol fonts commonly measure, not a rendering defect). Left at
+// raylib's own default (print straight to stdout), this was easy to miss
+// at mep's original ~90-glyph icon set but is now ~2,000+ lines dumped
+// to the terminal on every single launch: a real, synchronous cost
+// against a live terminal (most emulators render/scroll each line as it
+// arrives) that also buries whatever the user actually launched mep from
+// a terminal to see. Redirected to a real log file instead of suppressed
+// outright, so "why is font/texture loading behaving oddly" is still
+// fully answerable -- just not dumped into every ordinary launch's
+// terminal. `SetTraceLogCallback` fully replaces raylib's own handler
+// (see utils.c's own TraceLog -- it returns immediately once a callback
+// is installed, never falling through to its normal vprintf(stdout)
+// path), so nothing prints to the terminal at all once this is active.
+FILE *g_trace_log_file = nullptr;
+
+void MepTraceLogCallback(int logLevel, const char *text, va_list args) {
+    if (!g_trace_log_file) return;
+    const char *prefix = "";
+    switch (logLevel) {
+        case LOG_TRACE: prefix = "TRACE: "; break;
+        case LOG_DEBUG: prefix = "DEBUG: "; break;
+        case LOG_INFO: prefix = "INFO: "; break;
+        case LOG_WARNING: prefix = "WARNING: "; break;
+        case LOG_ERROR: prefix = "ERROR: "; break;
+        case LOG_FATAL: prefix = "FATAL: "; break;
+        default: break;
+    }
+    fputs(prefix, g_trace_log_file);
+    vfprintf(g_trace_log_file, text, args);
+    fputc('\n', g_trace_log_file);
+}
+
+// Truncates (not appends) on every launch -- this is "what did the most
+// recent run's font/texture/shader loading actually do," not a
+// cross-session audit trail; an ever-growing file serves neither
+// purpose better and just accumulates disk usage across however many
+// times mep has ever been started. Falls back to raylib's own default
+// stdout logging (by simply never installing the callback) if the log
+// file can't be opened -- e.g. no $HOME resolvable at all -- rather than
+// silently discarding every message with nowhere for them to go.
+void SetUpTraceLogFile() {
+    std::string dir = MepDataDir();
+    if (dir.empty()) return;
+    g_trace_log_file = std::fopen((dir + "/mep.log").c_str(), "w");
+    if (!g_trace_log_file) return;
+    SetTraceLogCallback(MepTraceLogCallback);
+    std::printf("mep: logging to %s/mep.log\n", dir.c_str());
+}
+
 int main(int argc, char **argv) {
+    // First thing of all -- StartIconFontBakeAsync's background thread
+    // (right below) calls LoadFontData too, and its own "size is bigger
+    // than expected" warnings need somewhere to go from the moment that
+    // thread starts, not just from here on the main thread.
+    SetUpTraceLogFile();
 #if !defined(__EMSCRIPTEN__)
+    // Kicked off before InitWindow (before anything else in main(), in
+    // fact) so its ~90ms of pure-CPU font-atlas work has the longest
+    // possible window to overlap with -- InitWindow's own GL/driver
+    // setup, ApplyFontSize's other (much cheaper) font loads,
+    // LoadOfficeFonts, BuildMenus, LuaEnv construction and every
+    // kBuiltin* script it runs, treesitter grammar registration -- all
+    // of it, before ApplyFontSize's icon-font block actually needs the
+    // result. See StartIconFontBakeAsync's own comment for the full
+    // reasoning and why this is safe (no GL calls happen on the
+    // background thread).
+    StartIconFontBakeAsync(static_cast<int>(kDefaultFontSize * 2));
+
     // Writing to a subprocess's stdin pipe after that process has already
     // exited (an LSP server that failed to start, crashed, or exited
     // between spawn and mep's own first write to it -- Phase 36 polyglot
@@ -18235,6 +18750,7 @@ int main(int argc, char **argv) {
             lua->DoFile(config_path);
         }
     }
+    mep::agent::Start();
 #endif
 
 #if defined(__EMSCRIPTEN__)
@@ -18264,6 +18780,7 @@ int main(int argc, char **argv) {
     // window-close/:qa -- it sat there until something outside mep (e.g.
     // a couple of Ctrl-C's at the launching shell) killed it by force.
     JobManager::Instance().ShutdownAll();
+    mep::agent::Stop();
 #endif
 
     UnloadFont(g_font);

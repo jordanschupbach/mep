@@ -195,6 +195,7 @@ add_executable(mep
     src/editor.cpp
     src/lua_env.cpp
     src/job.cpp
+    src/agent_rpc.cpp
     src/vterm.cpp
     src/treesitter.cpp
     src/regex.cpp
@@ -250,6 +251,15 @@ if(NOT EMSCRIPTEN)
         target_link_libraries(mep-collab-session-test PRIVATE Threads::Threads)
     else()
         target_link_libraries(mep-collab-session-test PRIVATE ws2_32)
+    endif()
+    if(NOT WIN32)
+        # Unlike the collab tests above, this spawns the real native `mep`
+        # binary (path given as argv[1]) and needs a live display -- run by
+        # hand (`./mep-agent-rpc-test ./mep`), not wired into an automated
+        # ctest suite, matching how the collab tests here aren't either.
+        add_executable(mep-agent-rpc-test src/agent_rpc_test.cpp)
+        target_include_directories(mep-agent-rpc-test PRIVATE src)
+        target_link_libraries(mep-agent-rpc-test PRIVATE Threads::Threads)
     endif()
 endif()
 

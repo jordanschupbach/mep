@@ -1,5 +1,6 @@
 {
   "tasks": {
-    "launch": "deno run --allow-net --allow-read --allow-write --allow-env --allow-ffi --allow-run=/bin/sh --unstable-ffi --unstable-worker-options launcher/serve.ts"
+    "launch": "deno run --allow-net --allow-read --allow-write --allow-env --allow-ffi --allow-run=/bin/sh --unstable-ffi --unstable-worker-options launcher/serve.ts",
+    "mcp": "deno run --allow-net --allow-read --allow-write --allow-env mcp/server.ts"
   }
 }

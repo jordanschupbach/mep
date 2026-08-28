@@ -1,8 +1,11 @@
 #include "editor.h"
 
+#include "agent_rpc.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -1480,6 +1483,13 @@ int Editor::FindOrCreateBuffer(const std::string &path, bool *existed) {
     for (size_t i = 0; i < buffers_.size(); i++) {
         if (!buffers_[i].filename.empty() && buffers_[i].filename == path) {
             if (existed) *existed = true;
+            // Un-deletes it (BufferDelete's own comment) -- re-opening a
+            // path whose buffer was `:bd`'d reuses that same buffer
+            // object (its content/undo history is still sitting right
+            // there, this dedup-by-filename match already found it)
+            // rather than silently staying hidden from buffer_list/
+            // bnext/bprev while LoadFile happily starts editing it again.
+            buffers_[i].deleted = false;
             return static_cast<int>(i);
         }
     }
@@ -1642,8 +1652,26 @@ void Editor::TerminalSpawn(TerminalSession &sess, const std::vector<std::string>
     // so xterm-256color is an honest claim, not just a placeholder value
     // -- matches what the web build's own launcher/serve.ts pty bridge
     // already hardcodes for the same reason.
-    sess.job_id =
-        JobManager::Instance().Spawn(argv, "", std::move(cb), /*use_pty=*/true, {{"TERM", "xterm-256color"}});
+    //
+    // COLORTERM=truecolor for the same reason, added alongside TERM after
+    // a report that a real full-screen TUI (Claude Code's own, running
+    // inside :terminal) looked visibly worse here than in an ordinary
+    // terminal emulator. TERM=xterm-256color only advertises 256-indexed
+    // colors on its own -- COLORTERM is the separate, additional signal
+    // most modern color-detection libraries (supports-color/chalk, which
+    // Node/Ink-based TUIs including Claude Code's use) check before
+    // emitting real 24-bit SGR instead of quantizing to a 256-color
+    // palette. Confirmed empirically, not just from reading chalk's
+    // source: Node's own tty.WriteStream.getColorDepth() -- the same
+    // primitive supports-color is built on -- reports 24 (truecolor) with
+    // COLORTERM=truecolor ambient, but only 8 (256-color) with TERM=
+    // xterm-256color alone, run both ways under `script` (real PTY) with
+    // an otherwise-identical environment. Like TERM above, an honest
+    // claim, not a placeholder: VTerm already parses/renders full 24-bit
+    // RGB SGI (38/48;2;r;g;b), so nothing downstream is left over-
+    // promising.
+    sess.job_id = JobManager::Instance().Spawn(argv, "", std::move(cb), /*use_pty=*/true,
+                                                {{"TERM", "xterm-256color"}, {"COLORTERM", "truecolor"}});
     if (sess.job_id == 0) status_message_ = "Failed to start terminal";
 #endif
 }
@@ -1822,7 +1850,24 @@ void Editor::SyncModeToActivePaneBuffer() {
                mode_ == Mode::OfficeNormal || mode_ == Mode::OfficeInsert || mode_ == Mode::OfficeVisual ||
                mode_ == Mode::SheetNormal || mode_ == Mode::SheetInsert || mode_ == Mode::SheetVisual ||
                mode_ == Mode::KanbanNormal || mode_ == Mode::KanbanInsert || mode_ == Mode::GanttNormal ||
-               mode_ == Mode::GanttInsert) {
+               mode_ == Mode::GanttInsert || mode_ == Mode::Sidebar) {
+        // Mode::Sidebar included here (unlike every other case above,
+        // it's not a *buffer-type*-driven mode, it's an input-focus one)
+        // -- opening a plain-text file from a sidebar (e.g. the built-in
+        // file tree's Enter-on-a-file, kBuiltinFileTree's on_click ->
+        // mep.open -> LoadFile -> here) landed on an ordinary buffer that
+        // doesn't match any branch above, so mode_ was silently left at
+        // Mode::Sidebar even though the real pane it just switched to is
+        // now showing plain text. Every keypress still routed to
+        // HandleSidebarInput() (main.cpp's mode_ dispatch switches purely
+        // on mode_, independent of which pane/buffer is "active"), so
+        // typing did nothing and even hjkl was reinterpreted as sidebar
+        // navigation -- reported as "stuck in sidebar mode after opening
+        // a file, only a mouse click in the pane recovers it." A newly
+        // stale focused_sidebar_id_ is fine left as-is here, same as the
+        // mod1+hjkl pane-blur case (main.cpp's own DrawSidebars comment)
+        // -- every reader of it already gates on mode_ == Mode::Sidebar
+        // first, not on focused_sidebar_id_ alone.
         mode_ = Mode::Normal;
     }
 }
@@ -4763,7 +4808,7 @@ void Editor::HandleTerminalInput() {
         }
         if (!is_forwarded && !(ctrl && key >= KEY_A && key <= KEY_Z)) continue;
         sess->scroll_offset = 0;
-        if (!sess->exited) SendTerminalKey(*sess, key, 0, ctrl);
+        if (!sess->exited) SendTerminalKey(*sess, key, 0, ctrl, shift);
     }
 
     if (!sess->exited) {
@@ -4963,7 +5008,7 @@ void Editor::EnterTerminalNormalMode(TerminalSession &sess) {
     mode_ = Mode::Normal;
 }
 
-void Editor::SendTerminalKey(TerminalSession &sess, int key, int codepoint, bool ctrl) {
+void Editor::SendTerminalKey(TerminalSession &sess, int key, int codepoint, bool ctrl, bool shift) {
     std::string bytes;
     bool app_mode = sess.vterm && sess.vterm->ApplicationCursorKeys();
     if (codepoint > 0) {
@@ -4997,7 +5042,16 @@ void Editor::SendTerminalKey(TerminalSession &sess, int key, int codepoint, bool
                 bytes = "\x7f";
                 break;
             case KEY_TAB:
-                bytes = "\t";
+                // Shift+Tab is CBT (Cursor Backward Tabulation, CSI Z) in
+                // every xterm-class terminal -- a distinct byte sequence
+                // from plain Tab (0x09), not the same byte with a
+                // modifier flag the child could inspect. Previously this
+                // sent a plain "\t" regardless of shift, so any program
+                // relying on Shift+Tab as its own binding (readline's
+                // reverse completion, or Claude Code's own "shift+tab to
+                // cycle" modes, reported broken here) saw indistinguishable
+                // plain-Tab input and could never react to it.
+                bytes = shift ? "\x1b[Z" : "\t";
                 break;
             case KEY_UP:
                 bytes = app_mode ? "\x1bOA" : "\x1b[A";
@@ -5140,6 +5194,74 @@ void Editor::PaneCloseBufferTab() {
     p.buffer_id = p.buffer_tabs[p.buffer_tab_index];
     ClampCursor();
     SyncModeToActivePaneBuffer();
+}
+
+void Editor::BufferDelete(bool force) {
+    const int target = CurPane().buffer_id;
+    if (target < 0 || target >= static_cast<int>(buffers_.size())) return;
+    Buffer &buf = buffers_[target];
+    if (buf.deleted) return;  // already gone (e.g. a stray repeated :bd)
+    if (!force && buf.modified) {
+        status_message_ = "E37: No write since last change (add ! to override)";
+        return;
+    }
+    buf.deleted = true;
+
+    // Computed lazily -- only if some pane actually ends up with nothing
+    // left in its own buffer_tabs once `target` is removed from it.
+    int fallback_id = -1;
+    auto pick_fallback = [&]() {
+        if (fallback_id >= 0) return fallback_id;
+        for (int i = 0; i < static_cast<int>(buffers_.size()); i++) {
+            if (i != target && !buffers_[i].deleted) {
+                fallback_id = i;
+                return fallback_id;
+            }
+        }
+        fallback_id = CreateEmptyBuffer();  // every buffer was deleted -- never leave a pane with none
+        return fallback_id;
+    };
+
+    for (Tab &tab : tabs_) {
+        std::vector<int> pane_ids;
+        CollectLeaves(tab.root.get(), pane_ids);
+        for (int pane_id : pane_ids) {
+            SplitNode *node = FindNode(tab.root.get(), pane_id);
+            if (!node) continue;
+            Pane &p = node->pane;
+            EnsureBufferTabSeeded(p);
+            auto it = std::find(p.buffer_tabs.begin(), p.buffer_tabs.end(), target);
+            if (it == p.buffer_tabs.end()) continue;  // this pane never had `target` open at all
+            const bool was_active = (p.buffer_id == target);
+            const int removed_idx = static_cast<int>(it - p.buffer_tabs.begin());
+            p.buffer_tabs.erase(it);
+            if (p.buffer_tabs.empty()) p.buffer_tabs = {pick_fallback()};
+            if (was_active) {
+                // Land on whatever now occupies the removed tab's own
+                // position (the tab that used to sit right after it),
+                // clamped down if it was the last one -- same "which tab
+                // becomes active" rule PaneCloseBufferTab already uses.
+                p.buffer_tab_index = std::min(removed_idx, static_cast<int>(p.buffer_tabs.size()) - 1);
+                p.buffer_id = p.buffer_tabs[p.buffer_tab_index];
+                // p's own cursor may not even be in-bounds for whatever
+                // buffer it just landed on (a different buffer entirely,
+                // in the fallback case) -- ClampPositionInBuffer, not
+                // ClampCursor, since this may not be CurPane() (the same
+                // deleted buffer can be the active tab in more than one
+                // split pane at once).
+                p.cursor = ClampPositionInBuffer(p.buffer_id, p.cursor);
+            } else {
+                // `target` was only a background tab here -- stay on
+                // whatever was already active, just re-locate its
+                // (possibly shifted-down-by-one) index in the array.
+                auto ait = std::find(p.buffer_tabs.begin(), p.buffer_tabs.end(), p.buffer_id);
+                p.buffer_tab_index = (ait != p.buffer_tabs.end()) ? static_cast<int>(ait - p.buffer_tabs.begin()) : 0;
+            }
+        }
+    }
+    ClampCursor();
+    SyncModeToActivePaneBuffer();
+    status_message_ = "Buffer " + std::to_string(target) + " deleted";
 }
 
 void Editor::PaneMoveBufferTabToNeighbor(const std::string &direction) {
@@ -5299,14 +5421,27 @@ void Editor::TabPrevious() {
 
 void Editor::BufferNext() {
     if (buffers_.size() <= 1) return;
-    int next = (CurPane().buffer_id + 1) % static_cast<int>(buffers_.size());
+    const int n = static_cast<int>(buffers_.size());
+    int next = CurPane().buffer_id;
+    // Bounded by n, not unbounded -- every buffer (including the current
+    // one) could be `:bd`'d, in which case this just steps all the way
+    // around back to where it started and SwitchToBufferForLua below is
+    // a same-buffer no-op, matching BufferPrevious' own bound.
+    for (int i = 0; i < n; i++) {
+        next = (next + 1) % n;
+        if (!buffers_[next].deleted) break;
+    }
     SwitchToBufferForLua(next);
 }
 
 void Editor::BufferPrevious() {
     if (buffers_.size() <= 1) return;
-    int n = static_cast<int>(buffers_.size());
-    int prev = (CurPane().buffer_id - 1 + n) % n;
+    const int n = static_cast<int>(buffers_.size());
+    int prev = CurPane().buffer_id;
+    for (int i = 0; i < n; i++) {
+        prev = (prev - 1 + n) % n;
+        if (!buffers_[prev].deleted) break;
+    }
     SwitchToBufferForLua(prev);
 }
 
@@ -9333,6 +9468,78 @@ bool Editor::CompletionResolveInfo(const std::string &text, std::string *detail,
     return lua_->CallRefWithStringForDetailDoc(completion_resolve_hook_ref_, text, detail, doc);
 }
 
+// Display name for a Mode -- the status line's own label (main.cpp) and,
+// since the addition of the agent-control socket, event.modeChanged's
+// "mode" field (agent_rpc.cpp) both want the same string for the same
+// mode, hence living here rather than as a main.cpp-private helper.
+const char *ModeName(Mode m, bool replace_mode) {
+    switch (m) {
+        case Mode::Normal: return "NORMAL";
+        case Mode::Insert: return replace_mode ? "REPLACE" : "INSERT";
+        case Mode::Visual: return "VISUAL";
+        case Mode::VisualLine: return "V-LINE";
+        case Mode::VisualBlock: return "V-BLOCK";
+        case Mode::Command: return "COMMAND";
+        case Mode::SearchForward:
+        case Mode::SearchBackward:
+            return "SEARCH";
+        case Mode::Prompt: return "INPUT";
+        case Mode::Confirm: return "CONFIRM";
+        case Mode::Select: return "SELECT";
+        case Mode::Preview: return "PREVIEW";
+        case Mode::Sidebar: return "SIDEBAR";
+        case Mode::Picker: return "PICKER";
+        case Mode::RoamGraph: return "ROAM-GRAPH";
+        case Mode::WhichKey: return "WHICHKEY";
+        case Mode::HintChar:
+        case Mode::HintLabel:
+            return "HINT";
+        case Mode::Terminal: return "TERMINAL";
+        case Mode::Image: return "IMAGE";
+        case Mode::Pdf: return "PDF";
+        case Mode::Html: return "HTML";
+        case Mode::OfficeNormal: return "NORMAL";
+        case Mode::OfficeInsert: return "INSERT";
+        case Mode::OfficeVisual: return "VISUAL";
+        case Mode::SheetNormal: return "NORMAL";
+        case Mode::SheetInsert: return "INSERT";
+        case Mode::SheetVisual: return "VISUAL";
+        case Mode::KanbanNormal: return "NORMAL";
+        case Mode::KanbanInsert: return "INSERT";
+        case Mode::GanttNormal: return "NORMAL";
+        case Mode::GanttInsert: return "INSERT";
+    }
+    return "?";
+}
+
+ThemeColor ParticipantColor(const std::string &id) {
+    // A small fixed palette of vivid, mutually-distinguishable colors --
+    // chosen to read reasonably against both a light and a dark theme's
+    // background without per-theme tuning (this codebase has no existing
+    // "identity color" infrastructure to hook into, see this function's
+    // own declaration comment in editor.h).
+    static const ThemeColor kPalette[] = {
+        {230, 76, 60, 255},   // red
+        {230, 148, 40, 255},  // orange
+        {170, 185, 40, 255},  // yellow-green
+        {46, 184, 110, 255},  // green
+        {32, 178, 170, 255},  // teal
+        {52, 130, 230, 255},  // blue
+        {155, 89, 220, 255},  // purple
+        {230, 90, 160, 255},  // pink
+    };
+    // FNV-1a: cheap, stable across runs (unlike std::hash<std::string>,
+    // which is only guaranteed stable within one process execution --
+    // fine here since ids aren't persisted across restarts anyway, but
+    // FNV-1a is just as simple to write directly).
+    uint32_t hash = 2166136261u;
+    for (unsigned char c : id) {
+        hash ^= c;
+        hash *= 16777619u;
+    }
+    return kPalette[hash % (sizeof(kPalette) / sizeof(kPalette[0]))];
+}
+
 // --- Command-line completion (`:` command bar) -----------------------------
 
 namespace {
@@ -9345,13 +9552,14 @@ namespace {
 const std::vector<std::string> &BuiltinCommandNames() {
     static const std::vector<std::string> kNames = {
         "w", "write", "wa", "wall", "q", "quit", "q!", "quit!", "qa", "qall", "qa!", "qall!",
-        "wq", "x", "wqa", "xa", "wqall", "xall", "e", "edit", "split", "sp", "vsplit", "vs",
+        "wq", "x", "wqa", "xa", "wqall", "xall", "e", "edit", "e!", "edit!", "split", "sp", "vsplit", "vs",
         "terminal", "term",
         "close", "tabnew", "tabdelete", "tabclose", "tabnext", "tabn", "tabprevious", "tabp", "tabN",
-        "bnext", "bn", "bprevious", "bprev", "bp", "bNext", "bN",
+        "bnext", "bn", "bprevious", "bprev", "bp", "bNext", "bN", "bdelete", "bd", "bdelete!", "bd!",
         "set", "normal", "norm", "normal!", "norm!", "MepNotifyClear", "MepNotifyDismiss",
         "MepNotifyPanel", "MepLayout", "MepScratch", "MepZen", "colorscheme", "colo", "lua", "source",
         "MepNextSheet", "MepPrevSheet", "Kanban", "Gantt", "Org", "Text", "CollabJoin", "CollabLeave", "CollabStatus",
+        "AgentSocket",
     };
     return kNames;
 }
@@ -9360,7 +9568,7 @@ const std::vector<std::string> &BuiltinCommandNames() {
 // the command name should list directory entries rather than command names.
 bool CommandTakesFileArg(const std::string &name) {
     static const std::vector<std::string> kFileCommands = {
-        "w", "write", "wq", "x", "wqa", "xa", "wqall", "xall", "e", "edit",
+        "w", "write", "wq", "x", "wqa", "xa", "wqall", "xall", "e", "edit", "e!", "edit!",
         "split", "sp", "vsplit", "vs", "tabnew", "source",
     };
     return std::find(kFileCommands.begin(), kFileCommands.end(), name) != kFileCommands.end();
@@ -11358,14 +11566,24 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
         if (SaveFile(args.empty() ? Buf().filename : args)) QuitCurrent(true);
     } else if (name == "wqa" || name == "xa" || name == "wqall" || name == "xall") {
         if (WriteAllModified()) QuitAll(true);
-    } else if (name == "e" || name == "edit") {
-        // force_text=true: the literal `:e`/`:edit` ex-command is the one
-        // deliberate escape hatch back to plain-text for an .html/.htm
-        // file (LoadFile's own comment) -- every other file-open path in
-        // this editor (Enter in the file tree/pickers, LSP jumps, etc.)
-        // goes through mep.open instead, which always opens the default
-        // (rendered) view.
-        LoadFile(args, true);
+    } else if (name == "e" || name == "edit" || name == "e!" || name == "edit!") {
+        // Bare `:e`/`:e!` (no path argument) reloads the *current*
+        // buffer's own file from disk instead of erroring with "no file
+        // name" (LoadFile's own behavior for an empty path, correct for
+        // every other caller but not this one) -- ReloadCurrentBuffer's
+        // own comment has the full reasoning (force/E37, cursor
+        // preserved not reset). `:e path`/`:e! path` are unaffected:
+        // force_text=true, same escape-hatch reasoning as before -- the
+        // bang there only ever meant "no path given" routing, LoadFile
+        // itself has no unsaved-changes guard to override when opening a
+        // *different* file (mep's buffers persist independently, so
+        // switching away from a modified one never loses it).
+        bool bang = !name.empty() && name.back() == '!';
+        if (args.empty()) {
+            ReloadCurrentBuffer(bang);
+        } else {
+            LoadFile(args, true);
+        }
     } else if (name == "split" || name == "sp") {
         SplitCurrentPane(SplitDir::Horizontal, args);
     } else if (name == "vsplit" || name == "vs") {
@@ -11386,6 +11604,8 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
         BufferNext();
     } else if (name == "bprevious" || name == "bprev" || name == "bp" || name == "bNext" || name == "bN") {
         BufferPrevious();
+    } else if (name == "bd" || name == "bdelete" || name == "bd!" || name == "bdelete!") {
+        BufferDelete(!name.empty() && name.back() == '!');
     } else if (name == "set") {
         size_t pos = 0;
         while (pos < args.size()) {
@@ -11445,6 +11665,9 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
     } else if (name == "CollabStatus") {
         if (!CollaborationActive()) status_message_ = "Collaboration: disconnected";
         else status_message_ = "Collaboration: " + std::to_string(CollaborationPeers().size()) + " collaborator(s)";
+    } else if (name == "AgentSocket") {
+        const std::string path = mep::agent::SocketPath();
+        status_message_ = path.empty() ? "Agent socket: unavailable" : ("Agent socket: " + path);
     } else if (name == "colorscheme" || name == "colo") {
         if (args.empty()) {
             status_message_ = current_theme_name_;
@@ -11539,8 +11762,97 @@ void Editor::SetBufferLinesForLua(int buffer_id, const std::vector<std::string> 
     buf.modified = false;
 }
 
+// --- Participant-addressed editing (COLLAB_CURSORS_PLAN.md) ---------------
+
+void Editor::PushUndoForBuffer(int buffer_id) {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
+    Buffer &buf = buffers_[buffer_id];
+    buf.undo_stack.push_back(buf.lines);
+    if (buf.undo_stack.size() > kMaxUndo) buf.undo_stack.erase(buf.undo_stack.begin());
+    buf.redo_stack.clear();
+    change_epoch_++;
+}
+
+CursorPos Editor::ClampPositionInBuffer(int buffer_id, CursorPos pos) const {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return {0, 0};
+    const Buffer &buf = buffers_[buffer_id];
+    const int row = std::max(0, std::min(pos.row, static_cast<int>(buf.lines.size()) - 1));
+    const int col = std::max(0, std::min(pos.col, static_cast<int>(buf.lines[row].size())));
+    return {row, col};
+}
+
+void Editor::SetLineAt(int buffer_id, int row, const std::string &text) {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
+    Buffer &buf = buffers_[buffer_id];
+    if (row < 0 || row >= static_cast<int>(buf.lines.size())) return;
+    PushUndoForBuffer(buffer_id);
+    buf.lines[row] = text;
+    buf.modified = true;
+}
+
+void Editor::ReplaceLinesAt(int buffer_id, int start_row, int end_row, const std::vector<std::string> &lines) {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
+    Buffer &buf = buffers_[buffer_id];
+    start_row = std::max(0, std::min(start_row, static_cast<int>(buf.lines.size())));
+    end_row = std::max(start_row, std::min(end_row, static_cast<int>(buf.lines.size())));
+    PushUndoForBuffer(buffer_id);
+    buf.lines.erase(buf.lines.begin() + start_row, buf.lines.begin() + end_row);
+    buf.lines.insert(buf.lines.begin() + start_row, lines.begin(), lines.end());
+    if (buf.lines.empty()) buf.lines.push_back("");
+    buf.modified = true;
+}
+
+// Splices `text` in as raw bytes at an explicit buffer_id/position --
+// see this method's declaration in editor.h for why it doesn't reuse
+// InsertChar/InsertNewline (their ASCII-only/byte-wise handling silently
+// drops non-ASCII text). Mark/fold shifting (ShiftMarksForLineEdit/
+// ShiftFoldsForLineEdit) is deliberately skipped here -- both are Buf()-
+// implicit (operate on the active buffer only), and generalizing them is
+// out of scope for v1; a remote participant inserting/deleting lines in
+// a buffer that isn't currently active can leave that buffer's own
+// marks/folds stale, same accepted limitation as ClampPositionInBuffer's
+// own fold-unaware clamping.
+CursorPos Editor::InsertTextAt(int buffer_id, CursorPos at, const std::string &text) {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return at;
+    Buffer &buf = buffers_[buffer_id];
+    const CursorPos start = ClampPositionInBuffer(buffer_id, at);
+
+    std::vector<std::string> segments;
+    size_t begin = 0;
+    for (;;) {
+        const size_t nl = text.find('\n', begin);
+        segments.push_back(text.substr(begin, nl == std::string::npos ? std::string::npos : nl - begin));
+        if (nl == std::string::npos) break;
+        begin = nl + 1;
+    }
+
+    PushUndoForBuffer(buffer_id);
+    std::string &line = buf.lines[start.row];
+    const std::string tail = line.substr(start.col);
+    line = line.substr(0, start.col) + segments.front();
+
+    CursorPos result;
+    if (segments.size() == 1) {
+        line += tail;
+        result = {start.row, start.col + static_cast<int>(segments.front().size())};
+    } else {
+        for (size_t i = 1; i + 1 < segments.size(); i++) {
+            buf.lines.insert(buf.lines.begin() + start.row + static_cast<int>(i), segments[i]);
+        }
+        buf.lines.insert(buf.lines.begin() + start.row + static_cast<int>(segments.size()) - 1, segments.back() + tail);
+        result = {start.row + static_cast<int>(segments.size()) - 1, static_cast<int>(segments.back().size())};
+    }
+    buf.modified = true;
+    return result;
+}
+
 std::string Editor::BufferLabelForLua(int buffer_id) const {
     if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return "";
+    // `:bd`/`:bdelete`'d (Buffer::deleted) -- l_buffer_list (lua_env.cpp)
+    // already skips any buffer_id whose label comes back empty, so this
+    // is what actually keeps a deleted buffer out of the Buffers picker
+    // without needing a second, separate filter there.
+    if (buffers_[buffer_id].deleted) return "";
     // Terminal buffers have no filename (they're never saved), so without
     // this they'd all show as the same indistinguishable "[No Name]" --
     // defeating the point of surfacing them here at all now that closing
@@ -12038,6 +12350,28 @@ void Editor::QuitAll(bool force) {
     should_quit_ = true;
 }
 
+void Editor::ReloadCurrentBuffer(bool force) {
+    if (Buf().filename.empty()) {
+        status_message_ = "E32: No file name";
+        return;
+    }
+    if (!force && Buf().modified) {
+        status_message_ = "E37: No write since last change (add ! to override)";
+        return;
+    }
+    std::ifstream in(Buf().filename, std::ios::binary);
+    if (!in) {
+        status_message_ = "E484: Can't open file \"" + Buf().filename + "\"";
+        return;
+    }
+    std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    PushUndo();
+    Buf().lines = SplitIntoLines(content);
+    Buf().modified = false;
+    ClampCursor();
+    status_message_ = "\"" + Buf().filename + "\" " + std::to_string(Buf().LineCount()) + "L reloaded";
+}
+
 void Editor::LoadFile(const std::string &path, bool force_text) {
     if (path.empty()) {
         status_message_ = "E32: No file name";
@@ -12289,7 +12623,32 @@ std::vector<Editor::CollaborationPeerInfo> Editor::CollaborationPeers() const {
     if (collaboration_) for (const auto &peer : collaboration_->Collaborators()) result.push_back({peer.id, peer.name, peer.row, peer.col, peer.has_location});
     return result;
 }
-bool Editor::JumpToCollaborator(const std::string &peer_id) {
-    for (const auto &peer : CollaborationPeers()) if (peer.id == peer_id && peer.has_location) { CurPane().cursor = {peer.row, peer.col}; ClampCursor(); status_message_ = "Collaboration: jumped to " + peer.name; return true; }
-    status_message_ = "Collaboration: collaborator has no shared location"; return false;
+std::vector<Editor::ParticipantInfo> Editor::Participants() const {
+    std::vector<ParticipantInfo> result;
+    for (const auto &peer : CollaborationPeers()) {
+        result.push_back({peer.id, peer.name, ParticipantKind::Human, collaboration_buffer_id_, peer.row, peer.col, peer.has_location, ""});
+    }
+    for (const auto &agent : mep::agent::AgentParticipants()) {
+        result.push_back({agent.id, agent.name, ParticipantKind::Agent, agent.buffer_id, agent.row, agent.col, agent.has_location, agent.status});
+    }
+    return result;
+}
+
+bool Editor::JumpToParticipant(const std::string &id) {
+    for (const auto &p : Participants()) {
+        if (p.id != id) continue;
+        if (!p.has_location) {
+            status_message_ = (p.name.empty() ? p.id : p.name) + " has no known cursor location yet";
+            return false;
+        }
+        if (p.buffer_id >= 0 && p.buffer_id < static_cast<int>(buffers_.size()) && p.buffer_id != CurPane().buffer_id) {
+            SwitchToBufferForLua(p.buffer_id);
+        }
+        CurPane().cursor = {p.row, p.col};
+        ClampCursor();
+        status_message_ = "Jumped to " + (p.name.empty() ? p.id : p.name);
+        return true;
+    }
+    status_message_ = "No such participant";
+    return false;
 }

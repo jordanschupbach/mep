@@ -59,6 +59,22 @@ inline std::string MepDataDir() {
 #endif
 }
 
+// Per-user directory holding one Unix-domain-socket file per running
+// native mep instance (see agent_rpc.h) -- a sibling of MepDataDir()
+// itself rather than a whole separate directory-resolution convention.
+// Empty string (nothing created) if MepDataDir() itself is empty.
+inline std::string MepAgentSocketDir() {
+#if defined(__EMSCRIPTEN__)
+    return "";
+#else
+    std::string base = MepDataDir();
+    if (base.empty()) return "";
+    std::string dir = base + "/agent-sockets";
+    mkdir(dir.c_str(), 0700);
+    return dir;
+#endif
+}
+
 // Reads and parses a JSON file. Returns false (out untouched) if the file
 // doesn't exist or doesn't parse -- callers should treat that as "no
 // persisted state yet", not an error.

@@ -158,6 +158,21 @@ enum class Mode {
     GanttInsert,
 };
 
+// Display name for the status line (main.cpp) and agent_rpc.cpp's
+// event.modeChanged notification -- the one place outside main.cpp that
+// also needs a human/agent-readable mode string, hence living here
+// rather than staying main.cpp-private.
+const char *ModeName(Mode m, bool replace_mode = false);
+
+// A stable, distinct color per participant id (COLLAB_CURSORS_PLAN.md) --
+// hashes `id` into a small fixed palette so the same participant always
+// gets the same color across frames/reconnects (as long as their id
+// string itself is stable), and different participants are visually
+// distinguishable. No precedent for this existed anywhere in the
+// codebase before this feature (confirmed during design) -- every
+// existing collaboration-peer UI element used one uniform color.
+ThemeColor ParticipantColor(const std::string &id);
+
 struct CursorPos {
     int row = 0;
     int col = 0;
@@ -436,6 +451,21 @@ struct Buffer {
     // this flag only distinguishes it for :MepScratch's find-or-create and
     // its tab/status-line label ("[Scratch]" instead of "[No Name]").
     bool scratch = false;
+    // `:bd`/`:bdelete` (Editor::BufferDelete) -- soft-delete, not a real
+    // erase from buffers_: buffer_id is treated as a stable index
+    // everywhere in this codebase (panes, terminals_, agent-rpc
+    // connections' cursor_buffer_id, ...), and only one place
+    // (DropUnusedInitialBuffer, a narrow startup-only case) ever actually
+    // shifts it -- reindexing every one of those sites for a general
+    // "delete any buffer at any time" command would be exactly the kind
+    // of invasive, easy-to-miss-a-site change that class of bug comes
+    // from. A deleted buffer is closed out of every pane/tab currently
+    // showing it (like `:bd` in real vim) and hidden from buffer_list/
+    // bnext/bprev (BufferLabelForLua/BufferNext/BufferPrevious all check
+    // this), but its Buffer object -- content, undo history -- stays put
+    // at its same index; FindOrCreateBuffer clears this again if the same
+    // path is ever opened a second time.
+    bool deleted = false;
 
     std::vector<std::vector<std::string>> undo_stack;
     std::vector<std::vector<std::string>> redo_stack;
@@ -1330,6 +1360,13 @@ public:
     // itself stays on the const overload above, unchanged.
     SplitNode *MutableActiveTabRoot() { return tabs_[active_tab_].root.get(); }
     int ActivePaneId() const { return tabs_[active_tab_].active_pane_id; }
+    // Same as ActiveTabRoot()/ActivePaneId() but for tab `index`
+    // specifically (0 <= index < TabCount(), unchecked -- same contract as
+    // every other accessor here) rather than always the active tab --
+    // agent_rpc.cpp's state.dump walks every open tab, not just the one
+    // currently in view.
+    const SplitNode *TabRoot(int index) const { return tabs_[index].root.get(); }
+    int TabActivePaneId(int index) const { return tabs_[index].active_pane_id; }
     const Buffer &GetBuffer(int buffer_id) const { return buffers_[buffer_id]; }
 
     // --- Terminal panes (`:terminal`/`:term`, Part VI Phase 27+) ---
@@ -1735,11 +1772,54 @@ public:
     // terminal/Run/REPL output into a background buffer the user isn't
     // necessarily looking at right now).
     void SetBufferLinesForLua(int buffer_id, const std::vector<std::string> &lines);
+
+    // --- Participant-addressed editing (COLLAB_CURSORS_PLAN.md) ---
+    // Same shape as ReplaceLinesForLua/SetLineForLua above, but take an
+    // explicit buffer_id + position instead of implicitly targeting
+    // CurPane()/Buf() -- used by agent-rpc connections and (eventually)
+    // collaboration peers so a remote participant's own independent
+    // cursor can be edited at without disturbing the local user's real
+    // one, or whatever buffer they currently have open. Each bounds-
+    // checks buffer_id (no-op on an invalid one) and pushes its own
+    // per-buffer undo entry (PushUndoForBuffer), so the local user can
+    // always `u`-undo a remote edit like any other change.
+    //
+    // InsertTextAt deliberately does not reuse InsertChar/InsertNewline
+    // (editor.cpp): InsertChar rejects any codepoint outside 32-126, and
+    // the existing InsertTextForLua iterates its input byte-wise, so
+    // non-ASCII text has always been silently dropped by buffer.
+    // insertText -- a real, pre-existing bug, out of scope to fix here
+    // (needs its own dedicated verification). InsertTextAt instead
+    // splices the given text in as raw bytes (split on '\n', spliced
+    // into buf.lines directly, the same technique InsertNewline's own
+    // line-splitting already uses), which is correct for UTF-8 by
+    // construction and avoids inheriting that bug in new code.
+    CursorPos InsertTextAt(int buffer_id, CursorPos at, const std::string &text);
+    void SetLineAt(int buffer_id, int row, const std::string &text);
+    void ReplaceLinesAt(int buffer_id, int start_row, int end_row, const std::vector<std::string> &lines);
+    // ClampCursor()'s logic, generalized to an explicit buffer_id/position
+    // instead of CurPane()/mode_ -- deliberately simpler than ClampCursor
+    // (no fold-awareness: a background participant's position doesn't
+    // interact with fold state the way the local cursor's navigation
+    // does; acceptable v1 scope limit, not a correctness bug).
+    CursorPos ClampPositionInBuffer(int buffer_id, CursorPos pos) const;
+    // PushUndo() (editor.cpp), but for an explicit buffer_id instead of
+    // Buf() -- Buffer::undo_stack is already per-buffer, so this is a
+    // small, low-risk generalization, not a new undo model.
+    void PushUndoForBuffer(int buffer_id);
+
     // Creates a new empty buffer *without* switching any pane to it (Part
     // VI Phase 27: a dedicated Run/REPL output buffer, populated via
     // SetBufferLinesForLua before the caller splits a pane and switches
     // it into view there).
     int CreateBufferForLua() { return CreateEmptyBuffer(); }
+    // Finds-or-creates a buffer for `path` *without* switching any pane to
+    // it (same "don't disturb what the human is looking at" contract as
+    // CreateBufferForLua above) -- a thin public wrapper around the
+    // private FindOrCreateBuffer, for callers (agent_rpc.cpp's default-
+    // cursor-position logic, COLLAB_CURSORS_PLAN.md) that need to resolve
+    // a file to a buffer_id but must not touch the active pane/cursor.
+    int FindOrCreateBufferForLua(const std::string &path) { return FindOrCreateBuffer(path); }
     int BufferCountForLua() const { return static_cast<int>(buffers_.size()); }
     std::string BufferLabelForLua(int buffer_id) const;
     // Raw filename (empty for a terminal buffer or an unsaved "[No Name]"
@@ -1905,6 +1985,18 @@ public:
     // how an existing buffer for the same path gets reused across a
     // force_text mismatch instead of duplicated.
     void LoadFile(const std::string &path, bool force_text = false);
+    // Bare `:e`/`:e!` (RunCommand) -- re-reads the *current* buffer's own
+    // file from disk in place, unlike LoadFile(path), which always opens
+    // (or switches to) a buffer for a given path and resets the pane's
+    // cursor/scroll as a fresh-open would. `force`: skip the unsaved-
+    // changes guard (`:e!`), matching QuitCurrent/NewBuffer's own
+    // force/E37 convention. Cursor position is preserved (clamped, in
+    // case the file shrank) rather than reset to {0,0} -- reloading is
+    // "refresh what's on disk", not "open a new file", and the classic
+    // use case (an external tool regenerated this file, or `git checkout`
+    // reverted it) is exactly the case where staying roughly in place
+    // matters.
+    void ReloadCurrentBuffer(bool force);
     // Startup-only cleanup for main()'s own `LoadFile(argv[1])` call:
     // every LoadFile branch acquires a buffer via FindOrCreateBuffer or
     // an OpenXInPlace helper, none of which special-case "there's
@@ -1969,7 +2061,44 @@ public:
     struct CollaborationPeerInfo { std::string id, name; int row = 0, col = 0; bool has_location = false; };
     bool CollaborationActive() const;
     std::vector<CollaborationPeerInfo> CollaborationPeers() const;
-    bool JumpToCollaborator(const std::string &peer_id);
+    // Which buffer :CollabJoin is attached to (-1 if collaboration isn't
+    // active) -- CollaborationPeerInfo itself carries no buffer identity
+    // since collaboration is single-buffer; Participants() (below) is
+    // what attaches this to each human peer for rendering.
+    int CollaborationBufferId() const { return collaboration_buffer_id_; }
+
+    // --- Participants (COLLAB_CURSORS_PLAN.md): a unified view of every
+    // remote editor of this project -- human collaborators (:CollabJoin)
+    // and connected AI agents (src/agent_rpc.cpp), for rendering a real
+    // named/colored cursor per participant plus a tab-bar "who's here"
+    // list. Pull-based (recomputed fresh each call, same pattern as
+    // CollaborationPeers() itself, which this wraps for the Human half) --
+    // no persisted list on Editor, nothing to keep push-synchronized.
+    enum class ParticipantKind { Human, Agent };
+    struct ParticipantInfo {
+        std::string id, name;
+        ParticipantKind kind = ParticipantKind::Human;
+        int buffer_id = -1;
+        int row = 0, col = 0;
+        bool has_location = false;
+        // Agent-only (always "" for a Human participant) -- "idle" |
+        // "thinking" | "writing" | "awaiting_input" | "done", or "" if
+        // the agent has never reported one. See agent_rpc.h's
+        // AgentParticipant::status for where this comes from.
+        std::string status;
+    };
+    std::vector<ParticipantInfo> Participants() const;
+    // Moves the local user's own cursor to participant `id`'s last-known
+    // position -- switching the active pane's buffer first if the
+    // participant is somewhere else (an AI agent, unlike a human
+    // collaborator, can be positioned in any buffer, not just the single
+    // one :CollabJoin ever attaches to). Supersedes the old, narrower
+    // JumpToCollaborator (single-buffer-only, no buffer-switch), which
+    // this replaces -- click handlers for both the tab-bar participant
+    // chips and the status-line collaboration chips now go through this
+    // one function. Returns false (status_message_ explains why) if `id`
+    // isn't a current participant or has no known location yet.
+    bool JumpToParticipant(const std::string &id);
 
     // --- Modal overlays (NVIM_PARITY_PLAN.md Part I Phase 3) ---
     // vim.ui.input/vim.ui.select/confirm-dialog equivalents: each takes
@@ -2560,7 +2689,7 @@ private:
     // Ctrl-N exit chord (which must NOT forward its first half if the
     // second key turns out not to be Ctrl-N) can buffer one key before
     // deciding whether to call this.
-    void SendTerminalKey(TerminalSession &sess, int key, int codepoint, bool ctrl);
+    void SendTerminalKey(TerminalSession &sess, int key, int codepoint, bool ctrl, bool shift = false);
     // Ctrl-\ Ctrl-N (Neovim's terminal-normal chord): snapshots the
     // session's current VTerm scrollback+grid into CurPane()'s own buffer
     // (see the comment above the definition for why this is a snapshot,
@@ -3435,12 +3564,21 @@ private:
     // :bnext/:bn, :bprevious/:bp/:bprev -- cycle CurPane()'s own buffer_id
     // through the flat, ids-are-indices buffers_ vector (SwitchToBufferForLua's
     // own indexing, also what mep.buffer_list()/mep.buffer_switch use),
-    // wrapping at either end. Unlike TabNext/TabPrevious's tabs_ (which can
-    // shrink -- :tabdelete), buffers_ only ever grows (there's no :bdelete),
-    // so there's no need to skip a since-removed id the way that wrap
-    // arithmetic would otherwise have to.
+    // wrapping at either end and skipping any buffer `:bd`/`:bdelete`
+    // (BufferDelete, below) has soft-deleted -- buffers_ itself only ever
+    // grows (unlike TabNext/TabPrevious's tabs_, which can shrink via
+    // :tabdelete), so this is a live filter over a stable index space,
+    // not wrap arithmetic around a since-removed id.
     void BufferNext();
     void BufferPrevious();
+    // :bd/:bdelete, :bd!/:bdelete! -- see Buffer::deleted's own comment
+    // for why this soft-deletes (marks CurPane()'s own buffer hidden from
+    // buffer_list/bnext/bprev and closes it out of every pane/tab
+    // currently showing it, falling back to another open buffer or a
+    // fresh empty one) rather than actually erasing from buffers_.
+    // `force`: skip the unsaved-changes guard (`:bd!`), same E37
+    // convention as QuitCurrent/NewBuffer/ReloadCurrentBuffer.
+    void BufferDelete(bool force);
     // Fills `out` with the normalized rect of every pane in *node's subtree.
     void ComputeRects(const SplitNode *node, float x0, float y0, float x1, float y1,
                        std::vector<PaneRect> &out) const;

@@ -135,6 +135,15 @@ function handlePtyUpgrade(req: Request): Response {
           const childEnv: Record<string, string> = {
             ...Deno.env.toObject(),
             TERM: "xterm-256color",
+            // Same reasoning as the native build's Editor::TerminalSpawn
+            // (src/editor.cpp): TERM=xterm-256color alone only advertises
+            // 256-indexed colors to most color-detection libraries
+            // (supports-color/chalk, which Node/Ink-based TUIs check) --
+            // COLORTERM is the separate signal they look for before
+            // emitting real 24-bit SGR instead of a quantized palette.
+            // VTerm parses/renders full 24-bit RGB SGR either way, so
+            // this is an honest capability claim, not a placeholder.
+            COLORTERM: "truecolor",
             // No real PTY means no ioctl(TIOCSWINSZ) to tell the shell
             // its actual size; COLUMNS/LINES is the best sizing hint
             // available without one (some programs consult it as a

@@ -378,8 +378,13 @@ server.registerTool(
 // same error clearly to the model when it actually tries to do something.
 try {
   await mep.call("session.identify", { name: Deno.env.get("MEP_AGENT_NAME") ?? "Claude" });
-} catch {
-  // swallowed -- see comment above
+} catch (err) {
+  // Not fatal -- see comment above -- but still worth a trace: this is the
+  // one failure mode with no other visible symptom (mep's tab-bar agent
+  // chip just silently never appears), so a silent catch here left users
+  // with no way to find out why. Goes to the MCP server's stderr, which
+  // the client generally logs even though it isn't shown inline.
+  console.error(`mep-agent: session.identify failed at startup: ${err instanceof Error ? err.message : err}`);
 }
 
 await server.connect(new StdioServerTransport());

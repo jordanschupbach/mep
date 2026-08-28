@@ -715,6 +715,44 @@ void FlushAgentEvents(Editor &editor, const std::vector<Connection *> &conns) {
     state.last_notify_id = notify_history.empty() ? state.last_notify_id : notify_history.front().id;
 }
 
+// Removes other mep instances' leftover *.sock files whose listening process
+// is gone -- e.g. mep was killed rather than exiting via :qa! (the only path
+// that runs Stop()'s own unlink). Left in place, a dead file makes
+// mcp/mep_client.ts's discoverSocketPath() glob match more than one socket,
+// which it treats as an unresolvable ambiguity (several live mep windows is
+// a real case it refuses to guess between) -- so the MCP server's startup
+// session.identify silently fails and the tab-bar agent chip never appears,
+// for every future mep session, until someone notices and removes it by hand.
+void PruneStaleSockets(const std::string &dir, const std::string &own_path) {
+    std::error_code ec;
+    for (const auto &entry : std::filesystem::directory_iterator(dir, ec)) {
+        if (ec) return;
+        if (entry.path().extension() != ".sock") continue;
+        const std::string entry_path = entry.path().string();
+        if (entry_path == own_path) continue;
+
+        int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (fd < 0) continue;
+        sockaddr_un addr{};
+        addr.sun_family = AF_UNIX;
+        if (entry_path.size() >= sizeof(addr.sun_path)) {
+            CloseFd(fd);
+            continue;
+        }
+        std::strncpy(addr.sun_path, entry_path.c_str(), sizeof(addr.sun_path) - 1);
+        // AF_UNIX connect() is a local rendezvous, not a network round trip --
+        // it returns immediately whether or not a listener is present, so no
+        // poll()/timeout dance is needed here (unlike AcceptLoop's poll() above).
+        const int rc = connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr));
+        const int connect_errno = errno;
+        CloseFd(fd);
+        if (rc == 0) continue;  // a live mep instance is listening -- leave it alone
+        if (connect_errno == ECONNREFUSED || connect_errno == ENOENT) {
+            unlink(entry_path.c_str());  // file outlived its listener -- safe to remove
+        }
+    }
+}
+
 }  // namespace
 
 void Start() {
@@ -728,6 +766,7 @@ void Start() {
         return;
     }
     const std::string path = dir + "/" + std::to_string(static_cast<long>(getpid())) + ".sock";
+    PruneStaleSockets(dir, path);
     unlink(path.c_str());  // stale socket left behind if a pid was ever reused
 
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);

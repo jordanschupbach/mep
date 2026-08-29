@@ -283,7 +283,19 @@
             # `library(languageserver)` would fail without this. Still
             # provides the same `R`/`Rscript` binaries babel's own
             # execution already used.
-            (pkgs.rWrapper.override { packages = with pkgs.rPackages; [ languageserver ]; })
+            # ggplot2/rpart/rpart.plot cover reports/iris.org's babel
+            # blocks (rpart itself ships as one of R's own "recommended"
+            # packages so it's already on .libPaths() without being
+            # listed here, but rpart.plot and ggplot2 are plain CRAN
+            # packages that need to be pulled in explicitly, same as
+            # languageserver above).
+            (pkgs.rWrapper.override {
+              packages = with pkgs.rPackages; [
+                languageserver
+                ggplot2
+                rpart_plot
+              ];
+            })
             pkgs.php
             pkgs.rustc
             pkgs.cargo

@@ -710,6 +710,7 @@ PaneDragState g_pane_drag;
 constexpr float kPaneDragThresholdPx = 4.0f;
 
 void DrawPaneDragOverlay();  // defined below, alongside UpdatePaneMouseInteraction; called from DrawEditor
+void DrawPaneBorder(float x, float y, float w, float h, bool is_active);  // defined below; also used by DrawSidebars so a focused sidebar gets the same active-border treatment as a focused pane
 
 int LineHeight() { return static_cast<int>(g_font_size) + 6; }
 int MenuBarHeight() { return static_cast<int>(g_font_size) + 12; }
@@ -1543,6 +1544,50 @@ void DrawLineFast(const std::string &line, float x, float y, float font_size, Co
         Rectangle src{g_font.recs[index].x - pad, g_font.recs[index].y - pad,
                       g_font.recs[index].width + 2.0f * pad, g_font.recs[index].height + 2.0f * pad};
         DrawTexturePro(g_font.texture, src, dst, Vector2{0, 0}, 0.0f, tint);
+    }
+}
+
+// Soft-wrap (:set wrap) column<->pixel helpers, shared by every per-row
+// drawing site in DrawPane below (plain text, selection, cursorline,
+// decorations, the blinking cursor itself). A row's visible text is a flat
+// column sequence; wrapping it just means every `wrap_cols`-th column
+// starts a new *visual* row `line_height` further down instead of
+// `g_char_width` further right -- these two helpers are that one idea,
+// applied once instead of separately at each of the many column->pixel
+// sites this function already had before wrap existed. `wrap_cols<=0`
+// (wrap off, or a fold/org-image/org-latex row that never wraps -- see
+// DrawPane's own `row_wrap_cols` local) always maps to "one row, no
+// splitting", i.e. exactly the pre-wrap behavior, so callers don't need a
+// separate "is wrap on" branch of their own.
+
+// Where column `col` of a row lands: `base_ly` is the row's own first
+// visual line's y (what `ly` used to mean everywhere, pre-wrap).
+Vector2 WrapPos(int col, int wrap_cols, float text_x, float base_ly, int line_height) {
+    if (wrap_cols <= 0 || col < wrap_cols) return Vector2{text_x + col * g_char_width, base_ly};
+    int sub = col / wrap_cols;
+    return Vector2{text_x + (col - sub * wrap_cols) * g_char_width, base_ly + sub * line_height};
+}
+
+// Invokes draw(y, x0, x1, piece_col_start, piece_col_end) once per visual
+// row the column range [col_a, col_b) touches -- a selection/decoration
+// span that straddles a wrap boundary needs one rectangle-or-text-draw per
+// side of it, same as a fold or org inline image already needing more than
+// one draw call for what's logically a single row.
+template <typename Fn>
+void ForEachWrapPiece(int col_a, int col_b, int wrap_cols, float text_x, float base_ly, int line_height, Fn &&draw) {
+    if (col_b <= col_a) return;
+    if (wrap_cols <= 0) {
+        draw(base_ly, text_x + col_a * g_char_width, text_x + col_b * g_char_width, col_a, col_b);
+        return;
+    }
+    int c = col_a;
+    while (c < col_b) {
+        int sub = c / wrap_cols;
+        int piece_end = std::min(col_b, (sub + 1) * wrap_cols);
+        float x0 = text_x + (c - sub * wrap_cols) * g_char_width;
+        float x1 = text_x + (piece_end - sub * wrap_cols) * g_char_width;
+        draw(base_ly + sub * line_height, x0, x1, c, piece_end);
+        c = piece_end;
     }
 }
 
@@ -8017,6 +8062,107 @@ const char *kBuiltinOrgBabel =
     "  mep.notify('Tangled ' .. #order .. ' file(s)')\n"
     "end\n"
     "mep.command('MepOrgBabelTangle', mep.org_babel_tangle)\n"
+    // :session support, export-only: real org-babel keeps one persistent
+    // interpreter per :session name, so a block that does `library(x)`
+    // (R) / imports something / defines a variable is visible to a later
+    // block sharing that same session -- a plain per-block Rscript/
+    // python3/etc. invocation (what every block still gets without
+    // :session, both here and in mep.org_babel_execute) starts fresh
+    // every time and can never see it, so e.g. a plot block relying on
+    // an earlier block's `library(ggplot2)` just fails with "could not
+    // find function ggplot". This does NOT run a real persistent
+    // interpreter (no interactive C-c C-c continuation -- mep.org_babel_
+    // execute is unchanged) -- only export, which already runs every
+    // block in one batch, gets it: mep_org_babel_run_session_group
+    // concatenates every same-session block's own prepared script (var
+    // prelude + body + graphics_wrap, identical to what a standalone run
+    // would produce) with a printed sentinel line between each pair,
+    // runs the whole thing as ONE process, and splits the combined
+    // stdout back apart on those sentinels to build each block's own
+    // #+RESULTS: -- so state genuinely carries forward within the group,
+    // in document order, the same way a real session would. Only
+    // languages with a print_stmt (the sentinel needs one) and no
+    // wrap_main (concatenating several wrapped mains -- multiple
+    // `int main(){}`s, repeated `<?php` tags -- isn't valid source)
+    // qualify; the compiled languages and PHP always fall back to
+    // independent per-block runs, same as a block with no :session at
+    // all. :cache is ignored within a group (always re-run) -- caching
+    // one sub-result out of a combined script isn't worth the added
+    // complexity here.
+    "local function mep_org_babel_session_name(blk)\n"
+    "  local s = blk.args_str:match(':session%s+(%S+)')\n"
+    "  if not s or s == 'none' or s == 'no' then return nil end\n"
+    "  return s\n"
+    "end\n"
+    "local function mep_org_babel_session_eligible(lang_def)\n"
+    "  return lang_def.print_stmt ~= nil and lang_def.wrap_main == nil\n"
+    "end\n"
+    "local function mep_org_babel_split_marker(i) return '::mep-babel-split-' .. i .. '::' end\n"
+    // Always returns at least one segment (even with zero markers found),
+    // so `#segments` alone tells the caller how far a script that died
+    // partway through actually got -- see mep_org_babel_run_session_group's
+    // error branch below.
+    "local function mep_org_babel_split_session_output(out_lines)\n"
+    "  local segments, current, next_i = {}, {}, 1\n"
+    "  for _, line in ipairs(out_lines) do\n"
+    "    if line:find(mep_org_babel_split_marker(next_i), 1, true) then\n"
+    "      segments[#segments + 1] = current\n"
+    "      current = {}\n"
+    "      next_i = next_i + 1\n"
+    "    else\n"
+    "      current[#current + 1] = line\n"
+    "    end\n"
+    "  end\n"
+    "  segments[#segments + 1] = current\n"
+    "  return segments\n"
+    "end\n"
+    "function mep_org_babel_run_session_group(blks, lang_def, exe, blk_dir, results, on_done)\n"
+    "  local script = {}\n"
+    "  for i, blk in ipairs(blks) do\n"
+    "    local resolved_file = blk.file and mep_org_resolve_path(blk.file) or nil\n"
+    "    local body_lines = mep_org_babel_split_lines(blk.body)\n"
+    "    local blk_script = mep_org_babel_prepare_script(\n"
+    "      blk.lang, lang_def, blk.vars, body_lines, blk.args_str, blk.results_modes, resolved_file)\n"
+    "    mep_org_babel_extend(script, blk_script)\n"
+    "    if i < #blks then\n"
+    "      script[#script + 1] = lang_def.print_stmt(mep_org_babel_format_literal(mep_org_babel_split_marker(i)))\n"
+    "    end\n"
+    "  end\n"
+    "  mep_org_babel_spawn(lang_def, exe, script, '', function(code, out_lines, err_lines, failure_verb)\n"
+    "    local segments = mep_org_babel_split_session_output(out_lines)\n"
+    "    if code == 0 then\n"
+    "      for i, blk in ipairs(blks) do\n"
+    "        local resolved_file = blk.file and mep_org_resolve_path(blk.file) or nil\n"
+    "        local lines, raw = mep_org_babel_result_lines(blk, segments[i] or {}, resolved_file)\n"
+    "        results[blk.end_row] = {lines = lines, raw = raw}\n"
+    "      end\n"
+    "    else\n"
+    // Blocks before #segments got a clean, complete sentinel-delimited
+    // section, so they ran fully. Block #segments is where the script
+    // actually stopped (its trailing sentinel never printed) -- that's
+    // the one the error belongs to. Anything after it never ran at all;
+    // left untouched in `results` so mep_org_babel_splice_results leaves
+    // whatever #+RESULTS: it already had alone rather than inventing a
+    // "skipped" message for it.
+    "      for i, blk in ipairs(blks) do\n"
+    "        if i < #segments then\n"
+    "          local resolved_file = blk.file and mep_org_resolve_path(blk.file) or nil\n"
+    "          local lines, raw = mep_org_babel_result_lines(blk, segments[i] or {}, resolved_file)\n"
+    "          results[blk.end_row] = {lines = lines, raw = raw}\n"
+    "        elseif i == #segments then\n"
+    "          mep.notify(\n"
+    "            'Babel (export, :session ' .. (mep_org_babel_session_name(blk) or '?') .. '): ' .. failure_verb\n"
+    "              .. ' failed (' .. blk.lang .. ', exit ' .. code .. '): '\n"
+    "              .. (mep_org_babel_first_error_line(err_lines) or 'no error output'),\n"
+    "            'warn'\n"
+    "          )\n"
+    "          results[blk.end_row] = {lines = err_lines, raw = false}\n"
+    "        end\n"
+    "      end\n"
+    "    end\n"
+    "    on_done()\n"
+    "  end, blk_dir)\n"
+    "end\n"
     // Export-time babel execution (kBuiltinOrgExport's mep_org_export_
     // prepare is the only caller): runs every #+BEGIN_SRC block in the
     // CURRENT buffer, in document order, sequentially -- each waits for
@@ -8032,6 +8178,12 @@ const char *kBuiltinOrgBabel =
     // export, so it's treated as a skip rather than a hang). A block
     // whose language can't be resolved (missing interpreter) is skipped
     // with a warning notification rather than aborting the whole export.
+    // Blocks sharing a language + :session name (mep_org_babel_session_
+    // eligible above) are gathered into one 'group' plan entry, in
+    // first-occurrence order, and run together via mep_org_babel_run_
+    // session_group instead of one 'single' entry per block -- everything
+    // else about the walk (sequential, one thing running at a time) is
+    // unchanged.
     // Known gap, documented rather than silently wrong: operates on this
     // buffer's own lines only, before #+INCLUDE:/macro resolution (that
     // happens afterward, in mep_org_export_prepare) -- a code block
@@ -8057,22 +8209,47 @@ const char *kBuiltinOrgBabel =
     "  end\n"
     "  local blk_dir = mep_lsp_abspath(mep.filename()):match('^(.*)/[^/]*$') or '.'\n"
     "  local results = {}\n"
-    "  local function run_index(idx)\n"
-    "    if idx > #blocks then\n"
-    "      callback(mep_org_babel_splice_results(base_lines, blocks, results))\n"
-    "      return\n"
-    "    end\n"
-    "    local blk = blocks[idx]\n"
+    "  local plan, group_at = {}, {}\n"
+    "  for _, blk in ipairs(blocks) do\n"
     "    local eval_arg = blk.args_str:match(':eval%s+(%S+)')\n"
     "    local skip = eval_arg and (eval_arg == 'no' or eval_arg == 'never' or eval_arg:match('%-export$') or eval_arg:match('^query'))\n"
     "    if skip then\n"
-    "      run_index(idx + 1)\n"
+    "      plan[#plan + 1] = {kind = 'skip'}\n"
+    "    else\n"
+    "      local lang_def, exe_or_err = mep_org_babel_resolve_lang(blk.lang)\n"
+    "      local session = lang_def and mep_org_babel_session_eligible(lang_def) and mep_org_babel_session_name(blk)\n"
+    "      if session then\n"
+    "        local key = blk.lang .. '|' .. session\n"
+    "        local gi = group_at[key]\n"
+    "        if gi then\n"
+    "          table.insert(plan[gi].blks, blk)\n"
+    "        else\n"
+    "          plan[#plan + 1] = {kind = 'group', lang_def = lang_def, exe = exe_or_err, blks = {blk}}\n"
+    "          group_at[key] = #plan\n"
+    "        end\n"
+    "      else\n"
+    "        plan[#plan + 1] = {kind = 'single', blk = blk, lang_def = lang_def, exe_or_err = exe_or_err}\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  local function run_plan(idx)\n"
+    "    if idx > #plan then\n"
+    "      callback(mep_org_babel_splice_results(base_lines, blocks, results))\n"
     "      return\n"
     "    end\n"
-    "    local lang_def, exe_or_err = mep_org_babel_resolve_lang(blk.lang)\n"
+    "    local entry = plan[idx]\n"
+    "    if entry.kind == 'skip' then\n"
+    "      run_plan(idx + 1)\n"
+    "      return\n"
+    "    end\n"
+    "    if entry.kind == 'group' then\n"
+    "      mep_org_babel_run_session_group(entry.blks, entry.lang_def, entry.exe, blk_dir, results, function() run_plan(idx + 1) end)\n"
+    "      return\n"
+    "    end\n"
+    "    local blk, lang_def, exe_or_err = entry.blk, entry.lang_def, entry.exe_or_err\n"
     "    if not lang_def then\n"
     "      mep.notify('Babel (export): ' .. exe_or_err, 'warn')\n"
-    "      run_index(idx + 1)\n"
+    "      run_plan(idx + 1)\n"
     "      return\n"
     "    end\n"
     "    local resolved_file = blk.file and mep_org_resolve_path(blk.file) or nil\n"
@@ -8080,7 +8257,7 @@ const char *kBuiltinOrgBabel =
     "    if blk.cache == 'yes' and mep_org_babel_cache[cache_key] then\n"
     "      local lines, raw = mep_org_babel_result_lines(blk, mep_org_babel_cache[cache_key], resolved_file)\n"
     "      results[blk.end_row] = {lines = lines, raw = raw}\n"
-    "      run_index(idx + 1)\n"
+    "      run_plan(idx + 1)\n"
     "      return\n"
     "    end\n"
     "    local body_lines = mep_org_babel_split_lines(blk.body)\n"
@@ -8102,10 +8279,10 @@ const char *kBuiltinOrgBabel =
     "        local lines, raw = mep_org_babel_result_lines(blk, out_lines, resolved_file)\n"
     "        results[blk.end_row] = {lines = lines, raw = raw}\n"
     "      end\n"
-    "      run_index(idx + 1)\n"
+    "      run_plan(idx + 1)\n"
     "    end, blk_dir)\n"
     "  end\n"
-    "  run_index(1)\n"
+    "  run_plan(1)\n"
     "end\n"
     // Returns a NEW lines array: base_lines with, right after each block
     // in `blocks` that has a `results[blk.end_row]` entry, a formatted
@@ -10742,20 +10919,41 @@ const char *kBuiltinAi =
     "  end)\n"
     "end\n"
     "function mep.ai_cancel()\n"
-    "  if mep_ai_active_job then mep.job_kill(mep_ai_active_job) mep_ai_active_job = nil mep.notify('AI stream cancelled') end\n"
+    "  if mep_ai_active_job then mep.job_kill(mep_ai_active_job) mep_ai_active_job = nil mep.participant_clear('ai-stream') mep.notify('AI stream cancelled') end\n"
     "end\n"
     "mep.command('MepAiCancel', mep.ai_cancel)\n"
-    // Send-buffer / send-range: streams the response in at the cursor,
-    // one mep.insert_text(delta) call per chunk -- an ever-advancing
-    // cursor position is inherently gravity-tracked without needing a
-    // dedicated decoration-based tracker.
-    "function mep.ai_send_text(prompt)\n"
-    "  local n = mep.line_count()\n"
-    "  mep.replace_lines(n + 1, n + 1, {'', '--- AI response ---', ''})\n"
-    "  mep.set_cursor(mep.line_count(), 1)\n"
+    // Send-buffer / send-range: streams the response in right where the
+    // cursor already is (never relocates it first -- e.g. sending the
+    // whole buffer as context via 'gl' still answers in place, at point,
+    // not appended after a jump to the end), one mep.insert_text(delta)
+    // call per chunk -- an ever-advancing cursor position is inherently
+    // gravity-tracked without needing a dedicated decoration-based tracker.
+    //
+    // While the stream runs, a synthetic 'ai-stream' participant (see
+    // mep.participant_set/Editor::SetLocalParticipant) rides the same
+    // cursor: this gets the response the same tab-bar robot-icon chip +
+    // in-buffer colored cursor label a real connected mep-agent gets via
+    // agent_rpc.cpp, for free, via the existing per-frame Participants()
+    // polling in DrawTabBar/DrawPane -- no redraw call needed here.
+    // `on_complete`, if given, runs once the response finishes streaming
+    // in, before the "AI response complete" notification -- e.g.
+    // mep.ai_replace_selection uses it to drop back to Normal mode, the
+    // way a human typing the same replacement by hand would on <Esc>.
+    "function mep.ai_send_text(prompt, on_complete)\n"
+    "  local buf = mep.current_buffer()\n"
+    "  local row, col = mep.cursor()\n"
+    "  mep.participant_set('ai-stream', 'AI', buf, row, col, 'writing')\n"
     "  mep_ai_request({{role = 'user', content = prompt}}, nil,\n"
-    "    function(delta) mep.insert_text(delta) end,\n"
-    "    function(tool_calls) mep.notify('AI response complete') end)\n"
+    "    function(delta)\n"
+    "      mep.insert_text(delta)\n"
+    "      local r, c = mep.cursor()\n"
+    "      mep.participant_set('ai-stream', 'AI', buf, r, c, 'writing')\n"
+    "    end,\n"
+    "    function(tool_calls)\n"
+    "      mep.participant_clear('ai-stream')\n"
+    "      if on_complete then on_complete() end\n"
+    "      mep.notify('AI response complete')\n"
+    "    end)\n"
     "end\n"
     "function mep.ai_send_buffer()\n"
     "  local lines = {}\n"
@@ -10782,9 +10980,451 @@ const char *kBuiltinAi =
     "  if sel == '' then mep.notify('No Visual selection', 'warn') return end\n"
     "  mep.ai_send_text(sel)\n"
     "end\n"
+    // Replace-selection variant of the above: sends the same prompt (the
+    // highlighted text) but, unlike mep.ai_send_selection, first deletes
+    // the selection (mep.visual_change -- the "c" operator, so it's
+    // undoable and yanked like any other change) and streams the response
+    // in at that exact spot, so the AI's answer *replaces* what was
+    // highlighted instead of merely being sent alongside it.
+    "function mep.ai_replace_selection()\n"
+    "  local sel = mep.visual_selection()\n"
+    "  if sel == '' then mep.notify('No Visual selection', 'warn') return end\n"
+    "  mep.visual_change()\n"
+    "  mep.ai_send_text(sel, mep.enter_normal)\n"
+    "end\n"
     "mep.command('MepAiSendBuffer', mep.ai_send_buffer)\n"
     "mep.command('MepAiSendSelection', mep.ai_send_selection)\n"
+    "mep.command('MepAiReplaceSelection', mep.ai_replace_selection)\n"
     "mep.map('v', 'K', mep.ai_send_selection, {desc = 'AI: send selection'})\n"
+    // A shorter alias for the whole-buffer send above, plus a leader
+    // binding for it -- gptel-style "quick one-off, not agentic" entry
+    // point distinct from MepAiAgent's tool-calling sidebar below.
+    // Bound via mep.map_g (not plain mep.map, which only ever sees a
+    // single already-unprefixed keystroke and can't reach anything typed
+    // after a pending 'g' -- see mep.map_g('d', ...) above for lsp_goto_definition).
+    "mep.command('MepAiSend', mep.ai_send_buffer)\n"
+    "mep.map_g('l', mep.ai_send_buffer)\n"
+    // Visual mode's own 'gl': Normal mode's g_mappings_ and Visual mode's
+    // visual_g_mappings_ are two entirely separate tables (DispatchVisualKey
+    // has its own pending-g dispatch, see mep.map_g_visual's doc comment),
+    // so this needs its own registration even though it's the same 'gl'
+    // spelling -- and deliberately means something different here: replace
+    // the highlighted selection instead of sending the whole buffer.
+    "mep.map_g_visual('l', mep.ai_replace_selection)\n"
+    // AI context picker (<leader>ai): a fuzzy-findable, checkbox-toggled
+    // list of extra text blobs to prepend alongside the buffer when
+    // sending to the AI -- mep_ai_request itself never attaches anything
+    // beyond the messages array it's given (no hidden system prompt), so
+    // this is purely an opt-in way to compose more than just "the whole
+    // buffer" into that one user message, without needing a dozen
+    // one-off ai_send_* variants.
+    //
+    // mep.ai_context_items is the persistent (session-lifetime, like
+    // mep_ai_tool_allow_always above) list: {id, name, text, enabled,
+    // dynamic}. `name` is a short label typed separately from `text`
+    // (Ctrl-A prompts for each in turn) so fuzzy-finding has a real key to
+    // search distinct from the body. `dynamic` entries carry no fixed
+    // `text` -- currently just the one seeded default, resolved fresh at
+    // send time via mep_ai_context_current_buffer_text, so toggling it
+    // always reflects the buffer's live contents rather than a stale
+    // snapshot taken when it was added.
+    "mep.ai_context_items = mep.ai_context_items or {}\n"
+    "local mep_ai_context_next_id = 0\n"
+    "local mep_ai_context_escape_armed = false\n"
+    "local function mep_ai_context_ensure_default()\n"
+    "  if #mep.ai_context_items == 0 then\n"
+    "    table.insert(mep.ai_context_items, {id = 'current-buffer', name = 'Current buffer text', enabled = true, dynamic = true})\n"
+    "  end\n"
+    "end\n"
+    "local function mep_ai_context_find(id)\n"
+    "  for i, it in ipairs(mep.ai_context_items) do\n"
+    "    if it.id == id then return i, it end\n"
+    "  end\n"
+    "end\n"
+    "local function mep_ai_context_current_buffer_text()\n"
+    "  local lines = {}\n"
+    "  for i = 1, mep.line_count() do lines[#lines + 1] = mep.get_line(i) end\n"
+    "  return table.concat(lines, '\\n')\n"
+    "end\n"
+    // Scores one entry against `query`: any match in `name`, however
+    // weak, outranks every text-only match (a flat tier bump) -- "give
+    // precedence towards the names" -- while mep.fuzzy_score's own score
+    // still orders candidates within each tier. nil means neither field
+    // matched at all (only possible when query isn't empty).
+    "local function mep_ai_context_score(it, query)\n"
+    "  if query == '' then return 0 end\n"
+    "  local name_score = (mep.fuzzy_score(it.name, query))\n"
+    "  if name_score >= 0 then return 1000000 + name_score end\n"
+    "  local text_score = it.text and (mep.fuzzy_score(it.text, query)) or -1\n"
+    "  if text_score >= 0 then return text_score end\n"
+    "end\n"
+    // Fakes the checkbox via a literal "[x]"/"[ ]" prefix baked into
+    // `display` -- PickerItem itself has no checked-state field. Filtering
+    // happens entirely here rather than in the picker's own built-in
+    // engine (which only ever scores `display`) -- see raw_results=true
+    // on mep.picker_open below -- so a query can match `name` OR `text`,
+    // with the name-precedence weighting above.
+    "local function mep_ai_context_filtered_items(query)\n"
+    "  local scored = {}\n"
+    "  for i, it in ipairs(mep.ai_context_items) do\n"
+    "    local s = mep_ai_context_score(it, query)\n"
+    "    if s then scored[#scored + 1] = {it = it, score = s, idx = i} end\n"
+    "  end\n"
+    "  table.sort(scored, function(a, b)\n"
+    "    if a.score ~= b.score then return a.score > b.score end\n"
+    "    return a.idx < b.idx\n"
+    "  end)\n"
+    "  local items = {}\n"
+    "  for _, e in ipairs(scored) do\n"
+    "    items[#items + 1] = {display = (e.it.enabled and '[x] ' or '[ ] ') .. e.it.name, data = e.it.id}\n"
+    "  end\n"
+    "  return items\n"
+    "end\n"
+    // `preserve_escape_arm`: internal-only, set when this is a
+    // self-reopen from a first Escape press below -- never passed by
+    // <leader>ai/:MepAiContextPicker, so a genuinely fresh open always
+    // starts unarmed.
+    "function mep.ai_context_picker(preserve_escape_arm)\n"
+    "  if not preserve_escape_arm then mep_ai_context_escape_armed = false end\n"
+    "  mep_ai_context_ensure_default()\n"
+    "  local current_query = ''\n"
+    "  local items = mep_ai_context_filtered_items(current_query)\n"
+    "  local highlighted = items[1] and items[1].data or nil\n"
+    "  mep.picker_open('AI context (C-y toggle, C-a add, C-d delete)', items,\n"
+    "    function(data)\n"
+    // Editor::HandlePickerInput's escape branch tears the picker down
+    // completely -- mode_ restored, callbacks unreffed -- *before* ever
+    // calling on_select(nil), so there is no way to veto or intercept the
+    // close itself. The only way to make Escape require two presses is to
+    // detect the cancel here, after the fact, and immediately reopen a
+    // fresh picker (preserving the armed flag), so only a *second*,
+    // uninterrupted Escape -- or hitting Enter/nothing else in between --
+    // actually leaves it closed. Any other interaction (typing, C-y/a/d,
+    // navigating) disarms it below, so the pair must be consecutive.
+    "      if data == nil then\n"
+    "        if not mep_ai_context_escape_armed then\n"
+    "          mep_ai_context_escape_armed = true\n"
+    "          mep.notify('Press Escape again to close')\n"
+    "          mep.ai_context_picker(true)\n"
+    "        else\n"
+    "          mep_ai_context_escape_armed = false\n"
+    "        end\n"
+    "        return\n"
+    "      end\n"
+    "      mep_ai_context_escape_armed = false\n"
+    "      local parts = {}\n"
+    "      for _, it in ipairs(mep.ai_context_items) do\n"
+    "        if it.enabled then\n"
+    "          parts[#parts + 1] = it.dynamic and mep_ai_context_current_buffer_text() or it.text\n"
+    "        end\n"
+    "      end\n"
+    "      if #parts == 0 then mep.notify('No AI context selected', 'warn') return end\n"
+    "      mep.ai_send_text(table.concat(parts, '\\n\\n'))\n"
+    "    end,\n"
+    "    function(query)\n"
+    "      mep_ai_context_escape_armed = false\n"
+    "      current_query = query\n"
+    "      mep.picker_set_items(mep_ai_context_filtered_items(query))\n"
+    "    end,\n"
+    "    function(key)\n"
+    "      mep_ai_context_escape_armed = false\n"
+    "      if key == 'y' then\n"
+    // `highlighted and f(highlighted)` would silently collapse to just
+    // the first return value here (Lua truncates a binary `and`'s result
+    // to one value even when its right side is a multi-return call), so
+    // the guard has to be a separate `if` rather than folded into the
+    // assignment, or `it` would always come back nil.
+    "        if highlighted then\n"
+    "          local _, it = mep_ai_context_find(highlighted)\n"
+    "          if it then it.enabled = not it.enabled end\n"
+    "        end\n"
+    "        mep.picker_set_items(mep_ai_context_filtered_items(current_query))\n"
+    "      elseif key == 'a' then\n"
+    "        mep.ui_input('New context name:', '', function(name)\n"
+    "          if name == nil or name == '' then return end\n"
+    "          mep.ui_input('New context text:', '', function(text)\n"
+    "            if text == nil or text == '' then return end\n"
+    "            mep_ai_context_next_id = mep_ai_context_next_id + 1\n"
+    "            table.insert(mep.ai_context_items, {id = 'ctx-' .. mep_ai_context_next_id, name = name, text = text, enabled = true, dynamic = false})\n"
+    "            mep.picker_set_items(mep_ai_context_filtered_items(current_query))\n"
+    "          end)\n"
+    "        end)\n"
+    "      elseif key == 'd' then\n"
+    "        local idx = highlighted and mep_ai_context_find(highlighted)\n"
+    "        if idx then\n"
+    "          table.remove(mep.ai_context_items, idx)\n"
+    "          local new_items = mep_ai_context_filtered_items(current_query)\n"
+    "          local new_idx = math.min(idx, #new_items)\n"
+    "          highlighted = new_items[new_idx] and new_items[new_idx].data or nil\n"
+    "          mep.picker_set_items(new_items)\n"
+    "        end\n"
+    "      end\n"
+    "    end,\n"
+    "    function(data)\n"
+    "      mep_ai_context_escape_armed = false\n"
+    "      highlighted = data\n"
+    "    end,\n"
+    "    true)\n"
+    "end\n"
+    "mep.command('MepAiContextPicker', mep.ai_context_picker)\n"
+    "mep.leader_map('ai', 'AI: context picker', mep.ai_context_picker)\n"
+    // Speech-to-text (<leader>v toggles): press once to start recording,
+    // press again to stop -- while it's running, the transcript streams in
+    // at the cursor a few seconds behind your voice, entering Insert mode
+    // first if the buffer wasn't already there, so dictated text behaves
+    // like typed text.
+    //
+    // Whisper's REST endpoint has no partial-result/SSE mode (unlike the
+    // chat endpoints above) -- it only ever transcribes one complete audio
+    // file and returns the whole thing at once. True word-by-word
+    // streaming would mean OpenAI's separate Realtime API (a WebSocket
+    // session, PCM frames, server-side turn detection) instead, which is
+    // a materially bigger integration. So the toggle here fakes "live"
+    // transcription by having ffmpeg itself cut the recording into short
+    // back-to-back segments (mep.stt_chunk_seconds each) via its `segment`
+    // muxer -- one continuous capture, no gap between chunks -- and
+    // transcribing each segment the moment ffmpeg finalizes it, so text
+    // lands progressively instead of only after the whole recording ends.
+    // Smaller chunks lower the latency before words appear at the cost of
+    // more API calls (and Whisper is more prone to hallucinating filler
+    // text like "Thank you." on a chunk that's mostly silence); larger
+    // chunks are the opposite trade.
+    //
+    // mep.stt_record_cmd is the recording command *up to* (not including)
+    // the segmenting/output flags, which get appended right before
+    // spawning -- overridable in user config for a different audio
+    // backend (e.g. 'alsa'/'avfoundation' instead of 'pulse') or a
+    // different recording tool entirely (arecord, sox), as long as it
+    // still understands the segment-muxer flags appended below.
+    // '-loglevel warning' (not 'error'): a real connection failure would
+    // already surface at 'error' either way, but ffmpeg's pulse input
+    // logs which source/format it actually opened at a level below
+    // 'error' -- worth having in mep_stt_ffmpeg.log (see on_stderr below)
+    // when diagnosing a recording that "succeeds" but is actually silent
+    // (wrong default source, muted input) rather than erroring outright.
+    "mep.stt_record_cmd = mep.stt_record_cmd or\n"
+    "  {'ffmpeg', '-y', '-loglevel', 'warning', '-f', 'pulse', '-i', 'default', '-ar', '16000', '-ac', '1'}\n"
+    "mep.stt_base_url = mep.stt_base_url or 'https://api.openai.com/v1'\n"
+    "mep.stt_model = mep.stt_model or 'whisper-1'\n"
+    "mep.stt_chunk_seconds = mep.stt_chunk_seconds or 4\n"
+    "local mep_stt_job = nil\n"
+    "local mep_stt_base = nil\n"
+    // Segments are numbered by ffmpeg itself (%03d, from 0), so a running
+    // count of how many this recording has produced doubles as both the
+    // next segment's index and, since ffmpeg finalizes them strictly in
+    // order, the key each transcription result needs for in-order
+    // insertion below.
+    "local mep_stt_next_index = 0\n"
+    "local mep_stt_pending = {}\n"
+    "local mep_stt_flush_index = 0\n"
+    "local mep_stt_inflight = 0\n"
+    "local mep_stt_stopping = false\n"
+    // Whisper is OpenAI-only (no Anthropic equivalent), so this resolves
+    // an OpenAI key independent of mep.ai_provider -- opportunistically
+    // reusing mep.ai_api_key when the chat provider already IS OpenAI
+    // (avoids a redundant prompt), otherwise keeping its own separate
+    // override, same fallback chain (env var, then a masked ui_input
+    // prompt) as mep_ai_get_key above.
+    "local function mep_stt_get_key(cb)\n"
+    "  if mep.stt_api_key then cb(mep.stt_api_key) return end\n"
+    "  if mep.ai_provider == 'openai' and mep.ai_api_key then cb(mep.ai_api_key) return end\n"
+    "  local v = os.getenv('OPENAI_API_KEY')\n"
+    "  if v and v ~= '' then mep.stt_api_key = v cb(v) return end\n"
+    "  mep.ui_input('OpenAI API key (OPENAI_API_KEY not set, needed for speech-to-text):', '', function(key)\n"
+    "    if key and key ~= '' then mep.stt_api_key = key cb(key) end\n"
+    "  end, {masked = true})\n"
+    "end\n"
+    "local function mep_stt_insert_transcript(text)\n"
+    "  if text == nil or text == '' then return end\n"
+    "  if not mep.is_insert_mode() then mep.enter_insert() end\n"
+    "  mep.insert_text(text)\n"
+    "end\n"
+    // Debugging aid: copies each chunk's WAV out of /tmp into the current
+    // directory before it gets uploaded/deleted, so a "recording completed
+    // but the transcript is nonsense" report can be told apart from
+    // "nothing was actually captured" by just opening the file in an
+    // audio player. Only the most recent chunk is kept (overwritten each
+    // time) rather than one file per chunk, to avoid littering the
+    // directory over a long dictation session. mep.stt_debug_save defaults
+    // on since silent/garbage capture (wrong PulseAudio source, muted
+    // input, ffmpeg subprocess not reaching the audio server) is
+    // indistinguishable from a real transcription bug otherwise -- flip
+    // it off once diagnosed.
+    "mep.stt_debug_save = mep.stt_debug_save == nil or mep.stt_debug_save\n"
+    "local function mep_stt_save_debug_copy(path)\n"
+    "  if not mep.stt_debug_save then return end\n"
+    "  local src = io.open(path, 'rb')\n"
+    "  if not src then mep.notify('stt debug: could not open ' .. path .. ' to copy', 'warn') return end\n"
+    "  local data = src:read('*a')\n"
+    "  src:close()\n"
+    "  local dst = io.open('mep_stt_debug.wav', 'wb')\n"
+    "  if not dst then mep.notify('stt debug: could not write ./mep_stt_debug.wav', 'warn') return end\n"
+    "  dst:write(data)\n"
+    "  dst:close()\n"
+    "end\n"
+    // Chunks can finish transcribing out of order (a later, shorter
+    // request can win the race against an earlier one still in flight),
+    // so results are held in mep_stt_pending by index and only inserted
+    // once every chunk before them has already landed -- this is what
+    // keeps dictated text in speaking order despite that.
+    "local function mep_stt_flush()\n"
+    "  while mep_stt_pending[mep_stt_flush_index] ~= nil do\n"
+    "    local text = mep_stt_pending[mep_stt_flush_index]\n"
+    "    mep_stt_pending[mep_stt_flush_index] = nil\n"
+    "    mep_stt_flush_index = mep_stt_flush_index + 1\n"
+    "    mep_stt_insert_transcript(text)\n"
+    "  end\n"
+    "end\n"
+    // `;filename=audio.wav;type=audio/wav` on the -F value overrides what
+    // curl reports as the upload's filename/content-type, since the WAV
+    // file itself is an extension-less path -- without this, OpenAI would
+    // see a filename with no recognizable audio extension and could
+    // reject or misdetect the format.
+    "local function mep_stt_transcribe_chunk(index, path)\n"
+    "  mep_stt_inflight = mep_stt_inflight + 1\n"
+    "  mep_stt_save_debug_copy(path)\n"
+    "  mep_stt_get_key(function(key)\n"
+    "    local argv = {\n"
+    "      'curl', '-s', '-X', 'POST', mep.stt_base_url .. '/audio/transcriptions',\n"
+    "      '-H', 'Authorization: Bearer ' .. key,\n"
+    "      '-F', 'file=@' .. path .. ';filename=audio.wav;type=audio/wav',\n"
+    "      '-F', 'model=' .. mep.stt_model,\n"
+    "      '-F', 'response_format=json',\n"
+    "    }\n"
+    "    local out = {}\n"
+    "    mep.job_start(argv, {\n"
+    "      on_stdout = function(l) out[#out + 1] = l end,\n"
+    "      on_stderr = function(l) out[#out + 1] = l end,\n"
+    "      on_exit = function(code)\n"
+    "        os.remove(path)\n"
+    "        mep_stt_inflight = mep_stt_inflight - 1\n"
+    "        local raw = table.concat(out, '\\n')\n"
+    "        local obj = mep_ai_json_decode(raw)\n"
+    "        if obj and obj.text then\n"
+    "          mep_stt_pending[index] = obj.text\n"
+    "        else\n"
+    "          mep_stt_pending[index] = ''\n"
+    "          mep.notify('Speech-to-text chunk failed: ' .. raw, 'error')\n"
+    "        end\n"
+    "        mep_stt_flush()\n"
+    "        if mep_stt_inflight == 0 and not mep_stt_job then mep.notify('Transcription complete') end\n"
+    "      end,\n"
+    "    })\n"
+    "  end)\n"
+    "end\n"
+    "function mep.stt_toggle()\n"
+    "  if mep_stt_job then\n"
+    // mep.job_kill only ever sends SIGTERM and returns immediately (see
+    // Job::Kill, job.cpp) -- it does NOT wait for ffmpeg to actually exit.
+    // ffmpeg only finalizes a segment's real size/duration fields (each
+    // one starts with a placeholder) once it finishes handling the signal
+    // and closes its current output, so grabbing the last segment right
+    // here, synchronously, would race a file that's still mid-finalization
+    // -- this is exactly what produced the old "zero length" / "invalid
+    // format" errors on the single-file version of this feature. The
+    // on_exit handler below only runs once JobManager has confirmed the
+    // process is truly gone and every segment -- including the one that
+    // was open at kill time -- is complete.
+    "    mep_stt_stopping = true\n"
+    "    mep.job_kill(mep_stt_job)\n"
+    "    mep.stt_set_recording(false)\n"
+    "    mep.notify('Stopping recording...')\n"
+    "    return\n"
+    "  end\n"
+    "  mep_stt_stopping = false\n"
+    "  mep_stt_next_index = 0\n"
+    "  mep_stt_pending = {}\n"
+    "  mep_stt_flush_index = 0\n"
+    "  mep_stt_inflight = 0\n"
+    "  mep_stt_base = os.tmpname()\n"
+    "  os.remove(mep_stt_base)\n"
+    "  local argv = {}\n"
+    "  for _, a in ipairs(mep.stt_record_cmd) do argv[#argv + 1] = a end\n"
+    // `-segment_list pipe:1` with `flat`/`+live` turns ffmpeg's own stdout
+    // into a real-time feed of finalized segment paths, one per line, the
+    // instant each one closes -- reusing mep.job_start's ordinary
+    // line-based on_stdout rather than needing any raw/binary streaming
+    // support. `-reset_timestamps 1` keeps each segment's internal
+    // timestamps starting at 0 (Whisper doesn't care, but a WAV with
+    // multi-minute-offset timestamps is a footgun for anything else that
+    // might open it, e.g. the debug copy).
+    "  local extra = {\n"
+    "    '-f', 'segment', '-segment_time', tostring(mep.stt_chunk_seconds),\n"
+    "    '-reset_timestamps', '1', '-strftime', '0',\n"
+    "    '-segment_list', 'pipe:1', '-segment_list_type', 'flat', '-segment_list_flags', '+live',\n"
+    "    mep_stt_base .. '_%03d.wav',\n"
+    "  }\n"
+    "  for _, a in ipairs(extra) do argv[#argv + 1] = a end\n"
+    // Previously nothing captured ffmpeg's stderr at all -- without an
+    // on_stderr callback, JobManager still drains the pipe (so ffmpeg
+    // never blocks writing to it) but throws every line away uncalled,
+    // so even a real "can't connect to PulseAudio"-type error was
+    // silently discarded and never visible anywhere. Now logged to
+    // ./mep_stt_ffmpeg.log (alongside the debug WAV, same
+    // mep.stt_debug_save flag) so a "recording completes but is silent"
+    // report can be told apart from an actual capture error.
+    "  local mep_stt_ffmpeg_err = {}\n"
+    "  mep_stt_job = mep.job_start(argv, {\n"
+    // `line` here is only a "a segment just finished" signal, not a
+    // usable path -- ffmpeg's flat segment_list writes just the
+    // basename (av_basename) of each segment regardless of how the
+    // output pattern itself was specified, even when that pattern was
+    // already absolute, so treating it as a path resolves against
+    // mep's own cwd (wherever the user's buffer happens to live) instead
+    // of the actual tmp file and fails to open every time. The real path
+    // is fully predictable anyway (deterministic %03d numbering), so
+    // just rebuild it the same way the final-segment fallback below
+    // already has to.
+    "    on_stdout = function(line)\n"
+    "      if line == nil or line == '' then return end\n"
+    "      local index = mep_stt_next_index\n"
+    "      mep_stt_next_index = mep_stt_next_index + 1\n"
+    "      local path = mep_stt_base .. '_' .. string.format('%03d', index) .. '.wav'\n"
+    "      mep_stt_transcribe_chunk(index, path)\n"
+    "    end,\n"
+    "    on_stderr = function(l) mep_stt_ffmpeg_err[#mep_stt_ffmpeg_err + 1] = l end,\n"
+    // Fires once ffmpeg has genuinely exited, whether that's a deliberate
+    // stop (mep_stt_stopping true) or an unrequested death (bad device,
+    // permission error, no such audio source -- mep_stt_stopping still
+    // false, so this reports it and cleans up instead of silently trying
+    // to transcribe whatever partial/empty segment resulted).
+    "    on_exit = function(code)\n"
+    "      local was_stopping = mep_stt_stopping\n"
+    "      mep_stt_job = nil\n"
+    "      mep.stt_set_recording(false)\n"
+    "      if mep.stt_debug_save and #mep_stt_ffmpeg_err > 0 then\n"
+    "        local log = io.open('mep_stt_ffmpeg.log', 'w')\n"
+    "        if log then log:write(table.concat(mep_stt_ffmpeg_err, '\\n')) log:close() end\n"
+    "      end\n"
+    // The segment that was being recorded at kill time may have been
+    // finalized (and its path already delivered through on_stdout above,
+    // in this very poll tick -- JobManager drains stdout before invoking
+    // on_exit) without making the live segment list if ffmpeg died before
+    // flushing that last write. Its filename is fully predictable
+    // (deterministic %03d numbering) either way, so just check for it
+    // directly rather than trying to tell those two cases apart.
+    "      local final_path = mep_stt_base .. '_' .. string.format('%03d', mep_stt_next_index) .. '.wav'\n"
+    "      if was_stopping then\n"
+    "        local f = io.open(final_path, 'rb')\n"
+    "        if f then\n"
+    "          f:close()\n"
+    "          local index = mep_stt_next_index\n"
+    "          mep_stt_next_index = mep_stt_next_index + 1\n"
+    "          mep_stt_transcribe_chunk(index, final_path)\n"
+    "        end\n"
+    "        if mep_stt_inflight == 0 then mep.notify('Transcription complete') end\n"
+    "      else\n"
+    "        os.remove(final_path)\n"
+    "        local detail = #mep_stt_ffmpeg_err > 0 and (' -- ' .. mep_stt_ffmpeg_err[#mep_stt_ffmpeg_err]) or ''\n"
+    "        mep.notify('Recording stopped unexpectedly (exit ' .. code .. ')' .. detail, 'warn')\n"
+    "      end\n"
+    "    end,\n"
+    "  })\n"
+    "  mep.stt_set_recording(true)\n"
+    "  mep.notify('Recording -- transcribing as you talk. Press <leader>v again to stop.')\n"
+    "end\n"
+    "mep.command('MepSttToggle', mep.stt_toggle)\n"
+    "mep.leader_map('v', 'Speech-to-text: toggle live transcription', mep.stt_toggle)\n"
     // Tools: read_file/list_dir/run_command, each gated by a permission
     // prompt. run_command always re-prompts (no blanket approval, per
     // the plan); the other two support an allow-always-this-session
@@ -11971,8 +12611,14 @@ void DrawSidebars() {
             g_sidebar_border_rects.push_back({sb.id, horizontal, sign, grab});
         }
 
+        bool is_focused = sb.id == focused_id;
         DrawRectangle(px, py, pw, ph, ResolveHlGroup("Sidebar"));
-        DrawRectangleLines(px, py, pw, ph, ResolveHlGroup("SidebarBorder"));
+        // Same active/inactive border treatment DrawPane's own panes get
+        // (DrawPaneBorder), rather than a flat SidebarBorder outline that
+        // never changed regardless of focus -- otherwise a focused sidebar
+        // looked identical to an unfocused one, and the pane it took focus
+        // from kept showing as "active" with nothing here to counter that.
+        DrawPaneBorder(static_cast<float>(px), static_cast<float>(py), static_cast<float>(pw), static_cast<float>(ph), is_focused);
 
         // Title/line text is drawn at a fixed x (px + 8) with no wrapping,
         // so a long entry (a deep file-tree path, a long symbol name) or a
@@ -11984,10 +12630,25 @@ void DrawSidebars() {
         DrawTextEx(g_font, sb.title.c_str(), Vector2{static_cast<float>(px + 8), static_cast<float>(py + 6)},
                    MenuFontSize(), 0, ResolveHlGroup("SidebarTitle"));
 
-        bool is_focused = sb.id == focused_id;
+        // How many rows actually fit below the header -- feeds
+        // UpdateScrollForSidebar (keeps the cursor in view, same contract as
+        // UpdateScrollForPane's own visible_lines) and bounds the render/hit-
+        // test loop below to just that window, mirroring DrawPane's own
+        // scroll_row-relative row loop instead of drawing every line
+        // starting at the top and relying on BeginScissorMode alone to hide
+        // the rest -- that clipped the *drawing* but never brought an
+        // off-screen cursor back into view, so moving past the last visible
+        // row (or a mouse wheel, previously not even wired into Mode::Sidebar
+        // in Editor::HandleMouseWheel) had nowhere to go.
+        int visible_lines = std::max(1, (ph - header_h - 10) / line_h);
+        g_editor.UpdateScrollForSidebar(sb.id, visible_lines);
+        int scroll = sb.scroll_offset;
+
         int cursor = g_editor.SidebarCursor();
-        for (size_t i = 0; i < lines.size(); i++) {
-            float ly = py + header_h + i * line_h;
+        size_t first = static_cast<size_t>(scroll);
+        size_t last = std::min(lines.size(), first + static_cast<size_t>(visible_lines));
+        for (size_t i = first; i < last; i++) {
+            float ly = py + header_h + (i - first) * line_h;
             if (is_focused && static_cast<int>(i) == cursor) {
                 DrawRectangle(px + 2, static_cast<int>(ly) - 1, pw - 4, line_h, ResolveHlGroup("PickerSelected"));
             }
@@ -14974,6 +15635,27 @@ void DrawRobotIcon(Vector2 pos, float size, Color color) {
     DrawCircle(static_cast<int>(pos.x + head_size * 0.68f), static_cast<int>(eye_y), eye_r, BLACK);
 }
 
+// Small vector "microphone" icon for the tab bar's speech-to-text
+// recording indicator (bespoke-drawn, like DrawRobotIcon above, so it
+// doesn't depend on the loaded font having a mic glyph): a rounded
+// capsule head, a cradling stand, and a short base post/foot.
+void DrawMicIcon(Vector2 pos, float size, Color color) {
+    const float capsule_w = size * 0.42f;
+    const float capsule_h = size * 0.56f;
+    const float capsule_x = pos.x + (size - capsule_w) / 2.0f;
+    DrawRectangleRounded(Rectangle{capsule_x, pos.y, capsule_w, capsule_h}, 1.0f, 6, color);
+
+    const float stand_cx = capsule_x + capsule_w / 2.0f;
+    const float stand_cy = pos.y + capsule_h * 0.78f;
+    const float stand_r = capsule_w * 0.85f;
+    const float stand_thick = std::max(1.0f, size * 0.07f);
+    DrawRing(Vector2{stand_cx, stand_cy}, stand_r - stand_thick, stand_r, 0.0f, 180.0f, 16, color);
+
+    DrawLineEx(Vector2{stand_cx, stand_cy + stand_r}, Vector2{stand_cx, pos.y + size}, stand_thick, color);
+    DrawLineEx(Vector2{stand_cx - size * 0.18f, pos.y + size}, Vector2{stand_cx + size * 0.18f, pos.y + size}, stand_thick,
+               color);
+}
+
 // Small status badge overlaid on an AI agent's tab-bar chip
 // (COLLAB_CURSORS_PLAN.md Phase 1g) -- a distinct shape/symbol per
 // status, not color alone, so it stays legible in a static screenshot
@@ -16715,21 +17397,6 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     }
 
     int visible_lines = std::max(1, static_cast<int>(content_h / line_height));
-    g_editor.UpdateScrollForPane(pane.id, visible_lines);
-
-    BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
-                      static_cast<int>(content_h));
-
-    bool has_selection = is_active && g_editor.HasVisualSelection();
-    bool linewise_selection = g_editor.CurrentMode() == Mode::VisualLine;
-    bool block_selection = g_editor.CurrentMode() == Mode::VisualBlock;
-    CursorPos sel_start{}, sel_end{};
-    int block_top = 0, block_bottom = 0, block_left = 0, block_right = 0;
-    if (block_selection) {
-        g_editor.VisualBlockRange(block_top, block_bottom, block_left, block_right);
-    } else if (has_selection) {
-        g_editor.VisualRange(sel_start, sel_end);
-    }
 
     // Sign column: one character wide, *always* reserved (unlike
     // number_w below) for git/LSP-diagnostic/DAP-breakpoint/todo signs
@@ -16752,6 +17419,38 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     }
     float gutter_w = sign_w + number_w;
     float text_x = x + kMarginX + gutter_w;
+
+    // :set wrap/nowrap -- how many monospace columns of text fit between
+    // the gutter and the pane's right edge, i.e. the soft-wrap budget for
+    // every plain text row below. 0 means "wrap is off": every column-
+    // wrapping helper below (WrapPos/ForEachWrapPiece, further down this
+    // file) already treats <=0 as "draw this row/span as one unwrapped
+    // piece", which is exactly the pre-wrap-feature behavior -- so nothing
+    // downstream needs a separate "is wrap on" branch of its own. Computed
+    // up here (moved ahead of its old position further down) so it can
+    // reach Editor::UpdateScrollForPane, which needs the same budget to
+    // keep the cursor's own wrapped row from scrolling half off-screen.
+    int wrap_cols = 0;
+    if (g_editor.Wrap()) {
+        float avail_w = x + w - text_x - kMarginX;
+        wrap_cols = std::max(1, static_cast<int>(avail_w / g_char_width));
+    }
+
+    g_editor.UpdateScrollForPane(pane.id, visible_lines, wrap_cols);
+
+    BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
+                      static_cast<int>(content_h));
+
+    bool has_selection = is_active && g_editor.HasVisualSelection();
+    bool linewise_selection = g_editor.CurrentMode() == Mode::VisualLine;
+    bool block_selection = g_editor.CurrentMode() == Mode::VisualBlock;
+    CursorPos sel_start{}, sel_end{};
+    int block_top = 0, block_bottom = 0, block_left = 0, block_right = 0;
+    if (block_selection) {
+        g_editor.VisualBlockRange(block_top, block_bottom, block_left, block_right);
+    } else if (has_selection) {
+        g_editor.VisualRange(sel_start, sel_end);
+    }
 
     // buf.decorations is keyed by namespace, not by row -- scanning every
     // decoration in every namespace for every visible row (as this used
@@ -16826,6 +17525,28 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             }
         }
 
+        // :set wrap (row_wrap_cols>0) -- how many extra visual slots this
+        // row's own raw text needs, mirroring row_slots in
+        // Editor::UpdateScrollForPane (editor.cpp), which this must stay
+        // in exact agreement with. A closed fold, org inline image, or org
+        // LaTeX fragment never wraps (each already claims its own fixed
+        // slot count via the branches below, and `row`'s displayed content
+        // there isn't buf.lines[row] itself), so those are excluded here
+        // the same way editor.cpp's row_slots excludes them.
+        bool row_wraps = false;
+        int row_wrap_slots = 1;
+        if (!fold_here && wrap_cols > 0) {
+            bool is_org_image = g_editor.OrgImagesVisible() && buf.org_image_rows.count(row) != 0;
+            bool is_org_latex = !is_org_image && g_editor.OrgLatexVisible() && buf.org_latex_rows.count(row) != 0;
+            if (!is_org_image && !is_org_latex) {
+                row_wraps = true;
+                int len = static_cast<int>(buf.lines[row].size());
+                row_wrap_slots = std::max(1, (len + wrap_cols - 1) / wrap_cols);
+                visual_slot += row_wrap_slots - 1;  // visual_slot++ above already accounted for 1
+            }
+        }
+        int row_wrap_cols = row_wraps ? wrap_cols : 0;  // fed to WrapPos/ForEachWrapPiece below
+
         // :set cursorline (Phase 11 option) -- a full-width tint drawn
         // beneath everything else on this visual row, so fold-summary
         // text, the selection rectangles, and the line-number gutter all
@@ -16833,12 +17554,18 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // rows never reach this loop as their own `row` value (the jump
         // below skips straight past them), so the cursor being anywhere
         // inside a closed fold is checked against the fold's [start, end]
-        // range here rather than a plain `pane.cursor.row == row`.
+        // range here rather than a plain `pane.cursor.row == row`. A
+        // wrapped row tints every one of its visual slots, not just the
+        // first, so the tint doesn't look like it stops partway through
+        // the cursor's own line.
         if (is_active && g_editor.ShowCursorLine() && !IsCommandLineMode(g_editor.CurrentMode()) &&
             (pane.cursor.row == row ||
              (fold_here && pane.cursor.row >= fold_here->start_row && pane.cursor.row <= fold_here->end_row))) {
-            DrawRectangle(static_cast<int>(x), static_cast<int>(ly), static_cast<int>(w), line_height,
-                          ResolveHlGroup("CursorLine"));
+            int tint_slots = (row_wraps && pane.cursor.row == row) ? row_wrap_slots : 1;
+            for (int s = 0; s < tint_slots; s++) {
+                DrawRectangle(static_cast<int>(x), static_cast<int>(ly) + s * line_height, static_cast<int>(w),
+                              line_height, ResolveHlGroup("CursorLine"));
+            }
         }
 
         // Org inline images (<leader>oti / mep.org_images_toggle,
@@ -16953,20 +17680,24 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             int line_len = static_cast<int>(buf.lines[row].size());
             int cs = block_left;
             int ce = (block_right < 0) ? line_len + 1 : block_right + 1;
-            float x0 = text_x + cs * g_char_width;
-            float x1 = text_x + ce * g_char_width;
             Color sel_color = ResolveHlGroup("Visual");
-            DrawRectangle(static_cast<int>(x0), static_cast<int>(ly), static_cast<int>(x1 - x0), line_height,
-                          Color{sel_color.r, sel_color.g, sel_color.b, 160});
+            Color fill{sel_color.r, sel_color.g, sel_color.b, 160};
+            ForEachWrapPiece(cs, ce, row_wrap_cols, text_x, ly, line_height,
+                              [&](float py, float x0, float x1, int, int) {
+                                  DrawRectangle(static_cast<int>(x0), static_cast<int>(py),
+                                                static_cast<int>(x1 - x0), line_height, fill);
+                              });
         } else if (has_selection && row >= sel_start.row && row <= sel_end.row) {
             int line_len = static_cast<int>(buf.lines[row].size());
             int cs = (linewise_selection || row > sel_start.row) ? 0 : sel_start.col;
             int ce = (linewise_selection || row < sel_end.row) ? line_len + 1 : sel_end.col + 1;
-            float x0 = text_x + cs * g_char_width;
-            float x1 = text_x + ce * g_char_width;
             Color sel_color = ResolveHlGroup("Visual");
-            DrawRectangle(static_cast<int>(x0), static_cast<int>(ly), static_cast<int>(x1 - x0), line_height,
-                          Color{sel_color.r, sel_color.g, sel_color.b, 160});
+            Color fill{sel_color.r, sel_color.g, sel_color.b, 160};
+            ForEachWrapPiece(cs, ce, row_wrap_cols, text_x, ly, line_height,
+                              [&](float py, float x0, float x1, int, int) {
+                                  DrawRectangle(static_cast<int>(x0), static_cast<int>(py),
+                                                static_cast<int>(x1 - x0), line_height, fill);
+                              });
         }
         if (number_w > 0.0f) {
             // :set relativenumber: every row but the cursor's own shows
@@ -17002,8 +17733,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             const Decoration &d = *dp;
             if (d.whole_line && !d.hl_group.empty()) {
                 Color c = ResolveHlGroup(d.hl_group);
-                DrawRectangle(static_cast<int>(x), static_cast<int>(ly), static_cast<int>(w), line_height,
-                              Color{c.r, c.g, c.b, 40});
+                Color tint{c.r, c.g, c.b, 40};
+                for (int s = 0; s < row_wrap_slots; s++) {
+                    DrawRectangle(static_cast<int>(x), static_cast<int>(ly) + s * line_height, static_cast<int>(w),
+                                  line_height, tint);
+                }
             }
             if (!d.sign.empty() && d.priority > sign_priority) {
                 sign = d.sign;
@@ -17012,7 +17746,15 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 sign_priority = d.priority;
             }
         }
-        DrawLineFast(buf.lines[row], text_x, ly, g_font_size, ResolveHlGroup("Normal"));
+        if (row_wrap_cols <= 0) {
+            DrawLineFast(buf.lines[row], text_x, ly, g_font_size, ResolveHlGroup("Normal"));
+        } else {
+            const std::string &wline = buf.lines[row];
+            for (int s = 0; s < row_wrap_slots; s++) {
+                DrawLineFast(wline.substr(s * row_wrap_cols, row_wrap_cols), text_x, ly + s * line_height, g_font_size,
+                             ResolveHlGroup("Normal"));
+            }
+        }
         for (const Decoration *dp : row_decos) {
             const Decoration &d = *dp;
             if (!d.whole_line && !d.underline && !d.bold && !d.italic && (!d.hl_group.empty() || d.has_fg_color) &&
@@ -17035,27 +17777,41 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     b = std::min(static_cast<int>(line.size()), d.col_end);
                 }
                 if (b > a) {
-                    std::string span = line.substr(a, b - a);
                     // has_fg_color (Editor::EnterTerminalNormalMode's
                     // snapshotted terminal-cell colors) is a literal RGB,
                     // bypassing the named hl_group lookup entirely -- see
                     // Decoration::has_fg_color's own comment for why.
                     Color c = d.has_fg_color ? Color{d.fg_color.r, d.fg_color.g, d.fg_color.b, d.fg_color.a}
                                               : ResolveHlGroup(d.hl_group);
-                    // x-position: has_fg_color's `a` is already a byte
-                    // offset converted *from* the column index above, so
-                    // recovering the column back out of it would just be
-                    // undoing that conversion -- use d.col_start (the
-                    // column index) directly instead. The hl_group branch
-                    // keeps using `a` unchanged (== d.col_start already,
-                    // for the byte-offset-as-column content it assumes).
-                    float span_x = text_x + (d.has_fg_color ? d.col_start : a) * g_char_width;
                     // has_fg_color spans are EnterTerminalNormalMode's own
                     // snapshotted terminal-cell text (see its comment just
                     // above) -- same box-drawing/arrow/punctuation glyph
                     // coverage gap as live DrawTerminalGrid rendering
                     // applies here too, so g_terminal_font, not g_font.
-                    DrawTextEx(d.has_fg_color ? g_terminal_font : g_font, span.c_str(), Vector2{span_x, ly}, g_font_size, 0, c);
+                    Font span_font = d.has_fg_color ? g_terminal_font : g_font;
+                    // has_fg_color's `a`/`b` are byte offsets converted
+                    // *from* d.col_start/col_end (columns) above, so the
+                    // wrap split below -- which needs columns -- has to use
+                    // d.col_start/col_end directly for that case instead of
+                    // recovering columns back out of `a`/`b`; the hl_group
+                    // branch's `a`/`b` already equal its own column indices
+                    // (the byte-offset-as-column content it assumes).
+                    int col_a = d.has_fg_color ? d.col_start : a;
+                    int col_b = d.has_fg_color ? d.col_end : b;
+                    ForEachWrapPiece(col_a, col_b, row_wrap_cols, text_x, ly, line_height,
+                                      [&](float py, float px, float, int pa, int pb) {
+                                          // Re-derive each wrap piece's own byte range from its column
+                                          // bounds rather than assuming a fixed byte-per-column stride --
+                                          // has_fg_color content isn't guaranteed ASCII-only (ditto the
+                                          // hl_group branch's own byte-offset-as-column convention, which
+                                          // ColumnToByteOffset happens to reproduce exactly for it too).
+                                          int byte_a = std::min(static_cast<int>(line.size()),
+                                                                 static_cast<int>(ColumnToByteOffset(line, pa)));
+                                          int byte_b = std::min(static_cast<int>(line.size()),
+                                                                 static_cast<int>(ColumnToByteOffset(line, pb)));
+                                          std::string piece = line.substr(byte_a, byte_b - byte_a);
+                                          DrawTextEx(span_font, piece.c_str(), Vector2{px, py}, g_font_size, 0, c);
+                                      });
                 }
             }
             // Per-span underline (Phase 21 gap): a 1px DrawRectangle at
@@ -17069,10 +17825,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 int b = std::min(static_cast<int>(line.size()), d.col_end);
                 if (b > a) {
                     Color c = d.hl_group.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(d.hl_group);
-                    float ux = text_x + a * g_char_width;
-                    float uw = (b - a) * g_char_width;
-                    DrawRectangle(static_cast<int>(ux), static_cast<int>(ly + line_height - 2),
-                                  static_cast<int>(uw), 1, c);
+                    ForEachWrapPiece(a, b, row_wrap_cols, text_x, ly, line_height,
+                                      [&](float py, float x0, float x1, int, int) {
+                                          DrawRectangle(static_cast<int>(x0), static_cast<int>(py + line_height - 2),
+                                                        static_cast<int>(x1 - x0), 1, c);
+                                      });
                 }
             }
             // Per-span strikethrough (org emphasis +strike+, kBuiltinOrg):
@@ -17084,10 +17841,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 int b = std::min(static_cast<int>(line.size()), d.col_end);
                 if (b > a) {
                     Color c = d.hl_group.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(d.hl_group);
-                    float ux = text_x + a * g_char_width;
-                    float uw = (b - a) * g_char_width;
-                    DrawRectangle(static_cast<int>(ux), static_cast<int>(ly + line_height / 2), static_cast<int>(uw),
-                                  1, c);
+                    ForEachWrapPiece(a, b, row_wrap_cols, text_x, ly, line_height,
+                                      [&](float py, float x0, float x1, int, int) {
+                                          DrawRectangle(static_cast<int>(x0), static_cast<int>(py + line_height / 2),
+                                                        static_cast<int>(x1 - x0), 1, c);
+                                      });
                 }
             }
             // Per-span bold (org emphasis *bold*, kBuiltinOrg): g_font is a
@@ -17101,11 +17859,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 int a = std::min(static_cast<int>(line.size()), d.col_start);
                 int b = std::min(static_cast<int>(line.size()), d.col_end);
                 if (b > a) {
-                    std::string span = line.substr(a, b - a);
                     Color c = d.hl_group.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(d.hl_group);
-                    float bx = text_x + a * g_char_width;
-                    DrawTextEx(g_font, span.c_str(), Vector2{bx, ly}, g_font_size, 0, c);
-                    DrawTextEx(g_font, span.c_str(), Vector2{bx + 1, ly}, g_font_size, 0, c);
+                    ForEachWrapPiece(a, b, row_wrap_cols, text_x, ly, line_height,
+                                      [&](float py, float px, float, int pa, int pb) {
+                                          std::string piece = line.substr(pa, pb - pa);
+                                          DrawTextEx(g_font, piece.c_str(), Vector2{px, py}, g_font_size, 0, c);
+                                          DrawTextEx(g_font, piece.c_str(), Vector2{px + 1, py}, g_font_size, 0, c);
+                                      });
                 }
             }
             // Per-span italic (org emphasis /italic/, kBuiltinOrg): same
@@ -17124,45 +17884,47 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 int a = std::min(static_cast<int>(line.size()), d.col_start);
                 int b = std::min(static_cast<int>(line.size()), d.col_end);
                 if (b > a) {
-                    std::string span = line.substr(a, b - a);
                     Color c = d.hl_group.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(d.hl_group);
-                    float ix = text_x + a * g_char_width;
-                    float span_w = (b - a) * g_char_width;
-                    float baseline_y = ly + line_height;
-                    // Unlike bold's double-draw (which lands its second
-                    // copy 1px from the first, close enough to the
-                    // DrawLineFast-drawn original underneath that the
-                    // overlap is invisible) or a plain color swap (same
-                    // position, same shape), shearing moves the glyph
-                    // shape itself -- the sheared redraw doesn't coincide
-                    // with the still-upright original DrawLineFast already
-                    // drew there, so without covering it first the two
-                    // visibly ghost together. Padded a bit past the span's
-                    // own column bounds since the shear pushes each
-                    // glyph's top edge rightward past its own column
-                    // width. Same NormalBg-cover-then-redraw trick the
-                    // inline-math renderer uses just above in this same
-                    // function, and the same tradeoff: it flattens
-                    // whatever whole-line background tint (CursorLine,
-                    // Visual selection) this row might have underneath,
-                    // just for this span.
+                    // Padded a bit past each piece's own column bounds
+                    // since the shear pushes each glyph's top edge
+                    // rightward past its own column width. Same NormalBg-
+                    // cover-then-redraw trick the inline-math renderer
+                    // uses just below in this same function, and the same
+                    // tradeoff: it flattens whatever whole-line background
+                    // tint (CursorLine, Visual selection) this row might
+                    // have underneath, just for this span.
                     float pad = line_height * 0.25f;
-                    DrawRectangle(static_cast<int>(ix - pad), static_cast<int>(ly), static_cast<int>(span_w + pad * 2),
-                                  line_height, ResolveHlGroup("NormalBg"));
-                    rlPushMatrix();
-                    rlTranslatef(ix, baseline_y, 0);
-                    // clang-format off
-                    float shear[16] = {
-                        1.0f,  0.0f, 0.0f, 0.0f,
-                        -0.22f, 1.0f, 0.0f, 0.0f,
-                        0.0f,  0.0f, 1.0f, 0.0f,
-                        0.0f,  0.0f, 0.0f, 1.0f,
-                    };
-                    // clang-format on
-                    rlMultMatrixf(shear);
-                    rlTranslatef(-ix, -baseline_y, 0);
-                    DrawTextEx(g_font, span.c_str(), Vector2{ix, ly}, g_font_size, 0, c);
-                    rlPopMatrix();
+                    ForEachWrapPiece(
+                        a, b, row_wrap_cols, text_x, ly, line_height, [&](float py, float px0, float px1, int pa, int pb) {
+                            std::string piece = line.substr(pa, pb - pa);
+                            float span_w = px1 - px0;
+                            float baseline_y = py + line_height;
+                            // Unlike bold's double-draw (which lands its second
+                            // copy 1px from the first, close enough to the
+                            // DrawLineFast-drawn original underneath that the
+                            // overlap is invisible) or a plain color swap (same
+                            // position, same shape), shearing moves the glyph
+                            // shape itself -- the sheared redraw doesn't coincide
+                            // with the still-upright original DrawLineFast already
+                            // drew there, so without covering it first the two
+                            // visibly ghost together.
+                            DrawRectangle(static_cast<int>(px0 - pad), static_cast<int>(py),
+                                          static_cast<int>(span_w + pad * 2), line_height, ResolveHlGroup("NormalBg"));
+                            rlPushMatrix();
+                            rlTranslatef(px0, baseline_y, 0);
+                            // clang-format off
+                            float shear[16] = {
+                                1.0f,  0.0f, 0.0f, 0.0f,
+                                -0.22f, 1.0f, 0.0f, 0.0f,
+                                0.0f,  0.0f, 1.0f, 0.0f,
+                                0.0f,  0.0f, 0.0f, 1.0f,
+                            };
+                            // clang-format on
+                            rlMultMatrixf(shear);
+                            rlTranslatef(-px0, -baseline_y, 0);
+                            DrawTextEx(g_font, piece.c_str(), Vector2{px0, py}, g_font_size, 0, c);
+                            rlPopMatrix();
+                        });
                 }
             }
             if (!d.virt_text.empty()) {
@@ -17173,8 +17935,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 // replacing a specific span -- see the field's own
                 // comment (editor.h) for why col_start-anchoring alone
                 // painted diagnostic text directly over real buffer text.
-                float vx = d.virt_text_eol ? text_x + (static_cast<float>(buf.lines[row].size()) + 1) * g_char_width
-                                            : text_x + d.col_start * g_char_width;
+                int vcol = d.virt_text_eol ? static_cast<int>(buf.lines[row].size()) + 1 : d.col_start;
+                Vector2 vpos = WrapPos(vcol, row_wrap_cols, text_x, ly, line_height);
+                float vx = vpos.x, vy = vpos.y;
                 if (d.virt_overlay) {
                     // Cover whichever is wider: the replacement text, or
                     // the original [col_start, col_end) span it's
@@ -17188,18 +17951,18 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     // visible, defeating the conceal.
                     float span_w = (d.col_end > d.col_start) ? (d.col_end - d.col_start) * g_char_width : 0.0f;
                     float overlay_w = std::max(span_w, MeasureTextEx(g_font, d.virt_text.c_str(), g_font_size, 0).x);
-                    DrawRectangle(static_cast<int>(vx), static_cast<int>(ly), static_cast<int>(overlay_w),
+                    DrawRectangle(static_cast<int>(vx), static_cast<int>(vy), static_cast<int>(overlay_w),
                                   line_height, ResolveHlGroup("NormalBg"));
                 }
-                DrawTextEx(g_font, d.virt_text.c_str(), Vector2{vx, ly}, g_font_size, 0,
+                DrawTextEx(g_font, d.virt_text.c_str(), Vector2{vx, vy}, g_font_size, 0,
                            ResolveHlGroup(d.virt_text_hl));
             }
             // Colorizer swatch (Phase 13): a small filled square in the
             // literal parsed color, drawn just before col_start.
             if (d.has_swatch) {
-                float sx = text_x + d.col_start * g_char_width;
+                Vector2 spos = WrapPos(d.col_start, row_wrap_cols, text_x, ly, line_height);
                 float sw = std::max(4.0f, g_char_width - 2);
-                DrawRectangle(static_cast<int>(sx), static_cast<int>(ly + (line_height - sw) / 2.0f),
+                DrawRectangle(static_cast<int>(spos.x), static_cast<int>(spos.y + (line_height - sw) / 2.0f),
                               static_cast<int>(sw), static_cast<int>(sw),
                               Color{d.swatch_color.r, d.swatch_color.g, d.swatch_color.b, 255});
             }
@@ -17239,7 +18002,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             auto inline_it = buf.org_latex_inline.find(row);
             if (inline_it != buf.org_latex_inline.end()) {
                 for (const Buffer::OrgLatexInlineSpan &span : inline_it->second) {
-                    float span_x = text_x + span.col_start * g_char_width;
+                    Vector2 span_pos = WrapPos(span.col_start, row_wrap_cols, text_x, ly, line_height);
+                    float span_x = span_pos.x, span_y = span_pos.y;
                     float span_w = (span.col_end - span.col_start) * g_char_width;
                     Texture2D *tex = GetOrLoadOrgLatexTexture(span.path);
                     if (!tex) continue;
@@ -17249,9 +18013,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     float margin = g_char_width;
                     float cover_w = std::max(span_w, draw_w + margin * 2.0f);
                     float draw_x = span_x + (cover_w - draw_w) / 2.0f;
-                    DrawRectangle(static_cast<int>(span_x), static_cast<int>(ly), static_cast<int>(cover_w),
+                    DrawRectangle(static_cast<int>(span_x), static_cast<int>(span_y), static_cast<int>(cover_w),
                                   line_height, ResolveHlGroup("NormalBg"));
-                    DrawTextureEx(*tex, Vector2{draw_x, ly + (line_height - draw_h) / 2.0f}, 0.0f, scale, WHITE);
+                    DrawTextureEx(*tex, Vector2{draw_x, span_y + (line_height - draw_h) / 2.0f}, 0.0f, scale, WHITE);
                 }
             }
         }
@@ -17277,11 +18041,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         if (is_active && g_editor.IsHintActive()) {
             for (const HintMatch &hm : g_editor.HintMatches()) {
                 if (hm.row != row) continue;
-                float hx = text_x + hm.col * g_char_width;
+                Vector2 hpos = WrapPos(hm.col, row_wrap_cols, text_x, ly, line_height);
+                float hx = hpos.x, hy = hpos.y;
                 float label_w = MeasureTextEx(g_font, hm.label.c_str(), g_font_size, 0).x + 4;
-                DrawRectangle(static_cast<int>(hx), static_cast<int>(ly), static_cast<int>(label_w), line_height,
+                DrawRectangle(static_cast<int>(hx), static_cast<int>(hy), static_cast<int>(label_w), line_height,
                               ResolveHlGroup("PickerSelected"));
-                DrawTextEx(g_font, hm.label.c_str(), Vector2{hx + 2, ly}, g_font_size, 0, ResolveHlGroup("Warn"));
+                DrawTextEx(g_font, hm.label.c_str(), Vector2{hx + 2, hy}, g_font_size, 0, ResolveHlGroup("Warn"));
             }
         }
     }
@@ -17290,19 +18055,26 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // whatever it actually covered (fold-collapsed ranges included) --
     // the same visible-range bound that loop used, so this stays in sync
     // with it by construction instead of via a separately-computed value.
-    if (is_active && !IsCommandLineMode(g_editor.CurrentMode()) && pane.cursor.row >= pane.scroll_row &&
-        pane.cursor.row < row) {
-        // Buffer row -> visual slot, accounting for any closed folds
-        // between the top of the view and the cursor (each collapses to 1
-        // slot regardless of how many rows it hides -- the cursor itself
-        // is never hidden inside one, see ClampCursor), any org inline
-        // image (each *expands* to kOrgInlineImageSlots instead -- see the
-        // draw loop's own image branch above), and any org LaTeX fragment
-        // (expands to its own per-entry slots, org_latex_rows -- see the
-        // draw loop's own latex branch above); must stay in exact agreement
-        // with all of it and with Editor::UpdateScrollForPane, editor.cpp.
-        int cursor_slot = 0;
-        for (int r = pane.scroll_row; r < pane.cursor.row;) {
+    // Buffer row -> visual slot, accounting for any closed folds between
+    // the top of the view and `target_row` (each collapses to 1 slot
+    // regardless of how many rows it hides -- the cursor itself is never
+    // hidden inside one, see ClampCursor), any org inline image (each
+    // *expands* to kOrgInlineImageSlots instead -- see the draw loop's own
+    // image branch above), any org LaTeX fragment (expands to its own
+    // per-entry slots, org_latex_rows -- see the draw loop's own latex
+    // branch above), and soft-wrap (:set wrap, a plain row claims however
+    // many visual slots its own raw text needs). Must stay in exact
+    // agreement with the draw loop above and Editor::UpdateScrollForPane,
+    // editor.cpp. Shared by the real cursor below and every remote/local
+    // participant cursor further down, so a participant's marker lands on
+    // the same visual line as the real caret even when folds/wraps have
+    // shifted it off the raw row->line_height mapping a naive
+    // `row - scroll_row` would use -- that mismatch is what made a
+    // streaming AI participant's cursor visibly drift from the actual
+    // insertion point once its output wrapped past one visual line.
+    auto RowSlot = [&](int target_row) {
+        int slot = 0;
+        for (int r = pane.scroll_row; r < target_row;) {
             const Fold *f = nullptr;
             for (const Fold &fold : buf.folds) {
                 if (fold.closed && fold.start_row == r) f = &fold;
@@ -17310,20 +18082,26 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             auto latex_it = buf.org_latex_rows.find(r);
             if (f) {
                 r = f->end_row + 1;
-                cursor_slot += 1;
+                slot += 1;
             } else if (g_editor.OrgImagesVisible() && buf.org_image_rows.count(r)) {
                 r += 1;
-                cursor_slot += kOrgInlineImageSlots;
+                slot += kOrgInlineImageSlots;
             } else if (g_editor.OrgLatexVisible() && latex_it != buf.org_latex_rows.end()) {
                 r = latex_it->second.end_row + 1;  // skip the fragment's remaining raw source rows outright
-                cursor_slot += latex_it->second.slots;
+                slot += latex_it->second.slots;
             } else {
+                slot += (wrap_cols > 0)
+                            ? std::max(1, (static_cast<int>(buf.lines[r].size()) + wrap_cols - 1) / wrap_cols)
+                            : 1;
                 r += 1;
-                cursor_slot += 1;
             }
         }
-        float cursor_y = content_y + cursor_slot * line_height;
-        float cursor_x = text_x + pane.cursor.col * g_char_width;
+        return slot;
+    };
+
+    if (is_active && !IsCommandLineMode(g_editor.CurrentMode()) && pane.cursor.row >= pane.scroll_row &&
+        pane.cursor.row < row) {
+        int cursor_slot = RowSlot(pane.cursor.row);
         // A cursor resting on an image/latex row itself has no meaningful
         // column position (the row's own text is replaced by the texture,
         // not drawn at all) -- an outline around the whole reserved slot
@@ -17331,6 +18109,14 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         bool cursor_on_image = g_editor.OrgImagesVisible() && buf.org_image_rows.count(pane.cursor.row) != 0;
         auto cursor_latex_it = buf.org_latex_rows.find(pane.cursor.row);
         bool cursor_on_latex = g_editor.OrgLatexVisible() && cursor_latex_it != buf.org_latex_rows.end();
+        // The cursor's own row soft-wraps the same way any other plain row
+        // does (never an image/latex row, which are handled separately
+        // below); pane.cursor.col picks out which of its visual sub-lines
+        // the caret itself is drawn on.
+        int cursor_wrap_cols = (!cursor_on_image && !cursor_on_latex) ? wrap_cols : 0;
+        Vector2 cursor_pos = WrapPos(pane.cursor.col, cursor_wrap_cols, text_x, content_y + cursor_slot * line_height,
+                                      line_height);
+        float cursor_x = cursor_pos.x, cursor_y = cursor_pos.y;
         int cursor_slots = cursor_on_image ? kOrgInlineImageSlots : (cursor_on_latex ? cursor_latex_it->second.slots : 1);
         float row_extent = (cursor_on_image || cursor_on_latex) ? static_cast<float>(line_height) * cursor_slots
                                                                   : static_cast<float>(line_height);
@@ -17386,19 +18172,21 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // positioned in *this* pane's buffer, drawn as a colored bar plus a
     // floating name label (with a robot icon for an agent). Runs for
     // every pane (not just the active one) since DrawPane itself does --
-    // a participant can be in a buffer shown by a background split.
-    // Deliberately simpler than the local cursor's own row->slot math
-    // above: no fold/org-image/latex slot-awareness (a remote
-    // participant's position doesn't interact with this pane's fold/
-    // image state the way local navigation does -- an accepted v1 scope
-    // limit, matching ClampPositionInBuffer's own fold-unaware clamping
-    // in editor.cpp).
+    // a participant can be in a buffer shown by a background split. Uses
+    // the same RowSlot/WrapPos fold+wrap-aware mapping as the real cursor
+    // above (rather than a naive `row - scroll_row`) so the marker lands
+    // on the actual visual line a wrapped/folded row renders on.
     for (const Editor::ParticipantInfo &participant : g_editor.Participants()) {
         if (!participant.has_location || participant.buffer_id != pane.buffer_id) continue;
         if (participant.row < pane.scroll_row || participant.row >= pane.scroll_row + pane.visible_lines) continue;
 
-        const float py = content_y + static_cast<float>(participant.row - pane.scroll_row) * line_height;
-        const float px = text_x + participant.col * g_char_width;
+        bool p_on_image = g_editor.OrgImagesVisible() && buf.org_image_rows.count(participant.row) != 0;
+        auto p_latex_it = buf.org_latex_rows.find(participant.row);
+        bool p_on_latex = g_editor.OrgLatexVisible() && p_latex_it != buf.org_latex_rows.end();
+        int p_wrap_cols = (!p_on_image && !p_on_latex) ? wrap_cols : 0;
+        Vector2 p_pos = WrapPos(participant.col, p_wrap_cols, text_x, content_y + RowSlot(participant.row) * line_height,
+                                 line_height);
+        const float px = p_pos.x, py = p_pos.y;
         const Color color = ToRaylib(ParticipantColor(participant.id));
 
         DrawRectangle(static_cast<int>(px), static_cast<int>(py), std::max(2, static_cast<int>(g_char_width * 0.25f)), line_height, color);
@@ -17491,6 +18279,19 @@ void DrawTabBar(int y) {
     std::string mode_label = std::string(" ") + ModeName(g_editor.CurrentMode(), g_editor.IsReplaceMode()) + " ";
     DrawTextEx(g_font, mode_label.c_str(), Vector2{x, cy}, font_size, 0, ResolveHlGroup("StatusLineFg"));
     x += MeasureTextEx(g_font, mode_label.c_str(), font_size, 0).x + 4;
+
+    // Speech-to-text recording indicator (mep.stt_toggle): a slowly
+    // pulsing mic icon, same pulse idiom as DrawAgentStatusBadge's
+    // "thinking" dot, so recording reads as clearly ongoing rather than a
+    // static/possibly-stale icon.
+    if (g_editor.IsSttRecording()) {
+        const float mic_size = font_size;
+        const float pulse = 0.6f + 0.4f * sinf(static_cast<float>(GetTime()) * 4.0f);
+        Color mic_color = ResolveHlGroup("Red");
+        mic_color.a = static_cast<unsigned char>(255 * pulse);
+        DrawMicIcon(Vector2{x, cy}, mic_size, mic_color);
+        x += mic_size + 6;
+    }
 
     for (int i = 0; i < g_editor.TabCount(); i++) {
         bool active = (i == g_editor.ActiveTabIndex());
@@ -17662,8 +18463,18 @@ void DrawEditor() {
         } else {
             ComputePaneScreenRects(g_editor.MutableActiveTabRoot(), pane_x, static_cast<float>(content_top), pane_w,
                                     static_cast<float>(pane_area_h));
+            // While a sidebar has focus (Mode::Sidebar), tab.active_pane_id
+            // still points at whichever pane focus came from -- it's kept
+            // around so mod1+hjkl back out of the sidebar returns there,
+            // not cleared -- but that pane no longer actually has the
+            // cursor, so it shouldn't keep drawing with the active-pane
+            // border/header treatment (DrawPaneBorder/DrawPane's own
+            // TabActive header_bg) while the now-focused sidebar
+            // (DrawSidebars) draws none of its own. -1 matches no real
+            // pane id, so every leaf falls back to its inactive look.
+            int highlighted_pane_id = (g_editor.CurrentMode() == Mode::Sidebar) ? -1 : g_editor.ActivePaneId();
             DrawPaneTree(g_editor.ActiveTabRoot(), pane_x, static_cast<float>(content_top), pane_w,
-                         static_cast<float>(pane_area_h), g_editor.ActivePaneId());
+                         static_cast<float>(pane_area_h), highlighted_pane_id);
             DrawPaneDragOverlay();
         }
     }

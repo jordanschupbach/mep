@@ -78,10 +78,11 @@ register prefix.
 Insert: =i a I A o O= to enter it, =R= for Replace (typing overwrites;
 Backspace restores what was overwritten), =Ctrl-W=/=Ctrl-U= delete a
 word/to line-start while typing. Operators: =d y c= (also =D C Y=,
-=gu gU= case, =>= =<= indent, =~= toggle-case), composable with a
-motion, a text object (=iw aw i" a" i( a( ip ap= and friends), or
-doubled for the current line. =x p P= (also countable); =r{char}=
-replaces without entering Insert; =u= / =Ctrl-r= undo/redo.
+=gu gU= case, =gq= reflow/format, =>= =<= indent, =~= toggle-case),
+composable with a motion, a text object (=iw aw i" a" i( a( ip ap= and
+friends), or doubled for the current line (=gqq= reflows the current
+paragraph). =x p P= (also countable); =r{char}= replaces without
+entering Insert; =u= / =Ctrl-r= undo/redo.
 
 Registers: ="{a-z}= (or ="{A-Z}= to append) before an operator or
 =p=/=P= targets a named register instead of the unnamed one. Marks:
@@ -146,7 +147,13 @@ diagnostic/DAP-breakpoint/TODO-scan sign for that line (one glyph per
 row, highest-priority sign wins), regardless of whether either number
 option is on. =:set ignorecase= (=noignorecase=) makes search and
 =:s=/=:g= case-insensitive; =:set wrapscan= (=nowrapscan=, on by
-default) controls whether search wraps around the buffer.
+default) controls whether search wraps around the buffer. =:set
+textwidth=N= (=tw=N=, default 80) sets the column width =gq=/=gqq=
+wrap paragraphs to. =:set wrap= (=nowrap=, on by default) soft-wraps a
+row too wide for the pane onto extra visual rows instead of running it
+off the right edge -- the buffer still has exactly one logical line
+there, so it never gets its own line number and =j=/=k= still move by
+buffer line, not visual row.
 
 =:q= closes the current pane, quitting the application only if it's the
 last pane in the last tab (matching Vim); it refuses if that pane's

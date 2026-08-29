@@ -358,6 +358,15 @@ struct SidebarInstance {
     // rename/delete/refresh/toggle-hidden) without the generic sidebar
     // widget needing to know anything tree-specific. 0 = none registered.
     int on_key_ref = 0;
+    // First flattened-line index drawn at the top of the sidebar's content
+    // area -- this sidebar's mirror of Pane::scroll_row. Kept per-instance
+    // (rather than a single field alongside sidebar_cursor_) so a sidebar
+    // that loses focus (mod1+hjkl back into the pane tree, or another
+    // sidebar taking focus) keeps its own scroll position instead of
+    // sharing one slot with whichever sidebar happens to be focused right
+    // now. Updated once per rendered frame by Editor::UpdateScrollForSidebar
+    // (main.cpp's DrawSidebars, the same call shape as UpdateScrollForPane).
+    int scroll_offset = 0;
 };
 
 // One flattened, renderable/navigable line of a sidebar: either a section
@@ -1209,7 +1218,13 @@ public:
     // Adjusts the given pane's scroll so its cursor stays visible within
     // `visible_lines` rows. Call once per frame for every rendered pane
     // (each may have a different height depending on the split layout).
-    void UpdateScrollForPane(int pane_id, int visible_lines);
+    // `wrap_cols` is the pane's current soft-wrap budget in characters (see
+    // Wrap()) -- 0 disables wrap-aware slot counting, matching main.cpp's
+    // own "wrap_cols<=0 means wrap is off" convention. A row wider than
+    // wrap_cols counts as multiple visual slots here, the same way a
+    // closed fold or org inline image already does, so the cursor's own
+    // wrapped row can't scroll itself half off-screen.
+    void UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols = 0);
 
     Mode CurrentMode() const { return mode_; }
     // R (Replace mode): true while Mode::Insert should show "REPLACE" in
@@ -1232,6 +1247,11 @@ public:
     // :set cursorline/nocursorline -- whether main.cpp's renderer should
     // tint the active pane's cursor row with the "CursorLine" theme group.
     bool ShowCursorLine() const { return show_cursorline_; }
+    // :set wrap/nowrap -- whether main.cpp's renderer should soft-wrap a
+    // row too wide for the pane onto extra visual rows (the buffer itself
+    // still has exactly one logical line there; j/k and line numbering
+    // stay row-based, matching real Vim's default 'wrap' behavior).
+    bool Wrap() const { return wrap_; }
     // <leader>oti / mep.org_images_toggle -- whether main.cpp's renderer
     // should substitute a rendered texture for a Buffer::org_image_rows
     // row instead of its ordinary [[file:...]] text.
@@ -1833,6 +1853,28 @@ public:
     void GetCursorForLua(int *row, int *col) const;
     void SetCursorForLua(int row, int col);
     void InsertTextForLua(const std::string &text);
+    // Identical to pressing "c" on the current Visual selection
+    // (DispatchVisualKey's own case 'c':) -- deletes it with the same
+    // undo/register/cursor semantics as any other change, then leaves
+    // mode_ in Insert with the cursor at the deletion point, ready for
+    // InsertTextForLua to stream a replacement in. Falls back to
+    // ApplyOperatorToSelectionOrCurrentLine's own no-selection behavior
+    // ("cc" on the current line) if called outside Visual mode.
+    void ChangeVisualSelectionForLua();
+    // The Lua equivalent of pressing <Esc>: leaves Insert (or Visual, if
+    // still active) and returns to Normal mode. Used to hand control back
+    // to Normal once a streamed-in AI replacement (ChangeVisualSelectionForLua
+    // + repeated InsertTextForLua calls) finishes, mirroring what a human
+    // typing the same replacement by hand would do when done.
+    void EnterNormalForLua();
+    // The Lua equivalent of pressing "i": pushes one undo checkpoint (same
+    // as real Normal-mode 'i', DispatchNormalKey's own `case 'i':`) then
+    // enters Insert mode. Used by speech-to-text to make dictated text
+    // behave like the user typed it themselves -- one undo step per
+    // dictation session -- when the buffer wasn't already in Insert mode
+    // at the moment a transcript is ready to stream in.
+    void EnterInsertForLua();
+    bool IsInsertModeForLua() const { return mode_ == Mode::Insert; }
     void SetStatusMessage(const std::string &msg);
     void RequestQuit() { should_quit_ = true; }
     void RegisterLuaCommand(const std::string &name, int lua_ref);
@@ -1864,6 +1906,15 @@ public:
     // single already-unprefixed keystroke (RegisterLuaMapping's own doc
     // comment) and can't reach anything typed after a pending "g".
     void RegisterGMapping(const std::string &key, int lua_ref);
+    // mep.map_g_visual(key, fn): same as RegisterGMapping, but consulted
+    // from DispatchVisualKey's own pending_g_ handling instead -- Visual
+    // mode's g-prefix dispatch is a separate function with its own
+    // hardcoded gu/gU/gq/gg/ge/gE cases and never looks at g_mappings_
+    // (see DispatchVisualKey), so a Normal-mode-only "gl" registered via
+    // mep.map_g would silently no-op if typed while a Visual selection is
+    // active -- this table is what lets e.g. "gl" replace-selection work
+    // in Visual mode without colliding with Normal mode's own "gl".
+    void RegisterVisualGMapping(const std::string &key, int lua_ref);
     // mep.map_bracket_prev(key, fn) / mep.map_bracket_next(key, fn):
     // same shape as RegisterGMapping, but for a leading "[" / "]"
     // instead of "g" (e.g. "e" for "[e"/"]e" LSP diagnostic navigation).
@@ -2088,6 +2139,17 @@ public:
         std::string status;
     };
     std::vector<ParticipantInfo> Participants() const;
+    // Registers/updates a synthetic, locally-driven participant -- for a
+    // Lua-side feature (e.g. mep.ai_send_buffer's streaming) that wants the
+    // same tab-bar chip + in-buffer robot cursor a real socket-connected
+    // mep-agent gets "for free", without actually going through
+    // agent_rpc.cpp. Upserts by `id`; call again each streamed delta to
+    // move the cursor. `status` follows the same agent status vocabulary
+    // ParticipantInfo::status documents ("thinking"/"writing"/etc, or "").
+    void SetLocalParticipant(const std::string &id, const std::string &name, int buffer_id, int row, int col, const std::string &status = "");
+    // Removes a local participant added via SetLocalParticipant (e.g. once
+    // a stream finishes or is cancelled) -- a no-op if `id` isn't one.
+    void ClearLocalParticipant(const std::string &id);
     // Moves the local user's own cursor to participant `id`'s last-known
     // position -- switching the active pane's buffer first if the
     // participant is somewhere else (an AI agent, unlike a human
@@ -2312,6 +2374,15 @@ public:
     // by a different route.
     void FocusSidebarRow(int id, int line_index);
     void ActivateSidebarLine(int id, int line_index);
+    // Adjusts sidebar `id`'s scroll_offset so its cursor stays visible
+    // within `visible_lines` rows, and clamps it back in range if the
+    // sidebar's own content shrank (a collapsed section, a deleted file).
+    // Call once per frame for every *open* sidebar (main.cpp's DrawSidebars,
+    // which alone knows each one's rendered height) -- mirrors
+    // UpdateScrollForPane's contract exactly, just without that one's
+    // fold/wrap/org-image slot-counting: every sidebar row is exactly one
+    // line tall, so plain index arithmetic is enough.
+    void UpdateScrollForSidebar(int id, int visible_lines);
     // Absolute cell-count resize (border-drag's own per-frame update) --
     // the mouse-driven sibling of ResizeActivePane's Mode::Sidebar branch,
     // which only ever nudges by a fixed step. Clamped to the same minimum
@@ -2474,6 +2545,8 @@ public:
     void NextSheet();
     void PrevSheet();
     bool IsZenMode() const { return zen_mode_; }
+    bool IsSttRecording() const { return stt_recording_; }
+    void SetSttRecording(bool v) { stt_recording_ = v; }
 
     // --- Hints (NVIM_PARITY_PLAN.md Part III Phase 13) ---
     // Enters Mode::HintChar, awaiting the character to search for.
@@ -3340,11 +3413,12 @@ private:
     CursorPos NextSentenceStart(CursorPos from) const;
     CursorPos MoveMatchingBracket(CursorPos from) const;
 
-    // Applies operator `op` ('d', 'y', 'c', 'u'/'U' for gu/gU, or '>'/'<'
-    // for indent/dedent) over the half-open charwise range [start, end) on
-    // a single line (or spanning lines), or the inclusive line range
-    // [start.row, end.row] when `linewise` is true ('>'/'<' always treat
-    // it as a line range regardless of `linewise`, matching Vim).
+    // Applies operator `op` ('d', 'y', 'c', 'u'/'U' for gu/gU, '>'/'<' for
+    // indent/dedent, or 'q' for gq) over the half-open charwise range
+    // [start, end) on a single line (or spanning lines), or the inclusive
+    // line range [start.row, end.row] when `linewise` is true ('>'/'<'/'q'
+    // always treat it as a line range regardless of `linewise`, matching
+    // Vim).
     void ApplyOperator(char op, CursorPos start, CursorPos end, bool linewise);
     void DeleteRange(CursorPos start, CursorPos end, bool linewise);
     // Writes into register `reg_name` (0 = unnamed) -- replacing its
@@ -3366,6 +3440,11 @@ private:
     // end_row] by |levels| shiftwidths (a fixed 4 spaces -- no
     // 'shiftwidth'/'expandtab'/tabstop configuration).
     void IndentLines(int start_row, int end_row, int levels);
+    // gq: reflows [start_row, end_row] to wrap at text_width_ columns
+    // (":set textwidth="/"tw=", default 80), one blank-line-delimited
+    // paragraph at a time, reusing each paragraph's first line's indent
+    // for every wrapped line.
+    void FormatLines(int start_row, int end_row);
     // J/gJ: joins [count, or 2 if unset] lines starting at the cursor.
     // with_space controls whether a single space is inserted at the join
     // point (J) or not (gJ); leading whitespace on each joined-in line is
@@ -3417,6 +3496,14 @@ private:
     void WheelScrollImage(float dx, float dy);
     void WheelScrollHtml(float dx, float dy);
     void WheelScrollTerminal(float dy);
+    // Scrolls the focused sidebar's scroll_offset directly (not the
+    // cursor -- same "wheel pans the view, arrow keys/j/k move the
+    // cursor" split every other WheelScroll* above already follows).
+    // Clamped only against total row count here; the real bound
+    // (total - visible_lines) gets applied next frame by
+    // UpdateScrollForSidebar, the same lag ScrollHalfPage/ScrollFullPage's
+    // own doc comment already accepts for pane scrolling.
+    void WheelScrollSidebar(float dy);
     // Fractional-notch carry-over for each discrete-stepping content
     // type's WheelScroll* above -- see WheelSteps' own comment. Pixel-
     // based content (Pdf/Image/Html scroll_y/pan_x/pan_y) needs no
@@ -3425,6 +3512,7 @@ private:
     float wheel_accum_office_para_ = 0.0f, wheel_accum_office_col_ = 0.0f;
     float wheel_accum_sheet_row_ = 0.0f, wheel_accum_sheet_col_ = 0.0f;
     float wheel_accum_term_ = 0.0f;
+    float wheel_accum_sidebar_ = 0.0f;
     // Ctrl-A/Ctrl-X: adds `delta` (negative for Ctrl-X) to the first
     // number at or after the cursor on the current line, preserving
     // leading-zero padding the way Vim's default nrformats does, and
@@ -3732,6 +3820,12 @@ private:
     int statusline_ref_ = 0;
     int winbar_click_ref_ = 0;
     bool zen_mode_ = false;
+    // Speech-to-text recording indicator (Lua-driven, see mep.stt_toggle):
+    // purely a display flag for DrawTabBar's mic icon -- the actual
+    // recording process/job lives entirely in Lua, this just tells the
+    // tab bar whether to show it. Deliberately independent of
+    // ParticipantInfo/local_participants_ (not an AI-participant chip).
+    bool stt_recording_ = false;
 
     std::vector<HintMatch> hint_matches_;
     std::string hint_typed_;
@@ -3772,6 +3866,11 @@ private:
     std::unique_ptr<mep::collab::CollabSession> collaboration_;
     int collaboration_buffer_id_ = -1;
 
+    // Local (non-socket) participants -- see SetLocalParticipant. Small and
+    // short-lived (one entry per in-flight Lua-driven AI stream), so a
+    // linear vector keyed by id is fine.
+    std::vector<ParticipantInfo> local_participants_;
+
     // --- Notification state ---
     std::vector<NotifyEntry> toasts_;
     std::vector<NotifyEntry> notify_history_;
@@ -3805,8 +3904,19 @@ private:
     // :set options (Phase 11) -- deliberately a small, fixed set of plain
     // bools rather than a general options table, matching the plan's own
     // "a small, real set of options mep can actually honor" scope.
+    // text_width_ is the one numeric exception (":set textwidth=N"/"tw=N"),
+    // for gq's ApplyOperator('q', ...) -> FormatLines wrap width.
     bool ignore_case_ = false;
     bool wrapscan_ = true;
+    int text_width_ = 80;
+    // :set wrap/nowrap -- whether a buffer row wider than the pane soft-
+    // wraps onto extra *visual* rows (main.cpp's DrawPane) instead of
+    // running off the right edge. Distinct from text_width_/gq's hard
+    // reflow: this never touches buffer content, and the extra visual
+    // rows a wrapped row claims are never their own line number (mirrors
+    // how a closed fold or org inline image already claims more than one
+    // visual slot for one buffer row -- see Wrap()'s own comment).
+    bool wrap_ = true;
     // On by default (hybrid "number relativenumber"), unlike every other
     // :set option here -- a plain, unmodified mep should already look
     // like a real editor's default layout (line numbers + a gutter for
@@ -4060,6 +4170,7 @@ private:
     std::unordered_map<std::string, int> visual_mappings_;      // key -> lua ref
     std::unordered_map<std::string, int> mod1_mappings_;        // key -> lua ref
     std::unordered_map<std::string, int> g_mappings_;            // g-prefixed key -> lua ref
+    std::unordered_map<std::string, int> visual_g_mappings_;     // Visual-mode g-prefixed key -> lua ref (see RegisterVisualGMapping)
     std::unordered_map<std::string, int> bracket_prev_mappings_;  // [-prefixed key -> lua ref
     std::unordered_map<std::string, int> bracket_next_mappings_;  // ]-prefixed key -> lua ref
     // Optional human-readable description for a mep.map() binding, keyed

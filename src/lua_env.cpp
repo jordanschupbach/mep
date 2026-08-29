@@ -150,10 +150,76 @@ int l_current_buffer(lua_State *L) {
     return 1;
 }
 
+// mep.participant_set(id, name, buffer_id, row, col [, status]): upserts a
+// synthetic local participant -- e.g. a Lua-driven AI stream -- so it gets
+// the same tab-bar chip + in-buffer robot cursor a real connected mep-agent
+// gets via agent_rpc.cpp. row/col are 1-indexed like mep.cursor()/
+// mep.set_cursor(). `status` is optional, same vocabulary as a real agent's
+// (""/"idle"/"thinking"/"writing"/"awaiting_input"/"done").
+int l_participant_set(lua_State *L) {
+    const char *id = luaL_checkstring(L, 1);
+    const char *name = luaL_checkstring(L, 2);
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 3));
+    int row = static_cast<int>(luaL_checkinteger(L, 4)) - 1;
+    int col = static_cast<int>(luaL_checkinteger(L, 5)) - 1;
+    std::string status;
+    if (lua_gettop(L) >= 6 && lua_isstring(L, 6)) status = lua_tostring(L, 6);
+    GetEditor(L)->SetLocalParticipant(id, name, buffer_id, row, col, status);
+    return 0;
+}
+
+// mep.participant_clear(id): removes a participant added via
+// mep.participant_set (e.g. once an AI stream finishes or is cancelled).
+int l_participant_clear(lua_State *L) {
+    const char *id = luaL_checkstring(L, 1);
+    GetEditor(L)->ClearLocalParticipant(id);
+    return 0;
+}
+
 int l_insert_text(lua_State *L) {
     size_t len = 0;
     const char *s = luaL_checklstring(L, 1, &len);
     GetEditor(L)->InsertTextForLua(std::string(s, len));
+    return 0;
+}
+
+// mep.visual_change(): the Lua equivalent of pressing "c" on the current
+// Visual selection -- deletes it (with the same undo/register semantics
+// as any other change) and leaves the cursor, in Insert mode, at the
+// deletion point, ready for mep.insert_text to stream a replacement in.
+int l_visual_change(lua_State *L) {
+    GetEditor(L)->ChangeVisualSelectionForLua();
+    return 0;
+}
+
+// mep.enter_normal(): the Lua equivalent of pressing <Esc> -- returns to
+// Normal mode from Insert or Visual.
+int l_enter_normal(lua_State *L) {
+    GetEditor(L)->EnterNormalForLua();
+    return 0;
+}
+
+// mep.enter_insert(): the Lua equivalent of pressing "i" -- pushes one
+// undo checkpoint and enters Insert mode. Used by speech-to-text so a
+// streamed-in transcript behaves like typed text (one undo step per
+// dictation) when the buffer wasn't already in Insert mode.
+int l_enter_insert(lua_State *L) {
+    GetEditor(L)->EnterInsertForLua();
+    return 0;
+}
+
+// mep.is_insert_mode() -> true while Mode::Insert is active.
+int l_is_insert_mode(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->IsInsertModeForLua());
+    return 1;
+}
+
+// mep.stt_set_recording(bool): sets the tab bar's speech-to-text
+// recording indicator on/off -- purely a display flag, see
+// Editor::stt_recording_'s own comment; the recording process itself is
+// entirely Lua/job-driven (mep.stt_toggle).
+int l_stt_set_recording(lua_State *L) {
+    GetEditor(L)->SetSttRecording(lua_toboolean(L, 1));
     return 0;
 }
 
@@ -289,6 +355,19 @@ int l_map_g(lua_State *L) {
     lua_pushvalue(L, 2);
     int ref = luaL_ref(L, LUA_REGISTRYINDEX);
     GetEditor(L)->RegisterGMapping(key, ref);
+    return 0;
+}
+
+// mep.map_g_visual(key, fn): same as mep.map_g, but for Visual mode's own
+// separate g-prefix dispatch (DispatchVisualKey) instead of Normal's --
+// the two never share a table, so e.g. "gl" can mean something different
+// (or nothing) in Visual mode than it does in Normal mode.
+int l_map_g_visual(lua_State *L) {
+    const char *key = luaL_checkstring(L, 1);
+    luaL_checktype(L, 2, LUA_TFUNCTION);
+    lua_pushvalue(L, 2);
+    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    GetEditor(L)->RegisterVisualGMapping(key, ref);
     return 0;
 }
 
@@ -2358,6 +2437,13 @@ const luaL_Reg kMepFuncs[] = {
     {"cursor", l_cursor},
     {"set_cursor", l_set_cursor},
     {"current_buffer", l_current_buffer},
+    {"participant_set", l_participant_set},
+    {"participant_clear", l_participant_clear},
+    {"visual_change", l_visual_change},
+    {"enter_normal", l_enter_normal},
+    {"enter_insert", l_enter_insert},
+    {"is_insert_mode", l_is_insert_mode},
+    {"stt_set_recording", l_stt_set_recording},
     {"insert_text", l_insert_text},
     {"notify", l_notify},
     {"command", l_command},
@@ -2366,6 +2452,7 @@ const luaL_Reg kMepFuncs[] = {
     {"leader_bindings", l_leader_bindings},
     {"map_mod1", l_map_mod1},
     {"map_g", l_map_g},
+    {"map_g_visual", l_map_g_visual},
     {"map_bracket_prev", l_map_bracket_prev},
     {"map_bracket_next", l_map_bracket_next},
     {"set_mod1", l_set_mod1},

@@ -12,6 +12,7 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <sstream>
 
 #include "raylib.h"
 #include "lua_env.h"
@@ -883,7 +884,7 @@ void Editor::HandleInput() {
     TickCollaboration();
 }
 
-void Editor::UpdateScrollForPane(int pane_id, int visible_lines) {
+void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) {
     SplitNode *node = FindNode(tabs_[active_tab_].root.get(), pane_id);
     if (!node) return;
     Pane &pane = node->pane;
@@ -932,6 +933,26 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines) {
             if (org_latex_visible_) {
                 auto it = buf.org_latex_rows.find(r);
                 if (it != buf.org_latex_rows.end()) return it->second.slots;
+            }
+            // Soft-wrap (:set wrap, wrap_cols>0): a row's *raw* text length
+            // determines how many visual slots it claims, same "one row ->
+            // N slots" shape as the fold/org-image cases above -- except a
+            // closed fold's own start row never soft-wraps (its rendered
+            // content is the one-line "+-- N lines: ... ---" summary, not
+            // buf.lines[r] itself), so it's excluded here the same way
+            // DrawPane's row loop (main.cpp) excludes it from wrapping.
+            if (wrap_cols > 0) {
+                bool fold_start = false;
+                for (const Fold &f : buf.folds) {
+                    if (f.closed && f.start_row == r) {
+                        fold_start = true;
+                        break;
+                    }
+                }
+                if (!fold_start) {
+                    int len = static_cast<int>(buf.lines[r].size());
+                    return std::max(1, (len + wrap_cols - 1) / wrap_cols);
+                }
             }
             return 1;
         };
@@ -1222,6 +1243,15 @@ void Editor::WheelScrollTerminal(float dy) {
     if (steps != 0) sess->scroll_offset = std::clamp(sess->scroll_offset + steps, 0, sess->vterm->ScrollbackLines());
 }
 
+void Editor::WheelScrollSidebar(float dy) {
+    SidebarInstance *sb = FindSidebarMut(focused_sidebar_id_);
+    if (!sb) return;
+    int steps = WheelSteps(wheel_accum_sidebar_, -dy, kWheelLinesPerNotch);
+    if (steps == 0) return;
+    int max_scroll = std::max(0, static_cast<int>(FlattenSidebar(focused_sidebar_id_).size()) - 1);
+    sb->scroll_offset = std::clamp(sb->scroll_offset + steps, 0, max_scroll);
+}
+
 // Dispatched once per frame from HandleInput(), before the mode-specific
 // handler -- see this method's own declaration (editor.h) for why. Modal
 // overlays (Picker/Sidebar/Prompt/Command/etc.) and the Insert-family
@@ -1264,6 +1294,9 @@ void Editor::HandleMouseWheel(float dx, float dy) {
             // (see HandleTerminalInput's own comment on why those stay as
             // plain forwarded keystrokes here instead).
             WheelScrollTerminal(dy);
+            break;
+        case Mode::Sidebar:
+            WheelScrollSidebar(dy);
             break;
         default:
             break;
@@ -5888,6 +5921,7 @@ void Editor::SetMod1(const std::string &name) {
 void Editor::RegisterMod1Mapping(const std::string &key, int lua_ref) { mod1_mappings_[key] = lua_ref; }
 
 void Editor::RegisterGMapping(const std::string &key, int lua_ref) { g_mappings_[key] = lua_ref; }
+void Editor::RegisterVisualGMapping(const std::string &key, int lua_ref) { visual_g_mappings_[key] = lua_ref; }
 
 void Editor::RegisterBracketPrevMapping(const std::string &key, int lua_ref) { bracket_prev_mappings_[key] = lua_ref; }
 
@@ -6562,16 +6596,16 @@ bool Editor::DispatchNormalKey(int cp) {
     }
 
     // g-prefixed motions (gg / ge / gE) -- same "operator may or may not be
-    // pending" shape as f/F/t/T above. gu/gU/gJ are checked first and only
-    // when no operator is already pending: they're freestanding operators
-    // in their own right (like d/y/c), not motions, so "gu" itself sets
-    // pending_op_ (reusing 'u'/'U' as the operator letter -- see
-    // ApplyOperator) and waits for ITS motion the same way "d" does,
-    // rather than resolving anything here. (Only "guu"/"gUU" work as the
-    // doubled-key current-line form, not "gugu"/"gUgU" -- both are valid
-    // Vim spellings of the same thing, but only the first is worth the
-    // extra dispatch complexity here.)
-    if (pending_g_ && !pending_op_ && (c == 'u' || c == 'U')) {
+    // pending" shape as f/F/t/T above. gu/gU/gq/gJ are checked first and
+    // only when no operator is already pending: they're freestanding
+    // operators in their own right (like d/y/c), not motions, so "gu" (or
+    // "gq") itself sets pending_op_ (reusing 'u'/'U'/'q' as the operator
+    // letter -- see ApplyOperator) and waits for ITS motion the same way
+    // "d" does, rather than resolving anything here. (Only "guu"/"gUU"/
+    // "gqq" work as the doubled-key current-line form, not "gugu"/"gUgU"/
+    // "gqgq" -- all are valid Vim spellings of the same thing, but only
+    // the first is worth the extra dispatch complexity here.)
+    if (pending_g_ && !pending_op_ && (c == 'u' || c == 'U' || c == 'q')) {
         pending_g_ = false;
         pending_op_ = c;
         pending_op_start_ = CurPane().cursor;
@@ -7765,6 +7799,28 @@ void Editor::DispatchVisualKey(int cp) {
         EnterNormal();
         return;
     }
+    if (pending_g_ && c == 'q') {
+        // gq always reformats whole lines (like >/< above), regardless of
+        // whether the selection is charwise or linewise -- matching Vim,
+        // where gq is one of the operators whose motion is forced linewise.
+        pending_g_ = false;
+        TakeRawCount();
+        CursorPos s, e;
+        VisualRange(s, e);
+        FormatLines(s.row, e.row);
+        CurPane().cursor = FirstNonBlank(std::min(s.row, Buf().LineCount() - 1));
+        EnterNormal();
+        return;
+    }
+    if (pending_g_ && lua_) {
+        auto git = visual_g_mappings_.find(std::string(1, c));
+        if (git != visual_g_mappings_.end()) {
+            pending_g_ = false;
+            TakeRawCount();
+            lua_->CallRef(git->second);
+            return;
+        }
+    }
     if (pending_g_) {
         pending_g_ = false;
         int count = TakeRawCount();
@@ -8617,6 +8673,7 @@ void Editor::FocusSidebarRow(int id, int line_index) {
     // sidebar is closed some other way. Only capture on the genuine
     // transition into sidebar focus, same as OpenSidebar's own guard.
     if (mode_ != Mode::Sidebar) overlay_previous_mode_ = mode_;
+    pending_g_ = false;  // avoid gg/G leakage from whatever mode was active before this click
     focused_sidebar_id_ = id;
     mode_ = Mode::Sidebar;
     std::vector<SidebarLine> lines = FlattenSidebar(id);
@@ -8670,6 +8727,7 @@ void Editor::OpenSidebar(int id, bool focus) {
     sb->open = true;
     if (focus) {
         overlay_previous_mode_ = mode_;
+        pending_g_ = false;  // avoid gg/G leakage from whatever mode was active before this
         focused_sidebar_id_ = id;
         sidebar_cursor_ = 0;
         mode_ = Mode::Sidebar;
@@ -8727,6 +8785,27 @@ std::vector<SidebarLine> Editor::FlattenSidebar(int id) const {
     return out;
 }
 
+void Editor::UpdateScrollForSidebar(int id, int visible_lines) {
+    SidebarInstance *sb = FindSidebarMut(id);
+    if (!sb) return;
+    visible_lines = std::max(1, visible_lines);
+    int total = static_cast<int>(FlattenSidebar(id).size());
+    int max_scroll = std::max(0, total - visible_lines);
+    // Only the focused sidebar has a live cursor to chase -- an unfocused
+    // one (another open sidebar, or this one after mod1+hjkl blurred it
+    // back into the pane tree) just gets its scroll_offset clamped back in
+    // range below, same as a pane that shrank out from under its own
+    // scroll_row.
+    if (id == focused_sidebar_id_ && mode_ == Mode::Sidebar) {
+        if (sidebar_cursor_ < sb->scroll_offset) {
+            sb->scroll_offset = sidebar_cursor_;
+        } else if (sidebar_cursor_ >= sb->scroll_offset + visible_lines) {
+            sb->scroll_offset = sidebar_cursor_ - visible_lines + 1;
+        }
+    }
+    sb->scroll_offset = std::clamp(sb->scroll_offset, 0, max_scroll);
+}
+
 void Editor::HandleSidebarInput() {
     std::vector<SidebarLine> lines = FlattenSidebar(focused_sidebar_id_);
     bool escape = false, enter = false;
@@ -8738,9 +8817,11 @@ void Editor::HandleSidebarInput() {
         int id = focused_sidebar_id_;
         RestoreFromOverlay();
         CloseSidebar(id);
+        pending_g_ = false;  // don't leak a lone unmatched 'g' into whatever mode Escape restores
         return;
     }
     if (enter) {
+        pending_g_ = false;  // don't leak a lone unmatched 'g' into whatever mode this activation lands in
         ActivateSidebarLine(focused_sidebar_id_, sidebar_cursor_);
         return;
     }
@@ -8767,14 +8848,35 @@ void Editor::HandleSidebarInput() {
     }
     int cp = GetCharPressed();
     while (cp > 0) {
-        if (cp == 'j' && sidebar_cursor_ + 1 < static_cast<int>(lines.size())) sidebar_cursor_++;
-        else if (cp == 'k' && sidebar_cursor_ > 0) sidebar_cursor_--;
-        else if (cp == 'q') {
+        // gg/G: jump to the first/last flattened line, same "G always
+        // resolves immediately, g waits one more keystroke" shape as
+        // Normal mode's own pending_g_ (DispatchNormalKey) -- reusing that
+        // same flag here since Sidebar is its own mode and can't otherwise
+        // collide with Normal mode's use of it. Any key below that isn't
+        // itself continuing a pending 'g' clears it, so a stray 'g' can't
+        // wrongly arm a later unrelated 'G'.
+        if (cp == 'G') {
+            sidebar_cursor_ = std::max(0, static_cast<int>(lines.size()) - 1);
+            pending_g_ = false;
+        } else if (cp == 'g' && pending_g_) {
+            sidebar_cursor_ = 0;
+            pending_g_ = false;
+        } else if (cp == 'g') {
+            pending_g_ = true;
+        } else if (cp == 'j' && sidebar_cursor_ + 1 < static_cast<int>(lines.size())) {
+            sidebar_cursor_++;
+            pending_g_ = false;
+        } else if (cp == 'k' && sidebar_cursor_ > 0) {
+            sidebar_cursor_--;
+            pending_g_ = false;
+        } else if (cp == 'q') {
             int id = focused_sidebar_id_;
             RestoreFromOverlay();
             CloseSidebar(id);
+            pending_g_ = false;  // don't leak a lone unmatched 'g' into whatever mode q restores
             return;
         } else if (lua_) {
+            pending_g_ = false;
             const SidebarInstance *sb = FindSidebar(focused_sidebar_id_);
             if (sb && sb->on_key_ref != 0 && cp >= 32 && cp < 127) {
                 lua_->CallRefWithString(sb->on_key_ref, std::string(1, static_cast<char>(cp)));
@@ -10849,6 +10951,17 @@ void Editor::ApplyOperator(char op, CursorPos start, CursorPos end, bool linewis
         ClampCursor();
         return;
     }
+    if (op == 'q') {
+        // gq: same "always whole-line, even for a charwise motion" shape
+        // as >/< just above -- Vim documents gq as one of the operators
+        // whose motion is forced linewise regardless of how it was
+        // spelled (gqw reflows the rest of the paragraph's lines, not
+        // just up to the next word boundary).
+        FormatLines(start.row, end.row);
+        CurPane().cursor = FirstNonBlank(std::min(start.row, Buf().LineCount() - 1));
+        ClampCursor();
+        return;
+    }
 
     PushUndo();
     // Numbered registers: real Vim shifts "1-"9 down (dropping "9) and
@@ -10940,6 +11053,80 @@ void Editor::IndentLines(int start_row, int end_row, int levels) {
                 line.erase(0, remove);
             }
         }
+    }
+    Buf().modified = true;
+}
+
+// gq: reflows [start_row, end_row] to wrap at text_width_ columns
+// (":set textwidth="/"tw=", default 80), one blank-line-delimited
+// paragraph at a time -- same simplified "no comment leader" paragraph
+// boundary (Buf().lines[row].empty()) that MoveParagraphForward/
+// ParagraphObjectRange already use. A paragraph that extends beyond
+// end_row is only rewrapped where it overlaps [start_row, end_row],
+// matching Vim's gq{motion} (not the whole paragraph the motion happens
+// to graze). Every wrapped line reuses the *first* line's leading
+// whitespace as its indent.
+void Editor::FormatLines(int start_row, int end_row) {
+    const int kFormatWidth = std::max(1, text_width_);
+    end_row = std::min(end_row, Buf().LineCount() - 1);
+    if (start_row > end_row) return;
+    PushUndo();
+
+    int row = std::max(0, start_row);
+    while (row <= end_row) {
+        if (Buf().lines[row].empty()) {
+            row++;
+            continue;
+        }
+        int para_start = row;
+        int para_end = row;
+        while (para_end + 1 <= end_row && !Buf().lines[para_end + 1].empty()) para_end++;
+
+        const std::string &first_line = Buf().lines[para_start];
+        size_t indent_len = 0;
+        while (indent_len < first_line.size() &&
+               (first_line[indent_len] == ' ' || first_line[indent_len] == '\t')) {
+            indent_len++;
+        }
+        std::string indent = first_line.substr(0, indent_len);
+
+        std::vector<std::string> words;
+        for (int r = para_start; r <= para_end; r++) {
+            std::istringstream iss(Buf().lines[r]);
+            std::string w;
+            while (iss >> w) words.push_back(w);
+        }
+
+        std::vector<std::string> wrapped;
+        if (words.empty()) {
+            wrapped.push_back(indent);
+        } else {
+            std::string cur = indent;
+            bool cur_has_word = false;
+            for (const std::string &w : words) {
+                if (cur_has_word && cur.size() + 1 + w.size() > static_cast<size_t>(kFormatWidth)) {
+                    wrapped.push_back(cur);
+                    cur = indent + w;
+                } else {
+                    if (cur_has_word) cur += ' ';
+                    cur += w;
+                }
+                cur_has_word = true;
+            }
+            wrapped.push_back(cur);
+        }
+
+        int old_count = para_end - para_start + 1;
+        int new_count = static_cast<int>(wrapped.size());
+        Buf().lines.erase(Buf().lines.begin() + para_start, Buf().lines.begin() + para_end + 1);
+        ShiftMarksForLineEdit(para_start, -old_count);
+        ShiftFoldsForLineEdit(para_start, -old_count);
+        Buf().lines.insert(Buf().lines.begin() + para_start, wrapped.begin(), wrapped.end());
+        ShiftMarksForLineEdit(para_start, new_count);
+        ShiftFoldsForLineEdit(para_start, new_count);
+
+        end_row += new_count - old_count;
+        row = para_start + new_count;
     }
     Buf().modified = true;
 }
@@ -11614,6 +11801,28 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
             std::string opt = args.substr(pos, end - pos);
             pos = end + 1;
             if (opt.empty()) continue;
+            // Numeric "key=value" options -- checked before the boolean
+            // "no{key}" negation below since '=' never appears in one of
+            // those. Currently just textwidth/tw; any other numeric-style
+            // option added later belongs here too rather than growing a
+            // second table.
+            size_t eq = opt.find('=');
+            if (eq != std::string::npos) {
+                std::string key = opt.substr(0, eq);
+                std::string val = opt.substr(eq + 1);
+                if (key == "textwidth" || key == "tw") {
+                    char *val_end = nullptr;
+                    long w = std::strtol(val.c_str(), &val_end, 10);
+                    if (val_end != val.c_str() && *val_end == '\0' && w > 0) {
+                        text_width_ = static_cast<int>(w);
+                    } else {
+                        status_message_ = "E521: Number required after =: " + opt;
+                    }
+                } else {
+                    status_message_ = "E518: Unknown option: " + key;
+                }
+                continue;
+            }
             bool negate = opt.rfind("no", 0) == 0 && opt.size() > 2;
             std::string key = negate ? opt.substr(2) : opt;
             bool value = !negate;
@@ -11623,6 +11832,8 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
                 show_relative_numbers_ = value;
             } else if (key == "cursorline" || key == "cul") {
                 show_cursorline_ = value;
+            } else if (key == "wrap") {
+                wrap_ = value;
             } else if (key == "ignorecase" || key == "ic") {
                 ignore_case_ = value;
             } else if (key == "wrapscan" || key == "ws") {
@@ -11903,11 +12114,46 @@ void Editor::SetCursorForLua(int row, int col) {
 }
 
 void Editor::InsertTextForLua(const std::string &text) {
+    // Called from an async job callback (mep.insert_text) an arbitrary
+    // time after the request that produced `text` was kicked off --
+    // AI chat streaming and speech-to-text dictation both land their
+    // response/transcript this way, one chunk per callback, over a
+    // period of several seconds. Neither pins down which buffer/pane it
+    // targets: every chunk just inserts at whatever CurPane().cursor
+    // happens to be *at that moment*, matching typed-text semantics but
+    // meaning the cursor can have moved -- buffer switched, lines
+    // deleted, a shorter file opened in the same pane -- since the
+    // stream started. InsertNewline/InsertChar index Buf().lines[row]
+    // with no bounds check at all, so a stale row/col (most reliably hit
+    // with two such streams live at once, e.g. dictating while an AI
+    // response streams in) reads past the vector into uninitialized
+    // memory and corrupts/crashes on the very next edit -- confirmed via
+    // two independent core dumps, both faulting inside InsertNewline's
+    // vector<string>::insert on a garbage length read this way. Re-clamp
+    // against whatever Buf() actually is right now, right before
+    // touching it, the same way ordinary cursor motion already does via
+    // ClampCursor() -- but with insert-mode column bounds (col == line
+    // length is valid, appending at end-of-line) regardless of the
+    // current mode_, since typed/dictated/streamed text always behaves
+    // like Insert-mode input here even if a stream never called
+    // mep.enter_insert() first (mep.ai_send_text doesn't).
+    CursorPos &cursor = CurPane().cursor;
+    cursor.row = std::max(0, std::min(cursor.row, Buf().LineCount() - 1));
+    cursor.col = std::max(0, std::min(cursor.col, LineLen(cursor.row)));
     PushUndo();
     for (char c : text) {
         if (c == '\n') InsertNewline();
         else InsertChar(static_cast<unsigned char>(c));
     }
+}
+
+void Editor::ChangeVisualSelectionForLua() { ApplyOperatorToSelectionOrCurrentLine('c'); }
+
+void Editor::EnterNormalForLua() { EnterNormal(); }
+
+void Editor::EnterInsertForLua() {
+    PushUndo();
+    EnterInsert();
 }
 
 void Editor::SetStatusMessage(const std::string &msg) { status_message_ = msg; }
@@ -12631,7 +12877,32 @@ std::vector<Editor::ParticipantInfo> Editor::Participants() const {
     for (const auto &agent : mep::agent::AgentParticipants()) {
         result.push_back({agent.id, agent.name, ParticipantKind::Agent, agent.buffer_id, agent.row, agent.col, agent.has_location, agent.status});
     }
+    for (const auto &local : local_participants_) {
+        result.push_back(local);
+    }
     return result;
+}
+
+void Editor::SetLocalParticipant(const std::string &id, const std::string &name, int buffer_id, int row, int col, const std::string &status) {
+    CursorPos clamped = ClampPositionInBuffer(buffer_id, {row, col});
+    for (auto &p : local_participants_) {
+        if (p.id != id) continue;
+        p.name = name;
+        p.buffer_id = buffer_id;
+        p.row = clamped.row;
+        p.col = clamped.col;
+        p.has_location = true;
+        p.status = status;
+        return;
+    }
+    local_participants_.push_back({id, name, ParticipantKind::Agent, buffer_id, clamped.row, clamped.col, true, status});
+}
+
+void Editor::ClearLocalParticipant(const std::string &id) {
+    local_participants_.erase(
+        std::remove_if(local_participants_.begin(), local_participants_.end(),
+                        [&id](const ParticipantInfo &p) { return p.id == id; }),
+        local_participants_.end());
 }
 
 bool Editor::JumpToParticipant(const std::string &id) {

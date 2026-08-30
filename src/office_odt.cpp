@@ -1,4 +1,5 @@
 #include "office_doc.h"
+#include "image_doc.h"
 
 #include <algorithm>
 #include <cctype>
@@ -7,7 +8,6 @@
 #include <string>
 #include <unordered_map>
 
-#include "image_doc.h"
 #include "pugixml.hpp"
 
 // ODT parsing (content.xml + styles.xml via pugixml, both extracted from

@@ -9,6 +9,7 @@
 #include <unordered_map>
 
 #include "treesitter_queries.h"
+#include "treesitter_structure_queries.h"
 
 // The core set, compiled directly into mep (see CMakeLists.txt
 // TS_GRAMMAR_NAMES) -- statically linked, so these symbols are always
@@ -98,6 +99,32 @@ const std::unordered_map<std::string, LangEntry> &FoldQueryTable() {
         {"r", {tree_sitter_r, kFoldsR}},
         {"R", {tree_sitter_r, kFoldsR}},
         {"org", {tree_sitter_org, kFoldsOrg}},
+    };
+    return table;
+}
+
+// Structure (document outline) queries for the core compiled-in
+// languages -- see treesitter_structure_queries.h for what each pattern
+// actually captures. Every dynamically-loaded grammar's own structure
+// query lives in DynamicStructureQueryTable below instead (native builds
+// only, same split LanguageTable/DynamicLanguageTable already draws).
+const std::unordered_map<std::string, LangEntry> &StructureQueryTable() {
+    static const std::unordered_map<std::string, LangEntry> table = {
+        {"c", {tree_sitter_c, kStructureC}},
+        {"h", {tree_sitter_c, kStructureC}},
+        {"cpp", {tree_sitter_cpp, kStructureCpp}},
+        {"cc", {tree_sitter_cpp, kStructureCpp}},
+        {"cxx", {tree_sitter_cpp, kStructureCpp}},
+        {"hpp", {tree_sitter_cpp, kStructureCpp}},
+        {"hh", {tree_sitter_cpp, kStructureCpp}},
+        {"hxx", {tree_sitter_cpp, kStructureCpp}},
+        {"lua", {tree_sitter_lua, kStructureLua}},
+        {"py", {tree_sitter_python, kStructurePython}},
+        {"pyi", {tree_sitter_python, kStructurePython}},
+        {"js", {tree_sitter_javascript, kStructureJavascript}},
+        {"mjs", {tree_sitter_javascript, kStructureJavascript}},
+        {"cjs", {tree_sitter_javascript, kStructureJavascript}},
+        {"jsx", {tree_sitter_javascript, kStructureJavascript}},
     };
     return table;
 }
@@ -195,6 +222,29 @@ const std::unordered_map<std::string, DynLangEntry> &DynamicLanguageTable() {
         {"d", {"d", kHighlightsD}},
         {"nim", {"nim", kHighlightsNim}},
         {"cr", {"crystal", kHighlightsCrystal}},
+    };
+    return table;
+}
+
+// Structure queries for dynamically-loaded grammars -- same
+// canonical_name convention as DynamicLanguageTable (used to find/dlopen
+// the `.so`), but only the subset of DynamicLanguageTable's filetypes
+// that actually have a structure query written (treesitter_structure_
+// queries.h): the broad mainstream languages, not every highlight-only
+// grammar mep can highlight. mts/cts/tsx all reuse kStructureTypescript
+// -- see that query's own comment for why one query covers all three.
+const std::unordered_map<std::string, DynLangEntry> &DynamicStructureQueryTable() {
+    static const std::unordered_map<std::string, DynLangEntry> table = {
+        {"go", {"go", kStructureGo}},
+        {"rs", {"rust", kStructureRust}},
+        {"java", {"java", kStructureJava}},
+        {"rb", {"ruby", kStructureRuby}},
+        {"cs", {"c_sharp", kStructureCSharp}},
+        {"php", {"php", kStructurePhp}},
+        {"ts", {"typescript", kStructureTypescript}},
+        {"mts", {"typescript", kStructureTypescript}},
+        {"cts", {"typescript", kStructureTypescript}},
+        {"tsx", {"tsx", kStructureTypescript}},
     };
     return table;
 }
@@ -748,5 +798,146 @@ std::vector<TSFoldRange> TreesitterFoldRanges(const std::string &filetype, const
         }
     }
     ts_query_cursor_delete(cursor);
+    return out;
+}
+
+bool TreesitterHasStructureQuery(const std::string &filetype) {
+    if (StructureQueryTable().count(filetype)) return true;
+#if !defined(__EMSCRIPTEN__)
+    auto it = DynamicStructureQueryTable().find(filetype);
+    if (it != DynamicStructureQueryTable().end()) return LoadDynamicLanguage(it->second.canonical_name) != nullptr;
+#endif
+    return false;
+}
+
+namespace {
+
+// One raw `@definition.<kind>`/`@name` match pair, before dedup/nesting.
+struct RawStructureEntry {
+    uint32_t def_start_byte = 0;
+    uint32_t def_end_byte = 0;
+    int def_start_row = 0;
+    int def_end_row = 0;
+    int name_row = 0;
+    int name_col = 0;
+    std::string name;
+    std::string kind;
+};
+
+void CollectStructureEntries(const TSQuery *query, TSNode root, const std::string &text,
+                              std::vector<RawStructureEntry> &out) {
+    TSQueryCursor *cursor = ts_query_cursor_new();
+    ts_query_cursor_exec(cursor, query, root);
+    TSQueryMatch match;
+    while (ts_query_cursor_next_match(cursor, &match)) {
+        TSNode def_node{};
+        bool has_def = false;
+        std::string kind;
+        TSNode name_node{};
+        bool has_name = false;
+        for (uint16_t c = 0; c < match.capture_count; c++) {
+            const TSQueryCapture &cap = match.captures[c];
+            uint32_t nlen = 0;
+            const char *cname = ts_query_capture_name_for_id(query, cap.index, &nlen);
+            std::string capture_name(cname, nlen);
+            if (capture_name == "name") {
+                name_node = cap.node;
+                has_name = true;
+            } else if (capture_name.rfind("definition.", 0) == 0) {
+                def_node = cap.node;
+                has_def = true;
+                kind = capture_name.substr(std::strlen("definition."));
+            }
+        }
+        if (!has_def || !has_name) continue;  // a pattern missing either half isn't a usable outline entry
+        RawStructureEntry e;
+        e.def_start_byte = ts_node_start_byte(def_node);
+        e.def_end_byte = ts_node_end_byte(def_node);
+        e.def_start_row = static_cast<int>(ts_node_start_point(def_node).row);
+        e.def_end_row = static_cast<int>(ts_node_end_point(def_node).row);
+        TSPoint np = ts_node_start_point(name_node);
+        e.name_row = static_cast<int>(np.row);
+        e.name_col = static_cast<int>(np.column);
+        uint32_t name_s = ts_node_start_byte(name_node);
+        uint32_t name_e = std::min(ts_node_end_byte(name_node), static_cast<uint32_t>(text.size()));
+        e.name = name_e > name_s ? text.substr(name_s, name_e - name_s) : "";
+        e.kind = std::move(kind);
+        if (e.name.empty()) continue;
+        out.push_back(std::move(e));
+    }
+    ts_query_cursor_delete(cursor);
+}
+
+}  // namespace
+
+std::vector<TSStructureNode> TreesitterStructure(const std::string &filetype, const std::string &text) {
+    std::vector<TSStructureNode> out;
+
+    const TSLanguage *language = nullptr;
+    const char *query_source = nullptr;
+    if (auto it = StructureQueryTable().find(filetype); it != StructureQueryTable().end()) {
+        language = it->second.language();
+        query_source = it->second.query_source;
+    } else {
+#if !defined(__EMSCRIPTEN__)
+        auto dit = DynamicStructureQueryTable().find(filetype);
+        if (dit == DynamicStructureQueryTable().end()) return out;
+        language = LoadDynamicLanguage(dit->second.canonical_name);
+        if (!language) return out;
+        query_source = dit->second.query_source;
+#else
+        return out;
+#endif
+    }
+
+    TSQuery *query = QueryFor(language, query_source);
+    if (!query) return out;
+    // Same cache_key ("filetype") every other Treesitter* entry point
+    // uses -- a structure pass right after a highlight/fold pass for the
+    // same buffer reuses that already-current tree with no reparse.
+    TSTree *tree = GetTree(filetype, language, text);
+    if (!tree) return out;
+
+    std::vector<RawStructureEntry> raw;
+    CollectStructureEntries(query, ts_tree_root_node(tree), text, raw);
+
+    // Dedup exact-same-node matches (two patterns landing on one
+    // definition, e.g. Go's generic `type` pattern and its more specific
+    // struct/interface pattern -- see treesitter_structure_queries.h's
+    // top comment): group by byte span, keep the first non-"type" kind
+    // seen for that span, else the first entry outright.
+    std::sort(raw.begin(), raw.end(), [](const RawStructureEntry &a, const RawStructureEntry &b) {
+        if (a.def_start_byte != b.def_start_byte) return a.def_start_byte < b.def_start_byte;
+        return a.def_end_byte < b.def_end_byte;
+    });
+    std::vector<RawStructureEntry> deduped;
+    for (RawStructureEntry &e : raw) {
+        if (!deduped.empty() && deduped.back().def_start_byte == e.def_start_byte &&
+            deduped.back().def_end_byte == e.def_end_byte) {
+            if (deduped.back().kind == "type" && e.kind != "type") deduped.back() = std::move(e);
+            continue;
+        }
+        deduped.push_back(std::move(e));
+    }
+
+    // Nesting depth via a containment stack: sorted by start_byte already
+    // (a valid pre-order for properly-nested definitions -- a parent's
+    // definition always starts before any of its members' own), pop every
+    // ancestor whose span ends before this entry starts, then depth is
+    // however many ancestors remain open.
+    std::vector<uint32_t> stack_end_bytes;
+    for (const RawStructureEntry &e : deduped) {
+        while (!stack_end_bytes.empty() && stack_end_bytes.back() <= e.def_start_byte) stack_end_bytes.pop_back();
+        TSStructureNode node;
+        node.row = e.name_row;
+        node.col = e.name_col;
+        node.start_row = e.def_start_row;
+        node.end_row = e.def_end_row;
+        node.depth = static_cast<int>(stack_end_bytes.size());
+        node.name = e.name;
+        node.kind = e.kind;
+        out.push_back(std::move(node));
+        stack_end_bytes.push_back(e.def_end_byte);
+    }
     return out;
 }

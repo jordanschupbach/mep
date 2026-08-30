@@ -1,10 +1,11 @@
 #ifndef MEP_JS_ENGINE_H
 #define MEP_JS_ENGINE_H
 
+#include "html_doc.h"
+
 #include <functional>
 #include <string>
 
-#include "html_doc.h"
 
 // A tiny, intentionally non-spec-compliant tree-walking JS interpreter --
 // see js_engine.cpp's own header comment for the full scope/exclusion

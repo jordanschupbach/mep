@@ -1,3 +1,6 @@
+#include "office_doc.h"
+#include "sheet_doc.h"
+
 // ODS read/write -- Phase 3 (read) / part of Phase 4 (save-back) of
 // NVIM_PARITY_PLAN.md's spreadsheet-pane phase. Same content.xml-inside-
 // a-ZIP shape as office_odt.cpp's ODT support (table:table/table:table-row/
@@ -30,9 +33,7 @@
 #include <cstdlib>
 #include <sstream>
 
-#include "office_doc.h"
 #include "pugixml.hpp"
-#include "sheet_doc.h"
 
 namespace {
 

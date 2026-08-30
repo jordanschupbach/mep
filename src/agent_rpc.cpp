@@ -1,8 +1,8 @@
 #include "agent_rpc.h"
+#include "editor.h"
 
 #if !defined(__EMSCRIPTEN__) && !defined(_WIN32)
 
-#include "editor.h"
 #include "json.h"
 #include "persist.h"
 #include "rpc_framing.h"

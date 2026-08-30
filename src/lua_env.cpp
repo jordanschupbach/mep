@@ -1,4 +1,8 @@
 #include "lua_env.h"
+#include "doc_export.h"
+#include "editor.h"
+#include "job.h"
+#include "treesitter.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -24,10 +28,6 @@ extern "C" {
 
 #include "raylib.h"
 
-#include "doc_export.h"
-#include "editor.h"
-#include "job.h"
-#include "treesitter.h"
 #include "json.h"
 #include "persist.h"
 
@@ -409,6 +409,15 @@ int l_nav_pane(lua_State *L) {
     return 0;
 }
 
+// mep.focus_top_left_pane(): moves focus to the topmost, then leftmost,
+// pane in the active tab's split layout -- used by the file tree so a
+// click always opens near the tree rather than in whatever pane was last
+// active before the sidebar took focus.
+int l_focus_top_left_pane(lua_State *L) {
+    GetEditor(L)->FocusTopLeftPane();
+    return 0;
+}
+
 // mep.resize_pane(direction, step?): moves the split boundary between the
 // active pane and its neighbor "left"/"down"/"up"/"right" by `step` (a
 // 0..1 fraction of the split's extent, defaults to 5% if omitted).
@@ -669,6 +678,23 @@ int l_hover_close(lua_State *L) {
     return 0;
 }
 
+// mep.hover_is_open() -> bool. Lets a caller like mep.lsp_hover tell "K
+// opened a fresh popup" from "K was pressed again while one's already
+// showing" without keeping its own possibly-stale copy of that state.
+int l_hover_is_open(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->IsHoverOpen());
+    return 1;
+}
+
+// mep.hover_focus_enter(): moves the cursor into the open hover popup's
+// own text (Mode::HoverFocus) so it can be navigated/selected/yanked like
+// a normal buffer -- see Mode::HoverFocus's doc comment (editor.h) and
+// Editor::HandleHoverFocusInput. No-op if hover isn't open.
+int l_hover_focus_enter(lua_State *L) {
+    GetEditor(L)->EnterHoverFocus();
+    return 0;
+}
+
 // mep.ns_create(name) -> id. Stable per name (nvim_create_namespace-like).
 int l_ns_create(lua_State *L) {
     const char *name = luaL_checkstring(L, 1);
@@ -805,6 +831,378 @@ int l_ts_captures(lua_State *L) {
     return 1;
 }
 
+// mep.todo_scan_matches() -> array of {row, col_start, col_end, kw}
+// (1-indexed row/col_start, col_end exclusive, same convention as
+// mep.ts_captures/mep.deco_add above) for every TODO/FIXME/HACK/NOTE
+// occurrence in the current buffer. kBuiltinTodo's mep.todo_mark_buffer
+// (main.cpp) maps each match's `kw` to a glyph/hl via the user-configurable
+// mep.todoscan_keywords table and calls mep.deco_add -- the buffer scan
+// itself lives in Editor::TodoScanMatches (editor.cpp).
+int l_todo_scan_matches(lua_State *L) {
+    std::vector<Editor::TodoMatch> matches = GetEditor(L)->TodoScanMatches();
+    lua_createtable(L, static_cast<int>(matches.size()), 0);
+    for (size_t i = 0; i < matches.size(); i++) {
+        lua_createtable(L, 0, 4);
+        lua_pushinteger(L, matches[i].row + 1);
+        lua_setfield(L, -2, "row");
+        lua_pushinteger(L, matches[i].col_start + 1);
+        lua_setfield(L, -2, "col_start");
+        lua_pushinteger(L, matches[i].col_end + 1);
+        lua_setfield(L, -2, "col_end");
+        lua_pushlstring(L, matches[i].keyword.data(), matches[i].keyword.size());
+        lua_setfield(L, -2, "kw");
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+    return 1;
+}
+
+// mep.dap_toggle_breakpoint(): see Editor::DapToggleBreakpoint.
+int l_dap_toggle_breakpoint(lua_State *L) {
+    GetEditor(L)->DapToggleBreakpoint();
+    return 0;
+}
+
+// mep.dap_breakpoint_lines(filename) -> array of 1-indexed line numbers
+// (Editor::DapBreakpointLines) -- kBuiltinDap's mep.dap_start (main.cpp)
+// wraps each into a DAP {line = ...} object for the setBreakpoints
+// request, once its own 'initialized' notification handler fires.
+int l_dap_breakpoint_lines(lua_State *L) {
+    const char *filename = luaL_checkstring(L, 1);
+    std::vector<int> lines = GetEditor(L)->DapBreakpointLines(filename);
+    lua_createtable(L, static_cast<int>(lines.size()), 0);
+    for (size_t i = 0; i < lines.size(); i++) {
+        lua_pushinteger(L, lines[i]);
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+    return 1;
+}
+
+// mep.termsend_register(source, target) -> bool: see Editor::TermsendRegister
+// (notifies + returns false itself if `target` isn't a live terminal buffer).
+int l_termsend_register(lua_State *L) {
+    int source = static_cast<int>(luaL_checkinteger(L, 1));
+    int target = static_cast<int>(luaL_checkinteger(L, 2));
+    lua_pushboolean(L, GetEditor(L)->TermsendRegister(source, target));
+    return 1;
+}
+
+// mep.termsend_target(source) -> target buffer id, or nil if none
+// registered or its registered target is no longer a live terminal buffer.
+int l_termsend_target(lua_State *L) {
+    int source = static_cast<int>(luaL_checkinteger(L, 1));
+    int target = GetEditor(L)->TermsendTarget(source);
+    if (target <= 0) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_pushinteger(L, target);
+    return 1;
+}
+
+int l_termsend_unregister(lua_State *L) {
+    int source = static_cast<int>(luaL_checkinteger(L, 1));
+    GetEditor(L)->TermsendUnregister(source);
+    return 0;
+}
+
+// mep.termsend_candidates() -> array of terminal buffer ids currently
+// shown by a pane in the active tab (Editor::TermsendCandidates) -- what
+// kBuiltinTermSend's registration prompt offers as its default.
+int l_termsend_candidates(lua_State *L) {
+    std::vector<int> ids = GetEditor(L)->TermsendCandidates();
+    lua_createtable(L, static_cast<int>(ids.size()), 0);
+    for (size_t i = 0; i < ids.size(); i++) {
+        lua_pushinteger(L, ids[i]);
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+    return 1;
+}
+
+// mep.activity_todo_load(path) -> array of {done=bool, text=string}: see
+// Editor::ActivityTodoLoad.
+int l_activity_todo_load(lua_State *L) {
+    const char *path = luaL_checkstring(L, 1);
+    std::vector<Editor::ActivityTodoItem> items = GetEditor(L)->ActivityTodoLoad(path);
+    lua_createtable(L, static_cast<int>(items.size()), 0);
+    for (size_t i = 0; i < items.size(); i++) {
+        lua_createtable(L, 0, 2);
+        lua_pushboolean(L, items[i].done);
+        lua_setfield(L, -2, "done");
+        lua_pushlstring(L, items[i].text.data(), items[i].text.size());
+        lua_setfield(L, -2, "text");
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+    return 1;
+}
+
+// mep.activity_todo_save(path, items): `items` is an array of {done=, text=}.
+int l_activity_todo_save(lua_State *L) {
+    const char *path = luaL_checkstring(L, 1);
+    luaL_checktype(L, 2, LUA_TTABLE);
+    std::vector<Editor::ActivityTodoItem> items;
+    lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 2));
+    for (lua_Integer i = 1; i <= n; i++) {
+        lua_rawgeti(L, 2, i);
+        luaL_checktype(L, -1, LUA_TTABLE);
+        Editor::ActivityTodoItem item;
+        lua_getfield(L, -1, "done");
+        item.done = lua_toboolean(L, -1);
+        lua_pop(L, 1);
+        lua_getfield(L, -1, "text");
+        if (lua_isstring(L, -1)) item.text = lua_tostring(L, -1);
+        lua_pop(L, 1);
+        lua_pop(L, 1);  // the item table itself
+        items.push_back(std::move(item));
+    }
+    GetEditor(L)->ActivityTodoSave(path, items);
+    return 0;
+}
+
+// mep.activity_test_failure_lines(output) -> array of {index, line}
+// (1-indexed): see Editor::ActivityTestFailureLines.
+int l_activity_test_failure_lines(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    std::vector<std::string> output;
+    lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 1));
+    for (lua_Integer i = 1; i <= n; i++) {
+        lua_rawgeti(L, 1, i);
+        output.push_back(lua_isstring(L, -1) ? lua_tostring(L, -1) : "");
+        lua_pop(L, 1);
+    }
+    std::vector<Editor::ActivityTestFailureLine> fails = GetEditor(L)->ActivityTestFailureLines(output);
+    lua_createtable(L, static_cast<int>(fails.size()), 0);
+    for (size_t i = 0; i < fails.size(); i++) {
+        lua_createtable(L, 0, 2);
+        lua_pushinteger(L, fails[i].index);
+        lua_setfield(L, -2, "index");
+        lua_pushlstring(L, fails[i].line.data(), fails[i].line.size());
+        lua_setfield(L, -2, "line");
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+    return 1;
+}
+
+// mep.syntax_highlight_fallback(ns, keywords, comment_prefix): the
+// no-vendored-grammar fallback lexer over the *current* buffer -- see
+// Editor::SyntaxHighlightFallback. `keywords` is a plain array of
+// strings; `comment_prefix` may be nil/omitted (no comment highlighting
+// for that filetype).
+int l_syntax_highlight_fallback(lua_State *L) {
+    int ns = static_cast<int>(luaL_checkinteger(L, 1));
+    luaL_checktype(L, 2, LUA_TTABLE);
+    std::vector<std::string> keywords;
+    lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 2));
+    for (lua_Integer i = 1; i <= n; i++) {
+        lua_rawgeti(L, 2, i);
+        if (lua_isstring(L, -1)) keywords.push_back(lua_tostring(L, -1));
+        lua_pop(L, 1);
+    }
+    std::string comment_prefix = (lua_gettop(L) >= 3 && lua_isstring(L, 3)) ? lua_tostring(L, 3) : "";
+    GetEditor(L)->SyntaxHighlightFallback(ns, keywords, comment_prefix);
+    return 0;
+}
+
+// mep.org_highlight_emphasis(ns): org emphasis markup over the *current*
+// buffer -- see Editor::OrgHighlightEmphasis.
+int l_org_highlight_emphasis(lua_State *L) {
+    int ns = static_cast<int>(luaL_checkinteger(L, 1));
+    GetEditor(L)->OrgHighlightEmphasis(ns);
+    return 0;
+}
+
+// mep.md_toggle_checkbox()/mep.md_fold()/mep.md_table_align()/
+// mep.md_table_insert_row()/mep.md_table_insert_col(): kBuiltinMarkdown's
+// (main.cpp) checkbox toggle, fold computation, and GFM table commands --
+// see the matching Editor:: methods (editor.cpp) for the ported logic.
+// Bound directly under their original mep.* names since each is now
+// fully self-contained in C++, with no surrounding Lua glue left to keep.
+int l_md_toggle_checkbox(lua_State *L) {
+    GetEditor(L)->MdToggleCheckbox();
+    return 0;
+}
+int l_md_fold(lua_State *L) {
+    GetEditor(L)->MdComputeFolds();
+    return 0;
+}
+int l_md_table_align(lua_State *L) {
+    GetEditor(L)->MdTableAlign();
+    return 0;
+}
+int l_md_table_insert_row(lua_State *L) {
+    GetEditor(L)->MdTableInsertRow();
+    return 0;
+}
+int l_md_table_insert_col(lua_State *L) {
+    GetEditor(L)->MdTableInsertCol();
+    return 0;
+}
+
+// mep.md_conceal_scan(ns): the link/emphasis concealment scan itself
+// (Editor::MdConceal) -- kBuiltinMarkdown's mep.md_conceal keeps the
+// namespace create/clear and the auto/filetype gating in Lua, calling
+// this once those checks pass.
+int l_md_conceal_scan(lua_State *L) {
+    int ns = static_cast<int>(luaL_checkinteger(L, 1));
+    GetEditor(L)->MdConceal(ns);
+    return 0;
+}
+
+// mep.completion_scan_buffer_words(prefix) -> array of plain word
+// strings: see Editor::CompletionScanBufferWords. The caller
+// (kBuiltinCompletion's mep.completion_buffer_words, main.cpp) wraps each
+// into {text=w, kind='buffer'} itself, after filtering against whatever
+// it's already claimed via snippet trigger names.
+int l_completion_scan_buffer_words(lua_State *L) {
+    const char *prefix = luaL_checkstring(L, 1);
+    std::vector<std::string> words = GetEditor(L)->CompletionScanBufferWords(prefix);
+    lua_createtable(L, static_cast<int>(words.size()), 0);
+    for (size_t i = 0; i < words.size(); i++) {
+        lua_pushlstring(L, words[i].data(), words[i].size());
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+    return 1;
+}
+
+// mep.completion_path_prefix(prefix, col, line) -> dir, base or nil: see
+// Editor::CompletionPathPrefixFor. `col` is mep.cursor()'s own 1-indexed
+// convention.
+int l_completion_path_prefix(lua_State *L) {
+    const char *prefix = luaL_checkstring(L, 1);
+    int col = static_cast<int>(luaL_checkinteger(L, 2));
+    const char *line = luaL_checkstring(L, 3);
+    Editor::CompletionPathPrefix r = GetEditor(L)->CompletionPathPrefixFor(prefix, col, line);
+    if (!r.found) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_pushlstring(L, r.dir.data(), r.dir.size());
+    lua_pushlstring(L, r.base.data(), r.base.size());
+    return 2;
+}
+
+// mep.completion_rank(items, max_items): sorts `items` (an array of
+// {text=, ...} tables -- any other fields pass through untouched) by
+// #text then alphabetically, capped to `max_items`. Preserves the
+// original item tables verbatim (no field-shape assumptions beyond
+// `text` existing) -- kBuiltinCompletion's own mep_completion_rank port.
+int l_completion_rank(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    lua_Integer max_items = luaL_optinteger(L, 2, -1);
+    lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 1));
+    std::vector<std::pair<std::string, lua_Integer>> keys;
+    keys.reserve(static_cast<size_t>(n));
+    for (lua_Integer i = 1; i <= n; i++) {
+        lua_rawgeti(L, 1, i);
+        lua_getfield(L, -1, "text");
+        keys.emplace_back(lua_isstring(L, -1) ? lua_tostring(L, -1) : "", i);
+        lua_pop(L, 2);
+    }
+    std::stable_sort(keys.begin(), keys.end(), [](const auto &a, const auto &b) {
+        if (a.first.size() != b.first.size()) return a.first.size() < b.first.size();
+        return a.first < b.first;
+    });
+    lua_Integer out_n = (max_items >= 0 && static_cast<lua_Integer>(keys.size()) > max_items)
+                            ? max_items
+                            : static_cast<lua_Integer>(keys.size());
+    lua_createtable(L, static_cast<int>(out_n), 0);
+    for (lua_Integer i = 0; i < out_n; i++) {
+        lua_rawgeti(L, 1, keys[static_cast<size_t>(i)].second);
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+    return 1;
+}
+
+// mep.snippet_splice(row, before, after, body): see Editor::SnippetSplice.
+// `row` is mep.cursor()'s own 1-indexed convention (converted here);
+// `body` is a plain array of template-line strings.
+int l_snippet_splice(lua_State *L) {
+    int row = static_cast<int>(luaL_checkinteger(L, 1)) - 1;
+    const char *before = luaL_checkstring(L, 2);
+    const char *after = luaL_checkstring(L, 3);
+    luaL_checktype(L, 4, LUA_TTABLE);
+    std::vector<std::string> body;
+    lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 4));
+    for (lua_Integer i = 1; i <= n; i++) {
+        lua_rawgeti(L, 4, i);
+        body.push_back(luaL_optstring(L, -1, ""));
+        lua_pop(L, 1);
+    }
+    GetEditor(L)->SnippetSplice(row, before, after, body);
+    return 0;
+}
+
+// mep.snippet_jump(delta): see Editor::SnippetJump. Bound directly under
+// its original name -- MepSnippetNext/MepSnippetPrev call it unchanged.
+int l_snippet_jump(lua_State *L) {
+    int delta = static_cast<int>(luaL_checkinteger(L, 1));
+    GetEditor(L)->SnippetJump(delta);
+    return 0;
+}
+
+
+// mep.ts_apply_captures(ns, captures, hl_map, row_offset): resolves each
+// capture's highlight group via hl_map (falling back to the capture's
+// first dot-segment, e.g. 'function.builtin' -> 'function', mirroring
+// nvim's own capture-group fallback convention) and adds a decoration
+// for it in `ns`, with `row_offset` (default 0) added to each capture's
+// row -- the capture-resolve loop kBuiltinSyntax's mep.syntax_highlight
+// and its org-src-block-embedded highlighting both used to repeat by
+// hand (a local mep_ts_resolve_hl + mep.deco_add). `captures` is
+// mep.ts_captures's own 1-indexed output shape; `row_offset` is added
+// post-1-indexing (0 for a top-level call, a block's header row for an
+// org-embedded one).
+int l_ts_apply_captures(lua_State *L) {
+    int ns = static_cast<int>(luaL_checkinteger(L, 1));
+    luaL_checktype(L, 2, LUA_TTABLE);
+    luaL_checktype(L, 3, LUA_TTABLE);
+    int row_offset = static_cast<int>(luaL_optinteger(L, 4, 0));
+
+    std::unordered_map<std::string, std::string> hl_map;
+    lua_pushnil(L);
+    while (lua_next(L, 3) != 0) {
+        if (lua_type(L, -2) == LUA_TSTRING && lua_isstring(L, -1)) {
+            hl_map[lua_tostring(L, -2)] = lua_tostring(L, -1);
+        }
+        lua_pop(L, 1);
+    }
+
+    Editor *ed = GetEditor(L);
+    lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 2));
+    for (lua_Integer i = 1; i <= n; i++) {
+        lua_rawgeti(L, 2, i);
+        luaL_checktype(L, -1, LUA_TTABLE);
+        lua_getfield(L, -1, "row");
+        int row = static_cast<int>(luaL_optinteger(L, -1, 1)) - 1;
+        lua_pop(L, 1);
+        lua_getfield(L, -1, "col_start");
+        int col_start = static_cast<int>(luaL_optinteger(L, -1, 1)) - 1;
+        lua_pop(L, 1);
+        lua_getfield(L, -1, "col_end");
+        int col_end = static_cast<int>(luaL_optinteger(L, -1, col_start + 1)) - 1;
+        lua_pop(L, 1);
+        lua_getfield(L, -1, "capture");
+        std::string capture = lua_isstring(L, -1) ? lua_tostring(L, -1) : "";
+        lua_pop(L, 1);
+        lua_pop(L, 1);  // the capture table itself
+
+        auto it = hl_map.find(capture);
+        if (it == hl_map.end()) {
+            size_t dot = capture.find('.');
+            std::string base = dot == std::string::npos ? capture : capture.substr(0, dot);
+            it = hl_map.find(base);
+        }
+        if (it != hl_map.end()) {
+            Decoration d;
+            d.row = row + row_offset;
+            d.col_start = col_start;
+            d.col_end = col_end;
+            d.hl_group = it->second;
+            ed->AddDecoration(ns, d);
+        }
+    }
+    return 0;
+}
+
 // mep.ts_fold_ranges(filetype, text) -> array of {start_row, end_row}
 // (1-indexed, inclusive -- mep.fold_create's own convention), or nil if
 // `filetype` has no Treesitter fold query (see treesitter_queries.h's
@@ -829,6 +1227,51 @@ int l_ts_fold_ranges(lua_State *L) {
         lua_setfield(L, -2, "start_row");
         lua_pushinteger(L, ranges[i].end_row + 1);
         lua_setfield(L, -2, "end_row");
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+    return 1;
+}
+
+// mep.ts_structure(filetype, text) -> array of {row, col, start_row,
+// end_row, name, kind, depth} (row/col 1-indexed, matching mep.set_cursor's
+// convention; start_row/end_row also 1-indexed for the same reason
+// mep.ts_fold_ranges' is), in document order, or nil if `filetype` has no
+// Treesitter structure query (treesitter_structure_queries.h's own curated
+// language set -- narrower than TreesitterHasGrammar's, see that header's
+// top comment). The caller (kBuiltinStructure's mep.structure_refresh,
+// main.cpp) builds either a scratch-buffer outline or a sidebar section
+// from this directly; `depth` is already nesting-resolved (TreesitterStructure's
+// own containment-stack pass), so the Lua side never recomputes it.
+// `start_row`/`end_row` together give the definition's real span, used by
+// kBuiltinStructure's own "which item is the cursor in/near" tracking --
+// `row` alone (the name token) isn't enough for containment since it's
+// often not the first line of a multi-line signature.
+int l_ts_structure(lua_State *L) {
+    const char *filetype = luaL_checkstring(L, 1);
+    size_t len = 0;
+    const char *text = luaL_checklstring(L, 2, &len);
+    if (!TreesitterHasStructureQuery(filetype)) {
+        lua_pushnil(L);
+        return 1;
+    }
+    std::vector<TSStructureNode> nodes = TreesitterStructure(filetype, std::string(text, len));
+    lua_createtable(L, static_cast<int>(nodes.size()), 0);
+    for (size_t i = 0; i < nodes.size(); i++) {
+        lua_createtable(L, 0, 7);
+        lua_pushinteger(L, nodes[i].row + 1);
+        lua_setfield(L, -2, "row");
+        lua_pushinteger(L, nodes[i].col + 1);
+        lua_setfield(L, -2, "col");
+        lua_pushinteger(L, nodes[i].start_row + 1);
+        lua_setfield(L, -2, "start_row");
+        lua_pushinteger(L, nodes[i].end_row + 1);
+        lua_setfield(L, -2, "end_row");
+        lua_pushlstring(L, nodes[i].name.data(), nodes[i].name.size());
+        lua_setfield(L, -2, "name");
+        lua_pushlstring(L, nodes[i].kind.data(), nodes[i].kind.size());
+        lua_setfield(L, -2, "kind");
+        lua_pushinteger(L, nodes[i].depth);
+        lua_setfield(L, -2, "depth");
         lua_rawseti(L, -2, static_cast<int>(i + 1));
     }
     return 1;
@@ -1127,6 +1570,9 @@ int l_sidebar_set_sections(lua_State *L) {
                 lua_getfield(L, -1, "tooltip");
                 if (lua_isstring(L, -1)) w.tooltip = lua_tostring(L, -1);
                 lua_pop(L, 1);
+                lua_getfield(L, -1, "current");
+                w.current = lua_toboolean(L, -1);
+                lua_pop(L, 1);
                 w.on_click_ref = RefField(L, -1, "on_click");
                 lua_pop(L, 1);  // the widget table itself
                 sec.widgets.push_back(std::move(w));
@@ -1414,6 +1860,22 @@ int l_pane_focus_buffer(lua_State *L) {
     return 1;
 }
 
+// mep.buffer_cursor_row(id) -> row (1-indexed, matching mep.cursor()) of
+// whichever pane in the active tab shows buffer id, or nil if no pane
+// shows it -- unlike mep.cursor(), doesn't require that pane to be
+// focused (kBuiltinStructure's split-pane outline uses this to track its
+// source buffer's cursor while the outline pane itself has focus).
+int l_buffer_cursor_row(lua_State *L) {
+    int id = static_cast<int>(luaL_checkinteger(L, 1));
+    int row = GetEditor(L)->CursorRowForBuffer(id);
+    if (row < 0) {
+        lua_pushnil(L);
+    } else {
+        lua_pushinteger(L, row + 1);
+    }
+    return 1;
+}
+
 // mep.command_names() -> array of registered mep.command() names.
 int l_command_names(lua_State *L) {
     std::vector<std::string> names = GetEditor(L)->LuaCommandNames();
@@ -1688,6 +2150,1556 @@ Json LuaToJson(lua_State *L, int idx) {
         return obj;
     }
     return Json();
+}
+
+// Same as PushJson, except JSON null pushes as a real Lua nil rather
+// than the kJsonNullSentinel, *including nested nulls* (this recurses
+// into itself, not PushJson, for array/object children -- a thin
+// wrapper delegating non-null values to PushJson would still sentinel-
+// encode nulls nested inside them). kBuiltinAi's own mep_ai_json_decode
+// (LUA_TO_CPP_PLAN.md Phase AI) always returned plain nil for null
+// (its own hand-rolled decoder predates/is independent of the LSP
+// null-sentinel convention, and downstream AI/Leetcode code relies on
+// a null field reading falsy, e.g. `tool_calls[idx].id` from a
+// streamed delta that hasn't set an id yet) -- ported to reuse this
+// file's own Json engine (now with real surrogate-pair \u handling,
+// json.h) without changing that observable behavior.
+void PushJsonNilNull(lua_State *L, const Json &v) {
+    switch (v.type()) {
+        case Json::Type::Null:
+            lua_pushnil(L);
+            break;
+        case Json::Type::Bool:
+            lua_pushboolean(L, v.as_bool());
+            break;
+        case Json::Type::Number: {
+            // The original hand-rolled decoder's own `tonumber(...)` gives a
+            // real Lua *integer* subtype for source text with no '.'/'e'
+            // (so `tostring()` shows "1", not "1.0") -- Json::Number only
+            // ever stores a double, losing that source-text distinction, so
+            // this approximates it by integer-subtyping any numerically
+            // whole value instead (the overwhelmingly common real case --
+            // token counts, tool-call/content-block indices -- and only
+            // differs from the original for a JSON number deliberately
+            // written with a redundant ".0" that's still numerically whole,
+            // which round-tripped as a Lua float either way there too).
+            double d = v.as_double();
+            long long as_ll = static_cast<long long>(d);
+            if (static_cast<double>(as_ll) == d) {
+                lua_pushinteger(L, as_ll);
+            } else {
+                lua_pushnumber(L, d);
+            }
+            break;
+        }
+        case Json::Type::String:
+            lua_pushlstring(L, v.as_string().data(), v.as_string().size());
+            break;
+        case Json::Type::Array: {
+            lua_newtable(L);
+            const auto &items = v.items();
+            for (size_t i = 0; i < items.size(); i++) {
+                PushJsonNilNull(L, items[i]);
+                lua_rawseti(L, -2, static_cast<int>(i) + 1);
+            }
+            break;
+        }
+        case Json::Type::Object: {
+            lua_newtable(L);
+            for (const auto &kv : v.fields()) {
+                PushJsonNilNull(L, kv.second);
+                lua_setfield(L, -2, kv.first.c_str());
+            }
+            break;
+        }
+    }
+}
+
+// LSP documentSymbol kind numbers -> the same short names
+// kBuiltinSymbols' own MEP_SYMBOL_KIND table used to map (main.cpp) --
+// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#symbolKind,
+// trimmed to the subset that table covered rather than all 26.
+const char *LspSymbolKindName(int kind) {
+    switch (kind) {
+        case 2: return "module";
+        case 5: return "class";
+        case 6: return "method";
+        case 7: return "property";
+        case 9: return "enum";
+        case 10: return "enummember";
+        case 12: return "function";
+        case 13: return "variable";
+        case 14: return "constant";
+        default: return "?";
+    }
+}
+
+struct LspSymbolRow {
+    int row = 0;
+    std::string text;
+};
+
+// Recursively flattens an LSP textDocument/documentSymbol response (an
+// array of DocumentSymbol objects, each possibly nested via `children`)
+// into a depth-first list of display rows -- the tree-walk half of
+// kBuiltinSymbols' mep.lsp_symbols_refresh (main.cpp), which used to be a
+// local recursive `add(sym, depth)` Lua closure. `row` is 0-indexed here;
+// the caller (mep.set_cursor via a Lua on_click closure, since sidebar
+// widgets are still Lua-ref-driven) adds 1 back.
+void FlattenLspSymbols(const Json &syms, int depth, std::vector<LspSymbolRow> *out) {
+    for (const Json &sym : syms.items()) {
+        const Json &range = sym.contains("range") && !sym.get("range").is_null() ? sym.get("range")
+                                                                                   : sym.get("location").get("range");
+        int row = range.is_object() ? range.get("start").get("line").as_int(0) : 0;
+        std::string text(static_cast<size_t>(depth) * 2, ' ');
+        text += sym.get("name").as_string();
+        text += "  [";
+        text += LspSymbolKindName(sym.get("kind").as_int(0));
+        text += "]";
+        out->push_back({row, std::move(text)});
+        const Json &children = sym.get("children");
+        if (children.is_array()) FlattenLspSymbols(children, depth + 1, out);
+    }
+}
+
+// mep.lsp_symbols_flatten(result) -> array of {row, text} (1-indexed row),
+// depth-first over `result` (a textDocument/documentSymbol response, once
+// mep_lsp_result has already unwrapped it from the raw JSON-RPC message).
+namespace {
+// mep_doc_split_param's own port: "name: type" (python/typescript/rust/
+// kotlin convention) first, else "type name" (c/go/java convention, name
+// = trailing identifier) -- see kBuiltinDocs' own comment (main.cpp) for
+// why this is a best-effort heuristic, not a real per-grammar parser.
+struct DocSigParam {
+    std::string name;
+    std::string type;
+    bool has_type = false;
+};
+
+DocSigParam SplitDocParam(const std::string &label) {
+    // "name: type"
+    size_t k = 0;
+    while (k < label.size() && (std::isalnum(static_cast<unsigned char>(label[k])) || label[k] == '_')) k++;
+    if (k > 0) {
+        size_t p = k;
+        while (p < label.size() && std::isspace(static_cast<unsigned char>(label[p]))) p++;
+        if (p < label.size() && label[p] == ':') {
+            p++;
+            while (p < label.size() && std::isspace(static_cast<unsigned char>(label[p]))) p++;
+            if (p < label.size()) return {label.substr(0, k), label.substr(p), true};
+        }
+    }
+    // "type name" -- name is the maximal trailing [%w_] run, preceded by
+    // whitespace with a non-empty type before it.
+    size_t name_start = label.size();
+    while (name_start > 0 &&
+           (std::isalnum(static_cast<unsigned char>(label[name_start - 1])) || label[name_start - 1] == '_')) {
+        name_start--;
+    }
+    if (name_start < label.size() && name_start > 0) {
+        size_t ws_start = name_start;
+        while (ws_start > 0 && std::isspace(static_cast<unsigned char>(label[ws_start - 1]))) ws_start--;
+        if (ws_start < name_start) {
+            std::string ptype = label.substr(0, ws_start);
+            if (!ptype.empty()) return {label.substr(name_start), ptype, true};
+        }
+    }
+    return {label, "", false};
+}
+
+// mep_doc_return_type's own port: best-effort scrape of the trailing
+// "-> Type" (python/rust) or ": Type" (typescript) after the first ')'
+// that's immediately (modulo whitespace) followed by one of those tokens.
+std::string DocReturnTypeAfterToken(const std::string &sig, const std::string &token) {
+    for (size_t i = 0; i < sig.size(); i++) {
+        if (sig[i] != ')') continue;
+        size_t p = i + 1;
+        while (p < sig.size() && std::isspace(static_cast<unsigned char>(sig[p]))) p++;
+        if (sig.compare(p, token.size(), token) == 0) {
+            p += token.size();
+            while (p < sig.size() && std::isspace(static_cast<unsigned char>(sig[p]))) p++;
+            size_t end = sig.size();
+            while (end > p && std::isspace(static_cast<unsigned char>(sig[end - 1]))) end--;
+            if (end > p) return sig.substr(p, end - p);
+        }
+    }
+    return "";
+}
+
+std::pair<bool, std::string> DocReturnType(const std::string &sig) {
+    std::string r = DocReturnTypeAfterToken(sig, "->");
+    if (!r.empty()) return {true, r};
+    r = DocReturnTypeAfterToken(sig, ":");
+    if (!r.empty()) return {true, r};
+    return {false, ""};
+}
+
+// mep_doc_params_from_signature's own port, operating on the Json form
+// of an LSP SignatureInformation object (`active`, already unwrapped from
+// the JSON-RPC response by the still-Lua caller).
+std::vector<DocSigParam> DocParamsFromSignature(const Json &active) {
+    std::string label = active.get("label").as_string();
+    std::vector<DocSigParam> params;
+    const Json &parameters = active.get("parameters");
+    if (!parameters.is_array()) return params;
+    for (const Json &p : parameters.items()) {
+        const Json &plabel = p.get("label");
+        std::string ptext;
+        bool have_text = false;
+        if (plabel.is_string()) {
+            ptext = plabel.as_string();
+            have_text = true;
+        } else if (plabel.is_array() && plabel.items().size() >= 2) {
+            int start = std::max(0, plabel.items()[0].as_int(0));
+            int end = std::min(static_cast<int>(label.size()), plabel.items()[1].as_int(static_cast<int>(label.size())));
+            if (end > start) {
+                ptext = label.substr(start, end - start);
+                have_text = true;
+            }
+        }
+        if (have_text && !ptext.empty()) params.push_back(SplitDocParam(ptext));
+    }
+    return params;
+}
+}  // namespace
+
+// mep.docs_signature_info(active, sig) -> label, params, ret: given an
+// LSP SignatureInformation object (`active`) and the syntactic-fallback
+// signature text (`sig`), returns the label to use (active.label if
+// non-empty, else `sig`), the parsed parameter list (array of
+// {name=, type=}, type nil when none was recoverable), and the
+// best-effort return type scraped off the label (nil if none found) --
+// kBuiltinDocs' own mep_doc_params_from_signature + mep_doc_return_type +
+// the label-fallback line that used to precede them (main.cpp), now all
+// in one call.
+int l_docs_signature_info(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    const char *sig = luaL_checkstring(L, 2);
+    Json active = LuaToJson(L, 1);
+    std::string active_label = active.get("label").as_string();
+    std::string label = !active_label.empty() ? active_label : sig;
+
+    std::vector<DocSigParam> params = DocParamsFromSignature(active);
+    std::pair<bool, std::string> ret = DocReturnType(label);
+
+    lua_pushlstring(L, label.data(), label.size());
+    lua_createtable(L, static_cast<int>(params.size()), 0);
+    for (size_t i = 0; i < params.size(); i++) {
+        lua_createtable(L, 0, 2);
+        lua_pushlstring(L, params[i].name.data(), params[i].name.size());
+        lua_setfield(L, -2, "name");
+        if (params[i].has_type) {
+            lua_pushlstring(L, params[i].type.data(), params[i].type.size());
+        } else {
+            lua_pushnil(L);
+        }
+        lua_setfield(L, -2, "type");
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+    if (ret.first) {
+        lua_pushlstring(L, ret.second.data(), ret.second.size());
+    } else {
+        lua_pushnil(L);
+    }
+    return 3;
+}
+
+// mep.picker_preview_file(path, max_lines): see Editor::PreviewFile.
+int l_picker_preview_file(lua_State *L) {
+    const char *path = luaL_checkstring(L, 1);
+    int max_lines = static_cast<int>(luaL_optinteger(L, 2, 40));
+    GetEditor(L)->PreviewFile(path, max_lines);
+    return 0;
+}
+
+// mep.tree_build_rows(root, expanded_list, show_hidden, ignored_list) ->
+// array of {path=, name=, is_dir=, depth=, expanded=}: see
+// Editor::BuildFileTreeRows. `expanded_list`/`ignored_list` are plain
+// arrays of path strings (the caller's own mep_tree_expanded/
+// mep_tree_ignored tables, flattened via `for k in pairs(t) do ... end`
+// since Lua set-membership tables aren't naturally iterable as C arrays).
+int l_tree_build_rows(lua_State *L) {
+    const char *root = luaL_checkstring(L, 1);
+    luaL_checktype(L, 2, LUA_TTABLE);
+    bool show_hidden = lua_toboolean(L, 3);
+    luaL_checktype(L, 4, LUA_TTABLE);
+
+    std::vector<std::string> expanded;
+    lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 2));
+    for (lua_Integer i = 1; i <= n; i++) {
+        lua_rawgeti(L, 2, i);
+        if (lua_isstring(L, -1)) expanded.push_back(lua_tostring(L, -1));
+        lua_pop(L, 1);
+    }
+    std::vector<std::string> ignored;
+    n = static_cast<lua_Integer>(lua_rawlen(L, 4));
+    for (lua_Integer i = 1; i <= n; i++) {
+        lua_rawgeti(L, 4, i);
+        if (lua_isstring(L, -1)) ignored.push_back(lua_tostring(L, -1));
+        lua_pop(L, 1);
+    }
+
+    std::vector<Editor::FileTreeRow> rows = GetEditor(L)->BuildFileTreeRows(root, expanded, show_hidden, ignored);
+    lua_createtable(L, static_cast<int>(rows.size()), 0);
+    for (size_t i = 0; i < rows.size(); i++) {
+        lua_createtable(L, 0, 5);
+        lua_pushlstring(L, rows[i].full_path.data(), rows[i].full_path.size());
+        lua_setfield(L, -2, "path");
+        lua_pushlstring(L, rows[i].name.data(), rows[i].name.size());
+        lua_setfield(L, -2, "name");
+        lua_pushboolean(L, rows[i].is_dir);
+        lua_setfield(L, -2, "is_dir");
+        lua_pushinteger(L, rows[i].depth);
+        lua_setfield(L, -2, "depth");
+        lua_pushboolean(L, rows[i].expanded);
+        lua_setfield(L, -2, "expanded");
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+    return 1;
+}
+
+// mep.project_readme_path(dir) -> path or nil: see Editor::ProjectReadmePath.
+int l_project_readme_path(lua_State *L) {
+    const char *dir = luaL_checkstring(L, 1);
+    std::string path = GetEditor(L)->ProjectReadmePath(dir);
+    if (path.empty()) {
+        lua_pushnil(L);
+    } else {
+        lua_pushlstring(L, path.data(), path.size());
+    }
+    return 1;
+}
+
+// mep.colorize(): see Editor::Colorize. Bound directly, no wrapper.
+int l_colorize(lua_State *L) {
+    GetEditor(L)->Colorize();
+    return 0;
+}
+
+// mep.url_under_cursor() -> string or nil: see Editor::UrlUnderCursor.
+// Bound directly, no wrapper.
+int l_url_under_cursor(lua_State *L) {
+    std::string url = GetEditor(L)->UrlUnderCursor();
+    if (url.empty()) {
+        lua_pushnil(L);
+    } else {
+        lua_pushlstring(L, url.data(), url.size());
+    }
+    return 1;
+}
+
+// mep.list_urls_scan() -> array of URL strings: see Editor::ListUrls.
+// kBuiltinTextTools' own mep.list_urls (main.cpp) wraps this with the
+// picker.
+int l_list_urls_scan(lua_State *L) {
+    std::vector<std::string> urls = GetEditor(L)->ListUrls();
+    lua_createtable(L, static_cast<int>(urls.size()), 0);
+    for (size_t i = 0; i < urls.size(); i++) {
+        lua_pushlstring(L, urls[i].data(), urls[i].size());
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+    return 1;
+}
+
+namespace {
+// SGR (Select Graphic Rendition) color codes -> mep highlight group --
+// mep_ansi_sgr_hl's own port (kBuiltinRun, main.cpp).
+const char *AnsiSgrHl(int code) {
+    switch (code) {
+        case 31:
+        case 91:
+            return "Red";
+        case 32:
+        case 92:
+            return "Green";
+        case 33:
+        case 93:
+            return "Yellow";
+        case 34:
+        case 94:
+            return "Blue";
+        case 35:
+        case 95:
+            return "Purple";
+        case 36:
+        case 96:
+            return "Cyan";
+        default:
+            return nullptr;
+    }
+}
+
+struct AnsiSpan {
+    int row;  // 1-indexed
+    int col_start;
+    int col_end;
+    std::string hl;
+};
+
+struct AnsiRenderResult {
+    std::vector<std::string> lines;  // lines[0] is Lua's lines[1], etc.
+    std::vector<AnsiSpan> spans;
+};
+
+// mep_ansi_render's own port: re-parses a raw accumulated output byte
+// stream into plain lines + SGR color-span decorations every call (same
+// "re-parse from scratch, not incremental" choice the original made --
+// see kBuiltinRun's own header comment on why). Only `m` (SGR) escape
+// sequences are interpreted; every other CSI sequence is skipped over
+// (consumed, not rendered) -- this is color-only handling, not a real
+// cursor-addressable terminal grid.
+AnsiRenderResult AnsiRender(const std::string &raw) {
+    AnsiRenderResult result;
+    result.lines.emplace_back();
+    int row = 1;
+    bool has_hl = false;
+    std::string cur_hl;
+    int span_start = -1;  // -1 = no open span
+    auto close_span = [&](int end_col) {
+        if (has_hl && span_start >= 0) result.spans.push_back({row, span_start, end_col, cur_hl});
+        span_start = -1;
+    };
+    size_t i = 0;
+    const size_t n = raw.size();
+    while (i < n) {
+        char c = raw[i];
+        if (c == '\x1b' && i + 1 < n && raw[i + 1] == '[') {
+            size_t seq_end = i + 2;
+            while (seq_end < n && !std::isalpha(static_cast<unsigned char>(raw[seq_end]))) seq_end++;
+            if (seq_end >= n) break;  // no terminating letter -- matches "if not seq_end then break"
+            std::string params = raw.substr(i + 2, seq_end - (i + 2));
+            char cmd = raw[seq_end];
+            if (cmd == 'm') {
+                close_span(static_cast<int>(result.lines[row - 1].size()) + 1);
+                bool new_has_hl = has_hl;
+                std::string new_hl = cur_hl;
+                std::string with_sep = params + ";";
+                size_t seg_start = 0;
+                for (size_t p = 0; p < with_sep.size(); p++) {
+                    if (with_sep[p] != ';') continue;
+                    std::string code = with_sep.substr(seg_start, p - seg_start);
+                    seg_start = p + 1;
+                    bool all_digits = !code.empty();
+                    for (char ch : code) {
+                        if (!std::isdigit(static_cast<unsigned char>(ch))) {
+                            all_digits = false;
+                            break;
+                        }
+                    }
+                    if (code.empty() || code == "0") {
+                        new_has_hl = false;
+                        new_hl.clear();
+                    } else if (all_digits) {
+                        // Malformed (non-digit) codes are skipped -- keeps
+                        // whatever new_hl already was, same as Lua's own
+                        // `mep_ansi_sgr_hl(code) or new_hl` for an
+                        // unrecognized-but-numeric code; a non-numeric
+                        // code can't happen from `tonumber` in the
+                        // original (it'd just yield nil, same
+                        // fall-through) so this mirrors it defensively
+                        // instead of risking a parse throw.
+                        const char *hl = AnsiSgrHl(std::stoi(code));
+                        if (hl) {
+                            new_has_hl = true;
+                            new_hl = hl;
+                        }
+                    }
+                }
+                has_hl = new_has_hl;
+                cur_hl = new_hl;
+                if (has_hl) span_start = static_cast<int>(result.lines[row - 1].size()) + 1;
+            }
+            i = seq_end + 1;
+        } else if (c == '\n') {
+            close_span(static_cast<int>(result.lines[row - 1].size()) + 1);
+            row++;
+            result.lines.emplace_back();
+            if (has_hl) span_start = 1;
+            i++;
+        } else if (c == '\r') {
+            i++;
+        } else {
+            result.lines[row - 1] += c;
+            i++;
+        }
+    }
+    close_span(static_cast<int>(result.lines[row - 1].size()) + 1);
+    return result;
+}
+}  // namespace
+
+// mep.ansi_render(raw) -> lines, spans: see AnsiRender above.
+// kBuiltinRun's own mep_term_redraw (main.cpp) feeds `spans` straight
+// into mep.buffer_deco_add, same {row=, col_start=, col_end=, hl=} shape
+// mep_ansi_render always returned.
+int l_ansi_render(lua_State *L) {
+    const char *raw = luaL_checkstring(L, 1);
+    AnsiRenderResult result = AnsiRender(raw);
+    lua_createtable(L, static_cast<int>(result.lines.size()), 0);
+    for (size_t k = 0; k < result.lines.size(); k++) {
+        lua_pushlstring(L, result.lines[k].data(), result.lines[k].size());
+        lua_rawseti(L, -2, static_cast<int>(k + 1));
+    }
+    lua_createtable(L, static_cast<int>(result.spans.size()), 0);
+    for (size_t k = 0; k < result.spans.size(); k++) {
+        lua_createtable(L, 0, 4);
+        lua_pushinteger(L, result.spans[k].row);
+        lua_setfield(L, -2, "row");
+        lua_pushinteger(L, result.spans[k].col_start);
+        lua_setfield(L, -2, "col_start");
+        lua_pushinteger(L, result.spans[k].col_end);
+        lua_setfield(L, -2, "col_end");
+        lua_pushlstring(L, result.spans[k].hl.data(), result.spans[k].hl.size());
+        lua_setfield(L, -2, "hl");
+        lua_rawseti(L, -2, static_cast<int>(k + 1));
+    }
+    return 2;
+}
+
+namespace {
+// mep_leetcode_html_to_text's own gsub('<[bB][rR]%s*/?>', '\n') port:
+// <br>/<br/>/<br />/<BR> etc, replaced with a newline.
+std::string StripBrTags(const std::string &s) {
+    std::string out;
+    size_t i = 0;
+    while (i < s.size()) {
+        if (s[i] == '<' && i + 2 < s.size() && (s[i + 1] == 'b' || s[i + 1] == 'B') &&
+            (s[i + 2] == 'r' || s[i + 2] == 'R')) {
+            size_t j = i + 3;
+            while (j < s.size() && std::isspace(static_cast<unsigned char>(s[j]))) j++;
+            if (j < s.size() && s[j] == '/') j++;
+            if (j < s.size() && s[j] == '>') {
+                out += '\n';
+                i = j + 1;
+                continue;
+            }
+        }
+        out += s[i];
+        i++;
+    }
+    return out;
+}
+
+// gsub('</%a+>', '\n') port: any closing tag replaced with a newline.
+std::string StripClosingTags(const std::string &s) {
+    std::string out;
+    size_t i = 0;
+    while (i < s.size()) {
+        if (s[i] == '<' && i + 1 < s.size() && s[i + 1] == '/') {
+            size_t j = i + 2;
+            size_t letters_start = j;
+            while (j < s.size() && std::isalpha(static_cast<unsigned char>(s[j]))) j++;
+            if (j > letters_start && j < s.size() && s[j] == '>') {
+                out += '\n';
+                i = j + 1;
+                continue;
+            }
+        }
+        out += s[i];
+        i++;
+    }
+    return out;
+}
+
+// gsub('<[^>]*>', '') port: every remaining tag stripped entirely.
+std::string StripAnyTags(const std::string &s) {
+    std::string out;
+    size_t i = 0;
+    while (i < s.size()) {
+        if (s[i] == '<') {
+            size_t j = i + 1;
+            while (j < s.size() && s[j] != '>') j++;
+            if (j < s.size() && s[j] == '>') {
+                i = j + 1;
+                continue;
+            }
+        }
+        out += s[i];
+        i++;
+    }
+    return out;
+}
+
+std::string ReplaceAllLiteral(std::string s, const std::string &from, const std::string &to) {
+    size_t pos = 0;
+    while ((pos = s.find(from, pos)) != std::string::npos) {
+        s.replace(pos, from.size(), to);
+        pos += to.size();
+    }
+    return s;
+}
+
+// mep_leetcode_html_to_text's own port: a rough HTML -> plain-text pass
+// over LeetCode's `content` field (kBuiltinLeetcode, main.cpp) -- not a
+// real HTML parser, good enough for a read-only problem statement, not
+// meant to round-trip. The three tag-stripping passes and six entity
+// decodes run in the exact same sequential order the original's chained
+// gsub calls did (order matters here -- e.g. &amp;lt; decoding to &lt;
+// only happens *after* the &lt; pass already ran, so it's deliberately
+// left as literal "&lt;" in the output, not further decoded to "<").
+std::vector<std::string> LeetcodeHtmlToText(const std::string &html) {
+    std::string text = StripBrTags(html);
+    text = StripClosingTags(text);
+    text = StripAnyTags(text);
+    text = ReplaceAllLiteral(text, "&lt;", "<");
+    text = ReplaceAllLiteral(text, "&gt;", ">");
+    text = ReplaceAllLiteral(text, "&amp;", "&");
+    text = ReplaceAllLiteral(text, "&nbsp;", " ");
+    text = ReplaceAllLiteral(text, "&quot;", "\"");
+    text = ReplaceAllLiteral(text, "&#39;", "'");
+
+    std::vector<std::string> out;
+    std::string with_nl = text + "\n";
+    size_t start = 0;
+    for (size_t p = 0; p < with_nl.size(); p++) {
+        if (with_nl[p] != '\n') continue;
+        std::string line = with_nl.substr(start, p - start);
+        start = p + 1;
+        size_t a = 0, b = line.size();
+        while (a < b && std::isspace(static_cast<unsigned char>(line[a]))) a++;
+        while (b > a && std::isspace(static_cast<unsigned char>(line[b - 1]))) b--;
+        std::string trimmed = line.substr(a, b - a);
+        bool prev_nonempty = !out.empty() && !out.back().empty();
+        if (!trimmed.empty() || prev_nonempty) out.push_back(trimmed);
+    }
+    while (!out.empty() && out.front().empty()) out.erase(out.begin());
+    while (!out.empty() && out.back().empty()) out.pop_back();
+    return out;
+}
+}  // namespace
+
+// mep.leetcode_html_to_text(html) -> array of plain-text lines: see
+// LeetcodeHtmlToText above.
+int l_leetcode_html_to_text(lua_State *L) {
+    const char *html = luaL_optstring(L, 1, "");
+    std::vector<std::string> lines = LeetcodeHtmlToText(html);
+    lua_createtable(L, static_cast<int>(lines.size()), 0);
+    for (size_t i = 0; i < lines.size(); i++) {
+        lua_pushlstring(L, lines[i].data(), lines[i].size());
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+    return 1;
+}
+
+namespace {
+// Reads the current value of mep.org_todo_keywords (a Lua-configurable
+// global array, default {'TODO','DOING','DONE'} set by kBuiltinOrg) --
+// mep_org_parse_headline's own implicit dependency, read fresh here
+// rather than passed as a parameter since every one of its ~80 call
+// sites calls it with just a line, matching the original Lua closure's
+// own signature exactly.
+std::vector<std::string> ReadOrgTodoKeywords(lua_State *L) {
+    std::vector<std::string> kws;
+    lua_getglobal(L, "mep");
+    if (lua_istable(L, -1)) {
+        lua_getfield(L, -1, "org_todo_keywords");
+        if (lua_istable(L, -1)) {
+            lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, -1));
+            for (lua_Integer i = 1; i <= n; i++) {
+                lua_rawgeti(L, -1, i);
+                if (lua_isstring(L, -1)) kws.push_back(lua_tostring(L, -1));
+                lua_pop(L, 1);
+            }
+        }
+        lua_pop(L, 1);
+    }
+    lua_pop(L, 1);
+    return kws;
+}
+
+void PushOrgHeadlineParse(lua_State *L, const OrgHeadlineParse &h) {
+    if (!h.is_headline) {
+        lua_pushnil(L);
+        return;
+    }
+    lua_createtable(L, 0, 5);
+    lua_pushinteger(L, h.level);
+    lua_setfield(L, -2, "level");
+    if (h.has_todo) {
+        lua_pushlstring(L, h.todo.data(), h.todo.size());
+    } else {
+        lua_pushnil(L);
+    }
+    lua_setfield(L, -2, "todo");
+    if (h.has_priority) {
+        lua_pushlstring(L, h.priority.data(), h.priority.size());
+    } else {
+        lua_pushnil(L);
+    }
+    lua_setfield(L, -2, "priority");
+    lua_pushlstring(L, h.title.data(), h.title.size());
+    lua_setfield(L, -2, "title");
+    if (h.has_tags) {
+        lua_pushlstring(L, h.tags.data(), h.tags.size());
+    } else {
+        lua_pushnil(L);
+    }
+    lua_setfield(L, -2, "tags");
+}
+}  // namespace
+
+// mep_org_parse_headline(line) -> {level=,todo=,priority=,title=,tags=}
+// or nil: see ParseOrgHeadline (editor.h/.cpp). Registered as a *bare
+// global* (lua_register, not the mep.* table) -- see editor.h's own
+// comment on OrgHeadlineParse for why.
+int l_org_parse_headline_global(lua_State *L) {
+    const char *line = luaL_checkstring(L, 1);
+    std::vector<std::string> kws = ReadOrgTodoKeywords(L);
+    PushOrgHeadlineParse(L, ParseOrgHeadline(line, kws));
+    return 1;
+}
+
+// mep_org_current_headline_row([row]) -> row or nil: see
+// Editor::OrgCurrentHeadlineRow. Bare global, same reason.
+int l_org_current_headline_row_global(lua_State *L) {
+    int row = static_cast<int>(luaL_optinteger(L, 1, 0));
+    std::vector<std::string> kws = ReadOrgTodoKeywords(L);
+    int r = GetEditor(L)->OrgCurrentHeadlineRow(row, kws);
+    if (r <= 0) {
+        lua_pushnil(L);
+    } else {
+        lua_pushinteger(L, r);
+    }
+    return 1;
+}
+
+// mep_org_subtree_end(row) -> row: see Editor::OrgSubtreeEnd. Bare
+// global, same reason.
+int l_org_subtree_end_global(lua_State *L) {
+    int row = static_cast<int>(luaL_checkinteger(L, 1));
+    std::vector<std::string> kws = ReadOrgTodoKeywords(L);
+    lua_pushinteger(L, GetEditor(L)->OrgSubtreeEnd(row, kws));
+    return 1;
+}
+
+// mep.org_clock_in()/mep.org_clock_out(): see Editor::OrgClockIn/OrgClockOut.
+int l_org_clock_in(lua_State *L) {
+    GetEditor(L)->OrgClockIn();
+    return 0;
+}
+
+int l_org_clock_out(lua_State *L) {
+    GetEditor(L)->OrgClockOut();
+    return 0;
+}
+
+// mep.org_clock_table_items() -> array of "indent+title  H:MM" strings:
+// see Editor::OrgClockTableItems. kBuiltinOrgClock's own
+// mep.org_clock_table() is a thin wrapper feeding this into
+// mep.picker_open (which needs a Lua callback ref, so stays Lua glue).
+int l_org_clock_table_items(lua_State *L) {
+    std::vector<std::string> items = GetEditor(L)->OrgClockTableItems();
+    lua_createtable(L, static_cast<int>(items.size()), 0);
+    for (size_t i = 0; i < items.size(); i++) {
+        lua_pushlstring(L, items[i].data(), items[i].size());
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+    return 1;
+}
+
+// mep.org_property_get(row, key) -> value or nil: see Editor::OrgPropertyGet.
+// row may be nil/0 ("use the nearest headline at/above the cursor").
+int l_org_property_get(lua_State *L) {
+    int row = static_cast<int>(luaL_optinteger(L, 1, 0));
+    const char *key = luaL_checkstring(L, 2);
+    std::vector<std::string> kws = ReadOrgTodoKeywords(L);
+    std::pair<bool, std::string> result = GetEditor(L)->OrgPropertyGet(row, key, kws);
+    if (!result.first) {
+        lua_pushnil(L);
+    } else {
+        lua_pushlstring(L, result.second.data(), result.second.size());
+    }
+    return 1;
+}
+
+// mep.org_property_set(row, key, value): see Editor::OrgPropertySet.
+int l_org_property_set(lua_State *L) {
+    int row = static_cast<int>(luaL_optinteger(L, 1, 0));
+    const char *key = luaL_checkstring(L, 2);
+    const char *value = luaL_checkstring(L, 3);
+    std::vector<std::string> kws = ReadOrgTodoKeywords(L);
+    GetEditor(L)->OrgPropertySet(row, key, value, kws);
+    return 0;
+}
+
+// mep.org_property_remove(row, key): see Editor::OrgPropertyRemove.
+int l_org_property_remove(lua_State *L) {
+    int row = static_cast<int>(luaL_optinteger(L, 1, 0));
+    const char *key = luaL_checkstring(L, 2);
+    std::vector<std::string> kws = ReadOrgTodoKeywords(L);
+    GetEditor(L)->OrgPropertyRemove(row, key, kws);
+    return 0;
+}
+
+// mep.org_drill_grade(row, quality): see Editor::OrgDrillGrade.
+int l_org_drill_grade(lua_State *L) {
+    int row = static_cast<int>(luaL_checkinteger(L, 1));
+    int quality = static_cast<int>(luaL_checkinteger(L, 2));
+    std::vector<std::string> kws = ReadOrgTodoKeywords(L);
+    GetEditor(L)->OrgDrillGrade(row, quality, kws);
+    return 0;
+}
+
+// mep.org_agenda_expand_glob(pattern) -> array of paths: see
+// Editor::OrgAgendaExpandGlob.
+int l_org_agenda_expand_glob(lua_State *L) {
+    const char *pattern = luaL_checkstring(L, 1);
+    std::vector<std::string> results = GetEditor(L)->OrgAgendaExpandGlob(pattern);
+    lua_createtable(L, static_cast<int>(results.size()), 0);
+    for (size_t i = 0; i < results.size(); i++) {
+        lua_pushlstring(L, results[i].data(), results[i].size());
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+    return 1;
+}
+
+// mep.org_agenda_scan_lines(lines, path) -> array of
+// {file=,line=,todo=,title=,tags=,priority=,scheduled=,deadline=}: see
+// Editor::OrgAgendaScanLines.
+int l_org_agenda_scan_lines(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    const char *path = luaL_checkstring(L, 2);
+    std::vector<std::string> lines;
+    lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 1));
+    for (lua_Integer i = 1; i <= n; i++) {
+        lua_rawgeti(L, 1, i);
+        lines.push_back(luaL_optstring(L, -1, ""));
+        lua_pop(L, 1);
+    }
+    std::vector<std::string> kws = ReadOrgTodoKeywords(L);
+    std::vector<Editor::OrgAgendaEntry> entries = GetEditor(L)->OrgAgendaScanLines(lines, path, kws);
+    lua_createtable(L, static_cast<int>(entries.size()), 0);
+    for (size_t i = 0; i < entries.size(); i++) {
+        const Editor::OrgAgendaEntry &e = entries[i];
+        lua_createtable(L, 0, 8);
+        lua_pushlstring(L, e.file.data(), e.file.size());
+        lua_setfield(L, -2, "file");
+        lua_pushinteger(L, e.line);
+        lua_setfield(L, -2, "line");
+        if (e.has_todo) {
+            lua_pushlstring(L, e.todo.data(), e.todo.size());
+        } else {
+            lua_pushnil(L);
+        }
+        lua_setfield(L, -2, "todo");
+        lua_pushlstring(L, e.title.data(), e.title.size());
+        lua_setfield(L, -2, "title");
+        if (e.has_tags) {
+            lua_pushlstring(L, e.tags.data(), e.tags.size());
+        } else {
+            lua_pushnil(L);
+        }
+        lua_setfield(L, -2, "tags");
+        if (e.has_priority) {
+            lua_pushlstring(L, e.priority.data(), e.priority.size());
+        } else {
+            lua_pushnil(L);
+        }
+        lua_setfield(L, -2, "priority");
+        if (e.has_scheduled) {
+            lua_pushlstring(L, e.scheduled.data(), e.scheduled.size());
+        } else {
+            lua_pushnil(L);
+        }
+        lua_setfield(L, -2, "scheduled");
+        if (e.has_deadline) {
+            lua_pushlstring(L, e.deadline.data(), e.deadline.size());
+        } else {
+            lua_pushnil(L);
+        }
+        lua_setfield(L, -2, "deadline");
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+    return 1;
+}
+
+// mep.org_capture_expand_template(tmpl) -> expanded string: see
+// Editor::OrgExpandCaptureTemplate. (kBuiltinOrgCapture's own
+// mep_org_expand_template port -- named differently to avoid colliding
+// with kBuiltinOrg's unrelated mep.org_expand_template, the "<s Tab"
+// easy-templates command.)
+int l_org_expand_capture_template(lua_State *L) {
+    const char *tmpl = luaL_checkstring(L, 1);
+    std::string expanded = GetEditor(L)->OrgExpandCaptureTemplate(tmpl);
+    lua_pushlstring(L, expanded.data(), expanded.size());
+    return 1;
+}
+
+// mep.org_refile_move(target_row) -> new cursor row or nil: see
+// Editor::OrgRefileMove.
+int l_org_refile_move(lua_State *L) {
+    int target_row = static_cast<int>(luaL_checkinteger(L, 1));
+    std::vector<std::string> kws = ReadOrgTodoKeywords(L);
+    int dest = GetEditor(L)->OrgRefileMove(target_row, kws);
+    if (dest <= 0) {
+        lua_pushnil(L);
+    } else {
+        lua_pushinteger(L, dest);
+    }
+    return 1;
+}
+
+// mep.org_latex_scan_fragments() -> {blocks = {{start_row=,end_row=,
+// body=}, ...}, inlines = {{row=,col_start=,col_end=,body=}, ...}}: see
+// Editor::OrgLatexScanFragments.
+int l_org_latex_scan_fragments(lua_State *L) {
+    Editor::OrgLatexScanResult result = GetEditor(L)->OrgLatexScanFragments();
+    lua_createtable(L, 0, 2);
+    lua_createtable(L, static_cast<int>(result.blocks.size()), 0);
+    for (size_t i = 0; i < result.blocks.size(); i++) {
+        const Editor::OrgLatexBlock &b = result.blocks[i];
+        lua_createtable(L, 0, 3);
+        lua_pushinteger(L, b.start_row);
+        lua_setfield(L, -2, "start_row");
+        lua_pushinteger(L, b.end_row);
+        lua_setfield(L, -2, "end_row");
+        lua_pushlstring(L, b.body.data(), b.body.size());
+        lua_setfield(L, -2, "body");
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+    lua_setfield(L, -2, "blocks");
+    lua_createtable(L, static_cast<int>(result.inlines.size()), 0);
+    for (size_t i = 0; i < result.inlines.size(); i++) {
+        const Editor::OrgLatexInlineSpan &s = result.inlines[i];
+        lua_createtable(L, 0, 4);
+        lua_pushinteger(L, s.row);
+        lua_setfield(L, -2, "row");
+        lua_pushinteger(L, s.col_start);
+        lua_setfield(L, -2, "col_start");
+        lua_pushinteger(L, s.col_end);
+        lua_setfield(L, -2, "col_end");
+        lua_pushlstring(L, s.body.data(), s.body.size());
+        lua_setfield(L, -2, "body");
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+    lua_setfield(L, -2, "inlines");
+    return 1;
+}
+
+// mep.org_bib_parse_files({text1, text2, ...}) -> array of
+// {type=,key=,fields={name=value,...}}: see Editor::OrgBibParseFiles.
+int l_org_bib_parse_files(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    std::vector<std::string> texts;
+    lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 1));
+    for (lua_Integer i = 1; i <= n; i++) {
+        lua_rawgeti(L, 1, i);
+        texts.push_back(luaL_optstring(L, -1, ""));
+        lua_pop(L, 1);
+    }
+    std::vector<Editor::OrgBibEntry> entries = GetEditor(L)->OrgBibParseFiles(texts);
+    lua_createtable(L, static_cast<int>(entries.size()), 0);
+    for (size_t i = 0; i < entries.size(); i++) {
+        const Editor::OrgBibEntry &e = entries[i];
+        lua_createtable(L, 0, 3);
+        lua_pushlstring(L, e.type.data(), e.type.size());
+        lua_setfield(L, -2, "type");
+        lua_pushlstring(L, e.key.data(), e.key.size());
+        lua_setfield(L, -2, "key");
+        lua_createtable(L, 0, static_cast<int>(e.fields.size()));
+        for (const auto &kv : e.fields) {
+            lua_pushlstring(L, kv.second.data(), kv.second.size());
+            lua_setfield(L, -2, kv.first.c_str());
+        }
+        lua_setfield(L, -2, "fields");
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+    return 1;
+}
+
+// mep_org_bib_cite_at_cursor() -> array of citation keys under the
+// cursor, or an empty table if none: see Editor::OrgBibCiteAtCursor.
+// Bare global, same reason as the Org-0/mep_lsp_*/mep_org_resolve_path
+// primitives.
+int l_org_bib_cite_at_cursor_global(lua_State *L) {
+    std::vector<std::string> keys = GetEditor(L)->OrgBibCiteAtCursor();
+    lua_createtable(L, static_cast<int>(keys.size()), 0);
+    for (size_t i = 0; i < keys.size(); i++) {
+        lua_pushlstring(L, keys[i].data(), keys[i].size());
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+    return 1;
+}
+
+namespace {
+// Helpers shared by the OrgRoam bindings below: read a Lua array of
+// strings (arg index `idx`) into a std::vector<std::string>, or push
+// one back.
+std::vector<std::string> ReadStringArray(lua_State *L, int idx) {
+    std::vector<std::string> out;
+    lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, idx));
+    for (lua_Integer i = 1; i <= n; i++) {
+        lua_rawgeti(L, idx, i);
+        out.push_back(luaL_optstring(L, -1, ""));
+        lua_pop(L, 1);
+    }
+    return out;
+}
+
+void PushStringArray(lua_State *L, const std::vector<std::string> &items) {
+    lua_createtable(L, static_cast<int>(items.size()), 0);
+    for (size_t i = 0; i < items.size(); i++) {
+        lua_pushlstring(L, items[i].data(), items[i].size());
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+}
+}  // namespace
+
+// mep.org_roam_files_in({dir1, dir2, ...}) -> array of paths: see
+// Editor::OrgRoamFilesIn.
+int l_org_roam_files_in(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    std::vector<std::string> dirs = ReadStringArray(L, 1);
+    PushStringArray(L, GetEditor(L)->OrgRoamFilesIn(dirs));
+    return 1;
+}
+
+// mep.org_roam_title_of({line1, line2, ...}) -> title string or nil:
+// see Editor::OrgRoamTitleOf.
+int l_org_roam_title_of(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    std::vector<std::string> lines = ReadStringArray(L, 1);
+    std::vector<std::string> kws = ReadOrgTodoKeywords(L);
+    std::pair<bool, std::string> result = GetEditor(L)->OrgRoamTitleOf(lines, kws);
+    if (!result.first) {
+        lua_pushnil(L);
+    } else {
+        lua_pushlstring(L, result.second.data(), result.second.size());
+    }
+    return 1;
+}
+
+// mep.org_roam_ensure_id() -> id string: see Editor::OrgRoamEnsureId.
+int l_org_roam_ensure_id(lua_State *L) {
+    std::string id = GetEditor(L)->OrgRoamEnsureId();
+    lua_pushlstring(L, id.data(), id.size());
+    return 1;
+}
+
+// mep.org_roam_find_backlink_lines({line1, ...}, target_id) -> array of
+// 1-indexed line numbers: see Editor::OrgRoamFindBacklinkLines.
+int l_org_roam_find_backlink_lines(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    std::vector<std::string> lines = ReadStringArray(L, 1);
+    const char *target_id = luaL_checkstring(L, 2);
+    std::vector<int> result = GetEditor(L)->OrgRoamFindBacklinkLines(lines, target_id);
+    lua_createtable(L, static_cast<int>(result.size()), 0);
+    for (size_t i = 0; i < result.size(); i++) {
+        lua_pushinteger(L, result[i]);
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+    return 1;
+}
+
+// mep.org_roam_parse_file_index({line1, ...}) -> {has_id=,id=,title=,
+// links={...}} or {has_id=false} if the file has no :ID:: see
+// Editor::OrgRoamParseFileIndex.
+int l_org_roam_parse_file_index(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    std::vector<std::string> lines = ReadStringArray(L, 1);
+    std::vector<std::string> kws = ReadOrgTodoKeywords(L);
+    Editor::OrgRoamFileIndexEntry entry = GetEditor(L)->OrgRoamParseFileIndex(lines, kws);
+    lua_createtable(L, 0, 4);
+    lua_pushboolean(L, entry.has_id);
+    lua_setfield(L, -2, "has_id");
+    if (entry.has_id) {
+        lua_pushlstring(L, entry.id.data(), entry.id.size());
+        lua_setfield(L, -2, "id");
+        if (entry.has_title) {
+            lua_pushlstring(L, entry.title.data(), entry.title.size());
+        } else {
+            lua_pushnil(L);
+        }
+        lua_setfield(L, -2, "title");
+        PushStringArray(L, entry.links);
+        lua_setfield(L, -2, "links");
+    }
+    return 1;
+}
+
+// mep.org_roam_slugify(title) -> slug string: see OrgRoamSlugify.
+int l_org_roam_slugify(lua_State *L) {
+    const char *title = luaL_checkstring(L, 1);
+    std::string slug = OrgRoamSlugify(title);
+    lua_pushlstring(L, slug.data(), slug.size());
+    return 1;
+}
+
+// mep.org_table_align(): see Editor::OrgTableAlign.
+int l_org_table_align(lua_State *L) {
+    GetEditor(L)->OrgTableAlign();
+    return 0;
+}
+
+// mep.org_link_at_cursor() -> target, desc (desc nil if none), or nil:
+// see Editor::OrgLinkAtCursor.
+int l_org_link_at_cursor(lua_State *L) {
+    Editor::OrgLinkAtCursorResult r = GetEditor(L)->OrgLinkAtCursor();
+    if (!r.found) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_pushlstring(L, r.target.data(), r.target.size());
+    if (r.has_desc) {
+        lua_pushlstring(L, r.desc.data(), r.desc.size());
+    } else {
+        lua_pushnil(L);
+    }
+    return 2;
+}
+
+// mep.org_timestamp_insert(active): see Editor::OrgTimestampInsert.
+int l_org_timestamp_insert(lua_State *L) {
+    bool active = lua_toboolean(L, 1);
+    GetEditor(L)->OrgTimestampInsert(active);
+    return 0;
+}
+
+// mep.org_timestamp_shift(delta_days): see Editor::OrgTimestampShift.
+int l_org_timestamp_shift(lua_State *L) {
+    int delta_days = static_cast<int>(luaL_checkinteger(L, 1));
+    GetEditor(L)->OrgTimestampShift(delta_days);
+    return 0;
+}
+
+// mep.org_timestamp_at(line, col) -> {col_start=,col_end=,body=,
+// active=} or nil: see Editor::OrgTimestampAt. Exposed so the still-Lua
+// mep.org_timestamp_set_repeater can keep calling it.
+int l_org_timestamp_at(lua_State *L) {
+    const char *line = luaL_checkstring(L, 1);
+    int col = static_cast<int>(luaL_checkinteger(L, 2));
+    Editor::OrgTimestampMatch m = GetEditor(L)->OrgTimestampAt(line, col);
+    if (!m.found) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_createtable(L, 0, 4);
+    lua_pushinteger(L, m.col_start);
+    lua_setfield(L, -2, "col_start");
+    lua_pushinteger(L, m.col_end);
+    lua_setfield(L, -2, "col_end");
+    lua_pushlstring(L, m.body.data(), m.body.size());
+    lua_setfield(L, -2, "body");
+    lua_pushboolean(L, m.active);
+    lua_setfield(L, -2, "active");
+    return 1;
+}
+
+// mep.org_footnote_jump(): see Editor::OrgFootnoteJump.
+int l_org_footnote_jump(lua_State *L) {
+    GetEditor(L)->OrgFootnoteJump();
+    return 0;
+}
+
+// mep.org_set_planning(kind): see Editor::OrgSetPlanning.
+int l_org_set_planning(lua_State *L) {
+    const char *kind = luaL_checkstring(L, 1);
+    std::vector<std::string> kws = ReadOrgTodoKeywords(L);
+    GetEditor(L)->OrgSetPlanning(kind, kws);
+    return 0;
+}
+
+// mep.org_export_heading(format, level, title) -> heading string: see
+// OrgExportHeading.
+int l_org_export_heading(lua_State *L) {
+    const char *format = luaL_checkstring(L, 1);
+    int level = static_cast<int>(luaL_checkinteger(L, 2));
+    const char *title = luaL_checkstring(L, 3);
+    std::string result = OrgExportHeading(format, level, title);
+    lua_pushlstring(L, result.data(), result.size());
+    return 1;
+}
+
+// mep.org_html_escape(s) -> escaped string: see OrgHtmlEscape.
+int l_org_html_escape(lua_State *L) {
+    const char *s = luaL_checkstring(L, 1);
+    std::string result = OrgHtmlEscape(s);
+    lua_pushlstring(L, result.data(), result.size());
+    return 1;
+}
+
+// mep.org_subtree_end_lines({line1, ...}, row) -> row: see
+// OrgSubtreeEndLines.
+int l_org_subtree_end_lines(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    std::vector<std::string> lines = ReadStringArray(L, 1);
+    int row = static_cast<int>(luaL_checkinteger(L, 2));
+    std::vector<std::string> kws = ReadOrgTodoKeywords(L);
+    lua_pushinteger(L, OrgSubtreeEndLines(lines, row, kws));
+    return 1;
+}
+
+// mep.org_collect_macros({line1, ...}) -> {name = body, ...}: see
+// OrgCollectMacros.
+int l_org_collect_macros(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    std::vector<std::string> lines = ReadStringArray(L, 1);
+    std::map<std::string, std::string> macros = OrgCollectMacros(lines);
+    lua_createtable(L, 0, static_cast<int>(macros.size()));
+    for (const auto &kv : macros) {
+        lua_pushlstring(L, kv.second.data(), kv.second.size());
+        lua_setfield(L, -2, kv.first.c_str());
+    }
+    return 1;
+}
+
+// mep.org_expand_macro_line(line, macros) -> expanded string: see
+// OrgExpandMacroLine.
+int l_org_expand_macro_line(lua_State *L) {
+    const char *line = luaL_checkstring(L, 1);
+    luaL_checktype(L, 2, LUA_TTABLE);
+    std::map<std::string, std::string> macros;
+    lua_pushnil(L);
+    while (lua_next(L, 2) != 0) {
+        if (lua_type(L, -2) == LUA_TSTRING && lua_type(L, -1) == LUA_TSTRING) {
+            macros[lua_tostring(L, -2)] = lua_tostring(L, -1);
+        }
+        lua_pop(L, 1);
+    }
+    std::string result = OrgExpandMacroLine(line, macros);
+    lua_pushlstring(L, result.data(), result.size());
+    return 1;
+}
+
+// mep_org_babel_should_wrap_main(lang_key, args_str) -> bool: see
+// OrgBabelShouldWrapMain. Bare global (not a mep.* field) -- kBuiltinOrgBabel
+// and kBuiltinOrgPolyglot (two separate DoString chunks) both call this
+// by its bare-global name, same reason as mep_org_src_block_at.
+int l_org_babel_should_wrap_main_global(lua_State *L) {
+    const char *lang_key = luaL_checkstring(L, 1);
+    const char *args_str = luaL_checkstring(L, 2);
+    lua_pushboolean(L, OrgBabelShouldWrapMain(lang_key, args_str));
+    return 1;
+}
+
+// mep.org_babel_format_literal(raw) -> formatted literal string: see
+// OrgBabelFormatLiteral. `raw` is coerced to a string on the Lua side
+// first (luaL_checkstring already stringifies a number arg the same
+// way `tostring(raw)` did).
+int l_org_babel_format_literal(lua_State *L) {
+    const char *raw = luaL_checkstring(L, 1);
+    std::string result = OrgBabelFormatLiteral(raw);
+    lua_pushlstring(L, result.data(), result.size());
+    return 1;
+}
+
+// mep.org_parse_vars(args_str) -> {name = value, ...}: see OrgParseVars.
+int l_org_parse_vars(lua_State *L) {
+    const char *args_str = luaL_checkstring(L, 1);
+    std::map<std::string, std::string> vars = OrgParseVars(args_str);
+    lua_createtable(L, 0, static_cast<int>(vars.size()));
+    for (const auto &kv : vars) {
+        lua_pushlstring(L, kv.second.data(), kv.second.size());
+        lua_setfield(L, -2, kv.first.c_str());
+    }
+    return 1;
+}
+
+// mep.org_parse_results(args_str) -> {[mode] = true, ...}: see
+// OrgParseResults.
+int l_org_parse_results(lua_State *L) {
+    const char *args_str = luaL_checkstring(L, 1);
+    std::set<std::string> modes = OrgParseResults(args_str);
+    lua_createtable(L, 0, static_cast<int>(modes.size()));
+    for (const std::string &m : modes) {
+        lua_pushboolean(L, true);
+        lua_setfield(L, -2, m.c_str());
+    }
+    return 1;
+}
+
+namespace {
+// Shared by l_org_src_block_at_global below: pushes an OrgSrcBlock as
+// the same table shape the original Lua mep_org_src_block_at built.
+void PushOrgSrcBlock(lua_State *L, const OrgSrcBlock &blk) {
+    lua_createtable(L, 0, 10);
+    lua_pushinteger(L, blk.start_row);
+    lua_setfield(L, -2, "start_row");
+    lua_pushinteger(L, blk.end_row);
+    lua_setfield(L, -2, "end_row");
+    if (blk.has_lang) {
+        lua_pushlstring(L, blk.lang.data(), blk.lang.size());
+    } else {
+        lua_pushnil(L);
+    }
+    lua_setfield(L, -2, "lang");
+    lua_createtable(L, 0, static_cast<int>(blk.vars.size()));
+    for (const auto &kv : blk.vars) {
+        lua_pushlstring(L, kv.second.data(), kv.second.size());
+        lua_setfield(L, -2, kv.first.c_str());
+    }
+    lua_setfield(L, -2, "vars");
+    if (blk.has_tangle) {
+        lua_pushlstring(L, blk.tangle.data(), blk.tangle.size());
+    } else {
+        lua_pushnil(L);
+    }
+    lua_setfield(L, -2, "tangle");
+    if (blk.has_cache) {
+        lua_pushlstring(L, blk.cache.data(), blk.cache.size());
+    } else {
+        lua_pushnil(L);
+    }
+    lua_setfield(L, -2, "cache");
+    if (blk.has_file) {
+        lua_pushlstring(L, blk.file.data(), blk.file.size());
+    } else {
+        lua_pushnil(L);
+    }
+    lua_setfield(L, -2, "file");
+    lua_createtable(L, 0, static_cast<int>(blk.results_modes.size()));
+    for (const std::string &m : blk.results_modes) {
+        lua_pushboolean(L, true);
+        lua_setfield(L, -2, m.c_str());
+    }
+    lua_setfield(L, -2, "results_modes");
+    lua_pushlstring(L, blk.args_str.data(), blk.args_str.size());
+    lua_setfield(L, -2, "args_str");
+    lua_pushlstring(L, blk.body.data(), blk.body.size());
+    lua_setfield(L, -2, "body");
+}
+}  // namespace
+
+// mep_org_src_block_at(row) -> {start_row=,end_row=,lang=,vars=,
+// tangle=,cache=,file=,results_modes=,args_str=,body=} or nil: see
+// Editor::OrgSrcBlockAt. Bare global, same reason as the Org-0/
+// mep_lsp_*/mep_org_resolve_path/mep_org_bib_cite_at_cursor primitives
+// -- kBuiltinOrgPolyglot shares this exact name.
+int l_org_src_block_at_global(lua_State *L) {
+    int row = static_cast<int>(luaL_checkinteger(L, 1));
+    OrgSrcBlock blk = GetEditor(L)->OrgSrcBlockAt(row);
+    if (!blk.found) {
+        lua_pushnil(L);
+        return 1;
+    }
+    PushOrgSrcBlock(L, blk);
+    return 1;
+}
+
+// mep_ai_json_encode(v) -> compact JSON string: see LuaToJson/Json::dump.
+// Bare global (not a mep.* field, matching the original's own bare-
+// global name) -- kBuiltinAi and kBuiltinLeetcode (two separate
+// DoString chunks) both call this by its bare-global name.
+int l_ai_json_encode_global(lua_State *L) {
+    Json v = LuaToJson(L, 1);
+    std::string out = v.dump();
+    lua_pushlstring(L, out.data(), out.size());
+    return 1;
+}
+
+// mep_ai_json_decode(s) -> decoded Lua value, or nil on malformed input:
+// see Json::Parse/PushJsonNilNull. Bare global, same reason as
+// mep_ai_json_encode above. Uses PushJsonNilNull (not PushJson) so JSON
+// null decodes to plain Lua nil, matching the original hand-rolled
+// decoder's own behavior exactly (see PushJsonNilNull's own comment).
+int l_ai_json_decode_global(lua_State *L) {
+    const char *s = luaL_checkstring(L, 1);
+    Json v;
+    if (!Json::Parse(s, &v)) {
+        lua_pushnil(L);
+        return 1;
+    }
+    PushJsonNilNull(L, v);
+    return 1;
+}
+
+// mep_lsp_word_at_cursor() -> word string or nil: see Editor::LspWordAtCursor.
+int l_lsp_word_at_cursor(lua_State *L) {
+    std::pair<bool, std::string> result = GetEditor(L)->LspWordAtCursor();
+    if (!result.first) {
+        lua_pushnil(L);
+    } else {
+        lua_pushlstring(L, result.second.data(), result.second.size());
+    }
+    return 1;
+}
+
+// mep_lsp_apply_text_edit(e): e = {range={start={line=,character=},
+// ['end']={line=,character=}}, newText=}: see Editor::LspApplyTextEdit.
+int l_lsp_apply_text_edit(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    lua_getfield(L, 1, "range");
+    lua_getfield(L, -1, "start");
+    lua_getfield(L, -1, "line");
+    int start_line = static_cast<int>(luaL_checkinteger(L, -1));
+    lua_pop(L, 1);
+    lua_getfield(L, -1, "character");
+    int start_char = static_cast<int>(luaL_checkinteger(L, -1));
+    lua_pop(L, 2);  // pop start table, character
+    lua_getfield(L, -1, "end");
+    lua_getfield(L, -1, "line");
+    int end_line = static_cast<int>(luaL_checkinteger(L, -1));
+    lua_pop(L, 1);
+    lua_getfield(L, -1, "character");
+    int end_char = static_cast<int>(luaL_checkinteger(L, -1));
+    lua_pop(L, 2);  // pop end table, character
+    lua_pop(L, 1);  // pop range table
+    lua_getfield(L, 1, "newText");
+    const char *new_text = luaL_checkstring(L, -1);
+    lua_pop(L, 1);
+    GetEditor(L)->LspApplyTextEdit(start_line, start_char, end_line, end_char, new_text);
+    return 0;
+}
+
+namespace {
+// Reads one LSP TextEdit-shaped table (already on top of the stack) into
+// an Editor::LspTextEdit. Shared by l_lsp_apply_edits_current_buffer
+// below.
+Editor::LspTextEdit ReadLspTextEdit(lua_State *L, int idx) {
+    Editor::LspTextEdit e;
+    lua_getfield(L, idx, "range");
+    lua_getfield(L, -1, "start");
+    lua_getfield(L, -1, "line");
+    e.start_line = static_cast<int>(luaL_checkinteger(L, -1));
+    lua_pop(L, 1);
+    lua_getfield(L, -1, "character");
+    e.start_char = static_cast<int>(luaL_checkinteger(L, -1));
+    lua_pop(L, 2);
+    lua_getfield(L, -1, "end");
+    lua_getfield(L, -1, "line");
+    e.end_line = static_cast<int>(luaL_checkinteger(L, -1));
+    lua_pop(L, 1);
+    lua_getfield(L, -1, "character");
+    e.end_char = static_cast<int>(luaL_checkinteger(L, -1));
+    lua_pop(L, 2);
+    lua_pop(L, 1);
+    lua_getfield(L, idx, "newText");
+    e.new_text = luaL_checkstring(L, -1);
+    lua_pop(L, 1);
+    return e;
+}
+}  // namespace
+
+// mep_lsp_apply_edits_current_buffer({e1, e2, ...}): see
+// Editor::LspApplyEditsCurrentBuffer.
+int l_lsp_apply_edits_current_buffer(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    std::vector<Editor::LspTextEdit> edits;
+    lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 1));
+    for (lua_Integer i = 1; i <= n; i++) {
+        lua_rawgeti(L, 1, i);
+        edits.push_back(ReadLspTextEdit(L, -1));
+        lua_pop(L, 1);
+    }
+    GetEditor(L)->LspApplyEditsCurrentBuffer(std::move(edits));
+    return 0;
+}
+
+// mep.lsp_diag_wrap(text, width) -> array of wrapped lines: see LspDiagWrap.
+int l_lsp_diag_wrap(lua_State *L) {
+    const char *text = luaL_checkstring(L, 1);
+    int width = static_cast<int>(luaL_checkinteger(L, 2));
+    std::vector<std::string> lines = LspDiagWrap(text, width);
+    PushStringArray(L, lines);
+    return 1;
+}
+
+// mep_org_resolve_path(path) -> resolved path: see Editor::OrgResolvePath.
+// Bare global, same reason as the Org-0/mep_lsp_* primitives.
+int l_org_resolve_path_global(lua_State *L) {
+    const char *path = luaL_checkstring(L, 1);
+    std::string resolved = GetEditor(L)->OrgResolvePath(path);
+    lua_pushlstring(L, resolved.data(), resolved.size());
+    return 1;
+}
+
+// mep.org_image_scan(): see Editor::OrgImageScan.
+int l_org_image_scan(lua_State *L) {
+    GetEditor(L)->OrgImageScan();
+    return 0;
+}
+
+// mep_lsp_filetype(fname) -> extension string or nil: see LspFiletype
+// (editor.h/.cpp). Bare global, same reason as the Org-0 primitives
+// above.
+int l_lsp_filetype_global(lua_State *L) {
+    const char *fname = luaL_checkstring(L, 1);
+    std::string ft = LspFiletype(fname);
+    if (ft.empty()) {
+        lua_pushnil(L);
+    } else {
+        lua_pushlstring(L, ft.data(), ft.size());
+    }
+    return 1;
+}
+
+// mep_lsp_abspath(fname) -> absolute path string: see LspAbspath.
+int l_lsp_abspath_global(lua_State *L) {
+    const char *fname = luaL_checkstring(L, 1);
+    std::string ap = LspAbspath(fname);
+    lua_pushlstring(L, ap.data(), ap.size());
+    return 1;
+}
+
+// mep.git_gutter_refresh_native(base): see Editor::GitGutterRefresh.
+// kBuiltinGit's own mep.git_gutter_refresh (main.cpp) is a one-line
+// wrapper threading mep.git_gutter_base through.
+int l_git_gutter_refresh_native(lua_State *L) {
+    const char *base = luaL_checkstring(L, 1);
+    GetEditor(L)->GitGutterRefresh(base);
+    return 0;
+}
+
+// mep.git_next_hunk_row()/mep.git_prev_hunk_row() -> 1-indexed row or
+// nil: see Editor::GitNextHunkRow/GitPrevHunkRow.
+int l_git_next_hunk_row(lua_State *L) {
+    int row = GetEditor(L)->GitNextHunkRow();
+    if (row <= 0) {
+        lua_pushnil(L);
+    } else {
+        lua_pushinteger(L, row);
+    }
+    return 1;
+}
+int l_git_prev_hunk_row(lua_State *L) {
+    int row = GetEditor(L)->GitPrevHunkRow();
+    if (row <= 0) {
+        lua_pushnil(L);
+    } else {
+        lua_pushinteger(L, row);
+    }
+    return 1;
+}
+
+// mep.git_preview_hunk_text() -> text or nil: see Editor::GitPreviewHunkText.
+int l_git_preview_hunk_text(lua_State *L) {
+    std::pair<bool, std::string> r = GetEditor(L)->GitPreviewHunkText();
+    if (!r.first) {
+        lua_pushnil(L);
+    } else {
+        lua_pushlstring(L, r.second.data(), r.second.size());
+    }
+    return 1;
+}
+
+// mep.git_reset_hunk_native(base): see Editor::GitResetHunk.
+int l_git_reset_hunk_native(lua_State *L) {
+    const char *base = luaL_checkstring(L, 1);
+    GetEditor(L)->GitResetHunk(base);
+    return 0;
+}
+
+// mep.git_stage_hunk(): see Editor::GitStageHunk. Bound directly, no wrapper.
+int l_git_stage_hunk(lua_State *L) {
+    GetEditor(L)->GitStageHunk();
+    return 0;
+}
+
+int l_lsp_symbols_flatten(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    Json syms = LuaToJson(L, 1);
+    std::vector<LspSymbolRow> rows;
+    FlattenLspSymbols(syms, 0, &rows);
+    lua_createtable(L, static_cast<int>(rows.size()), 0);
+    for (size_t i = 0; i < rows.size(); i++) {
+        lua_createtable(L, 0, 2);
+        lua_pushinteger(L, rows[i].row + 1);
+        lua_setfield(L, -2, "row");
+        lua_pushlstring(L, rows[i].text.data(), rows[i].text.size());
+        lua_setfield(L, -2, "text");
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+    return 1;
 }
 
 // Persisted babel result cache (NVIM_PARITY_PLAN.md Phase 34 follow-up:
@@ -2127,115 +4139,10 @@ int l_doc_export_html_to_odt(lua_State *L) {
 #endif
 }
 
-// Myers diff (NVIM_PARITY_PLAN.md Part IV Phase 17): the equivalent of
-// Neovim's built-in vim.diff(), needed so git-gutter hunks don't have to
-// shell `git diff` per keystroke -- everything else git-specific (gutter
-// signs, staging, patch generation, the status sidebar) is orchestrated in
-// Lua (kBuiltinGit, main.cpp) on top of this one C++ primitive.
-struct DiffHunk {
-    int old_start, old_count, new_start, new_count;
-};
-
-// Classic O(ND) Myers diff (Myers 1986), operating on opaque line indices
-// via equality only -- returns the *edit script* as a sequence of (line
-// present only in `a`) / (line present only in `b`) markers, which the
-// caller (BuildHunks) coalesces into contiguous hunks.
-std::vector<DiffHunk> MyersDiffHunks(const std::vector<std::string> &a, const std::vector<std::string> &b) {
-    int n = static_cast<int>(a.size()), m = static_cast<int>(b.size());
-    int max_d = n + m;
-    if (max_d == 0) return {};
-    // trace[d] stores the V array (x-coordinates of furthest-reaching D-paths
-    // for each diagonal k) at step d, needed to walk the path back afterward.
-    std::vector<std::vector<int>> trace;
-    std::vector<int> v(2 * max_d + 1, 0);
-    auto vidx = [max_d](int k) { return k + max_d; };
-    int found_d = -1;
-    for (int d = 0; d <= max_d; d++) {
-        trace.push_back(v);
-        for (int k = -d; k <= d; k += 2) {
-            int x;
-            if (k == -d || (k != d && v[vidx(k - 1)] < v[vidx(k + 1)])) {
-                x = v[vidx(k + 1)];
-            } else {
-                x = v[vidx(k - 1)] + 1;
-            }
-            int y = x - k;
-            while (x < n && y < m && a[x] == b[y]) {
-                x++;
-                y++;
-            }
-            v[vidx(k)] = x;
-            if (x >= n && y >= m) {
-                found_d = d;
-                break;
-            }
-        }
-        if (found_d >= 0) break;
-    }
-
-    // Walk the recorded traces backward from (n,m) to (0,0), emitting
-    // per-line ops, then coalesce contiguous runs into hunks below.
-    struct Op {
-        char kind;  // '=' / '-' (only in a) / '+' (only in b)
-        int a_line, b_line;
-    };
-    std::vector<Op> ops;
-    int x = n, y = m;
-    for (int d = found_d; d > 0; d--) {
-        const std::vector<int> &vd = trace[d];
-        int k = x - y;
-        int prev_k = (k == -d || (k != d && vd[vidx(k - 1)] < vd[vidx(k + 1)])) ? k + 1 : k - 1;
-        int prev_x = vd[vidx(prev_k)];
-        int prev_y = prev_x - prev_k;
-        while (x > prev_x && y > prev_y) {
-            ops.push_back({'=', x - 1, y - 1});
-            x--;
-            y--;
-        }
-        if (x == prev_x) {
-            ops.push_back({'+', -1, y - 1});
-            y--;
-        } else {
-            ops.push_back({'-', x - 1, -1});
-            x--;
-        }
-    }
-    while (x > 0 && y > 0) {
-        ops.push_back({'=', x - 1, y - 1});
-        x--;
-        y--;
-    }
-    std::reverse(ops.begin(), ops.end());
-
-    std::vector<DiffHunk> hunks;
-    size_t i = 0;
-    int a_pos = 0, b_pos = 0;  // 0-indexed count of `a`/`b` lines consumed so far
-    while (i < ops.size()) {
-        if (ops[i].kind == '=') {
-            a_pos++;
-            b_pos++;
-            i++;
-            continue;
-        }
-        // A pure insertion has no `a` anchor of its own -- gitsigns
-        // convention: report it at the line *after* which it was inserted
-        // (0 if at the very top), i.e. `a_pos` (0-indexed) before the hunk.
-        int old_start = a_pos, new_start = b_pos;
-        int old_count = 0, new_count = 0;
-        while (i < ops.size() && ops[i].kind != '=') {
-            if (ops[i].kind == '-') {
-                old_count++;
-                a_pos++;
-            } else {
-                new_count++;
-                b_pos++;
-            }
-            i++;
-        }
-        hunks.push_back({old_start + 1, old_count, new_start + 1, new_count});
-    }
-    return hunks;
-}
+// Myers diff (NVIM_PARITY_PLAN.md Part IV Phase 17): DiffHunk/
+// MyersDiffHunks moved to editor.h/editor.cpp so Editor::GitGutterRefresh
+// (kBuiltinGit's own C++ port) can call it directly too -- this is now
+// just the mep.diff_lines Lua marshaling wrapper around it.
 
 int l_diff_lines(lua_State *L) {
     luaL_checktype(L, 1, LUA_TTABLE);
@@ -2395,6 +4302,13 @@ int l_icon_for_file(lua_State *L) {
     return 1;
 }
 
+// mep.hl_for_file(name) -> a highlight-group name for coloring by file type.
+int l_hl_for_file(lua_State *L) {
+    const char *name = luaL_checkstring(L, 1);
+    lua_pushstring(L, HlGroupForFilename(name).c_str());
+    return 1;
+}
+
 // mep.fuzzy_score(str, query) -> score (-1 if no match), positions (1-indexed array).
 int l_fuzzy_score(lua_State *L) {
     const char *str = luaL_checkstring(L, 1);
@@ -2457,6 +4371,7 @@ const luaL_Reg kMepFuncs[] = {
     {"map_bracket_next", l_map_bracket_next},
     {"set_mod1", l_set_mod1},
     {"nav_pane", l_nav_pane},
+    {"focus_top_left_pane", l_focus_top_left_pane},
     {"resize_pane", l_resize_pane},
     {"pane_set_share", l_pane_set_share},
     {"cmd", l_cmd},
@@ -2477,11 +4392,53 @@ const luaL_Reg kMepFuncs[] = {
     {"float_preview", l_float_preview},
     {"hover_show", l_hover_show},
     {"hover_close", l_hover_close},
+    {"hover_is_open", l_hover_is_open},
+    {"hover_focus_enter", l_hover_focus_enter},
     {"ns_create", l_ns_create},
     {"ns_clear", l_ns_clear},
     {"deco_add", l_deco_add},
     {"ts_captures", l_ts_captures},
     {"ts_fold_ranges", l_ts_fold_ranges},
+    {"ts_structure", l_ts_structure},
+    {"todo_scan_matches", l_todo_scan_matches},
+    {"dap_toggle_breakpoint", l_dap_toggle_breakpoint},
+    {"dap_breakpoint_lines", l_dap_breakpoint_lines},
+    {"termsend_register", l_termsend_register},
+    {"termsend_target", l_termsend_target},
+    {"termsend_unregister", l_termsend_unregister},
+    {"termsend_candidates", l_termsend_candidates},
+    {"activity_todo_load", l_activity_todo_load},
+    {"activity_todo_save", l_activity_todo_save},
+    {"activity_test_failure_lines", l_activity_test_failure_lines},
+    {"syntax_highlight_fallback", l_syntax_highlight_fallback},
+    {"org_highlight_emphasis", l_org_highlight_emphasis},
+    {"md_toggle_checkbox", l_md_toggle_checkbox},
+    {"md_fold", l_md_fold},
+    {"md_table_align", l_md_table_align},
+    {"md_table_insert_row", l_md_table_insert_row},
+    {"md_table_insert_col", l_md_table_insert_col},
+    {"md_conceal_scan", l_md_conceal_scan},
+    {"completion_scan_buffer_words", l_completion_scan_buffer_words},
+    {"completion_path_prefix", l_completion_path_prefix},
+    {"completion_rank", l_completion_rank},
+    {"snippet_splice", l_snippet_splice},
+    {"snippet_jump", l_snippet_jump},
+    {"docs_signature_info", l_docs_signature_info},
+    {"picker_preview_file", l_picker_preview_file},
+    {"tree_build_rows", l_tree_build_rows},
+    {"project_readme_path", l_project_readme_path},
+    {"colorize", l_colorize},
+    {"url_under_cursor", l_url_under_cursor},
+    {"list_urls_scan", l_list_urls_scan},
+    {"ansi_render", l_ansi_render},
+    {"leetcode_html_to_text", l_leetcode_html_to_text},
+    {"git_gutter_refresh_native", l_git_gutter_refresh_native},
+    {"git_next_hunk_row", l_git_next_hunk_row},
+    {"git_prev_hunk_row", l_git_prev_hunk_row},
+    {"git_preview_hunk_text", l_git_preview_hunk_text},
+    {"git_reset_hunk_native", l_git_reset_hunk_native},
+    {"git_stage_hunk", l_git_stage_hunk},
+    {"ts_apply_captures", l_ts_apply_captures},
     {"buffer_set_lines", l_buffer_set_lines},
     {"buffer_ns_clear", l_buffer_ns_clear},
     {"buffer_deco_add", l_buffer_deco_add},
@@ -2495,6 +4452,45 @@ const luaL_Reg kMepFuncs[] = {
     {"buf_clear_image_rows", l_buf_clear_image_rows},
     {"org_images_toggle", l_org_images_toggle},
     {"org_image_invalidate", l_org_image_invalidate},
+    {"org_image_scan", l_org_image_scan},
+    {"org_agenda_expand_glob", l_org_agenda_expand_glob},
+    {"org_agenda_scan_lines", l_org_agenda_scan_lines},
+    {"org_capture_expand_template", l_org_expand_capture_template},
+    {"org_refile_move", l_org_refile_move},
+    {"org_latex_scan_fragments", l_org_latex_scan_fragments},
+    {"org_bib_parse_files", l_org_bib_parse_files},
+    {"org_roam_files_in", l_org_roam_files_in},
+    {"org_roam_title_of", l_org_roam_title_of},
+    {"org_roam_ensure_id", l_org_roam_ensure_id},
+    {"org_roam_find_backlink_lines", l_org_roam_find_backlink_lines},
+    {"org_roam_parse_file_index", l_org_roam_parse_file_index},
+    {"org_roam_slugify", l_org_roam_slugify},
+    {"org_table_align", l_org_table_align},
+    {"org_link_at_cursor", l_org_link_at_cursor},
+    {"org_timestamp_insert", l_org_timestamp_insert},
+    {"org_timestamp_shift", l_org_timestamp_shift},
+    {"org_timestamp_at", l_org_timestamp_at},
+    {"org_footnote_jump", l_org_footnote_jump},
+    {"org_set_planning", l_org_set_planning},
+    {"org_export_heading", l_org_export_heading},
+    {"org_html_escape", l_org_html_escape},
+    {"org_subtree_end_lines", l_org_subtree_end_lines},
+    {"org_collect_macros", l_org_collect_macros},
+    {"org_expand_macro_line", l_org_expand_macro_line},
+    {"org_babel_format_literal", l_org_babel_format_literal},
+    {"org_parse_vars", l_org_parse_vars},
+    {"org_parse_results", l_org_parse_results},
+    {"lsp_word_at_cursor", l_lsp_word_at_cursor},
+    {"lsp_apply_text_edit", l_lsp_apply_text_edit},
+    {"lsp_apply_edits_current_buffer", l_lsp_apply_edits_current_buffer},
+    {"lsp_diag_wrap", l_lsp_diag_wrap},
+    {"org_clock_in", l_org_clock_in},
+    {"org_clock_out", l_org_clock_out},
+    {"org_clock_table_items", l_org_clock_table_items},
+    {"org_property_get", l_org_property_get},
+    {"org_property_set", l_org_property_set},
+    {"org_property_remove", l_org_property_remove},
+    {"org_drill_grade", l_org_drill_grade},
     {"buf_set_latex_row", l_buf_set_latex_row},
     {"buf_clear_latex_rows", l_buf_clear_latex_rows},
     {"org_latex_toggle", l_org_latex_toggle},
@@ -2525,11 +4521,13 @@ const luaL_Reg kMepFuncs[] = {
     {"buffer_count", l_buffer_count},
     {"pane_buffers", l_pane_buffers},
     {"pane_focus_buffer", l_pane_focus_buffer},
+    {"buffer_cursor_row", l_buffer_cursor_row},
     {"command_names", l_command_names},
     {"colorscheme", l_colorscheme},
     {"theme_names", l_theme_names},
     {"current_theme", l_current_theme},
     {"icon_for_file", l_icon_for_file},
+    {"hl_for_file", l_hl_for_file},
     {"set_leader", l_set_leader},
     {"leader_map", l_leader_map},
     {"leader_group", l_leader_group},
@@ -2568,6 +4566,7 @@ const luaL_Reg kMepFuncs[] = {
     {"set_insert_tab_hook", l_set_insert_tab_hook},
     {"lsp_start", l_lsp_start},
     {"lsp_request", l_lsp_request},
+    {"lsp_symbols_flatten", l_lsp_symbols_flatten},
     {"lsp_notify", l_lsp_notify},
     {"lsp_on_notification", l_lsp_on_notification},
     {"lsp_stop", l_lsp_stop},
@@ -2606,6 +4605,63 @@ LuaEnv::LuaEnv(Editor *editor) : editor_(editor) {
 
     lua_pushcfunction(L_, l_print);
     lua_setglobal(L_, "print");
+
+    // Org-mode "Phase Org-0" primitives (LUA_TO_CPP_PLAN.md): registered
+    // as bare globals, matching the exact names kBuiltinOrg's own
+    // (removed) Lua implementations used -- every one of the ~80 call
+    // sites across the org-mode cluster (main.cpp) keeps working
+    // unchanged, since Lua globals (unlike locals) persist across every
+    // separately-compiled DoString chunk this file's kBuiltin* strings
+    // run through. Registered here, before any of them load.
+    lua_pushcfunction(L_, l_org_parse_headline_global);
+    lua_setglobal(L_, "mep_org_parse_headline");
+    lua_pushcfunction(L_, l_org_current_headline_row_global);
+    lua_setglobal(L_, "mep_org_current_headline_row");
+    lua_pushcfunction(L_, l_org_subtree_end_global);
+    lua_setglobal(L_, "mep_org_subtree_end");
+
+    // mep_lsp_filetype/mep_lsp_abspath (LUA_TO_CPP_PLAN.md Phase 5 side
+    // quest): pure string utilities historically defined inside
+    // kBuiltinLsp, but used pervasively outside the LSP cluster itself
+    // (org images/babel/polyglot/export/roam, ...). See LspFiletype/
+    // LspAbspath's own comment (editor.h) for why these -- and only
+    // these two -- are safe to port ahead of the rest of LSP. Bare
+    // globals, same reason as the Org-0 primitives above.
+    lua_pushcfunction(L_, l_lsp_filetype_global);
+    lua_setglobal(L_, "mep_lsp_filetype");
+    lua_pushcfunction(L_, l_lsp_abspath_global);
+    lua_setglobal(L_, "mep_lsp_abspath");
+
+    // mep_org_resolve_path (LUA_TO_CPP_PLAN.md Phase 5): kBuiltinOrgImages
+    // and kBuiltinOrgBabel (two separate DoString chunks) both call this
+    // by its bare-global name. Registered here for the same reason as
+    // the other bare globals above.
+    lua_pushcfunction(L_, l_org_resolve_path_global);
+    lua_setglobal(L_, "mep_org_resolve_path");
+
+    // mep_org_bib_cite_at_cursor (LUA_TO_CPP_PLAN.md Phase 5):
+    // kBuiltinOrgBib and kBuiltinOrgLinks (two separate DoString chunks)
+    // both call this by its bare-global name. Registered here for the
+    // same reason as the other bare globals above.
+    lua_pushcfunction(L_, l_org_bib_cite_at_cursor_global);
+    lua_setglobal(L_, "mep_org_bib_cite_at_cursor");
+
+    // mep_org_src_block_at (LUA_TO_CPP_PLAN.md Phase 5): kBuiltinOrgBabel
+    // and kBuiltinOrgPolyglot (two separate DoString chunks) both call
+    // this by its bare-global name. Registered here for the same reason
+    // as the other bare globals above.
+    lua_pushcfunction(L_, l_org_src_block_at_global);
+    lua_setglobal(L_, "mep_org_src_block_at");
+    lua_pushcfunction(L_, l_org_babel_should_wrap_main_global);
+    lua_setglobal(L_, "mep_org_babel_should_wrap_main");
+
+    // mep_ai_json_encode/mep_ai_json_decode (LUA_TO_CPP_PLAN.md Phase AI):
+    // kBuiltinAi and kBuiltinLeetcode (two separate DoString chunks) both
+    // call these by their bare-global names.
+    lua_pushcfunction(L_, l_ai_json_encode_global);
+    lua_setglobal(L_, "mep_ai_json_encode");
+    lua_pushcfunction(L_, l_ai_json_decode_global);
+    lua_setglobal(L_, "mep_ai_json_decode");
 }
 
 LuaEnv::~LuaEnv() {
@@ -2830,3 +4886,5 @@ void LuaEnv::RegisterFrameHook(int ref) { frame_hook_refs_.push_back(ref); }
 void LuaEnv::RunFrameHooks() {
     for (int ref : frame_hook_refs_) CallRef(ref);
 }
+
+std::vector<std::string> LuaEnv::GetOrgTodoKeywords() const { return ReadOrgTodoKeywords(L_); }

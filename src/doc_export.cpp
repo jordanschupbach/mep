@@ -1,4 +1,6 @@
 #include "doc_export.h"
+#include "html_doc.h"
+#include "image_doc.h"
 
 #include <algorithm>
 #include <cctype>
@@ -7,8 +9,6 @@
 #include <sstream>
 #include <vector>
 
-#include "html_doc.h"
-#include "image_doc.h"
 #include "miniz.h"
 #include "pugixml.hpp"
 

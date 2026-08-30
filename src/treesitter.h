@@ -61,3 +61,43 @@ bool TreesitterHasFoldQuery(const std::string &filetype);
 // effectively free -- no reparse, the tree's already cached). Returns an
 // empty vector if `filetype` has no fold query.
 std::vector<TSFoldRange> TreesitterFoldRanges(const std::string &filetype, const std::string &text);
+
+// One entry in a document's structure outline (mep's own sidebar/split
+// consumer, main.cpp's kBuiltinStructure): a class/function/method/enum/
+// etc definition. `row`/`col` point at the *name* token specifically (0-
+// indexed, byte column) -- not the top of the definition, which may start
+// several lines earlier for a multi-line signature -- so jumping there
+// lands the cursor exactly on the identifier. `start_row` is the whole
+// definition's own first row (0-indexed) -- may be earlier than `row`
+// itself for a multi-line signature/decorator/attribute -- kept alongside
+// `row` so a consumer that needs "is the cursor inside this definition"
+// containment (rather than "jump to the name") has the real span to test
+// against. `end_row` is the whole definition's own last row, used both for
+// that same containment test and (already) to compute `depth` (nesting:
+// how many other entries' [start_row, end_row] ranges contain this one).
+// `kind` is the capture name's own "definition.<kind>" suffix from
+// treesitter_structure_queries.h (e.g. "class", "function", "method",
+// "enum", "struct", "interface", "namespace") -- deliberately not an
+// enum, since it's just a display label/icon key, never branched on.
+struct TSStructureNode {
+    int row = 0;
+    int col = 0;
+    int start_row = 0;
+    int end_row = 0;
+    int depth = 0;
+    std::string name;
+    std::string kind;
+};
+
+// True if `filetype` has a structure query defined -- either compiled in
+// (treesitter_structure_queries.h's core-language set) or, on native
+// builds, resolvable via the same dynamic dlopen() lookup
+// TreesitterHasGrammar uses.
+bool TreesitterHasStructureQuery(const std::string &filetype);
+
+// Runs `filetype`'s structure query over `text` (via the same incremental-
+// reparse cache every other Treesitter* entry point shares) and returns
+// every definition found, in document order, with `depth` already
+// resolved. Returns an empty vector if `filetype` has no structure query
+// or the query found nothing.
+std::vector<TSStructureNode> TreesitterStructure(const std::string &filetype, const std::string &text);

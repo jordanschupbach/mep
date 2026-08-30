@@ -87,6 +87,14 @@ public:
 
     lua_State *State() const { return L_; }
 
+    // Reads the current value of the Lua global mep.org_todo_keywords
+    // (default {'TODO','DOING','DONE'}, user-configurable) -- native org
+    // C++ (Editor::OrgClockIn/OrgClockTable/etc., editor.cpp) needs this
+    // same config ParseOrgHeadline's Lua-facing bindings already read
+    // (see lua_env.cpp's own ReadOrgTodoKeywords), but has no lua_State
+    // access of its own to read it directly.
+    std::vector<std::string> GetOrgTodoKeywords() const;
+
 private:
     lua_State *L_ = nullptr;
     Editor *editor_ = nullptr;

@@ -190,41 +190,57 @@ if(NOT EMSCRIPTEN)
     endif()
 endif()
 
-add_executable(mep
-    src/main.cpp
-    src/editor.cpp
-    src/lua_env.cpp
-    src/job.cpp
-    src/agent_rpc.cpp
+# Every logical module (editor, lua_env, job, agent_rpc, vterm, treesitter,
+# regex, image_doc, pdf_doc, office_doc/office_odt, formula, sheet_doc/
+# sheet_xlsx/sheet_ods, html_doc, js_engine, doc_export, org_doc) is its own
+# translation unit, built here as a static library so touching one module
+# only recompiles that module + relinks, instead of the whole application.
+# main.cpp itself stays a separate translation unit (the driver) linked
+# against this library. See tools/amalgamate.py / the `mep-amalgam` target
+# below for an optional single-translation-unit build of the same sources.
+add_library(mep_core STATIC
     src/vterm.cpp
-    src/treesitter.cpp
     src/regex.cpp
+    src/treesitter.cpp
     src/image_doc.cpp
     src/pdf_doc.cpp
+    src/formula.cpp
+    src/html_doc.cpp
+    src/job.cpp
+    src/org_doc.cpp
+    src/agent_rpc.cpp
+    src/lua_env.cpp
     src/office_doc.cpp
     src/office_odt.cpp
-    src/formula.cpp
+    src/doc_export.cpp
     src/sheet_doc.cpp
     src/sheet_xlsx.cpp
     src/sheet_ods.cpp
-    src/html_doc.cpp
     src/js_engine.cpp
-    src/doc_export.cpp
-    src/org_doc.cpp
+    src/editor.cpp
 )
-target_include_directories(mep PRIVATE src)
-target_link_libraries(mep PRIVATE raylib lua tree_sitter ${TS_GRAMMAR_LIBS} pugixml miniz)
-if(EMSCRIPTEN)
-    target_sources(mep PRIVATE src/collab_crdt.cpp src/collab_web_session.cpp)
+target_include_directories(mep_core PUBLIC src)
+target_link_libraries(mep_core PUBLIC raylib lua tree_sitter ${TS_GRAMMAR_LIBS} pugixml miniz)
+if(NOT EMSCRIPTEN)
+    target_link_libraries(mep_core PUBLIC pdfium)
 endif()
 if(NOT EMSCRIPTEN AND NOT WIN32)
     find_package(Threads REQUIRED)
-    target_link_libraries(mep PRIVATE Threads::Threads)
+    target_link_libraries(mep_core PUBLIC Threads::Threads)
     # dlopen/dlsym for the dynamic-grammar-loading path (treesitter.cpp).
     # Emscripten/wasm has no filesystem access to arbitrary shared
     # libraries, so that whole path is compiled out there instead of
     # linked against a (nonexistent) libdl.
-    target_link_libraries(mep PRIVATE ${CMAKE_DL_LIBS})
+    target_link_libraries(mep_core PUBLIC ${CMAKE_DL_LIBS})
+endif()
+
+add_executable(mep
+    src/main.cpp
+)
+target_include_directories(mep PRIVATE src)
+target_link_libraries(mep PRIVATE mep_core)
+if(EMSCRIPTEN)
+    target_sources(mep PRIVATE src/collab_crdt.cpp src/collab_web_session.cpp)
 endif()
 
 # Collaboration's WebSocket handshake needs SHA-1.  OpenSSL is the one
@@ -263,8 +279,60 @@ if(NOT EMSCRIPTEN)
     endif()
 endif()
 
+# `mep-amalgam`: the exact same application as `mep`, but built from one
+# generated translation unit (tools/amalgamate.py concatenates every
+# module + the collaboration subsystem + the embedded font/query data,
+# in dependency order, with a handful of same-named-but-unrelated symbols
+# disambiguated -- see that script's own comment) instead of mep_core +
+# main.cpp as separate translation units. Not part of the default `all`
+# target -- opt in with `cmake --build . --target mep-amalgam` when the
+# single-file build is actually wanted; every other target already gets
+# mep_core's fast incremental-compile benefit.
 if(NOT EMSCRIPTEN)
-    target_link_libraries(mep PRIVATE pdfium)
+    find_program(MEP_PYTHON3 NAMES python3 python)
+    if(NOT MEP_PYTHON3)
+        message(WARNING "python3 not found -- the mep-amalgam target will not be available")
+    else()
+        set(MEP_AMALGAM_SRC "${CMAKE_BINARY_DIR}/generated/mep_amalgam.cpp")
+        file(GLOB MEP_AMALGAM_DEPS "${CMAKE_SOURCE_DIR}/src/*.h" "${CMAKE_SOURCE_DIR}/src/*.cpp")
+        add_custom_command(
+            OUTPUT "${MEP_AMALGAM_SRC}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/generated"
+            COMMAND "${MEP_PYTHON3}" "${CMAKE_SOURCE_DIR}/tools/amalgamate.py" "${CMAKE_SOURCE_DIR}/src" "${MEP_AMALGAM_SRC}"
+            DEPENDS "${CMAKE_SOURCE_DIR}/tools/amalgamate.py" ${MEP_AMALGAM_DEPS}
+            COMMENT "Generating single-file amalgamated build (tools/amalgamate.py)"
+            VERBATIM
+        )
+        # A plain source file (not mep_core, which would duplicate-define every
+        # symbol the generated file already embeds): the same external
+        # libraries mep_core links against, plus OpenSSL for the collaboration
+        # subsystem's SHA-1, since that's folded into the generated file too.
+        add_executable(mep-amalgam EXCLUDE_FROM_ALL "${MEP_AMALGAM_SRC}")
+        target_include_directories(mep-amalgam PRIVATE src)
+        target_link_libraries(mep-amalgam PRIVATE raylib lua tree_sitter ${TS_GRAMMAR_LIBS} pugixml miniz OpenSSL::SSL OpenSSL::Crypto)
+        if(NOT WIN32)
+            target_link_libraries(mep-amalgam PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+        endif()
+        target_link_libraries(mep-amalgam PRIVATE pdfium)
+        if(WIN32)
+            target_link_libraries(mep-amalgam PRIVATE ws2_32)
+            add_custom_command(TARGET mep-amalgam POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${PDFIUM_RUNTIME_FILE}" "$<TARGET_FILE_DIR:mep-amalgam>"
+            )
+        else()
+            if(APPLE)
+                set_target_properties(mep-amalgam PROPERTIES BUILD_RPATH "@loader_path")
+            else()
+                set_target_properties(mep-amalgam PROPERTIES BUILD_RPATH "$ORIGIN")
+            endif()
+            add_custom_command(TARGET mep-amalgam POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${PDFIUM_RUNTIME_FILE}" "$<TARGET_FILE_DIR:mep-amalgam>"
+            )
+        endif()
+    endif()
+endif()
+
+if(NOT EMSCRIPTEN)
     # PDFium ships as a shared library, not something that can be linked
     # statically into a single self-contained binary -- copy it next to
     # the built executable and point mep's own rpath at its own directory

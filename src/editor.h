@@ -1,8 +1,16 @@
 #ifndef MEP_EDITOR_H
 #define MEP_EDITOR_H
 
+#include "pdf_doc.h"
+#include "office_doc.h"
+#include "sheet_doc.h"
+#include "html_doc.h"
+#include "org_doc.h"
+
 #include <functional>
+#include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -14,19 +22,14 @@
 // declaration isn't enough the way it is for ImageDoc/PdfDoc themselves
 // (only ever held via unique_ptr). pdf_doc.h is as dependency-light as
 // this header (no raylib), so including it directly here is safe.
-#include "pdf_doc.h"
 // Same reasoning as pdf_doc.h above -- OfficeSession holds OfficeDoc (and
 // its DocParagraph/DocSpan contents) by value, not behind a unique_ptr, so
 // the full definitions need to be visible here.
-#include "office_doc.h"
 // Same reasoning again -- SheetSession holds a Workbook by value.
-#include "sheet_doc.h"
 // Same reasoning again -- HtmlSession holds an HtmlDoc (its DOM tree) by
 // value.
-#include "html_doc.h"
 // Same reasoning again -- KanbanSession/GanttSession hold an OrgOutline by
 // value.
-#include "org_doc.h"
 
 namespace mep::collab { class CollabSession; }
 
@@ -156,7 +159,25 @@ enum class Mode {
     // it. See Editor::HandleGanttNormalInput/HandleGanttInsertInput.
     GanttNormal,
     GanttInsert,
+    // The hover-doc popup (ShowHover/DrawHoverPopup) with the cursor
+    // parked inside its own text as a small read-only pseudo-buffer --
+    // entered via Editor::EnterHoverFocus (Lua: mep.hover_focus_enter,
+    // wired to pressing 'K' twice more at the same spot once hover is
+    // already open -- see kBuiltinLsp's mep.lsp_hover), so the popup's
+    // content can be navigated/selected/yanked with ordinary hjkl/v/V/y
+    // instead of only being readable. Escape cancels an active selection
+    // first, then on a second Escape leaves focus back to Mode::Normal
+    // (Editor::HandleHoverFocusInput) -- the real buffer's cursor is never
+    // touched while focused, so MaybeDismissHover's usual "cursor moved"
+    // dismissal doesn't fire until the *next* Escape closes the popup for
+    // real. See Editor::HandleHoverFocusInput.
+    HoverFocus,
 };
+
+// Shared between Editor::HandleHoverFocusInput (scroll clamping) and
+// main.cpp's DrawHoverPopup (the focused render path's visible window) so
+// both agree on how many raw lines of hover text are shown at once.
+constexpr int kHoverFocusVisibleRows = 20;
 
 // Display name for the status line (main.cpp) and agent_rpc.cpp's
 // event.modeChanged notification -- the one place outside main.cpp that
@@ -196,6 +217,12 @@ int FuzzyScore(const std::string &str, const std::string &query, std::vector<int
 // Nerd Font Mono covering exactly the codepoints this function and its
 // main.cpp counterparts use), not g_font -- see DrawUiText's own comment.
 std::string IconForFilename(const std::string &name);
+
+// Filename/extension -> highlight-group name (e.g. "Blue", "Green",
+// "MutedFg") for coloring file tree rows by type. Names index into the
+// active theme's BuildHighlightGroups() map (editor.cpp), so colors follow
+// whatever :colorscheme is active rather than a fixed RGB value.
+std::string HlGroupForFilename(const std::string &name);
 
 // UTF-8-encodes a single Unicode codepoint. Icon tables below list plain hex
 // ints (e.g. 0xf15b) rather than C++ universal-character-name escapes or raw
@@ -339,6 +366,14 @@ struct Fold {
 struct SidebarWidget {
     std::string id, text, icon, hl, tooltip;
     int on_click_ref = 0;  // Lua function ref (luaL_ref), 0 = none
+    // Marks this row as "where the cursor currently is" for a consumer
+    // that tracks an external position (kBuiltinStructure's outline, e.g.)
+    // rather than the sidebar's own input focus -- drawn as a persistent
+    // background tint in DrawSidebars regardless of whether the sidebar
+    // itself is focused, unlike the focus-driven PickerSelected row
+    // highlight (sidebar_cursor_) which only ever shows on the focused
+    // sidebar. At most one widget should set this per render.
+    bool current = false;
 };
 struct SidebarSection {
     std::string id, title;
@@ -378,6 +413,7 @@ struct SidebarLine {
     int widget_index = -1;  // -1 for a header line
     std::string text;
     std::string hl;
+    bool current = false;  // mirrors SidebarWidget::current; see its comment
 };
 
 // A compact palette (mep.nvim's palettes.lua SPECS/FALLBACKS shape,
@@ -1191,6 +1227,156 @@ struct GanttSession {
     float content_x = 0, content_y = 0, content_w = 0, content_h = 0;
 };
 
+// Myers diff (NVIM_PARITY_PLAN.md Part IV Phase 17): the equivalent of
+// Neovim's built-in vim.diff(), needed so git-gutter hunks don't have to
+// shell `git diff` per keystroke. Declared here (not lua_env.cpp, where it
+// originated) so Editor::GitGutterRefresh/GitStageHunk (kBuiltinGit's own
+// port, editor.cpp) can call it directly -- mep.diff_lines (lua_env.cpp)
+// is the other, still-Lua-facing caller.
+struct DiffHunk {
+    int old_start, old_count, new_start, new_count;
+};
+
+// Classic O(ND) Myers diff (Myers 1986), operating on opaque line indices
+// via equality only -- returns the *edit script* as a sequence of (line
+// present only in `a`) / (line present only in `b`) markers, coalesced
+// into contiguous hunks.
+std::vector<DiffHunk> MyersDiffHunks(const std::vector<std::string> &a, const std::vector<std::string> &b);
+
+// mep_lsp_filetype/mep_lsp_abspath's own port (LUA_TO_CPP_PLAN.md Phase
+// 5 side quest): pure string utilities -- a bare file extension, and a
+// path resolved against the process cwd -- with *no* dependency on
+// g_lsp_clients/JSON-RPC framing (the actual stateful LSP machinery,
+// still Lua, its own future phase per this plan's coupling note). They
+// merely happen to be defined inside kBuiltinLsp's source for proximity;
+// dozens of call sites across the org cluster and elsewhere use them for
+// plain filetype/path logic, so -- mirroring Org-0's own reasoning --
+// they're ported and registered as bare globals (same exact names) here,
+// unblocking those call sites without touching real LSP state at all.
+std::string LspFiletype(const std::string &fname);
+std::string LspAbspath(const std::string &fname);
+
+// kBuiltinOrgRoam's own `title:lower():gsub('[^%w]+', '-'):gsub('^%-+',
+// ''):gsub('%-+$', '')` port (mep.org_roam_new_note's filename slug):
+// lowercase, every run of non-alphanumeric characters collapsed to a
+// single '-', leading/trailing '-' stripped. No Editor state needed.
+std::string OrgRoamSlugify(const std::string &title);
+
+// kBuiltinOrgExport's own ports (LUA_TO_CPP_PLAN.md Phase 5): the
+// format-agnostic text utilities the export walk uses, none of which
+// touch the Lua-configurable mep.org_export_marks table (which embeds a
+// real Lua closure for `link` -- a user-customization point left
+// alone, so mep_org_inline_convert itself, and the giant
+// mep.org_export walk built on it, stay Lua). No Editor state needed.
+//
+// mep_org_export_heading's own port. `format` is "html"/"markdown"/
+// anything else treated as ascii, matching the original's own
+// if/elseif/else.
+std::string OrgExportHeading(const std::string &format, int level, const std::string &title);
+// mep_org_html_escape's own port (&/</> only, matching the original).
+std::string OrgHtmlEscape(const std::string &s);
+// mep_org_subtree_end_lines's own port: mep_org_subtree_end's own
+// logic, operating on an arbitrary lines array (1-indexed `row`, same
+// convention as the buffer-based original) instead of the live buffer
+// -- the export walk resolves #+INCLUDE:/babel-result-splicing into a
+// scratch array first, so subtree-skipping (:noexport:) needs a
+// version that doesn't call mep.get_line/mep.line_count.
+int OrgSubtreeEndLines(const std::vector<std::string> &lines, int row, const std::vector<std::string> &todo_keywords);
+// mep_org_collect_macros's own port: every `#+MACRO: name body` line's
+// name -> body-with-$N-placeholders.
+std::map<std::string, std::string> OrgCollectMacros(const std::vector<std::string> &lines);
+// mep_org_expand_macro_line's own port: expands `{{{name(a,b)}}}` and
+// `{{{name}}}` macro references against `macros` (from
+// OrgCollectMacros), substituting each `$N` placeholder with the Nth
+// comma-separated argument (1-indexed, "" if out of range). An
+// undefined macro name is left as literal text.
+std::string OrgExpandMacroLine(const std::string &line, const std::map<std::string, std::string> &macros);
+
+// kBuiltinOrgBabel's own ports (LUA_TO_CPP_PLAN.md Phase 5): the block-
+// detection parser and its direct dependencies -- pure buffer-scan/
+// string-parsing, no async. This is a large (1174-line), heavily
+// job/process/session-orchestration-and-closure-table-coupled block
+// (a ~27-language descriptor table of Lua closures for var/print
+// statement rendering and program-wrapping, real subprocess spawning
+// for compile+run, REPL session management, results-block caching);
+// per this plan's own note it needs its own multi-session budget.
+// This first pass covers only what's cleanly portable without that
+// machinery.
+//
+// mep_org_babel_should_wrap_main's own port. The `local`
+// MEP_ORG_BABEL_WRAP_DEFAULT table (php='yes', every other wrap_main
+// language defaults 'no') isn't Lua-configurable to begin with (it's
+// chunk-private, no mep.* exposure), so hardcoding it here changes
+// nothing observable.
+bool OrgBabelShouldWrapMain(const std::string &lang_key, const std::string &args_str);
+// mep_org_babel_format_literal's own port: a bare integer/decimal
+// passes through unquoted; anything else becomes a backslash/quote/
+// newline/CR/tab-escaped double-quoted string literal.
+std::string OrgBabelFormatLiteral(const std::string &raw);
+// mep_org_parse_vars's own port: `:var name=value` pairs (value is
+// either a `"..."` string with `\"`/`\\` escapes, or a bare non-space
+// token).
+std::map<std::string, std::string> OrgParseVars(const std::string &args_str);
+// mep_org_parse_results's own port: the `:results` header-arg's
+// space-separated mode keywords, as a set.
+std::set<std::string> OrgParseResults(const std::string &args_str);
+// mep_org_src_block_at's own port: the #+begin_src/#+end_src block
+// containing (or starting at) `row`, or not-found. Bare Lua global
+// (`mep_org_src_block_at`, lua_env.cpp) -- kBuiltinOrgPolyglot (a
+// separate DoString chunk) shares this exact name already.
+struct OrgSrcBlock {
+    bool found = false;
+    int start_row = 0;
+    int end_row = 0;
+    bool has_lang = false;
+    std::string lang;  // lowercased
+    std::map<std::string, std::string> vars;
+    bool has_tangle = false;
+    std::string tangle;
+    bool has_cache = false;
+    std::string cache;
+    bool has_file = false;
+    std::string file;
+    std::set<std::string> results_modes;
+    std::string args_str;
+    std::string body;
+};
+
+// mep_diag_wrap's own port (LUA_TO_CPP_PLAN.md Phase LSP): greedy word-
+// wrap of `text` to `width` columns (mep.float_preview itself doesn't
+// wrap). No Editor state needed. Always returns at least one line
+// (an empty string for empty input, matching the original).
+std::vector<std::string> LspDiagWrap(const std::string &text, int width);
+
+// Org-mode "Phase Org-0" primitives (LUA_TO_CPP_PLAN.md): the headline
+// parser + two buffer-scan helpers built on it are called from ~80 sites
+// across the whole org-mode cluster (kBuiltinOrg and its 10 dependent
+// blocks) as *bare Lua globals* -- not `mep.*` table members --
+// `mep_org_parse_headline`/`mep_org_current_headline_row`/
+// `mep_org_subtree_end`, defined with a bare `function` (no `local`) in
+// kBuiltinOrg specifically so every other block's own separately-compiled
+// DoString chunk can see them too (Lua globals, unlike locals, persist
+// across chunks). Declared here so lua_env.cpp can register C
+// replacements under those exact same bare-global names (lua_register,
+// same idiom this file already uses for `print` -- see LuaEnv::LuaEnv) --
+// every one of those ~80 call sites keeps working completely unchanged.
+struct OrgHeadlineParse {
+    bool is_headline = false;
+    int level = 0;
+    std::string todo;  // empty if has_todo is false
+    bool has_todo = false;
+    std::string priority;  // single letter, empty if has_priority is false
+    bool has_priority = false;
+    std::string title;
+    std::string tags;  // colon-joined, e.g. "work:urgent"; empty if has_tags is false
+    bool has_tags = false;
+};
+
+// mep_org_parse_headline's own port. `todo_keywords` is
+// mep.org_todo_keywords' current value (Lua-configurable, so read fresh
+// by the caller each call rather than cached here).
+OrgHeadlineParse ParseOrgHeadline(const std::string &line, const std::vector<std::string> &todo_keywords);
+
 // A modal (vim-like) text editor: Normal/Insert/Visual/Command modes, a
 // handful of motions and operators, undo/redo, buffers/panes/tabs, and a
 // ":" command line that can dispatch into Lua. Does not attempt full Vim
@@ -1287,6 +1473,21 @@ public:
     // on creation, but there was no way back to it (or back to the
     // source buffer) afterward short of manual hjkl.
     bool FocusPaneShowingBuffer(int buffer_id);
+    // Cursor row (0-indexed) of whichever pane in the active tab shows
+    // buffer_id, without changing focus -- -1 if no pane shows it. Lets a
+    // Lua consumer that keeps its own buffer id around (e.g.
+    // kBuiltinStructure's split-pane source buffer) read that pane's live
+    // cursor position for "is the cursor near this item" tracking even
+    // while a different pane (or a sidebar) currently has focus, the way
+    // mep.cursor()/GetCursorForLua only ever can for the *focused* pane.
+    int CursorRowForBuffer(int buffer_id) const;
+    // Moves focus to whichever pane in the active tab's split layout is
+    // topmost, then (among ties) leftmost -- PaneRect's y0 then x0. The
+    // file tree's on_click calls this before mep.open so a click always
+    // opens near the tree instead of in whatever pane happened to be
+    // active before the sidebar took focus (e.g. the bottom pane of a
+    // top/bottom split, if that's the one that was last edited).
+    void FocusTopLeftPane();
     CursorPos Cursor() const { return CurPane().cursor; }
     int ScrollRow() const { return CurPane().scroll_row; }
     const std::string &CommandLine() const { return command_line_; }
@@ -1782,6 +1983,547 @@ public:
     std::string GetLineForLua(int row) const;  // 0-indexed
     void SetLineForLua(int row, const std::string &text);
     int LineCountForLua() const;
+    // One TODO/FIXME/HACK/NOTE occurrence (kBuiltinTodo, main.cpp): the
+    // first match of `keyword` on `row`, [col_start, col_end) 0-indexed
+    // like Decoration's own fields. The scanning half of Lua's own
+    // mep.todo_mark_buffer -- kBuiltinTodo maps each match's keyword to a
+    // glyph/hl via mep.todoscan_keywords (still Lua, user-configurable)
+    // and calls mep.deco_add; the buffer scan itself lives here.
+    struct TodoMatch {
+        int row = 0;
+        int col_start = 0;
+        int col_end = 0;
+        std::string keyword;
+    };
+    std::vector<TodoMatch> TodoScanMatches() const;
+    // DAP breakpoints (kBuiltinDap, main.cpp): toggles a breakpoint at the
+    // cursor's line in the current file and keeps the gutter decorations
+    // (a filled-circle sign) in sync -- the state (per-file line list) and
+    // toggle logic that used to be a Lua local `mep_dap_breakpoints` table
+    // + hand-rolled linear scan. Lines are 1-indexed throughout, matching
+    // mep.cursor()'s own convention and DAP's own `linesStartAt1` wire
+    // format -- kBuiltinDap's mep.dap_start reads them back via
+    // DapBreakpointLines to build a setBreakpoints request, so this stays
+    // 1-indexed rather than converting to this header's usual 0-indexed
+    // convention.
+    void DapToggleBreakpoint();
+    std::vector<int> DapBreakpointLines(const std::string &filename) const;
+    // TermSend registry (kBuiltinTermSend, main.cpp): which terminal
+    // buffer each "source" buffer's mod1+CR sends its lines/selection to.
+    // TermsendRegister validates `target` is a live terminal buffer
+    // itself (notifying and returning false if not, matching the old Lua
+    // mep.termsend_register's own contract exactly); TermsendTarget
+    // re-checks liveness on every read rather than caching, so a target
+    // buffer that got closed/repurposed since registration correctly
+    // reads back as "none" (0) without needing to be explicitly
+    // unregistered first.
+    bool TermsendRegister(int source, int target);
+    int TermsendTarget(int source) const;  // 0 = none registered/alive
+    void TermsendUnregister(int source);
+    std::vector<int> TermsendCandidates() const;  // terminal buffers in the active tab's panes
+    // Activity-bar Todo panel persistence (kBuiltinActivityBar, main.cpp):
+    // parses/writes the panel's own "0|text\n"/"1|text\n" line format --
+    // no escaping of embedded '|'/newlines in `text`, matching the
+    // original Lua's own fragile-but-existing format exactly rather than
+    // fixing it here.
+    struct ActivityTodoItem {
+        bool done = false;
+        std::string text;
+    };
+    std::vector<ActivityTodoItem> ActivityTodoLoad(const std::string &path) const;
+    void ActivityTodoSave(const std::string &path, const std::vector<ActivityTodoItem> &items) const;
+    // Activity-bar Tests panel: which lines of a test run's combined
+    // stdout/stderr look like a failure (case-insensitive "fail"
+    // substring), 1-indexed to match the original Lua's own ipairs index
+    // (kBuiltinActivityBar's widget id is 'f' .. index).
+    struct ActivityTestFailureLine {
+        int index = 0;
+        std::string line;
+    };
+    std::vector<ActivityTestFailureLine> ActivityTestFailureLines(const std::vector<std::string> &output) const;
+    // Syntax highlighting fallback lexer (kBuiltinSyntax, main.cpp): for a
+    // filetype with no vendored Treesitter grammar, a hand-rolled per-line
+    // scan (comment-prefix / quoted-string / number / keyword-list) over
+    // the *current* buffer, adding decorations into `ns` directly --
+    // ported from the Lua mep_syntax_scan_line + its per-line driver loop
+    // in one pass rather than round-tripping each line's matches back
+    // through a Lua table first. `keywords`/`comment_prefix` come from the
+    // still-Lua-configurable mep.syntax_keywords[ft]/
+    // mep.syntax_comment_prefix[ft] tables.
+    void SyntaxHighlightFallback(int ns, const std::vector<std::string> &keywords, const std::string &comment_prefix);
+    // Org emphasis markup (*bold*//italic//_underline_/+strike+/=verbatim=/
+    // ~code~) over the *current* buffer, added into `ns` -- ported from
+    // the Lua mep_org_scan_emphasis + mep_syntax_highlight_org_emphasis
+    // (kBuiltinSyntax, main.cpp), including their exact word-boundary
+    // marker-open/close rules and the #+begin_X/#+end_X block skip (a
+    // literal block's own '_'/'*' characters were never meant to be
+    // reinterpreted as emphasis).
+    void OrgHighlightEmphasis(int ns);
+    // Markdown (kBuiltinMarkdown, main.cpp), directly bound as the exact
+    // same mep.* names the Lua functions they replace used to have (no
+    // wrapper needed -- each is now fully self-contained in C++):
+    // toggles a `- [ ]`/`- [x]`-style checkbox on the cursor's line,
+    // notifying (like the original) if there isn't one there.
+    void MdToggleCheckbox();
+    // Recomputes every 'markdown'-provider fold (fenced code blocks +
+    // heading-nesting) over the current buffer -- bound directly as
+    // mep.md_fold.
+    void MdComputeFolds();
+    // GFM pipe-table align/insert-row/insert-col -- bound directly as
+    // mep.md_table_align/mep.md_table_insert_row/mep.md_table_insert_col.
+    // InsertRow/InsertCol both call MdTableAlign() themselves at the end,
+    // matching the original Lua's own call chain.
+    void MdTableAlign();
+    void MdTableInsertRow();
+    void MdTableInsertCol();
+    // Link/emphasis concealment scan over the current buffer, adding
+    // virt_overlay decorations into `ns` for every span found (skipping
+    // fenced code blocks and the cursor's own line, which always renders
+    // raw) -- the namespace's own create/clear and the auto/filetype
+    // gating stay in kBuiltinMarkdown's mep.md_conceal (this is its
+    // mep.md_conceal_scan call, once those checks pass).
+    void MdConceal(int ns);
+    // Completion (kBuiltinCompletion, main.cpp) -- only the pieces with
+    // no LSP-state dependency: the two "add candidates" scans and the
+    // final sort+cap. The LSP source itself, snippet-trigger source, and
+    // the overall per-word-position dispatch all stay Lua (deep coupling
+    // with kBuiltinLsp's/kBuiltinOrgPolyglot's own private state --
+    // LUA_TO_CPP_PLAN.md's Phase LSP territory, not this one).
+    //
+    // Every buffer word (`[A-Za-z0-9_]+` run) longer than `prefix` and
+    // starting with it, first-occurrence order, deduplicated *within this
+    // scan only* -- the caller still needs to filter the result against
+    // its own already-claimed (e.g. by a snippet trigger name) set itself.
+    std::vector<std::string> CompletionScanBufferWords(const std::string &prefix) const;
+    // mep_completion_path_prefix's own port: does the text just before
+    // `prefix` on `line` look like a filesystem path (`/`-triggered, a
+    // leading-`.` dotfile/relative path, or inside a require(/import /
+    // from  string) -- `col` is mep.cursor()'s own 1-indexed convention
+    // (this only ever reads it, doesn't touch cursor state). Returns
+    // found=false if it doesn't.
+    struct CompletionPathPrefix {
+        bool found = false;
+        std::string dir;
+        std::string base;
+    };
+    CompletionPathPrefix CompletionPathPrefixFor(const std::string &prefix, int col, const std::string &line) const;
+    // Snippet expansion + tabstop jumping (kBuiltinSnippets, main.cpp) --
+    // the tabstop parser (`$N`/`${N}`/`${N:default}`/`\$`), the splice
+    // (write the parsed body into the buffer, single-line via SetLineForLua
+    // or multi-line via ReplaceLinesForLua) and the jump-between-tabstops
+    // state machine all moved to C++; the snippet *bodies themselves*
+    // (mep.snippets, a big per-filetype template registry) stay Lua data,
+    // and mep.snippet_expand/mep.set_completion_accept_hook's callback
+    // (main.cpp) stay Lua glue -- both just look up/derive a body and
+    // before/after text, then call SnippetSplice.
+    //
+    // One tabstop's resolved position in an expanded snippet: `line_idx`
+    // is 1-indexed *within the snippet body* (not the buffer), `col` is
+    // the 1-indexed column on that expanded line, `num` is the tabstop's
+    // own `$N` number (0 = the final/last-stop position, sorted after
+    // every positive N per real snippet-engine convention).
+    struct SnippetTabstop {
+        int line_idx = 0;
+        int col = 0;
+        int num = 0;
+    };
+    // Splices `body` (template lines, 0-indexed `row` is where body[0]
+    // lands) into the buffer, `before`/`after` wrapping the first/last
+    // line (the text surrounding whatever triggered the expansion),
+    // computes every tabstop, and jumps to the first one -- mirrors the
+    // original's own mep_snippet_splice + immediate SnippetJump(1) call.
+    void SnippetSplice(int row, const std::string &before, const std::string &after,
+                        const std::vector<std::string> &body);
+    // Moves to the tabstop `delta` positions from the current one (1 =
+    // next, -1 = previous); a no-op if no snippet is active, clears the
+    // active state once moved past either end. Bound directly as
+    // mep.snippet_jump (no wrapper -- MepSnippetNext/Prev call it with a
+    // literal 1/-1 same as before).
+    void SnippetJump(int delta);
+    // Picker file preview (kBuiltinPickerSources, main.cpp): reads up to
+    // `max_lines` of `path` and sets it as the picker's preview pane text
+    // (SetPickerPreview) -- mep_picker_preview_file's own port, including
+    // its exact "(cannot open PATH)"/"..." truncation-marker messages.
+    // Bound directly as mep.picker_preview_file.
+    void PreviewFile(const std::string &path, int max_lines);
+    // File tree (kBuiltinFileTree, main.cpp): the recursive directory
+    // walk (mep_tree_build_widgets' own traversal half, port of --
+    // hidden/gitignore filtering, expand-state-driven recursion into
+    // expanded directories, dirs-first-then-alpha ordering) flattened
+    // into one depth-first row list in a single call, instead of the
+    // original's recursive-with-side-effects Lua function. The
+    // expand/gitignore *state* itself (mep_tree_expanded/mep_tree_ignored)
+    // stays Lua -- it's mutated from widget on_click closures, which need
+    // Lua refs regardless -- so it's passed in fresh each call rather
+    // than mirrored onto Editor.
+    struct FileTreeRow {
+        std::string full_path;
+        std::string name;
+        bool is_dir = false;
+        int depth = 0;
+        bool expanded = false;  // only meaningful when is_dir
+    };
+    std::vector<FileTreeRow> BuildFileTreeRows(const std::string &root,
+                                                const std::vector<std::string> &expanded_paths, bool show_hidden,
+                                                const std::vector<std::string> &ignored_relpaths) const;
+    // First of README.md/README.org/README.txt/README present as a file
+    // (not a dir) directly in `dir` -- empty string if none match.
+    // mep_project_readme_path's own port (kBuiltinFileTree).
+    std::string ProjectReadmePath(const std::string &dir) const;
+    // Colorizer (kBuiltinTextTools, main.cpp): scans the current buffer
+    // for #RRGGBBAA/#RRGGBB/#RGB hex literals, rgb()/rgba() calls, and
+    // CSS3/SVG named colors, adding a swatch decoration for each --
+    // mep.colorize's own port, including its exact overlap-avoidance
+    // order (8-hex claims first, 6-hex only if unclaimed, 3-hex only if
+    // unclaimed and doesn't itself claim, rgb()/rgba() and named colors
+    // both independent of the claim-tracking). Bound directly as
+    // mep.colorize -- owns its own namespace create/clear, nothing left
+    // in Lua to wrap.
+    void Colorize();
+    // URL detection (kBuiltinTextTools): the URL-shaped span scan
+    // (mep.nvim's own MEP_URL_PATTERN) -- UrlUnderCursor bound directly
+    // as mep.url_under_cursor (returns "" for none, matching the
+    // original's nil); ListUrls is mep.list_urls_scan, still wrapped by
+    // a thin Lua mep.list_urls that opens the picker over the result.
+    std::string UrlUnderCursor() const;
+    std::vector<std::string> ListUrls() const;
+    // Git gutter (kBuiltinGit, main.cpp) -- unlike earlier phases, this
+    // one moves the *async orchestration itself* to C++, not just a
+    // synchronous helper Lua calls into: JobManager::Spawn already takes
+    // real std::function callbacks (see LUA_TO_CPP_PLAN.md's "async is
+    // not actually the blocker" note), so `git show`'s on_exit runs pure
+    // C++ -- no Lua ref stored or invoked anywhere in this path. State
+    // (git_hunks_/git_base_lines_, below) moved off Lua-local tables onto
+    // Editor for the same reason. `base` (a git revision -- HEAD, a
+    // branch, a SHA) is still read from the Lua-configurable
+    // mep.git_gutter_base each call rather than cached here, matching
+    // this plan's usual "config stays Lua, passed in as a parameter"
+    // convention -- kBuiltinGit's own mep.git_gutter_refresh is now a
+    // one-line wrapper threading that global through.
+    void GitGutterRefresh(const std::string &base);
+    // 1-indexed target row, or 0 if there are no hunks at all -- the
+    // find-next/prev-hunk-relative-to-cursor half of mep.git_next_hunk/
+    // mep.git_prev_hunk; the cursor move + opt-in preview-on-jump stay a
+    // thin Lua wrapper (mep.git_hunk_preview_on_jump is a user-toggleable
+    // global).
+    int GitNextHunkRow() const;
+    int GitPrevHunkRow() const;
+    // The hunk-under-cursor's diff-format preview text ("(empty hunk)"
+    // for a zero-line hunk, matching the original), or found=false if the
+    // cursor isn't on a hunk -- kBuiltinGit's own mep.git_preview_hunk_text.
+    std::pair<bool, std::string> GitPreviewHunkText() const;
+    // Reverts the hunk under the cursor's lines back to `base`'s version,
+    // then re-runs GitGutterRefresh(base).
+    void GitResetHunk(const std::string &base);
+    // Builds a minimal single-hunk unified diff for the hunk under the
+    // cursor and applies it with `git apply --cached --unidiff-zero -`
+    // (JobManager::Spawn + WriteStdin + CloseStdin directly -- no Lua ref
+    // needed for on_exit either). Bound directly as mep.git_stage_hunk,
+    // no wrapper.
+    void GitStageHunk();
+    // mep_org_current_headline_row's own port: the nearest headline at or
+    // above `row` (1-indexed; 0 means "use the cursor's own row"), 0 if
+    // none. mep_org_subtree_end's own port: the exclusive end of `row`'s
+    // subtree (the next headline at level <= `row`'s own, or
+    // line_count()+1) -- `row` must itself already be a valid headline
+    // row, same undocumented precondition the original had (every real
+    // call site already guarantees this by construction).
+    int OrgCurrentHeadlineRow(int row, const std::vector<std::string> &todo_keywords) const;
+    int OrgSubtreeEnd(int row, const std::vector<std::string> &todo_keywords) const;
+    // kBuiltinOrgClock's own port (LUA_TO_CPP_PLAN.md Phase 5). Starts a
+    // clock on the headline at/above the cursor: warns if one is already
+    // running anywhere in the buffer, else inserts (or appends to an
+    // existing) :LOGBOOK: drawer under that headline with an open
+    // "CLOCK: [now]" line. mep.org_clock_effort stays a thin Lua wrapper
+    // (it's just a one-line call into OrgPropertyGet + OrgCurrentHeadlineRow,
+    // not worth its own binding).
+    void OrgClockIn();
+    // Finds the (first) open "CLOCK: [ts]" line in the buffer, closes it
+    // with "--[now] =>  H:MM", and reports the duration.
+    void OrgClockOut();
+    // Total clocked minutes across lines [a, b] (1-indexed, inclusive) --
+    // mep_org_clock_minutes_in_range's own port.
+    int OrgClockMinutesInRange(int a, int b) const;
+    // One "indent + title  H:MM" entry per headline with clocked time,
+    // used by kBuiltinOrgClock's thin mep.org_clock_table() wrapper to
+    // build the mep.picker_open items list (picker itself stays Lua glue).
+    std::vector<std::string> OrgClockTableItems() const;
+    // kBuiltinOrg's own mep.org_property_get/set/remove: reads/writes a
+    // ":PROPERTIES: ... :END:" drawer entry under the headline at `row`
+    // (<=0 means "use the nearest headline at/above the cursor", same
+    // convention as OrgCurrentHeadlineRow). `key` is matched
+    // case-insensitively, matching the original's `k:upper() ==
+    // key:upper()`. Ported opportunistically while working the org
+    // cluster (Phase 5): small, self-contained, and unblocks
+    // mep.org_clock_effort/mep.org_drill_grade, which are otherwise thin
+    // wrappers around a still-Lua property store.
+    std::pair<bool, std::string> OrgPropertyGet(int row, const std::string &key,
+                                                 const std::vector<std::string> &todo_keywords) const;
+    void OrgPropertySet(int row, const std::string &key, const std::string &value,
+                         const std::vector<std::string> &todo_keywords);
+    void OrgPropertyRemove(int row, const std::string &key, const std::vector<std::string> &todo_keywords);
+    // kBuiltinOrgDrill's own `mep_org_sm2` + `mep.org_drill_grade` port:
+    // runs the SM-2 spaced-repetition update against the DRILL_EF/
+    // DRILL_REPS/DRILL_INTERVAL properties on the headline at `row`
+    // (quality 0-5), then persists the updated properties plus a
+    // recomputed DRILL_DUE date. The rest of kBuiltinOrgDrill
+    // (mep.org_drill_collect_due/mep.org_drill_review) stays Lua: it
+    // reads *other* files off disk via the still-Lua
+    // mep_org_read_file_lines (a deliberate "stays Lua" choice, see
+    // kBuiltinOrgAgenda's own comment) and drives a ui_confirm/ui_select
+    // dialog chain.
+    void OrgDrillGrade(int row, int quality, const std::vector<std::string> &todo_keywords);
+    // mep_org_resolve_path's own port (LUA_TO_CPP_PLAN.md Phase 5):
+    // resolves a link/header-arg path against the org file's own
+    // directory (LspAbspath(mep.filename())-derived), unless already
+    // absolute (a leading '/') or ~-relative. Bare Lua global for the
+    // same reason as Org-0/mep_lsp_*: kBuiltinOrgBabel (a separate
+    // DoString chunk) reuses it for :file/:tangle header-arg resolution.
+    std::string OrgResolvePath(const std::string &path) const;
+    // kBuiltinOrgImages' own mep.org_image_scan port: rebuilds the
+    // current buffer's image-row registry (SetOrgImageRow/
+    // ClearOrgImageRows) from its [[file:...]] links -- same
+    // [[target][description]] handling as mep.org_link_at_cursor, same
+    // file:-prefix-only dispatch mep.org_link_follow uses.
+    void OrgImageScan();
+    // kBuiltinOrgAgenda's own `mep_org_expand_glob` port: `*` within the
+    // final path component only (no recursive `**`), matched via
+    // ListDirectory -- entries without a `*` (or with no `/` at all)
+    // pass through unchanged, same as the original.
+    std::vector<std::string> OrgAgendaExpandGlob(const std::string &pattern) const;
+    // kBuiltinOrgAgenda's own `mep.org_agenda_collect` per-file core: one
+    // entry per headline in `lines` (an already-disk-read file, `path`
+    // its origin), pairing each with any SCHEDULED:/DEADLINE: planning
+    // line immediately below it. The outer "for each configured agenda
+    // file, read its lines, scan them" loop stays Lua -- reading a file
+    // that isn't the live buffer stays on Lua's stdlib `io`, see
+    // kBuiltinOrgAgenda's own comment (main.cpp) -- but this, the actual
+    // per-line parsing work, doesn't need to.
+    struct OrgAgendaEntry {
+        std::string file;
+        int line = 0;
+        std::string todo;
+        bool has_todo = false;
+        std::string title;
+        std::string tags;
+        bool has_tags = false;
+        std::string priority;
+        bool has_priority = false;
+        std::string scheduled;
+        bool has_scheduled = false;
+        std::string deadline;
+        bool has_deadline = false;
+    };
+    std::vector<OrgAgendaEntry> OrgAgendaScanLines(const std::vector<std::string> &lines, const std::string &path,
+                                                    const std::vector<std::string> &todo_keywords) const;
+    // kBuiltinOrgCapture's own `mep_org_expand_template` port: expands
+    // org-capture's own small placeholder set (%U/%u -- inactive
+    // timestamp with/without time, %T/%t -- active timestamp with/
+    // without time, %a -- a `[[file:...]]` link to the current buffer,
+    // %% -- literal '%') against a capture template string.
+    std::string OrgExpandCaptureTemplate(const std::string &tmpl) const;
+    // kBuiltinOrgCapture's own mep.org_refile port, same-buffer branch
+    // only (see main.cpp's own comment on why the cross-file branch
+    // stays Lua): moves the subtree at the headline the cursor is
+    // currently on/inside to become the last child of `target_row`,
+    // re-leveling every line's stars by the same delta the original's
+    // own `reindent` closure computed. Returns the new 1-indexed cursor
+    // row, or 0 if the cursor isn't on a headline.
+    int OrgRefileMove(int target_row, const std::vector<std::string> &todo_keywords);
+    // kBuiltinOrgLatex's own fragment-detection port (LUA_TO_CPP_PLAN.md
+    // Phase 5): finds every whole-line/whole-block LaTeX fragment
+    // (#+BEGIN_LATEX/#+BEGIN_SRC latex blocks, \[..\]/$$..$$/\(..\) --
+    // single-line or multi-line -- and a bare single-line $..$) plus,
+    // on any line that isn't wholly one of those, every *inline*
+    // fragment embedded within it ("the value $x^2$ matters here").
+    // Pure buffer-scan -- deliberately does *not* cover the actual
+    // render pipeline (mep_org_latex_render's tectonic-compile ->
+    // pdftoppm-rasterize -> cache -> callback chain, main.cpp): that's
+    // a substantial async job-orchestration-and-caching subsystem in
+    // its own right, out of proportion to port opportunistically here.
+    struct OrgLatexBlock {
+        int start_row;  // 1-indexed
+        int end_row;    // 1-indexed, inclusive
+        std::string body;
+    };
+    struct OrgLatexInlineSpan {
+        int row;        // 1-indexed
+        int col_start;  // 1-indexed, inclusive
+        int col_end;    // 1-indexed, exclusive
+        std::string body;
+    };
+    struct OrgLatexScanResult {
+        std::vector<OrgLatexBlock> blocks;
+        std::vector<OrgLatexInlineSpan> inlines;
+    };
+    OrgLatexScanResult OrgLatexScanFragments() const;
+    // kBuiltinOrgBib's own hand-rolled BibTeX parser port
+    // (LUA_TO_CPP_PLAN.md Phase 5): mep_org_bib_split_top_level/
+    // mep_org_bib_expand_value/mep_org_bib_parse/
+    // mep_org_bib_resolve_crossrefs, combined into one entry point.
+    // Takes each already-disk-read .bib file's full text (reading .bib
+    // files off disk stays Lua, same "headless file loading" convention
+    // as kBuiltinOrgAgenda/kBuiltinOrgDrill's own read helpers), threads
+    // the `@string{...}` macro table across all of them in order (a
+    // macro must be defined before first use, matching real BibTeX,
+    // including across files when the caller passes them in resolution
+    // order), then resolves `crossref` fields once over the complete
+    // combined entry set.
+    struct OrgBibEntry {
+        std::string type;
+        std::string key;
+        std::map<std::string, std::string> fields;
+    };
+    std::vector<OrgBibEntry> OrgBibParseFiles(const std::vector<std::string> &file_texts) const;
+    // kBuiltinOrgBib's own citation-recognition-at-cursor port: resolves
+    // both modern org-cite (`[cite:@key]`, `[cite/style:@key1;@key2]`)
+    // and legacy org-ref (`cite:key`, `citep:key`, ...) syntax under the
+    // cursor to the same key list. Registered as a *bare global*
+    // (`mep_org_bib_cite_at_cursor`, lua_env.cpp) -- kBuiltinOrgLinks'
+    // own `mep.org_link_follow` (a separate DoString chunk) calls this
+    // by that exact name, the same cross-chunk-sharing idiom Org-0/
+    // mep_lsp_*/mep_org_resolve_path already use.
+    struct OrgBibCiteSpan {
+        int col_start;  // 1-indexed, inclusive
+        int col_end;    // 1-indexed, inclusive
+        std::vector<std::string> keys;
+    };
+    std::vector<std::string> OrgBibCiteAtCursor() const;
+    // kBuiltinOrgRoam's own ports (LUA_TO_CPP_PLAN.md Phase 5): the
+    // pure-computation pieces of the zettelkasten note-linking cluster.
+    // Reading each note file off disk stays Lua (this cluster's usual
+    // "headless file loading" convention), as does anything ending in a
+    // picker/UI callback or touching a *different* file via
+    // mep.pane_open -- these take an already-read lines array and do
+    // the actual parsing/scanning.
+    //
+    // mep_org_roam_files' own port: every `.org` file directly inside
+    // any of `dirs` (no recursion, matching the original).
+    std::vector<std::string> OrgRoamFilesIn(const std::vector<std::string> &dirs) const;
+    // mep_org_roam_title_of's own port: `#+TITLE:` (case-insensitive),
+    // else the first headline's title, else not-found.
+    std::pair<bool, std::string> OrgRoamTitleOf(const std::vector<std::string> &lines,
+                                                 const std::vector<std::string> &todo_keywords) const;
+    // mep.org_roam_ensure_id's own port: the current buffer's own :ID:
+    // property (scanned before the first headline), or a freshly
+    // generated one inserted as a new :PROPERTIES: drawer at the top of
+    // the buffer. ID generation uses C++'s own <random> rather than
+    // Lua's math.random -- the ID is an opaque unique-enough string, not
+    // a value any code depends on matching a specific PRNG stream, so
+    // this doesn't change any observable contract.
+    std::string OrgRoamEnsureId();
+    // mep.org_roam_backlinks' own scan port: every 1-indexed line in
+    // `lines` containing a `[[id:<target_id>` substring (a plain
+    // substring search, not a pattern) -- the sidebar widget
+    // construction itself (with its on_click Lua closures) stays Lua.
+    std::vector<int> OrgRoamFindBacklinkLines(const std::vector<std::string> &lines,
+                                               const std::string &target_id) const;
+    // mep_org_roam_index's own per-file port: this file's own :ID:
+    // (scanned the same way OrgRoamEnsureId's read-half does; a file
+    // with none is left out of the index entirely, matching the
+    // original), its title (OrgRoamTitleOf), and every deduplicated
+    // `[[id:...]]` link target across all its lines. The outer
+    // "for each roam file, read it, index it" loop and the graph's own
+    // hop-BFS/edge-building stay Lua.
+    struct OrgRoamFileIndexEntry {
+        bool has_id = false;
+        std::string id;
+        bool has_title = false;
+        std::string title;
+        std::vector<std::string> links;
+    };
+    OrgRoamFileIndexEntry OrgRoamParseFileIndex(const std::vector<std::string> &lines,
+                                                 const std::vector<std::string> &todo_keywords) const;
+    // kBuiltinOrgLinks's own ports (LUA_TO_CPP_PLAN.md Phase 5): table
+    // alignment, link/footnote/timestamp detection-at-cursor, and
+    // timestamp insert/shift/planning-line edits -- all pure
+    // current-buffer scan-and-edit, no async. Left in Lua: link_insert/
+    // timestamp_set_repeater/timestamp_insert_range (each a ui_input
+    // chain), org_store_link (sets Lua-side `mep.org_stored_link`
+    // state), org_link_follow's dispatch (mep.pane_open for file:
+    // targets) and org_link_highlight/org_timestamp_highlight (each a
+    // scan feeding an mep.deco_add loop -- a reasonable next cut, not
+    // done here).
+    //
+    // mep.org_table_align's own port: aligns the contiguous run of
+    // table rows touching the cursor.
+    void OrgTableAlign();
+    // mep.org_link_at_cursor's own port.
+    struct OrgLinkAtCursorResult {
+        bool found = false;
+        std::string target;
+        bool has_desc = false;
+        std::string desc;
+    };
+    OrgLinkAtCursorResult OrgLinkAtCursor() const;
+    // mep_org_timestamp_at's own port: the active `<...>` or inactive
+    // `[...]` org timestamp at `col` on `line`, if any.
+    struct OrgTimestampMatch {
+        bool found = false;
+        int col_start = 0;  // 1-indexed, inclusive
+        int col_end = 0;    // 1-indexed, inclusive
+        std::string body;
+        bool active = false;
+    };
+    OrgTimestampMatch OrgTimestampAt(const std::string &line, int col) const;
+    // mep.org_timestamp_insert's own port: inserts an active/inactive
+    // today-timestamp at the cursor.
+    void OrgTimestampInsert(bool active);
+    // mep.org_timestamp_shift's own port: shifts the timestamp under
+    // the cursor by `delta_days` calendar days, preserving any trailing
+    // repeater/weekday-independent text.
+    void OrgTimestampShift(int delta_days);
+    // mep.org_footnote_jump's own port: jumps from a `[fn:name]`
+    // reference under the cursor to its definition line (or, absent
+    // one, the first other reference), or vice versa.
+    void OrgFootnoteJump();
+    // mep.org_set_planning's own port: inserts or replaces a
+    // SCHEDULED:/DEADLINE: planning line directly below the current
+    // headline.
+    void OrgSetPlanning(const std::string &kind, const std::vector<std::string> &todo_keywords);
+    // mep_org_src_block_at's own port: see the OrgSrcBlock struct's own
+    // comment (near OrgExpandMacroLine, above) for the full picture.
+    OrgSrcBlock OrgSrcBlockAt(int row) const;
+    // kBuiltinLsp's own ports (LUA_TO_CPP_PLAN.md Phase LSP): the pure
+    // buffer-scan/edit pieces, not the LSP request/response machinery
+    // itself. That machinery (mep.lsp_request's callback -- a Lua ref,
+    // via LuaEnv::CallRefWithJson) is the actual reason every real
+    // feature here (hover/definition/references/rename/code-action/...)
+    // stays Lua: each one *is* "build params, issue a request, handle
+    // the response in a callback", and that callback is structurally a
+    // Lua closure by the existing request API's own design, not
+    // something a buffer-scan port can route around. `g_lsp_clients`/
+    // `LspClientState` (lua_env.cpp) already *are* real C++ state (not
+    // Lua tables) with real JobManager-callback-driven JSON-RPC framing
+    // -- moving that map's storage onto Editor specifically, as this
+    // plan's own coupling note suggested, wouldn't by itself unblock
+    // porting any of the above; the callback-threading is the actual
+    // obstacle, and it lives in `mep.lsp_request`'s own Lua-ref
+    // signature regardless of where the client map lives. Left for a
+    // future pass alongside a native (std::function-callback) request
+    // path, if this cluster is revisited.
+    //
+    // mep_lsp_word_at_cursor's own port: the `[%w_]` word touching the
+    // cursor on the current line, or not-found -- rename's own default
+    // prefill.
+    std::pair<bool, std::string> LspWordAtCursor() const;
+    // mep_lsp_apply_text_edit's own port: splices one LSP TextEdit
+    // (0-indexed line/character range + replacement text) into the
+    // current buffer, preserving the untouched prefix/suffix of the
+    // range's first/last line.
+    void LspApplyTextEdit(int start_line, int start_char, int end_line, int end_char, const std::string &new_text);
+    // mep_lsp_apply_edits_current_buffer's own port: applies a batch of
+    // TextEdits bottom-up (descending start position) so an
+    // earlier-applied edit's line/column shift never invalidates a
+    // later one still queued.
+    struct LspTextEdit {
+        int start_line = 0;
+        int start_char = 0;
+        int end_line = 0;
+        int end_char = 0;
+        std::string new_text;
+    };
+    void LspApplyEditsCurrentBuffer(std::vector<LspTextEdit> edits);
     // Replaces lines [start_row, end_row) (0-indexed, end exclusive) with
     // `lines` -- a general "splice" primitive (used first by Phase 17's
     // reset-hunk, generically useful for any future multi-line edit like
@@ -2289,6 +3031,12 @@ public:
     // matching rule that preserves open/closed state across a recompute.
     void RecomputeOrgFolds();
     bool IsOrgBuffer() const;
+    // Marker folding (za/zm/zr/zR/zM), enabled by default for every
+    // filetype: rebuilds provider="marker" folds from literal `{{{`/`}}}`
+    // text markers (vim's classic foldmethod=marker), same lazy
+    // recompute-before-every-z-command pattern as RecomputeOrgFolds above
+    // -- see the .cpp definition for the nesting/matching rule.
+    void RecomputeMarkerFolds();
     // zM/zR: force every fold in the current buffer open or closed, and
     // snap fold_level to the corresponding extreme (0 or the deepest
     // nesting present).
@@ -2717,6 +3465,17 @@ public:
     const std::string &HoverTitle() const { return hover_title_; }
     const std::string &HoverText() const { return hover_text_; }
 
+    // --- Hover focus (see Mode::HoverFocus's own comment) ---
+    // No-op if hover isn't currently open.
+    void EnterHoverFocus();
+    int HoverFocusRow() const { return hover_focus_row_; }
+    int HoverFocusCol() const { return hover_focus_col_; }
+    int HoverFocusScroll() const { return hover_focus_scroll_; }
+    bool HoverFocusSelecting() const { return hover_focus_selecting_; }
+    bool HoverFocusSelectLinewise() const { return hover_focus_select_linewise_; }
+    int HoverFocusSelectAnchorRow() const { return hover_focus_select_anchor_row_; }
+    int HoverFocusSelectAnchorCol() const { return hover_focus_select_anchor_col_; }
+
 private:
     void JoinCollaboration(const std::string &url, const std::string &name);
     void LeaveCollaboration();
@@ -2746,6 +3505,7 @@ private:
     void HandleConfirmInput();
     void HandleSelectInput();
     void HandlePreviewInput();
+    void HandleHoverFocusInput();
     void HandleSidebarInput();
     void HandlePickerInput();
     void HandleRoamGraphInput();
@@ -3860,6 +4620,20 @@ private:
     std::string hover_text_;
     CursorPos hover_anchor_pos_{};
 
+    // --- Hover focus state (see Mode::HoverFocus's own comment) ---
+    // row_/col_ index into hover_text_ split on '\n', vim-normal-mode-caret
+    // style (col clamped to the last character, not one-past-the-end).
+    int hover_focus_row_ = 0, hover_focus_col_ = 0;
+    // First visible raw line when the text is taller than
+    // kHoverFocusVisibleRows; kept in sync with row_ by HandleHoverFocusInput
+    // itself (minimal-scroll, like a real viewport) since editor.cpp has no
+    // way to know the popup's actual on-screen row height to recompute it
+    // from scratch each frame the way main.cpp's rendering could.
+    int hover_focus_scroll_ = 0;
+    bool hover_focus_pending_g_ = false, hover_focus_pending_y_ = false;
+    bool hover_focus_selecting_ = false, hover_focus_select_linewise_ = false;
+    int hover_focus_select_anchor_row_ = 0, hover_focus_select_anchor_col_ = 0;
+
     std::string command_line_;
     std::string status_message_;
 
@@ -4166,6 +4940,26 @@ private:
 
     LuaEnv *lua_ = nullptr;
     std::unordered_map<std::string, int> lua_commands_;         // name -> lua ref
+    // DapToggleBreakpoint/DapBreakpointLines state: filename -> insertion-
+    // ordered 1-indexed line list. Gutter decorations live in the
+    // CreateNamespace("dap") namespace -- CreateNamespace is idempotent
+    // by name, so no separate cached id is needed here.
+    std::unordered_map<std::string, std::vector<int>> dap_breakpoints_;
+    std::unordered_map<int, int> termsend_targets_;  // source buffer id -> target (terminal) buffer id
+    // GitGutterRefresh/GitNextHunkRow/GitPrevHunkRow/GitPreviewHunkText/
+    // GitResetHunk/GitStageHunk state: the most recently computed hunks
+    // and the diff base's own line content (1-indexed DiffHunk fields
+    // index into git_base_lines_ 1-based, i.e. git_base_lines_[i-1]).
+    std::vector<DiffHunk> git_hunks_;
+    std::vector<std::string> git_base_lines_;
+    // Pointer into git_hunks_, valid only until the next GitGutterRefresh
+    // call -- every caller uses it immediately, never stores it.
+    const DiffHunk *GitHunkAtCursor() const;
+    // SnippetSplice/SnippetJump state -- see SnippetTabstop's own comment.
+    bool has_snippet_state_ = false;
+    std::vector<SnippetTabstop> snippet_tabstops_;
+    int snippet_index_ = 0;
+    int snippet_base_row_ = 0;  // 0-indexed
     std::unordered_map<std::string, int> normal_mappings_;      // key -> lua ref
     std::unordered_map<std::string, int> visual_mappings_;      // key -> lua ref
     std::unordered_map<std::string, int> mod1_mappings_;        // key -> lua ref

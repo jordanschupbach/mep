@@ -1,23 +1,6 @@
 #include "editor.h"
-
 #include "agent_rpc.h"
-
-#include <algorithm>
-#include <cctype>
-#include <cmath>
-#include <cstdint>
-#include <cstdlib>
-#include <filesystem>
-#include <fstream>
-#include <iterator>
-#include <limits>
-#include <map>
-#include <sstream>
-
-#include "raylib.h"
 #include "lua_env.h"
-#include "json.h"
-#include "persist.h"
 #include "job.h"
 #include "regex.h"
 #include "vterm.h"
@@ -25,6 +8,25 @@
 #include "js_engine.h"
 #include "pdf_doc.h"
 #include "treesitter.h"
+
+#include <algorithm>
+#include <cctype>
+#include <random>
+#include <cmath>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <limits>
+#include <map>
+#include <sstream>
+#include <unordered_set>
+
+#include "raylib.h"
+#include "json.h"
+#include "persist.h"
 #include "collab_session.h"
 
 #if defined(__EMSCRIPTEN__)
@@ -766,6 +768,2435 @@ bool Editor::ThemePalette(const std::string &name, Palette *out) const {
     return true;
 }
 
+std::vector<DiffHunk> MyersDiffHunks(const std::vector<std::string> &a, const std::vector<std::string> &b) {
+    int n = static_cast<int>(a.size()), m = static_cast<int>(b.size());
+    int max_d = n + m;
+    if (max_d == 0) return {};
+    // trace[d] stores the V array (x-coordinates of furthest-reaching D-paths
+    // for each diagonal k) at step d, needed to walk the path back afterward.
+    std::vector<std::vector<int>> trace;
+    std::vector<int> v(2 * max_d + 1, 0);
+    auto vidx = [max_d](int k) { return k + max_d; };
+    int found_d = -1;
+    for (int d = 0; d <= max_d; d++) {
+        trace.push_back(v);
+        for (int k = -d; k <= d; k += 2) {
+            int x;
+            if (k == -d || (k != d && v[vidx(k - 1)] < v[vidx(k + 1)])) {
+                x = v[vidx(k + 1)];
+            } else {
+                x = v[vidx(k - 1)] + 1;
+            }
+            int y = x - k;
+            while (x < n && y < m && a[x] == b[y]) {
+                x++;
+                y++;
+            }
+            v[vidx(k)] = x;
+            if (x >= n && y >= m) {
+                found_d = d;
+                break;
+            }
+        }
+        if (found_d >= 0) break;
+    }
+
+    // Walk the recorded traces backward from (n,m) to (0,0), emitting
+    // per-line ops, then coalesce contiguous runs into hunks below.
+    struct Op {
+        char kind;  // '=' / '-' (only in a) / '+' (only in b)
+        int a_line, b_line;
+    };
+    std::vector<Op> ops;
+    int x = n, y = m;
+    for (int d = found_d; d > 0; d--) {
+        const std::vector<int> &vd = trace[d];
+        int k = x - y;
+        int prev_k = (k == -d || (k != d && vd[vidx(k - 1)] < vd[vidx(k + 1)])) ? k + 1 : k - 1;
+        int prev_x = vd[vidx(prev_k)];
+        int prev_y = prev_x - prev_k;
+        while (x > prev_x && y > prev_y) {
+            ops.push_back({'=', x - 1, y - 1});
+            x--;
+            y--;
+        }
+        if (x == prev_x) {
+            ops.push_back({'+', -1, y - 1});
+            y--;
+        } else {
+            ops.push_back({'-', x - 1, -1});
+            x--;
+        }
+    }
+    while (x > 0 && y > 0) {
+        ops.push_back({'=', x - 1, y - 1});
+        x--;
+        y--;
+    }
+    std::reverse(ops.begin(), ops.end());
+
+    std::vector<DiffHunk> hunks;
+    size_t i = 0;
+    int a_pos = 0, b_pos = 0;  // 0-indexed count of `a`/`b` lines consumed so far
+    while (i < ops.size()) {
+        if (ops[i].kind == '=') {
+            a_pos++;
+            b_pos++;
+            i++;
+            continue;
+        }
+        // A pure insertion has no `a` anchor of its own -- gitsigns
+        // convention: report it at the line *after* which it was inserted
+        // (0 if at the very top), i.e. `a_pos` (0-indexed) before the hunk.
+        int old_start = a_pos, new_start = b_pos;
+        int old_count = 0, new_count = 0;
+        while (i < ops.size() && ops[i].kind != '=') {
+            if (ops[i].kind == '-') {
+                old_count++;
+                a_pos++;
+            } else {
+                new_count++;
+                b_pos++;
+            }
+            i++;
+        }
+        hunks.push_back({old_start + 1, old_count, new_start + 1, new_count});
+    }
+    return hunks;
+}
+
+// mep_lsp_filetype's own `'%.([%w_]+)$'` port: the last `.`-delimited
+// run of [%w_] characters extending to the end of the string, or "" if
+// there is none. Only the *last* dot in the string can ever satisfy this
+// (any earlier dot leaves another literal '.' in its own remainder,
+// which can't match `[%w_]+$`), so a plain find_last_of already gives
+// the same leftmost-successful-match position Lua's :match would find.
+std::string LspFiletype(const std::string &fname) {
+    size_t pos = fname.find_last_of('.');
+    if (pos == std::string::npos) return "";
+    size_t start = pos + 1;
+    size_t i = start;
+    while (i < fname.size() && (std::isalnum(static_cast<unsigned char>(fname[i])) || fname[i] == '_')) i++;
+    if (i != fname.size() || i == start) return "";
+    return fname.substr(start);
+}
+
+// mep_lsp_abspath's own port.
+std::string LspAbspath(const std::string &fname) {
+    if (!fname.empty() && fname[0] == '/') return fname;
+#if !defined(__EMSCRIPTEN__)
+    std::error_code ec;
+    std::string cwd = std::filesystem::current_path(ec).string();
+    if (ec) cwd.clear();
+#else
+    std::string cwd;
+#endif
+    return cwd + "/" + fname;
+}
+
+std::string OrgRoamSlugify(const std::string &title) {
+    std::string lower = title;
+    for (char &c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    std::string collapsed;
+    size_t i = 0;
+    while (i < lower.size()) {
+        if (std::isalnum(static_cast<unsigned char>(lower[i]))) {
+            collapsed += lower[i];
+            i++;
+        } else {
+            collapsed += '-';
+            while (i < lower.size() && !std::isalnum(static_cast<unsigned char>(lower[i]))) i++;
+        }
+    }
+    size_t start = 0, end = collapsed.size();
+    while (start < end && collapsed[start] == '-') start++;
+    while (end > start && collapsed[end - 1] == '-') end--;
+    return collapsed.substr(start, end - start);
+}
+
+std::string OrgExportHeading(const std::string &format, int level, const std::string &title) {
+    if (format == "html") {
+        std::string lvl = std::to_string(level);
+        return "<h" + lvl + ">" + title + "</h" + lvl + ">";
+    }
+    if (format == "markdown") {
+        return std::string(static_cast<size_t>(std::max(0, level)), '#') + " " + title;
+    }
+    std::string upper = title;
+    for (char &c : upper) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    return std::string(static_cast<size_t>(std::max(0, level - 1)) * 2, ' ') + upper;
+}
+
+std::string OrgHtmlEscape(const std::string &s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        if (c == '&') {
+            out += "&amp;";
+        } else if (c == '<') {
+            out += "&lt;";
+        } else if (c == '>') {
+            out += "&gt;";
+        } else {
+            out += c;
+        }
+    }
+    return out;
+}
+
+int OrgSubtreeEndLines(const std::vector<std::string> &lines, int row, const std::vector<std::string> &todo_keywords) {
+    int level = 0;
+    if (row >= 1 && row <= static_cast<int>(lines.size())) {
+        OrgHeadlineParse h = ParseOrgHeadline(lines[row - 1], todo_keywords);
+        if (h.is_headline) level = h.level;
+    }
+    for (int i = row + 1; i <= static_cast<int>(lines.size()); i++) {
+        OrgHeadlineParse hi = ParseOrgHeadline(lines[i - 1], todo_keywords);
+        if (hi.is_headline && hi.level <= level) return i;
+    }
+    return static_cast<int>(lines.size()) + 1;
+}
+
+namespace {
+// Forward declaration -- defined later in this file (OrgLatex section);
+// same anonymous namespace, just needed here ahead of its definition.
+size_t SkipWs(const std::string &s, size_t pos);
+
+// kBuiltinOrgExport's own `'^%s*#%+MACRO:%s*([%w_%-]+)%s+(.*)$'` port.
+bool MatchMacroDef(const std::string &line, std::string *name, std::string *body) {
+    size_t i = SkipWs(line, 0);
+    static const std::string kTag = "#+MACRO:";
+    if (line.compare(i, kTag.size(), kTag) != 0) return false;
+    i = SkipWs(line, i + kTag.size());
+    size_t name_start = i;
+    while (i < line.size() &&
+           (std::isalnum(static_cast<unsigned char>(line[i])) || line[i] == '_' || line[i] == '-')) {
+        i++;
+    }
+    if (i == name_start) return false;
+    size_t name_end = i;
+    size_t ws_start = i;
+    i = SkipWs(line, i);
+    if (i == ws_start) return false;
+    *name = line.substr(name_start, name_end - name_start);
+    *body = line.substr(i);
+    return true;
+}
+}  // namespace
+
+std::map<std::string, std::string> OrgCollectMacros(const std::vector<std::string> &lines) {
+    std::map<std::string, std::string> macros;
+    for (const std::string &line : lines) {
+        std::string name, body;
+        if (MatchMacroDef(line, &name, &body)) macros[name] = body;
+    }
+    return macros;
+}
+
+namespace {
+// kBuiltinOrgExport's own `mep_org_split_args` port.
+std::vector<std::string> OrgSplitArgs(const std::string &s) {
+    std::vector<std::string> args;
+    std::string with_trailer = s + ",";
+    size_t start = 0;
+    for (size_t i = 0; i < with_trailer.size(); i++) {
+        if (with_trailer[i] == ',') {
+            args.push_back(with_trailer.substr(start, i - start));
+            start = i + 1;
+        }
+    }
+    return args;
+}
+
+// kBuiltinOrgExport's own `'%$(%d+)'` port: replaces every `$N` with
+// the Nth (1-indexed) element of `args`, or "" if out of range.
+std::string ExpandMacroDollarRefs(const std::string &def, const std::vector<std::string> &args) {
+    std::string out;
+    size_t pos = 0;
+    while (pos < def.size()) {
+        if (def[pos] == '$' && pos + 1 < def.size() && std::isdigit(static_cast<unsigned char>(def[pos + 1]))) {
+            size_t i = pos + 1;
+            while (i < def.size() && std::isdigit(static_cast<unsigned char>(def[i]))) i++;
+            int n = std::stoi(def.substr(pos + 1, i - (pos + 1)));
+            if (n >= 1 && n <= static_cast<int>(args.size())) out += args[n - 1];
+            pos = i;
+        } else {
+            out += def[pos];
+            pos++;
+        }
+    }
+    return out;
+}
+}  // namespace
+
+std::string OrgExpandMacroLine(const std::string &line, const std::map<std::string, std::string> &macros) {
+    // Pass 1: {{{name(args)}}}
+    std::string pass1;
+    size_t pos = 0;
+    while (true) {
+        size_t s = line.find("{{{", pos);
+        if (s == std::string::npos) {
+            pass1 += line.substr(pos);
+            break;
+        }
+        pass1 += line.substr(pos, s - pos);
+        size_t i = s + 3;
+        size_t name_start = i;
+        while (i < line.size() &&
+               (std::isalnum(static_cast<unsigned char>(line[i])) || line[i] == '_' || line[i] == '-')) {
+            i++;
+        }
+        bool matched = false;
+        if (i > name_start && i < line.size() && line[i] == '(') {
+            std::string name = line.substr(name_start, i - name_start);
+            size_t arg_start = i + 1;
+            size_t boundary = line.find('}', arg_start);
+            if (boundary != std::string::npos && boundary >= arg_start + 1 && line[boundary - 1] == ')' &&
+                boundary + 2 < line.size() && line[boundary] == '}' && line[boundary + 1] == '}' &&
+                line[boundary + 2] == '}') {
+                std::string argstr = line.substr(arg_start, (boundary - 1) - arg_start);
+                auto it = macros.find(name);
+                if (it == macros.end()) {
+                    pass1 += "{{{" + name + "(" + argstr + ")}}}";
+                } else {
+                    pass1 += ExpandMacroDollarRefs(it->second, OrgSplitArgs(argstr));
+                }
+                pos = boundary + 3;
+                matched = true;
+            }
+        }
+        if (!matched) {
+            pass1 += "{{{";
+            pos = s + 3;
+        }
+    }
+    // Pass 2: {{{name}}}
+    std::string out;
+    pos = 0;
+    while (true) {
+        size_t s = pass1.find("{{{", pos);
+        if (s == std::string::npos) {
+            out += pass1.substr(pos);
+            break;
+        }
+        out += pass1.substr(pos, s - pos);
+        size_t i = s + 3;
+        size_t name_start = i;
+        while (i < pass1.size() &&
+               (std::isalnum(static_cast<unsigned char>(pass1[i])) || pass1[i] == '_' || pass1[i] == '-')) {
+            i++;
+        }
+        if (i > name_start && i + 2 < pass1.size() && pass1[i] == '}' && pass1[i + 1] == '}' &&
+            pass1[i + 2] == '}') {
+            std::string name = pass1.substr(name_start, i - name_start);
+            auto it = macros.find(name);
+            out += (it != macros.end()) ? it->second : ("{{{" + name + "}}}");
+            pos = i + 3;
+        } else {
+            out += "{{{";
+            pos = s + 3;
+        }
+    }
+    return out;
+}
+
+namespace {
+// Forward declarations -- defined later in this file (OrgLatex/OrgBib
+// sections); same anonymous namespace, just needed here ahead of their
+// definitions.
+bool MatchCiLiteral(const std::string &s, size_t pos, const std::string &lit);
+bool IsSrcClose(const std::string &line);
+std::string JoinNewline(const std::vector<std::string> &lines);
+
+// kBuiltinOrgBabel's own `'#%+[Bb][Ee][Gg][Ii][Nn]_[Ss][Rr][Cc]'` open-
+// line port. Generic (no language requirement), unlike OrgLatex's own
+// IsSrcLatexOpen -- reused here plus IsSrcClose above (identical to
+// what that check already needs).
+bool IsSrcBlockOpen(const std::string &line) {
+    size_t i = SkipWs(line, 0);
+    if (i + 1 >= line.size() || line[i] != '#' || line[i + 1] != '+') return false;
+    i += 2;
+    return MatchCiLiteral(line, i, "BEGIN_SRC");
+}
+
+// Extracts the (optional) language tag and the rest of a
+// `#+BEGIN_SRC [lang] [args...]` header line as `args_str`, mirroring
+// the original's own two-pattern (`'...%s+(%S+)'` /
+// `'...%s+%S+%s*(.*)$'`) extraction exactly, including "no lang token
+// at all" leaving both has_lang=false and args_str empty.
+void ParseSrcHeader(const std::string &header, bool *has_lang, std::string *lang, std::string *args_str) {
+    size_t i = SkipWs(header, 0);
+    i += 2;  // "#+"
+    i += 9;  // "BEGIN_SRC"
+    size_t ws_start = i;
+    i = SkipWs(header, i);
+    if (i == ws_start || i >= header.size()) {
+        *has_lang = false;
+        *args_str = "";
+        return;
+    }
+    size_t lang_start = i;
+    while (i < header.size() && !std::isspace(static_cast<unsigned char>(header[i]))) i++;
+    *lang = header.substr(lang_start, i - lang_start);
+    *has_lang = true;
+    i = SkipWs(header, i);
+    *args_str = header.substr(i);
+}
+
+// kBuiltinOrgBabel's own `':KEY%s+(%S+)'` port (unanchored search,
+// required whitespace, one-or-more non-whitespace captured) -- shared
+// shape behind `:main`/`:tangle`/`:cache`/`:file` header-arg extraction.
+bool MatchHeaderArgToken(const std::string &s, const std::string &key, std::string *val) {
+    std::string needle = ":" + key;
+    size_t pos = 0;
+    while (true) {
+        size_t p = s.find(needle, pos);
+        if (p == std::string::npos) return false;
+        size_t i = p + needle.size();
+        size_t ws_start = i;
+        i = SkipWs(s, i);
+        if (i > ws_start) {
+            size_t tok_start = i;
+            while (i < s.size() && !std::isspace(static_cast<unsigned char>(s[i]))) i++;
+            if (i > tok_start) {
+                *val = s.substr(tok_start, i - tok_start);
+                return true;
+            }
+        }
+        pos = p + 1;
+    }
+}
+}  // namespace
+
+bool OrgBabelShouldWrapMain(const std::string &lang_key, const std::string &args_str) {
+    std::string main_val;
+    if (MatchHeaderArgToken(args_str, "main", &main_val)) {
+        if (main_val == "yes") return true;
+        if (main_val == "no") return false;
+    }
+    return lang_key == "php";
+}
+
+namespace {
+bool IsNumericLiteral(const std::string &s) {
+    size_t i = 0;
+    if (i < s.size() && s[i] == '-') i++;
+    size_t digit_start = i;
+    while (i < s.size() && std::isdigit(static_cast<unsigned char>(s[i]))) i++;
+    if (i == digit_start) return false;
+    if (i < s.size() && s[i] == '.') {
+        i++;
+        while (i < s.size() && std::isdigit(static_cast<unsigned char>(s[i]))) i++;
+    }
+    return i == s.size();
+}
+}  // namespace
+
+std::string OrgBabelFormatLiteral(const std::string &raw) {
+    if (IsNumericLiteral(raw)) return raw;
+    std::string esc;
+    for (char c : raw) {
+        switch (c) {
+            case '\\':
+                esc += "\\\\";
+                break;
+            case '"':
+                esc += "\\\"";
+                break;
+            case '\n':
+                esc += "\\n";
+                break;
+            case '\r':
+                esc += "\\r";
+                break;
+            case '\t':
+                esc += "\\t";
+                break;
+            default:
+                esc += c;
+        }
+    }
+    return "\"" + esc + "\"";
+}
+
+namespace {
+// kBuiltinOrgBabel's own `':var%s+([%w_]+)='` port.
+bool FindNextVarDecl(const std::string &s, size_t pos, size_t *decl_end, std::string *name) {
+    while (true) {
+        size_t p = s.find(":var", pos);
+        if (p == std::string::npos) return false;
+        size_t i = p + 4;
+        size_t ws_start = i;
+        i = SkipWs(s, i);
+        if (i == ws_start) {
+            pos = p + 1;
+            continue;
+        }
+        size_t name_start = i;
+        while (i < s.size() && (std::isalnum(static_cast<unsigned char>(s[i])) || s[i] == '_')) i++;
+        if (i == name_start) {
+            pos = p + 1;
+            continue;
+        }
+        size_t name_end = i;
+        if (i >= s.size() || s[i] != '=') {
+            pos = p + 1;
+            continue;
+        }
+        *name = s.substr(name_start, name_end - name_start);
+        *decl_end = i;
+        return true;
+    }
+}
+}  // namespace
+
+std::map<std::string, std::string> OrgParseVars(const std::string &args_str) {
+    std::map<std::string, std::string> vars;
+    size_t pos = 0;
+    while (true) {
+        size_t decl_end;
+        std::string name;
+        if (!FindNextVarDecl(args_str, pos, &decl_end, &name)) break;
+        size_t vstart = decl_end + 1;
+        if (vstart < args_str.size() && args_str[vstart] == '"') {
+            std::string buf;
+            size_t j = vstart + 1;
+            while (j < args_str.size()) {
+                char c = args_str[j];
+                if (c == '\\' && j + 1 < args_str.size()) {
+                    buf += args_str[j + 1];
+                    j += 2;
+                } else if (c == '"') {
+                    j++;
+                    break;
+                } else {
+                    buf += c;
+                    j++;
+                }
+            }
+            vars[name] = buf;
+            pos = j;
+        } else {
+            size_t tok_begin = args_str.find_first_not_of(" \t\n\r\f\v", vstart);
+            if (tok_begin == std::string::npos) {
+                vars[name] = "";
+                pos = vstart;
+            } else {
+                size_t tok_end = tok_begin;
+                while (tok_end < args_str.size() && !std::isspace(static_cast<unsigned char>(args_str[tok_end]))) {
+                    tok_end++;
+                }
+                vars[name] = args_str.substr(tok_begin, tok_end - tok_begin);
+                pos = tok_end;
+            }
+        }
+    }
+    return vars;
+}
+
+std::set<std::string> OrgParseResults(const std::string &args_str) {
+    std::set<std::string> modes;
+    static const std::string kNeedle = ":results";
+    size_t pos = 0;
+    std::string results_str;
+    while (true) {
+        size_t p = args_str.find(kNeedle, pos);
+        if (p == std::string::npos) break;
+        size_t i = p + kNeedle.size();
+        size_t ws_start = i;
+        i = SkipWs(args_str, i);
+        if (i == ws_start) {
+            pos = p + 1;
+            continue;
+        }
+        size_t val_start = i;
+        while (i < args_str.size() && args_str[i] != ':') i++;
+        results_str = args_str.substr(val_start, i - val_start);
+        break;
+    }
+    size_t end = results_str.size();
+    while (end > 0 && std::isspace(static_cast<unsigned char>(results_str[end - 1]))) end--;
+    results_str = results_str.substr(0, end);
+    size_t i = 0;
+    while (i < results_str.size()) {
+        while (i < results_str.size() && std::isspace(static_cast<unsigned char>(results_str[i]))) i++;
+        size_t start = i;
+        while (i < results_str.size() && !std::isspace(static_cast<unsigned char>(results_str[i]))) i++;
+        if (i > start) modes.insert(results_str.substr(start, i - start));
+    }
+    return modes;
+}
+
+OrgSrcBlock Editor::OrgSrcBlockAt(int row) const {
+    OrgSrcBlock result;
+    const int n = Buf().LineCount();
+    int start_row = 0;
+    for (int i = row; i >= 1; i--) {
+        if (i > n) continue;
+        if (IsSrcBlockOpen(Buf().lines[i - 1])) {
+            start_row = i;
+            break;
+        }
+        if (IsSrcClose(Buf().lines[i - 1])) return result;
+    }
+    if (start_row == 0) return result;
+    int end_row = 0;
+    for (int i = start_row + 1; i <= n; i++) {
+        if (IsSrcClose(Buf().lines[i - 1])) {
+            end_row = i;
+            break;
+        }
+    }
+    if (end_row == 0 || end_row < row) return result;
+    const std::string &header = Buf().lines[start_row - 1];
+    bool has_lang = false;
+    std::string lang, args_str;
+    ParseSrcHeader(header, &has_lang, &lang, &args_str);
+    if (has_lang) {
+        for (char &c : lang) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    std::vector<std::string> body_lines;
+    for (int i = start_row + 1; i <= end_row - 1; i++) {
+        if (i < 1 || i > n) continue;
+        body_lines.push_back(Buf().lines[i - 1]);
+    }
+    result.found = true;
+    result.start_row = start_row;
+    result.end_row = end_row;
+    result.has_lang = has_lang;
+    result.lang = lang;
+    result.vars = OrgParseVars(args_str);
+    result.has_tangle = MatchHeaderArgToken(args_str, "tangle", &result.tangle);
+    result.has_cache = MatchHeaderArgToken(args_str, "cache", &result.cache);
+    result.has_file = MatchHeaderArgToken(args_str, "file", &result.file);
+    result.results_modes = OrgParseResults(args_str);
+    result.args_str = args_str;
+    result.body = JoinNewline(body_lines);
+    return result;
+}
+
+std::vector<std::string> LspDiagWrap(const std::string &text, int width) {
+    std::vector<std::string> out;
+    std::string line;
+    size_t i = 0;
+    while (i < text.size()) {
+        while (i < text.size() && std::isspace(static_cast<unsigned char>(text[i]))) i++;
+        size_t start = i;
+        while (i < text.size() && !std::isspace(static_cast<unsigned char>(text[i]))) i++;
+        if (i == start) continue;
+        std::string word = text.substr(start, i - start);
+        if (line.empty()) {
+            line = word;
+        } else if (static_cast<int>(line.size() + 1 + word.size()) <= width) {
+            line += " " + word;
+        } else {
+            out.push_back(line);
+            line = word;
+        }
+    }
+    if (!line.empty()) out.push_back(line);
+    if (out.empty()) out.push_back("");
+    return out;
+}
+
+std::pair<bool, std::string> Editor::LspWordAtCursor() const {
+    int row = 0, col = 0;
+    GetCursorForLua(&row, &col);
+    row += 1;
+    col += 1;
+    if (row < 1 || row > Buf().LineCount()) return {false, ""};
+    const std::string &line = Buf().lines[row - 1];
+    int n = static_cast<int>(line.size());
+    int s = col, e = col;
+    auto is_word = [&](int pos1) {
+        // pos1 is 1-indexed; matches Lua's `[%w_]` class.
+        if (pos1 < 1 || pos1 > n) return false;
+        char c = line[pos1 - 1];
+        return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_';
+    };
+    while (s > 1 && is_word(s - 1)) s--;
+    while (e <= n && is_word(e)) e++;
+    if (s >= e) return {false, ""};
+    return {true, line.substr(s - 1, e - s)};
+}
+
+void Editor::LspApplyTextEdit(int start_line, int start_char, int end_line, int end_char,
+                               const std::string &new_text) {
+    int sl = start_line + 1, sc = start_char + 1;
+    int el = end_line + 1, ec = end_char + 1;
+    std::vector<std::string> new_lines;
+    size_t pos = 0;
+    while (true) {
+        size_t nl = new_text.find('\n', pos);
+        if (nl == std::string::npos) {
+            new_lines.push_back(new_text.substr(pos));
+            break;
+        }
+        new_lines.push_back(new_text.substr(pos, nl - pos));
+        pos = nl + 1;
+    }
+    std::string first_line = GetLineForLua(sl - 1);
+    std::string last_line = (el == sl) ? first_line : GetLineForLua(el - 1);
+    size_t prefix_len = std::min(static_cast<size_t>(sc - 1), first_line.size());
+    std::string prefix = first_line.substr(0, prefix_len);
+    std::string suffix;
+    size_t suffix_start = static_cast<size_t>(ec - 1);
+    if (suffix_start < last_line.size()) suffix = last_line.substr(suffix_start);
+    new_lines.front() = prefix + new_lines.front();
+    new_lines.back() = new_lines.back() + suffix;
+    ReplaceLinesForLua(sl - 1, el, new_lines);
+}
+
+void Editor::LspApplyEditsCurrentBuffer(std::vector<LspTextEdit> edits) {
+    std::sort(edits.begin(), edits.end(), [](const LspTextEdit &a, const LspTextEdit &b) {
+        if (a.start_line != b.start_line) return a.start_line > b.start_line;
+        return a.start_char > b.start_char;
+    });
+    for (const LspTextEdit &e : edits) {
+        LspApplyTextEdit(e.start_line, e.start_char, e.end_line, e.end_char, e.new_text);
+    }
+}
+
+namespace {
+bool IsOrgTagChar(char c) {
+    return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == ':' || c == '@';
+}
+
+// mep_org_parse_headline's own `:([%w_:@]+):%s*$` port: does `rest` end
+// (modulo trailing whitespace) with a `:tags:` block? Uses "leftmost
+// colon within the trailing run of tag-class characters" as the opening
+// delimiter -- matches Lua's own leftmost-then-greedy match for every
+// realistic headline (a clean tags block, no stray colons earlier in the
+// title); doesn't attempt to replicate full regex backtracking for a
+// pathological title with other colons positioned to make that leftmost
+// choice fail via an empty capture.
+bool ExtractOrgTags(const std::string &rest, std::string *tags, size_t *tag_block_start) {
+    size_t end_pos = rest.size();
+    while (end_pos > 0 && std::isspace(static_cast<unsigned char>(rest[end_pos - 1]))) end_pos--;
+    if (end_pos == 0 || rest[end_pos - 1] != ':') return false;
+    size_t run_start = end_pos - 1;
+    while (run_start > 0 && IsOrgTagChar(rest[run_start - 1])) run_start--;
+    size_t open = run_start;
+    while (open < end_pos - 1 && rest[open] != ':') open++;
+    if (open >= end_pos - 2) return false;  // no room for a non-empty capture
+    *tags = rest.substr(open + 1, (end_pos - 1) - (open + 1));
+    *tag_block_start = open;
+    return true;
+}
+}  // namespace
+
+OrgHeadlineParse ParseOrgHeadline(const std::string &line, const std::vector<std::string> &todo_keywords) {
+    OrgHeadlineParse h;
+    size_t i = 0;
+    while (i < line.size() && line[i] == '*') i++;
+    if (i == 0) return h;
+    size_t stars = i;
+    size_t ws_end = i;
+    while (ws_end < line.size() && std::isspace(static_cast<unsigned char>(line[ws_end]))) ws_end++;
+    if (ws_end == stars) return h;  // %s+ requires at least one whitespace char
+    std::string rest = line.substr(ws_end);
+    h.is_headline = true;
+    h.level = static_cast<int>(stars);
+
+    for (const std::string &kw : todo_keywords) {
+        std::string prefix = kw + " ";
+        if (rest.size() >= prefix.size() && rest.compare(0, prefix.size(), prefix) == 0) {
+            h.todo = kw;
+            h.has_todo = true;
+            rest = rest.substr(prefix.size());
+            break;
+        }
+    }
+
+    if (rest.size() >= 4 && rest[0] == '[' && rest[1] == '#' &&
+        std::isalpha(static_cast<unsigned char>(rest[2])) && rest[3] == ']') {
+        h.priority = std::string(1, rest[2]);
+        h.has_priority = true;
+        size_t p = 4;
+        while (p < rest.size() && std::isspace(static_cast<unsigned char>(rest[p]))) p++;
+        rest = rest.substr(p);
+    }
+
+    std::string tags;
+    size_t tag_block_start = 0;
+    if (ExtractOrgTags(rest, &tags, &tag_block_start)) {
+        h.tags = tags;
+        h.has_tags = true;
+        std::string title = rest.substr(0, tag_block_start);
+        size_t te = title.size();
+        while (te > 0 && std::isspace(static_cast<unsigned char>(title[te - 1]))) te--;
+        h.title = title.substr(0, te);
+    } else {
+        h.title = rest;
+    }
+    return h;
+}
+
+int Editor::OrgCurrentHeadlineRow(int row, const std::vector<std::string> &todo_keywords) const {
+    if (row <= 0) {
+        int r = 0, c = 0;
+        GetCursorForLua(&r, &c);
+        row = r + 1;
+    }
+    const int n = Buf().LineCount();
+    for (int i = row; i >= 1; i--) {
+        if (i < 1 || i > n) continue;
+        if (ParseOrgHeadline(Buf().lines[i - 1], todo_keywords).is_headline) return i;
+    }
+    return 0;
+}
+
+int Editor::OrgSubtreeEnd(int row, const std::vector<std::string> &todo_keywords) const {
+    const int n = Buf().LineCount();
+    int level = 0;
+    if (row >= 1 && row <= n) {
+        OrgHeadlineParse h = ParseOrgHeadline(Buf().lines[row - 1], todo_keywords);
+        if (h.is_headline) level = h.level;
+    }
+    for (int i = row + 1; i <= n; i++) {
+        OrgHeadlineParse h = ParseOrgHeadline(Buf().lines[i - 1], todo_keywords);
+        if (h.is_headline && h.level <= level) return i;
+    }
+    return n + 1;
+}
+
+namespace {
+// kBuiltinOrgClock's own `'^%s*CLOCK:%s*%[[^%]]+%]%s*$'` port: a line
+// holding an *open* clock (no closing "--[...] => H:MM" yet). If
+// `start_ts` is non-null, also captures the bracketed timestamp text.
+bool MatchRunningClockLine(const std::string &line, std::string *start_ts) {
+    size_t i = 0;
+    while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) i++;
+    static const std::string kPrefix = "CLOCK:";
+    if (line.compare(i, kPrefix.size(), kPrefix) != 0) return false;
+    i += kPrefix.size();
+    while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) i++;
+    if (i >= line.size() || line[i] != '[') return false;
+    size_t open = i + 1;
+    size_t close = line.find(']', open);
+    if (close == std::string::npos) return false;
+    size_t j = close + 1;
+    while (j < line.size() && std::isspace(static_cast<unsigned char>(line[j]))) j++;
+    if (j != line.size()) return false;  // trailing junk (e.g. an already-closed "--[...]") -> not "open"
+    if (start_ts) *start_ts = line.substr(open, close - open);
+    return true;
+}
+
+bool IsLogbookOpenLine(const std::string &line) {
+    size_t i = 0;
+    while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) i++;
+    static const std::string kTag = ":LOGBOOK:";
+    if (line.compare(i, kTag.size(), kTag) != 0) return false;
+    i += kTag.size();
+    while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) i++;
+    return i == line.size();
+}
+
+std::string FormatOrgTimestampNow() {
+    std::time_t now = std::time(nullptr);
+    std::tm tmv{};
+    localtime_r(&now, &tmv);
+    char buf[32];
+    std::strftime(buf, sizeof(buf), "%Y-%m-%d %a %H:%M", &tmv);
+    return std::string(buf);
+}
+
+bool MatchDigits(const std::string &s, size_t pos, int count, int *out) {
+    if (pos + static_cast<size_t>(count) > s.size()) return false;
+    int val = 0;
+    for (int k = 0; k < count; k++) {
+        char c = s[pos + k];
+        if (!std::isdigit(static_cast<unsigned char>(c))) return false;
+        val = val * 10 + (c - '0');
+    }
+    *out = val;
+    return true;
+}
+
+// kBuiltinOrgClock's own `'(%d%d%d%d)-(%d%d)-(%d%d) %a+ (%d%d):(%d%d)'`
+// port (unanchored search, matching Lua's :match semantics).
+bool ParseClockTimestamp(const std::string &s, int *y, int *mo, int *d, int *hh, int *mm) {
+    for (size_t pos = 0; pos <= s.size(); pos++) {
+        size_t i = pos;
+        if (!MatchDigits(s, i, 4, y)) continue;
+        i += 4;
+        if (i >= s.size() || s[i] != '-') continue;
+        i++;
+        if (!MatchDigits(s, i, 2, mo)) continue;
+        i += 2;
+        if (i >= s.size() || s[i] != '-') continue;
+        i++;
+        if (!MatchDigits(s, i, 2, d)) continue;
+        i += 2;
+        if (i >= s.size() || s[i] != ' ') continue;
+        i++;
+        size_t wd_start = i;
+        while (i < s.size() && std::isalpha(static_cast<unsigned char>(s[i]))) i++;
+        if (i == wd_start) continue;
+        if (i >= s.size() || s[i] != ' ') continue;
+        i++;
+        if (!MatchDigits(s, i, 2, hh)) continue;
+        i += 2;
+        if (i >= s.size() || s[i] != ':') continue;
+        i++;
+        if (!MatchDigits(s, i, 2, mm)) continue;
+        return true;
+    }
+    return false;
+}
+
+std::time_t MakeLocalTime(int y, int mo, int d, int hh, int mm) {
+    std::tm tmv{};
+    tmv.tm_year = y - 1900;
+    tmv.tm_mon = mo - 1;
+    tmv.tm_mday = d;
+    tmv.tm_hour = hh;
+    tmv.tm_min = mm;
+    tmv.tm_sec = 0;
+    tmv.tm_isdst = -1;
+    return std::mktime(&tmv);
+}
+
+// kBuiltinOrgClock's own `'=>%s*(%d+):(%d%d)%s*$'` port: scans back from
+// the end of the line for "=>  H:MM" (optional surrounding whitespace).
+bool MatchClockDuration(const std::string &line, int *total_minutes) {
+    size_t end_pos = line.size();
+    while (end_pos > 0 && std::isspace(static_cast<unsigned char>(line[end_pos - 1]))) end_pos--;
+    if (end_pos < 2) return false;
+    if (!std::isdigit(static_cast<unsigned char>(line[end_pos - 1])) ||
+        !std::isdigit(static_cast<unsigned char>(line[end_pos - 2]))) {
+        return false;
+    }
+    int h2 = (line[end_pos - 2] - '0') * 10 + (line[end_pos - 1] - '0');
+    size_t p = end_pos - 2;
+    if (p == 0 || line[p - 1] != ':') return false;
+    p--;
+    size_t h1_end = p;
+    while (p > 0 && std::isdigit(static_cast<unsigned char>(line[p - 1]))) p--;
+    if (p == h1_end) return false;
+    int h1 = std::stoi(line.substr(p, h1_end - p));
+    size_t q = p;
+    while (q > 0 && std::isspace(static_cast<unsigned char>(line[q - 1]))) q--;
+    if (q < 2 || line[q - 2] != '=' || line[q - 1] != '>') return false;
+    *total_minutes = h1 * 60 + h2;
+    return true;
+}
+}  // namespace
+
+void Editor::OrgClockIn() {
+    const int n = Buf().LineCount();
+    for (int i = 1; i <= n; i++) {
+        if (MatchRunningClockLine(Buf().lines[i - 1], nullptr)) {
+            Notify("A clock is already running", NotifyLevel::Warn);
+            return;
+        }
+    }
+    std::vector<std::string> kws = lua_ ? lua_->GetOrgTodoKeywords() : std::vector<std::string>{};
+    int row = OrgCurrentHeadlineRow(0, kws);
+    if (row <= 0) {
+        Notify("Not on a headline", NotifyLevel::Warn);
+        return;
+    }
+    int e = OrgSubtreeEnd(row, kws);
+    int logbook_start = 0;
+    for (int i = row + 1; i <= e - 1; i++) {
+        if (i < 1 || i > n) continue;
+        if (IsLogbookOpenLine(Buf().lines[i - 1])) {
+            logbook_start = i;
+            break;
+        }
+    }
+    std::string entry = "  CLOCK: [" + FormatOrgTimestampNow() + "]";
+    if (logbook_start == 0) {
+        ReplaceLinesForLua(row, row, {"  :LOGBOOK:", entry, "  :END:"});
+    } else {
+        ReplaceLinesForLua(logbook_start, logbook_start, {entry});
+    }
+    Notify("Clock started");
+}
+
+void Editor::OrgClockOut() {
+    const int n = Buf().LineCount();
+    for (int i = 1; i <= n; i++) {
+        std::string start_ts;
+        if (!MatchRunningClockLine(Buf().lines[i - 1], &start_ts)) continue;
+        int y = 0, mo = 0, d = 0, hh = 0, mm = 0;
+        if (!ParseClockTimestamp(start_ts, &y, &mo, &d, &hh, &mm)) continue;
+        std::time_t start_time = MakeLocalTime(y, mo, d, hh, mm);
+        std::time_t now = std::time(nullptr);
+        long long mins = static_cast<long long>(std::floor(std::difftime(now, start_time) / 60.0));
+        if (mins < 0) mins = 0;
+        char durbuf[32];
+        std::snprintf(durbuf, sizeof(durbuf), "%lld:%02lld", mins / 60, mins % 60);
+        std::string new_line = "  CLOCK: [" + start_ts + "]--[" + FormatOrgTimestampNow() + "] =>  " + durbuf;
+        SetLineForLua(i - 1, new_line);
+        Notify(std::string("Clock stopped: ") + durbuf);
+        return;
+    }
+    Notify("No running clock", NotifyLevel::Warn);
+}
+
+int Editor::OrgClockMinutesInRange(int a, int b) const {
+    int total = 0;
+    const int n = Buf().LineCount();
+    for (int i = a; i <= b; i++) {
+        if (i < 1 || i > n) continue;
+        int mins = 0;
+        if (MatchClockDuration(Buf().lines[i - 1], &mins)) total += mins;
+    }
+    return total;
+}
+
+std::vector<std::string> Editor::OrgClockTableItems() const {
+    std::vector<std::string> items;
+    std::vector<std::string> kws = lua_ ? lua_->GetOrgTodoKeywords() : std::vector<std::string>{};
+    const int n = Buf().LineCount();
+    for (int i = 1; i <= n; i++) {
+        OrgHeadlineParse h = ParseOrgHeadline(Buf().lines[i - 1], kws);
+        if (!h.is_headline) continue;
+        int mins = OrgClockMinutesInRange(i, OrgSubtreeEnd(i, kws) - 1);
+        if (mins <= 0) continue;
+        std::string indent(static_cast<size_t>(std::max(0, h.level - 1)) * 2, ' ');
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%d:%02d", mins / 60, mins % 60);
+        items.push_back(indent + h.title + "  " + buf);
+    }
+    return items;
+}
+
+namespace {
+bool IsPropertiesOpenLine(const std::string &line) {
+    size_t i = 0;
+    while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) i++;
+    static const std::string kTag = ":PROPERTIES:";
+    if (line.compare(i, kTag.size(), kTag) != 0) return false;
+    i += kTag.size();
+    while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) i++;
+    return i == line.size();
+}
+
+bool IsDrawerEndLine(const std::string &line) {
+    size_t i = 0;
+    while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) i++;
+    static const std::string kTag = ":END:";
+    if (line.compare(i, kTag.size(), kTag) != 0) return false;
+    i += kTag.size();
+    while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) i++;
+    return i == line.size();
+}
+
+// kBuiltinOrg's own `'^%s*:([%w_]+):%s*(.*)$'` port: a ":KEY: value" line
+// inside a drawer. Unlike MatchDrawerKeyPrefix below, requires the value
+// half too (used by org_property_get's read path).
+bool MatchPropertyLine(const std::string &line, std::string *key, std::string *value) {
+    size_t i = 0;
+    while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) i++;
+    if (i >= line.size() || line[i] != ':') return false;
+    i++;
+    size_t key_start = i;
+    while (i < line.size() && (std::isalnum(static_cast<unsigned char>(line[i])) || line[i] == '_')) i++;
+    if (i == key_start) return false;
+    size_t key_end = i;
+    if (i >= line.size() || line[i] != ':') return false;
+    i++;
+    while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) i++;
+    *key = line.substr(key_start, key_end - key_start);
+    *value = line.substr(i);
+    return true;
+}
+
+// kBuiltinOrg's own `'^%s*:([%w_]+):'` port (no value, no end anchor) --
+// org_property_set/remove's own "is this drawer line for KEY" scan.
+bool MatchDrawerKeyPrefix(const std::string &line, std::string *key) {
+    size_t i = 0;
+    while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) i++;
+    if (i >= line.size() || line[i] != ':') return false;
+    i++;
+    size_t key_start = i;
+    while (i < line.size() && (std::isalnum(static_cast<unsigned char>(line[i])) || line[i] == '_')) i++;
+    if (i == key_start) return false;
+    size_t key_end = i;
+    if (i >= line.size() || line[i] != ':') return false;
+    *key = line.substr(key_start, key_end - key_start);
+    return true;
+}
+
+bool EqualsIgnoreCase(const std::string &a, const std::string &b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); i++) {
+        if (std::toupper(static_cast<unsigned char>(a[i])) != std::toupper(static_cast<unsigned char>(b[i]))) {
+            return false;
+        }
+    }
+    return true;
+}
+}  // namespace
+
+std::pair<bool, std::string> Editor::OrgPropertyGet(int row, const std::string &key,
+                                                      const std::vector<std::string> &todo_keywords) const {
+    if (row <= 0) row = OrgCurrentHeadlineRow(0, todo_keywords);
+    if (row <= 0) return {false, ""};
+    int e = OrgSubtreeEnd(row, todo_keywords);
+    const int n = Buf().LineCount();
+    bool in_drawer = false;
+    for (int i = row + 1; i <= e - 1; i++) {
+        if (i < 1 || i > n) continue;
+        const std::string &line = Buf().lines[i - 1];
+        if (IsPropertiesOpenLine(line)) {
+            in_drawer = true;
+        } else if (IsDrawerEndLine(line)) {
+            break;
+        } else if (in_drawer) {
+            std::string k, v;
+            if (MatchPropertyLine(line, &k, &v) && EqualsIgnoreCase(k, key)) return {true, v};
+        }
+    }
+    return {false, ""};
+}
+
+void Editor::OrgPropertySet(int row, const std::string &key, const std::string &value,
+                             const std::vector<std::string> &todo_keywords) {
+    if (row <= 0) row = OrgCurrentHeadlineRow(0, todo_keywords);
+    if (row <= 0) return;
+    int e = OrgSubtreeEnd(row, todo_keywords);
+    int drawer_start = 0, drawer_end = 0;
+    for (int i = row + 1; i <= e - 1; i++) {
+        if (i < 1 || i > Buf().LineCount()) continue;
+        const std::string &line = Buf().lines[i - 1];
+        if (IsPropertiesOpenLine(line)) {
+            drawer_start = i;
+        } else if (IsDrawerEndLine(line) && drawer_start) {
+            drawer_end = i;
+            break;
+        }
+    }
+    if (drawer_start == 0) {
+        ReplaceLinesForLua(row, row, {":PROPERTIES:", ":END:"});
+        drawer_start = row + 1;
+        drawer_end = row + 2;
+    }
+    for (int i = drawer_start + 1; i <= drawer_end - 1; i++) {
+        if (i < 1 || i > Buf().LineCount()) continue;
+        std::string k;
+        if (MatchDrawerKeyPrefix(Buf().lines[i - 1], &k) && EqualsIgnoreCase(k, key)) {
+            SetLineForLua(i - 1, ":" + key + ": " + value);
+            return;
+        }
+    }
+    ReplaceLinesForLua(drawer_end - 1, drawer_end - 1, {":" + key + ": " + value});
+}
+
+void Editor::OrgPropertyRemove(int row, const std::string &key, const std::vector<std::string> &todo_keywords) {
+    if (row <= 0) row = OrgCurrentHeadlineRow(0, todo_keywords);
+    if (row <= 0) return;
+    int e = OrgSubtreeEnd(row, todo_keywords);
+    for (int i = row + 1; i <= e - 1; i++) {
+        if (i < 1 || i > Buf().LineCount()) continue;
+        std::string k;
+        if (MatchDrawerKeyPrefix(Buf().lines[i - 1], &k) && EqualsIgnoreCase(k, key)) {
+            ReplaceLinesForLua(i - 1, i, {});
+            return;
+        }
+    }
+}
+
+namespace {
+// kBuiltinOrgDrill's own `mep_org_sm2` port: SM-2 spaced-repetition
+// update (ef/reps/interval are read-modify-write in place).
+void Sm2Update(double *ef, int *reps, int *interval, int quality) {
+    if (quality < 3) {
+        *reps = 0;
+        *interval = 1;
+    } else {
+        (*reps)++;
+        if (*reps == 1) {
+            *interval = 1;
+        } else if (*reps == 2) {
+            *interval = 6;
+        } else {
+            *interval = static_cast<int>(std::floor(*interval * (*ef) + 0.5));
+        }
+    }
+    *ef = *ef + (0.1 - (5 - quality) * (0.08 + (5 - quality) * 0.02));
+    if (*ef < 1.3) *ef = 1.3;
+}
+
+double PropertyNumberOr(const std::pair<bool, std::string> &r, double def) {
+    if (!r.first) return def;
+    char *end = nullptr;
+    double v = std::strtod(r.second.c_str(), &end);
+    return end == r.second.c_str() ? def : v;
+}
+
+int PropertyIntOr(const std::pair<bool, std::string> &r, int def) {
+    if (!r.first) return def;
+    char *end = nullptr;
+    long v = std::strtol(r.second.c_str(), &end, 10);
+    return end == r.second.c_str() ? def : static_cast<int>(v);
+}
+}  // namespace
+
+void Editor::OrgDrillGrade(int row, int quality, const std::vector<std::string> &todo_keywords) {
+    double ef = PropertyNumberOr(OrgPropertyGet(row, "DRILL_EF", todo_keywords), 2.5);
+    int reps = PropertyIntOr(OrgPropertyGet(row, "DRILL_REPS", todo_keywords), 0);
+    int interval = PropertyIntOr(OrgPropertyGet(row, "DRILL_INTERVAL", todo_keywords), 0);
+    Sm2Update(&ef, &reps, &interval, quality);
+    char efbuf[32];
+    std::snprintf(efbuf, sizeof(efbuf), "%.2f", ef);
+    OrgPropertySet(row, "DRILL_EF", efbuf, todo_keywords);
+    OrgPropertySet(row, "DRILL_REPS", std::to_string(reps), todo_keywords);
+    OrgPropertySet(row, "DRILL_INTERVAL", std::to_string(interval), todo_keywords);
+    std::time_t due_time = std::time(nullptr) + static_cast<std::time_t>(interval) * 86400;
+    std::tm tmv{};
+    localtime_r(&due_time, &tmv);
+    char datebuf[16];
+    std::strftime(datebuf, sizeof(datebuf), "%Y-%m-%d", &tmv);
+    OrgPropertySet(row, "DRILL_DUE", datebuf, todo_keywords);
+}
+
+std::string Editor::OrgResolvePath(const std::string &path) const {
+    if (!path.empty() && path[0] == '/') return path;
+    if (!path.empty() && path[0] == '~') {
+        const char *home = std::getenv("HOME");
+        if (home) return std::string(home) + path.substr(1);
+        return path;
+    }
+    std::string abs = LspAbspath(CurrentBuffer().filename);
+    size_t slash = abs.find_last_of('/');
+    if (slash == std::string::npos) return path;
+    return abs.substr(0, slash) + "/" + path;
+}
+
+namespace {
+bool IsOrgImageExtension(const std::string &path) {
+    size_t pos = path.find_last_of('.');
+    if (pos == std::string::npos) return false;
+    size_t start = pos + 1;
+    size_t i = start;
+    while (i < path.size() && std::isalnum(static_cast<unsigned char>(path[i]))) i++;
+    if (i != path.size() || i == start) return false;
+    std::string ext = path.substr(start);
+    for (char &c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "bmp" || ext == "gif";
+}
+
+// kBuiltinOrgImages' own `'^([^%]]+)%]%[.+$'` port: strips a
+// "][description" suffix off a `[[target][description]]` link's inner
+// text, same as mep.org_link_at_cursor's own handling.
+std::string ExtractOrgImageLinkTarget(const std::string &inner) {
+    size_t rb = inner.find(']');
+    if (rb == std::string::npos || rb == 0) return inner;
+    if (rb + 1 >= inner.size() || inner[rb + 1] != '[') return inner;
+    if (rb + 2 >= inner.size()) return inner;
+    return inner.substr(0, rb);
+}
+}  // namespace
+
+void Editor::OrgImageScan() {
+    ClearOrgImageRows();
+    if (LspFiletype(CurrentBuffer().filename) != "org") return;
+    const int n = Buf().LineCount();
+    for (int i = 1; i <= n; i++) {
+        const std::string &line = Buf().lines[i - 1];
+        size_t pos = 0;
+        while (true) {
+            size_t open = line.find("[[", pos);
+            if (open == std::string::npos) break;
+            size_t close = line.find("]]", open + 2);
+            if (close == std::string::npos) break;
+            std::string inner = line.substr(open + 2, close - (open + 2));
+            pos = close + 2;
+            std::string target = ExtractOrgImageLinkTarget(inner);
+            if (target.compare(0, 5, "file:") == 0) {
+                std::string rest = target.substr(5);
+                size_t hash = rest.find('#');
+                std::string path = hash == std::string::npos ? rest : rest.substr(0, hash);
+                if (IsOrgImageExtension(path)) {
+                    SetOrgImageRow(i - 1, OrgResolvePath(path));
+                }
+            }
+        }
+    }
+}
+
+namespace {
+// Classic greedy-with-backtrack `*` wildcard match (single-char literals
+// only -- no `?`/character classes, matching kBuiltinOrgAgenda's own
+// glob subset: only `*` within the final path component). Equivalent to
+// the original's own "escape everything else, turn `*` into Lua's `.*`,
+// anchor with ^...$" approach, just without building an intermediate
+// pattern string.
+bool MatchesGlob(const std::string &name, const std::string &glob) {
+    size_t n = 0, g = 0, star_g = std::string::npos, star_n = 0;
+    while (n < name.size()) {
+        if (g < glob.size() && glob[g] == '*') {
+            star_g = g++;
+            star_n = n;
+        } else if (g < glob.size() && glob[g] == name[n]) {
+            g++;
+            n++;
+        } else if (star_g != std::string::npos) {
+            g = star_g + 1;
+            n = ++star_n;
+        } else {
+            return false;
+        }
+    }
+    while (g < glob.size() && glob[g] == '*') g++;
+    return g == glob.size();
+}
+}  // namespace
+
+std::vector<std::string> Editor::OrgAgendaExpandGlob(const std::string &pattern) const {
+    size_t slash = pattern.find_last_of('/');
+    if (slash == std::string::npos) return {pattern};
+    std::string dir = pattern.substr(0, slash);
+    std::string filepat = pattern.substr(slash + 1);
+    if (filepat.find('*') == std::string::npos) return {pattern};
+    std::vector<std::string> results;
+    for (const DirEntry &e : ListDirectory(dir)) {
+        if (!e.is_dir && MatchesGlob(e.name, filepat)) results.push_back(dir + "/" + e.name);
+    }
+    return results;
+}
+
+namespace {
+// kBuiltinOrgAgenda's own `'SCHEDULED:%s*<([^>]+)>'`/`'DEADLINE:%s*<([^>]+)>'`
+// port (unanchored search for `tag`, then the bracketed timestamp body).
+bool MatchPlanningTag(const std::string &line, const std::string &tag, std::string *out) {
+    size_t pos = line.find(tag);
+    if (pos == std::string::npos) return false;
+    size_t i = pos + tag.size();
+    while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) i++;
+    if (i >= line.size() || line[i] != '<') return false;
+    size_t start = i + 1;
+    size_t close = line.find('>', start);
+    if (close == std::string::npos || close == start) return false;
+    *out = line.substr(start, close - start);
+    return true;
+}
+}  // namespace
+
+std::vector<Editor::OrgAgendaEntry> Editor::OrgAgendaScanLines(const std::vector<std::string> &lines,
+                                                                const std::string &path,
+                                                                const std::vector<std::string> &todo_keywords) const {
+    std::vector<OrgAgendaEntry> entries;
+    for (size_t idx = 0; idx < lines.size(); idx++) {
+        OrgHeadlineParse h = ParseOrgHeadline(lines[idx], todo_keywords);
+        if (!h.is_headline) continue;
+        OrgAgendaEntry e;
+        e.file = path;
+        e.line = static_cast<int>(idx) + 1;
+        e.todo = h.todo;
+        e.has_todo = h.has_todo;
+        e.title = h.title;
+        e.tags = h.tags;
+        e.has_tags = h.has_tags;
+        e.priority = h.priority;
+        e.has_priority = h.has_priority;
+        if (idx + 1 < lines.size()) {
+            const std::string &nextline = lines[idx + 1];
+            std::string sched, dead;
+            if (MatchPlanningTag(nextline, "SCHEDULED:", &sched)) {
+                e.scheduled = sched;
+                e.has_scheduled = true;
+            }
+            if (MatchPlanningTag(nextline, "DEADLINE:", &dead)) {
+                e.deadline = dead;
+                e.has_deadline = true;
+            }
+        }
+        entries.push_back(std::move(e));
+    }
+    return entries;
+}
+
+namespace {
+std::string ReplaceAllLiteral(std::string s, const std::string &from, const std::string &to) {
+    size_t pos = 0;
+    while ((pos = s.find(from, pos)) != std::string::npos) {
+        s.replace(pos, from.size(), to);
+        pos += to.size();
+    }
+    return s;
+}
+
+// Date-only sibling of FormatOrgTimestampNow (OrgClock's own helper,
+// above) -- org-capture's %u/%t placeholders want no time-of-day.
+std::string FormatOrgDateOnlyNow() {
+    std::time_t now = std::time(nullptr);
+    std::tm tmv{};
+    localtime_r(&now, &tmv);
+    char buf[32];
+    std::strftime(buf, sizeof(buf), "%Y-%m-%d %a", &tmv);
+    return std::string(buf);
+}
+}  // namespace
+
+std::string Editor::OrgExpandCaptureTemplate(const std::string &tmpl) const {
+    std::string out = tmpl;
+    out = ReplaceAllLiteral(out, "%U", "[" + FormatOrgTimestampNow() + "]");
+    out = ReplaceAllLiteral(out, "%u", "[" + FormatOrgDateOnlyNow() + "]");
+    out = ReplaceAllLiteral(out, "%T", "<" + FormatOrgTimestampNow() + ">");
+    out = ReplaceAllLiteral(out, "%t", "<" + FormatOrgDateOnlyNow() + ">");
+    out = ReplaceAllLiteral(out, "%a", "[[file:" + CurrentBuffer().filename + "]]");
+    out = ReplaceAllLiteral(out, "%%", "%");
+    return out;
+}
+
+int Editor::OrgRefileMove(int target_row, const std::vector<std::string> &todo_keywords) {
+    int row = OrgCurrentHeadlineRow(0, todo_keywords);
+    if (row <= 0) return 0;
+    int e = OrgSubtreeEnd(row, todo_keywords);
+    std::vector<std::string> lines;
+    for (int i = row; i <= e - 1; i++) {
+        if (i < 1 || i > Buf().LineCount()) continue;
+        lines.push_back(Buf().lines[i - 1]);
+    }
+    if (lines.empty()) return 0;
+    int src_level = ParseOrgHeadline(lines[0], todo_keywords).level;
+    if (target_row < 1 || target_row > Buf().LineCount()) return 0;
+    int target_level = ParseOrgHeadline(Buf().lines[target_row - 1], todo_keywords).level;
+    int target_end = OrgSubtreeEnd(target_row, todo_keywords);
+
+    int delta = (target_level + 1) - src_level;
+    std::vector<std::string> reindented;
+    for (const std::string &line : lines) {
+        size_t stars = 0;
+        while (stars < line.size() && line[stars] == '*') stars++;
+        if (stars > 0 && delta != 0) {
+            int new_stars = std::max(1, static_cast<int>(stars) + delta);
+            reindented.push_back(std::string(static_cast<size_t>(new_stars), '*') + line.substr(stars));
+        } else {
+            reindented.push_back(line);
+        }
+    }
+
+    int dest_row;
+    if (target_row > row) {
+        ReplaceLinesForLua(target_end - 1, target_end - 1, reindented);
+        ReplaceLinesForLua(row - 1, e - 1, {});
+        dest_row = target_end - (e - row);
+    } else {
+        ReplaceLinesForLua(row - 1, e - 1, {});
+        ReplaceLinesForLua(target_end - 1, target_end - 1, reindented);
+        dest_row = target_end;
+    }
+    SetCursorForLua(dest_row - 1, 0);
+    return dest_row;
+}
+
+namespace {
+std::string LatexTrim(const std::string &s) {
+    size_t start = 0, end = s.size();
+    while (start < end && std::isspace(static_cast<unsigned char>(s[start]))) start++;
+    while (end > start && std::isspace(static_cast<unsigned char>(s[end - 1]))) end--;
+    return s.substr(start, end - start);
+}
+
+bool LatexWrapped(const std::string &s, const std::string &open, const std::string &close) {
+    if (s.size() <= open.size() + close.size()) return false;
+    if (s.compare(0, open.size(), open) != 0) return false;
+    return s.compare(s.size() - close.size(), close.size(), close) == 0;
+}
+
+bool MatchCiLiteral(const std::string &s, size_t pos, const std::string &lit) {
+    if (pos + lit.size() > s.size()) return false;
+    for (size_t k = 0; k < lit.size(); k++) {
+        if (std::tolower(static_cast<unsigned char>(s[pos + k])) != std::tolower(static_cast<unsigned char>(lit[k]))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+size_t SkipWs(const std::string &s, size_t pos) {
+    while (pos < s.size() && std::isspace(static_cast<unsigned char>(s[pos]))) pos++;
+    return pos;
+}
+
+// kBuiltinOrgLatex's own case-insensitive `#+BEGIN_LATEX`/`#+END_LATEX`/
+// `#+BEGIN_SRC latex`/`#+END_SRC` line matchers.
+bool IsLatexBlockOpen(const std::string &line) {
+    size_t i = SkipWs(line, 0);
+    if (i + 1 >= line.size() || line[i] != '#' || line[i + 1] != '+') return false;
+    i += 2;
+    if (!MatchCiLiteral(line, i, "BEGIN_LATEX")) return false;
+    i = SkipWs(line, i + 11);
+    return i == line.size();
+}
+
+bool IsLatexBlockClose(const std::string &line) {
+    size_t i = SkipWs(line, 0);
+    if (i + 1 >= line.size() || line[i] != '#' || line[i + 1] != '+') return false;
+    return MatchCiLiteral(line, i + 2, "END_LATEX");
+}
+
+bool IsSrcLatexOpen(const std::string &line) {
+    size_t i = SkipWs(line, 0);
+    if (i + 1 >= line.size() || line[i] != '#' || line[i + 1] != '+') return false;
+    i += 2;
+    if (!MatchCiLiteral(line, i, "BEGIN_SRC")) return false;
+    size_t ws_start = i + 9;
+    size_t after_ws = SkipWs(line, ws_start);
+    if (after_ws == ws_start) return false;
+    return MatchCiLiteral(line, after_ws, "latex");
+}
+
+bool IsSrcClose(const std::string &line) {
+    size_t i = SkipWs(line, 0);
+    if (i + 1 >= line.size() || line[i] != '#' || line[i + 1] != '+') return false;
+    return MatchCiLiteral(line, i + 2, "END_SRC");
+}
+
+std::string JoinNewline(const std::vector<std::string> &lines) {
+    std::string out;
+    for (size_t i = 0; i < lines.size(); i++) {
+        if (i > 0) out += '\n';
+        out += lines[i];
+    }
+    return out;
+}
+
+// kBuiltinOrgLatex's own `mep_org_latex_scan_inline` port: every
+// $..$/\(..\)/\[..\]/$$..$$ fragment embedded *within* a line that isn't
+// wholly consumed by one (Editor::OrgLatexScanFragments' whole-line
+// forms already handle that case). `row` is left unset (0); the caller
+// fills it in, since this scans one already-extracted line at a time.
+// Bare `$` is the only ambiguous delimiter -- see this function's own
+// Lua-source comment (main.cpp, kBuiltinOrgLatex) for the disambiguation
+// rule this mirrors exactly.
+std::vector<Editor::OrgLatexInlineSpan> ScanLatexInlineSpans(const std::string &line) {
+    std::vector<Editor::OrgLatexInlineSpan> spans;
+    size_t n = line.size();
+    size_t i = 0;
+    while (i < n) {
+        std::string body;
+        size_t span_end = 0;  // 0-indexed position of the span's last included char
+
+        if (i + 1 < n && line[i] == '\\' && line[i + 1] == '[') {
+            size_t s = line.find("\\]", i + 2);
+            if (s != std::string::npos) {
+                span_end = s + 1;
+                body = line.substr(i, span_end - i + 1);
+            }
+        } else if (i + 1 < n && line[i] == '$' && line[i + 1] == '$') {
+            size_t s = line.find("$$", i + 2);
+            if (s != std::string::npos) {
+                span_end = s + 1;
+                body = line.substr(i, span_end - i + 1);
+            }
+        } else if (i + 1 < n && line[i] == '\\' && line[i + 1] == '(') {
+            size_t s = line.find("\\)", i + 2);
+            if (s != std::string::npos) {
+                span_end = s + 1;
+                body = line.substr(i, span_end - i + 1);
+            }
+        } else if (line[i] == '$') {
+            char next_char = (i + 1 < n) ? line[i + 1] : '\0';
+            if (next_char != '\0' && next_char != ' ' && next_char != '$') {
+                size_t search_from = i + 1;
+                while (true) {
+                    size_t s = line.find('$', search_from);
+                    if (s == std::string::npos) break;
+                    char prev_char = (s > 0) ? line[s - 1] : '\0';
+                    char after_char = (s + 1 < n) ? line[s + 1] : '\0';
+                    bool after_is_digit = after_char != '\0' && std::isdigit(static_cast<unsigned char>(after_char));
+                    if (prev_char != ' ' && !after_is_digit) {
+                        span_end = s;
+                        body = line.substr(i, span_end - i + 1);
+                        break;
+                    }
+                    search_from = s + 1;
+                }
+            }
+        }
+
+        if (body.size() > 2) {
+            Editor::OrgLatexInlineSpan sp;
+            sp.row = 0;
+            sp.col_start = static_cast<int>(i) + 1;
+            sp.col_end = static_cast<int>(span_end) + 2;
+            sp.body = std::move(body);
+            spans.push_back(std::move(sp));
+            i = span_end + 1;
+        } else {
+            i++;
+        }
+    }
+    return spans;
+}
+}  // namespace
+
+Editor::OrgLatexScanResult Editor::OrgLatexScanFragments() const {
+    OrgLatexScanResult result;
+    const int n = Buf().LineCount();
+    int i = 1;
+    while (i <= n) {
+        const std::string &line = Buf().lines[i - 1];
+        std::string trimmed = LatexTrim(line);
+        std::string body;
+        int end_row = 0;
+
+        if (IsLatexBlockOpen(line)) {
+            std::vector<std::string> lines;
+            int j = i + 1;
+            while (j <= n && !IsLatexBlockClose(Buf().lines[j - 1])) {
+                lines.push_back(Buf().lines[j - 1]);
+                j++;
+            }
+            if (j <= n) {
+                body = JoinNewline(lines);
+                end_row = j;
+            }
+        } else if (IsSrcLatexOpen(line)) {
+            std::vector<std::string> lines;
+            int j = i + 1;
+            while (j <= n && !IsSrcClose(Buf().lines[j - 1])) {
+                lines.push_back(Buf().lines[j - 1]);
+                j++;
+            }
+            if (j <= n) {
+                body = JoinNewline(lines);
+                end_row = j;
+            }
+        } else if (LatexWrapped(trimmed, "\\[", "\\]")) {
+            body = trimmed;
+            end_row = i;
+        } else if (trimmed == "\\[") {
+            std::vector<std::string> lines;
+            int j = i + 1;
+            while (j <= n && LatexTrim(Buf().lines[j - 1]) != "\\]") {
+                lines.push_back(Buf().lines[j - 1]);
+                j++;
+            }
+            if (j <= n) {
+                body = "\\[" + JoinNewline(lines) + "\\]";
+                end_row = j;
+            }
+        } else if (LatexWrapped(trimmed, "$$", "$$")) {
+            body = trimmed;
+            end_row = i;
+        } else if (trimmed == "$$") {
+            std::vector<std::string> lines;
+            int j = i + 1;
+            while (j <= n && LatexTrim(Buf().lines[j - 1]) != "$$") {
+                lines.push_back(Buf().lines[j - 1]);
+                j++;
+            }
+            if (j <= n) {
+                body = "$$" + JoinNewline(lines) + "$$";
+                end_row = j;
+            }
+        } else if (LatexWrapped(trimmed, "\\(", "\\)")) {
+            body = trimmed;
+            end_row = i;
+        } else if (trimmed.size() > 2 && trimmed.front() == '$' && trimmed.back() == '$' &&
+                   trimmed[1] != '$' && trimmed[trimmed.size() - 2] != '$') {
+            body = trimmed;
+            end_row = i;
+        }
+
+        if (!body.empty()) {
+            result.blocks.push_back({i, end_row, body});
+            i = end_row + 1;
+        } else {
+            for (OrgLatexInlineSpan &span : ScanLatexInlineSpans(line)) {
+                span.row = i;
+                result.inlines.push_back(std::move(span));
+            }
+            i++;
+        }
+    }
+    return result;
+}
+
+namespace {
+// kBuiltinOrgBib's own `mep_org_bib_split_top_level` port: splits `s` on
+// `sep` at brace-depth 0 / outside quotes only (quotes only toggle at
+// brace-depth 0, since a quote inside a `{...}` group is already
+// protected by the braces).
+std::vector<std::string> BibSplitTopLevel(const std::string &s, char sep) {
+    std::vector<std::string> parts;
+    int depth = 0;
+    bool in_quotes = false;
+    size_t start = 0;
+    for (size_t i = 0; i < s.size(); i++) {
+        char c = s[i];
+        if (c == '"' && depth == 0) {
+            in_quotes = !in_quotes;
+        } else if (c == '{' && !in_quotes) {
+            depth++;
+        } else if (c == '}' && !in_quotes) {
+            depth--;
+        } else if (c == sep && depth == 0 && !in_quotes) {
+            parts.push_back(s.substr(start, i - start));
+            start = i + 1;
+        }
+    }
+    parts.push_back(s.substr(start));
+    return parts;
+}
+
+// kBuiltinOrgBib's own `mep_org_bib_expand_value` port.
+std::string BibExpandValue(const std::string &val, const std::map<std::string, std::string> &strings) {
+    std::vector<std::string> parts = BibSplitTopLevel(val, '#');
+    if (parts.size() == 1 && !val.empty() && (val[0] == '{' || val[0] == '"')) {
+        if (val.size() >= 2 && val.front() == '{' && val.back() == '}') return val.substr(1, val.size() - 2);
+        if (val.size() >= 2 && val.front() == '"' && val.back() == '"') return val.substr(1, val.size() - 2);
+        return val;
+    }
+    std::string buf;
+    for (const std::string &p : parts) {
+        std::string t = LatexTrim(p);
+        if (t.size() >= 2 && t.front() == '{' && t.back() == '}') {
+            buf += t.substr(1, t.size() - 2);
+        } else if (t.size() >= 2 && t.front() == '"' && t.back() == '"') {
+            buf += t.substr(1, t.size() - 2);
+        } else {
+            std::string lower_t = t;
+            for (char &c : lower_t) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            auto it = strings.find(lower_t);
+            buf += (it != strings.end()) ? it->second : t;
+        }
+    }
+    return buf;
+}
+
+// kBuiltinOrgBib's own `text:gmatch('@(%a+)%s*(%b{})')` port: finds the
+// next `@TYPE{balanced brace group}` occurrence at/after `pos`. Letters
+// consumed by TYPE and whitespace consumed between TYPE and `{` can
+// never themselves be `{`, so there's no backtracking case where a
+// shorter TYPE/whitespace span would expose a `{` a longer greedy scan
+// missed -- a plain greedy scan-then-check is equivalent to Lua's
+// (potentially-backtracking) pattern engine here.
+bool FindNextBibEntry(const std::string &text, size_t pos, std::string *etype, std::string *body, size_t *next_pos) {
+    while (true) {
+        size_t at = text.find('@', pos);
+        if (at == std::string::npos) return false;
+        size_t i = at + 1;
+        size_t type_start = i;
+        while (i < text.size() && std::isalpha(static_cast<unsigned char>(text[i]))) i++;
+        if (i == type_start) {
+            pos = at + 1;
+            continue;
+        }
+        std::string type_str = text.substr(type_start, i - type_start);
+        size_t j = SkipWs(text, i);
+        if (j >= text.size() || text[j] != '{') {
+            pos = at + 1;
+            continue;
+        }
+        int depth = 0;
+        size_t close = std::string::npos;
+        for (size_t k = j; k < text.size(); k++) {
+            if (text[k] == '{') {
+                depth++;
+            } else if (text[k] == '}') {
+                depth--;
+                if (depth == 0) {
+                    close = k;
+                    break;
+                }
+            }
+        }
+        if (close == std::string::npos) {
+            pos = at + 1;
+            continue;
+        }
+        *etype = type_str;
+        *body = text.substr(j + 1, close - j - 1);
+        *next_pos = close + 1;
+        return true;
+    }
+}
+
+// kBuiltinOrgBib's own `'^%s*([%w_%-]+)%s*=%s*(.-)%s*$'` port (used for
+// both `@string{name = value}` and, after the field-splitter, each
+// `name = value` field -- the original's field variant is a separate
+// two-step match-then-trim, but nets out to the exact same result).
+bool BibMatchNameEqVal(const std::string &s, std::string *name, std::string *val) {
+    size_t i = SkipWs(s, 0);
+    size_t name_start = i;
+    while (i < s.size() && (std::isalnum(static_cast<unsigned char>(s[i])) || s[i] == '_' || s[i] == '-')) i++;
+    if (i == name_start) return false;
+    *name = s.substr(name_start, i - name_start);
+    i = SkipWs(s, i);
+    if (i >= s.size() || s[i] != '=') return false;
+    i++;
+    i = SkipWs(s, i);
+    size_t val_start = i;
+    size_t val_end = s.size();
+    while (val_end > val_start && std::isspace(static_cast<unsigned char>(s[val_end - 1]))) val_end--;
+    *val = s.substr(val_start, val_end - val_start);
+    return true;
+}
+
+// kBuiltinOrgBib's own `'^%s*([^,]+),(.*)$'` port.
+bool BibMatchKeyAndFieldstr(const std::string &body, std::string *key_raw, std::string *fieldstr) {
+    size_t i = SkipWs(body, 0);
+    size_t key_start = i;
+    while (i < body.size() && body[i] != ',') i++;
+    if (i >= body.size() || i == key_start) return false;
+    *key_raw = body.substr(key_start, i - key_start);
+    *fieldstr = body.substr(i + 1);
+    return true;
+}
+
+std::string BibLower(const std::string &s) {
+    std::string out = s;
+    for (char &c : out) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return out;
+}
+
+// kBuiltinOrgBib's own `mep_org_bib_parse` port.
+void BibParseText(const std::string &text, std::map<std::string, std::string> *strings,
+                   std::vector<Editor::OrgBibEntry> *entries) {
+    size_t pos = 0;
+    std::string etype, body;
+    size_t next_pos = 0;
+    while (FindNextBibEntry(text, pos, &etype, &body, &next_pos)) {
+        pos = next_pos;
+        std::string lower_type = BibLower(etype);
+        if (lower_type == "string") {
+            std::string name, val;
+            if (BibMatchNameEqVal(body, &name, &val)) {
+                (*strings)[BibLower(name)] = BibExpandValue(val, *strings);
+            }
+        } else if (lower_type != "comment" && lower_type != "preamble") {
+            std::string key_raw, fieldstr;
+            if (BibMatchKeyAndFieldstr(body, &key_raw, &fieldstr)) {
+                Editor::OrgBibEntry entry;
+                entry.type = lower_type;
+                entry.key = LatexTrim(key_raw);
+                for (const std::string &part : BibSplitTopLevel(fieldstr, ',')) {
+                    std::string name, val;
+                    if (BibMatchNameEqVal(part, &name, &val)) {
+                        entry.fields[BibLower(name)] = BibExpandValue(val, *strings);
+                    }
+                }
+                entries->push_back(std::move(entry));
+            }
+        }
+    }
+}
+}  // namespace
+
+std::vector<Editor::OrgBibEntry> Editor::OrgBibParseFiles(const std::vector<std::string> &file_texts) const {
+    std::map<std::string, std::string> strings;
+    std::vector<OrgBibEntry> entries;
+    for (const std::string &text : file_texts) {
+        BibParseText(text, &strings, &entries);
+    }
+    std::map<std::string, OrgBibEntry *> by_key;
+    for (OrgBibEntry &e : entries) by_key[e.key] = &e;
+    for (OrgBibEntry &e : entries) {
+        auto fit = e.fields.find("crossref");
+        if (fit == e.fields.end()) continue;
+        auto pit = by_key.find(fit->second);
+        if (pit == by_key.end()) pit = by_key.find(BibLower(fit->second));
+        if (pit == by_key.end()) continue;
+        for (const auto &kv : pit->second->fields) {
+            if (e.fields.find(kv.first) == e.fields.end()) e.fields[kv.first] = kv.second;
+        }
+    }
+    return entries;
+}
+
+namespace {
+bool IsBibWordChar(char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; }
+bool IsBibKeyChar(char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-' || c == ':'; }
+
+// kBuiltinOrgBib's own `'^%s*@?(%S+)%s*$'` port.
+bool BibMatchAtKey(const std::string &s, std::string *key) {
+    size_t i = SkipWs(s, 0);
+    if (i < s.size() && s[i] == '@') i++;
+    size_t key_start = i;
+    while (i < s.size() && !std::isspace(static_cast<unsigned char>(s[i]))) i++;
+    if (i == key_start) return false;
+    size_t key_end = i;
+    i = SkipWs(s, i);
+    if (i != s.size()) return false;
+    *key = s.substr(key_start, key_end - key_start);
+    return true;
+}
+
+// kBuiltinOrgBib's own `'%[cite[%a/]-:(.-)%]'` port: `[%a/]-` is lazy,
+// but since neither a letter nor `/` can ever be `:`, a greedy
+// scan-then-check for the next `:` lands at the exact same position a
+// (potentially-backtracking) lazy match would -- same reasoning as
+// FindNextBibEntry above.
+bool FindNextOrgCiteSpan(const std::string &line, size_t pos, size_t *match_start, size_t *match_end,
+                          std::string *body) {
+    static const std::string kPrefix = "[cite";
+    while (true) {
+        if (pos + kPrefix.size() > line.size()) return false;
+        size_t s = line.find(kPrefix, pos);
+        if (s == std::string::npos) return false;
+        size_t i = s + kPrefix.size();
+        while (i < line.size() && (std::isalpha(static_cast<unsigned char>(line[i])) || line[i] == '/')) i++;
+        if (i >= line.size() || line[i] != ':') {
+            pos = s + 1;
+            continue;
+        }
+        size_t body_start = i + 1;
+        size_t close = line.find(']', body_start);
+        if (close == std::string::npos) {
+            pos = s + 1;
+            continue;
+        }
+        *match_start = s;
+        *match_end = close;
+        *body = line.substr(body_start, close - body_start);
+        return true;
+    }
+}
+
+// kBuiltinOrgBib's own `mep_org_bib_cite_spans` port.
+std::vector<Editor::OrgBibCiteSpan> BibCiteSpans(const std::string &line) {
+    std::vector<Editor::OrgBibCiteSpan> spans;
+
+    size_t pos = 0;
+    size_t match_start = 0, match_end = 0;
+    std::string body;
+    while (FindNextOrgCiteSpan(line, pos, &match_start, &match_end, &body)) {
+        pos = match_end + 1;
+        std::vector<std::string> keys;
+        for (const std::string &part : BibSplitTopLevel(body, ';')) {
+            std::string k;
+            if (BibMatchAtKey(part, &k)) keys.push_back(k);
+        }
+        if (!keys.empty()) {
+            spans.push_back({static_cast<int>(match_start) + 1, static_cast<int>(match_end) + 1, std::move(keys)});
+        }
+    }
+
+    static const std::vector<std::string> kLegacyPrefixes = {"citeauthor", "citeyear", "citep", "citet", "cite"};
+    size_t n = line.size();
+    size_t p = 0;
+    while (p < n) {
+        bool matched = false;
+        char prev = (p > 0) ? line[p - 1] : '\0';
+        bool prev_is_word = prev != '\0' && IsBibWordChar(prev);
+        if (prev != '[' && !prev_is_word) {
+            for (const std::string &prefix : kLegacyPrefixes) {
+                size_t plen = prefix.size();
+                if (p + plen < n && line.compare(p, plen, prefix) == 0 && line[p + plen] == ':') {
+                    size_t after = p + plen + 1;
+                    char after_char = (after < n) ? line[after] : '\0';
+                    bool after_is_key = after_char != '\0' && IsBibKeyChar(after_char);
+                    if (after_char != '@' && after_is_key) {
+                        size_t j = after;
+                        std::vector<std::string> keys;
+                        size_t key_start = after;
+                        while (j < n) {
+                            char c = line[j];
+                            if (IsBibKeyChar(c)) {
+                                j++;
+                            } else if (c == ',' && j + 1 < n && IsBibKeyChar(line[j + 1])) {
+                                keys.push_back(line.substr(key_start, j - key_start));
+                                j++;
+                                key_start = j;
+                            } else {
+                                break;
+                            }
+                        }
+                        keys.push_back(line.substr(key_start, j - key_start));
+                        spans.push_back({static_cast<int>(p) + 1, static_cast<int>(j), std::move(keys)});
+                        p = j;
+                        matched = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if (!matched) p++;
+    }
+
+    std::sort(spans.begin(), spans.end(), [](const Editor::OrgBibCiteSpan &a, const Editor::OrgBibCiteSpan &b) {
+        return a.col_start < b.col_start;
+    });
+    return spans;
+}
+}  // namespace
+
+std::vector<std::string> Editor::OrgBibCiteAtCursor() const {
+    int row = 0, col = 0;
+    GetCursorForLua(&row, &col);
+    row += 1;
+    col += 1;
+    if (row < 1 || row > Buf().LineCount()) return {};
+    const std::string &line = Buf().lines[row - 1];
+    for (const OrgBibCiteSpan &span : BibCiteSpans(line)) {
+        if (col >= span.col_start && col <= span.col_end) return span.keys;
+    }
+    return {};
+}
+
+namespace {
+bool HasOrgExtension(const std::string &name) {
+    static const std::string kExt = ".org";
+    return name.size() >= kExt.size() && name.compare(name.size() - kExt.size(), kExt.size(), kExt) == 0;
+}
+
+// kBuiltinOrgRoam's own `'^#%+[Tt][Ii][Tt][Ll][Ee]:%s*(.*)$'` port.
+bool MatchTitleKeyword(const std::string &line, std::string *title) {
+    if (line.size() < 2 || line[0] != '#' || line[1] != '+') return false;
+    if (!MatchCiLiteral(line, 2, "TITLE:")) return false;
+    size_t i = SkipWs(line, 8);
+    *title = line.substr(i);
+    return true;
+}
+
+// kBuiltinOrgRoam's own `'^%s*:ID:%s*(%S+)'` port (unanchored end).
+bool MatchIdProperty(const std::string &line, std::string *id) {
+    size_t i = SkipWs(line, 0);
+    static const std::string kTag = ":ID:";
+    if (line.compare(i, kTag.size(), kTag) != 0) return false;
+    i = SkipWs(line, i + kTag.size());
+    size_t start = i;
+    while (i < line.size() && !std::isspace(static_cast<unsigned char>(line[i]))) i++;
+    if (i == start) return false;
+    *id = line.substr(start, i - start);
+    return true;
+}
+
+// mep_org_roam_gen_id's own port. Uses C++'s own <random> rather than
+// Lua's math.random (see editor.h's own comment on OrgRoamEnsureId).
+std::string GenerateRoamId() {
+    std::time_t now = std::time(nullptr);
+    std::tm tmv{};
+    localtime_r(&now, &tmv);
+    char buf[32];
+    std::strftime(buf, sizeof(buf), "%Y%m%d%H%M%S", &tmv);
+    static std::mt19937 rng(std::random_device{}());
+    std::uniform_int_distribution<int> dist(1000, 9999);
+    return std::string(buf) + "-" + std::to_string(dist(rng));
+}
+
+// kBuiltinOrgRoam's own `line:gmatch('%[%[id:([%w%-]+)')` port.
+std::vector<std::string> ExtractIdLinkTargets(const std::string &line) {
+    std::vector<std::string> targets;
+    static const std::string kPrefix = "[[id:";
+    size_t pos = 0;
+    while (true) {
+        size_t s = line.find(kPrefix, pos);
+        if (s == std::string::npos) break;
+        size_t i = s + kPrefix.size();
+        size_t start = i;
+        while (i < line.size() && (std::isalnum(static_cast<unsigned char>(line[i])) || line[i] == '-')) i++;
+        if (i > start) {
+            targets.push_back(line.substr(start, i - start));
+            pos = i;
+        } else {
+            pos = s + 1;
+        }
+    }
+    return targets;
+}
+}  // namespace
+
+std::vector<std::string> Editor::OrgRoamFilesIn(const std::vector<std::string> &dirs) const {
+    std::vector<std::string> files;
+    for (const std::string &dir : dirs) {
+        for (const DirEntry &e : ListDirectory(dir)) {
+            if (HasOrgExtension(e.name)) files.push_back(dir + "/" + e.name);
+        }
+    }
+    return files;
+}
+
+std::pair<bool, std::string> Editor::OrgRoamTitleOf(const std::vector<std::string> &lines,
+                                                      const std::vector<std::string> &todo_keywords) const {
+    for (const std::string &line : lines) {
+        std::string title;
+        if (MatchTitleKeyword(line, &title)) return {true, title};
+    }
+    for (const std::string &line : lines) {
+        OrgHeadlineParse h = ParseOrgHeadline(line, todo_keywords);
+        if (h.is_headline) return {true, h.title};
+    }
+    return {false, ""};
+}
+
+std::string Editor::OrgRoamEnsureId() {
+    const int n = Buf().LineCount();
+    for (int i = 1; i <= n; i++) {
+        if (ParseOrgHeadline(Buf().lines[i - 1], {}).is_headline) break;
+        std::string id;
+        if (MatchIdProperty(Buf().lines[i - 1], &id)) return id;
+    }
+    std::string id = GenerateRoamId();
+    ReplaceLinesForLua(0, 0, {":PROPERTIES:", ":ID:       " + id, ":END:"});
+    return id;
+}
+
+std::vector<int> Editor::OrgRoamFindBacklinkLines(const std::vector<std::string> &lines,
+                                                   const std::string &target_id) const {
+    std::vector<int> result;
+    std::string needle = "[[id:" + target_id;
+    for (size_t i = 0; i < lines.size(); i++) {
+        if (lines[i].find(needle) != std::string::npos) result.push_back(static_cast<int>(i) + 1);
+    }
+    return result;
+}
+
+Editor::OrgRoamFileIndexEntry Editor::OrgRoamParseFileIndex(const std::vector<std::string> &lines,
+                                                             const std::vector<std::string> &todo_keywords) const {
+    OrgRoamFileIndexEntry result;
+    for (const std::string &line : lines) {
+        if (ParseOrgHeadline(line, {}).is_headline) break;
+        std::string id;
+        if (MatchIdProperty(line, &id)) {
+            result.has_id = true;
+            result.id = id;
+            break;
+        }
+    }
+    if (!result.has_id) return result;
+    std::pair<bool, std::string> title_result = OrgRoamTitleOf(lines, todo_keywords);
+    result.has_title = title_result.first;
+    result.title = title_result.second;
+    std::vector<std::string> links;
+    std::unordered_set<std::string> seen;
+    for (const std::string &line : lines) {
+        for (const std::string &lid : ExtractIdLinkTargets(line)) {
+            if (seen.insert(lid).second) links.push_back(lid);
+        }
+    }
+    result.links = std::move(links);
+    return result;
+}
+
+namespace {
+// mep_org_table_row's own port. Private to this file (the original was
+// a `local function` too, used only by org_table_align).
+struct OrgTableRow {
+    bool is_row = false;
+    bool is_sep = false;
+    std::vector<std::string> cells;
+};
+
+// kBuiltinOrgLinks' own `'^%s*|%-'`/inner-cell-split port.
+OrgTableRow ParseOrgTableRowImpl(const std::string &line) {
+    OrgTableRow result;
+    size_t i = SkipWs(line, 0);
+    if (i >= line.size() || line[i] != '|') return result;
+    result.is_row = true;
+    if (i + 1 < line.size() && line[i + 1] == '-') {
+        result.is_sep = true;
+        return result;
+    }
+    size_t bar_pos = i;
+    size_t end_trimmed = line.size();
+    while (end_trimmed > bar_pos + 1 && std::isspace(static_cast<unsigned char>(line[end_trimmed - 1]))) {
+        end_trimmed--;
+    }
+    std::string inner;
+    if (end_trimmed > bar_pos + 1 && line[end_trimmed - 1] == '|') {
+        inner = line.substr(bar_pos + 1, (end_trimmed - 1) - (bar_pos + 1));
+    } else {
+        inner = line.substr(bar_pos + 1, end_trimmed - (bar_pos + 1));
+    }
+    std::string with_trailer = inner + "|";
+    size_t start = 0;
+    for (size_t k = 0; k < with_trailer.size(); k++) {
+        if (with_trailer[k] == '|') {
+            result.cells.push_back(LatexTrim(with_trailer.substr(start, k - start)));
+            start = k + 1;
+        }
+    }
+    return result;
+}
+}  // namespace
+
+void Editor::OrgTableAlign() {
+    int row = 0, col = 0;
+    GetCursorForLua(&row, &col);
+    row += 1;
+    const int n = Buf().LineCount();
+    if (row < 1 || row > n || !ParseOrgTableRowImpl(Buf().lines[row - 1]).is_row) {
+        Notify("Not on a table row", NotifyLevel::Warn);
+        return;
+    }
+    int top = row;
+    while (top > 1 && ParseOrgTableRowImpl(Buf().lines[top - 2]).is_row) top--;
+    int bot = row;
+    while (bot < n && ParseOrgTableRowImpl(Buf().lines[bot]).is_row) bot++;
+
+    std::vector<int> widths;
+    std::vector<std::pair<int, OrgTableRow>> rows;
+    for (int i = top; i <= bot; i++) {
+        OrgTableRow r = ParseOrgTableRowImpl(Buf().lines[i - 1]);
+        if (!r.is_sep) {
+            for (size_t ci = 0; ci < r.cells.size(); ci++) {
+                if (ci >= widths.size()) widths.push_back(0);
+                widths[ci] = std::max(widths[ci], static_cast<int>(r.cells[ci].size()));
+            }
+        }
+        rows.push_back({i, std::move(r)});
+    }
+    for (const std::pair<int, OrgTableRow> &entry : rows) {
+        int i = entry.first;
+        const OrgTableRow &r = entry.second;
+        std::string line = "|";
+        if (r.is_sep) {
+            for (size_t wi = 0; wi < widths.size(); wi++) {
+                if (wi > 0) line += "+";
+                line += std::string(static_cast<size_t>(widths[wi] + 2), '-');
+            }
+        } else {
+            for (size_t ci = 0; ci < widths.size(); ci++) {
+                if (ci > 0) line += "|";
+                std::string cell = ci < r.cells.size() ? r.cells[ci] : "";
+                line += " " + cell + std::string(static_cast<size_t>(widths[ci]) - cell.size(), ' ') + " ";
+            }
+        }
+        line += "|";
+        SetLineForLua(i - 1, line);
+    }
+}
+
+namespace {
+// kBuiltinOrgLinks' own `'^([^%]]+)%]%[(.+)$'` port: splits inner link
+// text into (target, desc) if it has a `target][desc` shape, else
+// leaves it as a bare target with no description. Same underlying
+// shape as ExtractOrgImageLinkTarget (editor.cpp, OrgImageScan), but
+// that one discards desc -- org_link_at_cursor needs it back.
+void SplitLinkTargetDesc(const std::string &inner, std::string *target, bool *has_desc, std::string *desc) {
+    size_t rb = inner.find(']');
+    if (rb == std::string::npos || rb == 0 || rb + 1 >= inner.size() || inner[rb + 1] != '[' || rb + 2 >= inner.size()) {
+        *target = inner;
+        *has_desc = false;
+        return;
+    }
+    *target = inner.substr(0, rb);
+    *has_desc = true;
+    *desc = inner.substr(rb + 2);
+}
+}  // namespace
+
+Editor::OrgLinkAtCursorResult Editor::OrgLinkAtCursor() const {
+    OrgLinkAtCursorResult result;
+    int row = 0, col = 0;
+    GetCursorForLua(&row, &col);
+    row += 1;
+    col += 1;
+    if (row < 1 || row > Buf().LineCount()) return result;
+    const std::string &line = Buf().lines[row - 1];
+    size_t pos = 0;
+    while (true) {
+        size_t open = line.find("[[", pos);
+        if (open == std::string::npos) break;
+        size_t close = line.find("]]", open + 2);
+        if (close == std::string::npos) break;
+        int s = static_cast<int>(open) + 1;
+        int e = static_cast<int>(close) + 2;
+        if (col >= s && col <= e) {
+            std::string inner = line.substr(open + 2, close - (open + 2));
+            result.found = true;
+            SplitLinkTargetDesc(inner, &result.target, &result.has_desc, &result.desc);
+            return result;
+        }
+        pos = close + 2;
+    }
+    return result;
+}
+
+namespace {
+bool IsDigitRun(const std::string &s, size_t pos, int count) {
+    if (pos + static_cast<size_t>(count) > s.size()) return false;
+    for (int k = 0; k < count; k++) {
+        if (!std::isdigit(static_cast<unsigned char>(s[pos + k]))) return false;
+    }
+    return true;
+}
+
+// kBuiltinOrgLinks' own `'<(%d%d%d%d%-%d%d%-%d%d[^>]-)>'`/
+// `'%[(%d%d%d%d%-%d%d%-%d%d[^%]]-)%]'` port: finds the next
+// `open YYYY-MM-DD ... close` span at/after `pos`.
+bool FindTimestampAt(const std::string &line, size_t pos, char open, char close, size_t *s, size_t *e,
+                      std::string *body) {
+    while (true) {
+        size_t o = line.find(open, pos);
+        if (o == std::string::npos) return false;
+        size_t i = o + 1;
+        bool ok = IsDigitRun(line, i, 4) && i + 4 < line.size() && line[i + 4] == '-' &&
+                  IsDigitRun(line, i + 5, 2) && i + 7 < line.size() && line[i + 7] == '-' && IsDigitRun(line, i + 8, 2);
+        if (!ok) {
+            pos = o + 1;
+            continue;
+        }
+        size_t after_date = i + 10;
+        size_t close_pos = line.find(close, after_date);
+        if (close_pos == std::string::npos) {
+            pos = o + 1;
+            continue;
+        }
+        *s = o;
+        *e = close_pos;
+        *body = line.substr(i, close_pos - i);
+        return true;
+    }
+}
+
+// kBuiltinOrgLinks' own `'^%d%d%d%d%-%d%d%-%d%d%s*%a*(.*)$'` port: the
+// trailing text after the date and an optional weekday name (e.g. a
+// repeater like " +1w").
+std::string ExtractTimestampRest(const std::string &body) {
+    size_t i = SkipWs(body, 10);
+    while (i < body.size() && std::isalpha(static_cast<unsigned char>(body[i]))) i++;
+    return body.substr(i);
+}
+}  // namespace
+
+Editor::OrgTimestampMatch Editor::OrgTimestampAt(const std::string &line, int col) const {
+    OrgTimestampMatch result;
+    for (int pass = 0; pass < 2; pass++) {
+        char open = pass == 0 ? '<' : '[';
+        char close = pass == 0 ? '>' : ']';
+        size_t pos = 0;
+        while (true) {
+            size_t s0 = 0, e0 = 0;
+            std::string body;
+            if (!FindTimestampAt(line, pos, open, close, &s0, &e0, &body)) break;
+            int s = static_cast<int>(s0) + 1;
+            int e = static_cast<int>(e0) + 1;
+            if (col >= s && col <= e) {
+                result.found = true;
+                result.col_start = s;
+                result.col_end = e;
+                result.body = body;
+                result.active = pass == 0;
+                return result;
+            }
+            pos = e0 + 1;
+        }
+    }
+    return result;
+}
+
+void Editor::OrgTimestampInsert(bool active) {
+    int row = 0, col = 0;
+    GetCursorForLua(&row, &col);
+    row += 1;
+    col += 1;
+    std::string body = FormatOrgDateOnlyNow();
+    std::string ts = active ? ("<" + body + ">") : ("[" + body + "]");
+    const std::string &line = Buf().lines[row - 1];
+    std::string new_line = line.substr(0, col - 1) + ts + line.substr(col - 1);
+    SetLineForLua(row - 1, new_line);
+    SetCursorForLua(row - 1, col - 1 + static_cast<int>(ts.size()));
+}
+
+void Editor::OrgTimestampShift(int delta_days) {
+    int row = 0, col = 0;
+    GetCursorForLua(&row, &col);
+    row += 1;
+    col += 1;
+    if (row < 1 || row > Buf().LineCount()) return;
+    const std::string &line = Buf().lines[row - 1];
+    OrgTimestampMatch m = OrgTimestampAt(line, col);
+    if (!m.found) {
+        Notify("No timestamp under cursor", NotifyLevel::Warn);
+        return;
+    }
+    int y = std::stoi(m.body.substr(0, 4));
+    int mo = std::stoi(m.body.substr(5, 2));
+    int d = std::stoi(m.body.substr(8, 2));
+    std::string rest = ExtractTimestampRest(m.body);
+    std::time_t t = MakeLocalTime(y, mo, d, 12, 0);
+    t += static_cast<std::time_t>(delta_days) * 86400;
+    std::tm tmv{};
+    localtime_r(&t, &tmv);
+    char buf[32];
+    std::strftime(buf, sizeof(buf), "%Y-%m-%d %a", &tmv);
+    std::string newbody = std::string(buf) + rest;
+    char openc = m.active ? '<' : '[';
+    char closec = m.active ? '>' : ']';
+    std::string new_line = line.substr(0, m.col_start - 1) + openc + newbody + closec + line.substr(m.col_end);
+    SetLineForLua(row - 1, new_line);
+}
+
+namespace {
+// kBuiltinOrgLinks' own `'%[fn:([%w_%-]+)%]'` port.
+bool FindFootnoteRefAt(const std::string &line, int col, std::string *name) {
+    static const std::string kPrefix = "[fn:";
+    size_t pos = 0;
+    while (true) {
+        size_t s = line.find(kPrefix, pos);
+        if (s == std::string::npos) return false;
+        size_t i = s + kPrefix.size();
+        size_t name_start = i;
+        while (i < line.size() &&
+               (std::isalnum(static_cast<unsigned char>(line[i])) || line[i] == '_' || line[i] == '-')) {
+            i++;
+        }
+        if (i == name_start || i >= line.size() || line[i] != ']') {
+            pos = s + 1;
+            continue;
+        }
+        int s1 = static_cast<int>(s) + 1;
+        int e1 = static_cast<int>(i) + 1;
+        if (col >= s1 && col <= e1) {
+            *name = line.substr(name_start, i - name_start);
+            return true;
+        }
+        pos = i + 1;
+    }
+}
+}  // namespace
+
+void Editor::OrgFootnoteJump() {
+    int row = 0, col = 0;
+    GetCursorForLua(&row, &col);
+    row += 1;
+    col += 1;
+    if (row < 1 || row > Buf().LineCount()) return;
+    const std::string &line = Buf().lines[row - 1];
+    std::string name;
+    if (!FindFootnoteRefAt(line, col, &name)) {
+        Notify("No footnote under cursor", NotifyLevel::Warn);
+        return;
+    }
+    const int n = Buf().LineCount();
+    std::string def_prefix = "[fn:" + name + "]";
+    for (int i = 1; i <= n; i++) {
+        if (i == row) continue;
+        const std::string &l = Buf().lines[i - 1];
+        if (l.compare(0, def_prefix.size(), def_prefix) == 0) {
+            SetCursorForLua(i - 1, 0);
+            return;
+        }
+    }
+    for (int i = 1; i <= n; i++) {
+        if (i == row) continue;
+        if (Buf().lines[i - 1].find(def_prefix) != std::string::npos) {
+            SetCursorForLua(i - 1, 0);
+            return;
+        }
+    }
+    Notify("No counterpart found for [fn:" + name + "]", NotifyLevel::Warn);
+}
+
+void Editor::OrgSetPlanning(const std::string &kind, const std::vector<std::string> &todo_keywords) {
+    int row = OrgCurrentHeadlineRow(0, todo_keywords);
+    if (row <= 0) return;
+    std::string body = FormatOrgDateOnlyNow();
+    std::string text = kind + ": <" + body + ">";
+    const int n = Buf().LineCount();
+    bool has_next = row + 1 <= n;
+    std::string next_line = has_next ? Buf().lines[row] : "";
+    size_t i = SkipWs(next_line, 0);
+    std::string tag = kind + ":";
+    bool matches = next_line.compare(i, tag.size(), tag) == 0;
+    if (matches) {
+        SetLineForLua(row, text);
+    } else {
+        ReplaceLinesForLua(row, row, {text});
+    }
+}
+
 Editor::Editor() {
     buffers_.push_back(Buffer{});
     Tab tab;
@@ -879,6 +3310,9 @@ void Editor::HandleInput() {
             break;
         case Mode::GanttInsert:
             HandleGanttInsertInput();
+            break;
+        case Mode::HoverFocus:
+            HandleHoverFocusInput();
             break;
     }
     TickCollaboration();
@@ -1463,6 +3897,32 @@ bool Editor::FocusPaneShowingBuffer(int buffer_id) {
     if (mode_ == Mode::Terminal) mode_ = Mode::Normal;
     SyncModeToActivePaneBuffer();
     return true;
+}
+
+int Editor::CursorRowForBuffer(int buffer_id) const {
+    const Tab &tab = tabs_[active_tab_];
+    int pane_id = FindPaneIdForBuffer(tab.root.get(), buffer_id);
+    if (pane_id < 0) return -1;
+    const SplitNode *node = FindNode(tab.root.get(), pane_id);
+    return node ? node->pane.cursor.row : -1;
+}
+
+void Editor::FocusTopLeftPane() {
+    Tab &tab = tabs_[active_tab_];
+    std::vector<PaneRect> rects;
+    ComputeRects(tab.root.get(), 0.0f, 0.0f, 1.0f, 1.0f, rects);
+    if (rects.empty()) return;
+    constexpr float kEps = 0.001f;
+    const PaneRect *best = &rects[0];
+    for (const PaneRect &r : rects) {
+        if (r.y0 < best->y0 - kEps ||
+            (std::fabs(r.y0 - best->y0) <= kEps && r.x0 < best->x0 - kEps)) {
+            best = &r;
+        }
+    }
+    tab.active_pane_id = best->pane_id;
+    if (mode_ == Mode::Terminal) mode_ = Mode::Normal;
+    SyncModeToActivePaneBuffer();
 }
 
 bool Editor::RemovePaneNode(std::unique_ptr<SplitNode> &node_ptr, int pane_id) {
@@ -6551,8 +9011,11 @@ bool Editor::DispatchNormalKey(int cp) {
         // this on every edit) -- recomputing right before any fold command
         // touches the buffer means it's always current without paying a
         // rescan on every keystroke that isn't actually about to use it.
+        // Marker folds (`{{{`/`}}}`) get the same lazy treatment, but for
+        // every filetype -- not just org.
         if (c == 'a' || c == 'o' || c == 'c' || c == 'm' || c == 'r' || c == 'R' || c == 'M') {
             if (IsOrgBuffer()) RecomputeOrgFolds();
+            RecomputeMarkerFolds();
         }
         if (c == 'z' || c == 't' || c == 'b') {
             ScrollCursorTo(c);
@@ -8254,12 +10717,223 @@ void Editor::ShowHover(const std::string &title, const std::string &text) {
 
 void Editor::MaybeDismissHover() {
     if (!hover_open_) return;
+    // While focused (Mode::HoverFocus), the real cursor never moves and
+    // Escape is HandleHoverFocusInput's job (cancel selection, then leave
+    // focus) -- this must not also see that same Escape and race it into
+    // slamming hover_open_ shut a frame early, collapsing "Escape then
+    // Escape" into a single press. HandleHoverFocusInput's own exit path
+    // returns mode_ to Normal without moving the cursor, so the very next
+    // frame's check below (mode_ == Normal, no fresh Escape yet) leaves
+    // hover_open_ alone -- exactly the "one more Escape to actually close
+    // it" behavior Mode::HoverFocus's doc comment describes.
+    if (mode_ == Mode::HoverFocus) return;
     if (mode_ != Mode::Normal || IsKeyPressed(KEY_ESCAPE)) {
         hover_open_ = false;
         return;
     }
     CursorPos cur = Cursor();
     if (cur.row != hover_anchor_pos_.row || cur.col != hover_anchor_pos_.col) hover_open_ = false;
+}
+
+namespace {
+// Local to hover-focus navigation -- deliberately not shared with
+// main.cpp's identically-behaved SplitLines (editor.cpp doesn't link
+// against main.cpp's translation unit).
+std::vector<std::string> SplitHoverLines(const std::string &text) {
+    std::vector<std::string> lines;
+    size_t start = 0;
+    while (true) {
+        size_t nl = text.find('\n', start);
+        if (nl == std::string::npos) {
+            lines.push_back(text.substr(start));
+            break;
+        }
+        lines.push_back(text.substr(start, nl - start));
+        start = nl + 1;
+    }
+    if (lines.empty()) lines.push_back("");
+    return lines;
+}
+}  // namespace
+
+void Editor::EnterHoverFocus() {
+    if (!hover_open_) return;
+    overlay_previous_mode_ = mode_;
+    hover_focus_row_ = 0;
+    hover_focus_col_ = 0;
+    hover_focus_scroll_ = 0;
+    hover_focus_pending_g_ = false;
+    hover_focus_pending_y_ = false;
+    hover_focus_selecting_ = false;
+    hover_focus_select_linewise_ = false;
+    mode_ = Mode::HoverFocus;
+}
+
+// Read-only navigation over the open hover popup's own text (Mode::
+// HoverFocus, entered via EnterHoverFocus): hjkl/arrows move a caret
+// exactly the way Normal mode's does over a real buffer, gg/G jump to the
+// first/last line, v/V start a charwise/linewise selection (toggled off by
+// pressing the same key again, matching Visual mode), and y either yanks
+// the active selection or -- pressed twice with no selection, mirroring
+// "yy" -- the current line, into the unnamed/"0 registers so a plain 'p'
+// back in the real buffer pastes it. Escape cancels a selection first;
+// with no selection, it hands control back to RestoreFromOverlay (mode_
+// only -- the real cursor was never touched), leaving hover_open_ itself
+// alone so MaybeDismissHover's ordinary Escape-closes-it check on the next
+// frame is what actually dismisses the popup, not this function. 'q'
+// (vim's usual "close this window" key) skips that two-step dance and
+// closes the popup outright in one press, regardless of selection state.
+void Editor::HandleHoverFocusInput() {
+    std::vector<std::string> lines = SplitHoverLines(hover_text_);
+    int last_row = static_cast<int>(lines.size()) - 1;
+    auto clamp_col = [&](int row, int col) {
+        int len = static_cast<int>(lines[row].size());
+        return std::max(0, std::min(col, std::max(0, len - 1)));
+    };
+    auto move_row = [&](int delta) {
+        hover_focus_row_ = std::max(0, std::min(last_row, hover_focus_row_ + delta));
+        hover_focus_col_ = clamp_col(hover_focus_row_, hover_focus_col_);
+    };
+    auto start_select = [&](bool linewise) {
+        hover_focus_selecting_ = true;
+        hover_focus_select_linewise_ = linewise;
+        hover_focus_select_anchor_row_ = hover_focus_row_;
+        hover_focus_select_anchor_col_ = hover_focus_col_;
+    };
+    auto yank_selection = [&](int anchor_row, int anchor_col, bool linewise) {
+        int r0 = anchor_row, c0 = anchor_col;
+        int r1 = hover_focus_row_, c1 = hover_focus_col_;
+        if (r0 > r1 || (r0 == r1 && c0 > c1)) {
+            std::swap(r0, r1);
+            std::swap(c0, c1);
+        }
+        std::string text;
+        if (linewise) {
+            for (int r = r0; r <= r1; r++) {
+                text += lines[r];
+                text += '\n';
+            }
+        } else if (r0 == r1) {
+            const std::string &line = lines[r0];
+            int a = std::min(c0, static_cast<int>(line.size()));
+            int b = std::min(c1 + 1, static_cast<int>(line.size()));
+            if (b > a) text = line.substr(a, b - a);
+        } else {
+            for (int r = r0; r <= r1; r++) {
+                const std::string &line = lines[r];
+                if (r == r0) {
+                    text += line.substr(std::min(c0, static_cast<int>(line.size())));
+                } else if (r == r1) {
+                    text += line.substr(0, std::min(c1 + 1, static_cast<int>(line.size())));
+                } else {
+                    text += line;
+                }
+                if (r != r1) text += '\n';
+            }
+        }
+        Register &target = RegisterFor(0);
+        target.text = text;
+        target.linewise = linewise;
+        target.blockwise = false;
+        registers_['0'] = target;
+        SetStatusMessage("Yanked from hover doc");
+    };
+
+    if (IsKeyPressed(KEY_ESCAPE)) {
+        hover_focus_pending_g_ = false;
+        hover_focus_pending_y_ = false;
+        if (hover_focus_selecting_) {
+            hover_focus_selecting_ = false;
+        } else {
+            RestoreFromOverlay();
+        }
+        return;
+    }
+
+    if (IsKeyPressed(KEY_DOWN) || IsKeyPressedRepeat(KEY_DOWN)) move_row(1);
+    if (IsKeyPressed(KEY_UP) || IsKeyPressedRepeat(KEY_UP)) move_row(-1);
+    if (IsKeyPressed(KEY_LEFT) || IsKeyPressedRepeat(KEY_LEFT)) hover_focus_col_ = std::max(0, hover_focus_col_ - 1);
+    if (IsKeyPressed(KEY_RIGHT) || IsKeyPressedRepeat(KEY_RIGHT))
+        hover_focus_col_ = clamp_col(hover_focus_row_, hover_focus_col_ + 1);
+
+    for (int cp = GetCharPressed(); cp != 0; cp = GetCharPressed()) {
+        if (hover_focus_pending_g_) {
+            hover_focus_pending_g_ = false;
+            if (cp == 'g') {
+                hover_focus_row_ = 0;
+                hover_focus_col_ = clamp_col(0, hover_focus_col_);
+            }
+            continue;
+        }
+        if (hover_focus_pending_y_) {
+            hover_focus_pending_y_ = false;
+            if (cp == 'y') yank_selection(hover_focus_row_, hover_focus_col_, /*linewise=*/true);
+            continue;
+        }
+        switch (cp) {
+            case 'h':
+                hover_focus_col_ = std::max(0, hover_focus_col_ - 1);
+                break;
+            case 'l':
+                hover_focus_col_ = clamp_col(hover_focus_row_, hover_focus_col_ + 1);
+                break;
+            case 'j':
+                move_row(1);
+                break;
+            case 'k':
+                move_row(-1);
+                break;
+            case '0':
+                hover_focus_col_ = 0;
+                break;
+            case '$':
+                hover_focus_col_ = clamp_col(hover_focus_row_, static_cast<int>(lines[hover_focus_row_].size()));
+                break;
+            case 'g':
+                hover_focus_pending_g_ = true;
+                break;
+            case 'G':
+                hover_focus_row_ = last_row;
+                hover_focus_col_ = clamp_col(last_row, hover_focus_col_);
+                break;
+            case 'v':
+                if (hover_focus_selecting_ && !hover_focus_select_linewise_) {
+                    hover_focus_selecting_ = false;
+                } else {
+                    start_select(false);
+                }
+                break;
+            case 'V':
+                if (hover_focus_selecting_ && hover_focus_select_linewise_) {
+                    hover_focus_selecting_ = false;
+                } else {
+                    start_select(true);
+                }
+                break;
+            case 'y':
+                if (hover_focus_selecting_) {
+                    yank_selection(hover_focus_select_anchor_row_, hover_focus_select_anchor_col_,
+                                    hover_focus_select_linewise_);
+                    hover_focus_selecting_ = false;
+                } else {
+                    hover_focus_pending_y_ = true;
+                }
+                break;
+            case 'q':
+                hover_focus_pending_g_ = false;
+                hover_focus_pending_y_ = false;
+                hover_focus_selecting_ = false;
+                RestoreFromOverlay();
+                hover_open_ = false;
+                return;
+            default:
+                break;
+        }
+    }
+
+    if (hover_focus_row_ < hover_focus_scroll_) hover_focus_scroll_ = hover_focus_row_;
+    if (hover_focus_row_ >= hover_focus_scroll_ + kHoverFocusVisibleRows)
+        hover_focus_scroll_ = hover_focus_row_ - kHoverFocusVisibleRows + 1;
 }
 
 void Editor::RestoreFromOverlay() {
@@ -8616,6 +11290,55 @@ void Editor::RecomputeOrgFolds() {
     }
 }
 
+// Rebuilds provider="marker" folds from literal `{{{`/`}}}` text markers --
+// vim's classic foldmethod=marker, with mep's default foldmarker of
+// `{{{,}}}` -- and unlike RecomputeOrgFolds/MdComputeFolds, applies to
+// every filetype: this is what lets main.cpp fold itself along the exact
+// `{{{ module: X` / `}}} module: X` markers described in its own top-of-
+// file comment. Markers are matched purely as text, left to right within
+// and across lines (no comment-syntax awareness needed, same as vim's own
+// default), with each `}}}` closing the innermost still-open `{{{`; an
+// unmatched trailing `{{{` is simply left unclosed, same as vim. Existing
+// marker folds are preserved by matching on start_row, same convention as
+// RecomputeOrgFolds.
+void Editor::RecomputeMarkerFolds() {
+    std::vector<Fold> old_folds;
+    for (const Fold &f : Buf().folds) {
+        if (f.provider == "marker") old_folds.push_back(f);
+    }
+    ClearFoldsFromProvider("marker");
+
+    std::vector<int> stack;  // rows of still-open `{{{` markers
+    const int n = Buf().LineCount();
+    for (int i = 0; i < n; i++) {
+        const std::string &line = Buf().lines[i];
+        size_t pos = 0;
+        while (pos < line.size()) {
+            size_t open = line.find("{{{", pos);
+            size_t close = line.find("}}}", pos);
+            if (open == std::string::npos && close == std::string::npos) break;
+            if (close == std::string::npos || (open != std::string::npos && open < close)) {
+                stack.push_back(i);
+                pos = open + 3;
+            } else {
+                if (!stack.empty()) {
+                    int start_row = stack.back();
+                    stack.pop_back();
+                    bool fold_closed = false;
+                    for (const Fold &of : old_folds) {
+                        if (of.start_row == start_row) {
+                            fold_closed = of.closed;
+                            break;
+                        }
+                    }
+                    CreateFold(start_row, i, fold_closed, "marker");
+                }
+                pos = close + 3;
+            }
+        }
+    }
+}
+
 void Editor::SetAllFoldsClosed(bool closed) {
     for (Fold &f : Buf().folds) f.closed = closed;
     Buf().fold_level = closed ? 0 : MaxFoldNestingDepth(Buf().folds);
@@ -8779,6 +11502,7 @@ std::vector<SidebarLine> Editor::FlattenSidebar(int id) const {
             line.widget_index = wi;
             line.text = (w.icon.empty() ? "  " : "  " + w.icon + " ") + w.text;
             line.hl = w.hl;
+            line.current = w.current;
             out.push_back(line);
         }
     }
@@ -8968,6 +11692,43 @@ std::string IconForFilename(const std::string &name) {
     auto by_ext = kByExt.find(ext);
     if (by_ext != kByExt.end()) return Utf8FromCodepoint(by_ext->second);
     return Utf8FromCodepoint(0xf15b);  // nf-fa-file, generic fallback
+}
+
+std::string HlGroupForFilename(const std::string &name) {
+    // Filename/extension -> highlight-group name (one of BuildHighlightGroups'
+    // named roles), so file tree rows read as "the theme's blue/green/etc."
+    // rather than a hardcoded RGB value. Grouped by rough language/file
+    // family rather than 1:1 with IconForFilename's glyph choice, since the
+    // palette only has 7 hue roles to work with.
+    static const std::unordered_map<std::string, const char *> kByName = {
+        {"Makefile", "Red"},        {"makefile", "Red"},        {"CMakeLists.txt", "Red"},
+        {"Dockerfile", "Red"},      {".gitignore", "Orange"},   {".gitmodules", "Orange"},
+        {"README.md", "Cyan"},      {"README.org", "Cyan"},     {"README", "Cyan"},
+        {"LICENSE", "MutedFg"},     {".env", "Yellow"},         {".editorconfig", "MutedFg"},
+    };
+    auto by_name = kByName.find(name);
+    if (by_name != kByName.end()) return by_name->second;
+
+    size_t dot = name.find_last_of('.');
+    if (dot == std::string::npos || dot == name.size() - 1) return "Normal";
+    std::string ext = name.substr(dot + 1);
+    for (char &c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+
+    static const std::unordered_map<std::string, const char *> kByExt = {
+        {"c", "Blue"},      {"h", "Purple"},    {"cpp", "Purple"},  {"cc", "Purple"},   {"cxx", "Purple"},
+        {"hpp", "Purple"},  {"lua", "Blue"},    {"py", "Yellow"},   {"js", "Yellow"},   {"ts", "Blue"},
+        {"jsx", "Yellow"},  {"tsx", "Blue"},    {"rs", "Orange"},   {"go", "Cyan"},     {"java", "Red"},
+        {"rb", "Red"},      {"sh", "Green"},    {"bash", "Green"},  {"zsh", "Green"},
+        {"md", "Cyan"},     {"markdown", "Cyan"}, {"org", "Green"}, {"txt", "MutedFg"}, {"json", "Yellow"},
+        {"yaml", "Yellow"}, {"yml", "Yellow"},  {"toml", "Yellow"}, {"xml", "Orange"},  {"html", "Orange"},
+        {"css", "Blue"},    {"scss", "Blue"},   {"sql", "Purple"},  {"vim", "Green"},   {"lock", "MutedFg"},
+        {"log", "MutedFg"}, {"cs", "Red"},      {"php", "Purple"},  {"csv", "Green"},   {"env", "Yellow"},
+        {"git", "Orange"},  {"png", "Purple"},  {"jpg", "Purple"},  {"jpeg", "Purple"}, {"gif", "Purple"},
+        {"svg", "Purple"},  {"pdf", "Red"},     {"zip", "Orange"},  {"tar", "Orange"},  {"gz", "Orange"},
+    };
+    auto by_ext = kByExt.find(ext);
+    if (by_ext != kByExt.end()) return by_ext->second;
+    return "Normal";
 }
 
 // --- Fuzzy picker ----------------------------------------------------------
@@ -9610,6 +12371,7 @@ const char *ModeName(Mode m, bool replace_mode) {
         case Mode::KanbanInsert: return "INSERT";
         case Mode::GanttNormal: return "NORMAL";
         case Mode::GanttInsert: return "INSERT";
+        case Mode::HoverFocus: return "HOVER";
     }
     return "?";
 }
@@ -11949,6 +14711,1323 @@ void Editor::SetLineForLua(int row, const std::string &text) {
 }
 
 int Editor::LineCountForLua() const { return Buf().LineCount(); }
+
+std::vector<Editor::TodoMatch> Editor::TodoScanMatches() const {
+    static const char *const kKeywords[] = {"TODO", "FIXME", "HACK", "NOTE"};
+    std::vector<TodoMatch> matches;
+    const int n = Buf().LineCount();
+    for (int row = 0; row < n; row++) {
+        const std::string &line = Buf().lines[row];
+        for (const char *kw : kKeywords) {
+            size_t pos = line.find(kw);
+            if (pos != std::string::npos) {
+                matches.push_back({row, static_cast<int>(pos), static_cast<int>(pos + std::strlen(kw)), kw});
+            }
+        }
+    }
+    return matches;
+}
+
+void Editor::DapToggleBreakpoint() {
+    int ns = CreateNamespace("dap");
+    int row = 0, col = 0;
+    GetCursorForLua(&row, &col);
+    int line = row + 1;  // 1-indexed, matching mep.cursor()/DAP's own convention
+    std::vector<int> &bps = dap_breakpoints_[Buf().filename];
+    auto it = std::find(bps.begin(), bps.end(), line);
+    if (it != bps.end()) {
+        bps.erase(it);
+        // Only the remove path needs a full rebuild -- decorations have no
+        // per-item removal, only ClearNamespace (a whole-namespace wipe),
+        // so the surviving breakpoints' signs must be re-added. The add
+        // path below doesn't touch existing decorations at all, matching
+        // the original Lua's own asymmetric behavior exactly.
+        ClearNamespace(ns);
+        for (int r : bps) {
+            Decoration d;
+            d.row = r - 1;
+            d.sign = "";
+            d.sign_hl = "Red";
+            AddDecoration(ns, d);
+        }
+        return;
+    }
+    bps.push_back(line);
+    Decoration d;
+    d.row = line - 1;
+    d.sign = "";
+    d.sign_hl = "Red";
+    AddDecoration(ns, d);
+}
+
+std::vector<int> Editor::DapBreakpointLines(const std::string &filename) const {
+    auto it = dap_breakpoints_.find(filename);
+    if (it == dap_breakpoints_.end()) return {};
+    return it->second;
+}
+
+bool Editor::TermsendRegister(int source, int target) {
+    if (!IsTerminalBuffer(target)) {
+        Notify("mep.termsend: buffer " + std::to_string(target) + " is not a terminal buffer", NotifyLevel::Error);
+        return false;
+    }
+    termsend_targets_[source] = target;
+    return true;
+}
+
+int Editor::TermsendTarget(int source) const {
+    auto it = termsend_targets_.find(source);
+    if (it == termsend_targets_.end()) return 0;
+    return IsTerminalBuffer(it->second) ? it->second : 0;
+}
+
+void Editor::TermsendUnregister(int source) { termsend_targets_.erase(source); }
+
+std::vector<int> Editor::TermsendCandidates() const {
+    std::vector<int> out;
+    for (int id : PaneBuffersInActiveTab()) {
+        if (IsTerminalBuffer(id)) out.push_back(id);
+    }
+    return out;
+}
+
+std::vector<Editor::ActivityTodoItem> Editor::ActivityTodoLoad(const std::string &path) const {
+    std::vector<ActivityTodoItem> items;
+    std::ifstream f(path);
+    if (!f) return items;
+    std::string line;
+    while (std::getline(f, line)) {
+        if (line.size() >= 2 && std::isdigit(static_cast<unsigned char>(line[0])) && line[1] == '|') {
+            items.push_back({line[0] == '1', line.substr(2)});
+        }
+    }
+    return items;
+}
+
+void Editor::ActivityTodoSave(const std::string &path, const std::vector<ActivityTodoItem> &items) const {
+    std::ofstream f(path, std::ios::trunc);
+    if (!f) return;
+    for (const auto &it : items) {
+        f << (it.done ? '1' : '0') << '|' << it.text << '\n';
+    }
+}
+
+std::vector<Editor::ActivityTestFailureLine> Editor::ActivityTestFailureLines(
+    const std::vector<std::string> &output) const {
+    std::vector<ActivityTestFailureLine> out;
+    for (size_t i = 0; i < output.size(); i++) {
+        std::string lower = output[i];
+        std::transform(lower.begin(), lower.end(), lower.begin(),
+                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (lower.find("fail") != std::string::npos) {
+            out.push_back({static_cast<int>(i + 1), output[i]});
+        }
+    }
+    return out;
+}
+
+void Editor::SyntaxHighlightFallback(int ns, const std::vector<std::string> &keywords,
+                                      const std::string &comment_prefix) {
+    std::unordered_set<std::string> kwset(keywords.begin(), keywords.end());
+    const int n = Buf().LineCount();
+    for (int row = 0; row < n; row++) {
+        const std::string &line = Buf().lines[row];
+        const int len = static_cast<int>(line.size());
+        int i = 0;
+        while (i < len) {
+            char c = line[i];
+            if (!comment_prefix.empty() && line.compare(i, comment_prefix.size(), comment_prefix) == 0) {
+                Decoration d;
+                d.row = row;
+                d.col_start = i;
+                d.col_end = len;
+                d.hl_group = "Comment";
+                AddDecoration(ns, d);
+                break;
+            } else if (c == '"' || c == '\'') {
+                char q = c;
+                int j = i + 1;
+                while (j < len && line[j] != q) {
+                    if (line[j] == '\\') j++;
+                    j++;
+                }
+                Decoration d;
+                d.row = row;
+                d.col_start = i;
+                d.col_end = std::min(j + 1, len);
+                d.hl_group = "Green";
+                AddDecoration(ns, d);
+                i = j + 1;
+            } else if (std::isdigit(static_cast<unsigned char>(c))) {
+                int j = i;
+                while (j < len && (std::isdigit(static_cast<unsigned char>(line[j])) || line[j] == '.')) j++;
+                Decoration d;
+                d.row = row;
+                d.col_start = i;
+                d.col_end = j;
+                d.hl_group = "Cyan";
+                AddDecoration(ns, d);
+                i = j;
+            } else if (std::isalpha(static_cast<unsigned char>(c)) || c == '_') {
+                int j = i;
+                while (j < len && (std::isalnum(static_cast<unsigned char>(line[j])) || line[j] == '_')) j++;
+                if (kwset.count(line.substr(i, j - i))) {
+                    Decoration d;
+                    d.row = row;
+                    d.col_start = i;
+                    d.col_end = j;
+                    d.hl_group = "Purple";
+                    AddDecoration(ns, d);
+                }
+                i = j;
+            } else {
+                i++;
+            }
+        }
+    }
+}
+
+namespace {
+// ^\s*#\+KEYWORD\a+ (case-insensitive on KEYWORD), matching kBuiltinSyntax's
+// own '^%s*#%+[Bb][Ee][Gg][Ii][Nn]_%a+'/'^%s*#%+[Ee][Nn][Dd]_%a+' patterns --
+// `keyword` must already be lowercase ("begin_"/"end_").
+bool MatchesOrgBlockMarker(const std::string &line, const char *keyword) {
+    size_t i = 0;
+    while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) i++;
+    if (i + 1 >= line.size() || line[i] != '#' || line[i + 1] != '+') return false;
+    i += 2;
+    size_t klen = std::strlen(keyword);
+    if (i + klen > line.size()) return false;
+    for (size_t k = 0; k < klen; k++) {
+        if (std::tolower(static_cast<unsigned char>(line[i + k])) != keyword[k]) return false;
+    }
+    i += klen;
+    return i < line.size() && std::isalpha(static_cast<unsigned char>(line[i]));
+}
+}  // namespace
+
+void Editor::OrgHighlightEmphasis(int ns) {
+    static const std::unordered_map<char, char> kMarkerKind = {
+        {'*', 'b'}, {'/', 'i'}, {'_', 'u'}, {'+', 's'}, {'=', 'v'}, {'~', 'c'},
+    };
+    auto at = [](const std::string &s, int idx) -> char {
+        return (idx >= 0 && idx < static_cast<int>(s.size())) ? s[idx] : '\0';
+    };
+    auto is_word = [](char c) { return c != '\0' && std::isalnum(static_cast<unsigned char>(c)); };
+
+    bool in_block = false;
+    const int n = Buf().LineCount();
+    for (int row = 0; row < n; row++) {
+        const std::string &line = Buf().lines[row];
+        if (in_block) {
+            if (MatchesOrgBlockMarker(line, "end_")) in_block = false;
+            continue;
+        }
+        if (MatchesOrgBlockMarker(line, "begin_")) {
+            in_block = true;
+            continue;
+        }
+        int i = 0;
+        const int len = static_cast<int>(line.size());
+        while (i < len) {
+            char ch = line[i];
+            auto it = kMarkerKind.find(ch);
+            if (it == kMarkerKind.end()) {
+                i++;
+                continue;
+            }
+            char pre = at(line, i - 1);
+            char nxt = at(line, i + 1);
+            bool boundary_ok = (i == 0 || !is_word(pre)) && nxt != '\0' && nxt != ' ' && nxt != ch;
+            if (!boundary_ok) {
+                i++;
+                continue;
+            }
+            size_t search_from = static_cast<size_t>(i) + 1;
+            int found_end = -1;
+            while (true) {
+                size_t s = line.find(ch, search_from);
+                if (s == std::string::npos) break;
+                char prev_char = at(line, static_cast<int>(s) - 1);
+                char after_char = at(line, static_cast<int>(s) + 1);
+                if (prev_char != ' ' && prev_char != ch && !is_word(after_char)) {
+                    found_end = static_cast<int>(s);
+                    break;
+                }
+                search_from = s + 1;
+            }
+            if (found_end < 0) {
+                i++;
+                continue;
+            }
+            Decoration d;
+            d.row = row;
+            d.col_start = i;
+            d.col_end = found_end + 1;
+            switch (it->second) {
+                case 'b': d.bold = true; break;
+                case 'i': d.italic = true; break;
+                case 'u': d.underline = true; break;
+                case 's': d.strikethrough = true; d.hl_group = "Comment"; break;
+                case 'v': d.hl_group = "Green"; break;
+                case 'c': d.hl_group = "Cyan"; break;
+            }
+            AddDecoration(ns, d);
+            i = found_end + 1;
+        }
+    }
+}
+
+void Editor::MdToggleCheckbox() {
+    int row = 0, col = 0;
+    GetCursorForLua(&row, &col);
+    const std::string &line = Buf().lines[row];
+    size_t i = 0;
+    while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) i++;
+    bool ok = i < line.size() && (line[i] == '-' || line[i] == '*' || line[i] == '+');
+    if (ok) {
+        i++;
+        while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) i++;
+        ok = i < line.size() && line[i] == '[';
+    }
+    char mark = 0;
+    if (ok) {
+        i++;
+        ok = i < line.size();
+        if (ok) {
+            mark = line[i];
+            ok = (mark == ' ' || mark == 'x' || mark == 'X');
+        }
+    }
+    if (!ok) {
+        Notify("No checkbox on this line", NotifyLevel::Warn);
+        return;
+    }
+    char newmark = (mark == ' ') ? 'x' : ' ';
+    SetLineForLua(row, line.substr(0, i) + newmark + line.substr(i + 1));
+}
+
+void Editor::MdComputeFolds() {
+    ClearFoldsFromProvider("markdown");
+    struct Entry {
+        int level;
+        int row;
+    };
+    std::vector<Entry> stack;
+    bool in_fence = false;
+    int fence_start = 0;
+    const int n = Buf().LineCount();
+    for (int i = 0; i < n; i++) {
+        const std::string &line = Buf().lines[i];
+        if (line.compare(0, 3, "```") == 0) {
+            if (in_fence) {
+                CreateFold(fence_start, i, true, "markdown");
+                in_fence = false;
+            } else {
+                in_fence = true;
+                fence_start = i;
+            }
+        } else if (!in_fence) {
+            size_t h = 0;
+            while (h < line.size() && line[h] == '#') h++;
+            if (h > 0 && h < line.size() && std::isspace(static_cast<unsigned char>(line[h]))) {
+                int level = static_cast<int>(h);
+                while (!stack.empty() && stack.back().level >= level) {
+                    Entry top = stack.back();
+                    stack.pop_back();
+                    if (top.row < i - 1) CreateFold(top.row, i - 1, true, "markdown");
+                }
+                stack.push_back({level, i});
+            }
+        }
+    }
+    while (!stack.empty()) {
+        Entry top = stack.back();
+        stack.pop_back();
+        if (top.row < n - 1) CreateFold(top.row, n - 1, true, "markdown");
+    }
+}
+
+namespace {
+// A GFM pipe-table row, parsed by ParseMdTableRow (mep_md_table_row's own
+// C++ port): either not a table row at all, a separator row (---/:--/--:/
+// :-:) carrying per-column alignment, or a data row carrying trimmed
+// cell text.
+struct MdTableRowResult {
+    bool is_table_row = false;
+    bool is_sep = false;
+    std::vector<std::string> cells;   // data row only
+    std::vector<std::string> aligns;  // sep row only: "left"/"right"/"center"/"none"
+};
+
+// ^:?-+:?$ -- a single GFM separator cell (optional leading/trailing ':'
+// around one-or-more '-').
+bool IsMdSepCell(const std::string &c) {
+    size_t i = 0, n = c.size();
+    if (i < n && c[i] == ':') i++;
+    size_t dash_start = i;
+    while (i < n && c[i] == '-') i++;
+    if (i == dash_start) return false;
+    if (i < n && c[i] == ':') i++;
+    return i == n;
+}
+
+MdTableRowResult ParseMdTableRow(const std::string &line) {
+    MdTableRowResult r;
+    size_t i = 0;
+    while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) i++;
+    if (i >= line.size() || line[i] != '|') return r;
+    r.is_table_row = true;
+    std::string rest = line.substr(i + 1);
+    size_t end = rest.size();
+    while (end > 0 && std::isspace(static_cast<unsigned char>(rest[end - 1]))) end--;
+    std::string inner = (end > 0 && rest[end - 1] == '|') ? rest.substr(0, end - 1) : rest.substr(0, end);
+    std::vector<std::string> cells;
+    size_t start = 0;
+    for (size_t p = 0; p <= inner.size(); p++) {
+        if (p == inner.size() || inner[p] == '|') {
+            size_t a = start, b = p;
+            while (a < b && std::isspace(static_cast<unsigned char>(inner[a]))) a++;
+            while (b > a && std::isspace(static_cast<unsigned char>(inner[b - 1]))) b--;
+            cells.push_back(inner.substr(a, b - a));
+            start = p + 1;
+        }
+    }
+    bool is_sep = !cells.empty();
+    for (const auto &c : cells) {
+        if (!IsMdSepCell(c)) {
+            is_sep = false;
+            break;
+        }
+    }
+    if (is_sep) {
+        r.is_sep = true;
+        for (const auto &c : cells) {
+            bool l = !c.empty() && c.front() == ':';
+            bool rr = !c.empty() && c.back() == ':';
+            r.aligns.push_back((l && rr) ? "center" : (rr ? "right" : (l ? "left" : "none")));
+        }
+    } else {
+        r.cells = cells;
+    }
+    return r;
+}
+
+std::string MdSepCell(int w, const std::string &al) {
+    if (al == "left") return ":" + std::string(std::max(1, w - 1), '-');
+    if (al == "right") return std::string(std::max(1, w - 1), '-') + ":";
+    if (al == "center") return ":" + std::string(std::max(1, w - 2), '-') + ":";
+    return std::string(w, '-');
+}
+}  // namespace
+
+void Editor::MdTableAlign() {
+    int row = 0, col = 0;
+    GetCursorForLua(&row, &col);
+    if (!ParseMdTableRow(Buf().lines[row]).is_table_row) {
+        Notify("Not on a table row", NotifyLevel::Warn);
+        return;
+    }
+    int top = row;
+    while (top > 0 && ParseMdTableRow(Buf().lines[top - 1]).is_table_row) top--;
+    int bot = row;
+    const int n = Buf().LineCount();
+    while (bot < n - 1 && ParseMdTableRow(Buf().lines[bot + 1]).is_table_row) bot++;
+
+    std::vector<int> widths;
+    std::vector<std::string> aligns;
+    struct RowEntry {
+        int row;
+        MdTableRowResult r;
+    };
+    std::vector<RowEntry> rows;
+    for (int i = top; i <= bot; i++) {
+        MdTableRowResult r = ParseMdTableRow(Buf().lines[i]);
+        if (r.is_sep) {
+            for (size_t ci = 0; ci < r.aligns.size(); ci++) {
+                if (aligns.size() <= ci) aligns.resize(ci + 1);
+                aligns[ci] = r.aligns[ci];
+            }
+        } else {
+            for (size_t ci = 0; ci < r.cells.size(); ci++) {
+                if (widths.size() <= ci) widths.resize(ci + 1, 3);
+                widths[ci] = std::max(widths[ci], static_cast<int>(r.cells[ci].size()));
+            }
+        }
+        rows.push_back({i, std::move(r)});
+    }
+    for (auto &entry : rows) {
+        std::string out = "|";
+        for (size_t ci = 0; ci < widths.size(); ci++) {
+            std::string al = (ci < aligns.size() && !aligns[ci].empty()) ? aligns[ci] : "none";
+            if (entry.r.is_sep) {
+                out += " " + MdSepCell(widths[ci], al) + " |";
+            } else {
+                std::string cell = ci < entry.r.cells.size() ? entry.r.cells[ci] : "";
+                int pad = std::max(0, widths[ci] - static_cast<int>(cell.size()));
+                std::string padded;
+                if (al == "right") {
+                    padded = std::string(pad, ' ') + cell;
+                } else if (al == "center") {
+                    int lp = pad / 2;
+                    padded = std::string(lp, ' ') + cell + std::string(pad - lp, ' ');
+                } else {
+                    padded = cell + std::string(pad, ' ');
+                }
+                out += " " + padded + " |";
+            }
+        }
+        SetLineForLua(entry.row, out);
+    }
+}
+
+void Editor::MdTableInsertRow() {
+    int row = 0, col = 0;
+    GetCursorForLua(&row, &col);
+    MdTableRowResult r = ParseMdTableRow(Buf().lines[row]);
+    if (!r.is_table_row || r.is_sep) {
+        Notify("Not on a table data row", NotifyLevel::Warn);
+        return;
+    }
+    std::string blank = "|";
+    for (size_t i = 0; i < r.cells.size(); i++) blank += " |";
+    std::vector<std::string> newlines = {Buf().lines[row], blank};
+    ReplaceLinesForLua(row, row + 1, newlines);
+    SetCursorForLua(row + 1, 1);
+    MdTableAlign();
+}
+
+void Editor::MdTableInsertCol() {
+    int row = 0, col = 0;
+    GetCursorForLua(&row, &col);
+    if (!ParseMdTableRow(Buf().lines[row]).is_table_row) {
+        Notify("Not on a table row", NotifyLevel::Warn);
+        return;
+    }
+    int top = row;
+    while (top > 0 && ParseMdTableRow(Buf().lines[top - 1]).is_table_row) top--;
+    int bot = row;
+    const int n = Buf().LineCount();
+    while (bot < n - 1 && ParseMdTableRow(Buf().lines[bot + 1]).is_table_row) bot++;
+    std::vector<std::string> newlines;
+    for (int i = top; i <= bot; i++) {
+        std::string suffix = ParseMdTableRow(Buf().lines[i]).is_sep ? "---|" : " |";
+        const std::string &line = Buf().lines[i];
+        size_t end = line.size();
+        while (end > 0 && std::isspace(static_cast<unsigned char>(line[end - 1]))) end--;
+        newlines.push_back(line.substr(0, end) + suffix);
+    }
+    ReplaceLinesForLua(top, bot + 1, newlines);
+    MdTableAlign();
+}
+
+namespace {
+struct MdConcealSpan {
+    int col_start = 0;
+    int col_end = 0;
+    std::string text;
+    std::string hl;
+};
+
+// Plain-literal-find-based scanner (no Lua patterns involved in the
+// original either) for **bold**/__bold__, *italic*/_italic_ (with the
+// same mid-identifier-'_'/'*' exclusion OrgHighlightEmphasis's is_word
+// check uses), and [text](url)/[text][ref] links -- mep_md_conceal_spans'
+// own C++ port.
+std::vector<MdConcealSpan> ScanMdConcealSpans(const std::string &line) {
+    std::vector<MdConcealSpan> spans;
+    const int n = static_cast<int>(line.size());
+    auto at = [&](int idx) -> char { return (idx >= 0 && idx < n) ? line[idx] : '\0'; };
+    auto is_word = [](char c) { return c != '\0' && std::isalnum(static_cast<unsigned char>(c)); };
+    int i = 0;
+    while (i < n) {
+        char c0 = line[i];
+        char c1 = at(i + 1);
+        if ((c0 == '*' && c1 == '*') || (c0 == '_' && c1 == '_')) {
+            std::string two{c0, c1};
+            size_t close = line.find(two, static_cast<size_t>(i) + 2);
+            if (close != std::string::npos) {
+                spans.push_back({i, static_cast<int>(close) + 2,
+                                  line.substr(i + 2, close - static_cast<size_t>(i) - 2), "Yellow"});
+                i = static_cast<int>(close) + 2;
+            } else {
+                i++;
+            }
+        } else if (c0 == '*' || c0 == '_') {
+            char before = at(i - 1);
+            long close = -1;
+            if (!is_word(before)) {
+                size_t s = line.find(c0, static_cast<size_t>(i) + 1);
+                if (s != std::string::npos) close = static_cast<long>(s);
+            }
+            if (close >= 0 && close > i + 1 && !is_word(at(static_cast<int>(close) + 1))) {
+                spans.push_back({i, static_cast<int>(close) + 1,
+                                  line.substr(i + 1, static_cast<size_t>(close) - i - 1), "Cyan"});
+                i = static_cast<int>(close) + 1;
+            } else {
+                i++;
+            }
+        } else if (c0 == '[') {
+            size_t closeb = line.find(']', static_cast<size_t>(i) + 1);
+            char after = closeb != std::string::npos ? at(static_cast<int>(closeb) + 1) : '\0';
+            if (closeb != std::string::npos && after == '(') {
+                size_t closep = line.find(')', closeb + 2);
+                if (closep != std::string::npos) {
+                    spans.push_back({i, static_cast<int>(closep) + 1,
+                                      line.substr(i + 1, closeb - static_cast<size_t>(i) - 1), "Blue"});
+                    i = static_cast<int>(closep) + 1;
+                } else {
+                    i++;
+                }
+            } else if (closeb != std::string::npos && after == '[') {
+                size_t closer2 = line.find(']', closeb + 2);
+                if (closer2 != std::string::npos) {
+                    spans.push_back({i, static_cast<int>(closer2) + 1,
+                                      line.substr(i + 1, closeb - static_cast<size_t>(i) - 1), "Blue"});
+                    i = static_cast<int>(closer2) + 1;
+                } else {
+                    i++;
+                }
+            } else {
+                i++;
+            }
+        } else {
+            i++;
+        }
+    }
+    return spans;
+}
+}  // namespace
+
+void Editor::MdConceal(int ns) {
+    int cur_row = 0, col = 0;
+    GetCursorForLua(&cur_row, &col);
+    bool in_fence = false;
+    const int n = Buf().LineCount();
+    for (int row = 0; row < n; row++) {
+        const std::string &line = Buf().lines[row];
+        if (line.compare(0, 3, "```") == 0) {
+            in_fence = !in_fence;
+            continue;
+        }
+        if (in_fence || row == cur_row) continue;
+        for (const MdConcealSpan &sp : ScanMdConcealSpans(line)) {
+            Decoration d;
+            d.row = row;
+            d.col_start = sp.col_start;
+            d.col_end = sp.col_end;
+            d.virt_text = sp.text;
+            d.virt_text_hl = sp.hl;
+            d.virt_overlay = true;
+            d.priority = 10;
+            AddDecoration(ns, d);
+        }
+    }
+}
+
+std::vector<std::string> Editor::CompletionScanBufferWords(const std::string &prefix) const {
+    std::unordered_set<std::string> seen;
+    std::vector<std::string> words;
+    const int n = Buf().LineCount();
+    for (int i = 0; i < n; i++) {
+        const std::string &line = Buf().lines[i];
+        size_t j = 0;
+        const size_t len = line.size();
+        while (j < len) {
+            if (std::isalnum(static_cast<unsigned char>(line[j])) || line[j] == '_') {
+                size_t start = j;
+                while (j < len && (std::isalnum(static_cast<unsigned char>(line[j])) || line[j] == '_')) j++;
+                std::string w = line.substr(start, j - start);
+                if (w.size() > prefix.size() && w.compare(0, prefix.size(), prefix) == 0 && !seen.count(w)) {
+                    seen.insert(w);
+                    words.push_back(w);
+                }
+            } else {
+                j++;
+            }
+        }
+    }
+    return words;
+}
+
+namespace {
+// ctx contains "word" immediately followed by exactly one whitespace
+// character somewhere -- mep_completion_path_prefix's own
+// ctx:find('import%s')/ctx:find('from%s') (a bare %s, not %s*, so this is
+// a plain substring-then-one-whitespace-char search, not a general regex).
+bool FindWordFollowedBySpace(const std::string &s, const std::string &word) {
+    size_t pos = 0;
+    while ((pos = s.find(word, pos)) != std::string::npos) {
+        size_t after = pos + word.size();
+        if (after < s.size() && std::isspace(static_cast<unsigned char>(s[after]))) return true;
+        pos++;
+    }
+    return false;
+}
+
+// ctx:find('require%s*%(%s*$') -- does ctx, ignoring trailing whitespace,
+// end with "require", optional whitespace, then "("?
+bool EndsWithRequireCallOpen(const std::string &ctx) {
+    size_t end = ctx.size();
+    while (end > 0 && std::isspace(static_cast<unsigned char>(ctx[end - 1]))) end--;
+    if (end == 0 || ctx[end - 1] != '(') return false;
+    end--;
+    while (end > 0 && std::isspace(static_cast<unsigned char>(ctx[end - 1]))) end--;
+    static const std::string kRequire = "require";
+    if (end < kRequire.size()) return false;
+    return ctx.compare(end - kRequire.size(), kRequire.size(), kRequire) == 0;
+}
+}  // namespace
+
+Editor::CompletionPathPrefix Editor::CompletionPathPrefixFor(const std::string &prefix, int col,
+                                                              const std::string &line) const {
+    CompletionPathPrefix result;
+    int start = col - 1 - static_cast<int>(prefix.size());
+    if (start < 0) start = 0;
+    std::string before = line.substr(0, std::min<size_t>(static_cast<size_t>(start), line.size()));
+    char trigger = before.empty() ? '\0' : before.back();
+    bool is_path_dot = false;
+    if (trigger == '.') {
+        char prev = before.size() >= 2 ? before[before.size() - 2] : '\0';
+        is_path_dot = !(std::isalnum(static_cast<unsigned char>(prev)) || prev == '_');
+    }
+    if (trigger == '/' || is_path_dot) {
+        size_t p = before.size();
+        while (p > 0) {
+            char c = before[p - 1];
+            if (std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '.' || c == '-' || c == '/') {
+                p--;
+            } else {
+                break;
+            }
+        }
+        std::string token = before.substr(p);
+        size_t slash = token.find_last_of('/');
+        result.found = true;
+        result.dir = (slash == std::string::npos) ? "." : token.substr(0, slash + 1);
+        result.base = prefix;
+        return result;
+    }
+    if (trigger == '"' || trigger == '\'') {
+        std::string without_quote = before.substr(0, before.size() - 1);
+        std::string ctx =
+            without_quote.size() > 40 ? without_quote.substr(without_quote.size() - 40) : without_quote;
+        if (EndsWithRequireCallOpen(ctx) || FindWordFollowedBySpace(ctx, "import") ||
+            FindWordFollowedBySpace(ctx, "from")) {
+            result.found = true;
+            result.dir = ".";
+            result.base = prefix;
+        }
+    }
+    return result;
+}
+
+namespace {
+// A snippet template line's tabstop, positioned in the *cleaned* (marker
+// syntax stripped) output text -- mep_snippet_scan_line's own port.
+struct SnippetLineTabstop {
+    int col = 0;  // 1-indexed, within the cleaned line
+    int num = 0;
+};
+
+std::pair<std::string, std::vector<SnippetLineTabstop>> ScanSnippetLine(const std::string &tmpl) {
+    std::string out;
+    std::vector<SnippetLineTabstop> tabstops;
+    size_t i = 0;
+    const size_t n = tmpl.size();
+    while (i < n) {
+        char c = tmpl[i];
+        if (c == '\\' && i + 1 < n && tmpl[i + 1] == '$') {
+            out += '$';
+            i += 2;
+        } else if (c == '$' && i + 1 < n) {
+            size_t numstart = i + 1;
+            size_t j = numstart;
+            while (j < n && std::isdigit(static_cast<unsigned char>(tmpl[j]))) j++;
+            if (j > numstart) {
+                int num = std::stoi(tmpl.substr(numstart, j - numstart));
+                tabstops.push_back({static_cast<int>(out.size()) + 1, num});
+                i = j;
+            } else if (tmpl[i + 1] == '{') {
+                size_t close = tmpl.find('}', i + 2);
+                bool matched = false;
+                if (close != std::string::npos) {
+                    std::string inner = tmpl.substr(i + 2, close - (i + 2));
+                    size_t k = 0;
+                    while (k < inner.size() && std::isdigit(static_cast<unsigned char>(inner[k]))) k++;
+                    if (k > 0 && (k == inner.size() || inner[k] == ':')) {
+                        int idx = std::stoi(inner.substr(0, k));
+                        tabstops.push_back({static_cast<int>(out.size()) + 1, idx});
+                        if (k < inner.size()) out += inner.substr(k + 1);
+                        i = close + 1;
+                        matched = true;
+                    }
+                }
+                if (!matched) {
+                    out += c;
+                    i++;
+                }
+            } else {
+                out += c;
+                i++;
+            }
+        } else {
+            out += c;
+            i++;
+        }
+    }
+    return {out, tabstops};
+}
+}  // namespace
+
+void Editor::SnippetSplice(int row, const std::string &before, const std::string &after,
+                            const std::vector<std::string> &body) {
+    std::vector<std::string> out_lines;
+    std::vector<SnippetTabstop> all_tabstops;
+    for (size_t li = 0; li < body.size(); li++) {
+        auto [cleaned, stops] = ScanSnippetLine(body[li]);
+        int col_offset = (li == 0) ? static_cast<int>(before.size()) : 0;
+        for (const auto &s : stops) {
+            all_tabstops.push_back({static_cast<int>(li) + 1, s.col + col_offset, s.num});
+        }
+        std::string line = (li == 0 ? before : "") + cleaned + (li == body.size() - 1 ? after : "");
+        out_lines.push_back(std::move(line));
+    }
+    if (out_lines.size() == 1) {
+        SetLineForLua(row, out_lines[0]);
+    } else {
+        ReplaceLinesForLua(row, row + 1, out_lines);
+    }
+    std::stable_sort(all_tabstops.begin(), all_tabstops.end(), [](const SnippetTabstop &a, const SnippetTabstop &b) {
+        int an = (a.num == 0) ? 999 : a.num;
+        int bn = (b.num == 0) ? 999 : b.num;
+        return an < bn;
+    });
+    snippet_tabstops_ = std::move(all_tabstops);
+    snippet_index_ = 0;
+    snippet_base_row_ = row;
+    has_snippet_state_ = true;
+    SnippetJump(1);
+}
+
+void Editor::SnippetJump(int delta) {
+    if (!has_snippet_state_) return;
+    snippet_index_ += delta;
+    if (snippet_index_ < 1 || snippet_index_ > static_cast<int>(snippet_tabstops_.size())) {
+        has_snippet_state_ = false;
+        return;
+    }
+    const SnippetTabstop &ts = snippet_tabstops_[snippet_index_ - 1];
+    SetCursorForLua(snippet_base_row_ + ts.line_idx - 1, ts.col - 1);
+}
+
+void Editor::PreviewFile(const std::string &path, int max_lines) {
+    std::ifstream f(path);
+    if (!f) {
+        SetPickerPreview("(cannot open " + path + ")");
+        return;
+    }
+    if (max_lines <= 0) max_lines = 40;
+    std::vector<std::string> lines;
+    std::string line;
+    bool truncated = false;
+    while (std::getline(f, line)) {
+        if (static_cast<int>(lines.size()) >= max_lines) {
+            truncated = true;
+            break;
+        }
+        lines.push_back(std::move(line));
+    }
+    if (truncated) lines.push_back("...");
+    std::string text;
+    for (size_t i = 0; i < lines.size(); i++) {
+        if (i > 0) text += '\n';
+        text += lines[i];
+    }
+    SetPickerPreview(text);
+}
+
+namespace {
+std::string JoinTreePath(const std::string &dir, const std::string &name) {
+    if (!dir.empty() && dir.back() == '/') return dir + name;
+    return dir + "/" + name;
+}
+
+void BuildFileTreeRowsRecursive(const Editor *ed, const std::string &root, const std::string &dir, int depth,
+                                 const std::unordered_set<std::string> &expanded_paths, bool show_hidden,
+                                 const std::unordered_set<std::string> &ignored_relpaths,
+                                 std::vector<Editor::FileTreeRow> *out) {
+    std::vector<Editor::DirEntry> entries = ed->ListDirectory(dir);
+    std::sort(entries.begin(), entries.end(), [](const Editor::DirEntry &a, const Editor::DirEntry &b) {
+        if (a.is_dir != b.is_dir) return a.is_dir;
+        return a.name < b.name;
+    });
+    for (const Editor::DirEntry &e : entries) {
+        bool hidden = !e.name.empty() && e.name[0] == '.';
+        std::string rel = dir.size() > root.size() ? dir.substr(root.size() + 1) : "";
+        std::string relpath = rel.empty() ? e.name : (rel + "/" + e.name);
+        if ((show_hidden || !hidden) && !ignored_relpaths.count(relpath)) {
+            std::string full = JoinTreePath(dir, e.name);
+            bool expanded = e.is_dir && expanded_paths.count(full) > 0;
+            out->push_back({full, e.name, e.is_dir, depth, expanded});
+            if (expanded) BuildFileTreeRowsRecursive(ed, root, full, depth + 1, expanded_paths, show_hidden,
+                                                      ignored_relpaths, out);
+        }
+    }
+}
+}  // namespace
+
+std::vector<Editor::FileTreeRow> Editor::BuildFileTreeRows(const std::string &root,
+                                                            const std::vector<std::string> &expanded_paths,
+                                                            bool show_hidden,
+                                                            const std::vector<std::string> &ignored_relpaths) const {
+    std::unordered_set<std::string> expanded_set(expanded_paths.begin(), expanded_paths.end());
+    std::unordered_set<std::string> ignored_set(ignored_relpaths.begin(), ignored_relpaths.end());
+    std::vector<FileTreeRow> rows;
+    BuildFileTreeRowsRecursive(this, root, root, 0, expanded_set, show_hidden, ignored_set, &rows);
+    return rows;
+}
+
+std::string Editor::ProjectReadmePath(const std::string &dir) const {
+    static const char *const kNames[] = {"README.md", "README.org", "README.txt", "README"};
+    std::vector<DirEntry> entries = ListDirectory(dir);
+    for (const char *name : kNames) {
+        for (const DirEntry &e : entries) {
+            if (!e.is_dir && e.name == name) return dir + "/" + name;
+        }
+    }
+    return "";
+}
+
+namespace {
+// CSS3/SVG named-color keywords (148 entries, incl. both gray/grey
+// spellings and rebeccapurple) -- mep.colorize's own MEP_CSS_COLORS,
+// mechanically extracted from the original Lua table (not user-facing
+// config -- a Lua local, not a mep.* global).
+const std::unordered_map<std::string, std::string> kCssColors = {
+    {"aliceblue", "f0f8ff"}, {"antiquewhite", "faebd7"}, {"aqua", "00ffff"}, {"aquamarine", "7fffd4"},
+    {"azure", "f0ffff"}, {"beige", "f5f5dc"}, {"bisque", "ffe4c4"}, {"black", "000000"},
+    {"blanchedalmond", "ffebcd"}, {"blue", "0000ff"}, {"blueviolet", "8a2be2"}, {"brown", "a52a2a"},
+    {"burlywood", "deb887"}, {"cadetblue", "5f9ea0"}, {"chartreuse", "7fff00"}, {"chocolate", "d2691e"},
+    {"coral", "ff7f50"}, {"cornflowerblue", "6495ed"}, {"cornsilk", "fff8dc"}, {"crimson", "dc143c"},
+    {"cyan", "00ffff"}, {"darkblue", "00008b"}, {"darkcyan", "008b8b"}, {"darkgoldenrod", "b8860b"},
+    {"darkgray", "a9a9a9"}, {"darkgreen", "006400"}, {"darkgrey", "a9a9a9"}, {"darkkhaki", "bdb76b"},
+    {"darkmagenta", "8b008b"}, {"darkolivegreen", "556b2f"}, {"darkorange", "ff8c00"}, {"darkorchid", "9932cc"},
+    {"darkred", "8b0000"}, {"darksalmon", "e9967a"}, {"darkseagreen", "8fbc8f"}, {"darkslateblue", "483d8b"},
+    {"darkslategray", "2f4f4f"}, {"darkslategrey", "2f4f4f"}, {"darkturquoise", "00ced1"}, {"darkviolet", "9400d3"},
+    {"deeppink", "ff1493"}, {"deepskyblue", "00bfff"}, {"dimgray", "696969"}, {"dimgrey", "696969"},
+    {"dodgerblue", "1e90ff"}, {"firebrick", "b22222"}, {"floralwhite", "fffaf0"}, {"forestgreen", "228b22"},
+    {"fuchsia", "ff00ff"}, {"gainsboro", "dcdcdc"}, {"ghostwhite", "f8f8ff"}, {"gold", "ffd700"},
+    {"goldenrod", "daa520"}, {"gray", "808080"}, {"green", "008000"}, {"greenyellow", "adff2f"},
+    {"grey", "808080"}, {"honeydew", "f0fff0"}, {"hotpink", "ff69b4"}, {"indianred", "cd5c5c"},
+    {"indigo", "4b0082"}, {"ivory", "fffff0"}, {"khaki", "f0e68c"}, {"lavender", "e6e6fa"},
+    {"lavenderblush", "fff0f5"}, {"lawngreen", "7cfc00"}, {"lemonchiffon", "fffacd"}, {"lightblue", "add8e6"},
+    {"lightcoral", "f08080"}, {"lightcyan", "e0ffff"}, {"lightgoldenrodyellow", "fafad2"}, {"lightgray", "d3d3d3"},
+    {"lightgreen", "90ee90"}, {"lightgrey", "d3d3d3"}, {"lightpink", "ffb6c1"}, {"lightsalmon", "ffa07a"},
+    {"lightseagreen", "20b2aa"}, {"lightskyblue", "87cefa"}, {"lightslategray", "778899"},
+    {"lightslategrey", "778899"},
+    {"lightsteelblue", "b0c4de"}, {"lightyellow", "ffffe0"}, {"lime", "00ff00"}, {"limegreen", "32cd32"},
+    {"linen", "faf0e6"}, {"magenta", "ff00ff"}, {"maroon", "800000"}, {"mediumaquamarine", "66cdaa"},
+    {"mediumblue", "0000cd"}, {"mediumorchid", "ba55d3"}, {"mediumpurple", "9370db"}, {"mediumseagreen", "3cb371"},
+    {"mediumslateblue", "7b68ee"}, {"mediumspringgreen", "00fa9a"}, {"mediumturquoise", "48d1cc"},
+    {"mediumvioletred", "c71585"},
+    {"midnightblue", "191970"}, {"mintcream", "f5fffa"}, {"mistyrose", "ffe4e1"}, {"moccasin", "ffe4b5"},
+    {"navajowhite", "ffdead"}, {"navy", "000080"}, {"oldlace", "fdf5e6"}, {"olive", "808000"},
+    {"olivedrab", "6b8e23"}, {"orange", "ffa500"}, {"orangered", "ff4500"}, {"orchid", "da70d6"},
+    {"palegoldenrod", "eee8aa"}, {"palegreen", "98fb98"}, {"paleturquoise", "afeeee"}, {"palevioletred", "db7093"},
+    {"papayawhip", "ffefd5"}, {"peachpuff", "ffdab9"}, {"peru", "cd853f"}, {"pink", "ffc0cb"},
+    {"plum", "dda0dd"}, {"powderblue", "b0e0e6"}, {"purple", "800080"}, {"rebeccapurple", "663399"},
+    {"red", "ff0000"}, {"rosybrown", "bc8f8f"}, {"royalblue", "4169e1"}, {"saddlebrown", "8b4513"},
+    {"salmon", "fa8072"}, {"sandybrown", "f4a460"}, {"seagreen", "2e8b57"}, {"seashell", "fff5ee"},
+    {"sienna", "a0522d"}, {"silver", "c0c0c0"}, {"skyblue", "87ceeb"}, {"slateblue", "6a5acd"},
+    {"slategray", "708090"}, {"slategrey", "708090"}, {"snow", "fffafa"}, {"springgreen", "00ff7f"},
+    {"steelblue", "4682b4"}, {"tan", "d2b48c"}, {"teal", "008080"}, {"thistle", "d8bfd8"},
+    {"tomato", "ff6347"}, {"turquoise", "40e0d0"}, {"violet", "ee82ee"}, {"wheat", "f5deb3"},
+    {"white", "ffffff"}, {"whitesmoke", "f5f5f5"}, {"yellow", "ffff00"}, {"yellowgreen", "9acd32"},
+};
+
+int HexDigitVal(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return 10 + (c - 'a');
+}
+
+int HexPairVal(char hi, char lo) { return HexDigitVal(hi) * 16 + HexDigitVal(lo); }
+
+bool AllHexDigits(const std::string &line, int start, int count) {
+    for (int k = 0; k < count; k++) {
+        if (!std::isxdigit(static_cast<unsigned char>(line[start + k]))) return false;
+    }
+    return true;
+}
+
+void AddSwatch(Editor *ed, int ns, int row, int col_start, int col_end, int r, int g, int b) {
+    Decoration d;
+    d.row = row;
+    d.col_start = col_start;
+    d.col_end = col_end;
+    d.has_swatch = true;
+    d.swatch_color = {static_cast<unsigned char>(r), static_cast<unsigned char>(g), static_cast<unsigned char>(b)};
+    ed->AddDecoration(ns, d);
+}
+}  // namespace
+
+void Editor::Colorize() {
+    int ns = CreateNamespace("colorizer");
+    ClearNamespace(ns);
+    const int n = Buf().LineCount();
+    for (int row = 0; row < n; row++) {
+        const std::string &line = Buf().lines[row];
+        const int len = static_cast<int>(line.size());
+        std::vector<bool> covered(len, false);
+
+        // #RRGGBBAA (8 hex) -- unconditional (first to claim), alpha
+        // consumed but unused for the swatch color.
+        for (int i = 0; i < len;) {
+            if (line[i] == '#' && i + 9 <= len && AllHexDigits(line, i + 1, 8)) {
+                AddSwatch(this, ns, row, i, i + 9, HexPairVal(line[i + 1], line[i + 2]),
+                          HexPairVal(line[i + 3], line[i + 4]), HexPairVal(line[i + 5], line[i + 6]));
+                for (int k = i; k < i + 9; k++) covered[k] = true;
+                i += 9;
+            } else {
+                i++;
+            }
+        }
+        // #RRGGBB (6 hex) -- only if not already claimed by the 8-hex
+        // pass, but the scan itself still advances past every match
+        // found either way (mirrors gmatch's own non-overlapping
+        // progression, independent of the covered check).
+        for (int i = 0; i < len;) {
+            if (line[i] == '#' && i + 7 <= len && AllHexDigits(line, i + 1, 6)) {
+                if (!covered[i]) {
+                    AddSwatch(this, ns, row, i, i + 7, HexPairVal(line[i + 1], line[i + 2]),
+                              HexPairVal(line[i + 3], line[i + 4]), HexPairVal(line[i + 5], line[i + 6]));
+                    for (int k = i; k < i + 7; k++) covered[k] = true;
+                }
+                i += 7;
+            } else {
+                i++;
+            }
+        }
+        // #RGB (3 hex, each digit doubled) -- same claim-check as above,
+        // but (matching the original exactly) doesn't itself mark
+        // covered afterward.
+        for (int i = 0; i < len;) {
+            if (line[i] == '#' && i + 4 <= len && AllHexDigits(line, i + 1, 3)) {
+                if (!covered[i]) {
+                    int r = HexPairVal(line[i + 1], line[i + 1]);
+                    int g = HexPairVal(line[i + 2], line[i + 2]);
+                    int b = HexPairVal(line[i + 3], line[i + 3]);
+                    AddSwatch(this, ns, row, i, i + 4, r, g, b);
+                }
+                i += 4;
+            } else {
+                i++;
+            }
+        }
+        // rgb(r,g,b)/rgba(r,g,b,...) -- independent of the claim-tracking
+        // entirely (no covered check, doesn't mark it either); the swatch
+        // deliberately only spans the "rgb"/"rgba" keyword itself (3
+        // chars), matching the original's own col_end = s+3, not the
+        // whole call. `i` advances to the end of the *whole* matched
+        // text (through the 3rd number), mirroring gmatch's real
+        // progression, not the narrower decorated span.
+        for (int i = 0; i < len;) {
+            int p = i;
+            bool matched = false;
+            if (line.compare(p, 3, "rgb") == 0) {
+                p += 3;
+                if (p < len && line[p] == 'a') p++;
+                if (p < len && line[p] == '(') {
+                    p++;
+                    while (p < len && std::isspace(static_cast<unsigned char>(line[p]))) p++;
+                    int r_start = p;
+                    while (p < len && std::isdigit(static_cast<unsigned char>(line[p]))) p++;
+                    if (p > r_start) {
+                        int r = std::stoi(line.substr(r_start, p - r_start));
+                        while (p < len && std::isspace(static_cast<unsigned char>(line[p]))) p++;
+                        if (p < len && line[p] == ',') {
+                            p++;
+                            while (p < len && std::isspace(static_cast<unsigned char>(line[p]))) p++;
+                            int g_start = p;
+                            while (p < len && std::isdigit(static_cast<unsigned char>(line[p]))) p++;
+                            if (p > g_start) {
+                                int g = std::stoi(line.substr(g_start, p - g_start));
+                                while (p < len && std::isspace(static_cast<unsigned char>(line[p]))) p++;
+                                if (p < len && line[p] == ',') {
+                                    p++;
+                                    while (p < len && std::isspace(static_cast<unsigned char>(line[p]))) p++;
+                                    int b_start = p;
+                                    while (p < len && std::isdigit(static_cast<unsigned char>(line[p]))) p++;
+                                    if (p > b_start) {
+                                        int b = std::stoi(line.substr(b_start, p - b_start));
+                                        AddSwatch(this, ns, row, i, i + 3, r, g, b);
+                                        matched = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if (matched) {
+                i = p;
+            } else {
+                i++;
+            }
+        }
+        // CSS/SVG named colors -- every maximal run of letters (word-
+        // boundary-anchored, same as gmatch's %f[%a](%a+)%f[%A]), only
+        // decorated when it's an exact (case-sensitive) key in
+        // kCssColors and not already claimed.
+        for (int i = 0; i < len;) {
+            if (std::isalpha(static_cast<unsigned char>(line[i]))) {
+                int start = i;
+                while (i < len && std::isalpha(static_cast<unsigned char>(line[i]))) i++;
+                std::string word = line.substr(start, i - start);
+                auto it = kCssColors.find(word);
+                if (it != kCssColors.end() && !covered[start]) {
+                    AddSwatch(this, ns, row, start, i, HexPairVal(it->second[0], it->second[1]),
+                              HexPairVal(it->second[2], it->second[3]), HexPairVal(it->second[4], it->second[5]));
+                }
+            } else {
+                i++;
+            }
+        }
+    }
+}
+
+namespace {
+bool IsUrlBodyChar(unsigned char c) {
+    if (std::isalnum(c)) return true;
+    static const char *const kExtra = "-._~:/?#[]@!$&'()*+,;=%";
+    return std::strchr(kExtra, static_cast<char>(c)) != nullptr;
+}
+
+struct UrlSpan {
+    int col_start = 0;
+    int col_end = 0;  // exclusive
+};
+
+// mep.nvim's own MEP_URL_PATTERN
+// ("https?://[%w%-%._~:/?#%[%]@!$&'()*+,;=%%]+"): "http" + optional 's'
+// + "://" + one-or-more of the body charset above.
+std::vector<UrlSpan> FindUrlSpans(const std::string &line) {
+    std::vector<UrlSpan> spans;
+    const int len = static_cast<int>(line.size());
+    int i = 0;
+    while (i < len) {
+        if (line.compare(i, 4, "http") == 0) {
+            int j = i + 4;
+            if (j < len && line[j] == 's') j++;
+            if (line.compare(j, 3, "://") == 0) {
+                int body_start = j + 3;
+                int k = body_start;
+                while (k < len && IsUrlBodyChar(static_cast<unsigned char>(line[k]))) k++;
+                if (k > body_start) {
+                    spans.push_back({i, k});
+                    i = k;
+                    continue;
+                }
+            }
+        }
+        i++;
+    }
+    return spans;
+}
+}  // namespace
+
+std::string Editor::UrlUnderCursor() const {
+    int row = 0, col = 0;
+    GetCursorForLua(&row, &col);
+    if (row < 0 || row >= Buf().LineCount()) return "";
+    const std::string &line = Buf().lines[row];
+    for (const UrlSpan &sp : FindUrlSpans(line)) {
+        if (col >= sp.col_start && col < sp.col_end) return line.substr(sp.col_start, sp.col_end - sp.col_start);
+    }
+    return "";
+}
+
+std::vector<std::string> Editor::ListUrls() const {
+    std::vector<std::string> urls;
+    const int n = Buf().LineCount();
+    for (int row = 0; row < n; row++) {
+        const std::string &line = Buf().lines[row];
+        for (const UrlSpan &sp : FindUrlSpans(line)) {
+            urls.push_back(line.substr(sp.col_start, sp.col_end - sp.col_start));
+        }
+    }
+    return urls;
+}
+
+void Editor::GitGutterRefresh(const std::string &base) {
+    const std::string &fname = Buf().filename;
+    if (fname.empty()) return;
+    int ns = CreateNamespace("git");
+    // `base:path` is a pathspec, resolved relative to its own cwd -- run
+    // with cwd set to the buffer's own directory and just its basename,
+    // matching kBuiltinGit's own comment on why (an absolute path here
+    // makes git refuse the pathspec outright).
+    size_t slash = fname.find_last_of('/');
+    std::string dir = slash == std::string::npos ? "." : fname.substr(0, slash);
+    std::string base_name = slash == std::string::npos ? fname : fname.substr(slash + 1);
+    std::string spec = base + ":" + base_name;
+
+    auto lines = std::make_shared<std::vector<std::string>>();
+    JobManager::Callbacks cb;
+    cb.on_stdout = [lines](const std::string &line) { lines->push_back(line); };
+    cb.on_exit = [this, ns, lines](int /*code*/) {
+        git_base_lines_ = *lines;
+        std::vector<std::string> cur;
+        const int n = Buf().LineCount();
+        cur.reserve(n);
+        for (int i = 0; i < n; i++) cur.push_back(Buf().lines[i]);
+        git_hunks_ = MyersDiffHunks(*lines, cur);
+        ClearNamespace(ns);
+        for (const DiffHunk &h : git_hunks_) {
+            if (h.old_count == 0) {
+                for (int r = h.new_start; r < h.new_start + h.new_count; r++) {
+                    Decoration d;
+                    d.row = r - 1;
+                    d.whole_line = true;
+                    d.hl_group = "Add";
+                    d.sign = "+";
+                    d.sign_hl = "Add";
+                    AddDecoration(ns, d);
+                }
+            } else if (h.new_count == 0) {
+                Decoration d;
+                d.row = std::max(0, h.new_start - 1);
+                d.whole_line = false;
+                d.sign = "_";
+                d.sign_hl = "Red";
+                AddDecoration(ns, d);
+            } else {
+                for (int r = h.new_start; r < h.new_start + h.new_count; r++) {
+                    Decoration d;
+                    d.row = r - 1;
+                    d.whole_line = true;
+                    d.hl_group = "Yellow";
+                    d.sign = "~";
+                    d.sign_hl = "Yellow";
+                    AddDecoration(ns, d);
+                }
+            }
+        }
+    };
+    JobManager::Instance().Spawn({"git", "show", spec}, dir, cb);
+}
+
+const DiffHunk *Editor::GitHunkAtCursor() const {
+    int row = 0, col = 0;
+    GetCursorForLua(&row, &col);
+    int row_1idx = row + 1;
+    for (const DiffHunk &h : git_hunks_) {
+        int lo = h.new_start;
+        int hi = h.new_start + std::max(1, h.new_count) - 1;
+        if (row_1idx >= lo && row_1idx <= hi) return &h;
+    }
+    return nullptr;
+}
+
+int Editor::GitNextHunkRow() const {
+    int row = 0, col = 0;
+    GetCursorForLua(&row, &col);
+    int row_1idx = row + 1;
+    for (const DiffHunk &h : git_hunks_) {
+        if (h.new_start > row_1idx) return h.new_start;
+    }
+    if (!git_hunks_.empty()) return git_hunks_.front().new_start;
+    return 0;
+}
+
+int Editor::GitPrevHunkRow() const {
+    int row = 0, col = 0;
+    GetCursorForLua(&row, &col);
+    int row_1idx = row + 1;
+    for (auto it = git_hunks_.rbegin(); it != git_hunks_.rend(); ++it) {
+        if (it->new_start < row_1idx) return it->new_start;
+    }
+    if (!git_hunks_.empty()) return git_hunks_.back().new_start;
+    return 0;
+}
+
+std::pair<bool, std::string> Editor::GitPreviewHunkText() const {
+    const DiffHunk *h = GitHunkAtCursor();
+    if (!h) return {false, ""};
+    std::vector<std::string> lines;
+    for (int i = h->old_start; i < h->old_start + h->old_count; i++) {
+        std::string old_line =
+            (i - 1 >= 0 && i - 1 < static_cast<int>(git_base_lines_.size())) ? git_base_lines_[i - 1] : "";
+        lines.push_back("-" + old_line);
+    }
+    const int n = Buf().LineCount();
+    for (int i = h->new_start; i < h->new_start + h->new_count; i++) {
+        std::string cur_line = (i - 1 >= 0 && i - 1 < n) ? Buf().lines[i - 1] : "";
+        lines.push_back("+" + cur_line);
+    }
+    if (lines.empty()) lines.push_back("(empty hunk)");
+    std::string text;
+    for (size_t k = 0; k < lines.size(); k++) {
+        if (k > 0) text += '\n';
+        text += lines[k];
+    }
+    return {true, text};
+}
+
+void Editor::GitResetHunk(const std::string &base) {
+    const DiffHunk *h = GitHunkAtCursor();
+    if (!h) {
+        Notify("No hunk under cursor", NotifyLevel::Warn);
+        return;
+    }
+    std::vector<std::string> repl;
+    for (int i = h->old_start; i < h->old_start + h->old_count; i++) {
+        if (i - 1 >= 0 && i - 1 < static_cast<int>(git_base_lines_.size())) repl.push_back(git_base_lines_[i - 1]);
+    }
+    int new_start = h->new_start, new_count = h->new_count;
+    ReplaceLinesForLua(new_start - 1, new_start - 1 + new_count, repl);
+    GitGutterRefresh(base);
+}
+
+void Editor::GitStageHunk() {
+    const DiffHunk *h = GitHunkAtCursor();
+    const std::string &fname = Buf().filename;
+    if (!h || fname.empty()) {
+        Notify("No hunk under cursor", NotifyLevel::Warn);
+        return;
+    }
+    std::string old_hdr = h->old_count == 0 ? (std::to_string(h->old_start) + ",0")
+                                             : (std::to_string(h->old_start) + "," + std::to_string(h->old_count));
+    std::string new_hdr = h->new_count == 0 ? (std::to_string(h->new_start) + ",0")
+                                             : (std::to_string(h->new_start) + "," + std::to_string(h->new_count));
+    std::string patch;
+    patch += "diff --git a/" + fname + " b/" + fname + "\n";
+    patch += "--- a/" + fname + "\n";
+    patch += "+++ b/" + fname + "\n";
+    patch += "@@ -" + old_hdr + " +" + new_hdr + " @@\n";
+    const int n = Buf().LineCount();
+    for (int i = h->old_start; i < h->old_start + h->old_count; i++) {
+        std::string old_line =
+            (i - 1 >= 0 && i - 1 < static_cast<int>(git_base_lines_.size())) ? git_base_lines_[i - 1] : "";
+        patch += "-" + old_line + "\n";
+    }
+    for (int i = h->new_start; i < h->new_start + h->new_count; i++) {
+        std::string cur_line = (i - 1 >= 0 && i - 1 < n) ? Buf().lines[i - 1] : "";
+        patch += "+" + cur_line + "\n";
+    }
+    JobManager::Callbacks cb;
+    cb.on_exit = [this](int code) {
+        if (code == 0) {
+            Notify("Staged hunk");
+        } else {
+            Notify("git apply failed", NotifyLevel::Error);
+        }
+    };
+    int id = JobManager::Instance().Spawn({"git", "apply", "--cached", "--unidiff-zero", "-"}, "", cb);
+    JobManager::Instance().WriteStdin(id, patch);
+    JobManager::Instance().CloseStdin(id);
+}
 
 void Editor::ReplaceLinesForLua(int start_row, int end_row, const std::vector<std::string> &lines) {
     Buffer &buf = Buf();

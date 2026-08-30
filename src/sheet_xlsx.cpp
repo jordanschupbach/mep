@@ -1,3 +1,6 @@
+#include "office_doc.h"
+#include "sheet_doc.h"
+
 // XLSX read/write -- Phase 2 (read) / part of Phase 4 (save-back) of
 // NVIM_PARITY_PLAN.md's spreadsheet-pane phase. Same zip+XML approach as
 // office_doc.cpp's DOCX support (a .xlsx is a ZIP of XML parts too):
@@ -21,9 +24,7 @@
 #include <unordered_map>
 #include <utility>
 
-#include "office_doc.h"
 #include "pugixml.hpp"
-#include "sheet_doc.h"
 
 namespace {
 

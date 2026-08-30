@@ -323,19 +323,42 @@ private:
                     case 'u': {
                         if (pos + 4 >= s.size()) return false;
                         unsigned int cp = static_cast<unsigned int>(std::strtoul(s.substr(pos + 1, 4).c_str(), nullptr, 16));
-                        pos += 4;
-                        // Minimal UTF-8 encode (no surrogate-pair handling --
-                        // sufficient for the ASCII/BMP text this app deals
-                        // with; a \uXXXX astral surrogate pair round-trips
-                        // as two independent replacement-ish codepoints
-                        // rather than failing outright).
+                        // A high surrogate (0xD800-0xDBFF) must be combined
+                        // with an immediately-following low surrogate
+                        // (\uDC00-\uDFFF) into one real codepoint before
+                        // UTF-8 encoding it -- JSON (like JS) represents
+                        // astral characters (e.g. emoji) as a surrogate
+                        // *pair* of two \u escapes, neither independently a
+                        // valid standalone codepoint. Decoding each half on
+                        // its own would corrupt any such character. An
+                        // unpaired surrogate (malformed input, or a lone
+                        // high surrogate at end of string) falls through to
+                        // the plain 3-byte encode below unchanged, same as
+                        // before this fix -- only the common well-formed-
+                        // pair case actually changes behavior.
+                        size_t next_pos = pos + 5;
+                        if (cp >= 0xD800 && cp <= 0xDBFF && next_pos + 5 < s.size() && s[next_pos] == '\\' &&
+                            s[next_pos + 1] == 'u') {
+                            unsigned int lo =
+                                static_cast<unsigned int>(std::strtoul(s.substr(next_pos + 2, 4).c_str(), nullptr, 16));
+                            if (lo >= 0xDC00 && lo <= 0xDFFF) {
+                                cp = 0x10000 + (cp - 0xD800) * 0x400 + (lo - 0xDC00);
+                                next_pos += 6;
+                            }
+                        }
+                        pos = next_pos - 1;  // the pos++ right after this switch brings it to next_pos
                         if (cp < 0x80) {
                             result += static_cast<char>(cp);
                         } else if (cp < 0x800) {
                             result += static_cast<char>(0xC0 | (cp >> 6));
                             result += static_cast<char>(0x80 | (cp & 0x3F));
-                        } else {
+                        } else if (cp < 0x10000) {
                             result += static_cast<char>(0xE0 | (cp >> 12));
+                            result += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                            result += static_cast<char>(0x80 | (cp & 0x3F));
+                        } else {
+                            result += static_cast<char>(0xF0 | (cp >> 18));
+                            result += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
                             result += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
                             result += static_cast<char>(0x80 | (cp & 0x3F));
                         }

@@ -1,3 +1,12 @@
+#include "agent_rpc.h"
+#include "editor.h"
+#include "job.h"
+#include "lua_env.h"
+#include "vterm.h"
+#include "image_doc.h"
+#include "pdf_doc.h"
+#include "office_doc.h"
+
 #include "raylib.h"
 #include "rlgl.h"  // rlPushMatrix/rlMultMatrixf/rlTranslatef -- org emphasis italic's shear transform
 
@@ -26,17 +35,9 @@
 #include <emscripten/emscripten.h>
 #endif
 
-#include "agent_rpc.h"
-#include "editor.h"
 #include "font_data.h"
 #include "icon_font_data.h"
 #include "symbol_font_data.h"
-#include "job.h"
-#include "lua_env.h"
-#include "vterm.h"
-#include "image_doc.h"
-#include "pdf_doc.h"
-#include "office_doc.h"
 #include "office_font_data.h"
 #include "office_font_data_mono.h"
 #include "office_font_data_serif.h"
@@ -381,6 +382,11 @@ std::vector<float> g_menu_starts, g_menu_widths;
 void RecomputeMenuLabelLayout();  // defined below; also called from HandleFontSizeShortcuts()
 int g_open_menu = -1;
 bool g_show_help_overlay = false;
+// Set by DrawPane (for the active pane only) when a hover tooltip should be
+// shown, then actually drawn once by the caller after the whole pane tree
+// finishes -- see the hover-tooltip comment on DrawPane's own hover block.
+bool g_hover_popup_pending = false;
+float g_hover_popup_x = 0, g_hover_popup_y = 0;
 std::string g_help_overlay_text;
 
 // Which office-toolbar dropdown/popup is open (main.cpp's DrawPane office
@@ -1757,109 +1763,21 @@ const char *kBuiltinIcons =
 // URL) -- no new C++ needed beyond the swatch-rendering support in
 // Decoration/DrawPane and mep.platform() for picking xdg-open/open/start.
 const char *kBuiltinTextTools =
-    // CSS3/SVG named-color keywords (148 entries, incl. both gray/grey
-    // spellings and rebeccapurple) -- NVIM_PARITY_PLAN.md Phase 13 gap:
-    // colorizer previously only recognized hex/rgb()/rgba() literals.
-    "local MEP_CSS_COLORS = {\n"
-    "  aliceblue=\"f0f8ff\", antiquewhite=\"faebd7\", aqua=\"00ffff\", aquamarine=\"7fffd4\",\n"
-    "  azure=\"f0ffff\", beige=\"f5f5dc\", bisque=\"ffe4c4\", black=\"000000\",\n"
-    "  blanchedalmond=\"ffebcd\", blue=\"0000ff\", blueviolet=\"8a2be2\", brown=\"a52a2a\",\n"
-    "  burlywood=\"deb887\", cadetblue=\"5f9ea0\", chartreuse=\"7fff00\", chocolate=\"d2691e\",\n"
-    "  coral=\"ff7f50\", cornflowerblue=\"6495ed\", cornsilk=\"fff8dc\", crimson=\"dc143c\",\n"
-    "  cyan=\"00ffff\", darkblue=\"00008b\", darkcyan=\"008b8b\", darkgoldenrod=\"b8860b\",\n"
-    "  darkgray=\"a9a9a9\", darkgreen=\"006400\", darkgrey=\"a9a9a9\", darkkhaki=\"bdb76b\",\n"
-    "  darkmagenta=\"8b008b\", darkolivegreen=\"556b2f\", darkorange=\"ff8c00\", darkorchid=\"9932cc\",\n"
-    "  darkred=\"8b0000\", darksalmon=\"e9967a\", darkseagreen=\"8fbc8f\", darkslateblue=\"483d8b\",\n"
-    "  darkslategray=\"2f4f4f\", darkslategrey=\"2f4f4f\", darkturquoise=\"00ced1\", darkviolet=\"9400d3\",\n"
-    "  deeppink=\"ff1493\", deepskyblue=\"00bfff\", dimgray=\"696969\", dimgrey=\"696969\",\n"
-    "  dodgerblue=\"1e90ff\", firebrick=\"b22222\", floralwhite=\"fffaf0\", forestgreen=\"228b22\",\n"
-    "  fuchsia=\"ff00ff\", gainsboro=\"dcdcdc\", ghostwhite=\"f8f8ff\", gold=\"ffd700\",\n"
-    "  goldenrod=\"daa520\", gray=\"808080\", green=\"008000\", greenyellow=\"adff2f\",\n"
-    "  grey=\"808080\", honeydew=\"f0fff0\", hotpink=\"ff69b4\", indianred=\"cd5c5c\",\n"
-    "  indigo=\"4b0082\", ivory=\"fffff0\", khaki=\"f0e68c\", lavender=\"e6e6fa\",\n"
-    "  lavenderblush=\"fff0f5\", lawngreen=\"7cfc00\", lemonchiffon=\"fffacd\", lightblue=\"add8e6\",\n"
-    "  lightcoral=\"f08080\", lightcyan=\"e0ffff\", lightgoldenrodyellow=\"fafad2\", lightgray=\"d3d3d3\",\n"
-    "  lightgreen=\"90ee90\", lightgrey=\"d3d3d3\", lightpink=\"ffb6c1\", lightsalmon=\"ffa07a\",\n"
-    "  lightseagreen=\"20b2aa\", lightskyblue=\"87cefa\", lightslategray=\"778899\", lightslategrey=\"778899\",\n"
-    "  lightsteelblue=\"b0c4de\", lightyellow=\"ffffe0\", lime=\"00ff00\", limegreen=\"32cd32\",\n"
-    "  linen=\"faf0e6\", magenta=\"ff00ff\", maroon=\"800000\", mediumaquamarine=\"66cdaa\",\n"
-    "  mediumblue=\"0000cd\", mediumorchid=\"ba55d3\", mediumpurple=\"9370db\", mediumseagreen=\"3cb371\",\n"
-    "  mediumslateblue=\"7b68ee\", mediumspringgreen=\"00fa9a\", mediumturquoise=\"48d1cc\", mediumvioletred=\"c71585\",\n"
-    "  midnightblue=\"191970\", mintcream=\"f5fffa\", mistyrose=\"ffe4e1\", moccasin=\"ffe4b5\",\n"
-    "  navajowhite=\"ffdead\", navy=\"000080\", oldlace=\"fdf5e6\", olive=\"808000\",\n"
-    "  olivedrab=\"6b8e23\", orange=\"ffa500\", orangered=\"ff4500\", orchid=\"da70d6\",\n"
-    "  palegoldenrod=\"eee8aa\", palegreen=\"98fb98\", paleturquoise=\"afeeee\", palevioletred=\"db7093\",\n"
-    "  papayawhip=\"ffefd5\", peachpuff=\"ffdab9\", peru=\"cd853f\", pink=\"ffc0cb\",\n"
-    "  plum=\"dda0dd\", powderblue=\"b0e0e6\", purple=\"800080\", rebeccapurple=\"663399\",\n"
-    "  red=\"ff0000\", rosybrown=\"bc8f8f\", royalblue=\"4169e1\", saddlebrown=\"8b4513\",\n"
-    "  salmon=\"fa8072\", sandybrown=\"f4a460\", seagreen=\"2e8b57\", seashell=\"fff5ee\",\n"
-    "  sienna=\"a0522d\", silver=\"c0c0c0\", skyblue=\"87ceeb\", slateblue=\"6a5acd\",\n"
-    "  slategray=\"708090\", slategrey=\"708090\", snow=\"fffafa\", springgreen=\"00ff7f\",\n"
-    "  steelblue=\"4682b4\", tan=\"d2b48c\", teal=\"008080\", thistle=\"d8bfd8\",\n"
-    "  tomato=\"ff6347\", turquoise=\"40e0d0\", violet=\"ee82ee\", wheat=\"f5deb3\",\n"
-    "  white=\"ffffff\", whitesmoke=\"f5f5f5\", yellow=\"ffff00\", yellowgreen=\"9acd32\",\n"
-    "}\n"
-    "local mep_colorizer_ns = nil\n"
-    "function mep.colorize()\n"
-    "  if not mep_colorizer_ns then mep_colorizer_ns = mep.ns_create('colorizer') end\n"
-    "  mep.ns_clear(mep_colorizer_ns)\n"
-    "  for i = 1, mep.line_count() do\n"
-    "    local line = mep.get_line(i)\n"
-    "    local covered = {}\n"
-    "    for s, hex in line:gmatch('()#(%x%x%x%x%x%x%x%x)') do\n"
-    "      local r, g, b = tonumber(hex:sub(1,2),16), tonumber(hex:sub(3,4),16), tonumber(hex:sub(5,6),16)\n"
-    "      mep.deco_add(mep_colorizer_ns, {row=i, col_start=s, col_end=s+9, color={r,g,b}})\n"
-    "      for k = s, s + 8 do covered[k] = true end\n"
-    "    end\n"
-    "    for s, hex in line:gmatch('()#(%x%x%x%x%x%x)') do\n"
-    "      if not covered[s] then\n"
-    "        local r, g, b = tonumber(hex:sub(1,2),16), tonumber(hex:sub(3,4),16), tonumber(hex:sub(5,6),16)\n"
-    "        mep.deco_add(mep_colorizer_ns, {row=i, col_start=s, col_end=s+7, color={r,g,b}})\n"
-    "        for k = s, s + 6 do covered[k] = true end\n"
-    "      end\n"
-    "    end\n"
-    "    for s, hex in line:gmatch('()#(%x%x%x)') do\n"
-    "      if not covered[s] then\n"
-    "        local r = tonumber(hex:sub(1,1) .. hex:sub(1,1), 16)\n"
-    "        local g = tonumber(hex:sub(2,2) .. hex:sub(2,2), 16)\n"
-    "        local b = tonumber(hex:sub(3,3) .. hex:sub(3,3), 16)\n"
-    "        mep.deco_add(mep_colorizer_ns, {row=i, col_start=s, col_end=s+4, color={r,g,b}})\n"
-    "      end\n"
-    "    end\n"
-    "    for s, r, g, b in line:gmatch('()rgba?%(%s*(%d+)%s*,%s*(%d+)%s*,%s*(%d+)') do\n"
-    "      mep.deco_add(mep_colorizer_ns, {row=i, col_start=s, col_end=s+3, color={tonumber(r),tonumber(g),tonumber(b)}})\n"
-    "    end\n"
-    // Frontier-pattern word match so e.g. 'tan' inside 'instant' or 'red'
-    // inside 'credit' don't false-positive -- exact lowercase keyword
-    // only (CSS names are case-insensitive, but matching case-sensitively
-    // avoids flagging identifiers like a `Red` class/variable name).
-    "    for s, word in line:gmatch('()%f[%a](%a+)%f[%A]') do\n"
-    "      local hexv = MEP_CSS_COLORS[word]\n"
-    "      if hexv and not covered[s] then\n"
-    "        local r, g, b = tonumber(hexv:sub(1,2),16), tonumber(hexv:sub(3,4),16), tonumber(hexv:sub(5,6),16)\n"
-    "        mep.deco_add(mep_colorizer_ns, {row=i, col_start=s, col_end=s+#word, color={r,g,b}})\n"
-    "      end\n"
-    "    end\n"
-    "  end\n"
-    "end\n"
+    // The 148-entry CSS3/SVG named-color table and the whole colorizer
+    // scan (hex literals, rgb()/rgba(), named colors, with their exact
+    // overlap-avoidance order) moved to C++ -- Editor::Colorize, bound
+    // directly as mep.colorize (lua_env.cpp) -- nothing left to define
+    // here, just the command registration.
     "mep.command('MepColorize', mep.colorize)\n"
     // Opt-in auto-recompute (off by default -- a silent always-on
     // behavior change would surprise existing configs/large files);
     // :lua mep.colorize_auto = true to enable.
     "mep.colorize_auto = false\n"
     "mep.on_buffer_changed(function() if mep.colorize_auto then mep.colorize() end end)\n"
-    "local MEP_URL_PATTERN = \"https?://[%w%-%._~:/?#%[%]@!$&'()*+,;=%%]+\"\n"
-    "function mep.url_under_cursor()\n"
-    "  local row, col = mep.cursor()\n"
-    "  local line = mep.get_line(row)\n"
-    "  local init = 1\n"
-    "  while true do\n"
-    "    local s, e = line:find(MEP_URL_PATTERN, init)\n"
-    "    if not s then return nil end\n"
-    "    if col >= s and col <= e then return line:sub(s, e) end\n"
-    "    init = e + 1\n"
-    "  end\n"
-    "end\n"
+    // MEP_URL_PATTERN's scan (both here and mep.list_urls below) moved
+    // to C++ -- Editor::UrlUnderCursor/ListUrls, bound directly as
+    // mep.url_under_cursor and (as mep.list_urls_scan) wrapped by
+    // mep.list_urls below.
     "function mep.open_url(url)\n"
     "  local plat = mep.platform()\n"
     "  local cmd = 'xdg-open'\n"
@@ -1872,17 +1790,7 @@ const char *kBuiltinTextTools =
     "  else mep.notify('No URL under cursor', 'warn') end\n"
     "end\n"
     "function mep.list_urls()\n"
-    "  local items = {}\n"
-    "  for i = 1, mep.line_count() do\n"
-    "    local line = mep.get_line(i)\n"
-    "    local init = 1\n"
-    "    while true do\n"
-    "      local s, e = line:find(MEP_URL_PATTERN, init)\n"
-    "      if not s then break end\n"
-    "      items[#items + 1] = line:sub(s, e)\n"
-    "      init = e + 1\n"
-    "    end\n"
-    "  end\n"
+    "  local items = mep.list_urls_scan()\n"
     "  mep.picker_open('URLs', items, function(item)\n"
     "    if item then mep.open_url(item) end\n"
     "  end)\n"
@@ -2063,33 +1971,40 @@ const char *kBuiltinFileTree =
     "    on_exit = function() mep.tree_refresh() end,\n"
     "  })\n"
     "end\n"
-    "local function mep_tree_build_widgets(dir, depth, widgets)\n"
-    "  local entries = mep.list_dir(dir)\n"
-    "  for _, e in ipairs(entries) do\n"
-    "    local hidden = e.name:sub(1,1) == '.'\n"
-    "    local rel = dir:sub(#mep_tree_root + 2) \n"
-    "    local relpath = (rel ~= '' and (rel .. '/') or '') .. e.name\n"
-    "    if (mep_tree_show_hidden or not hidden) and not mep_tree_ignored[relpath] then\n"
-    "      local full = mep_tree_join(dir, e.name)\n"
-    "      mep_tree_is_dir[full] = e.is_dir\n"
-    "      local indent = string.rep('  ', depth)\n"
-    "      if e.is_dir then\n"
-    "        local marker = mep_tree_expanded[full] and mep.icons.dir_open or mep.icons.dir_closed\n"
-    "        widgets[#widgets + 1] = {\n"
-    "          id = full, text = indent .. marker .. ' ' .. e.name,\n"
-    "          on_click = function()\n"
-    "            if mep_tree_expanded[full] then mep_tree_expanded[full] = nil\n"
-    "            else mep_tree_expanded[full] = true end\n"
-    "            mep.tree_refresh()\n"
-    "          end,\n"
-    "        }\n"
-    "        if mep_tree_expanded[full] then mep_tree_build_widgets(full, depth + 1, widgets) end\n"
-    "      else\n"
-    "        widgets[#widgets + 1] = {\n"
-    "          id = full, text = indent .. mep.icon_for_file(e.name) .. ' ' .. e.name,\n"
-    "          on_click = function() mep.open(full) end,\n"
-    "        }\n"
-    "      end\n"
+    // The recursive walk (hidden/gitignore filtering, expand-driven
+    // recursion, dirs-first-then-alpha order) moved to C++ --
+    // Editor::BuildFileTreeRows, exposed as mep.tree_build_rows
+    // (lua_env.cpp) -- flattened into one call instead of a Lua function
+    // recursing into itself. What's left is genuinely just widget
+    // construction: each row needs its own on_click Lua ref regardless
+    // (toggle-expand for a dir, open for a file), and mep_tree_is_dir's
+    // side-effect population (tree_on_key's 'a' handler reads it) has to
+    // happen from Lua since that table is Lua-owned state.\n"
+    "local function mep_tree_build_widgets(widgets)\n"
+    "  local expanded_list = {}\n"
+    "  for k, v in pairs(mep_tree_expanded) do if v then expanded_list[#expanded_list + 1] = k end end\n"
+    "  local ignored_list = {}\n"
+    "  for k, v in pairs(mep_tree_ignored) do if v then ignored_list[#ignored_list + 1] = k end end\n"
+    "  local rows = mep.tree_build_rows(mep_tree_root, expanded_list, mep_tree_show_hidden, ignored_list)\n"
+    "  for _, row in ipairs(rows) do\n"
+    "    mep_tree_is_dir[row.path] = row.is_dir\n"
+    "    local indent = string.rep('  ', row.depth)\n"
+    "    if row.is_dir then\n"
+    "      local marker = row.expanded and mep.icons.dir_open or mep.icons.dir_closed\n"
+    "      widgets[#widgets + 1] = {\n"
+    "        id = row.path, text = indent .. marker .. ' ' .. row.name, hl = 'Blue',\n"
+    "        on_click = function()\n"
+    "          if mep_tree_expanded[row.path] then mep_tree_expanded[row.path] = nil\n"
+    "          else mep_tree_expanded[row.path] = true end\n"
+    "          mep.tree_refresh()\n"
+    "        end,\n"
+    "      }\n"
+    "    else\n"
+    "      widgets[#widgets + 1] = {\n"
+    "        id = row.path, text = indent .. mep.icon_for_file(row.name) .. ' ' .. row.name,\n"
+    "        hl = mep.hl_for_file(row.name),\n"
+    "        on_click = function() mep.focus_top_left_pane() mep.open(row.path) end,\n"
+    "      }\n"
     "    end\n"
     "  end\n"
     "end\n"
@@ -2100,7 +2015,7 @@ const char *kBuiltinFileTree =
     "    mep.sidebar_set_on_key(mep_tree_sidebar_id, mep.tree_on_key)\n"
     "  end\n"
     "  local widgets = {}\n"
-    "  mep_tree_build_widgets(mep_tree_root, 0, widgets)\n"
+    "  mep_tree_build_widgets(widgets)\n"
     "  mep.sidebar_set_sections(mep_tree_sidebar_id, {\n"
     "    {id = 'tree', title = mep_tree_root, collapsed = false, widgets = widgets},\n"
     "  })\n"
@@ -2173,23 +2088,15 @@ const char *kBuiltinFileTree =
     "end\n"
     "mep.command('MepFileTree', function() mep.tree_toggle() end)\n"
     "mep.leader_map('ff', 'Toggle file tree', function() mep.tree_toggle() end)\n"
-    "local MEP_README_NAMES = {'README.md', 'README.org', 'README.txt', 'README'}\n"
     // Shared by mep.project_open below and mep.projects()'s picker preview
-    // pane further down: first name in MEP_README_NAMES present (as a
-    // file, not a dir) in `dir` wins, so README.org is only preferred over
-    // README.md etc. by its position in that list. nil if none match.
-    "local function mep_project_readme_path(dir)\n"
-    "  local entries = mep.list_dir(dir)\n"
-    "  for _, name in ipairs(MEP_README_NAMES) do\n"
-    "    for _, e in ipairs(entries) do\n"
-    "      if not e.is_dir and e.name == name then return dir .. '/' .. name end\n"
-    "    end\n"
-    "  end\n"
-    "  return nil\n"
-    "end\n"
+    // pane further down: first of README.md/README.org/README.txt/README
+    // present as a file (not a dir) in `dir` wins, so README.org is only
+    // preferred over README.md etc. by that fixed priority order -- moved
+    // to C++ (Editor::ProjectReadmePath), exposed as
+    // mep.project_readme_path (lua_env.cpp); nil if none match.
     "function mep.project_open(dir)\n"
     "  mep.chdir(dir)\n"
-    "  local readme = mep_project_readme_path(dir)\n"
+    "  local readme = mep.project_readme_path(dir)\n"
     "  local opened_readme = readme ~= nil\n"
     "  if opened_readme then mep.open(readme) end\n"
     // A bare `:terminal` always opens its new pane above/left of whatever
@@ -2242,19 +2149,28 @@ const char *kBuiltinFileTree =
     "    mep.notify('Added current directory as a project')\n"
     "  end\n"
     // Preview pane (project picker's own version of find_files/live_grep's
-    // mep_picker_preview_file usage above): shows the highlighted
-    // project's README, trying MEP_README_NAMES in order so README.org
-    // (this editor's own convention) is picked over README.md etc. when a
-    // project happens to have more than one. The '+'/'-' action rows
-    // aren't project directories, so they just clear the pane instead.
+    // mep.picker_preview_file usage, kBuiltinPickerSources): shows the
+    // highlighted project's README, trying MEP_README_NAMES in order so
+    // README.org (this editor's own convention) is picked over README.md
+    // etc. when a project happens to have more than one. The '+'/'-'
+    // action rows aren't project directories, so they just clear the pane
+    // instead.
+    //
+    // Fixed in the Lua-to-C++ pass that moved mep_picker_preview_file to
+    // C++ (LUA_TO_CPP_PLAN.md): the old call here referenced a Lua
+    // *local* of that name declared in kBuiltinPickerSources' own,
+    // separately-compiled DoString chunk -- invisible from this chunk, so
+    // this preview pane silently errored (call to a nil global) every
+    // time, since the day this feature was written. mep.picker_preview_file
+    // is a real mep.* global now, visible everywhere.
     "  local function preview_project(item)\n"
     "    if item == '+ Add current directory' or item == '- Remove a project...' then\n"
     "      mep.picker_set_preview('')\n"
     "      return\n"
     "    end\n"
-    "    local readme = mep_project_readme_path(item)\n"
+    "    local readme = mep.project_readme_path(item)\n"
     "    if readme then\n"
-    "      mep_picker_preview_file(readme, 60)\n"
+    "      mep.picker_preview_file(readme, 60)\n"
     "    else\n"
     "      mep.picker_set_preview('(no README found in ' .. item .. ')')\n"
     "    end\n"
@@ -2291,9 +2207,14 @@ const char *kBuiltinFileTree =
 // the diff algorithm itself and mep.replace_lines (a generic multi-line
 // splice, not git-specific).
 const char *kBuiltinGit =
-    "local mep_git_ns = nil\n"
-    "local mep_git_hunks = {}\n"
-    "local mep_git_base_lines = {}\n"
+    // The `git show` job spawn, Myers-diff call, and hunk-to-decoration
+    // rendering all moved to C++ -- Editor::GitGutterRefresh (editor.cpp),
+    // exposed as mep.git_gutter_refresh_native (lua_env.cpp). Unlike
+    // earlier phases, this one moves the *async orchestration itself* off
+    // Lua refs entirely (JobManager::Spawn already takes real C++
+    // callbacks -- see LUA_TO_CPP_PLAN.md's "async is not actually the
+    // blocker" note) -- mep_git_hunks/mep_git_base_lines are now
+    // Editor-owned state (git_hunks_/git_base_lines_), not Lua locals.
     "local mep_git_status_sidebar_id = nil\n"
     // Configurable diff base (Phase 17 gap): a single global ref name,
     // not per-buffer -- same-global convention as mep_git_hunks/
@@ -2304,48 +2225,7 @@ const char *kBuiltinGit =
     // reports the current one. Every `git show <ref>:<file>` shell-out
     // in this module reads this instead of a hardcoded 'HEAD'.
     "mep.git_gutter_base = 'HEAD'\n"
-    "function mep.git_gutter_refresh()\n"
-    "  local fname = mep.filename()\n"
-    "  if fname == '' then return end\n"
-    "  if not mep_git_ns then mep_git_ns = mep.ns_create('git') end\n"
-    // `HEAD:<path>` is a pathspec, resolved by git relative to *its own*
-    // cwd (same as any other git path argument) -- run with cwd set to
-    // the buffer's own directory and just its basename, rather than
-    // mep's own process cwd (which need not have any relationship to
-    // where the file lives, or even be inside a git repo at all) and
-    // fname's own full path (which, being absolute whenever mep was
-    // opened with one, git would refuse outright: a pathspec can't be
-    // absolute). Without this, `git show` silently fails, the "old"
-    // side of the diff comes back empty, and every line in the buffer
-    // shows as a brand new addition -- confirmed exactly this way.
-    "  local dir = fname:match('^(.*)/[^/]+$') or '.'\n"
-    "  local base = fname:match('([^/]+)$') or fname\n"
-    "  local lines = {}\n"
-    "  mep.job_start({'git', 'show', mep.git_gutter_base .. ':' .. base}, {\n"
-    "    cwd = dir,\n"
-    "    on_stdout = function(l) lines[#lines + 1] = l end,\n"
-    "    on_exit = function(code)\n"
-    "      mep_git_base_lines = lines\n"
-    "      local cur = {}\n"
-    "      for i = 1, mep.line_count() do cur[i] = mep.get_line(i) end\n"
-    "      mep_git_hunks = mep.diff_lines(lines, cur)\n"
-    "      mep.ns_clear(mep_git_ns)\n"
-    "      for _, h in ipairs(mep_git_hunks) do\n"
-    "        if h.old_count == 0 then\n"
-    "          for r = h.new_start, h.new_start + h.new_count - 1 do\n"
-    "            mep.deco_add(mep_git_ns, {row = r, whole_line = true, hl_group = 'Add', sign = '+', sign_hl = 'Add'})\n"
-    "          end\n"
-    "        elseif h.new_count == 0 then\n"
-    "          mep.deco_add(mep_git_ns, {row = math.max(1, h.new_start), whole_line = false, sign = '_', sign_hl = 'Red'})\n"
-    "        else\n"
-    "          for r = h.new_start, h.new_start + h.new_count - 1 do\n"
-    "            mep.deco_add(mep_git_ns, {row = r, whole_line = true, hl_group = 'Yellow', sign = '~', sign_hl = 'Yellow'})\n"
-    "          end\n"
-    "        end\n"
-    "      end\n"
-    "    end,\n"
-    "  })\n"
-    "end\n"
+    "function mep.git_gutter_refresh() mep.git_gutter_refresh_native(mep.git_gutter_base) end\n"
     // Opt-in (off by default, same convention as mep.git_gutter_auto/
     // mep.colorize_auto): mep.float_preview dismisses on *any* keypress,
     // so auto-popping the hunk preview on every jump would make repeated
@@ -2357,75 +2237,41 @@ const char *kBuiltinGit =
     "local function mep_git_maybe_preview_hunk()\n"
     "  if mep.git_hunk_preview_on_jump then mep.git_preview_hunk() end\n"
     "end\n"
+    // The find-next/prev-hunk-relative-to-cursor search moved to C++ --
+    // Editor::GitNextHunkRow/GitPrevHunkRow, exposed as
+    // mep.git_next_hunk_row/mep.git_prev_hunk_row (lua_env.cpp); these
+    // stay thin Lua wrappers since the cursor move + opt-in preview-on-
+    // jump are the only things left to do.
     "function mep.git_next_hunk()\n"
-    "  local row = mep.cursor()\n"
-    "  for _, h in ipairs(mep_git_hunks) do\n"
-    "    if h.new_start > row then mep.set_cursor(h.new_start, 1) mep_git_maybe_preview_hunk() return end\n"
-    "  end\n"
-    "  if mep_git_hunks[1] then mep.set_cursor(mep_git_hunks[1].new_start, 1) mep_git_maybe_preview_hunk() end\n"
+    "  local row = mep.git_next_hunk_row()\n"
+    "  if row then mep.set_cursor(row, 1) mep_git_maybe_preview_hunk() end\n"
     "end\n"
     "function mep.git_prev_hunk()\n"
-    "  local row = mep.cursor()\n"
-    "  for i = #mep_git_hunks, 1, -1 do\n"
-    "    local h = mep_git_hunks[i]\n"
-    "    if h.new_start < row then mep.set_cursor(h.new_start, 1) mep_git_maybe_preview_hunk() return end\n"
-    "  end\n"
-    "  local last = mep_git_hunks[#mep_git_hunks]\n"
-    "  if last then mep.set_cursor(last.new_start, 1) mep_git_maybe_preview_hunk() end\n"
-    "end\n"
-    "local function mep_git_hunk_at_cursor()\n"
-    "  local row = mep.cursor()\n"
-    "  for _, h in ipairs(mep_git_hunks) do\n"
-    "    local lo, hi = h.new_start, h.new_start + math.max(1, h.new_count) - 1\n"
-    "    if row >= lo and row <= hi then return h end\n"
-    "  end\n"
+    "  local row = mep.git_prev_hunk_row()\n"
+    "  if row then mep.set_cursor(row, 1) mep_git_maybe_preview_hunk() end\n"
     "end\n"
     // Preview hunk (Phase 17 gap): shows the hunk under the cursor as a
     // unified-diff body (old lines '-', new lines '+') in a dismiss-on-
     // any-key float (mep.float_preview -> Editor::BeginPreview,
     // DrawPreviewOverlay in main.cpp) *before* mep.git_stage_hunk/
-    // git_reset_hunk act on it -- same hunk-at-cursor lookup and the
-    // same mep_git_base_lines those two already use, just rendered
-    // instead of applied.
+    // git_reset_hunk act on it. The hunk-at-cursor lookup + diff-text
+    // build moved to C++ -- Editor::GitPreviewHunkText, exposed as
+    // mep.git_preview_hunk_text (lua_env.cpp).
     "function mep.git_preview_hunk()\n"
-    "  local h = mep_git_hunk_at_cursor()\n"
-    "  if not h then mep.notify('No hunk under cursor', 'warn') return end\n"
-    "  local lines = {}\n"
-    "  for i = h.old_start, h.old_start + h.old_count - 1 do lines[#lines + 1] = '-' .. (mep_git_base_lines[i] or '') end\n"
-    "  for i = h.new_start, h.new_start + h.new_count - 1 do lines[#lines + 1] = '+' .. mep.get_line(i) end\n"
-    "  if #lines == 0 then lines[1] = '(empty hunk)' end\n"
-    "  mep.float_preview('Hunk preview  (base: ' .. mep.git_gutter_base .. ')', table.concat(lines, '\\n'))\n"
+    "  local text = mep.git_preview_hunk_text()\n"
+    "  if not text then mep.notify('No hunk under cursor', 'warn') return end\n"
+    "  mep.float_preview('Hunk preview  (base: ' .. mep.git_gutter_base .. ')', text)\n"
     "end\n"
-    "function mep.git_reset_hunk()\n"
-    "  local h = mep_git_hunk_at_cursor()\n"
-    "  if not h then mep.notify('No hunk under cursor', 'warn') return end\n"
-    "  local repl = {}\n"
-    "  for i = h.old_start, h.old_start + h.old_count - 1 do repl[#repl + 1] = mep_git_base_lines[i] end\n"
-    "  mep.replace_lines(h.new_start, h.new_start + h.new_count, repl)\n"
-    "  mep.git_gutter_refresh()\n"
-    "end\n"
-    "function mep.git_stage_hunk()\n"
-    "  local h = mep_git_hunk_at_cursor()\n"
-    "  local fname = mep.filename()\n"
-    "  if not h or fname == '' then mep.notify('No hunk under cursor', 'warn') return end\n"
-    "  local lines = {}\n"
-    "  lines[#lines + 1] = 'diff --git a/' .. fname .. ' b/' .. fname\n"
-    "  lines[#lines + 1] = '--- a/' .. fname\n"
-    "  lines[#lines + 1] = '+++ b/' .. fname\n"
-    "  local old_hdr = h.old_count == 0 and (h.old_start .. ',0') or (h.old_start .. ',' .. h.old_count)\n"
-    "  local new_hdr = h.new_count == 0 and (h.new_start .. ',0') or (h.new_start .. ',' .. h.new_count)\n"
-    "  lines[#lines + 1] = '@@ -' .. old_hdr .. ' +' .. new_hdr .. ' @@'\n"
-    "  for i = h.old_start, h.old_start + h.old_count - 1 do lines[#lines + 1] = '-' .. mep_git_base_lines[i] end\n"
-    "  for i = h.new_start, h.new_start + h.new_count - 1 do lines[#lines + 1] = '+' .. mep.get_line(i) end\n"
-    "  local patch = table.concat(lines, '\\n') .. '\\n'\n"
-    "  local id = mep.job_start({'git', 'apply', '--cached', '--unidiff-zero', '-'}, {\n"
-    "    on_exit = function(code)\n"
-    "      if code == 0 then mep.notify('Staged hunk') else mep.notify('git apply failed', 'error') end\n"
-    "    end,\n"
-    "  })\n"
-    "  mep.job_write(id, patch)\n"
-    "  mep.job_close_stdin(id)\n"
-    "end\n"
+    // Reset/stage both moved entirely to C++ -- Editor::GitResetHunk/
+    // GitStageHunk (editor.cpp). GitStageHunk needs no Lua wrapper at all
+    // (mep.git_stage_hunk is bound directly to the C function in
+    // kMepFuncs, lua_env.cpp -- callable as :lua mep.git_stage_hunk(),
+    // same as the original; neither it nor mep.git_reset_hunk has ever
+    // had its own :MepGit*/leader_map binding) -- its own
+    // `git apply --cached` job spawn + WriteStdin/CloseStdin runs with no
+    // Lua ref anywhere in the path, same as GitGutterRefresh's own
+    // `git show`.
+    "function mep.git_reset_hunk() mep.git_reset_hunk_native(mep.git_gutter_base) end\n"
     "function mep.git_status_refresh()\n"
     "  if not mep_git_status_sidebar_id then\n"
     "    mep_git_status_sidebar_id = mep.sidebar_create('Git Status', 'left', 40)\n"
@@ -2520,17 +2366,24 @@ const char *kBuiltinGit =
 // unlike find_files, since without ripgrep there is no fast alternative
 // short of a slow pure-Lua recursive grep; the picker just reports zero
 // matches with a hint) + live in-buffer marking via decorations.
+//
+// The in-buffer scan (which lines/columns TODO/FIXME/HACK/NOTE occur at)
+// is native C++ now -- Editor::TodoScanMatches (editor.cpp), exposed as
+// mep.todo_scan_matches (lua_env.cpp) -- so mep.todo_mark_buffer below is
+// just config + wiring: map each match's keyword to a glyph/highlight via
+// mep.todoscan_keywords and call mep.deco_add. MEP_TODO_KEYWORDS here is
+// only the project-wide mep.todoscan()'s own ripgrep pattern source below;
+// TodoScanMatches has its own identical, separately-hardcoded keyword
+// list for the buffer scan -- add a new keyword in both places.
 const char *kBuiltinTodo =
     "local MEP_TODO_KEYWORDS = {'TODO', 'FIXME', 'HACK', 'NOTE'}\n"
-    // Per-keyword sign glyph + highlight group, keyed by keyword text
-    // (case-sensitive, matching MEP_TODO_KEYWORDS' own case) -- same flat
-    // config-table shape as mep.syntax_keywords/mep.syntax_comment_prefix.
-    // Override an existing entry or add a new one at runtime, e.g.
-    // mep.todoscan_keywords.XXX = {glyph = 'X', hl = 'Purple'} (remember to
-    // also add 'XXX' to MEP_TODO_KEYWORDS above so it's actually scanned
-    // for). A keyword missing from this table -- or a config missing one
-    // of the two fields -- falls back to MEP_TODO_DEFAULT below field by
-    // field, so nothing breaks for keywords the user hasn't customized.
+    // Per-keyword sign glyph + highlight group, keyed by keyword text --
+    // same flat config-table shape as mep.syntax_keywords/
+    // mep.syntax_comment_prefix. Override an existing entry at runtime,
+    // e.g. mep.todoscan_keywords.TODO = {glyph = 'X', hl = 'Purple'}. A
+    // keyword missing from this table -- or a config missing one of the
+    // two fields -- falls back to MEP_TODO_DEFAULT below field by field,
+    // so nothing breaks for keywords the user hasn't customized.
     "mep.todoscan_keywords = {\n"
     "  TODO  = {glyph = '', hl = 'Yellow'},\n"
     "  FIXME = {glyph = '', hl = 'Red'},\n"
@@ -2542,17 +2395,11 @@ const char *kBuiltinTodo =
     "function mep.todo_mark_buffer()\n"
     "  if not mep_todo_ns then mep_todo_ns = mep.ns_create('todoscan') end\n"
     "  mep.ns_clear(mep_todo_ns)\n"
-    "  for i = 1, mep.line_count() do\n"
-    "    local line = mep.get_line(i)\n"
-    "    for _, kw in ipairs(MEP_TODO_KEYWORDS) do\n"
-    "      local s = line:find(kw, 1, true)\n"
-    "      if s then\n"
-    "        local cfg = mep.todoscan_keywords[kw] or MEP_TODO_DEFAULT\n"
-    "        local glyph = cfg.glyph or MEP_TODO_DEFAULT.glyph\n"
-    "        local hl = cfg.hl or MEP_TODO_DEFAULT.hl\n"
-    "        mep.deco_add(mep_todo_ns, {row = i, col_start = s, col_end = s + #kw, hl_group = hl, sign = glyph, sign_hl = hl})\n"
-    "      end\n"
-    "    end\n"
+    "  for _, m in ipairs(mep.todo_scan_matches()) do\n"
+    "    local cfg = mep.todoscan_keywords[m.kw] or MEP_TODO_DEFAULT\n"
+    "    local glyph = cfg.glyph or MEP_TODO_DEFAULT.glyph\n"
+    "    local hl = cfg.hl or MEP_TODO_DEFAULT.hl\n"
+    "    mep.deco_add(mep_todo_ns, {row = m.row, col_start = m.col_start, col_end = m.col_end, hl_group = hl, sign = glyph, sign_hl = hl})\n"
     "  end\n"
     "end\n"
     "mep.command('MepTodoMark', mep.todo_mark_buffer)\n"
@@ -2721,23 +2568,18 @@ const char *kBuiltinLsp =
     // completion items nearly empty and only fill in detail/documentation
     // lazily via that follow-up request.
     "mep_lsp_server_capabilities = {}\n"
-    // Global (not local): shared with kBuiltinSnippets, a separate
-    // DoString chunk that also needs filetype detection -- a `local`
-    // here would only be visible within this chunk's own closures.
-    "function mep_lsp_filetype(fname)\n"
-    "  return fname:match('%.([%w_]+)$')\n"
-    "end\n"
+    // mep_lsp_filetype/mep_lsp_abspath: ported to LspFiletype/LspAbspath
+    // (editor.h/.cpp) and registered as bare globals under these exact
+    // names before any kBuiltin* block runs (LuaEnv::LuaEnv, lua_env.cpp)
+    // -- LUA_TO_CPP_PLAN.md Phase 5 side quest, see their own comment for
+    // why these two (and not the rest of LSP) were safe to pull forward.
     // Diagnostics arrive keyed by the server's own (always-absolute)
     // file:// URI, but mep.filename() is whatever path the file was
     // opened with (often relative) -- every lookup into
-    // mep_lsp_diagnostics normalizes through this so the two can't
-    // silently miss each other (a real bug caught during verification:
-    // the first version compared the relative filename directly against
-    // the absolute URI-derived key and never matched).
-    "function mep_lsp_abspath(fname)\n"
-    "  if fname:sub(1, 1) == '/' then return fname end\n"
-    "  return mep.getcwd() .. '/' .. fname\n"
-    "end\n"
+    // mep_lsp_diagnostics normalizes through mep_lsp_abspath so the two
+    // can't silently miss each other (a real bug caught during
+    // verification: the first version compared the relative filename
+    // directly against the absolute URI-derived key and never matched).
     "function mep_lsp_uri(fname)\n"
     "  return 'file://' .. mep_lsp_abspath(fname)\n"
     "end\n"
@@ -2871,7 +2713,28 @@ const char *kBuiltinLsp =
     // chunk, so the function is only ever actually defined by the time
     // any of these run, not by the time this file's own load order
     // reaches this line.
+    // Tracks repeated 'K' presses at the same cursor spot while a hover
+    // popup from a prior press is still open, so a 2nd extra press (3rd
+    // press overall) focuses it (mep.hover_focus_enter, Mode::HoverFocus)
+    // instead of firing yet another LSP request -- lets the popup's own
+    // text be navigated/selected/yanked like a normal buffer. Any cursor
+    // movement (a genuinely new hover target) resets the count, same as
+    // the popup itself dismissing on cursor move (Editor::MaybeDismissHover).
+    "local mep_hover_focus_presses = 0\n"
+    "local mep_hover_focus_row, mep_hover_focus_col = nil, nil\n"
     "function mep.lsp_hover()\n"
+    "  local row, col = mep.cursor()\n"
+    "  if mep.hover_is_open() and mep_hover_focus_row == row and mep_hover_focus_col == col then\n"
+    "    mep_hover_focus_presses = mep_hover_focus_presses + 1\n"
+    "    if mep_hover_focus_presses >= 2 then\n"
+    "      mep.hover_focus_enter()\n"
+    "      mep_hover_focus_presses = 0\n"
+    "      return\n"
+    "    end\n"
+    "  else\n"
+    "    mep_hover_focus_row, mep_hover_focus_col = row, col\n"
+    "    mep_hover_focus_presses = 0\n"
+    "  end\n"
     "  local poly = mep_polyglot_context_at_cursor and mep_polyglot_context_at_cursor()\n"
     "  local id = poly and poly.client or mep.lsp_client_for()\n"
     "  if not id then mep.notify('No LSP attached', 'warn') return end\n"
@@ -2947,17 +2810,9 @@ const char *kBuiltinLsp =
     "  end)\n"
     "end\n"
     // Word under the cursor -- rename's own default-prefill (mep.ui_input's
-    // second arg), no existing helper for this anywhere else in the
-    // codebase to reuse.
-    "function mep_lsp_word_at_cursor()\n"
-    "  local row, col = mep.cursor()\n"
-    "  local line = mep.get_line(row)\n"
-    "  local s, e = col, col\n"
-    "  while s > 1 and line:sub(s - 1, s - 1):match('[%w_]') do s = s - 1 end\n"
-    "  while e <= #line and line:sub(e, e):match('[%w_]') do e = e + 1 end\n"
-    "  if s >= e then return nil end\n"
-    "  return line:sub(s, e - 1)\n"
-    "end\n"
+    // second arg). Ported to Editor::LspWordAtCursor (editor.cpp) --
+    // LUA_TO_CPP_PLAN.md Phase LSP, bound as mep.lsp_word_at_cursor.
+    "local function mep_lsp_word_at_cursor() return mep.lsp_word_at_cursor() end\n"
     // Shared by the two new goto-* requests below: same request/response
     // shape as mep.lsp_goto_definition above (Location | Location[]), just
     // a different method name and not-found message -- factored out here
@@ -3058,35 +2913,12 @@ const char *kBuiltinLsp =
     // against a code-action edit that inserts "marker\\n" at column 0
     // during verification (see report) -- a real bug, fixed before ever
     // reaching the live test.
-    "function mep_lsp_apply_text_edit(e)\n"
-    "  local sl, sc = e.range.start.line + 1, e.range.start.character + 1\n"
-    "  local el, ec = e.range['end'].line + 1, e.range['end'].character + 1\n"
-    "  local new_lines = {}\n"
-    "  local text, pos = e.newText, 1\n"
-    "  while true do\n"
-    "    local nl = text:find('\\n', pos, true)\n"
-    "    if not nl then new_lines[#new_lines + 1] = text:sub(pos) break end\n"
-    "    new_lines[#new_lines + 1] = text:sub(pos, nl - 1)\n"
-    "    pos = nl + 1\n"
-    "  end\n"
-    "  local first_line = mep.get_line(sl)\n"
-    "  local last_line = (el == sl) and first_line or mep.get_line(el)\n"
-    "  local prefix = first_line:sub(1, sc - 1)\n"
-    "  local suffix = last_line:sub(ec)\n"
-    "  new_lines[1] = prefix .. new_lines[1]\n"
-    "  new_lines[#new_lines] = new_lines[#new_lines] .. suffix\n"
-    "  mep.replace_lines(sl, el + 1, new_lines)\n"
-    "end\n"
-    // Applies a batch of TextEdits to the *currently open* buffer, bottom-
-    // up (descending start position) so an earlier-applied edit's
-    // line/column shift never invalidates a later one still queued.
-    "function mep_lsp_apply_edits_current_buffer(edits)\n"
-    "  table.sort(edits, function(a, b)\n"
-    "    if a.range.start.line ~= b.range.start.line then return a.range.start.line > b.range.start.line end\n"
-    "    return a.range.start.character > b.range.start.character\n"
-    "  end)\n"
-    "  for _, e in ipairs(edits) do mep_lsp_apply_text_edit(e) end\n"
-    "end\n"
+    // mep_lsp_apply_text_edit/mep_lsp_apply_edits_current_buffer ported to
+    // Editor::LspApplyTextEdit/LspApplyEditsCurrentBuffer (editor.cpp) --
+    // LUA_TO_CPP_PLAN.md Phase LSP, bound as mep.lsp_apply_text_edit/
+    // mep.lsp_apply_edits_current_buffer.
+    "local function mep_lsp_apply_text_edit(e) mep.lsp_apply_text_edit(e) end\n"
+    "local function mep_lsp_apply_edits_current_buffer(edits) mep.lsp_apply_edits_current_buffer(edits) end\n"
     // Applies an LSP WorkspaceEdit (rename/code-action's own response
     // shape), possibly spanning multiple files -- normalizes both
     // `changes` (a plain uri->TextEdit[] map) and `documentChanges`
@@ -3241,22 +3073,9 @@ const char *kBuiltinLsp =
     "local mep_diag_ns = nil\n"
     "local MEP_DIAG_SEVERITY = {[1] = 'Error', [2] = 'Warn', [3] = 'Info', [4] = 'Hint'}\n"
     "local MEP_DIAG_WRAP_WIDTH = 70\n"
-    "local function mep_diag_wrap(text, width)\n"
-    "  local out, line = {}, ''\n"
-    "  for word in text:gmatch('%S+') do\n"
-    "    if line == '' then\n"
-    "      line = word\n"
-    "    elseif #line + 1 + #word <= width then\n"
-    "      line = line .. ' ' .. word\n"
-    "    else\n"
-    "      out[#out + 1] = line\n"
-    "      line = word\n"
-    "    end\n"
-    "  end\n"
-    "  if line ~= '' then out[#out + 1] = line end\n"
-    "  if #out == 0 then out[1] = '' end\n"
-    "  return out\n"
-    "end\n"
+    // mep_diag_wrap ported to LspDiagWrap (editor.h/.cpp) --
+    // LUA_TO_CPP_PLAN.md Phase LSP, bound as mep.lsp_diag_wrap.
+    "local function mep_diag_wrap(text, width) return mep.lsp_diag_wrap(text, width) end\n"
     "local function mep_diag_at_row(row)\n"
     "  local diags = mep_lsp_diagnostics[mep_lsp_abspath(mep.filename())] or {}\n"
     "  local row_diags = {}\n"
@@ -3513,16 +3332,11 @@ const char *kBuiltinCompletion =
     // than a bare string -- sorted/capped by .text, same ranking as
     // before.
     "MEP_COMPLETION_MAX_ITEMS = 50\n"
-    "function mep_completion_rank(items)\n"
-    "  table.sort(items, function(a, b)\n"
-    "    if #a.text ~= #b.text then return #a.text < #b.text end\n"
-    "    return a.text < b.text\n"
-    "  end)\n"
-    "  if #items <= MEP_COMPLETION_MAX_ITEMS then return items end\n"
-    "  local capped = {}\n"
-    "  for i = 1, MEP_COMPLETION_MAX_ITEMS do capped[i] = items[i] end\n"
-    "  return capped\n"
-    "end\n"
+    // The sort+cap moved to C++ -- mep.completion_rank(items, max_items)
+    // (lua_env.cpp) -- a thin same-shape wrapper stays here only so every
+    // call site below doesn't need to spell out MEP_COMPLETION_MAX_ITEMS
+    // itself.
+    "function mep_completion_rank(items) return mep.completion_rank(items, MEP_COMPLETION_MAX_ITEMS) end\n"
     // Path completion source (new): returns dir, base if the text right
     // before the current alnum-prefix (as computed by
     // UpdateCompletionPopup, editor.cpp) looks like a filesystem path,
@@ -3539,33 +3353,11 @@ const char *kBuiltinCompletion =
     // :e/:w's own convention), not the edited file's directory -- a
     // known, documented simplification; a real `dirname(mep.filename())`
     // base would be a small follow-up.
-    "function mep_completion_path_prefix(prefix, row, col, line)\n"
-    "  local start = col - 1 - #prefix\n"
-    "  local before = line:sub(1, start)\n"
-    "  local trigger = before:sub(-1)\n"
-    // A bare '.' only starts a *path* token ("./foo", "../foo", a
-    // ".dotfile") when nothing identifier-like precedes it -- "np."/
-    // "self."/"os.path." are member access, not paths, and must fall
-    // through to the LSP dot-trigger below instead. Real bug caught by
-    // this exact scenario: adding the LSP dot-trigger made this function
-    // reachable with an empty prefix for the first time (previously
-    // gated out at 2+ chars), and "np." satisfied `trigger == '.'`
-    // unconditionally, silently swallowing every member-access query as
-    // a "list the current directory" file completion instead.
-    "  local is_path_dot = trigger == '.' and not before:sub(-2, -2):match('[%w_]')\n"
-    "  if trigger == '/' or is_path_dot then\n"
-    "    local token = before:match('[%w_%.%-/]*$') or ''\n"
-    "    local dir = token:match('^(.*/)') or ''\n"
-    "    return (dir == '' and '.' or dir), prefix\n"
-    "  end\n"
-    "  if trigger == '\"' or trigger == \"'\" then\n"
-    "    local ctx = before:sub(1, -2):sub(-40)\n"
-    "    if ctx:find('require%s*%(%s*$') or ctx:find('import%s') or ctx:find('from%s') then\n"
-    "      return '.', prefix\n"
-    "    end\n"
-    "  end\n"
-    "  return nil\n"
-    "end\n"
+    // The path/import-context detection moved to C++ --
+    // Editor::CompletionPathPrefixFor, exposed as mep.completion_path_prefix
+    // (lua_env.cpp) -- the real member-access-vs-path-dot distinction the
+    // comment above used to explain lives in that port now, verbatim.
+
     // LSP completion cache (new source): textDocument/completion is
     // async, unlike every other source here, so it can't be answered
     // inline the way buffer words can. Cached by *word start* position
@@ -3654,7 +3446,7 @@ const char *kBuiltinCompletion =
     // identifier match like "function" sitting next to a half-typed
     // filename would just be noise, so buffer words/snippets/LSP are
     // skipped rather than merged in this case.
-    "  local path_dir, path_base = mep_completion_path_prefix(prefix, row, col, line)\n"
+    "  local path_dir, path_base = mep.completion_path_prefix(prefix, col, line)\n"
     "  if path_dir then\n"
     "    for _, e in ipairs(mep.list_dir(path_dir)) do\n"
     "      if #e.name > #path_base and e.name:sub(1, #path_base) == path_base and not seen[e.name] then\n"
@@ -3693,12 +3485,15 @@ const char *kBuiltinCompletion =
     "        end\n"
     "      end\n"
     "    end\n"
-    "    for i = 1, mep.line_count() do\n"
-    "      for w in mep.get_line(i):gmatch('[%w_]+') do\n"
-    "        if #w > #prefix and w:sub(1, #prefix) == prefix and not seen[w] then\n"
-    "          seen[w] = true\n"
-    "          words[#words + 1] = {text = w, kind = 'buffer'}\n"
-    "        end\n"
+    // The buffer-word scan itself moved to C++ -- Editor::
+    // CompletionScanBufferWords, exposed as mep.completion_scan_buffer_words
+    // (lua_env.cpp); it dedupes within the buffer scan only, so `seen`
+    // (already carrying any snippet trigger names claimed above) still
+    // needs its own filter pass here.
+    "    for _, w in ipairs(mep.completion_scan_buffer_words(prefix)) do\n"
+    "      if not seen[w] then\n"
+    "        seen[w] = true\n"
+    "        words[#words + 1] = {text = w, kind = 'buffer'}\n"
     "      end\n"
     "    end\n"
     "  end\n"
@@ -3952,80 +3747,15 @@ const char *kBuiltinSnippets =
     "  ts = mep_snippets_js, tsx = mep_snippets_js,\n"
     "  sh = mep_snippets_sh, bash = mep_snippets_sh, zsh = mep_snippets_sh,\n"
     "}\n"
-    "local mep_snippet_state = nil\n"
-    "local function mep_snippet_scan_line(tmpl)\n"
-    "  local out, tabstops, i, n, len = {}, {}, 1, #tmpl, 0\n"
-    "  local function emit(s)\n"
-    "    out[#out + 1] = s\n"
-    "    len = len + #s\n"
-    "  end\n"
-    "  while i <= n do\n"
-    "    local c = tmpl:sub(i, i)\n"
-    "    if c == '\\\\' and tmpl:sub(i + 1, i + 1) == '$' then\n"
-    "      emit('$')\n"
-    "      i = i + 2\n"
-    "    elseif c == '$' and i < n then\n"
-    "      local rest = tmpl:sub(i + 1)\n"
-    "      local numstr = rest:match('^%d+')\n"
-    "      if numstr then\n"
-    "        tabstops[#tabstops + 1] = {col = len + 1, num = tonumber(numstr)}\n"
-    "        i = i + 1 + #numstr\n"
-    "      elseif rest:sub(1, 1) == '{' then\n"
-    "        local close = tmpl:find('}', i + 2, true)\n"
-    "        local inner = close and tmpl:sub(i + 2, close - 1) or nil\n"
-    "        local idx, default\n"
-    "        if inner then\n"
-    "          idx, default = inner:match('^(%d+):(.*)$')\n"
-    "          if not idx then idx = inner:match('^(%d+)$') end\n"
-    "        end\n"
-    "        if idx then\n"
-    "          tabstops[#tabstops + 1] = {col = len + 1, num = tonumber(idx)}\n"
-    "          if default then emit(default) end\n"
-    "          i = close + 1\n"
-    "        else\n"
-    "          emit(c)\n"
-    "          i = i + 1\n"
-    "        end\n"
-    "      else\n"
-    "        emit(c)\n"
-    "        i = i + 1\n"
-    "      end\n"
-    "    else\n"
-    "      emit(c)\n"
-    "      i = i + 1\n"
-    "    end\n"
-    "  end\n"
-    "  return table.concat(out), tabstops\n"
-    "end\n"
-    "function mep.snippet_jump(delta)\n"
-    "  if not mep_snippet_state then return end\n"
-    "  local st = mep_snippet_state\n"
-    "  st.index = st.index + delta\n"
-    "  if st.index < 1 or st.index > #st.tabstops then mep_snippet_state = nil return end\n"
-    "  local ts = st.tabstops[st.index]\n"
-    "  mep.set_cursor(st.base_row + ts.line_idx - 1, ts.col)\n"
-    "end\n"
-    // Factored out of mep.snippet_expand so the LSP-completion accept hook
-    // below can splice a raw insertText body the same way, without a
-    // registry-lookup-by-name step it has no use for (the body's already
-    // known -- it's the completion item's own text).
+    // The tabstop parser, splice, and jump-state-machine all moved to
+    // C++ -- Editor::SnippetSplice/SnippetJump (editor.cpp), exposed as
+    // mep.snippet_splice/mep.snippet_jump (lua_env.cpp); mep.snippet_jump
+    // is bound directly under its original name, no wrapper needed.
+    // mep_snippet_splice stays as a same-name local purely so
+    // mep.snippet_expand/the completion-accept hook below don't need to
+    // convert their own already-1-indexed `row` themselves.
     "local function mep_snippet_splice(row, before, after, body)\n"
-    "  local out_lines, all_tabstops = {}, {}\n"
-    "  for li, tmpl in ipairs(body) do\n"
-    "    local cleaned, stops = mep_snippet_scan_line(tmpl)\n"
-    "    local col_offset = (li == 1) and #before or 0\n"
-    "    for _, s in ipairs(stops) do\n"
-    "      all_tabstops[#all_tabstops + 1] = {line_idx = li, col = s.col + col_offset, num = s.num}\n"
-    "    end\n"
-    "    out_lines[li] = (li == 1 and before or '') .. cleaned .. (li == #body and after or '')\n"
-    "  end\n"
-    "  if #out_lines == 1 then mep.set_line(row, out_lines[1]) else mep.replace_lines(row, row + 1, out_lines) end\n"
-    "  table.sort(all_tabstops, function(a, b)\n"
-    "    local an, bn = (a.num == 0 and 999 or a.num), (b.num == 0 and 999 or b.num)\n"
-    "    return an < bn\n"
-    "  end)\n"
-    "  mep_snippet_state = {tabstops = all_tabstops, index = 0, base_row = row}\n"
-    "  mep.snippet_jump(1)\n"
+    "  mep.snippet_splice(row, before, after, body)\n"
     "end\n"
     "function mep.snippet_expand(name)\n"
     "  local ft = mep_lsp_filetype(mep.filename())\n"
@@ -4088,8 +3818,13 @@ const char *kBuiltinSnippets =
 // mep_lsp_uri/mep_lsp_filetype helpers Phase 20/21 already defined.
 const char *kBuiltinSymbols =
     "local mep_symbols_sidebar_id = nil\n"
-    "local MEP_SYMBOL_KIND = {[2]='module',[5]='class',[6]='method',[7]='property',[9]='enum',\n"
-    "  [10]='enummember',[12]='function',[13]='variable',[14]='constant'}\n"
+    // The kind-number -> name table and the recursive depth-first
+    // tree-walk both moved to C++ (Editor-independent, so it lives in
+    // lua_env.cpp: FlattenLspSymbols/mep.lsp_symbols_flatten) -- this is
+    // now just request orchestration (still Lua-ref-async, see
+    // LUA_TO_CPP_PLAN.md's Phase LSP note) and sidebar wiring (each
+    // widget needs its own on_click Lua ref regardless, so building that
+    // closure per row stays here).
     "function mep.lsp_symbols_refresh()\n"
     "  local id = mep.lsp_client_for()\n"
     "  if not id then mep.notify('No LSP attached', 'warn') return end\n"
@@ -4099,17 +3834,12 @@ const char *kBuiltinSymbols =
     "    if not result or #result == 0 then mep.notify('No symbols (or client lacks documentSymbol)') return end\n"
     "    if not mep_symbols_sidebar_id then mep_symbols_sidebar_id = mep.sidebar_create('Symbols', 'right', 32) end\n"
     "    local widgets = {}\n"
-    "    local function add(sym, depth)\n"
-    "      local kind = MEP_SYMBOL_KIND[sym.kind] or '?'\n"
-    "      local rng = sym.range or (sym.location and sym.location.range)\n"
-    "      local line = rng and rng.start.line or 0\n"
+    "    for _, w in ipairs(mep.lsp_symbols_flatten(result)) do\n"
     "      widgets[#widgets + 1] = {\n"
-    "        id = tostring(line), text = string.rep('  ', depth) .. sym.name .. '  [' .. kind .. ']',\n"
-    "        on_click = function() mep.set_cursor(line + 1, 1) end,\n"
+    "        id = tostring(w.row), text = w.text,\n"
+    "        on_click = function() mep.set_cursor(w.row, 1) end,\n"
     "      }\n"
-    "      if sym.children then for _, c in ipairs(sym.children) do add(c, depth + 1) end end\n"
     "    end\n"
-    "    for _, s in ipairs(result) do add(s, 0) end\n"
     "    mep.sidebar_set_sections(mep_symbols_sidebar_id,\n"
     "      {{id = 'symbols', title = mep.filename(), collapsed = false, widgets = widgets}})\n"
     "    mep.sidebar_open(mep_symbols_sidebar_id)\n"
@@ -4127,6 +3857,241 @@ const char *kBuiltinSymbols =
     "  if mep.symbols_auto_refresh and mep_symbols_sidebar_id and mep.sidebar_is_open(mep_symbols_sidebar_id) then\n"
     "    mep.lsp_symbols_refresh()\n"
     "  end\n"
+    "end)\n";
+
+// Document structure outline, Treesitter-powered (mep.ts_structure,
+// lua_env.cpp, backed by TreesitterStructure in treesitter.cpp) rather
+// than LSP-driven like kBuiltinSymbols above -- works with no language
+// server attached at all, just a grammar (treesitter_structure_queries.h's
+// own curated set: c/cpp/lua/python/js/ts/tsx/go/rust/java/rb/cs/php).
+// Two independent entry points as asked for: a real split (mep.
+// structure_split_open, <leader>aa) -- an ordinary buffer participating
+// in the pane tree like any other split, not a docked overlay, so it
+// closes/resizes/navigates with every existing pane command already --
+// and a full-height sidebar (mep.structure_sidebar_open, <leader>aA)
+// that tracks whichever pane is currently focused, reusing the exact
+// mep.sidebar_create/sidebar_set_sections plumbing kBuiltinSymbols' own
+// LSP outline already established above.
+//
+// The split buffer has no click/on_click widget machinery a real
+// Sidebar gets for free (SidebarWidget.on_click) -- it's plain buffer
+// text -- and mep.map has no buffer-scoped keymap concept (a single-key
+// binding is global across every buffer, see K/Q's own LSP bindings
+// above; that's why this doesn't reserve a fresh key for "jump" at all).
+// Instead mep.structure_split_open() itself is the jump action: calling
+// it again *from inside* the structure pane (rather than from the
+// source file) jumps to whichever entry line the cursor's sitting on --
+// the same open/act-on-current-context toggle shape mep.term_jump uses
+// for its Run/REPL pane, just folded into the one open call instead of
+// a second dedicated mapping.
+const char *kBuiltinStructure =
+    // Per-kind Nerd Font glyph + named highlight-group color, keyed by
+    // TSStructureNode.kind (treesitter_structure_queries.h's own curated
+    // capture-name vocabulary: class/enum/function/impl/interface/method/
+    // namespace/struct/trait/type/union). Glyphs are Codicons' own
+    // "symbol-*" set (nf-cod-symbol-*) -- the one icon family mep's own
+    // icon font subset (icon_font_data.h, see kIconCodepointRanges above)
+    // already bakes a broad contiguous range of, so no pyftsubset
+    // regeneration is needed for these. Codicons has no glyph distinct
+    // from "symbol-method" for either function or method (VS Code's own
+    // outline draws both the same way), nor one for "symbol-namespace"
+    // vs module -- color, not shape, is what actually tells those apart
+    // here, same reasoning trait/interface and union/struct share a
+    // glyph but differ in hl.
+    "local mep_structure_kind_style = {\n"
+    "  ['function'] = {icon = utf8.char(0xea8c), hl = 'Blue'},\n"
+    "  method = {icon = utf8.char(0xea8c), hl = 'Purple'},\n"
+    "  class = {icon = utf8.char(0xeb5b), hl = 'Orange'},\n"
+    "  struct = {icon = utf8.char(0xea91), hl = 'Orange'},\n"
+    "  interface = {icon = utf8.char(0xeb61), hl = 'Orange'},\n"
+    "  trait = {icon = utf8.char(0xeb61), hl = 'Green'},\n"
+    "  enum = {icon = utf8.char(0xea95), hl = 'Cyan'},\n"
+    "  namespace = {icon = utf8.char(0xea8b), hl = 'Cyan'},\n"
+    "  impl = {icon = utf8.char(0xeb29), hl = 'Green'},\n"
+    "  union = {icon = utf8.char(0xea91), hl = 'Purple'},\n"
+    "  type = {icon = utf8.char(0xeb63), hl = 'Yellow'},\n"
+    "}\n"
+    "local mep_structure_default_style = {icon = utf8.char(0xeb63), hl = 'Normal'}\n"
+    "local function mep_structure_style(kind)\n"
+    "  return mep_structure_kind_style[kind] or mep_structure_default_style\n"
+    "end\n"
+
+    // Shared by both entry points: current buffer's Treesitter structure
+    // outline, or (nil, message) if there's no grammar/query for it.
+    "local function mep_structure_items()\n"
+    "  local ft = mep_lsp_filetype(mep.filename())\n"
+    "  if not ft then return nil, 'No filetype for this buffer' end\n"
+    "  local lines = {}\n"
+    "  for i = 1, mep.line_count() do lines[i] = mep.get_line(i) end\n"
+    "  local items = mep.ts_structure(ft, table.concat(lines, '\\n'))\n"
+    "  if not items then return nil, 'No structure available for this filetype' end\n"
+    "  return items, nil\n"
+    "end\n"
+    "local function mep_structure_label(it)\n"
+    "  return string.rep('  ', it.depth) .. it.name .. '  [' .. it.kind .. ']'\n"
+    "end\n"
+    // Which item (index into `items`) the given 1-indexed row is "on":
+    // the innermost definition containing it (max start_row among every
+    // [start_row, end_row] span that contains cur_row), so a cursor deep
+    // inside a nested method highlights the method, not its enclosing
+    // class -- or, if cur_row isn't inside *any* definition (top-level
+    // code between two functions, an import block, trailing whitespace),
+    // the closest preceding one instead, i.e. the last item in document
+    // order with start_row <= cur_row. That's the same "last item at or
+    // before this position wins" tie-break DrawOfficeSidePanels' own
+    // Outline panel (main.cpp) already uses for its active-heading
+    // highlight -- deliberately the same rule here rather than inventing
+    // a second one. Returns nil (no highlight) if cur_row precedes every
+    // item, or if there's no cursor/no items to test at all.
+    "local function mep_structure_current_index(items, cur_row)\n"
+    "  if not (items and cur_row) then return nil end\n"
+    "  local before, inside = nil, nil\n"
+    "  for i, it in ipairs(items) do\n"
+    "    if it.start_row <= cur_row then\n"
+    "      before = i\n"
+    "      if cur_row <= it.end_row and (not inside or it.start_row >= items[inside].start_row) then\n"
+    "        inside = i\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  return inside or before\n"
+    "end\n"
+
+    // --- <leader>aa: real-pane split ---------------------------------
+    "local mep_structure_split_buf, mep_structure_split_source, mep_structure_split_items = nil, nil, nil\n"
+    "local mep_structure_split_ns = nil\n"
+    // Re-derived from scratch (clear the namespace, re-add every
+    // decoration) on each call rather than diffed against the previous
+    // pass -- same "just clear+re-add the whole namespace" convention
+    // every other decoration consumer here already follows (colorizer/
+    // todoscan/git-gutter, this file's own comment on Decoration), and
+    // items.size() is small enough (a document's own definition count)
+    // that re-adding them all every cursor move is not worth avoiding.
+    // Per-kind text color always applies; the current item additionally
+    // gets a translucent whole-line background so it reads as "you are
+    // here" even at a glance, not just by its (possibly subtle) text tint.
+    "local function mep_structure_split_apply_decos()\n"
+    "  if not (mep_structure_split_buf and mep_structure_split_items) then return end\n"
+    "  if not mep_structure_split_ns then mep_structure_split_ns = mep.ns_create('mep_structure_split') end\n"
+    "  mep.buffer_ns_clear(mep_structure_split_buf, mep_structure_split_ns)\n"
+    "  local cur_row = mep_structure_split_source and mep.buffer_cursor_row(mep_structure_split_source)\n"
+    "  local current = mep_structure_current_index(mep_structure_split_items, cur_row)\n"
+    "  for i, it in ipairs(mep_structure_split_items) do\n"
+    "    local style = mep_structure_style(it.kind)\n"
+    "    mep.buffer_deco_add(mep_structure_split_buf, mep_structure_split_ns,\n"
+    "      {row = i, col_start = 1, col_end = #mep_structure_label(it) + 1, hl_group = style.hl})\n"
+    "    if i == current then\n"
+    "      mep.buffer_deco_add(mep_structure_split_buf, mep_structure_split_ns, {row = i, whole_line = true, hl_group = 'Accent'})\n"
+    "    end\n"
+    "  end\n"
+    "end\n"
+    "function mep.structure_split_open()\n"
+    "  if mep_structure_split_buf and mep.current_buffer() == mep_structure_split_buf then\n"
+    "    local row = mep.cursor()\n"
+    "    local item = mep_structure_split_items and mep_structure_split_items[row]\n"
+    "    if not item then mep.notify('No structure entry on this line', 'warn') return end\n"
+    "    if not (mep_structure_split_source and mep.pane_focus_buffer(mep_structure_split_source)) then\n"
+    "      mep.notify('Source pane is no longer open', 'warn')\n"
+    "      return\n"
+    "    end\n"
+    "    mep.set_cursor(item.row, item.col)\n"
+    "    return\n"
+    "  end\n"
+    "  local source_buf = mep.current_buffer()\n"
+    "  local items, err = mep_structure_items()\n"
+    "  mep_structure_split_source = source_buf\n"
+    "  mep_structure_split_items = items\n"
+    "  local lines = {}\n"
+    "  if items then\n"
+    "    if #items == 0 then lines = {'(no definitions found)'} end\n"
+    "    for _, it in ipairs(items) do lines[#lines + 1] = mep_structure_label(it) end\n"
+    "  else\n"
+    "    lines = {err}\n"
+    "  end\n"
+    "  if not mep_structure_split_buf then mep_structure_split_buf = mep.buffer_new() end\n"
+    "  mep.buffer_set_lines(mep_structure_split_buf, lines)\n"
+    "  mep_structure_split_apply_decos()\n"
+    "  if not mep.pane_focus_buffer(mep_structure_split_buf) then\n"
+    "    mep.cmd('vsplit')\n"
+    "    mep.nav_pane('right')\n"
+    "    mep.buffer_switch(mep_structure_split_buf)\n"
+    "    mep.pane_set_share(0.25)\n"
+    "  end\n"
+    "end\n"
+    "mep.command('MepStructureSplit', mep.structure_split_open)\n"
+    "mep.leader_map('aa', 'Structure: split (treesitter)', mep.structure_split_open)\n"
+    // Keeps the split's current-item highlight following the *source*
+    // buffer's cursor even while some other pane (often the source pane
+    // itself, sitting right next to this split) has focus -- mep.cursor()
+    // alone only ever sees whichever pane is currently focused, so this
+    // uses mep.buffer_cursor_row (editor.cpp's CursorRowForBuffer) against
+    // the remembered source buffer id instead. Row-change-gated the same
+    // way the sidebar's own poll below is, so a stationary cursor costs
+    // nothing beyond the one comparison.
+    "local mep_structure_split_last_row = nil\n"
+    "mep.on_frame(function()\n"
+    "  if not (mep_structure_split_buf and mep_structure_split_items and mep_structure_split_source) then return end\n"
+    "  local row = mep.buffer_cursor_row(mep_structure_split_source)\n"
+    "  if row == mep_structure_split_last_row then return end\n"
+    "  mep_structure_split_last_row = row\n"
+    "  mep_structure_split_apply_decos()\n"
+    "end)\n"
+
+    // --- <leader>aA: full-height sidebar, tracks the active pane -----
+    "local mep_structure_sidebar_id = nil\n"
+    "local function mep_structure_sidebar_render()\n"
+    "  local items, err = mep_structure_items()\n"
+    "  local widgets = {}\n"
+    "  if not items then\n"
+    "    widgets[1] = {id = 'msg', text = err}\n"
+    "  elseif #items == 0 then\n"
+    "    widgets[1] = {id = 'msg', text = '(no definitions found)'}\n"
+    "  else\n"
+    "    local current = mep_structure_current_index(items, mep.cursor())\n"
+    "    for i, it in ipairs(items) do\n"
+    "      local style = mep_structure_style(it.kind)\n"
+    "      widgets[#widgets + 1] = {\n"
+    "        id = tostring(i), text = it.name,\n"
+    "        icon = string.rep('  ', it.depth) .. style.icon, hl = style.hl,\n"
+    "        current = (i == current),\n"
+    "        on_click = function() mep.set_cursor(it.row, it.col) end,\n"
+    "      }\n"
+    "    end\n"
+    "  end\n"
+    "  local fname = mep.filename()\n"
+    "  mep.sidebar_set_sections(mep_structure_sidebar_id,\n"
+    "    {{id = 'structure', title = (fname ~= '' and fname) or '[No Name]', collapsed = false, widgets = widgets}})\n"
+    "end\n"
+    "function mep.structure_sidebar_open()\n"
+    "  if not mep_structure_sidebar_id then mep_structure_sidebar_id = mep.sidebar_create('Structure', 'right', 34) end\n"
+    "  mep_structure_sidebar_render()\n"
+    "  mep.sidebar_open(mep_structure_sidebar_id)\n"
+    "end\n"
+    "mep.command('MepStructure', mep.structure_sidebar_open)\n"
+    "mep.leader_map('aA', 'Structure: full sidebar (treesitter)', mep.structure_sidebar_open)\n"
+    // Keeps the sidebar showing whichever pane is currently focused, and
+    // now also which item that pane's cursor is on -- mep.current_buffer()
+    // tracks the active *pane*'s buffer (sidebar focus itself doesn't
+    // change it, since a sidebar isn't a pane), so both checks below see
+    // straight through to the real source pane even while focus is on
+    // this very sidebar. Mirrors kBuiltinSyntax's own mep_syntax_last_file
+    // watcher (main.cpp) for the same "switch/move with no edit" gap mep.
+    // on_buffer_changed's epoch alone wouldn't catch; row is now polled
+    // alongside buf for the same reason the split pane's own poll above
+    // polls a row, just via mep.cursor() since here the tracked pane is
+    // always the focused one.
+    "local mep_structure_last_buf, mep_structure_last_row = nil, nil\n"
+    "mep.on_frame(function()\n"
+    "  if not (mep_structure_sidebar_id and mep.sidebar_is_open(mep_structure_sidebar_id)) then return end\n"
+    "  local buf = mep.current_buffer()\n"
+    "  local row = mep.cursor()\n"
+    "  if buf == mep_structure_last_buf and row == mep_structure_last_row then return end\n"
+    "  mep_structure_last_buf = buf\n"
+    "  mep_structure_last_row = row\n"
+    "  mep_structure_sidebar_render()\n"
+    "end)\n"
+    "mep.on_buffer_changed(function()\n"
+    "  if mep_structure_sidebar_id and mep.sidebar_is_open(mep_structure_sidebar_id) then mep_structure_sidebar_render() end\n"
     "end)\n";
 
 // Docs (generate + lookup) + Help picker (Phase 25). Help picker reuses
@@ -4275,47 +4240,11 @@ const char *kBuiltinDocs =
     // per-language would need a real per-grammar parser, not a two-regex
     // heuristic) but strictly better than the single opaque signature
     // line this replaces.\n"
-    "local function mep_doc_split_param(label)\n"
-    "  local name, ptype = label:match('^([%w_]+)%s*:%s*(.+)$')\n"
-    "  if name then return name, ptype end\n"
-    "  ptype, name = label:match('^(.-)%s+([%w_]+)$')\n"
-    "  if name and ptype and ptype ~= '' then return name, ptype end\n"
-    "  return label, nil\n"
-    "end\n"
-    // SignatureInformation.parameters[i].label is either a plain string
-    // (used as-is) or a [start, end] pair of *character offsets into the
-    // signature's own label* (sliced out here) -- both are valid per the
-    // LSP spec, and a server is free to use either.
-    "local function mep_doc_params_from_signature(active)\n"
-    "  local label = active.label or ''\n"
-    "  local params = {}\n"
-    "  for _, p in ipairs(active.parameters or {}) do\n"
-    "    local ptext = nil\n"
-    "    if type(p.label) == 'string' then\n"
-    "      ptext = p.label\n"
-    "    elseif type(p.label) == 'table' then\n"
-    "      ptext = label:sub((p.label[1] or 0) + 1, p.label[2] or #label)\n"
-    "    end\n"
-    "    if ptext and ptext ~= '' then\n"
-    "      local name, ptype = mep_doc_split_param(ptext)\n"
-    "      params[#params + 1] = {name = name, type = ptype}\n"
-    "    end\n"
-    "  end\n"
-    "  return params\n"
-    "end\n"
-    // Best-effort return-type scrape off the trailing "-> Type"
-    // (python/rust) or ": Type" (typescript) after the closing paren --
-    // nil (no @return/Returns line at all) for languages/signatures
-    // where neither shows up, e.g. C/Java's return type leads the
-    // signature instead of trailing it, which this doesn't attempt to
-    // recover.
-    "local function mep_doc_return_type(sig)\n"
-    "  local ret = sig:match('%)%s*%->%s*(.-)%s*$')\n"
-    "  if ret and ret ~= '' then return ret end\n"
-    "  ret = sig:match('%)%s*:%s*(.-)%s*$')\n"
-    "  if ret and ret ~= '' then return ret end\n"
-    "  return nil\n"
-    "end\n"
+    // The parameter-label splitter, the LSP-parameters-to-{name,type}
+    // extraction, and the trailing-return-type scrape all moved to C++ --
+    // mep.docs_signature_info(active, sig) (lua_env.cpp), which does all
+    // three (plus the label-fallback line that used to precede them) in
+    // one call -- see its own comment there.
     // Phase 25's original regex/same-line-scan generator, kept verbatim
     // as the always-available fallback (no LSP attached, or the attached
     // server's signatureHelp response comes back empty/erroring).
@@ -4357,9 +4286,7 @@ const char *kBuiltinDocs =
     "      mep_docs_generate_syntactic(row, sig, tmpl)\n"
     "      return\n"
     "    end\n"
-    "    local label = (active.label and active.label ~= '') and active.label or sig\n"
-    "    local params = mep_doc_params_from_signature(active)\n"
-    "    local ret = mep_doc_return_type(label)\n"
+    "    local label, params, ret = mep.docs_signature_info(active, sig)\n"
     "    mep.replace_lines(row, row, tmpl(label, params, ret))\n"
     "  end)\n"
     "end\n"
@@ -4451,24 +4378,12 @@ const char *kBuiltinDap =
     "  csharp = {cmd = {'netcoredbg', '--interpreter=vscode'}, filetypes = {'cs'}},\n"
     "}\n"
     "local mep_dap_client = nil\n"
-    "local mep_dap_ns = nil\n"
-    "local mep_dap_breakpoints = {}\n"
-    "function mep.dap_toggle_breakpoint()\n"
-    "  if not mep_dap_ns then mep_dap_ns = mep.ns_create('dap') end\n"
-    "  local row = mep.cursor()\n"
-    "  local f = mep.filename()\n"
-    "  mep_dap_breakpoints[f] = mep_dap_breakpoints[f] or {}\n"
-    "  local bps = mep_dap_breakpoints[f]\n"
-    "  for i, r in ipairs(bps) do\n"
-    "    if r == row then table.remove(bps, i)\n"
-    "      mep.ns_clear(mep_dap_ns)\n"
-    "      for _, r2 in ipairs(bps) do mep.deco_add(mep_dap_ns, {row = r2, sign = '', sign_hl = 'Red'}) end\n"
-    "      return\n"
-    "    end\n"
-    "  end\n"
-    "  bps[#bps + 1] = row\n"
-    "  mep.deco_add(mep_dap_ns, {row = row, sign = '', sign_hl = 'Red'})\n"
-    "end\n"
+    // The breakpoint list + toggle logic (per-file line array, gutter
+    // decoration sync) moved to C++ -- Editor::DapToggleBreakpoint/
+    // DapBreakpointLines (editor.cpp), exposed as
+    // mep.dap_toggle_breakpoint/mep.dap_breakpoint_lines (lua_env.cpp) --
+    // so mep.dap_toggle_breakpoint below is directly the C function, not a
+    // Lua wrapper around one.
     "function mep.dap_start(lang)\n"
     "  local adapter = mep.dap_adapters[lang]\n"
     "  if not adapter then mep.notify('No DAP adapter for ' .. tostring(lang), 'warn') return end\n"
@@ -4482,9 +4397,8 @@ const char *kBuiltinDap =
     "    end)\n"
     "    mep.lsp_on_notification(id, 'initialized', function()\n"
     "      local f = mep.filename()\n"
-    "      local bps = mep_dap_breakpoints[f] or {}\n"
     "      local lines = {}\n"
-    "      for _, r in ipairs(bps) do lines[#lines + 1] = {line = r} end\n"
+    "      for _, r in ipairs(mep.dap_breakpoint_lines(f)) do lines[#lines + 1] = {line = r} end\n"
     "      mep.lsp_request(id, 'setBreakpoints', {source = {path = mep.getcwd() .. '/' .. f}, breakpoints = lines})\n"
     "      mep.lsp_request(id, 'configurationDone', {})\n"
     "    end)\n"
@@ -4611,44 +4525,13 @@ const char *kBuiltinSyntax =
     "  OrgPropertyValue = 'Green', OrgDirectiveValue = 'Green',\n"
     "  OrgCellFormula = 'Orange',\n"
     "}\n"
-    "local function mep_ts_resolve_hl(capture)\n"
-    "  local hl = mep.ts_capture_hl[capture]\n"
-    "  if hl then return hl end\n"
-    "  local base = capture:match('^([^.]+)')\n"
-    "  return base and mep.ts_capture_hl[base]\n"
-    "end\n"
+    // The capture->highlight-group resolve (dot-segment fallback) and the
+    // fallback per-line lexer both moved to C++ -- mep.ts_apply_captures
+    // and mep.syntax_highlight_fallback (lua_env.cpp, backed by
+    // Editor::SyntaxHighlightFallback in editor.cpp) -- mep.ts_capture_hl
+    // stays here since it's genuinely user-configurable data, passed into
+    // mep.ts_apply_captures each call rather than read by C++ directly.
     "local mep_syntax_ns = nil\n"
-    "local function mep_syntax_scan_line(line, kwset, cprefix)\n"
-    "  local decos, i, n = {}, 1, #line\n"
-    "  while i <= n do\n"
-    "    local c = line:sub(i, i)\n"
-    "    if cprefix and line:sub(i, i + #cprefix - 1) == cprefix then\n"
-    "      decos[#decos + 1] = {s = i, e = n + 1, hl = 'Comment'}\n"
-    "      break\n"
-    "    elseif c == '\"' or c == \"'\" then\n"
-    "      local q, j = c, i + 1\n"
-    "      while j <= n and line:sub(j, j) ~= q do\n"
-    "        if line:sub(j, j) == '\\\\' then j = j + 1 end\n"
-    "        j = j + 1\n"
-    "      end\n"
-    "      decos[#decos + 1] = {s = i, e = math.min(j + 1, n + 1), hl = 'Green'}\n"
-    "      i = j + 1\n"
-    "    elseif c:match('%d') then\n"
-    "      local j = i\n"
-    "      while j <= n and line:sub(j, j):match('[%d%.]') do j = j + 1 end\n"
-    "      decos[#decos + 1] = {s = i, e = j, hl = 'Cyan'}\n"
-    "      i = j\n"
-    "    elseif c:match('[%a_]') then\n"
-    "      local j = i\n"
-    "      while j <= n and line:sub(j, j):match('[%w_]') do j = j + 1 end\n"
-    "      if kwset[line:sub(i, j - 1)] then decos[#decos + 1] = {s = i, e = j, hl = 'Purple'} end\n"
-    "      i = j\n"
-    "    else\n"
-    "      i = i + 1\n"
-    "    end\n"
-    "  end\n"
-    "  return decos\n"
-    "end\n"
     // Org src-block language injection: `mep.org_babel_langs` (see
     // kBuiltinOrgBabel) keys its table by the literal babel language tag a
     // `#+begin_src <lang>` header writes ("python", "c++", "csharp", ...),
@@ -4697,79 +4580,11 @@ const char *kBuiltinSyntax =
     // file, same shape of problem), a real quote character isn't
     // ambiguous the way bare `$` is, so there's no need for the extra
     // not-followed-by-digit refinement that scanner has.
-    "local MEP_ORG_EMPHASIS_MARKERS = {\n"
-    "  ['*'] = 'bold', ['/'] = 'italic', ['_'] = 'underline',\n"
-    "  ['+'] = 'strikethrough', ['='] = 'verbatim', ['~'] = 'code',\n"
-    "}\n"
-    "local function mep_org_emphasis_is_word(ch) return ch ~= '' and ch:match('%w') ~= nil end\n"
-    "local function mep_org_scan_emphasis(line)\n"
-    "  local spans = {}\n"
-    "  local i, n = 1, #line\n"
-    "  while i <= n do\n"
-    "    local ch = line:sub(i, i)\n"
-    "    local kind = MEP_ORG_EMPHASIS_MARKERS[ch]\n"
-    "    if kind then\n"
-    "      local pre = line:sub(i - 1, i - 1)\n"
-    "      local nxt = line:sub(i + 1, i + 1)\n"
-    "      if (i == 1 or not mep_org_emphasis_is_word(pre)) and nxt ~= '' and nxt ~= ' ' and nxt ~= ch then\n"
-    "        local search_from = i + 1\n"
-    "        local found_end = nil\n"
-    "        while true do\n"
-    "          local s = line:find(ch, search_from, true)\n"
-    "          if not s then break end\n"
-    "          local prev_char = line:sub(s - 1, s - 1)\n"
-    "          local after_char = line:sub(s + 1, s + 1)\n"
-    "          if prev_char ~= ' ' and prev_char ~= ch and not mep_org_emphasis_is_word(after_char) then\n"
-    "            found_end = s\n"
-    "            break\n"
-    "          end\n"
-    "          search_from = s + 1\n"
-    "        end\n"
-    "        if found_end then\n"
-    "          spans[#spans + 1] = {col_start = i, col_end = found_end + 1, kind = kind}\n"
-    "          i = found_end + 1\n"
-    "        else\n"
-    "          i = i + 1\n"
-    "        end\n"
-    "      else\n"
-    "        i = i + 1\n"
-    "      end\n"
-    "    else\n"
-    "      i = i + 1\n"
-    "    end\n"
-    "  end\n"
-    "  return spans\n"
-    "end\n"
-    // Skips scanning inside any #+begin_X ... #+end_X block (kBuiltinOrgLatex
-    // block-detection, above, uses the same case-insensitive pattern) --
-    // literal block contents (a code block's own `_`/`*` characters, an
-    // example block's prose) were never meant to be re-interpreted as
-    // emphasis, the same reasoning RecomputeOrgFolds' own comment
-    // (editor.cpp) gives for why headline folding needs org's real grammar
-    // instead of a naive line scan.
-    "local function mep_syntax_highlight_org_emphasis(ns, lines)\n"
-    "  local in_block = false\n"
-    "  for i = 1, #lines do\n"
-    "    local line = lines[i]\n"
-    "    if in_block then\n"
-    "      if line:match('^%s*#%+[Ee][Nn][Dd]_%a+') then in_block = false end\n"
-    "    elseif line:match('^%s*#%+[Bb][Ee][Gg][Ii][Nn]_%a+') then\n"
-    "      in_block = true\n"
-    "    else\n"
-    "      for _, span in ipairs(mep_org_scan_emphasis(line)) do\n"
-    "        local d = {row = i, col_start = span.col_start, col_end = span.col_end}\n"
-    "        if span.kind == 'bold' then d.bold = true\n"
-    "        elseif span.kind == 'italic' then d.italic = true\n"
-    "        elseif span.kind == 'underline' then d.underline = true\n"
-    "        elseif span.kind == 'strikethrough' then d.strikethrough = true d.hl_group = 'Comment'\n"
-    "        elseif span.kind == 'verbatim' then d.hl_group = 'Green'\n"
-    "        elseif span.kind == 'code' then d.hl_group = 'Cyan'\n"
-    "        end\n"
-    "        mep.deco_add(ns, d)\n"
-    "      end\n"
-    "    end\n"
-    "  end\n"
-    "end\n"
+    // Org emphasis markup's scanner (word-boundary marker open/close
+    // rules, the #+begin_X/#+end_X literal-block skip) moved to C++ --
+    // mep.org_highlight_emphasis (lua_env.cpp, backed by
+    // Editor::OrgHighlightEmphasis in editor.cpp), called directly from
+    // mep.syntax_highlight below.
     // Scans `lines` (a 1-indexed array mirroring the current buffer, same
     // shape mep.syntax_highlight already builds) for
     // `#+begin_src <lang>` / `#+end_src` pairs and runs each one's own
@@ -4799,14 +4614,7 @@ const char *kBuiltinSyntax =
     "          local body = {}\n"
     "          for k = hdr + 1, endr - 1 do body[#body + 1] = lines[k] end\n"
     "          local captures = mep.ts_captures(embed_ft, table.concat(body, '\\n'))\n"
-    "          if captures then\n"
-    "            for _, cap in ipairs(captures) do\n"
-    "              local hl = mep_ts_resolve_hl(cap.capture)\n"
-    "              if hl then\n"
-    "                mep.deco_add(ns, {row = hdr + cap.row, col_start = cap.col_start, col_end = cap.col_end, hl_group = hl})\n"
-    "              end\n"
-    "            end\n"
-    "          end\n"
+    "          if captures then mep.ts_apply_captures(ns, captures, mep.ts_capture_hl, hdr) end\n"
     "        end\n"
     "        i = endr + 1\n"
     "      else\n"
@@ -4829,15 +4637,10 @@ const char *kBuiltinSyntax =
     // *is* Treesitter syntax highlighting, not a fallback path.
     "  local captures = mep.ts_captures(ft, table.concat(lines, '\\n'))\n"
     "  if captures then\n"
-    "    for _, cap in ipairs(captures) do\n"
-    "      local hl = mep_ts_resolve_hl(cap.capture)\n"
-    "      if hl then\n"
-    "        mep.deco_add(mep_syntax_ns, {row = cap.row, col_start = cap.col_start, col_end = cap.col_end, hl_group = hl})\n"
-    "      end\n"
-    "    end\n"
+    "    mep.ts_apply_captures(mep_syntax_ns, captures, mep.ts_capture_hl, 0)\n"
     "    if ft == 'org' then\n"
     "      mep_syntax_highlight_org_src_blocks(mep_syntax_ns, lines)\n"
-    "      mep_syntax_highlight_org_emphasis(mep_syntax_ns, lines)\n"
+    "      mep.org_highlight_emphasis(mep_syntax_ns)\n"
     "    end\n"
     "    return\n"
     "  end\n"
@@ -4845,14 +4648,7 @@ const char *kBuiltinSyntax =
     // hand-rolled per-line lexer.
     "  local keywords = mep.syntax_keywords[ft]\n"
     "  if not keywords then return end\n"
-    "  local kwset = {}\n"
-    "  for _, k in ipairs(keywords) do kwset[k] = true end\n"
-    "  local cprefix = mep.syntax_comment_prefix[ft]\n"
-    "  for i = 1, #lines do\n"
-    "    for _, d in ipairs(mep_syntax_scan_line(lines[i], kwset, cprefix)) do\n"
-    "      mep.deco_add(mep_syntax_ns, {row = i, col_start = d.s, col_end = d.e, hl_group = d.hl})\n"
-    "    end\n"
-    "  end\n"
+    "  mep.syntax_highlight_fallback(mep_syntax_ns, keywords, mep.syntax_comment_prefix[ft])\n"
     "end\n"
     // Treesitter fold-query execution (Phase 19's other noted gap,
     // alongside the highlighter above -- see kFolds* in
@@ -4996,62 +4792,16 @@ const char *kBuiltinRun =
     "local mep_term_ns = nil\n"
     // job_id -> {raw=, buffer_id=}
     "local mep_term_sessions = {}\n"
-    "local function mep_ansi_sgr_hl(code)\n"
-    "  local map = {[31]='Red',[91]='Red',[32]='Green',[92]='Green',[33]='Yellow',[93]='Yellow',\n"
-    "    [34]='Blue',[94]='Blue',[35]='Purple',[95]='Purple',[36]='Cyan',[96]='Cyan'}\n"
-    "  return map[code]\n"
-    "end\n"
-    // Re-parses the whole accumulated raw byte stream into plain lines +
-    // color-span decorations every time (see comment above for why).
-    "local function mep_ansi_render(raw)\n"
-    "  local lines, spans = {''}, {}\n"
-    "  local cur_hl, span_start, row = nil, nil, 1\n"
-    "  local function close_span(end_col)\n"
-    "    if cur_hl and span_start then\n"
-    "      spans[#spans + 1] = {row = row, col_start = span_start, col_end = end_col, hl = cur_hl}\n"
-    "    end\n"
-    "    span_start = nil\n"
-    "  end\n"
-    "  local i, n = 1, #raw\n"
-    "  while i <= n do\n"
-    "    local c = raw:sub(i, i)\n"
-    "    if c == '\\27' and raw:sub(i + 1, i + 1) == '[' then\n"
-    "      local seq_end = raw:find('%a', i + 2)\n"
-    "      if not seq_end then break end\n"
-    "      local params, cmd = raw:sub(i + 2, seq_end - 1), raw:sub(seq_end, seq_end)\n"
-    "      if cmd == 'm' then\n"
-    "        close_span(#lines[row] + 1)\n"
-    "        local new_hl, any = cur_hl, false\n"
-    "        for code in (params .. ';'):gmatch('(%d*);') do\n"
-    "          any = true\n"
-    "          if code == '' or code == '0' then new_hl = nil else new_hl = mep_ansi_sgr_hl(tonumber(code)) or new_hl end\n"
-    "        end\n"
-    "        if not any then new_hl = nil end\n"
-    "        cur_hl = new_hl\n"
-    "        if cur_hl then span_start = #lines[row] + 1 end\n"
-    "      end\n"
-    "      i = seq_end + 1\n"
-    "    elseif c == '\\n' then\n"
-    "      close_span(#lines[row] + 1)\n"
-    "      row = row + 1\n"
-    "      lines[row] = ''\n"
-    "      if cur_hl then span_start = 1 end\n"
-    "      i = i + 1\n"
-    "    elseif c == '\\r' then\n"
-    "      i = i + 1\n"
-    "    else\n"
-    "      lines[row] = lines[row] .. c\n"
-    "      i = i + 1\n"
-    "    end\n"
-    "  end\n"
-    "  close_span(#lines[row] + 1)\n"
-    "  return lines, spans\n"
-    "end\n"
+    // The SGR-code lookup and the whole re-parse-from-scratch ANSI
+    // renderer moved to C++ -- AnsiRender, exposed as mep.ansi_render
+    // (lua_env.cpp) -- returning the exact same {lines, spans} shape
+    // (spans already {row=, col_start=, col_end=, hl=}) this fed straight
+    // into mep.buffer_deco_add below.
     "local function mep_term_redraw(job_id)\n"
     "  local sess = mep_term_sessions[job_id]\n"
     "  if not sess then return end\n"
     "  if not mep_term_ns then mep_term_ns = mep.ns_create('terminal') end\n"
-    "  local lines, spans = mep_ansi_render(sess.raw)\n"
+    "  local lines, spans = mep.ansi_render(sess.raw)\n"
     "  mep.buffer_set_lines(sess.buffer_id, lines)\n"
     "  mep.buffer_ns_clear(sess.buffer_id, mep_term_ns)\n"
     "  for _, s in ipairs(spans) do\n"
@@ -5177,37 +4927,24 @@ const char *kBuiltinRun =
 // panes only, the ones a user would actually open to run something
 // interactively and want code sent into.
 const char *kBuiltinTermSend =
-    // source bufnr -> target (terminal) bufnr
-    "local mep_termsend_targets = {}\n"
-    "local function mep_termsend_alive(bufnr)\n"
-    "  return bufnr ~= nil and mep.is_terminal_buffer(bufnr)\n"
-    "end\n"
-    // Every terminal buffer currently shown by a pane in the active tab,
-    // in mep.pane_buffers()'s own order -- what a fresh registration
-    // prompt offers as its default (its first entry).
-    "local function mep_termsend_candidates()\n"
-    "  local out = {}\n"
-    "  for _, id in ipairs(mep.pane_buffers()) do\n"
-    "    if mep.is_terminal_buffer(id) then out[#out + 1] = id end\n"
-    "  end\n"
-    "  return out\n"
-    "end\n"
-    "function mep.termsend_register(source, target)\n"
-    "  if not mep_termsend_alive(target) then\n"
-    "    mep.notify('mep.termsend: buffer ' .. tostring(target) .. ' is not a terminal buffer', 'error')\n"
-    "    return false\n"
-    "  end\n"
-    "  mep_termsend_targets[source] = target\n"
-    "  return true\n"
-    "end\n"
+    // The source->target registry, liveness check, and candidate-list
+    // filter moved to C++ -- Editor::TermsendRegister/TermsendTarget/
+    // TermsendUnregister/TermsendCandidates (editor.cpp), exposed as
+    // mep.termsend_register/target/unregister/candidates (lua_env.cpp).
+    // mep.termsend_register is now directly the C function (it already
+    // does the is-a-terminal-buffer check + error notify + registration
+    // itself); what's left here is the async-prompt flow
+    // (mep.ui_input has no native-callback path, see
+    // LUA_TO_CPP_PLAN.md) and the actual send/cursor-move glue.
+    //
     // Resolves `source`'s own send target, prompting for one first if it
     // has none yet (or its previous one has stopped existing). Calls
     // on_ready(target_bufnr) once a target is known; a no-op if the
     // prompt is cancelled or the typed id isn't a terminal buffer.
     "local function mep_termsend_ensure(source, on_ready)\n"
-    "  local target = mep_termsend_targets[source]\n"
-    "  if mep_termsend_alive(target) then on_ready(target) return end\n"
-    "  local candidates = mep_termsend_candidates()\n"
+    "  local target = mep.termsend_target(source)\n"
+    "  if target then on_ready(target) return end\n"
+    "  local candidates = mep.termsend_candidates()\n"
     "  local default = candidates[1] and tostring(candidates[1]) or ''\n"
     "  mep.ui_input('mep.termsend: terminal buffer id to send to', default, function(input)\n"
     "    if not input or input == '' then return end\n"
@@ -5217,7 +4954,7 @@ const char *kBuiltinTermSend =
     "      return\n"
     "    end\n"
     "    if mep.termsend_register(source, math.floor(id)) then\n"
-    "      on_ready(mep_termsend_targets[source])\n"
+    "      on_ready(mep.termsend_target(source))\n"
     "    end\n"
     "  end)\n"
     "end\n"
@@ -5272,7 +5009,7 @@ const char *kBuiltinTermSend =
     "  if args and args ~= '' then\n"
     "    mep.termsend_register(source, tonumber(args))\n"
     "  else\n"
-    "    mep_termsend_targets[source] = nil\n"
+    "    mep.termsend_unregister(source)\n"
     "    mep_termsend_ensure(source, function() end)\n"
     "  end\n"
     "end)\n";
@@ -5293,49 +5030,10 @@ const char *kBuiltinMarkdown =
     "  if not mep_md_ns then mep_md_ns = mep.ns_create('markdown') end\n"
     "  return mep_md_ns\n"
     "end\n"
-    "function mep.md_toggle_checkbox()\n"
-    "  local row = mep.cursor()\n"
-    "  local line = mep.get_line(row)\n"
-    "  local pre, mark = line:match('^(%s*[%-%*%+]%s*%[)([ xX])')\n"
-    "  if not pre then mep.notify('No checkbox on this line', 'warn') return end\n"
-    "  local newmark = (mark == ' ') and 'x' or ' '\n"
-    "  mep.set_line(row, line:sub(1, #pre) .. newmark .. line:sub(#pre + 2))\n"
-    "end\n"
+    // mep.md_toggle_checkbox and mep.md_fold are now the C functions
+    // directly (Editor::MdToggleCheckbox/MdComputeFolds, lua_env.cpp) --
+    // nothing left to define here, just the command registration below.
     "mep.command('MepMdCheckbox', mep.md_toggle_checkbox)\n"
-    "function mep.md_fold()\n"
-    "  mep.fold_clear_provider('markdown')\n"
-    // stack entries: {level, row}
-    "  local stack = {}\n"
-    "  local in_fence = false\n"
-    "  local fence_start = nil\n"
-    "  for i = 1, mep.line_count() do\n"
-    "    local line = mep.get_line(i)\n"
-    "    if line:match('^```') then\n"
-    "      if in_fence then\n"
-    "        mep.fold_create(fence_start, i, true, 'markdown')\n"
-    "        in_fence = false\n"
-    "      else\n"
-    "        in_fence = true\n"
-    "        fence_start = i\n"
-    "      end\n"
-    "    elseif not in_fence then\n"
-    "      local hashes = line:match('^(#+)%s')\n"
-    "      if hashes then\n"
-    "        local level = #hashes\n"
-    "        while #stack > 0 and stack[#stack].level >= level do\n"
-    "          local top = table.remove(stack)\n"
-    "          if top.row < i - 1 then mep.fold_create(top.row, i - 1, true, 'markdown') end\n"
-    "        end\n"
-    "        stack[#stack + 1] = {level = level, row = i}\n"
-    "      end\n"
-    "    end\n"
-    "  end\n"
-    "  local n = mep.line_count()\n"
-    "  while #stack > 0 do\n"
-    "    local top = table.remove(stack)\n"
-    "    if top.row < n then mep.fold_create(top.row, n, true, 'markdown') end\n"
-    "  end\n"
-    "end\n"
     // Level 1 hottest -> level 6 coolest, same "distinguish nesting depth
     // by color temperature" idea org's own headline levels use elsewhere
     // in this codebase -- NVIM_PARITY_PLAN.md Phase 28 gap: every level
@@ -5403,73 +5101,11 @@ const char *kBuiltinMarkdown =
     // but GFM tables carry per-column alignment in the separator row
     // (`:---`/`---:`/`:---:`/`---`) that org tables don't have, so this
     // is its own parser/renderer rather than a literal copy-paste).
-    "local function mep_md_table_row(line)\n"
-    "  if not line:match('^%s*|') then return nil end\n"
-    "  local inner = line:match('^%s*|(.-)|?%s*$')\n"
-    "  local cells = {}\n"
-    "  for cell in (inner .. '|'):gmatch('(.-)|') do cells[#cells + 1] = cell:match('^%s*(.-)%s*$') end\n"
-    "  local is_sep = #cells > 0\n"
-    "  for _, c in ipairs(cells) do if not c:match('^:?%-+:?$') then is_sep = false break end end\n"
-    "  if is_sep then\n"
-    "    local aligns = {}\n"
-    "    for i, c in ipairs(cells) do\n"
-    "      local l, r = c:sub(1, 1) == ':', c:sub(-1) == ':'\n"
-    "      aligns[i] = (l and r) and 'center' or (r and 'right') or (l and 'left') or 'none'\n"
-    "    end\n"
-    "    return 'sep', aligns\n"
-    "  end\n"
-    "  return cells\n"
-    "end\n"
-    "local function mep_md_sep_cell(w, al)\n"
-    "  if al == 'left' then return ':' .. string.rep('-', math.max(1, w - 1))\n"
-    "  elseif al == 'right' then return string.rep('-', math.max(1, w - 1)) .. ':'\n"
-    "  elseif al == 'center' then return ':' .. string.rep('-', math.max(1, w - 2)) .. ':'\n"
-    "  else return string.rep('-', w) end\n"
-    "end\n"
-    // Finds the contiguous run of |-lines touching the cursor (same
-    // approach as mep.org_table_align), computes per-column max width
-    // across all data rows, then rewrites every row: data cells padded
-    // per that column's alignment (left default, right, or center-split),
-    // and the separator row rebuilt to the same width while preserving
-    // whichever alignment colons it already carried.
-    "function mep.md_table_align()\n"
-    "  local row = mep.cursor()\n"
-    "  if not mep_md_table_row(mep.get_line(row)) then mep.notify('Not on a table row', 'warn') return end\n"
-    "  local top = row\n"
-    "  while top > 1 and mep_md_table_row(mep.get_line(top - 1)) do top = top - 1 end\n"
-    "  local bot, n = row, mep.line_count()\n"
-    "  while bot < n and mep_md_table_row(mep.get_line(bot + 1)) do bot = bot + 1 end\n"
-    "  local widths, aligns, rows = {}, {}, {}\n"
-    "  for i = top, bot do\n"
-    "    local r, a = mep_md_table_row(mep.get_line(i))\n"
-    "    rows[#rows + 1] = {i, r, a}\n"
-    "    if r == 'sep' then\n"
-    "      for ci, al in pairs(a) do aligns[ci] = al end\n"
-    "    else\n"
-    "      for ci, cell in ipairs(r) do widths[ci] = math.max(widths[ci] or 3, #cell) end\n"
-    "    end\n"
-    "  end\n"
-    "  for _, entry in ipairs(rows) do\n"
-    "    local i, r, a = entry[1], entry[2], entry[3]\n"
-    "    local parts = {}\n"
-    "    if r == 'sep' then\n"
-    "      for ci, w in ipairs(widths) do parts[#parts + 1] = ' ' .. mep_md_sep_cell(w, aligns[ci] or 'none') .. ' ' end\n"
-    "    else\n"
-    "      for ci, w in ipairs(widths) do\n"
-    "        local cell, al = r[ci] or '', aligns[ci] or 'none'\n"
-    "        local pad = math.max(0, w - #cell)\n"
-    "        local padded\n"
-    "        if al == 'right' then padded = string.rep(' ', pad) .. cell\n"
-    "        elseif al == 'center' then\n"
-    "          local lp = math.floor(pad / 2)\n"
-    "          padded = string.rep(' ', lp) .. cell .. string.rep(' ', pad - lp)\n"
-    "        else padded = cell .. string.rep(' ', pad) end\n"
-    "        parts[#parts + 1] = ' ' .. padded .. ' '\n"
-    "      end\n"
-    "    end\n"
-    "    mep.set_line(i, '|' .. table.concat(parts, '|') .. '|')\n"
-    "  end\n"
-    "end\n"
+    // The GFM pipe-table row parser/renderer and align/insert-row/
+    // insert-col commands are now the C functions directly
+    // (Editor::MdTableAlign/MdTableInsertRow/MdTableInsertCol, backed by
+    // a ParseMdTableRow port of mep_md_table_row -- editor.cpp) -- nothing
+    // left to define here, just the command registrations below.
     "mep.command('MepMdTableAlign', mep.md_table_align)\n"
     // Insert row/column, mirroring the spirit of the phase-30 tables
     // feature set (org itself has no insert-row/column commands to
@@ -5480,32 +5116,7 @@ const char *kBuiltinMarkdown =
     // cursor's column, to avoid needing to parse *which* cell the cursor
     // is inside of). Both re-run md_table_align afterwards so the table
     // stays lined up.
-    "function mep.md_table_insert_row()\n"
-    "  local row = mep.cursor()\n"
-    "  local r = mep_md_table_row(mep.get_line(row))\n"
-    "  if not r or r == 'sep' then mep.notify('Not on a table data row', 'warn') return end\n"
-    "  local blank = '|' .. string.rep(' |', #r)\n"
-    "  mep.replace_lines(row, row + 1, {mep.get_line(row), blank})\n"
-    "  mep.set_cursor(row + 1, 2)\n"
-    "  mep.md_table_align()\n"
-    "end\n"
     "mep.command('MepMdTableInsertRow', mep.md_table_insert_row)\n"
-    "function mep.md_table_insert_col()\n"
-    "  local row = mep.cursor()\n"
-    "  if not mep_md_table_row(mep.get_line(row)) then mep.notify('Not on a table row', 'warn') return end\n"
-    "  local top = row\n"
-    "  while top > 1 and mep_md_table_row(mep.get_line(top - 1)) do top = top - 1 end\n"
-    "  local bot, n = row, mep.line_count()\n"
-    "  while bot < n and mep_md_table_row(mep.get_line(bot + 1)) do bot = bot + 1 end\n"
-    "  local newlines = {}\n"
-    "  for i = top, bot do\n"
-    "    local r = mep_md_table_row(mep.get_line(i))\n"
-    "    local suffix = (r == 'sep') and '---|' or ' |'\n"
-    "    newlines[#newlines + 1] = mep.get_line(i):gsub('%s+$', '') .. suffix\n"
-    "  end\n"
-    "  mep.replace_lines(top, bot + 1, newlines)\n"
-    "  mep.md_table_align()\n"
-    "end\n"
     "mep.command('MepMdTableInsertCol', mep.md_table_insert_col)\n"
     // Link/emphasis concealment: hides `**`/`__`/`*`/`_` emphasis markers
     // and `[`/`]`/`(`/`)`/link-target text, showing plain bold/italic
@@ -5522,70 +5133,18 @@ const char *kBuiltinMarkdown =
     // only, not code spans, autolinks, or images).
     "local mep_md_conceal_ns = nil\n"
     "mep.md_conceal_auto = true\n"
-    "local function mep_md_conceal_spans(line)\n"
-    "  local spans, i, n = {}, 1, #line\n"
-    "  while i <= n do\n"
-    "    local two = line:sub(i, i + 1)\n"
-    "    if two == '**' or two == '__' then\n"
-    "      local close = line:find(two, i + 2, true)\n"
-    "      if close then\n"
-    "        spans[#spans + 1] = {s = i, e = close + 2, text = line:sub(i + 2, close - 1), hl = 'Yellow'}\n"
-    "        i = close + 2\n"
-    "      else i = i + 1 end\n"
-    "    else\n"
-    "      local c = line:sub(i, i)\n"
-    "      if c == '*' or c == '_' then\n"
-    "        local before = (i > 1) and line:sub(i - 1, i - 1) or ''\n"
-    // Avoid treating a mid-identifier '_' (snake_case) as an emphasis
-    // delimiter: only conceal when the char just before the opening
-    // delimiter isn't itself a word character.
-    "        local close = (not before:match('%w')) and line:find(c, i + 1, true) or nil\n"
-    "        if close and close > i + 1 and not line:sub(close + 1, close + 1):match('%w') then\n"
-    "          spans[#spans + 1] = {s = i, e = close + 1, text = line:sub(i + 1, close - 1), hl = 'Cyan'}\n"
-    "          i = close + 1\n"
-    "        else i = i + 1 end\n"
-    "      elseif c == '[' then\n"
-    "        local closeb = line:find(']', i + 1, true)\n"
-    "        local after = closeb and line:sub(closeb + 1, closeb + 1) or ''\n"
-    "        if closeb and after == '(' then\n"
-    "          local closep = line:find(')', closeb + 2, true)\n"
-    "          if closep then\n"
-    "            spans[#spans + 1] = {s = i, e = closep + 1, text = line:sub(i + 1, closeb - 1), hl = 'Blue'}\n"
-    "            i = closep + 1\n"
-    "          else i = i + 1 end\n"
-    "        elseif closeb and after == '[' then\n"
-    "          local closer2 = line:find(']', closeb + 2, true)\n"
-    "          if closer2 then\n"
-    "            spans[#spans + 1] = {s = i, e = closer2 + 1, text = line:sub(i + 1, closeb - 1), hl = 'Blue'}\n"
-    "            i = closer2 + 1\n"
-    "          else i = i + 1 end\n"
-    "        else i = i + 1 end\n"
-    "      else i = i + 1 end\n"
-    "    end\n"
-    "  end\n"
-    "  return spans\n"
-    "end\n"
+    // The span scan itself (mep_md_conceal_spans) moved to C++ --
+    // Editor::MdConceal, exposed as mep.md_conceal_scan (lua_env.cpp) --
+    // this keeps just the namespace lifecycle and the auto/filetype
+    // gating, matching mep.syntax_highlight/mep.md_conceal's own existing
+    // "check mep_lsp_filetype, bail early" idiom.
     "function mep.md_conceal()\n"
     "  if not mep_md_conceal_ns then mep_md_conceal_ns = mep.ns_create('markdown-conceal') end\n"
     "  mep.ns_clear(mep_md_conceal_ns)\n"
     "  if not mep.md_conceal_auto then return end\n"
     "  local ft = mep_lsp_filetype(mep.filename())\n"
     "  if ft ~= 'md' and ft ~= 'markdown' then return end\n"
-    "  local cur_row = mep.cursor()\n"
-    "  local in_fence = false\n"
-    "  for i = 1, mep.line_count() do\n"
-    "    local line = mep.get_line(i)\n"
-    "    if line:match('^```') then\n"
-    "      in_fence = not in_fence\n"
-    "    elseif not in_fence and i ~= cur_row then\n"
-    "      for _, sp in ipairs(mep_md_conceal_spans(line)) do\n"
-    "        mep.deco_add(mep_md_conceal_ns, {\n"
-    "          row = i, col_start = sp.s, col_end = sp.e,\n"
-    "          virt_text = sp.text, virt_text_hl = sp.hl, virt_overlay = true, priority = 10,\n"
-    "        })\n"
-    "      end\n"
-    "    end\n"
-    "  end\n"
+    "  mep.md_conceal_scan(mep_md_conceal_ns)\n"
     "end\n"
     "mep.command('MepMdConceal', mep.md_conceal)\n"
     "mep.on_buffer_changed(function() if mep.md_conceal_auto then mep.md_conceal() end end)\n"
@@ -5612,37 +5171,18 @@ const char *kBuiltinMarkdown =
 // (Phase 3) already cover everything this needs.
 const char *kBuiltinOrg =
     "mep.org_todo_keywords = {'TODO', 'DOING', 'DONE'}\n"
-    "function mep_org_parse_headline(line)\n"
-    "  local stars, rest = line:match('^(%*+)%s+(.*)$')\n"
-    "  if not stars then return nil end\n"
-    "  local todo = nil\n"
-    "  for _, kw in ipairs(mep.org_todo_keywords) do\n"
-    "    if rest:sub(1, #kw + 1) == kw .. ' ' then todo = kw; rest = rest:sub(#kw + 2); break end\n"
-    "  end\n"
-    "  local priority = rest:match('^%[#(%a)%]%s*')\n"
-    "  if priority then rest = rest:gsub('^%[#%a%]%s*', '') end\n"
-    "  local tags = rest:match(':([%w_:@]+):%s*$')\n"
-    "  local title = tags and rest:gsub(':[%w_:@]+:%s*$', ''):gsub('%s+$', '') or rest\n"
-    "  return {level = #stars, todo = todo, priority = priority, title = title, tags = tags}\n"
-    "end\n"
+    // mep_org_parse_headline/mep_org_current_headline_row/
+    // mep_org_subtree_end all moved to C++ -- ParseOrgHeadline/
+    // Editor::OrgCurrentHeadlineRow/OrgSubtreeEnd (editor.h/.cpp),
+    // registered as the same bare Lua globals these used to be
+    // (LuaEnv::LuaEnv, lua_env.cpp) -- see LUA_TO_CPP_PLAN.md's Phase
+    // Org-0. Nothing to define here anymore; every downstream call site
+    // across the whole org-mode cluster keeps calling these same three
+    // names unchanged.
     "function mep.org_is_headline(row) return mep_org_parse_headline(mep.get_line(row)) ~= nil end\n"
     "function mep.org_headline_level(row)\n"
     "  local h = mep_org_parse_headline(mep.get_line(row))\n"
     "  return h and h.level\n"
-    "end\n"
-    "function mep_org_current_headline_row(row)\n"
-    "  row = row or mep.cursor()\n"
-    "  for i = row, 1, -1 do if mep.org_is_headline(i) then return i end end\n"
-    "  return nil\n"
-    "end\n"
-    // Exclusive end: the next headline at level <= this one's, or EOF+1.
-    "function mep_org_subtree_end(row)\n"
-    "  local level = mep.org_headline_level(row)\n"
-    "  for i = row + 1, mep.line_count() do\n"
-    "    local l = mep.org_headline_level(i)\n"
-    "    if l and l <= level then return i end\n"
-    "  end\n"
-    "  return mep.line_count() + 1\n"
     "end\n"
     "function mep.org_next_headline()\n"
     "  for i = mep.cursor() + 1, mep.line_count() do\n"
@@ -5787,51 +5327,12 @@ const char *kBuiltinOrg =
     "    if tag then mep.org_sparse_tree(function(h) return h.tags and h.tags:find(':' .. tag .. ':', 1, true) end) end\n"
     "  end)\n"
     "end\n"
-    // Property drawers (:PROPERTIES: ... :END:), buffer-local.
-    "function mep.org_property_get(row, key)\n"
-    "  row = row or mep_org_current_headline_row()\n"
-    "  if not row then return nil end\n"
-    "  local e, in_drawer = mep_org_subtree_end(row), false\n"
-    "  for i = row + 1, e - 1 do\n"
-    "    local line = mep.get_line(i)\n"
-    "    if line:match('^%s*:PROPERTIES:%s*$') then in_drawer = true\n"
-    "    elseif line:match('^%s*:END:%s*$') then break\n"
-    "    elseif in_drawer then\n"
-    "      local k, v = line:match('^%s*:([%w_]+):%s*(.*)$')\n"
-    "      if k and k:upper() == key:upper() then return v end\n"
-    "    end\n"
-    "  end\n"
-    "  return nil\n"
-    "end\n"
-    "function mep.org_property_set(row, key, value)\n"
-    "  row = row or mep_org_current_headline_row()\n"
-    "  if not row then return end\n"
-    "  local e = mep_org_subtree_end(row)\n"
-    "  local drawer_start, drawer_end = nil, nil\n"
-    "  for i = row + 1, e - 1 do\n"
-    "    local line = mep.get_line(i)\n"
-    "    if line:match('^%s*:PROPERTIES:%s*$') then drawer_start = i\n"
-    "    elseif line:match('^%s*:END:%s*$') and drawer_start then drawer_end = i break end\n"
-    "  end\n"
-    "  if not drawer_start then\n"
-    "    mep.replace_lines(row + 1, row + 1, {':PROPERTIES:', ':END:'})\n"
-    "    drawer_start, drawer_end = row + 1, row + 2\n"
-    "  end\n"
-    "  for i = drawer_start + 1, drawer_end - 1 do\n"
-    "    local k = mep.get_line(i):match('^%s*:([%w_]+):')\n"
-    "    if k and k:upper() == key:upper() then mep.set_line(i, ':' .. key .. ': ' .. value) return end\n"
-    "  end\n"
-    "  mep.replace_lines(drawer_end, drawer_end, {':' .. key .. ': ' .. value})\n"
-    "end\n"
-    "function mep.org_property_remove(row, key)\n"
-    "  row = row or mep_org_current_headline_row()\n"
-    "  if not row then return end\n"
-    "  local e = mep_org_subtree_end(row)\n"
-    "  for i = row + 1, e - 1 do\n"
-    "    local k = mep.get_line(i):match('^%s*:([%w_]+):')\n"
-    "    if k and k:upper() == key:upper() then mep.replace_lines(i, i + 1, {}) return end\n"
-    "  end\n"
-    "end\n"
+    // Property drawers (:PROPERTIES: ... :END:), buffer-local. Ported to
+    // Editor::OrgPropertyGet/Set/Remove (editor.cpp) -- LUA_TO_CPP_PLAN.md
+    // Phase 5, done opportunistically while porting kBuiltinOrgClock/
+    // kBuiltinOrgDrill (both call these). mep.org_property_get/set/remove
+    // are now the native bindings directly, no Lua wrapper needed.
+
     // Checkbox toggle (same syntax as Phase 28's markdown checkbox) +
     // ancestor statistics-cookie ([n/m] / [n%]) recompute.
     "function mep.org_update_statistics_cookie()\n"
@@ -6241,63 +5742,13 @@ const char *kBuiltinOrg =
 // helpers from kBuiltinOrg, mep.open_url (Phase 13) for URL/mailto
 // targets, and mep.pane_open (Phase 14) for file: targets.
 const char *kBuiltinOrgLinks =
-    // Table alignment: | a | b | -> padded columns, |---+---| separators
-    // recomputed to match. Operates on the contiguous run of `|`-lines
-    // touching the cursor.
-    "local function mep_org_table_row(line)\n"
-    "  if not line:match('^%s*|') then return nil end\n"
-    "  if line:match('^%s*|%-') then return 'sep' end\n"
-    "  local inner = line:match('^%s*|(.-)|?%s*$')\n"
-    "  local cells = {}\n"
-    "  for cell in (inner .. '|'):gmatch('(.-)|') do cells[#cells + 1] = cell:match('^%s*(.-)%s*$') end\n"
-    "  return cells\n"
-    "end\n"
-    "function mep.org_table_align()\n"
-    "  local row = mep.cursor()\n"
-    "  if not mep_org_table_row(mep.get_line(row)) then mep.notify('Not on a table row', 'warn') return end\n"
-    "  local top = row\n"
-    "  while top > 1 and mep_org_table_row(mep.get_line(top - 1)) do top = top - 1 end\n"
-    "  local bot, n = row, mep.line_count()\n"
-    "  while bot < n and mep_org_table_row(mep.get_line(bot + 1)) do bot = bot + 1 end\n"
-    "  local widths, rows = {}, {}\n"
-    "  for i = top, bot do\n"
-    "    local r = mep_org_table_row(mep.get_line(i))\n"
-    "    rows[#rows + 1] = {i, r}\n"
-    "    if r ~= 'sep' then\n"
-    "      for ci, cell in ipairs(r) do widths[ci] = math.max(widths[ci] or 0, #cell) end\n"
-    "    end\n"
-    "  end\n"
-    "  for _, entry in ipairs(rows) do\n"
-    "    local i, r = entry[1], entry[2]\n"
-    "    local parts = {}\n"
-    "    if r == 'sep' then\n"
-    "      for _, w in ipairs(widths) do parts[#parts + 1] = string.rep('-', w + 2) end\n"
-    "      mep.set_line(i, '|' .. table.concat(parts, '+') .. '|')\n"
-    "    else\n"
-    "      for ci, w in ipairs(widths) do\n"
-    "        local cell = r[ci] or ''\n"
-    "        parts[#parts + 1] = ' ' .. cell .. string.rep(' ', w - #cell) .. ' '\n"
-    "      end\n"
-    "      mep.set_line(i, '|' .. table.concat(parts, '|') .. '|')\n"
-    "    end\n"
-    "  end\n"
-    "end\n"
+    // Table alignment (mep_org_table_row/mep.org_table_align) ported to
+    // Editor::OrgTableAlign (editor.cpp) -- LUA_TO_CPP_PLAN.md Phase 5.
+    // mep.org_table_align is now the native binding directly.
     "mep.command('MepOrgTableAlign', mep.org_table_align)\n"
-    // Links: [[target]] / [[target][description]].
-    "function mep.org_link_at_cursor()\n"
-    "  local row, col = mep.cursor()\n"
-    "  local line = mep.get_line(row)\n"
-    "  local pos = 1\n"
-    "  while true do\n"
-    "    local s, e, inner = line:find('%[%[(.-)%]%]', pos)\n"
-    "    if not s then return nil end\n"
-    "    if col >= s and col <= e then\n"
-    "      local target, desc = inner:match('^([^%]]+)%]%[(.+)$')\n"
-    "      return target or inner, desc\n"
-    "    end\n"
-    "    pos = e + 1\n"
-    "  end\n"
-    "end\n"
+    // Links: [[target]] / [[target][description]]. mep.org_link_at_cursor
+    // ported to Editor::OrgLinkAtCursor (editor.cpp) -- now the native
+    // binding directly.
     // The target prompt below defaults to the most recently org_store_
     // link-ed target, if any -- see mep.org_store_link further down.
     "function mep.org_link_insert()\n"
@@ -6400,69 +5851,26 @@ const char *kBuiltinOrgLinks =
     "end\n"
     // Footnotes: [fn:name] reference, jump to/from its `[fn:name] body`
     // definition line (or the first other reference if no definition).
-    "function mep.org_footnote_jump()\n"
-    "  local row, col = mep.cursor()\n"
-    "  local line = mep.get_line(row)\n"
-    "  local name\n"
-    "  local pos = 1\n"
-    "  while true do\n"
-    "    local s, e, n = line:find('%[fn:([%w_%-]+)%]', pos)\n"
-    "    if not s then break end\n"
-    "    if col >= s and col <= e then name = n break end\n"
-    "    pos = e + 1\n"
-    "  end\n"
-    "  if not name then mep.notify('No footnote under cursor', 'warn') return end\n"
-    "  for i = 1, mep.line_count() do\n"
-    "    if i ~= row and mep.get_line(i):match('^%[fn:' .. name .. '%]') then mep.set_cursor(i, 1) return end\n"
-    "  end\n"
-    "  for i = 1, mep.line_count() do\n"
-    "    if i ~= row and mep.get_line(i):find('%[fn:' .. name .. '%]') then mep.set_cursor(i, 1) return end\n"
-    "  end\n"
-    "  mep.notify('No counterpart found for [fn:' .. name .. ']', 'warn')\n"
-    "end\n"
+    // mep.org_footnote_jump ported to Editor::OrgFootnoteJump (editor.cpp)
+    // -- now the native binding directly.
     "mep.command('MepOrgFootnoteJump', mep.org_footnote_jump)\n"
     // Timestamps: <active> / [inactive], insert-at-cursor and
-    // increment/decrement-by-day (real calendar math via os.time/date).
+    // increment/decrement-by-day (real calendar math). mep_org_timestamp_at/
+    // mep.org_timestamp_insert/mep.org_timestamp_shift ported to
+    // Editor::OrgTimestampAt/OrgTimestampInsert/OrgTimestampShift
+    // (editor.cpp) -- LUA_TO_CPP_PLAN.md Phase 5. mep_org_timestamp_at
+    // survives as a thin wrapper over the native mep.org_timestamp_at
+    // (which returns a table, not multiple values) since
+    // org_timestamp_set_repeater below still needs the old calling
+    // convention; mep.org_timestamp_insert/_shift are now the native
+    // bindings directly.
     "local function mep_org_timestamp_at(line, col)\n"
-    "  local pos = 1\n"
-    "  while true do\n"
-    "    local s, e, body = line:find('<(%d%d%d%d%-%d%d%-%d%d[^>]-)>', pos)\n"
-    "    if not s then break end\n"
-    "    if col >= s and col <= e then return s, e, body, true end\n"
-    "    pos = e + 1\n"
-    "  end\n"
-    "  pos = 1\n"
-    "  while true do\n"
-    "    local s, e, body = line:find('%[(%d%d%d%d%-%d%d%-%d%d[^%]]-)%]', pos)\n"
-    "    if not s then break end\n"
-    "    if col >= s and col <= e then return s, e, body, false end\n"
-    "    pos = e + 1\n"
-    "  end\n"
-    "  return nil\n"
-    "end\n"
-    "function mep.org_timestamp_insert(active)\n"
-    "  local row, col = mep.cursor()\n"
-    "  local body = os.date('%Y-%m-%d %a')\n"
-    "  local ts = active and ('<' .. body .. '>') or ('[' .. body .. ']')\n"
-    "  local line = mep.get_line(row)\n"
-    "  mep.set_line(row, line:sub(1, col - 1) .. ts .. line:sub(col))\n"
-    "  mep.set_cursor(row, col + #ts)\n"
+    "  local m = mep.org_timestamp_at(line, col)\n"
+    "  if not m then return nil end\n"
+    "  return m.col_start, m.col_end, m.body, m.active\n"
     "end\n"
     "mep.command('MepOrgTimestamp', function() mep.org_timestamp_insert(true) end)\n"
     "mep.command('MepOrgTimestampInactive', function() mep.org_timestamp_insert(false) end)\n"
-    "function mep.org_timestamp_shift(delta_days)\n"
-    "  local row, col = mep.cursor()\n"
-    "  local line = mep.get_line(row)\n"
-    "  local s, e, body, active = mep_org_timestamp_at(line, col)\n"
-    "  if not s then mep.notify('No timestamp under cursor', 'warn') return end\n"
-    "  local y, mo, d = body:match('^(%d%d%d%d)-(%d%d)-(%d%d)')\n"
-    "  local rest = body:match('^%d%d%d%d%-%d%d%-%d%d%s*%a*(.*)$') or ''\n"
-    "  local t = os.time({year = tonumber(y), month = tonumber(mo), day = tonumber(d), hour = 12})\n"
-    "  t = t + delta_days * 86400\n"
-    "  local newbody = os.date('%Y-%m-%d %a', t) .. rest\n"
-    "  local openc, closec = active and '<' or '[', active and '>' or ']'\n"
-    "  mep.set_line(row, line:sub(1, s - 1) .. openc .. newbody .. closec .. line:sub(e + 1))\n"
-    "end\n"
     "mep.command('MepOrgTimestampIncr', function() mep.org_timestamp_shift(1) end)\n"
     "mep.command('MepOrgTimestampDecr', function() mep.org_timestamp_shift(-1) end)\n"
     // Repeater-insert UI: mep.org_timestamp_insert only ever writes a bare
@@ -6570,18 +5978,8 @@ const char *kBuiltinOrgLinks =
     "mep.command('MepOrgTimestampHighlight', mep.org_timestamp_highlight)\n"
     // SCHEDULED:/DEADLINE: planning lines, inserted directly below the
     // current headline (creating or replacing an existing planning line).
-    "function mep.org_set_planning(kind)\n"
-    "  local row = mep_org_current_headline_row()\n"
-    "  if not row then return end\n"
-    "  local body = os.date('%Y-%m-%d %a')\n"
-    "  local text = kind .. ': <' .. body .. '>'\n"
-    "  local next_line = mep.get_line(row + 1) or ''\n"
-    "  if next_line:match('^%s*' .. kind .. ':') then\n"
-    "    mep.set_line(row + 1, text)\n"
-    "  else\n"
-    "    mep.replace_lines(row + 1, row + 1, {text})\n"
-    "  end\n"
-    "end\n"
+    // mep.org_set_planning ported to Editor::OrgSetPlanning (editor.cpp)
+    // -- now the native binding directly.
     "mep.command('MepOrgScheduled', function() mep.org_set_planning('SCHEDULED') end)\n"
     "mep.command('MepOrgDeadline', function() mep.org_set_planning('DEADLINE') end)\n";
 
@@ -6596,63 +5994,15 @@ const char *kBuiltinOrgLinks =
 // buf_clear_image_rows -- the same "Lua decides *what*, C++ decides how to
 // render it fast" split every other decoration-backed org feature in this
 // file already uses (see e.g. mep.syntax_highlight -> mep.deco_add).
+// mep_org_resolve_path/mep.org_image_scan ported to Editor::OrgResolvePath/
+// OrgImageScan (editor.cpp) -- LUA_TO_CPP_PLAN.md Phase 5, unblocked by
+// porting mep_lsp_filetype/mep_lsp_abspath (see their own comment,
+// editor.h) ahead of the rest of LSP. mep_org_resolve_path is registered
+// as a bare global (LuaEnv::LuaEnv, lua_env.cpp) under its original name
+// -- still reused cross-chunk by kBuiltinOrgBabel below for :file/:tangle
+// header-arg resolution. mep.org_image_scan is now the native binding
+// directly.
 const char *kBuiltinOrgImages =
-    // Resolves any org header-arg/link path (an inline image's own
-    // `[[file:...]]` target, or -- since this is a plain global, reused
-    // cross-chunk by kBuiltinOrgBabel below, which loads after this one --
-    // a src block's `:file`/`:tangle` target too) against the *org file's
-    // own directory* (mep_lsp_abspath(mep.filename()), already defined
-    // above in kBuiltinLsp), real org-mode's own convention for a relative
-    // path -- deliberately *not* the editor's cwd the way :e/:w
-    // (mep_completion_path_prefix's own documented convention above) is.
-    // Confirmed broken otherwise (both directions): opening an org file
-    // from a different directory than mep was launched in left every
-    // relative-path inline image unresolved on read, and a :file/:tangle
-    // block wrote its output next to mep's own cwd instead of the org
-    // file it was run from.
-    "function mep_org_resolve_path(path)\n"
-    "  if path:sub(1, 1) == '/' then return path end\n"
-    "  if path:sub(1, 1) == '~' then\n"
-    "    local home = os.getenv('HOME')\n"
-    "    if home then return home .. path:sub(2) end\n"
-    "    return path\n"
-    "  end\n"
-    "  local dir = mep_lsp_abspath(mep.filename()):match('^(.*)/[^/]*$')\n"
-    "  return dir and (dir .. '/' .. path) or path\n"
-    "end\n"
-    "local MEP_ORG_IMAGE_EXTENSIONS = {png = true, jpg = true, jpeg = true, bmp = true, gif = true}\n"
-    "local function mep_org_image_is_image_target(path)\n"
-    "  local ext = path:match('%.([%a%d]+)$')\n"
-    "  return ext ~= nil and MEP_ORG_IMAGE_EXTENSIONS[ext:lower()] == true\n"
-    "end\n"
-    // Rebuilds the current buffer's whole image-row registry from its
-    // [[file:...]] links -- same split-on-'][' description handling as
-    // mep.org_link_at_cursor above, and the same file:-prefix-only
-    // dispatch mep.org_link_follow uses (a bare, unprefixed target isn't
-    // treated as a file link anywhere else in this codebase either, so it
-    // isn't here). A ::heading/::N suffix (mep.org_link_follow's own
-    // intra-file-jump syntax) is stripped the same way before the
-    // extension check, so `[[file:notes.org::*Setup]]` is never mistaken
-    // for a (nonexistent) `.org::*Setup`-extension image.
-    "function mep.org_image_scan()\n"
-    "  mep.buf_clear_image_rows()\n"
-    "  if mep_lsp_filetype(mep.filename()) ~= 'org' then return end\n"
-    "  for i = 1, mep.line_count() do\n"
-    "    local line, pos = mep.get_line(i), 1\n"
-    "    while true do\n"
-    "      local s, e, inner = line:find('%[%[(.-)%]%]', pos)\n"
-    "      if not s then break end\n"
-    "      pos = e + 1\n"
-    "      local target = inner:match('^([^%]]+)%]%[.+$') or inner\n"
-    "      if target:match('^file:') then\n"
-    "        local path = target:sub(6):match('^([^#]*)') or target:sub(6)\n"
-    "        if mep_org_image_is_image_target(path) then\n"
-    "          mep.buf_set_image_row(i, mep_org_resolve_path(path))\n"
-    "        end\n"
-    "      end\n"
-    "    end\n"
-    "  end\n"
-    "end\n"
     "mep.command('MepOrgImageScan', mep.org_image_scan)\n"
     // Keeps the registry fresh regardless of the toggle's own on/off state
     // (see Buffer::org_image_rows' own comment) -- debounce-rerun on edits
@@ -6693,16 +6043,14 @@ const char *kBuiltinOrgCapture =
     "  {key = 't', name = 'Task', template = '* TODO %?\\n  %U'},\n"
     "  {key = 'n', name = 'Note', template = '* %?\\n  %U'},\n"
     "}\n"
-    "function mep_org_expand_template(tmpl)\n"
-    "  local out = tmpl\n"
-    "  out = out:gsub('%%U', '[' .. os.date('%Y-%m-%d %a %H:%M') .. ']')\n"
-    "  out = out:gsub('%%u', '[' .. os.date('%Y-%m-%d %a') .. ']')\n"
-    "  out = out:gsub('%%T', '<' .. os.date('%Y-%m-%d %a %H:%M') .. '>')\n"
-    "  out = out:gsub('%%t', '<' .. os.date('%Y-%m-%d %a') .. '>')\n"
-    "  out = out:gsub('%%a', '[[file:' .. (mep.filename() or '') .. ']]')\n"
-    "  out = out:gsub('%%%%', '%%')\n"
-    "  return out\n"
-    "end\n"
+    // mep_org_expand_template (this block's own placeholder expander --
+    // distinct from kBuiltinOrg's *unrelated* mep.org_expand_template,
+    // the "<s Tab" easy-templates command, above) ported to
+    // Editor::OrgExpandCaptureTemplate (editor.cpp) -- LUA_TO_CPP_PLAN.md
+    // Phase 5, bound as mep.org_capture_expand_template (a fresh name --
+    // the original bare-global mep_org_expand_template would have been
+    // collision-free too, but this mep.* name matches this file's other
+    // capture bindings better).
     "function mep.org_capture()\n"
     "  local items = {}\n"
     "  for _, t in ipairs(mep.org_capture_templates) do items[#items + 1] = t.key .. ' - ' .. t.name end\n"
@@ -6712,7 +6060,7 @@ const char *kBuiltinOrgCapture =
     "    local tmpl\n"
     "    for _, t in ipairs(mep.org_capture_templates) do if t.key == key then tmpl = t end end\n"
     "    if not tmpl then return end\n"
-    "    local expanded = mep_org_expand_template(tmpl.template)\n"
+    "    local expanded = mep.org_capture_expand_template(tmpl.template)\n"
     "    local prompts = {}\n"
     "    expanded = expanded:gsub('%%%^{(.-)}', function(label)\n"
     "      prompts[#prompts + 1] = label\n"
@@ -6832,21 +6180,10 @@ const char *kBuiltinOrgCapture =
     "      return out\n"
     "    end\n"
     "    if target_file == '' then\n"
-    "      local target_level = mep.org_headline_level(target_row)\n"
-    "      local target_end = mep_org_subtree_end(target_row)\n"
-    "      local reindented = reindent(target_level)\n"
-    "      local dest_row\n"
-    "      if target_row > row then\n"
-    "        mep.replace_lines(target_end, target_end, reindented)\n"
-    "        mep.replace_lines(row, e, {})\n"
-    "        dest_row = target_end - (e - row)\n"
-    "      else\n"
-    "        mep.replace_lines(row, e, {})\n"
-    "        mep.replace_lines(target_end, target_end, reindented)\n"
-    "        dest_row = target_end\n"
-    "      end\n"
-    "      mep.set_cursor(dest_row, 1)\n"
-    "      mep.notify('Refiled')\n"
+    // Same-buffer move + re-level, ported to Editor::OrgRefileMove
+    // (editor.cpp) -- LUA_TO_CPP_PLAN.md Phase 5. The cross-file branch
+    // below stays Lua (it touches a second buffer via mep.pane_open).
+    "      if mep.org_refile_move(target_row) then mep.notify('Refiled') end\n"
     "    else\n"
     "      mep.replace_lines(row, e, {})\n"
     "      mep.pane_open(target_file)\n"
@@ -6907,32 +6244,14 @@ const char *kBuiltinOrgAgenda =
     "local function mep_org_date_of(ts) return ts and ts:match('^(%d%d%d%d%-%d%d%-%d%d)') end\n"
     "local function mep_org_has_repeater(ts) return ts and ts:match('[%+%.]+%d+[dwmy]') ~= nil end\n"
     "local function mep_org_occurs_on(ts, date) return ts ~= nil and mep.org_next_occurrence(ts, date) == date end\n"
-    // Glob expansion for agenda_files entries: only `*` within the final
-    // path component (no recursive `**`), matched via mep.list_dir
-    // (Phase 15) -- entries without a `*` pass through unchanged.
-    // Marks each `*` with a control byte first, then escapes every other
-    // magic pattern character, then swaps the marker for `.*` -- doing
-    // the escape pass directly would have nothing to distinguish a
-    // glob's own `*` from one already-escaped, since a bare `*` isn't in
-    // the escaped-character set to begin with.
-    "local function mep_org_glob_to_pattern(glob)\n"
-    "  local marked = glob:gsub('%*', '\\1')\n"
-    "  local escaped = marked:gsub('([%.%-%+%[%]%(%)%$%^%%])', '%%%1')\n"
-    "  return '^' .. escaped:gsub('\\1', '.*') .. '$'\n"
-    "end\n"
-    "local function mep_org_expand_glob(pattern)\n"
-    "  local dir, filepat = pattern:match('^(.*)/([^/]*)$')\n"
-    "  if not dir or not filepat:find('%*') then return {pattern} end\n"
-    "  local results = {}\n"
-    "  local ok, entries = pcall(mep.list_dir, dir)\n"
-    "  if ok and entries then\n"
-    "    local pat = mep_org_glob_to_pattern(filepat)\n"
-    "    for _, e in ipairs(entries) do\n"
-    "      if not e.is_dir and e.name:match(pat) then results[#results + 1] = dir .. '/' .. e.name end\n"
-    "    end\n"
-    "  end\n"
-    "  return results\n"
-    "end\n"
+    // Glob expansion (mep_org_glob_to_pattern/mep_org_expand_glob) and the
+    // per-file headline+planning-line scan (the body of what used to be
+    // mep.org_agenda_collect's inner loop) ported to
+    // Editor::OrgAgendaExpandGlob/OrgAgendaScanLines (editor.cpp) --
+    // LUA_TO_CPP_PLAN.md Phase 5, bound as mep.org_agenda_expand_glob/
+    // mep.org_agenda_scan_lines. mep_org_read_file_lines itself stays Lua
+    // (see this block's own top comment); org_agenda_collect is now just
+    // the outer "for each configured file, read it, scan it" loop.
     "function mep.org_agenda_add_current()\n"
     "  local f = mep.filename()\n"
     "  for _, p in ipairs(mep.org_agenda_files) do if p == f then mep.notify('Already in agenda files') return end end\n"
@@ -6940,25 +6259,13 @@ const char *kBuiltinOrgAgenda =
     "  mep.notify('Added to agenda files: ' .. f)\n"
     "end\n"
     "mep.command('MepOrgAgendaAddFile', mep.org_agenda_add_current)\n"
-    // Walks every configured agenda file (literal path or glob pattern)'s
-    // headlines, pairing each with any SCHEDULED:/DEADLINE: planning
-    // line immediately below it.
     "function mep.org_agenda_collect()\n"
     "  local entries = {}\n"
     "  for _, pattern in ipairs(mep.org_agenda_files) do\n"
-    "   for _, path in ipairs(mep_org_expand_glob(pattern)) do\n"
+    "   for _, path in ipairs(mep.org_agenda_expand_glob(pattern)) do\n"
     "    local lines = mep_org_read_file_lines(path)\n"
     "    if lines then\n"
-    "      for i, line in ipairs(lines) do\n"
-    "        local h = mep_org_parse_headline(line)\n"
-    "        if h then\n"
-    "          local nextline = lines[i + 1]\n"
-    "          local scheduled = nextline and nextline:match('SCHEDULED:%s*<([^>]+)>')\n"
-    "          local deadline = nextline and nextline:match('DEADLINE:%s*<([^>]+)>')\n"
-    "          entries[#entries + 1] = {file = path, line = i, todo = h.todo, title = h.title,\n"
-    "            tags = h.tags, priority = h.priority, scheduled = scheduled, deadline = deadline}\n"
-    "        end\n"
-    "      end\n"
+    "      for _, e in ipairs(mep.org_agenda_scan_lines(lines, path)) do entries[#entries + 1] = e end\n"
     "    end\n"
     "   end\n"
     "  end\n"
@@ -7075,72 +6382,22 @@ const char *kBuiltinOrgAgenda =
 // drawer, found by buffer scan rather than session state, so it's
 // durable across restarts by construction (matches the plan's own
 // design note).
+// kBuiltinOrgClock (LUA_TO_CPP_PLAN.md Phase 5): org_clock_in/out and the
+// clock-table's per-headline minute totals are now Editor::OrgClockIn/
+// OrgClockOut/OrgClockTableItems (editor.cpp) -- buffer-scan/string logic
+// with no async dependency. org_clock_effort stays a thin Lua wrapper --
+// it's just a one-line call into mep.org_property_get (now also native,
+// see kBuiltinOrg above) plus mep_org_current_headline_row, not worth its
+// own binding. org_clock_table itself stays a thin wrapper too:
+// mep.picker_open needs a Lua callback ref.
 const char *kBuiltinOrgClock =
-    "function mep.org_clock_in()\n"
-    "  for i = 1, mep.line_count() do\n"
-    "    if mep.get_line(i):match('^%s*CLOCK:%s*%[[^%]]+%]%s*$') then\n"
-    "      mep.notify('A clock is already running', 'warn') return\n"
-    "    end\n"
-    "  end\n"
-    "  local row = mep_org_current_headline_row()\n"
-    "  if not row then mep.notify('Not on a headline', 'warn') return end\n"
-    "  local e = mep_org_subtree_end(row)\n"
-    "  local logbook_start\n"
-    "  for i = row + 1, e - 1 do\n"
-    "    if mep.get_line(i):match('^%s*:LOGBOOK:%s*$') then logbook_start = i break end\n"
-    "  end\n"
-    "  local entry = '  CLOCK: [' .. os.date('%Y-%m-%d %a %H:%M') .. ']'\n"
-    "  if not logbook_start then\n"
-    "    mep.replace_lines(row + 1, row + 1, {'  :LOGBOOK:', entry, '  :END:'})\n"
-    "  else\n"
-    "    mep.replace_lines(logbook_start + 1, logbook_start + 1, {entry})\n"
-    "  end\n"
-    "  mep.notify('Clock started')\n"
-    "end\n"
     "mep.command('MepOrgClockIn', mep.org_clock_in)\n"
-    "function mep.org_clock_out()\n"
-    "  for i = 1, mep.line_count() do\n"
-    "    local start_ts = mep.get_line(i):match('^%s*CLOCK:%s*%[([^%]]+)%]%s*$')\n"
-    "    if start_ts then\n"
-    "      local y, mo, d, hh, mm = start_ts:match('(%d%d%d%d)-(%d%d)-(%d%d) %a+ (%d%d):(%d%d)')\n"
-    "      local start_t = os.time({year = tonumber(y), month = tonumber(mo), day = tonumber(d),\n"
-    "        hour = tonumber(hh), min = tonumber(mm)})\n"
-    "      local mins = math.floor((os.time() - start_t) / 60)\n"
-    "      local dur = string.format('%d:%02d', math.floor(mins / 60), mins % 60)\n"
-    "      mep.set_line(i, '  CLOCK: [' .. start_ts .. ']--[' .. os.date('%Y-%m-%d %a %H:%M') .. '] =>  ' .. dur)\n"
-    "      mep.notify('Clock stopped: ' .. dur)\n"
-    "      return\n"
-    "    end\n"
-    "  end\n"
-    "  mep.notify('No running clock', 'warn')\n"
-    "end\n"
     "mep.command('MepOrgClockOut', mep.org_clock_out)\n"
     "function mep.org_clock_effort(row)\n"
     "  return mep.org_property_get(row or mep_org_current_headline_row(), 'Effort')\n"
     "end\n"
-    // Clock-table: recursive per-headline totals over closed CLOCK
-    // entries (`=> H:MM`), summed across the whole subtree (including
-    // descendants), matching org's own clocktable semantics.
-    "local function mep_org_clock_minutes_in_range(a, b)\n"
-    "  local total = 0\n"
-    "  for i = a, b do\n"
-    "    local h1, h2 = mep.get_line(i):match('=>%s*(%d+):(%d%d)%s*$')\n"
-    "    if h1 then total = total + tonumber(h1) * 60 + tonumber(h2) end\n"
-    "  end\n"
-    "  return total\n"
-    "end\n"
     "function mep.org_clock_table()\n"
-    "  local items = {}\n"
-    "  for i = 1, mep.line_count() do\n"
-    "    local h = mep_org_parse_headline(mep.get_line(i))\n"
-    "    if h then\n"
-    "      local mins = mep_org_clock_minutes_in_range(i, mep_org_subtree_end(i) - 1)\n"
-    "      if mins > 0 then\n"
-    "        items[#items + 1] = string.rep('  ', h.level - 1) .. h.title .. '  ' ..\n"
-    "          string.format('%d:%02d', math.floor(mins / 60), mins % 60)\n"
-    "      end\n"
-    "    end\n"
-    "  end\n"
+    "  local items = mep.org_clock_table_items()\n"
     "  if #items == 0 then mep.notify('No clocked time found') return end\n"
     "  mep.picker_open('Clock Table', items, function() end)\n"
     "end\n"
@@ -7524,16 +6781,12 @@ const char *kBuiltinOrgBabel =
     "L.ts = L.typescript\n"
     "L.cs = L.csharp\n"
     "L['c#'] = L.csharp\n"
-    "-- lang key (lowercased babel token) -> which way :main's absence defaults\n"
-    "-- for a wrap_main-having language. Every entry-point language defaults to\n"
-    "-- 'no' (assume a self-contained program); PHP is the sole exception.\n"
-    "local MEP_ORG_BABEL_WRAP_DEFAULT = { php = 'yes' }\n"
-    "\n"
-    "function mep_org_babel_should_wrap_main(lang_key, args_str)\n"
-    "  local main = args_str:match(':main%s+(%S+)')\n"
-    "  if main == 'yes' or main == 'no' then return main == 'yes' end\n"
-    "  return (MEP_ORG_BABEL_WRAP_DEFAULT[lang_key] or 'no') == 'yes'\n"
-    "end\n"
+    // mep_org_babel_should_wrap_main (including the lang key -> :main-
+    // absence-default table it closed over, private to this chunk and
+    // never Lua-exposed to begin with) ported to OrgBabelShouldWrapMain
+    // (editor.cpp) -- LUA_TO_CPP_PLAN.md Phase 5, registered as the bare
+    // global mep_org_babel_should_wrap_main (kBuiltinOrgPolyglot shares
+    // this exact name).
     "\n"
     "-- Whether `exe` resolves on PATH -- mirrors vim.fn.executable's contract\n"
     "-- via a plain `command -v` shellout (POSIX-portable, no injection risk:\n"
@@ -7570,104 +6823,20 @@ const char *kBuiltinOrgBabel =
     "  return lang_def, exe\n"
     "end\n"
     "\n"
-    "-- `raw` (the right-hand side of a :var name=raw pair) as a literal for\n"
-    "-- injection into a script prelude: a bare number passes through as-is,\n"
-    "-- anything else becomes a backslash/quote-escaped double-quoted string --\n"
-    "-- the same convention across lua/python/js/c-family/etc.\n"
-    "function mep_org_babel_format_literal(raw)\n"
-    "  raw = tostring(raw)\n"
-    "  if raw:match('^%-?%d+%.?%d*$') then return raw end\n"
-    "  local esc = raw:gsub('\\\\', '\\\\\\\\'):gsub('\"', '\\\\\"'):gsub('\\n', '\\\\n'):gsub('\\r', '\\\\r'):gsub('\\t', '\\\\t')\n"
-    "  return '\"' .. esc .. '\"'\n"
-    "end\n"
+    // mep_org_babel_format_literal ported to OrgBabelFormatLiteral
+    // (editor.cpp) -- bound as mep.org_babel_format_literal.
+    "local function mep_org_babel_format_literal(raw) return mep.org_babel_format_literal(tostring(raw)) end\n"
     "\n"
     "local mep_org_babel_cache = mep.babel_cache_load()\n"
     "local function mep_org_babel_cache_save() mep.babel_cache_save(mep_org_babel_cache) end\n"
-    // `:var name=value` parsing (real bug fix): a value may be
-    // double-quoted (`"..."`, with `\"`/`\\` escapes, so it can contain
-    // spaces/quotes) or a bare non-space token, mirroring real Org's
-    // :var syntax closely enough for babel's purposes -- the previous
-    // `%S+`-only pattern silently truncated any value containing a
-    // space.
-    "local function mep_org_parse_vars(args_str)\n"
-    "  local vars = {}\n"
-    "  local pos = 1\n"
-    "  while true do\n"
-    "    local s, e, name = args_str:find(':var%s+([%w_]+)=', pos)\n"
-    "    if not s then break end\n"
-    "    local vstart = e + 1\n"
-    "    if args_str:sub(vstart, vstart) == '\"' then\n"
-    "      local buf, j = {}, vstart + 1\n"
-    "      while j <= #args_str do\n"
-    "        local c = args_str:sub(j, j)\n"
-    "        if c == '\\\\' and j < #args_str then\n"
-    "          buf[#buf + 1] = args_str:sub(j + 1, j + 1)\n"
-    "          j = j + 2\n"
-    "        elseif c == '\"' then\n"
-    "          j = j + 1\n"
-    "          break\n"
-    "        else\n"
-    "          buf[#buf + 1] = c\n"
-    "          j = j + 1\n"
-    "        end\n"
-    "      end\n"
-    "      vars[name] = table.concat(buf)\n"
-    "      pos = j\n"
-    "    else\n"
-    "      local vs, ve, tok = args_str:find('(%S+)', vstart)\n"
-    "      vars[name] = tok or ''\n"
-    "      pos = ve and (ve + 1) or vstart\n"
-    "    end\n"
-    "  end\n"
-    "  return vars\n"
-    "end\n"
-    // `:results` header-arg (Phase 34 gap): space-separated mode
-    // keywords captured as a set, stopping at the next `:key` header-arg
-    // (or end of string) -- `silent` suppresses the #+RESULTS: block
-    // entirely, `table` reformats tabular output, `value`/`output` pick
-    // the collection strategy (see mep_org_babel_prepare_script below).
-    "local function mep_org_parse_results(args_str)\n"
-    "  local results_str = args_str:match(':results%s+([^:]*)') or ''\n"
-    "  results_str = results_str:gsub('%s+$', '')\n"
-    "  local modes = {}\n"
-    "  for w in results_str:gmatch('%S+') do modes[w] = true end\n"
-    "  return modes\n"
-    "end\n"
-    // Global (not local): shared with kBuiltinOrgPolyglot, a separate
-    // DoString chunk that needs to find/enumerate src blocks too.
-    "function mep_org_src_block_at(row)\n"
-    "  local start_row\n"
-    "  for i = row, 1, -1 do\n"
-    "    if mep.get_line(i):match('^%s*#%+[Bb][Ee][Gg][Ii][Nn]_[Ss][Rr][Cc]') then start_row = i break end\n"
-    "    if mep.get_line(i):match('^%s*#%+[Ee][Nn][Dd]_[Ss][Rr][Cc]') then return nil end\n"
-    "  end\n"
-    "  if not start_row then return nil end\n"
-    "  local end_row\n"
-    "  for i = start_row + 1, mep.line_count() do\n"
-    "    if mep.get_line(i):match('^%s*#%+[Ee][Nn][Dd]_[Ss][Rr][Cc]') then end_row = i break end\n"
-    "  end\n"
-    "  if not end_row or end_row < row then return nil end\n"
-    "  local header = mep.get_line(start_row)\n"
-    // Directive keywords (#+begin_src/#+end_src, above) and the language
-    // tag are both case-insensitive in real org-mode ("#+BEGIN_SRC Lua"
-    // is exactly as valid as "#+begin_src lua") -- lowercased here so
-    // mep.org_babel_langs' lookup (keyed by lowercase "lua"/"python"/etc.,
-    // see mep.org_babel_execute below) still finds it regardless of how
-    // the source file capitalized it. Only the language tag is
-    // lowercased, not args_str -- a :var value's own case must round-trip
-    // untouched.
-    "  local lang = header:match('^%s*#%+[Bb][Ee][Gg][Ii][Nn]_[Ss][Rr][Cc]%s+(%S+)')\n"
-    "  if lang then lang = lang:lower() end\n"
-    "  local args_str = header:match('^%s*#%+[Bb][Ee][Gg][Ii][Nn]_[Ss][Rr][Cc]%s+%S+%s*(.*)$') or ''\n"
-    "  local vars = mep_org_parse_vars(args_str)\n"
-    "  local body = {}\n"
-    "  for i = start_row + 1, end_row - 1 do body[#body + 1] = mep.get_line(i) end\n"
-    "  return {start_row = start_row, end_row = end_row, lang = lang, vars = vars,\n"
-    "    tangle = args_str:match(':tangle%s+(%S+)'), cache = args_str:match(':cache%s+(%S+)'),\n"
-    "    file = args_str:match(':file%s+(%S+)'),\n"
-    "    results_modes = mep_org_parse_results(args_str),\n"
-    "    args_str = args_str, body = table.concat(body, '\\n')}\n"
-    "end\n"
+    // mep_org_parse_vars/mep_org_parse_results ported to OrgParseVars/
+    // OrgParseResults (editor.cpp) -- LUA_TO_CPP_PLAN.md Phase 5, bound
+    // as mep.org_parse_vars/mep.org_parse_results.
+    "local function mep_org_parse_vars(args_str) return mep.org_parse_vars(args_str) end\n"
+    "local function mep_org_parse_results(args_str) return mep.org_parse_results(args_str) end\n"
+    // mep_org_src_block_at ported to Editor::OrgSrcBlockAt (editor.cpp)
+    // -- LUA_TO_CPP_PLAN.md Phase 5, registered as the bare global
+    // mep_org_src_block_at (kBuiltinOrgPolyglot shares this exact name).
     // `:results table` best-effort reformat: tab-separated wins over
     // comma-separated if both appear anywhere in the output; first row
     // becomes the header (with a `|---+---|` separator) when there's
@@ -8846,66 +8015,14 @@ const char *kBuiltinOrgPolyglot =
 // fold doesn't survive the next debounced rescan, matching how
 // mep.org_fold_all/markdown's own fence folding already behave.
 const char *kBuiltinOrgLatex =
-    "local function mep_org_latex_trim(s) return s:match('^%s*(.-)%s*$') end\n"
-    "\n"
-    "local function mep_org_latex_wrapped(s, open, close)\n"
-    "  return #s > #open + #close and s:sub(1, #open) == open and s:sub(-#close) == close\n"
-    "end\n"
-    "\n"
-    "-- Finds every $..$/\\(..\\)/\\[..\\]/$$..$$ fragment embedded *within* a line\n"
-    "-- that isn't wholly consumed by one (mep.org_latex_scan's own whole-line\n"
-    "-- forms already handle that case) -- \"the value $x^2$ matters here\".\n"
-    "-- Returns a list of {col_start, col_end, body}, 1-indexed/exclusive-end,\n"
-    "-- same convention as mep.deco_add's opts table.\n"
-    "-- Bare `$` is the only ambiguous delimiter (currency: \"$5\", \"$5-$10\") --\n"
-    "-- applies Pandoc's own tex_math_dollars heuristic: the char right after\n"
-    "-- an opening $ and right before a closing $ must both be non-space, and\n"
-    "-- the char right after a closing $ must not be a digit (rules out\n"
-    "-- \"$5-$10\" and \"$20,$30\", which the naive \"next $ wins\" scan wouldn't).\n"
-    "-- \\(..\\)/\\[..\\]/$$..$$ have unambiguous 2-char delimiters, no such\n"
-    "-- heuristic needed there.\n"
-    "local function mep_org_latex_scan_inline(line)\n"
-    "  local spans = {}\n"
-    "  local i, n = 1, #line\n"
-    "  while i <= n do\n"
-    "    local two = line:sub(i, i + 1)\n"
-    "    local body, span_end\n"
-    "    if two == '\\\\[' then\n"
-    "      local s = line:find('\\\\]', i + 2, true)\n"
-    "      if s then body, span_end = line:sub(i, s + 1), s + 1 end\n"
-    "    elseif two == '$$' then\n"
-    "      local s = line:find('$$', i + 2, true)\n"
-    "      if s then body, span_end = line:sub(i, s + 1), s + 1 end\n"
-    "    elseif two == '\\\\(' then\n"
-    "      local s = line:find('\\\\)', i + 2, true)\n"
-    "      if s then body, span_end = line:sub(i, s + 1), s + 1 end\n"
-    "    elseif line:sub(i, i) == '$' then\n"
-    "      local next_char = line:sub(i + 1, i + 1)\n"
-    "      if next_char ~= '' and next_char ~= ' ' and next_char ~= '$' then\n"
-    "        local search_from = i + 1\n"
-    "        while true do\n"
-    "          local s = line:find('%$', search_from, false)\n"
-    "          if not s then break end\n"
-    "          local prev_char = line:sub(s - 1, s - 1)\n"
-    "          local after_char = line:sub(s + 1, s + 1)\n"
-    "          if prev_char ~= ' ' and not after_char:match('%d') then\n"
-    "            body, span_end = line:sub(i, s), s\n"
-    "            break\n"
-    "          end\n"
-    "          search_from = s + 1\n"
-    "        end\n"
-    "      end\n"
-    "    end\n"
-    "    if body and #body > 2 then\n"
-    "      spans[#spans + 1] = {col_start = i, col_end = span_end + 1, body = body}\n"
-    "      i = span_end + 1\n"
-    "    else\n"
-    "      i = i + 1\n"
-    "    end\n"
-    "  end\n"
-    "  return spans\n"
-    "end\n"
-    "\n"
+    // mep_org_latex_trim/mep_org_latex_wrapped/mep_org_latex_scan_inline,
+    // and the whole-line/whole-block matching in mep.org_latex_scan's own
+    // loop below, all ported to Editor::OrgLatexScanFragments (editor.cpp)
+    // -- LUA_TO_CPP_PLAN.md Phase 5, bound as mep.org_latex_scan_fragments.
+    // Deliberately NOT ported: mep_org_latex_render's tectonic-compile ->
+    // pdftoppm-rasterize -> cache -> callback chain below -- a
+    // substantial async job-orchestration-and-caching subsystem in its
+    // own right, out of proportion to fold into this same pass.
     "local MEP_ORG_LATEX_PREAMBLE = table.concat({\n"
     "  '\\\\documentclass[11pt,preview,border=1pt,varwidth]{standalone}',\n"
     "  '\\\\usepackage{amsmath}',\n"
@@ -9023,64 +8140,12 @@ const char *kBuiltinOrgLatex =
     "  mep.fold_clear_provider('latex')\n"
     "  if not mep.org_latex_visible() then return end\n"
     "  if mep_lsp_filetype(mep.filename()) ~= 'org' then return end\n"
-    "  local n = mep.line_count()\n"
-    "  local i = 1\n"
-    "  while i <= n do\n"
-    "    local line = mep.get_line(i)\n"
-    "    local trimmed = mep_org_latex_trim(line)\n"
-    "    local body, end_row\n"
-    "\n"
-    "    if line:match('^%s*#%+[Bb][Ee][Gg][Ii][Nn]_[Ll][Aa][Tt][Ee][Xx]%s*$') then\n"
-    "      local lines, j = {}, i + 1\n"
-    "      while j <= n and not mep.get_line(j):match('^%s*#%+[Ee][Nn][Dd]_[Ll][Aa][Tt][Ee][Xx]') do\n"
-    "        lines[#lines + 1] = mep.get_line(j)\n"
-    "        j = j + 1\n"
-    "      end\n"
-    "      if j <= n then body, end_row = table.concat(lines, '\\n'), j end\n"
-    "    elseif line:match('^%s*#%+[Bb][Ee][Gg][Ii][Nn]_[Ss][Rr][Cc]%s+[Ll][Aa][Tt][Ee][Xx]') then\n"
-    "      local lines, j = {}, i + 1\n"
-    "      while j <= n and not mep.get_line(j):match('^%s*#%+[Ee][Nn][Dd]_[Ss][Rr][Cc]') do\n"
-    "        lines[#lines + 1] = mep.get_line(j)\n"
-    "        j = j + 1\n"
-    "      end\n"
-    "      if j <= n then body, end_row = table.concat(lines, '\\n'), j end\n"
-    "    elseif mep_org_latex_wrapped(trimmed, '\\\\[', '\\\\]') then\n"
-    "      body, end_row = trimmed, i\n"
-    "    elseif trimmed == '\\\\[' then\n"
-    "      local lines, j = {}, i + 1\n"
-    "      while j <= n and mep_org_latex_trim(mep.get_line(j)) ~= '\\\\]' do\n"
-    "        lines[#lines + 1] = mep.get_line(j)\n"
-    "        j = j + 1\n"
-    "      end\n"
-    "      if j <= n then body, end_row = '\\\\[' .. table.concat(lines, '\\n') .. '\\\\]', j end\n"
-    "    elseif mep_org_latex_wrapped(trimmed, '$$', '$$') then\n"
-    "      body, end_row = trimmed, i\n"
-    "    elseif trimmed == '$$' then\n"
-    "      local lines, j = {}, i + 1\n"
-    "      while j <= n and mep_org_latex_trim(mep.get_line(j)) ~= '$$' do\n"
-    "        lines[#lines + 1] = mep.get_line(j)\n"
-    "        j = j + 1\n"
-    "      end\n"
-    "      if j <= n then body, end_row = '$$' .. table.concat(lines, '\\n') .. '$$', j end\n"
-    "    elseif mep_org_latex_wrapped(trimmed, '\\\\(', '\\\\)') then\n"
-    "      body, end_row = trimmed, i\n"
-    "    elseif #trimmed > 2 and trimmed:sub(1, 1) == '$' and trimmed:sub(-1) == '$'\n"
-    "        and trimmed:sub(2, 2) ~= '$' and trimmed:sub(-2, -2) ~= '$' then\n"
-    "      body, end_row = trimmed, i\n"
-    "    end\n"
-    "\n"
-    "    if body and body ~= '' then\n"
-    "      mep_org_latex_register(i, end_row, body)\n"
-    "      i = end_row + 1\n"
-    "    else\n"
-    "      -- No whole-line form matched -- this line isn't *entirely* a\n"
-    "      -- fragment, but may still have one or more embedded inline ones\n"
-    "      -- (\"the value $x^2$ matters here\").\n"
-    "      for _, span in ipairs(mep_org_latex_scan_inline(line)) do\n"
-    "        mep_org_latex_register_inline(i, span.col_start, span.col_end, span.body)\n"
-    "      end\n"
-    "      i = i + 1\n"
-    "    end\n"
+    "  local fragments = mep.org_latex_scan_fragments()\n"
+    "  for _, b in ipairs(fragments.blocks) do\n"
+    "    mep_org_latex_register(b.start_row, b.end_row, b.body)\n"
+    "  end\n"
+    "  for _, s in ipairs(fragments.inlines) do\n"
+    "    mep_org_latex_register_inline(s.row, s.col_start, s.col_end, s.body)\n"
     "  end\n"
     "end\n"
     "\n"
@@ -9153,7 +8218,9 @@ const char *kBuiltinOrgExport =
     "    code_open = '', code_close = '', underline_open = '', underline_close = '', strike_open = '', strike_close = '',\n"
     "    link = function(u, d) return d .. ' <' .. u .. '>' end},\n"
     "}\n"
-    "local function mep_org_html_escape(s) return (s:gsub('&', '&amp;'):gsub('<', '&lt;'):gsub('>', '&gt;')) end\n"
+    // mep_org_html_escape ported to OrgHtmlEscape (editor.cpp) --
+    // bound as mep.org_html_escape.
+    "local function mep_org_html_escape(s) return mep.org_html_escape(s) end\n"
     // Every construct's generated markup is stashed behind a `\0M<n>\0`
     // placeholder as soon as it's produced, then all placeholders are
     // restored in one final pass -- otherwise e.g. HTML's `</b>` (which
@@ -9180,11 +8247,9 @@ const char *kBuiltinOrgExport =
     "  end\n"
     "  return text\n"
     "end\n"
-    "local function mep_org_export_heading(format, level, title)\n"
-    "  if format == 'html' then return '<h' .. level .. '>' .. title .. '</h' .. level .. '>'\n"
-    "  elseif format == 'markdown' then return string.rep('#', level) .. ' ' .. title\n"
-    "  else return string.rep('  ', level - 1) .. title:upper() end\n"
-    "end\n"
+    // mep_org_export_heading ported to OrgExportHeading (editor.cpp) --
+    // LUA_TO_CPP_PLAN.md Phase 5, bound as mep.org_export_heading.
+    "local function mep_org_export_heading(format, level, title) return mep.org_export_heading(format, level, title) end\n"
     // Same capture -> highlight-group resolution as kBuiltinSyntax's own
     // (local, chunk-private) mep_ts_resolve_hl -- duplicated rather than
     // shared since Lua chunks loaded via separate DoString calls don't
@@ -9304,15 +8369,9 @@ const char *kBuiltinOrgExport =
     // array rather than the live buffer, so tag-based subtree skipping
     // (:noexport:) needs a version indexing into that array instead of
     // calling mep.get_line/mep.line_count.
-    "local function mep_org_subtree_end_lines(lines, row)\n"
-    "  local h = mep_org_parse_headline(lines[row])\n"
-    "  local level = h and h.level\n"
-    "  for i = row + 1, #lines do\n"
-    "    local hi = mep_org_parse_headline(lines[i])\n"
-    "    if hi and hi.level <= level then return i end\n"
-    "  end\n"
-    "  return #lines + 1\n"
-    "end\n"
+    // mep_org_subtree_end_lines ported to OrgSubtreeEndLines (editor.cpp)
+    // -- bound as mep.org_subtree_end_lines.
+    "local function mep_org_subtree_end_lines(lines, row) return mep.org_subtree_end_lines(lines, row) end\n"
     // `#+INCLUDE:` resolution (Phase 35 gap): a pre-pass run before the
     // rest of export, recursively splicing in referenced files' content
     // (`"path"` or bare path; optional `:lines "N-M"` slice). Guarded
@@ -9392,28 +8451,20 @@ const char *kBuiltinOrgExport =
     // each `$N` placeholder with the Nth comma-separated argument.
     // Text-level substitution only -- no escaped-comma support within an
     // argument, matching the scope of a best-effort implementation.
-    "local function mep_org_split_args(s)\n"
-    "  local args = {}\n"
-    "  for part in (s .. ','):gmatch('(.-),') do args[#args + 1] = part end\n"
-    "  return args\n"
-    "end\n"
-    "local function mep_org_expand_macro_line(line, macros)\n"
-    "  local expanded = line:gsub('{{{([%w_%-]+)%(([^}]*)%)}}}', function(name, argstr)\n"
-    "    local def = macros[name]\n"
-    "    if not def then return '{{{' .. name .. '(' .. argstr .. ')}}}' end\n"
-    "    local args = mep_org_split_args(argstr)\n"
-    "    return (def:gsub('%$(%d+)', function(n) return args[tonumber(n)] or '' end))\n"
-    "  end)\n"
-    "  expanded = expanded:gsub('{{{([%w_%-]+)}}}', function(name) return macros[name] or ('{{{' .. name .. '}}}') end)\n"
-    "  return expanded\n"
-    "end\n"
+    // mep_org_split_args/mep_org_expand_macro_line/mep_org_collect_macros
+    // ported to OrgSplitArgs/OrgExpandMacroLine/OrgCollectMacros
+    // (editor.cpp) -- LUA_TO_CPP_PLAN.md Phase 5, bound as
+    // mep.org_expand_macro_line/mep.org_collect_macros (OrgSplitArgs
+    // itself has no Lua-facing binding -- only used internally by the
+    // native OrgExpandMacroLine now). mep_org_collect_macros survives as
+    // a thin wrapper adapting its old (get_line, n) callback calling
+    // convention to the native array-based signature, since both call
+    // sites below still use that convention.
+    "local function mep_org_expand_macro_line(line, macros) return mep.org_expand_macro_line(line, macros) end\n"
     "local function mep_org_collect_macros(get_line, n)\n"
-    "  local macros = {}\n"
-    "  for i = 1, n do\n"
-    "    local name, body = get_line(i):match('^%s*#%+MACRO:%s*([%w_%-]+)%s+(.*)$')\n"
-    "    if name then macros[name] = body end\n"
-    "  end\n"
-    "  return macros\n"
+    "  local lines = {}\n"
+    "  for i = 1, n do lines[i] = get_line(i) end\n"
+    "  return mep.org_collect_macros(lines)\n"
     "end\n"
     // `lines_override`, when given, is used verbatim in place of
     // mep.org_resolve_includes()'s own live-buffer read --
@@ -9854,33 +8905,15 @@ const char *kBuiltinOrgRoam =
     "  if parent and parent ~= '' then mep_org_roam_ensure_dir(parent) end\n"
     "  mep.fs_mkdir(dir)\n"
     "end\n"
-    "local function mep_org_roam_gen_id() return os.date('%Y%m%d%H%M%S') .. '-' .. tostring(math.random(1000, 9999)) end\n"
-    "local function mep_org_roam_files()\n"
-    "  local files = {}\n"
-    "  for _, dir in ipairs(mep.org_roam_dirs) do\n"
-    "    for _, e in ipairs(mep.list_dir(dir)) do\n"
-    "      if e.name:match('%.org$') then files[#files + 1] = dir .. '/' .. e.name end\n"
-    "    end\n"
-    "  end\n"
-    "  return files\n"
-    "end\n"
-    // #+title:/#+TITLE:/#+Title: are all the same keyword in real
-    // org-mode (case-insensitive) -- Emacs org-roam's own default
-    // capture template writes the lowercase form, so matching only the
-    // uppercase spelling here silently missed it and fell through to
-    // the first-headline fallback below for any note using that
-    // template, showing the wrong entry name in the roam pickers.
-    "local function mep_org_roam_title_of(lines)\n"
-    "  for _, line in ipairs(lines) do\n"
-    "    local t = line:match('^#%+[Tt][Ii][Tt][Ll][Ee]:%s*(.*)$')\n"
-    "    if t then return t end\n"
-    "  end\n"
-    "  for _, line in ipairs(lines) do\n"
-    "    local h = mep_org_parse_headline(line)\n"
-    "    if h then return h.title end\n"
-    "  end\n"
-    "  return nil\n"
-    "end\n"
+    // mep_org_roam_gen_id folded into Editor::OrgRoamEnsureId (editor.cpp).
+    // mep_org_roam_files/mep_org_roam_title_of ported to
+    // Editor::OrgRoamFilesIn/OrgRoamTitleOf (editor.cpp) --
+    // LUA_TO_CPP_PLAN.md Phase 5, bound as mep.org_roam_files_in/
+    // mep.org_roam_title_of (both take already-collected data, no
+    // Lua-config access of their own, so `mep.org_roam_dirs` is threaded
+    // through explicitly here rather than read inside the binding).
+    "local function mep_org_roam_files() return mep.org_roam_files_in(mep.org_roam_dirs) end\n"
+    "local function mep_org_roam_title_of(lines) return mep.org_roam_title_of(lines) end\n"
     // Title-index cache (<leader>ors, mep.org_roam_sync below): find_notes
     // and insert_link both need every note's title, which means reading
     // and line-scanning every single file in mep.org_roam_dirs -- fine
@@ -9915,16 +8948,8 @@ const char *kBuiltinOrgRoam =
     "end\n"
     "mep.command('MepOrgRoamSync', mep.org_roam_sync)\n"
     "mep.leader_map('ors', 'Org-roam: sync notes', mep.org_roam_sync)\n"
-    "function mep.org_roam_ensure_id()\n"
-    "  for i = 1, mep.line_count() do\n"
-    "    if mep.org_is_headline(i) then break end\n"
-    "    local id = mep.get_line(i):match('^%s*:ID:%s*(%S+)')\n"
-    "    if id then return id end\n"
-    "  end\n"
-    "  local id = mep_org_roam_gen_id()\n"
-    "  mep.replace_lines(1, 1, {':PROPERTIES:', ':ID:       ' .. id, ':END:'})\n"
-    "  return id\n"
-    "end\n"
+    // mep.org_roam_ensure_id ported to Editor::OrgRoamEnsureId (editor.cpp)
+    // -- now the native binding directly.
     "mep.command('MepOrgRoamEnsureId', mep.org_roam_ensure_id)\n"
     "function mep.org_roam_insert_link()\n"
     "  local items = {}\n"
@@ -9951,8 +8976,11 @@ const char *kBuiltinOrgRoam =
     // current pane (mep.pane_open) instead of inserting a link to it from
     // wherever the cursor happens to be -- the "find a note" half of
     // org-roam-node-find, where Insert Link is the "link to a note" half.
-    // Live preview (mep_picker_preview_file, kBuiltinPickerSources) mirrors
-    // mep.find_files' own on_select_change usage.
+    // Live preview (mep.picker_preview_file) mirrors mep.find_files' own
+    // on_select_change usage. Same latent cross-chunk-local bug fixed
+    // here as the project picker's preview (see kBuiltinFileTree's own
+    // comment on it) -- this call used to reference a Lua local from a
+    // different DoString chunk and silently errored every time.
     "function mep.org_roam_find_notes()\n"
     "  local items = {}\n"
     "  for _, note in ipairs(mep_org_roam_notes()) do\n"
@@ -9962,7 +8990,7 @@ const char *kBuiltinOrgRoam =
     "  mep.picker_open('Roam: Find Note', items, function(path)\n"
     "    if path then mep.pane_open(path) end\n"
     "  end, nil, nil, function(path)\n"
-    "    if path then mep_picker_preview_file(path) end\n"
+    "    if path then mep.picker_preview_file(path) end\n"
     "  end)\n"
     "end\n"
     "mep.command('MepOrgRoamFindNotes', mep.org_roam_find_notes)\n"
@@ -9977,14 +9005,18 @@ const char *kBuiltinOrgRoam =
     "    if my_id then break end\n"
     "  end\n"
     "  if not my_id then mep.notify('This note has no :ID: yet', 'warn') return end\n"
+    // Substring search (mep.org_roam_find_backlink_lines) ported to
+    // Editor::OrgRoamFindBacklinkLines (editor.cpp) -- one widget per
+    // *matching line*, not per file, matching the original.
     "  local widgets = {}\n"
     "  for _, path in ipairs(mep_org_roam_files()) do\n"
     "    if path ~= mep.filename() then\n"
     "      local lines = mep_org_read_file_lines(path)\n"
     "      if lines then\n"
-    "        for i, line in ipairs(lines) do\n"
-    "          if line:find('[[id:' .. my_id, 1, true) then\n"
-    "            local title = mep_org_roam_title_of(lines) or path\n"
+    "        local matches = mep.org_roam_find_backlink_lines(lines, my_id)\n"
+    "        if #matches > 0 then\n"
+    "          local title = mep_org_roam_title_of(lines) or path\n"
+    "          for _, i in ipairs(matches) do\n"
     "            widgets[#widgets + 1] = {id = path .. ':' .. i, text = title,\n"
     "              on_click = function() mep.pane_open(path) mep.set_cursor(i, 1) end}\n"
     "          end\n"
@@ -10015,7 +9047,7 @@ const char *kBuiltinOrgRoam =
     "    local dir = mep.org_roam_dirs[1]\n"
     "    if not dir then mep.notify('No roam directory configured', 'warn') return end\n"
     "    mep_org_roam_ensure_dir(dir)\n"
-    "    local slug = title:lower():gsub('[^%w]+', '-'):gsub('^%-+', ''):gsub('%-+$', '')\n"
+    "    local slug = mep.org_roam_slugify(title)\n"
     "    mep.pane_open(dir .. '/' .. slug .. '.org')\n"
     "    mep.replace_lines(1, 1, {'#+TITLE: ' .. title})\n"
     "    mep.org_roam_ensure_id()\n"
@@ -10050,25 +9082,19 @@ const char *kBuiltinOrgRoam =
     // from rendering an unreadable ring. See NVIM_PARITY_PLAN.md's Phase
     // 37 section for the full writeup of this and the ring-layout (vs.
     // force-directed) decision on the rendering side.
+    // Per-file id/title/links extraction (mep.org_roam_parse_file_index)
+    // ported to Editor::OrgRoamParseFileIndex (editor.cpp) --
+    // LUA_TO_CPP_PLAN.md Phase 5. This function itself stays Lua: the
+    // outer "for each roam file, read it, index it" loop and the
+    // idx-table assembly.
     "local function mep_org_roam_index()\n"
     "  local idx = {}\n"
     "  for _, path in ipairs(mep_org_roam_files()) do\n"
     "    local lines = mep_org_read_file_lines(path)\n"
     "    if lines then\n"
-    "      local id\n"
-    "      for i = 1, #lines do\n"
-    "        if mep_org_parse_headline(lines[i]) then break end\n"
-    "        local m = lines[i]:match('^%s*:ID:%s*(%S+)')\n"
-    "        if m then id = m break end\n"
-    "      end\n"
-    "      if id then\n"
-    "        local links, seen = {}, {}\n"
-    "        for _, line in ipairs(lines) do\n"
-    "          for lid in line:gmatch('%[%[id:([%w%-]+)') do\n"
-    "            if not seen[lid] then seen[lid] = true links[#links + 1] = lid end\n"
-    "          end\n"
-    "        end\n"
-    "        idx[id] = {path = path, title = mep_org_roam_title_of(lines) or path, links = links}\n"
+    "      local entry = mep.org_roam_parse_file_index(lines)\n"
+    "      if entry.has_id then\n"
+    "        idx[entry.id] = {path = path, title = entry.title or path, links = entry.links}\n"
     "      end\n"
     "    end\n"
     "  end\n"
@@ -10148,32 +9174,17 @@ const char *kBuiltinOrgRoam =
 // properties in each headline's drawer (Phase 29's property machinery),
 // so cards are ordinary org headlines tagged `:drill:` -- no separate
 // storage format.
+// mep_org_sm2/mep.org_drill_grade ported to Editor::OrgDrillGrade
+// (editor.cpp) -- LUA_TO_CPP_PLAN.md Phase 5: pure math + live-buffer
+// property mutation, no async/file-I/O dependency. mep.org_drill_grade
+// is now the native binding directly. The rest of this block
+// (org_drill_collect_due/org_drill_review) stays Lua: it reads *other*
+// files off disk via the still-Lua mep_org_read_file_lines (a deliberate
+// "stays Lua" choice, see kBuiltinOrgAgenda's own comment) and drives a
+// ui_confirm/ui_select dialog chain.
 const char *kBuiltinOrgDrill =
     "mep.org_drill_tag = 'drill'\n"
     "mep.org_drill_files = {}\n"
-    "local function mep_org_sm2(ef, reps, interval, quality)\n"
-    "  if quality < 3 then\n"
-    "    reps, interval = 0, 1\n"
-    "  else\n"
-    "    reps = reps + 1\n"
-    "    if reps == 1 then interval = 1\n"
-    "    elseif reps == 2 then interval = 6\n"
-    "    else interval = math.floor(interval * ef + 0.5) end\n"
-    "  end\n"
-    "  ef = ef + (0.1 - (5 - quality) * (0.08 + (5 - quality) * 0.02))\n"
-    "  if ef < 1.3 then ef = 1.3 end\n"
-    "  return ef, reps, interval\n"
-    "end\n"
-    "function mep.org_drill_grade(row, quality)\n"
-    "  local ef = tonumber(mep.org_property_get(row, 'DRILL_EF')) or 2.5\n"
-    "  local reps = tonumber(mep.org_property_get(row, 'DRILL_REPS')) or 0\n"
-    "  local interval = tonumber(mep.org_property_get(row, 'DRILL_INTERVAL')) or 0\n"
-    "  ef, reps, interval = mep_org_sm2(ef, reps, interval, quality)\n"
-    "  mep.org_property_set(row, 'DRILL_EF', string.format('%.2f', ef))\n"
-    "  mep.org_property_set(row, 'DRILL_REPS', tostring(reps))\n"
-    "  mep.org_property_set(row, 'DRILL_INTERVAL', tostring(interval))\n"
-    "  mep.org_property_set(row, 'DRILL_DUE', os.date('%Y-%m-%d', os.time() + interval * 86400))\n"
-    "end\n"
     "local function mep_org_tags_at_lines(lines, row)\n"
     "  local h = mep_org_parse_headline(lines[row])\n"
     "  if not h then return {} end\n"
@@ -10233,107 +9244,14 @@ const char *kBuiltinOrgDrill =
 // using Lua's `%b{}` balanced-match pattern item for brace-nested field
 // values (titles like `{Foo {Bar} Baz}`), which a naive non-greedy regex
 // can't handle correctly.
+// mep_org_bib_split_top_level/mep_org_bib_expand_value/mep_org_bib_parse/
+// mep_org_bib_resolve_crossrefs ported to Editor::OrgBibParseFiles
+// (editor.cpp) -- LUA_TO_CPP_PLAN.md Phase 5, bound as
+// mep.org_bib_parse_files({text1, text2, ...}) (already-disk-read file
+// texts, in resolution order -- reading .bib files off disk stays Lua,
+// same "headless file loading" convention this cluster already uses).
 const char *kBuiltinOrgBib =
     "mep.org_bib_files = {}\n"
-    // Top-level (brace-depth-0, quote-depth-0) splitter: used both for
-    // separating a `@type{...}` body into its comma-delimited fields and
-    // for `#`-concatenation splitting of a single field's value. Quote-
-    // awareness matters for both: a field value like `"A, B"` must not
-    // be split on the comma inside it, and a title like `"A # B"` must
-    // not be split on the `#` as if it were BibTeX's concatenation
-    // operator. Quotes only toggle at brace-depth 0, since a `\"` inside
-    // a `{...}` group is already protected by the braces.
-    "local function mep_org_bib_split_top_level(s, sep)\n"
-    "  local parts, depth, in_quotes, start = {}, 0, false, 1\n"
-    "  for i = 1, #s do\n"
-    "    local c = s:sub(i, i)\n"
-    "    if c == '\"' and depth == 0 then in_quotes = not in_quotes\n"
-    "    elseif c == '{' and not in_quotes then depth = depth + 1\n"
-    "    elseif c == '}' and not in_quotes then depth = depth - 1\n"
-    "    elseif c == sep and depth == 0 and not in_quotes then\n"
-    "      parts[#parts + 1] = s:sub(start, i - 1)\n"
-    "      start = i + 1\n"
-    "    end\n"
-    "  end\n"
-    "  parts[#parts + 1] = s:sub(start)\n"
-    "  return parts\n"
-    "end\n"
-    // Expands a raw field-value token against the `@string{...}` macro
-    // table: `{...}`/`\"...\"` literals are unwrapped as before; a bare
-    // identifier (no delimiters) is looked up as a macro; `#`-joined
-    // pieces (`abbrev # \", Supplement\"`) are expanded piecewise and
-    // concatenated, matching BibTeX's string-concatenation operator.
-    // An undefined macro name is left as literal text rather than
-    // erroring, since this is a best-effort hand-rolled parser.
-    "local function mep_org_bib_expand_value(val, strings)\n"
-    "  local parts = mep_org_bib_split_top_level(val, '#')\n"
-    "  if #parts == 1 and (val:sub(1, 1) == '{' or val:sub(1, 1) == '\"') then\n"
-    "    if val:sub(1, 1) == '{' and val:sub(-1) == '}' then return val:sub(2, -2)\n"
-    "    elseif val:sub(1, 1) == '\"' and val:sub(-1) == '\"' then return val:sub(2, -2)\n"
-    "    else return val end\n"
-    "  end\n"
-    "  local buf = {}\n"
-    "  for _, p in ipairs(parts) do\n"
-    "    local t = p:match('^%s*(.-)%s*$')\n"
-    "    if t:sub(1, 1) == '{' and t:sub(-1) == '}' then buf[#buf + 1] = t:sub(2, -2)\n"
-    "    elseif t:sub(1, 1) == '\"' and t:sub(-1) == '\"' then buf[#buf + 1] = t:sub(2, -2)\n"
-    "    else buf[#buf + 1] = strings[t:lower()] or t end\n"
-    "  end\n"
-    "  return table.concat(buf)\n"
-    "end\n"
-    // `strings` accumulates `@string{name = \"value\"}` macro definitions
-    // as entries are scanned in file order (and across files, when the
-    // caller threads the same table through multiple mep_org_bib_parse
-    // calls) -- matching real BibTeX's requirement that a macro be
-    // defined before first use. `@comment`/`@preamble` blocks are
-    // recognized and skipped rather than mis-parsed as entries.
-    "local function mep_org_bib_parse(text, strings)\n"
-    "  strings = strings or {}\n"
-    "  local entries = {}\n"
-    "  for etype, braced in text:gmatch('@(%a+)%s*(%b{})') do\n"
-    "    local body = braced:sub(2, -2)\n"
-    "    local lower_type = etype:lower()\n"
-    "    if lower_type == 'string' then\n"
-    "      local name, val = body:match('^%s*([%w_%-]+)%s*=%s*(.-)%s*$')\n"
-    "      if name then strings[name:lower()] = mep_org_bib_expand_value(val, strings) end\n"
-    "    elseif lower_type ~= 'comment' and lower_type ~= 'preamble' then\n"
-    "      local key, fieldstr = body:match('^%s*([^,]+),(.*)$')\n"
-    "      if key then\n"
-    "        local fields = {}\n"
-    "        for _, part in ipairs(mep_org_bib_split_top_level(fieldstr, ',')) do\n"
-    "          local name, val = part:match('^%s*([%w_%-]+)%s*=%s*(.*)$')\n"
-    "          if name then\n"
-    "            val = val:match('^%s*(.-)%s*$')\n"
-    "            fields[name:lower()] = mep_org_bib_expand_value(val, strings)\n"
-    "          end\n"
-    "        end\n"
-    "        entries[#entries + 1] = {type = lower_type, key = key:match('^%s*(.-)%s*$'), fields = fields}\n"
-    "      end\n"
-    "    end\n"
-    "  end\n"
-    "  return entries\n"
-    "end\n"
-    // `crossref` resolution: run once over the *complete* entry set (all
-    // resolved .bib files combined), since the referenced parent entry
-    // commonly appears later in the file (e.g. an @inproceedings before
-    // its @proceedings). Only fields the child doesn't already define
-    // are filled in from the parent.
-    "local function mep_org_bib_resolve_crossrefs(entries)\n"
-    "  local by_key = {}\n"
-    "  for _, e in ipairs(entries) do by_key[e.key] = e end\n"
-    "  for _, e in ipairs(entries) do\n"
-    "    local xref = e.fields.crossref\n"
-    "    if xref then\n"
-    "      local parent = by_key[xref] or by_key[xref:lower()]\n"
-    "      if parent then\n"
-    "        for fname, fval in pairs(parent.fields) do\n"
-    "          if e.fields[fname] == nil then e.fields[fname] = fval end\n"
-    "        end\n"
-    "      end\n"
-    "    end\n"
-    "  end\n"
-    "  return entries\n"
-    "end\n"
     // File resolution: current buffer's directory, then each configured
     // project root, matching mep.nvim's documented search order.
     "function mep.org_bib_resolve_files()\n"
@@ -10359,24 +9277,21 @@ const char *kBuiltinOrgBib =
     "  end\n"
     "  return files\n"
     "end\n"
-    // Loads and parses every resolved .bib file into one combined entry
-    // list: `strings` (the @string macro table) is threaded across all
-    // files in resolution order so a macro defined in one file is
-    // usable by entries in a later one (matching a multi-file BibTeX
-    // run), then mep_org_bib_resolve_crossrefs runs once over the
-    // *complete* set so a crossref target defined in any file (in any
-    // position) is found. Shared by insertion, goto, and preview below.
+    // Loads every resolved .bib file's text (disk I/O stays Lua) and
+    // hands the whole batch to mep.org_bib_parse_files, which threads
+    // the @string macro table across all of them in resolution order
+    // and resolves crossrefs once over the complete combined set.
+    // Shared by insertion, goto, and preview below.
     "local function mep_org_bib_load_entries()\n"
-    "  local entries, strings = {}, {}\n"
+    "  local texts = {}\n"
     "  for _, path in ipairs(mep.org_bib_resolve_files()) do\n"
     "    local f = io.open(path, 'r')\n"
     "    if f then\n"
-    "      local text = f:read('*a')\n"
+    "      texts[#texts + 1] = f:read('*a')\n"
     "      f:close()\n"
-    "      for _, e in ipairs(mep_org_bib_parse(text, strings)) do entries[#entries + 1] = e end\n"
     "    end\n"
     "  end\n"
-    "  return mep_org_bib_resolve_crossrefs(entries)\n"
+    "  return mep.org_bib_parse_files(texts)\n"
     "end\n"
     "function mep.org_bib_insert_citation()\n"
     "  local entries = mep_org_bib_load_entries()\n"
@@ -10391,81 +9306,12 @@ const char *kBuiltinOrgBib =
     "  end)\n"
     "end\n"
     "mep.command('MepOrgBibInsertCitation', mep.org_bib_insert_citation)\n"
-    // Citation recognition at cursor: modern org-cite `[cite:@key]` /
-    // `[cite/style:@key1;@key2]` (keys `;`-separated, each optionally
-    // `@`-prefixed) *and* legacy org-ref link-type variants --
-    // `cite:key`, `citep:key`, `citet:key`, `citeauthor:key`,
-    // `citeyear:key` (keys `,`-separated, no `@`) -- resolve to the same
-    // key list so goto/preview below work identically for either
-    // syntax. No regex: a manual char-by-char scan, matching this
-    // file's existing hand-rolled-parser convention (see
-    // mep_org_bib_split_top_level above).
-    "local mep_org_bib_legacy_prefixes = {'citeauthor', 'citeyear', 'citep', 'citet', 'cite'}\n"
-    "local function mep_org_bib_is_word_char(c) return c ~= '' and c:match('[%w_]') ~= nil end\n"
-    "local function mep_org_bib_is_key_char(c) return c ~= '' and c:match('[%w_%-:]') ~= nil end\n"
-    "local function mep_org_bib_cite_spans(line)\n"
-    "  local spans = {}\n"
-    // org-cite: [cite:...] / [cite/style:...]
-    "  local pos = 1\n"
-    "  while true do\n"
-    "    local s, e, body = line:find('%[cite[%a/]-:(.-)%]', pos)\n"
-    "    if not s then break end\n"
-    "    local keys = {}\n"
-    "    for _, part in ipairs(mep_org_bib_split_top_level(body, ';')) do\n"
-    "      local k = part:match('^%s*@?(%S+)%s*$')\n"
-    "      if k then keys[#keys + 1] = k end\n"
-    "    end\n"
-    "    if #keys > 0 then spans[#spans + 1] = {s = s, e = e, keys = keys} end\n"
-    "    pos = e + 1\n"
-    "  end\n"
-    // legacy org-ref: citeTYPE:key1,key2 -- not preceded by '[' (that's
-    // the org-cite form above) or another word char, and not itself an
-    // org-cite `@key` (org-ref keys are bare, never `@`-prefixed).
-    "  local i = 1\n"
-    "  while i <= #line do\n"
-    "    local matched = false\n"
-    "    local prev = line:sub(i - 1, i - 1)\n"
-    "    if prev ~= '[' and not mep_org_bib_is_word_char(prev) then\n"
-    "      for _, prefix in ipairs(mep_org_bib_legacy_prefixes) do\n"
-    "        local plen = #prefix\n"
-    "        if line:sub(i, i + plen - 1) == prefix and line:sub(i + plen, i + plen) == ':' then\n"
-    "          local after = i + plen + 1\n"
-    "          if line:sub(after, after) ~= '@' and mep_org_bib_is_key_char(line:sub(after, after)) then\n"
-    "            local j, keys, key_start = after, {}, after\n"
-    "            while j <= #line do\n"
-    "              local c = line:sub(j, j)\n"
-    "              if mep_org_bib_is_key_char(c) then j = j + 1\n"
-    "              elseif c == ',' and mep_org_bib_is_key_char(line:sub(j + 1, j + 1)) then\n"
-    "                keys[#keys + 1] = line:sub(key_start, j - 1)\n"
-    "                j = j + 1\n"
-    "                key_start = j\n"
-    "              else break end\n"
-    "            end\n"
-    "            keys[#keys + 1] = line:sub(key_start, j - 1)\n"
-    "            spans[#spans + 1] = {s = i, e = j - 1, keys = keys}\n"
-    "            i = j\n"
-    "            matched = true\n"
-    "            break\n"
-    "          end\n"
-    "        end\n"
-    "      end\n"
-    "    end\n"
-    "    if not matched then i = i + 1 end\n"
-    "  end\n"
-    "  table.sort(spans, function(a, b) return a.s < b.s end)\n"
-    "  return spans\n"
-    "end\n"
-    // Global (not local) -- called from kBuiltinOrgLinks' org_link_follow
-    // (a separate Lua chunk) the same way that chunk already calls the
-    // other cross-chunk global mep_org_parse_headline.
-    "function mep_org_bib_cite_at_cursor()\n"
-    "  local row, col = mep.cursor()\n"
-    "  local line = mep.get_line(row)\n"
-    "  for _, span in ipairs(mep_org_bib_cite_spans(line)) do\n"
-    "    if col >= span.s and col <= span.e then return span.keys end\n"
-    "  end\n"
-    "  return nil\n"
-    "end\n"
+    // Citation recognition at cursor (modern org-cite `[cite:@key]` /
+    // `[cite/style:@key1;@key2]` *and* legacy org-ref `cite:key` /
+    // `citep:key` / etc.) ported to Editor::OrgBibCiteAtCursor
+    // (editor.cpp) -- LUA_TO_CPP_PLAN.md Phase 5, registered as the bare
+    // global mep_org_bib_cite_at_cursor (same name kBuiltinOrgLinks'
+    // org_link_follow already calls it by).
     // Jump-to-entry: a plain byte-search for `{key` immediately followed
     // by `,`/whitespace/end-of-file (i.e. the entry's opening line,
     // `@type{key,`) rather than a full re-parse -- cheap and avoids
@@ -10546,23 +9392,11 @@ const char *kBuiltinActivityBar =
     "mep.activity_todo_file = nil\n"
     "local mep_activity_todo_sidebar_id = nil\n"
     "local function mep_activity_todo_path() return mep.activity_todo_file or (mep.getcwd() .. '/.mep_todos.txt') end\n"
-    "local function mep_activity_todo_load()\n"
-    "  local items = {}\n"
-    "  local f = io.open(mep_activity_todo_path(), 'r')\n"
-    "  if f then\n"
-    "    for line in f:lines() do\n"
-    "      local done, text = line:match('^(%d)|(.*)$')\n"
-    "      if done then items[#items + 1] = {done = done == '1', text = text} end\n"
-    "    end\n"
-    "    f:close()\n"
-    "  end\n"
-    "  return items\n"
-    "end\n"
-    "local function mep_activity_todo_save(items)\n"
-    "  local f = io.open(mep_activity_todo_path(), 'w')\n"
-    "  for _, it in ipairs(items) do f:write((it.done and '1' or '0') .. '|' .. it.text .. '\\n') end\n"
-    "  f:close()\n"
-    "end\n"
+    // The file parse/serialize (the "0|text\\n"/"1|text\\n" line format)
+    // moved to C++ -- Editor::ActivityTodoLoad/ActivityTodoSave
+    // (editor.cpp), exposed as mep.activity_todo_load/save (lua_env.cpp).
+    "local function mep_activity_todo_load() return mep.activity_todo_load(mep_activity_todo_path()) end\n"
+    "local function mep_activity_todo_save(items) mep.activity_todo_save(mep_activity_todo_path(), items) end\n"
     "function mep.activity_todo_panel()\n"
     "  local items = mep_activity_todo_load()\n"
     "  local widgets = {}\n"
@@ -10617,11 +9451,12 @@ const char *kBuiltinActivityBar =
     "  local widgets, r = {}, mep_activity_test_results\n"
     "  if r.code ~= nil then\n"
     "    widgets[#widgets + 1] = {id = 'summary', text = (r.code == 0 and 'PASSED' or 'FAILED') .. ' (exit ' .. r.code .. ')'}\n"
-    "    for i, line in ipairs(r.output or {}) do\n"
-    "      if line:lower():find('fail', 1, true) then\n"
-    "        widgets[#widgets + 1] = {id = 'f' .. i, text = '  ' .. line, hl = 'Error',\n"
-    "          on_click = function() mep.notify(line) end}\n"
-    "      end\n"
+    // The case-insensitive 'fail' substring scan moved to C++ --
+    // Editor::ActivityTestFailureLines (editor.cpp), exposed as
+    // mep.activity_test_failure_lines (lua_env.cpp).
+    "    for _, fl in ipairs(mep.activity_test_failure_lines(r.output or {})) do\n"
+    "      widgets[#widgets + 1] = {id = 'f' .. fl.index, text = '  ' .. fl.line, hl = 'Error',\n"
+    "        on_click = function() mep.notify(fl.line) end}\n"
     "    end\n"
     "  else\n"
     "    widgets[#widgets + 1] = {id = 'none', text = '(no results yet -- run tests)'}\n"
@@ -10674,131 +9509,12 @@ const char *kBuiltinAi =
     "mep.ai_api_key = nil\n"
     "mep.ai_max_tokens = 2048\n"
     "local mep_ai_active_job = nil\n"
-    "function mep_ai_json_encode(v)\n"
-    "  local t = type(v)\n"
-    "  if t == 'string' then\n"
-    "    local esc = v:gsub('[\\\\\"\\n\\r\\t]', {['\\\\'] = '\\\\\\\\', ['\"'] = '\\\\\"', ['\\n'] = '\\\\n', ['\\r'] = '\\\\r', ['\\t'] = '\\\\t'})\n"
-    "    return '\"' .. esc .. '\"'\n"
-    "  elseif t == 'number' then return tostring(v)\n"
-    "  elseif t == 'boolean' then return v and 'true' or 'false'\n"
-    "  elseif t == 'table' then\n"
-    "    if #v > 0 then\n"
-    "      local parts = {}\n"
-    "      for _, item in ipairs(v) do parts[#parts + 1] = mep_ai_json_encode(item) end\n"
-    "      return '[' .. table.concat(parts, ',') .. ']'\n"
-    "    else\n"
-    "      local parts = {}\n"
-    "      for k, val in pairs(v) do parts[#parts + 1] = mep_ai_json_encode(tostring(k)) .. ':' .. mep_ai_json_encode(val) end\n"
-    "      if #parts == 0 then return '{}' end\n"
-    "      return '{' .. table.concat(parts, ',') .. '}'\n"
-    "    end\n"
-    "  end\n"
-    "  return 'null'\n"
-    "end\n"
-    // UTF-8-encodes a single Unicode codepoint (up to the 0x10FFFF max, so
-    // always 1-4 bytes) -- used by mep_ai_json_decode's \\uXXXX handling
-    // below. Lua 5.4's bitwise operators make this a direct transliteration
-    // of the standard UTF-8 encoding table rather than needing bit32/manual
-    // arithmetic shims.
-    "local function mep_ai_utf8_encode(cp)\n"
-    "  if cp < 0x80 then\n"
-    "    return string.char(cp)\n"
-    "  elseif cp < 0x800 then\n"
-    "    return string.char(0xC0 | (cp >> 6), 0x80 | (cp & 0x3F))\n"
-    "  elseif cp < 0x10000 then\n"
-    "    return string.char(0xE0 | (cp >> 12), 0x80 | ((cp >> 6) & 0x3F), 0x80 | (cp & 0x3F))\n"
-    "  else\n"
-    "    return string.char(0xF0 | (cp >> 18), 0x80 | ((cp >> 12) & 0x3F), 0x80 | ((cp >> 6) & 0x3F), 0x80 | (cp & 0x3F))\n"
-    "  end\n"
-    "end\n"
-    "function mep_ai_json_decode(s)\n"
-    "  local pos = 1\n"
-    "  local function skip_ws() while pos <= #s and s:sub(pos, pos):match('%s') do pos = pos + 1 end end\n"
-    "  local parse_value\n"
-    "  local function parse_string()\n"
-    "    pos = pos + 1\n"
-    "    local buf = {}\n"
-    "    while true do\n"
-    "      local c = s:sub(pos, pos)\n"
-    "      if c == '\"' then pos = pos + 1 break end\n"
-    "      if c == '\\\\' then\n"
-    "        local n = s:sub(pos + 1, pos + 1)\n"
-    "        local map = {n = '\\n', t = '\\t', r = '\\r', ['\"'] = '\"', ['\\\\'] = '\\\\', ['/'] = '/'}\n"
-    "        if n == 'u' then\n"
-    // \\uXXXX: decode the 4 hex digits into a codepoint. A high surrogate
-    // (0xD800-0xDBFF) must be combined with an immediately-following low
-    // surrogate (\\uDC00-\\uDFFF) into one real codepoint before UTF-8
-    // encoding it -- JSON (like JS) represents astral characters (e.g.
-    // emoji) as a surrogate *pair* of two \\u escapes, neither of which is
-    // independently a valid standalone codepoint. Decoding each half on
-    // its own (the bug this replaces) would silently corrupt any such
-    // character. A malformed/truncated escape falls back to U+FFFD
-    // (replacement character) rather than erroring the whole decode.
-    "          local cp = tonumber(s:sub(pos + 2, pos + 5), 16) or 0xFFFD\n"
-    "          pos = pos + 6\n"
-    "          if cp >= 0xD800 and cp <= 0xDBFF and s:sub(pos, pos + 1) == '\\\\u' then\n"
-    "            local lo = tonumber(s:sub(pos + 2, pos + 5), 16)\n"
-    "            if lo and lo >= 0xDC00 and lo <= 0xDFFF then\n"
-    "              cp = 0x10000 + (cp - 0xD800) * 0x400 + (lo - 0xDC00)\n"
-    "              pos = pos + 6\n"
-    "            end\n"
-    "          end\n"
-    "          buf[#buf + 1] = mep_ai_utf8_encode(cp)\n"
-    "        else\n"
-    "          buf[#buf + 1] = map[n] or n\n"
-    "          pos = pos + 2\n"
-    "        end\n"
-    "      else\n"
-    "        buf[#buf + 1] = c\n"
-    "        pos = pos + 1\n"
-    "      end\n"
-    "    end\n"
-    "    return table.concat(buf)\n"
-    "  end\n"
-    "  local function parse_number()\n"
-    "    local start = pos\n"
-    "    while pos <= #s and s:sub(pos, pos):match('[%d%.%-%+eE]') do pos = pos + 1 end\n"
-    "    return tonumber(s:sub(start, pos - 1))\n"
-    "  end\n"
-    "  parse_value = function()\n"
-    "    skip_ws()\n"
-    "    local c = s:sub(pos, pos)\n"
-    "    if c == '\"' then return parse_string()\n"
-    "    elseif c == '{' then\n"
-    "      pos = pos + 1\n"
-    "      local obj = {}\n"
-    "      skip_ws()\n"
-    "      if s:sub(pos, pos) == '}' then pos = pos + 1 return obj end\n"
-    "      while true do\n"
-    "        skip_ws()\n"
-    "        local key = parse_string()\n"
-    "        skip_ws()\n"
-    "        pos = pos + 1\n"
-    "        obj[key] = parse_value()\n"
-    "        skip_ws()\n"
-    "        if s:sub(pos, pos) == ',' then pos = pos + 1 else pos = pos + 1 break end\n"
-    "      end\n"
-    "      return obj\n"
-    "    elseif c == '[' then\n"
-    "      pos = pos + 1\n"
-    "      local arr = {}\n"
-    "      skip_ws()\n"
-    "      if s:sub(pos, pos) == ']' then pos = pos + 1 return arr end\n"
-    "      while true do\n"
-    "        arr[#arr + 1] = parse_value()\n"
-    "        skip_ws()\n"
-    "        if s:sub(pos, pos) == ',' then pos = pos + 1 else pos = pos + 1 break end\n"
-    "      end\n"
-    "      return arr\n"
-    "    elseif c == 't' then pos = pos + 4 return true\n"
-    "    elseif c == 'f' then pos = pos + 5 return false\n"
-    "    elseif c == 'n' then pos = pos + 4 return nil\n"
-    "    else return parse_number() end\n"
-    "  end\n"
-    "  local ok, result = pcall(parse_value)\n"
-    "  if ok then return result end\n"
-    "  return nil\n"
-    "end\n"
+    // mep_ai_json_encode/mep_ai_utf8_encode/mep_ai_json_decode ported to
+    // reuse this file's own Json engine (json.h/lua_env.cpp -- now with
+    // real surrogate-pair \u handling, a genuine latent-bug fix along the
+    // way) -- LUA_TO_CPP_PLAN.md Phase AI, registered as the bare globals
+    // mep_ai_json_encode/mep_ai_json_decode (kBuiltinLeetcode shares these
+    // exact names).
     // API key: explicit override, else env var, else a prompt (kept only
     // in the Lua variable for the session -- never written to disk). The
     // fallback prompt passes opts.masked so the key is never shown in the
@@ -11752,29 +10468,13 @@ const char *kBuiltinLeetcode =
     "local function mep_leetcode_csrf_of(cookie)\n"
     "  return cookie:match('csrftoken=([^;%s]+)')\n"
     "end\n"
-    // Rough HTML -> plain-text pass over LeetCode's own `content` field:
-    // turns <br>/block-closing tags into line breaks, strips every
-    // remaining tag, decodes a handful of common entities, collapses
-    // blank-line runs. Not a real HTML parser -- good enough for a
-    // read-only problem statement dropped into an org buffer, not meant
-    // to round-trip. (Mirrors mep.nvim's mep/leetcode/create.lua
-    // html_to_text almost line for line.)\n"
-    "local function mep_leetcode_html_to_text(html)\n"
-    "  local text = html or ''\n"
-    "  text = text:gsub('<[bB][rR]%s*/?>', '\\n')\n"
-    "  text = text:gsub('</%a+>', '\\n')\n"
-    "  text = text:gsub('<[^>]*>', '')\n"
-    "  text = text:gsub('&lt;', '<'):gsub('&gt;', '>'):gsub('&amp;', '&'):gsub('&nbsp;', ' ')\n"
-    "  text = text:gsub('&quot;', string.char(34)):gsub('&#39;', string.char(39))\n"
-    "  local out = {}\n"
-    "  for line in (text .. '\\n'):gmatch('([^\\n]*)\\n') do\n"
-    "    local trimmed = line:match('^%s*(.-)%s*$')\n"
-    "    if trimmed ~= '' or (out[#out] and out[#out] ~= '') then out[#out + 1] = trimmed end\n"
-    "  end\n"
-    "  while out[1] == '' do table.remove(out, 1) end\n"
-    "  while #out > 0 and out[#out] == '' do table.remove(out) end\n"
-    "  return out\n"
-    "end\n"
+    // Moved to C++ -- LeetcodeHtmlToText, exposed as
+    // mep.leetcode_html_to_text (lua_env.cpp): the tag-stripping/entity-
+    // decoding/blank-line-collapsing pass, byte-for-byte the same
+    // sequential order (mirrors mep.nvim's mep/leetcode/create.lua
+    // html_to_text almost line for line, same as the original comment
+    // here already noted).
+    "local function mep_leetcode_html_to_text(html) return mep.leetcode_html_to_text(html) end\n"
     // LeetCode's own per-language slugs (as seen in codeSnippets[].langSlug
     // and expected back by submit) mapped to/from mep.org_babel_langs' own
     // keys -- only the languages that table actually runs (sh/bash/
@@ -11939,7 +10639,11 @@ const char *kBuiltinWhichKeyGroups =
     "mep.leader_group('or', 'roam')\n"
     "mep.leader_group('l', 'lsp')\n"
     "mep.leader_group('p', 'project')\n"
-    "mep.leader_group('b', 'browse')\n";
+    "mep.leader_group('b', 'browse')\n"
+    // Same real-collision case as 'b' above: 'ai' (AI context picker)
+    // predates 'aa'/'aA' (this file's own Treesitter structure split/
+    // sidebar), so neither label alone covers the whole group.
+    "mep.leader_group('a', 'ai/structure')\n";
 
 const char *kBuiltinPickerSources =
     "function mep.themes()\n"
@@ -11961,27 +10665,23 @@ const char *kBuiltinPickerSources =
     // here since mep.themes()/mep.picker_open/mep.leader_map were all
     // already implemented but never actually wired to an entry point.
     "mep.leader_map('ut', 'Theme picker', mep.themes)\n"
-    // mep_picker_preview_file(path, max_lines): reads up to max_lines (40
-    // default) of `path` and hands it to mep.picker_set_preview -- the
-    // Phase 8 preview-pane gap, closed. Shared by find_files below and
-    // (over a matched line's file) live_grep further down. mod1+j/k scrolls
+    // mep.picker_preview_file(path, max_lines): reads up to max_lines (40
+    // default) of `path` and sets it as the picker preview -- the Phase 8
+    // preview-pane gap, closed. Now a real C function (Editor::PreviewFile,
+    // editor.cpp), which is what makes it usable as a proper mep.* global
+    // from every other builtin chunk's own preview callback (find_files
+    // below, live_grep further down, the project picker in kBuiltinFileTree,
+    // the roam note-browser in kBuiltinOrgRoam) -- as a Lua *local* it used
+    // to only ever actually work from calls inside this same chunk; every
+    // other caller was silently calling a nil global. mod1+j/k scrolls
     // within whatever got loaded (Editor::HandleMod1Shortcuts' Mode::Picker
     // case), but a file longer than max_lines is still truncated here, not
     // read in full -- the "..." marker makes that cutoff visible rather
     // than silently showing an incomplete file with no sign anything's
     // missing.\n"
-    "function mep_picker_preview_file(path, max_lines)\n"
-    "  local f = io.open(path, 'r')\n"
-    "  if not f then mep.picker_set_preview('(cannot open ' .. path .. ')') return end\n"
-    "  local lines, truncated = {}, false\n"
-    "  for line in f:lines() do\n"
-    "    if #lines >= (max_lines or 40) then truncated = true break end\n"
-    "    lines[#lines + 1] = line\n"
-    "  end\n"
-    "  f:close()\n"
-    "  if truncated then lines[#lines + 1] = '...' end\n"
-    "  mep.picker_set_preview(table.concat(lines, '\\n'))\n"
-    "end\n"
+    // Moved to C++ -- Editor::PreviewFile, bound directly as
+    // mep.picker_preview_file (lua_env.cpp) -- both call sites below just
+    // pass their path/max_lines through to it now.
     // Asynchronous population (NVIM_PARITY_PLAN.md Phase 8 gap, closed):
     // the picker now opens as soon as the *first* result line arrives
     // (ensure_open, below) instead of waiting for rg/find to exit --
@@ -12034,14 +10734,14 @@ const char *kBuiltinPickerSources =
     // scrolling now available (see the comment on mep_picker_preview_file
     // itself), a 40-line cap left almost nothing to actually scroll
     // through.\n"
-    "        mep_picker_preview_file(item, 200)\n"
+    "        mep.picker_preview_file(item, 200)\n"
     "      end\n"
     "    end)\n"
     // on_select_change only fires on an actual highlight *change* -- prime
     // it with the first result so Ctrl-I (and the preview column) work
     // immediately, without requiring an arrow-key press first.\n"
     "    highlighted = lines[1]\n"
-    "    mep_picker_preview_file(lines[1], 200)\n"
+    "    mep.picker_preview_file(lines[1], 200)\n"
     "  end\n"
     "  local function on_line(line)\n"
     "    lines[#lines + 1] = line\n"
@@ -12104,7 +10804,7 @@ const char *kBuiltinPickerSources =
     "  end, nil, function(item)\n"
     "    if item and item ~= '' then\n"
     "      local file, lnum = item:match('^(.*):(%d+)$')\n"
-    "      if file then mep_picker_preview_file(file, 200) end\n"
+    "      if file then mep.picker_preview_file(file, 200) end\n"
     "    end\n"
     "  end, true)\n"
     "end\n"
@@ -12649,6 +11349,18 @@ void DrawSidebars() {
         size_t last = std::min(lines.size(), first + static_cast<size_t>(visible_lines));
         for (size_t i = first; i < last; i++) {
             float ly = py + header_h + (i - first) * line_h;
+            // Persistent "current position" marker (SidebarWidget::current,
+            // e.g. kBuiltinStructure's own cursor-tracking) -- drawn
+            // regardless of focus, so it stays visible while the user is
+            // actually editing the source pane rather than the sidebar.
+            // Drawn before (so under) the focus-cursor rect below: on the
+            // rare frame both land on the same row, the focused-input
+            // highlight still reads as the stronger, "you are here for
+            // input" signal.
+            if (lines[i].current) {
+                Color tint = ResolveHlGroup("AccentTint");
+                DrawRectangle(px + 2, static_cast<int>(ly) - 1, pw - 4, line_h, tint);
+            }
             if (is_focused && static_cast<int>(i) == cursor) {
                 DrawRectangle(px + 2, static_cast<int>(ly) - 1, pw - 4, line_h, ResolveHlGroup("PickerSelected"));
             }
@@ -13412,13 +12124,107 @@ void DrawCompletionPopup(float x, float y) {
 // short single-line items the way the completion list can. Dismissal
 // (cursor move / mode change / Escape) is Editor::MaybeDismissHover's
 // job, not this function's -- it just draws whenever IsHoverOpen().
+// Focused-mode render path for DrawHoverPopup below (Mode::HoverFocus):
+// one *raw* ('\n'-split) line per display row -- deliberately not
+// word-wrapped the way the passive popup below is -- so the row index
+// drawn here always lines up 1:1 with Editor::HoverFocusRow(), which
+// Editor::HandleHoverFocusInput navigates over the exact same raw split.
+// A line wider than the box is simply clipped on screen; the text actually
+// yanked (HandleHoverFocusInput's own yank_selection) is never truncated,
+// only its display here.
+void DrawHoverPopupFocused(float x, float y, const std::string &title, const std::string &text) {
+    float font_size = g_font_size;
+    int line_h = static_cast<int>(font_size) + 4;
+    int screen_max_w = std::max(20, GetScreenWidth() - 40);
+    int max_chars_per_line = std::max(20, static_cast<int>((screen_max_w - 20) / g_char_width));
+    std::vector<std::string> lines = SplitLines(text);
+    int cursor_row = std::max(0, std::min(g_editor.HoverFocusRow(), static_cast<int>(lines.size()) - 1));
+    int cursor_col = g_editor.HoverFocusCol();
+    int scroll = std::max(0, std::min(g_editor.HoverFocusScroll(), static_cast<int>(lines.size()) - 1));
+    int total = static_cast<int>(lines.size());
+    int visible = std::max(1, std::min(total - scroll, kHoverFocusVisibleRows));
+    bool selecting = g_editor.HoverFocusSelecting();
+    bool sel_linewise = g_editor.HoverFocusSelectLinewise();
+    int sel_r0 = g_editor.HoverFocusSelectAnchorRow(), sel_c0 = g_editor.HoverFocusSelectAnchorCol();
+    int sel_r1 = cursor_row, sel_c1 = cursor_col;
+    if (selecting && (sel_r0 > sel_r1 || (sel_r0 == sel_r1 && sel_c0 > sel_c1))) {
+        std::swap(sel_r0, sel_r1);
+        std::swap(sel_c0, sel_c1);
+    }
+    auto display_of = [&](const std::string &line) {
+        return static_cast<int>(line.size()) > max_chars_per_line ? line.substr(0, max_chars_per_line) : line;
+    };
+    float max_w = title.empty() ? 0.0f : MeasureTextEx(g_font, title.c_str(), MenuFontSize(), 0).x;
+    for (int i = 0; i < visible; i++) {
+        max_w = std::max(max_w, MeasureTextEx(g_font, display_of(lines[scroll + i]).c_str(), font_size, 0).x);
+    }
+    const std::string hint = "hjkl move  v/V select  y yank  Esc back, Esc Esc/q close";
+    float hint_size = std::max(10.0f, font_size - 4);
+    max_w = std::max(max_w, MeasureTextEx(g_font, hint.c_str(), hint_size, 0).x);
+    int box_w = std::min(screen_max_w, static_cast<int>(max_w) + 20);
+    int title_h = title.empty() ? 0 : static_cast<int>(MenuFontSize()) + 6;
+    int hint_h = static_cast<int>(hint_size) + 8;
+    int box_h = title_h + visible * line_h + hint_h + 10;
+    if (x + box_w > GetScreenWidth()) x = GetScreenWidth() - box_w;
+    if (x < 0) x = 0;
+    if (y + box_h > GetScreenHeight()) y = std::max(0.0f, y - box_h - line_h);
+    DrawRectangle(static_cast<int>(x), static_cast<int>(y), box_w, box_h, ResolveHlGroup("Picker"));
+    DrawRectangleLines(static_cast<int>(x), static_cast<int>(y), box_w, box_h, ResolveHlGroup("PickerBorder"));
+    float ty = y + 5;
+    if (!title.empty()) {
+        DrawTextEx(g_font, title.c_str(), Vector2{x + 8, ty}, MenuFontSize(), 0, ResolveHlGroup("PickerTitle"));
+        ty += title_h;
+    }
+    for (int i = 0; i < visible; i++) {
+        int r = scroll + i;
+        std::string disp = display_of(lines[r]);
+        float ry = ty + i * line_h;
+        if (selecting && r >= sel_r0 && r <= sel_r1) {
+            int a = 0, b = static_cast<int>(disp.size());
+            if (!sel_linewise) {
+                if (r == sel_r0) a = std::min(sel_c0, b);
+                if (r == sel_r1) b = std::min(sel_c1 + 1, static_cast<int>(disp.size()));
+            }
+            if (b > a) {
+                float hx = x + 8 + a * g_char_width;
+                DrawRectangle(static_cast<int>(hx), static_cast<int>(ry), static_cast<int>((b - a) * g_char_width),
+                              line_h, Fade(ResolveHlGroup("PickerSelected"), 0.6f));
+            }
+        }
+        DrawTextEx(g_font, disp.c_str(), Vector2{x + 8, ry}, font_size, 0, ResolveHlGroup("Normal"));
+        if (r == cursor_row) {
+            float cx = x + 8 + std::min(cursor_col, static_cast<int>(disp.size())) * g_char_width;
+            Color cursor_bg = ResolveHlGroup("Normal");
+            DrawRectangle(static_cast<int>(cx), static_cast<int>(ry), static_cast<int>(g_char_width), line_h,
+                          Color{cursor_bg.r, cursor_bg.g, cursor_bg.b, 180});
+            if (cursor_col < static_cast<int>(disp.size())) {
+                char ch[2] = {disp[cursor_col], '\0'};
+                DrawTextEx(g_font, ch, Vector2{cx, ry}, font_size, 0, ResolveHlGroup("NormalBg"));
+            }
+        }
+    }
+    DrawTextEx(g_font, hint.c_str(), Vector2{x + 8, ty + visible * line_h + 4}, hint_size, 0, ResolveHlGroup("Comment"));
+}
+
 void DrawHoverPopup(float x, float y) {
     if (!g_editor.IsHoverOpen()) return;
     const std::string &title = g_editor.HoverTitle();
     const std::string &text = g_editor.HoverText();
+    if (g_editor.CurrentMode() == Mode::HoverFocus) {
+        DrawHoverPopupFocused(x, y, title, text);
+        return;
+    }
     float font_size = g_font_size;
     int line_h = static_cast<int>(font_size) + 4;
-    int max_box_w = std::min(GetScreenWidth() - 40, 640);
+    // A single unbroken paragraph (no real newlines -- the common case for
+    // a one-line LSP hover) gets word-wrapped to a comfortable reading
+    // width; content with real newlines (multi-line docstrings, markdown
+    // with a param list) is left unwrapped up to the screen edge instead,
+    // so the box grows to fit its widest actual line rather than
+    // rewrapping lines that already fit fine.
+    bool has_real_newlines = text.find('\n') != std::string::npos;
+    int screen_max_w = std::max(20, GetScreenWidth() - 40);
+    int max_box_w = has_real_newlines ? screen_max_w : std::min(screen_max_w, 640);
     int max_chars_per_line = std::max(20, static_cast<int>((max_box_w - 20) / g_char_width));
     std::vector<std::string> wrapped;
     for (const std::string &raw_line : SplitLines(text)) {
@@ -18217,14 +17023,19 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     EndScissorMode();
 
     DrawPaneBorder(x, y, w, h, is_active);
-    // Hover tooltip (Phase 3 gap): drawn *after* EndScissorMode/the pane
-    // border above, unlike the completion popup a few lines up -- hover
-    // text can be much wider/taller (multi-line LSP docs) than a narrow
-    // split pane, so clipping it to the pane rect the way the completion
-    // list already (harmlessly, for short candidate words) tolerates
-    // would visibly truncate real hover content.
+    // Hover tooltip (Phase 3 gap): recorded here but drawn later, once, by
+    // the caller after the *entire* pane tree has finished -- text can be
+    // much wider/taller (multi-line LSP docs) than a narrow split pane, so
+    // clipping it to the pane rect the way the completion list already
+    // (harmlessly, for short candidate words) tolerates would visibly
+    // truncate real hover content, and it must not be drawn here inline:
+    // this pane isn't necessarily the last one DrawPaneTree visits, so a
+    // sibling pane rendered afterward (e.g. one below in a horizontal
+    // split) would paint straight over it.
     if (hover_cursor_valid && g_editor.IsHoverOpen()) {
-        DrawHoverPopup(hover_cursor_x, hover_cursor_y);
+        g_hover_popup_pending = true;
+        g_hover_popup_x = hover_cursor_x;
+        g_hover_popup_y = hover_cursor_y;
     }
 }
 
@@ -18473,6 +17284,7 @@ void DrawEditor() {
             // (DrawSidebars) draws none of its own. -1 matches no real
             // pane id, so every leaf falls back to its inactive look.
             int highlighted_pane_id = (g_editor.CurrentMode() == Mode::Sidebar) ? -1 : g_editor.ActivePaneId();
+            g_hover_popup_pending = false;
             DrawPaneTree(g_editor.ActiveTabRoot(), pane_x, static_cast<float>(content_top), pane_w,
                          static_cast<float>(pane_area_h), highlighted_pane_id);
             DrawPaneDragOverlay();
@@ -18591,6 +17403,11 @@ void DrawEditor() {
     if (g_editor.CurrentMode() == Mode::Command && g_editor.IsCmdlineCompletionOpen()) {
         DrawCmdlineCompletionPopup(static_cast<float>(kMarginX), static_cast<float>(cmd_y));
     }
+    // Same reasoning as the cmdline completion popup just above: moved here,
+    // after DrawSidebars, so a hover doc wide/tall enough to spill into an
+    // open sidebar (the file tree, most visibly) paints on top of it instead
+    // of being overpainted by the sidebar's own opaque panel.
+    if (g_hover_popup_pending) DrawHoverPopup(g_hover_popup_x, g_hover_popup_y);
     if (g_editor.CurrentMode() == Mode::Prompt) DrawPromptOverlay();
     if (g_editor.CurrentMode() == Mode::Confirm) DrawConfirmOverlay();
     if (g_editor.CurrentMode() == Mode::Select) DrawSelectOverlay();
@@ -18619,6 +17436,13 @@ bool IsModalOverlayMode(Mode m) {
         case Mode::Select:
         case Mode::WhichKey:
         case Mode::Preview:
+        // Keystrokes are already captured by Mode::HoverFocus (see
+        // Editor::HandleHoverFocusInput); a click falling through to a
+        // pane/tab underneath the popup while focused would move focus out
+        // from under it without ever leaving the mode, leaving hjkl
+        // silently navigating an invisible popup instead of whatever the
+        // click landed on.
+        case Mode::HoverFocus:
             return true;
         default:
             return false;
@@ -19545,6 +18369,7 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinCompletion);
     lua->DoString(kBuiltinSnippets);
     lua->DoString(kBuiltinSymbols);
+    lua->DoString(kBuiltinStructure);
     lua->DoString(kBuiltinDocs);
     lua->DoString(kBuiltinDap);
     lua->DoString(kBuiltinSyntax);

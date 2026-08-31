@@ -28,6 +28,8 @@ bool IsPdfPath(const std::string &path) {
 struct PdfDoc::Impl {};
 PdfDoc::PdfDoc() = default;
 PdfDoc::~PdfDoc() = default;
+PdfDoc::PdfDoc(PdfDoc &&) noexcept = default;
+PdfDoc &PdfDoc::operator=(PdfDoc &&) noexcept = default;
 bool PdfDoc::LoadFromMemory(const unsigned char *, size_t) {
     error_ = "PDF viewing is not available in the web build";
     return false;
@@ -140,10 +142,19 @@ struct PdfDoc::Impl {
     ~Impl() {
         if (doc_) FPDF_CloseDocument(doc_);
     }
+    // Always held behind PdfDoc's std::unique_ptr<Impl>; never copied or
+    // moved by value (an implicit copy would double-close doc_).
+    Impl() = default;
+    Impl(const Impl &) = delete;
+    Impl &operator=(const Impl &) = delete;
+    Impl(Impl &&) = delete;
+    Impl &operator=(Impl &&) = delete;
 };
 
 PdfDoc::PdfDoc() = default;
 PdfDoc::~PdfDoc() = default;
+PdfDoc::PdfDoc(PdfDoc &&) noexcept = default;
+PdfDoc &PdfDoc::operator=(PdfDoc &&) noexcept = default;
 
 bool PdfDoc::LoadFromMemory(const unsigned char *bytes, size_t len) {
     EnsurePdfiumInitialized();

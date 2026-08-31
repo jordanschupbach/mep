@@ -225,7 +225,7 @@ private:
      * @param col Column index into the active grid.
      * @return Reference to the cell at (row, col).
      */
-    VTermCell &CellAt(int row, int col) { return Grid()[static_cast<size_t>(row) * cols_ + col]; }
+    VTermCell &CellAt(int row, int col) { return Grid()[static_cast<size_t>(row) * static_cast<size_t>(cols_) + static_cast<size_t>(col)]; }
 
     /**
      * @brief Feeds one raw byte through the parser state machine, handling UTF-8 continuation, control bytes, and escape/CSI/OSC sequences.

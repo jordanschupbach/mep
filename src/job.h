@@ -83,6 +83,14 @@ public:
      * @brief Deleted: a Job owns non-copyable OS resources (pid, fds, thread).
      */
     Job &operator=(const Job &) = delete;
+    /**
+     * @brief Deleted: always held behind std::shared_ptr<Job> (see JobManager); never moved by value.
+     */
+    Job(Job &&) = delete;
+    /**
+     * @brief Deleted: always held behind std::shared_ptr<Job> (see JobManager); never moved by value.
+     */
+    Job &operator=(Job &&) = delete;
 
     /**
      * @brief Reports whether the child process has exited (or the job failed to spawn).

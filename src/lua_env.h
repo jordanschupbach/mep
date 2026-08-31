@@ -33,6 +33,14 @@ public:
      * @brief Deleted -- LuaEnv owns a unique lua_State and must not be copied.
      */
     LuaEnv &operator=(const LuaEnv &) = delete;
+    /**
+     * @brief Deleted -- LuaEnv owns a unique lua_State; never moved by value (see main.cpp's process-lifetime instance).
+     */
+    LuaEnv(LuaEnv &&) = delete;
+    /**
+     * @brief Deleted -- LuaEnv owns a unique lua_State; never moved by value (see main.cpp's process-lifetime instance).
+     */
+    LuaEnv &operator=(LuaEnv &&) = delete;
 
     /**
      * @brief Compiles and runs a chunk of Lua source, reporting any error through the editor's status line.

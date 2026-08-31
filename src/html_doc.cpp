@@ -558,10 +558,10 @@ std::unordered_map<std::string, std::string> ParseDeclarations(const std::string
         std::string val = body.substr(colon + 1, (semi == std::string::npos ? n : semi) - colon - 1);
         /**
          * @brief Trims leading and trailing whitespace (spaces, tabs, CR, LF) from a string.
-         * @param s String to trim, taken by value.
+         * @param s String to trim.
          * @return The trimmed string, or an empty string if `s` is all whitespace.
          */
-        auto trim = [](std::string s) {
+        auto trim = [](const std::string &s) {
             size_t a = s.find_first_not_of(" \t\r\n");
             size_t b = s.find_last_not_of(" \t\r\n");
             return a == std::string::npos ? std::string() : s.substr(a, b - a + 1);

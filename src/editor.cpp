@@ -504,7 +504,7 @@ std::vector<std::string> SplitIntoLines(const std::string &content) {
         lines.push_back(line);
         start = nl + 1;
     }
-    if (lines.empty()) lines.push_back("");
+    if (lines.empty()) lines.emplace_back("");
     return lines;
 }
 
@@ -903,7 +903,7 @@ std::vector<DiffHunk> MyersDiffHunks(const std::vector<std::string> &a, const st
     // trace[d] stores the V array (x-coordinates of furthest-reaching D-paths
     // for each diagonal k) at step d, needed to walk the path back afterward.
     std::vector<std::vector<int>> trace;
-    std::vector<int> v(2 * max_d + 1, 0);
+    std::vector<int> v(static_cast<size_t>(2 * max_d + 1), 0);
     /**
      * @brief Converts a diagonal index k (which may be negative) into a non-negative offset into the v array.
      * @param k The diagonal index.
@@ -915,17 +915,17 @@ std::vector<DiffHunk> MyersDiffHunks(const std::vector<std::string> &a, const st
         trace.push_back(v);
         for (int k = -d; k <= d; k += 2) {
             int x;
-            if (k == -d || (k != d && v[vidx(k - 1)] < v[vidx(k + 1)])) {
-                x = v[vidx(k + 1)];
+            if (k == -d || (k != d && v[static_cast<size_t>(vidx(k - 1))] < v[static_cast<size_t>(vidx(k + 1))])) {
+                x = v[static_cast<size_t>(vidx(k + 1))];
             } else {
-                x = v[vidx(k - 1)] + 1;
+                x = v[static_cast<size_t>(vidx(k - 1))] + 1;
             }
             int y = x - k;
-            while (x < n && y < m && a[x] == b[y]) {
+            while (x < n && y < m && a[static_cast<size_t>(x)] == b[static_cast<size_t>(y)]) {
                 x++;
                 y++;
             }
-            v[vidx(k)] = x;
+            v[static_cast<size_t>(vidx(k))] = x;
             if (x >= n && y >= m) {
                 found_d = d;
                 break;
@@ -943,10 +943,10 @@ std::vector<DiffHunk> MyersDiffHunks(const std::vector<std::string> &a, const st
     std::vector<Op> ops;
     int x = n, y = m;
     for (int d = found_d; d > 0; d--) {
-        const std::vector<int> &vd = trace[d];
+        const std::vector<int> &vd = trace[static_cast<size_t>(d)];
         int k = x - y;
-        int prev_k = (k == -d || (k != d && vd[vidx(k - 1)] < vd[vidx(k + 1)])) ? k + 1 : k - 1;
-        int prev_x = vd[vidx(prev_k)];
+        int prev_k = (k == -d || (k != d && vd[static_cast<size_t>(vidx(k - 1))] < vd[static_cast<size_t>(vidx(k + 1))])) ? k + 1 : k - 1;
+        int prev_x = vd[static_cast<size_t>(vidx(prev_k))];
         int prev_y = prev_x - prev_k;
         while (x > prev_x && y > prev_y) {
             ops.push_back({'=', x - 1, y - 1});
@@ -1080,11 +1080,11 @@ std::string OrgHtmlEscape(const std::string &s) {
 int OrgSubtreeEndLines(const std::vector<std::string> &lines, int row, const std::vector<std::string> &todo_keywords) {
     int level = 0;
     if (row >= 1 && row <= static_cast<int>(lines.size())) {
-        OrgHeadlineParse h = ParseOrgHeadline(lines[row - 1], todo_keywords);
+        OrgHeadlineParse h = ParseOrgHeadline(lines[static_cast<size_t>(row - 1)], todo_keywords);
         if (h.is_headline) level = h.level;
     }
     for (int i = row + 1; i <= static_cast<int>(lines.size()); i++) {
-        OrgHeadlineParse hi = ParseOrgHeadline(lines[i - 1], todo_keywords);
+        OrgHeadlineParse hi = ParseOrgHeadline(lines[static_cast<size_t>(i - 1)], todo_keywords);
         if (hi.is_headline && hi.level <= level) return i;
     }
     return static_cast<int>(lines.size()) + 1;
@@ -1169,7 +1169,7 @@ std::string ExpandMacroDollarRefs(const std::string &def, const std::vector<std:
             size_t i = pos + 1;
             while (i < def.size() && std::isdigit(static_cast<unsigned char>(def[i]))) i++;
             int n = std::stoi(def.substr(pos + 1, i - (pos + 1)));
-            if (n >= 1 && n <= static_cast<int>(args.size())) out += args[n - 1];
+            if (n >= 1 && n <= static_cast<int>(args.size())) out += args[static_cast<size_t>(n - 1)];
             pos = i;
         } else {
             out += def[pos];
@@ -1208,7 +1208,11 @@ std::string OrgExpandMacroLine(const std::string &line, const std::map<std::stri
                 std::string argstr = line.substr(arg_start, (boundary - 1) - arg_start);
                 auto it = macros.find(name);
                 if (it == macros.end()) {
-                    pass1 += "{{{" + name + "(" + argstr + ")}}}";
+                    pass1 += "{{{";
+                    pass1 += name;
+                    pass1 += "(";
+                    pass1 += argstr;
+                    pass1 += ")}}}";
                 } else {
                     pass1 += ExpandMacroDollarRefs(it->second, OrgSplitArgs(argstr));
                 }
@@ -1516,22 +1520,22 @@ OrgSrcBlock Editor::OrgSrcBlockAt(int row) const {
     int start_row = 0;
     for (int i = row; i >= 1; i--) {
         if (i > n) continue;
-        if (IsSrcBlockOpen(Buf().lines[i - 1])) {
+        if (IsSrcBlockOpen(Buf().lines[static_cast<size_t>(i - 1)])) {
             start_row = i;
             break;
         }
-        if (IsSrcClose(Buf().lines[i - 1])) return result;
+        if (IsSrcClose(Buf().lines[static_cast<size_t>(i - 1)])) return result;
     }
     if (start_row == 0) return result;
     int end_row = 0;
     for (int i = start_row + 1; i <= n; i++) {
-        if (IsSrcClose(Buf().lines[i - 1])) {
+        if (IsSrcClose(Buf().lines[static_cast<size_t>(i - 1)])) {
             end_row = i;
             break;
         }
     }
     if (end_row == 0 || end_row < row) return result;
-    const std::string &header = Buf().lines[start_row - 1];
+    const std::string &header = Buf().lines[static_cast<size_t>(start_row - 1)];
     bool has_lang = false;
     std::string lang, args_str;
     ParseSrcHeader(header, &has_lang, &lang, &args_str);
@@ -1541,7 +1545,7 @@ OrgSrcBlock Editor::OrgSrcBlockAt(int row) const {
     std::vector<std::string> body_lines;
     for (int i = start_row + 1; i <= end_row - 1; i++) {
         if (i < 1 || i > n) continue;
-        body_lines.push_back(Buf().lines[i - 1]);
+        body_lines.push_back(Buf().lines[static_cast<size_t>(i - 1)]);
     }
     result.found = true;
     result.start_row = start_row;
@@ -1578,7 +1582,7 @@ std::vector<std::string> LspDiagWrap(const std::string &text, int width) {
         }
     }
     if (!line.empty()) out.push_back(line);
-    if (out.empty()) out.push_back("");
+    if (out.empty()) out.emplace_back("");
     return out;
 }
 
@@ -1588,7 +1592,7 @@ std::pair<bool, std::string> Editor::LspWordAtCursor() const {
     row += 1;
     col += 1;
     if (row < 1 || row > Buf().LineCount()) return {false, ""};
-    const std::string &line = Buf().lines[row - 1];
+    const std::string &line = Buf().lines[static_cast<size_t>(row - 1)];
     int n = static_cast<int>(line.size());
     int s = col, e = col;
     /**
@@ -1599,13 +1603,13 @@ std::pair<bool, std::string> Editor::LspWordAtCursor() const {
     auto is_word = [&](int pos1) {
         // pos1 is 1-indexed; matches Lua's `[%w_]` class.
         if (pos1 < 1 || pos1 > n) return false;
-        char c = line[pos1 - 1];
+        char c = line[static_cast<size_t>(pos1 - 1)];
         return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_';
     };
     while (s > 1 && is_word(s - 1)) s--;
     while (e <= n && is_word(e)) e++;
     if (s >= e) return {false, ""};
-    return {true, line.substr(s - 1, e - s)};
+    return {true, line.substr(static_cast<size_t>(s - 1), static_cast<size_t>(e - s))};
 }
 
 void Editor::LspApplyTextEdit(int start_line, int start_char, int end_line, int end_char,
@@ -1743,7 +1747,7 @@ int Editor::OrgCurrentHeadlineRow(int row, const std::vector<std::string> &todo_
     const int n = Buf().LineCount();
     for (int i = row; i >= 1; i--) {
         if (i < 1 || i > n) continue;
-        if (ParseOrgHeadline(Buf().lines[i - 1], todo_keywords).is_headline) return i;
+        if (ParseOrgHeadline(Buf().lines[static_cast<size_t>(i - 1)], todo_keywords).is_headline) return i;
     }
     return 0;
 }
@@ -1752,11 +1756,11 @@ int Editor::OrgSubtreeEnd(int row, const std::vector<std::string> &todo_keywords
     const int n = Buf().LineCount();
     int level = 0;
     if (row >= 1 && row <= n) {
-        OrgHeadlineParse h = ParseOrgHeadline(Buf().lines[row - 1], todo_keywords);
+        OrgHeadlineParse h = ParseOrgHeadline(Buf().lines[static_cast<size_t>(row - 1)], todo_keywords);
         if (h.is_headline) level = h.level;
     }
     for (int i = row + 1; i <= n; i++) {
-        OrgHeadlineParse h = ParseOrgHeadline(Buf().lines[i - 1], todo_keywords);
+        OrgHeadlineParse h = ParseOrgHeadline(Buf().lines[static_cast<size_t>(i - 1)], todo_keywords);
         if (h.is_headline && h.level <= level) return i;
     }
     return n + 1;
@@ -1830,7 +1834,7 @@ bool MatchDigits(const std::string &s, size_t pos, int count, int *out) {
     if (pos + static_cast<size_t>(count) > s.size()) return false;
     int val = 0;
     for (int k = 0; k < count; k++) {
-        char c = s[pos + k];
+        char c = s[pos + static_cast<size_t>(k)];
         if (!std::isdigit(static_cast<unsigned char>(c))) return false;
         val = val * 10 + (c - '0');
     }
@@ -1936,7 +1940,7 @@ bool MatchClockDuration(const std::string &line, int *total_minutes) {
 void Editor::OrgClockIn() {
     const int n = Buf().LineCount();
     for (int i = 1; i <= n; i++) {
-        if (MatchRunningClockLine(Buf().lines[i - 1], nullptr)) {
+        if (MatchRunningClockLine(Buf().lines[static_cast<size_t>(i - 1)], nullptr)) {
             Notify("A clock is already running", NotifyLevel::Warn);
             return;
         }
@@ -1951,7 +1955,7 @@ void Editor::OrgClockIn() {
     int logbook_start = 0;
     for (int i = row + 1; i <= e - 1; i++) {
         if (i < 1 || i > n) continue;
-        if (IsLogbookOpenLine(Buf().lines[i - 1])) {
+        if (IsLogbookOpenLine(Buf().lines[static_cast<size_t>(i - 1)])) {
             logbook_start = i;
             break;
         }
@@ -1969,7 +1973,7 @@ void Editor::OrgClockOut() {
     const int n = Buf().LineCount();
     for (int i = 1; i <= n; i++) {
         std::string start_ts;
-        if (!MatchRunningClockLine(Buf().lines[i - 1], &start_ts)) continue;
+        if (!MatchRunningClockLine(Buf().lines[static_cast<size_t>(i - 1)], &start_ts)) continue;
         int y = 0, mo = 0, d = 0, hh = 0, mm = 0;
         if (!ParseClockTimestamp(start_ts, &y, &mo, &d, &hh, &mm)) continue;
         std::time_t start_time = MakeLocalTime(y, mo, d, hh, mm);
@@ -1992,7 +1996,7 @@ int Editor::OrgClockMinutesInRange(int a, int b) const {
     for (int i = a; i <= b; i++) {
         if (i < 1 || i > n) continue;
         int mins = 0;
-        if (MatchClockDuration(Buf().lines[i - 1], &mins)) total += mins;
+        if (MatchClockDuration(Buf().lines[static_cast<size_t>(i - 1)], &mins)) total += mins;
     }
     return total;
 }
@@ -2002,7 +2006,7 @@ std::vector<std::string> Editor::OrgClockTableItems() const {
     std::vector<std::string> kws = lua_ ? lua_->GetOrgTodoKeywords() : std::vector<std::string>{};
     const int n = Buf().LineCount();
     for (int i = 1; i <= n; i++) {
-        OrgHeadlineParse h = ParseOrgHeadline(Buf().lines[i - 1], kws);
+        OrgHeadlineParse h = ParseOrgHeadline(Buf().lines[static_cast<size_t>(i - 1)], kws);
         if (!h.is_headline) continue;
         int mins = OrgClockMinutesInRange(i, OrgSubtreeEnd(i, kws) - 1);
         if (mins <= 0) continue;
@@ -2120,7 +2124,7 @@ std::pair<bool, std::string> Editor::OrgPropertyGet(int row, const std::string &
     bool in_drawer = false;
     for (int i = row + 1; i <= e - 1; i++) {
         if (i < 1 || i > n) continue;
-        const std::string &line = Buf().lines[i - 1];
+        const std::string &line = Buf().lines[static_cast<size_t>(i - 1)];
         if (IsPropertiesOpenLine(line)) {
             in_drawer = true;
         } else if (IsDrawerEndLine(line)) {
@@ -2141,7 +2145,7 @@ void Editor::OrgPropertySet(int row, const std::string &key, const std::string &
     int drawer_start = 0, drawer_end = 0;
     for (int i = row + 1; i <= e - 1; i++) {
         if (i < 1 || i > Buf().LineCount()) continue;
-        const std::string &line = Buf().lines[i - 1];
+        const std::string &line = Buf().lines[static_cast<size_t>(i - 1)];
         if (IsPropertiesOpenLine(line)) {
             drawer_start = i;
         } else if (IsDrawerEndLine(line) && drawer_start) {
@@ -2157,8 +2161,12 @@ void Editor::OrgPropertySet(int row, const std::string &key, const std::string &
     for (int i = drawer_start + 1; i <= drawer_end - 1; i++) {
         if (i < 1 || i > Buf().LineCount()) continue;
         std::string k;
-        if (MatchDrawerKeyPrefix(Buf().lines[i - 1], &k) && EqualsIgnoreCase(k, key)) {
-            SetLineForLua(i - 1, ":" + key + ": " + value);
+        if (MatchDrawerKeyPrefix(Buf().lines[static_cast<size_t>(i - 1)], &k) && EqualsIgnoreCase(k, key)) {
+            std::string drawer_line = ":";
+            drawer_line += key;
+            drawer_line += ": ";
+            drawer_line += value;
+            SetLineForLua(i - 1, drawer_line);
             return;
         }
     }
@@ -2172,7 +2180,7 @@ void Editor::OrgPropertyRemove(int row, const std::string &key, const std::vecto
     for (int i = row + 1; i <= e - 1; i++) {
         if (i < 1 || i > Buf().LineCount()) continue;
         std::string k;
-        if (MatchDrawerKeyPrefix(Buf().lines[i - 1], &k) && EqualsIgnoreCase(k, key)) {
+        if (MatchDrawerKeyPrefix(Buf().lines[static_cast<size_t>(i - 1)], &k) && EqualsIgnoreCase(k, key)) {
             ReplaceLinesForLua(i - 1, i, {});
             return;
         }
@@ -2305,7 +2313,7 @@ void Editor::OrgImageScan() {
     if (LspFiletype(CurrentBuffer().filename) != "org") return;
     const int n = Buf().LineCount();
     for (int i = 1; i <= n; i++) {
-        const std::string &line = Buf().lines[i - 1];
+        const std::string &line = Buf().lines[static_cast<size_t>(i - 1)];
         size_t pos = 0;
         while (true) {
             size_t open = line.find("[[", pos);
@@ -2483,12 +2491,12 @@ int Editor::OrgRefileMove(int target_row, const std::vector<std::string> &todo_k
     std::vector<std::string> lines;
     for (int i = row; i <= e - 1; i++) {
         if (i < 1 || i > Buf().LineCount()) continue;
-        lines.push_back(Buf().lines[i - 1]);
+        lines.push_back(Buf().lines[static_cast<size_t>(i - 1)]);
     }
     if (lines.empty()) return 0;
     int src_level = ParseOrgHeadline(lines[0], todo_keywords).level;
     if (target_row < 1 || target_row > Buf().LineCount()) return 0;
-    int target_level = ParseOrgHeadline(Buf().lines[target_row - 1], todo_keywords).level;
+    int target_level = ParseOrgHeadline(Buf().lines[static_cast<size_t>(target_row - 1)], todo_keywords).level;
     int target_end = OrgSubtreeEnd(target_row, todo_keywords);
 
     int delta = (target_level + 1) - src_level;
@@ -2720,7 +2728,7 @@ Editor::OrgLatexScanResult Editor::OrgLatexScanFragments() const {
     const int n = Buf().LineCount();
     int i = 1;
     while (i <= n) {
-        const std::string &line = Buf().lines[i - 1];
+        const std::string &line = Buf().lines[static_cast<size_t>(i - 1)];
         std::string trimmed = LatexTrim(line);
         std::string body;
         int end_row = 0;
@@ -2728,8 +2736,8 @@ Editor::OrgLatexScanResult Editor::OrgLatexScanFragments() const {
         if (IsLatexBlockOpen(line)) {
             std::vector<std::string> lines;
             int j = i + 1;
-            while (j <= n && !IsLatexBlockClose(Buf().lines[j - 1])) {
-                lines.push_back(Buf().lines[j - 1]);
+            while (j <= n && !IsLatexBlockClose(Buf().lines[static_cast<size_t>(j - 1)])) {
+                lines.push_back(Buf().lines[static_cast<size_t>(j - 1)]);
                 j++;
             }
             if (j <= n) {
@@ -2739,8 +2747,8 @@ Editor::OrgLatexScanResult Editor::OrgLatexScanFragments() const {
         } else if (IsSrcLatexOpen(line)) {
             std::vector<std::string> lines;
             int j = i + 1;
-            while (j <= n && !IsSrcClose(Buf().lines[j - 1])) {
-                lines.push_back(Buf().lines[j - 1]);
+            while (j <= n && !IsSrcClose(Buf().lines[static_cast<size_t>(j - 1)])) {
+                lines.push_back(Buf().lines[static_cast<size_t>(j - 1)]);
                 j++;
             }
             if (j <= n) {
@@ -2753,8 +2761,8 @@ Editor::OrgLatexScanResult Editor::OrgLatexScanFragments() const {
         } else if (trimmed == "\\[") {
             std::vector<std::string> lines;
             int j = i + 1;
-            while (j <= n && LatexTrim(Buf().lines[j - 1]) != "\\]") {
-                lines.push_back(Buf().lines[j - 1]);
+            while (j <= n && LatexTrim(Buf().lines[static_cast<size_t>(j - 1)]) != "\\]") {
+                lines.push_back(Buf().lines[static_cast<size_t>(j - 1)]);
                 j++;
             }
             if (j <= n) {
@@ -2767,8 +2775,8 @@ Editor::OrgLatexScanResult Editor::OrgLatexScanFragments() const {
         } else if (trimmed == "$$") {
             std::vector<std::string> lines;
             int j = i + 1;
-            while (j <= n && LatexTrim(Buf().lines[j - 1]) != "$$") {
-                lines.push_back(Buf().lines[j - 1]);
+            while (j <= n && LatexTrim(Buf().lines[static_cast<size_t>(j - 1)]) != "$$") {
+                lines.push_back(Buf().lines[static_cast<size_t>(j - 1)]);
                 j++;
             }
             if (j <= n) {
@@ -3190,7 +3198,7 @@ std::vector<std::string> Editor::OrgBibCiteAtCursor() const {
     row += 1;
     col += 1;
     if (row < 1 || row > Buf().LineCount()) return {};
-    const std::string &line = Buf().lines[row - 1];
+    const std::string &line = Buf().lines[static_cast<size_t>(row - 1)];
     for (const OrgBibCiteSpan &span : BibCiteSpans(line)) {
         if (col >= span.col_start && col <= span.col_end) return span.keys;
     }
@@ -3312,9 +3320,9 @@ std::pair<bool, std::string> Editor::OrgRoamTitleOf(const std::vector<std::strin
 std::string Editor::OrgRoamEnsureId() {
     const int n = Buf().LineCount();
     for (int i = 1; i <= n; i++) {
-        if (ParseOrgHeadline(Buf().lines[i - 1], {}).is_headline) break;
+        if (ParseOrgHeadline(Buf().lines[static_cast<size_t>(i - 1)], {}).is_headline) break;
         std::string id;
-        if (MatchIdProperty(Buf().lines[i - 1], &id)) return id;
+        if (MatchIdProperty(Buf().lines[static_cast<size_t>(i - 1)], &id)) return id;
     }
     std::string id = GenerateRoamId();
     ReplaceLinesForLua(0, 0, {":PROPERTIES:", ":ID:       " + id, ":END:"});
@@ -3410,26 +3418,26 @@ void Editor::OrgTableAlign() {
     GetCursorForLua(&row, &col);
     row += 1;
     const int n = Buf().LineCount();
-    if (row < 1 || row > n || !ParseOrgTableRowImpl(Buf().lines[row - 1]).is_row) {
+    if (row < 1 || row > n || !ParseOrgTableRowImpl(Buf().lines[static_cast<size_t>(row - 1)]).is_row) {
         Notify("Not on a table row", NotifyLevel::Warn);
         return;
     }
     int top = row;
-    while (top > 1 && ParseOrgTableRowImpl(Buf().lines[top - 2]).is_row) top--;
+    while (top > 1 && ParseOrgTableRowImpl(Buf().lines[static_cast<size_t>(top - 2)]).is_row) top--;
     int bot = row;
-    while (bot < n && ParseOrgTableRowImpl(Buf().lines[bot]).is_row) bot++;
+    while (bot < n && ParseOrgTableRowImpl(Buf().lines[static_cast<size_t>(bot)]).is_row) bot++;
 
     std::vector<int> widths;
     std::vector<std::pair<int, OrgTableRow>> rows;
     for (int i = top; i <= bot; i++) {
-        OrgTableRow r = ParseOrgTableRowImpl(Buf().lines[i - 1]);
+        OrgTableRow r = ParseOrgTableRowImpl(Buf().lines[static_cast<size_t>(i - 1)]);
         if (!r.is_sep) {
             for (size_t ci = 0; ci < r.cells.size(); ci++) {
                 if (ci >= widths.size()) widths.push_back(0);
                 widths[ci] = std::max(widths[ci], static_cast<int>(r.cells[ci].size()));
             }
         }
-        rows.push_back({i, std::move(r)});
+        rows.emplace_back(i, std::move(r));
     }
     for (const std::pair<int, OrgTableRow> &entry : rows) {
         int i = entry.first;
@@ -3485,7 +3493,7 @@ Editor::OrgLinkAtCursorResult Editor::OrgLinkAtCursor() const {
     row += 1;
     col += 1;
     if (row < 1 || row > Buf().LineCount()) return result;
-    const std::string &line = Buf().lines[row - 1];
+    const std::string &line = Buf().lines[static_cast<size_t>(row - 1)];
     size_t pos = 0;
     while (true) {
         size_t open = line.find("[[", pos);
@@ -3516,7 +3524,7 @@ namespace {
 bool IsDigitRun(const std::string &s, size_t pos, int count) {
     if (pos + static_cast<size_t>(count) > s.size()) return false;
     for (int k = 0; k < count; k++) {
-        if (!std::isdigit(static_cast<unsigned char>(s[pos + k]))) return false;
+        if (!std::isdigit(static_cast<unsigned char>(s[pos + static_cast<size_t>(k)]))) return false;
     }
     return true;
 }
@@ -3608,8 +3616,8 @@ void Editor::OrgTimestampInsert(bool active) {
     col += 1;
     std::string body = FormatOrgDateOnlyNow();
     std::string ts = active ? ("<" + body + ">") : ("[" + body + "]");
-    const std::string &line = Buf().lines[row - 1];
-    std::string new_line = line.substr(0, col - 1) + ts + line.substr(col - 1);
+    const std::string &line = Buf().lines[static_cast<size_t>(row - 1)];
+    std::string new_line = line.substr(0, static_cast<size_t>(col - 1)) + ts + line.substr(static_cast<size_t>(col - 1));
     SetLineForLua(row - 1, new_line);
     SetCursorForLua(row - 1, col - 1 + static_cast<int>(ts.size()));
 }
@@ -3620,7 +3628,7 @@ void Editor::OrgTimestampShift(int delta_days) {
     row += 1;
     col += 1;
     if (row < 1 || row > Buf().LineCount()) return;
-    const std::string &line = Buf().lines[row - 1];
+    const std::string &line = Buf().lines[static_cast<size_t>(row - 1)];
     OrgTimestampMatch m = OrgTimestampAt(line, col);
     if (!m.found) {
         Notify("No timestamp under cursor", NotifyLevel::Warn);
@@ -3639,7 +3647,7 @@ void Editor::OrgTimestampShift(int delta_days) {
     std::string newbody = std::string(buf) + rest;
     char openc = m.active ? '<' : '[';
     char closec = m.active ? '>' : ']';
-    std::string new_line = line.substr(0, m.col_start - 1) + openc + newbody + closec + line.substr(m.col_end);
+    std::string new_line = line.substr(0, static_cast<size_t>(m.col_start - 1)) + openc + newbody + closec + line.substr(static_cast<size_t>(m.col_end));
     SetLineForLua(row - 1, new_line);
 }
 
@@ -3685,7 +3693,7 @@ void Editor::OrgFootnoteJump() {
     row += 1;
     col += 1;
     if (row < 1 || row > Buf().LineCount()) return;
-    const std::string &line = Buf().lines[row - 1];
+    const std::string &line = Buf().lines[static_cast<size_t>(row - 1)];
     std::string name;
     if (!FindFootnoteRefAt(line, col, &name)) {
         Notify("No footnote under cursor", NotifyLevel::Warn);
@@ -3695,7 +3703,7 @@ void Editor::OrgFootnoteJump() {
     std::string def_prefix = "[fn:" + name + "]";
     for (int i = 1; i <= n; i++) {
         if (i == row) continue;
-        const std::string &l = Buf().lines[i - 1];
+        const std::string &l = Buf().lines[static_cast<size_t>(i - 1)];
         if (l.compare(0, def_prefix.size(), def_prefix) == 0) {
             SetCursorForLua(i - 1, 0);
             return;
@@ -3703,7 +3711,7 @@ void Editor::OrgFootnoteJump() {
     }
     for (int i = 1; i <= n; i++) {
         if (i == row) continue;
-        if (Buf().lines[i - 1].find(def_prefix) != std::string::npos) {
+        if (Buf().lines[static_cast<size_t>(i - 1)].find(def_prefix) != std::string::npos) {
             SetCursorForLua(i - 1, 0);
             return;
         }
@@ -3718,7 +3726,7 @@ void Editor::OrgSetPlanning(const std::string &kind, const std::vector<std::stri
     std::string text = kind + ": <" + body + ">";
     const int n = Buf().LineCount();
     bool has_next = row + 1 <= n;
-    std::string next_line = has_next ? Buf().lines[row] : "";
+    std::string next_line = has_next ? Buf().lines[static_cast<size_t>(row)] : "";
     size_t i = SkipWs(next_line, 0);
     std::string tag = kind + ":";
     bool matches = next_line.compare(i, tag.size(), tag) == 0;
@@ -3730,7 +3738,7 @@ void Editor::OrgSetPlanning(const std::string &kind, const std::vector<std::stri
 }
 
 Editor::Editor() {
-    buffers_.push_back(Buffer{});
+    buffers_.emplace_back();
     Tab tab;
     tab.root = std::make_unique<SplitNode>();
     tab.root->dir = SplitDir::Leaf;
@@ -3851,13 +3859,13 @@ void Editor::HandleInput() {
 }
 
 void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) {
-    SplitNode *node = FindNode(tabs_[active_tab_].root.get(), pane_id);
+    SplitNode *node = FindNode(tabs_[static_cast<size_t>(active_tab_)].root.get(), pane_id);
     if (!node) return;
     Pane &pane = node->pane;
     visible_lines = std::max(1, visible_lines);
     pane.visible_lines = visible_lines;
     if (pane.buffer_id < 0 || pane.buffer_id >= static_cast<int>(buffers_.size())) return;
-    const Buffer &buf = buffers_[pane.buffer_id];
+    const Buffer &buf = buffers_[static_cast<size_t>(pane.buffer_id)];
 
     // How far the cursor's own row moved since the last call -- feeds the
     // smoothing cap below. A pane that's never run this before (-1) is
@@ -3921,7 +3929,7 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) 
                     }
                 }
                 if (!fold_start) {
-                    int len = static_cast<int>(buf.lines[r].size());
+                    int len = static_cast<int>(buf.lines[static_cast<size_t>(r)].size());
                     return std::max(1, (len + wrap_cols - 1) / wrap_cols);
                 }
             }
@@ -4108,7 +4116,7 @@ void Editor::WheelScrollOffice(float dx, float dy) {
      * @brief Gets the length of the text in the office document paragraph the cursor currently sits on.
      * @return The paragraph text's length, in characters.
      */
-    auto cur_len = [&]() { return static_cast<int>(sess.doc.paragraphs[sess.cursor_para].text.size()); };
+    auto cur_len = [&]() { return static_cast<int>(sess.doc.paragraphs[static_cast<size_t>(sess.cursor_para)].text.size()); };
     if (dy != 0.0f) {
         int steps = WheelSteps(wheel_accum_office_para_, -dy, kWheelLinesPerNotch);
         if (steps != 0) {
@@ -4179,8 +4187,8 @@ void Editor::WheelScrollImage(float dx, float dy) {
         ApplyImageZoom(sess, sess.zoom * std::pow(kWheelZoomStepPerNotch, dy));
         return;
     }
-    int max_pan_x = sess.doc ? std::max(0, static_cast<int>(sess.doc->Width() * sess.zoom) - sess.viewport_w) : 0;
-    int max_pan_y = sess.doc ? std::max(0, static_cast<int>(sess.doc->Height() * sess.zoom) - sess.viewport_h) : 0;
+    int max_pan_x = sess.doc ? std::max(0, static_cast<int>(static_cast<float>(sess.doc->Width()) * sess.zoom) - sess.viewport_w) : 0;
+    int max_pan_y = sess.doc ? std::max(0, static_cast<int>(static_cast<float>(sess.doc->Height()) * sess.zoom) - sess.viewport_h) : 0;
     if (dy != 0.0f) {
         sess.pan_y = std::clamp(sess.pan_y + static_cast<int>(-dy * kWheelPixelsPerNotch), 0, max_pan_y);
     }
@@ -4280,33 +4288,33 @@ void Editor::HandleMouseWheel(float dx, float dy) {
 
 void Editor::IncrementNumberAtCursor(long long delta) {
     CursorPos &cursor = CurPane().cursor;
-    std::string &line = Buf().lines[cursor.row];
+    std::string &line = Buf().lines[static_cast<size_t>(cursor.row)];
     int len = static_cast<int>(line.size());
     int start = cursor.col;
-    while (start < len && !std::isdigit(static_cast<unsigned char>(line[start]))) start++;
+    while (start < len && !std::isdigit(static_cast<unsigned char>(line[static_cast<size_t>(start)]))) start++;
     if (start >= len) return;  // no number from the cursor onward on this line
     int a = start;
-    while (a > 0 && std::isdigit(static_cast<unsigned char>(line[a - 1]))) a--;
+    while (a > 0 && std::isdigit(static_cast<unsigned char>(line[static_cast<size_t>(a - 1)]))) a--;
     int b = start;
-    while (b < len && std::isdigit(static_cast<unsigned char>(line[b]))) b++;
-    bool negative = (a > 0 && line[a - 1] == '-');
+    while (b < len && std::isdigit(static_cast<unsigned char>(line[static_cast<size_t>(b)]))) b++;
+    bool negative = (a > 0 && line[static_cast<size_t>(a - 1)] == '-');
     int sign_pos = negative ? a - 1 : a;
     int width = b - a;
-    bool had_leading_zero = (width > 1 && line[a] == '0');
+    bool had_leading_zero = (width > 1 && line[static_cast<size_t>(a)] == '0');
 
     long long value = 0;
-    for (int i = a; i < b; i++) value = value * 10 + (line[i] - '0');
+    for (int i = a; i < b; i++) value = value * 10 + (line[static_cast<size_t>(i)] - '0');
     if (negative) value = -value;
     value += delta;
 
     std::string digits = std::to_string(value < 0 ? -value : value);
     if (had_leading_zero && static_cast<int>(digits.size()) < width) {
-        digits = std::string(width - digits.size(), '0') + digits;
+        digits = std::string(static_cast<size_t>(width) - digits.size(), '0') + digits;
     }
     std::string replacement = (value < 0 ? "-" : "") + digits;
 
     PushUndo();
-    line.replace(sign_pos, b - sign_pos, replacement);
+    line.replace(static_cast<size_t>(sign_pos), static_cast<size_t>(b - sign_pos), replacement);
     Buf().modified = true;
     cursor.col = sign_pos + static_cast<int>(replacement.size()) - 1;
     ClampCursor();
@@ -4336,10 +4344,10 @@ std::string Editor::CurrentVisualSelectionText() const {
         VisualBlockRange(top, bottom, left, right);
         std::string text;
         for (int r = top; r <= bottom; r++) {
-            const std::string &line = Buf().lines[r];
+            const std::string &line = Buf().lines[static_cast<size_t>(r)];
             int a = std::min(static_cast<int>(line.size()), left);
             int b = (right < 0) ? static_cast<int>(line.size()) : std::min(static_cast<int>(line.size()), right + 1);
-            text += (b > a) ? line.substr(a, b - a) : "";
+            text += (b > a) ? line.substr(static_cast<size_t>(a), static_cast<size_t>(b - a)) : "";
             text += "\n";
         }
         return text;
@@ -4356,7 +4364,7 @@ std::string Editor::CurrentVisualSelectionText() const {
 
 int Editor::LineLen(int row) const {
     if (row < 0 || row >= Buf().LineCount()) return 0;
-    return static_cast<int>(Buf().lines[row].size());
+    return static_cast<int>(Buf().lines[static_cast<size_t>(row)].size());
 }
 
 void Editor::ClampCursor() {
@@ -4376,13 +4384,13 @@ void Editor::ClampCursor() {
 // --- Buffer/pane/tab plumbing ----------------------------------------------
 
 Pane &Editor::CurPane() {
-    Tab &tab = tabs_[active_tab_];
+    Tab &tab = tabs_[static_cast<size_t>(active_tab_)];
     SplitNode *node = FindNode(tab.root.get(), tab.active_pane_id);
     return node->pane;
 }
 
 const Pane &Editor::CurPane() const {
-    const Tab &tab = tabs_[active_tab_];
+    const Tab &tab = tabs_[static_cast<size_t>(active_tab_)];
     SplitNode *node = FindNode(tab.root.get(), tab.active_pane_id);
     return node->pane;
 }
@@ -4413,7 +4421,7 @@ void Editor::CollectLeafBuffers(const SplitNode *node, std::vector<int> &ids) co
 
 std::vector<int> Editor::PaneBuffersInActiveTab() const {
     std::vector<int> ids;
-    CollectLeafBuffers(tabs_[active_tab_].root.get(), ids);
+    CollectLeafBuffers(tabs_[static_cast<size_t>(active_tab_)].root.get(), ids);
     return ids;
 }
 
@@ -4429,7 +4437,7 @@ int Editor::FindPaneIdForBuffer(const SplitNode *node, int buffer_id) const {
 }
 
 bool Editor::FocusPaneShowingBuffer(int buffer_id) {
-    Tab &tab = tabs_[active_tab_];
+    Tab &tab = tabs_[static_cast<size_t>(active_tab_)];
     int pane_id = FindPaneIdForBuffer(tab.root.get(), buffer_id);
     if (pane_id < 0) return false;
     tab.active_pane_id = pane_id;
@@ -4441,7 +4449,7 @@ bool Editor::FocusPaneShowingBuffer(int buffer_id) {
 }
 
 int Editor::CursorRowForBuffer(int buffer_id) const {
-    const Tab &tab = tabs_[active_tab_];
+    const Tab &tab = tabs_[static_cast<size_t>(active_tab_)];
     int pane_id = FindPaneIdForBuffer(tab.root.get(), buffer_id);
     if (pane_id < 0) return -1;
     const SplitNode *node = FindNode(tab.root.get(), pane_id);
@@ -4449,7 +4457,7 @@ int Editor::CursorRowForBuffer(int buffer_id) const {
 }
 
 void Editor::FocusTopLeftPane() {
-    Tab &tab = tabs_[active_tab_];
+    Tab &tab = tabs_[static_cast<size_t>(active_tab_)];
     std::vector<PaneRect> rects;
     ComputeRects(tab.root.get(), 0.0f, 0.0f, 1.0f, 1.0f, rects);
     if (rects.empty()) return;
@@ -4471,7 +4479,7 @@ bool Editor::RemovePaneNode(std::unique_ptr<SplitNode> &node_ptr, int pane_id) {
     for (size_t i = 0; i < node->children.size(); i++) {
         SplitNode *child = node->children[i].get();
         if (child->dir == SplitDir::Leaf && child->pane.id == pane_id) {
-            node->children.erase(node->children.begin() + i);
+            node->children.erase(node->children.begin() + static_cast<long>(i));
             if (node->children.size() == 1) {
                 node_ptr = std::move(node->children[0]);
             }
@@ -4485,7 +4493,7 @@ bool Editor::RemovePaneNode(std::unique_ptr<SplitNode> &node_ptr, int pane_id) {
 }
 
 int Editor::CreateEmptyBuffer() {
-    buffers_.push_back(Buffer{});
+    buffers_.emplace_back();
     return static_cast<int>(buffers_.size()) - 1;
 }
 
@@ -4508,7 +4516,7 @@ void Editor::OpenScratchBuffer() {
         }
     }
     int id = CreateEmptyBuffer();
-    buffers_[id].scratch = true;
+    buffers_[static_cast<size_t>(id)].scratch = true;
     CurPane().buffer_id = id;
     ClampCursor();
 }
@@ -4565,7 +4573,7 @@ int Editor::FindOrCreateBuffer(const std::string &path, bool *existed) {
 }
 
 void Editor::SplitCurrentPane(SplitDir dir, const std::string &file_arg) {
-    Tab &tab = tabs_[active_tab_];
+    Tab &tab = tabs_[static_cast<size_t>(active_tab_)];
     SplitNode *active = FindNode(tab.root.get(), tab.active_pane_id);
     if (!active) return;
 
@@ -4610,7 +4618,7 @@ void Editor::OpenTerminal(const std::string &args) {
 }
 
 void Editor::OpenTerminalInPlace(const std::string &args) {
-    Tab &tab = tabs_[active_tab_];
+    Tab &tab = tabs_[static_cast<size_t>(active_tab_)];
     SplitNode *node = FindNode(tab.root.get(), tab.active_pane_id);
     if (!node) return;
 
@@ -4651,7 +4659,7 @@ void Editor::TerminalSpawn(TerminalSession &sess, const std::vector<std::string>
     if (remote_argv.size() == 1) remote_argv.push_back("-i");
     Json payload = Json::Object();
     Json argv_json = Json::Array();
-    for (const std::string &a : remote_argv) argv_json.push_back(Json(a));
+    for (const std::string &a : remote_argv) argv_json.push_back(a);
     payload["cmd"] = argv_json;
     sess.job_id = mep_js_pty_connect_start(payload.dump().c_str());
     if (sess.job_id <= 0) {
@@ -4818,8 +4826,8 @@ void Editor::ResizeImageViewport(int buffer_id, int w, int h) {
     ImageSession &sess = it->second;
     sess.viewport_w = w;
     sess.viewport_h = h;
-    int max_pan_x = sess.doc ? std::max(0, static_cast<int>(sess.doc->Width() * sess.zoom) - w) : 0;
-    int max_pan_y = sess.doc ? std::max(0, static_cast<int>(sess.doc->Height() * sess.zoom) - h) : 0;
+    int max_pan_x = sess.doc ? std::max(0, static_cast<int>(static_cast<float>(sess.doc->Width()) * sess.zoom) - w) : 0;
+    int max_pan_y = sess.doc ? std::max(0, static_cast<int>(static_cast<float>(sess.doc->Height()) * sess.zoom) - h) : 0;
     sess.pan_x = std::clamp(sess.pan_x, 0, max_pan_x);
     sess.pan_y = std::clamp(sess.pan_y, 0, max_pan_y);
 }
@@ -4839,7 +4847,7 @@ void Editor::OpenImageInPlace(const std::string &path, const unsigned char *byte
             return;
         }
         buffer_id = CreateEmptyBuffer();
-        buffers_[buffer_id].filename = path;
+        buffers_[static_cast<size_t>(buffer_id)].filename = path;
         ImageSession sess;
         sess.buffer_id = buffer_id;
         sess.doc = std::move(doc);
@@ -4918,13 +4926,13 @@ void Editor::ApplyImageZoom(ImageSession &sess, float new_zoom) {
     if (!sess.doc || sess.doc->Width() <= 0 || sess.doc->Height() <= 0) return;
     new_zoom = std::clamp(new_zoom, kMinImageZoom, kMaxImageZoom);
     float ratio = new_zoom / sess.zoom;
-    float center_x = sess.pan_x + sess.viewport_w / 2.0f;
-    float center_y = sess.pan_y + sess.viewport_h / 2.0f;
+    float center_x = static_cast<float>(sess.pan_x) + static_cast<float>(sess.viewport_w) / 2.0f;
+    float center_y = static_cast<float>(sess.pan_y) + static_cast<float>(sess.viewport_h) / 2.0f;
     sess.zoom = new_zoom;
-    sess.pan_x = static_cast<int>(center_x * ratio - sess.viewport_w / 2.0f);
-    sess.pan_y = static_cast<int>(center_y * ratio - sess.viewport_h / 2.0f);
-    int mx = std::max(0, static_cast<int>(sess.doc->Width() * sess.zoom) - sess.viewport_w);
-    int my = std::max(0, static_cast<int>(sess.doc->Height() * sess.zoom) - sess.viewport_h);
+    sess.pan_x = static_cast<int>(center_x * ratio - static_cast<float>(sess.viewport_w) / 2.0f);
+    sess.pan_y = static_cast<int>(center_y * ratio - static_cast<float>(sess.viewport_h) / 2.0f);
+    int mx = std::max(0, static_cast<int>(static_cast<float>(sess.doc->Width()) * sess.zoom) - sess.viewport_w);
+    int my = std::max(0, static_cast<int>(static_cast<float>(sess.doc->Height()) * sess.zoom) - sess.viewport_h);
     sess.pan_x = std::clamp(sess.pan_x, 0, mx);
     sess.pan_y = std::clamp(sess.pan_y, 0, my);
 }
@@ -4941,8 +4949,8 @@ void Editor::HandleImageInput() {
     }
 
     constexpr int kPanStep = 40;
-    int max_pan_x = sess->doc ? std::max(0, static_cast<int>(sess->doc->Width() * sess->zoom) - sess->viewport_w) : 0;
-    int max_pan_y = sess->doc ? std::max(0, static_cast<int>(sess->doc->Height() * sess->zoom) - sess->viewport_h) : 0;
+    int max_pan_x = sess->doc ? std::max(0, static_cast<int>(static_cast<float>(sess->doc->Width()) * sess->zoom) - sess->viewport_w) : 0;
+    int max_pan_y = sess->doc ? std::max(0, static_cast<int>(static_cast<float>(sess->doc->Height()) * sess->zoom) - sess->viewport_h) : 0;
 
     // IsKeyPressed(Repeat) rather than draining GetKeyPressed(): GLFW only
     // enqueues the initial key-down into the GetKeyPressed() queue, so
@@ -4996,8 +5004,8 @@ void Editor::HandleImageInput() {
             apply_zoom(sess->zoom / kImageZoomStep);
         } else if (cp == '=' && sess->doc && sess->doc->Width() > 0 && sess->doc->Height() > 0 &&
                    sess->viewport_w > 0 && sess->viewport_h > 0) {
-            float fit = std::min(static_cast<float>(sess->viewport_w) / sess->doc->Width(),
-                                  static_cast<float>(sess->viewport_h) / sess->doc->Height());
+            float fit = std::min(static_cast<float>(sess->viewport_w) / static_cast<float>(sess->doc->Width()),
+                                  static_cast<float>(sess->viewport_h) / static_cast<float>(sess->doc->Height()));
             sess->zoom = std::clamp(fit, kMinImageZoom, kMaxImageZoom);
             sess->pan_x = 0;
             sess->pan_y = 0;
@@ -5113,10 +5121,10 @@ void Editor::OpenHtmlInPlace(const std::string &origin, const std::string &sourc
     }
     if (buffer_id < 0) {
         buffer_id = CreateEmptyBuffer();
-        buffers_[buffer_id].filename = source;
+        buffers_[static_cast<size_t>(buffer_id)].filename = source;
     }
     if (!IsHtmlBuffer(buffer_id)) {
-        buffers_[buffer_id].lines.clear();
+        buffers_[static_cast<size_t>(buffer_id)].lines.clear();
         HtmlSession sess;
         sess.buffer_id = buffer_id;
         PopulateHtmlSession(sess, origin, source, bytes, len);
@@ -5146,14 +5154,14 @@ void Editor::ReloadHtmlBuffer(int buffer_id, const std::string &origin, const st
                                const unsigned char *bytes, size_t len) {
     auto it = htmldocs_.find(buffer_id);
     if (it == htmldocs_.end()) return;
-    buffers_[buffer_id].filename = source;
+    buffers_[static_cast<size_t>(buffer_id)].filename = source;
     PopulateHtmlSession(it->second, origin, source, bytes, len);
 }
 
 void Editor::ConvertHtmlBufferToText(int buffer_id) {
     auto it = htmldocs_.find(buffer_id);
     if (it == htmldocs_.end()) return;
-    std::string path = buffers_[buffer_id].filename;
+    std::string path = buffers_[static_cast<size_t>(buffer_id)].filename;
     std::vector<std::string> lines;
 #if defined(__EMSCRIPTEN__)
     char *result = mep_js_read_file(path.c_str());
@@ -5168,7 +5176,7 @@ void Editor::ConvertHtmlBufferToText(int buffer_id) {
     }
 #endif
     htmldocs_.erase(it);
-    buffers_[buffer_id].lines = std::move(lines);
+    buffers_[static_cast<size_t>(buffer_id)].lines = std::move(lines);
     // Bumps mep.buffer_change_epoch() so the polling mep.on_buffer_changed
     // hooks (syntax highlighting, colorizer, folds, ...) notice this
     // buffer now has real content -- without it they stay silent, since
@@ -5184,16 +5192,16 @@ void Editor::ConvertHtmlBufferToText(int buffer_id) {
 void Editor::ConvertTextBufferToHtml(int buffer_id) {
     if (IsHtmlBuffer(buffer_id)) return;
     std::string content;
-    for (const auto &l : buffers_[buffer_id].lines) {
+    for (const auto &l : buffers_[static_cast<size_t>(buffer_id)].lines) {
         content += l;
         content += "\n";
     }
-    const std::string &path = buffers_[buffer_id].filename;
+    const std::string &path = buffers_[static_cast<size_t>(buffer_id)].filename;
     HtmlSession sess;
     sess.buffer_id = buffer_id;
     PopulateHtmlSession(sess, path, path, reinterpret_cast<const unsigned char *>(content.data()), content.size());
     htmldocs_[buffer_id] = std::move(sess);
-    buffers_[buffer_id].lines.clear();
+    buffers_[static_cast<size_t>(buffer_id)].lines.clear();
     // See ConvertHtmlBufferToText's own comment on this bump.
     change_epoch_++;
 }
@@ -5305,7 +5313,7 @@ std::pair<double, double> Editor::PdfPageSizePt(PdfSession &sess, int page_index
 }
 
 float Editor::PdfPageScreenHeightPx(PdfSession &sess, int page_index) {
-    return static_cast<float>(PdfPageSizePt(sess, page_index).second * sess.rendered_scale * sess.zoom);
+    return static_cast<float>(PdfPageSizePt(sess, page_index).second * static_cast<double>(sess.rendered_scale) * static_cast<double>(sess.zoom));
 }
 
 void Editor::ResizePdfViewport(int buffer_id, int w, int h) {
@@ -5316,7 +5324,7 @@ void Editor::ResizePdfViewport(int buffer_id, int w, int h) {
     sess.viewport_h = h;
     if (!sess.doc || sess.doc->PageCount() <= 0) return;
     double page_w_pt = PdfPageSizePt(sess, sess.page).first;
-    int page_w_px = static_cast<int>(page_w_pt * sess.rendered_scale * sess.zoom);
+    int page_w_px = static_cast<int>(page_w_pt * static_cast<double>(sess.rendered_scale) * static_cast<double>(sess.zoom));
     int max_pan_x = std::max(0, page_w_px - w);
     sess.pan_x = std::clamp(sess.pan_x, 0, max_pan_x);
 }
@@ -5400,7 +5408,7 @@ void Editor::OpenPdfInPlace(const std::string &path, const unsigned char *bytes,
             return;
         }
         buffer_id = CreateEmptyBuffer();
-        buffers_[buffer_id].filename = path;
+        buffers_[static_cast<size_t>(buffer_id)].filename = path;
         PdfSession sess;
         sess.buffer_id = buffer_id;
         sess.doc = std::move(doc);
@@ -5456,7 +5464,7 @@ void Editor::RebasePdfScroll(PdfSession &sess) {
 // zoom/rendered_scale.
 void Editor::ClampPdfPanX(PdfSession &sess) {
     double page_w_pt = PdfPageSizePt(sess, sess.page).first;
-    int mx = std::max(0, static_cast<int>(page_w_pt * sess.rendered_scale * sess.zoom) - sess.viewport_w);
+    int mx = std::max(0, static_cast<int>(page_w_pt * static_cast<double>(sess.rendered_scale) * static_cast<double>(sess.zoom)) - sess.viewport_w);
     sess.pan_x = std::clamp(sess.pan_x, 0, mx);
 }
 
@@ -5471,11 +5479,11 @@ void Editor::SettlePdfZoom(PdfSession &sess) {
 void Editor::ApplyPdfZoom(PdfSession &sess, float new_zoom) {
     new_zoom = std::clamp(new_zoom, kMinPdfZoom, kMaxPdfZoom);
     float ratio = new_zoom / sess.zoom;
-    float center_x = sess.pan_x + sess.viewport_w / 2.0f;
-    float center_y = sess.scroll_y + sess.viewport_h / 2.0f;
+    float center_x = static_cast<float>(sess.pan_x) + static_cast<float>(sess.viewport_w) / 2.0f;
+    float center_y = sess.scroll_y + static_cast<float>(sess.viewport_h) / 2.0f;
     sess.zoom = new_zoom;
-    sess.pan_x = static_cast<int>(center_x * ratio - sess.viewport_w / 2.0f);
-    sess.scroll_y = center_y * ratio - sess.viewport_h / 2.0f;
+    sess.pan_x = static_cast<int>(center_x * ratio - static_cast<float>(sess.viewport_w) / 2.0f);
+    sess.scroll_y = center_y * ratio - static_cast<float>(sess.viewport_h) / 2.0f;
     SettlePdfZoom(sess);
     RebasePdfScroll(sess);
     ClampPdfPanX(sess);
@@ -5584,7 +5592,7 @@ void Editor::HandlePdfInput() {
             apply_zoom(sess->zoom / kPdfZoomStep);
         } else if (cp == '=' && sess->viewport_w > 0 && sess->viewport_h > 0) {
             auto [pw, ph] = PdfPageSizePt(*sess, sess->page);
-            double base_w = pw * sess->rendered_scale, base_h = ph * sess->rendered_scale;
+            double base_w = pw * static_cast<double>(sess->rendered_scale), base_h = ph * static_cast<double>(sess->rendered_scale);
             if (base_w > 0 && base_h > 0) {
                 float fit = std::min(static_cast<float>(sess->viewport_w) / static_cast<float>(base_w),
                                       static_cast<float>(sess->viewport_h) / static_cast<float>(base_h));
@@ -5724,7 +5732,7 @@ bool Editor::MoveOfficeCursorVisualLine(OfficeSession *sess, int dir) {
         // value to line k, one line short of where the cursor actually is).
         int line_index = 0;
         for (int i = 0; i < static_cast<int>(lines.size()); i++) {
-            if (lines[i].first > sess->cursor_col) break;
+            if (lines[static_cast<size_t>(i)].first > sess->cursor_col) break;
             line_index = i;
         }
         int target_index = line_index + (dir < 0 ? -1 : 1);
@@ -5734,8 +5742,8 @@ bool Editor::MoveOfficeCursorVisualLine(OfficeSession *sess, int dir) {
             // offset, so moving through a run of same-width wrapped lines
             // tracks the same visual column, the way plain h/l-adjacent
             // vertical motion should.
-            int offset = sess->cursor_col - lines[line_index].first;
-            const std::pair<int, int> &target = lines[target_index];
+            int offset = sess->cursor_col - lines[static_cast<size_t>(line_index)].first;
+            const std::pair<int, int> &target = lines[static_cast<size_t>(target_index)];
             sess->cursor_col = std::clamp(target.first + offset, target.first, target.second);
             return false;  // stayed within the same paragraph
         }
@@ -5748,7 +5756,7 @@ bool Editor::MoveOfficeCursorVisualLine(OfficeSession *sess, int dir) {
     int new_para = std::clamp(sess->cursor_para + dir, 0, para_count - 1);
     bool moved = new_para != sess->cursor_para;
     sess->cursor_para = new_para;
-    sess->cursor_col = std::min(sess->cursor_col, static_cast<int>(sess->doc.paragraphs[sess->cursor_para].text.size()));
+    sess->cursor_col = std::min(sess->cursor_col, static_cast<int>(sess->doc.paragraphs[static_cast<size_t>(sess->cursor_para)].text.size()));
     return moved;
 }
 
@@ -5776,7 +5784,7 @@ void Editor::OpenOfficeInPlace(const std::string &path, const unsigned char *byt
             return;
         }
         buffer_id = CreateEmptyBuffer();
-        buffers_[buffer_id].filename = path;
+        buffers_[static_cast<size_t>(buffer_id)].filename = path;
         OfficeSession sess;
         sess.buffer_id = buffer_id;
         sess.doc = std::move(doc);
@@ -5809,12 +5817,12 @@ void Editor::HandleOfficeNormalInput() {
     const bool ctrl_down = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
     if (ctrl_down && (IsKeyPressed(KEY_EQUAL) || IsKeyPressedRepeat(KEY_EQUAL))) {
         SetOfficeZoom(1.1f);
-        status_message_ = "Document zoom: " + std::to_string(static_cast<int>(sess->zoom * 100.0f + 0.5f)) + "%";
+        status_message_ = "Document zoom: " + std::to_string(static_cast<int>(std::lround(sess->zoom * 100.0f))) + "%";
         return;
     }
     if (ctrl_down && (IsKeyPressed(KEY_MINUS) || IsKeyPressedRepeat(KEY_MINUS))) {
         SetOfficeZoom(1.0f / 1.1f);
-        status_message_ = "Document zoom: " + std::to_string(static_cast<int>(sess->zoom * 100.0f + 0.5f)) + "%";
+        status_message_ = "Document zoom: " + std::to_string(static_cast<int>(std::lround(sess->zoom * 100.0f))) + "%";
         return;
     }
 
@@ -5822,7 +5830,7 @@ void Editor::HandleOfficeNormalInput() {
      * @brief Returns the character length of the paragraph the office cursor is currently on.
      * @return The length, in characters, of the current paragraph's text.
      */
-    auto cur_len = [&]() { return static_cast<int>(sess->doc.paragraphs[sess->cursor_para].text.size()); };
+    auto cur_len = [&]() { return static_cast<int>(sess->doc.paragraphs[static_cast<size_t>(sess->cursor_para)].text.size()); };
     /**
      * @brief Moves the office cursor to a clamped paragraph index, entering a table if the destination paragraph anchors one.
      * @param new_para The target paragraph index (clamped to the valid range).
@@ -5846,7 +5854,7 @@ void Editor::HandleOfficeNormalInput() {
         // that paragraph to edit; an image anchor has nothing further to
         // "enter" (no per-image editing in v1).
         if (moved) {
-            int tref = sess->doc.paragraphs[sess->cursor_para].table_ref;
+            int tref = sess->doc.paragraphs[static_cast<size_t>(sess->cursor_para)].table_ref;
             if (tref >= 0) EnterOfficeTable(tref);
         }
     };
@@ -5939,13 +5947,13 @@ void Editor::HandleOfficeNormalInput() {
     if (held(KEY_L) || held(KEY_RIGHT)) sess->cursor_col = std::min(cur_len(), sess->cursor_col + 1);
     if (held(KEY_J) || held(KEY_DOWN)) {
         if (MoveOfficeCursorVisualLine(sess, 1)) {
-            int tref = sess->doc.paragraphs[sess->cursor_para].table_ref;
+            int tref = sess->doc.paragraphs[static_cast<size_t>(sess->cursor_para)].table_ref;
             if (tref >= 0) EnterOfficeTable(tref);
         }
     }
     if (held(KEY_K) || held(KEY_UP)) {
         if (MoveOfficeCursorVisualLine(sess, -1)) {
-            int tref = sess->doc.paragraphs[sess->cursor_para].table_ref;
+            int tref = sess->doc.paragraphs[static_cast<size_t>(sess->cursor_para)].table_ref;
             if (tref >= 0) EnterOfficeTable(tref);
         }
     }
@@ -6018,7 +6026,7 @@ void Editor::HandleOfficeNormalInput() {
         // exact wrapped-line count. Reuses goto_para so it gets the same
         // clamp-without-re-entering-a-table behavior as j/k.
         float line_h = std::max(1.0f, sess->base_font_pt * sess->zoom * 1.35f);
-        int half_page = std::max(1, static_cast<int>(sess->viewport_h / (2.0f * line_h)));
+        int half_page = std::max(1, static_cast<int>(static_cast<float>(sess->viewport_h) / (2.0f * line_h)));
         goto_para(sess->cursor_para + (down ? half_page : -half_page));
     }
 }
@@ -6046,7 +6054,7 @@ void Editor::UndoOffice() {
     sess.modified = true;
     int max_para = std::max(0, static_cast<int>(sess.doc.paragraphs.size()) - 1);
     sess.cursor_para = std::clamp(sess.cursor_para, 0, max_para);
-    sess.cursor_col = std::min(sess.cursor_col, static_cast<int>(sess.doc.paragraphs[sess.cursor_para].text.size()));
+    sess.cursor_col = std::min(sess.cursor_col, static_cast<int>(sess.doc.paragraphs[static_cast<size_t>(sess.cursor_para)].text.size()));
 }
 
 void Editor::RedoOffice() {
@@ -6063,7 +6071,7 @@ void Editor::RedoOffice() {
     sess.modified = true;
     int max_para = std::max(0, static_cast<int>(sess.doc.paragraphs.size()) - 1);
     sess.cursor_para = std::clamp(sess.cursor_para, 0, max_para);
-    sess.cursor_col = std::min(sess.cursor_col, static_cast<int>(sess.doc.paragraphs[sess.cursor_para].text.size()));
+    sess.cursor_col = std::min(sess.cursor_col, static_cast<int>(sess.doc.paragraphs[static_cast<size_t>(sess.cursor_para)].text.size()));
 }
 
 void Editor::HandleOfficeInsertInput() {
@@ -6080,12 +6088,12 @@ void Editor::HandleOfficeInsertInput() {
     const bool ctrl_down = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
     if (ctrl_down && (IsKeyPressed(KEY_EQUAL) || IsKeyPressedRepeat(KEY_EQUAL))) {
         SetOfficeZoom(1.1f);
-        status_message_ = "Document zoom: " + std::to_string(static_cast<int>(sess->zoom * 100.0f + 0.5f)) + "%";
+        status_message_ = "Document zoom: " + std::to_string(static_cast<int>(std::lround(sess->zoom * 100.0f))) + "%";
         return;
     }
     if (ctrl_down && (IsKeyPressed(KEY_MINUS) || IsKeyPressedRepeat(KEY_MINUS))) {
         SetOfficeZoom(1.0f / 1.1f);
-        status_message_ = "Document zoom: " + std::to_string(static_cast<int>(sess->zoom * 100.0f + 0.5f)) + "%";
+        status_message_ = "Document zoom: " + std::to_string(static_cast<int>(std::lround(sess->zoom * 100.0f))) + "%";
         return;
     }
 
@@ -6136,7 +6144,7 @@ void Editor::HandleOfficeInsertInput() {
      * @brief Returns the character length of the paragraph the office cursor is currently on.
      * @return The length, in characters, of the current paragraph's text.
      */
-    auto cur_len = [&]() { return static_cast<int>(sess->doc.paragraphs[sess->cursor_para].text.size()); };
+    auto cur_len = [&]() { return static_cast<int>(sess->doc.paragraphs[static_cast<size_t>(sess->cursor_para)].text.size()); };
 
     bool escape = false, enter = false, backspace = false, del = false;
     for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
@@ -6154,7 +6162,7 @@ void Editor::HandleOfficeInsertInput() {
     int cp = GetCharPressed();
     while (cp > 0) {
         if (cp >= 32 && cp <= 126) {
-            DocParagraph &p = sess->doc.paragraphs[sess->cursor_para];
+            DocParagraph &p = sess->doc.paragraphs[static_cast<size_t>(sess->cursor_para)];
             ApplyInsertToParagraph(p, sess->cursor_col, std::string(1, static_cast<char>(cp)));
             sess->cursor_col++;
             sess->modified = true;
@@ -6163,7 +6171,7 @@ void Editor::HandleOfficeInsertInput() {
     }
 
     if (enter || IsKeyPressedRepeat(KEY_ENTER)) {
-        DocParagraph &p = sess->doc.paragraphs[sess->cursor_para];
+        DocParagraph &p = sess->doc.paragraphs[static_cast<size_t>(sess->cursor_para)];
         DocParagraph second = SplitParagraphAt(p, sess->cursor_col);
         sess->doc.paragraphs.insert(sess->doc.paragraphs.begin() + sess->cursor_para + 1, std::move(second));
         sess->cursor_para++;
@@ -6172,13 +6180,13 @@ void Editor::HandleOfficeInsertInput() {
     }
     if (backspace || IsKeyPressedRepeat(KEY_BACKSPACE)) {
         if (sess->cursor_col > 0) {
-            DocParagraph &p = sess->doc.paragraphs[sess->cursor_para];
+            DocParagraph &p = sess->doc.paragraphs[static_cast<size_t>(sess->cursor_para)];
             ApplyDeleteToParagraph(p, sess->cursor_col - 1, sess->cursor_col);
             sess->cursor_col--;
             sess->modified = true;
         } else if (sess->cursor_para > 0) {
-            int prev_len = static_cast<int>(sess->doc.paragraphs[sess->cursor_para - 1].text.size());
-            MergeParagraphs(sess->doc.paragraphs[sess->cursor_para - 1], sess->doc.paragraphs[sess->cursor_para]);
+            int prev_len = static_cast<int>(sess->doc.paragraphs[static_cast<size_t>(sess->cursor_para - 1)].text.size());
+            MergeParagraphs(sess->doc.paragraphs[static_cast<size_t>(sess->cursor_para - 1)], sess->doc.paragraphs[static_cast<size_t>(sess->cursor_para)]);
             sess->doc.paragraphs.erase(sess->doc.paragraphs.begin() + sess->cursor_para);
             sess->cursor_para--;
             sess->cursor_col = prev_len;
@@ -6188,11 +6196,11 @@ void Editor::HandleOfficeInsertInput() {
     if (del || IsKeyPressedRepeat(KEY_DELETE)) {
         int len = cur_len();
         if (sess->cursor_col < len) {
-            DocParagraph &p = sess->doc.paragraphs[sess->cursor_para];
+            DocParagraph &p = sess->doc.paragraphs[static_cast<size_t>(sess->cursor_para)];
             ApplyDeleteToParagraph(p, sess->cursor_col, sess->cursor_col + 1);
             sess->modified = true;
         } else if (sess->cursor_para + 1 < static_cast<int>(sess->doc.paragraphs.size())) {
-            MergeParagraphs(sess->doc.paragraphs[sess->cursor_para], sess->doc.paragraphs[sess->cursor_para + 1]);
+            MergeParagraphs(sess->doc.paragraphs[static_cast<size_t>(sess->cursor_para)], sess->doc.paragraphs[static_cast<size_t>(sess->cursor_para) + 1]);
             sess->doc.paragraphs.erase(sess->doc.paragraphs.begin() + sess->cursor_para + 1);
             sess->modified = true;
         }
@@ -6218,12 +6226,12 @@ void Editor::HandleOfficeVisualInput() {
     const bool ctrl_down = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
     if (ctrl_down && (IsKeyPressed(KEY_EQUAL) || IsKeyPressedRepeat(KEY_EQUAL))) {
         SetOfficeZoom(1.1f);
-        status_message_ = "Document zoom: " + std::to_string(static_cast<int>(sess->zoom * 100.0f + 0.5f)) + "%";
+        status_message_ = "Document zoom: " + std::to_string(static_cast<int>(std::lround(sess->zoom * 100.0f))) + "%";
         return;
     }
     if (ctrl_down && (IsKeyPressed(KEY_MINUS) || IsKeyPressedRepeat(KEY_MINUS))) {
         SetOfficeZoom(1.0f / 1.1f);
-        status_message_ = "Document zoom: " + std::to_string(static_cast<int>(sess->zoom * 100.0f + 0.5f)) + "%";
+        status_message_ = "Document zoom: " + std::to_string(static_cast<int>(std::lround(sess->zoom * 100.0f))) + "%";
         return;
     }
     int para_count = static_cast<int>(sess->doc.paragraphs.size());
@@ -6235,7 +6243,7 @@ void Editor::HandleOfficeVisualInput() {
      * @brief Returns the character length of the paragraph the office cursor is currently on.
      * @return The length, in characters, of the current paragraph's text.
      */
-    auto cur_len = [&]() { return static_cast<int>(sess->doc.paragraphs[sess->cursor_para].text.size()); };
+    auto cur_len = [&]() { return static_cast<int>(sess->doc.paragraphs[static_cast<size_t>(sess->cursor_para)].text.size()); };
     /**
      * @brief Moves the office cursor to a clamped paragraph index, keeping the column within the new paragraph's bounds.
      * @param new_para The target paragraph index (clamped to the valid range).
@@ -6341,25 +6349,25 @@ void Editor::ToggleOfficeFormat(char which) {
             pa = cp; ca = cc; pb = ap; cb = ac;
         }
         if (pa == pb) {
-            ToggleFormatOverRange(sess.doc.paragraphs[pa], ca, cb, field);
+            ToggleFormatOverRange(sess.doc.paragraphs[static_cast<size_t>(pa)], ca, cb, field);
         } else {
-            ToggleFormatOverRange(sess.doc.paragraphs[pa], ca, static_cast<int>(sess.doc.paragraphs[pa].text.size()),
+            ToggleFormatOverRange(sess.doc.paragraphs[static_cast<size_t>(pa)], ca, static_cast<int>(sess.doc.paragraphs[static_cast<size_t>(pa)].text.size()),
                                    field);
             for (int pi = pa + 1; pi < pb; pi++) {
-                ToggleFormatOverRange(sess.doc.paragraphs[pi], 0, static_cast<int>(sess.doc.paragraphs[pi].text.size()),
+                ToggleFormatOverRange(sess.doc.paragraphs[static_cast<size_t>(pi)], 0, static_cast<int>(sess.doc.paragraphs[static_cast<size_t>(pi)].text.size()),
                                        field);
             }
-            ToggleFormatOverRange(sess.doc.paragraphs[pb], 0, cb, field);
+            ToggleFormatOverRange(sess.doc.paragraphs[static_cast<size_t>(pb)], 0, cb, field);
         }
         sess.has_selection = false;
         sess.cursor_para = pa;
         sess.cursor_col = ca;
         mode_ = Mode::OfficeNormal;
     } else {
-        int len = static_cast<int>(sess.doc.paragraphs[sess.cursor_para].text.size());
+        int len = static_cast<int>(sess.doc.paragraphs[static_cast<size_t>(sess.cursor_para)].text.size());
         int a = std::clamp(sess.cursor_col, 0, len);
         int b = std::min(a + 1, len);
-        if (b > a) ToggleFormatOverRange(sess.doc.paragraphs[sess.cursor_para], a, b, field);
+        if (b > a) ToggleFormatOverRange(sess.doc.paragraphs[static_cast<size_t>(sess.cursor_para)], a, b, field);
     }
     sess.modified = true;
 }
@@ -6396,8 +6404,8 @@ bool Editor::OfficeFormatActive(char which) const {
         col = sess.cursor_col;
     }
     cp = std::clamp(cp, 0, para_count - 1);
-    col = std::min(col, static_cast<int>(sess.doc.paragraphs[cp].text.size()));
-    return field_of(FormatAt(sess.doc.paragraphs[cp], col));
+    col = std::min(col, static_cast<int>(sess.doc.paragraphs[static_cast<size_t>(cp)].text.size()));
+    return field_of(FormatAt(sess.doc.paragraphs[static_cast<size_t>(cp)], col));
 }
 
 void Editor::ApplyOfficeFormatFieldOverSelection(const std::function<void(DocFormat &)> &apply) {
@@ -6417,25 +6425,25 @@ void Editor::ApplyOfficeFormatFieldOverSelection(const std::function<void(DocFor
             pa = cp; ca = cc; pb = ap; cb = ac;
         }
         if (pa == pb) {
-            SetFormatFieldOverRange(sess.doc.paragraphs[pa], ca, cb, apply);
+            SetFormatFieldOverRange(sess.doc.paragraphs[static_cast<size_t>(pa)], ca, cb, apply);
         } else {
-            SetFormatFieldOverRange(sess.doc.paragraphs[pa], ca, static_cast<int>(sess.doc.paragraphs[pa].text.size()),
+            SetFormatFieldOverRange(sess.doc.paragraphs[static_cast<size_t>(pa)], ca, static_cast<int>(sess.doc.paragraphs[static_cast<size_t>(pa)].text.size()),
                                      apply);
             for (int pi = pa + 1; pi < pb; pi++) {
-                SetFormatFieldOverRange(sess.doc.paragraphs[pi], 0, static_cast<int>(sess.doc.paragraphs[pi].text.size()),
+                SetFormatFieldOverRange(sess.doc.paragraphs[static_cast<size_t>(pi)], 0, static_cast<int>(sess.doc.paragraphs[static_cast<size_t>(pi)].text.size()),
                                          apply);
             }
-            SetFormatFieldOverRange(sess.doc.paragraphs[pb], 0, cb, apply);
+            SetFormatFieldOverRange(sess.doc.paragraphs[static_cast<size_t>(pb)], 0, cb, apply);
         }
         sess.has_selection = false;
         sess.cursor_para = pa;
         sess.cursor_col = ca;
         mode_ = Mode::OfficeNormal;
     } else {
-        int len = static_cast<int>(sess.doc.paragraphs[sess.cursor_para].text.size());
+        int len = static_cast<int>(sess.doc.paragraphs[static_cast<size_t>(sess.cursor_para)].text.size());
         int a = std::clamp(sess.cursor_col, 0, len);
         int b = std::min(a + 1, len);
-        if (b > a) SetFormatFieldOverRange(sess.doc.paragraphs[sess.cursor_para], a, b, apply);
+        if (b > a) SetFormatFieldOverRange(sess.doc.paragraphs[static_cast<size_t>(sess.cursor_para)], a, b, apply);
     }
     sess.modified = true;
 }
@@ -6514,8 +6522,8 @@ bool Editor::OfficeSuperscriptActiveInternal(bool super) const {
         col = sess.cursor_col;
     }
     cp = std::clamp(cp, 0, para_count - 1);
-    col = std::min(col, static_cast<int>(sess.doc.paragraphs[cp].text.size()));
-    DocFormat f = FormatAt(sess.doc.paragraphs[cp], col);
+    col = std::min(col, static_cast<int>(sess.doc.paragraphs[static_cast<size_t>(cp)].text.size()));
+    DocFormat f = FormatAt(sess.doc.paragraphs[static_cast<size_t>(cp)], col);
     return super ? f.superscript : f.subscript;
 }
 
@@ -6541,7 +6549,7 @@ bool Editor::OfficeAlignmentActive(DocParagraph::Align align) const {
     if (it == officedocs_.end()) return false;
     const OfficeSession &sess = it->second;
     int cp = std::clamp(sess.cursor_para, 0, static_cast<int>(sess.doc.paragraphs.size()) - 1);
-    return cp >= 0 && sess.doc.paragraphs[cp].align == align;
+    return cp >= 0 && sess.doc.paragraphs[static_cast<size_t>(cp)].align == align;
 }
 
 void Editor::SetOfficeListKind(DocParagraph::ListKind kind) {
@@ -6573,7 +6581,7 @@ bool Editor::OfficeListKindActive(DocParagraph::ListKind kind) const {
     if (it == officedocs_.end()) return false;
     const OfficeSession &sess = it->second;
     int cp = std::clamp(sess.cursor_para, 0, static_cast<int>(sess.doc.paragraphs.size()) - 1);
-    return cp >= 0 && sess.doc.paragraphs[cp].list_kind == kind;
+    return cp >= 0 && sess.doc.paragraphs[static_cast<size_t>(cp)].list_kind == kind;
 }
 
 void Editor::InsertOfficeText(const std::string &utf8) {
@@ -6582,7 +6590,7 @@ void Editor::InsertOfficeText(const std::string &utf8) {
     OfficeSession &sess = it->second;
     if (sess.doc.paragraphs.empty() || utf8.empty()) return;
     PushUndoOffice();
-    DocParagraph &p = sess.doc.paragraphs[sess.cursor_para];
+    DocParagraph &p = sess.doc.paragraphs[static_cast<size_t>(sess.cursor_para)];
     ApplyInsertToParagraph(p, sess.cursor_col, utf8);
     sess.cursor_col += static_cast<int>(utf8.size());
     sess.modified = true;
@@ -6599,7 +6607,7 @@ void Editor::InsertOfficeMath() {
         OfficeSession &sess = it->second;
         if (sess.doc.paragraphs.empty()) return;
         PushUndoOffice();
-        DocParagraph &p = sess.doc.paragraphs[sess.cursor_para];
+        DocParagraph &p = sess.doc.paragraphs[static_cast<size_t>(sess.cursor_para)];
         int start = sess.cursor_col;
         ApplyInsertToParagraph(p, start, latex);
         DocFormat fmt;
@@ -6636,7 +6644,7 @@ void Editor::InsertOfficeTablePrompt() {
             table.cells.assign(static_cast<size_t>(rows) * static_cast<size_t>(cols), std::string());
             sess.doc.tables.push_back(std::move(table));
             int table_ref = static_cast<int>(sess.doc.tables.size()) - 1;
-            sess.doc.paragraphs[sess.cursor_para].table_ref = table_ref;
+            sess.doc.paragraphs[static_cast<size_t>(sess.cursor_para)].table_ref = table_ref;
             sess.modified = true;
             EnterOfficeTable(table_ref);
         });
@@ -6670,7 +6678,7 @@ void Editor::InsertOfficeImagePrompt() {
         img.natural_w = probe.Width();
         img.natural_h = probe.Height();
         sess.doc.images.push_back(std::move(img));
-        sess.doc.paragraphs[sess.cursor_para].image_ref = static_cast<int>(sess.doc.images.size()) - 1;
+        sess.doc.paragraphs[static_cast<size_t>(sess.cursor_para)].image_ref = static_cast<int>(sess.doc.images.size()) - 1;
         sess.modified = true;
     });
 }
@@ -6767,7 +6775,7 @@ void Editor::OpenSheetInPlace(const std::string &path, const unsigned char *byte
             return;
         }
         buffer_id = CreateEmptyBuffer();
-        buffers_[buffer_id].filename = path;
+        buffers_[static_cast<size_t>(buffer_id)].filename = path;
         SheetSession sess;
         sess.buffer_id = buffer_id;
         sess.wb = std::move(wb);
@@ -6792,7 +6800,7 @@ void Editor::HandleSheetNormalInput() {
         sess = &it->second;
     }
     if (sess->wb.sheets.empty()) return;
-    Sheet &sh = sess->wb.sheets[sess->active_sheet];
+    Sheet &sh = sess->wb.sheets[static_cast<size_t>(sess->active_sheet)];
 
     // 2D grid navigation -- h/l move columns, j/k move rows (unlike
     // Office's 1D paragraph navigation). No upper clamp beyond 0 --
@@ -6908,7 +6916,7 @@ namespace {
 void ClampSheetCursorAfterSwap(SheetSession &sess) {
     if (sess.wb.sheets.empty()) return;
     sess.active_sheet = std::clamp(sess.active_sheet, 0, static_cast<int>(sess.wb.sheets.size()) - 1);
-    Sheet &sh = sess.wb.sheets[sess.active_sheet];
+    Sheet &sh = sess.wb.sheets[static_cast<size_t>(sess.active_sheet)];
     sess.cursor_row = std::clamp(sess.cursor_row, 0, sh.max_row);
     sess.cursor_col = std::clamp(sess.cursor_col, 0, sh.max_col);
 }
@@ -6951,7 +6959,7 @@ void Editor::NextSheet() {
     if (sess.wb.sheets.size() < 2) return;
     sess.active_sheet = (sess.active_sheet + 1) % static_cast<int>(sess.wb.sheets.size());
     ClampSheetCursorAfterSwap(sess);
-    status_message_ = "-- " + sess.wb.sheets[sess.active_sheet].name + " --";
+    status_message_ = "-- " + sess.wb.sheets[static_cast<size_t>(sess.active_sheet)].name + " --";
 }
 
 void Editor::PrevSheet() {
@@ -6962,7 +6970,7 @@ void Editor::PrevSheet() {
     int n = static_cast<int>(sess.wb.sheets.size());
     sess.active_sheet = (sess.active_sheet - 1 + n) % n;
     ClampSheetCursorAfterSwap(sess);
-    status_message_ = "-- " + sess.wb.sheets[sess.active_sheet].name + " --";
+    status_message_ = "-- " + sess.wb.sheets[static_cast<size_t>(sess.active_sheet)].name + " --";
 }
 
 void Editor::HandleSheetInsertInput() {
@@ -7041,7 +7049,7 @@ void Editor::HandleSheetVisualInput() {
         mode_ = Mode::SheetNormal;
         return;
     }
-    Sheet &sh = sess->wb.sheets[sess->active_sheet];
+    Sheet &sh = sess->wb.sheets[static_cast<size_t>(sess->active_sheet)];
 
     /**
      * @brief Checks whether a key was just pressed or is auto-repeating.
@@ -7161,7 +7169,7 @@ std::vector<int> Editor::KanbanCardsInColumn(int buffer_id, int column_index) co
     if (it == kanban_views_.end()) return out;
     std::vector<std::string> cols = KanbanColumns(buffer_id);
     if (column_index < 0 || column_index >= static_cast<int>(cols.size())) return out;
-    const std::string &kw = cols[column_index];
+    const std::string &kw = cols[static_cast<size_t>(column_index)];
     const OrgOutline &outline = it->second.outline;
     for (size_t i = 0; i < outline.headlines.size(); i++) {
         if (outline.headlines[i].todo_keyword == kw) out.push_back(static_cast<int>(i));
@@ -7177,7 +7185,7 @@ std::vector<int> Editor::GanttRows(int buffer_id) const {
     for (size_t i = 0; i < outline.headlines.size(); i++) {
         if (!outline.headlines[i].scheduled.present) continue;
         bool hidden = false;
-        for (int parent = outline.headlines[i].parent_index; parent >= 0; parent = outline.headlines[parent].parent_index) {
+        for (int parent = outline.headlines[i].parent_index; parent >= 0; parent = outline.headlines[static_cast<size_t>(parent)].parent_index) {
             if (it->second.collapsed_headlines.count(parent)) { hidden = true; break; }
         }
         if (!hidden) out.push_back(static_cast<int>(i));
@@ -7245,8 +7253,8 @@ void Editor::KanbanSetCardColumn(int headline_index, const std::string &new_keyw
     if (it == kanban_views_.end()) return;
     KanbanSession &sess = it->second;
     if (headline_index < 0 || headline_index >= static_cast<int>(sess.outline.headlines.size())) return;
-    const OrgHeadline &h = sess.outline.headlines[headline_index];
-    std::string new_line = RewriteHeadlineKeyword(Buf().lines[h.line_start], new_keyword, sess.outline.todo_keywords,
+    const OrgHeadline &h = sess.outline.headlines[static_cast<size_t>(headline_index)];
+    std::string new_line = RewriteHeadlineKeyword(Buf().lines[static_cast<size_t>(h.line_start)], new_keyword, sess.outline.todo_keywords,
                                                    sess.outline.done_keywords);
     ReplaceLinesForLua(h.line_start, h.line_start + 1, {new_line});
     sess.outline = ParseOrgOutline(Buf().lines);
@@ -7258,12 +7266,12 @@ void Editor::KanbanMoveCardBefore(int headline_index, int before_headline_index)
     KanbanSession &sess = it->second;
     int n = static_cast<int>(sess.outline.headlines.size());
     if (headline_index < 0 || headline_index >= n || before_headline_index == headline_index) return;
-    const OrgHeadline &h = sess.outline.headlines[headline_index];
+    const OrgHeadline &h = sess.outline.headlines[static_cast<size_t>(headline_index)];
     int dest_row;
     if (before_headline_index < 0 || before_headline_index >= n) {
         dest_row = Buf().LineCount() - 1;
     } else {
-        const OrgHeadline &target = sess.outline.headlines[before_headline_index];
+        const OrgHeadline &target = sess.outline.headlines[static_cast<size_t>(before_headline_index)];
         if (target.line_start >= h.line_start && target.line_start <= h.line_end) return;  // inside its own subtree
         dest_row = target.line_start - 1;
     }
@@ -7276,7 +7284,7 @@ void Editor::KanbanRenameCard(int headline_index, const std::string &new_title) 
     if (it == kanban_views_.end()) return;
     KanbanSession &sess = it->second;
     if (headline_index < 0 || headline_index >= static_cast<int>(sess.outline.headlines.size())) return;
-    const OrgHeadline &h = sess.outline.headlines[headline_index];
+    const OrgHeadline &h = sess.outline.headlines[static_cast<size_t>(headline_index)];
     std::string new_line = FormatHeadlineLine(h.level, h.todo_keyword, h.priority, new_title, h.tags);
     ReplaceLinesForLua(h.line_start, h.line_start + 1, {new_line});
     sess.outline = ParseOrgOutline(Buf().lines);
@@ -7308,7 +7316,7 @@ void Editor::KanbanDeleteCard(int headline_index) {
     if (it == kanban_views_.end()) return;
     KanbanSession &sess = it->second;
     if (headline_index < 0 || headline_index >= static_cast<int>(sess.outline.headlines.size())) return;
-    const OrgHeadline &h = sess.outline.headlines[headline_index];
+    const OrgHeadline &h = sess.outline.headlines[static_cast<size_t>(headline_index)];
     ReplaceLinesForLua(h.line_start, h.line_end + 1, {});
     sess.outline = ParseOrgOutline(Buf().lines);
 }
@@ -7349,7 +7357,7 @@ void Editor::KanbanRenameColumn(int column_index, const std::string &new_name) {
     KanbanSession &sess = it->second;
     std::vector<std::string> columns = KanbanColumns(CurPane().buffer_id);
     if (column_index < 0 || column_index >= static_cast<int>(columns.size()) || new_name.empty()) return;
-    const std::string old_name = columns[column_index];
+    const std::string old_name = columns[static_cast<size_t>(column_index)];
     if (old_name == new_name) return;
     for (const auto &kw : columns) {
         if (kw == new_name) {
@@ -7366,16 +7374,16 @@ void Editor::KanbanRenameColumn(int column_index, const std::string &new_name) {
     const std::vector<std::string> old_done = sess.outline.done_keywords;
     for (const OrgHeadline &h : sess.outline.headlines) {
         if (h.todo_keyword != old_name) continue;
-        std::string new_line = RewriteHeadlineKeyword(Buf().lines[h.line_start], new_name, old_todo, old_done);
+        std::string new_line = RewriteHeadlineKeyword(Buf().lines[static_cast<size_t>(h.line_start)], new_name, old_todo, old_done);
         ReplaceLinesForLua(h.line_start, h.line_start + 1, {new_line});
     }
 
     bool todo_side = column_index < static_cast<int>(old_todo.size());
     std::vector<std::string> new_todo = old_todo, new_done = old_done;
     if (todo_side) {
-        new_todo[column_index] = new_name;
+        new_todo[static_cast<size_t>(column_index)] = new_name;
     } else {
-        new_done[column_index - static_cast<int>(old_todo.size())] = new_name;
+        new_done[static_cast<size_t>(column_index - static_cast<int>(old_todo.size()))] = new_name;
     }
     int line_idx = FindOrgTodoLineIndex(Buf().lines);
     if (line_idx >= 0) ReplaceLinesForLua(line_idx, line_idx + 1, {FormatTodoLine(new_todo, new_done)});
@@ -7400,7 +7408,7 @@ void Editor::KanbanMoveColumn(int column_index, int before_column) {
 
     // `before_column` names a gap in the pre-move ordering. Erasing an item
     // to its left shifts that gap left by one.
-    std::string moved = columns[column_index];
+    std::string moved = columns[static_cast<size_t>(column_index)];
     columns.erase(columns.begin() + column_index);
     if (before_column > column_index) --before_column;
     columns.insert(columns.begin() + before_column, std::move(moved));
@@ -7434,7 +7442,7 @@ void Editor::KanbanDeleteColumn(int column_index) {
     }
     std::vector<int> cards = KanbanCardsInColumn(buffer_id, column_index);
     if (!cards.empty()) {
-        status_message_ = "Move " + std::to_string(cards.size()) + " card(s) out of \"" + columns[column_index] +
+        status_message_ = "Move " + std::to_string(cards.size()) + " card(s) out of \"" + columns[static_cast<size_t>(column_index)] +
                            "\" before deleting it";
         return;
     }
@@ -7457,9 +7465,9 @@ void Editor::GanttShiftHeadline(int headline_index, int delta_days) {
     if (it == gantt_views_.end()) return;
     GanttSession &sess = it->second;
     if (headline_index < 0 || headline_index >= static_cast<int>(sess.outline.headlines.size())) return;
-    const OrgHeadline &h = sess.outline.headlines[headline_index];
+    const OrgHeadline &h = sess.outline.headlines[static_cast<size_t>(headline_index)];
     if (h.planning_line < 0) return;
-    std::string line = Buf().lines[h.planning_line];
+    std::string line = Buf().lines[static_cast<size_t>(h.planning_line)];
     if (h.scheduled.present) line = RewriteTimestampInLine(line, false, ShiftTimestamp(h.scheduled, delta_days));
     if (h.deadline.present) line = RewriteTimestampInLine(line, true, ShiftTimestamp(h.deadline, delta_days));
     ReplaceLinesForLua(h.planning_line, h.planning_line + 1, {line});
@@ -7471,7 +7479,7 @@ void Editor::GanttSetHeadlineDate(int headline_index, bool is_deadline, long lon
     if (it == gantt_views_.end()) return;
     GanttSession &sess = it->second;
     if (headline_index < 0 || headline_index >= static_cast<int>(sess.outline.headlines.size())) return;
-    const OrgHeadline &h = sess.outline.headlines[headline_index];
+    const OrgHeadline &h = sess.outline.headlines[static_cast<size_t>(headline_index)];
     if (h.planning_line < 0 || !h.scheduled.present) return;
 
     if (!is_deadline) {
@@ -7481,7 +7489,7 @@ void Editor::GanttSetHeadlineDate(int headline_index, bool is_deadline, long lon
         }
         OrgTimestamp new_ts = h.scheduled;
         OrgDateFromDayNumber(new_day, new_ts.year, new_ts.month, new_ts.day);
-        std::string line = RewriteTimestampInLine(Buf().lines[h.planning_line], false, new_ts);
+        std::string line = RewriteTimestampInLine(Buf().lines[static_cast<size_t>(h.planning_line)], false, new_ts);
         ReplaceLinesForLua(h.planning_line, h.planning_line + 1, {line});
     } else {
         long long scheduled_day = OrgDayNumber(h.scheduled.year, h.scheduled.month, h.scheduled.day);
@@ -7489,7 +7497,7 @@ void Editor::GanttSetHeadlineDate(int headline_index, bool is_deadline, long lon
         OrgTimestamp new_ts = h.deadline.present ? h.deadline : OrgTimestamp{};
         OrgDateFromDayNumber(new_day, new_ts.year, new_ts.month, new_ts.day);
         new_ts.present = true;
-        std::string line = Buf().lines[h.planning_line];
+        std::string line = Buf().lines[static_cast<size_t>(h.planning_line)];
         line = h.deadline.present ? RewriteTimestampInLine(line, true, new_ts)
                                    : (line + " DEADLINE: " + FormatOrgTimestamp(new_ts));
         ReplaceLinesForLua(h.planning_line, h.planning_line + 1, {line});
@@ -7503,7 +7511,7 @@ void Editor::GanttSetHeadlineProgress(int headline_index, int progress) {
     GanttSession &sess = it->second;
     if (headline_index < 0 || headline_index >= static_cast<int>(sess.outline.headlines.size())) return;
     progress = std::clamp(progress, 0, 100);
-    const OrgHeadline &h = sess.outline.headlines[headline_index];
+    const OrgHeadline &h = sess.outline.headlines[static_cast<size_t>(headline_index)];
     int insert_at = h.line_start + 1;
     if (h.planning_line >= 0) insert_at = h.planning_line + 1;
     /**
@@ -7524,16 +7532,16 @@ void Editor::GanttSetHeadlineProgress(int headline_index, int progress) {
         std::string text = stripped(line);
         return text.rfind(":PROGRESS:", 0) == 0 || text.rfind(":progress:", 0) == 0;
     };
-    if (insert_at < Buf().LineCount() && stripped(Buf().lines[insert_at]) == ":PROPERTIES:") {
-        for (int line = insert_at + 1; line < Buf().LineCount() && stripped(Buf().lines[line]) != ":END:"; ++line) {
-            if (is_progress_property(Buf().lines[line])) {
+    if (insert_at < Buf().LineCount() && stripped(Buf().lines[static_cast<size_t>(insert_at)]) == ":PROPERTIES:") {
+        for (int line = insert_at + 1; line < Buf().LineCount() && stripped(Buf().lines[static_cast<size_t>(line)]) != ":END:"; ++line) {
+            if (is_progress_property(Buf().lines[static_cast<size_t>(line)])) {
                 ReplaceLinesForLua(line, line + 1, {":PROGRESS: " + std::to_string(progress)});
                 sess.outline = ParseOrgOutline(Buf().lines);
                 return;
             }
         }
         int end = insert_at + 1;
-        while (end < Buf().LineCount() && stripped(Buf().lines[end]) != ":END:") ++end;
+        while (end < Buf().LineCount() && stripped(Buf().lines[static_cast<size_t>(end)]) != ":END:") ++end;
         ReplaceLinesForLua(end, end, {":PROGRESS: " + std::to_string(progress)});
     } else {
         ReplaceLinesForLua(insert_at, insert_at, {":PROPERTIES:", ":PROGRESS: " + std::to_string(progress), ":END:"});
@@ -7572,10 +7580,10 @@ void Editor::HandleKanbanNormalInput() {
     // alongside the plain moves below since both would otherwise fire off
     // the same physical H/L keypress.
     if (shift && held(KEY_H) && !cards.empty() && sess->focused_column > 0) {
-        int hi = cards[sess->focused_row];
+        int hi = cards[static_cast<size_t>(sess->focused_row)];
         int desired_row = sess->focused_row;
         int new_column = sess->focused_column - 1;
-        KanbanSetCardColumn(hi, columns[new_column]);
+        KanbanSetCardColumn(hi, columns[static_cast<size_t>(new_column)]);
         sess->focused_column = new_column;
         std::vector<int> moved_cards = KanbanCardsInColumn(buffer_id, new_column);
         // Horizontal movement keeps the cursor's board row. The moved card
@@ -7585,10 +7593,10 @@ void Editor::HandleKanbanNormalInput() {
         return;
     }
     if (shift && held(KEY_L) && !cards.empty() && sess->focused_column + 1 < static_cast<int>(columns.size())) {
-        int hi = cards[sess->focused_row];
+        int hi = cards[static_cast<size_t>(sess->focused_row)];
         int desired_row = sess->focused_row;
         int new_column = sess->focused_column + 1;
-        KanbanSetCardColumn(hi, columns[new_column]);
+        KanbanSetCardColumn(hi, columns[static_cast<size_t>(new_column)]);
         sess->focused_column = new_column;
         std::vector<int> moved_cards = KanbanCardsInColumn(buffer_id, new_column);
         sess->focused_row = moved_cards.empty() ? 0 : std::min(desired_row, static_cast<int>(moved_cards.size()) - 1);
@@ -7616,22 +7624,26 @@ void Editor::HandleKanbanNormalInput() {
             TriggerWhichKey();
             return;
         } else if (cp == 'i' && !cards.empty()) {
-            int hi = cards[sess->focused_row];
+            int hi = cards[static_cast<size_t>(sess->focused_row)];
             sess->editing_headline_index = hi;
-            sess->edit_buffer = sess->outline.headlines[hi].title;
+            sess->edit_buffer = sess->outline.headlines[static_cast<size_t>(hi)].title;
             sess->edit_cursor = static_cast<int>(sess->edit_buffer.size());
             sess->editing = true;
             mode_ = Mode::KanbanInsert;
             return;
         } else if (cp == 'n') {
-            std::string column_keyword = columns[sess->focused_column];
+            // Captured by value into the lambda below, which escapes this
+            // function's scope (async prompt callback); the checker's
+            // "only used as const reference" analysis doesn't see that.
+            // NOLINTNEXTLINE(performance-unnecessary-copy-initialization)
+            std::string column_keyword = columns[static_cast<size_t>(sess->focused_column)];
             // Once a title is entered, creates a new card in the focused column with that title.
             BeginPromptNative("New card title", "", [this, column_keyword](const std::string &title) {
                 if (!title.empty()) KanbanNewCard(column_keyword, title);
             });
             return;
         } else if ((cp == 'x' || cp == 'd') && !cards.empty()) {
-            KanbanDeleteCard(cards[sess->focused_row]);
+            KanbanDeleteCard(cards[static_cast<size_t>(sess->focused_row)]);
             cards = KanbanCardsInColumn(buffer_id, sess->focused_column);
             sess->focused_row = cards.empty() ? 0 : std::clamp(sess->focused_row, 0, static_cast<int>(cards.size()) - 1);
         } else if (cp == 'u') {
@@ -7756,7 +7768,7 @@ void Editor::HandleGanttNormalInput() {
     while (cp > 0) {
         if (sess->pending_fold_command) {
             sess->pending_fold_command = false;
-            int focused = rows.empty() ? -1 : rows[sess->focused_row];
+            int focused = rows.empty() ? -1 : rows[static_cast<size_t>(sess->focused_row)];
             if ((cp == 'a' || cp == 'A') && focused >= 0) toggle_fold(focused);          // za
             else if (cp == 'c' && focused >= 0) { if (has_children(focused)) sess->collapsed_headlines.insert(focused); } // zc
             else if (cp == 'o' && focused >= 0) sess->collapsed_headlines.erase(focused); // zo
@@ -7769,19 +7781,19 @@ void Editor::HandleGanttNormalInput() {
             } else if (cp == 'm') {
                 int level = std::numeric_limits<int>::max();
                 for (int i = 0; i < static_cast<int>(sess->outline.headlines.size()); ++i) {
-                    if (has_children(i) && !sess->collapsed_headlines.count(i)) level = std::min(level, sess->outline.headlines[i].level);
+                    if (has_children(i) && !sess->collapsed_headlines.count(i)) level = std::min(level, sess->outline.headlines[static_cast<size_t>(i)].level);
                 }
                 if (level != std::numeric_limits<int>::max()) {
                     for (int i = 0; i < static_cast<int>(sess->outline.headlines.size()); ++i) {
-                        if (has_children(i) && sess->outline.headlines[i].level == level) sess->collapsed_headlines.insert(i);
+                        if (has_children(i) && sess->outline.headlines[static_cast<size_t>(i)].level == level) sess->collapsed_headlines.insert(i);
                     }
                 }
             } else if (cp == 'r') {
                 int level = std::numeric_limits<int>::max();
-                for (int i : sess->collapsed_headlines) level = std::min(level, sess->outline.headlines[i].level);
+                for (int i : sess->collapsed_headlines) level = std::min(level, sess->outline.headlines[static_cast<size_t>(i)].level);
                 if (level != std::numeric_limits<int>::max()) {
                     for (auto it = sess->collapsed_headlines.begin(); it != sess->collapsed_headlines.end();) {
-                        if (sess->outline.headlines[*it].level == level) it = sess->collapsed_headlines.erase(it);
+                        if (sess->outline.headlines[static_cast<size_t>(*it)].level == level) it = sess->collapsed_headlines.erase(it);
                         else ++it;
                     }
                 }
@@ -7816,10 +7828,10 @@ void Editor::HandleGanttNormalInput() {
                 status_message_ = "Gantt: fit schedule";
             }
         } else if (cp == ' ' && !rows.empty()) {
-            toggle_fold(rows[sess->focused_row]);
+            toggle_fold(rows[static_cast<size_t>(sess->focused_row)]);
         } else if (cp == 'p' && !rows.empty()) {
-            int hi = rows[sess->focused_row];
-            std::string current = std::to_string(sess->outline.headlines[hi].progress);
+            int hi = rows[static_cast<size_t>(sess->focused_row)];
+            std::string current = std::to_string(sess->outline.headlines[static_cast<size_t>(hi)].progress);
             // Once a numeric value is entered, sets the headline's progress percentage.
             BeginPromptNative("Progress (0-100)", current, [this, hi](const std::string &value) {
                 char *end = nullptr;
@@ -7843,7 +7855,7 @@ void Editor::HandleGanttNormalInput() {
                     break;
             }
         } else if (cp == 'i' && !rows.empty()) {
-            GanttBeginRename(rows[sess->focused_row]);
+            GanttBeginRename(rows[static_cast<size_t>(sess->focused_row)]);
             return;
         } else if (cp == 'u') {
             Undo();
@@ -7862,7 +7874,7 @@ void Editor::GanttBeginRename(int headline_index) {
     GanttSession *sess = GetGanttMutable(CurPane().buffer_id);
     if (!sess || headline_index < 0 || headline_index >= static_cast<int>(sess->outline.headlines.size())) return;
     sess->editing_headline_index = headline_index;
-    sess->edit_buffer = sess->outline.headlines[headline_index].title;
+    sess->edit_buffer = sess->outline.headlines[static_cast<size_t>(headline_index)].title;
     sess->edit_cursor = static_cast<int>(sess->edit_buffer.size());
     sess->editing = true;
     mode_ = Mode::GanttInsert;
@@ -7873,7 +7885,7 @@ void Editor::GanttRenameHeadline(int headline_index, const std::string &new_titl
     if (it == gantt_views_.end()) return;
     GanttSession &sess = it->second;
     if (headline_index < 0 || headline_index >= static_cast<int>(sess.outline.headlines.size())) return;
-    const OrgHeadline &h = sess.outline.headlines[headline_index];
+    const OrgHeadline &h = sess.outline.headlines[static_cast<size_t>(headline_index)];
     std::string new_line = FormatHeadlineLine(h.level, h.todo_keyword, h.priority, new_title, h.tags);
     ReplaceLinesForLua(h.line_start, h.line_start + 1, {new_line});
     sess.outline = ParseOrgOutline(Buf().lines);
@@ -8060,8 +8072,8 @@ ThemeColor Editor::ResolveVTermColor(const VTermColor &c, bool is_fg) const {
 // rotates out from under it (VTerm caps scrollback at 5000 lines --
 // vterm.h's kMaxScrollback) -- real surgery for comparatively little
 // payoff here, and out of step with this codebase's explicit "does not
-// attempt full Vim parity" scope (editor.h's own class comment). Ctrl-\
-// Ctrl-N again always re-snapshots, so "stale" is at most one chord away
+// attempt full Vim parity" scope (editor.h's own class comment). Ctrl-\ Ctrl-N
+// again always re-snapshots, so "stale" is at most one chord away
 // from "current".
 //
 // This is also what makes every other Normal-mode facility (hjkl/word
@@ -8144,7 +8156,7 @@ void Editor::EnterTerminalNormalMode(TerminalSession &sess) {
             // number of trailing *cells* to drop from cell_fg.
             size_t end = line.find_last_not_of(' ');
             if (end == std::string::npos) {
-                buf.lines.push_back(std::string());
+                buf.lines.emplace_back();
                 continue;
             }
             size_t trimmed_bytes = line.size() - (end + 1);
@@ -8183,13 +8195,13 @@ void Editor::EnterTerminalNormalMode(TerminalSession &sess) {
         // empty) -- trimmed the same way, but never past the cursor's own
         // line, which must survive even when it's itself blank (a fresh
         // prompt with nothing typed yet).
-        size_t min_lines = static_cast<size_t>(cursor_line + 1);
+        size_t min_lines = static_cast<size_t>(cursor_line) + 1;
         while (buf.lines.size() > min_lines && buf.lines.size() > 1 && buf.lines.back().empty()) {
             buf.lines.pop_back();
         }
-        cursor_col = std::clamp(term->CursorCol(), 0, static_cast<int>(buf.lines[cursor_line].size()));
+        cursor_col = std::clamp(term->CursorCol(), 0, static_cast<int>(buf.lines[static_cast<size_t>(cursor_line)].size()));
     }
-    if (buf.lines.empty()) buf.lines.push_back("");
+    if (buf.lines.empty()) buf.lines.emplace_back("");
 
     CursorPos &cur = CurPane().cursor;
     cur.row = cursor_line;
@@ -8280,7 +8292,7 @@ void Editor::SendTerminalKey(TerminalSession &sess, int key, int codepoint, bool
 }
 
 void Editor::ClosePane() {
-    Tab &tab = tabs_[active_tab_];
+    Tab &tab = tabs_[static_cast<size_t>(active_tab_)];
     if (tab.root->dir == SplitDir::Leaf) {
         // Only one pane in this tab: closing it closes the tab.
         if (tabs_.size() > 1) {
@@ -8304,7 +8316,7 @@ void Editor::ClosePane() {
 }
 
 void Editor::CyclePane(int delta) {
-    Tab &tab = tabs_[active_tab_];
+    Tab &tab = tabs_[static_cast<size_t>(active_tab_)];
     std::vector<int> ids;
     CollectLeaves(tab.root.get(), ids);
     if (ids.size() <= 1) return;
@@ -8313,7 +8325,7 @@ void Editor::CyclePane(int delta) {
     int idx = static_cast<int>(it - ids.begin());
     int n = static_cast<int>(ids.size());
     idx = ((idx + delta) % n + n) % n;
-    tab.active_pane_id = ids[idx];
+    tab.active_pane_id = ids[static_cast<size_t>(idx)];
 }
 
 // --- Window tiling-manager layer (NVIM_PARITY_PLAN.md Part III Phase 14) --
@@ -8343,7 +8355,7 @@ void Editor::PaneNextBufferTab() {
     EnsureBufferTabSeeded(p);
     if (p.buffer_tabs.size() <= 1) return;
     p.buffer_tab_index = (p.buffer_tab_index + 1) % static_cast<int>(p.buffer_tabs.size());
-    p.buffer_id = p.buffer_tabs[p.buffer_tab_index];
+    p.buffer_id = p.buffer_tabs[static_cast<size_t>(p.buffer_tab_index)];
     ClampCursor();
     SyncModeToActivePaneBuffer();
 }
@@ -8354,7 +8366,7 @@ void Editor::PanePrevBufferTab() {
     if (p.buffer_tabs.size() <= 1) return;
     int n = static_cast<int>(p.buffer_tabs.size());
     p.buffer_tab_index = (p.buffer_tab_index - 1 + n) % n;
-    p.buffer_id = p.buffer_tabs[p.buffer_tab_index];
+    p.buffer_id = p.buffer_tabs[static_cast<size_t>(p.buffer_tab_index)];
     ClampCursor();
     SyncModeToActivePaneBuffer();
 }
@@ -8364,7 +8376,7 @@ void Editor::GoToPaneBufferTab(int index) {
     EnsureBufferTabSeeded(p);
     if (p.buffer_tabs.empty()) return;
     p.buffer_tab_index = std::max(0, std::min(index, static_cast<int>(p.buffer_tabs.size()) - 1));
-    p.buffer_id = p.buffer_tabs[p.buffer_tab_index];
+    p.buffer_id = p.buffer_tabs[static_cast<size_t>(p.buffer_tab_index)];
     ClampCursor();
     SyncModeToActivePaneBuffer();
 }
@@ -8380,7 +8392,7 @@ void Editor::PaneCloseBufferTab() {
     if (p.buffer_tab_index >= static_cast<int>(p.buffer_tabs.size())) {
         p.buffer_tab_index = static_cast<int>(p.buffer_tabs.size()) - 1;
     }
-    p.buffer_id = p.buffer_tabs[p.buffer_tab_index];
+    p.buffer_id = p.buffer_tabs[static_cast<size_t>(p.buffer_tab_index)];
     ClampCursor();
     SyncModeToActivePaneBuffer();
 }
@@ -8388,7 +8400,7 @@ void Editor::PaneCloseBufferTab() {
 void Editor::BufferDelete(bool force) {
     const int target = CurPane().buffer_id;
     if (target < 0 || target >= static_cast<int>(buffers_.size())) return;
-    Buffer &buf = buffers_[target];
+    Buffer &buf = buffers_[static_cast<size_t>(target)];
     if (buf.deleted) return;  // already gone (e.g. a stray repeated :bd)
     if (!force && buf.modified) {
         status_message_ = "E37: No write since last change (add ! to override)";
@@ -8406,7 +8418,7 @@ void Editor::BufferDelete(bool force) {
     auto pick_fallback = [&]() {
         if (fallback_id >= 0) return fallback_id;
         for (int i = 0; i < static_cast<int>(buffers_.size()); i++) {
-            if (i != target && !buffers_[i].deleted) {
+            if (i != target && !buffers_[static_cast<size_t>(i)].deleted) {
                 fallback_id = i;
                 return fallback_id;
             }
@@ -8435,7 +8447,7 @@ void Editor::BufferDelete(bool force) {
                 // clamped down if it was the last one -- same "which tab
                 // becomes active" rule PaneCloseBufferTab already uses.
                 p.buffer_tab_index = std::min(removed_idx, static_cast<int>(p.buffer_tabs.size()) - 1);
-                p.buffer_id = p.buffer_tabs[p.buffer_tab_index];
+                p.buffer_id = p.buffer_tabs[static_cast<size_t>(p.buffer_tab_index)];
                 // p's own cursor may not even be in-bounds for whatever
                 // buffer it just landed on (a different buffer entirely,
                 // in the fallback case) -- ClampPositionInBuffer, not
@@ -8458,7 +8470,7 @@ void Editor::BufferDelete(bool force) {
 }
 
 void Editor::PaneMoveBufferTabToNeighbor(const std::string &direction) {
-    Tab &tab = tabs_[active_tab_];
+    Tab &tab = tabs_[static_cast<size_t>(active_tab_)];
     int neighbor_id = FindNeighborPaneId(tab.active_pane_id, direction);
     if (neighbor_id < 0) return;
     SplitNode *neighbor_node = FindNode(tab.root.get(), neighbor_id);
@@ -8473,7 +8485,7 @@ void Editor::PaneMoveBufferTabToNeighbor(const std::string &direction) {
         if (src.buffer_tab_index >= static_cast<int>(src.buffer_tabs.size())) {
             src.buffer_tab_index = static_cast<int>(src.buffer_tabs.size()) - 1;
         }
-        src.buffer_id = src.buffer_tabs[src.buffer_tab_index];
+        src.buffer_id = src.buffer_tabs[static_cast<size_t>(src.buffer_tab_index)];
         ClampCursor();
     }
 
@@ -8504,7 +8516,7 @@ std::unique_ptr<SplitNode> Editor::BuildSpiralLayout(std::vector<Pane> panes, bo
 }
 
 void Editor::ApplyLayout(const std::string &kind) {
-    Tab &tab = tabs_[active_tab_];
+    Tab &tab = tabs_[static_cast<size_t>(active_tab_)];
     std::vector<int> ids;
     CollectLeaves(tab.root.get(), ids);
     if (ids.size() <= 1) return;
@@ -8533,7 +8545,7 @@ void Editor::ApplyLayout(const std::string &kind) {
      * @param items The panes to stack, in order.
      * @return A newly allocated SplitNode whose children are leaf nodes for each pane in `items`.
      */
-    auto make_stack = [&](SplitDir dir, std::vector<Pane> items) {
+    auto make_stack = [&](SplitDir dir, const std::vector<Pane> &items) {
         auto n = std::make_unique<SplitNode>();
         n->dir = dir;
         for (const Pane &p : items) n->children.push_back(make_leaf(p));
@@ -8633,7 +8645,7 @@ void Editor::BufferNext() {
     // a same-buffer no-op, matching BufferPrevious' own bound.
     for (int i = 0; i < n; i++) {
         next = (next + 1) % n;
-        if (!buffers_[next].deleted) break;
+        if (!buffers_[static_cast<size_t>(next)].deleted) break;
     }
     SwitchToBufferForLua(next);
 }
@@ -8644,7 +8656,7 @@ void Editor::BufferPrevious() {
     int prev = CurPane().buffer_id;
     for (int i = 0; i < n; i++) {
         prev = (prev - 1 + n) % n;
-        if (!buffers_[prev].deleted) break;
+        if (!buffers_[static_cast<size_t>(prev)].deleted) break;
     }
     SwitchToBufferForLua(prev);
 }
@@ -8674,24 +8686,24 @@ void Editor::ComputeRects(const SplitNode *node, float x0, float y0, float x1, f
     if (node->dir == SplitDir::Horizontal) {
         float y = y0;
         for (int i = 0; i < n; i++) {
-            float h = has_shares ? (y1 - y0) * node->shares[i] : (y1 - y0) / n;
+            float h = has_shares ? (y1 - y0) * node->shares[static_cast<size_t>(i)] : (y1 - y0) / static_cast<float>(n);
             float next_y = (i == n - 1) ? y1 : y + h;
-            ComputeRects(node->children[i].get(), x0, y, x1, next_y, out);
+            ComputeRects(node->children[static_cast<size_t>(i)].get(), x0, y, x1, next_y, out);
             y = next_y;
         }
     } else {
         float x = x0;
         for (int i = 0; i < n; i++) {
-            float w = has_shares ? (x1 - x0) * node->shares[i] : (x1 - x0) / n;
+            float w = has_shares ? (x1 - x0) * node->shares[static_cast<size_t>(i)] : (x1 - x0) / static_cast<float>(n);
             float next_x = (i == n - 1) ? x1 : x + w;
-            ComputeRects(node->children[i].get(), x, y0, next_x, y1, out);
+            ComputeRects(node->children[static_cast<size_t>(i)].get(), x, y0, next_x, y1, out);
             x = next_x;
         }
     }
 }
 
 int Editor::FindNeighborPaneId(int from_pane_id, const std::string &direction) const {
-    const Tab &tab = tabs_[active_tab_];
+    const Tab &tab = tabs_[static_cast<size_t>(active_tab_)];
     std::vector<PaneRect> rects;
     ComputeRects(tab.root.get(), 0.0f, 0.0f, 1.0f, 1.0f, rects);
     if (rects.size() <= 1) return -1;
@@ -8762,7 +8774,7 @@ void Editor::NavigatePaneDirection(const std::string &direction) {
         return;
     }
 
-    Tab &tab = tabs_[active_tab_];
+    Tab &tab = tabs_[static_cast<size_t>(active_tab_)];
     int id = FindNeighborPaneId(tab.active_pane_id, direction);
     if (id >= 0) {
         tab.active_pane_id = id;
@@ -8795,7 +8807,7 @@ bool Editor::FindPathToPane(SplitNode *node, int pane_id, std::vector<std::pair<
     if (node->dir == SplitDir::Leaf) return node->pane.id == pane_id;
     for (size_t i = 0; i < node->children.size(); i++) {
         if (FindPathToPane(node->children[i].get(), pane_id, path)) {
-            path.push_back({node, static_cast<int>(i)});
+            path.emplace_back(node, static_cast<int>(i));
             return true;
         }
     }
@@ -8851,7 +8863,7 @@ void Editor::ResizeActivePane(const std::string &direction, float step) {
     if (!wants_columns && !wants_rows) return;
     SplitDir want_dir = wants_columns ? SplitDir::Vertical : SplitDir::Horizontal;
 
-    Tab &tab = tabs_[active_tab_];
+    Tab &tab = tabs_[static_cast<size_t>(active_tab_)];
     std::vector<std::pair<SplitNode *, int>> path;  // leaf-to-root order (see FindPathToPane)
     if (FindPathToPane(tab.root.get(), tab.active_pane_id, path)) {
         for (auto &[node, child_index] : path) {
@@ -8879,10 +8891,10 @@ void Editor::ResizeActivePane(const std::string &direction, float step) {
             }
 
             float delta = grow ? step : -step;
-            delta = std::clamp(delta, kMinPaneShare - node->shares[child_index],
-                                node->shares[other_index] - kMinPaneShare);
-            node->shares[child_index] += delta;
-            node->shares[other_index] -= delta;
+            delta = std::clamp(delta, kMinPaneShare - node->shares[static_cast<size_t>(child_index)],
+                                node->shares[static_cast<size_t>(other_index)] - kMinPaneShare);
+            node->shares[static_cast<size_t>(child_index)] += delta;
+            node->shares[static_cast<size_t>(other_index)] -= delta;
             return;
         }
     }
@@ -8911,19 +8923,19 @@ void Editor::ResizeActivePane(const std::string &direction, float step) {
 
 void Editor::SetActivePaneShare(float fraction) {
     fraction = std::clamp(fraction, kMinPaneShare, 1.0f - kMinPaneShare);
-    Tab &tab = tabs_[active_tab_];
+    Tab &tab = tabs_[static_cast<size_t>(active_tab_)];
     std::vector<std::pair<SplitNode *, int>> path;  // leaf-to-root order (see FindPathToPane)
     if (!FindPathToPane(tab.root.get(), tab.active_pane_id, path) || path.empty()) return;
     auto &[node, child_index] = path[0];  // immediate parent
     if (node->children.size() != 2) return;
     EnsureShares(node);
     int other_index = 1 - child_index;
-    node->shares[child_index] = fraction;
-    node->shares[other_index] = 1.0f - fraction;
+    node->shares[static_cast<size_t>(child_index)] = fraction;
+    node->shares[static_cast<size_t>(other_index)] = 1.0f - fraction;
 }
 
 void Editor::FocusPaneById(int pane_id) {
-    Tab &tab = tabs_[active_tab_];
+    Tab &tab = tabs_[static_cast<size_t>(active_tab_)];
     if (!FindNode(tab.root.get(), pane_id)) return;
     tab.active_pane_id = pane_id;
     // Mirrors NavigatePaneDirection's own same guard: focus genuinely
@@ -8950,7 +8962,7 @@ void Editor::FocusPaneById(int pane_id) {
 // before touching the destination side. Returns false (nothing removed,
 // nothing to do) if buffer_id isn't actually one of source's tabs.
 bool Editor::RemoveBufferTabFromPane(int source_pane_id, int buffer_id) {
-    Tab &tab = tabs_[active_tab_];
+    Tab &tab = tabs_[static_cast<size_t>(active_tab_)];
     SplitNode *src_node = FindNode(tab.root.get(), source_pane_id);
     if (!src_node) return false;
     Pane &src = src_node->pane;
@@ -8966,7 +8978,7 @@ bool Editor::RemoveBufferTabFromPane(int source_pane_id, int buffer_id) {
             if (src.buffer_tab_index >= static_cast<int>(src.buffer_tabs.size())) {
                 src.buffer_tab_index = static_cast<int>(src.buffer_tabs.size()) - 1;
             }
-            src.buffer_id = src.buffer_tabs[src.buffer_tab_index];
+            src.buffer_id = src.buffer_tabs[static_cast<size_t>(src.buffer_tab_index)];
             ClampCursor();
         } else if (removed_index < src.buffer_tab_index) {
             src.buffer_tab_index--;  // shift left to keep pointing at the same still-active tab
@@ -8983,7 +8995,7 @@ void Editor::MoveBufferTabToPane(int source_pane_id, int buffer_id, int dest_pan
     if (source_pane_id == dest_pane_id) return;
     if (!RemoveBufferTabFromPane(source_pane_id, buffer_id)) return;
 
-    Tab &tab = tabs_[active_tab_];
+    Tab &tab = tabs_[static_cast<size_t>(active_tab_)];
     // Re-found *after* RemoveBufferTabFromPane, never reused from before
     // it -- ClosePane() may have restructured the tree.
     SplitNode *dst_node = FindNode(tab.root.get(), dest_pane_id);
@@ -9010,7 +9022,7 @@ void Editor::SplitPaneWithBufferTab(int source_pane_id, int buffer_id, int dest_
     // moves into its own leaf below.
     if (!RemoveBufferTabFromPane(source_pane_id, buffer_id)) return;
 
-    Tab &tab = tabs_[active_tab_];
+    Tab &tab = tabs_[static_cast<size_t>(active_tab_)];
     // Re-found *after* RemoveBufferTabFromPane, same reasoning as
     // MoveBufferTabToPane above.
     SplitNode *dst_node = FindNode(tab.root.get(), dest_pane_id);
@@ -9053,16 +9065,16 @@ void Editor::SplitPaneWithBufferTab(int source_pane_id, int buffer_id, int dest_
 void Editor::SetPaneBorderShare(SplitNode *node, int child_index, float new_share) {
     if (!node || child_index < 0 || child_index + 1 >= static_cast<int>(node->children.size())) return;
     EnsureShares(node);
-    float pair_total = node->shares[child_index] + node->shares[child_index + 1];
+    float pair_total = node->shares[static_cast<size_t>(child_index)] + node->shares[static_cast<size_t>(child_index) + 1];
     new_share = std::clamp(new_share, kMinPaneShare, pair_total - kMinPaneShare);
-    node->shares[child_index] = new_share;
-    node->shares[child_index + 1] = pair_total - new_share;
+    node->shares[static_cast<size_t>(child_index)] = new_share;
+    node->shares[static_cast<size_t>(child_index) + 1] = pair_total - new_share;
 }
 
 float Editor::PaneBorderPairTotal(SplitNode *node, int child_index) {
     if (!node || child_index < 0 || child_index + 1 >= static_cast<int>(node->children.size())) return 0.0f;
     EnsureShares(node);
-    return node->shares[child_index] + node->shares[child_index + 1];
+    return node->shares[static_cast<size_t>(child_index)] + node->shares[static_cast<size_t>(child_index) + 1];
 }
 
 // --- Global (mod1) shortcuts ------------------------------------------------
@@ -10059,6 +10071,7 @@ bool Editor::DispatchNormalKey(int cp) {
                     case 'F': cmd = 'f'; break;
                     case 't': cmd = 'T'; break;
                     case 'T': cmd = 't'; break;
+                    default: break;
                 }
             }
             int count = std::max(1, TakeRawCount());
@@ -10375,15 +10388,15 @@ void Editor::RepeatLastChange(int override_count) {
         }
         std::string digits = std::to_string(override_count);
         std::vector<int> spliced(digits.begin(), digits.end());
-        spliced.insert(spliced.end(), keys.begin() + digit_run, keys.end());
+        spliced.insert(spliced.end(), keys.begin() + static_cast<long>(digit_run), keys.end());
         keys = spliced;
     }
     replaying_change_ = true;
-    for (size_t i = 0; i < keys.size(); i++) {
+    for (int key : keys) {
         if (mode_ == Mode::Insert) {
-            ProcessInsertKey(keys[i]);
+            ProcessInsertKey(key);
         } else if (mode_ == Mode::Normal) {
-            ProcessNormalKey(keys[i]);
+            ProcessNormalKey(key);
         } else if (mode_ == Mode::Visual || mode_ == Mode::VisualLine || mode_ == Mode::VisualBlock) {
             // A recorded Visual-mode change (see ProcessVisualKey) is the
             // literal key sequence from mode entry (v/V/Ctrl-V) through the
@@ -10395,8 +10408,8 @@ void Editor::RepeatLastChange(int override_count) {
             // shouldn't actually appear here in practice (an Escaped-out-of
             // Visual session never edited anything, so ProcessVisualKey never
             // commits it to last_change_keys_), but handled defensively.
-            if (keys[i] == kReplayEscape) EnterNormal();
-            else if (keys[i] > 0) ProcessVisualKey(keys[i]);
+            if (key == kReplayEscape) EnterNormal();
+            else if (key > 0) ProcessVisualKey(key);
         } else {
             break;  // shouldn't happen -- a recorded change never leaves Normal/Insert/Visual mid-way
         }
@@ -10436,8 +10449,7 @@ void Editor::PlayMacro(char reg, int count) {
     replaying_macro_ = true;
     macro_replay_depth_++;
     for (int rep = 0; rep < count; rep++) {
-        for (size_t i = 0; i < keys.size(); i++) {
-            int k = keys[i];
+        for (int k : keys) {
             if (mode_ == Mode::Insert) {
                 ProcessInsertKey(k);
                 continue;
@@ -10595,7 +10607,7 @@ void Editor::HandleInsertInput() {
 void Editor::InsertChar(int codepoint) {
     if (codepoint < 32 || codepoint > 126) return;
     CursorPos &cursor = CurPane().cursor;
-    std::string &line = Buf().lines[cursor.row];
+    std::string &line = Buf().lines[static_cast<size_t>(cursor.row)];
     line.insert(line.begin() + cursor.col, static_cast<char>(codepoint));
     cursor.col++;
     Buf().modified = true;
@@ -10603,9 +10615,9 @@ void Editor::InsertChar(int codepoint) {
 
 void Editor::InsertNewline() {
     CursorPos &cursor = CurPane().cursor;
-    std::string &line = Buf().lines[cursor.row];
-    std::string remainder = line.substr(cursor.col);
-    line.erase(cursor.col);
+    std::string &line = Buf().lines[static_cast<size_t>(cursor.row)];
+    std::string remainder = line.substr(static_cast<size_t>(cursor.col));
+    line.erase(static_cast<size_t>(cursor.col));
     Buf().lines.insert(Buf().lines.begin() + cursor.row + 1, remainder);
     ShiftMarksForLineEdit(cursor.row + 1, 1);
     ShiftFoldsForLineEdit(cursor.row + 1, 1);
@@ -10617,28 +10629,28 @@ void Editor::InsertNewline() {
 void Editor::Backspace() {
     CursorPos &cursor = CurPane().cursor;
     if (cursor.col > 0) {
-        std::string &line = Buf().lines[cursor.row];
-        line.erase(cursor.col - 1, 1);
+        std::string &line = Buf().lines[static_cast<size_t>(cursor.row)];
+        line.erase(static_cast<size_t>(cursor.col - 1), 1);
         cursor.col--;
     } else if (cursor.row > 0) {
-        std::string current = Buf().lines[cursor.row];
+        std::string current = Buf().lines[static_cast<size_t>(cursor.row)];
         Buf().lines.erase(Buf().lines.begin() + cursor.row);
         ShiftMarksForLineEdit(cursor.row, -1);
         ShiftFoldsForLineEdit(cursor.row, -1);
         cursor.row--;
         cursor.col = LineLen(cursor.row);
-        Buf().lines[cursor.row] += current;
+        Buf().lines[static_cast<size_t>(cursor.row)] += current;
     }
     Buf().modified = true;
 }
 
 void Editor::DeleteForward() {
     CursorPos &cursor = CurPane().cursor;
-    std::string &line = Buf().lines[cursor.row];
+    std::string &line = Buf().lines[static_cast<size_t>(cursor.row)];
     if (cursor.col < static_cast<int>(line.size())) {
-        line.erase(cursor.col, 1);
+        line.erase(static_cast<size_t>(cursor.col), 1);
     } else if (cursor.row + 1 < Buf().LineCount()) {
-        std::string next = Buf().lines[cursor.row + 1];
+        std::string next = Buf().lines[static_cast<size_t>(cursor.row) + 1];
         Buf().lines.erase(Buf().lines.begin() + cursor.row + 1);
         ShiftMarksForLineEdit(cursor.row + 1, -1);
         ShiftFoldsForLineEdit(cursor.row + 1, -1);
@@ -10652,8 +10664,8 @@ void Editor::ReplaceCharsAtCursor(int codepoint, int count) {
     int len = LineLen(cursor.row);
     if (count <= 0 || cursor.col + count > len) return;  // not enough chars left on the line: refuse, like Vim
     PushUndo();
-    std::string &line = Buf().lines[cursor.row];
-    for (int i = 0; i < count; i++) line[cursor.col + i] = static_cast<char>(codepoint);
+    std::string &line = Buf().lines[static_cast<size_t>(cursor.row)];
+    for (int i = 0; i < count; i++) line[static_cast<size_t>(cursor.col) + static_cast<size_t>(i)] = static_cast<char>(codepoint);
     cursor.col += count - 1;
     Buf().modified = true;
     ClampCursor();
@@ -10662,10 +10674,10 @@ void Editor::ReplaceCharsAtCursor(int codepoint, int count) {
 void Editor::ReplaceChar(int codepoint) {
     if (codepoint < 32 || codepoint > 126) return;
     CursorPos &cursor = CurPane().cursor;
-    std::string &line = Buf().lines[cursor.row];
+    std::string &line = Buf().lines[static_cast<size_t>(cursor.row)];
     if (cursor.col < static_cast<int>(line.size())) {
-        replace_overwritten_.push_back(line[cursor.col]);
-        line[cursor.col] = static_cast<char>(codepoint);
+        replace_overwritten_.push_back(line[static_cast<size_t>(cursor.col)]);
+        line[static_cast<size_t>(cursor.col)] = static_cast<char>(codepoint);
     } else {
         replace_overwritten_.push_back('\0');  // extended the line -- nothing to restore later
         line.insert(line.begin() + cursor.col, static_cast<char>(codepoint));
@@ -10686,11 +10698,11 @@ void Editor::ReplaceBackspace() {
     char restored = replace_overwritten_.back();
     replace_overwritten_.pop_back();
     cursor.col--;
-    std::string &line = Buf().lines[cursor.row];
+    std::string &line = Buf().lines[static_cast<size_t>(cursor.row)];
     if (restored == '\0') {
-        line.erase(cursor.col, 1);
+        line.erase(static_cast<size_t>(cursor.col), 1);
     } else {
-        line[cursor.col] = restored;
+        line[static_cast<size_t>(cursor.col)] = restored;
     }
     Buf().modified = true;
 }
@@ -10698,14 +10710,14 @@ void Editor::ReplaceBackspace() {
 void Editor::DeleteWordBeforeCursorInInsert() {
     CursorPos &cursor = CurPane().cursor;
     if (cursor.col == 0) return;  // no line-join, unlike Backspace -- matches Vim's Ctrl-W here
-    std::string &line = Buf().lines[cursor.row];
+    std::string &line = Buf().lines[static_cast<size_t>(cursor.row)];
     int col = cursor.col;
-    while (col > 0 && std::isspace(static_cast<unsigned char>(line[col - 1]))) col--;
+    while (col > 0 && std::isspace(static_cast<unsigned char>(line[static_cast<size_t>(col - 1)]))) col--;
     if (col > 0) {
-        CharClass cls = ClassOf(line[col - 1]);
-        while (col > 0 && ClassOf(line[col - 1]) == cls) col--;
+        CharClass cls = ClassOf(line[static_cast<size_t>(col - 1)]);
+        while (col > 0 && ClassOf(line[static_cast<size_t>(col - 1)]) == cls) col--;
     }
-    line.erase(col, cursor.col - col);
+    line.erase(static_cast<size_t>(col), static_cast<size_t>(cursor.col - col));
     cursor.col = col;
     Buf().modified = true;
 }
@@ -10713,7 +10725,7 @@ void Editor::DeleteWordBeforeCursorInInsert() {
 void Editor::DeleteToLineStartInInsert() {
     CursorPos &cursor = CurPane().cursor;
     if (cursor.col == 0) return;
-    Buf().lines[cursor.row].erase(0, cursor.col);
+    Buf().lines[static_cast<size_t>(cursor.row)].erase(0, static_cast<size_t>(cursor.col));
     cursor.col = 0;
     Buf().modified = true;
 }
@@ -10732,10 +10744,10 @@ void Editor::ApplyVisualBlockOperator(char op) {
     if (reg_name == '%') reg_name = 0;
     std::vector<std::string> block_lines;
     for (int r = top; r <= bottom; r++) {
-        const std::string &line = Buf().lines[r];
+        const std::string &line = Buf().lines[static_cast<size_t>(r)];
         int a = std::min(static_cast<int>(line.size()), left);
         int b = eol ? static_cast<int>(line.size()) : std::min(static_cast<int>(line.size()), right + 1);
-        block_lines.push_back(b > a ? line.substr(a, b - a) : std::string());
+        block_lines.push_back(b > a ? line.substr(static_cast<size_t>(a), static_cast<size_t>(b - a)) : std::string());
     }
     // Trailing '\n' after every row (including the last), matching
     // YankRange's linewise convention -- SplitYankLines (used by
@@ -10762,10 +10774,10 @@ void Editor::ApplyVisualBlockOperator(char op) {
     if (op == 'd') {
         PushUndo();
         for (int r = top; r <= bottom; r++) {
-            std::string &line = Buf().lines[r];
+            std::string &line = Buf().lines[static_cast<size_t>(r)];
             int a = std::min(static_cast<int>(line.size()), left);
             int b = eol ? static_cast<int>(line.size()) : std::min(static_cast<int>(line.size()), right + 1);
-            if (b > a) line.erase(a, b - a);
+            if (b > a) line.erase(static_cast<size_t>(a), static_cast<size_t>(b - a));
         }
         Buf().modified = true;
     }
@@ -10780,9 +10792,9 @@ void Editor::EnterVisualBlockInsert(bool at_end) {
     int col = at_end ? (eol ? LineLen(top) : right + 1) : left;
 
     PushUndo();
-    std::string &first_line = Buf().lines[top];
+    std::string &first_line = Buf().lines[static_cast<size_t>(top)];
     if (!eol && static_cast<int>(first_line.size()) < col) {
-        first_line += std::string(col - first_line.size(), ' ');
+        first_line += std::string(static_cast<size_t>(col) - first_line.size(), ' ');
     }
     CurPane().cursor = {top, col};
 
@@ -10800,12 +10812,12 @@ void Editor::FinishVisualBlockInsert() {
     block_insert_active_ = false;
     if (!block_insert_typed_.empty()) {
         for (int r = block_insert_top_ + 1; r <= block_insert_bottom_ && r < Buf().LineCount(); r++) {
-            std::string &line = Buf().lines[r];
+            std::string &line = Buf().lines[static_cast<size_t>(r)];
             int col = block_insert_eol_ ? static_cast<int>(line.size()) : block_insert_col_;
             if (!block_insert_eol_ && static_cast<int>(line.size()) < col) {
-                line += std::string(col - line.size(), ' ');
+                line += std::string(static_cast<size_t>(col) - line.size(), ' ');
             }
-            if (col <= static_cast<int>(line.size())) line.insert(col, block_insert_typed_);
+            if (col <= static_cast<int>(line.size())) line.insert(static_cast<size_t>(col), block_insert_typed_);
         }
         Buf().modified = true;
     }
@@ -10816,10 +10828,10 @@ void Editor::PasteBlockAt(CursorPos at, const std::vector<std::string> &block, b
     int col = before ? at.col : std::min(LineLen(at.row), at.col + 1);
     for (size_t i = 0; i < block.size(); i++) {
         int row = at.row + static_cast<int>(i);
-        if (row >= Buf().LineCount()) Buf().lines.push_back("");
-        std::string &line = Buf().lines[row];
-        if (static_cast<int>(line.size()) < col) line += std::string(col - line.size(), ' ');
-        line.insert(col, block[i]);
+        if (row >= Buf().LineCount()) Buf().lines.emplace_back("");
+        std::string &line = Buf().lines[static_cast<size_t>(row)];
+        if (static_cast<int>(line.size()) < col) line += std::string(static_cast<size_t>(col) - line.size(), ' ');
+        line.insert(static_cast<size_t>(col), block[i]);
     }
     CurPane().cursor = {at.row, col};
 }
@@ -11074,6 +11086,7 @@ void Editor::DispatchVisualKey(int cp) {
                     case 'F': cmd = 'f'; break;
                     case 't': cmd = 'T'; break;
                     case 'T': cmd = 't'; break;
+                    default: break;
                 }
             }
             int count = std::max(1, TakeRawCount());
@@ -11260,7 +11273,7 @@ void Editor::HandleCommandInput() {
         }
         if (cmd_history_index_ > 0) {
             cmd_history_index_--;
-            command_line_ = command_history_[cmd_history_index_];
+            command_line_ = command_history_[static_cast<size_t>(cmd_history_index_)];
         }
         return;
     }
@@ -11270,7 +11283,7 @@ void Editor::HandleCommandInput() {
             cmd_history_index_ = -1;
             command_line_ = cmd_history_saved_;
         } else {
-            command_line_ = command_history_[cmd_history_index_];
+            command_line_ = command_history_[static_cast<size_t>(cmd_history_index_)];
         }
         return;
     }
@@ -11361,7 +11374,7 @@ void Editor::HandleSearchInput() {
         }
         if (search_history_index_ > 0) {
             search_history_index_--;
-            search_query_ = search_history_[search_history_index_];
+            search_query_ = search_history_[static_cast<size_t>(search_history_index_)];
         }
         UpdateIncSearch();
         return;
@@ -11372,7 +11385,7 @@ void Editor::HandleSearchInput() {
             search_history_index_ = -1;
             search_query_ = search_history_saved_;
         } else {
-            search_query_ = search_history_[search_history_index_];
+            search_query_ = search_history_[static_cast<size_t>(search_history_index_)];
         }
         UpdateIncSearch();
         return;
@@ -11485,7 +11498,7 @@ std::vector<std::string> SplitHoverLines(const std::string &text) {
         lines.push_back(text.substr(start, nl - start));
         start = nl + 1;
     }
-    if (lines.empty()) lines.push_back("");
+    if (lines.empty()) lines.emplace_back("");
     return lines;
 }
 }  // namespace
@@ -11527,7 +11540,7 @@ void Editor::HandleHoverFocusInput() {
      * @return The column clamped to [0, line length - 1] (0 for an empty line).
      */
     auto clamp_col = [&](int row, int col) {
-        int len = static_cast<int>(lines[row].size());
+        int len = static_cast<int>(lines[static_cast<size_t>(row)].size());
         return std::max(0, std::min(col, std::max(0, len - 1)));
     };
     /**
@@ -11565,21 +11578,21 @@ void Editor::HandleHoverFocusInput() {
         std::string text;
         if (linewise) {
             for (int r = r0; r <= r1; r++) {
-                text += lines[r];
+                text += lines[static_cast<size_t>(r)];
                 text += '\n';
             }
         } else if (r0 == r1) {
-            const std::string &line = lines[r0];
+            const std::string &line = lines[static_cast<size_t>(r0)];
             int a = std::min(c0, static_cast<int>(line.size()));
             int b = std::min(c1 + 1, static_cast<int>(line.size()));
-            if (b > a) text = line.substr(a, b - a);
+            if (b > a) text = line.substr(static_cast<size_t>(a), static_cast<size_t>(b - a));
         } else {
             for (int r = r0; r <= r1; r++) {
-                const std::string &line = lines[r];
+                const std::string &line = lines[static_cast<size_t>(r)];
                 if (r == r0) {
-                    text += line.substr(std::min(c0, static_cast<int>(line.size())));
+                    text += line.substr(static_cast<size_t>(std::min(c0, static_cast<int>(line.size()))));
                 } else if (r == r1) {
-                    text += line.substr(0, std::min(c1 + 1, static_cast<int>(line.size())));
+                    text += line.substr(0, static_cast<size_t>(std::min(c1 + 1, static_cast<int>(line.size()))));
                 } else {
                     text += line;
                 }
@@ -11642,7 +11655,7 @@ void Editor::HandleHoverFocusInput() {
                 hover_focus_col_ = 0;
                 break;
             case '$':
-                hover_focus_col_ = clamp_col(hover_focus_row_, static_cast<int>(lines[hover_focus_row_].size()));
+                hover_focus_col_ = clamp_col(hover_focus_row_, static_cast<int>(lines[static_cast<size_t>(hover_focus_row_)].size()));
                 break;
             case 'g':
                 hover_focus_pending_g_ = true;
@@ -11855,12 +11868,12 @@ const std::unordered_map<int, std::vector<Decoration>> &Editor::CurrentBufferDec
 // needed to for the lines themselves.
 void Editor::ClearNamespaceInBuffer(int buffer_id, int ns) {
     if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
-    buffers_[buffer_id].decorations.erase(ns);
+    buffers_[static_cast<size_t>(buffer_id)].decorations.erase(ns);
 }
 
 int Editor::AddDecorationToBuffer(int buffer_id, int ns, Decoration deco) {
     if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return 0;
-    Buffer &buf = buffers_[buffer_id];
+    Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
     deco.id = buf.next_decoration_id++;
     buf.decorations[ns].push_back(deco);
     return deco.id;
@@ -12078,7 +12091,7 @@ void Editor::RecomputeMarkerFolds() {
     std::vector<int> stack;  // rows of still-open `{{{` markers
     const int n = Buf().LineCount();
     for (int i = 0; i < n; i++) {
-        const std::string &line = Buf().lines[i];
+        const std::string &line = Buf().lines[static_cast<size_t>(i)];
         size_t pos = 0;
         while (pos < line.size()) {
             size_t open = line.find("{{{", pos);
@@ -12145,9 +12158,9 @@ std::string Editor::SidebarCursorWidgetId(int id) const {
     if (!sb) return "";
     std::vector<SidebarLine> lines = FlattenSidebar(id);
     if (sidebar_cursor_ < 0 || sidebar_cursor_ >= static_cast<int>(lines.size())) return "";
-    const SidebarLine &line = lines[sidebar_cursor_];
+    const SidebarLine &line = lines[static_cast<size_t>(sidebar_cursor_)];
     if (line.kind != SidebarLine::Kind::Widget) return "";
-    return sb->sections[line.section_index].widgets[line.widget_index].id;
+    return sb->sections[static_cast<size_t>(line.section_index)].widgets[static_cast<size_t>(line.widget_index)].id;
 }
 
 void Editor::FocusSidebarRow(int id, int line_index) {
@@ -12173,17 +12186,17 @@ void Editor::FocusSidebarRow(int id, int line_index) {
 void Editor::ActivateSidebarLine(int id, int line_index) {
     std::vector<SidebarLine> lines = FlattenSidebar(id);
     if (line_index < 0 || line_index >= static_cast<int>(lines.size())) return;
-    const SidebarLine &line = lines[line_index];
+    const SidebarLine &line = lines[static_cast<size_t>(line_index)];
     SidebarInstance *sb = FindSidebarMut(id);
     if (!sb) return;
     if (line.kind == SidebarLine::Kind::SectionHeader) {
-        sb->sections[line.section_index].collapsed = !sb->sections[line.section_index].collapsed;
+        sb->sections[static_cast<size_t>(line.section_index)].collapsed = !sb->sections[static_cast<size_t>(line.section_index)].collapsed;
         if (id == focused_sidebar_id_) {
             int max_idx = static_cast<int>(FlattenSidebar(id).size()) - 1;
             sidebar_cursor_ = std::min(sidebar_cursor_, std::max(0, max_idx));
         }
     } else if (line.kind == SidebarLine::Kind::Widget) {
-        int ref = sb->sections[line.section_index].widgets[line.widget_index].on_click_ref;
+        int ref = sb->sections[static_cast<size_t>(line.section_index)].widgets[static_cast<size_t>(line.widget_index)].on_click_ref;
         if (ref != 0 && lua_) lua_->CallRef(ref);
     }
 }
@@ -12252,7 +12265,7 @@ std::vector<SidebarLine> Editor::FlattenSidebar(int id) const {
     const SidebarInstance *sb = FindSidebar(id);
     if (!sb) return out;
     for (int si = 0; si < static_cast<int>(sb->sections.size()); si++) {
-        const SidebarSection &sec = sb->sections[si];
+        const SidebarSection &sec = sb->sections[static_cast<size_t>(si)];
         if (!sec.title.empty()) {
             SidebarLine line;
             line.kind = SidebarLine::Kind::SectionHeader;
@@ -12262,7 +12275,7 @@ std::vector<SidebarLine> Editor::FlattenSidebar(int id) const {
         }
         if (sec.collapsed) continue;
         for (int wi = 0; wi < static_cast<int>(sec.widgets.size()); wi++) {
-            const SidebarWidget &w = sec.widgets[wi];
+            const SidebarWidget &w = sec.widgets[static_cast<size_t>(wi)];
             SidebarLine line;
             line.kind = SidebarLine::Kind::Widget;
             line.section_index = si;
@@ -12533,7 +12546,7 @@ int FuzzyScore(const std::string &str, const std::string &query, std::vector<int
     if (qi < query.size()) return -1;  // not every query char matched, in order
     int span = pos.empty() ? 0 : (pos.back() - pos.front() + 1);
     score -= (span - static_cast<int>(query.size()));
-    score -= static_cast<int>(str.size() * 0.01);
+    score -= static_cast<int>(static_cast<double>(str.size()) * 0.01);
     if (positions) *positions = std::move(pos);
     return score;
 }
@@ -12615,7 +12628,7 @@ void Editor::HandlePickerInput() {
     if (picker_on_select_change_ref_ != 0) {
         std::vector<PickerItem> pre_nav = PickerFilteredResults();
         if (picker_selected_ >= 0 && picker_selected_ < static_cast<int>(pre_nav.size())) {
-            pre_nav_data = pre_nav[picker_selected_].data;
+            pre_nav_data = pre_nav[static_cast<size_t>(picker_selected_)].data;
         }
     }
     if (escape) {
@@ -12636,7 +12649,7 @@ void Editor::HandlePickerInput() {
     if (enter) {
         std::vector<PickerItem> results = PickerFilteredResults();
         bool has_selection = picker_selected_ >= 0 && picker_selected_ < static_cast<int>(results.size());
-        std::string data = has_selection ? results[picker_selected_].data : std::string();
+        std::string data = has_selection ? results[static_cast<size_t>(picker_selected_)].data : std::string();
         int ref = picker_on_select_ref_;
         int qref = picker_on_query_change_ref_;
         int kref = picker_on_key_ref_;
@@ -12704,7 +12717,7 @@ void Editor::HandlePickerInput() {
     if (lua_ && picker_on_select_change_ref_ != 0) {
         std::vector<PickerItem> post_nav = PickerFilteredResults();
         if (picker_selected_ >= 0 && picker_selected_ < static_cast<int>(post_nav.size())) {
-            const std::string &post_nav_data = post_nav[picker_selected_].data;
+            const std::string &post_nav_data = post_nav[static_cast<size_t>(picker_selected_)].data;
             if (post_nav_data != pre_nav_data) {
                 lua_->CallRefWithString(picker_on_select_change_ref_, post_nav_data);
             }
@@ -12761,7 +12774,7 @@ std::vector<int> Editor::RoamGraphFilteredIndices() const {
         // Node 0 (the center note the view was opened on) is always kept
         // visible/selectable -- it's the anchor, not a search result.
         if (i == 0 || roam_graph_query_.empty() ||
-            FuzzyScore(roam_graph_nodes_[i].title, roam_graph_query_) >= 0) {
+            FuzzyScore(roam_graph_nodes_[static_cast<size_t>(i)].title, roam_graph_query_) >= 0) {
             out.push_back(i);
         }
     }
@@ -12789,7 +12802,7 @@ void Editor::HandleRoamGraphInput() {
     if (enter) {
         std::vector<int> filtered = RoamGraphFilteredIndices();
         bool has_selection = roam_graph_selected_ >= 0 && roam_graph_selected_ < static_cast<int>(filtered.size());
-        std::string path = has_selection ? roam_graph_nodes_[filtered[roam_graph_selected_]].path : std::string();
+        std::string path = has_selection ? roam_graph_nodes_[static_cast<size_t>(filtered[static_cast<size_t>(roam_graph_selected_)])].path : std::string();
         int ref = roam_graph_on_select_ref_;
         roam_graph_on_select_ref_ = 0;
         roam_graph_open_ = false;
@@ -12856,7 +12869,7 @@ std::vector<std::pair<std::string, std::string>> Editor::WhichKeyMatches() const
     for (const WhichKeyBinding &b : whichkey_bindings_) {
         if (b.sequence.size() >= whichkey_prefix_.size() &&
             b.sequence.compare(0, whichkey_prefix_.size(), whichkey_prefix_) == 0) {
-            out.push_back({b.sequence.substr(whichkey_prefix_.size()), b.description});
+            out.emplace_back(b.sequence.substr(whichkey_prefix_.size()), b.description);
         }
     }
     return out;
@@ -12875,7 +12888,7 @@ std::vector<std::pair<std::string, std::string>> Editor::WhichKeyDisplayEntries(
         const auto &leaves = bucket.second;
         auto group_it = leaves.size() > 1 ? whichkey_groups_.find(whichkey_prefix_ + bucket.first) : whichkey_groups_.end();
         if (group_it != whichkey_groups_.end()) {
-            out.push_back({std::string(1, bucket.first), "+" + group_it->second});
+            out.emplace_back(std::string(1, bucket.first), "+" + group_it->second);
         } else {
             for (const auto &leaf : leaves) out.push_back(leaf);
         }
@@ -12961,9 +12974,9 @@ void Editor::HandleHintCharInput() {
     int last_row = std::min(pane.scroll_row + std::max(1, pane.visible_lines), buf.LineCount());
     std::vector<HintMatch> matches;
     for (int row = pane.scroll_row; row < last_row; row++) {
-        const std::string &line = buf.lines[row];
+        const std::string &line = buf.lines[static_cast<size_t>(row)];
         for (int col = 0; col < static_cast<int>(line.size()); col++) {
-            if (line[col] == target) matches.push_back({row, col, ""});
+            if (line[static_cast<size_t>(col)] == target) matches.push_back({row, col, ""});
         }
     }
     if (matches.empty()) {
@@ -13018,10 +13031,10 @@ void Editor::UpdateCompletionPopup() {
         return;
     }
     const CursorPos &cursor = CurPane().cursor;
-    const std::string &line = Buf().lines[cursor.row];
+    const std::string &line = Buf().lines[static_cast<size_t>(cursor.row)];
     int start = cursor.col;
-    while (start > 0 && (std::isalnum(static_cast<unsigned char>(line[start - 1])) || line[start - 1] == '_')) start--;
-    std::string prefix = line.substr(start, cursor.col - start);
+    while (start > 0 && (std::isalnum(static_cast<unsigned char>(line[static_cast<size_t>(start - 1)])) || line[static_cast<size_t>(start - 1)] == '_')) start--;
+    std::string prefix = line.substr(static_cast<size_t>(start), static_cast<size_t>(cursor.col - start));
     // Member-access trigger: cursor sits right after a bare '.' with
     // nothing typed since (prefix empty, since '.' isn't alnum/'_' so the
     // backward scan above stops on it immediately) -- e.g. "np." for
@@ -13030,7 +13043,7 @@ void Editor::UpdateCompletionPopup() {
     // the way a plain identifier-word query does (NVIM_PARITY_PLAN.md
     // Phase 22 gap: dotted/member completion never reached the
     // completion source at all before this).
-    bool dot_trigger = prefix.empty() && start > 0 && line[start - 1] == '.';
+    bool dot_trigger = prefix.empty() && start > 0 && line[static_cast<size_t>(start - 1)] == '.';
     if (prefix.size() < 2 && !dot_trigger) {
         completion_open_ = false;
         completion_last_query_prefix_ = "\x01";
@@ -13089,12 +13102,12 @@ void Editor::AcceptCompletion() {
         completion_open_ = false;
         return;
     }
-    const std::string word = completion_items_[completion_selected_].text;
+    const std::string word = completion_items_[static_cast<size_t>(completion_selected_)].text;
     CursorPos &cursor = CurPane().cursor;
-    std::string &line = Buf().lines[cursor.row];
+    std::string &line = Buf().lines[static_cast<size_t>(cursor.row)];
     PushUndo();
-    line.erase(completion_word_start_col_, cursor.col - completion_word_start_col_);
-    line.insert(completion_word_start_col_, word);
+    line.erase(static_cast<size_t>(completion_word_start_col_), static_cast<size_t>(cursor.col - completion_word_start_col_));
+    line.insert(static_cast<size_t>(completion_word_start_col_), word);
     cursor.col = completion_word_start_col_ + static_cast<int>(word.size());
     Buf().modified = true;
     completion_open_ = false;
@@ -13180,7 +13193,8 @@ ThemeColor ParticipantColor(const std::string &id) {
     // fine here since ids aren't persisted across restarts anyway, but
     // FNV-1a is just as simple to write directly).
     uint32_t hash = 2166136261u;
-    for (unsigned char c : id) {
+    for (char raw : id) {
+        unsigned char c = static_cast<unsigned char>(raw);
         hash ^= c;
         hash *= 16777619u;
     }
@@ -13287,7 +13301,7 @@ void Editor::UpdateCmdlineCompletion() {
     if (candidates.empty()) return;
 
     if (candidates.size() == 1) {
-        command_line_ = command_line_.substr(0, word_start) + candidates[0];
+        command_line_ = command_line_.substr(0, static_cast<size_t>(word_start)) + candidates[0];
         return;
     }
 
@@ -13297,9 +13311,9 @@ void Editor::UpdateCmdlineCompletion() {
         while (j < common.size() && j < candidates[i].size() && common[j] == candidates[i][j]) j++;
         common.resize(j);
     }
-    command_line_ = command_line_.substr(0, word_start) + common;
+    command_line_ = command_line_.substr(0, static_cast<size_t>(word_start)) + common;
 
-    for (const std::string &c : candidates) cmdline_completion_items_.push_back({c, c});
+    for (const std::string &c : candidates) cmdline_completion_items_.push_back({c, c, {}});
     cmdline_completion_selected_ = 0;
     cmdline_completion_word_start_ = word_start;
     cmdline_completion_open_ = true;
@@ -13321,8 +13335,8 @@ void Editor::AcceptCmdlineCompletion() {
         cmdline_completion_open_ = false;
         return;
     }
-    const std::string &item = cmdline_completion_items_[cmdline_completion_selected_].data;
-    command_line_ = command_line_.substr(0, cmdline_completion_word_start_) + item;
+    const std::string &item = cmdline_completion_items_[static_cast<size_t>(cmdline_completion_selected_)].data;
+    command_line_ = command_line_.substr(0, static_cast<size_t>(cmdline_completion_word_start_)) + item;
     cmdline_completion_open_ = false;
 }
 
@@ -13447,7 +13461,7 @@ void Editor::UpdateIncSearch() {
     // place (regex if the pattern compiles as one, else the literal
     // pattern's own length) purely for the highlight span's extent; the
     // match itself was already found above.
-    const std::string &line = Buf().lines[result.row];
+    const std::string &line = Buf().lines[static_cast<size_t>(result.row)];
     int match_len = static_cast<int>(search_query_.size());
     mep_regex::Regex re(search_query_, ignore_case_);
     if (re.ok()) {
@@ -13511,7 +13525,7 @@ bool Editor::SearchOnce(const std::string &pattern, CursorPos from, bool forward
     int n = Buf().LineCount();
     if (forward) {
         for (int r = from.row; r < n; r++) {
-            const std::string &line = Buf().lines[r];
+            const std::string &line = Buf().lines[static_cast<size_t>(r)];
             size_t start = (r == from.row) ? static_cast<size_t>(from.col) + 1 : 0;
             if (start > line.size()) continue;
             if (use_regex) {
@@ -13531,7 +13545,7 @@ bool Editor::SearchOnce(const std::string &pattern, CursorPos from, bool forward
         return false;
     }
     for (int r = from.row; r >= 0; r--) {
-        const std::string &line = Buf().lines[r];
+        const std::string &line = Buf().lines[static_cast<size_t>(r)];
         int limit = (r == from.row) ? from.col - 1 : static_cast<int>(line.size());
         if (limit < 0) continue;
         if (use_regex) {
@@ -13597,7 +13611,7 @@ void Editor::SearchWordUnderCursor(bool forward) {
         status_message_ = "E348: No string under cursor";
         return;
     }
-    last_search_ = Buf().lines[start.row].substr(start.col, end.col - start.col);
+    last_search_ = Buf().lines[static_cast<size_t>(start.row)].substr(static_cast<size_t>(start.col), static_cast<size_t>(end.col - start.col));
     last_search_forward_ = forward;
     PerformSearch(forward);
 }
@@ -13612,12 +13626,12 @@ CursorPos Editor::MoveWordForward(CursorPos from) const {
     int row = from.row, col = from.col;
     int nrows = Buf().LineCount();
     if (col < LineLen(row)) {
-        CharClass start_class = ClassOf(Buf().lines[row][col]);
+        CharClass start_class = ClassOf(Buf().lines[static_cast<size_t>(row)][static_cast<size_t>(col)]);
         if (start_class != CharClass::Space) {
-            while (col < LineLen(row) && ClassOf(Buf().lines[row][col]) == start_class) col++;
+            while (col < LineLen(row) && ClassOf(Buf().lines[static_cast<size_t>(row)][static_cast<size_t>(col)]) == start_class) col++;
         }
     }
-    while (col >= LineLen(row) || ClassOf(Buf().lines[row][col]) == CharClass::Space) {
+    while (col >= LineLen(row) || ClassOf(Buf().lines[static_cast<size_t>(row)][static_cast<size_t>(col)]) == CharClass::Space) {
         if (col >= LineLen(row)) {
             if (row + 1 >= nrows) return {row, LineLen(row)};
             row++;
@@ -13649,15 +13663,15 @@ CursorPos Editor::MoveWordBackward(CursorPos from) const {
             if (LineLen(row) == 0) return {row, 0};
             continue;
         }
-        if (ClassOf(Buf().lines[row][col]) == CharClass::Space) {
+        if (ClassOf(Buf().lines[static_cast<size_t>(row)][static_cast<size_t>(col)]) == CharClass::Space) {
             col--;
             continue;
         }
         break;
     }
     if (col < 0) return {row, 0};
-    CharClass cc = ClassOf(Buf().lines[row][col]);
-    while (col > 0 && ClassOf(Buf().lines[row][col - 1]) == cc) col--;
+    CharClass cc = ClassOf(Buf().lines[static_cast<size_t>(row)][static_cast<size_t>(col)]);
+    while (col > 0 && ClassOf(Buf().lines[static_cast<size_t>(row)][static_cast<size_t>(col - 1)]) == cc) col--;
     return {row, col};
 }
 
@@ -13665,10 +13679,10 @@ CursorPos Editor::MoveWordBackward(CursorPos from) const {
 CursorPos Editor::MoveWORDForward(CursorPos from) const {
     int row = from.row, col = from.col;
     int nrows = Buf().LineCount();
-    if (col < LineLen(row) && !std::isspace(static_cast<unsigned char>(Buf().lines[row][col]))) {
-        while (col < LineLen(row) && !std::isspace(static_cast<unsigned char>(Buf().lines[row][col]))) col++;
+    if (col < LineLen(row) && !std::isspace(static_cast<unsigned char>(Buf().lines[static_cast<size_t>(row)][static_cast<size_t>(col)]))) {
+        while (col < LineLen(row) && !std::isspace(static_cast<unsigned char>(Buf().lines[static_cast<size_t>(row)][static_cast<size_t>(col)]))) col++;
     }
-    while (col >= LineLen(row) || std::isspace(static_cast<unsigned char>(Buf().lines[row][col]))) {
+    while (col >= LineLen(row) || std::isspace(static_cast<unsigned char>(Buf().lines[static_cast<size_t>(row)][static_cast<size_t>(col)]))) {
         if (col >= LineLen(row)) {
             if (row + 1 >= nrows) return {row, LineLen(row)};
             row++;
@@ -13700,14 +13714,14 @@ CursorPos Editor::MoveWORDBackward(CursorPos from) const {
             if (LineLen(row) == 0) return {row, 0};
             continue;
         }
-        if (std::isspace(static_cast<unsigned char>(Buf().lines[row][col]))) {
+        if (std::isspace(static_cast<unsigned char>(Buf().lines[static_cast<size_t>(row)][static_cast<size_t>(col)]))) {
             col--;
             continue;
         }
         break;
     }
     if (col < 0) return {row, 0};
-    while (col > 0 && !std::isspace(static_cast<unsigned char>(Buf().lines[row][col - 1]))) col--;
+    while (col > 0 && !std::isspace(static_cast<unsigned char>(Buf().lines[static_cast<size_t>(row)][static_cast<size_t>(col - 1)]))) col--;
     return {row, col};
 }
 
@@ -13722,17 +13736,17 @@ CursorPos Editor::MoveWordEndForward(CursorPos from, bool big) const {
             col = 0;
             continue;
         }
-        if (ClassOf(Buf().lines[row][col]) == CharClass::Space) {
+        if (ClassOf(Buf().lines[static_cast<size_t>(row)][static_cast<size_t>(col)]) == CharClass::Space) {
             col++;
             continue;
         }
         break;
     }
     if (big) {
-        while (col + 1 < LineLen(row) && ClassOf(Buf().lines[row][col + 1]) != CharClass::Space) col++;
+        while (col + 1 < LineLen(row) && ClassOf(Buf().lines[static_cast<size_t>(row)][static_cast<size_t>(col) + 1]) != CharClass::Space) col++;
     } else {
-        CharClass cc = ClassOf(Buf().lines[row][col]);
-        while (col + 1 < LineLen(row) && ClassOf(Buf().lines[row][col + 1]) == cc) col++;
+        CharClass cc = ClassOf(Buf().lines[static_cast<size_t>(row)][static_cast<size_t>(col)]);
+        while (col + 1 < LineLen(row) && ClassOf(Buf().lines[static_cast<size_t>(row)][static_cast<size_t>(col) + 1]) == cc) col++;
     }
     return {row, col};
 }
@@ -13742,12 +13756,12 @@ CursorPos Editor::MoveWordEndBackward(CursorPos from, bool big) const {
     int row = from.row, col = from.col;
     // Step off whatever run `from` is currently within, if any, so this
     // doesn't just land one character back inside the SAME word.
-    if (col < LineLen(row) && ClassOf(Buf().lines[row][col]) != CharClass::Space) {
+    if (col < LineLen(row) && ClassOf(Buf().lines[static_cast<size_t>(row)][static_cast<size_t>(col)]) != CharClass::Space) {
         if (big) {
-            while (col > 0 && ClassOf(Buf().lines[row][col - 1]) != CharClass::Space) col--;
+            while (col > 0 && ClassOf(Buf().lines[static_cast<size_t>(row)][static_cast<size_t>(col - 1)]) != CharClass::Space) col--;
         } else {
-            CharClass cc = ClassOf(Buf().lines[row][col]);
-            while (col > 0 && ClassOf(Buf().lines[row][col - 1]) == cc) col--;
+            CharClass cc = ClassOf(Buf().lines[static_cast<size_t>(row)][static_cast<size_t>(col)]);
+            while (col > 0 && ClassOf(Buf().lines[static_cast<size_t>(row)][static_cast<size_t>(col - 1)]) == cc) col--;
         }
     }
     col--;
@@ -13759,7 +13773,7 @@ CursorPos Editor::MoveWordEndBackward(CursorPos from, bool big) const {
             if (LineLen(row) == 0) return {row, 0};
             continue;
         }
-        if (ClassOf(Buf().lines[row][col]) == CharClass::Space) {
+        if (ClassOf(Buf().lines[static_cast<size_t>(row)][static_cast<size_t>(col)]) == CharClass::Space) {
             col--;
             continue;
         }
@@ -13771,9 +13785,9 @@ CursorPos Editor::MoveWordEndBackward(CursorPos from, bool big) const {
 
 CursorPos Editor::FirstNonBlank(int row) const {
     row = std::max(0, std::min(row, Buf().LineCount() - 1));
-    const std::string &line = Buf().lines[row];
+    const std::string &line = Buf().lines[static_cast<size_t>(row)];
     int col = 0;
-    while (col < static_cast<int>(line.size()) && std::isspace(static_cast<unsigned char>(line[col]))) col++;
+    while (col < static_cast<int>(line.size()) && std::isspace(static_cast<unsigned char>(line[static_cast<size_t>(col)]))) col++;
     if (col >= static_cast<int>(line.size())) col = std::max(0, static_cast<int>(line.size()) - 1);
     return {row, col};
 }
@@ -13784,14 +13798,14 @@ CursorPos Editor::FirstNonBlank(int row) const {
 CursorPos Editor::MoveParagraphForward(CursorPos from) const {
     int row = from.row + 1;
     int n = Buf().LineCount();
-    while (row < n && !Buf().lines[row].empty()) row++;
+    while (row < n && !Buf().lines[static_cast<size_t>(row)].empty()) row++;
     if (row >= n) row = n - 1;
     return {row, 0};
 }
 
 CursorPos Editor::MoveParagraphBackward(CursorPos from) const {
     int row = from.row - 1;
-    while (row > 0 && !Buf().lines[row].empty()) row--;
+    while (row > 0 && !Buf().lines[static_cast<size_t>(row)].empty()) row--;
     if (row < 0) row = 0;
     return {row, 0};
 }
@@ -13813,18 +13827,18 @@ CursorPos Editor::NextSentenceStart(CursorPos from) const {
         // (nothing "new" to stop at there).
         if (len == 0 && row != from.row) return {row, 0};
         while (col < len) {
-            char c = Buf().lines[row][col];
+            char c = Buf().lines[static_cast<size_t>(row)][static_cast<size_t>(col)];
             if (c == '.' || c == '!' || c == '?') {
                 int p = col + 1;
                 while (p < len) {
-                    char cc = Buf().lines[row][p];
+                    char cc = Buf().lines[static_cast<size_t>(row)][static_cast<size_t>(p)];
                     if (cc == ')' || cc == ']' || cc == '"' || cc == '\'') {
                         p++;
                         continue;
                     }
                     break;
                 }
-                if (p >= len || Buf().lines[row][p] == ' ' || Buf().lines[row][p] == '\t') {
+                if (p >= len || Buf().lines[static_cast<size_t>(row)][static_cast<size_t>(p)] == ' ' || Buf().lines[static_cast<size_t>(row)][static_cast<size_t>(p)] == '\t') {
                     // Boundary found. Skip whitespace forward (across
                     // lines, but stopping AT a blank line rather than
                     // past it) to land on the next sentence's first
@@ -13839,7 +13853,7 @@ CursorPos Editor::NextSentenceStart(CursorPos from) const {
                             if (r >= nrows) return {nrows - 1, LineLen(nrows - 1)};
                             continue;
                         }
-                        char wc = Buf().lines[r][c2];
+                        char wc = Buf().lines[static_cast<size_t>(r)][static_cast<size_t>(c2)];
                         if (wc == ' ' || wc == '\t') {
                             c2++;
                             continue;
@@ -13894,15 +13908,15 @@ CursorPos Editor::MoveSentenceBackward(CursorPos from) const {
 CursorPos Editor::MoveMatchingBracket(CursorPos from) const {
     static const std::string kOpens = "([{";
     static const std::string kCloses = ")]}";
-    const std::string &line0 = Buf().lines[from.row];
+    const std::string &line0 = Buf().lines[static_cast<size_t>(from.row)];
     int col = from.col;
-    while (col < static_cast<int>(line0.size()) && kOpens.find(line0[col]) == std::string::npos &&
-           kCloses.find(line0[col]) == std::string::npos) {
+    while (col < static_cast<int>(line0.size()) && kOpens.find(line0[static_cast<size_t>(col)]) == std::string::npos &&
+           kCloses.find(line0[static_cast<size_t>(col)]) == std::string::npos) {
         col++;
     }
     if (col >= static_cast<int>(line0.size())) return from;  // no bracket on this line: no-op
 
-    char c = line0[col];
+    char c = line0[static_cast<size_t>(col)];
     size_t open_idx = kOpens.find(c);
     bool forward = open_idx != std::string::npos;
     char open_c = forward ? c : kOpens[kCloses.find(c)];
@@ -13910,24 +13924,24 @@ CursorPos Editor::MoveMatchingBracket(CursorPos from) const {
     int depth = 0;
     if (forward) {
         for (int r = from.row; r < Buf().LineCount(); r++) {
-            const std::string &l = Buf().lines[r];
+            const std::string &l = Buf().lines[static_cast<size_t>(r)];
             int start_c = (r == from.row) ? col : 0;
             for (int cc = start_c; cc < static_cast<int>(l.size()); cc++) {
-                if (l[cc] == open_c) {
+                if (l[static_cast<size_t>(cc)] == open_c) {
                     depth++;
-                } else if (l[cc] == close_c && --depth == 0) {
+                } else if (l[static_cast<size_t>(cc)] == close_c && --depth == 0) {
                     return {r, cc};
                 }
             }
         }
     } else {
         for (int r = from.row; r >= 0; r--) {
-            const std::string &l = Buf().lines[r];
+            const std::string &l = Buf().lines[static_cast<size_t>(r)];
             int start_c = (r == from.row) ? col : static_cast<int>(l.size()) - 1;
             for (int cc = start_c; cc >= 0; cc--) {
-                if (l[cc] == close_c) {
+                if (l[static_cast<size_t>(cc)] == close_c) {
                     depth++;
-                } else if (l[cc] == open_c && --depth == 0) {
+                } else if (l[static_cast<size_t>(cc)] == open_c && --depth == 0) {
                     return {r, cc};
                 }
             }
@@ -13941,7 +13955,7 @@ CursorPos Editor::MoveMatchingBracket(CursorPos from) const {
 bool Editor::FindEnclosingBracketPair(CursorPos cursor, char open_c, char close_c, CursorPos *open_pos,
                                        CursorPos *close_pos) const {
     int row = cursor.row, col = cursor.col;
-    bool on_open = (col < LineLen(row) && Buf().lines[row][col] == open_c);
+    bool on_open = (col < LineLen(row) && Buf().lines[static_cast<size_t>(row)][static_cast<size_t>(col)] == open_c);
 
     CursorPos op;
     if (on_open) {
@@ -13956,12 +13970,12 @@ bool Editor::FindEnclosingBracketPair(CursorPos cursor, char open_c, char close_
         int depth = 0;
         bool found = false;
         for (int r = row; r >= 0 && !found; r--) {
-            const std::string &l = Buf().lines[r];
+            const std::string &l = Buf().lines[static_cast<size_t>(r)];
             int start_c = (r == row) ? col - 1 : static_cast<int>(l.size()) - 1;
             for (int cc = start_c; cc >= 0; cc--) {
-                if (l[cc] == close_c) {
+                if (l[static_cast<size_t>(cc)] == close_c) {
                     depth++;
-                } else if (l[cc] == open_c) {
+                } else if (l[static_cast<size_t>(cc)] == open_c) {
                     if (depth == 0) {
                         op = {r, cc};
                         found = true;
@@ -13978,12 +13992,12 @@ bool Editor::FindEnclosingBracketPair(CursorPos cursor, char open_c, char close_
     int depth = 0;
     int nrows = Buf().LineCount();
     for (int r = op.row; r < nrows; r++) {
-        const std::string &l = Buf().lines[r];
+        const std::string &l = Buf().lines[static_cast<size_t>(r)];
         int start_c = (r == op.row) ? op.col + 1 : 0;
         for (int cc = start_c; cc < static_cast<int>(l.size()); cc++) {
-            if (l[cc] == open_c) {
+            if (l[static_cast<size_t>(cc)] == open_c) {
                 depth++;
-            } else if (l[cc] == close_c) {
+            } else if (l[static_cast<size_t>(cc)] == close_c) {
                 if (depth == 0) {
                     *close_pos = {r, cc};
                     return true;
@@ -14014,10 +14028,10 @@ bool Editor::BracketObjectRange(CursorPos cursor, char open_c, char close_c, boo
 // cursor (covers both "cursor inside a pair" and "cursor before any pair
 // on the line, jump to the first one").
 bool Editor::QuoteObjectRange(CursorPos cursor, char quote, bool around, CursorPos *start, CursorPos *end) const {
-    const std::string &line = Buf().lines[cursor.row];
+    const std::string &line = Buf().lines[static_cast<size_t>(cursor.row)];
     std::vector<int> positions;
     for (int i = 0; i < static_cast<int>(line.size()); i++) {
-        if (line[i] == quote) positions.push_back(i);
+        if (line[static_cast<size_t>(i)] == quote) positions.push_back(i);
     }
     for (size_t i = 0; i + 1 < positions.size(); i += 2) {
         int a = positions[i], b = positions[i + 1];
@@ -14050,8 +14064,8 @@ void Editor::WordObjectRange(CursorPos cursor, bool around, bool big, CursorPos 
      * @return For a WORD (`big`): 0 if whitespace, 1 otherwise. For a word: 0 for space, 1 for word chars, 2 for punctuation.
      */
     auto classify = [&](int c) -> int {
-        if (big) return std::isspace(static_cast<unsigned char>(Buf().lines[row][c])) ? 0 : 1;
-        CharClass cc = ClassOf(Buf().lines[row][c]);
+        if (big) return std::isspace(static_cast<unsigned char>(Buf().lines[static_cast<size_t>(row)][static_cast<size_t>(c)])) ? 0 : 1;
+        CharClass cc = ClassOf(Buf().lines[static_cast<size_t>(row)][static_cast<size_t>(c)]);
         return cc == CharClass::Space ? 0 : (cc == CharClass::Word ? 1 : 2);
     };
 
@@ -14088,18 +14102,18 @@ void Editor::WordObjectRange(CursorPos cursor, bool around, bool big, CursorPos 
 void Editor::ParagraphObjectRange(CursorPos cursor, bool around, CursorPos *start, CursorPos *end) const {
     int n = Buf().LineCount();
     int row = cursor.row;
-    bool on_blank = Buf().lines[row].empty();
+    bool on_blank = Buf().lines[static_cast<size_t>(row)].empty();
     int top = row, bottom = row;
-    while (top > 0 && Buf().lines[top - 1].empty() == on_blank) top--;
-    while (bottom + 1 < n && Buf().lines[bottom + 1].empty() == on_blank) bottom++;
+    while (top > 0 && Buf().lines[static_cast<size_t>(top) - 1].empty() == on_blank) top--;
+    while (bottom + 1 < n && Buf().lines[static_cast<size_t>(bottom) + 1].empty() == on_blank) bottom++;
     if (around) {
         int extra_bottom = bottom;
-        while (extra_bottom + 1 < n && Buf().lines[extra_bottom + 1].empty() != on_blank) extra_bottom++;
+        while (extra_bottom + 1 < n && Buf().lines[static_cast<size_t>(extra_bottom) + 1].empty() != on_blank) extra_bottom++;
         if (extra_bottom > bottom) {
             bottom = extra_bottom;
         } else {
             int extra_top = top;
-            while (extra_top > 0 && Buf().lines[extra_top - 1].empty() != on_blank) extra_top--;
+            while (extra_top > 0 && Buf().lines[static_cast<size_t>(extra_top - 1)].empty() != on_blank) extra_top--;
             top = extra_top;
         }
     }
@@ -14273,7 +14287,7 @@ bool Editor::ResolveMotion(char c, CursorPos from, int count, CursorPos *target,
 }
 
 bool Editor::ResolveFind(char cmd, CursorPos from, char ch, int count, CursorPos *target) const {
-    const std::string &line = Buf().lines[from.row];
+    const std::string &line = Buf().lines[static_cast<size_t>(from.row)];
     int len = static_cast<int>(line.size());
     int col = from.col;
     for (int i = 0; i < count; i++) {
@@ -14281,7 +14295,7 @@ bool Editor::ResolveFind(char cmd, CursorPos from, char ch, int count, CursorPos
             int search_from = (cmd == 't' && i > 0) ? col + 2 : col + 1;
             int pos = -1;
             for (int cc = search_from; cc < len; cc++) {
-                if (line[cc] == ch) {
+                if (line[static_cast<size_t>(cc)] == ch) {
                     pos = cc;
                     break;
                 }
@@ -14292,7 +14306,7 @@ bool Editor::ResolveFind(char cmd, CursorPos from, char ch, int count, CursorPos
             int search_from = (cmd == 'T' && i > 0) ? col - 2 : col - 1;
             int pos = -1;
             for (int cc = search_from; cc >= 0; cc--) {
-                if (line[cc] == ch) {
+                if (line[static_cast<size_t>(cc)] == ch) {
                     pos = cc;
                     break;
                 }
@@ -14448,14 +14462,14 @@ void Editor::JumpListBack() {
     }
     if (p.jumplist_index <= 0) return;
     p.jumplist_index--;
-    GoToJumpEntry(p.jumplist[p.jumplist_index]);
+    GoToJumpEntry(p.jumplist[static_cast<size_t>(p.jumplist_index)]);
 }
 
 void Editor::JumpListForward() {
     Pane &p = CurPane();
     if (p.jumplist_index + 1 >= static_cast<int>(p.jumplist.size())) return;
     p.jumplist_index++;
-    GoToJumpEntry(p.jumplist[p.jumplist_index]);
+    GoToJumpEntry(p.jumplist[static_cast<size_t>(p.jumplist_index)]);
 }
 
 void Editor::TryRunOrgBabelAtCursor() {
@@ -14597,24 +14611,24 @@ void Editor::ApplyCaseChange(CursorPos start, CursorPos end, bool linewise, char
     if (linewise) {
         int last = std::min(end.row, Buf().LineCount() - 1);
         for (int r = start.row; r <= last; r++) {
-            for (char &c : Buf().lines[r]) c = transform(c);
+            for (char &c : Buf().lines[static_cast<size_t>(r)]) c = transform(c);
         }
     } else if (start.row == end.row) {
-        std::string &line = Buf().lines[start.row];
+        std::string &line = Buf().lines[static_cast<size_t>(start.row)];
         int a = std::min(static_cast<int>(line.size()), start.col);
         int b = std::min(static_cast<int>(line.size()), end.col);
-        for (int i = a; i < b; i++) line[i] = transform(line[i]);
+        for (int i = a; i < b; i++) line[static_cast<size_t>(i)] = transform(line[static_cast<size_t>(i)]);
     } else {
-        std::string &first = Buf().lines[start.row];
+        std::string &first = Buf().lines[static_cast<size_t>(start.row)];
         int a = std::min(static_cast<int>(first.size()), start.col);
-        for (int i = a; i < static_cast<int>(first.size()); i++) first[i] = transform(first[i]);
+        for (int i = a; i < static_cast<int>(first.size()); i++) first[static_cast<size_t>(i)] = transform(first[static_cast<size_t>(i)]);
         for (int r = start.row + 1; r < end.row; r++) {
-            for (char &c : Buf().lines[r]) c = transform(c);
+            for (char &c : Buf().lines[static_cast<size_t>(r)]) c = transform(c);
         }
         int end_row = std::min(end.row, Buf().LineCount() - 1);
-        std::string &last = Buf().lines[end_row];
+        std::string &last = Buf().lines[static_cast<size_t>(end_row)];
         int b = std::min(static_cast<int>(last.size()), end.col);
-        for (int i = 0; i < b; i++) last[i] = transform(last[i]);
+        for (int i = 0; i < b; i++) last[static_cast<size_t>(i)] = transform(last[static_cast<size_t>(i)]);
     }
     Buf().modified = true;
 }
@@ -14624,9 +14638,9 @@ void Editor::IndentLines(int start_row, int end_row, int levels) {
     PushUndo();
     end_row = std::min(end_row, Buf().LineCount() - 1);
     for (int r = std::max(0, start_row); r <= end_row; r++) {
-        std::string &line = Buf().lines[r];
+        std::string &line = Buf().lines[static_cast<size_t>(r)];
         if (levels > 0) {
-            for (int i = 0; i < levels; i++) line = kShift + line;
+            for (int i = 0; i < levels; i++) line.insert(0, kShift);
         } else {
             for (int i = 0; i < -levels; i++) {
                 size_t remove = 0;
@@ -14655,15 +14669,15 @@ void Editor::FormatLines(int start_row, int end_row) {
 
     int row = std::max(0, start_row);
     while (row <= end_row) {
-        if (Buf().lines[row].empty()) {
+        if (Buf().lines[static_cast<size_t>(row)].empty()) {
             row++;
             continue;
         }
         int para_start = row;
         int para_end = row;
-        while (para_end + 1 <= end_row && !Buf().lines[para_end + 1].empty()) para_end++;
+        while (para_end + 1 <= end_row && !Buf().lines[static_cast<size_t>(para_end) + 1].empty()) para_end++;
 
-        const std::string &first_line = Buf().lines[para_start];
+        const std::string &first_line = Buf().lines[static_cast<size_t>(para_start)];
         size_t indent_len = 0;
         while (indent_len < first_line.size() &&
                (first_line[indent_len] == ' ' || first_line[indent_len] == '\t')) {
@@ -14673,7 +14687,7 @@ void Editor::FormatLines(int start_row, int end_row) {
 
         std::vector<std::string> words;
         for (int r = para_start; r <= para_end; r++) {
-            std::istringstream iss(Buf().lines[r]);
+            std::istringstream iss(Buf().lines[static_cast<size_t>(r)]);
             std::string w;
             while (iss >> w) words.push_back(w);
         }
@@ -14721,14 +14735,14 @@ void Editor::JoinLines(int count, bool with_space) {
     PushUndo();
     int join_col = LineLen(row);
     for (int i = 0; i < joins; i++) {
-        std::string next = Buf().lines[row + 1];
+        std::string next = Buf().lines[static_cast<size_t>(row) + 1];
         Buf().lines.erase(Buf().lines.begin() + row + 1);
         ShiftMarksForLineEdit(row + 1, -1);
         ShiftFoldsForLineEdit(row + 1, -1);
         size_t s = 0;
         while (s < next.size() && std::isspace(static_cast<unsigned char>(next[s]))) s++;
         next = next.substr(s);
-        std::string &line = Buf().lines[row];
+        std::string &line = Buf().lines[static_cast<size_t>(row)];
         join_col = static_cast<int>(line.size());
         if (with_space && !next.empty() && next[0] != ')' && !line.empty()) {
             line += ' ';
@@ -14748,29 +14762,29 @@ void Editor::DeleteRange(CursorPos start, CursorPos end, bool linewise) {
         Buf().lines.erase(Buf().lines.begin() + first, Buf().lines.begin() + last + 1);
         ShiftMarksForLineEdit(first, -(last - first + 1));
         ShiftFoldsForLineEdit(first, -(last - first + 1));
-        if (Buf().lines.empty()) Buf().lines.push_back("");
+        if (Buf().lines.empty()) Buf().lines.emplace_back("");
         Buf().modified = true;
         return;
     }
     if (start.row == end.row) {
-        std::string &line = Buf().lines[start.row];
+        std::string &line = Buf().lines[static_cast<size_t>(start.row)];
         int a = std::min(static_cast<int>(line.size()), start.col);
         int b = std::min(static_cast<int>(line.size()), end.col);
-        if (b > a) line.erase(a, b - a);
+        if (b > a) line.erase(static_cast<size_t>(a), static_cast<size_t>(b - a));
     } else {
         // Multi-line charwise (e.g. `d}`, or a bracket/quote text object
         // spanning lines): join what's left of the start line (its own
         // prefix) with what's left of the end line (its own suffix),
         // dropping everything strictly between -- same shape as Vim's own
         // "join the two halves" behavior for an exclusive multi-line range.
-        std::string &first_line = Buf().lines[start.row];
+        std::string &first_line = Buf().lines[static_cast<size_t>(start.row)];
         int a = std::min(static_cast<int>(first_line.size()), start.col);
-        std::string prefix = first_line.substr(0, a);
+        std::string prefix = first_line.substr(0, static_cast<size_t>(a));
         int end_row = std::min(end.row, Buf().LineCount() - 1);
-        const std::string &last_line = Buf().lines[end_row];
+        const std::string &last_line = Buf().lines[static_cast<size_t>(end_row)];
         int b = std::min(static_cast<int>(last_line.size()), end.col);
-        std::string suffix = last_line.substr(b);
-        Buf().lines[start.row] = prefix + suffix;
+        std::string suffix = last_line.substr(static_cast<size_t>(b));
+        Buf().lines[static_cast<size_t>(start.row)] = prefix + suffix;
         Buf().lines.erase(Buf().lines.begin() + start.row + 1, Buf().lines.begin() + end_row + 1);
         ShiftMarksForLineEdit(start.row + 1, -(end_row - start.row));
         ShiftFoldsForLineEdit(start.row + 1, -(end_row - start.row));
@@ -14783,27 +14797,27 @@ std::string Editor::ExtractRangeText(CursorPos start, CursorPos end, bool linewi
     if (linewise) {
         int last = std::min(end.row, Buf().LineCount() - 1);
         for (int r = start.row; r <= last; r++) {
-            text += Buf().lines[r];
+            text += Buf().lines[static_cast<size_t>(r)];
             text += "\n";
         }
     } else if (start.row == end.row) {
-        const std::string &line = Buf().lines[start.row];
+        const std::string &line = Buf().lines[static_cast<size_t>(start.row)];
         int a = std::min(static_cast<int>(line.size()), start.col);
         int b = std::min(static_cast<int>(line.size()), end.col);
-        text = (b > a) ? line.substr(a, b - a) : "";
+        text = (b > a) ? line.substr(static_cast<size_t>(a), static_cast<size_t>(b - a)) : "";
     } else {
-        const std::string &first_line = Buf().lines[start.row];
+        const std::string &first_line = Buf().lines[static_cast<size_t>(start.row)];
         int a = std::min(static_cast<int>(first_line.size()), start.col);
-        text += first_line.substr(a);
+        text += first_line.substr(static_cast<size_t>(a));
         for (int r = start.row + 1; r < end.row; r++) {
             text += "\n";
-            text += Buf().lines[r];
+            text += Buf().lines[static_cast<size_t>(r)];
         }
         int end_row = std::min(end.row, Buf().LineCount() - 1);
-        const std::string &last_line = Buf().lines[end_row];
+        const std::string &last_line = Buf().lines[static_cast<size_t>(end_row)];
         int b = std::min(static_cast<int>(last_line.size()), end.col);
         text += "\n";
-        text += last_line.substr(0, b);
+        text += last_line.substr(0, static_cast<size_t>(b));
     }
     return text;
 }
@@ -14887,19 +14901,19 @@ std::vector<std::string> SplitKeepingLast(const std::string &text) {
 // position just past the inserted text.
 CursorPos Editor::InsertCharwiseTextAt(CursorPos pos, const std::string &text) {
     if (text.find('\n') == std::string::npos) {
-        std::string &line = Buf().lines[pos.row];
+        std::string &line = Buf().lines[static_cast<size_t>(pos.row)];
         int at = std::min(static_cast<int>(line.size()), pos.col);
-        line.insert(at, text);
+        line.insert(static_cast<size_t>(at), text);
         return {pos.row, at + static_cast<int>(text.size())};
     }
     std::vector<std::string> parts = SplitKeepingLast(text);
-    std::string &line = Buf().lines[pos.row];
+    std::string &line = Buf().lines[static_cast<size_t>(pos.row)];
     int at = std::min(static_cast<int>(line.size()), pos.col);
-    std::string suffix = line.substr(at);
-    std::string new_first = line.substr(0, at) + parts.front();
+    std::string suffix = line.substr(static_cast<size_t>(at));
+    std::string new_first = line.substr(0, static_cast<size_t>(at)) + parts.front();
     std::string new_last = parts.back() + suffix;
 
-    Buf().lines[pos.row] = new_first;
+    Buf().lines[static_cast<size_t>(pos.row)] = new_first;
     std::vector<std::string> to_insert(parts.begin() + 1, parts.end() - 1);
     to_insert.push_back(new_last);
     Buf().lines.insert(Buf().lines.begin() + pos.row + 1, to_insert.begin(), to_insert.end());
@@ -15100,7 +15114,7 @@ void Editor::ExSubstitute(int start_row, int end_row, const std::string &pattern
     int last_row = start_row;
     bool pushed_undo = false;
     for (int r = start_row; r <= end_row; r++) {
-        std::string &line = Buf().lines[r];
+        std::string &line = Buf().lines[static_cast<size_t>(r)];
         size_t pos = 0;
         bool changed_this_line = false;
         while (true) {
@@ -15164,7 +15178,7 @@ void Editor::ExGlobal(int start_row, int end_row, bool invert, const std::string
     if (start_row > end_row || subcmd.empty()) return;
     std::vector<int> matches;
     for (int r = start_row; r <= end_row; r++) {
-        bool found = CiFind(Buf().lines[r], pattern, 0) != std::string::npos;
+        bool found = CiFind(Buf().lines[static_cast<size_t>(r)], pattern, 0) != std::string::npos;
         if (found != invert) matches.push_back(r);
     }
     PushUndo();
@@ -15510,7 +15524,8 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
 }
 
 void Editor::RunNormalKeys(const std::string &keys) {
-    for (unsigned char c : keys) {
+    for (char raw : keys) {
+        unsigned char c = static_cast<unsigned char>(raw);
         if (mode_ == Mode::Insert) {
             ProcessInsertKey(c == 27 ? static_cast<int>(kReplayEscape) : static_cast<int>(c));
         } else if (mode_ == Mode::Normal) {
@@ -15530,13 +15545,13 @@ void Editor::RunNormalKeys(const std::string &keys) {
 
 std::string Editor::GetLineForLua(int row) const {
     if (row < 0 || row >= Buf().LineCount()) return "";
-    return Buf().lines[row];
+    return Buf().lines[static_cast<size_t>(row)];
 }
 
 void Editor::SetLineForLua(int row, const std::string &text) {
     if (row < 0 || row >= Buf().LineCount()) return;
     PushUndo();
-    Buf().lines[row] = text;
+    Buf().lines[static_cast<size_t>(row)] = text;
     Buf().modified = true;
 }
 
@@ -15547,7 +15562,7 @@ std::vector<Editor::TodoMatch> Editor::TodoScanMatches() const {
     std::vector<TodoMatch> matches;
     const int n = Buf().LineCount();
     for (int row = 0; row < n; row++) {
-        const std::string &line = Buf().lines[row];
+        const std::string &line = Buf().lines[static_cast<size_t>(row)];
         for (const char *kw : kKeywords) {
             size_t pos = line.find(kw);
             if (pos != std::string::npos) {
@@ -15662,12 +15677,12 @@ void Editor::SyntaxHighlightFallback(int ns, const std::vector<std::string> &key
     std::unordered_set<std::string> kwset(keywords.begin(), keywords.end());
     const int n = Buf().LineCount();
     for (int row = 0; row < n; row++) {
-        const std::string &line = Buf().lines[row];
+        const std::string &line = Buf().lines[static_cast<size_t>(row)];
         const int len = static_cast<int>(line.size());
         int i = 0;
         while (i < len) {
-            char c = line[i];
-            if (!comment_prefix.empty() && line.compare(i, comment_prefix.size(), comment_prefix) == 0) {
+            char c = line[static_cast<size_t>(i)];
+            if (!comment_prefix.empty() && line.compare(static_cast<size_t>(i), comment_prefix.size(), comment_prefix) == 0) {
                 Decoration d;
                 d.row = row;
                 d.col_start = i;
@@ -15678,8 +15693,8 @@ void Editor::SyntaxHighlightFallback(int ns, const std::vector<std::string> &key
             } else if (c == '"' || c == '\'') {
                 char q = c;
                 int j = i + 1;
-                while (j < len && line[j] != q) {
-                    if (line[j] == '\\') j++;
+                while (j < len && line[static_cast<size_t>(j)] != q) {
+                    if (line[static_cast<size_t>(j)] == '\\') j++;
                     j++;
                 }
                 Decoration d;
@@ -15691,7 +15706,7 @@ void Editor::SyntaxHighlightFallback(int ns, const std::vector<std::string> &key
                 i = j + 1;
             } else if (std::isdigit(static_cast<unsigned char>(c))) {
                 int j = i;
-                while (j < len && (std::isdigit(static_cast<unsigned char>(line[j])) || line[j] == '.')) j++;
+                while (j < len && (std::isdigit(static_cast<unsigned char>(line[static_cast<size_t>(j)])) || line[static_cast<size_t>(j)] == '.')) j++;
                 Decoration d;
                 d.row = row;
                 d.col_start = i;
@@ -15701,8 +15716,8 @@ void Editor::SyntaxHighlightFallback(int ns, const std::vector<std::string> &key
                 i = j;
             } else if (std::isalpha(static_cast<unsigned char>(c)) || c == '_') {
                 int j = i;
-                while (j < len && (std::isalnum(static_cast<unsigned char>(line[j])) || line[j] == '_')) j++;
-                if (kwset.count(line.substr(i, j - i))) {
+                while (j < len && (std::isalnum(static_cast<unsigned char>(line[static_cast<size_t>(j)])) || line[static_cast<size_t>(j)] == '_')) j++;
+                if (kwset.count(line.substr(static_cast<size_t>(i), static_cast<size_t>(j - i)))) {
                     Decoration d;
                     d.row = row;
                     d.col_start = i;
@@ -15754,7 +15769,7 @@ void Editor::OrgHighlightEmphasis(int ns) {
      * @return The character at `idx`, or '\0' if `idx` is out of range.
      */
     auto at = [](const std::string &s, int idx) -> char {
-        return (idx >= 0 && idx < static_cast<int>(s.size())) ? s[idx] : '\0';
+        return (idx >= 0 && idx < static_cast<int>(s.size())) ? s[static_cast<size_t>(idx)] : '\0';
     };
     /**
      * @brief Checks whether a character is a non-NUL alphanumeric "word" character.
@@ -15766,7 +15781,7 @@ void Editor::OrgHighlightEmphasis(int ns) {
     bool in_block = false;
     const int n = Buf().LineCount();
     for (int row = 0; row < n; row++) {
-        const std::string &line = Buf().lines[row];
+        const std::string &line = Buf().lines[static_cast<size_t>(row)];
         if (in_block) {
             if (MatchesOrgBlockMarker(line, "end_")) in_block = false;
             continue;
@@ -15778,7 +15793,7 @@ void Editor::OrgHighlightEmphasis(int ns) {
         int i = 0;
         const int len = static_cast<int>(line.size());
         while (i < len) {
-            char ch = line[i];
+            char ch = line[static_cast<size_t>(i)];
             auto it = kMarkerKind.find(ch);
             if (it == kMarkerKind.end()) {
                 i++;
@@ -15819,6 +15834,7 @@ void Editor::OrgHighlightEmphasis(int ns) {
                 case 's': d.strikethrough = true; d.hl_group = "Comment"; break;
                 case 'v': d.hl_group = "Green"; break;
                 case 'c': d.hl_group = "Cyan"; break;
+                default: break;
             }
             AddDecoration(ns, d);
             i = found_end + 1;
@@ -15829,7 +15845,7 @@ void Editor::OrgHighlightEmphasis(int ns) {
 void Editor::MdToggleCheckbox() {
     int row = 0, col = 0;
     GetCursorForLua(&row, &col);
-    const std::string &line = Buf().lines[row];
+    const std::string &line = Buf().lines[static_cast<size_t>(row)];
     size_t i = 0;
     while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) i++;
     bool ok = i < line.size() && (line[i] == '-' || line[i] == '*' || line[i] == '+');
@@ -15866,7 +15882,7 @@ void Editor::MdComputeFolds() {
     int fence_start = 0;
     const int n = Buf().LineCount();
     for (int i = 0; i < n; i++) {
-        const std::string &line = Buf().lines[i];
+        const std::string &line = Buf().lines[static_cast<size_t>(i)];
         if (line.compare(0, 3, "```") == 0) {
             if (in_fence) {
                 CreateFold(fence_start, i, true, "markdown");
@@ -15963,7 +15979,7 @@ MdTableRowResult ParseMdTableRow(const std::string &line) {
         for (const auto &c : cells) {
             bool l = !c.empty() && c.front() == ':';
             bool rr = !c.empty() && c.back() == ':';
-            r.aligns.push_back((l && rr) ? "center" : (rr ? "right" : (l ? "left" : "none")));
+            r.aligns.emplace_back((l && rr) ? "center" : (rr ? "right" : (l ? "left" : "none")));
         }
     } else {
         r.cells = cells;
@@ -15978,25 +15994,25 @@ MdTableRowResult ParseMdTableRow(const std::string &line) {
  * @return A string of dashes, with leading/trailing ':' markers according to `al`.
  */
 std::string MdSepCell(int w, const std::string &al) {
-    if (al == "left") return ":" + std::string(std::max(1, w - 1), '-');
-    if (al == "right") return std::string(std::max(1, w - 1), '-') + ":";
-    if (al == "center") return ":" + std::string(std::max(1, w - 2), '-') + ":";
-    return std::string(w, '-');
+    if (al == "left") return ":" + std::string(static_cast<size_t>(std::max(1, w - 1)), '-');
+    if (al == "right") return std::string(static_cast<size_t>(std::max(1, w - 1)), '-') + ":";
+    if (al == "center") return ":" + std::string(static_cast<size_t>(std::max(1, w - 2)), '-') + ":";
+    return std::string(static_cast<size_t>(w), '-');
 }
 }  // namespace
 
 void Editor::MdTableAlign() {
     int row = 0, col = 0;
     GetCursorForLua(&row, &col);
-    if (!ParseMdTableRow(Buf().lines[row]).is_table_row) {
+    if (!ParseMdTableRow(Buf().lines[static_cast<size_t>(row)]).is_table_row) {
         Notify("Not on a table row", NotifyLevel::Warn);
         return;
     }
     int top = row;
-    while (top > 0 && ParseMdTableRow(Buf().lines[top - 1]).is_table_row) top--;
+    while (top > 0 && ParseMdTableRow(Buf().lines[static_cast<size_t>(top) - 1]).is_table_row) top--;
     int bot = row;
     const int n = Buf().LineCount();
-    while (bot < n - 1 && ParseMdTableRow(Buf().lines[bot + 1]).is_table_row) bot++;
+    while (bot < n - 1 && ParseMdTableRow(Buf().lines[static_cast<size_t>(bot) + 1]).is_table_row) bot++;
 
     std::vector<int> widths;
     std::vector<std::string> aligns;
@@ -16006,7 +16022,7 @@ void Editor::MdTableAlign() {
     };
     std::vector<RowEntry> rows;
     for (int i = top; i <= bot; i++) {
-        MdTableRowResult r = ParseMdTableRow(Buf().lines[i]);
+        MdTableRowResult r = ParseMdTableRow(Buf().lines[static_cast<size_t>(i)]);
         if (r.is_sep) {
             for (size_t ci = 0; ci < r.aligns.size(); ci++) {
                 if (aligns.size() <= ci) aligns.resize(ci + 1);
@@ -16031,12 +16047,12 @@ void Editor::MdTableAlign() {
                 int pad = std::max(0, widths[ci] - static_cast<int>(cell.size()));
                 std::string padded;
                 if (al == "right") {
-                    padded = std::string(pad, ' ') + cell;
+                    padded = std::string(static_cast<size_t>(pad), ' ') + cell;
                 } else if (al == "center") {
                     int lp = pad / 2;
-                    padded = std::string(lp, ' ') + cell + std::string(pad - lp, ' ');
+                    padded = std::string(static_cast<size_t>(lp), ' ') + cell + std::string(static_cast<size_t>(pad - lp), ' ');
                 } else {
-                    padded = cell + std::string(pad, ' ');
+                    padded = cell + std::string(static_cast<size_t>(pad), ' ');
                 }
                 out += " " + padded + " |";
             }
@@ -16048,14 +16064,14 @@ void Editor::MdTableAlign() {
 void Editor::MdTableInsertRow() {
     int row = 0, col = 0;
     GetCursorForLua(&row, &col);
-    MdTableRowResult r = ParseMdTableRow(Buf().lines[row]);
+    MdTableRowResult r = ParseMdTableRow(Buf().lines[static_cast<size_t>(row)]);
     if (!r.is_table_row || r.is_sep) {
         Notify("Not on a table data row", NotifyLevel::Warn);
         return;
     }
     std::string blank = "|";
     for (size_t i = 0; i < r.cells.size(); i++) blank += " |";
-    std::vector<std::string> newlines = {Buf().lines[row], blank};
+    std::vector<std::string> newlines = {Buf().lines[static_cast<size_t>(row)], blank};
     ReplaceLinesForLua(row, row + 1, newlines);
     SetCursorForLua(row + 1, 1);
     MdTableAlign();
@@ -16064,19 +16080,19 @@ void Editor::MdTableInsertRow() {
 void Editor::MdTableInsertCol() {
     int row = 0, col = 0;
     GetCursorForLua(&row, &col);
-    if (!ParseMdTableRow(Buf().lines[row]).is_table_row) {
+    if (!ParseMdTableRow(Buf().lines[static_cast<size_t>(row)]).is_table_row) {
         Notify("Not on a table row", NotifyLevel::Warn);
         return;
     }
     int top = row;
-    while (top > 0 && ParseMdTableRow(Buf().lines[top - 1]).is_table_row) top--;
+    while (top > 0 && ParseMdTableRow(Buf().lines[static_cast<size_t>(top) - 1]).is_table_row) top--;
     int bot = row;
     const int n = Buf().LineCount();
-    while (bot < n - 1 && ParseMdTableRow(Buf().lines[bot + 1]).is_table_row) bot++;
+    while (bot < n - 1 && ParseMdTableRow(Buf().lines[static_cast<size_t>(bot) + 1]).is_table_row) bot++;
     std::vector<std::string> newlines;
     for (int i = top; i <= bot; i++) {
-        std::string suffix = ParseMdTableRow(Buf().lines[i]).is_sep ? "---|" : " |";
-        const std::string &line = Buf().lines[i];
+        std::string suffix = ParseMdTableRow(Buf().lines[static_cast<size_t>(i)]).is_sep ? "---|" : " |";
+        const std::string &line = Buf().lines[static_cast<size_t>(i)];
         size_t end = line.size();
         while (end > 0 && std::isspace(static_cast<unsigned char>(line[end - 1]))) end--;
         newlines.push_back(line.substr(0, end) + suffix);
@@ -16111,7 +16127,7 @@ std::vector<MdConcealSpan> ScanMdConcealSpans(const std::string &line) {
      * @param idx The index to read.
      * @return The character at `idx`, or '\0' if `idx` is out of range.
      */
-    auto at = [&](int idx) -> char { return (idx >= 0 && idx < n) ? line[idx] : '\0'; };
+    auto at = [&](int idx) -> char { return (idx >= 0 && idx < n) ? line[static_cast<size_t>(idx)] : '\0'; };
     /**
      * @brief Checks whether a character is a non-NUL alphanumeric "word" character.
      * @param c The character to test.
@@ -16120,14 +16136,14 @@ std::vector<MdConcealSpan> ScanMdConcealSpans(const std::string &line) {
     auto is_word = [](char c) { return c != '\0' && std::isalnum(static_cast<unsigned char>(c)); };
     int i = 0;
     while (i < n) {
-        char c0 = line[i];
+        char c0 = line[static_cast<size_t>(i)];
         char c1 = at(i + 1);
         if ((c0 == '*' && c1 == '*') || (c0 == '_' && c1 == '_')) {
             std::string two{c0, c1};
             size_t close = line.find(two, static_cast<size_t>(i) + 2);
             if (close != std::string::npos) {
                 spans.push_back({i, static_cast<int>(close) + 2,
-                                  line.substr(i + 2, close - static_cast<size_t>(i) - 2), "Yellow"});
+                                  line.substr(static_cast<size_t>(i) + 2, close - static_cast<size_t>(i) - 2), "Yellow"});
                 i = static_cast<int>(close) + 2;
             } else {
                 i++;
@@ -16141,7 +16157,7 @@ std::vector<MdConcealSpan> ScanMdConcealSpans(const std::string &line) {
             }
             if (close >= 0 && close > i + 1 && !is_word(at(static_cast<int>(close) + 1))) {
                 spans.push_back({i, static_cast<int>(close) + 1,
-                                  line.substr(i + 1, static_cast<size_t>(close) - i - 1), "Cyan"});
+                                  line.substr(static_cast<size_t>(i) + 1, static_cast<size_t>(close) - static_cast<size_t>(i) - 1), "Cyan"});
                 i = static_cast<int>(close) + 1;
             } else {
                 i++;
@@ -16153,7 +16169,7 @@ std::vector<MdConcealSpan> ScanMdConcealSpans(const std::string &line) {
                 size_t closep = line.find(')', closeb + 2);
                 if (closep != std::string::npos) {
                     spans.push_back({i, static_cast<int>(closep) + 1,
-                                      line.substr(i + 1, closeb - static_cast<size_t>(i) - 1), "Blue"});
+                                      line.substr(static_cast<size_t>(i) + 1, closeb - static_cast<size_t>(i) - 1), "Blue"});
                     i = static_cast<int>(closep) + 1;
                 } else {
                     i++;
@@ -16162,7 +16178,7 @@ std::vector<MdConcealSpan> ScanMdConcealSpans(const std::string &line) {
                 size_t closer2 = line.find(']', closeb + 2);
                 if (closer2 != std::string::npos) {
                     spans.push_back({i, static_cast<int>(closer2) + 1,
-                                      line.substr(i + 1, closeb - static_cast<size_t>(i) - 1), "Blue"});
+                                      line.substr(static_cast<size_t>(i) + 1, closeb - static_cast<size_t>(i) - 1), "Blue"});
                     i = static_cast<int>(closer2) + 1;
                 } else {
                     i++;
@@ -16184,7 +16200,7 @@ void Editor::MdConceal(int ns) {
     bool in_fence = false;
     const int n = Buf().LineCount();
     for (int row = 0; row < n; row++) {
-        const std::string &line = Buf().lines[row];
+        const std::string &line = Buf().lines[static_cast<size_t>(row)];
         if (line.compare(0, 3, "```") == 0) {
             in_fence = !in_fence;
             continue;
@@ -16209,7 +16225,7 @@ std::vector<std::string> Editor::CompletionScanBufferWords(const std::string &pr
     std::vector<std::string> words;
     const int n = Buf().LineCount();
     for (int i = 0; i < n; i++) {
-        const std::string &line = Buf().lines[i];
+        const std::string &line = Buf().lines[static_cast<size_t>(i)];
         size_t j = 0;
         const size_t len = line.size();
         while (j < len) {
@@ -16413,7 +16429,7 @@ void Editor::SnippetJump(int delta) {
         has_snippet_state_ = false;
         return;
     }
-    const SnippetTabstop &ts = snippet_tabstops_[snippet_index_ - 1];
+    const SnippetTabstop &ts = snippet_tabstops_[static_cast<size_t>(snippet_index_ - 1)];
     SetCursorForLua(snippet_base_row_ + ts.line_idx - 1, ts.col - 1);
 }
 
@@ -16434,7 +16450,7 @@ void Editor::PreviewFile(const std::string &path, int max_lines) {
         }
         lines.push_back(std::move(line));
     }
-    if (truncated) lines.push_back("...");
+    if (truncated) lines.emplace_back("...");
     std::string text;
     for (size_t i = 0; i < lines.size(); i++) {
         if (i > 0) text += '\n';
@@ -16588,7 +16604,7 @@ int HexPairVal(char hi, char lo) { return HexDigitVal(hi) * 16 + HexDigitVal(lo)
  */
 bool AllHexDigits(const std::string &line, int start, int count) {
     for (int k = 0; k < count; k++) {
-        if (!std::isxdigit(static_cast<unsigned char>(line[start + k]))) return false;
+        if (!std::isxdigit(static_cast<unsigned char>(line[static_cast<size_t>(start) + static_cast<size_t>(k)]))) return false;
     }
     return true;
 }
@@ -16620,17 +16636,17 @@ void Editor::Colorize() {
     ClearNamespace(ns);
     const int n = Buf().LineCount();
     for (int row = 0; row < n; row++) {
-        const std::string &line = Buf().lines[row];
+        const std::string &line = Buf().lines[static_cast<size_t>(row)];
         const int len = static_cast<int>(line.size());
-        std::vector<bool> covered(len, false);
+        std::vector<bool> covered(static_cast<size_t>(len), false);
 
         // #RRGGBBAA (8 hex) -- unconditional (first to claim), alpha
         // consumed but unused for the swatch color.
         for (int i = 0; i < len;) {
-            if (line[i] == '#' && i + 9 <= len && AllHexDigits(line, i + 1, 8)) {
-                AddSwatch(this, ns, row, i, i + 9, HexPairVal(line[i + 1], line[i + 2]),
-                          HexPairVal(line[i + 3], line[i + 4]), HexPairVal(line[i + 5], line[i + 6]));
-                for (int k = i; k < i + 9; k++) covered[k] = true;
+            if (line[static_cast<size_t>(i)] == '#' && i + 9 <= len && AllHexDigits(line, i + 1, 8)) {
+                AddSwatch(this, ns, row, i, i + 9, HexPairVal(line[static_cast<size_t>(i) + 1], line[static_cast<size_t>(i) + 2]),
+                          HexPairVal(line[static_cast<size_t>(i) + 3], line[static_cast<size_t>(i) + 4]), HexPairVal(line[static_cast<size_t>(i) + 5], line[static_cast<size_t>(i) + 6]));
+                for (int k = i; k < i + 9; k++) covered[static_cast<size_t>(k)] = true;
                 i += 9;
             } else {
                 i++;
@@ -16641,11 +16657,11 @@ void Editor::Colorize() {
         // found either way (mirrors gmatch's own non-overlapping
         // progression, independent of the covered check).
         for (int i = 0; i < len;) {
-            if (line[i] == '#' && i + 7 <= len && AllHexDigits(line, i + 1, 6)) {
-                if (!covered[i]) {
-                    AddSwatch(this, ns, row, i, i + 7, HexPairVal(line[i + 1], line[i + 2]),
-                              HexPairVal(line[i + 3], line[i + 4]), HexPairVal(line[i + 5], line[i + 6]));
-                    for (int k = i; k < i + 7; k++) covered[k] = true;
+            if (line[static_cast<size_t>(i)] == '#' && i + 7 <= len && AllHexDigits(line, i + 1, 6)) {
+                if (!covered[static_cast<size_t>(i)]) {
+                    AddSwatch(this, ns, row, i, i + 7, HexPairVal(line[static_cast<size_t>(i) + 1], line[static_cast<size_t>(i) + 2]),
+                              HexPairVal(line[static_cast<size_t>(i) + 3], line[static_cast<size_t>(i) + 4]), HexPairVal(line[static_cast<size_t>(i) + 5], line[static_cast<size_t>(i) + 6]));
+                    for (int k = i; k < i + 7; k++) covered[static_cast<size_t>(k)] = true;
                 }
                 i += 7;
             } else {
@@ -16656,11 +16672,11 @@ void Editor::Colorize() {
         // but (matching the original exactly) doesn't itself mark
         // covered afterward.
         for (int i = 0; i < len;) {
-            if (line[i] == '#' && i + 4 <= len && AllHexDigits(line, i + 1, 3)) {
-                if (!covered[i]) {
-                    int r = HexPairVal(line[i + 1], line[i + 1]);
-                    int g = HexPairVal(line[i + 2], line[i + 2]);
-                    int b = HexPairVal(line[i + 3], line[i + 3]);
+            if (line[static_cast<size_t>(i)] == '#' && i + 4 <= len && AllHexDigits(line, i + 1, 3)) {
+                if (!covered[static_cast<size_t>(i)]) {
+                    int r = HexPairVal(line[static_cast<size_t>(i) + 1], line[static_cast<size_t>(i) + 1]);
+                    int g = HexPairVal(line[static_cast<size_t>(i) + 2], line[static_cast<size_t>(i) + 2]);
+                    int b = HexPairVal(line[static_cast<size_t>(i) + 3], line[static_cast<size_t>(i) + 3]);
                     AddSwatch(this, ns, row, i, i + 4, r, g, b);
                 }
                 i += 4;
@@ -16678,32 +16694,32 @@ void Editor::Colorize() {
         for (int i = 0; i < len;) {
             int p = i;
             bool matched = false;
-            if (line.compare(p, 3, "rgb") == 0) {
+            if (line.compare(static_cast<size_t>(p), 3, "rgb") == 0) {
                 p += 3;
-                if (p < len && line[p] == 'a') p++;
-                if (p < len && line[p] == '(') {
+                if (p < len && line[static_cast<size_t>(p)] == 'a') p++;
+                if (p < len && line[static_cast<size_t>(p)] == '(') {
                     p++;
-                    while (p < len && std::isspace(static_cast<unsigned char>(line[p]))) p++;
+                    while (p < len && std::isspace(static_cast<unsigned char>(line[static_cast<size_t>(p)]))) p++;
                     int r_start = p;
-                    while (p < len && std::isdigit(static_cast<unsigned char>(line[p]))) p++;
+                    while (p < len && std::isdigit(static_cast<unsigned char>(line[static_cast<size_t>(p)]))) p++;
                     if (p > r_start) {
-                        int r = std::stoi(line.substr(r_start, p - r_start));
-                        while (p < len && std::isspace(static_cast<unsigned char>(line[p]))) p++;
-                        if (p < len && line[p] == ',') {
+                        int r = std::stoi(line.substr(static_cast<size_t>(r_start), static_cast<size_t>(p - r_start)));
+                        while (p < len && std::isspace(static_cast<unsigned char>(line[static_cast<size_t>(p)]))) p++;
+                        if (p < len && line[static_cast<size_t>(p)] == ',') {
                             p++;
-                            while (p < len && std::isspace(static_cast<unsigned char>(line[p]))) p++;
+                            while (p < len && std::isspace(static_cast<unsigned char>(line[static_cast<size_t>(p)]))) p++;
                             int g_start = p;
-                            while (p < len && std::isdigit(static_cast<unsigned char>(line[p]))) p++;
+                            while (p < len && std::isdigit(static_cast<unsigned char>(line[static_cast<size_t>(p)]))) p++;
                             if (p > g_start) {
-                                int g = std::stoi(line.substr(g_start, p - g_start));
-                                while (p < len && std::isspace(static_cast<unsigned char>(line[p]))) p++;
-                                if (p < len && line[p] == ',') {
+                                int g = std::stoi(line.substr(static_cast<size_t>(g_start), static_cast<size_t>(p - g_start)));
+                                while (p < len && std::isspace(static_cast<unsigned char>(line[static_cast<size_t>(p)]))) p++;
+                                if (p < len && line[static_cast<size_t>(p)] == ',') {
                                     p++;
-                                    while (p < len && std::isspace(static_cast<unsigned char>(line[p]))) p++;
+                                    while (p < len && std::isspace(static_cast<unsigned char>(line[static_cast<size_t>(p)]))) p++;
                                     int b_start = p;
-                                    while (p < len && std::isdigit(static_cast<unsigned char>(line[p]))) p++;
+                                    while (p < len && std::isdigit(static_cast<unsigned char>(line[static_cast<size_t>(p)]))) p++;
                                     if (p > b_start) {
-                                        int b = std::stoi(line.substr(b_start, p - b_start));
+                                        int b = std::stoi(line.substr(static_cast<size_t>(b_start), static_cast<size_t>(p - b_start)));
                                         AddSwatch(this, ns, row, i, i + 3, r, g, b);
                                         matched = true;
                                     }
@@ -16724,12 +16740,12 @@ void Editor::Colorize() {
         // decorated when it's an exact (case-sensitive) key in
         // kCssColors and not already claimed.
         for (int i = 0; i < len;) {
-            if (std::isalpha(static_cast<unsigned char>(line[i]))) {
+            if (std::isalpha(static_cast<unsigned char>(line[static_cast<size_t>(i)]))) {
                 int start = i;
-                while (i < len && std::isalpha(static_cast<unsigned char>(line[i]))) i++;
-                std::string word = line.substr(start, i - start);
+                while (i < len && std::isalpha(static_cast<unsigned char>(line[static_cast<size_t>(i)]))) i++;
+                std::string word = line.substr(static_cast<size_t>(start), static_cast<size_t>(i - start));
                 auto it = kCssColors.find(word);
-                if (it != kCssColors.end() && !covered[start]) {
+                if (it != kCssColors.end() && !covered[static_cast<size_t>(start)]) {
                     AddSwatch(this, ns, row, start, i, HexPairVal(it->second[0], it->second[1]),
                               HexPairVal(it->second[2], it->second[3]), HexPairVal(it->second[4], it->second[5]));
                 }
@@ -16770,13 +16786,13 @@ std::vector<UrlSpan> FindUrlSpans(const std::string &line) {
     const int len = static_cast<int>(line.size());
     int i = 0;
     while (i < len) {
-        if (line.compare(i, 4, "http") == 0) {
+        if (line.compare(static_cast<size_t>(i), 4, "http") == 0) {
             int j = i + 4;
-            if (j < len && line[j] == 's') j++;
-            if (line.compare(j, 3, "://") == 0) {
+            if (j < len && line[static_cast<size_t>(j)] == 's') j++;
+            if (line.compare(static_cast<size_t>(j), 3, "://") == 0) {
                 int body_start = j + 3;
                 int k = body_start;
-                while (k < len && IsUrlBodyChar(static_cast<unsigned char>(line[k]))) k++;
+                while (k < len && IsUrlBodyChar(static_cast<unsigned char>(line[static_cast<size_t>(k)]))) k++;
                 if (k > body_start) {
                     spans.push_back({i, k});
                     i = k;
@@ -16794,9 +16810,9 @@ std::string Editor::UrlUnderCursor() const {
     int row = 0, col = 0;
     GetCursorForLua(&row, &col);
     if (row < 0 || row >= Buf().LineCount()) return "";
-    const std::string &line = Buf().lines[row];
+    const std::string &line = Buf().lines[static_cast<size_t>(row)];
     for (const UrlSpan &sp : FindUrlSpans(line)) {
-        if (col >= sp.col_start && col < sp.col_end) return line.substr(sp.col_start, sp.col_end - sp.col_start);
+        if (col >= sp.col_start && col < sp.col_end) return line.substr(static_cast<size_t>(sp.col_start), static_cast<size_t>(sp.col_end - sp.col_start));
     }
     return "";
 }
@@ -16805,9 +16821,9 @@ std::vector<std::string> Editor::ListUrls() const {
     std::vector<std::string> urls;
     const int n = Buf().LineCount();
     for (int row = 0; row < n; row++) {
-        const std::string &line = Buf().lines[row];
+        const std::string &line = Buf().lines[static_cast<size_t>(row)];
         for (const UrlSpan &sp : FindUrlSpans(line)) {
-            urls.push_back(line.substr(sp.col_start, sp.col_end - sp.col_start));
+            urls.push_back(line.substr(static_cast<size_t>(sp.col_start), static_cast<size_t>(sp.col_end - sp.col_start)));
         }
     }
     return urls;
@@ -16841,8 +16857,8 @@ void Editor::GitGutterRefresh(const std::string &base) {
         git_base_lines_ = *lines;
         std::vector<std::string> cur;
         const int n = Buf().LineCount();
-        cur.reserve(n);
-        for (int i = 0; i < n; i++) cur.push_back(Buf().lines[i]);
+        cur.reserve(static_cast<size_t>(n));
+        for (int i = 0; i < n; i++) cur.push_back(Buf().lines[static_cast<size_t>(i)]);
         git_hunks_ = MyersDiffHunks(*lines, cur);
         ClearNamespace(ns);
         for (const DiffHunk &h : git_hunks_) {
@@ -16919,15 +16935,15 @@ std::pair<bool, std::string> Editor::GitPreviewHunkText() const {
     std::vector<std::string> lines;
     for (int i = h->old_start; i < h->old_start + h->old_count; i++) {
         std::string old_line =
-            (i - 1 >= 0 && i - 1 < static_cast<int>(git_base_lines_.size())) ? git_base_lines_[i - 1] : "";
+            (i - 1 >= 0 && i - 1 < static_cast<int>(git_base_lines_.size())) ? git_base_lines_[static_cast<size_t>(i - 1)] : "";
         lines.push_back("-" + old_line);
     }
     const int n = Buf().LineCount();
     for (int i = h->new_start; i < h->new_start + h->new_count; i++) {
-        std::string cur_line = (i - 1 >= 0 && i - 1 < n) ? Buf().lines[i - 1] : "";
+        std::string cur_line = (i - 1 >= 0 && i - 1 < n) ? Buf().lines[static_cast<size_t>(i - 1)] : "";
         lines.push_back("+" + cur_line);
     }
-    if (lines.empty()) lines.push_back("(empty hunk)");
+    if (lines.empty()) lines.emplace_back("(empty hunk)");
     std::string text;
     for (size_t k = 0; k < lines.size(); k++) {
         if (k > 0) text += '\n';
@@ -16944,7 +16960,7 @@ void Editor::GitResetHunk(const std::string &base) {
     }
     std::vector<std::string> repl;
     for (int i = h->old_start; i < h->old_start + h->old_count; i++) {
-        if (i - 1 >= 0 && i - 1 < static_cast<int>(git_base_lines_.size())) repl.push_back(git_base_lines_[i - 1]);
+        if (i - 1 >= 0 && i - 1 < static_cast<int>(git_base_lines_.size())) repl.push_back(git_base_lines_[static_cast<size_t>(i - 1)]);
     }
     int new_start = h->new_start, new_count = h->new_count;
     ReplaceLinesForLua(new_start - 1, new_start - 1 + new_count, repl);
@@ -16970,11 +16986,11 @@ void Editor::GitStageHunk() {
     const int n = Buf().LineCount();
     for (int i = h->old_start; i < h->old_start + h->old_count; i++) {
         std::string old_line =
-            (i - 1 >= 0 && i - 1 < static_cast<int>(git_base_lines_.size())) ? git_base_lines_[i - 1] : "";
+            (i - 1 >= 0 && i - 1 < static_cast<int>(git_base_lines_.size())) ? git_base_lines_[static_cast<size_t>(i - 1)] : "";
         patch += "-" + old_line + "\n";
     }
     for (int i = h->new_start; i < h->new_start + h->new_count; i++) {
-        std::string cur_line = (i - 1 >= 0 && i - 1 < n) ? Buf().lines[i - 1] : "";
+        std::string cur_line = (i - 1 >= 0 && i - 1 < n) ? Buf().lines[static_cast<size_t>(i - 1)] : "";
         patch += "+" + cur_line + "\n";
     }
     JobManager::Callbacks cb;
@@ -17001,14 +17017,14 @@ void Editor::ReplaceLinesForLua(int start_row, int end_row, const std::vector<st
     PushUndo();
     buf.lines.erase(buf.lines.begin() + start_row, buf.lines.begin() + end_row);
     buf.lines.insert(buf.lines.begin() + start_row, lines.begin(), lines.end());
-    if (buf.lines.empty()) buf.lines.push_back("");
+    if (buf.lines.empty()) buf.lines.emplace_back("");
     buf.modified = true;
     ClampCursor();
 }
 
 void Editor::SetBufferLinesForLua(int buffer_id, const std::vector<std::string> &lines) {
     if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
-    Buffer &buf = buffers_[buffer_id];
+    Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
     // No PushUndo/undo-stack entry -- this is for streaming external
     // process output (Part VI Phase 27's terminal/Run/REPL) into a
     // dedicated buffer that isn't the active pane's, where "undo" has no
@@ -17021,7 +17037,7 @@ void Editor::SetBufferLinesForLua(int buffer_id, const std::vector<std::string> 
 
 void Editor::PushUndoForBuffer(int buffer_id) {
     if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
-    Buffer &buf = buffers_[buffer_id];
+    Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
     buf.undo_stack.push_back(buf.lines);
     if (buf.undo_stack.size() > kMaxUndo) buf.undo_stack.erase(buf.undo_stack.begin());
     buf.redo_stack.clear();
@@ -17030,30 +17046,30 @@ void Editor::PushUndoForBuffer(int buffer_id) {
 
 CursorPos Editor::ClampPositionInBuffer(int buffer_id, CursorPos pos) const {
     if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return {0, 0};
-    const Buffer &buf = buffers_[buffer_id];
+    const Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
     const int row = std::max(0, std::min(pos.row, static_cast<int>(buf.lines.size()) - 1));
-    const int col = std::max(0, std::min(pos.col, static_cast<int>(buf.lines[row].size())));
+    const int col = std::max(0, std::min(pos.col, static_cast<int>(buf.lines[static_cast<size_t>(row)].size())));
     return {row, col};
 }
 
 void Editor::SetLineAt(int buffer_id, int row, const std::string &text) {
     if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
-    Buffer &buf = buffers_[buffer_id];
+    Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
     if (row < 0 || row >= static_cast<int>(buf.lines.size())) return;
     PushUndoForBuffer(buffer_id);
-    buf.lines[row] = text;
+    buf.lines[static_cast<size_t>(row)] = text;
     buf.modified = true;
 }
 
 void Editor::ReplaceLinesAt(int buffer_id, int start_row, int end_row, const std::vector<std::string> &lines) {
     if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
-    Buffer &buf = buffers_[buffer_id];
+    Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
     start_row = std::max(0, std::min(start_row, static_cast<int>(buf.lines.size())));
     end_row = std::max(start_row, std::min(end_row, static_cast<int>(buf.lines.size())));
     PushUndoForBuffer(buffer_id);
     buf.lines.erase(buf.lines.begin() + start_row, buf.lines.begin() + end_row);
     buf.lines.insert(buf.lines.begin() + start_row, lines.begin(), lines.end());
-    if (buf.lines.empty()) buf.lines.push_back("");
+    if (buf.lines.empty()) buf.lines.emplace_back("");
     buf.modified = true;
 }
 
@@ -17069,7 +17085,7 @@ void Editor::ReplaceLinesAt(int buffer_id, int start_row, int end_row, const std
 // own fold-unaware clamping.
 CursorPos Editor::InsertTextAt(int buffer_id, CursorPos at, const std::string &text) {
     if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return at;
-    Buffer &buf = buffers_[buffer_id];
+    Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
     const CursorPos start = ClampPositionInBuffer(buffer_id, at);
 
     std::vector<std::string> segments;
@@ -17082,9 +17098,9 @@ CursorPos Editor::InsertTextAt(int buffer_id, CursorPos at, const std::string &t
     }
 
     PushUndoForBuffer(buffer_id);
-    std::string &line = buf.lines[start.row];
-    const std::string tail = line.substr(start.col);
-    line = line.substr(0, start.col) + segments.front();
+    std::string &line = buf.lines[static_cast<size_t>(start.row)];
+    const std::string tail = line.substr(static_cast<size_t>(start.col));
+    line = line.substr(0, static_cast<size_t>(start.col)) + segments.front();
 
     CursorPos result;
     if (segments.size() == 1) {
@@ -17107,7 +17123,7 @@ std::string Editor::BufferLabelForLua(int buffer_id) const {
     // already skips any buffer_id whose label comes back empty, so this
     // is what actually keeps a deleted buffer out of the Buffers picker
     // without needing a second, separate filter there.
-    if (buffers_[buffer_id].deleted) return "";
+    if (buffers_[static_cast<size_t>(buffer_id)].deleted) return "";
     // Terminal buffers have no filename (they're never saved), so without
     // this they'd all show as the same indistinguishable "[No Name]" --
     // defeating the point of surfacing them here at all now that closing
@@ -17121,7 +17137,7 @@ std::string Editor::BufferLabelForLua(int buffer_id) const {
         if (sess->exited) label += " [exited: " + std::to_string(sess->exit_code) + "]";
         return label;
     }
-    const Buffer &buf = buffers_[buffer_id];
+    const Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
     std::string label = buf.filename.empty() ? "[No Name]" : buf.filename;
     if (buf.modified) label += " [+]";
     return label;
@@ -17130,7 +17146,7 @@ std::string Editor::BufferLabelForLua(int buffer_id) const {
 std::string Editor::BufferFilenameForLua(int buffer_id) const {
     if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return "";
     if (GetTerminal(buffer_id)) return "";
-    return buffers_[buffer_id].filename;
+    return buffers_[static_cast<size_t>(buffer_id)].filename;
 }
 
 void Editor::SwitchToBufferForLua(int buffer_id) {
@@ -17570,7 +17586,7 @@ void Editor::AddProject(const std::string &path) {
         list.push_back(canonical_path);
         Json doc = Json::Object();
         Json arr = Json::Array();
-        for (const std::string &p : list) arr.push_back(Json(p));
+        for (const std::string &p : list) arr.push_back(p);
         doc["projects"] = arr;
         WriteJsonFile(ProjectListPath(), doc);
     }
@@ -17586,7 +17602,7 @@ void Editor::RemoveProject(const std::string &path) {
     list.erase(std::remove(list.begin(), list.end(), path), list.end());
     Json doc = Json::Object();
     Json arr = Json::Array();
-    for (const std::string &p : list) arr.push_back(Json(p));
+    for (const std::string &p : list) arr.push_back(p);
     doc["projects"] = arr;
     WriteJsonFile(ProjectListPath(), doc);
 #endif
@@ -17831,7 +17847,7 @@ void Editor::LoadFile(const std::string &path, bool force_text) {
     CurPane().buffer_id = id;
     CurPane().cursor = {0, 0};
     CurPane().scroll_row = 0;
-    status_message_ = existed ? "\"" + path + "\" " + std::to_string(buffers_[id].LineCount()) + "L loaded"
+    status_message_ = existed ? "\"" + path + "\" " + std::to_string(buffers_[static_cast<size_t>(id)].LineCount()) + "L loaded"
                                : "\"" + path + "\" [New]";
     SyncModeToActivePaneBuffer();
 }
@@ -17878,7 +17894,8 @@ std::string BufferText(const Buffer &buffer) {
 std::vector<std::string> BufferLines(const std::string &text) {
     std::vector<std::string> lines; size_t begin = 0;
     while (begin <= text.size()) { const size_t end = text.find('\n', begin); lines.push_back(text.substr(begin, end == std::string::npos ? std::string::npos : end - begin)); if (end == std::string::npos) break; begin = end + 1; }
-    if (lines.empty()) lines.push_back(""); return lines;
+    if (lines.empty()) { lines.emplace_back(""); }
+    return lines;
 }
 }  // namespace
 

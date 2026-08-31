@@ -260,7 +260,8 @@ private:
      *  @param out the string to append the encoded literal to. */
     static void DumpString(const std::string &s, std::string &out) {
         out += '"';
-        for (unsigned char c : s) {
+        for (char raw : s) {
+            unsigned char c = static_cast<unsigned char>(raw);
             switch (c) {
                 case '"': out += "\\\""; break;
                 case '\\': out += "\\\\"; break;

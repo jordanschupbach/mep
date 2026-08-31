@@ -135,7 +135,7 @@ int l_replace_lines(lua_State *L) {
     lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 3));
     for (lua_Integer i = 1; i <= n; i++) {
         lua_rawgeti(L, 3, i);
-        lines.push_back(luaL_optstring(L, -1, ""));
+        lines.emplace_back(luaL_optstring(L, -1, ""));
         lua_pop(L, 1);
     }
     GetEditor(L)->ReplaceLinesForLua(start_row, end_row, lines);
@@ -665,7 +665,7 @@ int l_sidebar_default_cols(lua_State *L) {
     float char_width = GetCharWidthPx();
     int cols = 34;
     if (char_width > 0.0f) {
-        cols = static_cast<int>((static_cast<double>(GetScreenWidth()) * frac) / char_width);
+        cols = static_cast<int>((static_cast<double>(GetScreenWidth()) * frac) / static_cast<double>(char_width));
     }
     lua_pushinteger(L, std::max(cols, 10));
     return 1;
@@ -733,7 +733,7 @@ int l_job_start(lua_State *L) {
     lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 1));
     for (lua_Integer i = 1; i <= n; i++) {
         lua_rawgeti(L, 1, i);
-        argv.push_back(luaL_checkstring(L, -1));
+        argv.emplace_back(luaL_checkstring(L, -1));
         lua_pop(L, 1);
     }
 
@@ -890,7 +890,7 @@ int l_ui_select(lua_State *L) {
     lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 1));
     for (lua_Integer i = 1; i <= n; i++) {
         lua_rawgeti(L, 1, i);
-        items.push_back(luaL_checkstring(L, -1));
+        items.emplace_back(luaL_checkstring(L, -1));
         lua_pop(L, 1);
     }
     lua_pushvalue(L, 3);
@@ -1326,7 +1326,7 @@ int l_activity_test_failure_lines(lua_State *L) {
     lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 1));
     for (lua_Integer i = 1; i <= n; i++) {
         lua_rawgeti(L, 1, i);
-        output.push_back(lua_isstring(L, -1) ? lua_tostring(L, -1) : "");
+        output.emplace_back(lua_isstring(L, -1) ? lua_tostring(L, -1) : "");
         lua_pop(L, 1);
     }
     std::vector<Editor::ActivityTestFailureLine> fails = GetEditor(L)->ActivityTestFailureLines(output);
@@ -1359,7 +1359,7 @@ int l_syntax_highlight_fallback(lua_State *L) {
     lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 2));
     for (lua_Integer i = 1; i <= n; i++) {
         lua_rawgeti(L, 2, i);
-        if (lua_isstring(L, -1)) keywords.push_back(lua_tostring(L, -1));
+        if (lua_isstring(L, -1)) keywords.emplace_back(lua_tostring(L, -1));
         lua_pop(L, 1);
     }
     std::string comment_prefix = (lua_gettop(L) >= 3 && lua_isstring(L, 3)) ? lua_tostring(L, 3) : "";
@@ -1545,7 +1545,7 @@ int l_snippet_splice(lua_State *L) {
     lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 4));
     for (lua_Integer i = 1; i <= n; i++) {
         lua_rawgeti(L, 4, i);
-        body.push_back(luaL_optstring(L, -1, ""));
+        body.emplace_back(luaL_optstring(L, -1, ""));
         lua_pop(L, 1);
     }
     GetEditor(L)->SnippetSplice(row, before, after, body);
@@ -1731,7 +1731,7 @@ int l_buffer_set_lines(lua_State *L) {
     lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 2));
     for (lua_Integer i = 1; i <= n; i++) {
         lua_rawgeti(L, 2, i);
-        lines.push_back(luaL_optstring(L, -1, ""));
+        lines.emplace_back(luaL_optstring(L, -1, ""));
         lua_pop(L, 1);
     }
     GetEditor(L)->SetBufferLinesForLua(buffer_id, lines);
@@ -1792,7 +1792,7 @@ int l_term_start(lua_State *L) {
     lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 1));
     for (lua_Integer i = 1; i <= n; i++) {
         lua_rawgeti(L, 1, i);
-        argv.push_back(luaL_checkstring(L, -1));
+        argv.emplace_back(luaL_checkstring(L, -1));
         lua_pop(L, 1);
     }
     std::string cwd;
@@ -2815,11 +2815,15 @@ int l_fs_create_file(lua_State *L) {
     const char *path = luaL_checkstring(L, 1);
     bool ok = false;
 #if !defined(__EMSCRIPTEN__)
+    // NOLINTBEGIN(cppcoreguidelines-owning-memory) -- fopen/fclose matched
+    // within this same scope (existence-probe pattern, not a real leak);
+    // this codebase has no GSL dependency for gsl::owner<> annotations.
     FILE *f = std::fopen(path, "ab");
     if (f) {
         ok = true;
         std::fclose(f);
     }
+    // NOLINTEND(cppcoreguidelines-owning-memory)
 #endif
     lua_pushboolean(L, ok);
     return 1;
@@ -3271,7 +3275,7 @@ std::vector<DocSigParam> DocParamsFromSignature(const Json &active) {
             int start = std::max(0, plabel.items()[0].as_int(0));
             int end = std::min(static_cast<int>(label.size()), plabel.items()[1].as_int(static_cast<int>(label.size())));
             if (end > start) {
-                ptext = label.substr(start, end - start);
+                ptext = label.substr(static_cast<size_t>(start), static_cast<size_t>(end - start));
                 have_text = true;
             }
         }
@@ -3361,14 +3365,14 @@ int l_tree_build_rows(lua_State *L) {
     lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 2));
     for (lua_Integer i = 1; i <= n; i++) {
         lua_rawgeti(L, 2, i);
-        if (lua_isstring(L, -1)) expanded.push_back(lua_tostring(L, -1));
+        if (lua_isstring(L, -1)) expanded.emplace_back(lua_tostring(L, -1));
         lua_pop(L, 1);
     }
     std::vector<std::string> ignored;
     n = static_cast<lua_Integer>(lua_rawlen(L, 4));
     for (lua_Integer i = 1; i <= n; i++) {
         lua_rawgeti(L, 4, i);
-        if (lua_isstring(L, -1)) ignored.push_back(lua_tostring(L, -1));
+        if (lua_isstring(L, -1)) ignored.emplace_back(lua_tostring(L, -1));
         lua_pop(L, 1);
     }
 
@@ -3537,7 +3541,7 @@ AnsiRenderResult AnsiRender(const std::string &raw) {
             std::string params = raw.substr(i + 2, seq_end - (i + 2));
             char cmd = raw[seq_end];
             if (cmd == 'm') {
-                close_span(static_cast<int>(result.lines[row - 1].size()) + 1);
+                close_span(static_cast<int>(result.lines[static_cast<size_t>(row - 1)].size()) + 1);
                 bool new_has_hl = has_hl;
                 std::string new_hl = cur_hl;
                 std::string with_sep = params + ";";
@@ -3574,11 +3578,11 @@ AnsiRenderResult AnsiRender(const std::string &raw) {
                 }
                 has_hl = new_has_hl;
                 cur_hl = new_hl;
-                if (has_hl) span_start = static_cast<int>(result.lines[row - 1].size()) + 1;
+                if (has_hl) span_start = static_cast<int>(result.lines[static_cast<size_t>(row - 1)].size()) + 1;
             }
             i = seq_end + 1;
         } else if (c == '\n') {
-            close_span(static_cast<int>(result.lines[row - 1].size()) + 1);
+            close_span(static_cast<int>(result.lines[static_cast<size_t>(row - 1)].size()) + 1);
             row++;
             result.lines.emplace_back();
             if (has_hl) span_start = 1;
@@ -3586,11 +3590,11 @@ AnsiRenderResult AnsiRender(const std::string &raw) {
         } else if (c == '\r') {
             i++;
         } else {
-            result.lines[row - 1] += c;
+            result.lines[static_cast<size_t>(row - 1)] += c;
             i++;
         }
     }
-    close_span(static_cast<int>(result.lines[row - 1].size()) + 1);
+    close_span(static_cast<int>(result.lines[static_cast<size_t>(row - 1)].size()) + 1);
     return result;
 }
 }  // namespace
@@ -3806,7 +3810,7 @@ std::vector<std::string> ReadOrgTodoKeywords(lua_State *L) {
             lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, -1));
             for (lua_Integer i = 1; i <= n; i++) {
                 lua_rawgeti(L, -1, i);
-                if (lua_isstring(L, -1)) kws.push_back(lua_tostring(L, -1));
+                if (lua_isstring(L, -1)) kws.emplace_back(lua_tostring(L, -1));
                 lua_pop(L, 1);
             }
         }
@@ -4037,7 +4041,7 @@ int l_org_agenda_scan_lines(lua_State *L) {
     lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 1));
     for (lua_Integer i = 1; i <= n; i++) {
         lua_rawgeti(L, 1, i);
-        lines.push_back(luaL_optstring(L, -1, ""));
+        lines.emplace_back(luaL_optstring(L, -1, ""));
         lua_pop(L, 1);
     }
     std::vector<std::string> kws = ReadOrgTodoKeywords(L);
@@ -4178,7 +4182,7 @@ int l_org_bib_parse_files(lua_State *L) {
     lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 1));
     for (lua_Integer i = 1; i <= n; i++) {
         lua_rawgeti(L, 1, i);
-        texts.push_back(luaL_optstring(L, -1, ""));
+        texts.emplace_back(luaL_optstring(L, -1, ""));
         lua_pop(L, 1);
     }
     std::vector<Editor::OrgBibEntry> entries = GetEditor(L)->OrgBibParseFiles(texts);
@@ -4235,7 +4239,7 @@ std::vector<std::string> ReadStringArray(lua_State *L, int idx) {
     lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, idx));
     for (lua_Integer i = 1; i <= n; i++) {
         lua_rawgeti(L, idx, i);
-        out.push_back(luaL_optstring(L, -1, ""));
+        out.emplace_back(luaL_optstring(L, -1, ""));
         lua_pop(L, 1);
     }
     return out;
@@ -5188,7 +5192,7 @@ int l_lsp_start(lua_State *L) {
     lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 1));
     for (lua_Integer i = 1; i <= n; i++) {
         lua_rawgeti(L, 1, i);
-        argv.push_back(luaL_checkstring(L, -1));
+        argv.emplace_back(luaL_checkstring(L, -1));
         lua_pop(L, 1);
     }
     std::string cwd;
@@ -5548,13 +5552,13 @@ int l_diff_lines(lua_State *L) {
     lua_Integer na = static_cast<lua_Integer>(lua_rawlen(L, 1));
     for (lua_Integer i = 1; i <= na; i++) {
         lua_rawgeti(L, 1, i);
-        a.push_back(luaL_optstring(L, -1, ""));
+        a.emplace_back(luaL_optstring(L, -1, ""));
         lua_pop(L, 1);
     }
     lua_Integer nb = static_cast<lua_Integer>(lua_rawlen(L, 2));
     for (lua_Integer i = 1; i <= nb; i++) {
         lua_rawgeti(L, 2, i);
-        b.push_back(luaL_optstring(L, -1, ""));
+        b.emplace_back(luaL_optstring(L, -1, ""));
         lua_pop(L, 1);
     }
     std::vector<DiffHunk> hunks = MyersDiffHunks(a, b);
@@ -6156,7 +6160,7 @@ bool LuaEnv::CallRefWithStringForStrings(int ref, const std::string &arg, std::v
     lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L_, -1));
     for (lua_Integer i = 1; i <= n; i++) {
         lua_rawgeti(L_, -1, i);
-        if (lua_isstring(L_, -1)) out->push_back(lua_tostring(L_, -1));
+        if (lua_isstring(L_, -1)) out->emplace_back(lua_tostring(L_, -1));
         lua_pop(L_, 1);
     }
     lua_pop(L_, 1);
@@ -6194,10 +6198,10 @@ bool LuaEnv::CallRefWithStringForCompletionItems(int ref, const std::string &arg
             details->push_back(string_field("detail"));
             docs->push_back(string_field("doc"));
         } else if (lua_isstring(L_, -1)) {
-            texts->push_back(lua_tostring(L_, -1));
-            kinds->push_back("");
-            details->push_back("");
-            docs->push_back("");
+            texts->emplace_back(lua_tostring(L_, -1));
+            kinds->emplace_back();
+            details->emplace_back();
+            docs->emplace_back();
         }
         lua_pop(L_, 1);
     }
@@ -6271,7 +6275,7 @@ bool LuaEnv::CallRefForWidgets(int ref, std::vector<std::pair<std::string, std::
             lua_getfield(L_, -1, "hl");
             std::string hl = lua_isstring(L_, -1) ? lua_tostring(L_, -1) : "";
             lua_pop(L_, 1);
-            out->push_back({text, hl});
+            out->emplace_back(text, hl);
         }
         lua_pop(L_, 1);
     }

@@ -256,7 +256,7 @@ void Job::ReaderLoop() {
             fds[nfds] = {stderr_fd_, POLLIN, 0};
             err_idx = nfds++;
         }
-        int rc = poll(fds, nfds, 200);  // 200ms so a kill mid-read isn't stuck forever
+        int rc = poll(fds, static_cast<nfds_t>(nfds), 200);  // 200ms so a kill mid-read isn't stuck forever
         if (rc < 0) break;
 
         if (out_open && (fds[out_idx].revents & (POLLIN | POLLHUP | POLLERR))) {

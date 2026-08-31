@@ -269,7 +269,15 @@ void RenderOrgCodeBlockLatex(const DomNode *div_node, std::string &out) {
             const std::string &cls = c->Class();
             std::string tok = cls.compare(0, 4, "tok-") == 0 ? cls.substr(4) : "";
             std::string text = LatexEscapeVerbatim(CollectRawText(c.get()));
-            body += tok.empty() ? text : ("\\mepc{" + tok + "}{" + text + "}");
+            if (tok.empty()) {
+                body += text;
+            } else {
+                body += "\\mepc{";
+                body += tok;
+                body += "}{";
+                body += text;
+                body += "}";
+            }
         }
     }
     // A leading newline right after <code ...> (mep_org_html_code_block

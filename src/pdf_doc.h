@@ -62,6 +62,14 @@ public:
      * @brief Deleted: PdfDoc owns non-copyable backend document state, so copy-assignment is disallowed.
      */
     PdfDoc &operator=(const PdfDoc &) = delete;
+    /**
+     * @brief Move-constructs from another PdfDoc, transferring ownership of its backend state.
+     */
+    PdfDoc(PdfDoc &&) noexcept;
+    /**
+     * @brief Move-assigns from another PdfDoc, transferring ownership of its backend state.
+     */
+    PdfDoc &operator=(PdfDoc &&) noexcept;
 
     // Parses the PDF's cross-reference table/trailer and flattens its page
     // tree. Copies `bytes` internally (unlike ImageDoc, which decodes once

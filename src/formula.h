@@ -53,7 +53,7 @@ struct FormulaCellRef {
 };
 
 struct FormulaNode {
-    FormulaNodeKind kind;
+    FormulaNodeKind kind = FormulaNodeKind::Number;
 
     double number = 0;   // Number
     std::string text;    // String literal, or FunctionCall's function name (upper-cased)

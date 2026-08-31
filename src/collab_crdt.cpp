@@ -23,7 +23,19 @@ bool IdFromJson(const Json &json, CrdtId *id) {
     if (!json.is_object()) return false;
     const std::string actor = json.get("actor").as_string();
     const double counter = json.get("counter").as_double(-1);
-    if (actor.empty() || counter < 0 || counter != static_cast<uint64_t>(counter)) return false;
+    // An empty actor is only valid for Root() ({"", 0}) -- the sentinel
+    // used as an insert's `after` for the very first character in any
+    // causal chain, and thus always present in a real snapshot's "after"
+    // fields. Rejecting it unconditionally (as this used to) made every
+    // snapshot containing that first character fail to round-trip through
+    // Restore(): CrdtOperationFromJson would refuse to parse its `after`
+    // field, well before it's caught by any error assert -- assert() is
+    // compiled out under this project's default Release build's NDEBUG,
+    // which is exactly why collab_crdt_test.cpp's Restore() coverage never
+    // caught it (see that file's own CHECK() fix for the same reason).
+    // A non-Root id must still have a non-empty actor and counter >= 1.
+    const bool is_root = actor.empty() && counter == 0;
+    if ((actor.empty() && !is_root) || counter < 0 || counter != static_cast<uint64_t>(counter)) return false;
     *id = {actor, static_cast<uint64_t>(counter)}; return true;
 }
 /**
@@ -91,7 +103,7 @@ size_t TextCrdt::VisibleSize() const { return VisibleIds().size(); }
 std::vector<CrdtOperation> TextCrdt::Insert(size_t offset, const std::string &text) {
     std::vector<CrdtOperation> operations; const std::vector<CrdtId> visible = VisibleIds();
     CrdtId after = offset == 0 ? Root() : visible[std::min(offset, visible.size()) - 1];
-    for (unsigned char value : text) { CrdtOperation op{CrdtOperation::Kind::Insert, {actor_id_, ++clock_}, after, value}; Apply(op); operations.push_back(op); after = op.id; }
+    for (char raw : text) { unsigned char value = static_cast<unsigned char>(raw); CrdtOperation op{CrdtOperation::Kind::Insert, {actor_id_, ++clock_}, after, value}; Apply(op); operations.push_back(op); after = op.id; }
     return operations;
 }
 std::vector<CrdtOperation> TextCrdt::Erase(size_t offset, size_t count) {

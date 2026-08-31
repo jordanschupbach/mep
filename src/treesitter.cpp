@@ -8,8 +8,18 @@
 #include <regex>
 #include <unordered_map>
 
+// Vendored verbatim from each grammar repo (see treesitter_queries.h's own
+// top comment) -- not hand-written, so suppress our strict warnings here
+// rather than editing vendored content to satisfy them.
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-variable"
+#endif
 #include "treesitter_queries.h"
 #include "treesitter_structure_queries.h"
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 // The core set, compiled directly into mep (see CMakeLists.txt
 // TS_GRAMMAR_NAMES) -- statically linked, so these symbols are always
@@ -372,7 +382,9 @@ const TSLanguage *LoadDynamicLanguage(const std::string &canonical_name) {
     for (const std::string &dir : DynamicSearchPaths()) {
         if (dir.empty()) continue;
         for (const std::string &fname : filenames) {
-            std::string path = dir + "/" + fname;
+            std::string path = dir;
+            path += "/";
+            path += fname;
             void *handle = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
             if (!handle) continue;
             using LangFn = const TSLanguage *(*)(void);
@@ -535,10 +547,10 @@ bool EvalPredicates(const TSQuery *query, const TSQueryMatch &match, const std::
 }
 
 struct RawSpan {
-    uint32_t start_byte;
-    uint32_t end_byte;
-    uint32_t start_row;
-    uint32_t start_col;
+    uint32_t start_byte = 0;
+    uint32_t end_byte = 0;
+    uint32_t start_row = 0;
+    uint32_t start_col = 0;
     std::string capture;
 };
 
@@ -605,6 +617,17 @@ struct ParseCache {
     ~ParseCache() {
         if (tree) ts_tree_delete(tree);
     }
+    // Held as the mapped_type of std::unordered_map<std::string,
+    // ParseCache> (ParseCacheTable() below); node-based containers like
+    // unordered_map never copy/move their values on rehash, and every
+    // insertion here goes through operator[] (constructs in place), so
+    // copy/move are simply disabled rather than implemented -- an
+    // implicit copy would double-delete `tree`.
+    ParseCache() = default;
+    ParseCache(const ParseCache &) = delete;
+    ParseCache &operator=(const ParseCache &) = delete;
+    ParseCache(ParseCache &&) = delete;
+    ParseCache &operator=(ParseCache &&) = delete;
 };
 
 /**

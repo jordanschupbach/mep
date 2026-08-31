@@ -57,6 +57,14 @@ public:
      * @brief Disabled: a CollabSession owns a worker thread and socket and cannot be copy-assigned.
      */
     CollabSession &operator=(const CollabSession &) = delete;
+    /**
+     * @brief Disabled: always held behind std::unique_ptr (see Editor::collaboration_); never moved by value.
+     */
+    CollabSession(CollabSession &&) = delete;
+    /**
+     * @brief Disabled: always held behind std::unique_ptr (see Editor::collaboration_); never moved by value.
+     */
+    CollabSession &operator=(CollabSession &&) = delete;
 
     /**
      * @brief Begins connecting to the relay, running the socket work on a background thread (or, on Emscripten, an asynchronous browser WebSocket).

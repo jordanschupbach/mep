@@ -84,6 +84,16 @@ struct Connection {
     // session.setStatus case and each buffer.* handler below.
     std::string status;
 
+    // Always owned behind a std::unique_ptr<Connection> (see `connections`
+    // below) and never copied or moved -- holds a std::thread that ~Connection
+    // joins, so a copy/move would leave two destructors racing to shut down
+    // the same fd/thread.
+    Connection(const Connection &) = delete;
+    Connection &operator=(const Connection &) = delete;
+    Connection(Connection &&) = delete;
+    Connection &operator=(Connection &&) = delete;
+    Connection() = default;
+
     /**
      * @brief Tears down this connection: signals it closed, unblocks and joins its reader thread, and closes its socket.
      */
@@ -494,7 +504,7 @@ Json Dispatch(Editor &editor, Connection &conn, const std::string &method, const
     }
     if (method == "session.info") {
         Json j = Json::Object();
-        j["pid"] = static_cast<int>(getpid());
+        j["pid"] = getpid();
         j["cwd"] = std::filesystem::current_path().string();
         Json files = Json::Array();
         for (int i = 0; i < editor.BufferCountForLua(); i++) {
@@ -545,7 +555,7 @@ Json Dispatch(Editor &editor, Connection &conn, const std::string &method, const
         start = std::max(0, std::min(start, line_count));
         end = std::max(start, std::min(end, line_count));
         Json lines = Json::Array();
-        for (int i = start; i < end; i++) lines.push_back(Json(buf.lines[i]));
+        for (int i = start; i < end; i++) lines.push_back(Json(buf.lines[static_cast<size_t>(i)]));
         Json j = Json::Object();
         j["buffer_id"] = buffer_id;
         j["lines"] = std::move(lines);

@@ -249,7 +249,7 @@ void WriteOdsCachedValue(pugi::xml_node &cell_node, const CellValue &v) {
  * @param table The <table:table> XML node to append rows/cells to.
  */
 void SerializeOdsTable(Workbook &wb, int sheet_index, pugi::xml_node &table) {
-    Sheet &sh = wb.sheets[sheet_index];
+    Sheet &sh = wb.sheets[static_cast<size_t>(sheet_index)];
     for (int r = 0; r <= sh.max_row; r++) {
         pugi::xml_node row_node = table.append_child("table:table-row");
         for (int c = 0; c <= sh.max_col; c++) {

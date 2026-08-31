@@ -49,8 +49,8 @@ inline bool PumpRpcFrames(std::string &buffer, const std::function<void(const st
     // format, and exist only to bound how much unparseable/malicious
     // input this function will buffer before giving up rather than
     // growing `buffer` without limit.
-    constexpr size_t kMaxHeaderBytes = 8 * 1024;
-    constexpr size_t kMaxBodyBytes = 64 * 1024 * 1024;
+    constexpr size_t kMaxHeaderBytes = size_t{8} * 1024;
+    constexpr size_t kMaxBodyBytes = size_t{64} * 1024 * 1024;
 
     for (;;) {
         size_t header_end = buffer.find("\r\n\r\n");

@@ -75,7 +75,7 @@ bool SendAll(int fd, const std::string &message) {
 bool ReadHttpRequest(int fd, std::string *request) {
     request->clear();
     char chunk[1024];
-    while (request->find("\r\n\r\n") == std::string::npos && request->size() < 16 * 1024) {
+    while (request->find("\r\n\r\n") == std::string::npos && request->size() < size_t{16} * 1024) {
 #ifdef _WIN32
         const int n = recv(static_cast<SOCKET>(fd), chunk, sizeof(chunk), MSG_PEEK);
 #else
@@ -103,7 +103,7 @@ bool ReadHttpRequest(int fd, std::string *request) {
 bool ConsumeHttpRequest(int fd, std::string *request) {
     request->clear();
     char chunk[1024];
-    while (request->find("\r\n\r\n") == std::string::npos && request->size() < 16 * 1024) {
+    while (request->find("\r\n\r\n") == std::string::npos && request->size() < size_t{16} * 1024) {
 #ifdef _WIN32
         const int n = recv(static_cast<SOCKET>(fd), chunk, sizeof(chunk), 0);
 #else
@@ -295,7 +295,7 @@ private:
  * @return the listening socket descriptor, or -1 on failure
  */
 int Listen(uint16_t port) {
-    const int fd = static_cast<int>(socket(AF_INET, SOCK_STREAM, 0));
+    const int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return -1;
     int yes = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char *>(&yes), sizeof(yes));
@@ -313,8 +313,10 @@ int Listen(uint16_t port) {
  */
 int main(int argc, char **argv) {
     uint16_t port = 8787;
-    std::string admin_token = std::getenv("MEP_COLLAB_ADMIN_TOKEN") ? std::getenv("MEP_COLLAB_ADMIN_TOKEN") : "";
-    std::string public_url = std::getenv("MEP_COLLAB_PUBLIC_URL") ? std::getenv("MEP_COLLAB_PUBLIC_URL") : "";
+    const char *admin_token_env = std::getenv("MEP_COLLAB_ADMIN_TOKEN");
+    const char *public_url_env = std::getenv("MEP_COLLAB_PUBLIC_URL");
+    std::string admin_token = admin_token_env ? admin_token_env : "";
+    std::string public_url = public_url_env ? public_url_env : "";
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--port" && i + 1 < argc) port = static_cast<uint16_t>(std::stoi(argv[++i]));
@@ -331,7 +333,7 @@ int main(int argc, char **argv) {
     std::cout << "mep-collabd listening on 0.0.0.0:" << port << "\n";
     Relay relay(admin_token, public_url);
     for (;;) {
-        const int client = static_cast<int>(accept(listener, nullptr, nullptr));
+        const int client = accept(listener, nullptr, nullptr);
         if (client < 0) continue;
         // Handle each accepted client on its own detached thread.
         std::thread([&relay, client] { relay.Handle(client); }).detach();

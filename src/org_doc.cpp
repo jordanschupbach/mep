@@ -61,7 +61,8 @@ long long DaysFromCivil(int y, unsigned m, unsigned d) {
     y -= m <= 2;
     const long long era = (y >= 0 ? y : y - 399) / 400;
     const unsigned yoe = static_cast<unsigned>(y - era * 400);
-    const unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    const int doy_numerator = 153 * (static_cast<int>(m) + (m > 2 ? -3 : 9)) + 2;
+    const unsigned doy = static_cast<unsigned>(doy_numerator) / 5 + d - 1;
     const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     return era * 146097 + static_cast<long long>(doe) - 719468;
 }
@@ -81,7 +82,7 @@ void CivilFromDays(long long z, int &y, unsigned &m, unsigned &d) {
     const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     const unsigned mp = (5 * doy + 2) / 153;
     d = doy - (153 * mp + 2) / 5 + 1;
-    m = mp + (mp < 10 ? 3 : 9 - 12);  // mp<10 -> m=mp+3, else m=mp-9
+    m = static_cast<unsigned>(static_cast<int>(mp) + (mp < 10 ? 3 : 9 - 12));  // mp<10 -> m=mp+3, else m=mp-9
     y = static_cast<int>(yy + (m <= 2));
 }
 
@@ -466,9 +467,9 @@ OrgOutline ParseOrgOutline(const std::vector<std::string> &lines) {
         if (pl < lines.size()) {
             std::string sched_raw, deadline_raw;
             if (ParsePlanningLine(lines[pl], sched_raw, deadline_raw)) {
-                out.headlines[this_index].planning_line = static_cast<int>(pl);
-                if (!sched_raw.empty()) out.headlines[this_index].scheduled = ParseTimestamp(sched_raw);
-                if (!deadline_raw.empty()) out.headlines[this_index].deadline = ParseTimestamp(deadline_raw);
+                out.headlines[static_cast<size_t>(this_index)].planning_line = static_cast<int>(pl);
+                if (!sched_raw.empty()) out.headlines[static_cast<size_t>(this_index)].scheduled = ParseTimestamp(sched_raw);
+                if (!deadline_raw.empty()) out.headlines[static_cast<size_t>(this_index)].deadline = ParseTimestamp(deadline_raw);
                 pl++;
             }
         }
@@ -477,15 +478,15 @@ OrgOutline ParseOrgOutline(const std::vector<std::string> &lines) {
             while (d < lines.size() && !IsDrawerLine(lines[d], "END")) {
                 std::string key, val;
                 if (ParsePropertyLine(lines[d], key, val)) {
-                    if (EqualsIgnoreCase(key, "EFFORT")) out.headlines[this_index].effort = val;
-                    else if (EqualsIgnoreCase(key, "ID")) out.headlines[this_index].id = val;
-                    else if (EqualsIgnoreCase(key, "BLOCKER")) out.headlines[this_index].blockers = ParseDependencyIds(val);
+                    if (EqualsIgnoreCase(key, "EFFORT")) out.headlines[static_cast<size_t>(this_index)].effort = val;
+                    else if (EqualsIgnoreCase(key, "ID")) out.headlines[static_cast<size_t>(this_index)].id = val;
+                    else if (EqualsIgnoreCase(key, "BLOCKER")) out.headlines[static_cast<size_t>(this_index)].blockers = ParseDependencyIds(val);
                     else if (EqualsIgnoreCase(key, "ASSIGNEE") || EqualsIgnoreCase(key, "TEAM")) {
-                        out.headlines[this_index].assignee = val;
+                        out.headlines[static_cast<size_t>(this_index)].assignee = val;
                     } else if (EqualsIgnoreCase(key, "PROGRESS")) {
                         int progress = 0;
                         if (std::sscanf(val.c_str(), "%d", &progress) == 1) {
-                            out.headlines[this_index].progress = std::clamp(progress, 0, 100);
+                            out.headlines[static_cast<size_t>(this_index)].progress = std::clamp(progress, 0, 100);
                         }
                     }
                 }

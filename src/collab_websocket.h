@@ -7,8 +7,8 @@
 #include <cstdint>
 #include <string>
 
-typedef struct ssl_st SSL;
-typedef struct ssl_ctx_st SSL_CTX;
+using SSL = struct ssl_st;
+using SSL_CTX = struct ssl_ctx_st;
 
 namespace mep::collab {
 

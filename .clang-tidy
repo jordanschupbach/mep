@@ -1,0 +1,68 @@
+# Scope: mep's own C++ sources under src/ (see HeaderFilterRegex). Never
+# run against third_party/ or FetchContent-vendored deps -- we don't own
+# that code.
+#
+# Checks are curated for "memory-safe, modern C++" rather than the full
+# cppcoreguidelines/bugprone firehose. A few noisy groups are deliberately
+# OFF because this codebase talks to several C APIs directly (raylib, the
+# Lua 5.4 C API, PDFium, miniz, the tree-sitter C runtime): pointer
+# arithmetic on buffers, C arrays decaying to pointers, and varargs calls
+# are legitimate and unavoidable at those boundaries, not bugs. Turning
+# those checks on would bury real findings under thousands of forced
+# NOLINTs on correct C-interop code.
+#
+# NOTE: the Checks value below is a YAML folded block scalar (`>`) -- `#`
+# is NOT a comment character inside a block scalar, it becomes literal
+# string content instead, silently corrupting the exclusion-glob parsing.
+# That's why every rationale comment lives up here instead of inline:
+#
+# -clang-analyzer-optin.performance.Padding: a raw memory-footprint
+#   micro-optimization (minimize struct padding via field reordering),
+#   not a safety/correctness check. Fires on Editor -- a ~200-field class
+#   with exactly one instance for the process's whole lifetime (main.cpp's
+#   g_editor global) -- where the "savings" is a few hundred bytes total
+#   and manually reordering ~200 fields by hand is a real transcription-
+#   error risk for zero practical benefit.
+# -bugprone-branch-clone: manually reviewed every hit of this check across
+#   the codebase (9 sites): 100% false positives -- distinct conditions
+#   that legitimately share one consequent (e.g. multiple HTML tags
+#   sharing default style, multiple keys mapping to the same action), not
+#   copy-pasted-and-half-updated branches. Left enabled it's pure
+#   persistent noise here.
+Checks: >
+  -*,
+  clang-analyzer-*,
+  -clang-analyzer-optin.performance.Padding,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  -bugprone-branch-clone,
+  cppcoreguidelines-slicing,
+  cppcoreguidelines-special-member-functions,
+  cppcoreguidelines-pro-type-member-init,
+  cppcoreguidelines-pro-type-cstyle-cast,
+  cppcoreguidelines-pro-type-static-cast-downcast,
+  cppcoreguidelines-no-malloc,
+  cppcoreguidelines-owning-memory,
+  cppcoreguidelines-virtual-class-destructor,
+  modernize-use-nullptr,
+  modernize-use-override,
+  modernize-use-equals-default,
+  modernize-use-equals-delete,
+  modernize-use-emplace,
+  modernize-make-unique,
+  modernize-make-shared,
+  modernize-loop-convert,
+  modernize-use-using,
+  performance-*,
+  -performance-avoid-endl,
+  -performance-enum-size,
+
+WarningsAsErrors: ''
+# Anchored on the literal "/mep/src/" path segment, not just "/src/" --
+# a bare ".*/src/.*" also matches vendored deps' own "src" subdirectories
+# (e.g. build/native/_deps/raylib-src/src/raylib.h), which pulled findings
+# from raylib/pugixml/lua/stb_image.h into every report before this was
+# tightened.
+HeaderFilterRegex: '/mep/src/[^/]+\.(h|hpp)$'
+FormatStyle: none

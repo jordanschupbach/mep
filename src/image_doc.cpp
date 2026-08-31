@@ -19,7 +19,31 @@
 #define STBI_ONLY_BMP
 #define STBI_ONLY_GIF
 #define STBI_NO_STDIO
+// Third-party vendored header -- suppress our own strict -Wall/-Wextra/...
+// flags (see MEP_STRICT_FLAGS in CMakeLists.txt) for just this include so
+// its warnings don't drown out mep's own code, without editing vendored
+// source to satisfy warnings we don't require of third-party code.
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#pragma GCC diagnostic ignored "-Wconversion"
+#pragma GCC diagnostic ignored "-Wold-style-cast"
+#pragma GCC diagnostic ignored "-Wdouble-promotion"
+#pragma GCC diagnostic ignored "-Wcast-align"
+#pragma GCC diagnostic ignored "-Wunused-function"
+#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+#endif
+#if defined(__GNUC__) && !defined(__clang__)
+// GCC-only extra warnings (not recognized by clang, which would otherwise
+// itself warn about an unknown -W flag).
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+#pragma GCC diagnostic ignored "-Wduplicated-branches"
+#pragma GCC diagnostic ignored "-Wuseless-cast"
+#endif
 #include "../third_party/stb_image.h"
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 bool ImageDoc::LoadFromMemory(const unsigned char *bytes, size_t len) {
     int channels = 0;

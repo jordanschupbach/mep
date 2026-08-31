@@ -196,7 +196,10 @@ struct Environment {
 std::string NumberToString(double d) {
     if (std::isnan(d)) return "NaN";
     if (std::isinf(d)) return d > 0 ? "Infinity" : "-Infinity";
-    if (d == 0) return std::signbit(d) ? "0" : "0";
+    // JS ToString renders -0 as "0" too (no sign), unlike most other
+    // negative numbers -- this isn't a sign-handling bug, both branches
+    // are deliberately the same string.
+    if (d == 0) return "0";
     if (d == static_cast<double>(static_cast<long long>(d)) && std::fabs(d) < 1e15) {
         char buf[32];
         std::snprintf(buf, sizeof(buf), "%lld", static_cast<long long>(d));
@@ -1550,7 +1553,7 @@ struct Parser {
                 if (!sub.ok) Fail("template literal: " + sub.error);
                 n->is_expr_part.push_back(true);
                 n->template_exprs.push_back(std::move(expr));
-                n->template_texts.push_back("");
+                n->template_texts.emplace_back();
                 i = j + 1;
                 continue;
             }

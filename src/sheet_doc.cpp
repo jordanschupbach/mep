@@ -270,7 +270,7 @@ CellValue LiteralValueFromText(const std::string &text) {
 
 void SetCellRaw(Workbook &wb, int sheet, int row, int col, const std::string &raw) {
     if (sheet < 0 || sheet >= static_cast<int>(wb.sheets.size())) return;
-    Cell &cell = wb.sheets[sheet].GetOrCreateCell(row, col);
+    Cell &cell = wb.sheets[static_cast<size_t>(sheet)].GetOrCreateCell(row, col);
     cell.raw = raw;
     cell.ast.reset();
     if (!raw.empty() && raw[0] == '=' && raw.size() > 1) {
@@ -347,7 +347,7 @@ CellValue EvalCellRef(Workbook &wb, int sheet, const FormulaCellRef &ref) {
 void CollectRangeValues(Workbook &wb, int sheet, const FormulaNode &node, std::vector<CellValue> &out) {
     int target = ResolveSheetIndex(wb, node.cell.sheet_name, sheet);
     if (target < 0) return;
-    Sheet &sh = wb.sheets[target];
+    Sheet &sh = wb.sheets[static_cast<size_t>(target)];
     int r0 = std::min(node.cell.row, node.range_end.row), r1 = std::max(node.cell.row, node.range_end.row);
     int c0 = std::min(node.cell.col, node.range_end.col), c1 = std::max(node.cell.col, node.range_end.col);
     r1 = std::min(r1, sh.max_row);
@@ -376,7 +376,7 @@ void CollectRangeValues(Workbook &wb, int sheet, const FormulaNode &node, std::v
 void CollectRangeValuesOrdered(Workbook &wb, int sheet, const FormulaNode &node, std::vector<CellValue> &out) {
     int target = ResolveSheetIndex(wb, node.cell.sheet_name, sheet);
     if (target < 0) return;
-    Sheet &sh = wb.sheets[target];
+    Sheet &sh = wb.sheets[static_cast<size_t>(target)];
     int r0 = std::min(node.cell.row, node.range_end.row), r1 = std::max(node.cell.row, node.range_end.row);
     int c0 = std::min(node.cell.col, node.range_end.col), c1 = std::max(node.cell.col, node.range_end.col);
     r1 = std::min(r1, sh.max_row);
@@ -498,7 +498,7 @@ CellValue CallFunction(Workbook &wb, int sheet, const FormulaNode &node) {
         std::string s = ToText(v);
         int n = args.size() > 1 ? static_cast<int>(ToNumber(arg_value(1))) : 1;
         n = std::max(0, std::min(n, static_cast<int>(s.size())));
-        return MakeTextValue(name == "LEFT" ? s.substr(0, n) : s.substr(s.size() - n));
+        return MakeTextValue(name == "LEFT" ? s.substr(0, static_cast<size_t>(n)) : s.substr(s.size() - static_cast<size_t>(n)));
     }
     if (name == "MID") {
         if (args.size() < 3) return MakeErrorValue(SheetError::Value);
@@ -509,7 +509,7 @@ CellValue CallFunction(Workbook &wb, int sheet, const FormulaNode &node) {
         int count = static_cast<int>(ToNumber(arg_value(2)));
         if (start < 0 || start >= static_cast<int>(s.size()) || count <= 0) return MakeTextValue("");
         count = std::min(count, static_cast<int>(s.size()) - start);
-        return MakeTextValue(s.substr(start, count));
+        return MakeTextValue(s.substr(static_cast<size_t>(start), static_cast<size_t>(count)));
     }
     if (name == "UPPER" || name == "LOWER") {
         if (args.empty()) return MakeErrorValue(SheetError::Value);
@@ -579,7 +579,7 @@ CellValue CallFunction(Workbook &wb, int sheet, const FormulaNode &node) {
         int col_index = static_cast<int>(ToNumber(arg_value(2)));
         int target = ResolveSheetIndex(wb, range.cell.sheet_name, sheet);
         if (target < 0) return MakeErrorValue(SheetError::Ref);
-        Sheet &sh = wb.sheets[target];
+        Sheet &sh = wb.sheets[static_cast<size_t>(target)];
         int r0 = std::min(range.cell.row, range.range_end.row);
         int r1 = std::min(std::max(range.cell.row, range.range_end.row), sh.max_row);
         int c0 = std::min(range.cell.col, range.range_end.col);
@@ -650,7 +650,7 @@ CellValue EvalNode(Workbook &wb, int sheet, const FormulaNode &node) {
 
 CellValue EvaluateCell(Workbook &wb, int sheet, int row, int col) {
     if (sheet < 0 || sheet >= static_cast<int>(wb.sheets.size())) return MakeErrorValue(SheetError::Ref);
-    Sheet &sh = wb.sheets[sheet];
+    Sheet &sh = wb.sheets[static_cast<size_t>(sheet)];
     // FindCell (const) then const_cast, rather than a public mutable
     // finder: EvaluateCell is the one place in this file that needs
     // write access to an *existing* cell's cache without ever inserting
@@ -684,7 +684,7 @@ bool LoadCsvFromMemory(const unsigned char *bytes, size_t len, Workbook &out, st
     (void)error;  // CSV parsing can't structurally fail -- any byte sequence is a valid (if odd) CSV
     out.sheets.clear();
     out.source_format = "csv";
-    out.sheets.push_back(Sheet{});
+    out.sheets.emplace_back();
     out.sheets[0].name = "Sheet1";
 
     std::string text(reinterpret_cast<const char *>(bytes), len);

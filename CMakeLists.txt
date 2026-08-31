@@ -12,6 +12,57 @@ endif()
 include(FetchContent)
 set(FETCHCONTENT_QUIET FALSE)
 
+# Strict warnings for mep's OWN targets only (mep_core, mep, mep-collabd,
+# the collab/agent-rpc test binaries, mep-amalgam) -- deliberately NOT
+# applied to vendored/fetched third-party targets (raylib, lua, pugixml,
+# miniz, tree_sitter, the ts_* grammar libs, pdfium) since we don't own
+# that code and can't fix warnings inside it. Applied via
+# target_compile_options(... PRIVATE ${MEP_STRICT_FLAGS}) on each of our
+# own targets below, not injected globally through CMAKE_CXX_FLAGS.
+set(MEP_STRICT_FLAGS
+    -Wall
+    -Wextra
+    -Wpedantic
+    -Wshadow
+    -Wnon-virtual-dtor
+    -Wold-style-cast
+    -Wcast-align
+    -Woverloaded-virtual
+    -Wconversion
+    -Wsign-conversion
+    -Wnull-dereference
+    -Wdouble-promotion
+    -Wformat=2
+    -Wimplicit-fallthrough
+)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    list(APPEND MEP_STRICT_FLAGS
+        -Wuseless-cast
+        -Wmisleading-indentation
+        -Wduplicated-cond
+        -Wduplicated-branches
+        -Wlogical-op
+    )
+endif()
+option(MEP_WARNINGS_AS_ERRORS "Treat mep's own strict compiler warnings as errors" ON)
+if(MEP_WARNINGS_AS_ERRORS)
+    list(APPEND MEP_STRICT_FLAGS -Werror)
+endif()
+
+# Optional AddressSanitizer + UndefinedBehaviorSanitizer build: configure
+# with -DCMAKE_BUILD_TYPE=Sanitize. Same strict-warnings scoping applies
+# (own targets only); sanitizer instrumentation is also own-targets-only
+# since re-instrumenting fetched third-party static libs would require
+# rebuilding them from source under the sanitizer flags too, which
+# FetchContent's prebuilt/cached artifacts here don't do.
+set(CMAKE_CXX_FLAGS_SANITIZE "-g -O1 -fno-omit-frame-pointer -fsanitize=address,undefined" CACHE STRING "" FORCE)
+set(CMAKE_C_FLAGS_SANITIZE "-g -O1 -fno-omit-frame-pointer -fsanitize=address,undefined" CACHE STRING "" FORCE)
+set(CMAKE_EXE_LINKER_FLAGS_SANITIZE "-fsanitize=address,undefined" CACHE STRING "" FORCE)
+set(MEP_SANITIZE_FLAGS "")
+if(CMAKE_BUILD_TYPE STREQUAL "Sanitize")
+    set(MEP_SANITIZE_FLAGS -fsanitize=address,undefined -fno-omit-frame-pointer -g -O1)
+endif()
+
 set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(BUILD_GAMES OFF CACHE BOOL "" FORCE)
 
@@ -220,6 +271,8 @@ add_library(mep_core STATIC
     src/editor.cpp
 )
 target_include_directories(mep_core PUBLIC src)
+target_compile_options(mep_core PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep_core PRIVATE ${MEP_SANITIZE_FLAGS})
 target_link_libraries(mep_core PUBLIC raylib lua tree_sitter ${TS_GRAMMAR_LIBS} pugixml miniz)
 if(NOT EMSCRIPTEN)
     target_link_libraries(mep_core PUBLIC pdfium)
@@ -238,6 +291,8 @@ add_executable(mep
     src/main.cpp
 )
 target_include_directories(mep PRIVATE src)
+target_compile_options(mep PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep PRIVATE ${MEP_SANITIZE_FLAGS})
 target_link_libraries(mep PRIVATE mep_core)
 if(EMSCRIPTEN)
     target_sources(mep PRIVATE src/collab_crdt.cpp src/collab_web_session.cpp)
@@ -252,6 +307,8 @@ if(NOT EMSCRIPTEN)
     target_link_libraries(mep PRIVATE OpenSSL::SSL OpenSSL::Crypto)
     add_executable(mep-collabd src/collab_relay.cpp src/collab_websocket.cpp)
     target_include_directories(mep-collabd PRIVATE src)
+    target_compile_options(mep-collabd PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-collabd PRIVATE ${MEP_SANITIZE_FLAGS})
     target_link_libraries(mep-collabd PRIVATE OpenSSL::SSL OpenSSL::Crypto)
     if(NOT WIN32)
         target_link_libraries(mep-collabd PRIVATE Threads::Threads)
@@ -260,8 +317,12 @@ if(NOT EMSCRIPTEN)
     endif()
     add_executable(mep-collab-crdt-test src/collab_crdt_test.cpp src/collab_crdt.cpp)
     target_include_directories(mep-collab-crdt-test PRIVATE src)
+    target_compile_options(mep-collab-crdt-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-collab-crdt-test PRIVATE ${MEP_SANITIZE_FLAGS})
     add_executable(mep-collab-session-test src/collab_session_test.cpp src/collab_session.cpp src/collab_crdt.cpp src/collab_websocket.cpp)
     target_include_directories(mep-collab-session-test PRIVATE src)
+    target_compile_options(mep-collab-session-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-collab-session-test PRIVATE ${MEP_SANITIZE_FLAGS})
     target_link_libraries(mep-collab-session-test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
     if(NOT WIN32)
         target_link_libraries(mep-collab-session-test PRIVATE Threads::Threads)
@@ -275,6 +336,8 @@ if(NOT EMSCRIPTEN)
         # ctest suite, matching how the collab tests here aren't either.
         add_executable(mep-agent-rpc-test src/agent_rpc_test.cpp)
         target_include_directories(mep-agent-rpc-test PRIVATE src)
+        target_compile_options(mep-agent-rpc-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+        target_link_options(mep-agent-rpc-test PRIVATE ${MEP_SANITIZE_FLAGS})
         target_link_libraries(mep-agent-rpc-test PRIVATE Threads::Threads)
     endif()
 endif()

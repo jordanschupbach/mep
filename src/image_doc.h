@@ -28,6 +28,16 @@ public:
      * @brief Frees the decoded pixel buffer, if one was allocated by LoadFromMemory.
      */
     ~ImageDoc();
+    // pixels_ is an owned raw buffer freed via stbi_image_free in the
+    // destructor -- an implicit copy would shallow-copy the pointer and
+    // double-free it. Every current use is a local stack variable
+    // (LoadFromMemory'd and read within one function), so copy/move are
+    // simply disabled rather than implemented, matching actual usage.
+    ImageDoc() = default;
+    ImageDoc(const ImageDoc &) = delete;
+    ImageDoc &operator=(const ImageDoc &) = delete;
+    ImageDoc(ImageDoc &&) = delete;
+    ImageDoc &operator=(ImageDoc &&) = delete;
 
     /**
      * @brief Returns the decoded image's width in pixels.

@@ -135,7 +135,7 @@ std::vector<SheetEntry> ParseWorkbookSheetList(const unsigned char *zip_bytes, s
         if (target.rfind("/xl/", 0) == 0) {
             target = target.substr(1);
         } else if (target.rfind("xl/", 0) != 0) {
-            target = "xl/" + target;
+            target.insert(0, "xl/");
         }
         entry.path = target;
         if (entry.name.empty()) entry.name = "Sheet" + std::to_string(fallback_index);
@@ -313,7 +313,7 @@ void WriteXlsxCachedValue(pugi::xml_node &c_node, const CellValue &v) {
  * @param sheet_data The <sheetData> XML node to append rows/cells to.
  */
 void SerializeXlsxSheetData(Workbook &wb, int sheet_index, pugi::xml_node &sheet_data) {
-    Sheet &sh = wb.sheets[sheet_index];
+    Sheet &sh = wb.sheets[static_cast<size_t>(sheet_index)];
     for (int r = 0; r <= sh.max_row; r++) {
         bool row_has_content = false;
         for (int c = 0; c <= sh.max_col; c++) {
@@ -435,7 +435,7 @@ bool SaveXlsxToMemory(Workbook &wb, const std::vector<unsigned char> &original_b
 
         std::ostringstream ss;
         doc.save(ss, "", pugi::format_raw);
-        entries.push_back({wb.xlsx_sheet_paths[i], ss.str()});
+        entries.emplace_back(wb.xlsx_sheet_paths[i], ss.str());
     }
     return WriteZipReplacingEntries(original_bytes.data(), original_bytes.size(), entries, out, error);
 }

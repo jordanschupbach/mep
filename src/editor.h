@@ -441,7 +441,7 @@ struct SidebarInstance {
 // header (collapse toggle) or a widget row. Shared by main.cpp's renderer
 // and Editor::HandleSidebarInput so the two can't disagree about layout.
 struct SidebarLine {
-    enum class Kind { SectionHeader, Widget } kind;
+    enum class Kind { SectionHeader, Widget } kind = Kind::SectionHeader;
     int section_index = 0;
     int widget_index = -1;  // -1 for a header line
     std::string text;
@@ -1539,6 +1539,16 @@ public:
      * @brief Destroys the Editor. Defined out-of-line so members like TerminalSession's unique_ptr<VTerm> can be destroyed with complete types visible.
      */
     ~Editor();
+    // Exactly one Editor exists for the process's whole lifetime (main.cpp's
+    // g_editor global) and it owns a huge amount of non-trivially-copyable
+    // state (buffers, panes, terminal sessions, the CollabSession
+    // unique_ptr, ...) -- copying or moving it is never meaningful, so both
+    // are disabled explicitly rather than left to compiler-generated
+    // (and almost certainly wrong) defaults.
+    Editor(const Editor &) = delete;
+    Editor &operator=(const Editor &) = delete;
+    Editor(Editor &&) = delete;
+    Editor &operator=(Editor &&) = delete;
 
     /**
      * @brief Sets the Lua environment used for editor-Lua interop.
@@ -1907,7 +1917,7 @@ public:
      * @brief Returns the split-tree root of the active tab.
      * @return A const pointer to the active tab's root SplitNode.
      */
-    const SplitNode *ActiveTabRoot() const { return tabs_[active_tab_].root.get(); }
+    const SplitNode *ActiveTabRoot() const { return tabs_[static_cast<size_t>(active_tab_)].root.get(); }
     // Non-const sibling of ActiveTabRoot -- main.cpp's own per-frame pane-
     // geometry capture (mirroring DrawPaneTree's layout math) stashes raw
     // SplitNode* pointers for its border-drag hit-testing (SetPaneBorderShare
@@ -1917,12 +1927,12 @@ public:
      * @brief Returns a mutable split-tree root of the active tab, for geometry capture that needs raw SplitNode pointers.
      * @return A pointer to the active tab's root SplitNode.
      */
-    SplitNode *MutableActiveTabRoot() { return tabs_[active_tab_].root.get(); }
+    SplitNode *MutableActiveTabRoot() { return tabs_[static_cast<size_t>(active_tab_)].root.get(); }
     /**
      * @brief Returns the id of the currently focused pane in the active tab.
      * @return The active pane's id.
      */
-    int ActivePaneId() const { return tabs_[active_tab_].active_pane_id; }
+    int ActivePaneId() const { return tabs_[static_cast<size_t>(active_tab_)].active_pane_id; }
     // Same as ActiveTabRoot()/ActivePaneId() but for tab `index`
     // specifically (0 <= index < TabCount(), unchecked -- same contract as
     // every other accessor here) rather than always the active tab --
@@ -1933,19 +1943,19 @@ public:
      * @param index The tab index to look up (0 <= index < TabCount(), unchecked).
      * @return A const pointer to that tab's root SplitNode.
      */
-    const SplitNode *TabRoot(int index) const { return tabs_[index].root.get(); }
+    const SplitNode *TabRoot(int index) const { return tabs_[static_cast<size_t>(index)].root.get(); }
     /**
      * @brief Returns the id of the active pane in the tab at the given index.
      * @param index The tab index to look up (0 <= index < TabCount(), unchecked).
      * @return That tab's active pane id.
      */
-    int TabActivePaneId(int index) const { return tabs_[index].active_pane_id; }
+    int TabActivePaneId(int index) const { return tabs_[static_cast<size_t>(index)].active_pane_id; }
     /**
      * @brief Returns the buffer with the given id.
      * @param buffer_id The buffer id to look up.
      * @return A const reference to that buffer.
      */
-    const Buffer &GetBuffer(int buffer_id) const { return buffers_[buffer_id]; }
+    const Buffer &GetBuffer(int buffer_id) const { return buffers_[static_cast<size_t>(buffer_id)]; }
 
     // --- Terminal panes (`:terminal`/`:term`, Part VI Phase 27+) ---
     // main.cpp's DrawPane checks this to render straight from the
@@ -3336,14 +3346,14 @@ public:
     // a substantial async job-orchestration-and-caching subsystem in
     // its own right, out of proportion to port opportunistically here.
     struct OrgLatexBlock {
-        int start_row;  // 1-indexed
-        int end_row;    // 1-indexed, inclusive
+        int start_row = 0;  // 1-indexed
+        int end_row = 0;    // 1-indexed, inclusive
         std::string body;
     };
     struct OrgLatexInlineSpan {
-        int row;        // 1-indexed
-        int col_start;  // 1-indexed, inclusive
-        int col_end;    // 1-indexed, exclusive
+        int row = 0;        // 1-indexed
+        int col_start = 0;  // 1-indexed, inclusive
+        int col_end = 0;    // 1-indexed, exclusive
         std::string body;
     };
     struct OrgLatexScanResult {
@@ -5352,8 +5362,8 @@ private:
     // (arrows/Home/End/Delete/function keys as CSI or SS3 escape
     // sequences depending on term->ApplicationCursorKeys(), Ctrl+letter as
     // a C0 control code, everything else verbatim) and writes it to the
-    // session's PTY. Split out of HandleTerminalInput so the Ctrl-\
-    // Ctrl-N exit chord (which must NOT forward its first half if the
+    // session's PTY. Split out of HandleTerminalInput so the Ctrl-\ Ctrl-N
+    // exit chord (which must NOT forward its first half if the
     // second key turns out not to be Ctrl-N) can buffer one key before
     // deciding whether to call this.
     void SendTerminalKey(TerminalSession &sess, int key, int codepoint, bool ctrl, bool shift = false);
@@ -6169,8 +6179,8 @@ private:
     bool SaveBuffer(Buffer &buf, const std::string &path);
 
     // --- Buffer/pane/tab plumbing ---
-    Buffer &Buf() { return buffers_[CurPane().buffer_id]; }
-    const Buffer &Buf() const { return buffers_[CurPane().buffer_id]; }
+    Buffer &Buf() { return buffers_[static_cast<size_t>(CurPane().buffer_id)]; }
+    const Buffer &Buf() const { return buffers_[static_cast<size_t>(CurPane().buffer_id)]; }
     Pane &CurPane();
     const Pane &CurPane() const;
     SplitNode *FindNode(SplitNode *node, int pane_id) const;

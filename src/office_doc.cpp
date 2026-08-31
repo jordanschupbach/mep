@@ -409,8 +409,8 @@ bool WriteZipReplacingEntries(const unsigned char *orig_bytes, size_t orig_len,
             }
         }
         if (match >= 0) {
-            ok = mz_zip_writer_add_mem(&writer, entries[match].first.c_str(), entries[match].second.data(),
-                                        entries[match].second.size(), MZ_DEFAULT_COMPRESSION);
+            ok = mz_zip_writer_add_mem(&writer, entries[static_cast<size_t>(match)].first.c_str(), entries[static_cast<size_t>(match)].second.data(),
+                                        entries[static_cast<size_t>(match)].second.size(), MZ_DEFAULT_COMPRESSION);
             replaced[static_cast<size_t>(match)] = true;
         } else {
             ok = mz_zip_writer_add_from_zip_reader(&writer, &reader, i);

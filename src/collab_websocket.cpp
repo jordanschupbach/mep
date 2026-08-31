@@ -23,8 +23,8 @@
 
 namespace mep::collab {
 namespace {
-constexpr size_t kMaxHttpHeader = 16 * 1024;
-constexpr uint64_t kMaxMessage = 8 * 1024 * 1024;
+constexpr size_t kMaxHttpHeader = size_t{16} * 1024;
+constexpr uint64_t kMaxMessage = uint64_t{8} * 1024 * 1024;
 
 /**
  * @brief Closes a platform socket handle.
@@ -54,7 +54,7 @@ void ShutdownFd(int fd) {
  * @param value The string to trim.
  * @return The trimmed string, or an empty string if `value` is all whitespace.
  */
-std::string Trim(std::string value) {
+std::string Trim(const std::string &value) {
     const auto first = value.find_first_not_of(" \t\r\n");
     if (first == std::string::npos) return "";
     const auto last = value.find_last_not_of(" \t\r\n");
@@ -260,20 +260,30 @@ WebSocket WebSocket::Connect(const std::string &url, std::string *error) {
     addrinfo hints{}; hints.ai_socktype = SOCK_STREAM; hints.ai_family = AF_UNSPEC; addrinfo *addresses = nullptr;
     if (getaddrinfo(host.c_str(), port.c_str(), &hints, &addresses) != 0) { if (error) *error = "unable to resolve relay host"; return {}; }
     int fd = -1;
-    for (addrinfo *it = addresses; it; it = it->ai_next) { fd = static_cast<int>(socket(it->ai_family, it->ai_socktype, it->ai_protocol)); if (fd >= 0 && connect(fd, it->ai_addr, it->ai_addrlen) == 0) break; if (fd >= 0) { CloseFd(fd); fd = -1; } }
+    for (addrinfo *it = addresses; it; it = it->ai_next) { fd = socket(it->ai_family, it->ai_socktype, it->ai_protocol); if (fd >= 0 && connect(fd, it->ai_addr, it->ai_addrlen) == 0) break; if (fd >= 0) { CloseFd(fd); fd = -1; } }
     freeaddrinfo(addresses); if (fd < 0) { if (error) *error = "unable to connect to relay"; return {}; }
     WebSocket socket(fd); socket.peer_frames_masked_ = false;
     if (secure) {
         socket.ssl_ctx_ = SSL_CTX_new(TLS_client_method());
         if (!socket.ssl_ctx_ || SSL_CTX_set_default_verify_paths(socket.ssl_ctx_) != 1) { if (error) *error = "unable to initialize TLS trust store"; return {}; }
         SSL_CTX_set_verify(socket.ssl_ctx_, SSL_VERIFY_PEER, nullptr); socket.ssl_ = SSL_new(socket.ssl_ctx_);
+        // SSL_set_tlsext_host_name is an OpenSSL macro that expands to an
+        // old-style (void*) cast inside <openssl/ssl.h> -- not our code,
+        // so the warning is suppressed locally rather than editing a
+        // system header.
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wold-style-cast"
+#endif
         if (!socket.ssl_ || SSL_set_tlsext_host_name(socket.ssl_, host.c_str()) != 1 || SSL_set1_host(socket.ssl_, host.c_str()) != 1) { if (error) *error = "unable to initialize TLS connection"; return {}; }
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
         SSL_set_fd(socket.ssl_, fd); if (SSL_connect(socket.ssl_) != 1 || SSL_get_verify_result(socket.ssl_) != X509_V_OK) { if (error) *error = "TLS certificate verification failed"; return {}; }
     }
     unsigned char nonce[16]; if (RAND_bytes(nonce, sizeof(nonce)) != 1) { if (error) *error = "unable to create WebSocket nonce"; return {}; }
     const std::string key = Base64(nonce, sizeof(nonce));
-    const std::string host_header = authority;
-    const std::string request = "GET " + path + " HTTP/1.1\r\nHost: " + host_header + "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: " + key + "\r\n\r\n";
+    const std::string request = "GET " + path + " HTTP/1.1\r\nHost: " + authority + "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: " + key + "\r\n\r\n";
     if (!socket.SendAll(request.data(), request.size())) { if (error) *error = "unable to request WebSocket upgrade"; return {}; }
     std::string response; char c;
     while (response.find("\r\n\r\n") == std::string::npos && response.size() < kMaxHttpHeader) { if (!socket.ReceiveExact(&c, 1)) { if (error) *error = "relay closed during WebSocket upgrade"; return {}; } response.push_back(c); }

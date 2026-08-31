@@ -21,9 +21,9 @@ namespace {
  * @return The decoded codepoint, or the raw byte value if the sequence is invalid or truncated.
  */
 int32_t DecodeUtf8(const std::string &s, size_t &pos) {
-    unsigned char c = s[pos];
+    unsigned char c = static_cast<unsigned char>(s[pos]);
     int len = 1;
-    int32_t cp = c;
+    int32_t cp;  // every branch below sets this before any read
     if ((c & 0x80) == 0) {
         len = 1;
         cp = c;
@@ -45,14 +45,14 @@ int32_t DecodeUtf8(const std::string &s, size_t &pos) {
         return c;  // truncated sequence
     }
     for (int i = 1; i < len; i++) {
-        unsigned char cc = s[pos + i];
+        unsigned char cc = static_cast<unsigned char>(s[pos + static_cast<size_t>(i)]);
         if ((cc & 0xC0) != 0x80) {
             pos += 1;
             return c;  // malformed continuation
         }
         cp = (cp << 6) | (cc & 0x3F);
     }
-    pos += len;
+    pos += static_cast<size_t>(len);
     return cp;
 }
 
@@ -149,7 +149,7 @@ struct ClassItem {
 };
 
 struct Regex::Node {
-    Kind kind;
+    Kind kind = Kind::Literal;
     int32_t literal = 0;             // Literal
     std::vector<ClassItem> items;    // CharClass
     bool negated = false;            // CharClass's leading ^
@@ -513,7 +513,7 @@ public:
      */
     Matcher(const std::string &text, bool ignore_case, int group_count)
         : text_(text), ignore_case_(ignore_case) {
-        groups_.assign(group_count + 1, {-1, -1});
+        groups_.assign(static_cast<size_t>(group_count) + 1, {-1, -1});
     }
 
     // Tries to match starting exactly at `start`. On success, groups_[0]
@@ -647,10 +647,10 @@ private:
                 // Continuation: record this group's capture span, invoke the
                 // continuation, and roll back the capture if k() ultimately fails.
                 return Match(n->child.get(), pos, [&, idx](int end) {
-                    std::pair<int, int> saved = idx > 0 ? groups_[idx] : std::pair<int, int>{-1, -1};
-                    if (idx > 0) groups_[idx] = {pos, end};
+                    std::pair<int, int> saved = idx > 0 ? groups_[static_cast<size_t>(idx)] : std::pair<int, int>{-1, -1};
+                    if (idx > 0) groups_[static_cast<size_t>(idx)] = {pos, end};
                     if (k(end)) return true;
-                    if (idx > 0) groups_[idx] = saved;
+                    if (idx > 0) groups_[static_cast<size_t>(idx)] = saved;
                     return false;
                 });
             }
@@ -687,7 +687,7 @@ private:
         // "is the previous *codepoint* a word char" only ever cares about
         // plain ASCII bytes anyway).
         int p = pos - 1;
-        while (p > 0 && (static_cast<unsigned char>(text_[p]) & 0xC0) == 0x80) p--;
+        while (p > 0 && (static_cast<unsigned char>(text_[static_cast<size_t>(p)]) & 0xC0) == 0x80) p--;
         return PeekCp(p);
     }
 
@@ -811,15 +811,15 @@ std::string Regex::ExpandReplacement(const std::string &text, const Match &m, co
         char c = repl[i];
         if ((c == '\\' || c == '&') && i + (c == '&' ? 0 : 1) <= repl.size()) {
             if (c == '&') {
-                out += text.substr(m.start, m.end - m.start);
+                out += text.substr(static_cast<size_t>(m.start), static_cast<size_t>(m.end - m.start));
                 continue;
             }
             char next = (i + 1 < repl.size()) ? repl[i + 1] : '\0';
             if (next >= '0' && next <= '9') {
                 int idx = next - '0';
-                if (idx < static_cast<int>(m.groups.size()) && m.groups[idx].first >= 0) {
-                    const auto &g = m.groups[idx];
-                    out += text.substr(g.first, g.second - g.first);
+                if (idx < static_cast<int>(m.groups.size()) && m.groups[static_cast<size_t>(idx)].first >= 0) {
+                    const auto &g = m.groups[static_cast<size_t>(idx)];
+                    out += text.substr(static_cast<size_t>(g.first), static_cast<size_t>(g.second - g.first));
                 }
                 i++;
                 continue;
@@ -838,7 +838,7 @@ std::string Regex::ExpandReplacement(const std::string &text, const Match &m, co
 std::string Regex::ReplaceFirst(const std::string &text, const std::string &repl) const {
     Match m = Search(text, 0);
     if (!m.ok()) return text;
-    return text.substr(0, m.start) + ExpandReplacement(text, m, repl) + text.substr(m.end);
+    return text.substr(0, static_cast<size_t>(m.start)) + ExpandReplacement(text, m, repl) + text.substr(static_cast<size_t>(m.end));
 }
 
 std::string Regex::ReplaceAll(const std::string &text, const std::string &repl) const {
@@ -847,10 +847,10 @@ std::string Regex::ReplaceAll(const std::string &text, const std::string &repl) 
     while (pos <= static_cast<int>(text.size())) {
         Match m = Search(text, pos);
         if (!m.ok()) {
-            out += text.substr(pos);
+            out += text.substr(static_cast<size_t>(pos));
             break;
         }
-        out += text.substr(pos, m.start - pos);
+        out += text.substr(static_cast<size_t>(pos), static_cast<size_t>(m.start - pos));
         out += ExpandReplacement(text, m, repl);
         if (m.end == m.start) {
             // Empty match (e.g. pattern "a*" against "bbb") -- copy one

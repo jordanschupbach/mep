@@ -35,12 +35,24 @@
 #include <emscripten/emscripten.h>
 #endif
 
+// These are generated/subsetted font data headers (raw glyph byte arrays,
+// see each header's own top-of-file comment for its fonttools provenance)
+// -- not hand-written, so suppress our own strict warnings for them rather
+// than editing generated content to satisfy warnings we don't require of
+// vendored data.
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcomment"
+#endif
 #include "font_data.h"
 #include "icon_font_data.h"
 #include "symbol_font_data.h"
 #include "office_font_data.h"
 #include "office_font_data_mono.h"
 #include "office_font_data_serif.h"
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 #include "persist.h"
 
 namespace {
@@ -141,7 +153,7 @@ std::vector<int> BuildIconCodepoints() {
     std::vector<int> out;
     int range_total = 0;
     for (const auto &range : kIconCodepointRanges) range_total += range.second - range.first + 1;
-    out.reserve(range_total + sizeof(kIconCodepointExtras) / sizeof(kIconCodepointExtras[0]));
+    out.reserve(static_cast<size_t>(range_total) + sizeof(kIconCodepointExtras) / sizeof(kIconCodepointExtras[0]));
     for (const auto &range : kIconCodepointRanges) {
         for (int c = range.first; c <= range.second; c++) out.push_back(c);
     }
@@ -623,11 +635,11 @@ void ComputePaneScreenRects(SplitNode *node, float x, float y, float w, float h)
     if (node->dir == SplitDir::Horizontal) {
         float cy = y;
         for (int i = 0; i < n; i++) {
-            float ch = has_shares ? h * node->shares[i] : h / n;
+            float ch = has_shares ? h * node->shares[static_cast<size_t>(i)] : h / static_cast<float>(n);
             float next_y = (i == n - 1) ? y + h : cy + ch;
-            ComputePaneScreenRects(node->children[i].get(), x, cy, w, next_y - cy);
+            ComputePaneScreenRects(node->children[static_cast<size_t>(i)].get(), x, cy, w, next_y - cy);
             if (i < n - 1) {
-                float ch_next = has_shares ? h * node->shares[i + 1] : h / n;
+                float ch_next = has_shares ? h * node->shares[static_cast<size_t>(i) + 1] : h / static_cast<float>(n);
                 g_pane_border_rects.push_back({node, i, false, Rectangle{x, next_y - kBorderGrabPx / 2.0f, w, kBorderGrabPx},
                                                 Rectangle{x, cy, w, ch + ch_next}});
             }
@@ -636,11 +648,11 @@ void ComputePaneScreenRects(SplitNode *node, float x, float y, float w, float h)
     } else {
         float cx = x;
         for (int i = 0; i < n; i++) {
-            float cw = has_shares ? w * node->shares[i] : w / n;
+            float cw = has_shares ? w * node->shares[static_cast<size_t>(i)] : w / static_cast<float>(n);
             float next_x = (i == n - 1) ? x + w : cx + cw;
-            ComputePaneScreenRects(node->children[i].get(), cx, y, next_x - cx, h);
+            ComputePaneScreenRects(node->children[static_cast<size_t>(i)].get(), cx, y, next_x - cx, h);
             if (i < n - 1) {
-                float cw_next = has_shares ? w * node->shares[i + 1] : w / n;
+                float cw_next = has_shares ? w * node->shares[static_cast<size_t>(i) + 1] : w / static_cast<float>(n);
                 g_pane_border_rects.push_back({node, i, true, Rectangle{next_x - kBorderGrabPx / 2.0f, y, kBorderGrabPx, h},
                                                 Rectangle{cx, y, cw + cw_next, h}});
             }
@@ -1011,7 +1023,7 @@ bool ExportGanttSvg(int buffer_id, const std::string &path) {
                     (sess->ruler_scale == GanttSession::RulerScale::Months && month) ||
                     (sess->ruler_scale == GanttSession::RulerScale::Years && year);
         if (!show) continue;
-        float gx = label_w + i * sess->pixels_per_day;
+        float gx = label_w + static_cast<float>(i) * sess->pixels_per_day;
         out << "<path d=\"M " << gx << " " << ruler_h << " V " << height << "\" stroke=\""
             << SvgColor(sess->ruler_scale == GanttSession::RulerScale::Days ? border : accent) << "\"/>\n";
         char label[16] = {};
@@ -1028,22 +1040,23 @@ bool ExportGanttSvg(int buffer_id, const std::string &path) {
     std::unordered_map<std::string, int> id_to_headline;
     std::unordered_map<int, int> headline_to_row;
     for (int ri = 0; ri < static_cast<int>(rows.size()); ++ri) {
-        headline_to_row[rows[ri]] = ri;
-        if (!sess->outline.headlines[rows[ri]].id.empty()) id_to_headline[sess->outline.headlines[rows[ri]].id] = rows[ri];
+        headline_to_row[rows[static_cast<size_t>(ri)]] = ri;
+        if (!sess->outline.headlines[static_cast<size_t>(rows[static_cast<size_t>(ri)])].id.empty())
+            id_to_headline[sess->outline.headlines[static_cast<size_t>(rows[static_cast<size_t>(ri)])].id] = rows[static_cast<size_t>(ri)];
     }
     for (int target_hi : rows) {
-        const OrgHeadline &target = sess->outline.headlines[target_hi];
+        const OrgHeadline &target = sess->outline.headlines[static_cast<size_t>(target_hi)];
         for (const std::string &blocker : target.blockers) {
             auto source_it = id_to_headline.find(blocker);
             if (source_it == id_to_headline.end()) continue;
-            const OrgHeadline &source = sess->outline.headlines[source_it->second];
+            const OrgHeadline &source = sess->outline.headlines[static_cast<size_t>(source_it->second)];
             long long source_end = source.deadline.present ? OrgDayNumber(source.deadline.year, source.deadline.month, source.deadline.day)
                                                             : OrgDayNumber(source.scheduled.year, source.scheduled.month, source.scheduled.day);
             long long target_start = OrgDayNumber(target.scheduled.year, target.scheduled.month, target.scheduled.day);
             float sx = label_w + static_cast<float>(source_end - sess->anchor_day) * sess->pixels_per_day;
             float tx = label_w + static_cast<float>(target_start - sess->anchor_day) * sess->pixels_per_day;
-            float sy = ruler_h + headline_to_row[source_it->second] * row_h + row_h / 2.0f;
-            float ty = ruler_h + headline_to_row[target_hi] * row_h + row_h / 2.0f;
+            float sy = ruler_h + static_cast<float>(headline_to_row[source_it->second]) * static_cast<float>(row_h) + static_cast<float>(row_h) / 2.0f;
+            float ty = ruler_h + static_cast<float>(headline_to_row[target_hi]) * static_cast<float>(row_h) + static_cast<float>(row_h) / 2.0f;
             float bend = std::max(sx + 12.0f, tx - 12.0f);
             out << "<path d=\"M " << sx << " " << sy << " H " << bend << " V " << ty << " H " << tx
                 << "\" fill=\"none\" stroke=\"" << SvgColor(accent) << "\" stroke-width=\"2\"/>\n";
@@ -1052,9 +1065,9 @@ bool ExportGanttSvg(int buffer_id, const std::string &path) {
         }
     }
     for (int ri = 0; ri < static_cast<int>(rows.size()); ++ri) {
-        int hi = rows[ri];
-        const OrgHeadline &hd = sess->outline.headlines[hi];
-        float row_y = ruler_h + ri * row_h;
+        int hi = rows[static_cast<size_t>(ri)];
+        const OrgHeadline &hd = sess->outline.headlines[static_cast<size_t>(hi)];
+        float row_y = ruler_h + static_cast<float>(ri) * static_cast<float>(row_h);
         long long start = OrgDayNumber(hd.scheduled.year, hd.scheduled.month, hd.scheduled.day);
         float bar_x = label_w + static_cast<float>(start - sess->anchor_day) * sess->pixels_per_day;
         float bar_w = hd.deadline.present
@@ -1208,7 +1221,7 @@ float DrawUiText(const std::string &text, Vector2 pos, float font_size, Color ti
     for (int i = 0; i < len;) {
         int cp_size = 0;
         int cp = GetCodepointNext(&s[i], &cp_size);
-        std::string glyph(s + i, cp_size);
+        std::string glyph(s + i, static_cast<size_t>(cp_size));
         i += cp_size;
         const Font &f = IsIconCodepoint(cp) ? g_icon_font : (IsSymbolCodepoint(cp) ? g_symbol_font : g_font);
         if (!measure_only) DrawTextEx(f, glyph.c_str(), Vector2{x, pos.y}, font_size, 0, tint);
@@ -1373,7 +1386,7 @@ void ApplyFontSize(float size) {
     for (const auto &range : kTerminalRanges) terminal_range_total += range.second - range.first + 1;
     static std::vector<int> terminal_codepoints;
     terminal_codepoints.clear();
-    terminal_codepoints.reserve(95 + terminal_range_total + kTerminalExtraCount);
+    terminal_codepoints.reserve(size_t{95} + static_cast<size_t>(terminal_range_total) + static_cast<size_t>(kTerminalExtraCount));
     for (int c = 32; c <= 126; c++) terminal_codepoints.push_back(c);
     for (const auto &range : kTerminalRanges) {
         for (int c = range.first; c <= range.second; c++) terminal_codepoints.push_back(c);
@@ -1389,7 +1402,7 @@ void ApplyFontSize(float size) {
     for (const auto &range : kSymbolCodepointRanges) symbol_range_total += range.second - range.first + 1;
     static std::vector<int> symbol_codepoints;
     symbol_codepoints.clear();
-    symbol_codepoints.reserve(symbol_range_total);
+    symbol_codepoints.reserve(static_cast<size_t>(symbol_range_total));
     for (const auto &range : kSymbolCodepointRanges) {
         for (int c = range.first; c <= range.second; c++) symbol_codepoints.push_back(c);
     }
@@ -1566,19 +1579,19 @@ std::vector<OfficeWrapLine> WordWrapOfficeParagraph(const DocParagraph &p, float
     }
     // Measures the pixel width of the token/tab spanning [s, e) in its formatted font.
     auto token_width = [&](int s, int e) -> float {
-        if (e == s + 1 && text[s] == '\t') {
+        if (e == s + 1 && text[static_cast<size_t>(s)] == '\t') {
             Font &f = OfficeFontFor(FormatAt(p, s));
             return MeasureTextEx(f, " ", font_size, 0).x * 4.0f;
         }
         Font &f = OfficeFontFor(FormatAt(p, s));
-        std::string tok = text.substr(s, e - s);
+        std::string tok = text.substr(static_cast<size_t>(s), static_cast<size_t>(e - s));
         return MeasureTextEx(f, tok.c_str(), font_size, 0).x;
     };
     int line_start = 0;
     float cur_width = 0.0f;
     int i = 0;
     while (i < n) {
-        unsigned char c = static_cast<unsigned char>(text[i]);
+        unsigned char c = static_cast<unsigned char>(text[static_cast<size_t>(i)]);
         if (c == '\n') {
             lines.push_back({line_start, i});
             line_start = i + 1;
@@ -1592,7 +1605,7 @@ std::vector<OfficeWrapLine> WordWrapOfficeParagraph(const DocParagraph &p, float
         } else {
             tok_end = i;
             while (tok_end < n) {
-                unsigned char tc = static_cast<unsigned char>(text[tok_end]);
+                unsigned char tc = static_cast<unsigned char>(text[static_cast<size_t>(tok_end)]);
                 if (tc == ' ' || tc == '\t' || tc == '\n') break;
                 tok_end++;
             }
@@ -1722,15 +1735,15 @@ std::vector<OfficeFormatRun> BuildOfficeDisplayRuns(const DocParagraph &p, int a
         while (pos < base.end) {
             int open = -1;
             for (int i = pos; i < base.end; ++i) {
-                if (p.text[i] != '$' || (i > base.start && p.text[i - 1] == '\\')) continue;
-                if ((i + 1 < base.end && p.text[i + 1] == '$') || (i > base.start && p.text[i - 1] == '$')) continue;
+                if (p.text[static_cast<size_t>(i)] != '$' || (i > base.start && p.text[static_cast<size_t>(i) - 1] == '\\')) continue;
+                if ((i + 1 < base.end && p.text[static_cast<size_t>(i) + 1] == '$') || (i > base.start && p.text[static_cast<size_t>(i) - 1] == '$')) continue;
                 open = i; break;
             }
             if (open < 0) { if (pos < base.end) out.push_back({pos, base.end, base.fmt}); break; }
             int close = -1;
             for (int i = open + 1; i < base.end; ++i) {
-                if (p.text[i] != '$' || p.text[i - 1] == '\\') continue;
-                if ((i + 1 < base.end && p.text[i + 1] == '$') || p.text[i - 1] == '$') continue;
+                if (p.text[static_cast<size_t>(i)] != '$' || p.text[static_cast<size_t>(i) - 1] == '\\') continue;
+                if ((i + 1 < base.end && p.text[static_cast<size_t>(i) + 1] == '$') || p.text[static_cast<size_t>(i) - 1] == '$') continue;
                 close = i; break;
             }
             if (close < 0) { out.push_back({pos, base.end, base.fmt}); break; }
@@ -1774,7 +1787,7 @@ void DrawLineFast(const std::string &line, float x, float y, float font_size, Co
     // produced by InsertChar itself, but loaded file content isn't limited
     // to ASCII) advances the cursor column once, not once per byte, and
     // draws as the one glyph it is rather than one garbled glyph per byte.
-    float scale = font_size / g_font.baseSize;
+    float scale = font_size / static_cast<float>(g_font.baseSize);
     float pad = static_cast<float>(g_font.glyphPadding);
     int col = 0;
     const char *text = line.c_str();
@@ -1791,8 +1804,8 @@ void DrawLineFast(const std::string &line, float x, float y, float font_size, Co
             continue;
         }
         int index = g_glyph_index[codepoint - 32];
-        Rectangle dst{cx + g_font.glyphs[index].offsetX * scale - pad * scale,
-                      y + g_font.glyphs[index].offsetY * scale - pad * scale,
+        Rectangle dst{cx + static_cast<float>(g_font.glyphs[index].offsetX) * scale - pad * scale,
+                      y + static_cast<float>(g_font.glyphs[index].offsetY) * scale - pad * scale,
                       (g_font.recs[index].width + 2.0f * pad) * scale,
                       (g_font.recs[index].height + 2.0f * pad) * scale};
         Rectangle src{g_font.recs[index].x - pad, g_font.recs[index].y - pad,
@@ -1826,9 +1839,9 @@ void DrawLineFast(const std::string &line, float x, float y, float font_size, Co
  * @return The screen position of `col`.
  */
 Vector2 WrapPos(int col, int wrap_cols, float text_x, float base_ly, int line_height) {
-    if (wrap_cols <= 0 || col < wrap_cols) return Vector2{text_x + col * g_char_width, base_ly};
+    if (wrap_cols <= 0 || col < wrap_cols) return Vector2{text_x + static_cast<float>(col) * g_char_width, base_ly};
     int sub = col / wrap_cols;
-    return Vector2{text_x + (col - sub * wrap_cols) * g_char_width, base_ly + sub * line_height};
+    return Vector2{text_x + static_cast<float>(col - sub * wrap_cols) * g_char_width, base_ly + static_cast<float>(sub * line_height)};
 }
 
 // Invokes draw(y, x0, x1, piece_col_start, piece_col_end) once per visual
@@ -1850,16 +1863,16 @@ template <typename Fn>
 void ForEachWrapPiece(int col_a, int col_b, int wrap_cols, float text_x, float base_ly, int line_height, Fn &&draw) {
     if (col_b <= col_a) return;
     if (wrap_cols <= 0) {
-        draw(base_ly, text_x + col_a * g_char_width, text_x + col_b * g_char_width, col_a, col_b);
+        draw(base_ly, text_x + static_cast<float>(col_a) * g_char_width, text_x + static_cast<float>(col_b) * g_char_width, col_a, col_b);
         return;
     }
     int c = col_a;
     while (c < col_b) {
         int sub = c / wrap_cols;
         int piece_end = std::min(col_b, (sub + 1) * wrap_cols);
-        float x0 = text_x + (c - sub * wrap_cols) * g_char_width;
-        float x1 = text_x + (piece_end - sub * wrap_cols) * g_char_width;
-        draw(base_ly + sub * line_height, x0, x1, c, piece_end);
+        float x0 = text_x + static_cast<float>(c - sub * wrap_cols) * g_char_width;
+        float x1 = text_x + static_cast<float>(piece_end - sub * wrap_cols) * g_char_width;
+        draw(base_ly + static_cast<float>(sub * line_height), x0, x1, c, piece_end);
         c = piece_end;
     }
 }
@@ -11413,7 +11426,7 @@ bool HandleMenuInput() {
 
     int hovered = -1;
     for (size_t i = 0; i < g_menus.size(); i++) {
-        if (mouse.y >= 0 && mouse.y < bar_height && mouse.x >= g_menu_starts[i] &&
+        if (mouse.y >= 0 && mouse.y < static_cast<float>(bar_height) && mouse.x >= g_menu_starts[i] &&
             mouse.x < g_menu_starts[i] + g_menu_widths[i]) {
             hovered = static_cast<int>(i);
         }
@@ -11422,19 +11435,19 @@ bool HandleMenuInput() {
     if (g_open_menu >= 0) {
         if (hovered >= 0 && hovered != g_open_menu) g_open_menu = hovered;
 
-        const Menu &menu = g_menus[g_open_menu];
-        float dd_x = g_menu_starts[g_open_menu];
-        float dd_y = bar_height;
+        const Menu &menu = g_menus[static_cast<size_t>(g_open_menu)];
+        float dd_x = g_menu_starts[static_cast<size_t>(g_open_menu)];
+        float dd_y = static_cast<float>(bar_height);
         float dd_w = DropdownWidth(menu);
-        float dd_h = static_cast<float>(menu.items.size() * MenuItemHeight());
+        float dd_h = static_cast<float>(menu.items.size() * static_cast<size_t>(MenuItemHeight()));
         bool inside_dropdown =
             mouse.x >= dd_x && mouse.x < dd_x + dd_w && mouse.y >= dd_y && mouse.y < dd_y + dd_h;
 
         if (clicked) {
             if (inside_dropdown) {
-                int idx = static_cast<int>((mouse.y - dd_y) / MenuItemHeight());
+                int idx = static_cast<int>((mouse.y - dd_y) / static_cast<float>(MenuItemHeight()));
                 if (idx >= 0 && idx < static_cast<int>(menu.items.size())) {
-                    menu.items[idx].action();
+                    menu.items[static_cast<size_t>(idx)].action();
                 }
                 g_open_menu = -1;
             } else if (hovered < 0) {
@@ -11468,35 +11481,35 @@ void DrawMenuBar() {
             DrawRectangle(static_cast<int>(g_menu_starts[i]), 0, static_cast<int>(g_menu_widths[i]), bar_height,
                           ResolveHlGroup("MenuHighlight"));
         }
-        float text_y = (bar_height - font_size) / 2.0f;
+        float text_y = (static_cast<float>(bar_height) - font_size) / 2.0f;
         DrawTextEx(g_font, g_menus[i].label.c_str(),
                    Vector2{g_menu_starts[i] + kMenuPaddingX, text_y}, font_size, 0, ResolveHlGroup("MenuBarFg"));
     }
 
     if (g_open_menu >= 0) {
-        const Menu &menu = g_menus[g_open_menu];
-        float dd_x = g_menu_starts[g_open_menu];
-        float dd_y = bar_height;
+        const Menu &menu = g_menus[static_cast<size_t>(g_open_menu)];
+        float dd_x = g_menu_starts[static_cast<size_t>(g_open_menu)];
+        float dd_y = static_cast<float>(bar_height);
         float dd_w = DropdownWidth(menu);
         int item_h = MenuItemHeight();
         Vector2 mouse = GetMousePosition();
 
         DrawRectangle(static_cast<int>(dd_x), static_cast<int>(dd_y), static_cast<int>(dd_w),
-                      static_cast<int>(menu.items.size() * item_h), ResolveHlGroup("Picker"));
+                      static_cast<int>(menu.items.size() * static_cast<size_t>(item_h)), ResolveHlGroup("Picker"));
         for (size_t i = 0; i < menu.items.size(); i++) {
-            float item_y = dd_y + i * item_h;
+            float item_y = dd_y + static_cast<float>(i) * static_cast<float>(item_h);
             bool hovered_item = mouse.x >= dd_x && mouse.x < dd_x + dd_w && mouse.y >= item_y &&
-                                 mouse.y < item_y + item_h;
+                                 mouse.y < item_y + static_cast<float>(item_h);
             if (hovered_item) {
                 DrawRectangle(static_cast<int>(dd_x), static_cast<int>(item_y), static_cast<int>(dd_w), item_h,
                               ResolveHlGroup("MenuHighlight"));
             }
-            float text_y = item_y + (item_h - font_size) / 2.0f;
+            float text_y = item_y + (static_cast<float>(item_h) - font_size) / 2.0f;
             DrawTextEx(g_font, menu.items[i].label.c_str(), Vector2{dd_x + kMenuItemPaddingX, text_y}, font_size, 0,
                        ResolveHlGroup("MenuBarFg"));
         }
         DrawRectangleLines(static_cast<int>(dd_x), static_cast<int>(dd_y), static_cast<int>(dd_w),
-                            static_cast<int>(menu.items.size() * item_h), ResolveHlGroup("PickerBorder"));
+                            static_cast<int>(menu.items.size() * static_cast<size_t>(item_h)), ResolveHlGroup("PickerBorder"));
     }
 }
 
@@ -11593,7 +11606,7 @@ void DrawSelectOverlay() {
     FloatFrame f = DrawFloatFrame(box_w, box_h, g_editor.SelectTitle());
     int sel = g_editor.SelectIndex();
     for (size_t i = 0; i < items.size(); i++) {
-        float y = f.content_y + i * line_h;
+        float y = f.content_y + static_cast<float>(i) * static_cast<float>(line_h);
         if (static_cast<int>(i) == sel) {
             DrawRectangle(f.box_x + 6, static_cast<int>(y) - 1, f.box_w - 12, line_h, ResolveHlGroup("PickerSelected"));
         }
@@ -11632,7 +11645,7 @@ void DrawPreviewOverlay() {
                           10 + title_h + static_cast<int>(lines.size()) * line_h + static_cast<int>(hint_size) + 24);
     FloatFrame f = DrawFloatFrame(box_w, box_h, g_editor.PreviewTitle());
     for (size_t i = 0; i < lines.size(); i++) {
-        float y = f.content_y + i * line_h;
+        float y = f.content_y + static_cast<float>(i) * static_cast<float>(line_h);
         const std::string &line = lines[i];
         Color color = ResolveHlGroup("Normal");
         if (!line.empty() && line[0] == '+') color = ResolveHlGroup("Add");
@@ -11643,7 +11656,7 @@ void DrawPreviewOverlay() {
     float hint_w = MeasureTextEx(g_font, hint.c_str(), hint_size, 0).x;
     DrawTextEx(g_font, hint.c_str(),
                Vector2{static_cast<float>(f.box_x + f.box_w) - hint_w - 14,
-                       static_cast<float>(f.box_y + f.box_h - hint_size - 10)},
+                       static_cast<float>(f.box_y) + static_cast<float>(f.box_h) - hint_size - 10.0f},
                hint_size, 0, ResolveHlGroup("Comment"));
 }
 
@@ -11698,7 +11711,7 @@ void DrawToastStack() {
         float text_w = MeasureUiText(text, font_size);
         float box_w = text_w + 24;
         float box_h = font_size + 14;
-        float x = screen_w - box_w - 10;
+        float x = static_cast<float>(screen_w) - box_w - 10;
         DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(box_w), static_cast<int>(box_h),
                       ResolveHlGroup("FloatBg"));
         DrawRectangleLines(static_cast<int>(x), static_cast<int>(y), static_cast<int>(box_w),
@@ -11752,25 +11765,25 @@ void DrawSidebars() {
             py = content_top;
             pw = px_w;
             ph = content_bottom - content_top;
-            left_offset += px_w;
+            left_offset += static_cast<float>(px_w);
         } else if (sb.position == "top") {
             px = 0;
             py = content_top + static_cast<int>(top_offset);
             pw = screen_w;
             ph = std::min(content_h, (content_bottom - content_top) / 2);
-            top_offset += ph;
+            top_offset += static_cast<float>(ph);
         } else if (sb.position == "bottom") {
             ph = std::min(content_h, (content_bottom - content_top) / 2);
             px = 0;
             py = content_bottom - ph - static_cast<int>(bottom_offset);
             pw = screen_w;
-            bottom_offset += ph;
+            bottom_offset += static_cast<float>(ph);
         } else {  // "right"
             px = screen_w - px_w - static_cast<int>(right_offset);
             py = content_top;
             pw = px_w;
             ph = content_bottom - content_top;
-            right_offset += px_w;
+            right_offset += static_cast<float>(px_w);
         }
 
         // Resizable inner edge (the one facing the pane tree, not the
@@ -11785,10 +11798,10 @@ void DrawSidebars() {
             bool horizontal = sb.position == "left" || sb.position == "right";
             int sign = (sb.position == "left" || sb.position == "top") ? 1 : -1;
             Rectangle grab;
-            if (sb.position == "left") grab = Rectangle{px + pw - kBorderGrabPx / 2.0f, static_cast<float>(py), kBorderGrabPx, static_cast<float>(ph)};
-            else if (sb.position == "right") grab = Rectangle{px - kBorderGrabPx / 2.0f, static_cast<float>(py), kBorderGrabPx, static_cast<float>(ph)};
-            else if (sb.position == "top") grab = Rectangle{static_cast<float>(px), py + ph - kBorderGrabPx / 2.0f, static_cast<float>(pw), kBorderGrabPx};
-            else grab = Rectangle{static_cast<float>(px), py - kBorderGrabPx / 2.0f, static_cast<float>(pw), kBorderGrabPx};
+            if (sb.position == "left") grab = Rectangle{static_cast<float>(px + pw) - kBorderGrabPx / 2.0f, static_cast<float>(py), kBorderGrabPx, static_cast<float>(ph)};
+            else if (sb.position == "right") grab = Rectangle{static_cast<float>(px) - kBorderGrabPx / 2.0f, static_cast<float>(py), kBorderGrabPx, static_cast<float>(ph)};
+            else if (sb.position == "top") grab = Rectangle{static_cast<float>(px), static_cast<float>(py + ph) - kBorderGrabPx / 2.0f, static_cast<float>(pw), kBorderGrabPx};
+            else grab = Rectangle{static_cast<float>(px), static_cast<float>(py) - kBorderGrabPx / 2.0f, static_cast<float>(pw), kBorderGrabPx};
             g_sidebar_border_rects.push_back({sb.id, horizontal, sign, grab});
         }
 
@@ -11829,7 +11842,7 @@ void DrawSidebars() {
         size_t first = static_cast<size_t>(scroll);
         size_t last = std::min(lines.size(), first + static_cast<size_t>(visible_lines));
         for (size_t i = first; i < last; i++) {
-            float ly = py + header_h + (i - first) * line_h;
+            float ly = static_cast<float>(py) + static_cast<float>(header_h) + static_cast<float>(i - first) * static_cast<float>(line_h);
             // Persistent "current position" marker (SidebarWidget::current,
             // e.g. kBuiltinStructure's own cursor-tracking) -- drawn
             // regardless of focus, so it stays visible while the user is
@@ -11991,7 +12004,7 @@ void DrawOfficeSidePanels(float pane_x, float pane_w, float content_y, float con
             float row_h = g_font_size + 12.0f;
             float ry = py;
             for (int pi = 0; pi < static_cast<int>(doc.paragraphs.size()); pi++) {
-                const DocParagraph &para = doc.paragraphs[pi];
+                const DocParagraph &para = doc.paragraphs[static_cast<size_t>(pi)];
                 if (para.heading_level <= 0) continue;
                 if (pi <= office_sess->cursor_para) active_heading_para = pi;
                 bool active = false;  // resolved after the loop once the last heading <= cursor is known
@@ -12006,7 +12019,7 @@ void DrawOfficeSidePanels(float pane_x, float pane_w, float content_y, float con
                     g_editor.SetOfficeCursorPara(buffer_id, pi);
                     g_editor.SetOfficeScroll(buffer_id, pi, 0);
                 });
-                g_office_status.outline_rows.push_back({pi, row});
+                g_office_status.outline_rows.emplace_back(pi, row);
                 ry += row_h;
                 (void)active;
             }
@@ -12019,7 +12032,7 @@ void DrawOfficeSidePanels(float pane_x, float pane_w, float content_y, float con
             }
             ry = py;
             for (int pi = 0; pi < static_cast<int>(doc.paragraphs.size()); pi++) {
-                const DocParagraph &para = doc.paragraphs[pi];
+                const DocParagraph &para = doc.paragraphs[static_cast<size_t>(pi)];
                 if (para.heading_level <= 0) continue;
                 std::string text = para.text.empty() ? "(untitled heading)" : para.text;
                 float indent = 14.0f + static_cast<float>(para.heading_level - 1) * 14.0f;
@@ -12227,7 +12240,7 @@ static std::vector<Color> PickerLineColors(const std::string &text, const std::v
         Color c = ResolveHlGroup(s.hl_group);
         int cs = std::max(0, s.col_start);
         int ce = std::min(static_cast<int>(text.size()), s.col_end);
-        for (int i = cs; i < ce; i++) colors[i] = c;
+        for (int i = cs; i < ce; i++) colors[static_cast<size_t>(i)] = c;
     }
     return colors;
 }
@@ -12280,8 +12293,8 @@ void DrawPickerOverlay() {
     // since this overlay is one box rather than mep.nvim's three separate
     // floating windows and reads busier at the same fraction. Floors keep
     // it usable in a small window.
-    int box_w = std::max(400, static_cast<int>(GetScreenWidth() * 0.8f));
-    int box_h = std::max(300, static_cast<int>(GetScreenHeight() * 0.8f));
+    int box_w = std::max(400, static_cast<int>(static_cast<float>(GetScreenWidth()) * 0.8f));
+    int box_h = std::max(300, static_cast<int>(static_cast<float>(GetScreenHeight()) * 0.8f));
     FloatFrame f = DrawFloatFrame(box_w, box_h, g_editor.PickerTitle());
 
     std::string prompt_line = "> " + g_editor.PickerQuery();
@@ -12295,23 +12308,23 @@ void DrawPickerOverlay() {
              static_cast<int>(f.content_y + g_font_size + 6), ResolveHlGroup("PickerBorder"));
 
     // 0.38 split matches mep.nvim's ui.lua (left_width = 0.38 * width).
-    int list_w = has_preview ? static_cast<int>((f.box_x + f.box_w - f.content_x) * 0.38f) : (f.box_x + f.box_w) - static_cast<int>(f.content_x) - 4;
+    int list_w = has_preview ? static_cast<int>((static_cast<float>(f.box_x + f.box_w) - f.content_x) * 0.38f) : (f.box_x + f.box_w) - static_cast<int>(f.content_x) - 4;
 
     float list_y = f.content_y + g_font_size + 14;
     int line_h = static_cast<int>(g_font_size) + 4;
-    int max_rows = std::max(1, static_cast<int>((f.box_y + f.box_h - list_y) / line_h));
+    int max_rows = std::max(1, static_cast<int>((static_cast<float>(f.box_y + f.box_h) - list_y) / static_cast<float>(line_h)));
     int start = std::max(0, selected - max_rows + 1);
     BeginScissorMode(f.box_x, static_cast<int>(list_y) - 2, list_w, f.box_y + f.box_h - static_cast<int>(list_y));
     for (int i = start; i < static_cast<int>(results.size()) && i < start + max_rows; i++) {
-        float ry = list_y + (i - start) * line_h;
+        float ry = list_y + static_cast<float>((i - start) * line_h);
         if (i == selected) {
             DrawRectangle(f.box_x + 4, static_cast<int>(ry) - 1, list_w - 8, line_h, ResolveHlGroup("PickerSelected"));
         }
-        if (results[i].spans.empty()) {
-            DrawTextEx(g_font, results[i].display.c_str(), Vector2{f.content_x, ry}, g_font_size, 0, ResolveHlGroup("Normal"));
+        if (results[static_cast<size_t>(i)].spans.empty()) {
+            DrawTextEx(g_font, results[static_cast<size_t>(i)].display.c_str(), Vector2{f.content_x, ry}, g_font_size, 0, ResolveHlGroup("Normal"));
         } else {
-            std::vector<Color> colors = PickerLineColors(results[i].display, results[i].spans, ResolveHlGroup("Normal"));
-            DrawPickerColoredRun(results[i].display, colors, 0, results[i].display.size(), f.content_x, ry);
+            std::vector<Color> colors = PickerLineColors(results[static_cast<size_t>(i)].display, results[static_cast<size_t>(i)].spans, ResolveHlGroup("Normal"));
+            DrawPickerColoredRun(results[static_cast<size_t>(i)].display, colors, 0, results[static_cast<size_t>(i)].display.size(), f.content_x, ry);
         }
     }
     if (results.empty()) {
@@ -12336,10 +12349,10 @@ void DrawPickerOverlay() {
             // fresh from the highlighted row every frame (no stale state
             // to prime or clear, unlike the text preview below).
             std::string theme_name =
-                (selected >= 0 && selected < static_cast<int>(results.size())) ? results[selected].data : std::string();
+                (selected >= 0 && selected < static_cast<int>(results.size())) ? results[static_cast<size_t>(selected)].data : std::string();
             Palette pal;
             if (g_editor.ThemePalette(theme_name, &pal)) {
-                struct SwatchRow { const char *label; ThemeColor color; };
+                struct SwatchRow { const char *label = nullptr; ThemeColor color; };
                 SwatchRow rows[] = {
                     {"bg", pal.bg},     {"fg", pal.fg},     {"red", pal.red},       {"green", pal.green},
                     {"yellow", pal.yellow}, {"blue", pal.blue}, {"purple", pal.purple}, {"cyan", pal.cyan},
@@ -12347,7 +12360,7 @@ void DrawPickerOverlay() {
                 };
                 int swatch_size = static_cast<int>(g_font_size);
                 for (int i = 0; i < static_cast<int>(sizeof(rows) / sizeof(rows[0])); i++) {
-                    float ry = list_y + i * line_h;
+                    float ry = list_y + static_cast<float>(i * line_h);
                     DrawRectangle(static_cast<int>(px), static_cast<int>(ry), swatch_size, swatch_size,
                                   ToRaylib(rows[i].color));
                     DrawRectangleLines(static_cast<int>(px), static_cast<int>(ry), swatch_size, swatch_size,
@@ -12356,7 +12369,7 @@ void DrawPickerOverlay() {
                     std::snprintf(hex, sizeof(hex), "#%02X%02X%02X", rows[i].color.r, rows[i].color.g, rows[i].color.b);
                     std::string label = std::string(hex) + "  " + rows[i].label;
                     DrawTextEx(g_font, label.c_str(),
-                               Vector2{px + swatch_size + 8, ry + (swatch_size - g_font_size) / 2.0f}, g_font_size, 0,
+                               Vector2{px + static_cast<float>(swatch_size) + 8, ry + (static_cast<float>(swatch_size) - g_font_size) / 2.0f}, g_font_size, 0,
                                ResolveHlGroup("Normal"));
                 }
             } else {
@@ -12364,9 +12377,9 @@ void DrawPickerOverlay() {
             }
             EndScissorMode();
         } else {
-            int max_chars = std::max(10, static_cast<int>(preview_w / g_char_width));
+            int max_chars = std::max(10, static_cast<int>(static_cast<float>(preview_w) / g_char_width));
             int row = 0;
-            int max_preview_rows = static_cast<int>((f.box_y + f.box_h - list_y) / line_h);
+            int max_preview_rows = static_cast<int>((static_cast<float>(f.box_y + f.box_h) - list_y) / static_cast<float>(line_h));
             // mod1+j/k (Editor::HandleMod1Shortcuts' own Mode::Picker special
             // case) scrolls by skipping raw lines here -- PickerPreviewScroll()
             // counts the same raw lines SplitLines() returns, not the wrapped
@@ -12391,13 +12404,13 @@ void DrawPickerOverlay() {
                 while (pos < raw_line.size() && row < max_preview_rows) {
                     size_t take = std::min(raw_line.size() - pos, static_cast<size_t>(max_chars));
                     if (has_line_spans) {
-                        DrawPickerColoredRun(raw_line, line_colors, pos, take, px, list_y + row * line_h);
+                        DrawPickerColoredRun(raw_line, line_colors, pos, take, px, list_y + static_cast<float>(row * line_h));
                         pos += take;
                         row++;
                         continue;
                     }
                     std::string chunk = raw_line.substr(pos, take);
-                    DrawTextEx(g_font, chunk.c_str(), Vector2{px, list_y + row * line_h}, g_font_size, 0,
+                    DrawTextEx(g_font, chunk.c_str(), Vector2{px, list_y + static_cast<float>(row * line_h)}, g_font_size, 0,
                                ResolveHlGroup("Normal"));
                     pos += take;
                     row++;
@@ -12435,16 +12448,16 @@ static std::vector<Vector2> ComputeRoamGraphPositions(const std::vector<RoamGrap
     std::vector<Vector2> pos(nodes.size(), Vector2{cx, cy});
     std::vector<int> hop1, hop2;
     for (int i = 0; i < static_cast<int>(nodes.size()); i++) {
-        if (nodes[i].hop == 1) hop1.push_back(i);
-        else if (nodes[i].hop >= 2) hop2.push_back(i);
+        if (nodes[static_cast<size_t>(i)].hop == 1) hop1.push_back(i);
+        else if (nodes[static_cast<size_t>(i)].hop >= 2) hop2.push_back(i);
     }
     for (size_t k = 0; k < hop1.size(); k++) {
         float ang = kTwoPi * static_cast<float>(k) / static_cast<float>(hop1.size());
-        pos[hop1[k]] = Vector2{cx + r1 * cosf(ang), cy + r1 * sinf(ang)};
+        pos[static_cast<size_t>(hop1[k])] = Vector2{cx + r1 * cosf(ang), cy + r1 * sinf(ang)};
     }
     for (size_t k = 0; k < hop2.size(); k++) {
         float ang = kTwoPi * static_cast<float>(k) / static_cast<float>(hop2.size());
-        pos[hop2[k]] = Vector2{cx + r2 * cosf(ang), cy + r2 * sinf(ang)};
+        pos[static_cast<size_t>(hop2[k])] = Vector2{cx + r2 * cosf(ang), cy + r2 * sinf(ang)};
     }
     return pos;
 }
@@ -12492,10 +12505,10 @@ void DrawRoamGraphOverlay() {
     std::vector<Vector2> pos = ComputeRoamGraphPositions(nodes, cx, cy, r1, r2);
     std::vector<int> filtered = g_editor.RoamGraphFilteredIndices();
     std::vector<bool> visible(nodes.size(), false);
-    for (int i : filtered) visible[i] = true;
+    for (int i : filtered) visible[static_cast<size_t>(i)] = true;
     int selected_idx = -1;
     if (g_editor.RoamGraphSelected() >= 0 && g_editor.RoamGraphSelected() < static_cast<int>(filtered.size())) {
-        selected_idx = filtered[g_editor.RoamGraphSelected()];
+        selected_idx = filtered[static_cast<size_t>(g_editor.RoamGraphSelected())];
     }
 
     // Edges first, so nodes/labels draw on top of them.
@@ -12505,8 +12518,8 @@ void DrawRoamGraphOverlay() {
         if (e.a < 0 || e.a >= static_cast<int>(nodes.size()) || e.b < 0 || e.b >= static_cast<int>(nodes.size())) {
             continue;
         }
-        bool both_visible = visible[e.a] && visible[e.b];
-        DrawLineEx(pos[e.a], pos[e.b], both_visible ? 1.6f : 1.0f, both_visible ? edge_color : edge_dim);
+        bool both_visible = visible[static_cast<size_t>(e.a)] && visible[static_cast<size_t>(e.b)];
+        DrawLineEx(pos[static_cast<size_t>(e.a)], pos[static_cast<size_t>(e.b)], both_visible ? 1.6f : 1.0f, both_visible ? edge_color : edge_dim);
     }
 
     Color normal_c = ResolveHlGroup("Normal");
@@ -12522,20 +12535,20 @@ void DrawRoamGraphOverlay() {
     // of disappearing, so the ring layout (and the edges touching it)
     // stays legible as you type instead of reflowing every keystroke.
     for (int i = 0; i < static_cast<int>(nodes.size()); i++) {
-        bool is_center = nodes[i].hop == 0;
-        bool is_visible = visible[i];
-        float radius = is_center ? 10.0f : (nodes[i].hop == 1 ? 7.0f : 5.0f);
+        bool is_center = nodes[static_cast<size_t>(i)].hop == 0;
+        bool is_visible = visible[static_cast<size_t>(i)];
+        float radius = is_center ? 10.0f : (nodes[static_cast<size_t>(i)].hop == 1 ? 7.0f : 5.0f);
         Color fill = !is_visible ? dim_c : (is_center ? center_c : normal_c);
         if (i == selected_idx) {
-            DrawCircleV(pos[i], radius + 5.0f, Fade(select_c, 0.85f));
+            DrawCircleV(pos[static_cast<size_t>(i)], radius + 5.0f, Fade(select_c, 0.85f));
         }
-        DrawCircleV(pos[i], radius, fill);
-        DrawCircleLines(static_cast<int>(pos[i].x), static_cast<int>(pos[i].y), radius, border_c);
+        DrawCircleV(pos[static_cast<size_t>(i)], radius, fill);
+        DrawCircleLines(static_cast<int>(pos[static_cast<size_t>(i)].x), static_cast<int>(pos[static_cast<size_t>(i)].y), radius, border_c);
 
-        std::string label = nodes[i].title.empty() ? nodes[i].path : nodes[i].title;
+        std::string label = nodes[static_cast<size_t>(i)].title.empty() ? nodes[static_cast<size_t>(i)].path : nodes[static_cast<size_t>(i)].title;
         if (label.size() > 22) label = label.substr(0, 21) + "...";
         Vector2 msz = MeasureTextEx(g_font, label.c_str(), label_size, 0);
-        Vector2 lp{pos[i].x - msz.x / 2.0f, pos[i].y + radius + 3.0f};
+        Vector2 lp{pos[static_cast<size_t>(i)].x - msz.x / 2.0f, pos[static_cast<size_t>(i)].y + radius + 3.0f};
         Color text_c = !is_visible ? dim_c : (i == selected_idx ? select_c : normal_c);
         DrawTextEx(g_font, label.c_str(), lp, label_size, 0, text_c);
     }
@@ -12604,8 +12617,8 @@ void DrawWhichKeyOverlay() {
     for (size_t i = 0; i < matches.size(); i++) {
         int col = static_cast<int>(i) % columns;
         int row = static_cast<int>(i) / columns;
-        float x = content_x + col * item_w;
-        float y = content_y + row * line_h;
+        float x = content_x + static_cast<float>(col) * static_cast<float>(item_w);
+        float y = content_y + static_cast<float>(row) * static_cast<float>(line_h);
         DrawTextEx(g_font, matches[i].first.c_str(), Vector2{x, y}, font_size, 0, ResolveHlGroup("PickerTitle"));
         float key_w = MeasureTextEx(g_font, matches[i].first.c_str(), font_size, 0).x;
         DrawTextEx(g_font, matches[i].second.c_str(), Vector2{x + key_w + 16, y}, font_size, 0,
@@ -12640,7 +12653,7 @@ void DrawHelpOverlay() {
     DrawRectangleLines(box_x, box_y, box_w, box_h, ResolveHlGroup("FloatBorder"));
 
     for (size_t i = 0; i < lines.size(); i++) {
-        float y = box_y + 16 + i * line_h;
+        float y = static_cast<float>(box_y + 16) + static_cast<float>(i) * static_cast<float>(line_h);
         DrawTextEx(g_font, lines[i].c_str(), Vector2{static_cast<float>(box_x + 18), y}, font_size, 0, ResolveHlGroup("Normal"));
     }
 
@@ -12648,7 +12661,7 @@ void DrawHelpOverlay() {
     float hint_size = MenuFontSize();
     float hint_w = MeasureTextEx(g_font, hint.c_str(), hint_size, 0).x;
     DrawTextEx(g_font, hint.c_str(),
-               Vector2{static_cast<float>(box_x + box_w) - hint_w - 14, static_cast<float>(box_y + box_h - hint_size - 10)},
+               Vector2{static_cast<float>(box_x + box_w) - hint_w - 14, static_cast<float>(box_y + box_h) - hint_size - 10.0f},
                hint_size, 0, ResolveHlGroup("Comment"));
 }
 
@@ -12696,7 +12709,7 @@ const char *CompletionKindBadge(const std::string &kind) {
  * @param box_h Height of the completion popup box.
  * @param item The selected completion candidate whose detail/doc should be shown.
  */
-void DrawCompletionDetailPanel(int box_x, int box_y, int box_w, int box_h, const CompletionCandidate &item) {
+void DrawCompletionDetailPanel(int box_x, int box_y, int box_w, [[maybe_unused]] int box_h, const CompletionCandidate &item) {
     if (item.kind != "lsp") return;
     // Most real servers (pyright included) send textDocument/completion
     // items nearly empty -- detail/documentation only show up via a
@@ -12717,7 +12730,7 @@ void DrawCompletionDetailPanel(int box_x, int box_y, int box_w, int box_h, const
     float font_size = g_font_size;
     int line_h = static_cast<int>(font_size) + 4;
     int panel_w = std::min(GetScreenWidth() / 2, 640);
-    int max_chars_per_line = std::max(20, static_cast<int>((panel_w - 20) / g_char_width));
+    int max_chars_per_line = std::max(20, static_cast<int>(static_cast<float>(panel_w - 20) / g_char_width));
     std::vector<std::string> lines;
     int detail_line_count = 0;
     if (!detail->empty()) {
@@ -12730,10 +12743,10 @@ void DrawCompletionDetailPanel(int box_x, int box_y, int box_w, int box_h, const
             } while (pos < raw.size());
         }
         detail_line_count = static_cast<int>(lines.size());
-        if (!doc->empty()) lines.push_back("");
+        if (!doc->empty()) lines.emplace_back();
     }
     for (const std::string &raw : SplitLines(*doc)) {
-        if (raw.empty()) { lines.push_back(""); continue; }
+        if (raw.empty()) { lines.emplace_back(); continue; }
         size_t pos = 0;
         while (pos < raw.size()) {
             size_t take = std::min(raw.size() - pos, static_cast<size_t>(max_chars_per_line));
@@ -12751,7 +12764,7 @@ void DrawCompletionDetailPanel(int box_x, int box_y, int box_w, int box_h, const
     DrawRectangleLines(panel_x, panel_y, panel_w, panel_h, ResolveHlGroup("PickerBorder"));
     for (int i = 0; i < max_rows; i++) {
         Color c = (i < detail_line_count) ? ResolveHlGroup("PickerTitle") : ResolveHlGroup("Normal");
-        DrawTextEx(g_font, lines[i].c_str(), Vector2{static_cast<float>(panel_x + 8), static_cast<float>(panel_y + 6 + i * line_h)},
+        DrawTextEx(g_font, lines[static_cast<size_t>(i)].c_str(), Vector2{static_cast<float>(panel_x + 8), static_cast<float>(panel_y + 6 + i * line_h)},
                    font_size, 0, c);
     }
 }
@@ -12773,21 +12786,21 @@ void DrawCompletionPopup(float x, float y) {
     int box_w = static_cast<int>(badge_w + max_w) + 16;
     int max_rows = std::min(static_cast<int>(items.size()), 8);
     int box_h = max_rows * line_h + 6;
-    if (x + box_w > GetScreenWidth()) x = GetScreenWidth() - box_w;
+    if (x + static_cast<float>(box_w) > static_cast<float>(GetScreenWidth())) x = static_cast<float>(GetScreenWidth() - box_w);
     DrawRectangle(static_cast<int>(x), static_cast<int>(y), box_w, box_h, ResolveHlGroup("Picker"));
     DrawRectangleLines(static_cast<int>(x), static_cast<int>(y), box_w, box_h, ResolveHlGroup("PickerBorder"));
     int selected = g_editor.CompletionSelected();
     int start = std::max(0, std::min(selected - max_rows + 1, static_cast<int>(items.size()) - max_rows));
     for (int i = start; i < static_cast<int>(items.size()) && i < start + max_rows; i++) {
-        float ry = y + 3 + (i - start) * line_h;
+        float ry = y + 3 + static_cast<float>((i - start) * line_h);
         if (i == selected) {
             DrawRectangle(static_cast<int>(x) + 1, static_cast<int>(ry), box_w - 2, line_h,
                           ResolveHlGroup("PickerSelected"));
         }
-        DrawTextEx(g_font, CompletionKindBadge(items[i].kind), Vector2{x + 6, ry}, font_size, 0, ResolveHlGroup("Comment"));
-        DrawTextEx(g_font, items[i].text.c_str(), Vector2{x + 6 + badge_w, ry}, font_size, 0, ResolveHlGroup("Normal"));
+        DrawTextEx(g_font, CompletionKindBadge(items[static_cast<size_t>(i)].kind), Vector2{x + 6, ry}, font_size, 0, ResolveHlGroup("Comment"));
+        DrawTextEx(g_font, items[static_cast<size_t>(i)].text.c_str(), Vector2{x + 6 + badge_w, ry}, font_size, 0, ResolveHlGroup("Normal"));
     }
-    DrawCompletionDetailPanel(static_cast<int>(x), static_cast<int>(y), box_w, box_h, items[selected]);
+    DrawCompletionDetailPanel(static_cast<int>(x), static_cast<int>(y), box_w, box_h, items[static_cast<size_t>(selected)]);
 }
 
 // Hover tooltip (NVIM_PARITY_PLAN.md Phase 3 gap, closed): a small
@@ -12820,7 +12833,7 @@ void DrawHoverPopupFocused(float x, float y, const std::string &title, const std
     float font_size = g_font_size;
     int line_h = static_cast<int>(font_size) + 4;
     int screen_max_w = std::max(20, GetScreenWidth() - 40);
-    int max_chars_per_line = std::max(20, static_cast<int>((screen_max_w - 20) / g_char_width));
+    int max_chars_per_line = std::max(20, static_cast<int>(static_cast<float>(screen_max_w - 20) / g_char_width));
     std::vector<std::string> lines = SplitLines(text);
     int cursor_row = std::max(0, std::min(g_editor.HoverFocusRow(), static_cast<int>(lines.size()) - 1));
     int cursor_col = g_editor.HoverFocusCol();
@@ -12841,11 +12854,11 @@ void DrawHoverPopupFocused(float x, float y, const std::string &title, const std
      * @return The line unchanged if it already fits, otherwise its first max_chars_per_line characters.
      */
     auto display_of = [&](const std::string &line) {
-        return static_cast<int>(line.size()) > max_chars_per_line ? line.substr(0, max_chars_per_line) : line;
+        return static_cast<int>(line.size()) > max_chars_per_line ? line.substr(0, static_cast<size_t>(max_chars_per_line)) : line;
     };
     float max_w = title.empty() ? 0.0f : MeasureTextEx(g_font, title.c_str(), MenuFontSize(), 0).x;
     for (int i = 0; i < visible; i++) {
-        max_w = std::max(max_w, MeasureTextEx(g_font, display_of(lines[scroll + i]).c_str(), font_size, 0).x);
+        max_w = std::max(max_w, MeasureTextEx(g_font, display_of(lines[static_cast<size_t>(scroll) + static_cast<size_t>(i)]).c_str(), font_size, 0).x);
     }
     const std::string hint = "hjkl move  v/V select  y yank  Esc back, Esc Esc/q close";
     float hint_size = std::max(10.0f, font_size - 4);
@@ -12854,20 +12867,20 @@ void DrawHoverPopupFocused(float x, float y, const std::string &title, const std
     int title_h = title.empty() ? 0 : static_cast<int>(MenuFontSize()) + 6;
     int hint_h = static_cast<int>(hint_size) + 8;
     int box_h = title_h + visible * line_h + hint_h + 10;
-    if (x + box_w > GetScreenWidth()) x = GetScreenWidth() - box_w;
+    if (x + static_cast<float>(box_w) > static_cast<float>(GetScreenWidth())) x = static_cast<float>(GetScreenWidth() - box_w);
     if (x < 0) x = 0;
-    if (y + box_h > GetScreenHeight()) y = std::max(0.0f, y - box_h - line_h);
+    if (y + static_cast<float>(box_h) > static_cast<float>(GetScreenHeight())) y = std::max(0.0f, y - static_cast<float>(box_h) - static_cast<float>(line_h));
     DrawRectangle(static_cast<int>(x), static_cast<int>(y), box_w, box_h, ResolveHlGroup("Picker"));
     DrawRectangleLines(static_cast<int>(x), static_cast<int>(y), box_w, box_h, ResolveHlGroup("PickerBorder"));
     float ty = y + 5;
     if (!title.empty()) {
         DrawTextEx(g_font, title.c_str(), Vector2{x + 8, ty}, MenuFontSize(), 0, ResolveHlGroup("PickerTitle"));
-        ty += title_h;
+        ty += static_cast<float>(title_h);
     }
     for (int i = 0; i < visible; i++) {
         int r = scroll + i;
-        std::string disp = display_of(lines[r]);
-        float ry = ty + i * line_h;
+        std::string disp = display_of(lines[static_cast<size_t>(r)]);
+        float ry = ty + static_cast<float>(i * line_h);
         if (selecting && r >= sel_r0 && r <= sel_r1) {
             int a = 0, b = static_cast<int>(disp.size());
             if (!sel_linewise) {
@@ -12875,24 +12888,24 @@ void DrawHoverPopupFocused(float x, float y, const std::string &title, const std
                 if (r == sel_r1) b = std::min(sel_c1 + 1, static_cast<int>(disp.size()));
             }
             if (b > a) {
-                float hx = x + 8 + a * g_char_width;
-                DrawRectangle(static_cast<int>(hx), static_cast<int>(ry), static_cast<int>((b - a) * g_char_width),
+                float hx = x + 8 + static_cast<float>(a) * g_char_width;
+                DrawRectangle(static_cast<int>(hx), static_cast<int>(ry), static_cast<int>(static_cast<float>(b - a) * g_char_width),
                               line_h, Fade(ResolveHlGroup("PickerSelected"), 0.6f));
             }
         }
         DrawTextEx(g_font, disp.c_str(), Vector2{x + 8, ry}, font_size, 0, ResolveHlGroup("Normal"));
         if (r == cursor_row) {
-            float cx = x + 8 + std::min(cursor_col, static_cast<int>(disp.size())) * g_char_width;
+            float cx = x + 8 + static_cast<float>(std::min(cursor_col, static_cast<int>(disp.size()))) * g_char_width;
             Color cursor_bg = ResolveHlGroup("Normal");
             DrawRectangle(static_cast<int>(cx), static_cast<int>(ry), static_cast<int>(g_char_width), line_h,
                           Color{cursor_bg.r, cursor_bg.g, cursor_bg.b, 180});
             if (cursor_col < static_cast<int>(disp.size())) {
-                char ch[2] = {disp[cursor_col], '\0'};
+                char ch[2] = {disp[static_cast<size_t>(cursor_col)], '\0'};
                 DrawTextEx(g_font, ch, Vector2{cx, ry}, font_size, 0, ResolveHlGroup("NormalBg"));
             }
         }
     }
-    DrawTextEx(g_font, hint.c_str(), Vector2{x + 8, ty + visible * line_h + 4}, hint_size, 0, ResolveHlGroup("Comment"));
+    DrawTextEx(g_font, hint.c_str(), Vector2{x + 8, ty + static_cast<float>(visible * line_h) + 4}, hint_size, 0, ResolveHlGroup("Comment"));
 }
 
 /**
@@ -12921,10 +12934,10 @@ void DrawHoverPopup(float x, float y) {
     bool has_real_newlines = text.find('\n') != std::string::npos;
     int screen_max_w = std::max(20, GetScreenWidth() - 40);
     int max_box_w = has_real_newlines ? screen_max_w : std::min(screen_max_w, 640);
-    int max_chars_per_line = std::max(20, static_cast<int>((max_box_w - 20) / g_char_width));
+    int max_chars_per_line = std::max(20, static_cast<int>(static_cast<float>(max_box_w - 20) / g_char_width));
     std::vector<std::string> wrapped;
     for (const std::string &raw_line : SplitLines(text)) {
-        if (raw_line.empty()) { wrapped.push_back(""); continue; }
+        if (raw_line.empty()) { wrapped.emplace_back(); continue; }
         size_t pos = 0;
         while (pos < raw_line.size()) {
             size_t take = std::min(raw_line.size() - pos, static_cast<size_t>(max_chars_per_line));
@@ -12938,25 +12951,25 @@ void DrawHoverPopup(float x, float y) {
     // based overlays already make for oversized content.
     int max_rows = std::min(static_cast<int>(wrapped.size()), 20);
     float max_w = title.empty() ? 0.0f : MeasureTextEx(g_font, title.c_str(), MenuFontSize(), 0).x;
-    for (int i = 0; i < max_rows; i++) max_w = std::max(max_w, MeasureTextEx(g_font, wrapped[i].c_str(), font_size, 0).x);
+    for (int i = 0; i < max_rows; i++) max_w = std::max(max_w, MeasureTextEx(g_font, wrapped[static_cast<size_t>(i)].c_str(), font_size, 0).x);
     int box_w = std::min(max_box_w, static_cast<int>(max_w) + 20);
     int title_h = title.empty() ? 0 : static_cast<int>(MenuFontSize()) + 6;
     int box_h = title_h + max_rows * line_h + 10;
-    if (x + box_w > GetScreenWidth()) x = GetScreenWidth() - box_w;
+    if (x + static_cast<float>(box_w) > static_cast<float>(GetScreenWidth())) x = static_cast<float>(GetScreenWidth() - box_w);
     if (x < 0) x = 0;
     // Prefer drawing below the cursor (the `y` passed in); flip above it
     // if there isn't room below, same idea DrawCmdlineCompletionPopup
     // uses for the command bar's upward-growing list.
-    if (y + box_h > GetScreenHeight()) y = std::max(0.0f, y - box_h - line_h);
+    if (y + static_cast<float>(box_h) > static_cast<float>(GetScreenHeight())) y = std::max(0.0f, y - static_cast<float>(box_h) - static_cast<float>(line_h));
     DrawRectangle(static_cast<int>(x), static_cast<int>(y), box_w, box_h, ResolveHlGroup("Picker"));
     DrawRectangleLines(static_cast<int>(x), static_cast<int>(y), box_w, box_h, ResolveHlGroup("PickerBorder"));
     float ty = y + 5;
     if (!title.empty()) {
         DrawTextEx(g_font, title.c_str(), Vector2{x + 8, ty}, MenuFontSize(), 0, ResolveHlGroup("PickerTitle"));
-        ty += title_h;
+        ty += static_cast<float>(title_h);
     }
     for (int i = 0; i < max_rows; i++) {
-        DrawTextEx(g_font, wrapped[i].c_str(), Vector2{x + 8, ty + i * line_h}, font_size, 0, ResolveHlGroup("Normal"));
+        DrawTextEx(g_font, wrapped[static_cast<size_t>(i)].c_str(), Vector2{x + 8, ty + static_cast<float>(i * line_h)}, font_size, 0, ResolveHlGroup("Normal"));
     }
 }
 
@@ -12980,19 +12993,19 @@ void DrawCmdlineCompletionPopup(float x, float bottom_y) {
     int box_w = static_cast<int>(max_w) + 16;
     int max_rows = std::min(static_cast<int>(items.size()), 8);
     int box_h = max_rows * line_h + 6;
-    if (x + box_w > GetScreenWidth()) x = GetScreenWidth() - box_w;
-    float y = bottom_y - box_h;
+    if (x + static_cast<float>(box_w) > static_cast<float>(GetScreenWidth())) x = static_cast<float>(GetScreenWidth() - box_w);
+    float y = bottom_y - static_cast<float>(box_h);
     DrawRectangle(static_cast<int>(x), static_cast<int>(y), box_w, box_h, ResolveHlGroup("Picker"));
     DrawRectangleLines(static_cast<int>(x), static_cast<int>(y), box_w, box_h, ResolveHlGroup("PickerBorder"));
     int selected = g_editor.CmdlineCompletionSelected();
     int start = std::max(0, std::min(selected - max_rows + 1, static_cast<int>(items.size()) - max_rows));
     for (int i = start; i < static_cast<int>(items.size()) && i < start + max_rows; i++) {
-        float ry = y + 3 + (i - start) * line_h;
+        float ry = y + 3 + static_cast<float>((i - start) * line_h);
         if (i == selected) {
             DrawRectangle(static_cast<int>(x) + 1, static_cast<int>(ry), box_w - 2, line_h,
                           ResolveHlGroup("PickerSelected"));
         }
-        DrawTextEx(g_font, items[i].display.c_str(), Vector2{x + 6, ry}, font_size, 0, ResolveHlGroup("Normal"));
+        DrawTextEx(g_font, items[static_cast<size_t>(i)].display.c_str(), Vector2{x + 6, ry}, font_size, 0, ResolveHlGroup("Normal"));
     }
 }
 
@@ -13054,15 +13067,20 @@ const Font &TerminalCellFont(const std::string &ch) {
  * @param w Width of the terminal's drawing area (used only to size individual cells, not clip).
  * @param h Height of the terminal's drawing area, used to skip off-screen rows.
  */
-void DrawTerminalGrid(const TerminalSession &sess, float x, float y, float w, float h) {
+// NOTE(warning-fix): `w` is unused below despite the doc comment above
+// claiming it "sizes individual cells" -- cell width actually comes from
+// the fixed g_char_width (`cw`) instead. Marked [[maybe_unused]] rather
+// than removed since it's not clear whether this is stale documentation
+// or a dropped clipping/sizing feature; flagged for review.
+void DrawTerminalGrid(const TerminalSession &sess, float x, float y, [[maybe_unused]] float w, float h) {
     const VTerm *term = sess.vterm.get();
     if (!term) return;
     int rows = term->Rows(), cols = term->Cols();
-    float cw = g_char_width, lh = LineHeight();
+    float cw = g_char_width, lh = static_cast<float>(LineHeight());
 
     int sb_lines = term->ScrollbackLines();
     for (int r = 0; r < rows; r++) {
-        float ry = y + r * lh;
+        float ry = y + static_cast<float>(r) * lh;
         if (ry + lh < y || ry > y + h) continue;
         // Addresses scrollback (indices [0, sb_lines)) and the live grid
         // (indices [sb_lines, sb_lines+rows)) as one combined history;
@@ -13086,7 +13104,7 @@ void DrawTerminalGrid(const TerminalSession &sess, float x, float y, float w, fl
             } else {
                 cell = &term->At(combined_index - sb_lines, c);
             }
-            float cx = x + c * cw;
+            float cx = x + static_cast<float>(c) * cw;
             const VTermColor &fg_c = cell->reverse ? cell->bg : cell->fg;
             const VTermColor &bg_c = cell->reverse ? cell->fg : cell->bg;
             Color bg = VTermColorToRaylib(bg_c, false);
@@ -13118,8 +13136,8 @@ void DrawTerminalGrid(const TerminalSession &sess, float x, float y, float w, fl
     }
 
     if (sess.scroll_offset == 0 && term->CursorVisible() && !sess.exited) {
-        float cx = x + term->CursorCol() * cw;
-        float cy = y + term->CursorRow() * lh;
+        float cx = x + static_cast<float>(term->CursorCol()) * cw;
+        float cy = y + static_cast<float>(term->CursorRow()) * lh;
         Color cursor_bg = ResolveHlGroup("Normal");
         DrawRectangle(static_cast<int>(cx), static_cast<int>(cy), static_cast<int>(cw), static_cast<int>(lh),
                       Color{cursor_bg.r, cursor_bg.g, cursor_bg.b, 180});
@@ -14233,7 +14251,7 @@ struct HtmlLayoutCtx {
     // Directory <img src="relative/path"> is resolved against -- the open
     // HtmlSession's own source file's parent dir (empty for a page with no
     // real on-disk source, in which case only absolute local paths resolve).
-    std::string base_dir;
+    std::string base_dir = "";
     float zoom = 1.0f;  // matches HtmlSession::zoom -- local images scale with the same pane zoom as text does
 };
 
@@ -14259,17 +14277,17 @@ Color HtmlResolveColor(const ComputedStyle &s, const HtmlLayoutCtx &ctx) {
 
 struct HtmlPendingWord {
     std::string text;  // "\n" is a sentinel forced line break (from <br>), never real text
-    float font_size;
-    Color color;
-    bool bold, italic, underline, strikethrough;
+    float font_size = 0;
+    Color color{};
+    bool bold = false, italic = false, underline = false, strikethrough = false;
     // Set for a local <img> or a \(..\)/\[..\] math span placed inline --
     // at most one of the two is ever true. `text` is unused for either
     // (kept empty by their own construction sites below).
     bool is_image = false;
-    std::string image_path;
+    std::string image_path = "";
     float image_w = 0, image_h = 0;
     bool is_math = false;
-    MathLayoutResult math;
+    MathLayoutResult math{};
 };
 
 // Resolves an <img src> value against ctx.base_dir -- absolute local paths
@@ -14690,7 +14708,7 @@ constexpr float kHtmlListIndentPx = 24.0f;
 void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlLayoutCtx &ctx, HtmlLayout &out) {
     if (node->style.display_none) return;
     float line_h = HtmlLineHeight(ctx.base_font_size * node->style.font_scale);
-    cursor_y += node->style.margin_top_lines * line_h;
+    cursor_y += static_cast<float>(node->style.margin_top_lines) * line_h;
 
     // "max-width: Nem" + a horizontal auto margin (ComputedStyle::
     // has_max_width/margin_h_auto, html_doc.cpp) -- the standard idiom a
@@ -14803,14 +14821,14 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
         cursor_y += line_h / 2.0f;
         finish_bg();
         finish_border();
-        cursor_y += node->style.margin_bottom_lines * line_h;
+        cursor_y += static_cast<float>(node->style.margin_bottom_lines) * line_h;
         return;
     }
     if (node->style.preserve_whitespace) {
         HtmlLayoutPreformatted(node, indent_x, cursor_y, eff_ctx, out);
         finish_bg();
         finish_border();
-        cursor_y += node->style.margin_bottom_lines * line_h;
+        cursor_y += static_cast<float>(node->style.margin_bottom_lines) * line_h;
         return;
     }
     if (node->tag == "math") {
@@ -14826,7 +14844,7 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
         cursor_y += out.math_runs.back().layout.height;
         finish_bg();
         finish_border();
-        cursor_y += node->style.margin_bottom_lines * line_h;
+        cursor_y += static_cast<float>(node->style.margin_bottom_lines) * line_h;
         return;
     }
 
@@ -14864,7 +14882,7 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
     flush_words();
     finish_bg();
     finish_border();
-    cursor_y += node->style.margin_bottom_lines * line_h;
+    cursor_y += static_cast<float>(node->style.margin_bottom_lines) * line_h;
 }
 
 /**
@@ -15004,7 +15022,7 @@ void DrawKanban(const Pane &pane, float x, float y, float w, float h, bool is_ac
         });
     });
 
-    float col_header_y = y + header_h;
+    float col_header_y = y + static_cast<float>(header_h);
     float col_x = x;
     for (int ci = 0; ci < static_cast<int>(columns.size()); ci++) {
         float col_w = static_cast<float>(kKanbanColumnWidth);
@@ -15014,7 +15032,7 @@ void DrawKanban(const Pane &pane, float x, float y, float w, float h, bool is_ac
                                     sess->drag_column_index == ci;
         DrawRectangle(static_cast<int>(col_x), static_cast<int>(col_header_y), static_cast<int>(col_w) - 4, header_h,
                       ResolveHlGroup(column_being_dragged ? "CursorLine" : "MenuBar"));
-        std::string header_text = columns[ci] + " (" + std::to_string(cards.size()) + ")";
+        std::string header_text = columns[static_cast<size_t>(ci)] + " (" + std::to_string(cards.size()) + ")";
         BeginScissorMode(static_cast<int>(col_x), static_cast<int>(col_header_y), static_cast<int>(col_w) - 24,
                           header_h);
         DrawTextEx(g_font, header_text.c_str(), Vector2{col_x + 6, col_header_y + 4}, g_font_size, 0,
@@ -15043,16 +15061,16 @@ void DrawKanban(const Pane &pane, float x, float y, float w, float h, bool is_ac
         });
         if (g_kanban_col_menu_buffer == pane.buffer_id && g_kanban_col_menu_col == ci) {
             int item_h = MenuItemHeight();
-            Rectangle popup_rect{col_x, col_header_y + header_h, 130, static_cast<float>(item_h) * 2};
+            Rectangle popup_rect{col_x, col_header_y + static_cast<float>(header_h), 130, static_cast<float>(item_h) * 2};
             DrawRectangleRec(popup_rect, ResolveHlGroup("MenuBar"));
             DrawRectangleLinesEx(popup_rect, 1, ResolveHlGroup("Border"));
-            Rectangle rename_row{col_x, col_header_y + header_h, 130, static_cast<float>(item_h)};
-            Rectangle delete_row{col_x, col_header_y + header_h + item_h, 130, static_cast<float>(item_h)};
+            Rectangle rename_row{col_x, col_header_y + static_cast<float>(header_h), 130, static_cast<float>(item_h)};
+            Rectangle delete_row{col_x, col_header_y + static_cast<float>(header_h + item_h), 130, static_cast<float>(item_h)};
             DrawTextEx(g_font, "Rename", Vector2{rename_row.x + 8, rename_row.y + 4}, g_font_size, 0,
                        ResolveHlGroup("Normal"));
             DrawTextEx(g_font, "Delete", Vector2{delete_row.x + 8, delete_row.y + 4}, g_font_size, 0,
                        ResolveHlGroup("Normal"));
-            std::string col_name = columns[ci];
+            const std::string &col_name = columns[static_cast<size_t>(ci)];
             // Closes the column menu and prompts to rename this column, applying the new name on confirm.
             RegisterClickRegion(rename_row, [pane_id_for_col, col_i, col_name] {
                 g_editor.FocusPaneById(pane_id_for_col);
@@ -15072,10 +15090,10 @@ void DrawKanban(const Pane &pane, float x, float y, float w, float h, bool is_ac
             });
         }
 
-        float card_y = y + header_h * 2 + kKanbanCardGap;
+        float card_y = y + static_cast<float>(header_h * 2) + kKanbanCardGap;
         for (int ri = 0; ri < static_cast<int>(cards.size()); ri++) {
-            int hi = cards[ri];
-            const OrgHeadline &hd = sess->outline.headlines[hi];
+            int hi = cards[static_cast<size_t>(ri)];
+            const OrgHeadline &hd = sess->outline.headlines[static_cast<size_t>(hi)];
             bool is_focused = is_active && ci == sess->focused_column && ri == sess->focused_row &&
                                g_editor.CurrentMode() == Mode::KanbanNormal;
             bool is_being_dragged = sess->dragging && sess->drag_threshold_passed && sess->drag_headline_index == hi;
@@ -15105,19 +15123,19 @@ void DrawKanban(const Pane &pane, float x, float y, float w, float h, bool is_ac
                                g_font_size * 0.85f, 0, ResolveHlGroup("Comment"));
                 }
                 if (editing_this && is_active) {
-                    std::string pre = sess->edit_buffer.substr(0, std::min<size_t>(sess->edit_cursor, sess->edit_buffer.size()));
+                    std::string pre = sess->edit_buffer.substr(0, std::min<size_t>(static_cast<size_t>(sess->edit_cursor), sess->edit_buffer.size()));
                     float cx = card_rect.x + 6 + MeasureTextEx(g_font, (prio + pre).c_str(), g_font_size, 0).x;
                     DrawRectangle(static_cast<int>(cx), static_cast<int>(card_rect.y + 4), 2,
                                   static_cast<int>(g_font_size), ResolveHlGroup("Normal"));
                 }
                 EndScissorMode();
 
-                int pane_id = pane.id, col_i = ci, row_i = ri;
+                int pane_id = pane.id, card_col_i = ci, row_i = ri;
                 // Focuses this pane and sets the focused column/row to this card.
-                RegisterClickRegion(card_rect, [pane_id, col_i, row_i] {
+                RegisterClickRegion(card_rect, [pane_id, card_col_i, row_i] {
                     g_editor.FocusPaneById(pane_id);
                     if (KanbanSession *s = g_editor.GetKanbanMutable(g_editor.CurrentBufferId())) {
-                        s->focused_column = col_i;
+                        s->focused_column = card_col_i;
                         s->focused_row = row_i;
                     }
                 });
@@ -15127,8 +15145,8 @@ void DrawKanban(const Pane &pane, float x, float y, float w, float h, bool is_ac
 
         // Drop-target preview strip while a card is dragged over this column.
         if (sess->dragging && sess->drag_threshold_passed && !sess->drag_is_column && sess->drop_column == ci) {
-            float preview_y = y + header_h * 2 + kKanbanCardGap +
-                               sess->drop_row * (kKanbanCardHeight + kKanbanCardGap) - kKanbanCardGap / 2.0f;
+            float preview_y = y + static_cast<float>(header_h * 2 + kKanbanCardGap) +
+                               static_cast<float>(sess->drop_row * (kKanbanCardHeight + kKanbanCardGap)) - static_cast<float>(kKanbanCardGap) / 2.0f;
             DrawRectangle(static_cast<int>(col_x + 4), static_cast<int>(preview_y), static_cast<int>(col_w - 12), 3,
                           ResolveHlGroup("BorderActive"));
         }
@@ -15141,7 +15159,7 @@ void DrawKanban(const Pane &pane, float x, float y, float w, float h, bool is_ac
     // the header under the pointer.
     if (sess->dragging && sess->drag_threshold_passed && sess->drag_is_column &&
         sess->column_drop_slot >= 0 && sess->column_drop_slot <= static_cast<int>(columns.size())) {
-        float marker_x = x + sess->column_drop_slot * kKanbanColumnWidth;
+        float marker_x = x + static_cast<float>(sess->column_drop_slot * kKanbanColumnWidth);
         DrawRectangle(static_cast<int>(marker_x) - 2, static_cast<int>(col_header_y), 4, header_h,
                       ResolveHlGroup("BorderActive"));
     }
@@ -15153,7 +15171,7 @@ void DrawKanban(const Pane &pane, float x, float y, float w, float h, bool is_ac
         bool have_title = sess->drag_is_new_card;
         if (!have_title && sess->drag_headline_index >= 0 &&
             sess->drag_headline_index < static_cast<int>(sess->outline.headlines.size())) {
-            ghost_title = sess->outline.headlines[sess->drag_headline_index].title;
+            ghost_title = sess->outline.headlines[static_cast<size_t>(sess->drag_headline_index)].title;
             have_title = true;
         }
         if (have_title) {
@@ -15176,7 +15194,7 @@ void DrawKanban(const Pane &pane, float x, float y, float w, float h, bool is_ac
                                static_cast<float>(kKanbanColumnWidth) - 4, static_cast<float>(header_h)};
         DrawRectangleRec(header_ghost, ResolveHlGroup("Visual"));
         DrawRectangleLinesEx(header_ghost, 2, ResolveHlGroup("BorderActive"));
-        DrawTextEx(g_font, columns[sess->drag_column_index].c_str(), Vector2{header_ghost.x + 6, header_ghost.y + 4},
+        DrawTextEx(g_font, columns[static_cast<size_t>(sess->drag_column_index)].c_str(), Vector2{header_ghost.x + 6, header_ghost.y + 4},
                    g_font_size, 0, ResolveHlGroup("Normal"));
     }
 
@@ -15212,24 +15230,24 @@ void DrawGanttDependencies(const GanttSession &sess, const std::vector<int> &row
     std::unordered_map<std::string, int> id_to_headline;
     std::unordered_map<int, int> headline_to_row;
     for (int ri = 0; ri < static_cast<int>(rows.size()); ++ri) {
-        headline_to_row[rows[ri]] = ri;
-        const std::string &id = sess.outline.headlines[rows[ri]].id;
-        if (!id.empty()) id_to_headline[id] = rows[ri];
+        headline_to_row[rows[static_cast<size_t>(ri)]] = ri;
+        const std::string &id = sess.outline.headlines[static_cast<size_t>(rows[static_cast<size_t>(ri)])].id;
+        if (!id.empty()) id_to_headline[id] = rows[static_cast<size_t>(ri)];
     }
     Color arrow_color = Fade(ResolveHlGroup("BorderActive"), 0.8f);
     for (int target_hi : rows) {
-        const OrgHeadline &target = sess.outline.headlines[target_hi];
+        const OrgHeadline &target = sess.outline.headlines[static_cast<size_t>(target_hi)];
         for (const std::string &blocker : target.blockers) {
             auto source_it = id_to_headline.find(blocker);
             if (source_it == id_to_headline.end()) continue;  // dependency outside this Gantt view
-            const OrgHeadline &source = sess.outline.headlines[source_it->second];
+            const OrgHeadline &source = sess.outline.headlines[static_cast<size_t>(source_it->second)];
             long long source_end = source.deadline.present ? OrgDayNumber(source.deadline.year, source.deadline.month, source.deadline.day)
                                                             : OrgDayNumber(source.scheduled.year, source.scheduled.month, source.scheduled.day);
             long long target_start = OrgDayNumber(target.scheduled.year, target.scheduled.month, target.scheduled.day);
             float sx = timeline_x + static_cast<float>(source_end - sess.anchor_day) * sess.pixels_per_day;
             float tx = timeline_x + static_cast<float>(target_start - sess.anchor_day) * sess.pixels_per_day;
-            float sy = y + ruler_h + headline_to_row[source_it->second] * row_h + row_h / 2.0f;
-            float ty = y + ruler_h + headline_to_row[target_hi] * row_h + row_h / 2.0f;
+            float sy = y + ruler_h + static_cast<float>(headline_to_row[source_it->second] * row_h) + static_cast<float>(row_h) / 2.0f;
+            float ty = y + ruler_h + static_cast<float>(headline_to_row[target_hi] * row_h) + static_cast<float>(row_h) / 2.0f;
             float bend = std::max(sx + 12.0f, tx - 12.0f);
             DrawLineEx(Vector2{sx, sy}, Vector2{bend, sy}, 2, arrow_color);
             DrawLineEx(Vector2{bend, sy}, Vector2{bend, ty}, 2, arrow_color);
@@ -15284,7 +15302,7 @@ void DrawGantt(const Pane &pane, float x, float y, float w, float h, bool is_act
                      ResolveHlGroup("BorderActive"));
             const char *month_name = GanttMonthAbbrev(mm);
             float month_text_w = MeasureTextEx(g_font, month_name, g_font_size * 0.8f, 0).x;
-            DrawTextEx(g_font, month_name, Vector2{(gx + next_x - month_text_w) / 2.0f, y + PaneHeaderHeight() + 4},
+            DrawTextEx(g_font, month_name, Vector2{(gx + next_x - month_text_w) / 2.0f, y + static_cast<float>(PaneHeaderHeight()) + 4},
                        g_font_size * 0.8f, 0, ResolveHlGroup("Comment"));
             yy = next_year;
             mm = next_month;
@@ -15302,12 +15320,12 @@ void DrawGantt(const Pane &pane, float x, float y, float w, float h, bool is_act
             DrawTextEx(g_font, year_text, Vector2{(gx + next_x - year_text_w) / 2.0f, y + 4}, g_font_size * 0.8f, 0,
                        ResolveHlGroup("Comment"));
         }
-        DrawLine(static_cast<int>(timeline_x), static_cast<int>(y + PaneHeaderHeight()), static_cast<int>(x + w),
-                 static_cast<int>(y + PaneHeaderHeight()), ResolveHlGroup("Border"));
+        DrawLine(static_cast<int>(timeline_x), static_cast<int>(y + static_cast<float>(PaneHeaderHeight())), static_cast<int>(x + w),
+                 static_cast<int>(y + static_cast<float>(PaneHeaderHeight())), ResolveHlGroup("Border"));
     } else {
         for (int i = 0; i < visible_days; i++) {
             long long day = sess->anchor_day + i;
-            float gx = timeline_x + i * sess->pixels_per_day;
+            float gx = timeline_x + static_cast<float>(i) * sess->pixels_per_day;
             int yy, mm, dd;
             OrgDateFromDayNumber(day, yy, mm, dd);
             bool year_boundary = dd == 1 && mm == 1;
@@ -15347,9 +15365,9 @@ void DrawGantt(const Pane &pane, float x, float y, float w, float h, bool is_act
     DrawGanttDependencies(*sess, rows, timeline_x, y, row_h, ruler_h);
 
     for (int ri = 0; ri < static_cast<int>(rows.size()); ri++) {
-        int hi = rows[ri];
-        const OrgHeadline &hd = sess->outline.headlines[hi];
-        float row_y = y + ruler_h + ri * row_h;
+        int hi = rows[static_cast<size_t>(ri)];
+        const OrgHeadline &hd = sess->outline.headlines[static_cast<size_t>(hi)];
+        float row_y = y + ruler_h + static_cast<float>(ri * row_h);
         bool is_group = false;
         for (const OrgHeadline &candidate : sess->outline.headlines) {
             if (candidate.parent_index == hi) { is_group = true; break; }
@@ -15377,9 +15395,9 @@ void DrawGantt(const Pane &pane, float x, float y, float w, float h, bool is_act
         DrawTextEx(g_font, date_range.c_str(), Vector2{x + 6 + indent, row_y + g_font_size + 7}, g_font_size * 0.78f, 0,
                    ResolveHlGroup("Comment"));
         if (editing_this && is_active) {
-            std::string indent(static_cast<size_t>(std::max(0, hd.level - 1)) * 2, ' ');
-            std::string pre = sess->edit_buffer.substr(0, std::min<size_t>(sess->edit_cursor, sess->edit_buffer.size()));
-            float cx = x + 6 + MeasureTextEx(g_font, (indent + pre).c_str(), g_font_size, 0).x;
+            std::string edit_indent(static_cast<size_t>(std::max(0, hd.level - 1)) * 2, ' ');
+            std::string pre = sess->edit_buffer.substr(0, std::min<size_t>(static_cast<size_t>(sess->edit_cursor), sess->edit_buffer.size()));
+            float cx = x + 6 + MeasureTextEx(g_font, (edit_indent + pre).c_str(), g_font_size, 0).x;
             DrawRectangle(static_cast<int>(cx), static_cast<int>(row_y + 4), 2, static_cast<int>(g_font_size),
                           ResolveHlGroup("Normal"));
         }
@@ -15411,11 +15429,11 @@ void DrawGantt(const Pane &pane, float x, float y, float w, float h, bool is_act
         if (live_deadline.present) {
             long long end_day = OrgDayNumber(live_deadline.year, live_deadline.month, live_deadline.day);
             float bar_w = std::max(4.0f, static_cast<float>(end_day - start_day) * sess->pixels_per_day);
-            Rectangle bar_rect{bar_x, row_y + (row_h - kGanttBarHeight) / 2.0f, bar_w, kGanttBarHeight};
+            Rectangle bar_rect{bar_x, row_y + (static_cast<float>(row_h) - kGanttBarHeight) / 2.0f, bar_w, kGanttBarHeight};
             DrawRectangleRounded(bar_rect, 0.45f, 6, Fade(bar_color, 0.35f));
             if (hd.progress > 0) {
                 Rectangle completed = bar_rect;
-                completed.width = std::max(2.0f, bar_rect.width * hd.progress / 100.0f);
+                completed.width = std::max(2.0f, bar_rect.width * static_cast<float>(hd.progress) / 100.0f);
                 DrawRectangleRounded(completed, 0.45f, 6, bar_color);
             }
             DrawRectangleRoundedLines(bar_rect, 0.45f, 6, is_group ? ResolveHlGroup("Normal") : bar_color);
@@ -15436,7 +15454,7 @@ void DrawGantt(const Pane &pane, float x, float y, float w, float h, bool is_act
         } else if (hd.effort.has_value()) {
             // Effort-only duration -- read-only in v1 (documented gap: no
             // drag-resize since editing "H:MM" isn't supported yet).
-            Rectangle bar_rect{bar_x, row_y + (row_h - kGanttBarHeight) / 2.0f, 40, kGanttBarHeight};
+            Rectangle bar_rect{bar_x, row_y + (static_cast<float>(row_h) - kGanttBarHeight) / 2.0f, 40, kGanttBarHeight};
             DrawRectangleRounded(bar_rect, 0.45f, 6, Fade(bar_color, 0.6f));
         } else {
             // Milestone: SCHEDULED only, no duration info at all -- a
@@ -15445,7 +15463,7 @@ void DrawGantt(const Pane &pane, float x, float y, float w, float h, bool is_act
             // requirement made an earlier version of this invisible),
             // matching org-mode gantt exporters' own convention for a
             // zero-length task.
-            float cy = row_y + row_h / 2.0f;
+            float cy = row_y + static_cast<float>(row_h) / 2.0f;
             DrawCircle(static_cast<int>(bar_x), static_cast<int>(cy), 6.0f, bar_color);
             if (!being_dragged) {
                 int pane_id = pane.id, row_i = ri;
@@ -15629,7 +15647,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     KanbanSession *kanban_sess = g_editor.IsKanbanViewActive(pane.buffer_id) ? g_editor.GetKanbanMutable(pane.buffer_id) : nullptr;
     GanttSession *gantt_sess = g_editor.IsGanttViewActive(pane.buffer_id) ? g_editor.GetGanttMutable(pane.buffer_id) : nullptr;
     std::string suffix = buf.modified ? " [+]" : "";
-    float label_y = y + (header_h - font_size) / 2.0f;
+    float label_y = y + (static_cast<float>(header_h) - font_size) / 2.0f;
     if (pane.buffer_tabs.size() > 1) {
         // Per-pane buffer-tab strip: more than one buffer open in this pane
         // splits the header evenly, one filename chip per tab, highlighting
@@ -15641,9 +15659,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         int n = static_cast<int>(pane.buffer_tabs.size());
         float seg_x = x;
         for (int i = 0; i < n; i++) {
-            float next_x = (i == n - 1) ? x + w : x + w * (i + 1) / n;
+            float next_x = (i == n - 1) ? x + w : x + w * static_cast<float>(i + 1) / static_cast<float>(n);
             float seg_w = next_x - seg_x;
-            const Buffer &tb = g_editor.GetBuffer(pane.buffer_tabs[i]);
+            const Buffer &tb = g_editor.GetBuffer(pane.buffer_tabs[static_cast<size_t>(i)]);
             std::string name = tb.scratch ? "[Scratch]" : (tb.filename.empty() ? "[No Name]" : Basename(tb.filename));
             if (tb.modified) name += " [+]";
             bool tab_active = (i == pane.buffer_tab_index);
@@ -15658,7 +15676,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             EndScissorMode();
             if (i > 0) {
                 DrawLine(static_cast<int>(seg_x), static_cast<int>(y), static_cast<int>(seg_x),
-                          static_cast<int>(y + header_h), ResolveHlGroup("Border"));
+                          static_cast<int>(y + static_cast<float>(header_h)), ResolveHlGroup("Border"));
             }
             // Registered regardless of is_active now (not just the
             // already-focused pane): the click action focuses `pane.id`
@@ -15671,7 +15689,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // draggable too.
             {
                 Rectangle chip_rect{seg_x, y, seg_w, static_cast<float>(header_h)};
-                g_pane_tab_chip_rects.push_back({pane.id, pane.buffer_tabs[i], chip_rect});
+                g_pane_tab_chip_rects.push_back({pane.id, pane.buffer_tabs[static_cast<size_t>(i)], chip_rect});
                 int pane_id = pane.id;
                 // Focuses this pane then switches it to buffer tab `i`.
                 RegisterClickRegion(chip_rect, [pane_id, i] {
@@ -15709,12 +15727,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             if (img_sess->doc) {
                 label += " (" + std::to_string(img_sess->doc->Width()) + "x" +
                           std::to_string(img_sess->doc->Height()) + ") " +
-                          std::to_string(static_cast<int>(img_sess->zoom * 100.0f + 0.5f)) + "%";
+                          std::to_string(static_cast<int>(std::lround(img_sess->zoom * 100.0f))) + "%";
             }
             DrawTextEx(g_font, label.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
         } else if (html_sess) {
             std::string title = html_sess->doc.title.empty() ? html_sess->source : html_sess->doc.title;
-            std::string label = "HTML: " + title + "  " + std::to_string(static_cast<int>(html_sess->zoom * 100.0f + 0.5f)) + "%" +
+            std::string label = "HTML: " + title + "  " + std::to_string(static_cast<int>(std::lround(html_sess->zoom * 100.0f))) + "%" +
                                  (html_sess->theme_colors ? "  [theme, Ctrl-R]" : "  [page colors, Ctrl-R]");
             DrawTextEx(g_font, label.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
         } else if (pdf_sess && pdf_sess->search_active) {
@@ -15734,7 +15752,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             if (pdf_sess->doc) {
                 label += " (page " + std::to_string(pdf_sess->page + 1) + "/" +
                          std::to_string(pdf_sess->doc->PageCount()) + ") " +
-                         std::to_string(static_cast<int>(pdf_sess->zoom * 100.0f + 0.5f)) + "%" +
+                         std::to_string(static_cast<int>(std::lround(pdf_sess->zoom * 100.0f))) + "%" +
                          (pdf_sess->theme_colors ? "  [theme, Ctrl-R]" : "  [original, Ctrl-R]");
                 if (!pdf_sess->search_query.empty()) {
                     label += pdf_sess->search_matches.empty()
@@ -15755,7 +15773,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         } else if (sheet_sess) {
             std::string label = "Sheet: " + buf.filename;
             if (!sheet_sess->wb.sheets.empty()) {
-                const Sheet &sh = sheet_sess->wb.sheets[sheet_sess->active_sheet];
+                const Sheet &sh = sheet_sess->wb.sheets[static_cast<size_t>(sheet_sess->active_sheet)];
                 label += " (" + sh.name + ") " + CellAddressToString(sheet_sess->cursor_row, sheet_sess->cursor_col);
             }
             if (buf.modified) label += " [+]";
@@ -15766,7 +15784,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             DrawTextEx(g_font, label.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
         } else if (gantt_sess) {
             char zoom_buf[16];
-            std::snprintf(zoom_buf, sizeof(zoom_buf), "%.0fpx/day", gantt_sess->pixels_per_day);
+            std::snprintf(zoom_buf, sizeof(zoom_buf), "%.0fpx/day", static_cast<double>(gantt_sess->pixels_per_day));
             std::string label = "Gantt: " + buf.filename + "  " + GanttRulerScaleName(gantt_sess->ruler_scale) +
                                 " grid (t)  " + zoom_buf + "  f:fit p:progress za/zm:fold";
             if (buf.modified) label += " [+]";
@@ -15776,7 +15794,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             constexpr const char *formats[] = {"SVG", "PNG", "PDF"};
             float export_x = x + w - 132;
             for (int i = 0; i < 3; ++i) {
-                Rectangle button{export_x + i * 44.0f, static_cast<float>(y) + 3, 40, static_cast<float>(header_h) - 6};
+                Rectangle button{export_x + static_cast<float>(i) * 44.0f, static_cast<float>(y) + 3, 40, static_cast<float>(header_h) - 6};
                 DrawRectangleRec(button, ResolveHlGroup("CursorLine"));
                 DrawRectangleLinesEx(button, 1, ResolveHlGroup("Border"));
                 DrawTextEx(g_font, formats[i], Vector2{button.x + 4, button.y + 2}, font_size * 0.75f, 0,
@@ -15812,8 +15830,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         }
     }
 
-    float content_y = y + header_h;
-    float content_h = h - header_h;
+    float content_y = y + static_cast<float>(header_h);
+    float content_h = h - static_cast<float>(header_h);
 
     // Click anywhere in the pane's own content area (below the header,
     // which already has its own focus-on-click handling above) to focus
@@ -15878,7 +15896,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // (or the live grid itself, once shown again) is never wrapping
         // against a stale size.
         int cols = std::max(1, static_cast<int>(w / g_char_width));
-        int trows = std::max(1, static_cast<int>(content_h / line_height));
+        int trows = std::max(1, static_cast<int>(content_h / static_cast<float>(line_height)));
         g_editor.ResizeTerminal(pane.buffer_id, trows, cols);
 
         // Ctrl-\ Ctrl-N (Editor::EnterTerminalNormalMode) snapshots this
@@ -15925,7 +15943,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         Texture2D tex = GetOrLoadImageTexture(pane.buffer_id, *img_sess);
         BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
                           static_cast<int>(content_h));
-        DrawTextureEx(tex, Vector2{x - img_sess->pan_x, content_y - img_sess->pan_y}, 0.0f, img_sess->zoom, WHITE);
+        DrawTextureEx(tex, Vector2{x - static_cast<float>(img_sess->pan_x), content_y - static_cast<float>(img_sess->pan_y)}, 0.0f, img_sess->zoom, WHITE);
         EndScissorMode();
         DrawPaneBorder(x, y, w, h, is_active);
         return;
@@ -16072,7 +16090,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             if (rit == pdf_sess->rasters.end()) return 0.0f;
             const PdfSession::PageRaster &pr = rit->second;
             Texture2D tex = GetOrUpdatePdfPageTexture(pane.buffer_id, idx, pr, pdf_sess->theme_colors);
-            Vector2 pos{x - pdf_sess->pan_x, top_y};
+            Vector2 pos{x - static_cast<float>(pdf_sess->pan_x), top_y};
             DrawTextureEx(tex, pos, 0.0f, pdf_sess->zoom, WHITE);
             for (const PdfHighlightRect &hr : pr.highlights) {
                 bool current = hr.match_index == pdf_sess->search_current;
@@ -16539,6 +16557,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // triangular margin markers at the left/right text inset.
             float unit_px = 100.0f * office_sess->zoom;
             int unit = 1;
+            // Purely cosmetic ruler ticks, recomputed fresh every frame (no
+            // state carries across frames), and bounded to a handful of
+            // iterations by page_w -- accumulated float drift here has no
+            // observable effect worth an int-index rewrite.
+            // NOLINTNEXTLINE(clang-analyzer-security.FloatLoopCounter)
             for (float ux = unit_px; ux < page_w - 1.0f; ux += unit_px, unit++) {
                 float tx = ruler.x + ux;
                 DrawLineEx(Vector2{tx, ruler.y + ruler.height * 0.35f}, Vector2{tx, ruler.y + ruler.height}, 1.0f, ResolveHlGroup("MutedFg"));
@@ -16577,8 +16600,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // the scroll-follow scan below and the draw loop) to find which of
         // ITS visual lines holds cursor_col.
         int cp = std::clamp(office_sess->cursor_para, 0, para_count - 1);
-        float cursor_para_size = body_size * OfficeHeadingMultiplier(doc.paragraphs[cp].heading_level);
-        std::vector<OfficeWrapLine> cursor_wrap = WordWrapOfficeParagraph(doc.paragraphs[cp], max_width, cursor_para_size);
+        float cursor_para_size = body_size * OfficeHeadingMultiplier(doc.paragraphs[static_cast<size_t>(cp)].heading_level);
+        std::vector<OfficeWrapLine> cursor_wrap = WordWrapOfficeParagraph(doc.paragraphs[static_cast<size_t>(cp)], max_width, cursor_para_size);
         // Picks the LAST line whose start the cursor has reached, not the
         // first whose end it hasn't exceeded -- those differ exactly when a
         // wrap point is contiguous (WordWrapOfficeParagraph's own non-
@@ -16597,7 +16620,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // since line[k+1].start > cursor_col there.
         int cursor_line_in_para = 0;
         for (int li = 0; li < static_cast<int>(cursor_wrap.size()); li++) {
-            if (cursor_wrap[li].start > office_sess->cursor_col) break;
+            if (cursor_wrap[static_cast<size_t>(li)].start > office_sess->cursor_col) break;
             cursor_line_in_para = li;
         }
         // Feeds Editor::MoveOfficeCursorVisualLine (editor.cpp's j/k) the
@@ -16648,7 +16671,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     scroll_line--;
                 } else if (scroll_para > 0) {
                     scroll_para--;
-                    const DocParagraph &ppara = doc.paragraphs[scroll_para];
+                    const DocParagraph &ppara = doc.paragraphs[static_cast<size_t>(scroll_para)];
                     std::vector<OfficeWrapLine> pwl = WordWrapOfficeParagraph(
                         ppara, max_width, body_size * OfficeHeadingMultiplier(ppara.heading_level));
                     scroll_line = std::max(0, static_cast<int>(pwl.size()) - 1);
@@ -16661,7 +16684,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 float used = 0.0f;
                 bool found = false;
                 for (int pi = scroll_para; pi < para_count; pi++) {
-                    const DocParagraph &para = doc.paragraphs[pi];
+                    const DocParagraph &para = doc.paragraphs[static_cast<size_t>(pi)];
                     float lh = line_height_for(para.heading_level);
                     std::vector<OfficeWrapLine> wl_scan;
                     const std::vector<OfficeWrapLine> *wlp;
@@ -16689,7 +16712,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     if (overflowed || found) break;
                 }
                 if (found || scroll_para >= cp) break;
-                const DocParagraph &spara = doc.paragraphs[scroll_para];
+                const DocParagraph &spara = doc.paragraphs[static_cast<size_t>(scroll_para)];
                 std::vector<OfficeWrapLine> swl =
                     WordWrapOfficeParagraph(spara, max_width, body_size * OfficeHeadingMultiplier(spara.heading_level));
                 if (scroll_line + 1 < static_cast<int>(swl.size())) {
@@ -16719,7 +16742,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             float total_h = 0.0f, height_at_scroll = 0.0f;
             int words = 0;
             for (int pi = 0; pi < para_count; pi++) {
-                const DocParagraph &para = doc.paragraphs[pi];
+                const DocParagraph &para = doc.paragraphs[static_cast<size_t>(pi)];
                 float plh = line_height_for(para.heading_level);
                 int line_count = static_cast<int>(
                     ((pi == cp) ? cursor_wrap : WordWrapOfficeParagraph(para, max_width, body_size * OfficeHeadingMultiplier(para.heading_level)))
@@ -16772,7 +16795,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             DrawTextEx(g_font, left_label.c_str(), Vector2{x + 12.0f, office_footer_y + (kOfficeFooterH - status_font_size) / 2.0f},
                       status_font_size, 0, ResolveHlGroup("MutedFg"));
 
-            int zoom_pct = static_cast<int>(g_office_status.zoom * 100.0f + 0.5f);
+            int zoom_pct = static_cast<int>(std::lround(g_office_status.zoom * 100.0f));
             std::string pct_label = std::to_string(zoom_pct) + "%";
             float pct_w = MeasureTextEx(g_font, pct_label.c_str(), status_font_size, 0).x;
             float pct_x = x + w - 12.0f - pct_w;
@@ -16847,7 +16870,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // A long math run can be split into multiple OfficeFormatRuns
             // by visual wrapping. Locate its original document span so all
             // wrapped fragments reveal source together while editing.
-            for (const DocSpan &span : doc.paragraphs[paragraph].spans) {
+            for (const DocSpan &span : doc.paragraphs[static_cast<size_t>(paragraph)].spans) {
                 if (!span.fmt.math || office_sess->cursor_col < span.start || office_sess->cursor_col > span.end) continue;
                 if (run.start < span.end && run.end > span.start) return true;
             }
@@ -16870,21 +16893,21 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         };
         float draw_y = page_top + pad * 0.75f;
         for (int pi = scroll_para; pi < para_count && draw_y < page_top + page_h - pad * 0.5f; pi++) {
-            const DocParagraph &para = doc.paragraphs[pi];
+            const DocParagraph &para = doc.paragraphs[static_cast<size_t>(pi)];
             float size = body_size * OfficeHeadingMultiplier(para.heading_level);
             float lh = size * 1.35f;
             std::vector<OfficeWrapLine> wl_local = (pi == cp) ? cursor_wrap : WordWrapOfficeParagraph(para, max_width, size);
             int start_li = (pi == scroll_para) ? scroll_line : 0;
             for (int li = start_li; li < static_cast<int>(wl_local.size()); li++) {
                 if (draw_y > page_top + page_h - pad * 0.5f) break;
-                const OfficeWrapLine &line = wl_local[li];
+                const OfficeWrapLine &line = wl_local[static_cast<size_t>(li)];
                 std::vector<OfficeFormatRun> runs = BuildOfficeDisplayRuns(
                     para, line.start, line.end, office_insert && pi == cp, office_sess->cursor_col);
                 float line_x = page_x + pad;
                 if (para.align == DocParagraph::Align::Center || para.align == DocParagraph::Align::Right) {
                     float total_w = 0.0f;
                     for (const auto &r : runs) {
-                        std::string t = para.text.substr(r.start, r.end - r.start);
+                        std::string t = para.text.substr(static_cast<size_t>(r.start), static_cast<size_t>(r.end - r.start));
                         for (auto &ch : t) {
                             if (ch == '\t') ch = ' ';
                         }
@@ -16902,7 +16925,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     // rather than stored -- see DocParagraph::ListKind's
                     // own comment (office_doc.h) for why.
                     int num = 1;
-                    for (int k = pi - 1; k >= 0 && doc.paragraphs[k].list_kind == DocParagraph::ListKind::Numbered; k--) num++;
+                    for (int k = pi - 1; k >= 0 && doc.paragraphs[static_cast<size_t>(k)].list_kind == DocParagraph::ListKind::Numbered; k--) num++;
                     std::string marker = std::to_string(num) + ". ";
                     DrawTextEx(OfficeFontFor(DocFormat{}), marker.c_str(), Vector2{line_x, draw_y}, size, 0, text_color);
                     line_x += MeasureTextEx(OfficeFontFor(DocFormat{}), marker.c_str(), size, 0).x;
@@ -16917,7 +16940,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                             para, line.start, hl_start, office_insert && pi == cp, office_sess->cursor_col);
                         float hl_x0 = line_x;
                         for (const auto &r : pre_runs) {
-                            std::string t = para.text.substr(r.start, r.end - r.start);
+                            std::string t = para.text.substr(static_cast<size_t>(r.start), static_cast<size_t>(r.end - r.start));
                             for (auto &ch : t) {
                                 if (ch == '\t') ch = ' ';
                             }
@@ -16927,7 +16950,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                             para, hl_start, hl_end, office_insert && pi == cp, office_sess->cursor_col);
                         float hl_w = 0.0f;
                         for (const auto &r : hl_runs) {
-                            std::string t = para.text.substr(r.start, r.end - r.start);
+                            std::string t = para.text.substr(static_cast<size_t>(r.start), static_cast<size_t>(r.end - r.start));
                             for (auto &ch : t) {
                                 if (ch == '\t') ch = ' ';
                             }
@@ -16941,7 +16964,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 bool cursor_on_rendered_math = false;
                 float rendered_math_cursor_x = 0.0f, rendered_math_cursor_w = 0.0f, rendered_math_cursor_h = size;
                 for (const auto &r : runs) {
-                    std::string t = para.text.substr(r.start, r.end - r.start);
+                    std::string t = para.text.substr(static_cast<size_t>(r.start), static_cast<size_t>(r.end - r.start));
                     for (auto &ch : t) {
                         if (ch == '\t') ch = ' ';
                     }
@@ -17011,7 +17034,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                             para, line.start, office_sess->cursor_col, office_insert && pi == cp, office_sess->cursor_col);
                         float cursor_x = line_x;
                         for (const auto &r : pre) {
-                            std::string t = para.text.substr(r.start, r.end - r.start);
+                            std::string t = para.text.substr(static_cast<size_t>(r.start), static_cast<size_t>(r.end - r.start));
                             for (auto &ch : t) {
                                 if (ch == '\t') ch = ' ';
                             }
@@ -17039,7 +17062,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                             float block_w = size * 0.55f;  // fallback: end of paragraph/line, no next character
                             if (!at_cursor.empty() && at_cursor[0].end > at_cursor[0].start) {
                                 const OfficeFormatRun &r = at_cursor[0];
-                                std::string t = para.text.substr(r.start, r.end - r.start);
+                                std::string t = para.text.substr(static_cast<size_t>(r.start), static_cast<size_t>(r.end - r.start));
                                 for (auto &ch : t) {
                                     if (ch == '\t') ch = ' ';
                                 }
@@ -17049,7 +17072,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                           static_cast<int>(size), Fade(text_color, 0.55f));
                             if (!at_cursor.empty() && at_cursor[0].end > at_cursor[0].start && !at_cursor[0].fmt.math) {
                                 const OfficeFormatRun &r = at_cursor[0];
-                                std::string t = para.text.substr(r.start, r.end - r.start);
+                                std::string t = para.text.substr(static_cast<size_t>(r.start), static_cast<size_t>(r.end - r.start));
                                 for (auto &ch : t) {
                                     if (ch == '\t') ch = ' ';
                                 }
@@ -17198,7 +17221,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             static const float sizes[] = {8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48};
             float pw = 70.0f, item_h = row_h * 0.85f;
             int n = static_cast<int>(sizeof(sizes) / sizeof(sizes[0]));
-            Rectangle popup{font_size_btn.x, content_y, pw, item_h * n};
+            Rectangle popup{font_size_btn.x, content_y, pw, item_h * static_cast<float>(n)};
             draw_popup_bg(popup);
             float iy = popup.y;
             for (float sz : sizes) {
@@ -17289,7 +17312,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
 
     if (sheet_sess && !sheet_sess->wb.sheets.empty()) {
         g_editor.ResizeSheetViewport(pane.buffer_id, static_cast<int>(w), static_cast<int>(content_h));
-        const Sheet &sh = sheet_sess->wb.sheets[sheet_sess->active_sheet];
+        const Sheet &sh = sheet_sess->wb.sheets[static_cast<size_t>(sheet_sess->active_sheet)];
 
         // Formula bar: shows the active cell's raw text (or the live
         // edit buffer while SheetInsert is active) -- doubles as both a
@@ -17308,7 +17331,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         DrawTextEx(g_font, bar_text.c_str(), Vector2{x + 6, content_y + (bar_h - font_size) / 2.0f}, font_size, 0,
                    ResolveHlGroup("Normal"));
         if (is_active && sheet_sess->editing) {
-            std::string pre = bar_text.substr(0, std::min<size_t>(sheet_sess->edit_cursor, bar_text.size()));
+            std::string pre = bar_text.substr(0, std::min<size_t>(static_cast<size_t>(sheet_sess->edit_cursor), bar_text.size()));
             float cx = x + 6 + MeasureTextEx(g_font, pre.c_str(), font_size, 0).x;
             DrawRectangle(static_cast<int>(cx), static_cast<int>(content_y + (bar_h - font_size) / 2.0f), 2,
                           static_cast<int>(font_size), ResolveHlGroup("Normal"));
@@ -17348,7 +17371,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                       header_row_bg);
         for (int vc = 0; vc <= visible_cols; vc++) {
             int col = sheet_sess->scroll_col + vc;
-            float cx = x + row_header_w + vc * col_w;
+            float cx = x + row_header_w + static_cast<float>(vc) * col_w;
             if (cx > x + w) break;
             std::string letters = ColumnIndexToLetters(col);
             Vector2 sz = MeasureTextEx(g_font, letters.c_str(), font_size, 0);
@@ -17373,7 +17396,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
 
         for (int vr = 0; vr <= visible_rows; vr++) {
             int row = sheet_sess->scroll_row + vr;
-            float ry = body_y + vr * row_h;
+            float ry = body_y + static_cast<float>(vr) * row_h;
             if (ry > grid_y + grid_h) break;
             std::string rownum = std::to_string(row + 1);
             Vector2 sz = MeasureTextEx(g_font, rownum.c_str(), font_size, 0);
@@ -17382,7 +17405,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
 
             for (int vc = 0; vc <= visible_cols; vc++) {
                 int col = sheet_sess->scroll_col + vc;
-                float cx = x + row_header_w + vc * col_w;
+                float cx = x + row_header_w + static_cast<float>(vc) * col_w;
                 if (cx > x + w) break;
 
                 bool is_cursor = is_active && row == sheet_sess->cursor_row && col == sheet_sess->cursor_col;
@@ -17421,7 +17444,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         return;
     }
 
-    int visible_lines = std::max(1, static_cast<int>(content_h / line_height));
+    int visible_lines = std::max(1, static_cast<int>(content_h / static_cast<float>(line_height)));
 
     // Sign column: one character wide, *always* reserved (unlike
     // number_w below) for git/LSP-diagnostic/DAP-breakpoint/todo signs
@@ -17440,7 +17463,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     if (g_editor.ShowLineNumbers() || g_editor.ShowRelativeNumbers()) {
         int digits = 1;
         for (int n = buf.LineCount(); n >= 10; n /= 10) digits++;
-        number_w = (digits + 1) * g_char_width;
+        number_w = static_cast<float>(digits + 1) * g_char_width;
     }
     float gutter_w = sign_w + number_w;
     float text_x = x + kMarginX + gutter_w;
@@ -17536,7 +17559,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     int visual_slot = 0;  // a closed fold collapses N buffer rows into 1 of these
     int row = pane.scroll_row;
     for (; row < buf.LineCount() && visual_slot < visible_lines; row++) {
-        float ly = content_y + visual_slot * line_height;
+        float ly = content_y + static_cast<float>(visual_slot * line_height);
         visual_slot++;
 
         // Closed fold starting here: render a one-line summary in its
@@ -17558,7 +17581,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // in exact agreement with. A closed fold, org inline image, or org
         // LaTeX fragment never wraps (each already claims its own fixed
         // slot count via the branches below, and `row`'s displayed content
-        // there isn't buf.lines[row] itself), so those are excluded here
+        // there isn't buf.lines[static_cast<size_t>(row)] itself), so those are excluded here
         // the same way editor.cpp's row_slots excludes them.
         bool row_wraps = false;
         int row_wrap_slots = 1;
@@ -17567,7 +17590,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             bool is_org_latex = !is_org_image && g_editor.OrgLatexVisible() && buf.org_latex_rows.count(row) != 0;
             if (!is_org_image && !is_org_latex) {
                 row_wraps = true;
-                int len = static_cast<int>(buf.lines[row].size());
+                int len = static_cast<int>(buf.lines[static_cast<size_t>(row)].size());
                 row_wrap_slots = std::max(1, (len + wrap_cols - 1) / wrap_cols);
                 visual_slot += row_wrap_slots - 1;  // visual_slot++ above already accounted for 1
             }
@@ -17646,7 +17669,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             auto latex_it = buf.org_latex_rows.find(row);
             if (latex_it != buf.org_latex_rows.end()) {
                 const Buffer::OrgLatexRender &render = latex_it->second;
-                float slot_h = static_cast<float>(line_height) * render.slots;
+                float slot_h = static_cast<float>(line_height) * static_cast<float>(render.slots);
                 float pane_avail_w = std::max(40.0f, w - (text_x - x) - kMarginX);
                 Texture2D *tex = GetOrLoadOrgLatexTexture(render.path);
                 if (tex) {
@@ -17665,7 +17688,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
 
         if (fold_here) {
             int hidden = fold_here->end_row - fold_here->start_row;
-            std::string summary = "+-- " + std::to_string(hidden + 1) + " lines: " + buf.lines[row] + " ---";
+            std::string summary = "+-- " + std::to_string(hidden + 1) + " lines: " + buf.lines[static_cast<size_t>(row)] + " ---";
             DrawTextEx(g_font, summary.c_str(), Vector2{text_x, ly}, g_font_size, 0, ResolveHlGroup("SidebarTitle"));
             // Fold marker click-to-toggle (Phase 11 click-dispatch gap):
             // mep has no separate statuscolumn widget row, so the fold
@@ -17706,7 +17729,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         }
 
         if (block_selection && row >= block_top && row <= block_bottom) {
-            int line_len = static_cast<int>(buf.lines[row].size());
+            int line_len = static_cast<int>(buf.lines[static_cast<size_t>(row)].size());
             int cs = block_left;
             int ce = (block_right < 0) ? line_len + 1 : block_right + 1;
             Color sel_color = ResolveHlGroup("Visual");
@@ -17719,7 +17742,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                                 static_cast<int>(x1 - x0), line_height, fill);
                               });
         } else if (has_selection && row >= sel_start.row && row <= sel_end.row) {
-            int line_len = static_cast<int>(buf.lines[row].size());
+            int line_len = static_cast<int>(buf.lines[static_cast<size_t>(row)].size());
             int cs = (linewise_selection || row > sel_start.row) ? 0 : sel_start.col;
             int ce = (linewise_selection || row < sel_end.row) ? line_len + 1 : sel_end.col + 1;
             Color sel_color = ResolveHlGroup("Visual");
@@ -17780,11 +17803,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             }
         }
         if (row_wrap_cols <= 0) {
-            DrawLineFast(buf.lines[row], text_x, ly, g_font_size, ResolveHlGroup("Normal"));
+            DrawLineFast(buf.lines[static_cast<size_t>(row)], text_x, ly, g_font_size, ResolveHlGroup("Normal"));
         } else {
-            const std::string &wline = buf.lines[row];
+            const std::string &wline = buf.lines[static_cast<size_t>(row)];
             for (int s = 0; s < row_wrap_slots; s++) {
-                DrawLineFast(wline.substr(s * row_wrap_cols, row_wrap_cols), text_x, ly + s * line_height, g_font_size,
+                DrawLineFast(wline.substr(static_cast<size_t>(s) * static_cast<size_t>(row_wrap_cols), static_cast<size_t>(row_wrap_cols)), text_x, ly + static_cast<float>(s * line_height), g_font_size,
                              ResolveHlGroup("Normal"));
             }
         }
@@ -17792,7 +17815,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             const Decoration &d = *dp;
             if (!d.whole_line && !d.underline && !d.bold && !d.italic && (!d.hl_group.empty() || d.has_fg_color) &&
                 d.col_end > d.col_start) {
-                const std::string &line = buf.lines[row];
+                const std::string &line = buf.lines[static_cast<size_t>(row)];
                 int a, b;
                 if (d.has_fg_color) {
                     // A terminal-color run's col_start/col_end are column
@@ -17843,7 +17866,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                                                  static_cast<int>(ColumnToByteOffset(line, pa)));
                                           int byte_b = std::min(static_cast<int>(line.size()),
                                                                  static_cast<int>(ColumnToByteOffset(line, pb)));
-                                          std::string piece = line.substr(byte_a, byte_b - byte_a);
+                                          std::string piece = line.substr(static_cast<size_t>(byte_a), static_cast<size_t>(byte_b - byte_a));
                                           DrawTextEx(span_font, piece.c_str(), Vector2{px, py}, g_font_size, 0, c);
                                       });
                 }
@@ -17854,7 +17877,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // DrawTerminalGrid) -- same visual, but keyed off a column
             // range instead of a terminal cell.
             if (!d.whole_line && d.underline && d.col_end > d.col_start) {
-                const std::string &line = buf.lines[row];
+                const std::string &line = buf.lines[static_cast<size_t>(row)];
                 int a = std::min(static_cast<int>(line.size()), d.col_start);
                 int b = std::min(static_cast<int>(line.size()), d.col_end);
                 if (b > a) {
@@ -17862,7 +17885,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     // Draws the underline rectangle for each wrapped piece of this span.
                     ForEachWrapPiece(a, b, row_wrap_cols, text_x, ly, line_height,
                                       [&](float py, float x0, float x1, int, int) {
-                                          DrawRectangle(static_cast<int>(x0), static_cast<int>(py + line_height - 2),
+                                          DrawRectangle(static_cast<int>(x0), static_cast<int>(py + static_cast<float>(line_height) - 2),
                                                         static_cast<int>(x1 - x0), 1, c);
                                       });
                 }
@@ -17871,7 +17894,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // same primitive as underline just at the span's own vertical
             // middle instead of its baseline.
             if (!d.whole_line && d.strikethrough && d.col_end > d.col_start) {
-                const std::string &line = buf.lines[row];
+                const std::string &line = buf.lines[static_cast<size_t>(row)];
                 int a = std::min(static_cast<int>(line.size()), d.col_start);
                 int b = std::min(static_cast<int>(line.size()), d.col_end);
                 if (b > a) {
@@ -17879,7 +17902,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     // Draws the strikethrough rectangle for each wrapped piece of this span.
                     ForEachWrapPiece(a, b, row_wrap_cols, text_x, ly, line_height,
                                       [&](float py, float x0, float x1, int, int) {
-                                          DrawRectangle(static_cast<int>(x0), static_cast<int>(py + line_height / 2),
+                                          DrawRectangle(static_cast<int>(x0), static_cast<int>(py + static_cast<float>(line_height) / 2),
                                                         static_cast<int>(x1 - x0), 1, c);
                                       });
                 }
@@ -17891,7 +17914,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // a true bold face -- draw the span twice, the second copy
             // offset 1px right, thickening every stroke slightly.
             if (!d.whole_line && d.bold && d.col_end > d.col_start) {
-                const std::string &line = buf.lines[row];
+                const std::string &line = buf.lines[static_cast<size_t>(row)];
                 int a = std::min(static_cast<int>(line.size()), d.col_start);
                 int b = std::min(static_cast<int>(line.size()), d.col_end);
                 if (b > a) {
@@ -17899,7 +17922,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     // Draws each wrapped piece of this span twice, offset 1px right, to fake bold.
                     ForEachWrapPiece(a, b, row_wrap_cols, text_x, ly, line_height,
                                       [&](float py, float px, float, int pa, int pb) {
-                                          std::string piece = line.substr(pa, pb - pa);
+                                          std::string piece = line.substr(static_cast<size_t>(pa), static_cast<size_t>(pb - pa));
                                           DrawTextEx(g_font, piece.c_str(), Vector2{px, py}, g_font_size, 0, c);
                                           DrawTextEx(g_font, piece.c_str(), Vector2{px + 1, py}, g_font_size, 0, c);
                                       });
@@ -17917,7 +17940,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // than the world origin, so the glyphs lean without also
             // drifting away from their own line.
             if (!d.whole_line && d.italic && d.col_end > d.col_start) {
-                const std::string &line = buf.lines[row];
+                const std::string &line = buf.lines[static_cast<size_t>(row)];
                 int a = std::min(static_cast<int>(line.size()), d.col_start);
                 int b = std::min(static_cast<int>(line.size()), d.col_end);
                 if (b > a) {
@@ -17930,13 +17953,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     // tradeoff: it flattens whatever whole-line background
                     // tint (CursorLine, Visual selection) this row might
                     // have underneath, just for this span.
-                    float pad = line_height * 0.25f;
+                    float pad = static_cast<float>(line_height) * 0.25f;
                     // Covers then redraws each wrapped piece of this span sheared, to fake italics.
                     ForEachWrapPiece(
                         a, b, row_wrap_cols, text_x, ly, line_height, [&](float py, float px0, float px1, int pa, int pb) {
-                            std::string piece = line.substr(pa, pb - pa);
+                            std::string piece = line.substr(static_cast<size_t>(pa), static_cast<size_t>(pb - pa));
                             float span_w = px1 - px0;
-                            float baseline_y = py + line_height;
+                            float baseline_y = py + static_cast<float>(line_height);
                             // Unlike bold's double-draw (which lands its second
                             // copy 1px from the first, close enough to the
                             // DrawLineFast-drawn original underneath that the
@@ -17973,7 +17996,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 // replacing a specific span -- see the field's own
                 // comment (editor.h) for why col_start-anchoring alone
                 // painted diagnostic text directly over real buffer text.
-                int vcol = d.virt_text_eol ? static_cast<int>(buf.lines[row].size()) + 1 : d.col_start;
+                int vcol = d.virt_text_eol ? static_cast<int>(buf.lines[static_cast<size_t>(row)].size()) + 1 : d.col_start;
                 Vector2 vpos = WrapPos(vcol, row_wrap_cols, text_x, ly, line_height);
                 float vx = vpos.x, vy = vpos.y;
                 if (d.virt_overlay) {
@@ -17987,7 +18010,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     // the original span's tail end (anything past the
                     // replacement's width) undrawn-over and still
                     // visible, defeating the conceal.
-                    float span_w = (d.col_end > d.col_start) ? (d.col_end - d.col_start) * g_char_width : 0.0f;
+                    float span_w = (d.col_end > d.col_start) ? static_cast<float>(d.col_end - d.col_start) * g_char_width : 0.0f;
                     float overlay_w = std::max(span_w, MeasureTextEx(g_font, d.virt_text.c_str(), g_font_size, 0).x);
                     DrawRectangle(static_cast<int>(vx), static_cast<int>(vy), static_cast<int>(overlay_w),
                                   line_height, ResolveHlGroup("NormalBg"));
@@ -18000,7 +18023,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             if (d.has_swatch) {
                 Vector2 spos = WrapPos(d.col_start, row_wrap_cols, text_x, ly, line_height);
                 float sw = std::max(4.0f, g_char_width - 2);
-                DrawRectangle(static_cast<int>(spos.x), static_cast<int>(spos.y + (line_height - sw) / 2.0f),
+                DrawRectangle(static_cast<int>(spos.x), static_cast<int>(spos.y + (static_cast<float>(line_height) - sw) / 2.0f),
                               static_cast<int>(sw), static_cast<int>(sw),
                               Color{d.swatch_color.r, d.swatch_color.g, d.swatch_color.b, 255});
             }
@@ -18042,18 +18065,18 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 for (const Buffer::OrgLatexInlineSpan &span : inline_it->second) {
                     Vector2 span_pos = WrapPos(span.col_start, row_wrap_cols, text_x, ly, line_height);
                     float span_x = span_pos.x, span_y = span_pos.y;
-                    float span_w = (span.col_end - span.col_start) * g_char_width;
+                    float span_w = static_cast<float>(span.col_end - span.col_start) * g_char_width;
                     Texture2D *tex = GetOrLoadOrgLatexTexture(span.path);
                     if (!tex) continue;
                     float scale = (static_cast<float>(line_height) * 0.9f) / static_cast<float>(tex->height);
-                    float draw_w = tex->width * scale;
-                    float draw_h = tex->height * scale;
+                    float draw_w = static_cast<float>(tex->width) * scale;
+                    float draw_h = static_cast<float>(tex->height) * scale;
                     float margin = g_char_width;
                     float cover_w = std::max(span_w, draw_w + margin * 2.0f);
                     float draw_x = span_x + (cover_w - draw_w) / 2.0f;
                     DrawRectangle(static_cast<int>(span_x), static_cast<int>(span_y), static_cast<int>(cover_w),
                                   line_height, ResolveHlGroup("NormalBg"));
-                    DrawTextureEx(*tex, Vector2{draw_x, span_y + (line_height - draw_h) / 2.0f}, 0.0f, scale, WHITE);
+                    DrawTextureEx(*tex, Vector2{draw_x, span_y + (static_cast<float>(line_height) - draw_h) / 2.0f}, 0.0f, scale, WHITE);
                 }
             }
         }
@@ -18138,7 +18161,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 slot += latex_it->second.slots;
             } else {
                 slot += (wrap_cols > 0)
-                            ? std::max(1, (static_cast<int>(buf.lines[r].size()) + wrap_cols - 1) / wrap_cols)
+                            ? std::max(1, (static_cast<int>(buf.lines[static_cast<size_t>(r)].size()) + wrap_cols - 1) / wrap_cols)
                             : 1;
                 r += 1;
             }
@@ -18161,11 +18184,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // below); pane.cursor.col picks out which of its visual sub-lines
         // the caret itself is drawn on.
         int cursor_wrap_cols = (!cursor_on_image && !cursor_on_latex) ? wrap_cols : 0;
-        Vector2 cursor_pos = WrapPos(pane.cursor.col, cursor_wrap_cols, text_x, content_y + cursor_slot * line_height,
+        Vector2 cursor_pos = WrapPos(pane.cursor.col, cursor_wrap_cols, text_x, content_y + static_cast<float>(cursor_slot * line_height),
                                       line_height);
         float cursor_x = cursor_pos.x, cursor_y = cursor_pos.y;
         int cursor_slots = cursor_on_image ? kOrgInlineImageSlots : (cursor_on_latex ? cursor_latex_it->second.slots : 1);
-        float row_extent = (cursor_on_image || cursor_on_latex) ? static_cast<float>(line_height) * cursor_slots
+        float row_extent = (cursor_on_image || cursor_on_latex) ? static_cast<float>(line_height) * static_cast<float>(cursor_slots)
                                                                   : static_cast<float>(line_height);
         if (cursor_on_image || cursor_on_latex) {
             float avail_w = std::max(40.0f, w - (text_x - x) - kMarginX);
@@ -18178,7 +18201,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             Color cursor_bg = ResolveHlGroup("Normal");
             DrawRectangle(static_cast<int>(cursor_x), static_cast<int>(cursor_y), static_cast<int>(g_char_width),
                           line_height, Color{cursor_bg.r, cursor_bg.g, cursor_bg.b, 180});
-            const std::string &line = buf.lines[pane.cursor.row];
+            const std::string &line = buf.lines[static_cast<size_t>(pane.cursor.row)];
             // Skip the usual "punch the raw character back through the
             // cursor block" redraw when the cursor sits inside a
             // concealed inline-math span (Buffer::org_latex_inline) --
@@ -18200,14 +18223,14 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 }
             }
             if (!cursor_in_concealed_latex && pane.cursor.col < static_cast<int>(line.size())) {
-                char ch[2] = {line[pane.cursor.col], '\0'};
+                char ch[2] = {line[static_cast<size_t>(pane.cursor.col)], '\0'};
                 DrawTextEx(g_font, ch, Vector2{cursor_x, cursor_y}, g_font_size, 0, ResolveHlGroup("NormalBg"));
             }
         }
         // Completion popup (Phase 22): positioned just below the cursor.
         if (!cursor_on_image && !cursor_on_latex && g_editor.CurrentMode() == Mode::Insert &&
             g_editor.IsCompletionOpen()) {
-            DrawCompletionPopup(cursor_x, cursor_y + line_height);
+            DrawCompletionPopup(cursor_x, cursor_y + static_cast<float>(line_height));
         }
         hover_cursor_x = cursor_x;
         hover_cursor_y = cursor_y + row_extent;
@@ -18231,7 +18254,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         auto p_latex_it = buf.org_latex_rows.find(participant.row);
         bool p_on_latex = g_editor.OrgLatexVisible() && p_latex_it != buf.org_latex_rows.end();
         int p_wrap_cols = (!p_on_image && !p_on_latex) ? wrap_cols : 0;
-        Vector2 p_pos = WrapPos(participant.col, p_wrap_cols, text_x, content_y + RowSlot(participant.row) * line_height,
+        Vector2 p_pos = WrapPos(participant.col, p_wrap_cols, text_x, content_y + static_cast<float>(RowSlot(participant.row) * line_height),
                                  line_height);
         const float px = p_pos.x, py = p_pos.y;
         const Color color = ToRaylib(ParticipantColor(participant.id));
@@ -18240,7 +18263,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
 
         const bool is_agent = participant.kind == Editor::ParticipantKind::Agent;
         const std::string &label_text = participant.name.empty() ? participant.id : participant.name;
-        const float label_icon_w = is_agent ? line_height * 0.8f + 4.0f : 0.0f;
+        const float label_icon_w = is_agent ? static_cast<float>(line_height) * 0.8f + 4.0f : 0.0f;
         const float label_text_w = MeasureTextEx(g_font, label_text.c_str(), g_font_size, 0).x;
         const float label_pad = 4.0f;
         const float label_w = label_icon_w + label_text_w + label_pad * 2.0f;
@@ -18251,14 +18274,14 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // above (the participant is on the pane's own top visible row),
         // in which case flip it below instead of letting it draw off the
         // top of the pane.
-        const float label_y = (py - label_h < content_y) ? (py + line_height) : (py - label_h);
-        DrawRectangleRounded(Rectangle{label_x, label_y, label_w, label_h}, 0.3f, 4, Fade(color, 0.92f));
+        const float p_label_y = (py - label_h < content_y) ? (py + static_cast<float>(line_height)) : (py - label_h);
+        DrawRectangleRounded(Rectangle{label_x, p_label_y, label_w, label_h}, 0.3f, 4, Fade(color, 0.92f));
         float text_draw_x = label_x + label_pad;
         if (is_agent) {
-            DrawRobotIcon(Vector2{text_draw_x, label_y + (label_h - line_height * 0.8f) / 2.0f}, line_height * 0.8f, WHITE);
+            DrawRobotIcon(Vector2{text_draw_x, p_label_y + (label_h - static_cast<float>(line_height) * 0.8f) / 2.0f}, static_cast<float>(line_height) * 0.8f, WHITE);
             text_draw_x += label_icon_w;
         }
-        DrawTextEx(g_font, label_text.c_str(), Vector2{text_draw_x, label_y + (label_h - g_font_size) / 2.0f}, g_font_size, 0, WHITE);
+        DrawTextEx(g_font, label_text.c_str(), Vector2{text_draw_x, p_label_y + (label_h - g_font_size) / 2.0f}, g_font_size, 0, WHITE);
     }
 
     EndScissorMode();
@@ -18305,17 +18328,17 @@ void DrawPaneTree(const SplitNode *node, float x, float y, float w, float h, int
     if (node->dir == SplitDir::Horizontal) {
         float cy = y;
         for (int i = 0; i < n; i++) {
-            float ch = has_shares ? h * node->shares[i] : h / n;
+            float ch = has_shares ? h * node->shares[static_cast<size_t>(i)] : h / static_cast<float>(n);
             float next_y = (i == n - 1) ? y + h : cy + ch;
-            DrawPaneTree(node->children[i].get(), x, cy, w, next_y - cy, active_pane_id);
+            DrawPaneTree(node->children[static_cast<size_t>(i)].get(), x, cy, w, next_y - cy, active_pane_id);
             cy = next_y;
         }
     } else {
         float cx = x;
         for (int i = 0; i < n; i++) {
-            float cw = has_shares ? w * node->shares[i] : w / n;
+            float cw = has_shares ? w * node->shares[static_cast<size_t>(i)] : w / static_cast<float>(n);
             float next_x = (i == n - 1) ? x + w : cx + cw;
-            DrawPaneTree(node->children[i].get(), cx, y, next_x - cx, h, active_pane_id);
+            DrawPaneTree(node->children[static_cast<size_t>(i)].get(), cx, y, next_x - cx, h, active_pane_id);
             cx = next_x;
         }
     }
@@ -18340,7 +18363,7 @@ void DrawTabBar(int y) {
     int bar_h = TabBarHeight();
     float font_size = MenuFontSize();
     DrawRectangle(0, y, screen_w, bar_h, ResolveHlGroup("TabBar"));
-    float cy = y + (bar_h - font_size) / 2.0f;
+    float cy = static_cast<float>(y) + (static_cast<float>(bar_h) - font_size) / 2.0f;
 
     float x = 4;
     std::string mode_label = std::string(" ") + ModeName(g_editor.CurrentMode(), g_editor.IsReplaceMode()) + " ";
@@ -18403,19 +18426,19 @@ void DrawTabBar(int y) {
         const bool is_agent = participant.kind == Editor::ParticipantKind::Agent;
         const float chip_size = static_cast<float>(bar_h) - 6.0f;
         chip_x -= chip_size + 4.0f;
-        const Rectangle chip_rect{chip_x, y + 3.0f, chip_size, chip_size};
+        const Rectangle chip_rect{chip_x, static_cast<float>(y) + 3.0f, chip_size, chip_size};
         const Color color = ToRaylib(ParticipantColor(participant.id));
         DrawRectangleRounded(chip_rect, 0.3f, 4, color);
         if (is_agent) {
             const float pad = chip_size * 0.15f;
-            DrawRobotIcon(Vector2{chip_x + pad, y + 3.0f + pad}, chip_size - pad * 2.0f, WHITE);
+            DrawRobotIcon(Vector2{chip_x + pad, static_cast<float>(y) + 3.0f + pad}, chip_size - pad * 2.0f, WHITE);
             const float badge_r = chip_size * 0.24f;
-            DrawAgentStatusBadge(Vector2{chip_x + chip_size - badge_r * 0.75f, y + 3.0f + chip_size - badge_r * 0.75f}, badge_r,
+            DrawAgentStatusBadge(Vector2{chip_x + chip_size - badge_r * 0.75f, static_cast<float>(y) + 3.0f + chip_size - badge_r * 0.75f}, badge_r,
                                   participant.status);
         } else {
             const std::string initial = participant.name.empty() ? "?" : participant.name.substr(0, 1);
             const float iw = MeasureTextEx(g_font, initial.c_str(), font_size, 0).x;
-            DrawTextEx(g_font, initial.c_str(), Vector2{chip_x + (chip_size - iw) / 2.0f, y + 3.0f + (chip_size - font_size) / 2.0f},
+            DrawTextEx(g_font, initial.c_str(), Vector2{chip_x + (chip_size - iw) / 2.0f, static_cast<float>(y) + 3.0f + (chip_size - font_size) / 2.0f},
                        font_size, 0, WHITE);
         }
         if (CheckCollisionPointRec(mouse, chip_rect)) {
@@ -18430,9 +18453,9 @@ void DrawTabBar(int y) {
                                     static_cast<float>(bar_h)};
             // Keep the tooltip on-screen even for a chip near either edge.
             if (tooltip_rect.x < 0) tooltip_rect.x = 0;
-            if (tooltip_rect.x + tooltip_rect.width > screen_w) tooltip_rect.x = screen_w - tooltip_rect.width;
+            if (tooltip_rect.x + tooltip_rect.width > static_cast<float>(screen_w)) tooltip_rect.x = static_cast<float>(screen_w) - tooltip_rect.width;
             DrawRectangleRounded(tooltip_rect, 0.3f, 4, ResolveHlGroup("PickerSelected"));
-            DrawTextEx(g_font, tooltip_text.c_str(), Vector2{tooltip_rect.x + 4.0f, tooltip_rect.y + (bar_h - font_size) / 2.0f}, font_size,
+            DrawTextEx(g_font, tooltip_text.c_str(), Vector2{tooltip_rect.x + 4.0f, tooltip_rect.y + (static_cast<float>(bar_h) - font_size) / 2.0f}, font_size,
                        0, ResolveHlGroup("StatusLineFg"));
         }
         // Jumps the view to this participant's current location.
@@ -18454,18 +18477,18 @@ void DrawTabBar(int y) {
  */
 void DrawDashboard(float x, float y, float w, float h) {
     std::vector<std::string> lines = SplitLines(kAboutText);
-    lines.push_back("");
-    lines.push_back("i to start typing  :e to open a file  <leader> for keys  :q to quit");
+    lines.emplace_back();
+    lines.emplace_back("i to start typing  :e to open a file  <leader> for keys  :q to quit");
     float font_size = g_font_size;
     int line_h = static_cast<int>(font_size) + 8;
     float max_w = 0;
     for (const auto &line : lines) max_w = std::max(max_w, MeasureTextEx(g_font, line.c_str(), font_size, 0).x);
-    float box_h = static_cast<float>(lines.size() * line_h);
+    float box_h = static_cast<float>(lines.size() * static_cast<size_t>(line_h));
     float start_y = y + std::max(0.0f, (h - box_h) / 2.0f);
     for (size_t i = 0; i < lines.size(); i++) {
         float lw = MeasureTextEx(g_font, lines[i].c_str(), font_size, 0).x;
         float lx = x + std::max(0.0f, (w - lw) / 2.0f);
-        DrawTextEx(g_font, lines[i].c_str(), Vector2{lx, start_y + i * line_h}, font_size, 0,
+        DrawTextEx(g_font, lines[i].c_str(), Vector2{lx, start_y + static_cast<float>(i) * static_cast<float>(line_h)}, font_size, 0,
                    ResolveHlGroup("Comment"));
     }
 }
@@ -18511,11 +18534,11 @@ void DrawEditor() {
     // Zen centers the pane tree with generous side padding when the screen
     // is wide enough to spare it -- pure cosmetic, doesn't touch the pane
     // tree's own geometry/state.
-    float pane_x = 0.0f, pane_w = static_cast<float>(screen_w);
+    float pane_x = 0.0f, pane_w;  // both branches below set pane_w before any read
     if (zen) {
-        float pad = std::max(0.0f, (screen_w - 900.0f) / 2.0f);
+        float pad = std::max(0.0f, (static_cast<float>(screen_w) - 900.0f) / 2.0f);
         pane_x = pad;
-        pane_w = screen_w - 2 * pad;
+        pane_w = static_cast<float>(screen_w) - 2 * pad;
     } else {
         // Reserve real screen space for open left/right sidebars (zen hides
         // sidebars entirely, so this only applies outside it) rather than
@@ -18527,8 +18550,8 @@ void DrawEditor() {
         float left_w = 0.0f, right_w = 0.0f;
         for (const SidebarInstance &sb : g_editor.Sidebars()) {
             if (!sb.open) continue;
-            if (sb.position == "left") left_w += sb.size * g_char_width;
-            else if (sb.position == "right") right_w += sb.size * g_char_width;
+            if (sb.position == "left") left_w += static_cast<float>(sb.size) * g_char_width;
+            else if (sb.position == "right") right_w += static_cast<float>(sb.size) * g_char_width;
         }
         // NOTE: the office pane's own Outline/Format rail+panels are NOT
         // reserved here -- unlike SidebarInstances (app-wide chrome), they
@@ -18536,7 +18559,7 @@ void DrawEditor() {
         // entirely within DrawPane's own office branch (DrawOfficeSidePanels,
         // called there), the same way its toolbar is per-pane already.
         pane_x = left_w;
-        pane_w = std::max(100.0f, screen_w - left_w - right_w);
+        pane_w = std::max(100.0f, static_cast<float>(screen_w) - left_w - right_w);
     }
 
     if (pane_area_h > 0) {
@@ -18800,8 +18823,8 @@ void UpdateKanbanMouseInteraction() {
         float rel_content_y = mouse.y - sess->content_y;
         // Start column drags only from the header label, never from its
         // kebab menu (which remains an ordinary click target).
-        if (rel_content_y >= header_h && rel_content_y < header_h * 2 &&
-            mouse.x < sess->content_x + (col_i + 1) * kKanbanColumnWidth - 24) {
+        if (rel_content_y >= static_cast<float>(header_h) && rel_content_y < static_cast<float>(header_h * 2) &&
+            mouse.x < sess->content_x + static_cast<float>((col_i + 1) * kKanbanColumnWidth) - 24) {
             sess->dragging = true;
             sess->drag_is_column = true;
             sess->drag_column_index = col_i;
@@ -18815,12 +18838,12 @@ void UpdateKanbanMouseInteraction() {
         float rel_y = mouse.y - sess->content_y - card_area_top;
         int row_i = static_cast<int>(rel_y / (kKanbanCardHeight + kKanbanCardGap));
         if (row_i < 0 || row_i >= static_cast<int>(cards.size())) return;
-        float card_top = card_area_top + row_i * (kKanbanCardHeight + kKanbanCardGap);
+        float card_top = card_area_top + static_cast<float>(row_i * (kKanbanCardHeight + kKanbanCardGap));
         float rel_y_in_card = mouse.y - sess->content_y - card_top;
         if (rel_y_in_card < 0 || rel_y_in_card > kKanbanCardHeight) return;
         sess->dragging = true;
         sess->drag_is_new_card = false;
-        sess->drag_headline_index = cards[row_i];
+        sess->drag_headline_index = cards[static_cast<size_t>(row_i)];
         sess->drag_start_x = mouse.x;
         sess->drag_start_y = mouse.y;
         sess->drag_threshold_passed = false;
@@ -18861,15 +18884,15 @@ void UpdateKanbanMouseInteraction() {
             g_editor.KanbanMoveColumn(sess->drag_column_index, sess->column_drop_slot);
         } else if (sess->drag_threshold_passed && sess->drag_is_new_card && sess->drop_column >= 0 &&
             sess->drop_column < static_cast<int>(columns.size())) {
-            int hi = g_editor.KanbanNewCard(columns[sess->drop_column], "New card");
+            int hi = g_editor.KanbanNewCard(columns[static_cast<size_t>(sess->drop_column)], "New card");
             if (hi >= 0) g_editor.KanbanBeginRenameNewCard(hi);
         } else if (sess->drag_threshold_passed && !sess->drag_is_new_card && sess->drag_headline_index >= 0 &&
                    sess->drag_headline_index < static_cast<int>(sess->outline.headlines.size()) &&
                    sess->drop_column >= 0) {
             int hi = sess->drag_headline_index;
-            std::string old_keyword = sess->outline.headlines[hi].todo_keyword;
+            std::string old_keyword = sess->outline.headlines[static_cast<size_t>(hi)].todo_keyword;
             std::string new_keyword =
-                (sess->drop_column < static_cast<int>(columns.size())) ? columns[sess->drop_column] : old_keyword;
+                (sess->drop_column < static_cast<int>(columns.size())) ? columns[static_cast<size_t>(sess->drop_column)] : old_keyword;
             if (new_keyword != old_keyword) {
                 // Cross-column drop: changes status only -- the card's
                 // position within its new column follows natural document
@@ -18881,7 +18904,7 @@ void UpdateKanbanMouseInteraction() {
                 std::vector<int> cards = g_editor.KanbanCardsInColumn(buffer_id, sess->drop_column);
                 int before;
                 if (sess->drop_row >= 0 && sess->drop_row < static_cast<int>(cards.size())) {
-                    before = cards[sess->drop_row];
+                    before = cards[static_cast<size_t>(sess->drop_row)];
                 } else if (!cards.empty() && cards.back() + 1 < static_cast<int>(sess->outline.headlines.size())) {
                     // Dropped past this column's last card: land right
                     // after it (the next headline in *document* order,
@@ -18957,9 +18980,9 @@ void UpdateGanttMouseInteraction() {
         if ((!left_pressed && !right_pressed) || !PointInRect(mouse, content)) return;
         if (mouse.y < sess->content_y + ruler_h) return;
         std::vector<int> rows = g_editor.GanttRows(buffer_id);
-        int row_i = static_cast<int>((mouse.y - sess->content_y - ruler_h) / row_h);
+        int row_i = static_cast<int>((mouse.y - sess->content_y - ruler_h) / static_cast<float>(row_h));
         if (row_i < 0 || row_i >= static_cast<int>(rows.size())) return;
-        int hi = rows[row_i];
+        int hi = rows[static_cast<size_t>(row_i)];
 
         // A click in the label column (left of the divider): double-click
         // renames the row inline, otherwise it's just a focus click --
@@ -18970,7 +18993,7 @@ void UpdateGanttMouseInteraction() {
             for (const OrgHeadline &candidate : sess->outline.headlines) {
                 if (candidate.parent_index == hi) { has_children = true; break; }
             }
-            float toggle_right = sess->content_x + 6 + std::max(0, sess->outline.headlines[hi].level - 1) * 14.0f + 14;
+            float toggle_right = sess->content_x + 6 + static_cast<float>(std::max(0, sess->outline.headlines[static_cast<size_t>(hi)].level - 1)) * 14.0f + 14;
             if (has_children && mouse.x <= toggle_right) {
                 if (sess->collapsed_headlines.count(hi)) sess->collapsed_headlines.erase(hi);
                 else sess->collapsed_headlines.insert(hi);
@@ -18991,7 +19014,7 @@ void UpdateGanttMouseInteraction() {
             return;
         }
 
-        const OrgHeadline &hd = sess->outline.headlines[hi];
+        const OrgHeadline &hd = sess->outline.headlines[static_cast<size_t>(hi)];
         long long start_day = OrgDayNumber(hd.scheduled.year, hd.scheduled.month, hd.scheduled.day);
         long long clicked_day = sess->anchor_day + static_cast<long long>(std::floor((mouse.x - divider_x) / sess->pixels_per_day));
         sess->focused_row = row_i;
@@ -19101,7 +19124,7 @@ void UpdateOfficeScrollbarInteraction() {
         int para_count = static_cast<int>(doc.paragraphs.size());
         float acc = 0.0f;
         for (int pi = 0; pi < para_count; pi++) {
-            const DocParagraph &para = doc.paragraphs[pi];
+            const DocParagraph &para = doc.paragraphs[static_cast<size_t>(pi)];
             float size = g_office_status.body_size * OfficeHeadingMultiplier(para.heading_level);
             float plh = size * 1.35f;
             int line_count = std::max(
@@ -19273,7 +19296,7 @@ void UpdatePaneMouseInteraction() {
             } else if (g_pane_drag.kind == PaneDragKind::SidebarResize) {
                 want_cursor = g_pane_drag.sidebar_horizontal ? MOUSE_CURSOR_RESIZE_EW : MOUSE_CURSOR_RESIZE_NS;
                 float mouse_now = g_pane_drag.sidebar_horizontal ? mouse.x : mouse.y;
-                float delta_px = (mouse_now - g_pane_drag.sidebar_mouse_start) * g_pane_drag.sidebar_sign;
+                float delta_px = (mouse_now - g_pane_drag.sidebar_mouse_start) * static_cast<float>(g_pane_drag.sidebar_sign);
                 float unit = g_pane_drag.sidebar_horizontal ? g_char_width : static_cast<float>(LineHeight());
                 int new_size = g_pane_drag.sidebar_size_start + static_cast<int>(std::lround(delta_px / unit));
                 g_editor.SetSidebarSize(g_pane_drag.sidebar_id, new_size);
@@ -19521,6 +19544,11 @@ void MepTraceLogCallback(int logLevel, const char *text, va_list args) {
 void SetUpTraceLogFile() {
     std::string dir = MepDataDir();
     if (dir.empty()) return;
+    // Intentional process-lifetime singleton (raylib's TraceLogCallback
+    // writes to it for as long as the app runs); never explicitly
+    // fclose'd, same as the rest of this codebase's leaked-until-exit
+    // top-level state.
+    // NOLINTNEXTLINE(cppcoreguidelines-owning-memory)
     g_trace_log_file = std::fopen((dir + "/mep.log").c_str(), "w");
     if (!g_trace_log_file) return;
     SetTraceLogCallback(MepTraceLogCallback);
@@ -19623,6 +19651,13 @@ int main(int argc, char **argv) {
     // out-of-bounds/segfault trap, on native code paths that don't even
     // reach any of mep's own registered Lua functions. Native never hit
     // this since its main() only returns after the whole event loop ends.
+    // Intentional process-lifetime singleton, same as g_trace_log_file
+    // above: mep's shutdown path (below, JobManager::ShutdownAll/
+    // mep::agent::Stop) is explicit teardown for resources with bounded/
+    // unsafe destruction (child processes, threads), not a general
+    // "delete everything"; the Lua VM is deliberately left for
+    // process-exit cleanup.
+    // NOLINTNEXTLINE(cppcoreguidelines-owning-memory)
     LuaEnv *lua = new LuaEnv(&g_editor);
     g_editor.SetLuaEnv(lua);
     // Runs before any user config, so init.lua's own mep.map_mod1() calls
@@ -19672,9 +19707,15 @@ int main(int argc, char **argv) {
     }
     std::string config_path = ConfigFilePath();
     if (!config_path.empty()) {
+        // NOLINTBEGIN(cppcoreguidelines-owning-memory) -- fopen/fclose
+        // matched within this same scope: a readability probe (checks the
+        // file both exists and is permission-readable, which
+        // std::filesystem::exists() alone would not) before the real load
+        // via lua->DoFile below, not a leak.
         FILE *f = std::fopen(config_path.c_str(), "rb");
         if (f) {
             std::fclose(f);
+            // NOLINTEND(cppcoreguidelines-owning-memory)
             lua->DoFile(config_path);
         }
     }

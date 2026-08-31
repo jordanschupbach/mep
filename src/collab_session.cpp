@@ -48,7 +48,8 @@ std::vector<CrdtOperation> StateOperations(const TextCrdt &document) {
 std::string EncodeName(const std::string &name) {
     static constexpr char hex[] = "0123456789ABCDEF";
     std::string result;
-    for (unsigned char c : name) {
+    for (char raw : name) {
+        unsigned char c = static_cast<unsigned char>(raw);
         if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_') result.push_back(static_cast<char>(c));
         else { result += '%'; result += hex[c >> 4]; result += hex[c & 15]; }
     }
@@ -103,7 +104,8 @@ void CollabSession::ReceiveMessage(const std::string &text) {
         const Json &peers = message.get("peers"); if (!peers.is_array()) return;
         for (const Json &item : peers.items()) { const std::string id = item.get("peer").as_string(); if (!id.empty()) collaborators_[id] = {id, item.get("name").as_string(), 0, 0, false}; }
     } else if (type == "peer_join" || type == "presence") {
-        if (peer.empty()) return; Collaborator &other = collaborators_[peer]; other.id = peer; other.name = message.get("name").as_string(other.name);
+        if (peer.empty()) { return; }
+        Collaborator &other = collaborators_[peer]; other.id = peer; other.name = message.get("name").as_string(other.name);
         if (type == "presence") { other.row = message.get("row").as_int(); other.col = message.get("col").as_int(); other.has_location = true; }
     } else if (type == "peer_leave") {
         collaborators_.erase(peer);
@@ -138,6 +140,6 @@ void CollabSession::SetPresence(int row, int col) {
     Json message = Json::Object(); message["type"] = "presence"; message["row"] = row; message["col"] = col; Send(message);
 }
 std::vector<Collaborator> CollabSession::Collaborators() const {
-    std::lock_guard<std::mutex> lock(mutex_); std::vector<Collaborator> result; for (const auto &[id, collaborator] : collaborators_) result.push_back(collaborator); return result;
+    std::lock_guard<std::mutex> lock(mutex_); std::vector<Collaborator> result; result.reserve(collaborators_.size()); for (const auto &[id, collaborator] : collaborators_) result.push_back(collaborator); return result;
 }
 }  // namespace mep::collab

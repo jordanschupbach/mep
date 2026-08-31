@@ -3,13 +3,13 @@
 #include <algorithm>
 
 VTerm::VTerm(int rows, int cols) : rows_(std::max(1, rows)), cols_(std::max(1, cols)) {
-    primary_.assign(static_cast<size_t>(rows_) * cols_, VTermCell{});
-    alt_.assign(static_cast<size_t>(rows_) * cols_, VTermCell{});
+    primary_.assign(static_cast<size_t>(rows_) * static_cast<size_t>(cols_), VTermCell{});
+    alt_.assign(static_cast<size_t>(rows_) * static_cast<size_t>(cols_), VTermCell{});
     bottom_margin_ = rows_ - 1;
 }
 
 void VTerm::Feed(const std::string &data) {
-    for (unsigned char c : data) PutByte(c);
+    for (char raw : data) PutByte(static_cast<unsigned char>(raw));
 }
 
 void VTerm::Resize(int rows, int cols) {
@@ -19,14 +19,15 @@ void VTerm::Resize(int rows, int cols) {
     // Primary screen preserves as much existing content as fits,
     // top-left anchored; the alt screen is just reallocated blank (see
     // header comment -- a full-screen program redraws on SIGWINCH anyway).
-    std::vector<VTermCell> new_primary(static_cast<size_t>(rows) * cols, VTermCell{});
+    std::vector<VTermCell> new_primary(static_cast<size_t>(rows) * static_cast<size_t>(cols), VTermCell{});
     for (int r = 0; r < std::min(rows, rows_); r++) {
         for (int c = 0; c < std::min(cols, cols_); c++) {
-            new_primary[static_cast<size_t>(r) * cols + c] = primary_[static_cast<size_t>(r) * cols_ + c];
+            new_primary[static_cast<size_t>(r) * static_cast<size_t>(cols) + static_cast<size_t>(c)] =
+                primary_[static_cast<size_t>(r) * static_cast<size_t>(cols_) + static_cast<size_t>(c)];
         }
     }
     primary_ = std::move(new_primary);
-    alt_.assign(static_cast<size_t>(rows) * cols, VTermCell{});
+    alt_.assign(static_cast<size_t>(rows) * static_cast<size_t>(cols), VTermCell{});
     rows_ = rows;
     cols_ = cols;
     top_margin_ = 0;
@@ -39,15 +40,15 @@ void VTerm::Resize(int rows, int cols) {
 const VTermCell &VTerm::At(int row, int col) const {
     static const VTermCell kBlank{};
     if (row < 0 || row >= rows_ || col < 0 || col >= cols_) return kBlank;
-    return Grid()[static_cast<size_t>(row) * cols_ + col];
+    return Grid()[static_cast<size_t>(row) * static_cast<size_t>(cols_) + static_cast<size_t>(col)];
 }
 
 const VTermCell &VTerm::ScrollbackAt(int row, int col) const {
     static const VTermCell kBlank{};
     if (row < 0 || row >= static_cast<int>(scrollback_.size())) return kBlank;
-    const std::vector<VTermCell> &line = scrollback_[row];
+    const std::vector<VTermCell> &line = scrollback_[static_cast<size_t>(row)];
     if (col < 0 || col >= static_cast<int>(line.size())) return kBlank;
-    return line[col];
+    return line[static_cast<size_t>(col)];
 }
 
 // --- Byte-level parsing ------------------------------------------------

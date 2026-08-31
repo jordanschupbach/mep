@@ -8,6 +8,8 @@
 #include <thread>
 #include <vector>
 
+class Json;
+
 #if defined(__EMSCRIPTEN__)
 /**
  * @brief Delivers one text message received on the browser WebSocket to the CollabSession that owns `handle`.

@@ -3,8 +3,8 @@
 #include "collab_websocket.h"
 #include "json.h"
 
-#include <algorithm>
-#include <memory>
+#include <stddef.h>
+#include <utility>
 
 namespace mep::collab {
 /**
@@ -77,19 +77,19 @@ void CollabSession::Send(const Json &message) {
     if (socket_) socket_->socket.SendText(message.dump());
 }
 void CollabSession::Run() {
-    std::string url = url_ + (url_.find('?') == std::string::npos ? "?name=" : "&name=") + EncodeName(name_);
-    std::string error; WebSocket socket = WebSocket::Connect(url, &error);
-    if (!socket.valid()) { std::lock_guard<std::mutex> lock(mutex_); error_ = error; return; }
+    std::string ws_url = url_ + (url_.find('?') == std::string::npos ? "?name=" : "&name=") + EncodeName(name_);
+    std::string conn_error; WebSocket socket = WebSocket::Connect(ws_url, &conn_error);
+    if (!socket.valid()) { std::lock_guard<std::mutex> lock(mutex_); error_ = conn_error; return; }
     SocketHolder holder(std::move(socket));
     { std::lock_guard<std::mutex> send_lock(send_mutex_); socket_ = &holder; }
     { std::lock_guard<std::mutex> lock(mutex_); connected_ = true; }
     Json request = Json::Object(); request["type"] = "sync_request"; Send(request);
     std::string text;
-    while (holder.socket.ReceiveText(&text, &error)) ReceiveMessage(text);
+    while (holder.socket.ReceiveText(&text, &conn_error)) ReceiveMessage(text);
     { std::lock_guard<std::mutex> send_lock(send_mutex_); socket_ = nullptr; }
     std::lock_guard<std::mutex> lock(mutex_);
     connected_ = false;
-    if (!stopping_ && !error.empty()) error_ = error;
+    if (!stopping_ && !conn_error.empty()) error_ = conn_error;
 }
 void CollabSession::ReceiveMessage(const std::string &text) {
     Json message; if (!Json::Parse(text, &message) || !message.is_object()) return;

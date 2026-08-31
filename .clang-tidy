@@ -59,6 +59,19 @@ Checks: >
   -performance-enum-size,
 
 WarningsAsErrors: ''
+# The native build (build/native/compile_commands.json) is compiled with
+# GCC, whose command lines include GCC-only warning flags from
+# MEP_STRICT_FLAGS in CMakeLists.txt (-Wduplicated-cond, -Wduplicated-
+# branches, -Wlogical-op, -Wuseless-cast). clang-tidy replays those exact
+# flags through clang's own driver, which doesn't recognize them and (with
+# no ExtraArgsBefore) treats each as a hard "unknown warning option" error
+# -- clang-tidy then reports "Found compiler error(s)" and silently skips
+# real analysis for every file. -Wno-unknown-warning-option must come
+# *before* those flags on the synthesized command line to suppress them,
+# hence ExtraArgsBefore (not ExtraArgs, which appends after and would be
+# too late).
+ExtraArgsBefore:
+  - '-Wno-unknown-warning-option'
 # Anchored on the literal "/mep/src/" path segment, not just "/src/" --
 # a bare ".*/src/.*" also matches vendored deps' own "src" subdirectories
 # (e.g. build/native/_deps/raylib-src/src/raylib.h), which pulled findings

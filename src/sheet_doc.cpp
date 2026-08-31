@@ -6,6 +6,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <sstream>
+#include <utility>
+
+#include "formula.h"
 
 namespace {
 
@@ -347,7 +350,7 @@ CellValue EvalCellRef(Workbook &wb, int sheet, const FormulaCellRef &ref) {
 void CollectRangeValues(Workbook &wb, int sheet, const FormulaNode &node, std::vector<CellValue> &out) {
     int target = ResolveSheetIndex(wb, node.cell.sheet_name, sheet);
     if (target < 0) return;
-    Sheet &sh = wb.sheets[static_cast<size_t>(target)];
+    const Sheet &sh = wb.sheets[static_cast<size_t>(target)];
     int r0 = std::min(node.cell.row, node.range_end.row), r1 = std::max(node.cell.row, node.range_end.row);
     int c0 = std::min(node.cell.col, node.range_end.col), c1 = std::max(node.cell.col, node.range_end.col);
     r1 = std::min(r1, sh.max_row);
@@ -376,7 +379,7 @@ void CollectRangeValues(Workbook &wb, int sheet, const FormulaNode &node, std::v
 void CollectRangeValuesOrdered(Workbook &wb, int sheet, const FormulaNode &node, std::vector<CellValue> &out) {
     int target = ResolveSheetIndex(wb, node.cell.sheet_name, sheet);
     if (target < 0) return;
-    Sheet &sh = wb.sheets[static_cast<size_t>(target)];
+    const Sheet &sh = wb.sheets[static_cast<size_t>(target)];
     int r0 = std::min(node.cell.row, node.range_end.row), r1 = std::max(node.cell.row, node.range_end.row);
     int c0 = std::min(node.cell.col, node.range_end.col), c1 = std::max(node.cell.col, node.range_end.col);
     r1 = std::min(r1, sh.max_row);
@@ -579,7 +582,7 @@ CellValue CallFunction(Workbook &wb, int sheet, const FormulaNode &node) {
         int col_index = static_cast<int>(ToNumber(arg_value(2)));
         int target = ResolveSheetIndex(wb, range.cell.sheet_name, sheet);
         if (target < 0) return MakeErrorValue(SheetError::Ref);
-        Sheet &sh = wb.sheets[static_cast<size_t>(target)];
+        const Sheet &sh = wb.sheets[static_cast<size_t>(target)];
         int r0 = std::min(range.cell.row, range.range_end.row);
         int r1 = std::min(std::max(range.cell.row, range.range_end.row), sh.max_row);
         int c0 = std::min(range.cell.col, range.range_end.col);
@@ -650,7 +653,7 @@ CellValue EvalNode(Workbook &wb, int sheet, const FormulaNode &node) {
 
 CellValue EvaluateCell(Workbook &wb, int sheet, int row, int col) {
     if (sheet < 0 || sheet >= static_cast<int>(wb.sheets.size())) return MakeErrorValue(SheetError::Ref);
-    Sheet &sh = wb.sheets[static_cast<size_t>(sheet)];
+    const Sheet &sh = wb.sheets[static_cast<size_t>(sheet)];
     // FindCell (const) then const_cast, rather than a public mutable
     // finder: EvaluateCell is the one place in this file that needs
     // write access to an *existing* cell's cache without ever inserting
@@ -680,6 +683,11 @@ CellValue EvaluateCell(Workbook &wb, int sheet, int row, int col) {
 // CSV
 // ============================================================================
 
+// cppcheck-suppress constParameterReference
+// error stays non-const std::string& (not written here) to keep this
+// function's signature identical to LoadXlsxFromMemory/LoadOdsFromMemory
+// (sheet_doc.h) -- a deliberate uniform "load format X" family, not
+// something to special-case just because CSV's own error path is unused.
 bool LoadCsvFromMemory(const unsigned char *bytes, size_t len, Workbook &out, std::string &error) {
     (void)error;  // CSV parsing can't structurally fail -- any byte sequence is a valid (if odd) CSV
     out.sheets.clear();
@@ -758,7 +766,7 @@ bool SaveCsvToMemory(Workbook &wb, std::string &out, std::string &error) {
         error = "workbook has no sheets";
         return false;
     }
-    Sheet &sh = wb.sheets[0];  // CSV is single-sheet by construction
+    const Sheet &sh = wb.sheets[0];  // CSV is single-sheet by construction
     /**
      * @brief Quotes a field for CSV output if it contains a comma, quote, or newline, doubling any embedded quotes.
      * @param s Field text to escape.

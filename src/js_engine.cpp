@@ -1,11 +1,18 @@
 #include "js_engine.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
+#include <iterator>
 #include <memory>
 #include <sstream>
 #include <unordered_map>
+#include <utility>
 #include <vector>
+
+#include "html_doc.h"
 
 // A hand-rolled tokenizer + recursive-descent/precedence-climbing parser +
 // tree-walking interpreter for a *subset* of JS -- not spec-compliant, not
@@ -849,10 +856,6 @@ using NodePtr = std::unique_ptr<Node>;
 // ---------------------------------------------------------------------
 // Parser
 // ---------------------------------------------------------------------
-
-struct ParseError {
-    std::string message;
-};
 
 struct Parser {
     Lexer lex;
@@ -1819,7 +1822,7 @@ Completion EvalExpr(Interpreter &interp, const Node &n, EnvPtr &env) {
         }
         case NodeKind::ObjectLit: {
             auto obj = std::make_shared<ObjectData>();
-            for (auto &kv : n.obj_props) {
+            for (const auto &kv : n.obj_props) {
                 Completion c = EvalExpr(interp, *kv.second, env);
                 if (c.IsAbrupt()) return c;
                 obj->props[kv.first] = c.value;
@@ -1827,7 +1830,7 @@ Completion EvalExpr(Interpreter &interp, const Node &n, EnvPtr &env) {
             return Completion::Norm(Value::Obj(obj));
         }
         case NodeKind::Ident: {
-            Value *slot = env->Find(n.name);
+            const Value *slot = env->Find(n.name);
             if (!slot) return Completion::Thr("'" + n.name + "' is not defined");
             return Completion::Norm(*slot);
         }
@@ -1947,7 +1950,7 @@ Completion EvalExpr(Interpreter &interp, const Node &n, EnvPtr &env) {
                 return Completion::Thr("value is not a function");
             }
             std::vector<Value> args;
-            for (auto &a : n.args) {
+            for (const auto &a : n.args) {
                 Completion c = EvalExpr(interp, *a, env);
                 if (c.IsAbrupt()) return c;
                 args.push_back(c.value);
@@ -1988,7 +1991,7 @@ Completion ExecStmt(Interpreter &interp, const Node &n, EnvPtr &env) {
         case NodeKind::ExprStmt:
             return EvalExpr(interp, *n.a, env);
         case NodeKind::VarDecl: {
-            for (auto &d : n.declarators) {
+            for (const auto &d : n.declarators) {
                 Value v = Value::Undef();
                 if (d.second) {
                     Completion c = EvalExpr(interp, *d.second, env);
@@ -2082,7 +2085,7 @@ Value MakeNativeFn(NativeFn fn) {
 void SetupGlobals(EnvPtr &global, HtmlDoc &doc, const std::function<void(const std::string &)> &on_console_log) {
     auto console = std::make_shared<ObjectData>();
     // console.log(...args): stringifies and space-joins its arguments and forwards the line to on_console_log.
-    console->props["log"] = MakeNativeFn([&on_console_log](std::vector<Value> &args, bool &, std::string &) {
+    console->props["log"] = MakeNativeFn([&on_console_log](const std::vector<Value> &args, bool &, std::string &) {
         std::string line;
         for (size_t i = 0; i < args.size(); i++) {
             if (i) line += " ";
@@ -2097,7 +2100,7 @@ void SetupGlobals(EnvPtr &global, HtmlDoc &doc, const std::function<void(const s
     document->is_document = true;
     document->owner_doc = &doc;
     // document.getElementById(id): finds the first element with matching id in doc's tree and wraps it, or returns null if none matches or the argument isn't a string.
-    document->props["getElementById"] = MakeNativeFn([&doc](std::vector<Value> &args, bool &, std::string &) {
+    document->props["getElementById"] = MakeNativeFn([&doc](const std::vector<Value> &args, bool &, std::string &) {
         if (args.empty() || args[0].type != VType::String) return Value::MakeNull();
         DomNode *found = doc.root ? FindById(doc.root.get(), args[0].str) : nullptr;
         if (!found) return Value::MakeNull();

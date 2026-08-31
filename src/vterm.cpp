@@ -1,6 +1,7 @@
 #include "vterm.h"
 
 #include <algorithm>
+#include <utility>
 
 VTerm::VTerm(int rows, int cols) : rows_(std::max(1, rows)), cols_(std::max(1, cols)) {
     primary_.assign(static_cast<size_t>(rows_) * static_cast<size_t>(cols_), VTermCell{});

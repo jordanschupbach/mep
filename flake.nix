@@ -351,6 +351,16 @@
             pkgs.typescript-language-server # javascript, typescript
             pkgs.clang-tools # c, cpp -- provides clangd (plus clang-tidy/
             # -format etc, harmless extras from the same derivation)
+
+            # Static analysis for mep's own C++ (justfile's `lint` recipes):
+            # clang-tidy/clangd come from pkgs.clang-tools above already.
+            pkgs.cppcheck
+            # include-what-you-use pulls in its own pinned clang (currently
+            # 21.1.7, vs. clang-tools' 21.1.8 above) since its include-
+            # analysis is tied tightly to a matching clang/libclang build --
+            # a harmless, self-contained second clang toolchain, not a
+            # conflict with clangd/clang-tidy's.
+            pkgs.include-what-you-use
             pkgs.solargraph # ruby
             pkgs.rust-analyzer # rust
             pkgs.gopls # go

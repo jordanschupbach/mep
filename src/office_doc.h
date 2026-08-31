@@ -3,8 +3,8 @@
 
 #include <cstddef>
 #include <functional>
+#include <iterator>
 #include <string>
-#include <utility>
 #include <vector>
 
 // Deliberately raylib-free (same reasoning as image_doc.h/pdf_doc.h): the

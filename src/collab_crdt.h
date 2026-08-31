@@ -4,6 +4,7 @@
 // byte has a stable actor/counter id, so concurrent inserts/deletes commute;
 // a relay can therefore forward operations without interpreting document data.
 
+#include <stddef.h>
 #include <cstdint>
 #include <map>
 #include <set>

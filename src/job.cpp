@@ -5,12 +5,13 @@
 
 #if !defined(__EMSCRIPTEN__) && !defined(_WIN32)
 #define MEP_JOB_POSIX 1
-#include <fcntl.h>
 #include <poll.h>
 #include <pty.h>
 #include <signal.h>
+#include <stdlib.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
+#include <termios.h>
 #include <unistd.h>
 #endif
 
@@ -408,7 +409,7 @@ void JobManager::PollAll() {
 
 void JobManager::ShutdownAll(int grace_ms) {
 #if MEP_JOB_POSIX
-    for (auto &e : jobs_) {
+    for (const auto &e : jobs_) {
         if (e.job && !e.job->Finished()) e.job->Kill();
     }
     /**
@@ -416,7 +417,7 @@ void JobManager::ShutdownAll(int grace_ms) {
      * @return True if at least one job's Job::Finished() is false.
      */
     auto still_running = [this] {
-        for (auto &e : jobs_) {
+        for (const auto &e : jobs_) {
             if (e.job && !e.job->Finished()) return true;
         }
         return false;

@@ -6,8 +6,12 @@
 #include "sheet_doc.h"
 #include "html_doc.h"
 #include "org_doc.h"
+#include "image_doc.h"
+#include "vterm.h"
 
+#include <stddef.h>
 #include <functional>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <set>
@@ -783,9 +787,6 @@ struct PaneRect {
 };
 
 class LuaEnv;
-class VTerm;
-struct VTermColor;
-class ImageDoc;
 
 // One `:terminal`/`:term` pane's PTY-backed state (Part VI Phase 27+):
 // keyed by the buffer id standing in for it in the split tree (a terminal
@@ -5096,7 +5097,7 @@ public:
      * @brief Returns every registered leader-sequence binding, unfiltered by any typed prefix.
      * @return All which-key bindings.
      */
-    std::vector<WhichKeyBinding> AllWhichKeyBindings() const { return whichkey_bindings_; }
+    const std::vector<WhichKeyBinding> &AllWhichKeyBindings() const { return whichkey_bindings_; }
 
     // --- Dashboard/scratch/zen (NVIM_PARITY_PLAN.md Part III Phase 12) ---
     // True exactly when the dashboard should render: single tab, single
@@ -5366,7 +5367,7 @@ private:
     // exit chord (which must NOT forward its first half if the
     // second key turns out not to be Ctrl-N) can buffer one key before
     // deciding whether to call this.
-    void SendTerminalKey(TerminalSession &sess, int key, int codepoint, bool ctrl, bool shift = false);
+    void SendTerminalKey(const TerminalSession &sess, int key, int codepoint, bool ctrl, bool shift = false);
     // Ctrl-\ Ctrl-N (Neovim's terminal-normal chord): snapshots the
     // session's current VTerm scrollback+grid into CurPane()'s own buffer
     // (see the comment above the definition for why this is a snapshot,
@@ -5389,8 +5390,8 @@ private:
     // frame (native gets this for free via JobManager::PollAll's
     // callback, already wired elsewhere).
     void TerminalSpawn(TerminalSession &sess, const std::vector<std::string> &argv);
-    void TerminalWrite(TerminalSession &sess, const std::string &bytes);
-    void TerminalResizeBackend(TerminalSession &sess, int cols, int rows);
+    void TerminalWrite(const TerminalSession &sess, const std::string &bytes);
+    void TerminalResizeBackend(const TerminalSession &sess, int cols, int rows);
     // h/j/k/l and arrow keys pan; ':' and the leader key are forwarded
     // (EnterCommand/TriggerWhichKey) so the command line and whichkey/
     // leader mappings keep working; everything else is a no-op -- there's
@@ -6214,7 +6215,7 @@ private:
     // isn't actually one of source_pane_id's tabs.
     bool RemoveBufferTabFromPane(int source_pane_id, int buffer_id);
     // Rebuilds a leaf's Pane list into a fresh tree per ApplyLayout's `kind`.
-    std::unique_ptr<SplitNode> BuildSpiralLayout(std::vector<Pane> panes, bool horizontal_next) const;
+    std::unique_ptr<SplitNode> BuildSpiralLayout(const std::vector<Pane> &panes, bool horizontal_next) const;
     void UpdateCompletionPopup();
     void CompletionNext();
     void CompletionPrev();

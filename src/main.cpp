@@ -1,7 +1,11 @@
 #include "agent_rpc.h"
 #include "editor.h"
+#include "formula.h"
+#include "html_doc.h"
 #include "job.h"
 #include "lua_env.h"
+#include "org_doc.h"
+#include "sheet_doc.h"
 #include "vterm.h"
 #include "image_doc.h"
 #include "pdf_doc.h"
@@ -10,24 +14,30 @@
 #include "raylib.h"
 #include "rlgl.h"  // rlPushMatrix/rlMultMatrixf/rlTranslatef -- org emphasis italic's shear transform
 
+#include <stdarg.h>
 #include <algorithm>
-#include <chrono>
+#include <cctype>
 #include <cmath>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <iterator>
 #include <map>
+#include <memory>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <sys/stat.h>
+#include <system_error>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -882,7 +892,7 @@ const char *GanttMonthAbbrev(int month) {
  */
 long long GanttTodayDay() {
     std::time_t now = std::time(nullptr);
-    std::tm *local = std::localtime(&now);
+    const std::tm *local = std::localtime(&now);
     return local ? OrgDayNumber(local->tm_year + 1900, local->tm_mon + 1, local->tm_mday) : 0;
 }
 
@@ -1091,7 +1101,7 @@ bool ExportGanttSvg(int buffer_id, const std::string &path) {
  * @param path Output PDF file path.
  * @return True on success; false if the intermediate JPEG could not be written/read or the PDF file could not be opened.
  */
-bool ExportJpegPdf(Image image, const std::string &path) {
+bool ExportJpegPdf(const Image &image, const std::string &path) {
     // ExportImageToMemory in raylib 5 only implements PNG, even when the
     // regular file exporter supports JPEG. Use a short-lived JPEG next to
     // the destination and embed its bytes in the PDF, then remove it.
@@ -1486,13 +1496,13 @@ void LoadOfficeFonts() {
     g_office_font_mono_bolditalic = LoadFontFromMemory(".ttf", kLiberationMonoBoldItalicTtf,
                                                          static_cast<int>(kLiberationMonoBoldItalicTtfLen),
                                                          kOfficeFontBasePt * 2, codepoints, kCodepointCount);
-    Font *all_office_fonts[] = {&g_office_font_regular,       &g_office_font_bold,
-                                 &g_office_font_italic,        &g_office_font_bolditalic,
-                                 &g_office_font_serif_regular, &g_office_font_serif_bold,
-                                 &g_office_font_serif_italic,  &g_office_font_serif_bolditalic,
-                                 &g_office_font_mono_regular,  &g_office_font_mono_bold,
-                                 &g_office_font_mono_italic,   &g_office_font_mono_bolditalic};
-    for (Font *f : all_office_fonts) SetTextureFilter(f->texture, TEXTURE_FILTER_BILINEAR);
+    const Font *const all_office_fonts[] = {&g_office_font_regular,       &g_office_font_bold,
+                                       &g_office_font_italic,        &g_office_font_bolditalic,
+                                       &g_office_font_serif_regular, &g_office_font_serif_bold,
+                                       &g_office_font_serif_italic,  &g_office_font_serif_bolditalic,
+                                       &g_office_font_mono_regular,  &g_office_font_mono_bold,
+                                       &g_office_font_mono_italic,   &g_office_font_mono_bolditalic};
+    for (const Font *f : all_office_fonts) SetTextureFilter(f->texture, TEXTURE_FILTER_BILINEAR);
 }
 
 // Which of the 12 baked fonts (3 families x 4 weight/style) a run of text
@@ -1580,10 +1590,10 @@ std::vector<OfficeWrapLine> WordWrapOfficeParagraph(const DocParagraph &p, float
     // Measures the pixel width of the token/tab spanning [s, e) in its formatted font.
     auto token_width = [&](int s, int e) -> float {
         if (e == s + 1 && text[static_cast<size_t>(s)] == '\t') {
-            Font &f = OfficeFontFor(FormatAt(p, s));
+            const Font &f = OfficeFontFor(FormatAt(p, s));
             return MeasureTextEx(f, " ", font_size, 0).x * 4.0f;
         }
-        Font &f = OfficeFontFor(FormatAt(p, s));
+        const Font &f = OfficeFontFor(FormatAt(p, s));
         std::string tok = text.substr(static_cast<size_t>(s), static_cast<size_t>(e - s));
         return MeasureTextEx(f, tok.c_str(), font_size, 0).x;
     };
@@ -11440,10 +11450,10 @@ bool HandleMenuInput() {
         float dd_y = static_cast<float>(bar_height);
         float dd_w = DropdownWidth(menu);
         float dd_h = static_cast<float>(menu.items.size() * static_cast<size_t>(MenuItemHeight()));
-        bool inside_dropdown =
-            mouse.x >= dd_x && mouse.x < dd_x + dd_w && mouse.y >= dd_y && mouse.y < dd_y + dd_h;
 
         if (clicked) {
+            bool inside_dropdown =
+                mouse.x >= dd_x && mouse.x < dd_x + dd_w && mouse.y >= dd_y && mouse.y < dd_y + dd_h;
             if (inside_dropdown) {
                 int idx = static_cast<int>((mouse.y - dd_y) / static_cast<float>(MenuItemHeight()));
                 if (idx >= 0 && idx < static_cast<int>(menu.items.size())) {
@@ -12546,7 +12556,10 @@ void DrawRoamGraphOverlay() {
         DrawCircleLines(static_cast<int>(pos[static_cast<size_t>(i)].x), static_cast<int>(pos[static_cast<size_t>(i)].y), radius, border_c);
 
         std::string label = nodes[static_cast<size_t>(i)].title.empty() ? nodes[static_cast<size_t>(i)].path : nodes[static_cast<size_t>(i)].title;
-        if (label.size() > 22) label = label.substr(0, 21) + "...";
+        if (label.size() > 22) {
+            label.resize(21);
+            label += "...";
+        }
         Vector2 msz = MeasureTextEx(g_font, label.c_str(), label_size, 0);
         Vector2 lp{pos[static_cast<size_t>(i)].x - msz.x / 2.0f, pos[static_cast<size_t>(i)].y + radius + 3.0f};
         Color text_c = !is_visible ? dim_c : (i == selected_idx ? select_c : normal_c);
@@ -12575,9 +12588,12 @@ void DrawWhichKeyOverlay() {
     int margin_x = 40;
     int box_w = std::max(screen_w - margin_x * 2, 200);
 
+    // "<leader>" is a non-empty literal prefix, so `title` can never be
+    // empty here (unlike the sibling `title.empty()`-gated overlays
+    // elsewhere in this file, whose title strings really can be empty).
     std::string title = "<leader>" + g_editor.WhichKeyPrefix();
     float title_size = MenuFontSize();
-    int title_h = title.empty() ? 0 : static_cast<int>(title_size) + 8;
+    int title_h = static_cast<int>(title_size) + 8;
 
     // Now that the bar spans the screen width, flow entries into as many
     // columns as fit rather than one long column (mirrors which-key.nvim's
@@ -12610,10 +12626,9 @@ void DrawWhichKeyOverlay() {
 
     float content_x = static_cast<float>(box_x + 14);
     float content_y = static_cast<float>(box_y + 10);
-    if (!title.empty()) {
-        DrawTextEx(g_font, title.c_str(), Vector2{content_x, content_y}, title_size, 0, ResolveHlGroup("PickerTitle"));
-        content_y += title_size + 8;
-    }
+    // title is never empty here (see its declaration above).
+    DrawTextEx(g_font, title.c_str(), Vector2{content_x, content_y}, title_size, 0, ResolveHlGroup("PickerTitle"));
+    content_y += title_size + 8;
     for (size_t i = 0; i < matches.size(); i++) {
         int col = static_cast<int>(i) % columns;
         int row = static_cast<int>(i) / columns;
@@ -12900,7 +12915,7 @@ void DrawHoverPopupFocused(float x, float y, const std::string &title, const std
             DrawRectangle(static_cast<int>(cx), static_cast<int>(ry), static_cast<int>(g_char_width), line_h,
                           Color{cursor_bg.r, cursor_bg.g, cursor_bg.b, 180});
             if (cursor_col < static_cast<int>(disp.size())) {
-                char ch[2] = {disp[static_cast<size_t>(cursor_col)], '\0'};
+                const char ch[2] = {disp[static_cast<size_t>(cursor_col)], '\0'};
                 DrawTextEx(g_font, ch, Vector2{cx, ry}, font_size, 0, ResolveHlGroup("NormalBg"));
             }
         }
@@ -13949,8 +13964,8 @@ MathLayoutResult LayoutMathRow(const std::vector<MathNode> &terms, float font_si
         MathLayoutResult combined;
         float script_x = core.width + 1.0f;
         float max_script_w = 0;
-        for (auto &g : core.glyphs) combined.glyphs.push_back(g);
-        for (auto &b : core.bars) combined.bars.push_back(b);
+        for (const auto &g : core.glyphs) combined.glyphs.push_back(g);
+        for (const auto &b : core.bars) combined.bars.push_back(b);
         if (!t.sup.empty()) {
             MathLayoutResult sup = LayoutMathAtom(t.sup[0], font_size * kScriptScale);
             float sup_y = core.baseline - font_size * kScriptRaise - sup.baseline;
@@ -13984,7 +13999,7 @@ MathLayoutResult LayoutMathRow(const std::vector<MathNode> &terms, float font_si
         combined.width = script_x + max_script_w;
         combined.baseline = core.baseline;
         combined.height = core.height;
-        for (auto &g : combined.glyphs) combined.height = std::max(combined.height, g.rel_y + g.font_size);
+        for (const auto &g : combined.glyphs) combined.height = std::max(combined.height, g.rel_y + g.font_size);
         shared_baseline = std::max(shared_baseline, combined.baseline);
         placed.push_back({std::move(combined), x});
         x += placed.back().layout.width;
@@ -13992,7 +14007,7 @@ MathLayoutResult LayoutMathRow(const std::vector<MathNode> &terms, float font_si
     MathLayoutResult row;
     row.width = x;
     float max_below = 0;
-    for (Placed &p : placed) {
+    for (const Placed &p : placed) {
         float dy = shared_baseline - p.layout.baseline;
         for (auto g : p.layout.glyphs) {
             g.rel_x += p.x;
@@ -14142,7 +14157,7 @@ void DrawMathLayout(float x, float y, const MathLayoutResult &m, Color color) {
         float baseline_y = pos.y + g.font_size;
         rlTranslatef(pos.x, baseline_y, 0);
         // clang-format off
-        float shear[16] = {
+        const float shear[16] = {
             1.0f,   0.0f, 0.0f, 0.0f,
             -0.22f, 1.0f, 0.0f, 0.0f,
             0.0f,   0.0f, 1.0f, 0.0f,
@@ -14527,7 +14542,7 @@ void HtmlCollectInlineChild(DomNode *c, const ComputedStyle &parent_style, const
         auto src_it = c->attrs.find("src");
         std::string src = src_it != c->attrs.end() ? src_it->second : std::string();
         std::string resolved = ResolveHtmlImagePath(src, ctx.base_dir);
-        Texture2D *tex = resolved.empty() ? nullptr : GetOrLoadOrgInlineImageTexture(resolved);
+        const Texture2D *tex = resolved.empty() ? nullptr : GetOrLoadOrgInlineImageTexture(resolved);
         if (tex) {
             float natural_w = static_cast<float>(tex->width) * ctx.zoom;
             float natural_h = static_cast<float>(tex->height) * ctx.zoom;
@@ -14924,7 +14939,7 @@ void DrawHtmlRun(float x, float y, const HtmlRun &run) {
         float baseline_y = y + run.font_size;
         rlTranslatef(x, baseline_y, 0);
         // clang-format off
-        float shear[16] = {
+        const float shear[16] = {
             1.0f,   0.0f, 0.0f, 0.0f,
             -0.22f, 1.0f, 0.0f, 0.0f,
             0.0f,   0.0f, 1.0f, 0.0f,
@@ -15644,8 +15659,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // buffer -- hence gating on IsKanbanViewActive/IsGanttViewActive, not
     // just whether a cached session happens to exist for this buffer id
     // (see OrgViewMode's own comment, editor.h).
-    KanbanSession *kanban_sess = g_editor.IsKanbanViewActive(pane.buffer_id) ? g_editor.GetKanbanMutable(pane.buffer_id) : nullptr;
-    GanttSession *gantt_sess = g_editor.IsGanttViewActive(pane.buffer_id) ? g_editor.GetGanttMutable(pane.buffer_id) : nullptr;
+    const KanbanSession *kanban_sess = g_editor.IsKanbanViewActive(pane.buffer_id) ? g_editor.GetKanbanMutable(pane.buffer_id) : nullptr;
+    const GanttSession *gantt_sess = g_editor.IsGanttViewActive(pane.buffer_id) ? g_editor.GetGanttMutable(pane.buffer_id) : nullptr;
     std::string suffix = buf.modified ? " [+]" : "";
     float label_y = y + (static_cast<float>(header_h) - font_size) / 2.0f;
     if (pane.buffer_tabs.size() > 1) {
@@ -15688,6 +15703,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // pane-mouse-interaction system, not g_click_regions) so it's
             // draggable too.
             {
+                // cppcheck-suppress constStatement
+                // header_h is int (PaneHeaderHeight()'s return type); this
+                // cast is a real int->float conversion for Rectangle's
+                // float height field, not a no-op -- cppcheck's
+                // "unused cast" diagnostic appears to misfire on a cast as
+                // the trailing element of an aggregate-init list here.
                 Rectangle chip_rect{seg_x, y, seg_w, static_cast<float>(header_h)};
                 g_pane_tab_chip_rects.push_back({pane.id, pane.buffer_tabs[static_cast<size_t>(i)], chip_rect});
                 int pane_id = pane.id;
@@ -15710,6 +15731,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // Gantt's later SVG/PNG/PDF controls occupy the rightmost 132px
             // and must not be shadowed by this generic focus/tab chip.
             float header_click_w = gantt_sess ? std::max(0.0f, w - 132.0f) : w;
+            // cppcheck-suppress constStatement
+            // Same false positive as the chip_rect cast above -- header_h
+            // is int, the cast is a real conversion.
             Rectangle header_rect{x, y, header_click_w, static_cast<float>(header_h)};
             g_pane_tab_chip_rects.push_back({pane.id, pane.buffer_id, header_rect});
             int pane_id = pane.id;
@@ -16038,7 +16062,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         for (const HtmlImageRun &img : layout.images) {
             float ry = top + img.y;
             if (ry + img.h < content_y || ry > content_y + content_h) continue;
-            Texture2D *tex = theme ? GetOrLoadThemedHtmlImageTexture(img.path) : GetOrLoadOrgInlineImageTexture(img.path);
+            const Texture2D *tex = theme ? GetOrLoadThemedHtmlImageTexture(img.path) : GetOrLoadOrgInlineImageTexture(img.path);
             if (!tex) continue;  // e.g. the file was removed/moved since layout ran this same frame
             Rectangle src{0, 0, static_cast<float>(tex->width), static_cast<float>(tex->height)};
             Rectangle dst{x + kHtmlPad + img.x, ry, img.w, img.h};
@@ -16135,6 +16159,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // each office pane gets its own, the same way its toolbar already
         // is per-pane rather than shared chrome.
         content_h = std::max(0.0f, content_h - kOfficeFooterH);
+        // cppcheck-suppress variableScope
+        // Deliberately computed here alongside this pane's other layout
+        // geometry (content_h just above) rather than ~650 lines down at
+        // its first use, which is itself commented as "computed above" --
+        // moving it would separate related geometry setup for a purely
+        // cosmetic scope reduction.
         float office_footer_y = y + h - kOfficeFooterH;
         // Outline (left) icon-rail/panel and Format/Insert (right) panel --
         // docked to the sides of *this pane*, not the app window (same
@@ -16152,6 +16182,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         float btn_h = row_h - 6.0f;
         float row1_y = content_y + 3.0f;
         float row2_y = content_y + row_h + 3.0f;
+        // cppcheck-suppress duplicateAssignExpression
+        // Intentional: both toolbar rows start flush at the same left
+        // edge, then advance independently as each row's own buttons are
+        // placed below.
         float row1_x = ocx + 8, row2_x = ocx + 8;
 
         // Shared button chrome: no fill at rest, a light hover tint, a
@@ -16265,7 +16299,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             float bw = ls.x + 22.0f;
             // Draws the button's label text plus a hand-drawn downward chevron triangle.
             return draw_icon_btn(bx, by, bw, active,
-                [&, label, ls](Rectangle rect, Color color) {
+                [&, label](Rectangle rect, Color color) {
                     DrawTextEx(g_font, label.c_str(),
                               Vector2{rect.x + 7.0f, rect.y + (rect.height - font_size * 0.92f) / 2.0f},
                               font_size * 0.92f, 0, color);
@@ -16312,7 +16346,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                         rlPushMatrix();
                         float baseline_y = pos.y + font_size;
                         rlTranslatef(pos.x, baseline_y, 0);
-                        float shear[16] = {1.0f, 0.0f, 0.0f, 0.0f, -0.22f, 1.0f, 0.0f, 0.0f,
+                        const float shear[16] = {1.0f, 0.0f, 0.0f, 0.0f, -0.22f, 1.0f, 0.0f, 0.0f,
                                            0.0f, 0.0f, 1.0f, 0.0f, 0.0f,   0.0f, 0.0f, 1.0f};
                         rlMultMatrixf(shear);
                         rlTranslatef(-pos.x, -baseline_y, 0);
@@ -16816,6 +16850,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             if (g_office_zoom_drag) {
                 if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
                     float f = std::clamp((zmouse.x - slider.x) / slider.width, 0.0f, 1.0f);
+                    // cppcheck-suppress variableScope
+                    // Already declared immediately before its one use one
+                    // line down; there's no smaller enclosing block to move
+                    // it into without inlining the expression and losing
+                    // the name.
                     float target = kZoomMin + f * (kZoomMax - kZoomMin);
                     if (g_office_status.zoom > 0.001f) g_editor.SetOfficeZoom(target / g_office_status.zoom);
                 } else {
@@ -16999,7 +17038,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                         DrawMathLayout(run_x, run_y, ml, run_color);
                         rw = ml.width;
                     } else {
-                        Font &f = OfficeFontFor(r.fmt);
+                        const Font &f = OfficeFontFor(r.fmt);
                         rw = MeasureTextEx(f, t.c_str(), run_size, 0).x;
                         if (r.fmt.has_highlight) {
                             DrawRectangle(static_cast<int>(run_x), static_cast<int>(draw_y), static_cast<int>(rw),
@@ -17104,7 +17143,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 float cell_font = body_size * 0.85f;
                 float cell_h = cell_font + 12.0f;
                 float col_w = tbl.cols > 0 ? std::max(50.0f, max_width / static_cast<float>(tbl.cols)) : max_width;
-                Font &cell_fontobj = OfficeFontFor(DocFormat{});
+                const Font &cell_fontobj = OfficeFontFor(DocFormat{});
                 for (int r = 0; r < tbl.rows; r++) {
                     float ry = draw_y;
                     if (ry <= page_top + page_h - pad * 0.5f) {
@@ -17141,7 +17180,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             }
             if (para.image_ref >= 0 && para.image_ref < static_cast<int>(doc.images.size())) {
                 const DocImage &img = doc.images[static_cast<size_t>(para.image_ref)];
-                Texture2D *tex = GetOrLoadOfficeImageTexture(pane.buffer_id, para.image_ref, img);
+                const Texture2D *tex = GetOrLoadOfficeImageTexture(pane.buffer_id, para.image_ref, img);
                 if (tex && img.natural_w > 0 && img.natural_h > 0) {
                     float draw_w = static_cast<float>(img.natural_w);
                     float draw_h = static_cast<float>(img.natural_h);
@@ -17288,7 +17327,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             float ph = static_cast<float>(rows) * (cell + gap) + gap;
             Rectangle popup{special_btn.x, content_y, pw, ph};
             draw_popup_bg(popup);
-            Font &sym_font = g_office_font_regular;
+            const Font &sym_font = g_office_font_regular;
             for (int i = 0; i < n; i++) {
                 int col = i % static_cast<int>(cols);
                 int row = i / static_cast<int>(cols);
@@ -17636,7 +17675,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 float pane_avail_w = std::max(40.0f, w - (text_x - x) - kMarginX);
                 float target_w = kOrgImageLineWidthChars * g_char_width * kOrgImageWidthFraction;
                 float avail_w = std::min(pane_avail_w, target_w);
-                Texture2D *tex = GetOrLoadOrgInlineImageTexture(img_it->second);
+                const Texture2D *tex = GetOrLoadOrgInlineImageTexture(img_it->second);
                 if (tex) {
                     float scale = std::min(avail_w / static_cast<float>(tex->width),
                                             slot_h / static_cast<float>(tex->height));
@@ -17671,7 +17710,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 const Buffer::OrgLatexRender &render = latex_it->second;
                 float slot_h = static_cast<float>(line_height) * static_cast<float>(render.slots);
                 float pane_avail_w = std::max(40.0f, w - (text_x - x) - kMarginX);
-                Texture2D *tex = GetOrLoadOrgLatexTexture(render.path);
+                const Texture2D *tex = GetOrLoadOrgLatexTexture(render.path);
                 if (tex) {
                     float scale = std::min({pane_avail_w / static_cast<float>(tex->width),
                                              slot_h / static_cast<float>(tex->height), 1.0f});
@@ -17974,7 +18013,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                             rlPushMatrix();
                             rlTranslatef(px0, baseline_y, 0);
                             // clang-format off
-                            float shear[16] = {
+                            const float shear[16] = {
                                 1.0f,  0.0f, 0.0f, 0.0f,
                                 -0.22f, 1.0f, 0.0f, 0.0f,
                                 0.0f,  0.0f, 1.0f, 0.0f,
@@ -18066,7 +18105,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     Vector2 span_pos = WrapPos(span.col_start, row_wrap_cols, text_x, ly, line_height);
                     float span_x = span_pos.x, span_y = span_pos.y;
                     float span_w = static_cast<float>(span.col_end - span.col_start) * g_char_width;
-                    Texture2D *tex = GetOrLoadOrgLatexTexture(span.path);
+                    const Texture2D *tex = GetOrLoadOrgLatexTexture(span.path);
                     if (!tex) continue;
                     float scale = (static_cast<float>(line_height) * 0.9f) / static_cast<float>(tex->height);
                     float draw_w = static_cast<float>(tex->width) * scale;
@@ -18223,7 +18262,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 }
             }
             if (!cursor_in_concealed_latex && pane.cursor.col < static_cast<int>(line.size())) {
-                char ch[2] = {line[static_cast<size_t>(pane.cursor.col)], '\0'};
+                const char ch[2] = {line[static_cast<size_t>(pane.cursor.col)], '\0'};
                 DrawTextEx(g_font, ch, Vector2{cursor_x, cursor_y}, g_font_size, 0, ResolveHlGroup("NormalBg"));
             }
         }
@@ -18677,6 +18716,10 @@ void DrawEditor() {
     // every modal overlay below, not after, so a floating overlay (the
     // which-key hover included) always sits on top of an open sidebar
     // instead of being painted over by it.
+    // cppcheck flags this and the next `if (!zen) DrawX();` as
+    // duplicateCondition -- two independent draw calls that intentionally
+    // share the same zen-mode guard, not a copy-pasted branch.
+    // cppcheck-suppress duplicateCondition
     if (!zen) DrawSidebars();
     // DrawMenuBar draws both the bar itself *and* its open dropdown (if
     // any) in one call -- moved here, after DrawSidebars, for the
@@ -18687,6 +18730,7 @@ void DrawEditor() {
     // [0, menu_bar_height)) is never touched by DrawSidebars either way --
     // sidebars start at content_top, below both the menu bar and tab bar --
     // so moving the whole call has no effect on the bar's own draw order.
+    // cppcheck-suppress duplicateCondition
     if (!zen) DrawMenuBar();
     // Same reasoning as the comment just above (drawn after sidebars, not
     // before, so it sits on top instead of being painted over by one) --
@@ -19437,6 +19481,11 @@ void UpdateDrawFrame() {
         // frame, and only when the menu bar didn't already claim this
         // click (a menu dropdown can overlap the tab bar/pane area
         // beneath it).
+        // cppcheck flags this whole run of `if (!menu_consumed) UpdateX();`
+        // as duplicateCondition -- each guards a different, independent
+        // per-frame update function, not a copy-pasted branch; sharing the
+        // same guard is intentional (see the reasoning comments above/below
+        // each call).
         if (!menu_consumed) DispatchChromeClicks();
         // Same reasoning (needs this frame's freshly (re)populated pane/
         // border/chip geometry, and shouldn't fire under an open menu
@@ -19444,14 +19493,18 @@ void UpdateDrawFrame() {
         // fresh click, unlike DispatchChromeClicks, since a drag already
         // in progress needs its own continuous per-frame update even
         // when IsMouseButtonPressed() is false this frame.
+        // cppcheck-suppress duplicateCondition
         if (!menu_consumed) UpdatePaneMouseInteraction();
         // Same reasoning again -- needs this frame's freshly-refreshed
         // KanbanSession/GanttSession::content_x/y/w/h (set by DrawKanban/
         // DrawGantt), and a drag already in progress needs its own
         // continuous per-frame update the same way pane-chrome dragging
         // does above.
+        // cppcheck-suppress duplicateCondition
         if (!menu_consumed) UpdateKanbanMouseInteraction();
+        // cppcheck-suppress duplicateCondition
         if (!menu_consumed) UpdateGanttMouseInteraction();
+        // cppcheck-suppress duplicateCondition
         if (!menu_consumed) UpdateOfficeScrollbarInteraction();
     } catch (const std::exception &e) {
         g_editor.Notify(std::string("Internal error (recovered): ") + e.what(), Editor::NotifyLevel::Error);
@@ -19529,6 +19582,12 @@ void MepTraceLogCallback(int logLevel, const char *text, va_list args) {
         default: break;
     }
     fputs(prefix, g_trace_log_file);
+    // text is raylib's own runtime format string, forwarded verbatim from
+    // this TraceLogCallback -- there's no literal to give the compiler
+    // here, and no annotation on this function changes that (clang's
+    // -Wformat-nonliteral flags this call under IWYU's clang; GCC's
+    // -Wformat=2, this project's own compiler, does not flag it, a real
+    // divergence between the two rather than a bug in this code).
     vfprintf(g_trace_log_file, text, args);
     fputc('\n', g_trace_log_file);
 }

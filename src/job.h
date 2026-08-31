@@ -6,10 +6,12 @@
 #include <atomic>
 #include <deque>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 // Async external-process runner (NVIM_PARITY_PLAN.md Part I Phase 1):

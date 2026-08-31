@@ -30,23 +30,39 @@ public:
     /** @brief Constructs a null JSON value from a `nullptr`.
      *  @param unnamed nullptr tag selecting this overload (unused). */
     Json(std::nullptr_t) : type_(Type::Null) {}
+    // These single-argument constructors are deliberately implicit (not
+    // explicit, despite cppcheck's noExplicitConstructor) -- same
+    // rationale as nlohmann::json's own converting constructors: Json is
+    // used as a value type throughout the codebase precisely so callers
+    // can write `obj["key"] = 42;` or `return "some string";` from a
+    // Json-returning function without an explicit Json(...) wrapper at
+    // every call site. Marking these explicit would be a purely
+    // mechanical, ergonomics-destroying change across every caller for
+    // no safety benefit -- there's no ambiguity these overloads could be
+    // confused with elsewhere in the type's own use.
     /** @brief Constructs a boolean JSON value.
      *  @param b the boolean value to store. */
+    // cppcheck-suppress noExplicitConstructor
     Json(bool b) : type_(Type::Bool), bool_(b) {}
     /** @brief Constructs a numeric JSON value from an int.
      *  @param n the integer value, stored internally as a double. */
+    // cppcheck-suppress noExplicitConstructor
     Json(int n) : type_(Type::Number), num_(n) {}
     /** @brief Constructs a numeric JSON value from a long long.
      *  @param n the integer value, converted to and stored as a double. */
+    // cppcheck-suppress noExplicitConstructor
     Json(long long n) : type_(Type::Number), num_(static_cast<double>(n)) {}
     /** @brief Constructs a numeric JSON value from a double.
      *  @param n the numeric value to store. */
+    // cppcheck-suppress noExplicitConstructor
     Json(double n) : type_(Type::Number), num_(n) {}
     /** @brief Constructs a string JSON value from a C string.
      *  @param s the null-terminated string to copy in. */
+    // cppcheck-suppress noExplicitConstructor
     Json(const char *s) : type_(Type::String), str_(s) {}
     /** @brief Constructs a string JSON value from a std::string.
      *  @param s the string to move in. */
+    // cppcheck-suppress noExplicitConstructor
     Json(std::string s) : type_(Type::String), str_(std::move(s)) {}
 
     /** @brief Creates a new empty JSON array value.
@@ -139,6 +155,10 @@ public:
             type_ = Type::Object;
             obj_.clear();
         }
+        // cppcheck-suppress constVariableReference
+        // kv can't be const: this loop returns kv.second by non-const
+        // Json& (operator[] semantics -- callers mutate the result), which
+        // cppcheck's analysis here doesn't trace through to the return.
         for (auto &kv : obj_) {
             if (kv.first == key) return kv.second;
         }

@@ -1,14 +1,14 @@
 #ifndef MEP_SHEET_DOC_H
 #define MEP_SHEET_DOC_H
 
-#include "formula.h"
-
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+struct FormulaNode;
 
 
 // Deliberately raylib-free (same reasoning as office_doc.h/pdf_doc.h): the

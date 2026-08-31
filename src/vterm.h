@@ -1,6 +1,7 @@
 #ifndef MEP_VTERM_H
 #define MEP_VTERM_H
 
+#include <stddef.h>
 #include <cstdint>
 #include <deque>
 #include <string>

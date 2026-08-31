@@ -5,13 +5,19 @@
 #include "treesitter.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <functional>
+#include <iterator>
+#include <map>
 #include <memory>
+#include <set>
 #include <string>
+#include <system_error>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -2042,7 +2048,7 @@ int l_buf_clear_latex_inline(lua_State *L) {
  * @return Number of values pushed (1: the font size in pixels).
  */
 int l_font_size(lua_State *L) {
-    lua_pushnumber(L, GetFontSizePx());
+    lua_pushnumber(L, static_cast<double>(GetFontSizePx()));
     return 1;
 }
 
@@ -2540,7 +2546,7 @@ int l_roam_graph_close(lua_State *L) {
  * @return Number of values pushed (1: the array of buffer entries).
  */
 int l_buffer_list(lua_State *L) {
-    Editor *ed = GetEditor(L);
+    const Editor *ed = GetEditor(L);
     int n = ed->BufferCountForLua();
     lua_newtable(L);
     int out_i = 1;
@@ -5455,7 +5461,7 @@ int l_html_open(lua_State *L) {
 // same implicit-current-buffer convention mep.filename()/mep.line_count()
 // already use throughout).
 int l_html_current_origin(lua_State *L) {
-    Editor *ed = GetEditor(L);
+    const Editor *ed = GetEditor(L);
     const HtmlSession *sess = ed->GetHtml(ed->CurrentBufferId());
     if (!sess) {
         lua_pushnil(L);

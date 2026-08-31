@@ -4,6 +4,7 @@
 // It intentionally has no HTTP/WebSocket dependency; OpenSSL is used only for
 // SHA-1 during the WebSocket upgrade handshake.
 
+#include <stddef.h>
 #include <cstdint>
 #include <string>
 

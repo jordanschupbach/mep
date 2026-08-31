@@ -3,6 +3,7 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <utility>
 
 namespace {
 
@@ -848,7 +849,7 @@ std::shared_ptr<const FormulaNode> ShiftFormulaRefs(const std::shared_ptr<const 
         case FormulaNodeKind::FunctionCall: {
             std::vector<std::shared_ptr<const FormulaNode>> new_args;
             new_args.reserve(n->args.size());
-            for (auto &a : n->args) new_args.push_back(ShiftFormulaRefs(a, dr, dc));
+            for (const auto &a : n->args) new_args.push_back(ShiftFormulaRefs(a, dr, dc));
             n->args = std::move(new_args);
             break;
         }

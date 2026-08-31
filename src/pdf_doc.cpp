@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <utility>
 
 bool IsPdfPath(const std::string &path) {
     size_t dot = path.find_last_of('.');
@@ -179,7 +180,7 @@ double PdfDoc::PageWidthPt(int page_index) const {
     if (!impl_) return 0;
     FPDF_PAGE page = FPDF_LoadPage(impl_->doc_, page_index);
     if (!page) return 0;
-    double w = FPDF_GetPageWidthF(page);
+    double w = static_cast<double>(FPDF_GetPageWidthF(page));
     FPDF_ClosePage(page);
     return w;
 }
@@ -188,7 +189,7 @@ double PdfDoc::PageHeightPt(int page_index) const {
     if (!impl_) return 0;
     FPDF_PAGE page = FPDF_LoadPage(impl_->doc_, page_index);
     if (!page) return 0;
-    double h = FPDF_GetPageHeightF(page);
+    double h = static_cast<double>(FPDF_GetPageHeightF(page));
     FPDF_ClosePage(page);
     return h;
 }

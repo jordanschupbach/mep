@@ -4,13 +4,15 @@
 #include <array>
 #include <cctype>
 #include <cstring>
-#include <limits>
+#include <limits.h>
 #include <sstream>
+#include <utility>
 #include <vector>
 
+#include <openssl/rand.h>
 #include <openssl/sha.h>
 #include <openssl/ssl.h>
-#include <openssl/rand.h>
+#include <openssl/x509.h>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -18,6 +20,7 @@
 #else
 #include <netdb.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <unistd.h>
 #endif
 
@@ -259,10 +262,10 @@ WebSocket WebSocket::Connect(const std::string &url, std::string *error) {
     if (host.empty() || port.empty()) { if (error) *error = "invalid collaboration URL"; return {}; }
     addrinfo hints{}; hints.ai_socktype = SOCK_STREAM; hints.ai_family = AF_UNSPEC; addrinfo *addresses = nullptr;
     if (getaddrinfo(host.c_str(), port.c_str(), &hints, &addresses) != 0) { if (error) *error = "unable to resolve relay host"; return {}; }
-    int fd = -1;
-    for (addrinfo *it = addresses; it; it = it->ai_next) { fd = socket(it->ai_family, it->ai_socktype, it->ai_protocol); if (fd >= 0 && connect(fd, it->ai_addr, it->ai_addrlen) == 0) break; if (fd >= 0) { CloseFd(fd); fd = -1; } }
-    freeaddrinfo(addresses); if (fd < 0) { if (error) *error = "unable to connect to relay"; return {}; }
-    WebSocket socket(fd); socket.peer_frames_masked_ = false;
+    int sock_fd = -1;
+    for (addrinfo *it = addresses; it; it = it->ai_next) { sock_fd = socket(it->ai_family, it->ai_socktype, it->ai_protocol); if (sock_fd >= 0 && connect(sock_fd, it->ai_addr, it->ai_addrlen) == 0) break; if (sock_fd >= 0) { CloseFd(sock_fd); sock_fd = -1; } }
+    freeaddrinfo(addresses); if (sock_fd < 0) { if (error) *error = "unable to connect to relay"; return {}; }
+    WebSocket socket(sock_fd); socket.peer_frames_masked_ = false;
     if (secure) {
         socket.ssl_ctx_ = SSL_CTX_new(TLS_client_method());
         if (!socket.ssl_ctx_ || SSL_CTX_set_default_verify_paths(socket.ssl_ctx_) != 1) { if (error) *error = "unable to initialize TLS trust store"; return {}; }
@@ -279,7 +282,7 @@ WebSocket WebSocket::Connect(const std::string &url, std::string *error) {
 #if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic pop
 #endif
-        SSL_set_fd(socket.ssl_, fd); if (SSL_connect(socket.ssl_) != 1 || SSL_get_verify_result(socket.ssl_) != X509_V_OK) { if (error) *error = "TLS certificate verification failed"; return {}; }
+        SSL_set_fd(socket.ssl_, sock_fd); if (SSL_connect(socket.ssl_) != 1 || SSL_get_verify_result(socket.ssl_) != X509_V_OK) { if (error) *error = "TLS certificate verification failed"; return {}; }
     }
     unsigned char nonce[16]; if (RAND_bytes(nonce, sizeof(nonce)) != 1) { if (error) *error = "unable to create WebSocket nonce"; return {}; }
     const std::string key = Base64(nonce, sizeof(nonce));

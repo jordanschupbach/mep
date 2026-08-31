@@ -1,5 +1,8 @@
 #include "regex.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <algorithm>
 #include <cctype>
 #include <functional>

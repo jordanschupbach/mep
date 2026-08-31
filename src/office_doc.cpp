@@ -6,8 +6,10 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <initializer_list>
 #include <sstream>
 #include <unordered_map>
+#include <utility>
 
 #include "miniz.h"
 #include "pugixml.hpp"
@@ -127,7 +129,7 @@ void CoalesceSpans(std::vector<DocSpan> &spans) {
     // Comparator: orders spans by ascending start offset.
     std::sort(spans.begin(), spans.end(), [](const DocSpan &x, const DocSpan &y) { return x.start < y.start; });
     std::vector<DocSpan> out;
-    for (auto &s : spans) {
+    for (const auto &s : spans) {
         if (s.start == s.end) continue;
         if (!out.empty() && out.back().fmt == s.fmt && s.start <= out.back().end) {
             out.back().end = std::max(out.back().end, s.end);
@@ -139,7 +141,7 @@ void CoalesceSpans(std::vector<DocSpan> &spans) {
 }
 
 DocFormat FormatAt(const DocParagraph &p, int col) {
-    for (auto &s : p.spans) {
+    for (const auto &s : p.spans) {
         if (col >= s.start && col < s.end) return s.fmt;
     }
     return DocFormat{};
@@ -156,7 +158,7 @@ void ToggleFormatOverRange(DocParagraph &p, int a, int b, bool DocFormat::*field
     bool all_on = true;
     {
         int cursor = a;
-        for (auto &s : p.spans) {
+        for (const auto &s : p.spans) {
             if (s.end <= cursor) continue;
             if (s.start >= b) break;
             if (s.start > cursor) { all_on = false; break; }
@@ -182,7 +184,7 @@ void ToggleFormatOverRange(DocParagraph &p, int a, int b, bool DocFormat::*field
     // there -- a flat single replacement span would lose e.g. "was
     // bold+italic, toggling italic off should stay bold".
     int cursor = a;
-    for (auto &s : p.spans) {
+    for (const auto &s : p.spans) {
         if (s.end <= a || s.start >= b) continue;
         int seg_s = std::max(s.start, a), seg_e = std::min(s.end, b);
         if (seg_s > cursor) {
@@ -224,7 +226,7 @@ void SetFormatFieldOverRange(DocParagraph &p, int a, int b, const std::function<
     }
 
     int cursor = a;
-    for (auto &s : p.spans) {
+    for (const auto &s : p.spans) {
         if (s.end <= a || s.start >= b) continue;
         int seg_s = std::max(s.start, a), seg_e = std::min(s.end, b);
         if (seg_s > cursor) {
@@ -354,14 +356,15 @@ bool WriteZipReplacingEntry(const unsigned char *orig_bytes, size_t orig_len, co
         }
         if (std::strcmp(stat.m_filename, entry_name) == 0) {
             ok = mz_zip_writer_add_mem(&writer, entry_name, new_content.data(), new_content.size(),
-                                        MZ_DEFAULT_COMPRESSION);
+                                        static_cast<mz_uint>(MZ_DEFAULT_COMPRESSION));
             replaced = true;
         } else {
             ok = mz_zip_writer_add_from_zip_reader(&writer, &reader, i);
         }
     }
     if (ok && !replaced) {
-        ok = mz_zip_writer_add_mem(&writer, entry_name, new_content.data(), new_content.size(), MZ_DEFAULT_COMPRESSION);
+        ok = mz_zip_writer_add_mem(&writer, entry_name, new_content.data(), new_content.size(),
+                                    static_cast<mz_uint>(MZ_DEFAULT_COMPRESSION));
     }
     void *heap_data = nullptr;
     size_t heap_size = 0;
@@ -410,7 +413,7 @@ bool WriteZipReplacingEntries(const unsigned char *orig_bytes, size_t orig_len,
         }
         if (match >= 0) {
             ok = mz_zip_writer_add_mem(&writer, entries[static_cast<size_t>(match)].first.c_str(), entries[static_cast<size_t>(match)].second.data(),
-                                        entries[static_cast<size_t>(match)].second.size(), MZ_DEFAULT_COMPRESSION);
+                                        entries[static_cast<size_t>(match)].second.size(), static_cast<mz_uint>(MZ_DEFAULT_COMPRESSION));
             replaced[static_cast<size_t>(match)] = true;
         } else {
             ok = mz_zip_writer_add_from_zip_reader(&writer, &reader, i);
@@ -419,7 +422,7 @@ bool WriteZipReplacingEntries(const unsigned char *orig_bytes, size_t orig_len,
     for (size_t j = 0; ok && j < entries.size(); j++) {
         if (replaced[j]) continue;
         ok = mz_zip_writer_add_mem(&writer, entries[j].first.c_str(), entries[j].second.data(),
-                                    entries[j].second.size(), MZ_DEFAULT_COMPRESSION);
+                                    entries[j].second.size(), static_cast<mz_uint>(MZ_DEFAULT_COMPRESSION));
     }
     void *heap_data = nullptr;
     size_t heap_size = 0;
@@ -572,7 +575,8 @@ void CollectDocxParagraphRuns(const pugi::xml_node &p_node, DocParagraph &out) {
                 if (pugi::xml_node color = rpr.child("w:color")) {
                     std::string v = color.attribute("w:val").as_string();
                     unsigned int rgb = 0;
-                    if (v.size() == 6 && v != "auto" && std::sscanf(v.c_str(), "%x", &rgb) == 1) {
+                    // v.size() == 6 already rules out "auto" (4 chars) on its own.
+                    if (v.size() == 6 && std::sscanf(v.c_str(), "%x", &rgb) == 1) {
                         fmt.has_color = true;
                         fmt.color_r = static_cast<unsigned char>((rgb >> 16) & 0xff);
                         fmt.color_g = static_cast<unsigned char>((rgb >> 8) & 0xff);
@@ -582,7 +586,8 @@ void CollectDocxParagraphRuns(const pugi::xml_node &p_node, DocParagraph &out) {
                 if (pugi::xml_node shd = rpr.child("w:shd")) {
                     std::string v = shd.attribute("w:fill").as_string();
                     unsigned int rgb = 0;
-                    if (v.size() == 6 && v != "auto" && std::sscanf(v.c_str(), "%x", &rgb) == 1) {
+                    // v.size() == 6 already rules out "auto" (4 chars) on its own.
+                    if (v.size() == 6 && std::sscanf(v.c_str(), "%x", &rgb) == 1) {
                         fmt.has_highlight = true;
                         fmt.highlight_r = static_cast<unsigned char>((rgb >> 16) & 0xff);
                         fmt.highlight_g = static_cast<unsigned char>((rgb >> 8) & 0xff);
@@ -1001,7 +1006,7 @@ void SerializeDocxDrawing(const DocImage &img, pugi::xml_node &r_node, const std
     constexpr long long kMaxWidthEmu = 5486400;  // 6 inches
     long long w = static_cast<long long>(img.natural_w) * kEmuPerPx;
     long long h = static_cast<long long>(img.natural_h) * kEmuPerPx;
-    if (w > kMaxWidthEmu && w > 0) {
+    if (w > kMaxWidthEmu) {
         h = h * kMaxWidthEmu / w;
         w = kMaxWidthEmu;
     }

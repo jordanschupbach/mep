@@ -29,10 +29,15 @@
 // marked repeated, guarding against materializing a sparse-map-breaking
 // number of cells the way sheet_doc.cpp's own SUM(A1:A1048576) guard does.
 
+#include <algorithm>
 #include <cctype>
 #include <cstdlib>
 #include <sstream>
+#include <string>
+#include <utility>
+#include <vector>
 
+#include "formula.h"
 #include "pugixml.hpp"
 
 namespace {
@@ -249,7 +254,7 @@ void WriteOdsCachedValue(pugi::xml_node &cell_node, const CellValue &v) {
  * @param table The <table:table> XML node to append rows/cells to.
  */
 void SerializeOdsTable(Workbook &wb, int sheet_index, pugi::xml_node &table) {
-    Sheet &sh = wb.sheets[static_cast<size_t>(sheet_index)];
+    const Sheet &sh = wb.sheets[static_cast<size_t>(sheet_index)];
     for (int r = 0; r <= sh.max_row; r++) {
         pugi::xml_node row_node = table.append_child("table:table-row");
         for (int c = 0; c <= sh.max_col; c++) {

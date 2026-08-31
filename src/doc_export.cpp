@@ -5,8 +5,13 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <cstdio>
 #include <fstream>
+#include <iterator>
+#include <memory>
 #include <sstream>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "miniz.h"
@@ -125,7 +130,7 @@ size_t TableMaxCols(const std::vector<const DomNode *> &rows) {
     size_t max_cols = 0;
     for (const DomNode *r : rows) {
         size_t n = 0;
-        for (auto &c : r->children) {
+        for (const auto &c : r->children) {
             if (c->tag == "td" || c->tag == "th") n++;
         }
         max_cols = std::max(max_cols, n);
@@ -435,7 +440,7 @@ void WalkLatexNode(const DomNode *node, LatexCtx &ctx, std::string &out) {
         out += "}\n\\hline\n";
         for (const DomNode *r : rows) {
             bool first = true;
-            for (auto &c : r->children) {
+            for (const auto &c : r->children) {
                 if (c->tag != "td" && c->tag != "th") continue;
                 if (!first) out += " & ";
                 first = false;
@@ -744,7 +749,7 @@ void AppendOdtTable(const DomNode *node, OdtCtx &ctx, pugi::xml_node text_body) 
     for (size_t i = 0; i < max_cols; i++) table.append_child("table:table-column");
     for (const DomNode *r : rows) {
         pugi::xml_node trow = table.append_child("table:table-row");
-        for (auto &c : r->children) {
+        for (const auto &c : r->children) {
             if (c->tag != "td" && c->tag != "th") continue;
             pugi::xml_node cell = trow.append_child("table:table-cell");
             cell.append_attribute("office:value-type").set_value("string");
@@ -861,7 +866,7 @@ void WalkOdtBlock(const DomNode *node, OdtCtx &ctx, pugi::xml_node text_body) {
     if (tag == "ul" || tag == "ol") {
         pugi::xml_node list = text_body.append_child("text:list");
         list.append_attribute("text:style-name").set_value(tag == "ul" ? "MepBulletList" : "MepNumberList");
-        for (auto &c : node->children) {
+        for (const auto &c : node->children) {
             if (c->tag != "li") continue;
             pugi::xml_node item = list.append_child("text:list-item");
             pugi::xml_node p = item.append_child("text:p");

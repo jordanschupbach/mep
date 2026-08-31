@@ -6,7 +6,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <regex>
+#include <stdint.h>
 #include <unordered_map>
+#include <utility>
 
 // Vendored verbatim from each grammar repo (see treesitter_queries.h's own
 // top comment) -- not hand-written, so suppress our strict warnings here
@@ -566,7 +568,7 @@ struct RawSpan {
  * @param text The full source text captures' nodes index into.
  * @param out Vector to append every accepted capture's RawSpan to.
  */
-void CollectRawSpans(const TSQuery *query, TSNode root, const std::string &text, std::vector<RawSpan> &out) {
+void CollectRawSpans(const TSQuery *query, const TSNode &root, const std::string &text, std::vector<RawSpan> &out) {
     TSQueryCursor *cursor = ts_query_cursor_new();
     ts_query_cursor_exec(cursor, query, root);
     TSQueryMatch match;
@@ -766,9 +768,9 @@ TSTree *GetTree(const std::string &cache_key, const TSLanguage *language, const 
  */
 void ParseAndCollect(const std::string &cache_key, const TSLanguage *language, const char *query_source,
                       const std::string &text, std::vector<RawSpan> &out) {
-    TSQuery *query = QueryFor(language, query_source);
+    const TSQuery *query = QueryFor(language, query_source);
     if (!query) return;
-    TSTree *tree = GetTree(cache_key, language, text);
+    const TSTree *tree = GetTree(cache_key, language, text);
     if (tree) CollectRawSpans(query, ts_tree_root_node(tree), text, out);
 }
 
@@ -795,10 +797,10 @@ void ParseAndCollect(const std::string &cache_key, const TSLanguage *language, c
  * @param text The full source text (shared by both the block and inline parses).
  * @param out Vector to append every accepted inline capture's RawSpan to.
  */
-void CollectMarkdownInlineSpans(TSNode block_root, const std::string &text, std::vector<RawSpan> &out) {
-    TSQuery *finder = QueryFor(tree_sitter_markdown(), "(inline) @inline");
+void CollectMarkdownInlineSpans(const TSNode &block_root, const std::string &text, std::vector<RawSpan> &out) {
+    const TSQuery *finder = QueryFor(tree_sitter_markdown(), "(inline) @inline");
     if (!finder) return;
-    TSQuery *inline_query = QueryFor(tree_sitter_markdown_inline(), kHighlightsMarkdownInline);
+    const TSQuery *inline_query = QueryFor(tree_sitter_markdown_inline(), kHighlightsMarkdownInline);
     if (!inline_query) return;
 
     TSQueryCursor *cursor = ts_query_cursor_new();
@@ -836,9 +838,9 @@ void CollectMarkdownInlineSpans(TSNode block_root, const std::string &text, std:
  * @param out Vector to append every accepted capture's RawSpan to.
  */
 void HighlightMarkdown(const std::string &cache_key, const std::string &text, std::vector<RawSpan> &out) {
-    TSQuery *blockQuery = QueryFor(tree_sitter_markdown(), kHighlightsMarkdown);
+    const TSQuery *blockQuery = QueryFor(tree_sitter_markdown(), kHighlightsMarkdown);
     if (!blockQuery) return;
-    TSTree *tree = GetTree(cache_key, tree_sitter_markdown(), text);
+    const TSTree *tree = GetTree(cache_key, tree_sitter_markdown(), text);
     if (!tree) return;
     // The block tree's own incremental structure comes from GetTree's
     // cache; the inline injection pass below always re-parses each
@@ -929,13 +931,13 @@ std::vector<TSFoldRange> TreesitterFoldRanges(const std::string &filetype, const
     auto it = FoldQueryTable().find(filetype);
     if (it == FoldQueryTable().end()) return out;
     const LangEntry &entry = it->second;
-    TSQuery *query = QueryFor(entry.language(), entry.query_source);
+    const TSQuery *query = QueryFor(entry.language(), entry.query_source);
     if (!query) return out;
     // Same cache_key ("filetype") TreesitterHighlight itself uses --
     // when a fold pass runs right after a highlight pass for the same
     // buffer (mep's actual call pattern, see kBuiltinSyntax), this reuses
     // that already-current tree outright with no reparse at all.
-    TSTree *tree = GetTree(filetype, entry.language(), text);
+    const TSTree *tree = GetTree(filetype, entry.language(), text);
     if (!tree) return out;
 
     TSQueryCursor *cursor = ts_query_cursor_new();
@@ -999,7 +1001,7 @@ struct RawStructureEntry {
  * @param text The full source text captures' nodes index into.
  * @param out Vector to append every usable RawStructureEntry to.
  */
-void CollectStructureEntries(const TSQuery *query, TSNode root, const std::string &text,
+void CollectStructureEntries(const TSQuery *query, const TSNode &root, const std::string &text,
                               std::vector<RawStructureEntry> &out) {
     TSQueryCursor *cursor = ts_query_cursor_new();
     ts_query_cursor_exec(cursor, query, root);
@@ -1065,12 +1067,12 @@ std::vector<TSStructureNode> TreesitterStructure(const std::string &filetype, co
 #endif
     }
 
-    TSQuery *query = QueryFor(language, query_source);
+    const TSQuery *query = QueryFor(language, query_source);
     if (!query) return out;
     // Same cache_key ("filetype") every other Treesitter* entry point
     // uses -- a structure pass right after a highlight/fold pass for the
     // same buffer reuses that already-current tree with no reparse.
-    TSTree *tree = GetTree(filetype, language, text);
+    const TSTree *tree = GetTree(filetype, language, text);
     if (!tree) return out;
 
     std::vector<RawStructureEntry> raw;

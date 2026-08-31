@@ -18,12 +18,16 @@
 // range -- too common in real files to treat as an acceptable v1 loss the
 // way e.g. merged cells are.
 
-#include <algorithm>
 #include <cstdlib>
+#include <iterator>
+#include <memory>
 #include <sstream>
+#include <string>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
+#include "formula.h"
 #include "pugixml.hpp"
 
 namespace {
@@ -179,7 +183,7 @@ struct SharedFormulaMaster {
  * @param sheet_index Index of the destination sheet in wb.sheets.
  * @param shared_strings Index-ordered shared-string table used to resolve t="s" cells.
  */
-void ParseXlsxSheetXml(pugi::xml_document &doc, Workbook &wb, int sheet_index,
+void ParseXlsxSheetXml(const pugi::xml_document &doc, Workbook &wb, int sheet_index,
                         const std::vector<std::string> &shared_strings) {
     pugi::xml_node sheet_data = doc.child("worksheet").child("sheetData");
     if (!sheet_data) return;
@@ -201,7 +205,6 @@ void ParseXlsxSheetXml(pugi::xml_document &doc, Workbook &wb, int sheet_index,
             }
             implicit_col = col + 1;
 
-            std::string t = c_node.attribute("t").as_string();  // "" | "s" | "str" | "inlineStr" | "b" | "e" | "n"
             pugi::xml_node f_node = c_node.child("f");
             pugi::xml_node v_node = c_node.child("v");
             std::string raw;
@@ -236,6 +239,7 @@ void ParseXlsxSheetXml(pugi::xml_document &doc, Workbook &wb, int sheet_index,
             }
 
             if (raw.empty()) {
+                std::string t = c_node.attribute("t").as_string();  // "" | "s" | "str" | "inlineStr" | "b" | "e" | "n"
                 if (t == "s") {
                     if (v_node) {
                         int idx = std::atoi(v_node.text().get());
@@ -313,7 +317,7 @@ void WriteXlsxCachedValue(pugi::xml_node &c_node, const CellValue &v) {
  * @param sheet_data The <sheetData> XML node to append rows/cells to.
  */
 void SerializeXlsxSheetData(Workbook &wb, int sheet_index, pugi::xml_node &sheet_data) {
-    Sheet &sh = wb.sheets[static_cast<size_t>(sheet_index)];
+    const Sheet &sh = wb.sheets[static_cast<size_t>(sheet_index)];
     for (int r = 0; r <= sh.max_row; r++) {
         bool row_has_content = false;
         for (int c = 0; c <= sh.max_col; c++) {
@@ -365,7 +369,7 @@ bool LoadXlsxFromMemory(const unsigned char *bytes, size_t len, Workbook &out, s
     out.sheets.clear();
     out.xlsx_sheet_paths.clear();
     out.source_format = "xlsx";
-    for (auto &entry : sheet_list) {
+    for (const auto &entry : sheet_list) {
         Sheet sh;
         sh.name = entry.name;
         out.sheets.push_back(std::move(sh));

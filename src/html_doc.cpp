@@ -1,10 +1,11 @@
 #include "html_doc.h"
 
-#include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <initializer_list>
 #include <sstream>
 #include <unordered_set>
+#include <utility>
 
 namespace {
 
@@ -449,7 +450,7 @@ void ParseHtml(const std::string &html, HtmlDoc &out) {
         DomNode *cur = queue.front();
         queue.erase(queue.begin());
         if (cur->type == DomNodeType::Element && cur->tag == "title") {
-            for (auto &c : cur->children) {
+            for (const auto &c : cur->children) {
                 if (c->type == DomNodeType::Text) out.title += c->text;
             }
             break;
@@ -794,7 +795,7 @@ void ApplyDeclarations(ComputedStyle &s, const std::unordered_map<std::string, s
 void CollectStyleRules(DomNode *n, std::vector<CssRule> &rules) {
     if (n->type == DomNodeType::Element && n->tag == "style") {
         std::string css;
-        for (auto &c : n->children) {
+        for (const auto &c : n->children) {
             if (c->type == DomNodeType::Text) css += c->text;
         }
         size_t i = 0, len = css.size();
@@ -834,7 +835,7 @@ void CollectStyleRules(DomNode *n, std::vector<CssRule> &rules) {
  * @param rules Full list of collected CSS rules to test against `n`.
  * @param tag_pass True to match only bare-tag selectors this pass; false to match only .class/#id selectors.
  */
-void ApplyMatchingRules(DomNode *n, ComputedStyle &style, const std::vector<CssRule> &rules, bool tag_pass) {
+void ApplyMatchingRules(const DomNode *n, ComputedStyle &style, const std::vector<CssRule> &rules, bool tag_pass) {
     for (const CssRule &r : rules) {
         if (r.selector.empty()) continue;
         bool matches = false;

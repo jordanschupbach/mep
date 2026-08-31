@@ -29,6 +29,7 @@
 
 #include <poll.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -39,8 +40,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace {
 

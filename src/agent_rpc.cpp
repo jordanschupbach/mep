@@ -11,6 +11,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <sys/types.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -20,12 +21,16 @@
 #include <cerrno>
 #include <cstring>
 #include <deque>
+#include <exception>
 #include <filesystem>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <mutex>
 #include <set>
+#include <system_error>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace mep::agent {
@@ -246,7 +251,7 @@ const Pane *FindPane(const SplitNode &node, int pane_id) {
  * @param buffer_id The id of the buffer to summarize.
  * @return A JSON object describing the buffer.
  */
-Json BufferSummaryJson(Editor &editor, int buffer_id) {
+Json BufferSummaryJson(const Editor &editor, int buffer_id) {
     const Buffer &buf = editor.GetBuffer(buffer_id);
     Json j = Json::Object();
     j["id"] = buffer_id;

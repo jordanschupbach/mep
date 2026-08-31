@@ -3,6 +3,7 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 // A small, dependency-free regex engine (NVIM_PARITY_PLAN.md's own

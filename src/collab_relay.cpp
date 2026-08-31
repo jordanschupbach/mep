@@ -7,16 +7,15 @@
 #include "json.h"
 
 #include <algorithm>
-#include <atomic>
-#include <chrono>
 #include <cstdlib>
 #include <iostream>
 #include <map>
 #include <memory>
 #include <mutex>
-#include <sstream>
+#include <stdint.h>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <openssl/rand.h>
@@ -25,6 +24,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <unistd.h>
 #else
 #include <winsock2.h>

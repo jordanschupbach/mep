@@ -14,14 +14,17 @@
 #include <random>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <limits>
 #include <map>
 #include <sstream>
+#include <system_error>
 #include <unordered_set>
 
 #include "raylib.h"
@@ -938,7 +941,6 @@ std::vector<DiffHunk> MyersDiffHunks(const std::vector<std::string> &a, const st
     // per-line ops, then coalesce contiguous runs into hunks below.
     struct Op {
         char kind;  // '=' / '-' (only in a) / '+' (only in b)
-        int a_line, b_line;
     };
     std::vector<Op> ops;
     int x = n, y = m;
@@ -949,20 +951,20 @@ std::vector<DiffHunk> MyersDiffHunks(const std::vector<std::string> &a, const st
         int prev_x = vd[static_cast<size_t>(vidx(prev_k))];
         int prev_y = prev_x - prev_k;
         while (x > prev_x && y > prev_y) {
-            ops.push_back({'=', x - 1, y - 1});
+            ops.push_back({'='});
             x--;
             y--;
         }
         if (x == prev_x) {
-            ops.push_back({'+', -1, y - 1});
+            ops.push_back({'+'});
             y--;
         } else {
-            ops.push_back({'-', x - 1, -1});
+            ops.push_back({'-'});
             x--;
         }
     }
     while (x > 0 && y > 0) {
-        ops.push_back({'=', x - 1, y - 1});
+        ops.push_back({'='});
         x--;
         y--;
     }
@@ -1503,7 +1505,7 @@ std::set<std::string> OrgParseResults(const std::string &args_str) {
     }
     size_t end = results_str.size();
     while (end > 0 && std::isspace(static_cast<unsigned char>(results_str[end - 1]))) end--;
-    results_str = results_str.substr(0, end);
+    results_str.resize(end);
     size_t i = 0;
     while (i < results_str.size()) {
         while (i < results_str.size() && std::isspace(static_cast<unsigned char>(results_str[i]))) i++;
@@ -1540,6 +1542,12 @@ OrgSrcBlock Editor::OrgSrcBlockAt(int row) const {
     std::string lang, args_str;
     ParseSrcHeader(header, &has_lang, &lang, &args_str);
     if (has_lang) {
+        // cppcheck-suppress knownEmptyContainer
+        // lang is populated via the std::string* out-param ParseSrcHeader
+        // writes through above (*lang = header.substr(...), guarded by the
+        // same has_lang flag) -- cppcheck's value-flow doesn't trace writes
+        // through pointer out-parameters across the call, so it sees this
+        // as still default-constructed/empty.
         for (char &c : lang) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     }
     std::vector<std::string> body_lines;
@@ -1746,7 +1754,7 @@ int Editor::OrgCurrentHeadlineRow(int row, const std::vector<std::string> &todo_
     }
     const int n = Buf().LineCount();
     for (int i = row; i >= 1; i--) {
-        if (i < 1 || i > n) continue;
+        if (i > n) continue;
         if (ParseOrgHeadline(Buf().lines[static_cast<size_t>(i - 1)], todo_keywords).is_headline) return i;
     }
     return 0;
@@ -3038,7 +3046,7 @@ std::vector<Editor::OrgBibEntry> Editor::OrgBibParseFiles(const std::vector<std:
         if (pit == by_key.end()) pit = by_key.find(BibLower(fit->second));
         if (pit == by_key.end()) continue;
         for (const auto &kv : pit->second->fields) {
-            if (e.fields.find(kv.first) == e.fields.end()) e.fields[kv.first] = kv.second;
+            e.fields.try_emplace(kv.first, kv.second);
         }
     }
     return entries;
@@ -4391,7 +4399,7 @@ Pane &Editor::CurPane() {
 
 const Pane &Editor::CurPane() const {
     const Tab &tab = tabs_[static_cast<size_t>(active_tab_)];
-    SplitNode *node = FindNode(tab.root.get(), tab.active_pane_id);
+    const SplitNode *node = FindNode(tab.root.get(), tab.active_pane_id);
     return node->pane;
 }
 
@@ -4477,7 +4485,7 @@ void Editor::FocusTopLeftPane() {
 bool Editor::RemovePaneNode(std::unique_ptr<SplitNode> &node_ptr, int pane_id) {
     SplitNode *node = node_ptr.get();
     for (size_t i = 0; i < node->children.size(); i++) {
-        SplitNode *child = node->children[i].get();
+        const SplitNode *child = node->children[i].get();
         if (child->dir == SplitDir::Leaf && child->pane.id == pane_id) {
             node->children.erase(node->children.begin() + static_cast<long>(i));
             if (node->children.size() == 1) {
@@ -4726,7 +4734,7 @@ void Editor::TerminalSpawn(TerminalSession &sess, const std::vector<std::string>
 #endif
 }
 
-void Editor::TerminalWrite(TerminalSession &sess, const std::string &bytes) {
+void Editor::TerminalWrite(const TerminalSession &sess, const std::string &bytes) {
     if (sess.job_id <= 0) return;
 #if defined(__EMSCRIPTEN__)
     mep_js_pty_write(sess.job_id, bytes.data(), static_cast<int>(bytes.size()));
@@ -4735,7 +4743,7 @@ void Editor::TerminalWrite(TerminalSession &sess, const std::string &bytes) {
 #endif
 }
 
-void Editor::TerminalResizeBackend(TerminalSession &sess, int cols, int rows) {
+void Editor::TerminalResizeBackend(const TerminalSession &sess, int cols, int rows) {
     if (sess.job_id <= 0) return;
 #if defined(__EMSCRIPTEN__)
     mep_js_pty_resize(sess.job_id, cols, rows);
@@ -4794,7 +4802,7 @@ const TerminalSession *Editor::GetTerminal(int buffer_id) const {
 }
 
 bool Editor::WriteToTerminalBuffer(int buffer_id, const std::string &text) {
-    TerminalSession *sess = FindTerminal(buffer_id);
+    const TerminalSession *sess = FindTerminal(buffer_id);
     if (!sess || sess->exited) return false;
     TerminalWrite(*sess, text);
     return true;
@@ -6533,6 +6541,9 @@ void Editor::SetOfficeAlignment(DocParagraph::Align align) {
     OfficeSession &sess = it->second;
     if (sess.doc.paragraphs.empty()) return;
     PushUndoOffice();
+    // cppcheck-suppress duplicateAssignExpression
+    // Intentional: range starts as the single-point [cursor, cursor]
+    // before being widened below when there's an active selection.
     int first = sess.cursor_para, last = sess.cursor_para;
     if (mode_ == Mode::OfficeVisual && sess.has_selection) {
         first = std::min(sess.sel_anchor_para, sess.cursor_para);
@@ -6558,6 +6569,9 @@ void Editor::SetOfficeListKind(DocParagraph::ListKind kind) {
     OfficeSession &sess = it->second;
     if (sess.doc.paragraphs.empty()) return;
     PushUndoOffice();
+    // cppcheck-suppress duplicateAssignExpression
+    // Intentional: range starts as the single-point [cursor, cursor]
+    // before being widened below when there's an active selection.
     int first = sess.cursor_para, last = sess.cursor_para;
     if (mode_ == Mode::OfficeVisual && sess.has_selection) {
         first = std::min(sess.sel_anchor_para, sess.cursor_para);
@@ -6800,7 +6814,7 @@ void Editor::HandleSheetNormalInput() {
         sess = &it->second;
     }
     if (sess->wb.sheets.empty()) return;
-    Sheet &sh = sess->wb.sheets[static_cast<size_t>(sess->active_sheet)];
+    const Sheet &sh = sess->wb.sheets[static_cast<size_t>(sess->active_sheet)];
 
     // 2D grid navigation -- h/l move columns, j/k move rows (unlike
     // Office's 1D paragraph navigation). No upper clamp beyond 0 --
@@ -6916,7 +6930,7 @@ namespace {
 void ClampSheetCursorAfterSwap(SheetSession &sess) {
     if (sess.wb.sheets.empty()) return;
     sess.active_sheet = std::clamp(sess.active_sheet, 0, static_cast<int>(sess.wb.sheets.size()) - 1);
-    Sheet &sh = sess.wb.sheets[static_cast<size_t>(sess.active_sheet)];
+    const Sheet &sh = sess.wb.sheets[static_cast<size_t>(sess.active_sheet)];
     sess.cursor_row = std::clamp(sess.cursor_row, 0, sh.max_row);
     sess.cursor_col = std::clamp(sess.cursor_col, 0, sh.max_col);
 }
@@ -7049,7 +7063,7 @@ void Editor::HandleSheetVisualInput() {
         mode_ = Mode::SheetNormal;
         return;
     }
-    Sheet &sh = sess->wb.sheets[static_cast<size_t>(sess->active_sheet)];
+    const Sheet &sh = sess->wb.sheets[static_cast<size_t>(sess->active_sheet)];
 
     /**
      * @brief Checks whether a key was just pressed or is auto-repeating.
@@ -8209,7 +8223,7 @@ void Editor::EnterTerminalNormalMode(TerminalSession &sess) {
     mode_ = Mode::Normal;
 }
 
-void Editor::SendTerminalKey(TerminalSession &sess, int key, int codepoint, bool ctrl, bool shift) {
+void Editor::SendTerminalKey(const TerminalSession &sess, int key, int codepoint, bool ctrl, bool shift) {
     std::string bytes;
     bool app_mode = sess.vterm && sess.vterm->ApplicationCursorKeys();
     if (codepoint > 0) {
@@ -8498,7 +8512,7 @@ void Editor::PaneMoveBufferTabToNeighbor(const std::string &direction) {
     if (was_last_tab) ClosePane();
 }
 
-std::unique_ptr<SplitNode> Editor::BuildSpiralLayout(std::vector<Pane> panes, bool horizontal_next) const {
+std::unique_ptr<SplitNode> Editor::BuildSpiralLayout(const std::vector<Pane> &panes, bool horizontal_next) const {
     auto node = std::make_unique<SplitNode>();
     if (panes.size() == 1) {
         node->dir = SplitDir::Leaf;
@@ -8511,7 +8525,7 @@ std::unique_ptr<SplitNode> Editor::BuildSpiralLayout(std::vector<Pane> panes, bo
     first->pane = panes.front();
     std::vector<Pane> rest(panes.begin() + 1, panes.end());
     node->children.push_back(std::move(first));
-    node->children.push_back(BuildSpiralLayout(std::move(rest), !horizontal_next));
+    node->children.push_back(BuildSpiralLayout(rest, !horizontal_next));
     return node;
 }
 
@@ -10879,7 +10893,7 @@ void Editor::HandleVisualInput() {
 
     int cp = GetCharPressed();
     while (cp > 0) {
-        if (cp > 0 && cp <= 127) {
+        if (cp <= 127) {
             ProcessVisualKey(cp);
             // An operator that committed the change exits back to Normal
             // (d/x/y/~/c/u/U) or into Insert (c, Visual Block I/A) --
@@ -12164,7 +12178,7 @@ std::string Editor::SidebarCursorWidgetId(int id) const {
 }
 
 void Editor::FocusSidebarRow(int id, int line_index) {
-    SidebarInstance *sb = FindSidebarMut(id);
+    const SidebarInstance *sb = FindSidebarMut(id);
     if (!sb || !sb->open) return;
     // Unlike OpenSidebar (called once, when focus actually transitions into
     // a sidebar), this fires on every single mouse click on a row -- most of
@@ -13301,7 +13315,7 @@ void Editor::UpdateCmdlineCompletion() {
     if (candidates.empty()) return;
 
     if (candidates.size() == 1) {
-        command_line_ = command_line_.substr(0, static_cast<size_t>(word_start)) + candidates[0];
+        command_line_.replace(static_cast<size_t>(word_start), std::string::npos, candidates[0]);
         return;
     }
 
@@ -13311,7 +13325,7 @@ void Editor::UpdateCmdlineCompletion() {
         while (j < common.size() && j < candidates[i].size() && common[j] == candidates[i][j]) j++;
         common.resize(j);
     }
-    command_line_ = command_line_.substr(0, static_cast<size_t>(word_start)) + common;
+    command_line_.replace(static_cast<size_t>(word_start), std::string::npos, common);
 
     for (const std::string &c : candidates) cmdline_completion_items_.push_back({c, c, {}});
     cmdline_completion_selected_ = 0;
@@ -13336,7 +13350,7 @@ void Editor::AcceptCmdlineCompletion() {
         return;
     }
     const std::string &item = cmdline_completion_items_[static_cast<size_t>(cmdline_completion_selected_)].data;
-    command_line_ = command_line_.substr(0, static_cast<size_t>(cmdline_completion_word_start_)) + item;
+    command_line_.replace(static_cast<size_t>(cmdline_completion_word_start_), std::string::npos, item);
     cmdline_completion_open_ = false;
 }
 
@@ -14777,7 +14791,7 @@ void Editor::DeleteRange(CursorPos start, CursorPos end, bool linewise) {
         // prefix) with what's left of the end line (its own suffix),
         // dropping everything strictly between -- same shape as Vim's own
         // "join the two halves" behavior for an exclusive multi-line range.
-        std::string &first_line = Buf().lines[static_cast<size_t>(start.row)];
+        const std::string &first_line = Buf().lines[static_cast<size_t>(start.row)];
         int a = std::min(static_cast<int>(first_line.size()), start.col);
         std::string prefix = first_line.substr(0, static_cast<size_t>(a));
         int end_row = std::min(end.row, Buf().LineCount() - 1);
@@ -14907,7 +14921,7 @@ CursorPos Editor::InsertCharwiseTextAt(CursorPos pos, const std::string &text) {
         return {pos.row, at + static_cast<int>(text.size())};
     }
     std::vector<std::string> parts = SplitKeepingLast(text);
-    std::string &line = Buf().lines[static_cast<size_t>(pos.row)];
+    const std::string &line = Buf().lines[static_cast<size_t>(pos.row)];
     int at = std::min(static_cast<int>(line.size()), pos.col);
     std::string suffix = line.substr(static_cast<size_t>(at));
     std::string new_first = line.substr(0, static_cast<size_t>(at)) + parts.front();
@@ -16036,7 +16050,7 @@ void Editor::MdTableAlign() {
         }
         rows.push_back({i, std::move(r)});
     }
-    for (auto &entry : rows) {
+    for (const auto &entry : rows) {
         std::string out = "|";
         for (size_t ci = 0; ci < widths.size(); ci++) {
             std::string al = (ci < aligns.size() && !aligns[ci].empty()) ? aligns[ci] : "none";
@@ -17100,7 +17114,7 @@ CursorPos Editor::InsertTextAt(int buffer_id, CursorPos at, const std::string &t
     PushUndoForBuffer(buffer_id);
     std::string &line = buf.lines[static_cast<size_t>(start.row)];
     const std::string tail = line.substr(static_cast<size_t>(start.col));
-    line = line.substr(0, static_cast<size_t>(start.col)) + segments.front();
+    line.replace(static_cast<size_t>(start.col), std::string::npos, segments.front());
 
     CursorPos result;
     if (segments.size() == 1) {

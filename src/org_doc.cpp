@@ -120,7 +120,7 @@ bool ParseTodoLine(const std::string &line, std::vector<std::string> &todo_out, 
             continue;
         }
         size_t paren = tok.find('(');
-        if (paren != std::string::npos) tok = tok.substr(0, paren);
+        if (paren != std::string::npos) tok.resize(paren);
         if (tok.empty()) continue;
         tokens.push_back(tok);
         is_pipe.push_back(pipe_seen);

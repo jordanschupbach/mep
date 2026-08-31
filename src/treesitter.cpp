@@ -41,6 +41,11 @@ struct LangEntry {
 // separate inline-formatting grammar), Org, and R. Everything else is
 // resolved dynamically at runtime instead -- see DynamicLanguageTable
 // and LoadDynamicLanguage below.
+/**
+ * @brief Returns the process-lifetime table of compiled-in grammars,
+ * keyed by bare file extension.
+ * @return Reference to the static filetype-to-LangEntry table for the core compiled-in languages.
+ */
 const std::unordered_map<std::string, LangEntry> &LanguageTable() {
     static const std::unordered_map<std::string, LangEntry> table = {
         {"c", {tree_sitter_c, kHighlightsC}},
@@ -79,6 +84,11 @@ const std::unordered_map<std::string, LangEntry> &LanguageTable() {
 // Fold queries: only the core compiled-in languages get one (see
 // treesitter_queries.h's kFolds* comment for why markdown is excluded
 // but org isn't), keyed the same way as LanguageTable.
+/**
+ * @brief Returns the process-lifetime table of fold queries for the core
+ * compiled-in languages, keyed by bare file extension.
+ * @return Reference to the static filetype-to-LangEntry fold-query table.
+ */
 const std::unordered_map<std::string, LangEntry> &FoldQueryTable() {
     static const std::unordered_map<std::string, LangEntry> table = {
         {"c", {tree_sitter_c, kFoldsC}},
@@ -108,6 +118,12 @@ const std::unordered_map<std::string, LangEntry> &FoldQueryTable() {
 // actually captures. Every dynamically-loaded grammar's own structure
 // query lives in DynamicStructureQueryTable below instead (native builds
 // only, same split LanguageTable/DynamicLanguageTable already draws).
+/**
+ * @brief Returns the process-lifetime table of structure (document
+ * outline) queries for the core compiled-in languages, keyed by bare file
+ * extension.
+ * @return Reference to the static filetype-to-LangEntry structure-query table.
+ */
 const std::unordered_map<std::string, LangEntry> &StructureQueryTable() {
     static const std::unordered_map<std::string, LangEntry> table = {
         {"c", {tree_sitter_c, kStructureC}},
@@ -144,6 +160,12 @@ struct DynLangEntry {
     const char *query_source;
 };
 
+/**
+ * @brief Returns the process-lifetime table of filetypes with a known
+ * highlight query but no compiled-in grammar, keyed by bare file
+ * extension, each resolved by dlopen()ing a matching `.so` at runtime.
+ * @return Reference to the static filetype-to-DynLangEntry table.
+ */
 const std::unordered_map<std::string, DynLangEntry> &DynamicLanguageTable() {
     static const std::unordered_map<std::string, DynLangEntry> table = {
         {"sh", {"bash", kHighlightsBash}},
@@ -233,6 +255,11 @@ const std::unordered_map<std::string, DynLangEntry> &DynamicLanguageTable() {
 // queries.h): the broad mainstream languages, not every highlight-only
 // grammar mep can highlight. mts/cts/tsx all reuse kStructureTypescript
 // -- see that query's own comment for why one query covers all three.
+/**
+ * @brief Returns the process-lifetime table of structure queries for
+ * dynamically-loaded grammars, keyed by bare file extension.
+ * @return Reference to the static filetype-to-DynLangEntry structure-query table.
+ */
 const std::unordered_map<std::string, DynLangEntry> &DynamicStructureQueryTable() {
     static const std::unordered_map<std::string, DynLangEntry> table = {
         {"go", {"go", kStructureGo}},
@@ -269,6 +296,13 @@ const std::unordered_map<std::string, DynLangEntry> &DynamicStructureQueryTable(
 //     default ~/.config/mep/parsers), mirroring the existing
 //     ~/.config/mep/init.lua convention -- for a grammar built by hand
 //     (`tree-sitter build`) with nowhere else to go.
+/**
+ * @brief Builds the ordered list of directories to search for a dynamic
+ * grammar's `.so` file: $MEP_TS_PARSER_PATH entries first, then the
+ * tree-sitter CLI cache, nvim-treesitter's parser directory, and mep's
+ * own config-owned parsers directory.
+ * @return Search directories in priority order (may include empty strings from a malformed $MEP_TS_PARSER_PATH).
+ */
 std::vector<std::string> DynamicSearchPaths() {
     std::vector<std::string> paths;
     if (const char *env = getenv("MEP_TS_PARSER_PATH")) {
@@ -315,6 +349,14 @@ std::vector<std::string> DynamicSearchPaths() {
 // a search path mid-session needs a restart to be picked up, same as
 // every other static-once assumption this integration makes (compiled
 // queries, the grammar tables themselves).
+/**
+ * @brief Finds and dlopen()s the `.so` for a grammar by trying every
+ * (search path x filename variant) combination and resolving its
+ * `tree_sitter_<canonical_name>` symbol, caching the result (including
+ * failures) for the process lifetime.
+ * @param canonical_name The grammar's own name, as it appears in its `tree_sitter_<canonical_name>` export.
+ * @return Pointer to the loaded language, or nullptr if no matching library/symbol was found.
+ */
 const TSLanguage *LoadDynamicLanguage(const std::string &canonical_name) {
     static std::unordered_map<std::string, const TSLanguage *> cache;
     auto it = cache.find(canonical_name);
@@ -355,6 +397,14 @@ const TSLanguage *LoadDynamicLanguage(const std::string &canonical_name) {
 // sharing a language+query (e.g. cpp/cc/cxx/hpp/hh/hxx) always passes the
 // exact same static string-literal address, so pointer identity is
 // already a correct, zero-overhead cache key.
+/**
+ * @brief Returns the compiled TSQuery for a (language, query source) pair,
+ * building and caching it lazily for the process lifetime; the query
+ * source's pointer identity is used as the cache key.
+ * @param language The tree-sitter language to compile the query against.
+ * @param query_source The `.scm` query source text.
+ * @return Pointer to the cached compiled query, or nullptr if compilation failed.
+ */
 TSQuery *QueryFor(const TSLanguage *language, const char *query_source) {
     static std::unordered_map<const char *, TSQuery *> cache;
     auto it = cache.find(query_source);
@@ -367,12 +417,25 @@ TSQuery *QueryFor(const TSLanguage *language, const char *query_source) {
     return q;
 }
 
+/**
+ * @brief Looks up the literal string value of a query predicate step.
+ * @param query The compiled query the step belongs to.
+ * @param step The predicate step whose string value_id should be resolved.
+ * @return The step's literal string value.
+ */
 std::string PredicateStringValue(const TSQuery *query, const TSQueryPredicateStep &step) {
     uint32_t len = 0;
     const char *s = ts_query_string_value_for_id(query, step.value_id, &len);
     return std::string(s, len);
 }
 
+/**
+ * @brief Extracts the source text spanned by a query capture's node,
+ * clamped to `text`'s bounds.
+ * @param cap The query capture whose node's text should be extracted.
+ * @param text The full source text the node's byte offsets index into.
+ * @return The substring of `text` covered by the capture's node, or an empty string if the range is invalid.
+ */
 std::string CaptureText(const TSQueryCapture &cap, const std::string &text) {
     uint32_t s = ts_node_start_byte(cap.node);
     uint32_t e = ts_node_end_byte(cap.node);
@@ -396,6 +459,16 @@ std::string CaptureText(const TSQueryCapture &cap, const std::string &text) {
 // accepted as-is (treated as satisfied): a documented, minor precision
 // loss (e.g. a local variable named `arguments` still renders as the JS
 // builtin).
+/**
+ * @brief Evaluates every predicate attached to a query match's pattern
+ * (#eq?/#not-eq?/#match?/#not-match?/#any-of?/#not-any-of?, plus
+ * #lua-match?/#not-lua-match? treated as #match?/#not-match? aliases),
+ * treating any unrecognized predicate as satisfied.
+ * @param query The compiled query the match belongs to.
+ * @param match The query match whose predicates should be evaluated.
+ * @param text The full source text captures' nodes index into.
+ * @return True if every recognized predicate is satisfied (or none apply); false as soon as one fails.
+ */
 bool EvalPredicates(const TSQuery *query, const TSQueryMatch &match, const std::string &text) {
     uint32_t step_count = 0;
     const TSQueryPredicateStep *steps = ts_query_predicates_for_pattern(query, match.pattern_index, &step_count);
@@ -472,6 +545,15 @@ struct RawSpan {
 // Runs `query` over every match under `root` and appends each capture
 // (subject to EvalPredicates and the leading-underscore "not meant to be
 // rendered" convention) as a RawSpan.
+/**
+ * @brief Runs `query` over every match under `root` and appends each
+ * capture (subject to EvalPredicates and the leading-underscore "not meant
+ * to be rendered" convention) as a RawSpan.
+ * @param query The compiled query to run.
+ * @param root The root node to search under.
+ * @param text The full source text captures' nodes index into.
+ * @param out Vector to append every accepted capture's RawSpan to.
+ */
 void CollectRawSpans(const TSQuery *query, TSNode root, const std::string &text, std::vector<RawSpan> &out) {
     TSQueryCursor *cursor = ts_query_cursor_new();
     ts_query_cursor_exec(cursor, query, root);
@@ -517,11 +599,19 @@ struct ParseCache {
     std::string text;
     TSTree *tree = nullptr;
     const TSLanguage *language = nullptr;
+    /**
+     * @brief Deletes the cached TSTree, if one is held.
+     */
     ~ParseCache() {
         if (tree) ts_tree_delete(tree);
     }
 };
 
+/**
+ * @brief Returns the process-lifetime table of incremental-reparse
+ * caches, keyed by filetype string.
+ * @return Reference to the static filetype-to-ParseCache table.
+ */
 std::unordered_map<std::string, ParseCache> &ParseCacheTable() {
     static std::unordered_map<std::string, ParseCache> table;
     return table;
@@ -529,6 +619,13 @@ std::unordered_map<std::string, ParseCache> &ParseCacheTable() {
 
 // Row/column (TSPoint) of byte offset `off` within `text`, scanning from
 // the start -- tree-sitter points are line/column, not byte offsets.
+/**
+ * @brief Computes the row/column (TSPoint) of a byte offset within `text`
+ * by scanning from the start.
+ * @param text The full source text to scan.
+ * @param off The byte offset (clamped to `text`'s size) to locate.
+ * @return The TSPoint (row, column) corresponding to `off`.
+ */
 TSPoint PointFor(const std::string &text, size_t off) {
     uint32_t row = 0, col = 0;
     size_t n = std::min(off, text.size());
@@ -554,6 +651,15 @@ TSPoint PointFor(const std::string &text, size_t off) {
 // the two full text snapshots on every call instead. Still linear in the
 // text size, same order as the full reparse this replaces, so it can't
 // make the on-demand/debounced call pattern asymptotically worse.
+/**
+ * @brief Synthesizes a TSInputEdit describing the transformation from
+ * `old_text` to `new_text` via longest common prefix/suffix -- a valid
+ * (if not always minimal) edit region for tree-sitter's incremental
+ * reparse contract.
+ * @param old_text The previously-parsed text.
+ * @param new_text The current text to diff against `old_text`.
+ * @return The TSInputEdit describing the changed byte/point range.
+ */
 TSInputEdit ComputeEdit(const std::string &old_text, const std::string &new_text) {
     size_t max_common = std::min(old_text.size(), new_text.size());
     size_t prefix = 0;
@@ -583,6 +689,16 @@ TSInputEdit ComputeEdit(const std::string &old_text, const std::string &new_text
 // Ownership stays with the cache: callers must NOT delete the returned
 // tree, and must not hold onto it past their own call (the next GetTree
 // call for the same `cache_key` may ts_tree_edit or replace it).
+/**
+ * @brief Returns the parsed tree for `text` under `cache_key`/`language`,
+ * reusing or incrementally reparsing the previous call's cached tree when
+ * one exists for the same key and language, or parsing from scratch
+ * otherwise.
+ * @param cache_key Identifier (typically the filetype string) the parse cache is keyed by.
+ * @param language The tree-sitter language to parse with.
+ * @param text The full text to parse.
+ * @return The current tree for `cache_key`; ownership stays with the cache -- callers must not delete or retain it past their own call.
+ */
 TSTree *GetTree(const std::string &cache_key, const TSLanguage *language, const std::string &text) {
     ParseCache &cache = ParseCacheTable()[cache_key];
     if (cache.tree && cache.language == language && cache.text == text) {
@@ -616,6 +732,15 @@ TSTree *GetTree(const std::string &cache_key, const TSLanguage *language, const 
 
 // Parses `text` with `language` (via GetTree's incremental cache) and
 // collects the `query`'s captures into `out`.
+/**
+ * @brief Parses `text` with `language` (via GetTree's incremental cache)
+ * and collects the `query_source`'s compiled query captures into `out`.
+ * @param cache_key Identifier the parse cache is keyed by.
+ * @param language The tree-sitter language to parse with.
+ * @param query_source The `.scm` highlight query source text to run.
+ * @param text The full text to parse.
+ * @param out Vector to append every accepted capture's RawSpan to.
+ */
 void ParseAndCollect(const std::string &cache_key, const TSLanguage *language, const char *query_source,
                       const std::string &text, std::vector<RawSpan> &out) {
     TSQuery *query = QueryFor(language, query_source);
@@ -639,6 +764,14 @@ void ParseAndCollect(const std::string &cache_key, const TSLanguage *language, c
 // exact case, and the reason no manual row/column translation is needed:
 // positions coming out of that second parse are already in the original
 // document's coordinates.
+/**
+ * @brief Finds every `(inline)` node under `block_root` and re-parses each
+ * one's restricted byte range of `text` with the separate markdown-inline
+ * grammar, appending its highlight captures to `out`.
+ * @param block_root Root node of the already-parsed markdown block tree.
+ * @param text The full source text (shared by both the block and inline parses).
+ * @param out Vector to append every accepted inline capture's RawSpan to.
+ */
 void CollectMarkdownInlineSpans(TSNode block_root, const std::string &text, std::vector<RawSpan> &out) {
     TSQuery *finder = QueryFor(tree_sitter_markdown(), "(inline) @inline");
     if (!finder) return;
@@ -671,6 +804,14 @@ void CollectMarkdownInlineSpans(TSNode block_root, const std::string &text, std:
     ts_query_cursor_delete(cursor);
 }
 
+/**
+ * @brief Runs markdown's block highlight query over `text` (via GetTree's
+ * cache) and then layers in the separate inline-formatting pass via
+ * CollectMarkdownInlineSpans, appending both to `out`.
+ * @param cache_key Identifier the parse cache is keyed by.
+ * @param text The full markdown source text to parse and highlight.
+ * @param out Vector to append every accepted capture's RawSpan to.
+ */
 void HighlightMarkdown(const std::string &cache_key, const std::string &text, std::vector<RawSpan> &out) {
     TSQuery *blockQuery = QueryFor(tree_sitter_markdown(), kHighlightsMarkdown);
     if (!blockQuery) return;
@@ -726,6 +867,7 @@ std::vector<TSHighlightSpan> TreesitterHighlight(const std::string &filetype, co
     // captures (e.g. a whole call_expression) before the narrow ones
     // nested inside them (e.g. the function name) makes the narrow, more
     // specific highlight the one that actually shows.
+    // Comparator: orders spans by decreasing byte length (widest first).
     std::sort(raw.begin(), raw.end(), [](const RawSpan &a, const RawSpan &b) {
         return (a.end_byte - a.start_byte) > (b.end_byte - b.start_byte);
     });
@@ -824,6 +966,16 @@ struct RawStructureEntry {
     std::string kind;
 };
 
+/**
+ * @brief Runs `query` over every match under `root` and, for each match
+ * with both a `@definition.<kind>` and a `@name` capture, appends a
+ * RawStructureEntry describing it (skipping matches missing either half,
+ * or whose name text is empty).
+ * @param query The compiled structure query to run.
+ * @param root The root node to search under.
+ * @param text The full source text captures' nodes index into.
+ * @param out Vector to append every usable RawStructureEntry to.
+ */
 void CollectStructureEntries(const TSQuery *query, TSNode root, const std::string &text,
                               std::vector<RawStructureEntry> &out) {
     TSQueryCursor *cursor = ts_query_cursor_new();
@@ -906,6 +1058,7 @@ std::vector<TSStructureNode> TreesitterStructure(const std::string &filetype, co
     // struct/interface pattern -- see treesitter_structure_queries.h's
     // top comment): group by byte span, keep the first non-"type" kind
     // seen for that span, else the first entry outright.
+    // Comparator: orders entries by ascending (start_byte, end_byte).
     std::sort(raw.begin(), raw.end(), [](const RawStructureEntry &a, const RawStructureEntry &b) {
         if (a.def_start_byte != b.def_start_byte) return a.def_start_byte < b.def_start_byte;
         return a.def_end_byte < b.def_end_byte;

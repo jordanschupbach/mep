@@ -72,6 +72,11 @@
 // class of leak doesn't exist to begin with. All still return a malloc'd C
 // string the caller must free(): "OK\n<content>" / "OK" on success, or
 // "ERR\n<message>" on failure -- same contract as before.
+/**
+ * @brief Reads a text file's contents via the launcher's loopback HTTP bridge (wasm build only).
+ * @param path_ptr UTF-8 path to read, as seen by the Deno-hosted launcher process.
+ * @return A malloc'd C string: "OK\n<content>" on success, or "ERR\n<message>" on failure; caller must free().
+ */
 EM_JS(char *, mep_js_read_file, (const char *path_ptr), {
     const path = UTF8ToString(path_ptr);
     let text;
@@ -101,6 +106,11 @@ EM_JS(char *, mep_js_read_file, (const char *path_ptr), {
 // above it for why this is plain EM_JS, not EM_ASYNC_JS) -- the payload
 // here is base64 text, not raw file content, decoded back to bytes by
 // Base64Decode (image_doc.cpp) on the C++ side.
+/**
+ * @brief Reads a binary file (e.g. an image) via the launcher bridge's base64-safe endpoint (wasm build only).
+ * @param path_ptr UTF-8 path to read, as seen by the Deno-hosted launcher process.
+ * @return A malloc'd C string: "OK\n<base64 payload>" on success, or "ERR\n<message>" on failure; caller must free().
+ */
 EM_JS(char *, mep_js_read_file_binary, (const char *path_ptr), {
     const path = UTF8ToString(path_ptr);
     let text;
@@ -120,6 +130,12 @@ EM_JS(char *, mep_js_read_file_binary, (const char *path_ptr), {
     return ptr;
 });
 
+/**
+ * @brief Writes a text file's contents via the launcher's loopback HTTP bridge (wasm build only).
+ * @param path_ptr UTF-8 path to write, as seen by the Deno-hosted launcher process.
+ * @param content_ptr UTF-8 content to write to the file.
+ * @return A malloc'd C string: "OK" on success, or "ERR\n<message>" on failure; caller must free().
+ */
 EM_JS(char *, mep_js_write_file, (const char *path_ptr, const char *content_ptr), {
     const path = UTF8ToString(path_ptr);
     const content = UTF8ToString(content_ptr);
@@ -146,6 +162,11 @@ EM_JS(char *, mep_js_write_file, (const char *path_ptr, const char *content_ptr)
 // by a JSON array of {name, is_dir} objects (parsed with json.h on the C++
 // side) rather than a plain listing, since filenames can contain the
 // newlines/tabs a hand-rolled text format would need to escape.
+/**
+ * @brief Lists a directory's entries via the launcher bridge, for command-line path completion (wasm build only).
+ * @param path_ptr UTF-8 directory path to list, as seen by the Deno-hosted launcher process.
+ * @return A malloc'd C string: "OK\n<JSON array of {name, is_dir}>" on success, or "ERR\n<message>" on failure; caller must free().
+ */
 EM_JS(char *, mep_js_list_dir, (const char *path_ptr), {
     const path = UTF8ToString(path_ptr);
     let text;
@@ -171,6 +192,10 @@ EM_JS(char *, mep_js_list_dir, (const char *path_ptr), {
 // server-side (launcher/serve.ts's /projects endpoint) since the wasm
 // sandbox has no env vars of its own to compute it from. Result on success
 // is "OK\n" followed by a JSON array of path strings.
+/**
+ * @brief Fetches the persisted project-bookmark list via the launcher bridge (wasm build only).
+ * @return A malloc'd C string: "OK\n<JSON array of path strings>" on success, or "ERR\n<message>" on failure; caller must free().
+ */
 EM_JS(char *, mep_js_project_list, (), {
     let text;
     try {
@@ -192,6 +217,12 @@ EM_JS(char *, mep_js_project_list, (), {
 // action: "add" or "remove". Same result shape as mep_js_project_list --
 // the server returns the list post-mutation so the caller doesn't need a
 // second round trip to refresh it.
+/**
+ * @brief Adds or removes a project bookmark via the launcher bridge and returns the list post-mutation (wasm build only).
+ * @param action_ptr The mutation to perform: "add" or "remove".
+ * @param path_ptr UTF-8 project path to add or remove.
+ * @return A malloc'd C string: "OK\n<JSON array of path strings>" on success, or "ERR\n<message>" on failure; caller must free().
+ */
 EM_JS(char *, mep_js_project_mutate, (const char *action_ptr, const char *path_ptr), {
     const action = UTF8ToString(action_ptr);
     const path = UTF8ToString(path_ptr);
@@ -245,6 +276,11 @@ EM_JS(char *, mep_js_project_mutate, (const char *action_ptr, const char *path_p
 //     handed back as a null-terminated C string without risking silent
 //     truncation, and EM_JS can only return one value.
 //   - mep_js_pty_exited/_exit_code: whether the process has ended.
+/**
+ * @brief Opens a WebSocket to the launcher's `/pty` endpoint and sends the spawn request, without waiting for readiness (wasm build only).
+ * @param payload_json_ptr UTF-8 JSON spawn-request payload to send once the socket opens.
+ * @return The new PTY slot id (poll with mep_js_pty_connect_status), or -1 if the socket could not be created.
+ */
 EM_JS(int, mep_js_pty_connect_start, (const char *payload_json_ptr), {
     const payloadJson = UTF8ToString(payload_json_ptr);
     if (!window.__mepBridgeBase) {
@@ -306,6 +342,11 @@ EM_JS(int, mep_js_pty_connect_start, (const char *payload_json_ptr), {
     return id;
 });
 
+/**
+ * @brief Polls whether a PTY connection started by mep_js_pty_connect_start has become ready or failed (wasm build only).
+ * @param id The PTY slot id returned by mep_js_pty_connect_start.
+ * @return 0 while still connecting, 1 once ready, or -1 if the slot is unknown or the connection failed.
+ */
 EM_JS(int, mep_js_pty_connect_status, (int id), {
     const state = window.__mepPtys && window.__mepPtys[id];
     if (!state) return -1;
@@ -315,6 +356,10 @@ EM_JS(int, mep_js_pty_connect_status, (int id), {
 
 // Set by mep_js_pty_connect whenever it resolves to -1 -- read once, right
 // after, for a status message more useful than a generic "failed."
+/**
+ * @brief Retrieves the error message from the most recent failed PTY connect attempt (wasm build only).
+ * @return A malloc'd C string with the error message (or "unknown error" if none was recorded); caller must free().
+ */
 EM_JS(char *, mep_js_pty_last_error, (), {
     const text = window.__mepLastPtyError || "unknown error";
     const len = lengthBytesUTF8(text) + 1;
@@ -323,18 +368,34 @@ EM_JS(char *, mep_js_pty_last_error, (), {
     return ptr;
 });
 
+/**
+ * @brief Sends raw bytes to a connected PTY's WebSocket; a no-op if the socket isn't open yet (wasm build only).
+ * @param id The PTY slot id.
+ * @param bytes_ptr Pointer to the raw bytes to send.
+ * @param len Number of bytes to send.
+ */
 EM_JS(void, mep_js_pty_write, (int id, const char *bytes_ptr, int len), {
     const state = window.__mepPtys && window.__mepPtys[id];
     if (!state || state.ws.readyState !== WebSocket.OPEN) return;
     state.ws.send(HEAPU8.slice(bytes_ptr, bytes_ptr + len));
 });
 
+/**
+ * @brief Sends a terminal resize message to a connected PTY's WebSocket; a no-op if the socket isn't open yet (wasm build only).
+ * @param id The PTY slot id.
+ * @param cols The new column count.
+ * @param rows The new row count.
+ */
 EM_JS(void, mep_js_pty_resize, (int id, int cols, int rows), {
     const state = window.__mepPtys && window.__mepPtys[id];
     if (!state || state.ws.readyState !== WebSocket.OPEN) return;
     state.ws.send(JSON.stringify({ type: "resize", cols, rows }));
 });
 
+/**
+ * @brief Closes a PTY's WebSocket and discards its tracked state (wasm build only).
+ * @param id The PTY slot id to close.
+ */
 EM_JS(void, mep_js_pty_close, (int id), {
     const state = window.__mepPtys && window.__mepPtys[id];
     if (!state) return;
@@ -349,6 +410,11 @@ EM_JS(void, mep_js_pty_close, (int id), {
 // Returns a malloc'd raw-byte buffer (NOT a C string) or 0 if nothing has
 // arrived since the last poll; byte count is fetched right after via
 // mep_js_pty_poll_len(), before any other mep_js_pty_* call.
+/**
+ * @brief Drains and merges any raw output bytes a PTY has received since the last poll (wasm build only).
+ * @param id The PTY slot id to poll.
+ * @return A malloc'd raw byte buffer (not a null-terminated string; length is read separately via mep_js_pty_poll_len), or 0 if nothing has arrived; caller must free() a non-zero result.
+ */
 EM_JS(char *, mep_js_pty_poll, (int id), {
     const state = window.__mepPtys && window.__mepPtys[id];
     if (!state || state.queue.length === 0) {
@@ -370,13 +436,27 @@ EM_JS(char *, mep_js_pty_poll, (int id), {
     return ptr;
 });
 
+/**
+ * @brief Returns the byte length of the buffer most recently returned by mep_js_pty_poll (wasm build only).
+ * @return The number of bytes in the last poll's buffer, or 0 if none.
+ */
 EM_JS(int, mep_js_pty_poll_len, (), { return window.__mepLastPtyPollLen || 0; });
 
+/**
+ * @brief Checks whether a PTY's process has exited (or its slot no longer exists) (wasm build only).
+ * @param id The PTY slot id to check.
+ * @return 1 if the process has exited or the slot is unknown, 0 if it is still running.
+ */
 EM_JS(int, mep_js_pty_exited, (int id), {
     const state = window.__mepPtys && window.__mepPtys[id];
     return !state || state.exited ? 1 : 0;
 });
 
+/**
+ * @brief Retrieves the exit code of a PTY's process, if it has exited (wasm build only).
+ * @param id The PTY slot id to check.
+ * @return The process exit code, or -1 if the slot is unknown or the process hasn't exited.
+ */
 EM_JS(int, mep_js_pty_exit_code, (int id), {
     const state = window.__mepPtys && window.__mepPtys[id];
     return state ? state.exitCode : -1;
@@ -391,6 +471,11 @@ namespace {
 // about whitespace vs. non-whitespace.
 enum class CharClass { Space, Word, Punct };
 
+/**
+ * @brief Classifies a character into vim's word-motion character class (whitespace, word, or punctuation).
+ * @param c The character to classify.
+ * @return The CharClass the character belongs to.
+ */
 CharClass ClassOf(char c) {
     if (std::isspace(static_cast<unsigned char>(c))) return CharClass::Space;
     if (std::isalnum(static_cast<unsigned char>(c)) || c == '_') return CharClass::Word;
@@ -400,6 +485,11 @@ CharClass ClassOf(char c) {
 // Splits file content into lines the same way std::getline does: a
 // trailing newline does not produce a spurious empty final line, and a
 // trailing '\r' (CRLF) is stripped from each line.
+/**
+ * @brief Splits text into lines, stripping a trailing CRLF's '\r' and avoiding a spurious empty final line.
+ * @param content The raw file content to split.
+ * @return The content split into lines (always at least one, even for empty input).
+ */
 std::vector<std::string> SplitIntoLines(const std::string &content) {
     std::vector<std::string> lines;
     size_t start = 0;
@@ -423,12 +513,40 @@ std::vector<std::string> SplitIntoLines(const std::string &content) {
 // --- Theme engine (NVIM_PARITY_PLAN.md Part II Phase 9) ------------------
 namespace {
 
+/**
+ * @brief Builds a ThemeColor from int channel values, clamping each to the valid [0, 255] range.
+ * @param r Red channel (may be out of range).
+ * @param g Green channel (may be out of range).
+ * @param b Blue channel (may be out of range).
+ * @param a Alpha channel (may be out of range; defaults to fully opaque).
+ * @return The resulting color with all channels clamped to [0, 255].
+ */
 ThemeColor Clamp255(int r, int g, int b, int a = 255) {
+    // Clamps a single channel value into the valid [0, 255] byte range.
     auto c = [](int v) { return static_cast<unsigned char>(std::max(0, std::min(255, v))); };
     return ThemeColor{c(r), c(g), c(b), c(a)};
 }
+/**
+ * @brief Lightens a color by adding a fixed amount to each RGB channel.
+ * @param c The color to lighten.
+ * @param amount The amount to add to each RGB channel.
+ * @return The lightened color.
+ */
 ThemeColor Lighten(ThemeColor c, int amount) { return Clamp255(c.r + amount, c.g + amount, c.b + amount, c.a); }
+/**
+ * @brief Darkens a color by subtracting a fixed amount from each RGB channel.
+ * @param c The color to darken.
+ * @param amount The amount to subtract from each RGB channel.
+ * @return The darkened color.
+ */
 ThemeColor Darken(ThemeColor c, int amount) { return Lighten(c, -amount); }
+/**
+ * @brief Linearly interpolates between two colors.
+ * @param a The color at t = 0.
+ * @param b The color at t = 1.
+ * @param t The interpolation factor.
+ * @return The blended color (alpha taken from clamping defaults, not interpolated).
+ */
 ThemeColor Mix(ThemeColor a, ThemeColor b, float t) {
     return Clamp255(static_cast<int>(a.r + (b.r - a.r) * t), static_cast<int>(a.g + (b.g - a.g) * t),
                      static_cast<int>(a.b + (b.b - a.b) * t));
@@ -623,6 +741,11 @@ const Palette kPaletteOxocarbonLight = {
     {15, 98, 254, 255}, {103, 58, 183, 255}, {8, 189, 186, 255}, {255, 111, 0, 255}, {82, 82, 82, 255},
 };
 
+/**
+ * @brief Looks up a registered color palette by name.
+ * @param name The palette name to search for (e.g. "gruvbox-dark").
+ * @return A pointer to the matching Palette, or nullptr if no palette has that name.
+ */
 const Palette *FindPalette(const std::string &name) {
     static const Palette *kAll[] = {
         &kPaletteMepDark,        &kPaletteGruvboxDark,          &kPaletteNord,
@@ -648,6 +771,11 @@ const Palette *FindPalette(const std::string &name) {
 // chrome rendering and ResolveHlGroup's decoration-color fallback target --
 // mirrors mep.nvim's palette-to-highlight-group renderer, scoped to the
 // groups mep actually has consumers for today (grows as more land).
+/**
+ * @brief Expands a compact 10-color palette into the full set of named highlight groups used by the UI.
+ * @param p The source palette to expand.
+ * @return A map from highlight-group name to resolved ThemeColor.
+ */
 std::unordered_map<std::string, ThemeColor> BuildHighlightGroups(const Palette &p) {
     std::unordered_map<std::string, ThemeColor> g;
     // Base roles -- also what ResolveHlGroup's substring fallback reads
@@ -776,6 +904,11 @@ std::vector<DiffHunk> MyersDiffHunks(const std::vector<std::string> &a, const st
     // for each diagonal k) at step d, needed to walk the path back afterward.
     std::vector<std::vector<int>> trace;
     std::vector<int> v(2 * max_d + 1, 0);
+    /**
+     * @brief Converts a diagonal index k (which may be negative) into a non-negative offset into the v array.
+     * @param k The diagonal index.
+     * @return The corresponding index into the v array.
+     */
     auto vidx = [max_d](int k) { return k + max_d; };
     int found_d = -1;
     for (int d = 0; d <= max_d; d++) {
@@ -963,6 +1096,13 @@ namespace {
 size_t SkipWs(const std::string &s, size_t pos);
 
 // kBuiltinOrgExport's own `'^%s*#%+MACRO:%s*([%w_%-]+)%s+(.*)$'` port.
+/**
+ * @brief Matches a `#+MACRO: name body` definition line and extracts the macro name and body.
+ * @param line The line to match.
+ * @param name Set to the macro name on success.
+ * @param body Set to the macro body text on success.
+ * @return True if the line is a macro definition, false otherwise.
+ */
 bool MatchMacroDef(const std::string &line, std::string *name, std::string *body) {
     size_t i = SkipWs(line, 0);
     static const std::string kTag = "#+MACRO:";
@@ -995,6 +1135,11 @@ std::map<std::string, std::string> OrgCollectMacros(const std::vector<std::strin
 
 namespace {
 // kBuiltinOrgExport's own `mep_org_split_args` port.
+/**
+ * @brief Splits a comma-separated macro argument string into individual argument tokens.
+ * @param s The comma-separated argument text.
+ * @return The individual arguments, in order (an empty input yields a single empty argument).
+ */
 std::vector<std::string> OrgSplitArgs(const std::string &s) {
     std::vector<std::string> args;
     std::string with_trailer = s + ",";
@@ -1010,6 +1155,12 @@ std::vector<std::string> OrgSplitArgs(const std::string &s) {
 
 // kBuiltinOrgExport's own `'%$(%d+)'` port: replaces every `$N` with
 // the Nth (1-indexed) element of `args`, or "" if out of range.
+/**
+ * @brief Replaces every `$N` placeholder in a macro body with the Nth (1-indexed) argument.
+ * @param def The macro body/definition text containing `$N` placeholders.
+ * @param args The argument list to substitute in ($1 is args[0], etc.).
+ * @return The macro body with all `$N` references expanded (out-of-range N expands to "").
+ */
 std::string ExpandMacroDollarRefs(const std::string &def, const std::vector<std::string> &args) {
     std::string out;
     size_t pos = 0;
@@ -1112,6 +1263,11 @@ std::string JoinNewline(const std::vector<std::string> &lines);
 // line port. Generic (no language requirement), unlike OrgLatex's own
 // IsSrcLatexOpen -- reused here plus IsSrcClose above (identical to
 // what that check already needs).
+/**
+ * @brief Checks whether a line opens an org `#+BEGIN_SRC` block, case-insensitively and for any language.
+ * @param line The line to check.
+ * @return True if the line is a `#+BEGIN_SRC` opener.
+ */
 bool IsSrcBlockOpen(const std::string &line) {
     size_t i = SkipWs(line, 0);
     if (i + 1 >= line.size() || line[i] != '#' || line[i + 1] != '+') return false;
@@ -1124,6 +1280,13 @@ bool IsSrcBlockOpen(const std::string &line) {
 // the original's own two-pattern (`'...%s+(%S+)'` /
 // `'...%s+%S+%s*(.*)$'`) extraction exactly, including "no lang token
 // at all" leaving both has_lang=false and args_str empty.
+/**
+ * @brief Parses a `#+BEGIN_SRC [lang] [args...]` header line into its language tag and trailing args.
+ * @param header The full `#+BEGIN_SRC ...` header line.
+ * @param has_lang Set to whether a language token was present.
+ * @param lang Set to the language token (empty if has_lang is false).
+ * @param args_str Set to the remaining header-args text after the language token.
+ */
 void ParseSrcHeader(const std::string &header, bool *has_lang, std::string *lang, std::string *args_str) {
     size_t i = SkipWs(header, 0);
     i += 2;  // "#+"
@@ -1146,6 +1309,13 @@ void ParseSrcHeader(const std::string &header, bool *has_lang, std::string *lang
 // kBuiltinOrgBabel's own `':KEY%s+(%S+)'` port (unanchored search,
 // required whitespace, one-or-more non-whitespace captured) -- shared
 // shape behind `:main`/`:tangle`/`:cache`/`:file` header-arg extraction.
+/**
+ * @brief Finds a `:key value` header-arg token in a babel header-args string.
+ * @param s The header-args text to search.
+ * @param key The key to look for (without the leading colon).
+ * @param val Set to the token's value on success.
+ * @return True if the key was found with a following value token, false otherwise.
+ */
 bool MatchHeaderArgToken(const std::string &s, const std::string &key, std::string *val) {
     std::string needle = ":" + key;
     size_t pos = 0;
@@ -1178,6 +1348,11 @@ bool OrgBabelShouldWrapMain(const std::string &lang_key, const std::string &args
 }
 
 namespace {
+/**
+ * @brief Checks whether a string is a plain numeric literal (optional leading '-', digits, optional decimal part).
+ * @param s The string to check.
+ * @return True if the entire string is a numeric literal.
+ */
 bool IsNumericLiteral(const std::string &s) {
     size_t i = 0;
     if (i < s.size() && s[i] == '-') i++;
@@ -1221,6 +1396,14 @@ std::string OrgBabelFormatLiteral(const std::string &raw) {
 
 namespace {
 // kBuiltinOrgBabel's own `':var%s+([%w_]+)='` port.
+/**
+ * @brief Finds the next `:var name=` declaration in a babel header-args string starting at a given position.
+ * @param s The header-args text to search.
+ * @param pos The offset to start searching from.
+ * @param decl_end Set to the offset of the '=' that ends the declaration on success.
+ * @param name Set to the variable name on success.
+ * @return True if a `:var name=` declaration was found, false otherwise.
+ */
 bool FindNextVarDecl(const std::string &s, size_t pos, size_t *decl_end, std::string *name) {
     while (true) {
         size_t p = s.find(":var", pos);
@@ -1408,6 +1591,11 @@ std::pair<bool, std::string> Editor::LspWordAtCursor() const {
     const std::string &line = Buf().lines[row - 1];
     int n = static_cast<int>(line.size());
     int s = col, e = col;
+    /**
+     * @brief Checks whether the character at a 1-indexed column of `line` is a word character.
+     * @param pos1 The 1-indexed column to check.
+     * @return True if the column is in range and holds an alphanumeric or underscore character.
+     */
     auto is_word = [&](int pos1) {
         // pos1 is 1-indexed; matches Lua's `[%w_]` class.
         if (pos1 < 1 || pos1 > n) return false;
@@ -1448,6 +1636,8 @@ void Editor::LspApplyTextEdit(int start_line, int start_char, int end_line, int 
 }
 
 void Editor::LspApplyEditsCurrentBuffer(std::vector<LspTextEdit> edits) {
+    // Sorts edits in reverse document order (latest line/column first) so applying them in order never
+    // invalidates the positions of edits still to come.
     std::sort(edits.begin(), edits.end(), [](const LspTextEdit &a, const LspTextEdit &b) {
         if (a.start_line != b.start_line) return a.start_line > b.start_line;
         return a.start_char > b.start_char;
@@ -1458,6 +1648,11 @@ void Editor::LspApplyEditsCurrentBuffer(std::vector<LspTextEdit> edits) {
 }
 
 namespace {
+/**
+ * @brief Checks whether a character is valid within an org headline tag (alphanumeric, '_', ':', or '@').
+ * @param c The character to check.
+ * @return True if the character is a valid org tag character.
+ */
 bool IsOrgTagChar(char c) {
     return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == ':' || c == '@';
 }
@@ -1470,6 +1665,13 @@ bool IsOrgTagChar(char c) {
 // title); doesn't attempt to replicate full regex backtracking for a
 // pathological title with other colons positioned to make that leftmost
 // choice fail via an empty capture.
+/**
+ * @brief Extracts a trailing `:tag1:tag2:` tag block from the remainder of an org headline.
+ * @param rest The headline text after the stars/TODO-keyword/priority.
+ * @param tags Set to the extracted tag block text on success.
+ * @param tag_block_start Set to the offset within `rest` where the tag block begins, on success.
+ * @return True if a trailing tag block was found, false otherwise.
+ */
 bool ExtractOrgTags(const std::string &rest, std::string *tags, size_t *tag_block_start) {
     size_t end_pos = rest.size();
     while (end_pos > 0 && std::isspace(static_cast<unsigned char>(rest[end_pos - 1]))) end_pos--;
@@ -1564,6 +1766,12 @@ namespace {
 // kBuiltinOrgClock's own `'^%s*CLOCK:%s*%[[^%]]+%]%s*$'` port: a line
 // holding an *open* clock (no closing "--[...] => H:MM" yet). If
 // `start_ts` is non-null, also captures the bracketed timestamp text.
+/**
+ * @brief Checks whether a line is an open (not-yet-closed) org CLOCK entry, i.e. `CLOCK: [timestamp]`.
+ * @param line The line to check.
+ * @param start_ts If non-null, set to the bracketed timestamp text on success.
+ * @return True if the line is an open clock line, false otherwise.
+ */
 bool MatchRunningClockLine(const std::string &line, std::string *start_ts) {
     size_t i = 0;
     while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) i++;
@@ -1582,6 +1790,11 @@ bool MatchRunningClockLine(const std::string &line, std::string *start_ts) {
     return true;
 }
 
+/**
+ * @brief Checks whether a line is an org `:LOGBOOK:` drawer opener (ignoring surrounding whitespace).
+ * @param line The line to check.
+ * @return True if the line consists only of `:LOGBOOK:` (modulo whitespace).
+ */
 bool IsLogbookOpenLine(const std::string &line) {
     size_t i = 0;
     while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) i++;
@@ -1592,6 +1805,10 @@ bool IsLogbookOpenLine(const std::string &line) {
     return i == line.size();
 }
 
+/**
+ * @brief Formats the current local time as an org inactive-timestamp body (`YYYY-MM-DD Day HH:MM`).
+ * @return The formatted timestamp text.
+ */
 std::string FormatOrgTimestampNow() {
     std::time_t now = std::time(nullptr);
     std::tm tmv{};
@@ -1601,6 +1818,14 @@ std::string FormatOrgTimestampNow() {
     return std::string(buf);
 }
 
+/**
+ * @brief Parses exactly `count` consecutive decimal digits starting at a position.
+ * @param s The string to read from.
+ * @param pos The offset to start reading at.
+ * @param count The exact number of digit characters required.
+ * @param out Set to the parsed integer value on success.
+ * @return True if `count` digit characters were present at `pos`, false otherwise.
+ */
 bool MatchDigits(const std::string &s, size_t pos, int count, int *out) {
     if (pos + static_cast<size_t>(count) > s.size()) return false;
     int val = 0;
@@ -1615,6 +1840,16 @@ bool MatchDigits(const std::string &s, size_t pos, int count, int *out) {
 
 // kBuiltinOrgClock's own `'(%d%d%d%d)-(%d%d)-(%d%d) %a+ (%d%d):(%d%d)'`
 // port (unanchored search, matching Lua's :match semantics).
+/**
+ * @brief Searches a string for a `YYYY-MM-DD Day HH:MM`-shaped org timestamp and parses its fields.
+ * @param s The string to search (an unanchored scan, like Lua's `:match`).
+ * @param y Set to the parsed year on success.
+ * @param mo Set to the parsed month on success.
+ * @param d Set to the parsed day on success.
+ * @param hh Set to the parsed hour on success.
+ * @param mm Set to the parsed minute on success.
+ * @return True if a matching timestamp was found, false otherwise.
+ */
 bool ParseClockTimestamp(const std::string &s, int *y, int *mo, int *d, int *hh, int *mm) {
     for (size_t pos = 0; pos <= s.size(); pos++) {
         size_t i = pos;
@@ -1645,6 +1880,15 @@ bool ParseClockTimestamp(const std::string &s, int *y, int *mo, int *d, int *hh,
     return false;
 }
 
+/**
+ * @brief Converts calendar/time-of-day fields (in local time) into a std::time_t.
+ * @param y The year (e.g. 2026).
+ * @param mo The month (1-12).
+ * @param d The day of month.
+ * @param hh The hour (0-23).
+ * @param mm The minute.
+ * @return The corresponding std::time_t, with seconds set to 0 and DST auto-detected.
+ */
 std::time_t MakeLocalTime(int y, int mo, int d, int hh, int mm) {
     std::tm tmv{};
     tmv.tm_year = y - 1900;
@@ -1659,6 +1903,12 @@ std::time_t MakeLocalTime(int y, int mo, int d, int hh, int mm) {
 
 // kBuiltinOrgClock's own `'=>%s*(%d+):(%d%d)%s*$'` port: scans back from
 // the end of the line for "=>  H:MM" (optional surrounding whitespace).
+/**
+ * @brief Parses a trailing `=> H:MM` clock-duration suffix from a closed CLOCK line.
+ * @param line The line to scan (searched from the end).
+ * @param total_minutes Set to the total duration in minutes on success.
+ * @return True if a trailing `=> H:MM` suffix was found, false otherwise.
+ */
 bool MatchClockDuration(const std::string &line, int *total_minutes) {
     size_t end_pos = line.size();
     while (end_pos > 0 && std::isspace(static_cast<unsigned char>(line[end_pos - 1]))) end_pos--;
@@ -1765,6 +2015,11 @@ std::vector<std::string> Editor::OrgClockTableItems() const {
 }
 
 namespace {
+/**
+ * @brief Checks whether a line is an org `:PROPERTIES:` drawer opener (ignoring surrounding whitespace).
+ * @param line The line to check.
+ * @return True if the line consists only of `:PROPERTIES:` (modulo whitespace).
+ */
 bool IsPropertiesOpenLine(const std::string &line) {
     size_t i = 0;
     while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) i++;
@@ -1775,6 +2030,11 @@ bool IsPropertiesOpenLine(const std::string &line) {
     return i == line.size();
 }
 
+/**
+ * @brief Checks whether a line is a drawer-closing `:END:` line (ignoring surrounding whitespace).
+ * @param line The line to check.
+ * @return True if the line consists only of `:END:` (modulo whitespace).
+ */
 bool IsDrawerEndLine(const std::string &line) {
     size_t i = 0;
     while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) i++;
@@ -1788,6 +2048,13 @@ bool IsDrawerEndLine(const std::string &line) {
 // kBuiltinOrg's own `'^%s*:([%w_]+):%s*(.*)$'` port: a ":KEY: value" line
 // inside a drawer. Unlike MatchDrawerKeyPrefix below, requires the value
 // half too (used by org_property_get's read path).
+/**
+ * @brief Matches a `:KEY: value` property-drawer line and extracts both the key and value.
+ * @param line The line to match.
+ * @param key Set to the property key on success.
+ * @param value Set to the property value on success.
+ * @return True if the line matches the `:KEY: value` shape, false otherwise.
+ */
 bool MatchPropertyLine(const std::string &line, std::string *key, std::string *value) {
     size_t i = 0;
     while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) i++;
@@ -1807,6 +2074,12 @@ bool MatchPropertyLine(const std::string &line, std::string *key, std::string *v
 
 // kBuiltinOrg's own `'^%s*:([%w_]+):'` port (no value, no end anchor) --
 // org_property_set/remove's own "is this drawer line for KEY" scan.
+/**
+ * @brief Matches a `:KEY:` prefix at the start of a drawer line, without requiring or capturing a value.
+ * @param line The line to match.
+ * @param key Set to the property key on success.
+ * @return True if the line begins with `:KEY:`, false otherwise.
+ */
 bool MatchDrawerKeyPrefix(const std::string &line, std::string *key) {
     size_t i = 0;
     while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) i++;
@@ -1821,6 +2094,12 @@ bool MatchDrawerKeyPrefix(const std::string &line, std::string *key) {
     return true;
 }
 
+/**
+ * @brief Compares two strings for equality, ignoring ASCII case.
+ * @param a The first string.
+ * @param b The second string.
+ * @return True if the strings have equal length and match character-by-character ignoring case.
+ */
 bool EqualsIgnoreCase(const std::string &a, const std::string &b) {
     if (a.size() != b.size()) return false;
     for (size_t i = 0; i < a.size(); i++) {
@@ -1903,6 +2182,13 @@ void Editor::OrgPropertyRemove(int row, const std::string &key, const std::vecto
 namespace {
 // kBuiltinOrgDrill's own `mep_org_sm2` port: SM-2 spaced-repetition
 // update (ef/reps/interval are read-modify-write in place).
+/**
+ * @brief Applies one SM-2 spaced-repetition update step, adjusting ease factor, repetition count, and interval in place.
+ * @param ef The ease factor, read and updated in place.
+ * @param reps The repetition count, read and updated in place.
+ * @param interval The interval (in days), read and updated in place.
+ * @param quality The recall quality grade for this review (0-5; below 3 resets the schedule).
+ */
 void Sm2Update(double *ef, int *reps, int *interval, int quality) {
     if (quality < 3) {
         *reps = 0;
@@ -1921,6 +2207,12 @@ void Sm2Update(double *ef, int *reps, int *interval, int quality) {
     if (*ef < 1.3) *ef = 1.3;
 }
 
+/**
+ * @brief Parses an OrgPropertyGet-style (found, text) result as a double, falling back to a default.
+ * @param r The (found, value-text) pair returned by a property lookup.
+ * @param def The default value to use if not found or not parseable.
+ * @return The parsed number, or `def` if the property was absent or not numeric.
+ */
 double PropertyNumberOr(const std::pair<bool, std::string> &r, double def) {
     if (!r.first) return def;
     char *end = nullptr;
@@ -1928,6 +2220,12 @@ double PropertyNumberOr(const std::pair<bool, std::string> &r, double def) {
     return end == r.second.c_str() ? def : v;
 }
 
+/**
+ * @brief Parses an OrgPropertyGet-style (found, text) result as an int, falling back to a default.
+ * @param r The (found, value-text) pair returned by a property lookup.
+ * @param def The default value to use if not found or not parseable.
+ * @return The parsed integer, or `def` if the property was absent or not numeric.
+ */
 int PropertyIntOr(const std::pair<bool, std::string> &r, int def) {
     if (!r.first) return def;
     char *end = nullptr;
@@ -1968,6 +2266,11 @@ std::string Editor::OrgResolvePath(const std::string &path) const {
 }
 
 namespace {
+/**
+ * @brief Checks whether a path's extension identifies it as a supported image format (png/jpg/jpeg/bmp/gif).
+ * @param path The file path to check.
+ * @return True if the path has a recognized image extension.
+ */
 bool IsOrgImageExtension(const std::string &path) {
     size_t pos = path.find_last_of('.');
     if (pos == std::string::npos) return false;
@@ -1983,6 +2286,11 @@ bool IsOrgImageExtension(const std::string &path) {
 // kBuiltinOrgImages' own `'^([^%]]+)%]%[.+$'` port: strips a
 // "][description" suffix off a `[[target][description]]` link's inner
 // text, same as mep.org_link_at_cursor's own handling.
+/**
+ * @brief Strips a "][description" suffix off a `[[target][description]]` org link's inner text.
+ * @param inner The link's inner text (between the outer `[[` and `]]`).
+ * @return The target portion, with any `][description` suffix removed.
+ */
 std::string ExtractOrgImageLinkTarget(const std::string &inner) {
     size_t rb = inner.find(']');
     if (rb == std::string::npos || rb == 0) return inner;
@@ -2026,6 +2334,12 @@ namespace {
 // the original's own "escape everything else, turn `*` into Lua's `.*`,
 // anchor with ^...$" approach, just without building an intermediate
 // pattern string.
+/**
+ * @brief Matches a filename against a `*`-wildcard glob pattern (single-char literals, greedy with backtrack).
+ * @param name The filename to test.
+ * @param glob The glob pattern (only `*` is special; no `?` or character classes).
+ * @return True if the whole name matches the whole pattern.
+ */
 bool MatchesGlob(const std::string &name, const std::string &glob) {
     size_t n = 0, g = 0, star_g = std::string::npos, star_n = 0;
     while (n < name.size()) {
@@ -2063,6 +2377,13 @@ std::vector<std::string> Editor::OrgAgendaExpandGlob(const std::string &pattern)
 namespace {
 // kBuiltinOrgAgenda's own `'SCHEDULED:%s*<([^>]+)>'`/`'DEADLINE:%s*<([^>]+)>'`
 // port (unanchored search for `tag`, then the bracketed timestamp body).
+/**
+ * @brief Finds a planning-line tag (e.g. `SCHEDULED:` or `DEADLINE:`) and extracts its bracketed timestamp body.
+ * @param line The line to search (an unanchored search for `tag`).
+ * @param tag The planning keyword to look for, including its trailing colon (e.g. "SCHEDULED:").
+ * @param out Set to the timestamp text between the angle brackets on success.
+ * @return True if the tag was found followed by a `<...>` timestamp, false otherwise.
+ */
 bool MatchPlanningTag(const std::string &line, const std::string &tag, std::string *out) {
     size_t pos = line.find(tag);
     if (pos == std::string::npos) return false;
@@ -2112,6 +2433,13 @@ std::vector<Editor::OrgAgendaEntry> Editor::OrgAgendaScanLines(const std::vector
 }
 
 namespace {
+/**
+ * @brief Replaces every non-overlapping literal occurrence of a substring with another string.
+ * @param s The string to search and replace within (taken by value, modified and returned).
+ * @param from The literal substring to search for.
+ * @param to The replacement text.
+ * @return The string with all occurrences of `from` replaced by `to`.
+ */
 std::string ReplaceAllLiteral(std::string s, const std::string &from, const std::string &to) {
     size_t pos = 0;
     while ((pos = s.find(from, pos)) != std::string::npos) {
@@ -2123,6 +2451,10 @@ std::string ReplaceAllLiteral(std::string s, const std::string &from, const std:
 
 // Date-only sibling of FormatOrgTimestampNow (OrgClock's own helper,
 // above) -- org-capture's %u/%t placeholders want no time-of-day.
+/**
+ * @brief Formats the current local date (no time-of-day) as an org date string (`YYYY-MM-DD Day`).
+ * @return The formatted date text.
+ */
 std::string FormatOrgDateOnlyNow() {
     std::time_t now = std::time(nullptr);
     std::tm tmv{};
@@ -2187,6 +2519,11 @@ int Editor::OrgRefileMove(int target_row, const std::vector<std::string> &todo_k
 }
 
 namespace {
+/**
+ * @brief Trims leading and trailing whitespace from a string.
+ * @param s The string to trim.
+ * @return The string with leading/trailing whitespace removed.
+ */
 std::string LatexTrim(const std::string &s) {
     size_t start = 0, end = s.size();
     while (start < end && std::isspace(static_cast<unsigned char>(s[start]))) start++;
@@ -2194,12 +2531,26 @@ std::string LatexTrim(const std::string &s) {
     return s.substr(start, end - start);
 }
 
+/**
+ * @brief Checks whether a string is wrapped in a given open/close delimiter pair with non-empty content between.
+ * @param s The string to check.
+ * @param open The required prefix delimiter.
+ * @param close The required suffix delimiter.
+ * @return True if `s` starts with `open`, ends with `close`, and has content between them.
+ */
 bool LatexWrapped(const std::string &s, const std::string &open, const std::string &close) {
     if (s.size() <= open.size() + close.size()) return false;
     if (s.compare(0, open.size(), open) != 0) return false;
     return s.compare(s.size() - close.size(), close.size(), close) == 0;
 }
 
+/**
+ * @brief Checks whether a literal appears case-insensitively at a given position in a string.
+ * @param s The string to check within.
+ * @param pos The position in `s` where the literal must start.
+ * @param lit The literal text to match, case-insensitively.
+ * @return True if `lit` matches `s` at `pos` ignoring case.
+ */
 bool MatchCiLiteral(const std::string &s, size_t pos, const std::string &lit) {
     if (pos + lit.size() > s.size()) return false;
     for (size_t k = 0; k < lit.size(); k++) {
@@ -2210,6 +2561,12 @@ bool MatchCiLiteral(const std::string &s, size_t pos, const std::string &lit) {
     return true;
 }
 
+/**
+ * @brief Advances an index past any whitespace characters in a string.
+ * @param s The string to scan.
+ * @param pos The starting position.
+ * @return The position of the first non-whitespace character at or after `pos` (or `s.size()`).
+ */
 size_t SkipWs(const std::string &s, size_t pos) {
     while (pos < s.size() && std::isspace(static_cast<unsigned char>(s[pos]))) pos++;
     return pos;
@@ -2217,6 +2574,11 @@ size_t SkipWs(const std::string &s, size_t pos) {
 
 // kBuiltinOrgLatex's own case-insensitive `#+BEGIN_LATEX`/`#+END_LATEX`/
 // `#+BEGIN_SRC latex`/`#+END_SRC` line matchers.
+/**
+ * @brief Checks whether a line is a standalone `#+BEGIN_LATEX` line.
+ * @param line The line to check.
+ * @return True if `line` is (ignoring leading/trailing whitespace) exactly `#+BEGIN_LATEX`.
+ */
 bool IsLatexBlockOpen(const std::string &line) {
     size_t i = SkipWs(line, 0);
     if (i + 1 >= line.size() || line[i] != '#' || line[i + 1] != '+') return false;
@@ -2226,12 +2588,22 @@ bool IsLatexBlockOpen(const std::string &line) {
     return i == line.size();
 }
 
+/**
+ * @brief Checks whether a line is a `#+END_LATEX` line.
+ * @param line The line to check.
+ * @return True if `line` starts (after leading whitespace) with `#+END_LATEX`.
+ */
 bool IsLatexBlockClose(const std::string &line) {
     size_t i = SkipWs(line, 0);
     if (i + 1 >= line.size() || line[i] != '#' || line[i + 1] != '+') return false;
     return MatchCiLiteral(line, i + 2, "END_LATEX");
 }
 
+/**
+ * @brief Checks whether a line is a `#+BEGIN_SRC latex` line.
+ * @param line The line to check.
+ * @return True if `line` is a `#+BEGIN_SRC` line whose language argument is `latex`.
+ */
 bool IsSrcLatexOpen(const std::string &line) {
     size_t i = SkipWs(line, 0);
     if (i + 1 >= line.size() || line[i] != '#' || line[i + 1] != '+') return false;
@@ -2243,12 +2615,22 @@ bool IsSrcLatexOpen(const std::string &line) {
     return MatchCiLiteral(line, after_ws, "latex");
 }
 
+/**
+ * @brief Checks whether a line is a `#+END_SRC` line.
+ * @param line The line to check.
+ * @return True if `line` starts (after leading whitespace) with `#+END_SRC`.
+ */
 bool IsSrcClose(const std::string &line) {
     size_t i = SkipWs(line, 0);
     if (i + 1 >= line.size() || line[i] != '#' || line[i + 1] != '+') return false;
     return MatchCiLiteral(line, i + 2, "END_SRC");
 }
 
+/**
+ * @brief Joins a list of lines into a single string with `\n` separators.
+ * @param lines The lines to join.
+ * @return The joined text, with no trailing newline.
+ */
 std::string JoinNewline(const std::vector<std::string> &lines) {
     std::string out;
     for (size_t i = 0; i < lines.size(); i++) {
@@ -2266,6 +2648,11 @@ std::string JoinNewline(const std::vector<std::string> &lines) {
 // Bare `$` is the only ambiguous delimiter -- see this function's own
 // Lua-source comment (main.cpp, kBuiltinOrgLatex) for the disambiguation
 // rule this mirrors exactly.
+/**
+ * @brief Scans a single line for inline LaTeX fragments (`$..$`, `$$..$$`, `\(..\)`, `\[..\]`).
+ * @param line The line to scan.
+ * @return The inline spans found, in left-to-right order, with `row` left unset (0).
+ */
 std::vector<Editor::OrgLatexInlineSpan> ScanLatexInlineSpans(const std::string &line) {
     std::vector<Editor::OrgLatexInlineSpan> spans;
     size_t n = line.size();
@@ -2416,6 +2803,12 @@ namespace {
 // `sep` at brace-depth 0 / outside quotes only (quotes only toggle at
 // brace-depth 0, since a quote inside a `{...}` group is already
 // protected by the braces).
+/**
+ * @brief Splits a BibTeX string on a separator, but only at brace-depth 0 and outside quotes.
+ * @param s The string to split.
+ * @param sep The separator character.
+ * @return The parts between top-level (unbraced, unquoted) occurrences of `sep`.
+ */
 std::vector<std::string> BibSplitTopLevel(const std::string &s, char sep) {
     std::vector<std::string> parts;
     int depth = 0;
@@ -2439,6 +2832,12 @@ std::vector<std::string> BibSplitTopLevel(const std::string &s, char sep) {
 }
 
 // kBuiltinOrgBib's own `mep_org_bib_expand_value` port.
+/**
+ * @brief Expands a raw BibTeX field value, resolving `#`-concatenated string-macro references and stripping braces/quotes.
+ * @param val The raw field value text.
+ * @param strings The map of previously defined `@string` macro names (lowercased) to their expanded values.
+ * @return The expanded, unwrapped value text.
+ */
 std::string BibExpandValue(const std::string &val, const std::map<std::string, std::string> &strings) {
     std::vector<std::string> parts = BibSplitTopLevel(val, '#');
     if (parts.size() == 1 && !val.empty() && (val[0] == '{' || val[0] == '"')) {
@@ -2470,6 +2869,15 @@ std::string BibExpandValue(const std::string &val, const std::map<std::string, s
 // shorter TYPE/whitespace span would expose a `{` a longer greedy scan
 // missed -- a plain greedy scan-then-check is equivalent to Lua's
 // (potentially-backtracking) pattern engine here.
+/**
+ * @brief Finds the next `@TYPE{balanced brace group}` BibTeX entry at or after a given position.
+ * @param text The full BibTeX text to search.
+ * @param pos The position to begin searching from.
+ * @param etype Set to the entry type text (e.g. "article") on success.
+ * @param body Set to the text inside the entry's outermost balanced braces on success.
+ * @param next_pos Set to the position just past the entry's closing brace on success.
+ * @return True if an entry was found, false if there are no more.
+ */
 bool FindNextBibEntry(const std::string &text, size_t pos, std::string *etype, std::string *body, size_t *next_pos) {
     while (true) {
         size_t at = text.find('@', pos);
@@ -2515,6 +2923,13 @@ bool FindNextBibEntry(const std::string &text, size_t pos, std::string *etype, s
 // both `@string{name = value}` and, after the field-splitter, each
 // `name = value` field -- the original's field variant is a separate
 // two-step match-then-trim, but nets out to the exact same result).
+/**
+ * @brief Matches a `name = value` assignment (used for `@string{name = value}` and BibTeX entry fields).
+ * @param s The text to match against.
+ * @param name Set to the parsed name on success.
+ * @param val Set to the parsed (untrimmed-of-braces) value text on success.
+ * @return True if `s` matched the `name = value` pattern.
+ */
 bool BibMatchNameEqVal(const std::string &s, std::string *name, std::string *val) {
     size_t i = SkipWs(s, 0);
     size_t name_start = i;
@@ -2533,6 +2948,13 @@ bool BibMatchNameEqVal(const std::string &s, std::string *name, std::string *val
 }
 
 // kBuiltinOrgBib's own `'^%s*([^,]+),(.*)$'` port.
+/**
+ * @brief Splits a BibTeX entry body into its citation key and the remaining field-list text.
+ * @param body The entry body text (everything inside the entry's outer braces).
+ * @param key_raw Set to the citation key text (up to the first comma) on success.
+ * @param fieldstr Set to the remaining text after that comma on success.
+ * @return True if a comma-separated key was found, false otherwise.
+ */
 bool BibMatchKeyAndFieldstr(const std::string &body, std::string *key_raw, std::string *fieldstr) {
     size_t i = SkipWs(body, 0);
     size_t key_start = i;
@@ -2543,6 +2965,11 @@ bool BibMatchKeyAndFieldstr(const std::string &body, std::string *key_raw, std::
     return true;
 }
 
+/**
+ * @brief Returns a lowercased copy of a string.
+ * @param s The string to lowercase.
+ * @return The lowercased copy.
+ */
 std::string BibLower(const std::string &s) {
     std::string out = s;
     for (char &c : out) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -2550,6 +2977,12 @@ std::string BibLower(const std::string &s) {
 }
 
 // kBuiltinOrgBib's own `mep_org_bib_parse` port.
+/**
+ * @brief Parses BibTeX source text, accumulating `@string` macros and bibliography entries.
+ * @param text The BibTeX source text to parse.
+ * @param strings The map of lowercased `@string` macro names to expanded values, updated in place as macros are found.
+ * @param entries The list of parsed entries, appended to in place (comment/preamble/string entries are not added).
+ */
 void BibParseText(const std::string &text, std::map<std::string, std::string> *strings,
                    std::vector<Editor::OrgBibEntry> *entries) {
     size_t pos = 0;
@@ -2604,10 +3037,26 @@ std::vector<Editor::OrgBibEntry> Editor::OrgBibParseFiles(const std::vector<std:
 }
 
 namespace {
+/**
+ * @brief Checks whether a character can appear in a bare BibTeX word (alphanumeric or underscore).
+ * @param c The character to check.
+ * @return True if `c` is alphanumeric or `_`.
+ */
 bool IsBibWordChar(char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; }
+/**
+ * @brief Checks whether a character can appear in a citation key (alphanumeric, `_`, `-`, or `:`).
+ * @param c The character to check.
+ * @return True if `c` is a valid citation-key character.
+ */
 bool IsBibKeyChar(char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-' || c == ':'; }
 
 // kBuiltinOrgBib's own `'^%s*@?(%S+)%s*$'` port.
+/**
+ * @brief Parses a single citation key, optionally prefixed with `@`, from an otherwise whitespace-only string.
+ * @param s The text to match.
+ * @param key Set to the parsed key on success.
+ * @return True if `s` (trimmed) is a single `@`-optional key with no other content.
+ */
 bool BibMatchAtKey(const std::string &s, std::string *key) {
     size_t i = SkipWs(s, 0);
     if (i < s.size() && s[i] == '@') i++;
@@ -2626,6 +3075,15 @@ bool BibMatchAtKey(const std::string &s, std::string *key) {
 // scan-then-check for the next `:` lands at the exact same position a
 // (potentially-backtracking) lazy match would -- same reasoning as
 // FindNextBibEntry above.
+/**
+ * @brief Finds the next `[cite<letters/slashes>:body]` org-cite span at or after a given position in a line.
+ * @param line The line to search.
+ * @param pos The position to begin searching from.
+ * @param match_start Set to the index of the span's opening `[` on success.
+ * @param match_end Set to the index of the span's closing `]` on success.
+ * @param body Set to the text between the `:` and the closing `]` on success.
+ * @return True if a span was found, false if there are no more.
+ */
 bool FindNextOrgCiteSpan(const std::string &line, size_t pos, size_t *match_start, size_t *match_end,
                           std::string *body) {
     static const std::string kPrefix = "[cite";
@@ -2653,6 +3111,11 @@ bool FindNextOrgCiteSpan(const std::string &line, size_t pos, size_t *match_star
 }
 
 // kBuiltinOrgBib's own `mep_org_bib_cite_spans` port.
+/**
+ * @brief Scans a line for org-cite citation spans, both the `[cite:...]` syntax and legacy `citep:`/`citet:`/etc. prefixes.
+ * @param line The line to scan.
+ * @return The citation spans found, each with its column range and the citation keys it references.
+ */
 std::vector<Editor::OrgBibCiteSpan> BibCiteSpans(const std::string &line) {
     std::vector<Editor::OrgBibCiteSpan> spans;
 
@@ -2713,6 +3176,7 @@ std::vector<Editor::OrgBibCiteSpan> BibCiteSpans(const std::string &line) {
         if (!matched) p++;
     }
 
+    // Order spans left-to-right by their starting column.
     std::sort(spans.begin(), spans.end(), [](const Editor::OrgBibCiteSpan &a, const Editor::OrgBibCiteSpan &b) {
         return a.col_start < b.col_start;
     });
@@ -2734,12 +3198,23 @@ std::vector<std::string> Editor::OrgBibCiteAtCursor() const {
 }
 
 namespace {
+/**
+ * @brief Checks whether a filename has a `.org` extension.
+ * @param name The filename to check.
+ * @return True if `name` ends with `.org`.
+ */
 bool HasOrgExtension(const std::string &name) {
     static const std::string kExt = ".org";
     return name.size() >= kExt.size() && name.compare(name.size() - kExt.size(), kExt.size(), kExt) == 0;
 }
 
 // kBuiltinOrgRoam's own `'^#%+[Tt][Ii][Tt][Ll][Ee]:%s*(.*)$'` port.
+/**
+ * @brief Matches a `#+TITLE:` keyword line and extracts its value.
+ * @param line The line to check.
+ * @param title Set to the title text (after `#+TITLE:` and whitespace) on success.
+ * @return True if `line` is a `#+TITLE:` line.
+ */
 bool MatchTitleKeyword(const std::string &line, std::string *title) {
     if (line.size() < 2 || line[0] != '#' || line[1] != '+') return false;
     if (!MatchCiLiteral(line, 2, "TITLE:")) return false;
@@ -2749,6 +3224,12 @@ bool MatchTitleKeyword(const std::string &line, std::string *title) {
 }
 
 // kBuiltinOrgRoam's own `'^%s*:ID:%s*(%S+)'` port (unanchored end).
+/**
+ * @brief Matches an `:ID:` property line and extracts its value.
+ * @param line The line to check.
+ * @param id Set to the ID value on success.
+ * @return True if `line` (after leading whitespace) is a `:ID:` property with a value.
+ */
 bool MatchIdProperty(const std::string &line, std::string *id) {
     size_t i = SkipWs(line, 0);
     static const std::string kTag = ":ID:";
@@ -2763,6 +3244,10 @@ bool MatchIdProperty(const std::string &line, std::string *id) {
 
 // mep_org_roam_gen_id's own port. Uses C++'s own <random> rather than
 // Lua's math.random (see editor.h's own comment on OrgRoamEnsureId).
+/**
+ * @brief Generates a new org-roam ID from the current local timestamp plus a random 4-digit suffix.
+ * @return The generated ID, formatted `YYYYMMDDHHMMSS-NNNN`.
+ */
 std::string GenerateRoamId() {
     std::time_t now = std::time(nullptr);
     std::tm tmv{};
@@ -2775,6 +3260,11 @@ std::string GenerateRoamId() {
 }
 
 // kBuiltinOrgRoam's own `line:gmatch('%[%[id:([%w%-]+)')` port.
+/**
+ * @brief Extracts every `[[id:TARGET...]]` link target ID from a line.
+ * @param line The line to scan.
+ * @return The target IDs found, in order of appearance.
+ */
 std::vector<std::string> ExtractIdLinkTargets(const std::string &line) {
     std::vector<std::string> targets;
     static const std::string kPrefix = "[[id:";
@@ -2878,6 +3368,11 @@ struct OrgTableRow {
 };
 
 // kBuiltinOrgLinks' own `'^%s*|%-'`/inner-cell-split port.
+/**
+ * @brief Parses a line as an org table row: a separator row (`|-...`) or a row of `|`-delimited cells.
+ * @param line The line to parse.
+ * @return The parsed row; `is_row` is false if the line isn't a table row at all.
+ */
 OrgTableRow ParseOrgTableRowImpl(const std::string &line) {
     OrgTableRow result;
     size_t i = SkipWs(line, 0);
@@ -2963,6 +3458,13 @@ namespace {
 // leaves it as a bare target with no description. Same underlying
 // shape as ExtractOrgImageLinkTarget (editor.cpp, OrgImageScan), but
 // that one discards desc -- org_link_at_cursor needs it back.
+/**
+ * @brief Splits an org link's inner text into a target and an optional description (`target][desc` shape).
+ * @param inner The link's inner text (between the outer `[[` and `]]`).
+ * @param target Set to the target portion.
+ * @param has_desc Set to whether a `][description` suffix was present.
+ * @param desc Set to the description text if `has_desc` is set.
+ */
 void SplitLinkTargetDesc(const std::string &inner, std::string *target, bool *has_desc, std::string *desc) {
     size_t rb = inner.find(']');
     if (rb == std::string::npos || rb == 0 || rb + 1 >= inner.size() || inner[rb + 1] != '[' || rb + 2 >= inner.size()) {
@@ -3004,6 +3506,13 @@ Editor::OrgLinkAtCursorResult Editor::OrgLinkAtCursor() const {
 }
 
 namespace {
+/**
+ * @brief Checks whether a run of `count` consecutive digit characters starts at a given position.
+ * @param s The string to check.
+ * @param pos The starting position of the run.
+ * @param count The number of digit characters required.
+ * @return True if `s` has `count` digits starting at `pos`.
+ */
 bool IsDigitRun(const std::string &s, size_t pos, int count) {
     if (pos + static_cast<size_t>(count) > s.size()) return false;
     for (int k = 0; k < count; k++) {
@@ -3015,6 +3524,17 @@ bool IsDigitRun(const std::string &s, size_t pos, int count) {
 // kBuiltinOrgLinks' own `'<(%d%d%d%d%-%d%d%-%d%d[^>]-)>'`/
 // `'%[(%d%d%d%d%-%d%d%-%d%d[^%]]-)%]'` port: finds the next
 // `open YYYY-MM-DD ... close` span at/after `pos`.
+/**
+ * @brief Finds the next `open YYYY-MM-DD ... close` org timestamp span at or after a given position in a line.
+ * @param line The line to search.
+ * @param pos The position to begin searching from.
+ * @param open The opening delimiter character (`<` for active, `[` for inactive).
+ * @param close The matching closing delimiter character.
+ * @param s Set to the index of the opening delimiter on success.
+ * @param e Set to the index of the closing delimiter on success.
+ * @param body Set to the timestamp text between the delimiters on success.
+ * @return True if a valid timestamp span was found, false if there are no more.
+ */
 bool FindTimestampAt(const std::string &line, size_t pos, char open, char close, size_t *s, size_t *e,
                       std::string *body) {
     while (true) {
@@ -3043,6 +3563,11 @@ bool FindTimestampAt(const std::string &line, size_t pos, char open, char close,
 // kBuiltinOrgLinks' own `'^%d%d%d%d%-%d%d%-%d%d%s*%a*(.*)$'` port: the
 // trailing text after the date and an optional weekday name (e.g. a
 // repeater like " +1w").
+/**
+ * @brief Extracts the trailing text (e.g. a repeater like " +1w") following the date and optional weekday name in a timestamp body.
+ * @param body The timestamp body text (starting with `YYYY-MM-DD`).
+ * @return The text after the date and any weekday name.
+ */
 std::string ExtractTimestampRest(const std::string &body) {
     size_t i = SkipWs(body, 10);
     while (i < body.size() && std::isalpha(static_cast<unsigned char>(body[i]))) i++;
@@ -3120,6 +3645,13 @@ void Editor::OrgTimestampShift(int delta_days) {
 
 namespace {
 // kBuiltinOrgLinks' own `'%[fn:([%w_%-]+)%]'` port.
+/**
+ * @brief Checks whether a given column falls within a `[fn:name]` footnote reference on a line, extracting its name.
+ * @param line The line to search.
+ * @param col The 1-based column to test.
+ * @param name Set to the footnote name on success.
+ * @return True if `col` falls within a footnote reference.
+ */
 bool FindFootnoteRefAt(const std::string &line, int col, std::string *name) {
     static const std::string kPrefix = "[fn:";
     size_t pos = 0;
@@ -3362,6 +3894,11 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) 
         // must stay in exact agreement with DrawPane's row loop and its
         // cursor-Y lookup (main.cpp), the same three-way constraint the
         // comment above already calls out for folds.
+        /**
+         * @brief Computes how many visual scroll "slots" a given buffer row occupies (folds/org images/LaTeX fragments expand or collapse a row; soft-wrap can expand it too).
+         * @param r The buffer row to measure.
+         * @return The number of visual slots the row contributes.
+         */
         auto row_slots = [&](int r) {
             if (org_images_visible_ && buf.org_image_rows.count(r)) return kOrgInlineImageSlots;
             if (org_latex_visible_) {
@@ -3567,6 +4104,10 @@ void Editor::WheelScrollOffice(float dx, float dy) {
         sess.in_table_edit = -1;
         sess.table_cell_editing = false;
     }
+    /**
+     * @brief Gets the length of the text in the office document paragraph the cursor currently sits on.
+     * @return The paragraph text's length, in characters.
+     */
     auto cur_len = [&]() { return static_cast<int>(sess.doc.paragraphs[sess.cursor_para].text.size()); };
     if (dy != 0.0f) {
         int steps = WheelSteps(wheel_accum_office_para_, -dy, kWheelLinesPerNotch);
@@ -4126,7 +4667,15 @@ void Editor::TerminalSpawn(TerminalSession &sess, const std::vector<std::string>
     VTerm *vterm_ptr = sess.vterm.get();
     int buffer_id = sess.buffer_id;
     JobManager::Callbacks cb;
+    /**
+     * @brief Feeds a chunk of raw child-process output into the terminal's VTerm for parsing/rendering.
+     * @param chunk The raw bytes received from the child process.
+     */
     cb.on_stdout_raw = [vterm_ptr](const std::string &chunk) { vterm_ptr->Feed(chunk); };
+    /**
+     * @brief Marks this terminal session as exited and records its exit code, once the child process terminates.
+     * @param code The child process's exit code.
+     */
     cb.on_exit = [this, buffer_id](int code) {
         TerminalSession *s = FindTerminal(buffer_id);
         if (s) {
@@ -4398,6 +4947,11 @@ void Editor::HandleImageInput() {
     // IsKeyPressed(Repeat) rather than draining GetKeyPressed(): GLFW only
     // enqueues the initial key-down into the GetKeyPressed() queue, so
     // holding a key down (OS auto-repeat) would otherwise pan exactly once.
+    /**
+     * @brief Checks whether a key was just pressed or is auto-repeating.
+     * @param key The GLFW/raylib key code to check.
+     * @return True if the key is freshly pressed or repeating this frame.
+     */
     auto held = [](int key) { return IsKeyPressed(key) || IsKeyPressedRepeat(key); };
     if (held(KEY_H) || held(KEY_LEFT)) {
         sess->pan_x = std::clamp(sess->pan_x - kPanStep, 0, max_pan_x);
@@ -4422,6 +4976,10 @@ void Editor::HandleImageInput() {
     // fits the whole image into the current viewport and resets pan.
     // ApplyImageZoom (editor.h) does the actual work -- also reused by
     // HandleMouseWheel's Image branch for Ctrl-scroll.
+    /**
+     * @brief Applies a new zoom level to the current image session, re-anchored on the viewport center.
+     * @param new_zoom The target zoom factor.
+     */
     auto apply_zoom = [&](float new_zoom) { ApplyImageZoom(*sess, new_zoom); };
 
     int cp = GetCharPressed();
@@ -4458,6 +5016,11 @@ namespace {
 // needs to UTF-8-encode anything beyond ASCII itself -- std::string here is
 // always UTF-8 (matching PdfDoc::Search's own expectation, which decodes it
 // back to UTF-16 for PDFium).
+/**
+ * @brief Appends a Unicode codepoint to a string, UTF-8-encoded.
+ * @param s The string to append to.
+ * @param cp The Unicode codepoint to encode.
+ */
 void AppendUtf8(std::string &s, int cp) {
     if (cp < 0x80) {
         s.push_back(static_cast<char>(cp));
@@ -4510,6 +5073,7 @@ void Editor::PopulateHtmlSession(HtmlSession &sess, const std::string &origin, c
     sess.source = source;
     sess.doc = HtmlDoc();
     ParseHtml(std::string(reinterpret_cast<const char *>(bytes), len), sess.doc);
+    // Info-level console messages surface as plain notifications; script errors are prefixed with the page's source.
     RunScripts(
         sess.doc, [this](const std::string &msg) { Notify(msg, NotifyLevel::Info); },
         [this, source](const std::string &msg) { Notify(source + ": " + msg, NotifyLevel::Error); });
@@ -4651,6 +5215,11 @@ void Editor::HandleHtmlInput() {
     // enqueues the initial key-down into the GetKeyPressed() queue, so
     // holding a key down (OS auto-repeat) would otherwise scroll exactly
     // once -- same reasoning as HandleImageInput's own `held` helper.
+    /**
+     * @brief Checks whether a key was just pressed or is auto-repeating.
+     * @param key The GLFW/raylib key code to check.
+     * @return True if the key is freshly pressed or repeating this frame.
+     */
     auto held = [](int key) { return IsKeyPressed(key) || IsKeyPressedRepeat(key); };
     if (held(KEY_J) || held(KEY_DOWN)) sess->scroll_y += kScrollStep;
     if (held(KEY_K) || held(KEY_UP)) sess->scroll_y = std::max(0.0f, sess->scroll_y - kScrollStep);
@@ -4858,6 +5427,11 @@ void Editor::OpenPdfInPlace(const std::string &path, const unsigned char *bytes,
 void Editor::RebasePdfScroll(PdfSession &sess) {
     int page_count = sess.doc ? sess.doc->PageCount() : 0;
     if (page_count <= 0) return;
+    /**
+     * @brief Returns a PDF page's rendered height in screen pixels at the session's current scale/zoom.
+     * @param idx The page index.
+     * @return The page's on-screen height in pixels.
+     */
     auto page_screen_h = [&](int idx) { return PdfPageScreenHeightPx(sess, idx); };
     for (;;) {
         float cur_h = page_screen_h(sess.page);
@@ -4924,12 +5498,23 @@ void Editor::HandlePdfInput() {
     int page_count = sess->doc ? sess->doc->PageCount() : 0;
     if (page_count <= 0) return;
 
+    /**
+     * @brief Re-bases the current PDF page's scroll position after a scroll or zoom change.
+     */
     auto rebase_scroll = [&]() { RebasePdfScroll(*sess); };
+    /**
+     * @brief Clamps the current PDF page's horizontal pan offset to valid bounds.
+     */
     auto clamp_pan_x = [&]() { ClampPdfPanX(*sess); };
 
     constexpr int kScrollStep = 40;
     // Same IsKeyPressed||IsKeyPressedRepeat reasoning as HandleImageInput --
     // GetKeyPressed() only fires on initial key-down, not OS auto-repeat.
+    /**
+     * @brief Checks whether a key was just pressed or is auto-repeating.
+     * @param key The GLFW/raylib key code to check.
+     * @return True if the key is freshly pressed or repeating this frame.
+     */
     auto held = [](int key) { return IsKeyPressed(key) || IsKeyPressedRepeat(key); };
     bool scrolled = false;
     if (held(KEY_J) || held(KEY_DOWN)) { sess->scroll_y += kScrollStep; scrolled = true; }
@@ -4938,6 +5523,10 @@ void Editor::HandlePdfInput() {
     if (held(KEY_H) || held(KEY_LEFT)) { sess->pan_x -= kScrollStep; clamp_pan_x(); }
     if (held(KEY_L) || held(KEY_RIGHT)) { sess->pan_x += kScrollStep; clamp_pan_x(); }
 
+    /**
+     * @brief Jumps to a clamped PDF page number and resets vertical scroll to its top.
+     * @param new_page The target page index (clamped to the valid page range).
+     */
     auto goto_page = [&](int new_page) {
         sess->page = std::clamp(new_page, 0, page_count - 1);
         sess->scroll_y = 0;
@@ -4971,7 +5560,14 @@ void Editor::HandlePdfInput() {
     // removed, leaving each page's on-screen size unchanged. SettlePdfZoom/
     // ApplyPdfZoom (editor.h) do the actual work -- also reused by
     // HandleMouseWheel's Pdf branch for Ctrl-scroll.
+    /**
+     * @brief Settles the current PDF zoom, folding excess zoom into rendered_scale and clearing cached rasters when out of range.
+     */
     auto settle_zoom = [&]() { SettlePdfZoom(*sess); };
+    /**
+     * @brief Applies a new zoom level to the current PDF session, re-anchored on the viewport center.
+     * @param new_zoom The target zoom factor.
+     */
     auto apply_zoom = [&](float new_zoom) { ApplyPdfZoom(*sess, new_zoom); };
 
     int cp = GetCharPressed();
@@ -5222,7 +5818,15 @@ void Editor::HandleOfficeNormalInput() {
         return;
     }
 
+    /**
+     * @brief Returns the character length of the paragraph the office cursor is currently on.
+     * @return The length, in characters, of the current paragraph's text.
+     */
     auto cur_len = [&]() { return static_cast<int>(sess->doc.paragraphs[sess->cursor_para].text.size()); };
+    /**
+     * @brief Moves the office cursor to a clamped paragraph index, entering a table if the destination paragraph anchors one.
+     * @param new_para The target paragraph index (clamped to the valid range).
+     */
     auto goto_para = [&](int new_para) {
         int clamped = std::clamp(new_para, 0, para_count - 1);
         // Only auto-enter a table on an actual paragraph change -- a
@@ -5247,6 +5851,11 @@ void Editor::HandleOfficeNormalInput() {
         }
     };
 
+    /**
+     * @brief Checks whether a key was just pressed or is auto-repeating.
+     * @param key The GLFW/raylib key code to check.
+     * @return True if the key is freshly pressed or repeating this frame.
+     */
     auto held = [](int key) { return IsKeyPressed(key) || IsKeyPressedRepeat(key); };
 
     // Table-cell navigation mode: while the cursor is anchored on a table
@@ -5523,6 +6132,10 @@ void Editor::HandleOfficeInsertInput() {
         return;
     }
 
+    /**
+     * @brief Returns the character length of the paragraph the office cursor is currently on.
+     * @return The length, in characters, of the current paragraph's text.
+     */
     auto cur_len = [&]() { return static_cast<int>(sess->doc.paragraphs[sess->cursor_para].text.size()); };
 
     bool escape = false, enter = false, backspace = false, del = false;
@@ -5618,11 +6231,24 @@ void Editor::HandleOfficeVisualInput() {
         mode_ = Mode::OfficeNormal;
         return;
     }
+    /**
+     * @brief Returns the character length of the paragraph the office cursor is currently on.
+     * @return The length, in characters, of the current paragraph's text.
+     */
     auto cur_len = [&]() { return static_cast<int>(sess->doc.paragraphs[sess->cursor_para].text.size()); };
+    /**
+     * @brief Moves the office cursor to a clamped paragraph index, keeping the column within the new paragraph's bounds.
+     * @param new_para The target paragraph index (clamped to the valid range).
+     */
     auto goto_para = [&](int new_para) {
         sess->cursor_para = std::clamp(new_para, 0, para_count - 1);
         sess->cursor_col = std::min(sess->cursor_col, cur_len());
     };
+    /**
+     * @brief Checks whether a key was just pressed or is auto-repeating.
+     * @param key The GLFW/raylib key code to check.
+     * @return True if the key is freshly pressed or repeating this frame.
+     */
     auto held = [](int key) { return IsKeyPressed(key) || IsKeyPressedRepeat(key); };
     if (held(KEY_H) || held(KEY_LEFT)) sess->cursor_col = std::max(0, sess->cursor_col - 1);
     if (held(KEY_L) || held(KEY_RIGHT)) sess->cursor_col = std::min(cur_len(), sess->cursor_col + 1);
@@ -5744,6 +6370,11 @@ bool Editor::OfficeFormatActive(char which) const {
     const OfficeSession &sess = it->second;
     int para_count = static_cast<int>(sess.doc.paragraphs.size());
     if (para_count <= 0) return false;
+    /**
+     * @brief Selects which DocFormat boolean field corresponds to the requested format character.
+     * @param f The format record to read.
+     * @return The value of the bold/italic/strike/underline field matching `which`.
+     */
     auto field_of = [&](const DocFormat &f) {
         return which == 'b' ? f.bold : which == 'i' ? f.italic : which == 's' ? f.strike : f.underline;
     };
@@ -5810,14 +6441,17 @@ void Editor::ApplyOfficeFormatFieldOverSelection(const std::function<void(DocFor
 }
 
 void Editor::SetOfficeFontFamily(OfficeFontFamily family) {
+    // Sets the font family field on every format record in the selection (or current char).
     ApplyOfficeFormatFieldOverSelection([family](DocFormat &f) { f.font_family = family; });
 }
 
 void Editor::SetOfficeFontSizePt(float pt) {
+    // Sets the font size (in points) field on every format record in the selection (or current char).
     ApplyOfficeFormatFieldOverSelection([pt](DocFormat &f) { f.font_size_pt = pt; });
 }
 
 void Editor::SetOfficeColor(unsigned char r, unsigned char g, unsigned char b) {
+    // Enables and sets the explicit text color on every format record in the selection (or current char).
     ApplyOfficeFormatFieldOverSelection([r, g, b](DocFormat &f) {
         f.has_color = true;
         f.color_r = r; f.color_g = g; f.color_b = b;
@@ -5825,10 +6459,12 @@ void Editor::SetOfficeColor(unsigned char r, unsigned char g, unsigned char b) {
 }
 
 void Editor::ClearOfficeColor() {
+    // Clears the explicit text color flag on every format record in the selection (or current char).
     ApplyOfficeFormatFieldOverSelection([](DocFormat &f) { f.has_color = false; });
 }
 
 void Editor::SetOfficeHighlight(unsigned char r, unsigned char g, unsigned char b) {
+    // Enables and sets the highlight color on every format record in the selection (or current char).
     ApplyOfficeFormatFieldOverSelection([r, g, b](DocFormat &f) {
         f.has_highlight = true;
         f.highlight_r = r; f.highlight_g = g; f.highlight_b = b;
@@ -5836,6 +6472,7 @@ void Editor::SetOfficeHighlight(unsigned char r, unsigned char g, unsigned char 
 }
 
 void Editor::ClearOfficeHighlight() {
+    // Clears the highlight color flag on every format record in the selection (or current char).
     ApplyOfficeFormatFieldOverSelection([](DocFormat &f) { f.has_highlight = false; });
 }
 
@@ -5845,6 +6482,7 @@ void Editor::ToggleOfficeSuperscript() {
     // documents) so the whole selection ends up in one consistent
     // resulting state rather than each character flipping independently.
     bool active = OfficeSuperscriptActiveInternal(true);
+    // Flips superscript to the opposite of its sampled state and clears subscript (mutually exclusive).
     ApplyOfficeFormatFieldOverSelection([active](DocFormat &f) {
         f.superscript = !active;
         f.subscript = false;
@@ -5853,6 +6491,7 @@ void Editor::ToggleOfficeSuperscript() {
 
 void Editor::ToggleOfficeSubscript() {
     bool active = OfficeSuperscriptActiveInternal(false);
+    // Flips subscript to the opposite of its sampled state and clears superscript (mutually exclusive).
     ApplyOfficeFormatFieldOverSelection([active](DocFormat &f) {
         f.subscript = !active;
         f.superscript = false;
@@ -5952,6 +6591,7 @@ void Editor::InsertOfficeText(const std::string &utf8) {
 void Editor::InsertOfficeMath() {
     if (!IsOfficeBuffer(CurPane().buffer_id)) return;
     int buffer_id = CurPane().buffer_id;
+    // Once the LaTeX text is entered, inserts it into the paragraph as a new math-formatted span.
     BeginPromptNative("Insert math (LaTeX):", "", [this, buffer_id](const std::string &latex) {
         if (latex.empty()) return;
         auto it = officedocs_.find(buffer_id);
@@ -5979,8 +6619,10 @@ void Editor::InsertOfficeMath() {
 void Editor::InsertOfficeTablePrompt() {
     if (!IsOfficeBuffer(CurPane().buffer_id)) return;
     int buffer_id = CurPane().buffer_id;
+    // Once the row count is entered, prompts for the column count.
     BeginPromptNative("Insert table (rows):", "2", [this, buffer_id](const std::string &rows_str) {
         int rows = std::clamp(std::atoi(rows_str.c_str()), 1, 50);
+        // Once the column count is entered, builds an empty rows x cols table and enters it for editing.
         BeginPromptNative("Insert table (cols):", "2", [this, buffer_id, rows](const std::string &cols_str) {
             int cols = std::clamp(std::atoi(cols_str.c_str()), 1, 20);
             auto it = officedocs_.find(buffer_id);
@@ -6004,6 +6646,7 @@ void Editor::InsertOfficeTablePrompt() {
 void Editor::InsertOfficeImagePrompt() {
     if (!IsOfficeBuffer(CurPane().buffer_id)) return;
     int buffer_id = CurPane().buffer_id;
+    // Once a path is entered, decodes it and inserts it as a new image anchor on the current paragraph.
     BeginPromptNative("Insert image (path):", "", [this, buffer_id](const std::string &path) {
         if (path.empty()) return;
         std::ifstream f(path, std::ios::binary);
@@ -6156,6 +6799,11 @@ void Editor::HandleSheetNormalInput() {
     // hjkl can freely move past the sheet's current "used range" so the
     // user can navigate to an empty cell to start typing new data; gg/G/
     // 0/$ below jump specifically to the used-range corners.
+    /**
+     * @brief Checks whether a key was just pressed or is auto-repeating.
+     * @param key The GLFW/raylib key code to check.
+     * @return True if the key is freshly pressed or repeating this frame.
+     */
     auto held = [](int key) { return IsKeyPressed(key) || IsKeyPressedRepeat(key); };
     if (held(KEY_H) || held(KEY_LEFT)) sess->cursor_col = std::max(0, sess->cursor_col - 1);
     if (held(KEY_L) || held(KEY_RIGHT)) sess->cursor_col++;
@@ -6253,6 +6901,10 @@ namespace {
 // Workbook's used range (sheet count/active_sheet stay fixed across
 // undo/redo in v1 -- no structural sheet edits -- so only row/col need
 // clamping).
+/**
+ * @brief Clamps the sheet cursor and active sheet index back into the swapped-in workbook's valid range after undo/redo.
+ * @param sess The sheet session whose cursor/active_sheet were just swapped.
+ */
 void ClampSheetCursorAfterSwap(SheetSession &sess) {
     if (sess.wb.sheets.empty()) return;
     sess.active_sheet = std::clamp(sess.active_sheet, 0, static_cast<int>(sess.wb.sheets.size()) - 1);
@@ -6331,6 +6983,9 @@ void Editor::HandleSheetInsertInput() {
         else if (key == KEY_BACKSPACE) backspace = true;
         else if (key == KEY_DELETE) del = true;
     }
+    /**
+     * @brief Writes the in-progress edit buffer into the current cell and returns to SheetNormal mode.
+     */
     auto commit = [&]() {
         SetCellRaw(sess->wb, sess->active_sheet, sess->cursor_row, sess->cursor_col, sess->edit_buffer);
         sess->modified = true;
@@ -6388,6 +7043,11 @@ void Editor::HandleSheetVisualInput() {
     }
     Sheet &sh = sess->wb.sheets[sess->active_sheet];
 
+    /**
+     * @brief Checks whether a key was just pressed or is auto-repeating.
+     * @param key The GLFW/raylib key code to check.
+     * @return True if the key is freshly pressed or repeating this frame.
+     */
     auto held = [](int key) { return IsKeyPressed(key) || IsKeyPressedRepeat(key); };
     if (held(KEY_H) || held(KEY_LEFT)) sess->cursor_col = std::max(0, sess->cursor_col - 1);
     if (held(KEY_L) || held(KEY_RIGHT)) sess->cursor_col++;
@@ -6846,10 +7506,20 @@ void Editor::GanttSetHeadlineProgress(int headline_index, int progress) {
     const OrgHeadline &h = sess.outline.headlines[headline_index];
     int insert_at = h.line_start + 1;
     if (h.planning_line >= 0) insert_at = h.planning_line + 1;
+    /**
+     * @brief Returns a line with its leading spaces removed.
+     * @param line The line to strip.
+     * @return The line's text starting at its first non-space character (empty if all spaces).
+     */
     auto stripped = [](const std::string &line) {
         size_t first = line.find_first_not_of(' ');
         return first == std::string::npos ? std::string() : line.substr(first);
     };
+    /**
+     * @brief Checks whether a (property-drawer) line declares the PROGRESS property.
+     * @param line The line to check.
+     * @return True if the line, ignoring leading spaces, starts with ":PROGRESS:" (case-insensitive).
+     */
     auto is_progress_property = [&](const std::string &line) {
         std::string text = stripped(line);
         return text.rfind(":PROGRESS:", 0) == 0 || text.rfind(":progress:", 0) == 0;
@@ -6888,6 +7558,11 @@ void Editor::HandleKanbanNormalInput() {
     std::vector<int> cards = KanbanCardsInColumn(buffer_id, sess->focused_column);
     sess->focused_row = cards.empty() ? 0 : std::clamp(sess->focused_row, 0, static_cast<int>(cards.size()) - 1);
 
+    /**
+     * @brief Checks whether a key was just pressed or is auto-repeating.
+     * @param key The GLFW/raylib key code to check.
+     * @return True if the key is freshly pressed or repeating this frame.
+     */
     auto held = [](int key) { return IsKeyPressed(key) || IsKeyPressedRepeat(key); };
     bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
     // Shift+H/L moves the focused *card* into the adjacent column (the same
@@ -6950,6 +7625,7 @@ void Editor::HandleKanbanNormalInput() {
             return;
         } else if (cp == 'n') {
             std::string column_keyword = columns[sess->focused_column];
+            // Once a title is entered, creates a new card in the focused column with that title.
             BeginPromptNative("New card title", "", [this, column_keyword](const std::string &title) {
                 if (!title.empty()) KanbanNewCard(column_keyword, title);
             });
@@ -7042,6 +7718,11 @@ void Editor::HandleGanttNormalInput() {
     std::vector<int> rows = GanttRows(buffer_id);
     if (!rows.empty()) sess->focused_row = std::clamp(sess->focused_row, 0, static_cast<int>(rows.size()) - 1);
 
+    /**
+     * @brief Checks whether a key was just pressed or is auto-repeating.
+     * @param key The GLFW/raylib key code to check.
+     * @return True if the key is freshly pressed or repeating this frame.
+     */
     auto held = [](int key) { return IsKeyPressed(key) || IsKeyPressedRepeat(key); };
     if (held(KEY_J) || held(KEY_DOWN)) {
         if (!rows.empty()) sess->focused_row = std::min(static_cast<int>(rows.size()) - 1, sess->focused_row + 1);
@@ -7050,12 +7731,21 @@ void Editor::HandleGanttNormalInput() {
     if (held(KEY_H) || held(KEY_LEFT)) sess->anchor_day -= 1;
     if (held(KEY_L) || held(KEY_RIGHT)) sess->anchor_day += 1;
 
+    /**
+     * @brief Checks whether a headline has any child headlines in the current outline.
+     * @param headline_index Index of the candidate parent headline.
+     * @return True if some headline's parent_index equals headline_index.
+     */
     auto has_children = [&](int headline_index) {
         for (const OrgHeadline &candidate : sess->outline.headlines) {
             if (candidate.parent_index == headline_index) return true;
         }
         return false;
     };
+    /**
+     * @brief Toggles the collapsed/expanded fold state of a headline, if it has children.
+     * @param headline_index Index of the headline to toggle.
+     */
     auto toggle_fold = [&](int headline_index) {
         if (!has_children(headline_index)) return;
         if (sess->collapsed_headlines.count(headline_index)) sess->collapsed_headlines.erase(headline_index);
@@ -7130,6 +7820,7 @@ void Editor::HandleGanttNormalInput() {
         } else if (cp == 'p' && !rows.empty()) {
             int hi = rows[sess->focused_row];
             std::string current = std::to_string(sess->outline.headlines[hi].progress);
+            // Once a numeric value is entered, sets the headline's progress percentage.
             BeginPromptNative("Progress (0-100)", current, [this, hi](const std::string &value) {
                 char *end = nullptr;
                 long parsed = std::strtol(value.c_str(), &end, 10);
@@ -7348,6 +8039,11 @@ ThemeColor Editor::ResolveVTermColor(const VTermColor &c, bool is_fg) const {
             if (idx < 232) {
                 int n = idx - 16;
                 int r = n / 36, g = (n / 6) % 6, b = n % 6;
+                /**
+                 * @brief Converts a 0-5 color-cube component into its 0-255 xterm ramp value.
+                 * @param v The 0-5 color-cube component.
+                 * @return 0 for v==0, otherwise v*40+55.
+                 */
                 auto ramp = [](int v) { return static_cast<unsigned char>(v == 0 ? 0 : v * 40 + 55); };
                 return ThemeColor{ramp(r), ramp(g), ramp(b), 255};
             }
@@ -7703,6 +8399,10 @@ void Editor::BufferDelete(bool force) {
     // Computed lazily -- only if some pane actually ends up with nothing
     // left in its own buffer_tabs once `target` is removed from it.
     int fallback_id = -1;
+    /**
+     * @brief Finds (and caches) a buffer id to fall back to when a pane's last remaining buffer tab is the one being deleted.
+     * @return The id of an existing non-deleted buffer other than `target`, or a freshly created empty buffer if none exist.
+     */
     auto pick_fallback = [&]() {
         if (fallback_id >= 0) return fallback_id;
         for (int i = 0; i < static_cast<int>(buffers_.size()); i++) {
@@ -7816,12 +8516,23 @@ void Editor::ApplyLayout(const std::string &kind) {
         if (n) panes.push_back(n->pane);
     }
 
+    /**
+     * @brief Wraps a pane in a fresh leaf SplitNode.
+     * @param p The pane to wrap.
+     * @return A newly allocated leaf SplitNode holding `p`.
+     */
     auto make_leaf = [](const Pane &p) {
         auto n = std::make_unique<SplitNode>();
         n->dir = SplitDir::Leaf;
         n->pane = p;
         return n;
     };
+    /**
+     * @brief Builds a SplitNode containing one leaf child per pane, stacked along the given direction.
+     * @param dir The split direction for the stack.
+     * @param items The panes to stack, in order.
+     * @return A newly allocated SplitNode whose children are leaf nodes for each pane in `items`.
+     */
     auto make_stack = [&](SplitDir dir, std::vector<Pane> items) {
         auto n = std::make_unique<SplitNode>();
         n->dir = dir;
@@ -8104,6 +8815,11 @@ void Editor::ResizeActivePane(const std::string &direction, float step) {
     // sidebar's fixed cell size directly, only on the axis matching its own
     // dock edge (a no-op if `direction` doesn't match either edge of that
     // axis).
+    /**
+     * @brief Grows or shrinks a sidebar's fixed size along its dock edge, in response to a resize direction.
+     * @param sb The sidebar instance to resize (no-op if null).
+     * @param dir The resize direction ("left"/"right"/"up"/"down"); only the axis matching the sidebar's own dock edge has any effect.
+     */
     auto resize_sidebar = [](SidebarInstance *sb, const std::string &dir) {
         if (!sb) return;
         constexpr int kSidebarResizeStep = 4;
@@ -8363,6 +9079,7 @@ bool Editor::IsMod1Down() const {
 
 void Editor::SetMod1(const std::string &name) {
     std::string lower = name;
+    // Lowercases each character in place.
     std::transform(lower.begin(), lower.end(), lower.begin(),
                     [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     if (lower == "alt") {
@@ -8657,6 +9374,18 @@ void Editor::HandleNormalInput() {
             replace_mode_ = insert_one_shot_was_replace_;
             insert_one_shot_was_replace_ = false;
         }
+        return;
+    }
+
+    // Bare Enter/KP_Enter: unbound here otherwise (this editor's Normal
+    // mode has never given plain Enter a default motion the way real
+    // Vim's own CR is), so a registered buffer-scoped hook (SetBufferOnEnter,
+    // this class's own header comment) can claim it with no default
+    // behavior to preserve. Checked ahead of the GetCharPressed() loop
+    // below since raylib never reports Enter as a char event there anyway.
+    if ((IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER)) && enter_hook_ref_ != 0 &&
+        CurPane().buffer_id == enter_hook_buffer_id_ && lua_) {
+        lua_->CallRef(enter_hook_ref_);
         return;
     }
 
@@ -10739,6 +11468,11 @@ namespace {
 // Local to hover-focus navigation -- deliberately not shared with
 // main.cpp's identically-behaved SplitLines (editor.cpp doesn't link
 // against main.cpp's translation unit).
+/**
+ * @brief Splits a hover popup's text into individual lines on '\n'.
+ * @param text The full hover text to split.
+ * @return The lines of `text`; always contains at least one (possibly empty) entry.
+ */
 std::vector<std::string> SplitHoverLines(const std::string &text) {
     std::vector<std::string> lines;
     size_t start = 0;
@@ -10786,20 +11520,41 @@ void Editor::EnterHoverFocus() {
 void Editor::HandleHoverFocusInput() {
     std::vector<std::string> lines = SplitHoverLines(hover_text_);
     int last_row = static_cast<int>(lines.size()) - 1;
+    /**
+     * @brief Clamps a column to a valid caret position within the given hover line.
+     * @param row Index of the hover-text line the column is being clamped against.
+     * @param col Candidate column value to clamp.
+     * @return The column clamped to [0, line length - 1] (0 for an empty line).
+     */
     auto clamp_col = [&](int row, int col) {
         int len = static_cast<int>(lines[row].size());
         return std::max(0, std::min(col, std::max(0, len - 1)));
     };
+    /**
+     * @brief Moves the hover-focus caret up or down by a row delta, clamping row and column.
+     * @param delta Number of rows to move by (negative moves up).
+     */
     auto move_row = [&](int delta) {
         hover_focus_row_ = std::max(0, std::min(last_row, hover_focus_row_ + delta));
         hover_focus_col_ = clamp_col(hover_focus_row_, hover_focus_col_);
     };
+    /**
+     * @brief Begins a charwise or linewise selection anchored at the current hover-focus caret.
+     * @param linewise Whether the new selection is linewise (true) or charwise (false).
+     */
     auto start_select = [&](bool linewise) {
         hover_focus_selecting_ = true;
         hover_focus_select_linewise_ = linewise;
         hover_focus_select_anchor_row_ = hover_focus_row_;
         hover_focus_select_anchor_col_ = hover_focus_col_;
     };
+    /**
+     * @brief Extracts the text between an anchor position and the current hover-focus caret and
+     *        yanks it into the unnamed/"0 registers.
+     * @param anchor_row Row of the selection anchor.
+     * @param anchor_col Column of the selection anchor.
+     * @param linewise Whether the selection is linewise (whole lines) or charwise.
+     */
     auto yank_selection = [&](int anchor_row, int anchor_col, bool linewise) {
         int r0 = anchor_row, c0 = anchor_col;
         int r1 = hover_focus_row_, c1 = hover_focus_col_;
@@ -11138,6 +11893,7 @@ void Editor::CreateFold(int start_row, int end_row, bool closed, const std::stri
 
 void Editor::ClearFoldsFromProvider(const std::string &provider) {
     auto &folds = Buf().folds;
+    // Matches folds whose provider tag equals the one being cleared.
     folds.erase(std::remove_if(folds.begin(), folds.end(), [&](const Fold &f) { return f.provider == provider; }),
                 folds.end());
 }
@@ -11217,6 +11973,12 @@ namespace {
 // own comment) -- containment is recomputed from the flat row-range list
 // every time, which is fine at the sizes an org outline or a manual fold
 // set actually reaches.
+/**
+ * @brief Counts how many other folds in `folds` strictly contain `target`'s row range.
+ * @param folds The full set of folds to search for containing ranges.
+ * @param target The fold whose nesting depth is being computed.
+ * @return The number of distinct folds that strictly contain `target`.
+ */
 int FoldNestingDepth(const std::vector<Fold> &folds, const Fold &target) {
     int depth = 0;
     for (const Fold &f : folds) {
@@ -11230,6 +11992,11 @@ int FoldNestingDepth(const std::vector<Fold> &folds, const Fold &target) {
 // The deepest nesting level present, 1-indexed to match vim's own
 // 'foldlevel' (foldlevel N shows levels 1..N open) -- 0 if there are no
 // folds at all.
+/**
+ * @brief Computes the deepest fold nesting level present, 1-indexed like vim's 'foldlevel'.
+ * @param folds The full set of folds to inspect.
+ * @return The maximum nesting depth + 1 across all folds, or 0 if `folds` is empty.
+ */
 int MaxFoldNestingDepth(const std::vector<Fold> &folds) {
     int max_depth = 0;
     for (const Fold &f : folds) max_depth = std::max(max_depth, FoldNestingDepth(folds, f) + 1);
@@ -11736,7 +12503,14 @@ std::string HlGroupForFilename(const std::string &name) {
 int FuzzyScore(const std::string &str, const std::string &query, std::vector<int> *positions) {
     if (positions) positions->clear();
     if (query.empty()) return 0;
+    // True if the query contains any uppercase letter, enabling smart-case matching.
     bool smart_case = std::any_of(query.begin(), query.end(), [](unsigned char c) { return std::isupper(c); });
+    /**
+     * @brief Normalizes a character for comparison, lowercasing it unless smart-case matching
+     *        (an uppercase letter in the query) is active.
+     * @param c The character to normalize.
+     * @return `c` unchanged if `smart_case` is set, otherwise its lowercased form.
+     */
     auto norm = [&](char c) { return smart_case ? c : static_cast<char>(std::tolower(static_cast<unsigned char>(c))); };
     size_t si = 0, qi = 0;
     std::vector<int> pos;
@@ -11778,6 +12552,7 @@ void Editor::OpenPicker(const std::string &title, std::vector<PickerItem> items,
     picker_on_select_change_ref_ = on_select_change_ref;
     picker_raw_results_ = raw_results;
     picker_preview_text_.clear();
+    picker_preview_spans_.clear();
     picker_preview_scroll_ = 0;
     mode_ = Mode::Picker;
 }
@@ -11813,6 +12588,7 @@ std::vector<PickerItem> Editor::PickerFilteredResults() const {
         int score = FuzzyScore(it.display, picker_query_, nullptr);
         if (score >= 0) scored.emplace_back(score, &it);
     }
+    // Orders scored items by descending fuzzy-match score (best match first).
     std::stable_sort(scored.begin(), scored.end(),
                       [](const auto &a, const auto &b) { return a.first > b.first; });
     std::vector<PickerItem> out;
@@ -12147,6 +12923,12 @@ namespace {
 const char kHintLabelPool[] = "asdfghjklqwertyuiopzxcvbnm";
 constexpr int kHintPoolSize = 26;
 
+/**
+ * @brief Produces the hint label for a match at the given index, home-row-first.
+ * @param i Zero-based index of the match to label.
+ * @return A one-character label for the first 26 matches, or a two-character
+ *         combination from `kHintLabelPool` for indices beyond that (up to 702).
+ */
 std::string HintLabelForIndex(int i) {
     if (i < kHintPoolSize) return std::string(1, kHintLabelPool[i]);
     int rest = i - kHintPoolSize;
@@ -12221,6 +13003,7 @@ void Editor::HandleHintLabelInput() {
             return;
         }
     }
+    // True if any hint label still has hint_typed_ as a prefix (so typing could still narrow to it).
     bool any_prefix = std::any_of(hint_matches_.begin(), hint_matches_.end(), [&](const HintMatch &m) {
         return m.label.size() >= hint_typed_.size() && m.label.compare(0, hint_typed_.size(), hint_typed_) == 0;
     });
@@ -12413,6 +13196,10 @@ namespace {
 // inline syntax rather than a plain "name<space>args" shape and aren't
 // useful to offer here). Kept as a plain list rather than derived from the
 // dispatch chain itself since that chain is an if/else ladder, not a table.
+/**
+ * @brief Returns the static list of builtin command-line command names offered for completion.
+ * @return A reference to the static list of builtin command names.
+ */
 const std::vector<std::string> &BuiltinCommandNames() {
     static const std::vector<std::string> kNames = {
         "w", "write", "wa", "wall", "q", "quit", "q!", "quit!", "qa", "qall", "qa!", "qall!",
@@ -12430,6 +13217,11 @@ const std::vector<std::string> &BuiltinCommandNames() {
 
 // Commands whose last argument is a filesystem path, so completion after
 // the command name should list directory entries rather than command names.
+/**
+ * @brief Checks whether a command name's last argument is a filesystem path.
+ * @param name The command name to check.
+ * @return True if `name` is one of the commands that takes a file-path argument.
+ */
 bool CommandTakesFileArg(const std::string &name) {
     static const std::vector<std::string> kFileCommands = {
         "w", "write", "wq", "x", "wqa", "xa", "wqall", "xall", "e", "edit", "e!", "edit!",
@@ -12477,11 +13269,13 @@ void Editor::UpdateCmdlineCompletion() {
         std::string list_dir = dir.empty() ? "." : dir;
 
         std::vector<DirEntry> entries = ListDirectory(list_dir);
+        // Drop entries whose name doesn't start with the already-typed prefix.
         entries.erase(std::remove_if(entries.begin(), entries.end(),
                                       [&](const DirEntry &e) {
                                           return e.name.compare(0, base_prefix.size(), base_prefix) != 0;
                                       }),
                       entries.end());
+        // Directories sort before files; within each group, sort by name.
         std::sort(entries.begin(), entries.end(), [](const DirEntry &a, const DirEntry &b) {
             if (a.is_dir != b.is_dir) return a.is_dir;
             return a.name < b.name;
@@ -12675,6 +13469,11 @@ void Editor::UpdateIncSearch() {
 // --- Search --------------------------------------------------------------
 
 namespace {
+/**
+ * @brief Lowercases a string using ASCII-only case folding (no locale/Unicode support).
+ * @param s The string to lowercase.
+ * @return A copy of `s` with each ASCII uppercase letter converted to lowercase.
+ */
 std::string ToLowerAscii(const std::string &s) {
     std::string out = s;
     for (char &c : out) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -13070,6 +13869,11 @@ CursorPos Editor::MoveSentenceForward(CursorPos from) const { return NextSentenc
 // sitting exactly on one, the one before THAT, matching Vim's "already at
 // the start: go to the previous sentence" behavior.
 CursorPos Editor::MoveSentenceBackward(CursorPos from) const {
+    /**
+     * @brief Checks whether a position is at or before `from` in buffer order.
+     * @param p The position to compare.
+     * @return True if `p` is on an earlier row than `from`, or on the same row at or before its column.
+     */
     auto le_from = [&](CursorPos p) { return p.row < from.row || (p.row == from.row && p.col <= from.col); };
     CursorPos cur{0, 0};
     CursorPos prev{0, 0};
@@ -13240,6 +14044,11 @@ void Editor::WordObjectRange(CursorPos cursor, bool around, bool big, CursorPos 
     }
     int col = std::min(cursor.col, len - 1);
 
+    /**
+     * @brief Classifies a character in the current line for word/WORD boundary detection.
+     * @param c The column of the character to classify within `row`.
+     * @return For a WORD (`big`): 0 if whitespace, 1 otherwise. For a word: 0 for space, 1 for word chars, 2 for punctuation.
+     */
     auto classify = [&](int c) -> int {
         if (big) return std::isspace(static_cast<unsigned char>(Buf().lines[row][c])) ? 0 : 1;
         CharClass cc = ClassOf(Buf().lines[row][c]);
@@ -13558,6 +14367,11 @@ void Editor::ShiftMarksForLineEdit(int at_row, int count) {
 void Editor::ShiftFoldsForLineEdit(int at_row, int count) {
     if (count == 0 || Buf().folds.empty()) return;
     int n = Buf().LineCount();
+    /**
+     * @brief Shifts a fold boundary row to account for lines inserted or removed at `at_row`.
+     * @param row The fold boundary row to shift.
+     * @return The adjusted row, clamped to the current valid line range.
+     */
     auto shift_row = [&](int row) {
         if (count > 0) {
             if (row >= at_row) row += count;
@@ -13767,6 +14581,11 @@ void Editor::ApplyOperatorToSelectionOrCurrentLine(char op) {
 
 void Editor::ApplyCaseChange(CursorPos start, CursorPos end, bool linewise, char mode) {
     PushUndo();
+    /**
+     * @brief Applies the case-change mode to a single character.
+     * @param c The character to transform.
+     * @return `c` lowercased (mode 'u'), uppercased (mode 'U'), or with its case toggled (any other mode).
+     */
     auto transform = [mode](char c) -> char {
         unsigned char uc = static_cast<unsigned char>(c);
         if (mode == 'u') return static_cast<char>(std::tolower(uc));
@@ -14017,6 +14836,11 @@ namespace {
 // trailing '\n' (one after every line, including the last) -- so every
 // segment split out here is a real line, and any text after a final '\n'
 // (there never is any) would correctly be dropped.
+/**
+ * @brief Splits linewise-yanked text (always '\n'-terminated after every line) into its lines.
+ * @param text The linewise yank text to split.
+ * @return The lines of `text`, one entry per line, with the trailing '\n' after each removed.
+ */
 std::vector<std::string> SplitYankLines(const std::string &text) {
     std::vector<std::string> lines;
     std::string cur;
@@ -14035,6 +14859,11 @@ std::vector<std::string> SplitYankLines(const std::string &text) {
 // is spliced into whatever line already surrounds the insertion point, so
 // the content after the final '\n' (if any) is real "continues on this
 // line" text, not a line of its own, and must be kept.
+/**
+ * @brief Splits charwise-yanked text on '\n', keeping any trailing segment after the last newline.
+ * @param text The charwise yank text to split.
+ * @return The segments of `text` between newlines, including a final segment with no trailing '\n'.
+ */
 std::vector<std::string> SplitKeepingLast(const std::string &text) {
     std::vector<std::string> parts;
     size_t start = 0;
@@ -14379,6 +15208,7 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
     size_t e = raw.find_last_not_of(" \t");
     std::string cmd = raw.substr(b, e - b + 1);
 
+    // Checks whether every character of the trimmed command is a digit (a bare ":N" line-jump).
     bool all_digits = std::all_of(cmd.begin(), cmd.end(),
                                    [](char c) { return std::isdigit(static_cast<unsigned char>(c)); });
     if (all_digits) {
@@ -14817,6 +15647,7 @@ std::vector<Editor::ActivityTestFailureLine> Editor::ActivityTestFailureLines(
     std::vector<ActivityTestFailureLine> out;
     for (size_t i = 0; i < output.size(); i++) {
         std::string lower = output[i];
+        // Lowercases one character (used to build a case-insensitive copy of the line).
         std::transform(lower.begin(), lower.end(), lower.begin(),
                         [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         if (lower.find("fail") != std::string::npos) {
@@ -14891,6 +15722,12 @@ namespace {
 // ^\s*#\+KEYWORD\a+ (case-insensitive on KEYWORD), matching kBuiltinSyntax's
 // own '^%s*#%+[Bb][Ee][Gg][Ii][Nn]_%a+'/'^%s*#%+[Ee][Nn][Dd]_%a+' patterns --
 // `keyword` must already be lowercase ("begin_"/"end_").
+/**
+ * @brief Checks whether a line matches an org-mode "#+KEYWORD..." block marker (case-insensitive on keyword).
+ * @param line The line of text to test.
+ * @param keyword The lowercase marker keyword to match (e.g. "begin_" or "end_").
+ * @return True if the line, after leading whitespace, starts with "#+" followed by `keyword` and at least one more letter.
+ */
 bool MatchesOrgBlockMarker(const std::string &line, const char *keyword) {
     size_t i = 0;
     while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) i++;
@@ -14910,9 +15747,20 @@ void Editor::OrgHighlightEmphasis(int ns) {
     static const std::unordered_map<char, char> kMarkerKind = {
         {'*', 'b'}, {'/', 'i'}, {'_', 'u'}, {'+', 's'}, {'=', 'v'}, {'~', 'c'},
     };
+    /**
+     * @brief Fetches the character at `idx` in `s`, or the NUL character if `idx` is out of bounds.
+     * @param s The string to index into.
+     * @param idx The index to read.
+     * @return The character at `idx`, or '\0' if `idx` is out of range.
+     */
     auto at = [](const std::string &s, int idx) -> char {
         return (idx >= 0 && idx < static_cast<int>(s.size())) ? s[idx] : '\0';
     };
+    /**
+     * @brief Checks whether a character is a non-NUL alphanumeric "word" character.
+     * @param c The character to test.
+     * @return True if `c` is alphanumeric.
+     */
     auto is_word = [](char c) { return c != '\0' && std::isalnum(static_cast<unsigned char>(c)); };
 
     bool in_block = false;
@@ -15062,6 +15910,11 @@ struct MdTableRowResult {
 
 // ^:?-+:?$ -- a single GFM separator cell (optional leading/trailing ':'
 // around one-or-more '-').
+/**
+ * @brief Checks whether a table cell's text is a valid GFM separator cell (dashes with optional colon alignment markers).
+ * @param c The trimmed cell text to test.
+ * @return True if `c` matches the separator-cell pattern.
+ */
 bool IsMdSepCell(const std::string &c) {
     size_t i = 0, n = c.size();
     if (i < n && c[i] == ':') i++;
@@ -15072,6 +15925,11 @@ bool IsMdSepCell(const std::string &c) {
     return i == n;
 }
 
+/**
+ * @brief Parses a single line as a GFM pipe-table row, classifying it as a separator row or a data row.
+ * @param line The raw line of text to parse.
+ * @return An MdTableRowResult describing whether the line is a table row, and if so its alignments (separator row) or trimmed cell text (data row).
+ */
 MdTableRowResult ParseMdTableRow(const std::string &line) {
     MdTableRowResult r;
     size_t i = 0;
@@ -15113,6 +15971,12 @@ MdTableRowResult ParseMdTableRow(const std::string &line) {
     return r;
 }
 
+/**
+ * @brief Builds a GFM table separator cell of a given display width for a given column alignment.
+ * @param w The target width of the separator cell.
+ * @param al The column alignment: "left", "right", "center", or anything else for none.
+ * @return A string of dashes, with leading/trailing ':' markers according to `al`.
+ */
 std::string MdSepCell(int w, const std::string &al) {
     if (al == "left") return ":" + std::string(std::max(1, w - 1), '-');
     if (al == "right") return std::string(std::max(1, w - 1), '-') + ":";
@@ -15234,10 +16098,25 @@ struct MdConcealSpan {
 // same mid-identifier-'_'/'*' exclusion OrgHighlightEmphasis's is_word
 // check uses), and [text](url)/[text][ref] links -- mep_md_conceal_spans'
 // own C++ port.
+/**
+ * @brief Scans a line for markdown emphasis (bold via ** or __, italic via * or _) and link spans to conceal.
+ * @param line The line of text to scan.
+ * @return The list of spans found, each with its column range, the text to reveal in place of the markup, and a highlight group.
+ */
 std::vector<MdConcealSpan> ScanMdConcealSpans(const std::string &line) {
     std::vector<MdConcealSpan> spans;
     const int n = static_cast<int>(line.size());
+    /**
+     * @brief Fetches the character at `idx` in `line`, or the NUL character if `idx` is out of bounds.
+     * @param idx The index to read.
+     * @return The character at `idx`, or '\0' if `idx` is out of range.
+     */
     auto at = [&](int idx) -> char { return (idx >= 0 && idx < n) ? line[idx] : '\0'; };
+    /**
+     * @brief Checks whether a character is a non-NUL alphanumeric "word" character.
+     * @param c The character to test.
+     * @return True if `c` is alphanumeric.
+     */
     auto is_word = [](char c) { return c != '\0' && std::isalnum(static_cast<unsigned char>(c)); };
     int i = 0;
     while (i < n) {
@@ -15355,6 +16234,12 @@ namespace {
 // character somewhere -- mep_completion_path_prefix's own
 // ctx:find('import%s')/ctx:find('from%s') (a bare %s, not %s*, so this is
 // a plain substring-then-one-whitespace-char search, not a general regex).
+/**
+ * @brief Checks whether `s` contains `word` immediately followed by a single whitespace character somewhere.
+ * @param s The string to search.
+ * @param word The substring to look for.
+ * @return True if some occurrence of `word` in `s` is directly followed by a whitespace character.
+ */
 bool FindWordFollowedBySpace(const std::string &s, const std::string &word) {
     size_t pos = 0;
     while ((pos = s.find(word, pos)) != std::string::npos) {
@@ -15367,6 +16252,11 @@ bool FindWordFollowedBySpace(const std::string &s, const std::string &word) {
 
 // ctx:find('require%s*%(%s*$') -- does ctx, ignoring trailing whitespace,
 // end with "require", optional whitespace, then "("?
+/**
+ * @brief Checks whether `ctx`, ignoring trailing whitespace, ends with "require", optional whitespace, then "(".
+ * @param ctx The context string to test.
+ * @return True if `ctx` ends with an opening `require(` call (allowing whitespace before the paren).
+ */
 bool EndsWithRequireCallOpen(const std::string &ctx) {
     size_t end = ctx.size();
     while (end > 0 && std::isspace(static_cast<unsigned char>(ctx[end - 1]))) end--;
@@ -15430,6 +16320,11 @@ struct SnippetLineTabstop {
     int num = 0;
 };
 
+/**
+ * @brief Strips snippet tabstop markers ($1, ${1:default}, \$) from a template line and records their positions.
+ * @param tmpl The raw snippet template line, containing tabstop markers.
+ * @return A pair of the cleaned line text (markers replaced by their default text, if any) and the list of tabstops found, each with its column in the cleaned text and its tabstop number.
+ */
 std::pair<std::string, std::vector<SnippetLineTabstop>> ScanSnippetLine(const std::string &tmpl) {
     std::string out;
     std::vector<SnippetLineTabstop> tabstops;
@@ -15498,6 +16393,7 @@ void Editor::SnippetSplice(int row, const std::string &before, const std::string
     } else {
         ReplaceLinesForLua(row, row + 1, out_lines);
     }
+    // Orders tabstops by number, treating an unnumbered tabstop (0, the final-cursor "$0") as sorting last.
     std::stable_sort(all_tabstops.begin(), all_tabstops.end(), [](const SnippetTabstop &a, const SnippetTabstop &b) {
         int an = (a.num == 0) ? 999 : a.num;
         int bn = (b.num == 0) ? 999 : b.num;
@@ -15548,16 +16444,34 @@ void Editor::PreviewFile(const std::string &path, int max_lines) {
 }
 
 namespace {
+/**
+ * @brief Joins a directory path and an entry name with a single '/' separator.
+ * @param dir The directory path, with or without a trailing slash.
+ * @param name The entry name to append.
+ * @return `dir` and `name` joined by exactly one '/'.
+ */
 std::string JoinTreePath(const std::string &dir, const std::string &name) {
     if (!dir.empty() && dir.back() == '/') return dir + name;
     return dir + "/" + name;
 }
 
+/**
+ * @brief Recursively appends file-tree rows for `dir` and, for each expanded subdirectory, its children.
+ * @param ed The editor used to list each directory's contents.
+ * @param root The tree's root directory, used to compute entries' paths relative to it.
+ * @param dir The directory currently being listed.
+ * @param depth The nesting depth of `dir` below `root`, used as each row's indent level.
+ * @param expanded_paths The set of full directory paths that should be recursed into.
+ * @param show_hidden Whether dotfiles/dot-directories should be included.
+ * @param ignored_relpaths Paths (relative to `root`) to exclude entirely.
+ * @param out The row list to append to.
+ */
 void BuildFileTreeRowsRecursive(const Editor *ed, const std::string &root, const std::string &dir, int depth,
                                  const std::unordered_set<std::string> &expanded_paths, bool show_hidden,
                                  const std::unordered_set<std::string> &ignored_relpaths,
                                  std::vector<Editor::FileTreeRow> *out) {
     std::vector<Editor::DirEntry> entries = ed->ListDirectory(dir);
+    // Sorts directory entries directories-first, then alphabetically by name.
     std::sort(entries.begin(), entries.end(), [](const Editor::DirEntry &a, const Editor::DirEntry &b) {
         if (a.is_dir != b.is_dir) return a.is_dir;
         return a.name < b.name;
@@ -15646,14 +16560,32 @@ const std::unordered_map<std::string, std::string> kCssColors = {
     {"white", "ffffff"}, {"whitesmoke", "f5f5f5"}, {"yellow", "ffff00"}, {"yellowgreen", "9acd32"},
 };
 
+/**
+ * @brief Converts a single hex digit character to its numeric value.
+ * @param c The hex digit character ('0'-'9', 'a'-'f', or 'A'-'F'); behavior is undefined for any other character.
+ * @return The digit's value from 0 to 15.
+ */
 int HexDigitVal(char c) {
     if (c >= '0' && c <= '9') return c - '0';
     c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return 10 + (c - 'a');
 }
 
+/**
+ * @brief Converts a pair of hex digit characters to the byte value they encode.
+ * @param hi The high-nibble hex digit.
+ * @param lo The low-nibble hex digit.
+ * @return The combined byte value from 0 to 255.
+ */
 int HexPairVal(char hi, char lo) { return HexDigitVal(hi) * 16 + HexDigitVal(lo); }
 
+/**
+ * @brief Checks whether `count` characters of `line` starting at `start` are all hex digits.
+ * @param line The line of text to check.
+ * @param start The starting index of the range to check.
+ * @param count The number of characters to check.
+ * @return True if every character in the range is a hex digit.
+ */
 bool AllHexDigits(const std::string &line, int start, int count) {
     for (int k = 0; k < count; k++) {
         if (!std::isxdigit(static_cast<unsigned char>(line[start + k]))) return false;
@@ -15661,6 +16593,17 @@ bool AllHexDigits(const std::string &line, int start, int count) {
     return true;
 }
 
+/**
+ * @brief Adds a color-swatch decoration spanning a column range of a line.
+ * @param ed The editor to add the decoration through.
+ * @param ns The decoration namespace to add it under.
+ * @param row The zero-based row the swatch belongs to.
+ * @param col_start The starting column of the swatch span.
+ * @param col_end The ending column (exclusive) of the swatch span.
+ * @param r The swatch color's red component (0-255).
+ * @param g The swatch color's green component (0-255).
+ * @param b The swatch color's blue component (0-255).
+ */
 void AddSwatch(Editor *ed, int ns, int row, int col_start, int col_end, int r, int g, int b) {
     Decoration d;
     d.row = row;
@@ -15798,6 +16741,11 @@ void Editor::Colorize() {
 }
 
 namespace {
+/**
+ * @brief Checks whether a character is valid inside the body of a URL (after "scheme://").
+ * @param c The character to test.
+ * @return True if `c` is alphanumeric or one of the allowed URL body punctuation characters.
+ */
 bool IsUrlBodyChar(unsigned char c) {
     if (std::isalnum(c)) return true;
     static const char *const kExtra = "-._~:/?#[]@!$&'()*+,;=%";
@@ -15812,6 +16760,11 @@ struct UrlSpan {
 // mep.nvim's own MEP_URL_PATTERN
 // ("https?://[%w%-%._~:/?#%[%]@!$&'()*+,;=%%]+"): "http" + optional 's'
 // + "://" + one-or-more of the body charset above.
+/**
+ * @brief Finds all http(s):// URLs in a line of text.
+ * @param line The line of text to scan.
+ * @return The column spans of every URL found, in order of appearance.
+ */
 std::vector<UrlSpan> FindUrlSpans(const std::string &line) {
     std::vector<UrlSpan> spans;
     const int len = static_cast<int>(line.size());
@@ -15875,7 +16828,15 @@ void Editor::GitGutterRefresh(const std::string &base) {
 
     auto lines = std::make_shared<std::vector<std::string>>();
     JobManager::Callbacks cb;
+    /**
+     * @brief Collects one line of `git show`'s stdout output as it streams in.
+     * @param line The next line of output.
+     */
     cb.on_stdout = [lines](const std::string &line) { lines->push_back(line); };
+    /**
+     * @brief Once `git show` exits, diffs the fetched base-revision lines against the current buffer and redraws the git-gutter decorations.
+     * @param code The process exit code (unused).
+     */
     cb.on_exit = [this, ns, lines](int /*code*/) {
         git_base_lines_ = *lines;
         std::vector<std::string> cur;
@@ -16017,6 +16978,10 @@ void Editor::GitStageHunk() {
         patch += "+" + cur_line + "\n";
     }
     JobManager::Callbacks cb;
+    /**
+     * @brief Reports whether `git apply --cached` succeeded in staging the hunk.
+     * @param code The process exit code; 0 means success.
+     */
     cb.on_exit = [this](int code) {
         if (code == 0) {
             Notify("Staged hunk");

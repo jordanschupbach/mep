@@ -38,6 +38,10 @@
 // (PumpLspBuffer/LspClientState) predates this extraction and is left
 // as-is rather than migrated, to avoid touching a working, recently-
 // stabilized code path without its own test coverage.
+/** @brief Consumes as many complete Content-Length-framed messages as `buffer` currently holds, invoking `on_message` with each message body in arrival order and erasing consumed bytes from `buffer`.
+ *  @param buffer the accumulated input stream; consumed bytes are erased in place, leaving any trailing partial message for a later call.
+ *  @param on_message callback invoked with each complete message body, in arrival order.
+ *  @return false on an unrecoverable framing violation (caller should drop the connection); true otherwise, including "no complete message yet". */
 inline bool PumpRpcFrames(std::string &buffer, const std::function<void(const std::string &)> &on_message) {
     // A real Content-Length header is a couple dozen bytes; a real
     // message body is a small JSON-RPC call, not a bulk payload. Both
@@ -70,6 +74,9 @@ inline bool PumpRpcFrames(std::string &buffer, const std::function<void(const st
     }
 }
 
+/** @brief Wraps `body` in a Content-Length-framed JSON-RPC message header.
+ *  @param body the raw message body to frame.
+ *  @return the "Content-Length: N\r\n\r\n" header followed by `body`. */
 inline std::string FrameRpcMessage(const std::string &body) { return "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n" + body; }
 
 #endif  // MEP_RPC_FRAMING_H

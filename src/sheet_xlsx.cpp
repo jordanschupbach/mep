@@ -32,6 +32,11 @@ namespace {
 // concatenated -- handles both the simple <si><t>text</t></si> form and
 // the rich-text-run form <si><r><t>run1</t></r><r><t>run2</t></r></si>
 // (per-run formatting is discarded; sheet cells have no rich-text model).
+/**
+ * @brief Concatenates every <t> descendant's text within a shared-string <si> entry.
+ * @param si The <si> XML node to read.
+ * @return The entry's combined text, handling both the simple <si><t>...</t></si> form and the rich-text-run <si><r><t>...</t></r>...</si> form.
+ */
 std::string CollectSharedStringText(const pugi::xml_node &si) {
     std::string out;
     for (pugi::xml_node child : si.children()) {
@@ -48,6 +53,12 @@ std::string CollectSharedStringText(const pugi::xml_node &si) {
 // xl/sharedStrings.xml is optional (a workbook with no text cells at all
 // may omit it entirely) -- an empty result here just means every text
 // cell must be inlineStr instead, not a load failure.
+/**
+ * @brief Loads and parses xl/sharedStrings.xml into an index-ordered list of shared-string texts.
+ * @param zip_bytes Pointer to the raw .xlsx (zip) file contents.
+ * @param zip_len Length in bytes of the buffer pointed to by zip_bytes.
+ * @return The shared strings in file order; empty if the part is absent or unparsable (not a load failure -- text cells then use inlineStr instead).
+ */
 std::vector<std::string> ParseSharedStrings(const unsigned char *zip_bytes, size_t zip_len) {
     std::vector<std::string> out;
     std::vector<unsigned char> xml_bytes;
@@ -69,6 +80,13 @@ struct SheetEntry {
 // missing rels part or an unmatched r:id falls back to the conventional
 // "worksheets/sheetN.xml" path (1-indexed by document order) rather than
 // failing the whole load.
+/**
+ * @brief Parses xl/workbook.xml joined with xl/_rels/workbook.xml.rels into an ordered list of sheet name/zip-path pairs.
+ * @param zip_bytes Pointer to the raw .xlsx (zip) file contents.
+ * @param zip_len Length in bytes of the buffer pointed to by zip_bytes.
+ * @param error Receives a message if xl/workbook.xml is missing, malformed, or has no <sheets>.
+ * @return The sheets in document order (empty on failure, with error set); an unmatched r:id or missing rels part falls back to a conventional "worksheets/sheetN.xml" path rather than failing.
+ */
 std::vector<SheetEntry> ParseWorkbookSheetList(const unsigned char *zip_bytes, size_t zip_len, std::string &error) {
     std::vector<SheetEntry> sheets;
     std::vector<unsigned char> wb_xml;
@@ -131,6 +149,11 @@ struct ParsedCellRef {
     int row = -1, col = -1;
 };
 
+/**
+ * @brief Parses an XLSX cell-reference string (e.g. "B7") into zero-based row/col indices.
+ * @param r Cell reference text from a <c r="..."> attribute.
+ * @return The parsed row/col, or {-1,-1} if r doesn't parse as a valid cell address.
+ */
 ParsedCellRef ParseXlsxCellRef(const std::string &r) {
     ParsedCellRef out;
     bool row_abs = false, col_abs = false;
@@ -149,6 +172,13 @@ struct SharedFormulaMaster {
     std::string formula;  // native syntax, no leading '='
 };
 
+/**
+ * @brief Populates one sheet's cells from a parsed worksheet XML document, resolving shared strings and expanding shared formulas.
+ * @param doc Parsed worksheet XML document (its <worksheet><sheetData> is read).
+ * @param wb Workbook whose sheet at sheet_index is populated.
+ * @param sheet_index Index of the destination sheet in wb.sheets.
+ * @param shared_strings Index-ordered shared-string table used to resolve t="s" cells.
+ */
 void ParseXlsxSheetXml(pugi::xml_document &doc, Workbook &wb, int sheet_index,
                         const std::vector<std::string> &shared_strings) {
     pugi::xml_node sheet_data = doc.child("worksheet").child("sheetData");
@@ -243,6 +273,11 @@ void ParseXlsxSheetXml(pugi::xml_document &doc, Workbook &wb, int sheet_index,
     }
 }
 
+/**
+ * @brief Writes a computed CellValue's cached representation (a <v>, and a type attribute for bool/text/error) onto a <c> XML node.
+ * @param c_node The <c> node to write attributes/children onto.
+ * @param v The value to write (a formula's evaluated result, or a literal's own value).
+ */
 void WriteXlsxCachedValue(pugi::xml_node &c_node, const CellValue &v) {
     switch (v.kind) {
         case CellKind::Number:
@@ -271,6 +306,12 @@ void WriteXlsxCachedValue(pugi::xml_node &c_node, const CellValue &v) {
 // xl/sharedStrings.xml's index and count attributes in lockstep on every
 // save; a real, if slightly larger-than-necessary, tradeoff Excel/LO both
 // read back correctly regardless.
+/**
+ * @brief Appends one <row>/<c> per non-empty row/cell in a sheet, writing formulas (as inline <f>/<v>), numbers, and text/error literals (as inlineStr).
+ * @param wb Workbook whose sheet at sheet_index is serialized (formula cells are evaluated to get their cached value).
+ * @param sheet_index Index of the source sheet in wb.sheets.
+ * @param sheet_data The <sheetData> XML node to append rows/cells to.
+ */
 void SerializeXlsxSheetData(Workbook &wb, int sheet_index, pugi::xml_node &sheet_data) {
     Sheet &sh = wb.sheets[sheet_index];
     for (int r = 0; r <= sh.max_row; r++) {

@@ -183,6 +183,12 @@ constexpr int kHoverFocusVisibleRows = 20;
 // event.modeChanged notification -- the one place outside main.cpp that
 // also needs a human/agent-readable mode string, hence living here
 // rather than staying main.cpp-private.
+/**
+ * @brief Returns a human/agent-readable display name for a mode.
+ * @param m The mode to name.
+ * @param replace_mode Whether Insert mode should be reported as "REPLACE" instead of "INSERT".
+ * @return The mode's display name string.
+ */
 const char *ModeName(Mode m, bool replace_mode = false);
 
 // A stable, distinct color per participant id (COLLAB_CURSORS_PLAN.md) --
@@ -192,6 +198,11 @@ const char *ModeName(Mode m, bool replace_mode = false);
 // distinguishable. No precedent for this existed anywhere in the
 // codebase before this feature (confirmed during design) -- every
 // existing collaboration-peer UI element used one uniform color.
+/**
+ * @brief Deterministically derives a stable display color for a collaboration participant.
+ * @param id The participant's identifier string.
+ * @return The RGBA color assigned to that participant id.
+ */
 ThemeColor ParticipantColor(const std::string &id);
 
 struct CursorPos {
@@ -207,6 +218,13 @@ struct CursorPos {
 // strings score lower, as a tiebreaker). Smart-case: case-insensitive
 // unless `query` itself contains an uppercase letter. `positions`, if
 // non-null, receives the matched byte offsets in `str` (for highlighting).
+/**
+ * @brief Scores how well `query` fuzzy-matches `str` as an ordered subsequence, fzf-style.
+ * @param str The candidate string to match against.
+ * @param query The subsequence query to search for within `str`.
+ * @param positions Optional output vector to receive the matched byte offsets in `str`.
+ * @return A higher-is-better match score, or -1 if `query` doesn't match `str` at all.
+ */
 int FuzzyScore(const std::string &str, const std::string &query, std::vector<int> *positions = nullptr);
 
 // Filename/extension -> a Nerd Font icon glyph, UTF-8 encoded (NVIM_PARITY_
@@ -216,12 +234,22 @@ int FuzzyScore(const std::string &str, const std::string &query, std::vector<int
 // main.cpp's g_icon_font (icon_font_data.h, a pyftsubset subset of Symbols
 // Nerd Font Mono covering exactly the codepoints this function and its
 // main.cpp counterparts use), not g_font -- see DrawUiText's own comment.
+/**
+ * @brief Maps a filename or extension to its Nerd Font icon glyph.
+ * @param name The filename (or bare extension) to look up.
+ * @return A UTF-8 encoded icon glyph string.
+ */
 std::string IconForFilename(const std::string &name);
 
 // Filename/extension -> highlight-group name (e.g. "Blue", "Green",
 // "MutedFg") for coloring file tree rows by type. Names index into the
 // active theme's BuildHighlightGroups() map (editor.cpp), so colors follow
 // whatever :colorscheme is active rather than a fixed RGB value.
+/**
+ * @brief Maps a filename or extension to a highlight-group name for coloring file tree rows.
+ * @param name The filename (or bare extension) to look up.
+ * @return The highlight-group name to use for that file type.
+ */
 std::string HlGroupForFilename(const std::string &name);
 
 // UTF-8-encodes a single Unicode codepoint. Icon tables below list plain hex
@@ -233,6 +261,11 @@ std::string HlGroupForFilename(const std::string &name);
 // literal can't be. Icon codepoints are always in the Private Use Area or
 // Supplementary PUA-A, never a surrogate half or otherwise invalid scalar,
 // so this doesn't need to handle those cases.
+/**
+ * @brief UTF-8-encodes a single Unicode codepoint.
+ * @param cp The Unicode codepoint to encode.
+ * @return The UTF-8 byte sequence as a string.
+ */
 std::string Utf8FromCodepoint(int cp);
 
 // The contents of one register (yank/delete target). Registers are global
@@ -425,12 +458,31 @@ struct Palette {
     ThemeColor bg, fg, red, green, yellow, blue, purple, cyan, orange, border;
 };
 
+// One highlight span over a picker's item display text or its preview
+// column (Treesitter-backed syntax highlighting for `/`'s buffer-search
+// picker, kBuiltinPickerSources' mep.buffer_search -- see
+// Editor::SetPickerPreview and DrawPickerOverlay, main.cpp). `row` is
+// unused (always 0) on a PickerItem's own single-line `display`; for the
+// preview column it indexes into SplitLines(PickerPreview()) the same
+// way Decoration::row indexes into buffer lines. col_start/col_end are
+// byte offsets, [col_start, col_end) exclusive, matching Decoration's
+// own convention.
+struct PickerHlSpan {
+    int row = 0;
+    int col_start = 0;
+    int col_end = 0;
+    std::string hl_group;
+};
+
 // One entry in a picker's item list (NVIM_PARITY_PLAN.md Part I Phase 8).
 // `data` is an opaque payload (e.g. a file path) handed back to the
 // on_select callback verbatim -- `display` is what's matched/shown.
+// `spans` is optional per-item syntax highlighting over `display`
+// (PickerHlSpan above); empty for every existing plain-text picker.
 struct PickerItem {
     std::string display;
     std::string data;
+    std::vector<PickerHlSpan> spans;
 };
 
 // One insert-mode completion candidate (NVIM_PARITY_PLAN.md Phase 22
@@ -613,6 +665,10 @@ struct Buffer {
     };
     std::unordered_map<int, std::vector<OrgLatexInlineSpan>> org_latex_inline;
 
+    /**
+     * @brief Returns the number of lines currently in the buffer.
+     * @return The line count.
+     */
     int LineCount() const { return static_cast<int>(lines.size()); }
 };
 
@@ -1241,6 +1297,12 @@ struct DiffHunk {
 // via equality only -- returns the *edit script* as a sequence of (line
 // present only in `a`) / (line present only in `b`) markers, coalesced
 // into contiguous hunks.
+/**
+ * @brief Computes the Myers O(ND) diff between two line sequences, coalesced into contiguous hunks.
+ * @param a The "old" line sequence.
+ * @param b The "new" line sequence.
+ * @return The edit script as a sequence of DiffHunk ranges.
+ */
 std::vector<DiffHunk> MyersDiffHunks(const std::vector<std::string> &a, const std::vector<std::string> &b);
 
 // mep_lsp_filetype/mep_lsp_abspath's own port (LUA_TO_CPP_PLAN.md Phase
@@ -1253,13 +1315,28 @@ std::vector<DiffHunk> MyersDiffHunks(const std::vector<std::string> &a, const st
 // plain filetype/path logic, so -- mirroring Org-0's own reasoning --
 // they're ported and registered as bare globals (same exact names) here,
 // unblocking those call sites without touching real LSP state at all.
+/**
+ * @brief Returns a file's extension-derived filetype tag, mirroring mep_lsp_filetype.
+ * @param fname The filename to inspect.
+ * @return The filetype string (typically the lowercased extension).
+ */
 std::string LspFiletype(const std::string &fname);
+/**
+ * @brief Resolves a filename to an absolute path against the process's current working directory.
+ * @param fname The filename or relative path to resolve.
+ * @return The resolved absolute path.
+ */
 std::string LspAbspath(const std::string &fname);
 
 // kBuiltinOrgRoam's own `title:lower():gsub('[^%w]+', '-'):gsub('^%-+',
 // ''):gsub('%-+$', '')` port (mep.org_roam_new_note's filename slug):
 // lowercase, every run of non-alphanumeric characters collapsed to a
 // single '-', leading/trailing '-' stripped. No Editor state needed.
+/**
+ * @brief Slugifies an org-roam note title into a filename-safe form.
+ * @param title The note title to slugify.
+ * @return The lowercased title with non-alphanumeric runs collapsed to '-' and leading/trailing '-' stripped.
+ */
 std::string OrgRoamSlugify(const std::string &title);
 
 // kBuiltinOrgExport's own ports (LUA_TO_CPP_PLAN.md Phase 5): the
@@ -1272,8 +1349,20 @@ std::string OrgRoamSlugify(const std::string &title);
 // mep_org_export_heading's own port. `format` is "html"/"markdown"/
 // anything else treated as ascii, matching the original's own
 // if/elseif/else.
+/**
+ * @brief Renders an org headline as an exported heading in the given output format.
+ * @param format The export format: "html", "markdown", or anything else treated as plain ascii.
+ * @param level The headline's nesting level (number of leading '*'s).
+ * @param title The headline's title text.
+ * @return The formatted heading string.
+ */
 std::string OrgExportHeading(const std::string &format, int level, const std::string &title);
 // mep_org_html_escape's own port (&/</> only, matching the original).
+/**
+ * @brief Escapes &, <, and > for safe inclusion in HTML output.
+ * @param s The raw text to escape.
+ * @return The HTML-escaped text.
+ */
 std::string OrgHtmlEscape(const std::string &s);
 // mep_org_subtree_end_lines's own port: mep_org_subtree_end's own
 // logic, operating on an arbitrary lines array (1-indexed `row`, same
@@ -1281,15 +1370,33 @@ std::string OrgHtmlEscape(const std::string &s);
 // -- the export walk resolves #+INCLUDE:/babel-result-splicing into a
 // scratch array first, so subtree-skipping (:noexport:) needs a
 // version that doesn't call mep.get_line/mep.line_count.
+/**
+ * @brief Finds the last row of the org subtree starting at `row`, operating on an arbitrary lines array.
+ * @param lines The lines array to scan.
+ * @param row The 1-indexed row of the subtree's headline.
+ * @param todo_keywords The configured org TODO keywords, used to parse headlines correctly.
+ * @return The 1-indexed row where the subtree ends.
+ */
 int OrgSubtreeEndLines(const std::vector<std::string> &lines, int row, const std::vector<std::string> &todo_keywords);
 // mep_org_collect_macros's own port: every `#+MACRO: name body` line's
 // name -> body-with-$N-placeholders.
+/**
+ * @brief Collects every `#+MACRO: name body` declaration in a buffer.
+ * @param lines The buffer lines to scan.
+ * @return A map from macro name to its body text (with $N placeholders).
+ */
 std::map<std::string, std::string> OrgCollectMacros(const std::vector<std::string> &lines);
 // mep_org_expand_macro_line's own port: expands `{{{name(a,b)}}}` and
 // `{{{name}}}` macro references against `macros` (from
 // OrgCollectMacros), substituting each `$N` placeholder with the Nth
 // comma-separated argument (1-indexed, "" if out of range). An
 // undefined macro name is left as literal text.
+/**
+ * @brief Expands `{{{name(a,b)}}}`/`{{{name}}}` macro references in a line of text.
+ * @param line The line of text containing macro references to expand.
+ * @param macros The macro name-to-body map, as produced by OrgCollectMacros.
+ * @return The line with every recognized macro reference substituted.
+ */
 std::string OrgExpandMacroLine(const std::string &line, const std::map<std::string, std::string> &macros);
 
 // kBuiltinOrgBabel's own ports (LUA_TO_CPP_PLAN.md Phase 5): the block-
@@ -1308,17 +1415,38 @@ std::string OrgExpandMacroLine(const std::string &line, const std::map<std::stri
 // language defaults 'no') isn't Lua-configurable to begin with (it's
 // chunk-private, no mep.* exposure), so hardcoding it here changes
 // nothing observable.
+/**
+ * @brief Decides whether a babel source block's code should be wrapped in a `main` function before running.
+ * @param lang_key The babel language key (e.g. "php").
+ * @param args_str The block's raw header-args string.
+ * @return True if the language/args combination calls for a main-wrapper.
+ */
 bool OrgBabelShouldWrapMain(const std::string &lang_key, const std::string &args_str);
 // mep_org_babel_format_literal's own port: a bare integer/decimal
 // passes through unquoted; anything else becomes a backslash/quote/
 // newline/CR/tab-escaped double-quoted string literal.
+/**
+ * @brief Formats a raw babel `:var` value as a source-code literal.
+ * @param raw The raw variable value text.
+ * @return The value unquoted if it's a bare integer/decimal, otherwise an escaped double-quoted string literal.
+ */
 std::string OrgBabelFormatLiteral(const std::string &raw);
 // mep_org_parse_vars's own port: `:var name=value` pairs (value is
 // either a `"..."` string with `\"`/`\\` escapes, or a bare non-space
 // token).
+/**
+ * @brief Parses a babel block's `:var name=value` header-arg pairs.
+ * @param args_str The block's raw header-args string.
+ * @return A map from variable name to its (possibly quoted) value text.
+ */
 std::map<std::string, std::string> OrgParseVars(const std::string &args_str);
 // mep_org_parse_results's own port: the `:results` header-arg's
 // space-separated mode keywords, as a set.
+/**
+ * @brief Parses a babel block's `:results` header-arg into its space-separated mode keywords.
+ * @param args_str The block's raw header-args string.
+ * @return The set of `:results` mode keywords present.
+ */
 std::set<std::string> OrgParseResults(const std::string &args_str);
 // mep_org_src_block_at's own port: the #+begin_src/#+end_src block
 // containing (or starting at) `row`, or not-found. Bare Lua global
@@ -1346,6 +1474,12 @@ struct OrgSrcBlock {
 // wrap of `text` to `width` columns (mep.float_preview itself doesn't
 // wrap). No Editor state needed. Always returns at least one line
 // (an empty string for empty input, matching the original).
+/**
+ * @brief Greedily word-wraps text to a fixed column width.
+ * @param text The text to wrap.
+ * @param width The maximum column width per line.
+ * @return The wrapped lines; always at least one, even for empty input.
+ */
 std::vector<std::string> LspDiagWrap(const std::string &text, int width);
 
 // Org-mode "Phase Org-0" primitives (LUA_TO_CPP_PLAN.md): the headline
@@ -1375,6 +1509,12 @@ struct OrgHeadlineParse {
 // mep_org_parse_headline's own port. `todo_keywords` is
 // mep.org_todo_keywords' current value (Lua-configurable, so read fresh
 // by the caller each call rather than cached here).
+/**
+ * @brief Parses a single line as an org headline, extracting its level, TODO state, priority, title, and tags.
+ * @param line The line of text to parse.
+ * @param todo_keywords The currently configured org TODO keywords to recognize.
+ * @return The parsed headline fields; is_headline is false if `line` isn't a headline.
+ */
 OrgHeadlineParse ParseOrgHeadline(const std::string &line, const std::vector<std::string> &todo_keywords);
 
 // A modal (vim-like) text editor: Normal/Insert/Visual/Command modes, a
@@ -1385,6 +1525,9 @@ OrgHeadlineParse ParseOrgHeadline(const std::string &line, const std::vector<std
 // cycle-order, and reachable both via Ctrl-W h/j/k/l and mod1+h/j/k/l.
 class Editor {
 public:
+    /**
+     * @brief Constructs a new Editor with its default initial state (a single empty scratch buffer/pane/tab).
+     */
     Editor();
     // Declared (not defaulted here) purely so the compiler-generated body
     // -- which needs to destroy TerminalSession's std::unique_ptr<VTerm>
@@ -1392,13 +1535,27 @@ public:
     // (which includes vterm.h) rather than wherever an Editor happens to
     // be destroyed (main.cpp, which has no reason to know about VTerm at
     // all): the classic "incomplete type in unique_ptr" fix.
+    /**
+     * @brief Destroys the Editor. Defined out-of-line so members like TerminalSession's unique_ptr<VTerm> can be destroyed with complete types visible.
+     */
     ~Editor();
 
+    /**
+     * @brief Sets the Lua environment used for editor-Lua interop.
+     * @param lua Pointer to the LuaEnv instance to use.
+     */
     void SetLuaEnv(LuaEnv *lua) { lua_ = lua; }
+    /**
+     * @brief Returns the associated Lua environment.
+     * @return Pointer to the current LuaEnv instance.
+     */
     LuaEnv *Lua() const { return lua_; }
 
     // Reads raylib's input state directly and advances editor state by one
     // frame's worth of key events. Call once per frame.
+    /**
+     * @brief Reads raylib's input state and advances editor state by one frame's worth of key events.
+     */
     void HandleInput();
 
     // Adjusts the given pane's scroll so its cursor stays visible within
@@ -1410,15 +1567,33 @@ public:
     // wrap_cols counts as multiple visual slots here, the same way a
     // closed fold or org inline image already does, so the cursor's own
     // wrapped row can't scroll itself half off-screen.
+    /**
+     * @brief Adjusts a pane's scroll offset so its cursor stays visible within its visible rows.
+     * @param pane_id The id of the pane to adjust.
+     * @param visible_lines The number of visual rows currently visible in the pane.
+     * @param wrap_cols The pane's soft-wrap budget in characters; 0 disables wrap-aware slot counting.
+     */
     void UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols = 0);
 
+    /**
+     * @brief Returns the editor's current mode.
+     * @return The current Mode.
+     */
     Mode CurrentMode() const { return mode_; }
     // R (Replace mode): true while Mode::Insert should show "REPLACE" in
     // the status line instead of "INSERT" -- see replace_mode_'s own
     // comment for why this isn't a distinct Mode value.
+    /**
+     * @brief Returns whether Insert mode should currently be displayed as Replace mode.
+     * @return True if Replace mode is active.
+     */
     bool IsReplaceMode() const { return replace_mode_; }
     // :set number/nonumber -- whether main.cpp's renderer should draw a
     // line-number gutter.
+    /**
+     * @brief Returns whether the line-number gutter should be drawn.
+     * @return True if line numbers are enabled (:set number).
+     */
     bool ShowLineNumbers() const { return show_line_numbers_; }
     // :set relativenumber/norelativenumber -- whether each row's own
     // number is its distance from the cursor line rather than its
@@ -1429,18 +1604,34 @@ public:
     // real absolute one (left-aligned, the Vim/Neovim "hybrid" look)
     // whenever this is on, matching the everyday "number relativenumber
     // together" setup this editor now defaults to.
+    /**
+     * @brief Returns whether line numbers should be shown relative to the cursor line.
+     * @return True if relative numbering is enabled (:set relativenumber).
+     */
     bool ShowRelativeNumbers() const { return show_relative_numbers_; }
     // :set cursorline/nocursorline -- whether main.cpp's renderer should
     // tint the active pane's cursor row with the "CursorLine" theme group.
+    /**
+     * @brief Returns whether the active pane's cursor row should be highlighted.
+     * @return True if cursorline highlighting is enabled (:set cursorline).
+     */
     bool ShowCursorLine() const { return show_cursorline_; }
     // :set wrap/nowrap -- whether main.cpp's renderer should soft-wrap a
     // row too wide for the pane onto extra visual rows (the buffer itself
     // still has exactly one logical line there; j/k and line numbering
     // stay row-based, matching real Vim's default 'wrap' behavior).
+    /**
+     * @brief Returns whether long lines should be soft-wrapped for display.
+     * @return True if soft wrap is enabled (:set wrap).
+     */
     bool Wrap() const { return wrap_; }
     // <leader>oti / mep.org_images_toggle -- whether main.cpp's renderer
     // should substitute a rendered texture for a Buffer::org_image_rows
     // row instead of its ordinary [[file:...]] text.
+    /**
+     * @brief Returns whether inline images should be rendered for org [[file:...]] links.
+     * @return True if org inline image rendering is toggled on.
+     */
     bool OrgImagesVisible() const { return org_images_visible_; }
     // <leader>otl / mep.org_latex_toggle -- whether main.cpp's renderer
     // should substitute a rendered texture for a Buffer::org_latex_rows row
@@ -1449,21 +1640,37 @@ public:
     // access), which no-ops (after clearing any stale rows/folds) while
     // this is off -- see Buffer::org_latex_rows' own comment for why, unlike
     // OrgImagesVisible(), this needs a real Lua-visible getter.
+    /**
+     * @brief Returns whether inline LaTeX/math fragments should be rendered as images.
+     * @return True if org LaTeX rendering is toggled on.
+     */
     bool OrgLatexVisible() const { return org_latex_visible_; }
     // Active pane/buffer -- what most of the UI (statusline, blinking
     // cursor, Visual highlight) cares about.
+    /**
+     * @brief Returns the buffer shown by the active pane.
+     * @return A const reference to the active buffer.
+     */
     const Buffer &CurrentBuffer() const { return Buf(); }
     // The active pane's own buffer id -- CurPane() itself is private
     // (most of the editor reaches it as `this`'s own member, no need for
     // a public accessor), but a couple of lua_env.cpp bindings that
     // aren't Editor members (mep.html_current_origin/mep.html_reload)
     // need the raw id to key into htmldocs_ via GetHtml/ReloadHtmlBuffer.
+    /**
+     * @brief Returns the buffer id shown by the active pane.
+     * @return The active pane's buffer id.
+     */
     int CurrentBufferId() const { return CurPane().buffer_id; }
     // Buffer ids currently shown by a pane in the active tab's own split
     // layout, in that tab's leaf-traversal order (CollectLeafBuffers) --
     // what mep.pane_buffers() exposes for a Lua-side feature that wants
     // to "find an already-open terminal pane" (mirrors mep.nvim's
     // nvim_tabpage_list_wins()/nvim_win_get_buf combination).
+    /**
+     * @brief Lists the buffer ids currently shown by panes in the active tab.
+     * @return Buffer ids in the active tab's leaf-traversal order.
+     */
     std::vector<int> PaneBuffersInActiveTab() const;
     // Moves focus straight to whichever pane in the active tab already
     // shows buffer_id (false, no-op, if none does) -- unlike
@@ -1472,6 +1679,11 @@ public:
     // mep.repl_start open their output in a new split and focus it once,
     // on creation, but there was no way back to it (or back to the
     // source buffer) afterward short of manual hjkl.
+    /**
+     * @brief Moves focus to whichever pane in the active tab already shows the given buffer.
+     * @param buffer_id The buffer id to search for.
+     * @return True if a pane showing that buffer was found and focused, false otherwise.
+     */
     bool FocusPaneShowingBuffer(int buffer_id);
     // Cursor row (0-indexed) of whichever pane in the active tab shows
     // buffer_id, without changing focus -- -1 if no pane shows it. Lets a
@@ -1480,6 +1692,11 @@ public:
     // cursor position for "is the cursor near this item" tracking even
     // while a different pane (or a sidebar) currently has focus, the way
     // mep.cursor()/GetCursorForLua only ever can for the *focused* pane.
+    /**
+     * @brief Returns the cursor row of whichever pane in the active tab shows the given buffer.
+     * @param buffer_id The buffer id to look up.
+     * @return The cursor row (0-indexed) of the pane showing that buffer, or -1 if none does.
+     */
     int CursorRowForBuffer(int buffer_id) const;
     // Moves focus to whichever pane in the active tab's split layout is
     // topmost, then (among ties) leftmost -- PaneRect's y0 then x0. The
@@ -1487,14 +1704,37 @@ public:
     // opens near the tree instead of in whatever pane happened to be
     // active before the sidebar took focus (e.g. the bottom pane of a
     // top/bottom split, if that's the one that was last edited).
+    /**
+     * @brief Moves focus to the topmost, then leftmost, pane in the active tab's split layout.
+     */
     void FocusTopLeftPane();
+    /**
+     * @brief Returns the active pane's cursor position.
+     * @return The current cursor row/column.
+     */
     CursorPos Cursor() const { return CurPane().cursor; }
+    /**
+     * @brief Returns the active pane's current scroll row.
+     * @return The topmost visible buffer row.
+     */
     int ScrollRow() const { return CurPane().scroll_row; }
+    /**
+     * @brief Returns the in-progress ":" command-line text.
+     * @return The current command-line buffer contents.
+     */
     const std::string &CommandLine() const { return command_line_; }
     // The in-progress /{...} or ?{...} query, for the command bar to draw
     // while in Mode::SearchForward/SearchBackward (mirrors CommandLine()
     // above for Mode::Command).
+    /**
+     * @brief Returns the in-progress search query text.
+     * @return The current forward/backward search query being typed.
+     */
     const std::string &SearchQuery() const { return search_query_; }
+    /**
+     * @brief Returns the current status-line message.
+     * @return The status message text.
+     */
     const std::string &StatusMessage() const { return status_message_; }
 
     // --- Notifications (NVIM_PARITY_PLAN.md Part I Phase 6) ---
@@ -1511,20 +1751,54 @@ public:
         double created_at = 0.0;
         double expires_at = 0.0;  // 0 = never auto-dismiss
     };
+    /**
+     * @brief Pushes a notification: shows a toast, records it in history, and updates the status line.
+     * @param msg The message text to show.
+     * @param level The severity level, which controls toast duration and styling.
+     */
     void Notify(const std::string &msg, NotifyLevel level = NotifyLevel::Info);
     // Called once per frame with the current wall-clock time (main.cpp's
     // GetTime()) to expire timed-out toasts -- editor.h/.cpp stay
     // raylib-free, so "now" is threaded in rather than queried here.
+    /**
+     * @brief Expires toasts whose timeout has elapsed as of the given time.
+     * @param now The current wall-clock time in seconds.
+     */
     void PruneExpiredToasts(double now);
+    /**
+     * @brief Dismisses a single toast notification immediately.
+     * @param id The id of the toast to dismiss.
+     */
     void DismissToast(int id);
+    /**
+     * @brief Dismisses every currently visible toast notification.
+     */
     void DismissAllToasts();
+    /**
+     * @brief Clears the persistent notification history.
+     */
     void ClearNotifyHistory();
+    /**
+     * @brief Returns the currently visible toast notifications.
+     * @return A const reference to the active toast list.
+     */
     const std::vector<NotifyEntry> &Toasts() const { return toasts_; }
+    /**
+     * @brief Returns the full notification history.
+     * @return A const reference to the notification history list.
+     */
     const std::vector<NotifyEntry> &NotifyHistory() const { return notify_history_; }
     // :MepNotifyPanel -- a sidebar (Phase 7) view onto NotifyHistory(),
     // rebuilt from it each time this is called.
+    /**
+     * @brief Opens or closes the :MepNotifyPanel sidebar view of the notification history.
+     */
     void ToggleNotifyHistoryPanel();
 
+    /**
+     * @brief Returns whether the editor has requested the application quit.
+     * @return True if the editor should quit.
+     */
     bool ShouldQuit() const { return should_quit_; }
     // Polling-based buffer-change/save detection for Lua (mep.buffer_
     // change_epoch()/buffer_save_epoch()) -- a consumer stores the last
@@ -1532,7 +1806,15 @@ public:
     // the value differs, checked once per frame via mep.on_frame rather
     // than a synchronous callback fired from inside the edit/save call
     // stack (which would risk re-entrant buffer mutation).
+    /**
+     * @brief Returns a counter incremented on every buffer change, for cheap polling-based change detection.
+     * @return The current change epoch.
+     */
     int ChangeEpoch() const { return change_epoch_; }
+    /**
+     * @brief Returns a counter incremented on every buffer save, for cheap polling-based save detection.
+     * @return The current save epoch.
+     */
     int SaveEpoch() const { return save_epoch_; }
     // Wall-clock seconds since program start, threaded in from main.cpp's
     // raylib GetTime() once per frame (editor.h/.cpp stay raylib-free, so
@@ -1541,25 +1823,61 @@ public:
     // os.clock(), which measures CPU time, not wall-clock time -- under a
     // busy/idle-waiting render loop the two can drift apart enough to
     // make a debounce interval fire far later than intended.
+    /**
+     * @brief Sets the current wall-clock time, threaded in once per frame from main.cpp.
+     * @param t The current wall-clock time in seconds.
+     */
     void SetNow(double t) { now_ = t; }
+    /**
+     * @brief Returns the wall-clock time last set via SetNow.
+     * @return The current time in seconds.
+     */
     double Now() const { return now_; }
     // For the status line: the count typed so far (0 if none), so a
     // half-typed "3d" isn't invisible while it's pending.
+    /**
+     * @brief Returns the count prefix typed so far for a pending motion/operator.
+     * @return The pending count, or 0 if none has been typed.
+     */
     int PendingCount() const { return pending_count_; }
     // For the status line: the register named so far via "{a-z} (0 if
     // none), same reasoning as PendingCount above.
+    /**
+     * @brief Returns the register name typed so far via a pending "{a-z} prefix.
+     * @return The pending register character, or 0 if none has been typed.
+     */
     char PendingRegister() const { return pending_register_; }
 
+    /**
+     * @brief Returns whether a Visual-mode selection (charwise, linewise, or block) is currently active.
+     * @return True if any Visual mode is active.
+     */
     bool HasVisualSelection() const {
         return mode_ == Mode::Visual || mode_ == Mode::VisualLine || mode_ == Mode::VisualBlock;
     }
+    /**
+     * @brief Returns whether Visual Block mode is currently active.
+     * @return True if the current mode is VisualBlock.
+     */
     bool IsVisualBlock() const { return mode_ == Mode::VisualBlock; }
     // Returns the selection normalized so `start` <= `end` in buffer order.
+    /**
+     * @brief Computes the current Visual selection's start/end positions, normalized to buffer order.
+     * @param start Output: the earlier of the two endpoints.
+     * @param end Output: the later of the two endpoints.
+     */
     void VisualRange(CursorPos &start, CursorPos &end) const;
     // Visual Block's rectangular extent: rows [top, bottom], columns
     // [left, right] (right is -1 if the block is in "to end of line on
     // each row" mode -- see block_to_eol_'s comment -- callers should
     // treat that as "the rest of the row", not a literal column).
+    /**
+     * @brief Computes Visual Block mode's rectangular extent.
+     * @param top Output: the top row of the block.
+     * @param bottom Output: the bottom row of the block.
+     * @param left Output: the left column of the block.
+     * @param right Output: the right column of the block, or -1 if the block extends to each row's end.
+     */
     void VisualBlockRange(int &top, int &bottom, int &left, int &right) const;
     // Read-only text of the current Visual selection (charwise/linewise
     // joined with '\n' between lines, blockwise one row's slice per line
@@ -1568,49 +1886,113 @@ public:
     // and pushes no undo state, so it's safe to call from anywhere purely
     // to *read* the selection (mep.visual_selection(), send-selection
     // features, ...). See also ExtractRangeText (private).
+    /**
+     * @brief Returns the text currently covered by the active Visual selection.
+     * @return The selected text, or an empty string if no selection is active.
+     */
     std::string CurrentVisualSelectionText() const;
 
     // --- Multi-pane/tab read access (for main.cpp's renderer) ---
+    /**
+     * @brief Returns the number of open tabs.
+     * @return The tab count.
+     */
     int TabCount() const { return static_cast<int>(tabs_.size()); }
+    /**
+     * @brief Returns the index of the currently active tab.
+     * @return The active tab's index.
+     */
     int ActiveTabIndex() const { return active_tab_; }
+    /**
+     * @brief Returns the split-tree root of the active tab.
+     * @return A const pointer to the active tab's root SplitNode.
+     */
     const SplitNode *ActiveTabRoot() const { return tabs_[active_tab_].root.get(); }
     // Non-const sibling of ActiveTabRoot -- main.cpp's own per-frame pane-
     // geometry capture (mirroring DrawPaneTree's layout math) stashes raw
     // SplitNode* pointers for its border-drag hit-testing (SetPaneBorderShare
     // takes one directly), which needs mutable access; DrawPaneTree/drawing
     // itself stays on the const overload above, unchanged.
+    /**
+     * @brief Returns a mutable split-tree root of the active tab, for geometry capture that needs raw SplitNode pointers.
+     * @return A pointer to the active tab's root SplitNode.
+     */
     SplitNode *MutableActiveTabRoot() { return tabs_[active_tab_].root.get(); }
+    /**
+     * @brief Returns the id of the currently focused pane in the active tab.
+     * @return The active pane's id.
+     */
     int ActivePaneId() const { return tabs_[active_tab_].active_pane_id; }
     // Same as ActiveTabRoot()/ActivePaneId() but for tab `index`
     // specifically (0 <= index < TabCount(), unchecked -- same contract as
     // every other accessor here) rather than always the active tab --
     // agent_rpc.cpp's state.dump walks every open tab, not just the one
     // currently in view.
+    /**
+     * @brief Returns the split-tree root of the tab at the given index.
+     * @param index The tab index to look up (0 <= index < TabCount(), unchecked).
+     * @return A const pointer to that tab's root SplitNode.
+     */
     const SplitNode *TabRoot(int index) const { return tabs_[index].root.get(); }
+    /**
+     * @brief Returns the id of the active pane in the tab at the given index.
+     * @param index The tab index to look up (0 <= index < TabCount(), unchecked).
+     * @return That tab's active pane id.
+     */
     int TabActivePaneId(int index) const { return tabs_[index].active_pane_id; }
+    /**
+     * @brief Returns the buffer with the given id.
+     * @param buffer_id The buffer id to look up.
+     * @return A const reference to that buffer.
+     */
     const Buffer &GetBuffer(int buffer_id) const { return buffers_[buffer_id]; }
 
     // --- Terminal panes (`:terminal`/`:term`, Part VI Phase 27+) ---
     // main.cpp's DrawPane checks this to render straight from the
     // session's VTerm grid instead of the (unused, empty) Buffer text a
     // terminal pane's buffer_id still nominally points at.
+    /**
+     * @brief Returns whether the given buffer id is backed by a live terminal session.
+     * @param buffer_id The buffer id to check.
+     * @return True if the buffer is a terminal pane.
+     */
     bool IsTerminalBuffer(int buffer_id) const;
+    /**
+     * @brief Returns the terminal session for the given buffer id, if any.
+     * @param buffer_id The buffer id to look up.
+     * @return A const pointer to the TerminalSession, or nullptr if the buffer isn't a terminal.
+     */
     const TerminalSession *GetTerminal(int buffer_id) const;
     // Writes `text` into a real terminal buffer's own PTY (mep.terminal_write,
     // the "send this line to whichever :terminal pane I designated"
     // primitive a Lua-side vim-slime-style feature needs) -- false if
     // `buffer_id` isn't a live terminal (never one, or already exited).
+    /**
+     * @brief Writes text into a terminal buffer's underlying PTY.
+     * @param buffer_id The terminal buffer id to write to.
+     * @param text The text to send to the PTY.
+     * @return True if the buffer is a live terminal and the write was sent, false otherwise.
+     */
     bool WriteToTerminalBuffer(int buffer_id, const std::string &text);
     // Called once per frame by DrawPane with the terminal pane's current
     // character-cell size; no-ops if unchanged since the last call
     // (cheap to call unconditionally rather than threading a "did this
     // pane's pixel size change" flag down from main.cpp).
+    /**
+     * @brief Resizes a terminal pane's PTY and VTerm grid to match its current character-cell size.
+     * @param buffer_id The terminal buffer id to resize.
+     * @param rows The new number of terminal rows.
+     * @param cols The new number of terminal columns.
+     */
     void ResizeTerminal(int buffer_id, int rows, int cols);
     // Called once per frame from main.cpp's main loop, alongside
     // JobManager::Instance().PollAll() -- pumps buffered output for any
     // wasm-backed terminal session (see TerminalSpawn) into its VTerm; a
     // no-op on native builds, which get this for free via JobManager's
     // own callback-driven PollAll instead.
+    /**
+     * @brief Pumps buffered output for wasm-backed terminal sessions into their VTerm state; a no-op on native builds.
+     */
     void PollTerminals();
 
     // --- Image-viewer panes (opened via LoadFile for a png/jpg/bmp/gif
@@ -1618,18 +2000,44 @@ public:
     // main.cpp's DrawPane checks this to render the decoded texture instead
     // of the (unused, empty) Buffer text an image pane's buffer_id still
     // nominally points at.
+    /**
+     * @brief Returns whether the given buffer id is backed by a decoded image.
+     * @param buffer_id The buffer id to check.
+     * @return True if the buffer is an image pane.
+     */
     bool IsImageBuffer(int buffer_id) const;
+    /**
+     * @brief Returns the image session for the given buffer id, if any.
+     * @param buffer_id The buffer id to look up.
+     * @return A const pointer to the ImageSession, or nullptr if the buffer isn't an image pane.
+     */
     const ImageSession *GetImage(int buffer_id) const;
     // Called once per frame by DrawPane with the pane's current content
     // pixel size; also re-clamps pan_x/pan_y in case the pane shrank since
     // the last call (mirrors ResizeTerminal's per-frame-refresh pattern).
+    /**
+     * @brief Updates an image pane's viewport size and re-clamps its pan offset.
+     * @param buffer_id The image buffer id to resize.
+     * @param w The new viewport width in pixels.
+     * @param h The new viewport height in pixels.
+     */
     void ResizeImageViewport(int buffer_id, int w, int h);
 
     // --- PDF-viewer panes (opened via LoadFile for a .pdf path -- see
     // IsPdfPath in pdf_doc.h). Mirrors the Image-viewer block above; see
     // PdfSession's own comment for why it additionally owns a re-renderable
     // raster buffer instead of a fixed decode. ---
+    /**
+     * @brief Returns whether the given buffer id is backed by a PDF document.
+     * @param buffer_id The buffer id to check.
+     * @return True if the buffer is a PDF pane.
+     */
     bool IsPdfBuffer(int buffer_id) const;
+    /**
+     * @brief Returns the PDF session for the given buffer id, if any.
+     * @param buffer_id The buffer id to look up.
+     * @return A const pointer to the PdfSession, or nullptr if the buffer isn't a PDF pane.
+     */
     const PdfSession *GetPdf(int buffer_id) const;
     // Pure geometry clamp only (mirrors ResizeImageViewport): re-clamps
     // pan_x against the anchor page's on-screen width. Never triggers a
@@ -1637,6 +2045,12 @@ public:
     // separately (every frame from DrawPane, after this). Keeping the
     // resize call side-effect-free avoids thrashing re-renders before
     // HandlePdfInput's own zoom-band logic has settled.
+    /**
+     * @brief Updates a PDF pane's viewport size and re-clamps its horizontal pan, without triggering a re-render.
+     * @param buffer_id The PDF buffer id to resize.
+     * @param w The new viewport width in pixels.
+     * @param h The new viewport height in pixels.
+     */
     void ResizePdfViewport(int buffer_id, int w, int h);
     // Renders whichever of {page-1, page, page+1} aren't already cached at
     // the current rendered_scale (clearing the whole cache first if
@@ -1645,14 +2059,34 @@ public:
     // reading pdfs_[...].rasters to draw -- cheap on a cache hit (the
     // common case), so safe to call unconditionally every frame rather
     // than only on state-change edges.
+    /**
+     * @brief Ensures the anchor page and its immediate neighbors are rasterized at the current scale, evicting the rest.
+     * @param buffer_id The PDF buffer id to update.
+     */
     void EnsurePdfPagesRastered(int buffer_id);
 
     // --- HTML-preview panes (opened via mep.html_open, kBuiltinTextTools
     // -- deliberately *not* reachable from LoadFile's extension dispatch,
     // see Mode::Html's own comment on why). Mirrors the Image-viewer block
     // above. ---
+    /**
+     * @brief Returns whether the given buffer id is backed by an HTML preview.
+     * @param buffer_id The buffer id to check.
+     * @return True if the buffer is an HTML preview pane.
+     */
     bool IsHtmlBuffer(int buffer_id) const;
+    /**
+     * @brief Returns the HTML session for the given buffer id, if any.
+     * @param buffer_id The buffer id to look up.
+     * @return A const pointer to the HtmlSession, or nullptr if the buffer isn't an HTML pane.
+     */
     const HtmlSession *GetHtml(int buffer_id) const;
+    /**
+     * @brief Updates an HTML preview pane's viewport size.
+     * @param buffer_id The HTML buffer id to resize.
+     * @param w The new viewport width in pixels.
+     * @param h The new viewport height in pixels.
+     */
     void ResizeHtmlViewport(int buffer_id, int w, int h);
     // Clamps scroll_y into [0, max_scroll] -- called from DrawPane's html
     // branch *after* that frame's own LayoutHtmlDoc call, since max_scroll
@@ -1660,6 +2094,11 @@ public:
     // metrics this raylib-free file has no access to, the same reasoning
     // OfficeSession's own comment gives for why its scroll-follow math
     // lives in main.cpp instead of here.
+    /**
+     * @brief Clamps an HTML pane's vertical scroll offset to the current layout's valid range.
+     * @param buffer_id The HTML buffer id to clamp.
+     * @param max_scroll The maximum valid scroll offset (total layout height minus viewport height).
+     */
     void ClampHtmlScroll(int buffer_id, float max_scroll);
     // Parses `bytes` (already-read HTML text) and opens it as a new
     // HtmlSession in the *current* pane (mirrors OpenImageInPlace/
@@ -1671,6 +2110,13 @@ public:
     // display/dedup key, not necessarily read from disk itself (the
     // caller already did that, or fetched it via curl into a temp file).
     // `origin` is HtmlSession::origin -- see its own comment.
+    /**
+     * @brief Parses HTML bytes and opens them as a new HtmlSession in the current pane, deduplicating by source.
+     * @param origin The user-facing URL/path this page was opened from.
+     * @param source The display/dedup key identifying where the bytes came from.
+     * @param bytes Pointer to the raw HTML bytes to parse.
+     * @param len Length of `bytes` in bytes.
+     */
     void OpenHtmlInPlace(const std::string &origin, const std::string &source, const unsigned char *bytes,
                           size_t len);
     // Re-parses `bytes` INTO the existing HtmlSession at `buffer_id` --
@@ -1681,6 +2127,14 @@ public:
     // bytes) and "navigate this pane to a different address" (the address
     // bar, mep.browse_open_bar -- a new origin/source entirely). A no-op
     // if `buffer_id` isn't a live HTML session.
+    /**
+     * @brief Re-parses HTML bytes into an existing HtmlSession in place, overwriting its DOM and resetting scroll.
+     * @param buffer_id The buffer id of the existing HTML session to overwrite.
+     * @param origin The user-facing URL/path this page was (re)opened from.
+     * @param source The display/dedup key identifying where the bytes came from.
+     * @param bytes Pointer to the raw HTML bytes to parse.
+     * @param len Length of `bytes` in bytes.
+     */
     void ReloadHtmlBuffer(int buffer_id, const std::string &origin, const std::string &source,
                            const unsigned char *bytes, size_t len);
     // Converts `buffer_id` in place between the rendered HTML view and a
@@ -1696,13 +2150,31 @@ public:
     // copy, so unsaved edits show up in the rendered view, and is a
     // no-op if buffer_id is already an HTML buffer. Both are pure data
     // conversions -- callers handle CurPane()/mode_/status_message_.
+    /**
+     * @brief Converts an HTML buffer to a plain-text view by re-reading the file from disk; no-op if not HTML.
+     * @param buffer_id The buffer id to convert.
+     */
     void ConvertHtmlBufferToText(int buffer_id);
+    /**
+     * @brief Converts a plain-text buffer to a rendered HTML view by parsing its current in-memory lines.
+     * @param buffer_id The buffer id to convert.
+     */
     void ConvertTextBufferToHtml(int buffer_id);
 
     // --- WYSIWYG office-document panes (opened via LoadFile for a
     // .docx/.odt path -- see IsDocxPath/IsOdtPath in office_doc.h).
     // Mirrors the Image/PDF-viewer blocks above. ---
+    /**
+     * @brief Returns whether the given buffer is an open WYSIWYG office-document (.docx/.odt) session.
+     * @param buffer_id The buffer id to check.
+     * @return True if the buffer has an active OfficeSession.
+     */
     bool IsOfficeBuffer(int buffer_id) const;
+    /**
+     * @brief Returns the OfficeSession for a buffer, if it is an office-document pane.
+     * @param buffer_id The buffer id to look up.
+     * @return A const pointer to the OfficeSession, or nullptr if none exists.
+     */
     const OfficeSession *GetOffice(int buffer_id) const;
     // Pure geometry setter (mirrors ResizePdfViewport): records
     // viewport_w/h only, no scroll-follow logic -- unlike the plain text
@@ -1716,6 +2188,12 @@ public:
     // ~viewport-height's worth of paragraphs are ever wrapped in a given
     // frame, not the whole document) -- which then calls SetOfficeScroll
     // below if the cursor has scrolled out of view.
+    /**
+     * @brief Records an office pane's viewport size only; no scroll-follow logic (that needs word-wrap info main.cpp computes).
+     * @param buffer_id The office buffer id whose viewport changed.
+     * @param w The new viewport width in pixels.
+     * @param h The new viewport height in pixels.
+     */
     void ResizeOfficeViewport(int buffer_id, int w, int h);
     // Toolbar click handler (main.cpp's office DrawPane branch,
     // Phase 5) -- the same bold/italic/underline toggle
@@ -1726,12 +2204,21 @@ public:
     // just the single character at the cursor as a small but well-defined
     // fallback rather than a no-op -- no "sticky" insert-mode formatting
     // either way, consistent with the v1 exclusion.
+    /**
+     * @brief Toggles bold/italic/underline formatting over the active selection, or a single char at the cursor.
+     * @param which The format to toggle ('b', 'i', or 'u').
+     */
     void ToggleOfficeFormat(char which);
     // True if `which` (b/i/u) is "on" at the cursor (OfficeNormal) or
     // uniformly on across the current selection (OfficeVisual) -- drives
     // the toolbar button's pressed-look. Read-only, mirrors
     // ToggleFormatOverRange's own all-on check but without mutating
     // anything.
+    /**
+     * @brief Returns whether a format is "on" at the cursor, or uniformly on across the current selection.
+     * @param which The format to check ('b', 'i', or 'u').
+     * @return True if that format is currently active.
+     */
     bool OfficeFormatActive(char which) const;
     // Non-boolean-field counterparts of ToggleOfficeFormat/OfficeFormatActive
     // -- same Visual-selection-vs-single-char-at-cursor dispatch, but a
@@ -1744,13 +2231,45 @@ public:
     // genuine toggle (mirrors ToggleOfficeFormat's own on/off convention)
     // but need their own function since setting one must also clear the
     // other (mutually exclusive, unlike bold/italic/underline/strike).
+    /**
+     * @brief Sets the font family over the active selection, or at the cursor if no selection.
+     * @param family The font family to apply.
+     */
     void SetOfficeFontFamily(OfficeFontFamily family);
+    /**
+     * @brief Sets the font size (in points) over the active selection, or at the cursor if no selection.
+     * @param pt The font size in points.
+     */
     void SetOfficeFontSizePt(float pt);
+    /**
+     * @brief Sets the text color over the active selection, or at the cursor if no selection.
+     * @param r Red channel (0-255).
+     * @param g Green channel (0-255).
+     * @param b Blue channel (0-255).
+     */
     void SetOfficeColor(unsigned char r, unsigned char g, unsigned char b);
+    /**
+     * @brief Clears an explicit text color, reverting to the default, over the active selection or at the cursor.
+     */
     void ClearOfficeColor();
+    /**
+     * @brief Sets the highlight (background) color over the active selection, or at the cursor if no selection.
+     * @param r Red channel (0-255).
+     * @param g Green channel (0-255).
+     * @param b Blue channel (0-255).
+     */
     void SetOfficeHighlight(unsigned char r, unsigned char g, unsigned char b);
+    /**
+     * @brief Clears an explicit highlight color over the active selection, or at the cursor if no selection.
+     */
     void ClearOfficeHighlight();
+    /**
+     * @brief Toggles superscript over the active selection, or at the cursor; clears subscript if it was on.
+     */
     void ToggleOfficeSuperscript();
+    /**
+     * @brief Toggles subscript over the active selection, or at the cursor; clears superscript if it was on.
+     */
     void ToggleOfficeSubscript();
     // Paragraph-level (not span/char-range) setters: alignment and list
     // membership apply to every paragraph the Visual selection touches (or
@@ -1760,30 +2279,61 @@ public:
     // `kind` -- lets one button/key double as both "make this a bulleted
     // list" and "un-bullet it", matching ToggleOfficeFormat's own
     // click-again-to-undo convention.
+    /**
+     * @brief Sets the paragraph alignment for every paragraph the Visual selection touches, or just the cursor's paragraph.
+     * @param align The alignment to apply.
+     */
     void SetOfficeAlignment(DocParagraph::Align align);
+    /**
+     * @brief Returns whether an alignment is uniformly active across the affected paragraph(s).
+     * @param align The alignment to check.
+     * @return True if that alignment is uniformly set.
+     */
     bool OfficeAlignmentActive(DocParagraph::Align align) const;
+    /**
+     * @brief Sets the list kind for the affected paragraph(s), toggling back to None if already uniformly `kind`.
+     * @param kind The list kind to apply (or remove, if already uniformly active).
+     */
     void SetOfficeListKind(DocParagraph::ListKind kind);
+    /**
+     * @brief Returns whether a list kind is uniformly active across the affected paragraph(s).
+     * @param kind The list kind to check.
+     * @return True if that list kind is uniformly set.
+     */
     bool OfficeListKindActive(DocParagraph::ListKind kind) const;
     // Inserts `utf8` (a special character, or any literal text) at the
     // cursor -- the toolbar's special-character-grid click handler; not
     // format-related at all, just ApplyInsertToParagraph plus cursor
     // advance, same as a typed character in Mode::OfficeInsert.
+    /**
+     * @brief Inserts literal text (e.g. a special character from the toolbar grid) at the cursor.
+     * @param utf8 The UTF-8 text to insert.
+     */
     void InsertOfficeText(const std::string &utf8);
     // Opens a native prompt (BeginPromptNative) for a LaTeX-subset math
     // expression, then inserts it as a new span with DocFormat::math set
     // (main.cpp's office DrawPane branch renders a math=true run via
     // LayoutMathExpression/DrawMathLayout instead of literal glyphs).
+    /**
+     * @brief Prompts for a LaTeX-subset math expression and inserts it as a math-formatted span at the cursor.
+     */
     void InsertOfficeMath();
     // Opens two chained native prompts (rows, then cols), then inserts a
     // DocTable anchored to the paragraph at the cursor (OfficeDoc::tables
     // grows by one; the cursor paragraph's table_ref points at it). Cells
     // start empty.
+    /**
+     * @brief Prompts for a row and column count, then inserts an empty table anchored at the cursor's paragraph.
+     */
     void InsertOfficeTablePrompt();
     // Opens a native prompt for a local image file path, decodes it
     // (ImageDoc::LoadFromMemory) to confirm it's a real image and capture
     // its pixel dimensions, then inserts a DocImage anchored the same way
     // InsertOfficeTablePrompt anchors a DocTable. Silently no-ops (a
     // status message, not a crash) if the path doesn't decode.
+    /**
+     * @brief Prompts for a local image file path, decodes it, and inserts it as an image anchored at the cursor.
+     */
     void InsertOfficeImagePrompt();
     // Table-cell navigation/editing while OfficeSession::in_table_edit is
     // set (see that field's own comment) -- Tab/Shift-Tab or hjkl move
@@ -1791,24 +2341,52 @@ public:
     // back to normal paragraph navigation. Called from
     // HandleOfficeNormalInput/HandleOfficeInsertInput once a table anchor
     // is the cursor paragraph's own table_ref and the user has entered it.
+    /**
+     * @brief Enters table-cell navigation/editing mode for the table anchored at the cursor's paragraph.
+     * @param table_ref The table's index into OfficeDoc::tables.
+     */
     void EnterOfficeTable(int table_ref);
+    /**
+     * @brief Exits table-cell editing, returning to normal paragraph navigation.
+     */
     void ExitOfficeTable();
+    /**
+     * @brief Moves the current table-edit cell selection by the given row/column offset.
+     * @param dr The row offset to move by.
+     * @param dc The column offset to move by.
+     */
     void MoveOfficeTableCell(int dr, int dc);
     // Sets scroll_para/scroll_line_in_para directly -- the one mutation
     // point main.cpp's word-wrap-aware "is the cursor still visible"
     // check (DrawPane) uses to scroll-follow the cursor, since that
     // check's own logic must live in main.cpp (see ResizeOfficeViewport's
     // comment) but the state it adjusts lives here.
+    /**
+     * @brief Sets an office pane's scroll position directly (the mutation point main.cpp's cursor-visibility check drives).
+     * @param buffer_id The office buffer id to scroll.
+     * @param scroll_para The paragraph index to scroll to.
+     * @param scroll_line_in_para The visual line offset within that paragraph.
+     */
     void SetOfficeScroll(int buffer_id, int scroll_para, int scroll_line_in_para);
     // Sets OfficeSession::scroll_follow_last_cursor_para directly -- same
     // reasoning/pairing as SetOfficeScroll just above (the value the scan
     // reacts to lives in main.cpp, the state itself lives here).
+    /**
+     * @brief Sets the last cursor paragraph the scroll-follow logic reacted to.
+     * @param buffer_id The office buffer id to update.
+     * @param cursor_para The paragraph index the cursor is currently in.
+     */
     void SetOfficeScrollFollowCursorPara(int buffer_id, int cursor_para);
     // Jumps the cursor to the start of `para` (column 0, selection
     // cleared) -- the Outline panel's click-to-jump (main.cpp's
     // DrawOfficeSidePanels) needs this alongside SetOfficeScroll itself,
     // see its own comment (editor.cpp) for why moving only the scroll
     // position isn't enough.
+    /**
+     * @brief Jumps the cursor to the start of a paragraph, clearing any selection (used by the Outline panel's click-to-jump).
+     * @param buffer_id The office buffer id to update.
+     * @param para The paragraph index to jump the cursor to.
+     */
     void SetOfficeCursorPara(int buffer_id, int para);
     // Sets OfficeSession::cursor_wrap_lines(_para) directly -- same
     // main.cpp-computes/editor.cpp-stores pairing as SetOfficeScroll just
@@ -1816,6 +2394,12 @@ public:
     // geometry it can't compute itself. Called once per frame from
     // DrawPane, right where it already word-wraps the cursor's own
     // paragraph for rendering (main.cpp).
+    /**
+     * @brief Stores the current cursor paragraph's word-wrap geometry, feeding MoveOfficeCursorVisualLine.
+     * @param buffer_id The office buffer id to update.
+     * @param cursor_para The paragraph index the wrap geometry belongs to.
+     * @param lines The wrapped line ranges (start, end) within that paragraph.
+     */
     void SetOfficeCursorWrapLines(int buffer_id, int cursor_para, std::vector<std::pair<int, int>> lines);
     // Toolbar zoom +/- buttons (and now Ctrl-scroll, HandleMouseWheel's
     // Office branch): multiplies OfficeSession::zoom by `factor` (>1 to
@@ -1825,6 +2409,10 @@ public:
     // pan to re-center (unlike ApplyImageZoom/ApplyPdfZoom): an office
     // pane's position is cursor_para/cursor_col-derived, not a separate
     // pan_x/pan_y, so zooming doesn't need to touch it.
+    /**
+     * @brief Multiplies the office pane's zoom level, clamped to [0.5, 3.0].
+     * @param factor The multiplier to apply (greater than 1 to grow, less than 1 to shrink).
+     */
     void SetOfficeZoom(float factor);
     // 'u'/Ctrl-R in Mode::OfficeNormal (and now the toolbar's Undo/Redo
     // buttons, main.cpp) -- mirror Undo()/Redo()'s own push-the-opposite-
@@ -1832,19 +2420,41 @@ public:
     // redo_stack instead of Buffer's. Moved up to this file's public
     // section (was private) since a toolbar button click, unlike a
     // keybinding, calls it from outside the class.
+    /**
+     * @brief Undoes the last office-document edit, popping OfficeSession::undo_stack and pushing to redo_stack.
+     */
     void UndoOffice();
+    /**
+     * @brief Redoes the last undone office-document edit, popping OfficeSession::redo_stack and pushing to undo_stack.
+     */
     void RedoOffice();
 
     // --- Spreadsheet panes (opened via LoadFile for a .xlsx/.ods/.csv
     // path -- see IsXlsxPath/IsOdsPath/IsCsvPath in sheet_doc.h). Mirrors
     // the Office-pane block above. ---
+    /**
+     * @brief Returns whether the given buffer is an open spreadsheet (.xlsx/.ods/.csv) session.
+     * @param buffer_id The buffer id to check.
+     * @return True if the buffer has an active SheetSession.
+     */
     bool IsSheetBuffer(int buffer_id) const;
+    /**
+     * @brief Returns the SheetSession for a buffer, if it is a spreadsheet pane.
+     * @param buffer_id The buffer id to look up.
+     * @return A const pointer to the SheetSession, or nullptr if none exists.
+     */
     const SheetSession *GetSheet(int buffer_id) const;
     // Unlike ResizeOfficeViewport, this DOES do the full scroll-follow
     // job itself (see SheetSession::scroll_row's own comment for why --
     // fixed-size grid cells need no font measurement) -- records
     // viewport_w/h and clamps scroll_row/scroll_col so the cursor cell
     // stays visible, no main.cpp-side follow-up call needed.
+    /**
+     * @brief Records a sheet pane's viewport size and clamps scroll_row/scroll_col so the cursor cell stays visible.
+     * @param buffer_id The spreadsheet buffer id whose viewport changed.
+     * @param w The new viewport width in pixels.
+     * @param h The new viewport height in pixels.
+     */
     void ResizeSheetViewport(int buffer_id, int w, int h);
     // Non-const on purpose, called directly from main.cpp's DrawPane
     // (which only ever sees a `const SheetSession*` via GetSheet) --
@@ -1853,6 +2463,13 @@ public:
     // what's actually being rendered, not a side effect a const accessor
     // could hide. Returns an Empty CellValue if buffer_id/row/col don't
     // resolve to a real cell.
+    /**
+     * @brief Evaluates (and memoizes) a spreadsheet cell's value, mutating the cached formula state on demand.
+     * @param buffer_id The spreadsheet buffer id.
+     * @param row The cell's row index.
+     * @param col The cell's column index.
+     * @return The cell's evaluated value, or an Empty CellValue if the coordinates don't resolve to a real cell.
+     */
     CellValue EvaluateSheetCell(int buffer_id, int row, int col);
 
     // --- Kanban board / Gantt chart panes (opened via ":Kanban"/":Gantt"
@@ -1864,16 +2481,46 @@ public:
     // PushUndo()/Undo()/Redo() every ReplaceLinesForLua-based mutation
     // below already goes through -- no separate snapshot stack like
     // PushUndoSheet/PushUndoOffice. ---
+    /**
+     * @brief Returns whether the given buffer currently shows its org content as a Kanban board.
+     * @param buffer_id The buffer id to check.
+     * @return True if org_view_mode_ for this buffer is Kanban.
+     */
     bool IsKanbanViewActive(int buffer_id) const;
+    /**
+     * @brief Returns whether the given buffer currently shows its org content as a Gantt chart.
+     * @param buffer_id The buffer id to check.
+     * @return True if org_view_mode_ for this buffer is Gantt.
+     */
     bool IsGanttViewActive(int buffer_id) const;
+    /**
+     * @brief Returns the KanbanSession for a buffer, if a Kanban view is active for it.
+     * @param buffer_id The buffer id to look up.
+     * @return A const pointer to the KanbanSession, or nullptr if none exists.
+     */
     const KanbanSession *GetKanban(int buffer_id) const;
     // Non-const on purpose -- main.cpp's UpdateKanbanMouseInteraction
     // writes drag/focus/drop-target UI state directly (mirrors
     // EvaluateSheetCell's own non-const-for-main.cpp-driven-mutation
     // shape), reserving the Kanban*/Gantt* methods below for the actual
     // org-text-mutating actions.
+    /**
+     * @brief Returns a mutable KanbanSession for a buffer, for main.cpp to write drag/focus/drop-target UI state.
+     * @param buffer_id The buffer id to look up.
+     * @return A pointer to the KanbanSession, or nullptr if none exists.
+     */
     KanbanSession *GetKanbanMutable(int buffer_id);
+    /**
+     * @brief Returns the GanttSession for a buffer, if a Gantt view is active for it.
+     * @param buffer_id The buffer id to look up.
+     * @return A const pointer to the GanttSession, or nullptr if none exists.
+     */
     const GanttSession *GetGantt(int buffer_id) const;
+    /**
+     * @brief Returns a mutable GanttSession for a buffer, for main.cpp to write UI state.
+     * @param buffer_id The buffer id to look up.
+     * @return A pointer to the GanttSession, or nullptr if none exists.
+     */
     GanttSession *GetGanttMutable(int buffer_id);
 
     // Column keyword list a Kanban board renders/navigates -- the parsed
@@ -1882,25 +2529,50 @@ public:
     // DrawKanban/UpdateKanbanMouseInteraction and
     // HandleKanbanNormalInput/HandleKanbanInsertInput don't each duplicate
     // the concatenation.
+    /**
+     * @brief Returns the ordered list of Kanban column keywords (todo_keywords then done_keywords).
+     * @param buffer_id The Kanban buffer id.
+     * @return The column keyword names, in board order.
+     */
     std::vector<std::string> KanbanColumns(int buffer_id) const;
     // Document-order indices into KanbanSession::outline.headlines whose
     // todo_keyword matches KanbanColumns(buffer_id)[column_index] -- i.e.
     // "which cards are in this column, top to bottom".
+    /**
+     * @brief Returns document-order indices of headlines whose todo_keyword matches the given column.
+     * @param buffer_id The Kanban buffer id.
+     * @param column_index Index into KanbanColumns(buffer_id) naming the column to list.
+     * @return Indices into KanbanSession::outline.headlines for the cards in that column, top to bottom.
+     */
     std::vector<int> KanbanCardsInColumn(int buffer_id, int column_index) const;
     // Document-order indices into GanttSession::outline.headlines that
     // have a SCHEDULED date (see org_doc.h/the plan's documented v1 gap:
     // a headline with no SCHEDULED at all isn't shown in the Gantt view).
+    /**
+     * @brief Returns document-order indices of headlines that have a SCHEDULED date, for Gantt rendering.
+     * @param buffer_id The Gantt buffer id.
+     * @return Indices into GanttSession::outline.headlines with a SCHEDULED date.
+     */
     std::vector<int> GanttRows(int buffer_id) const;
 
     // ":Kanban"/":Gantt" ex-command bodies: parses (or re-parses, if a
     // session already exists for this buffer) Buf().lines into a fresh
     // OrgOutline and switches org_view_mode_ for CurrentBufferId(). A
     // status-message no-op if the current buffer isn't IsOrgBuffer().
+    /**
+     * @brief ":Kanban" ex-command body: (re-)parses the current buffer as an org outline and switches it to Kanban view.
+     */
     void OpenKanbanView();
+    /**
+     * @brief ":Gantt" ex-command body: (re-)parses the current buffer as an org outline and switches it to Gantt view.
+     */
     void OpenGanttView();
     // ":Org"/":Text" ex-command body -- sets org_view_mode_ back to Text
     // for CurrentBufferId(); the cached KanbanSession/GanttSession (if any)
     // is left in place so toggling back in doesn't lose scroll/zoom state.
+    /**
+     * @brief ":Org"/":Text" ex-command body: switches the current buffer back to plain Text view.
+     */
     void CloseOrgView();
 
     // Every method below performs exactly one PushUndo() + Buf().lines
@@ -1911,13 +2583,28 @@ public:
     // patched. All operate on CurPane().buffer_id via Buf(), same
     // convention as PushUndoSheet/ReplaceLinesForLua -- callers (main.cpp)
     // must ensure the relevant pane is focused first.
+    /**
+     * @brief Moves a Kanban card to a different column by rewriting its headline's todo_keyword.
+     * @param headline_index Document-order index of the headline (card) to move.
+     * @param new_keyword The target column's todo/done keyword.
+     */
     void KanbanSetCardColumn(int headline_index, const std::string &new_keyword);
     // Moves headline_index's whole subtree to sit immediately before
     // before_headline_index's subtree (or to the end of the buffer if
     // before_headline_index < 0). A no-op if either index is out of range
     // or before_headline_index falls *within* headline_index's own
     // subtree (would corrupt the move).
+    /**
+     * @brief Moves a card's whole headline subtree to sit immediately before another card's subtree.
+     * @param headline_index Document-order index of the headline (card) to move.
+     * @param before_headline_index Index of the headline to insert before, or negative to move to buffer end.
+     */
     void KanbanMoveCardBefore(int headline_index, int before_headline_index);
+    /**
+     * @brief Renames a Kanban card by rewriting its headline's title text.
+     * @param headline_index Document-order index of the headline (card) to rename.
+     * @param new_title The new title text.
+     */
     void KanbanRenameCard(int headline_index, const std::string &new_title);
     // Appends "* <column_keyword> <title>" as a new top-level headline at
     // the end of the buffer (v1 gap: no attempt to infer nesting
@@ -1925,12 +2612,26 @@ public:
     // new headline's index into KanbanSession::outline.headlines (always
     // the last entry, since it's appended at end-of-file) so a caller (the
     // "+ New Card" drag-drop handler) can immediately open it for rename.
+    /**
+     * @brief Appends a new top-level headline (card) at the end of the buffer in the given column.
+     * @param column_keyword The todo/done keyword naming the column to place the new card in.
+     * @param title The new card's title text.
+     * @return The new headline's index into KanbanSession::outline.headlines.
+     */
     int KanbanNewCard(const std::string &column_keyword, const std::string &title);
+    /**
+     * @brief Deletes a Kanban card by removing its headline (and subtree) from the buffer.
+     * @param headline_index Document-order index of the headline (card) to delete.
+     */
     void KanbanDeleteCard(int headline_index);
     // Enters Mode::KanbanInsert targeting a just-created card with an empty
     // edit buffer -- same end state as HandleKanbanNormalInput's 'i' path,
     // but callable from main.cpp's drag-and-drop-create flow (which must
     // enter insert mode itself right on drop, not wait for a key event).
+    /**
+     * @brief Enters Mode::KanbanInsert with an empty edit buffer targeting a just-created card.
+     * @param headline_index Document-order index of the new headline (card) to rename.
+     */
     void KanbanBeginRenameNewCard(int headline_index);
 
     // Column management: all three rewrite the file's single "#+TODO:"
@@ -1941,26 +2642,50 @@ public:
     // appends to the TODO side (a new mid-pipeline stage, before any DONE
     // keywords) and returns its column index (KanbanColumns' concatenated
     // ordering).
+    /**
+     * @brief Adds a new Kanban column (mid-pipeline TODO stage), rewriting the file's "#+TODO:" line.
+     * @param name The new column's keyword name.
+     * @return The new column's index in KanbanColumns' concatenated ordering; unchanged behavior (no-op) if `name` already exists.
+     */
     int KanbanAddColumn(const std::string &name);
     // column_index into KanbanColumns' concatenated ordering. Rewrites
     // every headline currently in this column (todo_keyword == the old
     // name) to the new keyword, then the "#+TODO:" line itself -- both
     // must happen together or a headline's keyword token would no longer
     // match anything ParseOrgOutline recognizes.
+    /**
+     * @brief Renames a Kanban column, rewriting every card currently in it plus the file's "#+TODO:" line.
+     * @param column_index Index into KanbanColumns' concatenated ordering naming the column to rename.
+     * @param new_name The column's new keyword name.
+     */
     void KanbanRenameColumn(int column_index, const std::string &new_name);
     // Moves a column to the gap `before_column` in KanbanColumns' current
     // ordering (0 = before the first column; size() = after the last).
     // The TODO/DONE split stays at its existing position in that ordering,
     // so moving a column across it also changes whether Org treats it as a
     // done keyword.
+    /**
+     * @brief Moves a Kanban column to a new position in the column ordering, possibly crossing the TODO/DONE split.
+     * @param column_index Index of the column to move.
+     * @param before_column Target gap to move it to (0 = before the first column; size() = after the last).
+     */
     void KanbanMoveColumn(int column_index, int before_column);
     // No-op + status_message_ if the column still has cards (deliberately
     // not auto-migrated or destructive -- see the plan) or if deleting it
     // would leave zero columns.
+    /**
+     * @brief Deletes a Kanban column, unless it still has cards or deleting it would leave zero columns.
+     * @param column_index Index of the column to delete.
+     */
     void KanbanDeleteColumn(int column_index);
 
     // Shifts both SCHEDULED and DEADLINE (whichever are present) by
     // delta_days -- a drag on the bar's body, preserving its duration.
+    /**
+     * @brief Shifts a Gantt headline's SCHEDULED and DEADLINE dates (whichever are present) by the same offset, preserving duration.
+     * @param headline_index Document-order index of the headline to shift.
+     * @param delta_days Number of days to shift by (may be negative).
+     */
     void GanttShiftHeadline(int headline_index, int delta_days);
     // Resizes one edge (is_deadline=false moves SCHEDULED, true moves
     // DEADLINE) to land on new_day (an OrgDayNumber-style day-ordinal) --
@@ -1970,18 +2695,52 @@ public:
     // SCHEDULED at all (nothing to anchor a resize against) or (when
     // is_deadline is false) if new_day would land at or after the
     // existing DEADLINE.
+    /**
+     * @brief Resizes one edge of a Gantt bar (SCHEDULED or DEADLINE) to a new day, e.g. via edge-drag.
+     * @param headline_index Document-order index of the headline to resize.
+     * @param is_deadline False to move SCHEDULED, true to move (or create) DEADLINE.
+     * @param new_day The target day, as an OrgDayNumber-style day-ordinal.
+     */
     void GanttSetHeadlineDate(int headline_index, bool is_deadline, long long new_day);
     // Rewrites/creates a :PROGRESS: property in the headline's immediate
     // property drawer. Used by GanttNormal's `p` prompt.
+    /**
+     * @brief Sets a Gantt headline's progress percentage by rewriting its :PROGRESS: property.
+     * @param headline_index Document-order index of the headline to update.
+     * @param progress The progress percentage to store.
+     */
     void GanttSetHeadlineProgress(int headline_index, int progress);
     // Enters Mode::GanttInsert to rename headline_index's title inline --
     // double-click on its label (or 'i') in the Gantt view.
+    /**
+     * @brief Enters Mode::GanttInsert to rename a headline's title inline.
+     * @param headline_index Document-order index of the headline to rename.
+     */
     void GanttBeginRename(int headline_index);
+    /**
+     * @brief Renames a Gantt headline by rewriting its title text.
+     * @param headline_index Document-order index of the headline to rename.
+     * @param new_title The new title text.
+     */
     void GanttRenameHeadline(int headline_index, const std::string &new_title);
 
     // --- Lua-facing API (called from lua_env.cpp bindings) ---
+    /**
+     * @brief Returns the text of one buffer line, for Lua's mep.get_line().
+     * @param row The 0-indexed line number.
+     * @return The line's text, or an empty string if out of range.
+     */
     std::string GetLineForLua(int row) const;  // 0-indexed
+    /**
+     * @brief Replaces the text of one buffer line, for Lua's mep.set_line().
+     * @param row The 0-indexed line number.
+     * @param text The new text for that line.
+     */
     void SetLineForLua(int row, const std::string &text);
+    /**
+     * @brief Returns the current buffer's line count, for Lua's mep.line_count().
+     * @return The number of lines in the current buffer.
+     */
     int LineCountForLua() const;
     // One TODO/FIXME/HACK/NOTE occurrence (kBuiltinTodo, main.cpp): the
     // first match of `keyword` on `row`, [col_start, col_end) 0-indexed
@@ -1995,6 +2754,10 @@ public:
         int col_end = 0;
         std::string keyword;
     };
+    /**
+     * @brief Scans the current buffer for TODO/FIXME/HACK/NOTE-style keyword occurrences.
+     * @return The matches found, each with its row, column range, and matched keyword.
+     */
     std::vector<TodoMatch> TodoScanMatches() const;
     // DAP breakpoints (kBuiltinDap, main.cpp): toggles a breakpoint at the
     // cursor's line in the current file and keeps the gutter decorations
@@ -2006,7 +2769,15 @@ public:
     // DapBreakpointLines to build a setBreakpoints request, so this stays
     // 1-indexed rather than converting to this header's usual 0-indexed
     // convention.
+    /**
+     * @brief Toggles a DAP breakpoint at the cursor's line in the current file, syncing the gutter decoration.
+     */
     void DapToggleBreakpoint();
+    /**
+     * @brief Returns the 1-indexed breakpoint lines currently set for a file.
+     * @param filename The file path to look up breakpoints for.
+     * @return The 1-indexed line numbers with an active breakpoint.
+     */
     std::vector<int> DapBreakpointLines(const std::string &filename) const;
     // TermSend registry (kBuiltinTermSend, main.cpp): which terminal
     // buffer each "source" buffer's mod1+CR sends its lines/selection to.
@@ -2017,9 +2788,28 @@ public:
     // buffer that got closed/repurposed since registration correctly
     // reads back as "none" (0) without needing to be explicitly
     // unregistered first.
+    /**
+     * @brief Registers `target` as the terminal buffer that `source`'s mod1+CR sends lines/selection to.
+     * @param source The source buffer id.
+     * @param target The terminal buffer id to send to; must be a live terminal buffer.
+     * @return True if registration succeeded, false (and notifies) if `target` isn't a live terminal buffer.
+     */
     bool TermsendRegister(int source, int target);
+    /**
+     * @brief Returns the terminal buffer currently registered for a source buffer, re-checking liveness.
+     * @param source The source buffer id to look up.
+     * @return The registered terminal buffer id, or 0 if none is registered or it's no longer alive.
+     */
     int TermsendTarget(int source) const;  // 0 = none registered/alive
+    /**
+     * @brief Unregisters any terminal-send target for a source buffer.
+     * @param source The source buffer id to unregister.
+     */
     void TermsendUnregister(int source);
+    /**
+     * @brief Returns the terminal buffers in the active tab's panes, as candidate termsend targets.
+     * @return The candidate terminal buffer ids.
+     */
     std::vector<int> TermsendCandidates() const;  // terminal buffers in the active tab's panes
     // Activity-bar Todo panel persistence (kBuiltinActivityBar, main.cpp):
     // parses/writes the panel's own "0|text\n"/"1|text\n" line format --
@@ -2030,7 +2820,17 @@ public:
         bool done = false;
         std::string text;
     };
+    /**
+     * @brief Loads the Activity-bar Todo panel's persisted items from a "0|text\n"/"1|text\n"-format file.
+     * @param path The file path to read.
+     * @return The loaded todo items, in file order.
+     */
     std::vector<ActivityTodoItem> ActivityTodoLoad(const std::string &path) const;
+    /**
+     * @brief Writes the Activity-bar Todo panel's items to a "0|text\n"/"1|text\n"-format file.
+     * @param path The file path to write.
+     * @param items The todo items to persist, in order.
+     */
     void ActivityTodoSave(const std::string &path, const std::vector<ActivityTodoItem> &items) const;
     // Activity-bar Tests panel: which lines of a test run's combined
     // stdout/stderr look like a failure (case-insensitive "fail"
@@ -2040,6 +2840,11 @@ public:
         int index = 0;
         std::string line;
     };
+    /**
+     * @brief Finds which lines of a test run's combined output look like failures.
+     * @param output The combined stdout/stderr lines of a test run.
+     * @return The matching lines, 1-indexed, in file order.
+     */
     std::vector<ActivityTestFailureLine> ActivityTestFailureLines(const std::vector<std::string> &output) const;
     // Syntax highlighting fallback lexer (kBuiltinSyntax, main.cpp): for a
     // filetype with no vendored Treesitter grammar, a hand-rolled per-line
@@ -2050,6 +2855,12 @@ public:
     // through a Lua table first. `keywords`/`comment_prefix` come from the
     // still-Lua-configurable mep.syntax_keywords[ft]/
     // mep.syntax_comment_prefix[ft] tables.
+    /**
+     * @brief Runs the hand-rolled fallback lexer over the current buffer for filetypes with no Treesitter grammar.
+     * @param ns The decoration namespace to add highlights into.
+     * @param keywords The filetype's configured keyword list.
+     * @param comment_prefix The filetype's line-comment prefix.
+     */
     void SyntaxHighlightFallback(int ns, const std::vector<std::string> &keywords, const std::string &comment_prefix);
     // Org emphasis markup (*bold*//italic//_underline_/+strike+/=verbatim=/
     // ~code~) over the *current* buffer, added into `ns` -- ported from
@@ -2058,23 +2869,42 @@ public:
     // marker-open/close rules and the #+begin_X/#+end_X block skip (a
     // literal block's own '_'/'*' characters were never meant to be
     // reinterpreted as emphasis).
+    /**
+     * @brief Scans the current buffer for org emphasis markup and adds decorations for it.
+     * @param ns The decoration namespace to add highlights into.
+     */
     void OrgHighlightEmphasis(int ns);
     // Markdown (kBuiltinMarkdown, main.cpp), directly bound as the exact
     // same mep.* names the Lua functions they replace used to have (no
     // wrapper needed -- each is now fully self-contained in C++):
     // toggles a `- [ ]`/`- [x]`-style checkbox on the cursor's line,
     // notifying (like the original) if there isn't one there.
+    /**
+     * @brief Toggles a `- [ ]`/`- [x]`-style checkbox on the cursor's line, notifying if none is present.
+     */
     void MdToggleCheckbox();
     // Recomputes every 'markdown'-provider fold (fenced code blocks +
     // heading-nesting) over the current buffer -- bound directly as
     // mep.md_fold.
+    /**
+     * @brief Recomputes every markdown fold (fenced code blocks and heading nesting) over the current buffer.
+     */
     void MdComputeFolds();
     // GFM pipe-table align/insert-row/insert-col -- bound directly as
     // mep.md_table_align/mep.md_table_insert_row/mep.md_table_insert_col.
     // InsertRow/InsertCol both call MdTableAlign() themselves at the end,
     // matching the original Lua's own call chain.
+    /**
+     * @brief Aligns the GFM pipe table touching the cursor.
+     */
     void MdTableAlign();
+    /**
+     * @brief Inserts a new row into the GFM pipe table at the cursor, then realigns it.
+     */
     void MdTableInsertRow();
+    /**
+     * @brief Inserts a new column into the GFM pipe table at the cursor, then realigns it.
+     */
     void MdTableInsertCol();
     // Link/emphasis concealment scan over the current buffer, adding
     // virt_overlay decorations into `ns` for every span found (skipping
@@ -2082,6 +2912,10 @@ public:
     // raw) -- the namespace's own create/clear and the auto/filetype
     // gating stay in kBuiltinMarkdown's mep.md_conceal (this is its
     // mep.md_conceal_scan call, once those checks pass).
+    /**
+     * @brief Scans the current buffer for markdown link/emphasis spans to conceal and adds overlay decorations for them.
+     * @param ns The decoration namespace to add the concealment overlays into.
+     */
     void MdConceal(int ns);
     // Completion (kBuiltinCompletion, main.cpp) -- only the pieces with
     // no LSP-state dependency: the two "add candidates" scans and the
@@ -2094,6 +2928,11 @@ public:
     // starting with it, first-occurrence order, deduplicated *within this
     // scan only* -- the caller still needs to filter the result against
     // its own already-claimed (e.g. by a snippet trigger name) set itself.
+    /**
+     * @brief Finds every buffer word starting with `prefix` and longer than it, for completion candidates.
+     * @param prefix The prefix text already typed before the cursor.
+     * @return The matching words, in first-occurrence order, deduplicated within this scan.
+     */
     std::vector<std::string> CompletionScanBufferWords(const std::string &prefix) const;
     // mep_completion_path_prefix's own port: does the text just before
     // `prefix` on `line` look like a filesystem path (`/`-triggered, a
@@ -2106,6 +2945,13 @@ public:
         std::string dir;
         std::string base;
     };
+    /**
+     * @brief Checks whether the text just before `prefix` on `line` looks like a filesystem path.
+     * @param prefix The completion prefix text already typed before the cursor.
+     * @param col The 1-indexed cursor column (mep.cursor()'s convention).
+     * @param line The full text of the current line.
+     * @return The resolved directory/base if it looks like a path, with found=false otherwise.
+     */
     CompletionPathPrefix CompletionPathPrefixFor(const std::string &prefix, int col, const std::string &line) const;
     // Snippet expansion + tabstop jumping (kBuiltinSnippets, main.cpp) --
     // the tabstop parser (`$N`/`${N}`/`${N:default}`/`\$`), the splice
@@ -2132,6 +2978,13 @@ public:
     // line (the text surrounding whatever triggered the expansion),
     // computes every tabstop, and jumps to the first one -- mirrors the
     // original's own mep_snippet_splice + immediate SnippetJump(1) call.
+    /**
+     * @brief Splices an expanded snippet body into the buffer and jumps to its first tabstop.
+     * @param row The 0-indexed row where body[0] lands.
+     * @param before The text surrounding the trigger, to prepend before the first body line.
+     * @param after The text surrounding the trigger, to append after the last body line.
+     * @param body The snippet's template lines to splice in.
+     */
     void SnippetSplice(int row, const std::string &before, const std::string &after,
                         const std::vector<std::string> &body);
     // Moves to the tabstop `delta` positions from the current one (1 =
@@ -2139,12 +2992,21 @@ public:
     // active state once moved past either end. Bound directly as
     // mep.snippet_jump (no wrapper -- MepSnippetNext/Prev call it with a
     // literal 1/-1 same as before).
+    /**
+     * @brief Moves to the tabstop `delta` positions from the current one in the active snippet.
+     * @param delta The number of tabstops to move (1 = next, -1 = previous).
+     */
     void SnippetJump(int delta);
     // Picker file preview (kBuiltinPickerSources, main.cpp): reads up to
     // `max_lines` of `path` and sets it as the picker's preview pane text
     // (SetPickerPreview) -- mep_picker_preview_file's own port, including
     // its exact "(cannot open PATH)"/"..." truncation-marker messages.
     // Bound directly as mep.picker_preview_file.
+    /**
+     * @brief Reads up to `max_lines` of `path` and sets it as the picker's preview pane text.
+     * @param path The file path to preview.
+     * @param max_lines The maximum number of lines to read.
+     */
     void PreviewFile(const std::string &path, int max_lines);
     // File tree (kBuiltinFileTree, main.cpp): the recursive directory
     // walk (mep_tree_build_widgets' own traversal half, port of --
@@ -2163,12 +3025,25 @@ public:
         int depth = 0;
         bool expanded = false;  // only meaningful when is_dir
     };
+    /**
+     * @brief Builds the file tree's flattened, depth-first row list for `root`, honoring expand/hidden/ignore state.
+     * @param root The root directory to walk.
+     * @param expanded_paths The directory paths currently expanded in the tree.
+     * @param show_hidden Whether hidden (dotfile) entries should be included.
+     * @param ignored_relpaths Paths (relative to root) that gitignore filtering excludes.
+     * @return The flattened rows, dirs-first-then-alpha, in depth-first order.
+     */
     std::vector<FileTreeRow> BuildFileTreeRows(const std::string &root,
                                                 const std::vector<std::string> &expanded_paths, bool show_hidden,
                                                 const std::vector<std::string> &ignored_relpaths) const;
     // First of README.md/README.org/README.txt/README present as a file
     // (not a dir) directly in `dir` -- empty string if none match.
     // mep_project_readme_path's own port (kBuiltinFileTree).
+    /**
+     * @brief Finds the first README.md/README.org/README.txt/README file directly inside `dir`.
+     * @param dir The directory to search (non-recursively).
+     * @return The matching file's path, or an empty string if none match.
+     */
     std::string ProjectReadmePath(const std::string &dir) const;
     // Colorizer (kBuiltinTextTools, main.cpp): scans the current buffer
     // for #RRGGBBAA/#RRGGBB/#RGB hex literals, rgb()/rgba() calls, and
@@ -2179,13 +3054,24 @@ public:
     // both independent of the claim-tracking). Bound directly as
     // mep.colorize -- owns its own namespace create/clear, nothing left
     // in Lua to wrap.
+    /**
+     * @brief Scans the current buffer for hex/rgb()/rgba()/named color literals and adds a swatch decoration for each.
+     */
     void Colorize();
     // URL detection (kBuiltinTextTools): the URL-shaped span scan
     // (mep.nvim's own MEP_URL_PATTERN) -- UrlUnderCursor bound directly
     // as mep.url_under_cursor (returns "" for none, matching the
     // original's nil); ListUrls is mep.list_urls_scan, still wrapped by
     // a thin Lua mep.list_urls that opens the picker over the result.
+    /**
+     * @brief Finds the URL-shaped span under the cursor, if any.
+     * @return The URL text, or an empty string if the cursor isn't on one.
+     */
     std::string UrlUnderCursor() const;
+    /**
+     * @brief Scans the current buffer for every URL-shaped span.
+     * @return The list of URLs found, in buffer order.
+     */
     std::vector<std::string> ListUrls() const;
     // Git gutter (kBuiltinGit, main.cpp) -- unlike earlier phases, this
     // one moves the *async orchestration itself* to C++, not just a
@@ -2200,26 +3086,49 @@ public:
     // this plan's usual "config stays Lua, passed in as a parameter"
     // convention -- kBuiltinGit's own mep.git_gutter_refresh is now a
     // one-line wrapper threading that global through.
+    /**
+     * @brief Asynchronously diffs the current buffer against `base` and refreshes the git gutter hunks.
+     * @param base The git revision (HEAD, a branch, or a SHA) to diff against.
+     */
     void GitGutterRefresh(const std::string &base);
     // 1-indexed target row, or 0 if there are no hunks at all -- the
     // find-next/prev-hunk-relative-to-cursor half of mep.git_next_hunk/
     // mep.git_prev_hunk; the cursor move + opt-in preview-on-jump stay a
     // thin Lua wrapper (mep.git_hunk_preview_on_jump is a user-toggleable
     // global).
+    /**
+     * @brief Finds the git hunk after the cursor's current row.
+     * @return The 1-indexed target row, or 0 if there are no hunks.
+     */
     int GitNextHunkRow() const;
+    /**
+     * @brief Finds the git hunk before the cursor's current row.
+     * @return The 1-indexed target row, or 0 if there are no hunks.
+     */
     int GitPrevHunkRow() const;
     // The hunk-under-cursor's diff-format preview text ("(empty hunk)"
     // for a zero-line hunk, matching the original), or found=false if the
     // cursor isn't on a hunk -- kBuiltinGit's own mep.git_preview_hunk_text.
+    /**
+     * @brief Builds the diff-format preview text of the git hunk under the cursor.
+     * @return The preview text ("(empty hunk)" for a zero-line hunk), with found=false if the cursor isn't on a hunk.
+     */
     std::pair<bool, std::string> GitPreviewHunkText() const;
     // Reverts the hunk under the cursor's lines back to `base`'s version,
     // then re-runs GitGutterRefresh(base).
+    /**
+     * @brief Reverts the git hunk under the cursor back to `base`'s version and refreshes the gutter.
+     * @param base The git revision to revert the hunk's lines back to.
+     */
     void GitResetHunk(const std::string &base);
     // Builds a minimal single-hunk unified diff for the hunk under the
     // cursor and applies it with `git apply --cached --unidiff-zero -`
     // (JobManager::Spawn + WriteStdin + CloseStdin directly -- no Lua ref
     // needed for on_exit either). Bound directly as mep.git_stage_hunk,
     // no wrapper.
+    /**
+     * @brief Stages the git hunk under the cursor via `git apply --cached --unidiff-zero -`.
+     */
     void GitStageHunk();
     // mep_org_current_headline_row's own port: the nearest headline at or
     // above `row` (1-indexed; 0 means "use the cursor's own row"), 0 if
@@ -2228,7 +3137,19 @@ public:
     // line_count()+1) -- `row` must itself already be a valid headline
     // row, same undocumented precondition the original had (every real
     // call site already guarantees this by construction).
+    /**
+     * @brief Finds the nearest org headline at or above `row`.
+     * @param row The 1-indexed row to search from (0 means the cursor's own row).
+     * @param todo_keywords The configured TODO keywords used to identify headlines.
+     * @return The headline's 1-indexed row, or 0 if none is found.
+     */
     int OrgCurrentHeadlineRow(int row, const std::vector<std::string> &todo_keywords) const;
+    /**
+     * @brief Finds the exclusive end row of the org subtree rooted at the headline on `row`.
+     * @param row The 1-indexed row of a valid headline.
+     * @param todo_keywords The configured TODO keywords used to identify headlines.
+     * @return The next headline row at or above `row`'s level, or line_count()+1 if none.
+     */
     int OrgSubtreeEnd(int row, const std::vector<std::string> &todo_keywords) const;
     // kBuiltinOrgClock's own port (LUA_TO_CPP_PLAN.md Phase 5). Starts a
     // clock on the headline at/above the cursor: warns if one is already
@@ -2237,16 +3158,32 @@ public:
     // "CLOCK: [now]" line. mep.org_clock_effort stays a thin Lua wrapper
     // (it's just a one-line call into OrgPropertyGet + OrgCurrentHeadlineRow,
     // not worth its own binding).
+    /**
+     * @brief Starts an org clock on the headline at/above the cursor, warning if one is already running.
+     */
     void OrgClockIn();
     // Finds the (first) open "CLOCK: [ts]" line in the buffer, closes it
     // with "--[now] =>  H:MM", and reports the duration.
+    /**
+     * @brief Closes the first open org clock line in the buffer and reports its duration.
+     */
     void OrgClockOut();
     // Total clocked minutes across lines [a, b] (1-indexed, inclusive) --
     // mep_org_clock_minutes_in_range's own port.
+    /**
+     * @brief Totals the clocked minutes recorded across a range of lines.
+     * @param a The 1-indexed start line, inclusive.
+     * @param b The 1-indexed end line, inclusive.
+     * @return The total clocked minutes in [a, b].
+     */
     int OrgClockMinutesInRange(int a, int b) const;
     // One "indent + title  H:MM" entry per headline with clocked time,
     // used by kBuiltinOrgClock's thin mep.org_clock_table() wrapper to
     // build the mep.picker_open items list (picker itself stays Lua glue).
+    /**
+     * @brief Builds a "indent + title  H:MM" entry per headline with clocked time.
+     * @return The clock table entries, for the clock table picker.
+     */
     std::vector<std::string> OrgClockTableItems() const;
     // kBuiltinOrg's own mep.org_property_get/set/remove: reads/writes a
     // ":PROPERTIES: ... :END:" drawer entry under the headline at `row`
@@ -2257,10 +3194,30 @@ public:
     // cluster (Phase 5): small, self-contained, and unblocks
     // mep.org_clock_effort/mep.org_drill_grade, which are otherwise thin
     // wrappers around a still-Lua property store.
+    /**
+     * @brief Reads a key's value from the :PROPERTIES: drawer under a headline.
+     * @param row The 1-indexed headline row (<=0 means the nearest headline at/above the cursor).
+     * @param key The property key to look up (matched case-insensitively).
+     * @param todo_keywords The configured TODO keywords used to identify headlines.
+     * @return The property's value, with found=false if the key isn't present.
+     */
     std::pair<bool, std::string> OrgPropertyGet(int row, const std::string &key,
                                                  const std::vector<std::string> &todo_keywords) const;
+    /**
+     * @brief Writes a key/value entry into the :PROPERTIES: drawer under a headline, creating it if needed.
+     * @param row The 1-indexed headline row (<=0 means the nearest headline at/above the cursor).
+     * @param key The property key to write (matched case-insensitively).
+     * @param value The value to store.
+     * @param todo_keywords The configured TODO keywords used to identify headlines.
+     */
     void OrgPropertySet(int row, const std::string &key, const std::string &value,
                          const std::vector<std::string> &todo_keywords);
+    /**
+     * @brief Removes a key's entry from the :PROPERTIES: drawer under a headline.
+     * @param row The 1-indexed headline row (<=0 means the nearest headline at/above the cursor).
+     * @param key The property key to remove (matched case-insensitively).
+     * @param todo_keywords The configured TODO keywords used to identify headlines.
+     */
     void OrgPropertyRemove(int row, const std::string &key, const std::vector<std::string> &todo_keywords);
     // kBuiltinOrgDrill's own `mep_org_sm2` + `mep.org_drill_grade` port:
     // runs the SM-2 spaced-repetition update against the DRILL_EF/
@@ -2272,6 +3229,12 @@ public:
     // mep_org_read_file_lines (a deliberate "stays Lua" choice, see
     // kBuiltinOrgAgenda's own comment) and drives a ui_confirm/ui_select
     // dialog chain.
+    /**
+     * @brief Runs the SM-2 spaced-repetition update against a headline's drill properties and persists the result.
+     * @param row The 1-indexed headline row.
+     * @param quality The recall quality grade (0-5).
+     * @param todo_keywords The configured TODO keywords used to identify headlines.
+     */
     void OrgDrillGrade(int row, int quality, const std::vector<std::string> &todo_keywords);
     // mep_org_resolve_path's own port (LUA_TO_CPP_PLAN.md Phase 5):
     // resolves a link/header-arg path against the org file's own
@@ -2279,17 +3242,30 @@ public:
     // absolute (a leading '/') or ~-relative. Bare Lua global for the
     // same reason as Org-0/mep_lsp_*: kBuiltinOrgBabel (a separate
     // DoString chunk) reuses it for :file/:tangle header-arg resolution.
+    /**
+     * @brief Resolves a link/header-arg path against the current org file's own directory.
+     * @param path The path to resolve (already-absolute or ~-relative paths pass through unchanged).
+     * @return The resolved path.
+     */
     std::string OrgResolvePath(const std::string &path) const;
     // kBuiltinOrgImages' own mep.org_image_scan port: rebuilds the
     // current buffer's image-row registry (SetOrgImageRow/
     // ClearOrgImageRows) from its [[file:...]] links -- same
     // [[target][description]] handling as mep.org_link_at_cursor, same
     // file:-prefix-only dispatch mep.org_link_follow uses.
+    /**
+     * @brief Rebuilds the current buffer's image-row registry from its [[file:...]] links.
+     */
     void OrgImageScan();
     // kBuiltinOrgAgenda's own `mep_org_expand_glob` port: `*` within the
     // final path component only (no recursive `**`), matched via
     // ListDirectory -- entries without a `*` (or with no `/` at all)
     // pass through unchanged, same as the original.
+    /**
+     * @brief Expands a `*`-wildcard pattern (within the final path component only) against the filesystem.
+     * @param pattern The glob pattern to expand.
+     * @return The matching paths, or `pattern` unchanged if it has no wildcard in its final component.
+     */
     std::vector<std::string> OrgAgendaExpandGlob(const std::string &pattern) const;
     // kBuiltinOrgAgenda's own `mep.org_agenda_collect` per-file core: one
     // entry per headline in `lines` (an already-disk-read file, `path`
@@ -2314,6 +3290,13 @@ public:
         std::string deadline;
         bool has_deadline = false;
     };
+    /**
+     * @brief Scans an already-read org file's lines for headlines and pairs each with any planning line below it.
+     * @param lines The file's lines, already read from disk.
+     * @param path The file's origin path, recorded on each entry.
+     * @param todo_keywords The configured TODO keywords used to identify headlines.
+     * @return One agenda entry per headline found.
+     */
     std::vector<OrgAgendaEntry> OrgAgendaScanLines(const std::vector<std::string> &lines, const std::string &path,
                                                     const std::vector<std::string> &todo_keywords) const;
     // kBuiltinOrgCapture's own `mep_org_expand_template` port: expands
@@ -2321,6 +3304,11 @@ public:
     // timestamp with/without time, %T/%t -- active timestamp with/
     // without time, %a -- a `[[file:...]]` link to the current buffer,
     // %% -- literal '%') against a capture template string.
+    /**
+     * @brief Expands org-capture's placeholder set (%U/%u/%T/%t/%a/%%) against a capture template string.
+     * @param tmpl The capture template text to expand.
+     * @return The expanded template text.
+     */
     std::string OrgExpandCaptureTemplate(const std::string &tmpl) const;
     // kBuiltinOrgCapture's own mep.org_refile port, same-buffer branch
     // only (see main.cpp's own comment on why the cross-file branch
@@ -2329,6 +3317,12 @@ public:
     // re-leveling every line's stars by the same delta the original's
     // own `reindent` closure computed. Returns the new 1-indexed cursor
     // row, or 0 if the cursor isn't on a headline.
+    /**
+     * @brief Moves the subtree at the cursor's headline to become the last child of `target_row`, re-leveling its stars.
+     * @param target_row The 1-indexed row of the headline to refile under.
+     * @param todo_keywords The configured TODO keywords used to identify headlines.
+     * @return The new 1-indexed cursor row, or 0 if the cursor isn't on a headline.
+     */
     int OrgRefileMove(int target_row, const std::vector<std::string> &todo_keywords);
     // kBuiltinOrgLatex's own fragment-detection port (LUA_TO_CPP_PLAN.md
     // Phase 5): finds every whole-line/whole-block LaTeX fragment
@@ -2356,6 +3350,10 @@ public:
         std::vector<OrgLatexBlock> blocks;
         std::vector<OrgLatexInlineSpan> inlines;
     };
+    /**
+     * @brief Scans the current buffer for whole-block and inline LaTeX fragments.
+     * @return Every LaTeX block and inline span found in the buffer.
+     */
     OrgLatexScanResult OrgLatexScanFragments() const;
     // kBuiltinOrgBib's own hand-rolled BibTeX parser port
     // (LUA_TO_CPP_PLAN.md Phase 5): mep_org_bib_split_top_level/
@@ -2374,6 +3372,11 @@ public:
         std::string key;
         std::map<std::string, std::string> fields;
     };
+    /**
+     * @brief Parses BibTeX entries from already-read .bib file texts and resolves crossref fields across them.
+     * @param file_texts The full text of each .bib file, in macro-resolution order.
+     * @return The parsed and crossref-resolved bibliography entries.
+     */
     std::vector<OrgBibEntry> OrgBibParseFiles(const std::vector<std::string> &file_texts) const;
     // kBuiltinOrgBib's own citation-recognition-at-cursor port: resolves
     // both modern org-cite (`[cite:@key]`, `[cite/style:@key1;@key2]`)
@@ -2388,6 +3391,10 @@ public:
         int col_end;    // 1-indexed, inclusive
         std::vector<std::string> keys;
     };
+    /**
+     * @brief Resolves the org-cite or org-ref citation syntax under the cursor to its citation keys.
+     * @return The cited keys found under the cursor, if any.
+     */
     std::vector<std::string> OrgBibCiteAtCursor() const;
     // kBuiltinOrgRoam's own ports (LUA_TO_CPP_PLAN.md Phase 5): the
     // pure-computation pieces of the zettelkasten note-linking cluster.
@@ -2399,9 +3406,20 @@ public:
     //
     // mep_org_roam_files' own port: every `.org` file directly inside
     // any of `dirs` (no recursion, matching the original).
+    /**
+     * @brief Finds every `.org` file directly inside any of `dirs` (no recursion).
+     * @param dirs The directories to scan.
+     * @return The matching file paths.
+     */
     std::vector<std::string> OrgRoamFilesIn(const std::vector<std::string> &dirs) const;
     // mep_org_roam_title_of's own port: `#+TITLE:` (case-insensitive),
     // else the first headline's title, else not-found.
+    /**
+     * @brief Derives a roam note's title from its `#+TITLE:` line, else its first headline.
+     * @param lines The note file's lines, already read from disk.
+     * @param todo_keywords The configured TODO keywords used to identify headlines.
+     * @return The derived title, with found=false if neither a `#+TITLE:` nor a headline exists.
+     */
     std::pair<bool, std::string> OrgRoamTitleOf(const std::vector<std::string> &lines,
                                                  const std::vector<std::string> &todo_keywords) const;
     // mep.org_roam_ensure_id's own port: the current buffer's own :ID:
@@ -2411,11 +3429,21 @@ public:
     // Lua's math.random -- the ID is an opaque unique-enough string, not
     // a value any code depends on matching a specific PRNG stream, so
     // this doesn't change any observable contract.
+    /**
+     * @brief Returns the current buffer's roam :ID: property, generating and inserting a fresh one if absent.
+     * @return The buffer's roam id.
+     */
     std::string OrgRoamEnsureId();
     // mep.org_roam_backlinks' own scan port: every 1-indexed line in
     // `lines` containing a `[[id:<target_id>` substring (a plain
     // substring search, not a pattern) -- the sidebar widget
     // construction itself (with its on_click Lua closures) stays Lua.
+    /**
+     * @brief Finds every line containing a `[[id:<target_id>` link substring.
+     * @param lines The lines to search.
+     * @param target_id The roam id being linked to.
+     * @return The 1-indexed matching line numbers.
+     */
     std::vector<int> OrgRoamFindBacklinkLines(const std::vector<std::string> &lines,
                                                const std::string &target_id) const;
     // mep_org_roam_index's own per-file port: this file's own :ID:
@@ -2432,6 +3460,12 @@ public:
         std::string title;
         std::vector<std::string> links;
     };
+    /**
+     * @brief Indexes a roam file's own :ID:, title, and every deduplicated `[[id:...]]` link target it contains.
+     * @param lines The file's lines, already read from disk.
+     * @param todo_keywords The configured TODO keywords used to identify headlines.
+     * @return The file's index entry (has_id=false if it has no :ID:).
+     */
     OrgRoamFileIndexEntry OrgRoamParseFileIndex(const std::vector<std::string> &lines,
                                                  const std::vector<std::string> &todo_keywords) const;
     // kBuiltinOrgLinks's own ports (LUA_TO_CPP_PLAN.md Phase 5): table
@@ -2447,6 +3481,9 @@ public:
     //
     // mep.org_table_align's own port: aligns the contiguous run of
     // table rows touching the cursor.
+    /**
+     * @brief Aligns the contiguous run of org table rows touching the cursor.
+     */
     void OrgTableAlign();
     // mep.org_link_at_cursor's own port.
     struct OrgLinkAtCursorResult {
@@ -2455,6 +3492,10 @@ public:
         bool has_desc = false;
         std::string desc;
     };
+    /**
+     * @brief Finds the org link under the cursor, if any.
+     * @return The link's target and optional description, with found=false if the cursor isn't on one.
+     */
     OrgLinkAtCursorResult OrgLinkAtCursor() const;
     // mep_org_timestamp_at's own port: the active `<...>` or inactive
     // `[...]` org timestamp at `col` on `line`, if any.
@@ -2465,24 +3506,51 @@ public:
         std::string body;
         bool active = false;
     };
+    /**
+     * @brief Finds the active `<...>` or inactive `[...]` org timestamp at `col` on `line`, if any.
+     * @param line The line text to search.
+     * @param col The 1-indexed column to check.
+     * @return The matched timestamp's span and text, with found=false if none is present at that column.
+     */
     OrgTimestampMatch OrgTimestampAt(const std::string &line, int col) const;
     // mep.org_timestamp_insert's own port: inserts an active/inactive
     // today-timestamp at the cursor.
+    /**
+     * @brief Inserts a today-dated org timestamp at the cursor.
+     * @param active Whether to insert an active `<...>` timestamp instead of an inactive `[...]` one.
+     */
     void OrgTimestampInsert(bool active);
     // mep.org_timestamp_shift's own port: shifts the timestamp under
     // the cursor by `delta_days` calendar days, preserving any trailing
     // repeater/weekday-independent text.
+    /**
+     * @brief Shifts the org timestamp under the cursor by a number of calendar days, preserving any repeater text.
+     * @param delta_days The number of calendar days to shift by (may be negative).
+     */
     void OrgTimestampShift(int delta_days);
     // mep.org_footnote_jump's own port: jumps from a `[fn:name]`
     // reference under the cursor to its definition line (or, absent
     // one, the first other reference), or vice versa.
+    /**
+     * @brief Jumps between a `[fn:name]` reference under the cursor and its definition (or vice versa).
+     */
     void OrgFootnoteJump();
     // mep.org_set_planning's own port: inserts or replaces a
     // SCHEDULED:/DEADLINE: planning line directly below the current
     // headline.
+    /**
+     * @brief Inserts or replaces a SCHEDULED:/DEADLINE: planning line directly below the current headline.
+     * @param kind Which planning keyword to set ("SCHEDULED" or "DEADLINE").
+     * @param todo_keywords The configured TODO keywords used to identify headlines.
+     */
     void OrgSetPlanning(const std::string &kind, const std::vector<std::string> &todo_keywords);
     // mep_org_src_block_at's own port: see the OrgSrcBlock struct's own
     // comment (near OrgExpandMacroLine, above) for the full picture.
+    /**
+     * @brief Finds the org source block containing `row`, if any.
+     * @param row The 1-indexed row to check.
+     * @return The enclosing source block's info.
+     */
     OrgSrcBlock OrgSrcBlockAt(int row) const;
     // kBuiltinLsp's own ports (LUA_TO_CPP_PLAN.md Phase LSP): the pure
     // buffer-scan/edit pieces, not the LSP request/response machinery
@@ -2506,11 +3574,23 @@ public:
     // mep_lsp_word_at_cursor's own port: the `[%w_]` word touching the
     // cursor on the current line, or not-found -- rename's own default
     // prefill.
+    /**
+     * @brief Finds the `[%w_]` word touching the cursor on the current line, for rename's default prefill.
+     * @return The word text, with found=false if the cursor isn't touching a word.
+     */
     std::pair<bool, std::string> LspWordAtCursor() const;
     // mep_lsp_apply_text_edit's own port: splices one LSP TextEdit
     // (0-indexed line/character range + replacement text) into the
     // current buffer, preserving the untouched prefix/suffix of the
     // range's first/last line.
+    /**
+     * @brief Splices one LSP TextEdit into the current buffer, preserving the untouched prefix/suffix text.
+     * @param start_line The 0-indexed start line of the edit range.
+     * @param start_char The 0-indexed start character of the edit range.
+     * @param end_line The 0-indexed end line of the edit range.
+     * @param end_char The 0-indexed end character of the edit range.
+     * @param new_text The replacement text.
+     */
     void LspApplyTextEdit(int start_line, int start_char, int end_line, int end_char, const std::string &new_text);
     // mep_lsp_apply_edits_current_buffer's own port: applies a batch of
     // TextEdits bottom-up (descending start position) so an
@@ -2523,16 +3603,31 @@ public:
         int end_char = 0;
         std::string new_text;
     };
+    /**
+     * @brief Applies a batch of LSP TextEdits to the current buffer, bottom-up so earlier edits don't shift later ones.
+     * @param edits The edits to apply.
+     */
     void LspApplyEditsCurrentBuffer(std::vector<LspTextEdit> edits);
     // Replaces lines [start_row, end_row) (0-indexed, end exclusive) with
     // `lines` -- a general "splice" primitive (used first by Phase 17's
     // reset-hunk, generically useful for any future multi-line edit like
     // an LSP text edit or formatter output).
+    /**
+     * @brief Replaces a range of lines in the current buffer.
+     * @param start_row The 0-indexed start row of the range to replace.
+     * @param end_row The 0-indexed end row of the range, exclusive.
+     * @param lines The replacement lines.
+     */
     void ReplaceLinesForLua(int start_row, int end_row, const std::vector<std::string> &lines);
     // Replaces a specific buffer's *entire* content by id, regardless of
     // which pane/buffer is currently active (Part VI Phase 27: streaming
     // terminal/Run/REPL output into a background buffer the user isn't
     // necessarily looking at right now).
+    /**
+     * @brief Replaces a specific buffer's entire content by id, regardless of which pane is active.
+     * @param buffer_id The id of the buffer to replace.
+     * @param lines The new full content of the buffer.
+     */
     void SetBufferLinesForLua(int buffer_id, const std::vector<std::string> &lines);
 
     // --- Participant-addressed editing (COLLAB_CURSORS_PLAN.md) ---
@@ -2556,24 +3651,58 @@ public:
     // into buf.lines directly, the same technique InsertNewline's own
     // line-splitting already uses), which is correct for UTF-8 by
     // construction and avoids inheriting that bug in new code.
+    /**
+     * @brief Inserts raw text as UTF-8 bytes into a specific buffer at an explicit position, pushing its own undo entry.
+     * @param buffer_id The id of the buffer to edit.
+     * @param at The position to insert the text at.
+     * @param text The text to insert.
+     * @return The cursor position after the inserted text.
+     */
     CursorPos InsertTextAt(int buffer_id, CursorPos at, const std::string &text);
+    /**
+     * @brief Sets the full text of one line in a specific buffer, pushing its own undo entry.
+     * @param buffer_id The id of the buffer to edit.
+     * @param row The 0-indexed row to set.
+     * @param text The new line text.
+     */
     void SetLineAt(int buffer_id, int row, const std::string &text);
+    /**
+     * @brief Replaces a range of lines in a specific buffer, pushing its own undo entry.
+     * @param buffer_id The id of the buffer to edit.
+     * @param start_row The 0-indexed start row of the range to replace.
+     * @param end_row The 0-indexed end row of the range, exclusive.
+     * @param lines The replacement lines.
+     */
     void ReplaceLinesAt(int buffer_id, int start_row, int end_row, const std::vector<std::string> &lines);
     // ClampCursor()'s logic, generalized to an explicit buffer_id/position
     // instead of CurPane()/mode_ -- deliberately simpler than ClampCursor
     // (no fold-awareness: a background participant's position doesn't
     // interact with fold state the way the local cursor's navigation
     // does; acceptable v1 scope limit, not a correctness bug).
+    /**
+     * @brief Clamps a position to valid bounds within a specific buffer, without fold-awareness.
+     * @param buffer_id The id of the buffer to clamp against.
+     * @param pos The position to clamp.
+     * @return The clamped position.
+     */
     CursorPos ClampPositionInBuffer(int buffer_id, CursorPos pos) const;
     // PushUndo() (editor.cpp), but for an explicit buffer_id instead of
     // Buf() -- Buffer::undo_stack is already per-buffer, so this is a
     // small, low-risk generalization, not a new undo model.
+    /**
+     * @brief Pushes an undo checkpoint for a specific buffer by id.
+     * @param buffer_id The id of the buffer to push an undo checkpoint for.
+     */
     void PushUndoForBuffer(int buffer_id);
 
     // Creates a new empty buffer *without* switching any pane to it (Part
     // VI Phase 27: a dedicated Run/REPL output buffer, populated via
     // SetBufferLinesForLua before the caller splits a pane and switches
     // it into view there).
+    /**
+     * @brief Creates a new empty buffer without switching any pane to it.
+     * @return The new buffer's id.
+     */
     int CreateBufferForLua() { return CreateEmptyBuffer(); }
     // Finds-or-creates a buffer for `path` *without* switching any pane to
     // it (same "don't disturb what the human is looking at" contract as
@@ -2581,19 +3710,60 @@ public:
     // private FindOrCreateBuffer, for callers (agent_rpc.cpp's default-
     // cursor-position logic, COLLAB_CURSORS_PLAN.md) that need to resolve
     // a file to a buffer_id but must not touch the active pane/cursor.
+    /**
+     * @brief Finds or creates a buffer for `path` without switching any pane to it.
+     * @param path The file path to resolve to a buffer.
+     * @return The buffer's id.
+     */
     int FindOrCreateBufferForLua(const std::string &path) { return FindOrCreateBuffer(path); }
+    /**
+     * @brief Returns the number of open buffers.
+     * @return The buffer count.
+     */
     int BufferCountForLua() const { return static_cast<int>(buffers_.size()); }
+    /**
+     * @brief Returns a buffer's display label, with "[+]"/"[Terminal] " decoration as applicable.
+     * @param buffer_id The id of the buffer to label.
+     * @return The display label text.
+     */
     std::string BufferLabelForLua(int buffer_id) const;
     // Raw filename (empty for a terminal buffer or an unsaved "[No Name]"
     // buffer) -- unlike BufferLabelForLua, no "[+]"/"[Terminal] " display
     // decoration, so callers needing the real path (e.g. LSP didClose's
     // buffer-closed sweep, kBuiltinLsp) can match it back to their own
     // filename-keyed state.
+    /**
+     * @brief Returns a buffer's raw filename, with no display decoration (empty for a terminal or unsaved buffer).
+     * @param buffer_id The id of the buffer to look up.
+     * @return The raw filename.
+     */
     std::string BufferFilenameForLua(int buffer_id) const;
+    /**
+     * @brief Switches the active pane to show a specific buffer.
+     * @param buffer_id The id of the buffer to switch to.
+     */
     void SwitchToBufferForLua(int buffer_id);
+    /**
+     * @brief Returns the names of every registered Lua command.
+     * @return The list of command names.
+     */
     std::vector<std::string> LuaCommandNames() const;
+    /**
+     * @brief Returns the active pane's cursor position via output parameters.
+     * @param row Output parameter set to the cursor's row.
+     * @param col Output parameter set to the cursor's column.
+     */
     void GetCursorForLua(int *row, int *col) const;
+    /**
+     * @brief Sets the active pane's cursor position.
+     * @param row The row to move the cursor to.
+     * @param col The column to move the cursor to.
+     */
     void SetCursorForLua(int row, int col);
+    /**
+     * @brief Inserts text at the cursor in the current buffer, as if typed.
+     * @param text The text to insert.
+     */
     void InsertTextForLua(const std::string &text);
     // Identical to pressing "c" on the current Visual selection
     // (DispatchVisualKey's own case 'c':) -- deletes it with the same
@@ -2602,12 +3772,18 @@ public:
     // InsertTextForLua to stream a replacement in. Falls back to
     // ApplyOperatorToSelectionOrCurrentLine's own no-selection behavior
     // ("cc" on the current line) if called outside Visual mode.
+    /**
+     * @brief Deletes the current Visual selection (as if "c" were pressed) and enters Insert mode at the deletion point, ready for streamed-in replacement text.
+     */
     void ChangeVisualSelectionForLua();
     // The Lua equivalent of pressing <Esc>: leaves Insert (or Visual, if
     // still active) and returns to Normal mode. Used to hand control back
     // to Normal once a streamed-in AI replacement (ChangeVisualSelectionForLua
     // + repeated InsertTextForLua calls) finishes, mirroring what a human
     // typing the same replacement by hand would do when done.
+    /**
+     * @brief Leaves Insert or Visual mode and returns to Normal mode, as if <Esc> were pressed.
+     */
     void EnterNormalForLua();
     // The Lua equivalent of pressing "i": pushes one undo checkpoint (same
     // as real Normal-mode 'i', DispatchNormalKey's own `case 'i':`) then
@@ -2615,14 +3791,40 @@ public:
     // behave like the user typed it themselves -- one undo step per
     // dictation session -- when the buffer wasn't already in Insert mode
     // at the moment a transcript is ready to stream in.
+    /**
+     * @brief Pushes an undo checkpoint (as real Normal-mode "i" does) and enters Insert mode, so streamed-in dictated text behaves like the user typed it.
+     */
     void EnterInsertForLua();
+    /**
+     * @brief Reports whether the editor is currently in Insert mode.
+     * @return True if the current mode is Insert.
+     */
     bool IsInsertModeForLua() const { return mode_ == Mode::Insert; }
+    /**
+     * @brief Sets the status line message shown to the user.
+     * @param msg The message text.
+     */
     void SetStatusMessage(const std::string &msg);
+    /**
+     * @brief Requests that the editor quit at the next opportunity.
+     */
     void RequestQuit() { should_quit_ = true; }
+    /**
+     * @brief Registers a Lua-implemented editor command under a name.
+     * @param name The command name.
+     * @param lua_ref The Lua registry reference to invoke when the command runs.
+     */
     void RegisterLuaCommand(const std::string &name, int lua_ref);
     // `description`: optional (empty = none), from mep.map's opts.desc --
     // recorded in mapping_descriptions_ (private, below) for
     // AllMappingDescriptions() to expose to the help picker.
+    /**
+     * @brief Registers a Lua-backed key mapping for Normal or Visual mode.
+     * @param mode The mode the mapping applies to (only Normal, Visual, and VisualLine are supported; others are ignored).
+     * @param key The key sequence to bind.
+     * @param lua_ref The Lua registry reference to invoke when the key is pressed.
+     * @param description Optional human-readable description shown in the help picker.
+     */
     void RegisterLuaMapping(Mode mode, const std::string &key, int lua_ref, const std::string &description = "");
     // Every plain mep.map() binding that was given an opts.desc, for the
     // help picker's keybinding introspection (NVIM_PARITY_PLAN.md Phase
@@ -2632,6 +3834,10 @@ public:
         std::string key;
         std::string description;
     };
+    /**
+     * @brief Returns every plain mep.map() binding that was given an opts.desc, for the help picker's keybinding introspection.
+     * @return The list of mode/key/description entries.
+     */
     std::vector<MappingDescription> AllMappingDescriptions() const;
     // Binds a single letter key under the mod1 modifier (see SetMod1) to a
     // Lua callback, globally across all modes. `key` is a bare letter
@@ -2640,6 +3846,11 @@ public:
     // already mod1 itself). Overrides any prior mapping for that exact
     // key, including the startup defaults (mod1+v/s/h/j/k/l/S-h/j/k/l/
     // C-h/j/k/l/d).
+    /**
+     * @brief Binds a single letter key under the mod1 modifier to a Lua callback, globally across all modes, overriding any prior mapping for that exact key.
+     * @param key A bare letter for mod1+letter, or "S-"/"C-" prefixed for mod1+Shift+letter / mod1+Ctrl+letter.
+     * @param lua_ref The Lua registry reference to invoke when the key is pressed.
+     */
     void RegisterMod1Mapping(const std::string &key, int lua_ref);
     // mep.map_g(key, fn): binds a single letter key after a leading "g"
     // in Normal mode (e.g. "d" for "gd") to a Lua callback -- for
@@ -2647,6 +3858,11 @@ public:
     // (gg/ge/gE/gu/gU/gJ/gv), since a bare mep.map only ever sees a
     // single already-unprefixed keystroke (RegisterLuaMapping's own doc
     // comment) and can't reach anything typed after a pending "g".
+    /**
+     * @brief Binds a single letter key after a leading "g" in Normal mode to a Lua callback.
+     * @param key The letter following "g" (e.g. "d" for "gd").
+     * @param lua_ref The Lua registry reference to invoke when the sequence is pressed.
+     */
     void RegisterGMapping(const std::string &key, int lua_ref);
     // mep.map_g_visual(key, fn): same as RegisterGMapping, but consulted
     // from DispatchVisualKey's own pending_g_ handling instead -- Visual
@@ -2656,6 +3872,11 @@ public:
     // mep.map_g would silently no-op if typed while a Visual selection is
     // active -- this table is what lets e.g. "gl" replace-selection work
     // in Visual mode without colliding with Normal mode's own "gl".
+    /**
+     * @brief Binds a single letter key after a leading "g" in Visual mode to a Lua callback, separately from RegisterGMapping's Normal-mode table.
+     * @param key The letter following "g" (e.g. "l" for "gl").
+     * @param lua_ref The Lua registry reference to invoke when the sequence is pressed.
+     */
     void RegisterVisualGMapping(const std::string &key, int lua_ref);
     // mep.map_bracket_prev(key, fn) / mep.map_bracket_next(key, fn):
     // same shape as RegisterGMapping, but for a leading "[" / "]"
@@ -2665,9 +3886,22 @@ public:
     // the consuming dispatch doesn't need to reconstruct which bracket
     // was pressed from state that's already been cleared by the time it
     // runs.
+    /**
+     * @brief Binds a single letter key after a leading "[" to a Lua callback (e.g. LSP diagnostic navigation).
+     * @param key The letter following "[".
+     * @param lua_ref The Lua registry reference to invoke when the sequence is pressed.
+     */
     void RegisterBracketPrevMapping(const std::string &key, int lua_ref);
+    /**
+     * @brief Binds a single letter key after a leading "]" to a Lua callback (e.g. LSP diagnostic navigation).
+     * @param key The letter following "]".
+     * @param lua_ref The Lua registry reference to invoke when the sequence is pressed.
+     */
     void RegisterBracketNextMapping(const std::string &key, int lua_ref);
-    // name: "alt" (default), "ctrl", "shift", or "super"/"cmd"/"meta".
+    /**
+     * @brief Sets which modifier key acts as mod1 for pane/window shortcuts.
+     * @param name "alt" (default), "ctrl", "shift", or "super"/"cmd"/"meta".
+     */
     void SetMod1(const std::string &name);
     // direction: "left"/"down"/"up"/"right". Moves focus to the pane best
     // positioned that way from the active one (most overlap along the
@@ -2680,6 +3914,10 @@ public:
     // the direction pointing back toward the pane content blurs the
     // sidebar (focus returns to whatever pane was active, without closing
     // it -- unlike Escape/q); other directions are a no-op.
+    /**
+     * @brief Moves focus to the neighboring pane best positioned in a direction, or into a docked sidebar on that edge; a no-op if there is none.
+     * @param direction "left"/"down"/"up"/"right".
+     */
     void NavigatePaneDirection(const std::string &direction);
     // direction: "left"/"down"/"up"/"right". Moves the split boundary
     // between the active pane and its neighbor that way by `step` (a
@@ -2695,6 +3933,11 @@ public:
     // few cells per call instead (only on the axis matching its own dock
     // edge -- `step` is ignored there, since it's a split-tree share
     // fraction, not a cell count).
+    /**
+     * @brief Grows or shrinks the active pane (or a focused sidebar) against its neighbor in a direction.
+     * @param direction "left"/"down"/"up"/"right".
+     * @param step Fraction of the split's extent to move the boundary by (kDefaultResizeStep if omitted/<=0); ignored for a focused sidebar.
+     */
     void ResizeActivePane(const std::string &direction, float step = 0.0f);
     // Sets the active pane's share of its immediate parent split to an
     // absolute fraction (clamped to [kMinPaneShare, 1 - kMinPaneShare])
@@ -2704,6 +3947,10 @@ public:
     // gives up the rest. Used by project_open to give the readme pane ~2/3
     // of the height and the terminal pane the remaining ~1/3. Exposed to
     // Lua as mep.pane_set_share().
+    /**
+     * @brief Sets the active pane's share of its immediate parent split to an absolute fraction; a no-op unless the parent has exactly two children.
+     * @param fraction The desired share, clamped to [kMinPaneShare, 1 - kMinPaneShare].
+     */
     void SetActivePaneShare(float fraction);
 
     // --- Mouse-driven pane/tab interaction (main.cpp's own per-frame hit-
@@ -2718,6 +3965,10 @@ public:
     // on. Used for "click any pane's header/tab chip to focus it" and by
     // the drag-and-drop methods below's own "you're now looking at where
     // you dropped it" convention.
+    /**
+     * @brief Makes a pane the active pane within the current tab, for mouse-driven focus.
+     * @param pane_id The id of the pane to focus (a no-op if it isn't a real leaf pane in this tab).
+     */
     void FocusPaneById(int pane_id);
     // Drag-and-drop "drop in the pane's center": moves buffer_id's tab out
     // of source_pane_id's buffer_tabs and into dest_pane_id's, then
@@ -2731,6 +3982,12 @@ public:
     // not a keyboard-driven move that deliberately leaves you in place.
     // A no-op if source_pane_id == dest_pane_id, buffer_id isn't actually
     // one of source's tabs, or either pane can't be found.
+    /**
+     * @brief Drag-and-drop "drop in the pane's center": moves a buffer's tab from one pane to another and focuses the destination.
+     * @param source_pane_id The pane the tab is currently in.
+     * @param buffer_id The id of the buffer whose tab is being moved.
+     * @param dest_pane_id The pane the tab is moved into.
+     */
     void MoveBufferTabToPane(int source_pane_id, int buffer_id, int dest_pane_id);
     // Drag-and-drop "drop on an edge": removes buffer_id from
     // source_pane_id (same fixup/ClosePane-if-empty as MoveBufferTabToPane
@@ -2741,6 +3998,14 @@ public:
     // existing content, mirroring SplitCurrentPane's exact node-mutation
     // shape. Focuses the new leaf. A no-op if source_pane_id ==
     // dest_pane_id or either pane can't be found.
+    /**
+     * @brief Drag-and-drop "drop on an edge": removes a buffer's tab from its source pane and splits the destination pane to hold it in a new leaf, which is focused.
+     * @param source_pane_id The pane the tab is currently in.
+     * @param buffer_id The id of the buffer whose tab is being moved.
+     * @param dest_pane_id The pane whose leaf node is split to hold the new leaf.
+     * @param dir The split axis (Vertical = left/right, Horizontal = top/bottom).
+     * @param before Whether the new leaf is placed before (left/top) or after (right/bottom) the destination's existing content.
+     */
     void SplitPaneWithBufferTab(int source_pane_id, int buffer_id, int dest_pane_id, SplitDir dir, bool before);
     // Border-drag resize: sets node->shares[child_index] to `new_share`
     // (clamped so both it and shares[child_index+1] stay >= kMinPaneShare),
@@ -2749,12 +4014,24 @@ public:
     // SetActivePaneShare (which only ever touches a node with exactly 2
     // children, its own immediate parent). Calls EnsureShares itself, so
     // it's safe to call on a node whose shares aren't populated yet.
+    /**
+     * @brief Border-drag resize: sets a split child's share to a new value, taking the difference out of the next sibling so their combined total is preserved.
+     * @param node The split node being resized.
+     * @param child_index The index of the child whose share is being set.
+     * @param new_share The desired share, clamped so both it and the next sibling's share stay >= kMinPaneShare.
+     */
     void SetPaneBorderShare(SplitNode *node, int child_index, float new_share);
     // Ensures node->shares is populated (EnsureShares) and returns the
     // combined share of children[child_index] and [child_index+1] -- used
     // to capture a border-drag's fixed pair total at drag *start*, before
     // any dragging/SetPaneBorderShare call has happened yet. 0 if
     // child_index is out of range.
+    /**
+     * @brief Returns the combined share of two adjacent split children, captured at border-drag start before any resizing.
+     * @param node The split node being resized.
+     * @param child_index The index of the first of the two adjacent children (0 if out of range).
+     * @return The pair's combined share.
+     */
     float PaneBorderPairTotal(SplitNode *node, int child_index);
 
     // `args`: same contract as OpenTerminal (empty = interactive shell,
@@ -2764,6 +4041,10 @@ public:
     // project_open's terminal-below-the-readme split, which needs the new
     // pane on the *bottom* rather than SplitCurrentPane's above/left
     // default). Exposed to Lua as mep.terminal_here().
+    /**
+     * @brief Attaches a terminal to the currently active pane in place, instead of splitting.
+     * @param args Same contract as OpenTerminal: empty for an interactive shell, non-empty to run `shell -c args`.
+     */
     void OpenTerminalInPlace(const std::string &args);
 
     // Also used directly by main.cpp to open a file passed on argv (native
@@ -2777,6 +4058,11 @@ public:
     // ConvertHtmlBufferToText/ConvertTextBufferToHtml's own comments for
     // how an existing buffer for the same path gets reused across a
     // force_text mismatch instead of duplicated.
+    /**
+     * @brief Opens (or switches to) a buffer for a file path, resetting the pane's cursor/scroll as a fresh open.
+     * @param path The file path to open.
+     * @param force_text For an .html/.htm path, opens the plain-text view instead of the rendered :Browse view.
+     */
     void LoadFile(const std::string &path, bool force_text = false);
     // Bare `:e`/`:e!` (RunCommand) -- re-reads the *current* buffer's own
     // file from disk in place, unlike LoadFile(path), which always opens
@@ -2789,6 +4075,10 @@ public:
     // use case (an external tool regenerated this file, or `git checkout`
     // reverted it) is exactly the case where staying roughly in place
     // matters.
+    /**
+     * @brief Re-reads the current buffer's own file from disk in place, preserving the (clamped) cursor position.
+     * @param force Skip the unsaved-changes guard (`:e!`).
+     */
     void ReloadCurrentBuffer(bool force);
     // Startup-only cleanup for main()'s own `LoadFile(argv[1])` call:
     // every LoadFile branch acquires a buffer via FindOrCreateBuffer or
@@ -2804,9 +4094,17 @@ public:
     // every remaining buffer's id down by one, and the active pane's own
     // buffer_id is the sole reference to any of them at this point (no
     // splits/tabs/terminals/other buffers exist yet to also fix up).
+    /**
+     * @brief Startup-only cleanup that removes the pristine placeholder buffer 0 left behind after main() opens a file via argv, shifting later buffer ids down by one.
+     */
     void DropUnusedInitialBuffer();
     // Returns true on success; false (with a status message set) if the
     // path is empty or the write failed.
+    /**
+     * @brief Writes the current buffer's content to a file path.
+     * @param path The file path to save to.
+     * @return True on success; false (with a status message set) if the path is empty or the write failed.
+     */
     bool SaveFile(const std::string &path);
 
     // Directory listing shared by mep.list_dir (Lua, lua_env.cpp -- the
@@ -2820,6 +4118,11 @@ public:
         std::string name;
         bool is_dir;
     };
+    /**
+     * @brief Lists the entries of a directory, unsorted and unfiltered.
+     * @param path The directory path to list.
+     * @return The directory's entries (native builds read the real filesystem; wasm builds go through the loopback bridge).
+     */
     std::vector<DirEntry> ListDirectory(const std::string &path) const;
 
     // Persisted project-root bookmark list (mep.projects() picker, Phase
@@ -2827,37 +4130,87 @@ public:
     // writes $XDG_DATA_HOME/mep/projects.json directly; wasm routes through
     // the `just run-wasm` loopback bridge (empty/no-op without one, e.g. a bare
     // browser tab).
+    /**
+     * @brief Returns the persisted list of bookmarked project-root paths.
+     * @return The bookmarked project paths.
+     */
     std::vector<std::string> ListProjects() const;
+    /**
+     * @brief Adds a project-root path to the persisted bookmark list.
+     * @param path The project path to add.
+     */
     void AddProject(const std::string &path);
+    /**
+     * @brief Removes a project-root path from the persisted bookmark list.
+     * @param path The project path to remove.
+     */
     void RemoveProject(const std::string &path);
 
     // --- Menu-facing API (called from main.cpp's menu bar actions) ---
+    /**
+     * @brief Undoes the last change, as if "u" were pressed.
+     */
     void Undo();
+    /**
+     * @brief Redoes the last undone change, as if Ctrl-r were pressed.
+     */
     void Redo();
     // Copy/Cut the current visual selection, or the current line if not in
     // Visual mode -- the same fallback a GUI menu's Copy/Cut needs when
     // there's no explicit selection.
+    /**
+     * @brief Copies the current Visual selection, or the current line if not in Visual mode, into the unnamed register.
+     */
     void Copy();
+    /**
+     * @brief Cuts the current Visual selection, or the current line if not in Visual mode, into the unnamed register.
+     */
     void Cut();
+    /**
+     * @brief Pastes the unnamed register's contents at the cursor.
+     */
     void Paste();
     // Replaces the active pane's buffer with a single empty line. Refuses
     // (with a status message, like :q) if there are unsaved changes.
+    /**
+     * @brief Replaces the active pane's buffer with a single empty line.
+     */
     void NewBuffer();
     // Opens the command line pre-filled with `prefix`, e.g. "e " for a
     // menu's Open action, so the user only has to type the filename.
+    /**
+     * @brief Opens the command line pre-filled with a prefix, for menu actions that only need the user to type the rest.
+     * @param prefix The text to pre-fill the command line with.
+     */
     void BeginCommand(const std::string &prefix);
     // Runs a command line as if the user typed ":<cmd>" and pressed Enter.
+    /**
+     * @brief Runs a command line as if the user typed ":<cmd>" and pressed Enter.
+     * @param cmd The command text to run (without the leading colon).
+     */
     void RunCommand(const std::string &cmd);
 
     // :CollabJoin / :CollabLeave. Collaboration follows the active text
     // buffer and merges remote CRDT operations at the next input frame.
     struct CollaborationPeerInfo { std::string id, name; int row = 0, col = 0; bool has_location = false; };
+    /**
+     * @brief Reports whether a :CollabJoin collaboration session is currently active.
+     * @return True if collaboration is active.
+     */
     bool CollaborationActive() const;
+    /**
+     * @brief Returns the remote human peers of the active collaboration session.
+     * @return The current collaboration peers.
+     */
     std::vector<CollaborationPeerInfo> CollaborationPeers() const;
     // Which buffer :CollabJoin is attached to (-1 if collaboration isn't
     // active) -- CollaborationPeerInfo itself carries no buffer identity
     // since collaboration is single-buffer; Participants() (below) is
     // what attaches this to each human peer for rendering.
+    /**
+     * @brief Returns the id of the buffer :CollabJoin is attached to.
+     * @return The collaboration buffer id, or -1 if collaboration isn't active.
+     */
     int CollaborationBufferId() const { return collaboration_buffer_id_; }
 
     // --- Participants (COLLAB_CURSORS_PLAN.md): a unified view of every
@@ -2880,6 +4233,10 @@ public:
         // AgentParticipant::status for where this comes from.
         std::string status;
     };
+    /**
+     * @brief Returns a unified, freshly-recomputed view of every remote editor of this project: human collaborators and connected AI agents.
+     * @return The current participants.
+     */
     std::vector<ParticipantInfo> Participants() const;
     // Registers/updates a synthetic, locally-driven participant -- for a
     // Lua-side feature (e.g. mep.ai_send_buffer's streaming) that wants the
@@ -2888,9 +4245,22 @@ public:
     // agent_rpc.cpp. Upserts by `id`; call again each streamed delta to
     // move the cursor. `status` follows the same agent status vocabulary
     // ParticipantInfo::status documents ("thinking"/"writing"/etc, or "").
+    /**
+     * @brief Registers or updates a synthetic, locally-driven participant, giving a Lua-side streaming feature its own tab-bar chip and in-buffer cursor.
+     * @param id The participant's unique id (upserted by this key).
+     * @param name The participant's display name.
+     * @param buffer_id The id of the buffer the participant's cursor is in.
+     * @param row The participant's cursor row.
+     * @param col The participant's cursor column.
+     * @param status The agent status vocabulary ("thinking"/"writing"/etc.), or "".
+     */
     void SetLocalParticipant(const std::string &id, const std::string &name, int buffer_id, int row, int col, const std::string &status = "");
     // Removes a local participant added via SetLocalParticipant (e.g. once
     // a stream finishes or is cancelled) -- a no-op if `id` isn't one.
+    /**
+     * @brief Removes a local participant added via SetLocalParticipant.
+     * @param id The id of the participant to remove (a no-op if `id` isn't one).
+     */
     void ClearLocalParticipant(const std::string &id);
     // Moves the local user's own cursor to participant `id`'s last-known
     // position -- switching the active pane's buffer first if the
@@ -2902,6 +4272,11 @@ public:
     // chips and the status-line collaboration chips now go through this
     // one function. Returns false (status_message_ explains why) if `id`
     // isn't a current participant or has no known location yet.
+    /**
+     * @brief Moves the local user's own cursor to a participant's last-known position, switching the active pane's buffer first if needed.
+     * @param id The id of the participant to jump to.
+     * @return False (with status_message_ explaining why) if `id` isn't a current participant or has no known location yet; true otherwise.
+     */
     bool JumpToParticipant(const std::string &id);
 
     // --- Modal overlays (NVIM_PARITY_PLAN.md Part I Phase 3) ---
@@ -2913,6 +4288,13 @@ public:
     //   Prompt:  on_done(text) on Enter, on_done() [nil] on Escape.
     //   Confirm: on_done(true/false) always (Escape counts as false).
     //   Select:  on_done(1-indexed index) on Enter, on_done() [nil] on Escape.
+    /**
+     * @brief Opens a vim.ui.input-equivalent modal text prompt, taking over input until confirmed or cancelled.
+     * @param title The prompt's title text.
+     * @param default_text The initial text pre-filled in the input.
+     * @param on_done_ref A Lua function ref, called with the entered text on Enter or with nil on Escape, then unrefed.
+     * @param masked Whether to render the input masked (e.g. for a password).
+     */
     void BeginPrompt(const std::string &title, const std::string &default_text, int on_done_ref,
                       bool masked = false);
     // Same as BeginPrompt, but for a native C++ caller (a toolbar button's
@@ -2921,26 +4303,89 @@ public:
     // through lua_->CallRefWithString when this is set, and does NOT call
     // it on Escape (cancel), matching BeginPrompt's own on_done() case
     // simply being skipped rather than called with an empty string.
+    /**
+     * @brief Same as BeginPrompt, but for a native C++ caller with a std::function callback instead of a Lua ref; not invoked on Escape.
+     * @param title The prompt's title text.
+     * @param default_text The initial text pre-filled in the input.
+     * @param on_done Callback invoked with the entered text on Enter.
+     */
     void BeginPromptNative(const std::string &title, const std::string &default_text,
                             std::function<void(const std::string &)> on_done);
+    /**
+     * @brief Opens a confirm-dialog-equivalent modal, taking over input until answered.
+     * @param message The confirmation message text.
+     * @param default_yes The default answer highlighted/used.
+     * @param on_done_ref A Lua function ref, called with true/false (Escape counts as false), then unrefed.
+     */
     void BeginConfirm(const std::string &message, bool default_yes, int on_done_ref);
+    /**
+     * @brief Opens a vim.ui.select-equivalent modal item picker, taking over input until confirmed or cancelled.
+     * @param title The picker's title text.
+     * @param items The selectable item labels.
+     * @param on_done_ref A Lua function ref, called with the 1-indexed chosen index on Enter or with nil on Escape, then unrefed.
+     */
     void BeginSelect(const std::string &title, std::vector<std::string> items, int on_done_ref);
     // Preview: no callback -- purely informational (e.g. git-gutter's
     // hunk preview), dismissed by any keypress or a click, restoring
     // whatever mode was active before it opened. `text` may contain
     // embedded '\n's; the renderer splits and draws one line each.
+    /**
+     * @brief Opens a purely informational modal overlay (e.g. a git-gutter hunk preview), dismissed by any keypress or click.
+     * @param title The preview's title text.
+     * @param text The preview text, split on embedded '\n's for rendering.
+     */
     void BeginPreview(const std::string &title, const std::string &text);
 
     // Read access for main.cpp's renderer.
+    /**
+     * @brief Returns the active prompt overlay's title text.
+     * @return The prompt title.
+     */
     const std::string &PromptTitle() const { return prompt_title_; }
+    /**
+     * @brief Returns the active prompt overlay's current input text.
+     * @return The prompt input text.
+     */
     const std::string &PromptInput() const { return prompt_input_; }
+    /**
+     * @brief Reports whether the active prompt overlay renders its input masked.
+     * @return True if the input is masked.
+     */
     bool PromptMasked() const { return prompt_masked_; }
+    /**
+     * @brief Returns the active confirm overlay's message text.
+     * @return The confirm message.
+     */
     const std::string &ConfirmMessage() const { return confirm_message_; }
+    /**
+     * @brief Returns the active confirm overlay's default answer.
+     * @return True if the default answer is yes.
+     */
     bool ConfirmDefaultYes() const { return confirm_default_yes_; }
+    /**
+     * @brief Returns the active select overlay's title text.
+     * @return The select title.
+     */
     const std::string &SelectTitle() const { return select_title_; }
+    /**
+     * @brief Returns the active select overlay's item labels.
+     * @return The select items.
+     */
     const std::vector<std::string> &SelectItems() const { return select_items_; }
+    /**
+     * @brief Returns the active select overlay's currently highlighted item index.
+     * @return The 0-indexed selected item index.
+     */
     int SelectIndex() const { return select_index_; }
+    /**
+     * @brief Returns the active preview overlay's title text.
+     * @return The preview title.
+     */
     const std::string &PreviewTitle() const { return preview_title_; }
+    /**
+     * @brief Returns the active preview overlay's text.
+     * @return The preview text.
+     */
     const std::string &PreviewText() const { return preview_text_; }
 
     // --- Theme engine (NVIM_PARITY_PLAN.md Part II Phase 9) ---
@@ -2953,8 +4398,21 @@ public:
     // main.cpp) -- that can't "just repaint" from a color lookup alone, so
     // ApplyTheme also bumps ThemeEpoch() for exactly that kind of cache to
     // key its own invalidation off of.
+    /**
+     * @brief Applies a registered theme palette by name, bumping ThemeEpoch() so caches that bake in resolved colors can invalidate.
+     * @param name The registered theme's name.
+     * @return True if applied; false (a no-op) if `name` isn't registered.
+     */
     bool ApplyTheme(const std::string &name);
+    /**
+     * @brief Returns the currently applied theme's name.
+     * @return The current theme name.
+     */
     const std::string &CurrentThemeName() const { return current_theme_name_; }
+    /**
+     * @brief Returns the names of every registered theme.
+     * @return The list of theme names.
+     */
     std::vector<std::string> ThemeNames() const;
     // Bumped every time ApplyTheme actually changes current_theme_groups_.
     // Exists for caches that bake a ResolveHighlight-derived color into
@@ -2963,16 +4421,32 @@ public:
     // catches a theme change even when nothing else about the cached
     // content changed, which comparing only *that* content's own version
     // (e.g. a PDF page's raster generation) would miss entirely.
+    /**
+     * @brief Returns a counter bumped every time ApplyTheme actually changes the active theme, for caches that bake in resolved colors to key invalidation off of.
+     * @return The current theme epoch.
+     */
     int ThemeEpoch() const { return theme_epoch_; }
     // Exact-name lookup into the active theme's built group map; returns
     // false if `name` isn't a known group (caller decides the fallback --
     // main.cpp's ResolveHlGroup falls back to its substring heuristic so
     // ad hoc decoration hl_group names keep working un-migrated).
+    /**
+     * @brief Looks up a highlight group's color in the active theme by exact name.
+     * @param name The highlight group name.
+     * @param out Output parameter set to the resolved color on success.
+     * @return True if `name` is a known group; false otherwise (caller decides the fallback).
+     */
     bool ResolveHighlight(const std::string &name, ThemeColor *out) const;
     // Raw palette lookup by theme name (not necessarily the active theme) --
     // for previews that want to show a theme's colors without switching the
     // whole app to it, e.g. the colorscheme picker's swatch preview. Returns
     // false if `name` isn't a registered theme.
+    /**
+     * @brief Looks up a registered theme's raw palette by name, without switching the active theme.
+     * @param name The theme's name.
+     * @param out Output parameter set to the theme's palette on success.
+     * @return True if `name` is a registered theme; false otherwise.
+     */
     bool ThemePalette(const std::string &name, Palette *out) const;
     // Resolves a VTermCell's fg color to a concrete ThemeColor -- shared by
     // main.cpp's VTermColorToRaylib (the live :terminal pane's own per-
@@ -2983,45 +4457,116 @@ public:
     // vterm.h/.cpp since it needs ResolveHighlight for the Default case
     // (defer to mep's own active theme) -- vterm.h itself stays free of
     // any such dependency, per its own header comment.
+    /**
+     * @brief Resolves a VTermColor (foreground or background) to a concrete ThemeColor, deferring to the active theme for the Default case.
+     * @param c The terminal color to resolve.
+     * @param is_fg Whether `c` is a foreground color (as opposed to background).
+     * @return The resolved theme color.
+     */
     ThemeColor ResolveVTermColor(const VTermColor &c, bool is_fg) const;
 
     // --- Decorations (NVIM_PARITY_PLAN.md Part I Phase 4) ---
     // Returns a stable id for `name`, creating one on first use (mirrors
     // nvim_create_namespace: idempotent by name).
+    /**
+     * @brief Returns a stable namespace id for a name, creating one on first use.
+     * @param name The namespace name.
+     * @return The namespace's id (idempotent by name, mirrors nvim_create_namespace).
+     */
     int CreateNamespace(const std::string &name);
     // Clears/adds operate on the *current* buffer -- the common case for
     // every planned consumer (colorizer, todoscan, git gutter, ...), which
     // all recompute against whatever buffer they're attached to.
+    /**
+     * @brief Clears every decoration in a namespace within the current buffer.
+     * @param ns The namespace id to clear.
+     */
     void ClearNamespace(int ns);
+    /**
+     * @brief Adds a decoration to a namespace within the current buffer.
+     * @param ns The namespace id to add to.
+     * @param deco The decoration to add.
+     * @return The added decoration's id.
+     */
     int AddDecoration(int ns, Decoration deco);
     // Flattened view across every namespace in the current buffer, for
     // main.cpp's per-line rendering pass.
+    /**
+     * @brief Returns a flattened view across every namespace's decorations in the current buffer.
+     * @return The current buffer's decorations, keyed by namespace id.
+     */
     const std::unordered_map<int, std::vector<Decoration>> &CurrentBufferDecorations() const;
+    /**
+     * @brief Clears every decoration in a namespace within a specific buffer.
+     * @param buffer_id The id of the buffer to clear decorations in.
+     * @param ns The namespace id to clear.
+     */
     void ClearNamespaceInBuffer(int buffer_id, int ns);
+    /**
+     * @brief Adds a decoration to a namespace within a specific buffer.
+     * @param buffer_id The id of the buffer to add the decoration to.
+     * @param ns The namespace id to add to.
+     * @param deco The decoration to add.
+     * @return The added decoration's id.
+     */
     int AddDecorationToBuffer(int buffer_id, int ns, Decoration deco);
 
     // --- Folding (NVIM_PARITY_PLAN.md Part I Phase 5) ---
     // za-equivalent: toggles the innermost fold containing the cursor's
     // row, if any.
+    /**
+     * @brief Toggles the innermost fold containing the cursor's row, if any (za-equivalent).
+     */
     void ToggleFoldAtCursor();
     // Toggles the innermost fold containing `row` directly, without moving
     // the cursor there first -- used by the gutter fold-marker click
     // dispatch (main.cpp's DrawPane), which knows the clicked buffer row
     // but shouldn't relocate the cursor just to toggle a fold near it.
+    /**
+     * @brief Toggles the innermost fold containing a row, without moving the cursor there first.
+     * @param row The row to toggle the fold at.
+     */
     void ToggleFoldAtRow(int row);
+    /**
+     * @brief Creates a new fold over a row range in the current buffer.
+     * @param start_row The fold's start row.
+     * @param end_row The fold's end row.
+     * @param closed Whether the fold starts closed.
+     * @param provider Tag identifying what created the fold, for later bulk-clearing via ClearFoldsFromProvider.
+     */
     void CreateFold(int start_row, int end_row, bool closed, const std::string &provider = "manual");
     // Removes every fold tagged with `provider` (a provider recomputing
     // its folds calls this before re-adding, mirroring the decoration
     // namespace clear-and-replace pattern).
+    /**
+     * @brief Removes every fold tagged with a given provider.
+     * @param provider The provider tag to clear folds for.
+     */
     void ClearFoldsFromProvider(const std::string &provider);
     // True (and *fold_start_row set) if `row` is hidden inside a closed
     // fold -- i.e. inside one but not that fold's own start row, which
     // stays visible as the fold's summary line.
+    /**
+     * @brief Reports whether a row is hidden inside a closed fold.
+     * @param row The row to check.
+     * @param fold_start_row Output parameter set to the containing fold's start row when hidden.
+     * @return True if `row` is hidden inside a closed fold.
+     */
     bool IsRowHiddenByFold(int row, int *fold_start_row) const;
+    /**
+     * @brief Returns the current buffer's folds.
+     * @return The current buffer's fold list.
+     */
     const std::vector<Fold> &CurrentBufferFolds() const { return Buf().folds; }
     // j/k (ResolveMotion) step by *displayed* lines, not buffer rows: a
     // closed fold's hidden interior counts as a single line no matter how
     // many rows it spans. `dir` is +1 (down) or -1 (up).
+    /**
+     * @brief Steps a row by one displayed line, treating a closed fold's hidden interior as a single line.
+     * @param row The starting row.
+     * @param dir The step direction: +1 (down) or -1 (up).
+     * @return The resulting row.
+     */
     int StepVisibleRow(int row, int dir) const;
 
     // Org-mode headline folding (za/zm/zr/zR/zM): rebuilds the current
@@ -3029,21 +4574,39 @@ public:
     // structure. Cheap enough to call before every z-command rather than
     // hook every edit site -- see the .cpp definition for the exact
     // matching rule that preserves open/closed state across a recompute.
+    /**
+     * @brief Rebuilds the current buffer's provider="org" folds from its headline structure, preserving open/closed state across the recompute.
+     */
     void RecomputeOrgFolds();
+    /**
+     * @brief Reports whether the current buffer is an org-mode buffer.
+     * @return True if the current buffer is org-mode.
+     */
     bool IsOrgBuffer() const;
     // Marker folding (za/zm/zr/zR/zM), enabled by default for every
     // filetype: rebuilds provider="marker" folds from literal `{{{`/`}}}`
     // text markers (vim's classic foldmethod=marker), same lazy
     // recompute-before-every-z-command pattern as RecomputeOrgFolds above
     // -- see the .cpp definition for the nesting/matching rule.
+    /**
+     * @brief Rebuilds the current buffer's provider="marker" folds from literal `{{{`/`}}}` text markers.
+     */
     void RecomputeMarkerFolds();
     // zM/zR: force every fold in the current buffer open or closed, and
     // snap fold_level to the corresponding extreme (0 or the deepest
     // nesting present).
+    /**
+     * @brief Forces every fold in the current buffer open or closed, snapping fold_level to the corresponding extreme.
+     * @param closed Whether to close (true) or open (false) every fold.
+     */
     void SetAllFoldsClosed(bool closed);
     // zm/zr: vim's "one level more/less" fold stepping. `delta` is +1
     // (zr, open a level) or -1 (zm, close a level); see Buffer::fold_level
     // for what the stored level means between calls.
+    /**
+     * @brief Steps the current buffer's fold level by one level more/less open.
+     * @param delta +1 to open a level (zr) or -1 to close a level (zm).
+     */
     void AdjustFoldLevel(int delta);
 
     // --- Org inline images (<leader>oti / mep.org_images_toggle) ---
@@ -3052,16 +4615,28 @@ public:
     // mep.org_image_scan() (kBuiltinOrgImages, main.cpp), mirroring
     // CreateFold's "one call per range" shape rather than taking a whole
     // replacement map at once.
+    /**
+     * @brief Registers or replaces the resolved image path for a row in the current buffer's org_image_rows.
+     * @param row The row the image reference is on.
+     * @param path The resolved image file path.
+     */
     void SetOrgImageRow(int row, const std::string &path);
     // Clears every entry -- called by mep.org_image_scan() before
     // rescanning, mirroring ClearFoldsFromProvider's clear-and-replace
     // pattern (there's only ever one "provider" of these, so no provider
     // tag is needed the way folds have one).
+    /**
+     * @brief Clears every registered org inline-image row entry in the current buffer.
+     */
     void ClearOrgImageRows();
     // <leader>oti: flips org_images_visible_ and returns the new state (so
     // the Lua-side wrapper can notify the user and, if newly visible,
     // trigger an immediate mep.org_image_scan() rather than waiting for
     // the next debounced buffer-changed tick).
+    /**
+     * @brief Toggles org inline-image rendering visibility.
+     * @return The new visibility state.
+     */
     bool ToggleOrgImages();
 
     // --- Org LaTeX/math-mode rendering (<leader>otl / mep.org_latex_toggle) ---
@@ -3070,44 +4645,131 @@ public:
     // fragment by Lua's mep.org_latex_scan() (kBuiltinOrgLatex, main.cpp),
     // mirroring SetOrgImageRow's "one call per match" shape. `end_row ==
     // row` for a single-line fragment.
+    /**
+     * @brief Registers or replaces the rendered LaTeX PNG for a source row range in the current buffer.
+     * @param row The fragment's start row.
+     * @param path The rendered PNG file path.
+     * @param slots The rendered image's slot count (Buffer::OrgLatexRender).
+     * @param end_row The fragment's end row (equal to `row` for a single-line fragment).
+     */
     void SetOrgLatexRow(int row, const std::string &path, int slots, int end_row);
     // Clears every entry -- called by mep.org_latex_scan() before
     // rescanning (and when the toggle turns off), mirroring
     // ClearOrgImageRows.
+    /**
+     * @brief Clears every registered org LaTeX render entry in the current buffer.
+     */
     void ClearOrgLatexRows();
     // <leader>otl: flips org_latex_visible_ and returns the new state, same
     // shape as ToggleOrgImages.
+    /**
+     * @brief Toggles org LaTeX/math-mode rendering visibility.
+     * @return The new visibility state.
+     */
     bool ToggleOrgLatex();
     // Appends one inline-math span (see Buffer::OrgLatexInlineSpan) for
     // `row` -- called once per match by mep_org_latex_register_inline
     // (kBuiltinOrgLatex). Appends rather than replaces (unlike
     // SetOrgLatexRow) since a single row can carry more than one inline
     // fragment ("$x$ and $y$ are related").
+    /**
+     * @brief Appends one inline-math LaTeX span for a row in the current buffer (a row may carry more than one).
+     * @param row The row the inline fragment is on.
+     * @param col_start The fragment's start column.
+     * @param col_end The fragment's end column.
+     * @param path The rendered PNG file path.
+     */
     void AddOrgLatexInlineSpan(int row, int col_start, int col_end, const std::string &path);
     // Clears every entry -- called by mep.org_latex_scan() before
     // rescanning (and when the toggle turns off).
+    /**
+     * @brief Clears every registered org LaTeX inline-math span in the current buffer.
+     */
     void ClearOrgLatexInlineSpans();
 
     // --- Sidebar/panel widget (NVIM_PARITY_PLAN.md Part I Phase 7) ---
+    /**
+     * @brief Creates a new sidebar panel widget.
+     * @param title The sidebar's title text.
+     * @param position The dock edge to attach the sidebar to.
+     * @param size The sidebar's fixed size in cells along its dock axis.
+     * @return The new sidebar's id.
+     */
     int CreateSidebar(const std::string &title, const std::string &position, int size);
+    /**
+     * @brief Sets a sidebar's section/widget content, replacing whatever it had.
+     * @param id The id of the sidebar to update.
+     * @param sections The new section content.
+     */
     void SetSidebarSections(int id, std::vector<SidebarSection> sections);
+    /**
+     * @brief Opens a sidebar, optionally focusing it.
+     * @param id The id of the sidebar to open.
+     * @param focus Whether to also move focus into the sidebar.
+     */
     void OpenSidebar(int id, bool focus);
+    /**
+     * @brief Closes a sidebar.
+     * @param id The id of the sidebar to close.
+     */
     void CloseSidebar(int id);
+    /**
+     * @brief Toggles a sidebar open or closed, optionally focusing it when opened.
+     * @param id The id of the sidebar to toggle.
+     * @param focus Whether to focus the sidebar when it becomes open.
+     */
     void ToggleSidebar(int id, bool focus);
+    /**
+     * @brief Reports whether a sidebar is currently open.
+     * @param id The id of the sidebar to check.
+     * @return True if the sidebar is open.
+     */
     bool IsSidebarOpen(int id) const;
+    /**
+     * @brief Returns every currently registered sidebar instance.
+     * @return The sidebar instances.
+     */
     const std::vector<SidebarInstance> &Sidebars() const { return sidebars_; }
+    /**
+     * @brief Returns the id of the currently focused sidebar.
+     * @return The focused sidebar's id, or 0 if none is focused.
+     */
     int FocusedSidebarId() const { return focused_sidebar_id_; }
+    /**
+     * @brief Returns the currently focused sidebar's cursor row.
+     * @return The sidebar cursor position.
+     */
     int SidebarCursor() const { return sidebar_cursor_; }
     // Section-header/widget rows in display order -- one section header
     // line, then (if not collapsed) one line per widget, repeated per
     // section. Returns {} for an unknown id.
+    /**
+     * @brief Flattens a sidebar's sections/widgets into display-order rows (one section header line, then one per widget if not collapsed).
+     * @param id The id of the sidebar to flatten.
+     * @return The sidebar's display rows, or {} for an unknown id.
+     */
     std::vector<SidebarLine> FlattenSidebar(int id) const;
+    /**
+     * @brief Looks up a sidebar instance by id.
+     * @param id The id of the sidebar to look up.
+     * @return The sidebar instance, or nullptr if `id` is unknown.
+     */
     const SidebarInstance *FindSidebar(int id) const;
+    /**
+     * @brief Registers a Lua callback for keypresses while a sidebar is focused.
+     * @param id The id of the sidebar to register the callback on.
+     * @param lua_ref The Lua registry reference to invoke on a keypress.
+     */
     void SetSidebarOnKey(int id, int lua_ref);
     // The `id` string of the widget at the sidebar's current cursor line,
     // or "" if the cursor is on a section header (or the sidebar/cursor is
     // invalid) -- what a Phase 15-style on_key handler uses to know which
     // row a key like "rename" or "delete" applies to.
+    /**
+     * @brief Returns the widget id at a sidebar's current cursor line.
+     * @param id The id of the sidebar to query.
+     * @return The widget id, or "" if the cursor is on a section header or the sidebar/cursor is invalid.
+     */
     std::string SidebarCursorWidgetId(int id) const;
     // Mouse click-through (main.cpp's own row/border hit-testing calls
     // into these -- see SidebarWidget's own header, which flagged this as
@@ -3120,7 +4782,17 @@ public:
     // shared by HandleSidebarInput's own Enter handling and a mouse
     // double-click, both just resolving to "activate the line at index N"
     // by a different route.
+    /**
+     * @brief Focuses a sidebar and moves its cursor to a clamped line index, for a mouse click.
+     * @param id The id of the sidebar to focus.
+     * @param line_index The line index to move the cursor to (clamped in range).
+     */
     void FocusSidebarRow(int id, int line_index);
+    /**
+     * @brief Activates the sidebar line at an index, as Enter would (toggling a section header's collapsed state or firing a widget's on_click).
+     * @param id The id of the sidebar containing the line.
+     * @param line_index The line index to activate.
+     */
     void ActivateSidebarLine(int id, int line_index);
     // Adjusts sidebar `id`'s scroll_offset so its cursor stays visible
     // within `visible_lines` rows, and clamps it back in range if the
@@ -3130,12 +4802,22 @@ public:
     // UpdateScrollForPane's contract exactly, just without that one's
     // fold/wrap/org-image slot-counting: every sidebar row is exactly one
     // line tall, so plain index arithmetic is enough.
+    /**
+     * @brief Adjusts a sidebar's scroll offset so its cursor stays visible within a given viewport height, clamping it if content shrank.
+     * @param id The id of the sidebar to update.
+     * @param visible_lines The sidebar's currently rendered height, in lines.
+     */
     void UpdateScrollForSidebar(int id, int visible_lines);
     // Absolute cell-count resize (border-drag's own per-frame update) --
     // the mouse-driven sibling of ResizeActivePane's Mode::Sidebar branch,
     // which only ever nudges by a fixed step. Clamped to the same minimum
     // that branch's own local kSidebarMinSize enforces (kept as a literal
     // here rather than a shared constant -- see this .cpp's own comment).
+    /**
+     * @brief Sets a sidebar's fixed size to an absolute cell count, for mouse border-drag resizing.
+     * @param id The id of the sidebar to resize.
+     * @param size The desired size in cells, clamped to a minimum.
+     */
     void SetSidebarSize(int id, int size);
 
     // --- Fuzzy picker (NVIM_PARITY_PLAN.md Part I Phase 8) ---
@@ -3167,9 +4849,22 @@ public:
     // literally appear in the matched line. Static sources (find_files,
     // buffers, commands, ...) leave this false and keep today's
     // client-side fuzzy filtering exactly as before.
+    /**
+     * @brief Opens the fuzzy picker overlay over a list of items, taking over input until an item is chosen or cancelled.
+     * @param title The picker's title text.
+     * @param items The initial (possibly later replaced via SetPickerItems) item list.
+     * @param on_select_ref Lua ref invoked with the chosen item's `data` string on Enter, or no args on Escape; unrefed either way.
+     * @param on_query_change_ref Lua ref (may be 0/none) invoked on every query edit, for a dynamic source to re-search.
+     * @param on_key_ref Lua ref (may be 0/none) invoked with a 1-char string on Ctrl+<letter> for a picker-specific shortcut.
+     * @param on_select_change_ref Lua ref (may be 0/none) invoked with the newly-highlighted item's `data` string whenever the effective selection changes.
+     * @param raw_results Whether to show `picker_items_` exactly as provided, skipping the client-side fuzzy re-filter.
+     */
     void OpenPicker(const std::string &title, std::vector<PickerItem> items, int on_select_ref,
                      int on_query_change_ref, int on_key_ref = 0, int on_select_change_ref = 0,
                      bool raw_results = false);
+    /**
+     * @brief Closes the picker overlay, leaving its registered Lua callback refs for the caller to invoke/unref.
+     */
     void ClosePicker();
     // Unlike bare ClosePicker() (which only flips picker_open_/mode_,
     // leaving ref cleanup to the caller -- HandlePickerInput's Escape/Enter
@@ -3177,16 +4872,43 @@ public:
     // invoke on_select_ref first), this also unrefs all of the picker's
     // registered Lua callbacks. For callers like mep.picker_close() that
     // just want the picker gone without running any of them.
+    /**
+     * @brief Closes the picker overlay and unrefs all of its registered Lua callbacks without invoking any of them.
+     */
     void ClosePickerDiscardingCallbacks();
+    /**
+     * @brief Replaces the open picker's item list, for a dynamic source streaming in results.
+     * @param items The new item list.
+     */
     void SetPickerItems(std::vector<PickerItem> items);
+    /**
+     * @brief Reports whether the picker overlay is currently open.
+     * @return True if the picker is open.
+     */
     bool IsPickerOpen() const { return picker_open_; }
+    /**
+     * @brief Returns the open picker's title text.
+     * @return The picker title.
+     */
     const std::string &PickerTitle() const { return picker_title_; }
+    /**
+     * @brief Returns the open picker's current query text.
+     * @return The picker query.
+     */
     const std::string &PickerQuery() const { return picker_query_; }
+    /**
+     * @brief Returns the open picker's currently highlighted result index.
+     * @return The selected index.
+     */
     int PickerSelected() const { return picker_selected_; }
     // Recomputed on demand (not cached) from the current query -- items
     // scoring < 0 (no match) are dropped, the rest sorted by score desc.
     // Returns `picker_items_` verbatim, unfiltered/unsorted, when the
     // picker was opened with raw_results (see OpenPicker above).
+    /**
+     * @brief Recomputes the picker's items filtered and sorted by fuzzy match score against the current query.
+     * @return The filtered, score-sorted items, or `picker_items_` verbatim when opened with raw_results.
+     */
     std::vector<PickerItem> PickerFilteredResults() const;
 
     // --- Picker preview pane (NVIM_PARITY_PLAN.md Phase 8 gap, closed) ---
@@ -3196,12 +4918,34 @@ public:
     // DrawPickerOverlay only draws that column, and only widens the box
     // for it, when this is non-empty. Cleared on every OpenPicker() so a
     // *later* unrelated picker doesn't inherit a stale preview from
-    // whatever was open before it.
-    void SetPickerPreview(const std::string &text) {
+    // whatever was open before it. `spans` is optional Treesitter-backed
+    // syntax highlighting over the preview text (PickerHlSpan above,
+    // `row` indexing SplitLines(text)) -- defaults empty for every
+    // existing plain-text preview source.
+    /**
+     * @brief Sets the text (and optional syntax highlight spans) shown in the picker's preview column, resetting its scroll.
+     * @param text The preview text to show.
+     * @param spans Optional Treesitter-backed highlight spans over the preview text.
+     */
+    void SetPickerPreview(const std::string &text, std::vector<PickerHlSpan> spans = {}) {
         picker_preview_text_ = text;
+        picker_preview_spans_ = std::move(spans);
         picker_preview_scroll_ = 0;
     }
+    /**
+     * @brief Returns the picker's current preview text.
+     * @return The preview text, empty if no preview is set.
+     */
     const std::string &PickerPreview() const { return picker_preview_text_; }
+    /**
+     * @brief Returns the picker preview's syntax highlight spans.
+     * @return The preview's highlight spans.
+     */
+    const std::vector<PickerHlSpan> &PickerPreviewSpans() const { return picker_preview_spans_; }
+    /**
+     * @brief Returns the picker preview column's current scroll offset.
+     * @return The preview scroll offset.
+     */
     int PickerPreviewScroll() const { return picker_preview_scroll_; }
 
     // --- Roam backlink-graph view (NVIM_PARITY_PLAN.md Phase 37's flagged
@@ -3214,17 +4958,51 @@ public:
     // on_select, is called with the chosen node's `path` on Enter, or with
     // no argument on Escape (mirrors mep.picker_open's nil-on-cancel
     // convention) -- then unref'd either way by HandleRoamGraphInput.
+    /**
+     * @brief Opens the roam backlink-graph overlay, laying out nodes into concentric hop-rings around the anchor note.
+     * @param title The graph view's title text.
+     * @param nodes The graph's nodes; nodes[0] must be the note the view was opened on (hop 0).
+     * @param edges The graph's edges between nodes.
+     * @param on_select_ref Lua ref invoked with the chosen node's `path` on Enter, or no args on Escape; unrefed either way.
+     */
     void OpenRoamGraph(const std::string &title, std::vector<RoamGraphNode> nodes,
                         std::vector<RoamGraphEdge> edges, int on_select_ref);
     // Unlike bare mode restore, this also unrefs on_select_ref without
     // calling it -- for mep.roam_graph_close() wanting the view gone with
     // no callback fired (mirrors ClosePickerDiscardingCallbacks).
+    /**
+     * @brief Closes the roam graph overlay and unrefs its on_select callback without invoking it.
+     */
     void CloseRoamGraphDiscardingCallback();
+    /**
+     * @brief Reports whether the roam graph overlay is currently open.
+     * @return True if the roam graph is open.
+     */
     bool IsRoamGraphOpen() const { return roam_graph_open_; }
+    /**
+     * @brief Returns the open roam graph's title text.
+     * @return The graph title.
+     */
     const std::string &RoamGraphTitle() const { return roam_graph_title_; }
+    /**
+     * @brief Returns the open roam graph's nodes.
+     * @return The graph nodes.
+     */
     const std::vector<RoamGraphNode> &RoamGraphNodes() const { return roam_graph_nodes_; }
+    /**
+     * @brief Returns the open roam graph's edges.
+     * @return The graph edges.
+     */
     const std::vector<RoamGraphEdge> &RoamGraphEdges() const { return roam_graph_edges_; }
+    /**
+     * @brief Returns the roam graph's current fuzzy-filter query text.
+     * @return The graph query.
+     */
     const std::string &RoamGraphQuery() const { return roam_graph_query_; }
+    /**
+     * @brief Returns the roam graph's currently selected node index.
+     * @return The selected node index.
+     */
     int RoamGraphSelected() const { return roam_graph_selected_; }
     // Indices into RoamGraphNodes() that currently match the fuzzy filter
     // (FuzzyScore against each node's title, reusing Phase 8's scorer --
@@ -3237,18 +5015,43 @@ public:
     // keystroke -- the "narrows which nodes are... highlighted" half of
     // the plan's requirement, not the "shown" half, a deliberate choice
     // documented in NVIM_PARITY_PLAN.md.
+    /**
+     * @brief Returns the indices of roam graph nodes currently matching the fuzzy query, for dimming the rest without reflowing the ring layout.
+     * @return The matching node indices; node 0 (the anchor) always matches, and an empty query matches every node.
+     */
     std::vector<int> RoamGraphFilteredIndices() const;
 
     // --- Whichkey (NVIM_PARITY_PLAN.md Part II Phase 11) ---
+    /**
+     * @brief Sets which key acts as the leader for which-key leader sequences.
+     * @param key The new leader key.
+     */
     void SetLeaderKey(char key) { leader_key_ = key; }
+    /**
+     * @brief Registers a leader-key sequence bound to a Lua callback, for the which-key overlay.
+     * @param sequence The key sequence following the leader key.
+     * @param description Human-readable description shown in the which-key overlay.
+     * @param lua_ref The Lua registry reference to invoke when the sequence is completed.
+     */
     void RegisterWhichKey(const std::string &sequence, const std::string &description, int lua_ref);
     // Enters Mode::WhichKey with an empty prefix -- called when the leader
     // key is pressed in Normal mode (see the char-dispatch loop).
+    /**
+     * @brief Enters Mode::WhichKey with an empty prefix, opening the which-key overlay.
+     */
     void TriggerWhichKey();
+    /**
+     * @brief Returns the which-key overlay's currently typed prefix.
+     * @return The current prefix text.
+     */
     const std::string &WhichKeyPrefix() const { return whichkey_prefix_; }
     // Bindings whose sequence starts with the current prefix, each paired
     // with the sequence's remainder (what's still left to type) -- the raw
     // leaf list HandleWhichKeyInput's exact-match/dead-end checks use.
+    /**
+     * @brief Returns every registered which-key binding whose sequence starts with the current prefix, paired with its remaining text.
+     * @return The matching sequence/remainder pairs.
+     */
     std::vector<std::pair<std::string, std::string>> WhichKeyMatches() const;
     // mep.leader_group(prefix, label): names a group of bindings that
     // share `prefix` (e.g. "o" -> "org") so DrawWhichKeyOverlay can show
@@ -3256,6 +5059,11 @@ public:
     // out in full -- real which-key.nvim requires the same explicit
     // per-group naming (there's no reliable way to auto-derive "org" from
     // a mix of "Org: ..."/"Org-roam: ..." descriptions in general).
+    /**
+     * @brief Names a group of which-key bindings sharing a prefix, so the overlay can show one collapsed row for them.
+     * @param prefix The shared key sequence prefix.
+     * @param label The group's display label.
+     */
     void RegisterWhichKeyGroup(const std::string &prefix, const std::string &label) { whichkey_groups_[prefix] = label; }
     // What DrawWhichKeyOverlay actually lists: WhichKeyMatches() bucketed
     // by their next character, collapsed to one "+label" row per bucket
@@ -3264,12 +5072,20 @@ public:
     // falls through to listing its own leaf/leaves exactly as before, so
     // an unnamed group degrades to today's flat behavior rather than
     // hiding anything.
+    /**
+     * @brief Buckets the current which-key matches by their next character, collapsing labeled multi-leaf buckets into a single "+label" row.
+     * @return The display rows to render in the which-key overlay.
+     */
     std::vector<std::pair<std::string, std::string>> WhichKeyDisplayEntries() const;
     // Every registered leader-sequence binding, unfiltered by any typed
     // prefix -- the leader-sequence half of the keybinding-introspection
     // picker (mep.leader_bindings(), NVIM_PARITY_PLAN.md Phase 25), the
     // other half being AllMappingDescriptions() (above) for plain
     // mep.map() bindings.
+    /**
+     * @brief Returns every registered leader-sequence binding, unfiltered by any typed prefix.
+     * @return All which-key bindings.
+     */
     std::vector<WhichKeyBinding> AllWhichKeyBindings() const { return whichkey_bindings_; }
 
     // --- Dashboard/scratch/zen (NVIM_PARITY_PLAN.md Part III Phase 12) ---
@@ -3394,6 +5210,24 @@ public:
     // false leaves Tab a no-op, same as before this hook existed, since
     // Insert mode has no other built-in Tab behavior to fall back to.
     void SetInsertTabHookRef(int lua_ref) { insert_tab_hook_ref_ = lua_ref; }
+
+    // mep.buffer_set_on_enter(buffer_id, fn): fn() called instead of
+    // whatever bare Enter/KP_Enter already does in Normal mode -- nothing,
+    // today; unlike Insert mode's CR this editor has never bound Normal
+    // mode's own Enter to a motion the way real Vim's "+"/CR is, so
+    // intercepting it here doesn't take anything away -- whenever the
+    // active pane's buffer is `buffer_id`. Single-slot, last-registration-
+    // wins, same scope cut as SetCompletionSourceRef/SetSidebarOnKey above:
+    // one buffer needs this at a time, not a general per-buffer registry.
+    // kBuiltinStructure's structure-split pane (main.cpp) is the first
+    // caller -- lets <CR> jump to the entry under the cursor there the
+    // same way ActivateSidebarLine already does for the full-sidebar
+    // version (HandleSidebarInput), instead of requiring <leader>aa to be
+    // pressed a second time from inside the pane.
+    void SetBufferOnEnter(int buffer_id, int lua_ref) {
+        enter_hook_buffer_id_ = buffer_id;
+        enter_hook_ref_ = lua_ref;
+    }
 
     // --- Command-line completion (`:` command bar) -----------------------
     // Same Tab/Ctrl-N/Ctrl-P/Enter/Escape shape as the Insert-mode popup
@@ -4556,6 +6390,7 @@ private:
     int picker_on_select_change_ref_ = 0;
     bool picker_raw_results_ = false;
     std::string picker_preview_text_;
+    std::vector<PickerHlSpan> picker_preview_spans_;
     // First preview line drawn (mod1+j/k, see HandleMod1Shortcuts) --
     // reset to 0 by SetPickerPreview so switching the highlighted result
     // doesn't leave a later item's preview scrolled to wherever the
@@ -4594,6 +6429,9 @@ private:
     int completion_accept_hook_ref_ = 0;
     int completion_resolve_hook_ref_ = 0;
     int insert_tab_hook_ref_ = 0;
+    // See SetBufferOnEnter's own comment above.
+    int enter_hook_buffer_id_ = -1;
+    int enter_hook_ref_ = 0;
     bool completion_open_ = false;
     std::vector<CompletionCandidate> completion_items_;
     int completion_selected_ = 0;

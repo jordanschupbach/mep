@@ -4,6 +4,10 @@
 #include <cassert>
 #include <iostream>
 
+/**
+ * @brief Exercises TextCrdt convergence between two replicas (concurrent inserts, a delete, and snapshot/restore round-trip), asserting their text stays in sync.
+ * @return 0 on success (assertion failures abort the process)
+ */
 int main() {
     mep::collab::TextCrdt a("alice"), b("bob");
     const auto hello = a.Insert(0, "hello"); b.Apply(hello);

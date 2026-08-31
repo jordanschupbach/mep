@@ -46,6 +46,13 @@ namespace {
 
 // Always active regardless of NDEBUG -- see the file-level comment above
 // for why plain assert() is the wrong tool here.
+/**
+ * @brief Prints a CHECK-failure message (with file/line and optional context) to stderr and aborts the process.
+ * @param expr The source text of the failed condition.
+ * @param file The source file the check ran in.
+ * @param line The source line the check ran on.
+ * @param context Extra diagnostic text to print, or "" to omit it.
+ */
 void CheckFailed(const char *expr, const char *file, int line, const std::string &context) {
     std::fprintf(stderr, "CHECK FAILED: %s at %s:%d\n", expr, file, line);
     if (!context.empty()) std::fprintf(stderr, "  context: %s\n", context.c_str());
@@ -55,6 +62,11 @@ void CheckFailed(const char *expr, const char *file, int line, const std::string
 #define CHECK(cond) ((cond) ? (void)0 : CheckFailed(#cond, __FILE__, __LINE__, ""))
 #define CHECK_CTX(cond, context) ((cond) ? (void)0 : CheckFailed(#cond, __FILE__, __LINE__, (context)))
 
+/**
+ * @brief Opens a single Unix-domain stream socket and connects it to the given path.
+ * @param path The Unix socket path to connect to.
+ * @return The connected socket's file descriptor, or -1 on failure (socket creation or connect).
+ */
 int ConnectOnce(const std::string &path) {
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) return -1;
@@ -81,6 +93,16 @@ int ConnectOnce(const std::string &path) {
 // strictly synchronous, one-outstanding-request-at-a-time protocol, so an
 // id mismatch on an actual response means something is genuinely wrong
 // with the connection state, not something to silently paper over.
+/**
+ * @brief Sends one framed JSON-RPC request over `fd` and blocks until its matching response arrives, skipping over any interleaved event.* notifications along the way.
+ * @param fd The connected socket to send the request on and read the response from.
+ * @param id The request id; the eventual response must echo this id.
+ * @param method The JSON-RPC method name to call.
+ * @param params The method's parameters.
+ * @param read_buf This connection's accumulated-but-not-yet-framed read buffer, reused/extended across calls.
+ * @param events_out If non-null, every event.* notification seen while waiting is appended here.
+ * @return The parsed JSON-RPC response matching `id`.
+ */
 Json Call(int fd, int id, const std::string &method, const Json &params, std::string *read_buf, std::vector<Json> *events_out = nullptr) {
     Json req = Json::Object();
     req["jsonrpc"] = Json("2.0");
@@ -135,6 +157,13 @@ Json Call(int fd, int id, const std::string &method, const Json &params, std::st
 // event.paneFocusChanged from `:terminal`, with a clear CHECK failure
 // (not a crash -- exactly what CHECK/CHECK_CTX are for) rather than a
 // silent pass.
+/**
+ * @brief Polls `fd` with a timeout, collecting every server-pushed event.* notification that arrives shortly after, until nothing more shows up within `timeout_ms`.
+ * @param fd The connected socket to read from.
+ * @param read_buf This connection's accumulated-but-not-yet-framed read buffer, reused/extended across calls.
+ * @param events_out Every notification found is appended here.
+ * @param timeout_ms How long to wait (in milliseconds) for each next message before giving up.
+ */
 void DrainEvents(int fd, std::string *read_buf, std::vector<Json> *events_out, int timeout_ms = 500) {
     pollfd pfd{fd, POLLIN, 0};
     for (;;) {
@@ -157,6 +186,12 @@ void DrainEvents(int fd, std::string *read_buf, std::vector<Json> *events_out, i
 
 }  // namespace
 
+/**
+ * @brief End-to-end test entry point: spawns a real mep instance, drives its agent-control socket through cursor/buffer/pane/state/participant-cursor/status RPCs plus the M3 event stream, then asks it to quit and verifies clean exit and socket cleanup.
+ * @param argc Argument count; must be 2.
+ * @param argv Argument vector; argv[1] is the path to the mep binary to spawn.
+ * @return 2 on bad usage; otherwise the process aborts via CHECK on any failure, or prints a success message and returns 0 (falls off the end of main).
+ */
 int main(int argc, char **argv) {
     if (argc != 2) {
         std::fprintf(stderr, "usage: mep-agent-rpc-test /path/to/mep\n");
@@ -254,10 +289,22 @@ int main(int argc, char **argv) {
     // else, so mode_ never has a net change across one PollOnce for that
     // command. `:terminal` does persist a real mode change (Terminal mode
     // stays active until the pane is closed), so it's used here instead.
+    /**
+     * @brief Checks whether any event in a list has the given method name.
+     * @param events The events to search.
+     * @param method The event.* method name to look for.
+     * @return true if some event's "method" equals `method`.
+     */
     auto has_event = [](const std::vector<Json> &events, const std::string &method) {
         for (const Json &e : events) if (e.get("method").as_string() == method) return true;
         return false;
     };
+    /**
+     * @brief Finds the first event in a list with the given method name.
+     * @param events The events to search.
+     * @param method The event.* method name to look for.
+     * @return A pointer to the first matching event, or nullptr if none match.
+     */
     auto find_event = [](const std::vector<Json> &events, const std::string &method) -> const Json * {
         for (const Json &e : events)
             if (e.get("method").as_string() == method) return &e;
@@ -265,6 +312,7 @@ int main(int argc, char **argv) {
     };
 
     std::vector<Json> term_events;
+    // Builds {cmd: "terminal"} inline as this call's params.
     Call(fd, 12, "command.run", [] { Json p = Json::Object(); p["cmd"] = "terminal"; return p; }(), &read_buf, &term_events);
     DrainEvents(fd, &read_buf, &term_events);
     CHECK_CTX(has_event(term_events, "event.paneFocusChanged"), "opening :terminal should push a pane focus change");
@@ -273,6 +321,7 @@ int main(int argc, char **argv) {
     CHECK_CTX(mode_ev->get("params").get("mode").as_string() == "TERMINAL", "mode=[" + mode_ev->get("params").get("mode").as_string() + "]");
 
     std::vector<Json> close_events;
+    // Builds {cmd: "close"} inline as this call's params.
     Call(fd, 13, "command.run", [] { Json p = Json::Object(); p["cmd"] = "close"; return p; }(), &read_buf, &close_events);
     DrainEvents(fd, &read_buf, &close_events);
     const Json *back_to_normal = find_event(close_events, "event.modeChanged");
@@ -280,6 +329,7 @@ int main(int argc, char **argv) {
               "closing the terminal pane should push a mode change back to NORMAL");
 
     std::vector<Json> notify_events;
+    // Builds {cmd: "lua mep.notify(...)"} inline as this call's params.
     Call(fd, 14, "command.run",
          [] { Json p = Json::Object(); p["cmd"] = "lua mep.notify('m3 test notification', 'warn')"; return p; }(), &read_buf, &notify_events);
     DrainEvents(fd, &read_buf, &notify_events);
@@ -300,6 +350,7 @@ int main(int argc, char **argv) {
     // produces at least one event regardless of whatever state earlier
     // steps left the cursor/mode in.
     std::vector<Json> actor_events;
+    // Builds {text: "watcher-test"} inline as this call's params.
     Call(fd, 15, "buffer.insertText", [] { Json p = Json::Object(); p["text"] = "watcher-test"; return p; }(), &read_buf, &actor_events);
     std::vector<Json> watcher_events;
     std::string watcher_buf;
@@ -316,8 +367,10 @@ int main(int argc, char **argv) {
     CHECK(fd2 >= 0);
     std::string read_buf2;
 
+    // Builds {name: "Agent A"} inline as this call's params.
     Json ident_a = Call(fd, 16, "session.identify", [] { Json p = Json::Object(); p["name"] = "Agent A"; return p; }(), &read_buf);
     CHECK(ident_a.get("result").get("participant_id").as_string() != "");
+    // Builds {name: "Agent B"} inline as this call's params.
     Json ident_b = Call(fd2, 16, "session.identify", [] { Json p = Json::Object(); p["name"] = "Agent B"; return p; }(), &read_buf2);
     CHECK(ident_b.get("result").get("participant_id").as_string() != ident_a.get("result").get("participant_id").as_string());
 
@@ -330,8 +383,10 @@ int main(int argc, char **argv) {
     set_a["row"] = 0;
     set_a["col"] = 0;
     Call(fd, 18, "cursor.set", set_a, &read_buf);
+    // Builds {text: "AAAA"} inline as this call's params.
     Call(fd, 19, "buffer.insertText", [] { Json p = Json::Object(); p["text"] = "AAAA"; return p; }(), &read_buf);
     Call(fd2, 17, "cursor.set", set_a, &read_buf2);  // same target position, independent connection
+    // Builds {text: "BBBB"} inline as this call's params.
     Call(fd2, 18, "buffer.insertText", [] { Json p = Json::Object(); p["text"] = "BBBB"; return p; }(), &read_buf2);
 
     const Json cursor_a = Call(fd, 20, "cursor.get", Json::Object(), &read_buf);
@@ -365,6 +420,7 @@ int main(int argc, char **argv) {
     const int fd3 = ConnectOnce(socket_path);
     CHECK(fd3 >= 0);
     std::string read_buf3;
+    // Builds {name: "Agent C"} inline as this call's params.
     Json ident_c = Call(fd3, 1, "session.identify", [] { Json p = Json::Object(); p["name"] = "Agent C"; return p; }(), &read_buf3);
     CHECK(ident_c.get("result").get("participant_id").as_string() != "");
     const Json cursor_c = Call(fd3, 2, "cursor.get", Json::Object(), &read_buf3);
@@ -382,6 +438,7 @@ int main(int argc, char **argv) {
     // Once the agent makes a real edit, EnsureConnCursorInitialized is a
     // no-op (cursor_buffer_id is already set) -- its cursor should track
     // that edit location from then on, not keep resetting to the readme.
+    // Builds {text: "agent C was here"} inline as this call's params.
     Call(fd3, 4, "buffer.insertText", [] { Json p = Json::Object(); p["text"] = "agent C was here"; return p; }(), &read_buf3);
     const Json cursor_c_after_edit = Call(fd3, 5, "cursor.get", Json::Object(), &read_buf3);
     CHECK_CTX(cursor_c_after_edit.get("result").get("col").as_int() == 16,
@@ -396,6 +453,11 @@ int main(int argc, char **argv) {
     // way to observe "thinking" or "awaiting_input" from RPC traffic
     // alone.
     const std::string agent_c_id = ident_c.get("result").get("participant_id").as_string();
+    /**
+     * @brief Looks up agent C's reported status within a session.listParticipants response.
+     * @param list_result The full JSON-RPC response from a session.listParticipants call.
+     * @return Agent C's "status" field, or "<not found>" if it isn't present in the result.
+     */
     auto find_participant_status = [&](const Json &list_result) -> std::string {
         for (const Json &p : list_result.get("result").items()) {
             if (p.get("id").as_string() == agent_c_id) return p.get("status").as_string();
@@ -407,12 +469,15 @@ int main(int argc, char **argv) {
     CHECK_CTX(find_participant_status(participants_after_write) == "writing",
               "buffer.insertText should auto-set status to \"writing\", got=[" + find_participant_status(participants_after_write) + "]");
 
+    // Builds {status: "thinking"} inline as this call's params.
     Call(fd3, 7, "session.setStatus", [] { Json p = Json::Object(); p["status"] = "thinking"; return p; }(), &read_buf3);
     const Json participants_after_thinking = Call(fd3, 8, "session.listParticipants", Json::Object(), &read_buf3);
     CHECK_CTX(find_participant_status(participants_after_thinking) == "thinking",
               "explicit session.setStatus(\"thinking\") should override the earlier auto-\"writing\" status");
 
+    // Builds {status: "awaiting_input"} inline as this call's params.
     Call(fd3, 9, "session.setStatus", [] { Json p = Json::Object(); p["status"] = "awaiting_input"; return p; }(), &read_buf3);
+    // Builds {status: "done"} inline as this call's params.
     Json set_done_resp = Call(fd3, 10, "session.setStatus", [] { Json p = Json::Object(); p["status"] = "done"; return p; }(), &read_buf3);
     CHECK(set_done_resp.contains("result"));
     const Json participants_after_done = Call(fd3, 11, "session.listParticipants", Json::Object(), &read_buf3);

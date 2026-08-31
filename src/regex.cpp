@@ -14,6 +14,12 @@ namespace {
 // truncated sequences decode as a single raw byte (never throws, never
 // under-advances) so a regex over slightly-malformed UTF-8 still
 // terminates instead of looping.
+/**
+ * @brief Decodes one UTF-8 codepoint from `s` starting at `pos`, advancing `pos` past it.
+ * @param s The UTF-8-encoded string to decode from.
+ * @param pos The byte offset to start decoding at; updated in place to the offset just past the decoded codepoint (or past one raw byte on invalid input).
+ * @return The decoded codepoint, or the raw byte value if the sequence is invalid or truncated.
+ */
 int32_t DecodeUtf8(const std::string &s, size_t &pos) {
     unsigned char c = s[pos];
     int len = 1;
@@ -54,6 +60,11 @@ int32_t DecodeUtf8(const std::string &s, size_t &pos) {
 // copies substrings of the original UTF-8 text, never re-encodes a bare
 // codepoint) -- kept as the natural counterpart to DecodeUtf8 above for
 // future consumers (e.g. a \u case-conversion replacement escape).
+/**
+ * @brief Appends the UTF-8 encoding of a single codepoint to `out`.
+ * @param cp The codepoint to encode.
+ * @param out The string to append the encoded bytes to.
+ */
 [[maybe_unused]] void EncodeUtf8(int32_t cp, std::string *out) {
     if (cp < 0x80) {
         out->push_back(static_cast<char>(cp));
@@ -72,6 +83,11 @@ int32_t DecodeUtf8(const std::string &s, size_t &pos) {
     }
 }
 
+/**
+ * @brief Case-folds a codepoint to lowercase, ASCII-only.
+ * @param cp The codepoint to fold.
+ * @return `cp` with ASCII uppercase letters mapped to lowercase; any other codepoint unchanged.
+ */
 int32_t FoldCase(int32_t cp) {
     // ASCII-only case folding -- matches this codebase's existing
     // ASCII-only assumption elsewhere (e.g. DispatchNormalKey's register
@@ -81,10 +97,25 @@ int32_t FoldCase(int32_t cp) {
     return cp;
 }
 
+/**
+ * @brief Checks whether a codepoint is a "word" character (regex \w semantics).
+ * @param cp The codepoint to test.
+ * @return True if `cp` is an ASCII letter, digit, or underscore.
+ */
 bool IsWordChar(int32_t cp) {
     return (cp >= 'a' && cp <= 'z') || (cp >= 'A' && cp <= 'Z') || (cp >= '0' && cp <= '9') || cp == '_';
 }
+/**
+ * @brief Checks whether a codepoint is an ASCII digit.
+ * @param cp The codepoint to test.
+ * @return True if `cp` is in the range '0'-'9'.
+ */
 bool IsDigitChar(int32_t cp) { return cp >= '0' && cp <= '9'; }
+/**
+ * @brief Checks whether a codepoint is a whitespace character (regex \s semantics).
+ * @param cp The codepoint to test.
+ * @return True if `cp` is space, tab, newline, carriage return, form feed, or vertical tab.
+ */
 bool IsSpaceChar(int32_t cp) {
     return cp == ' ' || cp == '\t' || cp == '\n' || cp == '\r' || cp == '\f' || cp == '\v';
 }
@@ -137,8 +168,19 @@ namespace {
 
 class Parser {
 public:
+    /**
+     * @brief Constructs a Parser over `pattern`.
+     * @param pattern The regex pattern text to parse.
+     * @param ignore_case Whether literals should be case-folded as they're parsed.
+     */
     Parser(const std::string &pattern, bool ignore_case) : p_(pattern), ignore_case_(ignore_case) {}
 
+    /**
+     * @brief Parses the full pattern into an AST.
+     * @param group_count Set to the number of capturing groups found.
+     * @param error Set to a human-readable message if parsing fails.
+     * @return The root AST node, or nullptr if parsing failed.
+     */
     std::unique_ptr<Node> Parse(int *group_count, std::string *error) {
         auto node = ParseAlternation();
         if (!error_.empty()) {
@@ -160,9 +202,26 @@ private:
     int next_group_ = 1;
     std::string error_;
 
+    /**
+     * @brief Checks whether the parser has consumed the entire pattern.
+     * @return True if there is no more input to parse.
+     */
     bool Eof() const { return pos_ >= p_.size(); }
+    /**
+     * @brief Looks at the next unconsumed character without advancing.
+     * @return The next character, or '\0' at end of input.
+     */
     char Peek() const { return Eof() ? '\0' : p_[pos_]; }
+    /**
+     * @brief Consumes and returns the next character.
+     * @return The character that was consumed.
+     */
     char Get() { return p_[pos_++]; }
+    /**
+     * @brief Consumes the next character if it equals `c`.
+     * @param c The character to match and consume.
+     * @return True if `c` was matched and consumed, false if the next character didn't match.
+     */
     bool Consume(char c) {
         if (Peek() == c) {
             pos_++;
@@ -170,10 +229,19 @@ private:
         }
         return false;
     }
+    /**
+     * @brief Records a parse error, keeping only the first one reported.
+     * @param msg The error message to record.
+     */
     void Fail(const std::string &msg) {
         if (error_.empty()) error_ = msg + " (at position " + std::to_string(pos_) + ")";
     }
 
+    /**
+     * @brief Builds a Concat AST node from a list of already-parsed parts, collapsing a single part to itself.
+     * @param parts The child nodes to concatenate, in order.
+     * @return `parts[0]` directly if there is exactly one part, otherwise a new Concat node wrapping all of them.
+     */
     std::unique_ptr<Node> MakeConcat(std::vector<std::unique_ptr<Node>> parts) {
         if (parts.size() == 1) return std::move(parts[0]);
         auto n = std::make_unique<Node>();
@@ -182,6 +250,10 @@ private:
         return n;
     }
 
+    /**
+     * @brief Parses a `|`-separated sequence of concatenations.
+     * @return The parsed alternation, collapsed to a single branch's node if there was only one.
+     */
     std::unique_ptr<Node> ParseAlternation() {
         std::vector<std::unique_ptr<Node>> alts;
         alts.push_back(ParseConcat());
@@ -195,6 +267,10 @@ private:
         return n;
     }
 
+    /**
+     * @brief Parses a sequence of repeat-atoms until `|`, `)`, or end of pattern.
+     * @return The concatenation of the parsed atoms (an empty Concat node for an empty alternative, e.g. the middle of "a||b").
+     */
     std::unique_ptr<Node> ParseConcat() {
         std::vector<std::unique_ptr<Node>> parts;
         while (!Eof() && Peek() != '|' && Peek() != ')' && error_.empty()) {
@@ -208,6 +284,10 @@ private:
         return MakeConcat(std::move(parts));
     }
 
+    /**
+     * @brief Parses one atom followed by an optional `*`, `+`, `?`, or `{n,m}` repetition suffix.
+     * @return The atom itself if unrepeated, or a Star/Plus/Quest/Repeat node wrapping it.
+     */
     std::unique_ptr<Node> ParseRepeat() {
         auto atom = ParseAtom();
         if (!error_.empty() || Eof()) return atom;
@@ -258,6 +338,10 @@ private:
         return atom;
     }
 
+    /**
+     * @brief Parses a single regex atom: a group, `.`, anchor, character class, escape, or literal character.
+     * @return The parsed atom node.
+     */
     std::unique_ptr<Node> ParseAtom() {
         if (Eof()) {
             Fail("unexpected end of pattern");
@@ -339,6 +423,11 @@ private:
         return LiteralNode(cp);
     }
 
+    /**
+     * @brief Builds a Literal AST node for one codepoint, case-folding it if the parser is case-insensitive.
+     * @param cp The literal codepoint to wrap.
+     * @return A new Literal node.
+     */
     std::unique_ptr<Node> LiteralNode(int32_t cp) {
         auto n = std::make_unique<Node>();
         n->kind = Kind::Literal;
@@ -346,6 +435,10 @@ private:
         return n;
     }
 
+    /**
+     * @brief Parses a `[...]` character class, including negation, ranges, and \d/\w/\s shorthands.
+     * @return The parsed CharClass node.
+     */
     std::unique_ptr<Node> ParseCharClass() {
         pos_++;  // '['
         auto n = std::make_unique<Node>();
@@ -412,6 +505,12 @@ private:
 // propagates back through the call stack, not just a single boolean.
 class Matcher {
 public:
+    /**
+     * @brief Constructs a Matcher that will attempt matches against `text`.
+     * @param text The subject string to match against (kept by reference; must outlive the Matcher).
+     * @param ignore_case Whether matching should fold ASCII letter case.
+     * @param group_count The number of capture groups to allocate slots for (plus the implicit whole-match group 0).
+     */
     Matcher(const std::string &text, bool ignore_case, int group_count)
         : text_(text), ignore_case_(ignore_case) {
         groups_.assign(group_count + 1, {-1, -1});
@@ -420,8 +519,15 @@ public:
     // Tries to match starting exactly at `start`. On success, groups_[0]
     // is set to {start, end} and groups_ holds every captured group;
     // returns the end offset, or -1 on failure.
+    /**
+     * @brief Attempts to match the whole AST starting exactly at byte offset `start`.
+     * @param root The AST root to match.
+     * @param start The byte offset to attempt the match at.
+     * @return The end offset of the match (and sets groups_[0]), or -1 if no match starts there.
+     */
     int MatchAt(const Node *root, int start) {
         int result = -1;
+        // Continuation: record the match's end offset now that it's known.
         Match(root, start, [&](int end) {
             result = end;
             return true;
@@ -430,6 +536,10 @@ public:
         return result;
     }
 
+    /**
+     * @brief Accesses the capture groups from the most recent successful match.
+     * @return A mutable reference to the vector of {start,end} group spans, indexed by group number (0 = whole match).
+     */
     std::vector<std::pair<int, int>> &groups() { return groups_; }
 
 private:
@@ -439,6 +549,12 @@ private:
 
     using Cont = std::function<bool(int)>;
 
+    /**
+     * @brief Decodes the codepoint at `pos`, case-folding it if the matcher is case-insensitive.
+     * @param pos The byte offset to decode at.
+     * @param next Set to the byte offset just past the decoded codepoint.
+     * @return The decoded (and possibly case-folded) codepoint.
+     */
     int32_t CodepointAt(int pos, int *next) const {
         size_t p = static_cast<size_t>(pos);
         int32_t cp = DecodeUtf8(text_, p);
@@ -446,6 +562,12 @@ private:
         return ignore_case_ ? FoldCase(cp) : cp;
     }
 
+    /**
+     * @brief Checks whether a codepoint satisfies a CharClass node's items, honoring negation.
+     * @param n The CharClass AST node to test against.
+     * @param cp The codepoint to test.
+     * @return True if `cp` matches the class (after applying `n->negated`).
+     */
     bool ClassMatches(const Node *n, int32_t cp) const {
         bool any = false;
         for (const ClassItem &it : n->items) {
@@ -468,6 +590,13 @@ private:
         return n->negated ? !any : any;
     }
 
+    /**
+     * @brief Recursively attempts to match one AST node at `pos`, invoking continuation `k` with the position after it on success.
+     * @param n The AST node to match.
+     * @param pos The byte offset to attempt matching at.
+     * @param k The continuation to invoke with the position after a successful match of `n`; backtracks (tries other options) if `k` returns false.
+     * @return True if `n` (and everything `k` requires afterward) matched successfully.
+     */
     bool Match(const Node *n, int pos, const Cont &k) {
         switch (n->kind) {
             case Kind::Literal: {
@@ -515,6 +644,8 @@ private:
             }
             case Kind::Group: {
                 int idx = n->group_index;
+                // Continuation: record this group's capture span, invoke the
+                // continuation, and roll back the capture if k() ultimately fails.
                 return Match(n->child.get(), pos, [&, idx](int end) {
                     std::pair<int, int> saved = idx > 0 ? groups_[idx] : std::pair<int, int>{-1, -1};
                     if (idx > 0) groups_[idx] = {pos, end};
@@ -535,10 +666,20 @@ private:
         return false;
     }
 
+    /**
+     * @brief Decodes the codepoint at `pos` without case-folding.
+     * @param pos The byte offset to decode at.
+     * @return The decoded codepoint.
+     */
     int32_t PeekCp(int pos) const {
         size_t p = static_cast<size_t>(pos);
         return DecodeUtf8(text_, p);
     }
+    /**
+     * @brief Decodes the codepoint immediately before `pos`, stepping back over UTF-8 continuation bytes.
+     * @param pos The byte offset to look before.
+     * @return The codepoint starting at or before `pos - 1`.
+     */
     int32_t PrevCp(int pos) const {
         // Step back one byte at a time until we're not mid-sequence, then
         // decode forward -- simple and adequate for boundary checks (word
@@ -550,8 +691,17 @@ private:
         return PeekCp(p);
     }
 
+    /**
+     * @brief Recursively matches a Concat node's children in order starting from index `i`.
+     * @param parts The child nodes of the Concat, in order.
+     * @param i The index of the next child to match.
+     * @param pos The byte offset to attempt matching at.
+     * @param k The continuation to invoke once all children have matched.
+     * @return True if all remaining children (and `k`) matched successfully.
+     */
     bool MatchConcat(const std::vector<std::unique_ptr<Node>> &parts, size_t i, int pos, const Cont &k) {
         if (i >= parts.size()) return k(pos);
+        // Continuation: after matching parts[i], recurse into the remaining children.
         return Match(parts[i].get(), pos, [&, i](int next) { return MatchConcat(parts, i + 1, next, k); });
     }
 
@@ -559,15 +709,41 @@ private:
     // times, greedy or lazy, via recursion: at each step, either (greedy)
     // try consuming one more repetition first and fall back to stopping,
     // or (lazy) try stopping first and fall back to consuming one more.
+    /**
+     * @brief Matches `child` repeated between `min_n` and `max_n` times (entry point for Star/Plus/Quest/Repeat).
+     * @param child The AST node to repeat.
+     * @param min_n The minimum number of repetitions required.
+     * @param max_n The maximum number of repetitions allowed, or -1 for unbounded.
+     * @param greedy Whether to prefer consuming more repetitions before falling back to stopping.
+     * @param pos The byte offset to start repeating at.
+     * @param k The continuation to invoke once repetition stops.
+     * @return True if some valid repetition count let `k` succeed.
+     */
     bool MatchRepeat(const Node *child, int min_n, int max_n, bool greedy, int pos, const Cont &k) {
         return MatchRepeatN(child, 0, min_n, max_n, greedy, pos, k);
     }
+    /**
+     * @brief Implements MatchRepeat's recursion, tracking how many repetitions of `child` have matched so far.
+     * @param child The AST node being repeated.
+     * @param count The number of repetitions matched so far.
+     * @param min_n The minimum number of repetitions required.
+     * @param max_n The maximum number of repetitions allowed, or -1 for unbounded.
+     * @param greedy Whether to try matching one more repetition before trying to stop.
+     * @param pos The byte offset to continue matching at.
+     * @param k The continuation to invoke once repetition stops.
+     * @return True if some valid continuation (further repetition or stopping) let `k` succeed.
+     */
     bool MatchRepeatN(const Node *child, int count, int min_n, int max_n, bool greedy, int pos, const Cont &k) {
         bool can_stop = count >= min_n;
         bool can_more = (max_n < 0 || count < max_n);
+        /**
+         * @brief Attempts to match one more repetition of `child`, then recurse for further repetitions; restores captured groups on failure.
+         * @return True if consuming another repetition (and everything after) succeeded.
+         */
         auto try_more = [&]() {
             if (!can_more) return false;
             auto saved = groups_;
+            // Continuation: guard against an empty match repeating forever, then recurse for the next repetition.
             bool matched = Match(child, pos, [&](int next) {
                 if (next == pos && count >= min_n) return false;  // guard: empty match can't repeat forever
                 return MatchRepeatN(child, count + 1, min_n, max_n, greedy, next, k);
@@ -575,6 +751,10 @@ private:
             if (!matched) groups_ = saved;
             return matched;
         };
+        /**
+         * @brief Attempts to stop repeating here and hand off to the continuation, if the minimum repetition count has been met.
+         * @return True if stopping here let `k` succeed.
+         */
         auto try_stop = [&]() { return can_stop && k(pos); };
         if (greedy) {
             if (try_more()) return true;

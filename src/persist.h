@@ -23,6 +23,8 @@
 // `$XDG_DATA_HOME/mep` if set, else `$HOME/.local/share/mep` on Linux,
 // `$HOME/Library/Application Support/mep` on macOS. Empty string if no
 // home directory can be determined, or on the wasm build.
+/** @brief Returns (creating if needed) mep's per-user data directory.
+ *  @return the resolved data directory path, or an empty string if no home directory can be determined, or on the wasm build. */
 inline std::string MepDataDir() {
 #if defined(__EMSCRIPTEN__)
     return "";
@@ -63,6 +65,8 @@ inline std::string MepDataDir() {
 // native mep instance (see agent_rpc.h) -- a sibling of MepDataDir()
 // itself rather than a whole separate directory-resolution convention.
 // Empty string (nothing created) if MepDataDir() itself is empty.
+/** @brief Returns (creating if needed) the per-user directory holding one Unix-domain-socket file per running native mep instance.
+ *  @return the resolved agent-sockets directory path, or an empty string if MepDataDir() is empty. */
 inline std::string MepAgentSocketDir() {
 #if defined(__EMSCRIPTEN__)
     return "";
@@ -78,6 +82,10 @@ inline std::string MepAgentSocketDir() {
 // Reads and parses a JSON file. Returns false (out untouched) if the file
 // doesn't exist or doesn't parse -- callers should treat that as "no
 // persisted state yet", not an error.
+/** @brief Reads and parses a JSON file.
+ *  @param path filesystem path of the JSON file to read.
+ *  @param out receives the parsed value on success; left untouched on failure.
+ *  @return true if the file existed and parsed successfully, false otherwise (treated by callers as "no persisted state yet"). */
 inline bool ReadJsonFile(const std::string &path, Json *out) {
 #if defined(__EMSCRIPTEN__)
     (void)path;
@@ -94,6 +102,10 @@ inline bool ReadJsonFile(const std::string &path, Json *out) {
 
 // Writes `value` as JSON to `path`. Returns false on failure to open the
 // file for writing.
+/** @brief Writes `value` as JSON to `path`.
+ *  @param path filesystem path to write the JSON document to (truncated if it already exists).
+ *  @param value the JSON value to serialize and write.
+ *  @return true on success, false if the file could not be opened for writing. */
 inline bool WriteJsonFile(const std::string &path, const Json &value) {
 #if defined(__EMSCRIPTEN__)
     (void)path;

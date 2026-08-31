@@ -40,11 +40,17 @@ bool IsImagePath(const std::string &path) {
     size_t dot = path.find_last_of('.');
     if (dot == std::string::npos) return false;
     std::string ext = path.substr(dot + 1);
+    // Lowercases a single character for case-insensitive extension comparison.
     std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return std::tolower(c); });
     return ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "bmp" || ext == "gif";
 }
 
 std::vector<unsigned char> Base64Decode(const std::string &b64) {
+    /**
+     * @brief Maps one base64 alphabet character to its 6-bit value.
+     * @param c The character to decode.
+     * @return The character's 6-bit value (0-63), or -1 if c is not a base64 alphabet character.
+     */
     auto decode_char = [](char c) -> int {
         if (c >= 'A' && c <= 'Z') return c - 'A';
         if (c >= 'a' && c <= 'z') return c - 'a' + 26;

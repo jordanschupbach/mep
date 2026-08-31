@@ -74,6 +74,11 @@ struct OrgOutline {
 // Parses every headline in `lines` into a flat, document-ordered outline.
 // Never fails outright -- a file with zero headlines just yields an empty
 // `headlines` vector with the default/parsed keyword sequence.
+/**
+ * @brief Parses an org file's lines into a flat, document-ordered outline of headlines.
+ * @param lines the full text of the org file, one entry per line
+ * @return the parsed OrgOutline (TODO/DONE keyword sequence plus every headline found)
+ */
 OrgOutline ParseOrgOutline(const std::vector<std::string> &lines);
 
 // Returns a rewritten copy of `headline_line` with its TODO/DONE keyword
@@ -82,6 +87,14 @@ OrgOutline ParseOrgOutline(const std::vector<std::string> &lines);
 // `done_keywords` disambiguate "the first word of the title happens to
 // look like a keyword" from an actual keyword token, so callers must pass
 // the same sequence `ParseOrgOutline` produced for this file.
+/**
+ * @brief Returns a copy of a headline line with its TODO/DONE keyword token replaced (or inserted if absent).
+ * @param headline_line the original "*** KEYWORD [#A] Title :tags:" line
+ * @param new_keyword the keyword token to place after the stars
+ * @param todo_keywords the file's TODO-side keyword sequence, used to recognize the existing keyword token
+ * @param done_keywords the file's DONE-side keyword sequence, used to recognize the existing keyword token
+ * @return the rewritten headline line
+ */
 std::string RewriteHeadlineKeyword(const std::string &headline_line, const std::string &new_keyword,
                                     const std::vector<std::string> &todo_keywords,
                                     const std::vector<std::string> &done_keywords);
@@ -92,17 +105,35 @@ std::string RewriteHeadlineKeyword(const std::string &headline_line, const std::
 // everything after that timestamp's weekday (time-of-day, repeater)
 // untouched. A no-op (returns the input unchanged) if that keyword isn't
 // present on the line.
+/**
+ * @brief Returns a copy of a SCHEDULED/DEADLINE planning line with that timestamp's date replaced.
+ * @param planning_line the original planning line, e.g. "SCHEDULED: <2026-08-25 Tue>"
+ * @param is_deadline true to rewrite the DEADLINE timestamp, false to rewrite the SCHEDULED timestamp
+ * @param new_ts the replacement date (and time-of-day, if any) to substitute in
+ * @return the rewritten planning line, or the input unchanged if the requested keyword isn't present
+ */
 std::string RewriteTimestampInLine(const std::string &planning_line, bool is_deadline, const OrgTimestamp &new_ts);
 
 // Returns `ts` shifted by `delta_days` (may be negative), recomputing the
 // weekday for the new date. `has_time`/`hour`/`min` are carried over
 // unchanged. A no-op if `!ts.present`.
+/**
+ * @brief Returns a timestamp shifted by a number of days, recomputing its weekday.
+ * @param ts the timestamp to shift
+ * @param delta_days number of days to add (may be negative to subtract)
+ * @return the shifted timestamp, with has_time/hour/min carried over unchanged, or `ts` unchanged if `!ts.present`
+ */
 OrgTimestamp ShiftTimestamp(const OrgTimestamp &ts, int delta_days);
 
 // Formats a *freshly constructed* timestamp (year/month/day/has_time/
 // hour/min only -- no repeater) as "<2026-08-25 Tue>" / "<2026-08-25 Tue
 // 09:00>". Rewriting an *existing* timestamp in place should go through
 // RewriteTimestampInLine instead, so any repeater/warning suffix survives.
+/**
+ * @brief Formats a freshly constructed timestamp as an org "<YYYY-MM-DD Day[ HH:MM]>" token.
+ * @param ts the timestamp to format (year/month/day/has_time/hour/min only; no repeater is emitted)
+ * @return the formatted token, or "" if `!ts.present`
+ */
 std::string FormatOrgTimestamp(const OrgTimestamp &ts);
 
 // Whole-file-regenerating headline builder -- unlike RewriteHeadlineKeyword
@@ -112,6 +143,15 @@ std::string FormatOrgTimestamp(const OrgTimestamp &ts);
 // Kanban title rename, and constructing a brand-new headline line for a
 // new card. `level` is clamped to >= 1 (a stars count of 0 isn't a
 // headline at all).
+/**
+ * @brief Builds an entire headline line from its parsed parts (stars, keyword, priority, title, tags).
+ * @param level headline depth (number of leading '*'), clamped to >= 1
+ * @param todo_keyword the TODO/DONE keyword to place after the stars, or "" to omit it
+ * @param priority the priority letter to emit as "[#X]", or 0 to omit it
+ * @param title the headline title text
+ * @param tags trailing tags to append as ":tag1:tag2:", or empty to omit
+ * @return the newly constructed headline line
+ */
 std::string FormatHeadlineLine(int level, const std::string &todo_keyword, char priority, const std::string &title,
                                 const std::vector<std::string> &tags);
 
@@ -120,7 +160,21 @@ std::string FormatHeadlineLine(int level, const std::string &todo_keyword, char 
 // x-pixel offset (and a drag's pixel delta back into a day count) without
 // duplicating the same civil-calendar arithmetic ParseOrgOutline/
 // ShiftTimestamp already use internally.
+/**
+ * @brief Converts a proleptic-Gregorian calendar date to a day ordinal (day 0 = 1970-01-01).
+ * @param year the calendar year
+ * @param month the calendar month (1-12)
+ * @param day the calendar day of month
+ * @return the day ordinal
+ */
 long long OrgDayNumber(int year, int month, int day);
+/**
+ * @brief Converts a day ordinal (day 0 = 1970-01-01) back to a proleptic-Gregorian calendar date.
+ * @param day_number the day ordinal to convert
+ * @param year set to the resulting calendar year
+ * @param month set to the resulting calendar month (1-12)
+ * @param day set to the resulting calendar day of month
+ */
 void OrgDateFromDayNumber(long long day_number, int &year, int &month, int &day);
 
 // Locates the first "#+TODO:" line (ParseOrgOutline only ever honors the
@@ -128,6 +182,11 @@ void OrgDateFromDayNumber(long long day_number, int &year, int &month, int &day)
 // Exposed so a Kanban column add/rename/delete can find the line to
 // rewrite (or know it needs to insert one) without re-implementing
 // ParseTodoLine's own prefix check.
+/**
+ * @brief Locates the first "#+TODO:" line in the file (the only one ParseOrgOutline honors).
+ * @param lines the full text of the org file, one entry per line
+ * @return the index of the first "#+TODO:" line, or -1 if `lines` has none
+ */
 int FindOrgTodoLineIndex(const std::vector<std::string> &lines);
 
 // Inverse of the "#+TODO:" line parsing folded into ParseOrgOutline --
@@ -137,6 +196,12 @@ int FindOrgTodoLineIndex(const std::vector<std::string> &lines);
 // above compares keyword tokens without them -- so a keyword list that came
 // from a file using fast-select hints loses them once rewritten through
 // here (a documented gap, not an oversight).
+/**
+ * @brief Builds a "#+TODO: kw1 kw2 | kw3" line from separate todo/done keyword lists.
+ * @param todo_keywords the TODO-side keywords, emitted before the '|'
+ * @param done_keywords the DONE-side keywords, emitted after the '|'
+ * @return the formatted "#+TODO:" line (never includes "(x)" fast-select hints)
+ */
 std::string FormatTodoLine(const std::vector<std::string> &todo_keywords, const std::vector<std::string> &done_keywords);
 
 #endif

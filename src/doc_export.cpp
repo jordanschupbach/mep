@@ -16,6 +16,11 @@ namespace {
 
 // --- shared DOM-walk helpers -----------------------------------------------
 
+/**
+ * @brief Returns the lowercased file extension of `path` (without the leading dot).
+ * @param path File path to extract the extension from.
+ * @return The lowercased extension, or an empty string if `path` has no '.'.
+ */
 std::string LowerExt(const std::string &path) {
     size_t dot = path.find_last_of('.');
     if (dot == std::string::npos) return "";
@@ -28,6 +33,12 @@ std::string LowerExt(const std::string &path) {
 // in-pane browser's <img> loader) -- kept as a separate copy rather than
 // a shared header function since that one lives in main.cpp (raylib-
 // linked) and this file deliberately isn't.
+/**
+ * @brief Resolves an <img src="..."> value to a local filesystem path usable to read the image, or "" if it isn't a readable local reference.
+ * @param src The raw src attribute value (may be a remote URL, a file: URI, an absolute path, or a path relative to `base_dir`).
+ * @param base_dir Base directory a relative `src` is resolved against.
+ * @return The resolved local path, or an empty string for http(s) URLs.
+ */
 std::string ResolveLocalPath(const std::string &src, const std::string &base_dir) {
     if (src.empty()) return "";
     if (src.compare(0, 7, "http://") == 0 || src.compare(0, 8, "https://") == 0) return "";
@@ -38,6 +49,12 @@ std::string ResolveLocalPath(const std::string &src, const std::string &base_dir
     return base_dir + "/" + s;
 }
 
+/**
+ * @brief Reads the entire contents of a binary file into `out`.
+ * @param path Filesystem path of the file to read.
+ * @param out Set to the file's raw bytes on success.
+ * @return True if the file was opened and read; false if it could not be opened.
+ */
 bool ReadFileBytes(const std::string &path, std::string &out) {
     std::ifstream f(path, std::ios::binary);
     if (!f) return false;
@@ -45,6 +62,11 @@ bool ReadFileBytes(const std::string &path, std::string &out) {
     return true;
 }
 
+/**
+ * @brief Recursively concatenates all Text-node content under `node`, ignoring element structure.
+ * @param node DOM node whose descendant text is collected.
+ * @return The concatenated raw text.
+ */
 std::string CollectRawText(const DomNode *node) {
     std::string out;
     for (auto &c : node->children) {
@@ -54,6 +76,12 @@ std::string CollectRawText(const DomNode *node) {
     return out;
 }
 
+/**
+ * @brief Checks whether `tag` is an HTML heading tag ("h1".."h6") and, if so, extracts its level.
+ * @param tag Lowercase tag name to test.
+ * @param level Set to the heading level (1-6) when this returns true; left unchanged otherwise.
+ * @return True if `tag` is a heading tag.
+ */
 bool IsHeadingTag(const std::string &tag, int &level) {
     if (tag.size() == 2 && tag[0] == 'h' && tag[1] >= '1' && tag[1] <= '6') {
         level = tag[1] - '0';
@@ -62,6 +90,11 @@ bool IsHeadingTag(const std::string &tag, int &level) {
     return false;
 }
 
+/**
+ * @brief Checks whether a <math> node is a display-mode (block) equation rather than inline.
+ * @param node The <math> DOM node to inspect.
+ * @return True if the node's "display" attribute is "1".
+ */
 bool IsMathDisplay(const DomNode *node) {
     auto it = node->attrs.find("display");
     return it != node->attrs.end() && it->second == "1";
@@ -70,6 +103,11 @@ bool IsMathDisplay(const DomNode *node) {
 // table/tr/td/th may have thead/tbody/tfoot wrappers in between (both
 // backends' own table walkers need the flat row list either way) --
 // collected once here rather than duplicated per backend.
+/**
+ * @brief Recursively collects every <tr> descendant of `node` into a flat list, looking through any thead/tbody/tfoot wrappers.
+ * @param node Table (or table-section) DOM node to search.
+ * @param rows Appended with a pointer to each <tr> found, in document order.
+ */
 void CollectTableRows(const DomNode *node, std::vector<const DomNode *> &rows) {
     for (auto &c : node->children) {
         if (c->tag == "tr") rows.push_back(c.get());
@@ -78,6 +116,11 @@ void CollectTableRows(const DomNode *node, std::vector<const DomNode *> &rows) {
     }
 }
 
+/**
+ * @brief Computes the widest row (by td/th count) across a table's rows.
+ * @param rows The table's flat row list (as produced by CollectTableRows).
+ * @return The maximum number of td/th cells found in any single row.
+ */
 size_t TableMaxCols(const std::vector<const DomNode *> &rows) {
     size_t max_cols = 0;
     for (const DomNode *r : rows) {
@@ -97,6 +140,11 @@ size_t TableMaxCols(const std::vector<const DomNode *> &rows) {
 // expected input shape. Purely defensive: nothing here relies on it, but
 // it costs little and avoids silently walking a <head>'s own <style>/
 // <meta> children if a full document is ever passed in by mistake.
+/**
+ * @brief Unwraps a full <html>/<body>-wrapped document down to its <body>; a no-op for a bare fragment.
+ * @param root The parsed document's root DOM node.
+ * @return The <body> node when a full document was passed; otherwise `root` unchanged (including when `root` is null).
+ */
 const DomNode *ContentRoot(const DomNode *root) {
     if (!root) return root;
     const DomNode *cur = root;
@@ -116,6 +164,11 @@ const DomNode *ContentRoot(const DomNode *root) {
 // LaTeX backend
 // ============================================================================
 
+/**
+ * @brief Escapes prose text for safe inclusion in LaTeX source, converting every LaTeX-special character to its literal-printing command.
+ * @param s Raw (unescaped) text.
+ * @return The LaTeX-escaped text.
+ */
 std::string LatexEscape(const std::string &s) {
     std::string out;
     out.reserve(s.size());
@@ -147,6 +200,11 @@ std::string LatexEscape(const std::string &s) {
 // unlike LatexEscape's prose context above. Mirrors Pygments' own LaTeX
 // formatter, which escapes exactly this same trio (as \PYZbs{}/\PYZob{}/
 // \PYZcb{}) for exactly this reason.
+/**
+ * @brief Escapes text for a fancyvrb Verbatim block using commandchars, escaping only backslash and the two brace characters that Verbatim's commandchars mode reserves.
+ * @param s Raw (unescaped) code/verbatim text.
+ * @return The Verbatim-safe escaped text.
+ */
 std::string LatexEscapeVerbatim(const std::string &s) {
     std::string out;
     out.reserve(s.size());
@@ -161,6 +219,12 @@ std::string LatexEscapeVerbatim(const std::string &s) {
     return out;
 }
 
+/**
+ * @brief Finds the first direct child element of `node` with the given tag name.
+ * @param node Parent DOM node whose direct children are searched.
+ * @param tag Tag name to match.
+ * @return Pointer to the first matching child, or nullptr if none is found.
+ */
 const DomNode *FindChildTag(const DomNode *node, const std::string &tag) {
     for (auto &c : node->children) {
         if (c->type == DomNodeType::Element && c->tag == tag) return c.get();
@@ -181,6 +245,11 @@ const DomNode *FindChildTag(const DomNode *node, const std::string &tag) {
 // exact suffix with the meptok<x> colors this file's own preamble defines
 // -- so this function needs no separate capture->color table of its own,
 // just the class name already baked into the HTML by the same export pass.
+/**
+ * @brief Renders an org-code-block <div> (with its highlighted <span class="tok-x"> children) as a bordered/headered tcolorbox around a fancyvrb Verbatim, appending the result to `out`.
+ * @param div_node The <div class="org-code-block"> node to render.
+ * @param out String the rendered LaTeX is appended to.
+ */
 void RenderOrgCodeBlockLatex(const DomNode *div_node, std::string &out) {
     const DomNode *pre = FindChildTag(div_node, "pre");
     const DomNode *code = pre ? FindChildTag(pre, "code") : nullptr;
@@ -220,6 +289,12 @@ struct LatexCtx {
     std::string base_dir;
 };
 
+/**
+ * @brief Recursively walks one DOM node and its descendants, appending the equivalent LaTeX markup to `out`.
+ * @param node DOM node (element or text) to render.
+ * @param ctx Shared LaTeX rendering context (currently just the image base directory).
+ * @param out String the rendered LaTeX is appended to.
+ */
 void WalkLatexNode(const DomNode *node, LatexCtx &ctx, std::string &out) {
     if (node->type == DomNodeType::Text) {
         out += LatexEscape(node->text);
@@ -483,9 +558,18 @@ struct OdtCtx {
 // of 2+ spaces (-> one literal space + <text:s text:c="N-1"/>, ODF's own
 // convention for preserving repeated whitespace an XML/HTML-style
 // collapse would otherwise eat) and appends the result to `parent`.
+/**
+ * @brief Appends `text` to `parent` as one or more pcdata nodes, converting tabs to <text:tab/> and runs of 2+ spaces to ODF's <text:s> repeated-whitespace convention.
+ * @param parent XML node the resulting pcdata/tab/space nodes are appended to.
+ * @param text Raw text to append.
+ */
 void AppendTextRun(pugi::xml_node parent, const std::string &text) {
     size_t i = 0, n = text.size();
     size_t seg_start = 0;
+    /**
+     * @brief Appends the pending pcdata segment [seg_start, end) to `parent` (a no-op if the segment is empty).
+     * @param end Exclusive end offset into `text` of the segment to flush.
+     */
     auto flush_pcdata = [&](size_t end) {
         if (end > seg_start) parent.append_child(pugi::node_pcdata).set_value(text.substr(seg_start, end - seg_start).c_str());
     };
@@ -517,6 +601,12 @@ void AppendTextRun(pugi::xml_node parent, const std::string &text) {
 
 void AppendOdtImageFrame(const DomNode *node, OdtCtx &ctx, pugi::xml_node container);
 
+/**
+ * @brief Recursively renders an inline-context DOM node (text, formatting, links, math, images) into ODT text runs appended to `container`.
+ * @param node DOM node (element or text) to render.
+ * @param ctx Shared ODT rendering context (base dir, image/table counters, collected images).
+ * @param container XML node (an open <text:p>/<text:span>/<text:a>) the resulting run(s) are appended to.
+ */
 void WalkOdtInline(const DomNode *node, OdtCtx &ctx, pugi::xml_node container) {
     if (node->type == DomNodeType::Text) {
         AppendTextRun(container, node->text);
@@ -590,6 +680,12 @@ void WalkOdtBlock(const DomNode *node, OdtCtx &ctx, pugi::xml_node text_body);
 // is capped at 15cm; an image whose file can't be read/decoded falls
 // back to a text placeholder appended to `container` directly, same
 // tolerance the LaTeX backend's own <img> handling has.
+/**
+ * @brief Decodes an <img>'s source file (to get its intrinsic aspect ratio) and appends a <draw:frame>/<draw:image> referencing it, registering the image's bytes in `ctx` for later zip packaging; falls back to a text placeholder if the file can't be read/decoded.
+ * @param node The <img> DOM node to render.
+ * @param ctx Shared ODT rendering context; the decoded image is appended to `ctx.images` and `ctx.image_counter` is advanced.
+ * @param container XML node the resulting <draw:frame> (or placeholder text) is appended to.
+ */
 void AppendOdtImageFrame(const DomNode *node, OdtCtx &ctx, pugi::xml_node container) {
     auto src_it = node->attrs.find("src");
     std::string resolved = src_it != node->attrs.end() ? ResolveLocalPath(src_it->second, ctx.base_dir) : "";
@@ -624,6 +720,12 @@ void AppendOdtImageFrame(const DomNode *node, OdtCtx &ctx, pugi::xml_node contai
     img_el.append_attribute("xlink:actuate").set_value("onLoad");
 }
 
+/**
+ * @brief Renders an HTML <table> as a <table:table> (with one <table:table-column> per max-width column and one <table:table-row>/<table:table-cell> per source row/cell), appended to `text_body`.
+ * @param node The <table> DOM node to render.
+ * @param ctx Shared ODT rendering context; `ctx.table_counter` is advanced to name the table uniquely.
+ * @param text_body XML node (the document's <office:text>) the resulting <table:table> is appended to.
+ */
 void AppendOdtTable(const DomNode *node, OdtCtx &ctx, pugi::xml_node text_body) {
     std::vector<const DomNode *> rows;
     CollectTableRows(node, rows);
@@ -667,6 +769,12 @@ void AppendOdtTable(const DomNode *node, OdtCtx &ctx, pugi::xml_node text_body) 
 void WalkOdtBlockChildren(const std::vector<std::unique_ptr<DomNode>> &children, OdtCtx &ctx,
                            pugi::xml_node text_body);
 
+/**
+ * @brief Recursively renders a block-context DOM node (heading, paragraph, list, table, blockquote, pre, image, or generic container) into ODT body content appended to `text_body`.
+ * @param node DOM node (element or, as a tolerant fallback, text) to render.
+ * @param ctx Shared ODT rendering context (base dir, image/table counters, collected images).
+ * @param text_body XML node (the document's <office:text>, or an ancestor list item) the resulting content is appended to.
+ */
 void WalkOdtBlock(const DomNode *node, OdtCtx &ctx, pugi::xml_node text_body) {
     if (node->type == DomNodeType::Text) {
         // Reached only when the CALLER didn't already route this
@@ -782,6 +890,12 @@ void WalkOdtBlock(const DomNode *node, OdtCtx &ctx, pugi::xml_node text_body) {
     WalkOdtBlockChildren(node->children, ctx, text_body);
 }
 
+/**
+ * @brief Walks a block container's children as a sequence, dispatching each block-level sibling through WalkOdtBlock and coalescing runs of consecutive inline siblings (text and inline elements) into single <text:p> paragraphs.
+ * @param children The child node list of a block container to walk.
+ * @param ctx Shared ODT rendering context (base dir, image/table counters, collected images).
+ * @param text_body XML node the resulting paragraphs/blocks are appended to.
+ */
 void WalkOdtBlockChildren(const std::vector<std::unique_ptr<DomNode>> &children, OdtCtx &ctx,
                            pugi::xml_node text_body) {
     pugi::xml_node open_p;  // empty/null until a run of inline content opens one
@@ -806,7 +920,20 @@ void WalkOdtBlockChildren(const std::vector<std::unique_ptr<DomNode>> &children,
 // office_odt.cpp's own SaveOdtToMemory already does (see its
 // GetOrCreateTextStyle/GetOrCreateParaStyle) -- no dependency on
 // styles.xml resolving a matching named style.
+/**
+ * @brief Appends every named <style:style>/<text:list-style> content.xml's WalkOdt* functions reference (bold/italic/underline/strike/mono text styles, heading/preformatted/quote paragraph styles, an hr style, a table-heading style, and bullet/number list styles) to `auto_styles`.
+ * @param auto_styles XML node (the document's <office:automatic-styles>) the style definitions are appended to.
+ */
 void AppendOdtAutomaticStyles(pugi::xml_node auto_styles) {
+    /**
+     * @brief Appends one text:family <style:style> (bold/italic/underline/strike/mono flags) named `name` to `auto_styles`.
+     * @param name Style name later referenced via text:style-name.
+     * @param bold Whether to set fo:font-weight to bold.
+     * @param italic Whether to set fo:font-style to italic.
+     * @param underline Whether to set a solid text-underline-style.
+     * @param strike Whether to set a solid text-line-through-style.
+     * @param mono Whether to set the font to "mep Mono".
+     */
     auto text_style = [&](const char *name, bool bold, bool italic, bool underline, bool strike, bool mono) {
         pugi::xml_node s = auto_styles.append_child("style:style");
         s.append_attribute("style:name").set_value(name);
@@ -824,6 +951,16 @@ void AppendOdtAutomaticStyles(pugi::xml_node auto_styles) {
     text_style("MepStrike", false, false, false, true, false);
     text_style("MepSrc", false, false, false, false, true);
 
+    /**
+     * @brief Appends one paragraph-family <style:style> (font size/weight/style/name plus top/bottom margins) named `name` to `auto_styles`.
+     * @param name Style name later referenced via text:style-name.
+     * @param font_pt Font size in points.
+     * @param bold Whether to set fo:font-weight to bold.
+     * @param margin_top Top margin, in inches.
+     * @param margin_bottom Bottom margin, in inches.
+     * @param mono Whether to set the font to "mep Mono".
+     * @param italic Whether to set fo:font-style to italic.
+     */
     auto para_style = [&](const std::string &name, double font_pt, bool bold, double margin_top,
                            double margin_bottom, bool mono, bool italic) {
         pugi::xml_node s = auto_styles.append_child("style:style");
@@ -871,6 +1008,11 @@ void AppendOdtAutomaticStyles(pugi::xml_node auto_styles) {
     // List styles -- one level only (a nested <ul>/<ol> reuses the same
     // level-1 marker rather than a distinct per-depth one; a real, if
     // visually flat, documented v1 simplification).
+    /**
+     * @brief Appends one single-level bullet <text:list-style> named `name`, using `bullet_char` as the marker, to `auto_styles`.
+     * @param name Style name later referenced via text:style-name on a <text:list>.
+     * @param bullet_char UTF-8 bytes of the bullet glyph.
+     */
     auto list_bullet_style = [&](const char *name, const char *bullet_char) {
         pugi::xml_node ls = auto_styles.append_child("text:list-style");
         ls.append_attribute("style:name").set_value(name);
@@ -903,6 +1045,10 @@ void AppendOdtAutomaticStyles(pugi::xml_node auto_styles) {
     la.append_attribute("fo:margin-left").set_value("0.5in");
 }
 
+/**
+ * @brief Builds a minimal-but-valid styles.xml (default page layout only; per-document styles live in content.xml's own automatic styles).
+ * @return The serialized styles.xml document.
+ */
 std::string BuildOdtStylesXml() {
     // A minimal-but-valid styles.xml -- content.xml's own automatic
     // styles (above) are fully self-contained, so this file only needs
@@ -942,6 +1088,12 @@ std::string BuildOdtStylesXml() {
     return ss.str();
 }
 
+/**
+ * @brief Builds the ODT package's meta.xml, recording title/author (when non-empty) and a fixed generator string.
+ * @param title Document title; omitted from the output when empty.
+ * @param author Document author; omitted from the output when empty.
+ * @return The serialized meta.xml document.
+ */
 std::string BuildOdtMetaXml(const std::string &title, const std::string &author) {
     pugi::xml_document doc;
     pugi::xml_node decl = doc.append_child(pugi::node_declaration);
@@ -961,6 +1113,11 @@ std::string BuildOdtMetaXml(const std::string &title, const std::string &author)
     return ss.str();
 }
 
+/**
+ * @brief Builds the ODT package's META-INF/manifest.xml, listing the fixed content/styles/meta entries plus one entry per embedded image.
+ * @param images Images collected during content rendering, each contributing one manifest entry.
+ * @return The serialized manifest.xml document.
+ */
 std::string BuildOdtManifestXml(const std::vector<OdtImage> &images) {
     pugi::xml_document doc;
     pugi::xml_node decl = doc.append_child(pugi::node_declaration);
@@ -969,6 +1126,11 @@ std::string BuildOdtManifestXml(const std::vector<OdtImage> &images) {
     pugi::xml_node root = doc.append_child("manifest:manifest");
     root.append_attribute("xmlns:manifest").set_value("urn:oasis:names:tc:opendocument:xmlns:manifest:1.0");
     root.append_attribute("manifest:version").set_value("1.2");
+    /**
+     * @brief Appends one <manifest:file-entry> for a zip archive path to `root`.
+     * @param path The archive-relative full path of the entry.
+     * @param media_type The entry's MIME media type.
+     */
     auto entry = [&](const char *path, const char *media_type) {
         pugi::xml_node e = root.append_child("manifest:file-entry");
         e.append_attribute("manifest:full-path").set_value(path);
@@ -994,10 +1156,20 @@ struct ZipEntryToWrite {
     bool store;         // true = STORED, false = DEFLATE
 };
 
+/**
+ * @brief Appends a 16-bit value to `s` as two little-endian bytes.
+ * @param s String to append the bytes to.
+ * @param v Value to encode.
+ */
 void AppendLE16(std::string &s, uint16_t v) {
     s += static_cast<char>(v & 0xff);
     s += static_cast<char>((v >> 8) & 0xff);
 }
+/**
+ * @brief Appends a 32-bit value to `s` as four little-endian bytes.
+ * @param s String to append the bytes to.
+ * @param v Value to encode.
+ */
 void AppendLE32(std::string &s, uint32_t v) {
     s += static_cast<char>(v & 0xff);
     s += static_cast<char>((v >> 8) & 0xff);
@@ -1030,6 +1202,11 @@ void AppendLE32(std::string &s, uint32_t v) {
 // tdefl_create_comp_flags_from_zip_params args miniz's own zip writer
 // uses internally, see its mz_zip_writer_add_mem_ex_v2) for the actual
 // CRC/deflate work rather than reimplementing either.
+/**
+ * @brief Builds a complete ZIP archive from `entries` (local file headers + data followed by a central directory and end-of-central-directory record), deflating each entry unless it's marked STORED or fails to shrink, always writing real sizes/CRC in the local header (general-purpose bit 3 clear, no trailing data descriptor) rather than using miniz's own zip-writer API.
+ * @param entries Entries to write, each either stored verbatim or DEFLATE-compressed.
+ * @return The complete, ready-to-write ZIP archive bytes.
+ */
 std::string BuildZipArchive(const std::vector<ZipEntryToWrite> &entries) {
     std::string out;
     struct CdRecord {

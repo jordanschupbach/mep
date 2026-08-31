@@ -211,10 +211,18 @@ std::vector<std::string> Job::DrainRaw() {
 
 #if MEP_JOB_POSIX
 namespace {
-// Appends `chunk` to `partial`, splitting on '\n' (stripping a trailing
-// '\r' for CRLF-emitting tools) and pushing each complete line into
-// `pending` under `mu`. Leaves a trailing partial line in `partial` for
-// the next chunk to complete.
+/**
+ * @brief Appends `chunk` to `partial`, splitting on '\n' (stripping a trailing
+ * '\r' for CRLF-emitting tools) and pushing each complete line into
+ * `pending` under `mu`. Leaves a trailing partial line in `partial` for
+ * the next chunk to complete.
+ * @param partial Accumulator holding the not-yet-newline-terminated tail from previous chunks; updated in place.
+ * @param data Pointer to the newly read bytes to feed in.
+ * @param len Number of bytes at `data`.
+ * @param is_stderr Whether this chunk came from the child's stderr (tags each pushed JobLine).
+ * @param mu Mutex guarding `pending`, locked around each push.
+ * @param pending Queue that each complete line is appended to.
+ */
 void FeedChunk(std::string &partial, const char *data, size_t len, bool is_stderr, std::mutex &mu,
                std::deque<JobLine> &pending) {
     partial.append(data, len);
@@ -393,6 +401,7 @@ void JobManager::PollAll() {
             }
         }
     }
+    // Selects entries whose exit callback has already fired, so they can be erased below.
     jobs_.erase(std::remove_if(jobs_.begin(), jobs_.end(), [](const Entry &e) { return e.exit_reported; }),
                 jobs_.end());
 }
@@ -402,6 +411,10 @@ void JobManager::ShutdownAll(int grace_ms) {
     for (auto &e : jobs_) {
         if (e.job && !e.job->Finished()) e.job->Kill();
     }
+    /**
+     * @brief Checks whether any registered job still has a live child process.
+     * @return True if at least one job's Job::Finished() is false.
+     */
     auto still_running = [this] {
         for (auto &e : jobs_) {
             if (e.job && !e.job->Finished()) return true;

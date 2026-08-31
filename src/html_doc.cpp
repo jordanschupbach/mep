@@ -8,11 +8,21 @@
 
 namespace {
 
+/**
+ * @brief Lowercases every character of a string (ASCII-aware via unsigned char cast).
+ * @param s String to lowercase, taken by value and modified in place.
+ * @return The lowercased string.
+ */
 std::string ToLower(std::string s) {
     for (char &c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return s;
 }
 
+/**
+ * @brief Checks whether a tag is a void element (no closing tag, e.g. <br>, <img>).
+ * @param tag Lowercase tag name to check.
+ * @return True if `tag` is one of the recognized void elements.
+ */
 bool IsVoidTag(const std::string &tag) {
     static const std::unordered_set<std::string> kVoid = {
         "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr",
@@ -24,8 +34,20 @@ bool IsVoidTag(const std::string &tag) {
 // matching close tag -- real HTML rule for <script>/<style>/<textarea>,
 // each for a different reason (script/style bodies routinely contain '<'
 // that isn't markup; textarea's is meant to preserve exactly what's typed).
+/**
+ * @brief Checks whether a tag's content should be taken verbatim (no nested-tag parsing) up to its matching close tag.
+ * @param tag Lowercase tag name to check.
+ * @return True for script/style/textarea.
+ */
 bool IsRawTextTag(const std::string &tag) { return tag == "script" || tag == "style" || tag == "textarea"; }
 
+/**
+ * @brief Finds the index of the next case-insensitive "</tag" occurrence at-or-after `from`.
+ * @param html Source HTML text to search.
+ * @param tag Lowercase tag name whose close tag is sought.
+ * @param from Index to start searching from.
+ * @return Index of the matching "</tag" occurrence, or std::string::npos if none is found.
+ */
 size_t FindCloseTagCI(const std::string &html, const std::string &tag, size_t from) {
     std::string needle = "</" + tag;
     std::string lower_html = ToLower(html.substr(from));
@@ -38,6 +60,11 @@ size_t FindCloseTagCI(const std::string &html, const std::string &tag, size_t fr
 // entries, almost all obscure symbols this monospace-only renderer has no
 // glyph for anyway -- see IconForFilename/g_icon_font's own ASCII-first
 // precedent, editor.h, for the same "font coverage" reasoning).
+/**
+ * @brief Decodes HTML character references (&name; and &#NN;/&#xHH;) in a string, covering a common subset (not the full HTML5 named-entity table).
+ * @param s Text to decode.
+ * @return `s` with recognized entities replaced by their literal characters; unrecognized ones are left as-is.
+ */
 std::string DecodeEntities(const std::string &s) {
     static const std::unordered_map<std::string, std::string> kNamed = {
         {"amp", "&"},     {"lt", "<"},        {"gt", ">"},     {"quot", "\""}, {"apos", "'"},
@@ -90,6 +117,13 @@ struct TagParseResult {
 // Parses one tag starting at `pos` (the character right after '<'; `<` of
 // a closing tag has already been confirmed present by the caller via
 // html[pos]=='/'). Returns the index just past the tag's own '>'.
+/**
+ * @brief Parses a single start or end tag (name, closing/self-closing flags, and attributes) starting right after its '<'.
+ * @param html Source HTML text being parsed.
+ * @param pos Index of the character right after the tag's opening '<'.
+ * @param out Result struct populated with the parsed tag name, attributes, and closing/self-closing flags.
+ * @return Index just past the tag's own '>'.
+ */
 size_t ParseTag(const std::string &html, size_t pos, TagParseResult &out) {
     size_t n = html.size();
     size_t i = pos;
@@ -145,6 +179,11 @@ size_t ParseTag(const std::string &html, size_t pos, TagParseResult &out) {
 // Subtrees whose text isn't prose to be scanned for math -- mirrors
 // MathJax's own default skip-tag list (script/style/pre/code/textarea),
 // plus "math" itself so a span already extracted is never rescanned.
+/**
+ * @brief Checks whether a tag's text content should be skipped when scanning for math spans (mirrors MathJax's default skip-tag list, plus "math" itself).
+ * @param tag Lowercase tag name to check.
+ * @return True for script/style/pre/code/textarea/math.
+ */
 bool IsMathSkipTag(const std::string &tag) {
     return tag == "script" || tag == "style" || tag == "pre" || tag == "code" || tag == "textarea" || tag == "math";
 }
@@ -157,6 +196,16 @@ bool IsMathSkipTag(const std::string &tag) {
 // content has no adjacent whitespace and contains no blank line, the same
 // conservative heuristic real MathJax configs use to avoid swallowing an
 // ordinary "$5 and $10" sentence as math.
+/**
+ * @brief Finds the next \(..\), \[..\], $$..$$, or $..$ math span at-or-after `from`, applying a conservative heuristic for single-`$` spans to avoid false positives like "$5 and $10".
+ * @param s Text to search.
+ * @param from Index to start searching from.
+ * @param content_start Set to the index where the raw LaTeX content begins (delimiter excluded).
+ * @param content_end Set to the index where the raw LaTeX content ends (delimiter excluded).
+ * @param span_end Set to the index just past the closing delimiter.
+ * @param display Set to true if the span is a display-style delimiter (\[..\] or $$..$$).
+ * @return Index of the opening delimiter, or std::string::npos if no span was found before the end of `s`.
+ */
 size_t FindNextMathSpan(const std::string &s, size_t from, size_t &content_start, size_t &content_end,
                          size_t &span_end, bool &display) {
     for (size_t i = from; i < s.size(); i++) {
@@ -213,6 +262,10 @@ size_t FindNextMathSpan(const std::string &s, size_t from, size_t &content_start
 // text is stored (above) -- main.cpp's own mini LaTeX layout (js_engine.h's
 // neighbor for math, not this raylib-free file, since typesetting needs
 // real font metrics) reads it back out via HtmlCollectRawText.
+/**
+ * @brief Splits math spans out of `parent`'s Text children into sibling <math> elements holding the raw LaTeX source, recursing into element children not in IsMathSkipTag's list.
+ * @param parent Node whose children are rewritten in place with extracted <math> siblings interleaved.
+ */
 void ExtractMathFromChildren(DomNode *parent) {
     std::vector<std::unique_ptr<DomNode>> out_children;
     for (auto &child : parent->children) {
@@ -265,6 +318,10 @@ void ExtractMathFromChildren(DomNode *parent) {
     parent->children = std::move(out_children);
 }
 
+/**
+ * @brief Extracts math spans from the whole document's node tree, if it has a root.
+ * @param doc Document whose tree is walked and rewritten in place.
+ */
 void ExtractMathSpans(HtmlDoc &doc) {
     if (doc.root) ExtractMathFromChildren(doc.root.get());
 }
@@ -301,6 +358,9 @@ void ParseHtml(const std::string &html, HtmlDoc &out) {
     stack.push_back(out.root.get());
     std::string text_buf;
 
+    /**
+     * @brief Flushes any buffered raw text into a new decoded Text node appended to the innermost open element, then clears the buffer.
+     */
     auto flush_text = [&]() {
         if (text_buf.empty()) return;
         auto node = std::make_unique<DomNode>();
@@ -403,6 +463,11 @@ void ParseHtml(const std::string &html, HtmlDoc &out) {
 
 namespace {
 
+/**
+ * @brief Builds the user-agent default ComputedStyle for a tag (block/inline, bold/italic/underline, heading font scale, list/display-none handling, etc.), before any CSS rules or inline styles are applied.
+ * @param tag Lowercase tag name to get defaults for.
+ * @return A ComputedStyle populated with this tag's UA defaults.
+ */
 ComputedStyle TagDefaults(const std::string &tag) {
     ComputedStyle s;
     s.block = true;
@@ -477,6 +542,11 @@ struct CssRule {
     std::unordered_map<std::string, std::string> decls;
 };
 
+/**
+ * @brief Parses a semicolon-separated "prop: value" declaration block into a property-name-to-value map, lowercasing and trimming both sides.
+ * @param body Declaration block text (the contents between a CSS rule's braces, or an inline style="" attribute value).
+ * @return Map of lowercased property names to lowercased, trimmed values.
+ */
 std::unordered_map<std::string, std::string> ParseDeclarations(const std::string &body) {
     std::unordered_map<std::string, std::string> out;
     size_t i = 0, n = body.size();
@@ -486,6 +556,11 @@ std::unordered_map<std::string, std::string> ParseDeclarations(const std::string
         size_t semi = body.find(';', colon);
         std::string prop = body.substr(i, colon - i);
         std::string val = body.substr(colon + 1, (semi == std::string::npos ? n : semi) - colon - 1);
+        /**
+         * @brief Trims leading and trailing whitespace (spaces, tabs, CR, LF) from a string.
+         * @param s String to trim, taken by value.
+         * @return The trimmed string, or an empty string if `s` is all whitespace.
+         */
         auto trim = [](std::string s) {
             size_t a = s.find_first_not_of(" \t\r\n");
             size_t b = s.find_last_not_of(" \t\r\n");
@@ -503,10 +578,23 @@ std::unordered_map<std::string, std::string> ParseDeclarations(const std::string
 // (rgb()/hsl()/alpha channels/currentColor/...) is out of scope; anything
 // this doesn't recognize is silently ignored (the property just isn't
 // set), same tolerance as an unmatched entity in DecodeEntities above.
+/**
+ * @brief Parses a CSS color value (#rgb, #rrggbb, or a small named-color table) into RGB components.
+ * @param raw Raw CSS color value text.
+ * @param r Set to the parsed red component on success.
+ * @param g Set to the parsed green component on success.
+ * @param b Set to the parsed blue component on success.
+ * @return True if `raw` was recognized and `r`/`g`/`b` were set; false otherwise (left untouched).
+ */
 bool ParseColor(const std::string &raw, unsigned char *r, unsigned char *g, unsigned char *b) {
     std::string v = raw;
     if (!v.empty() && v[0] == '#') {
         v = v.substr(1);
+        /**
+         * @brief Converts a single hex digit character to its numeric value.
+         * @param c Hex digit character ('0'-'9' or 'a'-'f').
+         * @return The digit's value (0-15), or -1 if `c` isn't a recognized hex digit.
+         */
         auto hex1 = [](char c) -> int {
             if (c >= '0' && c <= '9') return c - '0';
             if (c >= 'a' && c <= 'f') return c - 'a' + 10;
@@ -556,6 +644,11 @@ bool ParseColor(const std::string &raw, unsigned char *r, unsigned char *g, unsi
 // if the value has a color/style but no explicit width (mirrors CSS's own
 // "medium" default closely enough for this renderer's purposes). Leaves
 // `edge` untouched (still absent) if nothing recognizable was found.
+/**
+ * @brief Parses one border side's compound value (width/style/color in any order/subset, or "none"/"hidden") into a BorderEdge; every border still draws as a solid line regardless of the style keyword.
+ * @param val Compound border value text (e.g. "1px solid #d0d7de").
+ * @param edge Border edge updated in place; left untouched if nothing recognizable was found.
+ */
 void ParseBorderEdge(const std::string &val, ComputedStyle::BorderEdge &edge) {
     std::istringstream iss(val);
     std::string tok;
@@ -589,6 +682,11 @@ void ParseBorderEdge(const std::string &val, ComputedStyle::BorderEdge &edge) {
     if (any) edge.present = true;
 }
 
+/**
+ * @brief Applies a parsed CSS declaration map to a ComputedStyle, handling color, background, border, font-weight/style, text-decoration, display, font-size, max-width, and horizontal-auto-margin properties.
+ * @param s Style updated in place; only properties present in `decls` (and recognized) are overridden.
+ * @param decls Property-name-to-value map, as produced by ParseDeclarations.
+ */
 void ApplyDeclarations(ComputedStyle &s, const std::unordered_map<std::string, std::string> &decls) {
     unsigned char r, g, b;
     if (auto it = decls.find("color"); it != decls.end() && ParseColor(it->second, &r, &g, &b)) {
@@ -688,6 +786,11 @@ void ApplyDeclarations(ComputedStyle &s, const std::unordered_map<std::string, s
     }
 }
 
+/**
+ * @brief Recursively collects CSS rules from every <style> element's text content in the subtree rooted at `n`, splitting comma-separated selector lists into individual rules.
+ * @param n Root of the subtree to scan.
+ * @param rules Output list appended with one CssRule per selector found.
+ */
 void CollectStyleRules(DomNode *n, std::vector<CssRule> &rules) {
     if (n->type == DomNodeType::Element && n->tag == "style") {
         std::string css;
@@ -724,6 +827,13 @@ void CollectStyleRules(DomNode *n, std::vector<CssRule> &rules) {
 // and gets overwritten wholesale by WalkAndStyle's own `n->style = s;`
 // right after both passes run, which would silently discard whatever this
 // wrote there instead.
+/**
+ * @brief Applies every CssRule whose selector matches node `n` in the given pass (tag selectors, or class/id selectors) to `style`.
+ * @param n Node being styled; its tag/class/id are matched against each rule's selector.
+ * @param style Style updated in place with the declarations of every matching rule, in rule order.
+ * @param rules Full list of collected CSS rules to test against `n`.
+ * @param tag_pass True to match only bare-tag selectors this pass; false to match only .class/#id selectors.
+ */
 void ApplyMatchingRules(DomNode *n, ComputedStyle &style, const std::vector<CssRule> &rules, bool tag_pass) {
     for (const CssRule &r : rules) {
         if (r.selector.empty()) continue;
@@ -737,6 +847,14 @@ void ApplyMatchingRules(DomNode *n, ComputedStyle &style, const std::vector<CssR
     }
 }
 
+/**
+ * @brief Recursively computes and assigns the ComputedStyle for `n` and its descendants: tag defaults, inheritance from `parent`, matching CSS rules, then the inline style="" attribute, plus list-item nesting/marker bookkeeping.
+ * @param n Node to style (no-op if it isn't an Element).
+ * @param parent Already-computed style of `n`'s parent, used for inheritable properties.
+ * @param rules Full list of collected CSS rules to match against `n`.
+ * @param list_depth Current list nesting depth (0 = not inside a list) inherited from the caller.
+ * @param in_ordered Whether the enclosing list (if any) is ordered (<ol>).
+ */
 void WalkAndStyle(DomNode *n, const ComputedStyle &parent, const std::vector<CssRule> &rules, int list_depth,
                    bool in_ordered) {
     if (n->type != DomNodeType::Element) return;

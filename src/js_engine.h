@@ -30,6 +30,12 @@
 // ComputeStyles(doc) afterward if they care about a script having added/
 // removed elements -- this engine can't do that (see js_engine.cpp), so a
 // textContent-only mutation never needs it.
+/**
+ * @brief Runs every script in doc.scripts in document order against doc's DOM, sharing one global scope across all of them.
+ * @param doc The document whose scripts are executed and whose DOM tree they may read/mutate.
+ * @param on_console_log Invoked once per console.log(...) call with its arguments already stringified and space-joined.
+ * @param on_error Invoked once per script that fails to parse or throws while running, with a message locating the problem.
+ */
 void RunScripts(HtmlDoc &doc, const std::function<void(const std::string &)> &on_console_log,
                  const std::function<void(const std::string &)> &on_error);
 

@@ -8,6 +8,7 @@ bool IsPdfPath(const std::string &path) {
     size_t dot = path.find_last_of('.');
     if (dot == std::string::npos) return false;
     std::string ext = path.substr(dot + 1);
+    // Lowercases a single character for case-insensitive extension comparison.
     std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return std::tolower(c); });
     return ext == "pdf";
 }
@@ -51,7 +52,14 @@ namespace {
 // first use, once; never torn down explicitly -- process exit reclaims it,
 // the same way this editor never bothers unloading raylib's GL context on
 // exit either.
+/**
+ * @brief Initializes the process-global PDFium library exactly once, on first call.
+ */
 void EnsurePdfiumInitialized() {
+    /**
+     * @brief One-shot initializer invoked immediately to call FPDF_InitLibrary() and seed `initialized`.
+     * @return true, unconditionally, once FPDF_InitLibrary() has been called.
+     */
     static bool initialized = [] {
         FPDF_InitLibrary();
         return true;
@@ -59,6 +67,11 @@ void EnsurePdfiumInitialized() {
     (void)initialized;
 }
 
+/**
+ * @brief Translates a PDFium FPDF_GetLastError() code into a human-readable message.
+ * @param code The error code returned by FPDF_GetLastError().
+ * @return A short static description of the error.
+ */
 const char *PdfiumErrorString(unsigned long code) {
     switch (code) {
         case FPDF_ERR_SUCCESS: return "no error";
@@ -74,6 +87,11 @@ const char *PdfiumErrorString(unsigned long code) {
 // FPDF_WIDESTRING (search queries) is UTF-16LE, null-terminated. Search
 // queries are typed interactively, so a straightforward decode (not a
 // hardened one) is fine -- malformed UTF-8 bytes are just skipped.
+/**
+ * @brief Decodes a UTF-8 string into a UTF-16LE code unit sequence, skipping malformed bytes.
+ * @param s The UTF-8 input string.
+ * @return The decoded UTF-16LE code units (not null-terminated; callers append the terminator themselves).
+ */
 std::vector<unsigned short> Utf8ToUtf16(const std::string &s) {
     std::vector<unsigned short> out;
     size_t i = 0;
@@ -116,6 +134,9 @@ struct PdfDoc::Impl {
     std::vector<unsigned char> file_data_;
     FPDF_DOCUMENT doc_ = nullptr;
 
+    /**
+     * @brief Closes the underlying PDFium document handle, if one was successfully opened.
+     */
     ~Impl() {
         if (doc_) FPDF_CloseDocument(doc_);
     }

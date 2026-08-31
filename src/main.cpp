@@ -114,6 +114,11 @@ constexpr std::pair<int, int> kIconCodepointRanges[] = {
 // than pulling in the whole Material Design block they live in.
 constexpr int kIconCodepointExtras[] = {0xf0219, 0xf031b, 0xf0331, 0xf05c0, 0xf0721, 0xf0868};
 
+/**
+ * @brief Checks whether a Unicode codepoint falls within the icon-font glyph set.
+ * @param cp Unicode codepoint to test.
+ * @return True if `cp` is covered by kIconCodepointRanges or kIconCodepointExtras.
+ */
 bool IsIconCodepoint(int cp) {
     for (const auto &range : kIconCodepointRanges) {
         if (cp >= range.first && cp <= range.second) return true;
@@ -128,6 +133,10 @@ bool IsIconCodepoint(int cp) {
 // codepoint list LoadFontData/LoadFontFromMemory need -- shared by
 // ApplyFontSize's synchronous path and StartIconFontBakeAsync's
 // background one below, so the two can never drift out of sync.
+/**
+ * @brief Flattens kIconCodepointRanges and kIconCodepointExtras into one codepoint list for font loading.
+ * @return All icon-font codepoints, ranges expanded, followed by the individual extras.
+ */
 std::vector<int> BuildIconCodepoints() {
     std::vector<int> out;
     int range_total = 0;
@@ -173,7 +182,12 @@ IconFontBakeResult g_icon_font_bake_result;
 // same TTF/OTF path this bypasses.
 constexpr int kFontTtfDefaultCharsPadding = 4;
 
+/**
+ * @brief Kicks off the icon-font glyph/atlas bake on a background thread so it overlaps window init.
+ * @param base_size Font size (pixels) to bake the icon font's glyph data and atlas for.
+ */
 void StartIconFontBakeAsync(int base_size) {
+    // Background worker: builds the icon codepoint list and bakes the glyph data + atlas image for base_size.
     g_icon_font_bake_thread = std::thread([base_size] {
         std::vector<int> codepoints = BuildIconCodepoints();
         GlyphInfo *glyphs = LoadFontData(kIconFontTtf, static_cast<int>(kIconFontTtfLen), base_size, codepoints.data(),
@@ -212,6 +226,11 @@ constexpr std::pair<int, int> kSymbolCodepointRanges[] = {
     {0x27b1, 0x27be},  // dingbats
 };
 
+/**
+ * @brief Checks whether a Unicode codepoint falls within the math/symbol-font glyph set.
+ * @param cp Unicode codepoint to test.
+ * @return True if `cp` is covered by kSymbolCodepointRanges.
+ */
 bool IsSymbolCodepoint(int cp) {
     for (const auto &range : kSymbolCodepointRanges) {
         if (cp >= range.first && cp <= range.second) return true;
@@ -357,6 +376,13 @@ std::map<std::pair<int, int>, PdfTextureCacheEntry> g_pdf_page_textures;
 // (headings, images, diagrams) the same way most e-reader "night mode"
 // implementations do; it's a text-reading aid, not a color-accurate
 // filter.
+/**
+ * @brief Interpolates one color channel between a foreground and background value by luminance.
+ * @param fg Channel value to use where luminance is 0 (dark/text end of the gradient).
+ * @param bg Channel value to use where luminance is 1 (light/paper end of the gradient).
+ * @param luminance Source pixel luminance in [0,1] used as the interpolation factor.
+ * @return The interpolated channel value.
+ */
 unsigned char ThemedPdfChannel(unsigned char fg, unsigned char bg, float luminance) {
     return static_cast<unsigned char>(fg + (static_cast<float>(bg) - static_cast<float>(fg)) * luminance);
 }
@@ -497,10 +523,21 @@ struct ClickRegion {
 };
 std::vector<ClickRegion> g_click_regions;
 
+/**
+ * @brief Registers a clickable screen region and the callback to invoke when it is clicked this frame.
+ * @param rect Screen-space rectangle that should respond to a click.
+ * @param action Callback invoked when the region is clicked.
+ */
 void RegisterClickRegion(Rectangle rect, std::function<void()> action) {
     g_click_regions.push_back({rect, std::move(action)});
 }
 
+/**
+ * @brief Tests whether a point lies within a rectangle (half-open on the right/bottom edges).
+ * @param p Point to test.
+ * @param r Rectangle to test against.
+ * @return True if `p` is inside `r`.
+ */
 bool PointInRect(Vector2 p, const Rectangle &r) {
     return p.x >= r.x && p.x < r.x + r.width && p.y >= r.y && p.y < r.y + r.height;
 }
@@ -566,6 +603,14 @@ std::vector<PaneBorderRect> g_pane_border_rects;
 // pixel-space geometry for every leaf pane and every resizable border,
 // without duplicating drawing work. Called from DrawEditor, right before
 // DrawPaneTree itself.
+/**
+ * @brief Recursively captures this frame's pixel-space rects for every leaf pane and resizable border under `node`.
+ * @param node Pane-tree node (leaf or split) to lay out.
+ * @param x Left edge of `node`'s allotted screen area.
+ * @param y Top edge of `node`'s allotted screen area.
+ * @param w Width of `node`'s allotted screen area.
+ * @param h Height of `node`'s allotted screen area.
+ */
 void ComputePaneScreenRects(SplitNode *node, float x, float y, float w, float h) {
     if (node->dir == SplitDir::Leaf) {
         g_pane_screen_rects.push_back({node->pane.id, Rectangle{x, y, w, h}});
@@ -672,6 +717,12 @@ enum class PaneDropZone { Center, Left, Right, Top, Bottom };
 // the middle kCenterThreshold-sized region is Center (merge as a new
 // tab), otherwise whichever edge the point is nearest wins (split that
 // direction), giving the familiar VSCode-style pinwheel of drop zones.
+/**
+ * @brief Determines which drop zone (center/left/right/top/bottom) of `rect` `mouse` is closest to.
+ * @param mouse Current mouse position in screen space.
+ * @param rect Target pane's on-screen rectangle being dragged over.
+ * @return The drop zone the mouse position falls into.
+ */
 PaneDropZone ComputePaneDropZone(Vector2 mouse, const Rectangle &rect) {
     float fx = std::clamp((mouse.x - rect.x) / rect.width, 0.0f, 1.0f);
     float fy = std::clamp((mouse.y - rect.y) / rect.height, 0.0f, 1.0f);
@@ -718,11 +769,35 @@ constexpr float kPaneDragThresholdPx = 4.0f;
 void DrawPaneDragOverlay();  // defined below, alongside UpdatePaneMouseInteraction; called from DrawEditor
 void DrawPaneBorder(float x, float y, float w, float h, bool is_active);  // defined below; also used by DrawSidebars so a focused sidebar gets the same active-border treatment as a focused pane
 
+/**
+ * @brief Computes the pixel height of one text line at the current global font size.
+ * @return Line height in pixels.
+ */
 int LineHeight() { return static_cast<int>(g_font_size) + 6; }
+/**
+ * @brief Computes the pixel height of the top menu bar at the current global font size.
+ * @return Menu bar height in pixels.
+ */
 int MenuBarHeight() { return static_cast<int>(g_font_size) + 12; }
+/**
+ * @brief Computes the pixel height of one dropdown menu item at the current global font size.
+ * @return Menu item height in pixels.
+ */
 int MenuItemHeight() { return static_cast<int>(g_font_size) + 8; }
+/**
+ * @brief Computes the font size used for menu/chrome text, slightly smaller than the buffer font size.
+ * @return Menu font size in pixels, clamped to at least kMinFontSize.
+ */
 float MenuFontSize() { return std::max(kMinFontSize, g_font_size - 2); }
+/**
+ * @brief Computes the pixel height of the pane tab bar based on the menu font size.
+ * @return Tab bar height in pixels.
+ */
 int TabBarHeight() { return static_cast<int>(MenuFontSize()) + 10; }
+/**
+ * @brief Computes the pixel height of a pane's header/breadcrumb strip based on the menu font size.
+ * @return Pane header height in pixels.
+ */
 int PaneHeaderHeight() { return static_cast<int>(MenuFontSize()) + 8; }
 // A Gantt row's height, derived from the live font size rather than a
 // fixed constant (kGanttRowHeight used to be 28px flat) so a row's label
@@ -733,8 +808,17 @@ int PaneHeaderHeight() { return static_cast<int>(MenuFontSize()) + 8; }
 // PaneHeaderHeight() separately.
 // Each Gantt row carries both a task title and its visible scheduled/deadline
 // range, so reserve a compact second line for the latter.
+/**
+ * @brief Computes the pixel height of one Gantt chart row, sized for a title line plus a date-range line.
+ * @return Gantt row height in pixels.
+ */
 int GanttRowHeight() { return static_cast<int>(g_font_size * 2.0f) + 16; }
 
+/**
+ * @brief Formats an org timestamp as a "YYYY-MM-DD" label for Gantt row display.
+ * @param date Timestamp to format.
+ * @return The formatted date string, or an empty string if `date` is not present.
+ */
 std::string GanttDateLabel(const OrgTimestamp &date) {
     if (!date.present) return "";
     char buf[16];
@@ -742,6 +826,11 @@ std::string GanttDateLabel(const OrgTimestamp &date) {
     return buf;
 }
 
+/**
+ * @brief Returns the display name for a Gantt ruler scale.
+ * @param scale Ruler scale to name.
+ * @return "Days", "Months", or "Years" ("Days" as a fallback for an unrecognized value).
+ */
 const char *GanttRulerScaleName(GanttSession::RulerScale scale) {
     switch (scale) {
         case GanttSession::RulerScale::Days: return "Days";
@@ -751,6 +840,11 @@ const char *GanttRulerScaleName(GanttSession::RulerScale scale) {
     return "Days";
 }
 
+/**
+ * @brief Computes the pixel height of the Gantt ruler, doubled for the Months scale's extra year band.
+ * @param sess Gantt session whose ruler_scale determines the height.
+ * @return Ruler height in pixels.
+ */
 int GanttRulerHeight(const GanttSession &sess) {
     // Month cells need a dedicated year band above their labels; the other
     // scales retain the compact one-line ruler.
@@ -759,12 +853,21 @@ int GanttRulerHeight(const GanttSession &sess) {
 
 constexpr float kGanttBarHeight = 12.0f;
 
+/**
+ * @brief Returns the 3-letter abbreviation for a 1-based month number.
+ * @param month Month number (1 = January .. 12 = December).
+ * @return The month's abbreviation, or an empty string if out of range.
+ */
 const char *GanttMonthAbbrev(int month) {
     static constexpr const char *kMonths[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
                                                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
     return month >= 1 && month <= 12 ? kMonths[month - 1] : "";
 }
 
+/**
+ * @brief Computes today's date as an org day-number (days since org's epoch).
+ * @return Today's day number, or 0 if the local time could not be resolved.
+ */
 long long GanttTodayDay() {
     std::time_t now = std::time(nullptr);
     std::tm *local = std::localtime(&now);
@@ -775,10 +878,20 @@ long long GanttTodayDay() {
 // the command bar instead of the buffer's own blinking cursor, so this is
 // checked at both those call sites below rather than listing all three
 // modes twice.
+/**
+ * @brief Checks whether an editor mode shows a text-editing line in the command bar.
+ * @param m Editor mode to test.
+ * @return True if `m` is Command, SearchForward, or SearchBackward.
+ */
 bool IsCommandLineMode(Mode m) {
     return m == Mode::Command || m == Mode::SearchForward || m == Mode::SearchBackward;
 }
 
+/**
+ * @brief Converts an editor ThemeColor to a raylib Color.
+ * @param c Theme color to convert.
+ * @return The equivalent raylib Color.
+ */
 Color ToRaylib(ThemeColor c) { return Color{c.r, c.g, c.b, c.a}; }
 
 // Resolves a highlight-group name to a color via the active theme (Phase 9,
@@ -787,7 +900,18 @@ Color ToRaylib(ThemeColor c) { return Color{c.r, c.g, c.b, c.a}; }
 // falling back to a substring heuristic sourced from the same theme's base
 // role colors for un-migrated decoration hl_group names (e.g. "MepGitAdd")
 // that don't match a group 1:1.
+/**
+ * @brief Resolves a highlight-group name to a color via the active theme, falling back to a substring heuristic.
+ * @param name Highlight-group name to resolve (e.g. "StatusLine", "MepGitAdd").
+ * @return The resolved raylib color.
+ */
 Color ResolveHlGroup(const std::string &name) {
+    /**
+     * @brief Looks up a theme highlight group's color, falling back to a caller-supplied default.
+     * @param group Highlight-group name to resolve.
+     * @param fallback Color to return if `group` doesn't resolve.
+     * @return The resolved theme color, or `fallback`.
+     */
     auto get = [](const char *group, ThemeColor fallback) {
         ThemeColor v;
         return g_editor.ResolveHighlight(group, &v) ? v : fallback;
@@ -795,6 +919,11 @@ Color ResolveHlGroup(const std::string &name) {
     if (name.empty()) return ToRaylib(get("Normal", {211, 211, 211, 255}));
     ThemeColor c;
     if (g_editor.ResolveHighlight(name, &c)) return ToRaylib(c);
+    /**
+     * @brief Checks whether the enclosing `name` contains a given substring.
+     * @param s Substring to search for.
+     * @return True if `s` occurs within `name`.
+     */
     auto contains = [&](const char *s) { return name.find(s) != std::string::npos; };
     if (contains("Error") || contains("Delete") || contains("Red")) return ToRaylib(get("Red", {224, 108, 117, 255}));
     if (contains("Warn") || contains("Yellow")) return ToRaylib(get("Yellow", {229, 192, 123, 255}));
@@ -806,6 +935,12 @@ Color ResolveHlGroup(const std::string &name) {
     return ToRaylib(get("Normal", {200, 200, 200, 255}));
 }
 
+/**
+ * @brief Builds the output file path for a Gantt export, derived from the buffer's filename.
+ * @param buffer_id Buffer whose filename the export path is derived from.
+ * @param extension File extension to append (without a leading dot).
+ * @return The export path, formatted as "<basename-without-ext>.gantt.<extension>" ("gantt.<extension>" if the buffer has no filename).
+ */
 std::string GanttExportPath(int buffer_id, const char *extension) {
     std::filesystem::path path(g_editor.GetBuffer(buffer_id).filename);
     if (path.empty()) path = "gantt";
@@ -813,6 +948,11 @@ std::string GanttExportPath(int buffer_id, const char *extension) {
     return path.string() + ".gantt." + extension;
 }
 
+/**
+ * @brief Escapes text for safe embedding in SVG markup (&, <, >, ").
+ * @param text Raw text to escape.
+ * @return The XML-escaped text.
+ */
 std::string SvgEscape(const std::string &text) {
     std::string out;
     for (char c : text) {
@@ -827,6 +967,11 @@ std::string SvgEscape(const std::string &text) {
     return out;
 }
 
+/**
+ * @brief Formats a raylib Color as a "#rrggbb" SVG color string (alpha is dropped).
+ * @param color Color to format.
+ * @return The hex color string.
+ */
 std::string SvgColor(Color color) {
     char out[8];
     std::snprintf(out, sizeof(out), "#%02x%02x%02x", color.r, color.g, color.b);
@@ -836,6 +981,12 @@ std::string SvgColor(Color color) {
 // Writes the currently visible Gantt canvas as editable SVG. It deliberately
 // uses the session's rendered viewport (rather than inventing pagination), so
 // exported grid lines, scale and labels match exactly what the user sees.
+/**
+ * @brief Writes the currently visible Gantt chart viewport as an editable SVG file.
+ * @param buffer_id Buffer whose Gantt session is exported.
+ * @param path Output SVG file path.
+ * @return True on success; false if the buffer has no Gantt session/content or the file could not be written.
+ */
 bool ExportGanttSvg(int buffer_id, const std::string &path) {
     const GanttSession *sess = g_editor.GetGantt(buffer_id);
     if (!sess || sess->content_w <= 0 || sess->content_h <= 0) return false;
@@ -921,6 +1072,12 @@ bool ExportGanttSvg(int buffer_id, const std::string &path) {
     return static_cast<bool>(out);
 }
 
+/**
+ * @brief Exports an image as a single-page PDF by embedding it as a JPEG XObject.
+ * @param image Image to export.
+ * @param path Output PDF file path.
+ * @return True on success; false if the intermediate JPEG could not be written/read or the PDF file could not be opened.
+ */
 bool ExportJpegPdf(Image image, const std::string &path) {
     // ExportImageToMemory in raylib 5 only implements PNG, even when the
     // regular file exporter supports JPEG. Use a short-lived JPEG next to
@@ -937,6 +1094,7 @@ bool ExportJpegPdf(Image image, const std::string &path) {
     int width = image.width, height = image.height;
     std::ostringstream objects;
     std::vector<long long> offsets;
+    // Appends one numbered PDF object to `objects` and records its byte offset for the xref table.
     auto object = [&](int id, const std::string &body) {
         offsets.push_back(static_cast<long long>(objects.tellp()));
         objects << id << " 0 obj\n" << body << "\nendobj\n";
@@ -970,6 +1128,11 @@ bool ExportJpegPdf(Image image, const std::string &path) {
     return static_cast<bool>(out);
 }
 
+/**
+ * @brief Captures a screenshot of the Gantt chart's content area and exports it as an image or PDF.
+ * @param buffer_id Buffer whose Gantt chart is exported.
+ * @param extension Output format/extension (e.g. "png", "jpg", "pdf").
+ */
 void ExportGanttRaster(int buffer_id, const char *extension) {
     const GanttSession *sess = g_editor.GetGantt(buffer_id);
     if (!sess) return;
@@ -982,6 +1145,11 @@ void ExportGanttRaster(int buffer_id, const char *extension) {
 }
 
 
+/**
+ * @brief Splits text into lines on '\n', without keeping the newline characters.
+ * @param text Text to split.
+ * @return The lines of `text`, in order (always at least one element, even for an empty string).
+ */
 std::vector<std::string> SplitLines(const std::string &text) {
     std::vector<std::string> lines;
     size_t start = 0;
@@ -1000,6 +1168,11 @@ std::vector<std::string> SplitLines(const std::string &text) {
 // The part of `path` after its last '/', or the whole thing if there isn't
 // one -- DrawPane's own pane-header label (both the single-buffer and
 // per-pane buffer-tab-strip cases) shows just this, not the full path.
+/**
+ * @brief Returns the last path component of `path`.
+ * @param path Path to strip.
+ * @return The part of `path` after its last '/', or the whole string if there is none.
+ */
 std::string Basename(const std::string &path) {
     size_t slash = path.find_last_of('/');
     return slash == std::string::npos ? path : path.substr(slash + 1);
@@ -1019,6 +1192,15 @@ std::string Basename(const std::string &path) {
 // same thing a plain MeasureTextEx(g_font, text, ...).x would for an
 // icon-free string, so callers that need it (click-region sizing, right-
 // alignment, toast box width) don't need a second pass.
+/**
+ * @brief Draws (or measures) UI chrome text, routing each codepoint to the icon, symbol, or main font as needed.
+ * @param text Text to draw, possibly containing icon/symbol codepoints mixed with ordinary characters.
+ * @param pos Top-left screen position to start drawing at.
+ * @param font_size Font size in pixels.
+ * @param tint Text color.
+ * @param measure_only If true, skips the actual draw calls and only measures the text.
+ * @return The total width drawn/measured, in pixels.
+ */
 float DrawUiText(const std::string &text, Vector2 pos, float font_size, Color tint, bool measure_only = false) {
     float x = pos.x;
     const char *s = text.c_str();
@@ -1035,6 +1217,12 @@ float DrawUiText(const std::string &text, Vector2 pos, float font_size, Color ti
     return x - pos.x;
 }
 
+/**
+ * @brief Measures the rendered width of UI chrome text without drawing it.
+ * @param text Text to measure.
+ * @param font_size Font size in pixels.
+ * @return The measured width, in pixels.
+ */
 float MeasureUiText(const std::string &text, float font_size) {
     return DrawUiText(text, Vector2{0, 0}, font_size, BLANK, true);
 }
@@ -1053,12 +1241,19 @@ float MeasureUiText(const std::string &text, float font_size) {
 // per-character draw path (DrawLineFast below) is an O(1) lookup instead.
 int g_glyph_index[95] = {};
 
+/**
+ * @brief Caches g_font's glyph index for each ASCII 32..126 codepoint into g_glyph_index for O(1) lookup.
+ */
 void CacheGlyphIndices() {
     for (int c = 32; c <= 126; c++) g_glyph_index[c - 32] = GetGlyphIndex(g_font, c);
 }
 
 // Reloads the font at 2x the target draw size (supersampled for crisper
 // scaling) and recomputes the monospace character width used for layout.
+/**
+ * @brief Reloads g_font (and the icon/math/terminal fonts) at a new size and recomputes layout metrics.
+ * @param size Requested font size in pixels, clamped to [kMinFontSize, kMaxFontSize].
+ */
 void ApplyFontSize(float size) {
     g_font_size = std::max(kMinFontSize, std::min(size, kMaxFontSize));
     if (g_font.texture.id != 0) UnloadFont(g_font);
@@ -1226,6 +1421,9 @@ constexpr int kOfficeSpecialCharCount = sizeof(kOfficeSpecialChars) / sizeof(kOf
 // ApplyFontSize's own 2x-supersample convention) large enough to cover the
 // biggest heading size any session's zoom is likely to reach without
 // visibly blurring when DrawTextEx scales the atlas down.
+/**
+ * @brief Bakes the 12 office-pane font variants (Sans/Serif/Mono x regular/bold/italic/bold-italic) once at startup.
+ */
 void LoadOfficeFonts() {
     constexpr int kOfficeFontBasePt = 48;
     // Default ASCII range (32..126, matching raylib's own nullptr-codepoints
@@ -1288,6 +1486,11 @@ void LoadOfficeFonts() {
 // with this format draws with -- strike-through has no dedicated glyph
 // variant, drawn as an overlay line instead (see the office DrawPane
 // branch), so it doesn't affect font selection.
+/**
+ * @brief Selects the baked office font matching a format's family/weight/style.
+ * @param fmt Format whose font family, bold, and italic flags select the variant.
+ * @return Reference to the matching baked Font global.
+ */
 Font &OfficeFontFor(const DocFormat &fmt) {
     if (fmt.font_family == OfficeFontFamily::Serif) {
         if (fmt.bold && fmt.italic) return g_office_font_serif_bolditalic;
@@ -1310,6 +1513,11 @@ Font &OfficeFontFor(const DocFormat &fmt) {
 // Body-text-relative size multiplier for a paragraph's heading level (0 =
 // body). v1 simplification: a handful of fixed ratios, not a real style
 // cascade (see office_doc.h's own exclusion list).
+/**
+ * @brief Returns the body-text-relative size multiplier for a paragraph's heading level.
+ * @param heading_level Heading level (0 = body text, 1-4+ = heading levels).
+ * @return The size multiplier to apply to the body font size.
+ */
 float OfficeHeadingMultiplier(int heading_level) {
     switch (heading_level) {
         case 1: return 1.8f;
@@ -1340,6 +1548,13 @@ struct OfficeWrapLine {
 // FormatAt at the token's start -- spans from both parsers already align
 // to word boundaries in practice, so a token straddling a format change
 // is not a case real documents hit.
+/**
+ * @brief Greedily word-wraps one paragraph's text into visual lines against a pixel width.
+ * @param p Paragraph to wrap (uses its text and format spans).
+ * @param max_width Maximum line width in pixels.
+ * @param font_size Font size in pixels used to measure tokens.
+ * @return The wrapped lines as contiguous [start,end) byte ranges into `p.text`.
+ */
 std::vector<OfficeWrapLine> WordWrapOfficeParagraph(const DocParagraph &p, float max_width, float font_size) {
     std::vector<OfficeWrapLine> lines;
     const std::string &text = p.text;
@@ -1349,6 +1564,7 @@ std::vector<OfficeWrapLine> WordWrapOfficeParagraph(const DocParagraph &p, float
         lines.push_back({0, 0});
         return lines;
     }
+    // Measures the pixel width of the token/tab spanning [s, e) in its formatted font.
     auto token_width = [&](int s, int e) -> float {
         if (e == s + 1 && text[s] == '\t') {
             Font &f = OfficeFontFor(FormatAt(p, s));
@@ -1420,6 +1636,14 @@ std::vector<OfficeWrapLine> WordWrapOfficeParagraph(const DocParagraph &p, float
 // draw loop's own height math exactly (image scaled down to fit
 // max_width, same +8.0f gaps) without touching a Texture2D -- natural_w/
 // natural_h come straight from DocImage, so this needs no GPU load.
+/**
+ * @brief Computes the extra vertical space a paragraph's anchored table/image adds below its wrapped text.
+ * @param doc Office document owning `para`'s table/image references.
+ * @param para Paragraph whose table_ref/image_ref extra height is computed.
+ * @param max_width Available width in pixels, used to scale a wide image down to fit.
+ * @param body_size Body font size in pixels, used to size table row height.
+ * @return The extra height, in pixels, to add below the paragraph's wrapped lines.
+ */
 float OfficeParagraphExtraHeight(const OfficeDoc &doc, const DocParagraph &para, float max_width, float body_size) {
     float extra = 0.0f;
     if (para.table_ref >= 0 && para.table_ref < static_cast<int>(doc.tables.size())) {
@@ -1453,6 +1677,13 @@ struct OfficeFormatRun {
     bool dollar_delimited_math = false;
 };
 
+/**
+ * @brief Splits a paragraph's [a,b) byte range into contiguous runs, each sharing one DocFormat.
+ * @param p Paragraph whose spans supply the formatting.
+ * @param a Start byte offset (inclusive) of the range to split.
+ * @param b End byte offset (exclusive) of the range to split.
+ * @return The formatted runs covering [a,b), gaps between spans filled with a default-format run.
+ */
 std::vector<OfficeFormatRun> BuildOfficeFormatRuns(const DocParagraph &p, int a, int b) {
     std::vector<OfficeFormatRun> runs;
     int pos = a;
@@ -1473,6 +1704,15 @@ std::vector<OfficeFormatRun> BuildOfficeFormatRuns(const DocParagraph &p, int a,
 // editor's small MathJax-compatible subset with `$...$`; escaped dollars and
 // `$$` display blocks deliberately remain literal here. Persisted math spans
 // (created by the fx command) already carry DocFormat::math and pass through.
+/**
+ * @brief Builds display runs for one visual line, splitting out `$...$` inline-math chunks from plain-text runs.
+ * @param p Paragraph whose text/spans are scanned for math delimiters.
+ * @param a Start byte offset (inclusive) of the range to build runs for.
+ * @param b End byte offset (exclusive) of the range to build runs for.
+ * @param reveal_active_source If true, shows raw `$...$` delimiters/text when the cursor is inside them, instead of rendering as math.
+ * @param cursor_col Current cursor byte offset, used with `reveal_active_source`.
+ * @return The display runs covering [a,b), with math chunks flagged via DocFormat::math or dollar_delimited_math.
+ */
 std::vector<OfficeFormatRun> BuildOfficeDisplayRuns(const DocParagraph &p, int a, int b,
                                                      bool reveal_active_source, int cursor_col) {
     std::vector<OfficeFormatRun> out;
@@ -1520,6 +1760,14 @@ std::vector<OfficeFormatRun> BuildOfficeDisplayRuns(const DocParagraph &p, int a
 // DrawTextCodepoint for anything outside the cached ASCII range, e.g. a
 // non-ASCII byte in a loaded file -- InsertChar only ever produces 32..126
 // itself, but file content read from disk isn't bound by that.
+/**
+ * @brief Draws one monospace text line using cached glyph indices and fixed per-column advance.
+ * @param line Text to draw.
+ * @param x Left screen x position of the line's first column.
+ * @param y Top screen y position of the line.
+ * @param font_size Font size in pixels.
+ * @param tint Text color.
+ */
 void DrawLineFast(const std::string &line, float x, float y, float font_size, Color tint) {
     // Decodes by Unicode codepoint (GetCodepointNext), same as raylib's own
     // DrawTextEx -- not by byte -- so a multi-byte UTF-8 character (never
@@ -1568,6 +1816,15 @@ void DrawLineFast(const std::string &line, float x, float y, float font_size, Co
 
 // Where column `col` of a row lands: `base_ly` is the row's own first
 // visual line's y (what `ly` used to mean everywhere, pre-wrap).
+/**
+ * @brief Computes the screen position of a row's column, accounting for soft-wrap.
+ * @param col Character column within the row.
+ * @param wrap_cols Columns per visual sub-row before wrapping (<=0 disables wrapping).
+ * @param text_x Left screen x of the row's text area (column 0).
+ * @param base_ly Screen y of the row's first visual line.
+ * @param line_height Pixel height of one visual line, used to offset wrapped sub-rows downward.
+ * @return The screen position of `col`.
+ */
 Vector2 WrapPos(int col, int wrap_cols, float text_x, float base_ly, int line_height) {
     if (wrap_cols <= 0 || col < wrap_cols) return Vector2{text_x + col * g_char_width, base_ly};
     int sub = col / wrap_cols;
@@ -1579,6 +1836,16 @@ Vector2 WrapPos(int col, int wrap_cols, float text_x, float base_ly, int line_he
 // span that straddles a wrap boundary needs one rectangle-or-text-draw per
 // side of it, same as a fold or org inline image already needing more than
 // one draw call for what's logically a single row.
+/**
+ * @brief Invokes `draw` once per visual sub-row that the column range [col_a, col_b) touches under soft-wrap.
+ * @param col_a Start column (inclusive) of the range to split by wrap boundary.
+ * @param col_b End column (exclusive) of the range to split by wrap boundary.
+ * @param wrap_cols Columns per visual sub-row before wrapping (<=0 disables wrapping).
+ * @param text_x Left screen x of the row's text area (column 0).
+ * @param base_ly Screen y of the row's first visual line.
+ * @param line_height Pixel height of one visual line, used to offset wrapped sub-rows downward.
+ * @param draw Callback invoked as draw(y, x0, x1, piece_col_start, piece_col_end) for each wrap piece.
+ */
 template <typename Fn>
 void ForEachWrapPiece(int col_a, int col_b, int wrap_cols, float text_x, float base_ly, int line_height, Fn &&draw) {
     if (col_b <= col_a) return;
@@ -1605,6 +1872,12 @@ void ForEachWrapPiece(int col_a, int col_b, int wrap_cols, float text_x, float b
 // column index itself for pure-ASCII content (every other decoration
 // consumer already assumes that, which holds for typical source code, but
 // not for terminal output, which routinely isn't ASCII-only).
+/**
+ * @brief Converts a character-column index into a byte offset within a line, decoding UTF-8 codepoints.
+ * @param line Line text to scan.
+ * @param col Character column index to convert.
+ * @return The byte offset within `line` corresponding to `col`.
+ */
 size_t ColumnToByteOffset(const std::string &line, int col) {
     if (col <= 0) return 0;
     const char *text = line.c_str();
@@ -1620,6 +1893,9 @@ size_t ColumnToByteOffset(const std::string &line, int col) {
     return static_cast<size_t>(i);
 }
 
+/**
+ * @brief Handles Ctrl+Shift+=/- keyboard shortcuts to grow/shrink the global font size.
+ */
 void HandleFontSizeShortcuts() {
     bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
     bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
@@ -3877,13 +4153,16 @@ const char *kBuiltinSymbols =
 // Sidebar gets for free (SidebarWidget.on_click) -- it's plain buffer
 // text -- and mep.map has no buffer-scoped keymap concept (a single-key
 // binding is global across every buffer, see K/Q's own LSP bindings
-// above; that's why this doesn't reserve a fresh key for "jump" at all).
-// Instead mep.structure_split_open() itself is the jump action: calling
-// it again *from inside* the structure pane (rather than from the
-// source file) jumps to whichever entry line the cursor's sitting on --
-// the same open/act-on-current-context toggle shape mep.term_jump uses
-// for its Run/REPL pane, just folded into the one open call instead of
-// a second dedicated mapping.
+// above). <CR> jumping to the entry under the cursor instead uses
+// mep.buffer_set_on_enter (lua_env.cpp/editor.cpp's SetBufferOnEnter), a
+// narrower single-slot hook added for exactly this: Normal mode's own
+// bare Enter had no default behavior of its own to preserve, so claiming
+// it for one specific buffer (mep_structure_split_buf below) is safe
+// without a general per-buffer keymap registry. mep.structure_split_open()
+// itself is *also* still the jump action when re-invoked from inside the
+// pane (the same open/act-on-current-context toggle shape mep.term_jump
+// uses for its Run/REPL pane) -- <leader>aa keeps working there too, <CR>
+// is just a second, more discoverable way to trigger the exact same jump.
 const char *kBuiltinStructure =
     // Per-kind Nerd Font glyph + named highlight-group color, keyed by
     // TSStructureNode.kind (treesitter_structure_queries.h's own curated
@@ -3985,16 +4264,24 @@ const char *kBuiltinStructure =
     "    end\n"
     "  end\n"
     "end\n"
+    // Shared by both jump entry points below: <leader>aa re-invoked from
+    // inside the pane, and plain <CR> there (mep.buffer_set_on_enter,
+    // registered once below against mep_structure_split_buf -- see this
+    // whole block's own header comment for why <CR> can claim a bare key
+    // here when it otherwise couldn't for an ordinary buffer).
+    "local function mep_structure_split_jump()\n"
+    "  local row = mep.cursor()\n"
+    "  local item = mep_structure_split_items and mep_structure_split_items[row]\n"
+    "  if not item then mep.notify('No structure entry on this line', 'warn') return end\n"
+    "  if not (mep_structure_split_source and mep.pane_focus_buffer(mep_structure_split_source)) then\n"
+    "    mep.notify('Source pane is no longer open', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  mep.set_cursor(item.row, item.col)\n"
+    "end\n"
     "function mep.structure_split_open()\n"
     "  if mep_structure_split_buf and mep.current_buffer() == mep_structure_split_buf then\n"
-    "    local row = mep.cursor()\n"
-    "    local item = mep_structure_split_items and mep_structure_split_items[row]\n"
-    "    if not item then mep.notify('No structure entry on this line', 'warn') return end\n"
-    "    if not (mep_structure_split_source and mep.pane_focus_buffer(mep_structure_split_source)) then\n"
-    "      mep.notify('Source pane is no longer open', 'warn')\n"
-    "      return\n"
-    "    end\n"
-    "    mep.set_cursor(item.row, item.col)\n"
+    "    mep_structure_split_jump()\n"
     "    return\n"
     "  end\n"
     "  local source_buf = mep.current_buffer()\n"
@@ -4008,7 +4295,10 @@ const char *kBuiltinStructure =
     "  else\n"
     "    lines = {err}\n"
     "  end\n"
-    "  if not mep_structure_split_buf then mep_structure_split_buf = mep.buffer_new() end\n"
+    "  if not mep_structure_split_buf then\n"
+    "    mep_structure_split_buf = mep.buffer_new()\n"
+    "    mep.buffer_set_on_enter(mep_structure_split_buf, mep_structure_split_jump)\n"
+    "  end\n"
     "  mep.buffer_set_lines(mep_structure_split_buf, lines)\n"
     "  mep_structure_split_apply_decos()\n"
     "  if not mep.pane_focus_buffer(mep_structure_split_buf) then\n"
@@ -4048,13 +4338,26 @@ const char *kBuiltinStructure =
     "    widgets[1] = {id = 'msg', text = '(no definitions found)'}\n"
     "  else\n"
     "    local current = mep_structure_current_index(items, mep.cursor())\n"
+    "    local source_buf = mep.current_buffer()\n"
     "    for i, it in ipairs(items) do\n"
     "      local style = mep_structure_style(it.kind)\n"
     "      widgets[#widgets + 1] = {\n"
     "        id = tostring(i), text = it.name,\n"
     "        icon = string.rep('  ', it.depth) .. style.icon, hl = style.hl,\n"
     "        current = (i == current),\n"
-    "        on_click = function() mep.set_cursor(it.row, it.col) end,\n"
+    // Jump-and-focus, not just jump: move the cursor in the source
+    // buffer *and* hand keyboard focus back to whichever pane shows it
+    // (mep.pane_focus_buffer also resyncs mode_ off Mode::Sidebar via
+    // SyncModeToActivePaneBuffer -- see FocusPaneShowingBuffer, editor.cpp)
+    // so <CR>/double-click here lands you editing at that spot instead of
+    // silently moving a background pane's cursor while focus stays on the
+    // sidebar. Mirrors mep.structure_split_open's own jump-back-into-
+    // source-pane action just above, and captures source_buf once per
+    // render (not mep.current_buffer() inside the closure) for the same
+    // reason mep_structure_split_source is captured once per open --
+    // stays correct even if the tracked pane's own buffer identity outlives
+    // this particular render.
+    "        on_click = function() mep.set_cursor(it.row, it.col) mep.pane_focus_buffer(source_buf) end,\n"
     "      }\n"
     "    end\n"
     "  end\n"
@@ -10846,6 +11149,115 @@ const char *kBuiltinPickerSources =
     "    on_exit = function() flush() end,\n"
     "  })\n"
     "end)\n"
+    // '/' buffer-wide fuzzy line search: overrides Vim's own hardcoded
+    // incremental '/' (Editor::DispatchNormalKey's case '/', still what
+    // runs if this mapping is ever cleared -- mep.map's own doc comment,
+    // lua_env.cpp, "Overrides the builtin for that key") with a picker
+    // over every line of the *current* buffer, same shape as find_files/
+    // live_grep above but sourced from mep.get_line/mep.line_count
+    // instead of a job. Preview is centered on the highlighted line
+    // (kBufferSearchContext lines either side) rather than
+    // mep.picker_preview_file's top-of-file default -- a match deep in a
+    // long file is exactly the case that needs surrounding context shown,
+    // which is what distinguishes this from just reusing PreviewFile.
+    //
+    // Both the results list and the preview are Treesitter-highlighted
+    // via mep.ts_captures (same call kBuiltinSyntax's mep.syntax_highlight
+    // uses for the real buffer view), routed through PickerItem/preview
+    // `hl` spans (PickerHlSpan, editor.h; DrawPickerOverlay, main.cpp)
+    // instead of mep.deco_add -- those decorations are buffer-anchored,
+    // but a picker row/preview line is synthetic text (a line-number
+    // prefix and, in the preview, a '> '/'  ' gutter marker prepended to
+    // the real line), so captures are computed once against the buffer's
+    // own text and every span is shifted by that prefix's byte length
+    // before being handed to the picker.\n"
+    "local kBufferSearchContext = 10\n"
+    // Same capture -> highlight-group resolution as kBuiltinSyntax's own
+    // (local, chunk-private) mep_ts_resolve_hl -- duplicated rather than
+    // shared since Lua chunks loaded via separate DoString calls don't
+    // share locals (see kBuiltinOrgExport's mep_org_export_resolve_hl,
+    // same reasoning). mep.ts_capture_hl itself is a real `mep.*` global,
+    // so only this lookup wrapper needs its own copy.\n"
+    "local function mep_buffer_search_resolve_hl(capture)\n"
+    "  local hl = mep.ts_capture_hl[capture]\n"
+    "  if hl then return hl end\n"
+    "  local base = capture:match('^([^.]+)')\n"
+    "  return base and mep.ts_capture_hl[base]\n"
+    "end\n"
+    "function mep.buffer_search()\n"
+    "  local n = mep.line_count()\n"
+    "  local lines = {}\n"
+    "  for i = 1, n do lines[i] = mep.get_line(i) end\n"
+    "  local ft = mep_lsp_filetype(mep.filename())\n"
+    "  local captures = ft and mep.ts_captures(ft, table.concat(lines, '\\n'))\n"
+    // Grouped by row up front so both the item list and every preview
+    // call below are an O(1) lookup per line instead of rescanning the
+    // whole capture list.\n"
+    "  local spans_by_row = {}\n"
+    "  if captures then\n"
+    "    for _, c in ipairs(captures) do\n"
+    "      local hl = mep_buffer_search_resolve_hl(c.capture)\n"
+    "      if hl then\n"
+    "        local row_spans = spans_by_row[c.row]\n"
+    "        if not row_spans then row_spans = {}; spans_by_row[c.row] = row_spans end\n"
+    "        row_spans[#row_spans + 1] = {col_start = c.col_start, col_end = c.col_end, hl = hl}\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    // '%4d  ' is 6 bytes wide (kPrefixLen); shifting each span by that
+    // many columns keeps 1-indexed col_start/col_end valid over the
+    // prefixed display string instead of the raw line.\n"
+    "  local kPrefixLen = 6\n"
+    "  local function offset_spans(row_spans, offset)\n"
+    "    if not row_spans then return nil end\n"
+    "    local out = {}\n"
+    "    for i, s in ipairs(row_spans) do\n"
+    "      out[i] = {col_start = s.col_start + offset, col_end = s.col_end + offset, hl = s.hl}\n"
+    "    end\n"
+    "    return out\n"
+    "  end\n"
+    "  local items = {}\n"
+    "  for i = 1, n do\n"
+    "    items[i] = {\n"
+    "      display = string.format('%4d  %s', i, lines[i]), data = tostring(i),\n"
+    "      hl = offset_spans(spans_by_row[i], kPrefixLen),\n"
+    "    }\n"
+    "  end\n"
+    // Marks the matched line with a '> ' gutter (2 more bytes than the
+    // kPrefixLen offset above, so its own spans shift by kPrefixLen + 2)
+    // since the preview text is plain aside from these spans -- the only
+    // way to make the matched row visually distinct from its context.\n"
+    "  local function show_preview(row)\n"
+    "    local from = math.max(1, row - kBufferSearchContext)\n"
+    "    local to = math.min(n, row + kBufferSearchContext)\n"
+    "    local out_lines, out_spans = {}, {}\n"
+    "    for r = from, to do\n"
+    "      local marker = (r == row) and '> ' or '  '\n"
+    "      out_lines[#out_lines + 1] = marker .. string.format('%4d  %s', r, lines[r])\n"
+    "      local shifted = offset_spans(spans_by_row[r], #marker + kPrefixLen)\n"
+    "      if shifted then\n"
+    "        local out_row = #out_lines\n"
+    "        for _, s in ipairs(shifted) do\n"
+    "          out_spans[#out_spans + 1] = {row = out_row, col_start = s.col_start, col_end = s.col_end, hl = s.hl}\n"
+    "        end\n"
+    "      end\n"
+    "    end\n"
+    "    mep.picker_set_preview(table.concat(out_lines, '\\n'), out_spans)\n"
+    "  end\n"
+    "  mep.picker_open('Buffer Lines', items, function(item)\n"
+    "    if item then mep.set_cursor(tonumber(item), 1) end\n"
+    "  end, nil, nil, function(item)\n"
+    "    if item and item ~= '' then show_preview(tonumber(item)) end\n"
+    "  end)\n"
+    // Primes the preview against item[1] (n == 0 has no item to prime,
+    // and OpenPicker always starts with picker_selected_ == 0) -- matches
+    // find_files' own `highlighted = lines[1]` priming just above so the
+    // preview column is never blank until the first arrow/Ctrl-N press.\n"
+    "  if n > 0 then show_preview(1) end\n"
+    "end\n"
+    "mep.command('MepBufferSearch', mep.buffer_search)\n"
+    "mep.leader_map('/', 'Buffer fuzzy find', mep.buffer_search)\n"
+    "mep.map('n', '/', mep.buffer_search, {desc = 'Buffer fuzzy find (picker)'})\n"
     "function mep.buffers()\n"
     "  mep.picker_open('Buffers', mep.buffer_list(), function(item)\n"
     "    if item then mep.buffer_switch(tonumber(item)) end\n"
@@ -10895,43 +11307,51 @@ const char *kAboutText =
     "\n"
     "github.com/jordanschupbach/mep";
 
+/**
+ * @brief Opens the generic help/text overlay (DrawHelpOverlay) with the given body text.
+ * @param text The text to display in the overlay.
+ */
 void ShowOverlay(const std::string &text) {
     g_help_overlay_text = text;
     g_show_help_overlay = true;
 }
 
+/**
+ * @brief (Re)builds the top-level menu bar structure (g_menus) with its File/Edit/Window/Help
+ * menus and their item actions.
+ */
 void BuildMenus() {
     g_menus = {
         {"File",
          {
-             {"New", [] { g_editor.NewBuffer(); }},
-             {"Open...", [] { g_editor.BeginCommand("e "); }},
-             {"Save", [] { g_editor.RunCommand("w"); }},
-             {"Save As...", [] { g_editor.BeginCommand("w "); }},
-             {"Quit", [] { g_editor.RunCommand("q"); }},
+             {"New", [] { g_editor.NewBuffer(); }},                // creates a new empty buffer
+             {"Open...", [] { g_editor.BeginCommand("e "); }},      // starts an ":e " command for the user to complete
+             {"Save", [] { g_editor.RunCommand("w"); }},            // writes the current buffer
+             {"Save As...", [] { g_editor.BeginCommand("w "); }},   // starts a ":w " command for the user to complete
+             {"Quit", [] { g_editor.RunCommand("q"); }},            // runs ":q"
          }},
         {"Edit",
          {
-             {"Undo", [] { g_editor.Undo(); }},
-             {"Redo", [] { g_editor.Redo(); }},
-             {"Cut", [] { g_editor.Cut(); }},
-             {"Copy", [] { g_editor.Copy(); }},
-             {"Paste", [] { g_editor.Paste(); }},
+             {"Undo", [] { g_editor.Undo(); }},   // undoes the last edit
+             {"Redo", [] { g_editor.Redo(); }},   // redoes the last undone edit
+             {"Cut", [] { g_editor.Cut(); }},     // cuts the current selection
+             {"Copy", [] { g_editor.Copy(); }},   // copies the current selection
+             {"Paste", [] { g_editor.Paste(); }}, // pastes the current register
          }},
         {"Window",
          {
-             {"Split Horizontal", [] { g_editor.RunCommand("split"); }},
-             {"Split Vertical", [] { g_editor.RunCommand("vsplit"); }},
-             {"Close Pane", [] { g_editor.RunCommand("close"); }},
-             {"New Tab", [] { g_editor.RunCommand("tabnew"); }},
-             {"Close Tab", [] { g_editor.RunCommand("tabdelete"); }},
-             {"Next Tab", [] { g_editor.RunCommand("tabnext"); }},
-             {"Previous Tab", [] { g_editor.RunCommand("tabprevious"); }},
+             {"Split Horizontal", [] { g_editor.RunCommand("split"); }},      // runs ":split"
+             {"Split Vertical", [] { g_editor.RunCommand("vsplit"); }},       // runs ":vsplit"
+             {"Close Pane", [] { g_editor.RunCommand("close"); }},            // runs ":close"
+             {"New Tab", [] { g_editor.RunCommand("tabnew"); }},              // runs ":tabnew"
+             {"Close Tab", [] { g_editor.RunCommand("tabdelete"); }},         // runs ":tabdelete"
+             {"Next Tab", [] { g_editor.RunCommand("tabnext"); }},            // runs ":tabnext"
+             {"Previous Tab", [] { g_editor.RunCommand("tabprevious"); }},    // runs ":tabprevious"
          }},
         {"Help",
          {
-             {"Keybindings", [] { ShowOverlay(kKeybindingsText); }},
-             {"About", [] { ShowOverlay(kAboutText); }},
+             {"Keybindings", [] { ShowOverlay(kKeybindingsText); }},  // shows the keybindings reference overlay
+             {"About", [] { ShowOverlay(kAboutText); }},               // shows the About overlay
          }},
     };
 }
@@ -10940,6 +11360,10 @@ void BuildMenus() {
 // out left to right starting at kMenuPaddingX, into g_menu_starts/
 // g_menu_widths. Call whenever g_menus or the font size changes; the menu
 // bar's own per-frame code just reads the cached result.
+/**
+ * @brief Recomputes and caches the x-position and width of each top-level menu label
+ * (g_menu_starts/g_menu_widths), laid out left to right starting at kMenuPaddingX.
+ */
 void RecomputeMenuLabelLayout() {
     g_menu_starts.resize(g_menus.size());
     g_menu_widths.resize(g_menus.size());
@@ -10953,6 +11377,11 @@ void RecomputeMenuLabelLayout() {
     }
 }
 
+/**
+ * @brief Computes the pixel width a menu's dropdown box needs to fit its widest item label.
+ * @param menu The menu whose dropdown width is being measured.
+ * @return The dropdown box width in pixels.
+ */
 float DropdownWidth(const Menu &menu) {
     float font_size = MenuFontSize();
     float w = 0;
@@ -10964,6 +11393,12 @@ float DropdownWidth(const Menu &menu) {
 
 // Returns true if the menu bar or help overlay consumed input this frame,
 // in which case the editor itself should not process input.
+/**
+ * @brief Handles mouse/keyboard input for the help overlay and the top menu bar (hover,
+ * click-to-open, item selection, Escape-to-close).
+ * @return True if the menu bar or help overlay consumed this frame's input, meaning the
+ * editor itself should not process it.
+ */
 bool HandleMenuInput() {
     if (g_show_help_overlay) {
         if (IsKeyPressed(KEY_ESCAPE) || IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
@@ -11017,6 +11452,9 @@ bool HandleMenuInput() {
     return false;
 }
 
+/**
+ * @brief Draws the top menu bar and, if a menu is open, its dropdown of items.
+ */
 void DrawMenuBar() {
     int screen_w = GetScreenWidth();
     int bar_height = MenuBarHeight();
@@ -11072,6 +11510,14 @@ struct FloatFrame {
     float content_x, content_y;
 };
 
+/**
+ * @brief Draws a screen-dimming overlay plus a centered bordered box of the given size,
+ * with an optional title line, and returns where content should start drawing.
+ * @param w Width of the box in pixels.
+ * @param h Height of the box in pixels.
+ * @param title Optional title line drawn at the top of the box (skipped if empty).
+ * @return A FloatFrame describing the box's bounds and the content origin (content_x/content_y).
+ */
 FloatFrame DrawFloatFrame(int w, int h, const std::string &title) {
     int screen_w = GetScreenWidth();
     int screen_h = GetScreenHeight();
@@ -11090,6 +11536,10 @@ FloatFrame DrawFloatFrame(int w, int h, const std::string &title) {
     return {box_x, box_y, w, h, static_cast<float>(box_x + 14), content_y};
 }
 
+/**
+ * @brief Draws the single-line text-input prompt overlay (Editor's Prompt mode), masking
+ * the typed text with '*' characters when the prompt was opened as masked/password input.
+ */
 void DrawPromptOverlay() {
     int box_w = std::min(GetScreenWidth() - 80, 560);
     FloatFrame f = DrawFloatFrame(box_w, static_cast<int>(g_font_size) + 60, g_editor.PromptTitle());
@@ -11111,6 +11561,10 @@ void DrawPromptOverlay() {
     }
 }
 
+/**
+ * @brief Draws the yes/no confirmation overlay (Editor's Confirm mode), with its message
+ * and a hint reflecting which answer Enter will pick.
+ */
 void DrawConfirmOverlay() {
     const std::string &msg = g_editor.ConfirmMessage();
     int box_w = std::min(GetScreenWidth() - 80,
@@ -11124,6 +11578,10 @@ void DrawConfirmOverlay() {
     DrawTextEx(g_font, hint.c_str(), Vector2{f.content_x, f.content_y + g_font_size + 10}, hint_size, 0, ResolveHlGroup("Comment"));
 }
 
+/**
+ * @brief Draws the single-choice list overlay (Editor's Select mode), highlighting the
+ * currently selected item.
+ */
 void DrawSelectOverlay() {
     const std::vector<std::string> &items = g_editor.SelectItems();
     float font_size = g_font_size;
@@ -11151,6 +11609,10 @@ void DrawSelectOverlay() {
 // this was added for) are tinted with the same Add/Red groups the git
 // gutter's own decorations use, so the preview visually matches the
 // signs the user is previewing.
+/**
+ * @brief Draws the read-only text preview float (Editor's Preview mode), tinting diff
+ * '+'/'-' lines with the Add/Red highlight groups.
+ */
 void DrawPreviewOverlay() {
     std::vector<std::string> lines = SplitLines(g_editor.PreviewText());
     float font_size = g_font_size;
@@ -11185,6 +11647,11 @@ void DrawPreviewOverlay() {
                hint_size, 0, ResolveHlGroup("Comment"));
 }
 
+/**
+ * @brief Maps a notification severity level to the highlight-group color used to draw it.
+ * @param level The notification's severity level.
+ * @return The resolved color for that level (falls back to "Normal" for an unknown level).
+ */
 Color NotifyLevelColor(Editor::NotifyLevel level) {
     switch (level) {
         case Editor::NotifyLevel::Error: return ResolveHlGroup("Error");
@@ -11195,6 +11662,12 @@ Color NotifyLevelColor(Editor::NotifyLevel level) {
     return ResolveHlGroup("Normal");
 }
 
+/**
+ * @brief Maps a notification severity level to its Nerd Font icon glyph (rendered through
+ * g_icon_font).
+ * @param level The notification's severity level.
+ * @return The UTF-8 glyph string for that level, or an empty string for an unknown level.
+ */
 std::string NotifyLevelGlyph(Editor::NotifyLevel level) {
     // Nerd Font icon glyphs (g_icon_font, see kIconCodepoints and
     // DrawUiText's own comment) -- ASCII "X"/"!"/"i"/"." until that font
@@ -11210,6 +11683,10 @@ std::string NotifyLevelGlyph(Editor::NotifyLevel level) {
 }
 
 // Toast stack, top-right corner, newest closest to the corner (Phase 6).
+/**
+ * @brief Draws the stack of active toast notifications in the top-right corner, newest
+ * closest to the corner.
+ */
 void DrawToastStack() {
     const auto &toasts = g_editor.Toasts();
     if (toasts.empty()) return;
@@ -11235,6 +11712,10 @@ void DrawToastStack() {
 // edge (Phase 7) -- stacked if more than one shares an edge. Content comes
 // from Editor::FlattenSidebar so rendering and keyboard navigation
 // (Editor::HandleSidebarInput) can never disagree about line layout.
+/**
+ * @brief Renders every open sidebar as a docked box against its configured screen edge,
+ * stacking sidebars that share an edge, and records their border-drag/row hit-test rects.
+ */
 void DrawSidebars() {
     int screen_w = GetScreenWidth();
     int screen_h = GetScreenHeight();
@@ -11384,6 +11865,19 @@ void DrawSidebars() {
 // regardless of which pane currently has focus. Draws into (ocx, ocw) on
 // return: the horizontal band left over after reserving the rail (and
 // Outline/Format panel widths, if open) for the toolbar/page to use.
+/**
+ * @brief Draws an office pane's left icon rail plus its optional Outline and Format/Insert
+ * side panels, and shrinks the returned content rect (ocx/ocw) to what's left for the
+ * toolbar/page after those panels.
+ * @param pane_x Left x-coordinate of the office pane's own screen rect.
+ * @param pane_w Width of the office pane's own screen rect.
+ * @param content_y Top y-coordinate of the pane's content area (below any toolbar).
+ * @param content_h Height of the pane's content area.
+ * @param buffer_id Id of the buffer being edited, used to route outline-click navigation.
+ * @param office_sess The office document session being displayed, or nullptr.
+ * @param ocx Out parameter: left x-coordinate left over for the toolbar/page after the rail/panels.
+ * @param ocw Out parameter: width left over for the toolbar/page after the rail/panels.
+ */
 void DrawOfficeSidePanels(float pane_x, float pane_w, float content_y, float content_h, int buffer_id,
                           const OfficeSession *office_sess, float &ocx, float &ocw) {
     ocx = pane_x;
@@ -11395,6 +11889,15 @@ void DrawOfficeSidePanels(float pane_x, float pane_w, float content_y, float con
                   ResolveHlGroup("MenuBar"));
     DrawLineEx(Vector2{rail.width, rail.y}, Vector2{rail.width, rail.y + rail.height}, 1.0f, ResolveHlGroup("Border"));
 
+    /**
+     * @brief Draws one rounded icon button on the office side rail at vertical center `cy`,
+     * highlighting it if active or hovered, invoking `draw` for the icon glyph itself, and
+     * registering `on_click` as its click handler.
+     * @param cy Vertical center of the icon button, in screen coordinates.
+     * @param active Whether the button should render in its active/highlighted state.
+     * @param draw Callback that paints the icon glyph at the button's center with the given color.
+     * @param on_click Callback invoked when the button is clicked (skipped if null).
+     */
     auto rail_icon = [&](float cy, bool active, const std::function<void(Vector2, Color)> &draw, const std::function<void()> &on_click) {
         Rectangle hit{rail.x + 4.0f, cy - 14.0f, rail.width - 8.0f, 28.0f};
         Vector2 mouse = GetMousePosition();
@@ -11421,12 +11924,14 @@ void DrawOfficeSidePanels(float pane_x, float pane_w, float content_y, float con
             }
         },
         [] { g_office_outline_open = !g_office_outline_open; });
+    // Decorative search-glyph icon (draws a magnifying glass); not wired to any action.
     rail_icon(rail.y + 72.0f, false,
         [](Vector2 c, Color color) {
             DrawCircleLines(static_cast<int>(c.x - 2.0f), static_cast<int>(c.y - 2.0f), 5.0f, color);
             DrawLineEx(Vector2{c.x + 1.5f, c.y + 1.5f}, Vector2{c.x + 6.0f, c.y + 6.0f}, 1.4f, color);
         },
         nullptr);
+    // Decorative comment/flag-glyph icon (draws a small bordered flag shape); not wired to any action.
     rail_icon(rail.y + 108.0f, false,
         [](Vector2 c, Color color) {
             Rectangle rb{c.x - 5.0f, c.y - 8.0f, 10.0f, 16.0f};
@@ -11435,6 +11940,7 @@ void DrawOfficeSidePanels(float pane_x, float pane_w, float content_y, float con
                         Vector2{rb.x + rb.width / 2.0f, rb.y + rb.height - 6.0f}, ResolveHlGroup("MenuBar"));
         },
         nullptr);
+    // Decorative clock-glyph icon (draws a circle with hour/minute hands); not wired to any action.
     rail_icon(rail.y + 144.0f, false,
         [](Vector2 c, Color color) {
             DrawCircleLines(static_cast<int>(c.x), static_cast<int>(c.y), 7.0f, color);
@@ -11442,6 +11948,7 @@ void DrawOfficeSidePanels(float pane_x, float pane_w, float content_y, float con
             DrawLineEx(c, Vector2{c.x + 3.0f, c.y}, 1.2f, color);
         },
         nullptr);
+    // Decorative target/settings-glyph icon (draws two concentric circles); not wired to any action.
     rail_icon(rail.y + rail.height - 26.0f, false,
         [](Vector2 c, Color color) {
             DrawCircleLines(static_cast<int>(c.x), static_cast<int>(c.y), 7.0f, color);
@@ -11464,6 +11971,7 @@ void DrawOfficeSidePanels(float pane_x, float pane_w, float content_y, float con
         Vector2 cc{close_rect.x + close_rect.width / 2.0f, close_rect.y + close_rect.height / 2.0f};
         DrawLineEx(Vector2{cc.x - 4.0f, cc.y - 4.0f}, Vector2{cc.x + 4.0f, cc.y + 4.0f}, 1.3f, ResolveHlGroup("MutedFg"));
         DrawLineEx(Vector2{cc.x - 4.0f, cc.y + 4.0f}, Vector2{cc.x + 4.0f, cc.y - 4.0f}, 1.3f, ResolveHlGroup("MutedFg"));
+        // Closes the Outline panel.
         RegisterClickRegion(close_rect, [] { g_office_outline_open = false; });
         py += MenuFontSize() + 12.0f;
         // Search box: visual only in this pass -- filtering headings by
@@ -11492,6 +12000,8 @@ void DrawOfficeSidePanels(float pane_x, float pane_w, float content_y, float con
                 float indent = 14.0f + static_cast<float>(para.heading_level - 1) * 14.0f;
                 float fsize = g_font_size * (para.heading_level == 1 ? 0.95f : 0.85f);
                 while (!text.empty() && MeasureTextEx(g_font, text.c_str(), fsize, 0).x > panel.width - indent - 12.0f) text.pop_back();
+                // Clicking an outline row moves the office cursor to that heading paragraph
+                // and scrolls the document to it.
                 RegisterClickRegion(row, [buffer_id, pi] {
                     g_editor.SetOfficeCursorPara(buffer_id, pi);
                     g_editor.SetOfficeScroll(buffer_id, pi, 0);
@@ -11541,19 +12051,36 @@ void DrawOfficeSidePanels(float pane_x, float pane_w, float content_y, float con
             Vector2 ts = MeasureTextEx(g_font, label, g_font_size * 0.85f, 0);
             DrawTextEx(g_font, label, Vector2{tab.x + (tab.width - ts.x) / 2.0f, tab.y + (tab.height - ts.y * 0.85f) / 2.0f},
                       g_font_size * 0.85f, 0, active ? ResolveHlGroup("Accent") : ResolveHlGroup("Normal"));
+            // Switches the Format panel to this tab (0 = Format, 1 = Insert).
             RegisterClickRegion(tab, [t] { g_office_format_tab = t; });
         }
         Rectangle close_rect{panel.x + panel.width - 28.0f, py - 2.0f, 20.0f, 20.0f};
         Vector2 cc{close_rect.x + close_rect.width / 2.0f, close_rect.y + close_rect.height / 2.0f};
         DrawLineEx(Vector2{cc.x - 4.0f, cc.y - 4.0f}, Vector2{cc.x + 4.0f, cc.y + 4.0f}, 1.3f, ResolveHlGroup("MutedFg"));
         DrawLineEx(Vector2{cc.x - 4.0f, cc.y + 4.0f}, Vector2{cc.x + 4.0f, cc.y - 4.0f}, 1.3f, ResolveHlGroup("MutedFg"));
+        // Closes the Format/Insert panel.
         RegisterClickRegion(close_rect, [] { g_office_format_open = false; });
         py += tab_h + 14.0f;
 
+        /**
+         * @brief Draws a small muted section heading in the Format panel and advances `py`
+         * past it.
+         * @param label The heading text to draw.
+         */
         auto section_label = [&](const char *label) {
             DrawTextEx(g_font, label, Vector2{panel.x + 14.0f, py}, g_font_size * 0.85f, 0, ResolveHlGroup("MutedFg"));
             py += g_font_size * 0.85f + 8.0f;
         };
+        /**
+         * @brief Draws one square icon button in a horizontal row of the Format panel at
+         * `*bx`, highlighting it if active or hovered, invoking `draw` for its icon,
+         * registering `on_click`, and advancing `*bx` past it.
+         * @param bx In/out x-coordinate cursor for the row; advanced by the button's width plus spacing.
+         * @param active Whether the button should render in its active/highlighted state.
+         * @param w Width (and effectively height basis) of the button.
+         * @param draw Callback that paints the button's icon within its rect using the given color.
+         * @param on_click Callback invoked when the button is clicked.
+         */
         auto icon_row_btn = [&](float *bx, bool active, float w, const std::function<void(Rectangle, Color)> &draw,
                                  const std::function<void()> &on_click) {
             Rectangle rect{*bx, py, w, 28.0f};
@@ -11574,6 +12101,8 @@ void DrawOfficeSidePanels(float pane_x, float pane_w, float content_y, float con
             static const SB kSB[] = {{'b', "B"}, {'i', "I"}, {'u', "U"}, {'s', "S"}};
             for (const SB &sb : kSB) {
                 char which = sb.which;
+                // Draws the button's single-letter glyph (B/I/U/S), centered in its rect;
+                // clicking toggles that character formatting on the current selection.
                 icon_row_btn(&bx, office_sess && g_editor.OfficeFormatActive(which), 28.0f,
                     [&](Rectangle rect, Color color) {
                         Vector2 ts = MeasureTextEx(g_font, sb.ch, g_font_size, 0);
@@ -11593,6 +12122,8 @@ void DrawOfficeSidePanels(float pane_x, float pane_w, float content_y, float con
             for (const AB &ab : kAB) {
                 DocParagraph::Align align = ab.align;
                 int kind = ab.kind;
+                // Draws a small left/center/right/justify text-line icon for this alignment
+                // kind; clicking sets the current paragraph's alignment.
                 icon_row_btn(&bx, office_sess && g_editor.OfficeAlignmentActive(align), 28.0f,
                     [kind](Rectangle rect, Color color) {
                         float pad = rect.width * 0.22f;
@@ -11625,9 +12156,9 @@ void DrawOfficeSidePanels(float pane_x, float pane_w, float content_y, float con
             section_label("Insert");
             struct InsB { const char *label; std::function<void()> action; };
             const InsB items[] = {
-                {"Image", [] { g_editor.InsertOfficeImagePrompt(); }},
-                {"Table", [] { g_editor.InsertOfficeTablePrompt(); }},
-                {"Equation", [] { g_editor.InsertOfficeMath(); }},
+                {"Image", [] { g_editor.InsertOfficeImagePrompt(); }},      // opens the insert-image prompt
+                {"Table", [] { g_editor.InsertOfficeTablePrompt(); }},      // opens the insert-table prompt
+                {"Equation", [] { g_editor.InsertOfficeMath(); }},          // inserts a math/equation block
             };
             for (const InsB &it : items) {
                 Rectangle row{panel.x + 12.0f, py, panel.width - 24.0f, 30.0f};
@@ -11658,8 +12189,87 @@ void DrawOfficeSidePanels(float pane_x, float pane_w, float content_y, float con
 // text-preview sources it doesn't need on_select_change to push anything
 // -- the highlighted row's Palette is looked up fresh every frame below,
 // so it's never a stale item behind.
+/**
+ * @brief Reports whether the currently open picker is the Colorscheme picker, which gets
+ * its own always-on color-swatch preview column instead of the generic text preview.
+ * @return True if the picker's title is "Colorscheme".
+ */
 bool IsSwatchPreviewPicker() { return g_editor.PickerTitle() == "Colorscheme"; }
 
+/**
+ * @brief Compares two colors for exact equality across all four RGBA channels.
+ * @param a First color to compare.
+ * @param b Second color to compare.
+ * @return True if every channel (r, g, b, a) matches.
+ */
+static bool ColorEq(Color a, Color b) { return a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a; }
+
+// Per-byte color for one line of picker text (a PickerItem's `display`,
+// or one line of the preview column), starting from `default_color` and
+// overlaying each of `spans` (PickerHlSpan -- Treesitter captures,
+// kBuiltinPickerSources' mep.buffer_search) in list order, later spans
+// winning over earlier ones for any overlapping bytes -- the same
+// "layer in order, last wins" rule BuildActiveDecorations already
+// applies to buffer text's own overlapping highlight decorations.
+/**
+ * @brief Computes a per-byte color array for one line of picker text, starting from
+ * `default_color` and overlaying each of `spans` in list order (later spans win over
+ * earlier ones for overlapping bytes).
+ * @param text The line of text being colored.
+ * @param spans Highlight spans (byte ranges plus highlight group) to overlay onto the text.
+ * @param default_color The color used for any byte not covered by a span.
+ * @return A vector the same length as `text`, giving each byte's resolved color.
+ */
+static std::vector<Color> PickerLineColors(const std::string &text, const std::vector<PickerHlSpan> &spans,
+                                            Color default_color) {
+    std::vector<Color> colors(text.size(), default_color);
+    for (const PickerHlSpan &s : spans) {
+        Color c = ResolveHlGroup(s.hl_group);
+        int cs = std::max(0, s.col_start);
+        int ce = std::min(static_cast<int>(text.size()), s.col_end);
+        for (int i = cs; i < ce; i++) colors[i] = c;
+    }
+    return colors;
+}
+
+// Draws text[start, start+len) at (x, y), one DrawTextEx call per
+// maximal run of same-colored bytes in `colors` (sized to `text`, see
+// PickerLineColors) rather than one call per byte. Returns the x just
+// past the drawn run, unused by either caller today but harmless to
+// keep for a future caller that needs to continue drawing on the same
+// line (e.g. a trailing annotation).
+/**
+ * @brief Draws text[start, start+len) at (x, y), issuing one DrawTextEx call per maximal
+ * run of same-colored bytes in `colors` rather than one call per byte.
+ * @param text The full line of text `colors` was computed for.
+ * @param colors Per-byte colors (sized to `text`; see PickerLineColors).
+ * @param start Byte offset into `text`/`colors` to start drawing from.
+ * @param len Number of bytes to draw.
+ * @param x Left x-coordinate to start drawing at.
+ * @param y Y-coordinate to draw the text at.
+ * @return The x-coordinate just past the drawn run.
+ */
+static float DrawPickerColoredRun(const std::string &text, const std::vector<Color> &colors, size_t start, size_t len,
+                                   float x, float y) {
+    float cx = x;
+    size_t i = start;
+    size_t end = start + len;
+    while (i < end) {
+        size_t j = i + 1;
+        while (j < end && ColorEq(colors[j], colors[i])) j++;
+        std::string run = text.substr(i, j - i);
+        DrawTextEx(g_font, run.c_str(), Vector2{cx, y}, g_font_size, 0, colors[i]);
+        cx += MeasureTextEx(g_font, run.c_str(), g_font_size, 0).x;
+        i = j;
+    }
+    return cx;
+}
+
+/**
+ * @brief Draws the fuzzy picker overlay: prompt line, filtered results list, and (when a
+ * source supplied one) a preview column -- either a colorscheme swatch grid or scrolled
+ * highlighted text.
+ */
 void DrawPickerOverlay() {
     std::vector<PickerItem> results = g_editor.PickerFilteredResults();
     int selected = g_editor.PickerSelected();
@@ -11697,7 +12307,12 @@ void DrawPickerOverlay() {
         if (i == selected) {
             DrawRectangle(f.box_x + 4, static_cast<int>(ry) - 1, list_w - 8, line_h, ResolveHlGroup("PickerSelected"));
         }
-        DrawTextEx(g_font, results[i].display.c_str(), Vector2{f.content_x, ry}, g_font_size, 0, ResolveHlGroup("Normal"));
+        if (results[i].spans.empty()) {
+            DrawTextEx(g_font, results[i].display.c_str(), Vector2{f.content_x, ry}, g_font_size, 0, ResolveHlGroup("Normal"));
+        } else {
+            std::vector<Color> colors = PickerLineColors(results[i].display, results[i].spans, ResolveHlGroup("Normal"));
+            DrawPickerColoredRun(results[i].display, colors, 0, results[i].display.size(), f.content_x, ry);
+        }
     }
     if (results.empty()) {
         DrawTextEx(g_font, "-- no matches --", Vector2{f.content_x, list_y}, g_font_size, 0, ResolveHlGroup("Comment"));
@@ -11758,13 +12373,29 @@ void DrawPickerOverlay() {
             // rows the loop below further splits a too-long line into.
             std::vector<std::string> preview_lines = SplitLines(g_editor.PickerPreview());
             int scroll = std::min(g_editor.PickerPreviewScroll(), std::max(0, static_cast<int>(preview_lines.size()) - 1));
+            // Grouped once per frame (not looked up per raw_line) since
+            // PickerPreviewSpans() is a flat list across every preview
+            // line -- kBuiltinPickerSources' mep.buffer_search
+            // (main.cpp) is the only source populating it today.
+            std::unordered_map<int, std::vector<PickerHlSpan>> spans_by_row;
+            for (const PickerHlSpan &s : g_editor.PickerPreviewSpans()) spans_by_row[s.row].push_back(s);
             for (size_t li = static_cast<size_t>(scroll); li < preview_lines.size(); li++) {
                 const std::string &raw_line = preview_lines[li];
                 if (row >= max_preview_rows) break;
                 if (raw_line.empty()) { row++; continue; }
+                std::vector<Color> line_colors;
+                auto sit = spans_by_row.find(static_cast<int>(li));
+                bool has_line_spans = sit != spans_by_row.end();
+                if (has_line_spans) line_colors = PickerLineColors(raw_line, sit->second, ResolveHlGroup("Normal"));
                 size_t pos = 0;
                 while (pos < raw_line.size() && row < max_preview_rows) {
                     size_t take = std::min(raw_line.size() - pos, static_cast<size_t>(max_chars));
+                    if (has_line_spans) {
+                        DrawPickerColoredRun(raw_line, line_colors, pos, take, px, list_y + row * line_h);
+                        pos += take;
+                        row++;
+                        continue;
+                    }
                     std::string chunk = raw_line.substr(pos, take);
                     DrawTextEx(g_font, chunk.c_str(), Vector2{px, list_y + row * line_h}, g_font_size, 0,
                                ResolveHlGroup("Normal"));
@@ -11787,6 +12418,17 @@ void DrawPickerOverlay() {
 // hop-2 nodes (links/backlinks of those) ring it at radius r2. Recomputed
 // fresh every frame -- node counts here are small (a few dozen at most,
 // per the Lua side's hop-2 cap), so there's no need to cache it.
+/**
+ * @brief Computes a deterministic ring layout for the roam backlink graph: the hop-0 node
+ * sits at the center, hop-1 nodes are evenly spaced on a ring of radius r1, and hop-2+
+ * nodes are evenly spaced on a ring of radius r2.
+ * @param nodes The graph nodes to position, each tagged with its hop distance from center.
+ * @param cx X-coordinate of the ring center.
+ * @param cy Y-coordinate of the ring center.
+ * @param r1 Radius of the hop-1 ring.
+ * @param r2 Radius of the hop-2+ ring.
+ * @return A vector parallel to `nodes` giving each node's computed screen position.
+ */
 static std::vector<Vector2> ComputeRoamGraphPositions(const std::vector<RoamGraphNode> &nodes, float cx, float cy,
                                                         float r1, float r2) {
     constexpr float kTwoPi = 6.28318530718f;
@@ -11807,6 +12449,11 @@ static std::vector<Vector2> ComputeRoamGraphPositions(const std::vector<RoamGrap
     return pos;
 }
 
+/**
+ * @brief Draws the roam backlink-graph overlay: a query prompt, and a ring-layout node-link
+ * diagram of linked notes, dimming nodes that don't match the current fuzzy query rather
+ * than hiding them.
+ */
 void DrawRoamGraphOverlay() {
     int box_w = std::min(GetScreenWidth() - 60, 1100);
     int box_h = std::min(GetScreenHeight() - 60, 780);
@@ -11901,6 +12548,10 @@ void DrawRoamGraphOverlay() {
 // bottom of the screen (mirroring which-key.nvim) rather than centered like
 // the other floats -- DrawFloatFrame always centers, so this positions its
 // own box instead of going through it.
+/**
+ * @brief Draws the which-key popup docked along the bottom of the screen, listing the
+ * bindings under the currently typed leader prefix flowed into as many columns as fit.
+ */
 void DrawWhichKeyOverlay() {
     std::vector<std::pair<std::string, std::string>> matches = g_editor.WhichKeyDisplayEntries();
     float font_size = g_font_size;
@@ -11962,6 +12613,10 @@ void DrawWhichKeyOverlay() {
     }
 }
 
+/**
+ * @brief Draws the generic centered help/text overlay (g_help_overlay_text), sized to fit
+ * its content, dismissed on Escape or click.
+ */
 void DrawHelpOverlay() {
     int screen_w = GetScreenWidth();
     int screen_h = GetScreenHeight();
@@ -12011,6 +12666,11 @@ void DrawHelpOverlay() {
 // from -- lsp/file/snippet/buffer -- wasn't shown at all before). Fixed-
 // width labels, all 4 chars or fewer, so the badge column doesn't jitter
 // row to row.
+/**
+ * @brief Maps a completion candidate's source kind to a fixed-width dim badge label.
+ * @param kind The candidate's source kind ("lsp", "file", "snippet", or "buffer").
+ * @return A 4-character badge string, or four spaces for an unrecognized kind.
+ */
 const char *CompletionKindBadge(const std::string &kind) {
     if (kind == "lsp") return "lsp ";
     if (kind == "file") return "file";
@@ -12026,6 +12686,16 @@ const char *CompletionKindBadge(const std::string &kind) {
 // flipping above the cursor when there's no room below. Plain wrapping,
 // no markdown rendering (see mep_lsp_completion_meta's own comment on
 // why): this is a quick glance, not a rendered doc viewer.
+/**
+ * @brief Draws the side info panel showing an LSP completion candidate's detail/documentation
+ * text, positioned to the right of the completion box (or its left if there's no room);
+ * does nothing for non-LSP candidates or when there's no detail/doc to show.
+ * @param box_x Left x-coordinate of the completion popup box this panel is anchored to.
+ * @param box_y Top y-coordinate of the completion popup box.
+ * @param box_w Width of the completion popup box.
+ * @param box_h Height of the completion popup box.
+ * @param item The selected completion candidate whose detail/doc should be shown.
+ */
 void DrawCompletionDetailPanel(int box_x, int box_y, int box_w, int box_h, const CompletionCandidate &item) {
     if (item.kind != "lsp") return;
     // Most real servers (pyright included) send textDocument/completion
@@ -12086,6 +12756,12 @@ void DrawCompletionDetailPanel(int box_x, int box_y, int box_w, int box_h, const
     }
 }
 
+/**
+ * @brief Draws the completion candidate list popup anchored at the cursor's screen position,
+ * plus the selected item's detail panel.
+ * @param x Anchor x-coordinate (cursor screen position); clamped left if the popup would overflow.
+ * @param y Anchor y-coordinate (cursor screen position).
+ */
 void DrawCompletionPopup(float x, float y) {
     const std::vector<CompletionCandidate> &items = g_editor.CompletionItems();
     if (items.empty()) return;
@@ -12132,6 +12808,14 @@ void DrawCompletionPopup(float x, float y) {
 // A line wider than the box is simply clipped on screen; the text actually
 // yanked (HandleHoverFocusInput's own yank_selection) is never truncated,
 // only its display here.
+/**
+ * @brief Draws the focused-mode hover popup (Mode::HoverFocus): raw '\n'-split lines with a
+ * navigable cursor, optional Visual-style selection highlighting, and a keybinding hint.
+ * @param x Anchor x-coordinate; clamped to stay on screen.
+ * @param y Anchor y-coordinate; flipped upward if the box would overflow the bottom.
+ * @param title Optional title line drawn above the text (skipped if empty).
+ * @param text The hover content, one raw display row per '\n'-separated line.
+ */
 void DrawHoverPopupFocused(float x, float y, const std::string &title, const std::string &text) {
     float font_size = g_font_size;
     int line_h = static_cast<int>(font_size) + 4;
@@ -12151,6 +12835,11 @@ void DrawHoverPopupFocused(float x, float y, const std::string &title, const std
         std::swap(sel_r0, sel_r1);
         std::swap(sel_c0, sel_c1);
     }
+    /**
+     * @brief Truncates a raw line to at most max_chars_per_line characters for display.
+     * @param line The raw line to truncate.
+     * @return The line unchanged if it already fits, otherwise its first max_chars_per_line characters.
+     */
     auto display_of = [&](const std::string &line) {
         return static_cast<int>(line.size()) > max_chars_per_line ? line.substr(0, max_chars_per_line) : line;
     };
@@ -12206,6 +12895,13 @@ void DrawHoverPopupFocused(float x, float y, const std::string &title, const std
     DrawTextEx(g_font, hint.c_str(), Vector2{x + 8, ty + visible * line_h + 4}, hint_size, 0, ResolveHlGroup("Comment"));
 }
 
+/**
+ * @brief Draws the passive hover tooltip anchored just below the cursor, word-wrapping a
+ * single-paragraph hover or leaving multi-line content unwrapped; delegates to
+ * DrawHoverPopupFocused when in Mode::HoverFocus. Does nothing if no hover is open.
+ * @param x Anchor x-coordinate (typically just below/right of the cursor).
+ * @param y Anchor y-coordinate; flipped above the cursor if there's no room below.
+ */
 void DrawHoverPopup(float x, float y) {
     if (!g_editor.IsHoverOpen()) return;
     const std::string &title = g_editor.HoverTitle();
@@ -12268,6 +12964,12 @@ void DrawHoverPopup(float x, float y) {
 // but anchored by its bottom edge (bottom_y) rather than its top -- the
 // command bar sits at the very bottom of the window, so the list has to
 // grow upward off of it rather than downward off a cursor.
+/**
+ * @brief Draws the command-line completion popup, anchored by its bottom edge so the list
+ * grows upward from the command bar rather than downward from a cursor.
+ * @param x Anchor x-coordinate; clamped left if the popup would overflow the screen.
+ * @param bottom_y Y-coordinate of the popup's bottom edge (the command bar's top).
+ */
 void DrawCmdlineCompletionPopup(float x, float bottom_y) {
     const std::vector<PickerItem> &items = g_editor.CmdlineCompletionItems();
     if (items.empty()) return;
@@ -12302,6 +13004,12 @@ void DrawCmdlineCompletionPopup(float x, float bottom_y) {
 // same resolution once, up front, to snapshot into Decorations that outlive
 // the live TerminalSession's own per-cell data (see that function's own
 // comment) -- this is just the raylib::Color wrapper around it.
+/**
+ * @brief Resolves a VTerm cell color to an actual raylib Color, via Editor::ResolveVTermColor.
+ * @param c The VTerm cell color to resolve (Default/Indexed/Rgb).
+ * @param is_fg Whether this is a foreground color (vs. background), affecting default resolution.
+ * @return The resolved raylib Color.
+ */
 Color VTermColorToRaylib(const VTermColor &c, bool is_fg) {
     ThemeColor tc = g_editor.ResolveVTermColor(c, is_fg);
     return Color{tc.r, tc.g, tc.b, tc.a};
@@ -12322,6 +13030,12 @@ Color VTermColorToRaylib(const VTermColor &c, bool is_fg) {
 // coverage for those at all, so without this every such icon drew as a
 // missing-glyph box exactly like the box-drawing/arrow gap fixed
 // earlier. `ch` is one cell's worth of UTF-8 (usually 1-4 bytes).
+/**
+ * @brief Picks which font to render one terminal cell's glyph with, routing Nerd Font icon
+ * and symbol codepoints to their dedicated fonts and everything else to the terminal font.
+ * @param ch One terminal cell's glyph, as UTF-8 (usually 1-4 bytes).
+ * @return The font to draw `ch` with.
+ */
 const Font &TerminalCellFont(const std::string &ch) {
     int cp_size = 0;
     int cp = GetCodepointNext(ch.c_str(), &cp_size);
@@ -12330,6 +13044,16 @@ const Font &TerminalCellFont(const std::string &ch) {
     return g_terminal_font;
 }
 
+/**
+ * @brief Renders a :terminal pane's cell grid (combined scrollback + live screen, offset by
+ * sess.scroll_offset), including per-cell background, glyph, bold, underline, and the
+ * terminal cursor when at the live position.
+ * @param sess The terminal session whose VTerm grid should be drawn.
+ * @param x Left x-coordinate of the terminal's drawing area.
+ * @param y Top y-coordinate of the terminal's drawing area.
+ * @param w Width of the terminal's drawing area (used only to size individual cells, not clip).
+ * @param h Height of the terminal's drawing area, used to skip off-screen rows.
+ */
 void DrawTerminalGrid(const TerminalSession &sess, float x, float y, float w, float h) {
     const VTerm *term = sess.vterm.get();
     if (!term) return;
@@ -12411,6 +13135,13 @@ void DrawTerminalGrid(const TerminalSession &sess, float x, float y, float w, fl
 // a GPU texture, and returns it. `sess.doc` is decoded once by
 // Editor::OpenImageInPlace and never mutated, so nothing here ever needs to
 // re-upload once cached.
+/**
+ * @brief Lazily uploads an ImageSession's decoded RGBA8 pixels as a GPU texture, caching the
+ * result per buffer id in g_image_textures so a given buffer never re-uploads.
+ * @param buffer_id Id of the buffer the image session belongs to, used as the cache key.
+ * @param sess The image session whose decoded pixels should be uploaded.
+ * @return The cached or newly-uploaded GPU texture.
+ */
 Texture2D GetOrLoadImageTexture(int buffer_id, const ImageSession &sess) {
     auto it = g_image_textures.find(buffer_id);
     if (it != g_image_textures.end()) return it->second;
@@ -12444,6 +13175,14 @@ std::unordered_map<long long, OfficeImageCacheEntry> g_office_image_textures;
 // don't decode (shouldn't happen -- InsertOfficeImagePrompt already
 // validated them at insert time -- but a table/image dropped in from a
 // round-tripped file could in principle hold anything).
+/**
+ * @brief Lazily decodes and GPU-uploads an embedded office-document image (DocImage::bytes),
+ * caching the result in g_office_image_textures keyed by (buffer_id, image_ref).
+ * @param buffer_id Id of the buffer the image belongs to.
+ * @param image_ref Index of the image within that buffer's document, used with buffer_id as the cache key.
+ * @param img The embedded image's raw bytes to decode on a cache miss.
+ * @return Pointer to the cached texture, or nullptr if the bytes failed to decode.
+ */
 Texture2D *GetOrLoadOfficeImageTexture(int buffer_id, int image_ref, const DocImage &img) {
     long long key = (static_cast<long long>(buffer_id) << 32) | static_cast<unsigned int>(image_ref);
     auto it = g_office_image_textures.find(key);
@@ -12501,6 +13240,13 @@ std::unordered_map<std::string, OrgInlineImageCacheEntry> g_org_inline_image_tex
 // narrowings (e.g. the babel results cache's own "native-only" comment):
 // inline images in a text buffer aren't part of the wasm/webview build's
 // own feature surface today.
+/**
+ * @brief Lazily loads and GPU-uploads an inline org-mode image (a [[file:path]] link target),
+ * mtime-cached in g_org_inline_image_textures so an on-disk change (e.g. a re-run org-babel
+ * :file block) triggers a reload.
+ * @param path Filesystem path to the image file.
+ * @return Pointer to the cached texture, or nullptr if the file can't be stat'd, read, or decoded.
+ */
 Texture2D *GetOrLoadOrgInlineImageTexture(const std::string &path) {
     struct stat st {};
     if (stat(path.c_str(), &st) != 0) return nullptr;
@@ -12556,6 +13302,12 @@ Texture2D *GetOrLoadOrgInlineImageTexture(const std::string &path) {
 // subprocess has already exited by then, so there's no more racing left
 // to do) sidesteps the whole problem instead of trying to out-guess it
 // with a finer-grained clock.
+/**
+ * @brief Drops and unloads any cached texture for `path` in g_org_inline_image_textures, so
+ * the next GetOrLoadOrgInlineImageTexture call does an unconditional fresh reload instead of
+ * trusting a possibly-poisoned mtime-based cache entry.
+ * @param path Filesystem path whose cache entry should be evicted.
+ */
 void EvictOrgInlineImageTexture(const std::string &path) {
     auto it = g_org_inline_image_textures.find(path);
     if (it == g_org_inline_image_textures.end()) return;
@@ -12590,6 +13342,13 @@ std::unordered_map<std::string, ThemedHtmlImageCacheEntry> g_themed_html_image_t
 // pixels, so this keeps its own independent decode rather than growing
 // the shared org-image cache entry with a field org-mode itself never
 // needs.
+/**
+ * @brief Lazily loads, luminance-recolors to match the current theme, and GPU-uploads a
+ * local <img> for HtmlSession::theme_colors mode, mtime- and theme-epoch-cached in
+ * g_themed_html_image_textures.
+ * @param path Filesystem path to the image file.
+ * @return Pointer to the cached texture, or nullptr if the file can't be stat'd, read, or decoded.
+ */
 Texture2D *GetOrLoadThemedHtmlImageTexture(const std::string &path) {
     struct stat st {};
     if (stat(path.c_str(), &st) != 0) return nullptr;
@@ -12666,6 +13425,13 @@ std::unordered_map<std::string, OrgLatexTextureCacheEntry> g_org_latex_textures;
 // Returns nullptr if `path` can't be stat'd, read, or decoded -- DrawPane's
 // own latex branch falls back to showing a warning in that case, same
 // contract as GetOrLoadOrgInlineImageTexture.
+/**
+ * @brief Lazily loads and GPU-uploads a rendered LaTeX/math fragment (a black-on-white PNG
+ * produced by tectonic+pdftoppm), recoloring each pixel's luminance onto the editor's own
+ * foreground/background gradient; cached in g_org_latex_textures by path and theme epoch.
+ * @param path Filesystem path to the rendered fragment's PNG.
+ * @return Pointer to the cached texture, or nullptr if the file can't be stat'd, read, or decoded.
+ */
 Texture2D *GetOrLoadOrgLatexTexture(const std::string &path) {
     struct stat st {};
     if (stat(path.c_str(), &st) != 0) return nullptr;
@@ -12727,6 +13493,17 @@ Texture2D *GetOrLoadOrgLatexTexture(const std::string &path) {
 // is recolored through ThemedPdfChannel into a scratch buffer before
 // upload; the raw raster itself is never mutated, so toggling back to
 // standard colors doesn't need a re-render, just a re-upload.
+/**
+ * @brief Returns the GPU texture for one rasterized PDF page, uploading or re-uploading it
+ * (updating in place when the size is unchanged, else replacing the texture) whenever the
+ * raster's generation, the theme_colors flag, or the theme epoch has moved on since the last
+ * upload; optionally recolors the raw RGBA raster through ThemedPdfChannel first.
+ * @param buffer_id Id of the buffer the PDF page belongs to, used with page_index as the cache key.
+ * @param page_index Index of the page within that buffer's document.
+ * @param raster The page's current CPU-side raster (pixels, size, generation counter).
+ * @param theme_colors Whether to recolor the raster to match the editor's color scheme before upload.
+ * @return The cached or freshly-uploaded GPU texture for this page.
+ */
 Texture2D GetOrUpdatePdfPageTexture(int buffer_id, int page_index, const PdfSession::PageRaster &raster,
                                      bool theme_colors) {
     int theme_epoch = g_editor.ThemeEpoch();
@@ -12787,6 +13564,13 @@ Texture2D GetOrUpdatePdfPageTexture(int buffer_id, int page_index, const PdfSess
 // scrolled out of the {page-1, page, page+1} window) -- keeps GPU memory
 // bounded the same way the CPU-side cache is bounded, regardless of how
 // many pages of a long document have been scrolled through.
+/**
+ * @brief Evicts and unloads GPU page textures for `buffer_id` whose page no longer has a
+ * CPU-side raster in `sess` (i.e. it scrolled out of the rastered window), keeping GPU memory
+ * bounded.
+ * @param buffer_id Id of the buffer whose stale page textures should be pruned.
+ * @param sess The PDF session whose current raster set defines which pages are still live.
+ */
 void PrunePdfPageTextures(int buffer_id, const PdfSession &sess) {
     for (auto it = g_pdf_page_textures.begin(); it != g_pdf_page_textures.end();) {
         if (it->first.first == buffer_id && sess.rasters.find(it->first.second) == sess.rasters.end()) {
@@ -12812,6 +13596,15 @@ void PrunePdfPageTextures(int buffer_id, const PdfSession &sess) {
 // too would just double up against that instead of adding legibility.
 // Four separate DrawRectangle strips rather than one DrawRectangleLinesEx
 // call, since that only ever draws one uniform thickness on all sides.
+/**
+ * @brief Draws a themed border around a pane's rectangle, thicker on all sides when the pane
+ * is active so which pane has the cursor reads at a glance.
+ * @param x Left edge of the pane rectangle.
+ * @param y Top edge of the pane rectangle.
+ * @param w Width of the pane rectangle.
+ * @param h Height of the pane rectangle.
+ * @param is_active Whether this pane is the currently active one (drawn with a thicker border).
+ */
 void DrawPaneBorder(float x, float y, float w, float h, bool is_active) {
     Color border_color = is_active ? ResolveHlGroup("BorderActive") : ResolveHlGroup("BorderInactive");
     float top_thick = is_active ? 3.0f : 1.0f;
@@ -12861,14 +13654,26 @@ struct MathNode {
 struct MathParser {
     const std::string &s;
     size_t i = 0;
+    /**
+     * @brief Constructs a parser over `src`, starting at offset 0.
+     * @param src The raw LaTeX math source to parse (a reference kept for the parser's lifetime).
+     */
     explicit MathParser(const std::string &src) : s(src) {}
 
+    /**
+     * @brief Advances the cursor past any run of whitespace at the current position.
+     */
     void SkipSpace() {
         while (i < s.size() && std::isspace(static_cast<unsigned char>(s[i]))) i++;
     }
 
     // One command name's macro-expansion, name -> Unicode codepoint (must
     // also be in kMathCodepoints above, or it'll draw as a missing glyph).
+    /**
+     * @brief Returns the static lookup table mapping LaTeX command names (e.g. "alpha") to
+     * their Unicode codepoint, built once on first call.
+     * @return Reference to the shared name-to-codepoint symbol table.
+     */
     static const std::unordered_map<std::string, int> &SymbolTable() {
         static const std::unordered_map<std::string, int> kTable = {
             {"alpha", 0x3b1},    {"beta", 0x3b2},     {"gamma", 0x3b3},   {"delta", 0x3b4},
@@ -12904,6 +13709,12 @@ struct MathParser {
     // Parses "{ row }" (consuming both braces) or, absent a brace, a single
     // ParseAtom() -- used for both sup/sub arguments and \frac/\sqrt args,
     // matching real LaTeX's "one token or a braced group" argument rule.
+    /**
+     * @brief Parses a braced group "{ row }" (consuming both braces) or, absent a brace, a
+     * single ParseAtom() result -- the "one token or a braced group" argument rule shared by
+     * sup/sub arguments and \\frac/\\sqrt arguments.
+     * @return The parsed group's or atom's node.
+     */
     MathNode ParseGroupOrAtom() {
         SkipSpace();
         if (i < s.size() && s[i] == '{') {
@@ -12915,6 +13726,12 @@ struct MathParser {
         return ParseAtom();
     }
 
+    /**
+     * @brief Parses a backslash command at the current position (a Greek/symbol name, \\frac,
+     * \\sqrt, \\text-like upright-run commands, a sizing hint, an escaped literal character, or
+     * an unrecognized name shown literally) and returns the resulting node.
+     * @return The parsed command's resulting math node.
+     */
     MathNode ParseCommand() {
         i++;  // consume '\'
         size_t start = i;
@@ -12950,6 +13767,12 @@ struct MathParser {
             MathNode grp = ParseGroupOrAtom();
             MathNode n;
             n.kind = MathKind::Row;
+            /**
+             * @brief Returns a copy of `m` with italics forced off, for rendering \\text-like
+             * upright-run command bodies.
+             * @param m The node to copy.
+             * @return Copy of `m` with MathNode::italic cleared.
+             */
             auto upright_copy = [](MathNode m) {
                 m.italic = false;
                 return m;
@@ -12981,6 +13804,11 @@ struct MathParser {
 
     // One atom, *without* consuming a trailing ^/_ (ParseRow attaches
     // those to whatever atom precedes them).
+    /**
+     * @brief Parses one atom (a command, or a single literal character) without consuming a
+     * trailing ^/_ -- ParseRow attaches those to whatever atom precedes them.
+     * @return The parsed atom's math node.
+     */
     MathNode ParseAtom() {
         SkipSpace();
         if (i >= s.size()) return MathNode{};
@@ -12996,6 +13824,14 @@ struct MathParser {
     // A left-to-right sequence of atoms (each optionally followed by ^/_),
     // stopping at `end` (or end-of-string if `end` is '\0', the top-level
     // call's own sentinel).
+    /**
+     * @brief Parses a left-to-right sequence of atoms, each optionally followed by ^/_, stopping
+     * at the `end` delimiter (or end-of-string if `end` is '\\0'). Recovers from a
+     * non-progressing parse by consuming one literal byte, so malformed/in-progress input can't
+     * stall the layout loop.
+     * @param end Delimiter character to stop before (or '\\0' to parse to end-of-string).
+     * @return The parsed row's math node.
+     */
     MathNode ParseRow(char end) {
         MathNode row;
         row.kind = MathKind::Row;
@@ -13065,6 +13901,14 @@ MathLayoutResult LayoutMathAtom(const MathNode &n, float font_size);
 // Composes `terms` left-to-right, each already carrying its own optional
 // sup/sub (see MathNode::sup/sub), aligning every term's own baseline to
 // the row's shared (tallest-above-baseline) value.
+/**
+ * @brief Lays out `terms` left-to-right, placing each term's own optional sup/sub scripts
+ * relative to it and aligning every term's baseline to the row's shared (tallest-above-baseline)
+ * value.
+ * @param terms The sequence of math nodes to compose into one row.
+ * @param font_size Base font size to lay out at; sup/sub scripts are shrunk relative to this.
+ * @return The composed row's glyph runs, bar runs, size, and baseline.
+ */
 MathLayoutResult LayoutMathRow(const std::vector<MathNode> &terms, float font_size) {
     constexpr float kScriptScale = 0.7f;    // sup/sub shrink factor, roughly TeX's own scriptstyle ratio
     constexpr float kScriptRaise = 0.55f;   // superscript raised this fraction of font_size above the baseline
@@ -13151,6 +13995,15 @@ MathLayoutResult LayoutMathRow(const std::vector<MathNode> &terms, float font_si
 
 // Lays out `n` itself (ignoring any sup/sub attached to it -- LayoutMathRow
 // composes those onto whichever row this atom is a term of).
+/**
+ * @brief Lays out node `n` itself (Row delegates to LayoutMathRow; Frac stacks numerator over
+ * denominator with a dividing bar; Sqrt draws a radical glyph plus overline before the radicand;
+ * Text measures and places one glyph run), ignoring any sup/sub attached to `n` -- LayoutMathRow
+ * composes those onto whichever row this atom is a term of.
+ * @param n The math node to lay out.
+ * @param font_size Font size to lay out at.
+ * @return The laid-out node's glyph runs, bar runs, size, and baseline.
+ */
 MathLayoutResult LayoutMathAtom(const MathNode &n, float font_size) {
     switch (n.kind) {
         case MathKind::Row:
@@ -13234,6 +14087,14 @@ MathLayoutResult LayoutMathAtom(const MathNode &n, float font_size) {
 // `font_size`. Always succeeds -- an unparseable/unknown construct
 // degrades to plain-looking text (see ParseCommand's own fallback) rather
 // than failing outright, same tolerance as the rest of this HTML renderer.
+/**
+ * @brief Entry point that parses and lays out one \\(..\\)/\\[..\\]/$..$/$$..$$ span's raw LaTeX
+ * source (delimiters already stripped by ExtractMathSpans) at `font_size`. Always succeeds --
+ * an unparseable/unknown construct degrades to plain-looking text rather than failing outright.
+ * @param latex The raw LaTeX math source, with delimiters already stripped.
+ * @param font_size Font size to lay out at.
+ * @return The laid-out expression's glyph runs, bar runs, size, and baseline.
+ */
 MathLayoutResult LayoutMathExpression(const std::string &latex, float font_size) {
     MathParser parser(latex);
     MathNode top = parser.ParseRow('\0');
@@ -13243,6 +14104,14 @@ MathLayoutResult LayoutMathExpression(const std::string &latex, float font_size)
 // Same shear-for-italic technique as DrawHtmlRun (below) -- bare variables
 // (MathNode::italic) draw slanted, matching standard math-mode convention;
 // symbols/digits/operators stay upright.
+/**
+ * @brief Draws a laid-out math expression's glyph runs and bar runs at (x, y), shearing italic
+ * glyph runs to slant them the same way DrawHtmlRun does for italic text.
+ * @param x X offset to draw the layout's origin at.
+ * @param y Y offset to draw the layout's origin at.
+ * @param m The laid-out expression to draw (from LayoutMathExpression/LayoutMathAtom).
+ * @param color Color to draw the glyphs and bars in.
+ */
 void DrawMathLayout(float x, float y, const MathLayoutResult &m, Color color) {
     for (const MathGlyphRun &g : m.glyphs) {
         if (g.text.empty()) continue;
@@ -13368,8 +14237,21 @@ struct HtmlLayoutCtx {
     float zoom = 1.0f;  // matches HtmlSession::zoom -- local images scale with the same pane zoom as text does
 };
 
+/**
+ * @brief Returns the line height to use for text at `font_size` (a fixed 6px leading added on
+ * top of the font size).
+ * @param font_size The text's font size.
+ * @return The line height in pixels.
+ */
 float HtmlLineHeight(float font_size) { return font_size + 6.0f; }
 
+/**
+ * @brief Resolves a style's effective text color, falling back to the layout context's default
+ * color when the style has no explicit color set.
+ * @param s The computed style to read a color from.
+ * @param ctx Layout context supplying the fallback default color.
+ * @return The resolved color.
+ */
 Color HtmlResolveColor(const ComputedStyle &s, const HtmlLayoutCtx &ctx) {
     if (!s.has_color) return ctx.default_color;
     return Color{s.color_r, s.color_g, s.color_b, 255};
@@ -13395,6 +14277,14 @@ struct HtmlPendingWord {
 // fetch here (WEBKIT_PARITY_PLAN.md Part IV Phase 13 is where subresource
 // fetching would land) and returns "" so callers fall back to the
 // existing [image: ...] placeholder text instead of a broken texture load.
+/**
+ * @brief Resolves an <img src> value against `base_dir` for local file loading. An absolute
+ * path passes through unchanged; a remote (http/https) src returns "" since there is no local
+ * file to fetch, so callers fall back to a bracketed placeholder instead of a broken texture load.
+ * @param src The <img> element's src attribute value.
+ * @param base_dir Directory to resolve a relative `src` against.
+ * @return The resolved local filesystem path, or "" if `src` is empty or a remote URL.
+ */
 std::string ResolveHtmlImagePath(const std::string &src, const std::string &base_dir) {
     if (src.empty()) return "";
     if (src.compare(0, 7, "http://") == 0 || src.compare(0, 8, "https://") == 0) return "";
@@ -13421,14 +14311,38 @@ std::string ResolveHtmlImagePath(const std::string &src, const std::string &base
 // line's height, and therefore every word's centering offset within it,
 // isn't known until the *last* word on that line is seen, so placement is
 // buffered per-line and only pushed once flush_line() knows `lh`.
+/**
+ * @brief Places `words` left-to-right starting at `indent_x`, wrapping to a new line whenever
+ * the next word wouldn't fit within ctx.layout_width, vertically centering every word on a line
+ * within that line's own (tallest-entry) height, and appending the resulting runs/images/math
+ * runs to `out`.
+ * @param words The pending words (and inline images/math) to lay out, in order.
+ * @param indent_x Left edge to start each line at.
+ * @param cursor_y Y position to start laying out at.
+ * @param ctx Layout context (wrap width, etc.).
+ * @param out Layout output to append placed runs, images, and math runs to.
+ * @return The cursor_y position just past the last laid-out line.
+ */
 float HtmlFlushWords(std::vector<HtmlPendingWord> &words, float indent_x, float cursor_y, const HtmlLayoutCtx &ctx,
                       HtmlLayout &out) {
     if (words.empty()) return cursor_y;
+    /**
+     * @brief Returns the on-screen width of one pending word (image width, laid-out math width,
+     * or measured text width).
+     * @param w The pending word to measure.
+     * @return The word's width in pixels.
+     */
     auto word_width = [](const HtmlPendingWord &w) -> float {
         if (w.is_image) return w.image_w;
         if (w.is_math) return w.math.width;
         return MeasureTextEx(g_font, w.text.c_str(), w.font_size, 0).x;
     };
+    /**
+     * @brief Returns the line height one pending word requires (image height, math height, or
+     * the font's line height), each plus a small margin.
+     * @param w The pending word to measure.
+     * @return The line height in pixels the word needs.
+     */
     auto word_line_height = [](const HtmlPendingWord &w) -> float {
         if (w.is_image) return w.image_h + 6.0f;
         if (w.is_math) return std::max(w.math.height, w.font_size) + 6.0f;
@@ -13440,6 +14354,10 @@ float HtmlFlushWords(std::vector<HtmlPendingWord> &words, float indent_x, float 
         float x;
     };
     std::vector<PlacedWord> line;
+    /**
+     * @brief Emits the words buffered in `line` as centered runs/images/math runs at the
+     * current cursor_y, advances cursor_y past the line, and resets `line`/`x` for the next line.
+     */
     auto flush_line = [&]() {
         if (line.empty()) return;
         float lh = 0;
@@ -13502,6 +14420,15 @@ float HtmlFlushWords(std::vector<HtmlPendingWord> &words, float indent_x, float 
 // (HtmlCollectInlineChild's element recursion too, not just adjacent text
 // nodes) -- judged not worth the added bookkeeping/regression risk for a
 // cosmetic-only gap.
+/**
+ * @brief Splits `text` on whitespace into words appended to `out`, each stamped with `style`'s
+ * resolved font size/color/formatting (every word from the same text node shares one template
+ * since the DOM has no per-word style).
+ * @param text The raw text content to split into words.
+ * @param style The cascaded style to stamp each word with.
+ * @param ctx Layout context supplying the base font size and fallback color.
+ * @param out Word list to append the split words to.
+ */
 void HtmlCollectTextWords(const std::string &text, const ComputedStyle &style, const HtmlLayoutCtx &ctx,
                            std::vector<HtmlPendingWord> &out) {
     float fs = ctx.base_font_size * style.font_scale;
@@ -13523,6 +14450,12 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
 // Concatenates every descendant Text node's raw content in document order
 // -- <pre>'s own layout and a <math> node's own raw LaTeX source (both
 // below) need the literal text, not word-split.
+/**
+ * @brief Concatenates every descendant Text node's raw content under `node`, in document order,
+ * skipping display:none subtrees.
+ * @param node The DOM node whose descendant text should be collected.
+ * @param out String to append the collected raw text to.
+ */
 void HtmlCollectRawText(DomNode *node, std::string &out) {
     for (auto &c : node->children) {
         if (c->type == DomNodeType::Text) out += c->text;
@@ -13549,6 +14482,17 @@ void HtmlCollectRawText(DomNode *node, std::string &out) {
 // (An earlier version of this dispatch split those two call sites, and
 // the block-child one silently collected nothing for a childless element
 // like <img> in that position -- not even the bracketed placeholder.)
+/**
+ * @brief Handles exactly one inline-flow child `c` of some container -- text nodes are word-
+ * split, <br> becomes a forced line break, <img> is resolved and sized into a pending image
+ * word, other elements (e.g. <span>, <a>, <b>) recurse over their own children, and any other
+ * leaf is skipped.
+ * @param c The child DOM node to collect.
+ * @param parent_style Cascaded style to use for a plain Text child (its own style is its
+ * parent element's).
+ * @param ctx Layout context (wrap width, base dir, zoom, etc.).
+ * @param out Word list to append the collected pending words to.
+ */
 void HtmlCollectInlineChild(DomNode *c, const ComputedStyle &parent_style, const HtmlLayoutCtx &ctx,
                              std::vector<HtmlPendingWord> &out) {
     if (c->type == DomNodeType::Text) {
@@ -13569,6 +14513,11 @@ void HtmlCollectInlineChild(DomNode *c, const ComputedStyle &parent_style, const
         if (tex) {
             float natural_w = static_cast<float>(tex->width) * ctx.zoom;
             float natural_h = static_cast<float>(tex->height) * ctx.zoom;
+            /**
+             * @brief Reads and parses attribute `name` on `c` as a pixel size.
+             * @param name Attribute name to look up.
+             * @return The parsed numeric value, or 0 if the attribute is missing or unparseable.
+             */
             auto attr_px = [&](const char *name) -> float {
                 auto it = c->attrs.find(name);
                 if (it == c->attrs.end()) return 0;
@@ -13655,6 +14604,18 @@ struct HtmlPreCursor {
 // boundaries on the same line and only resets at indent_x on a real '\n',
 // so a highlighted token flows immediately after the plain text before it
 // with no gap, exactly like one flat run of that whole line would have.
+/**
+ * @brief Recurses through a <pre>'s subtree in document order, emitting one run per contiguous
+ * same-styled text piece split on literal '\\n' bytes (no word-wrap), carrying each element's
+ * own cascaded style down to the text it directly contains and advancing `cur`'s x/line_index
+ * as it goes.
+ * @param node The DOM node (text or element) currently being visited.
+ * @param style The cascaded style in effect for `node` (its own style if an element, else its
+ * parent's).
+ * @param cur Per-line cursor state mutated as the subtree is walked.
+ * @param ctx Layout context (base font size, etc.).
+ * @param out Layout output to append emitted runs to.
+ */
 void HtmlLayoutPreNode(DomNode *node, const ComputedStyle &style, HtmlPreCursor &cur, const HtmlLayoutCtx &ctx,
                         HtmlLayout &out) {
     if (node->type == DomNodeType::Text) {
@@ -13688,6 +14649,15 @@ void HtmlLayoutPreNode(DomNode *node, const ComputedStyle &style, HtmlPreCursor 
 // positioned verbatim with no word-wrap -- wrapping would require either
 // truncating or re-flowing whitespace-significant content (code
 // indentation), neither of which stays "preformatted".
+/**
+ * @brief Lays out a <pre> block: one run per contiguous same-styled span per source line,
+ * positioned verbatim with no word-wrap, then advances `cursor_y` past the block's full height.
+ * @param node The <pre> element's DOM node.
+ * @param indent_x Left edge to position each line at.
+ * @param cursor_y Y position to start laying out at; updated in place to just past this block.
+ * @param ctx Layout context (base font size, etc.).
+ * @param out Layout output to append emitted runs to.
+ */
 void HtmlLayoutPreformatted(DomNode *node, float indent_x, float &cursor_y, const HtmlLayoutCtx &ctx,
                              HtmlLayout &out) {
     HtmlPreCursor cur;
@@ -13706,6 +14676,17 @@ void HtmlLayoutPreformatted(DomNode *node, float indent_x, float &cursor_y, cons
 
 constexpr float kHtmlListIndentPx = 24.0f;
 
+/**
+ * @brief Recursively lays out a block element and its subtree: applies top margin, narrows the
+ * layout column for a centered max-width box, pushes background/border boxes sized once the
+ * block's content height is known, and dispatches to list/pre/inline-flow handling for its
+ * children, advancing `cursor_y` past the whole block.
+ * @param node The block element's DOM node.
+ * @param indent_x Left edge to lay this block's content out at.
+ * @param cursor_y Y position to start laying out at; updated in place to just past this block.
+ * @param ctx Layout context (wrap width, base font size, base dir, zoom).
+ * @param out Layout output to append runs, rules, images, math runs, backgrounds, and borders to.
+ */
 void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlLayoutCtx &ctx, HtmlLayout &out) {
     if (node->style.display_none) return;
     float line_h = HtmlLineHeight(ctx.base_font_size * node->style.font_scale);
@@ -13772,6 +14753,11 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
         out.backgrounds.push_back(
             {bg_x, block_top, bg_w, 0.0f, Color{node->style.bg_r, node->style.bg_g, node->style.bg_b, 255}});
     }
+    /**
+     * @brief Fills in the pushed background box's height (from `block_top` to the current
+     * `cursor_y`), now that this block's full content height is known. No-op if this block
+     * has no background.
+     */
     auto finish_bg = [&]() {
         if (bg_index != static_cast<size_t>(-1)) out.backgrounds[bg_index].h = cursor_y - block_top;
     };
@@ -13802,6 +14788,11 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
         }
         out.borders.push_back(br);
     }
+    /**
+     * @brief Fills in the pushed border box's height (from `block_top` to the current
+     * `cursor_y`), now that this block's full content height is known. No-op if this block
+     * has no border.
+     */
     auto finish_border = [&]() {
         if (border_index != static_cast<size_t>(-1)) out.borders[border_index].h = cursor_y - block_top;
     };
@@ -13847,6 +14838,10 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
         words.push_back({marker, eff_ctx.base_font_size * node->style.font_scale, HtmlResolveColor(node->style, eff_ctx),
                           node->style.bold, node->style.italic, false, false});
     }
+    /**
+     * @brief Lays out any words buffered so far (via HtmlFlushWords) at `my_indent`, advances
+     * `cursor_y` past them, and clears the buffer. No-op if nothing is buffered.
+     */
     auto flush_words = [&]() {
         if (words.empty()) return;
         cursor_y = HtmlFlushWords(words, my_indent, cursor_y, eff_ctx, out);
@@ -13872,6 +14867,13 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
     cursor_y += node->style.margin_bottom_lines * line_h;
 }
 
+/**
+ * @brief Lays out an entire HtmlDoc by walking its root's top-level element children with
+ * HtmlLayoutBlock.
+ * @param doc The parsed/styled HTML document to lay out.
+ * @param ctx Layout context (wrap width, base font size, base dir, zoom).
+ * @return The resulting layout (runs, rules, images, math runs, backgrounds, borders, total height).
+ */
 HtmlLayout LayoutHtmlDoc(const HtmlDoc &doc, const HtmlLayoutCtx &ctx) {
     HtmlLayout out;
     if (!doc.root) return out;
@@ -13890,6 +14892,13 @@ HtmlLayout LayoutHtmlDoc(const HtmlDoc &doc, const HtmlLayoutCtx &ctx) {
 // already-drawn-upright copy underneath to erase-and-redraw over first:
 // each HtmlRun is only ever drawn once, here, so italic's shear can wrap
 // the actual draw call directly with no background-cover step.
+/**
+ * @brief Draws one laid-out HTML text run at (x, y), shearing for italics, faking bold with a
+ * 1px-offset double draw, and drawing underline/strikethrough rules as needed.
+ * @param x X position to draw the run at.
+ * @param y Y position to draw the run at.
+ * @param run The run to draw (text, font size, color, and style flags).
+ */
 void DrawHtmlRun(float x, float y, const HtmlRun &run) {
     bool sheared = run.italic;
     if (sheared) {
@@ -13935,6 +14944,17 @@ void DrawHtmlRun(float x, float y, const HtmlRun &run) {
 // card/row); an actual drag past the threshold is entirely the Update*
 // functions' job, since they alone see mouse state across frames.
 
+/**
+ * @brief Draws a kanban board pane: toolbar ("+ New Card"/"+ Column"), per-column headers with
+ * a "..." rename/delete menu, and each column's cards, refreshing the session's cached content
+ * geometry and registering click regions for the toolbar/menu/card interactions along the way.
+ * @param pane The pane displaying this kanban board.
+ * @param x Left edge of the pane's content area.
+ * @param y Top edge of the pane's content area.
+ * @param w Width of the pane's content area.
+ * @param h Height of the pane's content area.
+ * @param is_active Whether this pane is the currently active one.
+ */
 void DrawKanban(const Pane &pane, float x, float y, float w, float h, bool is_active) {
     KanbanSession *sess = g_editor.GetKanbanMutable(pane.buffer_id);
     if (!sess) return;
@@ -13975,8 +14995,10 @@ void DrawKanban(const Pane &pane, float x, float y, float w, float h, bool is_ac
     DrawTextEx(g_font, "+ Column", Vector2{add_col_rect.x + 6, add_col_rect.y + 3}, g_font_size * 0.9f, 0,
                ResolveHlGroup("Normal"));
     int pane_id_for_add = pane.id;
+    // Focuses this pane and prompts for a new column name, adding it to the kanban board on confirm.
     RegisterClickRegion(add_col_rect, [pane_id_for_add] {
         g_editor.FocusPaneById(pane_id_for_add);
+        // Adds the entered name as a new kanban column, unless the prompt was left empty.
         g_editor.BeginPromptNative("New column name", "", [](const std::string &name) {
             if (!name.empty()) g_editor.KanbanAddColumn(name);
         });
@@ -14007,6 +15029,7 @@ void DrawKanban(const Pane &pane, float x, float y, float w, float h, bool is_ac
         Rectangle kebab_rect{col_x + col_w - 24, col_header_y + 4, 18, static_cast<float>(header_h) - 8};
         DrawTextEx(g_font, "...", Vector2{kebab_rect.x + 2, kebab_rect.y}, g_font_size, 0, ResolveHlGroup("Comment"));
         int pane_id_for_col = pane.id, col_i = ci;
+        // Focuses this pane and toggles the rename/delete popup menu for this column.
         RegisterClickRegion(kebab_rect, [pane_id_for_col, col_i] {
             g_editor.FocusPaneById(pane_id_for_col);
             int buffer_id = g_editor.CurrentBufferId();
@@ -14030,14 +15053,17 @@ void DrawKanban(const Pane &pane, float x, float y, float w, float h, bool is_ac
             DrawTextEx(g_font, "Delete", Vector2{delete_row.x + 8, delete_row.y + 4}, g_font_size, 0,
                        ResolveHlGroup("Normal"));
             std::string col_name = columns[ci];
+            // Closes the column menu and prompts to rename this column, applying the new name on confirm.
             RegisterClickRegion(rename_row, [pane_id_for_col, col_i, col_name] {
                 g_editor.FocusPaneById(pane_id_for_col);
                 g_kanban_col_menu_buffer = -1;
                 g_kanban_col_menu_col = -1;
+                // Renames the column to the entered text, unless the prompt was left empty.
                 g_editor.BeginPromptNative("Rename column", col_name, [col_i](const std::string &name) {
                     if (!name.empty()) g_editor.KanbanRenameColumn(col_i, name);
                 });
             });
+            // Closes the column menu and deletes this column.
             RegisterClickRegion(delete_row, [pane_id_for_col, col_i] {
                 g_editor.FocusPaneById(pane_id_for_col);
                 g_kanban_col_menu_buffer = -1;
@@ -14087,6 +15113,7 @@ void DrawKanban(const Pane &pane, float x, float y, float w, float h, bool is_ac
                 EndScissorMode();
 
                 int pane_id = pane.id, col_i = ci, row_i = ri;
+                // Focuses this pane and sets the focused column/row to this card.
                 RegisterClickRegion(card_rect, [pane_id, col_i, row_i] {
                     g_editor.FocusPaneById(pane_id);
                     if (KanbanSession *s = g_editor.GetKanbanMutable(g_editor.CurrentBufferId())) {
@@ -14159,6 +15186,7 @@ void DrawKanban(const Pane &pane, float x, float y, float w, float h, bool is_ac
     // card/button/popup-row its own click priority -- see DrawPane's own
     // kanban_or_gantt_active exclusion comment for why the generic
     // pane-body catch-all is skipped there instead of double-registering).
+    // Focuses this pane and dismisses any open column menu on a click that missed everything more specific above.
     RegisterClickRegion(Rectangle{x, y, w, h}, [pane_id = pane.id] {
         g_editor.FocusPaneById(pane_id);
         g_kanban_col_menu_buffer = -1;
@@ -14168,6 +15196,17 @@ void DrawKanban(const Pane &pane, float x, float y, float w, float h, bool is_ac
     EndScissorMode();
 }
 
+/**
+ * @brief Draws dependency arrows between Gantt rows: for each visible headline with a
+ * `blockers` id that resolves to another headline also in `rows`, draws an elbowed connector
+ * from the blocker's end to the dependent's start with an arrowhead.
+ * @param sess The Gantt session (outline, timeline scale) to read headline data from.
+ * @param rows Headline indices currently visible, in display row order.
+ * @param timeline_x X position of the timeline's day-0 column.
+ * @param y Top edge of the Gantt content area.
+ * @param row_h Height of one row.
+ * @param ruler_h Height of the date ruler above the rows.
+ */
 void DrawGanttDependencies(const GanttSession &sess, const std::vector<int> &rows, float timeline_x, float y, int row_h,
                            float ruler_h) {
     std::unordered_map<std::string, int> id_to_headline;
@@ -14200,6 +15239,16 @@ void DrawGanttDependencies(const GanttSession &sess, const std::vector<int> &row
     }
 }
 
+/**
+ * @brief Draws a Gantt chart pane: the label column, a date ruler (day/week/month scale), each
+ * row's bar, and dependency arrows, refreshing the session's cached content geometry as it goes.
+ * @param pane The pane displaying this Gantt chart.
+ * @param x Left edge of the pane's content area.
+ * @param y Top edge of the pane's content area.
+ * @param w Width of the pane's content area.
+ * @param h Height of the pane's content area.
+ * @param is_active Whether this pane is the currently active one.
+ */
 void DrawGantt(const Pane &pane, float x, float y, float w, float h, bool is_active) {
     GanttSession *sess = g_editor.GetGanttMutable(pane.buffer_id);
     if (!sess) return;
@@ -14378,6 +15427,7 @@ void DrawGantt(const Pane &pane, float x, float y, float w, float h, bool is_act
             }
             if (!being_dragged) {
                 int pane_id = pane.id, row_i = ri;
+                // Focuses this pane and sets the focused Gantt row to this task's bar.
                 RegisterClickRegion(bar_rect, [pane_id, row_i] {
                     g_editor.FocusPaneById(pane_id);
                     if (GanttSession *s = g_editor.GetGanttMutable(g_editor.CurrentBufferId())) s->focused_row = row_i;
@@ -14400,6 +15450,7 @@ void DrawGantt(const Pane &pane, float x, float y, float w, float h, bool is_act
             if (!being_dragged) {
                 int pane_id = pane.id, row_i = ri;
                 Rectangle hit{bar_x - 6, cy - 6, 12, 12};
+                // Focuses this pane and sets the focused Gantt row to this milestone.
                 RegisterClickRegion(hit, [pane_id, row_i] {
                     g_editor.FocusPaneById(pane_id);
                     if (GanttSession *s = g_editor.GetGanttMutable(g_editor.CurrentBufferId())) s->focused_row = row_i;
@@ -14408,6 +15459,7 @@ void DrawGantt(const Pane &pane, float x, float y, float w, float h, bool is_act
         }
     }
 
+    // Focuses this pane on a click that missed every row's bar/milestone.
     RegisterClickRegion(Rectangle{x, y, w, h}, [pane_id = pane.id] { g_editor.FocusPaneById(pane_id); });
 
     EndScissorMode();
@@ -14421,6 +15473,13 @@ void DrawGantt(const Pane &pane, float x, float y, float w, float h, bool is_act
 // dependency for one icon -- confirmed with the user before building
 // this instead). `pos` is the icon's top-left corner; `size` is its
 // overall square footprint (head + antenna included).
+/**
+ * @brief Draws a small hand-drawn robot glyph (antenna, rounded head, two dot eyes) using raylib
+ * primitives, for AI-agent participant chips.
+ * @param pos Top-left corner of the icon's overall square footprint (antenna included).
+ * @param size Side length of the icon's overall square footprint.
+ * @param color Color to draw the icon in.
+ */
 void DrawRobotIcon(Vector2 pos, float size, Color color) {
     const float antenna_h = size * 0.18f;
     const float head_y = pos.y + antenna_h;
@@ -14445,6 +15504,13 @@ void DrawRobotIcon(Vector2 pos, float size, Color color) {
 // recording indicator (bespoke-drawn, like DrawRobotIcon above, so it
 // doesn't depend on the loaded font having a mic glyph): a rounded
 // capsule head, a cradling stand, and a short base post/foot.
+/**
+ * @brief Draws a small hand-drawn microphone icon (rounded capsule head, cradling stand, base
+ * post) using raylib primitives, for the tab bar's speech-to-text recording indicator.
+ * @param pos Top-left corner of the icon's overall square footprint.
+ * @param size Side length of the icon's overall square footprint.
+ * @param color Color to draw the icon in.
+ */
 void DrawMicIcon(Vector2 pos, float size, Color color) {
     const float capsule_w = size * 0.42f;
     const float capsule_h = size * 0.56f;
@@ -14470,6 +15536,15 @@ void DrawMicIcon(Vector2 pos, float size, Color color) {
 // session.setStatus / made an edit yet, renders exactly as it did
 // before this feature existed. `center` is the badge's own center, not
 // the chip's -- callers position it (bottom-right corner of the chip).
+/**
+ * @brief Draws a small status badge (a distinct shape/symbol per status, plus a dark outline)
+ * overlaid on an AI agent's tab-bar chip; draws nothing for an empty or "idle" status.
+ * @param center Center point of the badge (not the chip's own center -- callers position this
+ * at, e.g., the chip's bottom-right corner).
+ * @param radius Radius of the badge.
+ * @param status The agent's reported status string ("thinking", "writing", "awaiting_input",
+ * or others handled further below; "" or "idle" draws nothing).
+ */
 void DrawAgentStatusBadge(Vector2 center, float radius, const std::string &status) {
     if (status.empty() || status == "idle") return;
     const int cx = static_cast<int>(center.x);
@@ -14515,6 +15590,18 @@ void DrawAgentStatusBadge(Vector2 center, float radius, const std::string &statu
     }
 }
 
+/**
+ * @brief Draws one pane's full contents: the header (single filename label or a multi-buffer
+ * tab strip), then dispatches to the appropriate content renderer for the pane's buffer kind
+ * (terminal, image, HTML, PDF, office document, sheet, kanban, gantt, or plain text buffer),
+ * registering click regions for header tabs/controls along the way.
+ * @param pane The pane to draw.
+ * @param x Left edge of the pane's rectangle.
+ * @param y Top edge of the pane's rectangle.
+ * @param w Width of the pane's rectangle.
+ * @param h Height of the pane's rectangle.
+ * @param is_active Whether this pane is the currently active one.
+ */
 void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_active) {
     int line_height = LineHeight();
     int header_h = PaneHeaderHeight();
@@ -14586,6 +15673,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 Rectangle chip_rect{seg_x, y, seg_w, static_cast<float>(header_h)};
                 g_pane_tab_chip_rects.push_back({pane.id, pane.buffer_tabs[i], chip_rect});
                 int pane_id = pane.id;
+                // Focuses this pane then switches it to buffer tab `i`.
                 RegisterClickRegion(chip_rect, [pane_id, i] {
                     g_editor.FocusPaneById(pane_id);
                     g_editor.GoToPaneBufferTab(i);
@@ -14607,6 +15695,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             Rectangle header_rect{x, y, header_click_w, static_cast<float>(header_h)};
             g_pane_tab_chip_rects.push_back({pane.id, pane.buffer_id, header_rect});
             int pane_id = pane.id;
+            // Focuses this pane.
             RegisterClickRegion(header_rect, [pane_id] { g_editor.FocusPaneById(pane_id); });
         }
         if (term_sess) {
@@ -14694,6 +15783,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                            ResolveHlGroup("Normal"));
                 int export_buffer_id = pane.buffer_id;
                 std::string format = i == 0 ? "svg" : (i == 1 ? "png" : "pdf");
+                // Exports the Gantt chart to `format`: SVG is written synchronously; PNG/PDF are
+                // queued as a pending raster export handled elsewhere in the frame loop.
                 RegisterClickRegion(button, [export_buffer_id, format] {
                     if (format == "svg") {
                         std::string path = GanttExportPath(export_buffer_id, "svg");
@@ -14775,6 +15866,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             focus_click_x += left_excl;
             focus_click_w = std::max(0.0f, focus_click_w - left_excl - right_excl);
         }
+        // Focuses this pane on a click anywhere in its content area (outside any more specific
+        // widget registered below).
         RegisterClickRegion(Rectangle{focus_click_x, focus_click_y, focus_click_w, focus_click_h},
                             [pane_id = pane.id] { g_editor.FocusPaneById(pane_id); });
     }
@@ -14967,6 +16060,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         Color match_c = ResolveHlGroup("IncSearch");
         Color match_other = Color{match_c.r, match_c.g, match_c.b, 90};
         Color match_cur = Color{match_c.r, match_c.g, match_c.b, 190};
+        /**
+         * @brief Draws PDF page `idx` (if a raster for it is cached) at y position `top_y`,
+         * along with its search-match highlight rectangles.
+         * @param idx Page index to draw.
+         * @param top_y Y position of the page's top edge.
+         * @return The page's on-screen height (zoom-scaled), or 0 if no raster is cached for it.
+         */
         auto draw_page = [&](int idx, float top_y) -> float {
             auto rit = pdf_sess->rasters.find(idx);
             if (rit == pdf_sess->rasters.end()) return 0.0f;
@@ -15041,6 +16141,14 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // the color the caller's own content (text or hand-drawn icon)
         // should use, so every button (text-label or icon) stays visually
         // consistent without duplicating this logic per button kind.
+        /**
+         * @brief Draws a toolbar button's background chrome (no fill at rest, a hover tint, or
+         * an accent tint when toggled on) and returns the foreground color its label/icon
+         * content should be drawn in.
+         * @param rect The button's rectangle.
+         * @param active Whether the button is currently toggled on.
+         * @return The color to draw the button's own content (text or icon) in.
+         */
         auto btn_bg = [&](Rectangle rect, bool active) -> Color {
             bool hovered = CheckCollisionPointRec(GetMousePosition(), rect);
             if (active) DrawRectangleRounded(rect, 0.25f, 6, ResolveHlGroup("AccentTint"));
@@ -15051,6 +16159,16 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // Draws one text-label button at (*bx, by), advancing *bx past it;
         // returns the button's own rect (callers open a dropdown directly
         // below it).
+        /**
+         * @brief Draws one text-label toolbar button at (*bx, by), registers `on_click` for it,
+         * and advances *bx past it.
+         * @param bx In/out x cursor: read for the button's left edge, advanced past the button.
+         * @param by Y position of the button.
+         * @param label Text to draw centered in the button.
+         * @param active Whether the button is currently toggled on.
+         * @param on_click Callback registered as this button's click region.
+         * @return The button's own rectangle (so a caller can open a dropdown below it).
+         */
         auto draw_btn = [&](float *bx, float by, const std::string &label, bool active,
                              const std::function<void()> &on_click) -> Rectangle {
             Vector2 ls = MeasureTextEx(g_font, label.c_str(), font_size * 0.92f, 0);
@@ -15072,6 +16190,19 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // restyle plan), so bold/italic/underline/strike still draw as
         // real styled letters, and align/list/undo/redo/color/table/image
         // draw as small vector shapes sized to the button rect.
+        /**
+         * @brief Draws one hand-drawn-icon toolbar button at (*bx, by) of width `bw` (button
+         * chrome via btn_bg, icon content via `draw_content`), registers `on_click` for it, and
+         * advances *bx past it.
+         * @param bx In/out x cursor: read for the button's left edge, advanced past the button.
+         * @param by Y position of the button.
+         * @param bw Width of the button.
+         * @param active Whether the button is currently toggled on.
+         * @param draw_content Callback that paints the button's icon content given its rect and
+         * foreground color.
+         * @param on_click Callback registered as this button's click region.
+         * @return The button's own rectangle.
+         */
         auto draw_icon_btn = [&](float *bx, float by, float bw, bool active,
                                   const std::function<void(Rectangle, Color)> &draw_content,
                                   const std::function<void()> &on_click) -> Rectangle {
@@ -15083,6 +16214,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             return rect;
         };
 
+        /**
+         * @brief Draws a short vertical separator line at the current x cursor and advances it
+         * past it.
+         * @param bx In/out x cursor: advanced past the separator.
+         * @param by Y position of the toolbar row the separator sits in.
+         */
         auto add_sep = [&](float *bx, float by) {
             *bx += 5.0f;
             DrawLineEx(Vector2{*bx, by + 4.0f}, Vector2{*bx, by + btn_h - 4.0f}, 1.0f, ResolveHlGroup("Border"));
@@ -15094,10 +16231,21 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // codepoints, ApplyFontSize above), so a unicode "\xE2\x96\xBE"
         // chevron in the label string rendered as a tofu '?' glyph; a
         // drawn triangle sidesteps font coverage entirely.
+        /**
+         * @brief Draws a text-label toolbar button with a small hand-drawn dropdown chevron
+         * (via draw_icon_btn), registers `on_click`, and advances *bx past it.
+         * @param bx In/out x cursor: read for the button's left edge, advanced past the button.
+         * @param by Y position of the button.
+         * @param label Text to draw in the button, left-aligned before the chevron.
+         * @param active Whether the button is currently toggled on (e.g. its dropdown is open).
+         * @param on_click Callback registered as this button's click region.
+         * @return The button's own rectangle.
+         */
         auto draw_dropdown_btn = [&](float *bx, float by, const std::string &label, bool active,
                                       const std::function<void()> &on_click) -> Rectangle {
             Vector2 ls = MeasureTextEx(g_font, label.c_str(), font_size * 0.92f, 0);
             float bw = ls.x + 22.0f;
+            // Draws the button's label text plus a hand-drawn downward chevron triangle.
             return draw_icon_btn(bx, by, bw, active,
                 [&, label, ls](Rectangle rect, Color color) {
                     DrawTextEx(g_font, label.c_str(),
@@ -15115,10 +16263,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         };
 
         // --- Row 1: font family/size, B/I/U/S, alignment, super/subscript, colors ---
+        // Toggles the font-family dropdown open/closed.
         Rectangle font_family_btn =
             draw_dropdown_btn(&row1_x, row1_y, "Font", g_office_dropdown_open == kOfficeDropdownFontFamily, [] {
                 g_office_dropdown_open = g_office_dropdown_open == kOfficeDropdownFontFamily ? -1 : kOfficeDropdownFontFamily;
             });
+        // Toggles the font-size dropdown open/closed.
         Rectangle font_size_btn =
             draw_dropdown_btn(&row1_x, row1_y, "Size", g_office_dropdown_open == kOfficeDropdownFontSize, [] {
                 g_office_dropdown_open = g_office_dropdown_open == kOfficeDropdownFontSize ? -1 : kOfficeDropdownFontSize;
@@ -15134,6 +16284,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             {'u', "U", false, false, true, false}, {'s', "S", false, false, false, true}};
         for (const StyleBtn &sb : kStyleBtns) {
             char which = sb.which;
+            // Draws this style button's own styled glyph (bold/italic/underline/strike), and
+            // on click toggles that format at the cursor/selection.
             draw_icon_btn(&row1_x, row1_y, btn_h, g_editor.OfficeFormatActive(which),
                 [&, sb](Rectangle rect, Color color) {
                     Vector2 ts = MeasureTextEx(g_font, sb.ch, font_size, 0);
@@ -15175,6 +16327,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         for (const AlignBtn &ab : kAlignBtns) {
             DocParagraph::Align align = ab.align;
             int kind = ab.kind;
+            // Draws this alignment icon's bars (left/center/right/justify), and on click sets
+            // the paragraph alignment at the cursor/selection.
             draw_icon_btn(&row1_x, row1_y, btn_h, g_editor.OfficeAlignmentActive(align),
                 [kind](Rectangle rect, Color color) {
                     float pad = rect.width * 0.2f;
@@ -15200,6 +16354,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // digits (U+00B2/U+2082) -- g_font is ASCII-only (see
         // draw_dropdown_btn's own comment on why), so those rendered as
         // tofu '?' glyphs.
+        // Draws a small raised "x2" glyph, and on click toggles superscript at the cursor/selection.
         draw_icon_btn(&row1_x, row1_y, btn_h, false,
             [&](Rectangle rect, Color color) {
                 Vector2 xs = MeasureTextEx(g_font, "x", font_size * 0.85f, 0);
@@ -15210,6 +16365,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 DrawTextEx(g_font, "2", Vector2{x0 + xs.x, rect.y + (rect.height - small) / 2.0f - 4.0f}, small, 0, color);
             },
             [] { g_editor.ToggleOfficeSuperscript(); });
+        // Draws a small lowered "x2" glyph, and on click toggles subscript at the cursor/selection.
         draw_icon_btn(&row1_x, row1_y, btn_h, false,
             [&](Rectangle rect, Color color) {
                 Vector2 xs = MeasureTextEx(g_font, "x", font_size * 0.85f, 0);
@@ -15227,6 +16383,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // isn't cheaply sampled the way OfficeFormatActive's bool toggles
         // are), same documented simplification as the format panel's
         // margins/page-color controls.
+        // Draws an "A" with a red swatch bar, and on click toggles the text-color dropdown.
         Rectangle text_color_btn = draw_icon_btn(&row1_x, row1_y, btn_h,
             g_office_dropdown_open == kOfficeDropdownTextColor,
             [&](Rectangle rect, Color color) {
@@ -15237,6 +16394,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                               static_cast<int>(bw), 3, Color{211, 47, 47, 255});
             },
             [] { g_office_dropdown_open = g_office_dropdown_open == kOfficeDropdownTextColor ? -1 : kOfficeDropdownTextColor; });
+        // Draws an "A" with a yellow swatch bar, and on click toggles the highlight-color dropdown.
         Rectangle highlight_btn = draw_icon_btn(&row1_x, row1_y, btn_h,
             g_office_dropdown_open == kOfficeDropdownHighlight,
             [&](Rectangle rect, Color color) {
@@ -15249,6 +16407,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             [] { g_office_dropdown_open = g_office_dropdown_open == kOfficeDropdownHighlight ? -1 : kOfficeDropdownHighlight; });
 
         // --- Row 2: lists, special chars, math, table, image, undo/redo ---
+        // Draws a bulleted-list icon, and on click sets the paragraph list kind to Bullet.
         draw_icon_btn(&row2_x, row2_y, btn_h, g_editor.OfficeListKindActive(DocParagraph::ListKind::Bullet),
             [](Rectangle rect, Color color) {
                 float pad = rect.width * 0.16f;
@@ -15261,6 +16420,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 }
             },
             [] { g_editor.SetOfficeListKind(DocParagraph::ListKind::Bullet); });
+        // Draws a numbered-list icon, and on click sets the paragraph list kind to Numbered.
         draw_icon_btn(&row2_x, row2_y, btn_h, g_editor.OfficeListKindActive(DocParagraph::ListKind::Numbered),
             [&](Rectangle rect, Color color) {
                 float pad = rect.width * 0.14f;
@@ -15276,11 +16436,14 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             },
             [] { g_editor.SetOfficeListKind(DocParagraph::ListKind::Numbered); });
         add_sep(&row2_x, row2_y);
+        // Toggles the special-characters dropdown open/closed.
         Rectangle special_btn = draw_dropdown_btn(&row2_x, row2_y, "Sym", g_office_dropdown_open == kOfficeDropdownSpecialChars, [] {
             g_office_dropdown_open = g_office_dropdown_open == kOfficeDropdownSpecialChars ? -1 : kOfficeDropdownSpecialChars;
         });
+        // Inserts a math expression at the cursor.
         draw_btn(&row2_x, row2_y, "fx", false, [] { g_editor.InsertOfficeMath(); });
         add_sep(&row2_x, row2_y);
+        // Draws a table-grid icon, and on click prompts to insert a table.
         draw_icon_btn(&row2_x, row2_y, btn_h, false,
             [](Rectangle rect, Color color) {
                 float pad = rect.width * 0.18f;
@@ -15290,6 +16453,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 DrawLineEx(Vector2{grid.x + grid.width / 2.0f, grid.y}, Vector2{grid.x + grid.width / 2.0f, grid.y + grid.height}, 1.0f, color);
             },
             [] { g_editor.InsertOfficeTablePrompt(); });
+        // Draws a picture-frame icon, and on click prompts to insert an image.
         draw_icon_btn(&row2_x, row2_y, btn_h, false,
             [](Rectangle rect, Color color) {
                 float pad = rect.width * 0.16f;
@@ -15307,6 +16471,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // Undo/redo: an arced ring (DrawRing) with a triangular arrowhead
         // at its open end, mirrored for redo -- the standard curved-arrow
         // shape, built from primitives rather than an icon glyph.
+        /**
+         * @brief Draws a curved-arrow undo/redo icon (an arced ring with a triangular
+         * arrowhead at its open end, mirrored between undo and redo) inside `rect`.
+         * @param rect The icon's bounding rectangle.
+         * @param color Color to draw the icon in.
+         * @param redo True to draw the redo (mirrored) variant, false for undo.
+         */
         auto draw_undo_redo_icon = [](Rectangle rect, Color color, bool redo) {
             float cx = rect.x + rect.width / 2.0f;
             float cy = rect.y + rect.height / 2.0f + 1.0f;
@@ -15325,9 +16496,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             Vector2 p3{tipx + normal.x * s * 0.7f, tipy + normal.y * s * 0.7f};
             DrawTriangle(p1, p2, p3, color);
         };
+        // Draws the undo icon, and on click undoes the last office-document edit.
         draw_icon_btn(&row2_x, row2_y, btn_h, false,
             [&](Rectangle rect, Color color) { draw_undo_redo_icon(rect, color, false); },
             [] { g_editor.UndoOffice(); });
+        // Draws the redo icon, and on click redoes the last undone office-document edit.
         draw_icon_btn(&row2_x, row2_y, btn_h, false,
             [&](Rectangle rect, Color color) { draw_undo_redo_icon(rect, color, true); },
             [] { g_editor.RedoOffice(); });
@@ -15370,6 +16543,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 float tx = ruler.x + ux;
                 DrawLineEx(Vector2{tx, ruler.y + ruler.height * 0.35f}, Vector2{tx, ruler.y + ruler.height}, 1.0f, ResolveHlGroup("MutedFg"));
             }
+            /**
+             * @brief Draws a downward-pointing triangular margin marker on the ruler at x
+             * position `mx`.
+             * @param mx X position to center the marker at.
+             */
             auto margin_marker = [&](float mx) {
                 DrawTriangle(Vector2{mx - 4.0f, ruler.y + ruler.height}, Vector2{mx + 4.0f, ruler.y + ruler.height},
                             Vector2{mx, ruler.y + ruler.height * 0.4f}, ResolveHlGroup("Accent"));
@@ -15388,6 +16566,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         float max_width = std::max(50.0f, page_w - 2.0f * pad);
         float body_size = office_sess->base_font_pt * office_sess->zoom;
 
+        /**
+         * @brief Returns the line height (in pixels) for a paragraph at the given heading level.
+         * @param heading_level The paragraph's heading level (0 for body text).
+         * @return The line height in pixels.
+         */
         auto line_height_for = [&](int heading_level) { return body_size * OfficeHeadingMultiplier(heading_level) * 1.35f; };
 
         // Wraps the cursor's own paragraph once up front (reused by both
@@ -15639,11 +16822,26 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // cursor placement keeps the caret from drifting over a typeset
         // fraction/superscript while the user is changing its code.
         const bool office_insert = is_active && g_editor.CurrentMode() == Mode::OfficeInsert;
+        /**
+         * @brief Returns the effective font size to draw `run` at: its explicit font_size_pt
+         * (zoom-scaled) if set, else `paragraph_size`, shrunk further for superscript/subscript.
+         * @param run The format run to size.
+         * @param paragraph_size Fallback size to use when the run has no explicit font size.
+         * @return The effective font size in pixels.
+         */
         auto run_size_for = [&](const OfficeFormatRun &run, float paragraph_size) {
             float run_size = run.fmt.font_size_pt > 0.0f ? run.fmt.font_size_pt * office_sess->zoom : paragraph_size;
             if (run.fmt.superscript || run.fmt.subscript) run_size *= 0.65f;
             return run_size;
         };
+        /**
+         * @brief Returns whether `run` is a math run whose raw LaTeX source should currently be
+         * shown as editable text, because the cursor sits inside its original document span
+         * while the office document is in insert mode.
+         * @param paragraph Index of the paragraph `run` belongs to.
+         * @param run The format run to check.
+         * @return True if the run's LaTeX source should be revealed instead of typeset math.
+         */
         auto math_source_is_active = [&](int paragraph, const OfficeFormatRun &run) {
             if (!run.fmt.math || !office_insert || paragraph != cp) return false;
             // A long math run can be split into multiple OfficeFormatRuns
@@ -15655,6 +16853,16 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             }
             return false;
         };
+        /**
+         * @brief Returns the on-screen width of `text` when drawn as `run`: typeset math width
+         * when the run is math and its source isn't currently being revealed, else measured
+         * text width.
+         * @param paragraph Index of the paragraph `run` belongs to.
+         * @param run The format run `text` was built from.
+         * @param text The run's literal text (tabs already normalized to spaces).
+         * @param paragraph_size Fallback font size for run_size_for.
+         * @return The run's width in pixels.
+         */
         auto run_width = [&](int paragraph, const OfficeFormatRun &run, const std::string &text, float paragraph_size) {
             const float run_size = run_size_for(run, paragraph_size);
             if (run.fmt.math && !math_source_is_active(paragraph, run)) return LayoutMathExpression(text, run_size).width;
@@ -15955,6 +17163,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // so a popup isn't clipped to the content area. content_y here is
         // already past the toolbar (incremented above), so popups anchor
         // directly at content_y rather than content_y + toolbar_h.
+        /**
+         * @brief Draws a dropdown popup's background fill and border rectangle.
+         * @param r The popup's rectangle.
+         */
         auto draw_popup_bg = [&](Rectangle r) {
             DrawRectangle(static_cast<int>(r.x), static_cast<int>(r.y), static_cast<int>(r.width),
                           static_cast<int>(r.height), ResolveHlGroup("OfficePage"));
@@ -15975,6 +17187,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 DrawTextEx(g_font, it.label, Vector2{rect.x + 6, rect.y + (item_h - font_size) / 2.0f}, font_size, 0,
                           ResolveHlGroup("Normal"));
                 OfficeFontFamily fam = it.fam;
+                // Sets the document's font family to this item and closes the dropdown.
                 RegisterClickRegion(rect, [fam] {
                     g_editor.SetOfficeFontFamily(fam);
                     g_office_dropdown_open = -1;
@@ -15994,6 +17207,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 std::string label = std::to_string(static_cast<int>(sz));
                 DrawTextEx(g_font, label.c_str(), Vector2{rect.x + 8, rect.y + (item_h - font_size) / 2.0f}, font_size,
                           0, ResolveHlGroup("Normal"));
+                // Sets the document's font size to this item and closes the dropdown.
                 RegisterClickRegion(rect, [sz] {
                     g_editor.SetOfficeFontSizePt(sz);
                     g_office_dropdown_open = -1;
@@ -16020,6 +17234,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             Rectangle clear_rect{popup.x, popup.y, pw, row_h * 0.7f};
             DrawTextEx(g_font, "Clear", Vector2{clear_rect.x + 6, clear_rect.y + 4}, font_size * 0.85f, 0,
                       ResolveHlGroup("Normal"));
+            // Clears the text-color or highlight-color override (whichever dropdown is open) and
+            // closes the dropdown.
             RegisterClickRegion(clear_rect, [is_highlight] {
                 if (is_highlight) g_editor.ClearOfficeHighlight(); else g_editor.ClearOfficeColor();
                 g_office_dropdown_open = -1;
@@ -16034,6 +17250,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 DrawRectangleLines(static_cast<int>(sx), static_cast<int>(sy), static_cast<int>(cell), static_cast<int>(cell),
                                     ResolveHlGroup("Border"));
                 unsigned char r = swatches[i].r, gc = swatches[i].g, b = swatches[i].b;
+                // Sets the text or highlight color (whichever dropdown is open) to this swatch
+                // and closes the dropdown.
                 RegisterClickRegion(Rectangle{sx, sy, cell, cell}, [is_highlight, r, gc, b] {
                     if (is_highlight) g_editor.SetOfficeHighlight(r, gc, b); else g_editor.SetOfficeColor(r, gc, b);
                     g_office_dropdown_open = -1;
@@ -16057,6 +17275,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 Vector2 gs = MeasureTextEx(sym_font, glyph.c_str(), cell * 0.7f, 0);
                 DrawTextEx(sym_font, glyph.c_str(), Vector2{sx + (cell - gs.x) / 2.0f, sy + (cell - gs.y) / 2.0f},
                           cell * 0.7f, 0, ResolveHlGroup("Normal"));
+                // Inserts this special-character glyph at the cursor and closes the dropdown.
                 RegisterClickRegion(Rectangle{sx, sy, cell, cell}, [glyph] {
                     g_editor.InsertOfficeText(glyph);
                     g_office_dropdown_open = -1;
@@ -16295,6 +17514,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // decorations, all defaulting to 0) keeps its original per-namespace
     // insertion order relative to same-priority decorations.
     for (auto &row_entry : decos_by_row) {
+        // Orders decorations on this row by ascending priority, so a higher-priority one paints
+        // over a lower-priority one while same-priority decorations keep their original order.
         std::stable_sort(row_entry.second.begin(), row_entry.second.end(),
                           [](const Decoration *a, const Decoration *b) { return a->priority < b->priority; });
     }
@@ -16458,6 +17679,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             if (is_active) {
                 DrawTextEx(g_font, "+", Vector2{text_x - g_char_width, ly}, g_font_size, 0, ResolveHlGroup("LineNr"));
                 int marker_row = row;
+                // Toggles (opens) the fold starting at this row.
                 RegisterClickRegion(
                     Rectangle{text_x - g_char_width, ly, g_char_width, static_cast<float>(line_height)},
                     [marker_row] { g_editor.ToggleFoldAtRow(marker_row); });
@@ -16474,6 +17696,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 if (!f.closed && f.start_row == row) {
                     DrawTextEx(g_font, "-", Vector2{text_x - g_char_width, ly}, g_font_size, 0, ResolveHlGroup("LineNr"));
                     int marker_row = row;
+                    // Toggles (closes) the fold starting at this row.
                     RegisterClickRegion(
                         Rectangle{text_x - g_char_width, ly, g_char_width, static_cast<float>(line_height)},
                         [marker_row] { g_editor.ToggleFoldAtRow(marker_row); });
@@ -16488,6 +17711,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             int ce = (block_right < 0) ? line_len + 1 : block_right + 1;
             Color sel_color = ResolveHlGroup("Visual");
             Color fill{sel_color.r, sel_color.g, sel_color.b, 160};
+            // Draws the block-selection fill rectangle for each wrapped piece of this row's
+            // selected column range.
             ForEachWrapPiece(cs, ce, row_wrap_cols, text_x, ly, line_height,
                               [&](float py, float x0, float x1, int, int) {
                                   DrawRectangle(static_cast<int>(x0), static_cast<int>(py),
@@ -16499,6 +17724,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             int ce = (linewise_selection || row < sel_end.row) ? line_len + 1 : sel_end.col + 1;
             Color sel_color = ResolveHlGroup("Visual");
             Color fill{sel_color.r, sel_color.g, sel_color.b, 160};
+            // Draws the character/linewise-selection fill rectangle for each wrapped piece of
+            // this row's selected column range.
             ForEachWrapPiece(cs, ce, row_wrap_cols, text_x, ly, line_height,
                               [&](float py, float x0, float x1, int, int) {
                                   DrawRectangle(static_cast<int>(x0), static_cast<int>(py),
@@ -16604,6 +17831,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     // (the byte-offset-as-column content it assumes).
                     int col_a = d.has_fg_color ? d.col_start : a;
                     int col_b = d.has_fg_color ? d.col_end : b;
+                    // Draws this decoration span's recolored text for each wrapped piece of it.
                     ForEachWrapPiece(col_a, col_b, row_wrap_cols, text_x, ly, line_height,
                                       [&](float py, float px, float, int pa, int pb) {
                                           // Re-derive each wrap piece's own byte range from its column
@@ -16631,6 +17859,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 int b = std::min(static_cast<int>(line.size()), d.col_end);
                 if (b > a) {
                     Color c = d.hl_group.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(d.hl_group);
+                    // Draws the underline rectangle for each wrapped piece of this span.
                     ForEachWrapPiece(a, b, row_wrap_cols, text_x, ly, line_height,
                                       [&](float py, float x0, float x1, int, int) {
                                           DrawRectangle(static_cast<int>(x0), static_cast<int>(py + line_height - 2),
@@ -16647,6 +17876,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 int b = std::min(static_cast<int>(line.size()), d.col_end);
                 if (b > a) {
                     Color c = d.hl_group.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(d.hl_group);
+                    // Draws the strikethrough rectangle for each wrapped piece of this span.
                     ForEachWrapPiece(a, b, row_wrap_cols, text_x, ly, line_height,
                                       [&](float py, float x0, float x1, int, int) {
                                           DrawRectangle(static_cast<int>(x0), static_cast<int>(py + line_height / 2),
@@ -16666,6 +17896,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 int b = std::min(static_cast<int>(line.size()), d.col_end);
                 if (b > a) {
                     Color c = d.hl_group.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(d.hl_group);
+                    // Draws each wrapped piece of this span twice, offset 1px right, to fake bold.
                     ForEachWrapPiece(a, b, row_wrap_cols, text_x, ly, line_height,
                                       [&](float py, float px, float, int pa, int pb) {
                                           std::string piece = line.substr(pa, pb - pa);
@@ -16700,6 +17931,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     // tint (CursorLine, Visual selection) this row might
                     // have underneath, just for this span.
                     float pad = line_height * 0.25f;
+                    // Covers then redraws each wrapped piece of this span sheared, to fake italics.
                     ForEachWrapPiece(
                         a, b, row_wrap_cols, text_x, ly, line_height, [&](float py, float px0, float px1, int pa, int pb) {
                             std::string piece = line.substr(pa, pb - pa);
@@ -16878,6 +18110,15 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // `row - scroll_row` would use -- that mismatch is what made a
     // streaming AI participant's cursor visibly drift from the actual
     // insertion point once its output wrapped past one visual line.
+    /**
+     * @brief Converts a buffer row to its visual slot index within this pane's current scroll
+     * position, accounting for closed folds (collapse to 1 slot), org inline images/LaTeX
+     * fragments (expand to their own slot count), and soft-wrap (a plain row claims however many
+     * slots its own text needs) -- must stay in exact agreement with the draw loop above and
+     * Editor::UpdateScrollForPane.
+     * @param target_row The buffer row to convert.
+     * @return The visual slot index (relative to pane.scroll_row) that `target_row` renders on.
+     */
     auto RowSlot = [&](int target_row) {
         int slot = 0;
         for (int r = pane.scroll_row; r < target_row;) {
@@ -17043,6 +18284,16 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
 // their rectangle by SplitNode::shares (falling back to equal shares when
 // unset) top-to-bottom or left-to-right; Leaf nodes render via DrawPane.
 // Mirrors Editor::ComputeRects, which uses the same shares for nav geometry.
+/**
+ * @brief Recursively draws a split-tree node's rectangle, dividing it among children
+ *        for Horizontal/Vertical nodes or rendering a single pane for a Leaf node.
+ * @param node the split-tree node to draw (Leaf, Horizontal, or Vertical).
+ * @param x left edge of the rectangle to draw into.
+ * @param y top edge of the rectangle to draw into.
+ * @param w width of the rectangle to draw into.
+ * @param h height of the rectangle to draw into.
+ * @param active_pane_id id of the pane that should render with active-pane styling.
+ */
 void DrawPaneTree(const SplitNode *node, float x, float y, float w, float h, int active_pane_id) {
     if (node->dir == SplitDir::Leaf) {
         DrawPane(node->pane, x, y, w, h, node->pane.id == active_pane_id);
@@ -17079,6 +18330,11 @@ void DrawPaneTree(const SplitNode *node, float x, float y, float w, float h, int
 // mep.nvim's own Unicode bullets (U+25CF/U+25CB) would've rendered as
 // tofu through g_font's ASCII-only atlas, which is why these used to be
 // plain ASCII '*'/'o' instead.
+/**
+ * @brief Draws the tab bar: mode indicator, STT recording indicator, one clickable
+ *        circle per tab, new/close-tab buttons, and participant presence chips.
+ * @param y screen y-coordinate at which the tab bar row starts.
+ */
 void DrawTabBar(int y) {
     int screen_w = GetScreenWidth();
     int bar_h = TabBarHeight();
@@ -17120,12 +18376,14 @@ void DrawTabBar(int y) {
     std::string add_label = " " + Utf8FromCodepoint(0xf067) + " ";  // nf-fa-plus
     float add_w = MeasureUiText(add_label, font_size);
     DrawUiText(add_label, Vector2{x, cy}, font_size, ResolveHlGroup("StatusLineFg"));
+    // Opens a new (unnamed) tab.
     RegisterClickRegion(Rectangle{x, static_cast<float>(y), add_w, static_cast<float>(bar_h)}, [] { g_editor.TabNew(""); });
     x += add_w;
 
     std::string close_label = " " + Utf8FromCodepoint(0xf00d) + " ";  // nf-fa-times
     float close_w = MeasureUiText(close_label, font_size);
     DrawUiText(close_label, Vector2{x, cy}, font_size, ResolveHlGroup("StatusLineFg"));
+    // Closes the current tab.
     RegisterClickRegion(Rectangle{x, static_cast<float>(y), close_w, static_cast<float>(bar_h)},
                          [] { g_editor.TabDelete(); });
 
@@ -17177,6 +18435,7 @@ void DrawTabBar(int y) {
             DrawTextEx(g_font, tooltip_text.c_str(), Vector2{tooltip_rect.x + 4.0f, tooltip_rect.y + (bar_h - font_size) / 2.0f}, font_size,
                        0, ResolveHlGroup("StatusLineFg"));
         }
+        // Jumps the view to this participant's current location.
         RegisterClickRegion(chip_rect, [id = participant.id] { g_editor.JumpToParticipant(id); });
     }
 }
@@ -17185,6 +18444,14 @@ void DrawTabBar(int y) {
 // Editor::ShouldShowDashboard() holds (single empty untouched buffer, one
 // window) -- disappears the instant that stops being true, since this is
 // just a per-frame check, not a one-shot flag to remember to clear.
+/**
+ * @brief Draws the startup dashboard's about text and hint line, vertically and
+ *        horizontally centered within the given rectangle.
+ * @param x left edge of the rectangle to center within.
+ * @param y top edge of the rectangle to center within.
+ * @param w width of the rectangle to center within.
+ * @param h height of the rectangle to center within.
+ */
 void DrawDashboard(float x, float y, float w, float h) {
     std::vector<std::string> lines = SplitLines(kAboutText);
     lines.push_back("");
@@ -17203,6 +18470,10 @@ void DrawDashboard(float x, float y, float w, float h) {
     }
 }
 
+/**
+ * @brief Draws one full editor frame: chrome (menu/tab/status/command bars), the
+ *        pane tree or dashboard, sidebars, and every active modal overlay/toast.
+ */
 void DrawEditor() {
     // Rebuilt fresh this frame by DrawTabBar/DrawPane below -- see the
     // g_click_regions declaration for why clearing here (rather than after

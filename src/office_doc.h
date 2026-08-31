@@ -51,6 +51,11 @@ struct DocFormat {
     bool has_highlight = false;
     unsigned char highlight_r = 255, highlight_g = 255, highlight_b = 0;
 
+    /**
+     * @brief Compares every formatting field for equality.
+     * @param o The DocFormat to compare against.
+     * @return True if all bold/italic/font/color/highlight fields (etc.) match exactly.
+     */
     bool operator==(const DocFormat &o) const {
         return bold == o.bold && italic == o.italic && underline == o.underline && strike == o.strike &&
                superscript == o.superscript && subscript == o.subscript && math == o.math &&
@@ -59,6 +64,11 @@ struct DocFormat {
                has_highlight == o.has_highlight && highlight_r == o.highlight_r && highlight_g == o.highlight_g &&
                highlight_b == o.highlight_b;
     }
+    /**
+     * @brief Inverse of operator==.
+     * @param o The DocFormat to compare against.
+     * @return True if any formatting field differs.
+     */
     bool operator!=(const DocFormat &o) const { return !(*this == o); }
 };
 
@@ -107,7 +117,19 @@ struct DocParagraph {
 struct DocTable {
     int rows = 0, cols = 0;
     std::vector<std::string> cells;
+    /**
+     * @brief Mutable reference to one cell's text, computed from row-major offset.
+     * @param r Row index.
+     * @param c Column index.
+     * @return Reference to the cell's text at (r, c).
+     */
     std::string &Cell(int r, int c) { return cells[static_cast<size_t>(r) * static_cast<size_t>(cols) + static_cast<size_t>(c)]; }
+    /**
+     * @brief Const reference to one cell's text, computed from row-major offset.
+     * @param r Row index.
+     * @param c Column index.
+     * @return Const reference to the cell's text at (r, c).
+     */
     const std::string &Cell(int r, int c) const {
         return cells[static_cast<size_t>(r) * static_cast<size_t>(cols) + static_cast<size_t>(c)];
     }
@@ -145,6 +167,12 @@ struct OfficeDoc {
 // ToggleFormatOverRange to clip existing spans before inserting a new one
 // for the toggled range -- it *is* the shared "cut a range out of a span
 // list" primitive, not delete-specific.
+/**
+ * @brief Deletes the character range [a,b) from a paragraph's text and clamps its spans accordingly.
+ * @param p The paragraph to modify in place.
+ * @param a Start offset of the range to delete (clamped to the text).
+ * @param b End offset of the range to delete (clamped to the text).
+ */
 void ApplyDeleteToParagraph(DocParagraph &p, int a, int b);
 
 // Inserts `inserted` at `col`. A span ending at/before col is unchanged;
@@ -156,6 +184,12 @@ void ApplyDeleteToParagraph(DocParagraph &p, int a, int b);
 // word isn't bold; Visual-select-then-toggle is the only v1 way to apply
 // formatting, deliberately, see the plan doc); spans starting at/after col
 // shift by +len(inserted).
+/**
+ * @brief Inserts text at a column, shifting/extending spans per the documented adjacency rules.
+ * @param p The paragraph to modify in place.
+ * @param col Offset at which to insert (clamped to the text).
+ * @param inserted The text to insert.
+ */
 void ApplyInsertToParagraph(DocParagraph &p, int col, const std::string &inserted);
 
 // Splits `p` at `col`, returning the new second paragraph; `p` is
@@ -165,6 +199,12 @@ void ApplyInsertToParagraph(DocParagraph &p, int col, const std::string &inserte
 // pressing Enter mid-bold-run. Both halves inherit p's original
 // align/heading_level/bullet (a deliberate v1 simplification vs. Word's
 // actual "Enter after a Heading demotes the next paragraph" behavior).
+/**
+ * @brief Splits a paragraph at a column into two, truncating `p` in place and returning the new second half.
+ * @param p The paragraph to split; truncated in place to become the first half.
+ * @param col Offset at which to split (clamped to the text).
+ * @return The newly created second-half paragraph.
+ */
 DocParagraph SplitParagraphAt(DocParagraph &p, int col);
 
 // Merges `next` onto the end of `p` in place; `next`'s spans shift by
@@ -172,6 +212,11 @@ DocParagraph SplitParagraphAt(DocParagraph &p, int col);
 // paragraph's own span list was already sorted -- an invariant every
 // function here assumes and preserves). `p` keeps its own paragraph
 // properties (matches Word's own merge behavior).
+/**
+ * @brief Appends `next` onto the end of `p` in place, shifting `next`'s spans by `p`'s original length.
+ * @param p The paragraph to merge into; keeps its own paragraph properties.
+ * @param next The paragraph whose text/spans are appended.
+ */
 void MergeParagraphs(DocParagraph &p, const DocParagraph &next);
 
 // Toggles one boolean field of DocFormat (selected via pointer-to-member,
@@ -183,17 +228,34 @@ void MergeParagraphs(DocParagraph &p, const DocParagraph &next);
 // format, then coalesces adjacent same-format spans -- not optional, since
 // repeated toggling is the main way an editing session's span list would
 // otherwise grow unboundedly.
+/**
+ * @brief Toggles one boolean DocFormat field on/off over a character range, turning it on unless already uniformly on.
+ * @param p The paragraph to modify in place.
+ * @param a Start offset of the range (clamped to the text).
+ * @param b End offset of the range (clamped to the text).
+ * @param field Pointer-to-member selecting which boolean field to toggle (e.g. &DocFormat::bold).
+ */
 void ToggleFormatOverRange(DocParagraph &p, int a, int b, bool DocFormat::*field);
 
 // Merges adjacent/overlapping spans that have identical DocFormat into
 // one. Exposed separately from ToggleFormatOverRange since parsers may
 // also want to normalize a freshly-built span list.
+/**
+ * @brief Merges adjacent/overlapping spans with identical DocFormat into single spans, in place.
+ * @param spans The span list to sort and coalesce in place.
+ */
 void CoalesceSpans(std::vector<DocSpan> &spans);
 
 // The DocFormat in effect at a single character offset (the span
 // containing it, or a default DocFormat if none) -- used both by the
 // renderer (per-run styling) and by ToggleFormatOverRange (determining
 // on/off state).
+/**
+ * @brief Looks up the format in effect at a single character offset.
+ * @param p The paragraph to query.
+ * @param col The character offset to look up.
+ * @return The DocFormat of the span containing `col`, or a default DocFormat if none.
+ */
 DocFormat FormatAt(const DocParagraph &p, int col);
 
 // Sets one non-boolean DocFormat field to an explicit value over [a,b) --
@@ -206,6 +268,13 @@ DocFormat FormatAt(const DocParagraph &p, int col);
 // over, mirroring ToggleFormatOverRange's pointer-to-member dispatch but
 // generalized to a lambda since a non-bool field can't be toggled through
 // a single shared code path the same way.
+/**
+ * @brief Sets one non-boolean DocFormat field to an explicit value over a character range.
+ * @param p The paragraph to modify in place.
+ * @param a Start offset of the range (clamped to the text).
+ * @param b End offset of the range (clamped to the text).
+ * @param apply Callback that mutates a DocFormat& to set the one field it closes over.
+ */
 void SetFormatFieldOverRange(DocParagraph &p, int a, int b, const std::function<void(DocFormat &)> &apply);
 
 // Sets every paragraph in [first,last] (inclusive paragraph indices) to
@@ -213,14 +282,38 @@ void SetFormatFieldOverRange(DocParagraph &p, int a, int b, const std::function<
 // setters above (alignment and list membership are whole-paragraph
 // properties, not character-range ones, so there's no span math here at
 // all, just a direct field assignment per paragraph).
+/**
+ * @brief Sets the alignment of every paragraph in an inclusive index range.
+ * @param paragraphs The paragraph list to modify in place.
+ * @param first Index of the first paragraph (clamped, swapped with `last` if greater).
+ * @param last Index of the last paragraph (clamped, swapped with `first` if smaller).
+ * @param align The alignment to apply to each paragraph in range.
+ */
 void SetParagraphAlignment(std::vector<DocParagraph> &paragraphs, int first, int last, DocParagraph::Align align);
+/**
+ * @brief Sets the list-kind (bullet/numbered/none) of every paragraph in an inclusive index range.
+ * @param paragraphs The paragraph list to modify in place.
+ * @param first Index of the first paragraph (clamped, swapped with `last` if greater).
+ * @param last Index of the last paragraph (clamped, swapped with `first` if smaller).
+ * @param kind The list kind to apply to each paragraph in range.
+ */
 void SetParagraphListKind(std::vector<DocParagraph> &paragraphs, int first, int last, DocParagraph::ListKind kind);
 
 // ============================================================================
 // File I/O
 // ============================================================================
 
+/**
+ * @brief Checks whether a path's lowercased extension is "docx".
+ * @param path The file path to check.
+ * @return True if the path ends in ".docx" (case-insensitive).
+ */
 bool IsDocxPath(const std::string &path);
+/**
+ * @brief Checks whether a path's lowercased extension is "odt".
+ * @param path The file path to check.
+ * @return True if the path ends in ".odt" (case-insensitive).
+ */
 bool IsOdtPath(const std::string &path);
 
 // Sniffs `bytes` (a DocImage's raw encoded content) by magic-number prefix
@@ -232,10 +325,20 @@ bool IsOdtPath(const std::string &path);
 // correctness issue). Shared by SaveDocxToMemory's word/media/ part naming
 // and SaveOdtToMemory's Pictures/ part naming, and their respective
 // Content-Types/manifest MIME-type declarations.
+/**
+ * @brief Sniffs raw image bytes by magic-number prefix to determine a lowercase file extension.
+ * @param bytes The raw encoded image content.
+ * @return "png", "jpeg", "gif", or "bmp" if recognized; "png" as the fallback otherwise.
+ */
 std::string SniffImageExtension(const std::string &bytes);
 
 // Maps a SniffImageExtension result ("png"/"jpeg"/"gif"/"bmp"/anything
 // else) to its MIME type, for Content-Types/manifest declarations.
+/**
+ * @brief Maps a SniffImageExtension-style extension to its MIME type.
+ * @param ext The lowercase extension ("png"/"jpeg"/"gif"/"bmp"/other).
+ * @return The corresponding image MIME type, defaulting to "image/png" for unrecognized extensions.
+ */
 std::string MimeForImageExt(const std::string &ext);
 
 // Reads a named entry out of an in-memory ZIP archive (both .docx and
@@ -243,6 +346,14 @@ std::string MimeForImageExt(const std::string &ext);
 // if the archive can't be opened or the entry isn't present. Shared
 // between office_doc.cpp's DOCX parser and office_odt.cpp's ODT parser
 // (and, eventually, Phase 4's save-back copy-through path).
+/**
+ * @brief Reads a named entry out of an in-memory ZIP archive.
+ * @param zip_bytes Pointer to the archive's raw bytes.
+ * @param zip_len Length of `zip_bytes` in bytes.
+ * @param entry_name Name of the ZIP entry to extract.
+ * @param out Receives the entry's decompressed bytes on success.
+ * @return True if the archive opened and the entry was found and extracted; false otherwise (`out` left empty).
+ */
 bool ReadZipEntry(const unsigned char *zip_bytes, size_t zip_len, const char *entry_name,
                    std::vector<unsigned char> &out);
 
@@ -257,6 +368,16 @@ bool ReadZipEntry(const unsigned char *zip_bytes, size_t zip_len, const char *en
 // since that entry is never the one being replaced, its raw copy
 // preserves both properties by construction. Shared by
 // office_doc.cpp's DOCX save-back and office_odt.cpp's ODT save-back.
+/**
+ * @brief Rebuilds a ZIP archive from `orig_bytes`, replacing exactly one entry and copying every other entry through unchanged.
+ * @param orig_bytes Pointer to the original archive's raw bytes.
+ * @param orig_len Length of `orig_bytes` in bytes.
+ * @param entry_name Name of the entry to replace (added if not already present).
+ * @param new_content The replacement content for `entry_name`.
+ * @param out Receives the rebuilt archive's bytes on success.
+ * @param error Receives a message on failure.
+ * @return True on success; false if the original can't be read as a ZIP or the writer fails (`error` set).
+ */
 bool WriteZipReplacingEntry(const unsigned char *orig_bytes, size_t orig_len, const char *entry_name,
                              const std::string &new_content, std::vector<unsigned char> &out, std::string &error);
 
@@ -268,6 +389,15 @@ bool WriteZipReplacingEntry(const unsigned char *orig_bytes, size_t orig_len, co
 // in the original archive is appended at the end (matching
 // WriteZipReplacingEntry's own fallback), though v1's no-add/remove-sheets
 // scope means that path is never actually exercised.
+/**
+ * @brief Rebuilds a ZIP archive from `orig_bytes`, replacing every (name, content) pair in `entries` in one pass.
+ * @param orig_bytes Pointer to the original archive's raw bytes.
+ * @param orig_len Length of `orig_bytes` in bytes.
+ * @param entries Name/content pairs to replace (or append, if not found in the original).
+ * @param out Receives the rebuilt archive's bytes on success.
+ * @param error Receives a message on failure.
+ * @return True on success; false if the original can't be read as a ZIP or the writer fails (`error` set).
+ */
 bool WriteZipReplacingEntries(const unsigned char *orig_bytes, size_t orig_len,
                                const std::vector<std::pair<std::string, std::string>> &entries,
                                std::vector<unsigned char> &out, std::string &error);
@@ -277,6 +407,14 @@ bool WriteZipReplacingEntries(const unsigned char *orig_bytes, size_t orig_len,
 // paragraphs/runs are skipped rather than failing the whole load. Returns
 // false (with `error` set) only if the file isn't a readable ZIP or has
 // no `word/document.xml` part.
+/**
+ * @brief Parses a .docx file's bytes in memory into an OfficeDoc.
+ * @param bytes Pointer to the .docx file's raw bytes.
+ * @param len Length of `bytes` in bytes.
+ * @param out Receives the parsed paragraphs/tables/images and source_format="docx" on success.
+ * @param error Receives a message on failure.
+ * @return True on success; false only if the file isn't a readable ZIP or has no word/document.xml part (`error` set).
+ */
 bool LoadDocxFromMemory(const unsigned char *bytes, size_t len, OfficeDoc &out, std::string &error);
 
 // Serializes `doc.paragraphs`/`doc.tables` back into `word/document.xml`
@@ -291,6 +429,14 @@ bool LoadDocxFromMemory(const unsigned char *bytes, size_t len, OfficeDoc &out, 
 // isn't re-emitted (no numbering.xml list-definition tracking in v1 --
 // safer to drop the bullet's list formatting on save than guess an
 // unresolvable numId that could trigger a "needs repair" prompt).
+/**
+ * @brief Serializes an OfficeDoc's paragraphs/tables back into word/document.xml and rebuilds the full .docx ZIP.
+ * @param doc The document model to serialize.
+ * @param original_bytes The original .docx file's raw bytes, used to preserve namespace declarations/sectPr and other parts.
+ * @param out Receives the rebuilt .docx file's bytes on success.
+ * @param error Receives a message on failure.
+ * @return True on success; false on failure (`error` set).
+ */
 bool SaveDocxToMemory(const OfficeDoc &doc, const std::vector<unsigned char> &original_bytes,
                       std::vector<unsigned char> &out, std::string &error);
 
@@ -299,6 +445,14 @@ bool SaveDocxToMemory(const OfficeDoc &doc, const std::vector<unsigned char> &or
 // paragraphs/styles are skipped rather than failing the whole load;
 // returns false (with `error` set) only if the file isn't a readable ZIP
 // or has no `content.xml` part.
+/**
+ * @brief Parses a .odt file's bytes in memory into an OfficeDoc.
+ * @param bytes Pointer to the .odt file's raw bytes.
+ * @param len Length of `bytes` in bytes.
+ * @param out Receives the parsed paragraphs/tables/images and source_format="odt" on success.
+ * @param error Receives a message on failure.
+ * @return True on success; false only if the file isn't a readable ZIP or has no content.xml part (`error` set).
+ */
 bool LoadOdtFromMemory(const unsigned char *bytes, size_t len, OfficeDoc &out, std::string &error);
 
 // Serializes `doc.paragraphs`/`doc.tables` back into `content.xml` (same
@@ -308,6 +462,14 @@ bool LoadOdtFromMemory(const unsigned char *bytes, size_t len, OfficeDoc &out, s
 // image anchor is dropped, and bullet paragraphs lose their <text:list>
 // wrapping on save (no list-style tracking in v1) -- a table round-trips
 // (plain cell text only, same scope as the DOCX path).
+/**
+ * @brief Serializes an OfficeDoc's paragraphs/tables back into content.xml and rebuilds the full .odt ZIP.
+ * @param doc The document model to serialize.
+ * @param original_bytes The original .odt file's raw bytes, used to preserve other parts via reparse.
+ * @param out Receives the rebuilt .odt file's bytes on success.
+ * @param error Receives a message on failure.
+ * @return True on success; false on failure (`error` set).
+ */
 bool SaveOdtToMemory(const OfficeDoc &doc, const std::vector<unsigned char> &original_bytes,
                      std::vector<unsigned char> &out, std::string &error);
 

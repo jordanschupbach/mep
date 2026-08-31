@@ -36,6 +36,10 @@ namespace {
 // (COLLAB_CURSORS_PLAN.md's per-connection identity/cursor) and needs the
 // complete type, not just a forward declaration.
 
+/**
+ * @brief Closes a file descriptor if it is valid.
+ * @param fd The file descriptor to close (a negative value is ignored).
+ */
 void CloseFd(int fd) {
     if (fd >= 0) close(fd);
 }
@@ -80,6 +84,9 @@ struct Connection {
     // session.setStatus case and each buffer.* handler below.
     std::string status;
 
+    /**
+     * @brief Tears down this connection: signals it closed, unblocks and joins its reader thread, and closes its socket.
+     */
     ~Connection() {
         closed = true;
         if (fd >= 0) shutdown(fd, SHUT_RDWR);  // unblocks a thread parked in recv()
@@ -87,6 +94,9 @@ struct Connection {
         CloseFd(fd);
     }
 
+    /**
+     * @brief Reader-thread loop: repeatedly receives bytes from this connection's socket, frames them into JSON-RPC messages, and queues each into `pending` until the socket closes or framing is lost.
+     */
     void ReaderLoop() {
         char chunk[4096];
         for (;;) {
@@ -96,6 +106,7 @@ struct Connection {
                 return;
             }
             read_buffer.append(chunk, static_cast<size_t>(n));
+            // Parses one complete framed message body into JSON and pushes it onto `pending` for the main thread; silently drops a body that isn't valid JSON or isn't a JSON object.
             bool ok = PumpRpcFrames(read_buffer, [this](const std::string &body) {
                 Json msg;
                 if (!Json::Parse(body, &msg) || !msg.is_object()) return;
@@ -114,6 +125,11 @@ struct Connection {
         }
     }
 
+    /**
+     * @brief Blocking-writes a framed JSON-RPC message to this connection's socket.
+     * @param message The JSON-RPC message (response or notification) to send.
+     * @return true if the entire framed message was written; false on a send failure.
+     */
     bool Send(const Json &message) {
         const std::string framed = FrameRpcMessage(message.dump());
         size_t offset = 0;
@@ -133,6 +149,11 @@ struct RpcError {
     std::string message;
 };
 
+/**
+ * @brief Converts a JSON array of strings into a std::vector<std::string>.
+ * @param value The JSON value to read; anything other than an array yields an empty result.
+ * @return The array's elements, each coerced to a string, in order.
+ */
 std::vector<std::string> JsonStringArray(const Json &value) {
     std::vector<std::string> out;
     if (!value.is_array()) return out;
@@ -140,6 +161,12 @@ std::vector<std::string> JsonStringArray(const Json &value) {
     return out;
 }
 
+/**
+ * @brief Builds a JSON object representing a cursor position.
+ * @param row The cursor's row.
+ * @param col The cursor's column.
+ * @return A JSON object with "row" and "col" fields.
+ */
 Json CursorJson(int row, int col) {
     Json j = Json::Object();
     j["row"] = row;
@@ -147,6 +174,11 @@ Json CursorJson(int row, int col) {
     return j;
 }
 
+/**
+ * @brief Serializes a Pane's id, buffer, cursor, visual anchor, and scroll position to JSON.
+ * @param pane The pane to serialize.
+ * @return A JSON object describing the pane.
+ */
 Json PaneJson(const Pane &pane) {
     Json j = Json::Object();
     j["id"] = pane.id;
@@ -157,6 +189,11 @@ Json PaneJson(const Pane &pane) {
     return j;
 }
 
+/**
+ * @brief Recursively serializes a split-tree node (leaf pane or horizontal/vertical split with its children and share weights) to JSON.
+ * @param node The split-tree node to serialize.
+ * @return A JSON object describing the node and, for a non-leaf node, its children.
+ */
 Json SplitNodeJson(const SplitNode &node) {
     Json j = Json::Object();
     if (node.dir == SplitDir::Leaf) {
@@ -179,6 +216,12 @@ Json SplitNodeJson(const SplitNode &node) {
 // comment in editor.h) and a client that only knows a pane_id (e.g. from
 // an earlier pane.split/state.dump result) has no reason to also track
 // which tab it lives in.
+/**
+ * @brief Depth-first searches a split-tree node for the leaf pane with a given id.
+ * @param node The split-tree node (or subtree) to search.
+ * @param pane_id The pane id to look for.
+ * @return A pointer to the matching Pane, or nullptr if no leaf under `node` has that id.
+ */
 const Pane *FindPane(const SplitNode &node, int pane_id) {
     if (node.dir == SplitDir::Leaf) return node.pane.id == pane_id ? &node.pane : nullptr;
     for (const auto &child : node.children) {
@@ -187,6 +230,12 @@ const Pane *FindPane(const SplitNode &node, int pane_id) {
     return nullptr;
 }
 
+/**
+ * @brief Builds a JSON summary (id, filename, modified flag, line count) of a buffer.
+ * @param editor The editor owning the buffer.
+ * @param buffer_id The id of the buffer to summarize.
+ * @return A JSON object describing the buffer.
+ */
 Json BufferSummaryJson(Editor &editor, int buffer_id) {
     const Buffer &buf = editor.GetBuffer(buffer_id);
     Json j = Json::Object();
@@ -204,6 +253,11 @@ Json BufferSummaryJson(Editor &editor, int buffer_id) {
 // means the human peer's collaboration hasn't reported a presence yet
 // (an agent's own cursor always has a location once identified -- see
 // EnsureConnCursorInitialized).
+/**
+ * @brief Serializes a participant (agent or human) -- identity, kind, buffer, location, and status -- to JSON.
+ * @param p The participant info to serialize.
+ * @return A JSON object describing the participant; includes "cursor" only if `p.has_location` is true.
+ */
 Json ParticipantJson(const Editor::ParticipantInfo &p) {
     Json j = Json::Object();
     j["id"] = p.id;
@@ -223,12 +277,17 @@ Json ParticipantJson(const Editor::ParticipantInfo &p) {
 // README.org, readme.txt, Readme.rst, ...). Returns "" (caller falls
 // back to something else) if none is found or the directory can't be
 // listed.
+/**
+ * @brief Finds a README-like file (case-insensitive "readme" prefix) as a regular file directly in the current working directory.
+ * @return The file's bare, original-case filename, or "" if none is found or the directory can't be listed.
+ */
 std::string FindReadmePath() {
     std::error_code ec;
     for (const auto &entry : std::filesystem::directory_iterator(std::filesystem::current_path(), ec)) {
         if (ec || !entry.is_regular_file()) continue;
         const std::string name = entry.path().filename().string();
         std::string lower_name = name;
+        // Lowercases each character of the copy used only for the case-insensitive "readme" prefix check.
         std::transform(lower_name.begin(), lower_name.end(), lower_name.begin(), [](unsigned char c) { return std::tolower(c); });
         // Bare, ORIGINAL-case filename, not entry.path().string() and not
         // the lowercased copy used only for the case-insensitive prefix
@@ -261,6 +320,11 @@ std::string FindReadmePath() {
 // original (pre-this-feature) behavior. Once any real cursor.set/
 // buffer.insertText/etc. call happens, that position sticks -- "last
 // known edit location" for the rest of this connection's life.
+/**
+ * @brief Idempotently seeds a connection's own independent cursor the first time it's needed, defaulting to the project's README (row 0, col 0) or, failing that, a one-time snapshot of the human's current buffer/cursor.
+ * @param editor The editor used to resolve/create the default buffer.
+ * @param conn The connection whose cursor to seed; a no-op if it's already been seeded.
+ */
 void EnsureConnCursorInitialized(Editor &editor, Connection &conn) {
     if (conn.cursor_buffer_id >= 0) return;
     const std::string readme_path = FindReadmePath();
@@ -296,6 +360,14 @@ void EnsureConnCursorInitialized(Editor &editor, Connection &conn) {
 // getLines, file.*, pane.*, command.run, session.info, state.dump)
 // remains global/real-editor-scoped -- these are "control the editor"
 // actions, not "type as this participant" ones.
+/**
+ * @brief Executes one JSON-RPC method call against the editor and/or this connection's own state, dispatching by method name.
+ * @param editor The editor to act on for global/real-editor-scoped methods.
+ * @param conn The requesting connection, for participant-scoped methods (cursor.*, buffer.insertText/setLine/replaceLines/switch, session.*) and status tracking.
+ * @param method The JSON-RPC method name (e.g. "cursor.get", "buffer.insertText", "pane.split").
+ * @param params The method's parameters, read leniently (missing fields read as 0/"").
+ * @return The method's JSON result.
+ */
 Json Dispatch(Editor &editor, Connection &conn, const std::string &method, const Json &params) {
     if (method == "cursor.get") {
         EnsureConnCursorInitialized(editor, conn);
@@ -482,6 +554,12 @@ Json Dispatch(Editor &editor, Connection &conn, const std::string &method, const
     throw RpcError{-32601, "method not found: " + method};
 }
 
+/**
+ * @brief Builds a successful JSON-RPC 2.0 response envelope.
+ * @param id The request id this response answers.
+ * @param result The method's result value.
+ * @return A JSON object with "jsonrpc", "id", and "result" fields.
+ */
 Json BuildResponse(const Json &id, const Json &result) {
     Json resp = Json::Object();
     resp["jsonrpc"] = Json("2.0");
@@ -490,6 +568,13 @@ Json BuildResponse(const Json &id, const Json &result) {
     return resp;
 }
 
+/**
+ * @brief Builds an error JSON-RPC 2.0 response envelope.
+ * @param id The request id this response answers.
+ * @param code The JSON-RPC error code.
+ * @param message A human-readable error message.
+ * @return A JSON object with "jsonrpc", "id", and "error" (containing "code" and "message") fields.
+ */
 Json BuildErrorResponse(const Json &id, int code, const std::string &message) {
     Json resp = Json::Object();
     resp["jsonrpc"] = Json("2.0");
@@ -503,6 +588,12 @@ Json BuildErrorResponse(const Json &id, int code, const std::string &message) {
 
 // Server-initiated push, no "id" -- a JSON-RPC 2.0 notification, not a
 // response to anything the client asked for.
+/**
+ * @brief Builds a JSON-RPC 2.0 notification envelope (a server-initiated push with no "id").
+ * @param method The notification's method name (e.g. "event.cursorMoved").
+ * @param params The notification's parameters.
+ * @return A JSON object with "jsonrpc", "method", and "params" fields.
+ */
 Json BuildNotification(const std::string &method, const Json &params) {
     Json note = Json::Object();
     note["jsonrpc"] = Json("2.0");
@@ -511,6 +602,11 @@ Json BuildNotification(const std::string &method, const Json &params) {
     return note;
 }
 
+/**
+ * @brief Converts an Editor::NotifyLevel to its lowercase wire name.
+ * @param level The notification level to convert.
+ * @return "debug", "info", "warn", or "error"; "info" for any unrecognized value.
+ */
 const char *NotifyLevelName(Editor::NotifyLevel level) {
     switch (level) {
         case Editor::NotifyLevel::Debug: return "debug";
@@ -563,11 +659,20 @@ struct State {
     int last_notify_id = 0;
 };
 
+/**
+ * @brief Accesses this module's single process-wide State instance.
+ * @return A reference to the lazily-constructed, function-local static State.
+ */
 State &Instance() {
     static State state;
     return state;
 }
 
+/**
+ * @brief Accept-thread loop: blocks in poll() on the listener and a wakeup pipe, accepting each new connection (spawning its reader thread and registering it) until Stop() signals shutdown via the wakeup pipe.
+ * @param listener_fd The bound, listening socket to accept() from.
+ * @param wakeup_fd The read end of the self-pipe Stop() writes to, to unblock this poll() on shutdown.
+ */
 void AcceptLoop(int listener_fd, int wakeup_fd) {
     pollfd fds[2] = {{listener_fd, POLLIN, 0}, {wakeup_fd, POLLIN, 0}};
     for (;;) {
@@ -598,6 +703,7 @@ void AcceptLoop(int listener_fd, int wakeup_fd) {
         conn->fd = fd;
         conn->participant_id = "agent-" + std::to_string(state.next_participant_id.fetch_add(1));
         Connection *raw = conn.get();
+        // Runs this new connection's ReaderLoop() on its own dedicated reader thread.
         conn->reader_thread = std::thread([raw] { raw->ReaderLoop(); });
 
         std::lock_guard<std::mutex> lock(state.mutex);
@@ -606,6 +712,11 @@ void AcceptLoop(int listener_fd, int wakeup_fd) {
     }
 }
 
+/**
+ * @brief Sends the same JSON-RPC notification to every given connection.
+ * @param conns The connections to send to.
+ * @param notification The notification message to broadcast.
+ */
 void Broadcast(const std::vector<Connection *> &conns, const Json &notification) {
     for (Connection *conn : conns) conn->Send(notification);
 }
@@ -645,6 +756,11 @@ void Broadcast(const std::vector<Connection *> &conns, const Json &notification)
 // interactive-typing case, but background-buffer streaming via
 // mep.set_buffer_lines stays invisible to this event; poll buffer.getLines
 // if that matters.
+/**
+ * @brief Diffs the editor's current cursor/focus/mode/buffer/notification state against what was last seen and broadcasts one event.* notification per thing that changed to every connected client; called once per frame from PollOnce.
+ * @param editor The editor to poll for current state.
+ * @param conns The currently-connected connections to broadcast to.
+ */
 void FlushAgentEvents(Editor &editor, const std::vector<Connection *> &conns) {
     State &state = Instance();
 
@@ -723,6 +839,11 @@ void FlushAgentEvents(Editor &editor, const std::vector<Connection *> &conns) {
 // a real case it refuses to guess between) -- so the MCP server's startup
 // session.identify silently fails and the tab-bar agent chip never appears,
 // for every future mep session, until someone notices and removes it by hand.
+/**
+ * @brief Removes other mep instances' leftover *.sock files in `dir` whose listening process is gone (probing each with a local connect()), leaving live sockets and `own_path` untouched.
+ * @param dir The directory to scan for *.sock files.
+ * @param own_path This instance's own socket path, always skipped.
+ */
 void PruneStaleSockets(const std::string &dir, const std::string &own_path) {
     std::error_code ec;
     for (const auto &entry : std::filesystem::directory_iterator(dir, ec)) {
@@ -800,6 +921,7 @@ void Start() {
     state.listener_fd = fd;
     state.socket_path = path;
     const int wakeup_read = state.wakeup_fds[0];
+    // Runs AcceptLoop() on its own dedicated accept thread.
     state.accept_thread = std::thread([fd, wakeup_read] { AcceptLoop(fd, wakeup_read); });
     std::cout << "mep: agent socket listening at " << path << "\n";
 }
@@ -888,6 +1010,7 @@ void PollOnce(Editor &editor) {
     FlushAgentEvents(editor, conns);
 
     std::lock_guard<std::mutex> lock(state.mutex);
+    // Selects every connection whose `closed` flag is set, so erase() below can drop them.
     state.connections.erase(
         std::remove_if(state.connections.begin(), state.connections.end(), [](const std::unique_ptr<Connection> &c) { return c->closed.load(); }),
         state.connections.end());

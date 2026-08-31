@@ -49,6 +49,11 @@ struct OdtStyle {
 // -- ODF's style:font-name is typically already a human-readable family
 // name (not an indirect id needing font-face-decls resolution), so the
 // same substring match applies.
+/**
+ * @brief Maps an ODF font-name/font-family value to one of the 3 embedded logical families.
+ * @param name The font name, e.g. from style:font-name or fo:font-family.
+ * @return Serif/Mono if `name` matches a recognized family or metric-compatible substitute; Sans otherwise.
+ */
 OfficeFontFamily OdtFontFamilyFromName(const std::string &name) {
     std::string lower;
     for (char c : name) lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
@@ -67,6 +72,14 @@ OfficeFontFamily OdtFontFamilyFromName(const std::string &name) {
 // "#RRGGBB" -> true + rgb out-params; anything else (a named color, an
 // empty/"transparent" background) returns false, matching this file's own
 // existing "silently ignore what isn't a plain hex value" tolerance.
+/**
+ * @brief Parses a "#RRGGBB" ODF color string into RGB byte out-params.
+ * @param v The color string to parse.
+ * @param r Receives the red component on success.
+ * @param g Receives the green component on success.
+ * @param b Receives the blue component on success.
+ * @return True if `v` is a valid "#RRGGBB" hex string; false otherwise (out-params untouched).
+ */
 bool ParseOdtHexColor(const std::string &v, unsigned char *r, unsigned char *g, unsigned char *b) {
     if (v.size() != 7 || v[0] != '#') return false;
     unsigned int rgb = 0;
@@ -79,6 +92,11 @@ bool ParseOdtHexColor(const std::string &v, unsigned char *r, unsigned char *g, 
 
 using StyleMap = std::unordered_map<std::string, OdtStyle>;
 
+/**
+ * @brief Reads a <style:style>'s text/paragraph properties and parent-style-name into an OdtStyle.
+ * @param style_node The <style:style> node to read.
+ * @param s The style struct to populate (only fields the node actually sets are marked has_*).
+ */
 void ParseStyleNode(const pugi::xml_node &style_node, OdtStyle &s) {
     if (pugi::xml_node tp = style_node.child("style:text-properties")) {
         if (pugi::xml_attribute a = tp.attribute("fo:font-weight")) {
@@ -160,6 +178,11 @@ void ParseStyleNode(const pugi::xml_node &style_node, OdtStyle &s) {
 // styles/automatic-styles) into the same map; the two namespaces don't
 // collide in practice (LibreOffice/Word-exported automatic names like
 // "P1"/"T1" vs. named styles like "Standard"/"Heading_20_1").
+/**
+ * @brief Collects every <style:style style:name="..."> child of `container` into a name -> OdtStyle map.
+ * @param container The <office:automatic-styles> or <office:styles> node to scan.
+ * @param out The map to insert parsed styles into (merged with any existing entries).
+ */
 void CollectStyles(const pugi::xml_node &container, StyleMap &out) {
     for (pugi::xml_node style_node : container.children("style:style")) {
         pugi::xml_attribute name_attr = style_node.attribute("style:name");
@@ -173,6 +196,12 @@ void CollectStyles(const pugi::xml_node &container, StyleMap &out) {
 // Resolves a style name against the map, folding in one level of
 // style:parent-style-name for any field the named style itself didn't
 // set (not a full cascade -- see OdtStyle's own comment).
+/**
+ * @brief Looks up a style by name and folds in one level of its parent style for any unset fields.
+ * @param styles The name -> OdtStyle map to look up in.
+ * @param name The style name to resolve (returns a default OdtStyle if empty or not found).
+ * @return The resolved style, with fields the named style didn't set filled in from its parent (one level only).
+ */
 OdtStyle ResolveStyle(const StyleMap &styles, const std::string &name) {
     if (name.empty()) return OdtStyle{};
     auto it = styles.find(name);
@@ -225,6 +254,13 @@ OdtStyle ResolveStyle(const StyleMap &styles, const std::string &name) {
 // <w:hyperlink> recursion), mapping <text:tab/>/<text:line-break/> to
 // embedded '\t'/'\n' and <text:s text:c="N"/> (explicit preserved
 // space run) to N literal spaces.
+/**
+ * @brief Walks a paragraph's mixed text/element children, appending text and building DocSpans for formatted runs.
+ * @param node The node whose children to walk (a <text:p>/<text:h>, or a nested <text:span>/<text:a>).
+ * @param styles The resolved style map, used to look up <text:span> formatting.
+ * @param base_fmt The format inherited from the enclosing context, composed with any span-level overrides.
+ * @param out The paragraph to append text/spans onto.
+ */
 void CollectOdtInline(const pugi::xml_node &node, const StyleMap &styles, DocFormat base_fmt, DocParagraph &out) {
     for (pugi::xml_node child : node.children()) {
         if (child.type() == pugi::node_pcdata || child.type() == pugi::node_cdata) {
@@ -271,6 +307,13 @@ void CollectOdtInline(const pugi::xml_node &node, const StyleMap &styles, DocFor
     }
 }
 
+/**
+ * @brief Parses one <text:p>/<text:h> into a DocParagraph, resolving its paragraph style and inline runs.
+ * @param p_node The <text:p> or <text:h> node to parse.
+ * @param styles The resolved style map.
+ * @param in_list Whether this paragraph is inside a <text:list> (marks it as a bullet paragraph).
+ * @return The parsed paragraph.
+ */
 DocParagraph ParseOdtParagraph(const pugi::xml_node &p_node, const StyleMap &styles, bool in_list) {
     DocParagraph out;
     std::string style_name;
@@ -312,6 +355,12 @@ DocParagraph ParseOdtParagraph(const pugi::xml_node &p_node, const StyleMap &sty
 // via a scratch DocParagraph per <text:p>, discarding its spans (DocTable
 // cells carry no per-run formatting, matching this file's own scope note),
 // joining multiple paragraphs within one cell with '\n'.
+/**
+ * @brief Extracts a <table:table-cell>'s plain text, joining multiple paragraphs with '\n'.
+ * @param cell_node The <table:table-cell> node to read.
+ * @param styles The resolved style map (needed by CollectOdtInline, though spans are discarded here).
+ * @return The cell's flattened plain text.
+ */
 std::string OdtCellText(const pugi::xml_node &cell_node, const StyleMap &styles) {
     std::string text;
     bool first_p = true;
@@ -333,6 +382,12 @@ std::string OdtCellText(const pugi::xml_node &cell_node, const StyleMap &styles)
 // of saying "N identical empty cells in a row") is expanded to N entries,
 // same simplification DOCX's own w:gridCol-vs-actual-w:tc mismatch handling
 // makes.
+/**
+ * @brief Parses a <table:table> into a DocTable, expanding repeated cells and padding shorter rows.
+ * @param table_node The <table:table> node to parse.
+ * @param styles The resolved style map, passed through to cell text extraction.
+ * @return The parsed table, sized rows x (widest row's column count).
+ */
 DocTable ParseOdtTable(const pugi::xml_node &table_node, const StyleMap &styles) {
     std::vector<std::vector<std::string>> rows;
     int max_cols = 0;
@@ -363,6 +418,12 @@ DocTable ParseOdtTable(const pugi::xml_node &table_node, const StyleMap &styles)
 // returns its href -- already a package-root-relative zip path in ODF
 // (unlike DOCX's indirection through a relationship id), so no separate
 // resolution step is needed.
+/**
+ * @brief Recursively searches a node's descendants for a <draw:image xlink:href="..."/> and returns its href.
+ * @param node The node to search within (typically a <text:p>/<text:h>).
+ * @param href Receives the image's package-relative href if found.
+ * @return True if an image was found (`href` set); false otherwise.
+ */
 bool FindOdtImageHref(const pugi::xml_node &node, std::string &href) {
     for (pugi::xml_node child : node.children()) {
         if (std::string(child.name()) == "draw:image") {
@@ -389,6 +450,17 @@ bool FindOdtImageHref(const pugi::xml_node &node, std::string &href) {
 // out of v1 scope, and (unlike a raw ZIP-entry failure) skipping a single
 // unsupported element is exactly the per-element tolerance this parser is
 // meant to have.
+/**
+ * @brief Recursively walks a body/list container collecting paragraphs, tables, and inline images.
+ * @param container The node whose children to walk (<office:text>, <text:list>, or <text:list-item>).
+ * @param styles The resolved style map.
+ * @param in_list Whether the current position is inside a <text:list> (marks paragraphs as bullets).
+ * @param zip_bytes Pointer to the .odt file's raw bytes, used to resolve embedded image parts.
+ * @param zip_len Length of `zip_bytes` in bytes.
+ * @param out Receives one DocParagraph per <text:p>/<text:h> (plus a table anchor per <table:table>).
+ * @param tables Receives one DocTable per <table:table> encountered.
+ * @param images Receives one DocImage per resolvable embedded image encountered.
+ */
 void CollectOdtBodyParagraphs(const pugi::xml_node &container, const StyleMap &styles, bool in_list,
                                const unsigned char *zip_bytes, size_t zip_len, std::vector<DocParagraph> &out,
                                std::vector<DocTable> &tables, std::vector<DocImage> &images) {
@@ -490,6 +562,11 @@ namespace {
 // from a packed-bitfield int once DocFormat grew fields (font family/size/
 // color) an int can't cleanly encode), so a document with many runs of the
 // same formatting doesn't grow one style per run.
+/**
+ * @brief Builds a string key from a DocFormat's fields, for deduplicating generated text styles.
+ * @param fmt The format to encode.
+ * @return A compact string uniquely encoding the fields relevant to an ODF text style.
+ */
 std::string DocFormatCacheKey(const DocFormat &fmt) {
     char buf[64];
     std::snprintf(buf, sizeof(buf), "%d%d%d%d%d%d%d%d%.1f%d%d%d%d%d%d", fmt.bold, fmt.italic, fmt.underline,
@@ -499,6 +576,14 @@ std::string DocFormatCacheKey(const DocFormat &fmt) {
     return std::string(buf);
 }
 
+/**
+ * @brief Looks up (or creates and registers) a <style:style style:family="text"> for a given DocFormat.
+ * @param auto_styles The <office:automatic-styles> node to append a new style onto, if needed.
+ * @param cache Format-key -> style-name cache, checked first and updated on creation.
+ * @param fmt The format to represent as a text style (returns "" for a default/empty format).
+ * @param counter Running counter used to generate a unique style name, incremented on creation.
+ * @return The style name to reference via text:style-name, or "" if `fmt` is the default format.
+ */
 std::string GetOrCreateTextStyle(pugi::xml_node &auto_styles, std::unordered_map<std::string, std::string> &cache,
                                   const DocFormat &fmt, int &counter) {
     if (fmt == DocFormat{}) return "";
@@ -540,6 +625,14 @@ std::string GetOrCreateTextStyle(pugi::xml_node &auto_styles, std::unordered_map
     return name;
 }
 
+/**
+ * @brief Looks up (or creates and registers) a <style:style style:family="paragraph"> for a given alignment.
+ * @param auto_styles The <office:automatic-styles> node to append a new style onto, if needed.
+ * @param cache Alignment -> style-name cache, checked first and updated on creation.
+ * @param align The alignment to represent as a paragraph style (returns "" for Left, ODF's default).
+ * @param counter Running counter used to generate a unique style name, incremented on creation.
+ * @return The style name to reference via text:style-name, or "" if `align` is Left.
+ */
 std::string GetOrCreateParaStyle(pugi::xml_node &auto_styles, std::unordered_map<int, std::string> &cache,
                                   DocParagraph::Align align, int &counter) {
     if (align == DocParagraph::Align::Left) return "";
@@ -564,6 +657,16 @@ std::string GetOrCreateParaStyle(pugi::xml_node &auto_styles, std::unordered_map
 // for the default format) segment per format run, splitting embedded
 // '\t'/'\n' into <text:tab/>/<text:line-break/> siblings -- the reverse of
 // CollectOdtInline's mapping.
+/**
+ * @brief Builds a <text:p>/<text:h> node's alignment attribute and format-run children from a DocParagraph.
+ * @param p The paragraph to serialize.
+ * @param auto_styles The <office:automatic-styles> node passed through to style get-or-create helpers.
+ * @param text_style_cache Format-key -> style-name cache for text styles.
+ * @param text_counter Running counter for generating unique text style names.
+ * @param para_style_cache Alignment -> style-name cache for paragraph styles.
+ * @param para_counter Running counter for generating unique paragraph style names.
+ * @param p_node The <text:p> or <text:h> XML node to append attributes/children onto.
+ */
 void SerializeOdtParagraph(const DocParagraph &p, pugi::xml_node &auto_styles,
                             std::unordered_map<std::string, std::string> &text_style_cache, int &text_counter,
                             std::unordered_map<int, std::string> &para_style_cache, int &para_counter,
@@ -571,6 +674,12 @@ void SerializeOdtParagraph(const DocParagraph &p, pugi::xml_node &auto_styles,
     std::string pstyle = GetOrCreateParaStyle(auto_styles, para_style_cache, p.align, para_counter);
     if (!pstyle.empty()) p_node.append_attribute("text:style-name").set_value(pstyle.c_str());
 
+    /**
+     * @brief Appends one run covering [s,e) of `p.text` as a <text:span> (or bare text), with tab/break splitting.
+     * @param s Start offset into `p.text`.
+     * @param e End offset into `p.text` (no-op if e<=s).
+     * @param fmt The format to render as this run's text style, if non-default.
+     */
     auto emit_run = [&](int s, int e, const DocFormat &fmt) {
         if (e <= s) return;
         std::string tstyle = GetOrCreateTextStyle(auto_styles, text_style_cache, fmt, text_counter);
@@ -613,6 +722,13 @@ void SerializeOdtParagraph(const DocParagraph &p, pugi::xml_node &auto_styles,
 // with the same '\t'/'\n'-segmented plain-text emission SerializeOdtParagraph
 // uses for a run's own text, but with no <text:span> since DocTable cells
 // carry no formatting.
+/**
+ * @brief Builds a <table:table> node from a DocTable, applying a shared bordered cell style to every cell.
+ * @param t The table to serialize.
+ * @param table_node The <table:table> XML node to append children onto.
+ * @param table_name The value for the table's table:name attribute.
+ * @param cell_style_name The pre-registered table-cell style name to apply to every cell.
+ */
 void SerializeOdtTable(const DocTable &t, pugi::xml_node &table_node, const std::string &table_name,
                        const std::string &cell_style_name) {
     table_node.append_attribute("table:name").set_value(table_name.c_str());
@@ -652,6 +768,13 @@ void SerializeOdtTable(const DocTable &t, pugi::xml_node &table_node, const std:
 // simplification DocImage's own scope note describes. text:anchor-type
 // "as-char" flows the frame inline with the paragraph's own text, mirroring
 // how DOCX's wp:inline anchors a drawing.
+/**
+ * @brief Builds a <draw:frame><draw:image .../></draw:frame> anchored inline inside a paragraph node.
+ * @param img The image whose natural dimensions size the frame (converted px -> cm, capped to 16cm wide).
+ * @param p_node The paragraph node to append the frame onto.
+ * @param href The package-root-relative zip path to the image part (e.g. "Pictures/mepimage1.png").
+ * @param frame_index Used to generate a unique draw:name for the frame.
+ */
 void SerializeOdtDrawFrame(const DocImage &img, pugi::xml_node &p_node, const std::string &href, int frame_index) {
     constexpr double kCmPerPx = 2.54 / 96.0;
     constexpr double kMaxWidthCm = 16.0;

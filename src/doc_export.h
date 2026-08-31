@@ -27,6 +27,14 @@
 // turning a DOM tree into LaTeX text can fail; a follow-on `tectonic`
 // compile (kBuiltinOrgExport, main.cpp) is what can actually fail, and
 // that's the caller's concern, not this function's.
+/**
+ * @brief Renders the DOM parsed from `html` as a complete, standalone LaTeX document (\documentclass through \end{document}).
+ * @param html HTML source (bare fragment or full document) walked to build the LaTeX body.
+ * @param title Document title; emitted via \title and \maketitle only when non-empty.
+ * @param author Document author; emitted via \author only when non-empty.
+ * @param base_dir Base directory used to resolve a local <img src="relative/path">.
+ * @return The complete LaTeX document source; this always succeeds.
+ */
 std::string ExportHtmlToLatex(const std::string &html, const std::string &title, const std::string &author,
                                const std::string &base_dir);
 
@@ -47,6 +55,16 @@ std::string ExportHtmlToLatex(const std::string &html, const std::string &title,
 // in `error` otherwise (only a local file-write failure can actually
 // happen here -- an unreadable/missing image is dropped with a text
 // placeholder, same tolerance as the LaTeX backend, not a hard error).
+/**
+ * @brief Renders the DOM parsed from `html` into a real .odt package (built from scratch and zipped via miniz) written to `out_path`.
+ * @param html HTML source (bare fragment or full document) walked to build the ODT content.
+ * @param out_path Filesystem path the generated .odt archive is written to.
+ * @param title Document title recorded in the ODT metadata; omitted when empty.
+ * @param author Document author recorded in the ODT metadata; omitted when empty.
+ * @param base_dir Base directory used to resolve a local <img src="relative/path">.
+ * @param error Set to a message describing the failure when this returns false.
+ * @return True on success (file written); false on a local file-write failure, with `error` set.
+ */
 bool ExportHtmlToOdt(const std::string &html, const std::string &out_path, const std::string &title,
                      const std::string &author, const std::string &base_dir, std::string &error);
 

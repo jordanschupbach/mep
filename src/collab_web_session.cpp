@@ -10,16 +10,40 @@
 
 namespace mep::collab {
 namespace {
+/**
+ * @brief Returns the process-wide registry mapping web handles to their owning CollabSession, created on first use.
+ * @return A reference to the handle-to-session registry.
+ */
 std::map<int, CollabSession *> &Sessions() { static std::map<int, CollabSession *> sessions; return sessions; }
+/**
+ * @brief Returns a reference to the counter used to allocate the next unique web socket handle.
+ * @return A reference to the next-handle counter, starting at 1.
+ */
 int &NextHandle() { static int handle = 1; return handle; }
+/**
+ * @brief Percent-encodes a display name for safe inclusion in a URL query string, passing alphanumerics, '-', and '_' through unescaped.
+ * @param name The display name to encode.
+ * @return The percent-encoded name.
+ */
 std::string EncodeName(const std::string &name) {
     static constexpr char hex[] = "0123456789ABCDEF"; std::string result;
     for (unsigned char c : name) { if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_') result.push_back(static_cast<char>(c)); else { result += '%'; result += hex[c >> 4]; result += hex[c & 15]; } }
     return result;
 }
+/**
+ * @brief Builds a JSON protocol message carrying a list of CRDT operations.
+ * @param type The message "type" field, e.g. "update" or "sync_response".
+ * @param operations The CRDT operations to encode into the message's "ops" array.
+ * @return The assembled JSON message.
+ */
 Json OperationsMessage(const char *type, const std::vector<CrdtOperation> &operations) {
     Json message = Json::Object(); message["type"] = type; Json list = Json::Array(); for (const auto &op : operations) list.push_back(CrdtOperationToJson(op)); message["ops"] = std::move(list); return message;
 }
+/**
+ * @brief Reconstructs the full sequence of CRDT operations (including tombstoning deletes) needed to replay a document's current state.
+ * @param document The CRDT document to snapshot.
+ * @return The operations representing the document's complete state.
+ */
 std::vector<CrdtOperation> StateOperations(const TextCrdt &document) {
     std::vector<CrdtOperation> all; const Json snapshot = document.Snapshot();
     for (const Json &entry : snapshot.get("nodes").items()) { CrdtOperation op; if (!CrdtOperationFromJson(entry, &op)) continue; all.push_back(op); if (entry.get("deleted").as_bool()) all.push_back({CrdtOperation::Kind::Delete, op.id, {}, 0}); }
@@ -27,6 +51,12 @@ std::vector<CrdtOperation> StateOperations(const TextCrdt &document) {
 }
 }
 
+/**
+ * @brief JS glue: opens a browser WebSocket for `handle` and wires its open/message/error/close events to
+ * mep_collab_web_event and mep_collab_web_message.
+ * @param handle Handle identifying the owning CollabSession.
+ * @param url The ws:// or wss:// URL to connect to.
+ */
 EM_JS(void, mep_collab_web_connect, (int handle, const char *url), {
     if (!Module.mepCollabSockets) Module.mepCollabSockets = {};
     try {
@@ -37,9 +67,18 @@ EM_JS(void, mep_collab_web_connect, (int handle, const char *url), {
         socket.onclose = () => { delete Module.mepCollabSockets[handle]; Module._mep_collab_web_event(handle, 0); };
     } catch (_) { Module._mep_collab_web_event(handle, -1); }
 });
+/**
+ * @brief JS glue: sends `text` on the open browser WebSocket for `handle`, if any.
+ * @param handle Handle identifying the owning CollabSession.
+ * @param text The UTF-8 message text to send.
+ */
 EM_JS(void, mep_collab_web_send, (int handle, const char *text), {
     const socket = Module.mepCollabSockets && Module.mepCollabSockets[handle]; if (socket && socket.readyState === WebSocket.OPEN) socket.send(UTF8ToString(text));
 });
+/**
+ * @brief JS glue: closes the browser WebSocket registered for `handle`, if any.
+ * @param handle Handle identifying the owning CollabSession.
+ */
 EM_JS(void, mep_collab_web_close, (int handle), {
     const socket = Module.mepCollabSockets && Module.mepCollabSockets[handle]; if (socket) socket.close();
 });

@@ -6,6 +6,11 @@
 
 namespace {
 
+/**
+ * @brief Returns a copy of `s` with ASCII lower-case letters upper-cased (non-ASCII bytes untouched).
+ * @param s the string to upper-case
+ * @return the upper-cased copy
+ */
 std::string ToUpperAscii(const std::string &s) {
     std::string out = s;
     for (char &c : out) {
@@ -28,8 +33,16 @@ struct Token {
 
 class Lexer {
 public:
+    /**
+     * @brief Constructs a lexer that tokenizes `s`.
+     * @param s the formula source text to lex; must outlive the Lexer (stored by reference)
+     */
     explicit Lexer(const std::string &s) : s_(s) {}
 
+    /**
+     * @brief Skips leading whitespace and lexes the next token from the input.
+     * @return the next Token, or a TokKind::End token once the input is exhausted
+     */
     Token Next() {
         SkipSpaces();
         if (pos_ >= s_.size()) return Token{TokKind::End, "", 0};
@@ -45,10 +58,17 @@ public:
     }
 
 private:
+    /**
+     * @brief Advances the cursor past any run of whitespace at the current position.
+     */
     void SkipSpaces() {
         while (pos_ < s_.size() && std::isspace(static_cast<unsigned char>(s_[pos_]))) pos_++;
     }
 
+    /**
+     * @brief Lexes a numeric literal starting at the current position.
+     * @return a TokKind::Number token holding the parsed value
+     */
     Token LexNumber() {
         const char *start = s_.c_str() + pos_;
         char *end = nullptr;
@@ -60,6 +80,10 @@ private:
 
     // Excel-style string escaping: a doubled `""` inside a quoted string
     // is one literal `"`, not two separate tokens' worth of quote.
+    /**
+     * @brief Lexes a double-quoted string literal starting at the current position, unescaping doubled quotes.
+     * @return a TokKind::String token holding the unescaped text
+     */
     Token LexString() {
         pos_++;  // opening quote
         std::string out;
@@ -92,6 +116,10 @@ private:
     // quoted sheet names). Returns a plain Ident token -- ParsePrimary's
     // existing IsOp("!") branch after an Ident already builds a
     // sheet-qualified ref from it, so quoting needs no parser changes.
+    /**
+     * @brief Lexes a single-quoted sheet name starting at the current position, unescaping doubled apostrophes.
+     * @return a TokKind::Ident token holding the unescaped sheet name
+     */
     Token LexQuotedIdent() {
         pos_++;  // opening quote
         std::string out;
@@ -119,6 +147,10 @@ private:
     // single Ident token (ParseCellAddress strips the $ signs later) --
     // a plain identifier (function/sheet name) never legitimately
     // contains one, so accepting it here unconditionally is harmless.
+    /**
+     * @brief Lexes an identifier (function name, sheet name, or cell reference) starting at the current position.
+     * @return a TokKind::Ident token holding the identifier text
+     */
     Token LexIdent() {
         size_t start = pos_;
         while (pos_ < s_.size()) {
@@ -135,6 +167,10 @@ private:
         return t;
     }
 
+    /**
+     * @brief Lexes a one- or two-character operator token starting at the current position.
+     * @return a TokKind::Op token holding the operator text
+     */
     Token LexOp() {
         std::string two = (pos_ + 1 < s_.size()) ? s_.substr(pos_, 2) : "";
         if (two == "<>" || two == "<=" || two == ">=") {
@@ -161,8 +197,17 @@ using NodePtr = std::shared_ptr<const FormulaNode>;
 
 class Parser {
 public:
+    /**
+     * @brief Constructs a parser over `text` and lexes the first token.
+     * @param text the formula source text to parse
+     */
     explicit Parser(const std::string &text) : lexer_(text) { Advance(); }
 
+    /**
+     * @brief Parses the full formula and checks that no trailing input remains.
+     * @param error set to a description of the syntax error when parsing fails
+     * @return the parsed AST root, or nullptr on error (either a parse error or unexpected trailing input)
+     */
     NodePtr Parse(std::string &error) {
         NodePtr node = ParseCompare();
         if (!error_.empty()) {
@@ -177,36 +222,74 @@ public:
     }
 
 private:
+    /**
+     * @brief Consumes the current token and lexes the next one into `cur_`.
+     */
     void Advance() { cur_ = lexer_.Next(); }
+    /**
+     * @brief Checks whether the current token is an operator token matching `s`.
+     * @param s the operator text to match
+     * @return true if the current token is an Op token equal to `s`
+     */
     bool IsOp(const char *s) const { return cur_.kind == TokKind::Op && cur_.text == s; }
+    /**
+     * @brief Records a parse error, keeping only the first one reported.
+     * @param msg the error message to record
+     */
     void Fail(const std::string &msg) {
         if (error_.empty()) error_ = msg;
     }
 
+    /**
+     * @brief Builds a Number AST node.
+     * @param v the numeric value
+     * @return the new Number node
+     */
     static NodePtr MakeNum(double v) {
         auto n = std::make_shared<FormulaNode>();
         n->kind = FormulaNodeKind::Number;
         n->number = v;
         return n;
     }
+    /**
+     * @brief Builds a String AST node.
+     * @param v the string literal value
+     * @return the new String node
+     */
     static NodePtr MakeStr(const std::string &v) {
         auto n = std::make_shared<FormulaNode>();
         n->kind = FormulaNodeKind::String;
         n->text = v;
         return n;
     }
+    /**
+     * @brief Builds a Bool AST node.
+     * @param v the boolean value
+     * @return the new Bool node
+     */
     static NodePtr MakeBool(bool v) {
         auto n = std::make_shared<FormulaNode>();
         n->kind = FormulaNodeKind::Bool;
         n->boolean = v;
         return n;
     }
+    /**
+     * @brief Builds a CellRef AST node.
+     * @param ref the cell reference
+     * @return the new CellRef node
+     */
     static NodePtr MakeCellRef(const FormulaCellRef &ref) {
         auto n = std::make_shared<FormulaNode>();
         n->kind = FormulaNodeKind::CellRef;
         n->cell = ref;
         return n;
     }
+    /**
+     * @brief Builds a Range AST node.
+     * @param start the range's start cell reference
+     * @param end the range's end cell reference
+     * @return the new Range node
+     */
     static NodePtr MakeRange(const FormulaCellRef &start, const FormulaCellRef &end) {
         auto n = std::make_shared<FormulaNode>();
         n->kind = FormulaNodeKind::Range;
@@ -214,6 +297,13 @@ private:
         n->range_end = end;
         return n;
     }
+    /**
+     * @brief Builds a BinaryOp AST node.
+     * @param op the binary operator
+     * @param lhs the left-hand operand
+     * @param rhs the right-hand operand
+     * @return the new BinaryOp node
+     */
     static NodePtr MakeBinary(FormulaOp op, NodePtr lhs, NodePtr rhs) {
         auto n = std::make_shared<FormulaNode>();
         n->kind = FormulaNodeKind::BinaryOp;
@@ -222,6 +312,12 @@ private:
         n->rhs = std::move(rhs);
         return n;
     }
+    /**
+     * @brief Builds a UnaryOp AST node.
+     * @param op the unary operator
+     * @param operand the operand, stored in the node's `lhs` field
+     * @return the new UnaryOp node
+     */
     static NodePtr MakeUnary(FormulaOp op, NodePtr operand) {
         auto n = std::make_shared<FormulaNode>();
         n->kind = FormulaNodeKind::UnaryOp;
@@ -229,6 +325,12 @@ private:
         n->lhs = std::move(operand);
         return n;
     }
+    /**
+     * @brief Builds a FunctionCall AST node.
+     * @param name the (already upper-cased) function name
+     * @param args the call's argument nodes
+     * @return the new FunctionCall node
+     */
     static NodePtr MakeFunc(const std::string &name, std::vector<NodePtr> args) {
         auto n = std::make_shared<FormulaNode>();
         n->kind = FormulaNodeKind::FunctionCall;
@@ -239,6 +341,12 @@ private:
 
     // Parses one cell-address Ident token (already consumed into `tok`)
     // into a FormulaCellRef; on failure, Fail()s and returns false.
+    /**
+     * @brief Parses an already-lexed identifier as a cell address into `out`.
+     * @param ident the identifier text (e.g. "B12" or "$B$12")
+     * @param out set to the parsed cell reference on success
+     * @return true if `ident` is a valid cell address, false otherwise (Fail() is not called here)
+     */
     bool AddressFromIdent(const std::string &ident, FormulaCellRef &out) {
         int r, c;
         bool ra, ca;
@@ -254,6 +362,11 @@ private:
     // `start` ref (which may or may not itself be sheet-qualified --
     // range_end always inherits `start`'s sheet_name, matching how "A1:B10"
     // and "Sheet2!A1:B10" both only name the sheet once).
+    /**
+     * @brief Consumes an optional ":addr2" range suffix after an already-parsed cell reference.
+     * @param start the already-parsed start cell reference
+     * @return a CellRef node if no ':' follows, a Range node if a valid range end follows, or nullptr on error
+     */
     NodePtr FinishRefOrRange(const FormulaCellRef &start) {
         if (!IsOp(":")) return MakeCellRef(start);
         Advance();
@@ -271,6 +384,10 @@ private:
         return MakeRange(start, end);
     }
 
+    /**
+     * @brief Parses the highest-precedence grammar tier: literals, parenthesized expressions, function calls, cell references, and ranges.
+     * @return the parsed AST node, or nullptr on error
+     */
     NodePtr ParsePrimary() {
         if (!error_.empty()) return nullptr;
         if (cur_.kind == TokKind::Number) {
@@ -359,6 +476,10 @@ private:
         return nullptr;
     }
 
+    /**
+     * @brief Parses an optional right-associative '^' power expression over a primary operand.
+     * @return the parsed AST node, or nullptr on error
+     */
     NodePtr ParsePower() {
         NodePtr base = ParsePrimary();
         if (IsOp("^")) {
@@ -369,6 +490,10 @@ private:
         return base;
     }
 
+    /**
+     * @brief Parses an optional leading unary minus, otherwise falls through to power/primary parsing.
+     * @return the parsed AST node, or nullptr on error
+     */
     NodePtr ParseUnary() {
         if (!error_.empty()) return nullptr;
         if (IsOp("-")) {
@@ -378,6 +503,10 @@ private:
         return ParsePower();
     }
 
+    /**
+     * @brief Parses a left-associative chain of '*'/'/' multiplication and division.
+     * @return the parsed AST node, or nullptr on error
+     */
     NodePtr ParseMul() {
         NodePtr lhs = ParseUnary();
         while (IsOp("*") || IsOp("/")) {
@@ -388,6 +517,10 @@ private:
         return lhs;
     }
 
+    /**
+     * @brief Parses a left-associative chain of '+'/'-' addition and subtraction.
+     * @return the parsed AST node, or nullptr on error
+     */
     NodePtr ParseAdd() {
         NodePtr lhs = ParseMul();
         while (IsOp("+") || IsOp("-")) {
@@ -398,6 +531,10 @@ private:
         return lhs;
     }
 
+    /**
+     * @brief Parses a left-associative chain of '&' string concatenation.
+     * @return the parsed AST node, or nullptr on error
+     */
     NodePtr ParseConcat() {
         NodePtr lhs = ParseAdd();
         while (IsOp("&")) {
@@ -407,6 +544,10 @@ private:
         return lhs;
     }
 
+    /**
+     * @brief Parses the lowest-precedence grammar tier: a chain of comparison operators (=, <>, <, >, <=, >=).
+     * @return the parsed AST node, or nullptr on error
+     */
     NodePtr ParseCompare() {
         NodePtr lhs = ParseConcat();
         for (;;) {
@@ -498,12 +639,22 @@ std::string CellAddressToString(int row, int col) { return ColumnIndexToLetters(
 
 namespace {
 
+/**
+ * @brief Formats a double as formula-safe text using up to 10 significant digits.
+ * @param n the number to format
+ * @return the formatted text
+ */
 std::string FormatNumberForFormula(double n) {
     char buf[64];
     std::snprintf(buf, sizeof(buf), "%.10g", n);
     return std::string(buf);
 }
 
+/**
+ * @brief Quotes `s` as a formula double-quoted string literal, doubling any embedded '"'.
+ * @param s the raw string value
+ * @return the quoted, escaped literal text including surrounding double quotes
+ */
 std::string QuoteStringLiteral(const std::string &s) {
     std::string out = "\"";
     for (char c : s) {
@@ -514,6 +665,11 @@ std::string QuoteStringLiteral(const std::string &s) {
     return out;
 }
 
+/**
+ * @brief Checks whether `name` must be single-quoted when serialized (empty or containing non alnum/'_'/'$' characters).
+ * @param name the sheet name to check
+ * @return true if `name` needs quoting
+ */
 bool SheetNameNeedsQuote(const std::string &name) {
     if (name.empty()) return true;
     for (char c : name) {
@@ -522,6 +678,11 @@ bool SheetNameNeedsQuote(const std::string &name) {
     return false;
 }
 
+/**
+ * @brief Wraps `name` in single quotes, doubling any embedded apostrophe.
+ * @param name the sheet name to quote
+ * @return the quoted, escaped sheet name including surrounding single quotes
+ */
 std::string QuoteSheetName(const std::string &name) {
     std::string out = "'";
     for (char c : name) {
@@ -532,8 +693,18 @@ std::string QuoteSheetName(const std::string &name) {
     return out;
 }
 
+/**
+ * @brief Formats a sheet name for serialization, quoting it only if needed.
+ * @param name the sheet name to format
+ * @return `name` single-quoted if SheetNameNeedsQuote(name) is true, otherwise `name` unchanged
+ */
 std::string FormatSheetName(const std::string &name) { return SheetNameNeedsQuote(name) ? QuoteSheetName(name) : name; }
 
+/**
+ * @brief Formats a cell reference's address text ("A1", "$A$1", ...), without any sheet qualifier.
+ * @param ref the cell reference to format
+ * @return the "A1"-style address text, with '$' prefixes for absolute row/column
+ */
 std::string FormatCellRefText(const FormulaCellRef &ref) {
     std::string s;
     if (ref.col_abs) s += "$";
@@ -543,6 +714,11 @@ std::string FormatCellRefText(const FormulaCellRef &ref) {
     return s;
 }
 
+/**
+ * @brief Maps a FormulaOp to its formula-text operator symbol.
+ * @param op the operator to map
+ * @return the operator's text symbol (e.g. "+", "<>"), or "" for an unrecognized value
+ */
 std::string OpToText(FormulaOp op) {
     switch (op) {
         case FormulaOp::Add: return "+";
@@ -562,6 +738,11 @@ std::string OpToText(FormulaOp op) {
     return "";
 }
 
+/**
+ * @brief Serializes a cell reference in this engine's native syntax ("A1" or "Sheet2!A1").
+ * @param ref the cell reference to serialize
+ * @return the serialized reference text
+ */
 std::string SerializeCellRefNative(const FormulaCellRef &ref) {
     std::string s;
     if (!ref.sheet_name.empty()) s += FormatSheetName(ref.sheet_name) + "!";
@@ -573,6 +754,11 @@ std::string SerializeCellRefNative(const FormulaCellRef &ref) {
 // range's end side is always left unqualified ("[Sheet2.A1:.B2]") --
 // range_end.sheet_name always mirrors start's (see FinishRefOrRange), so
 // there's never a genuinely different end-sheet to print here.
+/**
+ * @brief Serializes a cell reference in ODF bracket syntax ("[.A1]" or "[Sheet2.A1]").
+ * @param ref the cell reference to serialize
+ * @return the serialized bracket-form reference text
+ */
 std::string SerializeCellRefOds(const FormulaCellRef &ref) {
     std::string s = "[";
     if (!ref.sheet_name.empty()) s += FormatSheetName(ref.sheet_name);
@@ -580,6 +766,12 @@ std::string SerializeCellRefOds(const FormulaCellRef &ref) {
     return s;
 }
 
+/**
+ * @brief Serializes a range in ODF bracket syntax ("[.A1:.B2]" or "[Sheet2.A1:.B2]").
+ * @param start the range's start cell reference (its sheet_name qualifies the whole range)
+ * @param end the range's end cell reference (printed unqualified)
+ * @return the serialized bracket-form range text
+ */
 std::string SerializeRangeOds(const FormulaCellRef &start, const FormulaCellRef &end) {
     std::string s = "[";
     if (!start.sheet_name.empty()) s += FormatSheetName(start.sheet_name);
@@ -587,6 +779,12 @@ std::string SerializeRangeOds(const FormulaCellRef &start, const FormulaCellRef 
     return s;
 }
 
+/**
+ * @brief Recursively serializes an AST node to formula text, in either native or ODS-bracket style.
+ * @param node the AST node to serialize
+ * @param ods_style true to emit ODF bracket-ref syntax and ';' argument separators, false for native syntax and ',' separators
+ * @return the serialized formula text for `node` and its subtree
+ */
 std::string SerializeFormulaImpl(const FormulaNode &node, bool ods_style) {
     switch (node.kind) {
         case FormulaNodeKind::Number:

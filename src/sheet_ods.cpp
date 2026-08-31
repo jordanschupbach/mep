@@ -37,6 +37,11 @@
 
 namespace {
 
+/**
+ * @brief Reports whether a sheet name needs single-quoting to lex correctly in this engine's native formula syntax.
+ * @param name Sheet name to check.
+ * @return True if name is non-empty and contains a character other than alphanumerics, '_', or '$'.
+ */
 bool NeedsNativeQuote(const std::string &name) {
     if (name.empty()) return false;
     for (char c : name) {
@@ -55,6 +60,11 @@ bool NeedsNativeQuote(const std::string &name) {
 // name that itself needs quoting to lex correctly natively (same
 // characters, just not pre-quoted by this particular producer) gets
 // quoted here instead.
+/**
+ * @brief Translates one bracketed ODF reference's inner text into this engine's native "Sheet!Cell"/"Cell" syntax.
+ * @param part ODF reference text with no surrounding brackets, e.g. "SheetName.A1", ".A1", or "$SheetName.$A$1".
+ * @return part translated to native syntax, or part unchanged if it has no '.' (malformed).
+ */
 std::string TranslateOdsRefPart(const std::string &part) {
     size_t dot = part.rfind('.');
     if (dot == std::string::npos) return part;  // malformed -- pass through rather than drop
@@ -72,6 +82,11 @@ std::string TranslateOdsRefPart(const std::string &part) {
 // for the end side, the same convention ODF ranges themselves follow in
 // every producer actually observed (the end side's own sheet qualifier,
 // when present at all, always matches the start's).
+/**
+ * @brief Translates one bracketed ODF reference (single cell or range) into this engine's native reference syntax.
+ * @param inner ODF reference text with no surrounding brackets, e.g. "Sheet.A1:.B5" or "Sheet.A1:Sheet.B5".
+ * @return The translated single-cell reference, or "start:end_cell" for a range (the end side's own sheet qualifier, if any, is dropped since it's always inherited from the start).
+ */
 std::string TranslateOdsBracketRef(const std::string &inner) {
     size_t colon = inner.find(':');
     if (colon == std::string::npos) return TranslateOdsRefPart(inner);
@@ -88,6 +103,11 @@ std::string TranslateOdsBracketRef(const std::string &inner) {
 // it's inside a string literal (so a `;` or `[` that happens to appear
 // inside a quoted formula string is left untouched). Returns "" (caller
 // falls back to the cell's cached value) if `text` has no '=' at all.
+/**
+ * @brief Converts an ODF formula's raw text ("of:=..."/"oooc:=...") into this engine's native formula syntax.
+ * @param text Full formula cell text, including the "of:="/"oooc:=" namespace prefix.
+ * @return The translated formula text (no leading '='/prefix), with `;` argument separators replaced by `,` and every bracketed reference translated; "" if text has no '=' at all.
+ */
 std::string TranslateOdsFormula(const std::string &text) {
     size_t eq = text.find('=');
     if (eq == std::string::npos) return "";
@@ -128,6 +148,11 @@ std::string TranslateOdsFormula(const std::string &text) {
 // live from the translated formula text (never trust the file's own
 // cached office:value/text:p for a formula cell -- same "recompute, don't
 // trust a stale cache" discipline EvaluateCell itself follows).
+/**
+ * @brief Extracts a <table:table-cell>'s content as this engine's raw cell text (a formula, a literal value, or paragraph text).
+ * @param cell The <table:table-cell> XML node to read.
+ * @return The cell's raw text: "=..." if it carries a formula, the literal value/text for a recognized value-type, or the joined <text:p> paragraph text otherwise; "" if genuinely empty.
+ */
 std::string OdsCellRawText(const pugi::xml_node &cell) {
     if (pugi::xml_attribute formula_attr = cell.attribute("table:formula")) {
         std::string translated = TranslateOdsFormula(formula_attr.as_string());
@@ -163,6 +188,12 @@ std::string OdsCellRawText(const pugi::xml_node &cell) {
     return text;
 }
 
+/**
+ * @brief Populates one sheet's cells from a parsed <table:table>'s rows, expanding repeated (but non-empty) rows/columns.
+ * @param table The <table:table> XML node to read.
+ * @param wb Workbook whose sheet at sheet_index is populated.
+ * @param sheet_index Index of the destination sheet in wb.sheets.
+ */
 void ParseOdsTable(const pugi::xml_node &table, Workbook &wb, int sheet_index) {
     int row = 0;
     for (pugi::xml_node row_node : table.children("table:table-row")) {
@@ -181,6 +212,11 @@ void ParseOdsTable(const pugi::xml_node &table, Workbook &wb, int sheet_index) {
     }
 }
 
+/**
+ * @brief Writes a computed CellValue's cached representation onto a <table:table-cell> XML node.
+ * @param cell_node The <table:table-cell> node to write attributes/children onto.
+ * @param v The value to write (a formula's evaluated result, or a literal's own value).
+ */
 void WriteOdsCachedValue(pugi::xml_node &cell_node, const CellValue &v) {
     switch (v.kind) {
         case CellKind::Number:
@@ -206,6 +242,12 @@ void WriteOdsCachedValue(pugi::xml_node &cell_node, const CellValue &v) {
     }
 }
 
+/**
+ * @brief Appends one <table:table-row>/<table:table-cell> per used cell in a sheet, writing formulas, numbers, and text/error literals.
+ * @param wb Workbook whose sheet at sheet_index is serialized (formula cells are evaluated to get their cached value).
+ * @param sheet_index Index of the source sheet in wb.sheets.
+ * @param table The <table:table> XML node to append rows/cells to.
+ */
 void SerializeOdsTable(Workbook &wb, int sheet_index, pugi::xml_node &table) {
     Sheet &sh = wb.sheets[sheet_index];
     for (int r = 0; r <= sh.max_row; r++) {

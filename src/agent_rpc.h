@@ -38,22 +38,36 @@ namespace mep::agent {
 // failure just leaves the feature unavailable (logged to stderr, not
 // fatal -- matches how a missing external tool degrades elsewhere in this
 // codebase, e.g. Job::SpawnFailed).
+/**
+ * @brief Binds this instance's agent-control Unix socket and starts its accept thread.
+ */
 void Start();
 
 // Closes the listener, joins every connection's reader thread, and
 // unlinks the socket file. Called once from main()'s existing shutdown
 // path, before the process exits.
+/**
+ * @brief Shuts down the agent-control socket: stops accepting, closes every connection, and unlinks the socket file.
+ */
 void Stop();
 
 // Drains every connection's parsed requests, dispatches each against
 // `editor`, and writes back its JSON-RPC response -- all on the calling
 // (main) thread. Call once per frame, alongside JobManager::Instance().
 // PollAll(). A no-op if Start() was never called or binding failed.
+/**
+ * @brief Dispatches every connected agent's pending JSON-RPC requests against the editor and sends their responses; call once per frame.
+ * @param editor The editor instance to dispatch RPC requests against.
+ */
 void PollOnce(Editor &editor);
 
 // Absolute path of the bound socket, or "" if Start() hasn't run yet or
 // binding failed. Used by main()'s startup log line and the :AgentSocket
 // ex-command.
+/**
+ * @brief Returns the absolute path of the bound agent-control socket.
+ * @return The socket path, or "" if Start() hasn't run yet or binding failed.
+ */
 std::string SocketPath();
 
 // One connected agent's identity + its own independent virtual cursor
@@ -82,13 +96,31 @@ struct AgentParticipant {
 // Snapshots every currently-connected agent's identity/cursor/status.
 // Safe to call from the main thread at any time (including mid-PollOnce,
 // e.g. from Editor::Participants() while rendering).
+/**
+ * @brief Snapshots every currently-connected agent's identity, cursor, and status.
+ * @return One AgentParticipant per currently-connected agent connection.
+ */
 std::vector<AgentParticipant> AgentParticipants();
 
 #else
 
+/**
+ * @brief No-op stand-in for Start() on platforms without the agent-control socket (wasm/Windows).
+ */
 inline void Start() {}
+/**
+ * @brief No-op stand-in for Stop() on platforms without the agent-control socket (wasm/Windows).
+ */
 inline void Stop() {}
+/**
+ * @brief No-op stand-in for PollOnce() on platforms without the agent-control socket (wasm/Windows).
+ * @param editor Unused.
+ */
 inline void PollOnce(Editor &) {}
+/**
+ * @brief No-op stand-in for SocketPath() on platforms without the agent-control socket (wasm/Windows).
+ * @return Always "".
+ */
 inline std::string SocketPath() { return ""; }
 
 struct AgentParticipant {
@@ -99,6 +131,10 @@ struct AgentParticipant {
     bool has_location = false;
     std::string status;
 };
+/**
+ * @brief No-op stand-in for AgentParticipants() on platforms without the agent-control socket (wasm/Windows).
+ * @return Always empty.
+ */
 inline std::vector<AgentParticipant> AgentParticipants() { return {}; }
 
 #endif

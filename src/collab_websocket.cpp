@@ -26,6 +26,10 @@ namespace {
 constexpr size_t kMaxHttpHeader = 16 * 1024;
 constexpr uint64_t kMaxMessage = 8 * 1024 * 1024;
 
+/**
+ * @brief Closes a platform socket handle.
+ * @param fd The socket file descriptor to close.
+ */
 void CloseFd(int fd) {
 #ifdef _WIN32
     closesocket(static_cast<SOCKET>(fd));
@@ -33,6 +37,10 @@ void CloseFd(int fd) {
     close(fd);
 #endif
 }
+/**
+ * @brief Shuts down both directions of a platform socket handle, used to unblock a thread waiting in recv().
+ * @param fd The socket file descriptor to shut down.
+ */
 void ShutdownFd(int fd) {
 #ifdef _WIN32
     shutdown(static_cast<SOCKET>(fd), SD_BOTH);
@@ -41,6 +49,11 @@ void ShutdownFd(int fd) {
 #endif
 }
 
+/**
+ * @brief Strips leading and trailing whitespace (spaces, tabs, CR, LF) from a string.
+ * @param value The string to trim.
+ * @return The trimmed string, or an empty string if `value` is all whitespace.
+ */
 std::string Trim(std::string value) {
     const auto first = value.find_first_not_of(" \t\r\n");
     if (first == std::string::npos) return "";
@@ -48,11 +61,22 @@ std::string Trim(std::string value) {
     return value.substr(first, last - first + 1);
 }
 
+/**
+ * @brief Converts a string to lowercase (ASCII).
+ * @param value The string to convert.
+ * @return The lowercased string.
+ */
 std::string Lower(std::string value) {
     for (char &c : value) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return value;
 }
 
+/**
+ * @brief Encodes a byte buffer as standard Base64 text.
+ * @param data Pointer to the bytes to encode.
+ * @param size Number of bytes to encode.
+ * @return The Base64-encoded string, padded with '=' as needed.
+ */
 std::string Base64(const unsigned char *data, size_t size) {
     static constexpr char kAlphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     std::string out;
@@ -70,6 +94,12 @@ std::string Base64(const unsigned char *data, size_t size) {
     return out;
 }
 
+/**
+ * @brief Checks whether a comma-separated HTTP header value contains a given token, ignoring case and surrounding whitespace.
+ * @param value The comma-separated header value to search.
+ * @param needle The token to look for.
+ * @return True if `needle` appears as one of the comma-separated tokens, false otherwise.
+ */
 bool HeaderHasToken(const std::string &value, const std::string &needle) {
     std::stringstream stream(value);
     std::string token;
@@ -79,6 +109,11 @@ bool HeaderHasToken(const std::string &value, const std::string &needle) {
     return false;
 }
 
+/**
+ * @brief Converts one hexadecimal digit character to its numeric value.
+ * @param c The character to convert.
+ * @return The digit's value (0-15), or -1 if `c` is not a hex digit.
+ */
 int Hex(char c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;

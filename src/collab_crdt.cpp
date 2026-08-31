@@ -7,7 +7,18 @@
 
 namespace mep::collab {
 namespace {
+/**
+ * @brief Converts a CrdtId to its JSON representation.
+ * @param id the id to serialize
+ * @return a JSON object with "actor" and "counter" fields
+ */
 Json IdToJson(const CrdtId &id) { Json out = Json::Object(); out["actor"] = id.actor; out["counter"] = static_cast<long long>(id.counter); return out; }
+/**
+ * @brief Parses a CrdtId from JSON, rejecting missing actors or non-integer/negative counters.
+ * @param json the JSON value to parse
+ * @param id output id populated on success
+ * @return true if `json` held a valid actor/counter pair
+ */
 bool IdFromJson(const Json &json, CrdtId *id) {
     if (!json.is_object()) return false;
     const std::string actor = json.get("actor").as_string();
@@ -15,6 +26,10 @@ bool IdFromJson(const Json &json, CrdtId *id) {
     if (actor.empty() || counter < 0 || counter != static_cast<uint64_t>(counter)) return false;
     *id = {actor, static_cast<uint64_t>(counter)}; return true;
 }
+/**
+ * @brief Generates a random actor id of the form "mep-" followed by 16 random alphanumeric characters.
+ * @return a newly generated actor id
+ */
 std::string DefaultActor() {
     static constexpr char alphabet[] = "abcdefghijklmnopqrstuvwxyz0123456789";
     std::random_device rd; std::mt19937_64 rng(rd());

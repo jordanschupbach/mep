@@ -29,6 +29,13 @@ struct TSHighlightSpan {
 // -- either compiled in, or, on native builds, loadable from disk at
 // runtime. May attempt (and cache the result of) a dynamic-library
 // search as a side effect.
+/**
+ * @brief Checks whether a Treesitter grammar is available for a filetype,
+ * either compiled in or, on native builds, resolvable via a dynamic
+ * dlopen() lookup (whose result is cached as a side effect).
+ * @param filetype Bare file extension identifying the language (e.g. "cpp", "py").
+ * @return True if a grammar is available for `filetype`.
+ */
 bool TreesitterHasGrammar(const std::string &filetype);
 
 // Parses `text` with the grammar for `filetype` and runs its highlight
@@ -38,6 +45,14 @@ bool TreesitterHasGrammar(const std::string &filetype);
 // back to a from-scratch parse the first time a filetype is seen or
 // after a grammar change. Returns an empty vector if no grammar is
 // available for `filetype`.
+/**
+ * @brief Parses `text` with the grammar for `filetype` and runs its
+ * highlight query, returning every capture as a line-local span, reusing
+ * an incrementally-reparsed cached tree when available.
+ * @param filetype Bare file extension identifying the language.
+ * @param text Full buffer text to parse and highlight.
+ * @return Every highlight capture as a line-clipped span; empty if no grammar is available for `filetype`.
+ */
 std::vector<TSHighlightSpan> TreesitterHighlight(const std::string &filetype, const std::string &text);
 
 // One foldable range, 0-indexed rows, both inclusive (mep's own Fold
@@ -50,6 +65,11 @@ struct TSFoldRange {
 // True if `filetype` has a fold query defined (distinct from
 // TreesitterHasGrammar: fewer filetypes have a fold query than have a
 // highlight query -- see treesitter_queries.h's kFolds* comment).
+/**
+ * @brief Checks whether `filetype` has a fold query defined.
+ * @param filetype Bare file extension identifying the language.
+ * @return True if a fold query is defined for `filetype`.
+ */
 bool TreesitterHasFoldQuery(const std::string &filetype);
 
 // Runs `filetype`'s fold query (if one is defined -- only the core
@@ -60,6 +80,14 @@ bool TreesitterHasFoldQuery(const std::string &filetype);
 // right after a TreesitterHighlight call for the same filetype/text is
 // effectively free -- no reparse, the tree's already cached). Returns an
 // empty vector if `filetype` has no fold query.
+/**
+ * @brief Runs `filetype`'s fold query (if defined) over `text` and returns
+ * every capture spanning more than one line, sharing the same
+ * incremental-reparse cache the other Treesitter* entry points use.
+ * @param filetype Bare file extension identifying the language.
+ * @param text Full buffer text to parse and search for foldable ranges.
+ * @return Every multi-line fold range found; empty if `filetype` has no fold query.
+ */
 std::vector<TSFoldRange> TreesitterFoldRanges(const std::string &filetype, const std::string &text);
 
 // One entry in a document's structure outline (mep's own sidebar/split
@@ -93,6 +121,13 @@ struct TSStructureNode {
 // (treesitter_structure_queries.h's core-language set) or, on native
 // builds, resolvable via the same dynamic dlopen() lookup
 // TreesitterHasGrammar uses.
+/**
+ * @brief Checks whether `filetype` has a structure (document outline) query
+ * defined, either compiled in or, on native builds, resolvable via the
+ * same dynamic dlopen() lookup TreesitterHasGrammar uses.
+ * @param filetype Bare file extension identifying the language.
+ * @return True if a structure query is defined for `filetype`.
+ */
 bool TreesitterHasStructureQuery(const std::string &filetype);
 
 // Runs `filetype`'s structure query over `text` (via the same incremental-
@@ -100,4 +135,12 @@ bool TreesitterHasStructureQuery(const std::string &filetype);
 // every definition found, in document order, with `depth` already
 // resolved. Returns an empty vector if `filetype` has no structure query
 // or the query found nothing.
+/**
+ * @brief Runs `filetype`'s structure query over `text` and returns every
+ * definition found, in document order, with each entry's nesting `depth`
+ * already resolved.
+ * @param filetype Bare file extension identifying the language.
+ * @param text Full buffer text to parse and extract structure from.
+ * @return Every definition found, in document order; empty if `filetype` has no structure query or none matched.
+ */
 std::vector<TSStructureNode> TreesitterStructure(const std::string &filetype, const std::string &text);

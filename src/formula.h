@@ -74,6 +74,12 @@ struct FormulaNode {
 // A successful parse is guaranteed to contain no null child nodes
 // anywhere in the tree -- the evaluator can walk it without null-checking
 // every node.
+/**
+ * @brief Tokenizes and parses a formula string (without leading '=') into an AST.
+ * @param text the formula source text, with any leading '=' already stripped by the caller
+ * @param error set to a description of the syntax error when parsing fails
+ * @return the parsed AST root, or nullptr if `text` contains a syntax error
+ */
 std::shared_ptr<const FormulaNode> ParseFormula(const std::string &text, std::string &error);
 
 // Column-letter <-> 0-indexed-column helpers ("A" <-> 0, "Z" <-> 25, "AA"
@@ -81,11 +87,36 @@ std::shared_ptr<const FormulaNode> ParseFormula(const std::string &text, std::st
 // every format's cell-address parsing (xlsx's r="B12" attribute, ods's
 // [.B12] formula syntax, and the grid renderer's own column-letter
 // header) so the base-26 arithmetic exists exactly once.
+/**
+ * @brief Converts a column-letter string ("A", "Z", "AA", ...) to a 0-indexed column number.
+ * @param letters the column letters, expected upper-case A-Z
+ * @return the 0-indexed column number, or -1 if `letters` contains a non-A-Z character
+ */
 int ColumnLettersToIndex(const std::string &letters);
+/**
+ * @brief Converts a 0-indexed column number to its column-letter string.
+ * @param col the 0-indexed column number
+ * @return the column letters ("A", "Z", "AA", ...) for `col`
+ */
 std::string ColumnIndexToLetters(int col);
 // Parses "B12" or "$B$12" -> row=11,col=1 (0-indexed) + the $ flags.
 // Returns false if `text` isn't a syntactically valid cell reference.
+/**
+ * @brief Parses an "A1"-style (optionally "$"-anchored) cell address into row/column and absolute-reference flags.
+ * @param text the cell address text, e.g. "B12" or "$B$12"
+ * @param row set to the parsed 0-indexed row
+ * @param col set to the parsed 0-indexed column
+ * @param row_abs set to true if the row carries a '$' anchor
+ * @param col_abs set to true if the column carries a '$' anchor
+ * @return true if `text` is a syntactically valid cell reference, false otherwise
+ */
 bool ParseCellAddress(const std::string &text, int &row, int &col, bool &row_abs, bool &col_abs);
+/**
+ * @brief Formats a 0-indexed row/column pair back into "A1"-style cell address text.
+ * @param row the 0-indexed row
+ * @param col the 0-indexed column
+ * @return the "A1"-style cell address text
+ */
 std::string CellAddressToString(int row, int col);
 
 // Serializes an AST back into formula text (no leading '='). `ods_style`
@@ -98,6 +129,12 @@ std::string CellAddressToString(int row, int col);
 // nested BinaryOp/UnaryOp rather than computing minimal precedence-aware
 // parens -- correctness (this only ever feeds back into ParseFormula or a
 // file format, never a human) over prettiness.
+/**
+ * @brief Serializes an AST back into formula text (no leading '='), always fully parenthesized.
+ * @param node the AST root to serialize
+ * @param ods_style true to emit ODF bracket-ref syntax and ';' argument separators, false for this engine's native syntax and ',' separators
+ * @return the formula text, or "" if `node` is null
+ */
 std::string SerializeFormula(const std::shared_ptr<const FormulaNode> &node, bool ods_style = false);
 
 // Returns a deep copy of `node` with every non-absolute ($-less) CellRef/
@@ -105,6 +142,13 @@ std::string SerializeFormula(const std::shared_ptr<const FormulaNode> &node, boo
 // untouched -- used to expand an XLSX shared-formula group's one stored
 // master formula into each member cell's own relative formula (see
 // sheet_xlsx.cpp's shared-formula handling).
+/**
+ * @brief Returns a deep copy of `node` with every non-absolute CellRef/Range endpoint shifted by (dr,dc).
+ * @param node the AST root to copy and shift
+ * @param dr the row offset applied to every non-$-anchored row
+ * @param dc the column offset applied to every non-$-anchored column
+ * @return the shifted deep copy, or `node` unchanged (null) if `node` is null
+ */
 std::shared_ptr<const FormulaNode> ShiftFormulaRefs(const std::shared_ptr<const FormulaNode> &node, int dr, int dc);
 
 #endif

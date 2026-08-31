@@ -20,6 +20,13 @@ namespace {
 
 // Delete-range clamp: maps a span endpoint through the removal of [a,b).
 // x<=a unaffected; a<x<b collapses to a; x>=b shifts left by (b-a).
+/**
+ * @brief Maps one span endpoint through the removal of a deleted range.
+ * @param x The endpoint to map.
+ * @param a Start of the deleted range.
+ * @param b End of the deleted range.
+ * @return `x` if x<=a; `a` if a<x<b; `x-(b-a)` if x>=b.
+ */
 int ClampThroughDelete(int x, int a, int b) {
     if (x <= a) return x;
     if (x < b) return a;
@@ -117,6 +124,7 @@ void MergeParagraphs(DocParagraph &p, const DocParagraph &next) {
 }
 
 void CoalesceSpans(std::vector<DocSpan> &spans) {
+    // Comparator: orders spans by ascending start offset.
     std::sort(spans.begin(), spans.end(), [](const DocSpan &x, const DocSpan &y) { return x.start < y.start; });
     std::vector<DocSpan> out;
     for (auto &s : spans) {
@@ -193,6 +201,7 @@ void ToggleFormatOverRange(DocParagraph &p, int a, int b, bool DocFormat::*field
         out.push_back({cursor, b, gap_fmt});
     }
 
+    // Comparator: orders the rebuilt segments by ascending start offset.
     std::sort(out.begin(), out.end(), [](const DocSpan &x, const DocSpan &y) { return x.start < y.start; });
     p.spans = std::move(out);
     CoalesceSpans(p.spans);
@@ -234,6 +243,7 @@ void SetFormatFieldOverRange(DocParagraph &p, int a, int b, const std::function<
         out.push_back({cursor, b, gap_fmt});
     }
 
+    // Comparator: orders the rebuilt segments by ascending start offset.
     std::sort(out.begin(), out.end(), [](const DocSpan &x, const DocSpan &y) { return x.start < y.start; });
     p.spans = std::move(out);
     CoalesceSpans(p.spans);
@@ -258,10 +268,16 @@ void SetParagraphListKind(std::vector<DocParagraph> &paragraphs, int first, int 
 // ============================================================================
 
 namespace {
+/**
+ * @brief Extracts and lowercases a file path's extension (text after the last '.').
+ * @param path The file path to inspect.
+ * @return The lowercased extension, or "" if `path` has no '.'.
+ */
 std::string LowerExt(const std::string &path) {
     size_t dot = path.find_last_of('.');
     if (dot == std::string::npos) return "";
     std::string ext = path.substr(dot + 1);
+    // Lowercases each character of the extension in place.
     std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return std::tolower(c); });
     return ext;
 }
@@ -271,6 +287,11 @@ bool IsDocxPath(const std::string &path) { return LowerExt(path) == "docx"; }
 bool IsOdtPath(const std::string &path) { return LowerExt(path) == "odt"; }
 
 std::string SniffImageExtension(const std::string &bytes) {
+    /**
+     * @brief Checks whether `bytes` begins with the given magic-number byte sequence.
+     * @param sig The signature bytes to match at the start of `bytes`.
+     * @return True if `bytes` is at least as long as `sig` and matches it byte-for-byte.
+     */
     auto starts_with = [&](std::initializer_list<unsigned char> sig) {
         if (bytes.size() < sig.size()) return false;
         size_t i = 0;
@@ -421,6 +442,11 @@ namespace {
 // casing/spacing DOCX producers commonly use) to a 1-6 level, or 0 if it
 // isn't recognized as a heading -- deliberately just name recognition,
 // not resolving the full w:basedOn style-cascade (out of v1 scope).
+/**
+ * @brief Maps a DOCX heading paragraph style id to a 1-6 heading level.
+ * @param style_id The style id, e.g. "Heading1"/"Heading 1"/"heading1".
+ * @return 1-6 if `style_id` is recognized as a heading style; 0 otherwise.
+ */
 int DocxHeadingLevelFromStyleName(const std::string &style_id) {
     // Common forms: "Heading1", "Heading 1", "heading1".
     std::string s;
@@ -439,6 +465,11 @@ int DocxHeadingLevelFromStyleName(const std::string &style_id) {
 // booleans can be explicitly disabled (w:val="false"/"0"); anything else
 // present is treated as on, matching how these elements are used in
 // practice by real producers.
+/**
+ * @brief Determines whether an OOXML boolean toggle element (e.g. <w:b/>) is "on".
+ * @param toggle_node The toggle element node (may be null/empty).
+ * @return False if the node is absent; otherwise true unless w:val is "false"/"0"/"off".
+ */
 bool OoxmlBoolOn(const pugi::xml_node &toggle_node) {
     if (!toggle_node) return false;
     pugi::xml_attribute val = toggle_node.attribute("w:val");
@@ -450,6 +481,12 @@ bool OoxmlBoolOn(const pugi::xml_node &toggle_node) {
 // Appends run text (handling <w:t>, <w:tab/>, <w:br/>) into `text`,
 // returning the appended length so the caller can build a DocSpan for it
 // if the run carries any formatting.
+/**
+ * @brief Appends one <w:r> run's text (including <w:tab/>/<w:br/> as '\t'/'\n') onto `text`.
+ * @param run The <w:r> run node to read.
+ * @param text The string to append onto.
+ * @return The number of characters appended.
+ */
 int AppendDocxRunText(const pugi::xml_node &run, std::string &text) {
     int start = static_cast<int>(text.size());
     for (pugi::xml_node child : run.children()) {
@@ -476,6 +513,11 @@ int AppendDocxRunText(const pugi::xml_node &run, std::string &text) {
 // Mono) so a document authored in real Word still gets a *sensible*
 // mep-side family rather than silently falling back to Sans for every
 // font name it doesn't recognize verbatim.
+/**
+ * @brief Maps a DOCX <w:rFonts> ascii font name to one of the 3 embedded logical families.
+ * @param name The font name as it appears in <w:rFonts w:ascii="...">.
+ * @return Serif/Mono if `name` matches a recognized family or metric-compatible substitute; Sans otherwise.
+ */
 OfficeFontFamily DocxFontFamilyFromName(const std::string &name) {
     std::string lower;
     for (char c : name) lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
@@ -494,6 +536,11 @@ OfficeFontFamily DocxFontFamilyFromName(const std::string &name) {
 // Walks a <w:p>'s children collecting run text/spans -- recurses into
 // <w:hyperlink> (which wraps <w:r> runs) so hyperlinked text isn't
 // silently dropped; hyperlink *behavior* (click/navigate) isn't modeled.
+/**
+ * @brief Walks a <w:p>'s run/hyperlink children, appending text and building DocSpans for formatted runs.
+ * @param p_node The <w:p> paragraph node to walk.
+ * @param out The paragraph to append text/spans onto.
+ */
 void CollectDocxParagraphRuns(const pugi::xml_node &p_node, DocParagraph &out) {
     for (pugi::xml_node child : p_node.children()) {
         std::string name = child.name();
@@ -563,6 +610,11 @@ void CollectDocxParagraphRuns(const pugi::xml_node &p_node, DocParagraph &out) {
 // map to '\t'/'\n' the same way CollectDocxParagraphRuns does for ordinary
 // paragraph text; run-level formatting (bold/color/etc.) inside a cell is
 // dropped, also matching DocTable's documented scope.
+/**
+ * @brief Extracts a <w:tc> table cell's plain text, joining multiple paragraphs with '\n'.
+ * @param tc_node The <w:tc> cell node to read.
+ * @return The cell's flattened plain text.
+ */
 std::string DocxCellText(const pugi::xml_node &tc_node) {
     std::string text;
     bool first_p = true;
@@ -581,6 +633,11 @@ std::string DocxCellText(const pugi::xml_node &tc_node) {
 // Parses a <w:tbl> into a DocTable. Column count is taken from the widest
 // <w:tr> (not <w:tblGrid>, which can disagree with actual cell counts in
 // the wild) -- shorter rows are padded with empty cells.
+/**
+ * @brief Parses a <w:tbl> into a DocTable, padding shorter rows with empty cells.
+ * @param tbl_node The <w:tbl> table node to parse.
+ * @return The parsed table, sized rows x (widest row's column count).
+ */
 DocTable ParseDocxTable(const pugi::xml_node &tbl_node) {
     std::vector<std::vector<std::string>> rows;
     int max_cols = 0;
@@ -607,6 +664,12 @@ DocTable ParseDocxTable(const pugi::xml_node &tbl_node) {
 // relationship id. Plain tag-name string matching, not real namespace
 // resolution -- consistent with how every other w:/a:/pic: element in this
 // file is matched (pugixml here is never configured namespace-aware).
+/**
+ * @brief Recursively searches a node's descendants for an <a:blip r:embed="..."/> and returns its relationship id.
+ * @param node The node to search within (typically a <w:p>).
+ * @param rel_id Receives the relationship id if found.
+ * @return True if a blip was found (`rel_id` set); false otherwise.
+ */
 bool FindDocxBlipRelId(const pugi::xml_node &node, std::string &rel_id) {
     for (pugi::xml_node child : node.children()) {
         if (std::string(child.name()) == "a:blip") {
@@ -624,6 +687,12 @@ bool FindDocxBlipRelId(const pugi::xml_node &node, std::string &rel_id) {
 // relationships at all, e.g. one that never had an image/hyperlink, simply
 // yields an empty map) into an Id -> Target lookup, used to resolve an
 // <a:blip r:embed="rIdN"/> to its word/media/... zip entry path.
+/**
+ * @brief Loads word/_rels/document.xml.rels (if present) into an Id -> Target lookup map.
+ * @param bytes Pointer to the .docx file's raw bytes.
+ * @param len Length of `bytes` in bytes.
+ * @return The relationship id -> target map, empty if the rels part is missing or unreadable.
+ */
 std::unordered_map<std::string, std::string> LoadDocxRelationships(const unsigned char *bytes, size_t len) {
     std::unordered_map<std::string, std::string> out;
     std::vector<unsigned char> rel_bytes;
@@ -637,6 +706,11 @@ std::unordered_map<std::string, std::string> LoadDocxRelationships(const unsigne
     return out;
 }
 
+/**
+ * @brief Parses a <w:p>'s paragraph properties (heading/alignment/list) and run text/spans into `out`.
+ * @param p_node The <w:p> paragraph node to parse.
+ * @param out The paragraph to populate.
+ */
 void ParseDocxParagraph(const pugi::xml_node &p_node, DocParagraph &out) {
     pugi::xml_node ppr = p_node.child("w:pPr");
     if (ppr) {
@@ -748,6 +822,11 @@ namespace {
 // rendering, duplicated here in miniature rather than shared across the
 // raylib/non-raylib boundary those two files deliberately keep (see
 // office_doc.h's own top-of-file comment).
+/**
+ * @brief Builds a <w:p> node's paragraph properties and format-run children from a DocParagraph.
+ * @param p The paragraph to serialize.
+ * @param p_node The <w:p> XML node to append children onto.
+ */
 void SerializeDocxParagraph(const DocParagraph &p, pugi::xml_node &p_node) {
     if (p.heading_level > 0 || p.align != DocParagraph::Align::Left) {
         pugi::xml_node ppr = p_node.append_child("w:pPr");
@@ -763,6 +842,12 @@ void SerializeDocxParagraph(const DocParagraph &p, pugi::xml_node &p_node) {
         }
     }
 
+    /**
+     * @brief Appends one <w:r> run covering [s,e) of `p.text`, with `fmt`'s properties and tab/break splitting.
+     * @param s Start offset into `p.text`.
+     * @param e End offset into `p.text` (no-op if e<=s).
+     * @param fmt The format to render as this run's <w:rPr>.
+     */
     auto emit_run = [&](int s, int e, const DocFormat &fmt) {
         if (e <= s) return;
         pugi::xml_node r = p_node.append_child("w:r");
@@ -842,6 +927,11 @@ void SerializeDocxParagraph(const DocParagraph &p, pugi::xml_node &p_node) {
 // non-empty '\t'/'\n'-delimited segment, mirroring emit_run's own
 // segmentation above but without per-run <w:rPr> since DocTable cells carry
 // no formatting.
+/**
+ * @brief Builds a <w:tbl> node from a DocTable, with visible borders and equal-width columns.
+ * @param t The table to serialize.
+ * @param tbl_node The <w:tbl> XML node to append children onto.
+ */
 void SerializeDocxTable(const DocTable &t, pugi::xml_node &tbl_node) {
     pugi::xml_node tbl_pr = tbl_node.append_child("w:tblPr");
     pugi::xml_node borders = tbl_pr.append_child("w:tblBorders");
@@ -900,6 +990,12 @@ void SerializeDocxTable(const DocTable &t, pugi::xml_node &tbl_node) {
 // assumption DocImage::natural_w/h's pixel dimensions carry everywhere
 // else in this codebase) and capped to 6 inches wide, matching main.cpp's
 // own render-time "cap to the pane's content width" behavior.
+/**
+ * @brief Builds a minimal inline <w:drawing> referencing an image relationship inside a run node.
+ * @param img The image whose natural dimensions size the drawing (converted px -> EMU, capped to 6in wide).
+ * @param r_node The <w:r> run node to append the drawing onto.
+ * @param rel_id The relationship id (<a:blip r:embed="...">) pointing at the image part.
+ */
 void SerializeDocxDrawing(const DocImage &img, pugi::xml_node &r_node, const std::string &rel_id) {
     constexpr long long kEmuPerPx = 9525;
     constexpr long long kMaxWidthEmu = 5486400;  // 6 inches

@@ -48,6 +48,10 @@ struct Match {
     // participate (e.g. the untaken side of an alternation).
     std::vector<std::pair<int, int>> groups;
 
+    /**
+     * @brief Reports whether this Match represents a successful match.
+     * @return True if start is a valid (non-negative) byte offset, false if no match was found.
+     */
     bool ok() const { return start >= 0; }
 };
 
@@ -57,24 +61,74 @@ public:
     // querying a failed compile just returns "no match" rather than
     // asserting, but error() has a human-readable reason worth surfacing
     // to whatever UI is showing the pattern (e.g. :s's own status line).
+    /**
+     * @brief Compiles `pattern` into this Regex, optionally case-insensitively.
+     * @param pattern The regex pattern text to compile.
+     * @param ignore_case When true, matching folds ASCII letter case.
+     */
     explicit Regex(const std::string &pattern, bool ignore_case = false);
+    /**
+     * @brief Destroys the Regex, releasing its compiled AST.
+     */
     ~Regex();
+    /**
+     * @brief Move-constructs a Regex, transferring ownership of the compiled pattern from `other`.
+     * @param other The Regex to move from; left in a valid but unspecified state.
+     */
     Regex(Regex &&) noexcept;
+    /**
+     * @brief Move-assigns this Regex, transferring ownership of the compiled pattern from `other`.
+     * @param other The Regex to move from; left in a valid but unspecified state.
+     * @return Reference to this Regex.
+     */
     Regex &operator=(Regex &&) noexcept;
+    /**
+     * @brief Deleted -- Regex is move-only; it owns its compiled AST via unique_ptr and is not copyable.
+     * @param other Unused; copy construction is not supported.
+     */
     Regex(const Regex &) = delete;
+    /**
+     * @brief Deleted -- Regex is move-only; it owns its compiled AST via unique_ptr and is not copyable.
+     * @param other Unused; copy assignment is not supported.
+     * @return Not applicable; this overload is deleted.
+     */
     Regex &operator=(const Regex &) = delete;
 
+    /**
+     * @brief Reports whether the pattern compiled successfully.
+     * @return True if compilation succeeded and Search/Match may be used, false otherwise.
+     */
     bool ok() const { return ok_; }
+    /**
+     * @brief Returns the human-readable compile error, if any.
+     * @return The error message describing why compilation failed, or an empty string if it succeeded.
+     */
     const std::string &error() const { return error_; }
 
     // First match starting at or after byte offset `from`.
+    /**
+     * @brief Finds the first match of the compiled pattern at or after a given byte offset.
+     * @param text The subject string to search.
+     * @param from The byte offset to start searching from.
+     * @return A Match describing the first match found; ok() is false if there is no match or the pattern failed to compile.
+     */
     Match Search(const std::string &text, int from = 0) const;
     // Whole-string match (anchors Search's result to start==0 &&
     // end==text.size() -- NOT the same as wrapping the pattern in ^...$,
     // since ^/$ inside the pattern already anchor to the subject's own
     // start/end per the class comment above; this just additionally
     // requires the match to *span* the whole string).
+    /**
+     * @brief Checks whether the pattern matches the entire subject string.
+     * @param text The subject string to test.
+     * @return True if a match spans exactly the whole string, false otherwise.
+     */
     bool FullMatch(const std::string &text) const;
+    /**
+     * @brief Checks whether the pattern matches anywhere within the subject string.
+     * @param text The subject string to search.
+     * @return True if any match is found, false otherwise.
+     */
     bool PartialMatch(const std::string &text) const { return Search(text).ok(); }
 
     // `repl` may reference capture groups as \1-\9 (Perl-style) or Vim's
@@ -82,7 +136,19 @@ public:
     // command has historically been documented against Vim's \0 convention
     // (see kBuiltinSubstitute in main.cpp) and callers shouldn't have to
     // care which style a given user typed.
+    /**
+     * @brief Replaces the first match of the pattern in `text` with an expanded replacement string.
+     * @param text The subject string to search and replace within.
+     * @param repl The replacement template; may reference capture groups via \1-\9 or Vim-style \0/&.
+     * @return A new string with the first match replaced, or `text` unchanged if there was no match.
+     */
     std::string ReplaceFirst(const std::string &text, const std::string &repl) const;
+    /**
+     * @brief Replaces every non-overlapping match of the pattern in `text` with an expanded replacement string.
+     * @param text The subject string to search and replace within.
+     * @param repl The replacement template; may reference capture groups via \1-\9 or Vim-style \0/&.
+     * @return A new string with all matches replaced.
+     */
     std::string ReplaceAll(const std::string &text, const std::string &repl) const;
 
     // Expands \1-\9 / \0 / & in `repl` against one already-found `m` (from
@@ -92,6 +158,13 @@ public:
     // per-line, count-tracking :s loop, which -- unlike ReplaceAll -- needs
     // to know how many replacements happened and respect a per-line
     // first-match-only vs every-match `g` flag).
+    /**
+     * @brief Expands a replacement template's capture-group references (\1-\9, \0, &) against one already-found match.
+     * @param text The original subject string the match `m` was found in.
+     * @param m The match whose captured groups supply the replacement text.
+     * @param repl The replacement template to expand.
+     * @return The expanded replacement string.
+     */
     static std::string ExpandReplacement(const std::string &text, const Match &m, const std::string &repl);
 
     // Implementation detail (AST node), public only so the free-standing

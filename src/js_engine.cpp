@@ -60,30 +60,58 @@ struct Value {
     bool boolean = false;
     ObjectPtr obj;
 
+    /**
+     * @brief Constructs a default-initialized value (VType::Undefined).
+     * @return An undefined Value.
+     */
     static Value Undef() { return Value{}; }
+    /**
+     * @brief Constructs a value of type Null.
+     * @return A Value with type VType::Null.
+     */
     static Value MakeNull() {
         Value v;
         v.type = VType::Null;
         return v;
     }
+    /**
+     * @brief Constructs a numeric value.
+     * @param d The numeric payload.
+     * @return A Value with type VType::Number holding d.
+     */
     static Value Num(double d) {
         Value v;
         v.type = VType::Number;
         v.num = d;
         return v;
     }
+    /**
+     * @brief Constructs a string value.
+     * @param s The string payload, moved into the result.
+     * @return A Value with type VType::String holding s.
+     */
     static Value Str(std::string s) {
         Value v;
         v.type = VType::String;
         v.str = std::move(s);
         return v;
     }
+    /**
+     * @brief Constructs a boolean value.
+     * @param b The boolean payload.
+     * @return A Value with type VType::Boolean holding b.
+     */
     static Value Bool(bool b) {
         Value v;
         v.type = VType::Boolean;
         v.boolean = b;
         return v;
     }
+    /**
+     * @brief Constructs an object value wrapping the given object pointer.
+     * @param o The object pointer, moved into the result.
+     * @return A Value with type VType::Object holding o.
+     */
     static Value Obj(ObjectPtr o) {
         Value v;
         v.type = VType::Object;
@@ -91,6 +119,10 @@ struct Value {
         return v;
     }
 
+    /**
+     * @brief Computes this value's JS-style truthiness (ToBoolean).
+     * @return false for undefined/null, false for 0/NaN numbers, false for an empty string, and true for any object.
+     */
     bool Truthy() const {
         switch (type) {
             case VType::Undefined:
@@ -136,6 +168,11 @@ struct Environment {
     std::unordered_map<std::string, Value> vars;
     EnvPtr parent;
 
+    /**
+     * @brief Looks up a binding by name, walking outward through parent scopes.
+     * @param name The identifier to look up.
+     * @return A pointer to the binding's Value if found in this scope or an ancestor, else nullptr.
+     */
     Value *Find(const std::string &name) {
         for (Environment *e = this; e != nullptr; e = e->parent.get()) {
             auto it = e->vars.find(name);
@@ -143,9 +180,19 @@ struct Environment {
         }
         return nullptr;
     }
+    /**
+     * @brief Creates or overwrites a binding in this scope (not any ancestor).
+     * @param name The identifier to bind.
+     * @param v The value to bind it to.
+     */
     void Define(const std::string &name, Value v) { vars[name] = std::move(v); }
 };
 
+/**
+ * @brief Converts a JS number to its display string, matching JS's own Number-to-String rules for the common cases.
+ * @param d The number to convert.
+ * @return "NaN"/"Infinity"/"-Infinity" for those special values, an integer literal for whole numbers under 1e15 in magnitude, otherwise a 15-significant-digit decimal rendering.
+ */
 std::string NumberToString(double d) {
     if (std::isnan(d)) return "NaN";
     if (std::isinf(d)) return d > 0 ? "Infinity" : "-Infinity";
@@ -161,6 +208,11 @@ std::string NumberToString(double d) {
     return oss.str();
 }
 
+/**
+ * @brief Reads an array object's "length" property.
+ * @param obj The array object to inspect.
+ * @return The numeric value of obj's "length" property, or 0 if it has none.
+ */
 long ArrayLength(const ObjectPtr &obj) {
     auto it = obj->props.find("length");
     if (it == obj->props.end()) return 0;
@@ -169,6 +221,11 @@ long ArrayLength(const ObjectPtr &obj) {
 
 std::string ToDisplayString(const Value &v);
 
+/**
+ * @brief Joins an array object's elements (index 0..length-1) into a comma-separated display string, matching JS's default Array.toString().
+ * @param obj The array object to join.
+ * @return The comma-joined display strings of obj's elements, skipping any missing index.
+ */
 std::string JoinArrayForDisplay(const ObjectPtr &obj) {
     std::string out;
     long len = ArrayLength(obj);
@@ -180,6 +237,11 @@ std::string JoinArrayForDisplay(const ObjectPtr &obj) {
     return out;
 }
 
+/**
+ * @brief Converts a Value to the string JS's implicit ToString/template-literal coercion would produce.
+ * @param v The value to convert.
+ * @return "undefined"/"null"/"true"/"false" for those value kinds, the number formatted via NumberToString, the string itself, or an object rendering ("[object HTMLElement]", the joined array, "function", or "[object Object]").
+ */
 std::string ToDisplayString(const Value &v) {
     switch (v.type) {
         case VType::Undefined:
@@ -202,6 +264,11 @@ std::string ToDisplayString(const Value &v) {
     return "";
 }
 
+/**
+ * @brief Converts a Value to a number, matching JS's ToNumber for the value kinds this engine has.
+ * @param v The value to convert.
+ * @return 0/1 for booleans, 0 for null, NaN for undefined and for objects, the number itself for numbers, and for strings the parsed number (0 for an empty string, NaN if any non-numeric/non-trailing-whitespace text remains).
+ */
 double ToNumber(const Value &v) {
     switch (v.type) {
         case VType::Number:
@@ -227,6 +294,12 @@ double ToNumber(const Value &v) {
     return std::nan("");
 }
 
+/**
+ * @brief Tests two values for strict (type-and-value) equality, the semantics this engine's own == and != operators use.
+ * @param a The left-hand value.
+ * @param b The right-hand value.
+ * @return false if a and b have different VTypes; otherwise true for undefined/null (always equal to their own type), and a plain value comparison for boolean/number/string, or pointer identity for objects.
+ */
 bool StrictEquals(const Value &a, const Value &b) {
     if (a.type != b.type) return false;
     switch (a.type) {
@@ -245,6 +318,11 @@ bool StrictEquals(const Value &a, const Value &b) {
     return false;
 }
 
+/**
+ * @brief Recursively concatenates the text of a DOM node's descendant Text nodes, matching the real DOM's .textContent getter.
+ * @param n The DOM node whose descendants' text is concatenated.
+ * @return The concatenation of every descendant Text node's text, in document order.
+ */
 std::string GetTextContent(const DomNode *n) {
     std::string out;
     for (const auto &c : n->children) {
@@ -263,6 +341,11 @@ std::string GetTextContent(const DomNode *n) {
 // own style is never consulted by anything (js_engine.h's own comment) and
 // this doesn't touch the element's tag/attrs/position, so the element's
 // *own* already-computed style stays correct.
+/**
+ * @brief Sets a DOM node's textContent by discarding its existing children and replacing them with a single new Text node.
+ * @param n The DOM node whose children are replaced.
+ * @param text The text for the new sole Text child.
+ */
 void SetTextContent(DomNode *n, const std::string &text) {
     n->children.clear();
     auto t = std::make_unique<DomNode>();
@@ -272,6 +355,12 @@ void SetTextContent(DomNode *n, const std::string &text) {
     n->children.push_back(std::move(t));
 }
 
+/**
+ * @brief Recursively searches an element subtree (depth-first, pre-order) for an element with the given id attribute.
+ * @param n The subtree root to search, including itself.
+ * @param id The id value to match.
+ * @return A pointer to the first matching element node found, or nullptr if none matches.
+ */
 DomNode *FindById(DomNode *n, const std::string &id) {
     if (n->type == DomNodeType::Element && n->Id() == id) return n;
     for (auto &c : n->children) {
@@ -280,6 +369,12 @@ DomNode *FindById(DomNode *n, const std::string &id) {
     return nullptr;
 }
 
+/**
+ * @brief Determines whether a property key string is a non-negative-integer array index (i.e. consists only of digits).
+ * @param key The property key to test.
+ * @param idx Set to the parsed integer value of key when it is a valid index; left untouched otherwise.
+ * @return true if key is non-empty and every character is a digit, false otherwise.
+ */
 bool IsArrayIndexKey(const std::string &key, long &idx) {
     if (key.empty()) return false;
     for (char c : key) {
@@ -289,6 +384,12 @@ bool IsArrayIndexKey(const std::string &key, long &idx) {
     return true;
 }
 
+/**
+ * @brief Reads a property from an object, resolving the magic textContent/title bindings before falling back to plain stored properties.
+ * @param obj The object to read from (may be null).
+ * @param key The property name to read.
+ * @return undefined if obj is null; the DOM element's live text content for a DOM-wrapper's "textContent"; the owning document's title for the document object's "title"; the stored property value if present; undefined otherwise.
+ */
 Value GetProp(const ObjectPtr &obj, const std::string &key) {
     if (!obj) return Value::Undef();
     if (obj->dom_node && key == "textContent") return Value::Str(GetTextContent(obj->dom_node));
@@ -298,6 +399,12 @@ Value GetProp(const ObjectPtr &obj, const std::string &key) {
     return Value::Undef();
 }
 
+/**
+ * @brief Writes a property on an object, resolving the magic textContent/title bindings and array-length bookkeeping before falling back to a plain property store.
+ * @param obj The object to write to (a no-op if null).
+ * @param key The property name to write.
+ * @param val The value to store.
+ */
 void SetProp(const ObjectPtr &obj, const std::string &key, Value val) {
     if (!obj) return;
     if (obj->dom_node && key == "textContent") {
@@ -392,8 +499,15 @@ struct Lexer {
     std::string src;
     size_t i = 0;
 
+    /**
+     * @brief Constructs a lexer over the given source, positioned at offset 0.
+     * @param s The source text to tokenize, moved into the lexer.
+     */
     explicit Lexer(std::string s) : src(std::move(s)) {}
 
+    /**
+     * @brief Advances past whitespace, line comments, and block comments at the current position.
+     */
     void SkipTrivia() {
         for (;;) {
             while (i < src.size() && (src[i] == ' ' || src[i] == '\t' || src[i] == '\n' || src[i] == '\r')) i++;
@@ -411,6 +525,11 @@ struct Lexer {
         }
     }
 
+    /**
+     * @brief Reads and decodes a single-quoted or double-quoted string literal body starting at the current position, consuming both delimiters.
+     * @param quote The quote character that opens (and must close) the literal.
+     * @return The decoded string contents, with \n \t \r \\ \' \" \` escapes resolved (any other escaped character is kept literally).
+     */
     std::string ReadQuoted(char quote) {
         std::string out;
         i++;  // opening quote
@@ -451,6 +570,10 @@ struct Lexer {
         return out;
     }
 
+    /**
+     * @brief Scans and returns the next token, first skipping any leading trivia.
+     * @return The next Token (Tok::End once the source is exhausted).
+     */
     Token Next() {
         SkipTrivia();
         Token t;
@@ -517,6 +640,12 @@ struct Lexer {
             if (i < src.size()) i++;  // closing backtick
             return t;
         }
+        /**
+         * @brief Lexes a one- or two-character operator: consumes and emits two_tok if the next char is c2, otherwise consumes and emits just one_tok.
+         * @param c2 The second character that, if present, extends the operator to two_tok.
+         * @param two_tok The token type to emit when c2 follows.
+         * @param one_tok The token type to emit otherwise.
+         */
         auto two = [&](char c2, Tok two_tok, Tok one_tok) {
             if (i + 1 < src.size() && src[i + 1] == c2) {
                 i += 2;
@@ -705,6 +834,10 @@ struct Node {
     // If/While/For/Block share a/b/c/body loosely; kept explicit per-kind below for clarity at eval time
     std::unique_ptr<Node> init, cond, update, then_branch, else_branch;
 
+    /**
+     * @brief Constructs an AST node of the given kind, leaving all other fields at their defaults.
+     * @param k The node's kind.
+     */
     explicit Node(NodeKind k) : kind(k) {}
 };
 
@@ -724,10 +857,21 @@ struct Parser {
     bool ok = true;
     std::string error;
 
+    /**
+     * @brief Constructs a parser over the given source and primes it with the first token.
+     * @param src The source text to parse, moved into the parser's lexer.
+     */
     explicit Parser(std::string src) : lex(std::move(src)) { cur = lex.Next(); }
 
+    /**
+     * @brief Consumes the current token and lexes the next one into `cur`.
+     */
     void Advance() { cur = lex.Next(); }
 
+    /**
+     * @brief Records a parse failure, keeping only the first one encountered.
+     * @param msg The error message to record.
+     */
     void Fail(const std::string &msg) {
         if (ok) {
             ok = false;
@@ -735,8 +879,18 @@ struct Parser {
         }
     }
 
+    /**
+     * @brief Tests whether the current token is of the given type, without consuming it.
+     * @param t The token type to test against.
+     * @return true if `cur`'s type equals t, false otherwise.
+     */
     bool Check(Tok t) const { return cur.type == t; }
 
+    /**
+     * @brief Consumes the current token if it matches the given type.
+     * @param t The token type to match.
+     * @return true and advances past it if `cur`'s type equals t; false (leaving `cur` untouched) otherwise.
+     */
     bool Match(Tok t) {
         if (cur.type == t) {
             Advance();
@@ -745,10 +899,19 @@ struct Parser {
         return false;
     }
 
+    /**
+     * @brief Consumes the current token if it matches the given type, else records a parse failure.
+     * @param t The required token type.
+     * @param what A human-readable description of what was expected, used in the failure message.
+     */
     void Expect(Tok t, const char *what) {
         if (!Match(t)) Fail(std::string("expected ") + what);
     }
 
+    /**
+     * @brief Parses a whole program: a sequence of statements until end of input.
+     * @return The Program node containing the parsed top-level statements.
+     */
     NodePtr ParseProgram() {
         auto prog = std::make_unique<Node>(NodeKind::Program);
         while (ok && !Check(Tok::End)) {
@@ -758,6 +921,10 @@ struct Parser {
         return prog;
     }
 
+    /**
+     * @brief Parses a brace-delimited statement list: `{` stmt* `}`.
+     * @return The Block node containing the parsed statements.
+     */
     NodePtr ParseBlock() {
         Expect(Tok::LBrace, "'{'");
         auto blk = std::make_unique<Node>(NodeKind::Block);
@@ -768,6 +935,10 @@ struct Parser {
         return blk;
     }
 
+    /**
+     * @brief Parses a single statement, dispatching on the current token to the right statement-kind parser (block, empty, var decl, function decl, if, while, for, return, break, continue, or an expression statement as the fallback).
+     * @return The parsed statement node.
+     */
     NodePtr ParseStatement() {
         if (!ok) return std::make_unique<Node>(NodeKind::Block);
         if (Check(Tok::LBrace)) return ParseBlock();
@@ -803,6 +974,10 @@ struct Parser {
         return n;
     }
 
+    /**
+     * @brief Parses a var/let/const declaration statement, including one or more comma-separated `name` or `name = init` declarators.
+     * @return The VarDecl node holding the parsed declarators.
+     */
     NodePtr ParseVarDecl() {
         Advance();  // var/let/const
         auto n = std::make_unique<Node>(NodeKind::VarDecl);
@@ -822,6 +997,10 @@ struct Parser {
         return n;
     }
 
+    /**
+     * @brief Parses a named function declaration: `function name(params) { body }`.
+     * @return The FunctionDecl node holding the function's name, parameters, and body.
+     */
     NodePtr ParseFunctionDecl() {
         Advance();  // function
         auto n = std::make_unique<Node>(NodeKind::FunctionDecl);
@@ -835,6 +1014,10 @@ struct Parser {
         return n;
     }
 
+    /**
+     * @brief Parses a parenthesized parameter list followed by a brace-delimited body, filling them into an existing function node.
+     * @param n The FunctionDecl/FunctionExpr node whose params and body are populated.
+     */
     void ParseParamsAndBody(Node &n) {
         Expect(Tok::LParen, "'('");
         while (ok && !Check(Tok::RParen)) {
@@ -851,6 +1034,10 @@ struct Parser {
         n.body = std::move(blk->body);
     }
 
+    /**
+     * @brief Parses an if statement, including its condition, then-branch, and optional else-branch.
+     * @return The If node holding the parsed condition and branches.
+     */
     NodePtr ParseIf() {
         Advance();
         Expect(Tok::LParen, "'('");
@@ -862,6 +1049,10 @@ struct Parser {
         return n;
     }
 
+    /**
+     * @brief Parses a while statement, including its condition and loop body.
+     * @return The While node holding the parsed condition and body.
+     */
     NodePtr ParseWhile() {
         Advance();
         Expect(Tok::LParen, "'('");
@@ -872,6 +1063,10 @@ struct Parser {
         return n;
     }
 
+    /**
+     * @brief Parses a C-style for statement: `for (init; cond; update) body`, where init may be a var declaration or an expression, and cond/update are optional.
+     * @return The For node holding the parsed init, cond, update, and body.
+     */
     NodePtr ParseFor() {
         Advance();
         Expect(Tok::LParen, "'('");
@@ -898,12 +1093,25 @@ struct Parser {
 
     // ---- Expressions, lowest to highest precedence ----
 
+    /**
+     * @brief Parses a full expression (the lowest-precedence entry point, currently equivalent to an assignment expression).
+     * @return The parsed expression node.
+     */
     NodePtr ParseExpression() { return ParseAssignExpr(); }
 
+    /**
+     * @brief Tests whether a token type is one of the supported assignment operators (=, +=, -=, *=, /=).
+     * @param t The token type to test.
+     * @return true if t is an assignment operator, false otherwise.
+     */
     bool IsAssignOp(Tok t) const {
         return t == Tok::Assign || t == Tok::PlusEq || t == Tok::MinusEq || t == Tok::StarEq || t == Tok::SlashEq;
     }
 
+    /**
+     * @brief Parses an assignment expression: first speculatively tries an arrow-function form (`ident =>` or `(params) =>`, rewinding the lexer if it doesn't pan out), otherwise parses a conditional expression and, if an assignment operator follows, wraps it as an Assign node.
+     * @return The parsed expression node (a FunctionExpr for an arrow function, an Assign node for an assignment, or whatever ParseConditional produced otherwise).
+     */
     NodePtr ParseAssignExpr() {
         // Arrow-function lookahead: `ident => ...` or `(params) => ...`.
         // A single bare identifier is easy to detect with one token of
@@ -972,6 +1180,10 @@ struct Parser {
         return left;
     }
 
+    /**
+     * @brief Parses an arrow function's body, filling it into an existing function node: a brace-delimited block, or a single implicit-return expression (arrow_expr_body set true).
+     * @param fn The FunctionExpr node whose body is populated.
+     */
     void ParseArrowBody(Node &fn) {
         if (Check(Tok::LBrace)) {
             NodePtr blk = ParseBlock();
@@ -982,6 +1194,10 @@ struct Parser {
         }
     }
 
+    /**
+     * @brief Parses a conditional (ternary) expression: a logical-OR expression optionally followed by `? then : else`.
+     * @return A Conditional node if `?` was present, otherwise the parsed logical-OR expression unchanged.
+     */
     NodePtr ParseConditional() {
         NodePtr cond = ParseLogicalOr();
         if (Match(Tok::Question)) {
@@ -995,6 +1211,10 @@ struct Parser {
         return cond;
     }
 
+    /**
+     * @brief Parses a left-associative chain of `||` logical-OR expressions.
+     * @return The parsed expression, left-nested as Logical("||") nodes for each `||` encountered.
+     */
     NodePtr ParseLogicalOr() {
         NodePtr left = ParseLogicalAnd();
         while (Check(Tok::OrOr)) {
@@ -1008,6 +1228,10 @@ struct Parser {
         return left;
     }
 
+    /**
+     * @brief Parses a left-associative chain of `&&` logical-AND expressions.
+     * @return The parsed expression, left-nested as Logical("&&") nodes for each `&&` encountered.
+     */
     NodePtr ParseLogicalAnd() {
         NodePtr left = ParseEquality();
         while (Check(Tok::AndAnd)) {
@@ -1021,6 +1245,10 @@ struct Parser {
         return left;
     }
 
+    /**
+     * @brief Parses a left-associative chain of equality expressions; `==`/`===` and `!=`/`!==` are treated as equivalent (mapped to "==" / "!=") since this engine's comparisons are always strict.
+     * @return The parsed expression, left-nested as Binary("==" or "!=") nodes for each operator encountered.
+     */
     NodePtr ParseEquality() {
         NodePtr left = ParseRelational();
         for (;;) {
@@ -1040,6 +1268,10 @@ struct Parser {
         return left;
     }
 
+    /**
+     * @brief Parses a left-associative chain of relational expressions (`<`, `>`, `<=`, `>=`).
+     * @return The parsed expression, left-nested as Binary nodes for each relational operator encountered.
+     */
     NodePtr ParseRelational() {
         NodePtr left = ParseAdditive();
         for (;;) {
@@ -1063,6 +1295,10 @@ struct Parser {
         return left;
     }
 
+    /**
+     * @brief Parses a left-associative chain of additive expressions (`+`, `-`).
+     * @return The parsed expression, left-nested as Binary nodes for each `+`/`-` encountered.
+     */
     NodePtr ParseAdditive() {
         NodePtr left = ParseMultiplicative();
         for (;;) {
@@ -1082,6 +1318,10 @@ struct Parser {
         return left;
     }
 
+    /**
+     * @brief Parses a left-associative chain of multiplicative expressions (`*`, `/`, `%`).
+     * @return The parsed expression, left-nested as Binary nodes for each `*`/`/`/`%` encountered.
+     */
     NodePtr ParseMultiplicative() {
         NodePtr left = ParseUnary();
         for (;;) {
@@ -1103,6 +1343,10 @@ struct Parser {
         return left;
     }
 
+    /**
+     * @brief Parses a unary expression: a prefix `-`/`+`/`!`/`typeof`, a prefix/postfix `++`/`--`, or (falling through) a call/member expression.
+     * @return An Unary node for a `-`/`+`/`!`/`typeof` prefix, an Update node for `++`/`--` (prefix or postfix), or the parsed call/member expression otherwise.
+     */
     NodePtr ParseUnary() {
         if (Check(Tok::Minus) || Check(Tok::Plus) || Check(Tok::Bang) || Check(Tok::KwTypeof)) {
             std::string op = Check(Tok::Minus) ? "-" : Check(Tok::Plus) ? "+" : Check(Tok::Bang) ? "!" : "typeof";
@@ -1134,6 +1378,10 @@ struct Parser {
         return expr;
     }
 
+    /**
+     * @brief Parses a primary expression followed by any chain of member access (`.prop`, `[expr]`) and call (`(args)`) postfix operators.
+     * @return The parsed expression, wrapped in Member/Call nodes for each postfix operator encountered, left to right.
+     */
     NodePtr ParseCallOrMember() {
         NodePtr expr = ParsePrimary();
         for (;;) {
@@ -1171,6 +1419,10 @@ struct Parser {
         return expr;
     }
 
+    /**
+     * @brief Parses a primary expression: a literal (number/string/template/bool/null/undefined), identifier, function expression, parenthesized expression, array literal, or object literal.
+     * @return The parsed primary expression node; on an unrecognized token, records a parse failure and returns an UndefinedLit placeholder.
+     */
     NodePtr ParsePrimary() {
         if (Check(Tok::Num)) {
             auto n = std::make_unique<Node>(NodeKind::NumberLit);
@@ -1254,6 +1506,10 @@ struct Parser {
         return std::make_unique<Node>(NodeKind::UndefinedLit);
     }
 
+    /**
+     * @brief Parses the raw body a TemplateStr token captured, splitting it into alternating literal-text and `${...}` expression parts (each expression part re-parsed with a fresh sub-Parser) and decoding \n/\t escapes in the literal parts.
+     * @return The TemplateLit node holding the alternating literal/expression parts.
+     */
     NodePtr ParseTemplateLiteral() {
         // The lexer already isolated the raw `...${...}...` body (with
         // ${...} nesting balanced); re-scanning it here with its own
@@ -1316,12 +1572,39 @@ struct Completion {
     CompletionType type = CompletionType::Normal;
     Value value;
 
+    /**
+     * @brief Constructs a Normal completion carrying an optional value.
+     * @param v The completion's value (defaults to undefined).
+     * @return A Completion with type CompletionType::Normal.
+     */
     static Completion Norm(Value v = Value::Undef()) { return {CompletionType::Normal, std::move(v)}; }
+    /**
+     * @brief Constructs a Return completion carrying the returned value.
+     * @param v The value being returned.
+     * @return A Completion with type CompletionType::Return.
+     */
     static Completion Ret(Value v) { return {CompletionType::Return, std::move(v)}; }
+    /**
+     * @brief Constructs a Break completion.
+     * @return A Completion with type CompletionType::Break.
+     */
     static Completion Brk() { return {CompletionType::Break, Value::Undef()}; }
+    /**
+     * @brief Constructs a Continue completion.
+     * @return A Completion with type CompletionType::Continue.
+     */
     static Completion Cont() { return {CompletionType::Continue, Value::Undef()}; }
+    /**
+     * @brief Constructs a Throw completion carrying an error message.
+     * @param msg The thrown error message.
+     * @return A Completion with type CompletionType::Throw, whose value is a string Value holding msg.
+     */
     static Completion Thr(const std::string &msg) { return {CompletionType::Throw, Value::Str(msg)}; }
 
+    /**
+     * @brief Tests whether this completion is non-Normal (Return, Break, Continue, or Throw), i.e. should short-circuit further evaluation.
+     * @return true if this completion's type is not CompletionType::Normal, false otherwise.
+     */
     bool IsAbrupt() const { return type != CompletionType::Normal; }
 };
 
@@ -1341,6 +1624,11 @@ struct Interpreter {
     int call_depth = 0;
     EnvPtr global;
 
+    /**
+     * @brief Increments the interpreter's step counter and checks it against the max-steps limit, guarding against infinite loops/unbounded execution.
+     * @param out Set to a Throw completion (step-limit-exceeded error) when the limit is exceeded; left untouched otherwise.
+     * @return true if the step limit was exceeded (caller should propagate `out`), false otherwise.
+     */
     bool StepGuard(Completion &out) {
         if (++steps > kMaxSteps) {
             out = Completion::Thr("script exceeded step limit (possible infinite loop)");
@@ -1353,14 +1641,21 @@ struct Interpreter {
 Completion EvalExpr(Interpreter &interp, const Node &n, EnvPtr &env);
 Completion ExecStmt(Interpreter &interp, const Node &n, EnvPtr &env);
 
+// One-pass function hoisting: a direct-child `function foo(){}` in this
+// block is bound before any statement runs, so sibling statements
+// (including ones textually *before* it) can call it -- matches the
+// common "helper defined lower in the same script" pattern real JS
+// hoisting also allows, without implementing full hoisting semantics
+// for var declarations too (those stay bound at their own statement,
+// per this file's own header comment on var/let/const).
+/**
+ * @brief Executes a block's statement list against the given scope, first hoisting any direct-child function declarations so they're callable before their own textual position.
+ * @param interp The interpreter, providing step-counting/call-depth state shared across the whole run.
+ * @param stmts The statements to execute, in order.
+ * @param env The scope to execute them in (function declarations are bound here; other statements may create nested scopes of their own).
+ * @return Normal on falling off the end of the list, or the first abrupt (Return/Break/Continue/Throw) completion produced by a statement.
+ */
 Completion ExecBlockBody(Interpreter &interp, const std::vector<NodePtr> &stmts, EnvPtr &env) {
-    // One-pass function hoisting: a direct-child `function foo(){}` in this
-    // block is bound before any statement runs, so sibling statements
-    // (including ones textually *before* it) can call it -- matches the
-    // common "helper defined lower in the same script" pattern real JS
-    // hoisting also allows, without implementing full hoisting semantics
-    // for var declarations too (those stay bound at their own statement,
-    // per this file's own header comment on var/let/const).
     for (const auto &s : stmts) {
         if (s->kind == NodeKind::FunctionDecl) {
             auto obj = std::make_shared<ObjectData>();
@@ -1379,6 +1674,13 @@ Completion ExecBlockBody(Interpreter &interp, const std::vector<NodePtr> &stmts,
     return Completion::Norm();
 }
 
+/**
+ * @brief Invokes a callable object (native or user-defined) with the given arguments, enforcing the max call-depth guard for user-defined functions and translating a concise arrow body's expression result or a block body's Return completion into the call's result.
+ * @param interp The interpreter, providing call-depth tracking shared across the whole run.
+ * @param fn The callable object to invoke.
+ * @param args The argument values to pass; missing trailing parameters bind to undefined.
+ * @return Normal with the call's result value, or a Throw completion (not callable, call-depth exceeded, or an exception propagated from the callee).
+ */
 Completion CallFunction(Interpreter &interp, const ObjectPtr &fn, std::vector<Value> &args) {
     if (fn->native) {
         bool threw = false;
@@ -1420,6 +1722,15 @@ Completion CallFunction(Interpreter &interp, const ObjectPtr &fn, std::vector<Va
 // something assignable to (a bare identifier, a.b, or a[expr]) -- every
 // caller propagates that the same way any other abrupt completion is
 // propagated.
+/**
+ * @brief Assigns a value to an assignment target: a bare identifier (updating an existing binding or creating a global) or a member expression (a.b / a[expr], via SetProp).
+ * @param interp The interpreter, used to evaluate a computed target's object/key subexpressions.
+ * @param target The assignment target node (must be an Ident or Member node).
+ * @param val The value to assign.
+ * @param env The scope to resolve identifiers and evaluate subexpressions in.
+ * @param out Set to the abrupt completion on failure (an evaluation error, a non-object member base, or an unassignable target kind); untouched on success.
+ * @return true if the assignment succeeded, false otherwise (with `out` set).
+ */
 bool AssignTo(Interpreter &interp, const Node &target, Value val, EnvPtr &env, Completion &out) {
     if (target.kind == NodeKind::Ident) {
         Value *slot = env->Find(target.name);
@@ -1456,6 +1767,13 @@ bool AssignTo(Interpreter &interp, const Node &target, Value val, EnvPtr &env, C
     return false;
 }
 
+/**
+ * @brief Evaluates an expression AST node to a value, dispatching on the node's kind (literals, identifiers, unary/update/binary/logical/assignment operators, member access, calls, the conditional operator, and function expressions).
+ * @param interp The interpreter, providing step-counting/call-depth state and consulted for the per-evaluation step guard.
+ * @param n The expression node to evaluate.
+ * @param env The scope to resolve identifiers and evaluate subexpressions in.
+ * @return Normal with the expression's value, or an abrupt completion (Throw for an evaluation error, or whatever a nested call/member/assignment propagated).
+ */
 Completion EvalExpr(Interpreter &interp, const Node &n, EnvPtr &env) {
     Completion guard;
     if (interp.StepGuard(guard)) return guard;
@@ -1650,6 +1968,13 @@ Completion EvalExpr(Interpreter &interp, const Node &n, EnvPtr &env) {
     }
 }
 
+/**
+ * @brief Executes a statement AST node, dispatching on the node's kind (block, expression statement, var declaration, function declaration, if, while, for, return, break, continue), falling back to expression evaluation for any other node kind.
+ * @param interp The interpreter, providing step-counting/call-depth state shared across the whole run.
+ * @param n The statement node to execute.
+ * @param env The scope to execute it in.
+ * @return Normal after a non-control-flow statement, or the abrupt completion produced by (or propagated through) it: Return, Break, Continue, or Throw.
+ */
 Completion ExecStmt(Interpreter &interp, const Node &n, EnvPtr &env) {
     switch (n.kind) {
         case NodeKind::Block: {
@@ -1733,6 +2058,11 @@ Completion ExecStmt(Interpreter &interp, const Node &n, EnvPtr &env) {
     }
 }
 
+/**
+ * @brief Wraps a native C++ callback as a callable JS function object.
+ * @param fn The native callback, moved into the resulting object.
+ * @return A Value wrapping an ObjectData with is_function set and `native` holding fn.
+ */
 Value MakeNativeFn(NativeFn fn) {
     auto obj = std::make_shared<ObjectData>();
     obj->is_function = true;
@@ -1740,8 +2070,15 @@ Value MakeNativeFn(NativeFn fn) {
     return Value::Obj(obj);
 }
 
+/**
+ * @brief Populates a global scope with this engine's entire DOM/console binding surface: console.log, document (with getElementById and the magic .title property), and a bare inert window object.
+ * @param global The scope to define the globals in.
+ * @param doc The document that document.getElementById/.title operate against.
+ * @param on_console_log Forwarded to console.log's native implementation, invoked with each call's space-joined, stringified arguments.
+ */
 void SetupGlobals(EnvPtr &global, HtmlDoc &doc, const std::function<void(const std::string &)> &on_console_log) {
     auto console = std::make_shared<ObjectData>();
+    // console.log(...args): stringifies and space-joins its arguments and forwards the line to on_console_log.
     console->props["log"] = MakeNativeFn([&on_console_log](std::vector<Value> &args, bool &, std::string &) {
         std::string line;
         for (size_t i = 0; i < args.size(); i++) {
@@ -1756,6 +2093,7 @@ void SetupGlobals(EnvPtr &global, HtmlDoc &doc, const std::function<void(const s
     auto document = std::make_shared<ObjectData>();
     document->is_document = true;
     document->owner_doc = &doc;
+    // document.getElementById(id): finds the first element with matching id in doc's tree and wraps it, or returns null if none matches or the argument isn't a string.
     document->props["getElementById"] = MakeNativeFn([&doc](std::vector<Value> &args, bool &, std::string &) {
         if (args.empty() || args[0].type != VType::String) return Value::MakeNull();
         DomNode *found = doc.root ? FindById(doc.root.get(), args[0].str) : nullptr;

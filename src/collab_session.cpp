@@ -7,13 +7,28 @@
 #include <memory>
 
 namespace mep::collab {
+/**
+ * @brief Wraps a connected WebSocket so the header can hold a pointer to it without exposing the WebSocket type.
+ * @param value The connected WebSocket to take ownership of.
+ */
 class CollabSession::SocketHolder { public: WebSocket socket; explicit SocketHolder(WebSocket value) : socket(std::move(value)) {} };
 namespace {
+/**
+ * @brief Builds a JSON protocol message carrying a list of CRDT operations.
+ * @param type The message "type" field, e.g. "update" or "sync_response".
+ * @param operations The CRDT operations to encode into the message's "ops" array.
+ * @return The assembled JSON message.
+ */
 Json OperationsMessage(const char *type, const std::vector<CrdtOperation> &operations) {
     Json message = Json::Object(); message["type"] = type; Json list = Json::Array();
     for (const auto &op : operations) list.push_back(CrdtOperationToJson(op));
     message["ops"] = std::move(list); return message;
 }
+/**
+ * @brief Reconstructs the full sequence of CRDT operations (including tombstoning deletes) needed to replay a document's current state.
+ * @param document The CRDT document to snapshot.
+ * @return The operations representing the document's complete state.
+ */
 std::vector<CrdtOperation> StateOperations(const TextCrdt &document) {
     std::vector<CrdtOperation> all;
     const Json snapshot = document.Snapshot();
@@ -25,6 +40,11 @@ std::vector<CrdtOperation> StateOperations(const TextCrdt &document) {
     }
     return all;
 }
+/**
+ * @brief Percent-encodes a display name for safe inclusion in a URL query string, passing alphanumerics, '-', and '_' through unescaped.
+ * @param name The display name to encode.
+ * @return The percent-encoded name.
+ */
 std::string EncodeName(const std::string &name) {
     static constexpr char hex[] = "0123456789ABCDEF";
     std::string result;
@@ -41,6 +61,7 @@ CollabSession::CollabSession(std::string url, std::string name, const std::strin
     document_.Insert(0, initial_text);
 }
 CollabSession::~CollabSession() { Stop(); }
+// Runs Run() on a new background thread that owns the socket for the session's lifetime.
 void CollabSession::Start() { worker_ = std::thread([this] { Run(); }); }
 void CollabSession::Stop() {
     { std::lock_guard<std::mutex> lock(mutex_); if (stopping_) return; stopping_ = true; }

@@ -83,11 +83,23 @@ struct Sheet {
     // unordered_map::operator[]) -- range-consuming formula functions
     // (SUM/VLOOKUP/etc.) rely on this to stay sparse even when iterating
     // a million-row range; see EvaluateCell's own comment.
+    /**
+     * @brief Looks up a cell without creating one, so sparse iteration never inflates the map.
+     * @param row Zero-based row index to look up.
+     * @param col Zero-based column index to look up.
+     * @return Pointer to the existing Cell, or nullptr if (row,col) has never been given content.
+     */
     const Cell *FindCell(int row, int col) const;
     // Inserts an empty Cell if absent (bumping max_row/max_col to cover
     // it) and returns a reference -- the only way `cells` should ever
     // grow. Used by SetCellRaw and by file loaders, never by formula
     // evaluation.
+    /**
+     * @brief Fetches the cell at (row,col), creating an empty one and growing max_row/max_col if needed.
+     * @param row Zero-based row index to fetch or create.
+     * @param col Zero-based column index to fetch or create.
+     * @return Reference to the (possibly newly-inserted) Cell.
+     */
     Cell &GetOrCreateCell(int row, int col);
 
 private:
@@ -118,6 +130,14 @@ struct Workbook {
 // workbook recomputes on its next EvaluateCell call. The one mutation
 // entry point every editor action and file-format loader goes through --
 // never poke a Cell's raw/kind/ast fields directly.
+/**
+ * @brief Sets a cell's raw text, reparsing it into kind/ast and bumping the workbook's recalc generation.
+ * @param wb Workbook containing the target cell.
+ * @param sheet Index of the sheet containing the target cell.
+ * @param row Zero-based row index of the target cell.
+ * @param col Zero-based column index of the target cell.
+ * @param raw New raw text for the cell (a literal, or a formula if it starts with '=').
+ */
 void SetCellRaw(Workbook &wb, int sheet, int row, int col, const std::string &raw);
 
 // The single mandatory evaluation choke point -- every reference of any
@@ -141,6 +161,14 @@ void SetCellRaw(Workbook &wb, int sheet, int row, int col, const std::string &ra
 // cell's cached value is only provably fresh relative to the whole
 // workbook's last edit, not that specific cell's real dependencies,
 // which is an accepted v1 simplification for realistic sheet sizes.
+/**
+ * @brief Returns a cell's current value, recomputing it from its formula AST if its cached result is stale.
+ * @param wb Workbook containing the target cell.
+ * @param sheet Index of the sheet containing the target cell.
+ * @param row Zero-based row index of the target cell.
+ * @param col Zero-based column index of the target cell.
+ * @return The cell's value: a literal's stored value, a formula's (fresh or memoized) computed value, an Empty value for a never-touched cell, or a Circular error if evaluation re-enters a cell already being evaluated.
+ */
 CellValue EvaluateCell(Workbook &wb, int sheet, int row, int col);
 
 // Formats a CellValue for display (the grid renderer) and for CSV save
@@ -148,10 +176,30 @@ CellValue EvaluateCell(Workbook &wb, int sheet, int row, int col);
 // general-format numeric text (no trailing zeros), "TRUE"/"FALSE" for
 // booleans, the raw text for Text, and a canonical "#DIV/0!"-style token
 // for each SheetError.
+/**
+ * @brief Renders a CellValue as display/CSV text (trimmed numbers, TRUE/FALSE, raw text, or a canonical error token).
+ * @param v Value to format.
+ * @return The formatted text.
+ */
 std::string FormatCellValue(const CellValue &v);
 
+/**
+ * @brief Reports whether a path's extension (case-insensitive) is "csv".
+ * @param path File path to check.
+ * @return True if the path's extension is csv.
+ */
 bool IsCsvPath(const std::string &path);
+/**
+ * @brief Reports whether a path's extension (case-insensitive) is "xlsx".
+ * @param path File path to check.
+ * @return True if the path's extension is xlsx.
+ */
 bool IsXlsxPath(const std::string &path);
+/**
+ * @brief Reports whether a path's extension (case-insensitive) is "ods".
+ * @param path File path to check.
+ * @return True if the path's extension is ods.
+ */
 bool IsOdsPath(const std::string &path);
 
 // ============================================================================
@@ -163,14 +211,61 @@ bool IsOdsPath(const std::string &path);
 // write out.
 // ============================================================================
 
+/**
+ * @brief Parses CSV bytes into a single-sheet Workbook, one cell per comma/newline-delimited field.
+ * @param bytes Pointer to the raw CSV file contents.
+ * @param len Length in bytes of the buffer pointed to by bytes.
+ * @param out Workbook to populate; replaced with a single "Sheet1".
+ * @param error Unused (CSV parsing cannot structurally fail).
+ * @return Always true.
+ */
 bool LoadCsvFromMemory(const unsigned char *bytes, size_t len, Workbook &out, std::string &error);
+/**
+ * @brief Serializes a workbook's first sheet to CSV text, evaluating formulas to their current values.
+ * @param wb Workbook to save; its first sheet is written.
+ * @param out Receives the generated CSV text.
+ * @param error Receives a message if the workbook has no sheets.
+ * @return True on success, false if wb has no sheets.
+ */
 bool SaveCsvToMemory(Workbook &wb, std::string &out, std::string &error);
 
+/**
+ * @brief Loads an .xlsx workbook from an in-memory zip, parsing every worksheet part into `out`.
+ * @param bytes Pointer to the raw .xlsx (zip) file contents.
+ * @param len Length in bytes of the buffer pointed to by bytes.
+ * @param out Workbook to populate, including xlsx_sheet_paths for later saving.
+ * @param error Receives a message describing why loading failed.
+ * @return True on success, false if the workbook part or sheet list can't be read.
+ */
 bool LoadXlsxFromMemory(const unsigned char *bytes, size_t len, Workbook &out, std::string &error);
+/**
+ * @brief Saves a workbook back into an .xlsx zip, rewriting each worksheet part's <sheetData> in place.
+ * @param wb Workbook to save; must have one xlsx_sheet_paths entry per sheet.
+ * @param original_bytes The originally-loaded .xlsx bytes, used as the base to rewrite entries in.
+ * @param out Receives the resulting .xlsx (zip) bytes.
+ * @param error Receives a message describing why saving failed.
+ * @return True on success, false on a sheet-count mismatch or missing/malformed worksheet part.
+ */
 bool SaveXlsxToMemory(Workbook &wb, const std::vector<unsigned char> &original_bytes, std::vector<unsigned char> &out,
                        std::string &error);
 
+/**
+ * @brief Loads an .ods workbook from an in-memory zip, parsing every <table:table> in content.xml into `out`.
+ * @param bytes Pointer to the raw .ods (zip) file contents.
+ * @param len Length in bytes of the buffer pointed to by bytes.
+ * @param out Workbook to populate.
+ * @param error Receives a message describing why loading failed.
+ * @return True on success, false if content.xml is missing, malformed, or has no tables.
+ */
 bool LoadOdsFromMemory(const unsigned char *bytes, size_t len, Workbook &out, std::string &error);
+/**
+ * @brief Saves a workbook back into an .ods zip, rewriting each <table:table>'s rows in content.xml.
+ * @param wb Workbook to save.
+ * @param original_bytes The originally-loaded .ods bytes, used as the base to rewrite content.xml in.
+ * @param out Receives the resulting .ods (zip) bytes.
+ * @param error Receives a message describing why saving failed.
+ * @return True on success, false on a sheet-count mismatch or missing/malformed content.xml.
+ */
 bool SaveOdsToMemory(Workbook &wb, const std::vector<unsigned char> &original_bytes, std::vector<unsigned char> &out,
                       std::string &error);
 

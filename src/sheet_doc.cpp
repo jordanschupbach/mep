@@ -9,14 +9,26 @@
 
 namespace {
 
+/**
+ * @brief Packs a (row,col) pair into a single 64-bit key for the sparse cell map.
+ * @param row Zero-based row index.
+ * @param col Zero-based column index.
+ * @return The packed key: row in the high 32 bits, col in the low 32 bits.
+ */
 uint64_t CellKey(int row, int col) {
     return (static_cast<uint64_t>(static_cast<uint32_t>(row)) << 32) | static_cast<uint32_t>(col);
 }
 
+/**
+ * @brief Extracts a path's file extension, lowercased.
+ * @param path File path to inspect.
+ * @return The lowercased extension (no leading dot), or "" if path has no '.'.
+ */
 std::string LowerExt(const std::string &path) {
     size_t dot = path.find_last_of('.');
     if (dot == std::string::npos) return "";
     std::string ext = path.substr(dot + 1);
+    // Lowercases each character of ext in place.
     std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return std::tolower(c); });
     return ext;
 }
@@ -46,6 +58,11 @@ bool IsOdsPath(const std::string &path) { return LowerExt(path) == "ods"; }
 
 namespace {
 
+/**
+ * @brief Formats a double as general-format numeric text, with special tokens for NaN/Infinity.
+ * @param n Number to format.
+ * @return "NaN", "Inf"/"-Inf", or n rendered with up to 10 significant digits.
+ */
 std::string FormatNumber(double n) {
     if (std::isnan(n)) return "NaN";
     if (std::isinf(n)) return n < 0 ? "-Inf" : "Inf";
@@ -54,25 +71,50 @@ std::string FormatNumber(double n) {
     return std::string(buf);
 }
 
+/**
+ * @brief Reports whether a CellValue represents an evaluation error.
+ * @param v Value to check.
+ * @return True if v.kind is Error.
+ */
 bool IsErrorValue(const CellValue &v) { return v.kind == CellKind::Error; }
+/**
+ * @brief Builds an Error-kind CellValue.
+ * @param e The specific error to carry.
+ * @return A CellValue with kind Error and error set to e.
+ */
 CellValue MakeErrorValue(SheetError e) {
     CellValue v;
     v.kind = CellKind::Error;
     v.error = e;
     return v;
 }
+/**
+ * @brief Builds a Number-kind CellValue.
+ * @param n The numeric value to carry.
+ * @return A CellValue with kind Number and number set to n.
+ */
 CellValue MakeNumberValue(double n) {
     CellValue v;
     v.kind = CellKind::Number;
     v.number = n;
     return v;
 }
+/**
+ * @brief Builds a Text-kind CellValue.
+ * @param s The text to carry.
+ * @return A CellValue with kind Text and text set to s.
+ */
 CellValue MakeTextValue(const std::string &s) {
     CellValue v;
     v.kind = CellKind::Text;
     v.text = s;
     return v;
 }
+/**
+ * @brief Builds a Bool-kind CellValue.
+ * @param b The boolean value to carry.
+ * @return A CellValue with kind Bool and boolean set to b.
+ */
 CellValue MakeBoolValue(bool b) {
     CellValue v;
     v.kind = CellKind::Bool;
@@ -80,6 +122,11 @@ CellValue MakeBoolValue(bool b) {
     return v;
 }
 
+/**
+ * @brief Coerces a CellValue to a number for arithmetic (numbers pass through, booleans become 0/1, text is parsed).
+ * @param v Value to coerce.
+ * @return The numeric interpretation of v; 0.0 for empty/error/unparsable text.
+ */
 double ToNumber(const CellValue &v) {
     switch (v.kind) {
         case CellKind::Number: return v.number;
@@ -95,6 +142,11 @@ double ToNumber(const CellValue &v) {
     }
 }
 
+/**
+ * @brief Coerces a CellValue to display text (numbers formatted, booleans as TRUE/FALSE).
+ * @param v Value to coerce.
+ * @return The text interpretation of v; "" for empty/error/formula kinds.
+ */
 std::string ToText(const CellValue &v) {
     switch (v.kind) {
         case CellKind::Text: return v.text;
@@ -104,12 +156,18 @@ std::string ToText(const CellValue &v) {
     }
 }
 
+/**
+ * @brief Coerces a CellValue to a boolean (booleans pass through, numbers are nonzero-test, text matches "TRUE" case-insensitively).
+ * @param v Value to coerce.
+ * @return The boolean interpretation of v; false for empty/error/unparsable text.
+ */
 bool ToBoolValue(const CellValue &v) {
     switch (v.kind) {
         case CellKind::Bool: return v.boolean;
         case CellKind::Number: return v.number != 0.0;
         case CellKind::Text: {
             std::string u = v.text;
+            // Uppercases u in place so the TRUE comparison below is case-insensitive.
             std::transform(u.begin(), u.end(), u.begin(), [](unsigned char c) { return std::toupper(c); });
             return u == "TRUE";
         }
@@ -120,19 +178,33 @@ bool ToBoolValue(const CellValue &v) {
 // Case-insensitive text compare (matches Excel's own default lookup
 // behavior), numeric compare for numbers, exact for booleans; anything
 // else (mixed kinds not covered below) is simply unequal.
+/**
+ * @brief Compares two CellValues for equality, treating text comparison as case-insensitive.
+ * @param a First value to compare.
+ * @param b Second value to compare.
+ * @return True if a and b are equal by the rule appropriate to their kinds.
+ */
 bool ValuesEqual(const CellValue &a, const CellValue &b) {
     if (a.kind == CellKind::Number && b.kind == CellKind::Number) return a.number == b.number;
     if (a.kind == CellKind::Bool && b.kind == CellKind::Bool) return a.boolean == b.boolean;
     if ((a.kind == CellKind::Text || a.kind == CellKind::Number) &&
         (b.kind == CellKind::Text || b.kind == CellKind::Number)) {
         std::string ta = ToText(a), tb = ToText(b);
+        // Uppercases ta in place for the case-insensitive comparison below.
         std::transform(ta.begin(), ta.end(), ta.begin(), [](unsigned char c) { return std::toupper(c); });
+        // Uppercases tb in place for the case-insensitive comparison below.
         std::transform(tb.begin(), tb.end(), tb.begin(), [](unsigned char c) { return std::toupper(c); });
         return ta == tb;
     }
     return false;
 }
 
+/**
+ * @brief Orders two CellValues: text-aware (lexical) if either side is Text, numeric otherwise.
+ * @param a First value to compare.
+ * @param b Second value to compare.
+ * @return Negative if a < b, positive if a > b, 0 if equal.
+ */
 int CompareValues(const CellValue &a, const CellValue &b) {
     if (a.kind == CellKind::Text || b.kind == CellKind::Text) {
         return ToText(a).compare(ToText(b));
@@ -179,6 +251,11 @@ namespace {
 // every byte was consumed) is Number; everything else is Text -- no
 // literal booleans, "TRUE"/"FALSE" typed directly into a cell is Text in
 // v1 (only a formula's TRUE()/FALSE() literal produces an actual Bool).
+/**
+ * @brief Parses a non-formula cell's raw text into its literal CellValue (Number if the whole string parses as one, Text otherwise).
+ * @param text Raw literal text (no leading '=').
+ * @return An Empty value for "", a Number value if text parses fully as a number, otherwise a Text value.
+ */
 CellValue LiteralValueFromText(const std::string &text) {
     CellValue v;
     if (text.empty()) return v;  // Empty
@@ -227,6 +304,13 @@ namespace {
 CellValue EvalNode(Workbook &wb, int sheet, const FormulaNode &node);
 CellValue CallFunction(Workbook &wb, int sheet, const FormulaNode &node);
 
+/**
+ * @brief Resolves a formula reference's sheet name to a sheet index, defaulting to the referring formula's own sheet.
+ * @param wb Workbook to search.
+ * @param sheet_name Sheet name from the reference; "" means "use default_sheet".
+ * @param default_sheet Index of the sheet the referring formula lives on.
+ * @return The matching sheet's index, default_sheet if sheet_name is empty, or -1 if no sheet matches.
+ */
 int ResolveSheetIndex(const Workbook &wb, const std::string &sheet_name, int default_sheet) {
     if (sheet_name.empty()) return default_sheet;
     for (size_t i = 0; i < wb.sheets.size(); i++) {
@@ -235,6 +319,13 @@ int ResolveSheetIndex(const Workbook &wb, const std::string &sheet_name, int def
     return -1;
 }
 
+/**
+ * @brief Evaluates a single cell reference within a formula, resolving its (possibly cross-sheet) target first.
+ * @param wb Workbook to evaluate against.
+ * @param sheet Index of the sheet the referencing formula lives on.
+ * @param ref The cell reference node to evaluate.
+ * @return The referenced cell's value, or a Ref error if its sheet name doesn't resolve.
+ */
 CellValue EvalCellRef(Workbook &wb, int sheet, const FormulaCellRef &ref) {
     int target = ResolveSheetIndex(wb, ref.sheet_name, sheet);
     if (target < 0) return MakeErrorValue(SheetError::Ref);
@@ -246,6 +337,13 @@ CellValue EvalCellRef(Workbook &wb, int sheet, const FormulaCellRef &ref) {
 // used by aggregate functions (SUM/AVERAGE/...) where position within
 // the range doesn't matter. See CollectRangeValuesOrdered below for the
 // position-preserving variant MATCH needs.
+/**
+ * @brief Appends every non-empty cell's value within a range to out, skipping untouched cells.
+ * @param wb Workbook to evaluate against.
+ * @param sheet Index of the sheet the referencing formula lives on (used if the range has no explicit sheet).
+ * @param node Range node whose cell/range_end define the range's corners.
+ * @param out Vector to append each collected value to.
+ */
 void CollectRangeValues(Workbook &wb, int sheet, const FormulaNode &node, std::vector<CellValue> &out) {
     int target = ResolveSheetIndex(wb, node.cell.sheet_name, sheet);
     if (target < 0) return;
@@ -268,6 +366,13 @@ void CollectRangeValues(Workbook &wb, int sheet, const FormulaNode &node, std::v
 // the range" the way INDEX/MATCH's row-offset arithmetic expects. Single-
 // column or single-row ranges only (v1 scope -- a 2D range's "position"
 // for MATCH is otherwise ambiguous); iterates row-major.
+/**
+ * @brief Appends every logical position in a single-row/column range to out, preserving position (Empty placeholders for untouched cells).
+ * @param wb Workbook to evaluate against.
+ * @param sheet Index of the sheet the referencing formula lives on (used if the range has no explicit sheet).
+ * @param node Range node whose cell/range_end define the range's corners.
+ * @param out Vector to append each collected value (or Empty placeholder) to, in row-major order.
+ */
 void CollectRangeValuesOrdered(Workbook &wb, int sheet, const FormulaNode &node, std::vector<CellValue> &out) {
     int target = ResolveSheetIndex(wb, node.cell.sheet_name, sheet);
     if (target < 0) return;
@@ -291,6 +396,13 @@ void CollectRangeValuesOrdered(Workbook &wb, int sheet, const FormulaNode &node,
 // A single argument, expanded to every value it denotes: a Range expands
 // to CollectRangeValues (aggregate, order-agnostic); anything else
 // evaluates to exactly one value.
+/**
+ * @brief Expands one function-call argument into every value it denotes, appending to out.
+ * @param wb Workbook to evaluate against.
+ * @param sheet Index of the sheet the calling formula lives on.
+ * @param arg Argument node to expand.
+ * @param out Vector to append the resulting value(s) to: every cell in a Range, or the single evaluated value otherwise.
+ */
 void CollectArgValues(Workbook &wb, int sheet, const FormulaNode &arg, std::vector<CellValue> &out) {
     if (arg.kind == FormulaNodeKind::Range) {
         CollectRangeValues(wb, sheet, arg, out);
@@ -299,9 +411,17 @@ void CollectArgValues(Workbook &wb, int sheet, const FormulaNode &arg, std::vect
     }
 }
 
+/**
+ * @brief Dispatches a formula function call by name and evaluates it against its already-parsed arguments.
+ * @param wb Workbook to evaluate against.
+ * @param sheet Index of the sheet the calling formula lives on.
+ * @param node FunctionCall node holding the function name (node.text) and argument nodes (node.args).
+ * @return The function's result, or a Name error if the function name is unrecognized (or a Value/NA/Ref error for malformed arguments to a recognized function).
+ */
 CellValue CallFunction(Workbook &wb, int sheet, const FormulaNode &node) {
     const std::string &name = node.text;
     const auto &args = node.args;
+    // Evaluates the i-th argument node to a single CellValue (a convenience shorthand used throughout the functions below).
     auto arg_value = [&](size_t i) { return EvalNode(wb, sheet, *args[i]); };
 
     if (name == "SUM" || name == "AVERAGE" || name == "COUNT" || name == "COUNTA" || name == "MIN" ||
@@ -396,6 +516,7 @@ CellValue CallFunction(Workbook &wb, int sheet, const FormulaNode &node) {
         CellValue v = arg_value(0);
         if (IsErrorValue(v)) return v;
         std::string s = ToText(v);
+        // Upper- or lower-cases s in place, depending on which of UPPER/LOWER was called.
         std::transform(s.begin(), s.end(), s.begin(),
                         [&](unsigned char c) { return name == "UPPER" ? std::toupper(c) : std::tolower(c); });
         return MakeTextValue(s);
@@ -471,6 +592,13 @@ CellValue CallFunction(Workbook &wb, int sheet, const FormulaNode &node) {
     return MakeErrorValue(SheetError::Name);  // unknown function
 }
 
+/**
+ * @brief Recursively evaluates one formula AST node to its value (literals, cell/range refs, unary/binary ops, function calls).
+ * @param wb Workbook to evaluate against.
+ * @param sheet Index of the sheet the containing formula lives on.
+ * @param node AST node to evaluate.
+ * @return The node's computed value, or an error value if a subexpression failed or the node kind is unhandled.
+ */
 CellValue EvalNode(Workbook &wb, int sheet, const FormulaNode &node) {
     switch (node.kind) {
         case FormulaNodeKind::Number: return MakeNumberValue(node.number);
@@ -565,11 +693,17 @@ bool LoadCsvFromMemory(const unsigned char *bytes, size_t len, Workbook &out, st
     std::string field;
     bool in_quotes = false;
 
+    /**
+     * @brief Writes the current field buffer into cell (row,col) if non-empty, then advances to the next column.
+     */
     auto commit_field = [&]() {
         if (!field.empty()) SetCellRaw(out, 0, row, col, field);
         col++;
         field.clear();
     };
+    /**
+     * @brief Commits the current field, then advances to the next row and resets the column to 0.
+     */
     auto commit_row = [&]() {
         commit_field();
         row++;
@@ -625,6 +759,11 @@ bool SaveCsvToMemory(Workbook &wb, std::string &out, std::string &error) {
         return false;
     }
     Sheet &sh = wb.sheets[0];  // CSV is single-sheet by construction
+    /**
+     * @brief Quotes a field for CSV output if it contains a comma, quote, or newline, doubling any embedded quotes.
+     * @param s Field text to escape.
+     * @return s unchanged if it needs no quoting, otherwise a double-quoted, quote-doubled version of s.
+     */
     auto escape = [](const std::string &s) -> std::string {
         if (s.find_first_of(",\"\n\r") == std::string::npos) return s;
         std::string q = "\"";

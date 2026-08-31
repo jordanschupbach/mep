@@ -6,6 +6,12 @@
 
 namespace {
 
+/**
+ * @brief Compares two strings for equality ignoring ASCII case.
+ * @param a the first string
+ * @param b the second string
+ * @return true if `a` and `b` are the same length and equal case-insensitively
+ */
 bool EqualsIgnoreCase(const std::string &a, const std::string &b) {
     if (a.size() != b.size()) return false;
     for (size_t i = 0; i < a.size(); i++) {
@@ -14,6 +20,11 @@ bool EqualsIgnoreCase(const std::string &a, const std::string &b) {
     return true;
 }
 
+/**
+ * @brief Strips leading ASCII space characters from a string.
+ * @param s the string to strip
+ * @return `s` with any leading ' ' characters removed
+ */
 std::string LStrip(const std::string &s) {
     size_t i = 0;
     while (i < s.size() && s[i] == ' ') i++;
@@ -21,6 +32,13 @@ std::string LStrip(const std::string &s) {
 }
 
 // 0 = Sunday .. 6 = Saturday, via Sakamoto's algorithm.
+/**
+ * @brief Computes the day of week for a Gregorian calendar date via Sakamoto's algorithm.
+ * @param y the calendar year
+ * @param m the calendar month (1-12)
+ * @param d the calendar day of month
+ * @return the day of week, 0 = Sunday .. 6 = Saturday
+ */
 int DayOfWeek(int y, int m, int d) {
     static const int t[] = {0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4};
     if (m < 3) y -= 1;
@@ -32,6 +50,13 @@ const char *kWeekdayAbbrev[7] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"
 // proleptic Gregorian, day 0 = 1970-01-01) -- used only to add/subtract a
 // whole number of days from a date without touching wall-clock time
 // zones or libc's mktime range limits.
+/**
+ * @brief Converts a proleptic-Gregorian civil date to a day count from the epoch (day 0 = 1970-01-01).
+ * @param y the calendar year
+ * @param m the calendar month (1-12)
+ * @param d the calendar day of month
+ * @return the day count from the epoch
+ */
 long long DaysFromCivil(int y, unsigned m, unsigned d) {
     y -= m <= 2;
     const long long era = (y >= 0 ? y : y - 399) / 400;
@@ -40,6 +65,13 @@ long long DaysFromCivil(int y, unsigned m, unsigned d) {
     const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     return era * 146097 + static_cast<long long>(doe) - 719468;
 }
+/**
+ * @brief Converts a day count from the epoch (day 0 = 1970-01-01) back to a proleptic-Gregorian civil date.
+ * @param z the day count from the epoch
+ * @param y set to the resulting calendar year
+ * @param m set to the resulting calendar month (1-12)
+ * @param d set to the resulting calendar day of month
+ */
 void CivilFromDays(long long z, int &y, unsigned &m, unsigned &d) {
     z += 719468;
     const long long era = (z >= 0 ? z : z - 146096) / 146097;
@@ -58,6 +90,13 @@ void CivilFromDays(long long z, int &y, unsigned &m, unsigned &d) {
 // after -> done_out. Without a '|' at all, the last token is treated as
 // the done keyword (matching real org's own default when no separator is
 // given), unless there's only one token.
+/**
+ * @brief Parses a "#+TODO: ..." line into separate TODO-side and DONE-side keyword lists.
+ * @param line the candidate line to parse
+ * @param todo_out appended with the TODO-side keyword tokens (fast-select "(x)" suffixes stripped)
+ * @param done_out appended with the DONE-side keyword tokens (fast-select "(x)" suffixes stripped)
+ * @return true if `line` was a valid "#+TODO:" line and at least one keyword was parsed
+ */
 bool ParseTodoLine(const std::string &line, std::vector<std::string> &todo_out, std::vector<std::string> &done_out) {
     std::string trimmed = LStrip(line);
     const std::string prefix = "#+TODO:";
@@ -111,6 +150,12 @@ bool ParseTodoLine(const std::string &line, std::vector<std::string> &todo_out, 
 // trimmed), if one validly appears (a run of ':'-separated non-empty
 // alnum/_/@/% tokens immediately preceded by whitespace or start-of-
 // string). Otherwise `title` is the whole of `rest` and `tags` is empty.
+/**
+ * @brief Splits a trailing " :tag1:tag2:" block off a headline's remaining text, if one validly appears.
+ * @param rest the right-trimmed text remaining after stars/keyword/priority have been stripped
+ * @param title set to the title text with any trailing tags block removed
+ * @param tags set to the parsed tag tokens, or cleared if no valid tags block was found
+ */
 void ExtractTrailingTags(const std::string &rest, std::string &title, std::vector<std::string> &tags) {
     tags.clear();
     if (rest.empty() || rest.back() != ':') {
@@ -172,6 +217,14 @@ struct KeywordSpan {
     bool matched;
     bool is_done;
 };
+/**
+ * @brief Locates the keyword token (if any) right after a headline's stars.
+ * @param line the full headline line
+ * @param after_stars byte offset into `line` just past the stars and following space(s)
+ * @param todo_kw the file's TODO-side keyword sequence to match against
+ * @param done_kw the file's DONE-side keyword sequence to match against
+ * @return the [start,end) byte range of the token, with `matched`/`is_done` set; on no match, a zero-length range at the token's start position
+ */
 KeywordSpan FindKeywordSpan(const std::string &line, size_t after_stars, const std::vector<std::string> &todo_kw,
                             const std::vector<std::string> &done_kw) {
     size_t i = after_stars;
@@ -187,6 +240,14 @@ KeywordSpan FindKeywordSpan(const std::string &line, size_t after_stars, const s
     return {tok_start, tok_start, false, false};
 }
 
+/**
+ * @brief Parses a single "*** KEYWORD [#A] Title :tags:" headline line into its component fields.
+ * @param line the candidate line to parse
+ * @param todo_kw the file's TODO-side keyword sequence, used to recognize a keyword token
+ * @param done_kw the file's DONE-side keyword sequence, used to recognize a keyword token
+ * @param out set with the parsed level/keyword/priority/title/tags (planning/properties are not filled in here)
+ * @return true if `line` is a valid headline line (starts with '*'s followed by a space)
+ */
 bool ParseHeadlineLine(const std::string &line, const std::vector<std::string> &todo_kw,
                        const std::vector<std::string> &done_kw, OrgHeadline &out) {
     size_t i = 0, n = line.size();
@@ -224,6 +285,13 @@ bool ParseHeadlineLine(const std::string &line, const std::vector<std::string> &
 // Extracts a single "<...>" token starting at or after `from`, if the
 // keyword ("SCHEDULED"/"DEADLINE") appears there followed by ':' and a
 // '<'-opened timestamp; advances `from` past it. Returns "" if absent.
+/**
+ * @brief Extracts a single "<...>" timestamp token that immediately follows a keyword (e.g. "SCHEDULED:").
+ * @param line the planning line to scan
+ * @param keyword the keyword to look for ("SCHEDULED" or "DEADLINE")
+ * @param from byte offset to start searching from; advanced past the extracted token on success
+ * @return the "<...>" token text, or "" if the keyword/colon/timestamp isn't found there
+ */
 std::string ExtractTimestampAfterKeyword(const std::string &line, const std::string &keyword, size_t &from) {
     size_t kw_pos = line.find(keyword, from);
     if (kw_pos == std::string::npos) return "";
@@ -239,6 +307,13 @@ std::string ExtractTimestampAfterKeyword(const std::string &line, const std::str
     return line.substr(i, close - i + 1);
 }
 
+/**
+ * @brief Parses a SCHEDULED/DEADLINE planning line, extracting either or both raw timestamp tokens.
+ * @param line the candidate line to parse
+ * @param sched_raw set to the raw "<...>" SCHEDULED timestamp token, or "" if absent
+ * @param deadline_raw set to the raw "<...>" DEADLINE timestamp token, or "" if absent
+ * @return true if `line` starts with "SCHEDULED"/"DEADLINE" and at least one timestamp was extracted
+ */
 bool ParsePlanningLine(const std::string &line, std::string &sched_raw, std::string &deadline_raw) {
     std::string trimmed = LStrip(line);
     if (trimmed.compare(0, 9, "SCHEDULED") != 0 && trimmed.compare(0, 8, "DEADLINE") != 0) return false;
@@ -249,10 +324,23 @@ bool ParsePlanningLine(const std::string &line, std::string &sched_raw, std::str
     return !sched_raw.empty() || !deadline_raw.empty();
 }
 
+/**
+ * @brief Checks whether a line is exactly a ":NAME:" drawer marker (case-insensitive, ignoring leading spaces).
+ * @param line the candidate line to check
+ * @param name the drawer name to match, without surrounding colons (e.g. "PROPERTIES")
+ * @return true if `line`, left-stripped, equals ":name:" case-insensitively
+ */
 bool IsDrawerLine(const std::string &line, const std::string &name) {
     return EqualsIgnoreCase(LStrip(line), ":" + name + ":");
 }
 
+/**
+ * @brief Parses a ":KEY: value" property-drawer line into its key and value.
+ * @param line the candidate line to parse
+ * @param key set to the property key (text between the two leading colons)
+ * @param val set to the trimmed value text following the second colon
+ * @return true if `line`, left-stripped, starts with ':' and contains a closing ':' for the key
+ */
 bool ParsePropertyLine(const std::string &line, std::string &key, std::string &val) {
     std::string t = LStrip(line);
     if (t.empty() || t[0] != ':') return false;
@@ -266,6 +354,11 @@ bool ParsePropertyLine(const std::string &line, std::string &key, std::string &v
     return true;
 }
 
+/**
+ * @brief Splits a :BLOCKER: property value into individual predecessor IDs.
+ * @param value the raw property value, IDs separated by whitespace and/or commas
+ * @return the parsed list of non-empty ID tokens
+ */
 std::vector<std::string> ParseDependencyIds(const std::string &value) {
     std::vector<std::string> ids;
     size_t pos = 0;
@@ -279,6 +372,11 @@ std::vector<std::string> ParseDependencyIds(const std::string &value) {
     return ids;
 }
 
+/**
+ * @brief Parses a full "<YYYY-MM-DD Day[ HH:MM...]>" org timestamp token into its date/time fields.
+ * @param raw the raw "<...>" timestamp token text
+ * @return the parsed OrgTimestamp (year/month/day/has_time/hour/min, with `raw` preserved verbatim); `present` is false if `raw` doesn't start with a valid date
+ */
 OrgTimestamp ParseTimestamp(const std::string &raw) {
     OrgTimestamp ts;
     ts.raw = raw;
@@ -309,6 +407,12 @@ OrgTimestamp ParseTimestamp(const std::string &raw) {
 // Replaces just the "YYYY-MM-DD Day" portion of a full "<...>" token with
 // the one computed from `new_date`, leaving anything after the weekday
 // (time-of-day, repeater, warning period) byte-for-byte untouched.
+/**
+ * @brief Replaces the "YYYY-MM-DD Day" portion of a "<...>" timestamp token, preserving everything after it verbatim.
+ * @param raw the original "<...>" timestamp token text
+ * @param new_date the date (year/month/day) to substitute in; its weekday is recomputed
+ * @return the rewritten token, or `raw` unchanged if it isn't a well-formed "<...>" token
+ */
 std::string RewriteTimestampDate(const std::string &raw, const OrgTimestamp &new_date) {
     if (raw.size() < 11 || raw.front() != '<') return raw;
     size_t space_after_date = raw.find(' ', 1);

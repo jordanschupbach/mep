@@ -6,6 +6,13 @@
 #include <thread>
 
 // Invoked with one ws:// capability link by the local integration harness.
+/**
+ * @brief Integration test entry point: connects two CollabSession clients to the same room and asserts that
+ * initial text, presence, and a later edit all converge between them.
+ * @param argc Argument count; must be 2 (program name plus the capability-link URL).
+ * @param argv Argument vector; argv[1] is the ws:// capability-link URL to connect to.
+ * @return 0 on success, 2 if the URL argument is missing.
+ */
 int main(int argc, char **argv) {
     if (argc != 2) { std::cerr << "usage: mep-collab-session-test ws://...\n"; return 2; }
     mep::collab::CollabSession alice(argv[1], "Alice", "alpha");

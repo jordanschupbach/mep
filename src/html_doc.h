@@ -122,7 +122,15 @@ struct DomNode {
     // linear attrs.find() is already effectively O(1) in practice --
     // these two just spare every caller from spelling out the map lookup
     // and empty-string fallback themselves.
+    /**
+     * @brief Returns this node's "id" attribute value, or an empty string if it has none.
+     * @return The "id" attribute value, or a shared empty string if absent.
+     */
     const std::string &Id() const;
+    /**
+     * @brief Returns this node's "class" attribute value, or an empty string if it has none.
+     * @return The "class" attribute value, or a shared empty string if absent.
+     */
     const std::string &Class() const;
 };
 
@@ -148,6 +156,11 @@ struct HtmlDoc {
 // parse. Always succeeds -- there's no ill-formed input this bails out on,
 // only ones it does something reasonable-but-imperfect with, so unlike
 // LoadDocxFromMemory there's no bool/error out-param.
+/**
+ * @brief Parses HTML markup into a DOM tree, extracts math spans, and computes styles, always succeeding (tolerant of malformed markup).
+ * @param html Already-decoded UTF-8 HTML text to parse.
+ * @param out Destination document; its root/title/scripts are reset and repopulated.
+ */
 void ParseHtml(const std::string &html, HtmlDoc &out);
 
 // Walks `doc.root`, resolving every node's `style` per this file's own
@@ -160,10 +173,19 @@ void ParseHtml(const std::string &html, HtmlDoc &out);
 // attrs/position -- but re-running this is cheap enough for the doc sizes
 // this renderer targets that it's not worth tracking whether that
 // happened).
+/**
+ * @brief Resolves the computed `style` of every node in `doc.root` by cascading inheritance, tag defaults, `<style>` block rules, and inline `style=` attributes.
+ * @param doc Document whose tree gets its `style` fields (re)computed in place.
+ */
 void ComputeStyles(HtmlDoc &doc);
 
 // True if `path`'s extension is .html or .htm (case-insensitive) -- same
 // convention as IsDocxPath/IsImagePath/etc. (office_doc.h and friends).
+/**
+ * @brief Checks whether a path's extension is .html or .htm, case-insensitively.
+ * @param path File path to check.
+ * @return True if `path` ends in .html or .htm (any case).
+ */
 bool IsHtmlPath(const std::string &path);
 
 #endif

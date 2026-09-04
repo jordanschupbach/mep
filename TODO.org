@@ -1,0 +1,9 @@
+* DONE Add tabs, nested within workspaces, nested within projects feature
+ - Need to have new git worktrees per workspace
+ - Need to have buffers scoped to workspaces
+ - Need to remove mode from top tab bar
+ - Need to add project to left side of tab bar formatted like [project_name] and
+ tabs formatted like [ws1] [ws2] highlighted by active workspace
+ - Implemented 2026-09-03 across all 12 phases of WORKSPACES_PLAN.md (see its
+   Status section for what was verified how, and what still needs a GPU-capable
+   display to confirm by eye).

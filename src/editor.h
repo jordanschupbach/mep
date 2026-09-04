@@ -567,6 +567,12 @@ struct Buffer {
     // at its same index; FindOrCreateBuffer clears this again if the same
     // path is ever opened a second time.
     bool deleted = false;
+    // WORKSPACES_PLAN.md decision 3: which Workspace (by stable id) this
+    // buffer belongs to; -1 = unscoped (the startup dashboard buffer,
+    // :MepScratch, transient help/quickfix-style buffers). Scoped readers
+    // (:bnext, :ls, the buffer picker, agent buffer.list) filter on it;
+    // global ones (:wa, the :qa guard) deliberately don't.
+    int workspace_id = -1;
 
     std::vector<std::vector<std::string>> undo_stack;
     std::vector<std::vector<std::string>> redo_stack;
@@ -776,6 +782,41 @@ struct SplitNode {
 struct Tab {
     std::unique_ptr<SplitNode> root;
     int active_pane_id = 0;
+};
+
+struct WorktreeEntry;  // workspace_git.h
+class Json;            // json.h
+
+// WORKSPACES_PLAN.md: one named group of tabs with its own root directory
+// (a git worktree once Phase 6 lands, otherwise the project root) and its
+// own set of buffers (Buffer::workspace_id). Identified by a stable id
+// from Editor::next_workspace_id_ -- never an index, since workspaces can
+// be reordered or closed underneath a buffer/terminal/agent that names one.
+struct Workspace {
+    int id = 0;
+    std::string name;    // "main", "feat-login"; also the branch/dir name
+    std::string root;    // absolute; worktree path or project root
+    std::string branch;  // "" when not git-backed
+    bool primary = false;   // the checkout itself: never a worktree, undeletable
+    bool creating = false;  // `git worktree add` still running (drawn dimmed)
+    // Phase 7: set from Lua's optional debounced `git status --porcelain`
+    // poll (mep.opt.workspace_git_dirty); drawn as a `+` suffix. The `*`
+    // suffix (modified buffers) is computed live instead, never from git.
+    bool git_dirty = false;
+    std::vector<Tab> tabs;
+    int active_tab = 0;
+};
+
+// One loaded project root (Editor::projects_). Only a bookmark before
+// WORKSPACES_PLAN.md; now the top of the Project > Workspace > Tab nesting.
+struct Project {
+    int id = 0;
+    std::string name;  // basename(root)
+    std::string root;  // std::filesystem::canonical
+    bool is_git = false;
+    std::string git_toplevel;  // primary checkout's toplevel; == root normally
+    std::vector<Workspace> workspaces;
+    int active_workspace = 0;
 };
 
 // A pane's position within its tab, normalized to [0,1]. Derived purely
@@ -1908,17 +1949,17 @@ public:
      * @brief Returns the number of open tabs.
      * @return The tab count.
      */
-    int TabCount() const { return static_cast<int>(tabs_.size()); }
+    int TabCount() const { return static_cast<int>(Tabs().size()); }
     /**
      * @brief Returns the index of the currently active tab.
      * @return The active tab's index.
      */
-    int ActiveTabIndex() const { return active_tab_; }
+    int ActiveTabIndex() const { return ActiveWorkspace().active_tab; }
     /**
      * @brief Returns the split-tree root of the active tab.
      * @return A const pointer to the active tab's root SplitNode.
      */
-    const SplitNode *ActiveTabRoot() const { return tabs_[static_cast<size_t>(active_tab_)].root.get(); }
+    const SplitNode *ActiveTabRoot() const { return ActiveTab().root.get(); }
     // Non-const sibling of ActiveTabRoot -- main.cpp's own per-frame pane-
     // geometry capture (mirroring DrawPaneTree's layout math) stashes raw
     // SplitNode* pointers for its border-drag hit-testing (SetPaneBorderShare
@@ -1928,12 +1969,12 @@ public:
      * @brief Returns a mutable split-tree root of the active tab, for geometry capture that needs raw SplitNode pointers.
      * @return A pointer to the active tab's root SplitNode.
      */
-    SplitNode *MutableActiveTabRoot() { return tabs_[static_cast<size_t>(active_tab_)].root.get(); }
+    SplitNode *MutableActiveTabRoot() { return ActiveTab().root.get(); }
     /**
      * @brief Returns the id of the currently focused pane in the active tab.
      * @return The active pane's id.
      */
-    int ActivePaneId() const { return tabs_[static_cast<size_t>(active_tab_)].active_pane_id; }
+    int ActivePaneId() const { return ActiveTab().active_pane_id; }
     // Same as ActiveTabRoot()/ActivePaneId() but for tab `index`
     // specifically (0 <= index < TabCount(), unchecked -- same contract as
     // every other accessor here) rather than always the active tab --
@@ -1944,13 +1985,150 @@ public:
      * @param index The tab index to look up (0 <= index < TabCount(), unchecked).
      * @return A const pointer to that tab's root SplitNode.
      */
-    const SplitNode *TabRoot(int index) const { return tabs_[static_cast<size_t>(index)].root.get(); }
+    const SplitNode *TabRoot(int index) const { return Tabs()[static_cast<size_t>(index)].root.get(); }
     /**
      * @brief Returns the id of the active pane in the tab at the given index.
      * @param index The tab index to look up (0 <= index < TabCount(), unchecked).
      * @return That tab's active pane id.
      */
-    int TabActivePaneId(int index) const { return tabs_[static_cast<size_t>(index)].active_pane_id; }
+    int TabActivePaneId(int index) const { return Tabs()[static_cast<size_t>(index)].active_pane_id; }
+    // --- Workspaces: lifecycle (WORKSPACES_PLAN.md Phase 2) ---
+    // Creates an in-memory workspace in the active project with one empty
+    // tab and returns its id, or -1 (status message set) if `name` is
+    // invalid/duplicate. `root` empty = the project root; `branch` is
+    // display-only. Does not switch to it.
+    int WorkspaceNew(const std::string &name, const std::string &root, const std::string &branch);
+    // Activates workspace `id` (in whichever loaded project holds it),
+    // chdir()s to its root (decision 4) and bumps WorkspaceChangeEpoch().
+    bool WorkspaceSwitch(int id);
+    void WorkspaceNext();
+    void WorkspacePrevious();
+    // Refuses for the primary workspace, and (unless `force`) for one with
+    // modified buffers; otherwise kills its terminals, soft-deletes its
+    // buffers and activates the nearest neighbour. Phase 6's git worktree
+    // removal wraps this (WorkspaceRemove).
+    bool WorkspaceDelete(int id, bool force);
+    bool WorkspaceRename(int id, const std::string &name);
+    // User-facing `:wsnew` entry: on a git project spawns `git worktree
+    // add` asynchronously and materialises the workspace on success
+    // (Phase 6); otherwise WorkspaceNew + WorkspaceSwitch immediately.
+    // `attach_existing`: `:wsnew!` -- attach to an existing branch of the
+    // same name instead of creating one.
+    void WorkspaceCreate(const std::string &name, bool attach_existing);
+    // User-facing `:wsdelete[!] [name]` entry: git worktree removal (Phase
+    // 6) followed by WorkspaceDelete. Empty `arg` = the active workspace.
+    void WorkspaceRemove(const std::string &arg, bool force);
+    // "name" or 1-based index string -> workspace id in the active
+    // project, -1 if neither matches.
+    int ResolveWorkspaceArg(const std::string &arg) const;
+    // --- Git worktrees (WORKSPACES_PLAN.md Phase 6; native only) ---
+    // Async `git rev-parse --show-toplevel` then `git worktree list
+    // --porcelain` for project `project_id`: sets Project::is_git/
+    // git_toplevel, the primary workspace's branch, and adopts every
+    // worktree under the derived worktree directory as a workspace
+    // (decision 7). Called from main() at startup and by ProjectLoad.
+    void ProjectDetectGit(int project_id);
+    // `:wsadopt <path-or-branch>`: turns a hand-made worktree (one not
+    // under the derived directory) into a workspace.
+    void WorkspaceAdopt(const std::string &path_or_branch);
+    // `:wsprune`: `git worktree prune`, then drops every workspace whose
+    // directory has vanished.
+    void WorkspacePrune();
+    // mep.opt.worktree_dir: where new worktrees go instead of
+    // `<parent>/<repo>.worktrees` (see DeriveWorktreeDir).
+    void SetWorktreeDirOverride(const std::string &dir) { worktree_dir_override_ = dir; }
+    // mep.opt.restore_workspaces / --no-session (Phase 10).
+    void SetRestoreWorkspaces(bool on) { restore_workspaces_ = on; }
+    bool RestoreWorkspaces() const { return restore_workspaces_ && session_enabled_; }
+    // `--no-session`: neither restore nor write the per-project session
+    // file (tests and throwaway runs must never touch the real data dir).
+    void SetSessionPersistence(bool on) { session_enabled_ = on; }
+    bool SessionPersistence() const { return session_enabled_; }
+    const std::string &WorktreeDirOverride() const { return worktree_dir_override_; }
+    // The project a workspace belongs to, or nullptr.
+    Project *ProjectOfWorkspace(int workspace_id);
+    const Project *ProjectOfWorkspace(int workspace_id) const;
+
+    // --- Projects (WORKSPACES_PLAN.md Phase 9) ---
+    // Loads `root` (canonicalised) as a project and makes it active: an
+    // already-loaded root is just switched to. A fresh project gets a
+    // primary "main" workspace, Phase 10's saved state (if any and
+    // RestoreWorkspaces()), and Phase 6's async git detection. Returns the
+    // project id, or -1 if `root` isn't a directory. `restored` (optional)
+    // reports whether saved state or an existing load supplied the layout,
+    // so mep.project_open can skip its readme/terminal default layout.
+    int ProjectLoad(const std::string &root, bool *restored = nullptr);
+    bool ProjectSwitch(int id);
+    // Refuses for the last loaded project and (unless `force`) when any
+    // of its workspaces has unsaved buffers; saves its state first.
+    bool ProjectClose(int id, bool force);
+    void ProjectNext();
+    void ProjectPrevious();
+    // "name", 1-based index string, or an absolute root -> project id; -1.
+    int ResolveProjectArg(const std::string &arg) const;
+    // `mep --project <dir>` / $MEP_PROJECT: re-roots the bootstrap project
+    // (before any file is opened) instead of loading a second one.
+    bool RerootInitialProject(const std::string &root);
+
+    // --- Persistence (WORKSPACES_PLAN.md Phase 10) ---
+    // Writes `MepDataDir()/workspaces/<slug>-<hash>.json` for the project.
+    bool SaveWorkspaceState(int project_id);
+    void SaveAllWorkspaceState();
+    // Best-effort restore (decision 10): missing files are skipped with a
+    // one-line summary, vanished worktrees pruned, malformed JSON ignored.
+    // `keep_primary_tabs`: leave the primary workspace's current tabs
+    // alone (`mep <file>` already put something there).
+    bool RestoreWorkspaceState(int project_id, bool keep_primary_tabs);
+    // Per-frame: saves 500 ms after the last structural change
+    // (workspace/tab/pane/buffer-in-pane changes; cursor moves don't count).
+    void TickWorkspacePersistence(double now);
+    std::string WorkspaceStateFile(const Project &project) const;
+    bool WorkspaceHasModifiedBuffers(int id) const;
+    // A relative buffer path resolved against the buffer's own workspace
+    // root when that workspace isn't the active one (whose root is the
+    // process cwd already); absolute paths and unscoped buffers pass through.
+    std::string ResolveBufferPath(const Buffer &buf, const std::string &path) const;
+    // Bumped on every switch/create/delete/rename so Lua's
+    // mep.on_workspace_changed can poll it (same idiom as
+    // BufferChangeEpoch/mep.on_buffer_changed).
+    int WorkspaceChangeEpoch() const { return workspace_change_epoch_; }
+
+    // --- Project / workspace read access (WORKSPACES_PLAN.md) ---
+    /** @brief Returns the active project (there is always at least one). */
+    const Project &ActiveProject() const { return projects_[static_cast<size_t>(active_project_)]; }
+    Project &MutableActiveProject() { return projects_[static_cast<size_t>(active_project_)]; }
+    /** @brief Returns the active workspace of the active project. */
+    const Workspace &ActiveWorkspace() const {
+        const Project &p = ActiveProject();
+        return p.workspaces[static_cast<size_t>(p.active_workspace)];
+    }
+    Workspace &MutableActiveWorkspace() {
+        Project &p = MutableActiveProject();
+        return p.workspaces[static_cast<size_t>(p.active_workspace)];
+    }
+    /** @brief Workspace with stable id `id` in any loaded project, or nullptr. */
+    const Workspace *FindWorkspace(int id) const;
+    Workspace *FindWorkspace(int id);
+    /** @brief Workspace named `name` in the active project, or nullptr. */
+    const Workspace *FindWorkspaceByName(const std::string &name) const;
+    int WorkspaceCount() const { return static_cast<int>(ActiveProject().workspaces.size()); }
+    int ActiveWorkspaceIndex() const { return ActiveProject().active_workspace; }
+    int ProjectCount() const { return static_cast<int>(projects_.size()); }
+    int ActiveProjectIndex() const { return active_project_; }
+    const Project &ProjectAt(int index) const { return projects_[static_cast<size_t>(index)]; }
+    const Project *FindProject(int id) const;
+    Project *FindProject(int id);
+    /** @brief The active workspace's root directory (decision 4: == process cwd). */
+    const std::string &ActiveRoot() const { return ActiveWorkspace().root; }
+    // Decision 3: a buffer is visible from the active workspace when it is
+    // scoped to it or unscoped (-1: dashboard, scratch). The workspace-
+    // scoped readers (:bnext, :ls, the picker, agent buffer.list) filter
+    // on this; global ones (:wa, :qa guard) deliberately don't.
+    bool BufferInActiveWorkspace(int buffer_id) const {
+        if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return false;
+        const int ws = buffers_[static_cast<size_t>(buffer_id)].workspace_id;
+        return ws == -1 || ws == ActiveWorkspace().id;
+    }
     /**
      * @brief Returns the buffer with the given id.
      * @param buffer_id The buffer id to look up.
@@ -2092,6 +2270,8 @@ public:
      * @return A const pointer to the HtmlSession, or nullptr if the buffer isn't an HTML pane.
      */
     const HtmlSession *GetHtml(int buffer_id) const;
+    // Every live HTML session's buffer id (main.cpp's media playback sweep).
+    std::vector<int> HtmlBufferIds() const;
     /**
      * @brief Updates an HTML preview pane's viewport size.
      * @param buffer_id The HTML buffer id to resize.
@@ -2111,6 +2291,9 @@ public:
      * @param max_scroll The maximum valid scroll offset (total layout height minus viewport height).
      */
     void ClampHtmlScroll(int buffer_id, float max_scroll);
+    // Advances the page's <audio>/<video> clocks by `seconds` (DrawPane calls
+    // this once per frame with GetFrameTime()); see AdvanceHtmlMediaClock.
+    void AdvanceHtmlMedia(int buffer_id, double seconds);
     // Parses `bytes` (already-read HTML text) and opens it as a new
     // HtmlSession in the *current* pane (mirrors OpenImageInPlace/
     // OpenPdfInPlace exactly: dedup-by-`source` reuses an existing session
@@ -4018,6 +4201,13 @@ public:
      * @param before Whether the new leaf is placed before (left/top) or after (right/bottom) the destination's existing content.
      */
     void SplitPaneWithBufferTab(int source_pane_id, int buffer_id, int dest_pane_id, SplitDir dir, bool before);
+    // Drop target for a file dragged out of a sidebar (main.cpp's
+    // PaneDragKind::FileDrop): opens `path` in pane `dest_pane_id` (center
+    // zone, `split == false`) or in a fresh leaf split off that pane
+    // (`dir`/`before` as in SplitPaneWithBufferTab). Goes through LoadFile
+    // so images/PDFs/HTML/office files get their viewers exactly as `:e`
+    // would; the new pane becomes the active one.
+    void OpenFileInPane(int dest_pane_id, const std::string &path, bool split, SplitDir dir, bool before);
     // Border-drag resize: sets node->shares[child_index] to `new_share`
     // (clamped so both it and shares[child_index+1] stay >= kMinPaneShare),
     // taking the difference out of shares[child_index+1] so their combined
@@ -4799,6 +4989,11 @@ public:
      * @param line_index The line index to move the cursor to (clamped in range).
      */
     void FocusSidebarRow(int id, int line_index);
+    // The widget id of flattened line `line_index` of sidebar `id` ("" for
+    // a section header or out-of-range line). The file tree and git
+    // sidebars use the file path as the id, which is what main.cpp's
+    // drag-a-file-onto-a-pane gesture keys off.
+    std::string SidebarLineWidgetId(int id, int line_index) const;
     /**
      * @brief Activates the sidebar line at an index, as Enter would (toggling a section header's collapsed state or firing a widget's on_click).
      * @param id The id of the sidebar containing the line.
@@ -6259,7 +6454,7 @@ private:
     // own indexing, also what mep.buffer_list()/mep.buffer_switch use),
     // wrapping at either end and skipping any buffer `:bd`/`:bdelete`
     // (BufferDelete, below) has soft-deleted -- buffers_ itself only ever
-    // grows (unlike TabNext/TabPrevious's tabs_, which can shrink via
+    // grows (unlike TabNext/TabPrevious's Tabs(), which can shrink via
     // :tabdelete), so this is a live filter over a stable index space,
     // not wrap arithmetic around a since-removed id.
     void BufferNext();
@@ -6320,9 +6515,59 @@ private:
     // *next* key turns out to be Ctrl-N. True while that first half is
     // still pending a decision.
     bool terminal_pending_ctrl_bs_ = false;
-    std::vector<Tab> tabs_;
-    int active_tab_ = 0;
+    // WORKSPACES_PLAN.md decision 1: the tab list lives on the active
+    // workspace of the active project; Tabs()/ActiveTab() below are the
+    // shims every former `tabs_`/`active_tab_` site now goes through.
+    std::vector<Project> projects_;
+    int active_project_ = 0;
+    int next_workspace_id_ = 1;
+    int next_project_id_ = 1;
+    // Global (not per workspace) so agent-rpc's bare pane ids stay unique
+    // across the whole editor.
     int next_pane_id_ = 0;
+    std::vector<Tab> &Tabs() { return MutableActiveWorkspace().tabs; }
+    const std::vector<Tab> &Tabs() const { return ActiveWorkspace().tabs; }
+    Tab &ActiveTab() { return Tabs()[static_cast<size_t>(ActiveWorkspace().active_tab)]; }
+    const Tab &ActiveTab() const { return Tabs()[static_cast<size_t>(ActiveWorkspace().active_tab)]; }
+    // Creates the one Project/Workspace the editor starts with (the
+    // process cwd, workspace "main"); ProjectLoad (Phase 9) re-roots it.
+    void BootstrapInitialProject();
+    // Builds a one-empty-tab Workspace (not yet inserted anywhere).
+    Workspace MakeWorkspace(const std::string &name, const std::string &root, const std::string &branch);
+    // WorkspaceNew for a specific (not necessarily active) project.
+    int WorkspaceNewIn(Project &project, const std::string &name, const std::string &root, const std::string &branch);
+    static const Workspace *FindWorkspaceByNameIn(const Project &project, const std::string &name);
+    // Phase 6: folds a parsed `git worktree list` into project
+    // `project_id`'s workspaces (see ProjectDetectGit).
+    void AdoptWorktrees(int project_id, const std::vector<WorktreeEntry> &entries);
+    std::string worktree_dir_override_;
+    bool restore_workspaces_ = true;
+    bool session_enabled_ = true;
+    // Kills a workspace's terminals and soft-deletes its buffers (shared by
+    // WorkspaceDelete and ProjectClose).
+    void ReleaseWorkspaceResources(int workspace_id);
+    Json WorkspaceStateJson(const Project &project) const;
+    Json SplitStateJson(const Workspace &ws, const SplitNode &node) const;
+    // Rebuilds a split tree from SplitStateJson output with fresh pane ids;
+    // `leaves` collects (new pane id, pane JSON) for the caller to open
+    // buffers into afterwards, `id_map` old pane id -> new.
+    std::unique_ptr<SplitNode> SplitFromStateJson(const Json &node, std::vector<std::pair<int, Json>> &leaves,
+                                                  std::unordered_map<int, int> &id_map);
+    // Applies one saved workspace's tabs (opens files, terminals); returns
+    // the number of files skipped because they no longer exist.
+    int RestoreWorkspaceTabs(Workspace &ws, const Json &ws_json);
+    uint64_t LayoutFingerprint() const;
+    uint64_t last_layout_fingerprint_ = 0;
+    double layout_dirty_since_ = -1.0;
+    bool layout_dirty_ = false;
+    bool persistence_primed_ = false;
+    // Decision 4: process cwd == active workspace root, re-applied on
+    // every switch. No-op on the wasm build.
+    void ChdirToActiveRoot();
+    // Shared tail of every workspace/project activation: leaves Terminal
+    // mode, re-syncs the mode to the newly visible pane, bumps the epoch.
+    void AfterWorkspaceActivated();
+    int workspace_change_epoch_ = 0;
 
     // Namespace name -> id, global (not per-buffer) so the same name
     // always maps to the same id everywhere, mirroring nvim_create_namespace.

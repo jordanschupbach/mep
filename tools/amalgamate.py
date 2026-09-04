@@ -64,6 +64,7 @@ MODULES = [
         ("Token", "Token_js_engine"),
         ("NodePtr", "NodePtr_js_engine"),
     ]),
+    dict(name="workspace_git", header="workspace_git.h", cpps=["workspace_git.cpp"], renames=[]),
     dict(name="editor", header="editor.h", cpps=["editor.cpp"], renames=[
         ("EqualsIgnoreCase", "EqualsIgnoreCase_editor"),
         ("ReplaceAllLiteral", "ReplaceAllLiteral_editor"),

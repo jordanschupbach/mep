@@ -1,7 +1,13 @@
 #include "html_doc.h"
+#include "wav_doc.h"
 
+#include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdlib>
+#include <fstream>
+#include <functional>
+#include <iterator>
 #include <initializer_list>
 #include <sstream>
 #include <unordered_set>
@@ -354,6 +360,7 @@ void ParseHtml(const std::string &html, HtmlDoc &out) {
     out.root->tag = "#document";
     out.title.clear();
     out.scripts.clear();
+    out.detached_nodes.clear();
 
     std::vector<DomNode *> stack;
     stack.push_back(out.root.get());
@@ -410,6 +417,21 @@ void ParseHtml(const std::string &html, HtmlDoc &out) {
         node->type = DomNodeType::Element;
         node->tag = tr.tag;
         node->attrs = std::move(tr.attrs);
+        if (auto value = node->attrs.find("value"); value != node->attrs.end()) node->form_value = value->second;
+        node->form_checked = node->attrs.count("checked") != 0;
+        node->form_disabled = node->attrs.count("disabled") != 0;
+        node->details_open = node->attrs.count("open") != 0;
+        if (node->tag == "canvas") {
+            auto dimension = [&node](const char *name, int fallback) {
+                auto it = node->attrs.find(name);
+                if (it == node->attrs.end()) return fallback;
+                char *end = nullptr;
+                long value = std::strtol(it->second.c_str(), &end, 10);
+                return end == it->second.c_str() ? fallback : static_cast<int>(std::max(1L, std::min(value, 8192L)));
+            };
+            node->canvas_width = dimension("width", 300);
+            node->canvas_height = dimension("height", 150);
+        }
         node->parent = stack.back();
         DomNode *raw = node.get();
         stack.back()->children.push_back(std::move(node));
@@ -426,9 +448,7 @@ void ParseHtml(const std::string &html, HtmlDoc &out) {
                 tnode->parent = raw;
                 raw->children.push_back(std::move(tnode));
             }
-            // textarea's raw content is intentionally dropped: this
-            // renderer has no form/input model to hold it (see this
-            // file's own header on out-of-scope features).
+            if (tr.tag == "textarea") raw->form_value = DecodeEntities(raw_text);
             if (close_start == std::string::npos) {
                 i = n;
             } else {
@@ -518,7 +538,7 @@ ComputedStyle TagDefaults(const std::string &tag) {
                tag == "link" || tag == "#comment") {
         s.display_none = true;
     } else if (tag == "span" || tag == "small" || tag == "label" || tag == "td" || tag == "th" || tag == "br" ||
-               tag == "img") {
+               tag == "img" || tag == "audio" || tag == "video" || tag == "input" || tag == "button" || tag == "select" || tag == "textarea" || tag == "option") {
         s.block = false;
     } else if (tag == "math") {
         // Synthetic tag ExtractMathSpans (below) inserts for a \(..\)/\[..\]/
@@ -541,7 +561,182 @@ ComputedStyle TagDefaults(const std::string &tag) {
 struct CssRule {
     std::string selector;
     std::unordered_map<std::string, std::string> decls;
+    size_t source_order = 0;
 };
+
+struct CssSimpleSelector {
+    struct Attribute { std::string name, value; char op = 0; };
+    std::string tag;
+    std::string id;
+    std::vector<std::string> classes;
+    std::vector<Attribute> attributes;
+    std::vector<std::pair<std::string, std::string>> pseudos;
+};
+
+struct ParsedSelector {
+    std::vector<CssSimpleSelector> parts;  // left-to-right
+    std::vector<char> combinators;         // relation parts[i] -> parts[i + 1]
+    int id_count = 0, class_count = 0, tag_count = 0;
+    bool valid = false;
+};
+
+bool IsCssIdentChar(char c) {
+    return std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_';
+}
+
+ParsedSelector ParseSelector(const std::string &raw) {
+    ParsedSelector out;
+    size_t i = 0;
+    char pending = 0;
+    auto spaces = [&]() { bool any = false; while (i < raw.size() && std::isspace(static_cast<unsigned char>(raw[i]))) { any = true; ++i; } return any; };
+    spaces();
+    while (i < raw.size()) {
+        CssSimpleSelector simple;
+        bool has_piece = false;
+        if (raw[i] == '*') { ++i; has_piece = true; }
+        else if (IsCssIdentChar(raw[i])) {
+            size_t start = i; while (i < raw.size() && IsCssIdentChar(raw[i])) ++i;
+            simple.tag = raw.substr(start, i - start); out.tag_count++; has_piece = true;
+        }
+        while (i < raw.size()) {
+            if (raw[i] == '#') {
+                size_t start = ++i; while (i < raw.size() && IsCssIdentChar(raw[i])) ++i;
+                if (start == i) return out;
+                simple.id = raw.substr(start, i - start); out.id_count++; has_piece = true;
+            } else if (raw[i] == '.') {
+                size_t start = ++i; while (i < raw.size() && IsCssIdentChar(raw[i])) ++i;
+                if (start == i) return out;
+                simple.classes.push_back(raw.substr(start, i - start)); out.class_count++; has_piece = true;
+            } else if (raw[i] == '[') {
+                size_t close = raw.find(']', i + 1); if (close == std::string::npos) return out;
+                std::string body = raw.substr(i + 1, close - i - 1);
+                size_t begin = body.find_first_not_of(" \t"), end = body.find_last_not_of(" \t");
+                if (begin == std::string::npos) return out;
+                body = body.substr(begin, end - begin + 1);
+                CssSimpleSelector::Attribute attr;
+                size_t op = body.find("~=");
+                if (op != std::string::npos) attr.op = '~'; else { op = body.find('='); if (op != std::string::npos) attr.op = '='; }
+                attr.name = ToLower(body.substr(0, op == std::string::npos ? body.size() : op));
+                if (op != std::string::npos) {
+                    size_t value_at = op + (attr.op == '~' ? 2 : 1);
+                    attr.value = body.substr(value_at);
+                    if (attr.value.size() >= 2 && (attr.value.front() == '\'' || attr.value.front() == '"') && attr.value.back() == attr.value.front()) attr.value = attr.value.substr(1, attr.value.size() - 2);
+                }
+                if (attr.name.empty()) return out;
+                simple.attributes.push_back(std::move(attr)); out.class_count++; has_piece = true; i = close + 1;
+            } else if (raw[i] == ':') {
+                size_t name_start = ++i; while (i < raw.size() && IsCssIdentChar(raw[i])) ++i;
+                if (name_start == i) return out;
+                std::string name = raw.substr(name_start, i - name_start);
+                std::string argument;
+                if (i < raw.size() && raw[i] == '(') {
+                    size_t close = raw.find(')', i + 1); if (close == std::string::npos) return out;
+                    argument = raw.substr(i + 1, close - i - 1); i = close + 1;
+                }
+                simple.pseudos.push_back({std::move(name), std::move(argument)});
+                out.class_count++; has_piece = true;
+            } else break;
+        }
+        if (!has_piece) return out;
+        if (!out.parts.empty()) out.combinators.push_back(pending ? pending : ' ');
+        out.parts.push_back(std::move(simple)); pending = 0;
+        bool had_space = spaces();
+        if (i >= raw.size()) break;
+        if (raw[i] == '>' || raw[i] == '+' || raw[i] == '~') { pending = raw[i++]; spaces(); }
+        else if (had_space) pending = ' ';
+        else return out;
+    }
+    out.valid = !out.parts.empty();
+    return out;
+}
+
+bool HasClass(const DomNode *node, const std::string &want) {
+    std::istringstream words(node->Class());
+    std::string word;
+    while (words >> word) if (word == want) return true;
+    return false;
+}
+
+int ElementIndex(const DomNode *node, bool same_type) {
+    if (!node || !node->parent) return 0;
+    int index = 0;
+    for (const auto &child : node->parent->children) {
+        if (child->type != DomNodeType::Element || (same_type && child->tag != node->tag)) continue;
+        ++index;
+        if (child.get() == node) return index;
+    }
+    return 0;
+}
+
+bool NthMatches(const std::string &raw, int index) {
+    std::string v; for (char c : raw) if (!std::isspace(static_cast<unsigned char>(c))) v += c;
+    if (v == "odd") return index % 2 == 1;
+    if (v == "even") return index % 2 == 0;
+    size_t n = v.find('n');
+    if (n == std::string::npos) return index == std::atoi(v.c_str());
+    int a = n == 0 ? 1 : (v.substr(0, n) == "-" ? -1 : std::atoi(v.substr(0, n).c_str()));
+    int b = n + 1 == v.size() ? 0 : std::atoi(v.substr(n + 1).c_str());
+    return a != 0 && (index - b) * a >= 0 && (index - b) % a == 0;
+}
+
+bool MatchesSimple(const DomNode *node, const CssSimpleSelector &simple) {
+    if (!node || node->type != DomNodeType::Element) return false;
+    if (!simple.tag.empty() && node->tag != simple.tag) return false;
+    if (!simple.id.empty() && node->Id() != simple.id) return false;
+    for (const std::string &klass : simple.classes) if (!HasClass(node, klass)) return false;
+    for (const auto &attr : simple.attributes) {
+        auto it = node->attrs.find(attr.name); if (it == node->attrs.end()) return false;
+        if (attr.op == '=' && it->second != attr.value) return false;
+        if (attr.op == '~') {
+            std::istringstream words(it->second); std::string word; bool found = false;
+            while (words >> word) if (word == attr.value) { found = true; break; }
+            if (!found) return false;
+        }
+    }
+    for (const auto &[name, argument] : simple.pseudos) {
+        if (name == "first-child" && ElementIndex(node, false) != 1) return false;
+        if (name == "last-child") {
+            int index = ElementIndex(node, false), count = 0;
+            if (node->parent) for (const auto &child : node->parent->children) if (child->type == DomNodeType::Element) ++count;
+            if (index != count) return false;
+        }
+        if (name == "nth-child" && !NthMatches(argument, ElementIndex(node, false))) return false;
+        if (name == "nth-of-type" && !NthMatches(argument, ElementIndex(node, true))) return false;
+        // Interaction state is added with the event system; unsupported
+        // pseudo classes never match rather than incorrectly styling all nodes.
+        if (name == "hover" || name == "focus" || name == "active") return false;
+    }
+    return true;
+}
+
+bool MatchesSelectorAt(const DomNode *node, const ParsedSelector &selector, int part) {
+    if (!MatchesSimple(node, selector.parts[static_cast<size_t>(part)])) return false;
+    if (part == 0) return true;
+    char combinator = selector.combinators[static_cast<size_t>(part - 1)];
+    if (combinator == '>') return MatchesSelectorAt(node->parent, selector, part - 1);
+    if (combinator == ' ') {
+        for (const DomNode *ancestor = node->parent; ancestor; ancestor = ancestor->parent)
+            if (MatchesSelectorAt(ancestor, selector, part - 1)) return true;
+        return false;
+    }
+    if (!node->parent) return false;
+    const auto &siblings = node->parent->children;
+    for (size_t i = 0; i < siblings.size(); ++i) if (siblings[i].get() == node) {
+        if (combinator == '+') {
+            while (i > 0) { --i; if (siblings[i]->type == DomNodeType::Element) return MatchesSelectorAt(siblings[i].get(), selector, part - 1); }
+            return false;
+        }
+        while (i > 0) { --i; if (siblings[i]->type == DomNodeType::Element && MatchesSelectorAt(siblings[i].get(), selector, part - 1)) return true; }
+        return false;
+    }
+    return false;
+}
+
+void CollectSelectorMatches(DomNode *node, const ParsedSelector &selector, std::vector<DomNode *> &out) {
+    if (!node) return;
+    if (node->type == DomNodeType::Element && MatchesSelectorAt(node, selector, static_cast<int>(selector.parts.size()) - 1)) out.push_back(node);
+    for (auto &child : node->children) CollectSelectorMatches(child.get(), selector, out);
+}
 
 /**
  * @brief Parses a semicolon-separated "prop: value" declaration block into a property-name-to-value map, lowercasing and trimming both sides.
@@ -683,6 +878,50 @@ void ParseBorderEdge(const std::string &val, ComputedStyle::BorderEdge &edge) {
     if (any) edge.present = true;
 }
 
+bool ParseCssLength(const std::string &raw, CssLength &out, bool allow_auto = false) {
+    std::string v = raw;
+    size_t a = v.find_first_not_of(" \t\r\n"), b = v.find_last_not_of(" \t\r\n");
+    if (a == std::string::npos) return false;
+    v = v.substr(a, b - a + 1);
+    if (allow_auto && v == "auto") {
+        out = CssLength{};
+        out.set = true;
+        out.auto_value = true;
+        return true;
+    }
+    char *end = nullptr;
+    double value = std::strtod(v.c_str(), &end);
+    if (end == v.c_str() || value < 0.0) return false;
+    std::string suffix = end;
+    CssLength::Unit unit = CssLength::Unit::Px;
+    if (suffix.empty() || suffix == "px") unit = CssLength::Unit::Px;
+    else if (suffix == "%") unit = CssLength::Unit::Percent;
+    else if (suffix == "em") unit = CssLength::Unit::Em;
+    else if (suffix == "rem") unit = CssLength::Unit::Rem;
+    else return false;
+    out.set = true;
+    out.auto_value = false;
+    out.value = static_cast<float>(value);
+    out.unit = unit;
+    return true;
+}
+
+void ParseCssEdges(const std::string &raw, CssEdges &edges, bool allow_auto) {
+    std::istringstream stream(raw);
+    std::vector<CssLength> values;
+    std::string token;
+    while (stream >> token && values.size() < 4) {
+        CssLength value;
+        if (!ParseCssLength(token, value, allow_auto)) return;
+        values.push_back(value);
+    }
+    if (values.empty()) return;
+    edges.top = values[0];
+    edges.right = values.size() > 1 ? values[1] : values[0];
+    edges.bottom = values.size() > 2 ? values[2] : values[0];
+    edges.left = values.size() > 3 ? values[3] : edges.right;
+}
+
 /**
  * @brief Applies a parsed CSS declaration map to a ComputedStyle, handling color, background, border, font-weight/style, text-decoration, display, font-size, max-width, and horizontal-auto-margin properties.
  * @param s Style updated in place; only properties present in `decls` (and recognized) are overridden.
@@ -714,6 +953,56 @@ void ApplyDeclarations(ComputedStyle &s, const std::unordered_map<std::string, s
     if (auto it = decls.find("border-right"); it != decls.end()) ParseBorderEdge(it->second, s.border_right);
     if (auto it = decls.find("border-bottom"); it != decls.end()) ParseBorderEdge(it->second, s.border_bottom);
     if (auto it = decls.find("border-left"); it != decls.end()) ParseBorderEdge(it->second, s.border_left);
+    if (auto it = decls.find("border-width"); it != decls.end()) {
+        CssEdges widths;
+        ParseCssEdges(it->second, widths, false);
+        const CssLength *v[4] = {&widths.top, &widths.right, &widths.bottom, &widths.left};
+        ComputedStyle::BorderEdge *e[4] = {&s.border_top, &s.border_right, &s.border_bottom, &s.border_left};
+        for (int i = 0; i < 4; ++i) if (v[i]->set && v[i]->unit == CssLength::Unit::Px) { e[i]->present = true; e[i]->width_px = v[i]->value; }
+    }
+    if (auto it = decls.find("border-color"); it != decls.end()) {
+        std::istringstream stream(it->second);
+        struct Rgb { unsigned char r, g, b; };
+        std::vector<Rgb> colors;
+        std::string token;
+        while (stream >> token && colors.size() < 4) {
+            unsigned char cr, cg, cb;
+            if (!ParseColor(token, &cr, &cg, &cb)) { colors.clear(); break; }
+            colors.push_back(Rgb{cr, cg, cb});
+        }
+        if (!colors.empty()) {
+            ComputedStyle::BorderEdge *e[4] = {&s.border_top, &s.border_right, &s.border_bottom, &s.border_left};
+            for (int i = 0; i < 4; ++i) {
+                size_t index = 0;
+                if (i == 1 || i == 3) index = std::min<size_t>(1, colors.size() - 1);
+                else if (i == 2) index = std::min<size_t>(2, colors.size() - 1);
+                if (i == 3 && colors.size() == 4) index = 3;
+                const Rgb c = colors[index];
+                e[i]->present = true; e[i]->r = c.r; e[i]->g = c.g; e[i]->b = c.b;
+            }
+        }
+    }
+    for (const auto &[name, edge] : std::initializer_list<std::pair<const char *, ComputedStyle::BorderEdge *>>{
+             {"border-top", &s.border_top}, {"border-right", &s.border_right},
+             {"border-bottom", &s.border_bottom}, {"border-left", &s.border_left}}) {
+        if (auto it = decls.find(std::string(name) + "-width"); it != decls.end()) {
+            CssLength width;
+            if (ParseCssLength(it->second, width) && width.unit == CssLength::Unit::Px) { edge->present = true; edge->width_px = width.value; }
+        }
+        if (auto it = decls.find(std::string(name) + "-color"); it != decls.end() && ParseColor(it->second, &r, &g, &b)) {
+            edge->present = true; edge->r = r; edge->g = g; edge->b = b;
+        }
+    }
+    if (auto it = decls.find("margin"); it != decls.end()) ParseCssEdges(it->second, s.margin, true);
+    if (auto it = decls.find("padding"); it != decls.end()) ParseCssEdges(it->second, s.padding, false);
+    for (const auto &[name, target] : std::initializer_list<std::pair<const char *, CssLength *>>{
+             {"margin-top", &s.margin.top}, {"margin-right", &s.margin.right}, {"margin-bottom", &s.margin.bottom}, {"margin-left", &s.margin.left},
+             {"padding-top", &s.padding.top}, {"padding-right", &s.padding.right}, {"padding-bottom", &s.padding.bottom}, {"padding-left", &s.padding.left},
+             {"width", &s.width}, {"height", &s.height}, {"min-width", &s.min_width}, {"min-height", &s.min_height},
+             {"max-width", &s.max_width}, {"max-height", &s.max_height}}) {
+        if (auto it = decls.find(name); it != decls.end()) ParseCssLength(it->second, *target, std::string(name).find("margin") == 0);
+    }
+    if (auto it = decls.find("box-sizing"); it != decls.end()) s.border_box = it->second == "border-box";
     if (auto it = decls.find("font-weight"); it != decls.end()) {
         const std::string &v = it->second;
         if (v == "bold" || v == "bolder" || (!v.empty() && std::isdigit(static_cast<unsigned char>(v[0])) && v >= "600")) {
@@ -812,7 +1101,7 @@ void CollectStyleRules(DomNode *n, std::vector<CssRule> &rules) {
                 std::string one = selector_list.substr(s, (comma == std::string::npos ? selector_list.size() : comma) - s);
                 size_t a = one.find_first_not_of(" \t\r\n");
                 size_t b = one.find_last_not_of(" \t\r\n");
-                if (a != std::string::npos) rules.push_back({ToLower(one.substr(a, b - a + 1)), decls});
+                if (a != std::string::npos) rules.push_back({ToLower(one.substr(a, b - a + 1)), decls, rules.size()});
                 if (comma == std::string::npos) break;
                 s = comma + 1;
             }
@@ -829,23 +1118,23 @@ void CollectStyleRules(DomNode *n, std::vector<CssRule> &rules) {
 // right after both passes run, which would silently discard whatever this
 // wrote there instead.
 /**
- * @brief Applies every CssRule whose selector matches node `n` in the given pass (tag selectors, or class/id selectors) to `style`.
- * @param n Node being styled; its tag/class/id are matched against each rule's selector.
- * @param style Style updated in place with the declarations of every matching rule, in rule order.
- * @param rules Full list of collected CSS rules to test against `n`.
- * @param tag_pass True to match only bare-tag selectors this pass; false to match only .class/#id selectors.
+ * @brief Applies every matching CSS rule in specificity/source order.
  */
-void ApplyMatchingRules(const DomNode *n, ComputedStyle &style, const std::vector<CssRule> &rules, bool tag_pass) {
+void ApplyMatchingRules(const DomNode *n, ComputedStyle &style, const std::vector<CssRule> &rules) {
+    struct Match { const CssRule *rule; ParsedSelector selector; };
+    std::vector<Match> matches;
     for (const CssRule &r : rules) {
-        if (r.selector.empty()) continue;
-        bool matches = false;
-        if (r.selector[0] == '.') matches = !tag_pass && n->Class() == r.selector.substr(1);
-        else if (r.selector[0] == '#')
-            matches = !tag_pass && n->Id() == r.selector.substr(1);
-        else
-            matches = tag_pass && n->tag == r.selector;
-        if (matches) ApplyDeclarations(style, r.decls);
+        ParsedSelector selector = ParseSelector(r.selector);
+        if (selector.valid && MatchesSelectorAt(n, selector, static_cast<int>(selector.parts.size()) - 1))
+            matches.push_back({&r, std::move(selector)});
     }
+    std::stable_sort(matches.begin(), matches.end(), [](const Match &a, const Match &b) {
+        if (a.selector.id_count != b.selector.id_count) return a.selector.id_count < b.selector.id_count;
+        if (a.selector.class_count != b.selector.class_count) return a.selector.class_count < b.selector.class_count;
+        if (a.selector.tag_count != b.selector.tag_count) return a.selector.tag_count < b.selector.tag_count;
+        return a.rule->source_order < b.rule->source_order;
+    });
+    for (const Match &match : matches) ApplyDeclarations(style, match.rule->decls);
 }
 
 /**
@@ -892,8 +1181,7 @@ void WalkAndStyle(DomNode *n, const ComputedStyle &parent, const std::vector<Css
     s.preserve_whitespace = s.preserve_whitespace || parent.preserve_whitespace;
     s.list_depth = list_depth;
 
-    ApplyMatchingRules(n, s, rules, /*tag_pass=*/true);
-    ApplyMatchingRules(n, s, rules, /*tag_pass=*/false);
+    ApplyMatchingRules(n, s, rules);
     if (auto it = n->attrs.find("style"); it != n->attrs.end()) ApplyDeclarations(s, ParseDeclarations(it->second));
     n->style = s;
 
@@ -910,6 +1198,20 @@ void WalkAndStyle(DomNode *n, const ComputedStyle &parent, const std::vector<Css
             c->style.list_item_index = item_index;
         }
     }
+    if (n->shadow_root) WalkAndStyle(n->shadow_root.get(), s, rules, next_depth, next_ordered);
+    if (n->tag == "select" && n->form_value.empty()) {
+        DomNode *fallback = nullptr;
+        for (auto &child : n->children) {
+            if (child->type != DomNodeType::Element || child->tag != "option") continue;
+            if (!fallback) fallback = child.get();
+            if (child->attrs.count("selected") != 0) { fallback = child.get(); break; }
+        }
+        if (fallback) {
+            auto value = fallback->attrs.find("value");
+            if (value != fallback->attrs.end()) n->form_value = value->second;
+            else for (const auto &text : fallback->children) if (text->type == DomNodeType::Text) n->form_value += text->text;
+        }
+    }
 }
 
 }  // namespace
@@ -920,4 +1222,165 @@ void ComputeStyles(HtmlDoc &doc) {
     CollectStyleRules(doc.root.get(), rules);
     ComputedStyle root_style;  // no color/bold/italic -- layout falls back to the pane's theme colors
     for (auto &c : doc.root->children) WalkAndStyle(c.get(), root_style, rules, 0, false);
+}
+
+std::vector<DomNode *> QuerySelectorAll(DomNode *root, const std::string &selector) {
+    ParsedSelector parsed = ParseSelector(ToLower(selector));
+    std::vector<DomNode *> matches;
+    if (root && parsed.valid) CollectSelectorMatches(root, parsed, matches);
+    return matches;
+}
+
+DomNode *QuerySelector(DomNode *root, const std::string &selector) {
+    std::vector<DomNode *> matches = QuerySelectorAll(root, selector);
+    return matches.empty() ? nullptr : matches.front();
+}
+
+AccessibleNode BuildAccessibilityTree(const HtmlDoc &doc) {
+    auto text_content = [](const DomNode *node, auto &&self) -> std::string {
+        if (!node) return "";
+        if (node->type == DomNodeType::Text) return node->text;
+        std::string text;
+        for (const auto &child : node->children) text += self(child.get(), self);
+        return text;
+    };
+    auto role_for = [](const DomNode *node) {
+        auto explicit_role = node->attrs.find("role");
+        if (explicit_role != node->attrs.end()) return explicit_role->second;
+        if (node->tag == "a") return std::string("link");
+        if (node->tag == "button") return std::string("button");
+        if (node->tag == "input") {
+            auto type = node->attrs.find("type");
+            if (type != node->attrs.end() && (type->second == "checkbox" || type->second == "radio")) return type->second;
+            return std::string("textbox");
+        }
+        if (node->tag == "textarea") return std::string("textbox");
+        if (node->tag == "select") return std::string("combobox");
+        if (node->tag == "img") return std::string("img");
+        if (node->tag == "main" || node->tag == "nav" || node->tag == "header" || node->tag == "footer") return node->tag;
+        if (node->tag.size() == 2 && node->tag[0] == 'h' && std::isdigit(static_cast<unsigned char>(node->tag[1]))) return std::string("heading");
+        if (node->tag == "ul" || node->tag == "ol") return std::string("list");
+        if (node->tag == "li") return std::string("listitem");
+        return std::string();
+    };
+    auto find_by_id = [](const DomNode *node, const std::string &id, auto &&self) -> const DomNode * {
+        if (!node) return nullptr;
+        if (node->Id() == id) return node;
+        for (const auto &child : node->children) if (const DomNode *found = self(child.get(), id, self)) return found;
+        if (node->shadow_root) if (const DomNode *found = self(node->shadow_root.get(), id, self)) return found;
+        return nullptr;
+    };
+    auto build = [&](const DomNode *node, auto &&self) -> AccessibleNode {
+        AccessibleNode accessible; accessible.role = role_for(node);
+        auto label = node->attrs.find("aria-label");
+        if (label != node->attrs.end()) accessible.name = label->second;
+        else if (auto labelled_by = node->attrs.find("aria-labelledby"); labelled_by != node->attrs.end() && doc.root) {
+            std::istringstream ids(labelled_by->second); std::string id;
+            while (ids >> id) if (const DomNode *label_node = find_by_id(doc.root.get(), id, find_by_id)) {
+                std::string part = text_content(label_node, text_content);
+                if (!part.empty()) accessible.name += (accessible.name.empty() ? "" : " ") + part;
+            }
+        }
+        else if (node->tag == "img" && node->attrs.count("alt")) accessible.name = node->attrs.at("alt");
+        else accessible.name = text_content(node, text_content);
+        if (auto description = node->attrs.find("aria-description"); description != node->attrs.end()) accessible.description = description->second;
+        else if (auto described_by = node->attrs.find("aria-describedby"); described_by != node->attrs.end() && doc.root) {
+            std::istringstream ids(described_by->second); std::string id;
+            while (ids >> id) if (const DomNode *description_node = find_by_id(doc.root.get(), id, find_by_id)) {
+                std::string part = text_content(description_node, text_content);
+                if (!part.empty()) accessible.description += (accessible.description.empty() ? "" : " ") + part;
+            }
+        }
+        accessible.disabled = node->form_disabled || node->attrs.count("aria-disabled") != 0;
+        accessible.checked = node->form_checked || node->attrs.count("aria-checked") != 0;
+        for (const auto &child : node->children) {
+            if (child->type != DomNodeType::Element || child->style.display_none) continue;
+            auto hidden = child->attrs.find("aria-hidden");
+            if (hidden != child->attrs.end() && hidden->second == "true") continue;
+            accessible.children.push_back(self(child.get(), self));
+        }
+        return accessible;
+    };
+    AccessibleNode root; root.role = "document"; root.name = doc.title;
+    if (doc.root) for (const auto &child : doc.root->children)
+        if (child->type == DomNodeType::Element && !child->style.display_none &&
+            !(child->attrs.count("aria-hidden") && child->attrs.at("aria-hidden") == "true")) root.children.push_back(build(child.get(), build));
+    return root;
+}
+
+bool CanvasGradientColorAt(const CanvasGradient &gradient, float x, float y,
+                           unsigned char &r, unsigned char &g, unsigned char &b, unsigned char &a) {
+    if (gradient.stops.empty()) return false;
+    float t = 0.0f;
+    if (gradient.radial) {
+        float dx = x - gradient.x1, dy = y - gradient.y1;
+        float span = gradient.r1 - gradient.r0;
+        t = span <= 0.0f ? 1.0f : (std::sqrt(dx * dx + dy * dy) - gradient.r0) / span;
+    } else {
+        float ax = gradient.x1 - gradient.x0, ay = gradient.y1 - gradient.y0;
+        float len2 = ax * ax + ay * ay;
+        t = len2 <= 0.0f ? 0.0f : ((x - gradient.x0) * ax + (y - gradient.y0) * ay) / len2;
+    }
+    t = std::max(0.0f, std::min(1.0f, t));
+    // Stops are kept sorted by offset at insertion (addColorStop).
+    const CanvasGradientStop *lo = &gradient.stops.front(), *hi = &gradient.stops.back();
+    for (size_t i = 0; i + 1 < gradient.stops.size(); ++i) {
+        if (t >= gradient.stops[i].offset && t <= gradient.stops[i + 1].offset) { lo = &gradient.stops[i]; hi = &gradient.stops[i + 1]; break; }
+    }
+    if (t <= lo->offset) { r = lo->r; g = lo->g; b = lo->b; a = lo->a; return true; }
+    if (t >= hi->offset) { r = hi->r; g = hi->g; b = hi->b; a = hi->a; return true; }
+    float f = (t - lo->offset) / (hi->offset - lo->offset);
+    auto mix = [f](unsigned char from, unsigned char to) { return static_cast<unsigned char>(static_cast<float>(from) + (static_cast<float>(to) - static_cast<float>(from)) * f); };
+    r = mix(lo->r, hi->r); g = mix(lo->g, hi->g); b = mix(lo->b, hi->b); a = mix(lo->a, hi->a);
+    return true;
+}
+
+namespace {
+
+void ForEachMediaNode(DomNode *node, const std::function<void(DomNode &)> &fn) {
+    if (!node) return;
+    if (node->type == DomNodeType::Element && (node->tag == "audio" || node->tag == "video")) fn(*node);
+    for (auto &child : node->children) ForEachMediaNode(child.get(), fn);
+    if (node->shadow_root) ForEachMediaNode(node->shadow_root.get(), fn);
+}
+
+}  // namespace
+
+void LoadHtmlMedia(HtmlDoc &doc, const std::string &base_dir) {
+    ForEachMediaNode(doc.root.get(), [&base_dir](DomNode &media) {
+        media.media_duration = 0.0; media.media_ready_state = 0; media.media_error.clear(); media.media_source_path.clear();
+        std::string src;
+        if (auto it = media.attrs.find("src"); it != media.attrs.end()) src = it->second;
+        if (src.empty())
+            for (auto &child : media.children)
+                if (child->type == DomNodeType::Element && child->tag == "source")
+                    if (auto it = child->attrs.find("src"); it != child->attrs.end() && !it->second.empty()) { src = it->second; break; }
+        if (src.empty()) return;
+        if (src.compare(0, 7, "http://") == 0 || src.compare(0, 8, "https://") == 0) { media.media_error = "remote media sources are not fetched"; return; }
+        std::string path = src[0] == '/' || base_dir.empty() ? src : base_dir + "/" + src;
+        std::ifstream in(path, std::ios::binary);
+        if (!in) { media.media_error = "MEDIA_ERR_SRC_NOT_SUPPORTED: cannot open " + src; return; }
+        std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        media.media_source_path = path;
+        WavDoc wav;
+        if (media.tag == "video" || !wav.LoadFromMemory(bytes.data(), bytes.size())) {
+            media.media_error = "MEDIA_ERR_SRC_NOT_SUPPORTED: " + (media.tag == "video" ? std::string("no video decoder") : wav.Error());
+            return;
+        }
+        media.media_duration = static_cast<double>(wav.Samples().size()) / static_cast<double>(wav.Channels()) / static_cast<double>(wav.SampleRate());
+        media.media_ready_state = 4;  // HAVE_ENOUGH_DATA: the whole file is decoded
+    });
+}
+
+void AdvanceHtmlMediaClock(HtmlDoc &doc, double seconds) {
+    if (seconds <= 0.0) return;
+    ForEachMediaNode(doc.root.get(), [seconds](DomNode &media) {
+        if (media.media_paused || media.media_ready_state < 4 || media.media_duration <= 0.0) return;
+        media.media_current_time += seconds;
+        if (media.media_current_time < media.media_duration) return;
+        if (media.attrs.count("loop")) { media.media_current_time = std::fmod(media.media_current_time, media.media_duration); return; }
+        media.media_current_time = media.media_duration;
+        media.media_paused = true;
+        media.media_ended = true;
+    });
 }

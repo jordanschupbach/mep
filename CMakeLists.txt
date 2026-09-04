@@ -254,6 +254,8 @@ add_library(mep_core STATIC
     src/regex.cpp
     src/treesitter.cpp
     src/image_doc.cpp
+    src/wav_doc.cpp
+    src/svg_doc.cpp
     src/pdf_doc.cpp
     src/formula.cpp
     src/html_doc.cpp
@@ -269,6 +271,7 @@ add_library(mep_core STATIC
     src/sheet_ods.cpp
     src/js_engine.cpp
     src/editor.cpp
+    src/workspace_git.cpp
 )
 target_include_directories(mep_core PUBLIC src)
 target_compile_options(mep_core PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
@@ -296,6 +299,23 @@ target_link_options(mep PRIVATE ${MEP_SANITIZE_FLAGS})
 target_link_libraries(mep PRIVATE mep_core)
 if(EMSCRIPTEN)
     target_sources(mep PRIVATE src/collab_crdt.cpp src/collab_web_session.cpp)
+endif()
+
+# Pure DOM/CSS test: intentionally links only html_doc.cpp, so selector and
+# cascade behavior can be verified without opening a raylib window.
+add_executable(mep-html-doc-test src/html_doc_test.cpp src/html_doc.cpp src/js_engine.cpp src/svg_doc.cpp src/wav_doc.cpp)
+target_include_directories(mep-html-doc-test PRIVATE src)
+target_compile_options(mep-html-doc-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-html-doc-test PRIVATE ${MEP_SANITIZE_FLAGS})
+
+# WORKSPACES_PLAN.md Phase 12: pure-helper test (worktree dir derivation,
+# porcelain parsing, name validation, session JSON round trip). Links only
+# workspace_git.cpp, same windowless model as mep-html-doc-test above.
+if(NOT EMSCRIPTEN)
+    add_executable(mep-workspace-test src/workspace_test.cpp src/workspace_git.cpp)
+    target_include_directories(mep-workspace-test PRIVATE src)
+    target_compile_options(mep-workspace-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-workspace-test PRIVATE ${MEP_SANITIZE_FLAGS})
 endif()
 
 # Collaboration's WebSocket handshake needs SHA-1.  OpenSSL is the one

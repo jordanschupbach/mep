@@ -248,8 +248,76 @@ server.registerTool(
 
 server.registerTool(
   "mep_buffer_list",
-  { description: "List every open buffer: id, filename, modified flag, line count." },
-  async () => callTool("buffer.list", {}),
+  {
+    description:
+      "List open buffers: id, filename, modified flag, line count, workspace_id. Scoped to the active workspace by default; pass workspace: \"all\" for every workspace, or a workspace id for one specific workspace.",
+    inputSchema: { workspace: z.union([z.number().int(), z.literal("all")]).optional() },
+  },
+  async (args: Record<string, unknown>) => callTool("buffer.list", args),
+);
+
+// --- Workspaces & projects (WORKSPACES_PLAN.md Phase 11) -------------------
+
+server.registerTool(
+  "mep_workspace_list",
+  {
+    description:
+      "List the active project's workspaces: id, name, root directory, git branch, primary flag, creating flag (git worktree still being added), active flag.",
+  },
+  async () => callTool("workspace.list", {}),
+);
+
+server.registerTool(
+  "mep_workspace_switch",
+  {
+    description: "Switch to a workspace by id or name. Changes the working directory to that workspace's root (its git worktree).",
+    inputSchema: { id: z.number().int().optional(), name: z.string().optional() },
+  },
+  async (args: Record<string, unknown>) => callTool("workspace.switch", args),
+);
+
+server.registerTool(
+  "mep_workspace_create",
+  {
+    description:
+      "Create a workspace. On a git project this adds a worktree on a new branch of the same name (asynchronously: the reply has creating=true until git finishes -- poll mep_workspace_list, or watch mep_poll_events for workspaceChanged / a notify with git's error). attach=true attaches to an existing branch instead of creating one.",
+    inputSchema: { name: z.string(), attach: z.boolean().optional() },
+  },
+  async (args: Record<string, unknown>) => callTool("workspace.create", args),
+);
+
+server.registerTool(
+  "mep_workspace_delete",
+  {
+    description:
+      "Delete a workspace by id or name (removes its git worktree; the branch is kept). Refuses the primary workspace, and one with unsaved buffers unless force=true.",
+    inputSchema: { id: z.number().int().optional(), name: z.string().optional(), force: z.boolean().optional() },
+  },
+  async (args: Record<string, unknown>) => callTool("workspace.delete", args),
+);
+
+server.registerTool(
+  "mep_project_list",
+  { description: "List the loaded projects: id, name, root, is_git, workspace_count, active flag." },
+  async () => callTool("project.list", {}),
+);
+
+server.registerTool(
+  "mep_project_switch",
+  {
+    description: "Switch to a loaded project by id or name.",
+    inputSchema: { id: z.number().int().optional(), name: z.string().optional() },
+  },
+  async (args: Record<string, unknown>) => callTool("project.switch", args),
+);
+
+server.registerTool(
+  "mep_project_open",
+  {
+    description: "Load a directory as a project (or switch to it if already loaded) and make it active; its saved workspaces/tabs are restored.",
+    inputSchema: { root: z.string() },
+  },
+  async (args: Record<string, unknown>) => callTool("project.open", args),
 );
 
 server.registerTool(
@@ -347,7 +415,10 @@ server.registerTool(
 
 server.registerTool(
   "mep_session_info",
-  { description: "Get this mep instance's pid, working directory, and list of open file paths -- useful for telling multiple running instances apart." },
+  {
+    description:
+      "Get this mep instance's pid, working directory (== the active workspace's root), active project/workspace names, workspace_root, git branch, and list of open file paths -- useful for telling multiple running instances apart.",
+  },
   async () => callTool("session.info", {}),
 );
 

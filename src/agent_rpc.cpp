@@ -258,6 +258,7 @@ Json BufferSummaryJson(const Editor &editor, int buffer_id) {
     j["filename"] = buf.filename;
     j["modified"] = buf.modified;
     j["line_count"] = static_cast<int>(buf.lines.size());
+    j["workspace_id"] = buf.workspace_id;
     return j;
 }
 
@@ -511,6 +512,14 @@ Json Dispatch(Editor &editor, Connection &conn, const std::string &method, const
         Json j = Json::Object();
         j["pid"] = getpid();
         j["cwd"] = std::filesystem::current_path().string();
+        // WORKSPACES_PLAN.md Phase 11: `cwd` stays (== workspace_root by
+        // decision 4) alongside the explicit project/workspace fields.
+        j["project"] = editor.ActiveProject().name;
+        j["project_root"] = editor.ActiveProject().root;
+        j["workspace"] = editor.ActiveWorkspace().name;
+        j["workspace_id"] = editor.ActiveWorkspace().id;
+        j["workspace_root"] = editor.ActiveRoot();
+        j["branch"] = editor.ActiveWorkspace().branch;
         Json files = Json::Array();
         for (int i = 0; i < editor.BufferCountForLua(); i++) {
             std::string filename = editor.BufferFilenameForLua(i);
@@ -531,23 +540,202 @@ Json Dispatch(Editor &editor, Connection &conn, const std::string &method, const
         Json buffers = Json::Array();
         for (int i = 0; i < editor.BufferCountForLua(); i++) buffers.push_back(BufferSummaryJson(editor, i));
         Json j = Json::Object();
+        // Top-level tabs/active_tab are the *active workspace's*, kept for
+        // one release so existing agent code keeps working (WORKSPACES_
+        // PLAN.md Phase 11); the nested projects[] below is the real shape.
         j["active_tab"] = editor.ActiveTabIndex();
         j["tabs"] = std::move(tabs);
+        j["tabs_deprecated"] = "top-level tabs/active_tab are the active workspace's; use projects[].workspaces[].tabs";
         j["buffers"] = std::move(buffers);
+        Json projects = Json::Array();
+        for (int pi = 0; pi < editor.ProjectCount(); pi++) {
+            const Project &p = editor.ProjectAt(pi);
+            Json pj = Json::Object();
+            pj["id"] = p.id;
+            pj["name"] = p.name;
+            pj["root"] = p.root;
+            pj["is_git"] = p.is_git;
+            pj["active"] = pi == editor.ActiveProjectIndex();
+            pj["active_workspace"] = p.active_workspace;
+            Json wss = Json::Array();
+            for (size_t wi = 0; wi < p.workspaces.size(); wi++) {
+                const Workspace &ws = p.workspaces[wi];
+                Json wj = Json::Object();
+                wj["id"] = ws.id;
+                wj["name"] = ws.name;
+                wj["root"] = ws.root;
+                wj["branch"] = ws.branch;
+                wj["primary"] = ws.primary;
+                wj["creating"] = ws.creating;
+                wj["active"] = pi == editor.ActiveProjectIndex() && static_cast<int>(wi) == p.active_workspace;
+                wj["active_tab"] = ws.active_tab;
+                Json wtabs = Json::Array();
+                for (const Tab &tab : ws.tabs) {
+                    Json tj = Json::Object();
+                    tj["active_pane_id"] = tab.active_pane_id;
+                    tj["root"] = tab.root ? SplitNodeJson(*tab.root) : Json::Object();
+                    wtabs.push_back(std::move(tj));
+                }
+                wj["tabs"] = std::move(wtabs);
+                wss.push_back(std::move(wj));
+            }
+            pj["workspaces"] = std::move(wss);
+            projects.push_back(std::move(pj));
+        }
+        j["active_project"] = editor.ActiveProjectIndex();
+        j["projects"] = std::move(projects);
         return j;
     }
     if (method == "pane.get") {
         const int pane_id = params.contains("pane_id") ? params.get("pane_id").as_int() : editor.ActivePaneId();
-        for (int i = 0; i < editor.TabCount(); i++) {
-            const SplitNode *root = editor.TabRoot(i);
-            if (!root) continue;
-            if (const Pane *pane = FindPane(*root, pane_id)) return PaneJson(*pane);
+        // Every workspace of every project (Phase 11): pane ids are global.
+        for (int pi = 0; pi < editor.ProjectCount(); pi++) {
+            const Project &p = editor.ProjectAt(pi);
+            for (const Workspace &ws : p.workspaces) {
+                for (const Tab &tab : ws.tabs) {
+                    if (!tab.root) continue;
+                    if (const Pane *pane = FindPane(*tab.root, pane_id)) {
+                        Json j = PaneJson(*pane);
+                        j["workspace_id"] = ws.id;
+                        j["project_id"] = p.id;
+                        return j;
+                    }
+                }
+            }
         }
         throw RpcError{-32602, "no such pane_id"};
     }
+    // --- Workspaces / projects (WORKSPACES_PLAN.md Phase 11) ---------------
+    if (method == "workspace.list") {
+        const Project &p = editor.ActiveProject();
+        Json out = Json::Array();
+        for (size_t wi = 0; wi < p.workspaces.size(); wi++) {
+            const Workspace &ws = p.workspaces[wi];
+            Json wj = Json::Object();
+            wj["id"] = ws.id;
+            wj["name"] = ws.name;
+            wj["root"] = ws.root;
+            wj["branch"] = ws.branch;
+            wj["primary"] = ws.primary;
+            wj["creating"] = ws.creating;
+            wj["active"] = static_cast<int>(wi) == p.active_workspace;
+            out.push_back(std::move(wj));
+        }
+        return out;
+    }
+    if (method == "workspace.switch") {
+        int id = -1;
+        if (params.get("id").is_number()) {
+            id = params.get("id").as_int();
+        } else if (params.get("name").is_string()) {
+            id = editor.ResolveWorkspaceArg(params.get("name").as_string());
+        }
+        if (id < 0 || !editor.FindWorkspace(id)) throw RpcError{-32602, "no such workspace"};
+        if (!editor.WorkspaceSwitch(id)) throw RpcError{-32000, editor.StatusMessage()};
+        return Json::Object();
+    }
+    if (method == "workspace.create") {
+        const std::string name = params.get("name").as_string();
+        if (name.empty()) throw RpcError{-32602, "name required"};
+        const int before = editor.WorkspaceCount();
+        editor.WorkspaceCreate(name, params.get("attach").as_bool(false));
+        if (editor.WorkspaceCount() == before) throw RpcError{-32000, editor.StatusMessage()};
+        const Workspace *ws = editor.FindWorkspaceByName(name);
+        Json j = Json::Object();
+        j["id"] = ws ? ws->id : -1;
+        j["name"] = name;
+        // On a git project `git worktree add` runs asynchronously: the
+        // workspace is `creating` until it finishes, then an
+        // event.workspaceChanged (or an event.notify carrying git's error
+        // text, same as the toast) follows. Poll workspace.list for
+        // `creating == false`.
+        j["creating"] = ws ? ws->creating : false;
+        j["root"] = ws ? ws->root : "";
+        return j;
+    }
+    if (method == "workspace.delete") {
+        std::string arg;
+        if (params.get("id").is_number()) {
+            const Workspace *ws = editor.FindWorkspace(params.get("id").as_int());
+            if (!ws) throw RpcError{-32602, "no such workspace"};
+            arg = ws->name;
+        } else {
+            arg = params.get("name").as_string();
+        }
+        const int before = editor.WorkspaceCount();
+        editor.WorkspaceRemove(arg, params.get("force").as_bool(false));
+        Json j = Json::Object();
+        // Git-backed deletes finish asynchronously (git worktree remove);
+        // `deleted` reports the synchronous outcome only.
+        j["deleted"] = editor.WorkspaceCount() < before;
+        j["message"] = editor.StatusMessage();
+        return j;
+    }
+    if (method == "project.list") {
+        Json out = Json::Array();
+        for (int pi = 0; pi < editor.ProjectCount(); pi++) {
+            const Project &p = editor.ProjectAt(pi);
+            Json pj = Json::Object();
+            pj["id"] = p.id;
+            pj["name"] = p.name;
+            pj["root"] = p.root;
+            pj["is_git"] = p.is_git;
+            pj["workspace_count"] = static_cast<int>(p.workspaces.size());
+            pj["active"] = pi == editor.ActiveProjectIndex();
+            out.push_back(std::move(pj));
+        }
+        return out;
+    }
+    if (method == "project.switch") {
+        int id = -1;
+        if (params.get("id").is_number()) {
+            id = params.get("id").as_int();
+        } else if (params.get("name").is_string()) {
+            id = editor.ResolveProjectArg(params.get("name").as_string());
+        }
+        if (id < 0 || !editor.FindProject(id)) throw RpcError{-32602, "no such project"};
+        editor.ProjectSwitch(id);
+        return Json::Object();
+    }
+    if (method == "project.open") {
+        const std::string root = params.get("root").as_string();
+        if (root.empty()) throw RpcError{-32602, "root required"};
+        bool restored = false;
+        int id = editor.ProjectLoad(root, &restored);
+        if (id < 0) throw RpcError{-32602, editor.StatusMessage()};
+        Json j = Json::Object();
+        j["id"] = id;
+        j["restored"] = restored;
+        j["root"] = editor.ActiveProject().root;
+        return j;
+    }
+    if (method == "project.close") {
+        int id = params.get("id").is_number() ? params.get("id").as_int()
+                                              : editor.ResolveProjectArg(params.get("name").as_string(""));
+        if (id < 0) throw RpcError{-32602, "no such project"};
+        if (!editor.ProjectClose(id, params.get("force").as_bool(false))) throw RpcError{-32000, editor.StatusMessage()};
+        return Json::Object();
+    }
     if (method == "buffer.list") {
+        // Workspace-scoped by default (WORKSPACES_PLAN.md Phase 4/11):
+        // {"workspace": "all"} lists everything, {"workspace": <id>} one
+        // specific workspace's buffers.
         Json buffers = Json::Array();
-        for (int i = 0; i < editor.BufferCountForLua(); i++) buffers.push_back(BufferSummaryJson(editor, i));
+        const Json &wsel = params.get("workspace");
+        const bool all = wsel.type() == Json::Type::String && wsel.as_string() == "all";
+        const int ws_id = wsel.type() == Json::Type::Number ? wsel.as_int() : -2;
+        for (int i = 0; i < editor.BufferCountForLua(); i++) {
+            const Buffer &buf = editor.GetBuffer(i);
+            if (buf.deleted) continue;
+            if (!all) {
+                if (ws_id != -2) {
+                    if (buf.workspace_id != ws_id && buf.workspace_id != -1) continue;
+                } else if (!editor.BufferInActiveWorkspace(i)) {
+                    continue;
+                }
+            }
+            buffers.push_back(BufferSummaryJson(editor, i));
+        }
         return buffers;
     }
     if (method == "buffer.getLines") {
@@ -672,6 +860,9 @@ struct State {
     bool last_replace_mode = false;
     int last_change_epoch = 0;
     int last_notify_id = 0;
+    int last_workspace_epoch = 0;
+    int last_workspace_id = 0;
+    int last_project_id = 0;
 };
 
 /**
@@ -794,8 +985,39 @@ void FlushAgentEvents(Editor &editor, const std::vector<Connection *> &conns) {
         state.last_replace_mode = replace_mode;
         state.last_change_epoch = change_epoch;
         state.last_notify_id = notify_history.empty() ? 0 : notify_history.front().id;
+        state.last_workspace_epoch = editor.WorkspaceChangeEpoch();
+        state.last_workspace_id = editor.ActiveWorkspace().id;
+        state.last_project_id = editor.ActiveProject().id;
         return;
     }
+    // WORKSPACES_PLAN.md Phase 11: workspace/project change events. The
+    // epoch also bumps on create/delete/rename of a *non-active*
+    // workspace, so event.workspaceChanged is "the workspace list or the
+    // active workspace changed", with the active one's details attached.
+    const int workspace_epoch = editor.WorkspaceChangeEpoch();
+    if (!conns.empty() && workspace_epoch != state.last_workspace_epoch) {
+        const Workspace &ws = editor.ActiveWorkspace();
+        const Project &project = editor.ActiveProject();
+        if (project.id != state.last_project_id) {
+            Json params = Json::Object();
+            params["project_id"] = project.id;
+            params["project"] = project.name;
+            params["root"] = project.root;
+            Broadcast(conns, BuildNotification("event.projectChanged", params));
+        }
+        Json params = Json::Object();
+        params["workspace_id"] = ws.id;
+        params["workspace"] = ws.name;
+        params["root"] = ws.root;
+        params["branch"] = ws.branch;
+        params["project_id"] = project.id;
+        params["project"] = project.name;
+        params["active_changed"] = ws.id != state.last_workspace_id;
+        Broadcast(conns, BuildNotification("event.workspaceChanged", params));
+    }
+    state.last_workspace_epoch = workspace_epoch;
+    state.last_workspace_id = editor.ActiveWorkspace().id;
+    state.last_project_id = editor.ActiveProject().id;
 
     if (!conns.empty()) {
         if (cursor.row != state.last_cursor.row || cursor.col != state.last_cursor.col || pane_id != state.last_pane_id) {

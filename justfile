@@ -54,6 +54,32 @@ run-wasm: build-web
 clean:
     rm -rf build
 
+# Build and run every *-test binary that needs no display: the pure
+# DOM/CSS, workspace-helper and collab tests. Exits non-zero on the first
+# failure (each binary aborts on a failed CHECK()).
+test: build-native
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for t in mep-html-doc-test mep-workspace-test mep-collab-crdt-test mep-collab-session-test; do
+        if [ -x "{{native_build_dir}}/$t" ]; then
+            echo "== $t"
+            "./{{native_build_dir}}/$t"
+        fi
+    done
+
+# The tests that drive a real `mep` window: the agent-RPC test (spawns
+# mep, needs a display and a working GL driver -- under Xvfb that means a
+# GPU-capable/llvmpipe driver; the sandbox WORKSPACES_PLAN.md was written
+# in segfaults in raylib's InitWindow) and the MCP server end-to-end test
+# (deno, same display requirement since it spawns mep too).
+test-gui: build-native
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "== mep-agent-rpc-test"
+    "./{{native_build_dir}}/mep-agent-rpc-test" "./{{native_build_dir}}/mep"
+    echo "== mcp/server_test.ts"
+    MEP_BINARY="$(realpath {{native_build_dir}}/mep)" deno test --allow-all mcp/server_test.ts
+
 # Static analysis of mep's own C++ (src/*.cpp, src/*.h) -- deliberately
 # excludes third_party/ and the build/native/_deps/*-src/ vendored trees
 # for all three tools below, same "own code only" scoping .clang-tidy's

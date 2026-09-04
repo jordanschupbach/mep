@@ -754,6 +754,11 @@ int l_job_start(lua_State *L) {
         on_exit_ref = RefField(L, 2, "on_exit");
     }
 
+    // WORKSPACES_PLAN.md decision 4 / "Risks": the safe default is the
+    // active workspace root, not the process cwd -- an async job started
+    // just before a workspace switch then still runs where it was asked.
+    if (cwd.empty()) cwd = GetEditor(L)->ActiveRoot();
+
     LuaEnv *env = GetLuaEnv(L);
     JobManager::Callbacks cb;
     if (on_stdout_ref != LUA_NOREF) {
@@ -2547,10 +2552,14 @@ int l_roam_graph_close(lua_State *L) {
  */
 int l_buffer_list(lua_State *L) {
     const Editor *ed = GetEditor(L);
+    // Workspace-scoped by default (WORKSPACES_PLAN.md Phase 4);
+    // mep.buffer_list(true) lists every workspace's buffers.
+    const bool all = lua_toboolean(L, 1) != 0;
     int n = ed->BufferCountForLua();
     lua_newtable(L);
     int out_i = 1;
     for (int id = 0; id < n; id++) {
+        if (!all && !ed->BufferInActiveWorkspace(id)) continue;
         std::string label = ed->BufferLabelForLua(id);
         if (label.empty()) continue;
         lua_newtable(L);
@@ -2910,6 +2919,294 @@ int l_project_remove(lua_State *L) {
     const char *path = luaL_checkstring(L, 1);
     GetEditor(L)->RemoveProject(path);
     return 0;
+}
+
+// --- Workspaces / projects (WORKSPACES_PLAN.md Phase 2) --------------------
+
+/**
+ * @brief Pushes one workspace as a Lua table {id, name, root, branch, primary, creating, active, index}.
+ * @param L Lua state.
+ * @param ws The workspace to describe.
+ * @param active Whether it is the active workspace of its project.
+ * @param index Its 1-based position within its project.
+ */
+void PushWorkspaceTable(lua_State *L, const Workspace &ws, bool active, int index) {
+    lua_newtable(L);
+    lua_pushinteger(L, ws.id);
+    lua_setfield(L, -2, "id");
+    lua_pushstring(L, ws.name.c_str());
+    lua_setfield(L, -2, "name");
+    lua_pushstring(L, ws.root.c_str());
+    lua_setfield(L, -2, "root");
+    lua_pushstring(L, ws.branch.c_str());
+    lua_setfield(L, -2, "branch");
+    lua_pushboolean(L, ws.primary);
+    lua_setfield(L, -2, "primary");
+    lua_pushboolean(L, ws.creating);
+    lua_setfield(L, -2, "creating");
+    lua_pushboolean(L, ws.git_dirty);
+    lua_setfield(L, -2, "git_dirty");
+    lua_pushboolean(L, active);
+    lua_setfield(L, -2, "active");
+    lua_pushinteger(L, index);
+    lua_setfield(L, -2, "index");
+}
+
+/**
+ * @brief Resolves a Lua workspace argument: an integer is a stable workspace id, a string is a name or 1-based index.
+ * @param L Lua state.
+ * @param idx Stack index of the argument (nil/absent = the active workspace).
+ * @return The workspace id, or -1 if nothing matches.
+ */
+int WorkspaceIdFromLuaArg(lua_State *L, int idx) {
+    const Editor *ed = GetEditor(L);
+    if (lua_isnoneornil(L, idx)) return ed->ActiveWorkspace().id;
+    if (lua_isinteger(L, idx)) {
+        int id = static_cast<int>(lua_tointeger(L, idx));
+        return ed->FindWorkspace(id) ? id : -1;
+    }
+    const char *name = lua_tostring(L, idx);
+    return name ? ed->ResolveWorkspaceArg(name) : -1;
+}
+
+/**
+ * @brief Implements mep.workspace_list(): every workspace of the active project, in bar order.
+ * @param L Lua state.
+ * @return Number of values pushed (1: array of workspace tables).
+ */
+int l_workspace_list(lua_State *L) {
+    const Editor *ed = GetEditor(L);
+    const Project &project = ed->ActiveProject();
+    lua_newtable(L);
+    for (size_t i = 0; i < project.workspaces.size(); i++) {
+        PushWorkspaceTable(L, project.workspaces[i], static_cast<int>(i) == project.active_workspace,
+                           static_cast<int>(i) + 1);
+        lua_rawseti(L, -2, static_cast<lua_Integer>(i) + 1);
+    }
+    return 1;
+}
+
+/**
+ * @brief Implements mep.workspace_current(): the active workspace's table.
+ * @param L Lua state.
+ * @return Number of values pushed (1).
+ */
+int l_workspace_current(lua_State *L) {
+    const Editor *ed = GetEditor(L);
+    PushWorkspaceTable(L, ed->ActiveWorkspace(), true, ed->ActiveWorkspaceIndex() + 1);
+    return 1;
+}
+
+/**
+ * @brief Implements mep.workspace_root(): the active workspace's root directory (== mep.getcwd() by decision 4).
+ * @param L Lua state.
+ * @return Number of values pushed (1: the path).
+ */
+int l_workspace_root(lua_State *L) {
+    lua_pushstring(L, GetEditor(L)->ActiveRoot().c_str());
+    return 1;
+}
+
+/**
+ * @brief Implements mep.workspace_new(name [, attach_existing]): `:wsnew[!] name`.
+ * @param L Lua state; arg 1 is the name, optional arg 2 attaches to an existing branch.
+ * @return Number of values pushed (0).
+ */
+int l_workspace_new(lua_State *L) {
+    const char *name = luaL_checkstring(L, 1);
+    GetEditor(L)->WorkspaceCreate(name, lua_toboolean(L, 2) != 0);
+    return 0;
+}
+
+/**
+ * @brief Implements mep.workspace_switch(id|name): activates a workspace.
+ * @param L Lua state.
+ * @return Number of values pushed (1: true on success).
+ */
+int l_workspace_switch(lua_State *L) {
+    int id = WorkspaceIdFromLuaArg(L, 1);
+    lua_pushboolean(L, id >= 0 && GetEditor(L)->WorkspaceSwitch(id));
+    return 1;
+}
+
+/**
+ * @brief Implements mep.workspace_delete(id|name [, force]): `:wsdelete[!]`.
+ * @param L Lua state.
+ * @return Number of values pushed (1: true on success).
+ */
+int l_workspace_delete(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    std::string arg;
+    if (lua_isinteger(L, 1)) {
+        const Workspace *ws = ed->FindWorkspace(static_cast<int>(lua_tointeger(L, 1)));
+        if (!ws) {
+            lua_pushboolean(L, false);
+            return 1;
+        }
+        arg = ws->name;
+    } else if (const char *name = lua_tostring(L, 1)) {
+        arg = name;
+    }
+    const int before = ed->WorkspaceCount();
+    ed->WorkspaceRemove(arg, lua_toboolean(L, 2) != 0);
+    lua_pushboolean(L, ed->WorkspaceCount() < before);
+    return 1;
+}
+
+/**
+ * @brief Implements mep.workspace_rename(id|name, new_name).
+ * @param L Lua state.
+ * @return Number of values pushed (1: true on success).
+ */
+int l_workspace_rename(lua_State *L) {
+    int id = WorkspaceIdFromLuaArg(L, 1);
+    const char *name = luaL_checkstring(L, 2);
+    lua_pushboolean(L, id >= 0 && GetEditor(L)->WorkspaceRename(id, name));
+    return 1;
+}
+
+/**
+ * @brief Implements mep.workspace_next() / mep.workspace_previous().
+ */
+int l_workspace_next(lua_State *L) {
+    GetEditor(L)->WorkspaceNext();
+    return 0;
+}
+int l_workspace_previous(lua_State *L) {
+    GetEditor(L)->WorkspacePrevious();
+    return 0;
+}
+
+/** @brief Pushes one project as {id, name, root, is_git, git_toplevel, workspace_count, active, index}. */
+void PushProjectTable(lua_State *L, const Project &p, bool active, int index) {
+    lua_newtable(L);
+    lua_pushinteger(L, p.id);
+    lua_setfield(L, -2, "id");
+    lua_pushstring(L, p.name.c_str());
+    lua_setfield(L, -2, "name");
+    lua_pushstring(L, p.root.c_str());
+    lua_setfield(L, -2, "root");
+    lua_pushboolean(L, p.is_git);
+    lua_setfield(L, -2, "is_git");
+    lua_pushstring(L, p.git_toplevel.c_str());
+    lua_setfield(L, -2, "git_toplevel");
+    lua_pushinteger(L, static_cast<lua_Integer>(p.workspaces.size()));
+    lua_setfield(L, -2, "workspace_count");
+    lua_pushboolean(L, active);
+    lua_setfield(L, -2, "active");
+    lua_pushinteger(L, index);
+    lua_setfield(L, -2, "index");
+}
+
+/** @brief Integer = project id, string = name / 1-based index / root; nil = active project. */
+int ProjectIdFromLuaArg(lua_State *L, int idx) {
+    const Editor *ed = GetEditor(L);
+    if (lua_isnoneornil(L, idx)) return ed->ActiveProject().id;
+    if (lua_isinteger(L, idx)) {
+        int id = static_cast<int>(lua_tointeger(L, idx));
+        return ed->FindProject(id) ? id : -1;
+    }
+    const char *name = lua_tostring(L, idx);
+    return name ? ed->ResolveProjectArg(name) : -1;
+}
+
+/** @brief Implements mep.project_load(dir) -> id, restored: loads (or switches to) a project (WORKSPACES_PLAN.md Phase 9). */
+int l_project_load(lua_State *L) {
+    bool restored = false;
+    int id = GetEditor(L)->ProjectLoad(luaL_checkstring(L, 1), &restored);
+    if (id < 0) {
+        lua_pushnil(L);
+        lua_pushboolean(L, false);
+        return 2;
+    }
+    lua_pushinteger(L, id);
+    lua_pushboolean(L, restored);
+    return 2;
+}
+/** @brief Implements mep.project_current(). */
+int l_project_current(lua_State *L) {
+    const Editor *ed = GetEditor(L);
+    PushProjectTable(L, ed->ActiveProject(), true, ed->ActiveProjectIndex() + 1);
+    return 1;
+}
+/** @brief Implements mep.project_loaded_list(): every loaded project, in load order. */
+int l_project_loaded_list(lua_State *L) {
+    const Editor *ed = GetEditor(L);
+    lua_newtable(L);
+    for (int i = 0; i < ed->ProjectCount(); i++) {
+        PushProjectTable(L, ed->ProjectAt(i), i == ed->ActiveProjectIndex(), i + 1);
+        lua_rawseti(L, -2, i + 1);
+    }
+    return 1;
+}
+/** @brief Implements mep.project_switch(id|name). */
+int l_project_switch(lua_State *L) {
+    int id = ProjectIdFromLuaArg(L, 1);
+    lua_pushboolean(L, id >= 0 && GetEditor(L)->ProjectSwitch(id));
+    return 1;
+}
+/** @brief Implements mep.project_close(id|name [, force]). */
+int l_project_close(lua_State *L) {
+    int id = ProjectIdFromLuaArg(L, 1);
+    lua_pushboolean(L, id >= 0 && GetEditor(L)->ProjectClose(id, lua_toboolean(L, 2) != 0));
+    return 1;
+}
+int l_project_next(lua_State *L) {
+    GetEditor(L)->ProjectNext();
+    return 0;
+}
+int l_project_previous(lua_State *L) {
+    GetEditor(L)->ProjectPrevious();
+    return 0;
+}
+/** @brief Implements mep.workspace_state_save() / mep.workspace_state_restore(): `:wssave` / `:wsrestore`. */
+int l_workspace_state_save(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    lua_pushboolean(L, ed->SaveWorkspaceState(ed->ActiveProject().id));
+    return 1;
+}
+int l_workspace_state_restore(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    lua_pushboolean(L, ed->RestoreWorkspaceState(ed->ActiveProject().id, false));
+    return 1;
+}
+
+/** @brief Implements mep.workspace_adopt(path_or_branch): `:wsadopt`. */
+int l_workspace_adopt(lua_State *L) {
+    GetEditor(L)->WorkspaceAdopt(luaL_checkstring(L, 1));
+    return 0;
+}
+/** @brief Implements mep.workspace_prune(): `:wsprune`. */
+int l_workspace_prune(lua_State *L) {
+    GetEditor(L)->WorkspacePrune();
+    return 0;
+}
+/** @brief Implements mep.workspace_set_git_dirty(id, bool): Phase 7's optional `+` marker. */
+int l_workspace_set_git_dirty(lua_State *L) {
+    Workspace *ws = GetEditor(L)->FindWorkspace(static_cast<int>(luaL_checkinteger(L, 1)));
+    if (ws) ws->git_dirty = lua_toboolean(L, 2) != 0;
+    return 0;
+}
+/** @brief Implements mep.workspace_set_restore(bool): backs mep.opt.restore_workspaces. */
+int l_workspace_set_restore(lua_State *L) {
+    GetEditor(L)->SetRestoreWorkspaces(lua_toboolean(L, 1) != 0);
+    return 0;
+}
+/** @brief Implements mep.workspace_set_worktree_dir(dir): backs mep.opt.worktree_dir. */
+int l_workspace_set_worktree_dir(lua_State *L) {
+    const char *dir = lua_tostring(L, 1);
+    GetEditor(L)->SetWorktreeDirOverride(dir ? dir : "");
+    return 0;
+}
+
+/**
+ * @brief Implements mep.workspace_change_epoch(): counter bumped on every workspace/project change, for mep.on_workspace_changed.
+ * @param L Lua state.
+ * @return Number of values pushed (1).
+ */
+int l_workspace_change_epoch(lua_State *L) {
+    lua_pushinteger(L, GetEditor(L)->WorkspaceChangeEpoch());
+    return 1;
 }
 
 /**
@@ -5961,6 +6258,30 @@ const luaL_Reg kMepFuncs[] = {
     {"babel_cache_save", l_babel_cache_save},
     {"chdir", l_chdir},
     {"getcwd", l_getcwd},
+    {"workspace_list", l_workspace_list},
+    {"workspace_current", l_workspace_current},
+    {"workspace_root", l_workspace_root},
+    {"workspace_new", l_workspace_new},
+    {"workspace_switch", l_workspace_switch},
+    {"workspace_delete", l_workspace_delete},
+    {"workspace_rename", l_workspace_rename},
+    {"workspace_next", l_workspace_next},
+    {"workspace_previous", l_workspace_previous},
+    {"workspace_change_epoch", l_workspace_change_epoch},
+    {"workspace_adopt", l_workspace_adopt},
+    {"workspace_prune", l_workspace_prune},
+    {"workspace_set_worktree_dir", l_workspace_set_worktree_dir},
+    {"workspace_set_restore", l_workspace_set_restore},
+    {"workspace_set_git_dirty", l_workspace_set_git_dirty},
+    {"workspace_state_save", l_workspace_state_save},
+    {"workspace_state_restore", l_workspace_state_restore},
+    {"project_load", l_project_load},
+    {"project_current", l_project_current},
+    {"project_loaded_list", l_project_loaded_list},
+    {"project_switch", l_project_switch},
+    {"project_close", l_project_close},
+    {"project_next", l_project_next},
+    {"project_previous", l_project_previous},
     {"diff_lines", l_diff_lines},
     {"filename", l_filename},
     {"html_open", l_html_open},

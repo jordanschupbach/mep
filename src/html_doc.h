@@ -30,6 +30,66 @@
 
 enum class DomNodeType { Element, Text };
 
+// A compact, renderer-independent display list for a canvas element.  The
+// JavaScript binding records commands here; main.cpp replays them into the
+// page's raylib render pass.  Keeping it on the DOM node means a canvas has
+// browser-like persistent pixels across layout frames instead of disappearing
+// whenever the preview is redrawn.
+struct CanvasGradientStop {
+    float offset = 0.0f;
+    unsigned char r = 0, g = 0, b = 0, a = 255;
+};
+
+// A CanvasGradient's geometry in canvas coordinates. Commands copy the
+// gradient active at record time, so a later addColorStop() can't retro-
+// actively recolor pixels already "painted" -- the same snapshot semantics
+// a real bitmap canvas has.
+struct CanvasGradient {
+    bool present = false;
+    bool radial = false;
+    float x0 = 0, y0 = 0, r0 = 0, x1 = 0, y1 = 0, r1 = 0;
+    std::vector<CanvasGradientStop> stops;
+};
+
+struct CanvasCommand {
+    enum class Kind { FillRect, StrokeRect, ClearRect, StrokePath, FillPath, FillText, ImageData };
+    Kind kind = Kind::FillRect;
+    float x = 0, y = 0, w = 0, h = 0;
+    unsigned char r = 0, g = 0, b = 0, a = 255;  // flat paint (globalAlpha already applied)
+    CanvasGradient gradient;                     // when present, overrides r/g/b (see CanvasGradientColorAt)
+    float line_width = 1.0f;
+    float font_size = 0.0f;  // FillText: canvas-space font size, 0 = renderer default
+    // Path geometry, already transformed by the CTM current at record time.
+    std::vector<float> points;
+    // FillPath: index triples into `points`, wound for raylib's DrawTriangle
+    // (see SvgShape::triangles in svg_doc.h for the convention).
+    std::vector<unsigned> triangles;
+    std::string text;
+    std::vector<unsigned char> pixels;
+};
+
+// Evaluates `gradient` at a canvas-space point: linear gradients project
+// onto the axis, radial ones use the distance from the inner circle's
+// center normalized by the outer radius (concentric approximation). Stops
+// are interpolated in straight RGBA. Returns false if there are no stops.
+bool CanvasGradientColorAt(const CanvasGradient &gradient, float x, float y,
+                           unsigned char &r, unsigned char &g, unsigned char &b, unsigned char &a);
+
+// A CSS length kept unresolved until layout, where the containing block and
+// effective font size are available. `auto_value` is meaningful for margins;
+// other properties simply treat it as their normal automatic value.
+struct CssLength {
+    enum class Unit { Px, Percent, Em, Rem };
+    bool set = false;
+    bool auto_value = false;
+    float value = 0.0f;
+    Unit unit = Unit::Px;
+};
+
+struct CssEdges {
+    CssLength top, right, bottom, left;
+};
+
 // Every property CSS could plausibly set, already resolved (inherited from
 // the parent, then the UA default for this tag, then <style> block rules,
 // then the inline style="" attribute, each layer only overriding what it
@@ -66,6 +126,12 @@ struct ComputedStyle {
         unsigned char r = 0, g = 0, b = 0;
     };
     BorderEdge border_top, border_right, border_bottom, border_left;
+    // CSS box-model lengths. They intentionally retain their units here:
+    // percentages need the containing block width and em needs this node's
+    // resolved font size, neither of which the DOM/style pass knows.
+    CssEdges margin, padding;
+    CssLength width, height, min_width, min_height, max_width, max_height;
+    bool border_box = false;  // false = content-box (the CSS default)
     // Multiplier on the pane's base font size -- 1.0 for body text, >1 for
     // headings (h1 largest), <1 never used in the UA defaults but a
     // <style> rule can still set one. Inherits from the parent (matching
@@ -108,6 +174,10 @@ struct DomNode {
     std::string text;  // Text node content verbatim (whitespace-collapsed at layout time, not here -- see main.cpp)
     std::unordered_map<std::string, std::string> attrs;
     std::vector<std::unique_ptr<DomNode>> children;
+    // A host-owned shadow root.  It is intentionally separate from light DOM
+    // children so DOM APIs retain both trees while layout renders the shadow
+    // subtree when present.
+    std::unique_ptr<DomNode> shadow_root;
     // Non-owning; valid for the node's whole lifetime since nothing in
     // this file or js_engine.cpp ever reparents/moves a node after parse
     // (js_engine.cpp's textContent setter replaces a node's *children*,
@@ -115,6 +185,34 @@ struct DomNode {
     // stay valid across a script mutation).
     DomNode *parent = nullptr;
     ComputedStyle style;
+
+    // Form/details state is DOM-owned rather than reconstructed by layout.
+    // This makes the initial HTML attributes observable now and gives the
+    // future input/event layer stable state to mutate.
+    std::string form_value;
+    bool form_checked = false;
+    bool form_disabled = false;
+    bool details_open = false;
+    bool media_paused = true;
+    bool media_muted = false;
+    double media_current_time = 0.0;
+    double media_volume = 1.0;
+    // Filled by LoadHtmlMedia from the resolved local source: duration in
+    // seconds and HTMLMediaElement.readyState (0 = HAVE_NOTHING, 4 =
+    // HAVE_ENOUGH_DATA). `media_error` is non-empty when the source could
+    // not be decoded (unsupported container/codec, missing file).
+    double media_duration = 0.0;
+    bool media_ended = false;
+    int media_ready_state = 0;
+    std::string media_error;
+    std::string media_source_path;  // resolved local path, "" for remote/none
+
+    // Canvas's coordinate space is separate from its CSS layout size.  These
+    // are initialized from width/height attributes (or the HTML defaults)
+    // and the command list is populated by CanvasRenderingContext2D.
+    int canvas_width = 300;
+    int canvas_height = 150;
+    std::vector<CanvasCommand> canvas_commands;
 
     // "id" and "class" attribute lookups (document.getElementById, a
     // <style> block's #id/.class selectors) are frequent enough relative
@@ -144,6 +242,21 @@ struct HtmlDoc {
     // on exactly that: a later block seeing an earlier one's globals).
     // External <script src> is out of scope entirely (never populated).
     std::vector<std::string> scripts;
+    // Nodes made through document.createElement/createTextNode remain here
+    // until insertion. This gives detached DOM wrappers stable ownership.
+    std::vector<std::unique_ptr<DomNode>> detached_nodes;
+};
+
+// Renderer-independent accessibility projection.  The editor can later map
+// this to its platform accessibility bridge without reinterpreting HTML or
+// ARIA at every call site.
+struct AccessibleNode {
+    std::string role;
+    std::string name;
+    std::string description;
+    bool disabled = false;
+    bool checked = false;
+    std::vector<AccessibleNode> children;
 };
 
 // Parses `html` (already-decoded UTF-8 text, not raw bytes -- the caller
@@ -178,6 +291,29 @@ void ParseHtml(const std::string &html, HtmlDoc &out);
  * @param doc Document whose tree gets its `style` fields (re)computed in place.
  */
 void ComputeStyles(HtmlDoc &doc);
+
+// Selector helpers shared by the DOM binding. They use the same parser and
+// matcher as the CSS cascade, preventing querySelector from drifting away
+// from what a stylesheet actually matches.
+DomNode *QuerySelector(DomNode *root, const std::string &selector);
+std::vector<DomNode *> QuerySelectorAll(DomNode *root, const std::string &selector);
+
+// Produces the document's semantic accessibility tree, respecting explicit
+// ARIA roles/labels and native HTML control semantics.
+AccessibleNode BuildAccessibilityTree(const HtmlDoc &doc);
+
+// Resolves every <audio>/<video> element's local source (its own `src` or
+// the first <source src>) against `base_dir`, decodes what the in-tree
+// media pipeline supports (PCM16 RIFF/WAVE via wav_doc.cpp today) to learn
+// its duration, and records readyState/error on the node. Remote sources
+// are left unloaded (Part IV networking is where fetching would land).
+// Called once per parse, before scripts run, so `duration` is observable.
+void LoadHtmlMedia(HtmlDoc &doc, const std::string &base_dir);
+
+// Advances every playing media element's clock by `seconds`; clamps at the
+// duration, honoring `loop`, and flips paused/ended at the end. The editor
+// calls this once per frame for the visible page.
+void AdvanceHtmlMediaClock(HtmlDoc &doc, double seconds);
 
 // True if `path`'s extension is .html or .htm (case-insensitive) -- same
 // convention as IsDocxPath/IsImagePath/etc. (office_doc.h and friends).

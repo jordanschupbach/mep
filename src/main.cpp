@@ -2,6 +2,7 @@
 #include "editor.h"
 #include "formula.h"
 #include "html_doc.h"
+#include "svg_doc.h"
 #include "job.h"
 #include "lua_env.h"
 #include "org_doc.h"
@@ -757,18 +758,26 @@ PaneDropZone ComputePaneDropZone(Vector2 mouse, const Rectangle &rect) {
     return (m > kCenterThreshold) ? PaneDropZone::Center : zone;
 }
 
-enum class PaneDragKind { None, TabMove, BorderResize, SidebarResize };
+// FileDrop: a file row dragged out of a sidebar (the file tree, the git
+// status list -- any widget whose id is an existing regular file) and
+// dropped on a pane, using the exact same zone pinwheel/overlay as
+// TabMove: center opens it in that pane, an edge splits that pane and
+// opens it in the new leaf (Editor::OpenFileInPane).
+enum class PaneDragKind { None, TabMove, BorderResize, SidebarResize, FileDrop };
 
 struct PaneDragState {
     PaneDragKind kind = PaneDragKind::None;
     Vector2 start_pos{};
     bool threshold_passed = false;  // false until the mouse has moved far enough to count as a real drag, not just a click-in-place
 
-    // TabMove fields.
+    // TabMove fields (target_pane_id/drop_zone shared with FileDrop).
     int source_pane_id = 0;
     int dragged_buffer_id = 0;
     int target_pane_id = -1;
     PaneDropZone drop_zone = PaneDropZone::Center;
+
+    // FileDrop fields.
+    std::string dragged_path;
 
     // BorderResize fields.
     SplitNode *border_node = nullptr;
@@ -1963,6 +1972,19 @@ const char *kKeybindingsText =
     "  :tabnew [file]  :tabdelete     new / close tab\n"
     "  :tabnext  :tabprevious         switch tabs\n"
     "\n"
+    "Projects & workspaces\n"
+    "  :wsnew[!] <name>               new workspace (git: new worktree + branch; ! attaches to existing branch)\n"
+    "  :wsdelete[!] [name]            delete workspace (and its worktree)\n"
+    "  :ws <name|N>  :wsnext  :wsprevious   switch workspace\n"
+    "  :wsrename <name>  :wslist      rename / pick workspace\n"
+    "  Ctrl-Shift-T                   new workspace prompt\n"
+    "  Ctrl-Alt-] / Ctrl-Alt-[        next / previous workspace\n"
+    "  <leader>w n/w/r/d/l/h          new / list / rename / delete / next / prev workspace\n"
+    "  <leader>gw                     git workspaces picker (branch, ahead/behind)\n"
+    "  :project [dir]  :projects      open/switch project / loaded-projects picker\n"
+    "  :projectclose[!]  :projectnext :projectprevious\n"
+    "  :wssave  :wsrestore            save / restore this project's layout\n"
+    "\n"
     "  Alt+s / Alt+v                  split (horizontal / vertical)\n"
     "  Alt+h j k l                    move focus left / down / up / right\n"
     "  Alt+Shift+h j k l              resize pane left / down / up / right\n"
@@ -2036,6 +2058,21 @@ const char *kBuiltinEditHooks =
     "    if epoch ~= last_epoch then\n"
     "      last_epoch = epoch\n"
     "      fn()\n"
+    "    end\n"
+    "  end)\n"
+    "end\n"
+    // WORKSPACES_PLAN.md Phase 2: fires after any workspace/project switch,
+    // create, delete or rename (Editor::WorkspaceChangeEpoch), same
+    // epoch-polling idiom as the two hooks above. Skips the initial state
+    // (last_epoch seeded from the current value) so it only reports real
+    // changes, unlike on_buffer_changed which fires once on load.
+    "function mep.on_workspace_changed(fn)\n"
+    "  local last_epoch = mep.workspace_change_epoch()\n"
+    "  mep.on_frame(function()\n"
+    "    local epoch = mep.workspace_change_epoch()\n"
+    "    if epoch ~= last_epoch then\n"
+    "      last_epoch = epoch\n"
+    "      fn(mep.workspace_current())\n"
     "    end\n"
     "  end)\n"
     "end\n";
@@ -2393,9 +2430,16 @@ const char *kBuiltinFileTree =
     // preferred over README.md etc. by that fixed priority order -- moved
     // to C++ (Editor::ProjectReadmePath), exposed as
     // mep.project_readme_path (lua_env.cpp); nil if none match.
+    // WORKSPACES_PLAN.md Phase 9: mep.project_open is mep.project_load
+    // (a real Project with its own workspaces, chdir'd to, git-detected,
+    // saved state restored) followed by the readme/terminal default
+    // layout -- but only when the project had no saved layout and wasn't
+    // already loaded.
     "function mep.project_open(dir)\n"
-    "  mep.chdir(dir)\n"
-    "  local readme = mep.project_readme_path(dir)\n"
+    "  local id, restored = mep.project_load(dir)\n"
+    "  if not id then return end\n"
+    "  dir = mep.workspace_root()\n"
+    "  local readme = restored and nil or mep.project_readme_path(dir)\n"
     "  local opened_readme = readme ~= nil\n"
     "  if opened_readme then mep.open(readme) end\n"
     // A bare `:terminal` always opens its new pane above/left of whatever
@@ -2421,6 +2465,30 @@ const char *kBuiltinFileTree =
     "  if opened_readme then mep.nav_pane('right') end\n"
     "  mep.notify('Opened project: ' .. dir)\n"
     "end\n"
+    // The switcher clicking `[project_name]` in the tab bar opens: every
+    // *loaded* project with its workspace count (unlike mep.projects(),
+    // the bookmark list). Enter switches; the trailing rows open a
+    // bookmark or close the active project.
+    "function mep.projects_open()\n"
+    "  local items = {}\n"
+    "  for _, p in ipairs(mep.project_loaded_list()) do\n"
+    "    local label = '[' .. p.name .. ']'\n"
+    "    if p.active then label = label .. ' *' end\n"
+    "    label = label .. '  ' .. p.workspace_count .. ' workspace' .. (p.workspace_count == 1 and '' or 's')\n"
+    "    if p.is_git then label = label .. '  git' end\n"
+    "    label = label .. '  ' .. p.root\n"
+    "    items[#items + 1] = {display = label, data = tostring(p.id)}\n"
+    "  end\n"
+    "  items[#items + 1] = '+ Open a project...'\n"
+    "  items[#items + 1] = '- Close current project'\n"
+    "  mep.picker_open('Loaded projects', items, function(item)\n"
+    "    if item == '+ Open a project...' then mep.projects()\n"
+    "    elseif item == '- Close current project' then mep.cmd('projectclose')\n"
+    "    elseif item then mep.project_switch(tonumber(item)) end\n"
+    "  end)\n"
+    "end\n"
+    "mep.command('MepProjectsOpen', mep.projects_open)\n"
+    "mep.leader_map('pp', 'Loaded projects', mep.projects_open)\n"
     "local function mep_project_basename(p)\n"
     "  local trimmed = p:gsub('/+$', '')\n"
     "  if trimmed == '' then return p end\n"
@@ -2578,6 +2646,7 @@ const char *kBuiltinGit =
     "  end\n"
     "  local widgets = {}\n"
     "  mep.job_start({'git', 'status', '--porcelain'}, {\n"
+    "    cwd = mep.workspace_root(),\n"
     "    on_stdout = function(line)\n"
     "      local status, path = line:sub(1, 2), line:sub(4)\n"
     "      widgets[#widgets + 1] = {\n"
@@ -2586,8 +2655,14 @@ const char *kBuiltinGit =
     "      }\n"
     "    end,\n"
     "    on_exit = function()\n"
+    // Phase 7: `branch @ workspace` in the header -- the list itself is
+    // already the active workspace's tree via cwd above.
+    "      local ws = mep.workspace_current()\n"
+    "      local title = 'Changes'\n"
+    "      if ws.branch ~= '' then title = title .. ' \xe2\x80\x94 ' .. ws.branch .. ' @ ' .. ws.name\n"
+    "      else title = title .. ' \xe2\x80\x94 ' .. ws.name end\n"
     "      mep.sidebar_set_sections(mep_git_status_sidebar_id, {\n"
-    "        {id = 'status', title = 'Changes', collapsed = false, widgets = widgets},\n"
+    "        {id = 'status', title = title, collapsed = false, widgets = widgets},\n"
     "      })\n"
     "    end,\n"
     "  })\n"
@@ -2601,6 +2676,7 @@ const char *kBuiltinGit =
     "      mep.ui_input('Commit message:', '', function(msg)\n"
     "        if msg and msg ~= '' then\n"
     "          mep.job_start({'git', 'commit', '-m', msg}, {\n"
+    "            cwd = mep.workspace_root(),\n"
     "            on_exit = function(code)\n"
     "              if code == 0 then mep.notify('Committed') else mep.notify('git commit failed', 'error') end\n"
     "              mep.git_status_refresh()\n"
@@ -2614,13 +2690,13 @@ const char *kBuiltinGit =
     "    return\n"
     "  end\n"
     "  if k == 's' then\n"
-    "    mep.job_start({'git', 'add', target}, {on_exit = function() mep.git_status_refresh() end})\n"
+    "    mep.job_start({'git', 'add', target}, {cwd = mep.workspace_root(), on_exit = function() mep.git_status_refresh() end})\n"
     "  elseif k == 'u' then\n"
-    "    mep.job_start({'git', 'reset', target}, {on_exit = function() mep.git_status_refresh() end})\n"
+    "    mep.job_start({'git', 'reset', target}, {cwd = mep.workspace_root(), on_exit = function() mep.git_status_refresh() end})\n"
     "  elseif k == 'd' then\n"
     "    mep.ui_confirm('Discard changes to ' .. target .. '?', false, function(yes)\n"
     "      if yes then\n"
-    "        mep.job_start({'git', 'checkout', '--', target}, {on_exit = function() mep.git_status_refresh() end})\n"
+    "        mep.job_start({'git', 'checkout', '--', target}, {cwd = mep.workspace_root(), on_exit = function() mep.git_status_refresh() end})\n"
     "      end\n"
     "    end)\n"
     "  elseif k == 'R' then\n"
@@ -2658,7 +2734,77 @@ const char *kBuiltinGit =
     // A longer default debounce interval than colorize/todo_mark since
     // this spawns a git subprocess per recompute.
     "mep.git_gutter_auto = false\n"
-    "mep.on_buffer_changed(function() if mep.git_gutter_auto then mep.git_gutter_refresh() end end, 0.6)\n";
+    "mep.on_buffer_changed(function() if mep.git_gutter_auto then mep.git_gutter_refresh() end end, 0.6)\n"
+    // WORKSPACES_PLAN.md Phase 7: opt-in `+` marker per workspace label
+    // (mep.opt.workspace_git_dirty = true) from a debounced `git status
+    // --porcelain` per workspace -- every 5s, never per frame, and only
+    // on git projects. The `*` marker (modified buffers) needs no git.
+    "do\n"
+    "  local last_poll = 0\n"
+    "  mep.on_frame(function()\n"
+    "    if not mep.opt.workspace_git_dirty then return end\n"
+    "    local now = mep.now()\n"
+    "    if now - last_poll < 5 then return end\n"
+    "    last_poll = now\n"
+    "    for _, ws in ipairs(mep.workspace_list()) do\n"
+    "      if not ws.creating and ws.branch ~= '' then\n"
+    "        local dirty = false\n"
+    "        mep.job_start({'git', 'status', '--porcelain'}, {\n"
+    "          cwd = ws.root,\n"
+    "          on_stdout = function(line) if line ~= '' then dirty = true end end,\n"
+    "          on_exit = function(code) if code == 0 then mep.workspace_set_git_dirty(ws.id, dirty) end end,\n"
+    "        })\n"
+    "      end\n"
+    "    end\n"
+    "  end)\n"
+    "end\n"
+    // <leader>gw: workspaces with branch, ahead/behind (one
+    // `git for-each-ref` call) and the dirty flag; Enter switches, the
+    // trailing rows create/delete.
+    "function mep.workspace_git_picker()\n"
+    "  local track = {}\n"
+    "  local function open_picker()\n"
+    "    local items = {}\n"
+    "    for _, ws in ipairs(mep.workspace_list()) do\n"
+    "      local label = '[' .. ws.name .. ']'\n"
+    "      if ws.active then label = label .. ' *' end\n"
+    "      if ws.branch ~= '' then label = label .. '  ' .. ws.branch end\n"
+    "      if track[ws.branch] and track[ws.branch] ~= '' then label = label .. '  ' .. track[ws.branch] end\n"
+    "      if ws.git_dirty then label = label .. '  [dirty]' end\n"
+    "      if ws.creating then label = label .. '  (creating...)' end\n"
+    "      items[#items + 1] = {display = label, data = tostring(ws.id)}\n"
+    "    end\n"
+    "    items[#items + 1] = '+ New workspace...'\n"
+    "    items[#items + 1] = '- Delete a workspace...'\n"
+    "    mep.picker_open('Git workspaces', items, function(item)\n"
+    "      if item == '+ New workspace...' then mep.workspace_new_prompt()\n"
+    "      elseif item == '- Delete a workspace...' then\n"
+    "        local del = {}\n"
+    "        for _, ws in ipairs(mep.workspace_list()) do\n"
+    "          if not ws.primary and not ws.creating then del[#del + 1] = {display = ws.name, data = tostring(ws.id)} end\n"
+    "        end\n"
+    "        mep.picker_open('Delete workspace', del, function(d)\n"
+    "          if not d then return end\n"
+    "          mep.ui_confirm('Delete workspace ' .. tostring(d) .. ' and its worktree?', false, function(yes)\n"
+    "            if yes then mep.workspace_delete(tonumber(d), false) end\n"
+    "          end)\n"
+    "        end)\n"
+    "      elseif item then mep.workspace_switch(tonumber(item)) end\n"
+    "    end)\n"
+    "  end\n"
+    "  local cur = mep.workspace_current()\n"
+    "  if cur.branch == '' then open_picker() return end\n"
+    "  mep.job_start({'git', 'for-each-ref', '--format=%(refname:short) %(upstream:track)', 'refs/heads'}, {\n"
+    "    cwd = mep.workspace_root(),\n"
+    "    on_stdout = function(line)\n"
+    "      local name, rest = line:match('^(%S+)%s*(.*)$')\n"
+    "      if name then track[name] = rest end\n"
+    "    end,\n"
+    "    on_exit = function() open_picker() end,\n"
+    "  })\n"
+    "end\n"
+    "mep.command('MepGitWorkspaces', mep.workspace_git_picker)\n"
+    "mep.leader_map('gw', 'Git workspaces', mep.workspace_git_picker)\n";
 
 // Todoscan (Phase 18): project-wide keyword scan (ripgrep-backed -- no
 // synchronous walk+match fallback for the project-wide scan specifically,
@@ -2720,7 +2866,8 @@ const char *kBuiltinTodo =
     "      if file then mep.open(file); mep.set_cursor(tonumber(lnum), 1) end\n"
     "    end)\n"
     "  end\n"
-    "  mep.job_start({'rg', '-n', '--no-heading', pattern, '.'}, {\n"
+    "  mep.job_start({'rg', '-n', '--no-heading', '--glob', '!*.worktrees', pattern, '.'}, {\n"
+    "    cwd = mep.workspace_root(),\n"
     "    on_stdout = on_stdout,\n"
     "    on_exit = function(code)\n"
     // 127 is job.cpp's own exec-failed convention (see job.cpp) -- means
@@ -2852,8 +2999,13 @@ const char *kBuiltinLsp =
     "  svelte = {cmd = {'svelteserver', '--stdio'}, filetypes = {'svelte'}},\n"
     "  basedpyright = {cmd = {'basedpyright-langserver', '--stdio'}, filetypes = {}},\n"
     "}\n"
-    // filetype -> client_id (one client per filetype, workspace-wide)
+    // (filetype .. '@' .. workspace root) -> client_id: one client per
+    // filetype *per workspace root* (WORKSPACES_PLAN.md Phase 5), since
+    // two worktrees of the same repo need distinct rootUris or edits in
+    // one tree get reported against the other. Non-git projects share one
+    // root across workspaces and so share one client.
     "local mep_lsp_clients = {}\n"
+    "local function mep_lsp_key(ft) return ft .. '@' .. mep.workspace_root() end\n"
     // filename -> array of LSP Diagnostic
     "local mep_lsp_diagnostics = {}\n"
     // filename -> version counter
@@ -2884,7 +3036,7 @@ const char *kBuiltinLsp =
     "end\n"
     "function mep.lsp_client_for(fname)\n"
     "  local ft = mep_lsp_filetype(fname or mep.filename())\n"
-    "  return ft and mep_lsp_clients[ft]\n"
+    "  return ft and mep_lsp_clients[mep_lsp_key(ft)]\n"
     "end\n"
     "function mep.lsp_attach()\n"
     "  local fname = mep.filename()\n"
@@ -2910,19 +3062,21 @@ const char *kBuiltinLsp =
     "    end\n"
     "  end\n"
     "  if not server then return end\n"
-    "  if mep_lsp_clients[ft] and mep.lsp_is_running(mep_lsp_clients[ft]) then\n"
+    "  local key = mep_lsp_key(ft)\n"
+    "  if mep_lsp_clients[key] and mep.lsp_is_running(mep_lsp_clients[key]) then\n"
     "    mep.lsp_did_open()\n"
     "    return\n"
     "  end\n"
-    "  local id = mep.lsp_start(server.cmd, {cwd = '.'})\n"
+    "  local root = mep.workspace_root()\n"
+    "  local id = mep.lsp_start(server.cmd, {cwd = root})\n"
     "  if id <= 0 then\n"
     "    mep.notify('LSP: failed to start ' .. server.cmd[1] .. ' (not on PATH?)', 'warn')\n"
     "    return\n"
     "  end\n"
-    "  mep_lsp_clients[ft] = id\n"
+    "  mep_lsp_clients[key] = id\n"
     "  mep.lsp_request(id, 'initialize', {\n"
     "    processId = mep.platform() == 'wasm' and mep.json_null or nil,\n"
-    "    rootUri = mep_lsp_uri('.'),\n"
+    "    rootUri = mep_lsp_uri(root),\n"
     "    capabilities = {\n"
     "      textDocument = {\n"
     "        hover = {contentFormat = {'plaintext'}},\n"
@@ -2950,6 +3104,21 @@ const char *kBuiltinLsp =
     "    mep.lsp_did_open()\n"
     "  end)\n"
     "end\n"
+    // Phase 5: when a workspace goes away, shut the clients that were
+    // rooted there -- unless another workspace still shares that root
+    // (non-git projects: every workspace is the project root).
+    "mep.on_workspace_changed(function()\n"
+    "  local live = {}\n"
+    "  for _, ws in ipairs(mep.workspace_list()) do live[ws.root] = true end\n"
+    "  for key, id in pairs(mep_lsp_clients) do\n"
+    "    local root = key:match('@(.*)$')\n"
+    "    if root and not live[root] then\n"
+    "      mep.lsp_stop(id)\n"
+    "      mep_lsp_clients[key] = nil\n"
+    "      mep_lsp_server_capabilities[id] = nil\n"
+    "    end\n"
+    "  end\n"
+    "end)\n"
     "function mep.lsp_did_open()\n"
     "  local id = mep.lsp_client_for()\n"
     "  if not id then return end\n"
@@ -10965,6 +11134,8 @@ const char *kBuiltinWhichKeyGroups =
     "mep.leader_group('or', 'roam')\n"
     "mep.leader_group('l', 'lsp')\n"
     "mep.leader_group('p', 'project')\n"
+    "mep.leader_group('w', 'workspace')\n"
+    "mep.leader_group('g', 'git')\n"
     "mep.leader_group('b', 'browse')\n"
     // Same real-collision case as 'b' above: 'ai' (AI context picker)
     // predates 'aa'/'aA' (this file's own Treesitter structure split/
@@ -11075,11 +11246,17 @@ const char *kBuiltinPickerSources =
     "    local now = mep.now()\n"
     "    if now - last_flush > 0.08 then last_flush = now flush() end\n"
     "  end\n"
-    "  mep.job_start({'rg', '--files', '--hidden', '--glob', '!.git'}, {\n"
+    // cwd is the workspace root and `*.worktrees` is excluded
+    // (WORKSPACES_PLAN.md Phase 3) so a sibling worktree directory never
+    // leaks into a project's own file list when mep.opt.worktree_dir
+    // points inside the repo.
+    "  mep.job_start({'rg', '--files', '--hidden', '--glob', '!.git', '--glob', '!*.worktrees'}, {\n"
+    "    cwd = mep.workspace_root(),\n"
     "    on_stdout = on_line,\n"
     "    on_exit = function(code)\n"
     "      if #lines == 0 then\n"
-    "        mep.job_start({'find', '.', '-type', 'f', '-not', '-path', '*/.git/*'}, {\n"
+    "        mep.job_start({'find', '.', '-type', 'f', '-not', '-path', '*/.git/*', '-not', '-path', '*.worktrees/*'}, {\n"
+    "          cwd = mep.workspace_root(),\n"
     "          on_stdout = on_line,\n"
     "          on_exit = function() ensure_open() flush() end,\n"
     "        })\n"
@@ -11160,7 +11337,8 @@ const char *kBuiltinPickerSources =
     // job never produced output or exited, IsRunning() stayed true
     // forever. Confirmed via a bare reproduction (rg with a pattern, no
     // path, stdin an open-but-silent pipe) before landing this fix.\n"
-    "  st.job_id = mep.job_start({'rg', '--line-number', '--no-heading', '--color=never', '--', query, '.'}, {\n"
+    "  st.job_id = mep.job_start({'rg', '--line-number', '--no-heading', '--color=never', '--glob', '!*.worktrees', '--', query, '.'}, {\n"
+    "    cwd = mep.workspace_root(),\n"
     "    on_stdout = function(line)\n"
     "      if my_gen ~= st.gen then return end\n"
     "      local file, lnum = line:match('^(.-):(%d+):.*$')\n"
@@ -11287,6 +11465,62 @@ const char *kBuiltinPickerSources =
     "  end)\n"
     "end\n"
     "mep.leader_map('bb', 'Buffers', mep.buffers)\n"
+    // WORKSPACES_PLAN.md Phase 2/9: the `:wslist` / <leader>ww picker over
+    // the active project's workspaces (name, branch, root; '*' marks the
+    // active one), plus the Ctrl-Shift-T / <leader>wn "new workspace" name
+    // prompt -- both Lua because ui_input/picker_open live here.
+    "function mep.workspaces()\n"
+    "  local items = {}\n"
+    "  for _, ws in ipairs(mep.workspace_list()) do\n"
+    "    local label = '[' .. ws.name .. ']'\n"
+    "    if ws.active then label = label .. ' *' end\n"
+    "    if ws.branch ~= '' then label = label .. '  ' .. ws.branch end\n"
+    "    if ws.creating then label = label .. '  (creating...)' end\n"
+    "    label = label .. '  ' .. ws.root\n"
+    "    items[#items + 1] = {display = label, data = tostring(ws.id)}\n"
+    "  end\n"
+    "  items[#items + 1] = '+ New workspace...'\n"
+    "  mep.picker_open('Workspaces', items, function(item)\n"
+    "    if item == '+ New workspace...' then mep.workspace_new_prompt()\n"
+    "    elseif item then mep.workspace_switch(tonumber(item)) end\n"
+    "  end)\n"
+    "end\n"
+    "function mep.workspace_new_prompt()\n"
+    "  mep.ui_input('New workspace name:', '', function(name)\n"
+    "    if name and name ~= '' then mep.workspace_new(name) end\n"
+    "  end)\n"
+    "end\n"
+    "function mep.workspace_rename_prompt()\n"
+    "  local cur = mep.workspace_current()\n"
+    "  mep.ui_input('Rename workspace ' .. cur.name .. ' to:', cur.name, function(name)\n"
+    "    if name and name ~= '' and name ~= cur.name then mep.workspace_rename(cur.id, name) end\n"
+    "  end)\n"
+    "end\n"
+    "function mep.workspace_delete_prompt()\n"
+    "  local cur = mep.workspace_current()\n"
+    "  if cur.primary then mep.notify('Cannot delete the primary workspace', 'warn') return end\n"
+    "  mep.ui_confirm('Delete workspace ' .. cur.name .. '?', false, function(yes)\n"
+    "    if yes then mep.workspace_delete(cur.id, false) end\n"
+    "  end)\n"
+    "end\n"
+    // mep.opt: the small options table WORKSPACES_PLAN.md introduces
+    // (worktree_dir, restore_workspaces, workspace_git_dirty). Assignments
+    // are forwarded to the C++ side immediately so init.lua's
+    // `mep.opt.worktree_dir = '...'` takes effect for the very next :wsnew.
+    "mep.opt = mep.opt or {}\n"
+    "setmetatable(mep.opt, {__newindex = function(t, k, v)\n"
+    "  rawset(t, k, v)\n"
+    "  if k == 'worktree_dir' then mep.workspace_set_worktree_dir(v or '')\n"
+    "  elseif k == 'restore_workspaces' then mep.workspace_set_restore(v ~= false)\n"
+    "  end\n"
+    "end})\n"
+    "mep.command('MepWorkspaces', mep.workspaces)\n"
+    "mep.leader_map('ww', 'Workspaces', mep.workspaces)\n"
+    "mep.leader_map('wn', 'New workspace', mep.workspace_new_prompt)\n"
+    "mep.leader_map('wr', 'Rename workspace', mep.workspace_rename_prompt)\n"
+    "mep.leader_map('wd', 'Delete workspace', mep.workspace_delete_prompt)\n"
+    "mep.leader_map('wl', 'Next workspace', mep.workspace_next)\n"
+    "mep.leader_map('wh', 'Previous workspace', mep.workspace_previous)\n"
     "function mep.commands()\n"
     "  mep.picker_open('Commands', mep.command_names(), function(item)\n"
     "    if item then mep.cmd(item) end\n"
@@ -11300,7 +11534,7 @@ const char *kBuiltinPickerSources =
     "function mep.winbar_navigate(dir)\n"
     "  if not dir or dir == '' then return end\n"
     "  local lines = {}\n"
-    "  mep.job_start({'rg', '--files', '--hidden', '--glob', '!.git', dir}, {\n"
+    "  mep.job_start({'rg', '--files', '--hidden', '--glob', '!.git', '--glob', '!*.worktrees', dir}, {\n"
     "    on_stdout = function(line) lines[#lines + 1] = line end,\n"
     "    on_exit = function(code)\n"
     "      if #lines == 0 then\n"
@@ -11370,6 +11604,11 @@ void BuildMenus() {
              {"Close Tab", [] { g_editor.RunCommand("tabdelete"); }},         // runs ":tabdelete"
              {"Next Tab", [] { g_editor.RunCommand("tabnext"); }},            // runs ":tabnext"
              {"Previous Tab", [] { g_editor.RunCommand("tabprevious"); }},    // runs ":tabprevious"
+             {"New Workspace", [] { g_editor.RunCommand("lua mep.workspace_new_prompt()"); }},  // prompts for a name
+             {"Workspaces...", [] { g_editor.RunCommand("wslist"); }},        // runs ":wslist"
+             {"Close Workspace", [] { g_editor.RunCommand("wsdelete"); }},   // runs ":wsdelete"
+             {"Next Workspace", [] { g_editor.RunCommand("wsnext"); }},      // runs ":wsnext"
+             {"Previous Workspace", [] { g_editor.RunCommand("wsprevious"); }},  // runs ":wsprevious"
          }},
         {"Help",
          {
@@ -14221,6 +14460,13 @@ struct HtmlMathRun {
     Color color{};
     MathLayoutResult layout;
 };
+// Canvas display lists are owned by their DOM nodes; the layout only records
+// the positioned viewport and the coordinate-space scale for this frame.
+struct HtmlCanvasRun {
+    float x = 0, y = 0, w = 0, h = 0;
+    const DomNode *node = nullptr;
+};
+struct HtmlSvgRun { float x = 0, y = 0, w = 0, h = 0; const DomNode *node = nullptr; };
 // A block element's own background-color box (ComputedStyle.has_bg,
 // html_doc.cpp's ApplyDeclarations -- parsed there but never actually
 // drawn anywhere before this struct existed). Pushed in document order
@@ -14254,9 +14500,15 @@ struct HtmlLayout {
     std::vector<HtmlRule> rules;
     std::vector<HtmlImageRun> images;
     std::vector<HtmlMathRun> math_runs;
+    std::vector<HtmlCanvasRun> canvases;
+    std::vector<HtmlSvgRun> svgs;
     std::vector<HtmlBgRect> backgrounds;
     std::vector<HtmlBorderRect> borders;
     float total_height = 0;
+    // The previous block's CSS bottom margin is deferred until the next
+    // block's top margin is known, allowing the two to collapse instead of
+    // always accumulating.
+    float pending_margin_bottom = 0;
 };
 
 struct HtmlLayoutCtx {
@@ -14277,6 +14529,17 @@ struct HtmlLayoutCtx {
  * @return The line height in pixels.
  */
 float HtmlLineHeight(float font_size) { return font_size + 6.0f; }
+
+float ResolveCssLength(const CssLength &length, float font_size, float containing_width) {
+    if (!length.set || length.auto_value) return 0.0f;
+    switch (length.unit) {
+        case CssLength::Unit::Px: return length.value;
+        case CssLength::Unit::Percent: return containing_width * length.value / 100.0f;
+        case CssLength::Unit::Em: return font_size * length.value;
+        case CssLength::Unit::Rem: return g_font_size * length.value;
+    }
+    return 0.0f;
+}
 
 /**
  * @brief Resolves a style's effective text color, falling back to the layout context's default
@@ -14479,6 +14742,7 @@ void HtmlCollectTextWords(const std::string &text, const ComputedStyle &style, c
 }
 
 void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlLayoutCtx &ctx, HtmlLayout &out);
+void HtmlLayoutTable(DomNode *table, float content_x, float &cursor_y, const HtmlLayoutCtx &ctx, HtmlLayout &out);
 
 // Concatenates every descendant Text node's raw content in document order
 // -- <pre>'s own layout and a <math> node's own raw LaTeX source (both
@@ -14490,7 +14754,8 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
  * @param out String to append the collected raw text to.
  */
 void HtmlCollectRawText(DomNode *node, std::string &out) {
-    for (auto &c : node->children) {
+    const auto &rendered_children = node->shadow_root ? node->shadow_root->children : node->children;
+    for (auto &c : rendered_children) {
         if (c->type == DomNodeType::Text) out += c->text;
         else if (!c->style.display_none)
             HtmlCollectRawText(c.get(), out);
@@ -14595,6 +14860,38 @@ void HtmlCollectInlineChild(DomNode *c, const ComputedStyle &parent_style, const
                              "]";
         out.push_back({label, ctx.base_font_size * c->style.font_scale, HtmlResolveColor(c->style, ctx), false,
                         true, false, false});
+        return;
+    }
+    if (c->tag == "input") {
+        std::string type = "text";
+        if (auto it = c->attrs.find("type"); it != c->attrs.end()) type = it->second;
+        std::string label;
+        if (type == "checkbox" || type == "radio") label = c->form_checked ? "[x]" : "[ ]";
+        else label = "[" + c->form_value + "]";
+        out.push_back({label, ctx.base_font_size * c->style.font_scale, HtmlResolveColor(c->style, ctx), false, false, false, false});
+        return;
+    }
+    if (c->tag == "button") {
+        std::string label; HtmlCollectRawText(c, label);
+        out.push_back({"[ " + label + " ]", ctx.base_font_size * c->style.font_scale, HtmlResolveColor(c->style, ctx), true, false, false, false});
+        return;
+    }
+    if (c->tag == "textarea") {
+        out.push_back({"[" + c->form_value + "]", ctx.base_font_size * c->style.font_scale, HtmlResolveColor(c->style, ctx), false, false, false, false});
+        return;
+    }
+    if (c->tag == "select") {
+        std::string selected = c->form_value;
+        if (selected.empty()) for (auto &option : c->children) if (option->type == DomNodeType::Element && option->tag == "option") { HtmlCollectRawText(option.get(), selected); break; }
+        out.push_back({"[" + selected + " v]", ctx.base_font_size * c->style.font_scale, HtmlResolveColor(c->style, ctx), false, false, false, false});
+        return;
+    }
+    if (c->tag == "audio" || c->tag == "video") {
+        auto source = c->attrs.find("src");
+        std::string label = c->tag == "video" ? "video" : "audio";
+        if (source != c->attrs.end() && !source->second.empty()) label += ": " + Basename(source->second);
+        label = "[" + std::string(c->media_paused ? "play " : "pause ") + label + " " + std::to_string(c->media_current_time) + "s]";
+        out.push_back({label, ctx.base_font_size * c->style.font_scale, HtmlResolveColor(c->style, ctx), false, false, false, false});
         return;
     }
     if (c->tag == "math") {
@@ -14722,6 +15019,32 @@ constexpr float kHtmlListIndentPx = 24.0f;
  */
 void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlLayoutCtx &ctx, HtmlLayout &out) {
     if (node->style.display_none) return;
+    // A <slot> in a shadow root projects matching light-DOM children from
+    // its host.  Keeping assignment in layout (rather than moving ownership)
+    // preserves both the host's DOM API and the shadow fallback subtree.
+    if (node->tag == "slot" && node->parent && node->parent->tag == "#shadow-root" && node->parent->parent) {
+        DomNode *host = node->parent->parent;
+        std::string slot_name;
+        if (auto it = node->attrs.find("name"); it != node->attrs.end()) slot_name = it->second;
+        bool assigned = false;
+        for (const auto &light : host->children) {
+            if (light->type != DomNodeType::Element && light->type != DomNodeType::Text) continue;
+            std::string child_slot;
+            if (light->type == DomNodeType::Element) if (auto it = light->attrs.find("slot"); it != light->attrs.end()) child_slot = it->second;
+            if (child_slot != slot_name) continue;
+            assigned = true;
+            if (light->type == DomNodeType::Text) {
+                std::vector<HtmlPendingWord> words; HtmlCollectTextWords(light->text, host->style, ctx, words);
+                cursor_y = HtmlFlushWords(words, indent_x, cursor_y, ctx, out);
+            } else if (light->style.block) HtmlLayoutBlock(light.get(), indent_x, cursor_y, ctx, out);
+            else {
+                std::vector<HtmlPendingWord> words; HtmlCollectInlineChild(light.get(), host->style, ctx, words);
+                cursor_y = HtmlFlushWords(words, indent_x, cursor_y, ctx, out);
+            }
+        }
+        if (assigned) return;
+        // No light-DOM assignment: use normal fallback children below.
+    }
     float line_h = HtmlLineHeight(ctx.base_font_size * node->style.font_scale);
     cursor_y += static_cast<float>(node->style.margin_top_lines) * line_h;
 
@@ -14741,7 +15064,6 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
     // and the only case that matters in practice since % isn't supported.
     HtmlLayoutCtx narrowed_ctx = ctx;
     bool narrowed = false;
-    float unnarrowed_indent_x = indent_x;
     if (node->style.has_max_width && node->style.margin_h_auto) {
         float max_w_px = ctx.base_font_size * node->style.font_scale * node->style.max_width_em;
         float avail = std::max(0.0f, ctx.layout_width - indent_x);
@@ -14761,6 +15083,48 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
     }
     const HtmlLayoutCtx &eff_ctx = narrowed ? narrowed_ctx : ctx;
 
+    // Resolve the box model only now: percentage lengths need the containing
+    // block and em lengths need the final font size.  `layout_width` is an
+    // absolute right edge throughout this renderer, hence the explicit
+    // content right edge below rather than passing a relative width around.
+    const ComputedStyle &cs = node->style;
+    float font_size = eff_ctx.base_font_size * cs.font_scale;
+    float available_w = std::max(0.0f, eff_ctx.layout_width - indent_x);
+    float margin_l = ResolveCssLength(cs.margin.left, font_size, available_w);
+    float margin_r = ResolveCssLength(cs.margin.right, font_size, available_w);
+    float margin_t = ResolveCssLength(cs.margin.top, font_size, available_w);
+    float margin_b = ResolveCssLength(cs.margin.bottom, font_size, available_w);
+    float pad_l = ResolveCssLength(cs.padding.left, font_size, available_w);
+    float pad_r = ResolveCssLength(cs.padding.right, font_size, available_w);
+    float pad_t = ResolveCssLength(cs.padding.top, font_size, available_w);
+    float pad_b = ResolveCssLength(cs.padding.bottom, font_size, available_w);
+    float border_l = cs.border_left.present ? cs.border_left.width_px : 0.0f;
+    float border_r = cs.border_right.present ? cs.border_right.width_px : 0.0f;
+    float border_t = cs.border_top.present ? cs.border_top.width_px : 0.0f;
+    float border_b = cs.border_bottom.present ? cs.border_bottom.width_px : 0.0f;
+    float fixed_w = ResolveCssLength(cs.width, font_size, available_w);
+    float min_w = ResolveCssLength(cs.min_width, font_size, available_w);
+    float max_w = cs.max_width.set ? ResolveCssLength(cs.max_width, font_size, available_w) : available_w;
+    float extras_w = pad_l + border_l + border_r + pad_r;
+    float border_w = cs.width.set ? (cs.border_box ? fixed_w : fixed_w + extras_w) : available_w - margin_l - margin_r;
+    border_w = std::max(border_w, cs.border_box ? min_w : min_w + extras_w);
+    border_w = std::min(border_w, cs.border_box ? max_w : max_w + extras_w);
+    border_w = std::max(extras_w, border_w);
+    // Horizontal auto margins absorb leftover width for a definite-width box.
+    if (cs.margin.left.auto_value || cs.margin.right.auto_value) {
+        float remaining = std::max(0.0f, available_w - border_w - (cs.margin.left.auto_value ? 0.0f : margin_l) -
+                                   (cs.margin.right.auto_value ? 0.0f : margin_r));
+        if (cs.margin.left.auto_value && cs.margin.right.auto_value) margin_l = margin_r = remaining / 2.0f;
+        else if (cs.margin.left.auto_value) margin_l = remaining;
+        else margin_r = remaining;
+    }
+    float border_x = indent_x + margin_l;
+    float content_x = border_x + border_l + pad_l;
+    HtmlLayoutCtx box_ctx = eff_ctx;
+    box_ctx.layout_width = content_x + std::max(0.0f, border_w - extras_w);
+    cursor_y += std::max(out.pending_margin_bottom, margin_t);
+    out.pending_margin_bottom = 0.0f;
+
     // Pushed *before* this node's own content is laid out (a child's own
     // background, pushed during the recursion below, lands at a later
     // vector index than this one) so drawing HtmlLayout::backgrounds
@@ -14772,17 +15136,11 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
     float block_top = cursor_y;
     size_t bg_index = node->style.has_bg ? out.backgrounds.size() : static_cast<size_t>(-1);
     if (bg_index != static_cast<size_t>(-1)) {
-        // A centered max-width element's *background* still spans the full
-        // width it would have without the constraint (unnarrowed_indent_x/
-        // ctx.layout_width, not the narrowed column) -- real CSS special-
-        // cases exactly this for <body> (its background paints the whole
-        // canvas even though its box is narrower), which is what keeps a
-        // centered page's side margins showing the page's own background
-        // instead of this pane's dark theme color bleeding through. Every
-        // other box (border, content wrap) still uses the narrowed column
-        // -- only the background fill gets the wider canvas treatment.
-        float bg_x = narrowed ? unnarrowed_indent_x : indent_x;
-        float bg_w = narrowed ? (ctx.layout_width - unnarrowed_indent_x) : (eff_ctx.layout_width - indent_x);
+        // Backgrounds paint the border box (not the content box), so padding
+        // is colored but margins stay transparent, matching CSS's normal
+        // background-clip:border-box default.
+        float bg_x = border_x;
+        float bg_w = border_w;
         out.backgrounds.push_back(
             {bg_x, block_top, bg_w, 0.0f, Color{node->style.bg_r, node->style.bg_g, node->style.bg_b, 255}});
     }
@@ -14794,15 +15152,14 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
     auto finish_bg = [&]() {
         if (bg_index != static_cast<size_t>(-1)) out.backgrounds[bg_index].h = cursor_y - block_top;
     };
-    const ComputedStyle &cs = node->style;
     bool has_border = cs.border_top.present || cs.border_right.present || cs.border_bottom.present ||
                        cs.border_left.present;
     size_t border_index = has_border ? out.borders.size() : static_cast<size_t>(-1);
     if (border_index != static_cast<size_t>(-1)) {
         HtmlBorderRect br;
-        br.x = indent_x;
+        br.x = border_x;
         br.y = block_top;
-        br.w = eff_ctx.layout_width - indent_x;
+        br.w = border_w;
         if (cs.border_top.present) {
             br.top_w = cs.border_top.width_px;
             br.top_c = Color{cs.border_top.r, cs.border_top.g, cs.border_top.b, 255};
@@ -14830,19 +15187,41 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
         if (border_index != static_cast<size_t>(-1)) out.borders[border_index].h = cursor_y - block_top;
     };
 
+    cursor_y += border_t + pad_t;
+    const float tail_inset = pad_b + border_b;
+    const float content_top = cursor_y;
+    auto enforce_height = [&]() {
+        float content_h = cursor_y - content_top;
+        float requested = ResolveCssLength(cs.height, font_size, available_w);
+        float min_h = ResolveCssLength(cs.min_height, font_size, available_w);
+        float max_h = cs.max_height.set ? ResolveCssLength(cs.max_height, font_size, available_w) : content_h;
+        if (cs.height.set && cs.border_box) requested = std::max(0.0f, requested - border_t - pad_t - pad_b - border_b);
+        float target = cs.height.set ? requested : content_h;
+        target = std::max(target, min_h);
+        // Without overflow clipping yet, do not truncate existing prose to
+        // max-height; it still bounds an otherwise empty/fixed-height box.
+        if (content_h == 0.0f) target = std::min(target, max_h);
+        cursor_y = content_top + std::max(content_h, target);
+    };
     if (node->tag == "hr") {
         cursor_y += line_h / 2.0f;
-        out.rules.push_back({indent_x, cursor_y, eff_ctx.layout_width - indent_x});
+        out.rules.push_back({content_x, cursor_y, box_ctx.layout_width - content_x});
         cursor_y += line_h / 2.0f;
+        enforce_height();
+        cursor_y += tail_inset;
         finish_bg();
         finish_border();
+        out.pending_margin_bottom = std::max(out.pending_margin_bottom, margin_b);
         cursor_y += static_cast<float>(node->style.margin_bottom_lines) * line_h;
         return;
     }
     if (node->style.preserve_whitespace) {
-        HtmlLayoutPreformatted(node, indent_x, cursor_y, eff_ctx, out);
+        HtmlLayoutPreformatted(node, content_x, cursor_y, box_ctx, out);
+        enforce_height();
+        cursor_y += tail_inset;
         finish_bg();
         finish_border();
+        out.pending_margin_bottom = std::max(out.pending_margin_bottom, margin_b);
         cursor_y += static_cast<float>(node->style.margin_bottom_lines) * line_h;
         return;
     }
@@ -14852,23 +15231,75 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
         // treatment real browsers give \[..\]/$$..$$.
         std::string latex;
         HtmlCollectRawText(node, latex);
-        float fs = eff_ctx.base_font_size * node->style.font_scale;
+        float fs = box_ctx.base_font_size * node->style.font_scale;
         MathLayoutResult ml = LayoutMathExpression(latex, fs);
-        float box_x = indent_x + std::max(0.0f, (eff_ctx.layout_width - indent_x - ml.width) / 2.0f);
-        out.math_runs.push_back({box_x, cursor_y, HtmlResolveColor(node->style, eff_ctx), std::move(ml)});
+        float box_x = content_x + std::max(0.0f, (box_ctx.layout_width - content_x - ml.width) / 2.0f);
+        out.math_runs.push_back({box_x, cursor_y, HtmlResolveColor(node->style, box_ctx), std::move(ml)});
         cursor_y += out.math_runs.back().layout.height;
+        enforce_height();
+        cursor_y += tail_inset;
         finish_bg();
         finish_border();
+        out.pending_margin_bottom = std::max(out.pending_margin_bottom, margin_b);
+        cursor_y += static_cast<float>(node->style.margin_bottom_lines) * line_h;
+        return;
+    }
+    if (node->tag == "canvas") {
+        // An HTML canvas has a 300x150 default bitmap but its CSS box may
+        // scale it.  The commands remain in bitmap coordinates and are
+        // transformed at draw time, matching the useful core of the 2D API.
+        float natural_w = static_cast<float>(node->canvas_width);
+        float natural_h = static_cast<float>(node->canvas_height);
+        float canvas_w = cs.width.set ? std::max(1.0f, box_ctx.layout_width - content_x) : natural_w;
+        float canvas_h = cs.height.set ? std::max(1.0f, ResolveCssLength(cs.height, font_size, available_w)) : natural_h;
+        // Keep an unstyled canvas within the page instead of letting its
+        // intrinsic width create horizontal overflow in the preview pane.
+        if (!cs.width.set && canvas_w > box_ctx.layout_width - content_x) {
+            float scale = (box_ctx.layout_width - content_x) / canvas_w;
+            canvas_w *= scale; canvas_h *= scale;
+        }
+        out.canvases.push_back({content_x, cursor_y, canvas_w, canvas_h, node});
+        cursor_y += canvas_h;
+        enforce_height();
+        cursor_y += tail_inset;
+        finish_bg();
+        finish_border();
+        out.pending_margin_bottom = std::max(out.pending_margin_bottom, margin_b);
+        cursor_y += static_cast<float>(node->style.margin_bottom_lines) * line_h;
+        return;
+    }
+    if (node->tag == "svg") {
+        // Intrinsic size: width/height attributes, else the viewBox's own
+        // aspect (SvgIntrinsicSize), else HTML's 300x150 replaced default.
+        float intrinsic_w = 300.0f, intrinsic_h = 150.0f;
+        SvgIntrinsicSize(*node, intrinsic_w, intrinsic_h);
+        float svg_w = cs.width.set ? std::max(1.0f, ResolveCssLength(cs.width, font_size, available_w)) : std::max(1.0f, intrinsic_w);
+        float svg_h = cs.height.set ? std::max(1.0f, ResolveCssLength(cs.height, font_size, available_w)) : std::max(1.0f, intrinsic_h);
+        if (cs.width.set && !cs.height.set && intrinsic_w > 0.0f) svg_h = svg_w * intrinsic_h / intrinsic_w;
+        if (!cs.width.set && svg_w > box_ctx.layout_width - content_x) { float scale = (box_ctx.layout_width - content_x) / svg_w; svg_w *= scale; svg_h *= scale; }
+        out.svgs.push_back({content_x, cursor_y, svg_w, svg_h, node}); cursor_y += svg_h;
+        enforce_height(); cursor_y += tail_inset; finish_bg(); finish_border();
+        out.pending_margin_bottom = std::max(out.pending_margin_bottom, margin_b);
+        cursor_y += static_cast<float>(node->style.margin_bottom_lines) * line_h;
+        return;
+    }
+    if (node->tag == "table") {
+        HtmlLayoutTable(node, content_x, cursor_y, box_ctx, out);
+        enforce_height();
+        cursor_y += tail_inset;
+        finish_bg();
+        finish_border();
+        out.pending_margin_bottom = std::max(out.pending_margin_bottom, margin_b);
         cursor_y += static_cast<float>(node->style.margin_bottom_lines) * line_h;
         return;
     }
 
-    float my_indent = indent_x + static_cast<float>(node->style.list_depth) * kHtmlListIndentPx;
+    float my_indent = content_x + static_cast<float>(node->style.list_depth) * kHtmlListIndentPx;
     std::vector<HtmlPendingWord> words;
     if (node->style.is_list_item) {
         std::string marker =
             node->style.ordered_list_item ? (std::to_string(node->style.list_item_index) + ". ") : "* ";
-        words.push_back({marker, eff_ctx.base_font_size * node->style.font_scale, HtmlResolveColor(node->style, eff_ctx),
+        words.push_back({marker, box_ctx.base_font_size * node->style.font_scale, HtmlResolveColor(node->style, box_ctx),
                           node->style.bold, node->style.italic, false, false});
     }
     /**
@@ -14877,27 +15308,102 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
      */
     auto flush_words = [&]() {
         if (words.empty()) return;
-        cursor_y = HtmlFlushWords(words, my_indent, cursor_y, eff_ctx, out);
+        cursor_y = HtmlFlushWords(words, my_indent, cursor_y, box_ctx, out);
         words.clear();
     };
 
-    for (auto &c : node->children) {
+    const auto &rendered_children = node->shadow_root ? node->shadow_root->children : node->children;
+    for (auto &c : rendered_children) {
+        // A closed <details> exposes only its <summary>; the state lives on
+        // DomNode so Phase 11 can toggle exactly this branch on click.
+        if (node->tag == "details" && !node->details_open &&
+            (c->type != DomNodeType::Element || c->tag != "summary")) continue;
         if (c->type == DomNodeType::Text) {
-            HtmlCollectTextWords(c->text, node->style, eff_ctx, words);
+            HtmlCollectTextWords(c->text, node->style, box_ctx, words);
             continue;
         }
         if (c->style.display_none) continue;
         if (c->style.block) {
             flush_words();
-            HtmlLayoutBlock(c.get(), my_indent, cursor_y, eff_ctx, out);
+            HtmlLayoutBlock(c.get(), my_indent, cursor_y, box_ctx, out);
         } else {
-            HtmlCollectInlineChild(c.get(), node->style, eff_ctx, words);
+            HtmlCollectInlineChild(c.get(), node->style, box_ctx, words);
         }
     }
     flush_words();
+    enforce_height();
+    cursor_y += tail_inset;
     finish_bg();
     finish_border();
+    out.pending_margin_bottom = std::max(out.pending_margin_bottom, margin_b);
     cursor_y += static_cast<float>(node->style.margin_bottom_lines) * line_h;
+}
+
+// Basic table grid layout: determine intrinsic column widths from each cell's
+// text, fit the grid into the containing block, then lay every row's cells
+// independently at the shared row origin. This deliberately leaves CSS's
+// elaborate table algorithm/border-collapse semantics for later, while giving
+// normal HTML data tables stable columns, wrapping, and visible cell bounds.
+void HtmlLayoutTable(DomNode *table, float content_x, float &cursor_y, const HtmlLayoutCtx &ctx, HtmlLayout &out) {
+    std::vector<DomNode *> rows;
+    std::function<void(DomNode *)> collect_rows = [&](DomNode *n) {
+        for (auto &child : n->children) {
+            if (child->type != DomNodeType::Element) continue;
+            if (child->tag == "tr") rows.push_back(child.get());
+            else if (child->tag == "thead" || child->tag == "tbody" || child->tag == "tfoot") collect_rows(child.get());
+        }
+    };
+    collect_rows(table);
+    if (rows.empty()) return;
+    size_t columns = 0;
+    for (DomNode *row : rows) {
+        size_t count = 0;
+        for (auto &cell : row->children) if (cell->type == DomNodeType::Element && (cell->tag == "td" || cell->tag == "th")) {
+            int span = 1; auto it = cell->attrs.find("colspan"); if (it != cell->attrs.end()) span = std::max(1, std::atoi(it->second.c_str()));
+            count += static_cast<size_t>(span);
+        }
+        columns = std::max(columns, count);
+    }
+    if (columns == 0) return;
+    std::vector<float> widths(columns, 24.0f);
+    for (DomNode *row : rows) {
+        size_t column = 0;
+        for (auto &cell : row->children) {
+            if (cell->type != DomNodeType::Element || (cell->tag != "td" && cell->tag != "th")) continue;
+            int span = 1; auto it = cell->attrs.find("colspan"); if (it != cell->attrs.end()) span = std::max(1, std::atoi(it->second.c_str()));
+            std::string text; HtmlCollectRawText(cell.get(), text);
+            float natural = MeasureTextEx(g_font, text.c_str(), ctx.base_font_size * cell->style.font_scale, 0).x + 12.0f;
+            float each = natural / static_cast<float>(span);
+            for (int i = 0; i < span && column + static_cast<size_t>(i) < columns; ++i) widths[column + static_cast<size_t>(i)] = std::max(widths[column + static_cast<size_t>(i)], each);
+            column += static_cast<size_t>(span);
+        }
+    }
+    float available = std::max(1.0f, ctx.layout_width - content_x), total = 0.0f;
+    for (float width : widths) total += width;
+    if (total > available) for (float &width : widths) width *= available / total;
+    else for (float &width : widths) width += (available - total) / static_cast<float>(columns);
+    for (DomNode *row : rows) {
+        float row_top = cursor_y, row_bottom = row_top;
+        float x = content_x; size_t column = 0;
+        for (auto &cell : row->children) {
+            if (cell->type != DomNodeType::Element || (cell->tag != "td" && cell->tag != "th")) continue;
+            int span = 1; auto it = cell->attrs.find("colspan"); if (it != cell->attrs.end()) span = std::max(1, std::atoi(it->second.c_str()));
+            float cell_w = 0.0f; for (int i = 0; i < span && column + static_cast<size_t>(i) < columns; ++i) cell_w += widths[column + static_cast<size_t>(i)];
+            HtmlLayoutCtx cell_ctx = ctx; cell_ctx.layout_width = x + cell_w;
+            float cell_y = row_top + 4.0f;
+            HtmlLayoutBlock(cell.get(), x + 6.0f, cell_y, cell_ctx, out);
+            row_bottom = std::max(row_bottom, cell_y + 4.0f);
+            x += cell_w; column += static_cast<size_t>(span);
+        }
+        float row_h = std::max(HtmlLineHeight(ctx.base_font_size) + 8.0f, row_bottom - row_top);
+        x = content_x;
+        for (size_t column_index = 0; column_index < columns; ++column_index) {
+            HtmlBorderRect grid{ x, row_top, widths[column_index], row_h, 1, 1, 1, 1,
+                                 ResolveHlGroup("Border"), ResolveHlGroup("Border"), ResolveHlGroup("Border"), ResolveHlGroup("Border") };
+            out.borders.push_back(grid); x += widths[column_index];
+        }
+        cursor_y = row_top + row_h;
+    }
 }
 
 /**
@@ -14907,6 +15413,66 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
  * @param ctx Layout context (wrap width, base font size, base dir, zoom).
  * @return The resulting layout (runs, rules, images, math runs, backgrounds, borders, total height).
  */
+// <audio> playback bridge. The DOM owns the element state (paused/volume/
+// muted/currentTime, advanced by Editor::AdvanceHtmlMedia each frame); this
+// mirrors that state onto a raylib Sound per element so play()/pause() from
+// page script is actually audible. The audio device is opened lazily on the
+// first play() so pages without media never touch it, and a headless
+// machine (no device) simply keeps the silent clock. Seeking via
+// currentTime is not reflected in the device stream (raylib's Sound has no
+// seek); the clock and the audible position can therefore drift after a
+// script-driven seek -- noted in WEBKIT_PARITY_PLAN.md Part VII.
+struct HtmlMediaPlayback {
+    Sound sound{};
+    bool loaded = false, failed = false, playing = false;
+};
+std::unordered_map<const DomNode *, HtmlMediaPlayback> g_html_media_playback;
+
+void HtmlCollectMediaNodes(const DomNode *node, std::vector<const DomNode *> &out) {
+    if (!node) return;
+    if (node->type == DomNodeType::Element && (node->tag == "audio" || node->tag == "video")) out.push_back(node);
+    for (const auto &child : node->children) HtmlCollectMediaNodes(child.get(), out);
+    if (node->shadow_root) HtmlCollectMediaNodes(node->shadow_root.get(), out);
+}
+
+void SyncHtmlMediaPlayback() {
+    std::vector<const DomNode *> live;
+    for (int id : g_editor.HtmlBufferIds())
+        if (const HtmlSession *sess = g_editor.GetHtml(id)) HtmlCollectMediaNodes(sess->doc.root.get(), live);
+    // Elements whose page closed: stop and free their sound.
+    for (auto it = g_html_media_playback.begin(); it != g_html_media_playback.end();) {
+        if (std::find(live.begin(), live.end(), it->first) != live.end()) { ++it; continue; }
+        if (it->second.loaded) UnloadSound(it->second.sound);
+        it = g_html_media_playback.erase(it);
+    }
+    for (const DomNode *node : live) {
+        if (node->media_ready_state < 4 || node->media_source_path.empty()) continue;
+        bool want_playing = !node->media_paused;
+        auto found = g_html_media_playback.find(node);
+        if (!want_playing && found == g_html_media_playback.end()) continue;  // never played: nothing to mirror
+        HtmlMediaPlayback &playback = g_html_media_playback[node];
+        if (playback.failed) continue;
+        if (!playback.loaded) {
+            if (!IsAudioDeviceReady()) InitAudioDevice();
+            if (!IsAudioDeviceReady()) { playback.failed = true; continue; }
+            playback.sound = LoadSound(node->media_source_path.c_str());
+            if (playback.sound.frameCount == 0) { playback.failed = true; continue; }
+            playback.loaded = true;
+        }
+        SetSoundVolume(playback.sound, node->media_muted ? 0.0f : static_cast<float>(node->media_volume));
+        if (want_playing && !playback.playing) {
+            // A fresh start (or restart after ended) plays from the top; a
+            // resume after pause() continues where the device left off.
+            if (node->media_current_time <= 0.0 || !IsSoundPlaying(playback.sound)) PlaySound(playback.sound);
+            else ResumeSound(playback.sound);
+            playback.playing = true;
+        } else if (!want_playing && playback.playing) {
+            PauseSound(playback.sound);
+            playback.playing = false;
+        }
+    }
+}
+
 HtmlLayout LayoutHtmlDoc(const HtmlDoc &doc, const HtmlLayoutCtx &ctx) {
     HtmlLayout out;
     if (!doc.root) return out;
@@ -14915,6 +15481,7 @@ HtmlLayout LayoutHtmlDoc(const HtmlDoc &doc, const HtmlLayoutCtx &ctx) {
         if (c->type != DomNodeType::Element || c->style.display_none) continue;
         HtmlLayoutBlock(c.get(), 0, cursor_y, ctx, out);
     }
+    cursor_y += out.pending_margin_bottom;
     out.total_height = cursor_y;
     return out;
 }
@@ -15984,6 +16551,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // see ResolveHtmlImagePath's own header).
         ctx.base_dir = std::filesystem::path(html_sess->source).parent_path().string();
         ctx.zoom = html_sess->zoom;
+        // Media clocks tick with the frame, then the device mirrors the DOM.
+        g_editor.AdvanceHtmlMedia(pane.buffer_id, static_cast<double>(GetFrameTime()));
+        SyncHtmlMediaPlayback();
         HtmlLayout layout = LayoutHtmlDoc(html_sess->doc, ctx);
         // Layout depends on real font metrics (MeasureTextEx), so unlike
         // ResizePdfViewport's pure-geometry clamp, the max scroll_y this
@@ -16040,6 +16610,125 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             if (br.right_w > 0.0f)
                 DrawRectangle(static_cast<int>(bx + br.w - br.right_w), static_cast<int>(ry),
                               static_cast<int>(br.right_w), static_cast<int>(br.h), theme ? theme_border : br.right_c);
+        }
+        // Replay each canvas's retained 2D display list after CSS backgrounds
+        // and borders, but before text.  Commands are clipped manually to the
+        // canvas viewport (the pane scissor is already active here); this
+        // preserves the essential canvas rule that drawing cannot bleed into
+        // surrounding DOM content without introducing nested raylib scissors.
+        for (const HtmlCanvasRun &canvas : layout.canvases) {
+            if (!canvas.node) continue;
+            float ry = top + canvas.y;
+            if (ry + canvas.h < content_y || ry > content_y + content_h) continue;
+            float cx = x + kHtmlPad + canvas.x;
+            float sx = canvas.w / static_cast<float>(std::max(1, canvas.node->canvas_width));
+            float sy = canvas.h / static_cast<float>(std::max(1, canvas.node->canvas_height));
+            auto clipped = [cx, ry, &canvas](float px, float py, float pw, float ph, Color color) {
+                float left = std::max(cx, px), top_edge = std::max(ry, py);
+                float right = std::min(cx + canvas.w, px + pw), bottom = std::min(ry + canvas.h, py + ph);
+                if (right > left && bottom > top_edge)
+                    DrawRectangle(static_cast<int>(left), static_cast<int>(top_edge), static_cast<int>(right - left),
+                                  static_cast<int>(bottom - top_edge), color);
+            };
+            for (const CanvasCommand &command : canvas.node->canvas_commands) {
+                float px = cx + command.x * sx, py = ry + command.y * sy;
+                float pw = command.w * sx, ph = command.h * sy;
+                // A gradient paint is sampled per primitive (rect corners,
+                // triangle centroid, segment midpoint) in canvas space --
+                // exact for axis-aligned rects, a smooth-enough approximation
+                // for paths without a per-pixel shader.
+                auto color_at = [&command](float canvas_x, float canvas_y) {
+                    Color c{command.r, command.g, command.b, command.a};
+                    if (command.gradient.present) CanvasGradientColorAt(command.gradient, canvas_x, canvas_y, c.r, c.g, c.b, c.a);
+                    return c;
+                };
+                Color color = color_at(command.x + command.w / 2.0f, command.y + command.h / 2.0f);
+                auto at = [&](unsigned i) { return Vector2{cx + command.points[static_cast<size_t>(i) * 2U] * sx, ry + command.points[static_cast<size_t>(i) * 2U + 1U] * sy}; };
+                auto canvas_at = [&](unsigned i, float &ox, float &oy) { ox = command.points[static_cast<size_t>(i) * 2U]; oy = command.points[static_cast<size_t>(i) * 2U + 1U]; };
+                if (command.kind == CanvasCommand::Kind::FillRect) {
+                    if (command.gradient.present) {
+                        float left = std::max(cx, px), top_edge = std::max(ry, py);
+                        float right = std::min(cx + canvas.w, px + pw), bottom = std::min(ry + canvas.h, py + ph);
+                        if (right > left && bottom > top_edge) {
+                            auto back = [&](float screen_x, float screen_y) { return color_at((screen_x - cx) / sx, (screen_y - ry) / sy); };
+                            DrawRectangleGradientEx({left, top_edge, right - left, bottom - top_edge}, back(left, top_edge), back(left, bottom), back(right, bottom), back(right, top_edge));
+                        }
+                    } else clipped(px, py, pw, ph, color);
+                } else if (command.kind == CanvasCommand::Kind::StrokeRect) {
+                    float lw = std::max(1.0f, command.line_width * (sx + sy) / 2.0f);
+                    clipped(px, py, pw, lw, color_at(command.x + command.w / 2.0f, command.y)); clipped(px, py + ph - lw, pw, lw, color_at(command.x + command.w / 2.0f, command.y + command.h));
+                    clipped(px, py, lw, ph, color_at(command.x, command.y + command.h / 2.0f)); clipped(px + pw - lw, py, lw, ph, color_at(command.x + command.w, command.y + command.h / 2.0f));
+                } else if (command.kind == CanvasCommand::Kind::StrokePath) {
+                    float lw = std::max(1.0f, command.line_width * (sx + sy) / 2.0f);
+                    unsigned count = static_cast<unsigned>(command.points.size() / 2);
+                    for (unsigned i = 1; i < count; ++i) {
+                        Color c = color;
+                        if (command.gradient.present) { float ax, ay, bx, by; canvas_at(i - 1, ax, ay); canvas_at(i, bx, by); c = color_at((ax + bx) / 2.0f, (ay + by) / 2.0f); }
+                        DrawLineEx(at(i - 1), at(i), lw, c);
+                    }
+                } else if (command.kind == CanvasCommand::Kind::FillPath) {
+                    for (size_t i = 0; i + 2 < command.triangles.size(); i += 3) {
+                        Color c = color;
+                        if (command.gradient.present) {
+                            float ax, ay, bx, by, qx, qy; canvas_at(command.triangles[i], ax, ay); canvas_at(command.triangles[i + 1], bx, by); canvas_at(command.triangles[i + 2], qx, qy);
+                            c = color_at((ax + bx + qx) / 3.0f, (ay + by + qy) / 3.0f);
+                        }
+                        DrawTriangle(at(command.triangles[i]), at(command.triangles[i + 1]), at(command.triangles[i + 2]), c);
+                    }
+                } else if (command.kind == CanvasCommand::Kind::FillText) {
+                    float font_px = (command.font_size > 0.0f ? command.font_size : ctx.base_font_size) * sy;
+                    DrawTextEx(g_font, command.text.c_str(), {px, py - font_px}, font_px, 0, color_at(command.x, command.y));
+                } else if (command.kind == CanvasCommand::Kind::ImageData) {
+                    int image_w = std::max(0, static_cast<int>(command.w)), image_h = std::max(0, static_cast<int>(command.h));
+                    for (int iy = 0; iy < image_h; ++iy) for (int ix = 0; ix < image_w; ++ix) {
+                        size_t index = (static_cast<size_t>(iy) * static_cast<size_t>(image_w) + static_cast<size_t>(ix)) * 4U;
+                        if (index + 3 >= command.pixels.size()) continue;
+                        clipped(px + static_cast<float>(ix) * sx, py + static_cast<float>(iy) * sy, sx, sy, {command.pixels[index], command.pixels[index + 1], command.pixels[index + 2], command.pixels[index + 3]});
+                    }
+                } else {
+                    // The usual full-canvas clear is compacted at execution
+                    // time.  A partial clear exposes the preview's page base
+                    // color, the closest available representation without a
+                    // per-canvas GPU render target.
+                    clipped(px, py, pw, ph, ResolveHlGroup("NormalBg"));
+                }
+            }
+        }
+        // Embedded SVG is flattened by svg_doc.cpp into already-transformed
+        // polylines/triangles/text in the run's own pixel space (viewBox,
+        // transforms, path curves, inheritance all resolved there), and
+        // replayed here with raylib primitives -- same split as <canvas>.
+        for (const HtmlSvgRun &svg : layout.svgs) {
+            if (!svg.node) continue;
+            float sy = top + svg.y;
+            if (sy + svg.h < content_y || sy > content_y + content_h) continue;
+            float sx = x + kHtmlPad + svg.x;
+            Color page_fg = theme ? ResolveHlGroup("Normal") : HtmlResolveColor(svg.node->style, ctx);
+            SvgDisplayList list = BuildSvgDisplayList(*svg.node, svg.w, svg.h, SvgPaint{true, page_fg.r, page_fg.g, page_fg.b, 255});
+            auto to_color = [](const SvgPaint &paint) { return Color{paint.r, paint.g, paint.b, paint.a}; };
+            for (const SvgShape &shape : list.shapes) {
+                if (shape.kind == SvgShape::Kind::Text) {
+                    if (shape.points.size() < 2) continue;
+                    Vector2 size = MeasureTextEx(g_font, shape.text.c_str(), shape.font_size, 0);
+                    float anchor_dx = shape.text_anchor == "middle" ? -size.x / 2.0f : (shape.text_anchor == "end" ? -size.x : 0.0f);
+                    DrawTextEx(g_font, shape.text.c_str(), {sx + shape.points[0] + anchor_dx, sy + shape.points[1] - shape.font_size},
+                               shape.font_size, 0, to_color(shape.fill));
+                    continue;
+                }
+                auto at = [&](unsigned i) { return Vector2{sx + shape.points[static_cast<size_t>(i) * 2U], sy + shape.points[static_cast<size_t>(i) * 2U + 1U]}; };
+                if (shape.kind == SvgShape::Kind::Polygon && shape.fill.present) {
+                    Color fill = to_color(shape.fill);
+                    for (size_t i = 0; i + 2 < shape.triangles.size(); i += 3)
+                        DrawTriangle(at(shape.triangles[i]), at(shape.triangles[i + 1]), at(shape.triangles[i + 2]), fill);
+                }
+                if (shape.stroke.present) {
+                    Color stroke = to_color(shape.stroke);
+                    float width = std::max(1.0f, shape.stroke_width);
+                    unsigned count = static_cast<unsigned>(shape.points.size() / 2);
+                    for (unsigned i = 1; i < count; ++i) DrawLineEx(at(i - 1), at(i), width, stroke);
+                    if ((shape.closed || shape.kind == SvgShape::Kind::Polygon) && count > 2) DrawLineEx(at(count - 1), at(0), width, stroke);
+                }
+            }
         }
         for (const HtmlRule &r : layout.rules) {
             float ry = top + r.y;
@@ -18393,8 +19082,10 @@ void DrawPaneTree(const SplitNode *node, float x, float y, float w, float h, int
 // tofu through g_font's ASCII-only atlas, which is why these used to be
 // plain ASCII '*'/'o' instead.
 /**
- * @brief Draws the tab bar: mode indicator, STT recording indicator, one clickable
- *        circle per tab, new/close-tab buttons, and participant presence chips.
+ * @brief Draws the tab bar (WORKSPACES_PLAN.md Phase 8): `[project] [ws1]
+ *        [ws2*] | ● ○ + x`, then the STT recording indicator and the
+ *        participant presence chips docked right. The mode label that used
+ *        to lead the row is gone -- the status line already shows it.
  * @param y screen y-coordinate at which the tab bar row starts.
  */
 void DrawTabBar(int y) {
@@ -18403,102 +19094,208 @@ void DrawTabBar(int y) {
     float font_size = MenuFontSize();
     DrawRectangle(0, y, screen_w, bar_h, ResolveHlGroup("TabBar"));
     float cy = static_cast<float>(y) + (static_cast<float>(bar_h) - font_size) / 2.0f;
+    const float fy = static_cast<float>(y);
+    const float fbar_h = static_cast<float>(bar_h);
+    const Vector2 mouse = GetMousePosition();
 
-    float x = 4;
-    std::string mode_label = std::string(" ") + ModeName(g_editor.CurrentMode(), g_editor.IsReplaceMode()) + " ";
-    DrawTextEx(g_font, mode_label.c_str(), Vector2{x, cy}, font_size, 0, ResolveHlGroup("StatusLineFg"));
-    x += MeasureTextEx(g_font, mode_label.c_str(), font_size, 0).x + 4;
+    // Immediate-mode hover tooltip, same idiom as the participant chips
+    // below -- drawn at the end of the frame's bar so it overlays every
+    // label rather than being painted over by the next one.
+    std::string tooltip_text;
+    float tooltip_anchor_x = 0;
+    auto tooltip_if_hovered = [&](Rectangle rect, const std::string &text) {
+        if (!text.empty() && CheckCollisionPointRec(mouse, rect)) {
+            tooltip_text = text;
+            tooltip_anchor_x = rect.x + rect.width / 2.0f;
+        }
+    };
+
+    // --- Participant chips (COLLAB_CURSORS_PLAN.md): docked to the right
+    // edge, growing leftward -- laid out first so the left-hand labels
+    // know how much room they actually have.
+    float chip_x = static_cast<float>(screen_w) - 4.0f;
+    for (const Editor::ParticipantInfo &participant : g_editor.Participants()) {
+        const bool is_agent = participant.kind == Editor::ParticipantKind::Agent;
+        const float chip_size = fbar_h - 6.0f;
+        chip_x -= chip_size + 4.0f;
+        const Rectangle chip_rect{chip_x, fy + 3.0f, chip_size, chip_size};
+        const Color color = ToRaylib(ParticipantColor(participant.id));
+        DrawRectangleRounded(chip_rect, 0.3f, 4, color);
+        if (is_agent) {
+            const float pad = chip_size * 0.15f;
+            DrawRobotIcon(Vector2{chip_x + pad, fy + 3.0f + pad}, chip_size - pad * 2.0f, WHITE);
+            const float badge_r = chip_size * 0.24f;
+            DrawAgentStatusBadge(Vector2{chip_x + chip_size - badge_r * 0.75f, fy + 3.0f + chip_size - badge_r * 0.75f}, badge_r,
+                                  participant.status);
+        } else {
+            const std::string initial = participant.name.empty() ? "?" : participant.name.substr(0, 1);
+            const float iw = MeasureTextEx(g_font, initial.c_str(), font_size, 0).x;
+            DrawTextEx(g_font, initial.c_str(), Vector2{chip_x + (chip_size - iw) / 2.0f, fy + 3.0f + (chip_size - font_size) / 2.0f},
+                       font_size, 0, WHITE);
+        }
+        std::string chip_tip = participant.name.empty() ? participant.id : participant.name;
+        if (is_agent && !participant.status.empty() && participant.status != "idle") {
+            std::string status_label = participant.status;
+            std::replace(status_label.begin(), status_label.end(), '_', ' ');  // "awaiting_input" -> "awaiting input"
+            chip_tip += " \xe2\x80\x94 " + status_label;  // U+2014 EM DASH
+        }
+        tooltip_if_hovered(chip_rect, chip_tip);
+        // Jumps the view to this participant's current location.
+        RegisterClickRegion(chip_rect, [id = participant.id] { g_editor.JumpToParticipant(id); });
+    }
 
     // Speech-to-text recording indicator (mep.stt_toggle): a slowly
     // pulsing mic icon, same pulse idiom as DrawAgentStatusBadge's
-    // "thinking" dot, so recording reads as clearly ongoing rather than a
-    // static/possibly-stale icon.
+    // "thinking" dot. Sits just left of the chips (Phase 8) so it never
+    // fights the project label for the left edge.
     if (g_editor.IsSttRecording()) {
         const float mic_size = font_size;
+        chip_x -= mic_size + 6.0f;
         const float pulse = 0.6f + 0.4f * sinf(static_cast<float>(GetTime()) * 4.0f);
         Color mic_color = ResolveHlGroup("Red");
         mic_color.a = static_cast<unsigned char>(255 * pulse);
-        DrawMicIcon(Vector2{x, cy}, mic_size, mic_color);
-        x += mic_size + 6;
+        DrawMicIcon(Vector2{chip_x, cy}, mic_size, mic_color);
     }
+    const float right_limit = chip_x - 4.0f;
+
+    // --- [project] label: click -> loaded-project switcher (Phase 9).
+    const Project &project = g_editor.ActiveProject();
+    auto ellipsise = [](std::string text, size_t max_chars) {
+        if (text.size() <= max_chars) return text;
+        return text.substr(0, max_chars > 1 ? max_chars - 1 : 0) + "\xe2\x80\xa6";  // U+2026
+    };
+    float x = 4;
+    {
+        std::string label = " [" + ellipsise(project.name, 24) + "] ";
+        const float w = MeasureUiText(label, font_size);
+        DrawUiText(label, Vector2{x, cy}, font_size, ResolveHlGroup("ProjectLabel"));
+        const Rectangle rect{x, fy, w, fbar_h};
+        std::string tip = project.root;
+        if (g_editor.ProjectCount() > 1) tip += "  (" + std::to_string(g_editor.ProjectCount()) + " projects loaded)";
+        tooltip_if_hovered(rect, tip);
+        RegisterClickRegion(rect, [] { g_editor.RunCommand("lua mep.projects_open()"); });
+        x += w + 2;
+    }
+
+    // --- Workspace labels. Widths of everything to their right that must
+    // always fit (the active workspace's tab circles, +, x) decide how
+    // much the inactive labels get to shrink: full -> first 3 chars -> a
+    // single "+N" count. The bar never wraps.
+    const std::string circle_on = " " + Utf8FromCodepoint(0xf111) + " ";   // nf-fa-circle
+    const std::string circle_off = " " + Utf8FromCodepoint(0xf10c) + " ";  // nf-fa-circle_o
+    const std::string add_label = " " + Utf8FromCodepoint(0xf067) + " ";   // nf-fa-plus
+    const std::string close_label = " " + Utf8FromCodepoint(0xf00d) + " "; // nf-fa-times
+    const std::string separator = " \xe2\x94\x82 ";                          // U+2502 box drawings light vertical
+    const float circle_w = std::max(MeasureUiText(circle_on, font_size), MeasureUiText(circle_off, font_size));
+    const float tabs_w = circle_w * static_cast<float>(g_editor.TabCount()) + MeasureUiText(add_label, font_size) +
+                         MeasureUiText(close_label, font_size) + MeasureUiText(separator, font_size);
+
+    struct WsLabel {
+        int id = 0;
+        std::string name;
+        std::string suffix;  // "*" modified buffers, "+" git dirty, "..." creating
+        bool active = false;
+        bool creating = false;
+        std::string tip;
+    };
+    std::vector<WsLabel> labels;
+    for (int i = 0; i < g_editor.WorkspaceCount(); i++) {
+        const Workspace &ws = project.workspaces[static_cast<size_t>(i)];
+        WsLabel l;
+        l.id = ws.id;
+        l.name = ws.name;
+        l.active = i == g_editor.ActiveWorkspaceIndex();
+        l.creating = ws.creating;
+        if (ws.creating) {
+            l.suffix = "...";
+        } else {
+            if (g_editor.WorkspaceHasModifiedBuffers(ws.id)) l.suffix += "*";
+            if (ws.git_dirty) l.suffix += "+";
+        }
+        l.tip = ws.root;
+        if (!ws.branch.empty()) l.tip += "  @ " + ws.branch;
+        if (ws.creating) l.tip += "  (creating worktree...)";
+        labels.push_back(std::move(l));
+    }
+    auto full_text = [](const WsLabel &l) { return " [" + l.name + l.suffix + "] "; };
+    auto short_text = [](const WsLabel &l) { return " [" + l.name.substr(0, 3) + l.suffix + "] "; };
+    const float avail = right_limit - x - tabs_w;
+    int mode = 0;  // 0 = full, 1 = inactive shortened, 2 = active only + "+N"
+    float total = 0;
+    for (const WsLabel &l : labels) total += MeasureUiText(full_text(l), font_size);
+    if (total > avail) {
+        mode = 1;
+        total = 0;
+        for (const WsLabel &l : labels) total += MeasureUiText(l.active ? full_text(l) : short_text(l), font_size);
+        if (total > avail) mode = 2;
+    }
+    int hidden = 0;
+    for (const WsLabel &l : labels) {
+        if (mode == 2 && !l.active) {
+            hidden++;
+            continue;
+        }
+        const std::string text = (mode == 0 || l.active) ? full_text(l) : short_text(l);
+        const float w = MeasureUiText(text, font_size);
+        const Rectangle rect{x, fy, w, fbar_h};
+        Color c = ResolveHlGroup(l.active ? "WorkspaceActive" : "WorkspaceInactive");
+        if (l.active) DrawRectangleRounded(Rectangle{x, fy + 2.0f, w, fbar_h - 4.0f}, 0.3f, 4, ResolveHlGroup("WorkspaceActiveBg"));
+        if (l.creating) c.a = static_cast<unsigned char>(c.a / 2);
+        DrawUiText(text, Vector2{x, cy}, font_size, c);
+        tooltip_if_hovered(rect, l.tip);
+        if (!l.creating) {
+            RegisterClickRegion(rect, [id = l.id] { g_editor.WorkspaceSwitch(id); });
+            // Middle-click closes, like a browser tab (`:wsdelete <name>`).
+            if (IsMouseButtonPressed(MOUSE_BUTTON_MIDDLE) && CheckCollisionPointRec(mouse, rect)) {
+                g_editor.RunCommand("wsdelete " + l.name);
+            }
+        }
+        x += w;
+    }
+    if (hidden > 0) {
+        const std::string more = " +" + std::to_string(hidden) + " ";
+        const float w = MeasureUiText(more, font_size);
+        DrawUiText(more, Vector2{x, cy}, font_size, ResolveHlGroup("WorkspaceInactive"));
+        RegisterClickRegion(Rectangle{x, fy, w, fbar_h}, [] { g_editor.RunCommand("wslist"); });
+        x += w;
+    }
+
+    // --- Separator, then the active workspace's tabs exactly as before.
+    DrawUiText(separator, Vector2{x, cy}, font_size, ResolveHlGroup("WorkspaceInactive"));
+    x += MeasureUiText(separator, font_size);
 
     for (int i = 0; i < g_editor.TabCount(); i++) {
         bool active = (i == g_editor.ActiveTabIndex());
-        std::string glyph = " " + Utf8FromCodepoint(active ? 0xf111 : 0xf10c) + " ";  // nf-fa-circle / circle_o
+        const std::string &glyph = active ? circle_on : circle_off;
         Color c = ResolveHlGroup(active ? "TabActive" : "TabInactive");
         float w = MeasureUiText(glyph, font_size);
         DrawUiText(glyph, Vector2{x, cy}, font_size, c);
         // Click-to-switch (Phase 11 click-dispatch gap): a click anywhere on
         // this tab's circle jumps straight to it via GoToTab, same as :tabn N.
-        RegisterClickRegion(Rectangle{x, static_cast<float>(y), w, static_cast<float>(bar_h)},
-                             [i] { g_editor.GoToTab(i); });
+        RegisterClickRegion(Rectangle{x, fy, w, fbar_h}, [i] { g_editor.GoToTab(i); });
         x += w;
     }
 
-    std::string add_label = " " + Utf8FromCodepoint(0xf067) + " ";  // nf-fa-plus
     float add_w = MeasureUiText(add_label, font_size);
     DrawUiText(add_label, Vector2{x, cy}, font_size, ResolveHlGroup("StatusLineFg"));
     // Opens a new (unnamed) tab.
-    RegisterClickRegion(Rectangle{x, static_cast<float>(y), add_w, static_cast<float>(bar_h)}, [] { g_editor.TabNew(""); });
+    RegisterClickRegion(Rectangle{x, fy, add_w, fbar_h}, [] { g_editor.TabNew(""); });
     x += add_w;
 
-    std::string close_label = " " + Utf8FromCodepoint(0xf00d) + " ";  // nf-fa-times
     float close_w = MeasureUiText(close_label, font_size);
     DrawUiText(close_label, Vector2{x, cy}, font_size, ResolveHlGroup("StatusLineFg"));
     // Closes the current tab.
-    RegisterClickRegion(Rectangle{x, static_cast<float>(y), close_w, static_cast<float>(bar_h)},
-                         [] { g_editor.TabDelete(); });
+    RegisterClickRegion(Rectangle{x, fy, close_w, fbar_h}, [] { g_editor.TabDelete(); });
 
-    // Participant chips (COLLAB_CURSORS_PLAN.md): who's currently editing
-    // this project -- human collaborators and connected AI agents (robot
-    // icon) -- docked to the tab bar's right edge, growing leftward, so
-    // they don't collide with however many buffer/split tabs are open to
-    // the left. Hovering a chip shows its full name -- immediate-mode
-    // (checked and drawn in the same frame, no persistent hover-state
-    // object) since this is the only place needing a lightweight generic
-    // hover tooltip like this; the existing DrawHoverPopup/IsHoverOpen
-    // machinery is LSP-hover-specific, driven by its own keypress/
-    // debounce state machine, not a fit here.
-    float chip_x = static_cast<float>(screen_w) - 4.0f;
-    const Vector2 mouse = GetMousePosition();
-    for (const Editor::ParticipantInfo &participant : g_editor.Participants()) {
-        const bool is_agent = participant.kind == Editor::ParticipantKind::Agent;
-        const float chip_size = static_cast<float>(bar_h) - 6.0f;
-        chip_x -= chip_size + 4.0f;
-        const Rectangle chip_rect{chip_x, static_cast<float>(y) + 3.0f, chip_size, chip_size};
-        const Color color = ToRaylib(ParticipantColor(participant.id));
-        DrawRectangleRounded(chip_rect, 0.3f, 4, color);
-        if (is_agent) {
-            const float pad = chip_size * 0.15f;
-            DrawRobotIcon(Vector2{chip_x + pad, static_cast<float>(y) + 3.0f + pad}, chip_size - pad * 2.0f, WHITE);
-            const float badge_r = chip_size * 0.24f;
-            DrawAgentStatusBadge(Vector2{chip_x + chip_size - badge_r * 0.75f, static_cast<float>(y) + 3.0f + chip_size - badge_r * 0.75f}, badge_r,
-                                  participant.status);
-        } else {
-            const std::string initial = participant.name.empty() ? "?" : participant.name.substr(0, 1);
-            const float iw = MeasureTextEx(g_font, initial.c_str(), font_size, 0).x;
-            DrawTextEx(g_font, initial.c_str(), Vector2{chip_x + (chip_size - iw) / 2.0f, static_cast<float>(y) + 3.0f + (chip_size - font_size) / 2.0f},
-                       font_size, 0, WHITE);
-        }
-        if (CheckCollisionPointRec(mouse, chip_rect)) {
-            std::string tooltip_text = participant.name.empty() ? participant.id : participant.name;
-            if (is_agent && !participant.status.empty() && participant.status != "idle") {
-                std::string status_label = participant.status;
-                std::replace(status_label.begin(), status_label.end(), '_', ' ');  // "awaiting_input" -> "awaiting input"
-                tooltip_text += " \xe2\x80\x94 " + status_label;  // U+2014 EM DASH
-            }
-            const float tw = MeasureTextEx(g_font, tooltip_text.c_str(), font_size, 0).x;
-            Rectangle tooltip_rect{chip_x + chip_size / 2.0f - tw / 2.0f - 4.0f, static_cast<float>(y + bar_h), tw + 8.0f,
-                                    static_cast<float>(bar_h)};
-            // Keep the tooltip on-screen even for a chip near either edge.
-            if (tooltip_rect.x < 0) tooltip_rect.x = 0;
-            if (tooltip_rect.x + tooltip_rect.width > static_cast<float>(screen_w)) tooltip_rect.x = static_cast<float>(screen_w) - tooltip_rect.width;
-            DrawRectangleRounded(tooltip_rect, 0.3f, 4, ResolveHlGroup("PickerSelected"));
-            DrawTextEx(g_font, tooltip_text.c_str(), Vector2{tooltip_rect.x + 4.0f, tooltip_rect.y + (static_cast<float>(bar_h) - font_size) / 2.0f}, font_size,
-                       0, ResolveHlGroup("StatusLineFg"));
-        }
-        // Jumps the view to this participant's current location.
-        RegisterClickRegion(chip_rect, [id = participant.id] { g_editor.JumpToParticipant(id); });
+    if (!tooltip_text.empty()) {
+        const float tw = MeasureTextEx(g_font, tooltip_text.c_str(), font_size, 0).x;
+        Rectangle tooltip_rect{tooltip_anchor_x - tw / 2.0f - 4.0f, static_cast<float>(y + bar_h), tw + 8.0f, fbar_h};
+        // Keep the tooltip on-screen even for a label near either edge.
+        if (tooltip_rect.x < 0) tooltip_rect.x = 0;
+        if (tooltip_rect.x + tooltip_rect.width > static_cast<float>(screen_w)) tooltip_rect.x = static_cast<float>(screen_w) - tooltip_rect.width;
+        DrawRectangleRounded(tooltip_rect, 0.3f, 4, ResolveHlGroup("PickerSelected"));
+        DrawTextEx(g_font, tooltip_text.c_str(), Vector2{tooltip_rect.x + 4.0f, tooltip_rect.y + (fbar_h - font_size) / 2.0f}, font_size,
+                   0, ResolveHlGroup("StatusLineFg"));
     }
 }
 
@@ -19295,15 +20092,32 @@ void UpdatePaneMouseInteraction() {
                     break;
                 }
             }
-            // Sidebar rows don't drag (only click-to-select and double-
-            // click-to-activate) -- handled directly here rather than via
-            // g_click_regions/DispatchChromeClicks, since double-click
-            // detection needs to compare against the *previous* click's
-            // own time/position, state g_click_regions' plain fire-once
-            // closures have no way to carry.
+            // Sidebar rows: click-to-select and double-click-to-activate
+            // (handled directly here rather than via g_click_regions/
+            // DispatchChromeClicks, since double-click detection needs to
+            // compare against the *previous* click's own time/position,
+            // state g_click_regions' plain fire-once closures have no way
+            // to carry), plus a file row can be dragged onto a pane
+            // (PaneDragKind::FileDrop, see its enum comment).
             if (g_pane_drag.kind == PaneDragKind::None) {
                 for (const SidebarRowRect &r : g_sidebar_row_rects) {
                     if (!PointInRect(mouse, r.rect)) continue;
+                    // A row naming an existing file arms a FileDrop drag
+                    // alongside the click handling below: the click
+                    // (focus / double-click open) still happens on press
+                    // as before, and the drag only becomes real once the
+                    // mouse travels past kPaneDragThresholdPx.
+                    {
+                        const std::string wid = g_editor.SidebarLineWidgetId(r.sidebar_id, r.line_index);
+                        std::error_code ec;
+                        if (!wid.empty() && std::filesystem::is_regular_file(wid, ec)) {
+                            g_pane_drag.kind = PaneDragKind::FileDrop;
+                            g_pane_drag.start_pos = mouse;
+                            g_pane_drag.threshold_passed = false;
+                            g_pane_drag.dragged_path = wid;
+                            g_pane_drag.target_pane_id = -1;
+                        }
+                    }
                     double now = GetTime();
                     bool is_double = g_last_sidebar_click_id == r.sidebar_id && g_last_sidebar_click_row == r.line_index &&
                                       (now - g_last_sidebar_click_time) < kDoubleClickThresholdSec;
@@ -19344,7 +20158,7 @@ void UpdatePaneMouseInteraction() {
                 float unit = g_pane_drag.sidebar_horizontal ? g_char_width : static_cast<float>(LineHeight());
                 int new_size = g_pane_drag.sidebar_size_start + static_cast<int>(std::lround(delta_px / unit));
                 g_editor.SetSidebarSize(g_pane_drag.sidebar_id, new_size);
-            } else if (g_pane_drag.kind == PaneDragKind::TabMove) {
+            } else if (g_pane_drag.kind == PaneDragKind::TabMove || g_pane_drag.kind == PaneDragKind::FileDrop) {
                 want_cursor = MOUSE_CURSOR_POINTING_HAND;
                 g_pane_drag.target_pane_id = -1;
                 for (const PaneScreenRect &p : g_pane_screen_rects) {
@@ -19357,6 +20171,14 @@ void UpdatePaneMouseInteraction() {
             }
         }
     } else if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
+        if (g_pane_drag.threshold_passed && g_pane_drag.kind == PaneDragKind::FileDrop &&
+            g_pane_drag.target_pane_id >= 0) {
+            const bool center = g_pane_drag.drop_zone == PaneDropZone::Center;
+            bool side = g_pane_drag.drop_zone == PaneDropZone::Left || g_pane_drag.drop_zone == PaneDropZone::Right;
+            bool before = g_pane_drag.drop_zone == PaneDropZone::Left || g_pane_drag.drop_zone == PaneDropZone::Top;
+            g_editor.OpenFileInPane(g_pane_drag.target_pane_id, g_pane_drag.dragged_path, !center,
+                                    side ? SplitDir::Vertical : SplitDir::Horizontal, before);
+        }
         if (g_pane_drag.threshold_passed && g_pane_drag.kind == PaneDragKind::TabMove &&
             g_pane_drag.target_pane_id >= 0) {
             if (g_pane_drag.drop_zone == PaneDropZone::Center) {
@@ -19387,7 +20209,22 @@ void UpdatePaneMouseInteraction() {
 // "imperceptible at interactive framerates" tradeoff g_click_regions
 // already makes, see its own header).
 void DrawPaneDragOverlay() {
-    if (g_pane_drag.kind != PaneDragKind::TabMove || !g_pane_drag.threshold_passed || g_pane_drag.target_pane_id < 0) {
+    const bool file_drop = g_pane_drag.kind == PaneDragKind::FileDrop;
+    if ((g_pane_drag.kind != PaneDragKind::TabMove && !file_drop) || !g_pane_drag.threshold_passed) return;
+    if (g_pane_drag.target_pane_id < 0) {
+        // Dragging a file but not over any pane yet (still over the
+        // sidebar, say): just the floating name so the gesture reads as
+        // "carrying a file", no zone to highlight.
+        if (file_drop) {
+            const std::string label = Basename(g_pane_drag.dragged_path);
+            Vector2 mp = GetMousePosition();
+            float fs = MenuFontSize();
+            float tw = MeasureTextEx(g_font, label.c_str(), fs, 0).x;
+            Rectangle label_bg{mp.x + 12, mp.y + 12, tw + 12, fs + 8};
+            DrawRectangleRec(label_bg, ResolveHlGroup("MenuBar"));
+            DrawRectangleLinesEx(label_bg, 1.0f, ResolveHlGroup("Border"));
+            DrawTextEx(g_font, label.c_str(), Vector2{label_bg.x + 6, label_bg.y + 4}, fs, 0, ResolveHlGroup("Normal"));
+        }
         return;
     }
     Rectangle target{};
@@ -19413,11 +20250,16 @@ void DrawPaneDragOverlay() {
                   Color{base.r, base.g, base.b, 90});
     DrawRectangleLinesEx(hl, 2.0f, Color{base.r, base.g, base.b, 220});
 
-    // A small floating label near the cursor naming the dragged buffer,
-    // so it's clear what's being moved once the source pane's own chip
-    // is out of view/covered by other panes.
-    const Buffer &db = g_editor.GetBuffer(g_pane_drag.dragged_buffer_id);
-    std::string label = db.scratch ? "[Scratch]" : (db.filename.empty() ? "[No Name]" : Basename(db.filename));
+    // A small floating label near the cursor naming the dragged buffer
+    // (or file), so it's clear what's being moved once the source pane's
+    // own chip / the sidebar row is out of view.
+    std::string label;
+    if (file_drop) {
+        label = Basename(g_pane_drag.dragged_path);
+    } else {
+        const Buffer &db = g_editor.GetBuffer(g_pane_drag.dragged_buffer_id);
+        label = db.scratch ? "[Scratch]" : (db.filename.empty() ? "[No Name]" : Basename(db.filename));
+    }
     Vector2 mp = GetMousePosition();
     float fs = MenuFontSize();
     float tw = MeasureTextEx(g_font, label.c_str(), fs, 0).x;
@@ -19760,8 +20602,37 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinWhichKeyGroups);
 
 #if !defined(__EMSCRIPTEN__)
-    if (argc > 1) {
-        g_editor.LoadFile(argv[1]);
+    // Command line (WORKSPACES_PLAN.md Phase 9/10):
+    //   mep [--project <dir>] [--no-session] [file]
+    // $MEP_PROJECT is the launcher's equivalent of --project. The project
+    // re-root happens before any file opens so `mep --project ~/x a.txt`
+    // opens a.txt inside x's main workspace.
+    std::string file_arg;
+    std::string project_arg;
+    if (const char *env_project = std::getenv("MEP_PROJECT"); env_project && *env_project) project_arg = env_project;
+    for (int i = 1; i < argc; i++) {
+        const std::string a = argv[i];
+        if (a == "--project" && i + 1 < argc) {
+            project_arg = argv[++i];
+        } else if (a.rfind("--project=", 0) == 0) {
+            project_arg = a.substr(std::string("--project=").size());
+        } else if (a == "--no-session") {
+            g_editor.SetSessionPersistence(false);
+        } else if (a == "-h" || a == "--help") {
+            std::printf("usage: mep [--project <dir>] [--no-session] [file]\n"
+                        "  --project <dir>  open <dir> as the project (default: the current directory;\n"
+                        "                   $MEP_PROJECT is honoured too)\n"
+                        "  --no-session     neither restore nor save the project's workspaces/tabs\n");
+            return 0;
+        } else if (file_arg.empty()) {
+            file_arg = a;
+        }
+    }
+    if (!project_arg.empty() && !g_editor.RerootInitialProject(project_arg)) {
+        std::fprintf(stderr, "mep: not a directory: %s\n", project_arg.c_str());
+    }
+    if (!file_arg.empty()) {
+        g_editor.LoadFile(file_arg);
         g_editor.DropUnusedInitialBuffer();
     }
     std::string config_path = ConfigFilePath();
@@ -19778,10 +20649,18 @@ int main(int argc, char **argv) {
             lua->DoFile(config_path);
         }
     }
+    // WORKSPACES_PLAN.md Phase 6/10: after init.lua so mep.opt.worktree_dir
+    // and mep.opt.restore_workspaces are already known. Saved state is
+    // applied first (synchronously, so the bar is right from the first
+    // frame), then the async git detection confirms/adopts worktrees.
+    if (g_editor.RestoreWorkspaces()) g_editor.RestoreWorkspaceState(g_editor.ActiveProject().id, !file_arg.empty());
+    g_editor.ProjectDetectGit(g_editor.ActiveProject().id);
     mep::agent::Start();
 #endif
 
 #if defined(__EMSCRIPTEN__)
+    (void)argc;  // the command line is native-only (see above)
+    (void)argv;
     // simulate_infinite_loop=0: with =1, Emscripten unwinds the C call
     // stack up to main() via its own JS-exception-based mechanism to fake
     // "never returning" -- which doesn't coexist reliably with Asyncify's
@@ -19807,6 +20686,9 @@ int main(int argc, char **argv) {
     // join blocked forever, so mep's process never actually exited on
     // window-close/:qa -- it sat there until something outside mep (e.g.
     // a couple of Ctrl-C's at the launching shell) killed it by force.
+    // Unconditional save on quit (WORKSPACES_PLAN.md Phase 10), before the
+    // children go away so terminal panes are recorded as terminals.
+    g_editor.SaveAllWorkspaceState();
     JobManager::Instance().ShutdownAll();
     mep::agent::Stop();
 #endif

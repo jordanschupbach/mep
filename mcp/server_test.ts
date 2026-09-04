@@ -50,7 +50,9 @@ Deno.test("mep MCP server drives a real mep instance end-to-end", async () => {
   // stdout/stderr, and mep prints a lot of raylib boot logging -- an
   // unconsumed "piped" stream backs up the OS pipe buffer and blocks the
   // child's own writes once it fills, which would hang mep itself.
-  const mepProcess = new Deno.Command(mepBinary, { stdout: "null", stderr: "null" }).spawn();
+  // --no-session: a test run must neither inherit nor overwrite the real
+  // per-project workspace session file for this checkout.
+  const mepProcess = new Deno.Command(mepBinary, { args: ["--no-session"], stdout: "null", stderr: "null" }).spawn();
 
   try {
     const socketPath = await waitForSocket(mepProcess.pid);
@@ -68,7 +70,43 @@ Deno.test("mep MCP server drives a real mep instance end-to-end", async () => {
       const names = tools.tools.map((t: { name: string }) => t.name);
       if (!names.includes("mep_cursor_set")) throw new Error(`expected mep_cursor_set among tools: ${names.join(", ")}`);
       if (!names.includes("mep_identify")) throw new Error(`expected mep_identify among tools: ${names.join(", ")}`);
-      if (tools.tools.length < 24) throw new Error(`expected ~26 tools, got only ${tools.tools.length}: ${names.join(", ")}`);
+      if (tools.tools.length < 31) throw new Error(`expected ~33 tools, got only ${tools.tools.length}: ${names.join(", ")}`);
+      for (const t of ["mep_workspace_list", "mep_workspace_switch", "mep_workspace_create", "mep_workspace_delete", "mep_project_list", "mep_project_switch", "mep_project_open"]) {
+        if (!names.includes(t)) throw new Error(`expected ${t} among tools: ${names.join(", ")}`);
+      }
+
+      // --- Workspaces (WORKSPACES_PLAN.md Phase 11): the freshly launched
+      // instance has exactly one project with one primary "main" workspace;
+      // session.info and buffer.list carry the workspace fields.
+      const wsList = parseToolJson(
+        await client.callTool({ name: "mep_workspace_list", arguments: {} }) as ToolTextResult,
+      ) as Array<{ id: number; name: string; primary: boolean; active: boolean }>;
+      if (wsList.length !== 1 || wsList[0].name !== "main" || !wsList[0].primary || !wsList[0].active) {
+        throw new Error(`expected a single active primary "main" workspace, got: ${JSON.stringify(wsList)}`);
+      }
+      const projects = parseToolJson(
+        await client.callTool({ name: "mep_project_list", arguments: {} }) as ToolTextResult,
+      ) as Array<{ id: number; name: string; root: string; workspace_count: number; active: boolean }>;
+      if (projects.length !== 1 || projects[0].workspace_count !== 1 || !projects[0].active) {
+        throw new Error(`expected one active project with one workspace, got: ${JSON.stringify(projects)}`);
+      }
+      const info = parseToolJson(
+        await client.callTool({ name: "mep_session_info", arguments: {} }) as ToolTextResult,
+      ) as { cwd: string; workspace: string; workspace_root: string; project: string };
+      if (info.workspace !== "main" || info.workspace_root !== info.cwd || info.project !== projects[0].name) {
+        throw new Error(`session.info should describe the main workspace (cwd == workspace_root), got: ${JSON.stringify(info)}`);
+      }
+      const scopedBuffers = parseToolJson(
+        await client.callTool({ name: "mep_buffer_list", arguments: {} }) as ToolTextResult,
+      ) as Array<{ id: number; workspace_id: number }>;
+      const allBuffers = parseToolJson(
+        await client.callTool({ name: "mep_buffer_list", arguments: { workspace: "all" } }) as ToolTextResult,
+      ) as Array<{ id: number; workspace_id: number }>;
+      if (scopedBuffers.length === 0 || allBuffers.length < scopedBuffers.length) {
+        throw new Error(`buffer.list scoping looks wrong: scoped=${JSON.stringify(scopedBuffers)} all=${JSON.stringify(allBuffers)}`);
+      }
+      const noWs = await client.callTool({ name: "mep_workspace_switch", arguments: { name: "no-such-workspace" } }) as ToolTextResult;
+      if (noWs.isError !== true) throw new Error(`switching to a nonexistent workspace should be a tool error, got: ${JSON.stringify(noWs)}`);
 
       // server.ts auto-identifies on connect (default name "Claude" unless
       // MEP_AGENT_NAME is set) -- confirm mep_identify can rename that

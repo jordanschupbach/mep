@@ -130,7 +130,8 @@ builds on:
   can touch. Everything in Part III Phase 10/11 is net-new.
 - **Script execution model**: every `<script>` block runs exactly once,
   synchronously, immediately after the DOM finishes parsing, in one
-  shared global scope. No event loop, no re-entry — a script that
+  shared global scope (regression-tested across separate script tags). No
+  event loop, no re-entry — a script that
   registers a `setTimeout`/click handler today has literally nowhere for
   that callback to ever run. Part III Phase 9 is what fixes this.
 - **Pane integration** (`editor.h`'s `HtmlSession`/`Mode::Html`,
@@ -254,7 +255,11 @@ unimplemented — Phase 1 (full CSS box model) is next up in Part I proper.
 - [ ] Part VI — Performance (bytecode VM, incremental layout)
 - [ ] Part VII — The long tail (canvas/SVG/WebGL/audio-video/web
       components/service workers/a11y/i18n) — open-ended, survey depth
-      only
+      only. **Slices landed 2026-09-02/03** (see each item's Progress
+      note): canvas 2D with transforms/gradients, an SVG display-list
+      module (`svg_doc.cpp`), a WAV-only media pipeline, shadow DOM +
+      slots, an accessibility tree, and structural `WebAssembly.validate`.
+      None of the items is closed; each note says what's still missing.
 
 ---
 
@@ -341,6 +346,15 @@ naturally fall under any Part I/II/III phase as originally scoped).
 
 ### Phase 1 — Real CSS box model
 
+**Progress (2026-09-02):** the first implementation slice now stores
+unresolved `px`/`%`/`em`/`rem` box lengths, parses margin/padding/width/
+height/min/max longhands and shorthands, `box-sizing`, and per-side border
+width/color, and lays out/draws content, padding, and border rectangles from
+that geometry. Adjacent vertical CSS margins are deferred and collapsed to
+their maximum. `cmake --build build/native -j1` passes. Overflow clipping for
+a max-height box and Xvfb visual verification remain open, so this phase and
+its checkboxes intentionally stay unchecked.
+
 Today's `ComputedStyle` has exactly one spacing concept
 (`margin_top_lines`/`margin_bottom_lines`, in text lines). Real CSS needs
 the actual box model: content box, padding, border, margin, each
@@ -382,6 +396,15 @@ independently settable per side, plus `box-sizing` (`content-box` vs
 
 ### Phase 2 — CSS selector engine + cascade
 
+**Progress (2026-09-02):** selector parsing/matching now covers descendant,
+child, adjacent/general sibling, attribute (`[x]`, `[x="v"]`, `[x~="v"]`),
+multi-class, and structural `:first-child`/`:last-child`/`:nth-child`/
+`:nth-of-type` selectors. The cascade sorts matching rules by specificity then
+source order, and the same matcher backs `document.querySelector(All)`.
+`mep-html-doc-test` verifies selector, cascade, box-model, and query API
+behavior. Interaction pseudo-classes need the future event system, so Phase 2
+remains open.
+
 Today: tag selectors and `.class`/`#id` selectors, exact match only, two
 fixed passes (tag rules always lose to class/id rules) — no combinators,
 no attribute selectors, no pseudo-classes, no real specificity
@@ -419,6 +442,19 @@ calculation.
       attribute selector, and `:nth-child` for zebra-striping a list.
 
 ### Phase 3 — More elements, real tables, basic forms
+
+**Progress (2026-09-02):** `<table>` now has a dedicated grid layout path:
+it collects rows across table sections, measures columns, fits them to the
+containing block, handles `colspan`, lays cells independently with wrapping,
+and draws visible cell boundaries. `rowspan` and the form/widget half of this
+phase remain open.
+
+**Progress (2026-09-02, forms):** parsed DOM nodes now retain text values,
+checked/disabled state, and `<details open>` state. The renderer displays
+text, checkbox/radio, textarea, select, and button controls as visible form
+widgets, including authored selected-option values; the upcoming DOM event
+phase will make them editable/clickable. DOM scripts can already read/write
+the `<details>.open` state driving its renderer branch.
 
 - [ ] Table layout: `<table>`/`<tr>`/`<td>`/`<th>`/`<thead>`/`<tbody>`/
       `<tfoot>` as real row/column grid layout (measure each column's
@@ -529,6 +565,26 @@ getting it right here.
       exactly what a small targeted test script per feature is for.
 
 ### Phase 6 — Prototype object model + core built-ins
+
+**Progress (2026-09-02):** real array instances now expose tested
+`push`/`pop`/`shift`/`unshift`/`reverse`/`join`/`indexOf`/`includes`/`slice`/`concat` methods with
+maintained length semantics, plus `Array.isArray`. This is only the first core-built-in slice;
+prototype inheritance and the broader Array/Object/String/JSON surface
+remain open.
+
+**Progress (2026-09-02, Object):** `Object.keys`/`values`/`entries`/`assign`
+are now available for ordinary objects; property ordering is not yet
+ECMAScript-precise.
+
+**Progress (2026-09-02, Math):** `Math.abs`/`floor`/`ceil`/`round`/`min`/
+`max` are implemented and script-tested. **2026-09-03:** plus `sqrt`,
+`cbrt`, `sin`/`cos`/`tan`, `asin`/`acos`/`atan`/`atan2`, `exp`/`log`/`log2`/
+`log10`, `pow`, `hypot`, `trunc`, `sign`, `random`, and the `PI`/`E`/`SQRT2`/
+`LN2`/`LN10` constants -- canvas/animation code can't get far without
+`Math.PI`.
+
+**Progress (2026-09-02, Number):** global/`Number` `parseInt` and
+`parseFloat`, plus `Number.isNaN`/`isFinite`, are implemented and tested.
 
 - [ ] A real prototype chain: every object has an internal `[[Prototype]]`
       link, property lookup walks it, `Object.create`/
@@ -693,6 +749,18 @@ is "React mounts and a button click updates the UI."
       frame.
 
 ### Phase 10 — Full DOM mutation API
+
+**Progress (2026-09-02):** `document.createElement`/
+`createTextNode`, `appendChild`/`insertBefore`/`removeChild`/`replaceChild`/
+`remove`/`cloneNode`, attributes, and `classList` now mutate the owned DOM
+tree, with detached-node ownership preserved until insertion. Styles are
+recomputed after scripts; the regression suite builds a node entirely from
+JavaScript and verifies tree, class, camelCase inline-style, and form-value
+mutations. Basic navigation (`parentNode`, child collections/first-child),
+node metadata, `value`/`checked`, and `window.getComputedStyle()` are also
+exposed. Sibling navigation plus `innerHTML` replacement and inner/outer HTML
+serialization are now included, along with `document.body`, `head`, and
+`documentElement`.
 
 Today: `document.getElementById` + `.textContent` get/set is the entire
 mutation surface. Real apps (React's DOM renderer very much included)
@@ -1074,11 +1142,58 @@ designing all of them now.
       High real-world value (widely used for charts/graphics/games) and
       probably the single most approachable Part VII item, since it maps
       fairly directly onto raylib's own existing 2D drawing primitives.
+      Progress: `<canvas>` now owns a persistent renderer-independent display
+      list, honors intrinsic `width`/`height`, and exposes `getContext('2d')`
+      with stateful `fillStyle`, `strokeStyle`, `lineWidth`, `fillRect`,
+      `strokeRect`, and `clearRect`; the HTML pane replays and clips those
+      commands every frame. It also has retained line/arc/fill paths,
+      `fillText`, font state, and UTF-8-aware `measureText().width`.
+      **2026-09-03:** the context now keeps a real CTM (`translate`/`scale`/
+      `rotate`/`transform`/`setTransform`/`resetTransform`/`getTransform`)
+      applied to geometry at record time, so later transforms never move
+      painted pixels; `save`/`restore` round-trip the whole state;
+      `createLinearGradient`/`createRadialGradient` + `addColorStop` produce
+      gradient objects assignable to either style (rendered exactly on
+      axis-aligned rects via raylib's gradient rect, sampled per triangle/
+      segment elsewhere); `globalAlpha`; fill and stroke styles are finally
+      separate state (they used to share one color); colors go through the
+      spec-accurate parser shared with SVG (`rgb()`/`rgba()`, `#rgba`, named
+      colors); the default path keeps multiple subpaths across `moveTo`
+      (previously each `moveTo` dropped everything before it); fills are
+      ear-clipped into consistently wound triangles (the old fan drew
+      concave shapes wrong and lost clockwise ones to backface culling);
+      `fillText` honors the context's font size. Still outstanding:
+      `getImageData`/`drawImage`, `clip()`, line caps/joins/dashes, shadows,
+      compositing modes, `Path2D`.
 - [ ] **SVG** — a second, declarative vector-graphics document format
       with its own element set, largely orthogonal to the HTML/CSS
       engine built in Parts I–VI; real-world pages embed SVG constantly
       (icons especially), making this higher-value than it might first
       appear.
+      Progress (2026-09-03): SVG geometry moved out of the draw pass into
+      its own renderer-independent module, `src/svg_doc.cpp`, which
+      flattens an inline `<svg>` subtree into a display list of transformed
+      polylines, ear-clipped triangle fills, and positioned text runs that
+      `main.cpp` replays with raylib primitives -- the same split `<canvas>`
+      uses, so the whole grammar is covered by `mep-html-doc-test` without a
+      window. Covered: `viewBox` + `preserveAspectRatio` (meet/slice, all
+      alignments) and intrinsic sizing from the viewBox when `width`/
+      `height` are absent; the full path grammar (`M L H V C S Q T A Z`,
+      absolute/relative, implicit repeats, glued arc flags, reflected
+      control points, endpoint-to-center arc conversion); `transform`
+      lists (`translate`/`scale`/`rotate[cx cy]`/`skewX`/`skewY`/`matrix`)
+      composed through nested `<g>`/`<svg>`/`<use>`/`<symbol>`; inherited
+      presentation attributes and `style=""` (`fill`, `stroke`, `stroke-
+      width`, `opacity`, `fill-opacity`, `stroke-opacity`, `font-size`,
+      `text-anchor`, `display`, `visibility`, `color`/`currentColor`);
+      rounded `rect` corners; `<defs>`/`<title>`/gradient definitions
+      skipped as non-rendering; stroke widths and font sizes scaled by the
+      accumulated transform. Still outstanding: even-odd/nonzero fill rules
+      with holes (each subpath fills solid), real gradient/pattern paint
+      (`url(#id)` resolves to the average stop color), clip paths, masks,
+      markers, filters, `<image>`, `<foreignObject>`, `<style>`-sheet
+      selectors targeting SVG elements, and the SVG DOM API beyond
+      `createElementNS`.
 - [ ] **WebGL / WebGPU** — full 3D graphics APIs; a genuinely enormous
       undertaking (essentially "implement OpenGL ES's/a modern GPU
       API's JS binding surface, correctly, on top of raylib's own GL
@@ -1088,9 +1203,39 @@ designing all of them now.
       support (needs vendoring a codec library — ffmpeg or similar —
       plus a media pipeline) is a large, separate scope from anything
       else in this plan.
+      Progress (2026-09-03): the first slice of an in-tree, license-free
+      media pipeline. `src/wav_doc.cpp` decodes PCM16 RIFF/WAVE;
+      `LoadHtmlMedia` (html_doc.cpp) resolves each `<audio>`/`<video>`
+      element's `src` (or first `<source>`) against the page directory
+      before scripts run and records `duration`, `readyState` (4 when fully
+      decoded, 0 otherwise) and an `error` for unsupported/missing sources;
+      `AdvanceHtmlMediaClock` ticks playing elements once per frame,
+      clamping at the end, honoring `loop`, and flipping `paused`/`ended`.
+      Script sees `play()`/`pause()`/`load()`, `paused`, `ended`,
+      `currentTime`, `duration`, `readyState`, `volume`, `muted`, `loop`,
+      `error`, and `canPlayType()` (which only answers "probably" for WAV,
+      so feature-detecting pages pick a supported source honestly). The
+      inline widget shows play/pause state and the clock. `main.cpp`
+      mirrors the DOM state onto a raylib `Sound` per element (lazy
+      `InitAudioDevice` on first `play()`, pause/resume, volume/mute, unload
+      when the page closes) -- **this device path is unverified**: the
+      development sandbox has no audio device, so only the clock/decoder/
+      script surface is regression-tested. Outstanding: every other codec
+      (MP3/OGG/AAC would need a vendored decoder), seeking the device
+      stream (`currentTime` writes move the clock but not the audible
+      position), any video decoding at all, `<track>`, media events.
 - [ ] **Web Components / Shadow DOM** — custom elements, encapsulated
       style/DOM scoping; increasingly used by some real sites/design
       systems, orthogonal extension to Part III's DOM model.
+      Progress: host-owned Shadow DOM roots are now available through
+      `attachShadow()`/`shadowRoot`; they preserve light DOM separately and
+      render the shadow subtree. The `customElements` registry now supports
+      `define()`/`get()` for hyphenated custom-element definitions. Named
+      and default `<slot>`s project the host's light-DOM children at layout
+      time (falling back to the slot's own content), without moving DOM
+      ownership. Lifecycle callbacks (`connectedCallback` etc.), upgrades,
+      and CSS encapsulation remain outstanding -- all three wait on the JS
+      engine growing `class`/`new` semantics (Part II Phase 6).
 - [ ] **Service Workers, WebSockets, WebAssembly execution** — three
       independent, each-substantial pieces: an offline/caching proxy
       layer, a persistent bidirectional socket API (needs Phase 14's
@@ -1099,12 +1244,25 @@ designing all of them now.
       `.wasm` binaries — real sites increasingly ship WASM, so this one
       in particular may become worth prioritizing sooner than its
       position in this list suggests.
+      Progress: `WebAssembly.validate()` performs structural validation of
+      a real binary (magic/version, LEB128 section sizes that fit, custom-
+      section names, the spec's mandatory section order with one occurrence
+      per known section, function/code count agreement) so feature-
+      detecting pages get an honest yes/no on actual modules while garbage
+      is rejected; it deliberately does not type-check function bodies.
+      Typed arrays/`ArrayBuffer` (today only plain number arrays are
+      accepted), `WebAssembly.Module`/`instantiate`, execution, and the
+      browser Service Worker/WebSocket APIs remain outstanding.
 - [ ] **Accessibility tree / ARIA** — exposing a real accessibility tree
       (for screen readers etc.) alongside the visual render tree; low
       priority given mep's own primary interface is already a keyboard-
       driven terminal-adjacent editor rather than a general-audience
       browser, but worth a real look if this pane ever becomes a primary
       way users consume content rather than a developer-tool preview.
+      Progress: a renderer-independent accessibility tree now projects native
+      roles, explicit ARIA roles/labels, image alt text, and disabled/checked
+      control state from the live DOM. A platform accessibility bridge and
+      richer naming relationships remain outstanding.
 - [ ] **Internationalization**: bidirectional text (RTL scripts),
       complex script shaping (Arabic/Indic/CJK), IME input support for
       form fields (Phase 3's widgets) — real, substantial typography/

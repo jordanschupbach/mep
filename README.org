@@ -171,14 +171,65 @@ left/down/up/right, same heuristic as =mod1+hjkl= below); =Ctrl-W c/s/v=
 close/split-horizontal/split-vertical the current one. =:tabnew [file]=,
 =:tabdelete=, =:tabnext=, =:tabprevious= manage tabs -- each tab has its
 own independent split-pane layout. Two panes split from the same buffer
-(no filename given) share it, including undo history; the tab bar only
-appears once there's more than one tab. =:bnext=/=:bn= and
-=:bprevious=/=:bprev=/=:bp= cycle the current pane through every open
-buffer (not just the ones already opened in that pane's own tab strip),
-wrapping at either end. =Ctrl-O=/=Ctrl-I= walk backward/forward through
+(no filename given) share it, including undo history. The tab bar is one
+row: =[project] [ws1] [ws2*] │ ● ○ + x= -- the project name, one text
+label per workspace (the active one highlighted, =*= when it has
+unsaved buffers, dimmed with =...= while its worktree is still being
+created), then the active workspace's tabs as circles with the
+new/close buttons; participant chips dock right. Clicking a workspace
+label switches, middle-click closes it, hovering shows its directory and
+branch; clicking the project label opens the loaded-projects switcher.
+=:bnext=/=:bn= and =:bprevious=/=:bprev=/=:bp= cycle the current pane
+through every open buffer *of the current workspace* (not just the ones
+already opened in that pane's own tab strip), wrapping at either end. A file row in the file tree (or the git status sidebar) can also be
+dragged straight onto a pane: the same drop-zone pinwheel the pane
+tab chips use lights up under the mouse -- drop in the centre to open
+the file in that pane, on an edge to split the pane that way and open
+it in the new half. =Ctrl-O=/=Ctrl-I= walk backward/forward through
 the jumplist (populated by searches, =gg=/=G=, and mark jumps) -- per
 pane, and able to span buffers, distinct from the single-slot =``=/='''=
 mechanism.
+
+Projects & workspaces: tabs nest inside *workspaces*, which nest inside
+*projects*. A project is a directory (the one mep was started in, or
+=mep --project <dir>= / =$MEP_PROJECT= / =:project <dir>= /
+=mep.project_open(dir)=); several can be loaded at once and
+=:projects= (or clicking =[project]=, or =<leader>pp=) switches between
+them; =:projectclose[!]=, =:projectnext=, =:projectprevious=. Every
+project starts with a primary =main= workspace whose root is the
+project directory. =:wsnew <name>= creates another: on a git project it
+runs =git worktree add -b <name> <parent>/<repo>.worktrees/<name> HEAD=
+(asynchronously -- the label shows =[name...]= until git finishes) so
+each workspace edits its own checkout on its own branch; =:wsnew! <name>=
+attaches to an already-existing branch instead. The process working
+directory always follows the active workspace's root, so =<leader>ff=,
+live grep, =:e=, LSP (one client per language *per workspace root*) and
+=:terminal= (which also gets =$MEP_WORKSPACE= / =$MEP_PROJECT=) all act
+on that worktree. Buffers belong to the workspace they were opened in:
+=:ls=, =<leader>bb=, =:bnext= and the agent's =buffer.list= only show
+the active workspace's, while =:wa= and the =:qa= unsaved-changes guard
+stay global so nothing hidden is ever lost. =:ws <name|N>=, =:wsnext= /
+=:wsn=, =:wsprevious= / =:wsp=, =Ctrl-Alt-]= / =Ctrl-Alt-[= switch;
+=:wslist= / =<leader>ww= picks from a list; =:wsrename <name>=;
+=:wsdelete[!] [name]= runs =git worktree remove= (the *branch is kept*)
+then closes the workspace, refusing on unsaved buffers unless forced;
+=:wsadopt <path-or-branch>= turns a hand-made worktree into a workspace,
+=:wsprune= drops workspaces whose directory vanished. =<leader>gw= lists
+workspaces with branch and ahead/behind counts. Non-git projects work
+identically minus the worktrees (every workspace shares the project
+root). =mep.opt.worktree_dir= relocates new worktrees (absolute, or
+relative to the project root); =mep.opt.workspace_git_dirty = true= adds
+a =+= label suffix from a 5-second =git status= poll. Each project's
+layout -- workspaces, tabs, split trees, open files (relative to the
+workspace root), cursors, terminals -- is saved to
+=$XDG_DATA_HOME/mep/workspaces/<name>-<hash>.json= half a second after
+any structural change and on quit, and restored when the project is
+next opened (missing files are skipped with a message, vanished
+worktrees pruned, a corrupt file ignored); =mep --no-session= or
+=mep.opt.restore_workspaces = false= skips it, =:wssave= / =:wsrestore=
+do it by hand. Lua: =mep.workspace_list/current/root/new/switch/delete/
+rename/next/previous/adopt/prune()=, =mep.on_workspace_changed(fn)=,
+=mep.project_load/current/loaded_list/switch/close/next/previous()=.
 
 =mod1= (=Alt= by default, any mode): =mod1+s= / =mod1+v= split
 horizontal/vertical; =mod1+h/j/k/l= move focus to the pane spatially
@@ -242,10 +293,16 @@ Available to =:lua=, =:source=, and =init.lua=:
 ** Layout
 
 - =src/main.cpp= — raylib init/loop/rendering; owns the embedded font
-  and recursively draws each tab's split-pane tree.
+  and recursively draws the active workspace's each tab's split-pane
+  tree (and the =[project] [workspace]= tab bar).
 - =src/editor.h= / =src/editor.cpp= — modes, motions, operators, undo
-  (per-buffer), buffers/panes/tabs, the =:= command line, and the
+  (per-buffer), buffers/panes/tabs/workspaces/projects (incl. the
+  per-project session save/restore), the =:= command line, and the
   Lua-facing API surface.
+- =src/workspace_git.h= / =src/workspace_git.cpp= — pure helpers behind
+  git-worktree-backed workspaces (worktree dir derivation, =git worktree
+  list --porcelain= parsing, name validation, session-file paths);
+  unit-tested by =mep-workspace-test= (=just test=).
 - =src/lua_env.h= / =src/lua_env.cpp= — the embedded Lua state and the
   =mep.*= C bindings.
 - =src/font_data.h= — JetBrains Mono Regular, embedded so both builds

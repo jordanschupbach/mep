@@ -8,6 +8,7 @@
 #include "js_engine.h"
 #include "pdf_doc.h"
 #include "treesitter.h"
+#include "workspace_git.h"
 
 #include <algorithm>
 #include <cctype>
@@ -812,6 +813,13 @@ std::unordered_map<std::string, ThemeColor> BuildHighlightGroups(const Palette &
     g["TabBar"] = Darken(p.bg, 5);
     g["TabActive"] = Mix(p.blue, p.bg, 0.55f);
     g["TabInactive"] = Lighten(p.bg, 5);
+    // WORKSPACES_PLAN.md Phase 8: the `[project] [ws1] [ws2*]` labels. Text,
+    // not glyph fills, so the inactive one needs to stay legible (a muted
+    // fg) where TabInactive's near-bg tint only works for circle outlines.
+    g["ProjectLabel"] = Mix(p.blue, p.fg, 0.4f);
+    g["WorkspaceActive"] = p.fg;
+    g["WorkspaceActiveBg"] = Mix(p.blue, p.bg, 0.55f);
+    g["WorkspaceInactive"] = Mix(p.fg, p.bg, 0.5f);
     g["BorderActive"] = Mix(p.blue, p.fg, 0.3f);
     g["BorderInactive"] = p.border;
     g["CursorLine"] = Lighten(p.bg, 8);
@@ -3747,20 +3755,92 @@ void Editor::OrgSetPlanning(const std::string &kind, const std::vector<std::stri
 
 Editor::Editor() {
     buffers_.emplace_back();
+    BootstrapInitialProject();
+    ApplyTheme("mep-dark");
+}
+
+// WORKSPACES_PLAN.md Phase 1: the editor always has exactly one project
+// with one primary workspace holding one tab before anything else runs --
+// every accessor (ActiveTab(), CurPane(), ...) indexes unchecked into
+// projects_[active_project_].workspaces[active_workspace].tabs[active_tab]
+// and relies on this. The project root is the process cwd (decision 4);
+// `mep file.txt` keeps that cwd even when the file lives elsewhere.
+void Editor::BootstrapInitialProject() {
+    Project project;
+    project.id = next_project_id_++;
+    std::error_code ec;
+    std::filesystem::path cwd = std::filesystem::current_path(ec);
+    if (!ec) {
+        std::filesystem::path canon = std::filesystem::canonical(cwd, ec);
+        project.root = (ec ? cwd : canon).string();
+    }
+    if (project.root.empty()) project.root = "/";
+    project.name = std::filesystem::path(project.root).filename().string();
+    if (project.name.empty()) project.name = project.root;
+
+    Workspace ws;
+    ws.id = next_workspace_id_++;
+    ws.name = "main";
+    ws.root = project.root;
+    ws.primary = true;
+
     Tab tab;
     tab.root = std::make_unique<SplitNode>();
     tab.root->dir = SplitDir::Leaf;
     tab.root->pane.id = next_pane_id_++;
     tab.root->pane.buffer_id = 0;
     tab.active_pane_id = tab.root->pane.id;
-    tabs_.push_back(std::move(tab));
-    ApplyTheme("mep-dark");
+    ws.tabs.push_back(std::move(tab));
+
+    project.workspaces.push_back(std::move(ws));
+    projects_.push_back(std::move(project));
+    active_project_ = 0;
+}
+
+const Workspace *Editor::FindWorkspace(int id) const {
+    for (const Project &p : projects_) {
+        for (const Workspace &ws : p.workspaces) {
+            if (ws.id == id) return &ws;
+        }
+    }
+    return nullptr;
+}
+
+Workspace *Editor::FindWorkspace(int id) {
+    for (Project &p : projects_) {
+        for (Workspace &ws : p.workspaces) {
+            if (ws.id == id) return &ws;
+        }
+    }
+    return nullptr;
+}
+
+const Workspace *Editor::FindWorkspaceByName(const std::string &name) const {
+    for (const Workspace &ws : ActiveProject().workspaces) {
+        if (ws.name == name) return &ws;
+    }
+    return nullptr;
+}
+
+const Project *Editor::FindProject(int id) const {
+    for (const Project &p : projects_) {
+        if (p.id == id) return &p;
+    }
+    return nullptr;
+}
+
+Project *Editor::FindProject(int id) {
+    for (Project &p : projects_) {
+        if (p.id == id) return &p;
+    }
+    return nullptr;
 }
 
 Editor::~Editor() = default;
 
 void Editor::HandleInput() {
     TickCollaboration();
+    TickWorkspacePersistence(GetTime());
     MaybeDismissHover();
     {
         Vector2 wheel = GetMouseWheelMoveV();
@@ -3867,7 +3947,7 @@ void Editor::HandleInput() {
 }
 
 void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) {
-    SplitNode *node = FindNode(tabs_[static_cast<size_t>(active_tab_)].root.get(), pane_id);
+    SplitNode *node = FindNode(ActiveTab().root.get(), pane_id);
     if (!node) return;
     Pane &pane = node->pane;
     visible_lines = std::max(1, visible_lines);
@@ -4392,13 +4472,13 @@ void Editor::ClampCursor() {
 // --- Buffer/pane/tab plumbing ----------------------------------------------
 
 Pane &Editor::CurPane() {
-    Tab &tab = tabs_[static_cast<size_t>(active_tab_)];
+    Tab &tab = ActiveTab();
     SplitNode *node = FindNode(tab.root.get(), tab.active_pane_id);
     return node->pane;
 }
 
 const Pane &Editor::CurPane() const {
-    const Tab &tab = tabs_[static_cast<size_t>(active_tab_)];
+    const Tab &tab = ActiveTab();
     const SplitNode *node = FindNode(tab.root.get(), tab.active_pane_id);
     return node->pane;
 }
@@ -4429,7 +4509,7 @@ void Editor::CollectLeafBuffers(const SplitNode *node, std::vector<int> &ids) co
 
 std::vector<int> Editor::PaneBuffersInActiveTab() const {
     std::vector<int> ids;
-    CollectLeafBuffers(tabs_[static_cast<size_t>(active_tab_)].root.get(), ids);
+    CollectLeafBuffers(ActiveTab().root.get(), ids);
     return ids;
 }
 
@@ -4445,7 +4525,7 @@ int Editor::FindPaneIdForBuffer(const SplitNode *node, int buffer_id) const {
 }
 
 bool Editor::FocusPaneShowingBuffer(int buffer_id) {
-    Tab &tab = tabs_[static_cast<size_t>(active_tab_)];
+    Tab &tab = ActiveTab();
     int pane_id = FindPaneIdForBuffer(tab.root.get(), buffer_id);
     if (pane_id < 0) return false;
     tab.active_pane_id = pane_id;
@@ -4457,7 +4537,7 @@ bool Editor::FocusPaneShowingBuffer(int buffer_id) {
 }
 
 int Editor::CursorRowForBuffer(int buffer_id) const {
-    const Tab &tab = tabs_[static_cast<size_t>(active_tab_)];
+    const Tab &tab = ActiveTab();
     int pane_id = FindPaneIdForBuffer(tab.root.get(), buffer_id);
     if (pane_id < 0) return -1;
     const SplitNode *node = FindNode(tab.root.get(), pane_id);
@@ -4465,7 +4545,7 @@ int Editor::CursorRowForBuffer(int buffer_id) const {
 }
 
 void Editor::FocusTopLeftPane() {
-    Tab &tab = tabs_[static_cast<size_t>(active_tab_)];
+    Tab &tab = ActiveTab();
     std::vector<PaneRect> rects;
     ComputeRects(tab.root.get(), 0.0f, 0.0f, 1.0f, 1.0f, rects);
     if (rects.empty()) return;
@@ -4502,14 +4582,18 @@ bool Editor::RemovePaneNode(std::unique_ptr<SplitNode> &node_ptr, int pane_id) {
 
 int Editor::CreateEmptyBuffer() {
     buffers_.emplace_back();
+    // Scoped to the active workspace (WORKSPACES_PLAN.md Phase 4); the
+    // few deliberately unscoped buffers (startup buffer 0, :MepScratch)
+    // reset this to -1 themselves.
+    buffers_.back().workspace_id = ActiveWorkspace().id;
     return static_cast<int>(buffers_.size()) - 1;
 }
 
 // --- Dashboard/scratch/zen (NVIM_PARITY_PLAN.md Part III Phase 12) -------
 
 bool Editor::ShouldShowDashboard() const {
-    if (tabs_.size() != 1 || buffers_.size() != 1) return false;
-    const SplitNode *root = tabs_[0].root.get();
+    if (ProjectCount() != 1 || WorkspaceCount() != 1 || Tabs().size() != 1 || buffers_.size() != 1) return false;
+    const SplitNode *root = Tabs()[0].root.get();
     if (!root || root->dir != SplitDir::Leaf) return false;
     const Buffer &buf = buffers_[0];
     return !buf.modified && buf.filename.empty() && !buf.scratch && buf.lines.size() == 1 && buf.lines[0].empty();
@@ -4525,12 +4609,17 @@ void Editor::OpenScratchBuffer() {
     }
     int id = CreateEmptyBuffer();
     buffers_[static_cast<size_t>(id)].scratch = true;
+    buffers_[static_cast<size_t>(id)].workspace_id = -1;  // one scratch buffer, visible from every workspace
     CurPane().buffer_id = id;
     ClampCursor();
 }
 
 int Editor::FindOrCreateBuffer(const std::string &path, bool *existed) {
+    // Keyed by (workspace, filename) -- decision 3: the same out-of-tree
+    // file opened from two workspaces is two buffers; inside worktrees the
+    // paths differ anyway.
     for (size_t i = 0; i < buffers_.size(); i++) {
+        if (!BufferInActiveWorkspace(static_cast<int>(i))) continue;
         if (!buffers_[i].filename.empty() && buffers_[i].filename == path) {
             if (existed) *existed = true;
             // Un-deletes it (BufferDelete's own comment) -- re-opening a
@@ -4581,7 +4670,7 @@ int Editor::FindOrCreateBuffer(const std::string &path, bool *existed) {
 }
 
 void Editor::SplitCurrentPane(SplitDir dir, const std::string &file_arg) {
-    Tab &tab = tabs_[static_cast<size_t>(active_tab_)];
+    Tab &tab = ActiveTab();
     SplitNode *active = FindNode(tab.root.get(), tab.active_pane_id);
     if (!active) return;
 
@@ -4626,7 +4715,7 @@ void Editor::OpenTerminal(const std::string &args) {
 }
 
 void Editor::OpenTerminalInPlace(const std::string &args) {
-    Tab &tab = tabs_[static_cast<size_t>(active_tab_)];
+    Tab &tab = ActiveTab();
     SplitNode *node = FindNode(tab.root.get(), tab.active_pane_id);
     if (!node) return;
 
@@ -4728,8 +4817,16 @@ void Editor::TerminalSpawn(TerminalSession &sess, const std::vector<std::string>
     // claim, not a placeholder: VTerm already parses/renders full 24-bit
     // RGB SGI (38/48;2;r;g;b), so nothing downstream is left over-
     // promising.
-    sess.job_id = JobManager::Instance().Spawn(argv, "", std::move(cb), /*use_pty=*/true,
-                                                {{"TERM", "xterm-256color"}, {"COLORTERM", "truecolor"}});
+    //
+    // cwd is the active workspace root (WORKSPACES_PLAN.md decision 4) --
+    // explicit rather than inherited so a terminal opened in one worktree
+    // stays there even after the process cwd follows a workspace switch.
+    // MEP_WORKSPACE/MEP_PROJECT let shell prompts show where they are.
+    sess.job_id = JobManager::Instance().Spawn(argv, ActiveRoot(), std::move(cb), /*use_pty=*/true,
+                                                {{"TERM", "xterm-256color"},
+                                                 {"COLORTERM", "truecolor"},
+                                                 {"MEP_WORKSPACE", ActiveWorkspace().name},
+                                                 {"MEP_PROJECT", ActiveProject().name}});
     if (sess.job_id == 0) status_message_ = "Failed to start terminal";
 #endif
 }
@@ -4843,6 +4940,7 @@ void Editor::ResizeImageViewport(int buffer_id, int w, int h) {
 void Editor::OpenImageInPlace(const std::string &path, const unsigned char *bytes, size_t len) {
     int buffer_id = -1;
     for (size_t i = 0; i < buffers_.size(); i++) {
+        if (!BufferInActiveWorkspace(static_cast<int>(i))) continue;
         if (!buffers_[i].filename.empty() && buffers_[i].filename == path) {
             buffer_id = static_cast<int>(i);
             break;
@@ -5063,6 +5161,12 @@ const HtmlSession *Editor::GetHtml(int buffer_id) const {
     return it == htmldocs_.end() ? nullptr : &it->second;
 }
 
+std::vector<int> Editor::HtmlBufferIds() const {
+    std::vector<int> ids;
+    for (const auto &[id, sess] : htmldocs_) ids.push_back(id);
+    return ids;
+}
+
 void Editor::ResizeHtmlViewport(int buffer_id, int w, int h) {
     auto it = htmldocs_.find(buffer_id);
     if (it == htmldocs_.end()) return;
@@ -5074,6 +5178,12 @@ void Editor::ClampHtmlScroll(int buffer_id, float max_scroll) {
     auto it = htmldocs_.find(buffer_id);
     if (it == htmldocs_.end()) return;
     it->second.scroll_y = std::clamp(it->second.scroll_y, 0.0f, max_scroll);
+}
+
+void Editor::AdvanceHtmlMedia(int buffer_id, double seconds) {
+    auto it = htmldocs_.find(buffer_id);
+    if (it == htmldocs_.end()) return;
+    AdvanceHtmlMediaClock(it->second.doc, seconds);
 }
 
 // Parses `bytes` into `sess`'s DOM and runs its scripts -- shared by
@@ -5089,6 +5199,9 @@ void Editor::PopulateHtmlSession(HtmlSession &sess, const std::string &origin, c
     sess.source = source;
     sess.doc = HtmlDoc();
     ParseHtml(std::string(reinterpret_cast<const char *>(bytes), len), sess.doc);
+    // Local <audio>/<video> sources are decoded before scripts so
+    // `duration`/`readyState` are already meaningful to inline code.
+    LoadHtmlMedia(sess.doc, std::filesystem::path(source).parent_path().string());
     // Info-level console messages surface as plain notifications; script errors are prefixed with the page's source.
     RunScripts(
         sess.doc, [this](const std::string &msg) { Notify(msg, NotifyLevel::Info); },
@@ -5121,6 +5234,7 @@ void Editor::OpenHtmlInPlace(const std::string &origin, const std::string &sourc
         // which FindOrCreateBuffer's dedup (by Buffer::filename alone)
         // couldn't tell apart from this one afterward.
         for (size_t i = 0; i < buffers_.size(); i++) {
+            if (!BufferInActiveWorkspace(static_cast<int>(i))) continue;
             if (buffers_[i].filename == source) {
                 buffer_id = static_cast<int>(i);
                 break;
@@ -5404,6 +5518,7 @@ void Editor::GotoPdfMatch(PdfSession &sess, int index) {
 void Editor::OpenPdfInPlace(const std::string &path, const unsigned char *bytes, size_t len) {
     int buffer_id = -1;
     for (size_t i = 0; i < buffers_.size(); i++) {
+        if (!BufferInActiveWorkspace(static_cast<int>(i))) continue;
         if (!buffers_[i].filename.empty() && buffers_[i].filename == path) {
             buffer_id = static_cast<int>(i);
             break;
@@ -5771,6 +5886,7 @@ bool Editor::MoveOfficeCursorVisualLine(OfficeSession *sess, int dir) {
 void Editor::OpenOfficeInPlace(const std::string &path, const unsigned char *bytes, size_t len) {
     int buffer_id = -1;
     for (size_t i = 0; i < buffers_.size(); i++) {
+        if (!BufferInActiveWorkspace(static_cast<int>(i))) continue;
         if (!buffers_[i].filename.empty() && buffers_[i].filename == path) {
             buffer_id = static_cast<int>(i);
             break;
@@ -6766,6 +6882,7 @@ CellValue Editor::EvaluateSheetCell(int buffer_id, int row, int col) {
 void Editor::OpenSheetInPlace(const std::string &path, const unsigned char *bytes, size_t len) {
     int buffer_id = -1;
     for (size_t i = 0; i < buffers_.size(); i++) {
+        if (!BufferInActiveWorkspace(static_cast<int>(i))) continue;
         if (!buffers_[i].filename.empty() && buffers_[i].filename == path) {
             buffer_id = static_cast<int>(i);
             break;
@@ -8306,10 +8423,10 @@ void Editor::SendTerminalKey(const TerminalSession &sess, int key, int codepoint
 }
 
 void Editor::ClosePane() {
-    Tab &tab = tabs_[static_cast<size_t>(active_tab_)];
+    Tab &tab = ActiveTab();
     if (tab.root->dir == SplitDir::Leaf) {
         // Only one pane in this tab: closing it closes the tab.
-        if (tabs_.size() > 1) {
+        if (Tabs().size() > 1) {
             TabDelete();
         } else {
             status_message_ = "E444: Cannot close last window";
@@ -8330,7 +8447,7 @@ void Editor::ClosePane() {
 }
 
 void Editor::CyclePane(int delta) {
-    Tab &tab = tabs_[static_cast<size_t>(active_tab_)];
+    Tab &tab = ActiveTab();
     std::vector<int> ids;
     CollectLeaves(tab.root.get(), ids);
     if (ids.size() <= 1) return;
@@ -8441,7 +8558,7 @@ void Editor::BufferDelete(bool force) {
         return fallback_id;
     };
 
-    for (Tab &tab : tabs_) {
+    for (Tab &tab : Tabs()) {
         std::vector<int> pane_ids;
         CollectLeaves(tab.root.get(), pane_ids);
         for (int pane_id : pane_ids) {
@@ -8484,7 +8601,7 @@ void Editor::BufferDelete(bool force) {
 }
 
 void Editor::PaneMoveBufferTabToNeighbor(const std::string &direction) {
-    Tab &tab = tabs_[static_cast<size_t>(active_tab_)];
+    Tab &tab = ActiveTab();
     int neighbor_id = FindNeighborPaneId(tab.active_pane_id, direction);
     if (neighbor_id < 0) return;
     SplitNode *neighbor_node = FindNode(tab.root.get(), neighbor_id);
@@ -8530,7 +8647,7 @@ std::unique_ptr<SplitNode> Editor::BuildSpiralLayout(const std::vector<Pane> &pa
 }
 
 void Editor::ApplyLayout(const std::string &kind) {
-    Tab &tab = tabs_[static_cast<size_t>(active_tab_)];
+    Tab &tab = ActiveTab();
     std::vector<int> ids;
     CollectLeaves(tab.root.get(), ids);
     if (ids.size() <= 1) return;
@@ -8621,31 +8738,35 @@ void Editor::TabNew(const std::string &file_arg) {
     tab.root->pane.buffer_id = buffer_id;
     tab.active_pane_id = tab.root->pane.id;
 
-    tabs_.insert(tabs_.begin() + active_tab_ + 1, std::move(tab));
-    active_tab_++;
+    Workspace &ws = MutableActiveWorkspace();
+    ws.tabs.insert(ws.tabs.begin() + ws.active_tab + 1, std::move(tab));
+    ws.active_tab++;
     SyncModeToActivePaneBuffer();
 }
 
 void Editor::TabDelete() {
-    if (tabs_.size() <= 1) {
+    Workspace &ws = MutableActiveWorkspace();
+    if (ws.tabs.size() <= 1) {
         status_message_ = "E784: Cannot close last tab page";
         return;
     }
-    tabs_.erase(tabs_.begin() + active_tab_);
-    if (active_tab_ >= static_cast<int>(tabs_.size())) active_tab_ = static_cast<int>(tabs_.size()) - 1;
+    ws.tabs.erase(ws.tabs.begin() + ws.active_tab);
+    if (ws.active_tab >= static_cast<int>(ws.tabs.size())) ws.active_tab = static_cast<int>(ws.tabs.size()) - 1;
     SyncModeToActivePaneBuffer();
 }
 
 void Editor::TabNext() {
-    if (tabs_.size() <= 1) return;
-    active_tab_ = (active_tab_ + 1) % static_cast<int>(tabs_.size());
+    Workspace &ws = MutableActiveWorkspace();
+    if (ws.tabs.size() <= 1) return;
+    ws.active_tab = (ws.active_tab + 1) % static_cast<int>(ws.tabs.size());
     SyncModeToActivePaneBuffer();
 }
 
 void Editor::TabPrevious() {
-    if (tabs_.size() <= 1) return;
-    int n = static_cast<int>(tabs_.size());
-    active_tab_ = (active_tab_ - 1 + n) % n;
+    Workspace &ws = MutableActiveWorkspace();
+    if (ws.tabs.size() <= 1) return;
+    int n = static_cast<int>(ws.tabs.size());
+    ws.active_tab = (ws.active_tab - 1 + n) % n;
     SyncModeToActivePaneBuffer();
 }
 
@@ -8659,7 +8780,7 @@ void Editor::BufferNext() {
     // a same-buffer no-op, matching BufferPrevious' own bound.
     for (int i = 0; i < n; i++) {
         next = (next + 1) % n;
-        if (!buffers_[static_cast<size_t>(next)].deleted) break;
+        if (!buffers_[static_cast<size_t>(next)].deleted && BufferInActiveWorkspace(next)) break;
     }
     SwitchToBufferForLua(next);
 }
@@ -8670,7 +8791,7 @@ void Editor::BufferPrevious() {
     int prev = CurPane().buffer_id;
     for (int i = 0; i < n; i++) {
         prev = (prev - 1 + n) % n;
-        if (!buffers_[static_cast<size_t>(prev)].deleted) break;
+        if (!buffers_[static_cast<size_t>(prev)].deleted && BufferInActiveWorkspace(prev)) break;
     }
     SwitchToBufferForLua(prev);
 }
@@ -8679,12 +8800,1099 @@ void Editor::BufferPrevious() {
 // tab by index, unlike TabNext/TabPrevious's relative stepping -- what a
 // mouse click on a specific tab box in the tab bar needs. Out-of-range
 // indices are silently clamped rather than ignored, matching this file's
-// existing tolerant style (e.g. TabDelete's active_tab_ clamp above) since
+// existing tolerant style (e.g. TabDelete's active_tab clamp above) since
 // the click hit-testing that calls this only ever passes a valid index
 // anyway.
 void Editor::GoToTab(int index) {
-    if (tabs_.empty()) return;
-    active_tab_ = std::max(0, std::min(index, static_cast<int>(tabs_.size()) - 1));
+    Workspace &ws = MutableActiveWorkspace();
+    if (ws.tabs.empty()) return;
+    ws.active_tab = std::max(0, std::min(index, static_cast<int>(ws.tabs.size()) - 1));
+}
+
+// --- Workspaces (WORKSPACES_PLAN.md Phase 2) --------------------------------
+
+Workspace Editor::MakeWorkspace(const std::string &name, const std::string &root, const std::string &branch) {
+    Workspace ws;
+    ws.id = next_workspace_id_++;
+    ws.name = name;
+    ws.root = root;
+    ws.branch = branch;
+    int buffer_id = CreateEmptyBuffer();
+    buffers_[static_cast<size_t>(buffer_id)].workspace_id = ws.id;
+    Tab tab;
+    tab.root = std::make_unique<SplitNode>();
+    tab.root->dir = SplitDir::Leaf;
+    tab.root->pane.id = next_pane_id_++;
+    tab.root->pane.buffer_id = buffer_id;
+    tab.active_pane_id = tab.root->pane.id;
+    ws.tabs.push_back(std::move(tab));
+    return ws;
+}
+
+const Workspace *Editor::FindWorkspaceByNameIn(const Project &project, const std::string &name) {
+    for (const Workspace &ws : project.workspaces) {
+        if (ws.name == name) return &ws;
+    }
+    return nullptr;
+}
+
+int Editor::WorkspaceNewIn(Project &project, const std::string &name, const std::string &root,
+                           const std::string &branch) {
+    if (!ValidWorkspaceName(name)) {
+        status_message_ = "Invalid workspace name '" + name + "' (use letters, digits, . _ -)";
+        return -1;
+    }
+    if (FindWorkspaceByNameIn(project, name)) {
+        status_message_ = "Workspace '" + name + "' already exists";
+        return -1;
+    }
+    Workspace ws = MakeWorkspace(name, root.empty() ? project.root : root, branch);
+    int id = ws.id;
+    project.workspaces.push_back(std::move(ws));
+    workspace_change_epoch_++;
+    return id;
+}
+
+int Editor::WorkspaceNew(const std::string &name, const std::string &root, const std::string &branch) {
+    return WorkspaceNewIn(MutableActiveProject(), name, root, branch);
+}
+
+Project *Editor::ProjectOfWorkspace(int workspace_id) {
+    for (Project &p : projects_) {
+        for (const Workspace &ws : p.workspaces) {
+            if (ws.id == workspace_id) return &p;
+        }
+    }
+    return nullptr;
+}
+
+const Project *Editor::ProjectOfWorkspace(int workspace_id) const {
+    for (const Project &p : projects_) {
+        for (const Workspace &ws : p.workspaces) {
+            if (ws.id == workspace_id) return &p;
+        }
+    }
+    return nullptr;
+}
+
+void Editor::ChdirToActiveRoot() {
+#if !defined(__EMSCRIPTEN__)
+    std::error_code ec;
+    std::filesystem::current_path(ActiveRoot(), ec);
+#endif
+}
+
+void Editor::AfterWorkspaceActivated() {
+    ChdirToActiveRoot();
+    // Same "leaving a live terminal's keystroke-forwarding mode behind when
+    // focus actually moves" rule as NavigatePaneDirection's own.
+    if (mode_ == Mode::Terminal) mode_ = Mode::Normal;
+    SyncModeToActivePaneBuffer();
+    workspace_change_epoch_++;
+}
+
+bool Editor::WorkspaceSwitch(int id) {
+    for (size_t pi = 0; pi < projects_.size(); pi++) {
+        Project &project = projects_[pi];
+        for (size_t wi = 0; wi < project.workspaces.size(); wi++) {
+            Workspace &ws = project.workspaces[wi];
+            if (ws.id != id) continue;
+            if (ws.creating) {
+                status_message_ = "Workspace '" + ws.name + "' is still being created";
+                return false;
+            }
+            if (static_cast<int>(pi) == active_project_ && static_cast<int>(wi) == project.active_workspace) return true;
+            active_project_ = static_cast<int>(pi);
+            project.active_workspace = static_cast<int>(wi);
+            AfterWorkspaceActivated();
+            status_message_ = "workspace " + ws.name + (ws.branch.empty() ? "" : " on branch " + ws.branch);
+            return true;
+        }
+    }
+    status_message_ = "No such workspace";
+    return false;
+}
+
+void Editor::WorkspaceNext() {
+    const Project &project = ActiveProject();
+    const int n = static_cast<int>(project.workspaces.size());
+    if (n <= 1) return;
+    for (int step = 1; step < n; step++) {
+        const Workspace &ws = project.workspaces[static_cast<size_t>((project.active_workspace + step) % n)];
+        if (ws.creating) continue;
+        WorkspaceSwitch(ws.id);
+        return;
+    }
+}
+
+void Editor::WorkspacePrevious() {
+    const Project &project = ActiveProject();
+    const int n = static_cast<int>(project.workspaces.size());
+    if (n <= 1) return;
+    for (int step = 1; step < n; step++) {
+        const Workspace &ws = project.workspaces[static_cast<size_t>((project.active_workspace - step + n * step) % n)];
+        if (ws.creating) continue;
+        WorkspaceSwitch(ws.id);
+        return;
+    }
+}
+
+std::string Editor::ResolveBufferPath(const Buffer &buf, const std::string &path) const {
+    if (path.empty() || path[0] == '/') return path;
+    if (buf.workspace_id < 0 || buf.workspace_id == ActiveWorkspace().id) return path;
+    const Workspace *ws = FindWorkspace(buf.workspace_id);
+    if (!ws || ws->root.empty()) return path;
+    return ws->root + "/" + path;
+}
+
+bool Editor::WorkspaceHasModifiedBuffers(int id) const {
+    for (const Buffer &buf : buffers_) {
+        if (buf.workspace_id == id && buf.modified && !buf.deleted) return true;
+    }
+    return false;
+}
+
+bool Editor::WorkspaceDelete(int id, bool force) {
+    for (size_t pi = 0; pi < projects_.size(); pi++) {
+        Project &project = projects_[pi];
+        for (size_t wi = 0; wi < project.workspaces.size(); wi++) {
+            Workspace &ws = project.workspaces[wi];
+            if (ws.id != id) continue;
+            if (ws.primary) {
+                status_message_ = "Cannot delete the primary workspace '" + ws.name + "'";
+                return false;
+            }
+            if (ws.creating) {
+                status_message_ = "Workspace '" + ws.name + "' is still being created";
+                return false;
+            }
+            if (!force && WorkspaceHasModifiedBuffers(id)) {
+                status_message_ = "E37: workspace '" + ws.name + "' has unsaved buffers (add ! to override)";
+                return false;
+            }
+            ReleaseWorkspaceResources(id);
+            const std::string name = ws.name;
+            const bool was_active = static_cast<int>(pi) == active_project_ &&
+                                    static_cast<int>(wi) == project.active_workspace;
+            project.workspaces.erase(project.workspaces.begin() + static_cast<long>(wi));
+            if (project.active_workspace > static_cast<int>(wi)) {
+                project.active_workspace--;
+            } else if (project.active_workspace >= static_cast<int>(project.workspaces.size())) {
+                project.active_workspace = static_cast<int>(project.workspaces.size()) - 1;
+            }
+            if (was_active) {
+                AfterWorkspaceActivated();
+            } else {
+                workspace_change_epoch_++;
+            }
+            status_message_ = "Deleted workspace " + name;
+            return true;
+        }
+    }
+    status_message_ = "No such workspace";
+    return false;
+}
+
+void Editor::ReleaseWorkspaceResources(int workspace_id) {
+    // Kill this workspace's terminals: the PTY child would otherwise keep
+    // running with no pane able to ever show it again.
+    for (auto it = terminals_.begin(); it != terminals_.end();) {
+        const int bid = it->first;
+        const bool mine = bid >= 0 && bid < static_cast<int>(buffers_.size()) &&
+                          buffers_[static_cast<size_t>(bid)].workspace_id == workspace_id;
+        if (!mine) {
+            ++it;
+            continue;
+        }
+#if !defined(__EMSCRIPTEN__)
+        if (it->second.job_id > 0) JobManager::Instance().Kill(it->second.job_id);
+#endif
+        it = terminals_.erase(it);
+    }
+    // Soft-delete (never erase -- Buffer::deleted's own comment) so ids
+    // stay stable and FindOrCreateBuffer can revive them if the workspace
+    // is recreated with the same root.
+    for (Buffer &buf : buffers_) {
+        if (buf.workspace_id == workspace_id) buf.deleted = true;
+    }
+}
+
+bool Editor::WorkspaceRename(int id, const std::string &name) {
+    Workspace *ws = FindWorkspace(id);
+    if (!ws) {
+        status_message_ = "No such workspace";
+        return false;
+    }
+    if (!ValidWorkspaceName(name)) {
+        status_message_ = "Invalid workspace name '" + name + "' (use letters, digits, . _ -)";
+        return false;
+    }
+    if (const Workspace *other = FindWorkspaceByName(name); other && other != ws) {
+        status_message_ = "Workspace '" + name + "' already exists";
+        return false;
+    }
+    ws->name = name;
+    workspace_change_epoch_++;
+    return true;
+}
+
+int Editor::ResolveWorkspaceArg(const std::string &arg) const {
+    if (arg.empty()) return ActiveWorkspace().id;
+    if (const Workspace *ws = FindWorkspaceByName(arg)) return ws->id;
+    bool digits = !arg.empty() && std::all_of(arg.begin(), arg.end(),
+                                              [](char c) { return std::isdigit(static_cast<unsigned char>(c)); });
+    if (digits) {
+        int idx = std::atoi(arg.c_str()) - 1;
+        if (idx >= 0 && idx < WorkspaceCount()) return ActiveProject().workspaces[static_cast<size_t>(idx)].id;
+    }
+    return -1;
+}
+
+namespace {
+// A Lua string literal for `text` (long-bracket form, so no escaping of
+// quotes/backslashes is needed; the bracket level grows past any `]=]`
+// the text itself contains).
+std::string LuaQuote(const std::string &text) {
+    std::string eq;
+    while (text.find("]" + eq + "]") != std::string::npos) eq += "=";
+    return "[" + eq + "[" + text + "]" + eq + "]";
+}
+std::string TrimWs(std::string s) {
+    while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back()))) s.pop_back();
+    size_t b = 0;
+    while (b < s.size() && std::isspace(static_cast<unsigned char>(s[b]))) b++;
+    return s.substr(b);
+}
+}  // namespace
+
+void Editor::WorkspaceCreate(const std::string &name, bool attach_existing) {
+#if !defined(__EMSCRIPTEN__)
+    Project &project = MutableActiveProject();
+    if (project.is_git) {
+        // Decision 6: the worktree is created asynchronously and the
+        // workspace only becomes real (switchable, deletable) on exit 0.
+        // Until then a `creating` placeholder is drawn dimmed in the bar.
+        if (!ValidWorkspaceName(name)) {
+            status_message_ = "Invalid workspace name '" + name + "' (use letters, digits, . _ -)";
+            return;
+        }
+        if (FindWorkspaceByName(name)) {
+            status_message_ = "Workspace '" + name + "' already exists";
+            return;
+        }
+        const std::string dir = DeriveWorktreeDir(project.root, name, worktree_dir_override_);
+        Workspace ws = MakeWorkspace(name, dir, name);
+        ws.creating = true;
+        const int id = ws.id;
+        project.workspaces.push_back(std::move(ws));
+        workspace_change_epoch_++;
+
+        std::vector<std::string> argv = attach_existing
+                                            ? std::vector<std::string>{"git", "worktree", "add", dir, name}
+                                            : std::vector<std::string>{"git", "worktree", "add", "-b", name, dir, "HEAD"};
+        auto err = std::make_shared<std::string>();
+        JobManager::Callbacks cb;
+        cb.on_stderr = [err](const std::string &line) { *err += line + "\n"; };
+        cb.on_exit = [this, id, name, dir, err](int code) {
+            Workspace *created = FindWorkspace(id);
+            if (!created) return;  // pruned/closed meanwhile
+            if (code == 0) {
+                created->creating = false;
+                created->root = dir;
+                created->branch = name;
+                WorkspaceSwitch(id);
+                Notify("workspace " + name + " on branch " + name);
+                return;
+            }
+            created->creating = false;
+            WorkspaceDelete(id, /*force=*/true);
+            std::string msg = TrimWs(*err);
+            if (msg.empty()) msg = "git worktree add exited " + std::to_string(code);
+            if (msg.find("already exists") != std::string::npos) msg += " (use :wsnew! " + name + " to attach to the existing branch)";
+            Notify("Workspace '" + name + "': " + msg, NotifyLevel::Error);
+        };
+        // Always run from the primary checkout's toplevel, never the active
+        // workspace's root, or nested worktree dirs appear ("Risks").
+        int job = JobManager::Instance().Spawn(argv, project.git_toplevel.empty() ? project.root : project.git_toplevel, cb);
+        if (job == 0) {
+            Workspace *created = FindWorkspace(id);
+            if (created) created->creating = false;
+            WorkspaceDelete(id, /*force=*/true);
+            Notify("Failed to run git", NotifyLevel::Error);
+            return;
+        }
+        status_message_ = "Creating workspace " + name + "...";
+        return;
+    }
+#else
+    (void)attach_existing;
+#endif
+    // Non-git project (decision 8): a named tab group sharing the project
+    // root, created synchronously.
+    int id = WorkspaceNew(name, "", "");
+    if (id < 0) return;
+    WorkspaceSwitch(id);
+    if (!ActiveProject().is_git) status_message_ = "workspace " + name + " (not a git repository: no worktree created)";
+}
+
+void Editor::WorkspaceRemove(const std::string &arg, bool force) {
+    int id = ResolveWorkspaceArg(arg);
+    const Workspace *ws = id >= 0 ? FindWorkspace(id) : nullptr;
+    if (!ws) {
+        status_message_ = "No such workspace: " + arg;
+        return;
+    }
+    // The in-memory refusals (primary, creating, unsaved buffers) are
+    // checked *before* touching git so a refused delete never leaves a
+    // removed worktree behind.
+    if (ws->primary) {
+        status_message_ = "Cannot delete the primary workspace '" + ws->name + "'";
+        return;
+    }
+    if (ws->creating) {
+        status_message_ = "Workspace '" + ws->name + "' is still being created";
+        return;
+    }
+    if (!force && WorkspaceHasModifiedBuffers(id)) {
+        status_message_ = "E37: workspace '" + ws->name + "' has unsaved buffers (add ! to override)";
+        return;
+    }
+#if !defined(__EMSCRIPTEN__)
+    const Project *project = ProjectOfWorkspace(id);
+    if (project && project->is_git && ws->root != project->root) {
+        std::vector<std::string> argv = {"git", "worktree", "remove"};
+        if (force) argv.emplace_back("--force");
+        argv.push_back(ws->root);
+        auto err = std::make_shared<std::string>();
+        const std::string name = ws->name;
+        JobManager::Callbacks cb;
+        cb.on_stderr = [err](const std::string &line) { *err += line + "\n"; };
+        cb.on_exit = [this, id, name, force, err](int code) {
+            if (code == 0) {
+                if (WorkspaceDelete(id, force)) Notify("Removed workspace " + name + " (branch kept)");
+                return;
+            }
+            std::string msg = TrimWs(*err);
+            if (msg.empty()) msg = "git worktree remove exited " + std::to_string(code);
+            // Without `!` git itself refuses on a dirty tree -- surfaced
+            // verbatim (decision 5).
+            Notify("Workspace '" + name + "': " + msg, NotifyLevel::Error);
+        };
+        if (JobManager::Instance().Spawn(argv, project->git_toplevel.empty() ? project->root : project->git_toplevel, cb) == 0) {
+            Notify("Failed to run git", NotifyLevel::Error);
+            return;
+        }
+        status_message_ = "Removing worktree " + ws->root + "...";
+        return;
+    }
+#endif
+    WorkspaceDelete(id, force);
+}
+
+void Editor::ProjectDetectGit(int project_id) {
+#if !defined(__EMSCRIPTEN__)
+    Project *project = FindProject(project_id);
+    if (!project) return;
+    auto out = std::make_shared<std::string>();
+    JobManager::Callbacks cb;
+    cb.on_stdout = [out](const std::string &line) {
+        if (out->empty()) *out = TrimWs(line);
+    };
+    cb.on_exit = [this, project_id, out](int code) {
+        Project *p = FindProject(project_id);
+        if (!p) return;
+        if (code != 0 || out->empty()) {
+            p->is_git = false;
+            p->git_toplevel.clear();
+            return;
+        }
+        p->is_git = true;
+        p->git_toplevel = *out;
+        auto text = std::make_shared<std::string>();
+        JobManager::Callbacks cb2;
+        cb2.on_stdout = [text](const std::string &line) { *text += line + "\n"; };
+        cb2.on_exit = [this, project_id, text](int code2) {
+            if (code2 == 0) AdoptWorktrees(project_id, ParseWorktreeList(*text));
+        };
+        JobManager::Instance().Spawn({"git", "worktree", "list", "--porcelain"}, p->git_toplevel, cb2);
+    };
+    JobManager::Instance().Spawn({"git", "rev-parse", "--show-toplevel"}, project->root, cb);
+#else
+    (void)project_id;
+#endif
+}
+
+void Editor::AdoptWorktrees(int project_id, const std::vector<WorktreeEntry> &entries) {
+    Project *project = FindProject(project_id);
+    if (!project) return;
+    auto canon = [](const std::string &path) {
+        std::error_code ec;
+        std::filesystem::path c = std::filesystem::canonical(path, ec);
+        return ec ? path : c.string();
+    };
+    // The first entry is git's main worktree: the checkout every `git
+    // worktree add` must run from ("Risks"), whatever directory mep was
+    // launched in.
+    if (!entries.empty() && !entries[0].bare) project->git_toplevel = canon(entries[0].path);
+    const std::string derived_base =
+        std::filesystem::path(DeriveWorktreeDir(project->root, "x", worktree_dir_override_)).parent_path().string();
+    bool changed = false;
+    for (const WorktreeEntry &entry : entries) {
+        if (entry.bare || entry.prunable) continue;
+        const std::string path = canon(entry.path);
+        const std::string branch = entry.branch.empty() ? (entry.head.empty() ? "" : "(" + entry.head.substr(0, 7) + ")") : entry.branch;
+        bool matched = false;
+        for (Workspace &ws : project->workspaces) {
+            if (ws.root != path) continue;
+            if (ws.branch != branch) {
+                ws.branch = branch;
+                changed = true;
+            }
+            matched = true;
+            break;
+        }
+        if (matched) continue;
+        // Only worktrees under the derived directory are adopted
+        // automatically (decision 7); others wait for :wsadopt.
+        if (std::filesystem::path(path).parent_path().string() != derived_base) continue;
+        std::string name = std::filesystem::path(path).filename().string();
+        if (!ValidWorkspaceName(name) || FindWorkspaceByNameIn(*project, name)) continue;
+        if (WorkspaceNewIn(*project, name, path, branch) >= 0) changed = true;
+    }
+    if (changed) workspace_change_epoch_++;
+}
+
+void Editor::WorkspaceAdopt(const std::string &path_or_branch) {
+#if !defined(__EMSCRIPTEN__)
+    Project &project = MutableActiveProject();
+    if (!project.is_git) {
+        status_message_ = "Not a git repository";
+        return;
+    }
+    if (path_or_branch.empty()) {
+        status_message_ = "Usage: :wsadopt <path-or-branch>";
+        return;
+    }
+    const int project_id = project.id;
+    auto text = std::make_shared<std::string>();
+    JobManager::Callbacks cb;
+    cb.on_stdout = [text](const std::string &line) { *text += line + "\n"; };
+    cb.on_exit = [this, project_id, path_or_branch, text](int code) {
+        Project *p = FindProject(project_id);
+        if (!p || code != 0) {
+            Notify("git worktree list failed", NotifyLevel::Error);
+            return;
+        }
+        std::error_code ec;
+        std::filesystem::path want = std::filesystem::canonical(path_or_branch, ec);
+        const std::string want_path = ec ? "" : want.string();
+        for (const WorktreeEntry &entry : ParseWorktreeList(*text)) {
+            if (entry.bare || entry.prunable) continue;
+            std::filesystem::path c = std::filesystem::canonical(entry.path, ec);
+            const std::string path = ec ? entry.path : c.string();
+            const std::string base = std::filesystem::path(path).filename().string();
+            if (path != want_path && entry.branch != path_or_branch && base != path_or_branch) continue;
+            for (const Workspace &ws : p->workspaces) {
+                if (ws.root == path) {
+                    Notify("Already a workspace: " + ws.name);
+                    return;
+                }
+            }
+            std::string name = entry.branch.empty() ? base : entry.branch;
+            if (!ValidWorkspaceName(name) || FindWorkspaceByNameIn(*p, name)) name = base;
+            if (!ValidWorkspaceName(name) || FindWorkspaceByNameIn(*p, name)) {
+                Notify("Cannot derive a free workspace name for " + path, NotifyLevel::Error);
+                return;
+            }
+            int id = WorkspaceNewIn(*p, name, path, entry.branch);
+            if (id >= 0) {
+                WorkspaceSwitch(id);
+                Notify("Adopted worktree " + path + " as workspace " + name);
+            }
+            return;
+        }
+        Notify("No worktree matches '" + path_or_branch + "'", NotifyLevel::Warn);
+    };
+    JobManager::Instance().Spawn({"git", "worktree", "list", "--porcelain"},
+                                 project.git_toplevel.empty() ? project.root : project.git_toplevel, cb);
+#else
+    (void)path_or_branch;
+#endif
+}
+
+void Editor::WorkspacePrune() {
+#if !defined(__EMSCRIPTEN__)
+    Project &project = MutableActiveProject();
+    const int project_id = project.id;
+    auto drop_vanished = [this, project_id] {
+        Project *p = FindProject(project_id);
+        if (!p) return;
+        std::vector<int> gone;
+        for (const Workspace &ws : p->workspaces) {
+            if (ws.primary || ws.creating) continue;
+            std::error_code ec;
+            if (!std::filesystem::is_directory(ws.root, ec)) gone.push_back(ws.id);
+        }
+        for (int id : gone) WorkspaceDelete(id, /*force=*/true);
+        Notify(gone.empty() ? "No workspaces to prune" : "Pruned " + std::to_string(gone.size()) + " workspace(s)");
+    };
+    if (!project.is_git) {
+        drop_vanished();
+        return;
+    }
+    JobManager::Callbacks cb;
+    cb.on_exit = [drop_vanished](int) { drop_vanished(); };
+    JobManager::Instance().Spawn({"git", "worktree", "prune"},
+                                 project.git_toplevel.empty() ? project.root : project.git_toplevel, cb);
+#endif
+}
+
+// --- Projects (WORKSPACES_PLAN.md Phase 9) ----------------------------------
+
+namespace {
+std::string CanonicalDir(const std::string &path) {
+    std::error_code ec;
+    std::filesystem::path p = std::filesystem::canonical(path, ec);
+    if (ec || !std::filesystem::is_directory(p, ec)) return "";
+    return p.string();
+}
+std::string BasenameOrPath(const std::string &root) {
+    std::string name = std::filesystem::path(root).filename().string();
+    return name.empty() ? root : name;
+}
+}  // namespace
+
+int Editor::ProjectLoad(const std::string &root_arg, bool *restored) {
+    if (restored) *restored = false;
+    const std::string root = CanonicalDir(root_arg.empty() ? "." : root_arg);
+    if (root.empty()) {
+        status_message_ = "Not a directory: " + root_arg;
+        return -1;
+    }
+    for (size_t i = 0; i < projects_.size(); i++) {
+        if (projects_[i].root != root) continue;
+        if (restored) *restored = true;  // already has whatever layout the user built
+        ProjectSwitch(projects_[i].id);
+        return projects_[i].id;
+    }
+    Project project;
+    project.id = next_project_id_++;
+    project.root = root;
+    project.name = BasenameOrPath(root);
+    Workspace ws = MakeWorkspace("main", root, "");
+    ws.primary = true;
+    project.workspaces.push_back(std::move(ws));
+    projects_.push_back(std::move(project));
+    const int id = projects_.back().id;
+    active_project_ = static_cast<int>(projects_.size()) - 1;
+    AfterWorkspaceActivated();
+    if (RestoreWorkspaces() && RestoreWorkspaceState(id, /*keep_primary_tabs=*/false) && restored) *restored = true;
+    ProjectDetectGit(id);
+    status_message_ = "project " + ActiveProject().name + " (" + root + ")";
+    return id;
+}
+
+bool Editor::ProjectSwitch(int id) {
+    for (size_t i = 0; i < projects_.size(); i++) {
+        if (projects_[i].id != id) continue;
+        if (static_cast<int>(i) == active_project_) return true;
+        active_project_ = static_cast<int>(i);
+        Project &p = projects_[i];
+        if (p.active_workspace < 0 || p.active_workspace >= static_cast<int>(p.workspaces.size())) p.active_workspace = 0;
+        AfterWorkspaceActivated();
+        status_message_ = "project " + p.name + " / workspace " + ActiveWorkspace().name;
+        return true;
+    }
+    status_message_ = "No such project";
+    return false;
+}
+
+bool Editor::ProjectClose(int id, bool force) {
+    if (projects_.size() <= 1) {
+        status_message_ = "Cannot close the last project";
+        return false;
+    }
+    for (size_t i = 0; i < projects_.size(); i++) {
+        Project &p = projects_[i];
+        if (p.id != id) continue;
+        if (!force) {
+            for (const Workspace &ws : p.workspaces) {
+                if (WorkspaceHasModifiedBuffers(ws.id)) {
+                    status_message_ = "E37: project '" + p.name + "' has unsaved buffers in workspace '" + ws.name +
+                                      "' (add ! to override)";
+                    return false;
+                }
+            }
+        }
+        for (const Workspace &ws : p.workspaces) {
+            if (ws.creating) {
+                status_message_ = "Workspace '" + ws.name + "' is still being created";
+                return false;
+            }
+        }
+        SaveWorkspaceState(id);
+        for (const Workspace &ws : p.workspaces) ReleaseWorkspaceResources(ws.id);
+        const std::string name = p.name;
+        const bool was_active = static_cast<int>(i) == active_project_;
+        projects_.erase(projects_.begin() + static_cast<long>(i));
+        if (active_project_ > static_cast<int>(i)) {
+            active_project_--;
+        } else if (active_project_ >= static_cast<int>(projects_.size())) {
+            active_project_ = static_cast<int>(projects_.size()) - 1;
+        }
+        if (was_active) {
+            AfterWorkspaceActivated();
+        } else {
+            workspace_change_epoch_++;
+        }
+        status_message_ = "Closed project " + name;
+        return true;
+    }
+    status_message_ = "No such project";
+    return false;
+}
+
+void Editor::ProjectNext() {
+    if (projects_.size() <= 1) return;
+    ProjectSwitch(projects_[static_cast<size_t>((active_project_ + 1) % static_cast<int>(projects_.size()))].id);
+}
+
+void Editor::ProjectPrevious() {
+    if (projects_.size() <= 1) return;
+    const int n = static_cast<int>(projects_.size());
+    ProjectSwitch(projects_[static_cast<size_t>((active_project_ - 1 + n) % n)].id);
+}
+
+int Editor::ResolveProjectArg(const std::string &arg) const {
+    if (arg.empty()) return ActiveProject().id;
+    for (const Project &p : projects_) {
+        if (p.name == arg || p.root == arg) return p.id;
+    }
+    bool digits = std::all_of(arg.begin(), arg.end(), [](char c) { return std::isdigit(static_cast<unsigned char>(c)); });
+    if (digits) {
+        int idx = std::atoi(arg.c_str()) - 1;
+        if (idx >= 0 && idx < ProjectCount()) return projects_[static_cast<size_t>(idx)].id;
+    }
+    const std::string canon = CanonicalDir(arg);
+    if (!canon.empty()) {
+        for (const Project &p : projects_) {
+            if (p.root == canon) return p.id;
+        }
+    }
+    return -1;
+}
+
+bool Editor::RerootInitialProject(const std::string &root_arg) {
+    const std::string root = CanonicalDir(root_arg);
+    if (root.empty()) {
+        status_message_ = "Not a directory: " + root_arg;
+        return false;
+    }
+    Project &project = MutableActiveProject();
+    project.root = root;
+    project.name = BasenameOrPath(root);
+    for (Workspace &ws : project.workspaces) ws.root = root;
+    ChdirToActiveRoot();
+    return true;
+}
+
+// --- Persistence (WORKSPACES_PLAN.md Phase 10) ------------------------------
+
+namespace {
+constexpr int kWorkspaceStateVersion = 1;
+
+// Path of `filename` relative to `root` when it lives under it (so a moved
+// repo still restores); otherwise as-is.
+std::string RelativeToRoot(const std::string &filename, const std::string &root) {
+    if (filename.empty() || filename[0] != '/') return filename;
+    if (!root.empty() && filename.size() > root.size() + 1 && filename.compare(0, root.size(), root) == 0 &&
+        filename[root.size()] == '/') {
+        return filename.substr(root.size() + 1);
+    }
+    return filename;
+}
+}  // namespace
+
+std::string Editor::WorkspaceStateFile(const Project &project) const {
+    const std::string data = MepDataDir();
+    if (data.empty()) return "";
+    return WorkspaceStatePath(data, project.root);
+}
+
+Json Editor::SplitStateJson(const Workspace &ws, const SplitNode &node) const {
+    Json j = Json::Object();
+    if (node.dir == SplitDir::Leaf) {
+        const Pane &pane = node.pane;
+        j["dir"] = "leaf";
+        Json pj = Json::Object();
+        pj["id"] = pane.id;
+        pj["cursor"] = Json::Array();
+        pj["cursor"].push_back(Json(pane.cursor.row));
+        pj["cursor"].push_back(Json(pane.cursor.col));
+        pj["scroll"] = pane.scroll_row;
+        const int bid = pane.buffer_id;
+        const bool valid = bid >= 0 && bid < static_cast<int>(buffers_.size());
+        if (valid && GetTerminal(bid)) {
+            pj["kind"] = "terminal";
+        } else if (valid && !buffers_[static_cast<size_t>(bid)].filename.empty()) {
+            pj["kind"] = "file";
+            pj["buffer"] = RelativeToRoot(buffers_[static_cast<size_t>(bid)].filename, ws.root);
+        } else {
+            pj["kind"] = "empty";
+        }
+        Json tabs = Json::Array();
+        for (int other : pane.buffer_tabs) {
+            if (other == bid || other < 0 || other >= static_cast<int>(buffers_.size())) continue;
+            const Buffer &b = buffers_[static_cast<size_t>(other)];
+            if (b.deleted || b.filename.empty() || GetTerminal(other)) continue;
+            tabs.push_back(Json(RelativeToRoot(b.filename, ws.root)));
+        }
+        pj["buffer_tabs"] = std::move(tabs);
+        j["pane"] = std::move(pj);
+        return j;
+    }
+    j["dir"] = node.dir == SplitDir::Horizontal ? "horizontal" : "vertical";
+    Json children = Json::Array();
+    for (const auto &child : node.children) children.push_back(SplitStateJson(ws, *child));
+    j["children"] = std::move(children);
+    Json shares = Json::Array();
+    for (float share : node.shares) shares.push_back(Json(static_cast<double>(share)));
+    j["shares"] = std::move(shares);
+    return j;
+}
+
+Json Editor::WorkspaceStateJson(const Project &project) const {
+    Json j = Json::Object();
+    j["version"] = kWorkspaceStateVersion;
+    j["root"] = project.root;
+    const int aw = project.active_workspace;
+    j["active_workspace"] = (aw >= 0 && aw < static_cast<int>(project.workspaces.size()))
+                                ? project.workspaces[static_cast<size_t>(aw)].name
+                                : std::string("main");
+    Json workspaces = Json::Array();
+    for (const Workspace &ws : project.workspaces) {
+        if (ws.creating) continue;
+        Json wj = Json::Object();
+        wj["name"] = ws.name;
+        wj["root"] = ws.root;
+        wj["branch"] = ws.branch;
+        wj["primary"] = ws.primary;
+        wj["active_tab"] = ws.active_tab;
+        Json tabs = Json::Array();
+        for (const Tab &tab : ws.tabs) {
+            Json tj = Json::Object();
+            tj["active_pane"] = tab.active_pane_id;
+            tj["root"] = tab.root ? SplitStateJson(ws, *tab.root) : Json::Object();
+            tabs.push_back(std::move(tj));
+        }
+        wj["tabs"] = std::move(tabs);
+        workspaces.push_back(std::move(wj));
+    }
+    j["workspaces"] = std::move(workspaces);
+    return j;
+}
+
+bool Editor::SaveWorkspaceState(int project_id) {
+#if defined(__EMSCRIPTEN__)
+    (void)project_id;
+    return false;
+#else
+    if (!session_enabled_) return false;
+    const Project *project = FindProject(project_id);
+    if (!project) return false;
+    const std::string path = WorkspaceStateFile(*project);
+    if (path.empty()) return false;
+    mkdir(std::filesystem::path(path).parent_path().string().c_str(), 0755);
+    return WriteJsonFile(path, WorkspaceStateJson(*project));
+#endif
+}
+
+void Editor::SaveAllWorkspaceState() {
+    for (const Project &p : projects_) SaveWorkspaceState(p.id);
+}
+
+std::unique_ptr<SplitNode> Editor::SplitFromStateJson(const Json &node, std::vector<std::pair<int, Json>> &leaves,
+                                                      std::unordered_map<int, int> &id_map) {
+    auto out = std::make_unique<SplitNode>();
+    const std::string dir = node.get("dir").as_string("leaf");
+    if (dir == "horizontal" || dir == "vertical") {
+        const Json &children = node.get("children");
+        if (children.is_array() && children.items().size() >= 2) {
+            out->dir = dir == "horizontal" ? SplitDir::Horizontal : SplitDir::Vertical;
+            for (const Json &child : children.items()) out->children.push_back(SplitFromStateJson(child, leaves, id_map));
+            const Json &shares = node.get("shares");
+            if (shares.is_array() && shares.items().size() == out->children.size()) {
+                for (const Json &sh : shares.items()) out->shares.push_back(static_cast<float>(sh.as_double(0.0)));
+            }
+            return out;
+        }
+        // A degenerate split (0-1 children) collapses to one leaf.
+    }
+    out->dir = SplitDir::Leaf;
+    out->pane.id = next_pane_id_++;
+    out->pane.buffer_id = 0;
+    const Json &pane = node.get("pane");
+    if (pane.is_object()) {
+        id_map[pane.get("id").as_int(-1)] = out->pane.id;
+        leaves.emplace_back(out->pane.id, pane);
+    } else {
+        leaves.emplace_back(out->pane.id, Json::Object());
+    }
+    return out;
+}
+
+int Editor::RestoreWorkspaceTabs(Workspace &ws, const Json &ws_json) {
+    // Assumes `ws` is the active workspace (so LoadFile's relative paths,
+    // FindOrCreateBuffer's scoping and OpenTerminalInPlace's cwd all land
+    // in it) -- RestoreWorkspaceState arranges that.
+    int skipped = 0;
+    const Json &tabs_json = ws_json.get("tabs");
+    std::vector<Tab> new_tabs;
+    struct PendingLeaf {
+        size_t tab_index;
+        int pane_id;
+        Json pane;
+    };
+    std::vector<PendingLeaf> pending;
+    std::vector<int> active_pane_ids;
+    if (tabs_json.is_array()) {
+        for (const Json &tj : tabs_json.items()) {
+            std::vector<std::pair<int, Json>> leaves;
+            std::unordered_map<int, int> id_map;
+            Tab tab;
+            tab.root = SplitFromStateJson(tj.get("root"), leaves, id_map);
+            auto it = id_map.find(tj.get("active_pane").as_int(-1));
+            tab.active_pane_id = it != id_map.end() ? it->second : leaves.front().first;
+            for (auto &leaf : leaves) pending.push_back({new_tabs.size(), leaf.first, leaf.second});
+            new_tabs.push_back(std::move(tab));
+        }
+    }
+    if (new_tabs.empty()) return 0;  // unrestorable -> keep the single empty tab (decision 10)
+    // Every leaf starts on its own fresh empty buffer so a skipped file
+    // still leaves a valid pane.
+    for (Tab &tab : new_tabs) {
+        std::vector<int> ids;
+        CollectLeaves(tab.root.get(), ids);
+        for (int pid : ids) {
+            SplitNode *n = FindNode(tab.root.get(), pid);
+            if (n) n->pane.buffer_id = CreateEmptyBuffer();
+        }
+    }
+    // Retire the placeholder tab's buffer (MakeWorkspace's) if untouched.
+    for (Tab &old : ws.tabs) {
+        std::vector<int> bids;
+        CollectLeafBuffers(old.root.get(), bids);
+        for (int bid : bids) {
+            if (bid <= 0 || bid >= static_cast<int>(buffers_.size())) continue;
+            Buffer &b = buffers_[static_cast<size_t>(bid)];
+            if (b.filename.empty() && !b.modified && !GetTerminal(bid)) b.deleted = true;
+        }
+    }
+    ws.tabs = std::move(new_tabs);
+    ws.active_tab = std::max(0, std::min(ws_json.get("active_tab").as_int(0), static_cast<int>(ws.tabs.size()) - 1));
+    const int saved_active_tab = ws.active_tab;
+    for (const PendingLeaf &leaf : pending) {
+        ws.active_tab = static_cast<int>(leaf.tab_index);
+        Tab &tab = ws.tabs[leaf.tab_index];
+        const int saved_pane = tab.active_pane_id;
+        tab.active_pane_id = leaf.pane_id;
+        const int placeholder_buffer = CurPane().buffer_id;
+        const std::string kind = leaf.pane.get("kind").as_string("empty");
+        if (kind == "terminal") {
+            OpenTerminalInPlace("");
+        } else if (kind == "file") {
+            const std::string rel = leaf.pane.get("buffer").as_string("");
+            std::error_code ec;
+            const std::string abs = rel.empty() ? "" : (rel[0] == '/' ? rel : ws.root + "/" + rel);
+            if (!rel.empty() && std::filesystem::exists(abs, ec)) {
+                LoadFile(rel);
+            } else if (!rel.empty()) {
+                skipped++;
+            }
+        }
+        Pane &pane = CurPane();
+        // The pre-seeded empty buffer is only kept when nothing replaced it
+        // (kind "empty", or a skipped file); otherwise it would linger as a
+        // stray "[No Name]" in :ls.
+        if (pane.buffer_id != placeholder_buffer && placeholder_buffer > 0 &&
+            placeholder_buffer < static_cast<int>(buffers_.size())) {
+            buffers_[static_cast<size_t>(placeholder_buffer)].deleted = true;
+        }
+        const Json &cur = leaf.pane.get("cursor");
+        if (cur.is_array() && cur.items().size() == 2) {
+            pane.cursor.row = cur.items()[0].as_int(0);
+            pane.cursor.col = cur.items()[1].as_int(0);
+        }
+        pane.scroll_row = std::max(0, leaf.pane.get("scroll").as_int(0));
+        ClampCursor();
+        const Json &extra = leaf.pane.get("buffer_tabs");
+        if (extra.is_array()) {
+            EnsureBufferTabSeeded(pane);
+            for (const Json &e : extra.items()) {
+                const std::string rel = e.as_string("");
+                if (rel.empty()) continue;
+                std::error_code ec;
+                const std::string abs = rel[0] == '/' ? rel : ws.root + "/" + rel;
+                if (!std::filesystem::exists(abs, ec)) {
+                    skipped++;
+                    continue;
+                }
+                int bid = FindOrCreateBuffer(rel);
+                if (bid >= 0 && std::find(pane.buffer_tabs.begin(), pane.buffer_tabs.end(), bid) == pane.buffer_tabs.end()) {
+                    pane.buffer_tabs.push_back(bid);
+                }
+            }
+        }
+        tab.active_pane_id = saved_pane;
+    }
+    ws.active_tab = saved_active_tab;
+    if (mode_ == Mode::Terminal) mode_ = Mode::Normal;
+    SyncModeToActivePaneBuffer();
+    return skipped;
+}
+
+bool Editor::RestoreWorkspaceState(int project_id, bool keep_primary_tabs) {
+#if defined(__EMSCRIPTEN__)
+    (void)project_id;
+    (void)keep_primary_tabs;
+    return false;
+#else
+    Project *project = FindProject(project_id);
+    if (!project) return false;
+    const std::string path = WorkspaceStateFile(*project);
+    if (path.empty()) return false;
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec)) return false;
+    Json doc;
+    if (!ReadJsonFile(path, &doc) || !doc.is_object() || !doc.get("workspaces").is_array()) {
+        Notify("Ignoring malformed workspace session file " + path, NotifyLevel::Warn);
+        return false;
+    }
+    if (doc.get("version").as_int(0) != kWorkspaceStateVersion) {
+        Notify("Ignoring workspace session file with unknown version", NotifyLevel::Warn);
+        return false;
+    }
+    // Restore runs with each workspace active in turn (see
+    // RestoreWorkspaceTabs); remember where to land afterwards.
+    const int saved_project = active_project_;
+    for (size_t i = 0; i < projects_.size(); i++) {
+        if (projects_[i].id == project_id) active_project_ = static_cast<int>(i);
+    }
+    int skipped = 0;
+    int pruned = 0;
+    bool any = false;
+    for (const Json &wj : doc.get("workspaces").items()) {
+        if (!wj.is_object()) continue;
+        const std::string name = wj.get("name").as_string("");
+        const bool primary = wj.get("primary").as_bool(false);
+        std::string root = wj.get("root").as_string("");
+        Workspace *target = nullptr;
+        if (primary) {
+            for (Workspace &ws : project->workspaces) {
+                if (ws.primary) target = &ws;
+            }
+            if (target && !wj.get("branch").as_string("").empty() && target->branch.empty()) {
+                target->branch = wj.get("branch").as_string("");
+            }
+            if (keep_primary_tabs) continue;
+        } else {
+            if (root.empty() || !ValidWorkspaceName(name)) continue;
+            if (!std::filesystem::is_directory(root, ec)) {
+                pruned++;  // worktree gone (decision 10 / :wsprune)
+                continue;
+            }
+            for (Workspace &ws : project->workspaces) {
+                if (ws.root == root || ws.name == name) target = &ws;
+            }
+            if (!target) {
+                int id = WorkspaceNewIn(*project, name, root, wj.get("branch").as_string(""));
+                if (id < 0) continue;
+                target = FindWorkspace(id);
+            }
+        }
+        if (!target) continue;
+        for (size_t i = 0; i < project->workspaces.size(); i++) {
+            if (&project->workspaces[i] == target) project->active_workspace = static_cast<int>(i);
+        }
+        ChdirToActiveRoot();
+        skipped += RestoreWorkspaceTabs(*target, wj);
+        any = true;
+    }
+    const std::string active_name = doc.get("active_workspace").as_string("");
+    for (size_t i = 0; i < project->workspaces.size(); i++) {
+        if (project->workspaces[i].name == active_name) project->active_workspace = static_cast<int>(i);
+    }
+    active_project_ = saved_project;
+    for (size_t i = 0; i < projects_.size(); i++) {
+        if (projects_[i].id == project_id) active_project_ = static_cast<int>(i);
+    }
+    AfterWorkspaceActivated();
+    std::string msg;
+    if (skipped > 0) msg += std::to_string(skipped) + " file(s) skipped (no longer exist)";
+    if (pruned > 0) msg += (msg.empty() ? "" : ", ") + std::to_string(pruned) + " workspace(s) pruned (worktree gone)";
+    if (!msg.empty()) Notify("Restored workspaces: " + msg, NotifyLevel::Warn);
+    return any;
+#endif
+}
+
+uint64_t Editor::LayoutFingerprint() const {
+    // Cheap per-frame structural hash: what changes when a workspace, tab,
+    // pane or the buffer shown in a pane changes -- deliberately not the
+    // cursor, which is read at save time instead (decision 10).
+    // 64-bit arithmetic regardless of size_t's width (wasm is 32-bit).
+    uint64_t h = 1469598103934665603ull;
+    auto mix = [&h](size_t v) {
+        h ^= static_cast<uint64_t>(v) + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+    };
+    std::function<void(const SplitNode &)> walk = [&](const SplitNode &node) {
+        mix(static_cast<size_t>(node.dir));
+        if (node.dir == SplitDir::Leaf) {
+            mix(static_cast<size_t>(node.pane.id));
+            mix(static_cast<size_t>(node.pane.buffer_id) * 31u);
+            mix(node.pane.buffer_tabs.size());
+            return;
+        }
+        for (const auto &c : node.children) walk(*c);
+    };
+    mix(projects_.size());
+    mix(static_cast<size_t>(active_project_));
+    for (const Project &p : projects_) {
+        mix(std::hash<std::string>{}(p.root));
+        mix(static_cast<size_t>(p.active_workspace));
+        for (const Workspace &ws : p.workspaces) {
+            mix(std::hash<std::string>{}(ws.name));
+            mix(static_cast<size_t>(ws.active_tab));
+            mix(ws.creating ? 1u : 0u);
+            for (const Tab &t : ws.tabs) {
+                mix(static_cast<size_t>(t.active_pane_id));
+                if (t.root) walk(*t.root);
+            }
+        }
+    }
+    for (const Buffer &b : buffers_) mix(std::hash<std::string>{}(b.filename));
+    return h;
+}
+
+void Editor::TickWorkspacePersistence(double now) {
+    // Runs on the wasm build too (SaveAllWorkspaceState is a no-op there)
+    // so the bookkeeping fields aren't dead code under -Werror.
+    if (!session_enabled_) return;
+    const uint64_t fp = LayoutFingerprint();
+    if (!persistence_primed_) {
+        persistence_primed_ = true;
+        last_layout_fingerprint_ = fp;
+        return;
+    }
+    if (fp != last_layout_fingerprint_) {
+        last_layout_fingerprint_ = fp;
+        layout_dirty_ = true;
+        layout_dirty_since_ = now;
+        return;
+    }
+    if (layout_dirty_ && now - layout_dirty_since_ >= 0.5) {
+        layout_dirty_ = false;
+        SaveAllWorkspaceState();
+    }
 }
 
 
@@ -8717,7 +9925,7 @@ void Editor::ComputeRects(const SplitNode *node, float x0, float y0, float x1, f
 }
 
 int Editor::FindNeighborPaneId(int from_pane_id, const std::string &direction) const {
-    const Tab &tab = tabs_[static_cast<size_t>(active_tab_)];
+    const Tab &tab = ActiveTab();
     std::vector<PaneRect> rects;
     ComputeRects(tab.root.get(), 0.0f, 0.0f, 1.0f, 1.0f, rects);
     if (rects.size() <= 1) return -1;
@@ -8788,7 +9996,7 @@ void Editor::NavigatePaneDirection(const std::string &direction) {
         return;
     }
 
-    Tab &tab = tabs_[static_cast<size_t>(active_tab_)];
+    Tab &tab = ActiveTab();
     int id = FindNeighborPaneId(tab.active_pane_id, direction);
     if (id >= 0) {
         tab.active_pane_id = id;
@@ -8877,7 +10085,7 @@ void Editor::ResizeActivePane(const std::string &direction, float step) {
     if (!wants_columns && !wants_rows) return;
     SplitDir want_dir = wants_columns ? SplitDir::Vertical : SplitDir::Horizontal;
 
-    Tab &tab = tabs_[static_cast<size_t>(active_tab_)];
+    Tab &tab = ActiveTab();
     std::vector<std::pair<SplitNode *, int>> path;  // leaf-to-root order (see FindPathToPane)
     if (FindPathToPane(tab.root.get(), tab.active_pane_id, path)) {
         for (auto &[node, child_index] : path) {
@@ -8937,7 +10145,7 @@ void Editor::ResizeActivePane(const std::string &direction, float step) {
 
 void Editor::SetActivePaneShare(float fraction) {
     fraction = std::clamp(fraction, kMinPaneShare, 1.0f - kMinPaneShare);
-    Tab &tab = tabs_[static_cast<size_t>(active_tab_)];
+    Tab &tab = ActiveTab();
     std::vector<std::pair<SplitNode *, int>> path;  // leaf-to-root order (see FindPathToPane)
     if (!FindPathToPane(tab.root.get(), tab.active_pane_id, path) || path.empty()) return;
     auto &[node, child_index] = path[0];  // immediate parent
@@ -8949,7 +10157,7 @@ void Editor::SetActivePaneShare(float fraction) {
 }
 
 void Editor::FocusPaneById(int pane_id) {
-    Tab &tab = tabs_[static_cast<size_t>(active_tab_)];
+    Tab &tab = ActiveTab();
     if (!FindNode(tab.root.get(), pane_id)) return;
     tab.active_pane_id = pane_id;
     // Mirrors NavigatePaneDirection's own same guard: focus genuinely
@@ -8976,7 +10184,7 @@ void Editor::FocusPaneById(int pane_id) {
 // before touching the destination side. Returns false (nothing removed,
 // nothing to do) if buffer_id isn't actually one of source's tabs.
 bool Editor::RemoveBufferTabFromPane(int source_pane_id, int buffer_id) {
-    Tab &tab = tabs_[static_cast<size_t>(active_tab_)];
+    Tab &tab = ActiveTab();
     SplitNode *src_node = FindNode(tab.root.get(), source_pane_id);
     if (!src_node) return false;
     Pane &src = src_node->pane;
@@ -9009,7 +10217,7 @@ void Editor::MoveBufferTabToPane(int source_pane_id, int buffer_id, int dest_pan
     if (source_pane_id == dest_pane_id) return;
     if (!RemoveBufferTabFromPane(source_pane_id, buffer_id)) return;
 
-    Tab &tab = tabs_[static_cast<size_t>(active_tab_)];
+    Tab &tab = ActiveTab();
     // Re-found *after* RemoveBufferTabFromPane, never reused from before
     // it -- ClosePane() may have restructured the tree.
     SplitNode *dst_node = FindNode(tab.root.get(), dest_pane_id);
@@ -9036,7 +10244,7 @@ void Editor::SplitPaneWithBufferTab(int source_pane_id, int buffer_id, int dest_
     // moves into its own leaf below.
     if (!RemoveBufferTabFromPane(source_pane_id, buffer_id)) return;
 
-    Tab &tab = tabs_[static_cast<size_t>(active_tab_)];
+    Tab &tab = ActiveTab();
     // Re-found *after* RemoveBufferTabFromPane, same reasoning as
     // MoveBufferTabToPane above.
     SplitNode *dst_node = FindNode(tab.root.get(), dest_pane_id);
@@ -9072,6 +10280,59 @@ void Editor::SplitPaneWithBufferTab(int source_pane_id, int buffer_id, int dest_
     }
 
     tab.active_pane_id = new_pane_id;
+    ClampCursor();
+    SyncModeToActivePaneBuffer();
+}
+
+void Editor::OpenFileInPane(int dest_pane_id, const std::string &path, bool split, SplitDir dir, bool before) {
+    if (path.empty()) return;
+    Tab &tab = ActiveTab();
+    SplitNode *dst_node = FindNode(tab.root.get(), dest_pane_id);
+    if (!dst_node) return;
+    if (!split) {
+        FocusPaneById(dest_pane_id);
+        LoadFile(path);
+        return;
+    }
+    // Same tree surgery as SplitPaneWithBufferTab, except the new leaf
+    // starts on a throwaway empty buffer that LoadFile then replaces (and
+    // which is retired below so it doesn't linger as a stray [No Name]).
+    const int placeholder = CreateEmptyBuffer();
+    Pane new_pane;
+    new_pane.id = next_pane_id_++;
+    new_pane.buffer_id = placeholder;
+    new_pane.buffer_tabs = {placeholder};
+    new_pane.buffer_tab_index = 0;
+
+    Pane existing_pane = dst_node->pane;
+
+    auto new_leaf = std::make_unique<SplitNode>();
+    new_leaf->dir = SplitDir::Leaf;
+    new_leaf->pane = std::move(new_pane);
+    auto existing_leaf = std::make_unique<SplitNode>();
+    existing_leaf->dir = SplitDir::Leaf;
+    existing_leaf->pane = std::move(existing_pane);
+
+    const int new_pane_id = new_leaf->pane.id;
+    dst_node->dir = dir;
+    dst_node->pane = Pane{};
+    dst_node->children.clear();
+    dst_node->shares.clear();
+    if (before) {
+        dst_node->children.push_back(std::move(new_leaf));
+        dst_node->children.push_back(std::move(existing_leaf));
+    } else {
+        dst_node->children.push_back(std::move(existing_leaf));
+        dst_node->children.push_back(std::move(new_leaf));
+    }
+    FocusPaneById(new_pane_id);
+    LoadFile(path);
+    Pane &pane = CurPane();
+    if (pane.buffer_id != placeholder) {
+        buffers_[static_cast<size_t>(placeholder)].deleted = true;
+        pane.buffer_tabs.erase(std::remove(pane.buffer_tabs.begin(), pane.buffer_tabs.end(), placeholder), pane.buffer_tabs.end());
+        EnsureBufferTabSeeded(pane);
+    }
     ClampCursor();
     SyncModeToActivePaneBuffer();
 }
@@ -9226,6 +10487,24 @@ void Editor::ScrollPickerPreview(int delta) {
 bool Editor::HandleTabShortcuts() {
     bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
     bool alt = IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT);
+    bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+    // Workspace chords (WORKSPACES_PLAN.md Phase 2): Ctrl-Shift-T prompts
+    // for a new workspace name (a Lua ui_input, so it lives in
+    // kBuiltinWorkspaces), Ctrl-Alt-]/[ cycle workspaces. Checked before
+    // the plain Ctrl-T/Alt-N tab chords they extend. <leader>w* leader
+    // maps cover the same actions for layouts where these don't arrive.
+    if (ctrl && shift && IsKeyPressed(KEY_T)) {
+        if (lua_) lua_->DoString("mep.workspace_new_prompt()");
+        return true;
+    }
+    if (ctrl && alt && IsKeyPressed(KEY_RIGHT_BRACKET)) {
+        WorkspaceNext();
+        return true;
+    }
+    if (ctrl && alt && IsKeyPressed(KEY_LEFT_BRACKET)) {
+        WorkspacePrevious();
+        return true;
+    }
     if (ctrl && IsKeyPressed(KEY_T)) {
         TabNew("");
         return true;
@@ -12197,6 +13476,21 @@ void Editor::FocusSidebarRow(int id, int line_index) {
     sidebar_cursor_ = std::clamp(line_index, 0, std::max(0, static_cast<int>(lines.size()) - 1));
 }
 
+std::string Editor::SidebarLineWidgetId(int id, int line_index) const {
+    std::vector<SidebarLine> lines = FlattenSidebar(id);
+    if (line_index < 0 || line_index >= static_cast<int>(lines.size())) return "";
+    const SidebarLine &line = lines[static_cast<size_t>(line_index)];
+    if (line.kind != SidebarLine::Kind::Widget) return "";
+    for (const SidebarInstance &sb : sidebars_) {
+        if (sb.id != id) continue;
+        if (line.section_index < 0 || line.section_index >= static_cast<int>(sb.sections.size())) return "";
+        const SidebarSection &section = sb.sections[static_cast<size_t>(line.section_index)];
+        if (line.widget_index < 0 || line.widget_index >= static_cast<int>(section.widgets.size())) return "";
+        return section.widgets[static_cast<size_t>(line.widget_index)].id;
+    }
+    return "";
+}
+
 void Editor::ActivateSidebarLine(int id, int line_index) {
     std::vector<SidebarLine> lines = FlattenSidebar(id);
     if (line_index < 0 || line_index >= static_cast<int>(lines.size())) return;
@@ -13234,6 +14528,10 @@ const std::vector<std::string> &BuiltinCommandNames() {
         "wq", "x", "wqa", "xa", "wqall", "xall", "e", "edit", "e!", "edit!", "split", "sp", "vsplit", "vs",
         "terminal", "term",
         "close", "tabnew", "tabdelete", "tabclose", "tabnext", "tabn", "tabprevious", "tabp", "tabN",
+        "wsnew", "wsnew!", "wsdelete", "wsdelete!", "wsclose", "wsclose!", "wsnext", "wsn", "wsprevious", "wsp",
+        "wsrename", "ws", "workspace", "wslist", "workspaces", "wsadopt", "wsprune", "wssave", "wsrestore",
+        "project", "projectclose", "projectclose!", "projectnext", "projectn", "projectprevious", "projectprev",
+        "projectp", "projects",
         "bnext", "bn", "bprevious", "bprev", "bp", "bNext", "bN", "bdelete", "bd", "bdelete!", "bd!",
         "set", "normal", "norm", "normal!", "norm!", "MepNotifyClear", "MepNotifyDismiss",
         "MepNotifyPanel", "MepLayout", "MepScratch", "MepZen", "colorscheme", "colo", "lua", "source",
@@ -13253,7 +14551,7 @@ const std::vector<std::string> &BuiltinCommandNames() {
 bool CommandTakesFileArg(const std::string &name) {
     static const std::vector<std::string> kFileCommands = {
         "w", "write", "wq", "x", "wqa", "xa", "wqall", "xall", "e", "edit", "e!", "edit!",
-        "split", "sp", "vsplit", "vs", "tabnew", "source",
+        "split", "sp", "vsplit", "vs", "tabnew", "source", "project",
     };
     return std::find(kFileCommands.begin(), kFileCommands.end(), name) != kFileCommands.end();
 }
@@ -15407,6 +16705,75 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
         TabNext();
     } else if (name == "tabprevious" || name == "tabp" || name == "tabN") {
         TabPrevious();
+    } else if (name == "wsnew" || name == "wsnew!") {
+        if (args.empty()) {
+            status_message_ = "Usage: :wsnew[!] <name>";
+        } else {
+            WorkspaceCreate(args, name.back() == '!');
+        }
+    } else if (name == "wsdelete" || name == "wsdelete!" || name == "wsclose" || name == "wsclose!") {
+        WorkspaceRemove(args, name.back() == '!');
+    } else if (name == "wsnext" || name == "wsn") {
+        WorkspaceNext();
+    } else if (name == "wsprevious" || name == "wsp" || name == "wsN") {
+        WorkspacePrevious();
+    } else if (name == "wsrename") {
+        if (args.empty()) {
+            status_message_ = "Usage: :wsrename <name>";
+        } else if (WorkspaceRename(ActiveWorkspace().id, args)) {
+            status_message_ = "workspace renamed to " + args;
+        }
+    } else if (name == "ws" || name == "workspace") {
+        if (args.empty()) {
+            const Workspace &ws = ActiveWorkspace();
+            status_message_ = "workspace " + ws.name + " (" + ws.root + ")" +
+                              (ws.branch.empty() ? "" : " on branch " + ws.branch);
+        } else {
+            int id = ResolveWorkspaceArg(args);
+            if (id < 0) {
+                status_message_ = "No such workspace: " + args;
+            } else {
+                WorkspaceSwitch(id);
+            }
+        }
+    } else if (name == "wslist" || name == "workspaces") {
+        if (lua_) lua_->DoString("mep.workspaces()");
+    } else if (name == "wsadopt") {
+        WorkspaceAdopt(args);
+    } else if (name == "wsprune") {
+        WorkspacePrune();
+    } else if (name == "wssave") {
+        status_message_ = SaveWorkspaceState(ActiveProject().id) ? "Saved workspace state to " + WorkspaceStateFile(ActiveProject())
+                                                                 : "Could not save workspace state";
+    } else if (name == "wsrestore") {
+        if (!RestoreWorkspaceState(ActiveProject().id, /*keep_primary_tabs=*/false)) {
+            status_message_ = "No saved workspace state for " + ActiveProject().root;
+        }
+    } else if (name == "project") {
+        if (args.empty()) {
+            const Project &p = ActiveProject();
+            status_message_ = "project " + p.name + " (" + p.root + ")" + (p.is_git ? " [git]" : "") + ", " +
+                              std::to_string(p.workspaces.size()) + " workspace(s)";
+        } else if (lua_) {
+            // Through Lua so the readme/terminal default layout for a
+            // never-seen project is applied too (mep.project_open).
+            lua_->DoString("mep.project_open(" + LuaQuote(args) + ")");
+        } else {
+            ProjectLoad(args);
+        }
+    } else if (name == "projectclose" || name == "projectclose!") {
+        int id = ResolveProjectArg(args);
+        if (id < 0) {
+            status_message_ = "No such project: " + args;
+        } else {
+            ProjectClose(id, name.back() == '!');
+        }
+    } else if (name == "projectnext" || name == "projectn") {
+        ProjectNext();
+    } else if (name == "projectprevious" || name == "projectprev" || name == "projectp") {
+        ProjectPrevious();
+    } else if (name == "projects") {
+        if (lua_) lua_->DoString("mep.projects_open()");
     } else if (name == "bnext" || name == "bn") {
         BufferNext();
     } else if (name == "bprevious" || name == "bprev" || name == "bp" || name == "bNext" || name == "bN") {
@@ -17019,7 +18386,7 @@ void Editor::GitStageHunk() {
             Notify("git apply failed", NotifyLevel::Error);
         }
     };
-    int id = JobManager::Instance().Spawn({"git", "apply", "--cached", "--unidiff-zero", "-"}, "", cb);
+    int id = JobManager::Instance().Spawn({"git", "apply", "--cached", "--unidiff-zero", "-"}, ActiveRoot(), cb);
     JobManager::Instance().WriteStdin(id, patch);
     JobManager::Instance().CloseStdin(id);
 }
@@ -17337,6 +18704,13 @@ bool Editor::SaveBuffer(Buffer &buf, const std::string &path) {
         status_message_ = "E32: No file name";
         return false;
     }
+    // WORKSPACES_PLAN.md Phase 4: a relative `path` belongs to the
+    // buffer's own workspace root, which is only the process cwd while
+    // that workspace is active -- `:wa` from another workspace (a global
+    // reader by design) must still write the right file. Only the I/O
+    // below uses the resolved form; buf.filename/status text keep the
+    // user's own spelling.
+    const std::string io_path = ResolveBufferPath(buf, path);
     // `buf` is always a reference to an element of buffers_ (both callers
     // pass one) -- pointer arithmetic recovers its buffer_id to check
     // images_/pdfs_ without threading an id through every SaveBuffer call
@@ -17372,7 +18746,7 @@ bool Editor::SaveBuffer(Buffer &buf, const std::string &path) {
                 return false;
             }
 #if defined(__EMSCRIPTEN__)
-            char *result = mep_js_write_file(path.c_str(), content.c_str());
+            char *result = mep_js_write_file(io_path.c_str(), content.c_str());
             std::string res(result);
             std::free(result);
             if (res != "OK") {
@@ -17381,7 +18755,7 @@ bool Editor::SaveBuffer(Buffer &buf, const std::string &path) {
                 return false;
             }
 #else
-            std::ofstream csv_out(path, std::ios::binary);
+            std::ofstream csv_out(io_path, std::ios::binary);
             if (!csv_out) {
                 status_message_ = "E212: Can't open file for writing";
                 return false;
@@ -17416,7 +18790,7 @@ bool Editor::SaveBuffer(Buffer &buf, const std::string &path) {
             status_message_ = "E212: Can't write \"" + path + "\": " + err;
             return false;
         }
-        std::ofstream sheet_out(path, std::ios::binary);
+        std::ofstream sheet_out(io_path, std::ios::binary);
         if (!sheet_out) {
             status_message_ = "E212: Can't open file for writing";
             return false;
@@ -17464,7 +18838,7 @@ bool Editor::SaveBuffer(Buffer &buf, const std::string &path) {
             status_message_ = "E212: Can't write \"" + path + "\": " + err;
             return false;
         }
-        std::ofstream office_out(path, std::ios::binary);
+        std::ofstream office_out(io_path, std::ios::binary);
         if (!office_out) {
             status_message_ = "E212: Can't open file for writing";
             return false;
@@ -17489,7 +18863,7 @@ bool Editor::SaveBuffer(Buffer &buf, const std::string &path) {
         content += l;
         content += "\n";
     }
-    char *result = mep_js_write_file(path.c_str(), content.c_str());
+    char *result = mep_js_write_file(io_path.c_str(), content.c_str());
     std::string res(result);
     std::free(result);
     if (res != "OK") {
@@ -17503,7 +18877,7 @@ bool Editor::SaveBuffer(Buffer &buf, const std::string &path) {
     status_message_ = "\"" + path + "\" " + std::to_string(buf.LineCount()) + "L written";
     return true;
 #else
-    std::ofstream out(path, std::ios::binary);
+    std::ofstream out(io_path, std::ios::binary);
     if (!out) {
         status_message_ = "E212: Can't open file for writing";
         return false;
@@ -17641,7 +19015,7 @@ bool Editor::WriteAllModified() {
     return all_ok;
 }
 
-bool Editor::IsOnlyPaneOverall() const { return tabs_.size() == 1 && tabs_[0].root->dir == SplitDir::Leaf; }
+bool Editor::IsOnlyPaneOverall() const { return Tabs().size() == 1 && Tabs()[0].root->dir == SplitDir::Leaf; }
 
 bool Editor::AnyBufferModified() const {
     for (const auto &buf : buffers_) {
@@ -17781,6 +19155,7 @@ void Editor::LoadFile(const std::string &path, bool force_text) {
         // curl-to-tempfile path, kBuiltinTextTools).
         int existing_id = -1;
         for (size_t i = 0; i < buffers_.size(); i++) {
+            if (!BufferInActiveWorkspace(static_cast<int>(i))) continue;
             if (buffers_[i].filename == path) {
                 existing_id = static_cast<int>(i);
                 break;

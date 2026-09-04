@@ -204,7 +204,9 @@ int main(int argc, char **argv) {
     pid_t pid = fork();
     CHECK(pid >= 0);
     if (pid == 0) {
-        execl(argv[1], argv[1], nullptr);
+        // --no-session: never read or write the real per-project session
+        // file for whatever directory this test happens to run in.
+        execl(argv[1], argv[1], "--no-session", nullptr);
         _exit(127);  // execl only returns on failure
     }
 
@@ -506,6 +508,130 @@ int main(int argc, char **argv) {
     CHECK(waited == pid);
     CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
     CHECK(!std::filesystem::exists(socket_path));
+
+    // --- Workspaces (WORKSPACES_PLAN.md Phase 11): a second mep launched
+    // inside a throwaway git repo. workspace.create must add a worktree on
+    // a branch of the same name (asynchronously), state.dump must nest
+    // projects[] -> workspaces[] -> tabs[], buffer.list must be scoped to
+    // the active workspace, and a relative file.open must land inside the
+    // worktree.
+    {
+        char tmpl[] = "/tmp/mep-ws-test-XXXXXX";
+        const char *tmp = mkdtemp(tmpl);
+        CHECK_CTX(tmp != nullptr, "mkdtemp failed");
+        const std::string repo = tmp;
+        auto sh = [&repo](const std::string &cmd) {
+            const std::string full = "cd '" + repo + "' && " + cmd + " >/dev/null 2>&1";
+            return std::system(full.c_str());
+        };
+        CHECK_CTX(sh("git init -q && git config user.email t@t && git config user.name t && "
+                     "echo hello > README.md && git add README.md && git commit -q -m init") == 0,
+                  "could not set up the temporary git repo in " + repo);
+
+        pid_t pid2 = fork();
+        CHECK(pid2 >= 0);
+        if (pid2 == 0) {
+            if (chdir(repo.c_str()) != 0) _exit(126);
+            execl(argv[1], argv[1], "--no-session", nullptr);
+            _exit(127);
+        }
+        const std::string socket2 = MepAgentSocketDir() + "/" + std::to_string(static_cast<long>(pid2)) + ".sock";
+        int ws_fd = -1;
+        for (int i = 0; i < 100 && ws_fd < 0; i++) {
+            if (std::filesystem::exists(socket2)) ws_fd = ConnectOnce(socket2);
+            if (ws_fd < 0) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        CHECK_CTX(ws_fd >= 0, "second mep never bound its agent socket within 10s");
+        std::string ws_buf;
+
+        std::error_code ec;
+        const std::string repo_canon = std::filesystem::canonical(repo, ec).string();
+        Json info = Call(ws_fd, 1, "session.info", Json::Object(), &ws_buf).get("result");
+        CHECK_CTX(info.get("workspace").as_string() == "main", "session.info=[" + info.dump() + "]");
+        CHECK_CTX(info.get("workspace_root").as_string() == repo_canon, "session.info=[" + info.dump() + "]");
+
+        // Git detection is async (git rev-parse at startup): wait for it.
+        bool is_git = false;
+        for (int i = 0; i < 100 && !is_git; i++) {
+            Json plist = Call(ws_fd, 2, "project.list", Json::Object(), &ws_buf).get("result");
+            is_git = !plist.items().empty() && plist.items()[0].get("is_git").as_bool(false);
+            if (!is_git) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        CHECK_CTX(is_git, "project never detected as a git repo");
+
+        Json create = Call(ws_fd, 3, "workspace.create", [] { Json p = Json::Object(); p["name"] = "feat-x"; return p; }(), &ws_buf);
+        CHECK_CTX(create.contains("result"), "workspace.create=[" + create.dump() + "]");
+        CHECK(create.get("result").get("creating").as_bool(false));
+        // Poll until `git worktree add` finished and the workspace became active.
+        bool ready = false;
+        for (int i = 0; i < 200 && !ready; i++) {
+            Json wl = Call(ws_fd, 4, "workspace.list", Json::Object(), &ws_buf).get("result");
+            for (const Json &w : wl.items()) {
+                if (w.get("name").as_string() == "feat-x" && !w.get("creating").as_bool(true) && w.get("active").as_bool(false)) ready = true;
+            }
+            if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        CHECK_CTX(ready, "workspace feat-x never finished creating (git worktree add)");
+        const std::string worktree = std::filesystem::path(repo_canon).parent_path().string() + "/" +
+                                     std::filesystem::path(repo_canon).filename().string() + ".worktrees/feat-x";
+        CHECK_CTX(std::filesystem::is_directory(worktree), "expected worktree dir at " + worktree);
+        CHECK_CTX(sh("git worktree list | grep -q feat-x") == 0, "git worktree list should show feat-x");
+
+        Json info2 = Call(ws_fd, 5, "session.info", Json::Object(), &ws_buf).get("result");
+        CHECK_CTX(info2.get("workspace").as_string() == "feat-x", "session.info=[" + info2.dump() + "]");
+        CHECK_CTX(info2.get("branch").as_string() == "feat-x", "session.info=[" + info2.dump() + "]");
+        CHECK_CTX(info2.get("cwd").as_string() == std::filesystem::canonical(worktree, ec).string(),
+                  "cwd should be the worktree, session.info=[" + info2.dump() + "]");
+
+        // A relative open resolves against the worktree, scoped to it.
+        Call(ws_fd, 6, "file.open", [] { Json p = Json::Object(); p["path"] = "README.md"; return p; }(), &ws_buf);
+        Json scoped = Call(ws_fd, 7, "buffer.list", Json::Object(), &ws_buf).get("result");
+        Json all = Call(ws_fd, 8, "buffer.list", [] { Json p = Json::Object(); p["workspace"] = "all"; return p; }(), &ws_buf).get("result");
+        bool saw_readme = false;
+        for (const Json &b : scoped.items()) {
+            if (b.get("filename").as_string() == "README.md") saw_readme = true;
+        }
+        CHECK_CTX(saw_readme, "buffer.list (scoped)=[" + scoped.dump() + "]");
+        CHECK_CTX(all.items().size() >= scoped.items().size(), "all=[" + all.dump() + "] scoped=[" + scoped.dump() + "]");
+
+        Json ws_dump = Call(ws_fd, 9, "state.dump", Json::Object(), &ws_buf).get("result");
+        CHECK_CTX(ws_dump.get("projects").items().size() == 1, "state.ws_dump=[" + ws_dump.dump() + "]");
+        const Json &wss = ws_dump.get("projects").items()[0].get("workspaces");
+        CHECK_CTX(wss.items().size() == 2, "state.ws_dump=[" + ws_dump.dump() + "]");
+        CHECK(wss.items()[0].get("name").as_string() == "main");
+        CHECK(wss.items()[1].get("name").as_string() == "feat-x");
+        CHECK(wss.items()[1].get("tabs").items().size() >= 1);
+
+        // Back to main: the worktree's buffer is hidden from the scoped list.
+        Call(ws_fd, 10, "workspace.switch", [] { Json p = Json::Object(); p["name"] = "main"; return p; }(), &ws_buf);
+        Json main_scoped = Call(ws_fd, 11, "buffer.list", Json::Object(), &ws_buf).get("result");
+        bool leaked = false;
+        for (const Json &b : main_scoped.items()) {
+            if (b.get("filename").as_string() == "README.md") leaked = true;
+        }
+        CHECK_CTX(!leaked, "feat-x's README.md leaked into main's buffer.list=[" + main_scoped.dump() + "]");
+
+        // Delete removes the worktree but keeps the branch (decision 5).
+        Call(ws_fd, 12, "workspace.delete", [] { Json p = Json::Object(); p["name"] = "feat-x"; return p; }(), &ws_buf);
+        bool removed = false;
+        for (int i = 0; i < 200 && !removed; i++) {
+            Json wl = Call(ws_fd, 13, "workspace.list", Json::Object(), &ws_buf).get("result");
+            removed = wl.items().size() == 1;
+            if (!removed) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        CHECK_CTX(removed, "workspace feat-x was never removed");
+        CHECK_CTX(!std::filesystem::exists(worktree), "worktree dir should be gone: " + worktree);
+        CHECK_CTX(sh("git branch --list feat-x | grep -q feat-x") == 0, "branch feat-x should survive workspace deletion");
+
+        Json quit2 = Call(ws_fd, 14, "command.run", [] { Json p = Json::Object(); p["cmd"] = "qa!"; return p; }(), &ws_buf);
+        CHECK(quit2.contains("result"));
+        close(ws_fd);
+        int status2 = 0;
+        CHECK(waitpid(pid2, &status2, 0) == pid2);
+        CHECK(WIFEXITED(status2) && WEXITSTATUS(status2) == 0);
+        std::filesystem::remove_all(repo, ec);
+        std::filesystem::remove_all(std::filesystem::path(repo).parent_path() / (std::filesystem::path(repo).filename().string() + ".worktrees"), ec);
+    }
 
     std::printf("agent_rpc_test passed\n");
 }

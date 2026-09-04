@@ -3,16 +3,20 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
 #include "html_doc.h"
+#include "svg_doc.h"
 
 // A hand-rolled tokenizer + recursive-descent/precedence-climbing parser +
 // tree-walking interpreter for a *subset* of JS -- not spec-compliant, not
@@ -168,8 +172,31 @@ struct ObjectData {
     NativeFn native;
 
     DomNode *dom_node = nullptr;
+    DomNode *style_node = nullptr;  // non-null only for element.style wrappers
     HtmlDoc *owner_doc = nullptr;  // only set on the `document` object, for .title
+    bool is_canvas_context = false;
+    DomNode *canvas_node = nullptr;
+    unsigned char canvas_r = 0, canvas_g = 0, canvas_b = 0, canvas_a = 255;  // fillStyle
+    unsigned char canvas_stroke_r = 0, canvas_stroke_g = 0, canvas_stroke_b = 0, canvas_stroke_a = 255;  // strokeStyle
+    float canvas_line_width = 1.0f;
+    float canvas_font_size = 16.0f;
+    float canvas_global_alpha = 1.0f;
+    float canvas_transform[6] = {1, 0, 0, 1, 0, 0};  // CTM: a b c d e f
+    // A fillStyle/strokeStyle assigned a CanvasGradient object rather than
+    // a color string; null when the flat color above is in effect.
+    std::shared_ptr<ObjectData> canvas_fill_gradient, canvas_stroke_gradient;
+    // The current default path, one flat x,y list per subpath, in
+    // already-transformed canvas coordinates.
+    std::vector<std::vector<float>> canvas_subpaths;
+    std::vector<std::vector<float>> canvas_state_stack;  // save(): flattened numeric state
+    std::vector<std::pair<std::shared_ptr<ObjectData>, std::shared_ptr<ObjectData>>> canvas_gradient_stack;
+    // CanvasGradient objects (createLinearGradient/createRadialGradient).
+    bool is_canvas_gradient = false;
+    CanvasGradient gradient;
 };
+
+Value WrapDomNode(HtmlDoc &doc, DomNode *node);
+Value MakeNativeFn(NativeFn fn);
 
 struct Environment {
     std::unordered_map<std::string, Value> vars;
@@ -345,6 +372,36 @@ std::string GetTextContent(const DomNode *n) {
     return out;
 }
 
+std::string EscapeHtmlText(const std::string &text) {
+    std::string escaped;
+    for (char c : text) {
+        if (c == '&') escaped += "&amp;";
+        else if (c == '<') escaped += "&lt;";
+        else if (c == '>') escaped += "&gt;";
+        else escaped += c;
+    }
+    return escaped;
+}
+
+std::string SerializeDomNode(const DomNode *node) {
+    if (!node) return "";
+    if (node->type == DomNodeType::Text) return EscapeHtmlText(node->text);
+    if (node->tag == "#document") { std::string all; for (const auto &child : node->children) all += SerializeDomNode(child.get()); return all; }
+    std::string html = "<" + node->tag;
+    for (const auto &[name, value] : node->attrs) html += " " + name + "=\"" + EscapeHtmlText(value) + "\"";
+    static const std::unordered_set<std::string> void_tags = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"};
+    if (void_tags.count(node->tag)) return html + ">";
+    html += ">"; for (const auto &child : node->children) html += SerializeDomNode(child.get()); return html + "</" + node->tag + ">";
+}
+
+void ReplaceInnerHtml(DomNode *node, const std::string &html) {
+    if (!node || node->type != DomNodeType::Element) return;
+    HtmlDoc fragment; ParseHtml(html, fragment);
+    node->children.clear();
+    if (!fragment.root) return;
+    for (auto &child : fragment.root->children) { child->parent = node; node->children.push_back(std::move(child)); }
+}
+
 // Replaces every child with a single Text node -- matches real DOM's own
 // `el.textContent = x` (any existing children, element or text, are gone),
 // not an append. Deliberately doesn't call ComputeStyles: a Text node's
@@ -379,6 +436,13 @@ DomNode *FindById(DomNode *n, const std::string &id) {
     return nullptr;
 }
 
+DomNode *FindByTag(DomNode *n, const std::string &tag) {
+    if (!n) return nullptr;
+    if (n->type == DomNodeType::Element && n->tag == tag) return n;
+    for (auto &child : n->children) if (DomNode *found = FindByTag(child.get(), tag)) return found;
+    return nullptr;
+}
+
 /**
  * @brief Determines whether a property key string is a non-negative-integer array index (i.e. consists only of digits).
  * @param key The property key to test.
@@ -402,8 +466,148 @@ bool IsArrayIndexKey(const std::string &key, long &idx) {
  */
 Value GetProp(const ObjectPtr &obj, const std::string &key) {
     if (!obj) return Value::Undef();
+    if (obj->is_array && key == "push") return MakeNativeFn([obj](const std::vector<Value> &args, bool &, std::string &) {
+        long length = ArrayLength(obj); for (const Value &arg : args) obj->props[std::to_string(length++)] = arg;
+        obj->props["length"] = Value::Num(static_cast<double>(length)); return Value::Num(static_cast<double>(length));
+    });
+    if (obj->is_array && key == "pop") return MakeNativeFn([obj](const std::vector<Value> &, bool &, std::string &) {
+        long length = ArrayLength(obj); if (length == 0) return Value::Undef(); Value last = GetProp(obj, std::to_string(length - 1)); obj->props.erase(std::to_string(length - 1)); obj->props["length"] = Value::Num(static_cast<double>(length - 1)); return last;
+    });
+    if (obj->is_array && key == "shift") return MakeNativeFn([obj](const std::vector<Value> &, bool &, std::string &) {
+        long length = ArrayLength(obj); if (length == 0) return Value::Undef(); Value first = GetProp(obj, "0");
+        for (long i = 1; i < length; ++i) obj->props[std::to_string(i - 1)] = GetProp(obj, std::to_string(i));
+        obj->props.erase(std::to_string(length - 1)); obj->props["length"] = Value::Num(static_cast<double>(length - 1)); return first;
+    });
+    if (obj->is_array && key == "unshift") return MakeNativeFn([obj](const std::vector<Value> &args, bool &, std::string &) {
+        long length = ArrayLength(obj); for (long i = length; i-- > 0;) obj->props[std::to_string(i + static_cast<long>(args.size()))] = GetProp(obj, std::to_string(i));
+        for (size_t i = 0; i < args.size(); ++i) obj->props[std::to_string(i)] = args[i];
+        length += static_cast<long>(args.size());
+        obj->props["length"] = Value::Num(static_cast<double>(length));
+        return Value::Num(static_cast<double>(length));
+    });
+    if (obj->is_array && key == "reverse") return MakeNativeFn([obj](const std::vector<Value> &, bool &, std::string &) {
+        long length = ArrayLength(obj);
+        for (long i = 0; i < length / 2; ++i) std::swap(obj->props[std::to_string(i)], obj->props[std::to_string(length - 1 - i)]);
+        return Value::Obj(obj);
+    });
+    if (obj->is_array && key == "join") return MakeNativeFn([obj](const std::vector<Value> &args, bool &, std::string &) {
+        std::string separator = args.empty() ? "," : ToDisplayString(args[0]); std::string joined; long length = ArrayLength(obj);
+        for (long i = 0; i < length; ++i) { if (i) joined += separator; Value value = GetProp(obj, std::to_string(i)); if (value.type != VType::Undefined && value.type != VType::Null) joined += ToDisplayString(value); }
+        return Value::Str(joined);
+    });
+    if (obj->is_array && key == "indexOf") return MakeNativeFn([obj](const std::vector<Value> &args, bool &, std::string &) {
+        if (args.empty()) return Value::Num(-1);
+        long length = ArrayLength(obj);
+        for (long i = 0; i < length; ++i) if (StrictEquals(GetProp(obj, std::to_string(i)), args[0])) return Value::Num(static_cast<double>(i));
+        return Value::Num(-1);
+    });
+    if (obj->is_array && key == "includes") return MakeNativeFn([obj](const std::vector<Value> &args, bool &, std::string &) {
+        if (args.empty()) return Value::Bool(false);
+        long length = ArrayLength(obj); for (long i = 0; i < length; ++i) if (StrictEquals(GetProp(obj, std::to_string(i)), args[0])) return Value::Bool(true);
+        return Value::Bool(false);
+    });
+    if (obj->is_array && key == "slice") return MakeNativeFn([obj](const std::vector<Value> &args, bool &, std::string &) {
+        long length = ArrayLength(obj), start = args.empty() ? 0 : static_cast<long>(ToNumber(args[0]));
+        long end = args.size() < 2 ? length : static_cast<long>(ToNumber(args[1]));
+        if (start < 0) start = std::max(0L, length + start); else start = std::min(start, length);
+        if (end < 0) end = std::max(0L, length + end); else end = std::min(end, length);
+        auto result = std::make_shared<ObjectData>(); result->is_array = true; long index = 0;
+        for (long i = start; i < end; ++i) result->props[std::to_string(index++)] = GetProp(obj, std::to_string(i));
+        result->props["length"] = Value::Num(static_cast<double>(index)); return Value::Obj(result);
+    });
+    if (obj->is_array && key == "concat") return MakeNativeFn([obj](const std::vector<Value> &args, bool &, std::string &) {
+        auto result = std::make_shared<ObjectData>(); result->is_array = true; long index = 0;
+        auto append = [&](const Value &value) { if (value.type == VType::Object && value.obj && value.obj->is_array) { for (long i = 0; i < ArrayLength(value.obj); ++i) result->props[std::to_string(index++)] = GetProp(value.obj, std::to_string(i)); } else result->props[std::to_string(index++)] = value; };
+        append(Value::Obj(obj)); for (const Value &arg : args) append(arg); result->props["length"] = Value::Num(static_cast<double>(index)); return Value::Obj(result);
+    });
     if (obj->dom_node && key == "textContent") return Value::Str(GetTextContent(obj->dom_node));
+    if (obj->dom_node && key == "innerHTML") { std::string html; for (const auto &child : obj->dom_node->children) html += SerializeDomNode(child.get()); return Value::Str(html); }
+    if (obj->dom_node && key == "outerHTML") return Value::Str(SerializeDomNode(obj->dom_node));
+    if (obj->dom_node && obj->owner_doc) {
+        DomNode *node = obj->dom_node;
+        if (key == "parentNode" || key == "parentElement") return node->parent ? WrapDomNode(*obj->owner_doc, node->parent) : Value::MakeNull();
+        if (key == "firstChild" || key == "lastChild") {
+            if (node->children.empty()) return Value::MakeNull();
+            return WrapDomNode(*obj->owner_doc, (key == "firstChild" ? node->children.front() : node->children.back()).get());
+        }
+        if (key == "firstElementChild" || key == "lastElementChild") {
+            if (key == "firstElementChild") for (const auto &child : node->children) if (child->type == DomNodeType::Element) return WrapDomNode(*obj->owner_doc, child.get());
+            if (key == "lastElementChild") for (auto it = node->children.rbegin(); it != node->children.rend(); ++it) if ((*it)->type == DomNodeType::Element) return WrapDomNode(*obj->owner_doc, it->get());
+            return Value::MakeNull();
+        }
+        if (key == "nextSibling" || key == "previousSibling" || key == "nextElementSibling" || key == "previousElementSibling") {
+            if (!node->parent) return Value::MakeNull();
+            const auto &siblings = node->parent->children;
+            for (size_t i = 0; i < siblings.size(); ++i) if (siblings[i].get() == node) {
+                bool forward = key.find("next") == 0;
+                bool elements_only = key.find("Element") != std::string::npos;
+                for (size_t cursor = i; forward ? ++cursor < siblings.size() : cursor-- > 0;) {
+                    if (!elements_only || siblings[cursor]->type == DomNodeType::Element) return WrapDomNode(*obj->owner_doc, siblings[cursor].get());
+                }
+                return Value::MakeNull();
+            }
+        }
+        if (key == "children" || key == "childNodes") {
+            auto array = std::make_shared<ObjectData>(); array->is_array = true; size_t count = 0;
+            for (const auto &child : node->children) if (key == "childNodes" || child->type == DomNodeType::Element) array->props[std::to_string(count++)] = WrapDomNode(*obj->owner_doc, child.get());
+            array->props["length"] = Value::Num(static_cast<double>(count)); return Value::Obj(array);
+        }
+        if (key == "shadowRoot") return node->shadow_root ? WrapDomNode(*obj->owner_doc, node->shadow_root.get()) : Value::MakeNull();
+        if (key == "tagName" || key == "nodeName") return Value::Str(node->tag);
+        if (key == "nodeType") return Value::Num(node->type == DomNodeType::Element ? 1.0 : 3.0);
+        if (key == "value") return Value::Str(node->form_value);
+        if (key == "checked") return Value::Bool(node->form_checked);
+        if (key == "open") return Value::Bool(node->details_open);
+        if ((node->tag == "audio" || node->tag == "video") && key == "paused") return Value::Bool(node->media_paused);
+        if ((node->tag == "audio" || node->tag == "video") && key == "muted") return Value::Bool(node->media_muted);
+        if ((node->tag == "audio" || node->tag == "video") && key == "currentTime") return Value::Num(node->media_current_time);
+        if ((node->tag == "audio" || node->tag == "video") && key == "volume") return Value::Num(node->media_volume);
+        if ((node->tag == "audio" || node->tag == "video") && key == "duration") return Value::Num(node->media_ready_state >= 1 ? node->media_duration : std::numeric_limits<double>::quiet_NaN());
+        if ((node->tag == "audio" || node->tag == "video") && key == "ended") return Value::Bool(node->media_ended);
+        if ((node->tag == "audio" || node->tag == "video") && key == "readyState") return Value::Num(node->media_ready_state);
+        if ((node->tag == "audio" || node->tag == "video") && key == "loop") return Value::Bool(node->attrs.count("loop") != 0);
+        if ((node->tag == "audio" || node->tag == "video") && key == "error") {
+            if (node->media_error.empty()) return Value::MakeNull();
+            auto error = std::make_shared<ObjectData>();
+            error->props["code"] = Value::Num(4);  // MEDIA_ERR_SRC_NOT_SUPPORTED
+            error->props["message"] = Value::Str(node->media_error);
+            return Value::Obj(error);
+        }
+        if (node->tag == "canvas" && key == "width") return Value::Num(node->canvas_width);
+        if (node->tag == "canvas" && key == "height") return Value::Num(node->canvas_height);
+    }
+    if (obj->is_canvas_context) {
+        if (key == "fillStyle" || key == "strokeStyle") {
+            bool stroke = key == "strokeStyle";
+            const std::shared_ptr<ObjectData> &gradient = stroke ? obj->canvas_stroke_gradient : obj->canvas_fill_gradient;
+            if (gradient) return Value::Obj(gradient);
+            unsigned char r = stroke ? obj->canvas_stroke_r : obj->canvas_r, g = stroke ? obj->canvas_stroke_g : obj->canvas_g, b = stroke ? obj->canvas_stroke_b : obj->canvas_b, a = stroke ? obj->canvas_stroke_a : obj->canvas_a;
+            char text[40];
+            // Serialization follows the spec: opaque colors as #rrggbb, others as rgba().
+            if (a == 255) std::snprintf(text, sizeof(text), "#%02x%02x%02x", r, g, b);
+            else std::snprintf(text, sizeof(text), "rgba(%d, %d, %d, %g)", r, g, b, static_cast<double>(a) / 255.0);
+            return Value::Str(text);
+        }
+        if (key == "lineWidth") return Value::Num(obj->canvas_line_width);
+        if (key == "globalAlpha") return Value::Num(obj->canvas_global_alpha);
+        if (key == "font") return Value::Str(std::to_string(static_cast<int>(obj->canvas_font_size)) + "px monospace");
+    }
+    if (obj->style_node) {
+        std::string css_key;
+        for (char c : key) { if (std::isupper(static_cast<unsigned char>(c))) { css_key += '-'; css_key += static_cast<char>(std::tolower(static_cast<unsigned char>(c))); } else css_key += c; }
+        const std::string &style = obj->style_node->attrs["style"];
+        size_t pos = style.find(css_key + ":");
+        if (pos != std::string::npos) {
+            size_t start = pos + css_key.size() + 1; while (start < style.size() && std::isspace(static_cast<unsigned char>(style[start]))) ++start;
+            size_t end = style.find(';', start); return Value::Str(style.substr(start, end == std::string::npos ? std::string::npos : end - start));
+        }
+    }
     if (obj->is_document && key == "title") return Value::Str(obj->owner_doc ? obj->owner_doc->title : "");
+    if (obj->is_document && obj->owner_doc && (key == "body" || key == "head" || key == "documentElement")) {
+        const char *tag = key == "documentElement" ? "html" : key.c_str();
+        DomNode *found = obj->owner_doc->root ? FindByTag(obj->owner_doc->root.get(), tag) : nullptr;
+        return found ? WrapDomNode(*obj->owner_doc, found) : Value::MakeNull();
+    }
     auto it = obj->props.find(key);
     if (it != obj->props.end()) return it->second;
     return Value::Undef();
@@ -420,6 +624,53 @@ void SetProp(const ObjectPtr &obj, const std::string &key, Value val) {
     if (obj->dom_node && key == "textContent") {
         SetTextContent(obj->dom_node, ToDisplayString(val));
         return;
+    }
+    if (obj->dom_node && key == "innerHTML") { ReplaceInnerHtml(obj->dom_node, ToDisplayString(val)); return; }
+    if (obj->dom_node && key == "value") { obj->dom_node->form_value = ToDisplayString(val); return; }
+    if (obj->dom_node && key == "checked") { obj->dom_node->form_checked = val.Truthy(); return; }
+    if (obj->dom_node && key == "open") { obj->dom_node->details_open = val.Truthy(); return; }
+    if (obj->dom_node && (obj->dom_node->tag == "audio" || obj->dom_node->tag == "video")) {
+        if (key == "muted") { obj->dom_node->media_muted = val.Truthy(); return; }
+        if (key == "currentTime") { obj->dom_node->media_current_time = std::max(0.0, ToNumber(val)); return; }
+        if (key == "volume") { obj->dom_node->media_volume = std::max(0.0, std::min(1.0, ToNumber(val))); return; }
+        if (key == "loop") { if (val.Truthy()) obj->dom_node->attrs["loop"] = ""; else obj->dom_node->attrs.erase("loop"); return; }
+    }
+    if (obj->dom_node && obj->dom_node->tag == "canvas" && (key == "width" || key == "height")) {
+        int value = std::max(1, std::min(static_cast<int>(ToNumber(val)), 8192));
+        if (key == "width") obj->dom_node->canvas_width = value;
+        else obj->dom_node->canvas_height = value;
+        obj->dom_node->attrs[key] = std::to_string(value);
+        obj->dom_node->canvas_commands.clear();  // HTML resets its bitmap when either dimension changes.
+        return;
+    }
+    if (obj->dom_node && key == "className") { obj->dom_node->attrs["class"] = ToDisplayString(val); return; }
+    if (obj->style_node) {
+        std::string css_key;
+        for (char c : key) { if (std::isupper(static_cast<unsigned char>(c))) { css_key += '-'; css_key += static_cast<char>(std::tolower(static_cast<unsigned char>(c))); } else css_key += c; }
+        std::string &style = obj->style_node->attrs["style"];
+        size_t pos = style.find(css_key + ":");
+        std::string declaration = css_key + ": " + ToDisplayString(val) + ";";
+        if (pos == std::string::npos) style += (style.empty() ? "" : " ") + declaration;
+        else { size_t end = style.find(';', pos); style.replace(pos, end == std::string::npos ? std::string::npos : end - pos + 1, declaration); }
+        obj->props[key] = std::move(val);
+        return;
+    }
+    if (obj->is_canvas_context) {
+        if (key == "lineWidth") { obj->canvas_line_width = std::max(0.0f, static_cast<float>(ToNumber(val))); return; }
+        if (key == "font") { std::string font = ToDisplayString(val); char *end = nullptr; float size = std::strtof(font.c_str(), &end); if (end != font.c_str() && font.find("px") != std::string::npos) obj->canvas_font_size = std::max(1.0f, size); return; }
+        if (key == "globalAlpha") { double alpha = ToNumber(val); if (alpha >= 0.0 && alpha <= 1.0) obj->canvas_global_alpha = static_cast<float>(alpha); return; }
+        if (key == "fillStyle" || key == "strokeStyle") {
+            bool stroke = key == "strokeStyle";
+            std::shared_ptr<ObjectData> &gradient = stroke ? obj->canvas_stroke_gradient : obj->canvas_fill_gradient;
+            if (val.type == VType::Object && val.obj && val.obj->is_canvas_gradient) { gradient = val.obj; return; }
+            unsigned char r, g, b, a;
+            // An unparseable color leaves the style untouched, as the spec requires.
+            if (!ParseCssColor(ToDisplayString(val), r, g, b, a)) return;
+            gradient.reset();
+            if (stroke) { obj->canvas_stroke_r = r; obj->canvas_stroke_g = g; obj->canvas_stroke_b = b; obj->canvas_stroke_a = a; }
+            else { obj->canvas_r = r; obj->canvas_g = g; obj->canvas_b = b; obj->canvas_a = a; }
+            return;
+        }
     }
     if (obj->is_document && key == "title") {
         if (obj->owner_doc) obj->owner_doc->title = ToDisplayString(val);
@@ -2076,6 +2327,500 @@ Value MakeNativeFn(NativeFn fn) {
     return Value::Obj(obj);
 }
 
+std::unique_ptr<DomNode> TakeDomNode(HtmlDoc &doc, DomNode *node) {
+    if (!node) return nullptr;
+    auto take_from = [node](std::vector<std::unique_ptr<DomNode>> &nodes) {
+        for (auto it = nodes.begin(); it != nodes.end(); ++it) if (it->get() == node) {
+            std::unique_ptr<DomNode> result = std::move(*it); nodes.erase(it); return result;
+        }
+        return std::unique_ptr<DomNode>{};
+    };
+    if (std::unique_ptr<DomNode> detached = take_from(doc.detached_nodes)) return detached;
+    return node->parent ? take_from(node->parent->children) : nullptr;
+}
+
+std::unique_ptr<DomNode> CloneDomNode(const DomNode *source, bool deep) {
+    if (!source) return nullptr;
+    auto clone = std::make_unique<DomNode>();
+    clone->type = source->type; clone->tag = source->tag; clone->text = source->text; clone->attrs = source->attrs;
+    clone->form_value = source->form_value; clone->form_checked = source->form_checked;
+    clone->form_disabled = source->form_disabled; clone->details_open = source->details_open;
+    clone->media_paused = source->media_paused; clone->media_muted = source->media_muted;
+    clone->media_current_time = source->media_current_time; clone->media_volume = source->media_volume;
+    if (source->shadow_root) {
+        clone->shadow_root = CloneDomNode(source->shadow_root.get(), true);
+        clone->shadow_root->parent = clone.get();
+    }
+    if (deep) for (const auto &child : source->children) {
+        std::unique_ptr<DomNode> copied = CloneDomNode(child.get(), true);
+        copied->parent = clone.get(); clone->children.push_back(std::move(copied));
+    }
+    return clone;
+}
+
+// Structural validation of a WebAssembly binary: magic/version, well-formed
+// LEB128 section sizes that fit the buffer, custom-section names, the
+// spec's mandatory section order, one occurrence per known section, and a
+// function/code count match. It deliberately does not type-check function
+// bodies -- that is the job of a real runtime, which mep does not have --
+// so validate() answers "is this a plausibly loadable module" rather than
+// "is this fully valid"; pages feature-detecting WASM get an honest yes/no
+// on real binaries while garbage is still rejected.
+bool ValidateWasmModuleStructure(const std::vector<unsigned char> &bytes) {
+    static const unsigned char kHeader[] = {0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00};
+    if (bytes.size() < sizeof(kHeader) || !std::equal(kHeader, kHeader + sizeof(kHeader), bytes.begin())) return false;
+    auto read_leb = [&bytes](size_t &pos, size_t end, uint32_t &out) {
+        out = 0; unsigned shift = 0;
+        while (pos < end && shift < 35) {
+            unsigned char byte = bytes[pos++];
+            out |= (byte & 0x7fU) << shift;
+            if (!(byte & 0x80U)) return true;
+            shift += 7;
+        }
+        return false;
+    };
+    // Section ids in the order the spec requires them to appear.
+    static const unsigned char kOrder[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 10, 11};
+    int last_rank = -1;
+    uint32_t function_count = 0, code_count = 0;
+    bool has_functions = false, has_code = false;
+    size_t pos = sizeof(kHeader);
+    while (pos < bytes.size()) {
+        unsigned char id = bytes[pos++];
+        uint32_t size = 0;
+        if (!read_leb(pos, bytes.size(), size) || size > bytes.size() - pos) return false;
+        size_t end = pos + size;
+        if (id == 0) {
+            uint32_t name_len = 0;
+            if (!read_leb(pos, end, name_len) || name_len > end - pos) return false;
+        } else {
+            const unsigned char *rank = std::find(kOrder, kOrder + sizeof(kOrder), id);
+            if (rank == kOrder + sizeof(kOrder)) return false;
+            int this_rank = static_cast<int>(rank - kOrder);
+            if (this_rank <= last_rank) return false;
+            last_rank = this_rank;
+            if (id == 3 || id == 10) {
+                size_t count_pos = pos; uint32_t count = 0;
+                if (!read_leb(count_pos, end, count)) return false;
+                if (id == 3) { function_count = count; has_functions = true; } else { code_count = count; has_code = true; }
+            }
+        }
+        pos = end;
+    }
+    if (pos != bytes.size()) return false;
+    if (has_functions != has_code && (function_count > 0 || code_count > 0)) return false;
+    return function_count == code_count;
+}
+
+bool DomHasClass(const DomNode *node, const std::string &want) {
+    if (!node) return false;
+    std::istringstream words(node->Class()); std::string word;
+    while (words >> word) if (word == want) return true;
+    return false;
+}
+
+Value WrapDomNode(HtmlDoc &doc, DomNode *node) {
+    if (!node) return Value::MakeNull();
+    auto wrapper = std::make_shared<ObjectData>();
+    wrapper->dom_node = node;
+    wrapper->owner_doc = &doc;
+    wrapper->props["attachShadow"] = MakeNativeFn([doc_ptr = &doc, node](std::vector<Value> &args, bool &threw, std::string &error) {
+        if (node->type != DomNodeType::Element) { threw = true; error = "attachShadow requires an element"; return Value::Undef(); }
+        if (node->shadow_root) { threw = true; error = "shadow root already attached"; return Value::Undef(); }
+        if (!args.empty() && args[0].type != VType::Object) { threw = true; error = "attachShadow requires options"; return Value::Undef(); }
+        node->shadow_root = std::make_unique<DomNode>(); node->shadow_root->tag = "#shadow-root"; node->shadow_root->parent = node;
+        return WrapDomNode(*doc_ptr, node->shadow_root.get());
+    });
+    if (node->tag == "canvas") {
+        wrapper->props["getContext"] = MakeNativeFn([node](std::vector<Value> &args, bool &, std::string &) {
+            if (args.empty() || ToDisplayString(args[0]) != "2d") return Value::MakeNull();
+            auto context = std::make_shared<ObjectData>();
+            context->is_canvas_context = true;
+            context->canvas_node = node;
+            ObjectData *raw_context = context.get();
+            // Geometry is transformed by the current transformation matrix
+            // (CTM) as it is recorded, exactly like a real canvas: a later
+            // translate()/rotate() never moves pixels already painted.
+            auto apply = [raw_context](float x, float y, float &ox, float &oy) {
+                const float *m = raw_context->canvas_transform;
+                ox = m[0] * x + m[2] * y + m[4];
+                oy = m[1] * x + m[3] * y + m[5];
+            };
+            auto length_scale = [raw_context]() {
+                const float *m = raw_context->canvas_transform;
+                return std::sqrt(std::fabs(m[0] * m[3] - m[1] * m[2]));
+            };
+            auto axis_aligned = [raw_context]() { return raw_context->canvas_transform[1] == 0.0f && raw_context->canvas_transform[2] == 0.0f; };
+            auto paint = [raw_context](CanvasCommand &command, bool stroke) {
+                const std::shared_ptr<ObjectData> &gradient = stroke ? raw_context->canvas_stroke_gradient : raw_context->canvas_fill_gradient;
+                if (gradient && gradient->is_canvas_gradient) {
+                    command.gradient = gradient->gradient;
+                    command.gradient.present = true;
+                    for (CanvasGradientStop &stop : command.gradient.stops) stop.a = static_cast<unsigned char>(static_cast<float>(stop.a) * raw_context->canvas_global_alpha);
+                }
+                command.r = stroke ? raw_context->canvas_stroke_r : raw_context->canvas_r;
+                command.g = stroke ? raw_context->canvas_stroke_g : raw_context->canvas_g;
+                command.b = stroke ? raw_context->canvas_stroke_b : raw_context->canvas_b;
+                command.a = static_cast<unsigned char>(static_cast<float>(stroke ? raw_context->canvas_stroke_a : raw_context->canvas_a) * raw_context->canvas_global_alpha);
+            };
+            auto push_point = [raw_context, apply](float x, float y) {
+                float tx, ty; apply(x, y, tx, ty);
+                if (raw_context->canvas_subpaths.empty()) raw_context->canvas_subpaths.emplace_back();
+                raw_context->canvas_subpaths.back().push_back(tx); raw_context->canvas_subpaths.back().push_back(ty);
+            };
+            auto current_point = [raw_context](float &x, float &y) {
+                if (raw_context->canvas_subpaths.empty() || raw_context->canvas_subpaths.back().size() < 2) return false;
+                const std::vector<float> &sub = raw_context->canvas_subpaths.back();
+                x = sub[sub.size() - 2]; y = sub.back(); return true;
+            };
+            auto record = [node, raw_context, apply, length_scale, axis_aligned, paint](CanvasCommand::Kind kind, std::vector<Value> &values) {
+                if (values.size() < 4) return Value::Undef();
+                float x = static_cast<float>(ToNumber(values[0])), y = static_cast<float>(ToNumber(values[1]));
+                float w = static_cast<float>(ToNumber(values[2])), h = static_cast<float>(ToNumber(values[3]));
+                CanvasCommand command;
+                command.kind = kind;
+                command.line_width = raw_context->canvas_line_width * length_scale();
+                paint(command, kind == CanvasCommand::Kind::StrokeRect);
+                if (axis_aligned()) {
+                    float x0, y0, x1, y1; apply(x, y, x0, y0); apply(x + w, y + h, x1, y1);
+                    command.x = std::min(x0, x1); command.y = std::min(y0, y1); command.w = std::fabs(x1 - x0); command.h = std::fabs(y1 - y0);
+                } else {
+                    // A rotated/skewed rectangle is a general quadrilateral:
+                    // record it as path geometry instead of a box.
+                    std::vector<float> corners;
+                    for (auto [cx, cy] : {std::pair<float, float>{x, y}, {x + w, y}, {x + w, y + h}, {x, y + h}}) { float tx, ty; apply(cx, cy, tx, ty); corners.push_back(tx); corners.push_back(ty); }
+                    if (kind == CanvasCommand::Kind::ClearRect) {
+                        float min_x = corners[0], min_y = corners[1], max_x = corners[0], max_y = corners[1];
+                        for (size_t i = 0; i < corners.size(); i += 2) { min_x = std::min(min_x, corners[i]); max_x = std::max(max_x, corners[i]); min_y = std::min(min_y, corners[i + 1]); max_y = std::max(max_y, corners[i + 1]); }
+                        command.x = min_x; command.y = min_y; command.w = max_x - min_x; command.h = max_y - min_y;
+                    } else {
+                        command.kind = kind == CanvasCommand::Kind::FillRect ? CanvasCommand::Kind::FillPath : CanvasCommand::Kind::StrokePath;
+                        if (kind == CanvasCommand::Kind::StrokeRect) { corners.push_back(corners[0]); corners.push_back(corners[1]); }
+                        else command.triangles = TriangulateSvgPolygon(corners);
+                        command.points = std::move(corners);
+                    }
+                }
+                // A full-bitmap clear has a simple exact representation and
+                // prevents an unbounded command list for animation loops.
+                if (command.kind == CanvasCommand::Kind::ClearRect && command.x <= 0 && command.y <= 0 &&
+                    command.w >= static_cast<float>(node->canvas_width) && command.h >= static_cast<float>(node->canvas_height)) node->canvas_commands.clear();
+                else node->canvas_commands.push_back(std::move(command));
+                return Value::Undef();
+            };
+            context->props["fillRect"] = MakeNativeFn([record](std::vector<Value> &values, bool &, std::string &) { return record(CanvasCommand::Kind::FillRect, values); });
+            context->props["strokeRect"] = MakeNativeFn([record](std::vector<Value> &values, bool &, std::string &) { return record(CanvasCommand::Kind::StrokeRect, values); });
+            context->props["clearRect"] = MakeNativeFn([record](std::vector<Value> &values, bool &, std::string &) { return record(CanvasCommand::Kind::ClearRect, values); });
+            context->props["beginPath"] = MakeNativeFn([raw_context](std::vector<Value> &, bool &, std::string &) { raw_context->canvas_subpaths.clear(); return Value::Undef(); });
+            context->props["save"] = MakeNativeFn([raw_context](std::vector<Value> &, bool &, std::string &) {
+                std::vector<float> state = {static_cast<float>(raw_context->canvas_r), static_cast<float>(raw_context->canvas_g), static_cast<float>(raw_context->canvas_b), static_cast<float>(raw_context->canvas_a),
+                                            static_cast<float>(raw_context->canvas_stroke_r), static_cast<float>(raw_context->canvas_stroke_g), static_cast<float>(raw_context->canvas_stroke_b), static_cast<float>(raw_context->canvas_stroke_a),
+                                            raw_context->canvas_line_width, raw_context->canvas_font_size, raw_context->canvas_global_alpha};
+                state.insert(state.end(), raw_context->canvas_transform, raw_context->canvas_transform + 6);
+                raw_context->canvas_state_stack.push_back(std::move(state));
+                raw_context->canvas_gradient_stack.emplace_back(raw_context->canvas_fill_gradient, raw_context->canvas_stroke_gradient);
+                return Value::Undef();
+            });
+            context->props["restore"] = MakeNativeFn([raw_context](std::vector<Value> &, bool &, std::string &) {
+                if (raw_context->canvas_state_stack.empty()) return Value::Undef();
+                const std::vector<float> state = raw_context->canvas_state_stack.back(); raw_context->canvas_state_stack.pop_back();
+                raw_context->canvas_r = static_cast<unsigned char>(state[0]); raw_context->canvas_g = static_cast<unsigned char>(state[1]); raw_context->canvas_b = static_cast<unsigned char>(state[2]); raw_context->canvas_a = static_cast<unsigned char>(state[3]);
+                raw_context->canvas_stroke_r = static_cast<unsigned char>(state[4]); raw_context->canvas_stroke_g = static_cast<unsigned char>(state[5]); raw_context->canvas_stroke_b = static_cast<unsigned char>(state[6]); raw_context->canvas_stroke_a = static_cast<unsigned char>(state[7]);
+                raw_context->canvas_line_width = state[8]; raw_context->canvas_font_size = state[9]; raw_context->canvas_global_alpha = state[10];
+                std::copy(state.begin() + 11, state.begin() + 17, raw_context->canvas_transform);
+                if (!raw_context->canvas_gradient_stack.empty()) { raw_context->canvas_fill_gradient = raw_context->canvas_gradient_stack.back().first; raw_context->canvas_stroke_gradient = raw_context->canvas_gradient_stack.back().second; raw_context->canvas_gradient_stack.pop_back(); }
+                return Value::Undef();
+            });
+            // --- transforms ---
+            auto multiply = [raw_context](float a, float b, float c, float d, float e, float f) {
+                float *m = raw_context->canvas_transform;
+                float n[6] = {m[0] * a + m[2] * b, m[1] * a + m[3] * b, m[0] * c + m[2] * d, m[1] * c + m[3] * d, m[0] * e + m[2] * f + m[4], m[1] * e + m[3] * f + m[5]};
+                std::copy(n, n + 6, m);
+            };
+            context->props["translate"] = MakeNativeFn([multiply](std::vector<Value> &values, bool &, std::string &) { if (values.size() >= 2) multiply(1, 0, 0, 1, static_cast<float>(ToNumber(values[0])), static_cast<float>(ToNumber(values[1]))); return Value::Undef(); });
+            context->props["scale"] = MakeNativeFn([multiply](std::vector<Value> &values, bool &, std::string &) { if (values.size() >= 2) multiply(static_cast<float>(ToNumber(values[0])), 0, 0, static_cast<float>(ToNumber(values[1])), 0, 0); return Value::Undef(); });
+            context->props["rotate"] = MakeNativeFn([multiply](std::vector<Value> &values, bool &, std::string &) {
+                if (values.empty()) return Value::Undef();
+                float angle = static_cast<float>(ToNumber(values[0])), c = std::cos(angle), s = std::sin(angle);
+                multiply(c, s, -s, c, 0, 0); return Value::Undef();
+            });
+            context->props["transform"] = MakeNativeFn([multiply](std::vector<Value> &values, bool &, std::string &) {
+                if (values.size() < 6) return Value::Undef();
+                multiply(static_cast<float>(ToNumber(values[0])), static_cast<float>(ToNumber(values[1])), static_cast<float>(ToNumber(values[2])), static_cast<float>(ToNumber(values[3])), static_cast<float>(ToNumber(values[4])), static_cast<float>(ToNumber(values[5])));
+                return Value::Undef();
+            });
+            context->props["setTransform"] = MakeNativeFn([raw_context](std::vector<Value> &values, bool &, std::string &) {
+                if (values.size() < 6) return Value::Undef();
+                for (size_t i = 0; i < 6; ++i) raw_context->canvas_transform[i] = static_cast<float>(ToNumber(values[i]));
+                return Value::Undef();
+            });
+            context->props["resetTransform"] = MakeNativeFn([raw_context](std::vector<Value> &, bool &, std::string &) {
+                const float identity[6] = {1, 0, 0, 1, 0, 0}; std::copy(identity, identity + 6, raw_context->canvas_transform); return Value::Undef();
+            });
+            context->props["getTransform"] = MakeNativeFn([raw_context](std::vector<Value> &, bool &, std::string &) {
+                auto matrix = std::make_shared<ObjectData>();
+                const char *names[6] = {"a", "b", "c", "d", "e", "f"};
+                for (size_t i = 0; i < 6; ++i) matrix->props[names[i]] = Value::Num(static_cast<double>(raw_context->canvas_transform[i]));
+                return Value::Obj(matrix);
+            });
+            // --- gradients ---
+            auto make_gradient = [](bool radial, std::vector<Value> &values) {
+                auto gradient = std::make_shared<ObjectData>();
+                gradient->is_canvas_gradient = true;
+                gradient->gradient.present = true;
+                gradient->gradient.radial = radial;
+                auto number_at = [&values](size_t i) { return i < values.size() ? static_cast<float>(ToNumber(values[i])) : 0.0f; };
+                if (radial) { gradient->gradient.x0 = number_at(0); gradient->gradient.y0 = number_at(1); gradient->gradient.r0 = number_at(2); gradient->gradient.x1 = number_at(3); gradient->gradient.y1 = number_at(4); gradient->gradient.r1 = number_at(5); }
+                else { gradient->gradient.x0 = number_at(0); gradient->gradient.y0 = number_at(1); gradient->gradient.x1 = number_at(2); gradient->gradient.y1 = number_at(3); }
+                ObjectData *raw_gradient = gradient.get();
+                gradient->props["addColorStop"] = MakeNativeFn([raw_gradient](std::vector<Value> &stop_args, bool &threw, std::string &error) {
+                    if (stop_args.size() < 2) { threw = true; error = "addColorStop requires an offset and a color"; return Value::Undef(); }
+                    double offset = ToNumber(stop_args[0]);
+                    if (!(offset >= 0.0 && offset <= 1.0)) { threw = true; error = "IndexSizeError: gradient offset must be between 0 and 1"; return Value::Undef(); }
+                    CanvasGradientStop stop; stop.offset = static_cast<float>(offset);
+                    if (!ParseCssColor(ToDisplayString(stop_args[1]), stop.r, stop.g, stop.b, stop.a)) { threw = true; error = "SyntaxError: unrecognised gradient color"; return Value::Undef(); }
+                    std::vector<CanvasGradientStop> &stops = raw_gradient->gradient.stops;
+                    auto place = std::find_if(stops.begin(), stops.end(), [&stop](const CanvasGradientStop &existing) { return existing.offset > stop.offset; });
+                    stops.insert(place, stop);
+                    return Value::Undef();
+                });
+                return Value::Obj(gradient);
+            };
+            context->props["createLinearGradient"] = MakeNativeFn([make_gradient](std::vector<Value> &values, bool &, std::string &) { return make_gradient(false, values); });
+            context->props["createRadialGradient"] = MakeNativeFn([make_gradient](std::vector<Value> &values, bool &, std::string &) { return make_gradient(true, values); });
+            // --- path construction ---
+            context->props["moveTo"] = MakeNativeFn([raw_context, push_point](std::vector<Value> &values, bool &, std::string &) {
+                if (values.size() >= 2) { raw_context->canvas_subpaths.emplace_back(); push_point(static_cast<float>(ToNumber(values[0])), static_cast<float>(ToNumber(values[1]))); }
+                return Value::Undef();
+            });
+            context->props["lineTo"] = MakeNativeFn([push_point](std::vector<Value> &values, bool &, std::string &) {
+                if (values.size() >= 2) push_point(static_cast<float>(ToNumber(values[0])), static_cast<float>(ToNumber(values[1])));
+                return Value::Undef();
+            });
+            context->props["rect"] = MakeNativeFn([raw_context, push_point](std::vector<Value> &values, bool &, std::string &) {
+                if (values.size() < 4) return Value::Undef();
+                float x = static_cast<float>(ToNumber(values[0])), y = static_cast<float>(ToNumber(values[1])), w = static_cast<float>(ToNumber(values[2])), h = static_cast<float>(ToNumber(values[3]));
+                raw_context->canvas_subpaths.emplace_back();
+                push_point(x, y); push_point(x + w, y); push_point(x + w, y + h); push_point(x, y + h); push_point(x, y);
+                return Value::Undef();
+            });
+            context->props["quadraticCurveTo"] = MakeNativeFn([apply, current_point, raw_context](std::vector<Value> &values, bool &, std::string &) {
+                float x0, y0;
+                if (values.size() < 4 || !current_point(x0, y0)) return Value::Undef();
+                // Affine maps commute with Bezier evaluation, so flattening
+                // in transformed space with transformed control points is exact.
+                float cx, cy, x1, y1;
+                apply(static_cast<float>(ToNumber(values[0])), static_cast<float>(ToNumber(values[1])), cx, cy);
+                apply(static_cast<float>(ToNumber(values[2])), static_cast<float>(ToNumber(values[3])), x1, y1);
+                std::vector<float> &sub = raw_context->canvas_subpaths.back();
+                for (int i = 1; i <= 12; ++i) { float t = static_cast<float>(i) / 12.0f, u = 1.0f - t; sub.push_back(u * u * x0 + 2.0f * u * t * cx + t * t * x1); sub.push_back(u * u * y0 + 2.0f * u * t * cy + t * t * y1); }
+                return Value::Undef();
+            });
+            context->props["bezierCurveTo"] = MakeNativeFn([apply, current_point, raw_context](std::vector<Value> &values, bool &, std::string &) {
+                float x0, y0;
+                if (values.size() < 6 || !current_point(x0, y0)) return Value::Undef();
+                float cx1, cy1, cx2, cy2, x1, y1;
+                apply(static_cast<float>(ToNumber(values[0])), static_cast<float>(ToNumber(values[1])), cx1, cy1);
+                apply(static_cast<float>(ToNumber(values[2])), static_cast<float>(ToNumber(values[3])), cx2, cy2);
+                apply(static_cast<float>(ToNumber(values[4])), static_cast<float>(ToNumber(values[5])), x1, y1);
+                std::vector<float> &sub = raw_context->canvas_subpaths.back();
+                for (int i = 1; i <= 16; ++i) { float t = static_cast<float>(i) / 16.0f, u = 1.0f - t; sub.push_back(u * u * u * x0 + 3.0f * u * u * t * cx1 + 3.0f * u * t * t * cx2 + t * t * t * x1); sub.push_back(u * u * u * y0 + 3.0f * u * u * t * cy1 + 3.0f * u * t * t * cy2 + t * t * t * y1); }
+                return Value::Undef();
+            });
+            context->props["closePath"] = MakeNativeFn([raw_context](std::vector<Value> &, bool &, std::string &) {
+                if (raw_context->canvas_subpaths.empty()) return Value::Undef();
+                std::vector<float> &sub = raw_context->canvas_subpaths.back();
+                if (sub.size() >= 4) { sub.push_back(sub[0]); sub.push_back(sub[1]); }
+                return Value::Undef();
+            });
+            context->props["arc"] = MakeNativeFn([push_point](std::vector<Value> &values, bool &, std::string &) {
+                if (values.size() < 5) return Value::Undef();
+                float x = static_cast<float>(ToNumber(values[0])), y = static_cast<float>(ToNumber(values[1])), radius = std::max(0.0f, static_cast<float>(ToNumber(values[2])));
+                float start = static_cast<float>(ToNumber(values[3])), end = static_cast<float>(ToNumber(values[4])); bool anticlockwise = values.size() > 5 && values[5].Truthy(); const float tau = 6.283185307179586f;
+                if (!anticlockwise) while (end < start) end += tau; else while (end > start) end -= tau;
+                int segments = std::max(1, static_cast<int>(std::ceil(std::fabs(end - start) / (tau / 24.0f))));
+                for (int i = 0; i <= segments; ++i) { float angle = start + (end - start) * static_cast<float>(i) / static_cast<float>(segments); push_point(x + radius * std::cos(angle), y + radius * std::sin(angle)); }
+                return Value::Undef();
+            });
+            context->props["ellipse"] = MakeNativeFn([push_point](std::vector<Value> &values, bool &, std::string &) {
+                if (values.size() < 7) return Value::Undef();
+                float x = static_cast<float>(ToNumber(values[0])), y = static_cast<float>(ToNumber(values[1])), rx = std::max(0.0f, static_cast<float>(ToNumber(values[2]))), ry = std::max(0.0f, static_cast<float>(ToNumber(values[3]))), rotation = static_cast<float>(ToNumber(values[4]));
+                float start = static_cast<float>(ToNumber(values[5])), end = static_cast<float>(ToNumber(values[6])); bool anticlockwise = values.size() > 7 && values[7].Truthy(); const float tau = 6.283185307179586f;
+                if (!anticlockwise) while (end < start) end += tau; else while (end > start) end -= tau;
+                int segments = std::max(1, static_cast<int>(std::ceil(std::fabs(end - start) / (tau / 24.0f)))); float cosine = std::cos(rotation), sine = std::sin(rotation);
+                for (int i = 0; i <= segments; ++i) { float angle = start + (end - start) * static_cast<float>(i) / static_cast<float>(segments), ex = rx * std::cos(angle), ey = ry * std::sin(angle); push_point(x + ex * cosine - ey * sine, y + ex * sine + ey * cosine); }
+                return Value::Undef();
+            });
+            context->props["stroke"] = MakeNativeFn([node, raw_context, paint, length_scale](std::vector<Value> &, bool &, std::string &) {
+                for (const std::vector<float> &sub : raw_context->canvas_subpaths) {
+                    if (sub.size() < 4) continue;
+                    CanvasCommand command; command.kind = CanvasCommand::Kind::StrokePath; command.points = sub;
+                    paint(command, true); command.line_width = raw_context->canvas_line_width * length_scale();
+                    node->canvas_commands.push_back(std::move(command));
+                }
+                return Value::Undef();
+            });
+            context->props["fill"] = MakeNativeFn([node, raw_context, paint](std::vector<Value> &, bool &, std::string &) {
+                for (const std::vector<float> &sub : raw_context->canvas_subpaths) {
+                    if (sub.size() < 6) continue;
+                    CanvasCommand command; command.kind = CanvasCommand::Kind::FillPath; command.points = sub;
+                    command.triangles = TriangulateSvgPolygon(sub);
+                    paint(command, false);
+                    node->canvas_commands.push_back(std::move(command));
+                }
+                return Value::Undef();
+            });
+            context->props["isPointInPath"] = MakeNativeFn([raw_context](std::vector<Value> &values, bool &, std::string &) {
+                if (values.size() < 2) return Value::Bool(false);
+                float x = static_cast<float>(ToNumber(values[0])), y = static_cast<float>(ToNumber(values[1]));
+                for (const std::vector<float> &sub : raw_context->canvas_subpaths) {
+                    if (sub.size() < 6) continue;
+                    bool inside = false;
+                    const size_t count = sub.size() / 2;
+                    for (size_t i = 0, j = count - 1; i < count; j = i++) {
+                        float xi = sub[i * 2], yi = sub[i * 2 + 1], xj = sub[j * 2], yj = sub[j * 2 + 1];
+                        if ((yi > y) != (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) inside = !inside;
+                    }
+                    if (inside) return Value::Bool(true);
+                }
+                return Value::Bool(false);
+            });
+            context->props["fillText"] = MakeNativeFn([node, raw_context, apply, length_scale, paint](std::vector<Value> &values, bool &, std::string &) {
+                if (values.size() < 3) return Value::Undef();
+                CanvasCommand command; command.kind = CanvasCommand::Kind::FillText;
+                command.text = ToDisplayString(values[0]);
+                apply(static_cast<float>(ToNumber(values[1])), static_cast<float>(ToNumber(values[2])), command.x, command.y);
+                command.font_size = raw_context->canvas_font_size * length_scale();
+                paint(command, false);
+                node->canvas_commands.push_back(std::move(command)); return Value::Undef();
+            });
+            context->props["measureText"] = MakeNativeFn([raw_context](std::vector<Value> &values, bool &, std::string &) {
+                auto metrics = std::make_shared<ObjectData>(); std::string text = values.empty() ? "" : ToDisplayString(values[0]);
+                size_t glyphs = 0; for (char character : text) { unsigned char byte = static_cast<unsigned char>(character); if ((byte & 0xc0U) != 0x80U) ++glyphs; }
+                metrics->props["width"] = Value::Num(static_cast<double>(glyphs) * static_cast<double>(raw_context->canvas_font_size) * 0.6);
+                return Value::Obj(metrics);
+            });
+            context->props["createImageData"] = MakeNativeFn([](std::vector<Value> &values, bool &, std::string &) {
+                if (values.size() < 2) return Value::Undef();
+                int width = std::max(0, static_cast<int>(ToNumber(values[0]))), height = std::max(0, static_cast<int>(ToNumber(values[1])));
+                auto image = std::make_shared<ObjectData>(); image->props["width"] = Value::Num(width); image->props["height"] = Value::Num(height);
+                auto data = std::make_shared<ObjectData>(); data->is_array = true;
+                const size_t length = static_cast<size_t>(width) * static_cast<size_t>(height) * 4U;
+                data->props["length"] = Value::Num(static_cast<double>(length));
+                for (size_t i = 0; i < length; ++i) data->props[std::to_string(i)] = Value::Num(0);
+                image->props["data"] = Value::Obj(data); return Value::Obj(image);
+            });
+            context->props["putImageData"] = MakeNativeFn([node](std::vector<Value> &values, bool &, std::string &) {
+                if (values.size() < 3 || values[0].type != VType::Object || !values[0].obj) return Value::Undef();
+                Value width = GetProp(values[0].obj, "width"), height = GetProp(values[0].obj, "height"), data = GetProp(values[0].obj, "data");
+                if (width.type != VType::Number || height.type != VType::Number || data.type != VType::Object || !data.obj || !data.obj->is_array) return Value::Undef();
+                int w = std::max(0, static_cast<int>(width.num)), h = std::max(0, static_cast<int>(height.num));
+                CanvasCommand command; command.kind = CanvasCommand::Kind::ImageData; command.x = static_cast<float>(ToNumber(values[1])); command.y = static_cast<float>(ToNumber(values[2])); command.w = static_cast<float>(w); command.h = static_cast<float>(h);
+                const size_t length = static_cast<size_t>(w) * static_cast<size_t>(h) * 4U; command.pixels.reserve(length);
+                for (size_t i = 0; i < length; ++i) command.pixels.push_back(static_cast<unsigned char>(std::max(0.0, std::min(255.0, ToNumber(GetProp(data.obj, std::to_string(i)))))));
+                node->canvas_commands.push_back(std::move(command)); return Value::Undef();
+            });
+            return Value::Obj(context);
+        });
+    }
+    if (node->tag == "audio" || node->tag == "video") {
+        wrapper->props["play"] = MakeNativeFn([node](std::vector<Value> &, bool &, std::string &) {
+            // Playing again after the end restarts from the beginning, like a real element.
+            if (node->media_ended) { node->media_ended = false; node->media_current_time = 0.0; }
+            node->media_paused = false; return Value::Undef();
+        });
+        wrapper->props["pause"] = MakeNativeFn([node](std::vector<Value> &, bool &, std::string &) { node->media_paused = true; return Value::Undef(); });
+        wrapper->props["load"] = MakeNativeFn([node](std::vector<Value> &, bool &, std::string &) { node->media_paused = true; node->media_ended = false; node->media_current_time = 0.0; return Value::Undef(); });
+        // Only what the in-tree pipeline decodes is reported as playable, so
+        // feature-detecting pages pick a supported source honestly.
+        wrapper->props["canPlayType"] = MakeNativeFn([node](std::vector<Value> &args, bool &, std::string &) {
+            std::string type = args.empty() ? "" : ToDisplayString(args[0]);
+            for (char &c : type) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            type = type.substr(0, type.find(';'));
+            bool wav = type == "audio/wav" || type == "audio/wave" || type == "audio/x-wav" || type == "audio/vnd.wave";
+            return Value::Str(node->tag == "audio" && wav ? "probably" : "");
+        });
+    }
+    wrapper->props["appendChild"] = MakeNativeFn([&doc, node](const std::vector<Value> &args, bool &threw, std::string &error) {
+        if (args.empty() || args[0].type != VType::Object || !args[0].obj || !args[0].obj->dom_node) { threw = true; error = "appendChild requires a node"; return Value::Undef(); }
+        DomNode *child = args[0].obj->dom_node;
+        if (child == node) { threw = true; error = "cannot append node to itself"; return Value::Undef(); }
+        std::unique_ptr<DomNode> owned = TakeDomNode(doc, child);
+        if (!owned) { threw = true; error = "node is not attachable"; return Value::Undef(); }
+        owned->parent = node; node->children.push_back(std::move(owned));
+        return args[0];
+    });
+    wrapper->props["insertBefore"] = MakeNativeFn([&doc, node](const std::vector<Value> &args, bool &threw, std::string &error) {
+        if (args.empty() || args[0].type != VType::Object || !args[0].obj || !args[0].obj->dom_node) { threw = true; error = "insertBefore requires a node"; return Value::Undef(); }
+        if (args.size() < 2 || args[1].type == VType::Null) {
+            std::vector<Value> one{args[0]}; return GetProp(WrapDomNode(doc, node).obj, "appendChild").obj->native(one, threw, error);
+        }
+        if (args[1].type != VType::Object || !args[1].obj || !args[1].obj->dom_node) { threw = true; error = "insertBefore reference is not a node"; return Value::Undef(); }
+        DomNode *child = args[0].obj->dom_node, *before = args[1].obj->dom_node;
+        auto position = std::find_if(node->children.begin(), node->children.end(), [before](const auto &candidate) { return candidate.get() == before; });
+        if (position == node->children.end()) { threw = true; error = "reference is not a child"; return Value::Undef(); }
+        std::unique_ptr<DomNode> owned = TakeDomNode(doc, child);
+        if (!owned) { threw = true; error = "node is not attachable"; return Value::Undef(); }
+        owned->parent = node; node->children.insert(position, std::move(owned)); return args[0];
+    });
+    wrapper->props["removeChild"] = MakeNativeFn([&doc, node](const std::vector<Value> &args, bool &threw, std::string &error) {
+        if (args.empty() || args[0].type != VType::Object || !args[0].obj || !args[0].obj->dom_node || args[0].obj->dom_node->parent != node) { threw = true; error = "removeChild requires a child"; return Value::Undef(); }
+        if (std::unique_ptr<DomNode> owned = TakeDomNode(doc, args[0].obj->dom_node)) doc.detached_nodes.push_back(std::move(owned));
+        return args[0];
+    });
+    wrapper->props["replaceChild"] = MakeNativeFn([&doc, node](const std::vector<Value> &args, bool &threw, std::string &error) {
+        if (args.size() < 2 || args[0].type != VType::Object || args[1].type != VType::Object || !args[0].obj || !args[1].obj || !args[0].obj->dom_node || !args[1].obj->dom_node || args[1].obj->dom_node->parent != node) { threw = true; error = "replaceChild requires new and old child nodes"; return Value::Undef(); }
+        DomNode *old = args[1].obj->dom_node; auto position = std::find_if(node->children.begin(), node->children.end(), [old](const auto &candidate) { return candidate.get() == old; });
+        std::unique_ptr<DomNode> replacement = TakeDomNode(doc, args[0].obj->dom_node);
+        if (!replacement) { threw = true; error = "replacement is not attachable"; return Value::Undef(); }
+        std::unique_ptr<DomNode> displaced = std::move(*position); *position = std::move(replacement); (*position)->parent = node; displaced->parent = nullptr; doc.detached_nodes.push_back(std::move(displaced));
+        return args[1];
+    });
+    wrapper->props["cloneNode"] = MakeNativeFn([&doc, node](const std::vector<Value> &args, bool &, std::string &) {
+        bool deep = !args.empty() && args[0].Truthy(); std::unique_ptr<DomNode> clone = CloneDomNode(node, deep);
+        DomNode *raw = clone.get(); doc.detached_nodes.push_back(std::move(clone)); return WrapDomNode(doc, raw);
+    });
+    wrapper->props["remove"] = MakeNativeFn([&doc, node](const std::vector<Value> &, bool &, std::string &) {
+        if (std::unique_ptr<DomNode> owned = TakeDomNode(doc, node)) doc.detached_nodes.push_back(std::move(owned));
+        return Value::Undef();
+    });
+    wrapper->props["setAttribute"] = MakeNativeFn([node](const std::vector<Value> &args, bool &threw, std::string &error) {
+        if (args.size() < 2 || args[0].type != VType::String) { threw = true; error = "setAttribute requires name and value"; return Value::Undef(); }
+        node->attrs[args[0].str] = ToDisplayString(args[1]); return Value::Undef();
+    });
+    wrapper->props["getAttribute"] = MakeNativeFn([node](const std::vector<Value> &args, bool &, std::string &) {
+        if (args.empty() || args[0].type != VType::String) return Value::MakeNull();
+        auto it = node->attrs.find(args[0].str); return it == node->attrs.end() ? Value::MakeNull() : Value::Str(it->second);
+    });
+    wrapper->props["removeAttribute"] = MakeNativeFn([node](const std::vector<Value> &args, bool &, std::string &) {
+        if (!args.empty() && args[0].type == VType::String) node->attrs.erase(args[0].str);
+        return Value::Undef();
+    });
+    wrapper->props["hasAttribute"] = MakeNativeFn([node](const std::vector<Value> &args, bool &, std::string &) {
+        return Value::Bool(!args.empty() && args[0].type == VType::String && node->attrs.count(args[0].str) != 0);
+    });
+    auto class_list = std::make_shared<ObjectData>();
+    class_list->props["contains"] = MakeNativeFn([node](const std::vector<Value> &args, bool &, std::string &) { return Value::Bool(!args.empty() && args[0].type == VType::String && DomHasClass(node, args[0].str)); });
+    class_list->props["add"] = MakeNativeFn([node](const std::vector<Value> &args, bool &, std::string &) {
+        std::string classes = node->Class(); for (const Value &arg : args) if (arg.type == VType::String && !DomHasClass(node, arg.str)) classes += (classes.empty() ? "" : " ") + arg.str; node->attrs["class"] = classes; return Value::Undef();
+    });
+    class_list->props["remove"] = MakeNativeFn([node](const std::vector<Value> &args, bool &, std::string &) {
+        std::unordered_set<std::string> remove; for (const Value &arg : args) if (arg.type == VType::String) remove.insert(arg.str);
+        std::istringstream words(node->Class()); std::string word, classes; while (words >> word) if (!remove.count(word)) classes += (classes.empty() ? "" : " ") + word; node->attrs["class"] = classes; return Value::Undef();
+    });
+    class_list->props["toggle"] = MakeNativeFn([node](const std::vector<Value> &args, bool &, std::string &) {
+        if (args.empty() || args[0].type != VType::String) return Value::Bool(false);
+        bool had = DomHasClass(node, args[0].str);
+        if (had) { std::istringstream words(node->Class()); std::string word, classes; while (words >> word) if (word != args[0].str) classes += (classes.empty() ? "" : " ") + word; node->attrs["class"] = classes; }
+        else node->attrs["class"] += (node->Class().empty() ? "" : " ") + args[0].str;
+        return Value::Bool(!had);
+    });
+    wrapper->props["classList"] = Value::Obj(class_list);
+    auto style = std::make_shared<ObjectData>();
+    style->style_node = node;
+    wrapper->props["style"] = Value::Obj(style);
+    return Value::Obj(wrapper);
+}
+
 /**
  * @brief Populates a global scope with this engine's entire DOM/console binding surface: console.log, document (with getElementById and the magic .title property), and a bare inert window object.
  * @param global The scope to define the globals in.
@@ -2096,6 +2841,128 @@ void SetupGlobals(EnvPtr &global, HtmlDoc &doc, const std::function<void(const s
     });
     global->Define("console", Value::Obj(console));
 
+    auto array_ctor = std::make_shared<ObjectData>();
+    array_ctor->props["isArray"] = MakeNativeFn([](const std::vector<Value> &args, bool &, std::string &) {
+        return Value::Bool(!args.empty() && args[0].type == VType::Object && args[0].obj && args[0].obj->is_array);
+    });
+    global->Define("Array", Value::Obj(array_ctor));
+
+    auto object_ctor = std::make_shared<ObjectData>();
+    auto make_array = [](const std::vector<Value> &values) {
+        auto array = std::make_shared<ObjectData>();
+        array->is_array = true;
+        for (size_t i = 0; i < values.size(); ++i) array->props[std::to_string(i)] = values[i];
+        array->props["length"] = Value::Num(static_cast<double>(values.size()));
+        return Value::Obj(array);
+    };
+    object_ctor->props["keys"] = MakeNativeFn([make_array](const std::vector<Value> &args, bool &, std::string &) {
+        std::vector<Value> values;
+        if (!args.empty() && args[0].type == VType::Object && args[0].obj)
+            for (const auto &[key, value] : args[0].obj->props) if (!(args[0].obj->is_array && key == "length")) values.push_back(Value::Str(key));
+        return make_array(values);
+    });
+    object_ctor->props["values"] = MakeNativeFn([make_array](const std::vector<Value> &args, bool &, std::string &) {
+        std::vector<Value> values;
+        if (!args.empty() && args[0].type == VType::Object && args[0].obj)
+            for (const auto &[key, value] : args[0].obj->props) if (!(args[0].obj->is_array && key == "length")) values.push_back(value);
+        return make_array(values);
+    });
+    object_ctor->props["entries"] = MakeNativeFn([make_array](const std::vector<Value> &args, bool &, std::string &) {
+        std::vector<Value> entries;
+        if (!args.empty() && args[0].type == VType::Object && args[0].obj)
+            for (const auto &[key, value] : args[0].obj->props) if (!(args[0].obj->is_array && key == "length")) entries.push_back(make_array({Value::Str(key), value}));
+        return make_array(entries);
+    });
+    object_ctor->props["assign"] = MakeNativeFn([](const std::vector<Value> &args, bool &, std::string &) {
+        if (args.empty() || args[0].type != VType::Object || !args[0].obj) return Value::Undef();
+        for (size_t i = 1; i < args.size(); ++i) if (args[i].type == VType::Object && args[i].obj)
+            for (const auto &[key, value] : args[i].obj->props) if (!(args[i].obj->is_array && key == "length")) args[0].obj->props[key] = value;
+        return args[0];
+    });
+    global->Define("Object", Value::Obj(object_ctor));
+
+    auto math = std::make_shared<ObjectData>();
+    math->props["abs"] = MakeNativeFn([](const std::vector<Value> &args, bool &, std::string &) { return Value::Num(args.empty() ? std::numeric_limits<double>::quiet_NaN() : std::fabs(ToNumber(args[0]))); });
+    math->props["floor"] = MakeNativeFn([](const std::vector<Value> &args, bool &, std::string &) { return Value::Num(args.empty() ? std::numeric_limits<double>::quiet_NaN() : std::floor(ToNumber(args[0]))); });
+    math->props["ceil"] = MakeNativeFn([](const std::vector<Value> &args, bool &, std::string &) { return Value::Num(args.empty() ? std::numeric_limits<double>::quiet_NaN() : std::ceil(ToNumber(args[0]))); });
+    math->props["round"] = MakeNativeFn([](const std::vector<Value> &args, bool &, std::string &) { return Value::Num(args.empty() ? std::numeric_limits<double>::quiet_NaN() : std::floor(ToNumber(args[0]) + 0.5)); });
+    math->props["min"] = MakeNativeFn([](const std::vector<Value> &args, bool &, std::string &) { double result = std::numeric_limits<double>::infinity(); for (const Value &arg : args) result = std::min(result, ToNumber(arg)); return Value::Num(result); });
+    math->props["max"] = MakeNativeFn([](const std::vector<Value> &args, bool &, std::string &) { double result = -std::numeric_limits<double>::infinity(); for (const Value &arg : args) result = std::max(result, ToNumber(arg)); return Value::Num(result); });
+    // The rest of the numeric Math surface canvas/animation code leans on.
+    auto unary = [&math](const char *name, double (*fn)(double)) {
+        math->props[name] = MakeNativeFn([fn](const std::vector<Value> &args, bool &, std::string &) { return Value::Num(args.empty() ? std::numeric_limits<double>::quiet_NaN() : fn(ToNumber(args[0]))); });
+    };
+    unary("sqrt", [](double v) { return std::sqrt(v); }); unary("cbrt", [](double v) { return std::cbrt(v); });
+    unary("sin", [](double v) { return std::sin(v); }); unary("cos", [](double v) { return std::cos(v); }); unary("tan", [](double v) { return std::tan(v); });
+    unary("asin", [](double v) { return std::asin(v); }); unary("acos", [](double v) { return std::acos(v); }); unary("atan", [](double v) { return std::atan(v); });
+    unary("exp", [](double v) { return std::exp(v); }); unary("log", [](double v) { return std::log(v); }); unary("log2", [](double v) { return std::log2(v); }); unary("log10", [](double v) { return std::log10(v); });
+    unary("trunc", [](double v) { return std::trunc(v); }); unary("sign", [](double v) { return std::isnan(v) ? v : (v > 0 ? 1.0 : (v < 0 ? -1.0 : v)); });
+    math->props["atan2"] = MakeNativeFn([](const std::vector<Value> &args, bool &, std::string &) { return Value::Num(args.size() < 2 ? std::numeric_limits<double>::quiet_NaN() : std::atan2(ToNumber(args[0]), ToNumber(args[1]))); });
+    math->props["pow"] = MakeNativeFn([](const std::vector<Value> &args, bool &, std::string &) { return Value::Num(args.size() < 2 ? std::numeric_limits<double>::quiet_NaN() : std::pow(ToNumber(args[0]), ToNumber(args[1]))); });
+    math->props["hypot"] = MakeNativeFn([](const std::vector<Value> &args, bool &, std::string &) { double sum = 0; for (const Value &arg : args) { double v = ToNumber(arg); sum += v * v; } return Value::Num(std::sqrt(sum)); });
+    math->props["random"] = MakeNativeFn([](const std::vector<Value> &, bool &, std::string &) { return Value::Num(static_cast<double>(std::rand()) / (static_cast<double>(RAND_MAX) + 1.0)); });
+    math->props["PI"] = Value::Num(3.141592653589793); math->props["E"] = Value::Num(2.718281828459045);
+    math->props["SQRT2"] = Value::Num(1.4142135623730951); math->props["LN2"] = Value::Num(0.6931471805599453); math->props["LN10"] = Value::Num(2.302585092994046);
+    global->Define("Math", Value::Obj(math));
+
+    auto number_ctor = std::make_shared<ObjectData>();
+    number_ctor->props["isNaN"] = MakeNativeFn([](const std::vector<Value> &args, bool &, std::string &) {
+        return Value::Bool(!args.empty() && args[0].type == VType::Number && std::isnan(args[0].num));
+    });
+    number_ctor->props["isFinite"] = MakeNativeFn([](const std::vector<Value> &args, bool &, std::string &) {
+        return Value::Bool(!args.empty() && args[0].type == VType::Number && std::isfinite(args[0].num));
+    });
+    number_ctor->props["parseInt"] = MakeNativeFn([](const std::vector<Value> &args, bool &, std::string &) {
+        if (args.empty()) return Value::Num(std::numeric_limits<double>::quiet_NaN());
+        std::string text = ToDisplayString(args[0]);
+        int radix = args.size() > 1 ? static_cast<int>(ToNumber(args[1])) : 10;
+        char *end = nullptr;
+        long value = std::strtol(text.c_str(), &end, radix);
+        return end == text.c_str() ? Value::Num(std::numeric_limits<double>::quiet_NaN()) : Value::Num(static_cast<double>(value));
+    });
+    number_ctor->props["parseFloat"] = MakeNativeFn([](const std::vector<Value> &args, bool &, std::string &) {
+        if (args.empty()) return Value::Num(std::numeric_limits<double>::quiet_NaN());
+        std::string text = ToDisplayString(args[0]);
+        char *end = nullptr;
+        double value = std::strtod(text.c_str(), &end);
+        return end == text.c_str() ? Value::Num(std::numeric_limits<double>::quiet_NaN()) : Value::Num(value);
+    });
+    global->Define("Number", Value::Obj(number_ctor));
+    global->Define("parseInt", number_ctor->props["parseInt"]);
+    global->Define("parseFloat", number_ctor->props["parseFloat"]);
+
+    // The registry is deliberately independent of individual elements.  The
+    // current interpreter has no `new`/class semantics yet, but registering
+    // and looking up a custom-element definition is still useful to library
+    // bootstrap code and provides the stable base for upgrade callbacks.
+    auto custom_elements = std::make_shared<ObjectData>();
+    auto definitions = std::make_shared<std::unordered_map<std::string, Value>>();
+    custom_elements->props["define"] = MakeNativeFn([definitions](std::vector<Value> &args, bool &threw, std::string &error) {
+        if (args.size() < 2 || args[0].type != VType::String || args[0].str.find('-') == std::string::npos) { threw = true; error = "customElements.define requires a hyphenated name and constructor"; return Value::Undef(); }
+        if (definitions->count(args[0].str)) { threw = true; error = "custom element already defined"; return Value::Undef(); }
+        (*definitions)[args[0].str] = args[1]; return Value::Undef();
+    });
+    custom_elements->props["get"] = MakeNativeFn([definitions](std::vector<Value> &args, bool &, std::string &) {
+        if (args.empty() || args[0].type != VType::String) return Value::Undef();
+        auto it = definitions->find(args[0].str); return it == definitions->end() ? Value::Undef() : it->second;
+    });
+    global->Define("customElements", Value::Obj(custom_elements));
+
+    auto web_assembly = std::make_shared<ObjectData>();
+    web_assembly->props["validate"] = MakeNativeFn([](std::vector<Value> &args, bool &, std::string &) {
+        if (args.empty() || args[0].type != VType::Object || !args[0].obj || !args[0].obj->is_array) return Value::Bool(false);
+        std::vector<unsigned char> bytes;
+        size_t length = static_cast<size_t>(std::max<long>(0, ArrayLength(args[0].obj)));
+        bytes.reserve(length);
+        for (size_t i = 0; i < length; ++i) {
+            Value byte = GetProp(args[0].obj, std::to_string(i));
+            if (byte.type != VType::Number || byte.num < 0 || byte.num > 255 || byte.num != std::floor(byte.num)) return Value::Bool(false);
+            bytes.push_back(static_cast<unsigned char>(byte.num));
+        }
+        return Value::Bool(ValidateWasmModuleStructure(bytes));
+    });
+    global->Define("WebAssembly", Value::Obj(web_assembly));
+
     auto document = std::make_shared<ObjectData>();
     document->is_document = true;
     document->owner_doc = &doc;
@@ -2104,9 +2971,43 @@ void SetupGlobals(EnvPtr &global, HtmlDoc &doc, const std::function<void(const s
         if (args.empty() || args[0].type != VType::String) return Value::MakeNull();
         DomNode *found = doc.root ? FindById(doc.root.get(), args[0].str) : nullptr;
         if (!found) return Value::MakeNull();
-        auto wrapper = std::make_shared<ObjectData>();
-        wrapper->dom_node = found;
-        return Value::Obj(wrapper);
+        return WrapDomNode(doc, found);
+    });
+    document->props["querySelector"] = MakeNativeFn([&doc](const std::vector<Value> &args, bool &, std::string &) {
+        if (args.empty() || args[0].type != VType::String) return Value::MakeNull();
+        DomNode *found = doc.root ? QuerySelector(doc.root.get(), args[0].str) : nullptr;
+        if (!found) return Value::MakeNull();
+        return WrapDomNode(doc, found);
+    });
+    document->props["querySelectorAll"] = MakeNativeFn([&doc](const std::vector<Value> &args, bool &, std::string &) {
+        auto array = std::make_shared<ObjectData>();
+        array->is_array = true;
+        if (args.empty() || args[0].type != VType::String || !doc.root) {
+            array->props["length"] = Value::Num(0);
+            return Value::Obj(array);
+        }
+        std::vector<DomNode *> matches = QuerySelectorAll(doc.root.get(), args[0].str);
+        for (size_t i = 0; i < matches.size(); ++i) {
+            array->props[std::to_string(i)] = WrapDomNode(doc, matches[i]);
+        }
+        array->props["length"] = Value::Num(static_cast<double>(matches.size()));
+        return Value::Obj(array);
+    });
+    document->props["createElement"] = MakeNativeFn([&doc](const std::vector<Value> &args, bool &threw, std::string &error) {
+        if (args.empty() || args[0].type != VType::String || args[0].str.empty()) { threw = true; error = "createElement requires a tag name"; return Value::Undef(); }
+        auto node = std::make_unique<DomNode>(); node->type = DomNodeType::Element; node->tag = args[0].str;
+        DomNode *raw = node.get(); doc.detached_nodes.push_back(std::move(node)); return WrapDomNode(doc, raw);
+    });
+    document->props["createElementNS"] = MakeNativeFn([&doc](const std::vector<Value> &args, bool &threw, std::string &error) {
+        if (args.size() < 2 || args[1].type != VType::String || args[1].str.empty()) { threw = true; error = "createElementNS requires namespace and tag name"; return Value::Undef(); }
+        auto node = std::make_unique<DomNode>(); node->type = DomNodeType::Element; node->tag = args[1].str;
+        std::transform(node->tag.begin(), node->tag.end(), node->tag.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (args[0].type == VType::String) node->attrs["xmlns"] = args[0].str;
+        DomNode *raw = node.get(); doc.detached_nodes.push_back(std::move(node)); return WrapDomNode(doc, raw);
+    });
+    document->props["createTextNode"] = MakeNativeFn([&doc](const std::vector<Value> &args, bool &, std::string &) {
+        auto node = std::make_unique<DomNode>(); node->type = DomNodeType::Text; node->text = args.empty() ? "" : ToDisplayString(args[0]);
+        DomNode *raw = node.get(); doc.detached_nodes.push_back(std::move(node)); return WrapDomNode(doc, raw);
     });
     global->Define("document", Value::Obj(document));
 
@@ -2116,13 +3017,36 @@ void SetupGlobals(EnvPtr &global, HtmlDoc &doc, const std::function<void(const s
     // of throwing ReferenceError, without pretending this engine has any
     // of the real BOM (setTimeout/location/etc. -- see js_engine.h's own
     // header on what's deliberately not implemented yet).
-    global->Define("window", Value::Obj(std::make_shared<ObjectData>()));
+    auto window = std::make_shared<ObjectData>();
+    window->props["getComputedStyle"] = MakeNativeFn([](const std::vector<Value> &args, bool &, std::string &) {
+        auto result = std::make_shared<ObjectData>();
+        if (args.empty() || args[0].type != VType::Object || !args[0].obj || !args[0].obj->dom_node) return Value::Obj(result);
+        const ComputedStyle &style = args[0].obj->dom_node->style;
+        auto color_string = [](unsigned char r, unsigned char g, unsigned char b) {
+            char value[8]; std::snprintf(value, sizeof(value), "#%02x%02x%02x", r, g, b); return std::string(value);
+        };
+        if (style.has_color) result->props["color"] = Value::Str(color_string(style.color_r, style.color_g, style.color_b));
+        if (style.has_bg) result->props["backgroundColor"] = Value::Str(color_string(style.bg_r, style.bg_g, style.bg_b));
+        result->props["display"] = Value::Str(style.display_none ? "none" : (style.block ? "block" : "inline"));
+        result->props["fontWeight"] = Value::Str(style.bold ? "bold" : "normal");
+        result->props["fontStyle"] = Value::Str(style.italic ? "italic" : "normal");
+        return Value::Obj(result);
+    });
+    global->Define("window", Value::Obj(window));
 }
 
 }  // namespace
 
 void RunScripts(HtmlDoc &doc, const std::function<void(const std::string &)> &on_console_log,
                  const std::function<void(const std::string &)> &on_error) {
+    // All script tags in one document share the same global scope. Keep each
+    // parsed program alive until the whole sequence is done too: a function
+    // declared by an early script may be called by a later script and its AST
+    // must not dangle between iterations.
+    Interpreter interp;
+    interp.global = std::make_shared<Environment>();
+    SetupGlobals(interp.global, doc, on_console_log);
+    std::vector<NodePtr> programs;
     for (const std::string &script : doc.scripts) {
         Parser parser(script);
         NodePtr program = parser.ParseProgram();
@@ -2130,21 +3054,15 @@ void RunScripts(HtmlDoc &doc, const std::function<void(const std::string &)> &on
             on_error("script parse error: " + parser.error);
             continue;
         }
-        Interpreter interp;
-        interp.global = std::make_shared<Environment>();
-        SetupGlobals(interp.global, doc, on_console_log);
+        programs.push_back(std::move(program));
         EnvPtr scope = interp.global;
-        Completion result = ExecBlockBody(interp, program->body, scope);
+        Completion result = ExecBlockBody(interp, programs.back()->body, scope);
         if (result.type == CompletionType::Throw) {
             on_error("script error: " + ToDisplayString(result.value));
         }
-        // Program keeps every Node (including function bodies closures may
-        // still reference) alive via `program`'s own ownership for exactly
-        // this call's duration -- any ObjectData::fn_node pointing into it
-        // that somehow escaped RunScripts (it can't: nothing above stores a
-        // closure anywhere outside this function's own locals) would
-        // dangle after this loop iteration ends. Not a concern in practice
-        // since document.* never hands a script's own functions back to
-        // the caller.
     }
+    // Attribute/class/tree mutations can affect inherited and selector based
+    // styles. Layout reads ComputedStyle directly, so refresh it once after
+    // the document's synchronous script sequence completes.
+    ComputeStyles(doc);
 }

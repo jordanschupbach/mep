@@ -430,6 +430,14 @@ struct SidebarInstance {
     // rename/delete/refresh/toggle-hidden) without the generic sidebar
     // widget needing to know anything tree-specific. 0 = none registered.
     int on_key_ref = 0;
+    // Popout preview source (mod1+m, Editor::ToggleSidebarPopout): called
+    // with the widget id under the cursor ("" for a section header) each
+    // time that changes while this sidebar is popped out, and expected to
+    // answer -- synchronously or later, from a job callback -- through
+    // mep.sidebar_set_preview. 0 = none registered, in which case the
+    // popout is just a larger copy of the docked list with no preview
+    // column.
+    int on_preview_ref = 0;
     // Share of its dock's height this sidebar gets when several open
     // sidebars dock on the same left/right edge -- DrawSidebars merges
     // those into ONE column (width = the largest `size` among them, kept
@@ -4976,6 +4984,27 @@ public:
      * @param upper_fraction The upper sidebar's share of the pair's combined height, clamped to [0.1, 0.9].
      */
     void SetSidebarStackShares(int upper_id, int lower_id, float upper_fraction);
+    // Reorders a left/right dock's vertical stack: swaps `id` with the
+    // open sidebar stacked directly above ("up") or below ("down") it on
+    // the same edge. Stacking order IS registration order in sidebars_
+    // (OpenSidebarIdsOn/DrawSidebars both walk it top-to-bottom), so this
+    // swaps the two SidebarInstance entries in place -- every consumer
+    // that derives layout from that order (the renderer, mod1+j/k stack
+    // navigation, mod1+Shift+j/k divider resizing) follows automatically
+    // with no separate order field to keep in sync. Each sidebar keeps
+    // its own stack_share, so a taller sidebar stays taller after the
+    // swap. Focus is untouched: a focused sidebar stays focused (with the
+    // same cursor row) at its new slot, which is what mod1+Ctrl+j/k rely
+    // on (PaneMoveBufferTabToNeighbor's Mode::Sidebar branch). A no-op for
+    // an unknown/closed id, a top/bottom-docked sidebar, at either end of
+    // the stack, or for a non-vertical direction.
+    /**
+     * @brief Swaps a sidebar with its neighbor above or below in the same left/right dock stack; a no-op if there is none.
+     * @param id The sidebar to move.
+     * @param direction "up" or "down".
+     * @return True if the stack order changed.
+     */
+    bool SwapSidebarInStack(int id, const std::string &direction);
     /**
      * @brief Returns every currently registered sidebar instance.
      * @return The sidebar instances.
@@ -5012,6 +5041,101 @@ public:
      * @param lua_ref The Lua registry reference to invoke on a keypress.
      */
     void SetSidebarOnKey(int id, int lua_ref);
+    /**
+     * @brief Registers a Lua callback that supplies the popout preview for a sidebar (see SidebarInstance::on_preview_ref).
+     * @param id The id of the sidebar to register the callback on.
+     * @param lua_ref The Lua registry reference to invoke with the cursor widget's id whenever it changes while popped out.
+     */
+    void SetSidebarOnPreview(int id, int lua_ref);
+
+    // --- Sidebar popout (mod1+m) ---
+    // A focused sidebar can be "popped out" into a large centered float
+    // (main.cpp's DrawSidebarPopout, sized like the picker overlay): the
+    // same flattened rows on the left, driven by the very same
+    // HandleSidebarInput/FocusSidebarRow/ActivateSidebarLine paths as the
+    // docked panel (so every consumer's on_key bindings keep working
+    // untouched), plus a preview column on the right fed by the sidebar's
+    // on_preview_ref. The docked panel stays where it is underneath (the
+    // pane layout doesn't reflow for what's meant to be a temporary
+    // zoom); Escape/q/mod1+m/a click outside the box collapse the popout
+    // back to it, and anything that takes focus away from the sidebar
+    // (mod1+hjkl into the panes, opening a file, CloseSidebar) implicitly
+    // ends it -- SidebarPopoutActive() is false the moment the popped-out
+    // sidebar is no longer the focused one.
+    /**
+     * @brief Pops the focused sidebar out into the large centered float, or collapses it back if it already is.
+     * @param id The sidebar to toggle, or 0 for whichever sidebar currently has focus; a no-op unless that sidebar is focused.
+     */
+    void ToggleSidebarPopout(int id = 0);
+    /**
+     * @brief Pops a sidebar out into the large centered float; a no-op unless it is the focused sidebar.
+     * @param id The id of the sidebar to pop out.
+     */
+    void OpenSidebarPopout(int id);
+    /**
+     * @brief Collapses the popped-out sidebar (if any) back to its docked panel, keeping its focus and cursor.
+     */
+    void CloseSidebarPopout();
+    /**
+     * @brief Reports whether a sidebar popout is currently showing.
+     * @return True if a sidebar is popped out and still has input focus.
+     */
+    bool SidebarPopoutActive() const {
+        return sidebar_popout_id_ != 0 && mode_ == Mode::Sidebar && focused_sidebar_id_ == sidebar_popout_id_;
+    }
+    /**
+     * @brief Returns the id of the popped-out sidebar.
+     * @return The sidebar id, or 0 if none is popped out.
+     */
+    int SidebarPopoutId() const { return sidebar_popout_id_; }
+    // Fires the popped-out sidebar's on_preview_ref if the widget under
+    // its cursor changed since the last call (or its sections were
+    // replaced, or the popout just opened). Called once per frame by
+    // DrawSidebarPopout, the same call-shape as UpdateScrollForSidebar --
+    // a per-frame diff rather than hooks on every cursor-moving path
+    // (keys, wheel, clicks, SetSidebarSections re-populating the rows), so
+    // none of those can forget to refresh it.
+    /**
+     * @brief Re-requests the popout preview from the sidebar's on_preview callback if the cursor's widget changed.
+     */
+    void RefreshSidebarPopoutPreview();
+    /**
+     * @brief Sets the text shown in the popout's preview column (mep.sidebar_set_preview).
+     * @param text The preview text ("" hides the column's content); '\n'-separated lines.
+     * @param spans Optional per-span highlight groups, same shape as the picker preview's.
+     * @param title Optional caption drawn above the preview (a path, a diff command, ...).
+     * @param current_row Optional 0-indexed preview line to tint as "the row this widget refers to", or -1 for none.
+     */
+    void SetSidebarPopoutPreview(const std::string &text, std::vector<PickerHlSpan> spans = {},
+                                 const std::string &title = "", int current_row = -1) {
+        sidebar_popout_preview_text_ = text;
+        sidebar_popout_preview_spans_ = std::move(spans);
+        sidebar_popout_preview_title_ = title;
+        sidebar_popout_preview_current_row_ = current_row;
+        sidebar_popout_preview_scroll_ = 0;
+    }
+    const std::string &SidebarPopoutPreview() const { return sidebar_popout_preview_text_; }
+    const std::vector<PickerHlSpan> &SidebarPopoutPreviewSpans() const { return sidebar_popout_preview_spans_; }
+    const std::string &SidebarPopoutPreviewTitle() const { return sidebar_popout_preview_title_; }
+    int SidebarPopoutPreviewCurrentRow() const { return sidebar_popout_preview_current_row_; }
+    int SidebarPopoutPreviewScroll() const { return sidebar_popout_preview_scroll_; }
+    /**
+     * @brief Scrolls the popout preview column by `delta` raw lines (mod1+j/k while popped out), clamped in range.
+     * @param delta Lines to scroll; positive scrolls down.
+     */
+    void ScrollSidebarPopoutPreview(int delta);
+    // Lines of `path` for a preview: the live (possibly unsaved) buffer's
+    // lines if that file is open in one, else read from disk -- the same
+    // "an open buffer is the source of truth" rule ActivityTodoLoad uses.
+    // Bound as mep.read_lines.
+    /**
+     * @brief Reads a file's lines, preferring an open buffer's live contents over the on-disk copy.
+     * @param path The file path to read.
+     * @param max_lines Stop after this many lines (<= 0 for no cap); a trailing "..." marker is appended when truncated.
+     * @param out Receives the lines.
+     * @return False if the file is neither open nor readable.
+     */
+    bool ReadLinesForPath(const std::string &path, int max_lines, std::vector<std::string> *out) const;
     // The `id` string of the widget at the sidebar's current cursor line,
     // or "" if the cursor is on a section header (or the sidebar/cursor is
     // invalid) -- what a Phase 15-style on_key handler uses to know which
@@ -5409,7 +5533,14 @@ public:
     void PaneCloseBufferTabAndDelete();
     // Moves the current pane's active buffer tab to the nearest pane in
     // `direction` (reuses NavigatePaneDirection's neighbor search); a no-op
-    // if there's no pane that way.
+    // if there's no pane that way. When a sidebar is focused instead of a
+    // pane (Mode::Sidebar), the same mod1+Ctrl+j/k keys move that sidebar
+    // itself instead: swaps it with the one stacked above/below it in its
+    // left/right dock (SwapSidebarInStack), leaving it focused so the
+    // cursor travels with it -- the sidebar analogue of "move the thing
+    // I'm looking at that way", the way ResizeActivePane's Mode::Sidebar
+    // branch is the analogue for mod1+Shift+hjkl. Left/right (and anything
+    // on a top/bottom dock) is a no-op there.
     void PaneMoveBufferTabToNeighbor(const std::string &direction);
     std::vector<int> CurrentPaneBufferTabs() const { return CurPane().buffer_tabs; }
     int CurrentPaneBufferTabIndex() const { return CurPane().buffer_tab_index; }
@@ -6707,6 +6838,19 @@ private:
     int next_sidebar_id_ = 1;
     int focused_sidebar_id_ = 0;  // 0 = none
     int sidebar_cursor_ = 0;      // index into the focused sidebar's flattened line list
+    // Popout (see ToggleSidebarPopout): which sidebar is popped out (0 =
+    // none), and the single preview slot it shows -- one slot, not
+    // per-instance, since only one sidebar can be popped out at a time.
+    int sidebar_popout_id_ = 0;
+    // Identity of the row the preview was last requested for (kind +
+    // widget id, see RefreshSidebarPopoutPreview) and a force-refresh
+    // flag set when the popout opens or the sidebar's sections change.
+    std::string sidebar_popout_preview_key_;
+    bool sidebar_popout_preview_dirty_ = false;
+    std::string sidebar_popout_preview_title_, sidebar_popout_preview_text_;
+    std::vector<PickerHlSpan> sidebar_popout_preview_spans_;
+    int sidebar_popout_preview_current_row_ = -1;
+    int sidebar_popout_preview_scroll_ = 0;
 
     bool picker_open_ = false;
     std::string picker_title_;

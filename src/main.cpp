@@ -2044,6 +2044,10 @@ const char *kDefaultMod1Bindings =
     "mep.map_mod1('C-k', function() mep.pane_move_buffer('up') end)\n"
     "mep.map_mod1('C-l', function() mep.pane_move_buffer('right') end)\n"
     "mep.map_mod1('d', function() mep.pane_close_buffer() end)\n"
+    // mod1+m: pop the focused sidebar out into a large centered float with
+    // a preview column (Editor::ToggleSidebarPopout); a no-op unless a
+    // sidebar has focus, so it's safe as a global binding.
+    "mep.map_mod1('m', function() mep.sidebar_popout_toggle() end)\n"
     "mep.map_mod1('n', function() mep.pane_next_buffer() end)\n"
     "mep.map_mod1('p', function() mep.pane_prev_buffer() end)\n"
     "mep.map_mod1('Tab', function() mep.pane_next_buffer() end)\n"
@@ -2299,6 +2303,83 @@ const char *kBuiltinTextTools =
     "mep.leader_map('bo', 'Browse', mep.browse_command)\n"
     "mep.leader_map('bO', 'Browse (external window)', mep.browse_external_command)\n";
 
+// Sidebar popout preview helpers (mod1+m, Editor::ToggleSidebarPopout):
+// the shared "render these lines / this diff / this path into the popout's
+// preview column" routines the file tree, git status, todo and structure
+// sidebars' own mep.sidebar_set_on_preview callbacks all funnel through,
+// so each of them is a few lines of "work out what to show" rather than
+// a copy of the span-building below. Loaded before every sidebar chunk;
+// mep.ts_capture_hl (kBuiltinSyntax, loaded later) is only read at call
+// time, so the load order between the two doesn't matter.
+const char *kBuiltinSidebarPopout =
+    // Capture -> highlight-group resolution, the same exact-then-first-
+    // dot-segment fallback kBuiltinSyntax's own chunk-local resolver uses
+    // (duplicated for the usual reason: separate DoString chunks don't
+    // share locals, only the mep.ts_capture_hl table itself).
+    "local function mep_sidebar_preview_resolve_hl(capture)\n"
+    "  local map = mep.ts_capture_hl\n"
+    "  if not map then return nil end\n"
+    "  local hl = map[capture]\n"
+    "  if hl then return hl end\n"
+    "  local base = capture:match('^([^.]+)')\n"
+    "  return base and map[base]\n"
+    "end\n"
+    // mep.sidebar_preview_code(lines, ft, title, current_row): `lines`
+    // Treesitter-highlighted as filetype `ft` when a grammar for it is
+    // available (plain text otherwise -- mep.ts_captures returns nil, and
+    // a bad ft can't throw past the pcall), `current_row` (1-indexed into
+    // `lines`) tinted as the row the widget refers to.
+    "function mep.sidebar_preview_code(lines, ft, title, current_row)\n"
+    "  local text = table.concat(lines, '\\n')\n"
+    "  local spans = {}\n"
+    "  if ft and ft ~= '' and mep.ts_captures then\n"
+    "    local ok, caps = pcall(mep.ts_captures, ft, text)\n"
+    "    if ok and caps then\n"
+    "      for _, c in ipairs(caps) do\n"
+    "        local hl = mep_sidebar_preview_resolve_hl(c.capture)\n"
+    "        if hl then spans[#spans + 1] = {row = c.row, col_start = c.col_start, col_end = c.col_end, hl = hl} end\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  mep.sidebar_set_preview(text, spans, title or '', current_row)\n"
+    "end\n"
+    // mep.sidebar_preview_diff(text, title): a unified diff, tinted the
+    // way DrawPreviewOverlay tints mep.float_preview's hunk text (Add/Red
+    // for +/- lines) plus Comment for the file headers and Cyan for hunk
+    // headers.
+    "function mep.sidebar_preview_diff(text, title)\n"
+    "  local spans, row = {}, 0\n"
+    "  for line in (text .. '\\n'):gmatch('(.-)\\n') do\n"
+    "    row = row + 1\n"
+    "    local hl\n"
+    "    local head = line:sub(1, 4)\n"
+    "    if head == 'diff' or line:sub(1, 5) == 'index' or line:sub(1, 3) == '---' or line:sub(1, 3) == '+++' then hl = 'Comment'\n"
+    "    elseif line:sub(1, 2) == '@@' then hl = 'Cyan'\n"
+    "    elseif line:sub(1, 1) == '+' then hl = 'Add'\n"
+    "    elseif line:sub(1, 1) == '-' then hl = 'Red' end\n"
+    "    if hl and #line > 0 then spans[#spans + 1] = {row = row, col_start = 1, col_end = #line + 1, hl = hl} end\n"
+    "  end\n"
+    "  mep.sidebar_set_preview(text, spans, title or '')\n"
+    "end\n"
+    // mep.sidebar_preview_path(path, is_dir, title): a directory lists its
+    // entries (dirs first, mep.list_dir's own order, a trailing '/' on
+    // each dir); a file shows its leading lines (an open buffer's live
+    // text preferred -- mep.read_lines) highlighted by its filetype.
+    "function mep.sidebar_preview_path(path, is_dir, title)\n"
+    "  title = title or path\n"
+    "  if not path or path == '' then mep.sidebar_set_preview('') return end\n"
+    "  if is_dir then\n"
+    "    local lines = {}\n"
+    "    for _, e in ipairs(mep.list_dir(path)) do lines[#lines + 1] = e.is_dir and (e.name .. '/') or e.name end\n"
+    "    if #lines == 0 then lines[1] = '(empty directory)' end\n"
+    "    mep.sidebar_set_preview(table.concat(lines, '\\n'), {}, title)\n"
+    "    return\n"
+    "  end\n"
+    "  local lines = mep.read_lines(path, 400)\n"
+    "  if not lines then mep.sidebar_set_preview('(cannot open ' .. path .. ')', {}, title) return end\n"
+    "  mep.sidebar_preview_code(lines, mep_lsp_filetype(path), title)\n"
+    "end\n";
+
 // File tree sidebar (Phase 15): built entirely in Lua atop the Phase 7
 // sidebar widget (mep.sidebar_*), Phase 10 icons, and the new
 // mep.list_dir/fs_* primitives -- the generic sidebar stays feature-free,
@@ -2372,6 +2453,7 @@ const char *kBuiltinFileTree =
     "  if not mep_tree_sidebar_id then\n"
     "    mep_tree_sidebar_id = mep.sidebar_create('Files', 'left', mep.sidebar_default_cols(0.20))\n"
     "    mep.sidebar_set_on_key(mep_tree_sidebar_id, mep.tree_on_key)\n"
+    "    mep.sidebar_set_on_preview(mep_tree_sidebar_id, mep.tree_on_preview)\n"
     "  end\n"
     "  local widgets = {}\n"
     "  mep_tree_build_widgets(widgets)\n"
@@ -2389,6 +2471,11 @@ const char *kBuiltinFileTree =
     "function mep.tree_toggle()\n"
     "  if not mep_tree_sidebar_id then mep.tree_open('.') return end\n"
     "  mep.sidebar_toggle(mep_tree_sidebar_id)\n"
+    "end\n"
+    // Popout preview (mod1+m): the row's path is its widget id; a
+    // directory row lists its contents, a file row shows the file.
+    "function mep.tree_on_preview(path)\n"
+    "  mep.sidebar_preview_path(path, mep_tree_is_dir[path] or false)\n"
     "end\n"
     "function mep.tree_on_key(k)\n"
     "  local target = mep.sidebar_cursor_widget_id(mep_tree_sidebar_id)\n"
@@ -2442,7 +2529,7 @@ const char *kBuiltinFileTree =
     "  elseif k == 'C-v' and target then\n"
     "    mep.open(target)\n"
     "  elseif k == '?' then\n"
-    "    mep.notify('Files: Enter=open/toggle  a=create  r=rename  d=delete  R=refresh  H=hidden  o=open-with-OS  Ctrl-E/Ctrl-V=text/browser view')\n"
+    "    mep.notify('Files: Enter=open/toggle  a=create  r=rename  d=delete  R=refresh  H=hidden  o=open-with-OS  Ctrl-E/Ctrl-V=text/browser view  mod1+m=popout')\n"
     "  end\n"
     "end\n"
     "mep.command('MepFileTree', function() mep.tree_toggle() end)\n"
@@ -2667,18 +2754,26 @@ const char *kBuiltinGit =
     // Lua ref anywhere in the path, same as GitGutterRefresh's own
     // `git show`.
     "function mep.git_reset_hunk() mep.git_reset_hunk_native(mep.git_gutter_base) end\n"
+    // Per-path porcelain status codes of the list currently shown, for
+    // the popout preview's untracked-vs-tracked split below (a widget
+    // carries the code only inside its display text).
+    "local mep_git_status_codes = {}\n"
+    "local mep_git_status_preview_gen = 0\n"
     "function mep.git_status_refresh()\n"
     "  if not mep_git_status_sidebar_id then\n"
     "    mep_git_status_sidebar_id = mep.sidebar_create('Git Status', 'left', 40)\n"
     "    mep.sidebar_set_on_key(mep_git_status_sidebar_id, mep.git_status_on_key)\n"
+    "    mep.sidebar_set_on_preview(mep_git_status_sidebar_id, mep.git_status_on_preview)\n"
     "  end\n"
     "  local widgets = {}\n"
+    "  local codes = {}\n"
     "  mep_git_status_gen = mep_git_status_gen + 1\n"
     "  local gen = mep_git_status_gen\n"
     "  mep.job_start({'git', 'status', '--porcelain'}, {\n"
     "    cwd = mep.workspace_root(),\n"
     "    on_stdout = function(line)\n"
     "      local status, path = line:sub(1, 2), line:sub(4)\n"
+    "      codes[path] = status\n"
     "      widgets[#widgets + 1] = {\n"
     "        id = path, text = status .. '  ' .. path,\n"
     "        on_click = function() mep.open(path) end,\n"
@@ -2686,6 +2781,7 @@ const char *kBuiltinGit =
     "    end,\n"
     "    on_exit = function()\n"
     "      if gen ~= mep_git_status_gen then return end\n"
+    "      mep_git_status_codes = codes\n"
     // Phase 7: `branch @ workspace` in the header -- the list itself is
     // already the active workspace's tree via cwd above.
     "      local ws = mep.workspace_current()\n"
@@ -2698,11 +2794,40 @@ const char *kBuiltinGit =
     "    end,\n"
     "  })\n"
     "end\n"
+    // Popout preview (mod1+m): `git diff HEAD -- path` for a tracked
+    // entry (one diff covering both its staged and unstaged changes, so
+    // an 'MM' row reads as one change set), the file itself for an
+    // untracked/ignored one (nothing to diff against). Async like the
+    // status list; the generation counter drops a slow diff that lands
+    // after the cursor has already moved on to another row.
+    "function mep.git_status_on_preview(path)\n"
+    "  mep_git_status_preview_gen = mep_git_status_preview_gen + 1\n"
+    "  local gen = mep_git_status_preview_gen\n"
+    "  if path == '' then mep.sidebar_set_preview('') return end\n"
+    "  local status = mep_git_status_codes[path] or ''\n"
+    "  local abs = (path:sub(1, 1) == '/') and path or (mep.workspace_root() .. '/' .. path)\n"
+    "  if status == '?\?' or status == '!!' then\n"
+    "    mep.sidebar_preview_path(abs, path:sub(-1) == '/', path)\n"
+    "    return\n"
+    "  end\n"
+    "  local title = 'git diff HEAD -- ' .. path\n"
+    "  mep.sidebar_set_preview('(loading diff...)', {}, title)\n"
+    "  local out = {}\n"
+    "  mep.job_start({'git', 'diff', 'HEAD', '--', path}, {\n"
+    "    cwd = mep.workspace_root(),\n"
+    "    on_stdout = function(line) out[#out + 1] = line end,\n"
+    "    on_exit = function(code)\n"
+    "      if gen ~= mep_git_status_preview_gen then return end\n"
+    "      if #out == 0 then out[1] = (code == 0) and '(no changes against HEAD)' or '(git diff failed)' end\n"
+    "      mep.sidebar_preview_diff(table.concat(out, '\\n'), title)\n"
+    "    end,\n"
+    "  })\n"
+    "end\n"
     "function mep.git_status_on_key(k)\n"
     "  local target = mep.sidebar_cursor_widget_id(mep_git_status_sidebar_id)\n"
     "  if not target then\n"
     "    if k == '?' then\n"
-    "      mep.notify('Git: Enter=open  s=stage  u=unstage  d=discard  c=commit  R=refresh')\n"
+    "      mep.notify('Git: Enter=open  s=stage  u=unstage  d=discard  c=commit  R=refresh  mod1+m=popout')\n"
     "    elseif k == 'c' then\n"
     "      mep.ui_input('Commit message:', '', function(msg)\n"
     "        if msg and msg ~= '' then\n"
@@ -4563,8 +4688,13 @@ const char *kBuiltinStructure =
 
     // --- <leader>aA: full-height sidebar, tracks the active pane -----
     "local mep_structure_sidebar_id = nil\n"
+    // The items the sidebar's rows were last built from, so the popout
+    // preview can resolve a row's index id back to its [start_row,
+    // end_row] span without re-parsing the buffer per cursor move.
+    "local mep_structure_sidebar_items = nil\n"
     "local function mep_structure_sidebar_render()\n"
     "  local items, err = mep_structure_items()\n"
+    "  mep_structure_sidebar_items = items\n"
     "  local widgets = {}\n"
     "  if not items then\n"
     "    widgets[1] = {id = 'msg', text = err}\n"
@@ -4599,8 +4729,29 @@ const char *kBuiltinStructure =
     "  mep.sidebar_set_sections(mep_structure_sidebar_id,\n"
     "    {{id = 'structure', title = (fname ~= '' and fname) or '[No Name]', collapsed = false, widgets = widgets}})\n"
     "end\n"
+    // Popout preview (mod1+m): the definition's own source lines
+    // (start_row..end_row, capped so a 5000-line class can't stall the
+    // frame), highlighted by the buffer's filetype, with the line the
+    // row would jump to tinted. mep.get_line reads the active pane's
+    // buffer -- the one the sidebar tracks (see the on_frame poll below).
+    "local function mep_structure_sidebar_on_preview(id)\n"
+    "  local i = tonumber(id)\n"
+    "  local it = i and mep_structure_sidebar_items and mep_structure_sidebar_items[i]\n"
+    "  if not it then mep.sidebar_set_preview('') return end\n"
+    "  local first = it.start_row\n"
+    "  local last = math.min(it.end_row, first + 400, mep.line_count())\n"
+    "  local lines = {}\n"
+    "  for r = first, last do lines[#lines + 1] = mep.get_line(r) end\n"
+    "  if last < it.end_row then lines[#lines + 1] = '...' end\n"
+    "  local fname = mep.filename()\n"
+    "  local title = ((fname ~= '' and fname) or '[No Name]') .. ':' .. it.row\n"
+    "  mep.sidebar_preview_code(lines, mep_lsp_filetype(fname), title, it.row - first + 1)\n"
+    "end\n"
     "function mep.structure_sidebar_open()\n"
-    "  if not mep_structure_sidebar_id then mep_structure_sidebar_id = mep.sidebar_create('Structure', 'right', 34) end\n"
+    "  if not mep_structure_sidebar_id then\n"
+    "    mep_structure_sidebar_id = mep.sidebar_create('Structure', 'right', 34)\n"
+    "    mep.sidebar_set_on_preview(mep_structure_sidebar_id, mep_structure_sidebar_on_preview)\n"
+    "  end\n"
     "  mep_structure_sidebar_render()\n"
     "  mep.sidebar_open(mep_structure_sidebar_id)\n"
     "end\n"
@@ -9959,6 +10110,30 @@ const char *kBuiltinActivityBar =
     "  for _, it in ipairs(items) do parts[#parts + 1] = (it.done and '1' or '0') .. (it.level or 1) .. (it.line or '') .. it.text end\n"
     "  return table.concat(parts, '\\n')\n"
     "end\n"
+    // Popout preview (mod1+m): the headline's whole org subtree -- the
+    // headline itself (tinted) plus everything beneath it up to the next
+    // headline at the same or a shallower level -- read through
+    // mep.read_lines so an open, unsaved TODO.org previews its live text,
+    // the same source-of-truth rule ActivityTodoLoad follows. Items are
+    // re-loaded and matched by index exactly as on_click does.
+    "local function mep_activity_todo_on_preview(id)\n"
+    "  local i = tonumber(id)\n"
+    "  local it = i and mep_activity_todo_load()[i]\n"
+    "  if not (it and it.line) then mep.sidebar_set_preview('') return end\n"
+    "  local path = mep_activity_todo_path()\n"
+    "  local lines = mep.read_lines(path)\n"
+    "  if not lines or not lines[it.line] then mep.sidebar_set_preview('') return end\n"
+    "  local level = it.level or 1\n"
+    "  local last = it.line\n"
+    "  for r = it.line + 1, #lines do\n"
+    "    local stars = lines[r]:match('^(%*+)%s')\n"
+    "    if stars and #stars <= level then break end\n"
+    "    last = r\n"
+    "  end\n"
+    "  local sub = {}\n"
+    "  for r = it.line, last do sub[#sub + 1] = lines[r] end\n"
+    "  mep.sidebar_preview_code(sub, 'org', path .. ':' .. it.line, 1)\n"
+    "end\n"
     "function mep.activity_todo_panel()\n"
     "  local items = mep_activity_todo_load()\n"
     "  local widgets = {}\n"
@@ -9976,7 +10151,10 @@ const char *kBuiltinActivityBar =
     "  if #widgets == 0 then\n"
     "    widgets[1] = {id = 'empty', text = '(no TODO headlines in ' .. mep_activity_todo_path() .. ')', on_click = mep.activity_todo_open}\n"
     "  end\n"
-    "  if not mep_activity_todo_sidebar_id then mep_activity_todo_sidebar_id = mep.sidebar_create('Todo', 'right', 40) end\n"
+    "  if not mep_activity_todo_sidebar_id then\n"
+    "    mep_activity_todo_sidebar_id = mep.sidebar_create('Todo', 'right', 40)\n"
+    "    mep.sidebar_set_on_preview(mep_activity_todo_sidebar_id, mep_activity_todo_on_preview)\n"
+    "  end\n"
     "  mep.sidebar_set_sections(mep_activity_todo_sidebar_id, {{id = 'todos', title = '', collapsed = false, widgets = widgets}})\n"
     "  mep_activity_todo_rendered = mep_activity_todo_key(items)\n"
     "  mep.sidebar_open(mep_activity_todo_sidebar_id)\n"
@@ -12140,7 +12318,13 @@ void DrawSidebars() {
         // row (or a mouse wheel, previously not even wired into Mode::Sidebar
         // in Editor::HandleMouseWheel) had nowhere to go.
         int visible_lines = std::max(1, (ph - header_h - 10) / line_h);
-        g_editor.UpdateScrollForSidebar(sb.id, visible_lines);
+        // A popped-out sidebar's scroll is owned by DrawSidebarPopout's
+        // own (much taller) viewport: clamping it to this docked one
+        // first would keep yanking the float's view so the cursor sits
+        // within the first few docked rows, and the docked panel is only
+        // dimmed background under the float while that lasts anyway.
+        const bool popped_out = g_editor.SidebarPopoutActive() && g_editor.SidebarPopoutId() == sb.id;
+        if (!popped_out) g_editor.UpdateScrollForSidebar(sb.id, visible_lines);
         int scroll = sb.scroll_offset;
 
         int cursor = g_editor.SidebarCursor();
@@ -12804,6 +12988,155 @@ void DrawPickerOverlay() {
             EndScissorMode();
         }
     }
+}
+
+// Sidebar popout (mod1+m, Editor::ToggleSidebarPopout): the focused
+// sidebar zoomed into a picker-sized centered float -- its flattened rows
+// on the left (the exact same FlattenSidebar rows, cursor, scroll_offset
+// and row hit-rects the docked panel uses, so every key/click behaves
+// identically in both views) and, when the sidebar registered an
+// on_preview source (mep.sidebar_set_on_preview), a preview column on the
+// right: file contents for the file tree, `git diff` for git status, the
+// org subtree for a todo, the definition's source for a structure item.
+// The docked panel keeps drawing underneath (dimmed by DrawFloatFrame's
+// overlay) so the pane layout doesn't reflow for a temporary zoom.
+//
+// Modal for the mouse while up: the interaction rects DrawPaneTree/
+// DrawSidebars/DrawTabBar registered this frame are dropped so only the
+// float's own rows (re-registered below) respond, and DispatchChromeClicks
+// collapses the popout on a click outside its box.
+Rectangle g_sidebar_popout_rect{};
+
+/**
+ * @brief Draws the popped-out sidebar float (rows left, preview column right) and re-registers its row hit-rects as the only clickable chrome.
+ */
+void DrawSidebarPopout() {
+    // Per-frame preview refresh lives here rather than in the input path so
+    // every cursor-moving route (keys, wheel, click, a sections refresh)
+    // is covered by one diff -- see Editor::RefreshSidebarPopoutPreview.
+    g_editor.RefreshSidebarPopoutPreview();
+    if (!g_editor.SidebarPopoutActive()) return;
+    const SidebarInstance *sb = g_editor.FindSidebar(g_editor.SidebarPopoutId());
+    if (!sb) return;
+
+    g_sidebar_row_rects.clear();
+    g_sidebar_border_rects.clear();
+    g_sidebar_stack_rects.clear();
+    g_pane_border_rects.clear();
+    g_pane_tab_chip_rects.clear();
+    g_click_regions.clear();
+
+    // Same 80%/80% footprint (and floors) as DrawPickerOverlay, so the two
+    // "big centered list + preview" overlays read as one family.
+    int box_w = std::max(400, static_cast<int>(static_cast<float>(GetScreenWidth()) * 0.8f));
+    int box_h = std::max(300, static_cast<int>(static_cast<float>(GetScreenHeight()) * 0.8f));
+    FloatFrame f = DrawFloatFrame(box_w, box_h, sb->title);
+    g_sidebar_popout_rect = Rectangle{static_cast<float>(f.box_x), static_cast<float>(f.box_y), static_cast<float>(f.box_w),
+                                      static_cast<float>(f.box_h)};
+
+    const float font_size = g_font_size;
+    const int line_h = static_cast<int>(font_size) + 4;
+    const float hint_size = MenuFontSize();
+    const int hint_h = static_cast<int>(hint_size) + 16;
+    const bool has_preview = sb->on_preview_ref != 0;
+    const int right_edge = f.box_x + f.box_w;
+    const int list_w = has_preview ? static_cast<int>((static_cast<float>(right_edge) - f.content_x) * 0.38f)
+                                   : right_edge - static_cast<int>(f.content_x) - 4;
+    const float list_y = f.content_y + 4;
+    const int list_bottom = f.box_y + f.box_h - hint_h;
+
+    // --- Rows (left column): the docked panel's own draw loop, re-run
+    // against this taller viewport. UpdateScrollForSidebar here (not just
+    // in DrawSidebars) matters: the docked panel's visible_lines is far
+    // smaller, and whichever call runs last owns the clamp -- this one
+    // does, since DrawSidebarPopout draws after DrawSidebars.
+    const std::vector<SidebarLine> lines = g_editor.FlattenSidebar(sb->id);
+    const int visible_lines = std::max(1, (list_bottom - static_cast<int>(list_y)) / line_h);
+    g_editor.UpdateScrollForSidebar(sb->id, visible_lines);
+    const int scroll = sb->scroll_offset;
+    const int cursor = g_editor.SidebarCursor();
+    BeginScissorMode(f.box_x, static_cast<int>(list_y) - 2, list_w, list_bottom - static_cast<int>(list_y) + 2);
+    const size_t first = static_cast<size_t>(scroll);
+    const size_t last = std::min(lines.size(), first + static_cast<size_t>(visible_lines));
+    for (size_t i = first; i < last; i++) {
+        const float ly = list_y + static_cast<float>(i - first) * static_cast<float>(line_h);
+        if (lines[i].current) {
+            DrawRectangle(f.box_x + 4, static_cast<int>(ly) - 1, list_w - 8, line_h, ResolveHlGroup("AccentTint"));
+        }
+        if (static_cast<int>(i) == cursor) {
+            DrawRectangle(f.box_x + 4, static_cast<int>(ly) - 1, list_w - 8, line_h, ResolveHlGroup("PickerSelected"));
+        }
+        const Color color = lines[i].hl.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(lines[i].hl);
+        DrawUiText(lines[i].text, Vector2{f.content_x, ly}, font_size, color);
+        g_sidebar_row_rects.push_back(
+            {sb->id, static_cast<int>(i), Rectangle{static_cast<float>(f.box_x), ly - 1, static_cast<float>(list_w), static_cast<float>(line_h)}});
+    }
+    if (lines.empty()) {
+        DrawTextEx(g_font, "-- empty --", Vector2{f.content_x, list_y}, font_size, 0, ResolveHlGroup("Comment"));
+    }
+    EndScissorMode();
+
+    // --- Preview column (right): DrawPickerOverlay's text preview, plus
+    // an optional caption (the previewed path / diff command) and a
+    // "this is the row the widget refers to" tint (a structure item's
+    // definition line, a todo's headline) on top of the per-span colors.
+    if (has_preview) {
+        const int div_x = f.box_x + list_w + 6;
+        DrawLine(div_x, static_cast<int>(list_y) - 4, div_x, list_bottom, ResolveHlGroup("PickerBorder"));
+        const float px = static_cast<float>(div_x + 10);
+        const int preview_w = right_edge - div_x - 20;
+        const std::string &caption = g_editor.SidebarPopoutPreviewTitle();
+        BeginScissorMode(div_x + 1, static_cast<int>(list_y) - 2, preview_w + 19, list_bottom - static_cast<int>(list_y) + 2);
+        DrawTextEx(g_font, caption.empty() ? "Preview" : caption.c_str(), Vector2{px, list_y}, font_size, 0,
+                   ResolveHlGroup("Comment"));
+        const float text_y = list_y + static_cast<float>(line_h) + 4;
+        const int max_chars = std::max(10, static_cast<int>(static_cast<float>(preview_w) / g_char_width));
+        const int max_preview_rows = std::max(1, (list_bottom - static_cast<int>(text_y)) / line_h);
+        const std::vector<std::string> preview_lines = SplitLines(g_editor.SidebarPopoutPreview());
+        const int pscroll = std::min(g_editor.SidebarPopoutPreviewScroll(), std::max(0, static_cast<int>(preview_lines.size()) - 1));
+        const int current_row = g_editor.SidebarPopoutPreviewCurrentRow();
+        std::unordered_map<int, std::vector<PickerHlSpan>> spans_by_row;
+        for (const PickerHlSpan &sp : g_editor.SidebarPopoutPreviewSpans()) spans_by_row[sp.row].push_back(sp);
+        int row = 0;
+        for (size_t li = static_cast<size_t>(pscroll); li < preview_lines.size() && row < max_preview_rows; li++) {
+            const std::string &raw_line = preview_lines[li];
+            const float row_y0 = text_y + static_cast<float>(row * line_h);
+            if (static_cast<int>(li) == current_row) {
+                DrawRectangle(div_x + 4, static_cast<int>(row_y0) - 1, preview_w + 12, line_h, ResolveHlGroup("AccentTint"));
+            }
+            if (raw_line.empty()) {
+                row++;
+                continue;
+            }
+            auto sit = spans_by_row.find(static_cast<int>(li));
+            const bool has_line_spans = sit != spans_by_row.end();
+            std::vector<Color> line_colors;
+            if (has_line_spans) line_colors = PickerLineColors(raw_line, sit->second, ResolveHlGroup("Normal"));
+            size_t pos = 0;
+            while (pos < raw_line.size() && row < max_preview_rows) {
+                const size_t take = std::min(raw_line.size() - pos, static_cast<size_t>(max_chars));
+                const float ry = text_y + static_cast<float>(row * line_h);
+                if (has_line_spans) {
+                    DrawPickerColoredRun(raw_line, line_colors, pos, take, px, ry);
+                } else {
+                    DrawTextEx(g_font, raw_line.substr(pos, take).c_str(), Vector2{px, ry}, font_size, 0, ResolveHlGroup("Normal"));
+                }
+                pos += take;
+                row++;
+            }
+        }
+        if (preview_lines.empty() || (preview_lines.size() == 1 && preview_lines[0].empty())) {
+            DrawTextEx(g_font, "-- no preview --", Vector2{px, text_y}, font_size, 0, ResolveHlGroup("Comment"));
+        }
+        EndScissorMode();
+    }
+
+    // Key hint, bottom-right, same placement/color as DrawPreviewOverlay's.
+    const std::string hint = has_preview ? "Esc/q/mod1+m: dock   mod1+j/k: scroll preview" : "Esc/q/mod1+m: dock";
+    const float hint_w = MeasureTextEx(g_font, hint.c_str(), hint_size, 0).x;
+    DrawTextEx(g_font, hint.c_str(),
+               Vector2{static_cast<float>(right_edge) - hint_w - 14, static_cast<float>(f.box_y + f.box_h) - hint_size - 10.0f},
+               hint_size, 0, ResolveHlGroup("Comment"));
 }
 
 // Roam backlink-graph view (NVIM_PARITY_PLAN.md Phase 37's flagged "no
@@ -19847,6 +20180,10 @@ void DrawEditor() {
     // open sidebar (the file tree, most visibly) paints on top of it instead
     // of being overpainted by the sidebar's own opaque panel.
     if (g_hover_popup_pending) DrawHoverPopup(g_hover_popup_x, g_hover_popup_y);
+    // A popped-out sidebar (mod1+m) is a modal float like the overlays
+    // below, drawn over the docked panels/menu bar it zooms; a no-op
+    // unless one is active.
+    DrawSidebarPopout();
     if (g_editor.CurrentMode() == Mode::Prompt) DrawPromptOverlay();
     if (g_editor.CurrentMode() == Mode::Confirm) DrawConfirmOverlay();
     if (g_editor.CurrentMode() == Mode::Select) DrawSelectOverlay();
@@ -19901,6 +20238,16 @@ void DispatchChromeClicks() {
     Mode mode = g_editor.CurrentMode();
     if (IsModalOverlayMode(mode) && mode != Mode::Sidebar) return;
     Vector2 mouse = GetMousePosition();
+    // A popped-out sidebar (DrawSidebarPopout) already dropped every
+    // chrome click region for this frame; the one gesture left to handle
+    // here is the modal's usual dismiss -- a click anywhere outside its
+    // box collapses it back to the docked panel. Clicks inside the box
+    // are the float's own rows, handled by UpdatePaneMouseInteraction's
+    // sidebar-row path like any docked row.
+    if (g_editor.SidebarPopoutActive()) {
+        if (!PointInRect(mouse, g_sidebar_popout_rect)) g_editor.CloseSidebarPopout();
+        return;
+    }
     for (const ClickRegion &r : g_click_regions) {
         if (PointInRect(mouse, r.rect)) {
             r.action();
@@ -20899,6 +21246,7 @@ int main(int argc, char **argv) {
     lua->DoString(kDefaultMod1Bindings);
     lua->DoString(kBuiltinEditHooks);
     lua->DoString(kBuiltinIcons);
+    lua->DoString(kBuiltinSidebarPopout);
     lua->DoString(kBuiltinPickerSources);
     lua->DoString(kBuiltinTextTools);
     lua->DoString(kBuiltinFileTree);

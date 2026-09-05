@@ -2244,6 +2244,148 @@ int l_sidebar_set_on_key(lua_State *L) {
     return 0;
 }
 
+// mep.sidebar_set_on_preview(id, fn): fn(widget_id) is called whenever the
+// row under the cursor changes while sidebar `id` is popped out (mod1+m,
+// Editor::ToggleSidebarPopout) -- "" for a section header. The callback
+// answers via mep.sidebar_set_preview, either right away or later from a
+// job's on_exit (the git status sidebar's `git diff`), so an async source
+// needs no special plumbing.
+/**
+ * @brief Implements mep.sidebar_set_on_preview(id, fn): registers the callback that supplies a sidebar's popout preview.
+ * @param L Lua state; arg 1 is the sidebar id, arg 2 the callback, invoked with the cursor widget's id ("" on a section header).
+ * @return Number of values pushed (0).
+ */
+int l_sidebar_set_on_preview(lua_State *L) {
+    int id = static_cast<int>(luaL_checkinteger(L, 1));
+    luaL_checktype(L, 2, LUA_TFUNCTION);
+    lua_pushvalue(L, 2);
+    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    GetEditor(L)->SetSidebarOnPreview(id, ref);
+    return 0;
+}
+
+// Reads mep.picker_set_preview/mep.sidebar_set_preview's shared spans
+// argument -- a Lua array of {row=, col_start=, col_end=, hl=} (all
+// 1-indexed, col_end exclusive) -- at stack index `idx`.
+/**
+ * @brief Reads a Lua array of {row=, col_start=, col_end=, hl=} preview highlight spans into PickerHlSpan structs.
+ * @param L Lua state.
+ * @param idx Stack index of the array table (anything but a table reads as no spans).
+ * @return The parsed spans; entries without an `hl` string are skipped.
+ */
+std::vector<PickerHlSpan> ReadPreviewSpans(lua_State *L, int idx) {
+    std::vector<PickerHlSpan> spans;
+    if (!lua_istable(L, idx)) return spans;
+    lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, idx));
+    for (lua_Integer i = 1; i <= n; i++) {
+        lua_rawgeti(L, idx, i);
+        if (lua_istable(L, -1)) {
+            lua_getfield(L, -1, "row");
+            int row = static_cast<int>(luaL_optinteger(L, -1, 1)) - 1;
+            lua_pop(L, 1);
+            lua_getfield(L, -1, "col_start");
+            int col_start = static_cast<int>(luaL_optinteger(L, -1, 1)) - 1;
+            lua_pop(L, 1);
+            lua_getfield(L, -1, "col_end");
+            int col_end = static_cast<int>(luaL_optinteger(L, -1, col_start + 2)) - 1;
+            lua_pop(L, 1);
+            lua_getfield(L, -1, "hl");
+            if (lua_isstring(L, -1)) {
+                PickerHlSpan span;
+                span.row = row;
+                span.col_start = col_start;
+                span.col_end = col_end;
+                span.hl_group = lua_tostring(L, -1);
+                spans.push_back(std::move(span));
+            }
+            lua_pop(L, 1);
+        }
+        lua_pop(L, 1);
+    }
+    return spans;
+}
+
+// mep.sidebar_set_preview(text [, spans [, title [, current_row]]]): the
+// popout's preview-column content -- see Editor::SetSidebarPopoutPreview.
+// `spans` has mep.picker_set_preview's exact shape; `current_row` is the
+// 1-indexed preview line to tint as the row the widget refers to (the
+// definition line of a structure item, a todo's headline).
+/**
+ * @brief Implements mep.sidebar_set_preview(text, spans, title, current_row): sets the popped-out sidebar's preview column.
+ * @param L Lua state; arg 1 is the preview text ("" clears it), optional arg 2 an array of {row=, col_start=, col_end=, hl=} spans, optional arg 3 a caption, optional arg 4 the 1-indexed line to tint.
+ * @return Number of values pushed (0).
+ */
+int l_sidebar_set_preview(lua_State *L) {
+    size_t len = 0;
+    const char *text = luaL_optlstring(L, 1, "", &len);
+    std::vector<PickerHlSpan> spans = ReadPreviewSpans(L, 2);
+    const char *title = luaL_optstring(L, 3, "");
+    int current_row = static_cast<int>(luaL_optinteger(L, 4, 0)) - 1;
+    GetEditor(L)->SetSidebarPopoutPreview(std::string(text, len), std::move(spans), title, current_row);
+    return 0;
+}
+
+// mep.sidebar_popout_toggle([id]): pop the focused sidebar (or `id`, if
+// it is the focused one) out into the large centered float, or collapse
+// it back -- what mod1+m is bound to (kDefaultMod1Bindings, main.cpp).
+/**
+ * @brief Implements mep.sidebar_popout_toggle([id]): toggles the focused sidebar's popout float.
+ * @param L Lua state; optional arg 1 is the sidebar id (default: whichever sidebar has focus).
+ * @return Number of values pushed (0).
+ */
+int l_sidebar_popout_toggle(lua_State *L) {
+    int id = static_cast<int>(luaL_optinteger(L, 1, 0));
+    GetEditor(L)->ToggleSidebarPopout(id);
+    return 0;
+}
+
+/**
+ * @brief Implements mep.sidebar_popout_close(): collapses the popped-out sidebar (if any) back to its docked panel.
+ * @param L Lua state.
+ * @return Number of values pushed (0).
+ */
+int l_sidebar_popout_close(lua_State *L) {
+    GetEditor(L)->CloseSidebarPopout();
+    return 0;
+}
+
+/**
+ * @brief Implements mep.sidebar_is_popout([id]): reports whether a sidebar (default: any) is currently popped out.
+ * @param L Lua state; optional arg 1 is the sidebar id.
+ * @return Number of values pushed (1: boolean).
+ */
+int l_sidebar_is_popout(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    int id = static_cast<int>(luaL_optinteger(L, 1, 0));
+    bool active = ed->SidebarPopoutActive() && (id == 0 || ed->SidebarPopoutId() == id);
+    lua_pushboolean(L, active);
+    return 1;
+}
+
+// mep.read_lines(path [, max_lines]) -> array of lines, or nil if the
+// file is neither open in a buffer nor readable. Prefers an open buffer's
+// live (possibly unsaved) lines -- see Editor::ReadLinesForPath.
+/**
+ * @brief Implements mep.read_lines(path, max_lines): returns a file's lines, preferring an open buffer's live contents.
+ * @param L Lua state; arg 1 is the path, optional arg 2 caps the line count (a trailing "..." marks truncation).
+ * @return Number of values pushed (1: the array of lines, or nil).
+ */
+int l_read_lines(lua_State *L) {
+    const char *path = luaL_checkstring(L, 1);
+    int max_lines = static_cast<int>(luaL_optinteger(L, 2, 0));
+    std::vector<std::string> lines;
+    if (!GetEditor(L)->ReadLinesForPath(path, max_lines, &lines)) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_createtable(L, static_cast<int>(lines.size()), 0);
+    for (size_t i = 0; i < lines.size(); i++) {
+        lua_pushlstring(L, lines[i].data(), lines[i].size());
+        lua_rawseti(L, -2, static_cast<int>(i) + 1);
+    }
+    return 1;
+}
+
 // mep.buffer_set_on_enter(buffer_id, fn): fn() replaces whatever bare
 // Enter/KP_Enter already does in Normal mode (nothing, by default -- see
 // SetBufferOnEnter's own comment, editor.h) while `buffer_id` is the
@@ -2437,35 +2579,7 @@ int l_picker_set_items(lua_State *L) {
 int l_picker_set_preview(lua_State *L) {
     size_t len = 0;
     const char *text = luaL_optlstring(L, 1, "", &len);
-    std::vector<PickerHlSpan> spans;
-    if (lua_gettop(L) >= 2 && lua_istable(L, 2)) {
-        lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 2));
-        for (lua_Integer i = 1; i <= n; i++) {
-            lua_rawgeti(L, 2, i);
-            if (lua_istable(L, -1)) {
-                lua_getfield(L, -1, "row");
-                int row = static_cast<int>(luaL_optinteger(L, -1, 1)) - 1;
-                lua_pop(L, 1);
-                lua_getfield(L, -1, "col_start");
-                int col_start = static_cast<int>(luaL_optinteger(L, -1, 1)) - 1;
-                lua_pop(L, 1);
-                lua_getfield(L, -1, "col_end");
-                int col_end = static_cast<int>(luaL_optinteger(L, -1, col_start + 2)) - 1;
-                lua_pop(L, 1);
-                lua_getfield(L, -1, "hl");
-                if (lua_isstring(L, -1)) {
-                    PickerHlSpan span;
-                    span.row = row;
-                    span.col_start = col_start;
-                    span.col_end = col_end;
-                    span.hl_group = lua_tostring(L, -1);
-                    spans.push_back(std::move(span));
-                }
-                lua_pop(L, 1);
-            }
-            lua_pop(L, 1);
-        }
-    }
+    std::vector<PickerHlSpan> spans = ReadPreviewSpans(L, 2);
     GetEditor(L)->SetPickerPreview(std::string(text, len), std::move(spans));
     return 0;
 }
@@ -6228,6 +6342,12 @@ const luaL_Reg kMepFuncs[] = {
     {"sidebar_toggle", l_sidebar_toggle},
     {"sidebar_is_open", l_sidebar_is_open},
     {"sidebar_set_on_key", l_sidebar_set_on_key},
+    {"sidebar_set_on_preview", l_sidebar_set_on_preview},
+    {"sidebar_set_preview", l_sidebar_set_preview},
+    {"sidebar_popout_toggle", l_sidebar_popout_toggle},
+    {"sidebar_popout_close", l_sidebar_popout_close},
+    {"sidebar_is_popout", l_sidebar_is_popout},
+    {"read_lines", l_read_lines},
     {"sidebar_cursor", l_sidebar_cursor},
     {"sidebar_cursor_widget_id", l_sidebar_cursor_widget_id},
     {"picker_open", l_picker_open},

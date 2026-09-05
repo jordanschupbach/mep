@@ -8620,6 +8620,13 @@ void Editor::BufferDeleteById(int target, bool force) {
 }
 
 void Editor::PaneMoveBufferTabToNeighbor(const std::string &direction) {
+    // A focused sidebar isn't a node in the split tree and has no buffer
+    // tabs to move; the "move it that way" gesture becomes reordering the
+    // dock's vertical stack instead (see the header comment).
+    if (mode_ == Mode::Sidebar) {
+        SwapSidebarInStack(focused_sidebar_id_, direction);
+        return;
+    }
     Tab &tab = ActiveTab();
     int neighbor_id = FindNeighborPaneId(tab.active_pane_id, direction);
     if (neighbor_id < 0) return;
@@ -10482,6 +10489,21 @@ bool Editor::HandleMod1Shortcuts() {
     if (mode_ == Mode::Picker && !extra_ctrl && !extra_shift && !PickerPreview().empty() &&
         (IsKeyPressed(KEY_J) || IsKeyPressed(KEY_K))) {
         ScrollPickerPreview(IsKeyPressed(KEY_J) ? 1 : -1);
+        while (GetCharPressed() > 0) {
+        }
+        return true;
+    }
+    // Same for a popped-out sidebar (mod1+m) showing a preview: mod1+j/k
+    // would otherwise step focus to the sidebar stacked above/below the
+    // docked panel (NavigatePaneDirection's Mode::Sidebar branch), which
+    // is invisible behind the float -- scroll the preview column instead,
+    // exactly as the picker's own preview does. Without a preview the
+    // stack-navigation binding stays untouched (and, since it refocuses a
+    // different sidebar, simply ends the popout -- see
+    // RefreshSidebarPopoutPreview).
+    if (SidebarPopoutActive() && !extra_ctrl && !extra_shift && !SidebarPopoutPreview().empty() &&
+        (IsKeyPressed(KEY_J) || IsKeyPressed(KEY_K))) {
+        ScrollSidebarPopoutPreview(IsKeyPressed(KEY_J) ? 1 : -1);
         while (GetCharPressed() > 0) {
         }
         return true;
@@ -13506,6 +13528,86 @@ void Editor::SetSidebarOnKey(int id, int lua_ref) {
     if (SidebarInstance *sb = FindSidebarMut(id)) sb->on_key_ref = lua_ref;
 }
 
+void Editor::SetSidebarOnPreview(int id, int lua_ref) {
+    if (SidebarInstance *sb = FindSidebarMut(id)) sb->on_preview_ref = lua_ref;
+}
+
+// --- Sidebar popout (mod1+m) ---------------------------------------------
+
+void Editor::OpenSidebarPopout(int id) {
+    // Only the focused sidebar can be popped out: the popout reuses the
+    // focused sidebar's own cursor/input path wholesale (see the header
+    // comment), so popping out an unfocused one would show a float that
+    // no key reaches.
+    if (mode_ != Mode::Sidebar || id == 0 || id != focused_sidebar_id_) return;
+    const SidebarInstance *sb = FindSidebar(id);
+    if (!sb || !sb->open) return;
+    if (sidebar_popout_id_ != id) {
+        // A stale preview from an earlier popout (a different sidebar, or
+        // this one before it was collapsed) must never flash up for a
+        // frame before RefreshSidebarPopoutPreview's own callback replaces
+        // it -- start from an empty column each time.
+        SetSidebarPopoutPreview("");
+        sidebar_popout_preview_key_.clear();
+    }
+    sidebar_popout_id_ = id;
+    sidebar_popout_preview_dirty_ = true;
+}
+
+void Editor::CloseSidebarPopout() {
+    sidebar_popout_id_ = 0;
+    sidebar_popout_preview_key_.clear();
+    sidebar_popout_preview_dirty_ = false;
+    SetSidebarPopoutPreview("");
+}
+
+void Editor::ToggleSidebarPopout(int id) {
+    if (id == 0) id = focused_sidebar_id_;
+    if (SidebarPopoutActive() && sidebar_popout_id_ == id) {
+        CloseSidebarPopout();
+    } else {
+        OpenSidebarPopout(id);
+    }
+}
+
+void Editor::RefreshSidebarPopoutPreview() {
+    if (!SidebarPopoutActive()) {
+        // Focus left the popped-out sidebar by some route that doesn't go
+        // through CloseSidebarPopout (mod1+hjkl into the panes, a widget's
+        // on_click opening a file, ...): forget the popout entirely so
+        // refocusing the sidebar later comes back docked, not still
+        // zoomed -- and so a later mod1+m opens fresh rather than toggling
+        // a phantom popout closed.
+        if (sidebar_popout_id_ != 0) CloseSidebarPopout();
+        return;
+    }
+    const SidebarInstance *sb = FindSidebar(sidebar_popout_id_);
+    if (!sb) return;
+    // Row identity, not just the widget id: two section headers both
+    // resolve to "" as a widget id, and a header row must still tell the
+    // source "nothing is under the cursor now" once, so it can clear a
+    // previous widget's preview.
+    std::vector<SidebarLine> lines = FlattenSidebar(sidebar_popout_id_);
+    std::string key;
+    if (sidebar_cursor_ >= 0 && sidebar_cursor_ < static_cast<int>(lines.size())) {
+        const SidebarLine &line = lines[static_cast<size_t>(sidebar_cursor_)];
+        key = line.kind == SidebarLine::Kind::Widget ? "w:" + SidebarLineWidgetId(sidebar_popout_id_, sidebar_cursor_)
+                                                      : "h:" + std::to_string(line.section_index);
+    }
+    if (!sidebar_popout_preview_dirty_ && key == sidebar_popout_preview_key_) return;
+    sidebar_popout_preview_dirty_ = false;
+    sidebar_popout_preview_key_ = key;
+    if (sb->on_preview_ref == 0 || !lua_) return;
+    lua_->CallRefWithString(sb->on_preview_ref, SidebarCursorWidgetId(sidebar_popout_id_));
+}
+
+void Editor::ScrollSidebarPopoutPreview(int delta) {
+    int line_count = 1 + static_cast<int>(std::count(sidebar_popout_preview_text_.begin(),
+                                                     sidebar_popout_preview_text_.end(), '\n'));
+    int max_scroll = std::max(0, line_count - 1);
+    sidebar_popout_preview_scroll_ = std::clamp(sidebar_popout_preview_scroll_ + delta, 0, max_scroll);
+}
+
 std::string Editor::SidebarCursorWidgetId(int id) const {
     const SidebarInstance *sb = FindSidebar(id);
     if (!sb) return "";
@@ -13616,6 +13718,29 @@ void Editor::SetSidebarStackShares(int upper_id, int lower_id, float upper_fract
     lower->stack_share = total - upper->stack_share;
 }
 
+bool Editor::SwapSidebarInStack(int id, const std::string &direction) {
+    if (direction != "up" && direction != "down") return false;
+    const SidebarInstance *sb = FindSidebar(id);
+    if (!sb || !sb->open || (sb->position != "left" && sb->position != "right")) return false;
+    const std::vector<int> ids = OpenSidebarIdsOn(sb->position);
+    auto it = std::find(ids.begin(), ids.end(), id);
+    if (it == ids.end()) return false;
+    const int index = static_cast<int>(it - ids.begin()) + (direction == "down" ? 1 : -1);
+    if (index < 0 || index >= static_cast<int>(ids.size())) return false;
+    const int other_id = ids[static_cast<size_t>(index)];
+    auto by_id = [&](int want) {
+        return std::find_if(sidebars_.begin(), sidebars_.end(), [want](const SidebarInstance &s) { return s.id == want; });
+    };
+    auto a = by_id(id), b = by_id(other_id);
+    if (a == sidebars_.end() || b == sidebars_.end() || a == b) return false;
+    // Closed sidebars (or ones docked elsewhere) sitting between the two
+    // in sidebars_ don't participate in this edge's stack, so swapping the
+    // two entries outright -- rather than rotating the range -- is exactly
+    // "these two trade slots" as far as OpenSidebarIdsOn is concerned.
+    std::iter_swap(a, b);
+    return true;
+}
+
 int Editor::CreateSidebar(const std::string &title, const std::string &position, int size) {
     SidebarInstance sb;
     sb.id = next_sidebar_id_++;
@@ -13628,6 +13753,10 @@ int Editor::CreateSidebar(const std::string &title, const std::string &position,
 
 void Editor::SetSidebarSections(int id, std::vector<SidebarSection> sections) {
     if (SidebarInstance *sb = FindSidebarMut(id)) sb->sections = std::move(sections);
+    // The row under the popout's cursor may now name something else (a
+    // git status refresh reordering its list, the file tree expanding a
+    // directory) even though the cursor index itself never moved.
+    if (id == sidebar_popout_id_) sidebar_popout_preview_dirty_ = true;
 }
 
 void Editor::OpenSidebar(int id, bool focus) {
@@ -13656,6 +13785,7 @@ void Editor::CloseSidebar(int id) {
     SidebarInstance *sb = FindSidebarMut(id);
     if (!sb) return;
     sb->open = false;
+    if (id == sidebar_popout_id_) CloseSidebarPopout();
     if (focused_sidebar_id_ == id) {
         focused_sidebar_id_ = 0;
         if (mode_ == Mode::Sidebar) RestoreFromOverlay();
@@ -13732,7 +13862,18 @@ void Editor::HandleSidebarInput() {
         if (key == KEY_ESCAPE) escape = true;
         else if (key == KEY_ENTER) enter = true;
     }
+    // While popped out (mod1+m), Escape/q step back down to the docked
+    // panel instead of closing the sidebar outright -- the popout is a
+    // temporary zoom, and the natural "undo" of a zoom is un-zooming, not
+    // losing the panel (and its cursor) entirely. A second Escape/q then
+    // closes as before.
+    const bool popped_out = SidebarPopoutActive();
     if (escape) {
+        if (popped_out) {
+            CloseSidebarPopout();
+            pending_g_ = false;
+            return;
+        }
         int id = focused_sidebar_id_;
         RestoreFromOverlay();
         CloseSidebar(id);
@@ -13789,10 +13930,14 @@ void Editor::HandleSidebarInput() {
             sidebar_cursor_--;
             pending_g_ = false;
         } else if (cp == 'q') {
+            pending_g_ = false;  // don't leak a lone unmatched 'g' into whatever mode q restores
+            if (popped_out) {
+                CloseSidebarPopout();  // same un-zoom-first rule as Escape above
+                return;
+            }
             int id = focused_sidebar_id_;
             RestoreFromOverlay();
             CloseSidebar(id);
-            pending_g_ = false;  // don't leak a lone unmatched 'g' into whatever mode q restores
             return;
         } else if (lua_) {
             pending_g_ = false;
@@ -17157,6 +17302,24 @@ bool ReadFileLines(const std::string &path, std::vector<std::string> &lines) {
 }
 
 }  // namespace
+
+bool Editor::ReadLinesForPath(const std::string &path, int max_lines, std::vector<std::string> *out) const {
+    if (!out) return false;
+    out->clear();
+    std::vector<std::string> lines;
+    int buffer_id = FindOpenBufferForPath(path);
+    if (buffer_id >= 0) {
+        lines = buffers_[static_cast<size_t>(buffer_id)].lines;
+    } else if (!ReadFileLines(path, lines)) {
+        return false;
+    }
+    if (max_lines > 0 && static_cast<int>(lines.size()) > max_lines) {
+        lines.resize(static_cast<size_t>(max_lines));
+        lines.emplace_back("...");
+    }
+    *out = std::move(lines);
+    return true;
+}
 
 int Editor::FindOpenBufferForPath(const std::string &path) const {
     if (path.empty()) return -1;

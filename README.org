@@ -190,7 +190,28 @@ loaded-projects switcher. Sidebars docked on the same left/right edge
 merge into one column split vertically between them (so opening Git
 Status next to the file tree stacks it below rather than beside);
 drag the divider between two, or =mod1+Shift+j/k= from inside one, to
-re-split them, and =mod1+j/k= steps focus between them.
+re-split them, =mod1+j/k= steps focus between them, and =mod1+Ctrl+j/k=
+swaps the focused one with the sidebar above/below it (it stays focused,
+so the cursor travels with it). =mod1+m= from inside a focused sidebar
+pops it out into a large centered float -- the same rows and keys (so
+=j/k=, Enter and every panel's own bindings work unchanged), plus a
+preview column: the file tree shows the file under the cursor (or a
+directory's listing), Git Status shows =git diff HEAD= for the entry,
+Todo shows the headline's org subtree, and Structure shows the
+definition's source, each syntax-highlighted where a grammar is
+available. =mod1+j/k= scroll the preview; =Esc=, =q=, =mod1+m= again or
+a click outside the box drop back to the docked panel, and anything
+that moves focus out of the sidebar ends the popout too. A Lua sidebar
+gets a preview by registering =mep.sidebar_set_on_preview(id, fn)=:
+=fn(widget_id)= runs whenever the cursor's row changes while popped out
+and answers with =mep.sidebar_set_preview(text, spans, title,
+current_row)= (=spans= as in =mep.picker_set_preview=), or through the
+=mep.sidebar_preview_code(lines, filetype, title, current_row)=,
+=mep.sidebar_preview_diff(text, title)= and
+=mep.sidebar_preview_path(path, is_dir, title)= helpers the built-in
+panels use; =mep.read_lines(path, max_lines)= reads a file for it,
+preferring an open buffer's unsaved text. =mep.sidebar_popout_toggle()=
+is what =mod1+m= calls.
 =:bnext=/=:bn= and =:bprevious=/=:bprev=/=:bp= cycle the current pane
 through every open buffer *of the current workspace* (not just the ones
 already opened in that pane's own tab strip), wrapping at either end. A file row in the file tree (or the git status sidebar) can also be
@@ -254,7 +275,9 @@ against whichever neighbor it does have on that axis, so opposite keys
 always do opposite things; a no-op if the pane is alone on that axis
 (mirroring mep.nvim's =mep.window.panes.resize=). =mod1+Ctrl+h/j/k/l=
 moves the pane's active buffer tab into the neighboring pane that way,
-closing the current pane if that was its last tab. =mod1+d= removes the
+closing the current pane if that was its last tab (from inside a
+sidebar, =mod1+Ctrl+j/k= instead swap that sidebar with its stack
+neighbor -- see above). =mod1+d= removes the
 active buffer tab from the current pane (closing the pane once its last
 tab is gone). These are themselves just =mep.map_mod1()= calls run at
 startup (see the Lua API below), so redefine or remove any of them from

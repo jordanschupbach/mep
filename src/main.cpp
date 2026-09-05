@@ -2606,6 +2606,11 @@ const char *kBuiltinGit =
     // blocker" note) -- mep_git_hunks/mep_git_base_lines are now
     // Editor-owned state (git_hunks_/git_base_lines_), not Lua locals.
     "local mep_git_status_sidebar_id = nil\n"
+    // Bumped per refresh so a `git status` still in flight for the
+    // previous workspace can't repaint the sidebar after a switch has
+    // already kicked off the new one's (each on_exit checks it still
+    // owns the latest generation before touching the sections).
+    "local mep_git_status_gen = 0\n"
     // Configurable diff base (Phase 17 gap): a single global ref name,
     // not per-buffer -- same-global convention as mep_git_hunks/
     // mep_git_base_lines above, and simpler for the common case of
@@ -2668,6 +2673,8 @@ const char *kBuiltinGit =
     "    mep.sidebar_set_on_key(mep_git_status_sidebar_id, mep.git_status_on_key)\n"
     "  end\n"
     "  local widgets = {}\n"
+    "  mep_git_status_gen = mep_git_status_gen + 1\n"
+    "  local gen = mep_git_status_gen\n"
     "  mep.job_start({'git', 'status', '--porcelain'}, {\n"
     "    cwd = mep.workspace_root(),\n"
     "    on_stdout = function(line)\n"
@@ -2678,6 +2685,7 @@ const char *kBuiltinGit =
     "      }\n"
     "    end,\n"
     "    on_exit = function()\n"
+    "      if gen ~= mep_git_status_gen then return end\n"
     // Phase 7: `branch @ workspace` in the header -- the list itself is
     // already the active workspace's tree via cwd above.
     "      local ws = mep.workspace_current()\n"
@@ -2727,6 +2735,17 @@ const char *kBuiltinGit =
     "  end\n"
     "end\n"
     "mep.command('MepGitStatus', function() mep.git_status_refresh(); mep.sidebar_open(mep_git_status_sidebar_id) end)\n"
+    // Follow the active workspace: the list is `git status` run in
+    // mep.workspace_root(), so after a switch/create/delete/rename it
+    // would otherwise keep showing whichever worktree first opened it.
+    // Only an open sidebar is refreshed -- a closed one re-runs the
+    // status on its next :MepGitStatus anyway, and a refresh here would
+    // just spawn a git subprocess nobody is looking at.
+    "mep.on_workspace_changed(function()\n"
+    "  if mep_git_status_sidebar_id and mep.sidebar_is_open(mep_git_status_sidebar_id) then\n"
+    "    mep.git_status_refresh()\n"
+    "  end\n"
+    "end)\n"
     // `:MepGitGutter` alone just recomputes against the current base
     // (unchanged default behavior); `:MepGitGutter base <ref>` (Phase
     // 17 gap) repoints mep.git_gutter_base at any git revision -- a

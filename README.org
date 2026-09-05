@@ -212,6 +212,26 @@ current_row)= (=spans= as in =mep.picker_set_preview=), or through the
 panels use; =mep.read_lines(path, max_lines)= reads a file for it,
 preferring an open buffer's unsaved text. =mep.sidebar_popout_toggle()=
 is what =mod1+m= calls.
+The Todo sidebar (=<leader>tt=, the tab bar's Todo button, or
+=:MepActivityTodoPanel=) lists every keyworded headline of the
+project's =TODO.org= (=mep.activity_todo_file= overrides the path) and
+edits it in place: =a= adds a todo (a new =* TODO= headline at the end
+of the file), =e= edits the one under the cursor in a popup prompt
+(the headline's title is rewritten; its keyword, priority and tags are
+kept), =d= marks it done (or not done again), =x= deletes it and its
+whole subtree after a confirm, and =Enter= (or a click) starts or stops
+its clock -- an org =CLOCK: [start]--[end] => H:MM= time entry in a
+=:LOGBOOK:= drawer under the headline, the same lines =:MepOrgClockIn=,
+=:MepOrgClockOut= and =:MepOrgClockTable= use. Only one clock runs at a
+time, so starting another todo's clock stops the running one; marking
+a clocked-in todo done stops it too. The running todo's row shows as
+=[>]=, =o= opens the file, =R= re-reads it and =?= lists the keys. The
+status bar's right edge carries the active-todo chip: green with the
+clocked-in todo's title and a live elapsed timer, or a red =[No active
+TODO]= when nothing is clocked in; it follows the file (a clock started
+from inside =TODO.org= counts too) and clicking it toggles the sidebar.
+=mep.active_todo_set(text, start_unix_seconds)= / =mep.active_todo_set(nil)=
+is the hook behind it, for anyone driving the chip from their own Lua.
 =:bnext=/=:bn= and =:bprevious=/=:bprev=/=:bp= cycle the current pane
 through every open buffer *of the current workspace* (not just the ones
 already opened in that pane's own tab strip), wrapping at either end. A file row in the file tree (or the git status sidebar) can also be

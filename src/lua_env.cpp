@@ -5,6 +5,7 @@
 #include "treesitter.h"
 
 #include <algorithm>
+#include <ctime>
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
@@ -1341,6 +1342,110 @@ int l_activity_todo_save(lua_State *L) {
     return 0;
 }
 
+// mep.activity_todo_clock_status(path) -> nil when no clock is open in
+// the org file, else {line = 1-indexed headline line (the same identity
+// mep.activity_todo_load's items carry), start_ts = the CLOCK stamp's
+// text, start = that stamp as local-time Unix seconds, title = the
+// headline's title}. See Editor::ActivityTodoClockStatus.
+/**
+ * @brief Implements mep.activity_todo_clock_status(path): reports the running clock in an org todo file.
+ * @param L Lua state; arg 1 is the org file path.
+ * @return Number of values pushed (1: a {line, start_ts, start, title} table, or nil when no clock is open).
+ */
+int l_activity_todo_clock_status(lua_State *L) {
+    const char *path = luaL_checkstring(L, 1);
+    Editor::ActivityTodoClock clock = GetEditor(L)->ActivityTodoClockStatus(path);
+    if (clock.line < 0) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_createtable(L, 0, 4);
+    lua_pushinteger(L, clock.line + 1);
+    lua_setfield(L, -2, "line");
+    lua_pushlstring(L, clock.start_ts.data(), clock.start_ts.size());
+    lua_setfield(L, -2, "start_ts");
+    lua_pushinteger(L, clock.start_epoch);
+    lua_setfield(L, -2, "start");
+    lua_pushlstring(L, clock.title.data(), clock.title.size());
+    lua_setfield(L, -2, "title");
+    return 1;
+}
+
+// mep.activity_todo_clock_start(path, line) -> the start's Unix seconds
+// (the exact second, where the CLOCK stamp itself only keeps the minute),
+// or nil if nothing was written (a clock already open in the file, `line`
+// not a headline, or not an org file). `line` is 1-indexed.
+/**
+ * @brief Implements mep.activity_todo_clock_start(path, line): starts a clock under a headline of an org todo file.
+ * @param L Lua state; arg 1 is the org file path, arg 2 the 1-indexed headline line.
+ * @return Number of values pushed (1: the start time as Unix seconds, or nil on refusal).
+ */
+int l_activity_todo_clock_start(lua_State *L) {
+    const char *path = luaL_checkstring(L, 1);
+    int line = static_cast<int>(luaL_checkinteger(L, 2)) - 1;
+    const long long now = static_cast<long long>(std::time(nullptr));
+    if (!GetEditor(L)->ActivityTodoClockStart(path, line)) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_pushinteger(L, now);
+    return 1;
+}
+
+// mep.activity_todo_clock_stop(path) -> elapsed whole minutes, or nil
+// when no clock was open.
+/**
+ * @brief Implements mep.activity_todo_clock_stop(path): closes the running clock in an org todo file.
+ * @param L Lua state; arg 1 is the org file path.
+ * @return Number of values pushed (1: the elapsed whole minutes, or nil when no clock was open).
+ */
+int l_activity_todo_clock_stop(lua_State *L) {
+    const char *path = luaL_checkstring(L, 1);
+    int minutes = GetEditor(L)->ActivityTodoClockStop(path);
+    if (minutes < 0) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_pushinteger(L, minutes);
+    return 1;
+}
+
+// mep.activity_todo_retitle(path, line, text) -> bool: rewrites the
+// 1-indexed keyworded headline's title, keeping keyword/priority/tags.
+/**
+ * @brief Implements mep.activity_todo_retitle(path, line, text): retitles a headline of an org todo file.
+ * @param L Lua state; arg 1 is the org file path, arg 2 the 1-indexed headline line, arg 3 the new title.
+ * @return Number of values pushed (1: true if the headline was rewritten).
+ */
+int l_activity_todo_retitle(lua_State *L) {
+    const char *path = luaL_checkstring(L, 1);
+    int line = static_cast<int>(luaL_checkinteger(L, 2)) - 1;
+    size_t len = 0;
+    const char *text = luaL_checklstring(L, 3, &len);
+    lua_pushboolean(L, GetEditor(L)->ActivityTodoRetitle(path, line, std::string(text, len)));
+    return 1;
+}
+
+// mep.active_todo_set(text, start) / mep.active_todo_set(nil): what the
+// status bar's todo chip shows -- `text` with a live timer counting from
+// `start` (Unix seconds), or the red "[No active TODO]" state when nil.
+/**
+ * @brief Implements mep.active_todo_set(text, start): sets (or, with nil, clears) the status bar's active-todo chip.
+ * @param L Lua state; arg 1 is the todo title or nil, arg 2 the clock start as Unix seconds (defaults to now).
+ * @return Number of values pushed (0).
+ */
+int l_active_todo_set(lua_State *L) {
+    if (lua_isnoneornil(L, 1)) {
+        GetEditor(L)->ClearActiveTodo();
+        return 0;
+    }
+    size_t len = 0;
+    const char *text = luaL_checklstring(L, 1, &len);
+    long long start = luaL_optinteger(L, 2, static_cast<lua_Integer>(std::time(nullptr)));
+    GetEditor(L)->SetActiveTodo(std::string(text, len), start);
+    return 0;
+}
+
 // mep.activity_test_failure_lines(output) -> array of {index, line}
 // (1-indexed): see Editor::ActivityTestFailureLines.
 /**
@@ -2428,6 +2533,40 @@ int l_sidebar_cursor_widget_id(lua_State *L) {
         lua_pushstring(L, wid.c_str());
     }
     return 1;
+}
+
+// mep.sidebar_is_focused(id) -> bool: whether sidebar `id` currently
+// holds keyboard focus (Mode::Sidebar with this id) -- what makes
+// mep.sidebar_cursor()'s row belong to it, and what a re-render that
+// wants to put the cursor back (mep.sidebar_focus_row) must check first,
+// since focusing from any other mode would capture that mode as the one
+// to restore to.
+/**
+ * @brief Implements mep.sidebar_is_focused(id): reports whether a sidebar holds keyboard focus.
+ * @param L Lua state; arg 1 is the sidebar id.
+ * @return Number of values pushed (1: boolean).
+ */
+int l_sidebar_is_focused(lua_State *L) {
+    int id = static_cast<int>(luaL_checkinteger(L, 1));
+    Editor *ed = GetEditor(L);
+    lua_pushboolean(L, ed->CurrentMode() == Mode::Sidebar && ed->FocusedSidebarId() == id);
+    return 1;
+}
+
+// mep.sidebar_focus_row(id, row): focuses sidebar `id` with its cursor on
+// 1-indexed flattened `row` (clamped in range) -- Editor::FocusSidebarRow,
+// the same call a mouse click on a row makes. A Lua panel uses it to keep
+// the cursor on the same row across a re-render that removed rows.
+/**
+ * @brief Implements mep.sidebar_focus_row(id, row): focuses a sidebar and moves its cursor to a row.
+ * @param L Lua state; arg 1 is the sidebar id, arg 2 the 1-indexed row (clamped in range).
+ * @return Number of values pushed (0).
+ */
+int l_sidebar_focus_row(lua_State *L) {
+    int id = static_cast<int>(luaL_checkinteger(L, 1));
+    int row = static_cast<int>(luaL_checkinteger(L, 2)) - 1;
+    GetEditor(L)->FocusSidebarRow(id, std::max(0, row));
+    return 0;
 }
 
 // Reads a Lua array of {col_start=, col_end=, hl=} spans (1-indexed,
@@ -6244,6 +6383,11 @@ const luaL_Reg kMepFuncs[] = {
     {"termsend_candidates", l_termsend_candidates},
     {"activity_todo_load", l_activity_todo_load},
     {"activity_todo_save", l_activity_todo_save},
+    {"activity_todo_clock_status", l_activity_todo_clock_status},
+    {"activity_todo_clock_start", l_activity_todo_clock_start},
+    {"activity_todo_clock_stop", l_activity_todo_clock_stop},
+    {"activity_todo_retitle", l_activity_todo_retitle},
+    {"active_todo_set", l_active_todo_set},
     {"activity_test_failure_lines", l_activity_test_failure_lines},
     {"syntax_highlight_fallback", l_syntax_highlight_fallback},
     {"org_highlight_emphasis", l_org_highlight_emphasis},
@@ -6350,6 +6494,8 @@ const luaL_Reg kMepFuncs[] = {
     {"read_lines", l_read_lines},
     {"sidebar_cursor", l_sidebar_cursor},
     {"sidebar_cursor_widget_id", l_sidebar_cursor_widget_id},
+    {"sidebar_is_focused", l_sidebar_is_focused},
+    {"sidebar_focus_row", l_sidebar_focus_row},
     {"picker_open", l_picker_open},
     {"picker_set_items", l_picker_set_items},
     {"picker_set_preview", l_picker_set_preview},

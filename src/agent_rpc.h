@@ -92,6 +92,14 @@ struct AgentParticipant {
     // (COLLAB_CURSORS_PLAN.md Phase 1g, main.cpp's DrawAgentStatusBadge);
     // "" renders no badge at all, same as an agent predating this field.
     std::string status;
+    // The `:terminal` buffer this agent is running inside, or -1 if it
+    // didn't say (an agent started outside mep, or one predating this
+    // field). Reported by the agent itself in session.identify
+    // (mcp/server.ts reads it from $MEP_TERMINAL_BUFFER, which
+    // Editor::TerminalSpawn exports into every terminal it opens) -- what
+    // the AI-agents sidebar (kBuiltinAiTerminal, main.cpp) uses to pair a
+    // connected agent with the pane/tab/workspace to jump to.
+    int terminal_buffer_id = -1;
 };
 // Snapshots every currently-connected agent's identity/cursor/status.
 // Safe to call from the main thread at any time (including mid-PollOnce,

@@ -4536,6 +4536,69 @@ bool Editor::FocusPaneShowingBuffer(int buffer_id) {
     return true;
 }
 
+namespace {
+// Leaf whose visible buffer *or* any hidden buffer tab is `buffer_id`;
+// `*tab_index` (into pane.buffer_tabs) tells the caller which, so it can
+// bring a hidden tab to the front. Visible-match-first would be nicer in
+// a tie, but a buffer is only ever in one pane per tab in practice.
+SplitNode *FindLeafHoldingBuffer(SplitNode *node, int buffer_id, int *tab_index) {
+    if (!node) return nullptr;
+    if (node->dir == SplitDir::Leaf) {
+        if (node->pane.buffer_id == buffer_id) {
+            *tab_index = -1;
+            return node;
+        }
+        for (size_t i = 0; i < node->pane.buffer_tabs.size(); i++) {
+            if (node->pane.buffer_tabs[i] == buffer_id) {
+                *tab_index = static_cast<int>(i);
+                return node;
+            }
+        }
+        return nullptr;
+    }
+    for (auto &child : node->children) {
+        if (SplitNode *found = FindLeafHoldingBuffer(child.get(), buffer_id, tab_index)) return found;
+    }
+    return nullptr;
+}
+}  // namespace
+
+bool Editor::JumpToBuffer(int buffer_id) {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return false;
+    const int ws_id = buffers_[static_cast<size_t>(buffer_id)].workspace_id;
+    // -1 = unscoped (dashboard/scratch): visible from any workspace, so
+    // stay put. WorkspaceSwitch is a no-op when already there and also
+    // hops projects when the workspace belongs to another loaded one.
+    if (ws_id != -1 && ws_id != ActiveWorkspace().id && !WorkspaceSwitch(ws_id)) return false;
+
+    Workspace &ws = MutableActiveWorkspace();
+    for (size_t ti = 0; ti < ws.tabs.size(); ti++) {
+        int tab_index = -1;
+        SplitNode *leaf = FindLeafHoldingBuffer(ws.tabs[ti].root.get(), buffer_id, &tab_index);
+        if (!leaf) continue;
+        GoToTab(static_cast<int>(ti));
+        ws.tabs[ti].active_pane_id = leaf->pane.id;
+        if (tab_index >= 0) {
+            leaf->pane.buffer_tab_index = tab_index;
+            leaf->pane.buffer_id = buffer_id;
+        }
+        // Same mode bookkeeping as FocusPaneShowingBuffer: drop a live
+        // terminal's forwarding mode if focus left one, then re-derive
+        // the mode from the buffer landed on (Terminal again for a
+        // terminal, Normal otherwise -- which also leaves Mode::Sidebar
+        // when this was invoked from a sidebar's Enter).
+        if (mode_ == Mode::Terminal) mode_ = Mode::Normal;
+        ClampCursor();
+        SyncModeToActivePaneBuffer();
+        return true;
+    }
+    // Nowhere in this workspace's layout (its pane was closed): show it
+    // in the current pane instead so Enter still lands somewhere useful.
+    if (mode_ == Mode::Terminal) mode_ = Mode::Normal;
+    SwitchToBufferForLua(buffer_id);
+    return true;
+}
+
 int Editor::CursorRowForBuffer(int buffer_id) const {
     const Tab &tab = ActiveTab();
     int pane_id = FindPaneIdForBuffer(tab.root.get(), buffer_id);
@@ -4715,6 +4778,18 @@ void Editor::OpenTerminal(const std::string &args) {
 }
 
 void Editor::OpenTerminalInPlace(const std::string &args) {
+    const char *shell_env = std::getenv("SHELL");
+    std::string shell = (shell_env && *shell_env) ? shell_env : "/bin/sh";
+    std::vector<std::string> argv = args.empty() ? std::vector<std::string>{shell}
+                                                  : std::vector<std::string>{shell, "-c", args};
+    OpenTerminalInPlaceArgv(argv, args.empty() ? shell : args);
+}
+
+void Editor::OpenTerminalInPlaceArgv(const std::vector<std::string> &argv, const std::string &title) {
+    if (argv.empty()) {
+        status_message_ = "Failed to start terminal: empty command";
+        return;
+    }
     Tab &tab = ActiveTab();
     SplitNode *node = FindNode(tab.root.get(), tab.active_pane_id);
     if (!node) return;
@@ -4726,14 +4801,9 @@ void Editor::OpenTerminalInPlace(const std::string &args) {
     node->pane.buffer_tabs = {buffer_id};
     node->pane.buffer_tab_index = 0;
 
-    const char *shell_env = std::getenv("SHELL");
-    std::string shell = (shell_env && *shell_env) ? shell_env : "/bin/sh";
-    std::vector<std::string> argv = args.empty() ? std::vector<std::string>{shell}
-                                                  : std::vector<std::string>{shell, "-c", args};
-
     TerminalSession sess;
     sess.buffer_id = buffer_id;
-    sess.title = args.empty() ? shell : args;
+    sess.title = title.empty() ? argv[0] : title;
     // 24x80 is only a placeholder -- DrawPane calls ResizeTerminal with
     // the real pane's character-cell size on the very first frame it's
     // drawn, before any output can have arrived to be misjudged against
@@ -4822,11 +4892,28 @@ void Editor::TerminalSpawn(TerminalSession &sess, const std::vector<std::string>
     // explicit rather than inherited so a terminal opened in one worktree
     // stays there even after the process cwd follows a workspace switch.
     // MEP_WORKSPACE/MEP_PROJECT let shell prompts show where they are.
-    sess.job_id = JobManager::Instance().Spawn(argv, ActiveRoot(), std::move(cb), /*use_pty=*/true,
-                                                {{"TERM", "xterm-256color"},
-                                                 {"COLORTERM", "truecolor"},
-                                                 {"MEP_WORKSPACE", ActiveWorkspace().name},
-                                                 {"MEP_PROJECT", ActiveProject().name}});
+    //
+    // MEP_AGENT_SOCKET pins this window's own agent-control socket
+    // (agent_rpc.cpp) for anything started from inside the terminal --
+    // mcp/mep_client.ts's discoverSocketPath() honors it ahead of its
+    // *.sock directory scan, which errors out as ambiguous the moment a
+    // second mep window is open. An AI agent launched in a :terminal
+    // (mep.ai_terminal_open, kBuiltinAiTerminal in main.cpp) therefore
+    // always drives the very instance it's sitting in, never a sibling
+    // window. Only set when the socket actually bound (native builds;
+    // agent_rpc.h's wasm/Windows stub returns "").
+    std::vector<std::pair<std::string, std::string>> extra_env = {{"TERM", "xterm-256color"},
+                                                                  {"COLORTERM", "truecolor"},
+                                                                  {"MEP_WORKSPACE", ActiveWorkspace().name},
+                                                                  {"MEP_PROJECT", ActiveProject().name}};
+    std::string agent_socket = mep::agent::SocketPath();
+    if (!agent_socket.empty()) extra_env.emplace_back("MEP_AGENT_SOCKET", agent_socket);
+    // MEP_TERMINAL_BUFFER: this terminal's own buffer id, so an agent
+    // started inside it can report which pane it lives in (mcp/server.ts
+    // forwards it as session.identify's terminal_buffer_id) -- how the
+    // AI-agents sidebar pairs a connected agent with a jump target.
+    extra_env.emplace_back("MEP_TERMINAL_BUFFER", std::to_string(sess.buffer_id));
+    sess.job_id = JobManager::Instance().Spawn(argv, ActiveRoot(), std::move(cb), /*use_pty=*/true, std::move(extra_env));
     if (sess.job_id == 0) status_message_ = "Failed to start terminal";
 #endif
 }
@@ -14414,8 +14501,53 @@ void Editor::HandleRoamGraphInput() {
 
 // --- Whichkey (NVIM_PARITY_PLAN.md Part II Phase 11) -----------------------
 
+// Enter is the only non-printable key a leader sequence can contain (see
+// HandleWhichKeyInput); it's a literal '\r' byte internally, spelled
+// "<CR>" at the Lua/display boundary. Case-insensitive on the way in
+// ("<cr>"/"<Cr>"), and "<Return>"/"<Enter>" are accepted too, since all
+// three spellings are common in vim configs -- the display form is
+// always the canonical "<CR>".
+std::string Editor::NormalizeWhichKeySequence(const std::string &seq) {
+    static const char *const kEnterSpellings[] = {"<cr>", "<return>", "<enter>"};
+    std::string out;
+    size_t i = 0;
+    while (i < seq.size()) {
+        bool matched = false;
+        if (seq[i] == '<') {
+            for (const char *spelling : kEnterSpellings) {
+                size_t n = std::strlen(spelling);
+                if (i + n > seq.size()) continue;
+                bool eq = true;
+                for (size_t k = 0; k < n && eq; k++) {
+                    eq = std::tolower(static_cast<unsigned char>(seq[i + k])) == spelling[k];
+                }
+                if (eq) {
+                    out += '\r';
+                    i += n;
+                    matched = true;
+                    break;
+                }
+            }
+        }
+        if (!matched) out += seq[i++];
+    }
+    return out;
+}
+
+std::string Editor::WhichKeySequenceDisplay(const std::string &seq) {
+    std::string out;
+    for (char c : seq) {
+        if (c == '\r') {
+            out += "<CR>";
+        } else {
+            out += c;
+        }
+    }
+    return out;
+}
+
 void Editor::RegisterWhichKey(const std::string &sequence, const std::string &description, int lua_ref) {
-    whichkey_bindings_.push_back({sequence, description, lua_ref});
+    whichkey_bindings_.push_back({NormalizeWhichKeySequence(sequence), description, lua_ref});
 }
 
 void Editor::TriggerWhichKey() {
@@ -14448,24 +14580,32 @@ std::vector<std::pair<std::string, std::string>> Editor::WhichKeyDisplayEntries(
         const auto &leaves = bucket.second;
         auto group_it = leaves.size() > 1 ? whichkey_groups_.find(whichkey_prefix_ + bucket.first) : whichkey_groups_.end();
         if (group_it != whichkey_groups_.end()) {
-            out.emplace_back(std::string(1, bucket.first), "+" + group_it->second);
+            out.emplace_back(WhichKeySequenceDisplay(std::string(1, bucket.first)), "+" + group_it->second);
         } else {
-            for (const auto &leaf : leaves) out.push_back(leaf);
+            for (const auto &leaf : leaves) out.emplace_back(WhichKeySequenceDisplay(leaf.first), leaf.second);
         }
     }
     return out;
 }
 
 void Editor::HandleWhichKeyInput() {
+    // Enter arrives only through the key queue -- raylib's char queue
+    // (GetCharPressed) never carries it -- so it's picked up here, as the
+    // one non-printable key a sequence may contain (stored as '\r', see
+    // NormalizeWhichKeySequence). Escape still cancels, as before.
+    int cp = 0;
     for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
         if (key == KEY_ESCAPE) {
             RestoreFromOverlay();
             return;
         }
+        if (key == KEY_ENTER || key == KEY_KP_ENTER) cp = '\r';
     }
-    int cp = GetCharPressed();
-    if (cp <= 0) return;
-    if (cp < 32 || cp > 127) return;
+    if (cp == 0) {
+        cp = GetCharPressed();
+        if (cp <= 0) return;
+        if (cp < 32 || cp > 127) return;
+    }
     whichkey_prefix_ += static_cast<char>(cp);
 
     // Exact match: fire it and leave, regardless of any longer sequences
@@ -14481,7 +14621,7 @@ void Editor::HandleWhichKeyInput() {
     }
     // No binding starts with this prefix: nothing to descend into, cancel.
     if (WhichKeyMatches().empty()) {
-        status_message_ = "No such group: " + whichkey_prefix_;
+        status_message_ = "No such group: " + WhichKeySequenceDisplay(whichkey_prefix_);
         RestoreFromOverlay();
     }
 }
@@ -19672,7 +19812,8 @@ std::vector<Editor::ParticipantInfo> Editor::Participants() const {
         result.push_back({peer.id, peer.name, ParticipantKind::Human, collaboration_buffer_id_, peer.row, peer.col, peer.has_location, ""});
     }
     for (const auto &agent : mep::agent::AgentParticipants()) {
-        result.push_back({agent.id, agent.name, ParticipantKind::Agent, agent.buffer_id, agent.row, agent.col, agent.has_location, agent.status});
+        result.push_back({agent.id, agent.name, ParticipantKind::Agent, agent.buffer_id, agent.row, agent.col, agent.has_location, agent.status,
+                          agent.terminal_buffer_id});
     }
     for (const auto &local : local_participants_) {
         result.push_back(local);

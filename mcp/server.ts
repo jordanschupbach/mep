@@ -447,8 +447,17 @@ server.registerTool(
 // -- but don't let a failure here (mep not running yet, socket discovery
 // ambiguous) crash the MCP server itself. A tool call will surface that
 // same error clearly to the model when it actually tries to do something.
+//
+// MEP_TERMINAL_BUFFER is set by mep itself in every `:terminal` it opens
+// (Editor::TerminalSpawn) and inherited down through claude to this
+// process -- reporting it pairs this agent with the terminal pane it's
+// running in, which is what mep's AI-agents sidebar jumps to. Absent
+// (agent started from an outside terminal) it's simply not sent.
 try {
-  await mep.call("session.identify", { name: Deno.env.get("MEP_AGENT_NAME") ?? "Claude" });
+  const identity: Record<string, unknown> = { name: Deno.env.get("MEP_AGENT_NAME") ?? "Claude" };
+  const terminalBuffer = Number(Deno.env.get("MEP_TERMINAL_BUFFER") ?? "");
+  if (Number.isInteger(terminalBuffer) && terminalBuffer >= 0) identity.terminal_buffer_id = terminalBuffer;
+  await mep.call("session.identify", identity);
 } catch (err) {
   // Not fatal -- see comment above -- but still worth a trace: this is the
   // one failure mode with no other visible symptom (mep's tab-bar agent

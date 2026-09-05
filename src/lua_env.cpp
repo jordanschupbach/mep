@@ -249,6 +249,49 @@ int l_participant_clear(lua_State *L) {
     return 0;
 }
 
+// mep.participants() -> array of {id=, name=, kind='human'|'agent',
+// buffer_id=, row=, col= (1-indexed, only when has_location), has_location=,
+// status=, terminal_buffer_id=} -- the same Editor::Participants() snapshot
+// the tab-bar chips draw from (collab peers, socket-connected mep-agents,
+// and mep.participant_set locals alike). A fresh pull each call, so poll
+// it (mep.on_frame with a change hash, the way the AI-agents sidebar in
+// kBuiltinAiTerminal does) rather than expecting an event.
+/**
+ * @brief Implements mep.participants(): lists every current participant (human collaborators, connected agents, synthetic locals).
+ * @param L Lua state.
+ * @return Number of values pushed (1: array of participant tables).
+ */
+int l_participants(lua_State *L) {
+    std::vector<Editor::ParticipantInfo> parts = GetEditor(L)->Participants();
+    lua_createtable(L, static_cast<int>(parts.size()), 0);
+    for (size_t i = 0; i < parts.size(); i++) {
+        const Editor::ParticipantInfo &p = parts[i];
+        lua_createtable(L, 0, 9);
+        lua_pushlstring(L, p.id.data(), p.id.size());
+        lua_setfield(L, -2, "id");
+        lua_pushlstring(L, p.name.data(), p.name.size());
+        lua_setfield(L, -2, "name");
+        lua_pushstring(L, p.kind == Editor::ParticipantKind::Agent ? "agent" : "human");
+        lua_setfield(L, -2, "kind");
+        lua_pushinteger(L, p.buffer_id);
+        lua_setfield(L, -2, "buffer_id");
+        lua_pushboolean(L, p.has_location);
+        lua_setfield(L, -2, "has_location");
+        if (p.has_location) {
+            lua_pushinteger(L, p.row + 1);
+            lua_setfield(L, -2, "row");
+            lua_pushinteger(L, p.col + 1);
+            lua_setfield(L, -2, "col");
+        }
+        lua_pushlstring(L, p.status.data(), p.status.size());
+        lua_setfield(L, -2, "status");
+        lua_pushinteger(L, p.terminal_buffer_id);
+        lua_setfield(L, -2, "terminal_buffer_id");
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+    return 1;
+}
+
 /**
  * @brief Implements mep.insert_text(text): inserts text at the cursor position.
  * @param L Lua state; arg 1 is the text to insert.
@@ -447,7 +490,10 @@ int l_leader_bindings(lua_State *L) {
     lua_createtable(L, static_cast<int>(bindings.size()), 0);
     for (size_t i = 0; i < bindings.size(); i++) {
         lua_createtable(L, 0, 2);
-        lua_pushlstring(L, bindings[i].sequence.data(), bindings[i].sequence.size());
+        // Display form: Enter comes back as "<CR>", the same spelling
+        // mep.leader_map accepted it in.
+        std::string seq = Editor::WhichKeySequenceDisplay(bindings[i].sequence);
+        lua_pushlstring(L, seq.data(), seq.size());
         lua_setfield(L, -2, "seq");
         lua_pushlstring(L, bindings[i].description.data(), bindings[i].description.size());
         lua_setfield(L, -2, "desc");
@@ -689,6 +735,37 @@ int l_sidebar_default_cols(lua_State *L) {
  */
 int l_terminal_here(lua_State *L) {
     GetEditor(L)->OpenTerminalInPlace(luaL_optstring(L, 1, ""));
+    return 0;
+}
+
+// mep.terminal_here_argv(argv, title?): like mep.terminal_here, but runs
+// `argv` (an array of strings, argv[1] resolved via PATH) directly with
+// no `$SHELL -c` wrapper -- for callers whose arguments would otherwise
+// need shell quoting (kBuiltinAiTerminal passes a multi-line system
+// prompt as one argument). `title` is the buffer tab's label; defaults
+// to argv[1].
+/**
+ * @brief Implements mep.terminal_here_argv(argv, title?): attaches a terminal running `argv` directly (no shell) to the active pane.
+ * @param L Lua state; arg 1 is an array of strings (program + arguments), optional arg 2 the tab title.
+ * @return Number of values pushed (0).
+ */
+int l_terminal_here_argv(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    std::vector<std::string> argv;
+    lua_Integer n = luaL_len(L, 1);
+    for (lua_Integer i = 1; i <= n; i++) {
+        lua_rawgeti(L, 1, i);
+        if (!lua_isstring(L, -1)) {
+            lua_pop(L, 1);
+            return luaL_error(L, "terminal_here_argv: argv[%d] is not a string", static_cast<int>(i));
+        }
+        size_t len = 0;
+        const char *s = lua_tolstring(L, -1, &len);
+        argv.emplace_back(s, len);
+        lua_pop(L, 1);
+    }
+    if (argv.empty()) return luaL_error(L, "terminal_here_argv: argv is empty");
+    GetEditor(L)->OpenTerminalInPlaceArgv(argv, luaL_optstring(L, 2, ""));
     return 0;
 }
 
@@ -2767,6 +2844,69 @@ int l_pane_buffers(lua_State *L) {
 int l_pane_focus_buffer(lua_State *L) {
     int id = static_cast<int>(luaL_checkinteger(L, 1));
     lua_pushboolean(L, GetEditor(L)->FocusPaneShowingBuffer(id));
+    return 1;
+}
+
+// mep.jump_to_buffer(id) -> bool: mep.pane_focus_buffer's cross-workspace,
+// cross-tab big sibling (Editor::JumpToBuffer) -- switches to the buffer's
+// workspace, then the tab and pane holding it (activating a hidden buffer
+// tab if that's where it is), showing it in the current pane as a last
+// resort. False only for an invalid id / an unswitchable workspace.
+/**
+ * @brief Implements mep.jump_to_buffer(id): switches workspace/tab/pane to land on a buffer wherever it lives.
+ * @param L Lua state; arg 1 is the buffer id.
+ * @return Number of values pushed (1: boolean success).
+ */
+int l_jump_to_buffer(lua_State *L) {
+    int id = static_cast<int>(luaL_checkinteger(L, 1));
+    lua_pushboolean(L, GetEditor(L)->JumpToBuffer(id));
+    return 1;
+}
+
+// mep.buffer_workspace(id) -> workspace id owning the buffer, or nil for an
+// unscoped buffer (-1: dashboard/scratch) or an invalid id. Pair with
+// mep.workspace_list() for the name.
+/**
+ * @brief Implements mep.buffer_workspace(id): the stable id of the workspace a buffer belongs to.
+ * @param L Lua state; arg 1 is the buffer id.
+ * @return Number of values pushed (1: integer workspace id, or nil).
+ */
+int l_buffer_workspace(lua_State *L) {
+    int id = static_cast<int>(luaL_checkinteger(L, 1));
+    int ws = GetEditor(L)->BufferWorkspaceId(id);
+    if (ws < 0) {
+        lua_pushnil(L);
+    } else {
+        lua_pushinteger(L, ws);
+    }
+    return 1;
+}
+
+// mep.terminal_info(buffer_id) -> {title=, exited=, exit_code=} for a real
+// `:terminal` buffer, nil otherwise. `title` is the live one: whatever the
+// program last set via an OSC 0/1/2 title sequence (Claude Code keeps its
+// current task summary there, which is what the AI-agents sidebar shows as
+// the running task), falling back to the argv[0]/`:terminal <cmd>` label.
+/**
+ * @brief Implements mep.terminal_info(buffer_id): live title and exit state of a `:terminal` buffer.
+ * @param L Lua state; arg 1 is the buffer id.
+ * @return Number of values pushed (1: table, or nil for a non-terminal buffer).
+ */
+int l_terminal_info(lua_State *L) {
+    int id = static_cast<int>(luaL_checkinteger(L, 1));
+    const TerminalSession *sess = GetEditor(L)->GetTerminal(id);
+    if (!sess) {
+        lua_pushnil(L);
+        return 1;
+    }
+    const std::string &title = (sess->vterm && !sess->vterm->Title().empty()) ? sess->vterm->Title() : sess->title;
+    lua_createtable(L, 0, 3);
+    lua_pushlstring(L, title.data(), title.size());
+    lua_setfield(L, -2, "title");
+    lua_pushboolean(L, sess->exited);
+    lua_setfield(L, -2, "exited");
+    lua_pushinteger(L, sess->exit_code);
+    lua_setfield(L, -2, "exit_code");
     return 1;
 }
 
@@ -6188,6 +6328,7 @@ const luaL_Reg kMepFuncs[] = {
     {"current_buffer", l_current_buffer},
     {"participant_set", l_participant_set},
     {"participant_clear", l_participant_clear},
+    {"participants", l_participants},
     {"visual_change", l_visual_change},
     {"enter_normal", l_enter_normal},
     {"enter_insert", l_enter_insert},
@@ -6212,6 +6353,7 @@ const luaL_Reg kMepFuncs[] = {
     {"cmd", l_cmd},
     {"open", l_open},
     {"terminal_here", l_terminal_here},
+    {"terminal_here_argv", l_terminal_here_argv},
     {"is_terminal_buffer", l_is_terminal_buffer},
     {"terminal_write", l_terminal_write},
     {"sidebar_default_cols", l_sidebar_default_cols},
@@ -6363,6 +6505,9 @@ const luaL_Reg kMepFuncs[] = {
     {"buffer_count", l_buffer_count},
     {"pane_buffers", l_pane_buffers},
     {"pane_focus_buffer", l_pane_focus_buffer},
+    {"jump_to_buffer", l_jump_to_buffer},
+    {"buffer_workspace", l_buffer_workspace},
+    {"terminal_info", l_terminal_info},
     {"buffer_cursor_row", l_buffer_cursor_row},
     {"command_names", l_command_names},
     {"colorscheme", l_colorscheme},

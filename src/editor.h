@@ -1754,6 +1754,28 @@ public:
      * @return True if a pane showing that buffer was found and focused, false otherwise.
      */
     bool FocusPaneShowingBuffer(int buffer_id);
+    // The cross-workspace, cross-tab version of FocusPaneShowingBuffer:
+    // switches to the workspace (and project) owning `buffer_id`, then to
+    // the first tab of it with a pane holding that buffer -- visible, or
+    // as a hidden buffer tab, which gets activated -- and focuses that
+    // pane. Falls back to showing the buffer in the current pane when no
+    // pane holds it at all. What the AI-agents sidebar's Enter does
+    // (kBuiltinAiTerminal, main.cpp) to land on an agent's terminal.
+    /**
+     * @brief Switches workspace/tab/pane as needed to focus a pane holding the given buffer, showing it in the current pane as a last resort.
+     * @param buffer_id The buffer id to jump to.
+     * @return False only if the buffer id is invalid or its workspace can't be activated.
+     */
+    bool JumpToBuffer(int buffer_id);
+    /**
+     * @brief Returns the workspace id a buffer belongs to (-1 for unscoped buffers or an invalid id).
+     * @param buffer_id The buffer id.
+     * @return The owning workspace's stable id, or -1.
+     */
+    int BufferWorkspaceId(int buffer_id) const {
+        if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return -1;
+        return buffers_[static_cast<size_t>(buffer_id)].workspace_id;
+    }
     // Cursor row (0-indexed) of whichever pane in the active tab shows
     // buffer_id, without changing focus -- -1 if no pane shows it. Lets a
     // Lua consumer that keeps its own buffer id around (e.g.
@@ -4278,6 +4300,17 @@ public:
      * @param args Same contract as OpenTerminal: empty for an interactive shell, non-empty to run `shell -c args`.
      */
     void OpenTerminalInPlace(const std::string &args);
+    // The argv form OpenTerminalInPlace itself builds on: runs `argv`
+    // directly (execvp, no `$SHELL -c` in between -- so no shell quoting
+    // for callers passing a multi-line argument like a system prompt) in
+    // the currently active pane. `title` is what the pane's buffer tab
+    // shows; empty falls back to argv[0]. Behind mep.terminal_here_argv.
+    /**
+     * @brief Attaches a terminal running `argv` directly (no shell wrapper) to the currently active pane in place.
+     * @param argv Program and arguments; argv[0] is resolved via PATH.
+     * @param title Buffer-tab title; empty uses argv[0].
+     */
+    void OpenTerminalInPlaceArgv(const std::vector<std::string> &argv, const std::string &title);
 
     // Also used directly by main.cpp to open a file passed on argv (native
     // builds only -- a no-op with a status message under Emscripten).
@@ -4464,6 +4497,9 @@ public:
         // the agent has never reported one. See agent_rpc.h's
         // AgentParticipant::status for where this comes from.
         std::string status;
+        // Agent-only: the `:terminal` buffer the agent runs inside, -1 if
+        // unknown (see AgentParticipant::terminal_buffer_id).
+        int terminal_buffer_id = -1;
     };
     /**
      * @brief Returns a unified, freshly-recomputed view of every remote editor of this project: human collaborators and connected AI agents.
@@ -5444,7 +5480,26 @@ public:
      * @param prefix The shared key sequence prefix.
      * @param label The group's display label.
      */
-    void RegisterWhichKeyGroup(const std::string &prefix, const std::string &label) { whichkey_groups_[prefix] = label; }
+    void RegisterWhichKeyGroup(const std::string &prefix, const std::string &label) {
+        whichkey_groups_[NormalizeWhichKeySequence(prefix)] = label;
+    }
+    // Leader sequences are stored one byte per key. Enter is the one
+    // non-printable key HandleWhichKeyInput accepts (so a binding like
+    // <leader>a<CR> can exist); it's kept as a literal '\r' internally,
+    // while Lua callers spell it "<CR>" (also "<cr>", "<Return>",
+    // "<Enter>") the way vim does. These two convert between the spellings.
+    /**
+     * @brief Converts a Lua-facing leader sequence ("a<CR>") to the internal one-byte-per-key form ("a\r").
+     * @param seq The sequence as written in mep.leader_map/mep.leader_group.
+     * @return The normalized sequence.
+     */
+    static std::string NormalizeWhichKeySequence(const std::string &seq);
+    /**
+     * @brief Converts an internal leader sequence back to its display form, spelling Enter as "<CR>".
+     * @param seq A sequence (or sequence suffix/prefix) in the internal form.
+     * @return The human-readable form.
+     */
+    static std::string WhichKeySequenceDisplay(const std::string &seq);
     // What DrawWhichKeyOverlay actually lists: WhichKeyMatches() bucketed
     // by their next character, collapsed to one "+label" row per bucket
     // that both has more than one leaf *and* a registered group label;

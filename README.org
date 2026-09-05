@@ -287,6 +287,41 @@ Any mode: =Ctrl+Shift+== / =Ctrl+Shift+-= grow/shrink the font (the
 window opens maximized/fullscreen, and both the native window and the
 wasm canvas resize the editor to fill whatever size they're given).
 
+AI terminal: =<leader>a<CR>= (also =:aiterminal= / =:aiterm= /
+=:MepAiTerminal=, or =mep.ai_terminal_open()=) splits the current pane
+and runs Claude Code in a =:terminal= pane *below* it, focused, with an
+appended system prompt that explains it is inside this mep window and
+how to drive it through the =mep-agent= MCP server (=mcp/server.ts=:
+tool names, 0-indexed/end-exclusive conventions, the virtual cursor,
+and to edit open files through mep's buffer tools rather than behind
+its back). Every =:terminal= exports =$MEP_AGENT_SOCKET= (this window's
+own agent socket), which the MCP server honors ahead of its directory
+scan, so the agent always lands on the window it was launched from
+even with several open. The server is expected to be registered with
+Claude Code already (=claude mcp add mep-agent -- deno run --allow-net
+--allow-read --allow-write --allow-env /path/to/mep/mcp/server.ts=);
+alternatively =mep.opt.ai_terminal_mcp_server = '/path/to/mep/mcp/server.ts'=
+passes it inline via =--mcp-config=. =mep.opt.ai_terminal_cmd= (default
+={'claude'}=, e.g. ={'claude', '--model', 'opus'}=),
+=mep.opt.ai_terminal_share= (the terminal's height fraction, =0.4=) and
+=mep.opt.ai_terminal_instructions= (the prompt text; set to ='''= to send
+none) are all =init.lua=-overridable.
+
+AI agents sidebar: =<leader>al= (also =:aiagents= / =:MepAiAgents=, the
+=AI Agents= top-bar button, or the =Activity= picker) lists every AI
+agent in this window, grouped by workspace: its name, status badge
+(=thinking= / =writing= / =needs input= / =done= / =starting= /
+=exited=) and, on a dimmed second row, the running task -- the
+terminal's live OSC title, which Claude Code keeps set to a summary of
+what it is doing. Enter (or a click) on a row jumps to the workspace,
+tab and pane holding that agent's terminal, activating a hidden buffer
+tab if that is where it lives; =n= opens a new AI terminal, =r= forces a
+re-scan (it polls twice a second on its own while open). Agents that
+connected from a terminal mep didn't open are listed under =outside
+mep= and jump to their cursor's buffer instead. Pairing works because
+every =:terminal= exports =$MEP_TERMINAL_BUFFER= and the MCP server
+reports it as =terminal_buffer_id= in =session.identify=.
+
 *** Lua API
 
 Available to =:lua=, =:source=, and =init.lua=:
@@ -323,6 +358,27 @@ Available to =:lua=, =:source=, and =init.lua=:
 - =mep.cmd(str)= — runs =str= as if typed after =:= and Enter pressed
   (e.g. =mep.cmd(\"vsplit\")=); a general escape hatch for driving any
   ex-command from Lua.
+- =mep.leader_map(seq, desc, fn)= — binds a key sequence after the
+  leader (space), shown in the which-key popup; =mep.leader_group(prefix,
+  label)= names a group. =seq= is one character per key, except Enter,
+  spelled =<CR>= (=<Return>=/=<Enter>= also accepted): =mep.leader_map('a<CR>', ...)=.
+- =mep.terminal_here(args?)= — turns the active pane into a =:terminal=
+  in place (no split); =args= runs =$SHELL -c args=.
+- =mep.terminal_here_argv(argv, title?)= — same, but runs the =argv=
+  array directly with no shell in between (for arguments that would
+  otherwise need shell quoting, like a multi-line prompt); =title=
+  labels the buffer tab (default =argv[1]=).
+- =mep.terminal_info(buffer_id)= -> ={title=, exited=, exit_code=}= for
+  a =:terminal= buffer (=title= is the live OSC title, falling back to
+  the launch label), =nil= otherwise.
+- =mep.participants()= -> array of ={id=, name=, kind='human'|'agent',
+  buffer_id=, row=, col=, has_location=, status=, terminal_buffer_id=}=
+  — the same snapshot the tab-bar chips draw from.
+- =mep.buffer_workspace(buffer_id)= -> the owning workspace's id, or
+  =nil= for an unscoped buffer.
+- =mep.jump_to_buffer(buffer_id)= -> bool — switches workspace, tab and
+  pane to land on a buffer wherever it lives (=mep.pane_focus_buffer=
+  only searches the active tab).
 - =mep.quit()=
 
 ** Layout

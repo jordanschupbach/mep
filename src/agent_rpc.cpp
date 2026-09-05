@@ -88,6 +88,11 @@ struct Connection {
     // call, since that *is* directly observable here -- see Dispatch's
     // session.setStatus case and each buffer.* handler below.
     std::string status;
+    // See AgentParticipant::terminal_buffer_id (agent_rpc.h): -1 until a
+    // session.identify call carries one; validated against the editor's
+    // buffer range at that point, never re-checked (a terminal closing
+    // later just leaves a stale id the sidebar filters out itself).
+    int terminal_buffer_id = -1;
 
     // Always owned behind a std::unique_ptr<Connection> (see `connections`
     // below) and never copied or moved -- holds a std::thread that ~Connection
@@ -283,6 +288,7 @@ Json ParticipantJson(const Editor::ParticipantInfo &p) {
     j["has_location"] = p.has_location;
     if (p.has_location) j["cursor"] = CursorJson(p.row, p.col);
     j["status"] = p.status;  // "" for a human peer, or an agent that hasn't reported one
+    j["terminal_buffer_id"] = p.terminal_buffer_id;  // -1 unless the agent identified with one
     return j;
 }
 
@@ -431,6 +437,13 @@ Json Dispatch(Editor &editor, Connection &conn, const std::string &method, const
     if (method == "session.identify") {
         const std::string name = params.get("name").as_string();
         if (!name.empty()) conn.display_name = name;
+        // Optional; only ever set, never cleared -- an agent re-identifying
+        // to rename itself (mep_identify's documented use) normally omits
+        // it, and shouldn't lose its terminal pairing for that.
+        const int terminal_buffer_id = params.get("terminal_buffer_id").as_int(-1);
+        if (terminal_buffer_id >= 0 && terminal_buffer_id < editor.BufferCountForLua()) {
+            conn.terminal_buffer_id = terminal_buffer_id;
+        }
         // A registered (identified) agent should have a real, visible
         // cursor right away, not only once it happens to make its first
         // edit -- see EnsureConnCursorInitialized's own comment for the
@@ -1273,6 +1286,7 @@ std::vector<AgentParticipant> AgentParticipants() {
         p.col = conn->cursor.col;
         p.has_location = conn->cursor_buffer_id >= 0;
         p.status = conn->status;
+        p.terminal_buffer_id = conn->terminal_buffer_id;
         result.push_back(std::move(p));
     }
     return result;

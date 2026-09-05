@@ -2009,6 +2009,8 @@ const char *kKeybindingsText =
     "  :wssave  :wsrestore            save / restore this project's layout\n"
     "\n"
     "  Alt+s / Alt+v                  split (horizontal / vertical)\n"
+    "  :aiterminal  <leader>a<CR>     Claude Code terminal below, driving this window via mep-agent\n"
+    "  :aiagents    <leader>al        AI agents sidebar (status, task, workspace; Enter jumps to its terminal)\n"
     "  Alt+h j k l                    move focus left / down / up / right\n"
     "  Alt+Shift+h j k l              resize pane left / down / up / right\n"
     "  Alt+Ctrl+h j k l               move active tab into pane that way\n"
@@ -10248,8 +10250,9 @@ const char *kBuiltinActivityBar =
     // Aggregating entry point: a picker over the four panels rather than
     // a persistent icon column (see the phase's own scope-cut note).
     "function mep.activity_bar_open()\n"
-    "  mep.picker_open('Activity', {'Notifications', 'Todo', 'Tests', 'Git'}, function(choice)\n"
+    "  mep.picker_open('Activity', {'Notifications', 'Todo', 'Tests', 'Git', 'AI Agents'}, function(choice)\n"
     "    if choice == 'Notifications' then mep.cmd('MepNotifyPanel')\n"
+    "    elseif choice == 'AI Agents' then mep.cmd('MepAiAgents')\n"
     "    elseif choice == 'Todo' then mep.activity_todo_panel()\n"
     "    elseif choice == 'Tests' then mep.activity_test_panel()\n"
     "    elseif choice == 'Git' then mep.cmd('MepGitStatus') end\n"
@@ -11038,6 +11041,255 @@ const char *kBuiltinAi =
     "  end)\n"
     "end\n"
     "mep.command('MepAiAgent', mep.ai_agent_prompt)\n";
+
+// AI terminal (<leader>a<CR>, :aiterminal / :aiterm / :MepAiTerminal):
+// splits the current pane and runs Claude Code in a real :terminal pane
+// *below* it, with a system prompt (mep.opt.ai_terminal_instructions)
+// telling it that it lives inside this mep window and exactly how to
+// drive it through the mep-agent MCP server (mcp/server.ts) -- the tool
+// names, 0-indexed/end-exclusive conventions, the virtual-cursor model,
+// and the "edit open files through mep, not behind its back" rule that
+// mep_* tool descriptions alone don't convey.
+//
+// Which window it drives: Editor::TerminalSpawn exports MEP_AGENT_SOCKET
+// = this instance's own agent socket into the terminal's environment,
+// and the MCP server (a child of claude, so it inherits that) honors it
+// ahead of its directory scan -- so even with several mep windows open,
+// the agent always lands on the one it was launched from.
+//
+// The MCP server itself is expected to already be registered with Claude
+// Code (`claude mcp add mep-agent -- deno run ... mcp/server.ts`, the
+// documented setup); mep.opt.ai_terminal_mcp_server = '/path/to/mcp/
+// server.ts' instead passes an inline --mcp-config so nothing has to be
+// registered globally. The instructions go via --append-system-prompt,
+// so Claude Code's own default system prompt stays intact.
+//
+// Everything is an init.lua-overridable mep.opt.* (command argv, split
+// share, instructions, server path) -- `mep.opt.ai_terminal_cmd =
+// {'claude', '--model', 'opus'}` and the like are the expected way to
+// customize, not editing this chunk.
+//
+// mep.terminal_here_argv (not `:terminal <string>`) because the prompt is
+// a multi-line, quote-laden argument that would otherwise need shell
+// quoting on its way through `$SHELL -c`. Split direction: `:split`
+// opens the new pane above and focuses it, so -- same recipe as
+// mep.project_open (kBuiltinFileTree) -- step down into the original
+// pane pushed to the bottom and turn *that* one into the terminal, which
+// leaves the human's file exactly where it was, on top, and the terminal
+// focused underneath (Mode::Terminal, so typing goes straight to Claude).
+const char *kBuiltinAiTerminal =
+    "mep.opt = mep.opt or {}\n"
+    "mep.opt.ai_terminal_cmd = mep.opt.ai_terminal_cmd or {'claude'}\n"
+    "mep.opt.ai_terminal_share = mep.opt.ai_terminal_share or 0.4\n"
+    "mep.opt.ai_terminal_instructions = mep.opt.ai_terminal_instructions or [==[\n"
+    "You are running inside a terminal pane of mep, a graphical code editor. The human launched you from the editor itself (the :aiterminal command / <leader>a<CR>) and is working in the other panes of this same mep window, where they can see everything you do. Drive the editor through the mep-agent MCP server (tools named mep_*). It is already attached to this exact window: mep exported MEP_AGENT_SOCKET into your environment, so no socket discovery or configuration is needed.\n"
+    "\n"
+    "## Ground rules\n"
+    "- Orient yourself before touching the editor: mep_session_info (project, workspace, cwd, git branch, open files) and mep_state_dump (every buffer's id, filename, modified flag, line count, plus the full pane layout and which pane is active).\n"
+    "- Report progress with mep_set_status: \"thinking\" when you start a task, \"awaiting_input\" when you have asked the human something and are waiting, \"done\" when finished. The human sees it as a badge next to your name in mep's tab bar and has no other view of your reasoning.\n"
+    "- Edit files the human has open in mep through mep's own buffer tools (mep_buffer_get_lines, mep_buffer_set_lines, mep_buffer_replace_lines, mep_buffer_set_line, mep_buffer_insert_text), not by writing to disk behind mep's back: mep does not watch files for external changes, so a disk write will not show up in an open buffer, and the human saving that buffer later would overwrite your change. Save with mep_file_save when done, or leave the buffer modified and say so if the human may want to review first. If you did write to disk, tell the human they can reload with :e!.\n"
+    "- Files that are not open in mep can be edited with your ordinary file tools; open them in mep afterwards with mep_file_open if the human should look at them.\n"
+    "- Never run destructive ex-commands (qa!, q!, wsdelete, projectclose) through mep_command_run unless the human explicitly asked for that.\n"
+    "- Call mep_poll_events after a pause or before acting on assumptions: it returns everything that changed since your last check (cursor moves, buffer edits, pane focus, mode changes, notifications), including the human's own activity.\n"
+    "\n"
+    "## API conventions\n"
+    "- Rows and columns are 0-indexed. Line ranges are [start, end) with end exclusive.\n"
+    "- You have your own virtual cursor (mep_cursor_get, mep_cursor_set, mep_buffer_switch), drawn in the human's panes under your name; moving it never moves the human's cursor or changes what their panes show. mep_buffer_insert_text, mep_buffer_set_line and mep_buffer_replace_lines act on the buffer your cursor is in; mep_buffer_get_lines and mep_buffer_set_lines take an explicit buffer_id. mep_buffer_create makes a new empty buffer without displaying it.\n"
+    "- Buffer ids come from mep_buffer_list (active workspace, or workspace=\"all\") and mep_state_dump; mep_buffer_filename maps an id back to its path (\"\" for unsaved and terminal buffers).\n"
+    "- Layout: mep_pane_split (dir horizontal|vertical, optional file), mep_pane_close, mep_pane_focus(pane_id), mep_pane_resize(direction, step), mep_pane_get, mep_pane_split_with_buffer. Splitting focuses the new pane and changes what the human is looking at, so do it deliberately, e.g. to show them a file you want reviewed.\n"
+    "- Workspaces and projects: mep_workspace_list / _switch / _create / _delete and mep_project_list / _switch / _open. A workspace is a git worktree; switching one also changes the working directory to it.\n"
+    "- mep_command_run runs any \":\" ex-command without the colon (\"w\", \"e path\", \"split\", \"s/foo/bar/g\") -- the escape hatch for anything without a dedicated tool. There is no terminal tool; \"terminal <cmd>\" opens one.\n"
+    "- mep_identify renames yourself; mep_list_participants shows everyone connected, humans and agents alike.\n"
+    "\n"
+    "If no mep_* tools are available, the mep-agent MCP server is not registered with Claude Code or failed to start (it needs deno on PATH). Tell the human; it is registered with:\n"
+    "  claude mcp add mep-agent -- deno run --allow-net --allow-read --allow-write --allow-env /path/to/mep/mcp/server.ts\n"
+    "]==]\n"
+    // Assembled fresh on every open so init.lua/`:lua` tweaks to any
+    // mep.opt.ai_terminal_* take effect for the next terminal, not just
+    // the first.
+    "function mep.ai_terminal_argv()\n"
+    "  local argv = {}\n"
+    "  for _, a in ipairs(mep.opt.ai_terminal_cmd) do argv[#argv + 1] = tostring(a) end\n"
+    "  if mep.opt.ai_terminal_mcp_server and #mep.opt.ai_terminal_mcp_server > 0 then\n"
+    "    argv[#argv + 1] = '--mcp-config'\n"
+    "    argv[#argv + 1] = string.format('{\"mcpServers\":{\"mep-agent\":{\"type\":\"stdio\",\"command\":\"deno\",'\n"
+    "      .. '\"args\":[\"run\",\"--allow-net\",\"--allow-read\",\"--allow-write\",\"--allow-env\",\"%s\"]}}}',\n"
+    "      mep.opt.ai_terminal_mcp_server)\n"
+    "  end\n"
+    "  if mep.opt.ai_terminal_instructions and #mep.opt.ai_terminal_instructions > 0 then\n"
+    "    argv[#argv + 1] = '--append-system-prompt'\n"
+    "    argv[#argv + 1] = mep.opt.ai_terminal_instructions\n"
+    "  end\n"
+    "  return argv\n"
+    "end\n"
+    // Every terminal mep.ai_terminal_open started, keyed by buffer id --
+    // so the agents sidebar below can list one that is still booting (no
+    // agent connected yet) or whose agent already went away (claude
+    // exited), not just the ones currently holding a mep-agent socket.
+    // Entries whose terminal buffer is gone are dropped on the next scan.
+    "mep.ai_terminals = {}\n"
+    "function mep.ai_terminal_open()\n"
+    "  mep.cmd('split')\n"
+    "  mep.nav_pane('down')\n"
+    "  mep.terminal_here_argv(mep.ai_terminal_argv(), 'claude')\n"
+    "  mep.pane_set_share(mep.opt.ai_terminal_share)\n"
+    "  local buf = mep.current_buffer()\n"
+    "  if mep.is_terminal_buffer(buf) then mep.ai_terminals[buf] = {opened = mep.now()} end\n"
+    "end\n"
+    "mep.command('MepAiTerminal', mep.ai_terminal_open)\n"
+    "mep.command('aiterminal', mep.ai_terminal_open)\n"
+    "mep.command('aiterm', mep.ai_terminal_open)\n"
+    "mep.leader_map('a<CR>', 'AI: Claude Code terminal below', mep.ai_terminal_open)\n"
+
+    // --- AI agents sidebar (<leader>al, :aiagents / :MepAiAgents) --------
+    // One section per workspace (plus "outside mep" for agents that
+    // connected from a terminal mep didn't open), one row per agent:
+    // name, status badge text, and -- on a second, dimmed row -- the
+    // running task, taken from the terminal's live OSC title, which
+    // Claude Code keeps set to a short summary of what it's doing.
+    // Enter (or a click) on either row jumps to the workspace, tab and
+    // pane holding that agent's terminal via mep.jump_to_buffer; an
+    // agent without a terminal pairing jumps to its cursor's buffer
+    // instead. Sources are pull-only (mep.participants(), mep.terminal_
+    // info()), so it re-scans twice a second while open and only
+    // re-renders when the joined row key actually changed -- same
+    // "refresh-if-stale" idiom as kBuiltinActivityBar's Todo panel, so
+    // the sidebar cursor isn't disturbed by a no-op refresh.
+    "local mep_ai_agents_sidebar_id = nil\n"
+    "local mep_ai_agents_rendered = nil\n"
+    "local MEP_AI_STATUS_HL = {thinking = 'Yellow', writing = 'Blue', awaiting_input = 'Orange', done = 'Green', idle = 'Comment'}\n"
+    "local MEP_AI_STATUS_LABEL = {awaiting_input = 'needs input'}\n"
+    "local function mep_ai_agents_workspace_names()\n"
+    "  local names = {}\n"
+    "  for _, ws in ipairs(mep.workspace_list()) do names[ws.id] = ws.name .. (ws.active and ' (current)' or '') end\n"
+    "  return names\n"
+    "end\n"
+    // A terminal's title is only a *task* once the program running in it
+    // set one: right after launch it is still the 'claude' tab label
+    // mep.ai_terminal_open passed, which would just repeat the name.
+    "local function mep_ai_agents_task(buf)\n"
+    "  local info = buf and mep.terminal_info(buf)\n"
+    "  if not info then return '', false end\n"
+    "  local title = info.title or ''\n"
+    "  if title == 'claude' or title == (mep.opt.ai_terminal_cmd or {})[1] then title = '' end\n"
+    "  return title, info.exited\n"
+    "end\n"
+    "local function mep_ai_agents_collect()\n"
+    "  local ws_names = mep_ai_agents_workspace_names()\n"
+    "  local function location(buf)\n"
+    "    local ws = buf and mep.buffer_workspace(buf)\n"
+    "    if not ws then return nil end\n"
+    "    return ws_names[ws] or ('workspace #' .. ws)\n"
+    "  end\n"
+    "  local rows, by_terminal = {}, {}\n"
+    "  for _, p in ipairs(mep.participants()) do\n"
+    "    if p.kind == 'agent' then\n"
+    "      local tb = p.terminal_buffer_id\n"
+    "      if not (tb and tb >= 0 and mep.is_terminal_buffer(tb)) then tb = nil end\n"
+    "      local row = {id = p.id, name = p.name, status = p.status or '', terminal = tb,\n"
+    "                   cursor_buffer = p.has_location and p.buffer_id or nil}\n"
+    "      row.task, row.exited = mep_ai_agents_task(tb)\n"
+    "      row.workspace = location(tb or row.cursor_buffer) or 'outside mep'\n"
+    "      if tb then by_terminal[tb] = row end\n"
+    "      rows[#rows + 1] = row\n"
+    "    end\n"
+    "  end\n"
+    "  for buf, _ in pairs(mep.ai_terminals) do\n"
+    "    if not mep.is_terminal_buffer(buf) then\n"
+    "      mep.ai_terminals[buf] = nil\n"
+    "    elseif not by_terminal[buf] then\n"
+    "      local row = {id = 'terminal:' .. buf, name = 'claude', status = '', terminal = buf, starting = true}\n"
+    "      row.task, row.exited = mep_ai_agents_task(buf)\n"
+    "      row.workspace = location(buf) or 'outside mep'\n"
+    "      rows[#rows + 1] = row\n"
+    "    end\n"
+    "  end\n"
+    "  table.sort(rows, function(a, b)\n"
+    "    if a.workspace ~= b.workspace then return a.workspace < b.workspace end\n"
+    "    if a.name ~= b.name then return a.name < b.name end\n"
+    "    return a.id < b.id\n"
+    "  end)\n"
+    "  return rows\n"
+    "end\n"
+    "local function mep_ai_agents_key(rows)\n"
+    "  local parts = {}\n"
+    "  for _, r in ipairs(rows) do\n"
+    "    parts[#parts + 1] = table.concat({r.id, r.name, r.status, tostring(r.terminal or ''), r.task, r.workspace, tostring(r.exited or false)}, '|')\n"
+    "  end\n"
+    "  return table.concat(parts, '\\n')\n"
+    "end\n"
+    "local function mep_ai_agents_jump(r)\n"
+    "  return function()\n"
+    "    local target = r.terminal or r.cursor_buffer\n"
+    "    if not target then mep.notify('No known location for ' .. r.name, 'warn') return end\n"
+    "    if not mep.jump_to_buffer(target) then mep.notify('Could not jump to ' .. r.name, 'warn') end\n"
+    "  end\n"
+    "end\n"
+    "local function mep_ai_agents_status_text(r)\n"
+    "  if r.exited then return 'exited' end\n"
+    "  if r.starting then return 'starting' end\n"
+    "  if r.status == '' then return 'connected' end\n"
+    "  return MEP_AI_STATUS_LABEL[r.status] or r.status\n"
+    "end\n"
+    "local function mep_ai_agents_render(rows)\n"
+    "  local sections, by_ws = {}, {}\n"
+    "  for i, r in ipairs(rows) do\n"
+    "    local sec = by_ws[r.workspace]\n"
+    "    if not sec then\n"
+    "      sec = {id = 'ws:' .. r.workspace, title = r.workspace, collapsed = false, widgets = {}}\n"
+    "      by_ws[r.workspace] = sec\n"
+    "      sections[#sections + 1] = sec\n"
+    "    end\n"
+    "    local hl = r.exited and 'Comment' or (MEP_AI_STATUS_HL[r.status] or 'Normal')\n"
+    "    local jump = mep_ai_agents_jump(r)\n"
+    "    sec.widgets[#sec.widgets + 1] = {id = 'agent:' .. i, icon = '\xef\x84\xa0', hl = hl,\n"
+    "      text = r.name .. '  [' .. mep_ai_agents_status_text(r) .. ']',\n"
+    "      tooltip = (r.terminal and ('terminal buffer ' .. r.terminal) or 'no terminal pairing') .. ' -- Enter jumps there',\n"
+    "      on_click = jump}\n"
+    "    if r.task ~= '' then\n"
+    "      sec.widgets[#sec.widgets + 1] = {id = 'task:' .. i, text = '    ' .. r.task, hl = 'Comment', on_click = jump}\n"
+    "    end\n"
+    "  end\n"
+    "  if #sections == 0 then\n"
+    "    sections[1] = {id = 'none', title = '', collapsed = false, widgets = {\n"
+    "      {id = 'empty', text = '(no AI agents -- <leader>a<CR> or n opens one)', on_click = mep.ai_terminal_open}}}\n"
+    "  end\n"
+    "  mep.sidebar_set_sections(mep_ai_agents_sidebar_id, sections)\n"
+    "end\n"
+    "local function mep_ai_agents_refresh(force)\n"
+    "  local rows = mep_ai_agents_collect()\n"
+    "  local key = mep_ai_agents_key(rows)\n"
+    "  if not force and key == mep_ai_agents_rendered then return end\n"
+    "  mep_ai_agents_rendered = key\n"
+    "  mep_ai_agents_render(rows)\n"
+    "end\n"
+    // Extra keys while the sidebar is focused (Enter/j/k/q/Esc are the
+    // sidebar's own): n opens a new AI terminal, r forces a re-scan.
+    "local function mep_ai_agents_on_key(k)\n"
+    "  if k == 'n' then mep.ai_terminal_open()\n"
+    "  elseif k == 'r' then mep_ai_agents_refresh(true) end\n"
+    "end\n"
+    "function mep.ai_agents_panel()\n"
+    "  if not mep_ai_agents_sidebar_id then\n"
+    "    mep_ai_agents_sidebar_id = mep.sidebar_create('AI Agents', 'right', 44)\n"
+    "    mep.sidebar_set_on_key(mep_ai_agents_sidebar_id, mep_ai_agents_on_key)\n"
+    "  end\n"
+    "  mep_ai_agents_refresh(true)\n"
+    "  mep.sidebar_open(mep_ai_agents_sidebar_id)\n"
+    "end\n"
+    "mep.command('MepAiAgents', mep.ai_agents_panel)\n"
+    "mep.command('aiagents', mep.ai_agents_panel)\n"
+    "mep.leader_map('al', 'AI: agents sidebar', mep.ai_agents_panel)\n"
+    "do\n"
+    "  local last_poll = 0\n"
+    "  mep.on_frame(function()\n"
+    "    if not (mep_ai_agents_sidebar_id and mep.sidebar_is_open(mep_ai_agents_sidebar_id)) then return end\n"
+    "    local now = mep.now()\n"
+    "    if now - last_poll < 0.5 then return end\n"
+    "    last_poll = now\n"
+    "    mep_ai_agents_refresh(false)\n"
+    "  end)\n"
+    "end\n";
 
 // Phase 42 -- Leetcode (stretch, lowest priority). Local-only: problems
 // as `.org` files with Prompt/Solution/Tests headline structure, tests
@@ -13299,7 +13551,7 @@ void DrawWhichKeyOverlay() {
     // "<leader>" is a non-empty literal prefix, so `title` can never be
     // empty here (unlike the sibling `title.empty()`-gated overlays
     // elsewhere in this file, whose title strings really can be empty).
-    std::string title = "<leader>" + g_editor.WhichKeyPrefix();
+    std::string title = "<leader>" + Editor::WhichKeySequenceDisplay(g_editor.WhichKeyPrefix());
     float title_size = MenuFontSize();
     int title_h = static_cast<int>(title_size) + 8;
 
@@ -19670,6 +19922,7 @@ void DrawTabBar(int y) {
         {"Tests", "MepActivityTestPanel", 0xf0c3, 0, "Tests"},                   // nf-fa-flask
         {"Notifications", "MepNotifyPanel", 0xf0f3, 0, "Notifications"},         // nf-fa-bell
         {"AI Agent", "MepAiAgent", 0, 0, "AI agent"},
+        {"AI Agents", "MepAiAgents", 0xf0c0, 0, "AI agents (connected Claude Code sessions)"},  // nf-fa-users
     };
     auto find_sidebar_by_title = [](const char *title) -> const SidebarInstance * {
         for (const SidebarInstance &sb : g_editor.Sidebars()) {
@@ -21278,6 +21531,7 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinOrgBib);
     lua->DoString(kBuiltinActivityBar);
     lua->DoString(kBuiltinAi);
+    lua->DoString(kBuiltinAiTerminal);
     lua->DoString(kBuiltinLeetcode);
     lua->DoString(kBuiltinWhichKeyGroups);
 

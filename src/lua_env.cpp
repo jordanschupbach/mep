@@ -1274,32 +1274,46 @@ int l_termsend_candidates(lua_State *L) {
     return 1;
 }
 
-// mep.activity_todo_load(path) -> array of {done=bool, text=string}: see
-// Editor::ActivityTodoLoad.
+// mep.activity_todo_load(path) -> array of {done=bool, text=string,
+// line=int, level=int, keyword=string}: see Editor::ActivityTodoLoad.
+// `line` is the 1-indexed line of the item's headline in an org file (nil
+// for the legacy line format), the identity mep.activity_todo_save uses to
+// match an item back to its headline; `level` lets the panel indent
+// subtasks.
 /**
  * @brief Implements mep.activity_todo_load(path): loads an activity todo list from a file.
  * @param L Lua state; arg 1 is the file path.
- * @return Number of values pushed (1: array of {done=bool, text=string} items).
+ * @return Number of values pushed (1: array of {done=, text=, line=, level=, keyword=} items).
  */
 int l_activity_todo_load(lua_State *L) {
     const char *path = luaL_checkstring(L, 1);
     std::vector<Editor::ActivityTodoItem> items = GetEditor(L)->ActivityTodoLoad(path);
     lua_createtable(L, static_cast<int>(items.size()), 0);
     for (size_t i = 0; i < items.size(); i++) {
-        lua_createtable(L, 0, 2);
+        lua_createtable(L, 0, 5);
         lua_pushboolean(L, items[i].done);
         lua_setfield(L, -2, "done");
         lua_pushlstring(L, items[i].text.data(), items[i].text.size());
         lua_setfield(L, -2, "text");
+        if (items[i].line >= 0) {
+            lua_pushinteger(L, items[i].line + 1);
+            lua_setfield(L, -2, "line");
+        }
+        lua_pushinteger(L, items[i].level);
+        lua_setfield(L, -2, "level");
+        lua_pushlstring(L, items[i].keyword.data(), items[i].keyword.size());
+        lua_setfield(L, -2, "keyword");
         lua_rawseti(L, -2, static_cast<int>(i + 1));
     }
     return 1;
 }
 
-// mep.activity_todo_save(path, items): `items` is an array of {done=, text=}.
+// mep.activity_todo_save(path, items): `items` is an array of {done=,
+// text=, line=?} -- `line` (1-indexed, as loaded) ties an item to its org
+// headline; an item without one is a new entry to append.
 /**
- * @brief Implements mep.activity_todo_save(path, items): writes an activity todo list to a file.
- * @param L Lua state; arg 1 is the file path, arg 2 an array of {done=, text=} items.
+ * @brief Implements mep.activity_todo_save(path, items): writes an activity todo list back to a file.
+ * @param L Lua state; arg 1 is the file path, arg 2 an array of {done=, text=, line=?} items.
  * @return Number of values pushed (0).
  */
 int l_activity_todo_save(lua_State *L) {
@@ -1316,6 +1330,9 @@ int l_activity_todo_save(lua_State *L) {
         lua_pop(L, 1);
         lua_getfield(L, -1, "text");
         if (lua_isstring(L, -1)) item.text = lua_tostring(L, -1);
+        lua_pop(L, 1);
+        lua_getfield(L, -1, "line");
+        if (lua_isinteger(L, -1)) item.line = static_cast<int>(lua_tointeger(L, -1)) - 1;
         lua_pop(L, 1);
         lua_pop(L, 1);  // the item table itself
         items.push_back(std::move(item));

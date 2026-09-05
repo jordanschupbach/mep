@@ -60,7 +60,7 @@ clean:
 test: build-native
     #!/usr/bin/env bash
     set -euo pipefail
-    for t in mep-html-doc-test mep-workspace-test mep-collab-crdt-test mep-collab-session-test; do
+    for t in mep-html-doc-test mep-org-doc-test mep-workspace-test mep-collab-crdt-test mep-collab-session-test; do
         if [ -x "{{native_build_dir}}/$t" ]; then
             echo "== $t"
             "./{{native_build_dir}}/$t"

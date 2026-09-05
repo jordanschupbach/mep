@@ -3005,27 +3005,34 @@ public:
      * @return The candidate terminal buffer ids.
      */
     std::vector<int> TermsendCandidates() const;  // terminal buffers in the active tab's panes
-    // Activity-bar Todo panel persistence (kBuiltinActivityBar, main.cpp):
-    // parses/writes the panel's own "0|text\n"/"1|text\n" line format --
-    // no escaping of embedded '|'/newlines in `text`, matching the
-    // original Lua's own fragile-but-existing format exactly rather than
-    // fixing it here.
-    struct ActivityTodoItem {
-        bool done = false;
-        std::string text;
-    };
+    // Activity-bar Todo panel persistence (kBuiltinActivityBar, main.cpp).
+    // Two backing formats, picked by `path`'s extension:
+    //   - "*.org" (the default, the project's TODO.org): every keyworded
+    //     headline is one item, and saving applies the panel's changes as
+    //     surgical edits (OrgTodoListItems/OrgTodoListApply, org_doc.h) so
+    //     notes, plain headlines and the "#+TODO:" line survive. If that
+    //     file is open in a buffer, the buffer is the source of truth:
+    //     loads read its live (possibly unsaved) lines, and saves edit the
+    //     buffer (one undo step) and write it to disk only if it had no
+    //     pending changes of its own -- the sidebar never silently saves
+    //     the user's unrelated in-progress edits.
+    //   - anything else: the panel's original "0|text\n"/"1|text\n" line
+    //     format, whole-file rewrite, no escaping of embedded '|'/newlines
+    //     (kept exactly for anyone still pointing mep.activity_todo_file
+    //     at their old .mep_todos.txt).
+    using ActivityTodoItem = OrgTodoItem;
     /**
-     * @brief Loads the Activity-bar Todo panel's persisted items from a "0|text\n"/"1|text\n"-format file.
+     * @brief Loads the Activity-bar Todo panel's items from an org file (live buffer preferred) or a "0|text\n"-format file.
      * @param path The file path to read.
      * @return The loaded todo items, in file order.
      */
     std::vector<ActivityTodoItem> ActivityTodoLoad(const std::string &path) const;
     /**
-     * @brief Writes the Activity-bar Todo panel's items to a "0|text\n"/"1|text\n"-format file.
+     * @brief Writes the Activity-bar Todo panel's items back: minimal edits for an org file (through its open buffer, if any), whole-file rewrite otherwise.
      * @param path The file path to write.
      * @param items The todo items to persist, in order.
      */
-    void ActivityTodoSave(const std::string &path, const std::vector<ActivityTodoItem> &items) const;
+    void ActivityTodoSave(const std::string &path, const std::vector<ActivityTodoItem> &items);
     // Activity-bar Tests panel: which lines of a test run's combined
     // stdout/stderr look like a failure (case-insensitive "fail"
     // substring), 1-indexed to match the original Lua's own ipairs index
@@ -6434,6 +6441,13 @@ private:
     // error -- e.g. no filesystem at all under Emscripten. If not null,
     // `existed` is set to whether the file was found on disk.
     int FindOrCreateBuffer(const std::string &path, bool *existed = nullptr);
+    // Read-only cousin of FindOrCreateBuffer for ActivityTodoLoad/Save:
+    // the id of the live (non-deleted, non-terminal) buffer whose file is
+    // `path`, comparing absolute normalized paths so "TODO.org" opened
+    // from the cwd matches the panel's absolute default, across every
+    // workspace (a worktree's own TODO.org is a different absolute path
+    // anyway). -1 if the file isn't open.
+    int FindOpenBufferForPath(const std::string &path) const;
 
     void SplitCurrentPane(SplitDir dir, const std::string &file_arg);
     // `args`: empty runs an interactive shell ($SHELL, falling back to

@@ -308,6 +308,14 @@ target_include_directories(mep-html-doc-test PRIVATE src)
 target_compile_options(mep-html-doc-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-html-doc-test PRIVATE ${MEP_SANITIZE_FLAGS})
 
+# Org outline helpers (org_doc.cpp is dependency-free): the Todo-panel
+# <-> TODO.org sync (OrgTodoListItems/OrgTodoListApply), same windowless
+# model as mep-html-doc-test above.
+add_executable(mep-org-doc-test src/org_doc_test.cpp src/org_doc.cpp)
+target_include_directories(mep-org-doc-test PRIVATE src)
+target_compile_options(mep-org-doc-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-org-doc-test PRIVATE ${MEP_SANITIZE_FLAGS})
+
 # WORKSPACES_PLAN.md Phase 12: pure-helper test (worktree dir derivation,
 # porcelain parsing, name validation, session JSON round trip). Links only
 # workspace_git.cpp, same windowless model as mep-html-doc-test above.

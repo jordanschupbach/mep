@@ -620,3 +620,78 @@ std::string FormatTodoLine(const std::vector<std::string> &todo_keywords, const 
     }
     return line;
 }
+
+std::vector<OrgTodoItem> OrgTodoListItems(const std::vector<std::string> &lines) {
+    std::vector<OrgTodoItem> items;
+    OrgOutline outline = ParseOrgOutline(lines);
+    for (const OrgHeadline &h : outline.headlines) {
+        if (h.todo_keyword.empty()) continue;
+        OrgTodoItem it;
+        it.done = h.is_done_keyword;
+        it.text = h.title;
+        it.line = h.line_start;
+        it.level = h.level;
+        it.keyword = h.todo_keyword;
+        items.push_back(std::move(it));
+    }
+    return items;
+}
+
+std::vector<std::string> OrgTodoListApply(const std::vector<std::string> &lines, const std::vector<OrgTodoItem> &items) {
+    OrgOutline outline = ParseOrgOutline(lines);
+    const std::string todo_kw = outline.todo_keywords.empty() ? std::string("TODO") : outline.todo_keywords[0];
+    const std::string done_kw = outline.done_keywords.empty() ? std::string("DONE") : outline.done_keywords[0];
+
+    // Keyworded headlines by their line index -- the identity the panel
+    // hands back in OrgTodoItem::line.
+    std::vector<const OrgHeadline *> by_line(lines.size(), nullptr);
+    for (const OrgHeadline &h : outline.headlines) {
+        if (h.todo_keyword.empty()) continue;
+        if (h.line_start >= 0 && h.line_start < static_cast<int>(lines.size())) {
+            by_line[static_cast<size_t>(h.line_start)] = &h;
+        }
+    }
+
+    std::vector<std::string> out = lines;
+    std::vector<bool> referenced(lines.size(), false);
+    std::vector<const OrgTodoItem *> fresh;
+    for (const OrgTodoItem &item : items) {
+        if (item.line < 0) {
+            fresh.push_back(&item);
+            continue;
+        }
+        if (item.line >= static_cast<int>(lines.size())) continue;  // stale: ignored, see the header
+        const OrgHeadline *h = by_line[static_cast<size_t>(item.line)];
+        if (!h || referenced[static_cast<size_t>(item.line)]) continue;
+        referenced[static_cast<size_t>(item.line)] = true;
+        if (item.done != h->is_done_keyword) {
+            out[static_cast<size_t>(item.line)] = RewriteHeadlineKeyword(lines[static_cast<size_t>(item.line)],
+                                                                         item.done ? done_kw : todo_kw,
+                                                                         outline.todo_keywords, outline.done_keywords);
+        }
+    }
+
+    // Unreferenced keyworded headlines go, whole subtree each.
+    std::vector<bool> drop(lines.size(), false);
+    for (size_t i = 0; i < by_line.size(); i++) {
+        const OrgHeadline *h = by_line[i];
+        if (!h || referenced[i]) continue;
+        int end = std::min(h->line_end, static_cast<int>(lines.size()) - 1);
+        for (int k = h->line_start; k <= end; k++) drop[static_cast<size_t>(k)] = true;
+    }
+
+    std::vector<std::string> result;
+    result.reserve(out.size() + fresh.size());
+    for (size_t i = 0; i < out.size(); i++) {
+        if (!drop[i]) result.push_back(std::move(out[i]));
+    }
+    if (!fresh.empty()) {
+        // A buffer's "empty file" is one empty line -- don't leave that as a
+        // stray blank first line above the first appended headline.
+        if (result.size() == 1 && result[0].empty()) result.clear();
+        for (const OrgTodoItem *item : fresh) {
+            result.push_back(FormatHeadlineLine(1, item->done ? done_kw : todo_kw, 0, item->text, {}));
+        }
+    }
+    return result;
+}

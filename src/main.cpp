@@ -9883,31 +9883,78 @@ const char *kBuiltinOrgBib =
 // over the four panels (see Phase 40's plan notes) rather than a new
 // persistent always-visible C++ widget, given the four *panels*
 // themselves are the functional core.
+// Todo panel: a checklist view of the project's TODO.org (cwd-relative
+// by default; mep.activity_todo_file overrides, and a non-.org path there
+// still gets the panel's original "0|text" line file). Every keyworded
+// headline is one row, indented by level; clicking a row flips it
+// TODO<->DONE in the file. The file, not the panel, is the source of
+// truth: rows are re-read from it on every render, and the panel
+// re-renders itself whenever TODO.org is being edited in a buffer
+// (on_buffer_changed, current buffer only) or any buffer is saved, so
+// edits made in the editor and clicks made in the sidebar always agree.
+// Parse/apply live in C++ -- Editor::ActivityTodoLoad/ActivityTodoSave
+// (editor.cpp) over org_doc.h's OrgTodoListItems/OrgTodoListApply --
+// exposed as mep.activity_todo_load/save (lua_env.cpp).
 const char *kBuiltinActivityBar =
     "mep.activity_todo_file = nil\n"
     "local mep_activity_todo_sidebar_id = nil\n"
-    "local function mep_activity_todo_path() return mep.activity_todo_file or (mep.getcwd() .. '/.mep_todos.txt') end\n"
-    // The file parse/serialize (the "0|text\\n"/"1|text\\n" line format)
-    // moved to C++ -- Editor::ActivityTodoLoad/ActivityTodoSave
-    // (editor.cpp), exposed as mep.activity_todo_load/save (lua_env.cpp).
+    "local mep_activity_todo_rendered = nil\n"
+    "local function mep_activity_todo_path() return mep.activity_todo_file or (mep.getcwd() .. '/TODO.org') end\n"
     "local function mep_activity_todo_load() return mep.activity_todo_load(mep_activity_todo_path()) end\n"
     "local function mep_activity_todo_save(items) mep.activity_todo_save(mep_activity_todo_path(), items) end\n"
+    // Re-find an item after a fresh load: by headline line when it has
+    // one (an org file), else by position (the legacy line format).
+    "local function mep_activity_todo_find(items, ref, index)\n"
+    "  if ref.line then\n"
+    "    for _, it in ipairs(items) do if it.line == ref.line then return it end end\n"
+    "    return nil\n"
+    "  end\n"
+    "  return items[index]\n"
+    "end\n"
+    "local function mep_activity_todo_key(items)\n"
+    "  local parts = {}\n"
+    "  for _, it in ipairs(items) do parts[#parts + 1] = (it.done and '1' or '0') .. (it.level or 1) .. (it.line or '') .. it.text end\n"
+    "  return table.concat(parts, '\\n')\n"
+    "end\n"
     "function mep.activity_todo_panel()\n"
     "  local items = mep_activity_todo_load()\n"
     "  local widgets = {}\n"
     "  for i, it in ipairs(items) do\n"
-    "    widgets[#widgets + 1] = {id = tostring(i), text = (it.done and '[x] ' or '[ ] ') .. it.text,\n"
+    "    local indent = string.rep('  ', (it.level or 1) - 1)\n"
+    "    widgets[#widgets + 1] = {id = tostring(i), text = indent .. (it.done and '[x] ' or '[ ] ') .. it.text,\n"
     "      on_click = function()\n"
     "        local cur = mep_activity_todo_load()\n"
-    "        if cur[i] then cur[i].done = not cur[i].done end\n"
+    "        local hit = mep_activity_todo_find(cur, it, i)\n"
+    "        if hit then hit.done = not hit.done end\n"
     "        mep_activity_todo_save(cur)\n"
     "        mep.activity_todo_panel()\n"
     "      end}\n"
     "  end\n"
+    "  if #widgets == 0 then\n"
+    "    widgets[1] = {id = 'empty', text = '(no TODO headlines in ' .. mep_activity_todo_path() .. ')', on_click = mep.activity_todo_open}\n"
+    "  end\n"
     "  if not mep_activity_todo_sidebar_id then mep_activity_todo_sidebar_id = mep.sidebar_create('Todo', 'right', 40) end\n"
     "  mep.sidebar_set_sections(mep_activity_todo_sidebar_id, {{id = 'todos', title = '', collapsed = false, widgets = widgets}})\n"
+    "  mep_activity_todo_rendered = mep_activity_todo_key(items)\n"
     "  mep.sidebar_open(mep_activity_todo_sidebar_id)\n"
     "end\n"
+    // Refresh-if-stale: only redraws when the file's checklist actually
+    // differs from what's on screen, so the sidebar cursor isn't reset by
+    // every unrelated keystroke while the panel is open.
+    "local function mep_activity_todo_refresh()\n"
+    "  if not mep_activity_todo_sidebar_id or not mep.sidebar_is_open(mep_activity_todo_sidebar_id) then return end\n"
+    "  if mep_activity_todo_key(mep_activity_todo_load()) == mep_activity_todo_rendered then return end\n"
+    "  mep.activity_todo_panel()\n"
+    "end\n"
+    "local function mep_activity_todo_is_current_buffer()\n"
+    "  local name = mep.filename()\n"
+    "  if name == '' then return false end\n"
+    "  local path = mep_activity_todo_path()\n"
+    "  return name == path or (mep.getcwd() .. '/' .. name) == path\n"
+    "end\n"
+    "mep.on_buffer_changed(function() if mep_activity_todo_is_current_buffer() then mep_activity_todo_refresh() end end)\n"
+    "mep.on_buffer_saved(mep_activity_todo_refresh)\n"
+    "function mep.activity_todo_open() mep.open(mep_activity_todo_path()) end\n"
     "function mep.activity_todo_add()\n"
     "  mep.ui_input('New todo:', '', function(text)\n"
     "    if not text or text == '' then return end\n"
@@ -9924,6 +9971,7 @@ const char *kBuiltinActivityBar =
     "  mep.activity_todo_panel()\n"
     "end\n"
     "mep.command('MepActivityTodoPanel', mep.activity_todo_panel)\n"
+    "mep.command('MepActivityTodoOpen', mep.activity_todo_open)\n"
     "mep.command('MepActivityTodoAdd', mep.activity_todo_add)\n"
     "mep.command('MepActivityTodoClearDone', mep.activity_todo_clear_done)\n"
     // Tests panel: a configured command, else auto-detected from

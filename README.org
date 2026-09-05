@@ -85,7 +85,23 @@ paragraph). =x p P= (also countable); =r{char}= replaces without
 entering Insert; =u= / =Ctrl-r= undo/redo.
 
 Registers: ="{a-z}= (or ="{A-Z}= to append) before an operator or
-=p=/=P= targets a named register instead of the unnamed one. Marks:
+=p=/=P= targets a named register instead of the unnamed one. The
+unnamed register *is* the system clipboard (Vim's
+=clipboard=unnamedplus=): every yank/delete lands on the clipboard, and
+=p=/=P= paste whatever was copied last, in mep or in any other app
+(text ending in a newline pastes linewise, otherwise charwise). ="+= and
+="*= are accepted as spellings of the same register. In Insert mode,
+=Ctrl-R {reg}= inserts a register's text as if typed (so ="= / =+= paste
+the clipboard, =a= register a, and so on) and =Ctrl-Shift-V= pastes the
+clipboard directly; both also work in the =:= command line and the =/=
+=?= search prompt (kept to one printable line there), and
+=Ctrl-Shift-V= pastes into a terminal buffer. Lua gets the raw
+clipboard via =mep.clipboard_get()= / =mep.clipboard_set(text)=,
+independent of the registers. In the native X11 build the clipboard is
+owned by the mep window (as with any GLFW app), so it is gone once mep
+exits unless a clipboard manager is running; the wasm build's clipboard
+access is best-effort (see =mep_js_clipboard_read= in
+=src/editor.cpp=). Marks:
 =m{a-z}= sets one, =` {a-z}= jumps to it exactly, ='{a-z}= to its
 line's first non-blank (both work as operator targets too, e.g.
 =d`a=); =``= / ='''= jump back to the position before the last "big
@@ -302,6 +318,8 @@ Available to =:lua=, =:source=, and =init.lua=:
 - =mep.cursor()= -> row, col / =mep.set_cursor(row, col)=
 - =mep.current_buffer()= -> the active pane's own buffer id.
 - =mep.insert_text(text)=
+- =mep.clipboard_get()= -> text / =mep.clipboard_set(text)= — the
+  system clipboard itself, bypassing the registers.
 - =mep.notify(msg)= — also what Lua's own =print()= is routed through.
 - =mep.command(name, fn)= — defines a =:name= ex-command.
 - =mep.map(mode, key, fn)= — binds a single key (mode =\"n\"= or

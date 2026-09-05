@@ -4409,6 +4409,17 @@ public:
      * @brief Pastes the unnamed register's contents at the cursor.
      */
     void Paste();
+    // System clipboard bridge (also behind mep.clipboard_get/set in
+    // lua_env.cpp). Native builds go through raylib's GLFW clipboard (X11
+    // CLIPBOARD selection, Wayland, Win32, Cocoa); the
+    // wasm build goes through navigator.clipboard via mep_js_clipboard_*
+    // (editor.cpp) and is best-effort there -- reads only see what a
+    // paste event or a focus-time readText() managed to cache. Both are
+    // no-ops before the window exists (IsWindowReady()), so nothing here
+    // ever touches GLFW from a headless context. Reads normalize CRLF to
+    // LF; an empty/unavailable clipboard reads as "".
+    std::string SystemClipboardRead();
+    void SystemClipboardWrite(const std::string &text);
     // Replaces the active pane's buffer with a single empty line. Refuses
     // (with a status message, like :q) if there are unsaved changes.
     /**
@@ -6340,8 +6351,40 @@ private:
     // Returns the pending register spec (0 = none typed, meaning
     // "unnamed") and whether it was uppercase (append), resetting both.
     void TakeRegisterSpec(char *name, bool *append);
-    // Register `name` if nonzero, else the unnamed register.
+    // Register `name` if nonzero, else the unnamed register. "+ and "*
+    // (the system clipboard) both resolve to the unnamed register: mep
+    // keeps the unnamed register and the system clipboard in lockstep
+    // (Vim's `clipboard=unnamedplus`), so the three are one and the same
+    // -- see SyncUnnamedToSystemClipboard / PullSystemClipboard.
     Register &RegisterFor(char name);
+
+    // Pushes the unnamed register's current text to the system clipboard.
+    // Called after every write to registers_['"'] (YankRange,
+    // ApplyVisualBlockOperator, the hover-doc yank) -- the one place the
+    // "unnamed == system clipboard" invariant is maintained from mep's
+    // side. Remembers what it pushed (clipboard_synced_text_) so
+    // PullSystemClipboard can tell "still ours" from "changed elsewhere".
+    void SyncUnnamedToSystemClipboard();
+    // The other direction: if the system clipboard holds something other
+    // than what mep last pushed (i.e. another app copied since), replace
+    // the unnamed register with it -- charwise, or linewise when the text
+    // ends in a newline, the same heuristic Vim applies to "* / "+.
+    // Called before every read of the unnamed register (p/P, Ctrl-R,
+    // Ctrl-Shift-V, terminal paste). A no-op when the clipboard is empty
+    // or unchanged, so a blockwise/linewise yank made in mep keeps its
+    // shape across a round-trip.
+    void PullSystemClipboard();
+    // Text of register `name` for an Insert/cmdline-mode Ctrl-R: pulls the
+    // system clipboard first when `name` resolves to the unnamed register,
+    // and normalizes an uppercase name to its lowercase register. Returns
+    // "" for a name that isn't a register mep knows.
+    std::string RegisterTextForPaste(int name);
+    // Feeds `text` through ProcessInsertKey one codepoint at a time ('\n'
+    // as kReplayEnter), i.e. "as if typed": it lands in macro/`.` recording
+    // like ordinary typing, and picks up InsertNewline's auto-indent the
+    // same way Vim's own Ctrl-R (not Ctrl-R Ctrl-O) does. Used by Insert-
+    // mode Ctrl-R {reg} and Ctrl-Shift-V.
+    void InsertTextAsTyped(const std::string &text);
 
     // Resolves a single-key motion (everything in Phase 1 of
     // VIM_PARITY_PLAN.md except the multi-key f/F/t/T and g-prefixed ones,
@@ -7053,6 +7096,17 @@ private:
     // Numbered ("0-"9) and special ("%) registers are a documented stretch
     // goal in VIM_PARITY_PLAN.md, not implemented.
     std::unordered_map<char, Register> registers_;
+    // What SyncUnnamedToSystemClipboard last pushed to the system
+    // clipboard -- PullSystemClipboard compares against this to detect an
+    // external copy (see both methods' comments above).
+    std::string clipboard_synced_text_;
+    // Insert-mode Ctrl-R seen, waiting for the register name that follows
+    // (HandleInsertInput). Cancelled by any non-character key.
+    bool insert_pending_ctrl_r_ = false;
+    // Same, for the ':' command line and '/' '?' search prompts
+    // (HandleCommandInput / HandleSearchInput) -- one flag serves both
+    // since the two modes are mutually exclusive.
+    bool prompt_pending_ctrl_r_ = false;
     // "{a-z}/"{A-Z} seen before an operator or p/P: which register it
     // should use (0 = none typed, meaning "unnamed"), and whether it was
     // uppercase (append to the existing contents rather than replace).

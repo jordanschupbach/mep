@@ -2025,6 +2025,13 @@ public:
     // buffers and activates the nearest neighbour. Phase 6's git worktree
     // removal wraps this (WorkspaceRemove).
     bool WorkspaceDelete(int id, bool force);
+    // `:projectclear[!]` / <leader>pc: empties workspace `id` back to the
+    // single-tab / single-pane / fresh-empty-buffer shape MakeWorkspace
+    // gives a brand-new one -- kills its terminals and soft-deletes its
+    // buffers (ReleaseWorkspaceResources) -- so mep.project_default_layout
+    // (main.cpp) can rebuild the legacy readme/tree/terminal startup
+    // layout on it. Refuses (unless `force`) while it has modified buffers.
+    bool WorkspaceReset(int id, bool force);
     bool WorkspaceRename(int id, const std::string &name);
     // User-facing `:wsnew` entry: on a git project spawns `git worktree
     // add` asynchronously and materialises the workspace on success

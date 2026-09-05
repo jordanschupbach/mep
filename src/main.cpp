@@ -2540,16 +2540,14 @@ const char *kBuiltinFileTree =
     // preferred over README.md etc. by that fixed priority order -- moved
     // to C++ (Editor::ProjectReadmePath), exposed as
     // mep.project_readme_path (lua_env.cpp); nil if none match.
-    // WORKSPACES_PLAN.md Phase 9: mep.project_open is mep.project_load
-    // (a real Project with its own workspaces, chdir'd to, git-detected,
-    // saved state restored) followed by the readme/terminal default
-    // layout -- but only when the project had no saved layout and wasn't
-    // already loaded.
-    "function mep.project_open(dir)\n"
-    "  local id, restored = mep.project_load(dir)\n"
-    "  if not id then return end\n"
-    "  dir = mep.workspace_root()\n"
-    "  local readme = restored and nil or mep.project_readme_path(dir)\n"
+    // The legacy "fresh project" startup layout: README (if any) in the
+    // main pane, a terminal below it, the file tree in the left sidebar.
+    // Applied to the *active workspace* by mep.project_open (never-seen
+    // project only, see below) and rebuilt on demand by mep.project_clear
+    // (`:projectclear` / <leader>pc) after the workspace is emptied.
+    "function mep.project_default_layout(dir)\n"
+    "  dir = dir or mep.workspace_root()\n"
+    "  local readme = mep.project_readme_path(dir)\n"
     "  local opened_readme = readme ~= nil\n"
     "  if opened_readme then mep.open(readme) end\n"
     // A bare `:terminal` always opens its new pane above/left of whatever
@@ -2573,8 +2571,35 @@ const char *kBuiltinFileTree =
     // focus behavior); step focus back out into the pane tree so the user
     // lands with the cursor in the readme, not the file list.
     "  if opened_readme then mep.nav_pane('right') end\n"
+    "end\n"
+    // WORKSPACES_PLAN.md Phase 9: mep.project_open is mep.project_load
+    // (a real Project with its own workspaces, chdir'd to, git-detected,
+    // saved state restored) followed by the default layout above -- but
+    // *only* when the project had no saved layout and wasn't already
+    // loaded. A restored project is left exactly as saved: previously the
+    // tree_open/nav_pane tail still ran on top of the restored panes, so
+    // opening a project looked like a restore *and* a fresh startup.
+    "function mep.project_open(dir)\n"
+    "  local id, restored = mep.project_load(dir)\n"
+    "  if not id then return end\n"
+    "  dir = mep.workspace_root()\n"
+    "  if not restored then mep.project_default_layout(dir) end\n"
     "  mep.notify('Opened project: ' .. dir)\n"
     "end\n"
+    // `:projectclear[!]` / <leader>pc: throw away the active workspace's
+    // tabs, panes, buffers and terminals (Editor::WorkspaceReset -- refuses
+    // on unsaved buffers unless forced) and rebuild the legacy startup
+    // layout on the emptied workspace. Other workspaces of the project are
+    // untouched; the autosave picks the new layout up like any other change.
+    "function mep.project_clear(force)\n"
+    "  local ok, err = mep.workspace_reset(force and true or false)\n"
+    "  if not ok then mep.notify(err or 'Could not clear workspace', 'warn') return end\n"
+    "  local dir = mep.workspace_root()\n"
+    "  mep.project_default_layout(dir)\n"
+    "  mep.notify('Cleared project: ' .. dir)\n"
+    "end\n"
+    "mep.command('MepProjectClear', function() mep.project_clear(false) end)\n"
+    "mep.leader_map('pc', 'Clear project (default layout)', function() mep.project_clear(false) end)\n"
     // The switcher clicking `[project_name]` in the tab bar opens: every
     // *loaded* project with its workspace count (unlike mep.projects(),
     // the bookmark list). Enter switches; the trailing rows open a

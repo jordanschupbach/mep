@@ -9019,6 +9019,50 @@ bool Editor::WorkspaceDelete(int id, bool force) {
     return false;
 }
 
+bool Editor::WorkspaceReset(int id, bool force) {
+    for (size_t pi = 0; pi < projects_.size(); pi++) {
+        Project &project = projects_[pi];
+        for (size_t wi = 0; wi < project.workspaces.size(); wi++) {
+            Workspace &ws = project.workspaces[wi];
+            if (ws.id != id) continue;
+            if (ws.creating) {
+                status_message_ = "Workspace '" + ws.name + "' is still being created";
+                return false;
+            }
+            if (!force && WorkspaceHasModifiedBuffers(id)) {
+                status_message_ = "E37: workspace '" + ws.name + "' has unsaved buffers (add ! to override)";
+                return false;
+            }
+            ReleaseWorkspaceResources(id);
+            // Rebuilt by hand rather than via MakeWorkspace so the fresh
+            // buffer is scoped to *this* workspace's id (MakeWorkspace
+            // would scope it to a newly allocated one).
+            const int buffer_id = CreateEmptyBuffer();
+            buffers_[static_cast<size_t>(buffer_id)].workspace_id = id;
+            Tab tab;
+            tab.root = std::make_unique<SplitNode>();
+            tab.root->dir = SplitDir::Leaf;
+            tab.root->pane.id = next_pane_id_++;
+            tab.root->pane.buffer_id = buffer_id;
+            tab.active_pane_id = tab.root->pane.id;
+            ws.tabs.clear();
+            ws.tabs.push_back(std::move(tab));
+            ws.active_tab = 0;
+            const bool was_active = static_cast<int>(pi) == active_project_ &&
+                                    static_cast<int>(wi) == project.active_workspace;
+            if (was_active) {
+                AfterWorkspaceActivated();
+            } else {
+                workspace_change_epoch_++;
+            }
+            status_message_ = "Cleared workspace " + ws.name;
+            return true;
+        }
+    }
+    status_message_ = "No such workspace";
+    return false;
+}
+
 void Editor::ReleaseWorkspaceResources(int workspace_id) {
     // Kill this workspace's terminals: the PTY child would otherwise keep
     // running with no pane able to ever show it again.
@@ -17019,6 +17063,15 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
             status_message_ = "No such project: " + args;
         } else {
             ProjectClose(id, name.back() == '!');
+        }
+    } else if (name == "projectclear" || name == "projectclear!") {
+        // Through Lua (mep.project_clear) so the legacy readme/tree/
+        // terminal layout is rebuilt on the emptied workspace too.
+        const bool force = name.back() == '!';
+        if (lua_) {
+            lua_->DoString(std::string("mep.project_clear(") + (force ? "true" : "false") + ")");
+        } else {
+            WorkspaceReset(ActiveWorkspace().id, force);
         }
     } else if (name == "projectnext" || name == "projectn") {
         ProjectNext();

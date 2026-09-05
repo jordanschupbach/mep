@@ -204,4 +204,54 @@ int FindOrgTodoLineIndex(const std::vector<std::string> &lines);
  */
 std::string FormatTodoLine(const std::vector<std::string> &todo_keywords, const std::vector<std::string> &done_keywords);
 
+// Activity-bar Todo panel <-> org file sync (kBuiltinActivityBar, main.cpp;
+// Editor::ActivityTodoLoad/ActivityTodoSave in editor.cpp). The panel is a
+// flat checklist; an org file is an outline. The mapping: every headline
+// carrying a TODO/DONE keyword (any level) is one checklist item, in
+// document order; headlines without a keyword (plain section headers) and
+// all body text are invisible to the panel but preserved verbatim.
+struct OrgTodoItem {
+    bool done = false;    // classified against the file's TODO/DONE keyword split
+    std::string text;     // the headline title (keyword, priority and tags stripped)
+    int line = -1;        // 0-based index of the source headline line; -1 = not in the file yet
+    int level = 1;        // headline depth, so the panel can indent subtasks
+    std::string keyword;  // the headline's current keyword ("" for a not-yet-written item)
+};
+
+/**
+ * @brief Lists every keyworded headline in an org file as a flat checklist item.
+ * @param lines the full text of the org file, one entry per line
+ * @return one OrgTodoItem per headline with a TODO/DONE keyword, in document order
+ */
+std::vector<OrgTodoItem> OrgTodoListItems(const std::vector<std::string> &lines);
+
+// Writes a checklist back into the org text it was loaded from, as a set
+// of surgical edits rather than a regeneration -- everything the panel
+// can't represent (body text, properties, plain headlines, the "#+TODO:"
+// line) survives untouched:
+//   - an item whose `line` names a keyworded headline and whose `done`
+//     differs from that headline's keyword gets its keyword token rewritten
+//     (RewriteHeadlineKeyword) to the file's first DONE keyword (done) or
+//     first TODO keyword (not done). A headline already on the right side
+//     of the split keeps its exact keyword (a DOING item toggled "not
+//     done" stays DOING).
+//   - a keyworded headline no item refers to is removed along with its
+//     whole subtree (body + child headlines), org's own subtree semantics:
+//     "clear done" on a DONE parent takes its children with it.
+//   - an item with `line == -1` becomes a new level-1 headline appended at
+//     the end of the file, "* TODO text" (or the first DONE keyword if
+//     `done` is already set).
+//   - an item whose `line` no longer names a keyworded headline (the file
+//     changed underneath the panel) is ignored rather than re-appended, so
+//     a stale panel can't duplicate entries.
+// Item `text` is never written back for existing headlines: the panel has
+// no rename affordance, and retitling would discard priority cookies etc.
+/**
+ * @brief Applies a checklist's done-states/additions/removals to org text as minimal line edits.
+ * @param lines the current full text of the org file
+ * @param items the checklist to reconcile the file with (see the rules above)
+ * @return the rewritten file lines (equal to `lines` when nothing changed)
+ */
+std::vector<std::string> OrgTodoListApply(const std::vector<std::string> &lines, const std::vector<OrgTodoItem> &items);
+
 #endif

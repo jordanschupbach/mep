@@ -17124,20 +17124,97 @@ std::vector<int> Editor::TermsendCandidates() const {
     return out;
 }
 
+namespace {
+
+bool IsOrgTodoPath(const std::string &path) {
+    return path.size() >= 4 && path.compare(path.size() - 4, 4, ".org") == 0;
+}
+
+// Absolute, lexically normalized form of `path` for FindOpenBufferForPath's
+// equality test -- no realpath(3): a symlinked TODO.org opened under two
+// spellings is an accepted miss, not worth a filesystem round trip per
+// buffer per panel refresh.
+std::string NormalizedAbsolutePath(const std::string &path) {
+    std::error_code ec;
+    std::filesystem::path p(path);
+    if (p.is_relative()) {
+        std::filesystem::path cwd = std::filesystem::current_path(ec);
+        if (ec) return path;
+        p = cwd / p;
+    }
+    return p.lexically_normal().string();
+}
+
+// Reads a whole text file as lines, SplitIntoLines-style (a missing or
+// unreadable file is an empty vector, which for an org todo file means
+// "no items yet", not an error).
+bool ReadFileLines(const std::string &path, std::vector<std::string> &lines) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return false;
+    std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    lines = SplitIntoLines(content);
+    return true;
+}
+
+}  // namespace
+
+int Editor::FindOpenBufferForPath(const std::string &path) const {
+    if (path.empty()) return -1;
+    const std::string want = NormalizedAbsolutePath(path);
+    for (size_t i = 0; i < buffers_.size(); i++) {
+        const Buffer &buf = buffers_[static_cast<size_t>(i)];
+        if (buf.deleted || buf.filename.empty() || GetTerminal(static_cast<int>(i))) continue;
+        if (NormalizedAbsolutePath(ResolveBufferPath(buf, buf.filename)) == want) return static_cast<int>(i);
+    }
+    return -1;
+}
+
 std::vector<Editor::ActivityTodoItem> Editor::ActivityTodoLoad(const std::string &path) const {
     std::vector<ActivityTodoItem> items;
+    if (IsOrgTodoPath(path)) {
+        int buffer_id = FindOpenBufferForPath(path);
+        if (buffer_id >= 0) return OrgTodoListItems(buffers_[static_cast<size_t>(buffer_id)].lines);
+        std::vector<std::string> lines;
+        if (!ReadFileLines(path, lines)) return items;
+        return OrgTodoListItems(lines);
+    }
     std::ifstream f(path);
     if (!f) return items;
     std::string line;
     while (std::getline(f, line)) {
         if (line.size() >= 2 && std::isdigit(static_cast<unsigned char>(line[0])) && line[1] == '|') {
-            items.push_back({line[0] == '1', line.substr(2)});
+            ActivityTodoItem it;
+            it.done = line[0] == '1';
+            it.text = line.substr(2);
+            items.push_back(std::move(it));
         }
     }
     return items;
 }
 
-void Editor::ActivityTodoSave(const std::string &path, const std::vector<ActivityTodoItem> &items) const {
+void Editor::ActivityTodoSave(const std::string &path, const std::vector<ActivityTodoItem> &items) {
+    if (IsOrgTodoPath(path)) {
+        int buffer_id = FindOpenBufferForPath(path);
+        if (buffer_id >= 0) {
+            Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
+            std::vector<std::string> updated = OrgTodoListApply(buf.lines, items);
+            if (updated.empty()) updated.emplace_back("");
+            if (updated == buf.lines) return;
+            const bool had_pending_edits = buf.modified;
+            ReplaceLinesAt(buffer_id, 0, static_cast<int>(buf.lines.size()), updated);
+            if (CurPane().buffer_id == buffer_id) ClampCursor();
+            if (!had_pending_edits) SaveBuffer(buf, buf.filename);
+            return;
+        }
+        std::vector<std::string> lines;
+        const bool existed = ReadFileLines(path, lines);
+        std::vector<std::string> updated = OrgTodoListApply(lines, items);
+        if (existed && updated == lines) return;
+        std::ofstream f(path, std::ios::binary | std::ios::trunc);
+        if (!f) return;
+        for (const auto &l : updated) f << l << '\n';
+        return;
+    }
     std::ofstream f(path, std::ios::trunc);
     if (!f) return;
     for (const auto &it : items) {

@@ -7,3 +7,5 @@
  - Implemented 2026-09-03 across all 12 phases of WORKSPACES_PLAN.md (see its
    Status section for what was verified how, and what still needs a GPU-capable
    display to confirm by eye).
+
+* TODO Some test todo

@@ -228,7 +228,13 @@ Projects & workspaces: tabs nest inside *workspaces*, which nest inside
 =mep --project <dir>= / =$MEP_PROJECT= / =:project <dir>= /
 =mep.project_open(dir)=); several can be loaded at once and
 =:projects= (or clicking =[project]=, or =<leader>pp=) switches between
-them; =:projectclose[!]=, =:projectnext=, =:projectprevious=. Every
+them; =:projectclose[!]=, =:projectnext=, =:projectprevious=. A project
+opened for the first time gets the default layout -- its README in the
+main pane, a terminal below it and the file tree in the left sidebar;
+one with a saved session is restored exactly as it was left, with none
+of that applied on top. =:projectclear[!]= / =<leader>pc= throws away
+the active workspace's tabs, panes, buffers and terminals (refusing on
+unsaved buffers unless forced) and rebuilds that default layout. Every
 project starts with a primary =main= workspace whose root is the
 project directory. =:wsnew <name>= creates another: on a git project it
 runs =git worktree add -b <name> <parent>/<repo>.worktrees/<name> HEAD=

@@ -3185,6 +3185,22 @@ int l_workspace_delete(lua_State *L) {
 }
 
 /**
+ * @brief Implements mep.workspace_reset([force]) -> ok, err: empties the active workspace back to one fresh pane.
+ * @param L Lua state.
+ * @return Number of values pushed (1 on success: true; 2 on failure: false plus the status-line reason).
+ */
+int l_workspace_reset(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    if (ed->WorkspaceReset(ed->ActiveWorkspace().id, lua_toboolean(L, 1) != 0)) {
+        lua_pushboolean(L, true);
+        return 1;
+    }
+    lua_pushboolean(L, false);
+    lua_pushstring(L, ed->StatusMessage().c_str());
+    return 2;
+}
+
+/**
  * @brief Implements mep.workspace_rename(id|name, new_name).
  * @param L Lua state.
  * @return Number of values pushed (1: true on success).
@@ -6401,6 +6417,7 @@ const luaL_Reg kMepFuncs[] = {
     {"workspace_new", l_workspace_new},
     {"workspace_switch", l_workspace_switch},
     {"workspace_delete", l_workspace_delete},
+    {"workspace_reset", l_workspace_reset},
     {"workspace_rename", l_workspace_rename},
     {"workspace_next", l_workspace_next},
     {"workspace_previous", l_workspace_previous},

@@ -254,4 +254,91 @@ std::vector<OrgTodoItem> OrgTodoListItems(const std::vector<std::string> &lines)
  */
 std::vector<std::string> OrgTodoListApply(const std::vector<std::string> &lines, const std::vector<OrgTodoItem> &items);
 
+// The one write-back OrgTodoListApply deliberately never does: retitle
+// the keyworded headline at 0-based index `line`, keeping its stars,
+// keyword, priority cookie and tags (FormatHeadlineLine over the parsed
+// parts). Used by the Todo sidebar's 'e' key. Returns `lines` unchanged
+// when `line` doesn't name a keyworded headline (a stale panel, same rule
+// as OrgTodoListApply) or `new_title` is empty.
+/**
+ * @brief Rewrites the title of the keyworded headline at a 0-based line index, preserving keyword, priority and tags.
+ * @param lines the current full text of the org file
+ * @param line the 0-based index of the headline to retitle
+ * @param new_title the replacement title text
+ * @return the rewritten file lines (equal to `lines` when `line` isn't a keyworded headline or `new_title` is empty)
+ */
+std::vector<std::string> OrgTodoListRetitle(const std::vector<std::string> &lines, int line, const std::string &new_title);
+
+// --- Clocking (Todo sidebar's Enter = start/stop, kBuiltinActivityBar) ---
+// Same on-disk convention as Editor::OrgClockIn/OrgClockOut (editor.cpp,
+// the in-buffer :MepOrgClockIn/Out commands): an open clock is a
+// "CLOCK: [YYYY-MM-DD Day HH:MM]" line with nothing after the bracket,
+// inside a :LOGBOOK: drawer under its headline; stopping it appends
+// "--[end] =>  H:MM". These operate on plain lines so the sidebar can
+// clock a headline in a file that isn't the current buffer (or open at
+// all). Timestamp bodies are the "YYYY-MM-DD Day HH:MM" text between the
+// brackets, as editor.cpp's FormatOrgTimestampNow produces -- the weekday
+// is ignored when parsing.
+struct OrgOpenClock {
+    int line = -1;           // 0-based index of the open CLOCK line, -1 if none
+    int headline_line = -1;  // 0-based index of the nearest headline above it (-1 if none)
+    std::string start_ts;    // the bracketed start timestamp body
+};
+
+/**
+ * @brief Checks whether a line is an open (not-yet-closed) org CLOCK entry, i.e. `CLOCK: [timestamp]`.
+ * @param line the line to check
+ * @param start_ts if non-null, set to the bracketed timestamp body on success
+ * @return true if the line is an open clock line
+ */
+bool OrgMatchOpenClockLine(const std::string &line, std::string *start_ts);
+
+/**
+ * @brief Parses a `YYYY-MM-DD Day HH:MM` org timestamp body (weekday ignored, unanchored scan).
+ * @param s the text to scan
+ * @param y set to the year on success
+ * @param mo set to the month on success
+ * @param d set to the day on success
+ * @param hh set to the hour on success
+ * @param mm set to the minute on success
+ * @return true if a timestamp was found
+ */
+bool OrgParseClockTimestamp(const std::string &s, int *y, int *mo, int *d, int *hh, int *mm);
+
+/**
+ * @brief Finds the first open CLOCK line in an org file and the headline it belongs to.
+ * @param lines the full text of the org file
+ * @return the open clock (line == -1 when none is running)
+ */
+OrgOpenClock OrgFindOpenClock(const std::vector<std::string> &lines);
+
+// Inserts "  CLOCK: [now_ts]" under the headline at 0-based `headline_line`:
+// at the top of its existing :LOGBOOK: drawer, else in a new drawer right
+// after the headline's planning line and :PROPERTIES: drawer (if any),
+// org's own drawer order. Returns `lines` unchanged when `headline_line`
+// isn't a headline or a clock is already open anywhere in the file (only
+// one may run at a time, same rule as Editor::OrgClockIn).
+/**
+ * @brief Starts a clock under a headline by inserting an open CLOCK line into its LOGBOOK drawer.
+ * @param lines the current full text of the org file
+ * @param headline_line the 0-based index of the headline to clock
+ * @param now_ts the start timestamp body to write, e.g. "2026-09-05 Sat 10:00"
+ * @return the rewritten file lines (equal to `lines` if nothing could be started)
+ */
+std::vector<std::string> OrgClockStartLines(const std::vector<std::string> &lines, int headline_line,
+                                            const std::string &now_ts);
+
+// Closes the first open CLOCK line as "CLOCK: [start]--[now_ts] =>  H:MM";
+// `minutes` (if non-null) receives the elapsed whole minutes (clamped at
+// 0). Returns `lines` unchanged, with `minutes` = -1, when none is open.
+/**
+ * @brief Stops the first open clock in an org file, writing its end timestamp and duration.
+ * @param lines the current full text of the org file
+ * @param now_ts the end timestamp body to write
+ * @param minutes if non-null, set to the elapsed whole minutes (-1 when no clock was open)
+ * @return the rewritten file lines (equal to `lines` when no clock was open)
+ */
+std::vector<std::string> OrgClockStopLines(const std::vector<std::string> &lines, const std::string &now_ts,
+                                           int *minutes);
+
 #endif

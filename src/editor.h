@@ -3079,6 +3079,57 @@ public:
      * @param items The todo items to persist, in order.
      */
     void ActivityTodoSave(const std::string &path, const std::vector<ActivityTodoItem> &items);
+    // Todo sidebar edits beyond the checklist model (kBuiltinActivityBar's
+    // Enter = clock start/stop and 'e' = retitle): org files only -- the
+    // legacy "0|text" format has no headline to clock or retitle, so the
+    // panel edits its items and ActivityTodoSaves those instead. All go
+    // through the same live-buffer-else-file rule as ActivityTodoLoad/
+    // ActivityTodoSave (ReadLinesForPath/WriteLinesForPath), over org_doc.h's
+    // OrgClockStartLines/OrgClockStopLines/OrgTodoListRetitle.
+    struct ActivityTodoClock {
+        int line = -1;              // 0-based line of the clocked headline; -1 = no clock running
+        std::string start_ts;       // the open CLOCK line's bracketed start body
+        long long start_epoch = 0;  // that start as local-time Unix seconds (0 if unparsable)
+        std::string title;          // the clocked headline's title (keyword/priority/tags stripped)
+    };
+    /**
+     * @brief Reports the running clock in an org todo file, if any.
+     * @param path The org file to scan (live buffer preferred).
+     * @return The running clock; `line == -1` when none is open.
+     */
+    ActivityTodoClock ActivityTodoClockStatus(const std::string &path) const;
+    /**
+     * @brief Starts a clock under a headline of an org todo file (refused while another clock is open there).
+     * @param path The org file to edit.
+     * @param line The 0-based line of the headline to clock.
+     * @return True if a CLOCK line was written.
+     */
+    bool ActivityTodoClockStart(const std::string &path, int line);
+    /**
+     * @brief Stops the running clock in an org todo file.
+     * @param path The org file to edit.
+     * @return The elapsed whole minutes, or -1 when no clock was open.
+     */
+    int ActivityTodoClockStop(const std::string &path);
+    /**
+     * @brief Retitles a keyworded headline of an org todo file, keeping its keyword, priority and tags.
+     * @param path The org file to edit.
+     * @param line The 0-based line of the headline.
+     * @param text The new title.
+     * @return True if the headline was rewritten.
+     */
+    bool ActivityTodoRetitle(const std::string &path, int line, const std::string &text);
+    // Inverse of ReadLinesForPath, ActivityTodoSave's own write rule
+    // factored out: an open buffer for `path` gets its lines replaced as
+    // one undo step and is written to disk only if it had no pending
+    // edits of its own; otherwise the file is rewritten directly.
+    /**
+     * @brief Writes a whole file's lines back, through its open buffer when there is one.
+     * @param path The file to write.
+     * @param updated The new full text, one entry per line.
+     * @return True if the buffer was updated or the file written.
+     */
+    bool WriteLinesForPath(const std::string &path, const std::vector<std::string> &updated);
     // Activity-bar Tests panel: which lines of a test run's combined
     // stdout/stderr look like a failure (case-insensitive "fail"
     // substring), 1-indexed to match the original Lua's own ipairs index
@@ -5728,6 +5779,26 @@ public:
     void SetStatuslineRef(int ref) { statusline_ref_ = ref; }
     int StatuslineRef() const { return statusline_ref_; }
 
+    // --- Active-todo status-bar widget (kBuiltinActivityBar) ---
+    // What the bottom bar's todo chip shows: the clocked-in todo's title
+    // and a live elapsed timer (main.cpp computes it from `start_epoch`
+    // each frame), or "[No active TODO]" when nothing is set. Pushed from
+    // Lua (mep.active_todo_set) whenever the Todo sidebar's clock state
+    // is re-derived from TODO.org, never scanned from here.
+    void SetActiveTodo(const std::string &text, long long start_epoch) {
+        active_todo_ = true;
+        active_todo_text_ = text;
+        active_todo_start_epoch_ = start_epoch;
+    }
+    void ClearActiveTodo() {
+        active_todo_ = false;
+        active_todo_text_.clear();
+        active_todo_start_epoch_ = 0;
+    }
+    bool HasActiveTodo() const { return active_todo_; }
+    const std::string &ActiveTodoText() const { return active_todo_text_; }
+    long long ActiveTodoStartEpoch() const { return active_todo_start_epoch_; }
+
     // --- Winbar breadcrumb click hook (Part II Phase 11 click-dispatch gap) ---
     // The per-pane header (main.cpp's DrawPane) renders the active buffer's
     // path as clickable breadcrumb segments -- this is mep's winbar
@@ -6991,6 +7062,9 @@ private:
     // own lookup table.
     std::unordered_map<std::string, std::string> whichkey_groups_;
     int statusline_ref_ = 0;
+    bool active_todo_ = false;
+    std::string active_todo_text_;
+    long long active_todo_start_epoch_ = 0;
     int winbar_click_ref_ = 0;
     bool zen_mode_ = false;
     // Speech-to-text recording indicator (Lua-driven, see mep.stt_toggle):

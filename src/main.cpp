@@ -10144,15 +10144,21 @@ const char *kBuiltinOrgBib =
 // Todo panel: a checklist view of the project's TODO.org (cwd-relative
 // by default; mep.activity_todo_file overrides, and a non-.org path there
 // still gets the panel's original "0|text" line file). Every keyworded
-// headline is one row, indented by level; clicking a row flips it
-// TODO<->DONE in the file. The file, not the panel, is the source of
-// truth: rows are re-read from it on every render, and the panel
-// re-renders itself whenever TODO.org is being edited in a buffer
+// headline is one row, indented by level. The sidebar edits the file
+// directly: a = add, e = retitle (prompt popup), d = done, x = delete
+// (whole subtree, after a confirm), Enter/click = start or stop the
+// headline's org clock (a CLOCK entry in its :LOGBOOK: drawer), and the
+// status bar's active-todo chip (main.cpp's status line, fed through
+// mep.active_todo_set) shows the clocked-in todo with a live timer. The
+// file, not the panel, is the source of truth: rows and the running
+// clock are re-read from it on every render, and the panel re-renders
+// itself whenever TODO.org is being edited in a buffer
 // (on_buffer_changed, current buffer only) or any buffer is saved, so
-// edits made in the editor and clicks made in the sidebar always agree.
-// Parse/apply live in C++ -- Editor::ActivityTodoLoad/ActivityTodoSave
-// (editor.cpp) over org_doc.h's OrgTodoListItems/OrgTodoListApply --
-// exposed as mep.activity_todo_load/save (lua_env.cpp).
+// edits made in the editor and keys pressed in the sidebar always agree.
+// Parse/apply live in C++ -- Editor::ActivityTodoLoad/ActivityTodoSave/
+// ActivityTodoRetitle/ActivityTodoClock* (editor.cpp) over org_doc.h's
+// OrgTodoListItems/OrgTodoListApply/OrgTodoListRetitle/OrgClock*Lines --
+// exposed as mep.activity_todo_* (lua_env.cpp).
 const char *kBuiltinActivityBar =
     "mep.activity_todo_file = nil\n"
     "local mep_activity_todo_sidebar_id = nil\n"
@@ -10160,6 +10166,7 @@ const char *kBuiltinActivityBar =
     "local function mep_activity_todo_path() return mep.activity_todo_file or (mep.getcwd() .. '/TODO.org') end\n"
     "local function mep_activity_todo_load() return mep.activity_todo_load(mep_activity_todo_path()) end\n"
     "local function mep_activity_todo_save(items) mep.activity_todo_save(mep_activity_todo_path(), items) end\n"
+    "local function mep_activity_todo_clock() return mep.activity_todo_clock_status(mep_activity_todo_path()) end\n"
     // Re-find an item after a fresh load: by headline line when it has
     // one (an org file), else by position (the legacy line format).
     "local function mep_activity_todo_find(items, ref, index)\n"
@@ -10169,10 +10176,33 @@ const char *kBuiltinActivityBar =
     "  end\n"
     "  return items[index]\n"
     "end\n"
-    "local function mep_activity_todo_key(items)\n"
+    // The running clock is part of what's on screen (the [>] row), so a
+    // clock started/stopped from inside TODO.org (:MepOrgClockIn/Out) is
+    // a change worth re-rendering for too.
+    "local function mep_activity_todo_key(items, clock)\n"
     "  local parts = {}\n"
     "  for _, it in ipairs(items) do parts[#parts + 1] = (it.done and '1' or '0') .. (it.level or 1) .. (it.line or '') .. it.text end\n"
+    "  if clock then parts[#parts + 1] = 'clock' .. clock.line .. clock.start_ts end\n"
     "  return table.concat(parts, '\\n')\n"
+    "end\n"
+    // The bottom bar's active-todo chip (mep.active_todo_set, drawn by
+    // main.cpp's status line) is re-derived from the file's open CLOCK
+    // line -- the same durable source of truth :MepOrgClockIn uses -- on
+    // every sidebar action, on any save, while TODO.org is being edited,
+    // and once at startup, so it agrees with the file no matter which
+    // path changed it. CLOCK stamps only keep the minute, so a clock read
+    // back from the file can only be placed at the top of its minute;
+    // the exact second of a clock this session started itself is kept
+    // (keyed by the stamp text, so a clock from another session or a
+    // restart just falls back to the stamp) to stop the timer jumping
+    // back up to :59 on the next resync.
+    "local mep_activity_todo_exact = nil\n"
+    "function mep.activity_todo_sync_active()\n"
+    "  local clock = mep_activity_todo_clock()\n"
+    "  if not clock then mep.active_todo_set(nil) return end\n"
+    "  local start = clock.start\n"
+    "  if mep_activity_todo_exact and mep_activity_todo_exact.ts == clock.start_ts then start = mep_activity_todo_exact.epoch end\n"
+    "  mep.active_todo_set(clock.title, start)\n"
     "end\n"
     // Popout preview (mod1+m): the headline's whole org subtree -- the
     // headline itself (tinted) plus everything beneath it up to the next
@@ -10198,37 +10228,152 @@ const char *kBuiltinActivityBar =
     "  for r = it.line, last do sub[#sub + 1] = lines[r] end\n"
     "  mep.sidebar_preview_code(sub, 'org', path .. ':' .. it.line, 1)\n"
     "end\n"
+    // Rows: "[ ] title" / "[x] title", or "[>] title" (Add-tinted) for the
+    // one whose clock is running. Enter (and a click) on a row starts or
+    // stops its clock -- see mep.activity_todo_toggle_clock; done/edit/
+    // delete/add are the sidebar's own keys (mep.activity_todo_on_key).
+    // Re-rendering an already-open panel keeps focus and the cursor where
+    // they are (mep.sidebar_open only focuses -- and so resets the cursor
+    // -- when the panel was closed), so an action on row N leaves the
+    // cursor on row N, and a refresh triggered by editing TODO.org in a
+    // pane never yanks focus into the sidebar.
     "function mep.activity_todo_panel()\n"
     "  local items = mep_activity_todo_load()\n"
+    "  local clock = mep_activity_todo_clock()\n"
     "  local widgets = {}\n"
     "  for i, it in ipairs(items) do\n"
     "    local indent = string.rep('  ', (it.level or 1) - 1)\n"
-    "    widgets[#widgets + 1] = {id = tostring(i), text = indent .. (it.done and '[x] ' or '[ ] ') .. it.text,\n"
-    "      on_click = function()\n"
-    "        local cur = mep_activity_todo_load()\n"
-    "        local hit = mep_activity_todo_find(cur, it, i)\n"
-    "        if hit then hit.done = not hit.done end\n"
-    "        mep_activity_todo_save(cur)\n"
-    "        mep.activity_todo_panel()\n"
-    "      end}\n"
+    "    local running = clock ~= nil and it.line ~= nil and clock.line == it.line\n"
+    "    local mark = running and '[>] ' or (it.done and '[x] ' or '[ ] ')\n"
+    "    widgets[#widgets + 1] = {id = tostring(i), text = indent .. mark .. it.text, hl = running and 'Add' or nil,\n"
+    "      on_click = function() mep.activity_todo_toggle_clock(it, i) end}\n"
     "  end\n"
     "  if #widgets == 0 then\n"
-    "    widgets[1] = {id = 'empty', text = '(no TODO headlines in ' .. mep_activity_todo_path() .. ')', on_click = mep.activity_todo_open}\n"
+    "    widgets[1] = {id = 'empty', text = '(no TODO headlines in ' .. mep_activity_todo_path() .. ' -- a to add)', on_click = mep.activity_todo_open}\n"
     "  end\n"
+    "  local was_open = mep_activity_todo_sidebar_id ~= nil and mep.sidebar_is_open(mep_activity_todo_sidebar_id)\n"
     "  if not mep_activity_todo_sidebar_id then\n"
     "    mep_activity_todo_sidebar_id = mep.sidebar_create('Todo', 'right', 40)\n"
     "    mep.sidebar_set_on_preview(mep_activity_todo_sidebar_id, mep_activity_todo_on_preview)\n"
+    "    mep.sidebar_set_on_key(mep_activity_todo_sidebar_id, mep.activity_todo_on_key)\n"
     "  end\n"
     "  mep.sidebar_set_sections(mep_activity_todo_sidebar_id, {{id = 'todos', title = '', collapsed = false, widgets = widgets}})\n"
-    "  mep_activity_todo_rendered = mep_activity_todo_key(items)\n"
-    "  mep.sidebar_open(mep_activity_todo_sidebar_id)\n"
+    "  mep_activity_todo_rendered = mep_activity_todo_key(items, clock)\n"
+    "  mep.sidebar_open(mep_activity_todo_sidebar_id, not was_open)\n"
+    "  mep.activity_todo_sync_active()\n"
     "end\n"
-    // Refresh-if-stale: only redraws when the file's checklist actually
-    // differs from what's on screen, so the sidebar cursor isn't reset by
-    // every unrelated keystroke while the panel is open.
+    // Re-render after one of the sidebar's own edits, keeping the cursor
+    // on the same row (clamped -- deleting the last row moves it up one).
+    // Only touches the cursor while the panel actually has focus:
+    // focusing it from any other mode would make that mode the one Escape
+    // "restores" to.
+    "local function mep_activity_todo_rerender()\n"
+    "  local id = mep_activity_todo_sidebar_id\n"
+    "  local row = mep.sidebar_cursor()\n"
+    "  mep.activity_todo_panel()\n"
+    "  if id and mep.sidebar_is_focused(id) then mep.sidebar_focus_row(id, row) end\n"
+    "end\n"
+    // The item under the sidebar cursor (widget ids are 1-based item
+    // indices), re-loaded fresh: item, index, all items -- or nil on the
+    // '(no TODO headlines)' placeholder / a section header.
+    "local function mep_activity_todo_current()\n"
+    "  if not mep_activity_todo_sidebar_id then return nil end\n"
+    "  local i = tonumber(mep.sidebar_cursor_widget_id(mep_activity_todo_sidebar_id))\n"
+    "  if not i then return nil end\n"
+    "  local items = mep_activity_todo_load()\n"
+    "  return items[i], i, items\n"
+    "end\n"
+    // Enter/click: start this todo's clock, or stop it if it's the one
+    // running. Only one clock runs at a time (org's own rule, and
+    // OrgClockStartLines refuses a second), so starting one while another
+    // todo is clocked in stops that one first -- switching tasks is one
+    // keypress. Clock lines are org's own "CLOCK: [start]--[end] => H:MM"
+    // in a :LOGBOOK: drawer under the headline, so :MepOrgClockTable and
+    // :MepOrgClockOut see them too.
+    "function mep.activity_todo_toggle_clock(it, i)\n"
+    "  if not it.line then mep.notify('Clocking needs an org todo file', 'warn') return end\n"
+    "  local path = mep_activity_todo_path()\n"
+    "  local clock = mep_activity_todo_clock()\n"
+    "  if clock and clock.line == it.line then\n"
+    "    local mins = mep.activity_todo_clock_stop(path)\n"
+    "    if mins then mep.notify(string.format('Clock stopped: %d:%02d  %s', math.floor(mins / 60), mins % 60, it.text)) end\n"
+    "  else\n"
+    "    if clock then mep.activity_todo_clock_stop(path) end\n"
+    "    local epoch = mep.activity_todo_clock_start(path, it.line)\n"
+    "    if not epoch then mep.notify('Could not start a clock on ' .. it.text, 'error') return end\n"
+    "    local now = mep_activity_todo_clock()\n"
+    "    mep_activity_todo_exact = now and {ts = now.start_ts, epoch = epoch} or nil\n"
+    "    mep.notify('Clock started: ' .. it.text)\n"
+    "  end\n"
+    "  mep_activity_todo_rerender()\n"
+    "end\n"
+    // 'd': flip done. Marking the clocked-in todo done stops its clock
+    // first (finishing a task ends its time entry, as org's own
+    // clock-out-when-done does); un-doing leaves clocks alone.
+    "function mep.activity_todo_mark_done(it, i)\n"
+    "  local clock = mep_activity_todo_clock()\n"
+    "  if clock and it.line and clock.line == it.line and not it.done then mep.activity_todo_clock_stop(mep_activity_todo_path()) end\n"
+    "  local cur = mep_activity_todo_load()\n"
+    "  local hit = mep_activity_todo_find(cur, it, i)\n"
+    "  if hit then hit.done = not hit.done end\n"
+    "  mep_activity_todo_save(cur)\n"
+    "  mep_activity_todo_rerender()\n"
+    "end\n"
+    // 'e': the todo's text in the prompt popup, pre-filled; Enter writes
+    // it back as the headline's new title (keyword, priority cookie and
+    // tags kept -- mep.activity_todo_retitle), Escape leaves it alone.
+    "function mep.activity_todo_edit(it, i)\n"
+    "  mep.ui_input('Edit todo:', it.text, function(text)\n"
+    "    if not text or text == '' or text == it.text then return end\n"
+    "    if it.line then\n"
+    "      mep.activity_todo_retitle(mep_activity_todo_path(), it.line, text)\n"
+    "    else\n"
+    "      local cur = mep_activity_todo_load()\n"
+    "      if cur[i] then cur[i].text = text end\n"
+    "      mep_activity_todo_save(cur)\n"
+    "    end\n"
+    "    mep_activity_todo_rerender()\n"
+    "  end)\n"
+    "end\n"
+    // 'x': delete after a confirm -- it takes the headline's whole subtree
+    // (body, clock entries, child headlines) with it, org's own subtree
+    // semantics, so it's worth the extra keypress. A running clock on it
+    // simply goes too; the chip resyncs to '[No active TODO]'.
+    "function mep.activity_todo_delete(it, i)\n"
+    "  mep.ui_confirm('Delete todo \"' .. it.text .. '\" (and everything under it)?', false, function(yes)\n"
+    "    if not yes then return end\n"
+    "    local cur = mep_activity_todo_load()\n"
+    "    local hit = mep_activity_todo_find(cur, it, i)\n"
+    "    if not hit then return end\n"
+    "    for idx, c in ipairs(cur) do if c == hit then table.remove(cur, idx) break end end\n"
+    "    mep_activity_todo_save(cur)\n"
+    "    mep_activity_todo_rerender()\n"
+    "  end)\n"
+    "end\n"
+    // Sidebar keys (mep.sidebar_set_on_key; j/k/gg/G/q/Esc and Enter are
+    // the sidebar's own). Enter = start/stop the clock, a = add, e = edit,
+    // d = done, x = delete, o = open TODO.org, R = re-read, ? = this list.
+    "function mep.activity_todo_on_key(k)\n"
+    "  if k == '?' then\n"
+    "    mep.notify('Todo: Enter=start/stop clock  a=add  e=edit  d=done  x=delete  o=open file  R=refresh  mod1+m=popout')\n"
+    "    return\n"
+    "  elseif k == 'a' then mep.activity_todo_add() return\n"
+    "  elseif k == 'o' then mep.activity_todo_open() return\n"
+    "  elseif k == 'R' then mep_activity_todo_rerender() return\n"
+    "  end\n"
+    "  local it, i = mep_activity_todo_current()\n"
+    "  if not it then return end\n"
+    "  if k == 'e' then mep.activity_todo_edit(it, i)\n"
+    "  elseif k == 'd' then mep.activity_todo_mark_done(it, i)\n"
+    "  elseif k == 'x' then mep.activity_todo_delete(it, i)\n"
+    "  end\n"
+    "end\n"
+    // Refresh-if-stale: only redraws when the file's checklist (or its
+    // running clock) actually differs from what's on screen, so the
+    // sidebar isn't rebuilt by every unrelated keystroke while it's open.
     "local function mep_activity_todo_refresh()\n"
     "  if not mep_activity_todo_sidebar_id or not mep.sidebar_is_open(mep_activity_todo_sidebar_id) then return end\n"
-    "  if mep_activity_todo_key(mep_activity_todo_load()) == mep_activity_todo_rendered then return end\n"
+    "  if mep_activity_todo_key(mep_activity_todo_load(), mep_activity_todo_clock()) == mep_activity_todo_rendered then return end\n"
     "  mep.activity_todo_panel()\n"
     "end\n"
     "local function mep_activity_todo_is_current_buffer()\n"
@@ -10237,23 +10382,33 @@ const char *kBuiltinActivityBar =
     "  local path = mep_activity_todo_path()\n"
     "  return name == path or (mep.getcwd() .. '/' .. name) == path\n"
     "end\n"
-    "mep.on_buffer_changed(function() if mep_activity_todo_is_current_buffer() then mep_activity_todo_refresh() end end)\n"
-    "mep.on_buffer_saved(mep_activity_todo_refresh)\n"
+    // The chip follows the file even with the sidebar closed: editing
+    // TODO.org's CLOCK lines by hand, :MepOrgClockIn/Out inside it, or a
+    // save from anywhere all resync it. A workspace switch moves cwd, and
+    // with it which TODO.org is "the" todo file.
+    "mep.on_buffer_changed(function()\n"
+    "  if mep_activity_todo_is_current_buffer() then mep_activity_todo_refresh() mep.activity_todo_sync_active() end\n"
+    "end)\n"
+    "mep.on_buffer_saved(function() mep_activity_todo_refresh() mep.activity_todo_sync_active() end)\n"
+    "mep.on_workspace_changed(function() mep_activity_todo_refresh() mep.activity_todo_sync_active() end)\n"
+    "mep.activity_todo_sync_active()\n"
     "function mep.activity_todo_open() mep.open(mep_activity_todo_path()) end\n"
+    // 'a' (and :MepActivityTodoAdd): a new "* TODO text" headline appended
+    // at the end of the file, via the prompt popup.
     "function mep.activity_todo_add()\n"
     "  mep.ui_input('New todo:', '', function(text)\n"
     "    if not text or text == '' then return end\n"
     "    local items = mep_activity_todo_load()\n"
     "    items[#items + 1] = {done = false, text = text}\n"
     "    mep_activity_todo_save(items)\n"
-    "    mep.activity_todo_panel()\n"
+    "    mep_activity_todo_rerender()\n"
     "  end)\n"
     "end\n"
     "function mep.activity_todo_clear_done()\n"
     "  local kept = {}\n"
     "  for _, it in ipairs(mep_activity_todo_load()) do if not it.done then kept[#kept + 1] = it end end\n"
     "  mep_activity_todo_save(kept)\n"
-    "  mep.activity_todo_panel()\n"
+    "  mep_activity_todo_rerender()\n"
     "end\n"
     "mep.command('MepActivityTodoPanel', mep.activity_todo_panel)\n"
     "mep.command('MepActivityTodoOpen', mep.activity_todo_open)\n"
@@ -20411,6 +20566,45 @@ void DrawEditor() {
         int status_y = screen_h - command_bar_height - status_bar_height;
         DrawRectangle(0, status_y, screen_w, status_bar_height, ResolveHlGroup("StatusLine"));
         float status_font_size = std::max(kMinFontSize, g_font_size - 2);
+        // Active-todo chip (kBuiltinActivityBar's Todo sidebar clock, fed
+        // by mep.active_todo_set): docked at the right edge ahead of the
+        // Ln/Col readout, in both the built-in and the mep.set_statusline
+        // layouts. Green with the clocked-in todo's title and a live
+        // H:MM:SS counted from its CLOCK start; red "[No active TODO]"
+        // otherwise. Clicking it toggles the Todo sidebar.
+        float chip_left = static_cast<float>(screen_w - kMarginX);
+        {
+            const bool active = g_editor.HasActiveTodo();
+            std::string chip;
+            if (active) {
+                std::string title = g_editor.ActiveTodoText();
+                // Keep a long title from swallowing the whole bar: cut at a
+                // UTF-8 boundary and mark the cut.
+                const size_t kMaxTitle = 48;
+                if (title.size() > kMaxTitle) {
+                    size_t cut = kMaxTitle;
+                    while (cut > 0 && (static_cast<unsigned char>(title[cut]) & 0xC0) == 0x80) cut--;
+                    title = title.substr(0, cut) + "...";
+                }
+                long long secs = static_cast<long long>(std::time(nullptr)) - g_editor.ActiveTodoStartEpoch();
+                if (secs < 0) secs = 0;
+                char tbuf[32];
+                std::snprintf(tbuf, sizeof(tbuf), "%lld:%02lld:%02lld", secs / 3600, (secs / 60) % 60, secs % 60);
+                chip = title + "  " + tbuf;
+            } else {
+                chip = "[No active TODO]";
+            }
+            float chip_w = MeasureTextEx(g_font, chip.c_str(), status_font_size, 0).x + 14.0f;
+            Rectangle chip_rect{chip_left - chip_w, static_cast<float>(status_y + 2), chip_w,
+                                static_cast<float>(status_bar_height - 4)};
+            DrawRectangleRec(chip_rect, ResolveHlGroup(active ? "TodoActive" : "TodoInactive"));
+            DrawTextEx(g_font, chip.c_str(), Vector2{chip_rect.x + 7.0f, static_cast<float>(status_y + 3)},
+                       status_font_size, 0, ResolveHlGroup("StatusLineFg"));
+            RegisterClickRegion(chip_rect, [] {
+                if (g_editor.Lua()) g_editor.Lua()->DoString("mep.activity_todo_toggle()");
+            });
+            chip_left = chip_rect.x - 12.0f;
+        }
         std::vector<std::pair<std::string, std::string>> widgets;
         bool has_widgets = g_editor.Lua() && g_editor.Lua()->CallRefForWidgets(g_editor.StatuslineRef(), &widgets);
         if (has_widgets) {
@@ -20440,7 +20634,7 @@ void DrawEditor() {
                 std::string chip = peer.name.empty() ? "Anonymous" : peer.name;
                 chip += peer.has_location ? " @" + std::to_string(peer.row + 1) + ":" + std::to_string(peer.col + 1) : " connecting";
                 float chip_w = MeasureTextEx(g_font, chip.c_str(), status_font_size, 0).x + 14.0f;
-                const float right_start = static_cast<float>(screen_w - kMarginX) - MeasureTextEx(g_font, right.c_str(), status_font_size, 0).x;
+                const float right_start = chip_left - MeasureTextEx(g_font, right.c_str(), status_font_size, 0).x;
                 if (peer_x + chip_w + 8.0f >= right_start) break;
                 Rectangle chip_rect{peer_x, static_cast<float>(status_y + 2), chip_w, static_cast<float>(status_bar_height - 4)};
                 DrawRectangleRec(chip_rect, ResolveHlGroup("Visual"));
@@ -20451,8 +20645,7 @@ void DrawEditor() {
             DrawTextEx(g_font, left.c_str(), Vector2{static_cast<float>(kMarginX), static_cast<float>(status_y + 3)},
                        status_font_size, 0, ResolveHlGroup("StatusLineFg"));
             float right_w = MeasureTextEx(g_font, right.c_str(), status_font_size, 0).x;
-            DrawTextEx(g_font, right.c_str(),
-                       Vector2{static_cast<float>(screen_w - kMarginX) - right_w, static_cast<float>(status_y + 3)},
+            DrawTextEx(g_font, right.c_str(), Vector2{chip_left - right_w, static_cast<float>(status_y + 3)},
                        status_font_size, 0, ResolveHlGroup("StatusLineFg"));
         }
     }

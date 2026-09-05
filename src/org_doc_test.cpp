@@ -172,6 +172,94 @@ int main() {
         CHECK(out == Lines{"* DONE [#A] Important thing :work:urgent:"});
     }
 
+    // --- Retitle (the sidebar's 'e' key): stars, keyword, priority and
+    //     tags survive; a plain headline, a stale line or an empty title
+    //     is a no-op.
+    {
+        Lines tagged = {"#+TODO: TODO DOING | DONE", "* Plain", "** DOING [#B] Old title :work:", "   body"};
+        Lines out = OrgTodoListRetitle(tagged, 2, "New title");
+        const Lines expect = {"#+TODO: TODO DOING | DONE", "* Plain", "** DOING [#B] New title :work:", "   body"};
+        CHECK(out == expect);
+        CHECK(OrgTodoListRetitle(tagged, 1, "Nope") == tagged);   // plain headline, no keyword
+        CHECK(OrgTodoListRetitle(tagged, 3, "Nope") == tagged);   // body text
+        CHECK(OrgTodoListRetitle(tagged, 99, "Nope") == tagged);  // out of range
+        CHECK(OrgTodoListRetitle(tagged, 2, "") == tagged);       // empty title
+    }
+
+    // --- Clock line matching and timestamp parsing.
+    {
+        std::string ts;
+        CHECK(OrgMatchOpenClockLine("  CLOCK: [2026-09-05 Sat 10:00]", &ts) && ts == "2026-09-05 Sat 10:00");
+        CHECK(OrgMatchOpenClockLine("CLOCK:[2026-09-05 Sat 10:00]   ", nullptr));
+        CHECK(!OrgMatchOpenClockLine("  CLOCK: [2026-09-05 Sat 10:00]--[2026-09-05 Sat 11:30] =>  1:30", nullptr));
+        CHECK(!OrgMatchOpenClockLine("  :LOGBOOK:", nullptr));
+        CHECK(!OrgMatchOpenClockLine("  CLOCK: 2026-09-05 Sat 10:00", nullptr));
+        int y = 0, mo = 0, d = 0, hh = 0, mm = 0;
+        CHECK(OrgParseClockTimestamp("2026-09-05 Sat 10:07", &y, &mo, &d, &hh, &mm));
+        CHECK(y == 2026 && mo == 9 && d == 5 && hh == 10 && mm == 7);
+        CHECK(OrgParseClockTimestamp("[2026-01-31 Samstag 23:59]", &y, &mo, &d, &hh, &mm) && d == 31 && mm == 59);
+        CHECK(!OrgParseClockTimestamp("2026-09-05 Sat", &y, &mo, &d, &hh, &mm));
+        CHECK(!OrgParseClockTimestamp("2026-09-05 10:07", &y, &mo, &d, &hh, &mm));
+    }
+
+    // --- Clock start: a fresh drawer goes after the planning line and
+    //     :PROPERTIES: drawer; an existing :LOGBOOK: gets the new entry at
+    //     its top; a second start while one is open is refused; a non-
+    //     headline line is refused.
+    {
+        Lines file = {
+            "* TODO Task A",
+            "  SCHEDULED: <2026-09-06 Sun>",
+            "  :PROPERTIES:",
+            "  :ID: a",
+            "  :END:",
+            "  some body text",
+            "* TODO Task B",
+            "  :LOGBOOK:",
+            "  CLOCK: [2026-09-01 Tue 09:00]--[2026-09-01 Tue 09:30] =>  0:30",
+            "  :END:",
+        };
+        CHECK(OrgFindOpenClock(file).line == -1);
+        Lines a = OrgClockStartLines(file, 0, "2026-09-05 Sat 10:00");
+        CHECK(a.size() == file.size() + 3);
+        CHECK(a[5] == "  :LOGBOOK:" && a[6] == "  CLOCK: [2026-09-05 Sat 10:00]" && a[7] == "  :END:");
+        CHECK(a[8] == "  some body text");
+        OrgOpenClock open = OrgFindOpenClock(a);
+        CHECK(open.line == 6 && open.headline_line == 0 && open.start_ts == "2026-09-05 Sat 10:00");
+        CHECK(OrgClockStartLines(a, 9, "2026-09-05 Sat 10:01") == a);  // already running
+
+        Lines b = OrgClockStartLines(file, 6, "2026-09-05 Sat 10:00");
+        CHECK(b.size() == file.size() + 1);
+        CHECK(b[7] == "  :LOGBOOK:" && b[8] == "  CLOCK: [2026-09-05 Sat 10:00]");
+        CHECK(b[9] == "  CLOCK: [2026-09-01 Tue 09:00]--[2026-09-01 Tue 09:30] =>  0:30");
+        CHECK(OrgFindOpenClock(b).headline_line == 6);
+
+        CHECK(OrgClockStartLines(file, 5, "2026-09-05 Sat 10:00") == file);   // body text, not a headline
+        CHECK(OrgClockStartLines(file, 42, "2026-09-05 Sat 10:00") == file);  // out of range
+
+        // A subtree's LOGBOOK belongs to the child, not the parent: the
+        // parent gets its own drawer.
+        Lines nested = {"* TODO Parent", "** TODO Child", "   :LOGBOOK:", "   :END:"};
+        Lines n = OrgClockStartLines(nested, 0, "2026-09-05 Sat 10:00");
+        CHECK(n.size() == nested.size() + 3 && n[2] == "  CLOCK: [2026-09-05 Sat 10:00]" && n[4] == "** TODO Child");
+    }
+
+    // --- Clock stop: closes the open line with the duration (across
+    //     midnight too), reports minutes, and is a no-op when none is open.
+    {
+        Lines running = {"* TODO Task", "  :LOGBOOK:", "  CLOCK: [2026-09-05 Sat 23:50]", "  :END:"};
+        int mins = 0;
+        Lines out = OrgClockStopLines(running, "2026-09-06 Sun 01:05", &mins);
+        CHECK(mins == 75);
+        CHECK(out[2] == "  CLOCK: [2026-09-05 Sat 23:50]--[2026-09-06 Sun 01:05] =>  1:15");
+        CHECK(OrgFindOpenClock(out).line == -1);
+        int none = 0;
+        CHECK(OrgClockStopLines(out, "2026-09-06 Sun 01:06", &none) == out && none == -1);
+        // The clock's own end can't precede its start.
+        Lines back = OrgClockStopLines(running, "2026-09-05 Sat 23:40", &mins);
+        CHECK(mins == 0 && back[2] == "  CLOCK: [2026-09-05 Sat 23:50]--[2026-09-05 Sat 23:40] =>  0:00");
+    }
+
     std::printf("org_doc_test: all checks passed\n");
     return 0;
 }

@@ -899,6 +899,12 @@ std::unordered_map<std::string, ThemeColor> BuildHighlightGroups(const Palette &
     g["BorderInactive"] = p.border;
     g["CursorLine"] = Lighten(p.bg, 8);
     g["Visual"] = Mix(p.blue, p.bg, 0.35f);
+    // The status bar's active-todo chip (kBuiltinActivityBar's Todo
+    // sidebar clock, main.cpp's DrawFrame status line): green while a todo
+    // is clocked in, red while none is -- toned toward the background so
+    // StatusLineFg stays legible on top of either.
+    g["TodoActive"] = Mix(p.green, p.bg, 0.3f);
+    g["TodoInactive"] = Mix(p.red, p.bg, 0.3f);
     // incsearch's live match preview (Phase 4 stretch item) -- a span
     // recolor via the plain Decoration/hl_group pipeline (see
     // Editor::UpdateIncSearch), so it wants to read as "found" against
@@ -1858,32 +1864,10 @@ int Editor::OrgSubtreeEnd(int row, const std::vector<std::string> &todo_keywords
 }
 
 namespace {
-// kBuiltinOrgClock's own `'^%s*CLOCK:%s*%[[^%]]+%]%s*$'` port: a line
-// holding an *open* clock (no closing "--[...] => H:MM" yet). If
-// `start_ts` is non-null, also captures the bracketed timestamp text.
-/**
- * @brief Checks whether a line is an open (not-yet-closed) org CLOCK entry, i.e. `CLOCK: [timestamp]`.
- * @param line The line to check.
- * @param start_ts If non-null, set to the bracketed timestamp text on success.
- * @return True if the line is an open clock line, false otherwise.
- */
-bool MatchRunningClockLine(const std::string &line, std::string *start_ts) {
-    size_t i = 0;
-    while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) i++;
-    static const std::string kPrefix = "CLOCK:";
-    if (line.compare(i, kPrefix.size(), kPrefix) != 0) return false;
-    i += kPrefix.size();
-    while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) i++;
-    if (i >= line.size() || line[i] != '[') return false;
-    size_t open = i + 1;
-    size_t close = line.find(']', open);
-    if (close == std::string::npos) return false;
-    size_t j = close + 1;
-    while (j < line.size() && std::isspace(static_cast<unsigned char>(line[j]))) j++;
-    if (j != line.size()) return false;  // trailing junk (e.g. an already-closed "--[...]") -> not "open"
-    if (start_ts) *start_ts = line.substr(open, close - open);
-    return true;
-}
+// The open-clock line matcher (kBuiltinOrgClock's own
+// `'^%s*CLOCK:%s*%[[^%]]+%]%s*$'` port) now lives in org_doc.h as
+// OrgMatchOpenClockLine, shared with the Todo sidebar's path-based
+// clocking (OrgClockStartLines/OrgClockStopLines).
 
 /**
  * @brief Checks whether a line is an org `:LOGBOOK:` drawer opener (ignoring surrounding whitespace).
@@ -2031,7 +2015,7 @@ bool MatchClockDuration(const std::string &line, int *total_minutes) {
 void Editor::OrgClockIn() {
     const int n = Buf().LineCount();
     for (int i = 1; i <= n; i++) {
-        if (MatchRunningClockLine(Buf().lines[static_cast<size_t>(i - 1)], nullptr)) {
+        if (OrgMatchOpenClockLine(Buf().lines[static_cast<size_t>(i - 1)], nullptr)) {
             Notify("A clock is already running", NotifyLevel::Warn);
             return;
         }
@@ -2064,7 +2048,7 @@ void Editor::OrgClockOut() {
     const int n = Buf().LineCount();
     for (int i = 1; i <= n; i++) {
         std::string start_ts;
-        if (!MatchRunningClockLine(Buf().lines[static_cast<size_t>(i - 1)], &start_ts)) continue;
+        if (!OrgMatchOpenClockLine(Buf().lines[static_cast<size_t>(i - 1)], &start_ts)) continue;
         int y = 0, mo = 0, d = 0, hh = 0, mm = 0;
         if (!ParseClockTimestamp(start_ts, &y, &mo, &d, &hh, &mm)) continue;
         std::time_t start_time = MakeLocalTime(y, mo, d, hh, mm);
@@ -17880,27 +17864,32 @@ std::vector<Editor::ActivityTodoItem> Editor::ActivityTodoLoad(const std::string
     return items;
 }
 
+bool Editor::WriteLinesForPath(const std::string &path, const std::vector<std::string> &updated) {
+    int buffer_id = FindOpenBufferForPath(path);
+    if (buffer_id >= 0) {
+        Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
+        std::vector<std::string> next = updated;
+        if (next.empty()) next.emplace_back("");  // a buffer's "empty file" is one empty line
+        if (next == buf.lines) return true;
+        const bool had_pending_edits = buf.modified;
+        ReplaceLinesAt(buffer_id, 0, static_cast<int>(buf.lines.size()), next);
+        if (CurPane().buffer_id == buffer_id) ClampCursor();
+        if (!had_pending_edits) SaveBuffer(buf, buf.filename);
+        return true;
+    }
+    std::ofstream f(path, std::ios::binary | std::ios::trunc);
+    if (!f) return false;
+    for (const auto &l : updated) f << l << '\n';
+    return true;
+}
+
 void Editor::ActivityTodoSave(const std::string &path, const std::vector<ActivityTodoItem> &items) {
     if (IsOrgTodoPath(path)) {
-        int buffer_id = FindOpenBufferForPath(path);
-        if (buffer_id >= 0) {
-            Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
-            std::vector<std::string> updated = OrgTodoListApply(buf.lines, items);
-            if (updated.empty()) updated.emplace_back("");
-            if (updated == buf.lines) return;
-            const bool had_pending_edits = buf.modified;
-            ReplaceLinesAt(buffer_id, 0, static_cast<int>(buf.lines.size()), updated);
-            if (CurPane().buffer_id == buffer_id) ClampCursor();
-            if (!had_pending_edits) SaveBuffer(buf, buf.filename);
-            return;
-        }
         std::vector<std::string> lines;
-        const bool existed = ReadFileLines(path, lines);
+        const bool existed = ReadLinesForPath(path, 0, &lines);
         std::vector<std::string> updated = OrgTodoListApply(lines, items);
         if (existed && updated == lines) return;
-        std::ofstream f(path, std::ios::binary | std::ios::trunc);
-        if (!f) return;
-        for (const auto &l : updated) f << l << '\n';
+        WriteLinesForPath(path, updated);
         return;
     }
     std::ofstream f(path, std::ios::trunc);
@@ -17908,6 +17897,60 @@ void Editor::ActivityTodoSave(const std::string &path, const std::vector<Activit
     for (const auto &it : items) {
         f << (it.done ? '1' : '0') << '|' << it.text << '\n';
     }
+}
+
+Editor::ActivityTodoClock Editor::ActivityTodoClockStatus(const std::string &path) const {
+    ActivityTodoClock out;
+    if (!IsOrgTodoPath(path)) return out;
+    std::vector<std::string> lines;
+    if (!ReadLinesForPath(path, 0, &lines)) return out;
+    OrgOpenClock clock = OrgFindOpenClock(lines);
+    if (clock.line < 0 || clock.headline_line < 0) return out;
+    out.line = clock.headline_line;
+    out.start_ts = clock.start_ts;
+    int y = 0, mo = 0, d = 0, hh = 0, mm = 0;
+    if (OrgParseClockTimestamp(clock.start_ts, &y, &mo, &d, &hh, &mm)) {
+        out.start_epoch = static_cast<long long>(MakeLocalTime(y, mo, d, hh, mm));
+    }
+    // The same parse OrgTodoListItems uses for the sidebar rows (the
+    // file's own "#+TODO:" keywords), so the chip's title matches the row.
+    out.title = lines[static_cast<size_t>(clock.headline_line)];
+    for (const OrgHeadline &h : ParseOrgOutline(lines).headlines) {
+        if (h.line_start == clock.headline_line) {
+            out.title = h.title;
+            break;
+        }
+    }
+    return out;
+}
+
+bool Editor::ActivityTodoClockStart(const std::string &path, int line) {
+    if (!IsOrgTodoPath(path)) return false;
+    std::vector<std::string> lines;
+    if (!ReadLinesForPath(path, 0, &lines)) return false;
+    std::vector<std::string> updated = OrgClockStartLines(lines, line, FormatOrgTimestampNow());
+    if (updated == lines) return false;
+    return WriteLinesForPath(path, updated);
+}
+
+int Editor::ActivityTodoClockStop(const std::string &path) {
+    if (!IsOrgTodoPath(path)) return -1;
+    std::vector<std::string> lines;
+    if (!ReadLinesForPath(path, 0, &lines)) return -1;
+    int minutes = -1;
+    std::vector<std::string> updated = OrgClockStopLines(lines, FormatOrgTimestampNow(), &minutes);
+    if (minutes < 0) return -1;
+    if (!WriteLinesForPath(path, updated)) return -1;
+    return minutes;
+}
+
+bool Editor::ActivityTodoRetitle(const std::string &path, int line, const std::string &text) {
+    if (!IsOrgTodoPath(path)) return false;
+    std::vector<std::string> lines;
+    if (!ReadLinesForPath(path, 0, &lines)) return false;
+    std::vector<std::string> updated = OrgTodoListRetitle(lines, line, text);
+    if (updated == lines) return false;
+    return WriteLinesForPath(path, updated);
 }
 
 std::vector<Editor::ActivityTestFailureLine> Editor::ActivityTestFailureLines(

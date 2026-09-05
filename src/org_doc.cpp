@@ -695,3 +695,179 @@ std::vector<std::string> OrgTodoListApply(const std::vector<std::string> &lines,
     }
     return result;
 }
+
+std::vector<std::string> OrgTodoListRetitle(const std::vector<std::string> &lines, int line, const std::string &new_title) {
+    if (new_title.empty() || line < 0 || line >= static_cast<int>(lines.size())) return lines;
+    OrgOutline outline = ParseOrgOutline(lines);
+    for (const OrgHeadline &h : outline.headlines) {
+        if (h.line_start != line) continue;
+        if (h.todo_keyword.empty()) break;
+        std::vector<std::string> out = lines;
+        out[static_cast<size_t>(line)] = FormatHeadlineLine(h.level, h.todo_keyword, h.priority, new_title, h.tags);
+        return out;
+    }
+    return lines;
+}
+
+namespace {
+/**
+ * @brief Returns the index of the first non-whitespace character at or after `pos`.
+ * @param s the string to scan
+ * @param pos the offset to start from
+ * @return the index of the first non-space character, or s.size()
+ */
+size_t SkipSpaces(const std::string &s, size_t pos) {
+    while (pos < s.size() && std::isspace(static_cast<unsigned char>(s[pos]))) pos++;
+    return pos;
+}
+
+/**
+ * @brief Checks whether a line is an org headline of any level ("*"+ followed by a space).
+ * @param line the line to check
+ * @return true if the line starts with one or more '*' followed by a space
+ */
+bool IsAnyHeadlineLine(const std::string &line) {
+    size_t i = 0;
+    while (i < line.size() && line[i] == '*') i++;
+    return i > 0 && i < line.size() && line[i] == ' ';
+}
+
+/**
+ * @brief Parses exactly `count` consecutive decimal digits starting at a position.
+ * @param s the string to read from
+ * @param pos the offset to start reading at
+ * @param count the exact number of digit characters required
+ * @param out set to the parsed integer value on success
+ * @return true if `count` digit characters were present at `pos`
+ */
+bool ReadDigits(const std::string &s, size_t pos, int count, int *out) {
+    if (pos + static_cast<size_t>(count) > s.size()) return false;
+    int v = 0;
+    for (int i = 0; i < count; i++) {
+        char c = s[pos + static_cast<size_t>(i)];
+        if (!std::isdigit(static_cast<unsigned char>(c))) return false;
+        v = v * 10 + (c - '0');
+    }
+    *out = v;
+    return true;
+}
+}  // namespace
+
+bool OrgMatchOpenClockLine(const std::string &line, std::string *start_ts) {
+    size_t i = SkipSpaces(line, 0);
+    static const std::string kPrefix = "CLOCK:";
+    if (line.compare(i, kPrefix.size(), kPrefix) != 0) return false;
+    i = SkipSpaces(line, i + kPrefix.size());
+    if (i >= line.size() || line[i] != '[') return false;
+    size_t open = i + 1;
+    size_t close = line.find(']', open);
+    if (close == std::string::npos) return false;
+    if (SkipSpaces(line, close + 1) != line.size()) return false;  // "--[...] => H:MM" tail -> already closed
+    if (start_ts) *start_ts = line.substr(open, close - open);
+    return true;
+}
+
+bool OrgParseClockTimestamp(const std::string &s, int *y, int *mo, int *d, int *hh, int *mm) {
+    // "YYYY-MM-DD <weekday> HH:MM" -- the weekday token is any run of
+    // non-space characters (locale names differ), the original Lua
+    // pattern's `%d%d%d%d%-%d%d%-%d%d %S+ %d%d:%d%d`.
+    for (size_t i = 0; i + 16 <= s.size(); i++) {
+        int yy = 0, mmo = 0, dd = 0, h = 0, m = 0;
+        if (!ReadDigits(s, i, 4, &yy) || s[i + 4] != '-' || !ReadDigits(s, i + 5, 2, &mmo) || s[i + 7] != '-' ||
+            !ReadDigits(s, i + 8, 2, &dd) || s[i + 10] != ' ') {
+            continue;
+        }
+        size_t j = i + 11;
+        while (j < s.size() && !std::isspace(static_cast<unsigned char>(s[j]))) j++;
+        if (j == i + 11 || j >= s.size() || s[j] != ' ') continue;
+        j++;
+        if (!ReadDigits(s, j, 2, &h) || j + 2 >= s.size() || s[j + 2] != ':' || !ReadDigits(s, j + 3, 2, &m)) continue;
+        *y = yy;
+        *mo = mmo;
+        *d = dd;
+        *hh = h;
+        *mm = m;
+        return true;
+    }
+    return false;
+}
+
+OrgOpenClock OrgFindOpenClock(const std::vector<std::string> &lines) {
+    OrgOpenClock out;
+    for (size_t i = 0; i < lines.size(); i++) {
+        if (!OrgMatchOpenClockLine(lines[i], &out.start_ts)) continue;
+        out.line = static_cast<int>(i);
+        for (int k = static_cast<int>(i) - 1; k >= 0; k--) {
+            if (IsAnyHeadlineLine(lines[static_cast<size_t>(k)])) {
+                out.headline_line = k;
+                break;
+            }
+        }
+        return out;
+    }
+    return out;
+}
+
+std::vector<std::string> OrgClockStartLines(const std::vector<std::string> &lines, int headline_line,
+                                            const std::string &now_ts) {
+    if (headline_line < 0 || headline_line >= static_cast<int>(lines.size())) return lines;
+    if (!IsAnyHeadlineLine(lines[static_cast<size_t>(headline_line)])) return lines;
+    if (OrgFindOpenClock(lines).line >= 0) return lines;
+    // The headline's own body only (up to its first child headline, not
+    // the whole subtree): a child's :LOGBOOK: is the child's.
+    int subtree_end = static_cast<int>(lines.size()) - 1;
+    for (int i = headline_line + 1; i < static_cast<int>(lines.size()); i++) {
+        if (IsAnyHeadlineLine(lines[static_cast<size_t>(i)])) {
+            subtree_end = i - 1;
+            break;
+        }
+    }
+    const std::string entry = "  CLOCK: [" + now_ts + "]";
+    std::vector<std::string> out = lines;
+    // An existing :LOGBOOK: drawer in that body: newest entry
+    // first, org's own convention (and Editor::OrgClockIn's).
+    for (int i = headline_line + 1; i <= subtree_end; i++) {
+        if (IsDrawerLine(lines[static_cast<size_t>(i)], "LOGBOOK")) {
+            out.insert(out.begin() + i + 1, entry);
+            return out;
+        }
+    }
+    // No drawer yet: a new one after the planning line and :PROPERTIES:
+    // drawer, if the headline has them, so those keep their org-mandated
+    // position directly under the headline.
+    int insert_at = headline_line + 1;
+    if (insert_at <= subtree_end) {
+        std::string sched, dead;
+        if (ParsePlanningLine(lines[static_cast<size_t>(insert_at)], sched, dead)) insert_at++;
+    }
+    if (insert_at <= subtree_end && IsDrawerLine(lines[static_cast<size_t>(insert_at)], "PROPERTIES")) {
+        for (int i = insert_at + 1; i <= subtree_end; i++) {
+            if (IsDrawerLine(lines[static_cast<size_t>(i)], "END")) {
+                insert_at = i + 1;
+                break;
+            }
+        }
+    }
+    out.insert(out.begin() + insert_at, {"  :LOGBOOK:", entry, "  :END:"});
+    return out;
+}
+
+std::vector<std::string> OrgClockStopLines(const std::vector<std::string> &lines, const std::string &now_ts,
+                                           int *minutes) {
+    if (minutes) *minutes = -1;
+    OrgOpenClock clock = OrgFindOpenClock(lines);
+    if (clock.line < 0) return lines;
+    long long mins = 0;
+    int y1 = 0, mo1 = 0, d1 = 0, h1 = 0, m1 = 0, y2 = 0, mo2 = 0, d2 = 0, h2 = 0, m2 = 0;
+    if (OrgParseClockTimestamp(clock.start_ts, &y1, &mo1, &d1, &h1, &m1) &&
+        OrgParseClockTimestamp(now_ts, &y2, &mo2, &d2, &h2, &m2)) {
+        mins = (OrgDayNumber(y2, mo2, d2) - OrgDayNumber(y1, mo1, d1)) * 1440 + (h2 * 60 + m2) - (h1 * 60 + m1);
+        if (mins < 0) mins = 0;
+    }
+    char durbuf[32];
+    std::snprintf(durbuf, sizeof(durbuf), "%lld:%02lld", mins / 60, mins % 60);
+    std::vector<std::string> out = lines;
+    out[static_cast<size_t>(clock.line)] = "  CLOCK: [" + clock.start_ts + "]--[" + now_ts + "] =>  " + durbuf;
+    if (minutes) *minutes = static_cast<int>(mins);
+    return out;
+}

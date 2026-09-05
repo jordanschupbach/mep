@@ -9,3 +9,8 @@
    display to confirm by eye).
 
 * TODO Some test todo
+  :LOGBOOK:
+  CLOCK: [2026-09-05 Sat 12:16]--[2026-09-05 Sat 12:16] =>  0:00
+  CLOCK: [2026-09-05 Sat 12:16]--[2026-09-05 Sat 12:16] =>  0:00
+  :END:
+* TODO Some new todo

@@ -438,6 +438,15 @@ struct SidebarInstance {
     // popout is just a larger copy of the docked list with no preview
     // column.
     int on_preview_ref = 0;
+    // Tab strip (mep.sidebar_set_tabs): view names drawn on a row under
+    // the docked title and beside the popout's title. Tab/Shift-Tab while
+    // focused, a click on a name, or mep.sidebar_set_active_tab switch
+    // views, each firing on_tab_ref(index, 1-based) so the consumer
+    // re-renders its sections for that view (the git panel's Status/Log/
+    // Branches/Stash). Empty = no strip, nothing changes.
+    std::vector<std::string> tabs;
+    int active_tab = 0;  // 0-based index into `tabs`
+    int on_tab_ref = 0;
     // Share of its dock's height this sidebar gets when several open
     // sidebars dock on the same left/right edge -- DrawSidebars merges
     // those into ONE column (width = the largest `size` among them, kept
@@ -4014,6 +4023,8 @@ public:
      * @return The buffer's id.
      */
     int FindOrCreateBufferForLua(const std::string &path) { return FindOrCreateBuffer(path); }
+    /** @brief mep.buffer_delete: public shim over BufferDeleteById. */
+    void BufferDeleteForLua(int buffer_id, bool force) { BufferDeleteById(buffer_id, force); }
     /**
      * @brief Returns the number of open buffers.
      * @return The buffer count.
@@ -5152,6 +5163,43 @@ public:
      * @param lua_ref The Lua registry reference to invoke with the cursor widget's id whenever it changes while popped out.
      */
     void SetSidebarOnPreview(int id, int lua_ref);
+    /** @brief Sets a sidebar's tab strip (see SidebarInstance::tabs); `active` is 0-based and clamped. */
+    void SetSidebarTabs(int id, std::vector<std::string> tabs, int active);
+    /** @brief Registers the Lua callback fired with the new 1-based index whenever a sidebar's active tab changes. */
+    void SetSidebarOnTab(int id, int lua_ref);
+    /** @brief Switches sidebar `id` to tab `index` (0-based, wrapped), resets its cursor/scroll and fires on_tab_ref; a no-op without tabs. */
+    void SelectSidebarTab(int id, int index);
+    int SidebarActiveTab(int id) const;
+
+    // --- Floating editable pane (mep.float_open) ---
+    // A real Pane hosting an ordinary buffer, drawn centered over
+    // everything (main.cpp's DrawFloatPane) and holding the cursor while
+    // open: CurPane() resolves to it, so every Normal/Insert/Visual/
+    // Command path (and the status line, :w, the mouse wheel) works on it
+    // exactly as on a docked pane. It is not part of any tab's split tree
+    // -- the tab's own active_pane_id is left alone underneath -- so
+    // closing it (Escape with nothing pending, :q/:close/:wq, the
+    // header's x, a click outside the box) simply drops the node and
+    // returns focus to wherever it came from: the sidebar row it was
+    // opened from (the Todo panel's 'e') or the tab's active pane. Any
+    // pane-tree operation (split, pane navigation, buffer delete) closes
+    // it first rather than acting "through" it. First consumer: the Todo
+    // sidebar's 'e', which opens TODO.org itself at the headline instead
+    // of a one-line title prompt.
+    /**
+     * @brief Opens `path` in a floating pane with the cursor on `row` (0-based), replacing any open float.
+     * @param save_on_close Whether closing the float writes the buffer if it was modified.
+     * @param on_close_ref Lua function ref called once on close with `true` if the buffer was written by that close (0 = none); released afterwards.
+     * @return true if the float opened.
+     */
+    bool OpenFloatPane(const std::string &path, int row, bool save_on_close, int on_close_ref = 0);
+    /** @brief Closes the floating pane (writing its buffer first if save_on_close was set), restoring the prior focus. */
+    void CloseFloatPane();
+    bool IsFloatPaneOpen() const { return float_node_ != nullptr; }
+    const Pane &FloatPane() const { return float_node_->pane; }
+    int FloatPaneId() const { return float_node_ ? float_node_->pane.id : -1; }
+    /** @brief Closes the float if the tab/workspace it was opened over is no longer active or its buffer was deleted. */
+    void ValidateFloatPane();
 
     // --- Sidebar popout (mod1+m) ---
     // A focused sidebar can be "popped out" into a large centered float
@@ -7014,6 +7062,17 @@ private:
     int next_sidebar_id_ = 1;
     int focused_sidebar_id_ = 0;  // 0 = none
     int sidebar_cursor_ = 0;      // index into the focused sidebar's flattened line list
+    // Floating pane (OpenFloatPane): the leaf node itself (null = none),
+    // the sidebar row focus returns to on close (0 = none), the
+    // workspace/tab it was opened over (ValidateFloatPane closes it when
+    // either changes underneath), and the close-time save policy.
+    std::unique_ptr<SplitNode> float_node_;
+    int float_return_sidebar_id_ = 0;
+    int float_return_sidebar_row_ = 0;
+    int float_workspace_id_ = 0;
+    int float_tab_index_ = 0;
+    bool float_save_on_close_ = false;
+    int float_on_close_ref_ = 0;
     // Popout (see ToggleSidebarPopout): which sidebar is popped out (0 =
     // none), and the single preview slot it shows -- one slot, not
     // per-instance, since only one sidebar can be popped out at a time.

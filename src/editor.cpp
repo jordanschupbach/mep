@@ -4006,7 +4006,8 @@ void Editor::HandleInput() {
 }
 
 void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) {
-    SplitNode *node = FindNode(ActiveTab().root.get(), pane_id);
+    SplitNode *node = (float_node_ && float_node_->pane.id == pane_id) ? float_node_.get()
+                                                                        : FindNode(ActiveTab().root.get(), pane_id);
     if (!node) return;
     Pane &pane = node->pane;
     visible_lines = std::max(1, visible_lines);
@@ -4530,13 +4531,18 @@ void Editor::ClampCursor() {
 
 // --- Buffer/pane/tab plumbing ----------------------------------------------
 
+// An open floating pane (OpenFloatPane) holds the cursor: it is "the
+// current pane" for every editing path without touching the tab's own
+// active_pane_id, which is what focus returns to once it closes.
 Pane &Editor::CurPane() {
+    if (float_node_) return float_node_->pane;
     Tab &tab = ActiveTab();
     SplitNode *node = FindNode(tab.root.get(), tab.active_pane_id);
     return node->pane;
 }
 
 const Pane &Editor::CurPane() const {
+    if (float_node_) return float_node_->pane;
     const Tab &tab = ActiveTab();
     const SplitNode *node = FindNode(tab.root.get(), tab.active_pane_id);
     return node->pane;
@@ -4792,6 +4798,7 @@ int Editor::FindOrCreateBuffer(const std::string &path, bool *existed) {
 }
 
 void Editor::SplitCurrentPane(SplitDir dir, const std::string &file_arg) {
+    if (float_node_) CloseFloatPane();
     Tab &tab = ActiveTab();
     SplitNode *active = FindNode(tab.root.get(), tab.active_pane_id);
     if (!active) return;
@@ -8587,6 +8594,12 @@ void Editor::SendTerminalKey(const TerminalSession &sess, int key, int codepoint
 }
 
 void Editor::ClosePane() {
+    // :close (and the header's x) on the floating pane closes the float,
+    // never the docked pane underneath it.
+    if (float_node_) {
+        CloseFloatPane();
+        return;
+    }
     Tab &tab = ActiveTab();
     if (tab.root->dir == SplitDir::Leaf) {
         // Only one pane in this tab: closing it closes the tab.
@@ -8610,7 +8623,96 @@ void Editor::ClosePane() {
     SyncModeToActivePaneBuffer();
 }
 
+// --- Floating editable pane (see editor.h) ---------------------------------
+
+bool Editor::OpenFloatPane(const std::string &path, int row, bool save_on_close, int on_close_ref) {
+    if (path.empty()) {
+        status_message_ = "E32: No file name";
+        if (on_close_ref != 0 && lua_) lua_->UnrefFunction(on_close_ref);
+        return false;
+    }
+    if (float_node_) CloseFloatPane();
+    int buffer_id = FindOrCreateBuffer(path);
+    if (buffer_id < 0) {
+        status_message_ = "E484: Can't open file \"" + path + "\"";
+        if (on_close_ref != 0 && lua_) lua_->UnrefFunction(on_close_ref);
+        return false;
+    }
+    // Opened from a focused sidebar (the Todo panel's 'e'): leave sidebar
+    // mode the way Escape would, remembering which row to come back to.
+    float_return_sidebar_id_ = 0;
+    if (mode_ == Mode::Sidebar) {
+        float_return_sidebar_id_ = focused_sidebar_id_;
+        float_return_sidebar_row_ = sidebar_cursor_;
+        focused_sidebar_id_ = 0;
+        RestoreFromOverlay();
+    }
+    auto node = std::make_unique<SplitNode>();
+    node->dir = SplitDir::Leaf;
+    node->pane.id = next_pane_id_++;
+    node->pane.buffer_id = buffer_id;
+    node->pane.buffer_tabs = {buffer_id};
+    node->pane.cursor = ClampPositionInBuffer(buffer_id, CursorPos{std::max(0, row), 0});
+    float_node_ = std::move(node);
+    float_workspace_id_ = ActiveWorkspace().id;
+    float_tab_index_ = ActiveWorkspace().active_tab;
+    float_save_on_close_ = save_on_close;
+    float_on_close_ref_ = on_close_ref;
+    CancelPendingNormalState();
+    mode_ = Mode::Normal;
+    SyncModeToActivePaneBuffer();
+    ClampCursor();
+    return true;
+}
+
+void Editor::CloseFloatPane() {
+    if (!float_node_) return;
+    const int buffer_id = float_node_->pane.buffer_id;
+    bool wrote = false;
+    if (float_save_on_close_ && buffer_id >= 0 && buffer_id < static_cast<int>(buffers_.size())) {
+        // Buf() is still the float's buffer here (float_node_ is set), so
+        // SaveFile writes exactly what was edited.
+        const Buffer &b = buffers_[static_cast<size_t>(buffer_id)];
+        if (b.modified && !b.deleted && !b.filename.empty()) wrote = SaveFile(b.filename);
+    }
+    float_node_.reset();
+    const int sidebar_id = float_return_sidebar_id_;
+    const int sidebar_row = float_return_sidebar_row_;
+    float_return_sidebar_id_ = 0;
+    CancelPendingNormalState();
+    mode_ = Mode::Normal;
+    SyncModeToActivePaneBuffer();
+    ClampCursor();
+    // Back to the sidebar row this was opened from, if that sidebar is
+    // still open (FocusSidebarRow clamps the row -- the list may have
+    // changed under the edit).
+    if (sidebar_id != 0 && IsSidebarOpen(sidebar_id)) FocusSidebarRow(sidebar_id, sidebar_row);
+    // Last, once the float is fully gone: the callback (the git panel's
+    // commit-on-close) may itself open prompts or another float.
+    const int on_close_ref = float_on_close_ref_;
+    float_on_close_ref_ = 0;
+    if (on_close_ref != 0 && lua_) {
+        lua_->CallRefWithBool(on_close_ref, wrote);
+        lua_->UnrefFunction(on_close_ref);
+    }
+}
+
+void Editor::ValidateFloatPane() {
+    if (!float_node_) return;
+    const int buffer_id = float_node_->pane.buffer_id;
+    const bool buffer_gone =
+        buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size()) || buffers_[static_cast<size_t>(buffer_id)].deleted;
+    if (buffer_gone || ActiveWorkspace().id != float_workspace_id_ || ActiveWorkspace().active_tab != float_tab_index_) {
+        // The buffer may already be gone (or belong to another workspace's
+        // panes): never write it from here.
+        float_save_on_close_ = false;
+        float_return_sidebar_id_ = 0;
+        CloseFloatPane();
+    }
+}
+
 void Editor::CyclePane(int delta) {
+    if (float_node_) CloseFloatPane();
     Tab &tab = ActiveTab();
     std::vector<int> ids;
     CollectLeaves(tab.root.get(), ids);
@@ -8693,6 +8795,12 @@ void Editor::PaneCloseBufferTab() {
 }
 
 void Editor::PaneCloseBufferTabAndDelete() {
+    // The float's header x: close the float, keep the buffer (it may
+    // still be open in a docked pane, and the Todo panel reads it).
+    if (float_node_) {
+        CloseFloatPane();
+        return;
+    }
     Pane &p = CurPane();
     EnsureBufferTabSeeded(p);
     const int target = p.buffer_id;
@@ -8720,6 +8828,7 @@ void Editor::BufferDeleteById(int target, bool force) {
         status_message_ = "E37: No write since last change (add ! to override)";
         return;
     }
+    if (float_node_ && float_node_->pane.buffer_id == target) CloseFloatPane();
     buf.deleted = true;
 
     // Computed lazily -- only if some pane actually ends up with nothing
@@ -10211,6 +10320,7 @@ int Editor::FindNeighborPaneId(int from_pane_id, const std::string &direction) c
 }
 
 void Editor::NavigatePaneDirection(const std::string &direction) {
+    if (float_node_) CloseFloatPane();
     if (mode_ == Mode::Sidebar) {
         const SidebarInstance *sb = FindSidebar(focused_sidebar_id_);
         if (!sb) return;
@@ -10432,6 +10542,12 @@ void Editor::SetActivePaneShare(float fraction) {
 }
 
 void Editor::FocusPaneById(int pane_id) {
+    // The float's own header buttons/body focus it by id: it already has
+    // focus, nothing to do. Any other pane means leaving the float.
+    if (float_node_) {
+        if (pane_id == float_node_->pane.id) return;
+        CloseFloatPane();
+    }
     Tab &tab = ActiveTab();
     if (!FindNode(tab.root.get(), pane_id)) return;
     tab.active_pane_id = pane_id;
@@ -10954,6 +11070,14 @@ void Editor::HandleNormalInput() {
         return;
     }
     if (IsKeyPressed(KEY_ESCAPE)) {
+        // In a floating pane, the "nothing pending" Escape that is Vim's
+        // harmless no-op everywhere else dismisses the float instead
+        // (Insert-mode Escape still just returns to Normal first, and one
+        // that cancels a pending operator/count still only cancels it).
+        if (float_node_ && !IsMidNormalCommand() && !insert_one_shot_normal_) {
+            CloseFloatPane();
+            return;
+        }
         // A bare Escape while recording only matters as a "cancel whatever
         // was pending" if something actually was -- an Escape with nothing
         // pending is Vim's harmless no-op, not worth a macro-replay entry.
@@ -13970,6 +14094,36 @@ void Editor::SetSidebarOnPreview(int id, int lua_ref) {
     if (SidebarInstance *sb = FindSidebarMut(id)) sb->on_preview_ref = lua_ref;
 }
 
+void Editor::SetSidebarTabs(int id, std::vector<std::string> tabs, int active) {
+    SidebarInstance *sb = FindSidebarMut(id);
+    if (!sb) return;
+    sb->tabs = std::move(tabs);
+    sb->active_tab = sb->tabs.empty() ? 0 : std::clamp(active, 0, static_cast<int>(sb->tabs.size()) - 1);
+}
+
+void Editor::SetSidebarOnTab(int id, int lua_ref) {
+    if (SidebarInstance *sb = FindSidebarMut(id)) sb->on_tab_ref = lua_ref;
+}
+
+void Editor::SelectSidebarTab(int id, int index) {
+    SidebarInstance *sb = FindSidebarMut(id);
+    if (!sb || sb->tabs.empty()) return;
+    const int n = static_cast<int>(sb->tabs.size());
+    sb->active_tab = ((index % n) + n) % n;
+    // A different view is a different list: start it from the top rather
+    // than leaving the cursor/scroll parked at a row index that meant
+    // something only in the previous one.
+    sb->scroll_offset = 0;
+    if (focused_sidebar_id_ == id) sidebar_cursor_ = 0;
+    if (id == sidebar_popout_id_) sidebar_popout_preview_dirty_ = true;
+    if (sb->on_tab_ref != 0 && lua_) lua_->CallRefWithInt(sb->on_tab_ref, sb->active_tab + 1);
+}
+
+int Editor::SidebarActiveTab(int id) const {
+    const SidebarInstance *sb = FindSidebar(id);
+    return sb ? sb->active_tab : 0;
+}
+
 // --- Sidebar popout (mod1+m) ---------------------------------------------
 
 void Editor::OpenSidebarPopout(int id) {
@@ -14296,9 +14450,19 @@ void Editor::UpdateScrollForSidebar(int id, int visible_lines) {
 void Editor::HandleSidebarInput() {
     std::vector<SidebarLine> lines = FlattenSidebar(focused_sidebar_id_);
     bool escape = false, enter = false;
+    int tab_delta = 0;
+    const bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
     for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
         if (key == KEY_ESCAPE) escape = true;
         else if (key == KEY_ENTER) enter = true;
+        else if (key == KEY_TAB) tab_delta += shift ? -1 : 1;
+    }
+    // Tab/Shift-Tab: next/previous view of a tabbed sidebar
+    // (SidebarInstance::tabs) -- a no-op for one without tabs.
+    if (tab_delta != 0) {
+        pending_g_ = false;
+        SelectSidebarTab(focused_sidebar_id_, SidebarActiveTab(focused_sidebar_id_) + tab_delta);
+        return;
     }
     // While popped out (mod1+m), Escape/q step back down to the docked
     // panel instead of closing the sidebar outright -- the popout is a
@@ -19942,6 +20106,10 @@ bool Editor::AnyBufferModified() const {
 void Editor::QuitCurrent(bool force) {
     if (!force && Buf().modified) {
         status_message_ = "E37: No write since last change (add ! to override)";
+        return;
+    }
+    if (float_node_) {
+        CloseFloatPane();
         return;
     }
     if (IsOnlyPaneOverall()) {

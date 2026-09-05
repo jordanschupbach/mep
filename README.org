@@ -228,13 +228,48 @@ current_row)= (=spans= as in =mep.picker_set_preview=), or through the
 panels use; =mep.read_lines(path, max_lines)= reads a file for it,
 preferring an open buffer's unsaved text. =mep.sidebar_popout_toggle()=
 is what =mod1+m= calls.
+The git panel (=<leader>gg=, the tab bar's Git button, or
+=:MepGitStatus=) is one sidebar with four views on a tab strip --
+=Tab=/=Shift-Tab=, the =1=-=4= keys or a click switch them, and
+=mod1+m= pops the panel out with a preview column beside the list:
+- *Status*: staged, changed and untracked files in their own sections
+  (the preview is =git diff --cached= / =git diff= for the row, the file
+  itself for an untracked one). =s=/=u= stage/unstage the row, =S=/=U=
+  everything, =d= discards it after a confirm (deletes an untracked
+  file), =Enter= opens the file.
+- *Log*: =git log= (latest 300), the preview is =git show= for the
+  commit; =y= copies its hash, =Enter= pops the panel out.
+- *Branches*: local and remote branches, newest commit first, with
+  ahead/behind and upstream; the preview is that branch's =git log
+  --oneline=. =Enter= checks one out (a remote one as a tracking
+  branch), =n= creates a branch from HEAD, =x= deletes one (a remote
+  branch via =git push --delete=, both after a confirm), =m= merges it
+  into the current branch, =r= rebases the current branch onto it.
+- *Stash*: =git stash list=; the preview is =git stash show -p=.
+  =n= stashes the working tree (untracked included, optional message),
+  =Enter=/=a= applies, =o= pops, =x= drops after a confirm.
+In every view =c= commits and =C= amends -- the message is edited in a
+floating pane over the repository's own =COMMIT_EDITMSG=, with the
+usual =#= status comment block below; closing the pane (=Escape= or
+=:q=) with a written message runs the commit, closing it untouched
+cancels -- =p= pushes (offering to set the upstream when the branch has
+none), =l= pulls, =f= fetches (=--all --prune=), =R= re-reads and =?=
+lists the keys. Every action reports its result as a toast and
+refreshes the view. =<leader>gl= / =gb= / =gs= open the log, branches
+or stash view popped out, =<leader>gc= / =gp= commit / push, and
+=:MepGitLog=, =:MepGitBranches=, =:MepGitStash=, =:MepGitCommit=,
+=:MepGitPush=, =:MepGitPull= and =:MepGitFetch= are the command forms.
+
 The Todo sidebar (=<leader>tt=, the tab bar's Todo button, or
 =:MepActivityTodoPanel=) lists every keyworded headline of the
 project's =TODO.org= (=mep.activity_todo_file= overrides the path) and
 edits it in place: =a= adds a todo (a new =* TODO= headline at the end
-of the file), =e= edits the one under the cursor in a popup prompt
-(the headline's title is rewritten; its keyword, priority and tags are
-kept), =d= marks it done (or not done again), =x= deletes it and its
+of the file), =e= opens =TODO.org= itself in a floating pane with the
+cursor on that headline, so its body, properties and clock lines can be
+edited too, not just the title (=Escape= with nothing pending, =:q= or
+a click outside the box closes it, writing the file if it changed, and
+focus returns to the same sidebar row), =d= marks it done (or not done
+again), =x= deletes it and its
 whole subtree after a confirm, and =Enter= (or a click) starts or stops
 its clock -- an org =CLOCK: [start]--[end] => H:MM= time entry in a
 =:LOGBOOK:= drawer under the headline, the same lines =:MepOrgClockIn=,
@@ -350,12 +385,14 @@ passes it inline via =--mcp-config=. =mep.opt.ai_terminal_cmd= (default
 none) are all =init.lua=-overridable.
 
 AI agents sidebar: =<leader>al= (also =:aiagents= / =:MepAiAgents=, the
-=AI Agents= top-bar button, or the =Activity= picker) lists every AI
+=AI Agents= top-bar button, or the =Activity= picker; =<leader>aa= /
+=:MepAiAgentsToggle= toggles it open and closed) lists every AI
 agent in this window, grouped by workspace: its name, status badge
-(=thinking= / =writing= / =needs input= / =done= / =starting= /
-=exited=) and, on a dimmed second row, the running task -- the
-terminal's live OSC title, which Claude Code keeps set to a summary of
-what it is doing. Enter (or a click) on a row jumps to the workspace,
+(=thinking= / =writing= / =needs input= / =done= / =starting=) and, on
+a dimmed second row, the running task -- the terminal's live OSC
+title, which Claude Code keeps set to a summary of what it is doing.
+An agent whose terminal process has exited disappears from the list
+automatically (its pane stays open until you close it). Enter (or a click) on a row jumps to the workspace,
 tab and pane holding that agent's terminal, activating a hidden buffer
 tab if that is where it lives; =n= opens a new AI terminal, =r= forces a
 re-scan (it polls twice a second on its own while open). Agents that
@@ -412,6 +449,23 @@ Available to =:lua=, =:source=, and =init.lua=:
   array directly with no shell in between (for arguments that would
   otherwise need shell quoting, like a multi-line prompt); =title=
   labels the buffer tab (default =argv[1]=).
+- =mep.sidebar_set_tabs(id, {name, ...}, active?)= gives a sidebar a
+  tab strip (drawn under the docked title and beside the popout's);
+  =Tab=/=Shift-Tab= while focused, a click on a name or
+  =mep.sidebar_set_active_tab(id, index)= switch, each calling the
+  =mep.sidebar_set_on_tab(id, fn(index))= callback (1-based) so the
+  consumer re-renders its sections for that view;
+  =mep.sidebar_active_tab(id)= reads it. The git panel is built on it.
+- =mep.float_open(path, line?, {save_on_close=bool}?)= -> bool opens a
+  file in a floating editable pane centered over everything -- a real
+  pane over a real buffer (every editing mode, =:w=, the wheel all work
+  inside it), closed by =Escape= with nothing pending, =:q=/=:close=, or
+  a click outside the box. =save_on_close= (default true) writes the
+  buffer on close if it changed, and =on_close=fn(saved)= runs once it
+  is gone with whether that close wrote the buffer; opened from a
+  focused sidebar, closing returns focus to that sidebar row.
+  =mep.float_close()= / =mep.float_is_open()= go with it. The Todo
+  sidebar's =e= and the git panel's commit editor are built on it.
 - =mep.terminal_info(buffer_id)= -> ={title=, exited=, exit_code=}= for
   a =:terminal= buffer (=title= is the live OSC title, falling back to
   the launch label), =nil= otherwise.

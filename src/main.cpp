@@ -684,6 +684,17 @@ struct SidebarRowRect {
 };
 std::vector<SidebarRowRect> g_sidebar_row_rects;
 
+// One tab-strip entry's rect this frame (SidebarInstance::tabs), captured
+// by DrawSidebarTabStrip from both the docked header and the popout's
+// title row; DispatchChromeClicks turns a click on one into
+// Editor::SelectSidebarTab.
+struct SidebarTabRect {
+    int sidebar_id;
+    int tab_index;
+    Rectangle rect;
+};
+std::vector<SidebarTabRect> g_sidebar_tab_rects;
+
 // One sidebar's resizable inner edge (the border facing the pane tree,
 // not the screen edge -- there's nothing to drag the outer edge against)
 // this frame, also captured directly inside DrawSidebars. `sign` is +1 if
@@ -821,6 +832,7 @@ PaneDragState g_pane_drag;
 constexpr float kPaneDragThresholdPx = 4.0f;
 
 void DrawPaneDragOverlay();  // defined below, alongside UpdatePaneMouseInteraction; called from DrawEditor
+void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_active);  // defined below; also used by DrawFloatPane
 void DrawPaneBorder(float x, float y, float w, float h, bool is_active);  // defined below; also used by DrawSidebars so a focused sidebar gets the same active-border treatment as a focused pane
 
 /**
@@ -2004,6 +2016,10 @@ const char *kKeybindingsText =
     "  Ctrl-Alt-] / Ctrl-Alt-[        next / previous workspace\n"
     "  <leader>w n/w/r/d/l/h          new / list / rename / delete / next / prev workspace\n"
     "  <leader>gw                     git workspaces picker (branch, ahead/behind)\n"
+    "  <leader>gg                     git panel (Tab / 1-4: Status, Log, Branches, Stash; ? lists keys)\n"
+    "  <leader>gl / gb / gs           git log / branches / stash, popped out\n"
+    "  <leader>gc / gp                git commit (message in a floating pane) / push\n"
+    "  :MepGitStatus :MepGitLog :MepGitBranches :MepGitStash :MepGitCommit :MepGitPush :MepGitPull :MepGitFetch\n"
     "  :project [dir]  :projects      open/switch project / loaded-projects picker\n"
     "  :projectclose[!]  :projectnext :projectprevious\n"
     "  :wssave  :wsrestore            save / restore this project's layout\n"
@@ -2011,6 +2027,7 @@ const char *kKeybindingsText =
     "  Alt+s / Alt+v                  split (horizontal / vertical)\n"
     "  :aiterminal  <leader>a<CR>     Claude Code terminal below, driving this window via mep-agent\n"
     "  :aiagents    <leader>al        AI agents sidebar (status, task, workspace; Enter jumps to its terminal)\n"
+    "               <leader>aa        toggle the AI agents sidebar\n"
     "  Alt+h j k l                    move focus left / down / up / right\n"
     "  Alt+Shift+h j k l              resize pane left / down / up / right\n"
     "  Alt+Ctrl+h j k l               move active tab into pane that way\n"
@@ -2786,129 +2803,471 @@ const char *kBuiltinGit =
     // carries the code only inside its display text).
     "local mep_git_status_codes = {}\n"
     "local mep_git_status_preview_gen = 0\n"
+    // Tabbed git panel (SidebarInstance::tabs, mep.sidebar_set_tabs):
+    // one sidebar, four views -- Status (staged / changes / untracked
+    // sections, each row's diff as the popout preview), Log (git log,
+    // `git show` preview), Branches (local + remote, `git log` preview),
+    // Stash (`git stash show -p` preview). Every view is one async git
+    // job re-run per refresh, generation-guarded like before, and the
+    // widget-id -> row table (mep_git_rows) is what the key handler and
+    // the preview callback resolve the cursor row through. Actions
+    // (stage/unstage/discard, commit/amend, push/pull/fetch, checkout/
+    // new/delete/merge/rebase, stash push/apply/pop/drop) all run
+    // through mep_git_action: notify start, notify result (last stderr
+    // line on failure), then refresh the current view. Commit messages
+    // are edited in a floating pane over the repo's own COMMIT_EDITMSG
+    // (mep.float_open + on_close): closing it with a written buffer
+    // runs `git commit -F <file> --cleanup=strip`, closing it untouched
+    // cancels -- git's own editor flow, without leaving the window.
+    "local MEP_GIT_TABS = {'Status', 'Log', 'Branches', 'Stash'}\n"
+    "local MEP_GIT_VIEWS = {'status', 'log', 'branches', 'stash'}\n"
+    "local mep_git_view = 'status'\n"
+    "local mep_git_rows = {}\n"
+    "local mep_git_head = ''\n"
+    "local function mep_git_root() return mep.workspace_root() end\n"
+    "local function mep_git_run(argv, cb)\n"
+    "  local out, err = {}, {}\n"
+    "  mep.job_start(argv, {\n"
+    "    cwd = mep_git_root(),\n"
+    "    on_stdout = function(line) out[#out + 1] = line end,\n"
+    "    on_stderr = function(line) err[#err + 1] = line end,\n"
+    "    on_exit = function(code) if cb then cb(code, out, err) end end,\n"
+    "  })\n"
+    "end\n"
+    "local function mep_git_fail_text(code, out, err)\n"
+    "  return err[#err] or out[#out] or ('exit ' .. tostring(code))\n"
+    "end\n"
+    "local function mep_git_action(argv, label, after)\n"
+    "  mep.notify(label .. '...')\n"
+    "  mep_git_run(argv, function(code, out, err)\n"
+    "    if code == 0 then\n"
+    "      mep.notify(label .. ': done')\n"
+    "    else\n"
+    "      mep.notify(label .. ' failed: ' .. mep_git_fail_text(code, out, err), 'error')\n"
+    "    end\n"
+    "    if after then after(code, out, err) end\n"
+    "    mep.git_refresh()\n"
+    "  end)\n"
+    "end\n"
+    "local function mep_git_current_branch(cb)\n"
+    "  local ws = mep.workspace_current()\n"
+    "  if ws and ws.branch and ws.branch ~= '' then cb(ws.branch) return end\n"
+    "  mep_git_run({'git', 'rev-parse', '--abbrev-ref', 'HEAD'}, function(code, out)\n"
+    "    cb((code == 0 and out[1]) or nil)\n"
+    "  end)\n"
+    "end\n"
+    "local function mep_git_ensure()\n"
+    "  if mep_git_status_sidebar_id then return end\n"
+    "  mep_git_status_sidebar_id = mep.sidebar_create('Git', 'left', 44)\n"
+    "  mep.sidebar_set_on_key(mep_git_status_sidebar_id, mep.git_status_on_key)\n"
+    "  mep.sidebar_set_on_preview(mep_git_status_sidebar_id, mep.git_status_on_preview)\n"
+    "  mep.sidebar_set_tabs(mep_git_status_sidebar_id, MEP_GIT_TABS, 1)\n"
+    "  mep.sidebar_set_on_tab(mep_git_status_sidebar_id, function(i)\n"
+    "    mep_git_view = MEP_GIT_VIEWS[i] or 'status'\n"
+    "    mep.git_refresh()\n"
+    "  end)\n"
+    "end\n"
+    "local function mep_git_set(sections, rows)\n"
+    "  mep_git_rows = rows or {}\n"
+    "  mep.sidebar_set_sections(mep_git_status_sidebar_id, sections)\n"
+    "end\n"
+    "local function mep_git_placeholder(id, text)\n"
+    "  return {{id = id, text = text, hl = 'Comment'}}\n"
+    "end\n"
+    "local function mep_git_split(line)\n"
+    "  local fields = {}\n"
+    "  for f in (line .. '\\t'):gmatch('([^\\t]*)\\t') do fields[#fields + 1] = f end\n"
+    "  return fields\n"
+    "end\n"
+    "local function mep_git_head_title()\n"
+    "  local ws = mep.workspace_current()\n"
+    "  local t = mep_git_head ~= '' and mep_git_head or ((ws and ws.branch ~= '') and ws.branch or 'HEAD')\n"
+    "  if ws then t = t .. ' @ ' .. ws.name end\n"
+    "  return t\n"
+    "end\n"
     "function mep.git_status_refresh()\n"
-    "  if not mep_git_status_sidebar_id then\n"
-    "    mep_git_status_sidebar_id = mep.sidebar_create('Git Status', 'left', 40)\n"
-    "    mep.sidebar_set_on_key(mep_git_status_sidebar_id, mep.git_status_on_key)\n"
-    "    mep.sidebar_set_on_preview(mep_git_status_sidebar_id, mep.git_status_on_preview)\n"
-    "  end\n"
-    "  local widgets = {}\n"
-    "  local codes = {}\n"
+    "  mep_git_ensure()\n"
     "  mep_git_status_gen = mep_git_status_gen + 1\n"
     "  local gen = mep_git_status_gen\n"
-    "  mep.job_start({'git', 'status', '--porcelain'}, {\n"
-    "    cwd = mep.workspace_root(),\n"
-    "    on_stdout = function(line)\n"
-    "      local status, path = line:sub(1, 2), line:sub(4)\n"
-    "      codes[path] = status\n"
-    "      widgets[#widgets + 1] = {\n"
-    "        id = path, text = status .. '  ' .. path,\n"
-    "        on_click = function() mep.open(path) end,\n"
-    "      }\n"
-    "    end,\n"
-    "    on_exit = function()\n"
-    "      if gen ~= mep_git_status_gen then return end\n"
-    "      mep_git_status_codes = codes\n"
-    // Phase 7: `branch @ workspace` in the header -- the list itself is
-    // already the active workspace's tree via cwd above.
-    "      local ws = mep.workspace_current()\n"
-    "      local title = 'Changes'\n"
-    "      if ws.branch ~= '' then title = title .. ' \xe2\x80\x94 ' .. ws.branch .. ' @ ' .. ws.name\n"
-    "      else title = title .. ' \xe2\x80\x94 ' .. ws.name end\n"
-    "      mep.sidebar_set_sections(mep_git_status_sidebar_id, {\n"
-    "        {id = 'status', title = title, collapsed = false, widgets = widgets},\n"
-    "      })\n"
-    "    end,\n"
-    "  })\n"
+    "  mep_git_run({'git', 'status', '--porcelain', '--branch'}, function(code, out)\n"
+    "    if gen ~= mep_git_status_gen then return end\n"
+    "    if code ~= 0 then\n"
+    "      mep_git_set({{id = 'status', title = 'Not a git repository', collapsed = false,\n"
+    "        widgets = mep_git_placeholder('none', '(' .. mep_git_root() .. ')')}})\n"
+    "      return\n"
+    "    end\n"
+    "    local staged, unstaged, untracked, rows, codes = {}, {}, {}, {}, {}\n"
+    "    local function add(list, prefix, code_char, path, hl)\n"
+    "      local target = path:match('^.* %-> (.*)$') or path\n"
+    "      local id = prefix .. path\n"
+    "      rows[id] = {kind = prefix, path = target, shown = path, code = code_char}\n"
+    "      list[#list + 1] = {id = id, text = code_char .. '  ' .. path, hl = hl,\n"
+    "        on_click = function() mep.open(target) end}\n"
+    "    end\n"
+    "    for _, line in ipairs(out) do\n"
+    "      if line:sub(1, 2) == '##' then\n"
+    "        mep_git_head = line:sub(4)\n"
+    "      elseif #line > 3 then\n"
+    "        local x, y, path = line:sub(1, 1), line:sub(2, 2), line:sub(4)\n"
+    "        codes[path] = x .. y\n"
+    "        if x == '?' then\n"
+    "          add(untracked, 'u:', '?', path, 'Comment')\n"
+    "        elseif x == '!' then\n"
+    "          -- ignored: not listed\n"
+    "        else\n"
+    "          if x ~= ' ' then add(staged, 's:', x, path, 'Add') end\n"
+    "          if y ~= ' ' then add(unstaged, 'w:', y, path, (y == 'D') and 'Red' or 'Yellow') end\n"
+    "        end\n"
+    "      end\n"
+    "    end\n"
+    "    mep_git_status_codes = codes\n"
+    "    mep_git_set({\n"
+    "      {id = 'head', title = mep_git_head_title(), collapsed = false, widgets = {}},\n"
+    "      {id = 'staged', title = 'Staged (' .. #staged .. ')', collapsed = false,\n"
+    "        widgets = (#staged > 0) and staged or mep_git_placeholder('staged-none', '(nothing staged -- s stages a change)')},\n"
+    "      {id = 'unstaged', title = 'Changes (' .. #unstaged .. ')', collapsed = false,\n"
+    "        widgets = (#unstaged > 0) and unstaged or mep_git_placeholder('unstaged-none', '(working tree clean)')},\n"
+    "      {id = 'untracked', title = 'Untracked (' .. #untracked .. ')', collapsed = false,\n"
+    "        widgets = (#untracked > 0) and untracked or mep_git_placeholder('untracked-none', '(none)')},\n"
+    "    }, rows)\n"
+    "  end)\n"
     "end\n"
-    // Popout preview (mod1+m): `git diff HEAD -- path` for a tracked
-    // entry (one diff covering both its staged and unstaged changes, so
-    // an 'MM' row reads as one change set), the file itself for an
-    // untracked/ignored one (nothing to diff against). Async like the
-    // status list; the generation counter drops a slow diff that lands
-    // after the cursor has already moved on to another row.
-    "function mep.git_status_on_preview(path)\n"
+    "local function mep_git_render_log()\n"
+    "  mep_git_status_gen = mep_git_status_gen + 1\n"
+    "  local gen = mep_git_status_gen\n"
+    "  mep_git_run({'git', 'log', '--date=short', '--format=%h\\t%ad\\t%an\\t%D\\t%s', '-n', '300'}, function(code, out)\n"
+    "    if gen ~= mep_git_status_gen then return end\n"
+    "    local widgets, rows = {}, {}\n"
+    "    for _, line in ipairs(out) do\n"
+    "      local f = mep_git_split(line)\n"
+    "      if #f >= 5 and f[1] ~= '' then\n"
+    "        local hash, date, author, decor, subject = f[1], f[2], f[3], f[4], f[5]\n"
+    "        local id = 'c:' .. hash\n"
+    "        rows[id] = {kind = 'commit', hash = hash, subject = subject}\n"
+    "        local text = hash .. '  ' .. date .. '  ' .. subject\n"
+    "        if decor ~= '' then text = text .. '  (' .. decor .. ')' end\n"
+    "        widgets[#widgets + 1] = {id = id, text = text, tooltip = author,\n"
+    "          hl = (decor:find('HEAD') and 'Add') or (decor ~= '' and 'Cyan') or nil,\n"
+    "          on_click = function()\n"
+    "            if not mep.sidebar_is_popout(mep_git_status_sidebar_id) then mep.sidebar_popout_toggle(mep_git_status_sidebar_id) end\n"
+    "          end}\n"
+    "      end\n"
+    "    end\n"
+    "    local title = 'Log' .. ((#out >= 300) and ' (latest 300)' or (' (' .. #widgets .. ')'))\n"
+    "    if code ~= 0 then widgets = mep_git_placeholder('log-none', '(git log failed)') end\n"
+    "    if #widgets == 0 then widgets = mep_git_placeholder('log-none', '(no commits yet)') end\n"
+    "    mep_git_set({\n"
+    "      {id = 'head', title = mep_git_head_title(), collapsed = false, widgets = {}},\n"
+    "      {id = 'log', title = title, collapsed = false, widgets = widgets},\n"
+    "    }, rows)\n"
+    "  end)\n"
+    "end\n"
+    "local function mep_git_render_branches()\n"
+    "  mep_git_status_gen = mep_git_status_gen + 1\n"
+    "  local gen = mep_git_status_gen\n"
+    "  local fmt = '--format=%(HEAD)\\t%(refname)\\t%(refname:short)\\t%(upstream:short)\\t%(upstream:track)\\t%(committerdate:relative)\\t%(subject)'\n"
+    "  mep_git_run({'git', 'for-each-ref', '--sort=-committerdate', fmt, 'refs/heads', 'refs/remotes'}, function(code, out)\n"
+    "    if gen ~= mep_git_status_gen then return end\n"
+    "    local locals, remotes, rows = {}, {}, {}\n"
+    "    for _, line in ipairs(out) do\n"
+    "      local f = mep_git_split(line)\n"
+    "      if #f >= 7 then\n"
+    "        local head, ref, short, upstream, track, when, subject = f[1], f[2], f[3], f[4], f[5], f[6], f[7]\n"
+    "        local remote = ref:sub(1, 13) == 'refs/remotes/'\n"
+    "        if not (remote and short:sub(-5) == '/HEAD') then\n"
+    "          local current = head == '*'\n"
+    "          local id = 'b:' .. ref\n"
+    "          rows[id] = {kind = 'branch', name = short, remote = remote, current = current, upstream = upstream}\n"
+    "          local text\n"
+    "          if remote then\n"
+    "            text = short .. '  ' .. when .. '  ' .. subject\n"
+    "          else\n"
+    "            text = (current and '* ' or '  ') .. short\n"
+    "            if track ~= '' then text = text .. '  ' .. track end\n"
+    "            if upstream ~= '' then text = text .. '  -> ' .. upstream end\n"
+    "            text = text .. '  (' .. when .. ')'\n"
+    "          end\n"
+    "          local w = {id = id, text = text, hl = current and 'Add' or nil, tooltip = subject,\n"
+    "            on_click = function() mep.git_checkout(short, remote) end}\n"
+    "          if remote then remotes[#remotes + 1] = w else locals[#locals + 1] = w end\n"
+    "        end\n"
+    "      end\n"
+    "    end\n"
+    "    if code ~= 0 then locals = mep_git_placeholder('br-none', '(git for-each-ref failed)') end\n"
+    "    if #locals == 0 then locals = mep_git_placeholder('br-none', '(no branches)') end\n"
+    "    if #remotes == 0 then remotes = mep_git_placeholder('rb-none', '(no remote branches -- f fetches)') end\n"
+    "    mep_git_set({\n"
+    "      {id = 'head', title = mep_git_head_title(), collapsed = false, widgets = {}},\n"
+    "      {id = 'local', title = 'Local (' .. #locals .. ')', collapsed = false, widgets = locals},\n"
+    "      {id = 'remote', title = 'Remote (' .. #remotes .. ')', collapsed = false, widgets = remotes},\n"
+    "    }, rows)\n"
+    "  end)\n"
+    "end\n"
+    "local function mep_git_render_stash()\n"
+    "  mep_git_status_gen = mep_git_status_gen + 1\n"
+    "  local gen = mep_git_status_gen\n"
+    "  mep_git_run({'git', 'stash', 'list', '--format=%gd\\t%cr\\t%gs'}, function(code, out)\n"
+    "    if gen ~= mep_git_status_gen then return end\n"
+    "    local widgets, rows = {}, {}\n"
+    "    for _, line in ipairs(out) do\n"
+    "      local f = mep_git_split(line)\n"
+    "      if #f >= 3 and f[1] ~= '' then\n"
+    "        local id = 't:' .. f[1]\n"
+    "        rows[id] = {kind = 'stash', ref = f[1], subject = f[3]}\n"
+    "        widgets[#widgets + 1] = {id = id, text = f[1] .. '  ' .. f[2] .. '  ' .. f[3],\n"
+    "          on_click = function() mep.git_stash_apply(f[1], false) end}\n"
+    "      end\n"
+    "    end\n"
+    "    if code ~= 0 then widgets = mep_git_placeholder('st-none', '(git stash list failed)') end\n"
+    "    if #widgets == 0 then widgets = mep_git_placeholder('st-none', '(no stashes -- n stashes the working tree)') end\n"
+    "    mep_git_set({\n"
+    "      {id = 'head', title = mep_git_head_title(), collapsed = false, widgets = {}},\n"
+    "      {id = 'stash', title = 'Stashes (' .. #widgets .. ')', collapsed = false, widgets = widgets},\n"
+    "    }, rows)\n"
+    "  end)\n"
+    "end\n"
+    "function mep.git_refresh()\n"
+    "  mep_git_ensure()\n"
+    "  if mep_git_view == 'log' then mep_git_render_log()\n"
+    "  elseif mep_git_view == 'branches' then mep_git_render_branches()\n"
+    "  elseif mep_git_view == 'stash' then mep_git_render_stash()\n"
+    "  else mep.git_status_refresh() end\n"
+    "end\n"
+    "local function mep_git_preview_cmd(argv, title, empty_text, as_diff)\n"
     "  mep_git_status_preview_gen = mep_git_status_preview_gen + 1\n"
     "  local gen = mep_git_status_preview_gen\n"
-    "  if path == '' then mep.sidebar_set_preview('') return end\n"
-    "  local status = mep_git_status_codes[path] or ''\n"
-    "  local abs = (path:sub(1, 1) == '/') and path or (mep.workspace_root() .. '/' .. path)\n"
-    "  if status == '?\?' or status == '!!' then\n"
-    "    mep.sidebar_preview_path(abs, path:sub(-1) == '/', path)\n"
-    "    return\n"
-    "  end\n"
-    "  local title = 'git diff HEAD -- ' .. path\n"
-    "  mep.sidebar_set_preview('(loading diff...)', {}, title)\n"
-    "  local out = {}\n"
-    "  mep.job_start({'git', 'diff', 'HEAD', '--', path}, {\n"
-    "    cwd = mep.workspace_root(),\n"
-    "    on_stdout = function(line) out[#out + 1] = line end,\n"
-    "    on_exit = function(code)\n"
-    "      if gen ~= mep_git_status_preview_gen then return end\n"
-    "      if #out == 0 then out[1] = (code == 0) and '(no changes against HEAD)' or '(git diff failed)' end\n"
+    "  mep.sidebar_set_preview('(loading...)', {}, title)\n"
+    "  mep_git_run(argv, function(code, out, err)\n"
+    "    if gen ~= mep_git_status_preview_gen then return end\n"
+    "    if #out == 0 then out[1] = (code == 0) and empty_text or ('(failed: ' .. mep_git_fail_text(code, out, err) .. ')') end\n"
+    "    if as_diff then\n"
     "      mep.sidebar_preview_diff(table.concat(out, '\\n'), title)\n"
-    "    end,\n"
-    "  })\n"
-    "end\n"
-    "function mep.git_status_on_key(k)\n"
-    "  local target = mep.sidebar_cursor_widget_id(mep_git_status_sidebar_id)\n"
-    "  if not target then\n"
-    "    if k == '?' then\n"
-    "      mep.notify('Git: Enter=open  s=stage  u=unstage  d=discard  c=commit  R=refresh  mod1+m=popout')\n"
-    "    elseif k == 'c' then\n"
-    "      mep.ui_input('Commit message:', '', function(msg)\n"
-    "        if msg and msg ~= '' then\n"
-    "          mep.job_start({'git', 'commit', '-m', msg}, {\n"
-    "            cwd = mep.workspace_root(),\n"
-    "            on_exit = function(code)\n"
-    "              if code == 0 then mep.notify('Committed') else mep.notify('git commit failed', 'error') end\n"
-    "              mep.git_status_refresh()\n"
-    "            end,\n"
-    "          })\n"
-    "        end\n"
-    "      end)\n"
-    "    elseif k == 'R' then\n"
-    "      mep.git_status_refresh()\n"
+    "    else\n"
+    "      mep.sidebar_set_preview(table.concat(out, '\\n'), {}, title)\n"
     "    end\n"
+    "  end)\n"
+    "end\n"
+    "function mep.git_status_on_preview(wid)\n"
+    "  local row = wid and mep_git_rows[wid]\n"
+    "  if not row then\n"
+    "    mep_git_status_preview_gen = mep_git_status_preview_gen + 1\n"
+    "    mep.sidebar_set_preview('')\n"
     "    return\n"
     "  end\n"
-    "  if k == 's' then\n"
-    "    mep.job_start({'git', 'add', target}, {cwd = mep.workspace_root(), on_exit = function() mep.git_status_refresh() end})\n"
-    "  elseif k == 'u' then\n"
-    "    mep.job_start({'git', 'reset', target}, {cwd = mep.workspace_root(), on_exit = function() mep.git_status_refresh() end})\n"
-    "  elseif k == 'd' then\n"
-    "    mep.ui_confirm('Discard changes to ' .. target .. '?', false, function(yes)\n"
-    "      if yes then\n"
-    "        mep.job_start({'git', 'checkout', '--', target}, {cwd = mep.workspace_root(), on_exit = function() mep.git_status_refresh() end})\n"
-    "      end\n"
-    "    end)\n"
-    "  elseif k == 'R' then\n"
-    "    mep.git_status_refresh()\n"
+    "  if row.kind == 'u:' then\n"
+    "    local abs = (row.path:sub(1, 1) == '/') and row.path or (mep_git_root() .. '/' .. row.path)\n"
+    "    mep_git_status_preview_gen = mep_git_status_preview_gen + 1\n"
+    "    mep.sidebar_preview_path(abs, row.path:sub(-1) == '/', row.path)\n"
+    "  elseif row.kind == 's:' then\n"
+    "    mep_git_preview_cmd({'git', 'diff', '--cached', '--', row.path}, 'git diff --cached -- ' .. row.path, '(no staged changes)', true)\n"
+    "  elseif row.kind == 'w:' then\n"
+    "    mep_git_preview_cmd({'git', 'diff', '--', row.path}, 'git diff -- ' .. row.path, '(no unstaged changes)', true)\n"
+    "  elseif row.kind == 'commit' then\n"
+    "    mep_git_preview_cmd({'git', 'show', '--stat', '--patch', '--format=medium', row.hash}, 'git show ' .. row.hash, '(empty commit)', true)\n"
+    "  elseif row.kind == 'branch' then\n"
+    "    mep_git_preview_cmd({'git', 'log', '--oneline', '--decorate', '-n', '60', row.name, '--'}, 'git log --oneline ' .. row.name, '(no commits)', false)\n"
+    "  elseif row.kind == 'stash' then\n"
+    "    mep_git_preview_cmd({'git', 'stash', 'show', '-p', '--stat', row.ref}, 'git stash show -p ' .. row.ref, '(empty stash)', true)\n"
     "  end\n"
     "end\n"
-    "mep.command('MepGitStatus', function() mep.git_status_refresh(); mep.sidebar_open(mep_git_status_sidebar_id) end)\n"
-    // <leader>gg: close the sidebar when it's open, otherwise re-run the
-    // status and open it (same as :MepGitStatus) -- a stale list from
-    // the last time it was open would be misleading, and refresh also
-    // creates the sidebar on first use.
+    "function mep.git_commit(amend)\n"
+    "  mep_git_run({'git', 'rev-parse', '--git-path', 'COMMIT_EDITMSG'}, function(code, out, err)\n"
+    "    if code ~= 0 or not out[1] then mep.notify('Not a git repository: ' .. mep_git_fail_text(code, out, err), 'error') return end\n"
+    "    local rel = out[1]\n"
+    "    local path = (rel:sub(1, 1) == '/') and rel or (mep_git_root() .. '/' .. rel)\n"
+    "    local function open_editor(previous)\n"
+    "      mep_git_run({'git', 'status'}, function(_, status)\n"
+    "        local lines = {}\n"
+    "        for _, l in ipairs(previous or {}) do lines[#lines + 1] = l end\n"
+    "        if #lines == 0 then lines[1] = '' end\n"
+    "        lines[#lines + 1] = ''\n"
+    "        lines[#lines + 1] = '# Please enter the commit message for your changes. Lines starting'\n"
+    "        lines[#lines + 1] = \"# with '#' will be ignored, and an empty message aborts the commit.\"\n"
+    "        lines[#lines + 1] = '# Escape (or :q) commits; leave the message empty to cancel.'\n"
+    "        lines[#lines + 1] = '#'\n"
+    "        for _, l in ipairs(status) do lines[#lines + 1] = '# ' .. l end\n"
+    "        local msg_buf = nil\n"
+    "        local ok = mep.float_open(path, 1, {save_on_close = true, on_close = function(saved)\n"
+    "          if msg_buf then mep.buffer_delete(msg_buf, true) end\n"
+    "          if not saved then mep.notify('Commit cancelled') return end\n"
+    "          local argv = {'git', 'commit', '-F', path, '--cleanup=strip'}\n"
+    "          if amend then argv[#argv + 1] = '--amend' end\n"
+    "          mep_git_action(argv, amend and 'Amend' or 'Commit')\n"
+    "        end})\n"
+    "        if ok then msg_buf = mep.current_buffer() mep.buffer_set_lines(msg_buf, lines) end\n"
+    "      end)\n"
+    "    end\n"
+    "    if amend then\n"
+    "      mep_git_run({'git', 'log', '-1', '--format=%B'}, function(c2, prev)\n"
+    "        while #prev > 0 and prev[#prev] == '' do prev[#prev] = nil end\n"
+    "        open_editor((c2 == 0) and prev or nil)\n"
+    "      end)\n"
+    "    else\n"
+    "      open_editor(nil)\n"
+    "    end\n"
+    "  end)\n"
+    "end\n"
+    "function mep.git_push()\n"
+    "  mep.notify('Push...')\n"
+    "  mep_git_run({'git', 'push'}, function(code, out, err)\n"
+    "    if code == 0 then\n"
+    "      mep.notify('Push: ' .. (err[#err] or out[#out] or 'done'))\n"
+    "      mep.git_refresh()\n"
+    "      return\n"
+    "    end\n"
+    "    local msg = table.concat(err, ' ')\n"
+    "    if msg:find('no upstream branch') or msg:find('set%-upstream') then\n"
+    "      mep_git_current_branch(function(branch)\n"
+    "        if not branch then mep.notify('Push failed: ' .. mep_git_fail_text(code, out, err), 'error') return end\n"
+    "        mep.ui_confirm('No upstream for ' .. branch .. '. Push it to origin and set the upstream?', true, function(yes)\n"
+    "          if yes then mep_git_action({'git', 'push', '-u', 'origin', branch}, 'Push') end\n"
+    "        end)\n"
+    "      end)\n"
+    "    else\n"
+    "      mep.notify('Push failed: ' .. mep_git_fail_text(code, out, err), 'error')\n"
+    "    end\n"
+    "  end)\n"
+    "end\n"
+    "function mep.git_pull() mep_git_action({'git', 'pull'}, 'Pull') end\n"
+    "function mep.git_fetch() mep_git_action({'git', 'fetch', '--all', '--prune'}, 'Fetch') end\n"
+    "function mep.git_checkout(name, remote)\n"
+    "  local target = name\n"
+    "  if remote then target = name:match('^[^/]+/(.*)$') or name end\n"
+    "  mep.ui_confirm('Check out ' .. target .. (remote and (' (tracking ' .. name .. ')') or '') .. '?', true, function(yes)\n"
+    "    if yes then mep_git_action({'git', 'checkout', target}, 'Checkout ' .. target) end\n"
+    "  end)\n"
+    "end\n"
+    "function mep.git_stash_apply(ref, pop)\n"
+    "  mep_git_action({'git', 'stash', pop and 'pop' or 'apply', ref}, (pop and 'Pop ' or 'Apply ') .. ref)\n"
+    "end\n"
+    "local MEP_GIT_HELP = {\n"
+    "  status = 'Git status: Enter=open  s/u=stage/unstage  S/U=all  d=discard  c=commit  C=amend  p=push  l=pull  f=fetch  R=refresh  Tab/1-4=view  mod1+m=popout',\n"
+    "  log = 'Git log: Enter=show in popout  y=copy hash  c=commit  p=push  l=pull  f=fetch  R=refresh  Tab/1-4=view',\n"
+    "  branches = 'Git branches: Enter=checkout  n=new branch  x=delete  m=merge into current  r=rebase current onto  f=fetch  p=push  l=pull  R=refresh  Tab/1-4=view',\n"
+    "  stash = 'Git stash: Enter/a=apply  o=pop  x=drop  n=stash changes  R=refresh  Tab/1-4=view',\n"
+    "}\n"
+    "function mep.git_status_on_key(k)\n"
+    "  local id = mep_git_status_sidebar_id\n"
+    "  local n = tonumber(k)\n"
+    "  if n and MEP_GIT_VIEWS[n] then mep.sidebar_set_active_tab(id, n) return end\n"
+    "  if k == '?' then mep.notify(MEP_GIT_HELP[mep_git_view] or MEP_GIT_HELP.status) return\n"
+    "  elseif k == 'R' then mep.git_refresh() return\n"
+    "  elseif k == 'c' then mep.git_commit(false) return\n"
+    "  elseif k == 'C' then mep.git_commit(true) return\n"
+    "  elseif k == 'p' then mep.git_push() return\n"
+    "  elseif k == 'l' then mep.git_pull() return\n"
+    "  elseif k == 'f' then mep.git_fetch() return\n"
+    "  end\n"
+    "  local wid = mep.sidebar_cursor_widget_id(id)\n"
+    "  local row = wid and mep_git_rows[wid]\n"
+    "  if mep_git_view == 'status' then\n"
+    "    if k == 'S' then mep_git_action({'git', 'add', '-A'}, 'Stage all') return\n"
+    "    elseif k == 'U' then mep_git_action({'git', 'reset'}, 'Unstage all') return end\n"
+    "    if not row then return end\n"
+    "    if k == 's' then\n"
+    "      mep_git_action({'git', 'add', '--', row.path}, 'Stage ' .. row.path)\n"
+    "    elseif k == 'u' then\n"
+    "      if row.kind == 's:' then mep_git_action({'git', 'reset', '--', row.path}, 'Unstage ' .. row.path)\n"
+    "      else mep.notify(row.shown .. ' is not staged') end\n"
+    "    elseif k == 'd' then\n"
+    "      if row.kind == 'u:' then\n"
+    "        mep.ui_confirm('Delete untracked ' .. row.shown .. '?', false, function(yes)\n"
+    "          if yes then mep_git_action({'git', 'clean', '-fd', '--', row.path}, 'Delete ' .. row.path) end\n"
+    "        end)\n"
+    "      else\n"
+    "        mep.ui_confirm('Discard all changes to ' .. row.shown .. '?', false, function(yes)\n"
+    "          if yes then mep_git_action({'git', 'checkout', 'HEAD', '--', row.path}, 'Discard ' .. row.path) end\n"
+    "        end)\n"
+    "      end\n"
+    "    end\n"
+    "  elseif mep_git_view == 'log' then\n"
+    "    if row and k == 'y' then mep.clipboard_set(row.hash) mep.notify('Copied ' .. row.hash) end\n"
+    "  elseif mep_git_view == 'branches' then\n"
+    "    if k == 'n' then\n"
+    "      mep.ui_input('New branch (from HEAD):', '', function(name)\n"
+    "        if name and name ~= '' then mep_git_action({'git', 'checkout', '-b', name}, 'Create ' .. name) end\n"
+    "      end)\n"
+    "      return\n"
+    "    end\n"
+    "    if not row then return end\n"
+    "    if k == 'x' then\n"
+    "      if row.current then mep.notify('Cannot delete the checked-out branch', 'warn') return end\n"
+    "      if row.remote then\n"
+    "        local remote, branch = row.name:match('^([^/]+)/(.*)$')\n"
+    "        if not remote then return end\n"
+    "        mep.ui_confirm('Delete REMOTE branch ' .. row.name .. ' (git push ' .. remote .. ' --delete ' .. branch .. ')?', false, function(yes)\n"
+    "          if yes then mep_git_action({'git', 'push', remote, '--delete', branch}, 'Delete ' .. row.name) end\n"
+    "        end)\n"
+    "      else\n"
+    "        mep.ui_confirm('Delete branch ' .. row.name .. '?', false, function(yes)\n"
+    "          if yes then mep_git_action({'git', 'branch', '-D', row.name}, 'Delete ' .. row.name) end\n"
+    "        end)\n"
+    "      end\n"
+    "    elseif k == 'm' then\n"
+    "      mep.ui_confirm('Merge ' .. row.name .. ' into the current branch?', true, function(yes)\n"
+    "        if yes then mep_git_action({'git', 'merge', row.name}, 'Merge ' .. row.name) end\n"
+    "      end)\n"
+    "    elseif k == 'r' then\n"
+    "      mep.ui_confirm('Rebase the current branch onto ' .. row.name .. '?', false, function(yes)\n"
+    "        if yes then mep_git_action({'git', 'rebase', row.name}, 'Rebase onto ' .. row.name) end\n"
+    "      end)\n"
+    "    elseif k == 'o' then\n"
+    "      mep.git_checkout(row.name, row.remote)\n"
+    "    end\n"
+    "  elseif mep_git_view == 'stash' then\n"
+    "    if k == 'n' then\n"
+    "      mep.ui_input('Stash message (optional):', '', function(msg)\n"
+    "        if msg == nil then return end\n"
+    "        local argv = {'git', 'stash', 'push', '--include-untracked'}\n"
+    "        if msg ~= '' then argv[#argv + 1] = '-m' argv[#argv + 1] = msg end\n"
+    "        mep_git_action(argv, 'Stash')\n"
+    "      end)\n"
+    "      return\n"
+    "    end\n"
+    "    if not row then return end\n"
+    "    if k == 'a' then mep.git_stash_apply(row.ref, false)\n"
+    "    elseif k == 'o' then mep.git_stash_apply(row.ref, true)\n"
+    "    elseif k == 'x' then\n"
+    "      mep.ui_confirm('Drop ' .. row.ref .. ' (' .. row.subject .. ')?', false, function(yes)\n"
+    "        if yes then mep_git_action({'git', 'stash', 'drop', row.ref}, 'Drop ' .. row.ref) end\n"
+    "      end)\n"
+    "    end\n"
+    "  end\n"
+    "end\n"
+    "function mep.git_open_view(view, popout)\n"
+    "  mep_git_ensure()\n"
+    "  local idx = 1\n"
+    "  for i, v in ipairs(MEP_GIT_VIEWS) do if v == view then idx = i end end\n"
+    "  mep.sidebar_open(mep_git_status_sidebar_id, true)\n"
+    "  mep.sidebar_set_active_tab(mep_git_status_sidebar_id, idx)\n"
+    "  if popout and not mep.sidebar_is_popout(mep_git_status_sidebar_id) then\n"
+    "    mep.sidebar_popout_toggle(mep_git_status_sidebar_id)\n"
+    "  end\n"
+    "end\n"
+    "mep.command('MepGitStatus', function() mep.git_open_view('status', false) end)\n"
+    "mep.command('MepGitLog', function() mep.git_open_view('log', true) end)\n"
+    "mep.command('MepGitBranches', function() mep.git_open_view('branches', true) end)\n"
+    "mep.command('MepGitStash', function() mep.git_open_view('stash', true) end)\n"
+    "mep.command('MepGitCommit', function() mep.git_commit(false) end)\n"
+    "mep.command('MepGitPush', mep.git_push)\n"
+    "mep.command('MepGitPull', mep.git_pull)\n"
+    "mep.command('MepGitFetch', mep.git_fetch)\n"
     "function mep.git_status_toggle()\n"
     "  if mep_git_status_sidebar_id and mep.sidebar_is_open(mep_git_status_sidebar_id) then\n"
     "    mep.sidebar_close(mep_git_status_sidebar_id)\n"
     "  else\n"
-    "    mep.git_status_refresh()\n"
-    "    mep.sidebar_open(mep_git_status_sidebar_id)\n"
+    "    mep.git_open_view(mep_git_view, false)\n"
     "  end\n"
     "end\n"
-    "mep.leader_map('gg', 'Toggle git status', mep.git_status_toggle)\n"
-    // Follow the active workspace: the list is `git status` run in
-    // mep.workspace_root(), so after a switch/create/delete/rename it
-    // would otherwise keep showing whichever worktree first opened it.
-    // Only an open sidebar is refreshed -- a closed one re-runs the
-    // status on its next :MepGitStatus anyway, and a refresh here would
-    // just spawn a git subprocess nobody is looking at.
+    "mep.leader_map('gg', 'Toggle git panel', mep.git_status_toggle)\n"
+    "mep.leader_map('gl', 'Git log (popout)', function() mep.git_open_view('log', true) end)\n"
+    "mep.leader_map('gb', 'Git branches (popout)', function() mep.git_open_view('branches', true) end)\n"
+    "mep.leader_map('gs', 'Git stash (popout)', function() mep.git_open_view('stash', true) end)\n"
+    "mep.leader_map('gc', 'Git commit', function() mep.git_commit(false) end)\n"
+    "mep.leader_map('gp', 'Git push', mep.git_push)\n"
     "mep.on_workspace_changed(function()\n"
     "  if mep_git_status_sidebar_id and mep.sidebar_is_open(mep_git_status_sidebar_id) then\n"
-    "    mep.git_status_refresh()\n"
+    "    mep.git_refresh()\n"
     "  end\n"
     "end)\n"
     // `:MepGitGutter` alone just recomputes against the current base
@@ -10319,19 +10678,23 @@ const char *kBuiltinActivityBar =
     "  mep_activity_todo_save(cur)\n"
     "  mep_activity_todo_rerender()\n"
     "end\n"
-    // 'e': the todo's text in the prompt popup, pre-filled; Enter writes
-    // it back as the headline's new title (keyword, priority cookie and
-    // tags kept -- mep.activity_todo_retitle), Escape leaves it alone.
+    // 'e': TODO.org itself in a floating pane (mep.float_open), cursor on
+    // the todo's headline, so the body, properties and clock lines under
+    // it can be edited too -- not just the title. Escape (or :q, or a
+    // click outside) closes the float, writing the file if it changed;
+    // the save hook re-renders the panel and focus returns to this row.
+    // A legacy (non-org) todo file has no headline lines to jump to, so
+    // it keeps the one-line title prompt.
     "function mep.activity_todo_edit(it, i)\n"
+    "  if it.line then\n"
+    "    mep.float_open(mep_activity_todo_path(), it.line)\n"
+    "    return\n"
+    "  end\n"
     "  mep.ui_input('Edit todo:', it.text, function(text)\n"
     "    if not text or text == '' or text == it.text then return end\n"
-    "    if it.line then\n"
-    "      mep.activity_todo_retitle(mep_activity_todo_path(), it.line, text)\n"
-    "    else\n"
-    "      local cur = mep_activity_todo_load()\n"
-    "      if cur[i] then cur[i].text = text end\n"
-    "      mep_activity_todo_save(cur)\n"
-    "    end\n"
+    "    local cur = mep_activity_todo_load()\n"
+    "    if cur[i] then cur[i].text = text end\n"
+    "    mep_activity_todo_save(cur)\n"
     "    mep_activity_todo_rerender()\n"
     "  end)\n"
     "end\n"
@@ -10355,7 +10718,7 @@ const char *kBuiltinActivityBar =
     // d = done, x = delete, o = open TODO.org, R = re-read, ? = this list.
     "function mep.activity_todo_on_key(k)\n"
     "  if k == '?' then\n"
-    "    mep.notify('Todo: Enter=start/stop clock  a=add  e=edit  d=done  x=delete  o=open file  R=refresh  mod1+m=popout')\n"
+    "    mep.notify('Todo: Enter=start/stop clock  a=add  e=edit in float (Esc closes)  d=done  x=delete  o=open file  R=refresh  mod1+m=popout')\n"
     "    return\n"
     "  elseif k == 'a' then mep.activity_todo_add() return\n"
     "  elseif k == 'o' then mep.activity_todo_open() return\n"
@@ -11363,9 +11726,9 @@ const char *kBuiltinAiTerminal =
     "end\n"
     // Every terminal mep.ai_terminal_open started, keyed by buffer id --
     // so the agents sidebar below can list one that is still booting (no
-    // agent connected yet) or whose agent already went away (claude
-    // exited), not just the ones currently holding a mep-agent socket.
-    // Entries whose terminal buffer is gone are dropped on the next scan.
+    // agent connected yet), not just the ones currently holding a
+    // mep-agent socket. Entries whose terminal buffer is gone, or whose
+    // process has exited, are dropped on the next scan.
     "mep.ai_terminals = {}\n"
     "function mep.ai_terminal_open()\n"
     "  mep.cmd('split')\n"
@@ -11386,6 +11749,9 @@ const char *kBuiltinAiTerminal =
     // name, status badge text, and -- on a second, dimmed row -- the
     // running task, taken from the terminal's live OSC title, which
     // Claude Code keeps set to a short summary of what it's doing.
+    // Agents whose terminal process has exited are dropped from the
+    // list (and forgotten from mep.ai_terminals) rather than lingering
+    // as an "exited" row -- the dead pane is still there to look at.
     // Enter (or a click) on either row jumps to the workspace, tab and
     // pane holding that agent's terminal via mep.jump_to_buffer; an
     // agent without a terminal pairing jumps to its cursor's buffer
@@ -11427,19 +11793,22 @@ const char *kBuiltinAiTerminal =
     "      if not (tb and tb >= 0 and mep.is_terminal_buffer(tb)) then tb = nil end\n"
     "      local row = {id = p.id, name = p.name, status = p.status or '', terminal = tb,\n"
     "                   cursor_buffer = p.has_location and p.buffer_id or nil}\n"
-    "      row.task, row.exited = mep_ai_agents_task(tb)\n"
-    "      row.workspace = location(tb or row.cursor_buffer) or 'outside mep'\n"
+    "      local task, exited = mep_ai_agents_task(tb)\n"
     "      if tb then by_terminal[tb] = row end\n"
-    "      rows[#rows + 1] = row\n"
+    "      if not exited then\n"
+    "        row.task = task\n"
+    "        row.workspace = location(tb or row.cursor_buffer) or 'outside mep'\n"
+    "        rows[#rows + 1] = row\n"
+    "      end\n"
     "    end\n"
     "  end\n"
     "  for buf, _ in pairs(mep.ai_terminals) do\n"
-    "    if not mep.is_terminal_buffer(buf) then\n"
+    "    local task, exited = mep_ai_agents_task(buf)\n"
+    "    if not mep.is_terminal_buffer(buf) or exited then\n"
     "      mep.ai_terminals[buf] = nil\n"
     "    elseif not by_terminal[buf] then\n"
-    "      local row = {id = 'terminal:' .. buf, name = 'claude', status = '', terminal = buf, starting = true}\n"
-    "      row.task, row.exited = mep_ai_agents_task(buf)\n"
-    "      row.workspace = location(buf) or 'outside mep'\n"
+    "      local row = {id = 'terminal:' .. buf, name = 'claude', status = '', terminal = buf, starting = true,\n"
+    "                   task = task, workspace = location(buf) or 'outside mep'}\n"
     "      rows[#rows + 1] = row\n"
     "    end\n"
     "  end\n"
@@ -11453,7 +11822,7 @@ const char *kBuiltinAiTerminal =
     "local function mep_ai_agents_key(rows)\n"
     "  local parts = {}\n"
     "  for _, r in ipairs(rows) do\n"
-    "    parts[#parts + 1] = table.concat({r.id, r.name, r.status, tostring(r.terminal or ''), r.task, r.workspace, tostring(r.exited or false)}, '|')\n"
+    "    parts[#parts + 1] = table.concat({r.id, r.name, r.status, tostring(r.terminal or ''), r.task, r.workspace}, '|')\n"
     "  end\n"
     "  return table.concat(parts, '\\n')\n"
     "end\n"
@@ -11465,7 +11834,6 @@ const char *kBuiltinAiTerminal =
     "  end\n"
     "end\n"
     "local function mep_ai_agents_status_text(r)\n"
-    "  if r.exited then return 'exited' end\n"
     "  if r.starting then return 'starting' end\n"
     "  if r.status == '' then return 'connected' end\n"
     "  return MEP_AI_STATUS_LABEL[r.status] or r.status\n"
@@ -11479,7 +11847,7 @@ const char *kBuiltinAiTerminal =
     "      by_ws[r.workspace] = sec\n"
     "      sections[#sections + 1] = sec\n"
     "    end\n"
-    "    local hl = r.exited and 'Comment' or (MEP_AI_STATUS_HL[r.status] or 'Normal')\n"
+    "    local hl = MEP_AI_STATUS_HL[r.status] or 'Normal'\n"
     "    local jump = mep_ai_agents_jump(r)\n"
     "    sec.widgets[#sec.widgets + 1] = {id = 'agent:' .. i, icon = '\xef\x84\xa0', hl = hl,\n"
     "      text = r.name .. '  [' .. mep_ai_agents_status_text(r) .. ']',\n"
@@ -11519,6 +11887,17 @@ const char *kBuiltinAiTerminal =
     "mep.command('MepAiAgents', mep.ai_agents_panel)\n"
     "mep.command('aiagents', mep.ai_agents_panel)\n"
     "mep.leader_map('al', 'AI: agents sidebar', mep.ai_agents_panel)\n"
+    // <leader>aa toggles: closes the sidebar when it's open, otherwise
+    // opens it (same shape as mep.structure_sidebar_toggle).
+    "function mep.ai_agents_toggle()\n"
+    "  if mep_ai_agents_sidebar_id and mep.sidebar_is_open(mep_ai_agents_sidebar_id) then\n"
+    "    mep.sidebar_close(mep_ai_agents_sidebar_id)\n"
+    "  else\n"
+    "    mep.ai_agents_panel()\n"
+    "  end\n"
+    "end\n"
+    "mep.command('MepAiAgentsToggle', mep.ai_agents_toggle)\n"
+    "mep.leader_map('aa', 'AI: toggle agents sidebar', mep.ai_agents_toggle)\n"
     "do\n"
     "  local last_poll = 0\n"
     "  mep.on_frame(function()\n"
@@ -12750,6 +13129,27 @@ void DrawToastStack() {
  * left/right sidebars merged into one vertically split column -- and records their
  * border-drag, stack-divider, and row hit-test rects.
  */
+// Draws a sidebar's tab strip (SidebarInstance::tabs) starting at (x, y):
+// each name in its own chip, the active one on the TabActive fill in
+// Normal, the rest in Comment. Records a SidebarTabRect per chip for
+// click-to-switch. Returns the x just past the last chip.
+float DrawSidebarTabStrip(const SidebarInstance &sb, float x, float y, float font_size) {
+    const float pad = 8.0f;
+    const float chip_h = font_size + 4.0f;
+    for (size_t i = 0; i < sb.tabs.size(); i++) {
+        const std::string &name = sb.tabs[i];
+        const float tw = MeasureTextEx(g_font, name.c_str(), font_size, 0).x;
+        const Rectangle rect{x, y - 2.0f, tw + 2 * pad, chip_h};
+        const bool active = static_cast<int>(i) == sb.active_tab;
+        if (active) DrawRectangleRec(rect, ResolveHlGroup("TabActive"));
+        DrawTextEx(g_font, name.c_str(), Vector2{x + pad, y}, font_size, 0,
+                   ResolveHlGroup(active ? "Normal" : "Comment"));
+        g_sidebar_tab_rects.push_back({sb.id, static_cast<int>(i), rect});
+        x += rect.width + 2.0f;
+    }
+    return x;
+}
+
 void DrawSidebars() {
     int screen_w = GetScreenWidth();
     int screen_h = GetScreenHeight();
@@ -12799,6 +13199,12 @@ void DrawSidebars() {
         BeginScissorMode(px, py, pw, ph);
         DrawTextEx(g_font, sb.title.c_str(), Vector2{static_cast<float>(px + 8), static_cast<float>(py + 6)},
                    MenuFontSize(), 0, ResolveHlGroup("SidebarTitle"));
+        // A tabbed sidebar's view strip takes one extra header row.
+        int hdr_h = header_h;
+        if (!sb.tabs.empty()) {
+            DrawSidebarTabStrip(sb, static_cast<float>(px + 8), static_cast<float>(py + header_h), MenuFontSize());
+            hdr_h += line_h;
+        }
 
         // How many rows actually fit below the header -- feeds
         // UpdateScrollForSidebar (keeps the cursor in view, same contract as
@@ -12810,7 +13216,7 @@ void DrawSidebars() {
         // off-screen cursor back into view, so moving past the last visible
         // row (or a mouse wheel, previously not even wired into Mode::Sidebar
         // in Editor::HandleMouseWheel) had nowhere to go.
-        int visible_lines = std::max(1, (ph - header_h - 10) / line_h);
+        int visible_lines = std::max(1, (ph - hdr_h - 10) / line_h);
         // A popped-out sidebar's scroll is owned by DrawSidebarPopout's
         // own (much taller) viewport: clamping it to this docked one
         // first would keep yanking the float's view so the cursor sits
@@ -12824,7 +13230,7 @@ void DrawSidebars() {
         size_t first = static_cast<size_t>(scroll);
         size_t last = std::min(lines.size(), first + static_cast<size_t>(visible_lines));
         for (size_t i = first; i < last; i++) {
-            float ly = static_cast<float>(py) + static_cast<float>(header_h) + static_cast<float>(i - first) * static_cast<float>(line_h);
+            float ly = static_cast<float>(py) + static_cast<float>(hdr_h) + static_cast<float>(i - first) * static_cast<float>(line_h);
             // Persistent "current position" marker (SidebarWidget::current,
             // e.g. kBuiltinStructure's own cursor-tracking) -- drawn
             // regardless of focus, so it stays visible while the user is
@@ -13503,6 +13909,37 @@ Rectangle g_sidebar_popout_rect{};
 /**
  * @brief Draws the popped-out sidebar float (rows left, preview column right) and re-registers its row hit-rects as the only clickable chrome.
  */
+// The floating editable pane (Editor::OpenFloatPane; the Todo sidebar's
+// 'e'): DrawFloatFrame's centered box at the popout/picker overlays' own
+// 80%/80% footprint, with an ordinary DrawPane inside it -- header,
+// gutter, cursor, wrap and scroll all exactly as a docked pane's, since
+// it *is* a Pane (CurPane() resolves to it while open). Modal for the
+// mouse the same way DrawSidebarPopout is: every click region/geometry
+// the docked chrome registered this frame is dropped first, so only the
+// float's own header buttons and body remain clickable, and
+// DispatchChromeClicks treats a click outside the box as dismiss.
+Rectangle g_float_pane_rect{};
+void DrawFloatPane() {
+    if (!g_editor.IsFloatPaneOpen()) return;
+    g_sidebar_row_rects.clear();
+    g_sidebar_tab_rects.clear();
+    g_sidebar_border_rects.clear();
+    g_sidebar_stack_rects.clear();
+    g_pane_border_rects.clear();
+    g_pane_tab_chip_rects.clear();
+    g_pane_screen_rects.clear();
+    g_click_regions.clear();
+    int box_w = std::max(400, static_cast<int>(static_cast<float>(GetScreenWidth()) * 0.8f));
+    int box_h = std::max(300, static_cast<int>(static_cast<float>(GetScreenHeight()) * 0.8f));
+    FloatFrame f = DrawFloatFrame(box_w, box_h, "");
+    g_float_pane_rect = Rectangle{static_cast<float>(f.box_x), static_cast<float>(f.box_y), static_cast<float>(f.box_w),
+                                  static_cast<float>(f.box_h)};
+    const float pad = 4.0f;
+    DrawPane(g_editor.FloatPane(), static_cast<float>(f.box_x) + pad, static_cast<float>(f.box_y) + pad,
+             static_cast<float>(f.box_w) - 2 * pad, static_cast<float>(f.box_h) - 2 * pad,
+             g_editor.CurrentMode() != Mode::Sidebar);
+}
+
 void DrawSidebarPopout() {
     // Per-frame preview refresh lives here rather than in the input path so
     // every cursor-moving route (keys, wheel, click, a sections refresh)
@@ -13513,6 +13950,7 @@ void DrawSidebarPopout() {
     if (!sb) return;
 
     g_sidebar_row_rects.clear();
+    g_sidebar_tab_rects.clear();
     g_sidebar_border_rects.clear();
     g_sidebar_stack_rects.clear();
     g_pane_border_rects.clear();
@@ -13526,6 +13964,10 @@ void DrawSidebarPopout() {
     FloatFrame f = DrawFloatFrame(box_w, box_h, sb->title);
     g_sidebar_popout_rect = Rectangle{static_cast<float>(f.box_x), static_cast<float>(f.box_y), static_cast<float>(f.box_w),
                                       static_cast<float>(f.box_h)};
+    if (!sb->tabs.empty()) {
+        const float title_w = MeasureTextEx(g_font, sb->title.c_str(), MenuFontSize(), 0).x;
+        DrawSidebarTabStrip(*sb, f.content_x + title_w + 24.0f, static_cast<float>(f.box_y + 10), MenuFontSize());
+    }
 
     const float font_size = g_font_size;
     const int line_h = static_cast<int>(font_size) + 4;
@@ -13625,7 +14067,8 @@ void DrawSidebarPopout() {
     }
 
     // Key hint, bottom-right, same placement/color as DrawPreviewOverlay's.
-    const std::string hint = has_preview ? "Esc/q/mod1+m: dock   mod1+j/k: scroll preview" : "Esc/q/mod1+m: dock";
+    std::string hint = has_preview ? "Esc/q/mod1+m: dock   mod1+j/k: scroll preview" : "Esc/q/mod1+m: dock";
+    if (!sb->tabs.empty()) hint = "Tab/S-Tab: switch view   " + hint;
     const float hint_w = MeasureTextEx(g_font, hint.c_str(), hint_size, 0).x;
     DrawTextEx(g_font, hint.c_str(),
                Vector2{static_cast<float>(right_edge) - hint_w - 14, static_cast<float>(f.box_y + f.box_h) - hint_size - 10.0f},
@@ -20156,7 +20599,7 @@ void DrawTabBar(int y) {
     };
     static const SidebarButton kSidebarButtons[] = {
         {"Files", "MepFileTree", 0xf07b, 0xf07c, "Files"},                       // nf-fa-folder / folder_open
-        {"Git Status", "MepGitStatus", 0xe725, 0, "Git status"},                 // nf-dev-git_branch
+        {"Git", "MepGitStatus", 0xe725, 0, "Git: status, log, branches, stash"},                 // nf-dev-git_branch
         {"Symbols", "MepSymbols", 0xf121, 0, "Symbols"},                         // nf-fa-code
         {"Structure", "MepStructure", 0xf0e8, 0, "Structure"},                   // nf-fa-sitemap
         {"Todo", "MepActivityTodoPanel", 0xf046, 0, "Todo"},                     // nf-fa-check_square_o
@@ -20475,8 +20918,12 @@ void DrawEditor() {
     g_pane_tab_chip_rects.clear();
     g_pane_border_rects.clear();
     g_sidebar_row_rects.clear();
+    g_sidebar_tab_rects.clear();
     g_sidebar_border_rects.clear();
     g_sidebar_stack_rects.clear();
+    // A tab/workspace switch or :bd underneath an open floating pane
+    // (Editor::OpenFloatPane) ends it before anything below draws it.
+    g_editor.ValidateFloatPane();
     int screen_w = GetScreenWidth();
     int screen_h = GetScreenHeight();
     int line_height = LineHeight();
@@ -20544,7 +20991,8 @@ void DrawEditor() {
             // TabActive header_bg) while the now-focused sidebar
             // (DrawSidebars) draws none of its own. -1 matches no real
             // pane id, so every leaf falls back to its inactive look.
-            int highlighted_pane_id = (g_editor.CurrentMode() == Mode::Sidebar) ? -1 : g_editor.ActivePaneId();
+            int highlighted_pane_id =
+                (g_editor.CurrentMode() == Mode::Sidebar || g_editor.IsFloatPaneOpen()) ? -1 : g_editor.ActivePaneId();
             g_hover_popup_pending = false;
             DrawPaneTree(g_editor.ActiveTabRoot(), pane_x, static_cast<float>(content_top), pane_w,
                          static_cast<float>(pane_area_h), highlighted_pane_id);
@@ -20715,6 +21163,10 @@ void DrawEditor() {
     // A popped-out sidebar (mod1+m) is a modal float like the overlays
     // below, drawn over the docked panels/menu bar it zooms; a no-op
     // unless one is active.
+    // The floating editable pane (Todo 'e') sits above the docked
+    // chrome like the popout below; the prompt/confirm overlays a key
+    // pressed inside it may open still draw on top of it.
+    DrawFloatPane();
     DrawSidebarPopout();
     if (g_editor.CurrentMode() == Mode::Prompt) DrawPromptOverlay();
     if (g_editor.CurrentMode() == Mode::Confirm) DrawConfirmOverlay();
@@ -20776,8 +21228,22 @@ void DispatchChromeClicks() {
     // box collapses it back to the docked panel. Clicks inside the box
     // are the float's own rows, handled by UpdatePaneMouseInteraction's
     // sidebar-row path like any docked row.
+    // A tab-strip chip (docked header or the popout's title row): focus
+    // that sidebar if it isn't already, then switch its view.
+    for (const SidebarTabRect &t : g_sidebar_tab_rects) {
+        if (!PointInRect(mouse, t.rect)) continue;
+        if (!(mode == Mode::Sidebar && g_editor.FocusedSidebarId() == t.sidebar_id)) g_editor.FocusSidebarRow(t.sidebar_id, 0);
+        g_editor.SelectSidebarTab(t.sidebar_id, t.tab_index);
+        return;
+    }
     if (g_editor.SidebarPopoutActive()) {
         if (!PointInRect(mouse, g_sidebar_popout_rect)) g_editor.CloseSidebarPopout();
+        return;
+    }
+    // Same dismiss gesture for the floating pane (DrawFloatPane dropped
+    // the docked chrome's regions, so the loop below only sees its own).
+    if (g_editor.IsFloatPaneOpen() && !PointInRect(mouse, g_float_pane_rect)) {
+        g_editor.CloseFloatPane();
         return;
     }
     for (const ClickRegion &r : g_click_regions) {

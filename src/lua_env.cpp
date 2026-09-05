@@ -1036,6 +1036,80 @@ int l_float_preview(lua_State *L) {
     return 0;
 }
 
+// mep.buffer_delete(id, force?): drops buffer `id` (:bdelete's
+// Editor::BufferDeleteById -- panes showing it fall back to another
+// buffer). `force` (default false) discards unsaved changes. Used by the
+// git panel to drop the COMMIT_EDITMSG buffer once its float has closed.
+/**
+ * @brief Implements mep.buffer_delete(id, force?): deletes a buffer by id.
+ * @param L Lua state; arg 1 buffer id, optional arg 2 force (discard unsaved changes).
+ * @return Number of values pushed (0).
+ */
+int l_buffer_delete(lua_State *L) {
+    int id = static_cast<int>(luaL_checkinteger(L, 1));
+    bool force = lua_toboolean(L, 2) != 0;
+    GetEditor(L)->BufferDeleteForLua(id, force);
+    return 0;
+}
+
+// mep.float_open(path, line?, opts?) -> bool: opens `path` in a floating
+// editable pane centered over everything (Editor::OpenFloatPane; drawn by
+// main.cpp's DrawFloatPane), cursor on 1-based `line` (default 1). Unlike
+// float_preview below this is a real Pane over a real buffer -- every
+// editing mode, :w, the mouse wheel all work inside it -- and it closes
+// on Escape with nothing pending, :q/:close/:wq, or a click outside the
+// box. opts.save_on_close (default true) writes the buffer on close if
+// it was modified. Opened from a focused sidebar (the Todo panel's 'e'),
+// closing returns focus to that sidebar row.
+/**
+ * @brief Implements mep.float_open(path, line?, opts?): opens a file in a floating editable pane.
+ * @param L Lua state; arg 1 is the path, optional arg 2 the 1-based line, optional arg 3 an options table ({save_on_close=bool}).
+ * @return Number of values pushed (1: true if the float opened).
+ */
+int l_float_open(lua_State *L) {
+    size_t len = 0;
+    const char *path = luaL_checklstring(L, 1, &len);
+    int line = static_cast<int>(luaL_optinteger(L, 2, 1));
+    bool save_on_close = true;
+    int on_close_ref = 0;
+    if (lua_istable(L, 3)) {
+        lua_getfield(L, 3, "save_on_close");
+        if (!lua_isnil(L, -1)) save_on_close = lua_toboolean(L, -1) != 0;
+        lua_pop(L, 1);
+        // opts.on_close(saved): fired once the float is gone, `saved` =
+        // this close wrote the buffer (so "opened, typed nothing, Escape"
+        // arrives as false -- the git commit flow's cancel).
+        lua_getfield(L, 3, "on_close");
+        if (lua_isfunction(L, -1)) {
+            on_close_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+        } else {
+            lua_pop(L, 1);
+        }
+    }
+    lua_pushboolean(L, GetEditor(L)->OpenFloatPane(std::string(path, len), line - 1, save_on_close, on_close_ref));
+    return 1;
+}
+
+/**
+ * @brief Implements mep.float_close(): closes the floating editable pane if one is open.
+ * @param L Lua state.
+ * @return Number of values pushed (0).
+ */
+int l_float_close(lua_State *L) {
+    GetEditor(L)->CloseFloatPane();
+    return 0;
+}
+
+/**
+ * @brief Implements mep.float_is_open(): reports whether a floating editable pane is open.
+ * @param L Lua state.
+ * @return Number of values pushed (1: boolean).
+ */
+int l_float_is_open(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->IsFloatPaneOpen());
+    return 1;
+}
+
 // mep.hover_show(title, text): a small floating window anchored near the
 // cursor (NVIM_PARITY_PLAN.md Phase 3's "hover tooltip" gap, closed) --
 // unlike float_preview above, this does *not* take over input/mode: it's
@@ -2453,6 +2527,69 @@ int l_sidebar_set_on_key(lua_State *L) {
     int ref = luaL_ref(L, LUA_REGISTRYINDEX);
     GetEditor(L)->SetSidebarOnKey(id, ref);
     return 0;
+}
+
+// mep.sidebar_set_tabs(id, {name, ...}, active?): gives sidebar `id` a tab
+// strip (SidebarInstance::tabs) -- one view name per entry, `active` the
+// 1-based one to start on (default 1). Tab/Shift-Tab while focused, a
+// click on a name, or mep.sidebar_set_active_tab switch; each fires the
+// mep.sidebar_set_on_tab callback with the new 1-based index, which is
+// where the consumer re-renders its sections for that view.
+/**
+ * @brief Implements mep.sidebar_set_tabs(id, names, active?): sets a sidebar's tab strip.
+ * @param L Lua state; arg 1 sidebar id, arg 2 array of tab names, optional arg 3 the 1-based active tab.
+ * @return Number of values pushed (0).
+ */
+int l_sidebar_set_tabs(lua_State *L) {
+    int id = static_cast<int>(luaL_checkinteger(L, 1));
+    luaL_checktype(L, 2, LUA_TTABLE);
+    std::vector<std::string> tabs;
+    lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 2));
+    for (lua_Integer i = 1; i <= n; i++) {
+        lua_rawgeti(L, 2, i);
+        tabs.emplace_back(luaL_optstring(L, -1, ""));
+        lua_pop(L, 1);
+    }
+    int active = static_cast<int>(luaL_optinteger(L, 3, 1)) - 1;
+    GetEditor(L)->SetSidebarTabs(id, std::move(tabs), active);
+    return 0;
+}
+
+/**
+ * @brief Implements mep.sidebar_set_on_tab(id, fn): fn(index) runs whenever the sidebar's active tab changes (1-based).
+ * @param L Lua state; arg 1 sidebar id, arg 2 the callback.
+ * @return Number of values pushed (0).
+ */
+int l_sidebar_set_on_tab(lua_State *L) {
+    int id = static_cast<int>(luaL_checkinteger(L, 1));
+    luaL_checktype(L, 2, LUA_TFUNCTION);
+    lua_pushvalue(L, 2);
+    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    GetEditor(L)->SetSidebarOnTab(id, ref);
+    return 0;
+}
+
+/**
+ * @brief Implements mep.sidebar_set_active_tab(id, index): switches a sidebar to the 1-based tab (wrapping), firing its on_tab callback.
+ * @param L Lua state; arg 1 sidebar id, arg 2 the 1-based tab index.
+ * @return Number of values pushed (0).
+ */
+int l_sidebar_set_active_tab(lua_State *L) {
+    int id = static_cast<int>(luaL_checkinteger(L, 1));
+    int index = static_cast<int>(luaL_checkinteger(L, 2)) - 1;
+    GetEditor(L)->SelectSidebarTab(id, index);
+    return 0;
+}
+
+/**
+ * @brief Implements mep.sidebar_active_tab(id) -> 1-based index of the sidebar's active tab (1 when it has none).
+ * @param L Lua state; arg 1 sidebar id.
+ * @return Number of values pushed (1).
+ */
+int l_sidebar_active_tab(lua_State *L) {
+    int id = static_cast<int>(luaL_checkinteger(L, 1));
+    lua_pushinteger(L, GetEditor(L)->SidebarActiveTab(id) + 1);
+    return 1;
 }
 
 // mep.sidebar_set_on_preview(id, fn): fn(widget_id) is called whenever the
@@ -6553,6 +6690,9 @@ const luaL_Reg kMepFuncs[] = {
     {"ui_confirm", l_ui_confirm},
     {"ui_select", l_ui_select},
     {"float_preview", l_float_preview},
+    {"float_open", l_float_open},
+    {"float_close", l_float_close},
+    {"float_is_open", l_float_is_open},
     {"hover_show", l_hover_show},
     {"hover_close", l_hover_close},
     {"hover_is_open", l_hover_is_open},
@@ -6608,6 +6748,7 @@ const luaL_Reg kMepFuncs[] = {
     {"git_stage_hunk", l_git_stage_hunk},
     {"ts_apply_captures", l_ts_apply_captures},
     {"buffer_set_lines", l_buffer_set_lines},
+    {"buffer_delete", l_buffer_delete},
     {"buffer_ns_clear", l_buffer_ns_clear},
     {"buffer_deco_add", l_buffer_deco_add},
     {"term_start", l_term_start},
@@ -6675,6 +6816,10 @@ const luaL_Reg kMepFuncs[] = {
     {"sidebar_toggle", l_sidebar_toggle},
     {"sidebar_is_open", l_sidebar_is_open},
     {"sidebar_set_on_key", l_sidebar_set_on_key},
+    {"sidebar_set_tabs", l_sidebar_set_tabs},
+    {"sidebar_set_on_tab", l_sidebar_set_on_tab},
+    {"sidebar_set_active_tab", l_sidebar_set_active_tab},
+    {"sidebar_active_tab", l_sidebar_active_tab},
     {"sidebar_set_on_preview", l_sidebar_set_on_preview},
     {"sidebar_set_preview", l_sidebar_set_preview},
     {"sidebar_popout_toggle", l_sidebar_popout_toggle},

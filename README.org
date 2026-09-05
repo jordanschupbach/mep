@@ -242,8 +242,8 @@ The git panel (=<leader>gg=, the tab bar's Git button, or
 - *Branches*: local and remote branches, newest commit first, with
   ahead/behind and upstream; the preview is that branch's =git log
   --oneline=. =Enter= checks one out (a remote one as a tracking
-  branch), =n= creates a branch from HEAD, =x= deletes one (a remote
-  branch via =git push --delete=, both after a confirm), =m= merges it
+  branch), =n= creates a branch from HEAD, =x= or =D= deletes one (a
+  remote branch via =git push --delete=, both after a confirm), =m= merges it
   into the current branch, =r= rebases the current branch onto it.
 - *Stash*: =git stash list=; the preview is =git stash show -p=.
   =n= stashes the working tree (untracked included, optional message),

@@ -261,6 +261,35 @@ int l_insert_text(lua_State *L) {
     return 0;
 }
 
+// mep.clipboard_get() -> text: the system clipboard's current text ("" if
+// empty/unavailable -- see Editor::SystemClipboardRead for the wasm
+// caveats). mep.clipboard_set(text): copies text to the system clipboard.
+// Deliberately *not* routed through the unnamed register: these are the
+// raw clipboard for scripts that want it (e.g. a "copy file path" command),
+// and leave mep's own registers untouched.
+/**
+ * @brief Implements mep.clipboard_get(): returns the system clipboard's text.
+ * @param L Lua state; no args.
+ * @return Number of values pushed (1: the clipboard text, "" if none).
+ */
+int l_clipboard_get(lua_State *L) {
+    std::string text = GetEditor(L)->SystemClipboardRead();
+    lua_pushlstring(L, text.data(), text.size());
+    return 1;
+}
+
+/**
+ * @brief Implements mep.clipboard_set(text): copies text to the system clipboard.
+ * @param L Lua state; arg 1 is the text.
+ * @return Number of values pushed (0).
+ */
+int l_clipboard_set(lua_State *L) {
+    size_t len = 0;
+    const char *s = luaL_checklstring(L, 1, &len);
+    GetEditor(L)->SystemClipboardWrite(std::string(s, len));
+    return 0;
+}
+
 // mep.visual_change(): the Lua equivalent of pressing "c" on the current
 // Visual selection -- deletes it (with the same undo/register semantics
 // as any other change) and leaves the cursor, in Insert mode, at the
@@ -6194,6 +6223,8 @@ const luaL_Reg kMepFuncs[] = {
     {"is_insert_mode", l_is_insert_mode},
     {"stt_set_recording", l_stt_set_recording},
     {"insert_text", l_insert_text},
+    {"clipboard_get", l_clipboard_get},
+    {"clipboard_set", l_clipboard_set},
     {"notify", l_notify},
     {"command", l_command},
     {"map", l_map},

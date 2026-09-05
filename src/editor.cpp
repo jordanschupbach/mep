@@ -465,6 +465,81 @@ EM_JS(int, mep_js_pty_exit_code, (int id), {
     const state = window.__mepPtys && window.__mepPtys[id];
     return state ? state.exitCode : -1;
 });
+
+// System clipboard bridge for the wasm build (Editor::SystemClipboardRead/
+// Write). raylib's own web-platform GetClipboardText() is a stub, and
+// navigator.clipboard.readText() is async (and permission-gated) -- so,
+// same as the file bridge above, nothing here awaits (no Asyncify).
+// Instead the JS side keeps a cache, window.__mepClipboardText, fed by:
+//   - every write mep itself makes (so a yank/paste round-trip inside mep
+//     always works, even where the browser refuses clipboard access);
+//   - the document's "paste" event (the browser hands over the real
+//     clipboard text on a Ctrl-V/Ctrl-Shift-V keypress without any
+//     permission prompt -- the one reliable read path in a webview);
+//   - a readText() kicked off on window focus and on every read, whose
+//     result lands in the cache for the *next* read (best-effort: it
+//     depends on the page being a secure context and the user granting
+//     clipboard-read, neither of which a file:// or loopback webview is
+//     guaranteed to have).
+// Writes try navigator.clipboard.writeText() first (needs a recent user
+// activation -- a keypress within the last few seconds counts, which a
+// yank always is) and fall back to the hidden-textarea execCommand("copy")
+// trick the org HTML export's copy button (main.cpp) already uses.
+/**
+ * @brief Writes text to the system clipboard and the JS-side cache (wasm build only).
+ * @param text_ptr UTF-8 text to copy.
+ */
+EM_JS(void, mep_js_clipboard_write, (const char *text_ptr), {
+    const text = UTF8ToString(text_ptr);
+    window.__mepClipboardText = text;
+    try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).catch(function() {});
+            return;
+        }
+    } catch (e) {}
+    try {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+    } catch (e) {}
+});
+
+/**
+ * @brief Returns the cached system clipboard text, installing the paste/focus listeners that keep it fresh on first call (wasm build only).
+ * @return A malloc'd C string with the cached clipboard text ("" if none); caller must free().
+ */
+EM_JS(char *, mep_js_clipboard_read, (), {
+    if (!window.__mepClipboardRefresh) {
+        window.__mepClipboardRefresh = function() {
+            try {
+                if (navigator.clipboard && navigator.clipboard.readText) {
+                    navigator.clipboard.readText().then(function(t) {
+                        if (t) window.__mepClipboardText = t;
+                    }, function() {});
+                }
+            } catch (e) {}
+        };
+        document.addEventListener("paste", function(ev) {
+            try {
+                const t = ev.clipboardData && ev.clipboardData.getData("text/plain");
+                if (t) window.__mepClipboardText = t;
+            } catch (e) {}
+        });
+        window.addEventListener("focus", window.__mepClipboardRefresh);
+    }
+    window.__mepClipboardRefresh();
+    const text = window.__mepClipboardText || "";
+    const len = lengthBytesUTF8(text) + 1;
+    const ptr = _malloc(len);
+    stringToUTF8(text, ptr, len);
+    return ptr;
+});
 #endif
 
 namespace {
@@ -8117,6 +8192,24 @@ void Editor::HandleTerminalInput() {
             terminal_pending_ctrl_bs_ = true;
             continue;
         }
+        // Ctrl-Shift-V: paste the system clipboard (== unnamed register,
+        // so a yank from any mep buffer pastes here too) into the child,
+        // the terminal-emulator convention -- plain Ctrl-V stays a
+        // literal 0x16 for the child, same as in any other terminal.
+        // Newlines go as CR: that's what a terminal sends for Enter, and
+        // what a shell reading pasted lines expects. Sent raw (no
+        // bracketed-paste wrapping): VTerm doesn't track whether the
+        // child ever enabled mode 2004 (vterm.h), so it can't know when
+        // the child would want the brackets.
+        if (key == KEY_V && ctrl && shift) {
+            std::string text = RegisterTextForPaste('"');
+            for (char &c : text) {
+                if (c == '\n') c = '\r';
+            }
+            sess->scroll_offset = 0;
+            if (!sess->exited && !text.empty()) TerminalWrite(*sess, text);
+            continue;
+        }
         if (shift && (key == KEY_PAGE_UP || key == KEY_PAGE_DOWN) && sess->vterm) {
             int rows = sess->vterm->Rows();
             if (key == KEY_PAGE_UP) {
@@ -10921,7 +11014,131 @@ Register &Editor::RegisterFor(char name) {
         r.blockwise = false;
         return r;
     }
+    // "+ and "* are the system clipboard, which mep keeps identical to
+    // the unnamed register (see the header comment) -- so they simply
+    // *are* the unnamed register here. Callers that write through this
+    // (YankRange etc.) then push to the real clipboard via
+    // SyncUnnamedToSystemClipboard, and readers pull first.
+    if (name == '+' || name == '*') name = 0;
     return registers_[name != 0 ? name : '"'];
+}
+
+std::string Editor::SystemClipboardRead() {
+    std::string text;
+#if defined(__EMSCRIPTEN__)
+    char *raw = mep_js_clipboard_read();
+    if (raw) {
+        text = raw;
+        free(raw);
+    }
+#else
+    if (!IsWindowReady()) return text;
+    const char *raw = GetClipboardText();
+    if (raw) text = raw;
+#endif
+    // Other apps (Windows ones especially, but anything that round-trips
+    // through a browser too) hand over CRLF line endings; mep's buffers
+    // are LF-only, and a stray '\r' would otherwise land verbatim in the
+    // pasted text.
+    std::string out;
+    out.reserve(text.size());
+    for (size_t i = 0; i < text.size(); i++) {
+        if (text[i] == '\r' && i + 1 < text.size() && text[i + 1] == '\n') continue;
+        out += text[i];
+    }
+    return out;
+}
+
+void Editor::SystemClipboardWrite(const std::string &text) {
+#if defined(__EMSCRIPTEN__)
+    mep_js_clipboard_write(text.c_str());
+#else
+    if (!IsWindowReady()) return;
+    SetClipboardText(text.c_str());
+#endif
+}
+
+void Editor::SyncUnnamedToSystemClipboard() {
+    const Register &unnamed = registers_['"'];
+    // An empty register (e.g. yanking a zero-width range) leaves the
+    // system clipboard alone rather than clearing what some other app put
+    // there.
+    if (unnamed.text.empty()) return;
+    clipboard_synced_text_ = unnamed.text;
+    SystemClipboardWrite(unnamed.text);
+}
+
+void Editor::PullSystemClipboard() {
+    std::string text = SystemClipboardRead();
+    if (text.empty() || text == clipboard_synced_text_) return;
+    Register &unnamed = registers_['"'];
+    unnamed.text = text;
+    unnamed.linewise = text.back() == '\n';
+    unnamed.blockwise = false;
+    clipboard_synced_text_ = text;
+}
+
+std::string Editor::RegisterTextForPaste(int name) {
+    if (name >= 'A' && name <= 'Z') name = name - 'A' + 'a';
+    bool known = (name >= 'a' && name <= 'z') || (name >= '0' && name <= '9') || name == '-' ||
+                 name == '%' || name == '"' || name == '+' || name == '*';
+    if (!known) return "";
+    char reg_name = static_cast<char>(name);
+    if (reg_name == '"' || reg_name == '+' || reg_name == '*') {
+        reg_name = 0;
+        PullSystemClipboard();
+    }
+    return RegisterFor(reg_name).text;
+}
+
+void Editor::InsertTextAsTyped(const std::string &text) {
+    // Decode UTF-8 to codepoints -- ProcessInsertKey speaks codepoints
+    // (it's what GetCharPressed() hands HandleInsertInput), not bytes.
+    // Malformed sequences are skipped byte-by-byte rather than inserted
+    // as garbage.
+    size_t i = 0;
+    while (i < text.size()) {
+        unsigned char b = static_cast<unsigned char>(text[i]);
+        int cp = 0;
+        size_t len = 1;
+        if (b < 0x80) {
+            cp = b;
+        } else if ((b & 0xE0) == 0xC0) {
+            cp = b & 0x1F;
+            len = 2;
+        } else if ((b & 0xF0) == 0xE0) {
+            cp = b & 0x0F;
+            len = 3;
+        } else if ((b & 0xF8) == 0xF0) {
+            cp = b & 0x07;
+            len = 4;
+        } else {
+            i++;
+            continue;
+        }
+        if (i + len > text.size()) break;
+        bool valid = true;
+        for (size_t k = 1; k < len; k++) {
+            unsigned char c = static_cast<unsigned char>(text[i + k]);
+            if ((c & 0xC0) != 0x80) {
+                valid = false;
+                break;
+            }
+            cp = (cp << 6) | (c & 0x3F);
+        }
+        if (!valid) {
+            i++;
+            continue;
+        }
+        i += len;
+        if (cp == '\n') {
+            ProcessInsertKey(kReplayEnter);
+        } else if (cp == '\r') {
+            continue;  // stray CR (CRLF is already normalized on read)
+        } else {
+            ProcessInsertKey(cp);
+        }
+    }
 }
 
 bool Editor::TryLuaMapping(Mode mode, const std::string &key) {
@@ -11004,14 +11221,17 @@ bool Editor::DispatchNormalKey(int cp) {
     if (pending_find_ == 0 && !pending_g_ && !pending_ctrl_w_ && pending_textobj_scope_ == 0) {
         if (awaiting_register_name_) {
             awaiting_register_name_ = false;
-            if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '%') {
+            if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '%' || c == '+' ||
+                c == '*') {
                 // "0-"9 (numbered/last-yank), "- (small-delete), "%
-                // (filename, read-only) -- all single-char names taken
-                // literally, same as "a-"z. Writes to "% silently no-op
-                // (see YankRange/ApplyVisualBlockOperator); "0-"9/"- are
-                // written automatically by ApplyOperator rather than by
-                // naming them explicitly before an operator, but reading
-                // them via "1p etc. works the same as any other register.
+                // (filename, read-only), "+/"* (system clipboard -- one
+                // and the same as the unnamed register, see RegisterFor)
+                // -- all single-char names taken literally, same as
+                // "a-"z. Writes to "% silently no-op (see YankRange/
+                // ApplyVisualBlockOperator); "0-"9/"- are written
+                // automatically by ApplyOperator rather than by naming
+                // them explicitly before an operator, but reading them
+                // via "1p etc. works the same as any other register.
                 pending_register_ = c;
                 pending_register_append_ = false;
             } else if (c >= 'A' && c <= 'Z') {
@@ -11869,8 +12089,9 @@ void Editor::HandleInsertInput() {
     // edge -- not subject to the same race) is enough to tell "Ctrl-W" apart
     // from a bare "w" that the GetCharPressed() loop below will see instead.
     bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+    bool shift_down = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
     bool escape = false, enter = false, backspace = false, del = false, ctrl_w = false, ctrl_u = false;
-    bool tab_key = false, ctrl_n = false, ctrl_p = false, ctrl_o = false;
+    bool tab_key = false, ctrl_n = false, ctrl_p = false, ctrl_o = false, ctrl_r = false, ctrl_shift_v = false;
     for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
         if (key == KEY_ESCAPE) escape = true;
         else if (key == KEY_ENTER) enter = true;
@@ -11882,6 +12103,15 @@ void Editor::HandleInsertInput() {
         else if (key == KEY_N && ctrl) ctrl_n = true;
         else if (key == KEY_P && ctrl) ctrl_p = true;
         else if (key == KEY_O && ctrl) ctrl_o = true;
+        else if (key == KEY_R && ctrl) ctrl_r = true;
+        else if (key == KEY_V && ctrl && shift_down) ctrl_shift_v = true;
+    }
+    // A pending Ctrl-R only survives until the next *character*; any
+    // special key in between (Escape especially) cancels it, so an
+    // abandoned Ctrl-R can't swallow the first letter typed after Escape
+    // and re-entering Insert.
+    if (escape || enter || backspace || del || ctrl_w || ctrl_u || tab_key || ctrl_o || ctrl_shift_v) {
+        insert_pending_ctrl_r_ = false;
     }
     // Completion popup (Phase 22): intercepts only its own navigation/
     // accept/dismiss keys, and only while open -- a first Escape closes
@@ -11943,10 +12173,31 @@ void Editor::HandleInsertInput() {
         EnterNormal();
         return;
     }
+    // Ctrl-Shift-V: paste the system clipboard (== unnamed register) as
+    // if typed -- the terminal-emulator convention, for people who reach
+    // for it before Vim's own Ctrl-R. Ctrl-R {reg}: Vim's Insert-mode
+    // register paste; the register name arrives as the next character
+    // (handled in the GetCharPressed() loop below), same "+/"* spelling
+    // as the Normal-mode prefix. Neither is a KEY_V/KEY_R char event --
+    // GLFW never delivers a char for a Ctrl-chorded key, which is what
+    // keeps a bare 'r'/'v' from also landing in the buffer.
+    if (ctrl_shift_v) {
+        InsertTextAsTyped(RegisterTextForPaste('"'));
+        return;
+    }
+    if (ctrl_r) {
+        insert_pending_ctrl_r_ = true;
+        return;
+    }
 
     int cp = GetCharPressed();
     while (cp > 0) {
-        ProcessInsertKey(cp);
+        if (insert_pending_ctrl_r_) {
+            insert_pending_ctrl_r_ = false;
+            InsertTextAsTyped(RegisterTextForPaste(cp));
+        } else {
+            ProcessInsertKey(cp);
+        }
         cp = GetCharPressed();
     }
 
@@ -12115,8 +12366,9 @@ void Editor::ApplyVisualBlockOperator(char op) {
     char reg_name = 0;
     bool append = false;
     TakeRegisterSpec(&reg_name, &append);
-    // "% is read-only (see YankRange's own comment) -- redirect to unnamed.
-    if (reg_name == '%') reg_name = 0;
+    // "% is read-only (see YankRange's own comment) -- redirect to unnamed;
+    // "+/"* are the unnamed register outright (same as in YankRange).
+    if (reg_name == '%' || reg_name == '+' || reg_name == '*') reg_name = 0;
     std::vector<std::string> block_lines;
     for (int r = top; r <= bottom; r++) {
         const std::string &line = Buf().lines[static_cast<size_t>(r)];
@@ -12142,6 +12394,7 @@ void Editor::ApplyVisualBlockOperator(char op) {
     target.blockwise = true;
     // Same unnamed-register mirroring YankRange does.
     if (reg_name != 0) registers_['"'] = target;
+    SyncUnnamedToSystemClipboard();
     // "0 mirrors the most recent pure yank here too (block delete below
     // does NOT touch it, matching Vim -- only op == 'y' counts as a yank).
     if (op == 'y') registers_['0'] = registers_['"'];
@@ -12333,7 +12586,8 @@ void Editor::DispatchVisualKey(int cp) {
     if (pending_find_ == 0 && !pending_g_ && pending_textobj_scope_ == 0) {
         if (awaiting_register_name_) {
             awaiting_register_name_ = false;
-            if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '%') {
+            if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '%' || c == '+' ||
+                c == '*') {
                 pending_register_ = c;
                 pending_register_append_ = false;
             } else if (c >= 'A' && c <= 'Z') {
@@ -12564,8 +12818,9 @@ void Editor::HandleCommandInput() {
     // this was silently swallowing Enter here: `:qa` would sit in the
     // command line with the app fully unresponsive after.
     bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+    bool shift_down = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
     bool escape = false, enter = false, backspace = false, up = false, down = false;
-    bool tab_key = false, ctrl_n = false, ctrl_p = false;
+    bool tab_key = false, ctrl_n = false, ctrl_p = false, ctrl_r = false, ctrl_shift_v = false;
     for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
         if (key == KEY_ESCAPE) escape = true;
         else if (key == KEY_ENTER) enter = true;
@@ -12575,7 +12830,11 @@ void Editor::HandleCommandInput() {
         else if (key == KEY_TAB) tab_key = true;
         else if (key == KEY_N && ctrl) ctrl_n = true;
         else if (key == KEY_P && ctrl) ctrl_p = true;
+        else if (key == KEY_R && ctrl) ctrl_r = true;
+        else if (key == KEY_V && ctrl && shift_down) ctrl_shift_v = true;
     }
+    // Same cancel-on-any-special-key rule as HandleInsertInput's Ctrl-R.
+    if (escape || enter || backspace || up || down || tab_key || ctrl_shift_v) prompt_pending_ctrl_r_ = false;
     // Peeked (not just checked) up front, unlike the other keys above,
     // because whether a char was typed this frame feeds a decision below
     // (does typing close the completion popup) -- GetCharPressed() drains
@@ -12662,23 +12921,56 @@ void Editor::HandleCommandInput() {
         }
         return;
     }
+    // Ctrl-Shift-V / Ctrl-R {reg}: paste into the command line, same pair
+    // as Insert mode. The line is single-line printable ASCII (the typing
+    // loop below enforces exactly that), so pasted text is filtered the
+    // same way -- a newline ends up as a space, not as a submit.
+    /**
+     * @brief Appends `text` to the command line under its printable-ASCII, single-line rule.
+     * @param text The pasted text; newlines become spaces, anything else outside 32..126 is dropped.
+     */
+    auto paste_into_cmdline = [&](const std::string &text) {
+        for (char c : text) {
+            if (c == '\n') c = ' ';
+            if (c >= 32 && c < 127) command_line_ += c;
+        }
+    };
+    if (ctrl_shift_v) {
+        paste_into_cmdline(RegisterTextForPaste('"'));
+        return;
+    }
+    if (ctrl_r) {
+        prompt_pending_ctrl_r_ = true;
+        return;
+    }
     int cp = pending_char;
     while (cp > 0) {
-        if (cp >= 32 && cp < 127) command_line_ += static_cast<char>(cp);
+        if (prompt_pending_ctrl_r_) {
+            prompt_pending_ctrl_r_ = false;
+            paste_into_cmdline(RegisterTextForPaste(cp));
+        } else if (cp >= 32 && cp < 127) {
+            command_line_ += static_cast<char>(cp);
+        }
         cp = GetCharPressed();
     }
 }
 
 void Editor::HandleSearchInput() {
     // Same GetKeyPressed()-vs-IsKeyPressed() reasoning as HandleCommandInput.
+    bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+    bool shift_down = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
     bool escape = false, enter = false, backspace = false, up = false, down = false;
+    bool ctrl_r = false, ctrl_shift_v = false;
     for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
         if (key == KEY_ESCAPE) escape = true;
         else if (key == KEY_ENTER) enter = true;
         else if (key == KEY_BACKSPACE) backspace = true;
         else if (key == KEY_UP) up = true;
         else if (key == KEY_DOWN) down = true;
+        else if (key == KEY_R && ctrl) ctrl_r = true;
+        else if (key == KEY_V && ctrl && shift_down) ctrl_shift_v = true;
     }
+    if (escape || enter || backspace || up || down || ctrl_shift_v) prompt_pending_ctrl_r_ = false;
     if (escape) {
         ClearNamespace(CreateNamespace("__mep_incsearch"));
         CurPane().cursor = search_anchor_;  // undo incsearch's live preview move
@@ -12765,10 +13057,40 @@ void Editor::HandleSearchInput() {
         UpdateIncSearch();
         return;
     }
+    // Ctrl-Shift-V / Ctrl-R {reg}: same paste pair as HandleCommandInput,
+    // under the search prompt's own printable-ASCII rule; a pasted
+    // newline is dropped (a search pattern has no use for a space there
+    // the way a command line might).
+    /**
+     * @brief Appends `text` to the search query, keeping only printable ASCII.
+     * @param text The pasted text.
+     * @return True if anything was appended (so incsearch needs refreshing).
+     */
+    auto paste_into_search = [&](const std::string &text) {
+        bool any = false;
+        for (char c : text) {
+            if (c >= 32 && c < 127) {
+                search_query_ += c;
+                any = true;
+            }
+        }
+        return any;
+    };
+    if (ctrl_shift_v) {
+        if (paste_into_search(RegisterTextForPaste('"'))) UpdateIncSearch();
+        return;
+    }
+    if (ctrl_r) {
+        prompt_pending_ctrl_r_ = true;
+        return;
+    }
     int cp = GetCharPressed();
     bool typed = false;
     while (cp > 0) {
-        if (cp >= 32 && cp < 127) {
+        if (prompt_pending_ctrl_r_) {
+            prompt_pending_ctrl_r_ = false;
+            if (paste_into_search(RegisterTextForPaste(cp))) typed = true;
+        } else if (cp >= 32 && cp < 127) {
             search_query_ += static_cast<char>(cp);
             typed = true;
         }
@@ -12979,6 +13301,7 @@ void Editor::HandleHoverFocusInput() {
         target.linewise = linewise;
         target.blockwise = false;
         registers_['0'] = target;
+        SyncUnnamedToSystemClipboard();
         SetStatusMessage("Yanked from hover doc");
     };
 
@@ -16394,6 +16717,9 @@ void Editor::YankRange(CursorPos start, CursorPos end, bool linewise, char reg_n
     // the unnamed register so the yank/delete itself still behaves
     // normally otherwise.
     if (reg_name == '%') reg_name = 0;
+    // "+/"* *are* the unnamed register (RegisterFor) -- normalized here
+    // too so the `reg_name != 0` mirroring below isn't a self-assign.
+    if (reg_name == '+' || reg_name == '*') reg_name = 0;
 
     Register &target = RegisterFor(reg_name);
     if (append && reg_name != 0) {
@@ -16407,6 +16733,8 @@ void Editor::YankRange(CursorPos start, CursorPos end, bool linewise, char reg_n
     // final result, regardless of which named register (if any) it also
     // went to, matching Vim.
     if (reg_name != 0) registers_['"'] = target;
+    // ...and the system clipboard mirrors the unnamed register.
+    SyncUnnamedToSystemClipboard();
 }
 
 namespace {
@@ -16490,6 +16818,9 @@ CursorPos Editor::InsertCharwiseTextAt(CursorPos pos, const std::string &text) {
 }
 
 void Editor::PasteAfter(int count, char reg_name) {
+    // Pasting from the unnamed register (plain p, "+p, "*p) picks up
+    // whatever another app copied since mep last touched the clipboard.
+    if (reg_name == 0 || reg_name == '"' || reg_name == '+' || reg_name == '*') PullSystemClipboard();
     Register &reg = RegisterFor(reg_name);
     if (reg.text.empty() || count <= 0) return;
     PushUndo();
@@ -16520,6 +16851,7 @@ void Editor::PasteAfter(int count, char reg_name) {
 }
 
 void Editor::PasteBefore(int count, char reg_name) {
+    if (reg_name == 0 || reg_name == '"' || reg_name == '+' || reg_name == '*') PullSystemClipboard();
     Register &reg = RegisterFor(reg_name);
     if (reg.text.empty() || count <= 0) return;
     PushUndo();

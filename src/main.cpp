@@ -2860,6 +2860,19 @@ const char *kBuiltinGit =
     "  end\n"
     "end\n"
     "mep.command('MepGitStatus', function() mep.git_status_refresh(); mep.sidebar_open(mep_git_status_sidebar_id) end)\n"
+    // <leader>gs: close the sidebar when it's open, otherwise re-run the
+    // status and open it (same as :MepGitStatus) -- a stale list from
+    // the last time it was open would be misleading, and refresh also
+    // creates the sidebar on first use.
+    "function mep.git_status_toggle()\n"
+    "  if mep_git_status_sidebar_id and mep.sidebar_is_open(mep_git_status_sidebar_id) then\n"
+    "    mep.sidebar_close(mep_git_status_sidebar_id)\n"
+    "  else\n"
+    "    mep.git_status_refresh()\n"
+    "    mep.sidebar_open(mep_git_status_sidebar_id)\n"
+    "  end\n"
+    "end\n"
+    "mep.leader_map('gs', 'Toggle git status', mep.git_status_toggle)\n"
     // Follow the active workspace: the list is `git status` run in
     // mep.workspace_root(), so after a switch/create/delete/rename it
     // would otherwise keep showing whichever worktree first opened it.
@@ -4500,10 +4513,10 @@ const char *kBuiltinSymbols =
 // server attached at all, just a grammar (treesitter_structure_queries.h's
 // own curated set: c/cpp/lua/python/js/ts/tsx/go/rust/java/rb/cs/php).
 // Two independent entry points as asked for: a real split (mep.
-// structure_split_open, <leader>aa) -- an ordinary buffer participating
+// structure_split_open, <leader>sS) -- an ordinary buffer participating
 // in the pane tree like any other split, not a docked overlay, so it
 // closes/resizes/navigates with every existing pane command already --
-// and a full-height sidebar (mep.structure_sidebar_open, <leader>aA)
+// and a full-height sidebar (mep.structure_sidebar_open, <leader>ss)
 // that tracks whichever pane is currently focused, reusing the exact
 // mep.sidebar_create/sidebar_set_sections plumbing kBuiltinSymbols' own
 // LSP outline already established above.
@@ -4520,8 +4533,10 @@ const char *kBuiltinSymbols =
 // without a general per-buffer keymap registry. mep.structure_split_open()
 // itself is *also* still the jump action when re-invoked from inside the
 // pane (the same open/act-on-current-context toggle shape mep.term_jump
-// uses for its Run/REPL pane) -- <leader>aa keeps working there too, <CR>
-// is just a second, more discoverable way to trigger the exact same jump.
+// uses for its Run/REPL pane) -- :MepStructureSplit does that from inside
+// the pane, <CR> is just a second, more discoverable way to trigger the
+// exact same jump. (<leader>sS is a *toggle* -- mep.structure_split_toggle
+// below -- so from inside the pane it closes the split instead.)
 const char *kBuiltinStructure =
     // Per-kind Nerd Font glyph + named highlight-group color, keyed by
     // TSStructureNode.kind (treesitter_structure_queries.h's own curated
@@ -4595,7 +4610,7 @@ const char *kBuiltinStructure =
     "  return inside or before\n"
     "end\n"
 
-    // --- <leader>aa: real-pane split ---------------------------------
+    // --- <leader>sS: real-pane split ---------------------------------
     "local mep_structure_split_buf, mep_structure_split_source, mep_structure_split_items = nil, nil, nil\n"
     "local mep_structure_split_ns = nil\n"
     // Re-derived from scratch (clear the namespace, re-add every
@@ -4623,8 +4638,8 @@ const char *kBuiltinStructure =
     "    end\n"
     "  end\n"
     "end\n"
-    // Shared by both jump entry points below: <leader>aa re-invoked from
-    // inside the pane, and plain <CR> there (mep.buffer_set_on_enter,
+    // Shared by both jump entry points below: :MepStructureSplit re-invoked
+    // from inside the pane, and plain <CR> there (mep.buffer_set_on_enter,
     // registered once below against mep_structure_split_buf -- see this
     // whole block's own header comment for why <CR> can claim a bare key
     // here when it otherwise couldn't for an ordinary buffer).
@@ -4668,7 +4683,6 @@ const char *kBuiltinStructure =
     "  end\n"
     "end\n"
     "mep.command('MepStructureSplit', mep.structure_split_open)\n"
-    "mep.leader_map('aa', 'Structure: split (treesitter)', mep.structure_split_open)\n"
     // Keeps the split's current-item highlight following the *source*
     // buffer's cursor even while some other pane (often the source pane
     // itself, sitting right next to this split) has focus -- mep.cursor()
@@ -4686,7 +4700,7 @@ const char *kBuiltinStructure =
     "  mep_structure_split_apply_decos()\n"
     "end)\n"
 
-    // --- <leader>aA: full-height sidebar, tracks the active pane -----
+    // --- <leader>ss: full-height sidebar, tracks the active pane -----
     "local mep_structure_sidebar_id = nil\n"
     // The items the sidebar's rows were last built from, so the popout
     // preview can resolve a row's index id back to its [start_row,
@@ -4756,7 +4770,30 @@ const char *kBuiltinStructure =
     "  mep.sidebar_open(mep_structure_sidebar_id)\n"
     "end\n"
     "mep.command('MepStructure', mep.structure_sidebar_open)\n"
-    "mep.leader_map('aA', 'Structure: full sidebar (treesitter)', mep.structure_sidebar_open)\n"
+    // <leader>ss / <leader>sS toggles. The sidebar one is the usual
+    // is_open/close-else-open shape; the split one checks whether the
+    // outline buffer is showing in any pane of the active tab
+    // (mep.pane_focus_buffer both answers that and focuses the pane) and
+    // closes just that buffer tab (or the pane, when it's the only tab)
+    // via mep.pane_close_buffer -- the buffer itself is kept, so the
+    // next open reuses it and its <CR> hook. Re-invoking from inside the
+    // pane therefore closes it; <CR> remains the jump key there.
+    "function mep.structure_sidebar_toggle()\n"
+    "  if mep_structure_sidebar_id and mep.sidebar_is_open(mep_structure_sidebar_id) then\n"
+    "    mep.sidebar_close(mep_structure_sidebar_id)\n"
+    "  else\n"
+    "    mep.structure_sidebar_open()\n"
+    "  end\n"
+    "end\n"
+    "function mep.structure_split_toggle()\n"
+    "  if mep_structure_split_buf and mep.pane_focus_buffer(mep_structure_split_buf) then\n"
+    "    mep.pane_close_buffer()\n"
+    "  else\n"
+    "    mep.structure_split_open()\n"
+    "  end\n"
+    "end\n"
+    "mep.leader_map('ss', 'Toggle structure sidebar (treesitter)', mep.structure_sidebar_toggle)\n"
+    "mep.leader_map('sS', 'Toggle structure split (buffer-local)', mep.structure_split_toggle)\n"
     // Keeps the sidebar showing whichever pane is currently focused, and
     // now also which item that pane's cursor is on -- mep.current_buffer()
     // tracks the active *pane*'s buffer (sidebar focus itself doesn't
@@ -10245,6 +10282,28 @@ const char *kBuiltinActivityBar =
     "end\n"
     "mep.command('MepActivityTestRun', mep.activity_test_run)\n"
     "mep.command('MepActivityTestPanel', mep.activity_test_panel)\n"
+    // <leader>tt / <leader>tT / <leader>nn toggles. Todo and Tests are
+    // Lua-owned sidebars, so close-if-open else (re)build+open; the
+    // Notifications panel is editor.cpp's own ToggleNotifyHistoryPanel
+    // behind :MepNotifyPanel, which already toggles.
+    "function mep.activity_todo_toggle()\n"
+    "  if mep_activity_todo_sidebar_id and mep.sidebar_is_open(mep_activity_todo_sidebar_id) then\n"
+    "    mep.sidebar_close(mep_activity_todo_sidebar_id)\n"
+    "  else\n"
+    "    mep.activity_todo_panel()\n"
+    "  end\n"
+    "end\n"
+    "function mep.activity_test_toggle()\n"
+    "  if mep_activity_test_sidebar_id and mep.sidebar_is_open(mep_activity_test_sidebar_id) then\n"
+    "    mep.sidebar_close(mep_activity_test_sidebar_id)\n"
+    "  else\n"
+    "    mep.activity_test_panel()\n"
+    "  end\n"
+    "end\n"
+    "function mep.notify_panel_toggle() mep.cmd('MepNotifyPanel') end\n"
+    "mep.leader_map('tt', 'Toggle todo sidebar', mep.activity_todo_toggle)\n"
+    "mep.leader_map('tT', 'Toggle tests sidebar', mep.activity_test_toggle)\n"
+    "mep.leader_map('nn', 'Toggle notifications sidebar', mep.notify_panel_toggle)\n"
     // Aggregating entry point: a picker over the four panels rather than
     // a persistent icon column (see the phase's own scope-cut note).
     "function mep.activity_bar_open()\n"
@@ -11406,10 +11465,12 @@ const char *kBuiltinWhichKeyGroups =
     "mep.leader_group('w', 'workspace')\n"
     "mep.leader_group('g', 'git')\n"
     "mep.leader_group('b', 'browse')\n"
-    // Same real-collision case as 'b' above: 'ai' (AI context picker)
-    // predates 'aa'/'aA' (this file's own Treesitter structure split/
-    // sidebar), so neither label alone covers the whole group.
-    "mep.leader_group('a', 'ai/structure')\n";
+    "mep.leader_group('a', 'ai')\n"
+    // Sidebar toggles: 's' (Treesitter structure sidebar/split), 't'
+    // (Todo/Tests activity panels), 'n' (notification history).
+    "mep.leader_group('s', 'structure')\n"
+    "mep.leader_group('t', 'todo/tests')\n"
+    "mep.leader_group('n', 'notifications')\n";
 
 const char *kBuiltinPickerSources =
     "function mep.themes()\n"

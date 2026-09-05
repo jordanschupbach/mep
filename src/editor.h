@@ -5621,8 +5621,8 @@ public:
     // kBuiltinStructure's structure-split pane (main.cpp) is the first
     // caller -- lets <CR> jump to the entry under the cursor there the
     // same way ActivateSidebarLine already does for the full-sidebar
-    // version (HandleSidebarInput), instead of requiring <leader>aa to be
-    // pressed a second time from inside the pane.
+    // version (HandleSidebarInput), instead of requiring :MepStructureSplit
+    // to be re-run from inside the pane.
     void SetBufferOnEnter(int buffer_id, int lua_ref) {
         enter_hook_buffer_id_ = buffer_id;
         enter_hook_ref_ = lua_ref;

@@ -176,9 +176,21 @@ row: =[project] [ws1] [ws2*] │ ● ○ + x= -- the project name, one text
 label per workspace (the active one highlighted, =*= when it has
 unsaved buffers, dimmed with =...= while its worktree is still being
 created), then the active workspace's tabs as circles with the
-new/close buttons; participant chips dock right. Clicking a workspace
-label switches, middle-click closes it, hovering shows its directory and
-branch; clicking the project label opens the loaded-projects switcher.
+new/close buttons; participant chips, three search buttons (fuzzy find
+in the current buffer, project-wide live grep, and the open-buffers
+picker -- the same pickers as =<leader>/=, =<leader>pr= and
+=<leader>bb=) and a row of sidebar toggle buttons (Files, Git, Symbols,
+Structure, Todo, Tests, Notifications, AI Agent -- lit while that panel
+is open, click to open or close it) dock right. Every pane header ends
+in =| _ x= buttons: split that pane vertically, split it horizontally,
+or close its visible buffer (and the pane, once empty).
+Clicking a workspace label switches, middle-click closes it, hovering
+shows its directory and branch; clicking the project label opens the
+loaded-projects switcher. Sidebars docked on the same left/right edge
+merge into one column split vertically between them (so opening Git
+Status next to the file tree stacks it below rather than beside);
+drag the divider between two, or =mod1+Shift+j/k= from inside one, to
+re-split them, and =mod1+j/k= steps focus between them.
 =:bnext=/=:bn= and =:bprevious=/=:bprev=/=:bp= cycle the current pane
 through every open buffer *of the current workspace* (not just the ones
 already opened in that pane's own tab strip), wrapping at either end. A file row in the file tree (or the git status sidebar) can also be

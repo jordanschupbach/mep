@@ -698,6 +698,21 @@ struct SidebarBorderRect {
 };
 std::vector<SidebarBorderRect> g_sidebar_border_rects;
 
+// The divider between two sidebars stacked in the same left/right dock
+// (DrawSidebars merges same-edge sidebars into one column split
+// vertically by SidebarInstance::stack_share), captured per frame like
+// the two lists above. Dragging it re-splits the pair's combined height
+// (Editor::SetSidebarStackShares); pair_top/pair_h are the pixel extent
+// the two together span, for mouse position -> fraction.
+struct SidebarStackRect {
+    int upper_id;
+    int lower_id;
+    Rectangle grab_rect;
+    float pair_top;
+    float pair_h;
+};
+std::vector<SidebarStackRect> g_sidebar_stack_rects;
+
 // Double-click detection state for sidebar rows -- GLFW/raylib has no
 // built-in notion of a double-click, so this is the same "two presses
 // within a short wall-clock window" idiom Editor::pending_ctrl_c_ already
@@ -763,7 +778,7 @@ PaneDropZone ComputePaneDropZone(Vector2 mouse, const Rectangle &rect) {
 // dropped on a pane, using the exact same zone pinwheel/overlay as
 // TabMove: center opens it in that pane, an edge splits that pane and
 // opens it in the new leaf (Editor::OpenFileInPane).
-enum class PaneDragKind { None, TabMove, BorderResize, SidebarResize, FileDrop };
+enum class PaneDragKind { None, TabMove, BorderResize, SidebarResize, SidebarStackResize, FileDrop };
 
 struct PaneDragState {
     PaneDragKind kind = PaneDragKind::None;
@@ -792,6 +807,14 @@ struct PaneDragState {
     int sidebar_sign = 1;
     int sidebar_size_start = 0;    // SidebarInstance::size (cells) at drag start
     float sidebar_mouse_start = 0;  // mouse.x (horizontal) or mouse.y (vertical) at drag start
+
+    // SidebarStackResize: the two stacked sidebars either side of the
+    // dragged divider and the pixel band they jointly span (see
+    // SidebarStackRect).
+    int stack_upper_id = 0;
+    int stack_lower_id = 0;
+    float stack_pair_top = 0.0f;
+    float stack_pair_h = 0.0f;
 };
 PaneDragState g_pane_drag;
 
@@ -9882,7 +9905,8 @@ const char *kBuiltinOrgBib =
 // icon-only button column" chrome affordance is scoped down to a picker
 // over the four panels (see Phase 40's plan notes) rather than a new
 // persistent always-visible C++ widget, given the four *panels*
-// themselves are the functional core.
+// themselves are the functional core. (The persistent affordance later
+// arrived anyway as DrawTabBar's right-docked sidebar toggle buttons.)
 const char *kBuiltinActivityBar =
     "mep.activity_todo_file = nil\n"
     "local mep_activity_todo_sidebar_id = nil\n"
@@ -11465,6 +11489,9 @@ const char *kBuiltinPickerSources =
     "  end)\n"
     "end\n"
     "mep.leader_map('bb', 'Buffers', mep.buffers)\n"
+    // <leader>bs: the session's scratch buffer (:MepScratch -- reuses the
+    // existing one if it's already open, else creates it).
+    "mep.leader_map('bs', 'Scratch buffer', function() mep.cmd('MepScratch') end)\n"
     // WORKSPACES_PLAN.md Phase 2/9: the `:wslist` / <leader>ww picker over
     // the active project's workspaces (name, branch, root; '*' marks the
     // active one), plus the Ctrl-Shift-T / <leader>wn "new workspace" name
@@ -11970,19 +11997,27 @@ void DrawToastStack() {
     }
 }
 
-// Renders every open sidebar as a docked box flush against its configured
-// edge (Phase 7) -- stacked if more than one shares an edge. Content comes
-// from Editor::FlattenSidebar so rendering and keyboard navigation
-// (Editor::HandleSidebarInput) can never disagree about line layout.
+// Renders every open sidebar docked against its configured edge (Phase 7).
+// Left/right: every open sidebar on an edge is merged into ONE column
+// (width = Editor::DockSize, the members' shared `size`) split vertically
+// between them by SidebarInstance::stack_share -- so opening a second
+// panel on the same side (a tab-bar button, :MepGitStatus next to the file
+// tree, ...) stacks it under the first instead of growing a second column
+// beside it. Top/bottom sidebars stack outward-to-inward in registration
+// order as before. Content comes from Editor::FlattenSidebar so rendering
+// and keyboard navigation (Editor::HandleSidebarInput) can never disagree
+// about line layout.
 /**
- * @brief Renders every open sidebar as a docked box against its configured screen edge,
- * stacking sidebars that share an edge, and records their border-drag/row hit-test rects.
+ * @brief Renders every open sidebar against its configured screen edge -- same-edge
+ * left/right sidebars merged into one vertically split column -- and records their
+ * border-drag, stack-divider, and row hit-test rects.
  */
 void DrawSidebars() {
     int screen_w = GetScreenWidth();
     int screen_h = GetScreenHeight();
     float font_size = g_font_size;
     int line_h = static_cast<int>(font_size) + 4;
+    int header_h = line_h + 6;
     // Only ever called outside zen mode (DrawEditor's `if (!zen)
     // DrawSidebars()`), so these mirror DrawEditor's own layout constants
     // for that case -- content_top/content_bottom bound the exact same
@@ -11993,7 +12028,6 @@ void DrawSidebars() {
     // keeps it from painting over pane content horizontally.
     int content_top = MenuBarHeight() + TabBarHeight();
     int content_bottom = screen_h - 2 * LineHeight();  // status bar + command bar
-    float left_offset = 0, right_offset = 0, top_offset = 0, bottom_offset = 0;
     // FocusedSidebarId() alone isn't enough now that mod1+hjkl can blur a
     // sidebar back into the pane tree without closing it (NavigatePane
     // Direction) -- that leaves focused_sidebar_id_ set (so mod1+hjkl back
@@ -12001,59 +12035,13 @@ void DrawSidebars() {
     // longer actually has input focus, so its cursor highlight shouldn't
     // draw as if it still does.
     int focused_id = (g_editor.CurrentMode() == Mode::Sidebar) ? g_editor.FocusedSidebarId() : 0;
+    constexpr float kBorderGrabPx = 6.0f;
 
-    for (const SidebarInstance &sb : g_editor.Sidebars()) {
-        if (!sb.open) continue;
+    // Paints one sidebar into its own rect (a whole dock column for a lone
+    // sidebar, one vertical slice of it for a stacked one) and records its
+    // row hit-test rects. Shared by both dock shapes below.
+    auto draw_one = [&](const SidebarInstance &sb, int px, int py, int pw, int ph) {
         std::vector<SidebarLine> lines = g_editor.FlattenSidebar(sb.id);
-        int px, py, pw, ph;
-        int px_w = sb.size * static_cast<int>(g_char_width);
-        int header_h = line_h + 6;
-        int content_h = static_cast<int>(lines.size()) * line_h + header_h + 10;
-        if (sb.position == "left") {
-            px = static_cast<int>(left_offset);
-            py = content_top;
-            pw = px_w;
-            ph = content_bottom - content_top;
-            left_offset += static_cast<float>(px_w);
-        } else if (sb.position == "top") {
-            px = 0;
-            py = content_top + static_cast<int>(top_offset);
-            pw = screen_w;
-            ph = std::min(content_h, (content_bottom - content_top) / 2);
-            top_offset += static_cast<float>(ph);
-        } else if (sb.position == "bottom") {
-            ph = std::min(content_h, (content_bottom - content_top) / 2);
-            px = 0;
-            py = content_bottom - ph - static_cast<int>(bottom_offset);
-            pw = screen_w;
-            bottom_offset += static_cast<float>(ph);
-        } else {  // "right"
-            px = screen_w - px_w - static_cast<int>(right_offset);
-            py = content_top;
-            pw = px_w;
-            ph = content_bottom - content_top;
-            right_offset += static_cast<float>(px_w);
-        }
-
-        // Resizable inner edge (the one facing the pane tree, not the
-        // screen edge -- there's nothing to drag the outer one against):
-        // grab strip centered on that edge, `sign` set so "dragging in
-        // the direction that widens/heightens the on-screen gap between
-        // this edge and the sidebar's own outer edge" always *shrinks*
-        // toward zero the same intuitive way border-dragging between two
-        // panes already does.
-        {
-            constexpr float kBorderGrabPx = 6.0f;
-            bool horizontal = sb.position == "left" || sb.position == "right";
-            int sign = (sb.position == "left" || sb.position == "top") ? 1 : -1;
-            Rectangle grab;
-            if (sb.position == "left") grab = Rectangle{static_cast<float>(px + pw) - kBorderGrabPx / 2.0f, static_cast<float>(py), kBorderGrabPx, static_cast<float>(ph)};
-            else if (sb.position == "right") grab = Rectangle{static_cast<float>(px) - kBorderGrabPx / 2.0f, static_cast<float>(py), kBorderGrabPx, static_cast<float>(ph)};
-            else if (sb.position == "top") grab = Rectangle{static_cast<float>(px), static_cast<float>(py + ph) - kBorderGrabPx / 2.0f, static_cast<float>(pw), kBorderGrabPx};
-            else grab = Rectangle{static_cast<float>(px), static_cast<float>(py) - kBorderGrabPx / 2.0f, static_cast<float>(pw), kBorderGrabPx};
-            g_sidebar_border_rects.push_back({sb.id, horizontal, sign, grab});
-        }
-
         bool is_focused = sb.id == focused_id;
         DrawRectangle(px, py, pw, ph, ResolveHlGroup("Sidebar"));
         // Same active/inactive border treatment DrawPane's own panes get
@@ -12061,6 +12049,7 @@ void DrawSidebars() {
         // never changed regardless of focus -- otherwise a focused sidebar
         // looked identical to an unfocused one, and the pane it took focus
         // from kept showing as "active" with nothing here to counter that.
+        // In a stack this also draws the divider between neighbors.
         DrawPaneBorder(static_cast<float>(px), static_cast<float>(py), static_cast<float>(pw), static_cast<float>(ph), is_focused);
 
         // Title/line text is drawn at a fixed x (px + 8) with no wrapping,
@@ -12113,6 +12102,86 @@ void DrawSidebars() {
                 {sb.id, static_cast<int>(i), Rectangle{static_cast<float>(px), ly - 1, static_cast<float>(pw), static_cast<float>(line_h)}});
         }
         EndScissorMode();
+    };
+
+    // --- Left/right docks: one merged column per edge.
+    for (const char *edge : {"left", "right"}) {
+        const std::vector<int> ids = g_editor.OpenSidebarIdsOn(edge);
+        if (ids.empty()) continue;
+        const bool is_left = std::string(edge) == "left";
+        const int pw = g_editor.DockSize(edge) * static_cast<int>(g_char_width);
+        const int px = is_left ? 0 : screen_w - pw;
+        const int py = content_top;
+        const int ph = content_bottom - content_top;
+
+        // Resizable inner edge (the one facing the pane tree, not the
+        // screen edge -- there's nothing to drag the outer one against):
+        // grab strip centered on that edge, `sign` set so "dragging in
+        // the direction that widens the on-screen gap between this edge
+        // and the dock's own outer edge" always *shrinks* toward zero the
+        // same intuitive way border-dragging between two panes already
+        // does. One strip for the whole column: SetSidebarSize propagates
+        // to every member of the dock, so any member's id will do.
+        {
+            const float gx = is_left ? static_cast<float>(px + pw) - kBorderGrabPx / 2.0f : static_cast<float>(px) - kBorderGrabPx / 2.0f;
+            g_sidebar_border_rects.push_back(
+                {ids.front(), true, is_left ? 1 : -1, Rectangle{gx, static_cast<float>(py), kBorderGrabPx, static_cast<float>(ph)}});
+        }
+
+        // Vertical split by stack_share; the last member absorbs the
+        // rounding remainder so the stack always exactly fills the column.
+        float total_share = 0.0f;
+        for (int id : ids) total_share += std::max(0.0f, g_editor.FindSidebar(id)->stack_share);
+        std::vector<int> heights(ids.size(), 0);
+        int used = 0;
+        for (size_t k = 0; k < ids.size(); k++) {
+            const float share = total_share > 0.0f ? std::max(0.0f, g_editor.FindSidebar(ids[k])->stack_share) / total_share
+                                                   : 1.0f / static_cast<float>(ids.size());
+            heights[k] = k + 1 == ids.size() ? std::max(0, ph - used) : static_cast<int>(std::lround(static_cast<float>(ph) * share));
+            used += heights[k];
+        }
+        int y = py;
+        for (size_t k = 0; k < ids.size(); k++) {
+            const SidebarInstance *sb = g_editor.FindSidebar(ids[k]);
+            draw_one(*sb, px, y, pw, heights[k]);
+            if (k + 1 < ids.size()) {
+                // Divider between this member and the next: dragging it
+                // re-splits just the two of them (SetSidebarStackShares).
+                const float divider_y = static_cast<float>(y + heights[k]);
+                g_sidebar_stack_rects.push_back({ids[k], ids[k + 1],
+                                                 Rectangle{static_cast<float>(px), divider_y - kBorderGrabPx / 2.0f, static_cast<float>(pw), kBorderGrabPx},
+                                                 static_cast<float>(y), static_cast<float>(heights[k] + heights[k + 1])});
+            }
+            y += heights[k];
+        }
+    }
+
+    // --- Top/bottom: stacked outward-to-inward in registration order,
+    // each sized to its own content (capped at half the content band).
+    float top_offset = 0, bottom_offset = 0;
+    for (const SidebarInstance &sb : g_editor.Sidebars()) {
+        if (!sb.open || (sb.position != "top" && sb.position != "bottom")) continue;
+        const std::vector<SidebarLine> lines = g_editor.FlattenSidebar(sb.id);
+        const int content_h = static_cast<int>(lines.size()) * line_h + header_h + 10;
+        const int ph = std::min(content_h, (content_bottom - content_top) / 2);
+        const int px = 0;
+        const int pw = screen_w;
+        int py;
+        if (sb.position == "top") {
+            py = content_top + static_cast<int>(top_offset);
+            top_offset += static_cast<float>(ph);
+        } else {
+            py = content_bottom - ph - static_cast<int>(bottom_offset);
+            bottom_offset += static_cast<float>(ph);
+        }
+        // Same inner-edge grab strip as the left/right docks above, on the
+        // vertical axis.
+        {
+            const int sign = sb.position == "top" ? 1 : -1;
+            const float gy = sb.position == "top" ? static_cast<float>(py + ph) - kBorderGrabPx / 2.0f : static_cast<float>(py) - kBorderGrabPx / 2.0f;
+            g_sidebar_border_rects.push_back({sb.id, false, sign, Rectangle{static_cast<float>(px), gy, static_cast<float>(pw), kBorderGrabPx}});
+        }
+        draw_one(sb, px, py, pw, ph);
     }
 }
 
@@ -16230,6 +16299,54 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     const GanttSession *gantt_sess = g_editor.IsGanttViewActive(pane.buffer_id) ? g_editor.GetGanttMutable(pane.buffer_id) : nullptr;
     std::string suffix = buf.modified ? " [+]" : "";
     float label_y = y + (static_cast<float>(header_h) - font_size) / 2.0f;
+    // Header controls docked at the far right of the header, on the
+    // *visible* buffer only (the active chip of a multi-tab strip, or a
+    // plain single-buffer header), left to right: a '|' vertical-split
+    // button, a '_' horizontal-split button, then the close 'x' (same
+    // nf-fa-times glyph as DrawTabBar's own tab-close button). The split
+    // buttons focus this pane and run :vsplit / :split on it (the new
+    // pane shares this one's buffer); the 'x' runs
+    // PaneCloseBufferTabAndDelete -- closes the tab (and the pane, once
+    // empty) AND :bd's the buffer. The whole strip's rect is carved out of
+    // the chip/header click+drag rects below so a press on any of the
+    // three never arms a TabMove drag or double-fires as a focus click.
+    const std::string vsplit_label = " | ";
+    const std::string hsplit_label = " _ ";
+    const std::string close_label = " " + Utf8FromCodepoint(0xf00d) + " ";
+    const float vsplit_w = MeasureUiText(vsplit_label, font_size);
+    const float hsplit_w = MeasureUiText(hsplit_label, font_size);
+    const float close_w = MeasureUiText(close_label, font_size);
+    const float controls_w = vsplit_w + hsplit_w + close_w;
+    const Vector2 header_mouse = GetMousePosition();
+    // Draws the three controls over `bg` filling controls_rect (each
+    // brightened while hovered) and registers their click regions.
+    auto draw_header_controls = [&](Rectangle controls_rect, Color bg) {
+        DrawRectangleRec(controls_rect, bg);
+        const int pane_id = pane.id;
+        float bx = controls_rect.x;
+        auto button = [&](const std::string &label, float bw, std::function<void()> action) {
+            const Rectangle rect{bx, controls_rect.y, bw, controls_rect.height};
+            const bool hovered = PointInRect(header_mouse, rect);
+            DrawUiText(label, Vector2{rect.x, label_y}, font_size, ResolveHlGroup(hovered ? "Normal" : "Comment"));
+            RegisterClickRegion(rect, std::move(action));
+            bx += bw;
+        };
+        // Focuses this pane, then splits it vertically (side by side).
+        button(vsplit_label, vsplit_w, [pane_id] {
+            g_editor.FocusPaneById(pane_id);
+            g_editor.RunCommand("vsplit");
+        });
+        // Focuses this pane, then splits it horizontally (stacked).
+        button(hsplit_label, hsplit_w, [pane_id] {
+            g_editor.FocusPaneById(pane_id);
+            g_editor.RunCommand("split");
+        });
+        // Focuses this pane, then closes its visible buffer tab and deletes that buffer.
+        button(close_label, close_w, [pane_id] {
+            g_editor.FocusPaneById(pane_id);
+            g_editor.PaneCloseBufferTabAndDelete();
+        });
+    };
     if (pane.buffer_tabs.size() > 1) {
         // Per-pane buffer-tab strip: more than one buffer open in this pane
         // splits the header evenly, one filename chip per tab, highlighting
@@ -16250,12 +16367,19 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             Color seg_bg =
                 tab_active ? ResolveHlGroup("TabActive") : (is_active ? ResolveHlGroup("TabInactive") : ResolveHlGroup("MenuBar"));
             DrawRectangle(static_cast<int>(seg_x), static_cast<int>(y), static_cast<int>(seg_w), header_h, seg_bg);
-            BeginScissorMode(static_cast<int>(seg_x), static_cast<int>(y), static_cast<int>(seg_w), header_h);
+            // The active chip gives up its rightmost controls_w to the
+            // split/close controls; the label centers (and clips) within
+            // what's left.
+            float chip_w = tab_active ? std::max(0.0f, seg_w - controls_w) : seg_w;
+            BeginScissorMode(static_cast<int>(seg_x), static_cast<int>(y), static_cast<int>(chip_w), header_h);
             float text_w = MeasureTextEx(g_font, name.c_str(), font_size, 0).x;
-            float text_x = seg_x + std::max(0.0f, (seg_w - text_w) / 2.0f);
+            float text_x = seg_x + std::max(0.0f, (chip_w - text_w) / 2.0f);
             DrawTextEx(g_font, name.c_str(), Vector2{text_x, label_y}, font_size, 0,
                        ResolveHlGroup(tab_active ? "Normal" : "Comment"));
             EndScissorMode();
+            if (tab_active) {
+                draw_header_controls(Rectangle{seg_x + chip_w, y, controls_w, static_cast<float>(header_h)}, seg_bg);
+            }
             if (i > 0) {
                 DrawLine(static_cast<int>(seg_x), static_cast<int>(y), static_cast<int>(seg_x),
                           static_cast<int>(y + static_cast<float>(header_h)), ResolveHlGroup("Border"));
@@ -16276,7 +16400,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 // float height field, not a no-op -- cppcheck's
                 // "unused cast" diagnostic appears to misfire on a cast as
                 // the trailing element of an aggregate-init list here.
-                Rectangle chip_rect{seg_x, y, seg_w, static_cast<float>(header_h)};
+                Rectangle chip_rect{seg_x, y, chip_w, static_cast<float>(header_h)};
                 g_pane_tab_chip_rects.push_back({pane.id, pane.buffer_tabs[static_cast<size_t>(i)], chip_rect});
                 int pane_id = pane.id;
                 // Focuses this pane then switches it to buffer tab `i`.
@@ -16289,6 +16413,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         }
     } else {
         DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), header_h, header_bg);
+        // Where the split/close controls go: flush right, or just left of
+        // Gantt's 132px-wide SVG/PNG/PDF export controls.
+        const float single_controls_x = gantt_sess ? x + w - 132.0f - controls_w : x + w - controls_w;
         // A single-buffer pane's whole plain header counts as "the tab"
         // for click-to-focus and drag-and-drop purposes too, not just a
         // multi-tab strip's own chips -- there's still exactly one
@@ -16296,8 +16423,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // nothing else to distinguish it from.
         {
             // Gantt's later SVG/PNG/PDF controls occupy the rightmost 132px
-            // and must not be shadowed by this generic focus/tab chip.
-            float header_click_w = gantt_sess ? std::max(0.0f, w - 132.0f) : w;
+            // and must not be shadowed by this generic focus/tab chip; the
+            // split/close controls sit just left of those (or flush right
+            // otherwise) and are carved out of the chip rect the same way.
+            float header_click_w = std::max(0.0f, single_controls_x - x);
             // cppcheck-suppress constStatement
             // Same false positive as the chip_rect cast above -- header_h
             // is int, the cast is a real conversion.
@@ -16419,6 +16548,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             float text_x = x + std::max(0.0f, (w - text_w) / 2.0f);
             DrawTextEx(g_font, label.c_str(), Vector2{text_x, label_y}, font_size, 0, ResolveHlGroup("Normal"));
         }
+        // After every label above so it paints over one long enough to
+        // run underneath it (the left-aligned session labels aren't
+        // clipped to the header). Same controls_x the click rect was
+        // carved around; Gantt's export buttons sit to its right.
+        draw_header_controls(Rectangle{single_controls_x, y, controls_w, static_cast<float>(header_h)}, header_bg);
     }
 
     float content_y = y + static_cast<float>(header_h);
@@ -19110,10 +19244,114 @@ void DrawTabBar(int y) {
         }
     };
 
-    // --- Participant chips (COLLAB_CURSORS_PLAN.md): docked to the right
-    // edge, growing leftward -- laid out first so the left-hand labels
-    // know how much room they actually have.
+    // --- Sidebar toggle buttons: one icon per panel, docked to the right
+    // edge and growing leftward (drawn in reverse so the table order below
+    // reads left-to-right on screen). Each button shows its panel's open
+    // state -- WorkspaceActiveBg fill while open, MenuHighlight on hover --
+    // and a click closes the panel if open, else runs the command that
+    // (re)builds and opens it, so a stale panel (Notifications, Git Status)
+    // always comes back fresh. Panels are matched by SidebarInstance::title
+    // (the Lua side registers them lazily, so an id isn't known up front).
+    // This is the persistent "activity bar" affordance kBuiltinActivityBar
+    // originally scoped down to a picker.
+    struct SidebarButton {
+        const char *title;    // SidebarInstance::title the panel registers under
+        const char *command;  // :command that builds + opens the panel
+        int icon;             // Nerd Font codepoint, 0 = DrawRobotIcon
+        int icon_open;        // codepoint while open, 0 = same as `icon`
+        const char *tooltip;
+    };
+    static const SidebarButton kSidebarButtons[] = {
+        {"Files", "MepFileTree", 0xf07b, 0xf07c, "Files"},                       // nf-fa-folder / folder_open
+        {"Git Status", "MepGitStatus", 0xe725, 0, "Git status"},                 // nf-dev-git_branch
+        {"Symbols", "MepSymbols", 0xf121, 0, "Symbols"},                         // nf-fa-code
+        {"Structure", "MepStructure", 0xf0e8, 0, "Structure"},                   // nf-fa-sitemap
+        {"Todo", "MepActivityTodoPanel", 0xf046, 0, "Todo"},                     // nf-fa-check_square_o
+        {"Tests", "MepActivityTestPanel", 0xf0c3, 0, "Tests"},                   // nf-fa-flask
+        {"Notifications", "MepNotifyPanel", 0xf0f3, 0, "Notifications"},         // nf-fa-bell
+        {"AI Agent", "MepAiAgent", 0, 0, "AI agent"},
+    };
+    auto find_sidebar_by_title = [](const char *title) -> const SidebarInstance * {
+        for (const SidebarInstance &sb : g_editor.Sidebars()) {
+            if (sb.title == title) return &sb;
+        }
+        return nullptr;
+    };
+    const float button_size = fbar_h - 4.0f;
     float chip_x = static_cast<float>(screen_w) - 4.0f;
+    for (size_t bi = std::size(kSidebarButtons); bi-- > 0;) {
+        const SidebarButton &button = kSidebarButtons[bi];
+        const SidebarInstance *sidebar = find_sidebar_by_title(button.title);
+        const bool open = sidebar != nullptr && sidebar->open;
+        chip_x -= button_size + 2.0f;
+        const Rectangle rect{chip_x, fy + 2.0f, button_size, button_size};
+        const bool hovered = CheckCollisionPointRec(mouse, rect);
+        if (open) {
+            DrawRectangleRounded(rect, 0.3f, 4, ResolveHlGroup("WorkspaceActiveBg"));
+        } else if (hovered) {
+            DrawRectangleRounded(rect, 0.3f, 4, ResolveHlGroup("MenuHighlight"));
+        }
+        const Color icon_color = ResolveHlGroup(open || hovered ? "WorkspaceActive" : "WorkspaceInactive");
+        if (button.icon == 0) {
+            const float pad = button_size * 0.15f;
+            DrawRobotIcon(Vector2{rect.x + pad, rect.y + pad}, button_size - pad * 2.0f, icon_color);
+        } else {
+            const std::string glyph = Utf8FromCodepoint(open && button.icon_open != 0 ? button.icon_open : button.icon);
+            const float gw = MeasureUiText(glyph, font_size);
+            DrawUiText(glyph, Vector2{rect.x + (button_size - gw) / 2.0f, cy}, font_size, icon_color);
+        }
+        tooltip_if_hovered(rect, std::string(button.tooltip) + (open ? " (click to close)" : ""));
+        RegisterClickRegion(rect, [title = button.title, command = button.command] {
+            for (const SidebarInstance &sb : g_editor.Sidebars()) {
+                if (sb.title == title && sb.open) {
+                    g_editor.CloseSidebar(sb.id);
+                    return;
+                }
+            }
+            g_editor.RunCommand(command);
+        });
+    }
+    // Thin divider between the buttons and whatever sits to their left.
+    chip_x -= 6.0f;
+    DrawRectangle(static_cast<int>(chip_x), y + 4, 1, bar_h - 8, ResolveHlGroup("WorkspaceInactive"));
+    chip_x -= 2.0f;
+
+    // --- Search buttons: just left of the sidebar toggles, same chip
+    // style minus the open-state fill (these are one-shot pickers, not
+    // panels). Left to right: fuzzy find within the current buffer,
+    // project-wide live grep, and the open-buffers picker -- the same Lua
+    // entry points <leader>/ , <leader>pr and <leader>bb run.
+    struct SearchButton {
+        const char *command;  // :command that opens the picker
+        int icon;             // Nerd Font codepoint
+        const char *tooltip;
+    };
+    static const SearchButton kSearchButtons[] = {
+        {"lua mep.buffer_search()", 0xf002, "Search in buffer"},           // nf-fa-search
+        {"lua mep.live_grep()", 0xf1e5, "Search project (live grep)"},     // nf-fa-binoculars
+        {"lua mep.buffers()", 0xf0c5, "Switch buffer"},                    // nf-fa-files_o
+    };
+    for (size_t bi = std::size(kSearchButtons); bi-- > 0;) {
+        const SearchButton &button = kSearchButtons[bi];
+        chip_x -= button_size + 2.0f;
+        const Rectangle rect{chip_x, fy + 2.0f, button_size, button_size};
+        const bool hovered = CheckCollisionPointRec(mouse, rect);
+        if (hovered) DrawRectangleRounded(rect, 0.3f, 4, ResolveHlGroup("MenuHighlight"));
+        const std::string glyph = Utf8FromCodepoint(button.icon);
+        const float gw = MeasureUiText(glyph, font_size);
+        DrawUiText(glyph, Vector2{rect.x + (button_size - gw) / 2.0f, cy}, font_size,
+                   ResolveHlGroup(hovered ? "WorkspaceActive" : "WorkspaceInactive"));
+        tooltip_if_hovered(rect, button.tooltip);
+        RegisterClickRegion(rect, [command = button.command] { g_editor.RunCommand(command); });
+    }
+    // Divider between the search buttons and the chips to their left.
+    chip_x -= 6.0f;
+    DrawRectangle(static_cast<int>(chip_x), y + 4, 1, bar_h - 8, ResolveHlGroup("WorkspaceInactive"));
+    chip_x -= 2.0f;
+
+    // --- Participant chips (COLLAB_CURSORS_PLAN.md): just left of the
+    // sidebar buttons, growing leftward -- laid out first so the left-hand
+    // labels know how much room they actually have.
     for (const Editor::ParticipantInfo &participant : g_editor.Participants()) {
         const bool is_agent = participant.kind == Editor::ParticipantKind::Agent;
         const float chip_size = fbar_h - 6.0f;
@@ -19344,6 +19582,7 @@ void DrawEditor() {
     g_pane_border_rects.clear();
     g_sidebar_row_rects.clear();
     g_sidebar_border_rects.clear();
+    g_sidebar_stack_rects.clear();
     int screen_w = GetScreenWidth();
     int screen_h = GetScreenHeight();
     int line_height = LineHeight();
@@ -19380,15 +19619,13 @@ void DrawEditor() {
         // sidebars entirely, so this only applies outside it) rather than
         // letting DrawSidebars' opaque panels just overlay pane content --
         // needed for sidebars to feel like actual neighboring panes now
-        // that mod1+hjkl can focus/resize them. Sums every open sidebar on
-        // each edge the same way DrawSidebars accumulates left_offset/
-        // right_offset, so the two stay in agreement.
-        float left_w = 0.0f, right_w = 0.0f;
-        for (const SidebarInstance &sb : g_editor.Sidebars()) {
-            if (!sb.open) continue;
-            if (sb.position == "left") left_w += static_cast<float>(sb.size) * g_char_width;
-            else if (sb.position == "right") right_w += static_cast<float>(sb.size) * g_char_width;
-        }
+        // that mod1+hjkl can focus/resize them. Every open sidebar on an
+        // edge shares ONE merged column (DrawSidebars splits it vertically
+        // between them), so the reservation is that column's width --
+        // Editor::DockSize, the same source DrawSidebars sizes it from, so
+        // the two stay in agreement.
+        const float left_w = static_cast<float>(g_editor.DockSize("left")) * g_char_width;
+        const float right_w = static_cast<float>(g_editor.DockSize("right")) * g_char_width;
         // NOTE: the office pane's own Outline/Format rail+panels are NOT
         // reserved here -- unlike SidebarInstances (app-wide chrome), they
         // dock to the sides of *that specific pane* and are drawn/reserved
@@ -20032,6 +20269,15 @@ void UpdatePaneMouseInteraction() {
             }
         }
         if (!over_border) {
+            for (const SidebarStackRect &st : g_sidebar_stack_rects) {
+                if (PointInRect(mouse, st.grab_rect)) {
+                    over_border = true;
+                    want_cursor = MOUSE_CURSOR_RESIZE_NS;
+                    break;
+                }
+            }
+        }
+        if (!over_border) {
             for (const PaneTabChipRect &c : g_pane_tab_chip_rects) {
                 if (PointInRect(mouse, c.rect)) {
                     want_cursor = MOUSE_CURSOR_POINTING_HAND;
@@ -20077,6 +20323,19 @@ void UpdatePaneMouseInteraction() {
                         }
                     }
                     g_pane_drag.sidebar_mouse_start = sb.horizontal ? mouse.x : mouse.y;
+                    break;
+                }
+            }
+            if (g_pane_drag.kind == PaneDragKind::None) {
+                for (const SidebarStackRect &st : g_sidebar_stack_rects) {
+                    if (!PointInRect(mouse, st.grab_rect)) continue;
+                    g_pane_drag.kind = PaneDragKind::SidebarStackResize;
+                    g_pane_drag.start_pos = mouse;
+                    g_pane_drag.threshold_passed = false;
+                    g_pane_drag.stack_upper_id = st.upper_id;
+                    g_pane_drag.stack_lower_id = st.lower_id;
+                    g_pane_drag.stack_pair_top = st.pair_top;
+                    g_pane_drag.stack_pair_h = st.pair_h;
                     break;
                 }
             }
@@ -20158,6 +20417,12 @@ void UpdatePaneMouseInteraction() {
                 float unit = g_pane_drag.sidebar_horizontal ? g_char_width : static_cast<float>(LineHeight());
                 int new_size = g_pane_drag.sidebar_size_start + static_cast<int>(std::lround(delta_px / unit));
                 g_editor.SetSidebarSize(g_pane_drag.sidebar_id, new_size);
+            } else if (g_pane_drag.kind == PaneDragKind::SidebarStackResize) {
+                want_cursor = MOUSE_CURSOR_RESIZE_NS;
+                // Same mouse-position -> fraction-of-the-pair mapping as
+                // BorderResize; SetSidebarStackShares clamps.
+                const float frac = g_pane_drag.stack_pair_h > 0.0f ? (mouse.y - g_pane_drag.stack_pair_top) / g_pane_drag.stack_pair_h : 0.5f;
+                g_editor.SetSidebarStackShares(g_pane_drag.stack_upper_id, g_pane_drag.stack_lower_id, frac);
             } else if (g_pane_drag.kind == PaneDragKind::TabMove || g_pane_drag.kind == PaneDragKind::FileDrop) {
                 want_cursor = MOUSE_CURSOR_POINTING_HAND;
                 g_pane_drag.target_pane_id = -1;

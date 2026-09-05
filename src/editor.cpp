@@ -8528,8 +8528,27 @@ void Editor::PaneCloseBufferTab() {
     SyncModeToActivePaneBuffer();
 }
 
-void Editor::BufferDelete(bool force) {
-    const int target = CurPane().buffer_id;
+void Editor::PaneCloseBufferTabAndDelete() {
+    Pane &p = CurPane();
+    EnsureBufferTabSeeded(p);
+    const int target = p.buffer_id;
+    if (target < 0 || target >= static_cast<int>(buffers_.size())) return;
+    if (buffers_[static_cast<size_t>(target)].modified) {
+        status_message_ = "E37: No write since last change (:w to save, :bd! to discard)";
+        return;
+    }
+    // Tab first, then buffer: PaneCloseBufferTab handles this pane's own
+    // bookkeeping (next tab becomes active / pane closes / E444 on the
+    // last window), and BufferDeleteById then sweeps `target` out of
+    // every remaining pane -- including this one in the last-window case,
+    // where it swaps in a fallback buffer instead.
+    PaneCloseBufferTab();
+    BufferDeleteById(target, /*force=*/false);
+}
+
+void Editor::BufferDelete(bool force) { BufferDeleteById(CurPane().buffer_id, force); }
+
+void Editor::BufferDeleteById(int target, bool force) {
     if (target < 0 || target >= static_cast<int>(buffers_.size())) return;
     Buffer &buf = buffers_[static_cast<size_t>(target)];
     if (buf.deleted) return;  // already gone (e.g. a stray repeated :bd)
@@ -9986,6 +10005,18 @@ void Editor::NavigatePaneDirection(const std::string &direction) {
             RestoreFromOverlay();
             return;
         }
+        // Up/down inside a left/right dock walks the vertical stack of
+        // sidebars sharing that edge (DrawSidebars merges them into one
+        // column; OpenSidebarIdsOn's order is top-to-bottom there). A
+        // no-op at either end of the stack.
+        if ((sb->position == "left" || sb->position == "right") && (direction == "up" || direction == "down")) {
+            std::vector<int> ids = OpenSidebarIdsOn(sb->position);
+            auto it = std::find(ids.begin(), ids.end(), sb->id);
+            if (it == ids.end()) return;
+            const int index = static_cast<int>(it - ids.begin()) + (direction == "down" ? 1 : -1);
+            if (index >= 0 && index < static_cast<int>(ids.size())) OpenSidebar(ids[static_cast<size_t>(index)], true);
+            return;
+        }
         // Pressing further *outward* -- away from the pane tree, into the
         // screen edge the sidebar is already docked against -- has nowhere
         // left to navigate, so this is a no-op. Resizing that edge is
@@ -10014,15 +10045,16 @@ void Editor::NavigatePaneDirection(const std::string &direction) {
     }
     if (direction != "left" && direction != "right") return;
     // No neighbor pane that way -- step into an open sidebar docked on the
-    // same edge instead, if there is one. Iterates in registration order
-    // and keeps the last match: DrawSidebars stacks same-edge sidebars
-    // outward-to-inward in that same order, so the last one is the one
-    // physically adjacent to the pane content.
-    int target_id = 0;
-    for (const SidebarInstance &sb : sidebars_) {
-        if (sb.open && sb.position == direction) target_id = sb.id;
-    }
-    if (target_id != 0) OpenSidebar(target_id, true);
+    // same edge instead, if there is one. Same-edge sidebars all share one
+    // merged column (DrawSidebars), so every one of them is equally
+    // adjacent to the pane content: prefer the one that had focus last
+    // (mod1+hjkl out of a sidebar leaves focused_sidebar_id_ set for
+    // exactly this round trip), else the topmost of the stack.
+    std::vector<int> ids = OpenSidebarIdsOn(direction);
+    if (ids.empty()) return;
+    int target_id = ids.front();
+    if (std::find(ids.begin(), ids.end(), focused_sidebar_id_) != ids.end()) target_id = focused_sidebar_id_;
+    OpenSidebar(target_id, true);
 }
 
 bool Editor::FindPathToPane(SplitNode *node, int pane_id, std::vector<std::pair<SplitNode *, int>> &path) const {
@@ -10075,7 +10107,35 @@ void Editor::ResizeActivePane(const std::string &direction, float step) {
         sb->size = std::max(kSidebarMinSize, sb->size + delta);
     };
     if (mode_ == Mode::Sidebar) {
-        resize_sidebar(FindSidebarMut(focused_sidebar_id_), direction);
+        SidebarInstance *sb = FindSidebarMut(focused_sidebar_id_);
+        if (!sb) return;
+        // Up/down on a left/right-docked sidebar moves the divider between
+        // it and its stack neighbor (same-edge sidebars share one column,
+        // split vertically by stack_share) -- grows against the one below
+        // it if there is one, else shrinks against the one above, the same
+        // convention the pane-tree branch below uses between siblings.
+        if ((sb->position == "left" || sb->position == "right") && (direction == "up" || direction == "down")) {
+            std::vector<int> ids = OpenSidebarIdsOn(sb->position);
+            auto it = std::find(ids.begin(), ids.end(), sb->id);
+            if (it == ids.end() || ids.size() < 2) return;
+            const int index = static_cast<int>(it - ids.begin());
+            const bool has_next = index + 1 < static_cast<int>(ids.size());
+            const int other = has_next ? index + 1 : index - 1;
+            const bool grow = has_next ? direction == "down" : direction == "up";
+            const int upper = std::min(index, other), lower = std::max(index, other);
+            const SidebarInstance *u = FindSidebar(ids[static_cast<size_t>(upper)]);
+            const SidebarInstance *l = FindSidebar(ids[static_cast<size_t>(lower)]);
+            const float total = u->stack_share + l->stack_share;
+            const float frac = total > 0.0f ? u->stack_share / total : 0.5f;
+            constexpr float kStackResizeStep = 0.05f;
+            // Growing the focused sidebar moves the divider down when it's
+            // the upper one, up when it's the lower one.
+            const float delta = ((index == upper) == grow) ? kStackResizeStep : -kStackResizeStep;
+            SetSidebarStackShares(u->id, l->id, frac + delta);
+            return;
+        }
+        resize_sidebar(sb, direction);
+        SetSidebarSize(sb->id, sb->size);  // propagates to the rest of the dock
         return;
     }
 
@@ -13516,6 +13576,44 @@ void Editor::SetSidebarSize(int id, int size) {
     // local constant there, not shared class scope -- not worth a bigger
     // refactor to share a single named constant for one duplicated literal).
     sb->size = std::max(10, size);
+    // Every open sidebar on the same edge renders in one merged column
+    // (DrawSidebars, DockSize), so a resize of any one of them is a resize
+    // of the column: keep the members equal rather than letting the max
+    // silently win and the dragged sidebar's own size drift underneath it.
+    for (SidebarInstance &other : sidebars_) {
+        if (other.open && other.position == sb->position) other.size = sb->size;
+    }
+}
+
+std::vector<int> Editor::OpenSidebarIdsOn(const std::string &position) const {
+    std::vector<int> ids;
+    for (const SidebarInstance &sb : sidebars_) {
+        if (sb.open && sb.position == position) ids.push_back(sb.id);
+    }
+    return ids;
+}
+
+int Editor::DockSize(const std::string &position) const {
+    int size = 0;
+    for (const SidebarInstance &sb : sidebars_) {
+        if (sb.open && sb.position == position) size = std::max(size, sb.size);
+    }
+    return size;
+}
+
+void Editor::SetSidebarStackShares(int upper_id, int lower_id, float upper_fraction) {
+    SidebarInstance *upper = FindSidebarMut(upper_id);
+    SidebarInstance *lower = FindSidebarMut(lower_id);
+    if (!upper || !lower || upper == lower) return;
+    // The pair's combined share is held constant (same idea as
+    // SetPaneBorderShare's border_pair_total) so moving one divider never
+    // disturbs the other members of the stack.
+    float total = upper->stack_share + lower->stack_share;
+    if (total <= 0.0f) total = 2.0f;
+    constexpr float kMinStackFraction = 0.1f;  // keeps at least a title row's worth of each visible
+    upper_fraction = std::clamp(upper_fraction, kMinStackFraction, 1.0f - kMinStackFraction);
+    upper->stack_share = upper_fraction * total;
+    lower->stack_share = total - upper->stack_share;
 }
 
 int Editor::CreateSidebar(const std::string &title, const std::string &position, int size) {
@@ -13537,7 +13635,16 @@ void Editor::OpenSidebar(int id, bool focus) {
     if (!sb) return;
     sb->open = true;
     if (focus) {
-        overlay_previous_mode_ = mode_;
+        // Only capture the mode to return to on the genuine transition into
+        // sidebar focus. Refocusing from one sidebar to another (mod1+j/k
+        // through a stack, a tab-bar button opening a second panel while
+        // the first is focused, :MepGitStatus from inside the file tree)
+        // arrives here with mode_ already Sidebar -- capturing that would
+        // make RestoreFromOverlay (mod1+h/l back into the panes, Escape, q)
+        // "restore" straight back into Sidebar mode, trapping focus there
+        // until the sidebar was closed some other way. Same guard as
+        // FocusSidebarRow's.
+        if (mode_ != Mode::Sidebar) overlay_previous_mode_ = mode_;
         pending_g_ = false;  // avoid gg/G leakage from whatever mode was active before this
         focused_sidebar_id_ = id;
         sidebar_cursor_ = 0;

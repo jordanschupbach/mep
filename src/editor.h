@@ -430,6 +430,15 @@ struct SidebarInstance {
     // rename/delete/refresh/toggle-hidden) without the generic sidebar
     // widget needing to know anything tree-specific. 0 = none registered.
     int on_key_ref = 0;
+    // Share of its dock's height this sidebar gets when several open
+    // sidebars dock on the same left/right edge -- DrawSidebars merges
+    // those into ONE column (width = the largest `size` among them, kept
+    // in sync by SetSidebarSize) split vertically, each getting
+    // stack_share / (sum of the open members' shares) of the column.
+    // Adjusted by dragging the divider between two stacked sidebars or
+    // mod1+Shift+j/k while one is focused (SetSidebarStackShares); the
+    // default 1.0 everywhere means an even split.
+    float stack_share = 1.0f;
     // First flattened-line index drawn at the top of the sidebar's content
     // area -- this sidebar's mirror of Pane::scroll_row. Kept per-instance
     // (rather than a single field alongside sidebar_cursor_) so a sidebar
@@ -4101,13 +4110,16 @@ public:
     // positioned that way from the active one (most overlap along the
     // perpendicular axis, then closest); a no-op if there is none -- unless
     // a sidebar is docked on that edge and open, in which case focus steps
-    // into it instead (the innermost one, if more than one shares the
-    // edge). Sidebars aren't nodes in the split tree, so this is handled
-    // as a special case rather than by extending FindNeighborPaneId's
-    // geometry: when called while a sidebar is focused (Mode::Sidebar),
-    // the direction pointing back toward the pane content blurs the
-    // sidebar (focus returns to whatever pane was active, without closing
-    // it -- unlike Escape/q); other directions are a no-op.
+    // into it instead (the one focused last time if it's still open on
+    // that edge, else the topmost of that edge's stack). Sidebars aren't
+    // nodes in the split tree, so this is handled as a special case rather
+    // than by extending FindNeighborPaneId's geometry: when called while a
+    // sidebar is focused (Mode::Sidebar), the direction pointing back
+    // toward the pane content blurs the sidebar (focus returns to whatever
+    // pane was active, without closing it -- unlike Escape/q); up/down
+    // step to the sidebar stacked above/below it in the same left/right
+    // dock (see SidebarInstance::stack_share); other directions are a
+    // no-op.
     /**
      * @brief Moves focus to the neighboring pane best positioned in a direction, or into a docked sidebar on that edge; a no-op if there is none.
      * @param direction "left"/"down"/"up"/"right".
@@ -4124,9 +4136,13 @@ public:
     // left/right skips over a Horizontal ancestor) to find the nearest one
     // that can actually satisfy the resize. When a sidebar is focused
     // instead of a pane, resizes that sidebar's fixed column/row size by a
-    // few cells per call instead (only on the axis matching its own dock
-    // edge -- `step` is ignored there, since it's a split-tree share
-    // fraction, not a cell count).
+    // few cells per call instead (on the axis matching its own dock edge --
+    // `step` is ignored there, since it's a split-tree share fraction, not
+    // a cell count; the whole dock follows, since same-edge sidebars share
+    // one column), while up/down on a left/right-docked sidebar moves the
+    // divider between it and the sidebar stacked next to it instead
+    // (SetSidebarStackShares), with the same grow-against-next-else-shrink-
+    // against-previous convention as panes.
     /**
      * @brief Grows or shrinks the active pane (or a focused sidebar) against its neighbor in a direction.
      * @param direction "left"/"down"/"up"/"right".
@@ -4926,6 +4942,33 @@ public:
      * @return True if the sidebar is open.
      */
     bool IsSidebarOpen(int id) const;
+    // Dock helpers for the "same edge => one merged column" layout (see
+    // SidebarInstance::stack_share): the open sidebars docked on an edge in
+    // registration order (= top-to-bottom stacking order for left/right),
+    // and the column size that edge's dock renders at -- the largest
+    // `size` among its open members (SetSidebarSize keeps them equal, so
+    // in practice they agree; the max is just the tie-break when a
+    // sidebar created with a different size is opened into an existing
+    // dock and hasn't been resized yet).
+    /**
+     * @brief Lists the open sidebars docked on an edge, in registration (stacking) order.
+     * @param position "left"/"right"/"top"/"bottom".
+     * @return The open sidebars' ids, top-to-bottom for a left/right dock.
+     */
+    std::vector<int> OpenSidebarIdsOn(const std::string &position) const;
+    /**
+     * @brief Returns the cell size the merged dock on an edge renders at.
+     * @param position "left"/"right"/"top"/"bottom".
+     * @return The largest `size` among the edge's open sidebars, or 0 if none is open.
+     */
+    int DockSize(const std::string &position) const;
+    /**
+     * @brief Splits the combined height of two vertically adjacent stacked sidebars between them.
+     * @param upper_id The sidebar drawn above the divider.
+     * @param lower_id The sidebar drawn below it.
+     * @param upper_fraction The upper sidebar's share of the pair's combined height, clamped to [0.1, 0.9].
+     */
+    void SetSidebarStackShares(int upper_id, int lower_id, float upper_fraction);
     /**
      * @brief Returns every currently registered sidebar instance.
      * @return The sidebar instances.
@@ -5345,6 +5388,18 @@ public:
     // Removes the current pane's active buffer tab; closes the pane itself
     // (existing ClosePane()) once its last tab is removed.
     void PaneCloseBufferTab();
+    // The pane header's own close 'x' (DrawPane, main.cpp): removes the
+    // current pane's active buffer tab exactly like PaneCloseBufferTab
+    // (closing the pane once its last tab goes), THEN soft-deletes that
+    // buffer out of every other pane still showing it (BufferDeleteById,
+    // the `:bd` machinery) -- so the click both closes the tab and drops
+    // the buffer from buffer_list/bnext/bprev, rather than leaving it
+    // lingering as a hidden buffer the way PaneCloseBufferTab alone does.
+    // Refuses (E37 in the status line, nothing changes) when the buffer
+    // has unsaved changes, same guard as :bd without '!'. On the very
+    // last window ClosePane can't remove the pane, so the pane instead
+    // ends up showing BufferDeleteById's fallback buffer.
+    void PaneCloseBufferTabAndDelete();
     // Moves the current pane's active buffer tab to the nearest pane in
     // `direction` (reuses NavigatePaneDirection's neighbor search); a no-op
     // if there's no pane that way.
@@ -6467,6 +6522,10 @@ private:
     // `force`: skip the unsaved-changes guard (`:bd!`), same E37
     // convention as QuitCurrent/NewBuffer/ReloadCurrentBuffer.
     void BufferDelete(bool force);
+    // BufferDelete's actual body, on an explicit buffer id instead of
+    // CurPane()'s -- for PaneCloseBufferTabAndDelete, which has already
+    // moved CurPane() off the buffer it wants gone by the time it deletes.
+    void BufferDeleteById(int target, bool force);
     // Fills `out` with the normalized rect of every pane in *node's subtree.
     void ComputeRects(const SplitNode *node, float x0, float y0, float x1, float y1,
                        std::vector<PaneRect> &out) const;

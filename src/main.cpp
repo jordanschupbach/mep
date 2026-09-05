@@ -2860,7 +2860,7 @@ const char *kBuiltinGit =
     "  end\n"
     "end\n"
     "mep.command('MepGitStatus', function() mep.git_status_refresh(); mep.sidebar_open(mep_git_status_sidebar_id) end)\n"
-    // <leader>gs: close the sidebar when it's open, otherwise re-run the
+    // <leader>gg: close the sidebar when it's open, otherwise re-run the
     // status and open it (same as :MepGitStatus) -- a stale list from
     // the last time it was open would be misleading, and refresh also
     // creates the sidebar on first use.
@@ -2872,7 +2872,7 @@ const char *kBuiltinGit =
     "    mep.sidebar_open(mep_git_status_sidebar_id)\n"
     "  end\n"
     "end\n"
-    "mep.leader_map('gs', 'Toggle git status', mep.git_status_toggle)\n"
+    "mep.leader_map('gg', 'Toggle git status', mep.git_status_toggle)\n"
     // Follow the active workspace: the list is `git status` run in
     // mep.workspace_root(), so after a switch/create/delete/rename it
     // would otherwise keep showing whichever worktree first opened it.

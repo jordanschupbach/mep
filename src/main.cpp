@@ -25,6 +25,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <deque>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -559,6 +560,7 @@ ImageEditorPanDragState g_imgedit_pan_drag;
 constexpr float kImgEditMenubarH = 26.0f;
 constexpr float kImgEditToolbarH = 34.0f;
 constexpr float kImgEditSidebarW = 190.0f;
+constexpr float kImgEditToolSidebarW = 76.0f;  // two 32px button columns + margins/gap
 
 // Generic click-region registry (NVIM_PARITY_PLAN.md Phase 11's "generic
 // click dispatch on widgets" gap): rebuilt fresh every frame by whichever
@@ -595,6 +597,45 @@ Rectangle g_pane_control_tooltip_anchor{};
  */
 void RegisterClickRegion(Rectangle rect, std::function<void()> action) {
     g_click_regions.push_back({rect, std::move(action)});
+}
+
+// A multi-step gesture (the agent-control socket's ui.mouse_click's
+// down+up, ui.mouse_drag's down/move.../up -- main.cpp's
+// RegisterUiAutomationMethods) can't be played out by simply calling
+// agent_ui:: functions back to back inside the RPC handler: agent_rpc.h's
+// own threading rule is that Dispatch() -- and everything it calls,
+// including these handlers -- runs synchronously on mep's one main
+// thread, entirely within a single PollOnce(), which itself runs once
+// per frame *before* that frame's own HandleInput()/DrawEditor(). So
+// every XTest event a handler fires all lands in the X server's queue
+// before mep's next glfwPollEvents() call ever runs -- one call drains
+// all of them at once, coalescing e.g. a press immediately followed by a
+// release into "button ended up unchanged since last frame," which
+// raylib's edge-triggered IsMouseButtonPressed/Released never sees as
+// two events (a std::this_thread::sleep_for here doesn't help either: it
+// blocks this same main thread, so mep still can't reach a frame
+// boundary during it -- it would just make mep visibly freeze for the
+// sleep's duration).
+//
+// The fix: queue each step and apply exactly one of them per real
+// rendered frame, from the main loop itself (see DrainUiInputQueueOneStep's
+// own call site) -- so consecutive steps are naturally separated by a
+// real HandleInput()/DrawEditor() in between, the same way a human's own
+// press/move/release are never all processed in a single frame either.
+// ui.mouse_move/mouse_down/mouse_up/scroll/key_* don't need this: each is
+// already its own separate RPC call, so it's already frame-separated from
+// whatever came before or after it by the real round-trip time between
+// two tool calls.
+std::deque<std::function<void()>> g_ui_input_queue;
+
+/**
+ * @brief Applies at most one queued synthetic-input step; called once per real frame from the main loop.
+ */
+void DrainUiInputQueueOneStep() {
+    if (g_ui_input_queue.empty()) return;
+    std::function<void()> step = std::move(g_ui_input_queue.front());
+    g_ui_input_queue.pop_front();
+    step();
 }
 
 /**
@@ -18413,15 +18454,60 @@ const char *ImageEditorToolName(ImageEditorTool tool) {
         case ImageEditorTool::Bucket: return "Fill";
         case ImageEditorTool::Eyedropper: return "Eyedropper";
         case ImageEditorTool::Pan: return "Pan";
+        case ImageEditorTool::SelectRect: return "Rectangle Select";
+        case ImageEditorTool::SelectEllipse: return "Ellipse Select";
+        case ImageEditorTool::Lasso: return "Lasso";
+        case ImageEditorTool::Move: return "Move";
     }
     return "";
 }
 
-// x of the primary-color swatch drawn by DrawImageEditorPane's toolbar,
-// remembered across the frame so the color-picker popup (drawn after the
-// canvas, at the bottom of the same function) can anchor itself under it
-// without threading the rect through as a parameter.
+// Top-left of the primary-color swatch, drawn at the bottom of the left
+// tool sidebar by DrawImageEditorPane, remembered across the frame so the
+// color-picker popup (drawn after the canvas, at the bottom of the same
+// function) can anchor itself off it without threading the rect through
+// as a parameter.
 float g_imgedit_swatch_x = 0.0f;
+float g_imgedit_swatch_y = 0.0f;
+
+/**
+ * @brief Draws a dashed line between two screen points -- the "marching ants" look for a
+ * selection outline, without an actual marching-ants animation (no time-based dash phase).
+ * @param a Start point, in screen pixels.
+ * @param b End point, in screen pixels.
+ * @param color Dash color.
+ */
+void DrawImageEditorDashedSegment(Vector2 a, Vector2 b, Color color) {
+    constexpr float kDash = 6.0f, kGap = 4.0f;
+    float dx = b.x - a.x, dy = b.y - a.y;
+    float len = std::sqrt(dx * dx + dy * dy);
+    if (len < 0.001f) return;
+    float ux = dx / len, uy = dy / len;
+    float pos = 0.0f;
+    bool draw = true;
+    while (pos < len) {
+        float seg = std::min(draw ? kDash : kGap, len - pos);
+        if (draw) {
+            DrawLineEx(Vector2{a.x + ux * pos, a.y + uy * pos}, Vector2{a.x + ux * (pos + seg), a.y + uy * (pos + seg)}, 1.5f,
+                       color);
+        }
+        pos += seg;
+        draw = !draw;
+    }
+}
+
+/**
+ * @brief Draws a dashed outline through a sequence of screen points, optionally closing back to
+ * the first.
+ * @param points Path points, in screen pixels, in order.
+ * @param closed Whether to also dash a segment from the last point back to the first.
+ * @param color Dash color.
+ */
+void DrawImageEditorDashedPath(const std::vector<Vector2> &points, bool closed, Color color) {
+    if (points.size() < 2) return;
+    for (size_t i = 0; i + 1 < points.size(); i++) DrawImageEditorDashedSegment(points[i], points[i + 1], color);
+    if (closed) DrawImageEditorDashedSegment(points.back(), points.front(), color);
+}
 
 /**
  * @brief Draws the in-pane image editor (IMAGE_EDITOR.md): menubar, toolbar, layers sidebar,
@@ -18475,7 +18561,11 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
                         }}}});
     menus.push_back({"Edit",
                       {{"Undo", [buffer_id] { g_editor.UndoImageEditor(buffer_id); }},
-                       {"Redo", [buffer_id] { g_editor.RedoImageEditor(buffer_id); }}}});
+                       {"Redo", [buffer_id] { g_editor.RedoImageEditor(buffer_id); }},
+                       {"Deselect",
+                        [buffer_id] {
+                            if (auto *s = g_editor.GetImageEditorMutable(buffer_id)) s->selection.kind = ImageEditorSelectionKind::None;
+                        }}}});
     menus.push_back({"Layer",
                       {{"New Layer", [buffer_id] { g_editor.ImageEditorAddLayer(buffer_id); }},
                        {"Duplicate Layer", [buffer_id] { g_editor.ImageEditorDuplicateLayer(buffer_id); }},
@@ -18550,43 +18640,17 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
         }
     }
 
-    // --- Toolbar: tool buttons, brush size, primary/secondary swatches, recent colors ---
+    // --- Toolbar: brush size, primary/secondary swatches, recent colors ---
+    // (tool selection itself lives in the left tool sidebar, drawn after the
+    // canvas rect below -- kept in this same function, just a separate
+    // block, so its RegisterClickRegion calls still land before this
+    // frame's DispatchChromeClicks())
     Rectangle toolbar{x, y + kImgEditMenubarH, w, kImgEditToolbarH};
     DrawRectangleRec(toolbar, ResolveHlGroup("CursorLine"));
     {
         float bx = x + 6.0f;
         float by = toolbar.y + 3.0f;
         float bs = kImgEditToolbarH - 6.0f;
-        struct ToolBtn {
-            ImageEditorTool tool;
-            const char *letter;
-        };
-        static const ToolBtn kTools[] = {
-            {ImageEditorTool::Pencil, "B"},   {ImageEditorTool::Eraser, "X"},     {ImageEditorTool::Line, "L"},
-            {ImageEditorTool::Rectangle, "R"}, {ImageEditorTool::Ellipse, "C"},    {ImageEditorTool::Bucket, "F"},
-            {ImageEditorTool::Eyedropper, "I"}, {ImageEditorTool::Pan, "H"},
-        };
-        Vector2 mouse = GetMousePosition();
-        for (const ToolBtn &tb : kTools) {
-            Rectangle rect{bx, by, bs, bs};
-            bool active = sess.tool == tb.tool;
-            bool hovered = CheckCollisionPointRec(mouse, rect);
-            if (active) DrawRectangleRounded(rect, 0.25f, 6, ResolveHlGroup("AccentTint"));
-            else if (hovered) DrawRectangleRounded(rect, 0.25f, 6, ResolveHlGroup("Picker"));
-            Vector2 ts = MeasureTextEx(g_font, tb.letter, font_size, 0);
-            DrawTextEx(g_font, tb.letter, Vector2{rect.x + (rect.width - ts.x) / 2.0f, rect.y + (rect.height - font_size) / 2.0f},
-                       font_size, 0, active ? ResolveHlGroup("Accent") : ResolveHlGroup("Normal"));
-            if (hovered) {
-                g_pane_control_tooltip_text = ImageEditorToolName(tb.tool);
-                g_pane_control_tooltip_anchor = rect;
-            }
-            ImageEditorTool tool = tb.tool;
-            RegisterClickRegion(rect, [buffer_id, tool] {
-                if (auto *s = g_editor.GetImageEditorMutable(buffer_id)) s->tool = tool;
-            });
-            bx += bs + 4.0f;
-        }
-        bx += 8.0f;
 
         Rectangle minus_rect{bx, by, bs, bs};
         DrawRectangleRounded(minus_rect, 0.25f, 6, ResolveHlGroup("Picker"));
@@ -18609,31 +18673,10 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
         });
         bx = plus_rect.x + bs + 14.0f;
 
+        // Primary/secondary swatches themselves live at the bottom of the
+        // left tool sidebar now (drawn further down, after the tool grid)
+        // -- only the recent-colors strip stays here in the toolbar.
         auto to_raylib_color = [](RgbaColor c) { return Color{c.r, c.g, c.b, c.a}; };
-        Rectangle pri_rect{bx, by, bs, bs};
-        g_imgedit_swatch_x = bx;
-        DrawRectangleRec(pri_rect, to_raylib_color(sess.primary_color));
-        DrawRectangleLinesEx(pri_rect, 1.5f, ResolveHlGroup("Border"));
-        RegisterClickRegion(pri_rect, [] {
-            if (g_imgedit_picker_open && g_imgedit_picker_target == 0) g_imgedit_picker_open = false;
-            else {
-                g_imgedit_picker_open = true;
-                g_imgedit_picker_target = 0;
-            }
-        });
-        bx += bs + 4.0f;
-        Rectangle sec_rect{bx, by, bs, bs};
-        DrawRectangleRec(sec_rect, to_raylib_color(sess.secondary_color));
-        DrawRectangleLinesEx(sec_rect, 1.5f, ResolveHlGroup("Border"));
-        RegisterClickRegion(sec_rect, [] {
-            if (g_imgedit_picker_open && g_imgedit_picker_target == 1) g_imgedit_picker_open = false;
-            else {
-                g_imgedit_picker_open = true;
-                g_imgedit_picker_target = 1;
-            }
-        });
-        bx += bs + 10.0f;
-
         for (size_t i = 0; i < sess.recent_colors.size() && bx + bs < toolbar.x + toolbar.width - 4.0f; i++) {
             RgbaColor c = sess.recent_colors[i];
             Rectangle rc{bx, by + bs * 0.15f, bs * 0.7f, bs * 0.7f};
@@ -18760,8 +18803,115 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
         EndScissorMode();
     }
 
+    // --- Tool sidebar (left) --- a vertical icon palette, Photoshop/GIMP-
+    // style, rather than the horizontal letter row this replaced -- icons
+    // over letters so the tool is recognizable without reading (B/X/L/R/
+    // C/F/I/H read as noise at a glance; a pencil/eraser/eyedropper glyph
+    // doesn't). Uses g_icon_font via DrawUiText/Utf8FromCodepoint, the same
+    // Nerd Font Symbols subset as every other icon in this codebase (see
+    // editor.h's own comment on IconForFilename) -- NOT g_font, which has
+    // no glyph at these codepoints.
+    Rectangle tool_sidebar{x, y + kImgEditMenubarH + kImgEditToolbarH, kImgEditToolSidebarW,
+                            h - kImgEditMenubarH - kImgEditToolbarH};
+    DrawRectangleRec(tool_sidebar, ResolveHlGroup("MenuBar"));
+    DrawLineEx(Vector2{tool_sidebar.x + tool_sidebar.width, tool_sidebar.y},
+               Vector2{tool_sidebar.x + tool_sidebar.width, tool_sidebar.y + tool_sidebar.height}, 1.0f, ResolveHlGroup("Border"));
+    {
+        struct ToolBtn {
+            ImageEditorTool tool;
+            int icon_codepoint;
+        };
+        // Two columns (kCols below), in reading order -- row 0 is
+        // Pencil/Eraser, row 1 Line/Rectangle, etc. -- rather than the
+        // single column this replaced, so 12 tools fit in half the
+        // vertical space.
+        static const ToolBtn kTools[] = {
+            {ImageEditorTool::Pencil, 0xf040},        // nf-fa-pencil
+            {ImageEditorTool::Eraser, 0xf12d},        // nf-fa-eraser
+            {ImageEditorTool::Line, '/'},              // plain ASCII slash -- no FA4 glyph reads as "diagonal line" better
+            {ImageEditorTool::Rectangle, 0xf096},     // nf-fa-square_o
+            {ImageEditorTool::Ellipse, 0xf10c},       // nf-fa-circle_o
+            {ImageEditorTool::Bucket, 0xf043},        // nf-fa-tint
+            {ImageEditorTool::Eyedropper, 0xf1fb},    // nf-fa-eyedropper
+            {ImageEditorTool::Pan, 0xf256},           // nf-fa-hand_paper_o
+            {ImageEditorTool::SelectRect, 0xf125},    // nf-fa-crop
+            {ImageEditorTool::SelectEllipse, 0xf192}, // nf-fa-dot_circle_o
+            {ImageEditorTool::Lasso, 0xf0d0},         // nf-fa-magic
+            {ImageEditorTool::Move, 0xf047},          // nf-fa-arrows
+        };
+        constexpr int kCols = 2;
+        constexpr float kGap = 4.0f;
+        float bs = (tool_sidebar.width - kGap * (kCols + 1)) / static_cast<float>(kCols);
+        float grid_x = tool_sidebar.x + kGap;
+        float grid_y = tool_sidebar.y + 6.0f;
+        float icon_size = font_size * 1.15f;
+        Vector2 mouse = GetMousePosition();
+        BeginScissorMode(static_cast<int>(tool_sidebar.x), static_cast<int>(tool_sidebar.y), static_cast<int>(tool_sidebar.width),
+                          static_cast<int>(tool_sidebar.height));
+        int idx = 0;
+        for (const ToolBtn &tb : kTools) {
+            int col = idx % kCols, row = idx / kCols;
+            Rectangle rect{grid_x + static_cast<float>(col) * (bs + kGap), grid_y + static_cast<float>(row) * (bs + kGap), bs, bs};
+            bool active = sess.tool == tb.tool;
+            bool hovered = CheckCollisionPointRec(mouse, rect);
+            if (active) DrawRectangleRounded(rect, 0.25f, 6, ResolveHlGroup("AccentTint"));
+            else if (hovered) DrawRectangleRounded(rect, 0.25f, 6, ResolveHlGroup("Picker"));
+            std::string glyph = Utf8FromCodepoint(tb.icon_codepoint);
+            float gw = MeasureUiText(glyph, icon_size);
+            DrawUiText(glyph, Vector2{rect.x + (rect.width - gw) / 2.0f, rect.y + (rect.height - icon_size) / 2.0f}, icon_size,
+                       active ? ResolveHlGroup("Accent") : ResolveHlGroup("Normal"));
+            if (hovered) {
+                g_pane_control_tooltip_text = ImageEditorToolName(tb.tool);
+                g_pane_control_tooltip_anchor = rect;
+            }
+            ImageEditorTool tool = tb.tool;
+            RegisterClickRegion(rect, [buffer_id, tool] {
+                if (auto *s = g_editor.GetImageEditorMutable(buffer_id)) s->tool = tool;
+            });
+            idx++;
+        }
+
+        // Primary/secondary swatches, anchored to the sidebar's bottom
+        // edge (not right after the tool grid) so they stay put regardless
+        // of how many tool rows there are above them.
+        auto to_raylib_color = [](RgbaColor c) { return Color{c.r, c.g, c.b, c.a}; };
+        float swatch_y = tool_sidebar.y + tool_sidebar.height - bs - 10.0f;
+        Rectangle pri_rect{grid_x, swatch_y, bs, bs};
+        g_imgedit_swatch_x = pri_rect.x;
+        g_imgedit_swatch_y = pri_rect.y;
+        DrawRectangleRec(pri_rect, to_raylib_color(sess.primary_color));
+        DrawRectangleLinesEx(pri_rect, 1.5f, ResolveHlGroup("Border"));
+        if (CheckCollisionPointRec(mouse, pri_rect)) {
+            g_pane_control_tooltip_text = "Foreground color";
+            g_pane_control_tooltip_anchor = pri_rect;
+        }
+        RegisterClickRegion(pri_rect, [] {
+            if (g_imgedit_picker_open && g_imgedit_picker_target == 0) g_imgedit_picker_open = false;
+            else {
+                g_imgedit_picker_open = true;
+                g_imgedit_picker_target = 0;
+            }
+        });
+        Rectangle sec_rect{grid_x + bs + kGap, swatch_y, bs, bs};
+        DrawRectangleRec(sec_rect, to_raylib_color(sess.secondary_color));
+        DrawRectangleLinesEx(sec_rect, 1.5f, ResolveHlGroup("Border"));
+        if (CheckCollisionPointRec(mouse, sec_rect)) {
+            g_pane_control_tooltip_text = "Background color";
+            g_pane_control_tooltip_anchor = sec_rect;
+        }
+        RegisterClickRegion(sec_rect, [] {
+            if (g_imgedit_picker_open && g_imgedit_picker_target == 1) g_imgedit_picker_open = false;
+            else {
+                g_imgedit_picker_open = true;
+                g_imgedit_picker_target = 1;
+            }
+        });
+        EndScissorMode();
+    }
+
     // --- Canvas ---
-    Rectangle canvas{x, y + kImgEditMenubarH + kImgEditToolbarH, w - sidebar_w, h - kImgEditMenubarH - kImgEditToolbarH};
+    Rectangle canvas{x + kImgEditToolSidebarW, y + kImgEditMenubarH + kImgEditToolbarH, w - kImgEditToolSidebarW - sidebar_w,
+                      h - kImgEditMenubarH - kImgEditToolbarH};
     if (canvas.width > 0.0f && canvas.height > 0.0f) {
         g_editor.ResizeImageEditorViewport(buffer_id, static_cast<int>(canvas.width), static_cast<int>(canvas.height));
         Texture2D tex = GetOrLoadImageEditorTexture(buffer_id, sess);
@@ -18832,7 +18982,13 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
         bool painting_tool = sess.tool == ImageEditorTool::Pencil || sess.tool == ImageEditorTool::Eraser;
         bool shape_tool =
             sess.tool == ImageEditorTool::Line || sess.tool == ImageEditorTool::Rectangle || sess.tool == ImageEditorTool::Ellipse;
+        bool select_tool = sess.tool == ImageEditorTool::SelectRect || sess.tool == ImageEditorTool::SelectEllipse;
+        bool is_lasso = sess.tool == ImageEditorTool::Lasso;
+        bool is_move_tool = sess.tool == ImageEditorTool::Move;
         bool use_left_for_paint = sess.tool != ImageEditorTool::Pan;
+        auto to_screen = [&](int px, int py) {
+            return Vector2{img_x + static_cast<float>(px) * sess.zoom, img_y + static_cast<float>(py) * sess.zoom};
+        };
         if (is_active && use_left_for_paint) {
             if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && mouse_in_canvas) {
                 if (painting_tool || shape_tool) {
@@ -18848,12 +19004,29 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
                     g_editor.ImageEditorFloodFill(sess, mcx, mcy);
                 } else if (sess.tool == ImageEditorTool::Eyedropper) {
                     g_editor.ImageEditorPickColor(sess, mcx, mcy);
+                } else if (select_tool) {
+                    sess.stroking = true;
+                    sess.stroke_start_x = mcx;
+                    sess.stroke_start_y = mcy;
+                } else if (is_lasso) {
+                    sess.stroking = true;
+                    sess.selection.kind = ImageEditorSelectionKind::Lasso;
+                    sess.selection.lasso_points.clear();
+                    sess.selection.lasso_points.emplace_back(mcx, mcy);
+                } else if (is_move_tool) {
+                    g_editor.PushUndoImageEditor(buffer_id);
+                    sess.stroking = true;
+                    sess.stroke_start_x = mcx;
+                    sess.stroke_start_y = mcy;
                 }
             } else if (IsMouseButtonDown(MOUSE_BUTTON_LEFT) && sess.stroking) {
                 if (painting_tool) {
                     g_editor.ImageEditorStrokeTo(sess, sess.last_x, sess.last_y, mcx, mcy);
                     sess.last_x = mcx;
                     sess.last_y = mcy;
+                } else if (is_lasso) {
+                    auto &pts = sess.selection.lasso_points;
+                    if (pts.empty() || pts.back().first != mcx || pts.back().second != mcy) pts.emplace_back(mcx, mcy);
                 }
             } else if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT) && sess.stroking) {
                 if (shape_tool) {
@@ -18865,12 +19038,26 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
                     } else if (sess.tool == ImageEditorTool::Ellipse) {
                         g_editor.ImageEditorCommitEllipse(sess, sess.stroke_start_x, sess.stroke_start_y, mcx, mcy, filled);
                     }
+                } else if (select_tool) {
+                    sess.selection.kind =
+                        sess.tool == ImageEditorTool::SelectRect ? ImageEditorSelectionKind::Rect : ImageEditorSelectionKind::Ellipse;
+                    sess.selection.x0 = sess.stroke_start_x;
+                    sess.selection.y0 = sess.stroke_start_y;
+                    sess.selection.x1 = mcx;
+                    sess.selection.y1 = mcy;
+                } else if (is_lasso) {
+                    // Too few points to enclose an area -- treat as a
+                    // click-without-dragging, not a degenerate selection.
+                    if (sess.selection.lasso_points.size() < 3) sess.selection.kind = ImageEditorSelectionKind::None;
+                } else if (is_move_tool) {
+                    g_editor.ImageEditorMoveSelection(sess, mcx - sess.stroke_start_x, mcy - sess.stroke_start_y);
                 }
                 sess.stroking = false;
                 sess.last_x = sess.last_y = -1;
             }
         }
 
+        Color selection_color = ResolveHlGroup("Accent");
         if (sess.stroking && shape_tool) {
             float p0x = img_x + static_cast<float>(sess.stroke_start_x) * sess.zoom;
             float p0y = img_y + static_cast<float>(sess.stroke_start_y) * sess.zoom;
@@ -18887,6 +19074,66 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
                 DrawEllipseLines(static_cast<int>(center.x), static_cast<int>(center.y), std::abs(p1x - p0x) / 2.0f,
                                   std::abs(p1y - p0y) / 2.0f, preview_color);
             }
+        } else if (sess.stroking && select_tool) {
+            Vector2 p0 = to_screen(sess.stroke_start_x, sess.stroke_start_y);
+            Vector2 p1 = to_screen(mcx, mcy);
+            if (sess.tool == ImageEditorTool::SelectRect) {
+                DrawImageEditorDashedPath({p0, Vector2{p1.x, p0.y}, p1, Vector2{p0.x, p1.y}}, true, selection_color);
+            } else {
+                Vector2 center{(p0.x + p1.x) / 2.0f, (p0.y + p1.y) / 2.0f};
+                float rx = std::abs(p1.x - p0.x) / 2.0f, ry = std::abs(p1.y - p0.y) / 2.0f;
+                std::vector<Vector2> pts;
+                constexpr int kEllipseSegs = 40;
+                for (int i = 0; i < kEllipseSegs; i++) {
+                    float t = static_cast<float>(i) / static_cast<float>(kEllipseSegs) * (2.0f * PI);
+                    pts.push_back(Vector2{center.x + rx * std::cos(t), center.y + ry * std::sin(t)});
+                }
+                DrawImageEditorDashedPath(pts, true, selection_color);
+            }
+        } else if (sess.stroking && is_lasso) {
+            std::vector<Vector2> pts;
+            for (const auto &p : sess.selection.lasso_points) pts.push_back(to_screen(p.first, p.second));
+            pts.push_back(to_screen(mcx, mcy));
+            DrawImageEditorDashedPath(pts, false, selection_color);
+        } else if (sess.stroking && is_move_tool) {
+            int dx = mcx - sess.stroke_start_x, dy = mcy - sess.stroke_start_y;
+            int bx0, by0, bx1, by1;
+            if (sess.selection.kind == ImageEditorSelectionKind::None) {
+                bx0 = 0;
+                by0 = 0;
+                bx1 = sess.width - 1;
+                by1 = sess.height - 1;
+            } else {
+                ImageEditorSelectionBounds(sess.selection, sess.width, sess.height, bx0, by0, bx1, by1);
+            }
+            Vector2 p0 = to_screen(bx0 + dx, by0 + dy);
+            Vector2 p1 = to_screen(bx1 + 1 + dx, by1 + 1 + dy);
+            DrawImageEditorDashedPath({p0, Vector2{p1.x, p0.y}, p1, Vector2{p0.x, p1.y}}, true, selection_color);
+        } else if (sess.selection.kind != ImageEditorSelectionKind::None) {
+            // Not mid-gesture -- draw the persisted selection at its own
+            // stored coordinates, so it stays visible while e.g. painting
+            // with a different tool or just looking at the canvas.
+            if (sess.selection.kind == ImageEditorSelectionKind::Rect) {
+                Vector2 p0 = to_screen(sess.selection.x0, sess.selection.y0);
+                Vector2 p1 = to_screen(sess.selection.x1, sess.selection.y1);
+                DrawImageEditorDashedPath({p0, Vector2{p1.x, p0.y}, p1, Vector2{p0.x, p1.y}}, true, selection_color);
+            } else if (sess.selection.kind == ImageEditorSelectionKind::Ellipse) {
+                Vector2 p0 = to_screen(sess.selection.x0, sess.selection.y0);
+                Vector2 p1 = to_screen(sess.selection.x1, sess.selection.y1);
+                Vector2 center{(p0.x + p1.x) / 2.0f, (p0.y + p1.y) / 2.0f};
+                float rx = std::abs(p1.x - p0.x) / 2.0f, ry = std::abs(p1.y - p0.y) / 2.0f;
+                std::vector<Vector2> pts;
+                constexpr int kEllipseSegs = 40;
+                for (int i = 0; i < kEllipseSegs; i++) {
+                    float t = static_cast<float>(i) / static_cast<float>(kEllipseSegs) * (2.0f * PI);
+                    pts.push_back(Vector2{center.x + rx * std::cos(t), center.y + ry * std::sin(t)});
+                }
+                DrawImageEditorDashedPath(pts, true, selection_color);
+            } else if (sess.selection.kind == ImageEditorSelectionKind::Lasso) {
+                std::vector<Vector2> pts;
+                for (const auto &p : sess.selection.lasso_points) pts.push_back(to_screen(p.first, p.second));
+                DrawImageEditorDashedPath(pts, true, selection_color);
+            }
         }
 
         std::string status = std::string(ImageEditorToolName(sess.tool)) + "  brush " + std::to_string(sess.brush_size) +
@@ -18896,6 +19143,7 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
         if (sess.active_layer >= 0 && sess.active_layer < static_cast<int>(sess.layers.size())) {
             status += "  Layer: " + sess.layers[static_cast<size_t>(sess.active_layer)].name;
         }
+        if (sess.selection.kind != ImageEditorSelectionKind::None) status += "  [selection]";
         float status_font = font_size * 0.85f;
         Vector2 st = MeasureTextEx(g_font, status.c_str(), status_font, 0);
         Rectangle status_bg{canvas.x + 4.0f, canvas.y + canvas.height - st.y - 10.0f, st.x + 12.0f, st.y + 6.0f};
@@ -18907,9 +19155,11 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
 
     // --- Color-picker popup (drawn last, over everything else) ---
     if (g_imgedit_picker_open) {
-        float px = g_imgedit_swatch_x;
-        float py = y + kImgEditMenubarH + kImgEditToolbarH + 4.0f;
         float pw = 200.0f, ph = 170.0f;
+        // The swatches sit at the sidebar's bottom, so the popup opens
+        // upward from them rather than downward off the pane's edge.
+        float px = g_imgedit_swatch_x;
+        float py = g_imgedit_swatch_y - ph - 6.0f;
         Rectangle popup{px, py, pw, ph};
         DrawRectangleRec(popup, ResolveHlGroup("Picker"));
         DrawRectangleLinesEx(popup, 1.0f, ResolveHlGroup("Border"));
@@ -19377,12 +19627,19 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             focus_click_w = std::max(0.0f, focus_click_w - left_excl - right_excl);
         }
         if (imgedit_active) {
-            // Exclude the menubar+toolbar (top) and layers sidebar (right)
-            // -- same reasoning as the office exclusion just above: their
-            // own click regions register later, inside DrawImageEditorPane.
+            // Exclude the menubar+toolbar (top), the tool sidebar (left),
+            // and the layers sidebar (right) -- same reasoning as the
+            // office exclusion just above: their own click regions
+            // register later, inside DrawImageEditorPane. Missing the left
+            // exclusion here left every tool-sidebar button (and the
+            // color swatches) silently swallowed by this catch-all --
+            // first-match-wins in DispatchChromeClicks, and this region
+            // registers before DrawImageEditorPane's own per-button ones.
             float top_excl = kImgEditMenubarH + kImgEditToolbarH;
             focus_click_y += top_excl;
             focus_click_h = std::max(0.0f, focus_click_h - top_excl);
+            focus_click_x += kImgEditToolSidebarW;
+            focus_click_w = std::max(0.0f, focus_click_w - kImgEditToolSidebarW);
             float right_excl = (focus_click_w - kImgEditSidebarW > 250.0f) ? kImgEditSidebarW : 0.0f;
             focus_click_w = std::max(0.0f, focus_click_w - right_excl);
         }
@@ -23576,6 +23833,7 @@ void UpdateDrawFrame() {
     try {
         JobManager::Instance().PollAll();
         mep::agent::PollOnce(g_editor);
+        DrainUiInputQueueOneStep();
         g_editor.PollTerminals();
         g_editor.PruneExpiredToasts(GetTime());
         g_editor.SetNow(GetTime());
@@ -23802,8 +24060,8 @@ void RegisterUiAutomationMethods() {
         const int button = UiButtonNumber(params.get("button").as_string("left"));
         const int clicks = std::max(1, params.get("clicks").as_int(1));
         for (int i = 0; i < clicks; i++) {
-            mep::agent_ui::MouseButton(x, y, button, true);
-            mep::agent_ui::MouseButton(x, y, button, false);
+            g_ui_input_queue.push_back([x, y, button] { mep::agent_ui::MouseButton(x, y, button, true); });
+            g_ui_input_queue.push_back([x, y, button] { mep::agent_ui::MouseButton(x, y, button, false); });
         }
         return Json::Object();
     });
@@ -23814,13 +24072,13 @@ void RegisterUiAutomationMethods() {
         const int y2 = params.get("y2").as_int();
         const int button = UiButtonNumber(params.get("button").as_string("left"));
         const int steps = std::max(1, params.get("steps").as_int(12));
-        mep::agent_ui::MouseButton(x1, y1, button, true);
+        g_ui_input_queue.push_back([x1, y1, button] { mep::agent_ui::MouseButton(x1, y1, button, true); });
         for (int i = 1; i <= steps; i++) {
-            const float t = static_cast<float>(i) / static_cast<float>(steps);
-            mep::agent_ui::MouseMove(x1 + static_cast<int>(static_cast<float>(x2 - x1) * t),
-                                      y1 + static_cast<int>(static_cast<float>(y2 - y1) * t));
+            const int mx = x1 + static_cast<int>(static_cast<float>(x2 - x1) * (static_cast<float>(i) / static_cast<float>(steps)));
+            const int my = y1 + static_cast<int>(static_cast<float>(y2 - y1) * (static_cast<float>(i) / static_cast<float>(steps)));
+            g_ui_input_queue.push_back([mx, my] { mep::agent_ui::MouseMove(mx, my); });
         }
-        mep::agent_ui::MouseButton(x2, y2, button, false);
+        g_ui_input_queue.push_back([x2, y2, button] { mep::agent_ui::MouseButton(x2, y2, button, false); });
         return Json::Object();
     });
     mep::agent::RegisterUiMethod("ui.scroll", [](const Json &params) {
@@ -23836,9 +24094,16 @@ void RegisterUiAutomationMethods() {
         return Json::Object();
     });
     mep::agent::RegisterUiMethod("ui.key_press", [](const Json &params) {
-        const std::string key = params.get("key").as_string();
-        if (!mep::agent_ui::KeyEvent(key, true) || !mep::agent_ui::KeyEvent(key, false))
-            throw std::runtime_error("unresolved key name");
+        // Queued (see g_ui_input_queue's own comment), not sent synchronously
+        // back-to-back: a non-character key (Escape/Delete/BackSpace/arrows/
+        // Enter/F-keys/...) is read via IsKeyPressed's per-frame polled edge,
+        // not GLFW's queued char-input stream the way a plain letter is --
+        // firing press-then-release before mep's next frame ever polls
+        // coalesces them into "unchanged," so e.g. Delete/BackSpace above
+        // (Editor::HandleImageEditorInput) would never see the press at all.
+        std::string key = params.get("key").as_string();
+        g_ui_input_queue.push_back([key] { mep::agent_ui::KeyEvent(key, true); });
+        g_ui_input_queue.push_back([key] { mep::agent_ui::KeyEvent(key, false); });
         return Json::Object();
     });
     mep::agent::RegisterUiMethod("ui.type_text", [](const Json &params) {

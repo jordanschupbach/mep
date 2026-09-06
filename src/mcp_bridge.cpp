@@ -183,10 +183,18 @@ private:
         parsed_queue_.clear();
     }
 
+    // send() with MSG_NOSIGNAL, not write() -- mep can exit/restart out
+    // from under an already-connected bridge (the whole point of this
+    // being a separate long-lived process), and writing to a socket
+    // whose peer already closed raises SIGPIPE by default, which kills
+    // this entire process before the `n <= 0` check below ever runs.
+    // MSG_NOSIGNAL turns that into an ordinary EPIPE return instead, so
+    // the existing Disconnect()-and-let-the-next-Call()-reconnect path
+    // actually gets to run.
     bool WriteAll(const std::string &data) {
         size_t off = 0;
         while (off < data.size()) {
-            ssize_t n = write(fd_, data.data() + off, data.size() - off);
+            ssize_t n = send(fd_, data.data() + off, data.size() - off, MSG_NOSIGNAL);
             if (n <= 0) return false;
             off += static_cast<size_t>(n);
         }

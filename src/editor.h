@@ -933,10 +933,36 @@ struct RgbaColor {
 };
 
 // Tools the in-pane image editor's toolbar offers (IMAGE_EDITOR.md Phase
-// 1). Pan needs no dedicated case in the paint-primitive code below --
-// it's handled entirely by main.cpp's drag tracking, the same as the
-// middle-mouse-drag pan every tool gets for free.
-enum class ImageEditorTool { Pencil, Eraser, Line, Rectangle, Ellipse, Bucket, Eyedropper, Pan };
+// 1, plus the selection/move tools added afterward). Pan needs no
+// dedicated case in the paint-primitive code below -- it's handled
+// entirely by main.cpp's drag tracking, the same as the middle-mouse-drag
+// pan every tool gets for free. SelectRect/SelectEllipse/Lasso only ever
+// populate an ImageEditorSession::selection (below); they never touch
+// layer pixels directly -- ImageEditorDeleteSelection/MoveSelection do
+// that, driven by the Delete key / a Move-tool drag.
+enum class ImageEditorTool { Pencil, Eraser, Line, Rectangle, Ellipse, Bucket, Eyedropper, Pan, SelectRect, SelectEllipse, Lasso, Move };
+
+// A selection region on an ImageEditorSession, in canvas (image) pixel
+// coordinates -- None means no active selection. Rect/Ellipse store their
+// bounding box as two unordered corners (x0,y0)-(x1,y1), same convention
+// as ImageEditorCommitRect/Ellipse's own arguments; Lasso stores its
+// traced path directly (open while still being dragged, implicitly
+// closed -- first point connected back to last -- once committed).
+// ImageEditorSelectionContains (editor.cpp) is the single per-pixel
+// "is this point inside" test every kind funnels through.
+enum class ImageEditorSelectionKind { None, Rect, Ellipse, Lasso };
+struct ImageEditorSelection {
+    ImageEditorSelectionKind kind = ImageEditorSelectionKind::None;
+    int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    std::vector<std::pair<int, int>> lasso_points;
+};
+// Bounding box of `sel`, clamped to [0, width) x [0, height) -- an empty
+// (x1 < x0) box for an empty/None selection. Defined in editor.cpp; a
+// free function (not an Editor:: method) since it's pure geometry with no
+// Editor state to touch -- main.cpp's Move-tool drag preview calls this
+// directly to know what rectangle to outline mid-drag.
+void ImageEditorSelectionBounds(const ImageEditorSelection &sel, int width, int height, int &out_x0, int &out_y0, int &out_x1,
+                                 int &out_y1);
 
 // One layer of an in-pane image-editor session: a full-canvas RGBA8 pixel
 // buffer plus display attributes. Always sized width*height*4 to match
@@ -999,6 +1025,14 @@ struct ImageEditorSession {
     int last_x = -1, last_y = -1;
 
     bool show_grid = false;
+
+    // The active selection (SelectRect/SelectEllipse/Lasso tools), if any
+    // -- None means the whole layer is fair game for Move and Delete is a
+    // no-op. Persists across tool switches (matching every mainstream
+    // image editor: picking a different tool doesn't clear your
+    // selection) until Deselect (Edit menu) or a new selection replaces
+    // it.
+    ImageEditorSelection selection;
 
     // Flattened (visibility/opacity-composited) pixels, recomputed by
     // Editor::ImageEditorComposite whenever `dirty` -- both main.cpp's
@@ -2494,6 +2528,21 @@ public:
      * @param y Sample point y, in canvas pixels.
      */
     void ImageEditorPickColor(ImageEditorSession &sess, int x, int y);
+    /**
+     * @brief Clears (to transparent) every pixel of the active layer inside the current selection;
+     * no-op if there's no selection.
+     * @param sess The session to clear pixels in.
+     */
+    void ImageEditorDeleteSelection(ImageEditorSession &sess);
+    /**
+     * @brief Moves the active layer's selected pixels (or the whole layer, if there's no selection)
+     * by (dx, dy) canvas pixels: cuts them from their original position (leaving transparency
+     * behind) and pastes them at the offset position, shifting the selection itself to match.
+     * @param sess The session to move pixels in.
+     * @param dx Horizontal offset, in canvas pixels.
+     * @param dy Vertical offset, in canvas pixels.
+     */
+    void ImageEditorMoveSelection(ImageEditorSession &sess, int dx, int dy);
     /**
      * @brief Recomputes an image-editor session's flattened `composite` buffer from its visible
      * layers, if `dirty`; no-op otherwise.

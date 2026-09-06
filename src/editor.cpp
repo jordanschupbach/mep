@@ -4825,8 +4825,20 @@ void Editor::SplitCurrentPane(SplitDir dir, const std::string &file_arg) {
     SplitNode *active = FindNode(tab.root.get(), tab.active_pane_id);
     if (!active) return;
 
+    // A special-kind path (image/pdf/docx/odt/html/csv/xlsx/ods) needs
+    // LoadFile's own detection -- FindOrCreateBuffer below only ever
+    // creates a plain-text buffer, which for one of these paths means
+    // garbled binary decoded as text instead of the real viewer/editor.
+    // Route those through LoadFile instead, once the new pane is already
+    // active (below): every special-kind branch there (OpenImageInPlace,
+    // OpenPdfInPlace, ...) assigns into CurPane() itself, so calling it
+    // there lands the file in the *new* pane, not the original one.
+    const bool special = !file_arg.empty() &&
+                         (IsImagePath(file_arg) || IsPdfPath(file_arg) || IsDocxPath(file_arg) || IsOdtPath(file_arg) ||
+                          IsHtmlPath(file_arg) || IsCsvPath(file_arg) || IsXlsxPath(file_arg) || IsOdsPath(file_arg));
+
     int new_buffer_id = active->pane.buffer_id;
-    if (!file_arg.empty()) {
+    if (!file_arg.empty() && !special) {
         int id = FindOrCreateBuffer(file_arg);
         if (id < 0) return;
         new_buffer_id = id;
@@ -4856,6 +4868,7 @@ void Editor::SplitCurrentPane(SplitDir dir, const std::string &file_arg) {
     active->children.push_back(std::move(original_leaf));
 
     tab.active_pane_id = new_pane.id;
+    if (special) LoadFile(file_arg);
 }
 
 void Editor::SplitTabBottom(int buffer_id, float share) {
@@ -5678,6 +5691,166 @@ void Editor::ImageEditorPickColor(ImageEditorSession &sess, int x, int y) {
     ImageEditorPushRecentColor(sess, c);
 }
 
+// Per-pixel "is (px, py) inside this selection" test -- the single place
+// ImageEditorDeleteSelection/MoveSelection (and nothing else -- rendering
+// the selection's marching-ants outline in main.cpp draws its stored
+// geometry directly, it never needs a per-pixel test) ask this question.
+// (px, py) are canvas/image pixel coordinates, same space as `sel`'s own
+// fields.
+bool ImageEditorSelectionContains(const ImageEditorSelection &sel, int px, int py) {
+    switch (sel.kind) {
+        case ImageEditorSelectionKind::None:
+            return false;
+        case ImageEditorSelectionKind::Rect: {
+            int lo_x = std::min(sel.x0, sel.x1), hi_x = std::max(sel.x0, sel.x1);
+            int lo_y = std::min(sel.y0, sel.y1), hi_y = std::max(sel.y0, sel.y1);
+            return px >= lo_x && px <= hi_x && py >= lo_y && py <= hi_y;
+        }
+        case ImageEditorSelectionKind::Ellipse: {
+            int lo_x = std::min(sel.x0, sel.x1), hi_x = std::max(sel.x0, sel.x1);
+            int lo_y = std::min(sel.y0, sel.y1), hi_y = std::max(sel.y0, sel.y1);
+            float rx = static_cast<float>(hi_x - lo_x) / 2.0f, ry = static_cast<float>(hi_y - lo_y) / 2.0f;
+            if (rx < 0.5f || ry < 0.5f) return false;
+            float cx = static_cast<float>(lo_x + hi_x) / 2.0f, cy = static_cast<float>(lo_y + hi_y) / 2.0f;
+            float nx = (static_cast<float>(px) + 0.5f - cx) / rx;
+            float ny = (static_cast<float>(py) + 0.5f - cy) / ry;
+            return nx * nx + ny * ny <= 1.0f;
+        }
+        case ImageEditorSelectionKind::Lasso: {
+            // Standard ray-casting point-in-polygon test, implicitly
+            // closing the path from its last point back to its first.
+            size_t n = sel.lasso_points.size();
+            if (n < 3) return false;
+            bool inside = false;
+            for (size_t i = 0, j = n - 1; i < n; j = i++) {
+                int xi = sel.lasso_points[i].first, yi = sel.lasso_points[i].second;
+                int xj = sel.lasso_points[j].first, yj = sel.lasso_points[j].second;
+                bool crosses = (yi > py) != (yj > py);
+                if (crosses && static_cast<float>(px) <
+                                   static_cast<float>(xj - xi) * static_cast<float>(py - yi) / static_cast<float>(yj - yi) +
+                                       static_cast<float>(xi)) {
+                    inside = !inside;
+                }
+            }
+            return inside;
+        }
+    }
+    return false;
+}
+
+// Bounding box of `sel`, clamped to [0, width) x [0, height) -- lets
+// DeleteSelection/MoveSelection iterate just the relevant pixels instead
+// of the whole canvas. Yields an empty (x1 < x0) box for an empty/None
+// selection, which every caller below already treats as "nothing to do".
+void ImageEditorSelectionBounds(const ImageEditorSelection &sel, int width, int height, int &out_x0, int &out_y0, int &out_x1,
+                                 int &out_y1) {
+    if (sel.kind == ImageEditorSelectionKind::None) {
+        out_x0 = out_y0 = 0;
+        out_x1 = out_y1 = -1;
+        return;
+    }
+    if (sel.kind == ImageEditorSelectionKind::Lasso) {
+        if (sel.lasso_points.empty()) {
+            out_x0 = out_y0 = 0;
+            out_x1 = out_y1 = -1;
+            return;
+        }
+        out_x0 = out_x1 = sel.lasso_points[0].first;
+        out_y0 = out_y1 = sel.lasso_points[0].second;
+        for (const auto &p : sel.lasso_points) {
+            out_x0 = std::min(out_x0, p.first);
+            out_x1 = std::max(out_x1, p.first);
+            out_y0 = std::min(out_y0, p.second);
+            out_y1 = std::max(out_y1, p.second);
+        }
+    } else {
+        out_x0 = std::min(sel.x0, sel.x1);
+        out_x1 = std::max(sel.x0, sel.x1);
+        out_y0 = std::min(sel.y0, sel.y1);
+        out_y1 = std::max(sel.y0, sel.y1);
+    }
+    out_x0 = std::clamp(out_x0, 0, width - 1);
+    out_x1 = std::clamp(out_x1, 0, width - 1);
+    out_y0 = std::clamp(out_y0, 0, height - 1);
+    out_y1 = std::clamp(out_y1, 0, height - 1);
+}
+
+void Editor::ImageEditorDeleteSelection(ImageEditorSession &sess) {
+    if (sess.selection.kind == ImageEditorSelectionKind::None) return;
+    if (sess.active_layer < 0 || sess.active_layer >= static_cast<int>(sess.layers.size())) return;
+    ImageEditorLayer &layer = sess.layers[static_cast<size_t>(sess.active_layer)];
+    int x0, y0, x1, y1;
+    ImageEditorSelectionBounds(sess.selection, sess.width, sess.height, x0, y0, x1, y1);
+    for (int py = y0; py <= y1; py++) {
+        for (int px = x0; px <= x1; px++) {
+            if (ImageEditorSelectionContains(sess.selection, px, py)) {
+                ImageEditorSetPixel(layer, sess.width, sess.height, px, py, RgbaColor{0, 0, 0, 0});
+            }
+        }
+    }
+    sess.modified = true;
+    sess.dirty = true;
+}
+
+void Editor::ImageEditorMoveSelection(ImageEditorSession &sess, int dx, int dy) {
+    if (dx == 0 && dy == 0) return;
+    if (sess.active_layer < 0 || sess.active_layer >= static_cast<int>(sess.layers.size())) return;
+    ImageEditorLayer &layer = sess.layers[static_cast<size_t>(sess.active_layer)];
+    const bool whole_layer = sess.selection.kind == ImageEditorSelectionKind::None;
+    int x0, y0, x1, y1;
+    if (whole_layer) {
+        x0 = 0;
+        y0 = 0;
+        x1 = sess.width - 1;
+        y1 = sess.height - 1;
+    } else {
+        ImageEditorSelectionBounds(sess.selection, sess.width, sess.height, x0, y0, x1, y1);
+    }
+    int w = x1 - x0 + 1, h = y1 - y0 + 1;
+    if (w <= 0 || h <= 0) return;
+    // Snapshot the moved region first (cutting straight from `layer` while
+    // reading it would read back already-cleared/already-stamped pixels
+    // on overlap between source and destination), then clear the source,
+    // then stamp the snapshot at the offset position -- classic cut/paste,
+    // not an in-place shift.
+    std::vector<unsigned char> patch(static_cast<size_t>(w) * static_cast<size_t>(h) * 4, 0);
+    for (int py = y0; py <= y1; py++) {
+        for (int px = x0; px <= x1; px++) {
+            if (!whole_layer && !ImageEditorSelectionContains(sess.selection, px, py)) continue;
+            RgbaColor c = ImageEditorGetPixel(layer, sess.width, sess.height, px, py);
+            size_t pi = (static_cast<size_t>(py - y0) * static_cast<size_t>(w) + static_cast<size_t>(px - x0)) * 4;
+            patch[pi] = c.r;
+            patch[pi + 1] = c.g;
+            patch[pi + 2] = c.b;
+            patch[pi + 3] = c.a;
+            ImageEditorSetPixel(layer, sess.width, sess.height, px, py, RgbaColor{0, 0, 0, 0});
+        }
+    }
+    for (int py = 0; py < h; py++) {
+        for (int px = 0; px < w; px++) {
+            size_t pi = (static_cast<size_t>(py) * static_cast<size_t>(w) + static_cast<size_t>(px)) * 4;
+            if (patch[pi + 3] == 0) continue;  // nothing captured here (outside a non-rect selection) -- don't punch a hole
+            RgbaColor c{patch[pi], patch[pi + 1], patch[pi + 2], patch[pi + 3]};
+            ImageEditorSetPixel(layer, sess.width, sess.height, x0 + px + dx, y0 + py + dy, c);
+        }
+    }
+    if (!whole_layer) {
+        if (sess.selection.kind == ImageEditorSelectionKind::Lasso) {
+            for (auto &p : sess.selection.lasso_points) {
+                p.first += dx;
+                p.second += dy;
+            }
+        } else {
+            sess.selection.x0 += dx;
+            sess.selection.x1 += dx;
+            sess.selection.y0 += dy;
+            sess.selection.y1 += dy;
+        }
+    }
+    sess.modified = true;
+    sess.dirty = true;
+}
+
 void Editor::ImageEditorComposite(ImageEditorSession &sess) {
     if (!sess.dirty) return;
     size_t n = static_cast<size_t>(sess.width) * static_cast<size_t>(sess.height) * 4;
@@ -5782,12 +5955,14 @@ bool Editor::SaveImageEditorPng(ImageEditorSession &sess, const std::string &pat
 }
 
 // Tool hotkeys ('b'/'x'/'l'/'r'/'c'/'f'/'i'/'h' select Pencil/Eraser/Line/
-// Rectangle/Ellipse/Bucket/Eyedropper/Pan), '['/']' shrink/grow the brush,
-// 'u'/Ctrl-R undo/redo, +/-/= zoom (same math as HandleImageInput's own),
-// Esc leaves back to Mode::Image. ':' and the leader key are forwarded,
-// same as HandleImageInput. Mouse painting itself is handled by main.cpp's
-// DrawPane instead -- see Mode::ImageEditor's own comment (editor.h) for
-// why.
+// Rectangle/Ellipse/Bucket/Eyedropper/Pan; 'm'/'o'/'w'/'v' select Rectangle-
+// select/Ellipse-select/Lasso/Move), '['/']' shrink/grow the brush, 'u'/
+// Ctrl-R undo/redo, +/-/= zoom (same math as HandleImageInput's own),
+// Delete/BackSpace clears the selection's pixels (no-op with no
+// selection), Esc leaves back to Mode::Image. ':' and the leader key are
+// forwarded, same as HandleImageInput. Mouse painting itself is handled
+// by main.cpp's DrawPane instead -- see Mode::ImageEditor's own comment
+// (editor.h) for why.
 void Editor::HandleImageEditorInput() {
     ImageEditorSession *sess = GetImageEditorMutable(CurPane().buffer_id);
     if (!sess) {
@@ -5844,8 +6019,26 @@ void Editor::HandleImageEditorInput() {
             sess->tool = ImageEditorTool::Eyedropper;
         } else if (cp == 'h') {
             sess->tool = ImageEditorTool::Pan;
+        } else if (cp == 'm') {
+            sess->tool = ImageEditorTool::SelectRect;
+        } else if (cp == 'o') {
+            sess->tool = ImageEditorTool::SelectEllipse;
+        } else if (cp == 'w') {
+            sess->tool = ImageEditorTool::Lasso;
+        } else if (cp == 'v') {
+            sess->tool = ImageEditorTool::Move;
         }
         cp = GetCharPressed();
+    }
+    // Delete/Backspace: not part of the GetCharPressed() queue above (they're
+    // control keys, not printable characters) -- clears the selection's
+    // pixels but leaves the selection itself in place, same as every
+    // mainstream image editor's Delete key.
+    if (IsKeyPressed(KEY_DELETE) || IsKeyPressed(KEY_BACKSPACE)) {
+        if (sess->selection.kind != ImageEditorSelectionKind::None) {
+            PushUndoImageEditor(sess->buffer_id);
+            ImageEditorDeleteSelection(*sess);
+        }
     }
 }
 

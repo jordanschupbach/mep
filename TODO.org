@@ -10,3 +10,23 @@
 
 * TODO Add language specific, configurable run button to active pane bar
 * TODO Add language modes
+* TODO Add reorder todo feature with ctrl+j,k
+* TODO todo management
+  :LOGBOOK:
+  CLOCK: [2026-09-05 Sat 21:29]--[2026-09-05 Sat 21:46] =>  0:17
+  :END:
+* TODO add notification to workspace tab in tabbar for finished ai (should be red)
+* TODO Add platform native file-open popup (instead of :e , the current behavior)
+* TODO Add better styling to mode in bottom bar and remove filename
+* TODO Add compiler explorer to c++ ui
+* TODO add hex exploration to c++ ui
+* TODO Fix dap debug ui
+* TODO fix exiting sidebar bug (specifically when exiting todo editor)
+* TODO add image editor
+* TODO add latex run button
+* TODO add orgmode run button
+* TODO bind run button to <leader>rr
+* TODO add colors to tabbar buttons
+* TODO decrease size of tabbar tab button icons (i.e. just for tab, new tab, delete tab)
+* TODO remove ? mark and swap with [+] for adding new workspace
+* TODO add [-] for delete active workspace

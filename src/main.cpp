@@ -4340,6 +4340,175 @@ const char *kBuiltinLsp =
     "  end\n"
     "end)\n";
 
+// Language-specific UI modes (<leader>lu): a per-tab toggle that hands off
+// to a language module registered in mep.language_ui_modes[lang] --
+// mep.language_for_buffer maps the current buffer's file extension to a
+// language key via mep.language_ui_extensions (populated by each module,
+// e.g. kBuiltinLanguageUiR below adds {r = 'r'}), and mode.open() builds
+// whatever pane layout that language wants and returns a close() function.
+// mep.language_ui_active tracks at most one active mode per tab, keyed by
+// mep.current_tab_id() so <leader>lu closes the right one regardless of
+// which of its own panes currently has focus (or whether the cursor is
+// back in the original source buffer, whose extension is what future
+// re-opens key off).
+const char *kBuiltinLanguageUi =
+    "mep.language_ui_modes = mep.language_ui_modes or {}\n"
+    "mep.language_ui_extensions = mep.language_ui_extensions or {}\n"
+    "mep.language_ui_active = mep.language_ui_active or {}\n"
+    "function mep.language_for_buffer(buf)\n"
+    "  local name = mep.buffer_filename(buf or mep.current_buffer())\n"
+    "  local ext = name:match('%.([%w]+)$')\n"
+    "  return ext and mep.language_ui_extensions[ext:lower()]\n"
+    "end\n"
+    "function mep.language_ui_toggle()\n"
+    "  local tid = mep.current_tab_id()\n"
+    "  local active = mep.language_ui_active[tid]\n"
+    "  if active then\n"
+    "    mep.language_ui_active[tid] = nil\n"
+    "    active.close()\n"
+    "    return\n"
+    "  end\n"
+    "  local lang = mep.language_for_buffer()\n"
+    "  local mode = lang and mep.language_ui_modes[lang]\n"
+    "  if not mode then\n"
+    "    mep.notify('No language UI mode registered' .. (lang and (' for \"' .. lang .. '\"') or ' for this file'), 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  mep.language_ui_active[tid] = {lang = lang, close = mode.open()}\n"
+    "end\n"
+    "mep.command('MepLanguageUi', mep.language_ui_toggle)\n"
+    "mep.leader_map('lu', 'Language UI mode (toggle)', mep.language_ui_toggle)\n";
+
+// R language UI mode (kBuiltinLanguageUi's first consumer): <leader>lu on
+// an .R buffer lays a Console/Figures/Help/Data strip below the source
+// pane -- Console is a real `R` REPL (mep.terminal_here_argv); the other
+// three are plain text/image files mep.r_ui_init_template teaches that
+// same R session to keep refreshed:
+//   - options(pager = ...) redirects `?topic`/help() output, which R
+//     already writes to a temp file and hands to a pager function, into
+//     the Help pane's file instead of a terminal pager.
+//   - mep_show(expr) points a png() device at the Figures pane's file for
+//     the duration of `expr` -- works for base graphics (mep_show(plot(x)))
+//     and anything with a print method (mep_show(print(ggplot(...)))).
+//   - mep_view(x) writes head(x) to the Data pane's file -- the closest
+//     thing to RStudio's View() available to a plain-terminal R session.
+// None of these need mep to watch the filesystem: the Help/Data panes are
+// ordinary text buffers the user reopens like any externally-changed file,
+// and the poll loop at the bottom re-opens the Figures pane's path on a
+// timer purely because a stale plot is more likely to go unnoticed than a
+// stale text pane.
+const char *kBuiltinLanguageUiR =
+    "mep.opt = mep.opt or {}\n"
+    "mep.opt.r_ui_cmd = mep.opt.r_ui_cmd or {'R', '--no-save', '--quiet'}\n"
+    "mep.opt.r_ui_bottom_share = mep.opt.r_ui_bottom_share or 0.4\n"
+    "mep.opt.r_ui_info_share = mep.opt.r_ui_info_share or 0.34\n"
+    "mep.opt.r_ui_figure_poll_interval = mep.opt.r_ui_figure_poll_interval or 1.0\n"
+    "mep.language_ui_extensions.r = mep.language_ui_extensions.r or 'r'\n"
+    // %s order when formatted: help_path, plot_path, data_path.
+    "local mep_r_ui_init_template = [==[\n"
+    "options(help_type = \"text\")\n"
+    "options(pager = function(files, header, title, delete.file) {\n"
+    "  try(file.copy(files[1], \"%s\", overwrite = TRUE), silent = TRUE)\n"
+    "  if (isTRUE(delete.file)) unlink(files)\n"
+    "})\n"
+    "mep_show <- function(expr) {\n"
+    "  grDevices::png(filename = \"%s\", width = 900, height = 650, res = 120)\n"
+    "  on.exit(grDevices::dev.off(), add = TRUE)\n"
+    "  eval.parent(substitute(expr))\n"
+    "  invisible(NULL)\n"
+    "}\n"
+    "mep_view <- function(x, n = 100) {\n"
+    "  writeLines(utils::capture.output(print(utils::head(x, n))), \"%s\")\n"
+    "  invisible(x)\n"
+    "}\n"
+    "cat(\"mep: language UI ready -- mep_show(expr) draws to the Figures pane, mep_view(x) writes to the Data pane, help() and ?topic go to the Help pane.\\n\")\n"
+    "]==]\n"
+    "local mep_r_ui_figures = {}\n"
+    "function mep.r_ui_open()\n"
+    "  local plot_path = os.tmpname() .. '.png'\n"
+    "  local help_path = os.tmpname() .. '.txt'\n"
+    "  local data_path = os.tmpname() .. '.txt'\n"
+    "  local placeholder_path = os.tmpname() .. '.txt'\n"
+    "  local init_path = os.tmpname() .. '.R'\n"
+    "  local ph = io.open(placeholder_path, 'w')\n"
+    "  if ph then\n"
+    "    ph:write('No figure yet.\\nCall mep_show(plot(...)) or mep_show(print(ggplot(...))) from the R console below.\\n')\n"
+    "    ph:close()\n"
+    "  end\n"
+    "  local hf = io.open(help_path, 'w')\n"
+    "  if hf then hf:close() end\n"
+    "  local df = io.open(data_path, 'w')\n"
+    "  if df then df:close() end\n"
+    "  local rf = io.open(init_path, 'w')\n"
+    "  if rf then\n"
+    "    rf:write(string.format(mep_r_ui_init_template, help_path, plot_path, data_path))\n"
+    "    rf:close()\n"
+    "  end\n"
+    "\n"
+    "  local source_pane = mep.current_pane_id()\n"
+    "  mep.cmd('split')\n"
+    "  mep.nav_pane('down')\n"
+    "  mep.pane_set_share(mep.opt.r_ui_bottom_share)\n"
+    "  mep.cmd('vsplit')\n"
+    "  mep.cmd('vsplit')\n"
+    "  mep.terminal_here_argv(mep.opt.r_ui_cmd, 'R')\n"
+    "  local console_pane = mep.current_pane_id()\n"
+    "  local console_buf = mep.current_buffer()\n"
+    "  if mep.is_terminal_buffer(console_buf) then\n"
+    "    mep.terminal_write(console_buf, string.format(\"source('%s', echo = FALSE)\\n\", init_path))\n"
+    "  end\n"
+    "\n"
+    "  mep.nav_pane('right')\n"
+    "  mep.open(placeholder_path)\n"
+    "  local figure_pane = mep.current_pane_id()\n"
+    "\n"
+    "  mep.nav_pane('right')\n"
+    "  mep.open(help_path)\n"
+    "  local help_pane = mep.current_pane_id()\n"
+    "  mep.pane_set_share(mep.opt.r_ui_info_share)\n"
+    "  mep.cmd('split')\n"
+    "  mep.open(data_path)\n"
+    "  local data_pane = mep.current_pane_id()\n"
+    "\n"
+    "  mep.pane_focus(source_pane)\n"
+    "  mep_r_ui_figures[mep.current_tab_id()] = {pane = figure_pane, path = plot_path}\n"
+    "  mep.notify('R language UI: console/figures/help/data below')\n"
+    "\n"
+    "  return function()\n"
+    "    mep_r_ui_figures[mep.current_tab_id()] = nil\n"
+    "    for _, pid in ipairs({console_pane, figure_pane, help_pane, data_pane}) do\n"
+    "      if mep.pane_focus(pid) then mep.cmd('close') end\n"
+    "    end\n"
+    "    if mep.is_terminal_buffer(console_buf) then mep.buffer_delete(console_buf, true) end\n"
+    "    mep.pane_focus(source_pane)\n"
+    "    mep.notify('R language UI mode closed')\n"
+    "  end\n"
+    "end\n"
+    "mep.language_ui_modes.r = {open = mep.r_ui_open}\n"
+    // Re-opens the Figures pane's path on a timer (only while its tab is
+    // the active one -- mep.pane_focus only ever resolves panes in the
+    // active tab) so a fresh mep_show(...) call shows up without the user
+    // having to reopen the file by hand. Cheap: a small PNG decode roughly
+    // once a second, and only for as long as an R UI mode is actually open.
+    "do\n"
+    "  local last_poll = 0\n"
+    "  mep.on_frame(function()\n"
+    "    local entry = mep_r_ui_figures[mep.current_tab_id()]\n"
+    "    if not entry then return end\n"
+    "    local now = mep.now()\n"
+    "    if now - last_poll < mep.opt.r_ui_figure_poll_interval then return end\n"
+    "    last_poll = now\n"
+    "    local f = io.open(entry.path, 'rb')\n"
+    "    if not f then return end\n"
+    "    f:close()\n"
+    "    local cur = mep.current_pane_id()\n"
+    "    if mep.pane_focus(entry.pane) then\n"
+    "      mep.open(entry.path)\n"
+    "      mep.pane_focus(cur)\n"
+    "    end\n"
+    "  end)\n"
+    "end\n";
+
 // Completion sources (Phase 22): buffer-word is the always-available
 // default, now joined by two more sources folded into the same function --
 // mep still only has one completion-source *slot*
@@ -12372,7 +12541,7 @@ const char *kBuiltinWhichKeyGroups =
     "mep.leader_group('oe', 'export')\n"
     "mep.leader_group('ot', 'toggle')\n"
     "mep.leader_group('or', 'roam')\n"
-    "mep.leader_group('l', 'lsp')\n"
+    "mep.leader_group('l', 'lsp/lang')\n"
     "mep.leader_group('p', 'project')\n"
     "mep.leader_group('w', 'workspace')\n"
     "mep.leader_group('g', 'git')\n"
@@ -22352,6 +22521,8 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinGit);
     lua->DoString(kBuiltinTodo);
     lua->DoString(kBuiltinLsp);
+    lua->DoString(kBuiltinLanguageUi);
+    lua->DoString(kBuiltinLanguageUiR);
     lua->DoString(kBuiltinCompletion);
     lua->DoString(kBuiltinSnippets);
     lua->DoString(kBuiltinSymbols);

@@ -5147,6 +5147,24 @@ void Editor::OpenImageInPlace(const std::string &path, const unsigned char *byte
         sess.buffer_id = buffer_id;
         sess.doc = std::move(doc);
         images_[buffer_id] = std::move(sess);
+    } else {
+        // `path` is already open in a buffer -- re-decode `bytes` into it
+        // instead of leaving the cached ImageDoc stale. Callers that expect
+        // to see the file's *current* disk content on a repeat open (e.g.
+        // the R language-UI mode's figures pane, reopened on a poll to show
+        // the latest plot) would otherwise keep showing whatever was on
+        // disk the first time this path was opened.
+        auto it = images_.find(buffer_id);
+        if (it != images_.end()) {
+            auto doc = std::make_unique<ImageDoc>();
+            if (!doc->LoadFromMemory(bytes, len)) {
+                status_message_ = "E-\"" + path + "\": " + doc->Error();
+                return;
+            }
+            it->second.doc = std::move(doc);
+            it->second.pan_x = 0;
+            it->second.pan_y = 0;
+        }
     }
     CurPane().buffer_id = buffer_id;
     CurPane().cursor = {0, 0};

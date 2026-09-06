@@ -6540,6 +6540,62 @@ int l_html_reload(lua_State *L) {
     return 0;
 }
 
+// mep.pdf_reload(path): re-reads local file `path` and re-decodes it INTO
+// the current pane's existing PdfSession in place (Editor::ReloadPdfBuffer)
+// -- same "hard overwrite of whichever <type> pane is currently active,
+// used to refresh an already-recompiled output file" role mep.html_reload
+// plays for HTML (kBuiltinRunButton's org branch, main.cpp, is the
+// intended caller for both). A no-op (with a notification) if the current
+// pane isn't a PDF pane, or if `path` can't be read.
+int l_pdf_reload(lua_State *L) {
+    const char *path = luaL_checkstring(L, 1);
+#if !defined(__EMSCRIPTEN__)
+    Editor *ed = GetEditor(L);
+    int buffer_id = ed->CurrentBufferId();
+    if (!ed->GetPdf(buffer_id)) {
+        ed->Notify("Not a PDF pane", Editor::NotifyLevel::Warn);
+        return 0;
+    }
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        ed->Notify("Can't open \"" + std::string(path) + "\"", Editor::NotifyLevel::Error);
+        return 0;
+    }
+    std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    ed->ReloadPdfBuffer(buffer_id, bytes.data(), bytes.size());
+#else
+    GetEditor(L)->Notify("mep.pdf_reload: not supported in the wasm build", Editor::NotifyLevel::Error);
+#endif
+    return 0;
+}
+
+// mep.office_reload(path): re-reads local file `path` (docx or odt) and
+// re-decodes it INTO the current pane's existing OfficeSession in place
+// (Editor::ReloadOfficeBuffer) -- same role mep.html_reload/mep.pdf_reload
+// play for their own formats. A no-op (with a notification) if the
+// current pane isn't an office pane, or if `path` can't be read.
+int l_office_reload(lua_State *L) {
+    const char *path = luaL_checkstring(L, 1);
+#if !defined(__EMSCRIPTEN__)
+    Editor *ed = GetEditor(L);
+    int buffer_id = ed->CurrentBufferId();
+    if (!ed->GetOffice(buffer_id)) {
+        ed->Notify("Not an office document pane", Editor::NotifyLevel::Warn);
+        return 0;
+    }
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        ed->Notify("Can't open \"" + std::string(path) + "\"", Editor::NotifyLevel::Error);
+        return 0;
+    }
+    std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    ed->ReloadOfficeBuffer(buffer_id, path, bytes.data(), bytes.size());
+#else
+    GetEditor(L)->Notify("mep.office_reload: not supported in the wasm build", Editor::NotifyLevel::Error);
+#endif
+    return 0;
+}
+
 // mep.doc_export_html_to_latex(html, title, author, base_dir): thin
 // binding over doc_export.h's ExportHtmlToLatex -- see its own header for
 // the actual conversion. Pure string in, string out, no I/O of its own
@@ -7066,6 +7122,8 @@ const luaL_Reg kMepFuncs[] = {
     {"html_open", l_html_open},
     {"html_current_origin", l_html_current_origin},
     {"html_reload", l_html_reload},
+    {"pdf_reload", l_pdf_reload},
+    {"office_reload", l_office_reload},
     {"doc_export_html_to_latex", l_doc_export_html_to_latex},
     {"doc_export_html_to_odt", l_doc_export_html_to_odt},
     {"set_completion_source", l_set_completion_source},

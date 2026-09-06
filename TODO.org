@@ -8,6 +8,10 @@
    Status section for what was verified how, and what still needs a GPU-capable
    display to confirm by eye).
 
+* DONE Add reorder todo feature with ctrl+j,k :ARCHIVE:
+  :LOGBOOK:
+  CLOCK: [2026-09-05 Sat 22:03]--[2026-09-05 Sat 22:12] =>  0:09
+  :END:
 * TODO Add language specific, configurable run button to active pane bar
   :LOGBOOK:
   CLOCK: [2026-09-05 Sat 21:28]--[2026-09-05 Sat 21:45] =>  0:17
@@ -15,10 +19,6 @@
 * TODO Add language modes
   :LOGBOOK:
   CLOCK: [2026-09-05 Sat 21:28]--[2026-09-05 Sat 21:47] =>  0:19
-  :END:
-* TODO Add reorder todo feature with ctrl+j,k
-  :LOGBOOK:
-  CLOCK: [2026-09-05 Sat 22:03]--[2026-09-05 Sat 22:12] =>  0:09
   :END:
 * TODO todo management
   :LOGBOOK:
@@ -33,7 +33,16 @@
 * TODO fix exiting sidebar bug (specifically when exiting todo editor)
 * TODO add image editor
 * TODO add latex run button
-* TODO add orgmode run button
+* DONE add orgmode run button :ARCHIVE:
+  - Run button now shows for .org files; picks the target format from a
+    `#+EXPORT:` header keyword (html/pdf/odt/markdown/ascii, default html),
+    runs the matching mep.org_export_* exporter, and opens/refreshes the
+    result in a vertical split using the appropriate viewer (browser-style
+    HTML pane, PDF viewer, or office WYSIWYG pane), reusing an already-open
+    split instead of stacking up new ones.
+  - Added mep.pdf_reload/mep.office_reload (editor.cpp/lua_env.cpp) so an
+    already-open PDF/ODT preview can be refreshed in place, mirroring the
+    existing mep.html_reload.
 * TODO bind run button to <leader>rr
 * TODO add colors to tabbar buttons
 * TODO decrease size of tabbar tab button icons (i.e. just for tab, new tab, delete tab)

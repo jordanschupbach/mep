@@ -2397,6 +2397,47 @@ public:
      */
     void ReloadHtmlBuffer(int buffer_id, const std::string &origin, const std::string &source,
                            const unsigned char *bytes, size_t len);
+    // Re-decodes `bytes` INTO the existing PdfSession at `buffer_id` --
+    // unlike OpenPdfInPlace, never creates a new buffer/session and never
+    // does a dedup-by-filename lookup; a hard in-place overwrite (fresh
+    // PdfDoc, raster/search-match caches cleared, page/scroll/pan reset to
+    // the top). Filename never changes across a reload (unlike HTML's
+    // origin/source), so unlike ReloadHtmlBuffer this takes no path
+    // argument. Used by the run button (kBuiltinRunButton's org branch,
+    // main.cpp) to refresh an already-open PDF preview after recompiling
+    // the same output path -- mep.open's own dedup-by-filename lookup in
+    // OpenPdfInPlace would otherwise just find and reuse the stale session
+    // instead of re-reading the freshly recompiled bytes. A no-op if
+    // `buffer_id` isn't a live PDF session, or if `bytes` fails to parse
+    // (the stale session is left alone rather than being torn down).
+    /**
+     * @brief Re-decodes PDF bytes into an existing PdfSession in place, resetting page/scroll/search state.
+     * @param buffer_id The buffer id of the existing PDF session to overwrite.
+     * @param bytes Pointer to the raw PDF bytes to parse.
+     * @param len Length of `bytes` in bytes.
+     */
+    void ReloadPdfBuffer(int buffer_id, const unsigned char *bytes, size_t len);
+    // Re-decodes `bytes` INTO the existing OfficeSession at `buffer_id` --
+    // unlike OpenOfficeInPlace, never creates a new buffer/session and
+    // never does a dedup-by-filename lookup; a hard in-place overwrite
+    // (fresh OfficeDoc + original_bytes, cursor/selection/scroll/undo
+    // reset). Same "refresh an already-open preview after recompiling the
+    // same output path" role ReloadPdfBuffer/ReloadHtmlBuffer play for
+    // their own formats (kBuiltinRunButton's org branch, main.cpp). `path`
+    // is only needed to tell docx from odt (IsDocxPath/IsOdtPath) --
+    // unlike ReloadHtmlBuffer's origin/source it isn't stored anywhere, so
+    // callers just pass the same path the session was already opened
+    // from. A no-op if `buffer_id` isn't a live office session, or if
+    // `bytes` fails to parse (the stale session is left alone rather than
+    // being torn down).
+    /**
+     * @brief Re-decodes office-document bytes into an existing OfficeSession in place, resetting cursor/scroll/undo state.
+     * @param buffer_id The buffer id of the existing office session to overwrite.
+     * @param path The file path (used only to distinguish docx from odt).
+     * @param bytes Pointer to the raw document bytes to parse.
+     * @param len Length of `bytes` in bytes.
+     */
+    void ReloadOfficeBuffer(int buffer_id, const std::string &path, const unsigned char *bytes, size_t len);
     // Converts `buffer_id` in place between the rendered HTML view and a
     // plain-text view of the same underlying file, keeping the same
     // buffer_id both ways (so :w/undo/the pane's tab all keep working

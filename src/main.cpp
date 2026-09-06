@@ -10086,16 +10086,29 @@ const char *kBuiltinOrgExport =
     // org leader binding in this codebase (mep.org_images_toggle_ui,
     // mep.org_latex_toggle_ui, ...) already follows this same named-
     // global-function pattern for exactly that reason.
-    "function mep.org_export_html()\n"
+    // `on_done`, if given, fires with the written file's path once export
+    // actually completes -- optional and unused by MepOrgExport*/the
+    // leader bindings below, but the org run button (kBuiltinRunButton)
+    // needs it to know when (and where) to open its preview pane, and
+    // html/markdown/ascii's mep_org_export_to_file call is otherwise
+    // fire-and-forget from here.\n"
+    "function mep.org_export_html(on_done)\n"
     "  mep_org_export_prepare(function(lines)\n"
-    "    mep_org_export_to_file(mep_org_html_wrap_document(mep.org_export('html', lines), mep_org_extract_meta(lines)), 'html')\n"
+    "    local out = mep_org_export_to_file(mep_org_html_wrap_document(mep.org_export('html', lines), mep_org_extract_meta(lines)), 'html')\n"
+    "    if on_done then on_done(out) end\n"
     "  end)\n"
     "end\n"
-    "function mep.org_export_markdown()\n"
-    "  mep_org_export_prepare(function(lines) mep_org_export_to_file(mep.org_export('markdown', lines), 'md') end)\n"
+    "function mep.org_export_markdown(on_done)\n"
+    "  mep_org_export_prepare(function(lines)\n"
+    "    local out = mep_org_export_to_file(mep.org_export('markdown', lines), 'md')\n"
+    "    if on_done then on_done(out) end\n"
+    "  end)\n"
     "end\n"
-    "function mep.org_export_ascii()\n"
-    "  mep_org_export_prepare(function(lines) mep_org_export_to_file(mep.org_export('ascii', lines), 'txt') end)\n"
+    "function mep.org_export_ascii(on_done)\n"
+    "  mep_org_export_prepare(function(lines)\n"
+    "    local out = mep_org_export_to_file(mep.org_export('ascii', lines), 'txt')\n"
+    "    if on_done then on_done(out) end\n"
+    "  end)\n"
     "end\n"
     // PDF: org -> HTML (in-process) -> LaTeX (doc_export.h's
     // ExportHtmlToLatex, C++) -> a real .tex file next to the org file
@@ -10106,7 +10119,7 @@ const char *kBuiltinOrgExport =
     // resulting PDF itself rather than rasterizing+discarding it). The
     // .tex file is deliberately left on disk afterward -- a legitimate
     // export artifact of its own, not just scratch.
-    "function mep.org_export_pdf()\n"
+    "function mep.org_export_pdf(on_done)\n"
     "  mep_org_export_prepare(function(lines)\n"
     "    local meta = mep_org_extract_meta(lines)\n"
     "    local html = mep.org_export('html', lines)\n"
@@ -10125,6 +10138,7 @@ const char *kBuiltinOrgExport =
     "      on_exit = function(code)\n"
     "        if code == 0 then\n"
     "          mep.notify('Exported to ' .. base .. '.pdf')\n"
+    "          if on_done then on_done(base .. '.pdf') end\n"
     "        else\n"
     "          mep.notify('PDF export failed (tectonic exit ' .. code .. '): '\n"
     "            .. (tex_err[#tex_err] or 'see ' .. tex_path), 'error')\n"
@@ -10136,7 +10150,7 @@ const char *kBuiltinOrgExport =
     // ODT: org -> HTML (in-process) -> a real .odt written directly by
     // doc_export.h's ExportHtmlToOdt (C++, zipped via miniz) -- no
     // external tool/subprocess needed for this backend, unlike PDF.
-    "function mep.org_export_odt()\n"
+    "function mep.org_export_odt(on_done)\n"
     "  mep_org_export_prepare(function(lines)\n"
     "    local meta = mep_org_extract_meta(lines)\n"
     "    local html = mep.org_export('html', lines)\n"
@@ -10145,6 +10159,7 @@ const char *kBuiltinOrgExport =
     "    local ok, err = mep.doc_export_html_to_odt(html, base .. '.odt', meta.title or '', meta.author or '', base_dir)\n"
     "    if ok then\n"
     "      mep.notify('Exported to ' .. base .. '.odt')\n"
+    "      if on_done then on_done(base .. '.odt') end\n"
     "    else\n"
     "      mep.notify('ODT export failed: ' .. (err or '?'), 'error')\n"
     "    end\n"
@@ -12109,6 +12124,86 @@ const char *kBuiltinRunButton =
     "  end\n"
     "  mep_run_button_pending = remaining\n"
     "end)\n"
+    // Org run button (RUNBUTTON_PLAN, org branch): unlike every filetype
+    // above (a single shell command handed to the shared terminal), an
+    // .org file's "run" is mep's own in-process exporter (kBuiltinOrgExport,
+    // already loaded by the time this chunk runs -- see main()'s DoString
+    // order) -- there's no shell command to run, and the result isn't
+    // terminal output but a compiled document that belongs in its own
+    // viewer pane, not the popup terminal. Target format comes from a
+    // `#+EXPORT:` keyword (case-insensitive, mirroring #+TITLE:/#+AUTHOR:'s
+    // own convention -- mep_org_extract_meta, kBuiltinOrgExport), defaulting
+    // to html when absent; md/txt are accepted as aliases for the
+    // markdown/ascii backends' own file extensions.\n"
+    "local mep_run_button_org_exporters = {\n"
+    "  html = mep.org_export_html,\n"
+    "  pdf = mep.org_export_pdf,\n"
+    "  odt = mep.org_export_odt,\n"
+    "  markdown = mep.org_export_markdown,\n"
+    "  md = mep.org_export_markdown,\n"
+    "  ascii = mep.org_export_ascii,\n"
+    "  txt = mep.org_export_ascii,\n"
+    "}\n"
+    "local function mep_run_button_org_format()\n"
+    "  for i = 1, mep.line_count() do\n"
+    "    local f = mep.get_line(i):match('^%s*#%+[Ee][Xx][Pp][Oo][Rr][Tt]:%s*(%S+)%s*$')\n"
+    "    if f then return f:lower() end\n"
+    "  end\n"
+    "  return 'html'\n"
+    "end\n"
+    // Finds a buffer showing `path` in the ACTIVE TAB's own pane layout
+    // (mep.pane_buffers(), same scope mep_run_button_shown above already
+    // uses) -- "already open" here means "already visible in a split next
+    // to this org buffer", not merely open in some unrelated tab/
+    // workspace.\n"
+    "local function mep_run_button_pane_for_path(path)\n"
+    "  for _, id in ipairs(mep.pane_buffers()) do\n"
+    "    if mep.buffer_filename(id) == path then return id end\n"
+    "  end\n"
+    "  return nil\n"
+    "end\n"
+    // Shows `path` (whatever mep_run_button_org_exporters[format] just
+    // wrote) in a vertical split, reusing one that's already open next to
+    // this org buffer instead of stacking up a new split on every run.
+    // Refreshes in place via the html/pdf/office *_reload primitives
+    // (editor.cpp, lua_env.cpp) when the existing pane is already that
+    // viewer type -- mep.open's own dedup-by-filename lookup in
+    // LoadFile/OpenPdfInPlace/OpenOfficeInPlace would otherwise just find
+    // and reuse the STALE session from the previous run instead of
+    // picking up the freshly recompiled bytes, exactly the gap
+    // mep.html_reload already existed to cover for HTML alone.\n"
+    "local function mep_run_button_show_org_output(path)\n"
+    "  local existing = mep_run_button_pane_for_path(path)\n"
+    "  if existing then\n"
+    "    mep.pane_focus_buffer(existing)\n"
+    "    local ext = path:match('%.([^.]+)$')\n"
+    "    if ext == 'html' or ext == 'htm' then\n"
+    "      mep.html_reload(path)\n"
+    "    elseif ext == 'pdf' then\n"
+    "      mep.pdf_reload(path)\n"
+    "    elseif ext == 'odt' or ext == 'docx' then\n"
+    "      mep.office_reload(path)\n"
+    "    else\n"
+    "      mep.cmd('e!')\n"
+    "    end\n"
+    "  else\n"
+    "    mep.cmd('vsplit')\n"
+    "    mep.open(path)\n"
+    "  end\n"
+    "  mep.notify('Run: opened ' .. path)\n"
+    "end\n"
+    "function mep.run_button_run_org()\n"
+    "  local fname = mep.filename()\n"
+    "  if not fname or fname == '' then mep.notify('Run: save this buffer to a file first', 'warn') return end\n"
+    "  mep.cmd('write')\n"
+    "  local format = mep_run_button_org_format()\n"
+    "  local exporter = mep_run_button_org_exporters[format]\n"
+    "  if not exporter then\n"
+    "    mep.notify('Run: unknown #+EXPORT: ' .. format .. ', defaulting to html', 'warn')\n"
+    "    exporter = mep.org_export_html\n"
+    "  end\n"
+    "  exporter(mep_run_button_show_org_output)\n"
+    "end\n"
     // Runs (or compiles-then-runs) the *focused pane's* current file --
     // main.cpp's Run button click handler focuses that pane first, same
     // convention as its vsplit/hsplit/close neighbors, so mep.filename()/
@@ -12118,6 +12213,7 @@ const char *kBuiltinRunButton =
     "  local fname = mep.filename()\n"
     "  if not fname or fname == '' then mep.notify('Run: save this buffer to a file first', 'warn') return end\n"
     "  local ext = mep_lsp_filetype(fname)\n"
+    "  if ext == 'org' then mep.run_button_run_org() return end\n"
     "  local cfg = ext and mep_run_config_for(ext)\n"
     "  if not cfg then mep.notify('Run: no run command configured for this filetype', 'warn') return end\n"
     "  mep.cmd('write')\n"
@@ -18169,7 +18265,7 @@ void DrawAgentStatusBadge(Vector2 center, float radius, const std::string &statu
  * @return True if the Run button should be shown for a buffer with this extension.
  */
 bool RunButtonSupportsExtension(const std::string &ext) {
-    static const std::unordered_set<std::string> kExts = {"py", "r", "R", "c", "cpp", "cc", "cxx"};
+    static const std::unordered_set<std::string> kExts = {"py", "r", "R", "c", "cpp", "cc", "cxx", "org"};
     return kExts.count(ext) != 0;
 }
 

@@ -5754,6 +5754,28 @@ void Editor::OpenPdfInPlace(const std::string &path, const unsigned char *bytes,
     status_message_.clear();
 }
 
+void Editor::ReloadPdfBuffer(int buffer_id, const unsigned char *bytes, size_t len) {
+    auto it = pdfs_.find(buffer_id);
+    if (it == pdfs_.end()) return;
+    auto doc = std::make_unique<PdfDoc>();
+    if (!doc->LoadFromMemory(bytes, len)) {
+        status_message_ = "E-reload: " + doc->Error();
+        return;
+    }
+    PdfSession &sess = it->second;
+    sess.doc = std::move(doc);
+    sess.page = 0;
+    sess.scroll_y = 0;
+    sess.pan_x = 0;
+    sess.rasters.clear();
+    sess.page_size_pt.clear();
+    sess.search_active = false;
+    sess.search_input.clear();
+    sess.search_query.clear();
+    sess.search_matches.clear();
+    sess.search_current = -1;
+}
+
 // Crosses `page` forward/backward as scroll_y drifts past the current
 // anchor page's on-screen bounds, re-basing scroll_y relative to the new
 // anchor each time -- this is what makes j/k (or the mouse wheel) held
@@ -6127,6 +6149,42 @@ void Editor::OpenOfficeInPlace(const std::string &path, const unsigned char *byt
     CurPane().scroll_row = 0;
     pending_g_ = false;  // avoid gg/G leakage from whatever mode preceded this
     status_message_.clear();
+}
+
+void Editor::ReloadOfficeBuffer(int buffer_id, const std::string &path, const unsigned char *bytes, size_t len) {
+    auto it = officedocs_.find(buffer_id);
+    if (it == officedocs_.end()) return;
+    OfficeDoc doc;
+    std::string error;
+    bool ok = false;
+    if (IsDocxPath(path)) {
+        ok = LoadDocxFromMemory(bytes, len, doc, error);
+    } else if (IsOdtPath(path)) {
+        ok = LoadOdtFromMemory(bytes, len, doc, error);
+    } else {
+        error = "unsupported office document format";
+    }
+    if (!ok) {
+        status_message_ = "E-reload: " + error;
+        return;
+    }
+    OfficeSession &sess = it->second;
+    sess.doc = std::move(doc);
+    sess.original_bytes.assign(bytes, bytes + len);
+    sess.cursor_para = 0;
+    sess.cursor_col = 0;
+    sess.has_selection = false;
+    sess.sel_anchor_para = 0;
+    sess.sel_anchor_col = 0;
+    sess.modified = false;
+    sess.undo_stack.clear();
+    sess.redo_stack.clear();
+    sess.scroll_para = 0;
+    sess.scroll_line_in_para = 0;
+    sess.scroll_follow_last_cursor_para = -1;
+    sess.in_table_edit = -1;
+    sess.table_cursor_row = 0;
+    sess.table_cursor_col = 0;
 }
 
 void Editor::HandleOfficeNormalInput() {

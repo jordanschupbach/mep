@@ -10842,7 +10842,8 @@ bool Editor::HandleMod1Shortcuts() {
     // in main.cpp), but while a sidebar is focused (file tree, git status,
     // etc.) that mapping would silently close whatever buffer sits behind
     // it -- so intercept it here and close the sidebar instead, mirroring
-    // the generic q/Escape handling in HandleSidebarInput.
+    // the generic q handling in HandleSidebarInput (Escape deliberately
+    // doesn't close a docked sidebar).
     if (mode_ == Mode::Sidebar && !extra_ctrl && !extra_shift && IsKeyPressed(KEY_D)) {
         int id = focused_sidebar_id_;
         RestoreFromOverlay();
@@ -10929,10 +10930,12 @@ void Editor::ScrollPickerPreview(int delta) {
     picker_preview_scroll_ = std::max(0, std::min(picker_preview_scroll_ + delta, max_scroll));
 }
 
-// Ctrl-T (new tab) / Alt-1..Alt-9 (jump to tab by number) -- fixed global
-// bindings, not user-remappable mod1 mappings (mod1 itself defaults to
-// Alt, so routing these through that system would make mod1=alt users'
-// Alt-1..9 ambiguous with whatever else mod1 might bind there). Checked
+// Ctrl-T (new tab), Ctrl-Tab / Ctrl-Shift-Tab (next / previous tab) and
+// Alt-1..Alt-9 (switch to workspace by number) -- fixed global bindings,
+// not user-remappable mod1 mappings (mod1 itself defaults to Alt, so
+// routing these through that system would make mod1=alt users' Alt-1..9
+// ambiguous with whatever else mod1 might bind there; and mod1=Shift
+// would turn every typed '!'..'(' into a workspace switch). Checked
 // unconditionally alongside HandleMod1Shortcuts, before mode dispatch, so
 // e.g. Ctrl-T opens a new tab from Insert mode the same way it would in
 // Normal.
@@ -10943,7 +10946,7 @@ bool Editor::HandleTabShortcuts() {
     // Workspace chords (WORKSPACES_PLAN.md Phase 2): Ctrl-Shift-T prompts
     // for a new workspace name (a Lua ui_input, so it lives in
     // kBuiltinWorkspaces), Ctrl-Alt-]/[ cycle workspaces. Checked before
-    // the plain Ctrl-T/Alt-N tab chords they extend. <leader>w* leader
+    // the plain Ctrl-T / Ctrl-Tab / Alt-N chords below. <leader>w* leader
     // maps cover the same actions for layouts where these don't arrive.
     if (ctrl && shift && IsKeyPressed(KEY_T)) {
         if (lua_) lua_->DoString("mep.workspace_new_prompt()");
@@ -10961,10 +10964,27 @@ bool Editor::HandleTabShortcuts() {
         TabNew("");
         return true;
     }
-    if (alt) {
+    // Ctrl-Tab / Ctrl-Shift-Tab: step through the active workspace's tabs
+    // (the same relative move as :tabnext / :tabprevious). Ctrl+Alt+Tab is
+    // left alone so it can't be confused with mod1+Tab's buffer cycling.
+    if (ctrl && !alt && IsKeyPressed(KEY_TAB)) {
+        if (shift) TabPrevious();
+        else TabNext();
+        return true;
+    }
+    // Alt-1..9: switch to the Nth workspace of the active project (the
+    // same 1-based order :ws N uses and the tab bar lists). An index past
+    // the last workspace, or one whose worktree is still being created, is
+    // reported on the status line rather than ignored silently.
+    if (alt && !ctrl) {
         for (int key = KEY_ONE; key <= KEY_NINE; key++) {
             if (!IsKeyPressed(key)) continue;
-            GoToTab(key - KEY_ONE);
+            const int idx = key - KEY_ONE;
+            if (idx < WorkspaceCount()) {
+                WorkspaceSwitch(ActiveProject().workspaces[static_cast<size_t>(idx)].id);
+            } else {
+                status_message_ = "No workspace " + std::to_string(idx + 1);
+            }
             // Same reasoning as HandleMod1Shortcuts' own drain: Alt-as-
             // compose on some layouts can still queue a char event for the
             // digit alongside the key event handled above.
@@ -14513,19 +14533,14 @@ void Editor::HandleSidebarInput() {
     // While popped out (mod1+m), Escape/q step back down to the docked
     // panel instead of closing the sidebar outright -- the popout is a
     // temporary zoom, and the natural "undo" of a zoom is un-zooming, not
-    // losing the panel (and its cursor) entirely. A second Escape/q then
-    // closes as before.
+    // losing the panel (and its cursor) entirely. A second q then closes
+    // as before. Escape on a *docked* sidebar deliberately does nothing:
+    // closing is reserved for q and mod1+d (HandleMod1Shortcuts), so a
+    // reflexive Escape can't throw away the panel and its cursor.
     const bool popped_out = SidebarPopoutActive();
     if (escape) {
-        if (popped_out) {
-            CloseSidebarPopout();
-            pending_g_ = false;
-            return;
-        }
-        int id = focused_sidebar_id_;
-        RestoreFromOverlay();
-        CloseSidebar(id);
-        pending_g_ = false;  // don't leak a lone unmatched 'g' into whatever mode Escape restores
+        pending_g_ = false;  // an unmatched 'g' shouldn't survive an Escape
+        if (popped_out) CloseSidebarPopout();
         return;
     }
     if (enter) {
@@ -18159,6 +18174,15 @@ bool Editor::ActivityTodoRetitle(const std::string &path, int line, const std::s
     std::vector<std::string> lines;
     if (!ReadLinesForPath(path, 0, &lines)) return false;
     std::vector<std::string> updated = OrgTodoListRetitle(lines, line, text);
+    if (updated == lines) return false;
+    return WriteLinesForPath(path, updated);
+}
+
+bool Editor::ActivityTodoArchive(const std::string &path, int line) {
+    if (!IsOrgTodoPath(path)) return false;
+    std::vector<std::string> lines;
+    if (!ReadLinesForPath(path, 0, &lines)) return false;
+    std::vector<std::string> updated = OrgTodoListArchive(lines, line);
     if (updated == lines) return false;
     return WriteLinesForPath(path, updated);
 }

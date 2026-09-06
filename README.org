@@ -185,8 +185,9 @@ Windows & tabs: =:split [file]= / =:vsplit [file]= split the current pane
 pane; =Ctrl-W h/j/k/l= moves focus directionally instead (spatially
 left/down/up/right, same heuristic as =mod1+hjkl= below); =Ctrl-W c/s/v=
 close/split-horizontal/split-vertical the current one. =:tabnew [file]=,
-=:tabdelete=, =:tabnext=, =:tabprevious= manage tabs -- each tab has its
-own independent split-pane layout. Two panes split from the same buffer
+=:tabdelete=, =:tabnext=, =:tabprevious= manage tabs (=Ctrl-T= opens a
+new one, =Ctrl-Tab= / =Ctrl-Shift-Tab= step to the next / previous) --
+each tab has its own independent split-pane layout. Two panes split from the same buffer
 (no filename given) share it, including undo history. The tab bar is one
 row: =[project] [ws1] [ws2*] │ ● ○ + x= -- the project name, one text
 label per workspace (the active one highlighted, =*= when it has
@@ -319,7 +320,8 @@ on that worktree. Buffers belong to the workspace they were opened in:
 =:ls=, =<leader>bb=, =:bnext= and the agent's =buffer.list= only show
 the active workspace's, while =:wa= and the =:qa= unsaved-changes guard
 stay global so nothing hidden is ever lost. =:ws <name|N>=, =:wsnext= /
-=:wsn=, =:wsprevious= / =:wsp=, =Ctrl-Alt-]= / =Ctrl-Alt-[= switch;
+=:wsn=, =:wsprevious= / =:wsp=, =Ctrl-Alt-]= / =Ctrl-Alt-[= switch, and
+=Alt-1= .. =Alt-9= jump straight to the Nth workspace;
 =:wslist= / =<leader>ww= picks from a list; =:wsrename <name>=;
 =:wsdelete[!] [name]= runs =git worktree remove= (the *branch is kept*)
 then closes the workspace, refusing on unsaved buffers unless forced;

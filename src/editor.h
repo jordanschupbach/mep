@@ -3139,6 +3139,13 @@ public:
      * @return True if the headline was rewritten.
      */
     bool ActivityTodoRetitle(const std::string &path, int line, const std::string &text);
+    /**
+     * @brief Tags a keyworded headline of an org todo file :ARCHIVE:, hiding it (and its subtree) from the panel.
+     * @param path The org file to edit.
+     * @param line The 0-based line of the headline.
+     * @return True if the headline was rewritten.
+     */
+    bool ActivityTodoArchive(const std::string &path, int line);
     // Inverse of ReadLinesForPath, ActivityTodoSave's own write rule
     // factored out: an open buffer for `path` gets its lines replaced as
     // one undo step and is written to disk only if it had no pending
@@ -4233,7 +4240,7 @@ public:
     // than by extending FindNeighborPaneId's geometry: when called while a
     // sidebar is focused (Mode::Sidebar), the direction pointing back
     // toward the pane content blurs the sidebar (focus returns to whatever
-    // pane was active, without closing it -- unlike Escape/q); up/down
+    // pane was active, without closing it -- unlike q/mod1+d); up/down
     // step to the sidebar stacked above/below it in the same left/right
     // dock (see SidebarInstance::stack_share); other directions are a
     // no-op.
@@ -6279,7 +6286,8 @@ private:
     // scroll past the last line ever coming back into view.
     void ScrollPickerPreview(int delta);
     // Checked alongside HandleMod1Shortcuts, same reasoning: Ctrl-T (new
-    // tab) and Alt-1..Alt-9 (jump to tab by number) are fixed, global
+    // tab), Ctrl-Tab / Ctrl-Shift-Tab (next / previous tab) and
+    // Alt-1..Alt-9 (switch to workspace by number) are fixed, global
     // shortcuts independent of whatever mod1_ is currently configured to
     // (mod1 only ever scans letters/Tab, never digits -- see
     // HandleMod1Shortcuts), so they can't just be mod1 mappings themselves.

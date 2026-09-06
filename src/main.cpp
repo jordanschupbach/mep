@@ -2004,8 +2004,9 @@ const char *kKeybindingsText =
     "  Ctrl-W w / W                   cycle to next / previous pane\n"
     "  Ctrl-W c / s / v               close / split-h / split-v pane\n"
     "  Ctrl-W h j k l                 move focus left / down / up / right\n"
-    "  :tabnew [file]  :tabdelete     new / close tab\n"
+    "  :tabnew [file]  :tabdelete     new / close tab (Ctrl-T = new)\n"
     "  :tabnext  :tabprevious         switch tabs\n"
+    "  Ctrl-Tab / Ctrl-Shift-Tab      next / previous tab\n"
     "\n"
     "Projects & workspaces\n"
     "  :wsnew[!] <name>               new workspace (git: new worktree + branch; ! attaches to existing branch)\n"
@@ -2014,6 +2015,7 @@ const char *kKeybindingsText =
     "  :wsrename <name>  :wslist      rename / pick workspace\n"
     "  Ctrl-Shift-T                   new workspace prompt\n"
     "  Ctrl-Alt-] / Ctrl-Alt-[        next / previous workspace\n"
+    "  Alt-1 .. Alt-9                 switch to workspace by number\n"
     "  <leader>w n/w/r/d/l/h          new / list / rename / delete / next / prev workspace\n"
     "  <leader>gw                     git workspaces picker (branch, ahead/behind)\n"
     "  <leader>gg                     git panel (Tab / 1-4: Status, Log, Branches, Stash; ? lists keys)\n"
@@ -10506,7 +10508,9 @@ const char *kBuiltinOrgBib =
 // still gets the panel's original "0|text" line file). Every keyworded
 // headline is one row, indented by level. The sidebar edits the file
 // directly: a = add, e = retitle (prompt popup), d = done, x = delete
-// (whole subtree, after a confirm), Enter/click = start or stop the
+// (whole subtree, after a confirm), A = archive (tags the headline
+// :ARCHIVE:, which hides it and its subtree from the panel while leaving
+// it in the file), Enter/click = start or stop the
 // headline's org clock (a CLOCK entry in its :LOGBOOK: drawer), and the
 // status bar's active-todo chip (main.cpp's status line, fed through
 // mep.active_todo_set) shows the clocked-in todo with a live timer. The
@@ -10516,8 +10520,9 @@ const char *kBuiltinOrgBib =
 // (on_buffer_changed, current buffer only) or any buffer is saved, so
 // edits made in the editor and keys pressed in the sidebar always agree.
 // Parse/apply live in C++ -- Editor::ActivityTodoLoad/ActivityTodoSave/
-// ActivityTodoRetitle/ActivityTodoClock* (editor.cpp) over org_doc.h's
-// OrgTodoListItems/OrgTodoListApply/OrgTodoListRetitle/OrgClock*Lines --
+// ActivityTodoRetitle/ActivityTodoArchive/ActivityTodoClock* (editor.cpp)
+// over org_doc.h's OrgTodoListItems/OrgTodoListApply/OrgTodoListRetitle/
+// OrgTodoListArchive/OrgClock*Lines --
 // exposed as mep.activity_todo_* (lua_env.cpp).
 const char *kBuiltinActivityBar =
     "mep.activity_todo_file = nil\n"
@@ -10714,12 +10719,26 @@ const char *kBuiltinActivityBar =
     "    mep_activity_todo_rerender()\n"
     "  end)\n"
     "end\n"
-    // Sidebar keys (mep.sidebar_set_on_key; j/k/gg/G/q/Esc and Enter are
+    // 'A': archive -- an :ARCHIVE: tag on the headline (org's own
+    // convention), which OrgTodoListItems then skips along with the whole
+    // subtree under it, so the row disappears but nothing is deleted:
+    // body, clock history and children all stay in the file. A running
+    // clock on it is stopped first, as marking it done would. The legacy
+    // "0|text" format has no headline to tag, so it can't archive.
+    "function mep.activity_todo_archive_item(it, i)\n"
+    "  if not it.line then mep.notify('Archive needs an org todo file') return end\n"
+    "  local clock = mep_activity_todo_clock()\n"
+    "  if clock and clock.line == it.line then mep.activity_todo_clock_stop(mep_activity_todo_path()) end\n"
+    "  if mep.activity_todo_archive(mep_activity_todo_path(), it.line) then mep.notify('Archived: ' .. it.text) end\n"
+    "  mep_activity_todo_rerender()\n"
+    "end\n"
+    // Sidebar keys (mep.sidebar_set_on_key; j/k/gg/G/q and Enter are
     // the sidebar's own). Enter = start/stop the clock, a = add, e = edit,
-    // d = done, x = delete, o = open TODO.org, R = re-read, ? = this list.
+    // d = done, x = delete, A = archive, o = open TODO.org, R = re-read,
+    // ? = this list.
     "function mep.activity_todo_on_key(k)\n"
     "  if k == '?' then\n"
-    "    mep.notify('Todo: Enter=start/stop clock  a=add  e=edit in float (Esc closes)  d=done  x=delete  o=open file  R=refresh  mod1+m=popout')\n"
+    "    mep.notify('Todo: Enter=start/stop clock  a=add  e=edit in float (Esc closes)  d=done  x=delete  A=archive  o=open file  R=refresh  mod1+m=popout')\n"
     "    return\n"
     "  elseif k == 'a' then mep.activity_todo_add() return\n"
     "  elseif k == 'o' then mep.activity_todo_open() return\n"
@@ -10730,6 +10749,7 @@ const char *kBuiltinActivityBar =
     "  if k == 'e' then mep.activity_todo_edit(it, i)\n"
     "  elseif k == 'd' then mep.activity_todo_mark_done(it, i)\n"
     "  elseif k == 'x' then mep.activity_todo_delete(it, i)\n"
+    "  elseif k == 'A' then mep.activity_todo_archive_item(it, i)\n"
     "  end\n"
     "end\n"
     // Refresh-if-stale: only redraws when the file's checklist (or its
@@ -11949,7 +11969,7 @@ const char *kBuiltinAiTerminal =
     "  mep_ai_agents_rendered = key\n"
     "  mep_ai_agents_render(rows)\n"
     "end\n"
-    // Extra keys while the sidebar is focused (Enter/j/k/q/Esc are the
+    // Extra keys while the sidebar is focused (Enter/j/k/q are the
     // sidebar's own): n opens a new AI terminal, r forces a re-scan.
     "local function mep_ai_agents_on_key(k)\n"
     "  if k == 'n' then mep.ai_terminal_open()\n"

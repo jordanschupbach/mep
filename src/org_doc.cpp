@@ -621,11 +621,37 @@ std::string FormatTodoLine(const std::vector<std::string> &todo_keywords, const 
     return line;
 }
 
+namespace {
+/**
+ * @brief Marks which headlines of an outline sit in an :ARCHIVE: subtree (the tag on themselves or an ancestor).
+ * @param outline the parsed outline, headlines in document order
+ * @return one flag per outline.headlines entry, true when that headline is archived
+ */
+std::vector<bool> OrgArchivedHeadlines(const OrgOutline &outline) {
+    std::vector<bool> archived(outline.headlines.size(), false);
+    // Ancestor chain as (level, archived) pairs, in document order:
+    // a headline pops everything at its own level or deeper, so the
+    // top is always its nearest ancestor.
+    std::vector<std::pair<int, bool>> stack;
+    for (size_t i = 0; i < outline.headlines.size(); i++) {
+        const OrgHeadline &h = outline.headlines[i];
+        while (!stack.empty() && stack.back().first >= h.level) stack.pop_back();
+        bool self = std::find(h.tags.begin(), h.tags.end(), kOrgArchiveTag) != h.tags.end();
+        bool is_archived = self || (!stack.empty() && stack.back().second);
+        archived[i] = is_archived;
+        stack.emplace_back(h.level, is_archived);
+    }
+    return archived;
+}
+}  // namespace
+
 std::vector<OrgTodoItem> OrgTodoListItems(const std::vector<std::string> &lines) {
     std::vector<OrgTodoItem> items;
     OrgOutline outline = ParseOrgOutline(lines);
-    for (const OrgHeadline &h : outline.headlines) {
-        if (h.todo_keyword.empty()) continue;
+    const std::vector<bool> archived = OrgArchivedHeadlines(outline);
+    for (size_t hi = 0; hi < outline.headlines.size(); hi++) {
+        const OrgHeadline &h = outline.headlines[hi];
+        if (h.todo_keyword.empty() || archived[hi]) continue;
         OrgTodoItem it;
         it.done = h.is_done_keyword;
         it.text = h.title;
@@ -642,11 +668,15 @@ std::vector<std::string> OrgTodoListApply(const std::vector<std::string> &lines,
     const std::string todo_kw = outline.todo_keywords.empty() ? std::string("TODO") : outline.todo_keywords[0];
     const std::string done_kw = outline.done_keywords.empty() ? std::string("DONE") : outline.done_keywords[0];
 
-    // Keyworded headlines by their line index -- the identity the panel
-    // hands back in OrgTodoItem::line.
+    // Keyworded, non-archived headlines by their line index -- the
+    // identity the panel hands back in OrgTodoItem::line. An archived
+    // one is left out so that, never being "referenced", it also can't
+    // be dropped below.
+    const std::vector<bool> archived = OrgArchivedHeadlines(outline);
     std::vector<const OrgHeadline *> by_line(lines.size(), nullptr);
-    for (const OrgHeadline &h : outline.headlines) {
-        if (h.todo_keyword.empty()) continue;
+    for (size_t hi = 0; hi < outline.headlines.size(); hi++) {
+        const OrgHeadline &h = outline.headlines[hi];
+        if (h.todo_keyword.empty() || archived[hi]) continue;
         if (h.line_start >= 0 && h.line_start < static_cast<int>(lines.size())) {
             by_line[static_cast<size_t>(h.line_start)] = &h;
         }
@@ -694,6 +724,22 @@ std::vector<std::string> OrgTodoListApply(const std::vector<std::string> &lines,
         }
     }
     return result;
+}
+
+std::vector<std::string> OrgTodoListArchive(const std::vector<std::string> &lines, int line) {
+    if (line < 0 || line >= static_cast<int>(lines.size())) return lines;
+    OrgOutline outline = ParseOrgOutline(lines);
+    for (const OrgHeadline &h : outline.headlines) {
+        if (h.line_start != line) continue;
+        if (h.todo_keyword.empty()) break;
+        if (std::find(h.tags.begin(), h.tags.end(), kOrgArchiveTag) != h.tags.end()) break;
+        std::vector<std::string> tags = h.tags;
+        tags.emplace_back(kOrgArchiveTag);
+        std::vector<std::string> out = lines;
+        out[static_cast<size_t>(line)] = FormatHeadlineLine(h.level, h.todo_keyword, h.priority, h.title, tags);
+        return out;
+    }
+    return lines;
 }
 
 std::vector<std::string> OrgTodoListRetitle(const std::vector<std::string> &lines, int line, const std::string &new_title) {

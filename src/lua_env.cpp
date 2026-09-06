@@ -1665,6 +1665,21 @@ int l_activity_todo_retitle(lua_State *L) {
     return 1;
 }
 
+// mep.activity_todo_archive(path, line) -> bool: tags the 1-indexed
+// keyworded headline :ARCHIVE: so the Todo panel stops listing it (and
+// its subtree); the headline itself stays in the file untouched otherwise.
+/**
+ * @brief Implements mep.activity_todo_archive(path, line): archives a headline of an org todo file.
+ * @param L Lua state; arg 1 is the org file path, arg 2 the 1-indexed headline line.
+ * @return Number of values pushed (1: true if the headline was rewritten).
+ */
+int l_activity_todo_archive(lua_State *L) {
+    const char *path = luaL_checkstring(L, 1);
+    int line = static_cast<int>(luaL_checkinteger(L, 2)) - 1;
+    lua_pushboolean(L, GetEditor(L)->ActivityTodoArchive(path, line));
+    return 1;
+}
+
 // mep.active_todo_set(text, start) / mep.active_todo_set(nil): what the
 // status bar's todo chip shows -- `text` with a live timer counting from
 // `start` (Unix seconds), or the red "[No active TODO]" state when nil.
@@ -6779,6 +6794,7 @@ const luaL_Reg kMepFuncs[] = {
     {"activity_todo_clock_start", l_activity_todo_clock_start},
     {"activity_todo_clock_stop", l_activity_todo_clock_stop},
     {"activity_todo_retitle", l_activity_todo_retitle},
+    {"activity_todo_archive", l_activity_todo_archive},
     {"active_todo_set", l_active_todo_set},
     {"activity_test_failure_lines", l_activity_test_failure_lines},
     {"syntax_highlight_fallback", l_syntax_highlight_fallback},

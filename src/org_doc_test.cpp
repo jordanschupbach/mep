@@ -186,6 +186,51 @@ int main() {
         CHECK(OrgTodoListRetitle(tagged, 2, "") == tagged);       // empty title
     }
 
+    // --- Archive (the sidebar's 'A' key): the tag goes after any existing
+    //     tags; the archived headline and its whole subtree vanish from
+    //     the checklist, but a save of that checklist leaves them in the
+    //     file (they're never "unreferenced" -- see OrgTodoListApply). A
+    //     plain headline, a stale line or an already-archived one is a
+    //     no-op.
+    {
+        Lines doc = {"#+TODO: TODO | DONE", "* TODO [#A] Parent :work:", "** TODO Child", "   body",
+                     "* DONE Sibling", "* TODO Other"};
+        Lines out = OrgTodoListArchive(doc, 1);
+        CHECK(out[1] == "* TODO [#A] Parent :work:ARCHIVE:");
+        CHECK(out[2] == "** TODO Child");  // the child keeps its own line untouched...
+        std::vector<OrgTodoItem> items = OrgTodoListItems(out);
+        CHECK(items.size() == 2);  // ...but is hidden with its parent
+        CHECK(items[0].text == "Sibling" && items[0].line == 4);
+        CHECK(items[1].text == "Other" && items[1].line == 5);
+        // Saving the (archived-free) checklist back must not drop the
+        // archived subtree; toggling a visible sibling still works.
+        items[1].done = true;
+        Lines saved = OrgTodoListApply(out, items);
+        CHECK(saved.size() == out.size());
+        CHECK(saved[1] == "* TODO [#A] Parent :work:ARCHIVE:");
+        CHECK(saved[2] == "** TODO Child");
+        CHECK(saved[3] == "   body");
+        CHECK(saved[5] == "* DONE Other");
+        // Retitling the visible sibling doesn't disturb the archived rows either.
+        CHECK(OrgTodoListRetitle(saved, 5, "Renamed")[1] == "* TODO [#A] Parent :work:ARCHIVE:");
+        // No-ops.
+        CHECK(OrgTodoListArchive(out, 1) == out);    // already archived
+        CHECK(OrgTodoListArchive(doc, 0) == doc);    // "#+TODO:" line, not a headline
+        CHECK(OrgTodoListArchive(doc, 3) == doc);    // body text
+        CHECK(OrgTodoListArchive(doc, 99) == doc);   // out of range
+        CHECK(OrgTodoListArchive(doc, -1) == doc);   // negative
+        Lines plain = {"* Plain header", "* TODO Task"};
+        CHECK(OrgTodoListArchive(plain, 0) == plain);  // keywordless headline
+        const Lines plain_archived = {"* Plain header", "* TODO Task :ARCHIVE:"};
+        CHECK(OrgTodoListArchive(plain, 1) == plain_archived);
+        // An inherited tag: a keyworded child under an archived *plain*
+        // header is hidden too.
+        Lines nested = {"* Old stuff :ARCHIVE:", "** TODO Buried", "* TODO Live"};
+        std::vector<OrgTodoItem> vis = OrgTodoListItems(nested);
+        CHECK(vis.size() == 1 && vis[0].text == "Live");
+        CHECK(OrgTodoListApply(nested, vis) == nested);
+    }
+
     // --- Clock line matching and timestamp parsing.
     {
         std::string ts;

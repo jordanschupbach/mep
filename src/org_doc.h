@@ -218,10 +218,19 @@ struct OrgTodoItem {
     std::string keyword;  // the headline's current keyword ("" for a not-yet-written item)
 };
 
+// Archived headlines -- an ":ARCHIVE:" tag on the headline itself or on
+// any ancestor, org's own tag-inheritance rule for that tag -- are
+// invisible to the panel exactly like plain (keywordless) headlines:
+// OrgTodoListItems never lists them and OrgTodoListApply never touches
+// them (so a checklist loaded without them can't delete them as
+// "unreferenced" on the next save). The sidebar's 'A' key adds the tag
+// through OrgTodoListArchive.
+constexpr const char *kOrgArchiveTag = "ARCHIVE";
+
 /**
- * @brief Lists every keyworded headline in an org file as a flat checklist item.
+ * @brief Lists every keyworded, non-archived headline in an org file as a flat checklist item.
  * @param lines the full text of the org file, one entry per line
- * @return one OrgTodoItem per headline with a TODO/DONE keyword, in document order
+ * @return one OrgTodoItem per headline with a TODO/DONE keyword outside any :ARCHIVE: subtree, in document order
  */
 std::vector<OrgTodoItem> OrgTodoListItems(const std::vector<std::string> &lines);
 
@@ -268,6 +277,20 @@ std::vector<std::string> OrgTodoListApply(const std::vector<std::string> &lines,
  * @return the rewritten file lines (equal to `lines` when `line` isn't a keyworded headline or `new_title` is empty)
  */
 std::vector<std::string> OrgTodoListRetitle(const std::vector<std::string> &lines, int line, const std::string &new_title);
+
+// The sidebar's 'A' key: tag the keyworded headline at 0-based index
+// `line` with ":ARCHIVE:" (appended after any tags it already has, via
+// FormatHeadlineLine over the parsed parts), which drops it -- and its
+// whole subtree -- out of the checklist from the next OrgTodoListItems
+// on. Returns `lines` unchanged when `line` doesn't name a keyworded
+// headline or it already carries the tag.
+/**
+ * @brief Adds the :ARCHIVE: tag to the keyworded headline at a 0-based line index, preserving keyword, priority, title and other tags.
+ * @param lines the current full text of the org file
+ * @param line the 0-based index of the headline to archive
+ * @return the rewritten file lines (equal to `lines` when `line` isn't a keyworded headline or is already archived)
+ */
+std::vector<std::string> OrgTodoListArchive(const std::vector<std::string> &lines, int line);
 
 // --- Clocking (Todo sidebar's Enter = start/stop, kBuiltinActivityBar) ---
 // Same on-disk convention as Editor::OrgClockIn/OrgClockOut (editor.cpp,

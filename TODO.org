@@ -12,6 +12,11 @@
   :LOGBOOK:
   CLOCK: [2026-09-05 Sat 22:03]--[2026-09-05 Sat 22:12] =>  0:09
   :END:
+* TODO todo management
+  :LOGBOOK:
+  CLOCK: [2026-09-05 Sat 23:11]--[2026-09-05 Sat 23:11] =>  0:00
+  CLOCK: [2026-09-05 Sat 21:29]--[2026-09-05 Sat 21:46] =>  0:17
+  :END:
 * TODO Add language specific, configurable run button to active pane bar
   :LOGBOOK:
   CLOCK: [2026-09-05 Sat 21:28]--[2026-09-05 Sat 21:45] =>  0:17
@@ -20,13 +25,9 @@
   :LOGBOOK:
   CLOCK: [2026-09-05 Sat 21:28]--[2026-09-05 Sat 21:47] =>  0:19
   :END:
-* TODO todo management
-  :LOGBOOK:
-  CLOCK: [2026-09-05 Sat 21:29]--[2026-09-05 Sat 21:46] =>  0:17
-  :END:
 * TODO add notification to workspace tab in tabbar for finished ai (should be red)
 * TODO Add platform native file-open popup (instead of :e , the current behavior)
-* TODO Add better styling to mode in bottom bar and remove filename
+* DONE Add better styling to mode in bottom bar and remove filename :ARCHIVE:
 * TODO Add compiler explorer to c++ ui
 * TODO add hex exploration to c++ ui
 * TODO Fix dap debug ui
@@ -43,8 +44,13 @@
   - Added mep.pdf_reload/mep.office_reload (editor.cpp/lua_env.cpp) so an
     already-open PDF/ODT preview can be refreshed in place, mirroring the
     existing mep.html_reload.
-* TODO bind run button to <leader>rr
-* TODO add colors to tabbar buttons
-* TODO decrease size of tabbar tab button icons (i.e. just for tab, new tab, delete tab)
-* TODO remove ? mark and swap with [+] for adding new workspace
-* TODO add [-] for delete active workspace
+* DONE bind run button to <leader>rr :ARCHIVE:
+* DONE add colors to tabbar buttons :ARCHIVE:
+* DONE decrease size of tabbar tab button icons (i.e. just for tab, new tab, delete tab) :ARCHIVE:
+* DONE remove ? mark and swap with [+] for adding new workspace :ARCHIVE:
+* DONE add [-] for delete active workspace :ARCHIVE:
+* DONE add zen mode :ARCHIVE:
+  :LOGBOOK:
+  CLOCK: [2026-09-05 Sat 23:14]--[2026-09-05 Sat 23:20] =>  0:06
+  :END:
+* TODO add pomodoro timer widget

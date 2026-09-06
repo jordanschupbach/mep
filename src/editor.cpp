@@ -15606,7 +15606,7 @@ const std::vector<std::string> &BuiltinCommandNames() {
         "projectp", "projects",
         "bnext", "bn", "bprevious", "bprev", "bp", "bNext", "bN", "bdelete", "bd", "bdelete!", "bd!",
         "set", "normal", "norm", "normal!", "norm!", "MepNotifyClear", "MepNotifyDismiss",
-        "MepNotifyPanel", "MepLayout", "MepScratch", "MepZen", "colorscheme", "colo", "lua", "source",
+        "MepNotifyPanel", "MepLayout", "MepScratch", "MepZen", "MepPaneZoom", "colorscheme", "colo", "lua", "source",
         "MepNextSheet", "MepPrevSheet", "Kanban", "Gantt", "Org", "Text", "CollabJoin", "CollabLeave", "CollabStatus",
         "AgentSocket",
     };
@@ -17934,6 +17934,8 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
         OpenScratchBuffer();
     } else if (name == "MepZen") {
         ToggleZenMode();
+    } else if (name == "MepPaneZoom") {
+        TogglePaneZoom();
     } else if (name == "MepNextSheet") {
         NextSheet();
     } else if (name == "MepPrevSheet") {

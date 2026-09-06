@@ -557,6 +557,15 @@ struct ClickRegion {
 };
 std::vector<ClickRegion> g_click_regions;
 
+// Deferred tooltip for DrawPane's header controls (play/split/close): set
+// by whichever DrawPane call finds its own hover this frame, drawn once
+// after the whole pane tree so it always paints over every pane rather
+// than risking a later sibling pane's DrawPane call overwriting it (same
+// "collect during traversal, draw once at the end" idiom as
+// g_click_regions itself). Empty text = nothing to draw.
+std::string g_pane_control_tooltip_text;
+Rectangle g_pane_control_tooltip_anchor{};
+
 /**
  * @brief Registers a clickable screen region and the callback to invoke when it is clicked this frame.
  * @param rect Screen-space rectangle that should respond to a click.
@@ -12317,6 +12326,15 @@ const char *kBuiltinRunButton =
     "mep.command('MepRunButtonSetup', mep.run_button_setup)\n"
     "mep.leader_map('rs', 'Run button: setup current filetype', mep.run_button_setup)\n";
 
+// Pane zoom (<leader>zz): non-destructively renders just the active pane
+// full-screen (Editor::TogglePaneZoom/ZoomedPaneId, DrawEditor's own
+// zoomed-pane branch) in place of the whole split tree -- toggling again
+// (or navigating away and back) restores the normal layout, since the
+// underlying split tree is never touched.
+const char *kBuiltinPaneZoom =
+    "function mep.pane_zoom_toggle() mep.cmd('MepPaneZoom') end\n"
+    "mep.leader_map('zz', 'Toggle pane zoom (fullscreen current pane)', mep.pane_zoom_toggle)\n";
+
 // AI terminal (<leader>a<CR>, :aiterminal / :aiterm / :MepAiTerminal):
 // splits the current pane and runs Claude Code in a real :terminal pane
 // *below* it, with a system prompt (mep.opt.ai_terminal_instructions)
@@ -18376,7 +18394,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // the chip/header click+drag rects below so a press on any of the
     // three never arms a TabMove drag or double-fires as a focus click.
     const std::string vsplit_label = " | ";
-    const std::string hsplit_label = " _ ";
+    const std::string hsplit_label = " -- ";  // reads as one long dash, and sits mid-height unlike "_"
     const std::string close_label = " " + Utf8FromCodepoint(0xf00d) + " ";
     // Run button (RUNBUTTON_PLAN): left of the split controls, shown only
     // for a plain source-file pane (no terminal/image/pdf/office/sheet/
@@ -18406,11 +18424,15 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // while hovered -- independent of `action`, which is always a
         // left-click-only g_click_regions registration like every other
         // header control's.
-        auto button = [&](const std::string &label, float bw, std::function<void()> action,
-                            std::function<void(Rectangle)> on_right_click = nullptr) {
+        auto button = [&](const std::string &label, float bw, const char *color, const char *tooltip,
+                            std::function<void()> action, std::function<void(Rectangle)> on_right_click = nullptr) {
             const Rectangle rect{bx, controls_rect.y, bw, controls_rect.height};
             const bool hovered = PointInRect(header_mouse, rect);
-            DrawUiText(label, Vector2{rect.x, label_y}, font_size, ResolveHlGroup(hovered ? "Normal" : "Comment"));
+            DrawUiText(label, Vector2{rect.x, label_y}, font_size, ResolveHlGroup(hovered ? "Normal" : color));
+            if (hovered) {
+                g_pane_control_tooltip_text = tooltip;
+                g_pane_control_tooltip_anchor = rect;
+            }
             RegisterClickRegion(rect, std::move(action));
             if (on_right_click && hovered && IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) on_right_click(rect);
             bx += bw;
@@ -18419,7 +18441,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // Focuses this pane, then runs/compiles its current file in
             // this tab's popup terminal.
             button(
-                run_label, run_w,
+                run_label, run_w, "Green", "Run",
                 [pane_id] {
                     g_editor.FocusPaneById(pane_id);
                     g_editor.RunCommand("lua mep.run_button_run()");
@@ -18433,17 +18455,17 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 });
         }
         // Focuses this pane, then splits it vertically (side by side).
-        button(vsplit_label, vsplit_w, [pane_id] {
+        button(vsplit_label, vsplit_w, "Cyan", "Split vertically", [pane_id] {
             g_editor.FocusPaneById(pane_id);
             g_editor.RunCommand("vsplit");
         });
         // Focuses this pane, then splits it horizontally (stacked).
-        button(hsplit_label, hsplit_w, [pane_id] {
+        button(hsplit_label, hsplit_w, "Yellow", "Split horizontally", [pane_id] {
             g_editor.FocusPaneById(pane_id);
             g_editor.RunCommand("split");
         });
         // Focuses this pane, then closes its visible buffer tab and deletes that buffer.
-        button(close_label, close_w, [pane_id] {
+        button(close_label, close_w, "Red", "Close buffer", [pane_id] {
             g_editor.FocusPaneById(pane_id);
             g_editor.PaneCloseBufferTabAndDelete();
         });
@@ -21280,6 +21302,18 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
  * @param h height of the rectangle to draw into.
  * @param active_pane_id id of the pane that should render with active-pane styling.
  */
+// Finds the leaf SplitNode holding pane id `pane_id` under `node`, or
+// nullptr -- DrawEditor's own zoomed-pane branch uses this to draw just
+// that one leaf full-screen instead of recursing DrawPaneTree over the
+// whole split tree (Editor::ZoomedPaneId).
+const SplitNode *FindLeafNodeById(const SplitNode *node, int pane_id) {
+    if (node->dir == SplitDir::Leaf) return node->pane.id == pane_id ? node : nullptr;
+    for (const auto &child : node->children) {
+        if (const SplitNode *found = FindLeafNodeById(child.get(), pane_id)) return found;
+    }
+    return nullptr;
+}
+
 void DrawPaneTree(const SplitNode *node, float x, float y, float w, float h, int active_pane_id) {
     if (node->dir == SplitDir::Leaf) {
         DrawPane(node->pane, x, y, w, h, node->pane.id == active_pane_id);
@@ -21308,6 +21342,30 @@ void DrawPaneTree(const SplitNode *node, float x, float y, float w, float h, int
 }
 
 // Shown only when there's more than one tab, matching Vim's tabline.
+// Shared by DrawTabBar's own hover tooltip and DrawPane's header-control
+// tooltip (g_pane_control_tooltip_text): a small rounded label anchored
+// horizontally on `anchor_x`, sitting just below `below_y`, clamped to
+// stay on-screen at either edge.
+/**
+ * @brief Draws a small rounded hover-tooltip label.
+ * @param text Tooltip text.
+ * @param anchor_x Screen x-coordinate to horizontally center the tooltip on.
+ * @param below_y Screen y-coordinate the tooltip's top edge sits at.
+ * @param row_h Height of the tooltip row.
+ */
+void DrawSimpleTooltip(const std::string &text, float anchor_x, float below_y, float row_h) {
+    if (text.empty()) return;
+    float font_size = MenuFontSize();
+    const float tw = MeasureTextEx(g_font, text.c_str(), font_size, 0).x;
+    Rectangle rect{anchor_x - tw / 2.0f - 4.0f, below_y, tw + 8.0f, row_h};
+    int screen_w = GetScreenWidth();
+    if (rect.x < 0) rect.x = 0;
+    if (rect.x + rect.width > static_cast<float>(screen_w)) rect.x = static_cast<float>(screen_w) - rect.width;
+    DrawRectangleRounded(rect, 0.3f, 4, ResolveHlGroup("PickerSelected"));
+    DrawTextEx(g_font, text.c_str(), Vector2{rect.x + 4.0f, rect.y + (row_h - font_size) / 2.0f}, font_size, 0,
+               ResolveHlGroup("StatusLineFg"));
+}
+
 // Mirrors mep.nvim's own chrome.tabline (mep.nvim/lua/mep/chrome/
 // tabline.lua): a leading mode indicator, then one clickable circle per
 // tab -- filled for the active tab, hollow for the rest -- then '+'/'x'
@@ -21394,7 +21452,10 @@ void DrawTabBar(int y) {
         } else if (hovered) {
             DrawRectangleRounded(rect, 0.3f, 4, ResolveHlGroup("MenuHighlight"));
         }
-        const Color icon_color = ResolveHlGroup(open || hovered ? "WorkspaceActive" : button.color);
+        // Keep the icon in its own color even while open -- only the
+        // background fill (above) marks the open state; hover still
+        // brightens it to WorkspaceActive like every other tabbar icon.
+        const Color icon_color = ResolveHlGroup(hovered ? "WorkspaceActive" : button.color);
         if (button.icon == 0) {
             const float pad = button_size * 0.15f;
             DrawRobotIcon(Vector2{rect.x + pad, rect.y + pad}, button_size - pad * 2.0f, icon_color);
@@ -21527,11 +21588,19 @@ void DrawTabBar(int y) {
     const std::string circle_off = " " + Utf8FromCodepoint(0xf10c) + " ";  // nf-fa-circle_o
     const std::string add_label = " " + Utf8FromCodepoint(0xf067) + " ";   // nf-fa-plus
     const std::string close_label = " " + Utf8FromCodepoint(0xf00d) + " "; // nf-fa-times
-    const std::string ws_add_label = " [+] ";   // new workspace
+    const std::string ws_add_label = " [+]";    // new workspace
     const std::string ws_close_label = " [-] "; // close active workspace
-    const float circle_w = std::max(MeasureUiText(circle_on, font_size), MeasureUiText(circle_off, font_size));
-    const float tabs_w = circle_w * static_cast<float>(g_editor.TabCount()) + MeasureUiText(add_label, font_size) +
-                         MeasureUiText(close_label, font_size) + MeasureUiText(ws_add_label, font_size) +
+    // Tab circles/+/x render a bit smaller than the surrounding text --
+    // at full font_size they visually dominate the bar. The add/close
+    // glyphs go smaller still since they're just click targets, not
+    // state indicators like the circles.
+    const float tab_icon_font_size = font_size * 0.75f;
+    const float tab_addclose_font_size = font_size * 0.55f;
+    const float tab_icon_cy = static_cast<float>(y) + (fbar_h - tab_icon_font_size) / 2.0f;
+    const float tab_addclose_cy = static_cast<float>(y) + (fbar_h - tab_addclose_font_size) / 2.0f;
+    const float circle_w = std::max(MeasureUiText(circle_on, tab_icon_font_size), MeasureUiText(circle_off, tab_icon_font_size));
+    const float tabs_w = circle_w * static_cast<float>(g_editor.TabCount()) + MeasureUiText(add_label, tab_addclose_font_size) +
+                         MeasureUiText(close_label, tab_addclose_font_size) + MeasureUiText(ws_add_label, font_size) +
                          MeasureUiText(ws_close_label, font_size);
 
     struct WsLabel {
@@ -21630,35 +21699,39 @@ void DrawTabBar(int y) {
         bool active = (i == g_editor.ActiveTabIndex());
         const std::string &glyph = active ? circle_on : circle_off;
         Color c = ResolveHlGroup(active ? "TabActive" : "TabInactive");
-        float w = MeasureUiText(glyph, font_size);
-        DrawUiText(glyph, Vector2{x, cy}, font_size, c);
+        float w = MeasureUiText(glyph, tab_icon_font_size);
+        DrawUiText(glyph, Vector2{x, tab_icon_cy}, tab_icon_font_size, c);
+        const Rectangle rect{x, fy, w, fbar_h};
+        // Tooltip only for the open (hollow) circles of the other tabs --
+        // with one tab there's nothing to switch to, and the active tab's
+        // filled circle isn't a meaningful click target.
+        if (!active && g_editor.TabCount() > 1) tooltip_if_hovered(rect, "Switch to tab " + std::to_string(i + 1));
         // Click-to-switch (Phase 11 click-dispatch gap): a click anywhere on
         // this tab's circle jumps straight to it via GoToTab, same as :tabn N.
-        RegisterClickRegion(Rectangle{x, fy, w, fbar_h}, [i] { g_editor.GoToTab(i); });
+        RegisterClickRegion(rect, [i] { g_editor.GoToTab(i); });
         x += w;
     }
 
-    float add_w = MeasureUiText(add_label, font_size);
-    DrawUiText(add_label, Vector2{x, cy}, font_size, ResolveHlGroup("StatusLineFg"));
+    float add_w = MeasureUiText(add_label, tab_addclose_font_size);
+    DrawUiText(add_label, Vector2{x, tab_addclose_cy}, tab_addclose_font_size, ResolveHlGroup("StatusLineFg"));
     // Opens a new (unnamed) tab.
-    RegisterClickRegion(Rectangle{x, fy, add_w, fbar_h}, [] { g_editor.TabNew(""); });
+    {
+        const Rectangle rect{x, fy, add_w, fbar_h};
+        tooltip_if_hovered(rect, "New tab");
+        RegisterClickRegion(rect, [] { g_editor.TabNew(""); });
+    }
     x += add_w;
 
-    float close_w = MeasureUiText(close_label, font_size);
-    DrawUiText(close_label, Vector2{x, cy}, font_size, ResolveHlGroup("StatusLineFg"));
+    float close_w = MeasureUiText(close_label, tab_addclose_font_size);
+    DrawUiText(close_label, Vector2{x, tab_addclose_cy}, tab_addclose_font_size, ResolveHlGroup("StatusLineFg"));
     // Closes the current tab.
-    RegisterClickRegion(Rectangle{x, fy, close_w, fbar_h}, [] { g_editor.TabDelete(); });
-
-    if (!tooltip_text.empty()) {
-        const float tw = MeasureTextEx(g_font, tooltip_text.c_str(), font_size, 0).x;
-        Rectangle tooltip_rect{tooltip_anchor_x - tw / 2.0f - 4.0f, static_cast<float>(y + bar_h), tw + 8.0f, fbar_h};
-        // Keep the tooltip on-screen even for a label near either edge.
-        if (tooltip_rect.x < 0) tooltip_rect.x = 0;
-        if (tooltip_rect.x + tooltip_rect.width > static_cast<float>(screen_w)) tooltip_rect.x = static_cast<float>(screen_w) - tooltip_rect.width;
-        DrawRectangleRounded(tooltip_rect, 0.3f, 4, ResolveHlGroup("PickerSelected"));
-        DrawTextEx(g_font, tooltip_text.c_str(), Vector2{tooltip_rect.x + 4.0f, tooltip_rect.y + (fbar_h - font_size) / 2.0f}, font_size,
-                   0, ResolveHlGroup("StatusLineFg"));
+    {
+        const Rectangle rect{x, fy, close_w, fbar_h};
+        tooltip_if_hovered(rect, "Close tab");
+        RegisterClickRegion(rect, [] { g_editor.TabDelete(); });
     }
+
+    DrawSimpleTooltip(tooltip_text, tooltip_anchor_x, static_cast<float>(y + bar_h), fbar_h);
 }
 
 // Startup dashboard (Phase 12): shown in place of the pane tree only while
@@ -21701,6 +21774,7 @@ void DrawEditor() {
     // dispatch) is correct even with the one-frame lag. Same reasoning for
     // the pane/tab mouse-interaction geometry lists just below.
     g_click_regions.clear();
+    g_pane_control_tooltip_text.clear();
     g_pane_screen_rects.clear();
     g_pane_tab_chip_rects.clear();
     g_pane_border_rects.clear();
@@ -21781,9 +21855,27 @@ void DrawEditor() {
             int highlighted_pane_id =
                 (g_editor.CurrentMode() == Mode::Sidebar || g_editor.IsFloatPaneOpen()) ? -1 : g_editor.ActivePaneId();
             g_hover_popup_pending = false;
-            DrawPaneTree(g_editor.ActiveTabRoot(), pane_x, static_cast<float>(content_top), pane_w,
-                         static_cast<float>(pane_area_h), highlighted_pane_id);
+            // Pane zoom (<leader>zz, Editor::ZoomedPaneId): only takes
+            // effect while the zoomed pane is also the one that would
+            // otherwise draw as active -- switching focus elsewhere (or to
+            // a sidebar/float pane) falls straight back to the normal
+            // split tree without needing to be told to.
+            int zoomed_id = g_editor.ZoomedPaneId();
+            const SplitNode *zoomed_leaf =
+                (zoomed_id != -1 && zoomed_id == highlighted_pane_id) ? FindLeafNodeById(g_editor.ActiveTabRoot(), zoomed_id)
+                                                                       : nullptr;
+            if (zoomed_leaf) {
+                DrawPane(zoomed_leaf->pane, pane_x, static_cast<float>(content_top), pane_w, static_cast<float>(pane_area_h),
+                         true);
+            } else {
+                DrawPaneTree(g_editor.ActiveTabRoot(), pane_x, static_cast<float>(content_top), pane_w,
+                             static_cast<float>(pane_area_h), highlighted_pane_id);
+            }
             DrawPaneDragOverlay();
+            // Drawn once here, after every pane's own DrawPane call, so it
+            // always paints on top -- see g_pane_control_tooltip_text.
+            const Rectangle &tt = g_pane_control_tooltip_anchor;
+            DrawSimpleTooltip(g_pane_control_tooltip_text, tt.x + tt.width / 2.0f, tt.y + tt.height, tt.height);
         }
     }
 
@@ -21832,7 +21924,7 @@ void DrawEditor() {
             float chip_w = MeasureTextEx(g_font, chip.c_str(), status_font_size, 0).x + 14.0f;
             Rectangle chip_rect{chip_left - chip_w, static_cast<float>(status_y + 2), chip_w,
                                 static_cast<float>(status_bar_height - 4)};
-            DrawRectangleRec(chip_rect, ResolveHlGroup(active ? "TodoActive" : "TodoInactive"));
+            DrawRectangleRounded(chip_rect, 0.3f, 4, ResolveHlGroup(active ? "TodoActive" : "TodoInactive"));
             DrawTextEx(g_font, chip.c_str(), Vector2{chip_rect.x + 7.0f, static_cast<float>(status_y + 3)},
                        status_font_size, 0, ResolveHlGroup("StatusLineFg"));
             RegisterClickRegion(chip_rect, [] {
@@ -23088,6 +23180,7 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinAi);
     lua->DoString(kBuiltinTabTerminal);
     lua->DoString(kBuiltinRunButton);
+    lua->DoString(kBuiltinPaneZoom);
     lua->DoString(kBuiltinAiTerminal);
     lua->DoString(kBuiltinLeetcode);
     lua->DoString(kBuiltinWhichKeyGroups);

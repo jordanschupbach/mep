@@ -5763,6 +5763,19 @@ public:
     bool IsSttRecording() const { return stt_recording_; }
     void SetSttRecording(bool v) { stt_recording_ = v; }
 
+    // Pane zoom (<leader>zz): non-destructively renders just the active
+    // pane full-screen in place of the whole split tree -- unlike :only,
+    // the other panes' SplitNode structure is untouched, so toggling back
+    // restores the exact layout. Stores the zoomed pane's id rather than a
+    // plain bool so switching tabs/panes away from it "pauses" the zoom
+    // (ZoomedPaneId() no longer matches ActivePaneId(), main.cpp's
+    // DrawEditor falls back to the normal tree) without needing to be told
+    // about every navigation command; switching back re-applies it.
+    // Re-toggling while a *different* pane is now active zooms that one
+    // instead of unzooming the stale target.
+    void TogglePaneZoom() { zoomed_pane_id_ = (zoomed_pane_id_ == ActivePaneId()) ? -1 : ActivePaneId(); }
+    int ZoomedPaneId() const { return zoomed_pane_id_; }
+
     // --- Hints (NVIM_PARITY_PLAN.md Part III Phase 13) ---
     // Enters Mode::HintChar, awaiting the character to search for.
     void BeginHints();
@@ -7228,6 +7241,7 @@ private:
     long long active_todo_start_epoch_ = 0;
     int winbar_click_ref_ = 0;
     bool zen_mode_ = false;
+    int zoomed_pane_id_ = -1;  // see TogglePaneZoom/ZoomedPaneId
     // Speech-to-text recording indicator (Lua-driven, see mep.stt_toggle):
     // purely a display flag for DrawTabBar's mic icon -- the actual
     // recording process/job lives entirely in Lua, this just tells the

@@ -905,6 +905,15 @@ std::unordered_map<std::string, ThemeColor> BuildHighlightGroups(const Palette &
     // StatusLineFg stays legible on top of either.
     g["TodoActive"] = Mix(p.green, p.bg, 0.3f);
     g["TodoInactive"] = Mix(p.red, p.bg, 0.3f);
+    // Status bar's mode chip (main.cpp's DrawFrame status line): a filled
+    // badge colored by editing mode, toned toward the background the same
+    // way as the Todo chip above so StatusLineFg text stays legible on top.
+    g["ModeNormal"] = Mix(p.blue, p.bg, 0.35f);
+    g["ModeInsert"] = Mix(p.green, p.bg, 0.35f);
+    g["ModeReplace"] = Mix(p.red, p.bg, 0.35f);
+    g["ModeVisual"] = Mix(p.purple, p.bg, 0.35f);
+    g["ModeCommand"] = Mix(p.yellow, p.bg, 0.35f);
+    g["ModeOther"] = Mix(p.cyan, p.bg, 0.35f);
     // incsearch's live match preview (Phase 4 stretch item) -- a span
     // recolor via the plain Decoration/hl_group pipeline (see
     // Editor::UpdateIncSearch), so it wants to read as "found" against

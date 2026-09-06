@@ -9,4 +9,7 @@
    display to confirm by eye).
 
 * TODO Add language specific, configurable run button to active pane bar
+  :LOGBOOK:
+  CLOCK: [2026-09-05 Sat 21:28]--[2026-09-05 Sat 21:45] =>  0:17
+  :END:
 * TODO Add language modes

@@ -6053,6 +6053,61 @@ int l_babel_cache_save(lua_State *L) {
     return 0;
 }
 
+// Persisted pane-header Run button config (RUNBUTTON_PLAN): per-project
+// overrides -- compiler/interpreter and extra flags (pkg-config output
+// and the like) a user typed into the Run button's right-click Setup
+// popup -- keyed by project root (mep.getcwd()) so a project's flags
+// don't leak into an unrelated one. Stored at $XDG_DATA_HOME/mep/
+// run_config.json as {"entries": {project_root: {ext: {...}}}}, same
+// MepDataDir()/ReadJsonFile/WriteJsonFile/PushJson/LuaToJson convention
+// as the babel cache just above -- the whole table is an opaque Lua
+// value from this side of the boundary (kBuiltinRunButton, main.cpp),
+// so no bespoke per-field (de)serialization is needed here either.
+#if !defined(__EMSCRIPTEN__)
+namespace {
+/**
+ * @brief Returns the on-disk path of the persisted Run button config file.
+ * @return Path to run_config.json under the mep data directory.
+ */
+std::string RunConfigPath() { return MepDataDir() + "/run_config.json"; }
+}  // namespace
+#endif
+
+/**
+ * @brief Implements mep.run_config_load(): loads the persisted Run button config from disk.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the config's "entries" table, or an empty table if there is no persisted config -- native build only; the wasm build always returns empty).
+ */
+int l_run_config_load(lua_State *L) {
+#if !defined(__EMSCRIPTEN__)
+    Json doc;
+    if (ReadJsonFile(RunConfigPath(), &doc) && doc.is_object()) {
+        const Json &entries = doc.get("entries");
+        if (entries.is_object()) {
+            PushJson(L, entries);
+            return 1;
+        }
+    }
+#endif
+    lua_newtable(L);
+    return 1;
+}
+
+/**
+ * @brief Implements mep.run_config_save(entries): persists the Run button config to disk (a no-op on the wasm build).
+ * @param L Lua state; arg 1 is the config's {project_root: {ext: {...}}} entries table.
+ * @return Number of values pushed (0).
+ */
+int l_run_config_save(lua_State *L) {
+#if !defined(__EMSCRIPTEN__)
+    luaL_checktype(L, 1, LUA_TTABLE);
+    Json doc = Json::Object();
+    doc["entries"] = LuaToJson(L, 1);
+    WriteJsonFile(RunConfigPath(), doc);
+#endif
+    return 0;
+}
+
 // --- LSP client (NVIM_PARITY_PLAN.md Part V Phase 20) ----------------------
 //
 // A Content-Length-framed JSON-RPC 2.0 client over Phase 1's Job
@@ -6955,6 +7010,8 @@ const luaL_Reg kMepFuncs[] = {
     {"project_remove", l_project_remove},
     {"babel_cache_load", l_babel_cache_load},
     {"babel_cache_save", l_babel_cache_save},
+    {"run_config_load", l_run_config_load},
+    {"run_config_save", l_run_config_save},
     {"chdir", l_chdir},
     {"getcwd", l_getcwd},
     {"workspace_list", l_workspace_list},

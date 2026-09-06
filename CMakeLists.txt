@@ -314,6 +314,19 @@ if(NOT EMSCRIPTEN AND NOT WIN32 AND NOT APPLE)
     target_link_libraries(mep PRIVATE glfw X11::Xtst X11::X11)
 endif()
 
+# Dependency-free MCP bridge (mcp/server.ts's replacement -- see
+# src/mcp_bridge.cpp's own top comment): a plain external client of
+# mep's agent socket, same as mcp/mep_client.ts or `socat`, so it needs
+# none of mep_core/raylib -- just json.h/persist.h/rpc_framing.h and
+# POSIX sockets. Skipped on Emscripten/Windows for the same reason
+# agent_rpc.h's socket support itself is (see that header's own comment).
+if(NOT EMSCRIPTEN AND NOT WIN32)
+    add_executable(mep-mcp src/mcp_bridge.cpp)
+    target_include_directories(mep-mcp PRIVATE src)
+    target_compile_options(mep-mcp PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-mcp PRIVATE ${MEP_SANITIZE_FLAGS})
+endif()
+
 # Pure DOM/CSS test: intentionally links only html_doc.cpp, so selector and
 # cascade behavior can be verified without opening a raylib window.
 add_executable(mep-html-doc-test src/html_doc_test.cpp src/html_doc.cpp src/js_engine.cpp src/svg_doc.cpp src/wav_doc.cpp)

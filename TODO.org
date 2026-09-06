@@ -1,4 +1,4 @@
-* DONE Add tabs, nested within workspaces, nested within projects feature
+* DONE Add tabs, nested within workspaces, nested within projects feature :ARCHIVE:
  - Need to have new git worktrees per workspace
  - Need to have buffers scoped to workspaces
  - Need to remove mode from top tab bar
@@ -8,3 +8,5 @@
    Status section for what was verified how, and what still needs a GPU-capable
    display to confirm by eye).
 
+* TODO Add language specific, configurable run button to active pane bar
+* TODO Add language modes

@@ -1,8 +1,11 @@
 #ifndef MEP_AGENT_RPC_H
 #define MEP_AGENT_RPC_H
 
+#include <functional>
 #include <string>
 #include <vector>
+
+#include "json.h"
 
 class Editor;
 
@@ -30,6 +33,12 @@ class Editor;
 // here yet) -- every function below is a no-op there, so callers need no
 // #ifdef of their own.
 namespace mep::agent {
+
+// A "ui.*" automation method's handler: takes the request's params,
+// returns the JSON-RPC result. See RegisterUiMethod below. Declared for
+// both platform branches (not just the socket-capable one) so callers
+// need no #ifdef of their own around a RegisterUiMethod call.
+using UiMethodHandler = std::function<Json(const Json &params)>;
 
 #if !defined(__EMSCRIPTEN__) && !defined(_WIN32)
 
@@ -110,6 +119,21 @@ struct AgentParticipant {
  */
 std::vector<AgentParticipant> AgentParticipants();
 
+// Registers a handler for a "ui.*" automation RPC method (screenshot,
+// synthetic mouse/keyboard input) that Dispatch() falls through to when
+// no built-in method matches its own name. These methods need raylib/
+// GLFW/X11 -- this file deliberately has zero dependency on any of that
+// (see the top comment) -- so main.cpp registers them once at startup,
+// right after Start(), instead of them living here directly. Safe to
+// call more than once for different names; re-registering the same name
+// overwrites the previous handler.
+/**
+ * @brief Registers a handler for a "ui.*" automation RPC method that Dispatch() falls through to.
+ * @param name Exact JSON-RPC method name (e.g. "ui.screenshot", "ui.mouse_click").
+ * @param handler Callback invoked with the request's params; returns the JSON-RPC result.
+ */
+void RegisterUiMethod(const std::string &name, UiMethodHandler handler);
+
 #else
 
 /**
@@ -144,6 +168,10 @@ struct AgentParticipant {
  * @return Always empty.
  */
 inline std::vector<AgentParticipant> AgentParticipants() { return {}; }
+/**
+ * @brief No-op stand-in for RegisterUiMethod() on platforms without the agent-control socket (wasm/Windows).
+ */
+inline void RegisterUiMethod(const std::string &, UiMethodHandler) {}
 
 #endif
 

@@ -10,6 +10,7 @@
 #include "vterm.h"
 
 #include <stddef.h>
+#include <ctime>
 #include <functional>
 #include <iterator>
 #include <map>
@@ -97,6 +98,16 @@ enum class Mode {
     // buffer picker) keep working while parked on an image; there's simply
     // nothing meaningful for any other key to do.
     Image,
+    // A focused in-pane image editor (an ImageEditorSession buffer, opened
+    // by pressing 'e' on a Mode::Image pane -- see IMAGE_EDITOR.md and
+    // Editor::EnterImageEditor). Unlike Mode::Image this DOES capture the
+    // tool hotkeys/brush-size/[u]ndo keys (see Editor::HandleImageEditor-
+    // Input); mouse painting/dragging on the canvas itself is driven from
+    // main.cpp's DrawPane the same way pane-border/scrollbar dragging is
+    // (see g_pane_drag's own comment) rather than through this dispatch,
+    // since only DrawPane knows the pane's screen-space rect each frame.
+    // ':' and the leader key are still forwarded, same as Mode::Image.
+    ImageEditor,
     // A focused PDF-viewer pane (a PdfSession buffer -- see below): same
     // shape as Mode::Image (h/j/k/l pan, ':'/leader forwarded, everything
     // else a no-op) plus page navigation (Ctrl-f/Ctrl-b/PageDown/PageUp,
@@ -911,6 +922,90 @@ struct ImageSession {
     // to whatever ZoomImageToFit computes so the whole image just fits the
     // current viewport.
     float zoom = 1.0f;
+};
+
+// Plain RGBA color (this header stays raylib-free, same reasoning as
+// ImageDoc's own comment) -- main.cpp converts to/from raylib's Color at
+// the point of use.
+struct RgbaColor {
+    unsigned char r = 0, g = 0, b = 0, a = 255;
+    bool operator==(const RgbaColor &o) const { return r == o.r && g == o.g && b == o.b && a == o.a; }
+};
+
+// Tools the in-pane image editor's toolbar offers (IMAGE_EDITOR.md Phase
+// 1). Pan needs no dedicated case in the paint-primitive code below --
+// it's handled entirely by main.cpp's drag tracking, the same as the
+// middle-mouse-drag pan every tool gets for free.
+enum class ImageEditorTool { Pencil, Eraser, Line, Rectangle, Ellipse, Bucket, Eyedropper, Pan };
+
+// One layer of an in-pane image-editor session: a full-canvas RGBA8 pixel
+// buffer plus display attributes. Always sized width*height*4 to match
+// the owning ImageEditorSession -- resizing the canvas isn't supported
+// yet (IMAGE_EDITOR.md Phase 2), so every layer in a session stays the
+// same size for its whole lifetime.
+struct ImageEditorLayer {
+    std::string name;
+    std::vector<unsigned char> pixels;  // row-major RGBA8, width*height*4 bytes
+    bool visible = true;
+    float opacity = 1.0f;
+};
+
+// One in-pane image-editor pane's state (IMAGE_EDITOR.md Phase 1), keyed
+// by buffer id the same way ImageSession is -- opened over an
+// already-open image-viewer buffer (Editor::EnterImageEditor), never
+// standalone. Kept alive in Editor::image_editors_ for the buffer's whole
+// lifetime once opened (not destroyed on Esc back to Mode::Image) so
+// undo history/layers survive toggling back and forth; `active` is what
+// actually gates whether DrawPane shows the editor UI vs the plain
+// viewer (see IsImageEditorActive).
+struct ImageEditorSession {
+    int buffer_id = 0;
+    bool active = false;
+    int width = 0, height = 0;
+    std::vector<ImageEditorLayer> layers;
+    int active_layer = 0;
+
+    ImageEditorTool tool = ImageEditorTool::Pencil;
+    int brush_size = 2;
+    RgbaColor primary_color{0, 0, 0, 255};
+    RgbaColor secondary_color{255, 255, 255, 255};
+    // Most-recently-used swatches, newest first, deduplicated, capped at
+    // kMaxImageEditorRecentColors (editor.cpp) by PushRecentColor.
+    std::vector<RgbaColor> recent_colors;
+
+    // Same pan/zoom semantics as ImageSession (its own comment above) --
+    // panned in scaled-canvas pixels, clamped by Editor::
+    // ResizeImageEditorViewport/ApplyImageEditorZoom.
+    int pan_x = 0, pan_y = 0;
+    int viewport_w = 0, viewport_h = 0;
+    float zoom = 1.0f;
+
+    bool modified = false;
+    // Snapshot-based undo/redo, mirroring OfficeSession/SheetSession's own
+    // full-vector-copy convention (not diffs) -- one push per completed
+    // stroke/shape/fill/layer-op (Editor::PushUndoImageEditor), never per
+    // intermediate pixel write.
+    std::vector<std::vector<ImageEditorLayer>> undo_stack, redo_stack;
+
+    // In-progress paint stroke (mouse down -> up), tracked by main.cpp's
+    // DrawPane and applied via Editor::ImageEditorStrokeTo: `stroking`
+    // marks that PushUndoImageEditor has already fired for this stroke
+    // (so a multi-frame drag pushes exactly one undo entry, not one per
+    // frame), and last_x/last_y (canvas pixel coords, -1 = none yet) let
+    // Pencil/Eraser interpolate a continuous line between frames instead
+    // of leaving gaps when the mouse moves faster than one pixel/frame.
+    bool stroking = false;
+    int stroke_start_x = -1, stroke_start_y = -1;
+    int last_x = -1, last_y = -1;
+
+    bool show_grid = false;
+
+    // Flattened (visibility/opacity-composited) pixels, recomputed by
+    // Editor::ImageEditorComposite whenever `dirty` -- both main.cpp's
+    // texture upload and SaveBuffer's PNG export read this instead of
+    // re-compositing themselves.
+    std::vector<unsigned char> composite;
+    bool dirty = true;
 };
 
 // Visual gap (screen pixels, unscaled by zoom) drawn between consecutive
@@ -2277,6 +2372,162 @@ public:
      * @param h The new viewport height in pixels.
      */
     void ResizeImageViewport(int buffer_id, int w, int h);
+
+    // --- In-pane image editor (IMAGE_EDITOR.md), opened via 'e' on a
+    // focused Mode::Image pane (Editor::EnterImageEditor). Mirrors the
+    // Image-viewer block above's shape, plus layer/tool/undo state main.cpp's
+    // toolbar, layers sidebar, and canvas mouse-drag handling call directly
+    // (same "moved to public since a toolbar button calls it from outside
+    // the class" reasoning as UndoOffice/RedoOffice above). ---
+    /**
+     * @brief Returns whether the image editor is the active view for the given buffer id.
+     * @param buffer_id The buffer id to check.
+     * @return True if an ImageEditorSession exists for this buffer and is currently active.
+     */
+    bool IsImageEditorActive(int buffer_id) const;
+    /**
+     * @brief Returns the image-editor session for the given buffer id, if any.
+     * @param buffer_id The buffer id to look up.
+     * @return A const pointer to the ImageEditorSession, or nullptr if none exists.
+     */
+    const ImageEditorSession *GetImageEditor(int buffer_id) const;
+    /**
+     * @brief Returns a mutable pointer to the image-editor session for the given buffer id.
+     * @param buffer_id The buffer id to look up.
+     * @return A mutable pointer to the ImageEditorSession, or nullptr if none exists.
+     */
+    ImageEditorSession *GetImageEditorMutable(int buffer_id);
+    /**
+     * @brief Opens (or re-activates) the image editor over the current pane's image buffer.
+     */
+    void EnterImageEditor();
+    /**
+     * @brief Leaves the image editor, returning the current pane to the plain image viewer.
+     */
+    void ExitImageEditor();
+    /**
+     * @brief Updates an image-editor pane's viewport size and re-clamps its pan offset.
+     * @param buffer_id The image-editor buffer id to resize.
+     * @param w The new viewport width in pixels.
+     * @param h The new viewport height in pixels.
+     */
+    void ResizeImageEditorViewport(int buffer_id, int w, int h);
+    /**
+     * @brief Applies a new zoom level to an image-editor session, re-anchored on the viewport center.
+     * @param sess The session to update.
+     * @param new_zoom The target zoom factor.
+     */
+    void ApplyImageEditorZoom(ImageEditorSession &sess, float new_zoom);
+    /**
+     * @brief Snapshots the current buffer_id's image-editor layers onto its undo stack, clearing redo.
+     */
+    void PushUndoImageEditor(int buffer_id);
+    /**
+     * @brief Undoes the last image-editor edit for the given buffer id.
+     * @param buffer_id The image-editor buffer id to undo.
+     */
+    void UndoImageEditor(int buffer_id);
+    /**
+     * @brief Redoes the last undone image-editor edit for the given buffer id.
+     * @param buffer_id The image-editor buffer id to redo.
+     */
+    void RedoImageEditor(int buffer_id);
+    /**
+     * @brief Records a color as most-recently-used in an image-editor session's swatch strip.
+     * @param sess The session to update.
+     * @param color The color to move to the front of recent_colors.
+     */
+    void ImageEditorPushRecentColor(ImageEditorSession &sess, RgbaColor color);
+    /**
+     * @brief Paints a brush-sized stroke segment between two canvas points on the active layer,
+     * interpolating so a fast drag leaves no gaps.
+     * @param sess The session to paint into.
+     * @param x0 Segment start x, in canvas pixels.
+     * @param y0 Segment start y, in canvas pixels.
+     * @param x1 Segment end x, in canvas pixels.
+     * @param y1 Segment end y, in canvas pixels.
+     */
+    void ImageEditorStrokeTo(ImageEditorSession &sess, int x0, int y0, int x1, int y1);
+    /**
+     * @brief Commits a straight line between two canvas points onto the active layer.
+     * @param sess The session to paint into.
+     * @param x0 Line start x, in canvas pixels.
+     * @param y0 Line start y, in canvas pixels.
+     * @param x1 Line end x, in canvas pixels.
+     * @param y1 Line end y, in canvas pixels.
+     */
+    void ImageEditorCommitLine(ImageEditorSession &sess, int x0, int y0, int x1, int y1);
+    /**
+     * @brief Commits an axis-aligned rectangle (outline or filled) onto the active layer.
+     * @param sess The session to paint into.
+     * @param x0 One corner's x, in canvas pixels.
+     * @param y0 One corner's y, in canvas pixels.
+     * @param x1 The opposite corner's x, in canvas pixels.
+     * @param y1 The opposite corner's y, in canvas pixels.
+     * @param filled Whether to fill the rectangle instead of just outlining it.
+     */
+    void ImageEditorCommitRect(ImageEditorSession &sess, int x0, int y0, int x1, int y1, bool filled);
+    /**
+     * @brief Commits an axis-aligned ellipse (outline or filled), bounded by the given box, onto
+     * the active layer.
+     * @param sess The session to paint into.
+     * @param x0 One corner of the bounding box's x, in canvas pixels.
+     * @param y0 One corner of the bounding box's y, in canvas pixels.
+     * @param x1 The opposite corner's x, in canvas pixels.
+     * @param y1 The opposite corner's y, in canvas pixels.
+     * @param filled Whether to fill the ellipse instead of just outlining it.
+     */
+    void ImageEditorCommitEllipse(ImageEditorSession &sess, int x0, int y0, int x1, int y1, bool filled);
+    /**
+     * @brief Flood-fills the 4-connected region matching the clicked pixel's color on the active
+     * layer with the primary color.
+     * @param sess The session to paint into.
+     * @param x Seed point x, in canvas pixels.
+     * @param y Seed point y, in canvas pixels.
+     */
+    void ImageEditorFloodFill(ImageEditorSession &sess, int x, int y);
+    /**
+     * @brief Samples the composited (visible layers, opacity-blended) color at a canvas point into
+     * the session's primary color.
+     * @param sess The session to sample from.
+     * @param x Sample point x, in canvas pixels.
+     * @param y Sample point y, in canvas pixels.
+     */
+    void ImageEditorPickColor(ImageEditorSession &sess, int x, int y);
+    /**
+     * @brief Recomputes an image-editor session's flattened `composite` buffer from its visible
+     * layers, if `dirty`; no-op otherwise.
+     * @param sess The session to recomposite.
+     */
+    void ImageEditorComposite(ImageEditorSession &sess);
+    /**
+     * @brief Adds a new blank (fully transparent) layer above the active layer and selects it.
+     * @param buffer_id The image-editor buffer id to modify.
+     */
+    void ImageEditorAddLayer(int buffer_id);
+    /**
+     * @brief Deletes the active layer (refusing to delete the last remaining one).
+     * @param buffer_id The image-editor buffer id to modify.
+     */
+    void ImageEditorDeleteLayer(int buffer_id);
+    /**
+     * @brief Duplicates the active layer, inserting the copy directly above it and selecting it.
+     * @param buffer_id The image-editor buffer id to modify.
+     */
+    void ImageEditorDuplicateLayer(int buffer_id);
+    /**
+     * @brief Moves the active layer one slot up or down in the stacking order.
+     * @param buffer_id The image-editor buffer id to modify.
+     * @param delta +1 to move toward the top (later composited), -1 toward the bottom.
+     */
+    void ImageEditorMoveLayer(int buffer_id, int delta);
+    /**
+     * @brief Flattens an image-editor session's visible layers and writes the result as a PNG.
+     * @param sess The session to export.
+     * @param path Destination file path.
+     * @return True on success; false (with status_message_ set) on a write or encode failure.
+     */
+    bool SaveImageEditorPng(ImageEditorSession &sess, const std::string &path);
 
     // --- PDF-viewer panes (opened via LoadFile for a .pdf path -- see
     // IsPdfPath in pdf_doc.h). Mirrors the Image-viewer block above; see
@@ -5959,6 +6210,48 @@ public:
     const std::string &ActiveTodoText() const { return active_todo_text_; }
     long long ActiveTodoStartEpoch() const { return active_todo_start_epoch_; }
 
+    // --- Pomodoro status-bar widget ---
+    // A plain work/break countdown chip, docked just left of the Todo
+    // chip (main.cpp's DrawEditor). Unlike the Todo chip this needs no
+    // Lua interop (nothing outside main.cpp's own click handler and
+    // per-frame rollover check touches it), so it's plain C++ state.
+    enum class PomodoroPhase { Idle, Work, Break };
+
+    void PomodoroTogglePause() {
+        long long now = static_cast<long long>(std::time(nullptr));
+        if (pomodoro_phase_ == PomodoroPhase::Idle) {
+            pomodoro_phase_ = PomodoroPhase::Work;
+            pomodoro_running_ = true;
+            pomodoro_end_epoch_ = now + pomodoro_work_secs_;
+        } else if (pomodoro_running_) {
+            pomodoro_remaining_secs_ = std::max<long long>(0, pomodoro_end_epoch_ - now);
+            pomodoro_running_ = false;
+        } else {
+            pomodoro_end_epoch_ = now + pomodoro_remaining_secs_;
+            pomodoro_running_ = true;
+        }
+    }
+    // Advances Work<->Break once the current phase's countdown reaches
+    // zero. Called once per frame from DrawEditor, right before the chip
+    // reads phase/seconds-left, so there's no separate ticking callback.
+    void PomodoroCheckRollover() {
+        if (!pomodoro_running_) return;
+        long long now = static_cast<long long>(std::time(nullptr));
+        if (now < pomodoro_end_epoch_) return;
+        bool was_work = pomodoro_phase_ == PomodoroPhase::Work;
+        pomodoro_phase_ = was_work ? PomodoroPhase::Break : PomodoroPhase::Work;
+        pomodoro_end_epoch_ = now + (was_work ? pomodoro_break_secs_ : pomodoro_work_secs_);
+        Notify(was_work ? "Pomodoro: break time" : "Pomodoro: back to work", NotifyLevel::Info);
+    }
+    PomodoroPhase PomodoroCurrentPhase() const { return pomodoro_phase_; }
+    bool PomodoroRunning() const { return pomodoro_running_; }
+    long long PomodoroSecondsLeft() const {
+        if (pomodoro_phase_ == PomodoroPhase::Idle) return pomodoro_work_secs_;
+        if (!pomodoro_running_) return pomodoro_remaining_secs_;
+        long long now = static_cast<long long>(std::time(nullptr));
+        return std::max<long long>(0, pomodoro_end_epoch_ - now);
+    }
+
     // --- Winbar breadcrumb click hook (Part II Phase 11 click-dispatch gap) ---
     // The per-pane header (main.cpp's DrawPane) renders the active buffer's
     // path as clickable breadcrumb segments -- this is mep's winbar
@@ -6096,6 +6389,16 @@ private:
     // same math instead of duplicating it, same reasoning as
     // RebasePdfScroll/ClampPdfPanX's own extraction.
     void ApplyImageZoom(ImageSession &sess, float new_zoom);
+    // Tool hotkeys ('p'/'e'/'l'/'r'/'o'/'b'/'k' select Pencil/Eraser/Line/
+    // Rectangle/ellipse(O)/Bucket/pick(K), '['/']' shrink/grow the brush,
+    // 'u'/Ctrl-R undo/redo, +/-/= zoom, Esc leaves back to Mode::Image);
+    // ':' and the leader key are forwarded same as HandleImageInput. Mouse
+    // painting itself is NOT handled here -- see Mode::ImageEditor's own
+    // comment for why that lives in main.cpp's DrawPane instead.
+    void HandleImageEditorInput();
+    // Same Ctrl-scroll-zooms-else-pans shape as WheelScrollImage, operating
+    // on ImageEditorSession instead of ImageSession.
+    void WheelScrollImageEditor(float dx, float dy);
     // Finds-or-creates the buffer for `path` (same filename dedup
     // FindOrCreateBuffer uses) and, on a new open, decodes `bytes` via
     // ImageDoc and registers the ImageSession. Called from LoadFile once it
@@ -7023,6 +7326,7 @@ private:
     // from the buffer picker/`:buffers` after its last pane closes matches
     // how a closed text buffer's entry in buffers_ also just keeps existing.
     std::unordered_map<int, ImageSession> images_;
+    std::unordered_map<int, ImageEditorSession> image_editors_;
     // Keyed by buffer_id -- one entry per open PDF-viewer pane, same
     // never-reaped lifetime reasoning as images_ above.
     std::unordered_map<int, PdfSession> pdfs_;
@@ -7239,6 +7543,12 @@ private:
     bool active_todo_ = false;
     std::string active_todo_text_;
     long long active_todo_start_epoch_ = 0;
+    PomodoroPhase pomodoro_phase_ = PomodoroPhase::Idle;
+    bool pomodoro_running_ = false;
+    long long pomodoro_end_epoch_ = 0;
+    long long pomodoro_remaining_secs_ = 0;
+    int pomodoro_work_secs_ = 25 * 60;
+    int pomodoro_break_secs_ = 5 * 60;
     int winbar_click_ref_ = 0;
     bool zen_mode_ = false;
     int zoomed_pane_id_ = -1;  // see TogglePaneZoom/ZoomedPaneId

@@ -74,6 +74,7 @@ const READ_ONLY_METHODS = new Set([
   "session.listParticipants",
   "state.dump",
   "pane.get",
+  "ui.screenshot",
 ]);
 
 // Every tool below funnels through this -- issues the RPC call and turns
@@ -440,6 +441,133 @@ server.registerTool(
       "Drain and return every editor event (cursor moved, buffer changed, pane focus changed, mode changed, a notification fired) queued since the last call to this tool -- this connection's own event backlog, not a live stream. Call it periodically, or right after taking an action, to see what happened in the editor (including the human user's own activity, not just this agent's own actions) since you last checked.",
   },
   async () => toolResult(mep.drainEvents()),
+);
+
+// --- UI automation ("ui.*" methods, src/agent_ui_input.cpp) ----------------
+// Drives mep's *actual* window like Playwright drives a browser: click,
+// drag, type, scroll -- real X11 events (XTest) injected at the window's
+// current screen position -- and read back what's on screen. Unlike
+// every tool above (a thin wrapper over an Editor method that also works
+// headless, e.g. under the collab relay or a script with no display),
+// these need a real GUI window on a real X server; they're a no-op
+// (mouse/key tools silently do nothing, mep_screenshot errors) if mep
+// was built/run without one. Coordinates are window-client pixels -- the
+// same space mep_screenshot's own image is in, and what mep's own UI
+// code (RegisterClickRegion rectangles) uses -- so a screenshot's pixel
+// coordinates line up directly with the x/y you'd pass here.
+
+server.registerTool(
+  "mep_screenshot",
+  {
+    description:
+      "Capture mep's current window as a PNG and return its file path (read the file to see it). Takes no arguments. Coordinates in every other mep_mouse_*/mep_scroll tool are in this same pixel space.",
+  },
+  async () => callTool("ui.screenshot", {}),
+);
+
+server.registerTool(
+  "mep_mouse_move",
+  {
+    description: "Move the mouse pointer to (x, y) in mep's window (no click).",
+    inputSchema: { x: z.number().int(), y: z.number().int() },
+  },
+  async (args: Record<string, unknown>) => callTool("ui.mouse_move", args),
+);
+
+server.registerTool(
+  "mep_mouse_click",
+  {
+    description:
+      "Move to (x, y) and click a mouse button there. Use clicks:2 for a double-click. For a plain click-and-hold-a-modifier (e.g. Shift-click), call mep_key_down first, then this, then mep_key_up.",
+    inputSchema: {
+      x: z.number().int(),
+      y: z.number().int(),
+      button: z.enum(["left", "middle", "right"]).default("left"),
+      clicks: z.number().int().min(1).max(3).default(1),
+    },
+  },
+  async (args: Record<string, unknown>) => callTool("ui.mouse_click", args),
+);
+
+server.registerTool(
+  "mep_mouse_down",
+  {
+    description: "Press (and hold) a mouse button at (x, y). Pair with mep_mouse_up -- use this instead of mep_mouse_click to drag by hand with your own mep_mouse_move calls in between.",
+    inputSchema: { x: z.number().int(), y: z.number().int(), button: z.enum(["left", "middle", "right"]).default("left") },
+  },
+  async (args: Record<string, unknown>) => callTool("ui.mouse_down", args),
+);
+
+server.registerTool(
+  "mep_mouse_up",
+  {
+    description: "Release a mouse button at (x, y). See mep_mouse_down.",
+    inputSchema: { x: z.number().int(), y: z.number().int(), button: z.enum(["left", "middle", "right"]).default("left") },
+  },
+  async (args: Record<string, unknown>) => callTool("ui.mouse_up", args),
+);
+
+server.registerTool(
+  "mep_mouse_drag",
+  {
+    description:
+      "Press a button at (x1, y1), move smoothly to (x2, y2) in `steps` increments, then release -- one call for a paint stroke, a slider drag, a selection drag, etc.",
+    inputSchema: {
+      x1: z.number().int(),
+      y1: z.number().int(),
+      x2: z.number().int(),
+      y2: z.number().int(),
+      button: z.enum(["left", "middle", "right"]).default("left"),
+      steps: z.number().int().min(1).max(200).default(12),
+    },
+  },
+  async (args: Record<string, unknown>) => callTool("ui.mouse_drag", args),
+);
+
+server.registerTool(
+  "mep_scroll",
+  {
+    description: "Scroll the mouse wheel at (x, y). Positive delta scrolls up, negative scrolls down; each unit is one wheel click.",
+    inputSchema: { x: z.number().int(), y: z.number().int(), delta: z.number().int() },
+  },
+  async (args: Record<string, unknown>) => callTool("ui.scroll", args),
+);
+
+server.registerTool(
+  "mep_key_press",
+  {
+    description:
+      "Press and release one key: a single character (\"e\", \"[\", \"?\") or an X11 keysym name for anything without one (\"Escape\", \"Return\", \"Tab\", \"BackSpace\", \"Left\"/\"Right\"/\"Up\"/\"Down\", \"F1\"..\"F12\", \"Control_L\", \"Shift_L\", \"Alt_L\"). For an uppercase letter or shifted symbol, either pass it directly (Shift is applied automatically) or wrap with mep_key_down(\"Shift_L\")/mep_key_up(\"Shift_L\") for a held modifier across other calls (e.g. a Ctrl-click).",
+    inputSchema: { key: z.string() },
+  },
+  async (args: Record<string, unknown>) => callTool("ui.key_press", args),
+);
+
+server.registerTool(
+  "mep_key_down",
+  {
+    description: "Press and hold one key (see mep_key_press for name syntax) without releasing it -- for held modifiers (\"Shift_L\", \"Control_L\", \"Alt_L\") spanning other mep_mouse_*/mep_key_* calls. Pair with mep_key_up.",
+    inputSchema: { key: z.string() },
+  },
+  async (args: Record<string, unknown>) => callTool("ui.key_down", args),
+);
+
+server.registerTool(
+  "mep_key_up",
+  {
+    description: "Release a key previously held with mep_key_down.",
+    inputSchema: { key: z.string() },
+  },
+  async (args: Record<string, unknown>) => callTool("ui.key_up", args),
+);
+
+server.registerTool(
+  "mep_type_text",
+  {
+    description: "Type a string one keystroke at a time (printable ASCII only; auto-shifts uppercase letters and symbols). For most editing, mep_buffer_insert_text is far more direct -- reach for this only when you specifically need real keystrokes, e.g. exercising mep's own key handling or a text field with no buffer-level API.",
+    inputSchema: { text: z.string() },
+  },
+  async (args: Record<string, unknown>) => callTool("ui.type_text", args),
 );
 
 // Best-effort: identify ourselves right away so the human sees a real

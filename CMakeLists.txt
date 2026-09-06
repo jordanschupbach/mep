@@ -292,6 +292,7 @@ endif()
 
 add_executable(mep
     src/main.cpp
+    src/agent_ui_input.cpp
 )
 target_include_directories(mep PRIVATE src)
 target_compile_options(mep PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
@@ -299,6 +300,18 @@ target_link_options(mep PRIVATE ${MEP_SANITIZE_FLAGS})
 target_link_libraries(mep PRIVATE mep_core)
 if(EMSCRIPTEN)
     target_sources(mep PRIVATE src/collab_crdt.cpp src/collab_web_session.cpp)
+endif()
+if(NOT EMSCRIPTEN AND NOT WIN32 AND NOT APPLE)
+    # agent_ui_input.cpp's synthetic-input backend: XTest for injecting
+    # mouse/keyboard events (the agent-control socket's "ui.*" methods,
+    # main.cpp), plus GLFW's own headers to resolve mep's window down to
+    # its native X11 Display/Window (glfwGetX11Display/glfwGetX11Window).
+    # `glfw` is a real CMake target here -- raylib's own CMakeLists pulls
+    # it in via add_subdirectory when built for the Desktop platform, so
+    # it's already visible project-wide without a FetchContent of our
+    # own; linking it just exposes its public include/ directory to us.
+    find_package(X11 REQUIRED COMPONENTS Xtst)
+    target_link_libraries(mep PRIVATE glfw X11::Xtst X11::X11)
 endif()
 
 # Pure DOM/CSS test: intentionally links only html_doc.cpp, so selector and

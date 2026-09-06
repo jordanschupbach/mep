@@ -905,6 +905,12 @@ std::unordered_map<std::string, ThemeColor> BuildHighlightGroups(const Palette &
     // StatusLineFg stays legible on top of either.
     g["TodoActive"] = Mix(p.green, p.bg, 0.3f);
     g["TodoInactive"] = Mix(p.red, p.bg, 0.3f);
+    // Pomodoro chip (main.cpp's DrawFrame status line, docked left of the
+    // Todo chip): idle/gray, work/orange, break/cyan -- same "toned
+    // toward background" treatment as the Todo chip above.
+    g["PomodoroIdle"] = Mix(p.fg, p.bg, 0.5f);
+    g["PomodoroWork"] = Mix(p.orange, p.bg, 0.3f);
+    g["PomodoroBreak"] = Mix(p.cyan, p.bg, 0.3f);
     // Status bar's mode chip (main.cpp's DrawFrame status line): a filled
     // badge colored by editing mode, toned toward the background the same
     // way as the Todo chip above so StatusLineFg text stays legible on top.
@@ -3972,6 +3978,9 @@ void Editor::HandleInput() {
         case Mode::Image:
             HandleImageInput();
             break;
+        case Mode::ImageEditor:
+            HandleImageEditorInput();
+            break;
         case Mode::Pdf:
             HandlePdfInput();
             break;
@@ -4424,6 +4433,9 @@ void Editor::HandleMouseWheel(float dx, float dy) {
             break;
         case Mode::Image:
             WheelScrollImage(dx, dy);
+            break;
+        case Mode::ImageEditor:
+            WheelScrollImageEditor(dx, dy);
             break;
         case Mode::Html:
             WheelScrollHtml(dx, dy);
@@ -5196,6 +5208,13 @@ void Editor::SyncModeToActivePaneBuffer() {
         // the 'i'/'a' special case in DispatchNormalKey jumped back to
         // Mode::Terminal.
         mode_ = Mode::Terminal;
+    } else if (IsImageEditorActive(CurPane().buffer_id)) {
+        // Checked ahead of the plain IsImageBuffer branch below: an
+        // image-editor-active buffer is also an image buffer (the editor
+        // is opened over an existing ImageSession, see EnterImageEditor),
+        // so this must win to resume the editor UI instead of dropping
+        // back to the plain viewer on refocus.
+        mode_ = Mode::ImageEditor;
     } else if (IsImageBuffer(CurPane().buffer_id)) {
         mode_ = Mode::Image;
     } else if (IsPdfBuffer(CurPane().buffer_id)) {
@@ -5218,7 +5237,8 @@ void Editor::SyncModeToActivePaneBuffer() {
         mode_ = Mode::KanbanNormal;
     } else if (IsGanttViewActive(CurPane().buffer_id)) {
         mode_ = Mode::GanttNormal;
-    } else if (mode_ == Mode::Terminal || mode_ == Mode::Image || mode_ == Mode::Pdf || mode_ == Mode::Html ||
+    } else if (mode_ == Mode::Terminal || mode_ == Mode::Image || mode_ == Mode::ImageEditor || mode_ == Mode::Pdf ||
+               mode_ == Mode::Html ||
                mode_ == Mode::OfficeNormal || mode_ == Mode::OfficeInsert || mode_ == Mode::OfficeVisual ||
                mode_ == Mode::SheetNormal || mode_ == Mode::SheetInsert || mode_ == Mode::SheetVisual ||
                mode_ == Mode::KanbanNormal || mode_ == Mode::KanbanInsert || mode_ == Mode::GanttNormal ||
@@ -5331,9 +5351,500 @@ void Editor::HandleImageInput() {
             sess->zoom = std::clamp(fit, kMinImageZoom, kMaxImageZoom);
             sess->pan_x = 0;
             sess->pan_y = 0;
+        } else if (cp == 'e') {
+            EnterImageEditor();
+            return;  // mode_ is no longer Image -- stop draining as this mode
         }
         // Every other printable key is a deliberate no-op -- see
         // Mode::Image's own comment for why (no text to insert/operate on).
+        cp = GetCharPressed();
+    }
+}
+
+// --- In-pane image editor (IMAGE_EDITOR.md) ---------------------------------
+
+namespace {
+constexpr size_t kMaxImageEditorRecentColors = 12;
+constexpr float kTwoPi = 6.28318530718f;
+
+/**
+ * @brief Writes one RGBA8 pixel into a layer's buffer; a no-op if (x, y) falls outside the canvas.
+ */
+void ImageEditorSetPixel(ImageEditorLayer &layer, int width, int height, int x, int y, RgbaColor c) {
+    if (x < 0 || y < 0 || x >= width || y >= height) return;
+    size_t i = (static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)) * 4;
+    layer.pixels[i] = c.r;
+    layer.pixels[i + 1] = c.g;
+    layer.pixels[i + 2] = c.b;
+    layer.pixels[i + 3] = c.a;
+}
+
+/**
+ * @brief Reads one RGBA8 pixel from a layer's buffer; fully transparent black if outside the canvas.
+ */
+RgbaColor ImageEditorGetPixel(const ImageEditorLayer &layer, int width, int height, int x, int y) {
+    if (x < 0 || y < 0 || x >= width || y >= height) return RgbaColor{0, 0, 0, 0};
+    size_t i = (static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)) * 4;
+    return RgbaColor{layer.pixels[i], layer.pixels[i + 1], layer.pixels[i + 2], layer.pixels[i + 3]};
+}
+
+// Stamps a filled disc of diameter `size` (the brush size) centered at
+// (cx, cy) -- the brush shape shared by Pencil/Eraser strokes, the Line
+// tool, and the Rectangle/Ellipse outline modes.
+void ImageEditorStampBrush(ImageEditorLayer &layer, int width, int height, int cx, int cy, int size, RgbaColor c) {
+    float radius = static_cast<float>(size) / 2.0f;
+    int r = static_cast<int>(std::ceil(radius));
+    for (int dy = -r; dy <= r; dy++) {
+        for (int dx = -r; dx <= r; dx++) {
+            if (static_cast<float>(dx * dx + dy * dy) > radius * radius) continue;
+            ImageEditorSetPixel(layer, width, height, cx + dx, cy + dy, c);
+        }
+    }
+}
+
+// Bresenham line, stamping the brush at every step -- shared by
+// Editor::ImageEditorStrokeTo's drag interpolation and
+// Editor::ImageEditorCommitLine's straight-line tool.
+void ImageEditorBrushLine(ImageEditorLayer &layer, int width, int height, int x0, int y0, int x1, int y1, int size,
+                          RgbaColor c) {
+    int dx = std::abs(x1 - x0), sx = x1 >= x0 ? 1 : -1;
+    int dy = -std::abs(y1 - y0), sy = y1 >= y0 ? 1 : -1;
+    int err = dx + dy;
+    int x = x0, y = y0;
+    while (true) {
+        ImageEditorStampBrush(layer, width, height, x, y, size, c);
+        if (x == x1 && y == y1) break;
+        int e2 = 2 * err;
+        if (e2 >= dy) {
+            err += dy;
+            x += sx;
+        }
+        if (e2 <= dx) {
+            err += dx;
+            y += sy;
+        }
+    }
+}
+}  // namespace
+
+bool Editor::IsImageEditorActive(int buffer_id) const {
+    auto it = image_editors_.find(buffer_id);
+    return it != image_editors_.end() && it->second.active;
+}
+
+const ImageEditorSession *Editor::GetImageEditor(int buffer_id) const {
+    auto it = image_editors_.find(buffer_id);
+    return it == image_editors_.end() ? nullptr : &it->second;
+}
+
+ImageEditorSession *Editor::GetImageEditorMutable(int buffer_id) {
+    auto it = image_editors_.find(buffer_id);
+    return it == image_editors_.end() ? nullptr : &it->second;
+}
+
+void Editor::EnterImageEditor() {
+    int buffer_id = CurPane().buffer_id;
+    auto it = image_editors_.find(buffer_id);
+    if (it != image_editors_.end()) {
+        // Re-entering an already-opened session: resume exactly where it
+        // was left (layers/undo history/pan/zoom all still intact) rather
+        // than re-seeding from the ImageDoc, which would silently discard
+        // every edit made before a previous Esc back to Mode::Image.
+        it->second.active = true;
+        mode_ = Mode::ImageEditor;
+        return;
+    }
+    auto img_it = images_.find(buffer_id);
+    if (img_it == images_.end() || !img_it->second.doc) return;
+    ImageDoc &doc = *img_it->second.doc;
+    if (doc.Width() <= 0 || doc.Height() <= 0) return;
+    ImageEditorSession sess;
+    sess.buffer_id = buffer_id;
+    sess.active = true;
+    sess.width = doc.Width();
+    sess.height = doc.Height();
+    ImageEditorLayer base;
+    base.name = "Background";
+    size_t n = static_cast<size_t>(sess.width) * static_cast<size_t>(sess.height) * 4;
+    base.pixels.assign(doc.Pixels(), doc.Pixels() + n);
+    sess.layers.push_back(std::move(base));
+    // Start from the plain viewer's own pan/zoom so opening the editor
+    // doesn't visually jump.
+    sess.zoom = img_it->second.zoom;
+    sess.pan_x = img_it->second.pan_x;
+    sess.pan_y = img_it->second.pan_y;
+    image_editors_[buffer_id] = std::move(sess);
+    mode_ = Mode::ImageEditor;
+}
+
+void Editor::ExitImageEditor() {
+    // Deliberately doesn't erase the session from image_editors_ -- layers/
+    // undo history/tool state all survive so re-pressing 'e' resumes
+    // exactly where this left off (see EnterImageEditor's own comment).
+    auto it = image_editors_.find(CurPane().buffer_id);
+    if (it != image_editors_.end()) it->second.active = false;
+    mode_ = Mode::Image;
+}
+
+void Editor::ResizeImageEditorViewport(int buffer_id, int w, int h) {
+    auto it = image_editors_.find(buffer_id);
+    if (it == image_editors_.end()) return;
+    ImageEditorSession &sess = it->second;
+    sess.viewport_w = w;
+    sess.viewport_h = h;
+    int max_pan_x = std::max(0, static_cast<int>(static_cast<float>(sess.width) * sess.zoom) - w);
+    int max_pan_y = std::max(0, static_cast<int>(static_cast<float>(sess.height) * sess.zoom) - h);
+    sess.pan_x = std::clamp(sess.pan_x, 0, max_pan_x);
+    sess.pan_y = std::clamp(sess.pan_y, 0, max_pan_y);
+}
+
+void Editor::ApplyImageEditorZoom(ImageEditorSession &sess, float new_zoom) {
+    if (sess.width <= 0 || sess.height <= 0) return;
+    new_zoom = std::clamp(new_zoom, kMinImageZoom, kMaxImageZoom);
+    float ratio = new_zoom / sess.zoom;
+    float center_x = static_cast<float>(sess.pan_x) + static_cast<float>(sess.viewport_w) / 2.0f;
+    float center_y = static_cast<float>(sess.pan_y) + static_cast<float>(sess.viewport_h) / 2.0f;
+    sess.zoom = new_zoom;
+    sess.pan_x = static_cast<int>(center_x * ratio - static_cast<float>(sess.viewport_w) / 2.0f);
+    sess.pan_y = static_cast<int>(center_y * ratio - static_cast<float>(sess.viewport_h) / 2.0f);
+    int mx = std::max(0, static_cast<int>(static_cast<float>(sess.width) * sess.zoom) - sess.viewport_w);
+    int my = std::max(0, static_cast<int>(static_cast<float>(sess.height) * sess.zoom) - sess.viewport_h);
+    sess.pan_x = std::clamp(sess.pan_x, 0, mx);
+    sess.pan_y = std::clamp(sess.pan_y, 0, my);
+}
+
+void Editor::WheelScrollImageEditor(float dx, float dy) {
+    auto it = image_editors_.find(CurPane().buffer_id);
+    if (it == image_editors_.end()) return;
+    ImageEditorSession &sess = it->second;
+    if ((IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) && dy != 0.0f) {
+        ApplyImageEditorZoom(sess, sess.zoom * std::pow(kWheelZoomStepPerNotch, dy));
+        return;
+    }
+    int max_pan_x = std::max(0, static_cast<int>(static_cast<float>(sess.width) * sess.zoom) - sess.viewport_w);
+    int max_pan_y = std::max(0, static_cast<int>(static_cast<float>(sess.height) * sess.zoom) - sess.viewport_h);
+    if (dy != 0.0f) sess.pan_y = std::clamp(sess.pan_y + static_cast<int>(-dy * kWheelPixelsPerNotch), 0, max_pan_y);
+    if (dx != 0.0f) sess.pan_x = std::clamp(sess.pan_x + static_cast<int>(dx * kWheelPixelsPerNotch), 0, max_pan_x);
+}
+
+void Editor::PushUndoImageEditor(int buffer_id) {
+    auto it = image_editors_.find(buffer_id);
+    if (it == image_editors_.end()) return;
+    ImageEditorSession &sess = it->second;
+    sess.undo_stack.push_back(sess.layers);
+    if (sess.undo_stack.size() > kMaxUndo) sess.undo_stack.erase(sess.undo_stack.begin());
+    sess.redo_stack.clear();
+}
+
+void Editor::UndoImageEditor(int buffer_id) {
+    auto it = image_editors_.find(buffer_id);
+    if (it == image_editors_.end()) return;
+    ImageEditorSession &sess = it->second;
+    if (sess.undo_stack.empty()) {
+        status_message_ = "Already at oldest change";
+        return;
+    }
+    sess.redo_stack.push_back(sess.layers);
+    sess.layers = sess.undo_stack.back();
+    sess.undo_stack.pop_back();
+    sess.active_layer = std::clamp(sess.active_layer, 0, std::max(0, static_cast<int>(sess.layers.size()) - 1));
+    sess.modified = true;
+    sess.dirty = true;
+}
+
+void Editor::RedoImageEditor(int buffer_id) {
+    auto it = image_editors_.find(buffer_id);
+    if (it == image_editors_.end()) return;
+    ImageEditorSession &sess = it->second;
+    if (sess.redo_stack.empty()) {
+        status_message_ = "Already at newest change";
+        return;
+    }
+    sess.undo_stack.push_back(sess.layers);
+    sess.layers = sess.redo_stack.back();
+    sess.redo_stack.pop_back();
+    sess.active_layer = std::clamp(sess.active_layer, 0, std::max(0, static_cast<int>(sess.layers.size()) - 1));
+    sess.modified = true;
+    sess.dirty = true;
+}
+
+void Editor::ImageEditorPushRecentColor(ImageEditorSession &sess, RgbaColor color) {
+    auto &recent = sess.recent_colors;
+    recent.erase(std::remove(recent.begin(), recent.end(), color), recent.end());
+    recent.insert(recent.begin(), color);
+    if (recent.size() > kMaxImageEditorRecentColors) recent.resize(kMaxImageEditorRecentColors);
+}
+
+void Editor::ImageEditorStrokeTo(ImageEditorSession &sess, int x0, int y0, int x1, int y1) {
+    if (sess.active_layer < 0 || sess.active_layer >= static_cast<int>(sess.layers.size())) return;
+    ImageEditorLayer &layer = sess.layers[static_cast<size_t>(sess.active_layer)];
+    RgbaColor c = sess.tool == ImageEditorTool::Eraser ? RgbaColor{0, 0, 0, 0} : sess.primary_color;
+    ImageEditorBrushLine(layer, sess.width, sess.height, x0, y0, x1, y1, sess.brush_size, c);
+    sess.modified = true;
+    sess.dirty = true;
+}
+
+void Editor::ImageEditorCommitLine(ImageEditorSession &sess, int x0, int y0, int x1, int y1) {
+    if (sess.active_layer < 0 || sess.active_layer >= static_cast<int>(sess.layers.size())) return;
+    ImageEditorLayer &layer = sess.layers[static_cast<size_t>(sess.active_layer)];
+    ImageEditorBrushLine(layer, sess.width, sess.height, x0, y0, x1, y1, sess.brush_size, sess.primary_color);
+    sess.modified = true;
+    sess.dirty = true;
+}
+
+void Editor::ImageEditorCommitRect(ImageEditorSession &sess, int x0, int y0, int x1, int y1, bool filled) {
+    if (sess.active_layer < 0 || sess.active_layer >= static_cast<int>(sess.layers.size())) return;
+    ImageEditorLayer &layer = sess.layers[static_cast<size_t>(sess.active_layer)];
+    int lo_x = std::min(x0, x1), hi_x = std::max(x0, x1);
+    int lo_y = std::min(y0, y1), hi_y = std::max(y0, y1);
+    if (filled) {
+        for (int y = lo_y; y <= hi_y; y++) {
+            for (int x = lo_x; x <= hi_x; x++) ImageEditorSetPixel(layer, sess.width, sess.height, x, y, sess.primary_color);
+        }
+    } else {
+        ImageEditorBrushLine(layer, sess.width, sess.height, lo_x, lo_y, hi_x, lo_y, sess.brush_size, sess.primary_color);
+        ImageEditorBrushLine(layer, sess.width, sess.height, lo_x, hi_y, hi_x, hi_y, sess.brush_size, sess.primary_color);
+        ImageEditorBrushLine(layer, sess.width, sess.height, lo_x, lo_y, lo_x, hi_y, sess.brush_size, sess.primary_color);
+        ImageEditorBrushLine(layer, sess.width, sess.height, hi_x, lo_y, hi_x, hi_y, sess.brush_size, sess.primary_color);
+    }
+    sess.modified = true;
+    sess.dirty = true;
+}
+
+void Editor::ImageEditorCommitEllipse(ImageEditorSession &sess, int x0, int y0, int x1, int y1, bool filled) {
+    if (sess.active_layer < 0 || sess.active_layer >= static_cast<int>(sess.layers.size())) return;
+    ImageEditorLayer &layer = sess.layers[static_cast<size_t>(sess.active_layer)];
+    int lo_x = std::min(x0, x1), hi_x = std::max(x0, x1);
+    int lo_y = std::min(y0, y1), hi_y = std::max(y0, y1);
+    float rx = static_cast<float>(hi_x - lo_x) / 2.0f, ry = static_cast<float>(hi_y - lo_y) / 2.0f;
+    float cx = static_cast<float>(lo_x + hi_x) / 2.0f, cy = static_cast<float>(lo_y + hi_y) / 2.0f;
+    if (rx < 0.5f || ry < 0.5f) return;
+    if (filled) {
+        for (int y = lo_y; y <= hi_y; y++) {
+            for (int x = lo_x; x <= hi_x; x++) {
+                float nx = (static_cast<float>(x) + 0.5f - cx) / rx;
+                float ny = (static_cast<float>(y) + 0.5f - cy) / ry;
+                if (nx * nx + ny * ny <= 1.0f) ImageEditorSetPixel(layer, sess.width, sess.height, x, y, sess.primary_color);
+            }
+        }
+    } else {
+        int steps = std::max(32, static_cast<int>((rx + ry) * 2.0f));
+        for (int i = 0; i < steps; i++) {
+            float t = static_cast<float>(i) / static_cast<float>(steps) * kTwoPi;
+            int px = static_cast<int>(std::round(cx + rx * std::cos(t)));
+            int py = static_cast<int>(std::round(cy + ry * std::sin(t)));
+            ImageEditorStampBrush(layer, sess.width, sess.height, px, py, sess.brush_size, sess.primary_color);
+        }
+    }
+    sess.modified = true;
+    sess.dirty = true;
+}
+
+void Editor::ImageEditorFloodFill(ImageEditorSession &sess, int x, int y) {
+    if (sess.active_layer < 0 || sess.active_layer >= static_cast<int>(sess.layers.size())) return;
+    if (x < 0 || y < 0 || x >= sess.width || y >= sess.height) return;
+    ImageEditorLayer &layer = sess.layers[static_cast<size_t>(sess.active_layer)];
+    RgbaColor target = ImageEditorGetPixel(layer, sess.width, sess.height, x, y);
+    RgbaColor fill = sess.primary_color;
+    if (target == fill) return;
+    std::vector<bool> visited(static_cast<size_t>(sess.width) * static_cast<size_t>(sess.height), false);
+    std::vector<std::pair<int, int>> stack;
+    stack.emplace_back(x, y);
+    while (!stack.empty()) {
+        auto [cx, cy] = stack.back();
+        stack.pop_back();
+        if (cx < 0 || cy < 0 || cx >= sess.width || cy >= sess.height) continue;
+        size_t vi = static_cast<size_t>(cy) * static_cast<size_t>(sess.width) + static_cast<size_t>(cx);
+        if (visited[vi]) continue;
+        if (!(ImageEditorGetPixel(layer, sess.width, sess.height, cx, cy) == target)) continue;
+        visited[vi] = true;
+        ImageEditorSetPixel(layer, sess.width, sess.height, cx, cy, fill);
+        stack.emplace_back(cx + 1, cy);
+        stack.emplace_back(cx - 1, cy);
+        stack.emplace_back(cx, cy + 1);
+        stack.emplace_back(cx, cy - 1);
+    }
+    sess.modified = true;
+    sess.dirty = true;
+}
+
+void Editor::ImageEditorPickColor(ImageEditorSession &sess, int x, int y) {
+    ImageEditorComposite(sess);
+    if (x < 0 || y < 0 || x >= sess.width || y >= sess.height) return;
+    size_t i = (static_cast<size_t>(y) * static_cast<size_t>(sess.width) + static_cast<size_t>(x)) * 4;
+    if (i + 3 >= sess.composite.size()) return;
+    RgbaColor c{sess.composite[i], sess.composite[i + 1], sess.composite[i + 2], sess.composite[i + 3]};
+    sess.primary_color = c;
+    ImageEditorPushRecentColor(sess, c);
+}
+
+void Editor::ImageEditorComposite(ImageEditorSession &sess) {
+    if (!sess.dirty) return;
+    size_t n = static_cast<size_t>(sess.width) * static_cast<size_t>(sess.height) * 4;
+    sess.composite.assign(n, 0);
+    for (const ImageEditorLayer &layer : sess.layers) {
+        if (!layer.visible || layer.opacity <= 0.0f) continue;
+        for (size_t i = 0; i + 3 < n; i += 4) {
+            float src_a = (static_cast<float>(layer.pixels[i + 3]) / 255.0f) * layer.opacity;
+            if (src_a <= 0.0f) continue;
+            float dst_a = static_cast<float>(sess.composite[i + 3]) / 255.0f;
+            float out_a = src_a + dst_a * (1.0f - src_a);
+            for (size_t c = 0; c < 3; c++) {
+                float src = static_cast<float>(layer.pixels[i + c]);
+                float dst = static_cast<float>(sess.composite[i + c]);
+                float out = out_a > 0.0f ? (src * src_a + dst * dst_a * (1.0f - src_a)) / out_a : 0.0f;
+                sess.composite[i + c] = static_cast<unsigned char>(std::clamp(out, 0.0f, 255.0f));
+            }
+            sess.composite[i + 3] = static_cast<unsigned char>(std::clamp(out_a * 255.0f, 0.0f, 255.0f));
+        }
+    }
+    sess.dirty = false;
+}
+
+void Editor::ImageEditorAddLayer(int buffer_id) {
+    auto it = image_editors_.find(buffer_id);
+    if (it == image_editors_.end()) return;
+    ImageEditorSession &sess = it->second;
+    PushUndoImageEditor(buffer_id);
+    ImageEditorLayer layer;
+    layer.name = "Layer " + std::to_string(sess.layers.size() + 1);
+    layer.pixels.assign(static_cast<size_t>(sess.width) * static_cast<size_t>(sess.height) * 4, 0);
+    int insert_at = std::clamp(sess.active_layer + 1, 0, static_cast<int>(sess.layers.size()));
+    sess.layers.insert(sess.layers.begin() + insert_at, std::move(layer));
+    sess.active_layer = insert_at;
+    sess.modified = true;
+    sess.dirty = true;
+}
+
+void Editor::ImageEditorDeleteLayer(int buffer_id) {
+    auto it = image_editors_.find(buffer_id);
+    if (it == image_editors_.end()) return;
+    ImageEditorSession &sess = it->second;
+    if (sess.layers.size() <= 1) {
+        status_message_ = "Cannot delete the last layer";
+        return;
+    }
+    PushUndoImageEditor(buffer_id);
+    sess.layers.erase(sess.layers.begin() + sess.active_layer);
+    sess.active_layer = std::clamp(sess.active_layer, 0, static_cast<int>(sess.layers.size()) - 1);
+    sess.modified = true;
+    sess.dirty = true;
+}
+
+void Editor::ImageEditorDuplicateLayer(int buffer_id) {
+    auto it = image_editors_.find(buffer_id);
+    if (it == image_editors_.end()) return;
+    ImageEditorSession &sess = it->second;
+    PushUndoImageEditor(buffer_id);
+    ImageEditorLayer copy = sess.layers[static_cast<size_t>(sess.active_layer)];
+    copy.name += " copy";
+    sess.layers.insert(sess.layers.begin() + sess.active_layer + 1, std::move(copy));
+    sess.active_layer += 1;
+    sess.modified = true;
+    sess.dirty = true;
+}
+
+void Editor::ImageEditorMoveLayer(int buffer_id, int delta) {
+    auto it = image_editors_.find(buffer_id);
+    if (it == image_editors_.end()) return;
+    ImageEditorSession &sess = it->second;
+    int target = sess.active_layer + delta;
+    if (target < 0 || target >= static_cast<int>(sess.layers.size())) return;
+    PushUndoImageEditor(buffer_id);
+    std::swap(sess.layers[static_cast<size_t>(sess.active_layer)], sess.layers[static_cast<size_t>(target)]);
+    sess.active_layer = target;
+    sess.modified = true;
+    sess.dirty = true;
+}
+
+bool Editor::SaveImageEditorPng(ImageEditorSession &sess, const std::string &path) {
+#if defined(__EMSCRIPTEN__)
+    (void)sess;
+    (void)path;
+    status_message_ = "E-Image editor save isn't supported in the browser build yet (see IMAGE_EDITOR.md)";
+    return false;
+#else
+    ImageEditorComposite(sess);
+    Image img{};
+    img.data = sess.composite.data();
+    img.width = sess.width;
+    img.height = sess.height;
+    img.mipmaps = 1;
+    img.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
+    if (!ExportImage(img, path.c_str())) {
+        status_message_ = "E212: Can't write \"" + path + "\"";
+        return false;
+    }
+    sess.modified = false;
+    status_message_ = "\"" + path + "\" written";
+    return true;
+#endif
+}
+
+// Tool hotkeys ('b'/'x'/'l'/'r'/'c'/'f'/'i'/'h' select Pencil/Eraser/Line/
+// Rectangle/Ellipse/Bucket/Eyedropper/Pan), '['/']' shrink/grow the brush,
+// 'u'/Ctrl-R undo/redo, +/-/= zoom (same math as HandleImageInput's own),
+// Esc leaves back to Mode::Image. ':' and the leader key are forwarded,
+// same as HandleImageInput. Mouse painting itself is handled by main.cpp's
+// DrawPane instead -- see Mode::ImageEditor's own comment (editor.h) for
+// why.
+void Editor::HandleImageEditorInput() {
+    ImageEditorSession *sess = GetImageEditorMutable(CurPane().buffer_id);
+    if (!sess) {
+        mode_ = Mode::Normal;
+        return;
+    }
+    if (IsKeyPressed(KEY_ESCAPE)) {
+        ExitImageEditor();
+        return;
+    }
+    bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+    if (ctrl && IsKeyPressed(KEY_R)) {
+        RedoImageEditor(sess->buffer_id);
+        return;
+    }
+    auto apply_zoom = [&](float z) { ApplyImageEditorZoom(*sess, z); };
+    int cp = GetCharPressed();
+    while (cp > 0) {
+        if (cp == ':') {
+            EnterCommand();
+            return;  // mode_ is no longer ImageEditor -- stop draining as this mode
+        } else if (cp == static_cast<int>(leader_key_) && !whichkey_bindings_.empty()) {
+            TriggerWhichKey();
+            return;
+        } else if (cp == '+') {
+            apply_zoom(sess->zoom * kImageZoomStep);
+        } else if (cp == '-') {
+            apply_zoom(sess->zoom / kImageZoomStep);
+        } else if (cp == '=' && sess->width > 0 && sess->height > 0 && sess->viewport_w > 0 && sess->viewport_h > 0) {
+            float fit = std::min(static_cast<float>(sess->viewport_w) / static_cast<float>(sess->width),
+                                  static_cast<float>(sess->viewport_h) / static_cast<float>(sess->height));
+            sess->zoom = std::clamp(fit, kMinImageZoom, kMaxImageZoom);
+            sess->pan_x = 0;
+            sess->pan_y = 0;
+        } else if (cp == '[') {
+            sess->brush_size = std::max(1, sess->brush_size - 1);
+        } else if (cp == ']') {
+            sess->brush_size = std::min(64, sess->brush_size + 1);
+        } else if (cp == 'u') {
+            UndoImageEditor(sess->buffer_id);
+        } else if (cp == 'b') {
+            sess->tool = ImageEditorTool::Pencil;
+        } else if (cp == 'x') {
+            sess->tool = ImageEditorTool::Eraser;
+        } else if (cp == 'l') {
+            sess->tool = ImageEditorTool::Line;
+        } else if (cp == 'r') {
+            sess->tool = ImageEditorTool::Rectangle;
+        } else if (cp == 'c') {
+            sess->tool = ImageEditorTool::Ellipse;
+        } else if (cp == 'f') {
+            sess->tool = ImageEditorTool::Bucket;
+        } else if (cp == 'i') {
+            sess->tool = ImageEditorTool::Eyedropper;
+        } else if (cp == 'h') {
+            sess->tool = ImageEditorTool::Pan;
+        }
         cp = GetCharPressed();
     }
 }
@@ -15535,6 +16046,7 @@ const char *ModeName(Mode m, bool replace_mode) {
             return "HINT";
         case Mode::Terminal: return "TERMINAL";
         case Mode::Image: return "IMAGE";
+        case Mode::ImageEditor: return "IMAGE-EDIT";
         case Mode::Pdf: return "PDF";
         case Mode::Html: return "HTML";
         case Mode::OfficeNormal: return "NORMAL";
@@ -19989,6 +20501,18 @@ bool Editor::SaveBuffer(Buffer &buf, const std::string &path) {
     // on disk with a blank line.
     int buffer_id = static_cast<int>(&buf - buffers_.data());
     if (IsImageBuffer(buffer_id)) {
+        // An opened-and-edited image-editor session (IMAGE_EDITOR.md)
+        // flattens its layers and writes a real PNG; a plain, never-
+        // edited image-viewer pane keeps the original reject -- there's
+        // nothing to flatten and no reason to let `:w` touch the file.
+        auto edit_it = image_editors_.find(buffer_id);
+        if (edit_it != image_editors_.end()) {
+            if (!SaveImageEditorPng(edit_it->second, io_path)) return false;
+            buf.filename = path;
+            buf.modified = false;
+            save_epoch_++;
+            return true;
+        }
         status_message_ = "E382: Cannot write, image buffer";
         return false;
     }

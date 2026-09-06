@@ -30,6 +30,7 @@
 #include <set>
 #include <system_error>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -382,6 +383,19 @@ void EnsureConnCursorInitialized(Editor &editor, Connection &conn) {
 // getLines, file.*, pane.*, command.run, session.info, state.dump)
 // remains global/real-editor-scoped -- these are "control the editor"
 // actions, not "type as this participant" ones.
+// Registry backing RegisterUiMethod (defined below, outside this
+// anonymous namespace, near Start()) -- populated once by main.cpp after
+// Start(), for "ui.*" methods (screenshot, synthetic mouse/keyboard) that
+// need raylib/GLFW/X11, which this file otherwise has zero dependency on
+// (see agent_rpc.h's own top comment). Dispatch() below falls through to
+// it right before "method not found". A function-local static (not a
+// plain file-scope global) so it's guaranteed initialized before first
+// use regardless of static-init order across translation units.
+std::unordered_map<std::string, UiMethodHandler> &UiMethods() {
+    static std::unordered_map<std::string, UiMethodHandler> methods;
+    return methods;
+}
+
 /**
  * @brief Executes one JSON-RPC method call against the editor and/or this connection's own state, dispatching by method name.
  * @param editor The editor to act on for global/real-editor-scoped methods.
@@ -768,6 +782,8 @@ Json Dispatch(Editor &editor, Connection &conn, const std::string &method, const
         j["lines"] = std::move(lines);
         return j;
     }
+    auto ui_it = UiMethods().find(method);
+    if (ui_it != UiMethods().end()) return ui_it->second(params);
     throw RpcError{-32601, "method not found: " + method};
 }
 
@@ -1126,6 +1142,8 @@ void PruneStaleSockets(const std::string &dir, const std::string &own_path) {
 }
 
 }  // namespace
+
+void RegisterUiMethod(const std::string &name, UiMethodHandler handler) { UiMethods()[name] = std::move(handler); }
 
 void Start() {
     State &state = Instance();

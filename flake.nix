@@ -184,6 +184,7 @@
             pkgs.libxinerama
             pkgs.libxcursor
             pkgs.libxi
+            pkgs.libxtst
             pkgs.openssl
           ];
 
@@ -235,6 +236,7 @@
             pkgs.libxinerama
             pkgs.libxcursor
             pkgs.libxi
+            pkgs.libxtst
             pkgs.openssl
             # Runtime dep of webview_deno, used by the launcher to open a
             # native window around the wasm build.

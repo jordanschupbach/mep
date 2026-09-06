@@ -2567,6 +2567,61 @@ const char *kBuiltinFileTree =
     "end\n"
     "mep.command('MepFileTree', function() mep.tree_toggle() end)\n"
     "mep.leader_map('ff', 'Toggle file tree', function() mep.tree_toggle() end)\n"
+    // Native "Open File" dialog (<leader>fo / :MepOpenFile): the desktop's
+    // own file picker, for browsing to a path visually instead of typing
+    // one into `:e` or fuzzy-matching it via find_files (<leader>pf). No
+    // dialog toolkit is linked into mep itself, so -- same trick as
+    // mep.open_url/mep.browse above -- this shells out via mep.job_start:
+    // osascript's Cocoa panel on macOS, a WinForms dialog via PowerShell
+    // on Windows, and on Linux the first of zenity/kdialog/yad found on
+    // PATH (no single standard CLI for a desktop picker exists, and mep
+    // has no primitive to probe PATH directly, so each is tried in turn --
+    // a missing binary's execvp failure surfaces as exit code 127, which
+    // is what actually drives the fallback, not a presence check). A
+    // chosen path opens the same way file tree/find_files do (mep.open,
+    // not the force-text `:e`); a cancelled dialog (nonzero, non-127 exit)
+    // is a silent no-op.\n"
+    "local function mep_open_file_dialog_linux(chain_index)\n"
+    "  local backends = {\n"
+    "    {'zenity', '--file-selection', '--title=Open File'},\n"
+    "    {'kdialog', '--getopenfilename', '.'},\n"
+    "    {'yad', '--file', '--title=Open File'},\n"
+    "  }\n"
+    "  local argv = backends[chain_index]\n"
+    "  if not argv then\n"
+    "    mep.notify('No file dialog found (install zenity, kdialog, or yad)', 'error')\n"
+    "    return\n"
+    "  end\n"
+    "  local path\n"
+    "  mep.job_start(argv, {\n"
+    "    on_stdout = function(line) path = line end,\n"
+    "    on_exit = function(code)\n"
+    "      if code == 127 then mep_open_file_dialog_linux(chain_index + 1)\n"
+    "      elseif code == 0 and path and path ~= '' then mep.open(path) end\n"
+    "    end,\n"
+    "  })\n"
+    "end\n"
+    "function mep.open_file_dialog()\n"
+    "  local plat = mep.platform()\n"
+    "  local path\n"
+    "  if plat == 'macos' then\n"
+    "    mep.job_start({'osascript', '-e', 'POSIX path of (choose file)'}, {\n"
+    "      on_stdout = function(line) path = line end,\n"
+    "      on_exit = function(code) if code == 0 and path and path ~= '' then mep.open(path) end end,\n"
+    "    })\n"
+    "  elseif plat == 'windows' then\n"
+    "    mep.job_start({'powershell', '-NoProfile', '-Command',\n"
+    "      \"Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.OpenFileDialog; if ($f.ShowDialog() -eq 'OK') { Write-Output $f.FileName }\"\n"
+    "    }, {\n"
+    "      on_stdout = function(line) path = line end,\n"
+    "      on_exit = function(code) if code == 0 and path and path ~= '' then mep.open(path) end end,\n"
+    "    })\n"
+    "  else\n"
+    "    mep_open_file_dialog_linux(1)\n"
+    "  end\n"
+    "end\n"
+    "mep.command('MepOpenFile', mep.open_file_dialog)\n"
+    "mep.leader_map('fo', 'Open file (native dialog)', mep.open_file_dialog)\n"
     // Shared by mep.project_open below and mep.projects()'s picker preview
     // pane further down: first of README.md/README.org/README.txt/README
     // present as a file (not a dir) in `dir` wins, so README.org is only

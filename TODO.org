@@ -13,6 +13,9 @@
   CLOCK: [2026-09-05 Sat 21:28]--[2026-09-05 Sat 21:45] =>  0:17
   :END:
 * TODO Add language modes
+  :LOGBOOK:
+  CLOCK: [2026-09-05 Sat 21:28]--[2026-09-05 Sat 21:47] =>  0:19
+  :END:
 * TODO Add reorder todo feature with ctrl+j,k
 * TODO todo management
   :LOGBOOK:

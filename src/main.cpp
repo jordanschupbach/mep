@@ -21210,17 +21210,18 @@ void DrawTabBar(int y) {
         int icon;             // Nerd Font codepoint, 0 = DrawRobotIcon
         int icon_open;        // codepoint while open, 0 = same as `icon`
         const char *tooltip;
+        const char *color;    // highlight group for the icon at rest (hover/open still override to WorkspaceActive)
     };
     static const SidebarButton kSidebarButtons[] = {
-        {"Files", "MepFileTree", 0xf07b, 0xf07c, "Files"},                       // nf-fa-folder / folder_open
-        {"Git", "MepGitStatus", 0xe725, 0, "Git: status, log, branches, stash"},                 // nf-dev-git_branch
-        {"Symbols", "MepSymbols", 0xf121, 0, "Symbols"},                         // nf-fa-code
-        {"Structure", "MepStructure", 0xf0e8, 0, "Structure"},                   // nf-fa-sitemap
-        {"Todo", "MepActivityTodoPanel", 0xf046, 0, "Todo"},                     // nf-fa-check_square_o
-        {"Tests", "MepActivityTestPanel", 0xf0c3, 0, "Tests"},                   // nf-fa-flask
-        {"Notifications", "MepNotifyPanel", 0xf0f3, 0, "Notifications"},         // nf-fa-bell
-        {"AI Agent", "MepAiAgent", 0, 0, "AI agent"},
-        {"AI Agents", "MepAiAgents", 0xf0c0, 0, "AI agents (connected Claude Code sessions)"},  // nf-fa-users
+        {"Files", "MepFileTree", 0xf07b, 0xf07c, "Files", "Yellow"},                       // nf-fa-folder / folder_open
+        {"Git", "MepGitStatus", 0xe725, 0, "Git: status, log, branches, stash", "Orange"},                 // nf-dev-git_branch
+        {"Symbols", "MepSymbols", 0xf121, 0, "Symbols", "Purple"},                         // nf-fa-code
+        {"Structure", "MepStructure", 0xf0e8, 0, "Structure", "Cyan"},                   // nf-fa-sitemap
+        {"Todo", "MepActivityTodoPanel", 0xf046, 0, "Todo", "Green"},                     // nf-fa-check_square_o
+        {"Tests", "MepActivityTestPanel", 0xf0c3, 0, "Tests", "Blue"},                    // nf-fa-flask
+        {"Notifications", "MepNotifyPanel", 0xf0f3, 0, "Notifications", "Red"},           // nf-fa-bell
+        {"AI Agent", "MepAiAgent", 0, 0, "AI agent", "Cyan"},
+        {"AI Agents", "MepAiAgents", 0xf0c0, 0, "AI agents (connected Claude Code sessions)", "Purple"},  // nf-fa-users
     };
     auto find_sidebar_by_title = [](const char *title) -> const SidebarInstance * {
         for (const SidebarInstance &sb : g_editor.Sidebars()) {
@@ -21242,7 +21243,7 @@ void DrawTabBar(int y) {
         } else if (hovered) {
             DrawRectangleRounded(rect, 0.3f, 4, ResolveHlGroup("MenuHighlight"));
         }
-        const Color icon_color = ResolveHlGroup(open || hovered ? "WorkspaceActive" : "WorkspaceInactive");
+        const Color icon_color = ResolveHlGroup(open || hovered ? "WorkspaceActive" : button.color);
         if (button.icon == 0) {
             const float pad = button_size * 0.15f;
             DrawRobotIcon(Vector2{rect.x + pad, rect.y + pad}, button_size - pad * 2.0f, icon_color);
@@ -21276,11 +21277,12 @@ void DrawTabBar(int y) {
         const char *command;  // :command that opens the picker
         int icon;             // Nerd Font codepoint
         const char *tooltip;
+        const char *color;    // highlight group for the icon at rest
     };
     static const SearchButton kSearchButtons[] = {
-        {"lua mep.buffer_search()", 0xf002, "Search in buffer"},           // nf-fa-search
-        {"lua mep.live_grep()", 0xf1e5, "Search project (live grep)"},     // nf-fa-binoculars
-        {"lua mep.buffers()", 0xf0c5, "Switch buffer"},                    // nf-fa-files_o
+        {"lua mep.buffer_search()", 0xf002, "Search in buffer", "Yellow"},           // nf-fa-search
+        {"lua mep.live_grep()", 0xf1e5, "Search project (live grep)", "Green"},      // nf-fa-binoculars
+        {"lua mep.buffers()", 0xf0c5, "Switch buffer", "Cyan"},                      // nf-fa-files_o
     };
     for (size_t bi = std::size(kSearchButtons); bi-- > 0;) {
         const SearchButton &button = kSearchButtons[bi];
@@ -21291,7 +21293,7 @@ void DrawTabBar(int y) {
         const std::string glyph = Utf8FromCodepoint(button.icon);
         const float gw = MeasureUiText(glyph, font_size);
         DrawUiText(glyph, Vector2{rect.x + (button_size - gw) / 2.0f, cy}, font_size,
-                   ResolveHlGroup(hovered ? "WorkspaceActive" : "WorkspaceInactive"));
+                   ResolveHlGroup(hovered ? "WorkspaceActive" : button.color));
         tooltip_if_hovered(rect, button.tooltip);
         RegisterClickRegion(rect, [command = button.command] { g_editor.RunCommand(command); });
     }
@@ -21374,10 +21376,12 @@ void DrawTabBar(int y) {
     const std::string circle_off = " " + Utf8FromCodepoint(0xf10c) + " ";  // nf-fa-circle_o
     const std::string add_label = " " + Utf8FromCodepoint(0xf067) + " ";   // nf-fa-plus
     const std::string close_label = " " + Utf8FromCodepoint(0xf00d) + " "; // nf-fa-times
-    const std::string separator = " \xe2\x94\x82 ";                          // U+2502 box drawings light vertical
+    const std::string ws_add_label = " [+] ";   // new workspace
+    const std::string ws_close_label = " [-] "; // close active workspace
     const float circle_w = std::max(MeasureUiText(circle_on, font_size), MeasureUiText(circle_off, font_size));
     const float tabs_w = circle_w * static_cast<float>(g_editor.TabCount()) + MeasureUiText(add_label, font_size) +
-                         MeasureUiText(close_label, font_size) + MeasureUiText(separator, font_size);
+                         MeasureUiText(close_label, font_size) + MeasureUiText(ws_add_label, font_size) +
+                         MeasureUiText(ws_close_label, font_size);
 
     struct WsLabel {
         int id = 0;
@@ -21449,9 +21453,27 @@ void DrawTabBar(int y) {
         x += w;
     }
 
-    // --- Separator, then the active workspace's tabs exactly as before.
-    DrawUiText(separator, Vector2{x, cy}, font_size, ResolveHlGroup("WorkspaceInactive"));
-    x += MeasureUiText(separator, font_size);
+    // --- New/close workspace buttons, then the active workspace's tabs
+    // exactly as before. Replaces a plain box-drawing separator glyph that
+    // wasn't covered by any loaded font and rendered as a "?" tofu fallback.
+    {
+        const float w = MeasureUiText(ws_add_label, font_size);
+        const Rectangle rect{x, fy, w, fbar_h};
+        const bool hovered = CheckCollisionPointRec(mouse, rect);
+        DrawUiText(ws_add_label, Vector2{x, cy}, font_size, ResolveHlGroup(hovered ? "WorkspaceActive" : "Green"));
+        tooltip_if_hovered(rect, "New workspace");
+        RegisterClickRegion(rect, [] { g_editor.RunCommand("lua mep.workspace_new_prompt()"); });
+        x += w;
+    }
+    {
+        const float w = MeasureUiText(ws_close_label, font_size);
+        const Rectangle rect{x, fy, w, fbar_h};
+        const bool hovered = CheckCollisionPointRec(mouse, rect);
+        DrawUiText(ws_close_label, Vector2{x, cy}, font_size, ResolveHlGroup(hovered ? "WorkspaceActive" : "Red"));
+        tooltip_if_hovered(rect, "Close active workspace");
+        RegisterClickRegion(rect, [] { g_editor.RunCommand("wsdelete"); });
+        x += w;
+    }
 
     for (int i = 0; i < g_editor.TabCount(); i++) {
         bool active = (i == g_editor.ActiveTabIndex());
@@ -21683,9 +21705,20 @@ void DrawEditor() {
             std::string register_indicator =
                 g_editor.PendingRegister() != 0 ? std::string("\"") + g_editor.PendingRegister() + "  " : "";
             std::string buf_label = buf.scratch ? "[Scratch]" : (buf.filename.empty() ? "[No Name]" : buf.filename);
-            std::string left = std::string("-- ") + ModeName(g_editor.CurrentMode(), g_editor.IsReplaceMode()) +
-                                " --  " + register_indicator + count_indicator + buf_label +
-                                (buf.modified ? " [+]" : "");
+            // Mode chip: a filled, mode-colored badge (ModeNormal/Insert/...,
+            // editor.cpp) in place of the old plain "-- NORMAL --" text, same
+            // filled-chip idiom as the active-todo/collab-peer chips just
+            // below and above.
+            std::string mode_name = ModeName(g_editor.CurrentMode(), g_editor.IsReplaceMode());
+            std::string mode_group;
+            if (mode_name == "NORMAL") mode_group = "ModeNormal";
+            else if (mode_name == "INSERT" || mode_name == "REPLACE") mode_group = mode_name == "REPLACE" ? "ModeReplace" : "ModeInsert";
+            else if (mode_name == "VISUAL" || mode_name == "V-LINE" || mode_name == "V-BLOCK" || mode_name == "SELECT") mode_group = "ModeVisual";
+            else if (mode_name == "COMMAND" || mode_name == "SEARCH") mode_group = "ModeCommand";
+            else mode_group = "ModeOther";
+            std::string mode_chip = " " + mode_name + " ";
+            std::string rest = "  " + register_indicator + count_indicator + buf_label + (buf.modified ? " [+]" : "");
+            std::string left = mode_chip + rest;
             std::string right = "Ln " + std::to_string(cursor.row + 1) + ", Col " + std::to_string(cursor.col + 1);
             // Collaboration presence stays in the editor's ordinary chrome,
             // not a modal: each compact chip identifies a peer and their
@@ -21704,7 +21737,13 @@ void DrawEditor() {
                 RegisterClickRegion(chip_rect, [peer_id = peer.id] { g_editor.JumpToParticipant(peer_id); });
                 peer_x += chip_w + 5.0f;
             }
-            DrawTextEx(g_font, left.c_str(), Vector2{static_cast<float>(kMarginX), static_cast<float>(status_y + 3)},
+            float mode_w = MeasureTextEx(g_font, mode_chip.c_str(), status_font_size, 0).x;
+            Rectangle mode_rect{static_cast<float>(kMarginX), static_cast<float>(status_y + 2), mode_w,
+                                static_cast<float>(status_bar_height - 4)};
+            DrawRectangleRounded(mode_rect, 0.3f, 4, ResolveHlGroup(mode_group));
+            DrawTextEx(g_font, mode_chip.c_str(), Vector2{static_cast<float>(kMarginX), static_cast<float>(status_y + 3)},
+                       status_font_size, 0, ResolveHlGroup("StatusLineFg"));
+            DrawTextEx(g_font, rest.c_str(), Vector2{static_cast<float>(kMarginX) + mode_w, static_cast<float>(status_y + 3)},
                        status_font_size, 0, ResolveHlGroup("StatusLineFg"));
             float right_w = MeasureTextEx(g_font, right.c_str(), status_font_size, 0).x;
             DrawTextEx(g_font, right.c_str(), Vector2{chip_left - right_w, static_cast<float>(status_y + 3)},

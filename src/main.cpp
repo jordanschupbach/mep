@@ -455,6 +455,17 @@ enum {
 };
 int g_office_dropdown_open = -1;
 
+// Which pane's Run-button "Setup" dropdown (DrawPane's header controls,
+// RUNBUTTON_PLAN) is open, keyed by Pane::id -- same single-int, no-
+// click-away-close convention as g_office_dropdown_open just above (one
+// "Setup..." item, so a bespoke Menu/MenuItem instance would be pure
+// overhead). -1 = none. g_run_button_menu_anchor is that pane's Run
+// button rect as of the frame the dropdown was opened (or last redrawn),
+// so DrawRunButtonMenu can anchor just below it without DrawPane having
+// to hand geometry back some other way.
+int g_run_button_menu_pane = -1;
+Rectangle g_run_button_menu_anchor{};
+
 // Populated by DrawPane's office branch (a full-document wrap-height scan
 // -- see the comment where it's filled in) and consumed by that same
 // pane's own Docs-style status footer (word/page count, zoom) right after,
@@ -11745,6 +11756,220 @@ const char *kBuiltinTabTerminal =
     "mep.command('tabterm', mep.tab_terminal_toggle)\n"
     "mep.leader_map('<CR>', 'Toggle this tab\\'s terminal (bottom)', mep.tab_terminal_toggle)\n";
 
+// RUNBUTTON_PLAN: the pane-header Run button (main.cpp's DrawPane, next to
+// the vsplit/hsplit/close controls) for R/Python/C/C++ source files.
+// R/Python are a single interpreter invocation; C/C++ compile to a temp
+// file first, then run that. Either way the command lands in *this tab's*
+// popup terminal (kBuiltinTabTerminal, immediately above) rather than a
+// dedicated mep.run_file-style output buffer -- it's meant to feel like
+// the human typed the run/compile command into the shell themselves, so
+// it shares that shell's scrollback, cwd, and any REPL/venv already
+// active there.
+//
+// Configurability (the actual reason this isn't just `mep.run_file` with
+// extra steps): a right-click on the button opens "Setup", prompting for
+// the interpreter/compiler and one free-form extra-flags string --
+// deliberately a single string, not structured include/lib-dir fields,
+// so `pkg-config --cflags --libs gtk+-3.0` (backticks and all) just works
+// once the assembled line reaches a real shell. Saved per mep.getcwd()
+// (project root) via mep.run_config_load/save (JSON on disk, same
+// MepDataDir() convention as the babel cache -- lua_env.cpp), so it
+// survives a restart and doesn't leak between unrelated projects.
+const char *kBuiltinRunButton =
+    "mep.opt = mep.opt or {}\n"
+    // ext -> {interpreter=, flags=} for py/r, {compiler=, flags=} for
+    // c/cpp -- what a project sees before its first Setup. init.lua can
+    // override these same defaults directly; Setup only ever writes the
+    // per-project table below, never this one.
+    "mep.opt.run_button_defaults = mep.opt.run_button_defaults or {\n"
+    "  py = {interpreter = 'python3', flags = ''},\n"
+    "  r = {interpreter = 'Rscript', flags = ''},\n"
+    "  c = {compiler = 'cc', flags = ''},\n"
+    "  cpp = {compiler = 'c++', flags = ''},\n"
+    "}\n"
+    "mep.opt.run_button_defaults.R = mep.opt.run_button_defaults.r\n"
+    "mep.opt.run_button_defaults.cc = mep.opt.run_button_defaults.cpp\n"
+    "mep.opt.run_button_defaults.cxx = mep.opt.run_button_defaults.cpp\n"
+    // Lazily loaded (a read-only session that never opens Setup never
+    // touches the file) and cached for the process lifetime -- Setup is
+    // the only writer, and it updates this same in-memory table right
+    // alongside the on-disk save, so nothing else needs to invalidate it.
+    "local mep_run_config_cache = nil\n"
+    "local function mep_run_config()\n"
+    "  if not mep_run_config_cache then mep_run_config_cache = mep.run_config_load() end\n"
+    "  return mep_run_config_cache\n"
+    "end\n"
+    "local function mep_run_config_for(ext)\n"
+    "  local default = mep.opt.run_button_defaults[ext]\n"
+    "  if not default then return nil end\n"
+    "  local proj = mep_run_config()[mep.getcwd()]\n"
+    "  local override = proj and proj[ext]\n"
+    "  return {\n"
+    "    interpreter = (override and override.interpreter) or default.interpreter,\n"
+    "    compiler = (override and override.compiler) or default.compiler,\n"
+    "    flags = (override and override.flags) or default.flags or '',\n"
+    "  }\n"
+    "end\n"
+    "local function mep_run_config_set(ext, cfg)\n"
+    "  local all = mep_run_config()\n"
+    "  local proj = all[mep.getcwd()] or {}\n"
+    "  proj[ext] = cfg\n"
+    "  all[mep.getcwd()] = proj\n"
+    "  mep.run_config_save(all)\n"
+    "end\n"
+    // Single-quotes `s` for a POSIX shell, closing/reopening around any
+    // embedded single quote -- the standard sh trick, needed since a
+    // filename or flags string can contain spaces (or, for flags,
+    // deliberately embeds a backtick command substitution that must
+    // reach the shell unescaped).
+    "local function mep_run_button_shq(s)\n"
+    "  return \"'\" .. tostring(s):gsub(\"'\", \"'\\\\''\") .. \"'\"\n"
+    "end\n"
+    "local function mep_run_button_is_compiled(ext)\n"
+    "  return ext == 'c' or ext == 'cpp' or ext == 'cc' or ext == 'cxx'\n"
+    "end\n"
+    // Assembles the one shell line for `ext`: a direct interpreter
+    // invocation for py/r, or -- since a compiled language needs a
+    // separate build step mep.run_file's own single-`interpreter <file>`
+    // shape can't express -- `compiler flags file -o tmp && tmp` for c/
+    // cpp, landing the binary outside the project tree (os.tmpname()) so
+    // repeated runs never race a half-written executable still being
+    // read by a previous run, nor need their own cleanup.\n"
+    "local function mep_run_button_command(ext, cfg, fname)\n"
+    "  local flags = cfg.flags or ''\n"
+    "  local flag_part = flags ~= '' and (' ' .. flags) or ''\n"
+    "  if mep_run_button_is_compiled(ext) then\n"
+    "    local out = os.tmpname()\n"
+    "    os.remove(out)\n"
+    // Flags go AFTER the source file, not between the compiler and it:
+    // `pkg-config --cflags --libs` mixes -I/-D (order-independent) with
+    // -l link flags, and GNU ld resolves -lfoo left-to-right against
+    // whatever object files came before it on the command line -- placed
+    // before the source file, that ordering silently drops link symbols
+    // (a real "undefined reference" caught trying this against a GTK
+    // hello-world with flags = '`pkg-config --cflags --libs gtk+-3.0`').\n"
+    "    return cfg.compiler .. ' ' .. mep_run_button_shq(fname) .. flag_part .. ' -o ' .. mep_run_button_shq(out)\n"
+    "      .. ' && ' .. mep_run_button_shq(out)\n"
+    "  end\n"
+    "  return cfg.interpreter .. flag_part .. ' ' .. mep_run_button_shq(fname)\n"
+    "end\n"
+    // Same shown/live liveness checks kBuiltinTabTerminal's own toggle
+    // uses (mep_tab_terminal_shown/live there are chunk-local, so not
+    // reachable from here -- duplicated rather than exported, since
+    // that's the entire body of each).
+    "local function mep_run_button_shown(buf)\n"
+    "  for _, id in ipairs(mep.pane_buffers()) do\n"
+    "    if id == buf then return true end\n"
+    "  end\n"
+    "  return false\n"
+    "end\n"
+    "local function mep_run_button_live(buf)\n"
+    "  if not buf or not mep.is_terminal_buffer(buf) then return false end\n"
+    "  local info = mep.terminal_info(buf)\n"
+    "  return info ~= nil and not info.exited\n"
+    "end\n"
+    // Unlike mep.tab_terminal_toggle, never *hides* an already-shown
+    // terminal -- this is "make sure it's visible", the show-only half
+    // of that function's own branches. Returns the terminal buffer id
+    // and whether a brand new shell was just spawned for it.
+    "local function mep_run_button_ensure_terminal()\n"
+    "  local tid = mep.current_tab_id()\n"
+    "  local entry = mep.tab_terminals[tid]\n"
+    "  if entry then\n"
+    "    if mep_run_button_shown(entry.buf) then return entry.buf, false end\n"
+    "    if mep_run_button_live(entry.buf) then\n"
+    "      mep.pane_split_bottom(entry.buf, mep.opt.tab_terminal_share)\n"
+    "      return entry.buf, false\n"
+    "    end\n"
+    "    if mep.is_terminal_buffer(entry.buf) then mep.buffer_delete(entry.buf, true) end\n"
+    "    mep.tab_terminals[tid] = nil\n"
+    "  end\n"
+    "  local from = mep.current_pane_id()\n"
+    "  mep.pane_split_bottom(nil, mep.opt.tab_terminal_share)\n"
+    "  mep.terminal_here()\n"
+    "  local buf = mep.current_buffer()\n"
+    "  if mep.is_terminal_buffer(buf) then\n"
+    "    mep.tab_terminals[tid] = {buf = buf, return_pane = from}\n"
+    "  end\n"
+    "  return buf, true\n"
+    "end\n"
+    // A freshly-spawned shell's PTY isn't necessarily ready to read the
+    // instant terminal_here() returns (the child process still has to
+    // exec and reach its own read loop), so a just-opened terminal's
+    // first command is queued here instead of written immediately --
+    // one persistent mep.on_frame drains it once its deadline passes,
+    // same "registered once, polls a queue" idiom as the rest of this
+    // file's debounced watchers.
+    "local mep_run_button_pending = {}\n"
+    "mep.on_frame(function()\n"
+    "  if #mep_run_button_pending == 0 then return end\n"
+    "  local now, remaining = mep.now(), {}\n"
+    "  for _, item in ipairs(mep_run_button_pending) do\n"
+    "    if now >= item.at then\n"
+    "      mep.terminal_write(item.buf, item.cmd .. '\\n')\n"
+    "    else\n"
+    "      remaining[#remaining + 1] = item\n"
+    "    end\n"
+    "  end\n"
+    "  mep_run_button_pending = remaining\n"
+    "end)\n"
+    // Runs (or compiles-then-runs) the *focused pane's* current file --
+    // main.cpp's Run button click handler focuses that pane first, same
+    // convention as its vsplit/hsplit/close neighbors, so mep.filename()/
+    // mep.getcwd() here are always the clicked pane's, not whichever pane
+    // had focus before the click.\n"
+    "function mep.run_button_run()\n"
+    "  local fname = mep.filename()\n"
+    "  if not fname or fname == '' then mep.notify('Run: save this buffer to a file first', 'warn') return end\n"
+    "  local ext = mep_lsp_filetype(fname)\n"
+    "  local cfg = ext and mep_run_config_for(ext)\n"
+    "  if not cfg then mep.notify('Run: no run command configured for this filetype', 'warn') return end\n"
+    "  mep.cmd('write')\n"
+    "  local cmd = mep_run_button_command(ext, cfg, fname)\n"
+    "  local buf, is_new = mep_run_button_ensure_terminal()\n"
+    "  if not buf then mep.notify('Run: could not open a terminal', 'error') return end\n"
+    "  if is_new then\n"
+    "    mep_run_button_pending[#mep_run_button_pending + 1] = {buf = buf, cmd = cmd, at = mep.now() + 0.3}\n"
+    "  else\n"
+    "    mep.terminal_write(buf, cmd .. '\\n')\n"
+    "  end\n"
+    "end\n"
+    "mep.command('MepRunButtonRun', mep.run_button_run)\n"
+    "mep.leader_map('rr', 'Run button: run/compile current file', mep.run_button_run)\n"
+    // The Setup popup main.cpp's Run-button right-click menu opens
+    // ("Setup..."): asks for the interpreter/compiler, then the one
+    // free-form flags string, pre-filled with whatever's already in
+    // effect (a per-project override if Setup has run before here,
+    // else mep.opt.run_button_defaults) -- an empty confirm on either
+    // prompt keeps that current value rather than clearing it, so
+    // re-running Setup to change just the flags doesn't require
+    // retyping the interpreter/compiler too.\n"
+    "function mep.run_button_setup()\n"
+    "  local fname = mep.filename()\n"
+    "  local ext = fname ~= '' and mep_lsp_filetype(fname)\n"
+    "  if not ext or not mep.opt.run_button_defaults[ext] then\n"
+    "    mep.notify('Run setup: this pane has no runnable filetype', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  local cur = mep_run_config_for(ext)\n"
+    "  local compiled = mep_run_button_is_compiled(ext)\n"
+    "  local field = compiled and 'compiler' or 'interpreter'\n"
+    "  mep.ui_input('Run setup (.' .. ext .. '): ' .. field, cur[field], function(prog)\n"
+    "    if not prog then return end\n"
+    "    if prog == '' then prog = cur[field] end\n"
+    "    mep.ui_input('Run setup (.' .. ext .. '): extra flags (e.g. `pkg-config --cflags --libs foo`)', cur.flags,\n"
+    "      function(flags)\n"
+    "        if flags == nil then return end\n"
+    "        local cfg = {flags = flags}\n"
+    "        cfg[field] = prog\n"
+    "        mep_run_config_set(ext, cfg)\n"
+    "        mep.notify('Run setup saved for .' .. ext)\n"
+    "      end)\n"
+    "  end)\n"
+    "end\n"
+    "mep.command('MepRunButtonSetup', mep.run_button_setup)\n"
+    "mep.leader_map('rs', 'Run button: setup current filetype', mep.run_button_setup)\n";
+
 // AI terminal (<leader>a<CR>, :aiterminal / :aiterm / :MepAiTerminal):
 // splits the current pane and runs Claude Code in a real :terminal pane
 // *below* it, with a system prompt (mep.opt.ai_terminal_instructions)
@@ -13005,6 +13230,44 @@ void DrawMenuBar() {
         DrawRectangleLines(static_cast<int>(dd_x), static_cast<int>(dd_y), static_cast<int>(dd_w),
                             static_cast<int>(menu.items.size() * static_cast<size_t>(item_h)), ResolveHlGroup("PickerBorder"));
     }
+}
+
+/**
+ * @brief Draws the pane-header Run button's right-click "Setup" dropdown (RUNBUTTON_PLAN)
+ * when one is open, anchored just below the Run button that opened it.
+ */
+void DrawRunButtonMenu() {
+    if (g_run_button_menu_pane == -1) return;
+    // Reuses DrawMenuBar's own dropdown look (Menu/MenuItem, DropdownWidth,
+    // MenuItemHeight, the Picker/PickerBorder/MenuHighlight/MenuBarFg
+    // groups) rather than inventing a second style for what's otherwise
+    // the same widget, just anchored under a pane header instead of the
+    // top menu bar.
+    Menu menu{"", {{"Setup...", [] {
+                        int pane_id = g_run_button_menu_pane;
+                        g_editor.FocusPaneById(pane_id);
+                        g_editor.RunCommand("lua mep.run_button_setup()");
+                        g_run_button_menu_pane = -1;
+                    }}}};
+    float font_size = MenuFontSize();
+    float dd_x = g_run_button_menu_anchor.x;
+    float dd_y = g_run_button_menu_anchor.y + g_run_button_menu_anchor.height;
+    float dd_w = std::max(DropdownWidth(menu), g_run_button_menu_anchor.width);
+    int item_h = MenuItemHeight();
+    Vector2 mouse = GetMousePosition();
+    DrawRectangle(static_cast<int>(dd_x), static_cast<int>(dd_y), static_cast<int>(dd_w), item_h,
+                  ResolveHlGroup("Picker"));
+    bool hovered_item = PointInRect(mouse, Rectangle{dd_x, dd_y, dd_w, static_cast<float>(item_h)});
+    if (hovered_item) {
+        DrawRectangle(static_cast<int>(dd_x), static_cast<int>(dd_y), static_cast<int>(dd_w), item_h,
+                      ResolveHlGroup("MenuHighlight"));
+    }
+    float text_y = dd_y + (static_cast<float>(item_h) - font_size) / 2.0f;
+    DrawTextEx(g_font, menu.items[0].label.c_str(), Vector2{dd_x + kMenuItemPaddingX, text_y}, font_size, 0,
+               ResolveHlGroup("MenuBarFg"));
+    DrawRectangleLines(static_cast<int>(dd_x), static_cast<int>(dd_y), static_cast<int>(dd_w), item_h,
+                        ResolveHlGroup("PickerBorder"));
+    RegisterClickRegion(Rectangle{dd_x, dd_y, dd_w, static_cast<float>(item_h)}, menu.items[0].action);
 }
 
 // Generic floating overlay frame: dims the screen, draws a centered
@@ -17696,6 +17959,24 @@ void DrawAgentStatusBadge(Vector2 center, float radius, const std::string &statu
     }
 }
 
+// Filetypes DrawPane's Run button (RUNBUTTON_PLAN) shows up for --
+// LspFiletype's own bare extension, so case-sensitive ("R" and "r" are
+// both listed since, unlike most extensions, R's is conventionally
+// capitalized). Deliberately the small starting set the feature request
+// asked for; a language's actual run/compile command lives in Lua
+// (mep.opt.run_button_defaults, kBuiltinRunButton) where it's just a
+// table entry to extend, so growing this list only needs a matching
+// entry there, not any further C++ change.
+/**
+ * @brief Reports whether the pane-header Run button supports a given bare file extension.
+ * @param ext Bare extension (LspFiletype's return value), e.g. "py", "cpp".
+ * @return True if the Run button should be shown for a buffer with this extension.
+ */
+bool RunButtonSupportsExtension(const std::string &ext) {
+    static const std::unordered_set<std::string> kExts = {"py", "r", "R", "c", "cpp", "cc", "cxx"};
+    return kExts.count(ext) != 0;
+}
+
 /**
  * @brief Draws one pane's full contents: the header (single filename label or a multi-buffer
  * tab strip), then dispatches to the appropriate content renderer for the pane's buffer kind
@@ -17750,10 +18031,22 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     const std::string vsplit_label = " | ";
     const std::string hsplit_label = " _ ";
     const std::string close_label = " " + Utf8FromCodepoint(0xf00d) + " ";
+    // Run button (RUNBUTTON_PLAN): left of the split controls, shown only
+    // for a plain source-file pane (no terminal/image/pdf/office/sheet/
+    // html/kanban/gantt session active) whose extension RunButtonSupports
+    // Extension recognizes -- R/Python/C/C++ to start. A left click runs
+    // mep.run_button_run() (kBuiltinTabTerminal's neighbor, main.cpp's
+    // Lua chunks) for the *just-focused* pane, same "focus first" pattern
+    // as vsplit/hsplit/close below; a right click opens the "Setup"
+    // dropdown (DrawRunButtonMenu) instead of running anything.
+    const bool show_run_button = !term_sess && !img_sess && !pdf_sess && !office_sess && !sheet_sess && !html_sess &&
+                                   !kanban_sess && !gantt_sess && RunButtonSupportsExtension(LspFiletype(buf.filename));
+    const std::string run_label = " " + Utf8FromCodepoint(0xf04b) + " ";  // nf-fa-play
+    const float run_w = show_run_button ? MeasureUiText(run_label, font_size) : 0.0f;
     const float vsplit_w = MeasureUiText(vsplit_label, font_size);
     const float hsplit_w = MeasureUiText(hsplit_label, font_size);
     const float close_w = MeasureUiText(close_label, font_size);
-    const float controls_w = vsplit_w + hsplit_w + close_w;
+    const float controls_w = run_w + vsplit_w + hsplit_w + close_w;
     const Vector2 header_mouse = GetMousePosition();
     // Draws the three controls over `bg` filling controls_rect (each
     // brightened while hovered) and registers their click regions.
@@ -17761,13 +18054,37 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         DrawRectangleRec(controls_rect, bg);
         const int pane_id = pane.id;
         float bx = controls_rect.x;
-        auto button = [&](const std::string &label, float bw, std::function<void()> action) {
+        // `on_right_click`, when given, fires (with this button's own
+        // rect, for DrawRunButtonMenu to anchor on) on a right-click
+        // while hovered -- independent of `action`, which is always a
+        // left-click-only g_click_regions registration like every other
+        // header control's.
+        auto button = [&](const std::string &label, float bw, std::function<void()> action,
+                            std::function<void(Rectangle)> on_right_click = nullptr) {
             const Rectangle rect{bx, controls_rect.y, bw, controls_rect.height};
             const bool hovered = PointInRect(header_mouse, rect);
             DrawUiText(label, Vector2{rect.x, label_y}, font_size, ResolveHlGroup(hovered ? "Normal" : "Comment"));
             RegisterClickRegion(rect, std::move(action));
+            if (on_right_click && hovered && IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) on_right_click(rect);
             bx += bw;
         };
+        if (show_run_button) {
+            // Focuses this pane, then runs/compiles its current file in
+            // this tab's popup terminal.
+            button(
+                run_label, run_w,
+                [pane_id] {
+                    g_editor.FocusPaneById(pane_id);
+                    g_editor.RunCommand("lua mep.run_button_run()");
+                },
+                // Right click: toggle this pane's Setup dropdown (closes
+                // it if it's already the one open, same convention as
+                // g_office_dropdown_open's own toggle buttons).
+                [pane_id](Rectangle r) {
+                    g_run_button_menu_pane = (g_run_button_menu_pane == pane_id) ? -1 : pane_id;
+                    g_run_button_menu_anchor = r;
+                });
+        }
         // Focuses this pane, then splits it vertically (side by side).
         button(vsplit_label, vsplit_w, [pane_id] {
             g_editor.FocusPaneById(pane_id);
@@ -21247,6 +21564,10 @@ void DrawEditor() {
     // so moving the whole call has no effect on the bar's own draw order.
     // cppcheck-suppress duplicateCondition
     if (!zen) DrawMenuBar();
+    // Same "drawn after sidebars/panes so it paints on top" reasoning as
+    // DrawMenuBar's own dropdown just above -- a Run button lives inside a
+    // pane header, so its own "Setup" dropdown needs the same treatment.
+    DrawRunButtonMenu();
     // Same reasoning as the comment just above (drawn after sidebars, not
     // before, so it sits on top instead of being painted over by one) --
     // this used to be drawn inline with the command-line text itself,
@@ -22378,6 +22699,7 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinActivityBar);
     lua->DoString(kBuiltinAi);
     lua->DoString(kBuiltinTabTerminal);
+    lua->DoString(kBuiltinRunButton);
     lua->DoString(kBuiltinAiTerminal);
     lua->DoString(kBuiltinLeetcode);
     lua->DoString(kBuiltinWhichKeyGroups);

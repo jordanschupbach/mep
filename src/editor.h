@@ -3146,6 +3146,14 @@ public:
      * @return True if the headline was rewritten.
      */
     bool ActivityTodoArchive(const std::string &path, int line);
+    /**
+     * @brief Moves a keyworded headline of an org todo file past its previous or next sibling, subtree and all.
+     * @param path The org file to edit.
+     * @param line The 0-based line of the headline to move.
+     * @param delta -1 to swap with the previous sibling, +1 for the next.
+     * @return The headline's line index after the move, or -1 if it couldn't move (no such sibling, or a stale/non-headline `line`).
+     */
+    int ActivityTodoMove(const std::string &path, int line, int delta);
     // Inverse of ReadLinesForPath, ActivityTodoSave's own write rule
     // factored out: an open buffer for `path` gets its lines replaced as
     // one undo step and is written to disk only if it had no pending

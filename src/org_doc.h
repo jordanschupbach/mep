@@ -292,6 +292,25 @@ std::vector<std::string> OrgTodoListRetitle(const std::vector<std::string> &line
  */
 std::vector<std::string> OrgTodoListArchive(const std::vector<std::string> &lines, int line);
 
+// Reorders the checklist: swaps the keyworded headline at 0-based index
+// `line` with its previous (`delta < 0`) or next (`delta > 0`) sibling --
+// the nearest other headline sharing the same parent, skipping over any
+// deeper-level descendants in between (org's own "move subtree past a
+// sibling" semantics; a headline never moves in or out of a different
+// parent's children this way). Whole subtrees swap together: body,
+// properties, clock history, children. Returns `lines` unchanged, with
+// `*new_line` left at `line`, when there is no such sibling or `line`
+// doesn't name a keyworded headline.
+/**
+ * @brief Swaps the keyworded headline at a 0-based line index with its previous or next sibling subtree.
+ * @param lines the current full text of the org file
+ * @param line the 0-based index of the headline to move
+ * @param delta -1 to swap with the previous sibling, +1 for the next
+ * @param new_line set to the moved headline's line index afterward (or left at `line` if it didn't move)
+ * @return the rewritten file lines (equal to `lines` when nothing changed)
+ */
+std::vector<std::string> OrgTodoListMove(const std::vector<std::string> &lines, int line, int delta, int *new_line);
+
 // --- Clocking (Todo sidebar's Enter = start/stop, kBuiltinActivityBar) ---
 // Same on-disk convention as Editor::OrgClockIn/OrgClockOut (editor.cpp,
 // the in-buffer :MepOrgClockIn/Out commands): an open clock is a

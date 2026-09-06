@@ -10914,13 +10914,38 @@ const char *kBuiltinActivityBar =
     "  if mep.activity_todo_archive(mep_activity_todo_path(), it.line) then mep.notify('Archived: ' .. it.text) end\n"
     "  mep_activity_todo_rerender()\n"
     "end\n"
+    // Ctrl-j/Ctrl-k: move the current todo down/up, keeping the cursor on
+    // it. An org todo swaps whole headline subtrees with the adjacent
+    // sibling (mep.activity_todo_move -> Editor::ActivityTodoMove ->
+    // OrgTodoListMove) -- a no-op past the first/last sibling, or into a
+    // different parent's children, same as org's own subtree reordering.
+    // The legacy "0|text" format has no siblings to speak of, so it's a
+    // plain adjacent swap of the flat list instead.
+    "function mep.activity_todo_reorder(it, i, delta)\n"
+    "  local new_row = nil\n"
+    "  if it.line then\n"
+    "    local new_line = mep.activity_todo_move(mep_activity_todo_path(), it.line, delta)\n"
+    "    if not new_line then return end\n"
+    "    for idx, x in ipairs(mep_activity_todo_load()) do if x.line == new_line then new_row = idx break end end\n"
+    "  else\n"
+    "    local j = i + delta\n"
+    "    local cur = mep_activity_todo_load()\n"
+    "    if j < 1 or j > #cur then return end\n"
+    "    cur[i], cur[j] = cur[j], cur[i]\n"
+    "    mep_activity_todo_save(cur)\n"
+    "    new_row = j\n"
+    "  end\n"
+    "  local id = mep_activity_todo_sidebar_id\n"
+    "  mep.activity_todo_panel()\n"
+    "  if id and new_row and mep.sidebar_is_focused(id) then mep.sidebar_focus_row(id, new_row) end\n"
+    "end\n"
     // Sidebar keys (mep.sidebar_set_on_key; j/k/gg/G/q and Enter are
     // the sidebar's own). Enter = start/stop the clock, a = add, e = edit,
     // d = done, x = delete, A = archive, o = open TODO.org, R = re-read,
-    // ? = this list.
+    // Ctrl-j/Ctrl-k = move down/up, ? = this list.
     "function mep.activity_todo_on_key(k)\n"
     "  if k == '?' then\n"
-    "    mep.notify('Todo: Enter=start/stop clock  a=add  e=edit in float (Esc closes)  d=done  x=delete  A=archive  o=open file  R=refresh  mod1+m=popout')\n"
+    "    mep.notify('Todo: Enter=start/stop clock  a=add  e=edit in float (Esc closes)  d=done  x=delete  A=archive  o=open file  R=refresh  C-j/C-k=move down/up  mod1+m=popout')\n"
     "    return\n"
     "  elseif k == 'a' then mep.activity_todo_add() return\n"
     "  elseif k == 'o' then mep.activity_todo_open() return\n"
@@ -10932,6 +10957,8 @@ const char *kBuiltinActivityBar =
     "  elseif k == 'd' then mep.activity_todo_mark_done(it, i)\n"
     "  elseif k == 'x' then mep.activity_todo_delete(it, i)\n"
     "  elseif k == 'A' then mep.activity_todo_archive_item(it, i)\n"
+    "  elseif k == 'C-j' then mep.activity_todo_reorder(it, i, 1)\n"
+    "  elseif k == 'C-k' then mep.activity_todo_reorder(it, i, -1)\n"
     "  end\n"
     "end\n"
     // Refresh-if-stale: only redraws when the file's checklist (or its

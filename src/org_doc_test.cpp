@@ -231,6 +231,51 @@ int main() {
         CHECK(OrgTodoListApply(nested, vis) == nested);
     }
 
+    // --- Move (the sidebar's Ctrl-j/Ctrl-k): swaps a headline's whole
+    //     subtree with its previous/next sibling; a no-op at either end of
+    //     the sibling run, or when a would-be sibling belongs to a
+    //     different parent.
+    {
+        Lines doc = {"#+TODO: TODO | DONE", "* TODO First", "* TODO Second", "* TODO Third",
+                     "** TODO Child of Third", "* TODO Fourth"};
+        int new_line = -1;
+        Lines out = OrgTodoListMove(doc, 2, 1, &new_line);  // Second, down
+        const Lines expect = {"#+TODO: TODO | DONE", "* TODO First", "* TODO Third",
+                              "** TODO Child of Third", "* TODO Second", "* TODO Fourth"};
+        CHECK(out == expect);
+        CHECK(new_line == 4);
+
+        new_line = -1;
+        CHECK(OrgTodoListMove(doc, 1, -1, &new_line) == doc);  // First, up: no previous sibling
+        CHECK(new_line == 1);
+
+        new_line = -1;
+        CHECK(OrgTodoListMove(doc, 5, 1, &new_line) == doc);  // Fourth, down: no next sibling
+        CHECK(new_line == 5);
+
+        new_line = -1;
+        CHECK(OrgTodoListMove(doc, 4, -1, &new_line) == doc);  // Child of Third, up: only child
+        CHECK(new_line == 4);
+
+        // Two children: the second moves past the first, staying under
+        // the same parent -- the third-party sibling boundary is never
+        // crossed.
+        Lines two_kids = {"#+TODO: TODO | DONE", "* TODO First", "* TODO Third",
+                          "** TODO Child A", "** TODO Child B", "* TODO Fourth"};
+        new_line = -1;
+        Lines kids_out = OrgTodoListMove(two_kids, 4, -1, &new_line);
+        const Lines kids_expect = {"#+TODO: TODO | DONE", "* TODO First", "* TODO Third",
+                                   "** TODO Child B", "** TODO Child A", "* TODO Fourth"};
+        CHECK(kids_out == kids_expect);
+        CHECK(new_line == 3);
+
+        // No-ops: stale/non-headline lines, bad delta.
+        CHECK(OrgTodoListMove(doc, 0, 1, &new_line) == doc);    // "#+TODO:" line
+        CHECK(OrgTodoListMove(doc, 99, 1, &new_line) == doc);   // out of range
+        CHECK(OrgTodoListMove(doc, -1, 1, &new_line) == doc);   // negative
+        CHECK(OrgTodoListMove(doc, 2, 0, &new_line) == doc);    // bad delta
+    }
+
     // --- Clock line matching and timestamp parsing.
     {
         std::string ts;

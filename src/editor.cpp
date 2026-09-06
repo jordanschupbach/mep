@@ -14581,23 +14581,27 @@ void Editor::HandleSidebarInput() {
         ActivateSidebarLine(focused_sidebar_id_, sidebar_cursor_);
         return;
     }
-    // Ctrl-E/Ctrl-V: html view-toggle escape hatch (see LoadFile's own
-    // force_text param) -- GLFW/raylib doesn't emit a char event while
-    // Ctrl is held (same reasoning as HandleNormalInput's own Ctrl-combo
-    // comment), so these can't reach mep.tree_on_key's fn(char) through
-    // the GetCharPressed() drain below the way every other binding
-    // (R/H/o/a/r/d/?) does. Passed through as the sentinels "C-e"/"C-v",
-    // never produced by GetCharPressed() (only single printable-ASCII
-    // chars), so on_key can tell a Ctrl-combo apart from a bare keypress
-    // via the same callback.
+    // Ctrl-E/Ctrl-V/Ctrl-J/Ctrl-K: html view-toggle escape hatch (see
+    // LoadFile's own force_text param) and the Todo panel's reorder keys --
+    // GLFW/raylib doesn't emit a char event while Ctrl is held (same
+    // reasoning as HandleNormalInput's own Ctrl-combo comment), so these
+    // can't reach mep.tree_on_key/mep.activity_todo_on_key's fn(char)
+    // through the GetCharPressed() drain below the way every other binding
+    // (R/H/o/a/r/d/?) does. Passed through as the sentinels
+    // "C-e"/"C-v"/"C-j"/"C-k", never produced by GetCharPressed() (only
+    // single printable-ASCII chars), so on_key can tell a Ctrl-combo apart
+    // from a bare keypress via the same callback.
     {
         bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
         bool ce = ctrl && IsKeyPressed(KEY_E);
         bool cv = ctrl && IsKeyPressed(KEY_V);
-        if (ce || cv) {
+        bool cj = ctrl && IsKeyPressed(KEY_J);
+        bool ck = ctrl && IsKeyPressed(KEY_K);
+        if (ce || cv || cj || ck) {
             const SidebarInstance *sb = FindSidebar(focused_sidebar_id_);
             if (sb && sb->on_key_ref != 0 && lua_) {
-                lua_->CallRefWithString(sb->on_key_ref, ce ? "C-e" : "C-v");
+                const char *sentinel = ce ? "C-e" : cv ? "C-v" : cj ? "C-j" : "C-k";
+                lua_->CallRefWithString(sb->on_key_ref, sentinel);
             }
             return;
         }
@@ -18219,6 +18223,17 @@ bool Editor::ActivityTodoArchive(const std::string &path, int line) {
     std::vector<std::string> updated = OrgTodoListArchive(lines, line);
     if (updated == lines) return false;
     return WriteLinesForPath(path, updated);
+}
+
+int Editor::ActivityTodoMove(const std::string &path, int line, int delta) {
+    if (!IsOrgTodoPath(path)) return -1;
+    std::vector<std::string> lines;
+    if (!ReadLinesForPath(path, 0, &lines)) return -1;
+    int new_line = line;
+    std::vector<std::string> updated = OrgTodoListMove(lines, line, delta, &new_line);
+    if (updated == lines) return -1;
+    if (!WriteLinesForPath(path, updated)) return -1;
+    return new_line;
 }
 
 std::vector<Editor::ActivityTestFailureLine> Editor::ActivityTestFailureLines(

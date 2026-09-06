@@ -755,6 +755,60 @@ std::vector<std::string> OrgTodoListRetitle(const std::vector<std::string> &line
     return lines;
 }
 
+std::vector<std::string> OrgTodoListMove(const std::vector<std::string> &lines, int line, int delta, int *new_line) {
+    if (new_line) *new_line = line;
+    if ((delta != -1 && delta != 1) || line < 0 || line >= static_cast<int>(lines.size())) return lines;
+    OrgOutline outline = ParseOrgOutline(lines);
+    int hi = -1;
+    for (size_t i = 0; i < outline.headlines.size(); i++) {
+        if (outline.headlines[i].line_start == line) {
+            hi = static_cast<int>(i);
+            break;
+        }
+    }
+    if (hi < 0 || outline.headlines[static_cast<size_t>(hi)].todo_keyword.empty()) return lines;
+    const int parent = outline.headlines[static_cast<size_t>(hi)].parent_index;
+    int sib = -1;
+    if (delta < 0) {
+        for (int i = hi - 1; i >= 0; i--) {
+            if (outline.headlines[static_cast<size_t>(i)].parent_index == parent) {
+                sib = i;
+                break;
+            }
+        }
+    } else {
+        for (size_t i = static_cast<size_t>(hi) + 1; i < outline.headlines.size(); i++) {
+            if (outline.headlines[i].parent_index == parent) {
+                sib = static_cast<int>(i);
+                break;
+            }
+        }
+    }
+    if (sib < 0) return lines;
+
+    // The earlier of the two subtrees in document order, and the later
+    // one -- contiguous, since nothing but `hi`'s own deeper-level
+    // descendants can sit between siblings sharing `parent`.
+    const OrgHeadline &earlier = delta < 0 ? outline.headlines[static_cast<size_t>(sib)]
+                                            : outline.headlines[static_cast<size_t>(hi)];
+    const OrgHeadline &later = delta < 0 ? outline.headlines[static_cast<size_t>(hi)]
+                                          : outline.headlines[static_cast<size_t>(sib)];
+    if (earlier.line_end + 1 != later.line_start) return lines;  // not actually contiguous -- shouldn't happen
+
+    std::vector<std::string> out;
+    out.reserve(lines.size());
+    for (int i = 0; i < earlier.line_start; i++) out.push_back(lines[static_cast<size_t>(i)]);
+    for (int i = later.line_start; i <= later.line_end; i++) out.push_back(lines[static_cast<size_t>(i)]);
+    for (int i = earlier.line_start; i <= earlier.line_end; i++) out.push_back(lines[static_cast<size_t>(i)]);
+    for (int i = later.line_end + 1; i < static_cast<int>(lines.size()); i++) out.push_back(lines[static_cast<size_t>(i)]);
+
+    // Moving up: `hi` (the later block) lands first, at `earlier`'s old
+    // start. Moving down: `hi` (the earlier block) lands second, shifted
+    // by how long the (now-preceding) `later` block is.
+    if (new_line) *new_line = delta < 0 ? earlier.line_start : earlier.line_start + (later.line_end - later.line_start + 1);
+    return out;
+}
+
 namespace {
 /**
  * @brief Returns the index of the first non-whitespace character at or after `pos`.

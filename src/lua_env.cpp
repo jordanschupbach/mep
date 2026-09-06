@@ -1680,6 +1680,27 @@ int l_activity_todo_archive(lua_State *L) {
     return 1;
 }
 
+// mep.activity_todo_move(path, line, delta) -> new 1-indexed line, or nil:
+// swaps the 1-indexed keyworded headline's whole subtree with its previous
+// (delta < 0) or next (delta > 0) sibling, reordering the checklist.
+/**
+ * @brief Implements mep.activity_todo_move(path, line, delta): reorders a headline of an org todo file among its siblings.
+ * @param L Lua state; arg 1 is the org file path, arg 2 the 1-indexed headline line, arg 3 the direction (-1 or 1).
+ * @return Number of values pushed (1: the moved headline's new 1-indexed line, or nil if it didn't move).
+ */
+int l_activity_todo_move(lua_State *L) {
+    const char *path = luaL_checkstring(L, 1);
+    int line = static_cast<int>(luaL_checkinteger(L, 2)) - 1;
+    int delta = static_cast<int>(luaL_checkinteger(L, 3));
+    int new_line = GetEditor(L)->ActivityTodoMove(path, line, delta);
+    if (new_line < 0) {
+        lua_pushnil(L);
+    } else {
+        lua_pushinteger(L, new_line + 1);
+    }
+    return 1;
+}
+
 // mep.active_todo_set(text, start) / mep.active_todo_set(nil): what the
 // status bar's todo chip shows -- `text` with a live timer counting from
 // `start` (Unix seconds), or the red "[No active TODO]" state when nil.
@@ -6850,6 +6871,7 @@ const luaL_Reg kMepFuncs[] = {
     {"activity_todo_clock_stop", l_activity_todo_clock_stop},
     {"activity_todo_retitle", l_activity_todo_retitle},
     {"activity_todo_archive", l_activity_todo_archive},
+    {"activity_todo_move", l_activity_todo_move},
     {"active_todo_set", l_active_todo_set},
     {"activity_test_failure_lines", l_activity_test_failure_lines},
     {"syntax_highlight_fallback", l_syntax_highlight_fallback},

@@ -17,6 +17,9 @@
   CLOCK: [2026-09-05 Sat 21:28]--[2026-09-05 Sat 21:47] =>  0:19
   :END:
 * TODO Add reorder todo feature with ctrl+j,k
+  :LOGBOOK:
+  CLOCK: [2026-09-05 Sat 22:03]
+  :END:
 * TODO todo management
   :LOGBOOK:
   CLOCK: [2026-09-05 Sat 21:29]--[2026-09-05 Sat 21:46] =>  0:17

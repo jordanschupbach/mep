@@ -2025,6 +2025,7 @@ const char *kKeybindingsText =
     "  :wssave  :wsrestore            save / restore this project's layout\n"
     "\n"
     "  Alt+s / Alt+v                  split (horizontal / vertical)\n"
+    "  :tabterminal <leader><CR>      toggle this tab's own terminal along the bottom (one shell per tab)\n"
     "  :aiterminal  <leader>a<CR>     Claude Code terminal below, driving this window via mep-agent\n"
     "  :aiagents    <leader>al        AI agents sidebar (status, task, workspace; Enter jumps to its terminal)\n"
     "               <leader>aa        toggle the AI agents sidebar\n"
@@ -11643,6 +11644,84 @@ const char *kBuiltinAi =
     "  end)\n"
     "end\n"
     "mep.command('MepAiAgent', mep.ai_agent_prompt)\n";
+
+// Per-tab terminal (<leader><CR>, :tabterminal / :tabterm /
+// :MepTabTerminal): one shell per tab, toggled along the bottom of the
+// tab. The first press opens a fresh `:terminal` in a full-width bottom
+// pane (mep.pane_split_bottom, not `:split`, so it spans the whole tab
+// even from inside a vsplit) and focuses it; pressing again while that
+// pane is showing closes the pane but keeps the shell running (Editor::
+// ClosePane's own "a terminal outlives its pane" rule); the next press
+// brings the same buffer back at the bottom. A shell that has exited is
+// swept (buffer deleted) and replaced by a fresh one on the next open.
+//
+// Keyed by mep.current_tab_id() (Tab::id, stable across :tabdelete --
+// never the tab index) in mep.tab_terminals, tab id -> {buf=,
+// return_pane=}; return_pane is where the human was when they opened it,
+// so hiding it from inside the terminal lands them back there instead
+// of on ClosePane's default (the tab's first leaf). Hiding from another
+// pane leaves focus where it was.
+//
+// In Terminal mode every key goes to the shell, so the leader can't
+// reach this from *inside* the terminal: Ctrl-\ Ctrl-n first (terminal
+// normal mode), then <leader><CR>. From any other pane it works as is.
+const char *kBuiltinTabTerminal =
+    "mep.opt = mep.opt or {}\n"
+    "mep.opt.tab_terminal_share = mep.opt.tab_terminal_share or 0.3\n"
+    "mep.tab_terminals = {}\n"
+    "local function mep_tab_terminal_shown(buf)\n"
+    "  for _, id in ipairs(mep.pane_buffers()) do\n"
+    "    if id == buf then return true end\n"
+    "  end\n"
+    "  return false\n"
+    "end\n"
+    "local function mep_tab_terminal_live(buf)\n"
+    "  if not buf or not mep.is_terminal_buffer(buf) then return false end\n"
+    "  local info = mep.terminal_info(buf)\n"
+    "  return info ~= nil and not info.exited\n"
+    "end\n"
+    "function mep.tab_terminal_toggle()\n"
+    "  local tid = mep.current_tab_id()\n"
+    "  local entry = mep.tab_terminals[tid]\n"
+    "  if entry then\n"
+    "    if mep_tab_terminal_shown(entry.buf) then\n"
+    "      if #mep.pane_buffers() == 1 then\n"
+    "        mep.notify('The terminal is the only pane in this tab', 'warn')\n"
+    "        return\n"
+    "      end\n"
+    "      local from = mep.current_pane_id()\n"
+    "      mep.pane_focus_buffer(entry.buf)\n"
+    "      local term_pane = mep.current_pane_id()\n"
+    "      mep.cmd('close')\n"
+    "      if from ~= term_pane then\n"
+    "        mep.pane_focus(from)\n"
+    "      elseif entry.return_pane then\n"
+    "        mep.pane_focus(entry.return_pane)\n"
+    "      end\n"
+    "      return\n"
+    "    end\n"
+    "    if mep_tab_terminal_live(entry.buf) then\n"
+    "      entry.return_pane = mep.current_pane_id()\n"
+    "      mep.pane_split_bottom(entry.buf, mep.opt.tab_terminal_share)\n"
+    "      return\n"
+    "    end\n"
+    // Exited (or its buffer got deleted underneath us): sweep it and
+    // fall through to opening a fresh shell for this tab.
+    "    if mep.is_terminal_buffer(entry.buf) then mep.buffer_delete(entry.buf, true) end\n"
+    "    mep.tab_terminals[tid] = nil\n"
+    "  end\n"
+    "  local from = mep.current_pane_id()\n"
+    "  mep.pane_split_bottom(nil, mep.opt.tab_terminal_share)\n"
+    "  mep.terminal_here()\n"
+    "  local buf = mep.current_buffer()\n"
+    "  if mep.is_terminal_buffer(buf) then\n"
+    "    mep.tab_terminals[tid] = {buf = buf, return_pane = from}\n"
+    "  end\n"
+    "end\n"
+    "mep.command('MepTabTerminal', mep.tab_terminal_toggle)\n"
+    "mep.command('tabterminal', mep.tab_terminal_toggle)\n"
+    "mep.command('tabterm', mep.tab_terminal_toggle)\n"
+    "mep.leader_map('<CR>', 'Toggle this tab\\'s terminal (bottom)', mep.tab_terminal_toggle)\n";
 
 // AI terminal (<leader>a<CR>, :aiterminal / :aiterm / :MepAiTerminal):
 // splits the current pane and runs Claude Code in a real :terminal pane
@@ -22276,6 +22355,7 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinOrgBib);
     lua->DoString(kBuiltinActivityBar);
     lua->DoString(kBuiltinAi);
+    lua->DoString(kBuiltinTabTerminal);
     lua->DoString(kBuiltinAiTerminal);
     lua->DoString(kBuiltinLeetcode);
     lua->DoString(kBuiltinWhichKeyGroups);

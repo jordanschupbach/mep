@@ -364,6 +364,19 @@ Any mode: =Ctrl+Shift+== / =Ctrl+Shift+-= grow/shrink the font (the
 window opens maximized/fullscreen, and both the native window and the
 wasm canvas resize the editor to fill whatever size they're given).
 
+Per-tab terminal: =<leader><CR>= (also =:tabterminal= / =:tabterm= /
+=:MepTabTerminal=, or =mep.tab_terminal_toggle()=) toggles one shell
+per tab along the bottom of that tab, spanning its full width. The
+first press opens a fresh =:terminal= there and focuses it; pressing
+again while it is showing closes the pane but leaves the shell running,
+and the next press brings the same shell back. A shell that has exited
+is replaced by a fresh one. Hiding it from inside the terminal returns
+focus to the pane it was opened from (leave Terminal mode first with
+=Ctrl-\ Ctrl-n=, since in Terminal mode every key goes to the shell);
+hiding it from another pane leaves focus where it was.
+=mep.opt.tab_terminal_share= (default =0.3=) is its share of the tab's
+height.
+
 AI terminal: =<leader>a<CR>= (also =:aiterminal= / =:aiterm= /
 =:MepAiTerminal=, or =mep.ai_terminal_open()=) splits the current pane
 and runs Claude Code in a =:terminal= pane *below* it, focused, with an
@@ -443,6 +456,14 @@ Available to =:lua=, =:source=, and =init.lua=:
   leader (space), shown in the which-key popup; =mep.leader_group(prefix,
   label)= names a group. =seq= is one character per key, except Enter,
   spelled =<CR>= (=<Return>=/=<Enter>= also accepted): =mep.leader_map('a<CR>', ...)=.
+- =mep.current_tab_id()= — the active tab's stable id (unchanged by
+  =:tabdelete=/=:tabnew= around it, unlike its index); =mep.current_pane_id()=
+  the focused pane's id, and =mep.pane_focus(pane_id)= -> bool focuses a
+  pane of the active tab by id. =mep.pane_split_bottom(buffer_id?, share?)=
+  opens a new full-width pane along the bottom of the tab (vim's
+  =:botright split=) showing =buffer_id= (default: the current buffer),
+  focused, taking =share= (default =0.3=) of the tab's height. The per-tab
+  terminal is built on these.
 - =mep.terminal_here(args?)= — turns the active pane into a =:terminal=
   in place (no split); =args= runs =$SHELL -c args=.
 - =mep.terminal_here_argv(argv, title?)= — same, but runs the =argv=

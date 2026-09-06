@@ -698,6 +698,65 @@ int l_pane_set_share(lua_State *L) {
     return 0;
 }
 
+// mep.current_tab_id() -> the active tab's stable id (Tab::id) -- unlike
+// its index, unchanged by :tabdelete/:tabnew around it, so a script can
+// key per-tab state on it (kBuiltinTabTerminal's tab -> terminal map).
+/**
+ * @brief Implements mep.current_tab_id(): returns the active tab's stable id.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the tab id).
+ */
+int l_current_tab_id(lua_State *L) {
+    lua_pushinteger(L, GetEditor(L)->ActiveTabId());
+    return 1;
+}
+
+// mep.current_pane_id() -> the focused pane's id in the active tab; pair
+// with mep.pane_focus(id) to come back to it after a split/close moved
+// focus elsewhere.
+/**
+ * @brief Implements mep.current_pane_id(): returns the active pane's id.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the pane id).
+ */
+int l_current_pane_id(lua_State *L) {
+    lua_pushinteger(L, GetEditor(L)->ActivePaneId());
+    return 1;
+}
+
+// mep.pane_focus(pane_id) -> bool: focuses that pane of the active tab
+// (Editor::FocusPaneById, the same jump a header click makes); false, and
+// a no-op, if no such pane exists in this tab any more.
+/**
+ * @brief Implements mep.pane_focus(pane_id): focuses a pane of the active tab by id.
+ * @param L Lua state; arg 1 is the pane id.
+ * @return Number of values pushed (1: true if the pane exists and is now focused).
+ */
+int l_pane_focus(lua_State *L) {
+    int pane_id = static_cast<int>(luaL_checkinteger(L, 1));
+    lua_pushboolean(L, GetEditor(L)->FocusPaneByIdForLua(pane_id));
+    return 1;
+}
+
+// mep.pane_split_bottom(buffer_id?, share?): opens a new full-width pane
+// along the bottom of the active tab (vim's `:botright split`, Editor::
+// SplitTabBottom) showing buffer_id -- the current buffer when nil, the
+// same way a bare `:split` duplicates it -- focused, taking `share`
+// (default 0.3) of the tab's height. Unlike `:split`, the new pane spans
+// the whole tab even when the focused pane sits inside a vsplit.
+/**
+ * @brief Implements mep.pane_split_bottom(buffer_id?, share?): opens and focuses a full-width bottom pane in the active tab.
+ * @param L Lua state; optional arg 1 the buffer to show (default: the current buffer), optional arg 2 its height share (default 0.3).
+ * @return Number of values pushed (0).
+ */
+int l_pane_split_bottom(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    int buffer_id = lua_isnoneornil(L, 1) ? ed->CurrentBufferId() : static_cast<int>(luaL_checkinteger(L, 1));
+    float share = static_cast<float>(luaL_optnumber(L, 2, 0.3));
+    ed->SplitTabBottom(buffer_id, share);
+    return 0;
+}
+
 // mep.cmd(str): runs str as if typed after ":" and Enter pressed. General
 // escape hatch for Lua to drive any ex-command (":vsplit", ":w", ...).
 /**
@@ -6673,6 +6732,10 @@ const luaL_Reg kMepFuncs[] = {
     {"focus_top_left_pane", l_focus_top_left_pane},
     {"resize_pane", l_resize_pane},
     {"pane_set_share", l_pane_set_share},
+    {"current_tab_id", l_current_tab_id},
+    {"current_pane_id", l_current_pane_id},
+    {"pane_focus", l_pane_focus},
+    {"pane_split_bottom", l_pane_split_bottom},
     {"cmd", l_cmd},
     {"open", l_open},
     {"terminal_here", l_terminal_here},

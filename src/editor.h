@@ -806,6 +806,12 @@ struct SplitNode {
 };
 
 struct Tab {
+    // Stable identity from Editor::next_tab_id_ (never an index: :tabdelete
+    // shifts every later tab down a slot), so Lua state keyed by tab -- the
+    // built-in per-tab terminal's tab -> buffer map (kBuiltinTabTerminal)
+    // -- survives tabs being closed/reordered around it. Runtime-only,
+    // like pane ids: a session restore hands the rebuilt tabs fresh ids.
+    int id = 0;
     std::unique_ptr<SplitNode> root;
     int active_pane_id = 0;
 };
@@ -2023,6 +2029,11 @@ public:
      * @return The active pane's id.
      */
     int ActivePaneId() const { return ActiveTab().active_pane_id; }
+    /**
+     * @brief Returns the stable id of the active tab (Tab::id), exposed to Lua as mep.current_tab_id().
+     * @return The active tab's id.
+     */
+    int ActiveTabId() const { return ActiveTab().id; }
     // Same as ActiveTabRoot()/ActivePaneId() but for tab `index`
     // specifically (0 <= index < TabCount(), unchecked -- same contract as
     // every other accessor here) rather than always the active tab --
@@ -4268,6 +4279,32 @@ public:
      * @param fraction The desired share, clamped to [kMinPaneShare, 1 - kMinPaneShare].
      */
     void SetActivePaneShare(float fraction);
+
+    // Adds a new full-width pane along the *bottom* of the active tab --
+    // vim's `:botright split` -- by re-rooting the tab's split tree under
+    // a Horizontal node whose children are [old root, new leaf], rather
+    // than splitting the focused pane the way SplitCurrentPane does (which
+    // would leave the new pane only as wide as that one pane inside a
+    // vsplit). The new leaf shows `buffer_id` and becomes the active pane
+    // (Terminal mode if it's a terminal, via SyncModeToActivePaneBuffer);
+    // `share` is its fraction of the tab's height. Built for the per-tab
+    // terminal toggle (kBuiltinTabTerminal), exposed to Lua as
+    // mep.pane_split_bottom(). A no-op for an invalid/deleted buffer id.
+    /**
+     * @brief Opens a new full-width pane along the bottom of the active tab showing a buffer, and focuses it.
+     * @param buffer_id The buffer the new pane shows (a no-op if invalid or deleted).
+     * @param share The new pane's fraction of the tab's height, clamped to [kMinPaneShare, 1 - kMinPaneShare].
+     */
+    void SplitTabBottom(int buffer_id, float share);
+    // Lua-facing FocusPaneById: reports whether `pane_id` was a real leaf
+    // pane of the active tab (and so got focused) instead of silently
+    // doing nothing, so a script can fall back to another target.
+    /**
+     * @brief Focuses a pane of the active tab by id, for Lua (mep.pane_focus()).
+     * @param pane_id The pane to focus.
+     * @return True if the pane exists in the active tab and is now focused, false (no-op) otherwise.
+     */
+    bool FocusPaneByIdForLua(int pane_id);
 
     // --- Mouse-driven pane/tab interaction (main.cpp's own per-frame hit-
     // testing against pane/border/tab-chip rects calls into these; there's
@@ -6953,6 +6990,8 @@ private:
     // Global (not per workspace) so agent-rpc's bare pane ids stay unique
     // across the whole editor.
     int next_pane_id_ = 0;
+    // Same global-uniqueness argument as next_pane_id_ (Tab::id's comment).
+    int next_tab_id_ = 1;
     std::vector<Tab> &Tabs() { return MutableActiveWorkspace().tabs; }
     const std::vector<Tab> &Tabs() const { return ActiveWorkspace().tabs; }
     Tab &ActiveTab() { return Tabs()[static_cast<size_t>(ActiveWorkspace().active_tab)]; }

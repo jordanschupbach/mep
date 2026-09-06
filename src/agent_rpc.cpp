@@ -585,6 +585,7 @@ Json Dispatch(Editor &editor, Connection &conn, const std::string &method, const
                 Json wtabs = Json::Array();
                 for (const Tab &tab : ws.tabs) {
                     Json tj = Json::Object();
+                    tj["id"] = tab.id;
                     tj["active_pane_id"] = tab.active_pane_id;
                     tj["root"] = tab.root ? SplitNodeJson(*tab.root) : Json::Object();
                     wtabs.push_back(std::move(tj));

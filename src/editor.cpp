@@ -3849,6 +3849,7 @@ void Editor::BootstrapInitialProject() {
     tab.root->pane.id = next_pane_id_++;
     tab.root->pane.buffer_id = 0;
     tab.active_pane_id = tab.root->pane.id;
+    tab.id = next_tab_id_++;
     ws.tabs.push_back(std::move(tab));
 
     project.workspaces.push_back(std::move(ws));
@@ -4834,6 +4835,41 @@ void Editor::SplitCurrentPane(SplitDir dir, const std::string &file_arg) {
     active->children.push_back(std::move(original_leaf));
 
     tab.active_pane_id = new_pane.id;
+}
+
+void Editor::SplitTabBottom(int buffer_id, float share) {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
+    if (buffers_[static_cast<size_t>(buffer_id)].deleted) return;
+    if (float_node_) CloseFloatPane();
+    Tab &tab = ActiveTab();
+    if (!tab.root) return;
+
+    auto new_leaf = std::make_unique<SplitNode>();
+    new_leaf->dir = SplitDir::Leaf;
+    new_leaf->pane.id = next_pane_id_++;
+    new_leaf->pane.buffer_id = buffer_id;
+    new_leaf->pane.buffer_tabs = {buffer_id};
+    new_leaf->pane.buffer_tab_index = 0;
+    const int new_pane_id = new_leaf->pane.id;
+
+    // Horizontal stacks its children top to bottom (ComputeRects), so
+    // [old root, new leaf] puts the new pane along the bottom, spanning
+    // the tab's full width whatever the old root was split into.
+    auto new_root = std::make_unique<SplitNode>();
+    new_root->dir = SplitDir::Horizontal;
+    new_root->children.push_back(std::move(tab.root));
+    new_root->children.push_back(std::move(new_leaf));
+    share = std::clamp(share, kMinPaneShare, 1.0f - kMinPaneShare);
+    new_root->shares = {1.0f - share, share};
+    tab.root = std::move(new_root);
+
+    tab.active_pane_id = new_pane_id;
+    // Focus moved off whatever pane was live before: same "leave Terminal
+    // mode's keystroke forwarding behind" rule as NavigatePaneDirection,
+    // then SyncModeToActivePaneBuffer re-enters it if the *new* pane is
+    // itself a terminal.
+    if (mode_ == Mode::Terminal) mode_ = Mode::Normal;
+    SyncModeToActivePaneBuffer();
 }
 
 // --- Terminal panes (`:terminal`/`:term`, Part VI Phase 27+) -------------
@@ -9036,6 +9072,7 @@ void Editor::TabNew(const std::string &file_arg) {
     tab.root->pane.id = next_pane_id_++;
     tab.root->pane.buffer_id = buffer_id;
     tab.active_pane_id = tab.root->pane.id;
+    tab.id = next_tab_id_++;
 
     Workspace &ws = MutableActiveWorkspace();
     ws.tabs.insert(ws.tabs.begin() + ws.active_tab + 1, std::move(tab));
@@ -9124,6 +9161,7 @@ Workspace Editor::MakeWorkspace(const std::string &name, const std::string &root
     tab.root->pane.id = next_pane_id_++;
     tab.root->pane.buffer_id = buffer_id;
     tab.active_pane_id = tab.root->pane.id;
+    tab.id = next_tab_id_++;
     ws.tabs.push_back(std::move(tab));
     return ws;
 }
@@ -9318,6 +9356,7 @@ bool Editor::WorkspaceReset(int id, bool force) {
             tab.root->pane.id = next_pane_id_++;
             tab.root->pane.buffer_id = buffer_id;
             tab.active_pane_id = tab.root->pane.id;
+            tab.id = next_tab_id_++;
             ws.tabs.clear();
             ws.tabs.push_back(std::move(tab));
             ws.active_tab = 0;
@@ -10003,6 +10042,7 @@ int Editor::RestoreWorkspaceTabs(Workspace &ws, const Json &ws_json) {
             std::vector<std::pair<int, Json>> leaves;
             std::unordered_map<int, int> id_map;
             Tab tab;
+            tab.id = next_tab_id_++;
             tab.root = SplitFromStateJson(tj.get("root"), leaves, id_map);
             auto it = id_map.find(tj.get("active_pane").as_int(-1));
             tab.active_pane_id = it != id_map.end() ? it->second : leaves.front().first;
@@ -10564,6 +10604,12 @@ void Editor::FocusPaneById(int pane_id) {
     // SyncModeToActivePaneBuffer as usual).
     if (mode_ == Mode::Sidebar) RestoreFromOverlay();
     SyncModeToActivePaneBuffer();
+}
+
+bool Editor::FocusPaneByIdForLua(int pane_id) {
+    if (!FindNode(ActiveTab().root.get(), pane_id)) return false;
+    FocusPaneById(pane_id);
+    return true;
 }
 
 // Removes buffer_id from source_pane_id's own buffer_tabs (erasing at the

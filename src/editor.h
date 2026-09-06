@@ -5237,8 +5237,14 @@ public:
      * @return true if the float opened.
      */
     bool OpenFloatPane(const std::string &path, int row, bool save_on_close, int on_close_ref = 0);
-    /** @brief Closes the floating pane (writing its buffer first if save_on_close was set), restoring the prior focus. */
-    void CloseFloatPane();
+    /**
+     * @brief Closes the floating pane, restoring the prior focus.
+     * @param force_write When true, writes the buffer unconditionally (ignoring save_on_close and whether it was
+     * modified) -- the ZZ "confirm" chord (DispatchNormalKey) uses this so a float opened with save_on_close=false
+     * (an implicit dismiss like Escape/:q/clicking away discards) can still be explicitly confirmed. Otherwise
+     * writes only if save_on_close was set and the buffer was modified, same as before this param existed.
+     */
+    void CloseFloatPane(bool force_write = false);
     bool IsFloatPaneOpen() const { return float_node_ != nullptr; }
     const Pane &FloatPane() const { return float_node_->pane; }
     int FloatPaneId() const { return float_node_ ? float_node_->pane.id : -1; }
@@ -7411,6 +7417,12 @@ private:
     bool pending_org_export_ = false;
     // 'z' waiting for a second key (scroll commands: z/t/b).
     bool pending_z_ = false;
+    // 'Z' waiting for a second key -- only ZZ is implemented (a float
+    // pane's "confirm" chord, see CloseFloatPane's force_write param and
+    // DispatchNormalKey); real vim's other Z-command, ZQ (discard and
+    // quit), has no mep equivalent yet. A bare Z outside a float, or Z
+    // followed by anything but a second Z, is silently swallowed.
+    bool pending_capital_z_ = false;
     // Per-key state for HandleNormalInput's bare-hjkl fast path (see its
     // own comment for the wasm/webview lag this exists to fix). Index:
     // 0=h, 1=j, 2=k, 3=l.

@@ -8701,15 +8701,15 @@ bool Editor::OpenFloatPane(const std::string &path, int row, bool save_on_close,
     return true;
 }
 
-void Editor::CloseFloatPane() {
+void Editor::CloseFloatPane(bool force_write) {
     if (!float_node_) return;
     const int buffer_id = float_node_->pane.buffer_id;
     bool wrote = false;
-    if (float_save_on_close_ && buffer_id >= 0 && buffer_id < static_cast<int>(buffers_.size())) {
+    if ((float_save_on_close_ || force_write) && buffer_id >= 0 && buffer_id < static_cast<int>(buffers_.size())) {
         // Buf() is still the float's buffer here (float_node_ is set), so
         // SaveFile writes exactly what was edited.
         const Buffer &b = buffers_[static_cast<size_t>(buffer_id)];
-        if (b.modified && !b.deleted && !b.filename.empty()) wrote = SaveFile(b.filename);
+        if ((b.modified || force_write) && !b.deleted && !b.filename.empty()) wrote = SaveFile(b.filename);
     }
     float_node_.reset();
     const int sidebar_id = float_return_sidebar_id_;
@@ -11679,6 +11679,15 @@ bool Editor::DispatchNormalKey(int cp) {
         return true;
     }
 
+    // ZZ: the float pane "confirm" chord (see CloseFloatPane's force_write
+    // param) -- a no-op outside a float, or if the second key isn't
+    // another 'Z' (ZQ, real vim's discard-and-quit, isn't implemented).
+    if (pending_capital_z_) {
+        pending_capital_z_ = false;
+        if (c == 'Z' && float_node_) CloseFloatPane(/*force_write=*/true);
+        return true;
+    }
+
     // q{a-z}/q{A-Z}: the register letter to record into (uppercase appends).
     if (pending_macro_record_) {
         pending_macro_record_ = false;
@@ -11953,6 +11962,10 @@ bool Editor::DispatchNormalKey(int cp) {
         pending_z_ = true;
         return true;
     }
+    if (c == 'Z') {
+        pending_capital_z_ = true;
+        return true;
+    }
     if (c == 'q') {
         if (recording_macro_) StopMacroRecording();
         else pending_macro_record_ = true;
@@ -12137,8 +12150,9 @@ bool Editor::DispatchNormalKey(int cp) {
 bool Editor::IsMidNormalCommand() const {
     return pending_op_ != 0 || pending_g_ || pending_bracket_prev_ || pending_bracket_next_ || pending_find_ != 0 ||
            pending_textobj_scope_ != 0 || pending_mark_jump_ != 0 || pending_mark_set_ || pending_ctrl_w_ ||
-           pending_org_export_ || pending_z_ || pending_count_ != 0 || awaiting_register_name_ ||
-           pending_register_ != 0 || pending_macro_record_ || awaiting_macro_play_ || pending_replace_;
+           pending_org_export_ || pending_z_ || pending_capital_z_ || pending_count_ != 0 ||
+           awaiting_register_name_ || pending_register_ != 0 || pending_macro_record_ || awaiting_macro_play_ ||
+           pending_replace_;
 }
 
 void Editor::CancelPendingNormalState() {
@@ -12154,6 +12168,7 @@ void Editor::CancelPendingNormalState() {
     pending_ctrl_w_ = false;
     pending_org_export_ = false;
     pending_z_ = false;
+    pending_capital_z_ = false;
     pending_count_ = 0;
     awaiting_register_name_ = false;
     pending_register_ = 0;
@@ -15670,6 +15685,7 @@ void Editor::EnterNormal() {
     pending_ctrl_w_ = false;
     pending_org_export_ = false;
     pending_z_ = false;
+    pending_capital_z_ = false;
     pending_count_ = 0;
     awaiting_register_name_ = false;
     pending_register_ = 0;

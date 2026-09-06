@@ -2819,9 +2819,11 @@ const char *kBuiltinGit =
     // through mep_git_action: notify start, notify result (last stderr
     // line on failure), then refresh the current view. Commit messages
     // are edited in a floating pane over the repo's own COMMIT_EDITMSG
-    // (mep.float_open + on_close): closing it with a written buffer
-    // runs `git commit -F <file> --cleanup=strip`, closing it untouched
-    // cancels -- git's own editor flow, without leaving the window.
+    // (mep.float_open + on_close, save_on_close=false so any implicit
+    // dismiss -- Escape, :q, clicking away -- discards rather than
+    // commits): ZZ in Normal mode is the explicit confirm
+    // (CloseFloatPane's force_write, DispatchNormalKey), running
+    // `git commit -F <file> --cleanup=strip` against whatever was typed.
     "local MEP_GIT_TABS = {'Status', 'Log', 'Branches', 'Stash'}\n"
     "local MEP_GIT_VIEWS = {'status', 'log', 'branches', 'stash'}\n"
     "local mep_git_view = 'status'\n"
@@ -3086,11 +3088,11 @@ const char *kBuiltinGit =
     "        lines[#lines + 1] = ''\n"
     "        lines[#lines + 1] = '# Please enter the commit message for your changes. Lines starting'\n"
     "        lines[#lines + 1] = \"# with '#' will be ignored, and an empty message aborts the commit.\"\n"
-    "        lines[#lines + 1] = '# Escape (or :q) commits; leave the message empty to cancel.'\n"
+    "        lines[#lines + 1] = '# ZZ commits; Escape (or :q) aborts, discarding this message.'\n"
     "        lines[#lines + 1] = '#'\n"
     "        for _, l in ipairs(status) do lines[#lines + 1] = '# ' .. l end\n"
     "        local msg_buf = nil\n"
-    "        local ok = mep.float_open(path, 1, {save_on_close = true, on_close = function(saved)\n"
+    "        local ok = mep.float_open(path, 1, {save_on_close = false, on_close = function(saved)\n"
     "          if msg_buf then mep.buffer_delete(msg_buf, true) end\n"
     "          if not saved then mep.notify('Commit cancelled') return end\n"
     "          local argv = {'git', 'commit', '-F', path, '--cleanup=strip'}\n"

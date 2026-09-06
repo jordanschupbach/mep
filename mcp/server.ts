@@ -1,15 +1,21 @@
 // MCP server wrapping mep's agent-control socket (src/agent_rpc.cpp, see
-// AGENT_RPC_PLAN.md) as normal MCP tools -- lets Claude (or any MCP
+// MEP_AGENT_API.md) as normal MCP tools -- lets Claude (or any MCP
 // client) drive a running mep instance: move/split/resize/focus panes,
 // move the cursor, read/edit buffer text, open/save files, run arbitrary
-// ex-commands, inspect full editor state, and poll for live events
-// (cursor/buffer/pane/mode changes, notifications).
+// ex-commands, inspect full editor state, poll for live events
+// (cursor/buffer/pane/mode changes, notifications), and drive the real
+// GUI window directly (screenshots, synthetic mouse/keyboard).
 //
 // Every tool here is a thin 1:1 wrapper around one JSON-RPC method the
 // C++ side already implements -- no new behavior, just another way to
 // reach the same primitives the embedded-Lua `mep.*` API and the raw
-// Unix-socket protocol already expose. See AGENT_RPC_PLAN.md's M1/M2/M3
-// sections for the full method table this mirrors.
+// Unix-socket protocol already expose. See MEP_AGENT_API.md for the full
+// tool reference this mirrors.
+//
+// Superseded by src/mcp_bridge.cpp (built as `mep-mcp`): a dependency-
+// free C++ binary speaking the same protocol, needing no Deno/Node
+// runtime -- prefer that for `claude mcp add`. This file (+
+// mep_client.ts) is kept as a reference/fallback implementation.
 //
 // Requires a native (non-wasm) `mep` already running, since only that
 // build binds the agent socket at all (see src/agent_rpc.h's own

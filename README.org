@@ -383,17 +383,19 @@ AI terminal: =<leader>a<CR>= (also =:aiterminal= / =:aiterm= /
 =:MepAiTerminal=, or =mep.ai_terminal_open()=) splits the current pane
 and runs Claude Code in a =:terminal= pane *below* it, focused, with an
 appended system prompt that explains it is inside this mep window and
-how to drive it through the =mep-agent= MCP server (=mcp/server.ts=:
-tool names, 0-indexed/end-exclusive conventions, the virtual cursor,
-and to edit open files through mep's buffer tools rather than behind
-its back). Every =:terminal= exports =$MEP_AGENT_SOCKET= (this window's
-own agent socket), which the MCP server honors ahead of its directory
-scan, so the agent always lands on the window it was launched from
-even with several open. The server is expected to be registered with
-Claude Code already (=claude mcp add mep-agent -- deno run --allow-net
---allow-read --allow-write --allow-env /path/to/mep/mcp/server.ts=);
-alternatively =mep.opt.ai_terminal_mcp_server = '/path/to/mep/mcp/server.ts'=
-passes it inline via =--mcp-config=. =mep.opt.ai_terminal_cmd= (default
+how to drive it through the =mep-agent= MCP server (=src/mcp_bridge.cpp=,
+built as =mep-mcp= -- a dependency-free C++ binary, see =MEP_AGENT_API.md=
+for the full tool reference including UI automation and the image
+editor: tool names, 0-indexed/end-exclusive conventions, the virtual
+cursor, and to edit open files through mep's buffer tools rather than
+behind its back). Every =:terminal= exports =$MEP_AGENT_SOCKET= (this
+window's own agent socket), which the MCP server honors ahead of its
+directory scan, so the agent always lands on the window it was launched
+from even with several open. The server is expected to be registered
+with Claude Code already (=claude mcp add mep-agent --
+/path/to/mep/build/native/mep-mcp=); alternatively
+=mep.opt.ai_terminal_mcp_server = '/path/to/mep-mcp'= passes it inline
+via =--mcp-config=. =mep.opt.ai_terminal_cmd= (default
 ={'claude'}=, e.g. ={'claude', '--model', 'opus'}=),
 =mep.opt.ai_terminal_share= (the terminal's height fraction, =0.4=) and
 =mep.opt.ai_terminal_instructions= (the prompt text; set to ='''= to send

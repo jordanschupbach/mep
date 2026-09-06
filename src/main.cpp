@@ -12402,10 +12402,11 @@ const char *kBuiltinPaneZoom =
 // splits the current pane and runs Claude Code in a real :terminal pane
 // *below* it, with a system prompt (mep.opt.ai_terminal_instructions)
 // telling it that it lives inside this mep window and exactly how to
-// drive it through the mep-agent MCP server (mcp/server.ts) -- the tool
-// names, 0-indexed/end-exclusive conventions, the virtual-cursor model,
-// and the "edit open files through mep, not behind its back" rule that
-// mep_* tool descriptions alone don't convey.
+// drive it through the mep-agent MCP server (src/mcp_bridge.cpp, built as
+// mep-mcp -- see MEP_AGENT_API.md) -- the tool names, 0-indexed/end-
+// exclusive conventions, the virtual-cursor model, the UI-automation/
+// image-editor cheat sheet, and the "edit open files through mep, not
+// behind its back" rule that mep_* tool descriptions alone don't convey.
 //
 // Which window it drives: Editor::TerminalSpawn exports MEP_AGENT_SOCKET
 // = this instance's own agent socket into the terminal's environment,
@@ -12414,11 +12415,11 @@ const char *kBuiltinPaneZoom =
 // the agent always lands on the one it was launched from.
 //
 // The MCP server itself is expected to already be registered with Claude
-// Code (`claude mcp add mep-agent -- deno run ... mcp/server.ts`, the
-// documented setup); mep.opt.ai_terminal_mcp_server = '/path/to/mcp/
-// server.ts' instead passes an inline --mcp-config so nothing has to be
-// registered globally. The instructions go via --append-system-prompt,
-// so Claude Code's own default system prompt stays intact.
+// Code (`claude mcp add mep-agent -- /path/to/mep-mcp`, the documented
+// setup); mep.opt.ai_terminal_mcp_server = '/path/to/mep-mcp' instead
+// passes an inline --mcp-config so nothing has to be registered globally.
+// The instructions go via --append-system-prompt, so Claude Code's own
+// default system prompt stays intact.
 //
 // Everything is an init.lua-overridable mep.opt.* (command argv, split
 // share, instructions, server path) -- `mep.opt.ai_terminal_cmd =
@@ -12457,8 +12458,20 @@ const char *kBuiltinAiTerminal =
     "- mep_command_run runs any \":\" ex-command without the colon (\"w\", \"e path\", \"split\", \"s/foo/bar/g\") -- the escape hatch for anything without a dedicated tool. There is no terminal tool; \"terminal <cmd>\" opens one.\n"
     "- mep_identify renames yourself; mep_list_participants shows everyone connected, humans and agents alike.\n"
     "\n"
-    "If no mep_* tools are available, the mep-agent MCP server is not registered with Claude Code or failed to start (it needs deno on PATH). Tell the human; it is registered with:\n"
-    "  claude mcp add mep-agent -- deno run --allow-net --allow-read --allow-write --allow-env /path/to/mep/mcp/server.ts\n"
+    "## UI automation (screenshots, clicks, keystrokes)\n"
+    "- mep_screenshot captures the actual window as a PNG and returns its path -- read the file to see it. Coordinates for every mep_mouse_*/mep_scroll tool are in that same pixel space (window-client, origin top-left), so take a screenshot first to find where things are before clicking.\n"
+    "- mep_mouse_click(x, y, button, clicks) and mep_mouse_drag(x1, y1, x2, y2, button, steps) are the main tools; mep_mouse_down/mep_mouse_move/mep_mouse_up let you compose a custom gesture (e.g. hold a modifier across several calls: mep_key_down(\"Shift_L\"), then click/drag, then mep_key_up(\"Shift_L\")).\n"
+    "- mep_key_press sends one keystroke (a single character, or an X11 name like \"Escape\"/\"Return\"/\"Tab\"/\"BackSpace\"/\"Left\"/\"F5\"); mep_type_text types a whole string (printable ASCII only). These drive real synthetic input at the OS level, so they work on anything drawn in the window, not just mep-aware widgets.\n"
+    "- Input can very occasionally not land (e.g. a dropped frame). If a screenshot right after doesn't show the expected change, retry the same action once and re-check before assuming something else is wrong.\n"
+    "\n"
+    "## The in-pane image editor\n"
+    "Press 'e' while viewing an image (a PNG/JPG/etc. buffer opened with mep_file_open or mep_pane_split's file argument) to open it, in the same pane. Esc returns to the plain viewer without losing anything -- layers and undo history are kept per-buffer, so re-pressing 'e' resumes exactly where you left off.\n"
+    "Layout (left to right): a two-column icon tool sidebar, the canvas, a Layers panel on the right; a thin toolbar (brush size, recent colors) sits above the canvas, under the menubar (File/Edit/Layer/View). The foreground/background swatches are at the bottom of the tool sidebar.\n"
+    "Tools -- hotkey, or click the sidebar icon -- select one, then drag/click on the canvas: b Pencil, x Eraser (freehand, brush size via '['/']'); l Line, r Rectangle, c Ellipse (drag corner to corner/end to end, hold Shift while releasing to fill); f Bucket fill (click, 4-connected flood fill); i Eyedropper (click, samples a color); h Pan (drag to scroll; also middle-mouse drag with any tool; Ctrl+scroll or +/-/= to zoom); m Rectangle select, o Ellipse select, w Lasso (drag out a selection); v Move (drags the selection's content, or the whole layer if none is selected, cutting from the old spot). With a selection: Delete/BackSpace clears its pixels (selection stays); Edit > Deselect drops it. u/Ctrl-R undo/redo.\n"
+    ":w/:wq (or mep_command_run(\"w\")) flattens visible layers and writes a real PNG. To draw something recognizable: work out the shape in canvas-pixel coordinates (the status bar shows the live cursor position and zoom % while hovering), convert to screen coordinates as canvas_top_left + pixel * zoom, and take a mep_screenshot right after opening the editor to read both off directly rather than computing pane geometry from scratch. Prefer a few large Line/Rectangle/Ellipse drags (exact and fast) over many tiny Pencil strokes; pick tools by hotkey rather than clicking the small sidebar icons. Full reference: MEP_AGENT_API.md in mep's own source tree.\n"
+    "\n"
+    "If no mep_* tools are available, the mep-agent MCP server is not registered with Claude Code or failed to start. Tell the human; it is registered with:\n"
+    "  claude mcp add mep-agent -- /path/to/mep/build/native/mep-mcp\n"
     "]==]\n"
     // Assembled fresh on every open so init.lua/`:lua` tweaks to any
     // mep.opt.ai_terminal_* take effect for the next terminal, not just
@@ -12468,8 +12481,7 @@ const char *kBuiltinAiTerminal =
     "  for _, a in ipairs(mep.opt.ai_terminal_cmd) do argv[#argv + 1] = tostring(a) end\n"
     "  if mep.opt.ai_terminal_mcp_server and #mep.opt.ai_terminal_mcp_server > 0 then\n"
     "    argv[#argv + 1] = '--mcp-config'\n"
-    "    argv[#argv + 1] = string.format('{\"mcpServers\":{\"mep-agent\":{\"type\":\"stdio\",\"command\":\"deno\",'\n"
-    "      .. '\"args\":[\"run\",\"--allow-net\",\"--allow-read\",\"--allow-write\",\"--allow-env\",\"%s\"]}}}',\n"
+    "    argv[#argv + 1] = string.format('{\"mcpServers\":{\"mep-agent\":{\"type\":\"stdio\",\"command\":\"%s\"}}}',\n"
     "      mep.opt.ai_terminal_mcp_server)\n"
     "  end\n"
     "  if mep.opt.ai_terminal_instructions and #mep.opt.ai_terminal_instructions > 0 then\n"
@@ -24107,10 +24119,15 @@ void RegisterUiAutomationMethods() {
         return Json::Object();
     });
     mep::agent::RegisterUiMethod("ui.type_text", [](const Json &params) {
-        const std::string text = params.get("text").as_string();
-        for (char c : text) {
-            if (!mep::agent_ui::TypeChar(c)) throw std::runtime_error(std::string("unsupported character: '") + c + "'");
-        }
+        // One TypeChar per queued step/real frame -- see g_ui_input_queue's
+        // own comment. Beyond the plain press/release coalescing risk,
+        // firing every character synchronously here would inject them all
+        // before mep's next single frame ever polls the X11 event queue,
+        // overflowing raylib's own fixed-size char-input queue (silently
+        // dropping characters past its capacity) exactly as if you'd
+        // somehow typed faster than any human keyboard could.
+        std::string text = params.get("text").as_string();
+        for (char c : text) g_ui_input_queue.push_back([c] { mep::agent_ui::TypeChar(c); });
         return Json::Object();
     });
 }

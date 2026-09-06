@@ -30,9 +30,8 @@ export function mepAgentSocketDir(): string {
 // `MEP_AGENT_SOCKET` (an explicit path) always wins. Otherwise: exactly
 // one `*.sock` in the agent-sockets directory is used automatically;
 // zero or several are both errors with a message telling the caller how
-// to resolve it -- several running mep windows is a real, expected case
-// (AGENT_RPC_PLAN.md's own multi-window discovery design), not something
-// to guess at silently.
+// to resolve it -- several running mep windows is a real, expected case,
+// not something to guess at silently.
 async function discoverSocketPath(): Promise<string> {
   const override = Deno.env.get("MEP_AGENT_SOCKET");
   if (override) return override;

@@ -254,6 +254,8 @@ add_library(mep_core STATIC
     src/regex.cpp
     src/treesitter.cpp
     src/image_doc.cpp
+    src/model3d_doc.cpp
+    src/model3d_blend_import.cpp
     src/wav_doc.cpp
     src/svg_doc.cpp
     src/pdf_doc.cpp
@@ -350,6 +352,22 @@ if(NOT EMSCRIPTEN)
     target_include_directories(mep-workspace-test PRIVATE src)
     target_compile_options(mep-workspace-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
     target_link_options(mep-workspace-test PRIVATE ${MEP_SANITIZE_FLAGS})
+endif()
+
+# MODEL3D.md: covers Scene bookkeeping and the glTF exporter -- the half of
+# model3d_doc.cpp that's pure CPU logic. Deliberately does NOT exercise
+# LoadModel3DFile/AddPrimitiveToScene (both need a live GL context via
+# raylib's UploadMesh, the one thing this windowless binary avoids), but
+# still links against raylib since model3d_doc.cpp references its symbols
+# even in the functions this test never calls. Native-only, matching
+# mep-workspace-test's own gating above (the feature itself is native-only
+# regardless, see MODEL3D_PLAN.md).
+if(NOT EMSCRIPTEN)
+    add_executable(mep-model3d-doc-test src/model3d_doc_test.cpp src/model3d_doc.cpp)
+    target_include_directories(mep-model3d-doc-test PRIVATE src)
+    target_link_libraries(mep-model3d-doc-test PRIVATE raylib)
+    target_compile_options(mep-model3d-doc-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-model3d-doc-test PRIVATE ${MEP_SANITIZE_FLAGS})
 endif()
 
 # Collaboration's WebSocket handshake needs SHA-1.  OpenSSL is the one

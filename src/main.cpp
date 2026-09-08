@@ -10,10 +10,30 @@
 #include "sheet_doc.h"
 #include "vterm.h"
 #include "image_doc.h"
+#include "model3d_blend_import.h"
+#include "model3d_doc.h"
 #include "pdf_doc.h"
 #include "office_doc.h"
 
 #include "raylib.h"
+// raymath.h's own inline functions use old-style casts and partial `{0}`
+// brace-initialization throughout (its own coding style, not something we
+// control) -- both trip this codebase's -Werror strict flags (see
+// MEP_STRICT_FLAGS, CMakeLists.txt), so it needs the same third-party-header
+// warning suppression image_doc.cpp gives third_party/stb_image.h, unlike
+// raylib.h/rlgl.h above, which happen to already be clean under these flags.
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wold-style-cast"
+#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+#pragma GCC diagnostic ignored "-Wdouble-promotion"
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#pragma GCC diagnostic ignored "-Wconversion"
+#endif
+#include "raymath.h"  // Vector3/Matrix helpers for the 3D-modeler viewport (Vector3CrossProduct etc.)
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 #include "rlgl.h"  // rlPushMatrix/rlMultMatrixf/rlTranslatef -- org emphasis italic's shear transform
 
 #include <stdarg.h>
@@ -561,6 +581,238 @@ constexpr float kImgEditMenubarH = 26.0f;
 constexpr float kImgEditToolbarH = 34.0f;
 constexpr float kImgEditSidebarW = 190.0f;
 constexpr float kImgEditToolSidebarW = 76.0f;  // two 32px button columns + margins/gap
+
+// --- In-pane 3D modeler (MODEL3D.md) UI chrome state -- same "plain
+// globals, one pane in view at a time" convention as the image-editor block
+// above. ---
+int g_model3d_dropdown_open = -1;  // which menubar dropdown (File=0/Edit=1/Add=2/View=3) is open
+constexpr float kModel3DMenubarH = 26.0f;
+constexpr float kModel3DToolSidebarW = 92.0f;
+constexpr float kModel3DSidebarW = 240.0f;
+// Orbit/pan camera drag, grabbed at mouse-down -- same shape as
+// ImageEditorPanDragState above, but tracking yaw/pitch/target instead of
+// pixel pan offsets.
+struct Model3DCameraDragState {
+    bool active = false;
+    bool panning = false;  // false = orbiting
+    int buffer_id = 0;
+    float start_mouse_x = 0, start_mouse_y = 0;
+    float start_yaw = 0, start_pitch = 0;
+    Vec3f start_target;
+};
+Model3DCameraDragState g_model3d_camera_drag;
+// Move/Rotate/Scale drag on the current selection, grabbed at mouse-down --
+// snapshots every selected object's starting transform so the whole drag
+// is relative to mouse movement since press, not accumulated per-frame
+// delta (which would drift with frame-rate-dependent step sizes).
+struct Model3DGizmoDragState {
+    bool active = false;
+    int buffer_id = 0;
+    Model3DTool tool = Model3DTool::Select;
+    float start_mouse_x = 0, start_mouse_y = 0;
+    std::vector<int> object_ids;
+    std::vector<Vec3f> start_positions, start_rotations, start_scales;
+    // Parallel to object_ids: -1 for a directly-selected object (the
+    // transform's own target, no orbiting needed); otherwise the index
+    // (into object_ids/start_positions) of the selected ancestor whose
+    // own start position this cascaded descendant's position should
+    // orbit/scale around as the parent rotates/scales. Populated only for
+    // Move (unused there -- translation is pivot-independent, so it just
+    // adds the same delta to every dragged object's position) and for the
+    // Rotate/Scale cascade cases that actually need a pivot to orbit/scale
+    // a descendant's position around (see the drag-start cascade comment
+    // below).
+    std::vector<int> cascade_pivot_index;
+    // -1 = free drag (view-plane translate / uniform scale / screen-drag
+    // yaw+pitch -- the original Phase 1 fallback, still used for a
+    // multi-object selection or when the drag didn't start on a gizmo
+    // handle/ring); 0/1/2 = X/Y/Z -- the drag started on that axis's
+    // on-screen gizmo handle or rotation ring (single-object selection
+    // only), constraining it to that world axis. `start_axis_param`'s
+    // meaning depends on `tool`: for Move/Scale it's the drag ray's
+    // starting position along the axis line (see ClosestParamOnAxis); for
+    // Rotate it's the drag's starting angle (radians, see AnglePointOnPlane)
+    // around the ring's plane. Either way, movement is measured as a delta
+    // from where the drag began, not an absolute per-frame value.
+    int axis = -1;
+    float start_axis_param = 0.0f;
+};
+Model3DGizmoDragState g_model3d_gizmo_drag;
+// Phase 3 vertex editing's own drag state, mirroring Model3DGizmoDragState's
+// "one undo push at drag-start, then direct mutation every frame" shape --
+// deliberately a separate struct/global rather than folding into the object
+// gizmo's own, since it tracks *vertex* indices on *one mesh*, not object
+// ids on the scene.
+struct Model3DVertexDragState {
+    bool active = false;
+    int buffer_id = 0;
+    int object_id = 0;
+    int mesh_index = -1;  // resolved once at drag-start, after EnsureUniqueMesh
+    float start_mouse_x = 0, start_mouse_y = 0;
+    std::vector<int> vertex_indices;
+    std::vector<Vec3f> start_positions;  // local (pre-object-transform) space, parallel to vertex_indices
+};
+Model3DVertexDragState g_model3d_vertex_drag;
+// Rectangle (rubber-band) multi-vertex selection: started whenever a
+// mesh-edit-mode mouse-down misses every vertex, instead of immediately
+// clearing the selection -- a plain click (drag distance under
+// kModel3DBoxSelectMinPx) still clears/no-ops exactly like before, but a
+// real drag instead selects every vertex whose on-screen projection falls
+// inside the box on release. Coordinates are viewport-local (same space as
+// `local_mouse`), not screen-absolute, so the box is agnostic to where the
+// pane itself sits on screen.
+struct Model3DVertexBoxSelectState {
+    bool active = false;
+    int buffer_id = 0;
+    float start_x = 0, start_y = 0;
+};
+Model3DVertexBoxSelectState g_model3d_vertex_box_select;
+constexpr float kModel3DBoxSelectMinPx = 4.0f;
+// On-screen gizmo arrow length, in world units, at the current camera
+// distance -- kept in one place so the draw code and the hit-test code
+// agree exactly on where the handles are. Scales with camera_distance so
+// the gizmo stays a sensible screen size regardless of zoom.
+float Model3DGizmoLength(float camera_distance) { return std::clamp(camera_distance * 0.15f, 0.3f, 20.0f); }
+
+// Closest point (as a signed distance along `axis_dir`, a unit vector) on
+// the infinite 3D line (axis_origin, axis_dir) to the given ray -- the
+// standard closest-point-between-two-skew-lines formula. Used to turn 2D
+// mouse movement into "how far did the drag move along this one world
+// axis", the same technique any 3-axis translate/scale gizmo uses.
+float ClosestParamOnAxis(Ray ray, Vector3 axis_origin, Vector3 axis_dir) {
+    Vector3 r = Vector3Subtract(ray.position, axis_origin);
+    float a = Vector3DotProduct(ray.direction, ray.direction);
+    float b = Vector3DotProduct(ray.direction, axis_dir);
+    float e = Vector3DotProduct(axis_dir, axis_dir);
+    float c = Vector3DotProduct(ray.direction, r);
+    float f = Vector3DotProduct(axis_dir, r);
+    float denom = a * e - b * b;
+    if (std::fabs(denom) < 1e-6f) return 0.0f;  // ray parallel to axis -- degenerate, leave unmoved
+    return (a * f - b * c) / denom;
+}
+
+// 2D point-to-segment distance, for hit-testing a mouse click against a
+// gizmo handle's on-screen projection.
+float DistancePointToSegment2D(Vector2 p, Vector2 a, Vector2 b) {
+    Vector2 ab = Vector2Subtract(b, a);
+    float len_sq = ab.x * ab.x + ab.y * ab.y;
+    float t = len_sq > 1e-6f ? std::clamp(Vector2DotProduct(Vector2Subtract(p, a), ab) / len_sq, 0.0f, 1.0f) : 0.0f;
+    Vector2 closest{a.x + ab.x * t, a.y + ab.y * t};
+    return Vector2Distance(p, closest);
+}
+
+// Intersects `ray` with the plane through `plane_point` whose normal is
+// `plane_normal` (unit vector), writing the intersection point to `*out` and
+// returning true -- or returning false if the ray is (near-)parallel to the
+// plane, which has no well-defined intersection. Used by the Rotate tool's
+// ring gizmo: dragging on a ring is really "where does the mouse ray cross
+// the plane that ring lies in".
+bool RayPlaneIntersect(Ray ray, Vector3 plane_point, Vector3 plane_normal, Vector3 *out) {
+    float denom = Vector3DotProduct(ray.direction, plane_normal);
+    if (std::fabs(denom) < 1e-6f) return false;
+    float t = Vector3DotProduct(Vector3Subtract(plane_point, ray.position), plane_normal) / denom;
+    if (t < 0.0f) return false;  // plane is behind the camera
+    *out = Vector3Add(ray.position, Vector3Scale(ray.direction, t));
+    return true;
+}
+
+// The two world-axis unit vectors spanning the plane perpendicular to axis
+// `i` (0/1/2 = X/Y/Z) -- e.g. the X rotation ring lies in the Y/Z plane, so
+// its basis is (Y, Z). Used both to draw that ring and to measure an angle
+// within it (AnglePointOnPlane below); the two always agree since they share
+// this one function.
+void GizmoRingBasis(int axis, Vector3 *out_u, Vector3 *out_v) {
+    if (axis == 0) {
+        *out_u = Vector3{0, 1, 0};
+        *out_v = Vector3{0, 0, 1};
+    } else if (axis == 1) {
+        *out_u = Vector3{0, 0, 1};
+        *out_v = Vector3{1, 0, 0};
+    } else {
+        *out_u = Vector3{1, 0, 0};
+        *out_v = Vector3{0, 1, 0};
+    }
+}
+
+// Angle (radians) of `point` around `origin` within the plane spanned by
+// (u, v) -- atan2 of point's (u, v) coordinates. Used to turn "where the
+// drag ray crosses the ring's plane" into a single rotation angle, both at
+// drag-start (the anchor) and on every subsequent frame (the delta from that
+// anchor becomes the rotation applied since the drag began).
+float AnglePointOnPlane(Vector3 point, Vector3 origin, Vector3 u, Vector3 v) {
+    Vector3 d = Vector3Subtract(point, origin);
+    return std::atan2(Vector3DotProduct(d, v), Vector3DotProduct(d, u));
+}
+
+// Draws one ring (circle outline) of `radius` centered at `center`, lying in
+// the plane spanned by unit vectors (u, v) -- a hand-rolled loop rather than
+// raylib's own DrawCircle3D (which draws in a plane derived from a rotation-
+// axis/angle pair) so the exact same (u, v) basis used here is guaranteed to
+// match GizmoRingBasis/AnglePointOnPlane's hit-test and drag math, with no
+// separate convention to keep in sync.
+void DrawGizmoRing(Vector3 center, float radius, Vector3 u, Vector3 v, Color color) {
+    constexpr int kSegments = 48;
+    Vector3 prev = Vector3Add(center, Vector3Scale(u, radius));
+    for (int i = 1; i <= kSegments; i++) {
+        float t = (2.0f * PI) * static_cast<float>(i) / static_cast<float>(kSegments);
+        Vector3 pt = Vector3Add(center, Vector3Add(Vector3Scale(u, std::cos(t) * radius), Vector3Scale(v, std::sin(t) * radius)));
+        DrawLine3D(prev, pt, color);
+        prev = pt;
+    }
+}
+
+// Rounds `v` to the nearest multiple of `step` (step > 0). Used for the
+// Model3D gizmo/free-drag's optional grid/angle/scale snapping
+// (Model3DSession::snap_enabled) -- applied to the final transform value
+// each frame, not accumulated, so it can't drift off-grid over a long drag.
+float SnapToStep(float v, float step) { return std::round(v / step) * step; }
+constexpr float kModel3DPosSnapStep = 0.25f;
+constexpr float kModel3DRotSnapStep = 15.0f;
+constexpr float kModel3DScaleSnapStep = 0.25f;
+
+// Per-buffer GPU mesh cache -- rebuilt wholesale whenever the scene's mesh
+// count changes (a new primitive/import added, or an undo/redo swapped in a
+// snapshot with a different mesh list), *or* whenever Model3DSession::
+// scene_generation changes (the scene was wholesale-replaced -- a new blank
+// scene or a file import/reopen; see that field's own comment). Existing
+// meshes' geometry never changes in place in this first pass (no vertex-
+// editing tools), so an unchanged scene never needs a re-upload -- see
+// GetOrBuildModel3DMeshes. The generation check exists because the count
+// check alone isn't sufficient: reopening a saved file into an already-open
+// buffer can coincidentally produce the same mesh count as whatever was
+// there before, which used to fool this cache into keeping the *previous*
+// scene's stale, wrong GPU-uploaded geometry (a real bug, found live).
+struct Model3DGpuCache {
+    std::vector<Mesh> meshes;
+    size_t mesh_count_synced = 0;
+    int mesh_generation_synced = -1;
+    // Parallel GPU-texture cache for Scene::textures (Phase 3 materials),
+    // same invalidation convention as `meshes` above -- an existing
+    // texture's pixels never change in place either.
+    std::vector<Texture2D> textures;
+    size_t texture_count_synced = 0;
+    int texture_generation_synced = -1;
+};
+std::unordered_map<int, Model3DGpuCache> g_model3d_gpu_cache;
+// One off-screen render target per pane buffer, recreated on a size change
+// -- see GetOrCreateModel3DRenderTexture.
+struct Model3DRenderTarget {
+    RenderTexture2D rt{};
+    int w = 0, h = 0;
+    bool valid = false;
+};
+std::unordered_map<int, Model3DRenderTarget> g_model3d_render_targets;
+// One reusable default material for every DrawMesh call -- its albedo color
+// is overwritten per-object right before each draw (see DrawModel3DPane),
+// which is enough to tint an untextured mesh under raylib's default shader.
+// Its albedo *texture* is likewise overwritten per-object: an object with a
+// Phase 3 texture binds its own GPU texture; one with none is reset back to
+// `g_model3d_default_white_texture` (captured once, right after
+// LoadMaterialDefault() first sets it) so a textured object drawn earlier
+// in the same frame can't leak its texture onto a later untextured one.
+Material g_model3d_default_material{};
+bool g_model3d_default_material_loaded = false;
+Texture2D g_model3d_default_white_texture{};
 
 // Generic click-region registry (NVIM_PARITY_PLAN.md Phase 11's "generic
 // click dispatch on widgets" gap): rebuilt fresh every frame by whichever
@@ -12470,6 +12722,10 @@ const char *kBuiltinAiTerminal =
     "Tools -- hotkey, or click the sidebar icon -- select one, then drag/click on the canvas: b Pencil, x Eraser (freehand, brush size via '['/']'); l Line, r Rectangle, c Ellipse (drag corner to corner/end to end, hold Shift while releasing to fill); f Bucket fill (click, 4-connected flood fill); i Eyedropper (click, samples a color); h Pan (drag to scroll; also middle-mouse drag with any tool; Ctrl+scroll or +/-/= to zoom); m Rectangle select, o Ellipse select, w Lasso (drag out a selection); v Move (drags the selection's content, or the whole layer if none is selected, cutting from the old spot). With a selection: Delete/BackSpace clears its pixels (selection stays); Edit > Deselect drops it. u/Ctrl-R undo/redo.\n"
     ":w/:wq (or mep_command_run(\"w\")) flattens visible layers and writes a real PNG. To draw something recognizable: work out the shape in canvas-pixel coordinates (the status bar shows the live cursor position and zoom % while hovering), convert to screen coordinates as canvas_top_left + pixel * zoom, and take a mep_screenshot right after opening the editor to read both off directly rather than computing pane geometry from scratch. Prefer a few large Line/Rectangle/Ellipse drags (exact and fast) over many tiny Pencil strokes; pick tools by hotkey rather than clicking the small sidebar icons. Full reference: MEP_AGENT_API.md in mep's own source tree.\n"
     "\n"
+    "## The in-pane 3D modeler\n"
+    "Opening a .obj/.gltf/.glb/.iqm/.vox/.m3d/.blend file (mep_file_open, or mep_pane_split's file argument) lands directly in the 3D modeler -- no separate viewer step first. .blend needs a real Blender install on PATH (converted to glTF via Blender's own command line, on a background job so opening it never blocks -- the pane switches to it immediately and shows a \"Converting...\" message until it finishes or fails; no dedicated \"still converting\" query exists yet, so list_objects/etc. against that buffer_id meanwhile just see an empty scene); everything else imports directly.\n"
+    "Unlike the image editor, this has a real scripting surface -- you don't need mep_mouse_*/mep_screenshot for it at all: mep_model_new() (build from scratch, returns buffer_id)/list_objects/scene_stats/primitive_info(kind?) (pivot+dimensions reference data, no buffer_id needed)/add_primitive(kind, transform?)/delete_object(cascade?)/duplicate_object(cascade?) (cascade, default false, also deletes/duplicates every transitive descendant instead of un-parenting/leaving them at the original -- duplicate's copies are re-parented to mirror the hierarchy under the new copy, correct through multiple levels)/set_transform(position?,rotation?,scale?)/set_material({r,g,b,a?})/set_texture(path) (base-color/albedo texture from an image file, empty path clears; no metallic/roughness -- this app's rendering has no lighting model to show them)/rename_object/set_visible/select/get_selection/camera_set({target?,yaw?,pitch?,distance?,fov?})/camera_get/undo/redo, plus vertex editing (list_vertices(object_id) -> index+local x/y/z per vertex, set_vertex_position(object_id, vertex_index, {x,y,z}), delete_vertices(object_id, vertex_indices) -- removes those vertices and every triangle referencing any of them, leaving a hole rather than retriangulating it -- merge_vertices(object_id, vertex_indices) -- welds 2+ vertices into one at their averaged position/normal/texcoord, dropping any triangle that becomes degenerate as a result (useful for stitching seams or welding a procedural mesh's own duplicate per-face corner vertices back together, though it doesn't renormalize the averaged normal) -- recalculate_normals(object_id) -- recomputes every vertex's normal (smooth/area-weighted average of adjacent triangles) from current geometry, zero visible effect in this app's own rendering, only matters for a tool like Blender that reads them on export -- subdivide_faces(object_id, vertex_indices) -- every triangle whose 3 corners are all in vertex_indices gets a new centroid vertex and fans into 3 triangles, returns the new centroid indices -- extrude_faces(object_id, vertex_indices, distance) -- lifts the fully-covered face along its own geometric normal, walling only the group's true boundary edges (internal diagonals stay unwalled) and respecting actual mesh connectivity (an unwelded primitive's faces extrude independently unless merged first), returns the new cap indices -- dissolve_vertex(object_id, vertex_index) -- removes one vertex, patching the hole via fan retriangulation when its incident triangles form a closed ring, else falling back to a plain hole-leaving removal (compare tri counts to tell which happened) -- inset_faces(object_id, vertex_indices, amount) -- duplicates the fully-covered face's vertices and moves them toward its own centroid by a 0..1 fraction, walling boundary edges like extrude but with no lift, returns the new cap indices (chain into extrude_faces for a raised-platform-with-border look) -- add_vertex(object_id, {x,y,z}) -> vertex_index -- appends one isolated vertex, invisible until connected -- make_face(object_id, vertex_indices) -- fan-connects existing vertices (including freshly add_vertex'd ones) into new triangle(s) from the first one, no requirement they already share a triangle (unlike every op above it) and no duplicate/overlap check -- list_triangles(object_id) -> every triangle's index+3 corner vertex indices, read-only, the way to actually discover a mesh's connectivity instead of inferring it from positions -- merge_by_distance(object_id, threshold) -> removed_count -- welds every group of mutually-close-enough vertices automatically (Blender's own Merge by Distance/Remove Doubles), the 'fix all the duplicates, whatever they are' counterpart to merge_vertices, useful right after add_primitive since raylib's generators emit unwelded duplicates at every shared corner -- flip_normals(object_id) -- reverses every triangle's winding and negates every normal, the fix for inside-out geometry (e.g. from a wrong-order make_face call) -- select/move/delete/merge/recalculate-normals/subdivide/extrude/dissolve/inset/add-vertex/make-face/merge-by-distance/flip-normals/list-triangles, but still no real edge/face selection (everything here treats 'vertices fully covering a triangle', or for make-face just 'vertices you picked', as the face); safely clones a shared mesh first so editing one instance never deforms another), batch (set_transforms/set_materials/delete_objects, array-of-updates in one call -- delete_objects also takes the same cascade? as single-object delete_object, default false), symmetry (duplicate_mirrored(axis), radial_array(count,axis) for fins/spokes instead of placing each by hand), grouping (group_objects(object_ids) -> group_id, set_parent(object_id, parent_id?) -- purely organizational, never composed into a child's own transform; the Move/Scale/axis-Rotate gizmo/free-drag cascade to descendants in the UI (Scale/Rotate actually orbit/scale each descendant's position around the dragged object's pivot, not just its own field in place; free-drag Rotate is the one exception that doesn't), but set_transform/set_transforms never cascade), and view/render (set_view({show_grid?,wireframe?,snap?}) -- snap rounds subsequent mouse-drag gizmo edits to a fixed grid/angle/scale step, has no effect on set_transform, frame_all, render_to_image(path,width?,height?,transparent?) -- a clean PNG of just the scene, unlike mep_screenshot which captures the whole window). kind is cube/sphere/cylinder/cone/plane/torus/wedge (cylinder/cone/wedge are base-pivoted, not centered -- see MEP_AGENT_API.md's pivot table, or call primitive_info, before stacking parts); rotation is Euler XYZ degrees; colors are 0..1 floats. A whole scene can be built, inspected, rendered, and saved through these tools alone -- save reuses mep_file_save (or mep_command_run(\"w\")), there's no separate export tool. Full reference and a worked example: MEP_AGENT_API.md's \"in-pane 3D modeler\" section.\n"
+    "\n"
     "If no mep_* tools are available, the mep-agent MCP server is not registered with Claude Code or failed to start. Tell the human; it is registered with:\n"
     "  claude mcp add mep-agent -- /path/to/mep/build/native/mep-mcp\n"
     "]==]\n"
@@ -19228,6 +19484,1834 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
     }
 }
 
+// --- In-pane 3D modeler (MODEL3D.md) ----------------------------------------
+
+/**
+ * @brief Builds a GPU-uploaded raylib Mesh from a Scene's raylib-free MeshData, expanding indexed
+ * geometry into a flat (non-indexed) triangle list -- so vertex counts are never bounded by
+ * raylib's 16-bit index type -- and synthesizing flat per-triangle normals when the source has
+ * none.
+ * @param md The CPU-side mesh data to upload.
+ * @return A GPU-uploaded raylib Mesh; caller owns it (UnloadMesh when done).
+ */
+Mesh BuildModel3DGpuMesh(const MeshData &md) {
+    Mesh m{};
+    int vcount = static_cast<int>(md.indices.empty() ? md.positions.size() / 3 : md.indices.size());
+    if (vcount <= 0) return m;
+    bool has_normals = !md.normals.empty();
+    bool has_uvs = !md.texcoords.empty();
+    m.vertexCount = vcount;
+    m.triangleCount = vcount / 3;
+    m.vertices = static_cast<float *>(malloc(sizeof(float) * 3 * static_cast<size_t>(vcount)));
+    m.normals = static_cast<float *>(malloc(sizeof(float) * 3 * static_cast<size_t>(vcount)));
+    m.texcoords = static_cast<float *>(malloc(sizeof(float) * 2 * static_cast<size_t>(vcount)));
+    for (int i = 0; i < vcount; i++) {
+        unsigned int src = md.indices.empty() ? static_cast<unsigned int>(i) : md.indices[static_cast<size_t>(i)];
+        for (int c = 0; c < 3; c++) m.vertices[i * 3 + c] = md.positions[static_cast<size_t>(src) * 3 + static_cast<size_t>(c)];
+        if (has_normals) {
+            for (int c = 0; c < 3; c++) m.normals[i * 3 + c] = md.normals[static_cast<size_t>(src) * 3 + static_cast<size_t>(c)];
+        } else {
+            m.normals[i * 3 + 0] = 0.0f;
+            m.normals[i * 3 + 1] = 1.0f;
+            m.normals[i * 3 + 2] = 0.0f;
+        }
+        if (has_uvs) {
+            for (int c = 0; c < 2; c++) m.texcoords[i * 2 + c] = md.texcoords[static_cast<size_t>(src) * 2 + static_cast<size_t>(c)];
+        } else {
+            m.texcoords[i * 2 + 0] = 0.0f;
+            m.texcoords[i * 2 + 1] = 0.0f;
+        }
+    }
+    if (!has_normals) {
+        for (int t = 0; t + 2 < vcount; t += 3) {
+            Vector3 a{m.vertices[t * 3], m.vertices[t * 3 + 1], m.vertices[t * 3 + 2]};
+            Vector3 b{m.vertices[(t + 1) * 3], m.vertices[(t + 1) * 3 + 1], m.vertices[(t + 1) * 3 + 2]};
+            Vector3 c{m.vertices[(t + 2) * 3], m.vertices[(t + 2) * 3 + 1], m.vertices[(t + 2) * 3 + 2]};
+            Vector3 n = Vector3Normalize(Vector3CrossProduct(Vector3Subtract(b, a), Vector3Subtract(c, a)));
+            for (int k = 0; k < 3; k++) {
+                m.normals[(t + k) * 3 + 0] = n.x;
+                m.normals[(t + k) * 3 + 1] = n.y;
+                m.normals[(t + k) * 3 + 2] = n.z;
+            }
+        }
+    }
+    UploadMesh(&m, false);
+    return m;
+}
+
+/**
+ * @brief Returns the GPU mesh cache for a 3D-modeler buffer, rebuilding it wholesale if the
+ * scene's mesh count has changed since the last build (a new primitive/import added, or an
+ * undo/redo swapped in a snapshot with a different mesh list), or if `generation` (Model3DSession::
+ * scene_generation) differs from what was last synced (the scene was wholesale-replaced -- see
+ * that field's own comment for why a count check alone isn't sufficient) -- existing meshes'
+ * geometry never changes in place in this first pass (no vertex-editing tools), so an otherwise-
+ * unchanged scene never needs a re-upload.
+ * @param buffer_id Id of the buffer the scene belongs to, used as the cache key.
+ * @param scene The scene whose meshes should be GPU-resident.
+ * @param generation The owning Model3DSession's current scene_generation.
+ * @return The cached (or freshly rebuilt) per-mesh Mesh list, parallel to scene.meshes.
+ */
+std::vector<Mesh> &GetOrBuildModel3DMeshes(int buffer_id, const Scene &scene, int generation) {
+    Model3DGpuCache &cache = g_model3d_gpu_cache[buffer_id];
+    if (cache.mesh_count_synced != scene.meshes.size() || cache.mesh_generation_synced != generation) {
+        for (Mesh &m : cache.meshes) UnloadMesh(m);
+        cache.meshes.clear();
+        cache.meshes.reserve(scene.meshes.size());
+        for (const MeshData &md : scene.meshes) cache.meshes.push_back(BuildModel3DGpuMesh(md));
+        cache.mesh_count_synced = scene.meshes.size();
+        cache.mesh_generation_synced = generation;
+    }
+    return cache.meshes;
+}
+
+/**
+ * @brief Returns the GPU texture cache for a 3D-modeler buffer, rebuilding it wholesale if the
+ * scene's texture count or scene_generation has changed (Phase 3 materials) -- same invalidation
+ * convention as GetOrBuildModel3DMeshes.
+ * @param buffer_id Id of the buffer the scene belongs to, used as the cache key.
+ * @param scene The scene whose textures should be GPU-resident.
+ * @param generation The owning Model3DSession's current scene_generation.
+ * @return The cached (or freshly rebuilt) per-texture Texture2D list, parallel to scene.textures.
+ */
+std::vector<Texture2D> &GetOrBuildModel3DTextures(int buffer_id, const Scene &scene, int generation) {
+    Model3DGpuCache &cache = g_model3d_gpu_cache[buffer_id];
+    if (cache.texture_count_synced != scene.textures.size() || cache.texture_generation_synced != generation) {
+        for (Texture2D &t : cache.textures) UnloadTexture(t);
+        cache.textures.clear();
+        cache.textures.reserve(scene.textures.size());
+        for (const TextureData &td : scene.textures) {
+            // Defensive: every real TextureData (LoadTextureIntoScene/
+            // LoadModel3DFile) is well-formed, but a degenerate one here
+            // would otherwise hand LoadTextureFromImage a null/undersized
+            // buffer -- push an empty placeholder (Texture2D{}, id 0)
+            // instead, which DrawModel3DPane's own texture-bind guards
+            // against (an id-0 texture is treated the same as "no texture").
+            if (td.width <= 0 || td.height <= 0 ||
+                td.pixels.size() < static_cast<size_t>(td.width) * static_cast<size_t>(td.height) * 4) {
+                cache.textures.push_back(Texture2D{});
+                continue;
+            }
+            Image img{};
+            // const_cast is safe -- LoadTextureFromImage only reads img.data
+            // (uploads it to the GPU), never writes through the pointer.
+            img.data = const_cast<unsigned char *>(td.pixels.data());
+            img.width = td.width;
+            img.height = td.height;
+            img.mipmaps = 1;
+            img.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
+            cache.textures.push_back(LoadTextureFromImage(img));
+        }
+        cache.texture_count_synced = scene.textures.size();
+        cache.texture_generation_synced = generation;
+    }
+    return cache.textures;
+}
+
+/**
+ * @brief Lazily creates (or resizes) the off-screen render target a 3D-modeler pane draws its
+ * viewport into, caching it per buffer id.
+ * @param buffer_id Id of the buffer the viewport belongs to, used as the cache key.
+ * @param w Desired render-target width in pixels.
+ * @param h Desired render-target height in pixels.
+ * @return The cached (or freshly (re)created) RenderTexture2D.
+ */
+RenderTexture2D &GetOrCreateModel3DRenderTexture(int buffer_id, int w, int h) {
+    Model3DRenderTarget &entry = g_model3d_render_targets[buffer_id];
+    if (!entry.valid || entry.w != w || entry.h != h) {
+        if (entry.valid) UnloadRenderTexture(entry.rt);
+        entry.rt = LoadRenderTexture(std::max(1, w), std::max(1, h));
+        entry.w = w;
+        entry.h = h;
+        entry.valid = true;
+    }
+    return entry.rt;
+}
+
+/**
+ * @brief Composes an Object3D's position/rotation/scale into a single world-space transform
+ * matrix (scale, then rotate, then translate).
+ * @param obj The object whose transform to compose.
+ * @return The composed transform matrix.
+ */
+Matrix Model3DObjectMatrix(const Object3D &obj) {
+    Matrix scale = MatrixScale(obj.scale.x, obj.scale.y, obj.scale.z);
+    Matrix rotate =
+        MatrixRotateXYZ(Vector3{obj.rotation_deg.x * DEG2RAD, obj.rotation_deg.y * DEG2RAD, obj.rotation_deg.z * DEG2RAD});
+    Matrix translate = MatrixTranslate(obj.position.x, obj.position.y, obj.position.z);
+    return MatrixMultiply(MatrixMultiply(scale, rotate), translate);
+}
+
+/**
+ * @brief Computes an orbit Camera3D from a Model3DSession's yaw/pitch/distance/target state.
+ * @param sess The session to read the camera state from.
+ * @return The equivalent raylib Camera3D.
+ */
+Camera3D Model3DBuildCamera(const Model3DSession &sess) {
+    float yaw = sess.camera_yaw * DEG2RAD;
+    float pitch = sess.camera_pitch * DEG2RAD;
+    Vector3 target{sess.camera_target.x, sess.camera_target.y, sess.camera_target.z};
+    Vector3 offset{sess.camera_distance * cosf(pitch) * sinf(yaw), sess.camera_distance * sinf(pitch),
+                    sess.camera_distance * cosf(pitch) * cosf(yaw)};
+    Camera3D cam{};
+    cam.position = Vector3Add(target, offset);
+    cam.target = target;
+    cam.up = Vector3{0.0f, 1.0f, 0.0f};
+    cam.fovy = sess.camera_fov;
+    cam.projection = CAMERA_PERSPECTIVE;
+    return cam;
+}
+
+/**
+ * @brief Computes a mesh's local-space axis-aligned bounding box from its raw vertex positions.
+ * @param md The mesh to measure.
+ * @param out_min Receives the box's minimum corner.
+ * @param out_max Receives the box's maximum corner.
+ */
+void Model3DLocalBounds(const MeshData &md, Vector3 &out_min, Vector3 &out_max) {
+    if (md.positions.size() < 3) {
+        out_min = out_max = Vector3{0, 0, 0};
+        return;
+    }
+    out_min = out_max = Vector3{md.positions[0], md.positions[1], md.positions[2]};
+    for (size_t v = 0; v + 2 < md.positions.size(); v += 3) {
+        out_min.x = std::min(out_min.x, md.positions[v]);
+        out_min.y = std::min(out_min.y, md.positions[v + 1]);
+        out_min.z = std::min(out_min.z, md.positions[v + 2]);
+        out_max.x = std::max(out_max.x, md.positions[v]);
+        out_max.y = std::max(out_max.y, md.positions[v + 1]);
+        out_max.z = std::max(out_max.z, md.positions[v + 2]);
+    }
+}
+
+/**
+ * @brief Computes an object's world-space bounding box by transforming its mesh's local box's 8
+ * corners by the object's transform and re-enclosing them (an approximation -- not the tightest
+ * possible box under rotation, but sufficient for click-picking and the selection outline).
+ * @param scene The scene the object belongs to (for its mesh's local bounds).
+ * @param obj The object to bound.
+ * @return The object's world-space bounding box; a degenerate (zero-size) box if it has no mesh.
+ */
+BoundingBox Model3DWorldBounds(const Scene &scene, const Object3D &obj) {
+    if (obj.mesh_index < 0 || obj.mesh_index >= static_cast<int>(scene.meshes.size())) {
+        // No geometry (an empty group/parent node, Phase 3's grouping
+        // feature) -- a degenerate box at the object's own world position,
+        // not at the origin, so its selection outline/ray-pick box sits
+        // where the node actually is instead of always at (0,0,0).
+        Vector3 p{obj.position.x, obj.position.y, obj.position.z};
+        return BoundingBox{p, p};
+    }
+    BoundingBox box{};
+    Vector3 lmin, lmax;
+    Model3DLocalBounds(scene.meshes[static_cast<size_t>(obj.mesh_index)], lmin, lmax);
+    Matrix mat = Model3DObjectMatrix(obj);
+    Vector3 corners[8] = {
+        {lmin.x, lmin.y, lmin.z}, {lmax.x, lmin.y, lmin.z}, {lmin.x, lmax.y, lmin.z}, {lmax.x, lmax.y, lmin.z},
+        {lmin.x, lmin.y, lmax.z}, {lmax.x, lmin.y, lmax.z}, {lmin.x, lmax.y, lmax.z}, {lmax.x, lmax.y, lmax.z},
+    };
+    Vector3 wmin = Vector3Transform(corners[0], mat);
+    Vector3 wmax = wmin;
+    for (int i = 1; i < 8; i++) {
+        Vector3 wc = Vector3Transform(corners[i], mat);
+        wmin = Vector3Min(wmin, wc);
+        wmax = Vector3Max(wmax, wc);
+    }
+    box.min = wmin;
+    box.max = wmax;
+    return box;
+}
+
+// Outliner display order for Phase 3's object parenting/grouping: root
+// objects (parent == -1) in their original Scene::objects order, each
+// immediately followed by its own descendants (depth-first, same
+// original-order tiebreak at every level) -- the usual file-tree layout.
+// `depth` (0 for a root) is how far to indent that row. A child whose
+// parent id doesn't currently exist in the scene (shouldn't happen --
+// Model3DDeleteObject un-parents children of whatever it deletes -- but
+// cheap to guard) is treated as a root rather than silently dropped.
+std::vector<std::pair<int, int>> BuildOutlinerOrder(const Scene &scene) {
+    std::vector<std::pair<int, int>> order;
+    std::function<void(int, int)> AppendChildrenOf = [&](int parent_id, int depth) {
+        for (const Object3D &obj : scene.objects) {
+            if (obj.parent != parent_id) continue;
+            order.push_back({obj.id, depth});
+            AppendChildrenOf(obj.id, depth + 1);
+        }
+    };
+    for (const Object3D &obj : scene.objects) {
+        bool parent_exists = obj.parent != -1 && scene.FindObject(obj.parent) != nullptr;
+        if (parent_exists) continue;  // appended when we reach its parent below
+        order.push_back({obj.id, 0});
+        AppendChildrenOf(obj.id, 1);
+    }
+    return order;
+}
+
+/**
+ * @brief Renders a 3D-modeler scene to an off-screen texture and exports it as an image file --
+ * the shared body behind both the `model.renderToImage` RPC/MCP tool and DrawModel3DPane's own
+ * File > Render Image... menu item (MODEL3D_PLAN.md Part XXXI), so a person driving the UI by
+ * hand can get the same clean, chrome-free render an agent already could. `show_grid`/`wireframe`
+ * are taken as plain parameters (not read from the session internally) so the RPC method's own
+ * existing per-call override behavior needs no special-casing here -- callers that just want "what
+ * a person currently sees in the viewport" pass `sess->show_grid`/`sess->wireframe` straight
+ * through, which is exactly what the menu item below does.
+ * @param buffer_id The 3D-modeler buffer to render.
+ * @param path Output image file path (format inferred from its extension, e.g. ".png").
+ * @param width Output image width in pixels.
+ * @param height Output image height in pixels.
+ * @param transparent If true, the background is transparent instead of the pane's own background color.
+ * @param show_grid Whether to draw the ground grid.
+ * @param wireframe Whether to render in wireframe mode.
+ * @return True on success; false if `buffer_id` isn't a 3D-modeler buffer or the export failed.
+ */
+bool Model3DRenderToImageFile(int buffer_id, const std::string &path, int width, int height, bool transparent,
+                               bool show_grid, bool wireframe) {
+    Model3DSession *sess = g_editor.GetModel3DMutable(buffer_id);
+    if (!sess) return false;
+
+    Camera3D camera = Model3DBuildCamera(*sess);
+    std::vector<Mesh> &gpu_meshes = GetOrBuildModel3DMeshes(buffer_id, sess->scene, sess->scene_generation);
+    std::vector<Texture2D> &gpu_textures = GetOrBuildModel3DTextures(buffer_id, sess->scene, sess->scene_generation);
+    if (!g_model3d_default_material_loaded) {
+        g_model3d_default_material = LoadMaterialDefault();
+        g_model3d_default_white_texture = g_model3d_default_material.maps[MATERIAL_MAP_ALBEDO].texture;
+        g_model3d_default_material_loaded = true;
+    }
+
+    RenderTexture2D rt = LoadRenderTexture(width, height);
+    BeginTextureMode(rt);
+    if (transparent) ClearBackground(Color{0, 0, 0, 0});
+    else ClearBackground(ResolveHlGroup("NormalBg"));
+    BeginMode3D(camera);
+    if (show_grid) DrawGrid(20, 1.0f);
+    if (wireframe) rlEnableWireMode();
+    for (const Object3D &obj : sess->scene.objects) {
+        if (!obj.visible) continue;
+        if (obj.mesh_index < 0 || obj.mesh_index >= static_cast<int>(gpu_meshes.size())) continue;
+        Matrix mat = Model3DObjectMatrix(obj);
+        g_model3d_default_material.maps[MATERIAL_MAP_ALBEDO].color =
+            Color{static_cast<unsigned char>(std::clamp(obj.color.r, 0.0f, 1.0f) * 255.0f),
+                  static_cast<unsigned char>(std::clamp(obj.color.g, 0.0f, 1.0f) * 255.0f),
+                  static_cast<unsigned char>(std::clamp(obj.color.b, 0.0f, 1.0f) * 255.0f),
+                  static_cast<unsigned char>(std::clamp(obj.color.a, 0.0f, 1.0f) * 255.0f)};
+        bool has_texture = obj.texture_index >= 0 && obj.texture_index < static_cast<int>(gpu_textures.size()) &&
+                            gpu_textures[static_cast<size_t>(obj.texture_index)].id > 0;
+        g_model3d_default_material.maps[MATERIAL_MAP_ALBEDO].texture =
+            has_texture ? gpu_textures[static_cast<size_t>(obj.texture_index)] : g_model3d_default_white_texture;
+        DrawMesh(gpu_meshes[static_cast<size_t>(obj.mesh_index)], g_model3d_default_material, mat);
+    }
+    if (wireframe) rlDisableWireMode();
+    EndMode3D();
+    EndTextureMode();
+
+    Image img = LoadImageFromTexture(rt.texture);
+    ImageFlipVertical(&img);  // render-texture textures are stored bottom-up (OpenGL convention)
+    bool ok = ExportImage(img, path.c_str());
+    UnloadImage(img);
+    UnloadRenderTexture(rt);
+    return ok;
+}
+
+/**
+ * @brief Draws one in-pane 3D-modeler session (MODEL3D.md): menubar, a left tool sidebar, a
+ * stacked Outliner+Inspector sidebar on the right, and a center 3D viewport (rendered to an
+ * off-screen texture, then blitted in) with orbit/pan camera dragging, click-to-select picking,
+ * and a simplified (gizmo-less) drag transform for the Move/Rotate/Scale tools.
+ * @param pane The pane this session is shown in.
+ * @param sess The 3D-modeler session to draw and interact with.
+ * @param x Left edge of the content rectangle (below the pane header).
+ * @param y Top edge of the content rectangle.
+ * @param w Width of the content rectangle.
+ * @param h Height of the content rectangle.
+ * @param is_active Whether this pane is the currently active one.
+ */
+void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, float w, float h, bool is_active) {
+    int buffer_id = pane.buffer_id;
+    int pane_id = pane.id;
+    float font_size = MenuFontSize();
+    DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h), ResolveHlGroup("NormalBg"));
+
+    // --- Menubar ---
+    Rectangle menubar{x, y, w, kModel3DMenubarH};
+    DrawRectangleRec(menubar, ResolveHlGroup("MenuBar"));
+    struct M3DMenuItem {
+        std::string label;
+        std::function<void()> action;
+    };
+    struct M3DMenu {
+        std::string label;
+        std::vector<M3DMenuItem> items;
+    };
+    std::vector<M3DMenu> menus;
+    menus.push_back({"File",
+                      {{"New",
+                        [pane_id] {
+                            g_editor.FocusPaneById(pane_id);
+                            g_editor.NewModel3DScene();
+                        }},
+                       {"Save",
+                        [pane_id, buffer_id] {
+                            g_editor.FocusPaneById(pane_id);
+                            g_editor.SaveFile(g_editor.GetBuffer(buffer_id).filename);
+                        }},
+                       {"Save As...", [pane_id, buffer_id] {
+                            g_editor.FocusPaneById(pane_id);
+                            std::string current = g_editor.GetBuffer(buffer_id).filename;
+                            g_editor.BeginPromptNative("Save scene as (.gltf)", current, [](const std::string &path) {
+                                if (!path.empty()) g_editor.SaveFile(path);
+                            });
+                        }},
+                       {"Render Image...", [pane_id, buffer_id] {
+                            // Fixed 1024x768/opaque defaults (matching model.renderToImage's own
+                            // RPC defaults) rather than a multi-field dialog this pane has no
+                            // precedent for -- one prompt, like Save As, not several.
+                            g_editor.FocusPaneById(pane_id);
+                            std::string current = g_editor.GetBuffer(buffer_id).filename;
+                            size_t slash = current.find_last_of('/');
+                            std::string dir = slash == std::string::npos ? "" : current.substr(0, slash + 1);
+                            g_editor.BeginPromptNative("Render to (.png)", dir + "render.png", [buffer_id](const std::string &path) {
+                                if (path.empty()) return;
+                                // Reads show_grid/wireframe live (not captured when the menu was
+                                // drawn) so the render matches whatever the viewport actually
+                                // looks like at the moment the path prompt is confirmed.
+                                auto *s = g_editor.GetModel3DMutable(buffer_id);
+                                if (!s) return;
+                                bool ok = Model3DRenderToImageFile(buffer_id, path, 1024, 768, /*transparent=*/false, s->show_grid,
+                                                                    s->wireframe);
+                                if (!ok) g_editor.Notify("Failed to render \"" + path + "\"", Editor::NotifyLevel::Error);
+                                else g_editor.Notify("\"" + path + "\" written");
+                            });
+                        }}}});
+    menus.push_back({"Edit",
+                      {{"Undo", [buffer_id] { g_editor.UndoModel3D(buffer_id); }},
+                       {"Redo", [buffer_id] { g_editor.RedoModel3D(buffer_id); }},
+                       {"Delete Selected",
+                        [buffer_id] {
+                            auto *s = g_editor.GetModel3DMutable(buffer_id);
+                            if (!s) return;
+                            std::vector<int> ids = s->selection;
+                            for (int id : ids) g_editor.Model3DDeleteObject(buffer_id, id);
+                        }},
+                       {"Delete Selected (With Children)",
+                        [buffer_id] {
+                            // cascade=true (Part XXIX/XXX) -- removes each selected object's whole
+                            // descendant subtree too, instead of un-parenting direct children and
+                            // leaving them behind (the plain "Delete Selected" above).
+                            auto *s = g_editor.GetModel3DMutable(buffer_id);
+                            if (!s) return;
+                            std::vector<int> ids = s->selection;
+                            for (int id : ids) g_editor.Model3DDeleteObject(buffer_id, id, /*cascade=*/true);
+                        }},
+                       {"Duplicate Selected", [buffer_id] {
+                            auto *s = g_editor.GetModel3DMutable(buffer_id);
+                            if (!s) return;
+                            std::vector<int> ids = s->selection;
+                            for (int id : ids) g_editor.Model3DDuplicateObject(buffer_id, id);
+                        }},
+                       {"Duplicate Selected (With Children)", [buffer_id] {
+                            auto *s = g_editor.GetModel3DMutable(buffer_id);
+                            if (!s) return;
+                            std::vector<int> ids = s->selection;
+                            for (int id : ids) g_editor.Model3DDuplicateObject(buffer_id, id, /*cascade=*/true);
+                        }},
+                       {"Duplicate Mirrored...", [pane_id, buffer_id] {
+                            // Model3DDuplicateMirrored(axis) -- a single-object op, so only fires
+                            // for exactly one selected object, matching its own signature.
+                            auto *s = g_editor.GetModel3DMutable(buffer_id);
+                            if (!s || s->selection.size() != 1) return;
+                            int object_id = s->selection[0];
+                            g_editor.FocusPaneById(pane_id);
+                            g_editor.BeginPromptNative("Mirror axis (x/y/z)", "x", [buffer_id, object_id](const std::string &text) {
+                                if (text.size() != 1) return;
+                                char axis = static_cast<char>(std::tolower(static_cast<unsigned char>(text[0])));
+                                if (axis != 'x' && axis != 'y' && axis != 'z') return;
+                                g_editor.Model3DDuplicateMirrored(buffer_id, object_id, axis);
+                            });
+                        }},
+                       {"Radial Array...", [pane_id, buffer_id] {
+                            auto *s = g_editor.GetModel3DMutable(buffer_id);
+                            if (!s || s->selection.size() != 1) return;
+                            int object_id = s->selection[0];
+                            g_editor.FocusPaneById(pane_id);
+                            g_editor.BeginPromptNative("Count Axis (e.g. \"6 y\")", "6 y", [buffer_id, object_id](const std::string &text) {
+                                int count = 0;
+                                char axis = 0;
+                                if (sscanf(text.c_str(), "%d %c", &count, &axis) != 2 || count < 2) return;
+                                axis = static_cast<char>(std::tolower(static_cast<unsigned char>(axis)));
+                                if (axis != 'x' && axis != 'y' && axis != 'z') return;
+                                g_editor.Model3DRadialArray(buffer_id, object_id, count, axis);
+                            });
+                        }},
+                       {"Group Selected",
+                        [buffer_id] {
+                            auto *s = g_editor.GetModel3DMutable(buffer_id);
+                            if (!s || s->selection.empty()) return;
+                            g_editor.Model3DGroupObjects(buffer_id, s->selection);
+                        }},
+                       {"Clear Parent", [buffer_id] {
+                            auto *s = g_editor.GetModel3DMutable(buffer_id);
+                            if (!s) return;
+                            std::vector<int> ids = s->selection;
+                            for (int id : ids) g_editor.Model3DSetParent(buffer_id, id, -1);
+                        }},
+                       {"Recalculate Normals", [buffer_id] {
+                            // No visible effect in this app's own viewport (its shaders never read
+                            // vertex normals) -- fixes up normals left stale by vertex edits, for a
+                            // glTF export that another tool (Blender, ...) will actually shade with.
+                            auto *s = g_editor.GetModel3DMutable(buffer_id);
+                            if (!s) return;
+                            for (int id : s->selection) g_editor.Model3DRecalculateNormals(buffer_id, id);
+                        }},
+                       {"Merge by Distance", [buffer_id] {
+                            // Blender's own "Merge by Distance"/"Remove Doubles" default threshold
+                            // (0.0001) -- welds raylib's own unwelded per-face duplicate vertices (see
+                            // Model3DMergeVertices' own note) without needing to know their indices.
+                            auto *s = g_editor.GetModel3DMutable(buffer_id);
+                            if (!s) return;
+                            for (int id : s->selection) g_editor.Model3DMergeByDistance(buffer_id, id, 0.0001f);
+                        }},
+                       {"Flip Normals", [buffer_id] {
+                            auto *s = g_editor.GetModel3DMutable(buffer_id);
+                            if (!s) return;
+                            for (int id : s->selection) g_editor.Model3DFlipNormals(buffer_id, id);
+                        }}}});
+    menus.push_back({"Add",
+                      {{"Cube", [buffer_id] { g_editor.Model3DAddPrimitive(buffer_id, PrimitiveKind::Cube); }},
+                       {"Sphere", [buffer_id] { g_editor.Model3DAddPrimitive(buffer_id, PrimitiveKind::Sphere); }},
+                       {"Cylinder", [buffer_id] { g_editor.Model3DAddPrimitive(buffer_id, PrimitiveKind::Cylinder); }},
+                       {"Cone", [buffer_id] { g_editor.Model3DAddPrimitive(buffer_id, PrimitiveKind::Cone); }},
+                       {"Plane", [buffer_id] { g_editor.Model3DAddPrimitive(buffer_id, PrimitiveKind::Plane); }},
+                       {"Torus", [buffer_id] { g_editor.Model3DAddPrimitive(buffer_id, PrimitiveKind::Torus); }},
+                       {"Wedge", [buffer_id] { g_editor.Model3DAddPrimitive(buffer_id, PrimitiveKind::Wedge); }}}});
+    menus.push_back({"View",
+                      {{"Toggle Grid",
+                        [buffer_id] {
+                            if (auto *s = g_editor.GetModel3DMutable(buffer_id)) s->show_grid = !s->show_grid;
+                        }},
+                       {"Toggle Wireframe",
+                        [buffer_id] {
+                            if (auto *s = g_editor.GetModel3DMutable(buffer_id)) s->wireframe = !s->wireframe;
+                        }},
+                       {"Frame All", [buffer_id] { g_editor.Model3DFrameAll(buffer_id); }}}});
+    if (sess.mesh_edit_mode) {
+        // Only shown while in Edit Mesh mode -- mirrors Blender's own
+        // mode-dependent menu bar (Object Mode vs. Edit Mode show
+        // different menus) rather than cluttering the normal
+        // object-editing menubar with vertex-selection-scoped items that
+        // do nothing outside this mode. Every item here was previously
+        // reachable ONLY via an undiscoverable hotkey (m/s/e/i/f/Ctrl-X/
+        // Delete, see Editor::HandleModel3DInput) with zero menu entry
+        // (MODEL3D_PLAN.md Part XXXI); the hotkeys are untouched and stay
+        // the fast path, this is the discoverable one. Each item re-checks
+        // its own guard (matching HandleModel3DInput's own per-hotkey
+        // guards exactly) and no-ops if unsatisfied.
+        menus.push_back(
+            {"Mesh",
+             {{"Merge Vertices", [buffer_id] {
+                    auto *s = g_editor.GetModel3DMutable(buffer_id);
+                    if (!s || s->selection.size() != 1 || s->vertex_selection.size() < 2) return;
+                    g_editor.Model3DMergeVertices(buffer_id, s->selection[0], s->vertex_selection);
+                    s->vertex_selection.clear();
+                }},
+              {"Subdivide", [buffer_id] {
+                    auto *s = g_editor.GetModel3DMutable(buffer_id);
+                    if (!s || s->selection.size() != 1 || s->vertex_selection.size() < 3) return;
+                    g_editor.Model3DSubdivideFaces(buffer_id, s->selection[0], s->vertex_selection);
+                    s->vertex_selection.clear();
+                }},
+              {"Extrude Faces...", [pane_id, buffer_id] {
+                    // Unlike the 'e' hotkey's fixed 0.5-unit step, prompts for an exact distance --
+                    // same BeginPromptNative + std::stof/try-catch pattern the Inspector's own
+                    // numeric fields already use, so precise hand-modeling doesn't need RPC.
+                    auto *s = g_editor.GetModel3DMutable(buffer_id);
+                    if (!s || s->selection.size() != 1 || s->vertex_selection.size() < 3) return;
+                    int object_id = s->selection[0];
+                    std::vector<int> verts = s->vertex_selection;
+                    g_editor.FocusPaneById(pane_id);
+                    g_editor.BeginPromptNative("Extrude distance", "0.5", [buffer_id, object_id, verts](const std::string &text) {
+                        try {
+                            float dist = std::stof(text);
+                            std::vector<int> cap = g_editor.Model3DExtrudeFaces(buffer_id, object_id, verts, dist);
+                            if (auto *s2 = g_editor.GetModel3DMutable(buffer_id)) s2->vertex_selection = cap;
+                        } catch (...) {
+                        }
+                    });
+                }},
+              {"Inset Faces...", [pane_id, buffer_id] {
+                    auto *s = g_editor.GetModel3DMutable(buffer_id);
+                    if (!s || s->selection.size() != 1 || s->vertex_selection.size() < 3) return;
+                    int object_id = s->selection[0];
+                    std::vector<int> verts = s->vertex_selection;
+                    g_editor.FocusPaneById(pane_id);
+                    g_editor.BeginPromptNative("Inset amount (0-1)", "0.3", [buffer_id, object_id, verts](const std::string &text) {
+                        try {
+                            float amount = std::stof(text);
+                            std::vector<int> cap = g_editor.Model3DInsetFaces(buffer_id, object_id, verts, amount);
+                            if (auto *s2 = g_editor.GetModel3DMutable(buffer_id)) s2->vertex_selection = cap;
+                        } catch (...) {
+                        }
+                    });
+                }},
+              {"Make Face", [buffer_id] {
+                    auto *s = g_editor.GetModel3DMutable(buffer_id);
+                    if (!s || s->selection.size() != 1 || s->vertex_selection.size() < 3) return;
+                    // Leaves vertex_selection untouched afterward -- no vertices were added,
+                    // removed, or reindexed, so it's still exactly right (matches the 'f' hotkey's
+                    // own behavior).
+                    g_editor.Model3DMakeFace(buffer_id, s->selection[0], s->vertex_selection);
+                }},
+              {"Dissolve Vertex", [buffer_id] {
+                    auto *s = g_editor.GetModel3DMutable(buffer_id);
+                    if (!s || s->selection.size() != 1 || s->vertex_selection.size() != 1) return;
+                    g_editor.Model3DDissolveVertex(buffer_id, s->selection[0], s->vertex_selection[0]);
+                    s->vertex_selection.clear();
+                }},
+              {"Delete Vertices", [buffer_id] {
+                    auto *s = g_editor.GetModel3DMutable(buffer_id);
+                    if (!s || s->selection.size() != 1 || s->vertex_selection.empty()) return;
+                    g_editor.Model3DDeleteVertices(buffer_id, s->selection[0], s->vertex_selection);
+                    s->vertex_selection.clear();
+                }}}});
+    }
+
+    float menu_x = x;
+    std::vector<float> menu_starts(menus.size()), menu_widths(menus.size());
+    for (size_t i = 0; i < menus.size(); i++) {
+        float mw = MeasureTextEx(g_font, menus[i].label.c_str(), font_size, 0).x + 16.0f;
+        menu_starts[i] = menu_x;
+        menu_widths[i] = mw;
+        Rectangle item_rect{menu_x, y, mw, kModel3DMenubarH};
+        bool open = g_model3d_dropdown_open == static_cast<int>(i);
+        if (open) DrawRectangleRec(item_rect, ResolveHlGroup("MenuHighlight"));
+        DrawTextEx(g_font, menus[i].label.c_str(), Vector2{menu_x + 8.0f, y + (kModel3DMenubarH - font_size) / 2.0f}, font_size, 0,
+                   ResolveHlGroup("MenuBarFg"));
+        int idx = static_cast<int>(i);
+        RegisterClickRegion(item_rect, [idx] { g_model3d_dropdown_open = g_model3d_dropdown_open == idx ? -1 : idx; });
+        menu_x += mw;
+    }
+    // Split into a registration half (here, before the tool sidebar/
+    // viewport/right-sidebar below) and a drawing half (at the very end
+    // of this function, after everything else). g_click_regions is
+    // first-match-wins by registration order (see its own declaration
+    // comment), so the dropdown's item regions have to be registered
+    // *before* whatever's visually underneath them to win a click there
+    // -- but *drawing* the dropdown here, before the tool sidebar/
+    // viewport/sidebar, meant those later opaque draws immediately
+    // painted right over it every frame, so it was never actually
+    // visible on screen despite the click-to-open state toggling
+    // correctly. A real, latent bug this pass found and fixed -- every
+    // "couldn't get this menu to open via synthetic clicks" note
+    // scattered through MODEL3D_PLAN.md's own verification sections was
+    // actually hitting this the whole time, not an input-injection
+    // limitation. dd_x/dd_y/dd_w/dd_item_h/dd_h are computed once here
+    // and reused by the drawing half below (declared at function scope,
+    // not inside the `if`, so they survive to the end either way).
+    bool dropdown_open = g_model3d_dropdown_open >= 0 && g_model3d_dropdown_open < static_cast<int>(menus.size());
+    float dd_x = 0.0f, dd_y = 0.0f, dd_w = 0.0f, dd_h = 0.0f, dd_item_h = 0.0f;
+    if (dropdown_open) {
+        const M3DMenu &menu = menus[static_cast<size_t>(g_model3d_dropdown_open)];
+        dd_x = menu_starts[static_cast<size_t>(g_model3d_dropdown_open)];
+        dd_y = y + kModel3DMenubarH;
+        for (const auto &item : menu.items) dd_w = std::max(dd_w, MeasureTextEx(g_font, item.label.c_str(), font_size, 0).x);
+        dd_w += 24.0f;
+        dd_item_h = font_size + 12.0f;
+        dd_h = dd_item_h * static_cast<float>(menu.items.size());
+        for (size_t i = 0; i < menu.items.size(); i++) {
+            Rectangle item_rect{dd_x, dd_y + static_cast<float>(i) * dd_item_h, dd_w, dd_item_h};
+            std::function<void()> action = menu.items[i].action;
+            RegisterClickRegion(item_rect, [action] {
+                action();
+                g_model3d_dropdown_open = -1;
+            });
+        }
+    }
+
+    float content_y = y + kModel3DMenubarH;
+    float content_h = h - kModel3DMenubarH;
+
+    // A .blend source converts on a background job (Editor::
+    // OpenModel3DInPlace/Model3DFinishBlendImport) instead of blocking the
+    // UI thread -- while it's still running, `scene` is empty and every
+    // tool/gizmo below would just be operating on nothing, so skip all of
+    // it (sidebars, viewport, camera/click handling) and show the status
+    // message centered in the content area instead. The menubar above this
+    // still drew normally (File > New still works to abandon the wait).
+    if (sess.blend_import_pending) {
+        DrawRectangle(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w), static_cast<int>(content_h),
+                      ResolveHlGroup("NormalBg"));
+        std::string msg = sess.blend_import_status.empty() ? "Converting via Blender..." : sess.blend_import_status;
+        Vector2 msg_size = MeasureTextEx(g_font, msg.c_str(), font_size, 0);
+        DrawTextEx(g_font, msg.c_str(),
+                   Vector2{x + (w - msg_size.x) / 2.0f, content_y + (content_h - msg_size.y) / 2.0f}, font_size, 0,
+                   ResolveHlGroup("Normal"));
+        return;
+    }
+
+    // --- Tool sidebar (left) --- icon buttons (Nerd Font glyphs via
+    // g_icon_font/DrawUiText/Utf8FromCodepoint) with hover tooltips
+    // (g_pane_control_tooltip_text/_anchor, drawn once at the end of
+    // DrawEditor so it always paints on top) -- same pattern and 2-column
+    // grid layout as the image editor's own tool sidebar just above,
+    // replacing the plain text-label rows this pane started with
+    // (MODEL3D_PLAN.md Part XXXI).
+    Rectangle tool_sidebar{x, content_y, kModel3DToolSidebarW, content_h};
+    DrawRectangleRec(tool_sidebar, ResolveHlGroup("MenuBar"));
+    DrawLineEx(Vector2{tool_sidebar.x + tool_sidebar.width, tool_sidebar.y},
+               Vector2{tool_sidebar.x + tool_sidebar.width, tool_sidebar.y + tool_sidebar.height}, 1.0f, ResolveHlGroup("Border"));
+    {
+        Vector2 mouse = GetMousePosition();
+        constexpr int kCols = 2;
+        constexpr float kGap = 4.0f;
+        float bs = (tool_sidebar.width - kGap * (kCols + 1)) / static_cast<float>(kCols);
+        float grid_x = tool_sidebar.x + kGap;
+        float grid_y = tool_sidebar.y + 6.0f;
+        float icon_size = font_size * 1.15f;
+
+        struct ToolBtn {
+            Model3DTool tool;
+            int icon_codepoint;
+            const char *tooltip;
+        };
+        static const ToolBtn kTools[] = {
+            {Model3DTool::Select, 0xf245, "Select"},   // nf-fa-mouse_pointer
+            {Model3DTool::Move, 0xf047, "Move"},       // nf-fa-arrows
+            {Model3DTool::Rotate, 0xf021, "Rotate"},   // nf-fa-refresh
+            {Model3DTool::Scale, 0xf065, "Scale"},     // nf-fa-expand
+            {Model3DTool::OrbitCam, 0xf0ac, "Orbit"},  // nf-fa-globe
+            {Model3DTool::PanCam, 0xf256, "Pan"},      // nf-fa-hand_paper_o
+        };
+        int idx = 0;
+        for (const ToolBtn &tb : kTools) {
+            int col = idx % kCols, row = idx / kCols;
+            Rectangle rect{grid_x + static_cast<float>(col) * (bs + kGap), grid_y + static_cast<float>(row) * (bs + kGap), bs, bs};
+            bool active_tool = sess.tool == tb.tool;
+            bool hovered = CheckCollisionPointRec(mouse, rect);
+            if (active_tool) DrawRectangleRounded(rect, 0.25f, 6, ResolveHlGroup("AccentTint"));
+            else if (hovered) DrawRectangleRounded(rect, 0.25f, 6, ResolveHlGroup("Picker"));
+            std::string glyph = Utf8FromCodepoint(tb.icon_codepoint);
+            float gw = MeasureUiText(glyph, icon_size);
+            DrawUiText(glyph, Vector2{rect.x + (rect.width - gw) / 2.0f, rect.y + (rect.height - icon_size) / 2.0f}, icon_size,
+                       active_tool ? ResolveHlGroup("Accent") : ResolveHlGroup("Normal"));
+            if (hovered) {
+                g_pane_control_tooltip_text = tb.tooltip;
+                g_pane_control_tooltip_anchor = rect;
+            }
+            Model3DTool tool_capture = tb.tool;
+            RegisterClickRegion(rect, [buffer_id, tool_capture] {
+                if (auto *s = g_editor.GetModel3DMutable(buffer_id)) s->tool = tool_capture;
+            });
+            idx++;
+        }
+        int tool_rows = (static_cast<int>(std::size(kTools)) + kCols - 1) / kCols;
+        float by = grid_y + static_cast<float>(tool_rows) * (bs + kGap) + 8.0f;
+
+        // Grid/Wireframe/Snap toggles, plus "Edit Mesh" (Phase 3 vertex
+        // editing) as a 4th slot in the same 2-column grid -- Edit Mesh
+        // alone needs a guard (exactly one object selected -- there's no
+        // single mesh to edit vertices of otherwise) and a side effect on
+        // toggle (clearing vertex_selection, so a stale selection from a
+        // previously-edited object can't linger into the next one), so it
+        // stays a separate block below rather than folding into kToggles'
+        // own table-driven loop.
+        struct ToggleBtn {
+            int icon_codepoint;
+            const char *tooltip;
+            bool Model3DSession::*field;
+        };
+        static const ToggleBtn kToggles[] = {
+            {0xf00a, "Grid", &Model3DSession::show_grid},      // nf-fa-th
+            {0xf1b2, "Wireframe", &Model3DSession::wireframe}, // nf-fa-cube
+            {0xf05b, "Snap", &Model3DSession::snap_enabled},   // nf-fa-crosshairs
+        };
+        int tidx = 0;
+        for (const ToggleBtn &tb : kToggles) {
+            int col = tidx % kCols, row = tidx / kCols;
+            Rectangle rect{grid_x + static_cast<float>(col) * (bs + kGap), by + static_cast<float>(row) * (bs + kGap), bs, bs};
+            bool on = sess.*(tb.field);
+            bool hovered = CheckCollisionPointRec(mouse, rect);
+            if (on) DrawRectangleRounded(rect, 0.25f, 6, ResolveHlGroup("AccentTint"));
+            else if (hovered) DrawRectangleRounded(rect, 0.25f, 6, ResolveHlGroup("Picker"));
+            std::string glyph = Utf8FromCodepoint(tb.icon_codepoint);
+            float gw = MeasureUiText(glyph, icon_size);
+            DrawUiText(glyph, Vector2{rect.x + (rect.width - gw) / 2.0f, rect.y + (rect.height - icon_size) / 2.0f}, icon_size,
+                       on ? ResolveHlGroup("Accent") : ResolveHlGroup("Normal"));
+            if (hovered) {
+                g_pane_control_tooltip_text = tb.tooltip;
+                g_pane_control_tooltip_anchor = rect;
+            }
+            bool Model3DSession::*field = tb.field;
+            RegisterClickRegion(rect, [buffer_id, field] {
+                if (auto *s = g_editor.GetModel3DMutable(buffer_id)) s->*field = !(s->*field);
+            });
+            tidx++;
+        }
+        {
+            bool can_edit_mesh = sess.selection.size() == 1;
+            int col = tidx % kCols, row = tidx / kCols;
+            Rectangle rect{grid_x + static_cast<float>(col) * (bs + kGap), by + static_cast<float>(row) * (bs + kGap), bs, bs};
+            bool on = sess.mesh_edit_mode;
+            bool hovered = can_edit_mesh && CheckCollisionPointRec(mouse, rect);
+            if (on) {
+                Color bg = ResolveHlGroup("AccentTint");
+                if (!can_edit_mesh) bg = Fade(bg, 0.5f);
+                DrawRectangleRounded(rect, 0.25f, 6, bg);
+            } else if (hovered) {
+                DrawRectangleRounded(rect, 0.25f, 6, ResolveHlGroup("Picker"));
+            }
+            std::string glyph = Utf8FromCodepoint(0xf1b3);  // nf-fa-cubes
+            float gw = MeasureUiText(glyph, icon_size);
+            Color fg = on ? ResolveHlGroup("Accent") : ResolveHlGroup("Normal");
+            if (!can_edit_mesh) fg = Fade(fg, 0.5f);
+            DrawUiText(glyph, Vector2{rect.x + (rect.width - gw) / 2.0f, rect.y + (rect.height - icon_size) / 2.0f}, icon_size, fg);
+            if (hovered) {
+                g_pane_control_tooltip_text = "Edit Mesh";
+                g_pane_control_tooltip_anchor = rect;
+            }
+            if (can_edit_mesh) {
+                RegisterClickRegion(rect, [buffer_id] {
+                    auto *s = g_editor.GetModel3DMutable(buffer_id);
+                    if (!s) return;
+                    s->mesh_edit_mode = !s->mesh_edit_mode;
+                    s->vertex_selection.clear();
+                });
+            }
+        }
+    }
+
+    // --- Right sidebar: Outliner (top half) + Inspector (bottom half) ---
+    float sidebar_w = (w - kModel3DToolSidebarW - kModel3DSidebarW > 200.0f) ? kModel3DSidebarW : 0.0f;
+    Rectangle sidebar{x + w - sidebar_w, content_y, sidebar_w, content_h};
+    if (sidebar_w > 0.0f) {
+        DrawRectangleRec(sidebar, ResolveHlGroup("MenuBar"));
+        DrawLineEx(Vector2{sidebar.x, sidebar.y}, Vector2{sidebar.x, sidebar.y + sidebar.height}, 1.0f, ResolveHlGroup("Border"));
+
+        float outliner_h = sidebar.height * 0.5f;
+        Rectangle outliner{sidebar.x, sidebar.y, sidebar.width, outliner_h};
+        float oy = outliner.y + 8.0f;
+        DrawTextEx(g_font, "Outliner", Vector2{outliner.x + 10.0f, oy}, font_size, 0, ResolveHlGroup("Normal"));
+        Rectangle add_rect{outliner.x + outliner.width - 28.0f, outliner.y + 4.0f, 20.0f, 20.0f};
+        DrawRectangleRounded(add_rect, 0.3f, 6, ResolveHlGroup("Picker"));
+        std::string add_glyph = Utf8FromCodepoint(0xf067);  // nf-fa-plus
+        float add_gw = MeasureUiText(add_glyph, font_size * 0.9f);
+        DrawUiText(add_glyph, Vector2{add_rect.x + (add_rect.width - add_gw) / 2.0f, add_rect.y + (add_rect.height - font_size * 0.9f) / 2.0f},
+                   font_size * 0.9f, ResolveHlGroup("Normal"));
+        if (CheckCollisionPointRec(GetMousePosition(), add_rect)) {
+            g_pane_control_tooltip_text = "Add Cube";
+            g_pane_control_tooltip_anchor = add_rect;
+        }
+        RegisterClickRegion(add_rect, [buffer_id] { g_editor.Model3DAddPrimitive(buffer_id, PrimitiveKind::Cube); });
+        oy += font_size + 6.0f;
+
+        Rectangle list_rect{outliner.x, oy, outliner.width, std::max(0.0f, outliner.y + outliner.height - oy)};
+        BeginScissorMode(static_cast<int>(list_rect.x), static_cast<int>(list_rect.y), static_cast<int>(list_rect.width),
+                          static_cast<int>(list_rect.height));
+        float row_h = 24.0f;
+        float ry = oy;
+        bool shift_held = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+        // Depth-indented so a group's children render nested under it
+        // (Phase 3 grouping) -- see BuildOutlinerOrder's own comment.
+        constexpr float kOutlinerIndentPx = 14.0f;
+        for (const auto &[row_object_id, depth] : BuildOutlinerOrder(sess.scene)) {
+            const Object3D *obj_ptr = sess.scene.FindObject(row_object_id);
+            if (!obj_ptr) continue;
+            const Object3D &obj = *obj_ptr;
+            float indent = static_cast<float>(depth) * kOutlinerIndentPx;
+            Rectangle row{outliner.x, ry, outliner.width, row_h};
+            bool selected = std::find(sess.selection.begin(), sess.selection.end(), obj.id) != sess.selection.end();
+            if (selected) DrawRectangleRec(row, ResolveHlGroup("AccentTint"));
+            Rectangle vis_rect{row.x + 6.0f + indent, row.y + (row_h - 16.0f) / 2.0f, 16.0f, 16.0f};
+            DrawRectangleLinesEx(vis_rect, 1.2f, ResolveHlGroup("MutedFg"));
+            if (obj.visible) {
+                DrawLineEx(Vector2{vis_rect.x + 2.0f, vis_rect.y + 8.0f}, Vector2{vis_rect.x + 14.0f, vis_rect.y + 8.0f}, 1.5f,
+                           ResolveHlGroup("Green"));
+            }
+            int object_id = obj.id;
+            bool obj_visible = obj.visible;
+            RegisterClickRegion(vis_rect, [buffer_id, object_id, obj_visible] { g_editor.Model3DSetVisible(buffer_id, object_id, !obj_visible); });
+            float name_x = vis_rect.x + vis_rect.width + 8.0f;
+            float name_w = std::max(0.0f, outliner.x + outliner.width - name_x - 8.0f);
+            std::string name = obj.name;
+            // An ellipsis on truncation -- without one, two objects whose
+            // names differ only past the cutoff (e.g. a multi-mesh
+            // import's "foo.gltf 1"/"foo.gltf 2") render identically in a
+            // narrow sidebar with no visual hint anything was cut off
+            // (caught live, MODEL3D_PLAN.md Part VII).
+            bool truncated = false;
+            while (!name.empty() && MeasureTextEx(g_font, (name + "...").c_str(), font_size * 0.85f, 0).x > name_w) {
+                name.pop_back();
+                truncated = true;
+            }
+            if (truncated) name += "...";
+            DrawTextEx(g_font, name.c_str(), Vector2{name_x, row.y + (row_h - font_size * 0.85f) / 2.0f}, font_size * 0.85f, 0,
+                       selected ? ResolveHlGroup("Accent") : ResolveHlGroup("Normal"));
+            Rectangle name_rect{name_x, row.y, name_w, row_h};
+            RegisterClickRegion(name_rect, [buffer_id, object_id, shift_held] {
+                auto *s = g_editor.GetModel3DMutable(buffer_id);
+                if (!s) return;
+                if (shift_held) {
+                    auto it = std::find(s->selection.begin(), s->selection.end(), object_id);
+                    if (it != s->selection.end()) s->selection.erase(it);
+                    else s->selection.push_back(object_id);
+                } else {
+                    s->selection = {object_id};
+                }
+            });
+            ry += row_h;
+        }
+        EndScissorMode();
+
+        // --- Inspector (bottom half) ---
+        Rectangle inspector{sidebar.x, sidebar.y + outliner_h, sidebar.width, sidebar.height - outliner_h};
+        DrawLineEx(Vector2{inspector.x, inspector.y}, Vector2{inspector.x + inspector.width, inspector.y}, 1.0f, ResolveHlGroup("Border"));
+        float iy = inspector.y + 8.0f;
+        DrawTextEx(g_font, "Inspector", Vector2{inspector.x + 10.0f, iy}, font_size, 0, ResolveHlGroup("Normal"));
+        iy += font_size + 8.0f;
+        if (sess.selection.size() == 1) {
+            const Object3D *obj = sess.scene.FindObject(sess.selection[0]);
+            if (obj) {
+                int object_id = obj->id;
+                std::string cur_name = obj->name;
+                Vec3f cur_pos = obj->position, cur_rot = obj->rotation_deg, cur_scale = obj->scale;
+                RgbaColorF cur_color = obj->color;
+
+                Rectangle name_click{inspector.x + 10.0f, iy, inspector.width - 20.0f, font_size + 6.0f};
+                DrawTextEx(g_font, cur_name.c_str(), Vector2{name_click.x, name_click.y}, font_size * 0.95f, 0, ResolveHlGroup("Normal"));
+                RegisterClickRegion(name_click, [pane_id, buffer_id, object_id, cur_name] {
+                    g_editor.FocusPaneById(pane_id);
+                    g_editor.BeginPromptNative("Rename object", cur_name, [buffer_id, object_id](const std::string &text) {
+                        if (!text.empty()) g_editor.Model3DRenameObject(buffer_id, object_id, text);
+                    });
+                });
+                iy += font_size + 10.0f;
+
+                auto edit_number = [&](const char *label, float value, std::function<void(float)> apply) {
+                    DrawTextEx(g_font, label, Vector2{inspector.x + 10.0f, iy + 2.0f}, font_size * 0.85f, 0, ResolveHlGroup("MutedFg"));
+                    Rectangle field_rect{inspector.x + 30.0f, iy, inspector.width - 40.0f, 20.0f};
+                    DrawRectangleRec(field_rect, ResolveHlGroup("Picker"));
+                    char buf[32];
+                    snprintf(buf, sizeof(buf), "%.3g", static_cast<double>(value));
+                    DrawTextEx(g_font, buf, Vector2{field_rect.x + 6.0f, field_rect.y + 2.0f}, font_size * 0.85f, 0, ResolveHlGroup("Normal"));
+                    RegisterClickRegion(field_rect, [pane_id, value, apply] {
+                        g_editor.FocusPaneById(pane_id);
+                        char cur[32];
+                        snprintf(cur, sizeof(cur), "%g", static_cast<double>(value));
+                        g_editor.BeginPromptNative("Value", cur, [apply](const std::string &text) {
+                            try {
+                                apply(std::stof(text));
+                            } catch (...) {
+                            }
+                        });
+                    });
+                    iy += 22.0f;
+                };
+                DrawTextEx(g_font, "Position", Vector2{inspector.x + 10.0f, iy}, font_size * 0.8f, 0, ResolveHlGroup("MutedFg"));
+                iy += font_size * 0.8f + 4.0f;
+                edit_number("X", cur_pos.x, [buffer_id, object_id, cur_pos](float v) {
+                    g_editor.Model3DSetTransform(buffer_id, object_id, true, Vec3f{v, cur_pos.y, cur_pos.z}, false, {}, false, {});
+                });
+                edit_number("Y", cur_pos.y, [buffer_id, object_id, cur_pos](float v) {
+                    g_editor.Model3DSetTransform(buffer_id, object_id, true, Vec3f{cur_pos.x, v, cur_pos.z}, false, {}, false, {});
+                });
+                edit_number("Z", cur_pos.z, [buffer_id, object_id, cur_pos](float v) {
+                    g_editor.Model3DSetTransform(buffer_id, object_id, true, Vec3f{cur_pos.x, cur_pos.y, v}, false, {}, false, {});
+                });
+                iy += 4.0f;
+                DrawTextEx(g_font, "Rotation", Vector2{inspector.x + 10.0f, iy}, font_size * 0.8f, 0, ResolveHlGroup("MutedFg"));
+                iy += font_size * 0.8f + 4.0f;
+                edit_number("X", cur_rot.x, [buffer_id, object_id, cur_rot](float v) {
+                    g_editor.Model3DSetTransform(buffer_id, object_id, false, {}, true, Vec3f{v, cur_rot.y, cur_rot.z}, false, {});
+                });
+                edit_number("Y", cur_rot.y, [buffer_id, object_id, cur_rot](float v) {
+                    g_editor.Model3DSetTransform(buffer_id, object_id, false, {}, true, Vec3f{cur_rot.x, v, cur_rot.z}, false, {});
+                });
+                edit_number("Z", cur_rot.z, [buffer_id, object_id, cur_rot](float v) {
+                    g_editor.Model3DSetTransform(buffer_id, object_id, false, {}, true, Vec3f{cur_rot.x, cur_rot.y, v}, false, {});
+                });
+                iy += 4.0f;
+                DrawTextEx(g_font, "Scale", Vector2{inspector.x + 10.0f, iy}, font_size * 0.8f, 0, ResolveHlGroup("MutedFg"));
+                iy += font_size * 0.8f + 4.0f;
+                edit_number("X", cur_scale.x, [buffer_id, object_id, cur_scale](float v) {
+                    g_editor.Model3DSetTransform(buffer_id, object_id, false, {}, false, {}, true, Vec3f{v, cur_scale.y, cur_scale.z});
+                });
+                edit_number("Y", cur_scale.y, [buffer_id, object_id, cur_scale](float v) {
+                    g_editor.Model3DSetTransform(buffer_id, object_id, false, {}, false, {}, true, Vec3f{cur_scale.x, v, cur_scale.z});
+                });
+                edit_number("Z", cur_scale.z, [buffer_id, object_id, cur_scale](float v) {
+                    g_editor.Model3DSetTransform(buffer_id, object_id, false, {}, false, {}, true, Vec3f{cur_scale.x, cur_scale.y, v});
+                });
+                iy += 4.0f;
+                DrawTextEx(g_font, "Color", Vector2{inspector.x + 10.0f, iy}, font_size * 0.8f, 0, ResolveHlGroup("MutedFg"));
+                iy += font_size * 0.8f + 4.0f;
+                Rectangle color_rect{inspector.x + 10.0f, iy, inspector.width - 20.0f, 20.0f};
+                DrawRectangleRec(color_rect, Color{static_cast<unsigned char>(std::clamp(cur_color.r, 0.0f, 1.0f) * 255.0f),
+                                                    static_cast<unsigned char>(std::clamp(cur_color.g, 0.0f, 1.0f) * 255.0f),
+                                                    static_cast<unsigned char>(std::clamp(cur_color.b, 0.0f, 1.0f) * 255.0f), 255});
+                DrawRectangleLinesEx(color_rect, 1.0f, ResolveHlGroup("Border"));
+                RegisterClickRegion(color_rect, [pane_id, buffer_id, object_id, cur_color] {
+                    g_editor.FocusPaneById(pane_id);
+                    char cur[64];
+                    snprintf(cur, sizeof(cur), "%.3g %.3g %.3g", static_cast<double>(cur_color.r), static_cast<double>(cur_color.g),
+                             static_cast<double>(cur_color.b));
+                    g_editor.BeginPromptNative("Color (r g b, 0-1)", cur, [buffer_id, object_id](const std::string &text) {
+                        float r, g, b;
+                        if (sscanf(text.c_str(), "%f %f %f", &r, &g, &b) == 3) {
+                            g_editor.Model3DSetMaterial(buffer_id, object_id, RgbaColorF{r, g, b, 1.0f});
+                        }
+                    });
+                });
+                iy += 24.0f + 8.0f;
+                DrawTextEx(g_font, "Texture", Vector2{inspector.x + 10.0f, iy}, font_size * 0.8f, 0, ResolveHlGroup("MutedFg"));
+                iy += font_size * 0.8f + 4.0f;
+                Rectangle tex_rect{inspector.x + 10.0f, iy, inspector.width - 20.0f, 20.0f};
+                DrawRectangleRec(tex_rect, ResolveHlGroup("Picker"));
+                int cur_texture_index = obj->texture_index;
+                std::string tex_label = cur_texture_index >= 0 && cur_texture_index < static_cast<int>(sess.scene.textures.size())
+                                             ? sess.scene.textures[static_cast<size_t>(cur_texture_index)].name
+                                             : "(none -- click to set)";
+                DrawTextEx(g_font, tex_label.c_str(), Vector2{tex_rect.x + 6.0f, tex_rect.y + 2.0f}, font_size * 0.85f, 0,
+                           ResolveHlGroup("Normal"));
+                RegisterClickRegion(tex_rect, [pane_id, buffer_id, object_id] {
+                    g_editor.FocusPaneById(pane_id);
+                    g_editor.BeginPromptNative("Texture image path (empty to clear)", "", [buffer_id, object_id](const std::string &text) {
+                        g_editor.Model3DSetTexture(buffer_id, object_id, text);
+                    });
+                });
+            }
+        } else if (sess.selection.size() > 1) {
+            // Multi-select: there's no single "current" position/rotation/
+            // scale to show (each object has its own), so -- same
+            // convention as Blender's N-panel multi-select fields -- every
+            // field is a *relative* edit applied to each selected object's
+            // own current value, not an absolute one: position/rotation
+            // fields add a delta, scale fields multiply by a factor.
+            // Clicking always prompts from a neutral placeholder ("0" for
+            // add, "1" for multiply) since there's nothing meaningful to
+            // show as "the" current value. Reads each object's live
+            // transform at apply-time (not capture-time) via
+            // GetModel3D(buffer_id), so an edit is never computed against a
+            // stale snapshot from when the Inspector was drawn. Applied via
+            // Model3DSetTransformsBatch -- one undo step per object, same
+            // as every other batch entry point (mep_model_set_transforms).
+            std::string label = std::to_string(sess.selection.size()) + " objects selected";
+            DrawTextEx(g_font, label.c_str(), Vector2{inspector.x + 10.0f, iy}, font_size * 0.9f, 0, ResolveHlGroup("MutedFg"));
+            iy += font_size * 0.9f + 10.0f;
+
+            std::vector<int> sel_ids = sess.selection;
+
+            // mode: 0 = position (add), 1 = rotation (add), 2 = scale (multiply).
+            auto edit_delta = [&](const char *label_text, char component, int mode) {
+                DrawTextEx(g_font, label_text, Vector2{inspector.x + 10.0f, iy + 2.0f}, font_size * 0.85f, 0, ResolveHlGroup("MutedFg"));
+                Rectangle field_rect{inspector.x + 30.0f, iy, inspector.width - 40.0f, 20.0f};
+                DrawRectangleRec(field_rect, ResolveHlGroup("Picker"));
+                const char *placeholder = mode == 2 ? "x1" : "+0";
+                DrawTextEx(g_font, placeholder, Vector2{field_rect.x + 6.0f, field_rect.y + 2.0f}, font_size * 0.85f, 0,
+                           ResolveHlGroup("Normal"));
+                RegisterClickRegion(field_rect, [pane_id, buffer_id, sel_ids, component, mode] {
+                    g_editor.FocusPaneById(pane_id);
+                    const char *prompt_label = mode == 2 ? "Scale factor (x, applied to each selected object)"
+                                                          : "Delta (added to each selected object)";
+                    g_editor.BeginPromptNative(prompt_label, mode == 2 ? "1" : "0", [buffer_id, sel_ids, component, mode](const std::string &text) {
+                        float v;
+                        try {
+                            v = std::stof(text);
+                        } catch (...) {
+                            return;
+                        }
+                        const Model3DSession *cur_sess = g_editor.GetModel3D(buffer_id);
+                        if (!cur_sess) return;
+                        std::vector<Model3DTransformUpdate> updates;
+                        for (int id : sel_ids) {
+                            const Object3D *o = cur_sess->scene.FindObject(id);
+                            if (!o) continue;
+                            Model3DTransformUpdate u;
+                            u.object_id = id;
+                            if (mode == 0) {
+                                u.has_position = true;
+                                u.position = o->position;
+                                if (component == 'x') u.position.x += v;
+                                else if (component == 'y') u.position.y += v;
+                                else u.position.z += v;
+                            } else if (mode == 1) {
+                                u.has_rotation = true;
+                                u.rotation_deg = o->rotation_deg;
+                                if (component == 'x') u.rotation_deg.x += v;
+                                else if (component == 'y') u.rotation_deg.y += v;
+                                else u.rotation_deg.z += v;
+                            } else {
+                                u.has_scale = true;
+                                u.scale = o->scale;
+                                if (component == 'x') u.scale.x *= v;
+                                else if (component == 'y') u.scale.y *= v;
+                                else u.scale.z *= v;
+                            }
+                            updates.push_back(u);
+                        }
+                        g_editor.Model3DSetTransformsBatch(buffer_id, updates);
+                    });
+                });
+                iy += 22.0f;
+            };
+            DrawTextEx(g_font, "Move by", Vector2{inspector.x + 10.0f, iy}, font_size * 0.8f, 0, ResolveHlGroup("MutedFg"));
+            iy += font_size * 0.8f + 4.0f;
+            edit_delta("X", 'x', 0);
+            edit_delta("Y", 'y', 0);
+            edit_delta("Z", 'z', 0);
+            iy += 4.0f;
+            DrawTextEx(g_font, "Rotate by (deg)", Vector2{inspector.x + 10.0f, iy}, font_size * 0.8f, 0, ResolveHlGroup("MutedFg"));
+            iy += font_size * 0.8f + 4.0f;
+            edit_delta("X", 'x', 1);
+            edit_delta("Y", 'y', 1);
+            edit_delta("Z", 'z', 1);
+            iy += 4.0f;
+            DrawTextEx(g_font, "Scale by (factor)", Vector2{inspector.x + 10.0f, iy}, font_size * 0.8f, 0, ResolveHlGroup("MutedFg"));
+            iy += font_size * 0.8f + 4.0f;
+            edit_delta("X", 'x', 2);
+            edit_delta("Y", 'y', 2);
+            edit_delta("Z", 'z', 2);
+        } else {
+            DrawTextEx(g_font, "No selection", Vector2{inspector.x + 10.0f, iy}, font_size * 0.9f, 0, ResolveHlGroup("MutedFg"));
+        }
+    }
+
+    // Defensive: if the object selection stopped being exactly one object
+    // since mesh_edit_mode was turned on (clicked a different object,
+    // multi-selected, or cleared the selection entirely), there's no
+    // longer a single well-defined mesh to show/edit vertices of -- drop
+    // back to object mode rather than risk misapplying a stale vertex
+    // index to whatever object is selected now.
+    if (sess.mesh_edit_mode && sess.selection.size() != 1) {
+        sess.mesh_edit_mode = false;
+        sess.vertex_selection.clear();
+    }
+
+    // --- Viewport ---
+    Rectangle viewport{x + kModel3DToolSidebarW, content_y, w - kModel3DToolSidebarW - sidebar_w, content_h};
+    if (viewport.width > 0.0f && viewport.height > 0.0f) {
+        g_editor.ResizeModel3DViewport(buffer_id, static_cast<int>(viewport.width), static_cast<int>(viewport.height));
+        Camera3D camera = Model3DBuildCamera(sess);
+        RenderTexture2D &rt = GetOrCreateModel3DRenderTexture(buffer_id, static_cast<int>(viewport.width), static_cast<int>(viewport.height));
+        std::vector<Mesh> &gpu_meshes = GetOrBuildModel3DMeshes(buffer_id, sess.scene, sess.scene_generation);
+        std::vector<Texture2D> &gpu_textures = GetOrBuildModel3DTextures(buffer_id, sess.scene, sess.scene_generation);
+        if (!g_model3d_default_material_loaded) {
+            g_model3d_default_material = LoadMaterialDefault();
+            g_model3d_default_white_texture = g_model3d_default_material.maps[MATERIAL_MAP_ALBEDO].texture;
+            g_model3d_default_material_loaded = true;
+        }
+
+        // On-screen translate/scale/rotate gizmo geometry -- computed once
+        // here so the draw call below and the hit-test/drag code further
+        // down (after EndMode3D, once the mouse position for this frame is
+        // known) agree exactly on where the three axis handles/rings are.
+        // Only shown for a single-object selection with the Move/Scale/
+        // Rotate tool active (a multi-object selection falls back to the
+        // older free-drag behavior -- there's no one obvious pivot to
+        // anchor a gizmo at), and never in mesh_edit_mode (Phase 3 vertex
+        // editing) -- there's no "move the whole object" while editing its
+        // individual vertices; gating it here (the one place both the draw
+        // call and the hit-test/drag code below read) suppresses both at
+        // once rather than needing a second check further down.
+        bool show_gizmo = !sess.mesh_edit_mode &&
+                           (sess.tool == Model3DTool::Move || sess.tool == Model3DTool::Scale || sess.tool == Model3DTool::Rotate) &&
+                           sess.selection.size() == 1;
+        Vector3 gizmo_origin{};
+        float gizmo_len = 0.0f;
+        Vector3 gizmo_axis_dir[3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+        if (show_gizmo) {
+            const Object3D *gizmo_obj = sess.scene.FindObject(sess.selection[0]);
+            show_gizmo = gizmo_obj != nullptr;
+            if (show_gizmo) {
+                gizmo_origin = Vector3{gizmo_obj->position.x, gizmo_obj->position.y, gizmo_obj->position.z};
+                gizmo_len = Model3DGizmoLength(sess.camera_distance);
+            }
+        }
+
+        BeginTextureMode(rt);
+        ClearBackground(ResolveHlGroup("NormalBg"));
+        BeginMode3D(camera);
+        if (sess.show_grid) DrawGrid(20, 1.0f);
+        if (sess.wireframe) rlEnableWireMode();
+        for (const Object3D &obj : sess.scene.objects) {
+            if (!obj.visible) continue;
+            if (obj.mesh_index < 0 || obj.mesh_index >= static_cast<int>(gpu_meshes.size())) continue;
+            Matrix mat = Model3DObjectMatrix(obj);
+            g_model3d_default_material.maps[MATERIAL_MAP_ALBEDO].color =
+                Color{static_cast<unsigned char>(std::clamp(obj.color.r, 0.0f, 1.0f) * 255.0f),
+                      static_cast<unsigned char>(std::clamp(obj.color.g, 0.0f, 1.0f) * 255.0f),
+                      static_cast<unsigned char>(std::clamp(obj.color.b, 0.0f, 1.0f) * 255.0f),
+                      static_cast<unsigned char>(std::clamp(obj.color.a, 0.0f, 1.0f) * 255.0f)};
+            // A textured object binds its own GPU texture (sampled, then
+            // tinted by the color set above -- texelColor * colDiffuse,
+            // raylib's default shader); reset to the default white texture
+            // otherwise so a textured object earlier in this loop can't
+            // leak onto an untextured one later in it.
+            bool has_texture = obj.texture_index >= 0 && obj.texture_index < static_cast<int>(gpu_textures.size()) &&
+                                gpu_textures[static_cast<size_t>(obj.texture_index)].id > 0;
+            g_model3d_default_material.maps[MATERIAL_MAP_ALBEDO].texture =
+                has_texture ? gpu_textures[static_cast<size_t>(obj.texture_index)] : g_model3d_default_white_texture;
+            DrawMesh(gpu_meshes[static_cast<size_t>(obj.mesh_index)], g_model3d_default_material, mat);
+        }
+        if (sess.wireframe) rlDisableWireMode();
+        for (int sel_id : sess.selection) {
+            const Object3D *sel_obj = sess.scene.FindObject(sel_id);
+            if (!sel_obj) continue;
+            DrawBoundingBox(Model3DWorldBounds(sess.scene, *sel_obj), ResolveHlGroup("Accent"));
+        }
+        // Phase 3 vertex editing: mesh_edit_mode replaces the object-level
+        // gizmo entirely (there's no "move the whole object" gizmo while
+        // editing its individual vertices) with a small marker per vertex
+        // of the one selected object, world-transformed the same way
+        // DrawMesh's own `mat` is. Sized off gizmo_len (camera-distance-
+        // scaled) purely for a sensible on-screen size at any zoom -- not
+        // an actual gizmo.
+        std::vector<Vector3> edit_vertex_world;  // populated only in mesh_edit_mode; read again below for hit-testing
+        if (sess.mesh_edit_mode && sess.selection.size() == 1) {
+            const Object3D *edit_obj = sess.scene.FindObject(sess.selection[0]);
+            if (edit_obj && edit_obj->mesh_index >= 0 && edit_obj->mesh_index < static_cast<int>(sess.scene.meshes.size())) {
+                const MeshData &md = sess.scene.meshes[static_cast<size_t>(edit_obj->mesh_index)];
+                Matrix mat = Model3DObjectMatrix(*edit_obj);
+                float point_radius = std::clamp(sess.camera_distance * 0.012f, 0.01f, 0.5f);
+                edit_vertex_world.reserve(static_cast<size_t>(md.VertexCount()));
+                for (int v = 0; v < md.VertexCount(); v++) {
+                    Vector3 local{md.positions[static_cast<size_t>(v) * 3 + 0], md.positions[static_cast<size_t>(v) * 3 + 1],
+                                  md.positions[static_cast<size_t>(v) * 3 + 2]};
+                    Vector3 world = Vector3Transform(local, mat);
+                    edit_vertex_world.push_back(world);
+                    bool selected = std::find(sess.vertex_selection.begin(), sess.vertex_selection.end(), v) != sess.vertex_selection.end();
+                    DrawSphere(world, point_radius, selected ? YELLOW : ResolveHlGroup("Accent"));
+                }
+            }
+        } else if (show_gizmo) {
+            // Drawn last (on top of everything, no depth test consideration)
+            // so the handles stay clickable/visible even when they'd
+            // otherwise poke through the object's own geometry -- standard
+            // gizmo convention, and simpler than fighting the depth buffer.
+            static const Color kAxisColor[3] = {RED, GREEN, BLUE};
+            for (int i = 0; i < 3; i++) {
+                bool active_axis = g_model3d_gizmo_drag.active && g_model3d_gizmo_drag.buffer_id == buffer_id &&
+                                    g_model3d_gizmo_drag.axis == i;
+                Color c = active_axis ? YELLOW : kAxisColor[i];
+                if (sess.tool == Model3DTool::Rotate) {
+                    Vector3 u, v;
+                    GizmoRingBasis(i, &u, &v);
+                    DrawGizmoRing(gizmo_origin, gizmo_len, u, v, c);
+                    continue;
+                }
+                Vector3 tip = Vector3Add(gizmo_origin, Vector3Scale(gizmo_axis_dir[i], gizmo_len));
+                Vector3 shaft_end = Vector3Add(gizmo_origin, Vector3Scale(gizmo_axis_dir[i], gizmo_len * 0.85f));
+                DrawLine3D(gizmo_origin, shaft_end, c);
+                if (sess.tool == Model3DTool::Move) {
+                    DrawCylinderEx(shaft_end, tip, gizmo_len * 0.06f, 0.0f, 8, c);  // arrowhead cone
+                } else {
+                    DrawCube(tip, gizmo_len * 0.12f, gizmo_len * 0.12f, gizmo_len * 0.12f, c);  // scale handle
+                }
+            }
+        }
+        EndMode3D();
+        EndTextureMode();
+
+        BeginScissorMode(static_cast<int>(viewport.x), static_cast<int>(viewport.y), static_cast<int>(viewport.width),
+                          static_cast<int>(viewport.height));
+        DrawTextureRec(rt.texture, Rectangle{0, 0, static_cast<float>(rt.texture.width), -static_cast<float>(rt.texture.height)},
+                       Vector2{viewport.x, viewport.y}, WHITE);
+
+        Vector2 mouse = GetMousePosition();
+        bool mouse_in_viewport = CheckCollisionPointRec(mouse, viewport);
+        Vector2 local_mouse{mouse.x - viewport.x, mouse.y - viewport.y};
+
+        // Orbit: OrbitCam tool + left-drag, or middle-mouse-drag with any
+        // tool (mirrors the image editor's "Pan tool / middle-mouse-drag
+        // with any tool" convention). Pan: PanCam tool + left-drag, or
+        // right-mouse-drag with any tool.
+        bool want_orbit = is_active && mouse_in_viewport &&
+                           ((sess.tool == Model3DTool::OrbitCam && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) ||
+                            IsMouseButtonPressed(MOUSE_BUTTON_MIDDLE));
+        bool want_pan = is_active && mouse_in_viewport &&
+                        ((sess.tool == Model3DTool::PanCam && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) ||
+                         IsMouseButtonPressed(MOUSE_BUTTON_RIGHT));
+        if (want_orbit) {
+            g_model3d_camera_drag = {true, false, buffer_id, mouse.x, mouse.y, sess.camera_yaw, sess.camera_pitch, sess.camera_target};
+        } else if (want_pan) {
+            g_model3d_camera_drag = {true, true, buffer_id, mouse.x, mouse.y, sess.camera_yaw, sess.camera_pitch, sess.camera_target};
+        }
+        if (g_model3d_camera_drag.active && g_model3d_camera_drag.buffer_id == buffer_id) {
+            bool still_down = g_model3d_camera_drag.panning
+                                   ? (IsMouseButtonDown(MOUSE_BUTTON_RIGHT) ||
+                                      (sess.tool == Model3DTool::PanCam && IsMouseButtonDown(MOUSE_BUTTON_LEFT)))
+                                   : (IsMouseButtonDown(MOUSE_BUTTON_MIDDLE) ||
+                                      (sess.tool == Model3DTool::OrbitCam && IsMouseButtonDown(MOUSE_BUTTON_LEFT)));
+            if (still_down) {
+                float dxp = mouse.x - g_model3d_camera_drag.start_mouse_x;
+                float dyp = mouse.y - g_model3d_camera_drag.start_mouse_y;
+                if (g_model3d_camera_drag.panning) {
+                    Vector3 forward = Vector3Normalize(Vector3Subtract(camera.target, camera.position));
+                    Vector3 right = Vector3Normalize(Vector3CrossProduct(forward, camera.up));
+                    Vector3 up = Vector3CrossProduct(right, forward);
+                    float pan_scale = sess.camera_distance * 0.0015f;
+                    Vector3 start{g_model3d_camera_drag.start_target.x, g_model3d_camera_drag.start_target.y,
+                                  g_model3d_camera_drag.start_target.z};
+                    Vector3 delta = Vector3Add(Vector3Scale(right, -dxp * pan_scale), Vector3Scale(up, dyp * pan_scale));
+                    Vector3 new_target = Vector3Add(start, delta);
+                    sess.camera_target = Vec3f{new_target.x, new_target.y, new_target.z};
+                } else {
+                    sess.camera_yaw = g_model3d_camera_drag.start_yaw - dxp * 0.3f;
+                    sess.camera_pitch = std::clamp(g_model3d_camera_drag.start_pitch - dyp * 0.3f, -89.0f, 89.0f);
+                }
+            } else {
+                g_model3d_camera_drag.active = false;
+            }
+        }
+
+        // Click-to-select (Select tool only -- Move/Rotate/Scale interpret
+        // any viewport drag as a transform of the *current* selection
+        // instead, same "no click needed to re-target, only to change
+        // selection" shape as Blender's G/R/S after a separate select).
+        if (is_active && mouse_in_viewport && !sess.mesh_edit_mode && sess.tool == Model3DTool::Select &&
+            IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            Ray ray = GetScreenToWorldRayEx(local_mouse, camera, static_cast<int>(viewport.width), static_cast<int>(viewport.height));
+            // First pass: every object whose bounding box the ray hits
+            // (cheap). One hit is the common case -- just use it. More than
+            // one (e.g. a window sphere sitting flush against a body
+            // cylinder, MODEL3D.md's own example) is ambiguous by box
+            // alone, so it's resolved with an exact per-triangle test
+            // (GetRayCollisionMesh) against just those candidates, rather
+            // than silently picking whichever box happened to be nearest --
+            // that could select an object whose actual geometry the click
+            // didn't touch at all. Falls back to nearest-box if every exact
+            // test somehow misses (e.g. degenerate zero-size geometry).
+            struct BoxHit {
+                int object_id;
+                float box_distance;
+                int mesh_index;
+            };
+            std::vector<BoxHit> box_hits;
+            for (const Object3D &obj : sess.scene.objects) {
+                if (!obj.visible) continue;
+                RayCollision hit = GetRayCollisionBox(ray, Model3DWorldBounds(sess.scene, obj));
+                if (hit.hit) box_hits.push_back({obj.id, hit.distance, obj.mesh_index});
+            }
+            int best_id = -1;
+            if (box_hits.size() == 1) {
+                best_id = box_hits[0].object_id;
+            } else if (box_hits.size() > 1) {
+                float best_dist = std::numeric_limits<float>::max();
+                for (const BoxHit &bh : box_hits) {
+                    const Object3D *obj = sess.scene.FindObject(bh.object_id);
+                    if (!obj || bh.mesh_index < 0 || bh.mesh_index >= static_cast<int>(gpu_meshes.size())) continue;
+                    RayCollision mesh_hit =
+                        GetRayCollisionMesh(ray, gpu_meshes[static_cast<size_t>(bh.mesh_index)], Model3DObjectMatrix(*obj));
+                    if (mesh_hit.hit && mesh_hit.distance < best_dist) {
+                        best_dist = mesh_hit.distance;
+                        best_id = bh.object_id;
+                    }
+                }
+                if (best_id < 0) {
+                    float best_box_dist = std::numeric_limits<float>::max();
+                    for (const BoxHit &bh : box_hits) {
+                        if (bh.box_distance < best_box_dist) {
+                            best_box_dist = bh.box_distance;
+                            best_id = bh.object_id;
+                        }
+                    }
+                }
+            }
+            bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+            if (best_id >= 0) {
+                if (shift) {
+                    auto it = std::find(sess.selection.begin(), sess.selection.end(), best_id);
+                    if (it != sess.selection.end()) sess.selection.erase(it);
+                    else sess.selection.push_back(best_id);
+                } else {
+                    sess.selection = {best_id};
+                }
+            } else if (!shift) {
+                sess.selection.clear();
+            }
+        }
+
+        // Phase 3 vertex editing: click-to-select + drag-to-move individual
+        // vertices, the mesh_edit_mode analog of the object Select tool's
+        // click-to-pick + the Move gizmo's free-drag above -- same overall
+        // shape (screen-project candidates, nearest-within-tolerance test,
+        // shift toggles membership, drag applies a view-plane delta), just
+        // operating on `edit_vertex_world` (populated above, inside
+        // BeginMode3D) instead of whole objects.
+        if (sess.mesh_edit_mode && sess.selection.size() == 1 && !edit_vertex_world.empty()) {
+            const Object3D *edit_obj = sess.scene.FindObject(sess.selection[0]);
+            if (is_active && mouse_in_viewport && edit_obj && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                float best_px = 12.0f;  // hit-test tolerance, screen pixels
+                int hit_vertex = -1;
+                for (size_t v = 0; v < edit_vertex_world.size(); v++) {
+                    Vector2 p = GetWorldToScreenEx(edit_vertex_world[v], camera, static_cast<int>(viewport.width),
+                                                    static_cast<int>(viewport.height));
+                    float d = Vector2Distance(local_mouse, p);
+                    if (d < best_px) {
+                        best_px = d;
+                        hit_vertex = static_cast<int>(v);
+                    }
+                }
+                bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+                if (hit_vertex >= 0) {
+                    bool already_selected =
+                        std::find(sess.vertex_selection.begin(), sess.vertex_selection.end(), hit_vertex) != sess.vertex_selection.end();
+                    if (shift) {
+                        if (already_selected) {
+                            sess.vertex_selection.erase(
+                                std::remove(sess.vertex_selection.begin(), sess.vertex_selection.end(), hit_vertex),
+                                sess.vertex_selection.end());
+                        } else {
+                            sess.vertex_selection.push_back(hit_vertex);
+                        }
+                    } else if (!already_selected) {
+                        sess.vertex_selection = {hit_vertex};
+                    }
+                    // Starts a drag whenever the click landed on a vertex,
+                    // even one that was already part of a larger selection
+                    // (matching the object gizmo's own "click a handle,
+                    // drag everything selected" shape) -- but not when this
+                    // click just *removed* it via shift (nothing coherent
+                    // to drag in that case).
+                    bool still_selected =
+                        std::find(sess.vertex_selection.begin(), sess.vertex_selection.end(), hit_vertex) != sess.vertex_selection.end();
+                    if (still_selected) {
+                        g_editor.PushUndoModel3D(buffer_id);
+                        int mesh_index = sess.scene.EnsureUniqueMesh(sess.selection[0]);
+                        g_model3d_vertex_drag.active = true;
+                        g_model3d_vertex_drag.buffer_id = buffer_id;
+                        g_model3d_vertex_drag.object_id = sess.selection[0];
+                        g_model3d_vertex_drag.mesh_index = mesh_index;
+                        g_model3d_vertex_drag.start_mouse_x = mouse.x;
+                        g_model3d_vertex_drag.start_mouse_y = mouse.y;
+                        g_model3d_vertex_drag.vertex_indices = sess.vertex_selection;
+                        g_model3d_vertex_drag.start_positions.clear();
+                        const MeshData &md = sess.scene.meshes[static_cast<size_t>(mesh_index)];
+                        for (int vi : g_model3d_vertex_drag.vertex_indices) {
+                            g_model3d_vertex_drag.start_positions.push_back(
+                                Vec3f{md.positions[static_cast<size_t>(vi) * 3 + 0], md.positions[static_cast<size_t>(vi) * 3 + 1],
+                                      md.positions[static_cast<size_t>(vi) * 3 + 2]});
+                        }
+                    }
+                } else {
+                    // Missed every vertex -- don't decide yet whether this
+                    // is a plain click (clear selection) or the start of a
+                    // rubber-band box select; that's resolved on release,
+                    // once the actual drag distance is known.
+                    g_model3d_vertex_box_select.active = true;
+                    g_model3d_vertex_box_select.buffer_id = buffer_id;
+                    g_model3d_vertex_box_select.start_x = local_mouse.x;
+                    g_model3d_vertex_box_select.start_y = local_mouse.y;
+                }
+            }
+        }
+        if (g_model3d_vertex_box_select.active && g_model3d_vertex_box_select.buffer_id == buffer_id) {
+            float box_x0 = std::min(g_model3d_vertex_box_select.start_x, local_mouse.x);
+            float box_y0 = std::min(g_model3d_vertex_box_select.start_y, local_mouse.y);
+            float box_x1 = std::max(g_model3d_vertex_box_select.start_x, local_mouse.x);
+            float box_y1 = std::max(g_model3d_vertex_box_select.start_y, local_mouse.y);
+            if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+                // Drawn in absolute (viewport-offset) coordinates -- this
+                // runs after the viewport texture's already been blitted
+                // to the real framebuffer, under the same BeginScissorMode
+                // as that blit, so a 2D rectangle here is the right call
+                // (no BeginMode3D needed, and it's automatically clipped to
+                // the viewport bounds).
+                Rectangle box{viewport.x + box_x0, viewport.y + box_y0, box_x1 - box_x0, box_y1 - box_y0};
+                DrawRectangleRec(box, ColorAlpha(ResolveHlGroup("Accent"), 0.15f));
+                DrawRectangleLinesEx(box, 1.0f, ResolveHlGroup("Accent"));
+            } else {
+                bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+                bool real_drag = (box_x1 - box_x0) > kModel3DBoxSelectMinPx || (box_y1 - box_y0) > kModel3DBoxSelectMinPx;
+                if (real_drag) {
+                    std::vector<int> caught;
+                    for (size_t v = 0; v < edit_vertex_world.size(); v++) {
+                        Vector2 p = GetWorldToScreenEx(edit_vertex_world[v], camera, static_cast<int>(viewport.width),
+                                                        static_cast<int>(viewport.height));
+                        if (p.x >= box_x0 && p.x <= box_x1 && p.y >= box_y0 && p.y <= box_y1) caught.push_back(static_cast<int>(v));
+                    }
+                    if (shift) {
+                        for (int vi : caught) {
+                            if (std::find(sess.vertex_selection.begin(), sess.vertex_selection.end(), vi) == sess.vertex_selection.end()) {
+                                sess.vertex_selection.push_back(vi);
+                            }
+                        }
+                    } else {
+                        sess.vertex_selection = caught;
+                    }
+                } else if (!shift) {
+                    sess.vertex_selection.clear();
+                }
+                g_model3d_vertex_box_select.active = false;
+            }
+        }
+        if (g_model3d_vertex_drag.active && g_model3d_vertex_drag.buffer_id == buffer_id) {
+            if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+                float dxp = mouse.x - g_model3d_vertex_drag.start_mouse_x;
+                float dyp = mouse.y - g_model3d_vertex_drag.start_mouse_y;
+                const Object3D *drag_obj = sess.scene.FindObject(g_model3d_vertex_drag.object_id);
+                if (drag_obj && g_model3d_vertex_drag.mesh_index >= 0 &&
+                    g_model3d_vertex_drag.mesh_index < static_cast<int>(sess.scene.meshes.size())) {
+                    Vector3 forward = Vector3Normalize(Vector3Subtract(camera.target, camera.position));
+                    Vector3 right = Vector3Normalize(Vector3CrossProduct(forward, camera.up));
+                    Vector3 up = Vector3CrossProduct(right, forward);
+                    float move_scale = sess.camera_distance * 0.0015f;
+                    Vector3 delta_world = Vector3Add(Vector3Scale(right, dxp * move_scale), Vector3Scale(up, -dyp * move_scale));
+                    // Vertices are stored in local (pre-object-transform)
+                    // space, but the drag should feel like moving in view
+                    // space -- convert the world-space delta into local
+                    // space via the inverse of the object's rotation+scale
+                    // (translation-free, so this is safe to apply to a
+                    // direction/delta, not just a point).
+                    Matrix scale = MatrixScale(drag_obj->scale.x, drag_obj->scale.y, drag_obj->scale.z);
+                    Matrix rotate = MatrixRotateXYZ(Vector3{drag_obj->rotation_deg.x * DEG2RAD, drag_obj->rotation_deg.y * DEG2RAD,
+                                                             drag_obj->rotation_deg.z * DEG2RAD});
+                    Matrix rs_inv = MatrixInvert(MatrixMultiply(scale, rotate));
+                    Vector3 delta_local = Vector3Transform(delta_world, rs_inv);
+                    MeshData &md = sess.scene.meshes[static_cast<size_t>(g_model3d_vertex_drag.mesh_index)];
+                    for (size_t i = 0; i < g_model3d_vertex_drag.vertex_indices.size(); i++) {
+                        int vi = g_model3d_vertex_drag.vertex_indices[i];
+                        const Vec3f &start = g_model3d_vertex_drag.start_positions[i];
+                        md.positions[static_cast<size_t>(vi) * 3 + 0] = start.x + delta_local.x;
+                        md.positions[static_cast<size_t>(vi) * 3 + 1] = start.y + delta_local.y;
+                        md.positions[static_cast<size_t>(vi) * 3 + 2] = start.z + delta_local.z;
+                    }
+                    g_editor.Model3DBumpSceneGeneration(buffer_id);
+                    sess.dirty = true;
+                    sess.modified = true;
+                }
+            } else {
+                g_model3d_vertex_drag.active = false;
+            }
+        }
+
+        // Move/Rotate/Scale. All three get a real on-screen 3-axis gizmo
+        // (drawn above, inside BeginMode3D) when exactly one object is
+        // selected: dragging a colored Move/Scale handle constrains the
+        // edit to that one world axis via ClosestParamOnAxis's closest-
+        // point-between-the-drag-ray-and-the-axis-line math, and dragging a
+        // Rotate ring constrains it to rotation around that one world axis
+        // via AnglePointOnPlane's ray-plane-intersection angle math -- the
+        // same techniques any translate/scale/rotate gizmo uses. A
+        // multi-object selection falls back to the original free-drag
+        // behavior below, since there's no single obvious pivot to anchor a
+        // gizmo at. All deltas are relative to the drag's start transform,
+        // not accumulated per-frame, so it doesn't drift with frame rate.
+        bool transform_tool = sess.tool == Model3DTool::Move || sess.tool == Model3DTool::Rotate || sess.tool == Model3DTool::Scale;
+        if (is_active && mouse_in_viewport && !sess.mesh_edit_mode && transform_tool && !sess.selection.empty() &&
+            IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            int hit_axis = -1;
+            if (show_gizmo && sess.tool == Model3DTool::Rotate) {
+                // Ring hit-test: where does the click ray cross each ring's
+                // plane, and is that crossing point close (in world units,
+                // scaled by the gizmo's own on-screen size) to the ring's
+                // radius -- a coarser test than the Move/Scale handles'
+                // exact screen-space segment distance, but rings are
+                // inherently harder to hit-test precisely at a grazing
+                // camera angle, and this is a reasonable first pass.
+                Ray ray = GetScreenToWorldRayEx(local_mouse, camera, static_cast<int>(viewport.width), static_cast<int>(viewport.height));
+                float best_dist = gizmo_len * 0.18f;  // hit-test tolerance, world units
+                for (int i = 0; i < 3; i++) {
+                    Vector3 hit;
+                    if (!RayPlaneIntersect(ray, gizmo_origin, gizmo_axis_dir[i], &hit)) continue;
+                    float d = std::fabs(Vector3Distance(hit, gizmo_origin) - gizmo_len);
+                    if (d < best_dist) {
+                        best_dist = d;
+                        hit_axis = i;
+                    }
+                }
+            } else if (show_gizmo) {
+                float best_px = 10.0f;  // hit-test tolerance, screen pixels
+                Vector2 p0 = GetWorldToScreenEx(gizmo_origin, camera, static_cast<int>(viewport.width), static_cast<int>(viewport.height));
+                for (int i = 0; i < 3; i++) {
+                    Vector3 tip = Vector3Add(gizmo_origin, Vector3Scale(gizmo_axis_dir[i], gizmo_len));
+                    Vector2 p1 = GetWorldToScreenEx(tip, camera, static_cast<int>(viewport.width), static_cast<int>(viewport.height));
+                    float d = DistancePointToSegment2D(local_mouse, p0, p1);
+                    if (d < best_px) {
+                        best_px = d;
+                        hit_axis = i;
+                    }
+                }
+            }
+            g_editor.PushUndoModel3D(buffer_id);
+            g_model3d_gizmo_drag.active = true;
+            g_model3d_gizmo_drag.buffer_id = buffer_id;
+            g_model3d_gizmo_drag.tool = sess.tool;
+            g_model3d_gizmo_drag.start_mouse_x = mouse.x;
+            g_model3d_gizmo_drag.start_mouse_y = mouse.y;
+            g_model3d_gizmo_drag.axis = hit_axis;
+            if (hit_axis >= 0 && sess.tool == Model3DTool::Rotate) {
+                Ray ray = GetScreenToWorldRayEx(local_mouse, camera, static_cast<int>(viewport.width), static_cast<int>(viewport.height));
+                Vector3 u, v, hit;
+                GizmoRingBasis(hit_axis, &u, &v);
+                if (RayPlaneIntersect(ray, gizmo_origin, gizmo_axis_dir[hit_axis], &hit)) {
+                    g_model3d_gizmo_drag.start_axis_param = AnglePointOnPlane(hit, gizmo_origin, u, v);
+                } else {
+                    g_model3d_gizmo_drag.axis = -1;  // degenerate ray/plane -- fall back to free drag
+                }
+            } else if (hit_axis >= 0) {
+                Ray ray = GetScreenToWorldRayEx(local_mouse, camera, static_cast<int>(viewport.width), static_cast<int>(viewport.height));
+                g_model3d_gizmo_drag.start_axis_param = ClosestParamOnAxis(ray, gizmo_origin, gizmo_axis_dir[hit_axis]);
+            }
+            // Move/Scale/axis-constrained-Rotate cascade to every selected
+            // object's descendants too -- "group move/rotate/scale"
+            // semantics for Phase 3's parenting/grouping feature
+            // (MODEL3D.md/MODEL3D_PLAN.md). Move is trivial: a straight
+            // translation delta is correct regardless of pivot, so it's
+            // just "widen the drag's object list, add the same delta to
+            // every one's own position" -- no matrix math needed. Scale
+            // and axis-Rotate aren't pivot-independent, though: cascading
+            // them for real means each descendant's *position* must also
+            // orbit/scale around the dragged (selected) ancestor's own
+            // position, not just its own rotation_deg/scale fields
+            // changing in place (which alone would spin/resize each
+            // descendant around its own origin, not sweep it around the
+            // parent the way an actual parent-child hierarchy would) --
+            // see cascade_pivot_index's own comment and the per-frame
+            // update loop below for the orbit/scale-around-pivot math.
+            // Free-drag (screen-trackball) Rotate is deliberately NOT
+            // cascaded to descendant position this pass -- unlike the
+            // axis-ring case, it has no single clean delta-angle+axis to
+            // orbit a pivot by (it composes 3 Euler components directly
+            // from accumulated screen-space drag distance), and cascading
+            // just rotation_deg without position would visibly break
+            // (children spinning in place instead of sweeping with the
+            // parent) rather than just being incomplete. Deduplicated so
+            // directly selecting both a group and one of its own children
+            // doesn't double-transform that child.
+            std::vector<int> drag_ids = sess.selection;
+            std::vector<int> cascade_pivot_index(drag_ids.size(), -1);  // directly selected -- no pivot needed
+            bool cascade_this_drag = sess.tool == Model3DTool::Move || sess.tool == Model3DTool::Scale ||
+                                      (sess.tool == Model3DTool::Rotate && hit_axis >= 0);
+            if (cascade_this_drag) {
+                for (size_t sel_i = 0; sel_i < sess.selection.size(); sel_i++) {
+                    for (int desc : sess.scene.Descendants(sess.selection[sel_i])) {
+                        if (std::find(drag_ids.begin(), drag_ids.end(), desc) == drag_ids.end()) {
+                            drag_ids.push_back(desc);
+                            cascade_pivot_index.push_back(static_cast<int>(sel_i));
+                        }
+                    }
+                }
+            }
+            g_model3d_gizmo_drag.object_ids = drag_ids;
+            g_model3d_gizmo_drag.cascade_pivot_index = cascade_pivot_index;
+            g_model3d_gizmo_drag.start_positions.clear();
+            g_model3d_gizmo_drag.start_rotations.clear();
+            g_model3d_gizmo_drag.start_scales.clear();
+            for (int id : drag_ids) {
+                const Object3D *o = sess.scene.FindObject(id);
+                g_model3d_gizmo_drag.start_positions.push_back(o ? o->position : Vec3f{});
+                g_model3d_gizmo_drag.start_rotations.push_back(o ? o->rotation_deg : Vec3f{});
+                g_model3d_gizmo_drag.start_scales.push_back(o ? o->scale : Vec3f{1, 1, 1});
+            }
+        }
+        if (g_model3d_gizmo_drag.active && g_model3d_gizmo_drag.buffer_id == buffer_id) {
+            if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+                float dxp = mouse.x - g_model3d_gizmo_drag.start_mouse_x;
+                float dyp = mouse.y - g_model3d_gizmo_drag.start_mouse_y;
+                float axis_delta = 0.0f;
+                float angle_delta_deg = 0.0f;
+                if (g_model3d_gizmo_drag.axis >= 0 && g_model3d_gizmo_drag.tool == Model3DTool::Rotate) {
+                    Ray ray = GetScreenToWorldRayEx(local_mouse, camera, static_cast<int>(viewport.width), static_cast<int>(viewport.height));
+                    Vector3 u, v, hit;
+                    GizmoRingBasis(g_model3d_gizmo_drag.axis, &u, &v);
+                    if (RayPlaneIntersect(ray, gizmo_origin, gizmo_axis_dir[g_model3d_gizmo_drag.axis], &hit)) {
+                        float now = AnglePointOnPlane(hit, gizmo_origin, u, v);
+                        float delta_rad = now - g_model3d_gizmo_drag.start_axis_param;
+                        // Wrap to (-PI, PI] so crossing the atan2 seam
+                        // (+-180 degrees) doesn't snap the rotation by a
+                        // full turn -- e.g. dragging smoothly past the seam
+                        // should keep advancing the angle, not jump back.
+                        while (delta_rad > PI) delta_rad -= 2.0f * PI;
+                        while (delta_rad < -PI) delta_rad += 2.0f * PI;
+                        angle_delta_deg = delta_rad * (180.0f / PI);
+                    }
+                } else if (g_model3d_gizmo_drag.axis >= 0) {
+                    Ray ray = GetScreenToWorldRayEx(local_mouse, camera, static_cast<int>(viewport.width), static_cast<int>(viewport.height));
+                    float now = ClosestParamOnAxis(ray, gizmo_origin, gizmo_axis_dir[g_model3d_gizmo_drag.axis]);
+                    axis_delta = now - g_model3d_gizmo_drag.start_axis_param;
+                }
+                Vector3 forward = Vector3Normalize(Vector3Subtract(camera.target, camera.position));
+                Vector3 right = Vector3Normalize(Vector3CrossProduct(forward, camera.up));
+                Vector3 up = Vector3CrossProduct(right, forward);
+                for (size_t i = 0; i < g_model3d_gizmo_drag.object_ids.size(); i++) {
+                    Object3D *o = sess.scene.FindObject(g_model3d_gizmo_drag.object_ids[i]);
+                    if (!o) continue;
+                    if (g_model3d_gizmo_drag.tool == Model3DTool::Move) {
+                        Vec3f start = g_model3d_gizmo_drag.start_positions[i];
+                        if (g_model3d_gizmo_drag.axis >= 0) {
+                            Vector3 ax = gizmo_axis_dir[g_model3d_gizmo_drag.axis];
+                            o->position = Vec3f{start.x + ax.x * axis_delta, start.y + ax.y * axis_delta, start.z + ax.z * axis_delta};
+                        } else {
+                            float move_scale = sess.camera_distance * 0.0015f;
+                            Vector3 delta = Vector3Add(Vector3Scale(right, dxp * move_scale), Vector3Scale(up, -dyp * move_scale));
+                            o->position = Vec3f{start.x + delta.x, start.y + delta.y, start.z + delta.z};
+                        }
+                        if (sess.snap_enabled) {
+                            o->position = Vec3f{SnapToStep(o->position.x, kModel3DPosSnapStep), SnapToStep(o->position.y, kModel3DPosSnapStep),
+                                                 SnapToStep(o->position.z, kModel3DPosSnapStep)};
+                        }
+                    } else if (g_model3d_gizmo_drag.tool == Model3DTool::Rotate) {
+                        Vec3f start = g_model3d_gizmo_drag.start_rotations[i];
+                        if (g_model3d_gizmo_drag.axis >= 0) {
+                            // Ring drag: rotates only around that one world
+                            // axis, adding the ring's angle delta straight
+                            // onto that axis's own Euler component. Exact
+                            // for an object starting at zero/simple
+                            // rotation; a compound starting rotation may
+                            // need a manual touch-up (same documented
+                            // tradeoff as duplicate_mirrored's reflected
+                            // rotation, MEP_AGENT_API.md). Also only
+                            // accurate within +-180 degrees of the drag's
+                            // start (see angle_delta_deg's own wrap-to-seam
+                            // comment above) -- a multi-turn single drag can
+                            // undercount.
+                            Vec3f delta{0, 0, 0};
+                            if (g_model3d_gizmo_drag.axis == 0) delta.x = angle_delta_deg;
+                            else if (g_model3d_gizmo_drag.axis == 1) delta.y = angle_delta_deg;
+                            else delta.z = angle_delta_deg;
+                            o->rotation_deg = Vec3f{start.x + delta.x, start.y + delta.y, start.z + delta.z};
+                            // Cascaded descendant (see cascade_pivot_index's own
+                            // comment): sweep its position around the dragged
+                            // ancestor's own start position too, by the same
+                            // angle around the same ring axis, so it orbits the
+                            // parent instead of just spinning its own rotation_deg
+                            // in place. Only the axis-ring case has a clean
+                            // single delta-angle+axis to do this with -- the
+                            // free-drag trackball case below deliberately
+                            // doesn't cascade position at all (see the
+                            // drag-start comment on why).
+                            int pivot_i = g_model3d_gizmo_drag.cascade_pivot_index[i];
+                            if (pivot_i >= 0) {
+                                Vec3f pivot = g_model3d_gizmo_drag.start_positions[static_cast<size_t>(pivot_i)];
+                                Vec3f start_pos = g_model3d_gizmo_drag.start_positions[i];
+                                Vector3 offset =
+                                    Vector3Subtract(Vector3{start_pos.x, start_pos.y, start_pos.z}, Vector3{pivot.x, pivot.y, pivot.z});
+                                Vector3 rotated = Vector3RotateByAxisAngle(offset, gizmo_axis_dir[g_model3d_gizmo_drag.axis],
+                                                                            angle_delta_deg * (PI / 180.0f));
+                                o->position = Vec3f{pivot.x + rotated.x, pivot.y + rotated.y, pivot.z + rotated.z};
+                            }
+                        } else {
+                            o->rotation_deg = Vec3f{start.x - dyp * 0.5f, start.y + dxp * 0.5f, start.z};
+                        }
+                        if (sess.snap_enabled) {
+                            o->rotation_deg = Vec3f{SnapToStep(o->rotation_deg.x, kModel3DRotSnapStep),
+                                                     SnapToStep(o->rotation_deg.y, kModel3DRotSnapStep),
+                                                     SnapToStep(o->rotation_deg.z, kModel3DRotSnapStep)};
+                        }
+                    } else if (g_model3d_gizmo_drag.tool == Model3DTool::Scale) {
+                        Vec3f start = g_model3d_gizmo_drag.start_scales[i];
+                        if (g_model3d_gizmo_drag.axis >= 0) {
+                            // Scales just the dragged axis's component -- a
+                            // non-uniform scale, unlike the free-drag
+                            // fallback below (which has no axis to single
+                            // out, so it scales all three uniformly).
+                            float factor = std::max(0.05f, 1.0f + axis_delta / std::max(0.001f, gizmo_len));
+                            Vec3f scaled = start;
+                            Vec3f factor_vec{1.0f, 1.0f, 1.0f};
+                            if (g_model3d_gizmo_drag.axis == 0) {
+                                scaled.x *= factor;
+                                factor_vec.x = factor;
+                            } else if (g_model3d_gizmo_drag.axis == 1) {
+                                scaled.y *= factor;
+                                factor_vec.y = factor;
+                            } else {
+                                scaled.z *= factor;
+                                factor_vec.z = factor;
+                            }
+                            if (sess.snap_enabled) {
+                                scaled = Vec3f{SnapToStep(scaled.x, kModel3DScaleSnapStep), SnapToStep(scaled.y, kModel3DScaleSnapStep),
+                                               SnapToStep(scaled.z, kModel3DScaleSnapStep)};
+                                if (scaled.x <= 0.0f) scaled.x = kModel3DScaleSnapStep;
+                                if (scaled.y <= 0.0f) scaled.y = kModel3DScaleSnapStep;
+                                if (scaled.z <= 0.0f) scaled.z = kModel3DScaleSnapStep;
+                            }
+                            o->scale = scaled;
+                            // Cascaded descendant: scale its position's offset
+                            // from the dragged ancestor's own start position by
+                            // the same per-axis factor, so it moves toward/away
+                            // from the parent as it scales, instead of just
+                            // resizing in place. Uses the pre-snap factor (not
+                            // whatever `scaled` got rounded to), so the position
+                            // stays exactly consistent with the actual drag
+                            // distance even when snap rounds the displayed scale.
+                            int pivot_i = g_model3d_gizmo_drag.cascade_pivot_index[i];
+                            if (pivot_i >= 0) {
+                                Vec3f pivot = g_model3d_gizmo_drag.start_positions[static_cast<size_t>(pivot_i)];
+                                Vec3f start_pos = g_model3d_gizmo_drag.start_positions[i];
+                                o->position = Vec3f{pivot.x + (start_pos.x - pivot.x) * factor_vec.x,
+                                                     pivot.y + (start_pos.y - pivot.y) * factor_vec.y,
+                                                     pivot.z + (start_pos.z - pivot.z) * factor_vec.z};
+                            }
+                        } else {
+                            float factor = std::max(0.05f, 1.0f - dyp * 0.01f);
+                            Vec3f uniform{start.x * factor, start.y * factor, start.z * factor};
+                            if (sess.snap_enabled) {
+                                uniform = Vec3f{SnapToStep(uniform.x, kModel3DScaleSnapStep), SnapToStep(uniform.y, kModel3DScaleSnapStep),
+                                                SnapToStep(uniform.z, kModel3DScaleSnapStep)};
+                                if (uniform.x <= 0.0f) uniform.x = kModel3DScaleSnapStep;
+                                if (uniform.y <= 0.0f) uniform.y = kModel3DScaleSnapStep;
+                                if (uniform.z <= 0.0f) uniform.z = kModel3DScaleSnapStep;
+                            }
+                            o->scale = uniform;
+                            int pivot_i = g_model3d_gizmo_drag.cascade_pivot_index[i];
+                            if (pivot_i >= 0) {
+                                Vec3f pivot = g_model3d_gizmo_drag.start_positions[static_cast<size_t>(pivot_i)];
+                                Vec3f start_pos = g_model3d_gizmo_drag.start_positions[i];
+                                o->position = Vec3f{pivot.x + (start_pos.x - pivot.x) * factor, pivot.y + (start_pos.y - pivot.y) * factor,
+                                                     pivot.z + (start_pos.z - pivot.z) * factor};
+                            }
+                        }
+                    }
+                    sess.dirty = true;
+                    sess.modified = true;
+                }
+            } else {
+                g_model3d_gizmo_drag.active = false;
+                g_model3d_gizmo_drag.axis = -1;
+            }
+        }
+
+        const char *tool_name = sess.tool == Model3DTool::Select   ? "Select"
+                                 : sess.tool == Model3DTool::Move     ? "Move"
+                                 : sess.tool == Model3DTool::Rotate   ? "Rotate"
+                                 : sess.tool == Model3DTool::Scale    ? "Scale"
+                                 : sess.tool == Model3DTool::OrbitCam ? "Orbit"
+                                                                       : "Pan";
+        std::string status = std::string(tool_name) + "  " + std::to_string(sess.scene.objects.size()) + " objects  " +
+                              std::to_string(sess.scene.TotalTriangleCount()) + " tris";
+        if (sess.selection.size() == 1) {
+            if (const Object3D *o = sess.scene.FindObject(sess.selection[0])) status += "  sel: " + o->name;
+        } else if (sess.selection.size() > 1) {
+            status += "  " + std::to_string(sess.selection.size()) + " selected";
+        }
+        float status_font = font_size * 0.85f;
+        Vector2 st = MeasureTextEx(g_font, status.c_str(), status_font, 0);
+        Rectangle status_bg{viewport.x + 4.0f, viewport.y + viewport.height - st.y - 10.0f, st.x + 12.0f, st.y + 6.0f};
+        DrawRectangleRounded(status_bg, 0.3f, 4, Color{0, 0, 0, 140});
+        DrawTextEx(g_font, status.c_str(), Vector2{status_bg.x + 6.0f, status_bg.y + 3.0f}, status_font, 0, WHITE);
+
+        EndScissorMode();
+    }
+
+    // Draws the open dropdown (if any) on top of literally everything
+    // else in this pane (tool sidebar, viewport, Outliner/Inspector) --
+    // its click regions were already registered much earlier, see that
+    // block's own comment for why the two halves are split this way.
+    if (dropdown_open) {
+        const M3DMenu &menu = menus[static_cast<size_t>(g_model3d_dropdown_open)];
+        DrawRectangle(static_cast<int>(dd_x), static_cast<int>(dd_y), static_cast<int>(dd_w), static_cast<int>(dd_h),
+                      ResolveHlGroup("Picker"));
+        DrawRectangleLinesEx(Rectangle{dd_x, dd_y, dd_w, dd_h}, 1.0f, ResolveHlGroup("Border"));
+        Vector2 dd_mouse = GetMousePosition();
+        for (size_t i = 0; i < menu.items.size(); i++) {
+            Rectangle item_rect{dd_x, dd_y + static_cast<float>(i) * dd_item_h, dd_w, dd_item_h};
+            bool hovered = CheckCollisionPointRec(dd_mouse, item_rect);
+            if (hovered) DrawRectangleRec(item_rect, ResolveHlGroup("MenuHighlight"));
+            DrawTextEx(g_font, menu.items[i].label.c_str(), Vector2{dd_x + 10.0f, item_rect.y + 6.0f}, font_size, 0,
+                       ResolveHlGroup("MenuBarFg"));
+        }
+    }
+}
+
 /**
  * @brief Draws one pane's full contents: the header (single filename label or a multi-buffer
  * tab strip), then dispatches to the appropriate content renderer for the pane's buffer kind
@@ -19262,6 +21346,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     ImageEditorSession *imgedit_sess = g_editor.GetImageEditorMutable(pane.buffer_id);
     bool imgedit_active = imgedit_sess && imgedit_sess->active;
     const PdfSession *pdf_sess = g_editor.GetPdf(pane.buffer_id);
+    Model3DSession *model3d_sess = g_editor.GetModel3DMutable(pane.buffer_id);
     const OfficeSession *office_sess = g_editor.GetOffice(pane.buffer_id);
     if (office_sess || imgedit_active) header_bg = ResolveHlGroup("MenuBar");
     const SheetSession *sheet_sess = g_editor.GetSheet(pane.buffer_id);
@@ -19473,6 +21558,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                           std::to_string(static_cast<int>(std::lround(img_sess->zoom * 100.0f))) + "%";
             }
             DrawTextEx(g_font, label.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
+        } else if (model3d_sess) {
+            std::string label = "3D: " + buf.filename + " (" + std::to_string(model3d_sess->scene.objects.size()) + " objects, " +
+                                  std::to_string(model3d_sess->scene.TotalTriangleCount()) + " tris)";
+            if (buf.modified) label += " [+]";
+            DrawTextEx(g_font, label.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
         } else if (html_sess) {
             std::string title = html_sess->doc.title.empty() ? html_sess->source : html_sess->doc.title;
             std::string label = "HTML: " + title + "  " + std::to_string(static_cast<int>(std::lround(html_sess->zoom * 100.0f))) + "%" +
@@ -19620,7 +21710,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // regions register later (inside DrawImageEditorPane, called below) --
     // skip the catch-all entirely rather than exclude an open-ended area.
     bool imgedit_popup_open = imgedit_active && (g_imgedit_dropdown_open != -1 || g_imgedit_picker_open);
-    if (!office_dropdown_open && !kanban_or_gantt_active && !imgedit_popup_open) {
+    // Same reasoning as imgedit_popup_open above: while a 3D-modeler
+    // menubar dropdown is open, it can extend down over the viewport/
+    // sidebar area, and its own item click regions register later (inside
+    // DrawModel3DPane, called below) -- skip the catch-all entirely
+    // rather than exclude an open-ended area.
+    bool model3d_popup_open = model3d_sess && g_model3d_dropdown_open != -1;
+    if (!office_dropdown_open && !kanban_or_gantt_active && !imgedit_popup_open && !model3d_popup_open) {
         float focus_click_x = x, focus_click_y = content_y, focus_click_w = w, focus_click_h = content_h;
         if (office_sess && !office_sess->doc.paragraphs.empty()) {
             float office_toolbar_h = static_cast<float>(header_h) * 2.0f;
@@ -19653,6 +21749,22 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             focus_click_x += kImgEditToolSidebarW;
             focus_click_w = std::max(0.0f, focus_click_w - kImgEditToolSidebarW);
             float right_excl = (focus_click_w - kImgEditSidebarW > 250.0f) ? kImgEditSidebarW : 0.0f;
+            focus_click_w = std::max(0.0f, focus_click_w - right_excl);
+        }
+        if (model3d_sess) {
+            // Exclude the menubar (top), tool sidebar (left), and
+            // Outliner+Inspector sidebar (right) -- same reasoning as the
+            // image-editor exclusion just above: their own click regions
+            // register later, inside DrawModel3DPane. Missing this left
+            // every menubar/sidebar button in the 3D modeler silently
+            // swallowed by this catch-all (caught live: clicking "Add" in
+            // the menubar just refocused the pane instead of opening the
+            // dropdown).
+            focus_click_y += kModel3DMenubarH;
+            focus_click_h = std::max(0.0f, focus_click_h - kModel3DMenubarH);
+            focus_click_x += kModel3DToolSidebarW;
+            focus_click_w = std::max(0.0f, focus_click_w - kModel3DToolSidebarW);
+            float right_excl = (focus_click_w - kModel3DSidebarW > 200.0f) ? kModel3DSidebarW : 0.0f;
             focus_click_w = std::max(0.0f, focus_click_w - right_excl);
         }
         // Focuses this pane on a click anywhere in its content area (outside any more specific
@@ -19711,6 +21823,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
 
     if (imgedit_active) {
         DrawImageEditorPane(pane, *imgedit_sess, x, content_y, w, content_h, is_active);
+        DrawPaneBorder(x, y, w, h, is_active);
+        return;
+    }
+
+    if (model3d_sess) {
+        DrawModel3DPane(pane, *model3d_sess, x, content_y, w, content_h, is_active);
         DrawPaneBorder(x, y, w, h, is_active);
         return;
     }
@@ -24132,6 +26250,42 @@ void RegisterUiAutomationMethods() {
     });
 }
 
+// Registered the same way RegisterUiAutomationMethods's methods are (via
+// mep::agent::RegisterUiMethod, since this needs raylib -- DrawMesh/
+// RenderTexture2D/etc -- which agent_rpc.cpp deliberately has zero
+// dependency on) -- added after live dogfooding found mep_screenshot's
+// "capture the whole window" shape has no answer for "just render me this
+// one scene to a PNG", which is exactly what MODEL3D.md's "with rendering"
+// goal needs. Reuses DrawModel3DPane's own viewport-rendering building
+// blocks (Model3DBuildCamera, GetOrBuildModel3DMeshes, Model3DObjectMatrix,
+// g_model3d_default_material) so a headless render always matches what the
+// live pane would show for the same session state, just without the
+// selection-outline overlay (a "clean" render is the point).
+void RegisterModel3DAgentMethods() {
+    mep::agent::RegisterUiMethod("model.renderToImage", [](const Json &params) {
+        int buffer_id = params.get("buffer_id").as_int(-1);
+        Model3DSession *sess = g_editor.GetModel3DMutable(buffer_id);
+        if (!sess) throw std::runtime_error("not a 3D-modeler buffer: " + std::to_string(buffer_id));
+        std::string path = params.get("path").as_string();
+        if (path.empty()) throw std::runtime_error("path is required");
+        int width = std::clamp(params.contains("width") ? params.get("width").as_int(1024) : 1024, 16, 4096);
+        int height = std::clamp(params.contains("height") ? params.get("height").as_int(768) : 768, 16, 4096);
+        bool transparent = params.get("transparent").as_bool(false);
+        bool show_grid = params.contains("show_grid") ? params.get("show_grid").as_bool(sess->show_grid) : sess->show_grid;
+        bool wireframe = params.contains("wireframe") ? params.get("wireframe").as_bool(sess->wireframe) : sess->wireframe;
+
+        if (!Model3DRenderToImageFile(buffer_id, path, width, height, transparent, show_grid, wireframe)) {
+            throw std::runtime_error("failed to write image: " + path);
+        }
+
+        Json result = Json::Object();
+        result["path"] = path;
+        result["width"] = width;
+        result["height"] = height;
+        return result;
+    });
+}
+
 int main(int argc, char **argv) {
     // First thing of all -- StartIconFontBakeAsync's background thread
     // (right below) calls LoadFontData too, and its own "size is bigger
@@ -24341,6 +26495,7 @@ int main(int argc, char **argv) {
     mep::agent::Start();
     mep::agent_ui::Init(GetWindowHandle());
     RegisterUiAutomationMethods();
+    RegisterModel3DAgentMethods();
 #endif
 
 #if defined(__EMSCRIPTEN__)

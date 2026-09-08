@@ -81,6 +81,14 @@ const READ_ONLY_METHODS = new Set([
   "state.dump",
   "pane.get",
   "ui.screenshot",
+  "model.listObjects",
+  "model.sceneStats",
+  "model.primitiveInfo",
+  "model.getSelection",
+  "model.cameraGet",
+  "model.renderToImage",
+  "model.listVertices",
+  "model.listTriangles",
 ]);
 
 // Every tool below funnels through this -- issues the RPC call and turns
@@ -574,6 +582,515 @@ server.registerTool(
     inputSchema: { text: z.string() },
   },
   async (args: Record<string, unknown>) => callTool("ui.type_text", args),
+);
+
+// --- In-pane 3D modeler (MODEL3D.md) -------------------------------------
+//
+// Mirrors src/mcp_bridge.cpp's mep_model_* rows one-for-one (kept here on
+// a best-effort basis per this file's own "superseded, fallback" framing
+// above -- mcp_bridge.cpp is the source of truth). Unlike the raster
+// image editor, this has a real scripting surface: a scene can be built,
+// inspected, and saved through these tools alone, no mep_mouse_*/
+// mep_screenshot automation needed. See MEP_AGENT_API.md's "in-pane 3D
+// modeler" section for the full reference and a worked example.
+
+const vec3Schema = z.object({ x: z.number().optional(), y: z.number().optional(), z: z.number().optional() }).optional();
+const transformSchema = z
+  .object({
+    position: vec3Schema.describe("optional {x,y,z}"),
+    rotation: vec3Schema.describe("optional {x,y,z}, Euler XYZ degrees"),
+    scale: vec3Schema.describe("optional {x,y,z}"),
+  })
+  .optional();
+
+server.registerTool(
+  "mep_model_new",
+  {
+    description:
+      'Create a fresh, empty 3D-modeler scene (no source file needed) and switch to it -- the "build from scratch" entry point. Returns the new buffer\'s id.',
+  },
+  async () => callTool("model.new", {}),
+);
+
+server.registerTool(
+  "mep_model_list_objects",
+  {
+    description:
+      "List every object in a 3D-modeler scene: id, name, visibility, position/rotation/scale, base color, and triangle count.",
+    inputSchema: { buffer_id: z.number().int() },
+  },
+  async (args: Record<string, unknown>) => callTool("model.listObjects", args),
+);
+
+server.registerTool(
+  "mep_model_scene_stats",
+  {
+    description: "Get a 3D-modeler scene's object count and total triangle count.",
+    inputSchema: { buffer_id: z.number().int() },
+  },
+  async (args: Record<string, unknown>) => callTool("model.sceneStats", args),
+);
+
+server.registerTool(
+  "mep_model_primitive_info",
+  {
+    description:
+      "Look up a primitive kind's pivot point and default dimensions (e.g. cylinder/cone are base-pivoted and extend +Y, not centered) -- pass kind for just that one, or omit it to get every kind at once. No buffer_id needed, this is static reference data, not scene state.",
+    inputSchema: { kind: z.enum(["cube", "sphere", "cylinder", "cone", "plane", "torus", "wedge"]).optional() },
+  },
+  async (args: Record<string, unknown>) => callTool("model.primitiveInfo", args),
+);
+
+server.registerTool(
+  "mep_model_add_primitive",
+  {
+    description:
+      "Add a procedurally generated primitive object (cube/sphere/cylinder/cone/plane/torus/wedge) to a 3D-modeler scene, optionally setting its initial transform. Returns the new object's id.",
+    inputSchema: {
+      buffer_id: z.number().int(),
+      kind: z.enum(["cube", "sphere", "cylinder", "cone", "plane", "torus", "wedge"]),
+      transform: transformSchema,
+    },
+  },
+  async (args: Record<string, unknown>) => callTool("model.addPrimitive", args),
+);
+
+server.registerTool(
+  "mep_model_delete_object",
+  {
+    description:
+      "Delete an object from a 3D-modeler scene. cascade (default false) also deletes every transitive descendant instead of just un-parenting them -- a real 'delete this group and everything in it.'",
+    inputSchema: { buffer_id: z.number().int(), object_id: z.number().int(), cascade: z.boolean().optional() },
+  },
+  async (args: Record<string, unknown>) => callTool("model.deleteObject", args),
+);
+
+server.registerTool(
+  "mep_model_duplicate_object",
+  {
+    description:
+      "Duplicate an object (same mesh, transform, and material) in a 3D-modeler scene. Returns the new object's id. cascade (default false) also duplicates every transitive descendant, re-parented to mirror the original hierarchy under the new copy -- a real 'duplicate this group and everything in it,' rather than just the one top-level node (whose children would otherwise still point at the original).",
+    inputSchema: { buffer_id: z.number().int(), object_id: z.number().int(), cascade: z.boolean().optional() },
+  },
+  async (args: Record<string, unknown>) => callTool("model.duplicateObject", args),
+);
+
+server.registerTool(
+  "mep_model_set_transform",
+  {
+    description:
+      "Set an object's position/rotation/scale in a 3D-modeler scene -- each of the three is optional, only the ones given are changed.",
+    inputSchema: {
+      buffer_id: z.number().int(),
+      object_id: z.number().int(),
+      position: vec3Schema,
+      rotation: vec3Schema.describe("Euler XYZ, degrees"),
+      scale: vec3Schema,
+    },
+  },
+  async (args: Record<string, unknown>) => callTool("model.setTransform", args),
+);
+
+server.registerTool(
+  "mep_model_set_material",
+  {
+    description: "Set an object's base color (0..1 floats; a defaults to 1.0) in a 3D-modeler scene.",
+    inputSchema: {
+      buffer_id: z.number().int(),
+      object_id: z.number().int(),
+      color: z.object({ r: z.number(), g: z.number(), b: z.number(), a: z.number().optional() }),
+    },
+  },
+  async (args: Record<string, unknown>) => callTool("model.setMaterial", args),
+);
+
+server.registerTool(
+  "mep_model_set_texture",
+  {
+    description:
+      "Set (or, with an empty path, clear) an object's base-color/albedo texture in a 3D-modeler scene, loaded from an image file (PNG/JPG/BMP/...). The texture is sampled and then tinted by the object's own mep_model_set_material color, same as glTF's baseColorTexture + baseColorFactor. No normal/metallic-roughness/emissive maps -- this is base color only.",
+    inputSchema: { buffer_id: z.number().int(), object_id: z.number().int(), path: z.string() },
+  },
+  async (args: Record<string, unknown>) => callTool("model.setTexture", args),
+);
+
+server.registerTool(
+  "mep_model_rename_object",
+  {
+    description: "Rename an object in a 3D-modeler scene.",
+    inputSchema: { buffer_id: z.number().int(), object_id: z.number().int(), name: z.string() },
+  },
+  async (args: Record<string, unknown>) => callTool("model.renameObject", args),
+);
+
+server.registerTool(
+  "mep_model_set_visible",
+  {
+    description: "Show or hide an object in a 3D-modeler scene (kept, not deleted).",
+    inputSchema: { buffer_id: z.number().int(), object_id: z.number().int(), visible: z.boolean() },
+  },
+  async (args: Record<string, unknown>) => callTool("model.setVisible", args),
+);
+
+server.registerTool(
+  "mep_model_select",
+  {
+    description:
+      "Replace the current selection in a 3D-modeler scene (silently drops any object_id that doesn't exist). Not an undoable edit.",
+    inputSchema: { buffer_id: z.number().int(), object_ids: z.array(z.number().int()) },
+  },
+  async (args: Record<string, unknown>) => callTool("model.select", args),
+);
+
+server.registerTool(
+  "mep_model_get_selection",
+  {
+    description: "Get the currently selected object ids in a 3D-modeler scene.",
+    inputSchema: { buffer_id: z.number().int() },
+  },
+  async (args: Record<string, unknown>) => callTool("model.getSelection", args),
+);
+
+server.registerTool(
+  "mep_model_camera_set",
+  {
+    description:
+      "Update a 3D-modeler pane's orbit camera (target/yaw/pitch/distance/fov) -- each field is optional, only the ones given are changed. Not an undoable edit.",
+    inputSchema: {
+      buffer_id: z.number().int(),
+      target: vec3Schema,
+      yaw: z.number().optional().describe("degrees"),
+      pitch: z.number().optional().describe("degrees, clamped to [-89,89]"),
+      distance: z.number().optional(),
+      fov: z.number().optional().describe("degrees"),
+    },
+  },
+  async (args: Record<string, unknown>) => callTool("model.cameraSet", args),
+);
+
+server.registerTool(
+  "mep_model_camera_get",
+  {
+    description: "Get a 3D-modeler pane's current orbit camera state.",
+    inputSchema: { buffer_id: z.number().int() },
+  },
+  async (args: Record<string, unknown>) => callTool("model.cameraGet", args),
+);
+
+server.registerTool(
+  "mep_model_undo",
+  {
+    description: "Undo the last edit in a 3D-modeler scene.",
+    inputSchema: { buffer_id: z.number().int() },
+  },
+  async (args: Record<string, unknown>) => callTool("model.undo", args),
+);
+
+server.registerTool(
+  "mep_model_redo",
+  {
+    description: "Redo the last undone edit in a 3D-modeler scene.",
+    inputSchema: { buffer_id: z.number().int() },
+  },
+  async (args: Record<string, unknown>) => callTool("model.redo", args),
+);
+
+server.registerTool(
+  "mep_model_render_to_image",
+  {
+    description:
+      "Render a 3D-modeler scene's viewport to a PNG file -- a clean render (no selection outline, no menubar/sidebars) at whatever resolution you ask for, unlike mep_screenshot which always captures the whole mep window. Needs the real GUI window (same requirement as mep_screenshot/mep_mouse_*).",
+    inputSchema: {
+      buffer_id: z.number().int(),
+      path: z.string().describe("destination PNG path"),
+      width: z.number().int().optional().describe("default 1024, clamped to [16,4096]"),
+      height: z.number().int().optional().describe("default 768, clamped to [16,4096]"),
+      transparent: z.boolean().optional().describe("clear to a transparent background instead of the theme background; default false"),
+      show_grid: z.boolean().optional().describe("default: the pane's own current grid setting"),
+      wireframe: z.boolean().optional().describe("default: the pane's own current wireframe setting"),
+    },
+  },
+  async (args: Record<string, unknown>) => callTool("model.renderToImage", args),
+);
+
+server.registerTool(
+  "mep_model_set_view",
+  {
+    description:
+      "Set a 3D-modeler pane's grid/wireframe/snap view toggles -- each field optional, only the ones given are changed. Not an undoable edit. snap rounds subsequent Move/Rotate/Scale drags to a fixed grid/angle/scale step.",
+    inputSchema: {
+      buffer_id: z.number().int(),
+      show_grid: z.boolean().optional(),
+      wireframe: z.boolean().optional(),
+      snap: z.boolean().optional(),
+    },
+  },
+  async (args: Record<string, unknown>) => callTool("model.setView", args),
+);
+
+server.registerTool(
+  "mep_model_frame_all",
+  {
+    description:
+      "Reframe a 3D-modeler pane's orbit camera (target + distance) to fit the whole scene's true world bounds -- yaw/pitch are left as they are. Not an undoable edit.",
+    inputSchema: { buffer_id: z.number().int() },
+  },
+  async (args: Record<string, unknown>) => callTool("model.frameAll", args),
+);
+
+const modelTransformUpdateSchema = z.object({
+  object_id: z.number().int(),
+  position: vec3Schema,
+  rotation: vec3Schema.describe("Euler XYZ, degrees"),
+  scale: vec3Schema,
+});
+
+server.registerTool(
+  "mep_model_set_transforms",
+  {
+    description:
+      "Set position/rotation/scale on many objects in one call (each entry's fields are independently optional, only given ones are changed). Returns how many updates were actually applied.",
+    inputSchema: { buffer_id: z.number().int(), updates: z.array(modelTransformUpdateSchema) },
+  },
+  async (args: Record<string, unknown>) => callTool("model.setTransforms", args),
+);
+
+const modelMaterialUpdateSchema = z.object({
+  object_id: z.number().int(),
+  color: z.object({ r: z.number(), g: z.number(), b: z.number(), a: z.number().optional() }),
+});
+
+server.registerTool(
+  "mep_model_set_materials",
+  {
+    description: "Set base color on many objects in one call. Returns how many updates were actually applied.",
+    inputSchema: { buffer_id: z.number().int(), updates: z.array(modelMaterialUpdateSchema) },
+  },
+  async (args: Record<string, unknown>) => callTool("model.setMaterials", args),
+);
+
+server.registerTool(
+  "mep_model_delete_objects",
+  {
+    description:
+      "Delete many objects from a 3D-modeler scene in one call. Returns how many were actually deleted. " +
+      "Optional cascade (default false, applied to every object_id) also deletes each one's whole " +
+      "descendant subtree, same as mep_model_delete_object's own cascade flag.",
+    inputSchema: {
+      buffer_id: z.number().int(),
+      object_ids: z.array(z.number().int()),
+      cascade: z.boolean().optional(),
+    },
+  },
+  async (args: Record<string, unknown>) => callTool("model.deleteObjects", args),
+);
+
+server.registerTool(
+  "mep_model_duplicate_mirrored",
+  {
+    description:
+      "Duplicate an object with its position mirrored across the given world axis through the origin, reflecting the copy's own rotation to match (exact for a simple single-axis rotation -- a compound rotation may need a manual touch-up afterward). Returns the new object's id.",
+    inputSchema: { buffer_id: z.number().int(), object_id: z.number().int(), axis: z.enum(["x", "y", "z"]) },
+  },
+  async (args: Record<string, unknown>) => callTool("model.duplicateMirrored", args),
+);
+
+server.registerTool(
+  "mep_model_radial_array",
+  {
+    description:
+      "Duplicate an object count-1 times, evenly spaced in a ring around the given axis through the origin -- e.g. a fin offset on X, arrayed 4x around Y, lands one at each 90-degree step, each still facing outward the way the original did. The original object is left as-is and not counted. Returns the new objects' ids, in order.",
+    inputSchema: {
+      buffer_id: z.number().int(),
+      object_id: z.number().int(),
+      count: z.number().int().describe("total copies including the original -- this many minus one new objects are created"),
+      axis: z.enum(["x", "y", "z"]),
+    },
+  },
+  async (args: Record<string, unknown>) => callTool("model.radialArray", args),
+);
+
+server.registerTool(
+  "mep_model_group_objects",
+  {
+    description:
+      "Create a new empty group node (no mesh, invisible in the viewport, positioned at the centroid of the grouped objects) and parent every object in object_ids under it. Object3D.parent is purely an organizational/group-move link -- it is never composed into a child's own transform, so grouping does not move or change how anything renders. Returns the new group's object id.",
+    inputSchema: { buffer_id: z.number().int(), object_ids: z.array(z.number().int()) },
+  },
+  async (args: Record<string, unknown>) => callTool("model.groupObjects", args),
+);
+
+server.registerTool(
+  "mep_model_set_parent",
+  {
+    description:
+      "Set (or clear) one object's parent, for Outliner grouping/nesting and Move-tool group-drag cascading. Fails (ok: false) on a nonexistent object/parent, parent_id == object_id, or a parent_id that's already a descendant of object_id (would create a cycle).",
+    inputSchema: {
+      buffer_id: z.number().int(),
+      object_id: z.number().int(),
+      parent_id: z.number().int().optional().describe("-1 (or omit) to clear/un-parent"),
+    },
+  },
+  async (args: Record<string, unknown>) => callTool("model.setParent", args),
+);
+
+server.registerTool(
+  "mep_model_list_vertices",
+  {
+    description:
+      "List every vertex of an object's mesh: index, local-space (pre-object-transform) x/y/z, and (when the mesh has normals) nx/ny/nz. The first real vertex-level mesh-editing primitive -- combine with mep_model_set_vertex_position to nudge individual vertices instead of only whole-object transforms.",
+    inputSchema: { buffer_id: z.number().int(), object_id: z.number().int() },
+  },
+  async (args: Record<string, unknown>) => callTool("model.listVertices", args),
+);
+
+server.registerTool(
+  "mep_model_list_triangles",
+  {
+    description:
+      "List every triangle of an object's mesh: index and the vertex-unit indices (a/b/c) of its 3 corners. Read-only mesh-connectivity introspection -- without this, there's no way to discover which vertices actually form a triangle together (the thing mep_model_subdivide_faces/extrude_faces/inset_faces/dissolve_vertex all key off of) besides positions alone. Combine with mep_model_list_vertices to find, e.g., which vertex triples share the same position (candidates for mep_model_merge_vertices) or which edges only appear in one triangle (a mesh boundary).",
+    inputSchema: { buffer_id: z.number().int(), object_id: z.number().int() },
+  },
+  async (args: Record<string, unknown>) => callTool("model.listTriangles", args),
+);
+
+server.registerTool(
+  "mep_model_set_vertex_position",
+  {
+    description:
+      "Set one vertex's local-space (pre-object-transform) position on an object's mesh. If the object currently shares its mesh with another object (a radial array, a mirrored duplicate, a multi-object import), it's transparently given its own private copy first, so this never deforms other objects. vertex_index is in vertex units (from mep_model_list_vertices or mep_model_list_objects' own vertex_count), not a raw float offset.",
+    inputSchema: {
+      buffer_id: z.number().int(),
+      object_id: z.number().int(),
+      vertex_index: z.number().int(),
+      position: z.object({ x: z.number(), y: z.number(), z: z.number() }),
+    },
+  },
+  async (args: Record<string, unknown>) => callTool("model.setVertexPosition", args),
+);
+
+server.registerTool(
+  "mep_model_delete_vertices",
+  {
+    description:
+      "Delete the given vertices (vertex-units indices) and every triangle referencing any of them from an object's mesh -- leaves a hole rather than retriangulating/filling it, and does not attempt to reconnect the surrounding geometry. Safely clones a shared mesh first, same as mep_model_set_vertex_position. Out-of-range/duplicate indices are harmless no-ops.",
+    inputSchema: { buffer_id: z.number().int(), object_id: z.number().int(), vertex_indices: z.array(z.number().int()) },
+  },
+  async (args: Record<string, unknown>) => callTool("model.deleteVertices", args),
+);
+
+server.registerTool(
+  "mep_model_merge_vertices",
+  {
+    description:
+      "Weld the given vertices (vertex-units indices) of an object's mesh into a single vertex at their averaged position/normal/texcoord -- any triangle that becomes degenerate as a result (two or more of its corners now the same vertex) is dropped rather than kept as zero-area. Safely clones a shared mesh first, same as mep_model_set_vertex_position. Out-of-range/duplicate indices are harmless no-ops; fewer than 2 distinct valid indices is a no-op (nothing to merge).",
+    inputSchema: { buffer_id: z.number().int(), object_id: z.number().int(), vertex_indices: z.array(z.number().int()) },
+  },
+  async (args: Record<string, unknown>) => callTool("model.mergeVertices", args),
+);
+
+server.registerTool(
+  "mep_model_recalculate_normals",
+  {
+    description:
+      "Recompute an object's mesh's per-vertex normals from its current triangle geometry (smooth -- each vertex's normal is the normalized, area-weighted average of every adjacent triangle's own normal). Has zero visible effect on this app's own rendering (its default shaders never read vertex normals) -- use it to fix up normals left stale by mep_model_set_vertex_position/delete_vertices/merge_vertices before exporting for a tool that does read them, e.g. Blender or a glTF viewer with real lighting. Safely clones a shared mesh first, same as mep_model_set_vertex_position.",
+    inputSchema: { buffer_id: z.number().int(), object_id: z.number().int() },
+  },
+  async (args: Record<string, unknown>) => callTool("model.recalculateNormals", args),
+);
+
+server.registerTool(
+  "mep_model_subdivide_faces",
+  {
+    description:
+      "Centroid-subdivide every triangle of an object's mesh whose all 3 corners are in vertex_indices -- this app's stand-in for real face-selection tooling (same convention as merge/extrude): a 'face' here just means whichever triangles are fully covered by the given vertex set. Each such triangle gets one new vertex at its centroid and is replaced by 3 new triangles fanning out to it; a triangle with fewer than all 3 corners selected is left untouched. Safely clones a shared mesh first, same as mep_model_set_vertex_position. Returns the newly-created centroid vertex indices (empty if no triangle was fully covered).",
+    inputSchema: { buffer_id: z.number().int(), object_id: z.number().int(), vertex_indices: z.array(z.number().int()) },
+  },
+  async (args: Record<string, unknown>) => callTool("model.subdivideFaces", args),
+);
+
+server.registerTool(
+  "mep_model_extrude_faces",
+  {
+    description:
+      "Extrude the face formed by every triangle of an object's mesh whose all 3 corners are in vertex_indices (same 'face' convention as mep_model_subdivide_faces), by distance along that face's own geometrically-derived normal -- not read from stored per-vertex normals, which may be stale or absent. Every vertex used by a selected triangle is duplicated and offset; the selected triangles are re-pointed at the duplicates (lifting the cap into place) while a wall quad connects the untouched original ring to the new one along each boundary edge of the selected group (an edge shared between two selected triangles, e.g. a face's own diagonal, is correctly left un-walled). A vertex also used by a triangle outside the selection (e.g. a cube's adjacent side face sharing a top corner) naturally stays attached there too. Extrusion follows actual mesh connectivity, not spatial adjacency -- a raylib-generated primitive's unwelded per-face vertices (see mep_model_merge_vertices) mean selecting an entire such mesh extrudes each of its faces independently; weld first if that's not wanted. Safely clones a shared mesh first, same as mep_model_set_vertex_position. Returns the new cap vertex indices (empty if no triangle was fully covered, or the selection was degenerate/zero-area) so the caller can immediately continue editing the just-extruded face.",
+    inputSchema: {
+      buffer_id: z.number().int(),
+      object_id: z.number().int(),
+      vertex_indices: z.array(z.number().int()),
+      distance: z.number(),
+    },
+  },
+  async (args: Record<string, unknown>) => callTool("model.extrudeFaces", args),
+);
+
+server.registerTool(
+  "mep_model_dissolve_vertex",
+  {
+    description:
+      "Remove one vertex from an object's mesh and patch the surrounding faces back together, unlike mep_model_delete_vertices' own deliberately-left hole. Only works cleanly on a proper interior vertex whose incident triangles form a single closed fan around it; when they don't (a mesh-boundary vertex, a non-manifold fan, or an isolated vertex with no incident triangles) this silently falls back to the same hole-leaving removal mep_model_delete_vertices does, rather than risk a malformed retriangulation -- there's no way to tell from the response which path was taken besides comparing triangle counts before/after. The retriangulation is a simple fan (not a 'nicest possible' one), so a very non-convex surrounding ring can produce a visibly thin sliver triangle or two. Safely clones a shared mesh first, same as mep_model_set_vertex_position.",
+    inputSchema: { buffer_id: z.number().int(), object_id: z.number().int(), vertex_index: z.number().int() },
+  },
+  async (args: Record<string, unknown>) => callTool("model.dissolveVertex", args),
+);
+
+server.registerTool(
+  "mep_model_inset_faces",
+  {
+    description:
+      "Inset the face formed by every triangle of an object's mesh whose all 3 corners are in vertex_indices (same 'face' convention as mep_model_subdivide_faces/mep_model_extrude_faces): every vertex the face uses is duplicated and moved toward the face group's own centroid (the average position of every vertex it uses) by amount, a 0..1 fraction (clamped) -- 0 is a degenerate zero-width inset, 1 fully collapses the new cap onto the centroid. The selected triangles are re-pointed at the duplicates (shrinking the cap in place, no lift along any normal, unlike mep_model_extrude_faces), and a wall quad connects the untouched original ring to the new shrunk one along each boundary edge of the group (an edge shared between two selected triangles, e.g. a face's own diagonal, is correctly left un-walled). Safely clones a shared mesh first, same as mep_model_set_vertex_position. Returns the new cap vertex indices (empty if no triangle was fully covered) -- chain straight into mep_model_extrude_faces on the returned indices for a raised-platform-with-border look.",
+    inputSchema: {
+      buffer_id: z.number().int(),
+      object_id: z.number().int(),
+      vertex_indices: z.array(z.number().int()),
+      amount: z.number(),
+    },
+  },
+  async (args: Record<string, unknown>) => callTool("model.insetFaces", args),
+);
+
+server.registerTool(
+  "mep_model_add_vertex",
+  {
+    description:
+      "Append one new, isolated vertex to an object's mesh at the given local-space (pre-object-transform) position -- no triangle references it, so it won't render until connected via mep_model_make_face or similar. The deliberate counterpart to subdivide/extrude/inset (which all work on existing triangles): this is how to build genuinely new geometry from scratch. Safely clones a shared mesh first, same as mep_model_set_vertex_position. Returns the new vertex's index (vertex units), or -1 if the object doesn't exist or has no mesh.",
+    inputSchema: {
+      buffer_id: z.number().int(),
+      object_id: z.number().int(),
+      position: z.object({ x: z.number(), y: z.number(), z: z.number() }),
+    },
+  },
+  async (args: Record<string, unknown>) => callTool("model.addVertex", args),
+);
+
+server.registerTool(
+  "mep_model_make_face",
+  {
+    description:
+      "Create new triangle(s) of an object's mesh connecting existing vertices -- fan-triangulated from the first of vertex_indices (3 vertices become 1 new triangle, 4 become 2, a pentagon 3), Blender's own 'Make Edge/Face' (F key) in spirit. Unlike mep_model_subdivide_faces/extrude_faces/inset_faces, the given vertices don't need to already form a triangle -- this is how to connect vertices (including ones just added via mep_model_add_vertex) that aren't adjacent yet. No new vertices are created, and no check is made for whether the resulting triangle(s) duplicate or overlap ones that already exist; winding (and so which side ends up 'front') follows the given vertex order. Safely clones a shared mesh first, same as mep_model_set_vertex_position. Returns false if fewer than 3 distinct valid vertices remain after filtering duplicates/out-of-range entries.",
+    inputSchema: { buffer_id: z.number().int(), object_id: z.number().int(), vertex_indices: z.array(z.number().int()) },
+  },
+  async (args: Record<string, unknown>) => callTool("model.makeFace", args),
+);
+
+server.registerTool(
+  "mep_model_merge_by_distance",
+  {
+    description:
+      "Automatically weld every group of an object's mesh's vertices whose positions are all mutually within threshold of each other -- Blender's own 'Merge by Distance'/'Remove Doubles', and the 'just fix all of them' counterpart to mep_model_merge_vertices (which needs the caller to already know which indices are duplicates). Especially useful right after importing/generating a primitive, since raylib's own generated meshes emit unwelded duplicate vertices at every shared corner. threshold=0 welds only exact (bit-identical) position duplicates; grouping is transitive through a chain of close-enough pairs. Each group is welded to its averaged position/normal/texcoord, and a triangle that becomes degenerate as a result is dropped, same as mep_model_merge_vertices. Safely clones a shared mesh first, same as mep_model_set_vertex_position. Returns how many vertices were removed (0 if nothing was within threshold of anything else).",
+    inputSchema: { buffer_id: z.number().int(), object_id: z.number().int(), threshold: z.number() },
+  },
+  async (args: Record<string, unknown>) => callTool("model.mergeByDistance", args),
+);
+
+server.registerTool(
+  "mep_model_flip_normals",
+  {
+    description:
+      "Reverse every triangle's winding and negate every vertex normal of an object's mesh, flipping which side renders as 'front' -- the fix for geometry that came out inside-out, e.g. a mep_model_make_face call given vertices in the wrong order, or some imported files. Operates on the whole mesh, not a selection. Safely clones a shared mesh first, same as mep_model_set_vertex_position.",
+    inputSchema: { buffer_id: z.number().int(), object_id: z.number().int() },
+  },
+  async (args: Record<string, unknown>) => callTool("model.flipNormals", args),
 );
 
 // Best-effort: identify ourselves right away so the human sees a real

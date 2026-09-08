@@ -6844,6 +6844,801 @@ int l_print(lua_State *L) {
     return 0;
 }
 
+// --- In-pane 3D modeler (MODEL3D.md) -- unlike the raster image editor
+// (which has no mep.* surface at all, only UI automation), the modeler
+// gets a real Lua API so a scene can be built/queried/saved without any
+// mouse/keyboard automation -- see MEP_AGENT_API.md's "in-pane 3D modeler"
+// section. Every l_model_* function below is a thin wrapper around one
+// Editor::Model3D* method, matching the rest of this file's convention;
+// each has a matching agent_rpc.cpp `model.*` method (thin RPC wrapper
+// around the same Editor:: method) and mcp_bridge.cpp `mep_model_*` tool.
+
+// Reads an {x=,y=,z=} table field into *out, leaving *out untouched if the
+// field is absent (any component defaults to 0 if the sub-table omits it).
+// Shared by every l_model_* function taking a position/rotation/scale/
+// target argument.
+/**
+ * @brief Reads an optional {x=,y=,z=} table field into a Vec3f.
+ * @param L Lua state.
+ * @param idx Stack index of the table containing the field.
+ * @param name Field name to read.
+ * @param out Receives the parsed vector; untouched if the field is absent.
+ * @return True if the field was present (a table).
+ */
+bool ReadVec3Field(lua_State *L, int idx, const char *name, Vec3f *out) {
+    lua_getfield(L, idx, name);
+    bool present = lua_istable(L, -1);
+    if (present) {
+        lua_getfield(L, -1, "x");
+        out->x = static_cast<float>(luaL_optnumber(L, -1, 0));
+        lua_pop(L, 1);
+        lua_getfield(L, -1, "y");
+        out->y = static_cast<float>(luaL_optnumber(L, -1, 0));
+        lua_pop(L, 1);
+        lua_getfield(L, -1, "z");
+        out->z = static_cast<float>(luaL_optnumber(L, -1, 0));
+        lua_pop(L, 1);
+    }
+    lua_pop(L, 1);
+    return present;
+}
+
+/**
+ * @brief Pushes a Vec3f as an {x=,y=,z=} Lua table.
+ * @param L Lua state.
+ * @param v The vector to push.
+ */
+void PushVec3(lua_State *L, const Vec3f &v) {
+    lua_newtable(L);
+    lua_pushnumber(L, v.x);
+    lua_setfield(L, -2, "x");
+    lua_pushnumber(L, v.y);
+    lua_setfield(L, -2, "y");
+    lua_pushnumber(L, v.z);
+    lua_setfield(L, -2, "z");
+}
+
+/**
+ * @brief Maps a primitive-kind name ("cube"/"sphere"/"cylinder"/"cone"/"plane"/"torus"/"wedge",
+ * case-insensitive) to a PrimitiveKind.
+ * @param name The primitive kind name.
+ * @return The matching PrimitiveKind, or PrimitiveKind::None if unrecognized.
+ */
+PrimitiveKind ParsePrimitiveKindName(const std::string &name) {
+    std::string s = name;
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return std::tolower(c); });
+    if (s == "cube") return PrimitiveKind::Cube;
+    if (s == "sphere") return PrimitiveKind::Sphere;
+    if (s == "cylinder") return PrimitiveKind::Cylinder;
+    if (s == "cone") return PrimitiveKind::Cone;
+    if (s == "plane") return PrimitiveKind::Plane;
+    if (s == "torus") return PrimitiveKind::Torus;
+    if (s == "wedge") return PrimitiveKind::Wedge;
+    return PrimitiveKind::None;
+}
+
+/**
+ * @brief Pushes one Object3D as a Lua table (id, name, kind, visible, position/rotation/scale,
+ * color, tri_count).
+ * @param L Lua state.
+ * @param scene The scene the object belongs to (for its mesh's triangle count).
+ * @param obj The object to push.
+ */
+void PushObject3DTable(lua_State *L, const Scene &scene, const Object3D &obj) {
+    lua_newtable(L);
+    lua_pushinteger(L, obj.id);
+    lua_setfield(L, -2, "id");
+    lua_pushstring(L, obj.name.c_str());
+    lua_setfield(L, -2, "name");
+    lua_pushboolean(L, obj.visible);
+    lua_setfield(L, -2, "visible");
+    PushVec3(L, obj.position);
+    lua_setfield(L, -2, "position");
+    PushVec3(L, obj.rotation_deg);
+    lua_setfield(L, -2, "rotation");
+    PushVec3(L, obj.scale);
+    lua_setfield(L, -2, "scale");
+    lua_newtable(L);
+    lua_pushnumber(L, obj.color.r);
+    lua_setfield(L, -2, "r");
+    lua_pushnumber(L, obj.color.g);
+    lua_setfield(L, -2, "g");
+    lua_pushnumber(L, obj.color.b);
+    lua_setfield(L, -2, "b");
+    lua_pushnumber(L, obj.color.a);
+    lua_setfield(L, -2, "a");
+    lua_setfield(L, -2, "color");
+    int tri_count = (obj.mesh_index >= 0 && obj.mesh_index < static_cast<int>(scene.meshes.size()))
+                        ? scene.meshes[static_cast<size_t>(obj.mesh_index)].TriangleCount()
+                        : 0;
+    lua_pushinteger(L, tri_count);
+    lua_setfield(L, -2, "tri_count");
+}
+
+// mep.model_new() -> buffer_id. Creates a fresh, empty 3D-modeler scene
+// (no source file) and switches to it -- the "build from scratch" entry
+// point, since every other way into Mode::Model3D goes through importing
+// an existing file.
+int l_model_new(lua_State *L) {
+    lua_pushinteger(L, GetEditor(L)->NewModel3DScene());
+    return 1;
+}
+
+// mep.model_list_objects(buffer_id) -> array of object tables (see PushObject3DTable).
+int l_model_list_objects(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    const Model3DSession *sess = GetEditor(L)->GetModel3D(buffer_id);
+    if (!sess) return luaL_error(L, "not a 3D-modeler buffer: %d", buffer_id);
+    lua_newtable(L);
+    int i = 1;
+    for (const Object3D &obj : sess->scene.objects) {
+        PushObject3DTable(L, sess->scene, obj);
+        lua_rawseti(L, -2, i++);
+    }
+    return 1;
+}
+
+// mep.model_scene_stats(buffer_id) -> {object_count=, triangle_count=}.
+int l_model_scene_stats(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    const Model3DSession *sess = GetEditor(L)->GetModel3D(buffer_id);
+    if (!sess) return luaL_error(L, "not a 3D-modeler buffer: %d", buffer_id);
+    lua_newtable(L);
+    lua_pushinteger(L, static_cast<lua_Integer>(sess->scene.objects.size()));
+    lua_setfield(L, -2, "object_count");
+    lua_pushinteger(L, sess->scene.TotalTriangleCount());
+    lua_setfield(L, -2, "triangle_count");
+    return 1;
+}
+
+// mep.model_primitive_info([kind]) -> table. With no `kind`, returns
+// {cube={pivot=,dimensions=}, sphere={...}, ...} for every primitive kind;
+// with `kind`, returns just that one kind's {pivot=,dimensions=} table.
+// No buffer_id -- this is static reference data, not scene state (MODEL3D.md
+// Phase 1.5's "not queryable at runtime" gap, closed here).
+int l_model_primitive_info(lua_State *L) {
+    static const struct {
+        const char *name;
+        PrimitiveKind kind;
+    } kAll[] = {{"cube", PrimitiveKind::Cube},     {"sphere", PrimitiveKind::Sphere}, {"cylinder", PrimitiveKind::Cylinder},
+                {"cone", PrimitiveKind::Cone},      {"plane", PrimitiveKind::Plane},   {"torus", PrimitiveKind::Torus},
+                {"wedge", PrimitiveKind::Wedge}};
+    auto PushInfo = [L](PrimitiveKind kind) {
+        std::string pivot, dimensions;
+        DescribePrimitiveKind(kind, &pivot, &dimensions);
+        lua_newtable(L);
+        lua_pushstring(L, pivot.c_str());
+        lua_setfield(L, -2, "pivot");
+        lua_pushstring(L, dimensions.c_str());
+        lua_setfield(L, -2, "dimensions");
+    };
+    if (lua_gettop(L) >= 1 && !lua_isnil(L, 1)) {
+        std::string kind_name = luaL_checkstring(L, 1);
+        PrimitiveKind kind = ParsePrimitiveKindName(kind_name);
+        if (kind == PrimitiveKind::None) return luaL_error(L, "unknown primitive kind: %s", kind_name.c_str());
+        PushInfo(kind);
+        return 1;
+    }
+    lua_newtable(L);
+    for (const auto &entry : kAll) {
+        PushInfo(entry.kind);
+        lua_setfield(L, -2, entry.name);
+    }
+    return 1;
+}
+
+// mep.model_add_primitive(buffer_id, kind[, transform]) -> object_id.
+// `transform`, if given, is a {position=, rotation=, scale=} table applied
+// right after creation (each sub-field optional, {x=,y=,z=} tables).
+int l_model_add_primitive(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    std::string kind_name = luaL_checkstring(L, 2);
+    PrimitiveKind kind = ParsePrimitiveKindName(kind_name);
+    if (kind == PrimitiveKind::None) return luaL_error(L, "unknown primitive kind: %s", kind_name.c_str());
+    int id = GetEditor(L)->Model3DAddPrimitive(buffer_id, kind);
+    if (id < 0) return luaL_error(L, "not a 3D-modeler buffer: %d", buffer_id);
+    if (lua_istable(L, 3)) {
+        Vec3f position, rotation, scale{1, 1, 1};
+        bool has_position = ReadVec3Field(L, 3, "position", &position);
+        bool has_rotation = ReadVec3Field(L, 3, "rotation", &rotation);
+        bool has_scale = ReadVec3Field(L, 3, "scale", &scale);
+        if (has_position || has_rotation || has_scale) {
+            GetEditor(L)->Model3DSetTransform(buffer_id, id, has_position, position, has_rotation, rotation, has_scale, scale);
+        }
+    }
+    lua_pushinteger(L, id);
+    return 1;
+}
+
+// mep.model_delete_object(buffer_id, object_id) -> bool.
+// mep.model_delete_object(buffer_id, object_id, cascade?) -> bool. cascade (default false) also
+// deletes every transitive descendant instead of just un-parenting them.
+int l_model_delete_object(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    int object_id = static_cast<int>(luaL_checkinteger(L, 2));
+    bool cascade = lua_toboolean(L, 3) != 0;
+    lua_pushboolean(L, GetEditor(L)->Model3DDeleteObject(buffer_id, object_id, cascade));
+    return 1;
+}
+
+// mep.model_duplicate_object(buffer_id, object_id, cascade?) -> new_object_id (-1 on failure). cascade
+// (default false) also duplicates every transitive descendant, re-parented to mirror the original
+// hierarchy under the new copy.
+int l_model_duplicate_object(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    int object_id = static_cast<int>(luaL_checkinteger(L, 2));
+    bool cascade = lua_toboolean(L, 3) != 0;
+    lua_pushinteger(L, GetEditor(L)->Model3DDuplicateObject(buffer_id, object_id, cascade));
+    return 1;
+}
+
+// mep.model_set_transform(buffer_id, object_id, {position=, rotation=, scale=}) -> bool.
+// Each of position/rotation/scale is optional -- only the ones given are
+// applied (see Editor::Model3DSetTransform's own has_* flags).
+int l_model_set_transform(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    int object_id = static_cast<int>(luaL_checkinteger(L, 2));
+    luaL_checktype(L, 3, LUA_TTABLE);
+    Vec3f position, rotation, scale;
+    bool has_position = ReadVec3Field(L, 3, "position", &position);
+    bool has_rotation = ReadVec3Field(L, 3, "rotation", &rotation);
+    bool has_scale = ReadVec3Field(L, 3, "scale", &scale);
+    lua_pushboolean(
+        L, GetEditor(L)->Model3DSetTransform(buffer_id, object_id, has_position, position, has_rotation, rotation, has_scale, scale));
+    return 1;
+}
+
+// mep.model_set_material(buffer_id, object_id, {r=, g=, b=, a=}) -> bool. r/g/b/a are 0..1 floats;
+// a defaults to 1.0 if omitted.
+int l_model_set_material(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    int object_id = static_cast<int>(luaL_checkinteger(L, 2));
+    luaL_checktype(L, 3, LUA_TTABLE);
+    RgbaColorF color;
+    lua_getfield(L, 3, "r");
+    color.r = static_cast<float>(luaL_optnumber(L, -1, 0));
+    lua_pop(L, 1);
+    lua_getfield(L, 3, "g");
+    color.g = static_cast<float>(luaL_optnumber(L, -1, 0));
+    lua_pop(L, 1);
+    lua_getfield(L, 3, "b");
+    color.b = static_cast<float>(luaL_optnumber(L, -1, 0));
+    lua_pop(L, 1);
+    lua_getfield(L, 3, "a");
+    color.a = static_cast<float>(luaL_optnumber(L, -1, 1.0));
+    lua_pop(L, 1);
+    lua_pushboolean(L, GetEditor(L)->Model3DSetMaterial(buffer_id, object_id, color));
+    return 1;
+}
+
+// mep.model_set_texture(buffer_id, object_id, path) -> bool. `path` is an image file
+// (PNG/JPG/BMP/...); pass "" to clear the texture (falls back to flat color). The texture is
+// sampled and then tinted by the object's own color, same as glTF's baseColorTexture +
+// baseColorFactor.
+int l_model_set_texture(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    int object_id = static_cast<int>(luaL_checkinteger(L, 2));
+    const char *path = luaL_checkstring(L, 3);
+    lua_pushboolean(L, GetEditor(L)->Model3DSetTexture(buffer_id, object_id, path));
+    return 1;
+}
+
+// mep.model_rename_object(buffer_id, object_id, name) -> bool.
+int l_model_rename_object(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    int object_id = static_cast<int>(luaL_checkinteger(L, 2));
+    const char *name = luaL_checkstring(L, 3);
+    lua_pushboolean(L, GetEditor(L)->Model3DRenameObject(buffer_id, object_id, name));
+    return 1;
+}
+
+// mep.model_set_visible(buffer_id, object_id, visible) -> bool.
+int l_model_set_visible(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    int object_id = static_cast<int>(luaL_checkinteger(L, 2));
+    bool visible = lua_toboolean(L, 3);
+    lua_pushboolean(L, GetEditor(L)->Model3DSetVisible(buffer_id, object_id, visible));
+    return 1;
+}
+
+// mep.model_select(buffer_id, {object_id, ...}) -- replaces the current selection, silently
+// dropping any id that doesn't exist.
+int l_model_select(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    luaL_checktype(L, 2, LUA_TTABLE);
+    std::vector<int> ids;
+    lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 2));
+    for (lua_Integer i = 1; i <= n; i++) {
+        lua_rawgeti(L, 2, i);
+        ids.push_back(static_cast<int>(luaL_optinteger(L, -1, -1)));
+        lua_pop(L, 1);
+    }
+    GetEditor(L)->Model3DSetSelection(buffer_id, ids);
+    return 0;
+}
+
+// mep.model_get_selection(buffer_id) -> array of currently selected object ids.
+int l_model_get_selection(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    const Model3DSession *sess = GetEditor(L)->GetModel3D(buffer_id);
+    if (!sess) return luaL_error(L, "not a 3D-modeler buffer: %d", buffer_id);
+    lua_newtable(L);
+    for (size_t i = 0; i < sess->selection.size(); i++) {
+        lua_pushinteger(L, sess->selection[i]);
+        lua_rawseti(L, -2, static_cast<int>(i) + 1);
+    }
+    return 1;
+}
+
+// mep.model_camera_set(buffer_id, {target=, yaw=, pitch=, distance=, fov=}) -- each field
+// optional, only given ones are applied.
+int l_model_camera_set(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    luaL_checktype(L, 2, LUA_TTABLE);
+    Model3DCameraParams params;
+    params.has_target = ReadVec3Field(L, 2, "target", &params.target);
+    lua_getfield(L, 2, "yaw");
+    params.has_yaw = !lua_isnil(L, -1);
+    params.yaw = static_cast<float>(luaL_optnumber(L, -1, 0));
+    lua_pop(L, 1);
+    lua_getfield(L, 2, "pitch");
+    params.has_pitch = !lua_isnil(L, -1);
+    params.pitch = static_cast<float>(luaL_optnumber(L, -1, 0));
+    lua_pop(L, 1);
+    lua_getfield(L, 2, "distance");
+    params.has_distance = !lua_isnil(L, -1);
+    params.distance = static_cast<float>(luaL_optnumber(L, -1, 0));
+    lua_pop(L, 1);
+    lua_getfield(L, 2, "fov");
+    params.has_fov = !lua_isnil(L, -1);
+    params.fov = static_cast<float>(luaL_optnumber(L, -1, 0));
+    lua_pop(L, 1);
+    GetEditor(L)->Model3DSetCamera(buffer_id, params);
+    return 0;
+}
+
+// mep.model_camera_get(buffer_id) -> {target=, yaw=, pitch=, distance=, fov=}.
+int l_model_camera_get(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    const Model3DSession *sess = GetEditor(L)->GetModel3D(buffer_id);
+    if (!sess) return luaL_error(L, "not a 3D-modeler buffer: %d", buffer_id);
+    lua_newtable(L);
+    PushVec3(L, sess->camera_target);
+    lua_setfield(L, -2, "target");
+    lua_pushnumber(L, sess->camera_yaw);
+    lua_setfield(L, -2, "yaw");
+    lua_pushnumber(L, sess->camera_pitch);
+    lua_setfield(L, -2, "pitch");
+    lua_pushnumber(L, sess->camera_distance);
+    lua_setfield(L, -2, "distance");
+    lua_pushnumber(L, sess->camera_fov);
+    lua_setfield(L, -2, "fov");
+    return 1;
+}
+
+// mep.model_undo(buffer_id) / mep.model_redo(buffer_id).
+int l_model_undo(lua_State *L) {
+    GetEditor(L)->UndoModel3D(static_cast<int>(luaL_checkinteger(L, 1)));
+    return 0;
+}
+int l_model_redo(lua_State *L) {
+    GetEditor(L)->RedoModel3D(static_cast<int>(luaL_checkinteger(L, 1)));
+    return 0;
+}
+
+// mep.model_set_view(buffer_id, {show_grid=, wireframe=, snap=}) -- each field optional, not undoable.
+int l_model_set_view(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    luaL_checktype(L, 2, LUA_TTABLE);
+    lua_getfield(L, 2, "show_grid");
+    bool has_show_grid = !lua_isnil(L, -1);
+    bool show_grid = lua_toboolean(L, -1) != 0;
+    lua_pop(L, 1);
+    lua_getfield(L, 2, "wireframe");
+    bool has_wireframe = !lua_isnil(L, -1);
+    bool wireframe = lua_toboolean(L, -1) != 0;
+    lua_pop(L, 1);
+    lua_getfield(L, 2, "snap");
+    bool has_snap = !lua_isnil(L, -1);
+    bool snap = lua_toboolean(L, -1) != 0;
+    lua_pop(L, 1);
+    GetEditor(L)->Model3DSetView(buffer_id, has_show_grid, show_grid, has_wireframe, wireframe, has_snap, snap);
+    return 0;
+}
+
+// mep.model_frame_all(buffer_id) -- reframes the orbit camera to fit the whole scene.
+int l_model_frame_all(lua_State *L) {
+    GetEditor(L)->Model3DFrameAll(static_cast<int>(luaL_checkinteger(L, 1)));
+    return 0;
+}
+
+// mep.model_set_transforms(buffer_id, {{object_id=, position=, rotation=, scale=}, ...}) -> count
+// actually applied. One round-trip for many objects, added after live dogfooding found repositioning
+// an 11-object scene one call per object too slow.
+int l_model_set_transforms(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    luaL_checktype(L, 2, LUA_TTABLE);
+    std::vector<Model3DTransformUpdate> updates;
+    lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 2));
+    for (lua_Integer i = 1; i <= n; i++) {
+        lua_rawgeti(L, 2, i);
+        int idx = lua_gettop(L);
+        Model3DTransformUpdate u;
+        lua_getfield(L, idx, "object_id");
+        u.object_id = static_cast<int>(luaL_optinteger(L, -1, -1));
+        lua_pop(L, 1);
+        u.has_position = ReadVec3Field(L, idx, "position", &u.position);
+        u.has_rotation = ReadVec3Field(L, idx, "rotation", &u.rotation_deg);
+        u.has_scale = ReadVec3Field(L, idx, "scale", &u.scale);
+        updates.push_back(u);
+        lua_pop(L, 1);
+    }
+    lua_pushinteger(L, GetEditor(L)->Model3DSetTransformsBatch(buffer_id, updates));
+    return 1;
+}
+
+// mep.model_set_materials(buffer_id, {{object_id=, r=, g=, b=, a=}, ...}) -> count actually applied.
+// Same batching motivation as mep.model_set_transforms above.
+int l_model_set_materials(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    luaL_checktype(L, 2, LUA_TTABLE);
+    std::vector<Model3DMaterialUpdate> updates;
+    lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 2));
+    for (lua_Integer i = 1; i <= n; i++) {
+        lua_rawgeti(L, 2, i);
+        int idx = lua_gettop(L);
+        Model3DMaterialUpdate u;
+        lua_getfield(L, idx, "object_id");
+        u.object_id = static_cast<int>(luaL_optinteger(L, -1, -1));
+        lua_pop(L, 1);
+        lua_getfield(L, idx, "r");
+        u.color.r = static_cast<float>(luaL_optnumber(L, -1, 0));
+        lua_pop(L, 1);
+        lua_getfield(L, idx, "g");
+        u.color.g = static_cast<float>(luaL_optnumber(L, -1, 0));
+        lua_pop(L, 1);
+        lua_getfield(L, idx, "b");
+        u.color.b = static_cast<float>(luaL_optnumber(L, -1, 0));
+        lua_pop(L, 1);
+        lua_getfield(L, idx, "a");
+        u.color.a = static_cast<float>(luaL_optnumber(L, -1, 1.0));
+        lua_pop(L, 1);
+        updates.push_back(u);
+        lua_pop(L, 1);
+    }
+    lua_pushinteger(L, GetEditor(L)->Model3DSetMaterialsBatch(buffer_id, updates));
+    return 1;
+}
+
+// mep.model_delete_objects(buffer_id, {object_id, ...}, cascade?) -> count actually deleted.
+int l_model_delete_objects(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    luaL_checktype(L, 2, LUA_TTABLE);
+    std::vector<int> ids;
+    lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 2));
+    for (lua_Integer i = 1; i <= n; i++) {
+        lua_rawgeti(L, 2, i);
+        ids.push_back(static_cast<int>(luaL_optinteger(L, -1, -1)));
+        lua_pop(L, 1);
+    }
+    bool cascade = lua_toboolean(L, 3) != 0;
+    lua_pushinteger(L, GetEditor(L)->Model3DDeleteObjectsBatch(buffer_id, ids, cascade));
+    return 1;
+}
+
+// mep.model_duplicate_mirrored(buffer_id, object_id, axis) -> new_object_id (-1 on failure). axis is
+// "x"/"y"/"z" -- mirrors position across that axis through the origin, and reflects the copy's own
+// rotation to match (exact for a simple single-axis rotation, see the .cpp for the general caveat).
+int l_model_duplicate_mirrored(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    int object_id = static_cast<int>(luaL_checkinteger(L, 2));
+    const char *axis = luaL_checkstring(L, 3);
+    lua_pushinteger(L, GetEditor(L)->Model3DDuplicateMirrored(buffer_id, object_id, axis[0]));
+    return 1;
+}
+
+// mep.model_radial_array(buffer_id, object_id, count, axis) -> array of the `count - 1` new object
+// ids (the original is left as-is and not included). Evenly arrays copies around `axis` through the
+// origin -- e.g. a fin offset from the origin on X, arrayed 4x around Y, lands one at each 90-degree
+// step, each still facing outward the way the original did.
+int l_model_radial_array(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    int object_id = static_cast<int>(luaL_checkinteger(L, 2));
+    int count = static_cast<int>(luaL_checkinteger(L, 3));
+    const char *axis = luaL_checkstring(L, 4);
+    std::vector<int> ids = GetEditor(L)->Model3DRadialArray(buffer_id, object_id, count, axis[0]);
+    lua_newtable(L);
+    for (size_t i = 0; i < ids.size(); i++) {
+        lua_pushinteger(L, ids[i]);
+        lua_rawseti(L, -2, static_cast<int>(i) + 1);
+    }
+    return 1;
+}
+
+// mep.model_group_objects(buffer_id, object_ids) -> new group_id (-1 on failure). Creates an empty
+// group node (no mesh, invisible in the viewport) at the centroid of object_ids and parents each of
+// them under it -- Object3D::parent is an organizational/group-move link only, never composed into a
+// child's own transform, so this doesn't move or change how anything renders.
+int l_model_group_objects(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    luaL_checktype(L, 2, LUA_TTABLE);
+    std::vector<int> ids;
+    lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 2));
+    for (lua_Integer i = 1; i <= n; i++) {
+        lua_rawgeti(L, 2, i);
+        ids.push_back(static_cast<int>(luaL_optinteger(L, -1, -1)));
+        lua_pop(L, 1);
+    }
+    lua_pushinteger(L, GetEditor(L)->Model3DGroupObjects(buffer_id, ids));
+    return 1;
+}
+
+// mep.model_set_parent(buffer_id, object_id, parent_id) -> bool. parent_id may be -1/nil to clear
+// (un-parent). Fails (returns false) on a nonexistent object/parent, parent_id == object_id, or a
+// parent_id that's already a descendant of object_id (would create a cycle).
+int l_model_set_parent(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    int object_id = static_cast<int>(luaL_checkinteger(L, 2));
+    int parent_id = lua_isnoneornil(L, 3) ? -1 : static_cast<int>(luaL_checkinteger(L, 3));
+    lua_pushboolean(L, GetEditor(L)->Model3DSetParent(buffer_id, object_id, parent_id));
+    return 1;
+}
+
+// mep.model_list_vertices(buffer_id, object_id) -> array of {index=, x=, y=, z=} (local mesh space,
+// pre-object-transform). Empty for an object with no mesh (an empty group node).
+int l_model_list_vertices(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    int object_id = static_cast<int>(luaL_checkinteger(L, 2));
+    const Model3DSession *sess = GetEditor(L)->GetModel3D(buffer_id);
+    if (!sess) return luaL_error(L, "not a 3D-modeler buffer: %d", buffer_id);
+    const Object3D *obj = sess->scene.FindObject(object_id);
+    if (!obj) return luaL_error(L, "no such object: %d", object_id);
+    lua_newtable(L);
+    if (obj->mesh_index >= 0 && obj->mesh_index < static_cast<int>(sess->scene.meshes.size())) {
+        const MeshData &md = sess->scene.meshes[static_cast<size_t>(obj->mesh_index)];
+        bool has_normals = !md.normals.empty();
+        for (int v = 0; v < md.VertexCount(); v++) {
+            lua_newtable(L);
+            lua_pushinteger(L, v);
+            lua_setfield(L, -2, "index");
+            lua_pushnumber(L, md.positions[static_cast<size_t>(v) * 3 + 0]);
+            lua_setfield(L, -2, "x");
+            lua_pushnumber(L, md.positions[static_cast<size_t>(v) * 3 + 1]);
+            lua_setfield(L, -2, "y");
+            lua_pushnumber(L, md.positions[static_cast<size_t>(v) * 3 + 2]);
+            lua_setfield(L, -2, "z");
+            if (has_normals) {
+                lua_pushnumber(L, md.normals[static_cast<size_t>(v) * 3 + 0]);
+                lua_setfield(L, -2, "nx");
+                lua_pushnumber(L, md.normals[static_cast<size_t>(v) * 3 + 1]);
+                lua_setfield(L, -2, "ny");
+                lua_pushnumber(L, md.normals[static_cast<size_t>(v) * 3 + 2]);
+                lua_setfield(L, -2, "nz");
+            }
+            lua_rawseti(L, -2, v + 1);
+        }
+    }
+    return 1;
+}
+
+// mep.model_list_triangles(buffer_id, object_id) -> array of {index, a, b, c} (vertex-unit indices of
+// each triangle's 3 corners). Read-only mesh-connectivity introspection -- without this, an agent has
+// no way to discover which vertices actually form a triangle together (the thing subdivide/extrude/
+// inset/make_face all key off of) besides the positions alone.
+int l_model_list_triangles(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    int object_id = static_cast<int>(luaL_checkinteger(L, 2));
+    const Model3DSession *sess = GetEditor(L)->GetModel3D(buffer_id);
+    if (!sess) return luaL_error(L, "not a 3D-modeler buffer: %d", buffer_id);
+    const Object3D *obj = sess->scene.FindObject(object_id);
+    if (!obj) return luaL_error(L, "no such object: %d", object_id);
+    lua_newtable(L);
+    if (obj->mesh_index >= 0 && obj->mesh_index < static_cast<int>(sess->scene.meshes.size())) {
+        const MeshData &md = sess->scene.meshes[static_cast<size_t>(obj->mesh_index)];
+        for (int t = 0; t < md.TriangleCount(); t++) {
+            lua_newtable(L);
+            lua_pushinteger(L, t);
+            lua_setfield(L, -2, "index");
+            lua_pushinteger(L, md.indices[static_cast<size_t>(t) * 3 + 0]);
+            lua_setfield(L, -2, "a");
+            lua_pushinteger(L, md.indices[static_cast<size_t>(t) * 3 + 1]);
+            lua_setfield(L, -2, "b");
+            lua_pushinteger(L, md.indices[static_cast<size_t>(t) * 3 + 2]);
+            lua_setfield(L, -2, "c");
+            lua_rawseti(L, -2, t + 1);
+        }
+    }
+    return 1;
+}
+
+// mep.model_set_vertex_position(buffer_id, object_id, vertex_index, {x=, y=, z=}) -> bool. Position
+// is local mesh space (pre-object-transform). Transparently gives the object its own private mesh
+// copy first if it currently shares one with another object (see Scene::EnsureUniqueMesh).
+int l_model_set_vertex_position(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    int object_id = static_cast<int>(luaL_checkinteger(L, 2));
+    int vertex_index = static_cast<int>(luaL_checkinteger(L, 3));
+    luaL_checktype(L, 4, LUA_TTABLE);
+    Vec3f pos;
+    lua_getfield(L, 4, "x");
+    pos.x = static_cast<float>(luaL_optnumber(L, -1, 0));
+    lua_pop(L, 1);
+    lua_getfield(L, 4, "y");
+    pos.y = static_cast<float>(luaL_optnumber(L, -1, 0));
+    lua_pop(L, 1);
+    lua_getfield(L, 4, "z");
+    pos.z = static_cast<float>(luaL_optnumber(L, -1, 0));
+    lua_pop(L, 1);
+    lua_pushboolean(L, GetEditor(L)->Model3DSetVertexPosition(buffer_id, object_id, vertex_index, pos));
+    return 1;
+}
+
+// mep.model_delete_vertices(buffer_id, object_id, vertex_indices) -> bool. Deletes the given
+// vertices (vertex-units indices) and every triangle referencing any of them, leaving a hole rather
+// than retriangulating. Safely clones a shared mesh first, same as mep.model_set_vertex_position.
+int l_model_delete_vertices(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    int object_id = static_cast<int>(luaL_checkinteger(L, 2));
+    luaL_checktype(L, 3, LUA_TTABLE);
+    std::vector<int> vertex_indices;
+    lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 3));
+    for (lua_Integer i = 1; i <= n; i++) {
+        lua_rawgeti(L, 3, i);
+        vertex_indices.push_back(static_cast<int>(luaL_optinteger(L, -1, -1)));
+        lua_pop(L, 1);
+    }
+    lua_pushboolean(L, GetEditor(L)->Model3DDeleteVertices(buffer_id, object_id, vertex_indices));
+    return 1;
+}
+
+// mep.model_merge_vertices(buffer_id, object_id, vertex_indices) -> bool. Welds the given vertices
+// (vertex-units indices) into a single vertex at their averaged position/normal/texcoord, dropping any
+// triangle that becomes degenerate as a result. Safely clones a shared mesh first, same as
+// mep.model_set_vertex_position. Fewer than 2 distinct valid indices is a harmless no-op.
+int l_model_merge_vertices(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    int object_id = static_cast<int>(luaL_checkinteger(L, 2));
+    luaL_checktype(L, 3, LUA_TTABLE);
+    std::vector<int> vertex_indices;
+    lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 3));
+    for (lua_Integer i = 1; i <= n; i++) {
+        lua_rawgeti(L, 3, i);
+        vertex_indices.push_back(static_cast<int>(luaL_optinteger(L, -1, -1)));
+        lua_pop(L, 1);
+    }
+    lua_pushboolean(L, GetEditor(L)->Model3DMergeVertices(buffer_id, object_id, vertex_indices));
+    return 1;
+}
+
+// mep.model_recalculate_normals(buffer_id, object_id) -> bool. Recomputes an object's mesh's per-vertex
+// normals from its current triangle geometry (smooth/averaged, see MeshData::RecalculateNormals). Has
+// zero visible effect on this app's own rendering (its shaders never read normals) -- fixes up normals
+// left stale by vertex edits for tools that do read them on export, e.g. Blender.
+int l_model_recalculate_normals(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    int object_id = static_cast<int>(luaL_checkinteger(L, 2));
+    lua_pushboolean(L, GetEditor(L)->Model3DRecalculateNormals(buffer_id, object_id));
+    return 1;
+}
+
+namespace {
+std::vector<int> ReadIntArray(lua_State *L, int index) {
+    luaL_checktype(L, index, LUA_TTABLE);
+    std::vector<int> out;
+    lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, index));
+    for (lua_Integer i = 1; i <= n; i++) {
+        lua_rawgeti(L, index, i);
+        out.push_back(static_cast<int>(luaL_optinteger(L, -1, -1)));
+        lua_pop(L, 1);
+    }
+    return out;
+}
+
+void PushIntArray(lua_State *L, const std::vector<int> &values) {
+    lua_newtable(L);
+    for (size_t i = 0; i < values.size(); i++) {
+        lua_pushinteger(L, values[i]);
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+}
+}  // namespace
+
+// mep.model_subdivide_faces(buffer_id, object_id, vertex_indices) -> table of new centroid vertex
+// indices (empty if nothing was subdivided). Centroid-subdivides every triangle whose all 3 corners are
+// in vertex_indices -- this app's stand-in for real face-selection tooling, same as merge/extrude.
+int l_model_subdivide_faces(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    int object_id = static_cast<int>(luaL_checkinteger(L, 2));
+    std::vector<int> vertex_indices = ReadIntArray(L, 3);
+    PushIntArray(L, GetEditor(L)->Model3DSubdivideFaces(buffer_id, object_id, vertex_indices));
+    return 1;
+}
+
+// mep.model_extrude_faces(buffer_id, object_id, vertex_indices, distance) -> table of new "cap" vertex
+// indices (empty on no-op/failure). Extrudes the face formed by every triangle whose all 3 corners are
+// in vertex_indices, along that face's own geometrically-derived normal.
+int l_model_extrude_faces(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    int object_id = static_cast<int>(luaL_checkinteger(L, 2));
+    std::vector<int> vertex_indices = ReadIntArray(L, 3);
+    float distance = static_cast<float>(luaL_checknumber(L, 4));
+    PushIntArray(L, GetEditor(L)->Model3DExtrudeFaces(buffer_id, object_id, vertex_indices, distance));
+    return 1;
+}
+
+// mep.model_dissolve_vertex(buffer_id, object_id, vertex_index) -> bool. Removes one vertex and patches
+// the surrounding faces back together where possible (falls back to a plain hole-leaving removal
+// otherwise -- see Editor::Model3DDissolveVertex).
+int l_model_dissolve_vertex(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    int object_id = static_cast<int>(luaL_checkinteger(L, 2));
+    int vertex_index = static_cast<int>(luaL_checkinteger(L, 3));
+    lua_pushboolean(L, GetEditor(L)->Model3DDissolveVertex(buffer_id, object_id, vertex_index));
+    return 1;
+}
+
+// mep.model_inset_faces(buffer_id, object_id, vertex_indices, amount) -> table of new cap vertex
+// indices (empty on no-op/failure). Insets the face formed by every triangle whose all 3 corners are in
+// vertex_indices, moving each duplicate toward the face group's own centroid by amount (0..1, clamped).
+int l_model_inset_faces(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    int object_id = static_cast<int>(luaL_checkinteger(L, 2));
+    std::vector<int> vertex_indices = ReadIntArray(L, 3);
+    float amount = static_cast<float>(luaL_checknumber(L, 4));
+    PushIntArray(L, GetEditor(L)->Model3DInsetFaces(buffer_id, object_id, vertex_indices, amount));
+    return 1;
+}
+
+// mep.model_add_vertex(buffer_id, object_id, {x,y,z}) -> vertex_index (-1 on failure). Appends one new,
+// isolated vertex -- no triangle references it until connected via mep.model_make_face or similar.
+int l_model_add_vertex(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    int object_id = static_cast<int>(luaL_checkinteger(L, 2));
+    luaL_checktype(L, 3, LUA_TTABLE);
+    Vec3f pos;
+    lua_getfield(L, 3, "x");
+    pos.x = static_cast<float>(luaL_optnumber(L, -1, 0));
+    lua_pop(L, 1);
+    lua_getfield(L, 3, "y");
+    pos.y = static_cast<float>(luaL_optnumber(L, -1, 0));
+    lua_pop(L, 1);
+    lua_getfield(L, 3, "z");
+    pos.z = static_cast<float>(luaL_optnumber(L, -1, 0));
+    lua_pop(L, 1);
+    lua_pushinteger(L, GetEditor(L)->Model3DAddVertex(buffer_id, object_id, pos));
+    return 1;
+}
+
+// mep.model_make_face(buffer_id, object_id, vertex_indices) -> bool. Connects existing vertices into
+// new triangle(s), fan-triangulated from the first one -- Blender's own "Make Edge/Face" in spirit.
+int l_model_make_face(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    int object_id = static_cast<int>(luaL_checkinteger(L, 2));
+    std::vector<int> vertex_indices = ReadIntArray(L, 3);
+    lua_pushboolean(L, GetEditor(L)->Model3DMakeFace(buffer_id, object_id, vertex_indices));
+    return 1;
+}
+
+// mep.model_merge_by_distance(buffer_id, object_id, threshold) -> removed_count. Automatically welds
+// every group of vertices whose positions are all mutually within threshold of each other -- Blender's
+// own "Merge by Distance"/"Remove Doubles". threshold=0 welds only exact position duplicates.
+int l_model_merge_by_distance(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    int object_id = static_cast<int>(luaL_checkinteger(L, 2));
+    float threshold = static_cast<float>(luaL_checknumber(L, 3));
+    lua_pushinteger(L, GetEditor(L)->Model3DMergeByDistance(buffer_id, object_id, threshold));
+    return 1;
+}
+
+// mep.model_flip_normals(buffer_id, object_id) -> bool. Reverses every triangle's winding and negates
+// every vertex normal -- the fix for geometry that renders inside-out.
+int l_model_flip_normals(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    int object_id = static_cast<int>(luaL_checkinteger(L, 2));
+    lua_pushboolean(L, GetEditor(L)->Model3DFlipNormals(buffer_id, object_id));
+    return 1;
+}
+
 const luaL_Reg kMepFuncs[] = {
     {"get_line", l_get_line},
     {"set_line", l_set_line},
@@ -7145,6 +7940,47 @@ const luaL_Reg kMepFuncs[] = {
     {"pane_close_buffer", l_pane_close_buffer},
     {"pane_move_buffer", l_pane_move_buffer},
     {"layout", l_layout},
+    {"model_new", l_model_new},
+    {"model_list_objects", l_model_list_objects},
+    {"model_scene_stats", l_model_scene_stats},
+    {"model_primitive_info", l_model_primitive_info},
+    {"model_add_primitive", l_model_add_primitive},
+    {"model_delete_object", l_model_delete_object},
+    {"model_duplicate_object", l_model_duplicate_object},
+    {"model_set_transform", l_model_set_transform},
+    {"model_set_material", l_model_set_material},
+    {"model_set_texture", l_model_set_texture},
+    {"model_rename_object", l_model_rename_object},
+    {"model_set_visible", l_model_set_visible},
+    {"model_select", l_model_select},
+    {"model_get_selection", l_model_get_selection},
+    {"model_camera_set", l_model_camera_set},
+    {"model_camera_get", l_model_camera_get},
+    {"model_undo", l_model_undo},
+    {"model_redo", l_model_redo},
+    {"model_set_view", l_model_set_view},
+    {"model_frame_all", l_model_frame_all},
+    {"model_set_transforms", l_model_set_transforms},
+    {"model_set_materials", l_model_set_materials},
+    {"model_delete_objects", l_model_delete_objects},
+    {"model_duplicate_mirrored", l_model_duplicate_mirrored},
+    {"model_radial_array", l_model_radial_array},
+    {"model_group_objects", l_model_group_objects},
+    {"model_set_parent", l_model_set_parent},
+    {"model_list_vertices", l_model_list_vertices},
+    {"model_list_triangles", l_model_list_triangles},
+    {"model_set_vertex_position", l_model_set_vertex_position},
+    {"model_delete_vertices", l_model_delete_vertices},
+    {"model_merge_vertices", l_model_merge_vertices},
+    {"model_recalculate_normals", l_model_recalculate_normals},
+    {"model_subdivide_faces", l_model_subdivide_faces},
+    {"model_extrude_faces", l_model_extrude_faces},
+    {"model_dissolve_vertex", l_model_dissolve_vertex},
+    {"model_inset_faces", l_model_inset_faces},
+    {"model_add_vertex", l_model_add_vertex},
+    {"model_make_face", l_model_make_face},
+    {"model_merge_by_distance", l_model_merge_by_distance},
+    {"model_flip_normals", l_model_flip_normals},
     {nullptr, nullptr},
 };
 

@@ -268,6 +268,99 @@ Json BufferSummaryJson(const Editor &editor, int buffer_id) {
     return j;
 }
 
+// --- In-pane 3D modeler (MODEL3D.md) ---------------------------------------
+// Every model.* method below is a thin wrapper around one Editor::Model3D*
+// method (per this file's own header comment on the design), matching
+// lua_env.cpp's l_model_* bindings and mcp_bridge.cpp's mep_model_* tools
+// one-for-one -- see MEP_AGENT_API.md's "in-pane 3D modeler" section.
+
+/**
+ * @brief Reads an {x=,y=,z=} JSON object into a Vec3f (0 for any missing component).
+ * @param j The JSON value to read (must be an object; a non-object yields {0,0,0}).
+ * @return The parsed vector.
+ */
+Vec3f JsonToVec3(const Json &j) {
+    Vec3f v;
+    v.x = static_cast<float>(j.get("x").as_double(0));
+    v.y = static_cast<float>(j.get("y").as_double(0));
+    v.z = static_cast<float>(j.get("z").as_double(0));
+    return v;
+}
+
+/**
+ * @brief Serializes a Vec3f as an {x=,y=,z=} JSON object.
+ * @param v The vector to serialize.
+ * @return The JSON object.
+ */
+Json Vec3Json(const Vec3f &v) {
+    Json j = Json::Object();
+    j["x"] = v.x;
+    j["y"] = v.y;
+    j["z"] = v.z;
+    return j;
+}
+
+/**
+ * @brief Serializes one Object3D (id, name, visibility, transform, color, triangle count) to JSON.
+ * @param scene The scene the object belongs to (for its mesh's triangle count).
+ * @param obj The object to serialize.
+ * @return The JSON object.
+ */
+Json ObjectJson(const Scene &scene, const Object3D &obj) {
+    Json j = Json::Object();
+    j["id"] = obj.id;
+    j["name"] = obj.name;
+    j["visible"] = obj.visible;
+    j["position"] = Vec3Json(obj.position);
+    j["rotation"] = Vec3Json(obj.rotation_deg);
+    j["scale"] = Vec3Json(obj.scale);
+    Json color = Json::Object();
+    color["r"] = obj.color.r;
+    color["g"] = obj.color.g;
+    color["b"] = obj.color.b;
+    color["a"] = obj.color.a;
+    j["color"] = color;
+    j["tri_count"] = (obj.mesh_index >= 0 && obj.mesh_index < static_cast<int>(scene.meshes.size()))
+                          ? scene.meshes[static_cast<size_t>(obj.mesh_index)].TriangleCount()
+                          : 0;
+    j["parent"] = obj.parent;  // -1 if none (Phase 3 grouping)
+    j["texture_index"] = obj.texture_index;  // -1 if none (Phase 3 materials/textures)
+    j["vertex_count"] = (obj.mesh_index >= 0 && obj.mesh_index < static_cast<int>(scene.meshes.size()))
+                             ? scene.meshes[static_cast<size_t>(obj.mesh_index)].VertexCount()
+                             : 0;
+    return j;
+}
+
+/**
+ * @brief Looks up a 3D-modeler session by buffer id, throwing an RpcError if it isn't one.
+ * @param editor The editor to look up the session on.
+ * @param buffer_id The buffer id to look up.
+ * @return A const pointer to the Model3DSession.
+ */
+const Model3DSession &RequireModel3D(const Editor &editor, int buffer_id) {
+    const Model3DSession *sess = editor.GetModel3D(buffer_id);
+    if (!sess) throw RpcError{-32602, "not a 3D-modeler buffer: " + std::to_string(buffer_id)};
+    return *sess;
+}
+
+/**
+ * @brief Maps a primitive-kind name to a PrimitiveKind, throwing an RpcError if unrecognized.
+ * @param name The primitive kind name ("cube"/"sphere"/"cylinder"/"cone"/"plane"/"torus"/"wedge").
+ * @return The matching PrimitiveKind.
+ */
+PrimitiveKind RequirePrimitiveKind(const std::string &name) {
+    std::string s = name;
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (s == "cube") return PrimitiveKind::Cube;
+    if (s == "sphere") return PrimitiveKind::Sphere;
+    if (s == "cylinder") return PrimitiveKind::Cylinder;
+    if (s == "cone") return PrimitiveKind::Cone;
+    if (s == "plane") return PrimitiveKind::Plane;
+    if (s == "torus") return PrimitiveKind::Torus;
+    if (s == "wedge") return PrimitiveKind::Wedge;
+    throw RpcError{-32602, "unknown primitive kind: " + name};
+}
+
 // COLLAB_CURSORS_PLAN.md Phase 1g -- lets a connected agent see who else
 // is here (other agents, human :CollabJoin peers) and each agent's
 // status badge, the same information main.cpp's tab-bar chip strip
@@ -780,6 +873,404 @@ Json Dispatch(Editor &editor, Connection &conn, const std::string &method, const
         Json j = Json::Object();
         j["buffer_id"] = buffer_id;
         j["lines"] = std::move(lines);
+        return j;
+    }
+    if (method == "model.new") {
+        Json j = Json::Object();
+        j["buffer_id"] = editor.NewModel3DScene();
+        return j;
+    }
+    if (method == "model.primitiveInfo") {
+        // No buffer_id/scene involved -- lets an agent ask the tool
+        // directly for a primitive's pivot/dimensions instead of having to
+        // already know or go read MEP_AGENT_API.md's table (MODEL3D.md
+        // Phase 1.5's "not queryable at runtime" gap, closed here).
+        // DescribePrimitiveKind (model3d_doc.cpp) is the single source of
+        // truth this and MEP_AGENT_API.md's table both draw from.
+        static const PrimitiveKind kAllKinds[] = {PrimitiveKind::Cube,   PrimitiveKind::Sphere, PrimitiveKind::Cylinder,
+                                                    PrimitiveKind::Cone,  PrimitiveKind::Plane,   PrimitiveKind::Torus,
+                                                    PrimitiveKind::Wedge};
+        auto InfoJson = [](PrimitiveKind kind, const std::string &name) {
+            std::string pivot, dimensions;
+            DescribePrimitiveKind(kind, &pivot, &dimensions);
+            Json j = Json::Object();
+            j["kind"] = name;
+            j["pivot"] = pivot;
+            j["dimensions"] = dimensions;
+            return j;
+        };
+        if (params.contains("kind")) {
+            std::string name = params.get("kind").as_string();
+            PrimitiveKind want = RequirePrimitiveKind(name);
+            return InfoJson(want, name);
+        }
+        static const char *const kNames[] = {"cube", "sphere", "cylinder", "cone", "plane", "torus", "wedge"};
+        Json kinds = Json::Object();
+        for (size_t i = 0; i < sizeof(kAllKinds) / sizeof(kAllKinds[0]); i++) kinds[kNames[i]] = InfoJson(kAllKinds[i], kNames[i]);
+        Json j = Json::Object();
+        j["kinds"] = kinds;
+        return j;
+    }
+    if (method == "model.listObjects") {
+        const Model3DSession &sess = RequireModel3D(editor, params.get("buffer_id").as_int(-1));
+        Json arr = Json::Array();
+        for (const Object3D &obj : sess.scene.objects) arr.push_back(ObjectJson(sess.scene, obj));
+        return arr;
+    }
+    if (method == "model.sceneStats") {
+        const Model3DSession &sess = RequireModel3D(editor, params.get("buffer_id").as_int(-1));
+        Json j = Json::Object();
+        j["object_count"] = static_cast<int>(sess.scene.objects.size());
+        j["triangle_count"] = sess.scene.TotalTriangleCount();
+        return j;
+    }
+    if (method == "model.addPrimitive") {
+        const int buffer_id = params.get("buffer_id").as_int(-1);
+        PrimitiveKind kind = RequirePrimitiveKind(params.get("kind").as_string());
+        int id = editor.Model3DAddPrimitive(buffer_id, kind);
+        if (id < 0) throw RpcError{-32602, "not a 3D-modeler buffer: " + std::to_string(buffer_id)};
+        if (params.contains("transform") && params.get("transform").is_object()) {
+            const Json &t = params.get("transform");
+            bool has_position = t.contains("position");
+            bool has_rotation = t.contains("rotation");
+            bool has_scale = t.contains("scale");
+            editor.Model3DSetTransform(buffer_id, id, has_position, has_position ? JsonToVec3(t.get("position")) : Vec3f{},
+                                        has_rotation, has_rotation ? JsonToVec3(t.get("rotation")) : Vec3f{}, has_scale,
+                                        has_scale ? JsonToVec3(t.get("scale")) : Vec3f{1, 1, 1});
+        }
+        Json j = Json::Object();
+        j["object_id"] = id;
+        return j;
+    }
+    if (method == "model.deleteObject") {
+        bool ok = editor.Model3DDeleteObject(params.get("buffer_id").as_int(-1), params.get("object_id").as_int(-1),
+                                              params.get("cascade").as_bool(false));
+        Json j = Json::Object();
+        j["ok"] = ok;
+        return j;
+    }
+    if (method == "model.duplicateObject") {
+        int id = editor.Model3DDuplicateObject(params.get("buffer_id").as_int(-1), params.get("object_id").as_int(-1),
+                                                params.get("cascade").as_bool(false));
+        Json j = Json::Object();
+        j["object_id"] = id;
+        return j;
+    }
+    if (method == "model.setTransform") {
+        const int buffer_id = params.get("buffer_id").as_int(-1);
+        const int object_id = params.get("object_id").as_int(-1);
+        bool has_position = params.contains("position");
+        bool has_rotation = params.contains("rotation");
+        bool has_scale = params.contains("scale");
+        bool ok = editor.Model3DSetTransform(buffer_id, object_id, has_position, has_position ? JsonToVec3(params.get("position")) : Vec3f{},
+                                              has_rotation, has_rotation ? JsonToVec3(params.get("rotation")) : Vec3f{}, has_scale,
+                                              has_scale ? JsonToVec3(params.get("scale")) : Vec3f{1, 1, 1});
+        Json j = Json::Object();
+        j["ok"] = ok;
+        return j;
+    }
+    if (method == "model.setMaterial") {
+        const Json &color = params.get("color");
+        RgbaColorF c;
+        c.r = static_cast<float>(color.get("r").as_double(0));
+        c.g = static_cast<float>(color.get("g").as_double(0));
+        c.b = static_cast<float>(color.get("b").as_double(0));
+        c.a = static_cast<float>(color.contains("a") ? color.get("a").as_double(1.0) : 1.0);
+        bool ok = editor.Model3DSetMaterial(params.get("buffer_id").as_int(-1), params.get("object_id").as_int(-1), c);
+        Json j = Json::Object();
+        j["ok"] = ok;
+        return j;
+    }
+    if (method == "model.setTexture") {
+        bool ok = editor.Model3DSetTexture(params.get("buffer_id").as_int(-1), params.get("object_id").as_int(-1),
+                                            params.get("path").as_string());
+        Json j = Json::Object();
+        j["ok"] = ok;
+        return j;
+    }
+    if (method == "model.renameObject") {
+        bool ok = editor.Model3DRenameObject(params.get("buffer_id").as_int(-1), params.get("object_id").as_int(-1),
+                                              params.get("name").as_string());
+        Json j = Json::Object();
+        j["ok"] = ok;
+        return j;
+    }
+    if (method == "model.setVisible") {
+        bool ok = editor.Model3DSetVisible(params.get("buffer_id").as_int(-1), params.get("object_id").as_int(-1),
+                                            params.get("visible").as_bool(true));
+        Json j = Json::Object();
+        j["ok"] = ok;
+        return j;
+    }
+    if (method == "model.select") {
+        std::vector<int> ids;
+        for (const Json &v : params.get("object_ids").items()) ids.push_back(v.as_int(-1));
+        editor.Model3DSetSelection(params.get("buffer_id").as_int(-1), ids);
+        return Json::Object();
+    }
+    if (method == "model.getSelection") {
+        const Model3DSession &sess = RequireModel3D(editor, params.get("buffer_id").as_int(-1));
+        Json arr = Json::Array();
+        for (int id : sess.selection) arr.push_back(id);
+        return arr;
+    }
+    if (method == "model.cameraSet") {
+        Model3DCameraParams cp;
+        cp.has_target = params.contains("target");
+        if (cp.has_target) cp.target = JsonToVec3(params.get("target"));
+        cp.has_yaw = params.contains("yaw");
+        cp.yaw = static_cast<float>(params.get("yaw").as_double(0));
+        cp.has_pitch = params.contains("pitch");
+        cp.pitch = static_cast<float>(params.get("pitch").as_double(0));
+        cp.has_distance = params.contains("distance");
+        cp.distance = static_cast<float>(params.get("distance").as_double(0));
+        cp.has_fov = params.contains("fov");
+        cp.fov = static_cast<float>(params.get("fov").as_double(0));
+        editor.Model3DSetCamera(params.get("buffer_id").as_int(-1), cp);
+        return Json::Object();
+    }
+    if (method == "model.cameraGet") {
+        const Model3DSession &sess = RequireModel3D(editor, params.get("buffer_id").as_int(-1));
+        Json j = Json::Object();
+        j["target"] = Vec3Json(sess.camera_target);
+        j["yaw"] = sess.camera_yaw;
+        j["pitch"] = sess.camera_pitch;
+        j["distance"] = sess.camera_distance;
+        j["fov"] = sess.camera_fov;
+        return j;
+    }
+    if (method == "model.undo") {
+        editor.UndoModel3D(params.get("buffer_id").as_int(-1));
+        return Json::Object();
+    }
+    if (method == "model.redo") {
+        editor.RedoModel3D(params.get("buffer_id").as_int(-1));
+        return Json::Object();
+    }
+    if (method == "model.setView") {
+        bool has_show_grid = params.contains("show_grid");
+        bool has_wireframe = params.contains("wireframe");
+        bool has_snap = params.contains("snap");
+        editor.Model3DSetView(params.get("buffer_id").as_int(-1), has_show_grid, params.get("show_grid").as_bool(false),
+                               has_wireframe, params.get("wireframe").as_bool(false), has_snap, params.get("snap").as_bool(false));
+        return Json::Object();
+    }
+    if (method == "model.frameAll") {
+        editor.Model3DFrameAll(params.get("buffer_id").as_int(-1));
+        return Json::Object();
+    }
+    if (method == "model.setTransforms") {
+        const int buffer_id = params.get("buffer_id").as_int(-1);
+        std::vector<Model3DTransformUpdate> updates;
+        for (const Json &item : params.get("updates").items()) {
+            Model3DTransformUpdate u;
+            u.object_id = item.get("object_id").as_int(-1);
+            u.has_position = item.contains("position");
+            if (u.has_position) u.position = JsonToVec3(item.get("position"));
+            u.has_rotation = item.contains("rotation");
+            if (u.has_rotation) u.rotation_deg = JsonToVec3(item.get("rotation"));
+            u.has_scale = item.contains("scale");
+            if (u.has_scale) u.scale = JsonToVec3(item.get("scale"));
+            updates.push_back(u);
+        }
+        Json j = Json::Object();
+        j["applied"] = editor.Model3DSetTransformsBatch(buffer_id, updates);
+        return j;
+    }
+    if (method == "model.setMaterials") {
+        const int buffer_id = params.get("buffer_id").as_int(-1);
+        std::vector<Model3DMaterialUpdate> updates;
+        for (const Json &item : params.get("updates").items()) {
+            Model3DMaterialUpdate u;
+            u.object_id = item.get("object_id").as_int(-1);
+            const Json &color = item.get("color");
+            u.color.r = static_cast<float>(color.get("r").as_double(0));
+            u.color.g = static_cast<float>(color.get("g").as_double(0));
+            u.color.b = static_cast<float>(color.get("b").as_double(0));
+            u.color.a = static_cast<float>(color.contains("a") ? color.get("a").as_double(1.0) : 1.0);
+            updates.push_back(u);
+        }
+        Json j = Json::Object();
+        j["applied"] = editor.Model3DSetMaterialsBatch(buffer_id, updates);
+        return j;
+    }
+    if (method == "model.deleteObjects") {
+        std::vector<int> ids;
+        for (const Json &v : params.get("object_ids").items()) ids.push_back(v.as_int(-1));
+        Json j = Json::Object();
+        j["deleted"] = editor.Model3DDeleteObjectsBatch(params.get("buffer_id").as_int(-1), ids,
+                                                          params.get("cascade").as_bool(false));
+        return j;
+    }
+    if (method == "model.duplicateMirrored") {
+        std::string axis = params.get("axis").as_string();
+        int id = editor.Model3DDuplicateMirrored(params.get("buffer_id").as_int(-1), params.get("object_id").as_int(-1),
+                                                  axis.empty() ? '\0' : axis[0]);
+        Json j = Json::Object();
+        j["object_id"] = id;
+        return j;
+    }
+    if (method == "model.radialArray") {
+        std::string axis = params.get("axis").as_string();
+        std::vector<int> ids = editor.Model3DRadialArray(params.get("buffer_id").as_int(-1), params.get("object_id").as_int(-1),
+                                                          params.get("count").as_int(0), axis.empty() ? '\0' : axis[0]);
+        Json arr = Json::Array();
+        for (int id : ids) arr.push_back(id);
+        return arr;
+    }
+    if (method == "model.groupObjects") {
+        std::vector<int> ids;
+        for (const Json &v : params.get("object_ids").items()) ids.push_back(v.as_int(-1));
+        Json j = Json::Object();
+        j["group_id"] = editor.Model3DGroupObjects(params.get("buffer_id").as_int(-1), ids);
+        return j;
+    }
+    if (method == "model.setParent") {
+        bool ok = editor.Model3DSetParent(params.get("buffer_id").as_int(-1), params.get("object_id").as_int(-1),
+                                           params.contains("parent_id") ? params.get("parent_id").as_int(-1) : -1);
+        Json j = Json::Object();
+        j["ok"] = ok;
+        return j;
+    }
+    if (method == "model.listVertices") {
+        const Model3DSession &sess = RequireModel3D(editor, params.get("buffer_id").as_int(-1));
+        const Object3D *obj = sess.scene.FindObject(params.get("object_id").as_int(-1));
+        if (!obj) throw RpcError{-32602, "no such object"};
+        Json arr = Json::Array();
+        if (obj->mesh_index >= 0 && obj->mesh_index < static_cast<int>(sess.scene.meshes.size())) {
+            const MeshData &md = sess.scene.meshes[static_cast<size_t>(obj->mesh_index)];
+            bool has_normals = !md.normals.empty();
+            for (int v = 0; v < md.VertexCount(); v++) {
+                Json vj = Json::Object();
+                vj["index"] = v;
+                vj["x"] = md.positions[static_cast<size_t>(v) * 3 + 0];
+                vj["y"] = md.positions[static_cast<size_t>(v) * 3 + 1];
+                vj["z"] = md.positions[static_cast<size_t>(v) * 3 + 2];
+                if (has_normals) {
+                    vj["nx"] = md.normals[static_cast<size_t>(v) * 3 + 0];
+                    vj["ny"] = md.normals[static_cast<size_t>(v) * 3 + 1];
+                    vj["nz"] = md.normals[static_cast<size_t>(v) * 3 + 2];
+                }
+                arr.push_back(vj);
+            }
+        }
+        return arr;
+    }
+    if (method == "model.listTriangles") {
+        const Model3DSession &sess = RequireModel3D(editor, params.get("buffer_id").as_int(-1));
+        const Object3D *obj = sess.scene.FindObject(params.get("object_id").as_int(-1));
+        if (!obj) throw RpcError{-32602, "no such object"};
+        Json arr = Json::Array();
+        if (obj->mesh_index >= 0 && obj->mesh_index < static_cast<int>(sess.scene.meshes.size())) {
+            const MeshData &md = sess.scene.meshes[static_cast<size_t>(obj->mesh_index)];
+            for (int t = 0; t < md.TriangleCount(); t++) {
+                Json tj = Json::Object();
+                tj["index"] = t;
+                tj["a"] = static_cast<int>(md.indices[static_cast<size_t>(t) * 3 + 0]);
+                tj["b"] = static_cast<int>(md.indices[static_cast<size_t>(t) * 3 + 1]);
+                tj["c"] = static_cast<int>(md.indices[static_cast<size_t>(t) * 3 + 2]);
+                arr.push_back(tj);
+            }
+        }
+        return arr;
+    }
+    if (method == "model.setVertexPosition") {
+        bool ok = editor.Model3DSetVertexPosition(params.get("buffer_id").as_int(-1), params.get("object_id").as_int(-1),
+                                                    params.get("vertex_index").as_int(-1), JsonToVec3(params.get("position")));
+        Json j = Json::Object();
+        j["ok"] = ok;
+        return j;
+    }
+    if (method == "model.deleteVertices") {
+        std::vector<int> vertex_indices;
+        for (const Json &v : params.get("vertex_indices").items()) vertex_indices.push_back(v.as_int(-1));
+        bool ok = editor.Model3DDeleteVertices(params.get("buffer_id").as_int(-1), params.get("object_id").as_int(-1), vertex_indices);
+        Json j = Json::Object();
+        j["ok"] = ok;
+        return j;
+    }
+    if (method == "model.mergeVertices") {
+        std::vector<int> vertex_indices;
+        for (const Json &v : params.get("vertex_indices").items()) vertex_indices.push_back(v.as_int(-1));
+        bool ok = editor.Model3DMergeVertices(params.get("buffer_id").as_int(-1), params.get("object_id").as_int(-1), vertex_indices);
+        Json j = Json::Object();
+        j["ok"] = ok;
+        return j;
+    }
+    if (method == "model.recalculateNormals") {
+        bool ok = editor.Model3DRecalculateNormals(params.get("buffer_id").as_int(-1), params.get("object_id").as_int(-1));
+        Json j = Json::Object();
+        j["ok"] = ok;
+        return j;
+    }
+    if (method == "model.subdivideFaces") {
+        std::vector<int> vertex_indices;
+        for (const Json &v : params.get("vertex_indices").items()) vertex_indices.push_back(v.as_int(-1));
+        std::vector<int> new_centroids = editor.Model3DSubdivideFaces(params.get("buffer_id").as_int(-1),
+                                                                        params.get("object_id").as_int(-1), vertex_indices);
+        Json j = Json::Object();
+        Json arr = Json::Array();
+        for (int v : new_centroids) arr.push_back(Json(v));
+        j["new_vertex_indices"] = arr;
+        return j;
+    }
+    if (method == "model.extrudeFaces") {
+        std::vector<int> vertex_indices;
+        for (const Json &v : params.get("vertex_indices").items()) vertex_indices.push_back(v.as_int(-1));
+        float distance = static_cast<float>(params.get("distance").as_double(0.0));
+        std::vector<int> new_cap = editor.Model3DExtrudeFaces(params.get("buffer_id").as_int(-1), params.get("object_id").as_int(-1),
+                                                                vertex_indices, distance);
+        Json j = Json::Object();
+        Json arr = Json::Array();
+        for (int v : new_cap) arr.push_back(Json(v));
+        j["new_vertex_indices"] = arr;
+        return j;
+    }
+    if (method == "model.dissolveVertex") {
+        bool ok = editor.Model3DDissolveVertex(params.get("buffer_id").as_int(-1), params.get("object_id").as_int(-1),
+                                                params.get("vertex_index").as_int(-1));
+        Json j = Json::Object();
+        j["ok"] = ok;
+        return j;
+    }
+    if (method == "model.insetFaces") {
+        std::vector<int> vertex_indices;
+        for (const Json &v : params.get("vertex_indices").items()) vertex_indices.push_back(v.as_int(-1));
+        float amount = static_cast<float>(params.get("amount").as_double(0.0));
+        std::vector<int> new_cap = editor.Model3DInsetFaces(params.get("buffer_id").as_int(-1), params.get("object_id").as_int(-1),
+                                                              vertex_indices, amount);
+        Json j = Json::Object();
+        Json arr = Json::Array();
+        for (int v : new_cap) arr.push_back(Json(v));
+        j["new_vertex_indices"] = arr;
+        return j;
+    }
+    if (method == "model.addVertex") {
+        int new_index = editor.Model3DAddVertex(params.get("buffer_id").as_int(-1), params.get("object_id").as_int(-1),
+                                                  JsonToVec3(params.get("position")));
+        Json j = Json::Object();
+        j["vertex_index"] = new_index;
+        return j;
+    }
+    if (method == "model.makeFace") {
+        std::vector<int> vertex_indices;
+        for (const Json &v : params.get("vertex_indices").items()) vertex_indices.push_back(v.as_int(-1));
+        bool ok = editor.Model3DMakeFace(params.get("buffer_id").as_int(-1), params.get("object_id").as_int(-1), vertex_indices);
+        Json j = Json::Object();
+        j["ok"] = ok;
+        return j;
+    }
+    if (method == "model.mergeByDistance") {
+        float threshold = static_cast<float>(params.get("threshold").as_double(0.0001));
+        int removed = editor.Model3DMergeByDistance(params.get("buffer_id").as_int(-1), params.get("object_id").as_int(-1), threshold);
+        Json j = Json::Object();
+        j["removed_count"] = removed;
+        return j;
+    }
+    if (method == "model.flipNormals") {
+        bool ok = editor.Model3DFlipNormals(params.get("buffer_id").as_int(-1), params.get("object_id").as_int(-1));
+        Json j = Json::Object();
+        j["ok"] = ok;
         return j;
     }
     auto ui_it = UiMethods().find(method);

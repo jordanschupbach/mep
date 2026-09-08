@@ -447,6 +447,299 @@ const ToolSpec kTools[] = {
      "most editing, mep_buffer_insert_text is far more direct -- reach for this only when you specifically need "
      "real keystrokes, e.g. exercising mep's own key handling or a text field with no buffer-level API.",
      R"({"type":"object","properties":{"text":{"type":"string"}},"required":["text"]})", false},
+
+    // --- In-pane 3D modeler (MODEL3D.md) -- unlike the raster image editor
+    // (UI-automation only, no structured API), this gives you a real
+    // scene-authoring surface: build/inspect/transform a scene with these
+    // tools alone, no mep_mouse_*/mep_screenshot needed. Either open a
+    // model file with mep_file_open (.obj/.gltf/.glb/.iqm/.vox/.m3d/.blend
+    // -- lands directly in the 3D modeler) or start from nothing with
+    // mep_model_new, then use `buffer_id` from mep_state_dump/
+    // mep_session_info/mep_model_new's own return value. See
+    // MEP_AGENT_API.md's "in-pane 3D modeler" section for a worked example.
+    {"mep_model_new", "model.new",
+     "Create a fresh, empty 3D-modeler scene (no source file needed) and switch to it -- the "
+     "\"build from scratch\" entry point. Returns the new buffer's id.",
+     kNoInput, false},
+    {"mep_model_list_objects", "model.listObjects",
+     "List every object in a 3D-modeler scene: id, name, visibility, position/rotation/scale, base color, and "
+     "triangle count.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"}},"required":["buffer_id"]})", true},
+    {"mep_model_scene_stats", "model.sceneStats", "Get a 3D-modeler scene's object count and total triangle count.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"}},"required":["buffer_id"]})", true},
+    {"mep_model_primitive_info", "model.primitiveInfo",
+     "Look up a primitive kind's pivot point and default dimensions (e.g. cylinder/cone are base-pivoted and extend "
+     "+Y, not centered) -- pass kind for just that one, or omit it to get every kind at once. No buffer_id needed, "
+     "this is static reference data, not scene state. Use this before stacking parts instead of having to already "
+     "know or go re-read MEP_AGENT_API.md's pivot table.",
+     R"({"type":"object","properties":{"kind":{"type":"string","enum":["cube","sphere","cylinder","cone","plane","torus","wedge"]}}})",
+     true},
+    {"mep_model_add_primitive", "model.addPrimitive",
+     "Add a procedurally generated primitive object (cube/sphere/cylinder/cone/plane/torus/wedge) to a 3D-modeler "
+     "scene, optionally setting its initial transform. Returns the new object's id.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"kind":{"type":"string","enum":["cube","sphere","cylinder","cone","plane","torus","wedge"]},"transform":{"type":"object","description":"optional position/rotation/scale, each an optional {x,y,z}; rotation in degrees","properties":{"position":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"}}},"rotation":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"}}},"scale":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"}}}}}},"required":["buffer_id","kind"]})",
+     false},
+    {"mep_model_delete_object", "model.deleteObject",
+     "Delete an object from a 3D-modeler scene. cascade (default false) also deletes every transitive "
+     "descendant (Scene::Descendants) instead of just un-parenting them -- a real 'delete this group "
+     "and everything in it.'",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"object_id":{"type":"integer"},"cascade":{"type":"boolean"}},"required":["buffer_id","object_id"]})",
+     false},
+    {"mep_model_duplicate_object", "model.duplicateObject",
+     "Duplicate an object (same mesh, transform, and material) in a 3D-modeler scene. Returns the new "
+     "object's id. cascade (default false) also duplicates every transitive descendant, re-parented to "
+     "mirror the original hierarchy under the new copy -- a real 'duplicate this group and everything "
+     "in it,' rather than just the one top-level node (whose children would otherwise still point at "
+     "the original).",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"object_id":{"type":"integer"},"cascade":{"type":"boolean"}},"required":["buffer_id","object_id"]})",
+     false},
+    {"mep_model_set_transform", "model.setTransform",
+     "Set an object's position/rotation/scale in a 3D-modeler scene -- each of the three is optional, only the "
+     "ones given are changed.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"object_id":{"type":"integer"},"position":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"}}},"rotation":{"type":"object","description":"Euler XYZ, degrees","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"}}},"scale":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"}}}},"required":["buffer_id","object_id"]})",
+     false},
+    {"mep_model_set_material", "model.setMaterial", "Set an object's base color (0..1 floats; a defaults to 1.0) in a 3D-modeler scene.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"object_id":{"type":"integer"},"color":{"type":"object","properties":{"r":{"type":"number"},"g":{"type":"number"},"b":{"type":"number"},"a":{"type":"number"}},"required":["r","g","b"]}},"required":["buffer_id","object_id","color"]})",
+     false},
+    {"mep_model_set_texture", "model.setTexture",
+     "Set (or, with an empty path, clear) an object's base-color/albedo texture in a 3D-modeler "
+     "scene, loaded from an image file (PNG/JPG/BMP/...). The texture is sampled and then tinted by "
+     "the object's own mep_model_set_material color, same as glTF's baseColorTexture + "
+     "baseColorFactor. No normal/metallic-roughness/emissive maps -- this is base color only.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"object_id":{"type":"integer"},"path":{"type":"string","description":"image file path, or empty string to clear"}},"required":["buffer_id","object_id","path"]})",
+     false},
+    {"mep_model_rename_object", "model.renameObject", "Rename an object in a 3D-modeler scene.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"object_id":{"type":"integer"},"name":{"type":"string"}},"required":["buffer_id","object_id","name"]})",
+     false},
+    {"mep_model_set_visible", "model.setVisible", "Show or hide an object in a 3D-modeler scene (kept, not deleted).",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"object_id":{"type":"integer"},"visible":{"type":"boolean"}},"required":["buffer_id","object_id","visible"]})",
+     false},
+    {"mep_model_select", "model.select",
+     "Replace the current selection in a 3D-modeler scene (silently drops any object_id that doesn't exist). Not "
+     "an undoable edit.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"object_ids":{"type":"array","items":{"type":"integer"}}},"required":["buffer_id","object_ids"]})",
+     false},
+    {"mep_model_get_selection", "model.getSelection", "Get the currently selected object ids in a 3D-modeler scene.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"}},"required":["buffer_id"]})", true},
+    {"mep_model_camera_set", "model.cameraSet",
+     "Update a 3D-modeler pane's orbit camera (target/yaw/pitch/distance/fov) -- each field is optional, only the "
+     "ones given are changed. Not an undoable edit.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"target":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"}}},"yaw":{"type":"number","description":"degrees"},"pitch":{"type":"number","description":"degrees, clamped to [-89,89]"},"distance":{"type":"number"},"fov":{"type":"number","description":"degrees"}},"required":["buffer_id"]})",
+     false},
+    {"mep_model_camera_get", "model.cameraGet", "Get a 3D-modeler pane's current orbit camera state.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"}},"required":["buffer_id"]})", true},
+    {"mep_model_undo", "model.undo", "Undo the last edit in a 3D-modeler scene.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"}},"required":["buffer_id"]})", false},
+    {"mep_model_redo", "model.redo", "Redo the last undone edit in a 3D-modeler scene.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"}},"required":["buffer_id"]})", false},
+    {"mep_model_render_to_image", "model.renderToImage",
+     "Render a 3D-modeler scene's viewport to a PNG file -- a clean render (no selection outline, no "
+     "menubar/sidebars) at whatever resolution you ask for, unlike mep_screenshot which always captures the "
+     "whole mep window. Needs the real GUI window (same requirement as mep_screenshot/mep_mouse_*).",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"path":{"type":"string","description":"destination PNG path"},"width":{"type":"integer","description":"default 1024, clamped to [16,4096]"},"height":{"type":"integer","description":"default 768, clamped to [16,4096]"},"transparent":{"type":"boolean","description":"clear to a transparent background instead of the theme background; default false"},"show_grid":{"type":"boolean","description":"default: the pane's own current grid setting"},"wireframe":{"type":"boolean","description":"default: the pane's own current wireframe setting"}},"required":["buffer_id","path"]})",
+     true},
+    {"mep_model_set_view", "model.setView",
+     "Set a 3D-modeler pane's grid/wireframe/snap view toggles -- each field optional, only the ones given are "
+     "changed. Not an undoable edit. The same thing the tool sidebar's Grid/Wireframe/Snap buttons do, exposed for "
+     "scripting. snap makes subsequent Move/Rotate/Scale gizmo and free drags round to a fixed grid step (0.25 "
+     "units), angle step (15 degrees), or scale step (0.25); it does not affect mep_model_set_transform, which "
+     "always sets the exact value given.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"show_grid":{"type":"boolean"},"wireframe":{"type":"boolean"},"snap":{"type":"boolean"}},"required":["buffer_id"]})",
+     false},
+    {"mep_model_frame_all", "model.frameAll",
+     "Reframe a 3D-modeler pane's orbit camera (target + distance) to fit the whole scene's true world bounds "
+     "-- yaw/pitch are left as they are. Not an undoable edit.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"}},"required":["buffer_id"]})", false},
+    {"mep_model_set_transforms", "model.setTransforms",
+     "Set position/rotation/scale on many objects in one call (each entry's fields are independently "
+     "optional, only given ones are changed) -- for repositioning several objects without one round-trip "
+     "per object. Returns how many updates were actually applied.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"updates":{"type":"array","items":{"type":"object","properties":{"object_id":{"type":"integer"},"position":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"}}},"rotation":{"type":"object","description":"Euler XYZ, degrees","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"}}},"scale":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"}}}},"required":["object_id"]}}},"required":["buffer_id","updates"]})",
+     false},
+    {"mep_model_set_materials", "model.setMaterials",
+     "Set base color on many objects in one call. Returns how many updates were actually applied.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"updates":{"type":"array","items":{"type":"object","properties":{"object_id":{"type":"integer"},"color":{"type":"object","properties":{"r":{"type":"number"},"g":{"type":"number"},"b":{"type":"number"},"a":{"type":"number"}},"required":["r","g","b"]}},"required":["object_id","color"]}}},"required":["buffer_id","updates"]})",
+     false},
+    {"mep_model_delete_objects", "model.deleteObjects",
+     "Delete many objects from a 3D-modeler scene in one call. Returns how many were actually deleted. "
+     "Optional cascade (default false, applied to every object_id) also deletes each one's whole "
+     "descendant subtree, same as mep_model_delete_object's own cascade flag.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"object_ids":{"type":"array","items":{"type":"integer"}},"cascade":{"type":"boolean"}},"required":["buffer_id","object_ids"]})",
+     false},
+    {"mep_model_duplicate_mirrored", "model.duplicateMirrored",
+     "Duplicate an object with its position mirrored across the given world axis through the origin, "
+     "reflecting the copy's own rotation to match (exact for a simple single-axis rotation -- a compound "
+     "rotation may need a manual touch-up afterward). Returns the new object's id.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"object_id":{"type":"integer"},"axis":{"type":"string","enum":["x","y","z"]}},"required":["buffer_id","object_id","axis"]})",
+     false},
+    {"mep_model_radial_array", "model.radialArray",
+     "Duplicate an object count-1 times, evenly spaced in a ring around the given axis through the origin -- "
+     "e.g. a fin offset on X, arrayed 4x around Y, lands one at each 90-degree step, each still facing "
+     "outward the way the original did. The original object is left as-is and not counted. Returns the new "
+     "objects' ids, in order.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"object_id":{"type":"integer"},"count":{"type":"integer","description":"total copies including the original -- this many minus one new objects are created"},"axis":{"type":"string","enum":["x","y","z"]}},"required":["buffer_id","object_id","count","axis"]})",
+     false},
+    {"mep_model_group_objects", "model.groupObjects",
+     "Create a new empty group node (no mesh, invisible in the viewport, positioned at the centroid of "
+     "the grouped objects) and parent every object in object_ids under it. Object3D.parent is purely an "
+     "organizational/group-move link -- it is never composed into a child's own transform, so grouping "
+     "does not move or change how anything renders. Returns the new group's object id.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"object_ids":{"type":"array","items":{"type":"integer"}}},"required":["buffer_id","object_ids"]})",
+     false},
+    {"mep_model_set_parent", "model.setParent",
+     "Set (or clear) one object's parent, for Outliner grouping/nesting and Move-tool group-drag "
+     "cascading. Fails (ok: false) on a nonexistent object/parent, parent_id == object_id, or a "
+     "parent_id that's already a descendant of object_id (would create a cycle).",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"object_id":{"type":"integer"},"parent_id":{"type":"integer","description":"-1 (or omit) to clear/un-parent"}},"required":["buffer_id","object_id"]})",
+     false},
+    {"mep_model_list_vertices", "model.listVertices",
+     "List every vertex of an object's mesh: index, local-space (pre-object-transform) x/y/z, and (when "
+     "the mesh has normals) nx/ny/nz. The first real vertex-level mesh-editing primitive -- combine "
+     "with mep_model_set_vertex_position to nudge individual vertices instead of only whole-object "
+     "transforms.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"object_id":{"type":"integer"}},"required":["buffer_id","object_id"]})",
+     true},
+    {"mep_model_list_triangles", "model.listTriangles",
+     "List every triangle of an object's mesh: index and the vertex-unit indices (a/b/c) of its 3 "
+     "corners. Read-only mesh-connectivity introspection -- without this, there's no way to discover "
+     "which vertices actually form a triangle together (the thing mep_model_subdivide_faces/"
+     "extrude_faces/inset_faces/dissolve_vertex all key off of) besides positions alone. Combine with "
+     "mep_model_list_vertices to find, e.g., which vertex triples share the same position (candidates "
+     "for mep_model_merge_vertices) or which edges only appear in one triangle (a mesh boundary).",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"object_id":{"type":"integer"}},"required":["buffer_id","object_id"]})",
+     true},
+    {"mep_model_set_vertex_position", "model.setVertexPosition",
+     "Set one vertex's local-space (pre-object-transform) position on an object's mesh. If the "
+     "object currently shares its mesh with another object (a radial array, a mirrored duplicate, a "
+     "multi-object import), it's transparently given its own private copy first, so this never "
+     "deforms other objects. vertex_index is in vertex units (from mep_model_list_vertices or "
+     "mep_model_list_objects' own vertex_count), not a raw float offset.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"object_id":{"type":"integer"},"vertex_index":{"type":"integer"},"position":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"}},"required":["x","y","z"]}},"required":["buffer_id","object_id","vertex_index","position"]})",
+     false},
+    {"mep_model_delete_vertices", "model.deleteVertices",
+     "Delete the given vertices (vertex-units indices) and every triangle referencing any of them "
+     "from an object's mesh -- leaves a hole rather than retriangulating/filling it, and does not "
+     "attempt to reconnect the surrounding geometry. Safely clones a shared mesh first, same as "
+     "mep_model_set_vertex_position. Out-of-range/duplicate indices are harmless no-ops.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"object_id":{"type":"integer"},"vertex_indices":{"type":"array","items":{"type":"integer"}}},"required":["buffer_id","object_id","vertex_indices"]})",
+     false},
+    {"mep_model_merge_vertices", "model.mergeVertices",
+     "Weld the given vertices (vertex-units indices) of an object's mesh into a single vertex at their "
+     "averaged position/normal/texcoord -- any triangle that becomes degenerate as a result (two or "
+     "more of its corners now the same vertex) is dropped rather than kept as zero-area. Safely clones "
+     "a shared mesh first, same as mep_model_set_vertex_position. Out-of-range/duplicate indices are "
+     "harmless no-ops; fewer than 2 distinct valid indices is a no-op (nothing to merge).",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"object_id":{"type":"integer"},"vertex_indices":{"type":"array","items":{"type":"integer"}}},"required":["buffer_id","object_id","vertex_indices"]})",
+     false},
+    {"mep_model_recalculate_normals", "model.recalculateNormals",
+     "Recompute an object's mesh's per-vertex normals from its current triangle geometry (smooth -- "
+     "each vertex's normal is the normalized, area-weighted average of every adjacent triangle's own "
+     "normal). Has zero visible effect on this app's own rendering (its default shaders never read "
+     "vertex normals) -- use it to fix up normals left stale by mep_model_set_vertex_position/"
+     "delete_vertices/merge_vertices before exporting for a tool that does read them, e.g. Blender or a "
+     "glTF viewer with real lighting. Safely clones a shared mesh first, same as "
+     "mep_model_set_vertex_position.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"object_id":{"type":"integer"}},"required":["buffer_id","object_id"]})",
+     false},
+    {"mep_model_subdivide_faces", "model.subdivideFaces",
+     "Centroid-subdivide every triangle of an object's mesh whose all 3 corners are in vertex_indices -- "
+     "this app's stand-in for real face-selection tooling (same convention as merge/extrude): a 'face' "
+     "here just means whichever triangles are fully covered by the given vertex set. Each such triangle "
+     "gets one new vertex at its centroid and is replaced by 3 new triangles fanning out to it; a "
+     "triangle with fewer than all 3 corners selected is left untouched. Safely clones a shared mesh "
+     "first, same as mep_model_set_vertex_position. Returns the newly-created centroid vertex indices "
+     "(empty if no triangle was fully covered).",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"object_id":{"type":"integer"},"vertex_indices":{"type":"array","items":{"type":"integer"}}},"required":["buffer_id","object_id","vertex_indices"]})",
+     false},
+    {"mep_model_extrude_faces", "model.extrudeFaces",
+     "Extrude the face formed by every triangle of an object's mesh whose all 3 corners are in "
+     "vertex_indices (same 'face' convention as mep_model_subdivide_faces), by distance along that "
+     "face's own geometrically-derived normal -- not read from stored per-vertex normals, which may be "
+     "stale or absent. Every vertex used by a selected triangle is duplicated and offset; the selected "
+     "triangles are re-pointed at the duplicates (lifting the cap into place) while a wall quad connects "
+     "the untouched original ring to the new one along each *boundary* edge of the selected group (an "
+     "edge shared between two selected triangles, e.g. a face's own diagonal, is correctly left un-"
+     "walled). A vertex also used by a triangle outside the selection (e.g. a cube's adjacent side face "
+     "sharing a top corner) naturally stays attached there too. Extrusion follows actual mesh "
+     "*connectivity*, not spatial adjacency -- a raylib-generated primitive's unwelded per-face vertices "
+     "(see mep_model_merge_vertices) mean selecting an entire such mesh extrudes each of its faces "
+     "independently; weld first if that's not wanted. Safely clones a shared mesh first, same as "
+     "mep_model_set_vertex_position. Returns the new cap vertex indices (empty if no triangle was fully "
+     "covered, or the selection was degenerate/zero-area) so the caller can immediately continue editing "
+     "the just-extruded face.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"object_id":{"type":"integer"},"vertex_indices":{"type":"array","items":{"type":"integer"}},"distance":{"type":"number"}},"required":["buffer_id","object_id","vertex_indices","distance"]})",
+     false},
+    {"mep_model_dissolve_vertex", "model.dissolveVertex",
+     "Remove one vertex from an object's mesh and patch the surrounding faces back together, unlike "
+     "mep_model_delete_vertices' own deliberately-left hole. Only works cleanly on a proper interior "
+     "vertex whose incident triangles form a single closed fan around it; when they don't (a mesh-"
+     "boundary vertex, a non-manifold fan, or an isolated vertex with no incident triangles) this "
+     "silently falls back to the same hole-leaving removal mep_model_delete_vertices does, rather than "
+     "risk a malformed retriangulation -- there's no way to tell from the response which path was taken "
+     "besides comparing triangle counts before/after. The retriangulation is a simple fan (not a "
+     "'nicest possible' one), so a very non-convex surrounding ring can produce a visibly thin sliver "
+     "triangle or two. Safely clones a shared mesh first, same as mep_model_set_vertex_position.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"object_id":{"type":"integer"},"vertex_index":{"type":"integer"}},"required":["buffer_id","object_id","vertex_index"]})",
+     false},
+    {"mep_model_inset_faces", "model.insetFaces",
+     "Inset the face formed by every triangle of an object's mesh whose all 3 corners are in "
+     "vertex_indices (same 'face' convention as mep_model_subdivide_faces/mep_model_extrude_faces): "
+     "every vertex the face uses is duplicated and moved toward the face group's own centroid (the "
+     "average position of every vertex it uses) by amount, a 0..1 fraction (clamped) -- 0 is a "
+     "degenerate zero-width inset, 1 fully collapses the new cap onto the centroid. The selected "
+     "triangles are re-pointed at the duplicates (shrinking the cap in place, no lift along any normal, "
+     "unlike mep_model_extrude_faces), and a wall quad connects the untouched original ring to the new "
+     "shrunk one along each boundary edge of the group (an edge shared between two selected triangles, "
+     "e.g. a face's own diagonal, is correctly left un-walled). Safely clones a shared mesh first, same "
+     "as mep_model_set_vertex_position. Returns the new cap vertex indices (empty if no triangle was "
+     "fully covered) -- chain straight into mep_model_extrude_faces on the returned indices for a "
+     "raised-platform-with-border look.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"object_id":{"type":"integer"},"vertex_indices":{"type":"array","items":{"type":"integer"}},"amount":{"type":"number"}},"required":["buffer_id","object_id","vertex_indices","amount"]})",
+     false},
+    {"mep_model_add_vertex", "model.addVertex",
+     "Append one new, isolated vertex to an object's mesh at the given local-space (pre-object-"
+     "transform) position -- no triangle references it, so it won't render until connected via "
+     "mep_model_make_face or similar. The deliberate counterpart to subdivide/extrude/inset (which all "
+     "work on existing triangles): this is how to build genuinely new geometry from scratch. Safely "
+     "clones a shared mesh first, same as mep_model_set_vertex_position. Returns the new vertex's index "
+     "(vertex units), or -1 if the object doesn't exist or has no mesh.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"object_id":{"type":"integer"},"position":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"}},"required":["x","y","z"]}},"required":["buffer_id","object_id","position"]})",
+     false},
+    {"mep_model_make_face", "model.makeFace",
+     "Create new triangle(s) of an object's mesh connecting existing vertices -- fan-triangulated from "
+     "the first of vertex_indices (3 vertices become 1 new triangle, 4 become 2, a pentagon 3), "
+     "Blender's own 'Make Edge/Face' (F key) in spirit. Unlike mep_model_subdivide_faces/extrude_faces/"
+     "inset_faces, the given vertices don't need to already form a triangle -- this is how to connect "
+     "vertices (including ones just added via mep_model_add_vertex) that aren't adjacent yet. No new "
+     "vertices are created, and no check is made for whether the resulting triangle(s) duplicate or "
+     "overlap ones that already exist; winding (and so which side ends up 'front') follows the given "
+     "vertex order. Safely clones a shared mesh first, same as mep_model_set_vertex_position. Returns "
+     "false if fewer than 3 distinct valid vertices remain after filtering duplicates/out-of-range "
+     "entries.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"object_id":{"type":"integer"},"vertex_indices":{"type":"array","items":{"type":"integer"}}},"required":["buffer_id","object_id","vertex_indices"]})",
+     false},
+    {"mep_model_merge_by_distance", "model.mergeByDistance",
+     "Automatically weld every group of an object's mesh's vertices whose positions are all mutually "
+     "within threshold of each other -- Blender's own 'Merge by Distance'/'Remove Doubles', and the "
+     "'just fix all of them' counterpart to mep_model_merge_vertices (which needs the caller to already "
+     "know which indices are duplicates). Especially useful right after importing/generating a "
+     "primitive, since raylib's own generated meshes emit unwelded duplicate vertices at every shared "
+     "corner. threshold=0 welds only exact (bit-identical) position duplicates; grouping is transitive "
+     "through a chain of close-enough pairs. Each group is welded to its averaged position/normal/"
+     "texcoord, and a triangle that becomes degenerate as a result is dropped, same as "
+     "mep_model_merge_vertices. Safely clones a shared mesh first, same as "
+     "mep_model_set_vertex_position. Returns how many vertices were removed (0 if nothing was within "
+     "threshold of anything else).",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"object_id":{"type":"integer"},"threshold":{"type":"number"}},"required":["buffer_id","object_id","threshold"]})",
+     false},
+    {"mep_model_flip_normals", "model.flipNormals",
+     "Reverse every triangle's winding and negate every vertex normal of an object's mesh, flipping "
+     "which side renders as 'front' -- the fix for geometry that came out inside-out, e.g. a "
+     "mep_model_make_face call given vertices in the wrong order, or some imported files. Operates on "
+     "the whole mesh, not a selection. Safely clones a shared mesh first, same as "
+     "mep_model_set_vertex_position.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"object_id":{"type":"integer"}},"required":["buffer_id","object_id"]})",
+     false},
 };
 
 const ToolSpec *FindTool(const std::string &name) {

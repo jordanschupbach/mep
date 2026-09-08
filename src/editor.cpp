@@ -6,6 +6,8 @@
 #include "vterm.h"
 #include "image_doc.h"
 #include "js_engine.h"
+#include "model3d_blend_import.h"
+#include "model3d_doc.h"
 #include "pdf_doc.h"
 #include "treesitter.h"
 #include "workspace_git.h"
@@ -3981,6 +3983,9 @@ void Editor::HandleInput() {
         case Mode::ImageEditor:
             HandleImageEditorInput();
             break;
+        case Mode::Model3D:
+            HandleModel3DInput();
+            break;
         case Mode::Pdf:
             HandlePdfInput();
             break;
@@ -4436,6 +4441,9 @@ void Editor::HandleMouseWheel(float dx, float dy) {
             break;
         case Mode::ImageEditor:
             WheelScrollImageEditor(dx, dy);
+            break;
+        case Mode::Model3D:
+            WheelScrollModel3D(dx, dy);
             break;
         case Mode::Html:
             WheelScrollHtml(dx, dy);
@@ -5230,6 +5238,8 @@ void Editor::SyncModeToActivePaneBuffer() {
         mode_ = Mode::ImageEditor;
     } else if (IsImageBuffer(CurPane().buffer_id)) {
         mode_ = Mode::Image;
+    } else if (IsModel3DBuffer(CurPane().buffer_id)) {
+        mode_ = Mode::Model3D;
     } else if (IsPdfBuffer(CurPane().buffer_id)) {
         mode_ = Mode::Pdf;
     } else if (IsHtmlBuffer(CurPane().buffer_id)) {
@@ -5250,7 +5260,8 @@ void Editor::SyncModeToActivePaneBuffer() {
         mode_ = Mode::KanbanNormal;
     } else if (IsGanttViewActive(CurPane().buffer_id)) {
         mode_ = Mode::GanttNormal;
-    } else if (mode_ == Mode::Terminal || mode_ == Mode::Image || mode_ == Mode::ImageEditor || mode_ == Mode::Pdf ||
+    } else if (mode_ == Mode::Terminal || mode_ == Mode::Image || mode_ == Mode::ImageEditor || mode_ == Mode::Model3D ||
+               mode_ == Mode::Pdf ||
                mode_ == Mode::Html ||
                mode_ == Mode::OfficeNormal || mode_ == Mode::OfficeInsert || mode_ == Mode::OfficeVisual ||
                mode_ == Mode::SheetNormal || mode_ == Mode::SheetInsert || mode_ == Mode::SheetVisual ||
@@ -6039,6 +6050,1043 @@ void Editor::HandleImageEditorInput() {
             PushUndoImageEditor(sess->buffer_id);
             ImageEditorDeleteSelection(*sess);
         }
+    }
+}
+
+// --- In-pane 3D modeler (MODEL3D.md) ----------------------------------------
+
+namespace {
+// Rotates a local vertex by an object's Euler XYZ rotation (degrees, X then
+// Y then Z) -- the same order/convention as model3d_doc.cpp's own
+// EulerXYZDegToQuat, kept in sync so a scene's computed bounds agree with
+// how main.cpp actually renders (and glTF actually exports) a rotated
+// object. Deliberately hand-rolled trig rather than a matrix type, since
+// this file (like model3d_doc.h) stays raylib-free.
+Vec3f RotateEulerXYZDeg(Vec3f v, Vec3f deg) {
+    constexpr float kPi = 3.14159265358979323846f;
+    float rx = deg.x * kPi / 180.0f, ry = deg.y * kPi / 180.0f, rz = deg.z * kPi / 180.0f;
+    float y1 = v.y * std::cos(rx) - v.z * std::sin(rx);
+    float z1 = v.y * std::sin(rx) + v.z * std::cos(rx);
+    float x2 = v.x * std::cos(ry) + z1 * std::sin(ry);
+    float z2 = -v.x * std::sin(ry) + z1 * std::cos(ry);
+    float x3 = x2 * std::cos(rz) - y1 * std::sin(rz);
+    float y3 = x2 * std::sin(rz) + y1 * std::cos(rz);
+    return Vec3f{x3, y3, z2};
+}
+
+// Rotates a point by `deg` degrees around a single world axis through the
+// origin -- used by Editor::Model3DRadialArray to place evenly-spaced
+// copies around an axis (distinct from RotateEulerXYZDeg above, which
+// composes all three Euler components at once for bounds computation).
+Vec3f RotateAroundAxisDeg(Vec3f v, char axis, float deg) {
+    constexpr float kPi = 3.14159265358979323846f;
+    float r = deg * kPi / 180.0f;
+    float c = std::cos(r), s = std::sin(r);
+    if (axis == 'x') return Vec3f{v.x, v.y * c - v.z * s, v.y * s + v.z * c};
+    if (axis == 'y') return Vec3f{v.x * c + v.z * s, v.y, -v.x * s + v.z * c};
+    return Vec3f{v.x * c - v.y * s, v.x * s + v.y * c, v.z};  // 'z'
+}
+
+// True world-space bounds of every visible-or-not object in the scene
+// (position+rotation+scale all applied to every mesh vertex) -- used by
+// both the initial import framing and Editor::Model3DFrameAll, so "fit the
+// whole scene" means the same thing in both places. Superseded a cruder
+// heuristic that only looked at scaled local vertex coordinates and
+// ignored position/rotation entirely, which visibly mis-framed any scene
+// whose objects weren't clustered at the origin (MODEL3D_PLAN.md's own
+// "camera framing differs after reimport" known gap, caught during live
+// multi-object testing).
+void ComputeSceneWorldBounds(const Scene &scene, Vec3f *out_min, Vec3f *out_max) {
+    bool any = false;
+    Vec3f mn{}, mx{};
+    for (const auto &obj : scene.objects) {
+        if (obj.mesh_index < 0 || obj.mesh_index >= static_cast<int>(scene.meshes.size())) continue;
+        const MeshData &md = scene.meshes[static_cast<size_t>(obj.mesh_index)];
+        for (size_t v = 0; v + 2 < md.positions.size(); v += 3) {
+            Vec3f p{md.positions[v] * obj.scale.x, md.positions[v + 1] * obj.scale.y, md.positions[v + 2] * obj.scale.z};
+            p = RotateEulerXYZDeg(p, obj.rotation_deg);
+            p.x += obj.position.x;
+            p.y += obj.position.y;
+            p.z += obj.position.z;
+            if (!any) {
+                mn = mx = p;
+                any = true;
+            }
+            mn.x = std::min(mn.x, p.x);
+            mn.y = std::min(mn.y, p.y);
+            mn.z = std::min(mn.z, p.z);
+            mx.x = std::max(mx.x, p.x);
+            mx.y = std::max(mx.y, p.y);
+            mx.z = std::max(mx.z, p.z);
+        }
+    }
+    *out_min = any ? mn : Vec3f{-1, -1, -1};
+    *out_max = any ? mx : Vec3f{1, 1, 1};
+}
+
+// "Fit the whole scene in view" camera target/distance from its true world
+// bounds (see ComputeSceneWorldBounds above).
+void ComputeSceneFitCamera(const Scene &scene, Vec3f *out_target, float *out_distance) {
+    Vec3f mn, mx;
+    ComputeSceneWorldBounds(scene, &mn, &mx);
+    out_target->x = (mn.x + mx.x) * 0.5f;
+    out_target->y = (mn.y + mx.y) * 0.5f;
+    out_target->z = (mn.z + mx.z) * 0.5f;
+    float extent = std::max({mx.x - mn.x, mx.y - mn.y, mx.z - mn.z}) * 0.5f;
+    *out_distance = std::clamp(extent * 2.5f + 2.0f, 2.0f, 500.0f);
+}
+
+// A fresh, never-repeated value every call -- see Model3DSession::
+// scene_generation's own comment for why this exists. Deliberately a
+// process-global counter (not reset per-buffer) so a brand-new
+// Model3DSession replacing an old one at the same buffer_id can never
+// coincidentally collide with whatever generation the old one had.
+int NextModel3DSceneGeneration() {
+    static int next = 1;
+    return next++;
+}
+}  // namespace
+
+bool Editor::IsModel3DBuffer(int buffer_id) const { return model3d_sessions_.find(buffer_id) != model3d_sessions_.end(); }
+
+const Model3DSession *Editor::GetModel3D(int buffer_id) const {
+    auto it = model3d_sessions_.find(buffer_id);
+    return it == model3d_sessions_.end() ? nullptr : &it->second;
+}
+
+Model3DSession *Editor::GetModel3DMutable(int buffer_id) {
+    auto it = model3d_sessions_.find(buffer_id);
+    return it == model3d_sessions_.end() ? nullptr : &it->second;
+}
+
+int Editor::NewModel3DScene() {
+    int buffer_id = CreateEmptyBuffer();
+    Model3DSession sess;
+    sess.buffer_id = buffer_id;
+    sess.scene_generation = NextModel3DSceneGeneration();
+    model3d_sessions_[buffer_id] = std::move(sess);
+    CurPane().buffer_id = buffer_id;
+    CurPane().cursor = {0, 0};
+    CurPane().scroll_row = 0;
+    mode_ = Mode::Model3D;
+    status_message_.clear();
+    return buffer_id;
+}
+
+void Editor::ResizeModel3DViewport(int buffer_id, int w, int h) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return;
+    it->second.viewport_w = w;
+    it->second.viewport_h = h;
+}
+
+void Editor::Model3DFinishOpen(int buffer_id, Scene scene) {
+    Model3DSession sess;
+    sess.buffer_id = buffer_id;
+    sess.scene = std::move(scene);
+    sess.scene_generation = NextModel3DSceneGeneration();
+    ComputeSceneFitCamera(sess.scene, &sess.camera_target, &sess.camera_distance);
+    model3d_sessions_[buffer_id] = std::move(sess);
+    // Deliberately doesn't touch CurPane() -- the synchronous caller
+    // (OpenModel3DInPlace's non-.blend path) does that itself right after
+    // this returns, since switching focus is expected there (this call is
+    // the direct result of the user's own :e/mep_file_open). The async
+    // caller (Model3DFinishBlendImport, firing on a background job's
+    // completion, possibly well after the user has moved on to something
+    // else) must NOT force-focus this pane out from under whatever they're
+    // doing now -- see that function's own comment.
+}
+
+void Editor::OpenModel3DInPlace(const std::string &path) {
+    int buffer_id = -1;
+    for (size_t i = 0; i < buffers_.size(); i++) {
+        if (!BufferInActiveWorkspace(static_cast<int>(i))) continue;
+        if (!buffers_[i].filename.empty() && buffers_[i].filename == path) {
+            buffer_id = static_cast<int>(i);
+            break;
+        }
+    }
+    if (IsBlendPath(path)) {
+        std::vector<std::string> argv;
+        std::string script_path, glb_path, prepare_error;
+        if (!PrepareBlendConversionJob(path, &argv, &script_path, &glb_path, &prepare_error)) {
+            // Matches the pre-async behavior: a conversion that never even
+            // starts (Blender missing, temp-file failure) creates no new
+            // buffer, same as a failed non-.blend load below -- only a
+            // pre-existing dedup match (buffer_id already >= 0) is reused.
+            status_message_ = "E-\"" + path + "\": " + prepare_error;
+            return;
+        }
+        if (buffer_id < 0) {
+            buffer_id = CreateEmptyBuffer();
+            buffers_[static_cast<size_t>(buffer_id)].filename = path;
+        }
+        // Placeholder session so DrawModel3DPane has somewhere to show the
+        // "Converting..." overlay -- the pane switches to it immediately,
+        // same as every other Open call, rather than waiting for Blender.
+        Model3DSession placeholder;
+        placeholder.buffer_id = buffer_id;
+        placeholder.blend_import_pending = true;
+        placeholder.blend_import_status = "Converting \"" + path + "\" via Blender...";
+        model3d_sessions_[buffer_id] = std::move(placeholder);
+        CurPane().buffer_id = buffer_id;
+        CurPane().cursor = {0, 0};
+        CurPane().scroll_row = 0;
+        status_message_.clear();
+
+        auto child_output = std::make_shared<std::string>();
+        JobManager::Callbacks cb;
+        cb.on_stdout = [child_output](const std::string &line) { *child_output += line + "\n"; };
+        cb.on_stderr = [child_output](const std::string &line) { *child_output += line + "\n"; };
+        cb.on_exit = [this, buffer_id, path, script_path, glb_path, child_output](int code) {
+            Model3DFinishBlendImport(buffer_id, path, script_path, glb_path, code, *child_output);
+        };
+        if (JobManager::Instance().Spawn(argv, /*cwd=*/"", cb) == 0) {
+            // Spawn itself failed synchronously (fork()/pipe() error, not a
+            // Blender-side failure) -- on_exit above was never registered
+            // to fire, so finish the job right here with a fabricated
+            // non-zero exit instead of leaving the placeholder stuck
+            // showing "Converting..." forever.
+            Model3DFinishBlendImport(buffer_id, path, script_path, glb_path, /*code=*/-1, "");
+        }
+        return;
+    }
+
+    Scene scene;
+    std::string error;
+    bool ok = LoadModel3DFile(path, &scene, &error);
+    if (!ok) {
+        status_message_ = "E-\"" + path + "\": " + error;
+        return;
+    }
+    scene.source_path = path;
+    if (buffer_id < 0) {
+        buffer_id = CreateEmptyBuffer();
+        buffers_[static_cast<size_t>(buffer_id)].filename = path;
+    }
+    Model3DFinishOpen(buffer_id, std::move(scene));
+    CurPane().buffer_id = buffer_id;
+    CurPane().cursor = {0, 0};
+    CurPane().scroll_row = 0;
+    status_message_.clear();
+}
+
+void Editor::Model3DFinishBlendImport(int buffer_id, const std::string &original_path, const std::string &script_path,
+                                       const std::string &glb_path, int exit_code, const std::string &child_output) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end() || !it->second.blend_import_pending) return;  // closed/replaced meanwhile
+
+    // Notify (not status_message_) either way below: this fires from a
+    // background job's completion, potentially long after the user's own
+    // :e/mep_file_open call returned and after they may have switched to a
+    // different pane/buffer entirely -- status_message_ would either be
+    // instantly overwritten by whatever they're doing now or, worse, show
+    // up attached to unrelated work. Also deliberately never touches
+    // CurPane() -- see Model3DFinishOpen's own comment.
+    std::string error;
+    if (!FinishBlendConversionJob(script_path, glb_path, exit_code, child_output, &error)) {
+        it->second.blend_import_pending = false;
+        Notify("\"" + original_path + "\": " + error, NotifyLevel::Error);
+        return;
+    }
+
+    Scene scene;
+    bool ok = LoadModel3DFile(glb_path, &scene, &error);
+    std::remove(glb_path.c_str());
+    if (!ok) {
+        it->second.blend_import_pending = false;
+        Notify("\"" + original_path + "\": " + error, NotifyLevel::Error);
+        return;
+    }
+    // The *original* path (the .blend source, not the throwaway converted
+    // .glb) is what re-imports/re-saves should reason about.
+    scene.source_path = original_path;
+    Model3DFinishOpen(buffer_id, std::move(scene));
+    Notify("\"" + original_path + "\" converted and imported");
+}
+
+void Editor::PushUndoModel3D(int buffer_id) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return;
+    Model3DSession &sess = it->second;
+    sess.undo_stack.push_back(sess.scene);
+    if (sess.undo_stack.size() > kMaxUndo) sess.undo_stack.erase(sess.undo_stack.begin());
+    sess.redo_stack.clear();
+}
+
+void Editor::UndoModel3D(int buffer_id) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return;
+    Model3DSession &sess = it->second;
+    if (sess.undo_stack.empty()) {
+        status_message_ = "Already at oldest change";
+        return;
+    }
+    sess.redo_stack.push_back(sess.scene);
+    sess.scene = sess.undo_stack.back();
+    sess.scene_generation = NextModel3DSceneGeneration();
+    sess.undo_stack.pop_back();
+    sess.selection.clear();
+    sess.modified = true;
+    sess.dirty = true;
+}
+
+void Editor::RedoModel3D(int buffer_id) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return;
+    Model3DSession &sess = it->second;
+    if (sess.redo_stack.empty()) {
+        status_message_ = "Already at newest change";
+        return;
+    }
+    sess.undo_stack.push_back(sess.scene);
+    sess.scene = sess.redo_stack.back();
+    sess.scene_generation = NextModel3DSceneGeneration();
+    sess.redo_stack.pop_back();
+    sess.selection.clear();
+    sess.modified = true;
+    sess.dirty = true;
+}
+
+int Editor::Model3DAddPrimitive(int buffer_id, PrimitiveKind kind) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return -1;
+    Model3DSession &sess = it->second;
+    PushUndoModel3D(buffer_id);
+    int id = AddPrimitiveToScene(&sess.scene, kind);
+    if (id < 0) {
+        sess.undo_stack.pop_back();  // no-op edit -- don't leave a spurious undo entry
+        return -1;
+    }
+    // Offsets each successive add along X so a run of quick-adds (the
+    // toolbar '+'/'a' hotkey) doesn't stack every new primitive exactly on
+    // top of the last one at the origin.
+    if (Object3D *obj = sess.scene.FindObject(id)) {
+        obj->position.x = static_cast<float>(sess.scene.objects.size() - 1) * 1.5f;
+    }
+    sess.selection = {id};
+    sess.modified = true;
+    sess.dirty = true;
+    return id;
+}
+
+bool Editor::Model3DDeleteObject(int buffer_id, int object_id, bool cascade) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return false;
+    Model3DSession &sess = it->second;
+    if (!sess.scene.FindObject(object_id)) return false;
+    PushUndoModel3D(buffer_id);
+    if (cascade) {
+        // Delete object_id and every transitive descendant together --
+        // collected up front (Scene::Descendants reads the live
+        // parent-chain, which we're about to start tearing down) since
+        // Scene::RemoveObject itself has no children-awareness at all,
+        // it's a plain erase-by-id.
+        std::vector<int> to_remove = sess.scene.Descendants(object_id);
+        to_remove.push_back(object_id);
+        for (int id : to_remove) {
+            sess.scene.RemoveObject(id);
+            sess.selection.erase(std::remove(sess.selection.begin(), sess.selection.end(), id), sess.selection.end());
+        }
+    } else {
+        // Un-parent (not cascade-delete) any direct children -- a safer
+        // default than silently deleting a whole subtree when the caller
+        // only asked to delete one object. The children keep their own
+        // absolute position/rotation/scale unchanged, since Object3D::
+        // parent was never composed into their transform in the first
+        // place.
+        for (Object3D &o : sess.scene.objects) {
+            if (o.parent == object_id) o.parent = -1;
+        }
+        sess.scene.RemoveObject(object_id);
+        sess.selection.erase(std::remove(sess.selection.begin(), sess.selection.end(), object_id), sess.selection.end());
+    }
+    sess.modified = true;
+    sess.dirty = true;
+    return true;
+}
+
+int Editor::Model3DDuplicateObject(int buffer_id, int object_id, bool cascade) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return -1;
+    Model3DSession &sess = it->second;
+    const Object3D *src = sess.scene.FindObject(object_id);
+    if (!src) return -1;
+    PushUndoModel3D(buffer_id);
+    Object3D copy = *src;
+    copy.name += " copy";
+    int new_id = sess.scene.AddObject(copy);
+    if (cascade) {
+        // Duplicate every transitive descendant too, re-parenting each
+        // copy to mirror the original hierarchy under new_id instead of
+        // the original object_id -- a real "duplicate this group and
+        // everything in it," not just the one top-level node. old_to_new
+        // maps an original id to its own copy's id so a grandchild (whose
+        // `parent` points at a child, not object_id directly) still gets
+        // correctly re-parented once its own parent's copy exists --
+        // Scene::Descendants returns ids breadth-first from object_id, so
+        // by the time a descendant is processed, its parent's copy is
+        // already in the map.
+        std::unordered_map<int, int> old_to_new;
+        old_to_new[object_id] = new_id;
+        for (int desc_id : sess.scene.Descendants(object_id)) {
+            const Object3D *desc_src = sess.scene.FindObject(desc_id);
+            if (!desc_src) continue;
+            Object3D desc_copy = *desc_src;
+            auto parent_it = old_to_new.find(desc_copy.parent);
+            desc_copy.parent = parent_it != old_to_new.end() ? parent_it->second : -1;
+            old_to_new[desc_id] = sess.scene.AddObject(desc_copy);
+        }
+    }
+    sess.selection = {new_id};
+    sess.modified = true;
+    sess.dirty = true;
+    return new_id;
+}
+
+bool Editor::Model3DSetTransform(int buffer_id, int object_id, bool has_position, Vec3f position, bool has_rotation,
+                                  Vec3f rotation_deg, bool has_scale, Vec3f scale) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return false;
+    Model3DSession &sess = it->second;
+    Object3D *obj = sess.scene.FindObject(object_id);
+    if (!obj) return false;
+    PushUndoModel3D(buffer_id);
+    if (has_position) obj->position = position;
+    if (has_rotation) obj->rotation_deg = rotation_deg;
+    if (has_scale) obj->scale = scale;
+    sess.modified = true;
+    sess.dirty = true;
+    return true;
+}
+
+bool Editor::Model3DSetMaterial(int buffer_id, int object_id, RgbaColorF color) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return false;
+    Model3DSession &sess = it->second;
+    Object3D *obj = sess.scene.FindObject(object_id);
+    if (!obj) return false;
+    PushUndoModel3D(buffer_id);
+    obj->color = color;
+    sess.modified = true;
+    sess.dirty = true;
+    return true;
+}
+
+bool Editor::Model3DSetTexture(int buffer_id, int object_id, const std::string &path) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return false;
+    Model3DSession &sess = it->second;
+    if (!sess.scene.FindObject(object_id)) return false;
+    if (path.empty()) {
+        PushUndoModel3D(buffer_id);
+        sess.scene.FindObject(object_id)->texture_index = -1;
+        sess.modified = true;
+        sess.dirty = true;
+        return true;
+    }
+    // Undo pushed *before* loading -- Model3DSession's undo is a whole-
+    // scene snapshot, so this makes one undo revert both the appended
+    // Scene::textures entry and the object's texture_index change
+    // together, rather than leaving an orphaned texture behind (the same
+    // "never garbage collected, another object might still reference it"
+    // tradeoff Scene::RemoveObject already documents for meshes, just
+    // avoided here since it's cheap to avoid).
+    PushUndoModel3D(buffer_id);
+    std::string error;
+    int texture_index = LoadTextureIntoScene(&sess.scene, path, &error);
+    if (texture_index < 0) {
+        if (!sess.undo_stack.empty()) sess.undo_stack.pop_back();  // load failed -- drop the now-unneeded push
+        return false;
+    }
+    sess.scene.FindObject(object_id)->texture_index = texture_index;
+    sess.modified = true;
+    sess.dirty = true;
+    return true;
+}
+
+bool Editor::Model3DRenameObject(int buffer_id, int object_id, const std::string &name) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return false;
+    Model3DSession &sess = it->second;
+    Object3D *obj = sess.scene.FindObject(object_id);
+    if (!obj) return false;
+    PushUndoModel3D(buffer_id);
+    obj->name = name;
+    sess.modified = true;
+    return true;
+}
+
+bool Editor::Model3DSetVisible(int buffer_id, int object_id, bool visible) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return false;
+    Model3DSession &sess = it->second;
+    Object3D *obj = sess.scene.FindObject(object_id);
+    if (!obj) return false;
+    PushUndoModel3D(buffer_id);
+    obj->visible = visible;
+    sess.modified = true;
+    sess.dirty = true;
+    return true;
+}
+
+void Editor::Model3DSetSelection(int buffer_id, const std::vector<int> &object_ids) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return;
+    Model3DSession &sess = it->second;
+    sess.selection.clear();
+    for (int id : object_ids) {
+        if (sess.scene.FindObject(id)) sess.selection.push_back(id);
+    }
+}
+
+void Editor::Model3DSetCamera(int buffer_id, const Model3DCameraParams &params) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return;
+    Model3DSession &sess = it->second;
+    if (params.has_target) sess.camera_target = params.target;
+    if (params.has_yaw) sess.camera_yaw = params.yaw;
+    if (params.has_pitch) sess.camera_pitch = std::clamp(params.pitch, -89.0f, 89.0f);
+    if (params.has_distance) sess.camera_distance = std::clamp(params.distance, 0.1f, 1000.0f);
+    if (params.has_fov) sess.camera_fov = std::clamp(params.fov, 1.0f, 170.0f);
+}
+
+bool Editor::SaveModel3DFile(Model3DSession &sess, const std::string &path) {
+#if defined(__EMSCRIPTEN__)
+    (void)sess;
+    (void)path;
+    status_message_ = "E-3D modeler save isn't supported in the browser build yet (see MODEL3D.md)";
+    return false;
+#else
+    std::string error;
+    if (!SaveModel3DGltf(sess.scene, path, &error)) {
+        status_message_ = "E212: Can't write \"" + path + "\": " + error;
+        return false;
+    }
+    sess.modified = false;
+    status_message_ = "\"" + path + "\" written";
+    return true;
+#endif
+}
+
+void Editor::Model3DSetView(int buffer_id, bool has_show_grid, bool show_grid, bool has_wireframe, bool wireframe, bool has_snap,
+                             bool snap) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return;
+    Model3DSession &sess = it->second;
+    if (has_show_grid) sess.show_grid = show_grid;
+    if (has_wireframe) sess.wireframe = wireframe;
+    if (has_snap) sess.snap_enabled = snap;
+}
+
+void Editor::Model3DFrameAll(int buffer_id) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return;
+    Model3DSession &sess = it->second;
+    ComputeSceneFitCamera(sess.scene, &sess.camera_target, &sess.camera_distance);
+}
+
+int Editor::Model3DSetTransformsBatch(int buffer_id, const std::vector<Model3DTransformUpdate> &updates) {
+    int count = 0;
+    for (const auto &u : updates) {
+        if (Model3DSetTransform(buffer_id, u.object_id, u.has_position, u.position, u.has_rotation, u.rotation_deg, u.has_scale,
+                                 u.scale)) {
+            count++;
+        }
+    }
+    return count;
+}
+
+int Editor::Model3DSetMaterialsBatch(int buffer_id, const std::vector<Model3DMaterialUpdate> &updates) {
+    int count = 0;
+    for (const auto &u : updates) {
+        if (Model3DSetMaterial(buffer_id, u.object_id, u.color)) count++;
+    }
+    return count;
+}
+
+int Editor::Model3DDeleteObjectsBatch(int buffer_id, const std::vector<int> &object_ids, bool cascade) {
+    int count = 0;
+    for (int id : object_ids) {
+        if (Model3DDeleteObject(buffer_id, id, cascade)) count++;
+    }
+    return count;
+}
+
+int Editor::Model3DDuplicateMirrored(int buffer_id, int object_id, char axis) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return -1;
+    Model3DSession &sess = it->second;
+    const Object3D *src = sess.scene.FindObject(object_id);
+    if (!src) return -1;
+    char a = static_cast<char>(std::tolower(static_cast<unsigned char>(axis)));
+    if (a != 'x' && a != 'y' && a != 'z') return -1;
+    PushUndoModel3D(buffer_id);
+    Object3D copy = *src;
+    copy.name += " mirror";
+    // Mirroring position across the plane through the origin perpendicular
+    // to `axis` just negates that one coordinate. Reflecting the object's
+    // *own* rotation to still look correct after that flip negates the
+    // other two Euler components -- exact for a single-axis rotation
+    // (the common case for a mirrored part); a rotation combining more than
+    // one non-mirrored axis may need a manual tweak afterward, since
+    // reflecting compound Euler rotations isn't a simple per-component
+    // negation in general.
+    if (a == 'x') {
+        copy.position.x = -copy.position.x;
+        copy.rotation_deg.y = -copy.rotation_deg.y;
+        copy.rotation_deg.z = -copy.rotation_deg.z;
+    } else if (a == 'y') {
+        copy.position.y = -copy.position.y;
+        copy.rotation_deg.x = -copy.rotation_deg.x;
+        copy.rotation_deg.z = -copy.rotation_deg.z;
+    } else {
+        copy.position.z = -copy.position.z;
+        copy.rotation_deg.x = -copy.rotation_deg.x;
+        copy.rotation_deg.y = -copy.rotation_deg.y;
+    }
+    int id = sess.scene.AddObject(std::move(copy));
+    sess.selection = {id};
+    sess.modified = true;
+    sess.dirty = true;
+    return id;
+}
+
+std::vector<int> Editor::Model3DRadialArray(int buffer_id, int object_id, int count, char axis) {
+    std::vector<int> result;
+    if (count < 1) return result;
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return result;
+    Model3DSession &sess = it->second;
+    const Object3D *src_ptr = sess.scene.FindObject(object_id);
+    if (!src_ptr) return result;
+    char a = static_cast<char>(std::tolower(static_cast<unsigned char>(axis)));
+    if (a != 'x' && a != 'y' && a != 'z') return result;
+    Object3D src = *src_ptr;  // copied -- AddObject below can reallocate objects_, invalidating src_ptr
+    PushUndoModel3D(buffer_id);
+    for (int i = 1; i < count; i++) {
+        float angle_deg = 360.0f * static_cast<float>(i) / static_cast<float>(count);
+        Object3D copy = src;
+        copy.name += " " + std::to_string(i + 1);
+        copy.position = RotateAroundAxisDeg(src.position, a, angle_deg);
+        if (a == 'x') copy.rotation_deg.x += angle_deg;
+        else if (a == 'y') copy.rotation_deg.y += angle_deg;
+        else copy.rotation_deg.z += angle_deg;
+        result.push_back(sess.scene.AddObject(std::move(copy)));
+    }
+    sess.selection = result;
+    sess.modified = true;
+    sess.dirty = true;
+    return result;
+}
+
+int Editor::Model3DGroupObjects(int buffer_id, const std::vector<int> &object_ids) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return -1;
+    Model3DSession &sess = it->second;
+    std::vector<int> valid_ids;
+    Vec3f centroid{};
+    for (int id : object_ids) {
+        const Object3D *o = sess.scene.FindObject(id);
+        if (!o) continue;
+        valid_ids.push_back(id);
+        centroid.x += o->position.x;
+        centroid.y += o->position.y;
+        centroid.z += o->position.z;
+    }
+    if (valid_ids.empty()) return -1;
+    centroid.x /= static_cast<float>(valid_ids.size());
+    centroid.y /= static_cast<float>(valid_ids.size());
+    centroid.z /= static_cast<float>(valid_ids.size());
+    PushUndoModel3D(buffer_id);
+    Object3D group;
+    group.name = "Group";
+    group.mesh_index = -1;
+    group.kind = PrimitiveKind::None;
+    group.position = centroid;
+    int group_id = sess.scene.AddObject(std::move(group));
+    for (int id : valid_ids) {
+        Object3D *o = sess.scene.FindObject(id);
+        if (o) o->parent = group_id;
+    }
+    sess.selection = {group_id};
+    sess.modified = true;
+    sess.dirty = true;
+    return group_id;
+}
+
+bool Editor::Model3DSetParent(int buffer_id, int object_id, int parent_id) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return false;
+    Model3DSession &sess = it->second;
+    Object3D *obj = sess.scene.FindObject(object_id);
+    if (!obj) return false;
+    if (parent_id == object_id) return false;
+    if (parent_id != -1) {
+        if (!sess.scene.FindObject(parent_id)) return false;
+        std::vector<int> descendants = sess.scene.Descendants(object_id);
+        if (std::find(descendants.begin(), descendants.end(), parent_id) != descendants.end()) {
+            return false;  // would create a cycle
+        }
+    }
+    PushUndoModel3D(buffer_id);
+    obj->parent = parent_id;
+    sess.modified = true;
+    sess.dirty = true;
+    return true;
+}
+
+bool Editor::Model3DSetVertexPosition(int buffer_id, int object_id, int vertex_index, Vec3f local_position) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return false;
+    Model3DSession &sess = it->second;
+    const Object3D *obj_before = sess.scene.FindObject(object_id);
+    if (!obj_before || obj_before->mesh_index < 0) return false;
+    if (vertex_index < 0 || vertex_index >= sess.scene.meshes[static_cast<size_t>(obj_before->mesh_index)].VertexCount()) {
+        return false;
+    }
+    PushUndoModel3D(buffer_id);
+    int mesh_index = sess.scene.EnsureUniqueMesh(object_id);
+    MeshData &md = sess.scene.meshes[static_cast<size_t>(mesh_index)];
+    md.positions[static_cast<size_t>(vertex_index) * 3 + 0] = local_position.x;
+    md.positions[static_cast<size_t>(vertex_index) * 3 + 1] = local_position.y;
+    md.positions[static_cast<size_t>(vertex_index) * 3 + 2] = local_position.z;
+    sess.scene_generation = NextModel3DSceneGeneration();
+    sess.modified = true;
+    sess.dirty = true;
+    return true;
+}
+
+bool Editor::Model3DDeleteVertices(int buffer_id, int object_id, const std::vector<int> &vertex_indices) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return false;
+    Model3DSession &sess = it->second;
+    const Object3D *obj_before = sess.scene.FindObject(object_id);
+    if (!obj_before || obj_before->mesh_index < 0) return false;
+    PushUndoModel3D(buffer_id);
+    int mesh_index = sess.scene.EnsureUniqueMesh(object_id);
+    sess.scene.meshes[static_cast<size_t>(mesh_index)].RemoveVertices(vertex_indices);
+    sess.scene_generation = NextModel3DSceneGeneration();
+    sess.modified = true;
+    sess.dirty = true;
+    return true;
+}
+
+bool Editor::Model3DMergeVertices(int buffer_id, int object_id, const std::vector<int> &vertex_indices) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return false;
+    Model3DSession &sess = it->second;
+    const Object3D *obj_before = sess.scene.FindObject(object_id);
+    if (!obj_before || obj_before->mesh_index < 0) return false;
+    PushUndoModel3D(buffer_id);
+    int mesh_index = sess.scene.EnsureUniqueMesh(object_id);
+    sess.scene.meshes[static_cast<size_t>(mesh_index)].MergeVertices(vertex_indices);
+    sess.scene_generation = NextModel3DSceneGeneration();
+    sess.modified = true;
+    sess.dirty = true;
+    return true;
+}
+
+bool Editor::Model3DRecalculateNormals(int buffer_id, int object_id) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return false;
+    Model3DSession &sess = it->second;
+    const Object3D *obj_before = sess.scene.FindObject(object_id);
+    if (!obj_before || obj_before->mesh_index < 0) return false;
+    PushUndoModel3D(buffer_id);
+    int mesh_index = sess.scene.EnsureUniqueMesh(object_id);
+    sess.scene.meshes[static_cast<size_t>(mesh_index)].RecalculateNormals();
+    sess.scene_generation = NextModel3DSceneGeneration();
+    sess.modified = true;
+    sess.dirty = true;
+    return true;
+}
+
+std::vector<int> Editor::Model3DSubdivideFaces(int buffer_id, int object_id, const std::vector<int> &vertex_indices) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return {};
+    Model3DSession &sess = it->second;
+    const Object3D *obj_before = sess.scene.FindObject(object_id);
+    if (!obj_before || obj_before->mesh_index < 0) return {};
+    PushUndoModel3D(buffer_id);
+    int mesh_index = sess.scene.EnsureUniqueMesh(object_id);
+    std::vector<int> new_centroids = sess.scene.meshes[static_cast<size_t>(mesh_index)].SubdivideFaces(vertex_indices);
+    sess.scene_generation = NextModel3DSceneGeneration();
+    sess.modified = true;
+    sess.dirty = true;
+    return new_centroids;
+}
+
+std::vector<int> Editor::Model3DExtrudeFaces(int buffer_id, int object_id, const std::vector<int> &vertex_indices,
+                                              float distance) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return {};
+    Model3DSession &sess = it->second;
+    const Object3D *obj_before = sess.scene.FindObject(object_id);
+    if (!obj_before || obj_before->mesh_index < 0) return {};
+    PushUndoModel3D(buffer_id);
+    int mesh_index = sess.scene.EnsureUniqueMesh(object_id);
+    std::vector<int> new_cap = sess.scene.meshes[static_cast<size_t>(mesh_index)].ExtrudeFaces(vertex_indices, distance);
+    sess.scene_generation = NextModel3DSceneGeneration();
+    sess.modified = true;
+    sess.dirty = true;
+    return new_cap;
+}
+
+bool Editor::Model3DDissolveVertex(int buffer_id, int object_id, int vertex_index) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return false;
+    Model3DSession &sess = it->second;
+    const Object3D *obj_before = sess.scene.FindObject(object_id);
+    if (!obj_before || obj_before->mesh_index < 0) return false;
+    // Read-only range check against the *current* (possibly still-shared) mesh -- deliberately not
+    // EnsureUniqueMesh here, since that clones on first call and we don't want that side effect (and no
+    // undo to cover it) before we've even confirmed vertex_index is valid.
+    if (vertex_index < 0 || vertex_index >= sess.scene.meshes[static_cast<size_t>(obj_before->mesh_index)].VertexCount()) {
+        return false;
+    }
+    PushUndoModel3D(buffer_id);
+    int mesh_index = sess.scene.EnsureUniqueMesh(object_id);
+    bool ok = sess.scene.meshes[static_cast<size_t>(mesh_index)].DissolveVertex(vertex_index);
+    sess.scene_generation = NextModel3DSceneGeneration();
+    sess.modified = true;
+    sess.dirty = true;
+    return ok;
+}
+
+std::vector<int> Editor::Model3DInsetFaces(int buffer_id, int object_id, const std::vector<int> &vertex_indices,
+                                            float amount) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return {};
+    Model3DSession &sess = it->second;
+    const Object3D *obj_before = sess.scene.FindObject(object_id);
+    if (!obj_before || obj_before->mesh_index < 0) return {};
+    PushUndoModel3D(buffer_id);
+    int mesh_index = sess.scene.EnsureUniqueMesh(object_id);
+    std::vector<int> new_cap = sess.scene.meshes[static_cast<size_t>(mesh_index)].InsetFaces(vertex_indices, amount);
+    sess.scene_generation = NextModel3DSceneGeneration();
+    sess.modified = true;
+    sess.dirty = true;
+    return new_cap;
+}
+
+int Editor::Model3DAddVertex(int buffer_id, int object_id, Vec3f local_position) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return -1;
+    Model3DSession &sess = it->second;
+    const Object3D *obj_before = sess.scene.FindObject(object_id);
+    if (!obj_before || obj_before->mesh_index < 0) return -1;
+    PushUndoModel3D(buffer_id);
+    int mesh_index = sess.scene.EnsureUniqueMesh(object_id);
+    int new_index = sess.scene.meshes[static_cast<size_t>(mesh_index)].AddVertex(local_position.x, local_position.y,
+                                                                                   local_position.z);
+    sess.scene_generation = NextModel3DSceneGeneration();
+    sess.modified = true;
+    sess.dirty = true;
+    return new_index;
+}
+
+bool Editor::Model3DMakeFace(int buffer_id, int object_id, const std::vector<int> &vertex_indices) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return false;
+    Model3DSession &sess = it->second;
+    const Object3D *obj_before = sess.scene.FindObject(object_id);
+    if (!obj_before || obj_before->mesh_index < 0) return false;
+    PushUndoModel3D(buffer_id);
+    int mesh_index = sess.scene.EnsureUniqueMesh(object_id);
+    bool ok = sess.scene.meshes[static_cast<size_t>(mesh_index)].MakeFace(vertex_indices);
+    sess.scene_generation = NextModel3DSceneGeneration();
+    sess.modified = true;
+    sess.dirty = true;
+    return ok;
+}
+
+int Editor::Model3DMergeByDistance(int buffer_id, int object_id, float threshold) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return 0;
+    Model3DSession &sess = it->second;
+    const Object3D *obj_before = sess.scene.FindObject(object_id);
+    if (!obj_before || obj_before->mesh_index < 0) return 0;
+    PushUndoModel3D(buffer_id);
+    int mesh_index = sess.scene.EnsureUniqueMesh(object_id);
+    int removed = sess.scene.meshes[static_cast<size_t>(mesh_index)].MergeByDistance(threshold);
+    sess.scene_generation = NextModel3DSceneGeneration();
+    sess.modified = true;
+    sess.dirty = true;
+    return removed;
+}
+
+bool Editor::Model3DFlipNormals(int buffer_id, int object_id) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return false;
+    Model3DSession &sess = it->second;
+    const Object3D *obj_before = sess.scene.FindObject(object_id);
+    if (!obj_before || obj_before->mesh_index < 0) return false;
+    PushUndoModel3D(buffer_id);
+    int mesh_index = sess.scene.EnsureUniqueMesh(object_id);
+    sess.scene.meshes[static_cast<size_t>(mesh_index)].FlipNormals();
+    sess.scene_generation = NextModel3DSceneGeneration();
+    sess.modified = true;
+    sess.dirty = true;
+    return true;
+}
+
+void Editor::Model3DBumpSceneGeneration(int buffer_id) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return;
+    it->second.scene_generation = NextModel3DSceneGeneration();
+}
+
+void Editor::HandleModel3DInput() {
+    Model3DSession *sess = nullptr;
+    {
+        auto it = model3d_sessions_.find(CurPane().buffer_id);
+        if (it == model3d_sessions_.end()) {
+            mode_ = Mode::Normal;
+            return;
+        }
+        sess = &it->second;
+    }
+
+    if (IsKeyPressed(KEY_ESCAPE)) {
+        sess->selection.clear();
+        return;
+    }
+    bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+    if (ctrl && IsKeyPressed(KEY_R)) {
+        RedoModel3D(sess->buffer_id);
+        return;
+    }
+    if (ctrl && IsKeyPressed(KEY_D)) {
+        std::vector<int> selected = sess->selection;
+        for (int id : selected) Model3DDuplicateObject(sess->buffer_id, id);
+        return;
+    }
+    if (ctrl && IsKeyPressed(KEY_X) && sess->mesh_edit_mode && sess->selection.size() == 1 &&
+        sess->vertex_selection.size() == 1) {
+        // Blender's own X-key ("delete/dissolve" menu) spirit -- Ctrl held
+        // to keep it well clear of the plain Delete/Backspace key (which
+        // stays the "just remove, leave a hole" behavior). Only fires for
+        // exactly one selected vertex -- dissolving several at once would
+        // need each one's ring recomputed after the previous one's
+        // removal shifts every later index, not attempted this pass.
+        Model3DDissolveVertex(sess->buffer_id, sess->selection[0], sess->vertex_selection[0]);
+        sess->vertex_selection.clear();
+        return;
+    }
+
+    // 1-6 pick the active tool (Select/Move/Rotate/Scale/OrbitCam/PanCam --
+    // digits rather than letters to sidestep collisions with 'u'ndo, 'a'dd,
+    // 'g'rid, and 'z' wireframe below), 'u' undoes, 'a' quick-adds a Cube
+    // (the Add menu offers the other primitives via mouse), 'g'/'z' toggle
+    // the grid/wireframe overlays. In Edit Mesh mode with enough vertices
+    // selected: 'm' merges (weld), 's' subdivides, 'e' extrudes, 'i' insets
+    // -- Blender-style single-letter hotkeys for the corresponding
+    // mep_model_* calls, each operating on whichever triangles the current
+    // vertex selection fully covers (this app's face-selection stand-in).
+    // 'f' is the exception -- it connects the selected vertices into new
+    // triangle(s) regardless of whether they already form one, Blender's
+    // own "Make Edge/Face" hotkey. Ctrl-X (above) dissolves the one
+    // selected vertex. ':' and the leader key are forwarded, same as
+    // HandleImageEditorInput.
+    int cp = GetCharPressed();
+    while (cp > 0) {
+        if (cp == ':') {
+            EnterCommand();
+            return;  // mode_ is no longer Model3D -- stop draining as this mode
+        } else if (cp == static_cast<int>(leader_key_) && !whichkey_bindings_.empty()) {
+            TriggerWhichKey();
+            return;
+        } else if (cp == '1') {
+            sess->tool = Model3DTool::Select;
+        } else if (cp == '2') {
+            sess->tool = Model3DTool::Move;
+        } else if (cp == '3') {
+            sess->tool = Model3DTool::Rotate;
+        } else if (cp == '4') {
+            sess->tool = Model3DTool::Scale;
+        } else if (cp == '5') {
+            sess->tool = Model3DTool::OrbitCam;
+        } else if (cp == '6') {
+            sess->tool = Model3DTool::PanCam;
+        } else if (cp == 'u') {
+            UndoModel3D(sess->buffer_id);
+        } else if (cp == 'a') {
+            Model3DAddPrimitive(sess->buffer_id, PrimitiveKind::Cube);
+        } else if (cp == 'g') {
+            sess->show_grid = !sess->show_grid;
+        } else if (cp == 'z') {
+            sess->wireframe = !sess->wireframe;
+        } else if (cp == 'm' && sess->mesh_edit_mode && sess->selection.size() == 1 && sess->vertex_selection.size() >= 2) {
+            // Welds the selected vertices together at their averaged
+            // position -- same Blender-style 'M' merge hotkey, minus the
+            // "merge at first/last/cursor" submenu (averaged-center only).
+            Model3DMergeVertices(sess->buffer_id, sess->selection[0], sess->vertex_selection);
+            sess->vertex_selection.clear();  // indices are now stale -- MergeVertices re-indexes everything
+        } else if (cp == 's' && sess->mesh_edit_mode && sess->selection.size() == 1 && sess->vertex_selection.size() >= 3) {
+            // Centroid-subdivides every triangle whose 3 corners are all
+            // currently selected (this app's face-selection stand-in, see
+            // MODEL3D.md). New centroid indices are known, but clearing
+            // the selection (rather than selecting them) matches how 'm'
+            // and Delete both leave mesh-edit selection empty after a
+            // topology change, keeping this predictable.
+            Model3DSubdivideFaces(sess->buffer_id, sess->selection[0], sess->vertex_selection);
+            sess->vertex_selection.clear();
+        } else if (cp == 'e' && sess->mesh_edit_mode && sess->selection.size() == 1 && sess->vertex_selection.size() >= 3) {
+            // Blender's own 'E' extrude hotkey. No interactive drag-to-set-
+            // distance gizmo yet (a real follow-up, not this pass's scope)
+            // -- a fixed small step, same spirit as 'a' quick-adding a
+            // Cube at a fixed size. Precise distances go through
+            // mep_model_extrude_faces directly. Re-selects the new cap so
+            // an immediate follow-up move (dragging the just-extruded
+            // face) works the way Blender's own extrude-then-grab does.
+            std::vector<int> new_cap = Model3DExtrudeFaces(sess->buffer_id, sess->selection[0], sess->vertex_selection, 0.5f);
+            sess->vertex_selection = new_cap;
+        } else if (cp == 'i' && sess->mesh_edit_mode && sess->selection.size() == 1 && sess->vertex_selection.size() >= 3) {
+            // Blender's own 'I' inset hotkey. A fixed 30% inward step, same
+            // "fixed small step" spirit as 'e'; precise amounts go through
+            // mep_model_inset_faces directly. Re-selects the new cap same
+            // as extrude -- chaining i then e (inset, then extrude the
+            // still-selected cap) gives a raised-platform-with-border look.
+            std::vector<int> new_cap = Model3DInsetFaces(sess->buffer_id, sess->selection[0], sess->vertex_selection, 0.3f);
+            sess->vertex_selection = new_cap;
+        } else if (cp == 'f' && sess->mesh_edit_mode && sess->selection.size() == 1 && sess->vertex_selection.size() >= 3) {
+            // Blender's own 'F' "Make Edge/Face" hotkey -- unlike
+            // m/s/e/i, this doesn't need the selection to already fully
+            // cover a triangle; it connects whichever vertices are
+            // selected into new one(s), fan-triangulated in selection
+            // order. Deliberately leaves vertex_selection untouched
+            // afterward (no vertices were added, removed, or reindexed,
+            // so it's still exactly right) -- lets an immediate follow-up
+            // op (move, extrude, ...) act on the just-created face too.
+            Model3DMakeFace(sess->buffer_id, sess->selection[0], sess->vertex_selection);
+        }
+        cp = GetCharPressed();
+    }
+    if (IsKeyPressed(KEY_DELETE) || IsKeyPressed(KEY_BACKSPACE)) {
+        if (sess->mesh_edit_mode && sess->selection.size() == 1 && !sess->vertex_selection.empty()) {
+            // Deletes the selected *vertices* (and their surrounding
+            // triangles) rather than the object itself while in mesh-edit
+            // mode -- matches the vertex markers' own click-to-select
+            // scope; deleting the whole object still needs object mode.
+            Model3DDeleteVertices(sess->buffer_id, sess->selection[0], sess->vertex_selection);
+            sess->vertex_selection.clear();  // indices are now stale -- RemoveVertices re-indexes everything
+        } else if (!sess->mesh_edit_mode) {
+            std::vector<int> selected = sess->selection;
+            for (int id : selected) Model3DDeleteObject(sess->buffer_id, id);
+        }
+    }
+}
+
+void Editor::WheelScrollModel3D(float dx, float dy) {
+    auto it = model3d_sessions_.find(CurPane().buffer_id);
+    if (it == model3d_sessions_.end()) return;
+    Model3DSession &sess = it->second;
+    // No 2D pan axis to scroll along the way WheelScrollImageEditor's dx/dy
+    // do -- plain scroll dollies the orbit camera in/out instead.
+    (void)dx;
+    if (dy != 0.0f) {
+        sess.camera_distance = std::clamp(sess.camera_distance * std::pow(kWheelZoomStepPerNotch, -dy), 0.2f, 1000.0f);
     }
 }
 
@@ -16240,6 +17288,7 @@ const char *ModeName(Mode m, bool replace_mode) {
         case Mode::Terminal: return "TERMINAL";
         case Mode::Image: return "IMAGE";
         case Mode::ImageEditor: return "IMAGE-EDIT";
+        case Mode::Model3D: return "3D-MODEL";
         case Mode::Pdf: return "PDF";
         case Mode::Html: return "HTML";
         case Mode::OfficeNormal: return "NORMAL";
@@ -16312,8 +17361,8 @@ const std::vector<std::string> &BuiltinCommandNames() {
         "bnext", "bn", "bprevious", "bprev", "bp", "bNext", "bN", "bdelete", "bd", "bdelete!", "bd!",
         "set", "normal", "norm", "normal!", "norm!", "MepNotifyClear", "MepNotifyDismiss",
         "MepNotifyPanel", "MepLayout", "MepScratch", "MepZen", "MepPaneZoom", "colorscheme", "colo", "lua", "source",
-        "MepNextSheet", "MepPrevSheet", "Kanban", "Gantt", "Org", "Text", "CollabJoin", "CollabLeave", "CollabStatus",
-        "AgentSocket",
+        "MepNextSheet", "MepPrevSheet", "Model3DNew", "Kanban", "Gantt", "Org", "Text", "CollabJoin", "CollabLeave",
+        "CollabStatus", "AgentSocket",
     };
     return kNames;
 }
@@ -18645,6 +19694,8 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
         NextSheet();
     } else if (name == "MepPrevSheet") {
         PrevSheet();
+    } else if (name == "Model3DNew") {
+        NewModel3DScene();
     } else if (name == "Kanban") {
         OpenKanbanView();
     } else if (name == "Gantt") {
@@ -20713,6 +21764,14 @@ bool Editor::SaveBuffer(Buffer &buf, const std::string &path) {
         status_message_ = "E382: Cannot write, PDF buffer";
         return false;
     }
+    if (IsModel3DBuffer(buffer_id)) {
+        Model3DSession &sess = model3d_sessions_.at(buffer_id);
+        if (!SaveModel3DFile(sess, io_path)) return false;
+        buf.filename = path;
+        buf.modified = false;
+        save_epoch_++;
+        return true;
+    }
     if (IsSheetBuffer(buffer_id)) {
         auto it = sheetdocs_.find(buffer_id);
         if (it == sheetdocs_.end()) {
@@ -21079,6 +22138,20 @@ void Editor::LoadFile(const std::string &path, bool force_text) {
             std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
             OpenImageInPlace(path, bytes.data(), bytes.size());
         }
+#endif
+        SyncModeToActivePaneBuffer();
+        return;
+    }
+    if (IsModel3DPath(path) || IsBlendPath(path)) {
+        // Unlike Image/Pdf/Docx above, no bytes-bridge dance: raylib's
+        // LoadModel wants a real filesystem path (not an in-memory buffer)
+        // for every format it handles, so this whole feature is native-only
+        // for now (see MODEL3D.md) -- OpenModel3DInPlace reads the file
+        // itself rather than LoadFile pre-reading it.
+#if defined(__EMSCRIPTEN__)
+        status_message_ = "E-3D modeler isn't supported in the browser build yet (see MODEL3D.md)";
+#else
+        OpenModel3DInPlace(path);
 #endif
         SyncModeToActivePaneBuffer();
         return;

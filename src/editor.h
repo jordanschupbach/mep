@@ -7,6 +7,7 @@
 #include "html_doc.h"
 #include "org_doc.h"
 #include "image_doc.h"
+#include "model3d_doc.h"
 #include "vterm.h"
 
 #include <stddef.h>
@@ -108,6 +109,18 @@ enum class Mode {
     // since only DrawPane knows the pane's screen-space rect each frame.
     // ':' and the leader key are still forwarded, same as Mode::Image.
     ImageEditor,
+    // A focused in-pane 3D modeler (a Model3DSession buffer -- see below,
+    // opened for .obj/.gltf/.glb/.iqm/.vox/.m3d/.blend -- see MODEL3D.md and
+    // Editor::OpenModel3DInPlace). Unlike Mode::Image/Mode::ImageEditor's
+    // view/edit split, there is no separate passive viewer mode: these
+    // formats land directly in the full editor, since MODEL3D.md's whole
+    // point is that a Blender file should open ready to edit. Captures tool
+    // hotkeys/undo keys the same way Mode::ImageEditor does (see Editor::
+    // HandleModel3DInput); camera orbit/pan/zoom-drag on the viewport itself
+    // is driven from main.cpp's DrawPane, same reasoning as ImageEditor's
+    // own canvas painting (only DrawPane knows the pane's screen-space rect
+    // each frame). ':' and the leader key are still forwarded.
+    Model3D,
     // A focused PDF-viewer pane (a PdfSession buffer -- see below): same
     // shape as Mode::Image (h/j/k/l pan, ':'/leader forwarded, everything
     // else a no-op) plus page navigation (Ctrl-f/Ctrl-b/PageDown/PageUp,
@@ -1040,6 +1053,166 @@ struct ImageEditorSession {
     // re-compositing themselves.
     std::vector<unsigned char> composite;
     bool dirty = true;
+};
+
+// Tools the in-pane 3D modeler's toolbar offers (MODEL3D.md Phase 1).
+// OrbitCam/PanCam camera manipulation and Move/Rotate/Scale's on-canvas drag
+// are both handled by main.cpp's per-frame mouse-drag tracking (same
+// convention as ImageEditorTool::Pan) -- this enum only selects *which*
+// drag behavior is active, the same way ImageEditorTool does for painting.
+enum class Model3DTool { Select, Move, Rotate, Scale, OrbitCam, PanCam };
+
+// Sparse update for Editor::Model3DSetCamera -- each field is only applied
+// if its `has_*` flag is set, so mep.model_camera_set/model.camera_set can
+// change just the fields a caller actually passed without first reading the
+// current camera back (the same "only touch what's given" convenience as a
+// partial table update, not a full replace).
+struct Model3DCameraParams {
+    bool has_target = false;
+    Vec3f target;
+    bool has_yaw = false;
+    float yaw = 0.0f;
+    bool has_pitch = false;
+    float pitch = 0.0f;
+    bool has_distance = false;
+    float distance = 0.0f;
+    bool has_fov = false;
+    float fov = 0.0f;
+};
+
+// Sparse per-object update for Editor::Model3DSetTransformsBatch -- one
+// array element per object, only applying the has_* fields it sets, same
+// convention as Model3DSetTransform's own flags. Lets an agent reposition
+// many objects (each to a different transform) in a single call instead of
+// one round-trip per object -- added after live dogfooding found a
+// 22-call round-trip cost coloring/renaming an 11-object scene one object
+// at a time.
+struct Model3DTransformUpdate {
+    int object_id = 0;
+    bool has_position = false;
+    Vec3f position;
+    bool has_rotation = false;
+    Vec3f rotation_deg;
+    bool has_scale = false;
+    Vec3f scale;
+};
+
+// Per-object update for Editor::Model3DSetMaterialsBatch -- same batching
+// motivation as Model3DTransformUpdate above.
+struct Model3DMaterialUpdate {
+    int object_id = 0;
+    RgbaColorF color;
+};
+
+// One in-pane 3D-modeler pane's state (MODEL3D.md Phase 1), keyed by buffer
+// id the same way ImageEditorSession is -- opened directly by Editor::
+// OpenModel3DInPlace (LoadFile's .obj/.gltf/.glb/.iqm/.vox/.m3d/.blend
+// branch), never standalone. Kept alive in Editor::model3d_sessions_ for the
+// buffer's whole lifetime once opened (never reaped), same lifetime rule as
+// every other doc session map (images_, image_editors_, htmldocs_, ...).
+//
+// Deliberately raylib-free, same reasoning as every other *Session struct in
+// this header: `scene` is plain CPU data (model3d_doc.h), and camera state
+// is stored as yaw/pitch/distance/target rather than a raylib Camera3D.
+// Unlike ImageEditorSession, there is no GPU-resource cache field here
+// either -- following PdfSession/ImageEditorSession's own actual precedent
+// (their GPU textures live in main.cpp's own g_image_editor_textures-style
+// file-scope cache, keyed by buffer id, not inside the session struct), the
+// per-mesh raylib Model cache lives in main.cpp, invalidated by `dirty`.
+struct Model3DSession {
+    int buffer_id = 0;
+    Scene scene;
+
+    // Set for the placeholder session created immediately by
+    // OpenModel3DInPlace for a .blend source, while the actual conversion
+    // runs on a background job (Editor::model3d_blend_jobs_) instead of
+    // blocking the UI thread -- `scene` is empty and every editing
+    // tool/gizmo is inert until this clears. DrawModel3DPane shows
+    // `blend_import_status` centered in the viewport instead of the normal
+    // sidebars/3D view while true. Always false for every other session
+    // (a blank New scene, or any non-.blend import), which populate
+    // `scene` synchronously the way they always have.
+    bool blend_import_pending = false;
+    std::string blend_import_status;
+
+    // Orbit camera around `target`; main.cpp is the only place this turns
+    // into a raylib Camera3D's position/target/up (yaw/pitch in degrees,
+    // distance in scene units, matching a typical modeling-tool orbit rig).
+    Vec3f camera_target;
+    float camera_yaw = -45.0f;
+    float camera_pitch = 30.0f;
+    float camera_distance = 6.0f;
+    float camera_fov = 45.0f;
+
+    std::vector<int> selection;  // Object3D ids, in selection order
+    Model3DTool tool = Model3DTool::Select;
+
+    bool modified = false;
+    // Snapshot-based undo/redo, same full-copy convention as
+    // ImageEditorSession::undo_stack/redo_stack above (one push per
+    // completed add/delete/transform/material op via Editor::
+    // PushUndoModel3D, never per intermediate drag frame).
+    std::vector<Scene> undo_stack, redo_stack;
+
+    // In-progress object drag (mouse down -> up) on the Move/Rotate/Scale
+    // tools, tracked by main.cpp's DrawPane the same way ImageEditorSession::
+    // stroking tracks an in-progress paint stroke: `dragging` marks that
+    // PushUndoModel3D has already fired for this drag (one undo entry per
+    // drag, not per frame).
+    bool dragging = false;
+
+    int viewport_w = 0, viewport_h = 0;
+    bool show_grid = true;
+    bool wireframe = false;
+    // When on, gizmo/free-drag Move/Scale/Rotate edits round their result to
+    // a fixed grid/scale/angle step (main.cpp's kModel3DPosSnapStep etc.)
+    // instead of the raw continuous drag value -- off by default to match
+    // every prior Phase 1/1.5/1.6 drag behavior exactly.
+    bool snap_enabled = false;
+
+    // Bumped by any scene mutation. Currently write-only (no reader) --
+    // NOT what actually gates the GPU mesh/texture cache rebuild (see
+    // scene_generation below for that); kept for whatever future use
+    // originally motivated it (mirrors ImageEditorSession::dirty's own
+    // role gating its GPU texture re-upload, though that one *is* read).
+    bool dirty = true;
+    // A fresh, globally-unique value handed out every time `scene` is
+    // wholesale-*replaced* (a new blank scene, a file import/reopen,
+    // undo, redo) rather than merely edited in place -- NOT bumped by
+    // ordinary per-field mutations (position/color/etc. edits), since
+    // those never change mesh/texture *content*, only how existing
+    // meshes are drawn. main.cpp's GetOrBuildModel3DMeshes/Textures
+    // compare this (alongside a plain count check, kept as a fast-path)
+    // to decide whether to re-upload -- added after a real, live-found
+    // bug: reopening a saved file into an already-open buffer whose
+    // previous scene happened to have the same mesh count silently kept
+    // rendering the *old* scene's stale GPU-uploaded geometry, since a
+    // count-only check can't distinguish "same scene, unchanged" from
+    // "completely different scene, coincidentally same count" (see
+    // MODEL3D_PLAN.md's account of this bug for the full story). Also
+    // bumped by Phase 3 vertex-position edits (Model3DSetVertexPosition
+    // and the interactive vertex drag) -- those change a MeshData's own
+    // content in place without touching mesh/object *count* at all, the
+    // one other case besides whole-scene-replacement the count check
+    // can't see on its own.
+    int scene_generation = 0;
+
+    // --- Phase 3 vertex-level mesh editing ---
+    // Independent of `tool`/`selection` above: those still mean what they
+    // always did (which *object(s)* are selected, for the object-level
+    // Select/Move/Rotate/Scale tools). When true, the viewport instead
+    // shows and lets you drag individual vertices of the one selected
+    // object (multi-object selection can't enter mesh-edit mode -- there's
+    // no single mesh to show vertices of). Toggled by a dedicated tool-
+    // sidebar button/hotkey, not one of the existing Model3DTool values,
+    // since it layers *on top of* whichever object tool was last active
+    // rather than replacing it (leaving mesh-edit mode returns to that).
+    bool mesh_edit_mode = false;
+    // Indices into the edited object's own MeshData::positions, in VERTEX
+    // units (i.e. index i means floats [3i, 3i+3), not a raw float
+    // offset) -- cleared whenever mesh_edit_mode is turned off or the
+    // object selection changes.
+    std::vector<int> vertex_selection;
 };
 
 // Visual gap (screen pixels, unscaled by zoom) drawn between consecutive
@@ -2577,6 +2750,420 @@ public:
      * @return True on success; false (with status_message_ set) on a write or encode failure.
      */
     bool SaveImageEditorPng(ImageEditorSession &sess, const std::string &path);
+
+    // --- In-pane 3D modeler (MODEL3D.md), opened directly by LoadFile for
+    // a .obj/.gltf/.glb/.iqm/.vox/.m3d/.blend path (Editor::
+    // OpenModel3DInPlace) -- unlike the image editor there's no separate
+    // viewer mode to enter from, see Mode::Model3D's own comment. Mutators
+    // below are public for the same reason ImageEditor's own are: main.cpp's
+    // toolbar/menubar/Outliner/Inspector and the Lua/RPC bindings
+    // (lua_env.cpp's l_model_*, agent_rpc.cpp's model.* methods) all call
+    // them directly. ---
+    /**
+     * @brief Returns whether the given buffer id is backed by a 3D-modeler scene.
+     * @param buffer_id The buffer id to check.
+     * @return True if a Model3DSession exists for this buffer.
+     */
+    bool IsModel3DBuffer(int buffer_id) const;
+    /**
+     * @brief Returns the 3D-modeler session for the given buffer id, if any.
+     * @param buffer_id The buffer id to look up.
+     * @return A const pointer to the Model3DSession, or nullptr if none exists.
+     */
+    const Model3DSession *GetModel3D(int buffer_id) const;
+    /**
+     * @brief Returns a mutable pointer to the 3D-modeler session for the given buffer id.
+     * @param buffer_id The buffer id to look up.
+     * @return A mutable pointer to the Model3DSession, or nullptr if none exists.
+     */
+    Model3DSession *GetModel3DMutable(int buffer_id);
+    /**
+     * @brief Creates a fresh, empty 3D-modeler buffer (no source file) and switches the current
+     * pane to it, landing in Mode::Model3D -- the "build from scratch" entry point (LoadFile's
+     * import branch always requires an existing, successfully-parsed file, which a blank scene by
+     * definition doesn't have).
+     * @return The new buffer's id.
+     */
+    int NewModel3DScene();
+    /**
+     * @brief Updates a 3D-modeler pane's viewport size (for aspect ratio and screen-space picking).
+     * @param buffer_id The 3D-modeler buffer id to resize.
+     * @param w The new viewport width in pixels.
+     * @param h The new viewport height in pixels.
+     */
+    void ResizeModel3DViewport(int buffer_id, int w, int h);
+    /**
+     * @brief Snapshots the current buffer_id's scene onto its undo stack, clearing redo.
+     * @param buffer_id The 3D-modeler buffer id to snapshot.
+     */
+    void PushUndoModel3D(int buffer_id);
+    /**
+     * @brief Undoes the last 3D-modeler edit for the given buffer id.
+     * @param buffer_id The 3D-modeler buffer id to undo.
+     */
+    void UndoModel3D(int buffer_id);
+    /**
+     * @brief Redoes the last undone 3D-modeler edit for the given buffer id.
+     * @param buffer_id The 3D-modeler buffer id to redo.
+     */
+    void RedoModel3D(int buffer_id);
+    /**
+     * @brief Adds a procedurally generated primitive object to the scene, pushing undo first.
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param kind Which primitive to generate.
+     * @return The new object's id, or -1 if buffer_id isn't a 3D-modeler buffer or kind is invalid.
+     */
+    int Model3DAddPrimitive(int buffer_id, PrimitiveKind kind);
+    /**
+     * @brief Deletes an object from the scene, pushing undo first.
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param object_id The object id to delete.
+     * @param cascade If false (the default), direct children are un-parented (kept, `parent` set to
+     * -1) rather than deleted -- the safer default when the caller only asked to remove one object. If
+     * true, every transitive descendant (Scene::Descendants) is deleted too, a real "delete group and
+     * everything in it."
+     * @return True if the object existed and was deleted.
+     */
+    bool Model3DDeleteObject(int buffer_id, int object_id, bool cascade = false);
+    /**
+     * @brief Duplicates an object (same mesh, transform, and material) with a new id, pushing undo
+     * first.
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param object_id The object id to duplicate.
+     * @param cascade If false (the default), only object_id itself is duplicated -- any children keep
+     * pointing at the *original*, not the copy (matching how duplicating a non-group object has always
+     * worked). If true, every transitive descendant (Scene::Descendants) is duplicated too, with the
+     * copies re-parented to mirror the original hierarchy under the new copy of object_id -- a real
+     * "duplicate this group and everything in it."
+     * @return The new (top-level) object's id, or -1 if object_id doesn't exist.
+     */
+    int Model3DDuplicateObject(int buffer_id, int object_id, bool cascade = false);
+    /**
+     * @brief Sets an object's position/rotation/scale, pushing undo first. Each `has_*` flag gates
+     * whether that field is applied, so a caller can update just one of the three.
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param object_id The object id to update.
+     * @param has_position Whether to apply `position`.
+     * @param position New position, in scene units.
+     * @param has_rotation Whether to apply `rotation_deg`.
+     * @param rotation_deg New Euler XYZ rotation, in degrees.
+     * @param has_scale Whether to apply `scale`.
+     * @param scale New per-axis scale factors.
+     * @return True if the object existed.
+     */
+    bool Model3DSetTransform(int buffer_id, int object_id, bool has_position, Vec3f position, bool has_rotation, Vec3f rotation_deg,
+                              bool has_scale, Vec3f scale);
+    /**
+     * @brief Sets an object's base color, pushing undo first.
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param object_id The object id to update.
+     * @param color New base color (0..1 floats).
+     * @return True if the object existed.
+     */
+    bool Model3DSetMaterial(int buffer_id, int object_id, RgbaColorF color);
+    /**
+     * @brief Sets (or clears) an object's base-color/albedo texture, pushing undo first. Loads
+     * `path` via LoadTextureIntoScene (a pure CPU image decode, no GL context needed) and appends it
+     * to the scene's texture list -- an existing Scene::textures entry is never reused/deduplicated
+     * even if the same path was already loaded once. The texture is sampled and then tinted by the
+     * object's own Model3DSetMaterial color, matching raylib's default shader (texelColor *
+     * colDiffuse) and glTF's own baseColorTexture + baseColorFactor semantics.
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param object_id The object id to update.
+     * @param path Path to an image file (PNG/JPG/BMP/...), or empty to clear the current texture
+     * (falls back to flat `color`).
+     * @return True if the object existed and (for a non-empty path) the image loaded successfully.
+     */
+    bool Model3DSetTexture(int buffer_id, int object_id, const std::string &path);
+    /**
+     * @brief Renames an object, pushing undo first.
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param object_id The object id to rename.
+     * @param name New display name.
+     * @return True if the object existed.
+     */
+    bool Model3DRenameObject(int buffer_id, int object_id, const std::string &name);
+    /**
+     * @brief Toggles an object's visibility, pushing undo first.
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param object_id The object id to update.
+     * @param visible New visibility state.
+     * @return True if the object existed.
+     */
+    bool Model3DSetVisible(int buffer_id, int object_id, bool visible);
+    /**
+     * @brief Replaces the current selection, silently dropping any id that doesn't exist. Not an
+     * undoable edit (selection isn't part of the saved scene).
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param object_ids The object ids to select, in order.
+     */
+    void Model3DSetSelection(int buffer_id, const std::vector<int> &object_ids);
+    /**
+     * @brief Updates the orbit camera, applying only the fields `params` marks as set. Not an
+     * undoable edit.
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param params Which camera fields to change and their new values.
+     */
+    void Model3DSetCamera(int buffer_id, const Model3DCameraParams &params);
+    /**
+     * @brief Serializes a 3D-modeler session's scene as glTF and writes it to `path`.
+     * @param sess The session to export.
+     * @param path Destination file path.
+     * @return True on success; false (with status_message_ set) on a write failure.
+     */
+    bool SaveModel3DFile(Model3DSession &sess, const std::string &path);
+    /**
+     * @brief Sets the grid/wireframe view toggles, applying only the fields given. Not an undoable
+     * edit (view state isn't part of the saved scene) -- exposes what was previously only reachable
+     * by clicking the tool sidebar's Grid/Wireframe buttons.
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param has_show_grid Whether to apply `show_grid`.
+     * @param show_grid New grid-visibility state.
+     * @param has_wireframe Whether to apply `wireframe`.
+     * @param wireframe New wireframe-rendering state.
+     */
+    void Model3DSetView(int buffer_id, bool has_show_grid, bool show_grid, bool has_wireframe, bool wireframe, bool has_snap,
+                         bool snap);
+    /**
+     * @brief Reframes the orbit camera (target + distance) to fit the whole scene's true world
+     * bounds (position/rotation/scale all accounted for) -- yaw/pitch are left as they are. Not an
+     * undoable edit.
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     */
+    void Model3DFrameAll(int buffer_id);
+    /**
+     * @brief Applies a batch of per-object transform updates in one call, pushing one undo entry
+     * per object updated (same granularity as calling Model3DSetTransform in a loop) -- added so an
+     * agent positioning many objects doesn't need one round-trip per object.
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param updates One update per object to touch; entries naming a nonexistent object_id are
+     * silently skipped.
+     * @return The number of updates actually applied.
+     */
+    int Model3DSetTransformsBatch(int buffer_id, const std::vector<Model3DTransformUpdate> &updates);
+    /**
+     * @brief Applies a batch of per-object material updates in one call. Same batching/undo
+     * granularity as Model3DSetTransformsBatch.
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param updates One color update per object to touch; entries naming a nonexistent object_id
+     * are silently skipped.
+     * @return The number of updates actually applied.
+     */
+    int Model3DSetMaterialsBatch(int buffer_id, const std::vector<Model3DMaterialUpdate> &updates);
+    /**
+     * @brief Deletes a batch of objects in one call. Same undo granularity as calling
+     * Model3DDeleteObject in a loop (one entry per object actually deleted).
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param object_ids Object ids to delete; ids that don't exist are silently skipped.
+     * @return The number of objects actually deleted.
+     */
+    int Model3DDeleteObjectsBatch(int buffer_id, const std::vector<int> &object_ids, bool cascade = false);
+    /**
+     * @brief Duplicates an object with its position mirrored across the given world axis through
+     * the origin (and, for a simple single-axis rotation, its own rotation reflected to match --
+     * see the .cpp for the exact Euler-angle caveat). Pushes undo once.
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param object_id The object id to mirror.
+     * @param axis Which axis to mirror across: 'x', 'y', or 'z'.
+     * @return The new object's id, or -1 if object_id doesn't exist or axis is invalid.
+     */
+    int Model3DDuplicateMirrored(int buffer_id, int object_id, char axis);
+    /**
+     * @brief Duplicates an object `count - 1` times in an evenly-spaced ring around the given axis
+     * (through the origin), rotating both each copy's position and its own rotation about that axis
+     * by the same step angle -- e.g. 4 copies of an object offset from the origin on the X axis,
+     * arrayed around Y, lands one at each 90-degree step, each still facing outward the same way
+     * the original did. Pushes one undo entry per copy created (same granularity as calling
+     * Model3DDuplicateObject in a loop).
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param object_id The object id to array (kept as-is; not counted in `count`).
+     * @param count Total number of copies to create (not including the original).
+     * @param axis Which axis to array around: 'x', 'y', or 'z'.
+     * @return The new objects' ids, in order; empty if object_id doesn't exist, axis is invalid, or
+     * count < 1.
+     */
+    std::vector<int> Model3DRadialArray(int buffer_id, int object_id, int count, char axis);
+    /**
+     * @brief Creates a new empty group node (no mesh -- Object3D::mesh_index -1, invisible in the
+     * viewport) and parents every object in `object_ids` under it, pushing one undo entry (the group
+     * creation) plus one more per reparented object -- same granularity as Model3DSetTransformsBatch's
+     * own per-entry undo. The group's own position is the centroid of the objects being grouped, so
+     * its on-screen gizmo/Outliner presence sits somewhere sensible rather than always at the origin.
+     * Object3D::parent is purely an organizational/group-move link (Outliner nesting, and Move
+     * gizmo/free-drag cascading to descendants) -- it is never composed into a child's own transform
+     * matrix, so grouping an object does not change how it renders.
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param object_ids The objects to group (already-grouped or nonexistent ids are skipped).
+     * @return The new group object's id, or -1 if buffer_id isn't a 3D-modeler buffer or object_ids is
+     * empty/contains no valid objects.
+     */
+    int Model3DGroupObjects(int buffer_id, const std::vector<int> &object_ids);
+    /**
+     * @brief Sets (or clears) one object's parent, pushing undo first.
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param object_id The object id to reparent.
+     * @param parent_id The new parent's object id, or -1 to clear (un-parent).
+     * @return False (no-op) if object_id doesn't exist, parent_id is neither -1 nor an existing
+     * object, parent_id == object_id, or parent_id is already a descendant of object_id (which would
+     * create a cycle).
+     */
+    bool Model3DSetParent(int buffer_id, int object_id, int parent_id);
+    /**
+     * @brief Sets one vertex's local-space position on an object's mesh, pushing undo first.
+     * Calls Scene::EnsureUniqueMesh first, so editing one instance of a mesh shared by several
+     * objects (a radial array, a mirrored duplicate, a multi-object import) never deforms the
+     * others -- the object is transparently given its own private copy of the mesh the first time
+     * any of its vertices are edited.
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param object_id The object id whose mesh to edit.
+     * @param vertex_index Which vertex, in vertex units (not a raw float offset) -- must be in
+     * [0, vertex_count) for the object's own mesh.
+     * @param local_position The new local-space (pre-object-transform) position.
+     * @return False (no-op) if object_id doesn't exist, has no mesh, or vertex_index is out of range.
+     */
+    bool Model3DSetVertexPosition(int buffer_id, int object_id, int vertex_index, Vec3f local_position);
+    /**
+     * @brief Deletes the given vertices (and every triangle referencing any of them -- see
+     * MeshData::RemoveVertices) from an object's mesh, pushing undo first. Calls
+     * Scene::EnsureUniqueMesh first, same sharing-safety as Model3DSetVertexPosition.
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param object_id The object id whose mesh to edit.
+     * @param vertex_indices Which vertices to remove, in vertex units. Out-of-range/duplicate entries
+     * are harmless no-ops.
+     * @return False (no-op, no undo pushed) if object_id doesn't exist or has no mesh; true otherwise,
+     * even if `vertex_indices` ends up removing nothing (e.g. all out of range).
+     */
+    bool Model3DDeleteVertices(int buffer_id, int object_id, const std::vector<int> &vertex_indices);
+    /**
+     * @brief Welds the given vertices (see MeshData::MergeVertices) of an object's mesh into a single
+     * vertex at their averaged position/normal/texcoord, dropping any triangle that becomes degenerate
+     * as a result. Pushes undo first. Calls Scene::EnsureUniqueMesh first, same sharing-safety as
+     * Model3DSetVertexPosition.
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param object_id The object id whose mesh to edit.
+     * @param vertex_indices Which vertices to merge together, in vertex units. Out-of-range/duplicate
+     * entries are harmless no-ops; fewer than 2 distinct valid entries is a no-op (nothing to merge).
+     * @return False (no-op, no undo pushed) if object_id doesn't exist or has no mesh; true otherwise,
+     * even if `vertex_indices` doesn't resolve to at least 2 distinct valid vertices to merge.
+     */
+    bool Model3DMergeVertices(int buffer_id, int object_id, const std::vector<int> &vertex_indices);
+    /**
+     * @brief Recomputes an object's mesh's per-vertex normals from its current triangle geometry (see
+     * MeshData::RecalculateNormals -- a "smooth" recalculation, averaging every adjacent triangle's own
+     * normal). Pushes undo first. Calls Scene::EnsureUniqueMesh first, same sharing-safety as
+     * Model3DSetVertexPosition. Has zero visible effect on this app's own rendering (raylib's default
+     * shaders never reference vertex normals) -- exists purely to fix up normals left stale by vertex
+     * edits (move/delete/merge) for tools that actually read them on export, e.g. Blender.
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param object_id The object id whose mesh to recalculate.
+     * @return False (no-op, no undo pushed) if object_id doesn't exist or has no mesh; true otherwise.
+     */
+    bool Model3DRecalculateNormals(int buffer_id, int object_id);
+    /**
+     * @brief Centroid-subdivides every triangle of an object's mesh whose all 3 corners are in
+     * `vertex_indices` (see MeshData::SubdivideFaces). Pushes undo first. Calls Scene::EnsureUniqueMesh
+     * first, same sharing-safety as Model3DSetVertexPosition.
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param object_id The object id whose mesh to edit.
+     * @param vertex_indices Vertices whose fully-covered triangles should be subdivided, in vertex units.
+     * @return The newly-created centroid vertex indices (empty if object_id doesn't exist, has no mesh,
+     * or no triangle was fully covered).
+     */
+    std::vector<int> Model3DSubdivideFaces(int buffer_id, int object_id, const std::vector<int> &vertex_indices);
+    /**
+     * @brief Extrudes the face formed by every triangle of an object's mesh whose all 3 corners are in
+     * `vertex_indices`, by `distance` along that face's own geometrically-derived normal (see
+     * MeshData::ExtrudeFaces for the full boundary-wall/connectivity behavior). Pushes undo first. Calls
+     * Scene::EnsureUniqueMesh first, same sharing-safety as Model3DSetVertexPosition.
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param object_id The object id whose mesh to edit.
+     * @param vertex_indices Vertices whose fully-covered triangles form the face to extrude.
+     * @param distance How far to extrude along the face's own normal (negative pushes inward).
+     * @return The new "cap" vertex indices (empty if object_id doesn't exist, has no mesh, no triangle
+     * was fully covered, or the selected face was degenerate).
+     */
+    std::vector<int> Model3DExtrudeFaces(int buffer_id, int object_id, const std::vector<int> &vertex_indices,
+                                          float distance);
+    /**
+     * @brief Dissolves one vertex of an object's mesh -- removes it and patches the surrounding faces
+     * back together where possible, falling back to a plain hole-leaving removal otherwise (see
+     * MeshData::DissolveVertex for exactly when each path is taken). Pushes undo first. Calls
+     * Scene::EnsureUniqueMesh first, same sharing-safety as Model3DSetVertexPosition.
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param object_id The object id whose mesh to edit.
+     * @param vertex_index Which vertex to dissolve, in vertex units.
+     * @return False (no-op, no undo pushed) if object_id doesn't exist, has no mesh, or vertex_index is
+     * out of range; true otherwise.
+     */
+    bool Model3DDissolveVertex(int buffer_id, int object_id, int vertex_index);
+    /**
+     * @brief Insets the face formed by every triangle of an object's mesh whose all 3 corners are in
+     * `vertex_indices` -- every vertex the face uses is duplicated and moved toward the face group's own
+     * centroid by `amount` (see MeshData::InsetFaces for the full boundary-wall behavior, shared with
+     * Model3DExtrudeFaces). Pushes undo first. Calls Scene::EnsureUniqueMesh first, same sharing-safety
+     * as Model3DSetVertexPosition.
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param object_id The object id whose mesh to edit.
+     * @param vertex_indices Vertices whose fully-covered triangles form the face to inset.
+     * @param amount Fraction toward the centroid, clamped to [0,1] -- 0 is a degenerate zero-width
+     * inset, 1 fully collapses the new cap onto the centroid.
+     * @return The new cap vertex indices (empty if object_id doesn't exist, has no mesh, or no triangle
+     * was fully covered).
+     */
+    std::vector<int> Model3DInsetFaces(int buffer_id, int object_id, const std::vector<int> &vertex_indices,
+                                        float amount);
+    /**
+     * @brief Appends one new, isolated vertex to an object's mesh (see MeshData::AddVertex) -- no
+     * triangle references it, so it won't render until connected via Model3DMakeFace or similar. Pushes
+     * undo first. Calls Scene::EnsureUniqueMesh first, same sharing-safety as Model3DSetVertexPosition.
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param object_id The object id whose mesh to add a vertex to.
+     * @param local_position The new vertex's local-space (pre-object-transform) position.
+     * @return The new vertex's index (in vertex units), or -1 if object_id doesn't exist or has no mesh.
+     */
+    int Model3DAddVertex(int buffer_id, int object_id, Vec3f local_position);
+    /**
+     * @brief Creates new triangle(s) of an object's mesh connecting existing vertices (see
+     * MeshData::MakeFace) -- fan-triangulated from the first of `vertex_indices`. Pushes undo first.
+     * Calls Scene::EnsureUniqueMesh first, same sharing-safety as Model3DSetVertexPosition.
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param object_id The object id whose mesh to add a face to.
+     * @param vertex_indices Vertices to connect, in the order to fan-triangulate from the first one.
+     * @return False (no-op, no undo pushed) if object_id doesn't exist, has no mesh, or fewer than 3
+     * distinct valid vertices remain after filtering; true otherwise.
+     */
+    bool Model3DMakeFace(int buffer_id, int object_id, const std::vector<int> &vertex_indices);
+    /**
+     * @brief Automatically welds every group of an object's mesh's vertices whose positions are all
+     * mutually within `threshold` of each other (see MeshData::MergeByDistance -- Blender's own "Merge
+     * by Distance"/"Remove Doubles"). Pushes undo first. Calls Scene::EnsureUniqueMesh first, same
+     * sharing-safety as Model3DSetVertexPosition.
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param object_id The object id whose mesh to weld.
+     * @param threshold Max distance between two vertices for them to be welded, clamped to >= 0 (0
+     * welds only exact/bit-identical position duplicates).
+     * @return How many vertices were removed (0 if object_id doesn't exist, has no mesh, or nothing was
+     * within threshold of anything else -- these aren't distinguishable from the return value alone).
+     */
+    int Model3DMergeByDistance(int buffer_id, int object_id, float threshold);
+    /**
+     * @brief Reverses every triangle's winding and negates every vertex normal of an object's mesh (see
+     * MeshData::FlipNormals) -- the fix for geometry that renders inside-out. Pushes undo first. Calls
+     * Scene::EnsureUniqueMesh first, same sharing-safety as Model3DSetVertexPosition.
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param object_id The object id whose mesh to flip.
+     * @return False (no-op, no undo pushed) if object_id doesn't exist or has no mesh; true otherwise.
+     */
+    bool Model3DFlipNormals(int buffer_id, int object_id);
+    /**
+     * @brief Assigns a fresh scene_generation value to a session, without pushing undo or touching
+     * anything else -- for main.cpp's interactive vertex drag, which (like the object gizmo drag)
+     * mutates mesh data directly every frame rather than going through Model3DSetVertexPosition's own
+     * per-call undo push, but still needs the GPU mesh cache to know the content changed each frame so
+     * the drag is visible live (see Model3DSession::scene_generation's own comment).
+     * @param buffer_id The 3D-modeler buffer id to bump.
+     */
+    void Model3DBumpSceneGeneration(int buffer_id);
 
     // --- PDF-viewer panes (opened via LoadFile for a .pdf path -- see
     // IsPdfPath in pdf_doc.h). Mirrors the Image-viewer block above; see
@@ -6448,6 +7035,66 @@ private:
     // Same Ctrl-scroll-zooms-else-pans shape as WheelScrollImage, operating
     // on ImageEditorSession instead of ImageSession.
     void WheelScrollImageEditor(float dx, float dy);
+    // Tool hotkeys ('v' Select/'g' Move/'r' Rotate/'s' Scale, Tab cycles
+    // OrbitCam/PanCam, 'u'/Ctrl-R undo/redo, Delete deletes the selection,
+    // Ctrl-D duplicates it, 'a' opens the Add-primitive menu); ':' and the
+    // leader key are forwarded same as HandleImageEditorInput. Camera drag
+    // and object-gizmo dragging are NOT handled here -- see Mode::Model3D's
+    // own comment for why that lives in main.cpp's DrawPane instead.
+    void HandleModel3DInput();
+    // Same Ctrl-scroll-zooms-else-orbits-nothing shape isn't quite right for
+    // a 3D camera -- plain scroll dollies the camera in/out (changes
+    // camera_distance); there's no 2D pan axis to scroll along the way
+    // WheelScrollImageEditor's dx/dy do, so dx is ignored.
+    void WheelScrollModel3D(float dx, float dy);
+    // Finds-or-creates the buffer for `path` (same filename dedup FindOr-
+    // CreateBuffer/OpenImageInPlace use). A non-.blend source imports and
+    // registers its Model3DSession synchronously via LoadModel3DFile, same
+    // as always. A .blend source instead registers a placeholder session
+    // (Model3DSession::blend_import_pending = true, empty scene) right
+    // away and starts the Blender conversion on a background JobManager
+    // job (Model3DFinishBlendImport below completes it from PollAll(), not
+    // this call) -- so opening a .blend file never blocks the UI thread
+    // for the several seconds a real Blender invocation takes, unlike the
+    // old ConvertBlendToGltf-then-import call this replaced. Called from
+    // LoadFile, native-only (no wasm bytes-bridge path -- raylib's
+    // LoadModel needs a real filesystem path, and JobManager itself is
+    // POSIX-only). Leaves CurPane()'s buffer switched to it either way
+    // (immediately for the placeholder case too, so the pane is visible
+    // while it converts); on a synchronous failure (bad non-.blend file,
+    // or Blender missing/failing to even start), sets status_message_ and
+    // leaves the current pane untouched.
+    void OpenModel3DInPlace(const std::string &path);
+    // Shared tail of OpenModel3DInPlace's non-.blend path and
+    // Model3DFinishBlendImport's success path: builds the actual
+    // Model3DSession from an already-loaded `scene` (fits the camera,
+    // bumps scene_generation, registers it). Deliberately does NOT touch
+    // CurPane() -- OpenModel3DInPlace's own synchronous non-.blend caller
+    // does that itself right after, but Model3DFinishBlendImport must not
+    // (see its own comment: that call can land long after the user has
+    // navigated elsewhere). `buffer_id` must already be a valid buffer
+    // (created by the caller); this never creates one itself.
+    void Model3DFinishOpen(int buffer_id, Scene scene);
+    // JobManager::Callbacks::on_exit for a .blend conversion started by
+    // OpenModel3DInPlace: on success, imports the resulting .glb via
+    // LoadModel3DFile and calls Model3DFinishOpen; on failure (Blender
+    // exited non-zero, or produced no .glb), just clears blend_import_
+    // pending. Either way reports the outcome via Notify(), not
+    // status_message_ -- this fires from a background job's completion,
+    // possibly well after the user's own :e/mep_file_open call returned
+    // and after they may have switched to a different pane/buffer, so a
+    // direct status_message_ write could get instantly overwritten or show
+    // up attached to unrelated work; CurPane() is likewise never touched
+    // here; blend_import_pending being cleared either way is what makes
+    // DrawModel3DPane stop showing the "Converting..." overlay next time
+    // the user does look at this pane (rendering the finished scene, or,
+    // on failure, the same empty scene a source that failed to parse would
+    // leave behind). No-ops if the buffer/session vanished (closed) or was
+    // replaced by something else in the meantime -- mirrors the "pruned/
+    // closed meanwhile" guard every other JobManager on_exit callback in
+    // this file already uses.
+    void Model3DFinishBlendImport(int buffer_id, const std::string &original_path, const std::string &script_path,
+                                   const std::string &glb_path, int exit_code, const std::string &child_output);
     // Finds-or-creates the buffer for `path` (same filename dedup
     // FindOrCreateBuffer uses) and, on a new open, decodes `bytes` via
     // ImageDoc and registers the ImageSession. Called from LoadFile once it
@@ -7376,6 +8023,9 @@ private:
     // how a closed text buffer's entry in buffers_ also just keeps existing.
     std::unordered_map<int, ImageSession> images_;
     std::unordered_map<int, ImageEditorSession> image_editors_;
+    // Keyed by buffer_id -- one entry per open in-pane 3D-modeler pane
+    // (MODEL3D.md), same never-reaped lifetime reasoning as images_ above.
+    std::unordered_map<int, Model3DSession> model3d_sessions_;
     // Keyed by buffer_id -- one entry per open PDF-viewer pane, same
     // never-reaped lifetime reasoning as images_ above.
     std::unordered_map<int, PdfSession> pdfs_;

@@ -14,7 +14,7 @@ set(FETCHCONTENT_QUIET FALSE)
 
 # Strict warnings for mep's OWN targets only (mep_core, mep, mep-collabd,
 # the collab/agent-rpc test binaries, mep-amalgam) -- deliberately NOT
-# applied to vendored/fetched third-party targets (raylib, lua, pugixml,
+# applied to vendored/fetched third-party targets (lua, pugixml,
 # miniz, tree_sitter, the ts_* grammar libs, pdfium) since we don't own
 # that code and can't fix warnings inside it. Applied via
 # target_compile_options(... PRIVATE ${MEP_STRICT_FLAGS}) on each of our
@@ -62,21 +62,6 @@ set(MEP_SANITIZE_FLAGS "")
 if(CMAKE_BUILD_TYPE STREQUAL "Sanitize")
     set(MEP_SANITIZE_FLAGS -fsanitize=address,undefined -fno-omit-frame-pointer -g -O1)
 endif()
-
-set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-set(BUILD_GAMES OFF CACHE BOOL "" FORCE)
-
-if(EMSCRIPTEN)
-    set(PLATFORM "Web" CACHE STRING "" FORCE)
-endif()
-
-FetchContent_Declare(
-    raylib
-    GIT_REPOSITORY https://github.com/raysan5/raylib.git
-    GIT_TAG        5.5
-    GIT_SHALLOW    TRUE
-)
-FetchContent_MakeAvailable(raylib)
 
 # Lua has no official CMake build, so it's fetched as a plain tarball and
 # built as a static library by hand: every src/*.c except the two files
@@ -184,7 +169,7 @@ endforeach()
 # shared-library release from github.com/bblanchon/pdfium-binaries (MIT-
 # licensed packaging of Google's own binary builds) rather than vendored
 # as source, the same "prebuilt binary, not a source vendor" tradeoff
-# raylib/lua deliberately avoid elsewhere in this file. Not available for
+# lua deliberately avoids elsewhere in this file. Not available for
 # the Emscripten/wasm build -- see the #if defined(__EMSCRIPTEN__) stub in
 # pdf_doc.cpp.
 if(NOT EMSCRIPTEN)
@@ -241,6 +226,36 @@ if(NOT EMSCRIPTEN)
     endif()
 endif()
 
+# The in-house GLFW+OpenGL gfx:: backend (see gfx/backend_native.cpp's own
+# comment): mep_core's rendering/windowing/input/audio/model-import layer,
+# and (below) four standalone smoke-test executables that exercise it
+# independently of the full app. Builds for both native desktop, via the
+# system/Nix-provided GLFW+OpenGL (mep owns this dependency directly,
+# rather than via raylib's now-removed subdirectory fetch), and Emscripten
+# -- GLFW and an OpenGL ES 3.0/WebGL2 context both come from emcc's own
+# `-sUSE_GLFW=3 -sUSE_WEBGL2=1 -sFULL_ES3=1` link-time shims, no
+# find_package/target_link_libraries needed for either. Declared before
+# mep_core below since mep_core links these sources in directly.
+set(MEP_GFX_NATIVE_SOURCES
+    src/gfx/gl_loader.cpp
+    src/gfx/gl_shader.cpp
+    src/gfx/backend_native.cpp
+    src/gfx/backend_native_audio.cpp
+    src/gfx/backend_native_renderer2d.cpp
+    src/gfx/backend_native_renderer3d.cpp
+    src/gfx/backend_native_model_obj.cpp
+    src/gfx/backend_native_model_iqm.cpp
+    src/gfx/backend_native_model_vox.cpp
+    src/gfx/backend_native_model_m3d.cpp
+    src/gfx/backend_native_model_gltf.cpp
+    src/gfx/backend_native_text.cpp
+    src/gfx/backend.cpp
+)
+if(NOT EMSCRIPTEN)
+    find_package(glfw3 REQUIRED)
+    find_package(OpenGL REQUIRED)
+endif()
+
 # Every logical module (editor, lua_env, job, agent_rpc, vterm, treesitter,
 # regex, image_doc, pdf_doc, office_doc/office_odt, formula, sheet_doc/
 # sheet_xlsx/sheet_ods, html_doc, js_engine, doc_export, org_doc) is its own
@@ -274,13 +289,14 @@ add_library(mep_core STATIC
     src/js_engine.cpp
     src/editor.cpp
     src/workspace_git.cpp
+    ${MEP_GFX_NATIVE_SOURCES}
 )
 target_include_directories(mep_core PUBLIC src)
 target_compile_options(mep_core PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep_core PRIVATE ${MEP_SANITIZE_FLAGS})
-target_link_libraries(mep_core PUBLIC raylib lua tree_sitter ${TS_GRAMMAR_LIBS} pugixml miniz)
+target_link_libraries(mep_core PUBLIC lua tree_sitter ${TS_GRAMMAR_LIBS} pugixml miniz)
 if(NOT EMSCRIPTEN)
-    target_link_libraries(mep_core PUBLIC pdfium)
+    target_link_libraries(mep_core PUBLIC pdfium glfw OpenGL::GL)
 endif()
 if(NOT EMSCRIPTEN AND NOT WIN32)
     find_package(Threads REQUIRED)
@@ -291,6 +307,44 @@ if(NOT EMSCRIPTEN AND NOT WIN32)
     # linked against a (nonexistent) libdl.
     target_link_libraries(mep_core PUBLIC ${CMAKE_DL_LIBS})
 endif()
+
+# Defines one gfx-native smoke-test executable (${main_src} plus the
+# shared MEP_GFX_NATIVE_SOURCES above), wired for whichever of native
+# desktop or Emscripten this configure is targeting.
+function(mep_add_gfx_native_smoke name main_src)
+    add_executable(${name} ${main_src} ${MEP_GFX_NATIVE_SOURCES})
+    target_include_directories(${name} PRIVATE src)
+    target_compile_options(${name} PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_libraries(${name} PRIVATE miniz)
+    if(EMSCRIPTEN)
+        target_link_options(${name} PRIVATE "-sUSE_GLFW=3" "-sUSE_WEBGL2=1" "-sFULL_ES3=1" "-sALLOW_MEMORY_GROWTH=1")
+    else()
+        target_link_options(${name} PRIVATE ${MEP_SANITIZE_FLAGS})
+        target_link_libraries(${name} PRIVATE glfw OpenGL::GL)
+        if(NOT WIN32 AND NOT APPLE)
+            target_link_libraries(${name} PRIVATE Threads::Threads m)
+        endif()
+    endif()
+endfunction()
+
+# B1 walking-skeleton smoke test (see gfx/native_smoke_main.cpp's own
+# comment): a real GLFW+GL 3.3 core window, deliberately standalone --
+# not part of mep_core/mep -- so the windowing/GL-context foundation can
+# be verified on its own before the rest of the native backend
+# (input/text/2D/3D) is built on top of it.
+mep_add_gfx_native_smoke(mep-gfx-native-smoke src/gfx/native_smoke_main.cpp)
+
+# Integration smoke test: exercises the actual gfx:: facade (2D
+# primitives, textures, text) against the native backend, not raw GL.
+mep_add_gfx_native_smoke(mep-gfx-native-integration-smoke src/gfx/native_gfx_smoke_main.cpp)
+
+# Audio lifecycle smoke test (device init, load, play/pause/resume,
+# IsSoundPlaying, volume, unload) -- see gfx/native_audio_smoke_main.cpp.
+mep_add_gfx_native_smoke(mep-gfx-native-audio-smoke src/gfx/native_audio_smoke_main.cpp)
+
+# Model-import smoke test (Stage B8): loads a real model file and
+# renders it, see gfx/native_model_smoke_main.cpp.
+mep_add_gfx_native_smoke(mep-gfx-native-model-smoke src/gfx/native_model_smoke_main.cpp)
 
 add_executable(mep
     src/main.cpp
@@ -308,10 +362,9 @@ if(NOT EMSCRIPTEN AND NOT WIN32 AND NOT APPLE)
     # mouse/keyboard events (the agent-control socket's "ui.*" methods,
     # main.cpp), plus GLFW's own headers to resolve mep's window down to
     # its native X11 Display/Window (glfwGetX11Display/glfwGetX11Window).
-    # `glfw` is a real CMake target here -- raylib's own CMakeLists pulls
-    # it in via add_subdirectory when built for the Desktop platform, so
-    # it's already visible project-wide without a FetchContent of our
-    # own; linking it just exposes its public include/ directory to us.
+    # `glfw` is the real CMake target the gfx:: native backend's own
+    # find_package(glfw3) above already resolved; linking it here just
+    # exposes its public include/ directory to this file too.
     find_package(X11 REQUIRED COMPONENTS Xtst)
     target_link_libraries(mep PRIVATE glfw X11::Xtst X11::X11)
 endif()
@@ -319,7 +372,7 @@ endif()
 # Dependency-free MCP bridge (mcp/server.ts's replacement -- see
 # src/mcp_bridge.cpp's own top comment): a plain external client of
 # mep's agent socket, same as mcp/mep_client.ts or `socat`, so it needs
-# none of mep_core/raylib -- just json.h/persist.h/rpc_framing.h and
+# none of mep_core -- just json.h/persist.h/rpc_framing.h and
 # POSIX sockets. Skipped on Emscripten/Windows for the same reason
 # agent_rpc.h's socket support itself is (see that header's own comment).
 if(NOT EMSCRIPTEN AND NOT WIN32)
@@ -330,7 +383,7 @@ if(NOT EMSCRIPTEN AND NOT WIN32)
 endif()
 
 # Pure DOM/CSS test: intentionally links only html_doc.cpp, so selector and
-# cascade behavior can be verified without opening a raylib window.
+# cascade behavior can be verified without opening a window.
 add_executable(mep-html-doc-test src/html_doc_test.cpp src/html_doc.cpp src/js_engine.cpp src/svg_doc.cpp src/wav_doc.cpp)
 target_include_directories(mep-html-doc-test PRIVATE src)
 target_compile_options(mep-html-doc-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
@@ -357,15 +410,22 @@ endif()
 # MODEL3D.md: covers Scene bookkeeping and the glTF exporter -- the half of
 # model3d_doc.cpp that's pure CPU logic. Deliberately does NOT exercise
 # LoadModel3DFile/AddPrimitiveToScene (both need a live GL context via
-# raylib's UploadMesh, the one thing this windowless binary avoids), but
-# still links against raylib since model3d_doc.cpp references its symbols
-# even in the functions this test never calls. Native-only, matching
-# mep-workspace-test's own gating above (the feature itself is native-only
-# regardless, see MODEL3D_PLAN.md).
+# gfx::UploadMesh, the one thing this windowless binary avoids) or open a
+# window -- but still links the full native gfx:: backend (not just
+# gfx/backend.cpp) since model3d_doc.cpp references its symbols even in
+# the functions this test never calls, and calls gfx::SetBackends() at
+# startup so the pure-CPU calls it does exercise (GenImageColor/
+# ExportImage/LoadImage/ImageFormat/UnloadImage, none of which touch GL --
+# see backend_native_renderer2d.cpp) have a backend installed. Native-only,
+# matching mep-workspace-test's own gating above (the feature itself is
+# native-only regardless, see MODEL3D_PLAN.md).
 if(NOT EMSCRIPTEN)
-    add_executable(mep-model3d-doc-test src/model3d_doc_test.cpp src/model3d_doc.cpp)
+    add_executable(mep-model3d-doc-test src/model3d_doc_test.cpp src/model3d_doc.cpp ${MEP_GFX_NATIVE_SOURCES})
     target_include_directories(mep-model3d-doc-test PRIVATE src)
-    target_link_libraries(mep-model3d-doc-test PRIVATE raylib)
+    target_link_libraries(mep-model3d-doc-test PRIVATE glfw OpenGL::GL miniz)
+    if(NOT WIN32 AND NOT APPLE)
+        target_link_libraries(mep-model3d-doc-test PRIVATE Threads::Threads m)
+    endif()
     target_compile_options(mep-model3d-doc-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
     target_link_options(mep-model3d-doc-test PRIVATE ${MEP_SANITIZE_FLAGS})
 endif()
@@ -444,7 +504,7 @@ if(NOT EMSCRIPTEN)
         # subsystem's SHA-1, since that's folded into the generated file too.
         add_executable(mep-amalgam EXCLUDE_FROM_ALL "${MEP_AMALGAM_SRC}")
         target_include_directories(mep-amalgam PRIVATE src)
-        target_link_libraries(mep-amalgam PRIVATE raylib lua tree_sitter ${TS_GRAMMAR_LIBS} pugixml miniz OpenSSL::SSL OpenSSL::Crypto)
+        target_link_libraries(mep-amalgam PRIVATE glfw OpenGL::GL lua tree_sitter ${TS_GRAMMAR_LIBS} pugixml miniz OpenSSL::SSL OpenSSL::Crypto)
         if(NOT WIN32)
             target_link_libraries(mep-amalgam PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
         endif()

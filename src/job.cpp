@@ -37,6 +37,23 @@ Job::Job(const std::vector<std::string> &argv, const std::string &cwd, bool raw_
             // terminal and stdin/stdout/stderr -- just cwd + exec.
             setpgid(0, 0);
             if (!cwd.empty() && chdir(cwd.c_str()) != 0) _exit(127);
+            // Strip KITTY_* -- mep launched from a real kitty window
+            // inherits these, and a shell that sees KITTY_INSTALLATION_DIR
+            // set will unconditionally source kitty's shell-integration
+            // script (common in .bashrc/.zshrc: `[ -n "$KITTY_INSTALLATION_
+            // DIR" ] && source .../kitty.bash`), regardless of $TERM. That
+            // script wraps its prompt additions in literal `\[...\]`
+            // readline-invisibility markers and performs a terminal
+            // handshake only real kitty answers; since this PTY isn't
+            // kitty, the handshake never completes and the raw `\[`/`\]`
+            // markers leak into the cell grid as visible text -- the
+            // "funny characters ... lots of square brackets" bug. Clearing
+            // these before exec makes the child correctly see itself as
+            // not running inside kitty, matching reality.
+            for (const char *k : {"KITTY_WINDOW_ID", "KITTY_PID", "KITTY_INSTALLATION_DIR", "KITTY_LISTEN_ON",
+                                   "KITTY_PUBLIC_KEY", "KITTY_SHELL_INTEGRATION"}) {
+                unsetenv(k);
+            }
             for (const auto &kv : extra_env_) setenv(kv.first.c_str(), kv.second.c_str(), 1);
             std::vector<char *> cargv;
             cargv.reserve(argv.size() + 1);

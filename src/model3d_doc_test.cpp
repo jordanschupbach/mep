@@ -1,16 +1,21 @@
-// Windowless coverage for model3d_doc.h's raylib-*independent* half: Scene
+// Windowless coverage for model3d_doc.h's GL-*independent* half: Scene
 // bookkeeping and the glTF JSON exporter. Deliberately does NOT call
-// LoadModel3DFile/AddPrimitiveToScene -- both go through raylib's
-// LoadModel/GenMesh*/UploadMesh, which need a live GL context (an
-// initialized raylib window) to actually run, the one thing this binary
-// (like mep-html-doc-test) is meant to avoid needing. Meshes here are
-// built by hand instead, matching the same MeshData shape those functions
-// would produce.
+// LoadModel3DFile/AddPrimitiveToScene -- both go through gfx::LoadModel/
+// GenMesh*/UploadMesh, which need a live GL context (an initialized
+// window) to actually run, the one thing this binary (like
+// mep-html-doc-test) is meant to avoid needing. Meshes here are built by
+// hand instead, matching the same MeshData shape those functions would
+// produce. Still installs a native gfx:: backend at startup (no window)
+// so this file's own pure-CPU calls (GenImageColor/ExportImage/LoadImage)
+// have one to dispatch through -- see this repo's CMakeLists.txt comment
+// on the mep-model3d-doc-test target for why linking the backend at all
+// is unavoidable even though most of it goes unused here.
 
 #include "model3d_doc.h"
 
+#include "gfx/backend_native.h"
+#include "gfx/renderer2d.h"
 #include "json.h"
-#include "raylib.h"
 
 #include <unistd.h>
 
@@ -44,6 +49,8 @@ MeshData MakeTriangle() {
 }  // namespace
 
 int main() {
+    gfx::SetBackends(gfx::ToBackends(gfx::CreateNativeBackendSet()));
+
     // --- Scene bookkeeping ---
     Scene scene;
     int mesh_index = static_cast<int>(scene.meshes.size());
@@ -711,12 +718,12 @@ int main() {
     // binary, unlike LoadModel3DFile/AddPrimitiveToScene's own
     // GPU-upload-dependent halves.
     {
-        Image gen_img = GenImageColor(4, 4, RED);
+        gfx::Image gen_img = gfx::GenImageColor(4, 4, gfx::Red);
         char tex_tmpl[] = "/tmp/mep-model3d-doc-test-tex-XXXXXX.png";
         int tex_fd = mkstemps(tex_tmpl, 4);
         CHECK(tex_fd >= 0);
         close(tex_fd);
-        CHECK(ExportImage(gen_img, tex_tmpl));
+        CHECK(gfx::ExportImage(gen_img, tex_tmpl));
         UnloadImage(gen_img);
 
         Scene tex_scene;

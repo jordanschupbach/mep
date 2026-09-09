@@ -9,7 +9,10 @@
 #include <utility>
 
 #include "json.h"
-#include "raylib.h"
+#include "gfx/renderer2d.h"
+#include "gfx/renderer3d.h"
+#include "gfx/vecmath.h"
+
 
 namespace {
 
@@ -72,11 +75,11 @@ void AppendBytes(std::vector<unsigned char> &buf, const void *data, size_t len) 
     buf.insert(buf.end(), p, p + len);
 }
 
-// Copies a raylib Mesh's CPU-side vertex arrays into a plain MeshData --
-// the one place this module reaches into raylib's types, immediately
-// converted away so nothing else in this file (or its callers) needs to
-// touch a raylib Mesh/Model handle.
-void ExtractMeshFromRaylib(const Mesh &m, MeshData *out) {
+// Copies a gfx::Mesh's CPU-side vertex arrays into a plain MeshData -- the
+// one place this module reaches into gfx::'s backend-facing types,
+// immediately converted away so nothing else in this file (or its
+// callers) needs to touch a gfx::Mesh/gfx::Model handle.
+void ExtractMeshData(const gfx::Mesh &m, MeshData *out) {
     out->positions.assign(m.vertices, m.vertices + static_cast<size_t>(m.vertexCount) * 3);
     if (m.normals) out->normals.assign(m.normals, m.normals + static_cast<size_t>(m.vertexCount) * 3);
     if (m.texcoords) out->texcoords.assign(m.texcoords, m.texcoords + static_cast<size_t>(m.vertexCount) * 2);
@@ -84,41 +87,43 @@ void ExtractMeshFromRaylib(const Mesh &m, MeshData *out) {
         out->indices.reserve(static_cast<size_t>(m.triangleCount) * 3);
         for (int k = 0; k < m.triangleCount * 3; k++) out->indices.push_back(m.indices[k]);
     } else {
-        // No index buffer -- raylib guarantees the vertex stream is already
-        // triangle-list order in this case, so 0..vertexCount-1 is correct.
+        // No index buffer -- gfx::UploadMesh/importers guarantee the
+        // vertex stream is already triangle-list order in this case, so
+        // 0..vertexCount-1 is correct.
         out->indices.resize(static_cast<size_t>(m.vertexCount));
         for (int k = 0; k < m.vertexCount; k++) out->indices[static_cast<size_t>(k)] = static_cast<unsigned int>(k);
     }
 }
 
-// A right-triangular prism ("wedge"/ramp/doorstop shape) -- raylib has no
-// GenMeshWedge, so this is a hand-built mesh in the exact style of raylib's
-// own GenMeshCube (rmodels.c): RL_MALLOC'd flat, non-indexed triangle-soup
-// arrays (one vertex per triangle-corner, so each triangle can carry its own
-// flat face normal), then UploadMesh so it can go through the same
-// ExtractMeshFromRaylib + UnloadMesh path every other primitive uses. Added
-// after dogfooding a rocket build from primitives found flattened, rotated
-// cubes an awkward stand-in for flat panel/fin shapes (MODEL3D_PLAN.md Part
-// VIII/MODEL3D.md Phase 1.5's "no wedge primitive" gap).
+// A right-triangular prism ("wedge"/ramp/doorstop shape) -- gfx:: has no
+// GenMeshWedge (raylib never did either), so this is a hand-built mesh in
+// the exact style of gfx::GenMeshCube (backend_native_renderer3d.cpp):
+// flat, non-indexed triangle-soup arrays (one vertex per triangle-corner,
+// so each triangle can carry its own flat face normal), then UploadMesh
+// so it can go through the same ExtractMeshData + UnloadMesh path every
+// other primitive uses. Added after dogfooding a rocket build from
+// primitives found flattened, rotated cubes an awkward stand-in for flat
+// panel/fin shapes (MODEL3D_PLAN.md Part VIII/MODEL3D.md Phase 1.5's "no
+// wedge primitive" gap).
 //
 // Base-pivoted like Cylinder/Cone (footprint centered in XZ at Y=0,
 // extending up to Y=height), not centered like Cube/Sphere/Torus -- see
 // MEP_AGENT_API.md's primitive pivot table. The vertical face sits at
 // Z=-length/2 (full `height` tall); the mesh ramps down to Y=0 at
 // Z=+length/2, so "forward" (+Z) is the downhill direction.
-Mesh GenMeshWedge(float width, float height, float length) {
-    Mesh mesh{};
+gfx::Mesh GenMeshWedge(float width, float height, float length) {
+    gfx::Mesh mesh{};
     float hw = width * 0.5f;
     float hl = length * 0.5f;
 
     // Bottom rectangle (Y=0).
-    Vector3 a{-hw, 0.0f, -hl};
-    Vector3 b{hw, 0.0f, -hl};
-    Vector3 c{hw, 0.0f, hl};
-    Vector3 d{-hw, 0.0f, hl};
+    gfx::Vector3 a{-hw, 0.0f, -hl};
+    gfx::Vector3 b{hw, 0.0f, -hl};
+    gfx::Vector3 c{hw, 0.0f, hl};
+    gfx::Vector3 d{-hw, 0.0f, hl};
     // Top ridge (Y=height), running along X at the front (Z=-hl) edge.
-    Vector3 e{-hw, height, -hl};
-    Vector3 f{hw, height, -hl};
+    gfx::Vector3 e{-hw, height, -hl};
+    gfx::Vector3 f{hw, height, -hl};
 
     // Each entry is one triangle's 3 corners, wound so cross(v1-v0, v2-v0)
     // points outward (worked out by hand per face against each vertex's
@@ -126,8 +131,8 @@ Mesh GenMeshWedge(float width, float height, float length) {
     // (0, -width*length, 0), i.e. straight down, confirming (a,b,c)/(a,c,d)
     // is the correct winding for that face's downward-facing normal).
     struct Tri {
-        Vector3 v0, v1, v2;
-        Vector3 n;
+        gfx::Vector3 v0, v1, v2;
+        gfx::Vector3 n;
     };
     const Tri tris[8] = {
         {a, b, c, {0, -1, 0}},        // bottom
@@ -143,16 +148,16 @@ Mesh GenMeshWedge(float width, float height, float length) {
     // and toward +Z (the downhill direction), derived from the same
     // cross-product-of-edges test as every other face here.
     float ramp_len = std::sqrt(length * length + height * height);
-    Vector3 ramp_n = ramp_len > 1e-6f ? Vector3{0.0f, length / ramp_len, height / ramp_len} : Vector3{0.0f, 1.0f, 0.0f};
+    gfx::Vector3 ramp_n = ramp_len > 1e-6f ? gfx::Vector3{0.0f, length / ramp_len, height / ramp_len} : gfx::Vector3{0.0f, 1.0f, 0.0f};
 
     const int kVertexCount = 24;  // 8 triangles * 3 corners, non-indexed
-    mesh.vertices = static_cast<float *>(RL_MALLOC(static_cast<size_t>(kVertexCount) * 3 * sizeof(float)));
-    mesh.normals = static_cast<float *>(RL_MALLOC(static_cast<size_t>(kVertexCount) * 3 * sizeof(float)));
-    mesh.texcoords = static_cast<float *>(RL_MALLOC(static_cast<size_t>(kVertexCount) * 2 * sizeof(float)));
+    mesh.vertices = new float[static_cast<size_t>(kVertexCount) * 3];
+    mesh.normals = new float[static_cast<size_t>(kVertexCount) * 3];
+    mesh.texcoords = new float[static_cast<size_t>(kVertexCount) * 2];
     int vi = 0;
     for (int t = 0; t < 8; t++) {
-        Vector3 n = (t == 4 || t == 5) ? ramp_n : tris[t].n;
-        const Vector3 corners[3] = {tris[t].v0, tris[t].v1, tris[t].v2};
+        gfx::Vector3 n = (t == 4 || t == 5) ? ramp_n : tris[t].n;
+        const gfx::Vector3 corners[3] = {tris[t].v0, tris[t].v1, tris[t].v2};
         const float uvs[3][2] = {{0.0f, 0.0f}, {1.0f, 0.0f}, {1.0f, 1.0f}};
         for (int k = 0; k < 3; k++) {
             mesh.vertices[vi * 3 + 0] = corners[k].x;
@@ -168,18 +173,18 @@ Mesh GenMeshWedge(float width, float height, float length) {
     }
     mesh.vertexCount = kVertexCount;
     mesh.triangleCount = 8;
-    UploadMesh(&mesh, false);
+    gfx::UploadMesh(&mesh, false);
     return mesh;
 }
 
-// Copies a raylib Image's CPU-side pixel data into a plain TextureData,
+// Copies a gfx::Image's CPU-side pixel data into a plain TextureData,
 // normalizing to RGBA8 first -- the one place both texture-loading entry
 // points (LoadTextureIntoScene's file decode, LoadModel3DFile's GPU
 // texture readback) converge, so both fill out a TextureData the exact
 // same way. Does not call UnloadImage -- that's the caller's own
 // decode-vs-readback-specific cleanup.
-void ExtractImageToTextureData(Image img, const std::string &name, TextureData *out) {
-    ImageFormat(&img, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+void ExtractImageToTextureData(gfx::Image img, const std::string &name, TextureData *out) {
+    gfx::ImageFormat(&img, gfx::kPixelFormatR8G8B8A8);
     out->name = name;
     out->width = img.width;
     out->height = img.height;
@@ -1032,10 +1037,10 @@ bool IsModel3DPath(const std::string &path) {
 }
 
 bool LoadModel3DFile(const std::string &path, Scene *out, std::string *error) {
-    Model model = LoadModel(path.c_str());
+    gfx::Model model = gfx::LoadModel(path.c_str());
     if (model.meshCount <= 0) {
         if (error) *error = "no meshes loaded (missing file, or unsupported/corrupt format): " + path;
-        UnloadModel(model);
+        gfx::UnloadModel(model);
         return false;
     }
 
@@ -1045,7 +1050,7 @@ bool LoadModel3DFile(const std::string &path, Scene *out, std::string *error) {
     for (int i = 0; i < model.meshCount; i++) {
         MeshData md;
         md.name = model.meshCount > 1 ? (base_name + "#" + std::to_string(i)) : base_name;
-        ExtractMeshFromRaylib(model.meshes[i], &md);
+        ExtractMeshData(model.meshes[i], &md);
         int mesh_index = static_cast<int>(out->meshes.size());
         out->meshes.push_back(std::move(md));
 
@@ -1056,46 +1061,34 @@ bool LoadModel3DFile(const std::string &path, Scene *out, std::string *error) {
         // Base color, plus a base-color/albedo texture if the material has
         // one bound -- still no normal/metallic-roughness/emissive maps or
         // metallic/roughness scalars (see Object3D::texture_index's own
-        // comment on why: raylib's default shader has no lighting model to
+        // comment on why: this app's 3D viewport has no lighting model to
         // apply them to). model.meshMaterial[i] indexes model.materials;
         // LoadModel always populates both (falling back to a single
-        // default material) so this is safe whenever raylib reported any
-        // meshes at all.
+        // default material) so this is safe whenever any meshes loaded
+        // at all.
         if (model.meshMaterial && model.materialCount > 0) {
             int mat_idx = model.meshMaterial[i];
             if (mat_idx >= 0 && mat_idx < model.materialCount) {
-                Color c = model.materials[mat_idx].maps[MATERIAL_MAP_ALBEDO].color;
+                gfx::Color c = model.materials[mat_idx].maps[gfx::kMaterialMapAlbedo].color;
                 obj.color = RgbaColorF{static_cast<float>(c.r) / 255.0f, static_cast<float>(c.g) / 255.0f,
                                         static_cast<float>(c.b) / 255.0f, static_cast<float>(c.a) / 255.0f};
-                Texture2D tex = model.materials[mat_idx].maps[MATERIAL_MAP_ALBEDO].texture;
-                // tex.id > 0 alone isn't "has a real texture" -- raylib's
-                // own glTF loader (rmodels.c) calls LoadMaterialDefault()
-                // for *every* material before applying overrides, which
-                // binds the shared rlgl default texture (always exactly
-                // 1x1) whether or not the glTF material actually specified
-                // a baseColorTexture. Filtering on width/height > 1 instead
-                // of comparing texture ids avoids needing rlgl.h just for
-                // rlGetTextureIdDefault() -- the only false negative this
-                // could produce is a genuine hand-authored 1x1 texture,
-                // which would render identically to no texture at all
-                // under this shader anyway (a uniform-color 1x1 sample is
-                // just a flat tint).
-                if (tex.id > 0 && tex.width > 1 && tex.height > 1) {
+                gfx::Texture2D tex = model.materials[mat_idx].maps[gfx::kMaterialMapAlbedo].texture;
+                if (tex.id != 0) {
                     // Reads the texture back from the GPU (it's already
                     // resident there -- LoadModel uploaded it as part of
                     // loading the material) into a plain TextureData, so
                     // the doc layer keeps owning real pixel bytes instead
-                    // of a raylib GPU handle, same as every other texture
-                    // path here. Each object gets its own TextureData copy
+                    // of a GPU handle, same as every other texture path
+                    // here. Each object gets its own TextureData copy
                     // even if several objects in this file share one
                     // material/texture -- a little redundant for a
                     // multi-mesh file with a shared texture, but simple
                     // and still correct; not deduplicated this pass.
-                    Image img = LoadImageFromTexture(tex);
+                    gfx::Image img = gfx::LoadImageFromTexture(tex);
                     if (img.data) {
                         TextureData td;
                         ExtractImageToTextureData(img, base_name + "_tex", &td);
-                        UnloadImage(img);
+                        gfx::UnloadImage(img);
                         obj.texture_index = static_cast<int>(out->textures.size());
                         out->textures.push_back(std::move(td));
                     }
@@ -1105,32 +1098,32 @@ bool LoadModel3DFile(const std::string &path, Scene *out, std::string *error) {
         out->AddObject(std::move(obj));
     }
     out->source_path = path;
-    UnloadModel(model);
+    gfx::UnloadModel(model);
     return true;
 }
 
 int AddPrimitiveToScene(Scene *scene, PrimitiveKind kind) {
-    Mesh m{};
+    gfx::Mesh m{};
     const char *name = "";
     switch (kind) {
         case PrimitiveKind::Cube:
-            m = GenMeshCube(1.0f, 1.0f, 1.0f);
+            m = gfx::GenMeshCube(1.0f, 1.0f, 1.0f);
             name = "Cube";
             break;
         case PrimitiveKind::Sphere:
-            m = GenMeshSphere(0.5f, 16, 16);
+            m = gfx::GenMeshSphere(0.5f, 16, 16);
             name = "Sphere";
             break;
         case PrimitiveKind::Cylinder:
-            m = GenMeshCylinder(0.5f, 1.0f, 16);
+            m = gfx::GenMeshCylinder(0.5f, 1.0f, 16);
             name = "Cylinder";
             break;
         case PrimitiveKind::Cone:
-            m = GenMeshCone(0.5f, 1.0f, 16);
+            m = gfx::GenMeshCone(0.5f, 1.0f, 16);
             name = "Cone";
             break;
         case PrimitiveKind::Plane:
-            m = GenMeshPlane(1.0f, 1.0f, 1, 1);
+            m = gfx::GenMeshPlane(1.0f, 1.0f, 1, 1);
             name = "Plane";
             break;
         case PrimitiveKind::Torus:
@@ -1142,7 +1135,7 @@ int AddPrimitiveToScene(Scene *scene, PrimitiveKind kind) {
             // at all -- caught live building a test scene (MODEL3D_PLAN.md
             // Part VIII/IX) and documented as a known quirk in
             // MEP_AGENT_API.md before this fix landed.
-            m = GenMeshTorus(0.35f, 0.15f, 16, 16);
+            m = gfx::GenMeshTorus(0.35f, 0.15f, 16, 16);
             name = "Torus";
             break;
         case PrimitiveKind::Wedge:
@@ -1159,8 +1152,8 @@ int AddPrimitiveToScene(Scene *scene, PrimitiveKind kind) {
     }
     MeshData md;
     md.name = name;
-    ExtractMeshFromRaylib(m, &md);
-    UnloadMesh(m);
+    ExtractMeshData(m, &md);
+    gfx::UnloadMesh(m);
 
     int mesh_index = static_cast<int>(scene->meshes.size());
     scene->meshes.push_back(std::move(md));
@@ -1173,7 +1166,7 @@ int AddPrimitiveToScene(Scene *scene, PrimitiveKind kind) {
 }
 
 int LoadTextureIntoScene(Scene *scene, const std::string &path, std::string *error) {
-    Image img = LoadImage(path.c_str());
+    gfx::Image img = gfx::LoadImage(path.c_str());
     if (!img.data) {
         if (error) *error = "failed to load image (missing file, or unsupported/corrupt format): " + path;
         return -1;
@@ -1182,7 +1175,7 @@ int LoadTextureIntoScene(Scene *scene, const std::string &path, std::string *err
     std::string name = slash == std::string::npos ? path : path.substr(slash + 1);
     TextureData td;
     ExtractImageToTextureData(img, name, &td);
-    UnloadImage(img);
+    gfx::UnloadImage(img);
     int index = static_cast<int>(scene->textures.size());
     scene->textures.push_back(std::move(td));
     return index;
@@ -1256,9 +1249,9 @@ bool SaveModel3DGltf(const Scene &scene, const std::string &path, std::string *e
     // way meshes/materials are -- unlike base color, pixel data has no
     // reason to be duplicated in the export just because our own in-memory
     // model might hold more than one copy of visually-identical bytes).
-    // Encoded to real PNG bytes via ExportImageToMemory (raylib's bundled
-    // stb_image_write) rather than embedding raw RGBA8 -- glTF images must
-    // be an actual encoded image format, not a raw pixel dump.
+    // Encoded to real PNG bytes via gfx::ExportImageToMemory rather than
+    // embedding raw RGBA8 -- glTF images must be an actual encoded image
+    // format, not a raw pixel dump.
     Json images_json = Json::Array();
     Json textures_json = Json::Array();
     std::vector<int> texture_gltf_index(scene.textures.size(), -1);
@@ -1267,18 +1260,16 @@ bool SaveModel3DGltf(const Scene &scene, const std::string &path, std::string *e
         if (td.width <= 0 || td.height <= 0 || td.pixels.size() < static_cast<size_t>(td.width) * static_cast<size_t>(td.height) * 4) {
             continue;
         }
-        Image img{};
+        gfx::Image img{};
         img.data = const_cast<unsigned char *>(td.pixels.data());
         img.width = td.width;
         img.height = td.height;
         img.mipmaps = 1;
-        img.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
-        int png_size = 0;
-        unsigned char *png_data = ExportImageToMemory(img, ".png", &png_size);
-        if (!png_data || png_size <= 0) continue;
+        img.format = gfx::kPixelFormatR8G8B8A8;
+        std::vector<unsigned char> png_data = gfx::ExportImageToMemory(img, ".png");
+        if (png_data.empty()) continue;
         Json image_entry = Json::Object();
-        image_entry["uri"] = std::string("data:image/png;base64,") + Base64Encode(png_data, static_cast<size_t>(png_size));
-        MemFree(png_data);
+        image_entry["uri"] = std::string("data:image/png;base64,") + Base64Encode(png_data.data(), png_data.size());
         int image_index = static_cast<int>(images_json.size());
         images_json.push_back(image_entry);
         Json texture_entry = Json::Object();

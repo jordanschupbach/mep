@@ -9,6 +9,7 @@
 #include "image_doc.h"
 #include "model3d_doc.h"
 #include "vterm.h"
+#include "gfx/types.h"
 
 #include <stddef.h>
 #include <ctime>
@@ -5113,8 +5114,11 @@ public:
      * @brief Binds a single letter key under the mod1 modifier to a Lua callback, globally across all modes, overriding any prior mapping for that exact key.
      * @param key A bare letter for mod1+letter, or "S-"/"C-" prefixed for mod1+Shift+letter / mod1+Ctrl+letter.
      * @param lua_ref The Lua registry reference to invoke when the key is pressed.
+     * @param repeat Whether holding the key should keep re-firing it at the OS key-repeat rate (see HandleMod1Shortcuts) -- off by
+     * default since most mod1 actions (split, close buffer, popout toggle, ...) aren't safe to repeat; resize_pane's S-h/j/k/l
+     * bindings are the one default case that opts in.
      */
-    void RegisterMod1Mapping(const std::string &key, int lua_ref);
+    void RegisterMod1Mapping(const std::string &key, int lua_ref, bool repeat = false);
     // mep.map_g(key, fn): binds a single letter key after a leading "g"
     // in Normal mode (e.g. "d" for "gd") to a Lua callback -- for
     // g-prefixed actions mep's own built-in motions don't already claim
@@ -6988,7 +6992,7 @@ private:
     // exit chord (which must NOT forward its first half if the
     // second key turns out not to be Ctrl-N) can buffer one key before
     // deciding whether to call this.
-    void SendTerminalKey(const TerminalSession &sess, int key, int codepoint, bool ctrl, bool shift = false);
+    void SendTerminalKey(const TerminalSession &sess, gfx::Key key, int codepoint, bool ctrl, bool shift = false);
     // Ctrl-\ Ctrl-N (Neovim's terminal-normal chord): snapshots the
     // session's current VTerm scrollback+grid into CurPane()'s own buffer
     // (see the comment above the definition for why this is a snapshot,
@@ -8653,7 +8657,14 @@ private:
     int snippet_base_row_ = 0;  // 0-indexed
     std::unordered_map<std::string, int> normal_mappings_;      // key -> lua ref
     std::unordered_map<std::string, int> visual_mappings_;      // key -> lua ref
-    std::unordered_map<std::string, int> mod1_mappings_;        // key -> lua ref
+    // repeat: see RegisterMod1Mapping's own doc -- whether HandleMod1Shortcuts
+    // should keep re-firing this one while the key is held, at the OS
+    // key-repeat rate, instead of only on the initial press.
+    struct Mod1Mapping {
+        int lua_ref = 0;
+        bool repeat = false;
+    };
+    std::unordered_map<std::string, Mod1Mapping> mod1_mappings_;  // key -> mapping
     std::unordered_map<std::string, int> g_mappings_;            // g-prefixed key -> lua ref
     std::unordered_map<std::string, int> visual_g_mappings_;     // Visual-mode g-prefixed key -> lua ref (see RegisterVisualGMapping)
     std::unordered_map<std::string, int> bracket_prev_mappings_;  // [-prefixed key -> lua ref

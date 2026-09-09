@@ -240,7 +240,7 @@ private:
                 out += bool_ ? "true" : "false";
                 break;
             case Type::Number: {
-                if (num_ == static_cast<long long>(num_) && std::fabs(num_) < 1e15) {
+                if (num_ == static_cast<double>(static_cast<long long>(num_)) && std::fabs(num_) < 1e15) {
                     out += std::to_string(static_cast<long long>(num_));
                 } else {
                     char buf[64];

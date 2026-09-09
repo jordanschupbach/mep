@@ -1,5 +1,13 @@
 #include "agent_rpc.h"
 #include "agent_ui_input.h"
+#include "gfx/audio.h"
+#include "gfx/backend_native.h"
+#include "gfx/input.h"
+#include "gfx/platform.h"
+#include "gfx/renderer2d.h"
+#include "gfx/renderer3d.h"
+#include "gfx/text.h"
+#include "gfx/vecmath.h"
 #include "editor.h"
 #include "formula.h"
 #include "html_doc.h"
@@ -15,7 +23,6 @@
 #include "pdf_doc.h"
 #include "office_doc.h"
 
-#include "raylib.h"
 // raymath.h's own inline functions use old-style casts and partial `{0}`
 // brace-initialization throughout (its own coding style, not something we
 // control) -- both trip this codebase's -Werror strict flags (see
@@ -30,11 +37,9 @@
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #pragma GCC diagnostic ignored "-Wconversion"
 #endif
-#include "raymath.h"  // Vector3/Matrix helpers for the 3D-modeler viewport (Vector3CrossProduct etc.)
 #if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic pop
 #endif
-#include "rlgl.h"  // rlPushMatrix/rlMultMatrixf/rlTranslatef -- org emphasis italic's shear transform
 
 #include <stdarg.h>
 #include <algorithm>
@@ -101,7 +106,7 @@ constexpr int kMenuPaddingX = 14;
 constexpr int kMenuItemPaddingX = 16;
 
 Editor g_editor;
-Font g_font;
+gfx::Font g_font;
 float g_font_size = kDefaultFontSize;
 float g_char_width = 0;
 
@@ -114,7 +119,7 @@ float g_char_width = 0;
 // data is icon_font_data.h, a pyftsubset subset of Symbols Nerd Font Mono
 // covering kIconCodepointRanges/kIconCodepointExtras below -- the full
 // font is ~10,000 glyphs/2.5MB; this subset is ~2,600 glyphs/~1.1MB.
-Font g_icon_font{};
+gfx::Font g_icon_font{};
 
 // Every Nerd Font icon *set* g_icon_font is baked with, as contiguous
 // PUA ranges -- broadened well past mep's own original ~90-glyph UI
@@ -213,9 +218,9 @@ std::vector<int> BuildIconCodepoints() {
 // doesn't support this, so that build keeps the plain synchronous
 // LoadFontFromMemory call it already used.
 struct IconFontBakeResult {
-    GlyphInfo *glyphs = nullptr;
-    Rectangle *recs = nullptr;
-    Image atlas{};
+    gfx::GlyphInfo *glyphs = nullptr;
+    gfx::Rectangle *recs = nullptr;
+    gfx::Image atlas{};
     int glyph_count = 0;
     int base_size = 0;  // the exact LoadFontData/GenImageFontAtlas fontSize this was baked for
 };
@@ -235,11 +240,11 @@ void StartIconFontBakeAsync(int base_size) {
     // Background worker: builds the icon codepoint list and bakes the glyph data + atlas image for base_size.
     g_icon_font_bake_thread = std::thread([base_size] {
         std::vector<int> codepoints = BuildIconCodepoints();
-        GlyphInfo *glyphs = LoadFontData(kIconFontTtf, static_cast<int>(kIconFontTtfLen), base_size, codepoints.data(),
-                                          static_cast<int>(codepoints.size()), FONT_DEFAULT);
-        Rectangle *recs = nullptr;
-        Image atlas = GenImageFontAtlas(glyphs, &recs, static_cast<int>(codepoints.size()), base_size,
-                                         kFontTtfDefaultCharsPadding, 0);
+        gfx::GlyphInfo *glyphs = gfx::LoadFontData(kIconFontTtf, static_cast<int>(kIconFontTtfLen), base_size, codepoints.data(),
+                                          static_cast<int>(codepoints.size()));
+        gfx::Rectangle *recs = nullptr;
+        gfx::Image atlas = gfx::GenImageFontAtlas(glyphs, &recs, static_cast<int>(codepoints.size()), base_size,
+                                         kFontTtfDefaultCharsPadding);
         g_icon_font_bake_result = {glyphs, recs, atlas, static_cast<int>(codepoints.size()), base_size};
     });
 }
@@ -259,7 +264,7 @@ void StartIconFontBakeAsync(int base_size) {
 // future gaps (star/weather/card-suit/media-transport glyphs some other
 // TUI reaches for) without embedding the much larger full Noto Sans
 // Symbols family.
-Font g_symbol_font{};
+gfx::Font g_symbol_font{};
 
 constexpr std::pair<int, int> kSymbolCodepointRanges[] = {
     {0x23e9, 0x23ea}, {0x23ed, 0x23ef}, {0x23f1, 0x23fa},  // media control symbols
@@ -293,7 +298,7 @@ bool IsSymbolCodepoint(int cp) {
 // than widening g_font's own bake) specifically so g_glyph_index's
 // ASCII-only fast path (see its own comment, just above ApplyFontSize)
 // never has to change.
-Font g_math_font{};
+gfx::Font g_math_font{};
 
 // Greek letters (lower+upper) + a curated set of common LaTeX math
 // operators/relations/arrows, *beyond* the ASCII 32..126 range ApplyFontSize
@@ -339,7 +344,7 @@ constexpr int kMathCodepoints[] = {
 // ranges verified absent (Braille patterns U+2800-28FF, used by some
 // spinner styles, are NOT in this font at all -- a real, currently
 // unfixed gap, not merely unrequested).
-Font g_terminal_font{};
+gfx::Font g_terminal_font{};
 
 // Individual extra codepoints for g_terminal_font that aren't part of a
 // contiguous range worth its own loop in ApplyFontSize: check/cross
@@ -360,30 +365,30 @@ constexpr int kTerminalExtraCodepoints[] = {
 // the main buffer's g_font_size is; raylib's DrawTextEx scales a baked
 // atlas to any requested size, just like drawing g_font at other sizes
 // already does elsewhere (e.g. MenuFontSize()).
-Font g_office_font_regular;
-Font g_office_font_bold;
-Font g_office_font_italic;
-Font g_office_font_bolditalic;
+gfx::Font g_office_font_regular;
+gfx::Font g_office_font_bold;
+gfx::Font g_office_font_italic;
+gfx::Font g_office_font_bolditalic;
 // Liberation Serif/Mono: the other 2 selectable font families
 // (DocFormat::font_family, office_doc.h) -- real, distinct glyph atlases
 // (office_font_data_serif.h/office_font_data_mono.h), same OFL-licensed
 // family and baking convention as the Sans set above, not just a stored
 // label with no visual effect.
-Font g_office_font_serif_regular;
-Font g_office_font_serif_bold;
-Font g_office_font_serif_italic;
-Font g_office_font_serif_bolditalic;
-Font g_office_font_mono_regular;
-Font g_office_font_mono_bold;
-Font g_office_font_mono_italic;
-Font g_office_font_mono_bolditalic;
+gfx::Font g_office_font_serif_regular;
+gfx::Font g_office_font_serif_bold;
+gfx::Font g_office_font_serif_italic;
+gfx::Font g_office_font_serif_bolditalic;
+gfx::Font g_office_font_mono_regular;
+gfx::Font g_office_font_mono_bold;
+gfx::Font g_office_font_mono_italic;
+gfx::Font g_office_font_mono_bolditalic;
 
 // GPU upload cache for image-viewer panes (Editor::ImageSession), keyed by
 // buffer_id -- an ImageDoc is decoded once and never mutated, so its
 // Texture2D is uploaded lazily on first draw and reused every frame after,
 // same lifetime as buffers_ itself (never evicted; see the comment above
 // Editor::images_).
-std::unordered_map<int, Texture2D> g_image_textures;
+std::unordered_map<int, gfx::Texture2D> g_image_textures;
 
 // GPU upload cache for PDF-viewer panes (Editor::PdfSession), keyed by
 // (buffer_id, page index) -- PdfSession virtualizes its raster cache down
@@ -403,7 +408,7 @@ std::unordered_map<int, Texture2D> g_image_textures;
 // would keep showing the old theme's colors until it happened to scroll
 // out of the window and back. See ThemeEpoch()'s own comment in editor.h.
 struct PdfTextureCacheEntry {
-    Texture2D tex{};
+    gfx::Texture2D tex{};
     int generation = -1;
     bool theme_colors = false;
     int theme_epoch = -1;
@@ -486,7 +491,7 @@ int g_office_dropdown_open = -1;
 // so DrawRunButtonMenu can anchor just below it without DrawPane having
 // to hand geometry back some other way.
 int g_run_button_menu_pane = -1;
-Rectangle g_run_button_menu_anchor{};
+gfx::Rectangle g_run_button_menu_anchor{};
 
 // Populated by DrawPane's office branch (a full-document wrap-height scan
 // -- see the comment where it's filled in) and consumed by that same
@@ -510,8 +515,8 @@ struct OfficeStatusInfo {
     // strip the thumb travels in; scroll_fraction/visible_fraction locate
     // the thumb within it (0..1, top-of-viewport / visible-height, both as
     // a fraction of the total document height).
-    Rectangle track{};
-    Rectangle thumb{};
+    gfx::Rectangle track{};
+    gfx::Rectangle thumb{};
     float scroll_fraction = 0.0f;
     float visible_fraction = 1.0f;
     float total_height = 0.0f;
@@ -525,7 +530,7 @@ struct OfficeStatusInfo {
     // first, then look up which one is "active" before redrawing that
     // row's highlight) -- cleared and repopulated fresh each time
     // DrawOfficeSidePanels draws the panel, not carried across frames.
-    std::vector<std::pair<int, Rectangle>> outline_rows;
+    std::vector<std::pair<int, gfx::Rectangle>> outline_rows;
 };
 OfficeStatusInfo g_office_status;
 
@@ -679,13 +684,13 @@ float Model3DGizmoLength(float camera_distance) { return std::clamp(camera_dista
 // standard closest-point-between-two-skew-lines formula. Used to turn 2D
 // mouse movement into "how far did the drag move along this one world
 // axis", the same technique any 3-axis translate/scale gizmo uses.
-float ClosestParamOnAxis(Ray ray, Vector3 axis_origin, Vector3 axis_dir) {
-    Vector3 r = Vector3Subtract(ray.position, axis_origin);
-    float a = Vector3DotProduct(ray.direction, ray.direction);
-    float b = Vector3DotProduct(ray.direction, axis_dir);
-    float e = Vector3DotProduct(axis_dir, axis_dir);
-    float c = Vector3DotProduct(ray.direction, r);
-    float f = Vector3DotProduct(axis_dir, r);
+float ClosestParamOnAxis(gfx::Ray ray, gfx::Vector3 axis_origin, gfx::Vector3 axis_dir) {
+    gfx::Vector3 r = gfx::Vector3Subtract(ray.position, axis_origin);
+    float a = gfx::Vector3DotProduct(ray.direction, ray.direction);
+    float b = gfx::Vector3DotProduct(ray.direction, axis_dir);
+    float e = gfx::Vector3DotProduct(axis_dir, axis_dir);
+    float c = gfx::Vector3DotProduct(ray.direction, r);
+    float f = gfx::Vector3DotProduct(axis_dir, r);
     float denom = a * e - b * b;
     if (std::fabs(denom) < 1e-6f) return 0.0f;  // ray parallel to axis -- degenerate, leave unmoved
     return (a * f - b * c) / denom;
@@ -693,12 +698,12 @@ float ClosestParamOnAxis(Ray ray, Vector3 axis_origin, Vector3 axis_dir) {
 
 // 2D point-to-segment distance, for hit-testing a mouse click against a
 // gizmo handle's on-screen projection.
-float DistancePointToSegment2D(Vector2 p, Vector2 a, Vector2 b) {
-    Vector2 ab = Vector2Subtract(b, a);
+float DistancePointToSegment2D(gfx::Vector2 p, gfx::Vector2 a, gfx::Vector2 b) {
+    gfx::Vector2 ab = gfx::Vector2Subtract(b, a);
     float len_sq = ab.x * ab.x + ab.y * ab.y;
-    float t = len_sq > 1e-6f ? std::clamp(Vector2DotProduct(Vector2Subtract(p, a), ab) / len_sq, 0.0f, 1.0f) : 0.0f;
-    Vector2 closest{a.x + ab.x * t, a.y + ab.y * t};
-    return Vector2Distance(p, closest);
+    float t = len_sq > 1e-6f ? std::clamp(gfx::Vector2DotProduct(gfx::Vector2Subtract(p, a), ab) / len_sq, 0.0f, 1.0f) : 0.0f;
+    gfx::Vector2 closest{a.x + ab.x * t, a.y + ab.y * t};
+    return gfx::Vector2Distance(p, closest);
 }
 
 // Intersects `ray` with the plane through `plane_point` whose normal is
@@ -707,12 +712,12 @@ float DistancePointToSegment2D(Vector2 p, Vector2 a, Vector2 b) {
 // plane, which has no well-defined intersection. Used by the Rotate tool's
 // ring gizmo: dragging on a ring is really "where does the mouse ray cross
 // the plane that ring lies in".
-bool RayPlaneIntersect(Ray ray, Vector3 plane_point, Vector3 plane_normal, Vector3 *out) {
-    float denom = Vector3DotProduct(ray.direction, plane_normal);
+bool RayPlaneIntersect(gfx::Ray ray, gfx::Vector3 plane_point, gfx::Vector3 plane_normal, gfx::Vector3 *out) {
+    float denom = gfx::Vector3DotProduct(ray.direction, plane_normal);
     if (std::fabs(denom) < 1e-6f) return false;
-    float t = Vector3DotProduct(Vector3Subtract(plane_point, ray.position), plane_normal) / denom;
+    float t = gfx::Vector3DotProduct(gfx::Vector3Subtract(plane_point, ray.position), plane_normal) / denom;
     if (t < 0.0f) return false;  // plane is behind the camera
-    *out = Vector3Add(ray.position, Vector3Scale(ray.direction, t));
+    *out = gfx::Vector3Add(ray.position, gfx::Vector3Scale(ray.direction, t));
     return true;
 }
 
@@ -721,16 +726,16 @@ bool RayPlaneIntersect(Ray ray, Vector3 plane_point, Vector3 plane_normal, Vecto
 // its basis is (Y, Z). Used both to draw that ring and to measure an angle
 // within it (AnglePointOnPlane below); the two always agree since they share
 // this one function.
-void GizmoRingBasis(int axis, Vector3 *out_u, Vector3 *out_v) {
+void GizmoRingBasis(int axis, gfx::Vector3 *out_u, gfx::Vector3 *out_v) {
     if (axis == 0) {
-        *out_u = Vector3{0, 1, 0};
-        *out_v = Vector3{0, 0, 1};
+        *out_u = gfx::Vector3{0, 1, 0};
+        *out_v = gfx::Vector3{0, 0, 1};
     } else if (axis == 1) {
-        *out_u = Vector3{0, 0, 1};
-        *out_v = Vector3{1, 0, 0};
+        *out_u = gfx::Vector3{0, 0, 1};
+        *out_v = gfx::Vector3{1, 0, 0};
     } else {
-        *out_u = Vector3{1, 0, 0};
-        *out_v = Vector3{0, 1, 0};
+        *out_u = gfx::Vector3{1, 0, 0};
+        *out_v = gfx::Vector3{0, 1, 0};
     }
 }
 
@@ -739,9 +744,9 @@ void GizmoRingBasis(int axis, Vector3 *out_u, Vector3 *out_v) {
 // drag ray crosses the ring's plane" into a single rotation angle, both at
 // drag-start (the anchor) and on every subsequent frame (the delta from that
 // anchor becomes the rotation applied since the drag began).
-float AnglePointOnPlane(Vector3 point, Vector3 origin, Vector3 u, Vector3 v) {
-    Vector3 d = Vector3Subtract(point, origin);
-    return std::atan2(Vector3DotProduct(d, v), Vector3DotProduct(d, u));
+float AnglePointOnPlane(gfx::Vector3 point, gfx::Vector3 origin, gfx::Vector3 u, gfx::Vector3 v) {
+    gfx::Vector3 d = gfx::Vector3Subtract(point, origin);
+    return std::atan2(gfx::Vector3DotProduct(d, v), gfx::Vector3DotProduct(d, u));
 }
 
 // Draws one ring (circle outline) of `radius` centered at `center`, lying in
@@ -750,13 +755,13 @@ float AnglePointOnPlane(Vector3 point, Vector3 origin, Vector3 u, Vector3 v) {
 // axis/angle pair) so the exact same (u, v) basis used here is guaranteed to
 // match GizmoRingBasis/AnglePointOnPlane's hit-test and drag math, with no
 // separate convention to keep in sync.
-void DrawGizmoRing(Vector3 center, float radius, Vector3 u, Vector3 v, Color color) {
+void DrawGizmoRing(gfx::Vector3 center, float radius, gfx::Vector3 u, gfx::Vector3 v, gfx::Color color) {
     constexpr int kSegments = 48;
-    Vector3 prev = Vector3Add(center, Vector3Scale(u, radius));
+    gfx::Vector3 prev = gfx::Vector3Add(center, gfx::Vector3Scale(u, radius));
     for (int i = 1; i <= kSegments; i++) {
-        float t = (2.0f * PI) * static_cast<float>(i) / static_cast<float>(kSegments);
-        Vector3 pt = Vector3Add(center, Vector3Add(Vector3Scale(u, std::cos(t) * radius), Vector3Scale(v, std::sin(t) * radius)));
-        DrawLine3D(prev, pt, color);
+        float t = (2.0f * gfx::kPi) * static_cast<float>(i) / static_cast<float>(kSegments);
+        gfx::Vector3 pt = gfx::Vector3Add(center, gfx::Vector3Add(gfx::Vector3Scale(u, std::cos(t) * radius), gfx::Vector3Scale(v, std::sin(t) * radius)));
+        gfx::DrawLine3D(prev, pt, color);
         prev = pt;
     }
 }
@@ -783,13 +788,13 @@ constexpr float kModel3DScaleSnapStep = 0.25f;
 // there before, which used to fool this cache into keeping the *previous*
 // scene's stale, wrong GPU-uploaded geometry (a real bug, found live).
 struct Model3DGpuCache {
-    std::vector<Mesh> meshes;
+    std::vector<gfx::Mesh> meshes;
     size_t mesh_count_synced = 0;
     int mesh_generation_synced = -1;
     // Parallel GPU-texture cache for Scene::textures (Phase 3 materials),
     // same invalidation convention as `meshes` above -- an existing
     // texture's pixels never change in place either.
-    std::vector<Texture2D> textures;
+    std::vector<gfx::Texture2D> textures;
     size_t texture_count_synced = 0;
     int texture_generation_synced = -1;
 };
@@ -797,7 +802,7 @@ std::unordered_map<int, Model3DGpuCache> g_model3d_gpu_cache;
 // One off-screen render target per pane buffer, recreated on a size change
 // -- see GetOrCreateModel3DRenderTexture.
 struct Model3DRenderTarget {
-    RenderTexture2D rt{};
+    gfx::RenderTexture2D rt{};
     int w = 0, h = 0;
     bool valid = false;
 };
@@ -810,9 +815,9 @@ std::unordered_map<int, Model3DRenderTarget> g_model3d_render_targets;
 // `g_model3d_default_white_texture` (captured once, right after
 // LoadMaterialDefault() first sets it) so a textured object drawn earlier
 // in the same frame can't leak its texture onto a later untextured one.
-Material g_model3d_default_material{};
+gfx::Material g_model3d_default_material{};
 bool g_model3d_default_material_loaded = false;
-Texture2D g_model3d_default_white_texture{};
+gfx::Texture2D g_model3d_default_white_texture{};
 
 // Generic click-region registry (NVIM_PARITY_PLAN.md Phase 11's "generic
 // click dispatch on widgets" gap): rebuilt fresh every frame by whichever
@@ -828,7 +833,7 @@ Texture2D g_model3d_default_white_texture{};
 // NVIM_PARITY_PLAN.md documents as a separate, larger, still-deferred
 // refactor.
 struct ClickRegion {
-    Rectangle rect;
+    gfx::Rectangle rect;
     std::function<void()> action;
 };
 std::vector<ClickRegion> g_click_regions;
@@ -840,14 +845,14 @@ std::vector<ClickRegion> g_click_regions;
 // "collect during traversal, draw once at the end" idiom as
 // g_click_regions itself). Empty text = nothing to draw.
 std::string g_pane_control_tooltip_text;
-Rectangle g_pane_control_tooltip_anchor{};
+gfx::Rectangle g_pane_control_tooltip_anchor{};
 
 /**
  * @brief Registers a clickable screen region and the callback to invoke when it is clicked this frame.
  * @param rect Screen-space rectangle that should respond to a click.
  * @param action Callback invoked when the region is clicked.
  */
-void RegisterClickRegion(Rectangle rect, std::function<void()> action) {
+void RegisterClickRegion(gfx::Rectangle rect, std::function<void()> action) {
     g_click_regions.push_back({rect, std::move(action)});
 }
 
@@ -896,7 +901,7 @@ void DrainUiInputQueueOneStep() {
  * @param r Rectangle to test against.
  * @return True if `p` is inside `r`.
  */
-bool PointInRect(Vector2 p, const Rectangle &r) {
+bool PointInRect(gfx::Vector2 p, const gfx::Rectangle &r) {
     return p.x >= r.x && p.x < r.x + r.width && p.y >= r.y && p.y < r.y + r.height;
 }
 
@@ -924,7 +929,7 @@ bool PointInRect(Vector2 p, const Rectangle &r) {
 // One leaf pane's on-screen rect this frame.
 struct PaneScreenRect {
     int pane_id;
-    Rectangle rect;
+    gfx::Rectangle rect;
 };
 std::vector<PaneScreenRect> g_pane_screen_rects;
 
@@ -935,7 +940,7 @@ std::vector<PaneScreenRect> g_pane_screen_rects;
 struct PaneTabChipRect {
     int pane_id;
     int buffer_id;
-    Rectangle rect;
+    gfx::Rectangle rect;
 };
 std::vector<PaneTabChipRect> g_pane_tab_chip_rects;
 
@@ -951,8 +956,8 @@ struct PaneBorderRect {
     SplitNode *node;
     int child_index;
     bool vertical;       // true = a left/right (Vertical-split) border, dragged horizontally; false = top/bottom (Horizontal-split), dragged vertically
-    Rectangle grab_rect;  // thin strip, for hover/drag-start hit-testing
-    Rectangle pair_rect;  // combined on-screen extent of children[child_index] and [child_index+1] (NOT node's own full rect, which may span more siblings) -- for converting drag mouse position into a share fraction
+    gfx::Rectangle grab_rect;  // thin strip, for hover/drag-start hit-testing
+    gfx::Rectangle pair_rect;  // combined on-screen extent of children[child_index] and [child_index+1] (NOT node's own full rect, which may span more siblings) -- for converting drag mouse position into a share fraction
 };
 std::vector<PaneBorderRect> g_pane_border_rects;
 
@@ -971,7 +976,7 @@ std::vector<PaneBorderRect> g_pane_border_rects;
  */
 void ComputePaneScreenRects(SplitNode *node, float x, float y, float w, float h) {
     if (node->dir == SplitDir::Leaf) {
-        g_pane_screen_rects.push_back({node->pane.id, Rectangle{x, y, w, h}});
+        g_pane_screen_rects.push_back({node->pane.id, gfx::Rectangle{x, y, w, h}});
         return;
     }
     int n = static_cast<int>(node->children.size());
@@ -986,8 +991,8 @@ void ComputePaneScreenRects(SplitNode *node, float x, float y, float w, float h)
             ComputePaneScreenRects(node->children[static_cast<size_t>(i)].get(), x, cy, w, next_y - cy);
             if (i < n - 1) {
                 float ch_next = has_shares ? h * node->shares[static_cast<size_t>(i) + 1] : h / static_cast<float>(n);
-                g_pane_border_rects.push_back({node, i, false, Rectangle{x, next_y - kBorderGrabPx / 2.0f, w, kBorderGrabPx},
-                                                Rectangle{x, cy, w, ch + ch_next}});
+                g_pane_border_rects.push_back({node, i, false, gfx::Rectangle{x, next_y - kBorderGrabPx / 2.0f, w, kBorderGrabPx},
+                                                gfx::Rectangle{x, cy, w, ch + ch_next}});
             }
             cy = next_y;
         }
@@ -999,8 +1004,8 @@ void ComputePaneScreenRects(SplitNode *node, float x, float y, float w, float h)
             ComputePaneScreenRects(node->children[static_cast<size_t>(i)].get(), cx, y, next_x - cx, h);
             if (i < n - 1) {
                 float cw_next = has_shares ? w * node->shares[static_cast<size_t>(i) + 1] : w / static_cast<float>(n);
-                g_pane_border_rects.push_back({node, i, true, Rectangle{next_x - kBorderGrabPx / 2.0f, y, kBorderGrabPx, h},
-                                                Rectangle{cx, y, cw + cw_next, h}});
+                g_pane_border_rects.push_back({node, i, true, gfx::Rectangle{next_x - kBorderGrabPx / 2.0f, y, kBorderGrabPx, h},
+                                                gfx::Rectangle{cx, y, cw + cw_next, h}});
             }
             cx = next_x;
         }
@@ -1015,7 +1020,7 @@ void ComputePaneScreenRects(SplitNode *node, float x, float y, float w, float h)
 struct SidebarRowRect {
     int sidebar_id;
     int line_index;
-    Rectangle rect;
+    gfx::Rectangle rect;
 };
 std::vector<SidebarRowRect> g_sidebar_row_rects;
 
@@ -1026,7 +1031,7 @@ std::vector<SidebarRowRect> g_sidebar_row_rects;
 struct SidebarTabRect {
     int sidebar_id;
     int tab_index;
-    Rectangle rect;
+    gfx::Rectangle rect;
 };
 std::vector<SidebarTabRect> g_sidebar_tab_rects;
 
@@ -1040,7 +1045,7 @@ struct SidebarBorderRect {
     int sidebar_id;
     bool horizontal;  // true = left/right sidebar (dragged horizontally, resizes width); false = top/bottom (dragged vertically, resizes height)
     int sign;
-    Rectangle grab_rect;
+    gfx::Rectangle grab_rect;
 };
 std::vector<SidebarBorderRect> g_sidebar_border_rects;
 
@@ -1053,7 +1058,7 @@ std::vector<SidebarBorderRect> g_sidebar_border_rects;
 struct SidebarStackRect {
     int upper_id;
     int lower_id;
-    Rectangle grab_rect;
+    gfx::Rectangle grab_rect;
     float pair_top;
     float pair_h;
 };
@@ -1107,7 +1112,7 @@ enum class PaneDropZone { Center, Left, Right, Top, Bottom };
  * @param rect Target pane's on-screen rectangle being dragged over.
  * @return The drop zone the mouse position falls into.
  */
-PaneDropZone ComputePaneDropZone(Vector2 mouse, const Rectangle &rect) {
+PaneDropZone ComputePaneDropZone(gfx::Vector2 mouse, const gfx::Rectangle &rect) {
     float fx = std::clamp((mouse.x - rect.x) / rect.width, 0.0f, 1.0f);
     float fy = std::clamp((mouse.y - rect.y) / rect.height, 0.0f, 1.0f);
     constexpr float kCenterThreshold = 0.25f;
@@ -1128,7 +1133,7 @@ enum class PaneDragKind { None, TabMove, BorderResize, SidebarResize, SidebarSta
 
 struct PaneDragState {
     PaneDragKind kind = PaneDragKind::None;
-    Vector2 start_pos{};
+    gfx::Vector2 start_pos{};
     bool threshold_passed = false;  // false until the mouse has moved far enough to count as a real drag, not just a click-in-place
 
     // TabMove fields (target_pane_id/drop_zone shared with FileDrop).
@@ -1145,7 +1150,7 @@ struct PaneDragState {
     int border_child_index = 0;
     bool border_vertical = false;
     float border_pair_total = 0.0f;  // shares[child_index]+shares[child_index+1] at drag start, held constant through the drag
-    Rectangle border_pair_rect{};    // pixel extent that pair spans, captured at drag start (for mouse position -> fraction)
+    gfx::Rectangle border_pair_rect{};    // pixel extent that pair spans, captured at drag start (for mouse position -> fraction)
 
     // SidebarResize fields.
     int sidebar_id = 0;
@@ -1293,7 +1298,7 @@ bool IsCommandLineMode(Mode m) {
  * @param c Theme color to convert.
  * @return The equivalent raylib Color.
  */
-Color ToRaylib(ThemeColor c) { return Color{c.r, c.g, c.b, c.a}; }
+gfx::Color ToRaylib(ThemeColor c) { return gfx::Color{c.r, c.g, c.b, c.a}; }
 
 // Resolves a highlight-group name to a color via the active theme (Phase 9,
 // NVIM_PARITY_PLAN.md Part II): an exact lookup into the theme's built group
@@ -1306,7 +1311,7 @@ Color ToRaylib(ThemeColor c) { return Color{c.r, c.g, c.b, c.a}; }
  * @param name Highlight-group name to resolve (e.g. "StatusLine", "MepGitAdd").
  * @return The resolved raylib color.
  */
-Color ResolveHlGroup(const std::string &name) {
+gfx::Color ResolveHlGroup(const std::string &name) {
     /**
      * @brief Looks up a theme highlight group's color, falling back to a caller-supplied default.
      * @param group Highlight-group name to resolve.
@@ -1373,7 +1378,7 @@ std::string SvgEscape(const std::string &text) {
  * @param color Color to format.
  * @return The hex color string.
  */
-std::string SvgColor(Color color) {
+std::string SvgColor(gfx::Color color) {
     char out[8];
     std::snprintf(out, sizeof(out), "#%02x%02x%02x", color.r, color.g, color.b);
     return out;
@@ -1398,8 +1403,8 @@ bool ExportGanttSvg(int buffer_id, const std::string &path) {
     int row_h = GanttRowHeight();
     std::ofstream out(path);
     if (!out) return false;
-    Color bg = ResolveHlGroup("NormalBg"), border = ResolveHlGroup("Border"), accent = ResolveHlGroup("BorderActive");
-    Color normal = ResolveHlGroup("Normal"), comment = ResolveHlGroup("Comment");
+    gfx::Color bg = ResolveHlGroup("NormalBg"), border = ResolveHlGroup("Border"), accent = ResolveHlGroup("BorderActive");
+    gfx::Color normal = ResolveHlGroup("Normal"), comment = ResolveHlGroup("Comment");
     out << "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"" << width << "\" height=\"" << height
         << "\" viewBox=\"0 0 " << width << " " << height << "\"><rect width=\"100%\" height=\"100%\" fill=\""
         << SvgColor(bg) << "\"/>\n";
@@ -1480,12 +1485,12 @@ bool ExportGanttSvg(int buffer_id, const std::string &path) {
  * @param path Output PDF file path.
  * @return True on success; false if the intermediate JPEG could not be written/read or the PDF file could not be opened.
  */
-bool ExportJpegPdf(const Image &image, const std::string &path) {
+bool ExportJpegPdf(const gfx::Image &image, const std::string &path) {
     // ExportImageToMemory in raylib 5 only implements PNG, even when the
     // regular file exporter supports JPEG. Use a short-lived JPEG next to
     // the destination and embed its bytes in the PDF, then remove it.
     std::string jpeg_path = path + ".mep-export.jpg";
-    if (!ExportImage(image, jpeg_path.c_str())) return false;
+    if (!gfx::ExportImage(image, jpeg_path.c_str())) return false;
     std::ifstream jpeg_file(jpeg_path, std::ios::binary);
     std::vector<unsigned char> jpeg((std::istreambuf_iterator<char>(jpeg_file)), std::istreambuf_iterator<char>());
     jpeg_file.close();
@@ -1538,11 +1543,11 @@ bool ExportJpegPdf(const Image &image, const std::string &path) {
 void ExportGanttRaster(int buffer_id, const char *extension) {
     const GanttSession *sess = g_editor.GetGantt(buffer_id);
     if (!sess) return;
-    Image image = LoadImageFromScreen();
-    ImageCrop(&image, Rectangle{sess->content_x, sess->content_y, sess->content_w, sess->content_h});
+    gfx::Image image = gfx::LoadImageFromScreen();
+    gfx::ImageCrop(&image, gfx::Rectangle{sess->content_x, sess->content_y, sess->content_w, sess->content_h});
     std::string path = GanttExportPath(buffer_id, extension);
-    bool ok = std::string(extension) == "pdf" ? ExportJpegPdf(image, path) : ExportImage(image, path.c_str());
-    UnloadImage(image);
+    bool ok = std::string(extension) == "pdf" ? ExportJpegPdf(image, path) : gfx::ExportImage(image, path.c_str());
+    gfx::UnloadImage(image);
     g_editor.SetStatusMessage(ok ? "Exported Gantt to " + path : "Gantt export failed: " + path);
 }
 
@@ -1603,18 +1608,18 @@ std::string Basename(const std::string &path) {
  * @param measure_only If true, skips the actual draw calls and only measures the text.
  * @return The total width drawn/measured, in pixels.
  */
-float DrawUiText(const std::string &text, Vector2 pos, float font_size, Color tint, bool measure_only = false) {
+float DrawUiText(const std::string &text, gfx::Vector2 pos, float font_size, gfx::Color tint, bool measure_only = false) {
     float x = pos.x;
     const char *s = text.c_str();
     int len = static_cast<int>(text.size());
     for (int i = 0; i < len;) {
         int cp_size = 0;
-        int cp = GetCodepointNext(&s[i], &cp_size);
+        int cp = gfx::GetCodepointNext(&s[i], &cp_size);
         std::string glyph(s + i, static_cast<size_t>(cp_size));
         i += cp_size;
-        const Font &f = IsIconCodepoint(cp) ? g_icon_font : (IsSymbolCodepoint(cp) ? g_symbol_font : g_font);
-        if (!measure_only) DrawTextEx(f, glyph.c_str(), Vector2{x, pos.y}, font_size, 0, tint);
-        x += MeasureTextEx(f, glyph.c_str(), font_size, 0).x;
+        const gfx::Font &f = IsIconCodepoint(cp) ? g_icon_font : (IsSymbolCodepoint(cp) ? g_symbol_font : g_font);
+        if (!measure_only) gfx::DrawTextEx(f, glyph.c_str(), gfx::Vector2{x, pos.y}, font_size, 0, tint);
+        x += gfx::MeasureTextEx(f, glyph.c_str(), font_size, 0).x;
     }
     return x - pos.x;
 }
@@ -1626,7 +1631,7 @@ float DrawUiText(const std::string &text, Vector2 pos, float font_size, Color ti
  * @return The measured width, in pixels.
  */
 float MeasureUiText(const std::string &text, float font_size) {
-    return DrawUiText(text, Vector2{0, 0}, font_size, BLANK, true);
+    return DrawUiText(text, gfx::Vector2{0, 0}, font_size, gfx::Blank, true);
 }
 
 // raylib's GetGlyphIndex(font, codepoint) -- called by DrawTextEx once and
@@ -1647,7 +1652,7 @@ int g_glyph_index[95] = {};
  * @brief Caches g_font's glyph index for each ASCII 32..126 codepoint into g_glyph_index for O(1) lookup.
  */
 void CacheGlyphIndices() {
-    for (int c = 32; c <= 126; c++) g_glyph_index[c - 32] = GetGlyphIndex(g_font, c);
+    for (int c = 32; c <= 126; c++) g_glyph_index[c - 32] = gfx::GetGlyphIndex(g_font, c);
 }
 
 // Reloads the font at 2x the target draw size (supersampled for crisper
@@ -1658,15 +1663,15 @@ void CacheGlyphIndices() {
  */
 void ApplyFontSize(float size) {
     g_font_size = std::max(kMinFontSize, std::min(size, kMaxFontSize));
-    if (g_font.texture.id != 0) UnloadFont(g_font);
-    g_font = LoadFontFromMemory(".ttf", kJetBrainsMonoRegularTtf,
+    if (g_font.texture.id != 0) gfx::UnloadFont(g_font);
+    g_font = gfx::LoadFontFromMemory(".ttf", kJetBrainsMonoRegularTtf,
                                  static_cast<int>(kJetBrainsMonoRegularTtfLen),
                                  static_cast<int>(g_font_size * 2), nullptr, 0);
-    SetTextureFilter(g_font.texture, TEXTURE_FILTER_BILINEAR);
-    g_char_width = MeasureTextEx(g_font, "M", g_font_size, 0).x;
+    gfx::SetTextureFilter(g_font.texture, gfx::TextureFilter::Bilinear);
+    g_char_width = gfx::MeasureTextEx(g_font, "M", g_font_size, 0).x;
     CacheGlyphIndices();
 
-    if (g_icon_font.texture.id != 0) UnloadFont(g_icon_font);
+    if (g_icon_font.texture.id != 0) gfx::UnloadFont(g_icon_font);
     // UnloadFont takes Font *by value* -- it frees the GPU texture and
     // CPU glyphs/recs it was handed, but can never reset g_icon_font's
     // own fields back to zero (it has no reference/pointer to this
@@ -1682,7 +1687,7 @@ void ApplyFontSize(float size) {
     // itself while double-checking this code, not by reproducing the
     // crash live (a same-session real-keyboard test aimed at the wrong
     // window first, so it couldn't be trusted either way).
-    g_icon_font = Font{};
+    g_icon_font = gfx::Font{};
     const int icon_base_size = static_cast<int>(g_font_size * 2);
 #if !defined(__EMSCRIPTEN__)
     // Consume StartIconFontBakeAsync's background work if it's there --
@@ -1704,50 +1709,50 @@ void ApplyFontSize(float size) {
             g_icon_font.glyphPadding = kFontTtfDefaultCharsPadding;
             g_icon_font.glyphs = g_icon_font_bake_result.glyphs;
             g_icon_font.recs = g_icon_font_bake_result.recs;
-            g_icon_font.texture = LoadTextureFromImage(g_icon_font_bake_result.atlas);
+            g_icon_font.texture = gfx::LoadTextureFromImage(g_icon_font_bake_result.atlas);
             // Mirrors LoadFontFromMemory's own post-atlas step (rtext.c):
             // each glyph's individual image is replaced with an alpha
             // crop of the atlas, required for ImageDrawText even though
             // mep itself never calls that -- kept for exact behavioral
             // parity with the synchronous path below.
             for (int i = 0; i < g_icon_font.glyphCount; i++) {
-                UnloadImage(g_icon_font.glyphs[i].image);
-                g_icon_font.glyphs[i].image = ImageFromImage(g_icon_font_bake_result.atlas, g_icon_font.recs[i]);
+                gfx::UnloadImage(g_icon_font.glyphs[i].image);
+                g_icon_font.glyphs[i].image = gfx::ImageFromImage(g_icon_font_bake_result.atlas, g_icon_font.recs[i]);
             }
-            UnloadImage(g_icon_font_bake_result.atlas);
+            gfx::UnloadImage(g_icon_font_bake_result.atlas);
             g_icon_font_bake_result = {};
         } else {
             // Never actually reached given the call pattern above, but
             // cheap insurance against a future refactor breaking that
             // invariant: discard the mismatched-size bake and fall
             // through to baking g_icon_font fresh, synchronously.
-            UnloadFontData(g_icon_font_bake_result.glyphs, g_icon_font_bake_result.glyph_count);
-            MemFree(g_icon_font_bake_result.recs);
-            UnloadImage(g_icon_font_bake_result.atlas);
+            gfx::UnloadFontData(g_icon_font_bake_result.glyphs, g_icon_font_bake_result.glyph_count);
+            gfx::FreeGlyphRects(g_icon_font_bake_result.recs);
+            gfx::UnloadImage(g_icon_font_bake_result.atlas);
             g_icon_font_bake_result = {};
         }
     }
     if (g_icon_font.texture.id == 0) {
 #endif
         std::vector<int> icon_codepoints = BuildIconCodepoints();
-        g_icon_font = LoadFontFromMemory(".ttf", kIconFontTtf, static_cast<int>(kIconFontTtfLen), icon_base_size,
+        g_icon_font = gfx::LoadFontFromMemory(".ttf", kIconFontTtf, static_cast<int>(kIconFontTtfLen), icon_base_size,
                                           icon_codepoints.data(), static_cast<int>(icon_codepoints.size()));
 #if !defined(__EMSCRIPTEN__)
     }
 #endif
-    SetTextureFilter(g_icon_font.texture, TEXTURE_FILTER_BILINEAR);
+    gfx::SetTextureFilter(g_icon_font.texture, gfx::TextureFilter::Bilinear);
 
-    if (g_math_font.texture.id != 0) UnloadFont(g_math_font);
+    if (g_math_font.texture.id != 0) gfx::UnloadFont(g_math_font);
     constexpr int kMathExtraCount = sizeof(kMathCodepoints) / sizeof(kMathCodepoints[0]);
     static int math_codepoints[95 + kMathExtraCount];
     for (int c = 32; c <= 126; c++) math_codepoints[c - 32] = c;
     for (int i = 0; i < kMathExtraCount; i++) math_codepoints[95 + i] = kMathCodepoints[i];
-    g_math_font = LoadFontFromMemory(".ttf", kJetBrainsMonoRegularTtf, static_cast<int>(kJetBrainsMonoRegularTtfLen),
+    g_math_font = gfx::LoadFontFromMemory(".ttf", kJetBrainsMonoRegularTtf, static_cast<int>(kJetBrainsMonoRegularTtfLen),
                                       static_cast<int>(g_font_size * 2), math_codepoints,
                                       95 + kMathExtraCount);
-    SetTextureFilter(g_math_font.texture, TEXTURE_FILTER_BILINEAR);
+    gfx::SetTextureFilter(g_math_font.texture, gfx::TextureFilter::Bilinear);
 
-    if (g_terminal_font.texture.id != 0) UnloadFont(g_terminal_font);
+    if (g_terminal_font.texture.id != 0) gfx::UnloadFont(g_terminal_font);
     // ASCII + several contiguous Unicode block ranges (box drawing, block
     // elements, geometric shapes, general punctuation, arrows) + the
     // sparse kTerminalExtraCodepoints extras -- see g_terminal_font's own
@@ -1781,12 +1786,12 @@ void ApplyFontSize(float size) {
         for (int c = range.first; c <= range.second; c++) terminal_codepoints.push_back(c);
     }
     for (int c : kTerminalExtraCodepoints) terminal_codepoints.push_back(c);
-    g_terminal_font = LoadFontFromMemory(".ttf", kJetBrainsMonoRegularTtf, static_cast<int>(kJetBrainsMonoRegularTtfLen),
+    g_terminal_font = gfx::LoadFontFromMemory(".ttf", kJetBrainsMonoRegularTtf, static_cast<int>(kJetBrainsMonoRegularTtfLen),
                                           static_cast<int>(g_font_size * 2), terminal_codepoints.data(),
                                           static_cast<int>(terminal_codepoints.size()));
-    SetTextureFilter(g_terminal_font.texture, TEXTURE_FILTER_BILINEAR);
+    gfx::SetTextureFilter(g_terminal_font.texture, gfx::TextureFilter::Bilinear);
 
-    if (g_symbol_font.texture.id != 0) UnloadFont(g_symbol_font);
+    if (g_symbol_font.texture.id != 0) gfx::UnloadFont(g_symbol_font);
     int symbol_range_total = 0;
     for (const auto &range : kSymbolCodepointRanges) symbol_range_total += range.second - range.first + 1;
     static std::vector<int> symbol_codepoints;
@@ -1795,10 +1800,10 @@ void ApplyFontSize(float size) {
     for (const auto &range : kSymbolCodepointRanges) {
         for (int c = range.first; c <= range.second; c++) symbol_codepoints.push_back(c);
     }
-    g_symbol_font = LoadFontFromMemory(".ttf", kSymbolFontTtf, static_cast<int>(kSymbolFontTtfLen),
+    g_symbol_font = gfx::LoadFontFromMemory(".ttf", kSymbolFontTtf, static_cast<int>(kSymbolFontTtfLen),
                                         static_cast<int>(g_font_size * 2), symbol_codepoints.data(),
                                         static_cast<int>(symbol_codepoints.size()));
-    SetTextureFilter(g_symbol_font.texture, TEXTURE_FILTER_BILINEAR);
+    gfx::SetTextureFilter(g_symbol_font.texture, gfx::TextureFilter::Bilinear);
 }
 
 // The office pane's special-character insert palette (main.cpp's DrawPane
@@ -1839,49 +1844,49 @@ void LoadOfficeFonts() {
     for (int c = 32; c <= 126; c++) codepoints[c - 32] = c;
     codepoints[95] = 0x2022;
     for (int i = 0; i < kOfficeSpecialCharCount; i++) codepoints[96 + i] = kOfficeSpecialChars[i];
-    g_office_font_regular = LoadFontFromMemory(".ttf", kLiberationSansRegularTtf,
+    g_office_font_regular = gfx::LoadFontFromMemory(".ttf", kLiberationSansRegularTtf,
                                                 static_cast<int>(kLiberationSansRegularTtfLen),
                                                 kOfficeFontBasePt * 2, codepoints, kCodepointCount);
-    g_office_font_bold = LoadFontFromMemory(".ttf", kLiberationSansBoldTtf,
+    g_office_font_bold = gfx::LoadFontFromMemory(".ttf", kLiberationSansBoldTtf,
                                              static_cast<int>(kLiberationSansBoldTtfLen),
                                              kOfficeFontBasePt * 2, codepoints, kCodepointCount);
-    g_office_font_italic = LoadFontFromMemory(".ttf", kLiberationSansItalicTtf,
+    g_office_font_italic = gfx::LoadFontFromMemory(".ttf", kLiberationSansItalicTtf,
                                                static_cast<int>(kLiberationSansItalicTtfLen),
                                                kOfficeFontBasePt * 2, codepoints, kCodepointCount);
-    g_office_font_bolditalic = LoadFontFromMemory(".ttf", kLiberationSansBoldItalicTtf,
+    g_office_font_bolditalic = gfx::LoadFontFromMemory(".ttf", kLiberationSansBoldItalicTtf,
                                                    static_cast<int>(kLiberationSansBoldItalicTtfLen),
                                                    kOfficeFontBasePt * 2, codepoints, kCodepointCount);
-    g_office_font_serif_regular = LoadFontFromMemory(".ttf", kLiberationSerifRegularTtf,
+    g_office_font_serif_regular = gfx::LoadFontFromMemory(".ttf", kLiberationSerifRegularTtf,
                                                        static_cast<int>(kLiberationSerifRegularTtfLen),
                                                        kOfficeFontBasePt * 2, codepoints, kCodepointCount);
-    g_office_font_serif_bold = LoadFontFromMemory(".ttf", kLiberationSerifBoldTtf,
+    g_office_font_serif_bold = gfx::LoadFontFromMemory(".ttf", kLiberationSerifBoldTtf,
                                                     static_cast<int>(kLiberationSerifBoldTtfLen),
                                                     kOfficeFontBasePt * 2, codepoints, kCodepointCount);
-    g_office_font_serif_italic = LoadFontFromMemory(".ttf", kLiberationSerifItalicTtf,
+    g_office_font_serif_italic = gfx::LoadFontFromMemory(".ttf", kLiberationSerifItalicTtf,
                                                       static_cast<int>(kLiberationSerifItalicTtfLen),
                                                       kOfficeFontBasePt * 2, codepoints, kCodepointCount);
-    g_office_font_serif_bolditalic = LoadFontFromMemory(".ttf", kLiberationSerifBoldItalicTtf,
+    g_office_font_serif_bolditalic = gfx::LoadFontFromMemory(".ttf", kLiberationSerifBoldItalicTtf,
                                                           static_cast<int>(kLiberationSerifBoldItalicTtfLen),
                                                           kOfficeFontBasePt * 2, codepoints, kCodepointCount);
-    g_office_font_mono_regular = LoadFontFromMemory(".ttf", kLiberationMonoRegularTtf,
+    g_office_font_mono_regular = gfx::LoadFontFromMemory(".ttf", kLiberationMonoRegularTtf,
                                                       static_cast<int>(kLiberationMonoRegularTtfLen),
                                                       kOfficeFontBasePt * 2, codepoints, kCodepointCount);
-    g_office_font_mono_bold = LoadFontFromMemory(".ttf", kLiberationMonoBoldTtf,
+    g_office_font_mono_bold = gfx::LoadFontFromMemory(".ttf", kLiberationMonoBoldTtf,
                                                    static_cast<int>(kLiberationMonoBoldTtfLen),
                                                    kOfficeFontBasePt * 2, codepoints, kCodepointCount);
-    g_office_font_mono_italic = LoadFontFromMemory(".ttf", kLiberationMonoItalicTtf,
+    g_office_font_mono_italic = gfx::LoadFontFromMemory(".ttf", kLiberationMonoItalicTtf,
                                                      static_cast<int>(kLiberationMonoItalicTtfLen),
                                                      kOfficeFontBasePt * 2, codepoints, kCodepointCount);
-    g_office_font_mono_bolditalic = LoadFontFromMemory(".ttf", kLiberationMonoBoldItalicTtf,
+    g_office_font_mono_bolditalic = gfx::LoadFontFromMemory(".ttf", kLiberationMonoBoldItalicTtf,
                                                          static_cast<int>(kLiberationMonoBoldItalicTtfLen),
                                                          kOfficeFontBasePt * 2, codepoints, kCodepointCount);
-    const Font *const all_office_fonts[] = {&g_office_font_regular,       &g_office_font_bold,
+    const gfx::Font *const all_office_fonts[] = {&g_office_font_regular,       &g_office_font_bold,
                                        &g_office_font_italic,        &g_office_font_bolditalic,
                                        &g_office_font_serif_regular, &g_office_font_serif_bold,
                                        &g_office_font_serif_italic,  &g_office_font_serif_bolditalic,
                                        &g_office_font_mono_regular,  &g_office_font_mono_bold,
                                        &g_office_font_mono_italic,   &g_office_font_mono_bolditalic};
-    for (const Font *f : all_office_fonts) SetTextureFilter(f->texture, TEXTURE_FILTER_BILINEAR);
+    for (const gfx::Font *f : all_office_fonts) gfx::SetTextureFilter(f->texture, gfx::TextureFilter::Bilinear);
 }
 
 // Which of the 12 baked fonts (3 families x 4 weight/style) a run of text
@@ -1893,7 +1898,7 @@ void LoadOfficeFonts() {
  * @param fmt Format whose font family, bold, and italic flags select the variant.
  * @return Reference to the matching baked Font global.
  */
-Font &OfficeFontFor(const DocFormat &fmt) {
+gfx::Font &OfficeFontFor(const DocFormat &fmt) {
     if (fmt.font_family == OfficeFontFamily::Serif) {
         if (fmt.bold && fmt.italic) return g_office_font_serif_bolditalic;
         if (fmt.bold) return g_office_font_serif_bold;
@@ -1969,12 +1974,12 @@ std::vector<OfficeWrapLine> WordWrapOfficeParagraph(const DocParagraph &p, float
     // Measures the pixel width of the token/tab spanning [s, e) in its formatted font.
     auto token_width = [&](int s, int e) -> float {
         if (e == s + 1 && text[static_cast<size_t>(s)] == '\t') {
-            const Font &f = OfficeFontFor(FormatAt(p, s));
-            return MeasureTextEx(f, " ", font_size, 0).x * 4.0f;
+            const gfx::Font &f = OfficeFontFor(FormatAt(p, s));
+            return gfx::MeasureTextEx(f, " ", font_size, 0).x * 4.0f;
         }
-        const Font &f = OfficeFontFor(FormatAt(p, s));
+        const gfx::Font &f = OfficeFontFor(FormatAt(p, s));
         std::string tok = text.substr(static_cast<size_t>(s), static_cast<size_t>(e - s));
-        return MeasureTextEx(f, tok.c_str(), font_size, 0).x;
+        return gfx::MeasureTextEx(f, tok.c_str(), font_size, 0).x;
     };
     int line_start = 0;
     float cur_width = 0.0f;
@@ -2170,7 +2175,7 @@ std::vector<OfficeFormatRun> BuildOfficeDisplayRuns(const DocParagraph &p, int a
  * @param font_size Font size in pixels.
  * @param tint Text color.
  */
-void DrawLineFast(const std::string &line, float x, float y, float font_size, Color tint) {
+void DrawLineFast(const std::string &line, float x, float y, float font_size, gfx::Color tint) {
     // Decodes by Unicode codepoint (GetCodepointNext), same as raylib's own
     // DrawTextEx -- not by byte -- so a multi-byte UTF-8 character (never
     // produced by InsertChar itself, but loaded file content isn't limited
@@ -2183,23 +2188,23 @@ void DrawLineFast(const std::string &line, float x, float y, float font_size, Co
     int byte_len = static_cast<int>(line.size());
     for (int i = 0; i < byte_len;) {
         int codepoint_size = 0;
-        int codepoint = GetCodepointNext(&text[i], &codepoint_size);
+        int codepoint = gfx::GetCodepointNext(&text[i], &codepoint_size);
         i += codepoint_size;
         float cx = x + static_cast<float>(col) * g_char_width;
         col++;
         if (codepoint == ' ' || codepoint == '\t') continue;
         if (codepoint < 32 || codepoint > 126) {
-            DrawTextCodepoint(g_font, codepoint, Vector2{cx, y}, font_size, tint);
+            gfx::DrawTextCodepoint(g_font, codepoint, gfx::Vector2{cx, y}, font_size, tint);
             continue;
         }
         int index = g_glyph_index[codepoint - 32];
-        Rectangle dst{cx + static_cast<float>(g_font.glyphs[index].offsetX) * scale - pad * scale,
+        gfx::Rectangle dst{cx + static_cast<float>(g_font.glyphs[index].offsetX) * scale - pad * scale,
                       y + static_cast<float>(g_font.glyphs[index].offsetY) * scale - pad * scale,
                       (g_font.recs[index].width + 2.0f * pad) * scale,
                       (g_font.recs[index].height + 2.0f * pad) * scale};
-        Rectangle src{g_font.recs[index].x - pad, g_font.recs[index].y - pad,
+        gfx::Rectangle src{g_font.recs[index].x - pad, g_font.recs[index].y - pad,
                       g_font.recs[index].width + 2.0f * pad, g_font.recs[index].height + 2.0f * pad};
-        DrawTexturePro(g_font.texture, src, dst, Vector2{0, 0}, 0.0f, tint);
+        gfx::DrawTexturePro(g_font.texture, src, dst, gfx::Vector2{0, 0}, 0.0f, tint);
     }
 }
 
@@ -2227,10 +2232,10 @@ void DrawLineFast(const std::string &line, float x, float y, float font_size, Co
  * @param line_height Pixel height of one visual line, used to offset wrapped sub-rows downward.
  * @return The screen position of `col`.
  */
-Vector2 WrapPos(int col, int wrap_cols, float text_x, float base_ly, int line_height) {
-    if (wrap_cols <= 0 || col < wrap_cols) return Vector2{text_x + static_cast<float>(col) * g_char_width, base_ly};
+gfx::Vector2 WrapPos(int col, int wrap_cols, float text_x, float base_ly, int line_height) {
+    if (wrap_cols <= 0 || col < wrap_cols) return gfx::Vector2{text_x + static_cast<float>(col) * g_char_width, base_ly};
     int sub = col / wrap_cols;
-    return Vector2{text_x + static_cast<float>(col - sub * wrap_cols) * g_char_width, base_ly + static_cast<float>(sub * line_height)};
+    return gfx::Vector2{text_x + static_cast<float>(col - sub * wrap_cols) * g_char_width, base_ly + static_cast<float>(sub * line_height)};
 }
 
 // Invokes draw(y, x0, x1, piece_col_start, piece_col_end) once per visual
@@ -2288,7 +2293,7 @@ size_t ColumnToByteOffset(const std::string &line, int col) {
     int i = 0;
     while (i < byte_len && column < col) {
         int codepoint_size = 0;
-        GetCodepointNext(&text[i], &codepoint_size);
+        gfx::GetCodepointNext(&text[i], &codepoint_size);
         i += codepoint_size;
         column++;
     }
@@ -2299,13 +2304,13 @@ size_t ColumnToByteOffset(const std::string &line, int col) {
  * @brief Handles Ctrl+Shift+=/- keyboard shortcuts to grow/shrink the global font size.
  */
 void HandleFontSizeShortcuts() {
-    bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
-    bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+    bool ctrl = gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl);
+    bool shift = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
     if (!ctrl || !shift) return;
-    if (IsKeyPressed(KEY_EQUAL) || IsKeyPressedRepeat(KEY_EQUAL)) {
+    if (gfx::IsKeyPressed(gfx::Key::Equal) || gfx::IsKeyPressedRepeat(gfx::Key::Equal)) {
         ApplyFontSize(g_font_size + kFontSizeStep);
         RecomputeMenuLabelLayout();
-    } else if (IsKeyPressed(KEY_MINUS) || IsKeyPressedRepeat(KEY_MINUS)) {
+    } else if (gfx::IsKeyPressed(gfx::Key::Minus) || gfx::IsKeyPressedRepeat(gfx::Key::Minus)) {
         ApplyFontSize(g_font_size - kFontSizeStep);
         RecomputeMenuLabelLayout();
     }
@@ -2392,10 +2397,13 @@ const char *kDefaultMod1Bindings =
     "mep.map_mod1('j', function() mep.nav_pane('down') end)\n"
     "mep.map_mod1('k', function() mep.nav_pane('up') end)\n"
     "mep.map_mod1('l', function() mep.nav_pane('right') end)\n"
-    "mep.map_mod1('S-h', function() mep.resize_pane('left') end)\n"
-    "mep.map_mod1('S-j', function() mep.resize_pane('down') end)\n"
-    "mep.map_mod1('S-k', function() mep.resize_pane('up') end)\n"
-    "mep.map_mod1('S-l', function() mep.resize_pane('right') end)\n"
+    // repeat=true (4th arg): resizing is naturally a hold-and-repeat action,
+    // like holding h/j/k/l to move the cursor -- unlike every other mod1
+    // binding here, which fires once per press.
+    "mep.map_mod1('S-h', function() mep.resize_pane('left') end, true)\n"
+    "mep.map_mod1('S-j', function() mep.resize_pane('down') end, true)\n"
+    "mep.map_mod1('S-k', function() mep.resize_pane('up') end, true)\n"
+    "mep.map_mod1('S-l', function() mep.resize_pane('right') end, true)\n"
     "mep.map_mod1('C-h', function() mep.pane_move_buffer('left') end)\n"
     "mep.map_mod1('C-j', function() mep.pane_move_buffer('down') end)\n"
     "mep.map_mod1('C-k', function() mep.pane_move_buffer('up') end)\n"
@@ -13798,7 +13806,7 @@ void RecomputeMenuLabelLayout() {
     float x = kMenuPaddingX;
     float font_size = MenuFontSize();
     for (size_t i = 0; i < g_menus.size(); i++) {
-        float w = MeasureTextEx(g_font, g_menus[i].label.c_str(), font_size, 0).x + kMenuPaddingX * 2;
+        float w = gfx::MeasureTextEx(g_font, g_menus[i].label.c_str(), font_size, 0).x + kMenuPaddingX * 2;
         g_menu_starts[i] = x;
         g_menu_widths[i] = w;
         x += w;
@@ -13814,7 +13822,7 @@ float DropdownWidth(const Menu &menu) {
     float font_size = MenuFontSize();
     float w = 0;
     for (const auto &item : menu.items) {
-        w = std::max(w, MeasureTextEx(g_font, item.label.c_str(), font_size, 0).x);
+        w = std::max(w, gfx::MeasureTextEx(g_font, item.label.c_str(), font_size, 0).x);
     }
     return w + kMenuItemPaddingX * 2;
 }
@@ -13829,14 +13837,14 @@ float DropdownWidth(const Menu &menu) {
  */
 bool HandleMenuInput() {
     if (g_show_help_overlay) {
-        if (IsKeyPressed(KEY_ESCAPE) || IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+        if (gfx::IsKeyPressed(gfx::Key::Escape) || gfx::IsMouseButtonPressed(gfx::MouseButton::Left)) {
             g_show_help_overlay = false;
         }
         return true;
     }
 
-    Vector2 mouse = GetMousePosition();
-    bool clicked = IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
+    gfx::Vector2 mouse = gfx::GetMousePosition();
+    bool clicked = gfx::IsMouseButtonPressed(gfx::MouseButton::Left);
     int bar_height = MenuBarHeight();
 
     int hovered = -1;
@@ -13869,7 +13877,7 @@ bool HandleMenuInput() {
                 g_open_menu = -1;
             }
         }
-        if (IsKeyPressed(KEY_ESCAPE)) g_open_menu = -1;
+        if (gfx::IsKeyPressed(gfx::Key::Escape)) g_open_menu = -1;
         return true;
     }
 
@@ -13884,21 +13892,21 @@ bool HandleMenuInput() {
  * @brief Draws the top menu bar and, if a menu is open, its dropdown of items.
  */
 void DrawMenuBar() {
-    int screen_w = GetScreenWidth();
+    int screen_w = gfx::GetScreenWidth();
     int bar_height = MenuBarHeight();
     float font_size = MenuFontSize();
 
-    DrawRectangle(0, 0, screen_w, bar_height, ResolveHlGroup("MenuBar"));
+    gfx::DrawRectangle(0, 0, screen_w, bar_height, ResolveHlGroup("MenuBar"));
 
     for (size_t i = 0; i < g_menus.size(); i++) {
         bool active = (static_cast<int>(i) == g_open_menu);
         if (active) {
-            DrawRectangle(static_cast<int>(g_menu_starts[i]), 0, static_cast<int>(g_menu_widths[i]), bar_height,
+            gfx::DrawRectangle(static_cast<int>(g_menu_starts[i]), 0, static_cast<int>(g_menu_widths[i]), bar_height,
                           ResolveHlGroup("MenuHighlight"));
         }
         float text_y = (static_cast<float>(bar_height) - font_size) / 2.0f;
-        DrawTextEx(g_font, g_menus[i].label.c_str(),
-                   Vector2{g_menu_starts[i] + kMenuPaddingX, text_y}, font_size, 0, ResolveHlGroup("MenuBarFg"));
+        gfx::DrawTextEx(g_font, g_menus[i].label.c_str(),
+                   gfx::Vector2{g_menu_starts[i] + kMenuPaddingX, text_y}, font_size, 0, ResolveHlGroup("MenuBarFg"));
     }
 
     if (g_open_menu >= 0) {
@@ -13907,23 +13915,23 @@ void DrawMenuBar() {
         float dd_y = static_cast<float>(bar_height);
         float dd_w = DropdownWidth(menu);
         int item_h = MenuItemHeight();
-        Vector2 mouse = GetMousePosition();
+        gfx::Vector2 mouse = gfx::GetMousePosition();
 
-        DrawRectangle(static_cast<int>(dd_x), static_cast<int>(dd_y), static_cast<int>(dd_w),
+        gfx::DrawRectangle(static_cast<int>(dd_x), static_cast<int>(dd_y), static_cast<int>(dd_w),
                       static_cast<int>(menu.items.size() * static_cast<size_t>(item_h)), ResolveHlGroup("Picker"));
         for (size_t i = 0; i < menu.items.size(); i++) {
             float item_y = dd_y + static_cast<float>(i) * static_cast<float>(item_h);
             bool hovered_item = mouse.x >= dd_x && mouse.x < dd_x + dd_w && mouse.y >= item_y &&
                                  mouse.y < item_y + static_cast<float>(item_h);
             if (hovered_item) {
-                DrawRectangle(static_cast<int>(dd_x), static_cast<int>(item_y), static_cast<int>(dd_w), item_h,
+                gfx::DrawRectangle(static_cast<int>(dd_x), static_cast<int>(item_y), static_cast<int>(dd_w), item_h,
                               ResolveHlGroup("MenuHighlight"));
             }
             float text_y = item_y + (static_cast<float>(item_h) - font_size) / 2.0f;
-            DrawTextEx(g_font, menu.items[i].label.c_str(), Vector2{dd_x + kMenuItemPaddingX, text_y}, font_size, 0,
+            gfx::DrawTextEx(g_font, menu.items[i].label.c_str(), gfx::Vector2{dd_x + kMenuItemPaddingX, text_y}, font_size, 0,
                        ResolveHlGroup("MenuBarFg"));
         }
-        DrawRectangleLines(static_cast<int>(dd_x), static_cast<int>(dd_y), static_cast<int>(dd_w),
+        gfx::DrawRectangleLines(static_cast<int>(dd_x), static_cast<int>(dd_y), static_cast<int>(dd_w),
                             static_cast<int>(menu.items.size() * static_cast<size_t>(item_h)), ResolveHlGroup("PickerBorder"));
     }
 }
@@ -13950,20 +13958,20 @@ void DrawRunButtonMenu() {
     float dd_y = g_run_button_menu_anchor.y + g_run_button_menu_anchor.height;
     float dd_w = std::max(DropdownWidth(menu), g_run_button_menu_anchor.width);
     int item_h = MenuItemHeight();
-    Vector2 mouse = GetMousePosition();
-    DrawRectangle(static_cast<int>(dd_x), static_cast<int>(dd_y), static_cast<int>(dd_w), item_h,
+    gfx::Vector2 mouse = gfx::GetMousePosition();
+    gfx::DrawRectangle(static_cast<int>(dd_x), static_cast<int>(dd_y), static_cast<int>(dd_w), item_h,
                   ResolveHlGroup("Picker"));
-    bool hovered_item = PointInRect(mouse, Rectangle{dd_x, dd_y, dd_w, static_cast<float>(item_h)});
+    bool hovered_item = PointInRect(mouse, gfx::Rectangle{dd_x, dd_y, dd_w, static_cast<float>(item_h)});
     if (hovered_item) {
-        DrawRectangle(static_cast<int>(dd_x), static_cast<int>(dd_y), static_cast<int>(dd_w), item_h,
+        gfx::DrawRectangle(static_cast<int>(dd_x), static_cast<int>(dd_y), static_cast<int>(dd_w), item_h,
                       ResolveHlGroup("MenuHighlight"));
     }
     float text_y = dd_y + (static_cast<float>(item_h) - font_size) / 2.0f;
-    DrawTextEx(g_font, menu.items[0].label.c_str(), Vector2{dd_x + kMenuItemPaddingX, text_y}, font_size, 0,
+    gfx::DrawTextEx(g_font, menu.items[0].label.c_str(), gfx::Vector2{dd_x + kMenuItemPaddingX, text_y}, font_size, 0,
                ResolveHlGroup("MenuBarFg"));
-    DrawRectangleLines(static_cast<int>(dd_x), static_cast<int>(dd_y), static_cast<int>(dd_w), item_h,
+    gfx::DrawRectangleLines(static_cast<int>(dd_x), static_cast<int>(dd_y), static_cast<int>(dd_w), item_h,
                         ResolveHlGroup("PickerBorder"));
-    RegisterClickRegion(Rectangle{dd_x, dd_y, dd_w, static_cast<float>(item_h)}, menu.items[0].action);
+    RegisterClickRegion(gfx::Rectangle{dd_x, dd_y, dd_w, static_cast<float>(item_h)}, menu.items[0].action);
 }
 
 // Generic floating overlay frame: dims the screen, draws a centered
@@ -13985,17 +13993,17 @@ struct FloatFrame {
  * @return A FloatFrame describing the box's bounds and the content origin (content_x/content_y).
  */
 FloatFrame DrawFloatFrame(int w, int h, const std::string &title) {
-    int screen_w = GetScreenWidth();
-    int screen_h = GetScreenHeight();
-    DrawRectangle(0, 0, screen_w, screen_h, ResolveHlGroup("Overlay"));
+    int screen_w = gfx::GetScreenWidth();
+    int screen_h = gfx::GetScreenHeight();
+    gfx::DrawRectangle(0, 0, screen_w, screen_h, ResolveHlGroup("Overlay"));
     int box_x = (screen_w - w) / 2;
     int box_y = (screen_h - h) / 2;
-    DrawRectangle(box_x, box_y, w, h, ResolveHlGroup("FloatBg"));
-    DrawRectangleLines(box_x, box_y, w, h, ResolveHlGroup("FloatBorder"));
+    gfx::DrawRectangle(box_x, box_y, w, h, ResolveHlGroup("FloatBg"));
+    gfx::DrawRectangleLines(box_x, box_y, w, h, ResolveHlGroup("FloatBorder"));
     float content_y = static_cast<float>(box_y + 10);
     float title_size = MenuFontSize();
     if (!title.empty()) {
-        DrawTextEx(g_font, title.c_str(), Vector2{static_cast<float>(box_x + 14), content_y}, title_size, 0,
+        gfx::DrawTextEx(g_font, title.c_str(), gfx::Vector2{static_cast<float>(box_x + 14), content_y}, title_size, 0,
                    ResolveHlGroup("PickerTitle"));
         content_y += title_size + 8;
     }
@@ -14007,7 +14015,7 @@ FloatFrame DrawFloatFrame(int w, int h, const std::string &title) {
  * the typed text with '*' characters when the prompt was opened as masked/password input.
  */
 void DrawPromptOverlay() {
-    int box_w = std::min(GetScreenWidth() - 80, 560);
+    int box_w = std::min(gfx::GetScreenWidth() - 80, 560);
     FloatFrame f = DrawFloatFrame(box_w, static_cast<int>(g_font_size) + 60, g_editor.PromptTitle());
     const std::string &real = g_editor.PromptInput();
     // Masked prompts (mep.ui_input's opts.masked/opts.password, e.g. the
@@ -14019,10 +14027,10 @@ void DrawPromptOverlay() {
     // approximation given masked input is realistically ASCII (API keys,
     // passwords).
     std::string line = g_editor.PromptMasked() ? std::string(real.size(), '*') : real;
-    DrawTextEx(g_font, line.c_str(), Vector2{f.content_x, f.content_y}, g_font_size, 0, ResolveHlGroup("Normal"));
+    gfx::DrawTextEx(g_font, line.c_str(), gfx::Vector2{f.content_x, f.content_y}, g_font_size, 0, ResolveHlGroup("Normal"));
     {
-        float cx = f.content_x + MeasureTextEx(g_font, line.c_str(), g_font_size, 0).x;
-        DrawRectangle(static_cast<int>(cx), static_cast<int>(f.content_y), 2, static_cast<int>(g_font_size),
+        float cx = f.content_x + gfx::MeasureTextEx(g_font, line.c_str(), g_font_size, 0).x;
+        gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(f.content_y), 2, static_cast<int>(g_font_size),
                       ResolveHlGroup("Normal"));
     }
 }
@@ -14033,15 +14041,15 @@ void DrawPromptOverlay() {
  */
 void DrawConfirmOverlay() {
     const std::string &msg = g_editor.ConfirmMessage();
-    int box_w = std::min(GetScreenWidth() - 80,
-                          static_cast<int>(MeasureTextEx(g_font, msg.c_str(), g_font_size, 0).x) + 60);
+    int box_w = std::min(gfx::GetScreenWidth() - 80,
+                          static_cast<int>(gfx::MeasureTextEx(g_font, msg.c_str(), g_font_size, 0).x) + 60);
     box_w = std::max(box_w, 260);
     FloatFrame f = DrawFloatFrame(box_w, static_cast<int>(g_font_size) * 2 + 50, "");
-    DrawTextEx(g_font, msg.c_str(), Vector2{f.content_x, f.content_y}, g_font_size, 0, ResolveHlGroup("Normal"));
+    gfx::DrawTextEx(g_font, msg.c_str(), gfx::Vector2{f.content_x, f.content_y}, g_font_size, 0, ResolveHlGroup("Normal"));
     std::string hint = g_editor.ConfirmDefaultYes() ? "[y]es / [n]o (Enter = yes, Esc = no)"
                                                      : "[y]es / [n]o (Enter = no, Esc = no)";
     float hint_size = MenuFontSize();
-    DrawTextEx(g_font, hint.c_str(), Vector2{f.content_x, f.content_y + g_font_size + 10}, hint_size, 0, ResolveHlGroup("Comment"));
+    gfx::DrawTextEx(g_font, hint.c_str(), gfx::Vector2{f.content_x, f.content_y + g_font_size + 10}, hint_size, 0, ResolveHlGroup("Comment"));
 }
 
 /**
@@ -14052,18 +14060,18 @@ void DrawSelectOverlay() {
     const std::vector<std::string> &items = g_editor.SelectItems();
     float font_size = g_font_size;
     int line_h = static_cast<int>(font_size) + 6;
-    float max_w = MeasureTextEx(g_font, g_editor.SelectTitle().c_str(), MenuFontSize(), 0).x;
-    for (const auto &it : items) max_w = std::max(max_w, MeasureTextEx(g_font, it.c_str(), font_size, 0).x);
-    int box_w = std::min(GetScreenWidth() - 80, static_cast<int>(max_w) + 60);
-    int box_h = std::min(GetScreenHeight() - 80, static_cast<int>(items.size()) * line_h + 60);
+    float max_w = gfx::MeasureTextEx(g_font, g_editor.SelectTitle().c_str(), MenuFontSize(), 0).x;
+    for (const auto &it : items) max_w = std::max(max_w, gfx::MeasureTextEx(g_font, it.c_str(), font_size, 0).x);
+    int box_w = std::min(gfx::GetScreenWidth() - 80, static_cast<int>(max_w) + 60);
+    int box_h = std::min(gfx::GetScreenHeight() - 80, static_cast<int>(items.size()) * line_h + 60);
     FloatFrame f = DrawFloatFrame(box_w, box_h, g_editor.SelectTitle());
     int sel = g_editor.SelectIndex();
     for (size_t i = 0; i < items.size(); i++) {
         float y = f.content_y + static_cast<float>(i) * static_cast<float>(line_h);
         if (static_cast<int>(i) == sel) {
-            DrawRectangle(f.box_x + 6, static_cast<int>(y) - 1, f.box_w - 12, line_h, ResolveHlGroup("PickerSelected"));
+            gfx::DrawRectangle(f.box_x + 6, static_cast<int>(y) - 1, f.box_w - 12, line_h, ResolveHlGroup("PickerSelected"));
         }
-        DrawTextEx(g_font, items[i].c_str(), Vector2{f.content_x, y}, font_size, 0, ResolveHlGroup("Normal"));
+        gfx::DrawTextEx(g_font, items[i].c_str(), gfx::Vector2{f.content_x, y}, font_size, 0, ResolveHlGroup("Normal"));
     }
 }
 
@@ -14083,9 +14091,9 @@ void DrawPreviewOverlay() {
     std::vector<std::string> lines = SplitLines(g_editor.PreviewText());
     float font_size = g_font_size;
     int line_h = static_cast<int>(font_size) + 6;
-    float max_w = MeasureTextEx(g_font, g_editor.PreviewTitle().c_str(), MenuFontSize(), 0).x;
-    for (const auto &line : lines) max_w = std::max(max_w, MeasureTextEx(g_font, line.c_str(), font_size, 0).x);
-    int box_w = std::min(GetScreenWidth() - 80, static_cast<int>(max_w) + 40);
+    float max_w = gfx::MeasureTextEx(g_font, g_editor.PreviewTitle().c_str(), MenuFontSize(), 0).x;
+    for (const auto &line : lines) max_w = std::max(max_w, gfx::MeasureTextEx(g_font, line.c_str(), font_size, 0).x);
+    int box_w = std::min(gfx::GetScreenWidth() - 80, static_cast<int>(max_w) + 40);
     box_w = std::max(box_w, 260);
     float hint_size = MenuFontSize();
     // DrawFloatFrame reserves its own title row (MenuFontSize()+8) on top
@@ -14094,21 +14102,21 @@ void DrawPreviewOverlay() {
     // box_h budget let the hint overlap the last content line for
     // short (e.g. one-line) previews.
     int title_h = g_editor.PreviewTitle().empty() ? 0 : static_cast<int>(MenuFontSize()) + 8;
-    int box_h = std::min(GetScreenHeight() - 80,
+    int box_h = std::min(gfx::GetScreenHeight() - 80,
                           10 + title_h + static_cast<int>(lines.size()) * line_h + static_cast<int>(hint_size) + 24);
     FloatFrame f = DrawFloatFrame(box_w, box_h, g_editor.PreviewTitle());
     for (size_t i = 0; i < lines.size(); i++) {
         float y = f.content_y + static_cast<float>(i) * static_cast<float>(line_h);
         const std::string &line = lines[i];
-        Color color = ResolveHlGroup("Normal");
+        gfx::Color color = ResolveHlGroup("Normal");
         if (!line.empty() && line[0] == '+') color = ResolveHlGroup("Add");
         else if (!line.empty() && line[0] == '-') color = ResolveHlGroup("Red");
-        DrawTextEx(g_font, line.c_str(), Vector2{f.content_x, y}, font_size, 0, color);
+        gfx::DrawTextEx(g_font, line.c_str(), gfx::Vector2{f.content_x, y}, font_size, 0, color);
     }
     std::string hint = "Press any key to close";
-    float hint_w = MeasureTextEx(g_font, hint.c_str(), hint_size, 0).x;
-    DrawTextEx(g_font, hint.c_str(),
-               Vector2{static_cast<float>(f.box_x + f.box_w) - hint_w - 14,
+    float hint_w = gfx::MeasureTextEx(g_font, hint.c_str(), hint_size, 0).x;
+    gfx::DrawTextEx(g_font, hint.c_str(),
+               gfx::Vector2{static_cast<float>(f.box_x + f.box_w) - hint_w - 14,
                        static_cast<float>(f.box_y) + static_cast<float>(f.box_h) - hint_size - 10.0f},
                hint_size, 0, ResolveHlGroup("Comment"));
 }
@@ -14118,7 +14126,7 @@ void DrawPreviewOverlay() {
  * @param level The notification's severity level.
  * @return The resolved color for that level (falls back to "Normal" for an unknown level).
  */
-Color NotifyLevelColor(Editor::NotifyLevel level) {
+gfx::Color NotifyLevelColor(Editor::NotifyLevel level) {
     switch (level) {
         case Editor::NotifyLevel::Error: return ResolveHlGroup("Error");
         case Editor::NotifyLevel::Warn: return ResolveHlGroup("Warn");
@@ -14156,7 +14164,7 @@ std::string NotifyLevelGlyph(Editor::NotifyLevel level) {
 void DrawToastStack() {
     const auto &toasts = g_editor.Toasts();
     if (toasts.empty()) return;
-    int screen_w = GetScreenWidth();
+    int screen_w = gfx::GetScreenWidth();
     float font_size = MenuFontSize();
     float y = 8.0f;
     for (auto it = toasts.rbegin(); it != toasts.rend(); ++it) {
@@ -14165,11 +14173,11 @@ void DrawToastStack() {
         float box_w = text_w + 24;
         float box_h = font_size + 14;
         float x = static_cast<float>(screen_w) - box_w - 10;
-        DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(box_w), static_cast<int>(box_h),
+        gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(box_w), static_cast<int>(box_h),
                       ResolveHlGroup("FloatBg"));
-        DrawRectangleLines(static_cast<int>(x), static_cast<int>(y), static_cast<int>(box_w),
+        gfx::DrawRectangleLines(static_cast<int>(x), static_cast<int>(y), static_cast<int>(box_w),
                             static_cast<int>(box_h), NotifyLevelColor(it->level));
-        DrawUiText(text, Vector2{x + 12, y + 7}, font_size, ResolveHlGroup("Normal"));
+        DrawUiText(text, gfx::Vector2{x + 12, y + 7}, font_size, ResolveHlGroup("Normal"));
         y += box_h + 6;
     }
 }
@@ -14198,11 +14206,11 @@ float DrawSidebarTabStrip(const SidebarInstance &sb, float x, float y, float fon
     const float chip_h = font_size + 4.0f;
     for (size_t i = 0; i < sb.tabs.size(); i++) {
         const std::string &name = sb.tabs[i];
-        const float tw = MeasureTextEx(g_font, name.c_str(), font_size, 0).x;
-        const Rectangle rect{x, y - 2.0f, tw + 2 * pad, chip_h};
+        const float tw = gfx::MeasureTextEx(g_font, name.c_str(), font_size, 0).x;
+        const gfx::Rectangle rect{x, y - 2.0f, tw + 2 * pad, chip_h};
         const bool active = static_cast<int>(i) == sb.active_tab;
-        if (active) DrawRectangleRec(rect, ResolveHlGroup("TabActive"));
-        DrawTextEx(g_font, name.c_str(), Vector2{x + pad, y}, font_size, 0,
+        if (active) gfx::DrawRectangleRec(rect, ResolveHlGroup("TabActive"));
+        gfx::DrawTextEx(g_font, name.c_str(), gfx::Vector2{x + pad, y}, font_size, 0,
                    ResolveHlGroup(active ? "Normal" : "Comment"));
         g_sidebar_tab_rects.push_back({sb.id, static_cast<int>(i), rect});
         x += rect.width + 2.0f;
@@ -14211,8 +14219,8 @@ float DrawSidebarTabStrip(const SidebarInstance &sb, float x, float y, float fon
 }
 
 void DrawSidebars() {
-    int screen_w = GetScreenWidth();
-    int screen_h = GetScreenHeight();
+    int screen_w = gfx::GetScreenWidth();
+    int screen_h = gfx::GetScreenHeight();
     float font_size = g_font_size;
     int line_h = static_cast<int>(font_size) + 4;
     int header_h = line_h + 6;
@@ -14241,7 +14249,7 @@ void DrawSidebars() {
     auto draw_one = [&](const SidebarInstance &sb, int px, int py, int pw, int ph) {
         std::vector<SidebarLine> lines = g_editor.FlattenSidebar(sb.id);
         bool is_focused = sb.id == focused_id;
-        DrawRectangle(px, py, pw, ph, ResolveHlGroup("Sidebar"));
+        gfx::DrawRectangle(px, py, pw, ph, ResolveHlGroup("Sidebar"));
         // Same active/inactive border treatment DrawPane's own panes get
         // (DrawPaneBorder), rather than a flat SidebarBorder outline that
         // never changed regardless of focus -- otherwise a focused sidebar
@@ -14256,8 +14264,8 @@ void DrawSidebars() {
         // branch) would otherwise overflow past pw into whatever's drawn
         // next -- the pane tree to one side. Scissor to the sidebar's own
         // rect the same way DrawPane clips its content.
-        BeginScissorMode(px, py, pw, ph);
-        DrawTextEx(g_font, sb.title.c_str(), Vector2{static_cast<float>(px + 8), static_cast<float>(py + 6)},
+        gfx::BeginScissorMode(px, py, pw, ph);
+        gfx::DrawTextEx(g_font, sb.title.c_str(), gfx::Vector2{static_cast<float>(px + 8), static_cast<float>(py + 6)},
                    MenuFontSize(), 0, ResolveHlGroup("SidebarTitle"));
         // A tabbed sidebar's view strip takes one extra header row.
         int hdr_h = header_h;
@@ -14300,18 +14308,18 @@ void DrawSidebars() {
             // highlight still reads as the stronger, "you are here for
             // input" signal.
             if (lines[i].current) {
-                Color tint = ResolveHlGroup("AccentTint");
-                DrawRectangle(px + 2, static_cast<int>(ly) - 1, pw - 4, line_h, tint);
+                gfx::Color tint = ResolveHlGroup("AccentTint");
+                gfx::DrawRectangle(px + 2, static_cast<int>(ly) - 1, pw - 4, line_h, tint);
             }
             if (is_focused && static_cast<int>(i) == cursor) {
-                DrawRectangle(px + 2, static_cast<int>(ly) - 1, pw - 4, line_h, ResolveHlGroup("PickerSelected"));
+                gfx::DrawRectangle(px + 2, static_cast<int>(ly) - 1, pw - 4, line_h, ResolveHlGroup("PickerSelected"));
             }
-            Color color = lines[i].hl.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(lines[i].hl);
-            DrawUiText(lines[i].text, Vector2{static_cast<float>(px + 8), ly}, font_size, color);
+            gfx::Color color = lines[i].hl.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(lines[i].hl);
+            DrawUiText(lines[i].text, gfx::Vector2{static_cast<float>(px + 8), ly}, font_size, color);
             g_sidebar_row_rects.push_back(
-                {sb.id, static_cast<int>(i), Rectangle{static_cast<float>(px), ly - 1, static_cast<float>(pw), static_cast<float>(line_h)}});
+                {sb.id, static_cast<int>(i), gfx::Rectangle{static_cast<float>(px), ly - 1, static_cast<float>(pw), static_cast<float>(line_h)}});
         }
-        EndScissorMode();
+        gfx::EndScissorMode();
     };
 
     // --- Left/right docks: one merged column per edge.
@@ -14335,7 +14343,7 @@ void DrawSidebars() {
         {
             const float gx = is_left ? static_cast<float>(px + pw) - kBorderGrabPx / 2.0f : static_cast<float>(px) - kBorderGrabPx / 2.0f;
             g_sidebar_border_rects.push_back(
-                {ids.front(), true, is_left ? 1 : -1, Rectangle{gx, static_cast<float>(py), kBorderGrabPx, static_cast<float>(ph)}});
+                {ids.front(), true, is_left ? 1 : -1, gfx::Rectangle{gx, static_cast<float>(py), kBorderGrabPx, static_cast<float>(ph)}});
         }
 
         // Vertical split by stack_share; the last member absorbs the
@@ -14359,7 +14367,7 @@ void DrawSidebars() {
                 // re-splits just the two of them (SetSidebarStackShares).
                 const float divider_y = static_cast<float>(y + heights[k]);
                 g_sidebar_stack_rects.push_back({ids[k], ids[k + 1],
-                                                 Rectangle{static_cast<float>(px), divider_y - kBorderGrabPx / 2.0f, static_cast<float>(pw), kBorderGrabPx},
+                                                 gfx::Rectangle{static_cast<float>(px), divider_y - kBorderGrabPx / 2.0f, static_cast<float>(pw), kBorderGrabPx},
                                                  static_cast<float>(y), static_cast<float>(heights[k] + heights[k + 1])});
             }
             y += heights[k];
@@ -14389,7 +14397,7 @@ void DrawSidebars() {
         {
             const int sign = sb.position == "top" ? 1 : -1;
             const float gy = sb.position == "top" ? static_cast<float>(py + ph) - kBorderGrabPx / 2.0f : static_cast<float>(py) - kBorderGrabPx / 2.0f;
-            g_sidebar_border_rects.push_back({sb.id, false, sign, Rectangle{static_cast<float>(px), gy, static_cast<float>(pw), kBorderGrabPx}});
+            g_sidebar_border_rects.push_back({sb.id, false, sign, gfx::Rectangle{static_cast<float>(px), gy, static_cast<float>(pw), kBorderGrabPx}});
         }
         draw_one(sb, px, py, pw, ph);
     }
@@ -14425,10 +14433,10 @@ void DrawOfficeSidePanels(float pane_x, float pane_w, float content_y, float con
     ocw = pane_w;
 
     // --- Left: icon rail (always shown for an office pane) ---
-    Rectangle rail{ocx, content_y, kOfficeRailW, content_h};
-    DrawRectangle(static_cast<int>(rail.x), static_cast<int>(rail.y), static_cast<int>(rail.width), static_cast<int>(rail.height),
+    gfx::Rectangle rail{ocx, content_y, kOfficeRailW, content_h};
+    gfx::DrawRectangle(static_cast<int>(rail.x), static_cast<int>(rail.y), static_cast<int>(rail.width), static_cast<int>(rail.height),
                   ResolveHlGroup("MenuBar"));
-    DrawLineEx(Vector2{rail.width, rail.y}, Vector2{rail.width, rail.y + rail.height}, 1.0f, ResolveHlGroup("Border"));
+    gfx::DrawLineEx(gfx::Vector2{rail.width, rail.y}, gfx::Vector2{rail.width, rail.y + rail.height}, 1.0f, ResolveHlGroup("Border"));
 
     /**
      * @brief Draws one rounded icon button on the office side rail at vertical center `cy`,
@@ -14439,14 +14447,14 @@ void DrawOfficeSidePanels(float pane_x, float pane_w, float content_y, float con
      * @param draw Callback that paints the icon glyph at the button's center with the given color.
      * @param on_click Callback invoked when the button is clicked (skipped if null).
      */
-    auto rail_icon = [&](float cy, bool active, const std::function<void(Vector2, Color)> &draw, const std::function<void()> &on_click) {
-        Rectangle hit{rail.x + 4.0f, cy - 14.0f, rail.width - 8.0f, 28.0f};
-        Vector2 mouse = GetMousePosition();
-        bool hovered = CheckCollisionPointRec(mouse, hit);
-        if (active) DrawRectangleRounded(hit, 0.3f, 6, ResolveHlGroup("AccentTint"));
-        else if (hovered) DrawRectangleRounded(hit, 0.3f, 6, ResolveHlGroup("CursorLine"));
-        Color color = active ? ResolveHlGroup("Accent") : ResolveHlGroup("MutedFg");
-        draw(Vector2{rail.x + rail.width / 2.0f, cy}, color);
+    auto rail_icon = [&](float cy, bool active, const std::function<void(gfx::Vector2, gfx::Color)> &draw, const std::function<void()> &on_click) {
+        gfx::Rectangle hit{rail.x + 4.0f, cy - 14.0f, rail.width - 8.0f, 28.0f};
+        gfx::Vector2 mouse = gfx::GetMousePosition();
+        bool hovered = gfx::CheckCollisionPointRec(mouse, hit);
+        if (active) gfx::DrawRectangleRounded(hit, 0.3f, 6, ResolveHlGroup("AccentTint"));
+        else if (hovered) gfx::DrawRectangleRounded(hit, 0.3f, 6, ResolveHlGroup("CursorLine"));
+        gfx::Color color = active ? ResolveHlGroup("Accent") : ResolveHlGroup("MutedFg");
+        draw(gfx::Vector2{rail.x + rail.width / 2.0f, cy}, color);
         if (on_click) RegisterClickRegion(hit, on_click);
     };
 
@@ -14456,44 +14464,44 @@ void DrawOfficeSidePanels(float pane_x, float pane_w, float content_y, float con
     // anything yet (no on_click), same documented tradeoff as the format
     // panel's margins/page-color controls.
     rail_icon(rail.y + 30.0f, g_office_outline_open,
-        [](Vector2 c, Color color) {
-            Rectangle page{c.x - 7.0f, c.y - 9.0f, 14.0f, 18.0f};
-            DrawRectangleLinesEx(page, 1.3f, color);
+        [](gfx::Vector2 c, gfx::Color color) {
+            gfx::Rectangle page{c.x - 7.0f, c.y - 9.0f, 14.0f, 18.0f};
+            gfx::DrawRectangleLinesEx(page, 1.3f, color);
             for (int i = 0; i < 3; i++) {
                 float ly = page.y + 4.0f + static_cast<float>(i) * 4.5f;
-                DrawLineEx(Vector2{page.x + 2.5f, ly}, Vector2{page.x + page.width - 2.5f, ly}, 1.1f, color);
+                gfx::DrawLineEx(gfx::Vector2{page.x + 2.5f, ly}, gfx::Vector2{page.x + page.width - 2.5f, ly}, 1.1f, color);
             }
         },
         [] { g_office_outline_open = !g_office_outline_open; });
     // Decorative search-glyph icon (draws a magnifying glass); not wired to any action.
     rail_icon(rail.y + 72.0f, false,
-        [](Vector2 c, Color color) {
-            DrawCircleLines(static_cast<int>(c.x - 2.0f), static_cast<int>(c.y - 2.0f), 5.0f, color);
-            DrawLineEx(Vector2{c.x + 1.5f, c.y + 1.5f}, Vector2{c.x + 6.0f, c.y + 6.0f}, 1.4f, color);
+        [](gfx::Vector2 c, gfx::Color color) {
+            gfx::DrawCircleLines(static_cast<int>(c.x - 2.0f), static_cast<int>(c.y - 2.0f), 5.0f, color);
+            gfx::DrawLineEx(gfx::Vector2{c.x + 1.5f, c.y + 1.5f}, gfx::Vector2{c.x + 6.0f, c.y + 6.0f}, 1.4f, color);
         },
         nullptr);
     // Decorative comment/flag-glyph icon (draws a small bordered flag shape); not wired to any action.
     rail_icon(rail.y + 108.0f, false,
-        [](Vector2 c, Color color) {
-            Rectangle rb{c.x - 5.0f, c.y - 8.0f, 10.0f, 16.0f};
-            DrawRectangleLinesEx(rb, 1.2f, color);
-            DrawTriangle(Vector2{rb.x + rb.width, rb.y + rb.height}, Vector2{rb.x, rb.y + rb.height},
-                        Vector2{rb.x + rb.width / 2.0f, rb.y + rb.height - 6.0f}, ResolveHlGroup("MenuBar"));
+        [](gfx::Vector2 c, gfx::Color color) {
+            gfx::Rectangle rb{c.x - 5.0f, c.y - 8.0f, 10.0f, 16.0f};
+            gfx::DrawRectangleLinesEx(rb, 1.2f, color);
+            gfx::DrawTriangle(gfx::Vector2{rb.x + rb.width, rb.y + rb.height}, gfx::Vector2{rb.x, rb.y + rb.height},
+                        gfx::Vector2{rb.x + rb.width / 2.0f, rb.y + rb.height - 6.0f}, ResolveHlGroup("MenuBar"));
         },
         nullptr);
     // Decorative clock-glyph icon (draws a circle with hour/minute hands); not wired to any action.
     rail_icon(rail.y + 144.0f, false,
-        [](Vector2 c, Color color) {
-            DrawCircleLines(static_cast<int>(c.x), static_cast<int>(c.y), 7.0f, color);
-            DrawLineEx(c, Vector2{c.x, c.y - 4.0f}, 1.2f, color);
-            DrawLineEx(c, Vector2{c.x + 3.0f, c.y}, 1.2f, color);
+        [](gfx::Vector2 c, gfx::Color color) {
+            gfx::DrawCircleLines(static_cast<int>(c.x), static_cast<int>(c.y), 7.0f, color);
+            gfx::DrawLineEx(c, gfx::Vector2{c.x, c.y - 4.0f}, 1.2f, color);
+            gfx::DrawLineEx(c, gfx::Vector2{c.x + 3.0f, c.y}, 1.2f, color);
         },
         nullptr);
     // Decorative target/settings-glyph icon (draws two concentric circles); not wired to any action.
     rail_icon(rail.y + rail.height - 26.0f, false,
-        [](Vector2 c, Color color) {
-            DrawCircleLines(static_cast<int>(c.x), static_cast<int>(c.y), 7.0f, color);
-            DrawCircleLines(static_cast<int>(c.x), static_cast<int>(c.y), 3.0f, color);
+        [](gfx::Vector2 c, gfx::Color color) {
+            gfx::DrawCircleLines(static_cast<int>(c.x), static_cast<int>(c.y), 7.0f, color);
+            gfx::DrawCircleLines(static_cast<int>(c.x), static_cast<int>(c.y), 3.0f, color);
         },
         nullptr);
     ocx += kOfficeRailW;
@@ -14501,29 +14509,29 @@ void DrawOfficeSidePanels(float pane_x, float pane_w, float content_y, float con
 
     // --- Outline panel (left, when toggled open) ---
     if (g_office_outline_open && ocw - kOfficeOutlineW > 100.0f) {
-        Rectangle panel{ocx, content_y, kOfficeOutlineW, content_h};
-        DrawRectangle(static_cast<int>(panel.x), static_cast<int>(panel.y), static_cast<int>(panel.width),
+        gfx::Rectangle panel{ocx, content_y, kOfficeOutlineW, content_h};
+        gfx::DrawRectangle(static_cast<int>(panel.x), static_cast<int>(panel.y), static_cast<int>(panel.width),
                       static_cast<int>(panel.height), ResolveHlGroup("OfficePage"));
-        DrawLineEx(Vector2{panel.x + panel.width, panel.y}, Vector2{panel.x + panel.width, panel.y + panel.height}, 1.0f,
+        gfx::DrawLineEx(gfx::Vector2{panel.x + panel.width, panel.y}, gfx::Vector2{panel.x + panel.width, panel.y + panel.height}, 1.0f,
                   ResolveHlGroup("Border"));
         float py = panel.y + 10.0f;
-        DrawTextEx(g_font, "Outline", Vector2{panel.x + 14.0f, py}, MenuFontSize(), 0, ResolveHlGroup("Normal"));
-        Rectangle close_rect{panel.x + panel.width - 28.0f, py - 2.0f, 20.0f, 20.0f};
-        Vector2 cc{close_rect.x + close_rect.width / 2.0f, close_rect.y + close_rect.height / 2.0f};
-        DrawLineEx(Vector2{cc.x - 4.0f, cc.y - 4.0f}, Vector2{cc.x + 4.0f, cc.y + 4.0f}, 1.3f, ResolveHlGroup("MutedFg"));
-        DrawLineEx(Vector2{cc.x - 4.0f, cc.y + 4.0f}, Vector2{cc.x + 4.0f, cc.y - 4.0f}, 1.3f, ResolveHlGroup("MutedFg"));
+        gfx::DrawTextEx(g_font, "Outline", gfx::Vector2{panel.x + 14.0f, py}, MenuFontSize(), 0, ResolveHlGroup("Normal"));
+        gfx::Rectangle close_rect{panel.x + panel.width - 28.0f, py - 2.0f, 20.0f, 20.0f};
+        gfx::Vector2 cc{close_rect.x + close_rect.width / 2.0f, close_rect.y + close_rect.height / 2.0f};
+        gfx::DrawLineEx(gfx::Vector2{cc.x - 4.0f, cc.y - 4.0f}, gfx::Vector2{cc.x + 4.0f, cc.y + 4.0f}, 1.3f, ResolveHlGroup("MutedFg"));
+        gfx::DrawLineEx(gfx::Vector2{cc.x - 4.0f, cc.y + 4.0f}, gfx::Vector2{cc.x + 4.0f, cc.y - 4.0f}, 1.3f, ResolveHlGroup("MutedFg"));
         // Closes the Outline panel.
         RegisterClickRegion(close_rect, [] { g_office_outline_open = false; });
         py += MenuFontSize() + 12.0f;
         // Search box: visual only in this pass -- filtering headings by
         // typed text would need its own text-input focus mode (mirroring
         // Mode::Prompt), a larger addition deferred out of this restyle.
-        Rectangle search{panel.x + 12.0f, py, panel.width - 24.0f, 26.0f};
-        DrawRectangleRounded(search, 0.3f, 6, ResolveHlGroup("MenuBar"));
-        DrawTextEx(g_font, "Search document", Vector2{search.x + 8.0f, search.y + 5.0f}, g_font_size * 0.8f, 0, ResolveHlGroup("MutedFg"));
+        gfx::Rectangle search{panel.x + 12.0f, py, panel.width - 24.0f, 26.0f};
+        gfx::DrawRectangleRounded(search, 0.3f, 6, ResolveHlGroup("MenuBar"));
+        gfx::DrawTextEx(g_font, "Search document", gfx::Vector2{search.x + 8.0f, search.y + 5.0f}, g_font_size * 0.8f, 0, ResolveHlGroup("MutedFg"));
         py += search.height + 10.0f;
 
-        BeginScissorMode(static_cast<int>(panel.x), static_cast<int>(py), static_cast<int>(panel.width),
+        gfx::BeginScissorMode(static_cast<int>(panel.x), static_cast<int>(py), static_cast<int>(panel.width),
                           static_cast<int>(panel.y + panel.height - py));
         if (office_sess) {
             const OfficeDoc &doc = office_sess->doc;
@@ -14536,11 +14544,11 @@ void DrawOfficeSidePanels(float pane_x, float pane_w, float content_y, float con
                 if (para.heading_level <= 0) continue;
                 if (pi <= office_sess->cursor_para) active_heading_para = pi;
                 bool active = false;  // resolved after the loop once the last heading <= cursor is known
-                Rectangle row{panel.x, ry, panel.width, row_h};
+                gfx::Rectangle row{panel.x, ry, panel.width, row_h};
                 std::string text = para.text.empty() ? "(untitled heading)" : para.text;
                 float indent = 14.0f + static_cast<float>(para.heading_level - 1) * 14.0f;
                 float fsize = g_font_size * (para.heading_level == 1 ? 0.95f : 0.85f);
-                while (!text.empty() && MeasureTextEx(g_font, text.c_str(), fsize, 0).x > panel.width - indent - 12.0f) text.pop_back();
+                while (!text.empty() && gfx::MeasureTextEx(g_font, text.c_str(), fsize, 0).x > panel.width - indent - 12.0f) text.pop_back();
                 // Clicking an outline row moves the office cursor to that heading paragraph
                 // and scrolls the document to it.
                 RegisterClickRegion(row, [buffer_id, pi] {
@@ -14556,7 +14564,7 @@ void DrawOfficeSidePanels(float pane_x, float pane_w, float content_y, float con
             // avoid a second full doc scan only to find the same index.
             for (const auto &entry : g_office_status.outline_rows) {
                 if (entry.first != active_heading_para) continue;
-                DrawRectangleRec(entry.second, ResolveHlGroup("AccentTint"));
+                gfx::DrawRectangleRec(entry.second, ResolveHlGroup("AccentTint"));
             }
             ry = py;
             for (int pi = 0; pi < static_cast<int>(doc.paragraphs.size()); pi++) {
@@ -14565,40 +14573,40 @@ void DrawOfficeSidePanels(float pane_x, float pane_w, float content_y, float con
                 std::string text = para.text.empty() ? "(untitled heading)" : para.text;
                 float indent = 14.0f + static_cast<float>(para.heading_level - 1) * 14.0f;
                 float fsize = g_font_size * (para.heading_level == 1 ? 0.95f : 0.85f);
-                while (!text.empty() && MeasureTextEx(g_font, text.c_str(), fsize, 0).x > panel.width - indent - 12.0f) text.pop_back();
-                Color tc = (pi == active_heading_para) ? ResolveHlGroup("Accent") : ResolveHlGroup("Normal");
-                DrawTextEx(g_font, text.c_str(), Vector2{panel.x + indent, ry + (row_h - fsize) / 2.0f}, fsize, 0, tc);
+                while (!text.empty() && gfx::MeasureTextEx(g_font, text.c_str(), fsize, 0).x > panel.width - indent - 12.0f) text.pop_back();
+                gfx::Color tc = (pi == active_heading_para) ? ResolveHlGroup("Accent") : ResolveHlGroup("Normal");
+                gfx::DrawTextEx(g_font, text.c_str(), gfx::Vector2{panel.x + indent, ry + (row_h - fsize) / 2.0f}, fsize, 0, tc);
                 ry += row_h;
             }
         }
-        EndScissorMode();
+        gfx::EndScissorMode();
         ocx += kOfficeOutlineW;
         ocw -= kOfficeOutlineW;
     }
 
     // --- Format/Insert panel (right, when toggled open) ---
     if (g_office_format_open && ocw - kOfficeFormatW > 100.0f) {
-        Rectangle panel{ocx + ocw - kOfficeFormatW, content_y, kOfficeFormatW, content_h};
-        DrawRectangle(static_cast<int>(panel.x), static_cast<int>(panel.y), static_cast<int>(panel.width),
+        gfx::Rectangle panel{ocx + ocw - kOfficeFormatW, content_y, kOfficeFormatW, content_h};
+        gfx::DrawRectangle(static_cast<int>(panel.x), static_cast<int>(panel.y), static_cast<int>(panel.width),
                       static_cast<int>(panel.height), ResolveHlGroup("OfficePage"));
-        DrawLineEx(Vector2{panel.x, panel.y}, Vector2{panel.x, panel.y + panel.height}, 1.0f, ResolveHlGroup("Border"));
+        gfx::DrawLineEx(gfx::Vector2{panel.x, panel.y}, gfx::Vector2{panel.x, panel.y + panel.height}, 1.0f, ResolveHlGroup("Border"));
         float py = panel.y + 10.0f;
         float tab_w = 70.0f, tab_h = 26.0f;
         for (int t = 0; t < 2; t++) {
-            Rectangle tab{panel.x + 14.0f + static_cast<float>(t) * (tab_w + 6.0f), py, tab_w, tab_h};
+            gfx::Rectangle tab{panel.x + 14.0f + static_cast<float>(t) * (tab_w + 6.0f), py, tab_w, tab_h};
             bool active = g_office_format_tab == t;
-            if (active) DrawRectangleRounded(tab, 0.3f, 6, ResolveHlGroup("AccentTint"));
+            if (active) gfx::DrawRectangleRounded(tab, 0.3f, 6, ResolveHlGroup("AccentTint"));
             const char *label = t == 0 ? "Format" : "Insert";
-            Vector2 ts = MeasureTextEx(g_font, label, g_font_size * 0.85f, 0);
-            DrawTextEx(g_font, label, Vector2{tab.x + (tab.width - ts.x) / 2.0f, tab.y + (tab.height - ts.y * 0.85f) / 2.0f},
+            gfx::Vector2 ts = gfx::MeasureTextEx(g_font, label, g_font_size * 0.85f, 0);
+            gfx::DrawTextEx(g_font, label, gfx::Vector2{tab.x + (tab.width - ts.x) / 2.0f, tab.y + (tab.height - ts.y * 0.85f) / 2.0f},
                       g_font_size * 0.85f, 0, active ? ResolveHlGroup("Accent") : ResolveHlGroup("Normal"));
             // Switches the Format panel to this tab (0 = Format, 1 = Insert).
             RegisterClickRegion(tab, [t] { g_office_format_tab = t; });
         }
-        Rectangle close_rect{panel.x + panel.width - 28.0f, py - 2.0f, 20.0f, 20.0f};
-        Vector2 cc{close_rect.x + close_rect.width / 2.0f, close_rect.y + close_rect.height / 2.0f};
-        DrawLineEx(Vector2{cc.x - 4.0f, cc.y - 4.0f}, Vector2{cc.x + 4.0f, cc.y + 4.0f}, 1.3f, ResolveHlGroup("MutedFg"));
-        DrawLineEx(Vector2{cc.x - 4.0f, cc.y + 4.0f}, Vector2{cc.x + 4.0f, cc.y - 4.0f}, 1.3f, ResolveHlGroup("MutedFg"));
+        gfx::Rectangle close_rect{panel.x + panel.width - 28.0f, py - 2.0f, 20.0f, 20.0f};
+        gfx::Vector2 cc{close_rect.x + close_rect.width / 2.0f, close_rect.y + close_rect.height / 2.0f};
+        gfx::DrawLineEx(gfx::Vector2{cc.x - 4.0f, cc.y - 4.0f}, gfx::Vector2{cc.x + 4.0f, cc.y + 4.0f}, 1.3f, ResolveHlGroup("MutedFg"));
+        gfx::DrawLineEx(gfx::Vector2{cc.x - 4.0f, cc.y + 4.0f}, gfx::Vector2{cc.x + 4.0f, cc.y - 4.0f}, 1.3f, ResolveHlGroup("MutedFg"));
         // Closes the Format/Insert panel.
         RegisterClickRegion(close_rect, [] { g_office_format_open = false; });
         py += tab_h + 14.0f;
@@ -14609,7 +14617,7 @@ void DrawOfficeSidePanels(float pane_x, float pane_w, float content_y, float con
          * @param label The heading text to draw.
          */
         auto section_label = [&](const char *label) {
-            DrawTextEx(g_font, label, Vector2{panel.x + 14.0f, py}, g_font_size * 0.85f, 0, ResolveHlGroup("MutedFg"));
+            gfx::DrawTextEx(g_font, label, gfx::Vector2{panel.x + 14.0f, py}, g_font_size * 0.85f, 0, ResolveHlGroup("MutedFg"));
             py += g_font_size * 0.85f + 8.0f;
         };
         /**
@@ -14622,14 +14630,14 @@ void DrawOfficeSidePanels(float pane_x, float pane_w, float content_y, float con
          * @param draw Callback that paints the button's icon within its rect using the given color.
          * @param on_click Callback invoked when the button is clicked.
          */
-        auto icon_row_btn = [&](float *bx, bool active, float w, const std::function<void(Rectangle, Color)> &draw,
+        auto icon_row_btn = [&](float *bx, bool active, float w, const std::function<void(gfx::Rectangle, gfx::Color)> &draw,
                                  const std::function<void()> &on_click) {
-            Rectangle rect{*bx, py, w, 28.0f};
-            Vector2 mouse = GetMousePosition();
-            bool hovered = CheckCollisionPointRec(mouse, rect);
-            if (active) DrawRectangleRounded(rect, 0.25f, 6, ResolveHlGroup("AccentTint"));
-            else if (hovered) DrawRectangleRounded(rect, 0.25f, 6, ResolveHlGroup("CursorLine"));
-            Color color = active ? ResolveHlGroup("Accent") : ResolveHlGroup("Normal");
+            gfx::Rectangle rect{*bx, py, w, 28.0f};
+            gfx::Vector2 mouse = gfx::GetMousePosition();
+            bool hovered = gfx::CheckCollisionPointRec(mouse, rect);
+            if (active) gfx::DrawRectangleRounded(rect, 0.25f, 6, ResolveHlGroup("AccentTint"));
+            else if (hovered) gfx::DrawRectangleRounded(rect, 0.25f, 6, ResolveHlGroup("CursorLine"));
+            gfx::Color color = active ? ResolveHlGroup("Accent") : ResolveHlGroup("Normal");
             draw(rect, color);
             RegisterClickRegion(rect, on_click);
             *bx += w + 4.0f;
@@ -14645,9 +14653,9 @@ void DrawOfficeSidePanels(float pane_x, float pane_w, float content_y, float con
                 // Draws the button's single-letter glyph (B/I/U/S), centered in its rect;
                 // clicking toggles that character formatting on the current selection.
                 icon_row_btn(&bx, office_sess && g_editor.OfficeFormatActive(which), 28.0f,
-                    [&](Rectangle rect, Color color) {
-                        Vector2 ts = MeasureTextEx(g_font, sb.ch, g_font_size, 0);
-                        DrawTextEx(g_font, sb.ch, Vector2{rect.x + (rect.width - ts.x) / 2.0f, rect.y + (rect.height - g_font_size) / 2.0f},
+                    [&](gfx::Rectangle rect, gfx::Color color) {
+                        gfx::Vector2 ts = gfx::MeasureTextEx(g_font, sb.ch, g_font_size, 0);
+                        gfx::DrawTextEx(g_font, sb.ch, gfx::Vector2{rect.x + (rect.width - ts.x) / 2.0f, rect.y + (rect.height - g_font_size) / 2.0f},
                                   g_font_size, 0, color);
                     },
                     [which] { g_editor.ToggleOfficeFormat(which); });
@@ -14666,7 +14674,7 @@ void DrawOfficeSidePanels(float pane_x, float pane_w, float content_y, float con
                 // Draws a small left/center/right/justify text-line icon for this alignment
                 // kind; clicking sets the current paragraph's alignment.
                 icon_row_btn(&bx, office_sess && g_editor.OfficeAlignmentActive(align), 28.0f,
-                    [kind](Rectangle rect, Color color) {
+                    [kind](gfx::Rectangle rect, gfx::Color color) {
                         float pad = rect.width * 0.22f;
                         float full = rect.width - 2.0f * pad, bar_h = 2.0f;
                         float gap = (rect.height - 4.0f * bar_h) / 5.0f;
@@ -14677,7 +14685,7 @@ void DrawOfficeSidePanels(float pane_x, float pane_w, float content_y, float con
                             float bx0 = rect.x + pad;
                             if (kind == 1) bx0 = rect.x + (rect.width - bw) / 2.0f;
                             else if (kind == 2) bx0 = rect.x + rect.width - pad - bw;
-                            DrawRectangle(static_cast<int>(bx0), static_cast<int>(by), static_cast<int>(bw), static_cast<int>(bar_h), color);
+                            gfx::DrawRectangle(static_cast<int>(bx0), static_cast<int>(by), static_cast<int>(bw), static_cast<int>(bar_h), color);
                         }
                     },
                     [align] { g_editor.SetOfficeAlignment(align); });
@@ -14685,14 +14693,14 @@ void DrawOfficeSidePanels(float pane_x, float pane_w, float content_y, float con
             py += 28.0f + 16.0f;
 
             section_label("Page");
-            Rectangle margins{panel.x + 14.0f, py, panel.width - 28.0f, 26.0f};
-            DrawRectangleRounded(margins, 0.2f, 6, ResolveHlGroup("MenuBar"));
-            DrawTextEx(g_font, "Margins: Normal", Vector2{margins.x + 8.0f, margins.y + 5.0f}, g_font_size * 0.8f, 0, ResolveHlGroup("MutedFg"));
+            gfx::Rectangle margins{panel.x + 14.0f, py, panel.width - 28.0f, 26.0f};
+            gfx::DrawRectangleRounded(margins, 0.2f, 6, ResolveHlGroup("MenuBar"));
+            gfx::DrawTextEx(g_font, "Margins: Normal", gfx::Vector2{margins.x + 8.0f, margins.y + 5.0f}, g_font_size * 0.8f, 0, ResolveHlGroup("MutedFg"));
             py += margins.height + 8.0f;
-            DrawTextEx(g_font, "Page color", Vector2{panel.x + 14.0f, py + 5.0f}, g_font_size * 0.8f, 0, ResolveHlGroup("MutedFg"));
-            Rectangle swatch{panel.x + panel.width - 42.0f, py, 28.0f, 18.0f};
-            DrawRectangleRec(swatch, ResolveHlGroup("OfficePage"));
-            DrawRectangleLinesEx(swatch, 1.0f, ResolveHlGroup("Border"));
+            gfx::DrawTextEx(g_font, "Page color", gfx::Vector2{panel.x + 14.0f, py + 5.0f}, g_font_size * 0.8f, 0, ResolveHlGroup("MutedFg"));
+            gfx::Rectangle swatch{panel.x + panel.width - 42.0f, py, 28.0f, 18.0f};
+            gfx::DrawRectangleRec(swatch, ResolveHlGroup("OfficePage"));
+            gfx::DrawRectangleLinesEx(swatch, 1.0f, ResolveHlGroup("Border"));
         } else {
             section_label("Insert");
             struct InsB { const char *label; std::function<void()> action; };
@@ -14702,10 +14710,10 @@ void DrawOfficeSidePanels(float pane_x, float pane_w, float content_y, float con
                 {"Equation", [] { g_editor.InsertOfficeMath(); }},          // inserts a math/equation block
             };
             for (const InsB &it : items) {
-                Rectangle row{panel.x + 12.0f, py, panel.width - 24.0f, 30.0f};
-                Vector2 mouse = GetMousePosition();
-                if (CheckCollisionPointRec(mouse, row)) DrawRectangleRounded(row, 0.2f, 6, ResolveHlGroup("CursorLine"));
-                DrawTextEx(g_font, it.label, Vector2{row.x + 10.0f, row.y + (row.height - g_font_size) / 2.0f}, g_font_size, 0, ResolveHlGroup("Normal"));
+                gfx::Rectangle row{panel.x + 12.0f, py, panel.width - 24.0f, 30.0f};
+                gfx::Vector2 mouse = gfx::GetMousePosition();
+                if (gfx::CheckCollisionPointRec(mouse, row)) gfx::DrawRectangleRounded(row, 0.2f, 6, ResolveHlGroup("CursorLine"));
+                gfx::DrawTextEx(g_font, it.label, gfx::Vector2{row.x + 10.0f, row.y + (row.height - g_font_size) / 2.0f}, g_font_size, 0, ResolveHlGroup("Normal"));
                 RegisterClickRegion(row, it.action);
                 py += row.height + 4.0f;
             }
@@ -14743,7 +14751,7 @@ bool IsSwatchPreviewPicker() { return g_editor.PickerTitle() == "Colorscheme"; }
  * @param b Second color to compare.
  * @return True if every channel (r, g, b, a) matches.
  */
-static bool ColorEq(Color a, Color b) { return a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a; }
+static bool ColorEq(gfx::Color a, gfx::Color b) { return a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a; }
 
 // Per-byte color for one line of picker text (a PickerItem's `display`,
 // or one line of the preview column), starting from `default_color` and
@@ -14761,11 +14769,11 @@ static bool ColorEq(Color a, Color b) { return a.r == b.r && a.g == b.g && a.b =
  * @param default_color The color used for any byte not covered by a span.
  * @return A vector the same length as `text`, giving each byte's resolved color.
  */
-static std::vector<Color> PickerLineColors(const std::string &text, const std::vector<PickerHlSpan> &spans,
-                                            Color default_color) {
-    std::vector<Color> colors(text.size(), default_color);
+static std::vector<gfx::Color> PickerLineColors(const std::string &text, const std::vector<PickerHlSpan> &spans,
+                                            gfx::Color default_color) {
+    std::vector<gfx::Color> colors(text.size(), default_color);
     for (const PickerHlSpan &s : spans) {
-        Color c = ResolveHlGroup(s.hl_group);
+        gfx::Color c = ResolveHlGroup(s.hl_group);
         int cs = std::max(0, s.col_start);
         int ce = std::min(static_cast<int>(text.size()), s.col_end);
         for (int i = cs; i < ce; i++) colors[static_cast<size_t>(i)] = c;
@@ -14790,7 +14798,7 @@ static std::vector<Color> PickerLineColors(const std::string &text, const std::v
  * @param y Y-coordinate to draw the text at.
  * @return The x-coordinate just past the drawn run.
  */
-static float DrawPickerColoredRun(const std::string &text, const std::vector<Color> &colors, size_t start, size_t len,
+static float DrawPickerColoredRun(const std::string &text, const std::vector<gfx::Color> &colors, size_t start, size_t len,
                                    float x, float y) {
     float cx = x;
     size_t i = start;
@@ -14799,8 +14807,8 @@ static float DrawPickerColoredRun(const std::string &text, const std::vector<Col
         size_t j = i + 1;
         while (j < end && ColorEq(colors[j], colors[i])) j++;
         std::string run = text.substr(i, j - i);
-        DrawTextEx(g_font, run.c_str(), Vector2{cx, y}, g_font_size, 0, colors[i]);
-        cx += MeasureTextEx(g_font, run.c_str(), g_font_size, 0).x;
+        gfx::DrawTextEx(g_font, run.c_str(), gfx::Vector2{cx, y}, g_font_size, 0, colors[i]);
+        cx += gfx::MeasureTextEx(g_font, run.c_str(), g_font_size, 0).x;
         i = j;
     }
     return cx;
@@ -14821,18 +14829,18 @@ void DrawPickerOverlay() {
     // since this overlay is one box rather than mep.nvim's three separate
     // floating windows and reads busier at the same fraction. Floors keep
     // it usable in a small window.
-    int box_w = std::max(400, static_cast<int>(static_cast<float>(GetScreenWidth()) * 0.8f));
-    int box_h = std::max(300, static_cast<int>(static_cast<float>(GetScreenHeight()) * 0.8f));
+    int box_w = std::max(400, static_cast<int>(static_cast<float>(gfx::GetScreenWidth()) * 0.8f));
+    int box_h = std::max(300, static_cast<int>(static_cast<float>(gfx::GetScreenHeight()) * 0.8f));
     FloatFrame f = DrawFloatFrame(box_w, box_h, g_editor.PickerTitle());
 
     std::string prompt_line = "> " + g_editor.PickerQuery();
-    DrawTextEx(g_font, prompt_line.c_str(), Vector2{f.content_x, f.content_y}, g_font_size, 0, ResolveHlGroup("Normal"));
+    gfx::DrawTextEx(g_font, prompt_line.c_str(), gfx::Vector2{f.content_x, f.content_y}, g_font_size, 0, ResolveHlGroup("Normal"));
     {
-        float cx = f.content_x + MeasureTextEx(g_font, prompt_line.c_str(), g_font_size, 0).x;
-        DrawRectangle(static_cast<int>(cx), static_cast<int>(f.content_y), 2, static_cast<int>(g_font_size),
+        float cx = f.content_x + gfx::MeasureTextEx(g_font, prompt_line.c_str(), g_font_size, 0).x;
+        gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(f.content_y), 2, static_cast<int>(g_font_size),
                       ResolveHlGroup("Normal"));
     }
-    DrawLine(f.box_x + 4, static_cast<int>(f.content_y + g_font_size + 6), f.box_x + f.box_w - 4,
+    gfx::DrawLine(f.box_x + 4, static_cast<int>(f.content_y + g_font_size + 6), f.box_x + f.box_w - 4,
              static_cast<int>(f.content_y + g_font_size + 6), ResolveHlGroup("PickerBorder"));
 
     // 0.38 split matches mep.nvim's ui.lua (left_width = 0.38 * width).
@@ -14842,35 +14850,35 @@ void DrawPickerOverlay() {
     int line_h = static_cast<int>(g_font_size) + 4;
     int max_rows = std::max(1, static_cast<int>((static_cast<float>(f.box_y + f.box_h) - list_y) / static_cast<float>(line_h)));
     int start = std::max(0, selected - max_rows + 1);
-    BeginScissorMode(f.box_x, static_cast<int>(list_y) - 2, list_w, f.box_y + f.box_h - static_cast<int>(list_y));
+    gfx::BeginScissorMode(f.box_x, static_cast<int>(list_y) - 2, list_w, f.box_y + f.box_h - static_cast<int>(list_y));
     for (int i = start; i < static_cast<int>(results.size()) && i < start + max_rows; i++) {
         float ry = list_y + static_cast<float>((i - start) * line_h);
         if (i == selected) {
-            DrawRectangle(f.box_x + 4, static_cast<int>(ry) - 1, list_w - 8, line_h, ResolveHlGroup("PickerSelected"));
+            gfx::DrawRectangle(f.box_x + 4, static_cast<int>(ry) - 1, list_w - 8, line_h, ResolveHlGroup("PickerSelected"));
         }
         if (results[static_cast<size_t>(i)].spans.empty()) {
-            DrawTextEx(g_font, results[static_cast<size_t>(i)].display.c_str(), Vector2{f.content_x, ry}, g_font_size, 0, ResolveHlGroup("Normal"));
+            gfx::DrawTextEx(g_font, results[static_cast<size_t>(i)].display.c_str(), gfx::Vector2{f.content_x, ry}, g_font_size, 0, ResolveHlGroup("Normal"));
         } else {
-            std::vector<Color> colors = PickerLineColors(results[static_cast<size_t>(i)].display, results[static_cast<size_t>(i)].spans, ResolveHlGroup("Normal"));
+            std::vector<gfx::Color> colors = PickerLineColors(results[static_cast<size_t>(i)].display, results[static_cast<size_t>(i)].spans, ResolveHlGroup("Normal"));
             DrawPickerColoredRun(results[static_cast<size_t>(i)].display, colors, 0, results[static_cast<size_t>(i)].display.size(), f.content_x, ry);
         }
     }
     if (results.empty()) {
-        DrawTextEx(g_font, "-- no matches --", Vector2{f.content_x, list_y}, g_font_size, 0, ResolveHlGroup("Comment"));
+        gfx::DrawTextEx(g_font, "-- no matches --", gfx::Vector2{f.content_x, list_y}, g_font_size, 0, ResolveHlGroup("Comment"));
     }
-    EndScissorMode();
+    gfx::EndScissorMode();
 
     if (has_preview) {
         int div_x = f.box_x + list_w + 6;
-        DrawLine(div_x, static_cast<int>(list_y) - 4, div_x, f.box_y + f.box_h - 6, ResolveHlGroup("PickerBorder"));
+        gfx::DrawLine(div_x, static_cast<int>(list_y) - 4, div_x, f.box_y + f.box_h - 6, ResolveHlGroup("PickerBorder"));
         // Mirrors mep.nvim's own preview window, which carries a " Preview
         // " title on its border -- this box has no separate border to
         // caption, so the label sits at the same row as the prompt line.
-        DrawTextEx(g_font, "Preview", Vector2{static_cast<float>(div_x + 10), f.content_y}, g_font_size, 0,
+        gfx::DrawTextEx(g_font, "Preview", gfx::Vector2{static_cast<float>(div_x + 10), f.content_y}, g_font_size, 0,
                    ResolveHlGroup("Comment"));
         float px = static_cast<float>(div_x + 10);
         int preview_w = (f.box_x + f.box_w) - div_x - 20;
-        BeginScissorMode(div_x, static_cast<int>(list_y) - 2, preview_w + 20, f.box_y + f.box_h - static_cast<int>(list_y));
+        gfx::BeginScissorMode(div_x, static_cast<int>(list_y) - 2, preview_w + 20, f.box_y + f.box_h - static_cast<int>(list_y));
         if (IsSwatchPreviewPicker()) {
             // One row per named palette role: a filled swatch of that
             // role's color, its hex value, and the role name -- looked up
@@ -14889,21 +14897,21 @@ void DrawPickerOverlay() {
                 int swatch_size = static_cast<int>(g_font_size);
                 for (int i = 0; i < static_cast<int>(sizeof(rows) / sizeof(rows[0])); i++) {
                     float ry = list_y + static_cast<float>(i * line_h);
-                    DrawRectangle(static_cast<int>(px), static_cast<int>(ry), swatch_size, swatch_size,
+                    gfx::DrawRectangle(static_cast<int>(px), static_cast<int>(ry), swatch_size, swatch_size,
                                   ToRaylib(rows[i].color));
-                    DrawRectangleLines(static_cast<int>(px), static_cast<int>(ry), swatch_size, swatch_size,
+                    gfx::DrawRectangleLines(static_cast<int>(px), static_cast<int>(ry), swatch_size, swatch_size,
                                         ResolveHlGroup("PickerBorder"));
                     char hex[8];
                     std::snprintf(hex, sizeof(hex), "#%02X%02X%02X", rows[i].color.r, rows[i].color.g, rows[i].color.b);
                     std::string label = std::string(hex) + "  " + rows[i].label;
-                    DrawTextEx(g_font, label.c_str(),
-                               Vector2{px + static_cast<float>(swatch_size) + 8, ry + (static_cast<float>(swatch_size) - g_font_size) / 2.0f}, g_font_size, 0,
+                    gfx::DrawTextEx(g_font, label.c_str(),
+                               gfx::Vector2{px + static_cast<float>(swatch_size) + 8, ry + (static_cast<float>(swatch_size) - g_font_size) / 2.0f}, g_font_size, 0,
                                ResolveHlGroup("Normal"));
                 }
             } else {
-                DrawTextEx(g_font, "-- no preview --", Vector2{px, list_y}, g_font_size, 0, ResolveHlGroup("Comment"));
+                gfx::DrawTextEx(g_font, "-- no preview --", gfx::Vector2{px, list_y}, g_font_size, 0, ResolveHlGroup("Comment"));
             }
-            EndScissorMode();
+            gfx::EndScissorMode();
         } else {
             int max_chars = std::max(10, static_cast<int>(static_cast<float>(preview_w) / g_char_width));
             int row = 0;
@@ -14924,7 +14932,7 @@ void DrawPickerOverlay() {
                 const std::string &raw_line = preview_lines[li];
                 if (row >= max_preview_rows) break;
                 if (raw_line.empty()) { row++; continue; }
-                std::vector<Color> line_colors;
+                std::vector<gfx::Color> line_colors;
                 auto sit = spans_by_row.find(static_cast<int>(li));
                 bool has_line_spans = sit != spans_by_row.end();
                 if (has_line_spans) line_colors = PickerLineColors(raw_line, sit->second, ResolveHlGroup("Normal"));
@@ -14938,13 +14946,13 @@ void DrawPickerOverlay() {
                         continue;
                     }
                     std::string chunk = raw_line.substr(pos, take);
-                    DrawTextEx(g_font, chunk.c_str(), Vector2{px, list_y + static_cast<float>(row * line_h)}, g_font_size, 0,
+                    gfx::DrawTextEx(g_font, chunk.c_str(), gfx::Vector2{px, list_y + static_cast<float>(row * line_h)}, g_font_size, 0,
                                ResolveHlGroup("Normal"));
                     pos += take;
                     row++;
                 }
             }
-            EndScissorMode();
+            gfx::EndScissorMode();
         }
     }
 }
@@ -14964,7 +14972,7 @@ void DrawPickerOverlay() {
 // DrawSidebars/DrawTabBar registered this frame are dropped so only the
 // float's own rows (re-registered below) respond, and DispatchChromeClicks
 // collapses the popout on a click outside its box.
-Rectangle g_sidebar_popout_rect{};
+gfx::Rectangle g_sidebar_popout_rect{};
 
 /**
  * @brief Draws the popped-out sidebar float (rows left, preview column right) and re-registers its row hit-rects as the only clickable chrome.
@@ -14978,7 +14986,7 @@ Rectangle g_sidebar_popout_rect{};
 // the docked chrome registered this frame is dropped first, so only the
 // float's own header buttons and body remain clickable, and
 // DispatchChromeClicks treats a click outside the box as dismiss.
-Rectangle g_float_pane_rect{};
+gfx::Rectangle g_float_pane_rect{};
 void DrawFloatPane() {
     if (!g_editor.IsFloatPaneOpen()) return;
     g_sidebar_row_rects.clear();
@@ -14989,10 +14997,10 @@ void DrawFloatPane() {
     g_pane_tab_chip_rects.clear();
     g_pane_screen_rects.clear();
     g_click_regions.clear();
-    int box_w = std::max(400, static_cast<int>(static_cast<float>(GetScreenWidth()) * 0.8f));
-    int box_h = std::max(300, static_cast<int>(static_cast<float>(GetScreenHeight()) * 0.8f));
+    int box_w = std::max(400, static_cast<int>(static_cast<float>(gfx::GetScreenWidth()) * 0.8f));
+    int box_h = std::max(300, static_cast<int>(static_cast<float>(gfx::GetScreenHeight()) * 0.8f));
     FloatFrame f = DrawFloatFrame(box_w, box_h, "");
-    g_float_pane_rect = Rectangle{static_cast<float>(f.box_x), static_cast<float>(f.box_y), static_cast<float>(f.box_w),
+    g_float_pane_rect = gfx::Rectangle{static_cast<float>(f.box_x), static_cast<float>(f.box_y), static_cast<float>(f.box_w),
                                   static_cast<float>(f.box_h)};
     const float pad = 4.0f;
     DrawPane(g_editor.FloatPane(), static_cast<float>(f.box_x) + pad, static_cast<float>(f.box_y) + pad,
@@ -15019,13 +15027,13 @@ void DrawSidebarPopout() {
 
     // Same 80%/80% footprint (and floors) as DrawPickerOverlay, so the two
     // "big centered list + preview" overlays read as one family.
-    int box_w = std::max(400, static_cast<int>(static_cast<float>(GetScreenWidth()) * 0.8f));
-    int box_h = std::max(300, static_cast<int>(static_cast<float>(GetScreenHeight()) * 0.8f));
+    int box_w = std::max(400, static_cast<int>(static_cast<float>(gfx::GetScreenWidth()) * 0.8f));
+    int box_h = std::max(300, static_cast<int>(static_cast<float>(gfx::GetScreenHeight()) * 0.8f));
     FloatFrame f = DrawFloatFrame(box_w, box_h, sb->title);
-    g_sidebar_popout_rect = Rectangle{static_cast<float>(f.box_x), static_cast<float>(f.box_y), static_cast<float>(f.box_w),
+    g_sidebar_popout_rect = gfx::Rectangle{static_cast<float>(f.box_x), static_cast<float>(f.box_y), static_cast<float>(f.box_w),
                                       static_cast<float>(f.box_h)};
     if (!sb->tabs.empty()) {
-        const float title_w = MeasureTextEx(g_font, sb->title.c_str(), MenuFontSize(), 0).x;
+        const float title_w = gfx::MeasureTextEx(g_font, sb->title.c_str(), MenuFontSize(), 0).x;
         DrawSidebarTabStrip(*sb, f.content_x + title_w + 24.0f, static_cast<float>(f.box_y + 10), MenuFontSize());
     }
 
@@ -15050,26 +15058,26 @@ void DrawSidebarPopout() {
     g_editor.UpdateScrollForSidebar(sb->id, visible_lines);
     const int scroll = sb->scroll_offset;
     const int cursor = g_editor.SidebarCursor();
-    BeginScissorMode(f.box_x, static_cast<int>(list_y) - 2, list_w, list_bottom - static_cast<int>(list_y) + 2);
+    gfx::BeginScissorMode(f.box_x, static_cast<int>(list_y) - 2, list_w, list_bottom - static_cast<int>(list_y) + 2);
     const size_t first = static_cast<size_t>(scroll);
     const size_t last = std::min(lines.size(), first + static_cast<size_t>(visible_lines));
     for (size_t i = first; i < last; i++) {
         const float ly = list_y + static_cast<float>(i - first) * static_cast<float>(line_h);
         if (lines[i].current) {
-            DrawRectangle(f.box_x + 4, static_cast<int>(ly) - 1, list_w - 8, line_h, ResolveHlGroup("AccentTint"));
+            gfx::DrawRectangle(f.box_x + 4, static_cast<int>(ly) - 1, list_w - 8, line_h, ResolveHlGroup("AccentTint"));
         }
         if (static_cast<int>(i) == cursor) {
-            DrawRectangle(f.box_x + 4, static_cast<int>(ly) - 1, list_w - 8, line_h, ResolveHlGroup("PickerSelected"));
+            gfx::DrawRectangle(f.box_x + 4, static_cast<int>(ly) - 1, list_w - 8, line_h, ResolveHlGroup("PickerSelected"));
         }
-        const Color color = lines[i].hl.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(lines[i].hl);
-        DrawUiText(lines[i].text, Vector2{f.content_x, ly}, font_size, color);
+        const gfx::Color color = lines[i].hl.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(lines[i].hl);
+        DrawUiText(lines[i].text, gfx::Vector2{f.content_x, ly}, font_size, color);
         g_sidebar_row_rects.push_back(
-            {sb->id, static_cast<int>(i), Rectangle{static_cast<float>(f.box_x), ly - 1, static_cast<float>(list_w), static_cast<float>(line_h)}});
+            {sb->id, static_cast<int>(i), gfx::Rectangle{static_cast<float>(f.box_x), ly - 1, static_cast<float>(list_w), static_cast<float>(line_h)}});
     }
     if (lines.empty()) {
-        DrawTextEx(g_font, "-- empty --", Vector2{f.content_x, list_y}, font_size, 0, ResolveHlGroup("Comment"));
+        gfx::DrawTextEx(g_font, "-- empty --", gfx::Vector2{f.content_x, list_y}, font_size, 0, ResolveHlGroup("Comment"));
     }
-    EndScissorMode();
+    gfx::EndScissorMode();
 
     // --- Preview column (right): DrawPickerOverlay's text preview, plus
     // an optional caption (the previewed path / diff command) and a
@@ -15077,12 +15085,12 @@ void DrawSidebarPopout() {
     // definition line, a todo's headline) on top of the per-span colors.
     if (has_preview) {
         const int div_x = f.box_x + list_w + 6;
-        DrawLine(div_x, static_cast<int>(list_y) - 4, div_x, list_bottom, ResolveHlGroup("PickerBorder"));
+        gfx::DrawLine(div_x, static_cast<int>(list_y) - 4, div_x, list_bottom, ResolveHlGroup("PickerBorder"));
         const float px = static_cast<float>(div_x + 10);
         const int preview_w = right_edge - div_x - 20;
         const std::string &caption = g_editor.SidebarPopoutPreviewTitle();
-        BeginScissorMode(div_x + 1, static_cast<int>(list_y) - 2, preview_w + 19, list_bottom - static_cast<int>(list_y) + 2);
-        DrawTextEx(g_font, caption.empty() ? "Preview" : caption.c_str(), Vector2{px, list_y}, font_size, 0,
+        gfx::BeginScissorMode(div_x + 1, static_cast<int>(list_y) - 2, preview_w + 19, list_bottom - static_cast<int>(list_y) + 2);
+        gfx::DrawTextEx(g_font, caption.empty() ? "Preview" : caption.c_str(), gfx::Vector2{px, list_y}, font_size, 0,
                    ResolveHlGroup("Comment"));
         const float text_y = list_y + static_cast<float>(line_h) + 4;
         const int max_chars = std::max(10, static_cast<int>(static_cast<float>(preview_w) / g_char_width));
@@ -15097,7 +15105,7 @@ void DrawSidebarPopout() {
             const std::string &raw_line = preview_lines[li];
             const float row_y0 = text_y + static_cast<float>(row * line_h);
             if (static_cast<int>(li) == current_row) {
-                DrawRectangle(div_x + 4, static_cast<int>(row_y0) - 1, preview_w + 12, line_h, ResolveHlGroup("AccentTint"));
+                gfx::DrawRectangle(div_x + 4, static_cast<int>(row_y0) - 1, preview_w + 12, line_h, ResolveHlGroup("AccentTint"));
             }
             if (raw_line.empty()) {
                 row++;
@@ -15105,7 +15113,7 @@ void DrawSidebarPopout() {
             }
             auto sit = spans_by_row.find(static_cast<int>(li));
             const bool has_line_spans = sit != spans_by_row.end();
-            std::vector<Color> line_colors;
+            std::vector<gfx::Color> line_colors;
             if (has_line_spans) line_colors = PickerLineColors(raw_line, sit->second, ResolveHlGroup("Normal"));
             size_t pos = 0;
             while (pos < raw_line.size() && row < max_preview_rows) {
@@ -15114,24 +15122,24 @@ void DrawSidebarPopout() {
                 if (has_line_spans) {
                     DrawPickerColoredRun(raw_line, line_colors, pos, take, px, ry);
                 } else {
-                    DrawTextEx(g_font, raw_line.substr(pos, take).c_str(), Vector2{px, ry}, font_size, 0, ResolveHlGroup("Normal"));
+                    gfx::DrawTextEx(g_font, raw_line.substr(pos, take).c_str(), gfx::Vector2{px, ry}, font_size, 0, ResolveHlGroup("Normal"));
                 }
                 pos += take;
                 row++;
             }
         }
         if (preview_lines.empty() || (preview_lines.size() == 1 && preview_lines[0].empty())) {
-            DrawTextEx(g_font, "-- no preview --", Vector2{px, text_y}, font_size, 0, ResolveHlGroup("Comment"));
+            gfx::DrawTextEx(g_font, "-- no preview --", gfx::Vector2{px, text_y}, font_size, 0, ResolveHlGroup("Comment"));
         }
-        EndScissorMode();
+        gfx::EndScissorMode();
     }
 
     // Key hint, bottom-right, same placement/color as DrawPreviewOverlay's.
     std::string hint = has_preview ? "Esc/q/mod1+m: dock   mod1+j/k: scroll preview" : "Esc/q/mod1+m: dock";
     if (!sb->tabs.empty()) hint = "Tab/S-Tab: switch view   " + hint;
-    const float hint_w = MeasureTextEx(g_font, hint.c_str(), hint_size, 0).x;
-    DrawTextEx(g_font, hint.c_str(),
-               Vector2{static_cast<float>(right_edge) - hint_w - 14, static_cast<float>(f.box_y + f.box_h) - hint_size - 10.0f},
+    const float hint_w = gfx::MeasureTextEx(g_font, hint.c_str(), hint_size, 0).x;
+    gfx::DrawTextEx(g_font, hint.c_str(),
+               gfx::Vector2{static_cast<float>(right_edge) - hint_w - 14, static_cast<float>(f.box_y + f.box_h) - hint_size - 10.0f},
                hint_size, 0, ResolveHlGroup("Comment"));
 }
 
@@ -15156,10 +15164,10 @@ void DrawSidebarPopout() {
  * @param r2 Radius of the hop-2+ ring.
  * @return A vector parallel to `nodes` giving each node's computed screen position.
  */
-static std::vector<Vector2> ComputeRoamGraphPositions(const std::vector<RoamGraphNode> &nodes, float cx, float cy,
+static std::vector<gfx::Vector2> ComputeRoamGraphPositions(const std::vector<RoamGraphNode> &nodes, float cx, float cy,
                                                         float r1, float r2) {
     constexpr float kTwoPi = 6.28318530718f;
-    std::vector<Vector2> pos(nodes.size(), Vector2{cx, cy});
+    std::vector<gfx::Vector2> pos(nodes.size(), gfx::Vector2{cx, cy});
     std::vector<int> hop1, hop2;
     for (int i = 0; i < static_cast<int>(nodes.size()); i++) {
         if (nodes[static_cast<size_t>(i)].hop == 1) hop1.push_back(i);
@@ -15167,11 +15175,11 @@ static std::vector<Vector2> ComputeRoamGraphPositions(const std::vector<RoamGrap
     }
     for (size_t k = 0; k < hop1.size(); k++) {
         float ang = kTwoPi * static_cast<float>(k) / static_cast<float>(hop1.size());
-        pos[static_cast<size_t>(hop1[k])] = Vector2{cx + r1 * cosf(ang), cy + r1 * sinf(ang)};
+        pos[static_cast<size_t>(hop1[k])] = gfx::Vector2{cx + r1 * cosf(ang), cy + r1 * sinf(ang)};
     }
     for (size_t k = 0; k < hop2.size(); k++) {
         float ang = kTwoPi * static_cast<float>(k) / static_cast<float>(hop2.size());
-        pos[static_cast<size_t>(hop2[k])] = Vector2{cx + r2 * cosf(ang), cy + r2 * sinf(ang)};
+        pos[static_cast<size_t>(hop2[k])] = gfx::Vector2{cx + r2 * cosf(ang), cy + r2 * sinf(ang)};
     }
     return pos;
 }
@@ -15182,25 +15190,25 @@ static std::vector<Vector2> ComputeRoamGraphPositions(const std::vector<RoamGrap
  * than hiding them.
  */
 void DrawRoamGraphOverlay() {
-    int box_w = std::min(GetScreenWidth() - 60, 1100);
-    int box_h = std::min(GetScreenHeight() - 60, 780);
+    int box_w = std::min(gfx::GetScreenWidth() - 60, 1100);
+    int box_h = std::min(gfx::GetScreenHeight() - 60, 780);
     FloatFrame f = DrawFloatFrame(box_w, box_h, g_editor.RoamGraphTitle());
 
     std::string prompt_line = "/ " + g_editor.RoamGraphQuery();
-    DrawTextEx(g_font, prompt_line.c_str(), Vector2{f.content_x, f.content_y}, g_font_size, 0, ResolveHlGroup("Normal"));
+    gfx::DrawTextEx(g_font, prompt_line.c_str(), gfx::Vector2{f.content_x, f.content_y}, g_font_size, 0, ResolveHlGroup("Normal"));
     {
-        float cx = f.content_x + MeasureTextEx(g_font, prompt_line.c_str(), g_font_size, 0).x;
-        DrawRectangle(static_cast<int>(cx), static_cast<int>(f.content_y), 2, static_cast<int>(g_font_size),
+        float cx = f.content_x + gfx::MeasureTextEx(g_font, prompt_line.c_str(), g_font_size, 0).x;
+        gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(f.content_y), 2, static_cast<int>(g_font_size),
                       ResolveHlGroup("Normal"));
     }
     float divider_y = f.content_y + g_font_size + 6;
-    DrawLine(f.box_x + 4, static_cast<int>(divider_y), f.box_x + f.box_w - 4, static_cast<int>(divider_y),
+    gfx::DrawLine(f.box_x + 4, static_cast<int>(divider_y), f.box_x + f.box_w - 4, static_cast<int>(divider_y),
              ResolveHlGroup("PickerBorder"));
 
     const std::vector<RoamGraphNode> &nodes = g_editor.RoamGraphNodes();
     const std::vector<RoamGraphEdge> &edges = g_editor.RoamGraphEdges();
     if (nodes.empty()) {
-        DrawTextEx(g_font, "-- no linked notes --", Vector2{f.content_x, divider_y + 14}, g_font_size, 0,
+        gfx::DrawTextEx(g_font, "-- no linked notes --", gfx::Vector2{f.content_x, divider_y + 14}, g_font_size, 0,
                    ResolveHlGroup("Comment"));
         return;
     }
@@ -15216,7 +15224,7 @@ void DrawRoamGraphOverlay() {
     float r1 = max_r * 0.5f;
     float r2 = max_r;
 
-    std::vector<Vector2> pos = ComputeRoamGraphPositions(nodes, cx, cy, r1, r2);
+    std::vector<gfx::Vector2> pos = ComputeRoamGraphPositions(nodes, cx, cy, r1, r2);
     std::vector<int> filtered = g_editor.RoamGraphFilteredIndices();
     std::vector<bool> visible(nodes.size(), false);
     for (int i : filtered) visible[static_cast<size_t>(i)] = true;
@@ -15226,21 +15234,21 @@ void DrawRoamGraphOverlay() {
     }
 
     // Edges first, so nodes/labels draw on top of them.
-    Color edge_color = ResolveHlGroup("PickerBorder");
-    Color edge_dim = Fade(edge_color, 0.25f);
+    gfx::Color edge_color = ResolveHlGroup("PickerBorder");
+    gfx::Color edge_dim = gfx::Fade(edge_color, 0.25f);
     for (const RoamGraphEdge &e : edges) {
         if (e.a < 0 || e.a >= static_cast<int>(nodes.size()) || e.b < 0 || e.b >= static_cast<int>(nodes.size())) {
             continue;
         }
         bool both_visible = visible[static_cast<size_t>(e.a)] && visible[static_cast<size_t>(e.b)];
-        DrawLineEx(pos[static_cast<size_t>(e.a)], pos[static_cast<size_t>(e.b)], both_visible ? 1.6f : 1.0f, both_visible ? edge_color : edge_dim);
+        gfx::DrawLineEx(pos[static_cast<size_t>(e.a)], pos[static_cast<size_t>(e.b)], both_visible ? 1.6f : 1.0f, both_visible ? edge_color : edge_dim);
     }
 
-    Color normal_c = ResolveHlGroup("Normal");
-    Color center_c = ResolveHlGroup("PickerTitle");
-    Color dim_c = ResolveHlGroup("Comment");
-    Color select_c = ResolveHlGroup("PickerSelected");
-    Color border_c = ResolveHlGroup("FloatBorder");
+    gfx::Color normal_c = ResolveHlGroup("Normal");
+    gfx::Color center_c = ResolveHlGroup("PickerTitle");
+    gfx::Color dim_c = ResolveHlGroup("Comment");
+    gfx::Color select_c = ResolveHlGroup("PickerSelected");
+    gfx::Color border_c = ResolveHlGroup("FloatBorder");
     float label_size = std::max(10.0f, g_font_size * 0.8f);
 
     // The fuzzy filter narrows which nodes are *highlighted* rather than
@@ -15252,22 +15260,22 @@ void DrawRoamGraphOverlay() {
         bool is_center = nodes[static_cast<size_t>(i)].hop == 0;
         bool is_visible = visible[static_cast<size_t>(i)];
         float radius = is_center ? 10.0f : (nodes[static_cast<size_t>(i)].hop == 1 ? 7.0f : 5.0f);
-        Color fill = !is_visible ? dim_c : (is_center ? center_c : normal_c);
+        gfx::Color fill = !is_visible ? dim_c : (is_center ? center_c : normal_c);
         if (i == selected_idx) {
-            DrawCircleV(pos[static_cast<size_t>(i)], radius + 5.0f, Fade(select_c, 0.85f));
+            gfx::DrawCircleV(pos[static_cast<size_t>(i)], radius + 5.0f, gfx::Fade(select_c, 0.85f));
         }
-        DrawCircleV(pos[static_cast<size_t>(i)], radius, fill);
-        DrawCircleLines(static_cast<int>(pos[static_cast<size_t>(i)].x), static_cast<int>(pos[static_cast<size_t>(i)].y), radius, border_c);
+        gfx::DrawCircleV(pos[static_cast<size_t>(i)], radius, fill);
+        gfx::DrawCircleLines(static_cast<int>(pos[static_cast<size_t>(i)].x), static_cast<int>(pos[static_cast<size_t>(i)].y), radius, border_c);
 
         std::string label = nodes[static_cast<size_t>(i)].title.empty() ? nodes[static_cast<size_t>(i)].path : nodes[static_cast<size_t>(i)].title;
         if (label.size() > 22) {
             label.resize(21);
             label += "...";
         }
-        Vector2 msz = MeasureTextEx(g_font, label.c_str(), label_size, 0);
-        Vector2 lp{pos[static_cast<size_t>(i)].x - msz.x / 2.0f, pos[static_cast<size_t>(i)].y + radius + 3.0f};
-        Color text_c = !is_visible ? dim_c : (i == selected_idx ? select_c : normal_c);
-        DrawTextEx(g_font, label.c_str(), lp, label_size, 0, text_c);
+        gfx::Vector2 msz = gfx::MeasureTextEx(g_font, label.c_str(), label_size, 0);
+        gfx::Vector2 lp{pos[static_cast<size_t>(i)].x - msz.x / 2.0f, pos[static_cast<size_t>(i)].y + radius + 3.0f};
+        gfx::Color text_c = !is_visible ? dim_c : (i == selected_idx ? select_c : normal_c);
+        gfx::DrawTextEx(g_font, label.c_str(), lp, label_size, 0, text_c);
     }
 }
 
@@ -15287,8 +15295,8 @@ void DrawWhichKeyOverlay() {
     float font_size = g_font_size;
     int line_h = static_cast<int>(font_size) + 6;
 
-    int screen_w = GetScreenWidth();
-    int screen_h = GetScreenHeight();
+    int screen_w = gfx::GetScreenWidth();
+    int screen_h = gfx::GetScreenHeight();
     int margin_x = 40;
     int box_w = std::max(screen_w - margin_x * 2, 200);
 
@@ -15305,7 +15313,7 @@ void DrawWhichKeyOverlay() {
     int item_w = 0;
     for (const auto &m : matches) {
         std::string line = m.first + "  " + m.second;
-        item_w = std::max(item_w, static_cast<int>(MeasureTextEx(g_font, line.c_str(), font_size, 0).x));
+        item_w = std::max(item_w, static_cast<int>(gfx::MeasureTextEx(g_font, line.c_str(), font_size, 0).x));
     }
     item_w += 28;
     int content_w = box_w - 28;
@@ -15322,25 +15330,25 @@ void DrawWhichKeyOverlay() {
     int status_bar_height = g_editor.IsZenMode() ? 0 : line_height;
     int bottom_margin = command_bar_height + status_bar_height + 8;
 
-    DrawRectangle(0, 0, screen_w, screen_h, ResolveHlGroup("Overlay"));
+    gfx::DrawRectangle(0, 0, screen_w, screen_h, ResolveHlGroup("Overlay"));
     int box_x = (screen_w - box_w) / 2;
     int box_y = screen_h - bottom_margin - box_h;
-    DrawRectangle(box_x, box_y, box_w, box_h, ResolveHlGroup("FloatBg"));
-    DrawRectangleLines(box_x, box_y, box_w, box_h, ResolveHlGroup("FloatBorder"));
+    gfx::DrawRectangle(box_x, box_y, box_w, box_h, ResolveHlGroup("FloatBg"));
+    gfx::DrawRectangleLines(box_x, box_y, box_w, box_h, ResolveHlGroup("FloatBorder"));
 
     float content_x = static_cast<float>(box_x + 14);
     float content_y = static_cast<float>(box_y + 10);
     // title is never empty here (see its declaration above).
-    DrawTextEx(g_font, title.c_str(), Vector2{content_x, content_y}, title_size, 0, ResolveHlGroup("PickerTitle"));
+    gfx::DrawTextEx(g_font, title.c_str(), gfx::Vector2{content_x, content_y}, title_size, 0, ResolveHlGroup("PickerTitle"));
     content_y += title_size + 8;
     for (size_t i = 0; i < matches.size(); i++) {
         int col = static_cast<int>(i) % columns;
         int row = static_cast<int>(i) / columns;
         float x = content_x + static_cast<float>(col) * static_cast<float>(item_w);
         float y = content_y + static_cast<float>(row) * static_cast<float>(line_h);
-        DrawTextEx(g_font, matches[i].first.c_str(), Vector2{x, y}, font_size, 0, ResolveHlGroup("PickerTitle"));
-        float key_w = MeasureTextEx(g_font, matches[i].first.c_str(), font_size, 0).x;
-        DrawTextEx(g_font, matches[i].second.c_str(), Vector2{x + key_w + 16, y}, font_size, 0,
+        gfx::DrawTextEx(g_font, matches[i].first.c_str(), gfx::Vector2{x, y}, font_size, 0, ResolveHlGroup("PickerTitle"));
+        float key_w = gfx::MeasureTextEx(g_font, matches[i].first.c_str(), font_size, 0).x;
+        gfx::DrawTextEx(g_font, matches[i].second.c_str(), gfx::Vector2{x + key_w + 16, y}, font_size, 0,
                    ResolveHlGroup("Normal"));
     }
 }
@@ -15350,9 +15358,9 @@ void DrawWhichKeyOverlay() {
  * its content, dismissed on Escape or click.
  */
 void DrawHelpOverlay() {
-    int screen_w = GetScreenWidth();
-    int screen_h = GetScreenHeight();
-    DrawRectangle(0, 0, screen_w, screen_h, ResolveHlGroup("Overlay"));
+    int screen_w = gfx::GetScreenWidth();
+    int screen_h = gfx::GetScreenHeight();
+    gfx::DrawRectangle(0, 0, screen_w, screen_h, ResolveHlGroup("Overlay"));
 
     std::vector<std::string> lines = SplitLines(g_help_overlay_text);
     float font_size = g_font_size;
@@ -15360,7 +15368,7 @@ void DrawHelpOverlay() {
 
     float max_w = 0;
     for (const auto &line : lines) {
-        max_w = std::max(max_w, MeasureTextEx(g_font, line.c_str(), font_size, 0).x);
+        max_w = std::max(max_w, gfx::MeasureTextEx(g_font, line.c_str(), font_size, 0).x);
     }
 
     int box_w = std::min(screen_w - 40, static_cast<int>(max_w) + 40);
@@ -15368,19 +15376,19 @@ void DrawHelpOverlay() {
     int box_x = (screen_w - box_w) / 2;
     int box_y = (screen_h - box_h) / 2;
 
-    DrawRectangle(box_x, box_y, box_w, box_h, ResolveHlGroup("FloatBg"));
-    DrawRectangleLines(box_x, box_y, box_w, box_h, ResolveHlGroup("FloatBorder"));
+    gfx::DrawRectangle(box_x, box_y, box_w, box_h, ResolveHlGroup("FloatBg"));
+    gfx::DrawRectangleLines(box_x, box_y, box_w, box_h, ResolveHlGroup("FloatBorder"));
 
     for (size_t i = 0; i < lines.size(); i++) {
         float y = static_cast<float>(box_y + 16) + static_cast<float>(i) * static_cast<float>(line_h);
-        DrawTextEx(g_font, lines[i].c_str(), Vector2{static_cast<float>(box_x + 18), y}, font_size, 0, ResolveHlGroup("Normal"));
+        gfx::DrawTextEx(g_font, lines[i].c_str(), gfx::Vector2{static_cast<float>(box_x + 18), y}, font_size, 0, ResolveHlGroup("Normal"));
     }
 
     std::string hint = "Press Escape or click to close";
     float hint_size = MenuFontSize();
-    float hint_w = MeasureTextEx(g_font, hint.c_str(), hint_size, 0).x;
-    DrawTextEx(g_font, hint.c_str(),
-               Vector2{static_cast<float>(box_x + box_w) - hint_w - 14, static_cast<float>(box_y + box_h) - hint_size - 10.0f},
+    float hint_w = gfx::MeasureTextEx(g_font, hint.c_str(), hint_size, 0).x;
+    gfx::DrawTextEx(g_font, hint.c_str(),
+               gfx::Vector2{static_cast<float>(box_x + box_w) - hint_w - 14, static_cast<float>(box_y + box_h) - hint_size - 10.0f},
                hint_size, 0, ResolveHlGroup("Comment"));
 }
 
@@ -15448,7 +15456,7 @@ void DrawCompletionDetailPanel(int box_x, int box_y, int box_w, [[maybe_unused]]
     }
     float font_size = g_font_size;
     int line_h = static_cast<int>(font_size) + 4;
-    int panel_w = std::min(GetScreenWidth() / 2, 640);
+    int panel_w = std::min(gfx::GetScreenWidth() / 2, 640);
     int max_chars_per_line = std::max(20, static_cast<int>(static_cast<float>(panel_w - 20) / g_char_width));
     std::vector<std::string> lines;
     int detail_line_count = 0;
@@ -15476,14 +15484,14 @@ void DrawCompletionDetailPanel(int box_x, int box_y, int box_w, [[maybe_unused]]
     int max_rows = std::min(static_cast<int>(lines.size()), 16);
     int panel_h = max_rows * line_h + 12;
     int panel_x = box_x + box_w + 4;
-    if (panel_x + panel_w > GetScreenWidth()) panel_x = box_x - panel_w - 4;
+    if (panel_x + panel_w > gfx::GetScreenWidth()) panel_x = box_x - panel_w - 4;
     if (panel_x < 0) return;  // no room on either side -- skip rather than overlap the completion box itself
-    int panel_y = std::min(box_y, GetScreenHeight() - panel_h);
-    DrawRectangle(panel_x, panel_y, panel_w, panel_h, ResolveHlGroup("Picker"));
-    DrawRectangleLines(panel_x, panel_y, panel_w, panel_h, ResolveHlGroup("PickerBorder"));
+    int panel_y = std::min(box_y, gfx::GetScreenHeight() - panel_h);
+    gfx::DrawRectangle(panel_x, panel_y, panel_w, panel_h, ResolveHlGroup("Picker"));
+    gfx::DrawRectangleLines(panel_x, panel_y, panel_w, panel_h, ResolveHlGroup("PickerBorder"));
     for (int i = 0; i < max_rows; i++) {
-        Color c = (i < detail_line_count) ? ResolveHlGroup("PickerTitle") : ResolveHlGroup("Normal");
-        DrawTextEx(g_font, lines[static_cast<size_t>(i)].c_str(), Vector2{static_cast<float>(panel_x + 8), static_cast<float>(panel_y + 6 + i * line_h)},
+        gfx::Color c = (i < detail_line_count) ? ResolveHlGroup("PickerTitle") : ResolveHlGroup("Normal");
+        gfx::DrawTextEx(g_font, lines[static_cast<size_t>(i)].c_str(), gfx::Vector2{static_cast<float>(panel_x + 8), static_cast<float>(panel_y + 6 + i * line_h)},
                    font_size, 0, c);
     }
 }
@@ -15499,25 +15507,25 @@ void DrawCompletionPopup(float x, float y) {
     if (items.empty()) return;
     float font_size = g_font_size;
     int line_h = static_cast<int>(font_size) + 4;
-    float badge_w = MeasureTextEx(g_font, "snip ", font_size, 0).x;
+    float badge_w = gfx::MeasureTextEx(g_font, "snip ", font_size, 0).x;
     float max_w = 60;
-    for (const auto &it : items) max_w = std::max(max_w, MeasureTextEx(g_font, it.text.c_str(), font_size, 0).x);
+    for (const auto &it : items) max_w = std::max(max_w, gfx::MeasureTextEx(g_font, it.text.c_str(), font_size, 0).x);
     int box_w = static_cast<int>(badge_w + max_w) + 16;
     int max_rows = std::min(static_cast<int>(items.size()), 8);
     int box_h = max_rows * line_h + 6;
-    if (x + static_cast<float>(box_w) > static_cast<float>(GetScreenWidth())) x = static_cast<float>(GetScreenWidth() - box_w);
-    DrawRectangle(static_cast<int>(x), static_cast<int>(y), box_w, box_h, ResolveHlGroup("Picker"));
-    DrawRectangleLines(static_cast<int>(x), static_cast<int>(y), box_w, box_h, ResolveHlGroup("PickerBorder"));
+    if (x + static_cast<float>(box_w) > static_cast<float>(gfx::GetScreenWidth())) x = static_cast<float>(gfx::GetScreenWidth() - box_w);
+    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y), box_w, box_h, ResolveHlGroup("Picker"));
+    gfx::DrawRectangleLines(static_cast<int>(x), static_cast<int>(y), box_w, box_h, ResolveHlGroup("PickerBorder"));
     int selected = g_editor.CompletionSelected();
     int start = std::max(0, std::min(selected - max_rows + 1, static_cast<int>(items.size()) - max_rows));
     for (int i = start; i < static_cast<int>(items.size()) && i < start + max_rows; i++) {
         float ry = y + 3 + static_cast<float>((i - start) * line_h);
         if (i == selected) {
-            DrawRectangle(static_cast<int>(x) + 1, static_cast<int>(ry), box_w - 2, line_h,
+            gfx::DrawRectangle(static_cast<int>(x) + 1, static_cast<int>(ry), box_w - 2, line_h,
                           ResolveHlGroup("PickerSelected"));
         }
-        DrawTextEx(g_font, CompletionKindBadge(items[static_cast<size_t>(i)].kind), Vector2{x + 6, ry}, font_size, 0, ResolveHlGroup("Comment"));
-        DrawTextEx(g_font, items[static_cast<size_t>(i)].text.c_str(), Vector2{x + 6 + badge_w, ry}, font_size, 0, ResolveHlGroup("Normal"));
+        gfx::DrawTextEx(g_font, CompletionKindBadge(items[static_cast<size_t>(i)].kind), gfx::Vector2{x + 6, ry}, font_size, 0, ResolveHlGroup("Comment"));
+        gfx::DrawTextEx(g_font, items[static_cast<size_t>(i)].text.c_str(), gfx::Vector2{x + 6 + badge_w, ry}, font_size, 0, ResolveHlGroup("Normal"));
     }
     DrawCompletionDetailPanel(static_cast<int>(x), static_cast<int>(y), box_w, box_h, items[static_cast<size_t>(selected)]);
 }
@@ -15551,7 +15559,7 @@ void DrawCompletionPopup(float x, float y) {
 void DrawHoverPopupFocused(float x, float y, const std::string &title, const std::string &text) {
     float font_size = g_font_size;
     int line_h = static_cast<int>(font_size) + 4;
-    int screen_max_w = std::max(20, GetScreenWidth() - 40);
+    int screen_max_w = std::max(20, gfx::GetScreenWidth() - 40);
     int max_chars_per_line = std::max(20, static_cast<int>(static_cast<float>(screen_max_w - 20) / g_char_width));
     std::vector<std::string> lines = SplitLines(text);
     int cursor_row = std::max(0, std::min(g_editor.HoverFocusRow(), static_cast<int>(lines.size()) - 1));
@@ -15575,25 +15583,25 @@ void DrawHoverPopupFocused(float x, float y, const std::string &title, const std
     auto display_of = [&](const std::string &line) {
         return static_cast<int>(line.size()) > max_chars_per_line ? line.substr(0, static_cast<size_t>(max_chars_per_line)) : line;
     };
-    float max_w = title.empty() ? 0.0f : MeasureTextEx(g_font, title.c_str(), MenuFontSize(), 0).x;
+    float max_w = title.empty() ? 0.0f : gfx::MeasureTextEx(g_font, title.c_str(), MenuFontSize(), 0).x;
     for (int i = 0; i < visible; i++) {
-        max_w = std::max(max_w, MeasureTextEx(g_font, display_of(lines[static_cast<size_t>(scroll) + static_cast<size_t>(i)]).c_str(), font_size, 0).x);
+        max_w = std::max(max_w, gfx::MeasureTextEx(g_font, display_of(lines[static_cast<size_t>(scroll) + static_cast<size_t>(i)]).c_str(), font_size, 0).x);
     }
     const std::string hint = "hjkl move  v/V select  y yank  Esc back, Esc Esc/q close";
     float hint_size = std::max(10.0f, font_size - 4);
-    max_w = std::max(max_w, MeasureTextEx(g_font, hint.c_str(), hint_size, 0).x);
+    max_w = std::max(max_w, gfx::MeasureTextEx(g_font, hint.c_str(), hint_size, 0).x);
     int box_w = std::min(screen_max_w, static_cast<int>(max_w) + 20);
     int title_h = title.empty() ? 0 : static_cast<int>(MenuFontSize()) + 6;
     int hint_h = static_cast<int>(hint_size) + 8;
     int box_h = title_h + visible * line_h + hint_h + 10;
-    if (x + static_cast<float>(box_w) > static_cast<float>(GetScreenWidth())) x = static_cast<float>(GetScreenWidth() - box_w);
+    if (x + static_cast<float>(box_w) > static_cast<float>(gfx::GetScreenWidth())) x = static_cast<float>(gfx::GetScreenWidth() - box_w);
     if (x < 0) x = 0;
-    if (y + static_cast<float>(box_h) > static_cast<float>(GetScreenHeight())) y = std::max(0.0f, y - static_cast<float>(box_h) - static_cast<float>(line_h));
-    DrawRectangle(static_cast<int>(x), static_cast<int>(y), box_w, box_h, ResolveHlGroup("Picker"));
-    DrawRectangleLines(static_cast<int>(x), static_cast<int>(y), box_w, box_h, ResolveHlGroup("PickerBorder"));
+    if (y + static_cast<float>(box_h) > static_cast<float>(gfx::GetScreenHeight())) y = std::max(0.0f, y - static_cast<float>(box_h) - static_cast<float>(line_h));
+    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y), box_w, box_h, ResolveHlGroup("Picker"));
+    gfx::DrawRectangleLines(static_cast<int>(x), static_cast<int>(y), box_w, box_h, ResolveHlGroup("PickerBorder"));
     float ty = y + 5;
     if (!title.empty()) {
-        DrawTextEx(g_font, title.c_str(), Vector2{x + 8, ty}, MenuFontSize(), 0, ResolveHlGroup("PickerTitle"));
+        gfx::DrawTextEx(g_font, title.c_str(), gfx::Vector2{x + 8, ty}, MenuFontSize(), 0, ResolveHlGroup("PickerTitle"));
         ty += static_cast<float>(title_h);
     }
     for (int i = 0; i < visible; i++) {
@@ -15608,23 +15616,23 @@ void DrawHoverPopupFocused(float x, float y, const std::string &title, const std
             }
             if (b > a) {
                 float hx = x + 8 + static_cast<float>(a) * g_char_width;
-                DrawRectangle(static_cast<int>(hx), static_cast<int>(ry), static_cast<int>(static_cast<float>(b - a) * g_char_width),
-                              line_h, Fade(ResolveHlGroup("PickerSelected"), 0.6f));
+                gfx::DrawRectangle(static_cast<int>(hx), static_cast<int>(ry), static_cast<int>(static_cast<float>(b - a) * g_char_width),
+                              line_h, gfx::Fade(ResolveHlGroup("PickerSelected"), 0.6f));
             }
         }
-        DrawTextEx(g_font, disp.c_str(), Vector2{x + 8, ry}, font_size, 0, ResolveHlGroup("Normal"));
+        gfx::DrawTextEx(g_font, disp.c_str(), gfx::Vector2{x + 8, ry}, font_size, 0, ResolveHlGroup("Normal"));
         if (r == cursor_row) {
             float cx = x + 8 + static_cast<float>(std::min(cursor_col, static_cast<int>(disp.size()))) * g_char_width;
-            Color cursor_bg = ResolveHlGroup("Normal");
-            DrawRectangle(static_cast<int>(cx), static_cast<int>(ry), static_cast<int>(g_char_width), line_h,
-                          Color{cursor_bg.r, cursor_bg.g, cursor_bg.b, 180});
+            gfx::Color cursor_bg = ResolveHlGroup("Normal");
+            gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(ry), static_cast<int>(g_char_width), line_h,
+                          gfx::Color{cursor_bg.r, cursor_bg.g, cursor_bg.b, 180});
             if (cursor_col < static_cast<int>(disp.size())) {
                 const char ch[2] = {disp[static_cast<size_t>(cursor_col)], '\0'};
-                DrawTextEx(g_font, ch, Vector2{cx, ry}, font_size, 0, ResolveHlGroup("NormalBg"));
+                gfx::DrawTextEx(g_font, ch, gfx::Vector2{cx, ry}, font_size, 0, ResolveHlGroup("NormalBg"));
             }
         }
     }
-    DrawTextEx(g_font, hint.c_str(), Vector2{x + 8, ty + static_cast<float>(visible * line_h) + 4}, hint_size, 0, ResolveHlGroup("Comment"));
+    gfx::DrawTextEx(g_font, hint.c_str(), gfx::Vector2{x + 8, ty + static_cast<float>(visible * line_h) + 4}, hint_size, 0, ResolveHlGroup("Comment"));
 }
 
 /**
@@ -15651,7 +15659,7 @@ void DrawHoverPopup(float x, float y) {
     // so the box grows to fit its widest actual line rather than
     // rewrapping lines that already fit fine.
     bool has_real_newlines = text.find('\n') != std::string::npos;
-    int screen_max_w = std::max(20, GetScreenWidth() - 40);
+    int screen_max_w = std::max(20, gfx::GetScreenWidth() - 40);
     int max_box_w = has_real_newlines ? screen_max_w : std::min(screen_max_w, 640);
     int max_chars_per_line = std::max(20, static_cast<int>(static_cast<float>(max_box_w - 20) / g_char_width));
     std::vector<std::string> wrapped;
@@ -15669,26 +15677,26 @@ void DrawHoverPopup(float x, float y) {
     // picker/sidebar, and truncating is the same tradeoff DrawFloatFrame-
     // based overlays already make for oversized content.
     int max_rows = std::min(static_cast<int>(wrapped.size()), 20);
-    float max_w = title.empty() ? 0.0f : MeasureTextEx(g_font, title.c_str(), MenuFontSize(), 0).x;
-    for (int i = 0; i < max_rows; i++) max_w = std::max(max_w, MeasureTextEx(g_font, wrapped[static_cast<size_t>(i)].c_str(), font_size, 0).x);
+    float max_w = title.empty() ? 0.0f : gfx::MeasureTextEx(g_font, title.c_str(), MenuFontSize(), 0).x;
+    for (int i = 0; i < max_rows; i++) max_w = std::max(max_w, gfx::MeasureTextEx(g_font, wrapped[static_cast<size_t>(i)].c_str(), font_size, 0).x);
     int box_w = std::min(max_box_w, static_cast<int>(max_w) + 20);
     int title_h = title.empty() ? 0 : static_cast<int>(MenuFontSize()) + 6;
     int box_h = title_h + max_rows * line_h + 10;
-    if (x + static_cast<float>(box_w) > static_cast<float>(GetScreenWidth())) x = static_cast<float>(GetScreenWidth() - box_w);
+    if (x + static_cast<float>(box_w) > static_cast<float>(gfx::GetScreenWidth())) x = static_cast<float>(gfx::GetScreenWidth() - box_w);
     if (x < 0) x = 0;
     // Prefer drawing below the cursor (the `y` passed in); flip above it
     // if there isn't room below, same idea DrawCmdlineCompletionPopup
     // uses for the command bar's upward-growing list.
-    if (y + static_cast<float>(box_h) > static_cast<float>(GetScreenHeight())) y = std::max(0.0f, y - static_cast<float>(box_h) - static_cast<float>(line_h));
-    DrawRectangle(static_cast<int>(x), static_cast<int>(y), box_w, box_h, ResolveHlGroup("Picker"));
-    DrawRectangleLines(static_cast<int>(x), static_cast<int>(y), box_w, box_h, ResolveHlGroup("PickerBorder"));
+    if (y + static_cast<float>(box_h) > static_cast<float>(gfx::GetScreenHeight())) y = std::max(0.0f, y - static_cast<float>(box_h) - static_cast<float>(line_h));
+    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y), box_w, box_h, ResolveHlGroup("Picker"));
+    gfx::DrawRectangleLines(static_cast<int>(x), static_cast<int>(y), box_w, box_h, ResolveHlGroup("PickerBorder"));
     float ty = y + 5;
     if (!title.empty()) {
-        DrawTextEx(g_font, title.c_str(), Vector2{x + 8, ty}, MenuFontSize(), 0, ResolveHlGroup("PickerTitle"));
+        gfx::DrawTextEx(g_font, title.c_str(), gfx::Vector2{x + 8, ty}, MenuFontSize(), 0, ResolveHlGroup("PickerTitle"));
         ty += static_cast<float>(title_h);
     }
     for (int i = 0; i < max_rows; i++) {
-        DrawTextEx(g_font, wrapped[static_cast<size_t>(i)].c_str(), Vector2{x + 8, ty + static_cast<float>(i * line_h)}, font_size, 0, ResolveHlGroup("Normal"));
+        gfx::DrawTextEx(g_font, wrapped[static_cast<size_t>(i)].c_str(), gfx::Vector2{x + 8, ty + static_cast<float>(i * line_h)}, font_size, 0, ResolveHlGroup("Normal"));
     }
 }
 
@@ -15708,23 +15716,23 @@ void DrawCmdlineCompletionPopup(float x, float bottom_y) {
     float font_size = g_font_size;
     int line_h = static_cast<int>(font_size) + 4;
     float max_w = 60;
-    for (const auto &it : items) max_w = std::max(max_w, MeasureTextEx(g_font, it.display.c_str(), font_size, 0).x);
+    for (const auto &it : items) max_w = std::max(max_w, gfx::MeasureTextEx(g_font, it.display.c_str(), font_size, 0).x);
     int box_w = static_cast<int>(max_w) + 16;
     int max_rows = std::min(static_cast<int>(items.size()), 8);
     int box_h = max_rows * line_h + 6;
-    if (x + static_cast<float>(box_w) > static_cast<float>(GetScreenWidth())) x = static_cast<float>(GetScreenWidth() - box_w);
+    if (x + static_cast<float>(box_w) > static_cast<float>(gfx::GetScreenWidth())) x = static_cast<float>(gfx::GetScreenWidth() - box_w);
     float y = bottom_y - static_cast<float>(box_h);
-    DrawRectangle(static_cast<int>(x), static_cast<int>(y), box_w, box_h, ResolveHlGroup("Picker"));
-    DrawRectangleLines(static_cast<int>(x), static_cast<int>(y), box_w, box_h, ResolveHlGroup("PickerBorder"));
+    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y), box_w, box_h, ResolveHlGroup("Picker"));
+    gfx::DrawRectangleLines(static_cast<int>(x), static_cast<int>(y), box_w, box_h, ResolveHlGroup("PickerBorder"));
     int selected = g_editor.CmdlineCompletionSelected();
     int start = std::max(0, std::min(selected - max_rows + 1, static_cast<int>(items.size()) - max_rows));
     for (int i = start; i < static_cast<int>(items.size()) && i < start + max_rows; i++) {
         float ry = y + 3 + static_cast<float>((i - start) * line_h);
         if (i == selected) {
-            DrawRectangle(static_cast<int>(x) + 1, static_cast<int>(ry), box_w - 2, line_h,
+            gfx::DrawRectangle(static_cast<int>(x) + 1, static_cast<int>(ry), box_w - 2, line_h,
                           ResolveHlGroup("PickerSelected"));
         }
-        DrawTextEx(g_font, items[static_cast<size_t>(i)].display.c_str(), Vector2{x + 6, ry}, font_size, 0, ResolveHlGroup("Normal"));
+        gfx::DrawTextEx(g_font, items[static_cast<size_t>(i)].display.c_str(), gfx::Vector2{x + 6, ry}, font_size, 0, ResolveHlGroup("Normal"));
     }
 }
 
@@ -15742,9 +15750,9 @@ void DrawCmdlineCompletionPopup(float x, float bottom_y) {
  * @param is_fg Whether this is a foreground color (vs. background), affecting default resolution.
  * @return The resolved raylib Color.
  */
-Color VTermColorToRaylib(const VTermColor &c, bool is_fg) {
+gfx::Color VTermColorToRaylib(const VTermColor &c, bool is_fg) {
     ThemeColor tc = g_editor.ResolveVTermColor(c, is_fg);
-    return Color{tc.r, tc.g, tc.b, tc.a};
+    return gfx::Color{tc.r, tc.g, tc.b, tc.a};
 }
 
 // Renders a `:terminal` pane straight from its VTerm grid (Editor::
@@ -15768,9 +15776,9 @@ Color VTermColorToRaylib(const VTermColor &c, bool is_fg) {
  * @param ch One terminal cell's glyph, as UTF-8 (usually 1-4 bytes).
  * @return The font to draw `ch` with.
  */
-const Font &TerminalCellFont(const std::string &ch) {
+const gfx::Font &TerminalCellFont(const std::string &ch) {
     int cp_size = 0;
-    int cp = GetCodepointNext(ch.c_str(), &cp_size);
+    int cp = gfx::GetCodepointNext(ch.c_str(), &cp_size);
     if (IsIconCodepoint(cp)) return g_icon_font;
     if (IsSymbolCodepoint(cp)) return g_symbol_font;  // see g_symbol_font's own comment
     return g_terminal_font;
@@ -15826,12 +15834,12 @@ void DrawTerminalGrid(const TerminalSession &sess, float x, float y, [[maybe_unu
             float cx = x + static_cast<float>(c) * cw;
             const VTermColor &fg_c = cell->reverse ? cell->bg : cell->fg;
             const VTermColor &bg_c = cell->reverse ? cell->fg : cell->bg;
-            Color bg = VTermColorToRaylib(bg_c, false);
-            Color fg = VTermColorToRaylib(fg_c, true);
-            if (cell->faint) fg = Color{static_cast<unsigned char>(fg.r / 2), static_cast<unsigned char>(fg.g / 2),
+            gfx::Color bg = VTermColorToRaylib(bg_c, false);
+            gfx::Color fg = VTermColorToRaylib(fg_c, true);
+            if (cell->faint) fg = gfx::Color{static_cast<unsigned char>(fg.r / 2), static_cast<unsigned char>(fg.g / 2),
                                          static_cast<unsigned char>(fg.b / 2), fg.a};
             if (bg_c.kind != VTermColorKind::Default || cell->reverse) {
-                DrawRectangle(static_cast<int>(cx), static_cast<int>(ry), static_cast<int>(cw) + 1,
+                gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(ry), static_cast<int>(cw) + 1,
                               static_cast<int>(lh), bg);
             }
             if (cell->ch != " " && !cell->ch.empty()) {
@@ -15840,16 +15848,16 @@ void DrawTerminalGrid(const TerminalSession &sess, float x, float y, [[maybe_unu
                 // drawing/block-element/arrow/punctuation/Nerd-Font-icon
                 // glyphs a real shell prompt or full-screen TUI leans on
                 // aren't in g_font's ASCII-only bake.
-                const Font &cell_font = TerminalCellFont(cell->ch);
-                DrawTextEx(cell_font, cell->ch.c_str(), Vector2{cx, ry}, g_font_size, 0, fg);
+                const gfx::Font &cell_font = TerminalCellFont(cell->ch);
+                gfx::DrawTextEx(cell_font, cell->ch.c_str(), gfx::Vector2{cx, ry}, g_font_size, 0, fg);
                 // Bold approximated by a 1px-offset second draw (no bold
                 // glyph variant of the loaded font is guaranteed to
                 // exist) rather than a brighter color -- keeps bold
                 // readable even for colors already at full brightness.
-                if (cell->bold) DrawTextEx(cell_font, cell->ch.c_str(), Vector2{cx + 1, ry}, g_font_size, 0, fg);
+                if (cell->bold) gfx::DrawTextEx(cell_font, cell->ch.c_str(), gfx::Vector2{cx + 1, ry}, g_font_size, 0, fg);
             }
             if (cell->underline) {
-                DrawRectangle(static_cast<int>(cx), static_cast<int>(ry + lh - 2), static_cast<int>(cw), 1, fg);
+                gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(ry + lh - 2), static_cast<int>(cw), 1, fg);
             }
         }
     }
@@ -15857,12 +15865,12 @@ void DrawTerminalGrid(const TerminalSession &sess, float x, float y, [[maybe_unu
     if (sess.scroll_offset == 0 && term->CursorVisible() && !sess.exited) {
         float cx = x + static_cast<float>(term->CursorCol()) * cw;
         float cy = y + static_cast<float>(term->CursorRow()) * lh;
-        Color cursor_bg = ResolveHlGroup("Normal");
-        DrawRectangle(static_cast<int>(cx), static_cast<int>(cy), static_cast<int>(cw), static_cast<int>(lh),
-                      Color{cursor_bg.r, cursor_bg.g, cursor_bg.b, 180});
+        gfx::Color cursor_bg = ResolveHlGroup("Normal");
+        gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(cy), static_cast<int>(cw), static_cast<int>(lh),
+                      gfx::Color{cursor_bg.r, cursor_bg.g, cursor_bg.b, 180});
         const VTermCell &under = term->At(term->CursorRow(), term->CursorCol());
         if (under.ch != " " && !under.ch.empty()) {
-            DrawTextEx(TerminalCellFont(under.ch), under.ch.c_str(), Vector2{cx, cy}, g_font_size, 0, ResolveHlGroup("NormalBg"));
+            gfx::DrawTextEx(TerminalCellFont(under.ch), under.ch.c_str(), gfx::Vector2{cx, cy}, g_font_size, 0, ResolveHlGroup("NormalBg"));
         }
     }
 }
@@ -15879,16 +15887,16 @@ void DrawTerminalGrid(const TerminalSession &sess, float x, float y, [[maybe_unu
  * @param sess The image session whose decoded pixels should be uploaded.
  * @return The cached or newly-uploaded GPU texture.
  */
-Texture2D GetOrLoadImageTexture(int buffer_id, const ImageSession &sess) {
+gfx::Texture2D GetOrLoadImageTexture(int buffer_id, const ImageSession &sess) {
     auto it = g_image_textures.find(buffer_id);
     if (it != g_image_textures.end()) return it->second;
-    Image img{};
+    gfx::Image img{};
     img.data = const_cast<unsigned char *>(sess.doc->Pixels());
     img.width = sess.doc->Width();
     img.height = sess.doc->Height();
     img.mipmaps = 1;
-    img.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
-    Texture2D tex = LoadTextureFromImage(img);  // copies pixel data to the GPU; img.data stays ImageDoc's
+    img.format = gfx::kPixelFormatR8G8B8A8;
+    gfx::Texture2D tex = gfx::LoadTextureFromImage(img);  // copies pixel data to the GPU; img.data stays ImageDoc's
     g_image_textures[buffer_id] = tex;
     return tex;
 }
@@ -15900,7 +15908,7 @@ Texture2D GetOrLoadImageTexture(int buffer_id, const ImageSession &sess) {
 // op set sess.dirty, and UpdateTexture pushes the new bytes into the SAME
 // texture (the canvas size never changes for a session's whole lifetime,
 // IMAGE_EDITOR.md Phase 1) instead of reallocating one every edit.
-std::unordered_map<int, Texture2D> g_image_editor_textures;
+std::unordered_map<int, gfx::Texture2D> g_image_editor_textures;
 
 /**
  * @brief Lazily uploads (and keeps up to date) an ImageEditorSession's flattened composite as a
@@ -15909,28 +15917,28 @@ std::unordered_map<int, Texture2D> g_image_editor_textures;
  * @param sess The image-editor session to composite and upload.
  * @return The cached (or freshly re-uploaded) GPU texture.
  */
-Texture2D GetOrLoadImageEditorTexture(int buffer_id, ImageEditorSession &sess) {
+gfx::Texture2D GetOrLoadImageEditorTexture(int buffer_id, ImageEditorSession &sess) {
     bool was_dirty = sess.dirty;
     g_editor.ImageEditorComposite(sess);
     auto it = g_image_editor_textures.find(buffer_id);
     if (it != g_image_editor_textures.end()) {
-        if (was_dirty) UpdateTexture(it->second, sess.composite.data());
+        if (was_dirty) gfx::UpdateTexture(it->second, sess.composite.data());
         return it->second;
     }
-    Image img{};
+    gfx::Image img{};
     img.data = sess.composite.data();
     img.width = sess.width;
     img.height = sess.height;
     img.mipmaps = 1;
-    img.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
-    Texture2D tex = LoadTextureFromImage(img);
+    img.format = gfx::kPixelFormatR8G8B8A8;
+    gfx::Texture2D tex = gfx::LoadTextureFromImage(img);
     g_image_editor_textures[buffer_id] = tex;
     return tex;
 }
 
 // One embedded-office-image cache slot (see g_office_image_textures below).
 struct OfficeImageCacheEntry {
-    Texture2D tex{};
+    gfx::Texture2D tex{};
     bool ok = false;  // false = the stored bytes didn't decode
 };
 // Keyed by (buffer_id, image_ref) packed into one int64 -- unlike a real
@@ -15955,7 +15963,7 @@ std::unordered_map<long long, OfficeImageCacheEntry> g_office_image_textures;
  * @param img The embedded image's raw bytes to decode on a cache miss.
  * @return Pointer to the cached texture, or nullptr if the bytes failed to decode.
  */
-Texture2D *GetOrLoadOfficeImageTexture(int buffer_id, int image_ref, const DocImage &img) {
+gfx::Texture2D *GetOrLoadOfficeImageTexture(int buffer_id, int image_ref, const DocImage &img) {
     long long key = (static_cast<long long>(buffer_id) << 32) | static_cast<unsigned int>(image_ref);
     auto it = g_office_image_textures.find(key);
     if (it != g_office_image_textures.end()) return it->second.ok ? &it->second.tex : nullptr;
@@ -15963,13 +15971,13 @@ Texture2D *GetOrLoadOfficeImageTexture(int buffer_id, int image_ref, const DocIm
     ImageDoc doc;
     entry.ok = doc.LoadFromMemory(reinterpret_cast<const unsigned char *>(img.bytes.data()), img.bytes.size());
     if (entry.ok) {
-        Image ri{};
+        gfx::Image ri{};
         ri.data = const_cast<unsigned char *>(doc.Pixels());
         ri.width = doc.Width();
         ri.height = doc.Height();
         ri.mipmaps = 1;
-        ri.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
-        entry.tex = LoadTextureFromImage(ri);  // copies pixel data to the GPU; doc goes out of scope right after
+        ri.format = gfx::kPixelFormatR8G8B8A8;
+        entry.tex = gfx::LoadTextureFromImage(ri);  // copies pixel data to the GPU; doc goes out of scope right after
     }
     OfficeImageCacheEntry &stored = g_office_image_textures[key] = entry;
     return stored.ok ? &stored.tex : nullptr;
@@ -15979,7 +15987,7 @@ Texture2D *GetOrLoadOfficeImageTexture(int buffer_id, int image_ref, const DocIm
 // below): the uploaded texture plus the file's mtime as of that upload, so
 // GetOrLoadOrgInlineImageTexture can tell a stale entry from a fresh one.
 struct OrgInlineImageCacheEntry {
-    Texture2D tex{};
+    gfx::Texture2D tex{};
     bool ok = false;  // false = load failed (missing file/bad decode)
     time_t mtime = 0;
 };
@@ -16019,7 +16027,7 @@ std::unordered_map<std::string, OrgInlineImageCacheEntry> g_org_inline_image_tex
  * @param path Filesystem path to the image file.
  * @return Pointer to the cached texture, or nullptr if the file can't be stat'd, read, or decoded.
  */
-Texture2D *GetOrLoadOrgInlineImageTexture(const std::string &path) {
+gfx::Texture2D *GetOrLoadOrgInlineImageTexture(const std::string &path) {
     struct stat st {};
     if (stat(path.c_str(), &st) != 0) return nullptr;
     OrgInlineImageCacheEntry &entry = g_org_inline_image_textures[path];
@@ -16029,18 +16037,18 @@ Texture2D *GetOrLoadOrgInlineImageTexture(const std::string &path) {
     std::vector<unsigned char> bytes;
     if (f) bytes.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
     ImageDoc doc;
-    if (entry.ok) UnloadTexture(entry.tex);  // replace a stale GPU handle rather than leak it
+    if (entry.ok) gfx::UnloadTexture(entry.tex);  // replace a stale GPU handle rather than leak it
     entry.ok = !bytes.empty() && doc.LoadFromMemory(bytes.data(), bytes.size());
     entry.mtime = st.st_mtime;
     if (!entry.ok) return nullptr;
 
-    Image img{};
+    gfx::Image img{};
     img.data = const_cast<unsigned char *>(doc.Pixels());
     img.width = doc.Width();
     img.height = doc.Height();
     img.mipmaps = 1;
-    img.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
-    entry.tex = LoadTextureFromImage(img);  // copies pixel data to the GPU; doc goes out of scope right after
+    img.format = gfx::kPixelFormatR8G8B8A8;
+    entry.tex = gfx::LoadTextureFromImage(img);  // copies pixel data to the GPU; doc goes out of scope right after
     return &entry.tex;
 }
 
@@ -16083,7 +16091,7 @@ Texture2D *GetOrLoadOrgInlineImageTexture(const std::string &path) {
 void EvictOrgInlineImageTexture(const std::string &path) {
     auto it = g_org_inline_image_textures.find(path);
     if (it == g_org_inline_image_textures.end()) return;
-    if (it->second.ok) UnloadTexture(it->second.tex);
+    if (it->second.ok) gfx::UnloadTexture(it->second.tex);
     g_org_inline_image_textures.erase(it);
 }
 
@@ -16097,7 +16105,7 @@ void EvictOrgInlineImageTexture(const std::string &path) {
 // html pane is already in theme mode re-recolors instead of keeping a
 // stale palette.
 struct ThemedHtmlImageCacheEntry {
-    Texture2D tex{};
+    gfx::Texture2D tex{};
     bool ok = false;
     time_t mtime = 0;
     int theme_epoch = -1;
@@ -16121,7 +16129,7 @@ std::unordered_map<std::string, ThemedHtmlImageCacheEntry> g_themed_html_image_t
  * @param path Filesystem path to the image file.
  * @return Pointer to the cached texture, or nullptr if the file can't be stat'd, read, or decoded.
  */
-Texture2D *GetOrLoadThemedHtmlImageTexture(const std::string &path) {
+gfx::Texture2D *GetOrLoadThemedHtmlImageTexture(const std::string &path) {
     struct stat st {};
     if (stat(path.c_str(), &st) != 0) return nullptr;
     int theme_epoch = g_editor.ThemeEpoch();
@@ -16132,15 +16140,15 @@ Texture2D *GetOrLoadThemedHtmlImageTexture(const std::string &path) {
     std::vector<unsigned char> bytes;
     if (f) bytes.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
     ImageDoc doc;
-    if (entry.ok) UnloadTexture(entry.tex);  // replace a stale GPU handle rather than leak it
+    if (entry.ok) gfx::UnloadTexture(entry.tex);  // replace a stale GPU handle rather than leak it
     entry.ok = !bytes.empty() && doc.LoadFromMemory(bytes.data(), bytes.size());
     entry.mtime = st.st_mtime;
     entry.theme_epoch = theme_epoch;
     if (!entry.ok) return nullptr;
 
     int iw = doc.Width(), ih = doc.Height();
-    Color fg = ResolveHlGroup("Normal");
-    Color bg = ResolveHlGroup("NormalBg");
+    gfx::Color fg = ResolveHlGroup("Normal");
+    gfx::Color bg = ResolveHlGroup("NormalBg");
     std::vector<unsigned char> themed(static_cast<size_t>(iw) * static_cast<size_t>(ih) * 4);
     const unsigned char *src_pixels = doc.Pixels();
     size_t n = static_cast<size_t>(iw) * static_cast<size_t>(ih);
@@ -16154,13 +16162,13 @@ Texture2D *GetOrLoadThemedHtmlImageTexture(const std::string &path) {
         dst[3] = src[3];  // alpha untouched -- only color channels ride the theme gradient
     }
 
-    Image img{};
+    gfx::Image img{};
     img.data = themed.data();
     img.width = iw;
     img.height = ih;
     img.mipmaps = 1;
-    img.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
-    entry.tex = LoadTextureFromImage(img);  // copies pixel data to the GPU; `themed` goes out of scope right after
+    img.format = gfx::kPixelFormatR8G8B8A8;
+    entry.tex = gfx::LoadTextureFromImage(img);  // copies pixel data to the GPU; `themed` goes out of scope right after
     return &entry.tex;
 }
 
@@ -16173,7 +16181,7 @@ Texture2D *GetOrLoadThemedHtmlImageTexture(const std::string &path) {
 // since the last upload" -- theme_epoch alone (no mtime field at all) is
 // enough to catch both.
 struct OrgLatexTextureCacheEntry {
-    Texture2D tex{};
+    gfx::Texture2D tex{};
     bool ok = false;
     int theme_epoch = -1;
     int w = 0, h = 0;
@@ -16204,7 +16212,7 @@ std::unordered_map<std::string, OrgLatexTextureCacheEntry> g_org_latex_textures;
  * @param path Filesystem path to the rendered fragment's PNG.
  * @return Pointer to the cached texture, or nullptr if the file can't be stat'd, read, or decoded.
  */
-Texture2D *GetOrLoadOrgLatexTexture(const std::string &path) {
+gfx::Texture2D *GetOrLoadOrgLatexTexture(const std::string &path) {
     struct stat st {};
     if (stat(path.c_str(), &st) != 0) return nullptr;
     int theme_epoch = g_editor.ThemeEpoch();
@@ -16217,14 +16225,14 @@ Texture2D *GetOrLoadOrgLatexTexture(const std::string &path) {
     ImageDoc doc;
     bool decoded = !bytes.empty() && doc.LoadFromMemory(bytes.data(), bytes.size());
     if (!decoded) {
-        if (entry.ok) UnloadTexture(entry.tex);
+        if (entry.ok) gfx::UnloadTexture(entry.tex);
         entry = OrgLatexTextureCacheEntry{};
         return nullptr;
     }
 
     int w = doc.Width(), h = doc.Height();
-    Color fg = ResolveHlGroup("Normal");
-    Color bg = ResolveHlGroup("NormalBg");
+    gfx::Color fg = ResolveHlGroup("Normal");
+    gfx::Color bg = ResolveHlGroup("NormalBg");
     std::vector<unsigned char> themed(static_cast<size_t>(w) * static_cast<size_t>(h) * 4);
     const unsigned char *src_pixels = doc.Pixels();
     for (size_t i = 0, n = static_cast<size_t>(w) * static_cast<size_t>(h); i < n; i++) {
@@ -16237,18 +16245,18 @@ Texture2D *GetOrLoadOrgLatexTexture(const std::string &path) {
         dst[3] = src[3];  // preserve alpha as-is (tectonic's own margin, if any)
     }
 
-    Image img{};
+    gfx::Image img{};
     img.data = themed.data();
     img.width = w;
     img.height = h;
     img.mipmaps = 1;
-    img.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
+    img.format = gfx::kPixelFormatR8G8B8A8;
 
     if (entry.ok && entry.w == w && entry.h == h) {
-        UpdateTexture(entry.tex, img.data);
+        gfx::UpdateTexture(entry.tex, img.data);
     } else {
-        if (entry.ok) UnloadTexture(entry.tex);
-        entry.tex = LoadTextureFromImage(img);
+        if (entry.ok) gfx::UnloadTexture(entry.tex);
+        entry.tex = gfx::LoadTextureFromImage(img);
     }
     entry.ok = true;
     entry.theme_epoch = theme_epoch;
@@ -16276,7 +16284,7 @@ Texture2D *GetOrLoadOrgLatexTexture(const std::string &path) {
  * @param theme_colors Whether to recolor the raster to match the editor's color scheme before upload.
  * @return The cached or freshly-uploaded GPU texture for this page.
  */
-Texture2D GetOrUpdatePdfPageTexture(int buffer_id, int page_index, const PdfSession::PageRaster &raster,
+gfx::Texture2D GetOrUpdatePdfPageTexture(int buffer_id, int page_index, const PdfSession::PageRaster &raster,
                                      bool theme_colors) {
     int theme_epoch = g_editor.ThemeEpoch();
     auto key = std::make_pair(buffer_id, page_index);
@@ -16289,8 +16297,8 @@ Texture2D GetOrUpdatePdfPageTexture(int buffer_id, int page_index, const PdfSess
     const unsigned char *pixels = raster.rgba.data();
     std::vector<unsigned char> themed;
     if (theme_colors) {
-        Color fg = ResolveHlGroup("Normal");
-        Color bg = ResolveHlGroup("NormalBg");
+        gfx::Color fg = ResolveHlGroup("Normal");
+        gfx::Color bg = ResolveHlGroup("NormalBg");
         themed.resize(raster.rgba.size());
         size_t n = static_cast<size_t>(raster.w) * static_cast<size_t>(raster.h);
         for (size_t i = 0; i < n; i++) {
@@ -16305,23 +16313,23 @@ Texture2D GetOrUpdatePdfPageTexture(int buffer_id, int page_index, const PdfSess
         pixels = themed.data();
     }
 
-    Image img{};
+    gfx::Image img{};
     img.data = const_cast<unsigned char *>(pixels);
     img.width = raster.w;
     img.height = raster.h;
     img.mipmaps = 1;
-    img.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
+    img.format = gfx::kPixelFormatR8G8B8A8;
 
     if (it != g_pdf_page_textures.end() && it->second.w == raster.w && it->second.h == raster.h) {
-        UpdateTexture(it->second.tex, img.data);
+        gfx::UpdateTexture(it->second.tex, img.data);
         it->second.generation = raster.generation;
         it->second.theme_colors = theme_colors;
         it->second.theme_epoch = theme_epoch;
         return it->second.tex;
     }
-    if (it != g_pdf_page_textures.end()) UnloadTexture(it->second.tex);
+    if (it != g_pdf_page_textures.end()) gfx::UnloadTexture(it->second.tex);
     PdfTextureCacheEntry entry;
-    entry.tex = LoadTextureFromImage(img);
+    entry.tex = gfx::LoadTextureFromImage(img);
     entry.generation = raster.generation;
     entry.theme_colors = theme_colors;
     entry.theme_epoch = theme_epoch;
@@ -16346,7 +16354,7 @@ Texture2D GetOrUpdatePdfPageTexture(int buffer_id, int page_index, const PdfSess
 void PrunePdfPageTextures(int buffer_id, const PdfSession &sess) {
     for (auto it = g_pdf_page_textures.begin(); it != g_pdf_page_textures.end();) {
         if (it->first.first == buffer_id && sess.rasters.find(it->first.second) == sess.rasters.end()) {
-            UnloadTexture(it->second.tex);
+            gfx::UnloadTexture(it->second.tex);
             it = g_pdf_page_textures.erase(it);
         } else {
             ++it;
@@ -16378,16 +16386,16 @@ void PrunePdfPageTextures(int buffer_id, const PdfSession &sess) {
  * @param is_active Whether this pane is the currently active one (drawn with a thicker border).
  */
 void DrawPaneBorder(float x, float y, float w, float h, bool is_active) {
-    Color border_color = is_active ? ResolveHlGroup("BorderActive") : ResolveHlGroup("BorderInactive");
+    gfx::Color border_color = is_active ? ResolveHlGroup("BorderActive") : ResolveHlGroup("BorderInactive");
     float top_thick = is_active ? 3.0f : 1.0f;
     float side_thick = is_active ? 6.0f : 1.0f;
-    DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(top_thick),
+    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(top_thick),
                   border_color);
-    DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(side_thick), static_cast<int>(h),
+    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(side_thick), static_cast<int>(h),
                   border_color);
-    DrawRectangle(static_cast<int>(x + w - side_thick), static_cast<int>(y), static_cast<int>(side_thick),
+    gfx::DrawRectangle(static_cast<int>(x + w - side_thick), static_cast<int>(y), static_cast<int>(side_thick),
                   static_cast<int>(h), border_color);
-    DrawRectangle(static_cast<int>(x), static_cast<int>(y + h - side_thick), static_cast<int>(w),
+    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y + h - side_thick), static_cast<int>(w),
                   static_cast<int>(side_thick), border_color);
 }
 
@@ -16819,7 +16827,7 @@ MathLayoutResult LayoutMathAtom(const MathNode &n, float font_size) {
         case MathKind::Sqrt: {
             MathLayoutResult inner = n.children.empty() ? MathLayoutResult{} : LayoutMathAtom(n.children[0], font_size);
             std::string radical = Utf8FromCodepoint(0x221a);
-            float rad_w = MeasureTextEx(g_math_font, radical.c_str(), font_size, 0).x;
+            float rad_w = gfx::MeasureTextEx(g_math_font, radical.c_str(), font_size, 0).x;
             constexpr float kOverlineGap = 3.0f;
             MathLayoutResult r;
             float pad = 3.0f;
@@ -16844,7 +16852,7 @@ MathLayoutResult LayoutMathAtom(const MathNode &n, float font_size) {
         default: {
             MathLayoutResult r;
             if (n.text.empty()) return r;
-            Vector2 sz = MeasureTextEx(g_math_font, n.text.c_str(), font_size, 0);
+            gfx::Vector2 sz = gfx::MeasureTextEx(g_math_font, n.text.c_str(), font_size, 0);
             r.width = sz.x;
             r.height = font_size;
             r.baseline = font_size * 0.78f;  // approximates cap-height-to-baseline for this bake
@@ -16884,17 +16892,17 @@ MathLayoutResult LayoutMathExpression(const std::string &latex, float font_size)
  * @param m The laid-out expression to draw (from LayoutMathExpression/LayoutMathAtom).
  * @param color Color to draw the glyphs and bars in.
  */
-void DrawMathLayout(float x, float y, const MathLayoutResult &m, Color color) {
+void DrawMathLayout(float x, float y, const MathLayoutResult &m, gfx::Color color) {
     for (const MathGlyphRun &g : m.glyphs) {
         if (g.text.empty()) continue;
-        Vector2 pos{x + g.rel_x, y + g.rel_y};
+        gfx::Vector2 pos{x + g.rel_x, y + g.rel_y};
         if (!g.italic) {
-            DrawTextEx(g_math_font, g.text.c_str(), pos, g.font_size, 0, color);
+            gfx::DrawTextEx(g_math_font, g.text.c_str(), pos, g.font_size, 0, color);
             continue;
         }
-        rlPushMatrix();
+        gfx::PushMatrix();
         float baseline_y = pos.y + g.font_size;
-        rlTranslatef(pos.x, baseline_y, 0);
+        gfx::TranslateMatrix(pos.x, baseline_y, 0);
         // clang-format off
         const float shear[16] = {
             1.0f,   0.0f, 0.0f, 0.0f,
@@ -16903,13 +16911,13 @@ void DrawMathLayout(float x, float y, const MathLayoutResult &m, Color color) {
             0.0f,   0.0f, 0.0f, 1.0f,
         };
         // clang-format on
-        rlMultMatrixf(shear);
-        rlTranslatef(-pos.x, -baseline_y, 0);
-        DrawTextEx(g_math_font, g.text.c_str(), pos, g.font_size, 0, color);
-        rlPopMatrix();
+        gfx::MultMatrix(shear);
+        gfx::TranslateMatrix(-pos.x, -baseline_y, 0);
+        gfx::DrawTextEx(g_math_font, g.text.c_str(), pos, g.font_size, 0, color);
+        gfx::PopMatrix();
     }
     for (const MathBarRun &b : m.bars) {
-        DrawRectangle(static_cast<int>(x + b.rel_x), static_cast<int>(y + b.rel_y), static_cast<int>(std::max(1.0f, b.w)),
+        gfx::DrawRectangle(static_cast<int>(x + b.rel_x), static_cast<int>(y + b.rel_y), static_cast<int>(std::max(1.0f, b.w)),
                       1, color);
     }
 }
@@ -16936,7 +16944,7 @@ struct HtmlRun {
     float x = 0, y = 0;
     float font_size = 0;
     std::string text;
-    Color color{};
+    gfx::Color color{};
     bool bold = false, italic = false, underline = false, strikethrough = false;
 };
 struct HtmlRule {
@@ -16957,7 +16965,7 @@ struct HtmlImageRun {
 // LayoutMathExpression -- `layout` is drawn via DrawMathLayout at (x,y).
 struct HtmlMathRun {
     float x = 0, y = 0;
-    Color color{};
+    gfx::Color color{};
     MathLayoutResult layout;
 };
 // Canvas display lists are owned by their DOM nodes; the layout only records
@@ -16978,7 +16986,7 @@ struct HtmlSvgRun { float x = 0, y = 0, w = 0, h = 0; const DomNode *node = null
 // on top of it, not the other way around.
 struct HtmlBgRect {
     float x = 0, y = 0, w = 0, h = 0;
-    Color color{};
+    gfx::Color color{};
 };
 // A block element's own border box (ComputedStyle.border_top/right/bottom/
 // left, html_doc.cpp's ApplyDeclarations) -- same "pushed by HtmlLayoutBlock
@@ -16993,7 +17001,7 @@ struct HtmlBgRect {
 struct HtmlBorderRect {
     float x = 0, y = 0, w = 0, h = 0;
     float top_w = 0, right_w = 0, bottom_w = 0, left_w = 0;
-    Color top_c{}, right_c{}, bottom_c{}, left_c{};
+    gfx::Color top_c{}, right_c{}, bottom_c{}, left_c{};
 };
 struct HtmlLayout {
     std::vector<HtmlRun> runs;
@@ -17014,7 +17022,7 @@ struct HtmlLayout {
 struct HtmlLayoutCtx {
     float layout_width;
     float base_font_size;
-    Color default_color;
+    gfx::Color default_color;
     // Directory <img src="relative/path"> is resolved against -- the open
     // HtmlSession's own source file's parent dir (empty for a page with no
     // real on-disk source, in which case only absolute local paths resolve).
@@ -17048,15 +17056,15 @@ float ResolveCssLength(const CssLength &length, float font_size, float containin
  * @param ctx Layout context supplying the fallback default color.
  * @return The resolved color.
  */
-Color HtmlResolveColor(const ComputedStyle &s, const HtmlLayoutCtx &ctx) {
+gfx::Color HtmlResolveColor(const ComputedStyle &s, const HtmlLayoutCtx &ctx) {
     if (!s.has_color) return ctx.default_color;
-    return Color{s.color_r, s.color_g, s.color_b, 255};
+    return gfx::Color{s.color_r, s.color_g, s.color_b, 255};
 }
 
 struct HtmlPendingWord {
     std::string text;  // "\n" is a sentinel forced line break (from <br>), never real text
     float font_size = 0;
-    Color color{};
+    gfx::Color color{};
     bool bold = false, italic = false, underline = false, strikethrough = false;
     // Set for a local <img> or a \(..\)/\[..\] math span placed inline --
     // at most one of the two is ever true. `text` is unused for either
@@ -17131,7 +17139,7 @@ float HtmlFlushWords(std::vector<HtmlPendingWord> &words, float indent_x, float 
     auto word_width = [](const HtmlPendingWord &w) -> float {
         if (w.is_image) return w.image_w;
         if (w.is_math) return w.math.width;
-        return MeasureTextEx(g_font, w.text.c_str(), w.font_size, 0).x;
+        return gfx::MeasureTextEx(g_font, w.text.c_str(), w.font_size, 0).x;
     };
     /**
      * @brief Returns the line height one pending word requires (image height, math height, or
@@ -17180,7 +17188,7 @@ float HtmlFlushWords(std::vector<HtmlPendingWord> &words, float indent_x, float 
             continue;
         }
         float word_w = word_width(w);
-        float space_w = line.empty() ? 0 : MeasureTextEx(g_font, " ", w.font_size, 0).x;
+        float space_w = line.empty() ? 0 : gfx::MeasureTextEx(g_font, " ", w.font_size, 0).x;
         // ctx.layout_width is the page's absolute right edge (measured
         // from the same x=0 indent_x itself is), constant regardless of
         // indent -- matching every box-width formula elsewhere in this
@@ -17193,7 +17201,7 @@ float HtmlFlushWords(std::vector<HtmlPendingWord> &words, float indent_x, float 
         // narrowed+centered block (ComputedStyle::has_max_width), whose
         // indent_x can be hundreds of pixels.
         if (!line.empty() && x + space_w + word_w > ctx.layout_width) flush_line();
-        if (!line.empty()) x += MeasureTextEx(g_font, " ", w.font_size, 0).x;
+        if (!line.empty()) x += gfx::MeasureTextEx(g_font, " ", w.font_size, 0).x;
         line.push_back({&w, x});
         x += word_w;
     }
@@ -17228,7 +17236,7 @@ float HtmlFlushWords(std::vector<HtmlPendingWord> &words, float indent_x, float 
 void HtmlCollectTextWords(const std::string &text, const ComputedStyle &style, const HtmlLayoutCtx &ctx,
                            std::vector<HtmlPendingWord> &out) {
     float fs = ctx.base_font_size * style.font_scale;
-    Color color = HtmlResolveColor(style, ctx);
+    gfx::Color color = HtmlResolveColor(style, ctx);
     size_t i = 0, n = text.size();
     while (i < n) {
         while (i < n && std::isspace(static_cast<unsigned char>(text[i]))) i++;
@@ -17307,7 +17315,7 @@ void HtmlCollectInlineChild(DomNode *c, const ComputedStyle &parent_style, const
         auto src_it = c->attrs.find("src");
         std::string src = src_it != c->attrs.end() ? src_it->second : std::string();
         std::string resolved = ResolveHtmlImagePath(src, ctx.base_dir);
-        const Texture2D *tex = resolved.empty() ? nullptr : GetOrLoadOrgInlineImageTexture(resolved);
+        const gfx::Texture2D *tex = resolved.empty() ? nullptr : GetOrLoadOrgInlineImageTexture(resolved);
         if (tex) {
             float natural_w = static_cast<float>(tex->width) * ctx.zoom;
             float natural_h = static_cast<float>(tex->height) * ctx.zoom;
@@ -17454,7 +17462,7 @@ void HtmlLayoutPreNode(DomNode *node, const ComputedStyle &style, HtmlPreCursor 
             cur.stripped_leading_newline = true;
             if (!text.empty() && text.front() == '\n') text.erase(text.begin());
         }
-        Color color = HtmlResolveColor(style, ctx);
+        gfx::Color color = HtmlResolveColor(style, ctx);
         size_t start = 0, n = text.size();
         while (start <= n) {
             size_t nl = text.find('\n', start);
@@ -17462,7 +17470,7 @@ void HtmlLayoutPreNode(DomNode *node, const ComputedStyle &style, HtmlPreCursor 
             if (!piece.empty()) {
                 float y = cur.start_y + static_cast<float>(cur.line_index) * cur.line_h;
                 out.runs.push_back({cur.x, y, cur.font_size, piece, color, style.bold, style.italic, false, false});
-                cur.x += MeasureTextEx(g_font, piece.c_str(), cur.font_size, 0).x;
+                cur.x += gfx::MeasureTextEx(g_font, piece.c_str(), cur.font_size, 0).x;
             }
             if (nl == std::string::npos) break;
             cur.x = cur.indent_x;
@@ -17642,7 +17650,7 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
         float bg_x = border_x;
         float bg_w = border_w;
         out.backgrounds.push_back(
-            {bg_x, block_top, bg_w, 0.0f, Color{node->style.bg_r, node->style.bg_g, node->style.bg_b, 255}});
+            {bg_x, block_top, bg_w, 0.0f, gfx::Color{node->style.bg_r, node->style.bg_g, node->style.bg_b, 255}});
     }
     /**
      * @brief Fills in the pushed background box's height (from `block_top` to the current
@@ -17662,19 +17670,19 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
         br.w = border_w;
         if (cs.border_top.present) {
             br.top_w = cs.border_top.width_px;
-            br.top_c = Color{cs.border_top.r, cs.border_top.g, cs.border_top.b, 255};
+            br.top_c = gfx::Color{cs.border_top.r, cs.border_top.g, cs.border_top.b, 255};
         }
         if (cs.border_right.present) {
             br.right_w = cs.border_right.width_px;
-            br.right_c = Color{cs.border_right.r, cs.border_right.g, cs.border_right.b, 255};
+            br.right_c = gfx::Color{cs.border_right.r, cs.border_right.g, cs.border_right.b, 255};
         }
         if (cs.border_bottom.present) {
             br.bottom_w = cs.border_bottom.width_px;
-            br.bottom_c = Color{cs.border_bottom.r, cs.border_bottom.g, cs.border_bottom.b, 255};
+            br.bottom_c = gfx::Color{cs.border_bottom.r, cs.border_bottom.g, cs.border_bottom.b, 255};
         }
         if (cs.border_left.present) {
             br.left_w = cs.border_left.width_px;
-            br.left_c = Color{cs.border_left.r, cs.border_left.g, cs.border_left.b, 255};
+            br.left_c = gfx::Color{cs.border_left.r, cs.border_left.g, cs.border_left.b, 255};
         }
         out.borders.push_back(br);
     }
@@ -17872,7 +17880,7 @@ void HtmlLayoutTable(DomNode *table, float content_x, float &cursor_y, const Htm
             if (cell->type != DomNodeType::Element || (cell->tag != "td" && cell->tag != "th")) continue;
             int span = 1; auto it = cell->attrs.find("colspan"); if (it != cell->attrs.end()) span = std::max(1, std::atoi(it->second.c_str()));
             std::string text; HtmlCollectRawText(cell.get(), text);
-            float natural = MeasureTextEx(g_font, text.c_str(), ctx.base_font_size * cell->style.font_scale, 0).x + 12.0f;
+            float natural = gfx::MeasureTextEx(g_font, text.c_str(), ctx.base_font_size * cell->style.font_scale, 0).x + 12.0f;
             float each = natural / static_cast<float>(span);
             for (int i = 0; i < span && column + static_cast<size_t>(i) < columns; ++i) widths[column + static_cast<size_t>(i)] = std::max(widths[column + static_cast<size_t>(i)], each);
             column += static_cast<size_t>(span);
@@ -17923,7 +17931,7 @@ void HtmlLayoutTable(DomNode *table, float content_x, float &cursor_y, const Htm
 // seek); the clock and the audible position can therefore drift after a
 // script-driven seek -- noted in WEBKIT_PARITY_PLAN.md Part VII.
 struct HtmlMediaPlayback {
-    Sound sound{};
+    gfx::Sound sound{};
     bool loaded = false, failed = false, playing = false;
 };
 std::unordered_map<const DomNode *, HtmlMediaPlayback> g_html_media_playback;
@@ -17942,7 +17950,7 @@ void SyncHtmlMediaPlayback() {
     // Elements whose page closed: stop and free their sound.
     for (auto it = g_html_media_playback.begin(); it != g_html_media_playback.end();) {
         if (std::find(live.begin(), live.end(), it->first) != live.end()) { ++it; continue; }
-        if (it->second.loaded) UnloadSound(it->second.sound);
+        if (it->second.loaded) gfx::UnloadSound(it->second.sound);
         it = g_html_media_playback.erase(it);
     }
     for (const DomNode *node : live) {
@@ -17953,21 +17961,21 @@ void SyncHtmlMediaPlayback() {
         HtmlMediaPlayback &playback = g_html_media_playback[node];
         if (playback.failed) continue;
         if (!playback.loaded) {
-            if (!IsAudioDeviceReady()) InitAudioDevice();
-            if (!IsAudioDeviceReady()) { playback.failed = true; continue; }
-            playback.sound = LoadSound(node->media_source_path.c_str());
+            if (!gfx::IsAudioDeviceReady()) gfx::InitAudioDevice();
+            if (!gfx::IsAudioDeviceReady()) { playback.failed = true; continue; }
+            playback.sound = gfx::LoadSound(node->media_source_path.c_str());
             if (playback.sound.frameCount == 0) { playback.failed = true; continue; }
             playback.loaded = true;
         }
-        SetSoundVolume(playback.sound, node->media_muted ? 0.0f : static_cast<float>(node->media_volume));
+        gfx::SetSoundVolume(playback.sound, node->media_muted ? 0.0f : static_cast<float>(node->media_volume));
         if (want_playing && !playback.playing) {
             // A fresh start (or restart after ended) plays from the top; a
             // resume after pause() continues where the device left off.
-            if (node->media_current_time <= 0.0 || !IsSoundPlaying(playback.sound)) PlaySound(playback.sound);
-            else ResumeSound(playback.sound);
+            if (node->media_current_time <= 0.0 || !gfx::IsSoundPlaying(playback.sound)) gfx::PlaySound(playback.sound);
+            else gfx::ResumeSound(playback.sound);
             playback.playing = true;
         } else if (!want_playing && playback.playing) {
-            PauseSound(playback.sound);
+            gfx::PauseSound(playback.sound);
             playback.playing = false;
         }
     }
@@ -18002,9 +18010,9 @@ HtmlLayout LayoutHtmlDoc(const HtmlDoc &doc, const HtmlLayoutCtx &ctx) {
 void DrawHtmlRun(float x, float y, const HtmlRun &run) {
     bool sheared = run.italic;
     if (sheared) {
-        rlPushMatrix();
+        gfx::PushMatrix();
         float baseline_y = y + run.font_size;
-        rlTranslatef(x, baseline_y, 0);
+        gfx::TranslateMatrix(x, baseline_y, 0);
         // clang-format off
         const float shear[16] = {
             1.0f,   0.0f, 0.0f, 0.0f,
@@ -18013,22 +18021,22 @@ void DrawHtmlRun(float x, float y, const HtmlRun &run) {
             0.0f,   0.0f, 0.0f, 1.0f,
         };
         // clang-format on
-        rlMultMatrixf(shear);
-        rlTranslatef(-x, -baseline_y, 0);
+        gfx::MultMatrix(shear);
+        gfx::TranslateMatrix(-x, -baseline_y, 0);
     }
-    DrawTextEx(g_font, run.text.c_str(), Vector2{x, y}, run.font_size, 0, run.color);
+    gfx::DrawTextEx(g_font, run.text.c_str(), gfx::Vector2{x, y}, run.font_size, 0, run.color);
     // Same double-draw-offset-1px bold fake as org emphasis (g_font has no
     // real bold face) -- drawn inside the same shear so a bold+italic run
     // doesn't end up half-sheared.
-    if (run.bold) DrawTextEx(g_font, run.text.c_str(), Vector2{x + 1, y}, run.font_size, 0, run.color);
-    if (sheared) rlPopMatrix();
+    if (run.bold) gfx::DrawTextEx(g_font, run.text.c_str(), gfx::Vector2{x + 1, y}, run.font_size, 0, run.color);
+    if (sheared) gfx::PopMatrix();
     if (run.underline || run.strikethrough) {
-        int text_w = std::max(1, static_cast<int>(MeasureTextEx(g_font, run.text.c_str(), run.font_size, 0).x));
+        int text_w = std::max(1, static_cast<int>(gfx::MeasureTextEx(g_font, run.text.c_str(), run.font_size, 0).x));
         if (run.underline) {
-            DrawRectangle(static_cast<int>(x), static_cast<int>(y + run.font_size + 2), text_w, 1, run.color);
+            gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y + run.font_size + 2), text_w, 1, run.color);
         }
         if (run.strikethrough) {
-            DrawRectangle(static_cast<int>(x), static_cast<int>(y + run.font_size / 2), text_w, 1, run.color);
+            gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y + run.font_size / 2), text_w, 1, run.color);
         }
     }
 }
@@ -18064,8 +18072,8 @@ void DrawKanban(const Pane &pane, float x, float y, float w, float h, bool is_ac
     sess->content_h = h;
 
     std::vector<std::string> columns = g_editor.KanbanColumns(pane.buffer_id);
-    BeginScissorMode(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h));
-    DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h),
+    gfx::BeginScissorMode(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h));
+    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h),
                   ResolveHlGroup("NormalBg"));
     int header_h = PaneHeaderHeight();
     // A toolbar row above the per-column headers -- "+ New Card" (a
@@ -18075,24 +18083,24 @@ void DrawKanban(const Pane &pane, float x, float y, float w, float h, bool is_ac
     // everything below down by one extra header_h; UpdateKanbanMouseInteraction
     // mirrors this offset exactly the same way it already independently
     // calls PaneHeaderHeight() rather than sharing a cached value.
-    DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), header_h, ResolveHlGroup("MenuBar"));
+    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), header_h, ResolveHlGroup("MenuBar"));
     sess->new_card_chip_x = x + 8;
     sess->new_card_chip_y = y + 4;
     sess->new_card_chip_w = 120;
     sess->new_card_chip_h = static_cast<float>(header_h) - 8;
     bool new_card_being_dragged = sess->dragging && sess->drag_threshold_passed && sess->drag_is_new_card;
     if (!new_card_being_dragged) {
-        Rectangle chip_rect{sess->new_card_chip_x, sess->new_card_chip_y, sess->new_card_chip_w, sess->new_card_chip_h};
-        DrawRectangleRec(chip_rect, ResolveHlGroup("CursorLine"));
-        DrawRectangleLinesEx(chip_rect, 1, ResolveHlGroup("Border"));
-        DrawTextEx(g_font, "+ New Card", Vector2{chip_rect.x + 6, chip_rect.y + 3}, g_font_size * 0.9f, 0,
+        gfx::Rectangle chip_rect{sess->new_card_chip_x, sess->new_card_chip_y, sess->new_card_chip_w, sess->new_card_chip_h};
+        gfx::DrawRectangleRec(chip_rect, ResolveHlGroup("CursorLine"));
+        gfx::DrawRectangleLinesEx(chip_rect, 1, ResolveHlGroup("Border"));
+        gfx::DrawTextEx(g_font, "+ New Card", gfx::Vector2{chip_rect.x + 6, chip_rect.y + 3}, g_font_size * 0.9f, 0,
                    ResolveHlGroup("Normal"));
     }
-    Rectangle add_col_rect{sess->new_card_chip_x + sess->new_card_chip_w + 8, y + 4, 90,
+    gfx::Rectangle add_col_rect{sess->new_card_chip_x + sess->new_card_chip_w + 8, y + 4, 90,
                             static_cast<float>(header_h) - 8};
-    DrawRectangleRec(add_col_rect, ResolveHlGroup("CursorLine"));
-    DrawRectangleLinesEx(add_col_rect, 1, ResolveHlGroup("Border"));
-    DrawTextEx(g_font, "+ Column", Vector2{add_col_rect.x + 6, add_col_rect.y + 3}, g_font_size * 0.9f, 0,
+    gfx::DrawRectangleRec(add_col_rect, ResolveHlGroup("CursorLine"));
+    gfx::DrawRectangleLinesEx(add_col_rect, 1, ResolveHlGroup("Border"));
+    gfx::DrawTextEx(g_font, "+ Column", gfx::Vector2{add_col_rect.x + 6, add_col_rect.y + 3}, g_font_size * 0.9f, 0,
                ResolveHlGroup("Normal"));
     int pane_id_for_add = pane.id;
     // Focuses this pane and prompts for a new column name, adding it to the kanban board on confirm.
@@ -18112,22 +18120,22 @@ void DrawKanban(const Pane &pane, float x, float y, float w, float h, bool is_ac
 
         bool column_being_dragged = sess->dragging && sess->drag_threshold_passed && sess->drag_is_column &&
                                     sess->drag_column_index == ci;
-        DrawRectangle(static_cast<int>(col_x), static_cast<int>(col_header_y), static_cast<int>(col_w) - 4, header_h,
+        gfx::DrawRectangle(static_cast<int>(col_x), static_cast<int>(col_header_y), static_cast<int>(col_w) - 4, header_h,
                       ResolveHlGroup(column_being_dragged ? "CursorLine" : "MenuBar"));
         std::string header_text = columns[static_cast<size_t>(ci)] + " (" + std::to_string(cards.size()) + ")";
-        BeginScissorMode(static_cast<int>(col_x), static_cast<int>(col_header_y), static_cast<int>(col_w) - 24,
+        gfx::BeginScissorMode(static_cast<int>(col_x), static_cast<int>(col_header_y), static_cast<int>(col_w) - 24,
                           header_h);
-        DrawTextEx(g_font, header_text.c_str(), Vector2{col_x + 6, col_header_y + 4}, g_font_size, 0,
+        gfx::DrawTextEx(g_font, header_text.c_str(), gfx::Vector2{col_x + 6, col_header_y + 4}, g_font_size, 0,
                    ResolveHlGroup("Normal"));
-        EndScissorMode();
+        gfx::EndScissorMode();
         if (ci > 0) {
-            DrawLine(static_cast<int>(col_x), static_cast<int>(y), static_cast<int>(col_x), static_cast<int>(y + h),
+            gfx::DrawLine(static_cast<int>(col_x), static_cast<int>(y), static_cast<int>(col_x), static_cast<int>(y + h),
                       ResolveHlGroup("Border"));
         }
 
         // Column menu ("..." -> Rename/Delete).
-        Rectangle kebab_rect{col_x + col_w - 24, col_header_y + 4, 18, static_cast<float>(header_h) - 8};
-        DrawTextEx(g_font, "...", Vector2{kebab_rect.x + 2, kebab_rect.y}, g_font_size, 0, ResolveHlGroup("Comment"));
+        gfx::Rectangle kebab_rect{col_x + col_w - 24, col_header_y + 4, 18, static_cast<float>(header_h) - 8};
+        gfx::DrawTextEx(g_font, "...", gfx::Vector2{kebab_rect.x + 2, kebab_rect.y}, g_font_size, 0, ResolveHlGroup("Comment"));
         int pane_id_for_col = pane.id, col_i = ci;
         // Focuses this pane and toggles the rename/delete popup menu for this column.
         RegisterClickRegion(kebab_rect, [pane_id_for_col, col_i] {
@@ -18143,14 +18151,14 @@ void DrawKanban(const Pane &pane, float x, float y, float w, float h, bool is_ac
         });
         if (g_kanban_col_menu_buffer == pane.buffer_id && g_kanban_col_menu_col == ci) {
             int item_h = MenuItemHeight();
-            Rectangle popup_rect{col_x, col_header_y + static_cast<float>(header_h), 130, static_cast<float>(item_h) * 2};
-            DrawRectangleRec(popup_rect, ResolveHlGroup("MenuBar"));
-            DrawRectangleLinesEx(popup_rect, 1, ResolveHlGroup("Border"));
-            Rectangle rename_row{col_x, col_header_y + static_cast<float>(header_h), 130, static_cast<float>(item_h)};
-            Rectangle delete_row{col_x, col_header_y + static_cast<float>(header_h + item_h), 130, static_cast<float>(item_h)};
-            DrawTextEx(g_font, "Rename", Vector2{rename_row.x + 8, rename_row.y + 4}, g_font_size, 0,
+            gfx::Rectangle popup_rect{col_x, col_header_y + static_cast<float>(header_h), 130, static_cast<float>(item_h) * 2};
+            gfx::DrawRectangleRec(popup_rect, ResolveHlGroup("MenuBar"));
+            gfx::DrawRectangleLinesEx(popup_rect, 1, ResolveHlGroup("Border"));
+            gfx::Rectangle rename_row{col_x, col_header_y + static_cast<float>(header_h), 130, static_cast<float>(item_h)};
+            gfx::Rectangle delete_row{col_x, col_header_y + static_cast<float>(header_h + item_h), 130, static_cast<float>(item_h)};
+            gfx::DrawTextEx(g_font, "Rename", gfx::Vector2{rename_row.x + 8, rename_row.y + 4}, g_font_size, 0,
                        ResolveHlGroup("Normal"));
-            DrawTextEx(g_font, "Delete", Vector2{delete_row.x + 8, delete_row.y + 4}, g_font_size, 0,
+            gfx::DrawTextEx(g_font, "Delete", gfx::Vector2{delete_row.x + 8, delete_row.y + 4}, g_font_size, 0,
                        ResolveHlGroup("Normal"));
             const std::string &col_name = columns[static_cast<size_t>(ci)];
             // Closes the column menu and prompts to rename this column, applying the new name on confirm.
@@ -18180,10 +18188,10 @@ void DrawKanban(const Pane &pane, float x, float y, float w, float h, bool is_ac
                                g_editor.CurrentMode() == Mode::KanbanNormal;
             bool is_being_dragged = sess->dragging && sess->drag_threshold_passed && sess->drag_headline_index == hi;
 
-            Rectangle card_rect{col_x + 4, card_y, col_w - 12, static_cast<float>(kKanbanCardHeight)};
+            gfx::Rectangle card_rect{col_x + 4, card_y, col_w - 12, static_cast<float>(kKanbanCardHeight)};
             if (!is_being_dragged) {
-                DrawRectangleRec(card_rect, ResolveHlGroup(is_focused ? "Visual" : "CursorLine"));
-                if (is_focused) DrawRectangleLinesEx(card_rect, 2, ResolveHlGroup("BorderActive"));
+                gfx::DrawRectangleRec(card_rect, ResolveHlGroup(is_focused ? "Visual" : "CursorLine"));
+                if (is_focused) gfx::DrawRectangleLinesEx(card_rect, 2, ResolveHlGroup("BorderActive"));
 
                 bool editing_this =
                     sess->editing && sess->editing_headline_index == hi && g_editor.CurrentMode() == Mode::KanbanInsert;
@@ -18193,24 +18201,24 @@ void DrawKanban(const Pane &pane, float x, float y, float w, float h, bool is_ac
                 // Clipped to the card's own rect -- a title longer than the
                 // column is wide would otherwise bleed into the next
                 // column rather than just being cut off.
-                BeginScissorMode(static_cast<int>(card_rect.x), static_cast<int>(card_rect.y),
+                gfx::BeginScissorMode(static_cast<int>(card_rect.x), static_cast<int>(card_rect.y),
                                   static_cast<int>(card_rect.width), static_cast<int>(card_rect.height));
-                DrawTextEx(g_font, line1.c_str(), Vector2{card_rect.x + 6, card_rect.y + 4}, g_font_size, 0,
+                gfx::DrawTextEx(g_font, line1.c_str(), gfx::Vector2{card_rect.x + 6, card_rect.y + 4}, g_font_size, 0,
                            ResolveHlGroup("Normal"));
                 if (!hd.tags.empty()) {
                     std::string tag_text;
                     for (const auto &t : hd.tags) tag_text += ":" + t;
                     tag_text += ":";
-                    DrawTextEx(g_font, tag_text.c_str(), Vector2{card_rect.x + 6, card_rect.y + 4 + g_font_size + 4},
+                    gfx::DrawTextEx(g_font, tag_text.c_str(), gfx::Vector2{card_rect.x + 6, card_rect.y + 4 + g_font_size + 4},
                                g_font_size * 0.85f, 0, ResolveHlGroup("Comment"));
                 }
                 if (editing_this && is_active) {
                     std::string pre = sess->edit_buffer.substr(0, std::min<size_t>(static_cast<size_t>(sess->edit_cursor), sess->edit_buffer.size()));
-                    float cx = card_rect.x + 6 + MeasureTextEx(g_font, (prio + pre).c_str(), g_font_size, 0).x;
-                    DrawRectangle(static_cast<int>(cx), static_cast<int>(card_rect.y + 4), 2,
+                    float cx = card_rect.x + 6 + gfx::MeasureTextEx(g_font, (prio + pre).c_str(), g_font_size, 0).x;
+                    gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(card_rect.y + 4), 2,
                                   static_cast<int>(g_font_size), ResolveHlGroup("Normal"));
                 }
-                EndScissorMode();
+                gfx::EndScissorMode();
 
                 int pane_id = pane.id, card_col_i = ci, row_i = ri;
                 // Focuses this pane and sets the focused column/row to this card.
@@ -18229,7 +18237,7 @@ void DrawKanban(const Pane &pane, float x, float y, float w, float h, bool is_ac
         if (sess->dragging && sess->drag_threshold_passed && !sess->drag_is_column && sess->drop_column == ci) {
             float preview_y = y + static_cast<float>(header_h * 2 + kKanbanCardGap) +
                                static_cast<float>(sess->drop_row * (kKanbanCardHeight + kKanbanCardGap)) - static_cast<float>(kKanbanCardGap) / 2.0f;
-            DrawRectangle(static_cast<int>(col_x + 4), static_cast<int>(preview_y), static_cast<int>(col_w - 12), 3,
+            gfx::DrawRectangle(static_cast<int>(col_x + 4), static_cast<int>(preview_y), static_cast<int>(col_w - 12), 3,
                           ResolveHlGroup("BorderActive"));
         }
 
@@ -18242,7 +18250,7 @@ void DrawKanban(const Pane &pane, float x, float y, float w, float h, bool is_ac
     if (sess->dragging && sess->drag_threshold_passed && sess->drag_is_column &&
         sess->column_drop_slot >= 0 && sess->column_drop_slot <= static_cast<int>(columns.size())) {
         float marker_x = x + static_cast<float>(sess->column_drop_slot * kKanbanColumnWidth);
-        DrawRectangle(static_cast<int>(marker_x) - 2, static_cast<int>(col_header_y), 4, header_h,
+        gfx::DrawRectangle(static_cast<int>(marker_x) - 2, static_cast<int>(col_header_y), 4, header_h,
                       ResolveHlGroup("BorderActive"));
     }
 
@@ -18257,26 +18265,26 @@ void DrawKanban(const Pane &pane, float x, float y, float w, float h, bool is_ac
             have_title = true;
         }
         if (have_title) {
-            Vector2 mouse = GetMousePosition();
-            Rectangle card_rect{mouse.x - 20, mouse.y - 12, static_cast<float>(kKanbanColumnWidth) - 12,
+            gfx::Vector2 mouse = gfx::GetMousePosition();
+            gfx::Rectangle card_rect{mouse.x - 20, mouse.y - 12, static_cast<float>(kKanbanColumnWidth) - 12,
                                  static_cast<float>(kKanbanCardHeight)};
-            DrawRectangleRec(card_rect, ResolveHlGroup("Visual"));
-            DrawRectangleLinesEx(card_rect, 2, ResolveHlGroup("BorderActive"));
-            BeginScissorMode(static_cast<int>(card_rect.x), static_cast<int>(card_rect.y),
+            gfx::DrawRectangleRec(card_rect, ResolveHlGroup("Visual"));
+            gfx::DrawRectangleLinesEx(card_rect, 2, ResolveHlGroup("BorderActive"));
+            gfx::BeginScissorMode(static_cast<int>(card_rect.x), static_cast<int>(card_rect.y),
                               static_cast<int>(card_rect.width), static_cast<int>(card_rect.height));
-            DrawTextEx(g_font, ghost_title.c_str(), Vector2{card_rect.x + 6, card_rect.y + 4}, g_font_size, 0,
+            gfx::DrawTextEx(g_font, ghost_title.c_str(), gfx::Vector2{card_rect.x + 6, card_rect.y + 4}, g_font_size, 0,
                        ResolveHlGroup("Normal"));
-            EndScissorMode();
+            gfx::EndScissorMode();
         }
     }
     if (sess->dragging && sess->drag_threshold_passed && sess->drag_is_column &&
         sess->drag_column_index >= 0 && sess->drag_column_index < static_cast<int>(columns.size())) {
-        Vector2 mouse = GetMousePosition();
-        Rectangle header_ghost{mouse.x - 20, mouse.y - static_cast<float>(header_h) / 2,
+        gfx::Vector2 mouse = gfx::GetMousePosition();
+        gfx::Rectangle header_ghost{mouse.x - 20, mouse.y - static_cast<float>(header_h) / 2,
                                static_cast<float>(kKanbanColumnWidth) - 4, static_cast<float>(header_h)};
-        DrawRectangleRec(header_ghost, ResolveHlGroup("Visual"));
-        DrawRectangleLinesEx(header_ghost, 2, ResolveHlGroup("BorderActive"));
-        DrawTextEx(g_font, columns[static_cast<size_t>(sess->drag_column_index)].c_str(), Vector2{header_ghost.x + 6, header_ghost.y + 4},
+        gfx::DrawRectangleRec(header_ghost, ResolveHlGroup("Visual"));
+        gfx::DrawRectangleLinesEx(header_ghost, 2, ResolveHlGroup("BorderActive"));
+        gfx::DrawTextEx(g_font, columns[static_cast<size_t>(sess->drag_column_index)].c_str(), gfx::Vector2{header_ghost.x + 6, header_ghost.y + 4},
                    g_font_size, 0, ResolveHlGroup("Normal"));
     }
 
@@ -18287,13 +18295,13 @@ void DrawKanban(const Pane &pane, float x, float y, float w, float h, bool is_ac
     // kanban_or_gantt_active exclusion comment for why the generic
     // pane-body catch-all is skipped there instead of double-registering).
     // Focuses this pane and dismisses any open column menu on a click that missed everything more specific above.
-    RegisterClickRegion(Rectangle{x, y, w, h}, [pane_id = pane.id] {
+    RegisterClickRegion(gfx::Rectangle{x, y, w, h}, [pane_id = pane.id] {
         g_editor.FocusPaneById(pane_id);
         g_kanban_col_menu_buffer = -1;
         g_kanban_col_menu_col = -1;
     });
 
-    EndScissorMode();
+    gfx::EndScissorMode();
 }
 
 /**
@@ -18316,7 +18324,7 @@ void DrawGanttDependencies(const GanttSession &sess, const std::vector<int> &row
         const std::string &id = sess.outline.headlines[static_cast<size_t>(rows[static_cast<size_t>(ri)])].id;
         if (!id.empty()) id_to_headline[id] = rows[static_cast<size_t>(ri)];
     }
-    Color arrow_color = Fade(ResolveHlGroup("BorderActive"), 0.8f);
+    gfx::Color arrow_color = gfx::Fade(ResolveHlGroup("BorderActive"), 0.8f);
     for (int target_hi : rows) {
         const OrgHeadline &target = sess.outline.headlines[static_cast<size_t>(target_hi)];
         for (const std::string &blocker : target.blockers) {
@@ -18331,10 +18339,10 @@ void DrawGanttDependencies(const GanttSession &sess, const std::vector<int> &row
             float sy = y + ruler_h + static_cast<float>(headline_to_row[source_it->second] * row_h) + static_cast<float>(row_h) / 2.0f;
             float ty = y + ruler_h + static_cast<float>(headline_to_row[target_hi] * row_h) + static_cast<float>(row_h) / 2.0f;
             float bend = std::max(sx + 12.0f, tx - 12.0f);
-            DrawLineEx(Vector2{sx, sy}, Vector2{bend, sy}, 2, arrow_color);
-            DrawLineEx(Vector2{bend, sy}, Vector2{bend, ty}, 2, arrow_color);
-            DrawLineEx(Vector2{bend, ty}, Vector2{tx, ty}, 2, arrow_color);
-            DrawTriangle(Vector2{tx, ty}, Vector2{tx - 7, ty - 4}, Vector2{tx - 7, ty + 4}, arrow_color);
+            gfx::DrawLineEx(gfx::Vector2{sx, sy}, gfx::Vector2{bend, sy}, 2, arrow_color);
+            gfx::DrawLineEx(gfx::Vector2{bend, sy}, gfx::Vector2{bend, ty}, 2, arrow_color);
+            gfx::DrawLineEx(gfx::Vector2{bend, ty}, gfx::Vector2{tx, ty}, 2, arrow_color);
+            gfx::DrawTriangle(gfx::Vector2{tx, ty}, gfx::Vector2{tx - 7, ty - 4}, gfx::Vector2{tx - 7, ty + 4}, arrow_color);
         }
     }
 }
@@ -18358,8 +18366,8 @@ void DrawGantt(const Pane &pane, float x, float y, float w, float h, bool is_act
     sess->content_h = h;
 
     std::vector<int> rows = g_editor.GanttRows(pane.buffer_id);
-    BeginScissorMode(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h));
-    DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h),
+    gfx::BeginScissorMode(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h));
+    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h),
                   ResolveHlGroup("NormalBg"));
 
     float label_w = sess->label_col_w;
@@ -18380,11 +18388,11 @@ void DrawGantt(const Pane &pane, float x, float y, float w, float h, bool is_act
             long long next_start = OrgDayNumber(next_year, next_month, 1);
             float gx = timeline_x + static_cast<float>(month_start - sess->anchor_day) * sess->pixels_per_day;
             float next_x = timeline_x + static_cast<float>(next_start - sess->anchor_day) * sess->pixels_per_day;
-            DrawLine(static_cast<int>(gx), static_cast<int>(y), static_cast<int>(gx), static_cast<int>(y + h),
+            gfx::DrawLine(static_cast<int>(gx), static_cast<int>(y), static_cast<int>(gx), static_cast<int>(y + h),
                      ResolveHlGroup("BorderActive"));
             const char *month_name = GanttMonthAbbrev(mm);
-            float month_text_w = MeasureTextEx(g_font, month_name, g_font_size * 0.8f, 0).x;
-            DrawTextEx(g_font, month_name, Vector2{(gx + next_x - month_text_w) / 2.0f, y + static_cast<float>(PaneHeaderHeight()) + 4},
+            float month_text_w = gfx::MeasureTextEx(g_font, month_name, g_font_size * 0.8f, 0).x;
+            gfx::DrawTextEx(g_font, month_name, gfx::Vector2{(gx + next_x - month_text_w) / 2.0f, y + static_cast<float>(PaneHeaderHeight()) + 4},
                        g_font_size * 0.8f, 0, ResolveHlGroup("Comment"));
             yy = next_year;
             mm = next_month;
@@ -18398,11 +18406,11 @@ void DrawGantt(const Pane &pane, float x, float y, float w, float h, bool is_act
             float next_x = timeline_x + static_cast<float>(next_year_start - sess->anchor_day) * sess->pixels_per_day;
             char year_text[8];
             std::snprintf(year_text, sizeof(year_text), "%04d", yy);
-            float year_text_w = MeasureTextEx(g_font, year_text, g_font_size * 0.8f, 0).x;
-            DrawTextEx(g_font, year_text, Vector2{(gx + next_x - year_text_w) / 2.0f, y + 4}, g_font_size * 0.8f, 0,
+            float year_text_w = gfx::MeasureTextEx(g_font, year_text, g_font_size * 0.8f, 0).x;
+            gfx::DrawTextEx(g_font, year_text, gfx::Vector2{(gx + next_x - year_text_w) / 2.0f, y + 4}, g_font_size * 0.8f, 0,
                        ResolveHlGroup("Comment"));
         }
-        DrawLine(static_cast<int>(timeline_x), static_cast<int>(y + static_cast<float>(PaneHeaderHeight())), static_cast<int>(x + w),
+        gfx::DrawLine(static_cast<int>(timeline_x), static_cast<int>(y + static_cast<float>(PaneHeaderHeight())), static_cast<int>(x + w),
                  static_cast<int>(y + static_cast<float>(PaneHeaderHeight())), ResolveHlGroup("Border"));
     } else {
         for (int i = 0; i < visible_days; i++) {
@@ -18413,33 +18421,33 @@ void DrawGantt(const Pane &pane, float x, float y, float w, float h, bool is_act
             bool year_boundary = dd == 1 && mm == 1;
             bool draw_gridline = sess->ruler_scale == GanttSession::RulerScale::Days || year_boundary;
             if (!draw_gridline) continue;
-            DrawLine(static_cast<int>(gx), static_cast<int>(y + ruler_h), static_cast<int>(gx), static_cast<int>(y + h),
+            gfx::DrawLine(static_cast<int>(gx), static_cast<int>(y + ruler_h), static_cast<int>(gx), static_cast<int>(y + h),
                      ResolveHlGroup(sess->ruler_scale == GanttSession::RulerScale::Days ? "Border" : "BorderActive"));
             if (sess->ruler_scale == GanttSession::RulerScale::Days && sess->pixels_per_day > 14.0f) {
                 char buf[8];
                 std::snprintf(buf, sizeof(buf), "%02d", dd);
-                DrawTextEx(g_font, buf, Vector2{gx + 2, y + 4}, g_font_size * 0.8f, 0, ResolveHlGroup("Comment"));
+                gfx::DrawTextEx(g_font, buf, gfx::Vector2{gx + 2, y + 4}, g_font_size * 0.8f, 0, ResolveHlGroup("Comment"));
             } else if (sess->ruler_scale == GanttSession::RulerScale::Years) {
                 char buf[8];
                 std::snprintf(buf, sizeof(buf), "%04d", yy);
-                DrawTextEx(g_font, buf, Vector2{gx + 2, y + 4}, g_font_size * 0.8f, 0, ResolveHlGroup("Comment"));
+                gfx::DrawTextEx(g_font, buf, gfx::Vector2{gx + 2, y + 4}, g_font_size * 0.8f, 0, ResolveHlGroup("Comment"));
             }
         }
     }
     // Label/timeline divider -- draggable (UpdateGanttMouseInteraction) to
     // resize label_col_w, drawn a bit heavier than the plain day-gridlines
     // above so it reads as a handle.
-    DrawLine(static_cast<int>(timeline_x), static_cast<int>(y + ruler_h), static_cast<int>(x + w),
+    gfx::DrawLine(static_cast<int>(timeline_x), static_cast<int>(y + ruler_h), static_cast<int>(x + w),
               static_cast<int>(y + ruler_h), ResolveHlGroup("Border"));
     long long today = GanttTodayDay();
     float today_x = timeline_x + static_cast<float>(today - sess->anchor_day) * sess->pixels_per_day;
     if (today_x >= timeline_x && today_x <= x + w) {
-        Color today_color = ResolveHlGroup("Red");
-        DrawRectangle(static_cast<int>(today_x) - 1, static_cast<int>(y), 3, static_cast<int>(h), Fade(today_color, 0.85f));
-        DrawTextEx(g_font, "Today", Vector2{today_x + 4, y + 4}, g_font_size * 0.7f, 0, today_color);
+        gfx::Color today_color = ResolveHlGroup("Red");
+        gfx::DrawRectangle(static_cast<int>(today_x) - 1, static_cast<int>(y), 3, static_cast<int>(h), gfx::Fade(today_color, 0.85f));
+        gfx::DrawTextEx(g_font, "Today", gfx::Vector2{today_x + 4, y + 4}, g_font_size * 0.7f, 0, today_color);
     }
     bool divider_hot = sess->resizing_label_col;
-    DrawRectangle(static_cast<int>(timeline_x) - 1, static_cast<int>(y), divider_hot ? 3 : 1, static_cast<int>(h),
+    gfx::DrawRectangle(static_cast<int>(timeline_x) - 1, static_cast<int>(y), divider_hot ? 3 : 1, static_cast<int>(h),
                   ResolveHlGroup(divider_hot ? "BorderActive" : "Border"));
 
     // Draw below bars/labels so dependency arrows stay visible in the open
@@ -18457,7 +18465,7 @@ void DrawGantt(const Pane &pane, float x, float y, float w, float h, bool is_act
         bool is_focused = g_clean_gantt_export_buffer != pane.buffer_id && is_active && ri == sess->focused_row &&
                            (g_editor.CurrentMode() == Mode::GanttNormal || g_editor.CurrentMode() == Mode::GanttInsert);
         if (is_focused) {
-            DrawRectangle(static_cast<int>(x), static_cast<int>(row_y), static_cast<int>(w), row_h,
+            gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(row_y), static_cast<int>(w), row_h,
                           ResolveHlGroup("CursorLine"));
         }
 
@@ -18466,24 +18474,24 @@ void DrawGantt(const Pane &pane, float x, float y, float w, float h, bool is_act
         float indent = static_cast<float>(std::max(0, hd.level - 1)) * 14.0f;
         std::string label = is_group ? (sess->collapsed_headlines.count(hi) ? "+ " : "- ") : "  ";
         label += editing_this ? sess->edit_buffer : hd.title;
-        BeginScissorMode(static_cast<int>(x), static_cast<int>(row_y), static_cast<int>(label_w), row_h);
-        DrawTextEx(g_font, label.c_str(), Vector2{x + 6 + indent, row_y + 4}, g_font_size, 0, ResolveHlGroup("Normal"));
-        if (is_group) DrawTextEx(g_font, label.c_str(), Vector2{x + 7 + indent, row_y + 4}, g_font_size, 0, ResolveHlGroup("Normal"));
+        gfx::BeginScissorMode(static_cast<int>(x), static_cast<int>(row_y), static_cast<int>(label_w), row_h);
+        gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{x + 6 + indent, row_y + 4}, g_font_size, 0, ResolveHlGroup("Normal"));
+        if (is_group) gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{x + 7 + indent, row_y + 4}, g_font_size, 0, ResolveHlGroup("Normal"));
         std::string date_range = "Start " + GanttDateLabel(hd.scheduled);
         if (hd.deadline.present) date_range += "  →  Due " + GanttDateLabel(hd.deadline);
         else date_range += "  →  Due —";
         if (!hd.assignee.empty()) date_range += "  |  " + hd.assignee;
         date_range += "  |  " + std::to_string(hd.progress) + "%";
-        DrawTextEx(g_font, date_range.c_str(), Vector2{x + 6 + indent, row_y + g_font_size + 7}, g_font_size * 0.78f, 0,
+        gfx::DrawTextEx(g_font, date_range.c_str(), gfx::Vector2{x + 6 + indent, row_y + g_font_size + 7}, g_font_size * 0.78f, 0,
                    ResolveHlGroup("Comment"));
         if (editing_this && is_active) {
             std::string edit_indent(static_cast<size_t>(std::max(0, hd.level - 1)) * 2, ' ');
             std::string pre = sess->edit_buffer.substr(0, std::min<size_t>(static_cast<size_t>(sess->edit_cursor), sess->edit_buffer.size()));
-            float cx = x + 6 + MeasureTextEx(g_font, (edit_indent + pre).c_str(), g_font_size, 0).x;
-            DrawRectangle(static_cast<int>(cx), static_cast<int>(row_y + 4), 2, static_cast<int>(g_font_size),
+            float cx = x + 6 + gfx::MeasureTextEx(g_font, (edit_indent + pre).c_str(), g_font_size, 0).x;
+            gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(row_y + 4), 2, static_cast<int>(g_font_size),
                           ResolveHlGroup("Normal"));
         }
-        EndScissorMode();
+        gfx::EndScissorMode();
 
         bool being_dragged = sess->dragging && sess->drag_headline_index == hi;
         OrgTimestamp live_scheduled = hd.scheduled, live_deadline = hd.deadline;
@@ -18491,7 +18499,7 @@ void DrawGantt(const Pane &pane, float x, float y, float w, float h, bool is_act
             // Live preview follows the mouse -- computed the same way
             // UpdateGanttMouseInteraction commits it on release, so the
             // bar never visibly "snaps" at drop time.
-            float dx = GetMousePosition().x - sess->drag_start_x;
+            float dx = gfx::GetMousePosition().x - sess->drag_start_x;
             int delta_days = static_cast<int>(std::lround(dx / sess->pixels_per_day));
             if (sess->drag_mode == GanttSession::DragMode::Move) {
                 live_scheduled = ShiftTimestamp(sess->drag_orig_scheduled, delta_days);
@@ -18506,23 +18514,23 @@ void DrawGantt(const Pane &pane, float x, float y, float w, float h, bool is_act
 
         long long start_day = OrgDayNumber(live_scheduled.year, live_scheduled.month, live_scheduled.day);
         float bar_x = timeline_x + static_cast<float>(start_day - sess->anchor_day) * sess->pixels_per_day;
-        Color bar_color = hd.is_done_keyword ? ResolveHlGroup("Comment") : ResolveHlGroup("BorderActive");
+        gfx::Color bar_color = hd.is_done_keyword ? ResolveHlGroup("Comment") : ResolveHlGroup("BorderActive");
 
         if (live_deadline.present) {
             long long end_day = OrgDayNumber(live_deadline.year, live_deadline.month, live_deadline.day);
             float bar_w = std::max(4.0f, static_cast<float>(end_day - start_day) * sess->pixels_per_day);
-            Rectangle bar_rect{bar_x, row_y + (static_cast<float>(row_h) - kGanttBarHeight) / 2.0f, bar_w, kGanttBarHeight};
-            DrawRectangleRounded(bar_rect, 0.45f, 6, Fade(bar_color, 0.35f));
+            gfx::Rectangle bar_rect{bar_x, row_y + (static_cast<float>(row_h) - kGanttBarHeight) / 2.0f, bar_w, kGanttBarHeight};
+            gfx::DrawRectangleRounded(bar_rect, 0.45f, 6, gfx::Fade(bar_color, 0.35f));
             if (hd.progress > 0) {
-                Rectangle completed = bar_rect;
+                gfx::Rectangle completed = bar_rect;
                 completed.width = std::max(2.0f, bar_rect.width * static_cast<float>(hd.progress) / 100.0f);
-                DrawRectangleRounded(completed, 0.45f, 6, bar_color);
+                gfx::DrawRectangleRounded(completed, 0.45f, 6, bar_color);
             }
-            DrawRectangleRoundedLines(bar_rect, 0.45f, 6, is_group ? ResolveHlGroup("Normal") : bar_color);
-            if (is_focused) DrawRectangleRoundedLinesEx(bar_rect, 0.45f, 6, 2, ResolveHlGroup("BorderActive"));
+            gfx::DrawRectangleRoundedLines(bar_rect, 0.45f, 6, is_group ? ResolveHlGroup("Normal") : bar_color);
+            if (is_focused) gfx::DrawRectangleRoundedLinesEx(bar_rect, 0.45f, 6, 2, ResolveHlGroup("BorderActive"));
             if (bar_w >= 44.0f) {
                 std::string progress = std::to_string(hd.progress) + "%";
-                DrawTextEx(g_font, progress.c_str(), Vector2{bar_rect.x + 5, bar_rect.y - 2}, g_font_size * 0.58f, 0,
+                gfx::DrawTextEx(g_font, progress.c_str(), gfx::Vector2{bar_rect.x + 5, bar_rect.y - 2}, g_font_size * 0.58f, 0,
                            ResolveHlGroup("Normal"));
             }
             if (!being_dragged) {
@@ -18536,8 +18544,8 @@ void DrawGantt(const Pane &pane, float x, float y, float w, float h, bool is_act
         } else if (hd.effort.has_value()) {
             // Effort-only duration -- read-only in v1 (documented gap: no
             // drag-resize since editing "H:MM" isn't supported yet).
-            Rectangle bar_rect{bar_x, row_y + (static_cast<float>(row_h) - kGanttBarHeight) / 2.0f, 40, kGanttBarHeight};
-            DrawRectangleRounded(bar_rect, 0.45f, 6, Fade(bar_color, 0.6f));
+            gfx::Rectangle bar_rect{bar_x, row_y + (static_cast<float>(row_h) - kGanttBarHeight) / 2.0f, 40, kGanttBarHeight};
+            gfx::DrawRectangleRounded(bar_rect, 0.45f, 6, gfx::Fade(bar_color, 0.6f));
         } else {
             // Milestone: SCHEDULED only, no duration info at all -- a
             // small filled circle (DrawCircle, not a hand-rolled diamond
@@ -18546,10 +18554,10 @@ void DrawGantt(const Pane &pane, float x, float y, float w, float h, bool is_act
             // matching org-mode gantt exporters' own convention for a
             // zero-length task.
             float cy = row_y + static_cast<float>(row_h) / 2.0f;
-            DrawCircle(static_cast<int>(bar_x), static_cast<int>(cy), 6.0f, bar_color);
+            gfx::DrawCircle(static_cast<int>(bar_x), static_cast<int>(cy), 6.0f, bar_color);
             if (!being_dragged) {
                 int pane_id = pane.id, row_i = ri;
-                Rectangle hit{bar_x - 6, cy - 6, 12, 12};
+                gfx::Rectangle hit{bar_x - 6, cy - 6, 12, 12};
                 // Focuses this pane and sets the focused Gantt row to this milestone.
                 RegisterClickRegion(hit, [pane_id, row_i] {
                     g_editor.FocusPaneById(pane_id);
@@ -18560,9 +18568,9 @@ void DrawGantt(const Pane &pane, float x, float y, float w, float h, bool is_act
     }
 
     // Focuses this pane on a click that missed every row's bar/milestone.
-    RegisterClickRegion(Rectangle{x, y, w, h}, [pane_id = pane.id] { g_editor.FocusPaneById(pane_id); });
+    RegisterClickRegion(gfx::Rectangle{x, y, w, h}, [pane_id = pane.id] { g_editor.FocusPaneById(pane_id); });
 
-    EndScissorMode();
+    gfx::EndScissorMode();
 }
 
 // A small hand-drawn robot glyph (COLLAB_CURSORS_PLAN.md) for AI-agent
@@ -18580,24 +18588,24 @@ void DrawGantt(const Pane &pane, float x, float y, float w, float h, bool is_act
  * @param size Side length of the icon's overall square footprint.
  * @param color Color to draw the icon in.
  */
-void DrawRobotIcon(Vector2 pos, float size, Color color) {
+void DrawRobotIcon(gfx::Vector2 pos, float size, gfx::Color color) {
     const float antenna_h = size * 0.18f;
     const float head_y = pos.y + antenna_h;
     const float head_size = size - antenna_h;
     const float antenna_x = pos.x + size / 2.0f;
 
-    DrawLineEx(Vector2{antenna_x, pos.y}, Vector2{antenna_x, head_y}, std::max(1.0f, size * 0.06f), color);
-    DrawCircle(static_cast<int>(antenna_x), static_cast<int>(pos.y), std::max(1.0f, size * 0.07f), color);
+    gfx::DrawLineEx(gfx::Vector2{antenna_x, pos.y}, gfx::Vector2{antenna_x, head_y}, std::max(1.0f, size * 0.06f), color);
+    gfx::DrawCircle(static_cast<int>(antenna_x), static_cast<int>(pos.y), std::max(1.0f, size * 0.07f), color);
 
-    DrawRectangleRounded(Rectangle{pos.x, head_y, head_size, head_size}, 0.3f, 4, color);
+    gfx::DrawRectangleRounded(gfx::Rectangle{pos.x, head_y, head_size, head_size}, 0.3f, 4, color);
 
     // Eyes: two small dark dots punched through the head, so they read
     // clearly against the head's own (participant-identity) color rather
     // than needing a second color parameter.
     const float eye_r = head_size * 0.09f;
     const float eye_y = head_y + head_size * 0.42f;
-    DrawCircle(static_cast<int>(pos.x + head_size * 0.32f), static_cast<int>(eye_y), eye_r, BLACK);
-    DrawCircle(static_cast<int>(pos.x + head_size * 0.68f), static_cast<int>(eye_y), eye_r, BLACK);
+    gfx::DrawCircle(static_cast<int>(pos.x + head_size * 0.32f), static_cast<int>(eye_y), eye_r, gfx::Black);
+    gfx::DrawCircle(static_cast<int>(pos.x + head_size * 0.68f), static_cast<int>(eye_y), eye_r, gfx::Black);
 }
 
 // Small vector "microphone" icon for the tab bar's speech-to-text
@@ -18611,20 +18619,20 @@ void DrawRobotIcon(Vector2 pos, float size, Color color) {
  * @param size Side length of the icon's overall square footprint.
  * @param color Color to draw the icon in.
  */
-void DrawMicIcon(Vector2 pos, float size, Color color) {
+void DrawMicIcon(gfx::Vector2 pos, float size, gfx::Color color) {
     const float capsule_w = size * 0.42f;
     const float capsule_h = size * 0.56f;
     const float capsule_x = pos.x + (size - capsule_w) / 2.0f;
-    DrawRectangleRounded(Rectangle{capsule_x, pos.y, capsule_w, capsule_h}, 1.0f, 6, color);
+    gfx::DrawRectangleRounded(gfx::Rectangle{capsule_x, pos.y, capsule_w, capsule_h}, 1.0f, 6, color);
 
     const float stand_cx = capsule_x + capsule_w / 2.0f;
     const float stand_cy = pos.y + capsule_h * 0.78f;
     const float stand_r = capsule_w * 0.85f;
     const float stand_thick = std::max(1.0f, size * 0.07f);
-    DrawRing(Vector2{stand_cx, stand_cy}, stand_r - stand_thick, stand_r, 0.0f, 180.0f, 16, color);
+    gfx::DrawRing(gfx::Vector2{stand_cx, stand_cy}, stand_r - stand_thick, stand_r, 0.0f, 180.0f, 16, color);
 
-    DrawLineEx(Vector2{stand_cx, stand_cy + stand_r}, Vector2{stand_cx, pos.y + size}, stand_thick, color);
-    DrawLineEx(Vector2{stand_cx - size * 0.18f, pos.y + size}, Vector2{stand_cx + size * 0.18f, pos.y + size}, stand_thick,
+    gfx::DrawLineEx(gfx::Vector2{stand_cx, stand_cy + stand_r}, gfx::Vector2{stand_cx, pos.y + size}, stand_thick, color);
+    gfx::DrawLineEx(gfx::Vector2{stand_cx - size * 0.18f, pos.y + size}, gfx::Vector2{stand_cx + size * 0.18f, pos.y + size}, stand_thick,
                color);
 }
 
@@ -18645,48 +18653,48 @@ void DrawMicIcon(Vector2 pos, float size, Color color) {
  * @param status The agent's reported status string ("thinking", "writing", "awaiting_input",
  * or others handled further below; "" or "idle" draws nothing).
  */
-void DrawAgentStatusBadge(Vector2 center, float radius, const std::string &status) {
+void DrawAgentStatusBadge(gfx::Vector2 center, float radius, const std::string &status) {
     if (status.empty() || status == "idle") return;
     const int cx = static_cast<int>(center.x);
     const int cy = static_cast<int>(center.y);
     // Dark outline first so the badge pops against any of the chip's own
     // per-identity FNV-hash background color (ParticipantColor) behind
     // it, regardless of hue.
-    DrawCircle(cx, cy, radius + 1.5f, BLACK);
+    gfx::DrawCircle(cx, cy, radius + 1.5f, gfx::Black);
     if (status == "thinking") {
         // A slowly pulsing dot -- deliberating, no observable output yet.
-        const float pulse = 0.6f + 0.4f * sinf(static_cast<float>(GetTime()) * 3.0f);
-        Color c = Color{255, 193, 7, 255};
+        const float pulse = 0.6f + 0.4f * sinf(static_cast<float>(gfx::GetTime()) * 3.0f);
+        gfx::Color c = gfx::Color{255, 193, 7, 255};
         c.a = static_cast<unsigned char>(255 * pulse);
-        DrawCircle(cx, cy, radius, c);
+        gfx::DrawCircle(cx, cy, radius, c);
     } else if (status == "writing") {
         // A solid dot with a diagonal pencil-stroke through it -- actively
         // producing edits right now (set automatically by any
         // buffer.insertText/setLine/replaceLines call, see agent_rpc.cpp).
-        Color c = Color{76, 175, 80, 255};
-        DrawCircle(cx, cy, radius, c);
+        gfx::Color c = gfx::Color{76, 175, 80, 255};
+        gfx::DrawCircle(cx, cy, radius, c);
         const float r = radius * 0.6f;
-        DrawLineEx(Vector2{center.x - r, center.y + r}, Vector2{center.x + r, center.y - r}, std::max(1.0f, radius * 0.28f), WHITE);
+        gfx::DrawLineEx(gfx::Vector2{center.x - r, center.y + r}, gfx::Vector2{center.x + r, center.y - r}, std::max(1.0f, radius * 0.28f), gfx::White);
     } else if (status == "awaiting_input") {
         // A question mark -- needs the human to respond to something
         // (elsewhere, in the agent's own conversation -- not observable
         // by mep itself, always explicitly reported via session.setStatus).
-        Color c = Color{229, 57, 53, 255};
-        DrawCircle(cx, cy, radius, c);
+        gfx::Color c = gfx::Color{229, 57, 53, 255};
+        gfx::DrawCircle(cx, cy, radius, c);
         const std::string q = "?";
         const float qs = radius * 1.7f;
-        const Vector2 qsz = MeasureTextEx(g_font, q.c_str(), qs, 0);
-        DrawTextEx(g_font, q.c_str(), Vector2{center.x - qsz.x / 2.0f, center.y - qsz.y / 2.0f}, qs, 0, WHITE);
+        const gfx::Vector2 qsz = gfx::MeasureTextEx(g_font, q.c_str(), qs, 0);
+        gfx::DrawTextEx(g_font, q.c_str(), gfx::Vector2{center.x - qsz.x / 2.0f, center.y - qsz.y / 2.0f}, qs, 0, gfx::White);
     } else if (status == "done") {
         // A checkmark -- finished whatever it was doing.
-        Color c = Color{66, 165, 245, 255};
-        DrawCircle(cx, cy, radius, c);
-        Vector2 p1{center.x - radius * 0.5f, center.y};
-        Vector2 p2{center.x - radius * 0.1f, center.y + radius * 0.45f};
-        Vector2 p3{center.x + radius * 0.55f, center.y - radius * 0.4f};
+        gfx::Color c = gfx::Color{66, 165, 245, 255};
+        gfx::DrawCircle(cx, cy, radius, c);
+        gfx::Vector2 p1{center.x - radius * 0.5f, center.y};
+        gfx::Vector2 p2{center.x - radius * 0.1f, center.y + radius * 0.45f};
+        gfx::Vector2 p3{center.x + radius * 0.55f, center.y - radius * 0.4f};
         const float t = std::max(1.0f, radius * 0.28f);
-        DrawLineEx(p1, p2, t, WHITE);
-        DrawLineEx(p2, p3, t, WHITE);
+        gfx::DrawLineEx(p1, p2, t, gfx::White);
+        gfx::DrawLineEx(p2, p3, t, gfx::White);
     }
 }
 
@@ -18745,7 +18753,7 @@ float g_imgedit_swatch_y = 0.0f;
  * @param b End point, in screen pixels.
  * @param color Dash color.
  */
-void DrawImageEditorDashedSegment(Vector2 a, Vector2 b, Color color) {
+void DrawImageEditorDashedSegment(gfx::Vector2 a, gfx::Vector2 b, gfx::Color color) {
     constexpr float kDash = 6.0f, kGap = 4.0f;
     float dx = b.x - a.x, dy = b.y - a.y;
     float len = std::sqrt(dx * dx + dy * dy);
@@ -18756,7 +18764,7 @@ void DrawImageEditorDashedSegment(Vector2 a, Vector2 b, Color color) {
     while (pos < len) {
         float seg = std::min(draw ? kDash : kGap, len - pos);
         if (draw) {
-            DrawLineEx(Vector2{a.x + ux * pos, a.y + uy * pos}, Vector2{a.x + ux * (pos + seg), a.y + uy * (pos + seg)}, 1.5f,
+            gfx::DrawLineEx(gfx::Vector2{a.x + ux * pos, a.y + uy * pos}, gfx::Vector2{a.x + ux * (pos + seg), a.y + uy * (pos + seg)}, 1.5f,
                        color);
         }
         pos += seg;
@@ -18771,7 +18779,7 @@ void DrawImageEditorDashedSegment(Vector2 a, Vector2 b, Color color) {
  * @param closed Whether to also dash a segment from the last point back to the first.
  * @param color Dash color.
  */
-void DrawImageEditorDashedPath(const std::vector<Vector2> &points, bool closed, Color color) {
+void DrawImageEditorDashedPath(const std::vector<gfx::Vector2> &points, bool closed, gfx::Color color) {
     if (points.size() < 2) return;
     for (size_t i = 0; i + 1 < points.size(); i++) DrawImageEditorDashedSegment(points[i], points[i + 1], color);
     if (closed) DrawImageEditorDashedSegment(points.back(), points.front(), color);
@@ -18794,12 +18802,12 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
     int buffer_id = pane.buffer_id;
     int pane_id = pane.id;
     float font_size = MenuFontSize();
-    DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h),
+    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h),
                   ResolveHlGroup("NormalBg"));
 
     // --- Menubar ---
-    Rectangle menubar{x, y, w, kImgEditMenubarH};
-    DrawRectangleRec(menubar, ResolveHlGroup("MenuBar"));
+    gfx::Rectangle menubar{x, y, w, kImgEditMenubarH};
+    gfx::DrawRectangleRec(menubar, ResolveHlGroup("MenuBar"));
     struct ImgEditMenuItem {
         std::string label;
         std::function<void()> action;
@@ -18868,13 +18876,13 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
     float menu_x = x;
     std::vector<float> menu_starts(menus.size()), menu_widths(menus.size());
     for (size_t i = 0; i < menus.size(); i++) {
-        float mw = MeasureTextEx(g_font, menus[i].label.c_str(), font_size, 0).x + 16.0f;
+        float mw = gfx::MeasureTextEx(g_font, menus[i].label.c_str(), font_size, 0).x + 16.0f;
         menu_starts[i] = menu_x;
         menu_widths[i] = mw;
-        Rectangle item_rect{menu_x, y, mw, kImgEditMenubarH};
+        gfx::Rectangle item_rect{menu_x, y, mw, kImgEditMenubarH};
         bool open = g_imgedit_dropdown_open == static_cast<int>(i);
-        if (open) DrawRectangleRec(item_rect, ResolveHlGroup("MenuHighlight"));
-        DrawTextEx(g_font, menus[i].label.c_str(), Vector2{menu_x + 8.0f, y + (kImgEditMenubarH - font_size) / 2.0f},
+        if (open) gfx::DrawRectangleRec(item_rect, ResolveHlGroup("MenuHighlight"));
+        gfx::DrawTextEx(g_font, menus[i].label.c_str(), gfx::Vector2{menu_x + 8.0f, y + (kImgEditMenubarH - font_size) / 2.0f},
                    font_size, 0, ResolveHlGroup("MenuBarFg"));
         int idx = static_cast<int>(i);
         RegisterClickRegion(item_rect, [idx] { g_imgedit_dropdown_open = g_imgedit_dropdown_open == idx ? -1 : idx; });
@@ -18886,19 +18894,19 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
         float dd_x = menu_starts[static_cast<size_t>(g_imgedit_dropdown_open)];
         float dd_y = y + kImgEditMenubarH;
         float dd_w = 0.0f;
-        for (const auto &item : menu.items) dd_w = std::max(dd_w, MeasureTextEx(g_font, item.label.c_str(), font_size, 0).x);
+        for (const auto &item : menu.items) dd_w = std::max(dd_w, gfx::MeasureTextEx(g_font, item.label.c_str(), font_size, 0).x);
         dd_w += 24.0f;
         float item_h = font_size + 12.0f;
         float dd_h = item_h * static_cast<float>(menu.items.size());
-        DrawRectangle(static_cast<int>(dd_x), static_cast<int>(dd_y), static_cast<int>(dd_w), static_cast<int>(dd_h),
+        gfx::DrawRectangle(static_cast<int>(dd_x), static_cast<int>(dd_y), static_cast<int>(dd_w), static_cast<int>(dd_h),
                       ResolveHlGroup("Picker"));
-        DrawRectangleLinesEx(Rectangle{dd_x, dd_y, dd_w, dd_h}, 1.0f, ResolveHlGroup("Border"));
-        Vector2 dd_mouse = GetMousePosition();
+        gfx::DrawRectangleLinesEx(gfx::Rectangle{dd_x, dd_y, dd_w, dd_h}, 1.0f, ResolveHlGroup("Border"));
+        gfx::Vector2 dd_mouse = gfx::GetMousePosition();
         for (size_t i = 0; i < menu.items.size(); i++) {
-            Rectangle item_rect{dd_x, dd_y + static_cast<float>(i) * item_h, dd_w, item_h};
-            bool hovered = CheckCollisionPointRec(dd_mouse, item_rect);
-            if (hovered) DrawRectangleRec(item_rect, ResolveHlGroup("MenuHighlight"));
-            DrawTextEx(g_font, menu.items[i].label.c_str(), Vector2{dd_x + 10.0f, item_rect.y + 6.0f}, font_size, 0,
+            gfx::Rectangle item_rect{dd_x, dd_y + static_cast<float>(i) * item_h, dd_w, item_h};
+            bool hovered = gfx::CheckCollisionPointRec(dd_mouse, item_rect);
+            if (hovered) gfx::DrawRectangleRec(item_rect, ResolveHlGroup("MenuHighlight"));
+            gfx::DrawTextEx(g_font, menu.items[i].label.c_str(), gfx::Vector2{dd_x + 10.0f, item_rect.y + 6.0f}, font_size, 0,
                        ResolveHlGroup("MenuBarFg"));
             std::function<void()> action = menu.items[i].action;
             RegisterClickRegion(item_rect, [action] {
@@ -18913,28 +18921,28 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
     // canvas rect below -- kept in this same function, just a separate
     // block, so its RegisterClickRegion calls still land before this
     // frame's DispatchChromeClicks())
-    Rectangle toolbar{x, y + kImgEditMenubarH, w, kImgEditToolbarH};
-    DrawRectangleRec(toolbar, ResolveHlGroup("CursorLine"));
+    gfx::Rectangle toolbar{x, y + kImgEditMenubarH, w, kImgEditToolbarH};
+    gfx::DrawRectangleRec(toolbar, ResolveHlGroup("CursorLine"));
     {
         float bx = x + 6.0f;
         float by = toolbar.y + 3.0f;
         float bs = kImgEditToolbarH - 6.0f;
 
-        Rectangle minus_rect{bx, by, bs, bs};
-        DrawRectangleRounded(minus_rect, 0.25f, 6, ResolveHlGroup("Picker"));
-        DrawTextEx(g_font, "-", Vector2{minus_rect.x + minus_rect.width / 2.0f - 3.0f, minus_rect.y + 2.0f}, font_size, 0,
+        gfx::Rectangle minus_rect{bx, by, bs, bs};
+        gfx::DrawRectangleRounded(minus_rect, 0.25f, 6, ResolveHlGroup("Picker"));
+        gfx::DrawTextEx(g_font, "-", gfx::Vector2{minus_rect.x + minus_rect.width / 2.0f - 3.0f, minus_rect.y + 2.0f}, font_size, 0,
                    ResolveHlGroup("Normal"));
         RegisterClickRegion(minus_rect, [buffer_id] {
             if (auto *s = g_editor.GetImageEditorMutable(buffer_id)) s->brush_size = std::max(1, s->brush_size - 1);
         });
         bx = minus_rect.x + bs + 4.0f;
         std::string size_label = std::to_string(sess.brush_size) + "px";
-        Vector2 sl = MeasureTextEx(g_font, size_label.c_str(), font_size, 0);
-        DrawTextEx(g_font, size_label.c_str(), Vector2{bx, by + (bs - font_size) / 2.0f}, font_size, 0, ResolveHlGroup("Normal"));
+        gfx::Vector2 sl = gfx::MeasureTextEx(g_font, size_label.c_str(), font_size, 0);
+        gfx::DrawTextEx(g_font, size_label.c_str(), gfx::Vector2{bx, by + (bs - font_size) / 2.0f}, font_size, 0, ResolveHlGroup("Normal"));
         bx += sl.x + 6.0f;
-        Rectangle plus_rect{bx, by, bs, bs};
-        DrawRectangleRounded(plus_rect, 0.25f, 6, ResolveHlGroup("Picker"));
-        DrawTextEx(g_font, "+", Vector2{plus_rect.x + plus_rect.width / 2.0f - 4.0f, plus_rect.y + 2.0f}, font_size, 0,
+        gfx::Rectangle plus_rect{bx, by, bs, bs};
+        gfx::DrawRectangleRounded(plus_rect, 0.25f, 6, ResolveHlGroup("Picker"));
+        gfx::DrawTextEx(g_font, "+", gfx::Vector2{plus_rect.x + plus_rect.width / 2.0f - 4.0f, plus_rect.y + 2.0f}, font_size, 0,
                    ResolveHlGroup("Normal"));
         RegisterClickRegion(plus_rect, [buffer_id] {
             if (auto *s = g_editor.GetImageEditorMutable(buffer_id)) s->brush_size = std::min(64, s->brush_size + 1);
@@ -18944,12 +18952,12 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
         // Primary/secondary swatches themselves live at the bottom of the
         // left tool sidebar now (drawn further down, after the tool grid)
         // -- only the recent-colors strip stays here in the toolbar.
-        auto to_raylib_color = [](RgbaColor c) { return Color{c.r, c.g, c.b, c.a}; };
+        auto to_raylib_color = [](RgbaColor c) { return gfx::Color{c.r, c.g, c.b, c.a}; };
         for (size_t i = 0; i < sess.recent_colors.size() && bx + bs < toolbar.x + toolbar.width - 4.0f; i++) {
             RgbaColor c = sess.recent_colors[i];
-            Rectangle rc{bx, by + bs * 0.15f, bs * 0.7f, bs * 0.7f};
-            DrawRectangleRec(rc, to_raylib_color(c));
-            DrawRectangleLinesEx(rc, 1.0f, ResolveHlGroup("Border"));
+            gfx::Rectangle rc{bx, by + bs * 0.15f, bs * 0.7f, bs * 0.7f};
+            gfx::DrawRectangleRec(rc, to_raylib_color(c));
+            gfx::DrawRectangleLinesEx(rc, 1.0f, ResolveHlGroup("Border"));
             RegisterClickRegion(rc, [buffer_id, c] {
                 if (auto *s = g_editor.GetImageEditorMutable(buffer_id)) s->primary_color = c;
             });
@@ -18959,13 +18967,13 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
 
     // --- Layers sidebar (right) ---
     float sidebar_w = (w - kImgEditSidebarW > 250.0f) ? kImgEditSidebarW : 0.0f;
-    Rectangle sidebar{x + w - sidebar_w, y + kImgEditMenubarH + kImgEditToolbarH, sidebar_w,
+    gfx::Rectangle sidebar{x + w - sidebar_w, y + kImgEditMenubarH + kImgEditToolbarH, sidebar_w,
                       h - kImgEditMenubarH - kImgEditToolbarH};
     if (sidebar_w > 0.0f) {
-        DrawRectangleRec(sidebar, ResolveHlGroup("MenuBar"));
-        DrawLineEx(Vector2{sidebar.x, sidebar.y}, Vector2{sidebar.x, sidebar.y + sidebar.height}, 1.0f, ResolveHlGroup("Border"));
+        gfx::DrawRectangleRec(sidebar, ResolveHlGroup("MenuBar"));
+        gfx::DrawLineEx(gfx::Vector2{sidebar.x, sidebar.y}, gfx::Vector2{sidebar.x, sidebar.y + sidebar.height}, 1.0f, ResolveHlGroup("Border"));
         float ly = sidebar.y + 8.0f;
-        DrawTextEx(g_font, "Layers", Vector2{sidebar.x + 10.0f, ly}, font_size, 0, ResolveHlGroup("Normal"));
+        gfx::DrawTextEx(g_font, "Layers", gfx::Vector2{sidebar.x + 10.0f, ly}, font_size, 0, ResolveHlGroup("Normal"));
         ly += font_size + 8.0f;
         {
             float lbx = sidebar.x + 10.0f;
@@ -18982,13 +18990,13 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
                 {"^", "Move layer up", [buffer_id] { g_editor.ImageEditorMoveLayer(buffer_id, 1); }},
                 {"v", "Move layer down", [buffer_id] { g_editor.ImageEditorMoveLayer(buffer_id, -1); }},
             };
-            Vector2 mouse = GetMousePosition();
+            gfx::Vector2 mouse = gfx::GetMousePosition();
             for (const LOp &op : ops) {
-                Rectangle rect{lbx, ly, lbw, 22.0f};
-                bool hovered = CheckCollisionPointRec(mouse, rect);
-                DrawRectangleRounded(rect, 0.25f, 6, hovered ? ResolveHlGroup("CursorLine") : ResolveHlGroup("Picker"));
-                Vector2 ts = MeasureTextEx(g_font, op.label, font_size * 0.85f, 0);
-                DrawTextEx(g_font, op.label, Vector2{rect.x + (rect.width - ts.x) / 2.0f, rect.y + (rect.height - font_size * 0.85f) / 2.0f},
+                gfx::Rectangle rect{lbx, ly, lbw, 22.0f};
+                bool hovered = gfx::CheckCollisionPointRec(mouse, rect);
+                gfx::DrawRectangleRounded(rect, 0.25f, 6, hovered ? ResolveHlGroup("CursorLine") : ResolveHlGroup("Picker"));
+                gfx::Vector2 ts = gfx::MeasureTextEx(g_font, op.label, font_size * 0.85f, 0);
+                gfx::DrawTextEx(g_font, op.label, gfx::Vector2{rect.x + (rect.width - ts.x) / 2.0f, rect.y + (rect.height - font_size * 0.85f) / 2.0f},
                            font_size * 0.85f, 0, ResolveHlGroup("Normal"));
                 if (hovered) {
                     g_pane_control_tooltip_text = op.name;
@@ -19000,19 +19008,19 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
             ly += 22.0f + 10.0f;
         }
         float row_h = 34.0f;
-        Rectangle list_rect{sidebar.x, ly, sidebar.width, std::max(0.0f, sidebar.y + sidebar.height - ly)};
-        BeginScissorMode(static_cast<int>(list_rect.x), static_cast<int>(list_rect.y), static_cast<int>(list_rect.width),
+        gfx::Rectangle list_rect{sidebar.x, ly, sidebar.width, std::max(0.0f, sidebar.y + sidebar.height - ly)};
+        gfx::BeginScissorMode(static_cast<int>(list_rect.x), static_cast<int>(list_rect.y), static_cast<int>(list_rect.width),
                           static_cast<int>(list_rect.height));
         float ry = ly;
         for (int li = static_cast<int>(sess.layers.size()) - 1; li >= 0; li--) {
             ImageEditorLayer &layer = sess.layers[static_cast<size_t>(li)];
-            Rectangle row{sidebar.x, ry, sidebar.width, row_h};
+            gfx::Rectangle row{sidebar.x, ry, sidebar.width, row_h};
             bool active_layer = li == sess.active_layer;
-            if (active_layer) DrawRectangleRec(row, ResolveHlGroup("AccentTint"));
-            Rectangle vis_rect{row.x + 6.0f, row.y + (row_h - 18.0f) / 2.0f, 18.0f, 18.0f};
-            DrawRectangleLinesEx(vis_rect, 1.2f, ResolveHlGroup("MutedFg"));
+            if (active_layer) gfx::DrawRectangleRec(row, ResolveHlGroup("AccentTint"));
+            gfx::Rectangle vis_rect{row.x + 6.0f, row.y + (row_h - 18.0f) / 2.0f, 18.0f, 18.0f};
+            gfx::DrawRectangleLinesEx(vis_rect, 1.2f, ResolveHlGroup("MutedFg"));
             if (layer.visible) {
-                DrawLineEx(Vector2{vis_rect.x + 2.0f, vis_rect.y + 9.0f}, Vector2{vis_rect.x + 16.0f, vis_rect.y + 9.0f}, 1.5f,
+                gfx::DrawLineEx(gfx::Vector2{vis_rect.x + 2.0f, vis_rect.y + 9.0f}, gfx::Vector2{vis_rect.x + 16.0f, vis_rect.y + 9.0f}, 1.5f,
                            ResolveHlGroup("Green"));
             }
             int li_capture = li;
@@ -19026,10 +19034,10 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
             float name_x = vis_rect.x + vis_rect.width + 8.0f;
             float name_w = std::max(0.0f, sidebar.width - (name_x - sidebar.x) - 8.0f);
             std::string name = layer.name;
-            while (!name.empty() && MeasureTextEx(g_font, name.c_str(), font_size * 0.9f, 0).x > name_w) name.pop_back();
-            DrawTextEx(g_font, name.c_str(), Vector2{name_x, row.y + 4.0f}, font_size * 0.9f, 0,
+            while (!name.empty() && gfx::MeasureTextEx(g_font, name.c_str(), font_size * 0.9f, 0).x > name_w) name.pop_back();
+            gfx::DrawTextEx(g_font, name.c_str(), gfx::Vector2{name_x, row.y + 4.0f}, font_size * 0.9f, 0,
                        active_layer ? ResolveHlGroup("Accent") : ResolveHlGroup("Normal"));
-            Rectangle name_rect{name_x, row.y, name_w, row_h * 0.6f};
+            gfx::Rectangle name_rect{name_x, row.y, name_w, row_h * 0.6f};
             RegisterClickRegion(name_rect, [buffer_id, li_capture] {
                 auto *s = g_editor.GetImageEditorMutable(buffer_id);
                 if (!s) return;
@@ -19049,12 +19057,12 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
                 }
             });
             float op_y = row.y + row_h * 0.6f;
-            Rectangle op_track{name_x, op_y, name_w, 6.0f};
-            DrawRectangleRec(op_track, ResolveHlGroup("CursorLine"));
-            Rectangle op_fill{name_x, op_y, name_w * layer.opacity, 6.0f};
-            DrawRectangleRec(op_fill, ResolveHlGroup("Accent"));
+            gfx::Rectangle op_track{name_x, op_y, name_w, 6.0f};
+            gfx::DrawRectangleRec(op_track, ResolveHlGroup("CursorLine"));
+            gfx::Rectangle op_fill{name_x, op_y, name_w * layer.opacity, 6.0f};
+            gfx::DrawRectangleRec(op_fill, ResolveHlGroup("Accent"));
             RegisterClickRegion(op_track, [buffer_id, li_capture, name_x, name_w] {
-                float mx2 = GetMousePosition().x;
+                float mx2 = gfx::GetMousePosition().x;
                 float frac = name_w > 0.0f ? std::clamp((mx2 - name_x) / name_w, 0.0f, 1.0f) : 1.0f;
                 auto *s = g_editor.GetImageEditorMutable(buffer_id);
                 if (s && li_capture >= 0 && li_capture < static_cast<int>(s->layers.size())) {
@@ -19065,10 +19073,10 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
             RegisterClickRegion(row, [buffer_id, li_capture] {
                 if (auto *s = g_editor.GetImageEditorMutable(buffer_id)) s->active_layer = li_capture;
             });
-            DrawLineEx(Vector2{row.x, row.y + row_h}, Vector2{row.x + row.width, row.y + row_h}, 1.0f, ResolveHlGroup("Border"));
+            gfx::DrawLineEx(gfx::Vector2{row.x, row.y + row_h}, gfx::Vector2{row.x + row.width, row.y + row_h}, 1.0f, ResolveHlGroup("Border"));
             ry += row_h;
         }
-        EndScissorMode();
+        gfx::EndScissorMode();
     }
 
     // --- Tool sidebar (left) --- a vertical icon palette, Photoshop/GIMP-
@@ -19079,11 +19087,11 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
     // Nerd Font Symbols subset as every other icon in this codebase (see
     // editor.h's own comment on IconForFilename) -- NOT g_font, which has
     // no glyph at these codepoints.
-    Rectangle tool_sidebar{x, y + kImgEditMenubarH + kImgEditToolbarH, kImgEditToolSidebarW,
+    gfx::Rectangle tool_sidebar{x, y + kImgEditMenubarH + kImgEditToolbarH, kImgEditToolSidebarW,
                             h - kImgEditMenubarH - kImgEditToolbarH};
-    DrawRectangleRec(tool_sidebar, ResolveHlGroup("MenuBar"));
-    DrawLineEx(Vector2{tool_sidebar.x + tool_sidebar.width, tool_sidebar.y},
-               Vector2{tool_sidebar.x + tool_sidebar.width, tool_sidebar.y + tool_sidebar.height}, 1.0f, ResolveHlGroup("Border"));
+    gfx::DrawRectangleRec(tool_sidebar, ResolveHlGroup("MenuBar"));
+    gfx::DrawLineEx(gfx::Vector2{tool_sidebar.x + tool_sidebar.width, tool_sidebar.y},
+               gfx::Vector2{tool_sidebar.x + tool_sidebar.width, tool_sidebar.y + tool_sidebar.height}, 1.0f, ResolveHlGroup("Border"));
     {
         struct ToolBtn {
             ImageEditorTool tool;
@@ -19113,20 +19121,20 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
         float grid_x = tool_sidebar.x + kGap;
         float grid_y = tool_sidebar.y + 6.0f;
         float icon_size = font_size * 1.15f;
-        Vector2 mouse = GetMousePosition();
-        BeginScissorMode(static_cast<int>(tool_sidebar.x), static_cast<int>(tool_sidebar.y), static_cast<int>(tool_sidebar.width),
+        gfx::Vector2 mouse = gfx::GetMousePosition();
+        gfx::BeginScissorMode(static_cast<int>(tool_sidebar.x), static_cast<int>(tool_sidebar.y), static_cast<int>(tool_sidebar.width),
                           static_cast<int>(tool_sidebar.height));
         int idx = 0;
         for (const ToolBtn &tb : kTools) {
             int col = idx % kCols, row = idx / kCols;
-            Rectangle rect{grid_x + static_cast<float>(col) * (bs + kGap), grid_y + static_cast<float>(row) * (bs + kGap), bs, bs};
+            gfx::Rectangle rect{grid_x + static_cast<float>(col) * (bs + kGap), grid_y + static_cast<float>(row) * (bs + kGap), bs, bs};
             bool active = sess.tool == tb.tool;
-            bool hovered = CheckCollisionPointRec(mouse, rect);
-            if (active) DrawRectangleRounded(rect, 0.25f, 6, ResolveHlGroup("AccentTint"));
-            else if (hovered) DrawRectangleRounded(rect, 0.25f, 6, ResolveHlGroup("Picker"));
+            bool hovered = gfx::CheckCollisionPointRec(mouse, rect);
+            if (active) gfx::DrawRectangleRounded(rect, 0.25f, 6, ResolveHlGroup("AccentTint"));
+            else if (hovered) gfx::DrawRectangleRounded(rect, 0.25f, 6, ResolveHlGroup("Picker"));
             std::string glyph = Utf8FromCodepoint(tb.icon_codepoint);
             float gw = MeasureUiText(glyph, icon_size);
-            DrawUiText(glyph, Vector2{rect.x + (rect.width - gw) / 2.0f, rect.y + (rect.height - icon_size) / 2.0f}, icon_size,
+            DrawUiText(glyph, gfx::Vector2{rect.x + (rect.width - gw) / 2.0f, rect.y + (rect.height - icon_size) / 2.0f}, icon_size,
                        active ? ResolveHlGroup("Accent") : ResolveHlGroup("Normal"));
             if (hovered) {
                 g_pane_control_tooltip_text = ImageEditorToolName(tb.tool);
@@ -19142,14 +19150,14 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
         // Primary/secondary swatches, anchored to the sidebar's bottom
         // edge (not right after the tool grid) so they stay put regardless
         // of how many tool rows there are above them.
-        auto to_raylib_color = [](RgbaColor c) { return Color{c.r, c.g, c.b, c.a}; };
+        auto to_raylib_color = [](RgbaColor c) { return gfx::Color{c.r, c.g, c.b, c.a}; };
         float swatch_y = tool_sidebar.y + tool_sidebar.height - bs - 10.0f;
-        Rectangle pri_rect{grid_x, swatch_y, bs, bs};
+        gfx::Rectangle pri_rect{grid_x, swatch_y, bs, bs};
         g_imgedit_swatch_x = pri_rect.x;
         g_imgedit_swatch_y = pri_rect.y;
-        DrawRectangleRec(pri_rect, to_raylib_color(sess.primary_color));
-        DrawRectangleLinesEx(pri_rect, 1.5f, ResolveHlGroup("Border"));
-        if (CheckCollisionPointRec(mouse, pri_rect)) {
+        gfx::DrawRectangleRec(pri_rect, to_raylib_color(sess.primary_color));
+        gfx::DrawRectangleLinesEx(pri_rect, 1.5f, ResolveHlGroup("Border"));
+        if (gfx::CheckCollisionPointRec(mouse, pri_rect)) {
             g_pane_control_tooltip_text = "Foreground color";
             g_pane_control_tooltip_anchor = pri_rect;
         }
@@ -19160,10 +19168,10 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
                 g_imgedit_picker_target = 0;
             }
         });
-        Rectangle sec_rect{grid_x + bs + kGap, swatch_y, bs, bs};
-        DrawRectangleRec(sec_rect, to_raylib_color(sess.secondary_color));
-        DrawRectangleLinesEx(sec_rect, 1.5f, ResolveHlGroup("Border"));
-        if (CheckCollisionPointRec(mouse, sec_rect)) {
+        gfx::Rectangle sec_rect{grid_x + bs + kGap, swatch_y, bs, bs};
+        gfx::DrawRectangleRec(sec_rect, to_raylib_color(sess.secondary_color));
+        gfx::DrawRectangleLinesEx(sec_rect, 1.5f, ResolveHlGroup("Border"));
+        if (gfx::CheckCollisionPointRec(mouse, sec_rect)) {
             g_pane_control_tooltip_text = "Background color";
             g_pane_control_tooltip_anchor = sec_rect;
         }
@@ -19174,43 +19182,43 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
                 g_imgedit_picker_target = 1;
             }
         });
-        EndScissorMode();
+        gfx::EndScissorMode();
     }
 
     // --- Canvas ---
-    Rectangle canvas{x + kImgEditToolSidebarW, y + kImgEditMenubarH + kImgEditToolbarH, w - kImgEditToolSidebarW - sidebar_w,
+    gfx::Rectangle canvas{x + kImgEditToolSidebarW, y + kImgEditMenubarH + kImgEditToolbarH, w - kImgEditToolSidebarW - sidebar_w,
                       h - kImgEditMenubarH - kImgEditToolbarH};
     if (canvas.width > 0.0f && canvas.height > 0.0f) {
         g_editor.ResizeImageEditorViewport(buffer_id, static_cast<int>(canvas.width), static_cast<int>(canvas.height));
-        Texture2D tex = GetOrLoadImageEditorTexture(buffer_id, sess);
-        BeginScissorMode(static_cast<int>(canvas.x), static_cast<int>(canvas.y), static_cast<int>(canvas.width),
+        gfx::Texture2D tex = GetOrLoadImageEditorTexture(buffer_id, sess);
+        gfx::BeginScissorMode(static_cast<int>(canvas.x), static_cast<int>(canvas.y), static_cast<int>(canvas.width),
                           static_cast<int>(canvas.height));
-        DrawRectangleRec(canvas, ResolveHlGroup("NormalBg"));
+        gfx::DrawRectangleRec(canvas, ResolveHlGroup("NormalBg"));
         int canvas_px_w = static_cast<int>(static_cast<float>(sess.width) * sess.zoom);
         int canvas_px_h = static_cast<int>(static_cast<float>(sess.height) * sess.zoom);
         float img_x = canvas.x - static_cast<float>(sess.pan_x);
         float img_y = canvas.y - static_cast<float>(sess.pan_y);
         constexpr int kCheck = 8;
-        Color check1 = ResolveHlGroup("CursorLine"), check2 = ResolveHlGroup("NormalBg");
+        gfx::Color check1 = ResolveHlGroup("CursorLine"), check2 = ResolveHlGroup("NormalBg");
         for (int cy2 = 0; cy2 * kCheck < canvas_px_h; cy2++) {
             for (int cx2 = 0; cx2 * kCheck < canvas_px_w; cx2++) {
                 bool odd = (cx2 + cy2) % 2 != 0;
-                DrawRectangle(static_cast<int>(img_x) + cx2 * kCheck, static_cast<int>(img_y) + cy2 * kCheck, kCheck, kCheck,
+                gfx::DrawRectangle(static_cast<int>(img_x) + cx2 * kCheck, static_cast<int>(img_y) + cy2 * kCheck, kCheck, kCheck,
                               odd ? check1 : check2);
             }
         }
-        DrawTextureEx(tex, Vector2{img_x, img_y}, 0.0f, sess.zoom, WHITE);
+        gfx::DrawTextureEx(tex, gfx::Vector2{img_x, img_y}, 0.0f, sess.zoom, gfx::White);
         if (sess.show_grid && sess.zoom >= 4.0f) {
             for (int gx = 0; gx <= sess.width; gx++) {
                 float sx = img_x + static_cast<float>(gx) * sess.zoom;
-                DrawLineEx(Vector2{sx, std::max(canvas.y, img_y)},
-                           Vector2{sx, std::min(canvas.y + canvas.height, img_y + static_cast<float>(canvas_px_h))}, 1.0f,
+                gfx::DrawLineEx(gfx::Vector2{sx, std::max(canvas.y, img_y)},
+                           gfx::Vector2{sx, std::min(canvas.y + canvas.height, img_y + static_cast<float>(canvas_px_h))}, 1.0f,
                            ResolveHlGroup("Border"));
             }
             for (int gy = 0; gy <= sess.height; gy++) {
                 float sy = img_y + static_cast<float>(gy) * sess.zoom;
-                DrawLineEx(Vector2{std::max(canvas.x, img_x), sy},
-                           Vector2{std::min(canvas.x + canvas.width, img_x + static_cast<float>(canvas_px_w)), sy}, 1.0f,
+                gfx::DrawLineEx(gfx::Vector2{std::max(canvas.x, img_x), sy},
+                           gfx::Vector2{std::min(canvas.x + canvas.width, img_x + static_cast<float>(canvas_px_w)), sy}, 1.0f,
                            ResolveHlGroup("Border"));
             }
         }
@@ -19225,17 +19233,17 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
             sess.last_x = sess.last_y = -1;
         }
 
-        Vector2 mouse = GetMousePosition();
-        bool mouse_in_canvas = CheckCollisionPointRec(mouse, canvas);
+        gfx::Vector2 mouse = gfx::GetMousePosition();
+        bool mouse_in_canvas = gfx::CheckCollisionPointRec(mouse, canvas);
         int mcx = static_cast<int>(std::floor((mouse.x - img_x) / sess.zoom));
         int mcy = static_cast<int>(std::floor((mouse.y - img_y) / sess.zoom));
 
         bool want_pan_drag = is_active && mouse_in_canvas &&
-                              ((sess.tool == ImageEditorTool::Pan && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) ||
-                               IsMouseButtonPressed(MOUSE_BUTTON_MIDDLE));
+                              ((sess.tool == ImageEditorTool::Pan && gfx::IsMouseButtonPressed(gfx::MouseButton::Left)) ||
+                               gfx::IsMouseButtonPressed(gfx::MouseButton::Middle));
         if (want_pan_drag) g_imgedit_pan_drag = {true, buffer_id, mouse.x, mouse.y, sess.pan_x, sess.pan_y};
         if (g_imgedit_pan_drag.active && g_imgedit_pan_drag.buffer_id == buffer_id) {
-            if (IsMouseButtonDown(MOUSE_BUTTON_LEFT) || IsMouseButtonDown(MOUSE_BUTTON_MIDDLE)) {
+            if (gfx::IsMouseButtonDown(gfx::MouseButton::Left) || gfx::IsMouseButtonDown(gfx::MouseButton::Middle)) {
                 int max_pan_x = std::max(0, canvas_px_w - static_cast<int>(canvas.width));
                 int max_pan_y = std::max(0, canvas_px_h - static_cast<int>(canvas.height));
                 sess.pan_x = std::clamp(g_imgedit_pan_drag.start_pan_x - static_cast<int>(mouse.x - g_imgedit_pan_drag.start_mouse_x),
@@ -19255,10 +19263,10 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
         bool is_move_tool = sess.tool == ImageEditorTool::Move;
         bool use_left_for_paint = sess.tool != ImageEditorTool::Pan;
         auto to_screen = [&](int px, int py) {
-            return Vector2{img_x + static_cast<float>(px) * sess.zoom, img_y + static_cast<float>(py) * sess.zoom};
+            return gfx::Vector2{img_x + static_cast<float>(px) * sess.zoom, img_y + static_cast<float>(py) * sess.zoom};
         };
         if (is_active && use_left_for_paint) {
-            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && mouse_in_canvas) {
+            if (gfx::IsMouseButtonPressed(gfx::MouseButton::Left) && mouse_in_canvas) {
                 if (painting_tool || shape_tool) {
                     g_editor.PushUndoImageEditor(buffer_id);
                     sess.stroking = true;
@@ -19287,7 +19295,7 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
                     sess.stroke_start_x = mcx;
                     sess.stroke_start_y = mcy;
                 }
-            } else if (IsMouseButtonDown(MOUSE_BUTTON_LEFT) && sess.stroking) {
+            } else if (gfx::IsMouseButtonDown(gfx::MouseButton::Left) && sess.stroking) {
                 if (painting_tool) {
                     g_editor.ImageEditorStrokeTo(sess, sess.last_x, sess.last_y, mcx, mcy);
                     sess.last_x = mcx;
@@ -19296,9 +19304,9 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
                     auto &pts = sess.selection.lasso_points;
                     if (pts.empty() || pts.back().first != mcx || pts.back().second != mcy) pts.emplace_back(mcx, mcy);
                 }
-            } else if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT) && sess.stroking) {
+            } else if (gfx::IsMouseButtonReleased(gfx::MouseButton::Left) && sess.stroking) {
                 if (shape_tool) {
-                    bool filled = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+                    bool filled = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
                     if (sess.tool == ImageEditorTool::Line) {
                         g_editor.ImageEditorCommitLine(sess, sess.stroke_start_x, sess.stroke_start_y, mcx, mcy);
                     } else if (sess.tool == ImageEditorTool::Rectangle) {
@@ -19325,41 +19333,41 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
             }
         }
 
-        Color selection_color = ResolveHlGroup("Accent");
+        gfx::Color selection_color = ResolveHlGroup("Accent");
         if (sess.stroking && shape_tool) {
             float p0x = img_x + static_cast<float>(sess.stroke_start_x) * sess.zoom;
             float p0y = img_y + static_cast<float>(sess.stroke_start_y) * sess.zoom;
             float p1x = img_x + static_cast<float>(mcx) * sess.zoom;
             float p1y = img_y + static_cast<float>(mcy) * sess.zoom;
-            Color preview_color = ResolveHlGroup("Accent");
+            gfx::Color preview_color = ResolveHlGroup("Accent");
             if (sess.tool == ImageEditorTool::Line) {
-                DrawLineEx(Vector2{p0x, p0y}, Vector2{p1x, p1y}, std::max(1.0f, sess.zoom), preview_color);
+                gfx::DrawLineEx(gfx::Vector2{p0x, p0y}, gfx::Vector2{p1x, p1y}, std::max(1.0f, sess.zoom), preview_color);
             } else if (sess.tool == ImageEditorTool::Rectangle) {
-                Rectangle pr{std::min(p0x, p1x), std::min(p0y, p1y), std::abs(p1x - p0x), std::abs(p1y - p0y)};
-                DrawRectangleLinesEx(pr, 1.5f, preview_color);
+                gfx::Rectangle pr{std::min(p0x, p1x), std::min(p0y, p1y), std::abs(p1x - p0x), std::abs(p1y - p0y)};
+                gfx::DrawRectangleLinesEx(pr, 1.5f, preview_color);
             } else if (sess.tool == ImageEditorTool::Ellipse) {
-                Vector2 center{(p0x + p1x) / 2.0f, (p0y + p1y) / 2.0f};
-                DrawEllipseLines(static_cast<int>(center.x), static_cast<int>(center.y), std::abs(p1x - p0x) / 2.0f,
+                gfx::Vector2 center{(p0x + p1x) / 2.0f, (p0y + p1y) / 2.0f};
+                gfx::DrawEllipseLines(static_cast<int>(center.x), static_cast<int>(center.y), std::abs(p1x - p0x) / 2.0f,
                                   std::abs(p1y - p0y) / 2.0f, preview_color);
             }
         } else if (sess.stroking && select_tool) {
-            Vector2 p0 = to_screen(sess.stroke_start_x, sess.stroke_start_y);
-            Vector2 p1 = to_screen(mcx, mcy);
+            gfx::Vector2 p0 = to_screen(sess.stroke_start_x, sess.stroke_start_y);
+            gfx::Vector2 p1 = to_screen(mcx, mcy);
             if (sess.tool == ImageEditorTool::SelectRect) {
-                DrawImageEditorDashedPath({p0, Vector2{p1.x, p0.y}, p1, Vector2{p0.x, p1.y}}, true, selection_color);
+                DrawImageEditorDashedPath({p0, gfx::Vector2{p1.x, p0.y}, p1, gfx::Vector2{p0.x, p1.y}}, true, selection_color);
             } else {
-                Vector2 center{(p0.x + p1.x) / 2.0f, (p0.y + p1.y) / 2.0f};
+                gfx::Vector2 center{(p0.x + p1.x) / 2.0f, (p0.y + p1.y) / 2.0f};
                 float rx = std::abs(p1.x - p0.x) / 2.0f, ry = std::abs(p1.y - p0.y) / 2.0f;
-                std::vector<Vector2> pts;
+                std::vector<gfx::Vector2> pts;
                 constexpr int kEllipseSegs = 40;
                 for (int i = 0; i < kEllipseSegs; i++) {
-                    float t = static_cast<float>(i) / static_cast<float>(kEllipseSegs) * (2.0f * PI);
-                    pts.push_back(Vector2{center.x + rx * std::cos(t), center.y + ry * std::sin(t)});
+                    float t = static_cast<float>(i) / static_cast<float>(kEllipseSegs) * (2.0f * gfx::kPi);
+                    pts.push_back(gfx::Vector2{center.x + rx * std::cos(t), center.y + ry * std::sin(t)});
                 }
                 DrawImageEditorDashedPath(pts, true, selection_color);
             }
         } else if (sess.stroking && is_lasso) {
-            std::vector<Vector2> pts;
+            std::vector<gfx::Vector2> pts;
             for (const auto &p : sess.selection.lasso_points) pts.push_back(to_screen(p.first, p.second));
             pts.push_back(to_screen(mcx, mcy));
             DrawImageEditorDashedPath(pts, false, selection_color);
@@ -19374,31 +19382,31 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
             } else {
                 ImageEditorSelectionBounds(sess.selection, sess.width, sess.height, bx0, by0, bx1, by1);
             }
-            Vector2 p0 = to_screen(bx0 + dx, by0 + dy);
-            Vector2 p1 = to_screen(bx1 + 1 + dx, by1 + 1 + dy);
-            DrawImageEditorDashedPath({p0, Vector2{p1.x, p0.y}, p1, Vector2{p0.x, p1.y}}, true, selection_color);
+            gfx::Vector2 p0 = to_screen(bx0 + dx, by0 + dy);
+            gfx::Vector2 p1 = to_screen(bx1 + 1 + dx, by1 + 1 + dy);
+            DrawImageEditorDashedPath({p0, gfx::Vector2{p1.x, p0.y}, p1, gfx::Vector2{p0.x, p1.y}}, true, selection_color);
         } else if (sess.selection.kind != ImageEditorSelectionKind::None) {
             // Not mid-gesture -- draw the persisted selection at its own
             // stored coordinates, so it stays visible while e.g. painting
             // with a different tool or just looking at the canvas.
             if (sess.selection.kind == ImageEditorSelectionKind::Rect) {
-                Vector2 p0 = to_screen(sess.selection.x0, sess.selection.y0);
-                Vector2 p1 = to_screen(sess.selection.x1, sess.selection.y1);
-                DrawImageEditorDashedPath({p0, Vector2{p1.x, p0.y}, p1, Vector2{p0.x, p1.y}}, true, selection_color);
+                gfx::Vector2 p0 = to_screen(sess.selection.x0, sess.selection.y0);
+                gfx::Vector2 p1 = to_screen(sess.selection.x1, sess.selection.y1);
+                DrawImageEditorDashedPath({p0, gfx::Vector2{p1.x, p0.y}, p1, gfx::Vector2{p0.x, p1.y}}, true, selection_color);
             } else if (sess.selection.kind == ImageEditorSelectionKind::Ellipse) {
-                Vector2 p0 = to_screen(sess.selection.x0, sess.selection.y0);
-                Vector2 p1 = to_screen(sess.selection.x1, sess.selection.y1);
-                Vector2 center{(p0.x + p1.x) / 2.0f, (p0.y + p1.y) / 2.0f};
+                gfx::Vector2 p0 = to_screen(sess.selection.x0, sess.selection.y0);
+                gfx::Vector2 p1 = to_screen(sess.selection.x1, sess.selection.y1);
+                gfx::Vector2 center{(p0.x + p1.x) / 2.0f, (p0.y + p1.y) / 2.0f};
                 float rx = std::abs(p1.x - p0.x) / 2.0f, ry = std::abs(p1.y - p0.y) / 2.0f;
-                std::vector<Vector2> pts;
+                std::vector<gfx::Vector2> pts;
                 constexpr int kEllipseSegs = 40;
                 for (int i = 0; i < kEllipseSegs; i++) {
-                    float t = static_cast<float>(i) / static_cast<float>(kEllipseSegs) * (2.0f * PI);
-                    pts.push_back(Vector2{center.x + rx * std::cos(t), center.y + ry * std::sin(t)});
+                    float t = static_cast<float>(i) / static_cast<float>(kEllipseSegs) * (2.0f * gfx::kPi);
+                    pts.push_back(gfx::Vector2{center.x + rx * std::cos(t), center.y + ry * std::sin(t)});
                 }
                 DrawImageEditorDashedPath(pts, true, selection_color);
             } else if (sess.selection.kind == ImageEditorSelectionKind::Lasso) {
-                std::vector<Vector2> pts;
+                std::vector<gfx::Vector2> pts;
                 for (const auto &p : sess.selection.lasso_points) pts.push_back(to_screen(p.first, p.second));
                 DrawImageEditorDashedPath(pts, true, selection_color);
             }
@@ -19413,12 +19421,12 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
         }
         if (sess.selection.kind != ImageEditorSelectionKind::None) status += "  [selection]";
         float status_font = font_size * 0.85f;
-        Vector2 st = MeasureTextEx(g_font, status.c_str(), status_font, 0);
-        Rectangle status_bg{canvas.x + 4.0f, canvas.y + canvas.height - st.y - 10.0f, st.x + 12.0f, st.y + 6.0f};
-        DrawRectangleRounded(status_bg, 0.3f, 4, Color{0, 0, 0, 140});
-        DrawTextEx(g_font, status.c_str(), Vector2{status_bg.x + 6.0f, status_bg.y + 3.0f}, status_font, 0, WHITE);
+        gfx::Vector2 st = gfx::MeasureTextEx(g_font, status.c_str(), status_font, 0);
+        gfx::Rectangle status_bg{canvas.x + 4.0f, canvas.y + canvas.height - st.y - 10.0f, st.x + 12.0f, st.y + 6.0f};
+        gfx::DrawRectangleRounded(status_bg, 0.3f, 4, gfx::Color{0, 0, 0, 140});
+        gfx::DrawTextEx(g_font, status.c_str(), gfx::Vector2{status_bg.x + 6.0f, status_bg.y + 3.0f}, status_font, 0, gfx::White);
 
-        EndScissorMode();
+        gfx::EndScissorMode();
     }
 
     // --- Color-picker popup (drawn last, over everything else) ---
@@ -19428,29 +19436,29 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
         // upward from them rather than downward off the pane's edge.
         float px = g_imgedit_swatch_x;
         float py = g_imgedit_swatch_y - ph - 6.0f;
-        Rectangle popup{px, py, pw, ph};
-        DrawRectangleRec(popup, ResolveHlGroup("Picker"));
-        DrawRectangleLinesEx(popup, 1.0f, ResolveHlGroup("Border"));
+        gfx::Rectangle popup{px, py, pw, ph};
+        gfx::DrawRectangleRec(popup, ResolveHlGroup("Picker"));
+        gfx::DrawRectangleLinesEx(popup, 1.0f, ResolveHlGroup("Border"));
         RgbaColor cur = g_imgedit_picker_target == 0 ? sess.primary_color : sess.secondary_color;
-        Vector3 hsv = ColorToHSV(Color{cur.r, cur.g, cur.b, cur.a});
-        Rectangle sv_rect{popup.x + 10.0f, popup.y + 10.0f, pw - 20.0f, 110.0f};
+        gfx::Vector3 hsv = gfx::ColorToHSV(gfx::Color{cur.r, cur.g, cur.b, cur.a});
+        gfx::Rectangle sv_rect{popup.x + 10.0f, popup.y + 10.0f, pw - 20.0f, 110.0f};
         for (int yy = 0; yy < static_cast<int>(sv_rect.height); yy += 2) {
             for (int xx = 0; xx < static_cast<int>(sv_rect.width); xx += 2) {
                 float s = static_cast<float>(xx) / sv_rect.width;
                 float v = 1.0f - static_cast<float>(yy) / sv_rect.height;
-                DrawRectangle(static_cast<int>(sv_rect.x) + xx, static_cast<int>(sv_rect.y) + yy, 2, 2, ColorFromHSV(hsv.x, s, v));
+                gfx::DrawRectangle(static_cast<int>(sv_rect.x) + xx, static_cast<int>(sv_rect.y) + yy, 2, 2, gfx::ColorFromHSV(hsv.x, s, v));
             }
         }
-        DrawRectangleLinesEx(sv_rect, 1.0f, ResolveHlGroup("Border"));
+        gfx::DrawRectangleLinesEx(sv_rect, 1.0f, ResolveHlGroup("Border"));
         float mkx = sv_rect.x + hsv.y * sv_rect.width;
         float mky = sv_rect.y + (1.0f - hsv.z) * sv_rect.height;
-        DrawCircleLines(static_cast<int>(mkx), static_cast<int>(mky), 4.0f, WHITE);
+        gfx::DrawCircleLines(static_cast<int>(mkx), static_cast<int>(mky), 4.0f, gfx::White);
         int target = g_imgedit_picker_target;
         RegisterClickRegion(sv_rect, [buffer_id, target, sv_rect, hsv] {
-            Vector2 m = GetMousePosition();
+            gfx::Vector2 m = gfx::GetMousePosition();
             float s = std::clamp((m.x - sv_rect.x) / sv_rect.width, 0.0f, 1.0f);
             float v = std::clamp(1.0f - (m.y - sv_rect.y) / sv_rect.height, 0.0f, 1.0f);
-            Color c = ColorFromHSV(hsv.x, s, v);
+            gfx::Color c = gfx::ColorFromHSV(hsv.x, s, v);
             auto *sptr = g_editor.GetImageEditorMutable(buffer_id);
             if (!sptr) return;
             RgbaColor rc{c.r, c.g, c.b, 255};
@@ -19458,19 +19466,19 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
             else sptr->secondary_color = rc;
             g_editor.ImageEditorPushRecentColor(*sptr, rc);
         });
-        Rectangle hue_rect{popup.x + 10.0f, sv_rect.y + sv_rect.height + 10.0f, pw - 20.0f, 20.0f};
+        gfx::Rectangle hue_rect{popup.x + 10.0f, sv_rect.y + sv_rect.height + 10.0f, pw - 20.0f, 20.0f};
         for (int xx = 0; xx < static_cast<int>(hue_rect.width); xx++) {
             float hh = static_cast<float>(xx) / hue_rect.width * 360.0f;
-            DrawRectangle(static_cast<int>(hue_rect.x) + xx, static_cast<int>(hue_rect.y), 1, static_cast<int>(hue_rect.height),
-                          ColorFromHSV(hh, 1.0f, 1.0f));
+            gfx::DrawRectangle(static_cast<int>(hue_rect.x) + xx, static_cast<int>(hue_rect.y), 1, static_cast<int>(hue_rect.height),
+                          gfx::ColorFromHSV(hh, 1.0f, 1.0f));
         }
-        DrawRectangleLinesEx(hue_rect, 1.0f, ResolveHlGroup("Border"));
+        gfx::DrawRectangleLinesEx(hue_rect, 1.0f, ResolveHlGroup("Border"));
         float hue_mk = hue_rect.x + (hsv.x / 360.0f) * hue_rect.width;
-        DrawLineEx(Vector2{hue_mk, hue_rect.y}, Vector2{hue_mk, hue_rect.y + hue_rect.height}, 2.0f, WHITE);
+        gfx::DrawLineEx(gfx::Vector2{hue_mk, hue_rect.y}, gfx::Vector2{hue_mk, hue_rect.y + hue_rect.height}, 2.0f, gfx::White);
         RegisterClickRegion(hue_rect, [buffer_id, target, hue_rect, hsv] {
-            float mx2 = GetMousePosition().x;
+            float mx2 = gfx::GetMousePosition().x;
             float hh = std::clamp((mx2 - hue_rect.x) / hue_rect.width, 0.0f, 1.0f) * 360.0f;
-            Color c = ColorFromHSV(hh, hsv.y, hsv.z);
+            gfx::Color c = gfx::ColorFromHSV(hh, hsv.y, hsv.z);
             auto *sptr = g_editor.GetImageEditorMutable(buffer_id);
             if (!sptr) return;
             RgbaColor rc{c.r, c.g, c.b, 255};
@@ -19478,8 +19486,8 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
             else sptr->secondary_color = rc;
             g_editor.ImageEditorPushRecentColor(*sptr, rc);
         });
-        Rectangle close_rect{popup.x + popup.width - 22.0f, popup.y + 2.0f, 18.0f, 18.0f};
-        DrawTextEx(g_font, "x", Vector2{close_rect.x + 4.0f, close_rect.y + 1.0f}, font_size, 0, ResolveHlGroup("MutedFg"));
+        gfx::Rectangle close_rect{popup.x + popup.width - 22.0f, popup.y + 2.0f, 18.0f, 18.0f};
+        gfx::DrawTextEx(g_font, "x", gfx::Vector2{close_rect.x + 4.0f, close_rect.y + 1.0f}, font_size, 0, ResolveHlGroup("MutedFg"));
         RegisterClickRegion(close_rect, [] { g_imgedit_picker_open = false; });
     }
 }
@@ -19494,8 +19502,8 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
  * @param md The CPU-side mesh data to upload.
  * @return A GPU-uploaded raylib Mesh; caller owns it (UnloadMesh when done).
  */
-Mesh BuildModel3DGpuMesh(const MeshData &md) {
-    Mesh m{};
+gfx::Mesh BuildModel3DGpuMesh(const MeshData &md) {
+    gfx::Mesh m{};
     int vcount = static_cast<int>(md.indices.empty() ? md.positions.size() / 3 : md.indices.size());
     if (vcount <= 0) return m;
     bool has_normals = !md.normals.empty();
@@ -19524,10 +19532,10 @@ Mesh BuildModel3DGpuMesh(const MeshData &md) {
     }
     if (!has_normals) {
         for (int t = 0; t + 2 < vcount; t += 3) {
-            Vector3 a{m.vertices[t * 3], m.vertices[t * 3 + 1], m.vertices[t * 3 + 2]};
-            Vector3 b{m.vertices[(t + 1) * 3], m.vertices[(t + 1) * 3 + 1], m.vertices[(t + 1) * 3 + 2]};
-            Vector3 c{m.vertices[(t + 2) * 3], m.vertices[(t + 2) * 3 + 1], m.vertices[(t + 2) * 3 + 2]};
-            Vector3 n = Vector3Normalize(Vector3CrossProduct(Vector3Subtract(b, a), Vector3Subtract(c, a)));
+            gfx::Vector3 a{m.vertices[t * 3], m.vertices[t * 3 + 1], m.vertices[t * 3 + 2]};
+            gfx::Vector3 b{m.vertices[(t + 1) * 3], m.vertices[(t + 1) * 3 + 1], m.vertices[(t + 1) * 3 + 2]};
+            gfx::Vector3 c{m.vertices[(t + 2) * 3], m.vertices[(t + 2) * 3 + 1], m.vertices[(t + 2) * 3 + 2]};
+            gfx::Vector3 n = gfx::Vector3Normalize(gfx::Vector3CrossProduct(gfx::Vector3Subtract(b, a), gfx::Vector3Subtract(c, a)));
             for (int k = 0; k < 3; k++) {
                 m.normals[(t + k) * 3 + 0] = n.x;
                 m.normals[(t + k) * 3 + 1] = n.y;
@@ -19535,7 +19543,7 @@ Mesh BuildModel3DGpuMesh(const MeshData &md) {
             }
         }
     }
-    UploadMesh(&m, false);
+    gfx::UploadMesh(&m, false);
     return m;
 }
 
@@ -19552,10 +19560,10 @@ Mesh BuildModel3DGpuMesh(const MeshData &md) {
  * @param generation The owning Model3DSession's current scene_generation.
  * @return The cached (or freshly rebuilt) per-mesh Mesh list, parallel to scene.meshes.
  */
-std::vector<Mesh> &GetOrBuildModel3DMeshes(int buffer_id, const Scene &scene, int generation) {
+std::vector<gfx::Mesh> &GetOrBuildModel3DMeshes(int buffer_id, const Scene &scene, int generation) {
     Model3DGpuCache &cache = g_model3d_gpu_cache[buffer_id];
     if (cache.mesh_count_synced != scene.meshes.size() || cache.mesh_generation_synced != generation) {
-        for (Mesh &m : cache.meshes) UnloadMesh(m);
+        for (gfx::Mesh &m : cache.meshes) gfx::UnloadMesh(m);
         cache.meshes.clear();
         cache.meshes.reserve(scene.meshes.size());
         for (const MeshData &md : scene.meshes) cache.meshes.push_back(BuildModel3DGpuMesh(md));
@@ -19574,10 +19582,10 @@ std::vector<Mesh> &GetOrBuildModel3DMeshes(int buffer_id, const Scene &scene, in
  * @param generation The owning Model3DSession's current scene_generation.
  * @return The cached (or freshly rebuilt) per-texture Texture2D list, parallel to scene.textures.
  */
-std::vector<Texture2D> &GetOrBuildModel3DTextures(int buffer_id, const Scene &scene, int generation) {
+std::vector<gfx::Texture2D> &GetOrBuildModel3DTextures(int buffer_id, const Scene &scene, int generation) {
     Model3DGpuCache &cache = g_model3d_gpu_cache[buffer_id];
     if (cache.texture_count_synced != scene.textures.size() || cache.texture_generation_synced != generation) {
-        for (Texture2D &t : cache.textures) UnloadTexture(t);
+        for (gfx::Texture2D &t : cache.textures) gfx::UnloadTexture(t);
         cache.textures.clear();
         cache.textures.reserve(scene.textures.size());
         for (const TextureData &td : scene.textures) {
@@ -19589,18 +19597,18 @@ std::vector<Texture2D> &GetOrBuildModel3DTextures(int buffer_id, const Scene &sc
             // against (an id-0 texture is treated the same as "no texture").
             if (td.width <= 0 || td.height <= 0 ||
                 td.pixels.size() < static_cast<size_t>(td.width) * static_cast<size_t>(td.height) * 4) {
-                cache.textures.push_back(Texture2D{});
+                cache.textures.push_back(gfx::Texture2D{});
                 continue;
             }
-            Image img{};
+            gfx::Image img{};
             // const_cast is safe -- LoadTextureFromImage only reads img.data
             // (uploads it to the GPU), never writes through the pointer.
             img.data = const_cast<unsigned char *>(td.pixels.data());
             img.width = td.width;
             img.height = td.height;
             img.mipmaps = 1;
-            img.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
-            cache.textures.push_back(LoadTextureFromImage(img));
+            img.format = gfx::kPixelFormatR8G8B8A8;
+            cache.textures.push_back(gfx::LoadTextureFromImage(img));
         }
         cache.texture_count_synced = scene.textures.size();
         cache.texture_generation_synced = generation;
@@ -19616,11 +19624,11 @@ std::vector<Texture2D> &GetOrBuildModel3DTextures(int buffer_id, const Scene &sc
  * @param h Desired render-target height in pixels.
  * @return The cached (or freshly (re)created) RenderTexture2D.
  */
-RenderTexture2D &GetOrCreateModel3DRenderTexture(int buffer_id, int w, int h) {
+gfx::RenderTexture2D &GetOrCreateModel3DRenderTexture(int buffer_id, int w, int h) {
     Model3DRenderTarget &entry = g_model3d_render_targets[buffer_id];
     if (!entry.valid || entry.w != w || entry.h != h) {
-        if (entry.valid) UnloadRenderTexture(entry.rt);
-        entry.rt = LoadRenderTexture(std::max(1, w), std::max(1, h));
+        if (entry.valid) gfx::UnloadRenderTexture(entry.rt);
+        entry.rt = gfx::LoadRenderTexture(std::max(1, w), std::max(1, h));
         entry.w = w;
         entry.h = h;
         entry.valid = true;
@@ -19634,12 +19642,12 @@ RenderTexture2D &GetOrCreateModel3DRenderTexture(int buffer_id, int w, int h) {
  * @param obj The object whose transform to compose.
  * @return The composed transform matrix.
  */
-Matrix Model3DObjectMatrix(const Object3D &obj) {
-    Matrix scale = MatrixScale(obj.scale.x, obj.scale.y, obj.scale.z);
-    Matrix rotate =
-        MatrixRotateXYZ(Vector3{obj.rotation_deg.x * DEG2RAD, obj.rotation_deg.y * DEG2RAD, obj.rotation_deg.z * DEG2RAD});
-    Matrix translate = MatrixTranslate(obj.position.x, obj.position.y, obj.position.z);
-    return MatrixMultiply(MatrixMultiply(scale, rotate), translate);
+gfx::Matrix Model3DObjectMatrix(const Object3D &obj) {
+    gfx::Matrix scale = gfx::MatrixScale(obj.scale.x, obj.scale.y, obj.scale.z);
+    gfx::Matrix rotate =
+        gfx::MatrixRotateXYZ(gfx::Vector3{obj.rotation_deg.x * gfx::kDeg2Rad, obj.rotation_deg.y * gfx::kDeg2Rad, obj.rotation_deg.z * gfx::kDeg2Rad});
+    gfx::Matrix translate = gfx::MatrixTranslate(obj.position.x, obj.position.y, obj.position.z);
+    return gfx::MatrixMultiply(gfx::MatrixMultiply(scale, rotate), translate);
 }
 
 /**
@@ -19647,18 +19655,18 @@ Matrix Model3DObjectMatrix(const Object3D &obj) {
  * @param sess The session to read the camera state from.
  * @return The equivalent raylib Camera3D.
  */
-Camera3D Model3DBuildCamera(const Model3DSession &sess) {
-    float yaw = sess.camera_yaw * DEG2RAD;
-    float pitch = sess.camera_pitch * DEG2RAD;
-    Vector3 target{sess.camera_target.x, sess.camera_target.y, sess.camera_target.z};
-    Vector3 offset{sess.camera_distance * cosf(pitch) * sinf(yaw), sess.camera_distance * sinf(pitch),
+gfx::Camera3D Model3DBuildCamera(const Model3DSession &sess) {
+    float yaw = sess.camera_yaw * gfx::kDeg2Rad;
+    float pitch = sess.camera_pitch * gfx::kDeg2Rad;
+    gfx::Vector3 target{sess.camera_target.x, sess.camera_target.y, sess.camera_target.z};
+    gfx::Vector3 offset{sess.camera_distance * cosf(pitch) * sinf(yaw), sess.camera_distance * sinf(pitch),
                     sess.camera_distance * cosf(pitch) * cosf(yaw)};
-    Camera3D cam{};
-    cam.position = Vector3Add(target, offset);
+    gfx::Camera3D cam{};
+    cam.position = gfx::Vector3Add(target, offset);
     cam.target = target;
-    cam.up = Vector3{0.0f, 1.0f, 0.0f};
+    cam.up = gfx::Vector3{0.0f, 1.0f, 0.0f};
     cam.fovy = sess.camera_fov;
-    cam.projection = CAMERA_PERSPECTIVE;
+    cam.projection = gfx::CameraProjection::Perspective;
     return cam;
 }
 
@@ -19668,12 +19676,12 @@ Camera3D Model3DBuildCamera(const Model3DSession &sess) {
  * @param out_min Receives the box's minimum corner.
  * @param out_max Receives the box's maximum corner.
  */
-void Model3DLocalBounds(const MeshData &md, Vector3 &out_min, Vector3 &out_max) {
+void Model3DLocalBounds(const MeshData &md, gfx::Vector3 &out_min, gfx::Vector3 &out_max) {
     if (md.positions.size() < 3) {
-        out_min = out_max = Vector3{0, 0, 0};
+        out_min = out_max = gfx::Vector3{0, 0, 0};
         return;
     }
-    out_min = out_max = Vector3{md.positions[0], md.positions[1], md.positions[2]};
+    out_min = out_max = gfx::Vector3{md.positions[0], md.positions[1], md.positions[2]};
     for (size_t v = 0; v + 2 < md.positions.size(); v += 3) {
         out_min.x = std::min(out_min.x, md.positions[v]);
         out_min.y = std::min(out_min.y, md.positions[v + 1]);
@@ -19692,29 +19700,29 @@ void Model3DLocalBounds(const MeshData &md, Vector3 &out_min, Vector3 &out_max) 
  * @param obj The object to bound.
  * @return The object's world-space bounding box; a degenerate (zero-size) box if it has no mesh.
  */
-BoundingBox Model3DWorldBounds(const Scene &scene, const Object3D &obj) {
+gfx::BoundingBox Model3DWorldBounds(const Scene &scene, const Object3D &obj) {
     if (obj.mesh_index < 0 || obj.mesh_index >= static_cast<int>(scene.meshes.size())) {
         // No geometry (an empty group/parent node, Phase 3's grouping
         // feature) -- a degenerate box at the object's own world position,
         // not at the origin, so its selection outline/ray-pick box sits
         // where the node actually is instead of always at (0,0,0).
-        Vector3 p{obj.position.x, obj.position.y, obj.position.z};
-        return BoundingBox{p, p};
+        gfx::Vector3 p{obj.position.x, obj.position.y, obj.position.z};
+        return gfx::BoundingBox{p, p};
     }
-    BoundingBox box{};
-    Vector3 lmin, lmax;
+    gfx::BoundingBox box{};
+    gfx::Vector3 lmin, lmax;
     Model3DLocalBounds(scene.meshes[static_cast<size_t>(obj.mesh_index)], lmin, lmax);
-    Matrix mat = Model3DObjectMatrix(obj);
-    Vector3 corners[8] = {
+    gfx::Matrix mat = Model3DObjectMatrix(obj);
+    gfx::Vector3 corners[8] = {
         {lmin.x, lmin.y, lmin.z}, {lmax.x, lmin.y, lmin.z}, {lmin.x, lmax.y, lmin.z}, {lmax.x, lmax.y, lmin.z},
         {lmin.x, lmin.y, lmax.z}, {lmax.x, lmin.y, lmax.z}, {lmin.x, lmax.y, lmax.z}, {lmax.x, lmax.y, lmax.z},
     };
-    Vector3 wmin = Vector3Transform(corners[0], mat);
-    Vector3 wmax = wmin;
+    gfx::Vector3 wmin = gfx::Vector3Transform(corners[0], mat);
+    gfx::Vector3 wmax = wmin;
     for (int i = 1; i < 8; i++) {
-        Vector3 wc = Vector3Transform(corners[i], mat);
-        wmin = Vector3Min(wmin, wc);
-        wmax = Vector3Max(wmax, wc);
+        gfx::Vector3 wc = gfx::Vector3Transform(corners[i], mat);
+        wmin = gfx::Vector3Min(wmin, wc);
+        wmax = gfx::Vector3Max(wmax, wc);
     }
     box.min = wmin;
     box.max = wmax;
@@ -19770,46 +19778,46 @@ bool Model3DRenderToImageFile(int buffer_id, const std::string &path, int width,
     Model3DSession *sess = g_editor.GetModel3DMutable(buffer_id);
     if (!sess) return false;
 
-    Camera3D camera = Model3DBuildCamera(*sess);
-    std::vector<Mesh> &gpu_meshes = GetOrBuildModel3DMeshes(buffer_id, sess->scene, sess->scene_generation);
-    std::vector<Texture2D> &gpu_textures = GetOrBuildModel3DTextures(buffer_id, sess->scene, sess->scene_generation);
+    gfx::Camera3D camera = Model3DBuildCamera(*sess);
+    std::vector<gfx::Mesh> &gpu_meshes = GetOrBuildModel3DMeshes(buffer_id, sess->scene, sess->scene_generation);
+    std::vector<gfx::Texture2D> &gpu_textures = GetOrBuildModel3DTextures(buffer_id, sess->scene, sess->scene_generation);
     if (!g_model3d_default_material_loaded) {
-        g_model3d_default_material = LoadMaterialDefault();
-        g_model3d_default_white_texture = g_model3d_default_material.maps[MATERIAL_MAP_ALBEDO].texture;
+        g_model3d_default_material = gfx::LoadMaterialDefault();
+        g_model3d_default_white_texture = g_model3d_default_material.maps[gfx::kMaterialMapAlbedo].texture;
         g_model3d_default_material_loaded = true;
     }
 
-    RenderTexture2D rt = LoadRenderTexture(width, height);
-    BeginTextureMode(rt);
-    if (transparent) ClearBackground(Color{0, 0, 0, 0});
-    else ClearBackground(ResolveHlGroup("NormalBg"));
-    BeginMode3D(camera);
-    if (show_grid) DrawGrid(20, 1.0f);
-    if (wireframe) rlEnableWireMode();
+    gfx::RenderTexture2D rt = gfx::LoadRenderTexture(width, height);
+    gfx::BeginTextureMode(rt);
+    if (transparent) gfx::ClearBackground(gfx::Color{0, 0, 0, 0});
+    else gfx::ClearBackground(ResolveHlGroup("NormalBg"));
+    gfx::BeginMode3D(camera);
+    if (show_grid) gfx::DrawGrid(20, 1.0f);
+    if (wireframe) gfx::EnableWireMode();
     for (const Object3D &obj : sess->scene.objects) {
         if (!obj.visible) continue;
         if (obj.mesh_index < 0 || obj.mesh_index >= static_cast<int>(gpu_meshes.size())) continue;
-        Matrix mat = Model3DObjectMatrix(obj);
-        g_model3d_default_material.maps[MATERIAL_MAP_ALBEDO].color =
-            Color{static_cast<unsigned char>(std::clamp(obj.color.r, 0.0f, 1.0f) * 255.0f),
+        gfx::Matrix mat = Model3DObjectMatrix(obj);
+        g_model3d_default_material.maps[gfx::kMaterialMapAlbedo].color =
+            gfx::Color{static_cast<unsigned char>(std::clamp(obj.color.r, 0.0f, 1.0f) * 255.0f),
                   static_cast<unsigned char>(std::clamp(obj.color.g, 0.0f, 1.0f) * 255.0f),
                   static_cast<unsigned char>(std::clamp(obj.color.b, 0.0f, 1.0f) * 255.0f),
                   static_cast<unsigned char>(std::clamp(obj.color.a, 0.0f, 1.0f) * 255.0f)};
         bool has_texture = obj.texture_index >= 0 && obj.texture_index < static_cast<int>(gpu_textures.size()) &&
                             gpu_textures[static_cast<size_t>(obj.texture_index)].id > 0;
-        g_model3d_default_material.maps[MATERIAL_MAP_ALBEDO].texture =
+        g_model3d_default_material.maps[gfx::kMaterialMapAlbedo].texture =
             has_texture ? gpu_textures[static_cast<size_t>(obj.texture_index)] : g_model3d_default_white_texture;
-        DrawMesh(gpu_meshes[static_cast<size_t>(obj.mesh_index)], g_model3d_default_material, mat);
+        gfx::DrawMesh(gpu_meshes[static_cast<size_t>(obj.mesh_index)], g_model3d_default_material, mat);
     }
-    if (wireframe) rlDisableWireMode();
-    EndMode3D();
-    EndTextureMode();
+    if (wireframe) gfx::DisableWireMode();
+    gfx::EndMode3D();
+    gfx::EndTextureMode();
 
-    Image img = LoadImageFromTexture(rt.texture);
-    ImageFlipVertical(&img);  // render-texture textures are stored bottom-up (OpenGL convention)
-    bool ok = ExportImage(img, path.c_str());
-    UnloadImage(img);
-    UnloadRenderTexture(rt);
+    gfx::Image img = gfx::LoadImageFromTexture(rt.texture);
+    gfx::ImageFlipVertical(&img);  // render-texture textures are stored bottom-up (OpenGL convention)
+    bool ok = gfx::ExportImage(img, path.c_str());
+    gfx::UnloadImage(img);
+    gfx::UnloadRenderTexture(rt);
     return ok;
 }
 
@@ -19830,11 +19838,11 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
     int buffer_id = pane.buffer_id;
     int pane_id = pane.id;
     float font_size = MenuFontSize();
-    DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h), ResolveHlGroup("NormalBg"));
+    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h), ResolveHlGroup("NormalBg"));
 
     // --- Menubar ---
-    Rectangle menubar{x, y, w, kModel3DMenubarH};
-    DrawRectangleRec(menubar, ResolveHlGroup("MenuBar"));
+    gfx::Rectangle menubar{x, y, w, kModel3DMenubarH};
+    gfx::DrawRectangleRec(menubar, ResolveHlGroup("MenuBar"));
     struct M3DMenuItem {
         std::string label;
         std::function<void()> action;
@@ -20078,13 +20086,13 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
     float menu_x = x;
     std::vector<float> menu_starts(menus.size()), menu_widths(menus.size());
     for (size_t i = 0; i < menus.size(); i++) {
-        float mw = MeasureTextEx(g_font, menus[i].label.c_str(), font_size, 0).x + 16.0f;
+        float mw = gfx::MeasureTextEx(g_font, menus[i].label.c_str(), font_size, 0).x + 16.0f;
         menu_starts[i] = menu_x;
         menu_widths[i] = mw;
-        Rectangle item_rect{menu_x, y, mw, kModel3DMenubarH};
+        gfx::Rectangle item_rect{menu_x, y, mw, kModel3DMenubarH};
         bool open = g_model3d_dropdown_open == static_cast<int>(i);
-        if (open) DrawRectangleRec(item_rect, ResolveHlGroup("MenuHighlight"));
-        DrawTextEx(g_font, menus[i].label.c_str(), Vector2{menu_x + 8.0f, y + (kModel3DMenubarH - font_size) / 2.0f}, font_size, 0,
+        if (open) gfx::DrawRectangleRec(item_rect, ResolveHlGroup("MenuHighlight"));
+        gfx::DrawTextEx(g_font, menus[i].label.c_str(), gfx::Vector2{menu_x + 8.0f, y + (kModel3DMenubarH - font_size) / 2.0f}, font_size, 0,
                    ResolveHlGroup("MenuBarFg"));
         int idx = static_cast<int>(i);
         RegisterClickRegion(item_rect, [idx] { g_model3d_dropdown_open = g_model3d_dropdown_open == idx ? -1 : idx; });
@@ -20113,12 +20121,12 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
         const M3DMenu &menu = menus[static_cast<size_t>(g_model3d_dropdown_open)];
         dd_x = menu_starts[static_cast<size_t>(g_model3d_dropdown_open)];
         dd_y = y + kModel3DMenubarH;
-        for (const auto &item : menu.items) dd_w = std::max(dd_w, MeasureTextEx(g_font, item.label.c_str(), font_size, 0).x);
+        for (const auto &item : menu.items) dd_w = std::max(dd_w, gfx::MeasureTextEx(g_font, item.label.c_str(), font_size, 0).x);
         dd_w += 24.0f;
         dd_item_h = font_size + 12.0f;
         dd_h = dd_item_h * static_cast<float>(menu.items.size());
         for (size_t i = 0; i < menu.items.size(); i++) {
-            Rectangle item_rect{dd_x, dd_y + static_cast<float>(i) * dd_item_h, dd_w, dd_item_h};
+            gfx::Rectangle item_rect{dd_x, dd_y + static_cast<float>(i) * dd_item_h, dd_w, dd_item_h};
             std::function<void()> action = menu.items[i].action;
             RegisterClickRegion(item_rect, [action] {
                 action();
@@ -20138,12 +20146,12 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
     // message centered in the content area instead. The menubar above this
     // still drew normally (File > New still works to abandon the wait).
     if (sess.blend_import_pending) {
-        DrawRectangle(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w), static_cast<int>(content_h),
+        gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w), static_cast<int>(content_h),
                       ResolveHlGroup("NormalBg"));
         std::string msg = sess.blend_import_status.empty() ? "Converting via Blender..." : sess.blend_import_status;
-        Vector2 msg_size = MeasureTextEx(g_font, msg.c_str(), font_size, 0);
-        DrawTextEx(g_font, msg.c_str(),
-                   Vector2{x + (w - msg_size.x) / 2.0f, content_y + (content_h - msg_size.y) / 2.0f}, font_size, 0,
+        gfx::Vector2 msg_size = gfx::MeasureTextEx(g_font, msg.c_str(), font_size, 0);
+        gfx::DrawTextEx(g_font, msg.c_str(),
+                   gfx::Vector2{x + (w - msg_size.x) / 2.0f, content_y + (content_h - msg_size.y) / 2.0f}, font_size, 0,
                    ResolveHlGroup("Normal"));
         return;
     }
@@ -20155,12 +20163,12 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
     // grid layout as the image editor's own tool sidebar just above,
     // replacing the plain text-label rows this pane started with
     // (MODEL3D_PLAN.md Part XXXI).
-    Rectangle tool_sidebar{x, content_y, kModel3DToolSidebarW, content_h};
-    DrawRectangleRec(tool_sidebar, ResolveHlGroup("MenuBar"));
-    DrawLineEx(Vector2{tool_sidebar.x + tool_sidebar.width, tool_sidebar.y},
-               Vector2{tool_sidebar.x + tool_sidebar.width, tool_sidebar.y + tool_sidebar.height}, 1.0f, ResolveHlGroup("Border"));
+    gfx::Rectangle tool_sidebar{x, content_y, kModel3DToolSidebarW, content_h};
+    gfx::DrawRectangleRec(tool_sidebar, ResolveHlGroup("MenuBar"));
+    gfx::DrawLineEx(gfx::Vector2{tool_sidebar.x + tool_sidebar.width, tool_sidebar.y},
+               gfx::Vector2{tool_sidebar.x + tool_sidebar.width, tool_sidebar.y + tool_sidebar.height}, 1.0f, ResolveHlGroup("Border"));
     {
-        Vector2 mouse = GetMousePosition();
+        gfx::Vector2 mouse = gfx::GetMousePosition();
         constexpr int kCols = 2;
         constexpr float kGap = 4.0f;
         float bs = (tool_sidebar.width - kGap * (kCols + 1)) / static_cast<float>(kCols);
@@ -20184,14 +20192,14 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
         int idx = 0;
         for (const ToolBtn &tb : kTools) {
             int col = idx % kCols, row = idx / kCols;
-            Rectangle rect{grid_x + static_cast<float>(col) * (bs + kGap), grid_y + static_cast<float>(row) * (bs + kGap), bs, bs};
+            gfx::Rectangle rect{grid_x + static_cast<float>(col) * (bs + kGap), grid_y + static_cast<float>(row) * (bs + kGap), bs, bs};
             bool active_tool = sess.tool == tb.tool;
-            bool hovered = CheckCollisionPointRec(mouse, rect);
-            if (active_tool) DrawRectangleRounded(rect, 0.25f, 6, ResolveHlGroup("AccentTint"));
-            else if (hovered) DrawRectangleRounded(rect, 0.25f, 6, ResolveHlGroup("Picker"));
+            bool hovered = gfx::CheckCollisionPointRec(mouse, rect);
+            if (active_tool) gfx::DrawRectangleRounded(rect, 0.25f, 6, ResolveHlGroup("AccentTint"));
+            else if (hovered) gfx::DrawRectangleRounded(rect, 0.25f, 6, ResolveHlGroup("Picker"));
             std::string glyph = Utf8FromCodepoint(tb.icon_codepoint);
             float gw = MeasureUiText(glyph, icon_size);
-            DrawUiText(glyph, Vector2{rect.x + (rect.width - gw) / 2.0f, rect.y + (rect.height - icon_size) / 2.0f}, icon_size,
+            DrawUiText(glyph, gfx::Vector2{rect.x + (rect.width - gw) / 2.0f, rect.y + (rect.height - icon_size) / 2.0f}, icon_size,
                        active_tool ? ResolveHlGroup("Accent") : ResolveHlGroup("Normal"));
             if (hovered) {
                 g_pane_control_tooltip_text = tb.tooltip;
@@ -20227,14 +20235,14 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
         int tidx = 0;
         for (const ToggleBtn &tb : kToggles) {
             int col = tidx % kCols, row = tidx / kCols;
-            Rectangle rect{grid_x + static_cast<float>(col) * (bs + kGap), by + static_cast<float>(row) * (bs + kGap), bs, bs};
+            gfx::Rectangle rect{grid_x + static_cast<float>(col) * (bs + kGap), by + static_cast<float>(row) * (bs + kGap), bs, bs};
             bool on = sess.*(tb.field);
-            bool hovered = CheckCollisionPointRec(mouse, rect);
-            if (on) DrawRectangleRounded(rect, 0.25f, 6, ResolveHlGroup("AccentTint"));
-            else if (hovered) DrawRectangleRounded(rect, 0.25f, 6, ResolveHlGroup("Picker"));
+            bool hovered = gfx::CheckCollisionPointRec(mouse, rect);
+            if (on) gfx::DrawRectangleRounded(rect, 0.25f, 6, ResolveHlGroup("AccentTint"));
+            else if (hovered) gfx::DrawRectangleRounded(rect, 0.25f, 6, ResolveHlGroup("Picker"));
             std::string glyph = Utf8FromCodepoint(tb.icon_codepoint);
             float gw = MeasureUiText(glyph, icon_size);
-            DrawUiText(glyph, Vector2{rect.x + (rect.width - gw) / 2.0f, rect.y + (rect.height - icon_size) / 2.0f}, icon_size,
+            DrawUiText(glyph, gfx::Vector2{rect.x + (rect.width - gw) / 2.0f, rect.y + (rect.height - icon_size) / 2.0f}, icon_size,
                        on ? ResolveHlGroup("Accent") : ResolveHlGroup("Normal"));
             if (hovered) {
                 g_pane_control_tooltip_text = tb.tooltip;
@@ -20249,21 +20257,21 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
         {
             bool can_edit_mesh = sess.selection.size() == 1;
             int col = tidx % kCols, row = tidx / kCols;
-            Rectangle rect{grid_x + static_cast<float>(col) * (bs + kGap), by + static_cast<float>(row) * (bs + kGap), bs, bs};
+            gfx::Rectangle rect{grid_x + static_cast<float>(col) * (bs + kGap), by + static_cast<float>(row) * (bs + kGap), bs, bs};
             bool on = sess.mesh_edit_mode;
-            bool hovered = can_edit_mesh && CheckCollisionPointRec(mouse, rect);
+            bool hovered = can_edit_mesh && gfx::CheckCollisionPointRec(mouse, rect);
             if (on) {
-                Color bg = ResolveHlGroup("AccentTint");
-                if (!can_edit_mesh) bg = Fade(bg, 0.5f);
-                DrawRectangleRounded(rect, 0.25f, 6, bg);
+                gfx::Color bg = ResolveHlGroup("AccentTint");
+                if (!can_edit_mesh) bg = gfx::Fade(bg, 0.5f);
+                gfx::DrawRectangleRounded(rect, 0.25f, 6, bg);
             } else if (hovered) {
-                DrawRectangleRounded(rect, 0.25f, 6, ResolveHlGroup("Picker"));
+                gfx::DrawRectangleRounded(rect, 0.25f, 6, ResolveHlGroup("Picker"));
             }
             std::string glyph = Utf8FromCodepoint(0xf1b3);  // nf-fa-cubes
             float gw = MeasureUiText(glyph, icon_size);
-            Color fg = on ? ResolveHlGroup("Accent") : ResolveHlGroup("Normal");
-            if (!can_edit_mesh) fg = Fade(fg, 0.5f);
-            DrawUiText(glyph, Vector2{rect.x + (rect.width - gw) / 2.0f, rect.y + (rect.height - icon_size) / 2.0f}, icon_size, fg);
+            gfx::Color fg = on ? ResolveHlGroup("Accent") : ResolveHlGroup("Normal");
+            if (!can_edit_mesh) fg = gfx::Fade(fg, 0.5f);
+            DrawUiText(glyph, gfx::Vector2{rect.x + (rect.width - gw) / 2.0f, rect.y + (rect.height - icon_size) / 2.0f}, icon_size, fg);
             if (hovered) {
                 g_pane_control_tooltip_text = "Edit Mesh";
                 g_pane_control_tooltip_anchor = rect;
@@ -20281,34 +20289,34 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
 
     // --- Right sidebar: Outliner (top half) + Inspector (bottom half) ---
     float sidebar_w = (w - kModel3DToolSidebarW - kModel3DSidebarW > 200.0f) ? kModel3DSidebarW : 0.0f;
-    Rectangle sidebar{x + w - sidebar_w, content_y, sidebar_w, content_h};
+    gfx::Rectangle sidebar{x + w - sidebar_w, content_y, sidebar_w, content_h};
     if (sidebar_w > 0.0f) {
-        DrawRectangleRec(sidebar, ResolveHlGroup("MenuBar"));
-        DrawLineEx(Vector2{sidebar.x, sidebar.y}, Vector2{sidebar.x, sidebar.y + sidebar.height}, 1.0f, ResolveHlGroup("Border"));
+        gfx::DrawRectangleRec(sidebar, ResolveHlGroup("MenuBar"));
+        gfx::DrawLineEx(gfx::Vector2{sidebar.x, sidebar.y}, gfx::Vector2{sidebar.x, sidebar.y + sidebar.height}, 1.0f, ResolveHlGroup("Border"));
 
         float outliner_h = sidebar.height * 0.5f;
-        Rectangle outliner{sidebar.x, sidebar.y, sidebar.width, outliner_h};
+        gfx::Rectangle outliner{sidebar.x, sidebar.y, sidebar.width, outliner_h};
         float oy = outliner.y + 8.0f;
-        DrawTextEx(g_font, "Outliner", Vector2{outliner.x + 10.0f, oy}, font_size, 0, ResolveHlGroup("Normal"));
-        Rectangle add_rect{outliner.x + outliner.width - 28.0f, outliner.y + 4.0f, 20.0f, 20.0f};
-        DrawRectangleRounded(add_rect, 0.3f, 6, ResolveHlGroup("Picker"));
+        gfx::DrawTextEx(g_font, "Outliner", gfx::Vector2{outliner.x + 10.0f, oy}, font_size, 0, ResolveHlGroup("Normal"));
+        gfx::Rectangle add_rect{outliner.x + outliner.width - 28.0f, outliner.y + 4.0f, 20.0f, 20.0f};
+        gfx::DrawRectangleRounded(add_rect, 0.3f, 6, ResolveHlGroup("Picker"));
         std::string add_glyph = Utf8FromCodepoint(0xf067);  // nf-fa-plus
         float add_gw = MeasureUiText(add_glyph, font_size * 0.9f);
-        DrawUiText(add_glyph, Vector2{add_rect.x + (add_rect.width - add_gw) / 2.0f, add_rect.y + (add_rect.height - font_size * 0.9f) / 2.0f},
+        DrawUiText(add_glyph, gfx::Vector2{add_rect.x + (add_rect.width - add_gw) / 2.0f, add_rect.y + (add_rect.height - font_size * 0.9f) / 2.0f},
                    font_size * 0.9f, ResolveHlGroup("Normal"));
-        if (CheckCollisionPointRec(GetMousePosition(), add_rect)) {
+        if (gfx::CheckCollisionPointRec(gfx::GetMousePosition(), add_rect)) {
             g_pane_control_tooltip_text = "Add Cube";
             g_pane_control_tooltip_anchor = add_rect;
         }
         RegisterClickRegion(add_rect, [buffer_id] { g_editor.Model3DAddPrimitive(buffer_id, PrimitiveKind::Cube); });
         oy += font_size + 6.0f;
 
-        Rectangle list_rect{outliner.x, oy, outliner.width, std::max(0.0f, outliner.y + outliner.height - oy)};
-        BeginScissorMode(static_cast<int>(list_rect.x), static_cast<int>(list_rect.y), static_cast<int>(list_rect.width),
+        gfx::Rectangle list_rect{outliner.x, oy, outliner.width, std::max(0.0f, outliner.y + outliner.height - oy)};
+        gfx::BeginScissorMode(static_cast<int>(list_rect.x), static_cast<int>(list_rect.y), static_cast<int>(list_rect.width),
                           static_cast<int>(list_rect.height));
         float row_h = 24.0f;
         float ry = oy;
-        bool shift_held = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+        bool shift_held = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
         // Depth-indented so a group's children render nested under it
         // (Phase 3 grouping) -- see BuildOutlinerOrder's own comment.
         constexpr float kOutlinerIndentPx = 14.0f;
@@ -20317,13 +20325,13 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
             if (!obj_ptr) continue;
             const Object3D &obj = *obj_ptr;
             float indent = static_cast<float>(depth) * kOutlinerIndentPx;
-            Rectangle row{outliner.x, ry, outliner.width, row_h};
+            gfx::Rectangle row{outliner.x, ry, outliner.width, row_h};
             bool selected = std::find(sess.selection.begin(), sess.selection.end(), obj.id) != sess.selection.end();
-            if (selected) DrawRectangleRec(row, ResolveHlGroup("AccentTint"));
-            Rectangle vis_rect{row.x + 6.0f + indent, row.y + (row_h - 16.0f) / 2.0f, 16.0f, 16.0f};
-            DrawRectangleLinesEx(vis_rect, 1.2f, ResolveHlGroup("MutedFg"));
+            if (selected) gfx::DrawRectangleRec(row, ResolveHlGroup("AccentTint"));
+            gfx::Rectangle vis_rect{row.x + 6.0f + indent, row.y + (row_h - 16.0f) / 2.0f, 16.0f, 16.0f};
+            gfx::DrawRectangleLinesEx(vis_rect, 1.2f, ResolveHlGroup("MutedFg"));
             if (obj.visible) {
-                DrawLineEx(Vector2{vis_rect.x + 2.0f, vis_rect.y + 8.0f}, Vector2{vis_rect.x + 14.0f, vis_rect.y + 8.0f}, 1.5f,
+                gfx::DrawLineEx(gfx::Vector2{vis_rect.x + 2.0f, vis_rect.y + 8.0f}, gfx::Vector2{vis_rect.x + 14.0f, vis_rect.y + 8.0f}, 1.5f,
                            ResolveHlGroup("Green"));
             }
             int object_id = obj.id;
@@ -20338,14 +20346,14 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
             // narrow sidebar with no visual hint anything was cut off
             // (caught live, MODEL3D_PLAN.md Part VII).
             bool truncated = false;
-            while (!name.empty() && MeasureTextEx(g_font, (name + "...").c_str(), font_size * 0.85f, 0).x > name_w) {
+            while (!name.empty() && gfx::MeasureTextEx(g_font, (name + "...").c_str(), font_size * 0.85f, 0).x > name_w) {
                 name.pop_back();
                 truncated = true;
             }
             if (truncated) name += "...";
-            DrawTextEx(g_font, name.c_str(), Vector2{name_x, row.y + (row_h - font_size * 0.85f) / 2.0f}, font_size * 0.85f, 0,
+            gfx::DrawTextEx(g_font, name.c_str(), gfx::Vector2{name_x, row.y + (row_h - font_size * 0.85f) / 2.0f}, font_size * 0.85f, 0,
                        selected ? ResolveHlGroup("Accent") : ResolveHlGroup("Normal"));
-            Rectangle name_rect{name_x, row.y, name_w, row_h};
+            gfx::Rectangle name_rect{name_x, row.y, name_w, row_h};
             RegisterClickRegion(name_rect, [buffer_id, object_id, shift_held] {
                 auto *s = g_editor.GetModel3DMutable(buffer_id);
                 if (!s) return;
@@ -20359,13 +20367,13 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
             });
             ry += row_h;
         }
-        EndScissorMode();
+        gfx::EndScissorMode();
 
         // --- Inspector (bottom half) ---
-        Rectangle inspector{sidebar.x, sidebar.y + outliner_h, sidebar.width, sidebar.height - outliner_h};
-        DrawLineEx(Vector2{inspector.x, inspector.y}, Vector2{inspector.x + inspector.width, inspector.y}, 1.0f, ResolveHlGroup("Border"));
+        gfx::Rectangle inspector{sidebar.x, sidebar.y + outliner_h, sidebar.width, sidebar.height - outliner_h};
+        gfx::DrawLineEx(gfx::Vector2{inspector.x, inspector.y}, gfx::Vector2{inspector.x + inspector.width, inspector.y}, 1.0f, ResolveHlGroup("Border"));
         float iy = inspector.y + 8.0f;
-        DrawTextEx(g_font, "Inspector", Vector2{inspector.x + 10.0f, iy}, font_size, 0, ResolveHlGroup("Normal"));
+        gfx::DrawTextEx(g_font, "Inspector", gfx::Vector2{inspector.x + 10.0f, iy}, font_size, 0, ResolveHlGroup("Normal"));
         iy += font_size + 8.0f;
         if (sess.selection.size() == 1) {
             const Object3D *obj = sess.scene.FindObject(sess.selection[0]);
@@ -20375,8 +20383,8 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
                 Vec3f cur_pos = obj->position, cur_rot = obj->rotation_deg, cur_scale = obj->scale;
                 RgbaColorF cur_color = obj->color;
 
-                Rectangle name_click{inspector.x + 10.0f, iy, inspector.width - 20.0f, font_size + 6.0f};
-                DrawTextEx(g_font, cur_name.c_str(), Vector2{name_click.x, name_click.y}, font_size * 0.95f, 0, ResolveHlGroup("Normal"));
+                gfx::Rectangle name_click{inspector.x + 10.0f, iy, inspector.width - 20.0f, font_size + 6.0f};
+                gfx::DrawTextEx(g_font, cur_name.c_str(), gfx::Vector2{name_click.x, name_click.y}, font_size * 0.95f, 0, ResolveHlGroup("Normal"));
                 RegisterClickRegion(name_click, [pane_id, buffer_id, object_id, cur_name] {
                     g_editor.FocusPaneById(pane_id);
                     g_editor.BeginPromptNative("Rename object", cur_name, [buffer_id, object_id](const std::string &text) {
@@ -20386,12 +20394,12 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
                 iy += font_size + 10.0f;
 
                 auto edit_number = [&](const char *label, float value, std::function<void(float)> apply) {
-                    DrawTextEx(g_font, label, Vector2{inspector.x + 10.0f, iy + 2.0f}, font_size * 0.85f, 0, ResolveHlGroup("MutedFg"));
-                    Rectangle field_rect{inspector.x + 30.0f, iy, inspector.width - 40.0f, 20.0f};
-                    DrawRectangleRec(field_rect, ResolveHlGroup("Picker"));
+                    gfx::DrawTextEx(g_font, label, gfx::Vector2{inspector.x + 10.0f, iy + 2.0f}, font_size * 0.85f, 0, ResolveHlGroup("MutedFg"));
+                    gfx::Rectangle field_rect{inspector.x + 30.0f, iy, inspector.width - 40.0f, 20.0f};
+                    gfx::DrawRectangleRec(field_rect, ResolveHlGroup("Picker"));
                     char buf[32];
                     snprintf(buf, sizeof(buf), "%.3g", static_cast<double>(value));
-                    DrawTextEx(g_font, buf, Vector2{field_rect.x + 6.0f, field_rect.y + 2.0f}, font_size * 0.85f, 0, ResolveHlGroup("Normal"));
+                    gfx::DrawTextEx(g_font, buf, gfx::Vector2{field_rect.x + 6.0f, field_rect.y + 2.0f}, font_size * 0.85f, 0, ResolveHlGroup("Normal"));
                     RegisterClickRegion(field_rect, [pane_id, value, apply] {
                         g_editor.FocusPaneById(pane_id);
                         char cur[32];
@@ -20405,7 +20413,7 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
                     });
                     iy += 22.0f;
                 };
-                DrawTextEx(g_font, "Position", Vector2{inspector.x + 10.0f, iy}, font_size * 0.8f, 0, ResolveHlGroup("MutedFg"));
+                gfx::DrawTextEx(g_font, "Position", gfx::Vector2{inspector.x + 10.0f, iy}, font_size * 0.8f, 0, ResolveHlGroup("MutedFg"));
                 iy += font_size * 0.8f + 4.0f;
                 edit_number("X", cur_pos.x, [buffer_id, object_id, cur_pos](float v) {
                     g_editor.Model3DSetTransform(buffer_id, object_id, true, Vec3f{v, cur_pos.y, cur_pos.z}, false, {}, false, {});
@@ -20417,7 +20425,7 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
                     g_editor.Model3DSetTransform(buffer_id, object_id, true, Vec3f{cur_pos.x, cur_pos.y, v}, false, {}, false, {});
                 });
                 iy += 4.0f;
-                DrawTextEx(g_font, "Rotation", Vector2{inspector.x + 10.0f, iy}, font_size * 0.8f, 0, ResolveHlGroup("MutedFg"));
+                gfx::DrawTextEx(g_font, "Rotation", gfx::Vector2{inspector.x + 10.0f, iy}, font_size * 0.8f, 0, ResolveHlGroup("MutedFg"));
                 iy += font_size * 0.8f + 4.0f;
                 edit_number("X", cur_rot.x, [buffer_id, object_id, cur_rot](float v) {
                     g_editor.Model3DSetTransform(buffer_id, object_id, false, {}, true, Vec3f{v, cur_rot.y, cur_rot.z}, false, {});
@@ -20429,7 +20437,7 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
                     g_editor.Model3DSetTransform(buffer_id, object_id, false, {}, true, Vec3f{cur_rot.x, cur_rot.y, v}, false, {});
                 });
                 iy += 4.0f;
-                DrawTextEx(g_font, "Scale", Vector2{inspector.x + 10.0f, iy}, font_size * 0.8f, 0, ResolveHlGroup("MutedFg"));
+                gfx::DrawTextEx(g_font, "Scale", gfx::Vector2{inspector.x + 10.0f, iy}, font_size * 0.8f, 0, ResolveHlGroup("MutedFg"));
                 iy += font_size * 0.8f + 4.0f;
                 edit_number("X", cur_scale.x, [buffer_id, object_id, cur_scale](float v) {
                     g_editor.Model3DSetTransform(buffer_id, object_id, false, {}, false, {}, true, Vec3f{v, cur_scale.y, cur_scale.z});
@@ -20441,13 +20449,13 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
                     g_editor.Model3DSetTransform(buffer_id, object_id, false, {}, false, {}, true, Vec3f{cur_scale.x, cur_scale.y, v});
                 });
                 iy += 4.0f;
-                DrawTextEx(g_font, "Color", Vector2{inspector.x + 10.0f, iy}, font_size * 0.8f, 0, ResolveHlGroup("MutedFg"));
+                gfx::DrawTextEx(g_font, "Color", gfx::Vector2{inspector.x + 10.0f, iy}, font_size * 0.8f, 0, ResolveHlGroup("MutedFg"));
                 iy += font_size * 0.8f + 4.0f;
-                Rectangle color_rect{inspector.x + 10.0f, iy, inspector.width - 20.0f, 20.0f};
-                DrawRectangleRec(color_rect, Color{static_cast<unsigned char>(std::clamp(cur_color.r, 0.0f, 1.0f) * 255.0f),
+                gfx::Rectangle color_rect{inspector.x + 10.0f, iy, inspector.width - 20.0f, 20.0f};
+                gfx::DrawRectangleRec(color_rect, gfx::Color{static_cast<unsigned char>(std::clamp(cur_color.r, 0.0f, 1.0f) * 255.0f),
                                                     static_cast<unsigned char>(std::clamp(cur_color.g, 0.0f, 1.0f) * 255.0f),
                                                     static_cast<unsigned char>(std::clamp(cur_color.b, 0.0f, 1.0f) * 255.0f), 255});
-                DrawRectangleLinesEx(color_rect, 1.0f, ResolveHlGroup("Border"));
+                gfx::DrawRectangleLinesEx(color_rect, 1.0f, ResolveHlGroup("Border"));
                 RegisterClickRegion(color_rect, [pane_id, buffer_id, object_id, cur_color] {
                     g_editor.FocusPaneById(pane_id);
                     char cur[64];
@@ -20461,15 +20469,15 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
                     });
                 });
                 iy += 24.0f + 8.0f;
-                DrawTextEx(g_font, "Texture", Vector2{inspector.x + 10.0f, iy}, font_size * 0.8f, 0, ResolveHlGroup("MutedFg"));
+                gfx::DrawTextEx(g_font, "Texture", gfx::Vector2{inspector.x + 10.0f, iy}, font_size * 0.8f, 0, ResolveHlGroup("MutedFg"));
                 iy += font_size * 0.8f + 4.0f;
-                Rectangle tex_rect{inspector.x + 10.0f, iy, inspector.width - 20.0f, 20.0f};
-                DrawRectangleRec(tex_rect, ResolveHlGroup("Picker"));
+                gfx::Rectangle tex_rect{inspector.x + 10.0f, iy, inspector.width - 20.0f, 20.0f};
+                gfx::DrawRectangleRec(tex_rect, ResolveHlGroup("Picker"));
                 int cur_texture_index = obj->texture_index;
                 std::string tex_label = cur_texture_index >= 0 && cur_texture_index < static_cast<int>(sess.scene.textures.size())
                                              ? sess.scene.textures[static_cast<size_t>(cur_texture_index)].name
                                              : "(none -- click to set)";
-                DrawTextEx(g_font, tex_label.c_str(), Vector2{tex_rect.x + 6.0f, tex_rect.y + 2.0f}, font_size * 0.85f, 0,
+                gfx::DrawTextEx(g_font, tex_label.c_str(), gfx::Vector2{tex_rect.x + 6.0f, tex_rect.y + 2.0f}, font_size * 0.85f, 0,
                            ResolveHlGroup("Normal"));
                 RegisterClickRegion(tex_rect, [pane_id, buffer_id, object_id] {
                     g_editor.FocusPaneById(pane_id);
@@ -20494,18 +20502,18 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
             // Model3DSetTransformsBatch -- one undo step per object, same
             // as every other batch entry point (mep_model_set_transforms).
             std::string label = std::to_string(sess.selection.size()) + " objects selected";
-            DrawTextEx(g_font, label.c_str(), Vector2{inspector.x + 10.0f, iy}, font_size * 0.9f, 0, ResolveHlGroup("MutedFg"));
+            gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{inspector.x + 10.0f, iy}, font_size * 0.9f, 0, ResolveHlGroup("MutedFg"));
             iy += font_size * 0.9f + 10.0f;
 
             std::vector<int> sel_ids = sess.selection;
 
             // mode: 0 = position (add), 1 = rotation (add), 2 = scale (multiply).
             auto edit_delta = [&](const char *label_text, char component, int mode) {
-                DrawTextEx(g_font, label_text, Vector2{inspector.x + 10.0f, iy + 2.0f}, font_size * 0.85f, 0, ResolveHlGroup("MutedFg"));
-                Rectangle field_rect{inspector.x + 30.0f, iy, inspector.width - 40.0f, 20.0f};
-                DrawRectangleRec(field_rect, ResolveHlGroup("Picker"));
+                gfx::DrawTextEx(g_font, label_text, gfx::Vector2{inspector.x + 10.0f, iy + 2.0f}, font_size * 0.85f, 0, ResolveHlGroup("MutedFg"));
+                gfx::Rectangle field_rect{inspector.x + 30.0f, iy, inspector.width - 40.0f, 20.0f};
+                gfx::DrawRectangleRec(field_rect, ResolveHlGroup("Picker"));
                 const char *placeholder = mode == 2 ? "x1" : "+0";
-                DrawTextEx(g_font, placeholder, Vector2{field_rect.x + 6.0f, field_rect.y + 2.0f}, font_size * 0.85f, 0,
+                gfx::DrawTextEx(g_font, placeholder, gfx::Vector2{field_rect.x + 6.0f, field_rect.y + 2.0f}, font_size * 0.85f, 0,
                            ResolveHlGroup("Normal"));
                 RegisterClickRegion(field_rect, [pane_id, buffer_id, sel_ids, component, mode] {
                     g_editor.FocusPaneById(pane_id);
@@ -20552,25 +20560,25 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
                 });
                 iy += 22.0f;
             };
-            DrawTextEx(g_font, "Move by", Vector2{inspector.x + 10.0f, iy}, font_size * 0.8f, 0, ResolveHlGroup("MutedFg"));
+            gfx::DrawTextEx(g_font, "Move by", gfx::Vector2{inspector.x + 10.0f, iy}, font_size * 0.8f, 0, ResolveHlGroup("MutedFg"));
             iy += font_size * 0.8f + 4.0f;
             edit_delta("X", 'x', 0);
             edit_delta("Y", 'y', 0);
             edit_delta("Z", 'z', 0);
             iy += 4.0f;
-            DrawTextEx(g_font, "Rotate by (deg)", Vector2{inspector.x + 10.0f, iy}, font_size * 0.8f, 0, ResolveHlGroup("MutedFg"));
+            gfx::DrawTextEx(g_font, "Rotate by (deg)", gfx::Vector2{inspector.x + 10.0f, iy}, font_size * 0.8f, 0, ResolveHlGroup("MutedFg"));
             iy += font_size * 0.8f + 4.0f;
             edit_delta("X", 'x', 1);
             edit_delta("Y", 'y', 1);
             edit_delta("Z", 'z', 1);
             iy += 4.0f;
-            DrawTextEx(g_font, "Scale by (factor)", Vector2{inspector.x + 10.0f, iy}, font_size * 0.8f, 0, ResolveHlGroup("MutedFg"));
+            gfx::DrawTextEx(g_font, "Scale by (factor)", gfx::Vector2{inspector.x + 10.0f, iy}, font_size * 0.8f, 0, ResolveHlGroup("MutedFg"));
             iy += font_size * 0.8f + 4.0f;
             edit_delta("X", 'x', 2);
             edit_delta("Y", 'y', 2);
             edit_delta("Z", 'z', 2);
         } else {
-            DrawTextEx(g_font, "No selection", Vector2{inspector.x + 10.0f, iy}, font_size * 0.9f, 0, ResolveHlGroup("MutedFg"));
+            gfx::DrawTextEx(g_font, "No selection", gfx::Vector2{inspector.x + 10.0f, iy}, font_size * 0.9f, 0, ResolveHlGroup("MutedFg"));
         }
     }
 
@@ -20586,16 +20594,16 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
     }
 
     // --- Viewport ---
-    Rectangle viewport{x + kModel3DToolSidebarW, content_y, w - kModel3DToolSidebarW - sidebar_w, content_h};
+    gfx::Rectangle viewport{x + kModel3DToolSidebarW, content_y, w - kModel3DToolSidebarW - sidebar_w, content_h};
     if (viewport.width > 0.0f && viewport.height > 0.0f) {
         g_editor.ResizeModel3DViewport(buffer_id, static_cast<int>(viewport.width), static_cast<int>(viewport.height));
-        Camera3D camera = Model3DBuildCamera(sess);
-        RenderTexture2D &rt = GetOrCreateModel3DRenderTexture(buffer_id, static_cast<int>(viewport.width), static_cast<int>(viewport.height));
-        std::vector<Mesh> &gpu_meshes = GetOrBuildModel3DMeshes(buffer_id, sess.scene, sess.scene_generation);
-        std::vector<Texture2D> &gpu_textures = GetOrBuildModel3DTextures(buffer_id, sess.scene, sess.scene_generation);
+        gfx::Camera3D camera = Model3DBuildCamera(sess);
+        gfx::RenderTexture2D &rt = GetOrCreateModel3DRenderTexture(buffer_id, static_cast<int>(viewport.width), static_cast<int>(viewport.height));
+        std::vector<gfx::Mesh> &gpu_meshes = GetOrBuildModel3DMeshes(buffer_id, sess.scene, sess.scene_generation);
+        std::vector<gfx::Texture2D> &gpu_textures = GetOrBuildModel3DTextures(buffer_id, sess.scene, sess.scene_generation);
         if (!g_model3d_default_material_loaded) {
-            g_model3d_default_material = LoadMaterialDefault();
-            g_model3d_default_white_texture = g_model3d_default_material.maps[MATERIAL_MAP_ALBEDO].texture;
+            g_model3d_default_material = gfx::LoadMaterialDefault();
+            g_model3d_default_white_texture = g_model3d_default_material.maps[gfx::kMaterialMapAlbedo].texture;
             g_model3d_default_material_loaded = true;
         }
 
@@ -20614,29 +20622,29 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
         bool show_gizmo = !sess.mesh_edit_mode &&
                            (sess.tool == Model3DTool::Move || sess.tool == Model3DTool::Scale || sess.tool == Model3DTool::Rotate) &&
                            sess.selection.size() == 1;
-        Vector3 gizmo_origin{};
+        gfx::Vector3 gizmo_origin{};
         float gizmo_len = 0.0f;
-        Vector3 gizmo_axis_dir[3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+        gfx::Vector3 gizmo_axis_dir[3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
         if (show_gizmo) {
             const Object3D *gizmo_obj = sess.scene.FindObject(sess.selection[0]);
             show_gizmo = gizmo_obj != nullptr;
             if (show_gizmo) {
-                gizmo_origin = Vector3{gizmo_obj->position.x, gizmo_obj->position.y, gizmo_obj->position.z};
+                gizmo_origin = gfx::Vector3{gizmo_obj->position.x, gizmo_obj->position.y, gizmo_obj->position.z};
                 gizmo_len = Model3DGizmoLength(sess.camera_distance);
             }
         }
 
-        BeginTextureMode(rt);
-        ClearBackground(ResolveHlGroup("NormalBg"));
-        BeginMode3D(camera);
-        if (sess.show_grid) DrawGrid(20, 1.0f);
-        if (sess.wireframe) rlEnableWireMode();
+        gfx::BeginTextureMode(rt);
+        gfx::ClearBackground(ResolveHlGroup("NormalBg"));
+        gfx::BeginMode3D(camera);
+        if (sess.show_grid) gfx::DrawGrid(20, 1.0f);
+        if (sess.wireframe) gfx::EnableWireMode();
         for (const Object3D &obj : sess.scene.objects) {
             if (!obj.visible) continue;
             if (obj.mesh_index < 0 || obj.mesh_index >= static_cast<int>(gpu_meshes.size())) continue;
-            Matrix mat = Model3DObjectMatrix(obj);
-            g_model3d_default_material.maps[MATERIAL_MAP_ALBEDO].color =
-                Color{static_cast<unsigned char>(std::clamp(obj.color.r, 0.0f, 1.0f) * 255.0f),
+            gfx::Matrix mat = Model3DObjectMatrix(obj);
+            g_model3d_default_material.maps[gfx::kMaterialMapAlbedo].color =
+                gfx::Color{static_cast<unsigned char>(std::clamp(obj.color.r, 0.0f, 1.0f) * 255.0f),
                       static_cast<unsigned char>(std::clamp(obj.color.g, 0.0f, 1.0f) * 255.0f),
                       static_cast<unsigned char>(std::clamp(obj.color.b, 0.0f, 1.0f) * 255.0f),
                       static_cast<unsigned char>(std::clamp(obj.color.a, 0.0f, 1.0f) * 255.0f)};
@@ -20647,15 +20655,15 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
             // leak onto an untextured one later in it.
             bool has_texture = obj.texture_index >= 0 && obj.texture_index < static_cast<int>(gpu_textures.size()) &&
                                 gpu_textures[static_cast<size_t>(obj.texture_index)].id > 0;
-            g_model3d_default_material.maps[MATERIAL_MAP_ALBEDO].texture =
+            g_model3d_default_material.maps[gfx::kMaterialMapAlbedo].texture =
                 has_texture ? gpu_textures[static_cast<size_t>(obj.texture_index)] : g_model3d_default_white_texture;
-            DrawMesh(gpu_meshes[static_cast<size_t>(obj.mesh_index)], g_model3d_default_material, mat);
+            gfx::DrawMesh(gpu_meshes[static_cast<size_t>(obj.mesh_index)], g_model3d_default_material, mat);
         }
-        if (sess.wireframe) rlDisableWireMode();
+        if (sess.wireframe) gfx::DisableWireMode();
         for (int sel_id : sess.selection) {
             const Object3D *sel_obj = sess.scene.FindObject(sel_id);
             if (!sel_obj) continue;
-            DrawBoundingBox(Model3DWorldBounds(sess.scene, *sel_obj), ResolveHlGroup("Accent"));
+            gfx::DrawBoundingBox(Model3DWorldBounds(sess.scene, *sel_obj), ResolveHlGroup("Accent"));
         }
         // Phase 3 vertex editing: mesh_edit_mode replaces the object-level
         // gizmo entirely (there's no "move the whole object" gizmo while
@@ -20664,21 +20672,21 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
         // DrawMesh's own `mat` is. Sized off gizmo_len (camera-distance-
         // scaled) purely for a sensible on-screen size at any zoom -- not
         // an actual gizmo.
-        std::vector<Vector3> edit_vertex_world;  // populated only in mesh_edit_mode; read again below for hit-testing
+        std::vector<gfx::Vector3> edit_vertex_world;  // populated only in mesh_edit_mode; read again below for hit-testing
         if (sess.mesh_edit_mode && sess.selection.size() == 1) {
             const Object3D *edit_obj = sess.scene.FindObject(sess.selection[0]);
             if (edit_obj && edit_obj->mesh_index >= 0 && edit_obj->mesh_index < static_cast<int>(sess.scene.meshes.size())) {
                 const MeshData &md = sess.scene.meshes[static_cast<size_t>(edit_obj->mesh_index)];
-                Matrix mat = Model3DObjectMatrix(*edit_obj);
+                gfx::Matrix mat = Model3DObjectMatrix(*edit_obj);
                 float point_radius = std::clamp(sess.camera_distance * 0.012f, 0.01f, 0.5f);
                 edit_vertex_world.reserve(static_cast<size_t>(md.VertexCount()));
                 for (int v = 0; v < md.VertexCount(); v++) {
-                    Vector3 local{md.positions[static_cast<size_t>(v) * 3 + 0], md.positions[static_cast<size_t>(v) * 3 + 1],
+                    gfx::Vector3 local{md.positions[static_cast<size_t>(v) * 3 + 0], md.positions[static_cast<size_t>(v) * 3 + 1],
                                   md.positions[static_cast<size_t>(v) * 3 + 2]};
-                    Vector3 world = Vector3Transform(local, mat);
+                    gfx::Vector3 world = gfx::Vector3Transform(local, mat);
                     edit_vertex_world.push_back(world);
                     bool selected = std::find(sess.vertex_selection.begin(), sess.vertex_selection.end(), v) != sess.vertex_selection.end();
-                    DrawSphere(world, point_radius, selected ? YELLOW : ResolveHlGroup("Accent"));
+                    gfx::DrawSphere(world, point_radius, selected ? gfx::Yellow : ResolveHlGroup("Accent"));
                 }
             }
         } else if (show_gizmo) {
@@ -20686,49 +20694,49 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
             // so the handles stay clickable/visible even when they'd
             // otherwise poke through the object's own geometry -- standard
             // gizmo convention, and simpler than fighting the depth buffer.
-            static const Color kAxisColor[3] = {RED, GREEN, BLUE};
+            static const gfx::Color kAxisColor[3] = {gfx::Red, gfx::Green, gfx::Blue};
             for (int i = 0; i < 3; i++) {
                 bool active_axis = g_model3d_gizmo_drag.active && g_model3d_gizmo_drag.buffer_id == buffer_id &&
                                     g_model3d_gizmo_drag.axis == i;
-                Color c = active_axis ? YELLOW : kAxisColor[i];
+                gfx::Color c = active_axis ? gfx::Yellow : kAxisColor[i];
                 if (sess.tool == Model3DTool::Rotate) {
-                    Vector3 u, v;
+                    gfx::Vector3 u, v;
                     GizmoRingBasis(i, &u, &v);
                     DrawGizmoRing(gizmo_origin, gizmo_len, u, v, c);
                     continue;
                 }
-                Vector3 tip = Vector3Add(gizmo_origin, Vector3Scale(gizmo_axis_dir[i], gizmo_len));
-                Vector3 shaft_end = Vector3Add(gizmo_origin, Vector3Scale(gizmo_axis_dir[i], gizmo_len * 0.85f));
-                DrawLine3D(gizmo_origin, shaft_end, c);
+                gfx::Vector3 tip = gfx::Vector3Add(gizmo_origin, gfx::Vector3Scale(gizmo_axis_dir[i], gizmo_len));
+                gfx::Vector3 shaft_end = gfx::Vector3Add(gizmo_origin, gfx::Vector3Scale(gizmo_axis_dir[i], gizmo_len * 0.85f));
+                gfx::DrawLine3D(gizmo_origin, shaft_end, c);
                 if (sess.tool == Model3DTool::Move) {
-                    DrawCylinderEx(shaft_end, tip, gizmo_len * 0.06f, 0.0f, 8, c);  // arrowhead cone
+                    gfx::DrawCylinderEx(shaft_end, tip, gizmo_len * 0.06f, 0.0f, 8, c);  // arrowhead cone
                 } else {
-                    DrawCube(tip, gizmo_len * 0.12f, gizmo_len * 0.12f, gizmo_len * 0.12f, c);  // scale handle
+                    gfx::DrawCube(tip, gizmo_len * 0.12f, gizmo_len * 0.12f, gizmo_len * 0.12f, c);  // scale handle
                 }
             }
         }
-        EndMode3D();
-        EndTextureMode();
+        gfx::EndMode3D();
+        gfx::EndTextureMode();
 
-        BeginScissorMode(static_cast<int>(viewport.x), static_cast<int>(viewport.y), static_cast<int>(viewport.width),
+        gfx::BeginScissorMode(static_cast<int>(viewport.x), static_cast<int>(viewport.y), static_cast<int>(viewport.width),
                           static_cast<int>(viewport.height));
-        DrawTextureRec(rt.texture, Rectangle{0, 0, static_cast<float>(rt.texture.width), -static_cast<float>(rt.texture.height)},
-                       Vector2{viewport.x, viewport.y}, WHITE);
+        gfx::DrawTextureRec(rt.texture, gfx::Rectangle{0, 0, static_cast<float>(rt.texture.width), -static_cast<float>(rt.texture.height)},
+                       gfx::Vector2{viewport.x, viewport.y}, gfx::White);
 
-        Vector2 mouse = GetMousePosition();
-        bool mouse_in_viewport = CheckCollisionPointRec(mouse, viewport);
-        Vector2 local_mouse{mouse.x - viewport.x, mouse.y - viewport.y};
+        gfx::Vector2 mouse = gfx::GetMousePosition();
+        bool mouse_in_viewport = gfx::CheckCollisionPointRec(mouse, viewport);
+        gfx::Vector2 local_mouse{mouse.x - viewport.x, mouse.y - viewport.y};
 
         // Orbit: OrbitCam tool + left-drag, or middle-mouse-drag with any
         // tool (mirrors the image editor's "Pan tool / middle-mouse-drag
         // with any tool" convention). Pan: PanCam tool + left-drag, or
         // right-mouse-drag with any tool.
         bool want_orbit = is_active && mouse_in_viewport &&
-                           ((sess.tool == Model3DTool::OrbitCam && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) ||
-                            IsMouseButtonPressed(MOUSE_BUTTON_MIDDLE));
+                           ((sess.tool == Model3DTool::OrbitCam && gfx::IsMouseButtonPressed(gfx::MouseButton::Left)) ||
+                            gfx::IsMouseButtonPressed(gfx::MouseButton::Middle));
         bool want_pan = is_active && mouse_in_viewport &&
-                        ((sess.tool == Model3DTool::PanCam && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) ||
-                         IsMouseButtonPressed(MOUSE_BUTTON_RIGHT));
+                        ((sess.tool == Model3DTool::PanCam && gfx::IsMouseButtonPressed(gfx::MouseButton::Left)) ||
+                         gfx::IsMouseButtonPressed(gfx::MouseButton::Right));
         if (want_orbit) {
             g_model3d_camera_drag = {true, false, buffer_id, mouse.x, mouse.y, sess.camera_yaw, sess.camera_pitch, sess.camera_target};
         } else if (want_pan) {
@@ -20736,22 +20744,22 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
         }
         if (g_model3d_camera_drag.active && g_model3d_camera_drag.buffer_id == buffer_id) {
             bool still_down = g_model3d_camera_drag.panning
-                                   ? (IsMouseButtonDown(MOUSE_BUTTON_RIGHT) ||
-                                      (sess.tool == Model3DTool::PanCam && IsMouseButtonDown(MOUSE_BUTTON_LEFT)))
-                                   : (IsMouseButtonDown(MOUSE_BUTTON_MIDDLE) ||
-                                      (sess.tool == Model3DTool::OrbitCam && IsMouseButtonDown(MOUSE_BUTTON_LEFT)));
+                                   ? (gfx::IsMouseButtonDown(gfx::MouseButton::Right) ||
+                                      (sess.tool == Model3DTool::PanCam && gfx::IsMouseButtonDown(gfx::MouseButton::Left)))
+                                   : (gfx::IsMouseButtonDown(gfx::MouseButton::Middle) ||
+                                      (sess.tool == Model3DTool::OrbitCam && gfx::IsMouseButtonDown(gfx::MouseButton::Left)));
             if (still_down) {
                 float dxp = mouse.x - g_model3d_camera_drag.start_mouse_x;
                 float dyp = mouse.y - g_model3d_camera_drag.start_mouse_y;
                 if (g_model3d_camera_drag.panning) {
-                    Vector3 forward = Vector3Normalize(Vector3Subtract(camera.target, camera.position));
-                    Vector3 right = Vector3Normalize(Vector3CrossProduct(forward, camera.up));
-                    Vector3 up = Vector3CrossProduct(right, forward);
+                    gfx::Vector3 forward = gfx::Vector3Normalize(gfx::Vector3Subtract(camera.target, camera.position));
+                    gfx::Vector3 right = gfx::Vector3Normalize(gfx::Vector3CrossProduct(forward, camera.up));
+                    gfx::Vector3 up = gfx::Vector3CrossProduct(right, forward);
                     float pan_scale = sess.camera_distance * 0.0015f;
-                    Vector3 start{g_model3d_camera_drag.start_target.x, g_model3d_camera_drag.start_target.y,
+                    gfx::Vector3 start{g_model3d_camera_drag.start_target.x, g_model3d_camera_drag.start_target.y,
                                   g_model3d_camera_drag.start_target.z};
-                    Vector3 delta = Vector3Add(Vector3Scale(right, -dxp * pan_scale), Vector3Scale(up, dyp * pan_scale));
-                    Vector3 new_target = Vector3Add(start, delta);
+                    gfx::Vector3 delta = gfx::Vector3Add(gfx::Vector3Scale(right, -dxp * pan_scale), gfx::Vector3Scale(up, dyp * pan_scale));
+                    gfx::Vector3 new_target = gfx::Vector3Add(start, delta);
                     sess.camera_target = Vec3f{new_target.x, new_target.y, new_target.z};
                 } else {
                     sess.camera_yaw = g_model3d_camera_drag.start_yaw - dxp * 0.3f;
@@ -20767,8 +20775,8 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
         // instead, same "no click needed to re-target, only to change
         // selection" shape as Blender's G/R/S after a separate select).
         if (is_active && mouse_in_viewport && !sess.mesh_edit_mode && sess.tool == Model3DTool::Select &&
-            IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-            Ray ray = GetScreenToWorldRayEx(local_mouse, camera, static_cast<int>(viewport.width), static_cast<int>(viewport.height));
+            gfx::IsMouseButtonPressed(gfx::MouseButton::Left)) {
+            gfx::Ray ray = gfx::GetScreenToWorldRayEx(local_mouse, camera, static_cast<int>(viewport.width), static_cast<int>(viewport.height));
             // First pass: every object whose bounding box the ray hits
             // (cheap). One hit is the common case -- just use it. More than
             // one (e.g. a window sphere sitting flush against a body
@@ -20787,7 +20795,7 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
             std::vector<BoxHit> box_hits;
             for (const Object3D &obj : sess.scene.objects) {
                 if (!obj.visible) continue;
-                RayCollision hit = GetRayCollisionBox(ray, Model3DWorldBounds(sess.scene, obj));
+                gfx::RayCollision hit = gfx::GetRayCollisionBox(ray, Model3DWorldBounds(sess.scene, obj));
                 if (hit.hit) box_hits.push_back({obj.id, hit.distance, obj.mesh_index});
             }
             int best_id = -1;
@@ -20798,8 +20806,8 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
                 for (const BoxHit &bh : box_hits) {
                     const Object3D *obj = sess.scene.FindObject(bh.object_id);
                     if (!obj || bh.mesh_index < 0 || bh.mesh_index >= static_cast<int>(gpu_meshes.size())) continue;
-                    RayCollision mesh_hit =
-                        GetRayCollisionMesh(ray, gpu_meshes[static_cast<size_t>(bh.mesh_index)], Model3DObjectMatrix(*obj));
+                    gfx::RayCollision mesh_hit =
+                        gfx::GetRayCollisionMesh(ray, gpu_meshes[static_cast<size_t>(bh.mesh_index)], Model3DObjectMatrix(*obj));
                     if (mesh_hit.hit && mesh_hit.distance < best_dist) {
                         best_dist = mesh_hit.distance;
                         best_id = bh.object_id;
@@ -20815,7 +20823,7 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
                     }
                 }
             }
-            bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+            bool shift = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
             if (best_id >= 0) {
                 if (shift) {
                     auto it = std::find(sess.selection.begin(), sess.selection.end(), best_id);
@@ -20838,19 +20846,19 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
         // BeginMode3D) instead of whole objects.
         if (sess.mesh_edit_mode && sess.selection.size() == 1 && !edit_vertex_world.empty()) {
             const Object3D *edit_obj = sess.scene.FindObject(sess.selection[0]);
-            if (is_active && mouse_in_viewport && edit_obj && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            if (is_active && mouse_in_viewport && edit_obj && gfx::IsMouseButtonPressed(gfx::MouseButton::Left)) {
                 float best_px = 12.0f;  // hit-test tolerance, screen pixels
                 int hit_vertex = -1;
                 for (size_t v = 0; v < edit_vertex_world.size(); v++) {
-                    Vector2 p = GetWorldToScreenEx(edit_vertex_world[v], camera, static_cast<int>(viewport.width),
+                    gfx::Vector2 p = gfx::GetWorldToScreenEx(edit_vertex_world[v], camera, static_cast<int>(viewport.width),
                                                     static_cast<int>(viewport.height));
-                    float d = Vector2Distance(local_mouse, p);
+                    float d = gfx::Vector2Distance(local_mouse, p);
                     if (d < best_px) {
                         best_px = d;
                         hit_vertex = static_cast<int>(v);
                     }
                 }
-                bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+                bool shift = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
                 if (hit_vertex >= 0) {
                     bool already_selected =
                         std::find(sess.vertex_selection.begin(), sess.vertex_selection.end(), hit_vertex) != sess.vertex_selection.end();
@@ -20908,23 +20916,23 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
             float box_y0 = std::min(g_model3d_vertex_box_select.start_y, local_mouse.y);
             float box_x1 = std::max(g_model3d_vertex_box_select.start_x, local_mouse.x);
             float box_y1 = std::max(g_model3d_vertex_box_select.start_y, local_mouse.y);
-            if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+            if (gfx::IsMouseButtonDown(gfx::MouseButton::Left)) {
                 // Drawn in absolute (viewport-offset) coordinates -- this
                 // runs after the viewport texture's already been blitted
                 // to the real framebuffer, under the same BeginScissorMode
                 // as that blit, so a 2D rectangle here is the right call
                 // (no BeginMode3D needed, and it's automatically clipped to
                 // the viewport bounds).
-                Rectangle box{viewport.x + box_x0, viewport.y + box_y0, box_x1 - box_x0, box_y1 - box_y0};
-                DrawRectangleRec(box, ColorAlpha(ResolveHlGroup("Accent"), 0.15f));
-                DrawRectangleLinesEx(box, 1.0f, ResolveHlGroup("Accent"));
+                gfx::Rectangle box{viewport.x + box_x0, viewport.y + box_y0, box_x1 - box_x0, box_y1 - box_y0};
+                gfx::DrawRectangleRec(box, gfx::ColorAlpha(ResolveHlGroup("Accent"), 0.15f));
+                gfx::DrawRectangleLinesEx(box, 1.0f, ResolveHlGroup("Accent"));
             } else {
-                bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+                bool shift = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
                 bool real_drag = (box_x1 - box_x0) > kModel3DBoxSelectMinPx || (box_y1 - box_y0) > kModel3DBoxSelectMinPx;
                 if (real_drag) {
                     std::vector<int> caught;
                     for (size_t v = 0; v < edit_vertex_world.size(); v++) {
-                        Vector2 p = GetWorldToScreenEx(edit_vertex_world[v], camera, static_cast<int>(viewport.width),
+                        gfx::Vector2 p = gfx::GetWorldToScreenEx(edit_vertex_world[v], camera, static_cast<int>(viewport.width),
                                                         static_cast<int>(viewport.height));
                         if (p.x >= box_x0 && p.x <= box_x1 && p.y >= box_y0 && p.y <= box_y1) caught.push_back(static_cast<int>(v));
                     }
@@ -20944,28 +20952,28 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
             }
         }
         if (g_model3d_vertex_drag.active && g_model3d_vertex_drag.buffer_id == buffer_id) {
-            if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+            if (gfx::IsMouseButtonDown(gfx::MouseButton::Left)) {
                 float dxp = mouse.x - g_model3d_vertex_drag.start_mouse_x;
                 float dyp = mouse.y - g_model3d_vertex_drag.start_mouse_y;
                 const Object3D *drag_obj = sess.scene.FindObject(g_model3d_vertex_drag.object_id);
                 if (drag_obj && g_model3d_vertex_drag.mesh_index >= 0 &&
                     g_model3d_vertex_drag.mesh_index < static_cast<int>(sess.scene.meshes.size())) {
-                    Vector3 forward = Vector3Normalize(Vector3Subtract(camera.target, camera.position));
-                    Vector3 right = Vector3Normalize(Vector3CrossProduct(forward, camera.up));
-                    Vector3 up = Vector3CrossProduct(right, forward);
+                    gfx::Vector3 forward = gfx::Vector3Normalize(gfx::Vector3Subtract(camera.target, camera.position));
+                    gfx::Vector3 right = gfx::Vector3Normalize(gfx::Vector3CrossProduct(forward, camera.up));
+                    gfx::Vector3 up = gfx::Vector3CrossProduct(right, forward);
                     float move_scale = sess.camera_distance * 0.0015f;
-                    Vector3 delta_world = Vector3Add(Vector3Scale(right, dxp * move_scale), Vector3Scale(up, -dyp * move_scale));
+                    gfx::Vector3 delta_world = gfx::Vector3Add(gfx::Vector3Scale(right, dxp * move_scale), gfx::Vector3Scale(up, -dyp * move_scale));
                     // Vertices are stored in local (pre-object-transform)
                     // space, but the drag should feel like moving in view
                     // space -- convert the world-space delta into local
                     // space via the inverse of the object's rotation+scale
                     // (translation-free, so this is safe to apply to a
                     // direction/delta, not just a point).
-                    Matrix scale = MatrixScale(drag_obj->scale.x, drag_obj->scale.y, drag_obj->scale.z);
-                    Matrix rotate = MatrixRotateXYZ(Vector3{drag_obj->rotation_deg.x * DEG2RAD, drag_obj->rotation_deg.y * DEG2RAD,
-                                                             drag_obj->rotation_deg.z * DEG2RAD});
-                    Matrix rs_inv = MatrixInvert(MatrixMultiply(scale, rotate));
-                    Vector3 delta_local = Vector3Transform(delta_world, rs_inv);
+                    gfx::Matrix scale = gfx::MatrixScale(drag_obj->scale.x, drag_obj->scale.y, drag_obj->scale.z);
+                    gfx::Matrix rotate = gfx::MatrixRotateXYZ(gfx::Vector3{drag_obj->rotation_deg.x * gfx::kDeg2Rad, drag_obj->rotation_deg.y * gfx::kDeg2Rad,
+                                                             drag_obj->rotation_deg.z * gfx::kDeg2Rad});
+                    gfx::Matrix rs_inv = gfx::MatrixInvert(gfx::MatrixMultiply(scale, rotate));
+                    gfx::Vector3 delta_local = gfx::Vector3Transform(delta_world, rs_inv);
                     MeshData &md = sess.scene.meshes[static_cast<size_t>(g_model3d_vertex_drag.mesh_index)];
                     for (size_t i = 0; i < g_model3d_vertex_drag.vertex_indices.size(); i++) {
                         int vi = g_model3d_vertex_drag.vertex_indices[i];
@@ -20997,7 +21005,7 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
         // not accumulated per-frame, so it doesn't drift with frame rate.
         bool transform_tool = sess.tool == Model3DTool::Move || sess.tool == Model3DTool::Rotate || sess.tool == Model3DTool::Scale;
         if (is_active && mouse_in_viewport && !sess.mesh_edit_mode && transform_tool && !sess.selection.empty() &&
-            IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            gfx::IsMouseButtonPressed(gfx::MouseButton::Left)) {
             int hit_axis = -1;
             if (show_gizmo && sess.tool == Model3DTool::Rotate) {
                 // Ring hit-test: where does the click ray cross each ring's
@@ -21007,12 +21015,12 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
                 // exact screen-space segment distance, but rings are
                 // inherently harder to hit-test precisely at a grazing
                 // camera angle, and this is a reasonable first pass.
-                Ray ray = GetScreenToWorldRayEx(local_mouse, camera, static_cast<int>(viewport.width), static_cast<int>(viewport.height));
+                gfx::Ray ray = gfx::GetScreenToWorldRayEx(local_mouse, camera, static_cast<int>(viewport.width), static_cast<int>(viewport.height));
                 float best_dist = gizmo_len * 0.18f;  // hit-test tolerance, world units
                 for (int i = 0; i < 3; i++) {
-                    Vector3 hit;
+                    gfx::Vector3 hit;
                     if (!RayPlaneIntersect(ray, gizmo_origin, gizmo_axis_dir[i], &hit)) continue;
-                    float d = std::fabs(Vector3Distance(hit, gizmo_origin) - gizmo_len);
+                    float d = std::fabs(gfx::Vector3Distance(hit, gizmo_origin) - gizmo_len);
                     if (d < best_dist) {
                         best_dist = d;
                         hit_axis = i;
@@ -21020,10 +21028,10 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
                 }
             } else if (show_gizmo) {
                 float best_px = 10.0f;  // hit-test tolerance, screen pixels
-                Vector2 p0 = GetWorldToScreenEx(gizmo_origin, camera, static_cast<int>(viewport.width), static_cast<int>(viewport.height));
+                gfx::Vector2 p0 = gfx::GetWorldToScreenEx(gizmo_origin, camera, static_cast<int>(viewport.width), static_cast<int>(viewport.height));
                 for (int i = 0; i < 3; i++) {
-                    Vector3 tip = Vector3Add(gizmo_origin, Vector3Scale(gizmo_axis_dir[i], gizmo_len));
-                    Vector2 p1 = GetWorldToScreenEx(tip, camera, static_cast<int>(viewport.width), static_cast<int>(viewport.height));
+                    gfx::Vector3 tip = gfx::Vector3Add(gizmo_origin, gfx::Vector3Scale(gizmo_axis_dir[i], gizmo_len));
+                    gfx::Vector2 p1 = gfx::GetWorldToScreenEx(tip, camera, static_cast<int>(viewport.width), static_cast<int>(viewport.height));
                     float d = DistancePointToSegment2D(local_mouse, p0, p1);
                     if (d < best_px) {
                         best_px = d;
@@ -21039,8 +21047,8 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
             g_model3d_gizmo_drag.start_mouse_y = mouse.y;
             g_model3d_gizmo_drag.axis = hit_axis;
             if (hit_axis >= 0 && sess.tool == Model3DTool::Rotate) {
-                Ray ray = GetScreenToWorldRayEx(local_mouse, camera, static_cast<int>(viewport.width), static_cast<int>(viewport.height));
-                Vector3 u, v, hit;
+                gfx::Ray ray = gfx::GetScreenToWorldRayEx(local_mouse, camera, static_cast<int>(viewport.width), static_cast<int>(viewport.height));
+                gfx::Vector3 u, v, hit;
                 GizmoRingBasis(hit_axis, &u, &v);
                 if (RayPlaneIntersect(ray, gizmo_origin, gizmo_axis_dir[hit_axis], &hit)) {
                     g_model3d_gizmo_drag.start_axis_param = AnglePointOnPlane(hit, gizmo_origin, u, v);
@@ -21048,7 +21056,7 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
                     g_model3d_gizmo_drag.axis = -1;  // degenerate ray/plane -- fall back to free drag
                 }
             } else if (hit_axis >= 0) {
-                Ray ray = GetScreenToWorldRayEx(local_mouse, camera, static_cast<int>(viewport.width), static_cast<int>(viewport.height));
+                gfx::Ray ray = gfx::GetScreenToWorldRayEx(local_mouse, camera, static_cast<int>(viewport.width), static_cast<int>(viewport.height));
                 g_model3d_gizmo_drag.start_axis_param = ClosestParamOnAxis(ray, gizmo_origin, gizmo_axis_dir[hit_axis]);
             }
             // Move/Scale/axis-constrained-Rotate cascade to every selected
@@ -21104,14 +21112,14 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
             }
         }
         if (g_model3d_gizmo_drag.active && g_model3d_gizmo_drag.buffer_id == buffer_id) {
-            if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+            if (gfx::IsMouseButtonDown(gfx::MouseButton::Left)) {
                 float dxp = mouse.x - g_model3d_gizmo_drag.start_mouse_x;
                 float dyp = mouse.y - g_model3d_gizmo_drag.start_mouse_y;
                 float axis_delta = 0.0f;
                 float angle_delta_deg = 0.0f;
                 if (g_model3d_gizmo_drag.axis >= 0 && g_model3d_gizmo_drag.tool == Model3DTool::Rotate) {
-                    Ray ray = GetScreenToWorldRayEx(local_mouse, camera, static_cast<int>(viewport.width), static_cast<int>(viewport.height));
-                    Vector3 u, v, hit;
+                    gfx::Ray ray = gfx::GetScreenToWorldRayEx(local_mouse, camera, static_cast<int>(viewport.width), static_cast<int>(viewport.height));
+                    gfx::Vector3 u, v, hit;
                     GizmoRingBasis(g_model3d_gizmo_drag.axis, &u, &v);
                     if (RayPlaneIntersect(ray, gizmo_origin, gizmo_axis_dir[g_model3d_gizmo_drag.axis], &hit)) {
                         float now = AnglePointOnPlane(hit, gizmo_origin, u, v);
@@ -21120,29 +21128,29 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
                         // (+-180 degrees) doesn't snap the rotation by a
                         // full turn -- e.g. dragging smoothly past the seam
                         // should keep advancing the angle, not jump back.
-                        while (delta_rad > PI) delta_rad -= 2.0f * PI;
-                        while (delta_rad < -PI) delta_rad += 2.0f * PI;
-                        angle_delta_deg = delta_rad * (180.0f / PI);
+                        while (delta_rad > gfx::kPi) delta_rad -= 2.0f * gfx::kPi;
+                        while (delta_rad < -gfx::kPi) delta_rad += 2.0f * gfx::kPi;
+                        angle_delta_deg = delta_rad * (180.0f / gfx::kPi);
                     }
                 } else if (g_model3d_gizmo_drag.axis >= 0) {
-                    Ray ray = GetScreenToWorldRayEx(local_mouse, camera, static_cast<int>(viewport.width), static_cast<int>(viewport.height));
+                    gfx::Ray ray = gfx::GetScreenToWorldRayEx(local_mouse, camera, static_cast<int>(viewport.width), static_cast<int>(viewport.height));
                     float now = ClosestParamOnAxis(ray, gizmo_origin, gizmo_axis_dir[g_model3d_gizmo_drag.axis]);
                     axis_delta = now - g_model3d_gizmo_drag.start_axis_param;
                 }
-                Vector3 forward = Vector3Normalize(Vector3Subtract(camera.target, camera.position));
-                Vector3 right = Vector3Normalize(Vector3CrossProduct(forward, camera.up));
-                Vector3 up = Vector3CrossProduct(right, forward);
+                gfx::Vector3 forward = gfx::Vector3Normalize(gfx::Vector3Subtract(camera.target, camera.position));
+                gfx::Vector3 right = gfx::Vector3Normalize(gfx::Vector3CrossProduct(forward, camera.up));
+                gfx::Vector3 up = gfx::Vector3CrossProduct(right, forward);
                 for (size_t i = 0; i < g_model3d_gizmo_drag.object_ids.size(); i++) {
                     Object3D *o = sess.scene.FindObject(g_model3d_gizmo_drag.object_ids[i]);
                     if (!o) continue;
                     if (g_model3d_gizmo_drag.tool == Model3DTool::Move) {
                         Vec3f start = g_model3d_gizmo_drag.start_positions[i];
                         if (g_model3d_gizmo_drag.axis >= 0) {
-                            Vector3 ax = gizmo_axis_dir[g_model3d_gizmo_drag.axis];
+                            gfx::Vector3 ax = gizmo_axis_dir[g_model3d_gizmo_drag.axis];
                             o->position = Vec3f{start.x + ax.x * axis_delta, start.y + ax.y * axis_delta, start.z + ax.z * axis_delta};
                         } else {
                             float move_scale = sess.camera_distance * 0.0015f;
-                            Vector3 delta = Vector3Add(Vector3Scale(right, dxp * move_scale), Vector3Scale(up, -dyp * move_scale));
+                            gfx::Vector3 delta = gfx::Vector3Add(gfx::Vector3Scale(right, dxp * move_scale), gfx::Vector3Scale(up, -dyp * move_scale));
                             o->position = Vec3f{start.x + delta.x, start.y + delta.y, start.z + delta.z};
                         }
                         if (sess.snap_enabled) {
@@ -21183,10 +21191,10 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
                             if (pivot_i >= 0) {
                                 Vec3f pivot = g_model3d_gizmo_drag.start_positions[static_cast<size_t>(pivot_i)];
                                 Vec3f start_pos = g_model3d_gizmo_drag.start_positions[i];
-                                Vector3 offset =
-                                    Vector3Subtract(Vector3{start_pos.x, start_pos.y, start_pos.z}, Vector3{pivot.x, pivot.y, pivot.z});
-                                Vector3 rotated = Vector3RotateByAxisAngle(offset, gizmo_axis_dir[g_model3d_gizmo_drag.axis],
-                                                                            angle_delta_deg * (PI / 180.0f));
+                                gfx::Vector3 offset =
+                                    gfx::Vector3Subtract(gfx::Vector3{start_pos.x, start_pos.y, start_pos.z}, gfx::Vector3{pivot.x, pivot.y, pivot.z});
+                                gfx::Vector3 rotated = gfx::Vector3RotateByAxisAngle(offset, gizmo_axis_dir[g_model3d_gizmo_drag.axis],
+                                                                            angle_delta_deg * (gfx::kPi / 180.0f));
                                 o->position = Vec3f{pivot.x + rotated.x, pivot.y + rotated.y, pivot.z + rotated.z};
                             }
                         } else {
@@ -21284,12 +21292,12 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
             status += "  " + std::to_string(sess.selection.size()) + " selected";
         }
         float status_font = font_size * 0.85f;
-        Vector2 st = MeasureTextEx(g_font, status.c_str(), status_font, 0);
-        Rectangle status_bg{viewport.x + 4.0f, viewport.y + viewport.height - st.y - 10.0f, st.x + 12.0f, st.y + 6.0f};
-        DrawRectangleRounded(status_bg, 0.3f, 4, Color{0, 0, 0, 140});
-        DrawTextEx(g_font, status.c_str(), Vector2{status_bg.x + 6.0f, status_bg.y + 3.0f}, status_font, 0, WHITE);
+        gfx::Vector2 st = gfx::MeasureTextEx(g_font, status.c_str(), status_font, 0);
+        gfx::Rectangle status_bg{viewport.x + 4.0f, viewport.y + viewport.height - st.y - 10.0f, st.x + 12.0f, st.y + 6.0f};
+        gfx::DrawRectangleRounded(status_bg, 0.3f, 4, gfx::Color{0, 0, 0, 140});
+        gfx::DrawTextEx(g_font, status.c_str(), gfx::Vector2{status_bg.x + 6.0f, status_bg.y + 3.0f}, status_font, 0, gfx::White);
 
-        EndScissorMode();
+        gfx::EndScissorMode();
     }
 
     // Draws the open dropdown (if any) on top of literally everything
@@ -21298,15 +21306,15 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
     // block's own comment for why the two halves are split this way.
     if (dropdown_open) {
         const M3DMenu &menu = menus[static_cast<size_t>(g_model3d_dropdown_open)];
-        DrawRectangle(static_cast<int>(dd_x), static_cast<int>(dd_y), static_cast<int>(dd_w), static_cast<int>(dd_h),
+        gfx::DrawRectangle(static_cast<int>(dd_x), static_cast<int>(dd_y), static_cast<int>(dd_w), static_cast<int>(dd_h),
                       ResolveHlGroup("Picker"));
-        DrawRectangleLinesEx(Rectangle{dd_x, dd_y, dd_w, dd_h}, 1.0f, ResolveHlGroup("Border"));
-        Vector2 dd_mouse = GetMousePosition();
+        gfx::DrawRectangleLinesEx(gfx::Rectangle{dd_x, dd_y, dd_w, dd_h}, 1.0f, ResolveHlGroup("Border"));
+        gfx::Vector2 dd_mouse = gfx::GetMousePosition();
         for (size_t i = 0; i < menu.items.size(); i++) {
-            Rectangle item_rect{dd_x, dd_y + static_cast<float>(i) * dd_item_h, dd_w, dd_item_h};
-            bool hovered = CheckCollisionPointRec(dd_mouse, item_rect);
-            if (hovered) DrawRectangleRec(item_rect, ResolveHlGroup("MenuHighlight"));
-            DrawTextEx(g_font, menu.items[i].label.c_str(), Vector2{dd_x + 10.0f, item_rect.y + 6.0f}, font_size, 0,
+            gfx::Rectangle item_rect{dd_x, dd_y + static_cast<float>(i) * dd_item_h, dd_w, dd_item_h};
+            bool hovered = gfx::CheckCollisionPointRec(dd_mouse, item_rect);
+            if (hovered) gfx::DrawRectangleRec(item_rect, ResolveHlGroup("MenuHighlight"));
+            gfx::DrawTextEx(g_font, menu.items[i].label.c_str(), gfx::Vector2{dd_x + 10.0f, item_rect.y + 6.0f}, font_size, 0,
                        ResolveHlGroup("MenuBarFg"));
         }
     }
@@ -21334,7 +21342,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     bool hover_cursor_valid = false;
 
     const Buffer &buf = g_editor.GetBuffer(pane.buffer_id);
-    Color header_bg = is_active ? ResolveHlGroup("TabActive") : ResolveHlGroup("MenuBar");
+    gfx::Color header_bg = is_active ? ResolveHlGroup("TabActive") : ResolveHlGroup("MenuBar");
     const TerminalSession *term_sess = g_editor.GetTerminal(pane.buffer_id);
     const ImageSession *img_sess = g_editor.GetImage(pane.buffer_id);
     // Mutable (not const like every session pointer above): the image
@@ -21391,11 +21399,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     const float hsplit_w = MeasureUiText(hsplit_label, font_size);
     const float close_w = MeasureUiText(close_label, font_size);
     const float controls_w = run_w + vsplit_w + hsplit_w + close_w;
-    const Vector2 header_mouse = GetMousePosition();
+    const gfx::Vector2 header_mouse = gfx::GetMousePosition();
     // Draws the three controls over `bg` filling controls_rect (each
     // brightened while hovered) and registers their click regions.
-    auto draw_header_controls = [&](Rectangle controls_rect, Color bg) {
-        DrawRectangleRec(controls_rect, bg);
+    auto draw_header_controls = [&](gfx::Rectangle controls_rect, gfx::Color bg) {
+        gfx::DrawRectangleRec(controls_rect, bg);
         const int pane_id = pane.id;
         float bx = controls_rect.x;
         // `on_right_click`, when given, fires (with this button's own
@@ -21404,16 +21412,16 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // left-click-only g_click_regions registration like every other
         // header control's.
         auto button = [&](const std::string &label, float bw, const char *color, const char *tooltip,
-                            std::function<void()> action, std::function<void(Rectangle)> on_right_click = nullptr) {
-            const Rectangle rect{bx, controls_rect.y, bw, controls_rect.height};
+                            std::function<void()> action, std::function<void(gfx::Rectangle)> on_right_click = nullptr) {
+            const gfx::Rectangle rect{bx, controls_rect.y, bw, controls_rect.height};
             const bool hovered = PointInRect(header_mouse, rect);
-            DrawUiText(label, Vector2{rect.x, label_y}, font_size, ResolveHlGroup(hovered ? "Normal" : color));
+            DrawUiText(label, gfx::Vector2{rect.x, label_y}, font_size, ResolveHlGroup(hovered ? "Normal" : color));
             if (hovered) {
                 g_pane_control_tooltip_text = tooltip;
                 g_pane_control_tooltip_anchor = rect;
             }
             RegisterClickRegion(rect, std::move(action));
-            if (on_right_click && hovered && IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) on_right_click(rect);
+            if (on_right_click && hovered && gfx::IsMouseButtonPressed(gfx::MouseButton::Right)) on_right_click(rect);
             bx += bw;
         };
         if (show_run_button) {
@@ -21428,7 +21436,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 // Right click: toggle this pane's Setup dropdown (closes
                 // it if it's already the one open, same convention as
                 // g_office_dropdown_open's own toggle buttons).
-                [pane_id](Rectangle r) {
+                [pane_id](gfx::Rectangle r) {
                     g_run_button_menu_pane = (g_run_button_menu_pane == pane_id) ? -1 : pane_id;
                     g_run_button_menu_anchor = r;
                 });
@@ -21466,24 +21474,24 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             std::string name = tb.scratch ? "[Scratch]" : (tb.filename.empty() ? "[No Name]" : Basename(tb.filename));
             if (tb.modified) name += " [+]";
             bool tab_active = (i == pane.buffer_tab_index);
-            Color seg_bg =
+            gfx::Color seg_bg =
                 tab_active ? ResolveHlGroup("TabActive") : (is_active ? ResolveHlGroup("TabInactive") : ResolveHlGroup("MenuBar"));
-            DrawRectangle(static_cast<int>(seg_x), static_cast<int>(y), static_cast<int>(seg_w), header_h, seg_bg);
+            gfx::DrawRectangle(static_cast<int>(seg_x), static_cast<int>(y), static_cast<int>(seg_w), header_h, seg_bg);
             // The active chip gives up its rightmost controls_w to the
             // split/close controls; the label centers (and clips) within
             // what's left.
             float chip_w = tab_active ? std::max(0.0f, seg_w - controls_w) : seg_w;
-            BeginScissorMode(static_cast<int>(seg_x), static_cast<int>(y), static_cast<int>(chip_w), header_h);
-            float text_w = MeasureTextEx(g_font, name.c_str(), font_size, 0).x;
+            gfx::BeginScissorMode(static_cast<int>(seg_x), static_cast<int>(y), static_cast<int>(chip_w), header_h);
+            float text_w = gfx::MeasureTextEx(g_font, name.c_str(), font_size, 0).x;
             float text_x = seg_x + std::max(0.0f, (chip_w - text_w) / 2.0f);
-            DrawTextEx(g_font, name.c_str(), Vector2{text_x, label_y}, font_size, 0,
+            gfx::DrawTextEx(g_font, name.c_str(), gfx::Vector2{text_x, label_y}, font_size, 0,
                        ResolveHlGroup(tab_active ? "Normal" : "Comment"));
-            EndScissorMode();
+            gfx::EndScissorMode();
             if (tab_active) {
-                draw_header_controls(Rectangle{seg_x + chip_w, y, controls_w, static_cast<float>(header_h)}, seg_bg);
+                draw_header_controls(gfx::Rectangle{seg_x + chip_w, y, controls_w, static_cast<float>(header_h)}, seg_bg);
             }
             if (i > 0) {
-                DrawLine(static_cast<int>(seg_x), static_cast<int>(y), static_cast<int>(seg_x),
+                gfx::DrawLine(static_cast<int>(seg_x), static_cast<int>(y), static_cast<int>(seg_x),
                           static_cast<int>(y + static_cast<float>(header_h)), ResolveHlGroup("Border"));
             }
             // Registered regardless of is_active now (not just the
@@ -21502,7 +21510,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 // float height field, not a no-op -- cppcheck's
                 // "unused cast" diagnostic appears to misfire on a cast as
                 // the trailing element of an aggregate-init list here.
-                Rectangle chip_rect{seg_x, y, chip_w, static_cast<float>(header_h)};
+                gfx::Rectangle chip_rect{seg_x, y, chip_w, static_cast<float>(header_h)};
                 g_pane_tab_chip_rects.push_back({pane.id, pane.buffer_tabs[static_cast<size_t>(i)], chip_rect});
                 int pane_id = pane.id;
                 // Focuses this pane then switches it to buffer tab `i`.
@@ -21514,7 +21522,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             seg_x = next_x;
         }
     } else {
-        DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), header_h, header_bg);
+        gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), header_h, header_bg);
         // Where the split/close controls go: flush right, or just left of
         // Gantt's 132px-wide SVG/PNG/PDF export controls.
         const float single_controls_x = gantt_sess ? x + w - 132.0f - controls_w : x + w - controls_w;
@@ -21532,7 +21540,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // cppcheck-suppress constStatement
             // Same false positive as the chip_rect cast above -- header_h
             // is int, the cast is a real conversion.
-            Rectangle header_rect{x, y, header_click_w, static_cast<float>(header_h)};
+            gfx::Rectangle header_rect{x, y, header_click_w, static_cast<float>(header_h)};
             g_pane_tab_chip_rects.push_back({pane.id, pane.buffer_id, header_rect});
             int pane_id = pane.id;
             // Focuses this pane.
@@ -21543,13 +21551,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 (term_sess->vterm && !term_sess->vterm->Title().empty()) ? term_sess->vterm->Title() : term_sess->title;
             std::string label = "Terminal: " + live_title;
             if (term_sess->exited) label += " [exited: " + std::to_string(term_sess->exit_code) + "]";
-            DrawTextEx(g_font, label.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
+            gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
         } else if (imgedit_active) {
             std::string label = "Image Editor: " + buf.filename + " (" + std::to_string(imgedit_sess->width) + "x" +
                                   std::to_string(imgedit_sess->height) + ") " +
                                   std::to_string(static_cast<int>(std::lround(imgedit_sess->zoom * 100.0f))) + "%";
             if (buf.modified) label += " [+]";
-            DrawTextEx(g_font, label.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
+            gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
         } else if (img_sess) {
             std::string label = "Image: " + buf.filename;
             if (img_sess->doc) {
@@ -21557,27 +21565,27 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                           std::to_string(img_sess->doc->Height()) + ") " +
                           std::to_string(static_cast<int>(std::lround(img_sess->zoom * 100.0f))) + "%";
             }
-            DrawTextEx(g_font, label.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
+            gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
         } else if (model3d_sess) {
             std::string label = "3D: " + buf.filename + " (" + std::to_string(model3d_sess->scene.objects.size()) + " objects, " +
                                   std::to_string(model3d_sess->scene.TotalTriangleCount()) + " tris)";
             if (buf.modified) label += " [+]";
-            DrawTextEx(g_font, label.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
+            gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
         } else if (html_sess) {
             std::string title = html_sess->doc.title.empty() ? html_sess->source : html_sess->doc.title;
             std::string label = "HTML: " + title + "  " + std::to_string(static_cast<int>(std::lround(html_sess->zoom * 100.0f))) + "%" +
                                  (html_sess->theme_colors ? "  [theme, Ctrl-R]" : "  [page colors, Ctrl-R]");
-            DrawTextEx(g_font, label.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
+            gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
         } else if (pdf_sess && pdf_sess->search_active) {
             // Takes over the header the same way Mode::Command's cmdline
             // takes over the bottom bar -- a blinking-cursor '/' input line
             // instead of the normal "PDF: file (page N/M) zoom%" label
             // while typing.
             std::string line = "/" + pdf_sess->search_input;
-            DrawTextEx(g_font, line.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
+            gfx::DrawTextEx(g_font, line.c_str(), gfx::Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
             {
-                float cx = x + 6 + MeasureTextEx(g_font, line.c_str(), font_size, 0).x;
-                DrawRectangle(static_cast<int>(cx), static_cast<int>(label_y), 2, static_cast<int>(font_size),
+                float cx = x + 6 + gfx::MeasureTextEx(g_font, line.c_str(), font_size, 0).x;
+                gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(label_y), 2, static_cast<int>(font_size),
                               ResolveHlGroup("Normal"));
             }
         } else if (pdf_sess) {
@@ -21595,13 +21603,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                        std::to_string(pdf_sess->search_matches.size()) + ", n/p)";
                 }
             }
-            DrawTextEx(g_font, label.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
+            gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
         } else if (office_sess) {
             // Just the filename -- no more "(para X/Y) Z%" (the Docs-style
             // status line below now carries page/word-count/zoom instead).
             std::string label = (buf.filename.empty() ? "Untitled Document" : buf.filename) + (buf.modified ? " [+]" : "");
-            Vector2 ts = MeasureTextEx(g_font, label.c_str(), font_size, 0);
-            DrawTextEx(g_font, label.c_str(), Vector2{x + std::max(6.0f, (w - ts.x) / 2.0f), label_y}, font_size, 0,
+            gfx::Vector2 ts = gfx::MeasureTextEx(g_font, label.c_str(), font_size, 0);
+            gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{x + std::max(6.0f, (w - ts.x) / 2.0f), label_y}, font_size, 0,
                        ResolveHlGroup("Normal"));
         } else if (sheet_sess) {
             std::string label = "Sheet: " + buf.filename;
@@ -21610,27 +21618,27 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 label += " (" + sh.name + ") " + CellAddressToString(sheet_sess->cursor_row, sheet_sess->cursor_col);
             }
             if (buf.modified) label += " [+]";
-            DrawTextEx(g_font, label.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
+            gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
         } else if (kanban_sess) {
             std::string label = "Kanban: " + buf.filename;
             if (buf.modified) label += " [+]";
-            DrawTextEx(g_font, label.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
+            gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
         } else if (gantt_sess) {
             char zoom_buf[16];
             std::snprintf(zoom_buf, sizeof(zoom_buf), "%.0fpx/day", static_cast<double>(gantt_sess->pixels_per_day));
             std::string label = "Gantt: " + buf.filename + "  " + GanttRulerScaleName(gantt_sess->ruler_scale) +
                                 " grid (t)  " + zoom_buf + "  f:fit p:progress za/zm:fold";
             if (buf.modified) label += " [+]";
-            DrawTextEx(g_font, label.c_str(), Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
+            gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
             // Export controls live in the pane header, outside the Gantt
             // canvas itself, so PNG/PDF screenshots contain only the chart.
             constexpr const char *formats[] = {"SVG", "PNG", "PDF"};
             float export_x = x + w - 132;
             for (int i = 0; i < 3; ++i) {
-                Rectangle button{export_x + static_cast<float>(i) * 44.0f, static_cast<float>(y) + 3, 40, static_cast<float>(header_h) - 6};
-                DrawRectangleRec(button, ResolveHlGroup("CursorLine"));
-                DrawRectangleLinesEx(button, 1, ResolveHlGroup("Border"));
-                DrawTextEx(g_font, formats[i], Vector2{button.x + 4, button.y + 2}, font_size * 0.75f, 0,
+                gfx::Rectangle button{export_x + static_cast<float>(i) * 44.0f, static_cast<float>(y) + 3, 40, static_cast<float>(header_h) - 6};
+                gfx::DrawRectangleRec(button, ResolveHlGroup("CursorLine"));
+                gfx::DrawRectangleLinesEx(button, 1, ResolveHlGroup("Border"));
+                gfx::DrawTextEx(g_font, formats[i], gfx::Vector2{button.x + 4, button.y + 2}, font_size * 0.75f, 0,
                            ResolveHlGroup("Normal"));
                 int export_buffer_id = pane.buffer_id;
                 std::string format = i == 0 ? "svg" : (i == 1 ? "png" : "pdf");
@@ -21657,15 +21665,15 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // split's header. mep.set_winbar_click/WinbarClickRef are still
             // there for a future consumer; nothing fires them from here now.
             std::string label = (buf.scratch ? "[Scratch]" : buf.filename.empty() ? "[No Name]" : Basename(buf.filename)) + suffix;
-            float text_w = MeasureTextEx(g_font, label.c_str(), font_size, 0).x;
+            float text_w = gfx::MeasureTextEx(g_font, label.c_str(), font_size, 0).x;
             float text_x = x + std::max(0.0f, (w - text_w) / 2.0f);
-            DrawTextEx(g_font, label.c_str(), Vector2{text_x, label_y}, font_size, 0, ResolveHlGroup("Normal"));
+            gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{text_x, label_y}, font_size, 0, ResolveHlGroup("Normal"));
         }
         // After every label above so it paints over one long enough to
         // run underneath it (the left-aligned session labels aren't
         // clipped to the header). Same controls_x the click rect was
         // carved around; Gantt's export buttons sit to its right.
-        draw_header_controls(Rectangle{single_controls_x, y, controls_w, static_cast<float>(header_h)}, header_bg);
+        draw_header_controls(gfx::Rectangle{single_controls_x, y, controls_w, static_cast<float>(header_h)}, header_bg);
     }
 
     float content_y = y + static_cast<float>(header_h);
@@ -21769,7 +21777,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         }
         // Focuses this pane on a click anywhere in its content area (outside any more specific
         // widget registered below).
-        RegisterClickRegion(Rectangle{focus_click_x, focus_click_y, focus_click_w, focus_click_h},
+        RegisterClickRegion(gfx::Rectangle{focus_click_x, focus_click_y, focus_click_w, focus_click_h},
                             [pane_id = pane.id] { g_editor.FocusPaneById(pane_id); });
     }
 
@@ -21793,10 +21801,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // it still running while browsing a different one.
         bool show_live_grid = !is_active || g_editor.CurrentMode() != Mode::Normal;
         if (show_live_grid) {
-            BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
+            gfx::BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
                               static_cast<int>(content_h));
             DrawTerminalGrid(*term_sess, x, content_y, w, content_h);
-            EndScissorMode();
+            gfx::EndScissorMode();
             DrawPaneBorder(x, y, w, h, is_active);
             return;
         }
@@ -21835,11 +21843,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
 
     if (img_sess && img_sess->doc) {
         g_editor.ResizeImageViewport(pane.buffer_id, static_cast<int>(w), static_cast<int>(content_h));
-        Texture2D tex = GetOrLoadImageTexture(pane.buffer_id, *img_sess);
-        BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
+        gfx::Texture2D tex = GetOrLoadImageTexture(pane.buffer_id, *img_sess);
+        gfx::BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
                           static_cast<int>(content_h));
-        DrawTextureEx(tex, Vector2{x - static_cast<float>(img_sess->pan_x), content_y - static_cast<float>(img_sess->pan_y)}, 0.0f, img_sess->zoom, WHITE);
-        EndScissorMode();
+        gfx::DrawTextureEx(tex, gfx::Vector2{x - static_cast<float>(img_sess->pan_x), content_y - static_cast<float>(img_sess->pan_y)}, 0.0f, img_sess->zoom, gfx::White);
+        gfx::EndScissorMode();
         DrawPaneBorder(x, y, w, h, is_active);
         return;
     }
@@ -21856,7 +21864,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         ctx.base_dir = std::filesystem::path(html_sess->source).parent_path().string();
         ctx.zoom = html_sess->zoom;
         // Media clocks tick with the frame, then the device mirrors the DOM.
-        g_editor.AdvanceHtmlMedia(pane.buffer_id, static_cast<double>(GetFrameTime()));
+        g_editor.AdvanceHtmlMedia(pane.buffer_id, static_cast<double>(gfx::GetFrameTime()));
         SyncHtmlMediaPlayback();
         HtmlLayout layout = LayoutHtmlDoc(html_sess->doc, ctx);
         // Layout depends on real font metrics (MeasureTextEx), so unlike
@@ -21865,9 +21873,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // after LayoutHtmlDoc runs -- see ClampHtmlScroll's own comment.
         g_editor.ClampHtmlScroll(pane.buffer_id, std::max(0.0f, layout.total_height - content_h));
 
-        BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
+        gfx::BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
                           static_cast<int>(content_h));
-        DrawRectangle(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
+        gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
                       static_cast<int>(content_h), ResolveHlGroup("NormalBg"));
         float top = content_y - html_sess->scroll_y;
         bool theme = html_sess->theme_colors;
@@ -21886,7 +21894,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             for (const HtmlBgRect &bg : layout.backgrounds) {
                 float ry = top + bg.y;
                 if (ry + bg.h < content_y || ry > content_y + content_h) continue;
-                DrawRectangle(static_cast<int>(x + kHtmlPad + bg.x), static_cast<int>(ry), static_cast<int>(bg.w),
+                gfx::DrawRectangle(static_cast<int>(x + kHtmlPad + bg.x), static_cast<int>(ry), static_cast<int>(bg.w),
                               static_cast<int>(bg.h), bg.color);
             }
         }
@@ -21899,20 +21907,20 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // own CSS color, matching HtmlRule's ("<hr>") own always-theme-
         // colored line just below (which never had a CSS color to begin
         // with, so it needs no such branch itself).
-        Color theme_border = ResolveHlGroup("Border");
+        gfx::Color theme_border = ResolveHlGroup("Border");
         for (const HtmlBorderRect &br : layout.borders) {
             float ry = top + br.y;
             if (ry + br.h < content_y || ry > content_y + content_h) continue;
             float bx = x + kHtmlPad + br.x;
-            if (br.top_w > 0.0f) DrawRectangle(static_cast<int>(bx), static_cast<int>(ry), static_cast<int>(br.w),
+            if (br.top_w > 0.0f) gfx::DrawRectangle(static_cast<int>(bx), static_cast<int>(ry), static_cast<int>(br.w),
                                                 static_cast<int>(br.top_w), theme ? theme_border : br.top_c);
             if (br.bottom_w > 0.0f)
-                DrawRectangle(static_cast<int>(bx), static_cast<int>(ry + br.h - br.bottom_w), static_cast<int>(br.w),
+                gfx::DrawRectangle(static_cast<int>(bx), static_cast<int>(ry + br.h - br.bottom_w), static_cast<int>(br.w),
                               static_cast<int>(br.bottom_w), theme ? theme_border : br.bottom_c);
-            if (br.left_w > 0.0f) DrawRectangle(static_cast<int>(bx), static_cast<int>(ry), static_cast<int>(br.left_w),
+            if (br.left_w > 0.0f) gfx::DrawRectangle(static_cast<int>(bx), static_cast<int>(ry), static_cast<int>(br.left_w),
                                                  static_cast<int>(br.h), theme ? theme_border : br.left_c);
             if (br.right_w > 0.0f)
-                DrawRectangle(static_cast<int>(bx + br.w - br.right_w), static_cast<int>(ry),
+                gfx::DrawRectangle(static_cast<int>(bx + br.w - br.right_w), static_cast<int>(ry),
                               static_cast<int>(br.right_w), static_cast<int>(br.h), theme ? theme_border : br.right_c);
         }
         // Replay each canvas's retained 2D display list after CSS backgrounds
@@ -21927,11 +21935,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             float cx = x + kHtmlPad + canvas.x;
             float sx = canvas.w / static_cast<float>(std::max(1, canvas.node->canvas_width));
             float sy = canvas.h / static_cast<float>(std::max(1, canvas.node->canvas_height));
-            auto clipped = [cx, ry, &canvas](float px, float py, float pw, float ph, Color color) {
+            auto clipped = [cx, ry, &canvas](float px, float py, float pw, float ph, gfx::Color color) {
                 float left = std::max(cx, px), top_edge = std::max(ry, py);
                 float right = std::min(cx + canvas.w, px + pw), bottom = std::min(ry + canvas.h, py + ph);
                 if (right > left && bottom > top_edge)
-                    DrawRectangle(static_cast<int>(left), static_cast<int>(top_edge), static_cast<int>(right - left),
+                    gfx::DrawRectangle(static_cast<int>(left), static_cast<int>(top_edge), static_cast<int>(right - left),
                                   static_cast<int>(bottom - top_edge), color);
             };
             for (const CanvasCommand &command : canvas.node->canvas_commands) {
@@ -21942,12 +21950,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 // exact for axis-aligned rects, a smooth-enough approximation
                 // for paths without a per-pixel shader.
                 auto color_at = [&command](float canvas_x, float canvas_y) {
-                    Color c{command.r, command.g, command.b, command.a};
+                    gfx::Color c{command.r, command.g, command.b, command.a};
                     if (command.gradient.present) CanvasGradientColorAt(command.gradient, canvas_x, canvas_y, c.r, c.g, c.b, c.a);
                     return c;
                 };
-                Color color = color_at(command.x + command.w / 2.0f, command.y + command.h / 2.0f);
-                auto at = [&](unsigned i) { return Vector2{cx + command.points[static_cast<size_t>(i) * 2U] * sx, ry + command.points[static_cast<size_t>(i) * 2U + 1U] * sy}; };
+                gfx::Color color = color_at(command.x + command.w / 2.0f, command.y + command.h / 2.0f);
+                auto at = [&](unsigned i) { return gfx::Vector2{cx + command.points[static_cast<size_t>(i) * 2U] * sx, ry + command.points[static_cast<size_t>(i) * 2U + 1U] * sy}; };
                 auto canvas_at = [&](unsigned i, float &ox, float &oy) { ox = command.points[static_cast<size_t>(i) * 2U]; oy = command.points[static_cast<size_t>(i) * 2U + 1U]; };
                 if (command.kind == CanvasCommand::Kind::FillRect) {
                     if (command.gradient.present) {
@@ -21955,7 +21963,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                         float right = std::min(cx + canvas.w, px + pw), bottom = std::min(ry + canvas.h, py + ph);
                         if (right > left && bottom > top_edge) {
                             auto back = [&](float screen_x, float screen_y) { return color_at((screen_x - cx) / sx, (screen_y - ry) / sy); };
-                            DrawRectangleGradientEx({left, top_edge, right - left, bottom - top_edge}, back(left, top_edge), back(left, bottom), back(right, bottom), back(right, top_edge));
+                            gfx::DrawRectangleGradientEx({left, top_edge, right - left, bottom - top_edge}, back(left, top_edge), back(left, bottom), back(right, bottom), back(right, top_edge));
                         }
                     } else clipped(px, py, pw, ph, color);
                 } else if (command.kind == CanvasCommand::Kind::StrokeRect) {
@@ -21966,22 +21974,22 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     float lw = std::max(1.0f, command.line_width * (sx + sy) / 2.0f);
                     unsigned count = static_cast<unsigned>(command.points.size() / 2);
                     for (unsigned i = 1; i < count; ++i) {
-                        Color c = color;
+                        gfx::Color c = color;
                         if (command.gradient.present) { float ax, ay, bx, by; canvas_at(i - 1, ax, ay); canvas_at(i, bx, by); c = color_at((ax + bx) / 2.0f, (ay + by) / 2.0f); }
-                        DrawLineEx(at(i - 1), at(i), lw, c);
+                        gfx::DrawLineEx(at(i - 1), at(i), lw, c);
                     }
                 } else if (command.kind == CanvasCommand::Kind::FillPath) {
                     for (size_t i = 0; i + 2 < command.triangles.size(); i += 3) {
-                        Color c = color;
+                        gfx::Color c = color;
                         if (command.gradient.present) {
                             float ax, ay, bx, by, qx, qy; canvas_at(command.triangles[i], ax, ay); canvas_at(command.triangles[i + 1], bx, by); canvas_at(command.triangles[i + 2], qx, qy);
                             c = color_at((ax + bx + qx) / 3.0f, (ay + by + qy) / 3.0f);
                         }
-                        DrawTriangle(at(command.triangles[i]), at(command.triangles[i + 1]), at(command.triangles[i + 2]), c);
+                        gfx::DrawTriangle(at(command.triangles[i]), at(command.triangles[i + 1]), at(command.triangles[i + 2]), c);
                     }
                 } else if (command.kind == CanvasCommand::Kind::FillText) {
                     float font_px = (command.font_size > 0.0f ? command.font_size : ctx.base_font_size) * sy;
-                    DrawTextEx(g_font, command.text.c_str(), {px, py - font_px}, font_px, 0, color_at(command.x, command.y));
+                    gfx::DrawTextEx(g_font, command.text.c_str(), {px, py - font_px}, font_px, 0, color_at(command.x, command.y));
                 } else if (command.kind == CanvasCommand::Kind::ImageData) {
                     int image_w = std::max(0, static_cast<int>(command.w)), image_h = std::max(0, static_cast<int>(command.h));
                     for (int iy = 0; iy < image_h; ++iy) for (int ix = 0; ix < image_w; ++ix) {
@@ -22007,40 +22015,40 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             float sy = top + svg.y;
             if (sy + svg.h < content_y || sy > content_y + content_h) continue;
             float sx = x + kHtmlPad + svg.x;
-            Color page_fg = theme ? ResolveHlGroup("Normal") : HtmlResolveColor(svg.node->style, ctx);
+            gfx::Color page_fg = theme ? ResolveHlGroup("Normal") : HtmlResolveColor(svg.node->style, ctx);
             SvgDisplayList list = BuildSvgDisplayList(*svg.node, svg.w, svg.h, SvgPaint{true, page_fg.r, page_fg.g, page_fg.b, 255});
-            auto to_color = [](const SvgPaint &paint) { return Color{paint.r, paint.g, paint.b, paint.a}; };
+            auto to_color = [](const SvgPaint &paint) { return gfx::Color{paint.r, paint.g, paint.b, paint.a}; };
             for (const SvgShape &shape : list.shapes) {
                 if (shape.kind == SvgShape::Kind::Text) {
                     if (shape.points.size() < 2) continue;
-                    Vector2 size = MeasureTextEx(g_font, shape.text.c_str(), shape.font_size, 0);
+                    gfx::Vector2 size = gfx::MeasureTextEx(g_font, shape.text.c_str(), shape.font_size, 0);
                     float anchor_dx = shape.text_anchor == "middle" ? -size.x / 2.0f : (shape.text_anchor == "end" ? -size.x : 0.0f);
-                    DrawTextEx(g_font, shape.text.c_str(), {sx + shape.points[0] + anchor_dx, sy + shape.points[1] - shape.font_size},
+                    gfx::DrawTextEx(g_font, shape.text.c_str(), {sx + shape.points[0] + anchor_dx, sy + shape.points[1] - shape.font_size},
                                shape.font_size, 0, to_color(shape.fill));
                     continue;
                 }
-                auto at = [&](unsigned i) { return Vector2{sx + shape.points[static_cast<size_t>(i) * 2U], sy + shape.points[static_cast<size_t>(i) * 2U + 1U]}; };
+                auto at = [&](unsigned i) { return gfx::Vector2{sx + shape.points[static_cast<size_t>(i) * 2U], sy + shape.points[static_cast<size_t>(i) * 2U + 1U]}; };
                 if (shape.kind == SvgShape::Kind::Polygon && shape.fill.present) {
-                    Color fill = to_color(shape.fill);
+                    gfx::Color fill = to_color(shape.fill);
                     for (size_t i = 0; i + 2 < shape.triangles.size(); i += 3)
-                        DrawTriangle(at(shape.triangles[i]), at(shape.triangles[i + 1]), at(shape.triangles[i + 2]), fill);
+                        gfx::DrawTriangle(at(shape.triangles[i]), at(shape.triangles[i + 1]), at(shape.triangles[i + 2]), fill);
                 }
                 if (shape.stroke.present) {
-                    Color stroke = to_color(shape.stroke);
+                    gfx::Color stroke = to_color(shape.stroke);
                     float width = std::max(1.0f, shape.stroke_width);
                     unsigned count = static_cast<unsigned>(shape.points.size() / 2);
-                    for (unsigned i = 1; i < count; ++i) DrawLineEx(at(i - 1), at(i), width, stroke);
-                    if ((shape.closed || shape.kind == SvgShape::Kind::Polygon) && count > 2) DrawLineEx(at(count - 1), at(0), width, stroke);
+                    for (unsigned i = 1; i < count; ++i) gfx::DrawLineEx(at(i - 1), at(i), width, stroke);
+                    if ((shape.closed || shape.kind == SvgShape::Kind::Polygon) && count > 2) gfx::DrawLineEx(at(count - 1), at(0), width, stroke);
                 }
             }
         }
         for (const HtmlRule &r : layout.rules) {
             float ry = top + r.y;
             if (ry < content_y - 4 || ry > content_y + content_h + 4) continue;
-            DrawLine(static_cast<int>(x + kHtmlPad + r.x), static_cast<int>(ry),
+            gfx::DrawLine(static_cast<int>(x + kHtmlPad + r.x), static_cast<int>(ry),
                       static_cast<int>(x + kHtmlPad + r.x + r.w), static_cast<int>(ry), ResolveHlGroup("Border"));
         }
-        Color theme_fg = ResolveHlGroup("Normal");
+        gfx::Color theme_fg = ResolveHlGroup("Normal");
         for (const HtmlRun &run : layout.runs) {
             float ry = top + run.y;
             if (ry + run.font_size < content_y || ry > content_y + content_h) continue;  // cheap vertical culling
@@ -22055,18 +22063,18 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         for (const HtmlImageRun &img : layout.images) {
             float ry = top + img.y;
             if (ry + img.h < content_y || ry > content_y + content_h) continue;
-            const Texture2D *tex = theme ? GetOrLoadThemedHtmlImageTexture(img.path) : GetOrLoadOrgInlineImageTexture(img.path);
+            const gfx::Texture2D *tex = theme ? GetOrLoadThemedHtmlImageTexture(img.path) : GetOrLoadOrgInlineImageTexture(img.path);
             if (!tex) continue;  // e.g. the file was removed/moved since layout ran this same frame
-            Rectangle src{0, 0, static_cast<float>(tex->width), static_cast<float>(tex->height)};
-            Rectangle dst{x + kHtmlPad + img.x, ry, img.w, img.h};
-            DrawTexturePro(*tex, src, dst, Vector2{0, 0}, 0.0f, WHITE);
+            gfx::Rectangle src{0, 0, static_cast<float>(tex->width), static_cast<float>(tex->height)};
+            gfx::Rectangle dst{x + kHtmlPad + img.x, ry, img.w, img.h};
+            gfx::DrawTexturePro(*tex, src, dst, gfx::Vector2{0, 0}, 0.0f, gfx::White);
         }
         for (const HtmlMathRun &m : layout.math_runs) {
             float ry = top + m.y;
             if (ry + m.layout.height < content_y || ry > content_y + content_h) continue;
             DrawMathLayout(x + kHtmlPad + m.x, ry, m.layout, theme ? theme_fg : m.color);
         }
-        EndScissorMode();
+        gfx::EndScissorMode();
         DrawPaneBorder(x, y, w, h, is_active);
         return;
     }
@@ -22076,7 +22084,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         g_editor.EnsurePdfPagesRastered(pane.buffer_id);
         PrunePdfPageTextures(pane.buffer_id, *pdf_sess);
 
-        BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
+        gfx::BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
                           static_cast<int>(content_h));
         // Draws up to 3 stacked pages -- the anchor page (pdf_sess->page,
         // positioned so scroll_y device-pixels have already scrolled past
@@ -22092,9 +22100,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // this stays theme-consistent the same way the page recoloring
         // does: dim alpha for "just another match," brighter for
         // search_current specifically.
-        Color match_c = ResolveHlGroup("IncSearch");
-        Color match_other = Color{match_c.r, match_c.g, match_c.b, 90};
-        Color match_cur = Color{match_c.r, match_c.g, match_c.b, 190};
+        gfx::Color match_c = ResolveHlGroup("IncSearch");
+        gfx::Color match_other = gfx::Color{match_c.r, match_c.g, match_c.b, 90};
+        gfx::Color match_cur = gfx::Color{match_c.r, match_c.g, match_c.b, 190};
         /**
          * @brief Draws PDF page `idx` (if a raster for it is cached) at y position `top_y`,
          * along with its search-match highlight rectangles.
@@ -22106,12 +22114,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             auto rit = pdf_sess->rasters.find(idx);
             if (rit == pdf_sess->rasters.end()) return 0.0f;
             const PdfSession::PageRaster &pr = rit->second;
-            Texture2D tex = GetOrUpdatePdfPageTexture(pane.buffer_id, idx, pr, pdf_sess->theme_colors);
-            Vector2 pos{x - static_cast<float>(pdf_sess->pan_x), top_y};
-            DrawTextureEx(tex, pos, 0.0f, pdf_sess->zoom, WHITE);
+            gfx::Texture2D tex = GetOrUpdatePdfPageTexture(pane.buffer_id, idx, pr, pdf_sess->theme_colors);
+            gfx::Vector2 pos{x - static_cast<float>(pdf_sess->pan_x), top_y};
+            gfx::DrawTextureEx(tex, pos, 0.0f, pdf_sess->zoom, gfx::White);
             for (const PdfHighlightRect &hr : pr.highlights) {
                 bool current = hr.match_index == pdf_sess->search_current;
-                DrawRectangle(static_cast<int>(pos.x + hr.x0 * pdf_sess->zoom),
+                gfx::DrawRectangle(static_cast<int>(pos.x + hr.x0 * pdf_sess->zoom),
                               static_cast<int>(pos.y + hr.y0 * pdf_sess->zoom),
                               static_cast<int>((hr.x1 - hr.x0) * pdf_sess->zoom),
                               static_cast<int>((hr.y1 - hr.y0) * pdf_sess->zoom), current ? match_cur : match_other);
@@ -22127,7 +22135,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             }
         }
         draw_page(pdf_sess->page + 1, anchor_y + anchor_h + kPdfPageGapPx);
-        EndScissorMode();
+        gfx::EndScissorMode();
 
         DrawPaneBorder(x, y, w, h, is_active);
         return;
@@ -22168,9 +22176,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
 
         float row_h = std::clamp(static_cast<float>(header_h) * 0.78f, 30.0f, 38.0f);
         float toolbar_h = row_h * 2.0f;
-        DrawRectangle(static_cast<int>(ocx), static_cast<int>(content_y), static_cast<int>(ocw),
+        gfx::DrawRectangle(static_cast<int>(ocx), static_cast<int>(content_y), static_cast<int>(ocw),
                       static_cast<int>(toolbar_h), ResolveHlGroup("MenuBar"));
-        DrawRectangle(static_cast<int>(ocx), static_cast<int>(content_y + toolbar_h - 1.0f), static_cast<int>(ocw), 1,
+        gfx::DrawRectangle(static_cast<int>(ocx), static_cast<int>(content_y + toolbar_h - 1.0f), static_cast<int>(ocw), 1,
                       ResolveHlGroup("Border"));
         float btn_h = row_h - 6.0f;
         float row1_y = content_y + 3.0f;
@@ -22194,10 +22202,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
          * @param active Whether the button is currently toggled on.
          * @return The color to draw the button's own content (text or icon) in.
          */
-        auto btn_bg = [&](Rectangle rect, bool active) -> Color {
-            bool hovered = CheckCollisionPointRec(GetMousePosition(), rect);
-            if (active) DrawRectangleRounded(rect, 0.25f, 6, ResolveHlGroup("AccentTint"));
-            else if (hovered) DrawRectangleRounded(rect, 0.25f, 6, ResolveHlGroup("CursorLine"));
+        auto btn_bg = [&](gfx::Rectangle rect, bool active) -> gfx::Color {
+            bool hovered = gfx::CheckCollisionPointRec(gfx::GetMousePosition(), rect);
+            if (active) gfx::DrawRectangleRounded(rect, 0.25f, 6, ResolveHlGroup("AccentTint"));
+            else if (hovered) gfx::DrawRectangleRounded(rect, 0.25f, 6, ResolveHlGroup("CursorLine"));
             return active ? ResolveHlGroup("Accent") : ResolveHlGroup("Normal");
         };
 
@@ -22215,13 +22223,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
          * @return The button's own rectangle (so a caller can open a dropdown below it).
          */
         auto draw_btn = [&](float *bx, float by, const std::string &label, bool active,
-                             const std::function<void()> &on_click) -> Rectangle {
-            Vector2 ls = MeasureTextEx(g_font, label.c_str(), font_size * 0.92f, 0);
+                             const std::function<void()> &on_click) -> gfx::Rectangle {
+            gfx::Vector2 ls = gfx::MeasureTextEx(g_font, label.c_str(), font_size * 0.92f, 0);
             float bw = ls.x + 14.0f;
-            Rectangle rect{*bx, by, bw, btn_h};
-            Color content = btn_bg(rect, active);
-            DrawTextEx(g_font, label.c_str(),
-                      Vector2{rect.x + (rect.width - ls.x) / 2.0f, rect.y + (rect.height - font_size * 0.92f) / 2.0f},
+            gfx::Rectangle rect{*bx, by, bw, btn_h};
+            gfx::Color content = btn_bg(rect, active);
+            gfx::DrawTextEx(g_font, label.c_str(),
+                      gfx::Vector2{rect.x + (rect.width - ls.x) / 2.0f, rect.y + (rect.height - font_size * 0.92f) / 2.0f},
                       font_size * 0.92f, 0, content);
             RegisterClickRegion(rect, on_click);
             *bx += bw + 2.0f;
@@ -22249,10 +22257,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
          * @return The button's own rectangle.
          */
         auto draw_icon_btn = [&](float *bx, float by, float bw, bool active,
-                                  const std::function<void(Rectangle, Color)> &draw_content,
-                                  const std::function<void()> &on_click) -> Rectangle {
-            Rectangle rect{*bx, by, bw, btn_h};
-            Color content = btn_bg(rect, active);
+                                  const std::function<void(gfx::Rectangle, gfx::Color)> &draw_content,
+                                  const std::function<void()> &on_click) -> gfx::Rectangle {
+            gfx::Rectangle rect{*bx, by, bw, btn_h};
+            gfx::Color content = btn_bg(rect, active);
             draw_content(rect, content);
             RegisterClickRegion(rect, on_click);
             *bx += bw + 2.0f;
@@ -22267,7 +22275,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
          */
         auto add_sep = [&](float *bx, float by) {
             *bx += 5.0f;
-            DrawLineEx(Vector2{*bx, by + 4.0f}, Vector2{*bx, by + btn_h - 4.0f}, 1.0f, ResolveHlGroup("Border"));
+            gfx::DrawLineEx(gfx::Vector2{*bx, by + 4.0f}, gfx::Vector2{*bx, by + btn_h - 4.0f}, 1.0f, ResolveHlGroup("Border"));
             *bx += 9.0f;
         };
 
@@ -22287,14 +22295,14 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
          * @return The button's own rectangle.
          */
         auto draw_dropdown_btn = [&](float *bx, float by, const std::string &label, bool active,
-                                      const std::function<void()> &on_click) -> Rectangle {
-            Vector2 ls = MeasureTextEx(g_font, label.c_str(), font_size * 0.92f, 0);
+                                      const std::function<void()> &on_click) -> gfx::Rectangle {
+            gfx::Vector2 ls = gfx::MeasureTextEx(g_font, label.c_str(), font_size * 0.92f, 0);
             float bw = ls.x + 22.0f;
             // Draws the button's label text plus a hand-drawn downward chevron triangle.
             return draw_icon_btn(bx, by, bw, active,
-                [&, label](Rectangle rect, Color color) {
-                    DrawTextEx(g_font, label.c_str(),
-                              Vector2{rect.x + 7.0f, rect.y + (rect.height - font_size * 0.92f) / 2.0f},
+                [&, label](gfx::Rectangle rect, gfx::Color color) {
+                    gfx::DrawTextEx(g_font, label.c_str(),
+                              gfx::Vector2{rect.x + 7.0f, rect.y + (rect.height - font_size * 0.92f) / 2.0f},
                               font_size * 0.92f, 0, color);
                     float tx = rect.x + rect.width - 12.0f, ty = rect.y + rect.height / 2.0f;
                     // Vertex order matters here -- DrawTriangle culls the
@@ -22302,19 +22310,19 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     // already-working DrawTriangle calls): (right, left,
                     // bottom) renders, (left, right, bottom) silently does
                     // not.
-                    DrawTriangle(Vector2{tx + 4.0f, ty - 2.0f}, Vector2{tx - 4.0f, ty - 2.0f}, Vector2{tx, ty + 3.0f}, color);
+                    gfx::DrawTriangle(gfx::Vector2{tx + 4.0f, ty - 2.0f}, gfx::Vector2{tx - 4.0f, ty - 2.0f}, gfx::Vector2{tx, ty + 3.0f}, color);
                 },
                 on_click);
         };
 
         // --- Row 1: font family/size, B/I/U/S, alignment, super/subscript, colors ---
         // Toggles the font-family dropdown open/closed.
-        Rectangle font_family_btn =
+        gfx::Rectangle font_family_btn =
             draw_dropdown_btn(&row1_x, row1_y, "Font", g_office_dropdown_open == kOfficeDropdownFontFamily, [] {
                 g_office_dropdown_open = g_office_dropdown_open == kOfficeDropdownFontFamily ? -1 : kOfficeDropdownFontFamily;
             });
         // Toggles the font-size dropdown open/closed.
-        Rectangle font_size_btn =
+        gfx::Rectangle font_size_btn =
             draw_dropdown_btn(&row1_x, row1_y, "Size", g_office_dropdown_open == kOfficeDropdownFontSize, [] {
                 g_office_dropdown_open = g_office_dropdown_open == kOfficeDropdownFontSize ? -1 : kOfficeDropdownFontSize;
             });
@@ -22332,30 +22340,30 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // Draws this style button's own styled glyph (bold/italic/underline/strike), and
             // on click toggles that format at the cursor/selection.
             draw_icon_btn(&row1_x, row1_y, btn_h, g_editor.OfficeFormatActive(which),
-                [&, sb](Rectangle rect, Color color) {
-                    Vector2 ts = MeasureTextEx(g_font, sb.ch, font_size, 0);
-                    Vector2 pos{rect.x + (rect.width - ts.x) / 2.0f, rect.y + (rect.height - font_size) / 2.0f};
+                [&, sb](gfx::Rectangle rect, gfx::Color color) {
+                    gfx::Vector2 ts = gfx::MeasureTextEx(g_font, sb.ch, font_size, 0);
+                    gfx::Vector2 pos{rect.x + (rect.width - ts.x) / 2.0f, rect.y + (rect.height - font_size) / 2.0f};
                     if (sb.italic) {
-                        rlPushMatrix();
+                        gfx::PushMatrix();
                         float baseline_y = pos.y + font_size;
-                        rlTranslatef(pos.x, baseline_y, 0);
+                        gfx::TranslateMatrix(pos.x, baseline_y, 0);
                         const float shear[16] = {1.0f, 0.0f, 0.0f, 0.0f, -0.22f, 1.0f, 0.0f, 0.0f,
                                            0.0f, 0.0f, 1.0f, 0.0f, 0.0f,   0.0f, 0.0f, 1.0f};
-                        rlMultMatrixf(shear);
-                        rlTranslatef(-pos.x, -baseline_y, 0);
-                        DrawTextEx(g_font, sb.ch, pos, font_size, 0, color);
-                        rlPopMatrix();
+                        gfx::MultMatrix(shear);
+                        gfx::TranslateMatrix(-pos.x, -baseline_y, 0);
+                        gfx::DrawTextEx(g_font, sb.ch, pos, font_size, 0, color);
+                        gfx::PopMatrix();
                     } else {
-                        DrawTextEx(g_font, sb.ch, pos, font_size, 0, color);
-                        if (sb.bold) DrawTextEx(g_font, sb.ch, Vector2{pos.x + 0.7f, pos.y}, font_size, 0, color);
+                        gfx::DrawTextEx(g_font, sb.ch, pos, font_size, 0, color);
+                        if (sb.bold) gfx::DrawTextEx(g_font, sb.ch, gfx::Vector2{pos.x + 0.7f, pos.y}, font_size, 0, color);
                     }
                     if (sb.underline) {
                         float uy = pos.y + font_size * 0.95f;
-                        DrawLineEx(Vector2{pos.x, uy}, Vector2{pos.x + ts.x, uy}, 1.3f, color);
+                        gfx::DrawLineEx(gfx::Vector2{pos.x, uy}, gfx::Vector2{pos.x + ts.x, uy}, 1.3f, color);
                     }
                     if (sb.strike) {
                         float sy = pos.y + font_size * 0.52f;
-                        DrawLineEx(Vector2{pos.x, sy}, Vector2{pos.x + ts.x, sy}, 1.3f, color);
+                        gfx::DrawLineEx(gfx::Vector2{pos.x, sy}, gfx::Vector2{pos.x + ts.x, sy}, 1.3f, color);
                     }
                 },
                 [which] { g_editor.ToggleOfficeFormat(which); });
@@ -22375,7 +22383,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // Draws this alignment icon's bars (left/center/right/justify), and on click sets
             // the paragraph alignment at the cursor/selection.
             draw_icon_btn(&row1_x, row1_y, btn_h, g_editor.OfficeAlignmentActive(align),
-                [kind](Rectangle rect, Color color) {
+                [kind](gfx::Rectangle rect, gfx::Color color) {
                     float pad = rect.width * 0.2f;
                     float full = rect.width - 2.0f * pad;
                     float bar_h = 2.0f;
@@ -22387,7 +22395,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                         float bx0 = rect.x + pad;
                         if (kind == 1) bx0 = rect.x + (rect.width - bw) / 2.0f;
                         else if (kind == 2) bx0 = rect.x + rect.width - pad - bw;
-                        DrawRectangle(static_cast<int>(bx0), static_cast<int>(by), static_cast<int>(bw),
+                        gfx::DrawRectangle(static_cast<int>(bx0), static_cast<int>(by), static_cast<int>(bw),
                                       static_cast<int>(bar_h), color);
                     }
                 },
@@ -22401,24 +22409,24 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // tofu '?' glyphs.
         // Draws a small raised "x2" glyph, and on click toggles superscript at the cursor/selection.
         draw_icon_btn(&row1_x, row1_y, btn_h, false,
-            [&](Rectangle rect, Color color) {
-                Vector2 xs = MeasureTextEx(g_font, "x", font_size * 0.85f, 0);
+            [&](gfx::Rectangle rect, gfx::Color color) {
+                gfx::Vector2 xs = gfx::MeasureTextEx(g_font, "x", font_size * 0.85f, 0);
                 float small = font_size * 0.6f;
                 float total_w = xs.x + small * 0.7f;
                 float x0 = rect.x + (rect.width - total_w) / 2.0f;
-                DrawTextEx(g_font, "x", Vector2{x0, rect.y + (rect.height - font_size * 0.85f) / 2.0f + 3.0f}, font_size * 0.85f, 0, color);
-                DrawTextEx(g_font, "2", Vector2{x0 + xs.x, rect.y + (rect.height - small) / 2.0f - 4.0f}, small, 0, color);
+                gfx::DrawTextEx(g_font, "x", gfx::Vector2{x0, rect.y + (rect.height - font_size * 0.85f) / 2.0f + 3.0f}, font_size * 0.85f, 0, color);
+                gfx::DrawTextEx(g_font, "2", gfx::Vector2{x0 + xs.x, rect.y + (rect.height - small) / 2.0f - 4.0f}, small, 0, color);
             },
             [] { g_editor.ToggleOfficeSuperscript(); });
         // Draws a small lowered "x2" glyph, and on click toggles subscript at the cursor/selection.
         draw_icon_btn(&row1_x, row1_y, btn_h, false,
-            [&](Rectangle rect, Color color) {
-                Vector2 xs = MeasureTextEx(g_font, "x", font_size * 0.85f, 0);
+            [&](gfx::Rectangle rect, gfx::Color color) {
+                gfx::Vector2 xs = gfx::MeasureTextEx(g_font, "x", font_size * 0.85f, 0);
                 float small = font_size * 0.6f;
                 float total_w = xs.x + small * 0.7f;
                 float x0 = rect.x + (rect.width - total_w) / 2.0f;
-                DrawTextEx(g_font, "x", Vector2{x0, rect.y + (rect.height - font_size * 0.85f) / 2.0f - 3.0f}, font_size * 0.85f, 0, color);
-                DrawTextEx(g_font, "2", Vector2{x0 + xs.x, rect.y + (rect.height - small) / 2.0f + 4.0f}, small, 0, color);
+                gfx::DrawTextEx(g_font, "x", gfx::Vector2{x0, rect.y + (rect.height - font_size * 0.85f) / 2.0f - 3.0f}, font_size * 0.85f, 0, color);
+                gfx::DrawTextEx(g_font, "2", gfx::Vector2{x0 + xs.x, rect.y + (rect.height - small) / 2.0f + 4.0f}, small, 0, color);
             },
             [] { g_editor.ToggleOfficeSubscript(); });
         add_sep(&row1_x, row1_y);
@@ -22429,60 +22437,60 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // are), same documented simplification as the format panel's
         // margins/page-color controls.
         // Draws an "A" with a red swatch bar, and on click toggles the text-color dropdown.
-        Rectangle text_color_btn = draw_icon_btn(&row1_x, row1_y, btn_h,
+        gfx::Rectangle text_color_btn = draw_icon_btn(&row1_x, row1_y, btn_h,
             g_office_dropdown_open == kOfficeDropdownTextColor,
-            [&](Rectangle rect, Color color) {
-                Vector2 ts = MeasureTextEx(g_font, "A", font_size * 0.85f, 0);
-                DrawTextEx(g_font, "A", Vector2{rect.x + (rect.width - ts.x) / 2.0f, rect.y + 2.0f}, font_size * 0.85f, 0, color);
+            [&](gfx::Rectangle rect, gfx::Color color) {
+                gfx::Vector2 ts = gfx::MeasureTextEx(g_font, "A", font_size * 0.85f, 0);
+                gfx::DrawTextEx(g_font, "A", gfx::Vector2{rect.x + (rect.width - ts.x) / 2.0f, rect.y + 2.0f}, font_size * 0.85f, 0, color);
                 float bw = rect.width * 0.55f;
-                DrawRectangle(static_cast<int>(rect.x + (rect.width - bw) / 2.0f), static_cast<int>(rect.y + rect.height - 6.0f),
-                              static_cast<int>(bw), 3, Color{211, 47, 47, 255});
+                gfx::DrawRectangle(static_cast<int>(rect.x + (rect.width - bw) / 2.0f), static_cast<int>(rect.y + rect.height - 6.0f),
+                              static_cast<int>(bw), 3, gfx::Color{211, 47, 47, 255});
             },
             [] { g_office_dropdown_open = g_office_dropdown_open == kOfficeDropdownTextColor ? -1 : kOfficeDropdownTextColor; });
         // Draws an "A" with a yellow swatch bar, and on click toggles the highlight-color dropdown.
-        Rectangle highlight_btn = draw_icon_btn(&row1_x, row1_y, btn_h,
+        gfx::Rectangle highlight_btn = draw_icon_btn(&row1_x, row1_y, btn_h,
             g_office_dropdown_open == kOfficeDropdownHighlight,
-            [&](Rectangle rect, Color color) {
-                Vector2 ts = MeasureTextEx(g_font, "A", font_size * 0.85f, 0);
-                DrawTextEx(g_font, "A", Vector2{rect.x + (rect.width - ts.x) / 2.0f, rect.y + 2.0f}, font_size * 0.85f, 0, color);
+            [&](gfx::Rectangle rect, gfx::Color color) {
+                gfx::Vector2 ts = gfx::MeasureTextEx(g_font, "A", font_size * 0.85f, 0);
+                gfx::DrawTextEx(g_font, "A", gfx::Vector2{rect.x + (rect.width - ts.x) / 2.0f, rect.y + 2.0f}, font_size * 0.85f, 0, color);
                 float bw = rect.width * 0.55f;
-                DrawRectangle(static_cast<int>(rect.x + (rect.width - bw) / 2.0f), static_cast<int>(rect.y + rect.height - 6.0f),
-                              static_cast<int>(bw), 3, Color{255, 212, 42, 255});
+                gfx::DrawRectangle(static_cast<int>(rect.x + (rect.width - bw) / 2.0f), static_cast<int>(rect.y + rect.height - 6.0f),
+                              static_cast<int>(bw), 3, gfx::Color{255, 212, 42, 255});
             },
             [] { g_office_dropdown_open = g_office_dropdown_open == kOfficeDropdownHighlight ? -1 : kOfficeDropdownHighlight; });
 
         // --- Row 2: lists, special chars, math, table, image, undo/redo ---
         // Draws a bulleted-list icon, and on click sets the paragraph list kind to Bullet.
         draw_icon_btn(&row2_x, row2_y, btn_h, g_editor.OfficeListKindActive(DocParagraph::ListKind::Bullet),
-            [](Rectangle rect, Color color) {
+            [](gfx::Rectangle rect, gfx::Color color) {
                 float pad = rect.width * 0.16f;
                 float gap = rect.height / 4.0f;
                 for (int i = 0; i < 3; i++) {
                     float cy = rect.y + gap * static_cast<float>(i + 1);
-                    DrawCircle(static_cast<int>(rect.x + pad), static_cast<int>(cy), 1.6f, color);
-                    DrawRectangle(static_cast<int>(rect.x + pad * 2.4f), static_cast<int>(cy - 1.0f),
+                    gfx::DrawCircle(static_cast<int>(rect.x + pad), static_cast<int>(cy), 1.6f, color);
+                    gfx::DrawRectangle(static_cast<int>(rect.x + pad * 2.4f), static_cast<int>(cy - 1.0f),
                                   static_cast<int>(rect.width - pad * 3.4f), 2, color);
                 }
             },
             [] { g_editor.SetOfficeListKind(DocParagraph::ListKind::Bullet); });
         // Draws a numbered-list icon, and on click sets the paragraph list kind to Numbered.
         draw_icon_btn(&row2_x, row2_y, btn_h, g_editor.OfficeListKindActive(DocParagraph::ListKind::Numbered),
-            [&](Rectangle rect, Color color) {
+            [&](gfx::Rectangle rect, gfx::Color color) {
                 float pad = rect.width * 0.14f;
                 float gap = rect.height / 4.0f;
                 float num_size = std::max(7.0f, rect.height * 0.3f);
                 for (int i = 0; i < 3; i++) {
                     float cy = rect.y + gap * static_cast<float>(i + 1);
                     std::string d = std::to_string(i + 1) + ".";
-                    DrawTextEx(g_font, d.c_str(), Vector2{rect.x + pad * 0.4f, cy - num_size * 0.5f}, num_size, 0, color);
-                    DrawRectangle(static_cast<int>(rect.x + pad * 3.0f), static_cast<int>(cy - 1.0f),
+                    gfx::DrawTextEx(g_font, d.c_str(), gfx::Vector2{rect.x + pad * 0.4f, cy - num_size * 0.5f}, num_size, 0, color);
+                    gfx::DrawRectangle(static_cast<int>(rect.x + pad * 3.0f), static_cast<int>(cy - 1.0f),
                                   static_cast<int>(rect.width - pad * 4.0f), 2, color);
                 }
             },
             [] { g_editor.SetOfficeListKind(DocParagraph::ListKind::Numbered); });
         add_sep(&row2_x, row2_y);
         // Toggles the special-characters dropdown open/closed.
-        Rectangle special_btn = draw_dropdown_btn(&row2_x, row2_y, "Sym", g_office_dropdown_open == kOfficeDropdownSpecialChars, [] {
+        gfx::Rectangle special_btn = draw_dropdown_btn(&row2_x, row2_y, "Sym", g_office_dropdown_open == kOfficeDropdownSpecialChars, [] {
             g_office_dropdown_open = g_office_dropdown_open == kOfficeDropdownSpecialChars ? -1 : kOfficeDropdownSpecialChars;
         });
         // Inserts a math expression at the cursor.
@@ -22490,26 +22498,26 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         add_sep(&row2_x, row2_y);
         // Draws a table-grid icon, and on click prompts to insert a table.
         draw_icon_btn(&row2_x, row2_y, btn_h, false,
-            [](Rectangle rect, Color color) {
+            [](gfx::Rectangle rect, gfx::Color color) {
                 float pad = rect.width * 0.18f;
-                Rectangle grid{rect.x + pad, rect.y + pad * 0.6f, rect.width - 2.0f * pad, rect.height - 1.2f * pad};
-                DrawRectangleLinesEx(grid, 1.2f, color);
-                DrawLineEx(Vector2{grid.x, grid.y + grid.height / 2.0f}, Vector2{grid.x + grid.width, grid.y + grid.height / 2.0f}, 1.0f, color);
-                DrawLineEx(Vector2{grid.x + grid.width / 2.0f, grid.y}, Vector2{grid.x + grid.width / 2.0f, grid.y + grid.height}, 1.0f, color);
+                gfx::Rectangle grid{rect.x + pad, rect.y + pad * 0.6f, rect.width - 2.0f * pad, rect.height - 1.2f * pad};
+                gfx::DrawRectangleLinesEx(grid, 1.2f, color);
+                gfx::DrawLineEx(gfx::Vector2{grid.x, grid.y + grid.height / 2.0f}, gfx::Vector2{grid.x + grid.width, grid.y + grid.height / 2.0f}, 1.0f, color);
+                gfx::DrawLineEx(gfx::Vector2{grid.x + grid.width / 2.0f, grid.y}, gfx::Vector2{grid.x + grid.width / 2.0f, grid.y + grid.height}, 1.0f, color);
             },
             [] { g_editor.InsertOfficeTablePrompt(); });
         // Draws a picture-frame icon, and on click prompts to insert an image.
         draw_icon_btn(&row2_x, row2_y, btn_h, false,
-            [](Rectangle rect, Color color) {
+            [](gfx::Rectangle rect, gfx::Color color) {
                 float pad = rect.width * 0.16f;
-                Rectangle frame{rect.x + pad, rect.y + pad * 0.7f, rect.width - 2.0f * pad, rect.height - 1.4f * pad};
-                DrawRectangleLinesEx(frame, 1.2f, color);
-                DrawCircle(static_cast<int>(frame.x + frame.width * 0.3f), static_cast<int>(frame.y + frame.height * 0.32f),
+                gfx::Rectangle frame{rect.x + pad, rect.y + pad * 0.7f, rect.width - 2.0f * pad, rect.height - 1.4f * pad};
+                gfx::DrawRectangleLinesEx(frame, 1.2f, color);
+                gfx::DrawCircle(static_cast<int>(frame.x + frame.width * 0.3f), static_cast<int>(frame.y + frame.height * 0.32f),
                           std::max(1.2f, frame.height * 0.11f), color);
-                Vector2 p1{frame.x + 1.5f, frame.y + frame.height - 1.5f};
-                Vector2 p2{frame.x + frame.width * 0.4f, frame.y + frame.height * 0.42f};
-                Vector2 p3{frame.x + frame.width - 1.5f, frame.y + frame.height - 1.5f};
-                DrawTriangle(p2, p1, p3, color);
+                gfx::Vector2 p1{frame.x + 1.5f, frame.y + frame.height - 1.5f};
+                gfx::Vector2 p2{frame.x + frame.width * 0.4f, frame.y + frame.height * 0.42f};
+                gfx::Vector2 p3{frame.x + frame.width - 1.5f, frame.y + frame.height - 1.5f};
+                gfx::DrawTriangle(p2, p1, p3, color);
             },
             [] { g_editor.InsertOfficeImagePrompt(); });
         add_sep(&row2_x, row2_y);
@@ -22523,31 +22531,31 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
          * @param color Color to draw the icon in.
          * @param redo True to draw the redo (mirrored) variant, false for undo.
          */
-        auto draw_undo_redo_icon = [](Rectangle rect, Color color, bool redo) {
+        auto draw_undo_redo_icon = [](gfx::Rectangle rect, gfx::Color color, bool redo) {
             float cx = rect.x + rect.width / 2.0f;
             float cy = rect.y + rect.height / 2.0f + 1.0f;
             float r = rect.height * 0.28f;
             float a0 = redo ? 200.0f : -20.0f;
             float a1 = redo ? 470.0f : 250.0f;
-            DrawRing(Vector2{cx, cy}, r - 1.3f, r + 1.3f, a0, a1, 20, color);
-            float tip_ang = (redo ? a0 : a1) * DEG2RAD;
+            gfx::DrawRing(gfx::Vector2{cx, cy}, r - 1.3f, r + 1.3f, a0, a1, 20, color);
+            float tip_ang = (redo ? a0 : a1) * gfx::kDeg2Rad;
             float tipx = cx + r * cosf(tip_ang), tipy = cy + r * sinf(tip_ang);
             float tangent = tip_ang + (redo ? -1.5708f : 1.5708f);
-            Vector2 dir{cosf(tangent), sinf(tangent)};
-            Vector2 normal{-dir.y, dir.x};
+            gfx::Vector2 dir{cosf(tangent), sinf(tangent)};
+            gfx::Vector2 normal{-dir.y, dir.x};
             float s = r * 0.7f;
-            Vector2 p1{tipx + dir.x * s, tipy + dir.y * s};
-            Vector2 p2{tipx - normal.x * s * 0.7f, tipy - normal.y * s * 0.7f};
-            Vector2 p3{tipx + normal.x * s * 0.7f, tipy + normal.y * s * 0.7f};
-            DrawTriangle(p1, p2, p3, color);
+            gfx::Vector2 p1{tipx + dir.x * s, tipy + dir.y * s};
+            gfx::Vector2 p2{tipx - normal.x * s * 0.7f, tipy - normal.y * s * 0.7f};
+            gfx::Vector2 p3{tipx + normal.x * s * 0.7f, tipy + normal.y * s * 0.7f};
+            gfx::DrawTriangle(p1, p2, p3, color);
         };
         // Draws the undo icon, and on click undoes the last office-document edit.
         draw_icon_btn(&row2_x, row2_y, btn_h, false,
-            [&](Rectangle rect, Color color) { draw_undo_redo_icon(rect, color, false); },
+            [&](gfx::Rectangle rect, gfx::Color color) { draw_undo_redo_icon(rect, color, false); },
             [] { g_editor.UndoOffice(); });
         // Draws the redo icon, and on click redoes the last undone office-document edit.
         draw_icon_btn(&row2_x, row2_y, btn_h, false,
-            [&](Rectangle rect, Color color) { draw_undo_redo_icon(rect, color, true); },
+            [&](gfx::Rectangle rect, gfx::Color color) { draw_undo_redo_icon(rect, color, true); },
             [] { g_editor.RedoOffice(); });
 
         content_y += toolbar_h;
@@ -22571,13 +22579,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         const float ruler_h = 20.0f;
         const float page_top = content_y + ruler_h + canvas_pad * 0.4f;
         const float page_h = std::max(40.0f, content_h - ruler_h - canvas_pad * 0.85f);
-        const Color canvas = ResolveHlGroup("NormalBg");
-        const Color paper = ResolveHlGroup("OfficePage");
-        DrawRectangle(static_cast<int>(ocx), static_cast<int>(content_y), static_cast<int>(ocw), static_cast<int>(content_h), canvas);
+        const gfx::Color canvas = ResolveHlGroup("NormalBg");
+        const gfx::Color paper = ResolveHlGroup("OfficePage");
+        gfx::DrawRectangle(static_cast<int>(ocx), static_cast<int>(content_y), static_cast<int>(ocw), static_cast<int>(content_h), canvas);
         {
             float pad = std::max(24.0f, page_w * 0.09f);
-            Rectangle ruler{page_x, content_y + 2.0f, page_w, ruler_h - 4.0f};
-            DrawRectangleRounded(ruler, 0.3f, 4, ResolveHlGroup("MenuBar"));
+            gfx::Rectangle ruler{page_x, content_y + 2.0f, page_w, ruler_h - 4.0f};
+            gfx::DrawRectangleRounded(ruler, 0.3f, 4, ResolveHlGroup("MenuBar"));
             // One tick per inch-equivalent unit (matches the page's own
             // canonical 900px-wide-at-100%-zoom convention above, so ticks
             // stay aligned with the text column as zoom changes) plus
@@ -22591,7 +22599,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // NOLINTNEXTLINE(clang-analyzer-security.FloatLoopCounter)
             for (float ux = unit_px; ux < page_w - 1.0f; ux += unit_px, unit++) {
                 float tx = ruler.x + ux;
-                DrawLineEx(Vector2{tx, ruler.y + ruler.height * 0.35f}, Vector2{tx, ruler.y + ruler.height}, 1.0f, ResolveHlGroup("MutedFg"));
+                gfx::DrawLineEx(gfx::Vector2{tx, ruler.y + ruler.height * 0.35f}, gfx::Vector2{tx, ruler.y + ruler.height}, 1.0f, ResolveHlGroup("MutedFg"));
             }
             /**
              * @brief Draws a downward-pointing triangular margin marker on the ruler at x
@@ -22599,15 +22607,15 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
              * @param mx X position to center the marker at.
              */
             auto margin_marker = [&](float mx) {
-                DrawTriangle(Vector2{mx - 4.0f, ruler.y + ruler.height}, Vector2{mx + 4.0f, ruler.y + ruler.height},
-                            Vector2{mx, ruler.y + ruler.height * 0.4f}, ResolveHlGroup("Accent"));
+                gfx::DrawTriangle(gfx::Vector2{mx - 4.0f, ruler.y + ruler.height}, gfx::Vector2{mx + 4.0f, ruler.y + ruler.height},
+                            gfx::Vector2{mx, ruler.y + ruler.height * 0.4f}, ResolveHlGroup("Accent"));
             };
             margin_marker(ruler.x + pad);
             margin_marker(ruler.x + page_w - pad);
         }
-        DrawRectangleRounded(Rectangle{page_x + 2.0f, page_top + 3.0f, page_w, page_h}, 0.012f, 8, Fade(BLACK, 0.16f));
-        DrawRectangleRounded(Rectangle{page_x, page_top, page_w, page_h}, 0.012f, 8, paper);
-        DrawRectangleRoundedLines(Rectangle{page_x, page_top, page_w, page_h}, 0.012f, 8, ResolveHlGroup("Border"));
+        gfx::DrawRectangleRounded(gfx::Rectangle{page_x + 2.0f, page_top + 3.0f, page_w, page_h}, 0.012f, 8, gfx::Fade(gfx::Black, 0.16f));
+        gfx::DrawRectangleRounded(gfx::Rectangle{page_x, page_top, page_w, page_h}, 0.012f, 8, paper);
+        gfx::DrawRectangleRoundedLines(gfx::Rectangle{page_x, page_top, page_w, page_h}, 0.012f, 8, ResolveHlGroup("Border"));
 
         g_editor.ResizeOfficeViewport(pane.buffer_id, static_cast<int>(page_w), static_cast<int>(page_h));
         const OfficeDoc &doc = office_sess->doc;
@@ -22803,7 +22811,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // edge, to clear DrawPaneBorder's own 6px active-pane border
             // strip (drawn later, over that same edge) -- otherwise the
             // border paints right over the track.
-            g_office_status.track = Rectangle{ocx + ocw - 17.0f, content_y, 8.0f, content_h - 4.0f};
+            g_office_status.track = gfx::Rectangle{ocx + ocw - 17.0f, content_y, 8.0f, content_h - 4.0f};
             g_office_status.max_width = max_width;
             g_office_status.body_size = body_size;
 
@@ -22812,36 +22820,36 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // anchored to *this pane's own* bottom edge (office_footer_y,
             // computed above), not the app's global status line.
             float status_font_size = std::max(kMinFontSize, g_font_size - 2.0f);
-            DrawRectangle(static_cast<int>(x), static_cast<int>(office_footer_y), static_cast<int>(w),
+            gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(office_footer_y), static_cast<int>(w),
                           static_cast<int>(kOfficeFooterH), ResolveHlGroup("MenuBar"));
-            DrawRectangle(static_cast<int>(x), static_cast<int>(office_footer_y), static_cast<int>(w), 1,
+            gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(office_footer_y), static_cast<int>(w), 1,
                           ResolveHlGroup("Border"));
             std::string left_label = "Page ~" + std::to_string(g_office_status.page_estimate) + " of ~" +
                                 std::to_string(g_office_status.page_total_estimate) + "    " +
                                 std::to_string(g_office_status.word_count) + " words    English (US)";
-            DrawTextEx(g_font, left_label.c_str(), Vector2{x + 12.0f, office_footer_y + (kOfficeFooterH - status_font_size) / 2.0f},
+            gfx::DrawTextEx(g_font, left_label.c_str(), gfx::Vector2{x + 12.0f, office_footer_y + (kOfficeFooterH - status_font_size) / 2.0f},
                       status_font_size, 0, ResolveHlGroup("MutedFg"));
 
             int zoom_pct = static_cast<int>(std::lround(g_office_status.zoom * 100.0f));
             std::string pct_label = std::to_string(zoom_pct) + "%";
-            float pct_w = MeasureTextEx(g_font, pct_label.c_str(), status_font_size, 0).x;
+            float pct_w = gfx::MeasureTextEx(g_font, pct_label.c_str(), status_font_size, 0).x;
             float pct_x = x + w - 12.0f - pct_w;
-            DrawTextEx(g_font, pct_label.c_str(), Vector2{pct_x, office_footer_y + (kOfficeFooterH - status_font_size) / 2.0f},
+            gfx::DrawTextEx(g_font, pct_label.c_str(), gfx::Vector2{pct_x, office_footer_y + (kOfficeFooterH - status_font_size) / 2.0f},
                       status_font_size, 0, ResolveHlGroup("MutedFg"));
 
             constexpr float kSliderW = 90.0f, kZoomMin = 0.5f, kZoomMax = 2.0f;
-            Rectangle slider{pct_x - kSliderW - 16.0f, office_footer_y + kOfficeFooterH / 2.0f - 2.0f, kSliderW, 4.0f};
-            DrawRectangleRounded(slider, 0.5f, 4, ResolveHlGroup("Border"));
+            gfx::Rectangle slider{pct_x - kSliderW - 16.0f, office_footer_y + kOfficeFooterH / 2.0f - 2.0f, kSliderW, 4.0f};
+            gfx::DrawRectangleRounded(slider, 0.5f, 4, ResolveHlGroup("Border"));
             float zfrac = std::clamp((g_office_status.zoom - kZoomMin) / (kZoomMax - kZoomMin), 0.0f, 1.0f);
-            Vector2 thumb_c{slider.x + slider.width * zfrac, slider.y + slider.height / 2.0f};
-            DrawCircle(static_cast<int>(thumb_c.x), static_cast<int>(thumb_c.y), 6.0f, ResolveHlGroup("Accent"));
-            Rectangle slider_hit{slider.x - 6.0f, slider.y - 8.0f, slider.width + 12.0f, 20.0f};
-            Vector2 zmouse = GetMousePosition();
-            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && CheckCollisionPointRec(zmouse, slider_hit)) {
+            gfx::Vector2 thumb_c{slider.x + slider.width * zfrac, slider.y + slider.height / 2.0f};
+            gfx::DrawCircle(static_cast<int>(thumb_c.x), static_cast<int>(thumb_c.y), 6.0f, ResolveHlGroup("Accent"));
+            gfx::Rectangle slider_hit{slider.x - 6.0f, slider.y - 8.0f, slider.width + 12.0f, 20.0f};
+            gfx::Vector2 zmouse = gfx::GetMousePosition();
+            if (gfx::IsMouseButtonPressed(gfx::MouseButton::Left) && gfx::CheckCollisionPointRec(zmouse, slider_hit)) {
                 g_office_zoom_drag = true;
             }
             if (g_office_zoom_drag) {
-                if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+                if (gfx::IsMouseButtonDown(gfx::MouseButton::Left)) {
                     float f = std::clamp((zmouse.x - slider.x) / slider.width, 0.0f, 1.0f);
                     // cppcheck-suppress variableScope
                     // Already declared immediately before its one use one
@@ -22856,10 +22864,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             }
         }
 
-        BeginScissorMode(static_cast<int>(page_x), static_cast<int>(page_top), static_cast<int>(page_w),
+        gfx::BeginScissorMode(static_cast<int>(page_x), static_cast<int>(page_top), static_cast<int>(page_w),
                           static_cast<int>(page_h));
-        Color text_color = ResolveHlGroup("Normal");
-        Color sel_color = ResolveHlGroup("AccentTint");
+        gfx::Color text_color = ResolveHlGroup("Normal");
+        gfx::Color sel_color = ResolveHlGroup("AccentTint");
         bool office_visual = is_active && g_editor.CurrentMode() == Mode::OfficeVisual && office_sess->has_selection;
         int sel_pa = 0, sel_ca = 0, sel_pb = 0, sel_cb = 0;
         if (office_visual) {
@@ -22921,7 +22929,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         auto run_width = [&](int paragraph, const OfficeFormatRun &run, const std::string &text, float paragraph_size) {
             const float run_size = run_size_for(run, paragraph_size);
             if (run.fmt.math && !math_source_is_active(paragraph, run)) return LayoutMathExpression(text, run_size).width;
-            return MeasureTextEx(OfficeFontFor(run.fmt), text.c_str(), run_size, 0).x;
+            return gfx::MeasureTextEx(OfficeFontFor(run.fmt), text.c_str(), run_size, 0).x;
         };
         float draw_y = page_top + pad * 0.75f;
         for (int pi = scroll_para; pi < para_count && draw_y < page_top + page_h - pad * 0.5f; pi++) {
@@ -22949,8 +22957,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                                                           : page_x + page_w - pad - total_w;
                 }
                 if (para.list_kind == DocParagraph::ListKind::Bullet && li == 0) {
-                    DrawTextEx(OfficeFontFor(DocFormat{}), "\xE2\x80\xA2 ", Vector2{line_x, draw_y}, size, 0, text_color);
-                    line_x += MeasureTextEx(OfficeFontFor(DocFormat{}), "\xE2\x80\xA2 ", size, 0).x;
+                    gfx::DrawTextEx(OfficeFontFor(DocFormat{}), "\xE2\x80\xA2 ", gfx::Vector2{line_x, draw_y}, size, 0, text_color);
+                    line_x += gfx::MeasureTextEx(OfficeFontFor(DocFormat{}), "\xE2\x80\xA2 ", size, 0).x;
                 } else if (para.list_kind == DocParagraph::ListKind::Numbered && li == 0) {
                     // Displayed number is "position within the current run
                     // of consecutive Numbered paragraphs", computed here
@@ -22959,8 +22967,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     int num = 1;
                     for (int k = pi - 1; k >= 0 && doc.paragraphs[static_cast<size_t>(k)].list_kind == DocParagraph::ListKind::Numbered; k--) num++;
                     std::string marker = std::to_string(num) + ". ";
-                    DrawTextEx(OfficeFontFor(DocFormat{}), marker.c_str(), Vector2{line_x, draw_y}, size, 0, text_color);
-                    line_x += MeasureTextEx(OfficeFontFor(DocFormat{}), marker.c_str(), size, 0).x;
+                    gfx::DrawTextEx(OfficeFontFor(DocFormat{}), marker.c_str(), gfx::Vector2{line_x, draw_y}, size, 0, text_color);
+                    line_x += gfx::MeasureTextEx(OfficeFontFor(DocFormat{}), marker.c_str(), size, 0).x;
                 }
                 if (office_visual && pi >= sel_pa && pi <= sel_pb) {
                     int hl_start = (pi == sel_pa) ? sel_ca : 0;
@@ -22988,7 +22996,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                             }
                             hl_w += run_width(pi, r, t, size);
                         }
-                        DrawRectangle(static_cast<int>(hl_x0), static_cast<int>(draw_y), static_cast<int>(hl_w),
+                        gfx::DrawRectangle(static_cast<int>(hl_x0), static_cast<int>(draw_y), static_cast<int>(hl_w),
                                       static_cast<int>(size), sel_color);
                     }
                 }
@@ -23014,7 +23022,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     float run_y = draw_y;
                     if (r.fmt.superscript) run_y -= size * 0.3f;
                     else if (r.fmt.subscript) run_y += size * 0.25f;
-                    Color run_color = r.fmt.has_color ? Color{r.fmt.color_r, r.fmt.color_g, r.fmt.color_b, 255} : text_color;
+                    gfx::Color run_color = r.fmt.has_color ? gfx::Color{r.fmt.color_r, r.fmt.color_g, r.fmt.color_b, 255} : text_color;
                     float rw;
                     if (r.fmt.math && !math_source_is_active(pi, r)) {
                         // DrawMathLayout's own y is the top of its bounding
@@ -23024,24 +23032,24 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                         // `position` here -- no baseline adjustment needed.
                         MathLayoutResult ml = LayoutMathExpression(t, run_size);
                         if (r.fmt.has_highlight) {
-                            DrawRectangle(static_cast<int>(run_x), static_cast<int>(run_y), static_cast<int>(ml.width),
+                            gfx::DrawRectangle(static_cast<int>(run_x), static_cast<int>(run_y), static_cast<int>(ml.width),
                                           static_cast<int>(ml.height),
-                                          Color{r.fmt.highlight_r, r.fmt.highlight_g, r.fmt.highlight_b, 255});
+                                          gfx::Color{r.fmt.highlight_r, r.fmt.highlight_g, r.fmt.highlight_b, 255});
                         }
                         DrawMathLayout(run_x, run_y, ml, run_color);
                         rw = ml.width;
                     } else {
-                        const Font &f = OfficeFontFor(r.fmt);
-                        rw = MeasureTextEx(f, t.c_str(), run_size, 0).x;
+                        const gfx::Font &f = OfficeFontFor(r.fmt);
+                        rw = gfx::MeasureTextEx(f, t.c_str(), run_size, 0).x;
                         if (r.fmt.has_highlight) {
-                            DrawRectangle(static_cast<int>(run_x), static_cast<int>(draw_y), static_cast<int>(rw),
+                            gfx::DrawRectangle(static_cast<int>(run_x), static_cast<int>(draw_y), static_cast<int>(rw),
                                           static_cast<int>(size),
-                                          Color{r.fmt.highlight_r, r.fmt.highlight_g, r.fmt.highlight_b, 255});
+                                          gfx::Color{r.fmt.highlight_r, r.fmt.highlight_g, r.fmt.highlight_b, 255});
                         }
-                        DrawTextEx(f, t.c_str(), Vector2{run_x, run_y}, run_size, 0, run_color);
+                        gfx::DrawTextEx(f, t.c_str(), gfx::Vector2{run_x, run_y}, run_size, 0, run_color);
                         if (r.fmt.underline || r.fmt.strike) {
                             float uy = run_y + (r.fmt.strike ? run_size * 0.5f : run_size * 0.95f);
-                            DrawLineEx(Vector2{run_x, uy}, Vector2{run_x + rw, uy}, 1.0f, run_color);
+                            gfx::DrawLineEx(gfx::Vector2{run_x, uy}, gfx::Vector2{run_x + rw, uy}, 1.0f, run_color);
                         }
                     }
                     const bool cursor_in_run = office_sess->cursor_col >= r.start && office_sess->cursor_col <= r.end;
@@ -23058,7 +23066,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 }
                 if (is_active && pi == cp && li == cursor_line_in_para) {
                     if (cursor_on_rendered_math) {
-                        DrawRectangleLines(static_cast<int>(rendered_math_cursor_x - 2.0f), static_cast<int>(draw_y - 2.0f),
+                        gfx::DrawRectangleLines(static_cast<int>(rendered_math_cursor_x - 2.0f), static_cast<int>(draw_y - 2.0f),
                                            static_cast<int>(rendered_math_cursor_w + 4.0f),
                                            static_cast<int>(rendered_math_cursor_h + 4.0f), text_color);
                     } else {
@@ -23073,7 +23081,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                             cursor_x += run_width(pi, r, t, size);
                         }
                         if (office_insert) {
-                            DrawRectangle(static_cast<int>(cursor_x), static_cast<int>(draw_y), 2, static_cast<int>(size),
+                            gfx::DrawRectangle(static_cast<int>(cursor_x), static_cast<int>(draw_y), 2, static_cast<int>(size),
                                           text_color);
                         } else {
                             // Block cursor (OfficeNormal/OfficeVisual) --
@@ -23100,8 +23108,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                 }
                                 block_w = std::max(4.0f, run_width(pi, r, t, size));
                             }
-                            DrawRectangle(static_cast<int>(cursor_x), static_cast<int>(draw_y), static_cast<int>(block_w),
-                                          static_cast<int>(size), Fade(text_color, 0.55f));
+                            gfx::DrawRectangle(static_cast<int>(cursor_x), static_cast<int>(draw_y), static_cast<int>(block_w),
+                                          static_cast<int>(size), gfx::Fade(text_color, 0.55f));
                             if (!at_cursor.empty() && at_cursor[0].end > at_cursor[0].start && !at_cursor[0].fmt.math) {
                                 const OfficeFormatRun &r = at_cursor[0];
                                 std::string t = para.text.substr(static_cast<size_t>(r.start), static_cast<size_t>(r.end - r.start));
@@ -23112,7 +23120,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                 float ry2 = draw_y;
                                 if (r.fmt.superscript) ry2 -= size * 0.3f;
                                 else if (r.fmt.subscript) ry2 += size * 0.25f;
-                                DrawTextEx(OfficeFontFor(r.fmt), t.c_str(), Vector2{cursor_x, ry2}, run_size2, 0, paper);
+                                gfx::DrawTextEx(OfficeFontFor(r.fmt), t.c_str(), gfx::Vector2{cursor_x, ry2}, run_size2, 0, paper);
                             }
                         }
                     }
@@ -23136,7 +23144,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 float cell_font = body_size * 0.85f;
                 float cell_h = cell_font + 12.0f;
                 float col_w = tbl.cols > 0 ? std::max(50.0f, max_width / static_cast<float>(tbl.cols)) : max_width;
-                const Font &cell_fontobj = OfficeFontFor(DocFormat{});
+                const gfx::Font &cell_fontobj = OfficeFontFor(DocFormat{});
                 for (int r = 0; r < tbl.rows; r++) {
                     float ry = draw_y;
                     if (ry <= page_top + page_h - pad * 0.5f) {
@@ -23144,25 +23152,25 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                             float cx = page_x + pad + col_w * static_cast<float>(c);
                             bool cell_active = is_active && in_this_table && r == office_sess->table_cursor_row &&
                                                c == office_sess->table_cursor_col;
-                            DrawRectangle(static_cast<int>(cx), static_cast<int>(ry), static_cast<int>(col_w),
+                            gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(ry), static_cast<int>(col_w),
                                           static_cast<int>(cell_h),
                                           cell_active ? ResolveHlGroup("AccentTint") : ResolveHlGroup("MenuBar"));
-                            DrawRectangleLines(static_cast<int>(cx), static_cast<int>(ry), static_cast<int>(col_w),
+                            gfx::DrawRectangleLines(static_cast<int>(cx), static_cast<int>(ry), static_cast<int>(col_w),
                                                 static_cast<int>(cell_h), ResolveHlGroup("Border"));
                             const std::string &full = tbl.Cell(r, c);
                             std::string shown = full;
                             while (!shown.empty() &&
-                                   MeasureTextEx(cell_fontobj, shown.c_str(), cell_font, 0).x > col_w - 8.0f) {
+                                   gfx::MeasureTextEx(cell_fontobj, shown.c_str(), cell_font, 0).x > col_w - 8.0f) {
                                 shown.pop_back();
                             }
-                            DrawTextEx(cell_fontobj, shown.c_str(),
-                                      Vector2{cx + 4.0f, ry + (cell_h - cell_font) / 2.0f}, cell_font, 0, text_color);
+                            gfx::DrawTextEx(cell_fontobj, shown.c_str(),
+                                      gfx::Vector2{cx + 4.0f, ry + (cell_h - cell_font) / 2.0f}, cell_font, 0, text_color);
                             if (cell_active && office_sess->table_cell_editing) {
                                 int cc = std::clamp(office_sess->table_cell_col, 0, static_cast<int>(full.size()));
                                 float cur_x =
-                                    cx + 4.0f + MeasureTextEx(cell_fontobj, full.substr(0, static_cast<size_t>(cc)).c_str(),
+                                    cx + 4.0f + gfx::MeasureTextEx(cell_fontobj, full.substr(0, static_cast<size_t>(cc)).c_str(),
                                                               cell_font, 0).x;
-                                DrawRectangle(static_cast<int>(cur_x), static_cast<int>(ry), 2,
+                                gfx::DrawRectangle(static_cast<int>(cur_x), static_cast<int>(ry), 2,
                                               static_cast<int>(cell_h), text_color);
                             }
                         }
@@ -23173,7 +23181,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             }
             if (para.image_ref >= 0 && para.image_ref < static_cast<int>(doc.images.size())) {
                 const DocImage &img = doc.images[static_cast<size_t>(para.image_ref)];
-                const Texture2D *tex = GetOrLoadOfficeImageTexture(pane.buffer_id, para.image_ref, img);
+                const gfx::Texture2D *tex = GetOrLoadOfficeImageTexture(pane.buffer_id, para.image_ref, img);
                 if (tex && img.natural_w > 0 && img.natural_h > 0) {
                     float draw_w = static_cast<float>(img.natural_w);
                     float draw_h = static_cast<float>(img.natural_h);
@@ -23183,14 +23191,14 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                         draw_h *= scale;
                     }
                     if (draw_y <= page_top + page_h - pad * 0.5f) {
-                        DrawTexturePro(*tex, Rectangle{0.0f, 0.0f, static_cast<float>(img.natural_w), static_cast<float>(img.natural_h)},
-                                      Rectangle{page_x + pad, draw_y, draw_w, draw_h}, Vector2{0.0f, 0.0f}, 0.0f, WHITE);
+                        gfx::DrawTexturePro(*tex, gfx::Rectangle{0.0f, 0.0f, static_cast<float>(img.natural_w), static_cast<float>(img.natural_h)},
+                                      gfx::Rectangle{page_x + pad, draw_y, draw_w, draw_h}, gfx::Vector2{0.0f, 0.0f}, 0.0f, gfx::White);
                     }
                     draw_y += draw_h + 8.0f;
                 }
             }
         }
-        EndScissorMode();
+        gfx::EndScissorMode();
 
         // --- Scrollbar: real vertical scrollbar (this pane had none before
         // this restyle -- see WYSIWYG restyle plan) at the pane's right
@@ -23202,14 +23210,14 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // "Draw computes this frame's geometry, a sibling Update* consumes
         // it next" split).
         {
-            const Rectangle &track = g_office_status.track;
-            DrawRectangleRounded(track, 0.5f, 6, ResolveHlGroup("MenuBar"));
+            const gfx::Rectangle &track = g_office_status.track;
+            gfx::DrawRectangleRounded(track, 0.5f, 6, ResolveHlGroup("MenuBar"));
             float thumb_h = std::max(24.0f, track.height * g_office_status.visible_fraction);
             float thumb_y = track.y + (track.height - thumb_h) * g_office_status.scroll_fraction;
-            g_office_status.thumb = Rectangle{track.x, thumb_y, track.width, thumb_h};
-            bool hovered = CheckCollisionPointRec(GetMousePosition(), Rectangle{track.x - 2, track.y, track.width + 4, track.height});
-            DrawRectangleRounded(g_office_status.thumb, 0.5f, 6,
-                                 hovered || g_office_scroll_drag.active ? ResolveHlGroup("MutedFg") : Color{189, 193, 198, 255});
+            g_office_status.thumb = gfx::Rectangle{track.x, thumb_y, track.width, thumb_h};
+            bool hovered = gfx::CheckCollisionPointRec(gfx::GetMousePosition(), gfx::Rectangle{track.x - 2, track.y, track.width + 4, track.height});
+            gfx::DrawRectangleRounded(g_office_status.thumb, 0.5f, 6,
+                                 hovered || g_office_scroll_drag.active ? ResolveHlGroup("MutedFg") : gfx::Color{189, 193, 198, 255});
         }
 
         // --- Dropdown popups (drawn last, after the document content, so
@@ -23222,10 +23230,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
          * @brief Draws a dropdown popup's background fill and border rectangle.
          * @param r The popup's rectangle.
          */
-        auto draw_popup_bg = [&](Rectangle r) {
-            DrawRectangle(static_cast<int>(r.x), static_cast<int>(r.y), static_cast<int>(r.width),
+        auto draw_popup_bg = [&](gfx::Rectangle r) {
+            gfx::DrawRectangle(static_cast<int>(r.x), static_cast<int>(r.y), static_cast<int>(r.width),
                           static_cast<int>(r.height), ResolveHlGroup("OfficePage"));
-            DrawRectangleLinesEx(r, 1.0f, ResolveHlGroup("Border"));
+            gfx::DrawRectangleLinesEx(r, 1.0f, ResolveHlGroup("Border"));
         };
         if (g_office_dropdown_open == kOfficeDropdownFontFamily) {
             struct FamItem { OfficeFontFamily fam; const char *label; };
@@ -23233,13 +23241,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 {OfficeFontFamily::Sans, "Sans (Liberation Sans)"}, {OfficeFontFamily::Serif, "Serif (Liberation Serif)"},
                 {OfficeFontFamily::Mono, "Mono (Liberation Mono)"}};
             float pw = 220.0f, item_h = row_h;
-            Rectangle popup{font_family_btn.x, content_y, pw, item_h * 3};
+            gfx::Rectangle popup{font_family_btn.x, content_y, pw, item_h * 3};
             draw_popup_bg(popup);
             float iy = popup.y;
             for (const FamItem &it : items) {
-                Rectangle rect{popup.x, iy, pw, item_h};
-                if (CheckCollisionPointRec(GetMousePosition(), rect)) DrawRectangleRec(rect, ResolveHlGroup("CursorLine"));
-                DrawTextEx(g_font, it.label, Vector2{rect.x + 6, rect.y + (item_h - font_size) / 2.0f}, font_size, 0,
+                gfx::Rectangle rect{popup.x, iy, pw, item_h};
+                if (gfx::CheckCollisionPointRec(gfx::GetMousePosition(), rect)) gfx::DrawRectangleRec(rect, ResolveHlGroup("CursorLine"));
+                gfx::DrawTextEx(g_font, it.label, gfx::Vector2{rect.x + 6, rect.y + (item_h - font_size) / 2.0f}, font_size, 0,
                           ResolveHlGroup("Normal"));
                 OfficeFontFamily fam = it.fam;
                 // Sets the document's font family to this item and closes the dropdown.
@@ -23253,14 +23261,14 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             static const float sizes[] = {8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48};
             float pw = 70.0f, item_h = row_h * 0.85f;
             int n = static_cast<int>(sizeof(sizes) / sizeof(sizes[0]));
-            Rectangle popup{font_size_btn.x, content_y, pw, item_h * static_cast<float>(n)};
+            gfx::Rectangle popup{font_size_btn.x, content_y, pw, item_h * static_cast<float>(n)};
             draw_popup_bg(popup);
             float iy = popup.y;
             for (float sz : sizes) {
-                Rectangle rect{popup.x, iy, pw, item_h};
-                if (CheckCollisionPointRec(GetMousePosition(), rect)) DrawRectangleRec(rect, ResolveHlGroup("CursorLine"));
+                gfx::Rectangle rect{popup.x, iy, pw, item_h};
+                if (gfx::CheckCollisionPointRec(gfx::GetMousePosition(), rect)) gfx::DrawRectangleRec(rect, ResolveHlGroup("CursorLine"));
                 std::string label = std::to_string(static_cast<int>(sz));
-                DrawTextEx(g_font, label.c_str(), Vector2{rect.x + 8, rect.y + (item_h - font_size) / 2.0f}, font_size,
+                gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{rect.x + 8, rect.y + (item_h - font_size) / 2.0f}, font_size,
                           0, ResolveHlGroup("Normal"));
                 // Sets the document's font size to this item and closes the dropdown.
                 RegisterClickRegion(rect, [sz] {
@@ -23279,15 +23287,15 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             float cell = 24.0f, gap = 4.0f, cols = 4.0f;
             int n = static_cast<int>(sizeof(swatches) / sizeof(swatches[0]));
             int rows = (n + static_cast<int>(cols) - 1) / static_cast<int>(cols);
-            Rectangle anchor = is_highlight ? highlight_btn : text_color_btn;
+            gfx::Rectangle anchor = is_highlight ? highlight_btn : text_color_btn;
             float pw = cols * (cell + gap) + gap;
             float ph = static_cast<float>(rows) * (cell + gap) + gap + row_h * 0.7f;
-            Rectangle popup{anchor.x, content_y, pw, ph};
+            gfx::Rectangle popup{anchor.x, content_y, pw, ph};
             draw_popup_bg(popup);
             // "Clear" row above the swatch grid -- removes any explicit
             // color/highlight override, falling back to the default.
-            Rectangle clear_rect{popup.x, popup.y, pw, row_h * 0.7f};
-            DrawTextEx(g_font, "Clear", Vector2{clear_rect.x + 6, clear_rect.y + 4}, font_size * 0.85f, 0,
+            gfx::Rectangle clear_rect{popup.x, popup.y, pw, row_h * 0.7f};
+            gfx::DrawTextEx(g_font, "Clear", gfx::Vector2{clear_rect.x + 6, clear_rect.y + 4}, font_size * 0.85f, 0,
                       ResolveHlGroup("Normal"));
             // Clears the text-color or highlight-color override (whichever dropdown is open) and
             // closes the dropdown.
@@ -23300,14 +23308,14 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 int row = i / static_cast<int>(cols);
                 float sx = popup.x + gap + static_cast<float>(col) * (cell + gap);
                 float sy = clear_rect.y + clear_rect.height + gap + static_cast<float>(row) * (cell + gap);
-                Color c{swatches[i].r, swatches[i].g, swatches[i].b, 255};
-                DrawRectangle(static_cast<int>(sx), static_cast<int>(sy), static_cast<int>(cell), static_cast<int>(cell), c);
-                DrawRectangleLines(static_cast<int>(sx), static_cast<int>(sy), static_cast<int>(cell), static_cast<int>(cell),
+                gfx::Color c{swatches[i].r, swatches[i].g, swatches[i].b, 255};
+                gfx::DrawRectangle(static_cast<int>(sx), static_cast<int>(sy), static_cast<int>(cell), static_cast<int>(cell), c);
+                gfx::DrawRectangleLines(static_cast<int>(sx), static_cast<int>(sy), static_cast<int>(cell), static_cast<int>(cell),
                                     ResolveHlGroup("Border"));
                 unsigned char r = swatches[i].r, gc = swatches[i].g, b = swatches[i].b;
                 // Sets the text or highlight color (whichever dropdown is open) to this swatch
                 // and closes the dropdown.
-                RegisterClickRegion(Rectangle{sx, sy, cell, cell}, [is_highlight, r, gc, b] {
+                RegisterClickRegion(gfx::Rectangle{sx, sy, cell, cell}, [is_highlight, r, gc, b] {
                     if (is_highlight) g_editor.SetOfficeHighlight(r, gc, b); else g_editor.SetOfficeColor(r, gc, b);
                     g_office_dropdown_open = -1;
                 });
@@ -23318,20 +23326,20 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             int rows = (n + static_cast<int>(cols) - 1) / static_cast<int>(cols);
             float pw = cols * (cell + gap) + gap;
             float ph = static_cast<float>(rows) * (cell + gap) + gap;
-            Rectangle popup{special_btn.x, content_y, pw, ph};
+            gfx::Rectangle popup{special_btn.x, content_y, pw, ph};
             draw_popup_bg(popup);
-            const Font &sym_font = g_office_font_regular;
+            const gfx::Font &sym_font = g_office_font_regular;
             for (int i = 0; i < n; i++) {
                 int col = i % static_cast<int>(cols);
                 int row = i / static_cast<int>(cols);
                 float sx = popup.x + gap + static_cast<float>(col) * (cell + gap);
                 float sy = popup.y + gap + static_cast<float>(row) * (cell + gap);
                 std::string glyph = Utf8FromCodepoint(kOfficeSpecialChars[i]);
-                Vector2 gs = MeasureTextEx(sym_font, glyph.c_str(), cell * 0.7f, 0);
-                DrawTextEx(sym_font, glyph.c_str(), Vector2{sx + (cell - gs.x) / 2.0f, sy + (cell - gs.y) / 2.0f},
+                gfx::Vector2 gs = gfx::MeasureTextEx(sym_font, glyph.c_str(), cell * 0.7f, 0);
+                gfx::DrawTextEx(sym_font, glyph.c_str(), gfx::Vector2{sx + (cell - gs.x) / 2.0f, sy + (cell - gs.y) / 2.0f},
                           cell * 0.7f, 0, ResolveHlGroup("Normal"));
                 // Inserts this special-character glyph at the cursor and closes the dropdown.
-                RegisterClickRegion(Rectangle{sx, sy, cell, cell}, [glyph] {
+                RegisterClickRegion(gfx::Rectangle{sx, sy, cell, cell}, [glyph] {
                     g_editor.InsertOfficeText(glyph);
                     g_office_dropdown_open = -1;
                 });
@@ -23351,7 +23359,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // real-spreadsheet-familiar "what's actually in this cell"
         // readout and the Insert-mode live-typing display.
         float bar_h = static_cast<float>(header_h);
-        DrawRectangle(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w), static_cast<int>(bar_h),
+        gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w), static_cast<int>(bar_h),
                       ResolveHlGroup("MenuBar"));
         std::string bar_text;
         if (sheet_sess->editing) {
@@ -23360,12 +23368,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             const Cell *cur = sh.FindCell(sheet_sess->cursor_row, sheet_sess->cursor_col);
             bar_text = cur ? cur->raw : "";
         }
-        DrawTextEx(g_font, bar_text.c_str(), Vector2{x + 6, content_y + (bar_h - font_size) / 2.0f}, font_size, 0,
+        gfx::DrawTextEx(g_font, bar_text.c_str(), gfx::Vector2{x + 6, content_y + (bar_h - font_size) / 2.0f}, font_size, 0,
                    ResolveHlGroup("Normal"));
         if (is_active && sheet_sess->editing) {
             std::string pre = bar_text.substr(0, std::min<size_t>(static_cast<size_t>(sheet_sess->edit_cursor), bar_text.size()));
-            float cx = x + 6 + MeasureTextEx(g_font, pre.c_str(), font_size, 0).x;
-            DrawRectangle(static_cast<int>(cx), static_cast<int>(content_y + (bar_h - font_size) / 2.0f), 2,
+            float cx = x + 6 + gfx::MeasureTextEx(g_font, pre.c_str(), font_size, 0).x;
+            gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(content_y + (bar_h - font_size) / 2.0f), 2,
                           static_cast<int>(font_size), ResolveHlGroup("Normal"));
         }
         // Sheet indicator: right-aligned in the formula bar, only shown
@@ -23377,19 +23385,19 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         if (sheet_sess->wb.sheets.size() > 1) {
             std::string tab_text = sh.name + "  (" + std::to_string(sheet_sess->active_sheet + 1) + "/" +
                                     std::to_string(sheet_sess->wb.sheets.size()) + ")";
-            Vector2 tab_sz = MeasureTextEx(g_font, tab_text.c_str(), font_size, 0);
-            DrawTextEx(g_font, tab_text.c_str(), Vector2{x + w - tab_sz.x - 6, content_y + (bar_h - font_size) / 2.0f},
+            gfx::Vector2 tab_sz = gfx::MeasureTextEx(g_font, tab_text.c_str(), font_size, 0);
+            gfx::DrawTextEx(g_font, tab_text.c_str(), gfx::Vector2{x + w - tab_sz.x - 6, content_y + (bar_h - font_size) / 2.0f},
                        font_size, 0, ResolveHlGroup("Comment"));
         }
 
         float grid_y = content_y + bar_h;
         float grid_h = content_h - bar_h;
-        BeginScissorMode(static_cast<int>(x), static_cast<int>(grid_y), static_cast<int>(w), static_cast<int>(grid_h));
+        gfx::BeginScissorMode(static_cast<int>(x), static_cast<int>(grid_y), static_cast<int>(w), static_cast<int>(grid_h));
 
-        Color header_row_bg = ResolveHlGroup("MenuBar");
-        Color text_color = ResolveHlGroup("Normal");
-        Color cursor_bg = ResolveHlGroup("Visual");
-        Color sel_bg = Color{cursor_bg.r, cursor_bg.g, cursor_bg.b, 90};
+        gfx::Color header_row_bg = ResolveHlGroup("MenuBar");
+        gfx::Color text_color = ResolveHlGroup("Normal");
+        gfx::Color cursor_bg = ResolveHlGroup("Visual");
+        gfx::Color sel_bg = gfx::Color{cursor_bg.r, cursor_bg.g, cursor_bg.b, 90};
 
         float col_header_h = static_cast<float>(kSheetRowHeight);
         float row_header_w = static_cast<float>(kSheetRowHeaderW);
@@ -23399,22 +23407,22 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         int visible_rows = std::max(1, static_cast<int>((grid_h - col_header_h) / row_h));
         int visible_cols = std::max(1, static_cast<int>((w - row_header_w) / col_w));
 
-        DrawRectangle(static_cast<int>(x), static_cast<int>(grid_y), static_cast<int>(w), static_cast<int>(col_header_h),
+        gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(grid_y), static_cast<int>(w), static_cast<int>(col_header_h),
                       header_row_bg);
         for (int vc = 0; vc <= visible_cols; vc++) {
             int col = sheet_sess->scroll_col + vc;
             float cx = x + row_header_w + static_cast<float>(vc) * col_w;
             if (cx > x + w) break;
             std::string letters = ColumnIndexToLetters(col);
-            Vector2 sz = MeasureTextEx(g_font, letters.c_str(), font_size, 0);
-            DrawTextEx(g_font, letters.c_str(),
-                       Vector2{cx + (col_w - sz.x) / 2.0f, grid_y + (col_header_h - font_size) / 2.0f}, font_size, 0,
+            gfx::Vector2 sz = gfx::MeasureTextEx(g_font, letters.c_str(), font_size, 0);
+            gfx::DrawTextEx(g_font, letters.c_str(),
+                       gfx::Vector2{cx + (col_w - sz.x) / 2.0f, grid_y + (col_header_h - font_size) / 2.0f}, font_size, 0,
                        text_color);
         }
 
         float body_y = grid_y + col_header_h;
         float body_h = grid_h - col_header_h;
-        DrawRectangle(static_cast<int>(x), static_cast<int>(body_y), static_cast<int>(row_header_w),
+        gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(body_y), static_cast<int>(row_header_w),
                       static_cast<int>(body_h), header_row_bg);
 
         bool sheet_visual = is_active && g_editor.CurrentMode() == Mode::SheetVisual && sheet_sess->has_selection;
@@ -23431,8 +23439,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             float ry = body_y + static_cast<float>(vr) * row_h;
             if (ry > grid_y + grid_h) break;
             std::string rownum = std::to_string(row + 1);
-            Vector2 sz = MeasureTextEx(g_font, rownum.c_str(), font_size, 0);
-            DrawTextEx(g_font, rownum.c_str(), Vector2{x + row_header_w - sz.x - 6, ry + (row_h - font_size) / 2.0f},
+            gfx::Vector2 sz = gfx::MeasureTextEx(g_font, rownum.c_str(), font_size, 0);
+            gfx::DrawTextEx(g_font, rownum.c_str(), gfx::Vector2{x + row_header_w - sz.x - 6, ry + (row_h - font_size) / 2.0f},
                        font_size, 0, text_color);
 
             for (int vc = 0; vc <= visible_cols; vc++) {
@@ -23443,10 +23451,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 bool is_cursor = is_active && row == sheet_sess->cursor_row && col == sheet_sess->cursor_col;
                 bool in_sel = sheet_visual && row >= sel_r0 && row <= sel_r1 && col >= sel_c0 && col <= sel_c1;
                 if (is_cursor) {
-                    DrawRectangle(static_cast<int>(cx), static_cast<int>(ry), static_cast<int>(col_w),
+                    gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(ry), static_cast<int>(col_w),
                                   static_cast<int>(row_h), cursor_bg);
                 } else if (in_sel) {
-                    DrawRectangle(static_cast<int>(cx), static_cast<int>(ry), static_cast<int>(col_w),
+                    gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(ry), static_cast<int>(col_w),
                                   static_cast<int>(row_h), sel_bg);
                 }
 
@@ -23457,21 +23465,21 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     // -- a v1 simplification (no per-column width overrides
                     // to expand into, unlike a real spreadsheet's
                     // overflow-into-the-next-empty-cell behavior).
-                    while (!text.empty() && MeasureTextEx(g_font, text.c_str(), font_size, 0).x > col_w - 6) {
+                    while (!text.empty() && gfx::MeasureTextEx(g_font, text.c_str(), font_size, 0).x > col_w - 6) {
                         text.pop_back();
                     }
-                    Color cell_color = v.kind == CellKind::Error ? ResolveHlGroup("ErrorText") : text_color;
+                    gfx::Color cell_color = v.kind == CellKind::Error ? ResolveHlGroup("ErrorText") : text_color;
                     float text_x = (v.kind == CellKind::Number)
-                                        ? cx + col_w - 6 - MeasureTextEx(g_font, text.c_str(), font_size, 0).x
+                                        ? cx + col_w - 6 - gfx::MeasureTextEx(g_font, text.c_str(), font_size, 0).x
                                         : cx + 4;
-                    DrawTextEx(g_font, text.c_str(), Vector2{text_x, ry + (row_h - font_size) / 2.0f}, font_size, 0,
+                    gfx::DrawTextEx(g_font, text.c_str(), gfx::Vector2{text_x, ry + (row_h - font_size) / 2.0f}, font_size, 0,
                                cell_color);
                 }
-                DrawRectangleLines(static_cast<int>(cx), static_cast<int>(ry), static_cast<int>(col_w),
-                                   static_cast<int>(row_h), Color{text_color.r, text_color.g, text_color.b, 40});
+                gfx::DrawRectangleLines(static_cast<int>(cx), static_cast<int>(ry), static_cast<int>(col_w),
+                                   static_cast<int>(row_h), gfx::Color{text_color.r, text_color.g, text_color.b, 40});
             }
         }
-        EndScissorMode();
+        gfx::EndScissorMode();
         DrawPaneBorder(x, y, w, h, is_active);
         return;
     }
@@ -23518,7 +23526,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
 
     g_editor.UpdateScrollForPane(pane.id, visible_lines, wrap_cols);
 
-    BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
+    gfx::BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
                       static_cast<int>(content_h));
 
     bool has_selection = is_active && g_editor.HasVisualSelection();
@@ -23645,7 +23653,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
              (fold_here && pane.cursor.row >= fold_here->start_row && pane.cursor.row <= fold_here->end_row))) {
             int tint_slots = (row_wraps && pane.cursor.row == row) ? row_wrap_slots : 1;
             for (int s = 0; s < tint_slots; s++) {
-                DrawRectangle(static_cast<int>(x), static_cast<int>(ly) + s * line_height, static_cast<int>(w),
+                gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(ly) + s * line_height, static_cast<int>(w),
                               line_height, ResolveHlGroup("CursorLine"));
             }
         }
@@ -23668,14 +23676,14 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 float pane_avail_w = std::max(40.0f, w - (text_x - x) - kMarginX);
                 float target_w = kOrgImageLineWidthChars * g_char_width * kOrgImageWidthFraction;
                 float avail_w = std::min(pane_avail_w, target_w);
-                const Texture2D *tex = GetOrLoadOrgInlineImageTexture(img_it->second);
+                const gfx::Texture2D *tex = GetOrLoadOrgInlineImageTexture(img_it->second);
                 if (tex) {
                     float scale = std::min(avail_w / static_cast<float>(tex->width),
                                             slot_h / static_cast<float>(tex->height));
-                    DrawTextureEx(*tex, Vector2{text_x, ly}, 0.0f, scale, WHITE);
+                    gfx::DrawTextureEx(*tex, gfx::Vector2{text_x, ly}, 0.0f, scale, gfx::White);
                 } else {
                     std::string msg = "[[file: image not found: " + img_it->second + "]]";
-                    DrawTextEx(g_font, msg.c_str(), Vector2{text_x, ly}, g_font_size, 0, ResolveHlGroup("Warn"));
+                    gfx::DrawTextEx(g_font, msg.c_str(), gfx::Vector2{text_x, ly}, g_font_size, 0, ResolveHlGroup("Warn"));
                 }
                 visual_slot += kOrgInlineImageSlots - 1;  // visual_slot++ above already accounted for 1
                 continue;  // the for-loop's own `row++` advances past this one row
@@ -23703,14 +23711,14 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 const Buffer::OrgLatexRender &render = latex_it->second;
                 float slot_h = static_cast<float>(line_height) * static_cast<float>(render.slots);
                 float pane_avail_w = std::max(40.0f, w - (text_x - x) - kMarginX);
-                const Texture2D *tex = GetOrLoadOrgLatexTexture(render.path);
+                const gfx::Texture2D *tex = GetOrLoadOrgLatexTexture(render.path);
                 if (tex) {
                     float scale = std::min({pane_avail_w / static_cast<float>(tex->width),
                                              slot_h / static_cast<float>(tex->height), 1.0f});
-                    DrawTextureEx(*tex, Vector2{text_x, ly}, 0.0f, scale, WHITE);
+                    gfx::DrawTextureEx(*tex, gfx::Vector2{text_x, ly}, 0.0f, scale, gfx::White);
                 } else {
                     std::string msg = "[LaTeX: render not found -- " + render.path + "]";
-                    DrawTextEx(g_font, msg.c_str(), Vector2{text_x, ly}, g_font_size, 0, ResolveHlGroup("Warn"));
+                    gfx::DrawTextEx(g_font, msg.c_str(), gfx::Vector2{text_x, ly}, g_font_size, 0, ResolveHlGroup("Warn"));
                 }
                 visual_slot += render.slots - 1;  // visual_slot++ above already accounted for 1
                 row = render.end_row;             // skip the fragment's remaining raw source rows outright
@@ -23721,7 +23729,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         if (fold_here) {
             int hidden = fold_here->end_row - fold_here->start_row;
             std::string summary = "+-- " + std::to_string(hidden + 1) + " lines: " + buf.lines[static_cast<size_t>(row)] + " ---";
-            DrawTextEx(g_font, summary.c_str(), Vector2{text_x, ly}, g_font_size, 0, ResolveHlGroup("SidebarTitle"));
+            gfx::DrawTextEx(g_font, summary.c_str(), gfx::Vector2{text_x, ly}, g_font_size, 0, ResolveHlGroup("SidebarTitle"));
             // Fold marker click-to-toggle (Phase 11 click-dispatch gap):
             // mep has no separate statuscolumn widget row, so the fold
             // marker lives in the gutter's own trailing-space column
@@ -23732,11 +23740,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // background split's gutter would silently toggle the wrong
             // buffer's fold otherwise.
             if (is_active) {
-                DrawTextEx(g_font, "+", Vector2{text_x - g_char_width, ly}, g_font_size, 0, ResolveHlGroup("LineNr"));
+                gfx::DrawTextEx(g_font, "+", gfx::Vector2{text_x - g_char_width, ly}, g_font_size, 0, ResolveHlGroup("LineNr"));
                 int marker_row = row;
                 // Toggles (opens) the fold starting at this row.
                 RegisterClickRegion(
-                    Rectangle{text_x - g_char_width, ly, g_char_width, static_cast<float>(line_height)},
+                    gfx::Rectangle{text_x - g_char_width, ly, g_char_width, static_cast<float>(line_height)},
                     [marker_row] { g_editor.ToggleFoldAtRow(marker_row); });
             }
             row = fold_here->end_row;
@@ -23749,11 +23757,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         if (is_active) {
             for (const Fold &f : buf.folds) {
                 if (!f.closed && f.start_row == row) {
-                    DrawTextEx(g_font, "-", Vector2{text_x - g_char_width, ly}, g_font_size, 0, ResolveHlGroup("LineNr"));
+                    gfx::DrawTextEx(g_font, "-", gfx::Vector2{text_x - g_char_width, ly}, g_font_size, 0, ResolveHlGroup("LineNr"));
                     int marker_row = row;
                     // Toggles (closes) the fold starting at this row.
                     RegisterClickRegion(
-                        Rectangle{text_x - g_char_width, ly, g_char_width, static_cast<float>(line_height)},
+                        gfx::Rectangle{text_x - g_char_width, ly, g_char_width, static_cast<float>(line_height)},
                         [marker_row] { g_editor.ToggleFoldAtRow(marker_row); });
                     break;
                 }
@@ -23764,26 +23772,26 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             int line_len = static_cast<int>(buf.lines[static_cast<size_t>(row)].size());
             int cs = block_left;
             int ce = (block_right < 0) ? line_len + 1 : block_right + 1;
-            Color sel_color = ResolveHlGroup("Visual");
-            Color fill{sel_color.r, sel_color.g, sel_color.b, 160};
+            gfx::Color sel_color = ResolveHlGroup("Visual");
+            gfx::Color fill{sel_color.r, sel_color.g, sel_color.b, 160};
             // Draws the block-selection fill rectangle for each wrapped piece of this row's
             // selected column range.
             ForEachWrapPiece(cs, ce, row_wrap_cols, text_x, ly, line_height,
                               [&](float py, float x0, float x1, int, int) {
-                                  DrawRectangle(static_cast<int>(x0), static_cast<int>(py),
+                                  gfx::DrawRectangle(static_cast<int>(x0), static_cast<int>(py),
                                                 static_cast<int>(x1 - x0), line_height, fill);
                               });
         } else if (has_selection && row >= sel_start.row && row <= sel_end.row) {
             int line_len = static_cast<int>(buf.lines[static_cast<size_t>(row)].size());
             int cs = (linewise_selection || row > sel_start.row) ? 0 : sel_start.col;
             int ce = (linewise_selection || row < sel_end.row) ? line_len + 1 : sel_end.col + 1;
-            Color sel_color = ResolveHlGroup("Visual");
-            Color fill{sel_color.r, sel_color.g, sel_color.b, 160};
+            gfx::Color sel_color = ResolveHlGroup("Visual");
+            gfx::Color fill{sel_color.r, sel_color.g, sel_color.b, 160};
             // Draws the character/linewise-selection fill rectangle for each wrapped piece of
             // this row's selected column range.
             ForEachWrapPiece(cs, ce, row_wrap_cols, text_x, ly, line_height,
                               [&](float py, float x0, float x1, int, int) {
-                                  DrawRectangle(static_cast<int>(x0), static_cast<int>(py),
+                                  gfx::DrawRectangle(static_cast<int>(x0), static_cast<int>(py),
                                                 static_cast<int>(x1 - x0), line_height, fill);
                               });
         }
@@ -23798,9 +23806,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             bool relative = g_editor.ShowRelativeNumbers();
             std::string num = (relative && !current_line) ? std::to_string(std::abs(row - pane.cursor.row))
                                                             : std::to_string(row + 1);
-            float num_w = MeasureTextEx(g_font, num.c_str(), g_font_size, 0).x;
+            float num_w = gfx::MeasureTextEx(g_font, num.c_str(), g_font_size, 0).x;
             float num_x = (relative && current_line) ? (text_x - number_w) : (text_x - g_char_width - num_w);
-            DrawTextEx(g_font, num.c_str(), Vector2{num_x, ly}, g_font_size, 0, ResolveHlGroup("LineNr"));
+            gfx::DrawTextEx(g_font, num.c_str(), gfx::Vector2{num_x, ly}, g_font_size, 0, ResolveHlGroup("LineNr"));
         }
 
         // Decorations (Phase 4): whole-line tint first (background,
@@ -23820,10 +23828,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         for (const Decoration *dp : row_decos) {
             const Decoration &d = *dp;
             if (d.whole_line && !d.hl_group.empty()) {
-                Color c = ResolveHlGroup(d.hl_group);
-                Color tint{c.r, c.g, c.b, 40};
+                gfx::Color c = ResolveHlGroup(d.hl_group);
+                gfx::Color tint{c.r, c.g, c.b, 40};
                 for (int s = 0; s < row_wrap_slots; s++) {
-                    DrawRectangle(static_cast<int>(x), static_cast<int>(ly) + s * line_height, static_cast<int>(w),
+                    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(ly) + s * line_height, static_cast<int>(w),
                                   line_height, tint);
                 }
             }
@@ -23869,14 +23877,14 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     // snapshotted terminal-cell colors) is a literal RGB,
                     // bypassing the named hl_group lookup entirely -- see
                     // Decoration::has_fg_color's own comment for why.
-                    Color c = d.has_fg_color ? Color{d.fg_color.r, d.fg_color.g, d.fg_color.b, d.fg_color.a}
+                    gfx::Color c = d.has_fg_color ? gfx::Color{d.fg_color.r, d.fg_color.g, d.fg_color.b, d.fg_color.a}
                                               : ResolveHlGroup(d.hl_group);
                     // has_fg_color spans are EnterTerminalNormalMode's own
                     // snapshotted terminal-cell text (see its comment just
                     // above) -- same box-drawing/arrow/punctuation glyph
                     // coverage gap as live DrawTerminalGrid rendering
                     // applies here too, so g_terminal_font, not g_font.
-                    Font span_font = d.has_fg_color ? g_terminal_font : g_font;
+                    gfx::Font span_font = d.has_fg_color ? g_terminal_font : g_font;
                     // has_fg_color's `a`/`b` are byte offsets converted
                     // *from* d.col_start/col_end (columns) above, so the
                     // wrap split below -- which needs columns -- has to use
@@ -23899,7 +23907,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                           int byte_b = std::min(static_cast<int>(line.size()),
                                                                  static_cast<int>(ColumnToByteOffset(line, pb)));
                                           std::string piece = line.substr(static_cast<size_t>(byte_a), static_cast<size_t>(byte_b - byte_a));
-                                          DrawTextEx(span_font, piece.c_str(), Vector2{px, py}, g_font_size, 0, c);
+                                          gfx::DrawTextEx(span_font, piece.c_str(), gfx::Vector2{px, py}, g_font_size, 0, c);
                                       });
                 }
             }
@@ -23913,11 +23921,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 int a = std::min(static_cast<int>(line.size()), d.col_start);
                 int b = std::min(static_cast<int>(line.size()), d.col_end);
                 if (b > a) {
-                    Color c = d.hl_group.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(d.hl_group);
+                    gfx::Color c = d.hl_group.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(d.hl_group);
                     // Draws the underline rectangle for each wrapped piece of this span.
                     ForEachWrapPiece(a, b, row_wrap_cols, text_x, ly, line_height,
                                       [&](float py, float x0, float x1, int, int) {
-                                          DrawRectangle(static_cast<int>(x0), static_cast<int>(py + static_cast<float>(line_height) - 2),
+                                          gfx::DrawRectangle(static_cast<int>(x0), static_cast<int>(py + static_cast<float>(line_height) - 2),
                                                         static_cast<int>(x1 - x0), 1, c);
                                       });
                 }
@@ -23930,11 +23938,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 int a = std::min(static_cast<int>(line.size()), d.col_start);
                 int b = std::min(static_cast<int>(line.size()), d.col_end);
                 if (b > a) {
-                    Color c = d.hl_group.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(d.hl_group);
+                    gfx::Color c = d.hl_group.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(d.hl_group);
                     // Draws the strikethrough rectangle for each wrapped piece of this span.
                     ForEachWrapPiece(a, b, row_wrap_cols, text_x, ly, line_height,
                                       [&](float py, float x0, float x1, int, int) {
-                                          DrawRectangle(static_cast<int>(x0), static_cast<int>(py + static_cast<float>(line_height) / 2),
+                                          gfx::DrawRectangle(static_cast<int>(x0), static_cast<int>(py + static_cast<float>(line_height) / 2),
                                                         static_cast<int>(x1 - x0), 1, c);
                                       });
                 }
@@ -23950,13 +23958,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 int a = std::min(static_cast<int>(line.size()), d.col_start);
                 int b = std::min(static_cast<int>(line.size()), d.col_end);
                 if (b > a) {
-                    Color c = d.hl_group.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(d.hl_group);
+                    gfx::Color c = d.hl_group.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(d.hl_group);
                     // Draws each wrapped piece of this span twice, offset 1px right, to fake bold.
                     ForEachWrapPiece(a, b, row_wrap_cols, text_x, ly, line_height,
                                       [&](float py, float px, float, int pa, int pb) {
                                           std::string piece = line.substr(static_cast<size_t>(pa), static_cast<size_t>(pb - pa));
-                                          DrawTextEx(g_font, piece.c_str(), Vector2{px, py}, g_font_size, 0, c);
-                                          DrawTextEx(g_font, piece.c_str(), Vector2{px + 1, py}, g_font_size, 0, c);
+                                          gfx::DrawTextEx(g_font, piece.c_str(), gfx::Vector2{px, py}, g_font_size, 0, c);
+                                          gfx::DrawTextEx(g_font, piece.c_str(), gfx::Vector2{px + 1, py}, g_font_size, 0, c);
                                       });
                 }
             }
@@ -23976,7 +23984,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 int a = std::min(static_cast<int>(line.size()), d.col_start);
                 int b = std::min(static_cast<int>(line.size()), d.col_end);
                 if (b > a) {
-                    Color c = d.hl_group.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(d.hl_group);
+                    gfx::Color c = d.hl_group.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(d.hl_group);
                     // Padded a bit past each piece's own column bounds
                     // since the shear pushes each glyph's top edge
                     // rightward past its own column width. Same NormalBg-
@@ -24001,10 +24009,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                             // with the still-upright original DrawLineFast already
                             // drew there, so without covering it first the two
                             // visibly ghost together.
-                            DrawRectangle(static_cast<int>(px0 - pad), static_cast<int>(py),
+                            gfx::DrawRectangle(static_cast<int>(px0 - pad), static_cast<int>(py),
                                           static_cast<int>(span_w + pad * 2), line_height, ResolveHlGroup("NormalBg"));
-                            rlPushMatrix();
-                            rlTranslatef(px0, baseline_y, 0);
+                            gfx::PushMatrix();
+                            gfx::TranslateMatrix(px0, baseline_y, 0);
                             // clang-format off
                             const float shear[16] = {
                                 1.0f,  0.0f, 0.0f, 0.0f,
@@ -24013,10 +24021,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                 0.0f,  0.0f, 0.0f, 1.0f,
                             };
                             // clang-format on
-                            rlMultMatrixf(shear);
-                            rlTranslatef(-px0, -baseline_y, 0);
-                            DrawTextEx(g_font, piece.c_str(), Vector2{px0, py}, g_font_size, 0, c);
-                            rlPopMatrix();
+                            gfx::MultMatrix(shear);
+                            gfx::TranslateMatrix(-px0, -baseline_y, 0);
+                            gfx::DrawTextEx(g_font, piece.c_str(), gfx::Vector2{px0, py}, g_font_size, 0, c);
+                            gfx::PopMatrix();
                         });
                 }
             }
@@ -24029,7 +24037,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 // comment (editor.h) for why col_start-anchoring alone
                 // painted diagnostic text directly over real buffer text.
                 int vcol = d.virt_text_eol ? static_cast<int>(buf.lines[static_cast<size_t>(row)].size()) + 1 : d.col_start;
-                Vector2 vpos = WrapPos(vcol, row_wrap_cols, text_x, ly, line_height);
+                gfx::Vector2 vpos = WrapPos(vcol, row_wrap_cols, text_x, ly, line_height);
                 float vx = vpos.x, vy = vpos.y;
                 if (d.virt_overlay) {
                     // Cover whichever is wider: the replacement text, or
@@ -24043,21 +24051,21 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     // replacement's width) undrawn-over and still
                     // visible, defeating the conceal.
                     float span_w = (d.col_end > d.col_start) ? static_cast<float>(d.col_end - d.col_start) * g_char_width : 0.0f;
-                    float overlay_w = std::max(span_w, MeasureTextEx(g_font, d.virt_text.c_str(), g_font_size, 0).x);
-                    DrawRectangle(static_cast<int>(vx), static_cast<int>(vy), static_cast<int>(overlay_w),
+                    float overlay_w = std::max(span_w, gfx::MeasureTextEx(g_font, d.virt_text.c_str(), g_font_size, 0).x);
+                    gfx::DrawRectangle(static_cast<int>(vx), static_cast<int>(vy), static_cast<int>(overlay_w),
                                   line_height, ResolveHlGroup("NormalBg"));
                 }
-                DrawTextEx(g_font, d.virt_text.c_str(), Vector2{vx, vy}, g_font_size, 0,
+                gfx::DrawTextEx(g_font, d.virt_text.c_str(), gfx::Vector2{vx, vy}, g_font_size, 0,
                            ResolveHlGroup(d.virt_text_hl));
             }
             // Colorizer swatch (Phase 13): a small filled square in the
             // literal parsed color, drawn just before col_start.
             if (d.has_swatch) {
-                Vector2 spos = WrapPos(d.col_start, row_wrap_cols, text_x, ly, line_height);
+                gfx::Vector2 spos = WrapPos(d.col_start, row_wrap_cols, text_x, ly, line_height);
                 float sw = std::max(4.0f, g_char_width - 2);
-                DrawRectangle(static_cast<int>(spos.x), static_cast<int>(spos.y + (static_cast<float>(line_height) - sw) / 2.0f),
+                gfx::DrawRectangle(static_cast<int>(spos.x), static_cast<int>(spos.y + (static_cast<float>(line_height) - sw) / 2.0f),
                               static_cast<int>(sw), static_cast<int>(sw),
-                              Color{d.swatch_color.r, d.swatch_color.g, d.swatch_color.b, 255});
+                              gfx::Color{d.swatch_color.r, d.swatch_color.g, d.swatch_color.b, 255});
             }
         }
         // Org inline math (<leader>otl, Editor::OrgLatexVisible()):
@@ -24095,10 +24103,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             auto inline_it = buf.org_latex_inline.find(row);
             if (inline_it != buf.org_latex_inline.end()) {
                 for (const Buffer::OrgLatexInlineSpan &span : inline_it->second) {
-                    Vector2 span_pos = WrapPos(span.col_start, row_wrap_cols, text_x, ly, line_height);
+                    gfx::Vector2 span_pos = WrapPos(span.col_start, row_wrap_cols, text_x, ly, line_height);
                     float span_x = span_pos.x, span_y = span_pos.y;
                     float span_w = static_cast<float>(span.col_end - span.col_start) * g_char_width;
-                    const Texture2D *tex = GetOrLoadOrgLatexTexture(span.path);
+                    const gfx::Texture2D *tex = GetOrLoadOrgLatexTexture(span.path);
                     if (!tex) continue;
                     float scale = (static_cast<float>(line_height) * 0.9f) / static_cast<float>(tex->height);
                     float draw_w = static_cast<float>(tex->width) * scale;
@@ -24106,9 +24114,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     float margin = g_char_width;
                     float cover_w = std::max(span_w, draw_w + margin * 2.0f);
                     float draw_x = span_x + (cover_w - draw_w) / 2.0f;
-                    DrawRectangle(static_cast<int>(span_x), static_cast<int>(span_y), static_cast<int>(cover_w),
+                    gfx::DrawRectangle(static_cast<int>(span_x), static_cast<int>(span_y), static_cast<int>(cover_w),
                                   line_height, ResolveHlGroup("NormalBg"));
-                    DrawTextureEx(*tex, Vector2{draw_x, span_y + (static_cast<float>(line_height) - draw_h) / 2.0f}, 0.0f, scale, WHITE);
+                    gfx::DrawTextureEx(*tex, gfx::Vector2{draw_x, span_y + (static_cast<float>(line_height) - draw_h) / 2.0f}, 0.0f, scale, gfx::White);
                 }
             }
         }
@@ -24122,11 +24130,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 // virt_overlay's own cover rectangle already uses.
                 float cx = x + kMarginX + g_char_width / 2.0f;
                 float cy = ly + static_cast<float>(line_height) / 2.0f;
-                DrawCircle(static_cast<int>(cx), static_cast<int>(cy), g_char_width * 0.58f, ResolveHlGroup(sign_hl));
+                gfx::DrawCircle(static_cast<int>(cx), static_cast<int>(cy), g_char_width * 0.58f, ResolveHlGroup(sign_hl));
                 float sign_w_text = MeasureUiText(sign, g_font_size);
-                DrawUiText(sign, Vector2{cx - sign_w_text / 2.0f, ly}, g_font_size, ResolveHlGroup("NormalBg"));
+                DrawUiText(sign, gfx::Vector2{cx - sign_w_text / 2.0f, ly}, g_font_size, ResolveHlGroup("NormalBg"));
             } else {
-                DrawUiText(sign, Vector2{x + kMarginX, ly}, g_font_size, ResolveHlGroup(sign_hl));
+                DrawUiText(sign, gfx::Vector2{x + kMarginX, ly}, g_font_size, ResolveHlGroup(sign_hl));
             }
         }
         // Hint labels (Phase 13): drawn last so they sit on top of
@@ -24134,12 +24142,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         if (is_active && g_editor.IsHintActive()) {
             for (const HintMatch &hm : g_editor.HintMatches()) {
                 if (hm.row != row) continue;
-                Vector2 hpos = WrapPos(hm.col, row_wrap_cols, text_x, ly, line_height);
+                gfx::Vector2 hpos = WrapPos(hm.col, row_wrap_cols, text_x, ly, line_height);
                 float hx = hpos.x, hy = hpos.y;
-                float label_w = MeasureTextEx(g_font, hm.label.c_str(), g_font_size, 0).x + 4;
-                DrawRectangle(static_cast<int>(hx), static_cast<int>(hy), static_cast<int>(label_w), line_height,
+                float label_w = gfx::MeasureTextEx(g_font, hm.label.c_str(), g_font_size, 0).x + 4;
+                gfx::DrawRectangle(static_cast<int>(hx), static_cast<int>(hy), static_cast<int>(label_w), line_height,
                               ResolveHlGroup("PickerSelected"));
-                DrawTextEx(g_font, hm.label.c_str(), Vector2{hx + 2, hy}, g_font_size, 0, ResolveHlGroup("Warn"));
+                gfx::DrawTextEx(g_font, hm.label.c_str(), gfx::Vector2{hx + 2, hy}, g_font_size, 0, ResolveHlGroup("Warn"));
             }
         }
     }
@@ -24216,7 +24224,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // below); pane.cursor.col picks out which of its visual sub-lines
         // the caret itself is drawn on.
         int cursor_wrap_cols = (!cursor_on_image && !cursor_on_latex) ? wrap_cols : 0;
-        Vector2 cursor_pos = WrapPos(pane.cursor.col, cursor_wrap_cols, text_x, content_y + static_cast<float>(cursor_slot * line_height),
+        gfx::Vector2 cursor_pos = WrapPos(pane.cursor.col, cursor_wrap_cols, text_x, content_y + static_cast<float>(cursor_slot * line_height),
                                       line_height);
         float cursor_x = cursor_pos.x, cursor_y = cursor_pos.y;
         int cursor_slots = cursor_on_image ? kOrgInlineImageSlots : (cursor_on_latex ? cursor_latex_it->second.slots : 1);
@@ -24224,15 +24232,15 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                                                   : static_cast<float>(line_height);
         if (cursor_on_image || cursor_on_latex) {
             float avail_w = std::max(40.0f, w - (text_x - x) - kMarginX);
-            DrawRectangleLines(static_cast<int>(text_x), static_cast<int>(cursor_y), static_cast<int>(avail_w),
+            gfx::DrawRectangleLines(static_cast<int>(text_x), static_cast<int>(cursor_y), static_cast<int>(avail_w),
                                 static_cast<int>(row_extent), ResolveHlGroup("Normal"));
         } else if (g_editor.CurrentMode() == Mode::Insert) {
-            DrawRectangle(static_cast<int>(cursor_x), static_cast<int>(cursor_y), 2, static_cast<int>(g_font_size),
+            gfx::DrawRectangle(static_cast<int>(cursor_x), static_cast<int>(cursor_y), 2, static_cast<int>(g_font_size),
                           ResolveHlGroup("Normal"));
         } else {
-            Color cursor_bg = ResolveHlGroup("Normal");
-            DrawRectangle(static_cast<int>(cursor_x), static_cast<int>(cursor_y), static_cast<int>(g_char_width),
-                          line_height, Color{cursor_bg.r, cursor_bg.g, cursor_bg.b, 180});
+            gfx::Color cursor_bg = ResolveHlGroup("Normal");
+            gfx::DrawRectangle(static_cast<int>(cursor_x), static_cast<int>(cursor_y), static_cast<int>(g_char_width),
+                          line_height, gfx::Color{cursor_bg.r, cursor_bg.g, cursor_bg.b, 180});
             const std::string &line = buf.lines[static_cast<size_t>(pane.cursor.row)];
             // Skip the usual "punch the raw character back through the
             // cursor block" redraw when the cursor sits inside a
@@ -24256,7 +24264,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             }
             if (!cursor_in_concealed_latex && pane.cursor.col < static_cast<int>(line.size())) {
                 const char ch[2] = {line[static_cast<size_t>(pane.cursor.col)], '\0'};
-                DrawTextEx(g_font, ch, Vector2{cursor_x, cursor_y}, g_font_size, 0, ResolveHlGroup("NormalBg"));
+                gfx::DrawTextEx(g_font, ch, gfx::Vector2{cursor_x, cursor_y}, g_font_size, 0, ResolveHlGroup("NormalBg"));
             }
         }
         // Completion popup (Phase 22): positioned just below the cursor.
@@ -24286,17 +24294,17 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         auto p_latex_it = buf.org_latex_rows.find(participant.row);
         bool p_on_latex = g_editor.OrgLatexVisible() && p_latex_it != buf.org_latex_rows.end();
         int p_wrap_cols = (!p_on_image && !p_on_latex) ? wrap_cols : 0;
-        Vector2 p_pos = WrapPos(participant.col, p_wrap_cols, text_x, content_y + static_cast<float>(RowSlot(participant.row) * line_height),
+        gfx::Vector2 p_pos = WrapPos(participant.col, p_wrap_cols, text_x, content_y + static_cast<float>(RowSlot(participant.row) * line_height),
                                  line_height);
         const float px = p_pos.x, py = p_pos.y;
-        const Color color = ToRaylib(ParticipantColor(participant.id));
+        const gfx::Color color = ToRaylib(ParticipantColor(participant.id));
 
-        DrawRectangle(static_cast<int>(px), static_cast<int>(py), std::max(2, static_cast<int>(g_char_width * 0.25f)), line_height, color);
+        gfx::DrawRectangle(static_cast<int>(px), static_cast<int>(py), std::max(2, static_cast<int>(g_char_width * 0.25f)), line_height, color);
 
         const bool is_agent = participant.kind == Editor::ParticipantKind::Agent;
         const std::string &label_text = participant.name.empty() ? participant.id : participant.name;
         const float label_icon_w = is_agent ? static_cast<float>(line_height) * 0.8f + 4.0f : 0.0f;
-        const float label_text_w = MeasureTextEx(g_font, label_text.c_str(), g_font_size, 0).x;
+        const float label_text_w = gfx::MeasureTextEx(g_font, label_text.c_str(), g_font_size, 0).x;
         const float label_pad = 4.0f;
         const float label_w = label_icon_w + label_text_w + label_pad * 2.0f;
         const float label_h = static_cast<float>(line_height);
@@ -24307,16 +24315,16 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // in which case flip it below instead of letting it draw off the
         // top of the pane.
         const float p_label_y = (py - label_h < content_y) ? (py + static_cast<float>(line_height)) : (py - label_h);
-        DrawRectangleRounded(Rectangle{label_x, p_label_y, label_w, label_h}, 0.3f, 4, Fade(color, 0.92f));
+        gfx::DrawRectangleRounded(gfx::Rectangle{label_x, p_label_y, label_w, label_h}, 0.3f, 4, gfx::Fade(color, 0.92f));
         float text_draw_x = label_x + label_pad;
         if (is_agent) {
-            DrawRobotIcon(Vector2{text_draw_x, p_label_y + (label_h - static_cast<float>(line_height) * 0.8f) / 2.0f}, static_cast<float>(line_height) * 0.8f, WHITE);
+            DrawRobotIcon(gfx::Vector2{text_draw_x, p_label_y + (label_h - static_cast<float>(line_height) * 0.8f) / 2.0f}, static_cast<float>(line_height) * 0.8f, gfx::White);
             text_draw_x += label_icon_w;
         }
-        DrawTextEx(g_font, label_text.c_str(), Vector2{text_draw_x, p_label_y + (label_h - g_font_size) / 2.0f}, g_font_size, 0, WHITE);
+        gfx::DrawTextEx(g_font, label_text.c_str(), gfx::Vector2{text_draw_x, p_label_y + (label_h - g_font_size) / 2.0f}, g_font_size, 0, gfx::White);
     }
 
-    EndScissorMode();
+    gfx::EndScissorMode();
 
     DrawPaneBorder(x, y, w, h, is_active);
     // Hover tooltip (Phase 3 gap): recorded here but drawn later, once, by
@@ -24403,13 +24411,13 @@ void DrawPaneTree(const SplitNode *node, float x, float y, float w, float h, int
 void DrawSimpleTooltip(const std::string &text, float anchor_x, float below_y, float row_h) {
     if (text.empty()) return;
     float font_size = MenuFontSize();
-    const float tw = MeasureTextEx(g_font, text.c_str(), font_size, 0).x;
-    Rectangle rect{anchor_x - tw / 2.0f - 4.0f, below_y, tw + 8.0f, row_h};
-    int screen_w = GetScreenWidth();
+    const float tw = gfx::MeasureTextEx(g_font, text.c_str(), font_size, 0).x;
+    gfx::Rectangle rect{anchor_x - tw / 2.0f - 4.0f, below_y, tw + 8.0f, row_h};
+    int screen_w = gfx::GetScreenWidth();
     if (rect.x < 0) rect.x = 0;
     if (rect.x + rect.width > static_cast<float>(screen_w)) rect.x = static_cast<float>(screen_w) - rect.width;
-    DrawRectangleRounded(rect, 0.3f, 4, ResolveHlGroup("PickerSelected"));
-    DrawTextEx(g_font, text.c_str(), Vector2{rect.x + 4.0f, rect.y + (row_h - font_size) / 2.0f}, font_size, 0,
+    gfx::DrawRectangleRounded(rect, 0.3f, 4, ResolveHlGroup("PickerSelected"));
+    gfx::DrawTextEx(g_font, text.c_str(), gfx::Vector2{rect.x + 4.0f, rect.y + (row_h - font_size) / 2.0f}, font_size, 0,
                ResolveHlGroup("StatusLineFg"));
 }
 
@@ -24429,22 +24437,22 @@ void DrawSimpleTooltip(const std::string &text, float anchor_x, float below_y, f
  * @param y screen y-coordinate at which the tab bar row starts.
  */
 void DrawTabBar(int y) {
-    int screen_w = GetScreenWidth();
+    int screen_w = gfx::GetScreenWidth();
     int bar_h = TabBarHeight();
     float font_size = MenuFontSize();
-    DrawRectangle(0, y, screen_w, bar_h, ResolveHlGroup("TabBar"));
+    gfx::DrawRectangle(0, y, screen_w, bar_h, ResolveHlGroup("TabBar"));
     float cy = static_cast<float>(y) + (static_cast<float>(bar_h) - font_size) / 2.0f;
     const float fy = static_cast<float>(y);
     const float fbar_h = static_cast<float>(bar_h);
-    const Vector2 mouse = GetMousePosition();
+    const gfx::Vector2 mouse = gfx::GetMousePosition();
 
     // Immediate-mode hover tooltip, same idiom as the participant chips
     // below -- drawn at the end of the frame's bar so it overlays every
     // label rather than being painted over by the next one.
     std::string tooltip_text;
     float tooltip_anchor_x = 0;
-    auto tooltip_if_hovered = [&](Rectangle rect, const std::string &text) {
-        if (!text.empty() && CheckCollisionPointRec(mouse, rect)) {
+    auto tooltip_if_hovered = [&](gfx::Rectangle rect, const std::string &text) {
+        if (!text.empty() && gfx::CheckCollisionPointRec(mouse, rect)) {
             tooltip_text = text;
             tooltip_anchor_x = rect.x + rect.width / 2.0f;
         }
@@ -24492,24 +24500,24 @@ void DrawTabBar(int y) {
         const SidebarInstance *sidebar = find_sidebar_by_title(button.title);
         const bool open = sidebar != nullptr && sidebar->open;
         chip_x -= button_size + 2.0f;
-        const Rectangle rect{chip_x, fy + 2.0f, button_size, button_size};
-        const bool hovered = CheckCollisionPointRec(mouse, rect);
+        const gfx::Rectangle rect{chip_x, fy + 2.0f, button_size, button_size};
+        const bool hovered = gfx::CheckCollisionPointRec(mouse, rect);
         if (open) {
-            DrawRectangleRounded(rect, 0.3f, 4, ResolveHlGroup("WorkspaceActiveBg"));
+            gfx::DrawRectangleRounded(rect, 0.3f, 4, ResolveHlGroup("WorkspaceActiveBg"));
         } else if (hovered) {
-            DrawRectangleRounded(rect, 0.3f, 4, ResolveHlGroup("MenuHighlight"));
+            gfx::DrawRectangleRounded(rect, 0.3f, 4, ResolveHlGroup("MenuHighlight"));
         }
         // Keep the icon in its own color even while open -- only the
         // background fill (above) marks the open state; hover still
         // brightens it to WorkspaceActive like every other tabbar icon.
-        const Color icon_color = ResolveHlGroup(hovered ? "WorkspaceActive" : button.color);
+        const gfx::Color icon_color = ResolveHlGroup(hovered ? "WorkspaceActive" : button.color);
         if (button.icon == 0) {
             const float pad = button_size * 0.15f;
-            DrawRobotIcon(Vector2{rect.x + pad, rect.y + pad}, button_size - pad * 2.0f, icon_color);
+            DrawRobotIcon(gfx::Vector2{rect.x + pad, rect.y + pad}, button_size - pad * 2.0f, icon_color);
         } else {
             const std::string glyph = Utf8FromCodepoint(open && button.icon_open != 0 ? button.icon_open : button.icon);
             const float gw = MeasureUiText(glyph, font_size);
-            DrawUiText(glyph, Vector2{rect.x + (button_size - gw) / 2.0f, cy}, font_size, icon_color);
+            DrawUiText(glyph, gfx::Vector2{rect.x + (button_size - gw) / 2.0f, cy}, font_size, icon_color);
         }
         tooltip_if_hovered(rect, std::string(button.tooltip) + (open ? " (click to close)" : ""));
         RegisterClickRegion(rect, [title = button.title, command = button.command] {
@@ -24524,7 +24532,7 @@ void DrawTabBar(int y) {
     }
     // Thin divider between the buttons and whatever sits to their left.
     chip_x -= 6.0f;
-    DrawRectangle(static_cast<int>(chip_x), y + 4, 1, bar_h - 8, ResolveHlGroup("WorkspaceInactive"));
+    gfx::DrawRectangle(static_cast<int>(chip_x), y + 4, 1, bar_h - 8, ResolveHlGroup("WorkspaceInactive"));
     chip_x -= 2.0f;
 
     // --- Search buttons: just left of the sidebar toggles, same chip
@@ -24546,19 +24554,19 @@ void DrawTabBar(int y) {
     for (size_t bi = std::size(kSearchButtons); bi-- > 0;) {
         const SearchButton &button = kSearchButtons[bi];
         chip_x -= button_size + 2.0f;
-        const Rectangle rect{chip_x, fy + 2.0f, button_size, button_size};
-        const bool hovered = CheckCollisionPointRec(mouse, rect);
-        if (hovered) DrawRectangleRounded(rect, 0.3f, 4, ResolveHlGroup("MenuHighlight"));
+        const gfx::Rectangle rect{chip_x, fy + 2.0f, button_size, button_size};
+        const bool hovered = gfx::CheckCollisionPointRec(mouse, rect);
+        if (hovered) gfx::DrawRectangleRounded(rect, 0.3f, 4, ResolveHlGroup("MenuHighlight"));
         const std::string glyph = Utf8FromCodepoint(button.icon);
         const float gw = MeasureUiText(glyph, font_size);
-        DrawUiText(glyph, Vector2{rect.x + (button_size - gw) / 2.0f, cy}, font_size,
+        DrawUiText(glyph, gfx::Vector2{rect.x + (button_size - gw) / 2.0f, cy}, font_size,
                    ResolveHlGroup(hovered ? "WorkspaceActive" : button.color));
         tooltip_if_hovered(rect, button.tooltip);
         RegisterClickRegion(rect, [command = button.command] { g_editor.RunCommand(command); });
     }
     // Divider between the search buttons and the chips to their left.
     chip_x -= 6.0f;
-    DrawRectangle(static_cast<int>(chip_x), y + 4, 1, bar_h - 8, ResolveHlGroup("WorkspaceInactive"));
+    gfx::DrawRectangle(static_cast<int>(chip_x), y + 4, 1, bar_h - 8, ResolveHlGroup("WorkspaceInactive"));
     chip_x -= 2.0f;
 
     // --- Participant chips (COLLAB_CURSORS_PLAN.md): just left of the
@@ -24568,20 +24576,20 @@ void DrawTabBar(int y) {
         const bool is_agent = participant.kind == Editor::ParticipantKind::Agent;
         const float chip_size = fbar_h - 6.0f;
         chip_x -= chip_size + 4.0f;
-        const Rectangle chip_rect{chip_x, fy + 3.0f, chip_size, chip_size};
-        const Color color = ToRaylib(ParticipantColor(participant.id));
-        DrawRectangleRounded(chip_rect, 0.3f, 4, color);
+        const gfx::Rectangle chip_rect{chip_x, fy + 3.0f, chip_size, chip_size};
+        const gfx::Color color = ToRaylib(ParticipantColor(participant.id));
+        gfx::DrawRectangleRounded(chip_rect, 0.3f, 4, color);
         if (is_agent) {
             const float pad = chip_size * 0.15f;
-            DrawRobotIcon(Vector2{chip_x + pad, fy + 3.0f + pad}, chip_size - pad * 2.0f, WHITE);
+            DrawRobotIcon(gfx::Vector2{chip_x + pad, fy + 3.0f + pad}, chip_size - pad * 2.0f, gfx::White);
             const float badge_r = chip_size * 0.24f;
-            DrawAgentStatusBadge(Vector2{chip_x + chip_size - badge_r * 0.75f, fy + 3.0f + chip_size - badge_r * 0.75f}, badge_r,
+            DrawAgentStatusBadge(gfx::Vector2{chip_x + chip_size - badge_r * 0.75f, fy + 3.0f + chip_size - badge_r * 0.75f}, badge_r,
                                   participant.status);
         } else {
             const std::string initial = participant.name.empty() ? "?" : participant.name.substr(0, 1);
-            const float iw = MeasureTextEx(g_font, initial.c_str(), font_size, 0).x;
-            DrawTextEx(g_font, initial.c_str(), Vector2{chip_x + (chip_size - iw) / 2.0f, fy + 3.0f + (chip_size - font_size) / 2.0f},
-                       font_size, 0, WHITE);
+            const float iw = gfx::MeasureTextEx(g_font, initial.c_str(), font_size, 0).x;
+            gfx::DrawTextEx(g_font, initial.c_str(), gfx::Vector2{chip_x + (chip_size - iw) / 2.0f, fy + 3.0f + (chip_size - font_size) / 2.0f},
+                       font_size, 0, gfx::White);
         }
         std::string chip_tip = participant.name.empty() ? participant.id : participant.name;
         if (is_agent && !participant.status.empty() && participant.status != "idle") {
@@ -24601,10 +24609,10 @@ void DrawTabBar(int y) {
     if (g_editor.IsSttRecording()) {
         const float mic_size = font_size;
         chip_x -= mic_size + 6.0f;
-        const float pulse = 0.6f + 0.4f * sinf(static_cast<float>(GetTime()) * 4.0f);
-        Color mic_color = ResolveHlGroup("Red");
+        const float pulse = 0.6f + 0.4f * sinf(static_cast<float>(gfx::GetTime()) * 4.0f);
+        gfx::Color mic_color = ResolveHlGroup("Red");
         mic_color.a = static_cast<unsigned char>(255 * pulse);
-        DrawMicIcon(Vector2{chip_x, cy}, mic_size, mic_color);
+        DrawMicIcon(gfx::Vector2{chip_x, cy}, mic_size, mic_color);
     }
     const float right_limit = chip_x - 4.0f;
 
@@ -24618,8 +24626,8 @@ void DrawTabBar(int y) {
     {
         std::string label = " [" + ellipsise(project.name, 24) + "] ";
         const float w = MeasureUiText(label, font_size);
-        DrawUiText(label, Vector2{x, cy}, font_size, ResolveHlGroup("ProjectLabel"));
-        const Rectangle rect{x, fy, w, fbar_h};
+        DrawUiText(label, gfx::Vector2{x, cy}, font_size, ResolveHlGroup("ProjectLabel"));
+        const gfx::Rectangle rect{x, fy, w, fbar_h};
         std::string tip = project.root;
         if (g_editor.ProjectCount() > 1) tip += "  (" + std::to_string(g_editor.ProjectCount()) + " projects loaded)";
         tooltip_if_hovered(rect, tip);
@@ -24697,16 +24705,16 @@ void DrawTabBar(int y) {
         }
         const std::string text = (mode == 0 || l.active) ? full_text(l) : short_text(l);
         const float w = MeasureUiText(text, font_size);
-        const Rectangle rect{x, fy, w, fbar_h};
-        Color c = ResolveHlGroup(l.active ? "WorkspaceActive" : "WorkspaceInactive");
-        if (l.active) DrawRectangleRounded(Rectangle{x, fy + 2.0f, w, fbar_h - 4.0f}, 0.3f, 4, ResolveHlGroup("WorkspaceActiveBg"));
+        const gfx::Rectangle rect{x, fy, w, fbar_h};
+        gfx::Color c = ResolveHlGroup(l.active ? "WorkspaceActive" : "WorkspaceInactive");
+        if (l.active) gfx::DrawRectangleRounded(gfx::Rectangle{x, fy + 2.0f, w, fbar_h - 4.0f}, 0.3f, 4, ResolveHlGroup("WorkspaceActiveBg"));
         if (l.creating) c.a = static_cast<unsigned char>(c.a / 2);
-        DrawUiText(text, Vector2{x, cy}, font_size, c);
+        DrawUiText(text, gfx::Vector2{x, cy}, font_size, c);
         tooltip_if_hovered(rect, l.tip);
         if (!l.creating) {
             RegisterClickRegion(rect, [id = l.id] { g_editor.WorkspaceSwitch(id); });
             // Middle-click closes, like a browser tab (`:wsdelete <name>`).
-            if (IsMouseButtonPressed(MOUSE_BUTTON_MIDDLE) && CheckCollisionPointRec(mouse, rect)) {
+            if (gfx::IsMouseButtonPressed(gfx::MouseButton::Middle) && gfx::CheckCollisionPointRec(mouse, rect)) {
                 g_editor.RunCommand("wsdelete " + l.name);
             }
         }
@@ -24715,8 +24723,8 @@ void DrawTabBar(int y) {
     if (hidden > 0) {
         const std::string more = " +" + std::to_string(hidden) + " ";
         const float w = MeasureUiText(more, font_size);
-        DrawUiText(more, Vector2{x, cy}, font_size, ResolveHlGroup("WorkspaceInactive"));
-        RegisterClickRegion(Rectangle{x, fy, w, fbar_h}, [] { g_editor.RunCommand("wslist"); });
+        DrawUiText(more, gfx::Vector2{x, cy}, font_size, ResolveHlGroup("WorkspaceInactive"));
+        RegisterClickRegion(gfx::Rectangle{x, fy, w, fbar_h}, [] { g_editor.RunCommand("wslist"); });
         x += w;
     }
 
@@ -24725,18 +24733,18 @@ void DrawTabBar(int y) {
     // wasn't covered by any loaded font and rendered as a "?" tofu fallback.
     {
         const float w = MeasureUiText(ws_add_label, font_size);
-        const Rectangle rect{x, fy, w, fbar_h};
-        const bool hovered = CheckCollisionPointRec(mouse, rect);
-        DrawUiText(ws_add_label, Vector2{x, cy}, font_size, ResolveHlGroup(hovered ? "WorkspaceActive" : "Green"));
+        const gfx::Rectangle rect{x, fy, w, fbar_h};
+        const bool hovered = gfx::CheckCollisionPointRec(mouse, rect);
+        DrawUiText(ws_add_label, gfx::Vector2{x, cy}, font_size, ResolveHlGroup(hovered ? "WorkspaceActive" : "Green"));
         tooltip_if_hovered(rect, "New workspace");
         RegisterClickRegion(rect, [] { g_editor.RunCommand("lua mep.workspace_new_prompt()"); });
         x += w;
     }
     {
         const float w = MeasureUiText(ws_close_label, font_size);
-        const Rectangle rect{x, fy, w, fbar_h};
-        const bool hovered = CheckCollisionPointRec(mouse, rect);
-        DrawUiText(ws_close_label, Vector2{x, cy}, font_size, ResolveHlGroup(hovered ? "WorkspaceActive" : "Red"));
+        const gfx::Rectangle rect{x, fy, w, fbar_h};
+        const bool hovered = gfx::CheckCollisionPointRec(mouse, rect);
+        DrawUiText(ws_close_label, gfx::Vector2{x, cy}, font_size, ResolveHlGroup(hovered ? "WorkspaceActive" : "Red"));
         tooltip_if_hovered(rect, "Close active workspace");
         RegisterClickRegion(rect, [] { g_editor.RunCommand("wsdelete"); });
         x += w;
@@ -24745,10 +24753,10 @@ void DrawTabBar(int y) {
     for (int i = 0; i < g_editor.TabCount(); i++) {
         bool active = (i == g_editor.ActiveTabIndex());
         const std::string &glyph = active ? circle_on : circle_off;
-        Color c = ResolveHlGroup(active ? "TabActive" : "TabInactive");
+        gfx::Color c = ResolveHlGroup(active ? "TabActive" : "TabInactive");
         float w = MeasureUiText(glyph, tab_icon_font_size);
-        DrawUiText(glyph, Vector2{x, tab_icon_cy}, tab_icon_font_size, c);
-        const Rectangle rect{x, fy, w, fbar_h};
+        DrawUiText(glyph, gfx::Vector2{x, tab_icon_cy}, tab_icon_font_size, c);
+        const gfx::Rectangle rect{x, fy, w, fbar_h};
         // Tooltip only for the open (hollow) circles of the other tabs --
         // with one tab there's nothing to switch to, and the active tab's
         // filled circle isn't a meaningful click target.
@@ -24760,20 +24768,20 @@ void DrawTabBar(int y) {
     }
 
     float add_w = MeasureUiText(add_label, tab_addclose_font_size);
-    DrawUiText(add_label, Vector2{x, tab_addclose_cy}, tab_addclose_font_size, ResolveHlGroup("StatusLineFg"));
+    DrawUiText(add_label, gfx::Vector2{x, tab_addclose_cy}, tab_addclose_font_size, ResolveHlGroup("StatusLineFg"));
     // Opens a new (unnamed) tab.
     {
-        const Rectangle rect{x, fy, add_w, fbar_h};
+        const gfx::Rectangle rect{x, fy, add_w, fbar_h};
         tooltip_if_hovered(rect, "New tab");
         RegisterClickRegion(rect, [] { g_editor.TabNew(""); });
     }
     x += add_w;
 
     float close_w = MeasureUiText(close_label, tab_addclose_font_size);
-    DrawUiText(close_label, Vector2{x, tab_addclose_cy}, tab_addclose_font_size, ResolveHlGroup("StatusLineFg"));
+    DrawUiText(close_label, gfx::Vector2{x, tab_addclose_cy}, tab_addclose_font_size, ResolveHlGroup("StatusLineFg"));
     // Closes the current tab.
     {
-        const Rectangle rect{x, fy, close_w, fbar_h};
+        const gfx::Rectangle rect{x, fy, close_w, fbar_h};
         tooltip_if_hovered(rect, "Close tab");
         RegisterClickRegion(rect, [] { g_editor.TabDelete(); });
     }
@@ -24800,13 +24808,13 @@ void DrawDashboard(float x, float y, float w, float h) {
     float font_size = g_font_size;
     int line_h = static_cast<int>(font_size) + 8;
     float max_w = 0;
-    for (const auto &line : lines) max_w = std::max(max_w, MeasureTextEx(g_font, line.c_str(), font_size, 0).x);
+    for (const auto &line : lines) max_w = std::max(max_w, gfx::MeasureTextEx(g_font, line.c_str(), font_size, 0).x);
     float box_h = static_cast<float>(lines.size() * static_cast<size_t>(line_h));
     float start_y = y + std::max(0.0f, (h - box_h) / 2.0f);
     for (size_t i = 0; i < lines.size(); i++) {
-        float lw = MeasureTextEx(g_font, lines[i].c_str(), font_size, 0).x;
+        float lw = gfx::MeasureTextEx(g_font, lines[i].c_str(), font_size, 0).x;
         float lx = x + std::max(0.0f, (w - lw) / 2.0f);
-        DrawTextEx(g_font, lines[i].c_str(), Vector2{lx, start_y + static_cast<float>(i) * static_cast<float>(line_h)}, font_size, 0,
+        gfx::DrawTextEx(g_font, lines[i].c_str(), gfx::Vector2{lx, start_y + static_cast<float>(i) * static_cast<float>(line_h)}, font_size, 0,
                    ResolveHlGroup("Comment"));
     }
 }
@@ -24832,8 +24840,8 @@ void DrawEditor() {
     // A tab/workspace switch or :bd underneath an open floating pane
     // (Editor::OpenFloatPane) ends it before anything below draws it.
     g_editor.ValidateFloatPane();
-    int screen_w = GetScreenWidth();
-    int screen_h = GetScreenHeight();
+    int screen_w = gfx::GetScreenWidth();
+    int screen_h = gfx::GetScreenHeight();
     int line_height = LineHeight();
     bool zen = g_editor.IsZenMode();
     // Zen mode (Phase 12) hides chrome -- menu bar, tab bar, status line,
@@ -24852,8 +24860,8 @@ void DrawEditor() {
     int content_top = menu_bar_height + tab_bar_height;
     int pane_area_h = screen_h - content_top - status_bar_height - command_bar_height;
 
-    BeginDrawing();
-    ClearBackground(ResolveHlGroup("NormalBg"));
+    gfx::BeginDrawing();
+    gfx::ClearBackground(ResolveHlGroup("NormalBg"));
 
     // Zen centers the pane tree with generous side padding when the screen
     // is wide enough to spare it -- pure cosmetic, doesn't touch the pane
@@ -24921,7 +24929,7 @@ void DrawEditor() {
             DrawPaneDragOverlay();
             // Drawn once here, after every pane's own DrawPane call, so it
             // always paints on top -- see g_pane_control_tooltip_text.
-            const Rectangle &tt = g_pane_control_tooltip_anchor;
+            const gfx::Rectangle &tt = g_pane_control_tooltip_anchor;
             DrawSimpleTooltip(g_pane_control_tooltip_text, tt.x + tt.width / 2.0f, tt.y + tt.height, tt.height);
         }
     }
@@ -24938,7 +24946,7 @@ void DrawEditor() {
         const Buffer &buf = g_editor.CurrentBuffer();
         CursorPos cursor = g_editor.Cursor();
         int status_y = screen_h - command_bar_height - status_bar_height;
-        DrawRectangle(0, status_y, screen_w, status_bar_height, ResolveHlGroup("StatusLine"));
+        gfx::DrawRectangle(0, status_y, screen_w, status_bar_height, ResolveHlGroup("StatusLine"));
         float status_font_size = std::max(kMinFontSize, g_font_size - 2);
         // Active-todo chip (kBuiltinActivityBar's Todo sidebar clock, fed
         // by mep.active_todo_set): docked at the right edge ahead of the
@@ -24968,11 +24976,11 @@ void DrawEditor() {
             } else {
                 chip = "[No active TODO]";
             }
-            float chip_w = MeasureTextEx(g_font, chip.c_str(), status_font_size, 0).x + 14.0f;
-            Rectangle chip_rect{chip_left - chip_w, static_cast<float>(status_y + 2), chip_w,
+            float chip_w = gfx::MeasureTextEx(g_font, chip.c_str(), status_font_size, 0).x + 14.0f;
+            gfx::Rectangle chip_rect{chip_left - chip_w, static_cast<float>(status_y + 2), chip_w,
                                 static_cast<float>(status_bar_height - 4)};
-            DrawRectangleRounded(chip_rect, 0.3f, 4, ResolveHlGroup(active ? "TodoActive" : "TodoInactive"));
-            DrawTextEx(g_font, chip.c_str(), Vector2{chip_rect.x + 7.0f, static_cast<float>(status_y + 3)},
+            gfx::DrawRectangleRounded(chip_rect, 0.3f, 4, ResolveHlGroup(active ? "TodoActive" : "TodoInactive"));
+            gfx::DrawTextEx(g_font, chip.c_str(), gfx::Vector2{chip_rect.x + 7.0f, static_cast<float>(status_y + 3)},
                        status_font_size, 0, ResolveHlGroup("StatusLineFg"));
             RegisterClickRegion(chip_rect, [] {
                 if (g_editor.Lua()) g_editor.Lua()->DoString("mep.activity_todo_toggle()");
@@ -25004,10 +25012,10 @@ void DrawEditor() {
             }
             std::string chip = icon + "  " + tbuf;
             float chip_w = MeasureUiText(chip, status_font_size) + 14.0f;
-            Rectangle chip_rect{chip_left - chip_w, static_cast<float>(status_y + 2), chip_w,
+            gfx::Rectangle chip_rect{chip_left - chip_w, static_cast<float>(status_y + 2), chip_w,
                                 static_cast<float>(status_bar_height - 4)};
-            DrawRectangleRounded(chip_rect, 0.3f, 4, ResolveHlGroup(hl));
-            DrawUiText(chip, Vector2{chip_rect.x + 7.0f, static_cast<float>(status_y + 3)}, status_font_size,
+            gfx::DrawRectangleRounded(chip_rect, 0.3f, 4, ResolveHlGroup(hl));
+            DrawUiText(chip, gfx::Vector2{chip_rect.x + 7.0f, static_cast<float>(status_y + 3)}, status_font_size,
                        ResolveHlGroup("StatusLineFg"));
             RegisterClickRegion(chip_rect, [] { g_editor.PomodoroTogglePause(); });
             chip_left = chip_rect.x - 12.0f;
@@ -25017,10 +25025,10 @@ void DrawEditor() {
         if (has_widgets) {
             float wx = static_cast<float>(kMarginX);
             for (const auto &seg : widgets) {
-                Color c = seg.second.empty() ? ResolveHlGroup("StatusLineFg") : ResolveHlGroup(seg.second);
-                DrawTextEx(g_font, seg.first.c_str(), Vector2{wx, static_cast<float>(status_y + 3)}, status_font_size,
+                gfx::Color c = seg.second.empty() ? ResolveHlGroup("StatusLineFg") : ResolveHlGroup(seg.second);
+                gfx::DrawTextEx(g_font, seg.first.c_str(), gfx::Vector2{wx, static_cast<float>(status_y + 3)}, status_font_size,
                            0, c);
-                wx += MeasureTextEx(g_font, seg.first.c_str(), status_font_size, 0).x;
+                wx += gfx::MeasureTextEx(g_font, seg.first.c_str(), status_font_size, 0).x;
             }
         } else {
             std::string count_indicator =
@@ -25047,36 +25055,36 @@ void DrawEditor() {
             // not a modal: each compact chip identifies a peer and their
             // shared cursor location. Clicking a chip jumps there.
             const auto collaborators = g_editor.CollaborationPeers();
-            float peer_x = static_cast<float>(kMarginX) + MeasureTextEx(g_font, left.c_str(), status_font_size, 0).x + 18.0f;
+            float peer_x = static_cast<float>(kMarginX) + gfx::MeasureTextEx(g_font, left.c_str(), status_font_size, 0).x + 18.0f;
             for (const auto &peer : collaborators) {
                 std::string chip = peer.name.empty() ? "Anonymous" : peer.name;
                 chip += peer.has_location ? " @" + std::to_string(peer.row + 1) + ":" + std::to_string(peer.col + 1) : " connecting";
-                float chip_w = MeasureTextEx(g_font, chip.c_str(), status_font_size, 0).x + 14.0f;
-                const float right_start = chip_left - MeasureTextEx(g_font, right.c_str(), status_font_size, 0).x;
+                float chip_w = gfx::MeasureTextEx(g_font, chip.c_str(), status_font_size, 0).x + 14.0f;
+                const float right_start = chip_left - gfx::MeasureTextEx(g_font, right.c_str(), status_font_size, 0).x;
                 if (peer_x + chip_w + 8.0f >= right_start) break;
-                Rectangle chip_rect{peer_x, static_cast<float>(status_y + 2), chip_w, static_cast<float>(status_bar_height - 4)};
-                DrawRectangleRec(chip_rect, ResolveHlGroup("Visual"));
-                DrawTextEx(g_font, chip.c_str(), Vector2{peer_x + 7.0f, static_cast<float>(status_y + 3)}, status_font_size, 0, ResolveHlGroup("StatusLineFg"));
+                gfx::Rectangle chip_rect{peer_x, static_cast<float>(status_y + 2), chip_w, static_cast<float>(status_bar_height - 4)};
+                gfx::DrawRectangleRec(chip_rect, ResolveHlGroup("Visual"));
+                gfx::DrawTextEx(g_font, chip.c_str(), gfx::Vector2{peer_x + 7.0f, static_cast<float>(status_y + 3)}, status_font_size, 0, ResolveHlGroup("StatusLineFg"));
                 RegisterClickRegion(chip_rect, [peer_id = peer.id] { g_editor.JumpToParticipant(peer_id); });
                 peer_x += chip_w + 5.0f;
             }
-            float mode_w = MeasureTextEx(g_font, mode_chip.c_str(), status_font_size, 0).x;
-            Rectangle mode_rect{static_cast<float>(kMarginX), static_cast<float>(status_y + 2), mode_w,
+            float mode_w = gfx::MeasureTextEx(g_font, mode_chip.c_str(), status_font_size, 0).x;
+            gfx::Rectangle mode_rect{static_cast<float>(kMarginX), static_cast<float>(status_y + 2), mode_w,
                                 static_cast<float>(status_bar_height - 4)};
-            DrawRectangleRounded(mode_rect, 0.3f, 4, ResolveHlGroup(mode_group));
-            DrawTextEx(g_font, mode_chip.c_str(), Vector2{static_cast<float>(kMarginX), static_cast<float>(status_y + 3)},
+            gfx::DrawRectangleRounded(mode_rect, 0.3f, 4, ResolveHlGroup(mode_group));
+            gfx::DrawTextEx(g_font, mode_chip.c_str(), gfx::Vector2{static_cast<float>(kMarginX), static_cast<float>(status_y + 3)},
                        status_font_size, 0, ResolveHlGroup("StatusLineFg"));
-            DrawTextEx(g_font, rest.c_str(), Vector2{static_cast<float>(kMarginX) + mode_w, static_cast<float>(status_y + 3)},
+            gfx::DrawTextEx(g_font, rest.c_str(), gfx::Vector2{static_cast<float>(kMarginX) + mode_w, static_cast<float>(status_y + 3)},
                        status_font_size, 0, ResolveHlGroup("StatusLineFg"));
-            float right_w = MeasureTextEx(g_font, right.c_str(), status_font_size, 0).x;
-            DrawTextEx(g_font, right.c_str(), Vector2{chip_left - right_w, static_cast<float>(status_y + 3)},
+            float right_w = gfx::MeasureTextEx(g_font, right.c_str(), status_font_size, 0).x;
+            gfx::DrawTextEx(g_font, right.c_str(), gfx::Vector2{chip_left - right_w, static_cast<float>(status_y + 3)},
                        status_font_size, 0, ResolveHlGroup("StatusLineFg"));
         }
     }
 
     // Command line / last message.
     int cmd_y = screen_h - command_bar_height;
-    DrawRectangle(0, cmd_y, screen_w, command_bar_height, ResolveHlGroup("NormalBg"));
+    gfx::DrawRectangle(0, cmd_y, screen_w, command_bar_height, ResolveHlGroup("NormalBg"));
     if (IsCommandLineMode(g_editor.CurrentMode())) {
         char prefix = ':';
         const std::string *text = &g_editor.CommandLine();
@@ -25088,15 +25096,15 @@ void DrawEditor() {
             text = &g_editor.SearchQuery();
         }
         std::string line = prefix + *text;
-        DrawTextEx(g_font, line.c_str(), Vector2{static_cast<float>(kMarginX), static_cast<float>(cmd_y + 3)},
+        gfx::DrawTextEx(g_font, line.c_str(), gfx::Vector2{static_cast<float>(kMarginX), static_cast<float>(cmd_y + 3)},
                    g_font_size, 0, ResolveHlGroup("Normal"));
         {
-            float cx = kMarginX + MeasureTextEx(g_font, line.c_str(), g_font_size, 0).x;
-            DrawRectangle(static_cast<int>(cx), cmd_y + 3, 2, static_cast<int>(g_font_size), ResolveHlGroup("Normal"));
+            float cx = kMarginX + gfx::MeasureTextEx(g_font, line.c_str(), g_font_size, 0).x;
+            gfx::DrawRectangle(static_cast<int>(cx), cmd_y + 3, 2, static_cast<int>(g_font_size), ResolveHlGroup("Normal"));
         }
     } else if (!g_editor.StatusMessage().empty()) {
-        DrawTextEx(g_font, g_editor.StatusMessage().c_str(),
-                   Vector2{static_cast<float>(kMarginX), static_cast<float>(cmd_y + 3)}, g_font_size, 0, ResolveHlGroup("Normal"));
+        gfx::DrawTextEx(g_font, g_editor.StatusMessage().c_str(),
+                   gfx::Vector2{static_cast<float>(kMarginX), static_cast<float>(cmd_y + 3)}, g_font_size, 0, ResolveHlGroup("Normal"));
     }
 
     if (show_tabs) DrawTabBar(menu_bar_height);
@@ -25158,7 +25166,7 @@ void DrawEditor() {
     if (g_show_help_overlay) DrawHelpOverlay();
     DrawToastStack();
 
-    EndDrawing();
+    gfx::EndDrawing();
 }
 
 // Shared by DispatchChromeClicks and UpdatePaneMouseInteraction: any of
@@ -25198,10 +25206,10 @@ bool IsModalOverlayMode(Mode m) {
 // click region is exactly how focus leaves a sidebar back into the pane
 // tree, so this dispatcher must still run while a sidebar has focus.
 void DispatchChromeClicks() {
-    if (!IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) return;
+    if (!gfx::IsMouseButtonPressed(gfx::MouseButton::Left)) return;
     Mode mode = g_editor.CurrentMode();
     if (IsModalOverlayMode(mode) && mode != Mode::Sidebar) return;
-    Vector2 mouse = GetMousePosition();
+    gfx::Vector2 mouse = gfx::GetMousePosition();
     // A popped-out sidebar (DrawSidebarPopout) already dropped every
     // chrome click region for this frame; the one gesture left to handle
     // here is the modal's usual dismiss -- a click anywhere outside its
@@ -25262,8 +25270,8 @@ void UpdateKanbanMouseInteraction() {
     int buffer_id = g_editor.CurrentBufferId();
     KanbanSession *sess = g_editor.GetKanbanMutable(buffer_id);
     if (!sess || sess->content_w <= 0 || sess->content_h <= 0) return;
-    Vector2 mouse = GetMousePosition();
-    Rectangle content{sess->content_x, sess->content_y, sess->content_w, sess->content_h};
+    gfx::Vector2 mouse = gfx::GetMousePosition();
+    gfx::Rectangle content{sess->content_x, sess->content_y, sess->content_w, sess->content_h};
     int header_h = PaneHeaderHeight();
 
     // A card area row's top, in Y offset from content_y -- two header_h
@@ -25273,8 +25281,8 @@ void UpdateKanbanMouseInteraction() {
     float card_area_top = static_cast<float>(header_h) * 2.0f + kKanbanCardGap;
 
     if (!sess->dragging) {
-        if (!IsMouseButtonPressed(MOUSE_BUTTON_LEFT) || !PointInRect(mouse, content)) return;
-        Rectangle chip_rect{sess->new_card_chip_x, sess->new_card_chip_y, sess->new_card_chip_w,
+        if (!gfx::IsMouseButtonPressed(gfx::MouseButton::Left) || !PointInRect(mouse, content)) return;
+        gfx::Rectangle chip_rect{sess->new_card_chip_x, sess->new_card_chip_y, sess->new_card_chip_w,
                              sess->new_card_chip_h};
         if (sess->new_card_chip_w > 0 && PointInRect(mouse, chip_rect)) {
             sess->dragging = true;
@@ -25348,7 +25356,7 @@ void UpdateKanbanMouseInteraction() {
         }
     }
 
-    if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
+    if (gfx::IsMouseButtonReleased(gfx::MouseButton::Left)) {
         std::vector<std::string> columns = g_editor.KanbanColumns(buffer_id);
         if (sess->drag_threshold_passed && sess->drag_is_column) {
             g_editor.KanbanMoveColumn(sess->drag_column_index, sess->column_drop_slot);
@@ -25416,8 +25424,8 @@ void UpdateGanttMouseInteraction() {
     int buffer_id = g_editor.CurrentBufferId();
     GanttSession *sess = g_editor.GetGanttMutable(buffer_id);
     if (!sess || sess->content_w <= 0 || sess->content_h <= 0) return;
-    Vector2 mouse = GetMousePosition();
-    Rectangle content{sess->content_x, sess->content_y, sess->content_w, sess->content_h};
+    gfx::Vector2 mouse = gfx::GetMousePosition();
+    gfx::Rectangle content{sess->content_x, sess->content_y, sess->content_w, sess->content_h};
     float label_w = sess->label_col_w;
     float divider_x = sess->content_x + label_w;
     float ruler_h = static_cast<float>(GanttRulerHeight(*sess));
@@ -25427,8 +25435,8 @@ void UpdateGanttMouseInteraction() {
     // resizing it while a bar happens to sit right at that x would
     // otherwise be ambiguous.
     if (sess->resizing_label_col) {
-        SetMouseCursor(MOUSE_CURSOR_RESIZE_EW);
-        if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+        gfx::SetMouseCursor(gfx::MouseCursor::ResizeEw);
+        if (gfx::IsMouseButtonDown(gfx::MouseButton::Left)) {
             sess->label_col_w = std::clamp(mouse.x - sess->content_x, 80.0f, sess->content_w - 120.0f);
         } else {
             sess->resizing_label_col = false;
@@ -25437,16 +25445,16 @@ void UpdateGanttMouseInteraction() {
     }
     if (!sess->dragging && PointInRect(mouse, content) && std::abs(mouse.x - divider_x) <= 4.0f &&
         mouse.y >= sess->content_y + ruler_h) {
-        SetMouseCursor(MOUSE_CURSOR_RESIZE_EW);
-        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+        gfx::SetMouseCursor(gfx::MouseCursor::ResizeEw);
+        if (gfx::IsMouseButtonPressed(gfx::MouseButton::Left)) {
             sess->resizing_label_col = true;
             return;
         }
     }
 
     if (!sess->dragging) {
-        bool left_pressed = IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
-        bool right_pressed = IsMouseButtonPressed(MOUSE_BUTTON_RIGHT);
+        bool left_pressed = gfx::IsMouseButtonPressed(gfx::MouseButton::Left);
+        bool right_pressed = gfx::IsMouseButtonPressed(gfx::MouseButton::Right);
         if ((!left_pressed && !right_pressed) || !PointInRect(mouse, content)) return;
         if (mouse.y < sess->content_y + ruler_h) return;
         std::vector<int> rows = g_editor.GanttRows(buffer_id);
@@ -25458,7 +25466,7 @@ void UpdateGanttMouseInteraction() {
         // renames the row inline, otherwise it's just a focus click --
         // either way it's not a bar drag, so handle and return.
         if (mouse.x < divider_x) {
-            if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) return;
+            if (gfx::IsMouseButtonPressed(gfx::MouseButton::Right)) return;
             bool has_children = false;
             for (const OrgHeadline &candidate : sess->outline.headlines) {
                 if (candidate.parent_index == hi) { has_children = true; break; }
@@ -25469,7 +25477,7 @@ void UpdateGanttMouseInteraction() {
                 else sess->collapsed_headlines.insert(hi);
                 return;
             }
-            double now = GetTime();
+            double now = gfx::GetTime();
             bool is_double =
                 g_last_gantt_click_headline == hi && (now - g_last_gantt_click_time) < kDoubleClickThresholdSec;
             sess->focused_row = row_i;
@@ -25491,7 +25499,7 @@ void UpdateGanttMouseInteraction() {
         // Right-click is a direct deadline picker, including for a
         // milestone with no deadline yet. The editor primitive validates
         // that it remains after the scheduled start date.
-        if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
+        if (gfx::IsMouseButtonPressed(gfx::MouseButton::Right)) {
             g_editor.GanttSetHeadlineDate(hi, /*is_deadline=*/true, clicked_day);
             return;
         }
@@ -25526,7 +25534,7 @@ void UpdateGanttMouseInteraction() {
         return;
     }
 
-    if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
+    if (gfx::IsMouseButtonReleased(gfx::MouseButton::Left)) {
         constexpr float kDragThresholdPx = 4.0f;
         bool threshold_passed = std::abs(mouse.x - sess->drag_start_x) > kDragThresholdPx;
         if (threshold_passed && sess->drag_headline_index >= 0) {
@@ -25578,9 +25586,9 @@ void UpdateOfficeScrollbarInteraction() {
         g_office_scroll_drag.active = false;
         return;
     }
-    const Rectangle &track = g_office_status.track;
-    const Rectangle &thumb = g_office_status.thumb;
-    Vector2 mouse = GetMousePosition();
+    const gfx::Rectangle &track = g_office_status.track;
+    const gfx::Rectangle &thumb = g_office_status.thumb;
+    gfx::Vector2 mouse = gfx::GetMousePosition();
 
     // Converts a target 0..1 fraction of the document's total wrapped
     // height into a (scroll_para, scroll_line_in_para) pair by walking
@@ -25610,18 +25618,18 @@ void UpdateOfficeScrollbarInteraction() {
         }
     };
 
-    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-        if (CheckCollisionPointRec(mouse, thumb)) {
+    if (gfx::IsMouseButtonPressed(gfx::MouseButton::Left)) {
+        if (gfx::CheckCollisionPointRec(mouse, thumb)) {
             g_office_scroll_drag.active = true;
             g_office_scroll_drag.grab_offset_y = mouse.y - thumb.y;
-        } else if (CheckCollisionPointRec(mouse, track)) {
+        } else if (gfx::CheckCollisionPointRec(mouse, track)) {
             float target_top_y = mouse.y - thumb.height * 0.5f;
             float fraction = (track.height > thumb.height) ? (target_top_y - track.y) / (track.height - thumb.height) : 0.0f;
             scroll_to_fraction(fraction);
         }
     }
     if (g_office_scroll_drag.active) {
-        if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+        if (gfx::IsMouseButtonDown(gfx::MouseButton::Left)) {
             float new_top_y = mouse.y - g_office_scroll_drag.grab_offset_y;
             float fraction = (track.height > thumb.height) ? (new_top_y - track.y) / (track.height - thumb.height) : 0.0f;
             scroll_to_fraction(fraction);
@@ -25635,19 +25643,19 @@ void UpdatePaneMouseInteraction() {
     Mode mode = g_editor.CurrentMode();
     if (IsModalOverlayMode(mode) && mode != Mode::Sidebar) {
         g_pane_drag = PaneDragState{};
-        SetMouseCursor(MOUSE_CURSOR_DEFAULT);
+        gfx::SetMouseCursor(gfx::MouseCursor::Default);
         return;
     }
 
-    Vector2 mouse = GetMousePosition();
-    MouseCursor want_cursor = MOUSE_CURSOR_DEFAULT;
+    gfx::Vector2 mouse = gfx::GetMousePosition();
+    gfx::MouseCursor want_cursor = gfx::MouseCursor::Default;
 
     if (g_pane_drag.kind == PaneDragKind::None) {
         bool over_border = false;
         for (const PaneBorderRect &b : g_pane_border_rects) {
             if (PointInRect(mouse, b.grab_rect)) {
                 over_border = true;
-                want_cursor = b.vertical ? MOUSE_CURSOR_RESIZE_EW : MOUSE_CURSOR_RESIZE_NS;
+                want_cursor = b.vertical ? gfx::MouseCursor::ResizeEw : gfx::MouseCursor::ResizeNs;
                 break;
             }
         }
@@ -25655,7 +25663,7 @@ void UpdatePaneMouseInteraction() {
             for (const SidebarBorderRect &sb : g_sidebar_border_rects) {
                 if (PointInRect(mouse, sb.grab_rect)) {
                     over_border = true;
-                    want_cursor = sb.horizontal ? MOUSE_CURSOR_RESIZE_EW : MOUSE_CURSOR_RESIZE_NS;
+                    want_cursor = sb.horizontal ? gfx::MouseCursor::ResizeEw : gfx::MouseCursor::ResizeNs;
                     break;
                 }
             }
@@ -25664,7 +25672,7 @@ void UpdatePaneMouseInteraction() {
             for (const SidebarStackRect &st : g_sidebar_stack_rects) {
                 if (PointInRect(mouse, st.grab_rect)) {
                     over_border = true;
-                    want_cursor = MOUSE_CURSOR_RESIZE_NS;
+                    want_cursor = gfx::MouseCursor::ResizeNs;
                     break;
                 }
             }
@@ -25672,20 +25680,20 @@ void UpdatePaneMouseInteraction() {
         if (!over_border) {
             for (const PaneTabChipRect &c : g_pane_tab_chip_rects) {
                 if (PointInRect(mouse, c.rect)) {
-                    want_cursor = MOUSE_CURSOR_POINTING_HAND;
+                    want_cursor = gfx::MouseCursor::PointingHand;
                     break;
                 }
             }
         }
-        if (!over_border && want_cursor == MOUSE_CURSOR_DEFAULT) {
+        if (!over_border && want_cursor == gfx::MouseCursor::Default) {
             for (const SidebarRowRect &r : g_sidebar_row_rects) {
                 if (PointInRect(mouse, r.rect)) {
-                    want_cursor = MOUSE_CURSOR_POINTING_HAND;
+                    want_cursor = gfx::MouseCursor::PointingHand;
                     break;
                 }
             }
         }
-        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+        if (gfx::IsMouseButtonPressed(gfx::MouseButton::Left)) {
             for (const PaneBorderRect &b : g_pane_border_rects) {
                 if (!PointInRect(mouse, b.grab_rect)) continue;
                 g_pane_drag.kind = PaneDragKind::BorderResize;
@@ -25769,7 +25777,7 @@ void UpdatePaneMouseInteraction() {
                             g_pane_drag.target_pane_id = -1;
                         }
                     }
-                    double now = GetTime();
+                    double now = gfx::GetTime();
                     bool is_double = g_last_sidebar_click_id == r.sidebar_id && g_last_sidebar_click_row == r.line_index &&
                                       (now - g_last_sidebar_click_time) < kDoubleClickThresholdSec;
                     g_editor.FocusSidebarRow(r.sidebar_id, r.line_index);
@@ -25790,33 +25798,33 @@ void UpdatePaneMouseInteraction() {
                 }
             }
         }
-    } else if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+    } else if (gfx::IsMouseButtonDown(gfx::MouseButton::Left)) {
         if (!g_pane_drag.threshold_passed) {
             float dx = mouse.x - g_pane_drag.start_pos.x, dy = mouse.y - g_pane_drag.start_pos.y;
             if (dx * dx + dy * dy > kPaneDragThresholdPx * kPaneDragThresholdPx) g_pane_drag.threshold_passed = true;
         }
         if (g_pane_drag.threshold_passed) {
             if (g_pane_drag.kind == PaneDragKind::BorderResize) {
-                want_cursor = g_pane_drag.border_vertical ? MOUSE_CURSOR_RESIZE_EW : MOUSE_CURSOR_RESIZE_NS;
-                const Rectangle &r = g_pane_drag.border_pair_rect;
+                want_cursor = g_pane_drag.border_vertical ? gfx::MouseCursor::ResizeEw : gfx::MouseCursor::ResizeNs;
+                const gfx::Rectangle &r = g_pane_drag.border_pair_rect;
                 float frac = g_pane_drag.border_vertical ? (mouse.x - r.x) / r.width : (mouse.y - r.y) / r.height;
                 g_editor.SetPaneBorderShare(g_pane_drag.border_node, g_pane_drag.border_child_index,
                                              std::clamp(frac, 0.0f, 1.0f) * g_pane_drag.border_pair_total);
             } else if (g_pane_drag.kind == PaneDragKind::SidebarResize) {
-                want_cursor = g_pane_drag.sidebar_horizontal ? MOUSE_CURSOR_RESIZE_EW : MOUSE_CURSOR_RESIZE_NS;
+                want_cursor = g_pane_drag.sidebar_horizontal ? gfx::MouseCursor::ResizeEw : gfx::MouseCursor::ResizeNs;
                 float mouse_now = g_pane_drag.sidebar_horizontal ? mouse.x : mouse.y;
                 float delta_px = (mouse_now - g_pane_drag.sidebar_mouse_start) * static_cast<float>(g_pane_drag.sidebar_sign);
                 float unit = g_pane_drag.sidebar_horizontal ? g_char_width : static_cast<float>(LineHeight());
                 int new_size = g_pane_drag.sidebar_size_start + static_cast<int>(std::lround(delta_px / unit));
                 g_editor.SetSidebarSize(g_pane_drag.sidebar_id, new_size);
             } else if (g_pane_drag.kind == PaneDragKind::SidebarStackResize) {
-                want_cursor = MOUSE_CURSOR_RESIZE_NS;
+                want_cursor = gfx::MouseCursor::ResizeNs;
                 // Same mouse-position -> fraction-of-the-pair mapping as
                 // BorderResize; SetSidebarStackShares clamps.
                 const float frac = g_pane_drag.stack_pair_h > 0.0f ? (mouse.y - g_pane_drag.stack_pair_top) / g_pane_drag.stack_pair_h : 0.5f;
                 g_editor.SetSidebarStackShares(g_pane_drag.stack_upper_id, g_pane_drag.stack_lower_id, frac);
             } else if (g_pane_drag.kind == PaneDragKind::TabMove || g_pane_drag.kind == PaneDragKind::FileDrop) {
-                want_cursor = MOUSE_CURSOR_POINTING_HAND;
+                want_cursor = gfx::MouseCursor::PointingHand;
                 g_pane_drag.target_pane_id = -1;
                 for (const PaneScreenRect &p : g_pane_screen_rects) {
                     if (PointInRect(mouse, p.rect)) {
@@ -25827,7 +25835,7 @@ void UpdatePaneMouseInteraction() {
                 }
             }
         }
-    } else if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
+    } else if (gfx::IsMouseButtonReleased(gfx::MouseButton::Left)) {
         if (g_pane_drag.threshold_passed && g_pane_drag.kind == PaneDragKind::FileDrop &&
             g_pane_drag.target_pane_id >= 0) {
             const bool center = g_pane_drag.drop_zone == PaneDropZone::Center;
@@ -25855,7 +25863,7 @@ void UpdatePaneMouseInteraction() {
         g_pane_drag = PaneDragState{};
     }
 
-    SetMouseCursor(want_cursor);
+    gfx::SetMouseCursor(want_cursor);
 }
 
 // Highlights which drop zone (center/left/right/top/bottom) a tab-chip
@@ -25874,17 +25882,17 @@ void DrawPaneDragOverlay() {
         // "carrying a file", no zone to highlight.
         if (file_drop) {
             const std::string label = Basename(g_pane_drag.dragged_path);
-            Vector2 mp = GetMousePosition();
+            gfx::Vector2 mp = gfx::GetMousePosition();
             float fs = MenuFontSize();
-            float tw = MeasureTextEx(g_font, label.c_str(), fs, 0).x;
-            Rectangle label_bg{mp.x + 12, mp.y + 12, tw + 12, fs + 8};
-            DrawRectangleRec(label_bg, ResolveHlGroup("MenuBar"));
-            DrawRectangleLinesEx(label_bg, 1.0f, ResolveHlGroup("Border"));
-            DrawTextEx(g_font, label.c_str(), Vector2{label_bg.x + 6, label_bg.y + 4}, fs, 0, ResolveHlGroup("Normal"));
+            float tw = gfx::MeasureTextEx(g_font, label.c_str(), fs, 0).x;
+            gfx::Rectangle label_bg{mp.x + 12, mp.y + 12, tw + 12, fs + 8};
+            gfx::DrawRectangleRec(label_bg, ResolveHlGroup("MenuBar"));
+            gfx::DrawRectangleLinesEx(label_bg, 1.0f, ResolveHlGroup("Border"));
+            gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{label_bg.x + 6, label_bg.y + 4}, fs, 0, ResolveHlGroup("Normal"));
         }
         return;
     }
-    Rectangle target{};
+    gfx::Rectangle target{};
     bool found = false;
     for (const PaneScreenRect &p : g_pane_screen_rects) {
         if (p.pane_id == g_pane_drag.target_pane_id) {
@@ -25894,7 +25902,7 @@ void DrawPaneDragOverlay() {
         }
     }
     if (!found) return;
-    Rectangle hl = target;
+    gfx::Rectangle hl = target;
     switch (g_pane_drag.drop_zone) {
         case PaneDropZone::Left: hl.width /= 2.0f; break;
         case PaneDropZone::Right: hl.x += hl.width / 2.0f; hl.width /= 2.0f; break;
@@ -25902,10 +25910,10 @@ void DrawPaneDragOverlay() {
         case PaneDropZone::Bottom: hl.y += hl.height / 2.0f; hl.height /= 2.0f; break;
         case PaneDropZone::Center: default: break;  // full target rect
     }
-    Color base = ResolveHlGroup("IncSearch");  // reuse an existing theme-derived highlight color rather than a hardcoded one
-    DrawRectangle(static_cast<int>(hl.x), static_cast<int>(hl.y), static_cast<int>(hl.width), static_cast<int>(hl.height),
-                  Color{base.r, base.g, base.b, 90});
-    DrawRectangleLinesEx(hl, 2.0f, Color{base.r, base.g, base.b, 220});
+    gfx::Color base = ResolveHlGroup("IncSearch");  // reuse an existing theme-derived highlight color rather than a hardcoded one
+    gfx::DrawRectangle(static_cast<int>(hl.x), static_cast<int>(hl.y), static_cast<int>(hl.width), static_cast<int>(hl.height),
+                  gfx::Color{base.r, base.g, base.b, 90});
+    gfx::DrawRectangleLinesEx(hl, 2.0f, gfx::Color{base.r, base.g, base.b, 220});
 
     // A small floating label near the cursor naming the dragged buffer
     // (or file), so it's clear what's being moved once the source pane's
@@ -25917,13 +25925,13 @@ void DrawPaneDragOverlay() {
         const Buffer &db = g_editor.GetBuffer(g_pane_drag.dragged_buffer_id);
         label = db.scratch ? "[Scratch]" : (db.filename.empty() ? "[No Name]" : Basename(db.filename));
     }
-    Vector2 mp = GetMousePosition();
+    gfx::Vector2 mp = gfx::GetMousePosition();
     float fs = MenuFontSize();
-    float tw = MeasureTextEx(g_font, label.c_str(), fs, 0).x;
-    Rectangle label_bg{mp.x + 12, mp.y + 12, tw + 12, fs + 8};
-    DrawRectangleRec(label_bg, ResolveHlGroup("MenuBar"));
-    DrawRectangleLinesEx(label_bg, 1.0f, ResolveHlGroup("Border"));
-    DrawTextEx(g_font, label.c_str(), Vector2{label_bg.x + 6, label_bg.y + 4}, fs, 0, ResolveHlGroup("Normal"));
+    float tw = gfx::MeasureTextEx(g_font, label.c_str(), fs, 0).x;
+    gfx::Rectangle label_bg{mp.x + 12, mp.y + 12, tw + 12, fs + 8};
+    gfx::DrawRectangleRec(label_bg, ResolveHlGroup("MenuBar"));
+    gfx::DrawRectangleLinesEx(label_bg, 1.0f, ResolveHlGroup("Border"));
+    gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{label_bg.x + 6, label_bg.y + 4}, fs, 0, ResolveHlGroup("Normal"));
 }
 
 #if defined(__EMSCRIPTEN__)
@@ -25965,8 +25973,8 @@ void UpdateDrawFrame() {
         mep::agent::PollOnce(g_editor);
         DrainUiInputQueueOneStep();
         g_editor.PollTerminals();
-        g_editor.PruneExpiredToasts(GetTime());
-        g_editor.SetNow(GetTime());
+        g_editor.PruneExpiredToasts(gfx::GetTime());
+        g_editor.SetNow(gfx::GetTime());
         if (g_editor.Lua()) g_editor.Lua()->RunFrameHooks();
         HandleFontSizeShortcuts();
         bool menu_consumed = HandleMenuInput();
@@ -26073,12 +26081,12 @@ void MepTraceLogCallback(int logLevel, const char *text, va_list args) {
     if (!g_trace_log_file) return;
     const char *prefix = "";
     switch (logLevel) {
-        case LOG_TRACE: prefix = "TRACE: "; break;
-        case LOG_DEBUG: prefix = "DEBUG: "; break;
-        case LOG_INFO: prefix = "INFO: "; break;
-        case LOG_WARNING: prefix = "WARNING: "; break;
-        case LOG_ERROR: prefix = "ERROR: "; break;
-        case LOG_FATAL: prefix = "FATAL: "; break;
+        case gfx::kLogTrace: prefix = "TRACE: "; break;
+        case gfx::kLogDebug: prefix = "DEBUG: "; break;
+        case gfx::kLogInfo: prefix = "INFO: "; break;
+        case gfx::kLogWarning: prefix = "WARNING: "; break;
+        case gfx::kLogError: prefix = "ERROR: "; break;
+        case gfx::kLogFatal: prefix = "FATAL: "; break;
         default: break;
     }
     fputs(prefix, g_trace_log_file);
@@ -26110,7 +26118,7 @@ void SetUpTraceLogFile() {
     // NOLINTNEXTLINE(cppcoreguidelines-owning-memory)
     g_trace_log_file = std::fopen((dir + "/mep.log").c_str(), "w");
     if (!g_trace_log_file) return;
-    SetTraceLogCallback(MepTraceLogCallback);
+    gfx::SetTraceLogCallback(MepTraceLogCallback);
     std::printf("mep: logging to %s/mep.log\n", dir.c_str());
 }
 
@@ -26138,13 +26146,13 @@ std::string UiScreenshot() {
     char name[64];
     std::snprintf(name, sizeof(name), "/shot-%lld-%03d.png", static_cast<long long>(std::time(nullptr)), counter++);
     const std::string path = dir + name;
-    const int w = GetScreenWidth();
-    const int h = GetScreenHeight();
-    unsigned char *pixels = rlReadScreenPixels(w, h);  // already vertically-corrected, opaque RGBA8 -- see its own comment
+    const int w = gfx::GetScreenWidth();
+    const int h = gfx::GetScreenHeight();
+    unsigned char *pixels = gfx::ReadScreenPixels(w, h);  // already vertically-corrected, opaque RGBA8 -- see its own comment
     if (!pixels) return "";
-    Image img{pixels, w, h, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8};
-    bool ok = ExportImage(img, path.c_str());
-    UnloadImage(img);
+    gfx::Image img{pixels, w, h, 1, gfx::kPixelFormatR8G8B8A8};
+    bool ok = gfx::ExportImage(img, path.c_str());
+    gfx::UnloadImage(img);
     return ok ? path : "";
 }
 
@@ -26287,6 +26295,12 @@ void RegisterModel3DAgentMethods() {
 }
 
 int main(int argc, char **argv) {
+    // Installs the in-house GLFW/OpenGL gfx:: backend -- must run before
+    // any other gfx:: call in this process (including on the background
+    // font-bake thread started a few lines below), since every gfx::
+    // facade function dereferences the backend pointers this sets up.
+    gfx::SetBackends(gfx::ToBackends(gfx::CreateNativeBackendSet()));
+
     // First thing of all -- StartIconFontBakeAsync's background thread
     // (right below) calls LoadFontData too, and its own "size is bigger
     // than expected" warnings need somewhere to go from the moment that
@@ -26353,16 +26367,16 @@ int main(int argc, char **argv) {
     // run, so this call is always safe.
     g_editor.ApplyTheme("mep-dark");
 
-    SetConfigFlags(FLAG_WINDOW_RESIZABLE);
-    InitWindow(kInitialWidth, kInitialHeight, "mep");
+    gfx::SetWindowResizable();
+    gfx::InitWindow(kInitialWidth, kInitialHeight, "mep");
     // raylib maps Escape to "close the window" by default; Escape is also
     // our Insert/Visual/Command -> Normal key, so that default must go.
-    SetExitKey(KEY_NULL);
+    gfx::SetExitKey(gfx::Key::None);
 
 #if !defined(__EMSCRIPTEN__)
     // The web build fills whatever size the browser/webview gives its
     // canvas (see web/shell.html); there's no OS window to maximize.
-    MaximizeWindow();
+    gfx::MaximizeWindow();
 #endif
 
     ApplyFontSize(kDefaultFontSize);
@@ -26493,7 +26507,7 @@ int main(int argc, char **argv) {
     if (g_editor.RestoreWorkspaces()) g_editor.RestoreWorkspaceState(g_editor.ActiveProject().id, !file_arg.empty());
     g_editor.ProjectDetectGit(g_editor.ActiveProject().id);
     mep::agent::Start();
-    mep::agent_ui::Init(GetWindowHandle());
+    mep::agent_ui::Init(gfx::GetNativeWindowHandle());
     RegisterUiAutomationMethods();
     RegisterModel3DAgentMethods();
 #endif
@@ -26513,8 +26527,8 @@ int main(int argc, char **argv) {
     emscripten_set_main_loop(UpdateDrawFrame, 0, 0);
     return 0;
 #else
-    SetTargetFPS(60);
-    while (!WindowShouldClose() && !g_editor.ShouldQuit()) {
+    gfx::SetTargetFPS(60);
+    while (!gfx::WindowShouldClose() && !g_editor.ShouldQuit()) {
         UpdateDrawFrame();
     }
 
@@ -26533,7 +26547,7 @@ int main(int argc, char **argv) {
     mep::agent::Stop();
 #endif
 
-    UnloadFont(g_font);
-    CloseWindow();
+    gfx::UnloadFont(g_font);
+    gfx::CloseWindow();
     return 0;
 }

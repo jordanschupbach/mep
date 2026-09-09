@@ -47,31 +47,23 @@
         # install dir are checked too (lower priority) -- see
         # DynamicSearchPaths' doc comment in treesitter.cpp for that list.
 
-        # mep's CMakeLists.txt pulls raylib and Lua in at configure time via
-        # FetchContent (GIT_REPOSITORY/URL), which needs network access --
-        # fine for `just build-native` in the devShell, but Nix's build
-        # sandbox has none. Fetched here instead as regular Nix derivations
-        # (network allowed for fixed-output derivations, verified by hash)
-        # and handed back to the same FetchContent machinery via
-        # FETCHCONTENT_SOURCE_DIR_<NAME>, so CMakeLists.txt itself needs no
-        # changes. raylib has no hash pin in CMakeLists.txt (GIT_TAG "5.5"
-        # floats), so its hash below is only pinned here; the Lua one
-        # mirrors CMakeLists.txt's own URL_HASH and must be kept in sync
-        # with it.
-        raylibSrc = pkgs.fetchFromGitHub {
-          owner = "raysan5";
-          repo = "raylib";
-          rev = "5.5";
-          hash = "sha256-J99i4z4JF7d6mJNuJIB0rHNDhXJ5AEkG0eBvvuBLHrY=";
-        };
+        # mep's CMakeLists.txt pulls Lua in at configure time via
+        # FetchContent (URL), which needs network access -- fine for `just
+        # build-native` in the devShell, but Nix's build sandbox has none.
+        # Fetched here instead as a regular Nix derivation (network
+        # allowed for fixed-output derivations, verified by hash) and
+        # handed back to the same FetchContent machinery via
+        # FETCHCONTENT_SOURCE_DIR_LUA, so CMakeLists.txt itself needs no
+        # changes. This hash mirrors CMakeLists.txt's own URL_HASH and
+        # must be kept in sync with it.
         luaTarball = pkgs.fetchurl {
           url = "https://www.lua.org/ftp/lua-5.4.7.tar.gz";
           sha256 = "9fbf5e28ef86c69858f6d3d34eccc32e911c1a28b4120ff3e84aaa70cfbf1e30";
         };
 
         # pugixml/miniz/pdfium (office_doc.cpp/pdf_doc.cpp) were added to
-        # CMakeLists.txt's FetchContent set after raylib/lua were already
-        # wired up above, and this file wasn't updated to match -- with
+        # CMakeLists.txt's FetchContent set after lua was already wired up
+        # above, and this file wasn't updated to match -- with
         # FETCHCONTENT_FULLY_DISCONNECTED=ON below, CMake never downloads
         # them, leaving pugixml/miniz/pdfium_SOURCE_DIR empty and failing
         # configure (pugixml has no sources, `add_library(miniz ...)` has
@@ -198,7 +190,6 @@
             mkdir -p "$NIX_BUILD_TOP/lua-src"
             tar xzf ${luaTarball} --strip-components=1 -C "$NIX_BUILD_TOP/lua-src"
             cmakeFlagsArray+=(
-              "-DFETCHCONTENT_SOURCE_DIR_RAYLIB=${raylibSrc}"
               "-DFETCHCONTENT_SOURCE_DIR_LUA=$NIX_BUILD_TOP/lua-src"
               "-DFETCHCONTENT_SOURCE_DIR_PUGIXML=${pugixmlSrc}"
               "-DFETCHCONTENT_SOURCE_DIR_MINIZ=${minizSrc}"
@@ -228,7 +219,7 @@
             pkgs.deno
             pkgs.just
             pkgs.pkg-config
-            # Native (non-wasm) raylib build deps, for `just build-native`.
+            # Native (non-wasm) gfx:: backend build deps (GLFW/OpenGL/X11), for `just build-native`.
             pkgs.glfw
             pkgs.libGL
             pkgs.libx11

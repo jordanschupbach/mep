@@ -33,7 +33,7 @@ extern "C" {
 #include "lualib.h"
 }
 
-#include "raylib.h"
+#include "gfx/platform.h"
 
 #include "json.h"
 #include "persist.h"
@@ -532,25 +532,34 @@ int l_leader_bindings(lua_State *L) {
     return 1;
 }
 
-// mep.map_mod1(key, fn): binds a single letter key under the mod1 modifier
-// (see mep.set_mod1), globally across all modes. `key` is a bare letter
-// ("h") for mod1+letter, or "S-"/"C-" prefixed ("S-h", "C-h") for
+// mep.map_mod1(key, fn, repeat?): binds a single letter key under the mod1
+// modifier (see mep.set_mod1), globally across all modes. `key` is a bare
+// letter ("h") for mod1+letter, or "S-"/"C-" prefixed ("S-h", "C-h") for
 // mod1+Shift+letter / mod1+Ctrl+letter. Two non-letter keys are also
 // recognized, each its own special case in HandleMod1Shortcuts since
 // neither falls in the A-Z scan the letter case uses: "Tab"/"S-Tab", and
 // "CR"/"S-CR" (Enter -- no Ctrl variant, matching Tab). Overrides any
 // prior mapping for that exact key, including the startup defaults.
+//
+// `repeat` (default false) lets holding the key keep re-firing it at the OS
+// key-repeat rate instead of only on the initial press -- most mod1 actions
+// (split, close buffer, popout toggle, ...) would misbehave if held (e.g.
+// spawning a stack of splits, or flickering a toggle), so this defaults
+// off; resize_pane's S-h/j/k/l bindings below are the one default case
+// that opts in, matching how holding plain h/j/k/l already repeats in a
+// buffer.
 /**
- * @brief Implements mep.map_mod1(key, fn): binds a single letter key (or "Tab"/"S-Tab"/"CR"/"S-CR") under the mod1 modifier, globally across all modes.
- * @param L Lua state; arg 1 is the key, arg 2 the callback function.
+ * @brief Implements mep.map_mod1(key, fn, repeat?): binds a single letter key (or "Tab"/"S-Tab"/"CR"/"S-CR") under the mod1 modifier, globally across all modes.
+ * @param L Lua state; arg 1 is the key, arg 2 the callback function, arg 3 (optional, default false) whether holding the key repeats it.
  * @return Number of values pushed (0).
  */
 int l_map_mod1(lua_State *L) {
     const char *key = luaL_checkstring(L, 1);
     luaL_checktype(L, 2, LUA_TFUNCTION);
+    bool repeat = lua_toboolean(L, 3) != 0;
     lua_pushvalue(L, 2);
     int ref = luaL_ref(L, LUA_REGISTRYINDEX);
-    GetEditor(L)->RegisterMod1Mapping(key, ref);
+    GetEditor(L)->RegisterMod1Mapping(key, ref, repeat);
     return 0;
 }
 
@@ -806,7 +815,7 @@ int l_sidebar_default_cols(lua_State *L) {
     float char_width = GetCharWidthPx();
     int cols = 34;
     if (char_width > 0.0f) {
-        cols = static_cast<int>((static_cast<double>(GetScreenWidth()) * frac) / static_cast<double>(char_width));
+        cols = static_cast<int>((static_cast<double>(gfx::GetScreenWidth()) * frac) / static_cast<double>(char_width));
     }
     lua_pushinteger(L, std::max(cols, 10));
     return 1;

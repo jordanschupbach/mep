@@ -30,7 +30,14 @@
 #include <system_error>
 #include <unordered_set>
 
-#include "raylib.h"
+#if !defined(__EMSCRIPTEN__) && !defined(_WIN32)
+#include <pwd.h>
+#include <unistd.h>
+#endif
+
+#include "gfx/input.h"
+#include "gfx/platform.h"
+#include "gfx/renderer2d.h"
 #include "json.h"
 #include "persist.h"
 #include "collab_session.h"
@@ -469,7 +476,7 @@ EM_JS(int, mep_js_pty_exit_code, (int id), {
 });
 
 // System clipboard bridge for the wasm build (Editor::SystemClipboardRead/
-// Write). raylib's own web-platform GetClipboardText() is a stub, and
+// Write). The underlying backend's web-platform GetClipboardText() is a stub, and
 // navigator.clipboard.readText() is async (and permission-gated) -- so,
 // same as the file bridge above, nothing here awaits (no Asyncify).
 // Instead the JS side keeps a cache, window.__mepClipboardText, fed by:
@@ -3917,10 +3924,10 @@ Editor::~Editor() = default;
 
 void Editor::HandleInput() {
     TickCollaboration();
-    TickWorkspacePersistence(GetTime());
+    TickWorkspacePersistence(gfx::GetTime());
     MaybeDismissHover();
     {
-        Vector2 wheel = GetMouseWheelMoveV();
+        gfx::Vector2 wheel = gfx::GetMouseWheelMoveV();
         if (wheel.x != 0.0f || wheel.y != 0.0f) HandleMouseWheel(wheel.x, wheel.y);
     }
     if (HandleMod1Shortcuts()) return;
@@ -4271,7 +4278,7 @@ void Editor::WheelScrollOffice(float dx, float dy) {
     // comment for the sign convention. Checked before the table-nav-exit
     // side effect below so a zoom gesture doesn't also drop out of an
     // active table cell the way a real scroll deliberately does.
-    if ((IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) && dy != 0.0f) {
+    if ((gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl)) && dy != 0.0f) {
         SetOfficeZoom(std::pow(kWheelZoomStepPerNotch, dy));
         return;
     }
@@ -4335,7 +4342,7 @@ void Editor::WheelScrollPdf(float dx, float dy) {
     // trackpad gesture is ignored while ctrl is held, same as the pan
     // below being ignored during the pinch itself -- this IS the zoom
     // gesture, not a scroll.
-    if ((IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) && dy != 0.0f) {
+    if ((gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl)) && dy != 0.0f) {
         ApplyPdfZoom(sess, sess.zoom * std::pow(kWheelZoomStepPerNotch, dy));
         return;
     }
@@ -4355,7 +4362,7 @@ void Editor::WheelScrollImage(float dx, float dy) {
     ImageSession &sess = it->second;
     // Ctrl-scroll zooms instead of panning -- see WheelScrollPdf's own
     // comment for the sign/dx-ignored reasoning (identical here).
-    if ((IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) && dy != 0.0f) {
+    if ((gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl)) && dy != 0.0f) {
         ApplyImageZoom(sess, sess.zoom * std::pow(kWheelZoomStepPerNotch, dy));
         return;
     }
@@ -4378,7 +4385,7 @@ void Editor::WheelScrollHtml(float dx, float dy) {
     // (HandleHtmlInput) as the keyboard shortcuts, just driven by the
     // wheel's vertical delta. See WheelScrollPdf's own comment for the
     // sign convention.
-    if ((IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) && dy != 0.0f) {
+    if ((gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl)) && dy != 0.0f) {
         sess.zoom = std::clamp(sess.zoom * std::pow(kWheelZoomStepPerNotch, dy), 0.3f, 3.0f);
         return;
     }
@@ -4922,8 +4929,28 @@ void Editor::OpenTerminal(const std::string &args) {
 }
 
 void Editor::OpenTerminalInPlace(const std::string &args) {
-    const char *shell_env = std::getenv("SHELL");
-    std::string shell = (shell_env && *shell_env) ? shell_env : "/bin/sh";
+    std::string shell;
+#if !defined(__EMSCRIPTEN__) && !defined(_WIN32)
+    // Prefer the OS-registered login shell (passwd db) over $SHELL: real
+    // terminal emulators (xterm, kitty, alacritty, ...) do the same,
+    // because $SHELL is just an inherited environment convention that
+    // tools can silently repoint to something not meant for interactive
+    // use -- observed here under nix-direnv, whose devShell activation
+    // exports SHELL=<nixpkgs' minimal, readline-less `bash`> (the one
+    // `mkShell` uses for build reproducibility, distinct from
+    // `bashInteractive`). A shell with no readline never converts a
+    // prompt's `\[`/`\]` non-printing markers (used by starship and
+    // kitty's own shell-integration script) into readline's internal
+    // ignore bytes -- they print as literal text instead, which is
+    // exactly the "funny characters ... lots of square brackets" bug.
+    if (struct passwd *pw = getpwuid(getuid())) {
+        if (pw->pw_shell && *pw->pw_shell) shell = pw->pw_shell;
+    }
+#endif
+    if (shell.empty()) {
+        const char *shell_env = std::getenv("SHELL");
+        shell = (shell_env && *shell_env) ? shell_env : "/bin/sh";
+    }
     std::vector<std::string> argv = args.empty() ? std::vector<std::string>{shell}
                                                   : std::vector<std::string>{shell, "-c", args};
     OpenTerminalInPlaceArgv(argv, args.empty() ? shell : args);
@@ -5318,30 +5345,30 @@ void Editor::HandleImageInput() {
     int max_pan_x = sess->doc ? std::max(0, static_cast<int>(static_cast<float>(sess->doc->Width()) * sess->zoom) - sess->viewport_w) : 0;
     int max_pan_y = sess->doc ? std::max(0, static_cast<int>(static_cast<float>(sess->doc->Height()) * sess->zoom) - sess->viewport_h) : 0;
 
-    // IsKeyPressed(Repeat) rather than draining GetKeyPressed(): GLFW only
-    // enqueues the initial key-down into the GetKeyPressed() queue, so
+    // gfx::IsKeyPressed(Repeat) rather than draining gfx::GetKeyPressed(): GLFW only
+    // enqueues the initial key-down into the gfx::GetKeyPressed() queue, so
     // holding a key down (OS auto-repeat) would otherwise pan exactly once.
     /**
      * @brief Checks whether a key was just pressed or is auto-repeating.
      * @param key The GLFW/raylib key code to check.
      * @return True if the key is freshly pressed or repeating this frame.
      */
-    auto held = [](int key) { return IsKeyPressed(key) || IsKeyPressedRepeat(key); };
-    if (held(KEY_H) || held(KEY_LEFT)) {
+    auto held = [](gfx::Key key) { return gfx::IsKeyPressed(key) || gfx::IsKeyPressedRepeat(key); };
+    if (held(gfx::Key::H) || held(gfx::Key::Left)) {
         sess->pan_x = std::clamp(sess->pan_x - kPanStep, 0, max_pan_x);
     }
-    if (held(KEY_L) || held(KEY_RIGHT)) {
+    if (held(gfx::Key::L) || held(gfx::Key::Right)) {
         sess->pan_x = std::clamp(sess->pan_x + kPanStep, 0, max_pan_x);
     }
-    if (held(KEY_K) || held(KEY_UP)) {
+    if (held(gfx::Key::K) || held(gfx::Key::Up)) {
         sess->pan_y = std::clamp(sess->pan_y - kPanStep, 0, max_pan_y);
     }
-    if (held(KEY_J) || held(KEY_DOWN)) {
+    if (held(gfx::Key::J) || held(gfx::Key::Down)) {
         sess->pan_y = std::clamp(sess->pan_y + kPanStep, 0, max_pan_y);
     }
-    bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
-    if (ctrl && held(KEY_D)) sess->pan_y = std::clamp(sess->pan_y + sess->viewport_h / 2, 0, max_pan_y);
-    if (ctrl && held(KEY_U)) sess->pan_y = std::clamp(sess->pan_y - sess->viewport_h / 2, 0, max_pan_y);
+    bool ctrl = gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl);
+    if (ctrl && held(gfx::Key::D)) sess->pan_y = std::clamp(sess->pan_y + sess->viewport_h / 2, 0, max_pan_y);
+    if (ctrl && held(gfx::Key::U)) sess->pan_y = std::clamp(sess->pan_y - sess->viewport_h / 2, 0, max_pan_y);
 
     // +/-/= zoom: +/- multiply or divide the zoom factor by kImageZoomStep,
     // re-anchored on whatever image point is currently at the viewport's
@@ -5356,7 +5383,7 @@ void Editor::HandleImageInput() {
      */
     auto apply_zoom = [&](float new_zoom) { ApplyImageZoom(*sess, new_zoom); };
 
-    int cp = GetCharPressed();
+    int cp = gfx::GetCharPressed();
     while (cp > 0) {
         if (cp == ':') {
             EnterCommand();
@@ -5381,7 +5408,7 @@ void Editor::HandleImageInput() {
         }
         // Every other printable key is a deliberate no-op -- see
         // Mode::Image's own comment for why (no text to insert/operate on).
-        cp = GetCharPressed();
+        cp = gfx::GetCharPressed();
     }
 }
 
@@ -5541,7 +5568,7 @@ void Editor::WheelScrollImageEditor(float dx, float dy) {
     auto it = image_editors_.find(CurPane().buffer_id);
     if (it == image_editors_.end()) return;
     ImageEditorSession &sess = it->second;
-    if ((IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) && dy != 0.0f) {
+    if ((gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl)) && dy != 0.0f) {
         ApplyImageEditorZoom(sess, sess.zoom * std::pow(kWheelZoomStepPerNotch, dy));
         return;
     }
@@ -5949,13 +5976,13 @@ bool Editor::SaveImageEditorPng(ImageEditorSession &sess, const std::string &pat
     return false;
 #else
     ImageEditorComposite(sess);
-    Image img{};
+    gfx::Image img{};
     img.data = sess.composite.data();
     img.width = sess.width;
     img.height = sess.height;
     img.mipmaps = 1;
-    img.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
-    if (!ExportImage(img, path.c_str())) {
+    img.format = gfx::kPixelFormatR8G8B8A8;
+    if (!gfx::ExportImage(img, path.c_str())) {
         status_message_ = "E212: Can't write \"" + path + "\"";
         return false;
     }
@@ -5980,17 +6007,17 @@ void Editor::HandleImageEditorInput() {
         mode_ = Mode::Normal;
         return;
     }
-    if (IsKeyPressed(KEY_ESCAPE)) {
+    if (gfx::IsKeyPressed(gfx::Key::Escape)) {
         ExitImageEditor();
         return;
     }
-    bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
-    if (ctrl && IsKeyPressed(KEY_R)) {
+    bool ctrl = gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl);
+    if (ctrl && gfx::IsKeyPressed(gfx::Key::R)) {
         RedoImageEditor(sess->buffer_id);
         return;
     }
     auto apply_zoom = [&](float z) { ApplyImageEditorZoom(*sess, z); };
-    int cp = GetCharPressed();
+    int cp = gfx::GetCharPressed();
     while (cp > 0) {
         if (cp == ':') {
             EnterCommand();
@@ -6039,13 +6066,13 @@ void Editor::HandleImageEditorInput() {
         } else if (cp == 'v') {
             sess->tool = ImageEditorTool::Move;
         }
-        cp = GetCharPressed();
+        cp = gfx::GetCharPressed();
     }
-    // Delete/Backspace: not part of the GetCharPressed() queue above (they're
+    // Delete/Backspace: not part of the gfx::GetCharPressed() queue above (they're
     // control keys, not printable characters) -- clears the selection's
     // pixels but leaves the selection itself in place, same as every
     // mainstream image editor's Delete key.
-    if (IsKeyPressed(KEY_DELETE) || IsKeyPressed(KEY_BACKSPACE)) {
+    if (gfx::IsKeyPressed(gfx::Key::Delete) || gfx::IsKeyPressed(gfx::Key::Backspace)) {
         if (sess->selection.kind != ImageEditorSelectionKind::None) {
             PushUndoImageEditor(sess->buffer_id);
             ImageEditorDeleteSelection(*sess);
@@ -6948,21 +6975,21 @@ void Editor::HandleModel3DInput() {
         sess = &it->second;
     }
 
-    if (IsKeyPressed(KEY_ESCAPE)) {
+    if (gfx::IsKeyPressed(gfx::Key::Escape)) {
         sess->selection.clear();
         return;
     }
-    bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
-    if (ctrl && IsKeyPressed(KEY_R)) {
+    bool ctrl = gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl);
+    if (ctrl && gfx::IsKeyPressed(gfx::Key::R)) {
         RedoModel3D(sess->buffer_id);
         return;
     }
-    if (ctrl && IsKeyPressed(KEY_D)) {
+    if (ctrl && gfx::IsKeyPressed(gfx::Key::D)) {
         std::vector<int> selected = sess->selection;
         for (int id : selected) Model3DDuplicateObject(sess->buffer_id, id);
         return;
     }
-    if (ctrl && IsKeyPressed(KEY_X) && sess->mesh_edit_mode && sess->selection.size() == 1 &&
+    if (ctrl && gfx::IsKeyPressed(gfx::Key::X) && sess->mesh_edit_mode && sess->selection.size() == 1 &&
         sess->vertex_selection.size() == 1) {
         // Blender's own X-key ("delete/dissolve" menu) spirit -- Ctrl held
         // to keep it well clear of the plain Delete/Backspace key (which
@@ -6989,7 +7016,7 @@ void Editor::HandleModel3DInput() {
     // own "Make Edge/Face" hotkey. Ctrl-X (above) dissolves the one
     // selected vertex. ':' and the leader key are forwarded, same as
     // HandleImageEditorInput.
-    int cp = GetCharPressed();
+    int cp = gfx::GetCharPressed();
     while (cp > 0) {
         if (cp == ':') {
             EnterCommand();
@@ -7061,9 +7088,9 @@ void Editor::HandleModel3DInput() {
             // op (move, extrude, ...) act on the just-created face too.
             Model3DMakeFace(sess->buffer_id, sess->selection[0], sess->vertex_selection);
         }
-        cp = GetCharPressed();
+        cp = gfx::GetCharPressed();
     }
-    if (IsKeyPressed(KEY_DELETE) || IsKeyPressed(KEY_BACKSPACE)) {
+    if (gfx::IsKeyPressed(gfx::Key::Delete) || gfx::IsKeyPressed(gfx::Key::Backspace)) {
         if (sess->mesh_edit_mode && sess->selection.size() == 1 && !sess->vertex_selection.empty()) {
             // Deletes the selected *vertices* (and their surrounding
             // triangles) rather than the object itself while in mesh-edit
@@ -7093,7 +7120,7 @@ void Editor::WheelScrollModel3D(float dx, float dy) {
 // --- PDF-viewer panes -------------------------------------------------------
 
 namespace {
-// GetCharPressed() yields full Unicode codepoints (raylib's char callback,
+// gfx::GetCharPressed() yields full Unicode codepoints (raylib's char callback,
 // not a raw keycode), so a PDF search query typed via HandlePdfSearchInput
 // needs to UTF-8-encode anything beyond ASCII itself -- std::string here is
 // always UTF-8 (matching PdfDoc::Search's own expectation, which decodes it
@@ -7308,9 +7335,9 @@ void Editor::HandleHtmlInput() {
     }
 
     constexpr float kScrollStep = 60.0f;
-    bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
-    // IsKeyPressed(Repeat) rather than draining GetKeyPressed(): GLFW only
-    // enqueues the initial key-down into the GetKeyPressed() queue, so
+    bool ctrl = gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl);
+    // gfx::IsKeyPressed(Repeat) rather than draining gfx::GetKeyPressed(): GLFW only
+    // enqueues the initial key-down into the gfx::GetKeyPressed() queue, so
     // holding a key down (OS auto-repeat) would otherwise scroll exactly
     // once -- same reasoning as HandleImageInput's own `held` helper.
     /**
@@ -7318,13 +7345,13 @@ void Editor::HandleHtmlInput() {
      * @param key The GLFW/raylib key code to check.
      * @return True if the key is freshly pressed or repeating this frame.
      */
-    auto held = [](int key) { return IsKeyPressed(key) || IsKeyPressedRepeat(key); };
-    if (held(KEY_J) || held(KEY_DOWN)) sess->scroll_y += kScrollStep;
-    if (held(KEY_K) || held(KEY_UP)) sess->scroll_y = std::max(0.0f, sess->scroll_y - kScrollStep);
-    if ((ctrl && held(KEY_D)) || held(KEY_PAGE_DOWN)) {
+    auto held = [](gfx::Key key) { return gfx::IsKeyPressed(key) || gfx::IsKeyPressedRepeat(key); };
+    if (held(gfx::Key::J) || held(gfx::Key::Down)) sess->scroll_y += kScrollStep;
+    if (held(gfx::Key::K) || held(gfx::Key::Up)) sess->scroll_y = std::max(0.0f, sess->scroll_y - kScrollStep);
+    if ((ctrl && held(gfx::Key::D)) || held(gfx::Key::PageDown)) {
         sess->scroll_y += static_cast<float>(sess->viewport_h) * 0.5f;
     }
-    if ((ctrl && held(KEY_U)) || held(KEY_PAGE_UP)) {
+    if ((ctrl && held(gfx::Key::U)) || held(gfx::Key::PageUp)) {
         sess->scroll_y = std::max(0.0f, sess->scroll_y - static_cast<float>(sess->viewport_h) * 0.5f);
     }
     // Mirrors PdfSession::theme_colors' own Ctrl-R toggle (HandlePdfInput) --
@@ -7332,13 +7359,13 @@ void Editor::HandleHtmlInput() {
     // same default (true; see HtmlSession::theme_colors' own comment for
     // why). The actual recoloring is entirely a DrawPane concern
     // (main.cpp); this just flips the flag.
-    if (ctrl && IsKeyPressed(KEY_R)) sess->theme_colors = !sess->theme_colors;
+    if (ctrl && gfx::IsKeyPressed(gfx::Key::R)) sess->theme_colors = !sess->theme_colors;
     // Ctrl-E: escape hatch to the plain-text view of this same file --
     // the opposite direction of HandleNormalInput's own Ctrl-V on an
     // .html/.htm buffer (see ConvertHtmlBufferToText's own comment).
     // `sess` is dangling after this (its HtmlSession got erased), so
     // nothing below may touch it -- return immediately.
-    if (ctrl && IsKeyPressed(KEY_E)) {
+    if (ctrl && gfx::IsKeyPressed(gfx::Key::E)) {
         ConvertHtmlBufferToText(CurPane().buffer_id);
         CurPane().cursor = {0, 0};
         CurPane().scroll_row = 0;
@@ -7357,7 +7384,7 @@ void Editor::HandleHtmlInput() {
     // (re-fetch if remote) / address-bar (mep.ui_input prompt) logic
     // lives in Lua, this just triggers it. Every other printable key is a
     // deliberate no-op -- there's no text to insert/operate on.
-    int cp = GetCharPressed();
+    int cp = gfx::GetCharPressed();
     while (cp > 0) {
         if (cp == ':') {
             EnterCommand();
@@ -7378,7 +7405,7 @@ void Editor::HandleHtmlInput() {
             auto it = lua_commands_.find("MepBrowseOpen");
             if (it != lua_commands_.end() && lua_) lua_->CallRefWithString(it->second, "");
         }
-        cp = GetCharPressed();
+        cp = gfx::GetCharPressed();
     }
 }
 
@@ -7630,19 +7657,19 @@ void Editor::HandlePdfInput() {
 
     constexpr int kScrollStep = 40;
     // Same IsKeyPressed||IsKeyPressedRepeat reasoning as HandleImageInput --
-    // GetKeyPressed() only fires on initial key-down, not OS auto-repeat.
+    // gfx::GetKeyPressed() only fires on initial key-down, not OS auto-repeat.
     /**
      * @brief Checks whether a key was just pressed or is auto-repeating.
      * @param key The GLFW/raylib key code to check.
      * @return True if the key is freshly pressed or repeating this frame.
      */
-    auto held = [](int key) { return IsKeyPressed(key) || IsKeyPressedRepeat(key); };
+    auto held = [](gfx::Key key) { return gfx::IsKeyPressed(key) || gfx::IsKeyPressedRepeat(key); };
     bool scrolled = false;
-    if (held(KEY_J) || held(KEY_DOWN)) { sess->scroll_y += kScrollStep; scrolled = true; }
-    if (held(KEY_K) || held(KEY_UP)) { sess->scroll_y -= kScrollStep; scrolled = true; }
+    if (held(gfx::Key::J) || held(gfx::Key::Down)) { sess->scroll_y += kScrollStep; scrolled = true; }
+    if (held(gfx::Key::K) || held(gfx::Key::Up)) { sess->scroll_y -= kScrollStep; scrolled = true; }
     if (scrolled) rebase_scroll();
-    if (held(KEY_H) || held(KEY_LEFT)) { sess->pan_x -= kScrollStep; clamp_pan_x(); }
-    if (held(KEY_L) || held(KEY_RIGHT)) { sess->pan_x += kScrollStep; clamp_pan_x(); }
+    if (held(gfx::Key::H) || held(gfx::Key::Left)) { sess->pan_x -= kScrollStep; clamp_pan_x(); }
+    if (held(gfx::Key::L) || held(gfx::Key::Right)) { sess->pan_x += kScrollStep; clamp_pan_x(); }
 
     /**
      * @brief Jumps to a clamped PDF page number and resets vertical scroll to its top.
@@ -7653,20 +7680,20 @@ void Editor::HandlePdfInput() {
         sess->scroll_y = 0;
     };
 
-    // Ctrl-f/Ctrl-b/Ctrl-r: same GetKeyPressed()-drain-while-ctrl-held
-    // pattern as HandleNormalInput's own Ctrl-combos (IsKeyPressed() alone
+    // Ctrl-f/Ctrl-b/Ctrl-r: same gfx::GetKeyPressed()-drain-while-ctrl-held
+    // pattern as HandleNormalInput's own Ctrl-combos (gfx::IsKeyPressed() alone
     // was found flaky for these under slow/software-rendered frames -- see
     // its comment at this function's normal-mode counterpart).
-    bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+    bool ctrl = gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl);
     bool next_page = false, prev_page = false, toggle_theme = false;
-    if (ctrl && held(KEY_D)) { sess->scroll_y += static_cast<float>(sess->viewport_h) * 0.5f; rebase_scroll(); }
-    if (ctrl && held(KEY_U)) { sess->scroll_y -= static_cast<float>(sess->viewport_h) * 0.5f; rebase_scroll(); }
-    for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
-        if (key == KEY_PAGE_DOWN) next_page = true;
-        else if (key == KEY_PAGE_UP) prev_page = true;
-        else if (ctrl && key == KEY_F) next_page = true;
-        else if (ctrl && key == KEY_B) prev_page = true;
-        else if (ctrl && key == KEY_R) toggle_theme = true;
+    if (ctrl && held(gfx::Key::D)) { sess->scroll_y += static_cast<float>(sess->viewport_h) * 0.5f; rebase_scroll(); }
+    if (ctrl && held(gfx::Key::U)) { sess->scroll_y -= static_cast<float>(sess->viewport_h) * 0.5f; rebase_scroll(); }
+    for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
+        if (key == gfx::Key::PageDown) next_page = true;
+        else if (key == gfx::Key::PageUp) prev_page = true;
+        else if (ctrl && key == gfx::Key::F) next_page = true;
+        else if (ctrl && key == gfx::Key::B) prev_page = true;
+        else if (ctrl && key == gfx::Key::R) toggle_theme = true;
     }
     if (next_page) goto_page(sess->page + 1);
     if (prev_page) goto_page(sess->page - 1);
@@ -7691,7 +7718,7 @@ void Editor::HandlePdfInput() {
      */
     auto apply_zoom = [&](float new_zoom) { ApplyPdfZoom(*sess, new_zoom); };
 
-    int cp = GetCharPressed();
+    int cp = gfx::GetCharPressed();
     while (cp > 0) {
         if (cp == ':') {
             EnterCommand();
@@ -7742,19 +7769,19 @@ void Editor::HandlePdfInput() {
         }
         // Every other printable key is a deliberate no-op -- see
         // Mode::Pdf's own comment for why (read-only content).
-        cp = GetCharPressed();
+        cp = gfx::GetCharPressed();
     }
 }
 
 void Editor::HandlePdfSearchInput(PdfSession &sess) {
-    if (IsKeyPressed(KEY_ESCAPE)) {
+    if (gfx::IsKeyPressed(gfx::Key::Escape)) {
         // Cancel: discard the in-progress query text, but leave any prior
         // *completed* search (search_query/search_matches/highlights)
         // exactly as it was -- matches vim's own '/' escape behavior.
         sess.search_active = false;
         return;
     }
-    if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER)) {
+    if (gfx::IsKeyPressed(gfx::Key::Enter) || gfx::IsKeyPressed(gfx::Key::KpEnter)) {
         sess.search_active = false;
         RunPdfSearch(sess, sess.search_input);
         if (!sess.search_matches.empty()) {
@@ -7771,10 +7798,10 @@ void Editor::HandlePdfSearchInput(PdfSession &sess) {
         }
         return;
     }
-    if (IsKeyPressed(KEY_BACKSPACE) || IsKeyPressedRepeat(KEY_BACKSPACE)) {
+    if (gfx::IsKeyPressed(gfx::Key::Backspace) || gfx::IsKeyPressedRepeat(gfx::Key::Backspace)) {
         if (!sess.search_input.empty()) sess.search_input.pop_back();
     }
-    for (int cp = GetCharPressed(); cp > 0; cp = GetCharPressed()) AppendUtf8(sess.search_input, cp);
+    for (int cp = gfx::GetCharPressed(); cp > 0; cp = gfx::GetCharPressed()) AppendUtf8(sess.search_input, cp);
 }
 
 // --- WYSIWYG office-document panes ------------------------------------------
@@ -7964,13 +7991,13 @@ void Editor::HandleOfficeNormalInput() {
     // Document-viewer zoom is intentionally available before table/nav
     // handling, so Ctrl+= and Ctrl+- work from every ordinary office
     // reading state rather than becoming table-specific commands.
-    const bool ctrl_down = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
-    if (ctrl_down && (IsKeyPressed(KEY_EQUAL) || IsKeyPressedRepeat(KEY_EQUAL))) {
+    const bool ctrl_down = gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl);
+    if (ctrl_down && (gfx::IsKeyPressed(gfx::Key::Equal) || gfx::IsKeyPressedRepeat(gfx::Key::Equal))) {
         SetOfficeZoom(1.1f);
         status_message_ = "Document zoom: " + std::to_string(static_cast<int>(std::lround(sess->zoom * 100.0f))) + "%";
         return;
     }
-    if (ctrl_down && (IsKeyPressed(KEY_MINUS) || IsKeyPressedRepeat(KEY_MINUS))) {
+    if (ctrl_down && (gfx::IsKeyPressed(gfx::Key::Minus) || gfx::IsKeyPressedRepeat(gfx::Key::Minus))) {
         SetOfficeZoom(1.0f / 1.1f);
         status_message_ = "Document zoom: " + std::to_string(static_cast<int>(std::lround(sess->zoom * 100.0f))) + "%";
         return;
@@ -8014,7 +8041,7 @@ void Editor::HandleOfficeNormalInput() {
      * @param key The GLFW/raylib key code to check.
      * @return True if the key is freshly pressed or repeating this frame.
      */
-    auto held = [](int key) { return IsKeyPressed(key) || IsKeyPressedRepeat(key); };
+    auto held = [](gfx::Key key) { return gfx::IsKeyPressed(key) || gfx::IsKeyPressedRepeat(key); };
 
     // Table-cell navigation mode: while the cursor is anchored on a table
     // (in_table_edit >= 0) and not currently editing one cell's text,
@@ -8026,12 +8053,12 @@ void Editor::HandleOfficeNormalInput() {
     // off its left/right edge simply clamps in place, matching this
     // codebase's existing column-motion-clamps-at-line-ends convention.
     if (sess->in_table_edit >= 0 && !sess->table_cell_editing) {
-        if (IsKeyPressed(KEY_ESCAPE)) {
+        if (gfx::IsKeyPressed(gfx::Key::Escape)) {
             ExitOfficeTable();
             return;
         }
         const DocTable &t = sess->doc.tables[static_cast<size_t>(sess->in_table_edit)];
-        if (held(KEY_J) || held(KEY_DOWN)) {
+        if (held(gfx::Key::J) || held(gfx::Key::Down)) {
             if (sess->table_cursor_row + 1 < t.rows) {
                 MoveOfficeTableCell(1, 0);
             } else {
@@ -8039,7 +8066,7 @@ void Editor::HandleOfficeNormalInput() {
                 goto_para(sess->cursor_para + 1);
                 sess->cursor_col = 0;
             }
-        } else if (held(KEY_K) || held(KEY_UP)) {
+        } else if (held(gfx::Key::K) || held(gfx::Key::Up)) {
             if (sess->table_cursor_row > 0) {
                 MoveOfficeTableCell(-1, 0);
             } else {
@@ -8047,12 +8074,12 @@ void Editor::HandleOfficeNormalInput() {
                 goto_para(sess->cursor_para - 1);
                 sess->cursor_col = cur_len();
             }
-        } else if (held(KEY_H) || held(KEY_LEFT)) {
+        } else if (held(gfx::Key::H) || held(gfx::Key::Left)) {
             MoveOfficeTableCell(0, -1);
-        } else if (held(KEY_L) || held(KEY_RIGHT)) {
+        } else if (held(gfx::Key::L) || held(gfx::Key::Right)) {
             MoveOfficeTableCell(0, 1);
-        } else if (held(KEY_TAB)) {
-            bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+        } else if (held(gfx::Key::Tab)) {
+            bool shift = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
             if (!shift) {
                 if (sess->table_cursor_col + 1 < t.cols) MoveOfficeTableCell(0, 1);
                 else if (sess->table_cursor_row + 1 < t.rows) MoveOfficeTableCell(1, -sess->table_cursor_col);
@@ -8061,7 +8088,7 @@ void Editor::HandleOfficeNormalInput() {
                 else if (sess->table_cursor_row > 0) MoveOfficeTableCell(-1, t.cols - 1 - sess->table_cursor_col);
             }
         }
-        int tcp = GetCharPressed();
+        int tcp = gfx::GetCharPressed();
         while (tcp > 0) {
             if (tcp == 'i') {
                 PushUndoOffice();
@@ -8080,7 +8107,7 @@ void Editor::HandleOfficeNormalInput() {
                 EnterCommand();
                 return;
             }
-            tcp = GetCharPressed();
+            tcp = gfx::GetCharPressed();
         }
         return;
     }
@@ -8093,22 +8120,22 @@ void Editor::HandleOfficeNormalInput() {
     // Reproduces goto_para's table-auto-entry on an actual paragraph
     // change (MoveOfficeCursorVisualLine returning true) since it's
     // bypassing goto_para itself for the visual-line-internal case.
-    if (held(KEY_H) || held(KEY_LEFT)) sess->cursor_col = std::max(0, sess->cursor_col - 1);
-    if (held(KEY_L) || held(KEY_RIGHT)) sess->cursor_col = std::min(cur_len(), sess->cursor_col + 1);
-    if (held(KEY_J) || held(KEY_DOWN)) {
+    if (held(gfx::Key::H) || held(gfx::Key::Left)) sess->cursor_col = std::max(0, sess->cursor_col - 1);
+    if (held(gfx::Key::L) || held(gfx::Key::Right)) sess->cursor_col = std::min(cur_len(), sess->cursor_col + 1);
+    if (held(gfx::Key::J) || held(gfx::Key::Down)) {
         if (MoveOfficeCursorVisualLine(sess, 1)) {
             int tref = sess->doc.paragraphs[static_cast<size_t>(sess->cursor_para)].table_ref;
             if (tref >= 0) EnterOfficeTable(tref);
         }
     }
-    if (held(KEY_K) || held(KEY_UP)) {
+    if (held(gfx::Key::K) || held(gfx::Key::Up)) {
         if (MoveOfficeCursorVisualLine(sess, -1)) {
             int tref = sess->doc.paragraphs[static_cast<size_t>(sess->cursor_para)].table_ref;
             if (tref >= 0) EnterOfficeTable(tref);
         }
     }
 
-    int cp = GetCharPressed();
+    int cp = gfx::GetCharPressed();
     while (cp > 0) {
         if (cp == ':') {
             EnterCommand();
@@ -8160,14 +8187,14 @@ void Editor::HandleOfficeNormalInput() {
         } else {
             pending_g_ = false;
         }
-        cp = GetCharPressed();
+        cp = gfx::GetCharPressed();
     }
-    bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
-    if (IsKeyPressed(KEY_R) && ctrl) {
+    bool ctrl = gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl);
+    if (gfx::IsKeyPressed(gfx::Key::R) && ctrl) {
         RedoOffice();
     }
-    if (ctrl && (held(KEY_D) || held(KEY_U))) {
-        bool down = held(KEY_D);
+    if (ctrl && (held(gfx::Key::D) || held(gfx::Key::U))) {
+        bool down = held(gfx::Key::D);
         // Paragraph count, not visual line count -- word-wrap needs
         // main.cpp's MeasureTextEx, which this raylib-model-level function
         // can't call (see ResizeOfficeViewport's own comment on why
@@ -8235,13 +8262,13 @@ void Editor::HandleOfficeInsertInput() {
         sess = &it->second;
     }
 
-    const bool ctrl_down = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
-    if (ctrl_down && (IsKeyPressed(KEY_EQUAL) || IsKeyPressedRepeat(KEY_EQUAL))) {
+    const bool ctrl_down = gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl);
+    if (ctrl_down && (gfx::IsKeyPressed(gfx::Key::Equal) || gfx::IsKeyPressedRepeat(gfx::Key::Equal))) {
         SetOfficeZoom(1.1f);
         status_message_ = "Document zoom: " + std::to_string(static_cast<int>(std::lround(sess->zoom * 100.0f))) + "%";
         return;
     }
-    if (ctrl_down && (IsKeyPressed(KEY_MINUS) || IsKeyPressedRepeat(KEY_MINUS))) {
+    if (ctrl_down && (gfx::IsKeyPressed(gfx::Key::Minus) || gfx::IsKeyPressedRepeat(gfx::Key::Minus))) {
         SetOfficeZoom(1.0f / 1.1f);
         status_message_ = "Document zoom: " + std::to_string(static_cast<int>(std::lround(sess->zoom * 100.0f))) + "%";
         return;
@@ -8258,29 +8285,29 @@ void Editor::HandleOfficeInsertInput() {
         std::string &cell = t.Cell(sess->table_cursor_row, sess->table_cursor_col);
         int &cc = sess->table_cell_col;
         cc = std::clamp(cc, 0, static_cast<int>(cell.size()));
-        for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
-            if (key == KEY_ESCAPE || key == KEY_ENTER) {
+        for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
+            if (key == gfx::Key::Escape || key == gfx::Key::Enter) {
                 sess->table_cell_editing = false;
                 mode_ = Mode::OfficeNormal;
                 return;
-            } else if (key == KEY_BACKSPACE) {
+            } else if (key == gfx::Key::Backspace) {
                 if (cc > 0) {
                     cell.erase(static_cast<size_t>(cc - 1), 1);
                     cc--;
                     sess->modified = true;
                 }
-            } else if (key == KEY_DELETE) {
+            } else if (key == gfx::Key::Delete) {
                 if (cc < static_cast<int>(cell.size())) {
                     cell.erase(static_cast<size_t>(cc), 1);
                     sess->modified = true;
                 }
-            } else if (key == KEY_LEFT) {
+            } else if (key == gfx::Key::Left) {
                 cc = std::max(0, cc - 1);
-            } else if (key == KEY_RIGHT) {
+            } else if (key == gfx::Key::Right) {
                 cc = std::min(static_cast<int>(cell.size()), cc + 1);
             }
         }
-        for (int cp2 = GetCharPressed(); cp2 > 0; cp2 = GetCharPressed()) {
+        for (int cp2 = gfx::GetCharPressed(); cp2 > 0; cp2 = gfx::GetCharPressed()) {
             if (cp2 >= 32 && cp2 <= 126) {
                 cell.insert(cell.begin() + cc, static_cast<char>(cp2));
                 cc++;
@@ -8297,11 +8324,11 @@ void Editor::HandleOfficeInsertInput() {
     auto cur_len = [&]() { return static_cast<int>(sess->doc.paragraphs[static_cast<size_t>(sess->cursor_para)].text.size()); };
 
     bool escape = false, enter = false, backspace = false, del = false;
-    for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
-        if (key == KEY_ESCAPE) escape = true;
-        else if (key == KEY_ENTER) enter = true;
-        else if (key == KEY_BACKSPACE) backspace = true;
-        else if (key == KEY_DELETE) del = true;
+    for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
+        if (key == gfx::Key::Escape) escape = true;
+        else if (key == gfx::Key::Enter) enter = true;
+        else if (key == gfx::Key::Backspace) backspace = true;
+        else if (key == gfx::Key::Delete) del = true;
     }
     if (escape) {
         mode_ = Mode::OfficeNormal;
@@ -8309,7 +8336,7 @@ void Editor::HandleOfficeInsertInput() {
         return;
     }
 
-    int cp = GetCharPressed();
+    int cp = gfx::GetCharPressed();
     while (cp > 0) {
         if (cp >= 32 && cp <= 126) {
             DocParagraph &p = sess->doc.paragraphs[static_cast<size_t>(sess->cursor_para)];
@@ -8317,10 +8344,10 @@ void Editor::HandleOfficeInsertInput() {
             sess->cursor_col++;
             sess->modified = true;
         }
-        cp = GetCharPressed();
+        cp = gfx::GetCharPressed();
     }
 
-    if (enter || IsKeyPressedRepeat(KEY_ENTER)) {
+    if (enter || gfx::IsKeyPressedRepeat(gfx::Key::Enter)) {
         DocParagraph &p = sess->doc.paragraphs[static_cast<size_t>(sess->cursor_para)];
         DocParagraph second = SplitParagraphAt(p, sess->cursor_col);
         sess->doc.paragraphs.insert(sess->doc.paragraphs.begin() + sess->cursor_para + 1, std::move(second));
@@ -8328,7 +8355,7 @@ void Editor::HandleOfficeInsertInput() {
         sess->cursor_col = 0;
         sess->modified = true;
     }
-    if (backspace || IsKeyPressedRepeat(KEY_BACKSPACE)) {
+    if (backspace || gfx::IsKeyPressedRepeat(gfx::Key::Backspace)) {
         if (sess->cursor_col > 0) {
             DocParagraph &p = sess->doc.paragraphs[static_cast<size_t>(sess->cursor_para)];
             ApplyDeleteToParagraph(p, sess->cursor_col - 1, sess->cursor_col);
@@ -8343,7 +8370,7 @@ void Editor::HandleOfficeInsertInput() {
             sess->modified = true;
         }
     }
-    if (del || IsKeyPressedRepeat(KEY_DELETE)) {
+    if (del || gfx::IsKeyPressedRepeat(gfx::Key::Delete)) {
         int len = cur_len();
         if (sess->cursor_col < len) {
             DocParagraph &p = sess->doc.paragraphs[static_cast<size_t>(sess->cursor_para)];
@@ -8355,12 +8382,12 @@ void Editor::HandleOfficeInsertInput() {
             sess->modified = true;
         }
     }
-    if (IsKeyPressed(KEY_LEFT) || IsKeyPressedRepeat(KEY_LEFT)) sess->cursor_col = std::max(0, sess->cursor_col - 1);
-    if (IsKeyPressed(KEY_RIGHT) || IsKeyPressedRepeat(KEY_RIGHT)) sess->cursor_col = std::min(cur_len(), sess->cursor_col + 1);
+    if (gfx::IsKeyPressed(gfx::Key::Left) || gfx::IsKeyPressedRepeat(gfx::Key::Left)) sess->cursor_col = std::max(0, sess->cursor_col - 1);
+    if (gfx::IsKeyPressed(gfx::Key::Right) || gfx::IsKeyPressedRepeat(gfx::Key::Right)) sess->cursor_col = std::min(cur_len(), sess->cursor_col + 1);
     // Visual-line-aware, like HandleOfficeNormalInput's own j/k -- see
     // MoveOfficeCursorVisualLine's comment.
-    if (IsKeyPressed(KEY_UP) || IsKeyPressedRepeat(KEY_UP)) MoveOfficeCursorVisualLine(sess, -1);
-    if (IsKeyPressed(KEY_DOWN) || IsKeyPressedRepeat(KEY_DOWN)) MoveOfficeCursorVisualLine(sess, 1);
+    if (gfx::IsKeyPressed(gfx::Key::Up) || gfx::IsKeyPressedRepeat(gfx::Key::Up)) MoveOfficeCursorVisualLine(sess, -1);
+    if (gfx::IsKeyPressed(gfx::Key::Down) || gfx::IsKeyPressedRepeat(gfx::Key::Down)) MoveOfficeCursorVisualLine(sess, 1);
 }
 
 void Editor::HandleOfficeVisualInput() {
@@ -8373,13 +8400,13 @@ void Editor::HandleOfficeVisualInput() {
         }
         sess = &it->second;
     }
-    const bool ctrl_down = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
-    if (ctrl_down && (IsKeyPressed(KEY_EQUAL) || IsKeyPressedRepeat(KEY_EQUAL))) {
+    const bool ctrl_down = gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl);
+    if (ctrl_down && (gfx::IsKeyPressed(gfx::Key::Equal) || gfx::IsKeyPressedRepeat(gfx::Key::Equal))) {
         SetOfficeZoom(1.1f);
         status_message_ = "Document zoom: " + std::to_string(static_cast<int>(std::lround(sess->zoom * 100.0f))) + "%";
         return;
     }
-    if (ctrl_down && (IsKeyPressed(KEY_MINUS) || IsKeyPressedRepeat(KEY_MINUS))) {
+    if (ctrl_down && (gfx::IsKeyPressed(gfx::Key::Minus) || gfx::IsKeyPressedRepeat(gfx::Key::Minus))) {
         SetOfficeZoom(1.0f / 1.1f);
         status_message_ = "Document zoom: " + std::to_string(static_cast<int>(std::lround(sess->zoom * 100.0f))) + "%";
         return;
@@ -8407,17 +8434,17 @@ void Editor::HandleOfficeVisualInput() {
      * @param key The GLFW/raylib key code to check.
      * @return True if the key is freshly pressed or repeating this frame.
      */
-    auto held = [](int key) { return IsKeyPressed(key) || IsKeyPressedRepeat(key); };
-    if (held(KEY_H) || held(KEY_LEFT)) sess->cursor_col = std::max(0, sess->cursor_col - 1);
-    if (held(KEY_L) || held(KEY_RIGHT)) sess->cursor_col = std::min(cur_len(), sess->cursor_col + 1);
+    auto held = [](gfx::Key key) { return gfx::IsKeyPressed(key) || gfx::IsKeyPressedRepeat(key); };
+    if (held(gfx::Key::H) || held(gfx::Key::Left)) sess->cursor_col = std::max(0, sess->cursor_col - 1);
+    if (held(gfx::Key::L) || held(gfx::Key::Right)) sess->cursor_col = std::min(cur_len(), sess->cursor_col + 1);
     // Visual-line-aware, like HandleOfficeNormalInput's own j/k -- see
     // MoveOfficeCursorVisualLine's comment. No table-auto-entry follow-up
     // here, matching this mode's own goto_para (above), which never had it
     // either.
-    if (held(KEY_J) || held(KEY_DOWN)) MoveOfficeCursorVisualLine(sess, 1);
-    if (held(KEY_K) || held(KEY_UP)) MoveOfficeCursorVisualLine(sess, -1);
+    if (held(gfx::Key::J) || held(gfx::Key::Down)) MoveOfficeCursorVisualLine(sess, 1);
+    if (held(gfx::Key::K) || held(gfx::Key::Up)) MoveOfficeCursorVisualLine(sess, -1);
 
-    int cp = GetCharPressed();
+    int cp = gfx::GetCharPressed();
     while (cp > 0) {
         if (cp == 'g') {
             if (pending_g_) {
@@ -8466,11 +8493,11 @@ void Editor::HandleOfficeVisualInput() {
         } else {
             pending_g_ = false;
         }
-        cp = GetCharPressed();
+        cp = gfx::GetCharPressed();
     }
 
-    for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
-        if (key == KEY_ESCAPE) {
+    for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
+        if (key == gfx::Key::Escape) {
             sess->has_selection = false;
             mode_ = Mode::OfficeNormal;
             return;
@@ -8969,13 +8996,13 @@ void Editor::HandleSheetNormalInput() {
      * @param key The GLFW/raylib key code to check.
      * @return True if the key is freshly pressed or repeating this frame.
      */
-    auto held = [](int key) { return IsKeyPressed(key) || IsKeyPressedRepeat(key); };
-    if (held(KEY_H) || held(KEY_LEFT)) sess->cursor_col = std::max(0, sess->cursor_col - 1);
-    if (held(KEY_L) || held(KEY_RIGHT)) sess->cursor_col++;
-    if (held(KEY_J) || held(KEY_DOWN)) sess->cursor_row++;
-    if (held(KEY_K) || held(KEY_UP)) sess->cursor_row = std::max(0, sess->cursor_row - 1);
+    auto held = [](gfx::Key key) { return gfx::IsKeyPressed(key) || gfx::IsKeyPressedRepeat(key); };
+    if (held(gfx::Key::H) || held(gfx::Key::Left)) sess->cursor_col = std::max(0, sess->cursor_col - 1);
+    if (held(gfx::Key::L) || held(gfx::Key::Right)) sess->cursor_col++;
+    if (held(gfx::Key::J) || held(gfx::Key::Down)) sess->cursor_row++;
+    if (held(gfx::Key::K) || held(gfx::Key::Up)) sess->cursor_row = std::max(0, sess->cursor_row - 1);
 
-    int cp = GetCharPressed();
+    int cp = gfx::GetCharPressed();
     while (cp > 0) {
         if (cp == ':') {
             EnterCommand();
@@ -9030,24 +9057,24 @@ void Editor::HandleSheetNormalInput() {
         } else {
             pending_g_ = false;
         }
-        cp = GetCharPressed();
+        cp = gfx::GetCharPressed();
     }
-    bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
-    if (IsKeyPressed(KEY_R) && ctrl) {
+    bool ctrl = gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl);
+    if (gfx::IsKeyPressed(gfx::Key::R) && ctrl) {
         RedoSheet();
     }
     // Excel's own next/prev-sheet convention -- matches real spreadsheet
     // muscle memory better than inventing a new mep-specific binding.
-    if (IsKeyPressed(KEY_PAGE_DOWN) && ctrl) {
+    if (gfx::IsKeyPressed(gfx::Key::PageDown) && ctrl) {
         NextSheet();
     }
-    if (IsKeyPressed(KEY_PAGE_UP) && ctrl) {
+    if (gfx::IsKeyPressed(gfx::Key::PageUp) && ctrl) {
         PrevSheet();
     }
-    if (ctrl && held(KEY_D)) {
+    if (ctrl && held(gfx::Key::D)) {
         sess->cursor_row += std::max(1, sess->viewport_h / kSheetRowHeight / 2);
     }
-    if (ctrl && held(KEY_U)) {
+    if (ctrl && held(gfx::Key::U)) {
         sess->cursor_row = std::max(0, sess->cursor_row - std::max(1, sess->viewport_h / kSheetRowHeight / 2));
     }
 }
@@ -9142,11 +9169,11 @@ void Editor::HandleSheetInsertInput() {
     }
 
     bool escape = false, enter = false, backspace = false, del = false;
-    for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
-        if (key == KEY_ESCAPE) escape = true;
-        else if (key == KEY_ENTER) enter = true;
-        else if (key == KEY_BACKSPACE) backspace = true;
-        else if (key == KEY_DELETE) del = true;
+    for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
+        if (key == gfx::Key::Escape) escape = true;
+        else if (key == gfx::Key::Enter) enter = true;
+        else if (key == gfx::Key::Backspace) backspace = true;
+        else if (key == gfx::Key::Delete) del = true;
     }
     /**
      * @brief Writes the in-progress edit buffer into the current cell and returns to SheetNormal mode.
@@ -9167,27 +9194,27 @@ void Editor::HandleSheetInsertInput() {
         return;
     }
 
-    int cp = GetCharPressed();
+    int cp = gfx::GetCharPressed();
     while (cp > 0) {
         if (cp >= 32 && cp <= 126) {
             sess->edit_buffer.insert(sess->edit_buffer.begin() + sess->edit_cursor, static_cast<char>(cp));
             sess->edit_cursor++;
         }
-        cp = GetCharPressed();
+        cp = gfx::GetCharPressed();
     }
-    if (backspace || IsKeyPressedRepeat(KEY_BACKSPACE)) {
+    if (backspace || gfx::IsKeyPressedRepeat(gfx::Key::Backspace)) {
         if (sess->edit_cursor > 0) {
             sess->edit_buffer.erase(sess->edit_buffer.begin() + sess->edit_cursor - 1);
             sess->edit_cursor--;
         }
     }
-    if (del || IsKeyPressedRepeat(KEY_DELETE)) {
+    if (del || gfx::IsKeyPressedRepeat(gfx::Key::Delete)) {
         if (sess->edit_cursor < static_cast<int>(sess->edit_buffer.size())) {
             sess->edit_buffer.erase(sess->edit_buffer.begin() + sess->edit_cursor);
         }
     }
-    if (IsKeyPressed(KEY_LEFT) || IsKeyPressedRepeat(KEY_LEFT)) sess->edit_cursor = std::max(0, sess->edit_cursor - 1);
-    if (IsKeyPressed(KEY_RIGHT) || IsKeyPressedRepeat(KEY_RIGHT)) {
+    if (gfx::IsKeyPressed(gfx::Key::Left) || gfx::IsKeyPressedRepeat(gfx::Key::Left)) sess->edit_cursor = std::max(0, sess->edit_cursor - 1);
+    if (gfx::IsKeyPressed(gfx::Key::Right) || gfx::IsKeyPressedRepeat(gfx::Key::Right)) {
         sess->edit_cursor = std::min(static_cast<int>(sess->edit_buffer.size()), sess->edit_cursor + 1);
     }
 }
@@ -9213,13 +9240,13 @@ void Editor::HandleSheetVisualInput() {
      * @param key The GLFW/raylib key code to check.
      * @return True if the key is freshly pressed or repeating this frame.
      */
-    auto held = [](int key) { return IsKeyPressed(key) || IsKeyPressedRepeat(key); };
-    if (held(KEY_H) || held(KEY_LEFT)) sess->cursor_col = std::max(0, sess->cursor_col - 1);
-    if (held(KEY_L) || held(KEY_RIGHT)) sess->cursor_col++;
-    if (held(KEY_J) || held(KEY_DOWN)) sess->cursor_row++;
-    if (held(KEY_K) || held(KEY_UP)) sess->cursor_row = std::max(0, sess->cursor_row - 1);
+    auto held = [](gfx::Key key) { return gfx::IsKeyPressed(key) || gfx::IsKeyPressedRepeat(key); };
+    if (held(gfx::Key::H) || held(gfx::Key::Left)) sess->cursor_col = std::max(0, sess->cursor_col - 1);
+    if (held(gfx::Key::L) || held(gfx::Key::Right)) sess->cursor_col++;
+    if (held(gfx::Key::J) || held(gfx::Key::Down)) sess->cursor_row++;
+    if (held(gfx::Key::K) || held(gfx::Key::Up)) sess->cursor_row = std::max(0, sess->cursor_row - 1);
 
-    int cp = GetCharPressed();
+    int cp = gfx::GetCharPressed();
     while (cp > 0) {
         if (cp == 'g') {
             if (pending_g_) {
@@ -9256,10 +9283,10 @@ void Editor::HandleSheetVisualInput() {
         } else {
             pending_g_ = false;
         }
-        cp = GetCharPressed();
+        cp = gfx::GetCharPressed();
     }
-    for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
-        if (key == KEY_ESCAPE) {
+    for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
+        if (key == gfx::Key::Escape) {
             sess->has_selection = false;
             mode_ = Mode::SheetNormal;
             return;
@@ -9728,15 +9755,15 @@ void Editor::HandleKanbanNormalInput() {
      * @param key The GLFW/raylib key code to check.
      * @return True if the key is freshly pressed or repeating this frame.
      */
-    auto held = [](int key) { return IsKeyPressed(key) || IsKeyPressedRepeat(key); };
-    bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+    auto held = [](gfx::Key key) { return gfx::IsKeyPressed(key) || gfx::IsKeyPressedRepeat(key); };
+    bool shift = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
     // Shift+H/L moves the focused *card* into the adjacent column (the same
     // KanbanSetCardColumn a cross-column drag-release already commits);
     // plain H/L (or the arrows, which have no shift variant to conflict
     // with) just moves focus. Checked as its own branch rather than
     // alongside the plain moves below since both would otherwise fire off
     // the same physical H/L keypress.
-    if (shift && held(KEY_H) && !cards.empty() && sess->focused_column > 0) {
+    if (shift && held(gfx::Key::H) && !cards.empty() && sess->focused_column > 0) {
         int hi = cards[static_cast<size_t>(sess->focused_row)];
         int desired_row = sess->focused_row;
         int new_column = sess->focused_column - 1;
@@ -9749,7 +9776,7 @@ void Editor::HandleKanbanNormalInput() {
         sess->focused_row = moved_cards.empty() ? 0 : std::min(desired_row, static_cast<int>(moved_cards.size()) - 1);
         return;
     }
-    if (shift && held(KEY_L) && !cards.empty() && sess->focused_column + 1 < static_cast<int>(columns.size())) {
+    if (shift && held(gfx::Key::L) && !cards.empty() && sess->focused_column + 1 < static_cast<int>(columns.size())) {
         int hi = cards[static_cast<size_t>(sess->focused_row)];
         int desired_row = sess->focused_row;
         int new_column = sess->focused_column + 1;
@@ -9759,20 +9786,20 @@ void Editor::HandleKanbanNormalInput() {
         sess->focused_row = moved_cards.empty() ? 0 : std::min(desired_row, static_cast<int>(moved_cards.size()) - 1);
         return;
     }
-    if (!shift && (held(KEY_H) || held(KEY_LEFT))) {
+    if (!shift && (held(gfx::Key::H) || held(gfx::Key::Left))) {
         sess->focused_column = std::max(0, sess->focused_column - 1);
         sess->focused_row = 0;
     }
-    if (!shift && (held(KEY_L) || held(KEY_RIGHT))) {
+    if (!shift && (held(gfx::Key::L) || held(gfx::Key::Right))) {
         sess->focused_column = std::min(static_cast<int>(columns.size()) - 1, sess->focused_column + 1);
         sess->focused_row = 0;
     }
-    if (held(KEY_J) || held(KEY_DOWN)) {
+    if (held(gfx::Key::J) || held(gfx::Key::Down)) {
         if (!cards.empty()) sess->focused_row = std::min(static_cast<int>(cards.size()) - 1, sess->focused_row + 1);
     }
-    if (held(KEY_K) || held(KEY_UP)) sess->focused_row = std::max(0, sess->focused_row - 1);
+    if (held(gfx::Key::K) || held(gfx::Key::Up)) sess->focused_row = std::max(0, sess->focused_row - 1);
 
-    int cp = GetCharPressed();
+    int cp = gfx::GetCharPressed();
     while (cp > 0) {
         if (cp == ':') {
             EnterCommand();
@@ -9807,10 +9834,10 @@ void Editor::HandleKanbanNormalInput() {
             Undo();
             sess->outline = ParseOrgOutline(Buf().lines);
         }
-        cp = GetCharPressed();
+        cp = gfx::GetCharPressed();
     }
-    bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
-    if (ctrl && IsKeyPressed(KEY_R)) {
+    bool ctrl = gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl);
+    if (ctrl && gfx::IsKeyPressed(gfx::Key::R)) {
         Redo();
         sess->outline = ParseOrgOutline(Buf().lines);
     }
@@ -9828,11 +9855,11 @@ void Editor::HandleKanbanInsertInput() {
     }
 
     bool escape = false, enter = false, backspace = false, del = false;
-    for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
-        if (key == KEY_ESCAPE) escape = true;
-        else if (key == KEY_ENTER) enter = true;
-        else if (key == KEY_BACKSPACE) backspace = true;
-        else if (key == KEY_DELETE) del = true;
+    for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
+        if (key == gfx::Key::Escape) escape = true;
+        else if (key == gfx::Key::Enter) enter = true;
+        else if (key == gfx::Key::Backspace) backspace = true;
+        else if (key == gfx::Key::Delete) del = true;
     }
     if (escape) {
         sess->editing = false;
@@ -9848,27 +9875,27 @@ void Editor::HandleKanbanInsertInput() {
         return;
     }
 
-    int cp = GetCharPressed();
+    int cp = gfx::GetCharPressed();
     while (cp > 0) {
         if (cp >= 32 && cp <= 126) {
             sess->edit_buffer.insert(sess->edit_buffer.begin() + sess->edit_cursor, static_cast<char>(cp));
             sess->edit_cursor++;
         }
-        cp = GetCharPressed();
+        cp = gfx::GetCharPressed();
     }
-    if (backspace || IsKeyPressedRepeat(KEY_BACKSPACE)) {
+    if (backspace || gfx::IsKeyPressedRepeat(gfx::Key::Backspace)) {
         if (sess->edit_cursor > 0) {
             sess->edit_buffer.erase(sess->edit_buffer.begin() + sess->edit_cursor - 1);
             sess->edit_cursor--;
         }
     }
-    if (del || IsKeyPressedRepeat(KEY_DELETE)) {
+    if (del || gfx::IsKeyPressedRepeat(gfx::Key::Delete)) {
         if (sess->edit_cursor < static_cast<int>(sess->edit_buffer.size())) {
             sess->edit_buffer.erase(sess->edit_buffer.begin() + sess->edit_cursor);
         }
     }
-    if (IsKeyPressed(KEY_LEFT) || IsKeyPressedRepeat(KEY_LEFT)) sess->edit_cursor = std::max(0, sess->edit_cursor - 1);
-    if (IsKeyPressed(KEY_RIGHT) || IsKeyPressedRepeat(KEY_RIGHT)) {
+    if (gfx::IsKeyPressed(gfx::Key::Left) || gfx::IsKeyPressedRepeat(gfx::Key::Left)) sess->edit_cursor = std::max(0, sess->edit_cursor - 1);
+    if (gfx::IsKeyPressed(gfx::Key::Right) || gfx::IsKeyPressedRepeat(gfx::Key::Right)) {
         sess->edit_cursor = std::min(static_cast<int>(sess->edit_buffer.size()), sess->edit_cursor + 1);
     }
 }
@@ -9892,13 +9919,13 @@ void Editor::HandleGanttNormalInput() {
      * @param key The GLFW/raylib key code to check.
      * @return True if the key is freshly pressed or repeating this frame.
      */
-    auto held = [](int key) { return IsKeyPressed(key) || IsKeyPressedRepeat(key); };
-    if (held(KEY_J) || held(KEY_DOWN)) {
+    auto held = [](gfx::Key key) { return gfx::IsKeyPressed(key) || gfx::IsKeyPressedRepeat(key); };
+    if (held(gfx::Key::J) || held(gfx::Key::Down)) {
         if (!rows.empty()) sess->focused_row = std::min(static_cast<int>(rows.size()) - 1, sess->focused_row + 1);
     }
-    if (held(KEY_K) || held(KEY_UP)) sess->focused_row = std::max(0, sess->focused_row - 1);
-    if (held(KEY_H) || held(KEY_LEFT)) sess->anchor_day -= 1;
-    if (held(KEY_L) || held(KEY_RIGHT)) sess->anchor_day += 1;
+    if (held(gfx::Key::K) || held(gfx::Key::Up)) sess->focused_row = std::max(0, sess->focused_row - 1);
+    if (held(gfx::Key::H) || held(gfx::Key::Left)) sess->anchor_day -= 1;
+    if (held(gfx::Key::L) || held(gfx::Key::Right)) sess->anchor_day += 1;
 
     /**
      * @brief Checks whether a headline has any child headlines in the current outline.
@@ -9921,7 +9948,7 @@ void Editor::HandleGanttNormalInput() {
         else sess->collapsed_headlines.insert(headline_index);
     };
 
-    int cp = GetCharPressed();
+    int cp = gfx::GetCharPressed();
     while (cp > 0) {
         if (sess->pending_fold_command) {
             sess->pending_fold_command = false;
@@ -10018,10 +10045,10 @@ void Editor::HandleGanttNormalInput() {
             Undo();
             sess->outline = ParseOrgOutline(Buf().lines);
         }
-        cp = GetCharPressed();
+        cp = gfx::GetCharPressed();
     }
-    bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
-    if (ctrl && IsKeyPressed(KEY_R)) {
+    bool ctrl = gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl);
+    if (ctrl && gfx::IsKeyPressed(gfx::Key::R)) {
         Redo();
         sess->outline = ParseOrgOutline(Buf().lines);
     }
@@ -10060,11 +10087,11 @@ void Editor::HandleGanttInsertInput() {
     }
 
     bool escape = false, enter = false, backspace = false, del = false;
-    for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
-        if (key == KEY_ESCAPE) escape = true;
-        else if (key == KEY_ENTER) enter = true;
-        else if (key == KEY_BACKSPACE) backspace = true;
-        else if (key == KEY_DELETE) del = true;
+    for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
+        if (key == gfx::Key::Escape) escape = true;
+        else if (key == gfx::Key::Enter) enter = true;
+        else if (key == gfx::Key::Backspace) backspace = true;
+        else if (key == gfx::Key::Delete) del = true;
     }
     if (escape) {
         sess->editing = false;
@@ -10080,27 +10107,27 @@ void Editor::HandleGanttInsertInput() {
         return;
     }
 
-    int cp = GetCharPressed();
+    int cp = gfx::GetCharPressed();
     while (cp > 0) {
         if (cp >= 32 && cp <= 126) {
             sess->edit_buffer.insert(sess->edit_buffer.begin() + sess->edit_cursor, static_cast<char>(cp));
             sess->edit_cursor++;
         }
-        cp = GetCharPressed();
+        cp = gfx::GetCharPressed();
     }
-    if (backspace || IsKeyPressedRepeat(KEY_BACKSPACE)) {
+    if (backspace || gfx::IsKeyPressedRepeat(gfx::Key::Backspace)) {
         if (sess->edit_cursor > 0) {
             sess->edit_buffer.erase(sess->edit_buffer.begin() + sess->edit_cursor - 1);
             sess->edit_cursor--;
         }
     }
-    if (del || IsKeyPressedRepeat(KEY_DELETE)) {
+    if (del || gfx::IsKeyPressedRepeat(gfx::Key::Delete)) {
         if (sess->edit_cursor < static_cast<int>(sess->edit_buffer.size())) {
             sess->edit_buffer.erase(sess->edit_buffer.begin() + sess->edit_cursor);
         }
     }
-    if (IsKeyPressed(KEY_LEFT) || IsKeyPressedRepeat(KEY_LEFT)) sess->edit_cursor = std::max(0, sess->edit_cursor - 1);
-    if (IsKeyPressed(KEY_RIGHT) || IsKeyPressedRepeat(KEY_RIGHT)) {
+    if (gfx::IsKeyPressed(gfx::Key::Left) || gfx::IsKeyPressedRepeat(gfx::Key::Left)) sess->edit_cursor = std::max(0, sess->edit_cursor - 1);
+    if (gfx::IsKeyPressed(gfx::Key::Right) || gfx::IsKeyPressedRepeat(gfx::Key::Right)) {
         sess->edit_cursor = std::min(static_cast<int>(sess->edit_buffer.size()), sess->edit_cursor + 1);
     }
 }
@@ -10112,25 +10139,25 @@ void Editor::HandleTerminalInput() {
         return;
     }
 
-    bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
-    bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+    bool ctrl = gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl);
+    bool shift = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
 
     // Keys this loop recognizes and forwards -- everything else (plain
     // letters/digits/symbols with no modifier) is deliberately left alone
-    // here and picked up by the GetCharPressed() loop below instead,
+    // here and picked up by the gfx::GetCharPressed() loop below instead,
     // mirroring HandleInsertInput's own split between the two. Ctrl+A-Z
     // is handled separately (as a control code) rather than through this
     // list.
-    static const int kForwardedKeys[] = {
-        KEY_ESCAPE,   KEY_ENTER,     KEY_KP_ENTER, KEY_BACKSPACE, KEY_TAB,      KEY_UP,
-        KEY_DOWN,     KEY_LEFT,      KEY_RIGHT,    KEY_HOME,      KEY_END,      KEY_PAGE_UP,
-        KEY_PAGE_DOWN, KEY_DELETE,   KEY_INSERT,
+    static const gfx::Key kForwardedKeys[] = {
+        gfx::Key::Escape,   gfx::Key::Enter,     gfx::Key::KpEnter, gfx::Key::Backspace, gfx::Key::Tab,      gfx::Key::Up,
+        gfx::Key::Down,     gfx::Key::Left,      gfx::Key::Right,    gfx::Key::Home,      gfx::Key::End,      gfx::Key::PageUp,
+        gfx::Key::PageDown, gfx::Key::Delete,   gfx::Key::Insert,
     };
 
-    for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
+    for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
         if (terminal_pending_ctrl_bs_) {
             terminal_pending_ctrl_bs_ = false;
-            if (key == KEY_N && ctrl) {
+            if (key == gfx::Key::N && ctrl) {
                 EnterTerminalNormalMode(*sess);
                 return;
             }
@@ -10139,7 +10166,7 @@ void Editor::HandleTerminalInput() {
             // send it now before handling this key.
             if (!sess->exited) TerminalWrite(*sess, std::string(1, '\x1C'));
         }
-        if (key == KEY_BACKSLASH && ctrl) {
+        if (key == gfx::Key::Backslash && ctrl) {
             terminal_pending_ctrl_bs_ = true;
             continue;
         }
@@ -10152,7 +10179,7 @@ void Editor::HandleTerminalInput() {
         // bracketed-paste wrapping): VTerm doesn't track whether the
         // child ever enabled mode 2004 (vterm.h), so it can't know when
         // the child would want the brackets.
-        if (key == KEY_V && ctrl && shift) {
+        if (key == gfx::Key::V && ctrl && shift) {
             std::string text = RegisterTextForPaste('"');
             for (char &c : text) {
                 if (c == '\n') c = '\r';
@@ -10161,9 +10188,9 @@ void Editor::HandleTerminalInput() {
             if (!sess->exited && !text.empty()) TerminalWrite(*sess, text);
             continue;
         }
-        if (shift && (key == KEY_PAGE_UP || key == KEY_PAGE_DOWN) && sess->vterm) {
+        if (shift && (key == gfx::Key::PageUp || key == gfx::Key::PageDown) && sess->vterm) {
             int rows = sess->vterm->Rows();
-            if (key == KEY_PAGE_UP) {
+            if (key == gfx::Key::PageUp) {
                 sess->scroll_offset = std::min(sess->scroll_offset + rows, sess->vterm->ScrollbackLines());
             } else {
                 sess->scroll_offset = std::max(0, sess->scroll_offset - rows);
@@ -10171,31 +10198,31 @@ void Editor::HandleTerminalInput() {
             continue;
         }
         bool is_forwarded = false;
-        for (int k : kForwardedKeys) {
+        for (gfx::Key k : kForwardedKeys) {
             if (k == key) {
                 is_forwarded = true;
                 break;
             }
         }
-        if (!is_forwarded && !(ctrl && key >= KEY_A && key <= KEY_Z)) continue;
+        if (!is_forwarded && !(ctrl && key >= gfx::Key::A && key <= gfx::Key::Z)) continue;
         sess->scroll_offset = 0;
         if (!sess->exited) SendTerminalKey(*sess, key, 0, ctrl, shift);
     }
 
     if (!sess->exited) {
         // Auto-repeat for the keys most likely to be held down.
-        if (IsKeyPressedRepeat(KEY_BACKSPACE)) SendTerminalKey(*sess, KEY_BACKSPACE, 0, false);
-        if (IsKeyPressedRepeat(KEY_UP)) SendTerminalKey(*sess, KEY_UP, 0, false);
-        if (IsKeyPressedRepeat(KEY_DOWN)) SendTerminalKey(*sess, KEY_DOWN, 0, false);
-        if (IsKeyPressedRepeat(KEY_LEFT)) SendTerminalKey(*sess, KEY_LEFT, 0, false);
-        if (IsKeyPressedRepeat(KEY_RIGHT)) SendTerminalKey(*sess, KEY_RIGHT, 0, false);
+        if (gfx::IsKeyPressedRepeat(gfx::Key::Backspace)) SendTerminalKey(*sess, gfx::Key::Backspace, 0, false);
+        if (gfx::IsKeyPressedRepeat(gfx::Key::Up)) SendTerminalKey(*sess, gfx::Key::Up, 0, false);
+        if (gfx::IsKeyPressedRepeat(gfx::Key::Down)) SendTerminalKey(*sess, gfx::Key::Down, 0, false);
+        if (gfx::IsKeyPressedRepeat(gfx::Key::Left)) SendTerminalKey(*sess, gfx::Key::Left, 0, false);
+        if (gfx::IsKeyPressedRepeat(gfx::Key::Right)) SendTerminalKey(*sess, gfx::Key::Right, 0, false);
     }
 
-    int cp = GetCharPressed();
+    int cp = gfx::GetCharPressed();
     while (cp > 0) {
         sess->scroll_offset = 0;
-        if (!sess->exited) SendTerminalKey(*sess, 0, cp, false);
-        cp = GetCharPressed();
+        if (!sess->exited) SendTerminalKey(*sess, gfx::Key::None, cp, false);
+        cp = gfx::GetCharPressed();
     }
 }
 
@@ -10384,7 +10411,7 @@ void Editor::EnterTerminalNormalMode(TerminalSession &sess) {
     mode_ = Mode::Normal;
 }
 
-void Editor::SendTerminalKey(const TerminalSession &sess, int key, int codepoint, bool ctrl, bool shift) {
+void Editor::SendTerminalKey(const TerminalSession &sess, gfx::Key key, int codepoint, bool ctrl, bool shift) {
     std::string bytes;
     bool app_mode = sess.vterm && sess.vterm->ApplicationCursorKeys();
     if (codepoint > 0) {
@@ -10403,21 +10430,21 @@ void Editor::SendTerminalKey(const TerminalSession &sess, int key, int codepoint
             bytes += static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
             bytes += static_cast<char>(0x80 | (codepoint & 0x3F));
         }
-    } else if (ctrl && key >= KEY_A && key <= KEY_Z) {
-        bytes = std::string(1, static_cast<char>(1 + (key - KEY_A)));
+    } else if (ctrl && key >= gfx::Key::A && key <= gfx::Key::Z) {
+        bytes = std::string(1, static_cast<char>(1 + (key - gfx::Key::A)));
     } else {
         switch (key) {
-            case KEY_ESCAPE:
+            case gfx::Key::Escape:
                 bytes = "\x1b";
                 break;
-            case KEY_ENTER:
-            case KEY_KP_ENTER:
+            case gfx::Key::Enter:
+            case gfx::Key::KpEnter:
                 bytes = "\r";
                 break;
-            case KEY_BACKSPACE:
+            case gfx::Key::Backspace:
                 bytes = "\x7f";
                 break;
-            case KEY_TAB:
+            case gfx::Key::Tab:
                 // Shift+Tab is CBT (Cursor Backward Tabulation, CSI Z) in
                 // every xterm-class terminal -- a distinct byte sequence
                 // from plain Tab (0x09), not the same byte with a
@@ -10429,34 +10456,34 @@ void Editor::SendTerminalKey(const TerminalSession &sess, int key, int codepoint
                 // plain-Tab input and could never react to it.
                 bytes = shift ? "\x1b[Z" : "\t";
                 break;
-            case KEY_UP:
+            case gfx::Key::Up:
                 bytes = app_mode ? "\x1bOA" : "\x1b[A";
                 break;
-            case KEY_DOWN:
+            case gfx::Key::Down:
                 bytes = app_mode ? "\x1bOB" : "\x1b[B";
                 break;
-            case KEY_RIGHT:
+            case gfx::Key::Right:
                 bytes = app_mode ? "\x1bOC" : "\x1b[C";
                 break;
-            case KEY_LEFT:
+            case gfx::Key::Left:
                 bytes = app_mode ? "\x1bOD" : "\x1b[D";
                 break;
-            case KEY_HOME:
+            case gfx::Key::Home:
                 bytes = app_mode ? "\x1bOH" : "\x1b[H";
                 break;
-            case KEY_END:
+            case gfx::Key::End:
                 bytes = app_mode ? "\x1bOF" : "\x1b[F";
                 break;
-            case KEY_PAGE_UP:
+            case gfx::Key::PageUp:
                 bytes = "\x1b[5~";
                 break;
-            case KEY_PAGE_DOWN:
+            case gfx::Key::PageDown:
                 bytes = "\x1b[6~";
                 break;
-            case KEY_DELETE:
+            case gfx::Key::Delete:
                 bytes = "\x1b[3~";
                 break;
-            case KEY_INSERT:
+            case gfx::Key::Insert:
                 bytes = "\x1b[2~";
                 break;
             default:
@@ -12630,10 +12657,10 @@ float Editor::PaneBorderPairTotal(SplitNode *node, int child_index) {
 
 bool Editor::IsMod1Down() const {
     switch (mod1_) {
-        case ModKey::Alt: return IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT);
-        case ModKey::Control: return IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
-        case ModKey::Shift: return IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
-        case ModKey::Super: return IsKeyDown(KEY_LEFT_SUPER) || IsKeyDown(KEY_RIGHT_SUPER);
+        case ModKey::Alt: return gfx::IsKeyDown(gfx::Key::LeftAlt) || gfx::IsKeyDown(gfx::Key::RightAlt);
+        case ModKey::Control: return gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl);
+        case ModKey::Shift: return gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
+        case ModKey::Super: return gfx::IsKeyDown(gfx::Key::LeftSuper) || gfx::IsKeyDown(gfx::Key::RightSuper);
     }
     return false;
 }
@@ -12656,7 +12683,9 @@ void Editor::SetMod1(const std::string &name) {
     }
 }
 
-void Editor::RegisterMod1Mapping(const std::string &key, int lua_ref) { mod1_mappings_[key] = lua_ref; }
+void Editor::RegisterMod1Mapping(const std::string &key, int lua_ref, bool repeat) {
+    mod1_mappings_[key] = Mod1Mapping{lua_ref, repeat};
+}
 
 void Editor::RegisterGMapping(const std::string &key, int lua_ref) { g_mappings_[key] = lua_ref; }
 void Editor::RegisterVisualGMapping(const std::string &key, int lua_ref) { visual_g_mappings_[key] = lua_ref; }
@@ -12673,19 +12702,19 @@ bool Editor::HandleMod1Shortcuts() {
     // itself isn't that same key, since e.g. mod1=Shift already implies
     // Shift is down for every mod1 combo.
     bool extra_ctrl =
-        mod1_ != ModKey::Control && (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL));
-    bool extra_shift = mod1_ != ModKey::Shift && (IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT));
+        mod1_ != ModKey::Control && (gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl));
+    bool extra_shift = mod1_ != ModKey::Shift && (gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift));
     // mod1+d is globally bound to pane_close_buffer (see kDefaultMod1Bindings
     // in main.cpp), but while a sidebar is focused (file tree, git status,
     // etc.) that mapping would silently close whatever buffer sits behind
     // it -- so intercept it here and close the sidebar instead, mirroring
     // the generic q handling in HandleSidebarInput (Escape deliberately
     // doesn't close a docked sidebar).
-    if (mode_ == Mode::Sidebar && !extra_ctrl && !extra_shift && IsKeyPressed(KEY_D)) {
+    if (mode_ == Mode::Sidebar && !extra_ctrl && !extra_shift && gfx::IsKeyPressed(gfx::Key::D)) {
         int id = focused_sidebar_id_;
         RestoreFromOverlay();
         CloseSidebar(id);
-        while (GetCharPressed() > 0) {
+        while (gfx::GetCharPressed() > 0) {
         }
         return true;
     }
@@ -12695,9 +12724,9 @@ bool Editor::HandleMod1Shortcuts() {
     // overlay to no visible effect -- so intercept it here and scroll the
     // preview instead, same reasoning as the Sidebar+D case above.
     if (mode_ == Mode::Picker && !extra_ctrl && !extra_shift && !PickerPreview().empty() &&
-        (IsKeyPressed(KEY_J) || IsKeyPressed(KEY_K))) {
-        ScrollPickerPreview(IsKeyPressed(KEY_J) ? 1 : -1);
-        while (GetCharPressed() > 0) {
+        (gfx::IsKeyPressed(gfx::Key::J) || gfx::IsKeyPressed(gfx::Key::K))) {
+        ScrollPickerPreview(gfx::IsKeyPressed(gfx::Key::J) ? 1 : -1);
+        while (gfx::GetCharPressed() > 0) {
         }
         return true;
     }
@@ -12710,34 +12739,42 @@ bool Editor::HandleMod1Shortcuts() {
     // different sidebar, simply ends the popout -- see
     // RefreshSidebarPopoutPreview).
     if (SidebarPopoutActive() && !extra_ctrl && !extra_shift && !SidebarPopoutPreview().empty() &&
-        (IsKeyPressed(KEY_J) || IsKeyPressed(KEY_K))) {
-        ScrollSidebarPopoutPreview(IsKeyPressed(KEY_J) ? 1 : -1);
-        while (GetCharPressed() > 0) {
+        (gfx::IsKeyPressed(gfx::Key::J) || gfx::IsKeyPressed(gfx::Key::K))) {
+        ScrollSidebarPopoutPreview(gfx::IsKeyPressed(gfx::Key::J) ? 1 : -1);
+        while (gfx::GetCharPressed() > 0) {
         }
         return true;
     }
-    for (int key = KEY_A; key <= KEY_Z; key++) {
-        if (!IsKeyPressed(key)) continue;
-        std::string base(1, static_cast<char>('a' + (key - KEY_A)));
+    for (gfx::Key key = gfx::Key::A; key <= gfx::Key::Z; key++) {
+        // Repeat events (held key, OS auto-repeat rate) only fire the
+        // mapping if it opted in via RegisterMod1Mapping's `repeat` flag
+        // (e.g. resize_pane's S-h/j/k/l) -- everything else (split, close
+        // buffer, popout toggle, ...) still only fires once per press, same
+        // as before repeat support existed.
+        bool pressed = gfx::IsKeyPressed(key);
+        bool repeated = !pressed && gfx::IsKeyPressedRepeat(key);
+        if (!pressed && !repeated) continue;
+        std::string base(1, static_cast<char>('a' + (key - gfx::Key::A)));
         std::string k = extra_ctrl ? ("C-" + base) : extra_shift ? ("S-" + base) : base;
         auto it = mod1_mappings_.find(k);
         if (it == mod1_mappings_.end() || !lua_) continue;
-        lua_->CallRef(it->second);
+        if (repeated && !it->second.repeat) continue;
+        lua_->CallRef(it->second.lua_ref);
         // The same physical combo may also have queued a char event (e.g.
         // Alt-as-compose on some layouts); drop it so it doesn't get typed
         // into whatever mode handles input next frame.
-        while (GetCharPressed() > 0) {
+        while (gfx::GetCharPressed() > 0) {
         }
         return true;
     }
     // Tab isn't a letter key so it falls outside the A-Z scan above; handled
     // separately for mod1+Tab / mod1+Shift+Tab (pane buffer-tab cycling).
-    if (IsKeyPressed(KEY_TAB)) {
+    if (gfx::IsKeyPressed(gfx::Key::Tab)) {
         std::string k = extra_shift ? "S-Tab" : "Tab";
         auto it = mod1_mappings_.find(k);
         if (it != mod1_mappings_.end() && lua_) {
-            lua_->CallRef(it->second);
-            while (GetCharPressed() > 0) {
+            lua_->CallRef(it->second.lua_ref);
+            while (gfx::GetCharPressed() > 0) {
             }
             return true;
         }
@@ -12748,12 +12785,12 @@ bool Editor::HandleMod1Shortcuts() {
     // HandleInput), which is what lets a "CR" mapping tell Normal from
     // Visual apart itself via mep.visual_selection() rather than needing
     // two separate registrations here.
-    if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER)) {
+    if (gfx::IsKeyPressed(gfx::Key::Enter) || gfx::IsKeyPressed(gfx::Key::KpEnter)) {
         std::string k = extra_shift ? "S-CR" : "CR";
         auto it = mod1_mappings_.find(k);
         if (it != mod1_mappings_.end() && lua_) {
-            lua_->CallRef(it->second);
-            while (GetCharPressed() > 0) {
+            lua_->CallRef(it->second.lua_ref);
+            while (gfx::GetCharPressed() > 0) {
             }
             return true;
         }
@@ -12777,34 +12814,34 @@ void Editor::ScrollPickerPreview(int delta) {
 // e.g. Ctrl-T opens a new tab from Insert mode the same way it would in
 // Normal.
 bool Editor::HandleTabShortcuts() {
-    bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
-    bool alt = IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT);
-    bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+    bool ctrl = gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl);
+    bool alt = gfx::IsKeyDown(gfx::Key::LeftAlt) || gfx::IsKeyDown(gfx::Key::RightAlt);
+    bool shift = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
     // Workspace chords (WORKSPACES_PLAN.md Phase 2): Ctrl-Shift-T prompts
     // for a new workspace name (a Lua ui_input, so it lives in
     // kBuiltinWorkspaces), Ctrl-Alt-]/[ cycle workspaces. Checked before
     // the plain Ctrl-T / Ctrl-Tab / Alt-N chords below. <leader>w* leader
     // maps cover the same actions for layouts where these don't arrive.
-    if (ctrl && shift && IsKeyPressed(KEY_T)) {
+    if (ctrl && shift && gfx::IsKeyPressed(gfx::Key::T)) {
         if (lua_) lua_->DoString("mep.workspace_new_prompt()");
         return true;
     }
-    if (ctrl && alt && IsKeyPressed(KEY_RIGHT_BRACKET)) {
+    if (ctrl && alt && gfx::IsKeyPressed(gfx::Key::RightBracket)) {
         WorkspaceNext();
         return true;
     }
-    if (ctrl && alt && IsKeyPressed(KEY_LEFT_BRACKET)) {
+    if (ctrl && alt && gfx::IsKeyPressed(gfx::Key::LeftBracket)) {
         WorkspacePrevious();
         return true;
     }
-    if (ctrl && IsKeyPressed(KEY_T)) {
+    if (ctrl && gfx::IsKeyPressed(gfx::Key::T)) {
         TabNew("");
         return true;
     }
     // Ctrl-Tab / Ctrl-Shift-Tab: step through the active workspace's tabs
     // (the same relative move as :tabnext / :tabprevious). Ctrl+Alt+Tab is
     // left alone so it can't be confused with mod1+Tab's buffer cycling.
-    if (ctrl && !alt && IsKeyPressed(KEY_TAB)) {
+    if (ctrl && !alt && gfx::IsKeyPressed(gfx::Key::Tab)) {
         if (shift) TabPrevious();
         else TabNext();
         return true;
@@ -12814,9 +12851,9 @@ bool Editor::HandleTabShortcuts() {
     // the last workspace, or one whose worktree is still being created, is
     // reported on the status line rather than ignored silently.
     if (alt && !ctrl) {
-        for (int key = KEY_ONE; key <= KEY_NINE; key++) {
-            if (!IsKeyPressed(key)) continue;
-            const int idx = key - KEY_ONE;
+        for (gfx::Key key = gfx::Key::One; key <= gfx::Key::Nine; key++) {
+            if (!gfx::IsKeyPressed(key)) continue;
+            const int idx = key - gfx::Key::One;
             if (idx < WorkspaceCount()) {
                 WorkspaceSwitch(ActiveProject().workspaces[static_cast<size_t>(idx)].id);
             } else {
@@ -12825,7 +12862,7 @@ bool Editor::HandleTabShortcuts() {
             // Same reasoning as HandleMod1Shortcuts' own drain: Alt-as-
             // compose on some layouts can still queue a char event for the
             // digit alongside the key event handled above.
-            while (GetCharPressed() > 0) {
+            while (gfx::GetCharPressed() > 0) {
             }
             return true;
         }
@@ -12837,46 +12874,46 @@ bool Editor::HandleTabShortcuts() {
 
 void Editor::HandleNormalInput() {
     // GLFW/raylib doesn't emit a char event while Ctrl is held, so these
-    // are checked separately from the GetCharPressed() loop below.
-    bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+    // are checked separately from the gfx::GetCharPressed() loop below.
+    bool ctrl = gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl);
     bool record_raw = recording_macro_ && !replaying_change_ && !replaying_macro_;
-    if (IsKeyPressed(KEY_R) && ctrl) {
+    if (gfx::IsKeyPressed(gfx::Key::R) && ctrl) {
         if (record_raw) macro_recording_buffer_.push_back(kReplayCtrlR);
         Redo();
         return;
     }
-    if (IsKeyPressed(KEY_W) && ctrl) {
+    if (gfx::IsKeyPressed(gfx::Key::W) && ctrl) {
         if (record_raw) macro_recording_buffer_.push_back(kReplayCtrlW);
         pending_ctrl_w_ = true;
         return;
     }
-    // Ctrl-V/D/U/F/B/A/X: same GetKeyPressed()-queue reasoning as
+    // Ctrl-V/D/U/F/B/A/X: same gfx::GetKeyPressed()-queue reasoning as
     // HandleInsertInput's Ctrl-W/Ctrl-U fix (see its comment) --
-    // IsKeyPressed(KEY_V) was visibly flaky under a slow (software-
+    // gfx::IsKeyPressed(gfx::Key::V) was visibly flaky under a slow (software-
     // rendered Xvfb) frame the same way those were, so every Ctrl-combo
     // added from Phase 9 onward reads off this queue instead. Ctrl-R/
     // Ctrl-W above predate that finding and were left as-is (out of scope
     // here), worth remembering if either is ever reported flaky too.
     bool ctrl_v = false, ctrl_d = false, ctrl_u = false, ctrl_f = false, ctrl_b = false, ctrl_a = false,
          ctrl_x = false, ctrl_o = false, ctrl_i = false, ctrl_c = false, ctrl_e = false;
-    for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
+    for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
         if (!ctrl) continue;
-        if (key == KEY_V) ctrl_v = true;
-        else if (key == KEY_D) ctrl_d = true;
-        else if (key == KEY_U) ctrl_u = true;
-        else if (key == KEY_F) ctrl_f = true;
-        else if (key == KEY_B) ctrl_b = true;
-        else if (key == KEY_A) ctrl_a = true;
-        else if (key == KEY_X) ctrl_x = true;
-        else if (key == KEY_O) ctrl_o = true;
-        else if (key == KEY_I) ctrl_i = true;
-        else if (key == KEY_C) ctrl_c = true;
-        else if (key == KEY_E) ctrl_e = true;
+        if (key == gfx::Key::V) ctrl_v = true;
+        else if (key == gfx::Key::D) ctrl_d = true;
+        else if (key == gfx::Key::U) ctrl_u = true;
+        else if (key == gfx::Key::F) ctrl_f = true;
+        else if (key == gfx::Key::B) ctrl_b = true;
+        else if (key == gfx::Key::A) ctrl_a = true;
+        else if (key == gfx::Key::X) ctrl_x = true;
+        else if (key == gfx::Key::O) ctrl_o = true;
+        else if (key == gfx::Key::I) ctrl_i = true;
+        else if (key == gfx::Key::C) ctrl_c = true;
+        else if (key == gfx::Key::E) ctrl_e = true;
     }
     // Held-repeat for the four page-scroll combos only (D/U/F/B) -- not
     // the queue-drained loop above (which only ever sees a key's initial
     // down-transition, by design: see this block's own comment; raylib's
-    // GetKeyPressed() queue never emits a second event for an OS/GLFW
+    // gfx::GetKeyPressed() queue never emits a second event for an OS/GLFW
     // auto-repeat of an already-held key), so without this, holding
     // Ctrl-D/U/F/B down scrolled once and then stopped. IsKeyPressedRepeat
     // reads a distinct signal (a key already known to be down re-firing on
@@ -12887,10 +12924,10 @@ void Editor::HandleNormalInput() {
     // nudge a number) where holding the key down repeating doesn't apply,
     // so they're deliberately left on the queue-only path above.
     if (ctrl) {
-        if (IsKeyPressedRepeat(KEY_D)) ctrl_d = true;
-        if (IsKeyPressedRepeat(KEY_U)) ctrl_u = true;
-        if (IsKeyPressedRepeat(KEY_F)) ctrl_f = true;
-        if (IsKeyPressedRepeat(KEY_B)) ctrl_b = true;
+        if (gfx::IsKeyPressedRepeat(gfx::Key::D)) ctrl_d = true;
+        if (gfx::IsKeyPressedRepeat(gfx::Key::U)) ctrl_u = true;
+        if (gfx::IsKeyPressedRepeat(gfx::Key::F)) ctrl_f = true;
+        if (gfx::IsKeyPressedRepeat(gfx::Key::B)) ctrl_b = true;
     }
     if (ctrl_v) {
         // On an .html/.htm buffer, Ctrl-V is repurposed as the escape
@@ -12972,7 +13009,7 @@ void Editor::HandleNormalInput() {
         }
         return;
     }
-    if (IsKeyPressed(KEY_ESCAPE)) {
+    if (gfx::IsKeyPressed(gfx::Key::Escape)) {
         // In a floating pane, the "nothing pending" Escape that is Vim's
         // harmless no-op everywhere else dismisses the float instead
         // (Insert-mode Escape still just returns to Normal first, and one
@@ -13003,17 +13040,17 @@ void Editor::HandleNormalInput() {
     // mode has never given plain Enter a default motion the way real
     // Vim's own CR is), so a registered buffer-scoped hook (SetBufferOnEnter,
     // this class's own header comment) can claim it with no default
-    // behavior to preserve. Checked ahead of the GetCharPressed() loop
+    // behavior to preserve. Checked ahead of the gfx::GetCharPressed() loop
     // below since raylib never reports Enter as a char event there anyway.
-    if ((IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER)) && enter_hook_ref_ != 0 &&
+    if ((gfx::IsKeyPressed(gfx::Key::Enter) || gfx::IsKeyPressed(gfx::Key::KpEnter)) && enter_hook_ref_ != 0 &&
         CurPane().buffer_id == enter_hook_buffer_id_ && lua_) {
         lua_->CallRef(enter_hook_ref_);
         return;
     }
 
     // Bare h/j/k/l: confirmed sustained holds move via a per-frame
-    // IsKeyDown() fast path instead of replaying every individual queued
-    // repeat notification in the GetCharPressed() drain loop below.
+    // gfx::IsKeyDown() fast path instead of replaying every individual queued
+    // repeat notification in the gfx::GetCharPressed() drain loop below.
     // Native doesn't need this -- a healthy frame keeps up with even a
     // fast OS repeat rate, so the queue never really backs up -- but
     // confirmed on the wasm/webview build specifically: holding a motion
@@ -13026,13 +13063,13 @@ void Editor::HandleNormalInput() {
     // Two guards keep this from ever dropping a real keystroke, which an
     // earlier version of this fix got wrong (confirmed empirically: three
     // separate, deliberate taps could land only one column of movement,
-    // because IsKeyDown() can miss a press/release pair that both happen
-    // to fall within one polling window -- unlike GetCharPressed(), whose
+    // because gfx::IsKeyDown() can miss a press/release pair that both happen
+    // to fall within one polling window -- unlike gfx::GetCharPressed(), whose
     // queue is filled straight from the press event and can't miss a tap
     // that way):
     //   1. kMotionHoldConfirmSec -- a key only starts being treated as
     //      "held" (fast path takes over, queue discards its repeats)
-    //      once IsKeyDown() has read continuously true for this long. A
+    //      once gfx::IsKeyDown() has read continuously true for this long. A
     //      human tap, even a fast one, doesn't remotely approach this;
     //      only a genuine sustained hold does. Below this threshold nothing
     //      here changes anything -- the original, fully-reliable
@@ -13048,21 +13085,21 @@ void Editor::HandleNormalInput() {
     //      a stale backlog as visible extra motion.
     constexpr double kMotionHoldConfirmSec = 0.2;
     constexpr double kMotionDiscardCooldownSec = 0.7;
-    bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+    bool shift = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
     bool count_pending_now = pending_count_ != 0;
     bool no_pending_state_now = pending_op_ == 0 && !pending_g_ && !pending_bracket_prev_ && !pending_bracket_next_ &&
                                  !pending_ctrl_w_ && !pending_org_export_ && pending_find_ == 0 && !count_pending_now &&
                                  !awaiting_register_name_;
-    double now = GetTime();
-    static const std::pair<int, char> kMotionKeys[] = {
-        {KEY_H, 'h'},
-        {KEY_J, 'j'},
-        {KEY_K, 'k'},
-        {KEY_L, 'l'},
+    double now = gfx::GetTime();
+    static const std::pair<gfx::Key, char> kMotionKeys[] = {
+        {gfx::Key::H, 'h'},
+        {gfx::Key::J, 'j'},
+        {gfx::Key::K, 'k'},
+        {gfx::Key::L, 'l'},
     };
     for (int i = 0; i < 4; i++) {
         MotionRepeatState &st = motion_repeat_[i];
-        bool down = IsKeyDown(kMotionKeys[i].first);
+        bool down = gfx::IsKeyDown(kMotionKeys[i].first);
         if (down) {
             if (st.down_since < 0.0) st.down_since = now;
             bool confirmed = (now - st.down_since) >= kMotionHoldConfirmSec;
@@ -13079,7 +13116,7 @@ void Editor::HandleNormalInput() {
         }
     }
 
-    int cp = GetCharPressed();
+    int cp = gfx::GetCharPressed();
     while (cp > 0) {
         // Digits (as a pending count) and a pending find/g-prefix always
         // win over a Lua mapping for the same key -- those states consume
@@ -13099,13 +13136,13 @@ void Editor::HandleNormalInput() {
         if (no_pending_state && !ctrl && !shift) {
             int idx = cp == 'h' ? 0 : cp == 'j' ? 1 : cp == 'k' ? 2 : cp == 'l' ? 3 : -1;
             if (idx >= 0 && now < motion_repeat_[idx].discard_until) {
-                cp = GetCharPressed();
+                cp = gfx::GetCharPressed();
                 continue;
             }
         }
         HandleNormalChar(cp, no_pending_state);
         if (mode_ != Mode::Normal) break;  // key switched modes mid-loop
-        cp = GetCharPressed();
+        cp = gfx::GetCharPressed();
     }
 }
 
@@ -13174,9 +13211,8 @@ std::string Editor::SystemClipboardRead() {
         free(raw);
     }
 #else
-    if (!IsWindowReady()) return text;
-    const char *raw = GetClipboardText();
-    if (raw) text = raw;
+    if (!gfx::IsWindowReady()) return text;
+    text = gfx::GetClipboardText();
 #endif
     // Other apps (Windows ones especially, but anything that round-trips
     // through a browser too) hand over CRLF line endings; mep's buffers
@@ -13195,8 +13231,8 @@ void Editor::SystemClipboardWrite(const std::string &text) {
 #if defined(__EMSCRIPTEN__)
     mep_js_clipboard_write(text.c_str());
 #else
-    if (!IsWindowReady()) return;
-    SetClipboardText(text.c_str());
+    if (!gfx::IsWindowReady()) return;
+    gfx::SetClipboardText(text);
 #endif
 }
 
@@ -13235,7 +13271,7 @@ std::string Editor::RegisterTextForPaste(int name) {
 
 void Editor::InsertTextAsTyped(const std::string &text) {
     // Decode UTF-8 to codepoints -- ProcessInsertKey speaks codepoints
-    // (it's what GetCharPressed() hands HandleInsertInput), not bytes.
+    // (it's what gfx::GetCharPressed() hands HandleInsertInput), not bytes.
     // Malformed sequences are skipped byte-by-byte rather than inserted
     // as garbage.
     size_t i = 0;
@@ -14232,36 +14268,36 @@ void Editor::PlayMacro(char reg, int count) {
 // --- Insert mode -------------------------------------------------------
 
 void Editor::HandleInsertInput() {
-    // See the same GetKeyPressed()-vs-IsKeyPressed() note in
+    // See the same gfx::GetKeyPressed()-vs-gfx::IsKeyPressed() note in
     // HandleCommandInput(): a same-frame keydown+keyup is invisible to
     // IsKeyPressed's state snapshot, so Escape/Enter/Backspace/Delete are
     // read from raylib's press queue instead, which can't miss them. Ctrl-W/
     // Ctrl-U ride the same queue for the same reason -- an early version of
-    // this used IsKeyPressed(KEY_W/KEY_U) the way HandleNormalInput's
+    // this used gfx::IsKeyPressed(gfx::Key::W/gfx::Key::U) the way HandleNormalInput's
     // Ctrl-R/Ctrl-W checks do, and it was visibly flaky under a slow
-    // (software-rendered Xvfb) frame for exactly that reason. GetKeyPressed()
+    // (software-rendered Xvfb) frame for exactly that reason. gfx::GetKeyPressed()
     // still reports the raw key regardless of modifiers held (it's how
     // Escape, which has no character form at all, gets caught here), so
-    // pairing it with a plain IsKeyDown() ctrl check (level state, not an
+    // pairing it with a plain gfx::IsKeyDown() ctrl check (level state, not an
     // edge -- not subject to the same race) is enough to tell "Ctrl-W" apart
-    // from a bare "w" that the GetCharPressed() loop below will see instead.
-    bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
-    bool shift_down = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+    // from a bare "w" that the gfx::GetCharPressed() loop below will see instead.
+    bool ctrl = gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl);
+    bool shift_down = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
     bool escape = false, enter = false, backspace = false, del = false, ctrl_w = false, ctrl_u = false;
     bool tab_key = false, ctrl_n = false, ctrl_p = false, ctrl_o = false, ctrl_r = false, ctrl_shift_v = false;
-    for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
-        if (key == KEY_ESCAPE) escape = true;
-        else if (key == KEY_ENTER) enter = true;
-        else if (key == KEY_BACKSPACE) backspace = true;
-        else if (key == KEY_DELETE) del = true;
-        else if (key == KEY_W && ctrl) ctrl_w = true;
-        else if (key == KEY_U && ctrl) ctrl_u = true;
-        else if (key == KEY_TAB) tab_key = true;
-        else if (key == KEY_N && ctrl) ctrl_n = true;
-        else if (key == KEY_P && ctrl) ctrl_p = true;
-        else if (key == KEY_O && ctrl) ctrl_o = true;
-        else if (key == KEY_R && ctrl) ctrl_r = true;
-        else if (key == KEY_V && ctrl && shift_down) ctrl_shift_v = true;
+    for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
+        if (key == gfx::Key::Escape) escape = true;
+        else if (key == gfx::Key::Enter) enter = true;
+        else if (key == gfx::Key::Backspace) backspace = true;
+        else if (key == gfx::Key::Delete) del = true;
+        else if (key == gfx::Key::W && ctrl) ctrl_w = true;
+        else if (key == gfx::Key::U && ctrl) ctrl_u = true;
+        else if (key == gfx::Key::Tab) tab_key = true;
+        else if (key == gfx::Key::N && ctrl) ctrl_n = true;
+        else if (key == gfx::Key::P && ctrl) ctrl_p = true;
+        else if (key == gfx::Key::O && ctrl) ctrl_o = true;
+        else if (key == gfx::Key::R && ctrl) ctrl_r = true;
+        else if (key == gfx::Key::V && ctrl && shift_down) ctrl_shift_v = true;
     }
     // A pending Ctrl-R only survives until the next *character*; any
     // special key in between (Escape especially) cancels it, so an
@@ -14300,7 +14336,7 @@ void Editor::HandleInsertInput() {
     // popup above (which still wins Tab when open) and before Escape/etc.
     // below, mirroring the mod1 Tab/S-Tab dispatch's own extra_shift check.
     if (tab_key && insert_tab_hook_ref_ != 0 && lua_) {
-        bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+        bool shift = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
         if (lua_->CallRefWithBoolForBool(insert_tab_hook_ref_, shift)) return;
     }
     if (escape) {
@@ -14334,8 +14370,8 @@ void Editor::HandleInsertInput() {
     // if typed -- the terminal-emulator convention, for people who reach
     // for it before Vim's own Ctrl-R. Ctrl-R {reg}: Vim's Insert-mode
     // register paste; the register name arrives as the next character
-    // (handled in the GetCharPressed() loop below), same "+/"* spelling
-    // as the Normal-mode prefix. Neither is a KEY_V/KEY_R char event --
+    // (handled in the gfx::GetCharPressed() loop below), same "+/"* spelling
+    // as the Normal-mode prefix. Neither is a gfx::Key::V/gfx::Key::R char event --
     // GLFW never delivers a char for a Ctrl-chorded key, which is what
     // keeps a bare 'r'/'v' from also landing in the buffer.
     if (ctrl_shift_v) {
@@ -14347,7 +14383,7 @@ void Editor::HandleInsertInput() {
         return;
     }
 
-    int cp = GetCharPressed();
+    int cp = gfx::GetCharPressed();
     while (cp > 0) {
         if (insert_pending_ctrl_r_) {
             insert_pending_ctrl_r_ = false;
@@ -14355,14 +14391,14 @@ void Editor::HandleInsertInput() {
         } else {
             ProcessInsertKey(cp);
         }
-        cp = GetCharPressed();
+        cp = gfx::GetCharPressed();
     }
 
     CursorPos &cursor = CurPane().cursor;
-    if (enter || IsKeyPressedRepeat(KEY_ENTER)) ProcessInsertKey(kReplayEnter);
-    if (backspace || IsKeyPressedRepeat(KEY_BACKSPACE)) ProcessInsertKey(kReplayBackspace);
-    if (del || IsKeyPressedRepeat(KEY_DELETE)) ProcessInsertKey(kReplayDelete);
-    if (IsKeyPressed(KEY_LEFT) || IsKeyPressedRepeat(KEY_LEFT)) {
+    if (enter || gfx::IsKeyPressedRepeat(gfx::Key::Enter)) ProcessInsertKey(kReplayEnter);
+    if (backspace || gfx::IsKeyPressedRepeat(gfx::Key::Backspace)) ProcessInsertKey(kReplayBackspace);
+    if (del || gfx::IsKeyPressedRepeat(gfx::Key::Delete)) ProcessInsertKey(kReplayDelete);
+    if (gfx::IsKeyPressed(gfx::Key::Left) || gfx::IsKeyPressedRepeat(gfx::Key::Left)) {
         if (cursor.col > 0) {
             cursor.col--;
         } else if (cursor.row > 0) {
@@ -14370,7 +14406,7 @@ void Editor::HandleInsertInput() {
             cursor.col = LineLen(cursor.row);
         }
     }
-    if (IsKeyPressed(KEY_RIGHT) || IsKeyPressedRepeat(KEY_RIGHT)) {
+    if (gfx::IsKeyPressed(gfx::Key::Right) || gfx::IsKeyPressedRepeat(gfx::Key::Right)) {
         if (cursor.col < LineLen(cursor.row)) {
             cursor.col++;
         } else if (cursor.row + 1 < Buf().LineCount()) {
@@ -14378,10 +14414,10 @@ void Editor::HandleInsertInput() {
             cursor.col = 0;
         }
     }
-    if (IsKeyPressed(KEY_UP) || IsKeyPressedRepeat(KEY_UP)) {
+    if (gfx::IsKeyPressed(gfx::Key::Up) || gfx::IsKeyPressedRepeat(gfx::Key::Up)) {
         if (cursor.row > 0) { cursor.row--; ClampCursor(); }
     }
-    if (IsKeyPressed(KEY_DOWN) || IsKeyPressedRepeat(KEY_DOWN)) {
+    if (gfx::IsKeyPressed(gfx::Key::Down) || gfx::IsKeyPressedRepeat(gfx::Key::Down)) {
         if (cursor.row + 1 < Buf().LineCount()) { cursor.row++; ClampCursor(); }
     }
     if (mode_ == Mode::Insert) UpdateCompletionPopup();
@@ -14622,7 +14658,7 @@ void Editor::PasteBlockAt(CursorPos at, const std::vector<std::string> &block, b
 }
 
 void Editor::HandleVisualInput() {
-    if (IsKeyPressed(KEY_ESCAPE)) {
+    if (gfx::IsKeyPressed(gfx::Key::Escape)) {
         // A cancelled Visual session (no operator ever applied) never
         // becomes a `.`-repeatable change -- ProcessVisualKey only ever
         // commits change_scratch_ into last_change_keys_ when an operator
@@ -14645,24 +14681,24 @@ void Editor::HandleVisualInput() {
 
     // Ctrl-D/Ctrl-U half-page scroll, same as Normal mode (HandleNormalInput)
     // -- GLFW/raylib doesn't emit a char event while Ctrl is held, so these
-    // can never be reached via the GetCharPressed() loop below and need
+    // can never be reached via the gfx::GetCharPressed() loop below and need
     // their own check. ScrollHalfPage moves CurPane().cursor.row directly,
     // which naturally extends the Visual selection (anchor stays put) same
     // as any other cursor-moving motion in Visual mode. IsKeyPressedRepeat
     // is checked too so holding the combo down scrolls repeatedly, matching
     // the fix already applied to HandleNormalInput/HandleOfficeNormalInput/
     // HandleSheetNormalInput/HandleImageInput/HandleHtmlInput/HandlePdfInput.
-    bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
-    if (ctrl && (IsKeyPressed(KEY_D) || IsKeyPressedRepeat(KEY_D))) {
+    bool ctrl = gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl);
+    if (ctrl && (gfx::IsKeyPressed(gfx::Key::D) || gfx::IsKeyPressedRepeat(gfx::Key::D))) {
         ScrollHalfPage(true);
         return;
     }
-    if (ctrl && (IsKeyPressed(KEY_U) || IsKeyPressedRepeat(KEY_U))) {
+    if (ctrl && (gfx::IsKeyPressed(gfx::Key::U) || gfx::IsKeyPressedRepeat(gfx::Key::U))) {
         ScrollHalfPage(false);
         return;
     }
 
-    int cp = GetCharPressed();
+    int cp = gfx::GetCharPressed();
     while (cp > 0) {
         if (cp <= 127) {
             ProcessVisualKey(cp);
@@ -14674,7 +14710,7 @@ void Editor::HandleVisualInput() {
             // now active pick up the rest next frame.
             if (mode_ != Mode::Visual && mode_ != Mode::VisualLine && mode_ != Mode::VisualBlock) return;
         }
-        cp = GetCharPressed();
+        cp = gfx::GetCharPressed();
     }
 
     CursorPos &cursor = CurPane().cursor;
@@ -14964,41 +15000,41 @@ void Editor::DispatchVisualKey(int cp) {
 // --- Command-line mode ---------------------------------------------------
 
 void Editor::HandleCommandInput() {
-    // IsKeyPressed(KEY_ENTER) compares a once-per-frame current/previous
+    // gfx::IsKeyPressed(gfx::Key::Enter) compares a once-per-frame current/previous
     // state snapshot, so a keydown+keyup that both land inside the same
     // (slow, software-rendered -- see WEBKIT_DISABLE_COMPOSITING_MODE in
     // launcher/serve.ts) frame is invisible to it: current is already back
-    // to "up" by the time the snapshot is taken. GetKeyPressed() drains
+    // to "up" by the time the snapshot is taken. gfx::GetKeyPressed() drains
     // raylib's own key-press queue instead, which is pushed to on every
     // press regardless of how fast the release follows -- immune to that
-    // race, same as GetCharPressed() already is for typed text. Confirmed
+    // race, same as gfx::GetCharPressed() already is for typed text. Confirmed
     // this was silently swallowing Enter here: `:qa` would sit in the
     // command line with the app fully unresponsive after.
-    bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
-    bool shift_down = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+    bool ctrl = gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl);
+    bool shift_down = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
     bool escape = false, enter = false, backspace = false, up = false, down = false;
     bool tab_key = false, ctrl_n = false, ctrl_p = false, ctrl_r = false, ctrl_shift_v = false;
-    for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
-        if (key == KEY_ESCAPE) escape = true;
-        else if (key == KEY_ENTER) enter = true;
-        else if (key == KEY_BACKSPACE) backspace = true;
-        else if (key == KEY_UP) up = true;
-        else if (key == KEY_DOWN) down = true;
-        else if (key == KEY_TAB) tab_key = true;
-        else if (key == KEY_N && ctrl) ctrl_n = true;
-        else if (key == KEY_P && ctrl) ctrl_p = true;
-        else if (key == KEY_R && ctrl) ctrl_r = true;
-        else if (key == KEY_V && ctrl && shift_down) ctrl_shift_v = true;
+    for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
+        if (key == gfx::Key::Escape) escape = true;
+        else if (key == gfx::Key::Enter) enter = true;
+        else if (key == gfx::Key::Backspace) backspace = true;
+        else if (key == gfx::Key::Up) up = true;
+        else if (key == gfx::Key::Down) down = true;
+        else if (key == gfx::Key::Tab) tab_key = true;
+        else if (key == gfx::Key::N && ctrl) ctrl_n = true;
+        else if (key == gfx::Key::P && ctrl) ctrl_p = true;
+        else if (key == gfx::Key::R && ctrl) ctrl_r = true;
+        else if (key == gfx::Key::V && ctrl && shift_down) ctrl_shift_v = true;
     }
     // Same cancel-on-any-special-key rule as HandleInsertInput's Ctrl-R.
     if (escape || enter || backspace || up || down || tab_key || ctrl_shift_v) prompt_pending_ctrl_r_ = false;
     // Peeked (not just checked) up front, unlike the other keys above,
     // because whether a char was typed this frame feeds a decision below
-    // (does typing close the completion popup) -- GetCharPressed() drains
-    // raylib's char queue same as GetKeyPressed() drains the key queue
+    // (does typing close the completion popup) -- gfx::GetCharPressed() drains
+    // raylib's char queue same as gfx::GetKeyPressed() drains the key queue
     // above, so this one has to be saved rather than re-queried, or the
     // typing loop further down would silently lose it.
-    int pending_char = GetCharPressed();
+    int pending_char = gfx::GetCharPressed();
     // Command-line completion popup: Tab opens/completes, Ctrl-N/Ctrl-P
     // move the highlighted item, Enter accepts (splices the item into
     // command_line_ but -- unlike a bare Enter below -- does not execute
@@ -15045,7 +15081,7 @@ void Editor::HandleCommandInput() {
         ExecuteCommandLine(cmd);
         return;
     }
-    if (backspace || IsKeyPressedRepeat(KEY_BACKSPACE)) {
+    if (backspace || gfx::IsKeyPressedRepeat(gfx::Key::Backspace)) {
         if (!command_line_.empty()) {
             command_line_.pop_back();
         } else {
@@ -15108,24 +15144,24 @@ void Editor::HandleCommandInput() {
         } else if (cp >= 32 && cp < 127) {
             command_line_ += static_cast<char>(cp);
         }
-        cp = GetCharPressed();
+        cp = gfx::GetCharPressed();
     }
 }
 
 void Editor::HandleSearchInput() {
-    // Same GetKeyPressed()-vs-IsKeyPressed() reasoning as HandleCommandInput.
-    bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
-    bool shift_down = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+    // Same gfx::GetKeyPressed()-vs-gfx::IsKeyPressed() reasoning as HandleCommandInput.
+    bool ctrl = gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl);
+    bool shift_down = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
     bool escape = false, enter = false, backspace = false, up = false, down = false;
     bool ctrl_r = false, ctrl_shift_v = false;
-    for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
-        if (key == KEY_ESCAPE) escape = true;
-        else if (key == KEY_ENTER) enter = true;
-        else if (key == KEY_BACKSPACE) backspace = true;
-        else if (key == KEY_UP) up = true;
-        else if (key == KEY_DOWN) down = true;
-        else if (key == KEY_R && ctrl) ctrl_r = true;
-        else if (key == KEY_V && ctrl && shift_down) ctrl_shift_v = true;
+    for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
+        if (key == gfx::Key::Escape) escape = true;
+        else if (key == gfx::Key::Enter) enter = true;
+        else if (key == gfx::Key::Backspace) backspace = true;
+        else if (key == gfx::Key::Up) up = true;
+        else if (key == gfx::Key::Down) down = true;
+        else if (key == gfx::Key::R && ctrl) ctrl_r = true;
+        else if (key == gfx::Key::V && ctrl && shift_down) ctrl_shift_v = true;
     }
     if (escape || enter || backspace || up || down || ctrl_shift_v) prompt_pending_ctrl_r_ = false;
     if (escape) {
@@ -15178,7 +15214,7 @@ void Editor::HandleSearchInput() {
         PerformSearch(last_search_forward_);
         return;
     }
-    if (backspace || IsKeyPressedRepeat(KEY_BACKSPACE)) {
+    if (backspace || gfx::IsKeyPressedRepeat(gfx::Key::Backspace)) {
         if (!search_query_.empty()) {
             search_query_.pop_back();
             UpdateIncSearch();
@@ -15241,7 +15277,7 @@ void Editor::HandleSearchInput() {
         prompt_pending_ctrl_r_ = true;
         return;
     }
-    int cp = GetCharPressed();
+    int cp = gfx::GetCharPressed();
     bool typed = false;
     while (cp > 0) {
         if (prompt_pending_ctrl_r_) {
@@ -15251,7 +15287,7 @@ void Editor::HandleSearchInput() {
             search_query_ += static_cast<char>(cp);
             typed = true;
         }
-        cp = GetCharPressed();
+        cp = gfx::GetCharPressed();
     }
     if (typed) UpdateIncSearch();
 }
@@ -15323,7 +15359,7 @@ void Editor::MaybeDismissHover() {
     // hover_open_ alone -- exactly the "one more Escape to actually close
     // it" behavior Mode::HoverFocus's doc comment describes.
     if (mode_ == Mode::HoverFocus) return;
-    if (mode_ != Mode::Normal || IsKeyPressed(KEY_ESCAPE)) {
+    if (mode_ != Mode::Normal || gfx::IsKeyPressed(gfx::Key::Escape)) {
         hover_open_ = false;
         return;
     }
@@ -15462,7 +15498,7 @@ void Editor::HandleHoverFocusInput() {
         SetStatusMessage("Yanked from hover doc");
     };
 
-    if (IsKeyPressed(KEY_ESCAPE)) {
+    if (gfx::IsKeyPressed(gfx::Key::Escape)) {
         hover_focus_pending_g_ = false;
         hover_focus_pending_y_ = false;
         if (hover_focus_selecting_) {
@@ -15473,13 +15509,13 @@ void Editor::HandleHoverFocusInput() {
         return;
     }
 
-    if (IsKeyPressed(KEY_DOWN) || IsKeyPressedRepeat(KEY_DOWN)) move_row(1);
-    if (IsKeyPressed(KEY_UP) || IsKeyPressedRepeat(KEY_UP)) move_row(-1);
-    if (IsKeyPressed(KEY_LEFT) || IsKeyPressedRepeat(KEY_LEFT)) hover_focus_col_ = std::max(0, hover_focus_col_ - 1);
-    if (IsKeyPressed(KEY_RIGHT) || IsKeyPressedRepeat(KEY_RIGHT))
+    if (gfx::IsKeyPressed(gfx::Key::Down) || gfx::IsKeyPressedRepeat(gfx::Key::Down)) move_row(1);
+    if (gfx::IsKeyPressed(gfx::Key::Up) || gfx::IsKeyPressedRepeat(gfx::Key::Up)) move_row(-1);
+    if (gfx::IsKeyPressed(gfx::Key::Left) || gfx::IsKeyPressedRepeat(gfx::Key::Left)) hover_focus_col_ = std::max(0, hover_focus_col_ - 1);
+    if (gfx::IsKeyPressed(gfx::Key::Right) || gfx::IsKeyPressedRepeat(gfx::Key::Right))
         hover_focus_col_ = clamp_col(hover_focus_row_, hover_focus_col_ + 1);
 
-    for (int cp = GetCharPressed(); cp != 0; cp = GetCharPressed()) {
+    for (int cp = gfx::GetCharPressed(); cp != 0; cp = gfx::GetCharPressed()) {
         if (hover_focus_pending_g_) {
             hover_focus_pending_g_ = false;
             if (cp == 'g') {
@@ -15565,12 +15601,12 @@ void Editor::RestoreFromOverlay() {
 }
 
 void Editor::HandlePromptInput() {
-    // Same GetKeyPressed()-vs-IsKeyPressed() reasoning as HandleCommandInput.
+    // Same gfx::GetKeyPressed()-vs-gfx::IsKeyPressed() reasoning as HandleCommandInput.
     bool escape = false, enter = false, backspace = false;
-    for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
-        if (key == KEY_ESCAPE) escape = true;
-        else if (key == KEY_ENTER) enter = true;
-        else if (key == KEY_BACKSPACE) backspace = true;
+    for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
+        if (key == gfx::Key::Escape) escape = true;
+        else if (key == gfx::Key::Enter) enter = true;
+        else if (key == gfx::Key::Backspace) backspace = true;
     }
     if (escape) {
         int ref = prompt_callback_ref_;
@@ -15596,28 +15632,28 @@ void Editor::HandlePromptInput() {
         }
         return;
     }
-    if (backspace || IsKeyPressedRepeat(KEY_BACKSPACE)) {
+    if (backspace || gfx::IsKeyPressedRepeat(gfx::Key::Backspace)) {
         if (!prompt_input_.empty()) prompt_input_.pop_back();
         return;
     }
-    int cp = GetCharPressed();
+    int cp = gfx::GetCharPressed();
     while (cp > 0) {
         if (cp >= 32 && cp < 127) prompt_input_ += static_cast<char>(cp);
-        cp = GetCharPressed();
+        cp = gfx::GetCharPressed();
     }
 }
 
 void Editor::HandleConfirmInput() {
     bool escape = false, enter = false;
     int cp = 0;
-    for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
-        if (key == KEY_ESCAPE) escape = true;
-        else if (key == KEY_ENTER) enter = true;
+    for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
+        if (key == gfx::Key::Escape) escape = true;
+        else if (key == gfx::Key::Enter) enter = true;
     }
-    cp = GetCharPressed();
+    cp = gfx::GetCharPressed();
     while (cp > 0) {
         if (cp == 'y' || cp == 'Y' || cp == 'n' || cp == 'N') break;
-        cp = GetCharPressed();
+        cp = gfx::GetCharPressed();
     }
     bool decided = false, result = false;
     if (escape) {
@@ -15644,9 +15680,9 @@ void Editor::HandleConfirmInput() {
 
 void Editor::HandleSelectInput() {
     bool escape = false, enter = false;
-    for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
-        if (key == KEY_ESCAPE) escape = true;
-        else if (key == KEY_ENTER) enter = true;
+    for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
+        if (key == gfx::Key::Escape) escape = true;
+        else if (key == gfx::Key::Enter) enter = true;
     }
     if (escape) {
         int ref = select_callback_ref_;
@@ -15667,17 +15703,17 @@ void Editor::HandleSelectInput() {
         }
         return;
     }
-    int cp = GetCharPressed();
+    int cp = gfx::GetCharPressed();
     while (cp > 0) {
         if ((cp == 'j') && select_index_ + 1 < static_cast<int>(select_items_.size())) select_index_++;
         if (cp == 'k' && select_index_ > 0) select_index_--;
-        cp = GetCharPressed();
+        cp = gfx::GetCharPressed();
     }
-    if ((IsKeyPressed(KEY_DOWN) || IsKeyPressedRepeat(KEY_DOWN)) &&
+    if ((gfx::IsKeyPressed(gfx::Key::Down) || gfx::IsKeyPressedRepeat(gfx::Key::Down)) &&
         select_index_ + 1 < static_cast<int>(select_items_.size())) {
         select_index_++;
     }
-    if ((IsKeyPressed(KEY_UP) || IsKeyPressedRepeat(KEY_UP)) && select_index_ > 0) {
+    if ((gfx::IsKeyPressed(gfx::Key::Up) || gfx::IsKeyPressedRepeat(gfx::Key::Up)) && select_index_ > 0) {
         select_index_--;
     }
 }
@@ -15688,9 +15724,9 @@ void Editor::HandleSelectInput() {
 // or a click just acknowledges and closes it.
 void Editor::HandlePreviewInput() {
     bool dismiss = false;
-    for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) dismiss = true;
-    for (int cp = GetCharPressed(); cp != 0; cp = GetCharPressed()) dismiss = true;
-    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) dismiss = true;
+    for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) dismiss = true;
+    for (int cp = gfx::GetCharPressed(); cp != 0; cp = gfx::GetCharPressed()) dismiss = true;
+    if (gfx::IsMouseButtonPressed(gfx::MouseButton::Left)) dismiss = true;
     if (dismiss) RestoreFromOverlay();
 }
 
@@ -16369,11 +16405,11 @@ void Editor::HandleSidebarInput() {
     std::vector<SidebarLine> lines = FlattenSidebar(focused_sidebar_id_);
     bool escape = false, enter = false;
     int tab_delta = 0;
-    const bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
-    for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
-        if (key == KEY_ESCAPE) escape = true;
-        else if (key == KEY_ENTER) enter = true;
-        else if (key == KEY_TAB) tab_delta += shift ? -1 : 1;
+    const bool shift = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
+    for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
+        if (key == gfx::Key::Escape) escape = true;
+        else if (key == gfx::Key::Enter) enter = true;
+        else if (key == gfx::Key::Tab) tab_delta += shift ? -1 : 1;
     }
     // Tab/Shift-Tab: next/previous view of a tabbed sidebar
     // (SidebarInstance::tabs) -- a no-op for one without tabs.
@@ -16405,17 +16441,17 @@ void Editor::HandleSidebarInput() {
     // GLFW/raylib doesn't emit a char event while Ctrl is held (same
     // reasoning as HandleNormalInput's own Ctrl-combo comment), so these
     // can't reach mep.tree_on_key/mep.activity_todo_on_key's fn(char)
-    // through the GetCharPressed() drain below the way every other binding
+    // through the gfx::GetCharPressed() drain below the way every other binding
     // (R/H/o/a/r/d/?) does. Passed through as the sentinels
-    // "C-e"/"C-v"/"C-j"/"C-k", never produced by GetCharPressed() (only
+    // "C-e"/"C-v"/"C-j"/"C-k", never produced by gfx::GetCharPressed() (only
     // single printable-ASCII chars), so on_key can tell a Ctrl-combo apart
     // from a bare keypress via the same callback.
     {
-        bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
-        bool ce = ctrl && IsKeyPressed(KEY_E);
-        bool cv = ctrl && IsKeyPressed(KEY_V);
-        bool cj = ctrl && IsKeyPressed(KEY_J);
-        bool ck = ctrl && IsKeyPressed(KEY_K);
+        bool ctrl = gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl);
+        bool ce = ctrl && gfx::IsKeyPressed(gfx::Key::E);
+        bool cv = ctrl && gfx::IsKeyPressed(gfx::Key::V);
+        bool cj = ctrl && gfx::IsKeyPressed(gfx::Key::J);
+        bool ck = ctrl && gfx::IsKeyPressed(gfx::Key::K);
         if (ce || cv || cj || ck) {
             const SidebarInstance *sb = FindSidebar(focused_sidebar_id_);
             if (sb && sb->on_key_ref != 0 && lua_) {
@@ -16425,7 +16461,7 @@ void Editor::HandleSidebarInput() {
             return;
         }
     }
-    int cp = GetCharPressed();
+    int cp = gfx::GetCharPressed();
     while (cp > 0) {
         // gg/G: jump to the first/last flattened line, same "G always
         // resolves immediately, g waits one more keystroke" shape as
@@ -16483,13 +16519,13 @@ void Editor::HandleSidebarInput() {
                 if (mode_ != Mode::Sidebar) return;
             }
         }
-        cp = GetCharPressed();
+        cp = gfx::GetCharPressed();
     }
-    if ((IsKeyPressed(KEY_DOWN) || IsKeyPressedRepeat(KEY_DOWN)) &&
+    if ((gfx::IsKeyPressed(gfx::Key::Down) || gfx::IsKeyPressedRepeat(gfx::Key::Down)) &&
         sidebar_cursor_ + 1 < static_cast<int>(lines.size())) {
         sidebar_cursor_++;
     }
-    if ((IsKeyPressed(KEY_UP) || IsKeyPressedRepeat(KEY_UP)) && sidebar_cursor_ > 0) {
+    if ((gfx::IsKeyPressed(gfx::Key::Up) || gfx::IsKeyPressedRepeat(gfx::Key::Up)) && sidebar_cursor_ > 0) {
         sidebar_cursor_--;
     }
 }
@@ -16691,12 +16727,12 @@ std::vector<PickerItem> Editor::PickerFilteredResults() const {
 
 void Editor::HandlePickerInput() {
     bool escape = false, enter = false, backspace = false;
-    for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
-        if (key == KEY_ESCAPE) escape = true;
-        else if (key == KEY_ENTER) enter = true;
-        else if (key == KEY_BACKSPACE) backspace = true;
+    for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
+        if (key == gfx::Key::Escape) escape = true;
+        else if (key == gfx::Key::Enter) enter = true;
+        else if (key == gfx::Key::Backspace) backspace = true;
     }
-    bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+    bool ctrl = gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl);
     // Snapshot the currently-highlighted item's `data` *before* this frame's
     // navigation/query edits are applied below, so the on_select_change_ref
     // firing at the bottom of this function can tell whether the effective
@@ -16750,40 +16786,40 @@ void Editor::HandlePickerInput() {
     // Ctrl+<letter> shortcuts (e.g. mep.projects()'s Ctrl-A for "add
     // current directory"), for any letter besides N/P below (already
     // reserved for next/prev) -- only if this picker registered a
-    // callback. IsKeyPressed rather than the GetKeyPressed() queue drained
+    // callback. IsKeyPressed rather than the gfx::GetKeyPressed() queue drained
     // above matches this function's existing Ctrl-N/Ctrl-P checks.
     if (ctrl && picker_on_key_ref_ != 0 && lua_) {
-        for (int key = KEY_A; key <= KEY_Z; key++) {
-            if (key == KEY_N || key == KEY_P || !IsKeyPressed(key)) continue;
-            lua_->CallRefWithString(picker_on_key_ref_, std::string(1, static_cast<char>('a' + (key - KEY_A))));
-            while (GetCharPressed() > 0) {
+        for (gfx::Key key = gfx::Key::A; key <= gfx::Key::Z; key++) {
+            if (key == gfx::Key::N || key == gfx::Key::P || !gfx::IsKeyPressed(key)) continue;
+            lua_->CallRefWithString(picker_on_key_ref_, std::string(1, static_cast<char>('a' + (key - gfx::Key::A))));
+            while (gfx::GetCharPressed() > 0) {
             }
             return;
         }
     }
     bool query_changed = false;
-    if (backspace || IsKeyPressedRepeat(KEY_BACKSPACE)) {
+    if (backspace || gfx::IsKeyPressedRepeat(gfx::Key::Backspace)) {
         if (!picker_query_.empty()) {
             picker_query_.pop_back();
             picker_selected_ = 0;
             query_changed = true;
         }
     }
-    if ((ctrl && IsKeyPressed(KEY_N)) || IsKeyPressed(KEY_DOWN) || IsKeyPressedRepeat(KEY_DOWN)) {
+    if ((ctrl && gfx::IsKeyPressed(gfx::Key::N)) || gfx::IsKeyPressed(gfx::Key::Down) || gfx::IsKeyPressedRepeat(gfx::Key::Down)) {
         int n = static_cast<int>(PickerFilteredResults().size());
         if (picker_selected_ + 1 < n) picker_selected_++;
     }
-    if ((ctrl && IsKeyPressed(KEY_P)) || IsKeyPressed(KEY_UP) || IsKeyPressedRepeat(KEY_UP)) {
+    if ((ctrl && gfx::IsKeyPressed(gfx::Key::P)) || gfx::IsKeyPressed(gfx::Key::Up) || gfx::IsKeyPressedRepeat(gfx::Key::Up)) {
         if (picker_selected_ > 0) picker_selected_--;
     }
-    int cp = GetCharPressed();
+    int cp = gfx::GetCharPressed();
     while (cp > 0) {
         if (cp >= 32 && cp < 127) {
             picker_query_ += static_cast<char>(cp);
             picker_selected_ = 0;
             query_changed = true;
         }
-        cp = GetCharPressed();
+        cp = gfx::GetCharPressed();
     }
     if (query_changed && lua_ && picker_on_query_change_ref_ != 0) {
         lua_->CallRefWithString(picker_on_query_change_ref_, picker_query_);
@@ -16862,10 +16898,10 @@ std::vector<int> Editor::RoamGraphFilteredIndices() const {
 
 void Editor::HandleRoamGraphInput() {
     bool escape = false, enter = false, backspace = false;
-    for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
-        if (key == KEY_ESCAPE) escape = true;
-        else if (key == KEY_ENTER) enter = true;
-        else if (key == KEY_BACKSPACE) backspace = true;
+    for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
+        if (key == gfx::Key::Escape) escape = true;
+        else if (key == gfx::Key::Enter) enter = true;
+        else if (key == gfx::Key::Backspace) backspace = true;
     }
     if (escape) {
         int ref = roam_graph_on_select_ref_;
@@ -16894,7 +16930,7 @@ void Editor::HandleRoamGraphInput() {
         return;
     }
     bool query_changed = false;
-    if (backspace || IsKeyPressedRepeat(KEY_BACKSPACE)) {
+    if (backspace || gfx::IsKeyPressedRepeat(gfx::Key::Backspace)) {
         if (!roam_graph_query_.empty()) {
             roam_graph_query_.pop_back();
             query_changed = true;
@@ -16909,21 +16945,21 @@ void Editor::HandleRoamGraphInput() {
     // scope-cut note -- the plan's own wording offers "arrow keys or
     // click", and arrow keys alone already give full node coverage).
     int filtered_count = static_cast<int>(RoamGraphFilteredIndices().size());
-    if (IsKeyPressed(KEY_RIGHT) || IsKeyPressedRepeat(KEY_RIGHT) || IsKeyPressed(KEY_DOWN) ||
-        IsKeyPressedRepeat(KEY_DOWN)) {
+    if (gfx::IsKeyPressed(gfx::Key::Right) || gfx::IsKeyPressedRepeat(gfx::Key::Right) || gfx::IsKeyPressed(gfx::Key::Down) ||
+        gfx::IsKeyPressedRepeat(gfx::Key::Down)) {
         if (filtered_count > 0) roam_graph_selected_ = (roam_graph_selected_ + 1) % filtered_count;
     }
-    if (IsKeyPressed(KEY_LEFT) || IsKeyPressedRepeat(KEY_LEFT) || IsKeyPressed(KEY_UP) ||
-        IsKeyPressedRepeat(KEY_UP)) {
+    if (gfx::IsKeyPressed(gfx::Key::Left) || gfx::IsKeyPressedRepeat(gfx::Key::Left) || gfx::IsKeyPressed(gfx::Key::Up) ||
+        gfx::IsKeyPressedRepeat(gfx::Key::Up)) {
         if (filtered_count > 0) roam_graph_selected_ = (roam_graph_selected_ - 1 + filtered_count) % filtered_count;
     }
-    int cp = GetCharPressed();
+    int cp = gfx::GetCharPressed();
     while (cp > 0) {
         if (cp >= 32 && cp < 127) {
             roam_graph_query_ += static_cast<char>(cp);
             query_changed = true;
         }
-        cp = GetCharPressed();
+        cp = gfx::GetCharPressed();
     }
     if (query_changed) {
         int n = static_cast<int>(RoamGraphFilteredIndices().size());
@@ -17026,15 +17062,15 @@ void Editor::HandleWhichKeyInput() {
     // one non-printable key a sequence may contain (stored as '\r', see
     // NormalizeWhichKeySequence). Escape still cancels, as before.
     int cp = 0;
-    for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
-        if (key == KEY_ESCAPE) {
+    for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
+        if (key == gfx::Key::Escape) {
             RestoreFromOverlay();
             return;
         }
-        if (key == KEY_ENTER || key == KEY_KP_ENTER) cp = '\r';
+        if (key == gfx::Key::Enter || key == gfx::Key::KpEnter) cp = '\r';
     }
     if (cp == 0) {
-        cp = GetCharPressed();
+        cp = gfx::GetCharPressed();
         if (cp <= 0) return;
         if (cp < 32 || cp > 127) return;
     }
@@ -17090,13 +17126,13 @@ void Editor::BeginHints() {
 }
 
 void Editor::HandleHintCharInput() {
-    for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
-        if (key == KEY_ESCAPE) {
+    for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
+        if (key == gfx::Key::Escape) {
             RestoreFromOverlay();
             return;
         }
     }
-    int cp = GetCharPressed();
+    int cp = gfx::GetCharPressed();
     if (cp <= 0) return;
     if (cp < 32 || cp > 127) return;
     char target = static_cast<char>(cp);
@@ -17128,13 +17164,13 @@ void Editor::HandleHintCharInput() {
 }
 
 void Editor::HandleHintLabelInput() {
-    for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
-        if (key == KEY_ESCAPE) {
+    for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
+        if (key == gfx::Key::Escape) {
             RestoreFromOverlay();
             return;
         }
     }
-    int cp = GetCharPressed();
+    int cp = gfx::GetCharPressed();
     if (cp <= 0) return;
     if (cp < 32 || cp > 127) return;
     hint_typed_ += static_cast<char>(cp);
@@ -17203,7 +17239,7 @@ void Editor::UpdateCompletionPopup() {
     // dot-trigger's own real prefix is "".
     if (prefix == completion_last_query_prefix_) return;
     constexpr double kMinQueryIntervalSec = 0.05;
-    double now = GetTime();
+    double now = gfx::GetTime();
     if (now - completion_last_query_time_ < kMinQueryIntervalSec) return;
     completion_last_query_prefix_ = prefix;
     completion_last_query_time_ = now;

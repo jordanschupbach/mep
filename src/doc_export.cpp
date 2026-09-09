@@ -14,8 +14,8 @@
 #include <utility>
 #include <vector>
 
-#include "miniz.h"
-#include "pugixml.hpp"
+#include "xml_doc.h"
+#include "zip_archive.h"
 
 namespace {
 
@@ -576,7 +576,7 @@ struct OdtCtx {
  * @param parent XML node the resulting pcdata/tab/space nodes are appended to.
  * @param text Raw text to append.
  */
-void AppendTextRun(pugi::xml_node parent, const std::string &text) {
+void AppendTextRun(xml::xml_node parent, const std::string &text) {
     size_t i = 0, n = text.size();
     size_t seg_start = 0;
     /**
@@ -584,7 +584,7 @@ void AppendTextRun(pugi::xml_node parent, const std::string &text) {
      * @param end Exclusive end offset into `text` of the segment to flush.
      */
     auto flush_pcdata = [&](size_t end) {
-        if (end > seg_start) parent.append_child(pugi::node_pcdata).set_value(text.substr(seg_start, end - seg_start).c_str());
+        if (end > seg_start) parent.append_child(xml::node_pcdata).set_value(text.substr(seg_start, end - seg_start).c_str());
     };
     while (i < n) {
         if (text[i] == '\t') {
@@ -600,8 +600,8 @@ void AppendTextRun(pugi::xml_node parent, const std::string &text) {
             size_t count = i - run_start;
             if (count >= 2) {
                 flush_pcdata(run_start);
-                parent.append_child(pugi::node_pcdata).set_value(" ");
-                pugi::xml_node s = parent.append_child("text:s");
+                parent.append_child(xml::node_pcdata).set_value(" ");
+                xml::xml_node s = parent.append_child("text:s");
                 s.append_attribute("text:c").set_value(static_cast<unsigned int>(count - 1));
                 seg_start = i;
             }
@@ -612,7 +612,7 @@ void AppendTextRun(pugi::xml_node parent, const std::string &text) {
     flush_pcdata(n);
 }
 
-void AppendOdtImageFrame(const DomNode *node, OdtCtx &ctx, pugi::xml_node container);
+void AppendOdtImageFrame(const DomNode *node, OdtCtx &ctx, xml::xml_node container);
 
 /**
  * @brief Recursively renders an inline-context DOM node (text, formatting, links, math, images) into ODT text runs appended to `container`.
@@ -620,7 +620,7 @@ void AppendOdtImageFrame(const DomNode *node, OdtCtx &ctx, pugi::xml_node contai
  * @param ctx Shared ODT rendering context (base dir, image/table counters, collected images).
  * @param container XML node (an open <text:p>/<text:span>/<text:a>) the resulting run(s) are appended to.
  */
-void WalkOdtInline(const DomNode *node, OdtCtx &ctx, pugi::xml_node container) {
+void WalkOdtInline(const DomNode *node, OdtCtx &ctx, xml::xml_node container) {
     if (node->type == DomNodeType::Text) {
         AppendTextRun(container, node->text);
         return;
@@ -636,20 +636,20 @@ void WalkOdtInline(const DomNode *node, OdtCtx &ctx, pugi::xml_node container) {
         // shown as its own raw LaTeX source in monospace text instead of
         // silently dropping the equation.
         std::string latex = CollectRawText(node);
-        pugi::xml_node span = container.append_child("text:span");
+        xml::xml_node span = container.append_child("text:span");
         span.append_attribute("text:style-name").set_value("MepSrc");
         AppendTextRun(span, IsMathDisplay(node) ? ("[" + latex + "]") : ("$" + latex + "$"));
         return;
     }
     if (tag == "code" || tag == "tt") {
-        pugi::xml_node span = container.append_child("text:span");
+        xml::xml_node span = container.append_child("text:span");
         span.append_attribute("text:style-name").set_value("MepSrc");
         AppendTextRun(span, CollectRawText(node));
         return;
     }
     if (tag == "a") {
         auto it = node->attrs.find("href");
-        pugi::xml_node link = container.append_child("text:a");
+        xml::xml_node link = container.append_child("text:a");
         link.append_attribute("xlink:type").set_value("simple");
         link.append_attribute("xlink:href").set_value(it != node->attrs.end() ? it->second.c_str() : "");
         for (auto &c : node->children) WalkOdtInline(c.get(), ctx, link);
@@ -661,7 +661,7 @@ void WalkOdtInline(const DomNode *node, OdtCtx &ctx, pugi::xml_node container) {
     else if (tag == "u") style = "MepUnderline";
     else if (tag == "s" || tag == "strike" || tag == "del") style = "MepStrike";
     if (style) {
-        pugi::xml_node span = container.append_child("text:span");
+        xml::xml_node span = container.append_child("text:span");
         span.append_attribute("text:style-name").set_value(style);
         for (auto &c : node->children) WalkOdtInline(c.get(), ctx, span);
         return;
@@ -681,7 +681,7 @@ void WalkOdtInline(const DomNode *node, OdtCtx &ctx, pugi::xml_node container) {
     for (auto &c : node->children) WalkOdtInline(c.get(), ctx, container);
 }
 
-void WalkOdtBlock(const DomNode *node, OdtCtx &ctx, pugi::xml_node text_body);
+void WalkOdtBlock(const DomNode *node, OdtCtx &ctx, xml::xml_node text_body);
 
 // Appends one <draw:frame><draw:image .../></draw:frame> (ODF images are
 // always text:anchor-type="as-char", i.e. inline-flowing within
@@ -699,7 +699,7 @@ void WalkOdtBlock(const DomNode *node, OdtCtx &ctx, pugi::xml_node text_body);
  * @param ctx Shared ODT rendering context; the decoded image is appended to `ctx.images` and `ctx.image_counter` is advanced.
  * @param container XML node the resulting <draw:frame> (or placeholder text) is appended to.
  */
-void AppendOdtImageFrame(const DomNode *node, OdtCtx &ctx, pugi::xml_node container) {
+void AppendOdtImageFrame(const DomNode *node, OdtCtx &ctx, xml::xml_node container) {
     auto src_it = node->attrs.find("src");
     std::string resolved = src_it != node->attrs.end() ? ResolveLocalPath(src_it->second, ctx.base_dir) : "";
     std::string bytes;
@@ -721,12 +721,12 @@ void AppendOdtImageFrame(const DomNode *node, OdtCtx &ctx, pugi::xml_node contai
     std::snprintf(width_buf, sizeof(width_buf), "%.2fcm", width_cm);
     std::snprintf(height_buf, sizeof(height_buf), "%.2fcm", height_cm);
 
-    pugi::xml_node frame = container.append_child("draw:frame");
+    xml::xml_node frame = container.append_child("draw:frame");
     frame.append_attribute("draw:name").set_value(("MepImage" + std::to_string(ctx.image_counter)).c_str());
     frame.append_attribute("text:anchor-type").set_value("as-char");
     frame.append_attribute("svg:width").set_value(width_buf);
     frame.append_attribute("svg:height").set_value(height_buf);
-    pugi::xml_node img_el = frame.append_child("draw:image");
+    xml::xml_node img_el = frame.append_child("draw:image");
     img_el.append_attribute("xlink:href").set_value(zip_name.c_str());
     img_el.append_attribute("xlink:type").set_value("simple");
     img_el.append_attribute("xlink:show").set_value("embed");
@@ -739,21 +739,21 @@ void AppendOdtImageFrame(const DomNode *node, OdtCtx &ctx, pugi::xml_node contai
  * @param ctx Shared ODT rendering context; `ctx.table_counter` is advanced to name the table uniquely.
  * @param text_body XML node (the document's <office:text>) the resulting <table:table> is appended to.
  */
-void AppendOdtTable(const DomNode *node, OdtCtx &ctx, pugi::xml_node text_body) {
+void AppendOdtTable(const DomNode *node, OdtCtx &ctx, xml::xml_node text_body) {
     std::vector<const DomNode *> rows;
     CollectTableRows(node, rows);
     size_t max_cols = TableMaxCols(rows);
     if (max_cols == 0) return;
-    pugi::xml_node table = text_body.append_child("table:table");
+    xml::xml_node table = text_body.append_child("table:table");
     table.append_attribute("table:name").set_value(("MepTable" + std::to_string(ctx.table_counter++)).c_str());
     for (size_t i = 0; i < max_cols; i++) table.append_child("table:table-column");
     for (const DomNode *r : rows) {
-        pugi::xml_node trow = table.append_child("table:table-row");
+        xml::xml_node trow = table.append_child("table:table-row");
         for (const auto &c : r->children) {
             if (c->tag != "td" && c->tag != "th") continue;
-            pugi::xml_node cell = trow.append_child("table:table-cell");
+            xml::xml_node cell = trow.append_child("table:table-cell");
             cell.append_attribute("office:value-type").set_value("string");
-            pugi::xml_node p = cell.append_child("text:p");
+            xml::xml_node p = cell.append_child("text:p");
             if (c->tag == "th") p.append_attribute("text:style-name").set_value("MepTableHeading");
             for (auto &gc : c->children) WalkOdtInline(gc.get(), ctx, p);
         }
@@ -780,7 +780,7 @@ void AppendOdtTable(const DomNode *node, OdtCtx &ctx, pugi::xml_node text_body) 
 // table.concat(out, '\n') leaves between output lines) is dropped
 // rather than opening an empty paragraph for it.
 void WalkOdtBlockChildren(const std::vector<std::unique_ptr<DomNode>> &children, OdtCtx &ctx,
-                           pugi::xml_node text_body);
+                           xml::xml_node text_body);
 
 /**
  * @brief Recursively renders a block-context DOM node (heading, paragraph, list, table, blockquote, pre, image, or generic container) into ODT body content appended to `text_body`.
@@ -788,7 +788,7 @@ void WalkOdtBlockChildren(const std::vector<std::unique_ptr<DomNode>> &children,
  * @param ctx Shared ODT rendering context (base dir, image/table counters, collected images).
  * @param text_body XML node (the document's <office:text>, or an ancestor list item) the resulting content is appended to.
  */
-void WalkOdtBlock(const DomNode *node, OdtCtx &ctx, pugi::xml_node text_body) {
+void WalkOdtBlock(const DomNode *node, OdtCtx &ctx, xml::xml_node text_body) {
     if (node->type == DomNodeType::Text) {
         // Reached only when the CALLER didn't already route this
         // through WalkOdtBlockChildren (i.e. every real entry point
@@ -796,7 +796,7 @@ void WalkOdtBlock(const DomNode *node, OdtCtx &ctx, pugi::xml_node text_body) {
         // same "degrade gracefully" spirit as the rest of this walker.
         bool blank = node->text.find_first_not_of(" \t\r\n") == std::string::npos;
         if (!blank) {
-            pugi::xml_node p = text_body.append_child("text:p");
+            xml::xml_node p = text_body.append_child("text:p");
             AppendTextRun(p, node->text);
         }
         return;
@@ -815,14 +815,14 @@ void WalkOdtBlock(const DomNode *node, OdtCtx &ctx, pugi::xml_node text_body) {
 
     int level;
     if (IsHeadingTag(tag, level)) {
-        pugi::xml_node h = text_body.append_child("text:h");
+        xml::xml_node h = text_body.append_child("text:h");
         h.append_attribute("text:outline-level").set_value(level);
         h.append_attribute("text:style-name").set_value(("MepHeading" + std::to_string(level)).c_str());
         for (auto &c : node->children) WalkOdtInline(c.get(), ctx, h);
         return;
     }
     if (tag == "p") {
-        pugi::xml_node p = text_body.append_child("text:p");
+        xml::xml_node p = text_body.append_child("text:p");
         for (auto &c : node->children) WalkOdtInline(c.get(), ctx, p);
         return;
     }
@@ -837,7 +837,7 @@ void WalkOdtBlock(const DomNode *node, OdtCtx &ctx, pugi::xml_node text_body) {
         while (start <= n) {
             size_t nl = raw.find('\n', start);
             std::string line = raw.substr(start, (nl == std::string::npos ? n : nl) - start);
-            pugi::xml_node p = text_body.append_child("text:p");
+            xml::xml_node p = text_body.append_child("text:p");
             p.append_attribute("text:style-name").set_value("MepPreformatted");
             AppendTextRun(p, line);
             if (nl == std::string::npos) break;
@@ -854,7 +854,7 @@ void WalkOdtBlock(const DomNode *node, OdtCtx &ctx, pugi::xml_node text_body) {
         // else in this file.
         for (auto &c : node->children) {
             if (c->type == DomNodeType::Element && c->tag == "p") {
-                pugi::xml_node p = text_body.append_child("text:p");
+                xml::xml_node p = text_body.append_child("text:p");
                 p.append_attribute("text:style-name").set_value("MepQuote");
                 for (auto &gc : c->children) WalkOdtInline(gc.get(), ctx, p);
             } else {
@@ -864,12 +864,12 @@ void WalkOdtBlock(const DomNode *node, OdtCtx &ctx, pugi::xml_node text_body) {
         return;
     }
     if (tag == "ul" || tag == "ol") {
-        pugi::xml_node list = text_body.append_child("text:list");
+        xml::xml_node list = text_body.append_child("text:list");
         list.append_attribute("text:style-name").set_value(tag == "ul" ? "MepBulletList" : "MepNumberList");
         for (const auto &c : node->children) {
             if (c->tag != "li") continue;
-            pugi::xml_node item = list.append_child("text:list-item");
-            pugi::xml_node p = item.append_child("text:p");
+            xml::xml_node item = list.append_child("text:list-item");
+            xml::xml_node p = item.append_child("text:p");
             for (auto &gc : c->children) {
                 if (gc->type == DomNodeType::Element && (gc->tag == "ul" || gc->tag == "ol")) {
                     WalkOdtBlock(gc.get(), ctx, item);  // nested list, sibling of the <text:p> above
@@ -910,12 +910,12 @@ void WalkOdtBlock(const DomNode *node, OdtCtx &ctx, pugi::xml_node text_body) {
  * @param text_body XML node the resulting paragraphs/blocks are appended to.
  */
 void WalkOdtBlockChildren(const std::vector<std::unique_ptr<DomNode>> &children, OdtCtx &ctx,
-                           pugi::xml_node text_body) {
-    pugi::xml_node open_p;  // empty/null until a run of inline content opens one
+                           xml::xml_node text_body) {
+    xml::xml_node open_p;  // empty/null until a run of inline content opens one
     for (auto &c : children) {
         bool is_block = c->type == DomNodeType::Element && c->style.block;
         if (is_block) {
-            open_p = pugi::xml_node();
+            open_p = xml::xml_node();
             WalkOdtBlock(c.get(), ctx, text_body);
             continue;
         }
@@ -937,7 +937,7 @@ void WalkOdtBlockChildren(const std::vector<std::unique_ptr<DomNode>> &children,
  * @brief Appends every named <style:style>/<text:list-style> content.xml's WalkOdt* functions reference (bold/italic/underline/strike/mono text styles, heading/preformatted/quote paragraph styles, an hr style, a table-heading style, and bullet/number list styles) to `auto_styles`.
  * @param auto_styles XML node (the document's <office:automatic-styles>) the style definitions are appended to.
  */
-void AppendOdtAutomaticStyles(pugi::xml_node auto_styles) {
+void AppendOdtAutomaticStyles(xml::xml_node auto_styles) {
     /**
      * @brief Appends one text:family <style:style> (bold/italic/underline/strike/mono flags) named `name` to `auto_styles`.
      * @param name Style name later referenced via text:style-name.
@@ -948,10 +948,10 @@ void AppendOdtAutomaticStyles(pugi::xml_node auto_styles) {
      * @param mono Whether to set the font to "mep Mono".
      */
     auto text_style = [&](const char *name, bool bold, bool italic, bool underline, bool strike, bool mono) {
-        pugi::xml_node s = auto_styles.append_child("style:style");
+        xml::xml_node s = auto_styles.append_child("style:style");
         s.append_attribute("style:name").set_value(name);
         s.append_attribute("style:family").set_value("text");
-        pugi::xml_node tp = s.append_child("style:text-properties");
+        xml::xml_node tp = s.append_child("style:text-properties");
         if (bold) tp.append_attribute("fo:font-weight").set_value("bold");
         if (italic) tp.append_attribute("fo:font-style").set_value("italic");
         if (underline) tp.append_attribute("style:text-underline-style").set_value("solid");
@@ -976,16 +976,16 @@ void AppendOdtAutomaticStyles(pugi::xml_node auto_styles) {
      */
     auto para_style = [&](const std::string &name, double font_pt, bool bold, double margin_top,
                            double margin_bottom, bool mono, bool italic) {
-        pugi::xml_node s = auto_styles.append_child("style:style");
+        xml::xml_node s = auto_styles.append_child("style:style");
         s.append_attribute("style:name").set_value(name.c_str());
         s.append_attribute("style:family").set_value("paragraph");
-        pugi::xml_node pp = s.append_child("style:paragraph-properties");
+        xml::xml_node pp = s.append_child("style:paragraph-properties");
         char buf[32];
         std::snprintf(buf, sizeof(buf), "%.3fin", margin_top);
         pp.append_attribute("fo:margin-top").set_value(buf);
         std::snprintf(buf, sizeof(buf), "%.3fin", margin_bottom);
         pp.append_attribute("fo:margin-bottom").set_value(buf);
-        pugi::xml_node tp = s.append_child("style:text-properties");
+        xml::xml_node tp = s.append_child("style:text-properties");
         char fbuf[16];
         std::snprintf(fbuf, sizeof(fbuf), "%.0fpt", font_pt);
         tp.append_attribute("fo:font-size").set_value(fbuf);
@@ -1003,17 +1003,17 @@ void AppendOdtAutomaticStyles(pugi::xml_node auto_styles) {
     // Horizontal rule: a paragraph with a bottom border and no text --
     // ODF has no dedicated <hr> equivalent, this is the conventional way
     // real ODF writers represent one.
-    pugi::xml_node hr = auto_styles.append_child("style:style");
+    xml::xml_node hr = auto_styles.append_child("style:style");
     hr.append_attribute("style:name").set_value("MepHr");
     hr.append_attribute("style:family").set_value("paragraph");
-    pugi::xml_node hr_pp = hr.append_child("style:paragraph-properties");
+    xml::xml_node hr_pp = hr.append_child("style:paragraph-properties");
     hr_pp.append_attribute("style:border-line-width-bottom").set_value("0.0008in 0.0008in 0.0008in");
     hr_pp.append_attribute("fo:border-bottom").set_value("0.5pt solid #000000");
     hr_pp.append_attribute("fo:padding").set_value("0in");
     hr_pp.append_attribute("fo:margin-top").set_value("0.1in");
     hr_pp.append_attribute("fo:margin-bottom").set_value("0.1in");
 
-    pugi::xml_node th = auto_styles.append_child("style:style");
+    xml::xml_node th = auto_styles.append_child("style:style");
     th.append_attribute("style:name").set_value("MepTableHeading");
     th.append_attribute("style:family").set_value("paragraph");
     th.append_child("style:text-properties").append_attribute("fo:font-weight").set_value("bold");
@@ -1027,14 +1027,14 @@ void AppendOdtAutomaticStyles(pugi::xml_node auto_styles) {
      * @param bullet_char UTF-8 bytes of the bullet glyph.
      */
     auto list_bullet_style = [&](const char *name, const char *bullet_char) {
-        pugi::xml_node ls = auto_styles.append_child("text:list-style");
+        xml::xml_node ls = auto_styles.append_child("text:list-style");
         ls.append_attribute("style:name").set_value(name);
-        pugi::xml_node lvl = ls.append_child("text:list-level-style-bullet");
+        xml::xml_node lvl = ls.append_child("text:list-level-style-bullet");
         lvl.append_attribute("text:level").set_value("1");
         lvl.append_attribute("text:bullet-char").set_value(bullet_char);
-        pugi::xml_node lp = lvl.append_child("style:list-level-properties");
+        xml::xml_node lp = lvl.append_child("style:list-level-properties");
         lp.append_attribute("text:list-level-position-and-space-mode").set_value("label-alignment");
-        pugi::xml_node la = lp.append_child("style:list-level-label-alignment");
+        xml::xml_node la = lp.append_child("style:list-level-label-alignment");
         la.append_attribute("text:label-followed-by").set_value("listtab");
         la.append_attribute("text:list-tab-stop-position").set_value("0.5in");
         la.append_attribute("fo:text-indent").set_value("-0.25in");
@@ -1042,16 +1042,16 @@ void AppendOdtAutomaticStyles(pugi::xml_node auto_styles) {
     };
     list_bullet_style("MepBulletList", "\xe2\x80\xa2");  // U+2022 BULLET, UTF-8 bytes (not a \u escape)
 
-    pugi::xml_node ls = auto_styles.append_child("text:list-style");
+    xml::xml_node ls = auto_styles.append_child("text:list-style");
     ls.append_attribute("style:name").set_value("MepNumberList");
-    pugi::xml_node lvl = ls.append_child("text:list-level-style-number");
+    xml::xml_node lvl = ls.append_child("text:list-level-style-number");
     lvl.append_attribute("text:level").set_value("1");
     lvl.append_attribute("style:num-format").set_value("1");
     lvl.append_attribute("style:num-suffix").set_value(".");
     lvl.append_attribute("text:display-levels").set_value("1");
-    pugi::xml_node lp = lvl.append_child("style:list-level-properties");
+    xml::xml_node lp = lvl.append_child("style:list-level-properties");
     lp.append_attribute("text:list-level-position-and-space-mode").set_value("label-alignment");
-    pugi::xml_node la = lp.append_child("style:list-level-label-alignment");
+    xml::xml_node la = lp.append_child("style:list-level-label-alignment");
     la.append_attribute("text:label-followed-by").set_value("listtab");
     la.append_attribute("text:list-tab-stop-position").set_value("0.5in");
     la.append_attribute("fo:text-indent").set_value("-0.25in");
@@ -1067,37 +1067,37 @@ std::string BuildOdtStylesXml() {
     // styles (above) are fully self-contained, so this file only needs
     // to exist and be well-formed; it carries the document's default
     // page layout (letter-ish, 1in margins) via office:master-styles.
-    pugi::xml_document doc;
-    pugi::xml_node decl = doc.append_child(pugi::node_declaration);
+    xml::xml_document doc;
+    xml::xml_node decl = doc.append_child(xml::node_declaration);
     decl.append_attribute("version").set_value("1.0");
     decl.append_attribute("encoding").set_value("UTF-8");
-    pugi::xml_node root = doc.append_child("office:document-styles");
+    xml::xml_node root = doc.append_child("office:document-styles");
     root.append_attribute("xmlns:office").set_value("urn:oasis:names:tc:opendocument:xmlns:office:1.0");
     root.append_attribute("xmlns:style").set_value("urn:oasis:names:tc:opendocument:xmlns:style:1.0");
     root.append_attribute("xmlns:fo").set_value("urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0");
     root.append_attribute("office:version").set_value("1.2");
-    pugi::xml_node styles = root.append_child("office:styles");
-    pugi::xml_node standard = styles.append_child("style:style");
+    xml::xml_node styles = root.append_child("office:styles");
+    xml::xml_node standard = styles.append_child("style:style");
     standard.append_attribute("style:name").set_value("Standard");
     standard.append_attribute("style:family").set_value("paragraph");
     standard.append_attribute("style:class").set_value("text");
 
-    pugi::xml_node master_styles = root.append_child("office:master-styles");
-    pugi::xml_node master = master_styles.append_child("style:master-page");
+    xml::xml_node master_styles = root.append_child("office:master-styles");
+    xml::xml_node master = master_styles.append_child("style:master-page");
     master.append_attribute("style:name").set_value("Standard");
     master.append_attribute("style:page-layout-name").set_value("MepPageLayout");
 
-    pugi::xml_node auto_styles = root.append_child("office:automatic-styles");
-    pugi::xml_node layout = auto_styles.append_child("style:page-layout");
+    xml::xml_node auto_styles = root.append_child("office:automatic-styles");
+    xml::xml_node layout = auto_styles.append_child("style:page-layout");
     layout.append_attribute("style:name").set_value("MepPageLayout");
-    pugi::xml_node lp = layout.append_child("style:page-layout-properties");
+    xml::xml_node lp = layout.append_child("style:page-layout-properties");
     lp.append_attribute("fo:margin-top").set_value("1in");
     lp.append_attribute("fo:margin-bottom").set_value("1in");
     lp.append_attribute("fo:margin-left").set_value("1in");
     lp.append_attribute("fo:margin-right").set_value("1in");
 
     std::ostringstream ss;
-    doc.save(ss, "", pugi::format_raw);
+    doc.save(ss, "", xml::format_raw);
     return ss.str();
 }
 
@@ -1108,21 +1108,21 @@ std::string BuildOdtStylesXml() {
  * @return The serialized meta.xml document.
  */
 std::string BuildOdtMetaXml(const std::string &title, const std::string &author) {
-    pugi::xml_document doc;
-    pugi::xml_node decl = doc.append_child(pugi::node_declaration);
+    xml::xml_document doc;
+    xml::xml_node decl = doc.append_child(xml::node_declaration);
     decl.append_attribute("version").set_value("1.0");
     decl.append_attribute("encoding").set_value("UTF-8");
-    pugi::xml_node root = doc.append_child("office:document-meta");
+    xml::xml_node root = doc.append_child("office:document-meta");
     root.append_attribute("xmlns:office").set_value("urn:oasis:names:tc:opendocument:xmlns:office:1.0");
     root.append_attribute("xmlns:dc").set_value("http://purl.org/dc/elements/1.1/");
     root.append_attribute("xmlns:meta").set_value("urn:oasis:names:tc:opendocument:xmlns:meta:1.0");
     root.append_attribute("office:version").set_value("1.2");
-    pugi::xml_node meta = root.append_child("office:meta");
-    if (!title.empty()) meta.append_child("dc:title").append_child(pugi::node_pcdata).set_value(title.c_str());
-    if (!author.empty()) meta.append_child("dc:creator").append_child(pugi::node_pcdata).set_value(author.c_str());
-    meta.append_child("meta:generator").append_child(pugi::node_pcdata).set_value("mep");
+    xml::xml_node meta = root.append_child("office:meta");
+    if (!title.empty()) meta.append_child("dc:title").append_child(xml::node_pcdata).set_value(title.c_str());
+    if (!author.empty()) meta.append_child("dc:creator").append_child(xml::node_pcdata).set_value(author.c_str());
+    meta.append_child("meta:generator").append_child(xml::node_pcdata).set_value("mep");
     std::ostringstream ss;
-    doc.save(ss, "", pugi::format_raw);
+    doc.save(ss, "", xml::format_raw);
     return ss.str();
 }
 
@@ -1132,11 +1132,11 @@ std::string BuildOdtMetaXml(const std::string &title, const std::string &author)
  * @return The serialized manifest.xml document.
  */
 std::string BuildOdtManifestXml(const std::vector<OdtImage> &images) {
-    pugi::xml_document doc;
-    pugi::xml_node decl = doc.append_child(pugi::node_declaration);
+    xml::xml_document doc;
+    xml::xml_node decl = doc.append_child(xml::node_declaration);
     decl.append_attribute("version").set_value("1.0");
     decl.append_attribute("encoding").set_value("UTF-8");
-    pugi::xml_node root = doc.append_child("manifest:manifest");
+    xml::xml_node root = doc.append_child("manifest:manifest");
     root.append_attribute("xmlns:manifest").set_value("urn:oasis:names:tc:opendocument:xmlns:manifest:1.0");
     root.append_attribute("manifest:version").set_value("1.2");
     /**
@@ -1145,7 +1145,7 @@ std::string BuildOdtManifestXml(const std::vector<OdtImage> &images) {
      * @param media_type The entry's MIME media type.
      */
     auto entry = [&](const char *path, const char *media_type) {
-        pugi::xml_node e = root.append_child("manifest:file-entry");
+        xml::xml_node e = root.append_child("manifest:file-entry");
         e.append_attribute("manifest:full-path").set_value(path);
         e.append_attribute("manifest:media-type").set_value(media_type);
     };
@@ -1159,145 +1159,8 @@ std::string BuildOdtManifestXml(const std::vector<OdtImage> &images) {
         entry(img.zip_name.c_str(), media.c_str());
     }
     std::ostringstream ss;
-    doc.save(ss, "", pugi::format_raw);
+    doc.save(ss, "", xml::format_raw);
     return ss.str();
-}
-
-struct ZipEntryToWrite {
-    std::string name;
-    std::string data;  // uncompressed
-    bool store;         // true = STORED, false = DEFLATE
-};
-
-/**
- * @brief Appends a 16-bit value to `s` as two little-endian bytes.
- * @param s String to append the bytes to.
- * @param v Value to encode.
- */
-void AppendLE16(std::string &s, uint16_t v) {
-    s += static_cast<char>(v & 0xff);
-    s += static_cast<char>((v >> 8) & 0xff);
-}
-/**
- * @brief Appends a 32-bit value to `s` as four little-endian bytes.
- * @param s String to append the bytes to.
- * @param v Value to encode.
- */
-void AppendLE32(std::string &s, uint32_t v) {
-    s += static_cast<char>(v & 0xff);
-    s += static_cast<char>((v >> 8) & 0xff);
-    s += static_cast<char>((v >> 16) & 0xff);
-    s += static_cast<char>((v >> 24) & 0xff);
-}
-
-// A from-scratch, minimal ZIP writer -- used instead of miniz's own
-// mz_zip_writer_* API specifically because that API's mz_zip_writer_
-// add_mem_ex_v2 (miniz.c) unconditionally sets general-purpose bit 3
-// (MZ_ZIP_LDH_BIT_FLAG_HAS_LOCATOR -- sizes/CRC deferred to a trailing
-// data descriptor after the entry's data) for any real in-memory buffer
-// add, with no public flag able to suppress it -- MZ_ZIP_FLAG_WRITE_
-// HEADER_SET_SIZE turned out to affect a different, lower-level
-// callback-based write path, not this one (confirmed by reading
-// miniz.c's own add_mem_ex_v2 body after the flag alone didn't change
-// the output). That's valid per the zip spec and fine for miniz's own
-// reader/most general-purpose tools, but LibreOffice's own strict ODF
-// package loader rejects a "mimetype" entry (first entry, used for fast
-// format sniffing) written that way -- confirmed two ways during
-// development: (1) a real `libreoffice --headless --convert-to pdf`
-// round-trip failed with "BrokenPackageRequest" against the miniz-
-// writer-produced archive, and (2) rebuilding the exact same entries
-// with Python's stdlib zipfile module (which writes real sizes/CRC
-// directly in the local header, bit 3 clear) round-tripped through
-// LibreOffice successfully. This writer always writes real sizes/CRC
-// directly (bit 3 always clear, no data descriptor ever emitted) --
-// still using miniz's own mz_crc32 and tdefl_compress_mem_to_heap
-// (called with -15 window bits + MZ_DEFAULT_STRATEGY, the exact same
-// tdefl_create_comp_flags_from_zip_params args miniz's own zip writer
-// uses internally, see its mz_zip_writer_add_mem_ex_v2) for the actual
-// CRC/deflate work rather than reimplementing either.
-/**
- * @brief Builds a complete ZIP archive from `entries` (local file headers + data followed by a central directory and end-of-central-directory record), deflating each entry unless it's marked STORED or fails to shrink, always writing real sizes/CRC in the local header (general-purpose bit 3 clear, no trailing data descriptor) rather than using miniz's own zip-writer API.
- * @param entries Entries to write, each either stored verbatim or DEFLATE-compressed.
- * @return The complete, ready-to-write ZIP archive bytes.
- */
-std::string BuildZipArchive(const std::vector<ZipEntryToWrite> &entries) {
-    std::string out;
-    struct CdRecord {
-        std::string name;
-        uint32_t crc, comp_size, uncomp_size, local_offset;
-        uint16_t method;
-    };
-    std::vector<CdRecord> cd;
-    for (const ZipEntryToWrite &e : entries) {
-        uint32_t crc =
-            static_cast<uint32_t>(mz_crc32(0, reinterpret_cast<const unsigned char *>(e.data.data()), e.data.size()));
-        std::string comp_data;
-        uint16_t method;
-        if (e.store || e.data.empty()) {
-            comp_data = e.data;
-            method = 0;
-        } else {
-            size_t out_len = 0;
-            mz_uint flags = tdefl_create_comp_flags_from_zip_params(MZ_DEFAULT_LEVEL, -15, MZ_DEFAULT_STRATEGY);
-            void *compressed =
-                tdefl_compress_mem_to_heap(e.data.data(), e.data.size(), &out_len, static_cast<int>(flags));
-            if (compressed && out_len < e.data.size()) {
-                comp_data.assign(static_cast<const char *>(compressed), out_len);
-                method = 8;
-            } else {
-                comp_data = e.data;  // incompressible/tiny -- store rather than grow
-                method = 0;
-            }
-            if (compressed) mz_free(compressed);
-        }
-        uint32_t local_offset = static_cast<uint32_t>(out.size());
-        out += "PK\x03\x04";
-        AppendLE16(out, 20);      // version needed
-        AppendLE16(out, 0);       // general purpose flag -- always 0: no data descriptor, no UTF-8 flag needed (ASCII names only)
-        AppendLE16(out, method);
-        AppendLE16(out, 0);       // mod time
-        AppendLE16(out, 0x21);    // mod date: 1980-01-01, the standard "no real timestamp" zip placeholder
-        AppendLE32(out, crc);
-        AppendLE32(out, static_cast<uint32_t>(comp_data.size()));
-        AppendLE32(out, static_cast<uint32_t>(e.data.size()));
-        AppendLE16(out, static_cast<uint16_t>(e.name.size()));
-        AppendLE16(out, 0);  // extra field length
-        out += e.name;
-        out += comp_data;
-        cd.push_back({e.name, crc, static_cast<uint32_t>(comp_data.size()), static_cast<uint32_t>(e.data.size()),
-                       local_offset, method});
-    }
-    uint32_t cd_offset = static_cast<uint32_t>(out.size());
-    for (const CdRecord &r : cd) {
-        out += "PK\x01\x02";
-        AppendLE16(out, 20);  // version made by
-        AppendLE16(out, 20);  // version needed
-        AppendLE16(out, 0);   // general purpose flag
-        AppendLE16(out, r.method);
-        AppendLE16(out, 0);    // mod time
-        AppendLE16(out, 0x21);  // mod date
-        AppendLE32(out, r.crc);
-        AppendLE32(out, r.comp_size);
-        AppendLE32(out, r.uncomp_size);
-        AppendLE16(out, static_cast<uint16_t>(r.name.size()));
-        AppendLE16(out, 0);  // extra field length
-        AppendLE16(out, 0);  // comment length
-        AppendLE16(out, 0);  // disk number start
-        AppendLE16(out, 0);  // internal file attributes
-        AppendLE32(out, 0);  // external file attributes
-        AppendLE32(out, r.local_offset);
-        out += r.name;
-    }
-    uint32_t cd_size = static_cast<uint32_t>(out.size()) - cd_offset;
-    out += "PK\x05\x06";
-    AppendLE16(out, 0);  // this disk number
-    AppendLE16(out, 0);  // disk with start of central directory
-    AppendLE16(out, static_cast<uint16_t>(cd.size()));  // entries on this disk
-    AppendLE16(out, static_cast<uint16_t>(cd.size()));  // total entries
-    AppendLE32(out, cd_size);
-    AppendLE32(out, cd_offset);
-    AppendLE16(out, 0);  // comment length
-    return out;
 }
 
 }  // namespace
@@ -1311,11 +1174,11 @@ bool ExportHtmlToOdt(const std::string &html, const std::string &out_path, const
     OdtCtx ctx;
     ctx.base_dir = base_dir;
 
-    pugi::xml_document content_doc;
-    pugi::xml_node decl = content_doc.append_child(pugi::node_declaration);
+    xml::xml_document content_doc;
+    xml::xml_node decl = content_doc.append_child(xml::node_declaration);
     decl.append_attribute("version").set_value("1.0");
     decl.append_attribute("encoding").set_value("UTF-8");
-    pugi::xml_node content_root = content_doc.append_child("office:document-content");
+    xml::xml_node content_root = content_doc.append_child("office:document-content");
     content_root.append_attribute("xmlns:office").set_value("urn:oasis:names:tc:opendocument:xmlns:office:1.0");
     content_root.append_attribute("xmlns:text").set_value("urn:oasis:names:tc:opendocument:xmlns:text:1.0");
     content_root.append_attribute("xmlns:table").set_value("urn:oasis:names:tc:opendocument:xmlns:table:1.0");
@@ -1326,27 +1189,27 @@ bool ExportHtmlToOdt(const std::string &html, const std::string &out_path, const
     content_root.append_attribute("xmlns:xlink").set_value("http://www.w3.org/1999/xlink");
     content_root.append_attribute("office:version").set_value("1.2");
 
-    pugi::xml_node auto_styles = content_root.append_child("office:automatic-styles");
+    xml::xml_node auto_styles = content_root.append_child("office:automatic-styles");
     AppendOdtAutomaticStyles(auto_styles);
 
-    pugi::xml_node body_el = content_root.append_child("office:body");
-    pugi::xml_node text_body = body_el.append_child("office:text");
+    xml::xml_node body_el = content_root.append_child("office:body");
+    xml::xml_node text_body = body_el.append_child("office:text");
     if (root) {
         WalkOdtBlockChildren(root->children, ctx, text_body);
     }
 
     std::ostringstream content_ss;
-    content_doc.save(content_ss, "", pugi::format_raw);
+    content_doc.save(content_ss, "", xml::format_raw);
     std::string content_xml = content_ss.str();
     std::string styles_xml = BuildOdtStylesXml();
     std::string meta_xml = BuildOdtMetaXml(title, author);
     std::string manifest_xml = BuildOdtManifestXml(ctx.images);
     // "mimetype" must be the first entry and stored uncompressed -- real
     // ODF readers/validators rely on this for fast format sniffing
-    // without inflating anything (see BuildZipArchive's own header for
-    // why this whole archive is hand-written rather than built via
-    // miniz's own zip-writer API).
-    std::vector<ZipEntryToWrite> zip_entries = {
+    // without inflating anything (see zip_archive.h's own header for the
+    // real-world round-trip failure that shaped its writer's exact
+    // local-header format).
+    std::vector<zip::EntryToWrite> zip_entries = {
         {"mimetype", "application/vnd.oasis.opendocument.text", true},
         {"META-INF/manifest.xml", manifest_xml, false},
         {"content.xml", content_xml, false},
@@ -1354,7 +1217,7 @@ bool ExportHtmlToOdt(const std::string &html, const std::string &out_path, const
         {"meta.xml", meta_xml, false},
     };
     for (const OdtImage &img : ctx.images) zip_entries.push_back({img.zip_name, img.bytes, true});
-    std::string archive = BuildZipArchive(zip_entries);
+    std::string archive = zip::BuildArchive(zip_entries);
 
     std::ofstream out(out_path, std::ios::binary);
     if (!out) {

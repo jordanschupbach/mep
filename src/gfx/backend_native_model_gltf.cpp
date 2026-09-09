@@ -30,6 +30,7 @@
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <sstream>
@@ -38,20 +39,8 @@
 
 #include "gfx/renderer2d.h"
 #include "gfx/vecmath.h"
+#include "image_codec.h"
 #include "json.h"
-
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wsign-conversion"
-#pragma GCC diagnostic ignored "-Wconversion"
-#pragma GCC diagnostic ignored "-Wold-style-cast"
-#pragma GCC diagnostic ignored "-Wcast-align"
-#pragma GCC diagnostic ignored "-Wdouble-promotion"
-#endif
-#include "../third_party/stb_image.h"
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC diagnostic pop
-#endif
 
 namespace gfx {
 
@@ -334,7 +323,7 @@ struct BuiltPrimitive {
 
 // Resolves a glTF image (by images[] index) to raw encoded bytes -- either
 // a uri (external file or base64 data: URI, same as buffers) or a GLB-
-// embedded bufferView -- then decodes it via stb_image. Empty Texture2D
+// embedded bufferView -- then decodes it via image_codec. Empty Texture2D
 // (id 0) on any failure; model3d_doc.cpp already treats that as "no
 // texture", same as an untextured material.
 gfx::Texture2D LoadGltfImageTexture(const GltfDoc &doc, int image_index, const std::string &base_dir) {
@@ -362,14 +351,15 @@ gfx::Texture2D LoadGltfImageTexture(const GltfDoc &doc, int image_index, const s
     }
     if (bytes.empty()) return gfx::Texture2D{};
 
-    int w = 0, h = 0, channels = 0;
-    unsigned char *pixels = stbi_load_from_memory(bytes.data(), static_cast<int>(bytes.size()), &w, &h, &channels, 4);
+    int w = 0, h = 0;
+    std::string error;
+    unsigned char *pixels = image_codec::Decode(bytes.data(), bytes.size(), &w, &h, &error);
     if (pixels == nullptr) return gfx::Texture2D{};
     gfx::Image image{pixels, w, h, 1, gfx::kPixelFormatR8G8B8A8};
     // Same "decode then upload, model3d_doc.cpp reads it back with
     // LoadImageFromTexture" dance the OBJ importer's map_Kd path uses.
     gfx::Texture2D tex = gfx::LoadTextureFromImage(image);
-    stbi_image_free(pixels);
+    std::free(pixels);
     return tex;
 }
 

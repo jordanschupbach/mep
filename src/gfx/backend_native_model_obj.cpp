@@ -31,19 +31,7 @@
 #include "gfx/renderer2d.h"
 #include "gfx/renderer3d.h"
 #include "gfx/vecmath.h"
-
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wsign-conversion"
-#pragma GCC diagnostic ignored "-Wconversion"
-#pragma GCC diagnostic ignored "-Wold-style-cast"
-#pragma GCC diagnostic ignored "-Wcast-align"
-#pragma GCC diagnostic ignored "-Wdouble-promotion"
-#endif
-#include "../third_party/stb_image.h"
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC diagnostic pop
-#endif
+#include "image_codec.h"
 
 namespace gfx {
 
@@ -82,20 +70,23 @@ std::string DirOf(const std::string &path) {
     return slash == std::string::npos ? std::string() : path.substr(0, slash + 1);
 }
 
-// Decodes an image file via stb_image and uploads it as a GPU texture --
-// same "decode then upload, caller reads it back with LoadImageFromTexture
-// later" dance model3d_doc.cpp's own texture-import path already does,
-// so a material's texture here behaves identically once LoadModel returns.
+// Decodes an image file via image_codec and uploads it as a GPU texture
+// -- same "decode then upload, caller reads it back with
+// LoadImageFromTexture later" dance model3d_doc.cpp's own texture-import
+// path already does, so a material's texture here behaves identically
+// once LoadModel returns.
 gfx::Texture2D LoadTextureFromFile(const std::string &path) {
-    int w = 0, h = 0, channels = 0;
-    unsigned char *pixels = stbi_load(path.c_str(), &w, &h, &channels, 4);
+    int w = 0, h = 0;
+    std::string error;
+    unsigned char *pixels = image_codec::DecodeFile(path.c_str(), &w, &h, &error);
     if (pixels == nullptr) {
-        std::fprintf(stderr, "gfx native: OBJ import: couldn't decode texture '%s'\n", path.c_str());
+        std::fprintf(stderr, "gfx native: OBJ import: couldn't decode texture '%s': %s\n", path.c_str(),
+                     error.c_str());
         return gfx::Texture2D{};
     }
     gfx::Image img{pixels, w, h, 1, gfx::kPixelFormatR8G8B8A8};
     gfx::Texture2D tex = gfx::LoadTextureFromImage(img);
-    stbi_image_free(pixels);
+    std::free(pixels);
     return tex;
 }
 

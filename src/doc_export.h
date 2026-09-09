@@ -41,8 +41,8 @@ std::string ExportHtmlToLatex(const std::string &html, const std::string &title,
 // Same DOM walk, targeting a real .odt package -- built from scratch
 // (mimetype/META-INF/manifest.xml/meta.xml/styles.xml/content.xml, plus
 // one Pictures/imgN.<ext> zip entry per embedded local image), zipped via
-// miniz the same way office_doc.cpp already writes docx/odt zip entries
-// (mz_zip_writer_add_mem), just building every entry directly rather
+// zip_archive.h's BuildArchive the same way office_doc.cpp already
+// writes docx/odt zip entries, just building every entry directly rather
 // than patching one into an existing template archive -- and every style
 // content.xml references is defined inline as an <office:automatic-
 // style>, the same self-contained approach office_odt.cpp's own
@@ -56,7 +56,7 @@ std::string ExportHtmlToLatex(const std::string &html, const std::string &title,
 // happen here -- an unreadable/missing image is dropped with a text
 // placeholder, same tolerance as the LaTeX backend, not a hard error).
 /**
- * @brief Renders the DOM parsed from `html` into a real .odt package (built from scratch and zipped via miniz) written to `out_path`.
+ * @brief Renders the DOM parsed from `html` into a real .odt package (built from scratch and zipped via zip_archive.h) written to `out_path`.
  * @param html HTML source (bare fragment or full document) walked to build the ODT content.
  * @param out_path Filesystem path the generated .odt archive is written to.
  * @param title Document title recorded in the ODT metadata; omitted when empty.

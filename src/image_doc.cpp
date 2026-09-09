@@ -2,54 +2,15 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 
-#define STB_IMAGE_IMPLEMENTATION
-// raylib's own rtextures.c already compiles its own copy of stb_image.h
-// (STB_IMAGE_IMPLEMENTATION, no STATIC) into libraylib.a -- without this,
-// both TUs emit non-static stbi_* symbols and the native link fails with
-// "multiple definition of `stbi_load_from_memory'" etc. STATIC restricts
-// every stbi_* symbol here to internal linkage, so this TU's copy can't
-// collide with raylib's.
-#define STB_IMAGE_STATIC
-// Only the formats this feature exposes (see IsImagePath below) need
-// decoding -- trims stb_image's compiled surface (and its dependency on
-// stb_image_resize/HDR/PSD/PIC/PNM parsing) down to what's actually reached.
-#define STBI_ONLY_PNG
-#define STBI_ONLY_JPEG
-#define STBI_ONLY_BMP
-#define STBI_ONLY_GIF
-#define STBI_NO_STDIO
-// Third-party vendored header -- suppress our own strict -Wall/-Wextra/...
-// flags (see MEP_STRICT_FLAGS in CMakeLists.txt) for just this include so
-// its warnings don't drown out mep's own code, without editing vendored
-// source to satisfy warnings we don't require of third-party code.
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wsign-conversion"
-#pragma GCC diagnostic ignored "-Wconversion"
-#pragma GCC diagnostic ignored "-Wold-style-cast"
-#pragma GCC diagnostic ignored "-Wdouble-promotion"
-#pragma GCC diagnostic ignored "-Wcast-align"
-#pragma GCC diagnostic ignored "-Wunused-function"
-#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
-#endif
-#if defined(__GNUC__) && !defined(__clang__)
-// GCC-only extra warnings (not recognized by clang, which would otherwise
-// itself warn about an unknown -W flag).
-#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
-#pragma GCC diagnostic ignored "-Wduplicated-branches"
-#pragma GCC diagnostic ignored "-Wuseless-cast"
-#endif
-#include "../third_party/stb_image.h"
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC diagnostic pop
-#endif
+#include "image_codec.h"
 
 bool ImageDoc::LoadFromMemory(const unsigned char *bytes, size_t len) {
-    int channels = 0;
-    pixels_ = stbi_load_from_memory(bytes, static_cast<int>(len), &width_, &height_, &channels, 4);
+    std::string error;
+    pixels_ = image_codec::Decode(bytes, len, &width_, &height_, &error);
     if (!pixels_) {
-        error_ = stbi_failure_reason() ? stbi_failure_reason() : "unknown decode error";
+        error_ = error;
         width_ = height_ = 0;
         return false;
     }
@@ -57,7 +18,7 @@ bool ImageDoc::LoadFromMemory(const unsigned char *bytes, size_t len) {
 }
 
 ImageDoc::~ImageDoc() {
-    if (pixels_) stbi_image_free(pixels_);
+    if (pixels_) std::free(pixels_);
 }
 
 bool IsImagePath(const std::string &path) {

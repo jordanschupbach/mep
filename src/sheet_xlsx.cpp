@@ -4,8 +4,8 @@
 // XLSX read/write -- Phase 2 (read) / part of Phase 4 (save-back) of
 // NVIM_PARITY_PLAN.md's spreadsheet-pane phase. Same zip+XML approach as
 // office_doc.cpp's DOCX support (a .xlsx is a ZIP of XML parts too):
-// miniz via office_doc.h's ReadZipEntry/WriteZipReplacingEntries, pugixml
-// for the XML itself. Kept in its own translation unit, same reasoning as
+// miniz via office_doc.h's ReadZipEntry/WriteZipReplacingEntries, xml_doc.h
+// (see PUGIXML_REMOVAL_PLAN.md) for the XML itself. Kept in its own translation unit, same reasoning as
 // office_odt.cpp staying separate from office_doc.cpp.
 //
 // Scope matches sheet_doc.h's own documented exclusions -- no merged
@@ -28,7 +28,7 @@
 #include <vector>
 
 #include "formula.h"
-#include "pugixml.hpp"
+#include "xml_doc.h"
 
 namespace {
 
@@ -41,14 +41,14 @@ namespace {
  * @param si The <si> XML node to read.
  * @return The entry's combined text, handling both the simple <si><t>...</t></si> form and the rich-text-run <si><r><t>...</t></r>...</si> form.
  */
-std::string CollectSharedStringText(const pugi::xml_node &si) {
+std::string CollectSharedStringText(const xml::xml_node &si) {
     std::string out;
-    for (pugi::xml_node child : si.children()) {
+    for (xml::xml_node child : si.children()) {
         std::string name = child.name();
         if (name == "t") {
             out += child.text().get();
         } else if (name == "r") {
-            if (pugi::xml_node t = child.child("t")) out += t.text().get();
+            if (xml::xml_node t = child.child("t")) out += t.text().get();
         }
     }
     return out;
@@ -67,9 +67,9 @@ std::vector<std::string> ParseSharedStrings(const unsigned char *zip_bytes, size
     std::vector<std::string> out;
     std::vector<unsigned char> xml_bytes;
     if (!ReadZipEntry(zip_bytes, zip_len, "xl/sharedStrings.xml", xml_bytes)) return out;
-    pugi::xml_document doc;
-    if (!doc.load_buffer(xml_bytes.data(), xml_bytes.size(), pugi::parse_default, pugi::encoding_utf8)) return out;
-    for (pugi::xml_node si : doc.child("sst").children("si")) out.push_back(CollectSharedStringText(si));
+    xml::xml_document doc;
+    if (!doc.load_buffer(xml_bytes.data(), xml_bytes.size(), xml::parse_default, xml::encoding_utf8)) return out;
+    for (xml::xml_node si : doc.child("sst").children("si")) out.push_back(CollectSharedStringText(si));
     return out;
 }
 
@@ -98,14 +98,14 @@ std::vector<SheetEntry> ParseWorkbookSheetList(const unsigned char *zip_bytes, s
         error = "not a valid .xlsx (missing xl/workbook.xml)";
         return sheets;
     }
-    pugi::xml_document doc;
-    pugi::xml_parse_result result =
-        doc.load_buffer(wb_xml.data(), wb_xml.size(), pugi::parse_default, pugi::encoding_utf8);
+    xml::xml_document doc;
+    xml::xml_parse_result result =
+        doc.load_buffer(wb_xml.data(), wb_xml.size(), xml::parse_default, xml::encoding_utf8);
     if (!result) {
         error = std::string("malformed xl/workbook.xml: ") + result.description();
         return sheets;
     }
-    pugi::xml_node sheets_node = doc.child("workbook").child("sheets");
+    xml::xml_node sheets_node = doc.child("workbook").child("sheets");
     if (!sheets_node) {
         error = "xl/workbook.xml has no <sheets>";
         return sheets;
@@ -114,9 +114,9 @@ std::vector<SheetEntry> ParseWorkbookSheetList(const unsigned char *zip_bytes, s
     std::unordered_map<std::string, std::string> rid_to_target;
     std::vector<unsigned char> rels_xml;
     if (ReadZipEntry(zip_bytes, zip_len, "xl/_rels/workbook.xml.rels", rels_xml)) {
-        pugi::xml_document rels_doc;
-        if (rels_doc.load_buffer(rels_xml.data(), rels_xml.size(), pugi::parse_default, pugi::encoding_utf8)) {
-            for (pugi::xml_node rel : rels_doc.child("Relationships").children("Relationship")) {
+        xml::xml_document rels_doc;
+        if (rels_doc.load_buffer(rels_xml.data(), rels_xml.size(), xml::parse_default, xml::encoding_utf8)) {
+            for (xml::xml_node rel : rels_doc.child("Relationships").children("Relationship")) {
                 std::string id = rel.attribute("Id").as_string();
                 std::string target = rel.attribute("Target").as_string();
                 if (!id.empty() && !target.empty()) rid_to_target[id] = target;
@@ -125,7 +125,7 @@ std::vector<SheetEntry> ParseWorkbookSheetList(const unsigned char *zip_bytes, s
     }
 
     int fallback_index = 1;
-    for (pugi::xml_node sheet_node : sheets_node.children("sheet")) {
+    for (xml::xml_node sheet_node : sheets_node.children("sheet")) {
         SheetEntry entry;
         entry.name = sheet_node.attribute("name").as_string();
         std::string rid = sheet_node.attribute("r:id").as_string();
@@ -183,20 +183,20 @@ struct SharedFormulaMaster {
  * @param sheet_index Index of the destination sheet in wb.sheets.
  * @param shared_strings Index-ordered shared-string table used to resolve t="s" cells.
  */
-void ParseXlsxSheetXml(const pugi::xml_document &doc, Workbook &wb, int sheet_index,
+void ParseXlsxSheetXml(const xml::xml_document &doc, Workbook &wb, int sheet_index,
                         const std::vector<std::string> &shared_strings) {
-    pugi::xml_node sheet_data = doc.child("worksheet").child("sheetData");
+    xml::xml_node sheet_data = doc.child("worksheet").child("sheetData");
     if (!sheet_data) return;
 
     std::unordered_map<int, SharedFormulaMaster> shared_masters;
     int implicit_row = 0;
 
-    for (pugi::xml_node row_node : sheet_data.children("row")) {
+    for (xml::xml_node row_node : sheet_data.children("row")) {
         int row = row_node.attribute("r") ? row_node.attribute("r").as_int() - 1 : implicit_row;
         if (row < 0) row = implicit_row;
         int implicit_col = 0;
 
-        for (pugi::xml_node c_node : row_node.children("c")) {
+        for (xml::xml_node c_node : row_node.children("c")) {
             std::string r_attr = c_node.attribute("r").as_string();
             int col = implicit_col;
             if (!r_attr.empty()) {
@@ -205,8 +205,8 @@ void ParseXlsxSheetXml(const pugi::xml_document &doc, Workbook &wb, int sheet_in
             }
             implicit_col = col + 1;
 
-            pugi::xml_node f_node = c_node.child("f");
-            pugi::xml_node v_node = c_node.child("v");
+            xml::xml_node f_node = c_node.child("f");
+            xml::xml_node v_node = c_node.child("v");
             std::string raw;
 
             if (f_node) {
@@ -247,7 +247,7 @@ void ParseXlsxSheetXml(const pugi::xml_document &doc, Workbook &wb, int sheet_in
                             raw = shared_strings[static_cast<size_t>(idx)];
                     }
                 } else if (t == "inlineStr") {
-                    if (pugi::xml_node is = c_node.child("is")) raw = CollectSharedStringText(is);
+                    if (xml::xml_node is = c_node.child("is")) raw = CollectSharedStringText(is);
                 } else if (t == "b") {
                     // SetCellRaw's own literal parser treats bare "TRUE"/
                     // "FALSE" text as Text, not Bool (see sheet_doc.cpp's
@@ -282,7 +282,7 @@ void ParseXlsxSheetXml(const pugi::xml_document &doc, Workbook &wb, int sheet_in
  * @param c_node The <c> node to write attributes/children onto.
  * @param v The value to write (a formula's evaluated result, or a literal's own value).
  */
-void WriteXlsxCachedValue(pugi::xml_node &c_node, const CellValue &v) {
+void WriteXlsxCachedValue(xml::xml_node &c_node, const CellValue &v) {
     switch (v.kind) {
         case CellKind::Number:
             c_node.append_child("v").text().set(FormatCellValue(v).c_str());
@@ -316,7 +316,7 @@ void WriteXlsxCachedValue(pugi::xml_node &c_node, const CellValue &v) {
  * @param sheet_index Index of the source sheet in wb.sheets.
  * @param sheet_data The <sheetData> XML node to append rows/cells to.
  */
-void SerializeXlsxSheetData(Workbook &wb, int sheet_index, pugi::xml_node &sheet_data) {
+void SerializeXlsxSheetData(Workbook &wb, int sheet_index, xml::xml_node &sheet_data) {
     const Sheet &sh = wb.sheets[static_cast<size_t>(sheet_index)];
     for (int r = 0; r <= sh.max_row; r++) {
         bool row_has_content = false;
@@ -328,13 +328,13 @@ void SerializeXlsxSheetData(Workbook &wb, int sheet_index, pugi::xml_node &sheet
         }
         if (!row_has_content) continue;  // sparse: <row> elements needn't be contiguous per the OOXML schema
 
-        pugi::xml_node row_node = sheet_data.append_child("row");
+        xml::xml_node row_node = sheet_data.append_child("row");
         row_node.append_attribute("r").set_value(std::to_string(r + 1).c_str());
 
         for (int c = 0; c <= sh.max_col; c++) {
             const Cell *cell = sh.FindCell(r, c);
             if (!cell) continue;
-            pugi::xml_node c_node = row_node.append_child("c");
+            xml::xml_node c_node = row_node.append_child("c");
             c_node.append_attribute("r").set_value(CellAddressToString(r, c).c_str());
 
             if (cell->kind == CellKind::Formula) {
@@ -379,8 +379,8 @@ bool LoadXlsxFromMemory(const unsigned char *bytes, size_t len, Workbook &out, s
     for (size_t i = 0; i < sheet_list.size(); i++) {
         std::vector<unsigned char> sheet_xml;
         if (!ReadZipEntry(bytes, len, sheet_list[i].path.c_str(), sheet_xml)) continue;  // tolerant: skip an unreadable sheet part
-        pugi::xml_document doc;
-        if (!doc.load_buffer(sheet_xml.data(), sheet_xml.size(), pugi::parse_default, pugi::encoding_utf8)) continue;
+        xml::xml_document doc;
+        if (!doc.load_buffer(sheet_xml.data(), sheet_xml.size(), xml::parse_default, xml::encoding_utf8)) continue;
         ParseXlsxSheetXml(doc, out, static_cast<int>(i), shared_strings);
     }
     return true;
@@ -399,30 +399,30 @@ bool SaveXlsxToMemory(Workbook &wb, const std::vector<unsigned char> &original_b
             error = "missing worksheet part: " + wb.xlsx_sheet_paths[i];
             return false;
         }
-        pugi::xml_document doc;
-        pugi::xml_parse_result result =
-            doc.load_buffer(sheet_xml.data(), sheet_xml.size(), pugi::parse_default, pugi::encoding_utf8);
+        xml::xml_document doc;
+        xml::xml_parse_result result =
+            doc.load_buffer(sheet_xml.data(), sheet_xml.size(), xml::parse_default, xml::encoding_utf8);
         if (!result) {
             error = "malformed " + wb.xlsx_sheet_paths[i] + ": " + result.description();
             return false;
         }
-        pugi::xml_node worksheet = doc.child("worksheet");
+        xml::xml_node worksheet = doc.child("worksheet");
         if (!worksheet) {
             error = wb.xlsx_sheet_paths[i] + " has no <worksheet>";
             return false;
         }
 
-        pugi::xml_node sheet_data = worksheet.child("sheetData");
+        xml::xml_node sheet_data = worksheet.child("sheetData");
         if (sheet_data) {
             // Reparse-and-replace-children-in-place (not remove+reinsert
             // the node itself) keeps <sheetData>'s required position
             // between <cols>/<sheetFormatPr> and <mergeCells>/
             // <pageMargins>/etc. correct for free -- same convention as
             // SaveDocxToMemory's own <w:body> child-replacement.
-            while (pugi::xml_node child = sheet_data.first_child()) sheet_data.remove_child(child);
+            while (xml::xml_node child = sheet_data.first_child()) sheet_data.remove_child(child);
         } else {
-            pugi::xml_node anchor;
-            for (pugi::xml_node child : worksheet.children()) {
+            xml::xml_node anchor;
+            for (xml::xml_node child : worksheet.children()) {
                 std::string name = child.name();
                 if (name == "sheetCalcPr" || name == "sheetProtection" || name == "mergeCells" ||
                     name == "conditionalFormatting" || name == "dataValidations" || name == "hyperlinks" ||
@@ -438,7 +438,7 @@ bool SaveXlsxToMemory(Workbook &wb, const std::vector<unsigned char> &original_b
         SerializeXlsxSheetData(wb, static_cast<int>(i), sheet_data);
 
         std::ostringstream ss;
-        doc.save(ss, "", pugi::format_raw);
+        doc.save(ss, "", xml::format_raw);
         entries.emplace_back(wb.xlsx_sheet_paths[i], ss.str());
     }
     return WriteZipReplacingEntries(original_bytes.data(), original_bytes.size(), entries, out, error);

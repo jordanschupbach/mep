@@ -358,16 +358,21 @@ bool ReadZipEntry(const unsigned char *zip_bytes, size_t zip_len, const char *en
                    std::vector<unsigned char> &out);
 
 // Rebuilds a ZIP archive from `orig_bytes`, replacing exactly one entry
-// (`entry_name`) with `new_content` and copying every other entry through
-// unchanged via mz_zip_writer_add_from_zip_reader -- a raw central-
-// directory-entry copy that preserves each original entry's compression
-// method and (by iterating in the reader's own index order) position,
-// rather than a generic extract-then-re-add loop that could silently
-// re-compress something. This is what makes it safe for ODT too: ODF
-// requires its `mimetype` entry be first and stored uncompressed, and
-// since that entry is never the one being replaced, its raw copy
-// preserves both properties by construction. Shared by
-// office_doc.cpp's DOCX save-back and office_odt.cpp's ODT save-back.
+// (`entry_name`) with `new_content`: every entry (including the
+// untouched ones) is decompressed via zip::ListAll and rebuilt fresh via
+// zip::BuildArchive, in the original central-directory order -- unlike
+// the miniz-based version this replaced, which raw-copied each unchanged
+// entry's already-compressed bytes rather than decompressing and
+// recompressing them (see MINIZ_REMOVAL_PLAN.md's Non-goals: matching
+// the exact original compressed bytes was never a requirement, only
+// that the decompressed *content* round-trips correctly, which this
+// does). This is still what makes it safe for ODT: ODF requires its
+// `mimetype` entry be first and stored uncompressed, and since original
+// entry order is preserved and that entry is never the one being
+// replaced, zip::BuildArchive's own `store` flag (carried through from
+// zip::ListAll's method-0 detection) keeps both properties intact.
+// Shared by office_doc.cpp's DOCX save-back and office_odt.cpp's ODT
+// save-back.
 /**
  * @brief Rebuilds a ZIP archive from `orig_bytes`, replacing exactly one entry and copying every other entry through unchanged.
  * @param orig_bytes Pointer to the original archive's raw bytes.

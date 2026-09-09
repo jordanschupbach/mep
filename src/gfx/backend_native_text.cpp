@@ -1,6 +1,7 @@
 // NativeTextBackend: font rasterization for Stage B's native backend, via
-// vendored stb_truetype.h (third_party/stb_truetype.h -- see
-// third_party_licenses/stb_truetype-LICENSE.txt). Bakes one atlas per
+// mep's own in-house TrueType parser/rasterizer (gfx/truetype.h -- see
+// STB_TRUETYPE_REMOVAL_PLAN.md for the removal writeup; stb_truetype.h
+// used to live here). Bakes one atlas per
 // LoadFontFromMemory/LoadFontData+GenImageFontAtlas call, using a simple
 // shelf packer (good enough for a few thousand glyphs at UI sizes; not
 // worth a more sophisticated packer until this backend is actually swapped
@@ -22,39 +23,7 @@
 #include <vector>
 
 #include "gfx/gl_loader.h"
-
-// See backend_native_renderer2d.cpp's own note on STB_*_IMPLEMENTATION
-// placement: exactly one translation unit in the final binary may define
-// this. Not linked into mep_core/mep yet, so safe here for now; resolve
-// when Stage B10 merges this backend in (image_doc.cpp already claims
-// STB_IMAGE_IMPLEMENTATION for that binary, and this file needs no image
-// decode of its own, just STB_TRUETYPE_IMPLEMENTATION).
-#define STB_TRUETYPE_IMPLEMENTATION
-// Vendored third-party header -- suppress mep's own strict -Wall/-Wextra/
-// ... flags (MEP_STRICT_FLAGS in CMakeLists.txt) for just this include,
-// same as image_doc.cpp does for stb_image.h.
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wsign-conversion"
-#pragma GCC diagnostic ignored "-Wconversion"
-#pragma GCC diagnostic ignored "-Wold-style-cast"
-#pragma GCC diagnostic ignored "-Wdouble-promotion"
-#pragma GCC diagnostic ignored "-Wcast-align"
-#pragma GCC diagnostic ignored "-Wunused-function"
-#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
-#pragma GCC diagnostic ignored "-Wnull-dereference"
-#pragma GCC diagnostic ignored "-Wshadow"
-#pragma GCC diagnostic ignored "-Wimplicit-fallthrough"
-#endif
-#if defined(__GNUC__) && !defined(__clang__)
-#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
-#pragma GCC diagnostic ignored "-Wduplicated-branches"
-#pragma GCC diagnostic ignored "-Wuseless-cast"
-#endif
-#include "../third_party/stb_truetype.h"
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC diagnostic pop
-#endif
+#include "gfx/truetype.h"
 
 namespace gfx {
 
@@ -121,15 +90,15 @@ NativeTextBackend::~NativeTextBackend() { delete impl_; }
 
 gfx::GlyphInfo *NativeTextBackend::LoadFontData(const unsigned char *file_data, int data_size, int font_size,
                                                  int *codepoints, int codepoint_count) {
-    (void)data_size;  // stbtt_InitFont trusts the buffer like raylib's own LoadFontData does
-    auto *font_info = new stbtt_fontinfo();
-    if (stbtt_InitFont(font_info, file_data, 0) == 0) {
-        std::fprintf(stderr, "gfx native: stbtt_InitFont failed\n");
+    (void)data_size;  // gfx::tt::InitFont trusts the buffer like raylib's own LoadFontData does
+    auto *font_info = new gfx::tt::FontInfo();
+    if (!gfx::tt::InitFont(font_info, file_data, data_size, 0)) {
+        std::fprintf(stderr, "gfx native: gfx::tt::InitFont failed\n");
         delete font_info;
         return nullptr;
     }
-    float scale = stbtt_ScaleForPixelHeight(font_info, static_cast<float>(font_size));
-    // stbtt_GetCodepointBitmap's own yoff is relative to the glyph's
+    float scale = gfx::tt::ScaleForPixelHeight(font_info, static_cast<float>(font_size));
+    // gfx::tt::GetCodepointBitmap's own yoff is relative to the glyph's
     // baseline (typically negative -- most glyphs sit above it), not to
     // the top of a font-size-tall line box. Adding the (scaled) font
     // ascent -- the baseline's own distance down from the top of that
@@ -139,7 +108,7 @@ gfx::GlyphInfo *NativeTextBackend::LoadFontData(const unsigned char *file_data, 
     // UI (rectangles, cursors, line/pane chrome -- none of which go
     // through this offset at all).
     int ascent = 0, descent = 0, line_gap = 0;
-    stbtt_GetFontVMetrics(font_info, &ascent, &descent, &line_gap);
+    gfx::tt::GetFontVMetrics(font_info, &ascent, &descent, &line_gap);
     int ascent_offset = static_cast<int>(static_cast<float>(ascent) * scale);
 
     std::vector<int> owned_codepoints;
@@ -164,9 +133,9 @@ gfx::GlyphInfo *NativeTextBackend::LoadFontData(const unsigned char *file_data, 
     for (int i = 0; i < codepoint_count; i++) {
         int cp = codepoints[i];
         int advance = 0, lsb = 0;
-        stbtt_GetCodepointHMetrics(font_info, cp, &advance, &lsb);
+        gfx::tt::GetCodepointHMetrics(font_info, cp, &advance, &lsb);
         int w = 0, h = 0, xoff = 0, yoff = 0;
-        unsigned char *bitmap = stbtt_GetCodepointBitmap(font_info, scale, scale, cp, &w, &h, &xoff, &yoff);
+        unsigned char *bitmap = gfx::tt::GetCodepointBitmap(font_info, scale, scale, cp, &w, &h, &xoff, &yoff);
 
         out[i].value = cp;
         out[i].offsetX = xoff;
@@ -181,7 +150,7 @@ gfx::GlyphInfo *NativeTextBackend::LoadFontData(const unsigned char *file_data, 
             auto *copy = static_cast<unsigned char *>(std::malloc(n));
             std::memcpy(copy, bitmap, n);
             out[i].image.data = copy;
-            stbtt_FreeBitmap(bitmap, nullptr);
+            gfx::tt::FreeBitmap(bitmap);
         } else {
             out[i].image.data = nullptr;
         }

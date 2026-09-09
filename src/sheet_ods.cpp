@@ -5,7 +5,7 @@
 // NVIM_PARITY_PLAN.md's spreadsheet-pane phase. Same content.xml-inside-
 // a-ZIP shape as office_odt.cpp's ODT support (table:table/table:table-row/
 // table:table-cell instead of office:text/text:p), reusing the same
-// ReadZipEntry/WriteZipReplacingEntry (office_doc.h) + pugixml pairing.
+// ReadZipEntry/WriteZipReplacingEntry (office_doc.h) + xml_doc.h pairing.
 //
 // The one real translation problem ODS has that XLSX doesn't: ODF
 // formulas use a different textual syntax entirely (`of:=SUM([.A1:.A10])`,
@@ -38,7 +38,7 @@
 #include <vector>
 
 #include "formula.h"
-#include "pugixml.hpp"
+#include "xml_doc.h"
 
 namespace {
 
@@ -158,15 +158,15 @@ std::string TranslateOdsFormula(const std::string &text) {
  * @param cell The <table:table-cell> XML node to read.
  * @return The cell's raw text: "=..." if it carries a formula, the literal value/text for a recognized value-type, or the joined <text:p> paragraph text otherwise; "" if genuinely empty.
  */
-std::string OdsCellRawText(const pugi::xml_node &cell) {
-    if (pugi::xml_attribute formula_attr = cell.attribute("table:formula")) {
+std::string OdsCellRawText(const xml::xml_node &cell) {
+    if (xml::xml_attribute formula_attr = cell.attribute("table:formula")) {
         std::string translated = TranslateOdsFormula(formula_attr.as_string());
         if (!translated.empty()) return "=" + translated;
     }
 
     std::string vtype = cell.attribute("office:value-type").as_string();
     if (vtype == "float" || vtype == "percentage" || vtype == "currency") {
-        if (pugi::xml_attribute v = cell.attribute("office:value")) return v.as_string();
+        if (xml::xml_attribute v = cell.attribute("office:value")) return v.as_string();
     } else if (vtype == "boolean") {
         // See sheet_xlsx.cpp's identical comment on its own "b"-type
         // branch -- SetCellRaw's literal parser never produces a real
@@ -175,9 +175,9 @@ std::string OdsCellRawText(const pugi::xml_node &cell) {
         std::string b = cell.attribute("office:boolean-value").as_string();
         return (b == "true") ? "=TRUE" : "=FALSE";
     } else if (vtype == "date") {
-        if (pugi::xml_attribute v = cell.attribute("office:date-value")) return v.as_string();
+        if (xml::xml_attribute v = cell.attribute("office:date-value")) return v.as_string();
     } else if (vtype == "time") {
-        if (pugi::xml_attribute v = cell.attribute("office:time-value")) return v.as_string();
+        if (xml::xml_attribute v = cell.attribute("office:time-value")) return v.as_string();
     }
 
     // "string" value-type, or no recognized value-type at all -- fall
@@ -185,7 +185,7 @@ std::string OdsCellRawText(const pugi::xml_node &cell) {
     // paragraphs (a genuinely multi-line cell) with '\n'.
     std::string text;
     bool first = true;
-    for (pugi::xml_node p : cell.children("text:p")) {
+    for (xml::xml_node p : cell.children("text:p")) {
         if (!first) text += "\n";
         text += p.text().get();
         first = false;
@@ -199,12 +199,12 @@ std::string OdsCellRawText(const pugi::xml_node &cell) {
  * @param wb Workbook whose sheet at sheet_index is populated.
  * @param sheet_index Index of the destination sheet in wb.sheets.
  */
-void ParseOdsTable(const pugi::xml_node &table, Workbook &wb, int sheet_index) {
+void ParseOdsTable(const xml::xml_node &table, Workbook &wb, int sheet_index) {
     int row = 0;
-    for (pugi::xml_node row_node : table.children("table:table-row")) {
+    for (xml::xml_node row_node : table.children("table:table-row")) {
         int row_repeat = std::max(1, row_node.attribute("table:number-rows-repeated").as_int(1));
         int col = 0;
-        for (pugi::xml_node cell_node : row_node.children("table:table-cell")) {
+        for (xml::xml_node cell_node : row_node.children("table:table-cell")) {
             int col_repeat = std::max(1, cell_node.attribute("table:number-columns-repeated").as_int(1));
             std::string raw = OdsCellRawText(cell_node);
             if (!raw.empty()) {
@@ -222,7 +222,7 @@ void ParseOdsTable(const pugi::xml_node &table, Workbook &wb, int sheet_index) {
  * @param cell_node The <table:table-cell> node to write attributes/children onto.
  * @param v The value to write (a formula's evaluated result, or a literal's own value).
  */
-void WriteOdsCachedValue(pugi::xml_node &cell_node, const CellValue &v) {
+void WriteOdsCachedValue(xml::xml_node &cell_node, const CellValue &v) {
     switch (v.kind) {
         case CellKind::Number:
             cell_node.append_attribute("office:value-type").set_value("float");
@@ -253,13 +253,13 @@ void WriteOdsCachedValue(pugi::xml_node &cell_node, const CellValue &v) {
  * @param sheet_index Index of the source sheet in wb.sheets.
  * @param table The <table:table> XML node to append rows/cells to.
  */
-void SerializeOdsTable(Workbook &wb, int sheet_index, pugi::xml_node &table) {
+void SerializeOdsTable(Workbook &wb, int sheet_index, xml::xml_node &table) {
     const Sheet &sh = wb.sheets[static_cast<size_t>(sheet_index)];
     for (int r = 0; r <= sh.max_row; r++) {
-        pugi::xml_node row_node = table.append_child("table:table-row");
+        xml::xml_node row_node = table.append_child("table:table-row");
         for (int c = 0; c <= sh.max_col; c++) {
             const Cell *cell = sh.FindCell(r, c);
-            pugi::xml_node cell_node = row_node.append_child("table:table-cell");
+            xml::xml_node cell_node = row_node.append_child("table:table-cell");
             if (!cell || cell->kind == CellKind::Empty) continue;
 
             if (cell->kind == CellKind::Formula) {
@@ -291,14 +291,14 @@ bool LoadOdsFromMemory(const unsigned char *bytes, size_t len, Workbook &out, st
         error = "not a valid .ods (missing content.xml)";
         return false;
     }
-    pugi::xml_document doc;
-    pugi::xml_parse_result result =
-        doc.load_buffer(content_bytes.data(), content_bytes.size(), pugi::parse_default, pugi::encoding_utf8);
+    xml::xml_document doc;
+    xml::xml_parse_result result =
+        doc.load_buffer(content_bytes.data(), content_bytes.size(), xml::parse_default, xml::encoding_utf8);
     if (!result) {
         error = std::string("malformed content.xml: ") + result.description();
         return false;
     }
-    pugi::xml_node spreadsheet = doc.child("office:document-content").child("office:body").child("office:spreadsheet");
+    xml::xml_node spreadsheet = doc.child("office:document-content").child("office:body").child("office:spreadsheet");
     if (!spreadsheet) {
         error = "content.xml has no <office:spreadsheet>";
         return false;
@@ -309,7 +309,7 @@ bool LoadOdsFromMemory(const unsigned char *bytes, size_t len, Workbook &out, st
     out.source_format = "ods";
 
     int sheet_index = 0;
-    for (pugi::xml_node table : spreadsheet.children("table:table")) {
+    for (xml::xml_node table : spreadsheet.children("table:table")) {
         Sheet sh;
         sh.name = table.attribute("table:name").as_string();
         if (sh.name.empty()) sh.name = "Sheet" + std::to_string(sheet_index + 1);
@@ -331,38 +331,38 @@ bool SaveOdsToMemory(Workbook &wb, const std::vector<unsigned char> &original_by
         error = "not a valid .ods (missing content.xml)";
         return false;
     }
-    pugi::xml_document doc;
-    pugi::xml_parse_result result =
-        doc.load_buffer(content_bytes.data(), content_bytes.size(), pugi::parse_default, pugi::encoding_utf8);
+    xml::xml_document doc;
+    xml::xml_parse_result result =
+        doc.load_buffer(content_bytes.data(), content_bytes.size(), xml::parse_default, xml::encoding_utf8);
     if (!result) {
         error = std::string("malformed content.xml: ") + result.description();
         return false;
     }
-    pugi::xml_node spreadsheet = doc.child("office:document-content").child("office:body").child("office:spreadsheet");
+    xml::xml_node spreadsheet = doc.child("office:document-content").child("office:body").child("office:spreadsheet");
     if (!spreadsheet) {
         error = "content.xml has no <office:spreadsheet>";
         return false;
     }
 
-    std::vector<pugi::xml_node> tables;
-    for (pugi::xml_node table : spreadsheet.children("table:table")) tables.push_back(table);
+    std::vector<xml::xml_node> tables;
+    for (xml::xml_node table : spreadsheet.children("table:table")) tables.push_back(table);
     if (tables.size() != wb.sheets.size()) {
         error = "sheet count changed since load (not supported in v1)";
         return false;
     }
 
     for (size_t i = 0; i < tables.size(); i++) {
-        pugi::xml_node table = tables[i];
+        xml::xml_node table = tables[i];
         // Removes only <table:table-row> children -- <table:table-column>
         // definitions and any other structural children stay untouched
         // and, since rows always come last in the ODF schema's own content
         // model for table:table, appending fresh rows below still lands
         // in a valid position.
-        while (pugi::xml_node child = table.child("table:table-row")) table.remove_child(child);
+        while (xml::xml_node child = table.child("table:table-row")) table.remove_child(child);
         SerializeOdsTable(wb, static_cast<int>(i), table);
     }
 
     std::ostringstream ss;
-    doc.save(ss, "", pugi::format_raw);
+    doc.save(ss, "", xml::format_raw);
     return WriteZipReplacingEntry(original_bytes.data(), original_bytes.size(), "content.xml", ss.str(), out, error);
 }

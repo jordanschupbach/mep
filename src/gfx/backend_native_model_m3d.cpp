@@ -18,10 +18,11 @@
 // the same reason: out of scope, not the common case for this format.
 //
 // M3D's "distribution" flavor deflate-compresses everything after the
-// HEAD lookup point; rather than hand-writing an inflate (a solved
-// problem this codebase already has a vendored answer for), this reuses
-// miniz -- already linked by mep_core for office_doc.cpp's DOCX/ODT zip
-// reading -- via its single-call tinfl_decompress_mem_to_heap() API.
+// HEAD lookup point; decoded via deflate.h's zlib-wrapped inflate (mep's
+// own in-house DEFLATE codec -- see MINIZ_REMOVAL_PLAN.md) since M3D's
+// compressed body uses the same zlib framing (RFC 1950) PNG's IDAT
+// chunks do, not ZIP's -- one shared codec for both, not a separate
+// implementation per container.
 
 #include "gfx/backend_native_internal.h"
 
@@ -31,29 +32,8 @@
 #include <fstream>
 #include <vector>
 
+#include "deflate.h"
 #include "gfx/vecmath.h"
-
-// Vendored third-party header -- suppress mep's own strict -Wall/-Wextra/
-// ... flags (MEP_STRICT_FLAGS in CMakeLists.txt) for just this include,
-// same as image_doc.cpp does for stb_image.h. Not needed on this file's
-// native desktop build (its old-style casts etc. land in what CMake
-// treats as a system include there), but Emscripten's clang is stricter.
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wsign-conversion"
-#pragma GCC diagnostic ignored "-Wconversion"
-#pragma GCC diagnostic ignored "-Wold-style-cast"
-#pragma GCC diagnostic ignored "-Wcast-align"
-#pragma GCC diagnostic ignored "-Wunused-function"
-#pragma GCC diagnostic ignored "-Wdouble-promotion"
-#endif
-#if defined(__GNUC__) && !defined(__clang__)
-#pragma GCC diagnostic ignored "-Wuseless-cast"
-#endif
-#include "miniz.h"
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC diagnostic pop
-#endif
 
 namespace gfx {
 
@@ -181,14 +161,13 @@ gfx::Model LoadM3dModel(const char *file_name) {
 
     if (!ChunkIs(file_buf, pos, "HEAD")) {
         size_t comp_len = declared_len - pos;
-        size_t out_len = 0;
-        void *inflated = tinfl_decompress_mem_to_heap(file_buf.data() + pos, comp_len, &out_len, TINFL_FLAG_PARSE_ZLIB_HEADER);
-        if (inflated == nullptr) {
+        std::string inflated;
+        bool ok = deflate::InflateZlib(reinterpret_cast<const unsigned char *>(file_buf.data() + pos), comp_len, inflated);
+        if (!ok) {
             std::fprintf(stderr, "gfx native: M3D import: '%s' body isn't valid HEAD or zlib data\n", file_name);
             return gfx::Model{};
         }
-        inflated_storage.assign(static_cast<char *>(inflated), static_cast<char *>(inflated) + out_len);
-        mz_free(inflated);
+        inflated_storage.assign(inflated.begin(), inflated.end());
         if (!ChunkIs(inflated_storage, 0, "HEAD")) {
             std::fprintf(stderr, "gfx native: M3D import: '%s' decompressed body has no HEAD chunk\n", file_name);
             return gfx::Model{};

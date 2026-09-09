@@ -11,8 +11,8 @@
 #include <unordered_map>
 #include <utility>
 
-#include "miniz.h"
-#include "pugixml.hpp"
+#include "xml_doc.h"
+#include "zip_archive.h"
 
 // ============================================================================
 // Span-editing primitives
@@ -310,132 +310,64 @@ std::string SniffImageExtension(const std::string &bytes) {
 }
 
 // ============================================================================
-// DOCX parsing (word/document.xml via pugixml, word/document.xml's bytes
-// extracted from the .docx ZIP container via miniz)
+// DOCX parsing (word/document.xml via xml_doc.h, word/document.xml's bytes
+// extracted from the .docx ZIP container via zip_archive.h)
 // ============================================================================
 
 bool ReadZipEntry(const unsigned char *zip_bytes, size_t zip_len, const char *entry_name,
                    std::vector<unsigned char> &out) {
-    mz_zip_archive zip{};
-    if (!mz_zip_reader_init_mem(&zip, zip_bytes, zip_len, 0)) return false;
-    int idx = mz_zip_reader_locate_file(&zip, entry_name, nullptr, 0);
-    if (idx < 0) {
-        mz_zip_reader_end(&zip);
-        return false;
-    }
-    size_t size = 0;
-    void *data = mz_zip_reader_extract_to_heap(&zip, static_cast<mz_uint>(idx), &size, 0);
-    mz_zip_reader_end(&zip);
-    if (!data) return false;
-    out.assign(static_cast<unsigned char *>(data), static_cast<unsigned char *>(data) + size);
-    mz_free(data);
+    std::string content;
+    if (!zip::Extract(zip_bytes, zip_len, entry_name, content)) return false;
+    out.assign(content.begin(), content.end());
     return true;
 }
 
 bool WriteZipReplacingEntry(const unsigned char *orig_bytes, size_t orig_len, const char *entry_name,
                              const std::string &new_content, std::vector<unsigned char> &out, std::string &error) {
-    mz_zip_archive reader{};
-    if (!mz_zip_reader_init_mem(&reader, orig_bytes, orig_len, 0)) {
-        error = "not a valid zip archive";
+    std::vector<zip::EntryToWrite> entries;
+    if (!zip::ListAll(orig_bytes, orig_len, entries, error)) {
+        if (error.empty()) error = "not a valid zip archive";
         return false;
     }
-    mz_zip_archive writer{};
-    if (!mz_zip_writer_init_heap(&writer, 0, 0)) {
-        mz_zip_reader_end(&reader);
-        error = "failed to initialize zip writer";
-        return false;
-    }
-    mz_uint n = mz_zip_reader_get_num_files(&reader);
-    bool ok = true;
     bool replaced = false;
-    for (mz_uint i = 0; i < n && ok; i++) {
-        mz_zip_archive_file_stat stat;
-        if (!mz_zip_reader_file_stat(&reader, i, &stat)) {
-            ok = false;
+    for (zip::EntryToWrite &e : entries) {
+        if (e.name == entry_name) {
+            e.data = new_content;
+            e.store = false;
+            replaced = true;
             break;
         }
-        if (std::strcmp(stat.m_filename, entry_name) == 0) {
-            ok = mz_zip_writer_add_mem(&writer, entry_name, new_content.data(), new_content.size(),
-                                        static_cast<mz_uint>(MZ_DEFAULT_COMPRESSION));
-            replaced = true;
-        } else {
-            ok = mz_zip_writer_add_from_zip_reader(&writer, &reader, i);
-        }
     }
-    if (ok && !replaced) {
-        ok = mz_zip_writer_add_mem(&writer, entry_name, new_content.data(), new_content.size(),
-                                    static_cast<mz_uint>(MZ_DEFAULT_COMPRESSION));
-    }
-    void *heap_data = nullptr;
-    size_t heap_size = 0;
-    if (ok) ok = mz_zip_writer_finalize_heap_archive(&writer, &heap_data, &heap_size);
-    mz_zip_writer_end(&writer);
-    mz_zip_reader_end(&reader);
-    if (!ok) {
-        error = "failed to write zip archive";
-        if (heap_data) mz_free(heap_data);
-        return false;
-    }
-    out.assign(static_cast<unsigned char *>(heap_data), static_cast<unsigned char *>(heap_data) + heap_size);
-    mz_free(heap_data);
+    if (!replaced) entries.push_back(zip::EntryToWrite{entry_name, new_content, false});
+    std::string archive = zip::BuildArchive(entries);
+    out.assign(archive.begin(), archive.end());
     return true;
 }
 
 bool WriteZipReplacingEntries(const unsigned char *orig_bytes, size_t orig_len,
                                const std::vector<std::pair<std::string, std::string>> &entries,
                                std::vector<unsigned char> &out, std::string &error) {
-    mz_zip_archive reader{};
-    if (!mz_zip_reader_init_mem(&reader, orig_bytes, orig_len, 0)) {
-        error = "not a valid zip archive";
+    std::vector<zip::EntryToWrite> zip_entries;
+    if (!zip::ListAll(orig_bytes, orig_len, zip_entries, error)) {
+        if (error.empty()) error = "not a valid zip archive";
         return false;
     }
-    mz_zip_archive writer{};
-    if (!mz_zip_writer_init_heap(&writer, 0, 0)) {
-        mz_zip_reader_end(&reader);
-        error = "failed to initialize zip writer";
-        return false;
-    }
-    mz_uint n = mz_zip_reader_get_num_files(&reader);
     std::vector<bool> replaced(entries.size(), false);
-    bool ok = true;
-    for (mz_uint i = 0; i < n && ok; i++) {
-        mz_zip_archive_file_stat stat;
-        if (!mz_zip_reader_file_stat(&reader, i, &stat)) {
-            ok = false;
-            break;
-        }
-        int match = -1;
+    for (zip::EntryToWrite &e : zip_entries) {
         for (size_t j = 0; j < entries.size(); j++) {
-            if (entries[j].first == stat.m_filename) {
-                match = static_cast<int>(j);
+            if (entries[j].first == e.name) {
+                e.data = entries[j].second;
+                e.store = false;
+                replaced[j] = true;
                 break;
             }
         }
-        if (match >= 0) {
-            ok = mz_zip_writer_add_mem(&writer, entries[static_cast<size_t>(match)].first.c_str(), entries[static_cast<size_t>(match)].second.data(),
-                                        entries[static_cast<size_t>(match)].second.size(), static_cast<mz_uint>(MZ_DEFAULT_COMPRESSION));
-            replaced[static_cast<size_t>(match)] = true;
-        } else {
-            ok = mz_zip_writer_add_from_zip_reader(&writer, &reader, i);
-        }
     }
-    for (size_t j = 0; ok && j < entries.size(); j++) {
-        if (replaced[j]) continue;
-        ok = mz_zip_writer_add_mem(&writer, entries[j].first.c_str(), entries[j].second.data(),
-                                    entries[j].second.size(), static_cast<mz_uint>(MZ_DEFAULT_COMPRESSION));
+    for (size_t j = 0; j < entries.size(); j++) {
+        if (!replaced[j]) zip_entries.push_back(zip::EntryToWrite{entries[j].first, entries[j].second, false});
     }
-    void *heap_data = nullptr;
-    size_t heap_size = 0;
-    if (ok) ok = mz_zip_writer_finalize_heap_archive(&writer, &heap_data, &heap_size);
-    mz_zip_writer_end(&writer);
-    mz_zip_reader_end(&reader);
-    if (!ok) {
-        error = "failed to write zip archive";
-        if (heap_data) mz_free(heap_data);
-        return false;
-    }
-    out.assign(static_cast<unsigned char *>(heap_data), static_cast<unsigned char *>(heap_data) + heap_size);
-    mz_free(heap_data);
+    std::string archive = zip::BuildArchive(zip_entries);
+    out.assign(archive.begin(), archive.end());
     return true;
 }
 
@@ -473,9 +405,9 @@ int DocxHeadingLevelFromStyleName(const std::string &style_id) {
  * @param toggle_node The toggle element node (may be null/empty).
  * @return False if the node is absent; otherwise true unless w:val is "false"/"0"/"off".
  */
-bool OoxmlBoolOn(const pugi::xml_node &toggle_node) {
+bool OoxmlBoolOn(const xml::xml_node &toggle_node) {
     if (!toggle_node) return false;
-    pugi::xml_attribute val = toggle_node.attribute("w:val");
+    xml::xml_attribute val = toggle_node.attribute("w:val");
     if (!val) return true;
     std::string v = val.as_string();
     return !(v == "false" || v == "0" || v == "off");
@@ -490,9 +422,9 @@ bool OoxmlBoolOn(const pugi::xml_node &toggle_node) {
  * @param text The string to append onto.
  * @return The number of characters appended.
  */
-int AppendDocxRunText(const pugi::xml_node &run, std::string &text) {
+int AppendDocxRunText(const xml::xml_node &run, std::string &text) {
     int start = static_cast<int>(text.size());
-    for (pugi::xml_node child : run.children()) {
+    for (xml::xml_node child : run.children()) {
         std::string name = child.name();
         if (name == "w:t") {
             text += child.text().get();
@@ -544,11 +476,11 @@ OfficeFontFamily DocxFontFamilyFromName(const std::string &name) {
  * @param p_node The <w:p> paragraph node to walk.
  * @param out The paragraph to append text/spans onto.
  */
-void CollectDocxParagraphRuns(const pugi::xml_node &p_node, DocParagraph &out) {
-    for (pugi::xml_node child : p_node.children()) {
+void CollectDocxParagraphRuns(const xml::xml_node &p_node, DocParagraph &out) {
+    for (xml::xml_node child : p_node.children()) {
         std::string name = child.name();
         if (name == "w:r") {
-            pugi::xml_node rpr = child.child("w:rPr");
+            xml::xml_node rpr = child.child("w:rPr");
             DocFormat fmt;
             if (rpr) {
                 fmt.bold = OoxmlBoolOn(rpr.child("w:b"));
@@ -559,20 +491,20 @@ void CollectDocxParagraphRuns(const pugi::xml_node &p_node, DocParagraph &out) {
                     fmt.underline = (uval != "none");
                 }
                 fmt.strike = OoxmlBoolOn(rpr.child("w:strike"));
-                if (pugi::xml_node va = rpr.child("w:vertAlign")) {
+                if (xml::xml_node va = rpr.child("w:vertAlign")) {
                     std::string v = va.attribute("w:val").as_string();
                     fmt.superscript = (v == "superscript");
                     fmt.subscript = (v == "subscript");
                 }
-                if (pugi::xml_node rfonts = rpr.child("w:rFonts")) {
-                    pugi::xml_attribute ascii = rfonts.attribute("w:ascii");
+                if (xml::xml_node rfonts = rpr.child("w:rFonts")) {
+                    xml::xml_attribute ascii = rfonts.attribute("w:ascii");
                     if (ascii) fmt.font_family = DocxFontFamilyFromName(ascii.as_string());
                 }
-                if (pugi::xml_node sz = rpr.child("w:sz")) {
+                if (xml::xml_node sz = rpr.child("w:sz")) {
                     // w:sz is in half-points.
                     fmt.font_size_pt = static_cast<float>(sz.attribute("w:val").as_int()) / 2.0f;
                 }
-                if (pugi::xml_node color = rpr.child("w:color")) {
+                if (xml::xml_node color = rpr.child("w:color")) {
                     std::string v = color.attribute("w:val").as_string();
                     unsigned int rgb = 0;
                     // v.size() == 6 already rules out "auto" (4 chars) on its own.
@@ -583,7 +515,7 @@ void CollectDocxParagraphRuns(const pugi::xml_node &p_node, DocParagraph &out) {
                         fmt.color_b = static_cast<unsigned char>(rgb & 0xff);
                     }
                 }
-                if (pugi::xml_node shd = rpr.child("w:shd")) {
+                if (xml::xml_node shd = rpr.child("w:shd")) {
                     std::string v = shd.attribute("w:fill").as_string();
                     unsigned int rgb = 0;
                     // v.size() == 6 already rules out "auto" (4 chars) on its own.
@@ -620,14 +552,14 @@ void CollectDocxParagraphRuns(const pugi::xml_node &p_node, DocParagraph &out) {
  * @param tc_node The <w:tc> cell node to read.
  * @return The cell's flattened plain text.
  */
-std::string DocxCellText(const pugi::xml_node &tc_node) {
+std::string DocxCellText(const xml::xml_node &tc_node) {
     std::string text;
     bool first_p = true;
-    for (pugi::xml_node p : tc_node.children("w:p")) {
+    for (xml::xml_node p : tc_node.children("w:p")) {
         if (!first_p) text += "\n";
         first_p = false;
-        for (pugi::xml_node r : p.children("w:r")) {
-            for (pugi::xml_node t_node : r.children("w:t")) text += t_node.text().get();
+        for (xml::xml_node r : p.children("w:r")) {
+            for (xml::xml_node t_node : r.children("w:t")) text += t_node.text().get();
             if (r.child("w:tab")) text += "\t";
             if (r.child("w:br")) text += "\n";
         }
@@ -643,12 +575,12 @@ std::string DocxCellText(const pugi::xml_node &tc_node) {
  * @param tbl_node The <w:tbl> table node to parse.
  * @return The parsed table, sized rows x (widest row's column count).
  */
-DocTable ParseDocxTable(const pugi::xml_node &tbl_node) {
+DocTable ParseDocxTable(const xml::xml_node &tbl_node) {
     std::vector<std::vector<std::string>> rows;
     int max_cols = 0;
-    for (pugi::xml_node tr : tbl_node.children("w:tr")) {
+    for (xml::xml_node tr : tbl_node.children("w:tr")) {
         std::vector<std::string> row;
-        for (pugi::xml_node tc : tr.children("w:tc")) row.push_back(DocxCellText(tc));
+        for (xml::xml_node tc : tr.children("w:tc")) row.push_back(DocxCellText(tc));
         max_cols = std::max(max_cols, static_cast<int>(row.size()));
         rows.push_back(std::move(row));
     }
@@ -668,17 +600,17 @@ DocTable ParseDocxTable(const pugi::xml_node &tbl_node) {
 // <a:blip r:embed="rIdN"/> (inside <w:r><w:drawing>...) and returns its
 // relationship id. Plain tag-name string matching, not real namespace
 // resolution -- consistent with how every other w:/a:/pic: element in this
-// file is matched (pugixml here is never configured namespace-aware).
+// file is matched (xml_doc.h has no namespace-aware mode at all).
 /**
  * @brief Recursively searches a node's descendants for an <a:blip r:embed="..."/> and returns its relationship id.
  * @param node The node to search within (typically a <w:p>).
  * @param rel_id Receives the relationship id if found.
  * @return True if a blip was found (`rel_id` set); false otherwise.
  */
-bool FindDocxBlipRelId(const pugi::xml_node &node, std::string &rel_id) {
-    for (pugi::xml_node child : node.children()) {
+bool FindDocxBlipRelId(const xml::xml_node &node, std::string &rel_id) {
+    for (xml::xml_node child : node.children()) {
         if (std::string(child.name()) == "a:blip") {
-            if (pugi::xml_attribute embed = child.attribute("r:embed")) {
+            if (xml::xml_attribute embed = child.attribute("r:embed")) {
                 rel_id = embed.as_string();
                 return true;
             }
@@ -702,9 +634,9 @@ std::unordered_map<std::string, std::string> LoadDocxRelationships(const unsigne
     std::unordered_map<std::string, std::string> out;
     std::vector<unsigned char> rel_bytes;
     if (!ReadZipEntry(bytes, len, "word/_rels/document.xml.rels", rel_bytes)) return out;
-    pugi::xml_document rel_doc;
-    if (!rel_doc.load_buffer(rel_bytes.data(), rel_bytes.size(), pugi::parse_default, pugi::encoding_utf8)) return out;
-    for (pugi::xml_node rel : rel_doc.child("Relationships").children("Relationship")) {
+    xml::xml_document rel_doc;
+    if (!rel_doc.load_buffer(rel_bytes.data(), rel_bytes.size(), xml::parse_default, xml::encoding_utf8)) return out;
+    for (xml::xml_node rel : rel_doc.child("Relationships").children("Relationship")) {
         std::string id = rel.attribute("Id").as_string();
         if (!id.empty()) out[id] = rel.attribute("Target").as_string();
     }
@@ -716,13 +648,13 @@ std::unordered_map<std::string, std::string> LoadDocxRelationships(const unsigne
  * @param p_node The <w:p> paragraph node to parse.
  * @param out The paragraph to populate.
  */
-void ParseDocxParagraph(const pugi::xml_node &p_node, DocParagraph &out) {
-    pugi::xml_node ppr = p_node.child("w:pPr");
+void ParseDocxParagraph(const xml::xml_node &p_node, DocParagraph &out) {
+    xml::xml_node ppr = p_node.child("w:pPr");
     if (ppr) {
-        if (pugi::xml_node pstyle = ppr.child("w:pStyle")) {
+        if (xml::xml_node pstyle = ppr.child("w:pStyle")) {
             out.heading_level = DocxHeadingLevelFromStyleName(pstyle.attribute("w:val").as_string());
         }
-        if (pugi::xml_node jc = ppr.child("w:jc")) {
+        if (xml::xml_node jc = ppr.child("w:jc")) {
             std::string v = jc.attribute("w:val").as_string();
             if (v == "center") out.align = DocParagraph::Align::Center;
             else if (v == "right" || v == "end") out.align = DocParagraph::Align::Right;
@@ -751,14 +683,14 @@ bool LoadDocxFromMemory(const unsigned char *bytes, size_t len, OfficeDoc &out, 
         error = "not a valid .docx (missing word/document.xml)";
         return false;
     }
-    pugi::xml_document doc;
-    pugi::xml_parse_result result =
-        doc.load_buffer(xml_bytes.data(), xml_bytes.size(), pugi::parse_default, pugi::encoding_utf8);
+    xml::xml_document doc;
+    xml::xml_parse_result result =
+        doc.load_buffer(xml_bytes.data(), xml_bytes.size(), xml::parse_default, xml::encoding_utf8);
     if (!result) {
         error = std::string("malformed word/document.xml: ") + result.description();
         return false;
     }
-    pugi::xml_node body = doc.child("w:document").child("w:body");
+    xml::xml_node body = doc.child("w:document").child("w:body");
     if (!body) {
         error = "word/document.xml has no <w:body>";
         return false;
@@ -778,7 +710,7 @@ bool LoadDocxFromMemory(const unsigned char *bytes, size_t len, OfficeDoc &out, 
     // elements (<w:r><w:drawing>...<a:blip r:embed="rIdN"/>...), so unlike
     // a table it needs no synthetic anchor -- the paragraph it's already
     // part of becomes the anchor via DocParagraph::image_ref.
-    for (pugi::xml_node child : body.children()) {
+    for (xml::xml_node child : body.children()) {
         std::string name = child.name();
         if (name == "w:p") {
             DocParagraph p;
@@ -832,15 +764,15 @@ namespace {
  * @param p The paragraph to serialize.
  * @param p_node The <w:p> XML node to append children onto.
  */
-void SerializeDocxParagraph(const DocParagraph &p, pugi::xml_node &p_node) {
+void SerializeDocxParagraph(const DocParagraph &p, xml::xml_node &p_node) {
     if (p.heading_level > 0 || p.align != DocParagraph::Align::Left) {
-        pugi::xml_node ppr = p_node.append_child("w:pPr");
+        xml::xml_node ppr = p_node.append_child("w:pPr");
         if (p.heading_level > 0) {
-            pugi::xml_node pstyle = ppr.append_child("w:pStyle");
+            xml::xml_node pstyle = ppr.append_child("w:pStyle");
             pstyle.append_attribute("w:val").set_value(("Heading" + std::to_string(p.heading_level)).c_str());
         }
         if (p.align != DocParagraph::Align::Left) {
-            pugi::xml_node jc = ppr.append_child("w:jc");
+            xml::xml_node jc = ppr.append_child("w:jc");
             const char *val = p.align == DocParagraph::Align::Center ? "center"
                               : p.align == DocParagraph::Align::Right ? "right" : "both";
             jc.append_attribute("w:val").set_value(val);
@@ -855,12 +787,12 @@ void SerializeDocxParagraph(const DocParagraph &p, pugi::xml_node &p_node) {
      */
     auto emit_run = [&](int s, int e, const DocFormat &fmt) {
         if (e <= s) return;
-        pugi::xml_node r = p_node.append_child("w:r");
+        xml::xml_node r = p_node.append_child("w:r");
         if (fmt != DocFormat{}) {
-            pugi::xml_node rpr = r.append_child("w:rPr");
+            xml::xml_node rpr = r.append_child("w:rPr");
             if (fmt.font_family != OfficeFontFamily::Sans) {
                 const char *fam = fmt.font_family == OfficeFontFamily::Serif ? "Liberation Serif" : "Liberation Mono";
-                pugi::xml_node rfonts = rpr.append_child("w:rFonts");
+                xml::xml_node rfonts = rpr.append_child("w:rFonts");
                 rfonts.append_attribute("w:ascii").set_value(fam);
                 rfonts.append_attribute("w:hAnsi").set_value(fam);
             }
@@ -883,7 +815,7 @@ void SerializeDocxParagraph(const DocParagraph &p, pugi::xml_node &p_node) {
             if (fmt.has_highlight) {
                 char hex[7];
                 std::snprintf(hex, sizeof(hex), "%02X%02X%02X", fmt.highlight_r, fmt.highlight_g, fmt.highlight_b);
-                pugi::xml_node shd = rpr.append_child("w:shd");
+                xml::xml_node shd = rpr.append_child("w:shd");
                 shd.append_attribute("w:val").set_value("clear");
                 shd.append_attribute("w:color").set_value("auto");
                 shd.append_attribute("w:fill").set_value(hex);
@@ -900,7 +832,7 @@ void SerializeDocxParagraph(const DocParagraph &p, pugi::xml_node &p_node) {
             bool is_br = !at_end && p.text[i] == '\n';
             if (is_tab || is_br || at_end) {
                 if (i > seg_start) {
-                    pugi::xml_node t = r.append_child("w:t");
+                    xml::xml_node t = r.append_child("w:t");
                     t.append_attribute("xml:space").set_value("preserve");
                     t.text().set(p.text.substr(seg_start, i - seg_start).c_str());
                 }
@@ -937,33 +869,33 @@ void SerializeDocxParagraph(const DocParagraph &p, pugi::xml_node &p_node) {
  * @param t The table to serialize.
  * @param tbl_node The <w:tbl> XML node to append children onto.
  */
-void SerializeDocxTable(const DocTable &t, pugi::xml_node &tbl_node) {
-    pugi::xml_node tbl_pr = tbl_node.append_child("w:tblPr");
-    pugi::xml_node borders = tbl_pr.append_child("w:tblBorders");
+void SerializeDocxTable(const DocTable &t, xml::xml_node &tbl_node) {
+    xml::xml_node tbl_pr = tbl_node.append_child("w:tblPr");
+    xml::xml_node borders = tbl_pr.append_child("w:tblBorders");
     for (const char *edge : {"w:top", "w:left", "w:bottom", "w:right", "w:insideH", "w:insideV"}) {
-        pugi::xml_node b = borders.append_child(edge);
+        xml::xml_node b = borders.append_child(edge);
         b.append_attribute("w:val").set_value("single");
         b.append_attribute("w:sz").set_value(4);
         b.append_attribute("w:space").set_value(0);
         b.append_attribute("w:color").set_value("000000");
     }
     constexpr int kColWidthTwips = 2000;
-    pugi::xml_node grid = tbl_node.append_child("w:tblGrid");
+    xml::xml_node grid = tbl_node.append_child("w:tblGrid");
     for (int c = 0; c < t.cols; c++) {
         grid.append_child("w:gridCol").append_attribute("w:w").set_value(kColWidthTwips);
     }
     for (int r = 0; r < t.rows; r++) {
-        pugi::xml_node tr = tbl_node.append_child("w:tr");
+        xml::xml_node tr = tbl_node.append_child("w:tr");
         for (int c = 0; c < t.cols; c++) {
-            pugi::xml_node tc = tr.append_child("w:tc");
-            pugi::xml_node tc_pr = tc.append_child("w:tcPr");
-            pugi::xml_node tc_w = tc_pr.append_child("w:tcW");
+            xml::xml_node tc = tr.append_child("w:tc");
+            xml::xml_node tc_pr = tc.append_child("w:tcPr");
+            xml::xml_node tc_w = tc_pr.append_child("w:tcW");
             tc_w.append_attribute("w:w").set_value(kColWidthTwips);
             tc_w.append_attribute("w:type").set_value("dxa");
-            pugi::xml_node p_node = tc.append_child("w:p");
+            xml::xml_node p_node = tc.append_child("w:p");
             const std::string &txt = t.Cell(r, c);
             if (txt.empty()) continue;
-            pugi::xml_node run = p_node.append_child("w:r");
+            xml::xml_node run = p_node.append_child("w:r");
             size_t seg_start = 0;
             for (size_t i = 0; i <= txt.size(); i++) {
                 bool at_end = i == txt.size();
@@ -971,7 +903,7 @@ void SerializeDocxTable(const DocTable &t, pugi::xml_node &tbl_node) {
                 bool is_br = !at_end && txt[i] == '\n';
                 if (is_tab || is_br || at_end) {
                     if (i > seg_start) {
-                        pugi::xml_node t_node = run.append_child("w:t");
+                        xml::xml_node t_node = run.append_child("w:t");
                         t_node.append_attribute("xml:space").set_value("preserve");
                         t_node.text().set(txt.substr(seg_start, i - seg_start).c_str());
                     }
@@ -1001,7 +933,7 @@ void SerializeDocxTable(const DocTable &t, pugi::xml_node &tbl_node) {
  * @param r_node The <w:r> run node to append the drawing onto.
  * @param rel_id The relationship id (<a:blip r:embed="...">) pointing at the image part.
  */
-void SerializeDocxDrawing(const DocImage &img, pugi::xml_node &r_node, const std::string &rel_id) {
+void SerializeDocxDrawing(const DocImage &img, xml::xml_node &r_node, const std::string &rel_id) {
     constexpr long long kEmuPerPx = 9525;
     constexpr long long kMaxWidthEmu = 5486400;  // 6 inches
     long long w = static_cast<long long>(img.natural_w) * kEmuPerPx;
@@ -1012,45 +944,45 @@ void SerializeDocxDrawing(const DocImage &img, pugi::xml_node &r_node, const std
     }
     std::string w_str = std::to_string(std::max(1LL, w)), h_str = std::to_string(std::max(1LL, h));
 
-    pugi::xml_node drawing = r_node.append_child("w:drawing");
-    pugi::xml_node inline_node = drawing.append_child("wp:inline");
+    xml::xml_node drawing = r_node.append_child("w:drawing");
+    xml::xml_node inline_node = drawing.append_child("wp:inline");
     inline_node.append_attribute("xmlns:wp")
         .set_value("http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing");
     inline_node.append_attribute("distT").set_value("0");
     inline_node.append_attribute("distB").set_value("0");
     inline_node.append_attribute("distL").set_value("0");
     inline_node.append_attribute("distR").set_value("0");
-    pugi::xml_node extent = inline_node.append_child("wp:extent");
+    xml::xml_node extent = inline_node.append_child("wp:extent");
     extent.append_attribute("cx").set_value(w_str.c_str());
     extent.append_attribute("cy").set_value(h_str.c_str());
-    pugi::xml_node doc_pr = inline_node.append_child("wp:docPr");
+    xml::xml_node doc_pr = inline_node.append_child("wp:docPr");
     doc_pr.append_attribute("id").set_value("1");
     doc_pr.append_attribute("name").set_value("Picture");
-    pugi::xml_node graphic = inline_node.append_child("a:graphic");
+    xml::xml_node graphic = inline_node.append_child("a:graphic");
     graphic.append_attribute("xmlns:a").set_value("http://schemas.openxmlformats.org/drawingml/2006/main");
-    pugi::xml_node graphic_data = graphic.append_child("a:graphicData");
+    xml::xml_node graphic_data = graphic.append_child("a:graphicData");
     graphic_data.append_attribute("uri").set_value("http://schemas.openxmlformats.org/drawingml/2006/picture");
-    pugi::xml_node pic = graphic_data.append_child("pic:pic");
+    xml::xml_node pic = graphic_data.append_child("pic:pic");
     pic.append_attribute("xmlns:pic").set_value("http://schemas.openxmlformats.org/drawingml/2006/picture");
-    pugi::xml_node nv_pic_pr = pic.append_child("pic:nvPicPr");
-    pugi::xml_node cnv_pr = nv_pic_pr.append_child("pic:cNvPr");
+    xml::xml_node nv_pic_pr = pic.append_child("pic:nvPicPr");
+    xml::xml_node cnv_pr = nv_pic_pr.append_child("pic:cNvPr");
     cnv_pr.append_attribute("id").set_value("0");
     cnv_pr.append_attribute("name").set_value("Picture");
     nv_pic_pr.append_child("pic:cNvPicPr");
-    pugi::xml_node blip_fill = pic.append_child("pic:blipFill");
-    pugi::xml_node blip = blip_fill.append_child("a:blip");
+    xml::xml_node blip_fill = pic.append_child("pic:blipFill");
+    xml::xml_node blip = blip_fill.append_child("a:blip");
     blip.append_attribute("xmlns:r").set_value("http://schemas.openxmlformats.org/officeDocument/2006/relationships");
     blip.append_attribute("r:embed").set_value(rel_id.c_str());
     blip_fill.append_child("a:stretch").append_child("a:fillRect");
-    pugi::xml_node sp_pr = pic.append_child("pic:spPr");
-    pugi::xml_node xfrm = sp_pr.append_child("a:xfrm");
-    pugi::xml_node off = xfrm.append_child("a:off");
+    xml::xml_node sp_pr = pic.append_child("pic:spPr");
+    xml::xml_node xfrm = sp_pr.append_child("a:xfrm");
+    xml::xml_node off = xfrm.append_child("a:off");
     off.append_attribute("x").set_value("0");
     off.append_attribute("y").set_value("0");
-    pugi::xml_node ext = xfrm.append_child("a:ext");
+    xml::xml_node ext = xfrm.append_child("a:ext");
     ext.append_attribute("cx").set_value(w_str.c_str());
     ext.append_attribute("cy").set_value(h_str.c_str());
-    pugi::xml_node prst_geom = sp_pr.append_child("a:prstGeom");
+    xml::xml_node prst_geom = sp_pr.append_child("a:prstGeom");
     prst_geom.append_attribute("prst").set_value("rect");
     prst_geom.append_child("a:avLst");
 }
@@ -1071,14 +1003,14 @@ bool SaveDocxToMemory(const OfficeDoc &doc, const std::vector<unsigned char> &or
         error = "not a valid .docx (missing word/document.xml)";
         return false;
     }
-    pugi::xml_document xml;
-    pugi::xml_parse_result result =
-        xml.load_buffer(xml_bytes.data(), xml_bytes.size(), pugi::parse_default, pugi::encoding_utf8);
+    xml::xml_document xml;
+    xml::xml_parse_result result =
+        xml.load_buffer(xml_bytes.data(), xml_bytes.size(), xml::parse_default, xml::encoding_utf8);
     if (!result) {
         error = std::string("malformed word/document.xml: ") + result.description();
         return false;
     }
-    pugi::xml_node body = xml.child("w:document").child("w:body");
+    xml::xml_node body = xml.child("w:document").child("w:body");
     if (!body) {
         error = "word/document.xml has no <w:body>";
         return false;
@@ -1088,9 +1020,9 @@ bool SaveDocxToMemory(const OfficeDoc &doc, const std::vector<unsigned char> &or
     // (page setup) as the insertion anchor so freshly-built paragraphs/
     // tables land before it -- OOXML requires w:sectPr, if present, to be
     // w:body's last child.
-    pugi::xml_node anchor;
-    for (pugi::xml_node child = body.first_child(); child;) {
-        pugi::xml_node next = child.next_sibling();
+    xml::xml_node anchor;
+    for (xml::xml_node child = body.first_child(); child;) {
+        xml::xml_node next = child.next_sibling();
         std::string name = child.name();
         if (name == "w:p" || name == "w:tbl") {
             body.remove_child(child);
@@ -1123,21 +1055,21 @@ bool SaveDocxToMemory(const OfficeDoc &doc, const std::vector<unsigned char> &or
     }
 
     for (const DocParagraph &p : doc.paragraphs) {
-        pugi::xml_node p_node = anchor ? body.insert_child_before("w:p", anchor) : body.append_child("w:p");
+        xml::xml_node p_node = anchor ? body.insert_child_before("w:p", anchor) : body.append_child("w:p");
         SerializeDocxParagraph(p, p_node);
         if (p.table_ref >= 0 && p.table_ref < static_cast<int>(doc.tables.size())) {
-            pugi::xml_node tbl_node = anchor ? body.insert_child_before("w:tbl", anchor) : body.append_child("w:tbl");
+            xml::xml_node tbl_node = anchor ? body.insert_child_before("w:tbl", anchor) : body.append_child("w:tbl");
             SerializeDocxTable(doc.tables[static_cast<size_t>(p.table_ref)], tbl_node);
         }
         if (p.image_ref >= 0 && p.image_ref < static_cast<int>(new_images.size())) {
             const NewImage &ni = new_images[static_cast<size_t>(p.image_ref)];
-            pugi::xml_node r_node = p_node.append_child("w:r");
+            xml::xml_node r_node = p_node.append_child("w:r");
             SerializeDocxDrawing(*ni.img, r_node, ni.rel_id);
         }
     }
 
     std::ostringstream ss;
-    xml.save(ss, "", pugi::format_raw);
+    xml.save(ss, "", xml::format_raw);
     std::vector<std::pair<std::string, std::string>> entries;
     entries.emplace_back("word/document.xml", ss.str());
 
@@ -1149,10 +1081,10 @@ bool SaveDocxToMemory(const OfficeDoc &doc, const std::vector<unsigned char> &or
         std::vector<unsigned char> rels_bytes;
         bool have_rels =
             ReadZipEntry(original_bytes.data(), original_bytes.size(), "word/_rels/document.xml.rels", rels_bytes);
-        pugi::xml_document rels_doc;
-        pugi::xml_node rels_root;
+        xml::xml_document rels_doc;
+        xml::xml_node rels_root;
         if (have_rels &&
-            rels_doc.load_buffer(rels_bytes.data(), rels_bytes.size(), pugi::parse_default, pugi::encoding_utf8)) {
+            rels_doc.load_buffer(rels_bytes.data(), rels_bytes.size(), xml::parse_default, xml::encoding_utf8)) {
             rels_root = rels_doc.child("Relationships");
         }
         if (!rels_root) {
@@ -1161,14 +1093,14 @@ bool SaveDocxToMemory(const OfficeDoc &doc, const std::vector<unsigned char> &or
             rels_root.append_attribute("xmlns").set_value("http://schemas.openxmlformats.org/package/2006/relationships");
         }
         for (const NewImage &ni : new_images) {
-            pugi::xml_node rel = rels_root.append_child("Relationship");
+            xml::xml_node rel = rels_root.append_child("Relationship");
             rel.append_attribute("Id").set_value(ni.rel_id.c_str());
             rel.append_attribute("Type").set_value(
                 "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image");
             rel.append_attribute("Target").set_value(("media/" + ni.media_filename).c_str());
         }
         std::ostringstream rss;
-        rels_doc.save(rss, "", pugi::format_raw);
+        rels_doc.save(rss, "", xml::format_raw);
         entries.emplace_back("word/_rels/document.xml.rels", rss.str());
 
         // [Content_Types].xml: add a <Default Extension="..."> for any
@@ -1176,10 +1108,10 @@ bool SaveDocxToMemory(const OfficeDoc &doc, const std::vector<unsigned char> &or
         // image before commonly lacks these entirely).
         std::vector<unsigned char> ct_bytes;
         bool have_ct = ReadZipEntry(original_bytes.data(), original_bytes.size(), "[Content_Types].xml", ct_bytes);
-        pugi::xml_document ct_doc;
-        pugi::xml_node types_root;
+        xml::xml_document ct_doc;
+        xml::xml_node types_root;
         if (have_ct &&
-            ct_doc.load_buffer(ct_bytes.data(), ct_bytes.size(), pugi::parse_default, pugi::encoding_utf8)) {
+            ct_doc.load_buffer(ct_bytes.data(), ct_bytes.size(), xml::parse_default, xml::encoding_utf8)) {
             types_root = ct_doc.child("Types");
         }
         if (types_root) {
@@ -1189,20 +1121,20 @@ bool SaveDocxToMemory(const OfficeDoc &doc, const std::vector<unsigned char> &or
                 if (std::find(seen_exts.begin(), seen_exts.end(), ext) != seen_exts.end()) continue;
                 seen_exts.push_back(ext);
                 bool found = false;
-                for (pugi::xml_node d : types_root.children("Default")) {
+                for (xml::xml_node d : types_root.children("Default")) {
                     if (std::string(d.attribute("Extension").as_string()) == ext) {
                         found = true;
                         break;
                     }
                 }
                 if (!found) {
-                    pugi::xml_node d = types_root.append_child("Default");
+                    xml::xml_node d = types_root.append_child("Default");
                     d.append_attribute("Extension").set_value(ext.c_str());
                     d.append_attribute("ContentType").set_value(MimeForImageExt(ext).c_str());
                 }
             }
             std::ostringstream css;
-            ct_doc.save(css, "", pugi::format_raw);
+            ct_doc.save(css, "", xml::format_raw);
             entries.emplace_back("[Content_Types].xml", css.str());
         }
 

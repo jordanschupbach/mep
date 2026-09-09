@@ -3,8 +3,9 @@
 // The Implementor side of the bridge: one small abstract interface per
 // subsystem (platform/window, input, audio, 2D rendering, text, 3D
 // rendering). gfx/backend_native.cpp implements all six, on GLFW+OpenGL+
-// miniaudio (this app's raylib dependency was fully removed in Stage
-// B10 -- see PLAN). Everything in src/ outside gfx/ talks only to the
+// an in-house ALSA audio backend (this app's raylib dependency was fully
+// removed in Stage B10 -- see PLAN; miniaudio was later removed too, see
+// MINIAUDIO_REMOVAL_PLAN.md). Everything in src/ outside gfx/ talks only to the
 // free-function facades in gfx/platform.h, gfx/input.h, etc. -- never to
 // these interfaces or to a concrete backend directly.
 

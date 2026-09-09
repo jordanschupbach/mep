@@ -1,6 +1,8 @@
 // Stage B audio smoke test: exercises the actual gfx::Audio* facade
 // against the native backend (device init, load, play/pause/resume,
-// IsSoundPlaying, volume, unload). Takes a WAV/MP3/FLAC path as argv[1].
+// IsSoundPlaying, volume, unload). Takes a PCM16 WAV path as argv[1] --
+// the only format the in-house ALSA backend supports (see
+// MINIAUDIO_REMOVAL_PLAN.md: every real call site only ever needs WAV).
 // Can't visually "see" correctness the way the 2D/3D smoke tests screenshot
 // their result, so this checks the state machine mechanically: frameCount
 // is nonzero after a successful load, IsSoundPlaying reflects start/pause/

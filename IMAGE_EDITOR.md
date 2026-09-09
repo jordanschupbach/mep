@@ -91,4 +91,4 @@ Status legend: `[x]` implemented this pass, `[ ]` planned/not yet done.
 
 - Vector layers / SVG editing — this is a raster-only editor.
 - Color management (ICC profiles) — always sRGB, matching `ImageDoc`'s
-  own decode (stb_image, no profile handling).
+  own decode (image_codec, no profile handling).

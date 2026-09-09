@@ -14,8 +14,8 @@ set(FETCHCONTENT_QUIET FALSE)
 
 # Strict warnings for mep's OWN targets only (mep_core, mep, mep-collabd,
 # the collab/agent-rpc test binaries, mep-amalgam) -- deliberately NOT
-# applied to vendored/fetched third-party targets (lua, pugixml,
-# miniz, tree_sitter, the ts_* grammar libs, pdfium) since we don't own
+# applied to vendored/fetched third-party targets (lua,
+# tree_sitter, the ts_* grammar libs, pdfium) since we don't own
 # that code and can't fix warnings inside it. Applied via
 # target_compile_options(... PRIVATE ${MEP_STRICT_FLAGS}) on each of our
 # own targets below, not injected globally through CMAKE_CXX_FLAGS.
@@ -78,35 +78,6 @@ file(GLOB LUA_SOURCES "${lua_SOURCE_DIR}/src/*.c")
 list(REMOVE_ITEM LUA_SOURCES "${lua_SOURCE_DIR}/src/lua.c" "${lua_SOURCE_DIR}/src/luac.c")
 add_library(lua STATIC ${LUA_SOURCES})
 target_include_directories(lua PUBLIC "${lua_SOURCE_DIR}/src")
-
-# pugixml (src/office_doc.cpp's DOCX/ODT XML parsing): has its own CMake
-# build exporting a `pugixml` interface target (static by default, see
-# its CMakeLists.txt), so this is a plain FetchContent -- no by-hand
-# static-lib wiring needed, unlike lua/miniz below.
-FetchContent_Declare(
-    pugixml
-    URL https://github.com/zeux/pugixml/releases/download/v1.16/pugixml-1.16.tar.gz
-    URL_HASH SHA256=4cee1ca4aad395170f4c7a07824f3bdd41f28316c6e1e1090a1425b278ec0b4b
-    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-)
-FetchContent_MakeAvailable(pugixml)
-
-# miniz (src/office_doc.cpp's DOCX/ODT ZIP container reading + writing --
-# both formats are ZIP archives of XML parts): like lua, has no CMake
-# build of its own, fetched as a tarball and built by hand. Unlike the
-# modular source tree in miniz's git repo, its GitHub Release asset is a
-# single pre-amalgamated miniz.c/miniz.h pair (confirmed by inspecting the
-# downloaded archive) -- as easy to vendor as a single-file stb-style
-# library, no glob needed.
-FetchContent_Declare(
-    miniz
-    URL https://github.com/richgel999/miniz/releases/download/3.1.2/miniz-3.1.2.zip
-    URL_HASH SHA256=f0446d863f9c19926ad9483c523fdc42e42b8d4a6a431d27e09d49c79a140d9a
-    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-)
-FetchContent_MakeAvailable(miniz)
-add_library(miniz STATIC "${miniz_SOURCE_DIR}/miniz.c")
-target_include_directories(miniz PUBLIC "${miniz_SOURCE_DIR}")
 
 # Tree-sitter runtime + a small core set of grammars: vendored locally
 # under third_party/ (source files only -- parser.c, an optional
@@ -249,6 +220,7 @@ set(MEP_GFX_NATIVE_SOURCES
     src/gfx/backend_native_model_m3d.cpp
     src/gfx/backend_native_model_gltf.cpp
     src/gfx/backend_native_text.cpp
+    src/gfx/truetype.cpp
     src/gfx/backend.cpp
 )
 if(NOT EMSCRIPTEN)
@@ -280,6 +252,14 @@ add_library(mep_core STATIC
     src/org_doc.cpp
     src/agent_rpc.cpp
     src/lua_env.cpp
+    src/xml_doc.cpp
+    src/deflate.cpp
+    src/zip_archive.cpp
+    src/png_codec.cpp
+    src/jpeg_codec.cpp
+    src/bmp_codec.cpp
+    src/gif_codec.cpp
+    src/image_codec.cpp
     src/office_doc.cpp
     src/office_odt.cpp
     src/doc_export.cpp
@@ -294,7 +274,7 @@ add_library(mep_core STATIC
 target_include_directories(mep_core PUBLIC src)
 target_compile_options(mep_core PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep_core PRIVATE ${MEP_SANITIZE_FLAGS})
-target_link_libraries(mep_core PUBLIC lua tree_sitter ${TS_GRAMMAR_LIBS} pugixml miniz)
+target_link_libraries(mep_core PUBLIC lua tree_sitter ${TS_GRAMMAR_LIBS})
 if(NOT EMSCRIPTEN)
     target_link_libraries(mep_core PUBLIC pdfium glfw OpenGL::GL)
 endif()
@@ -307,22 +287,42 @@ if(NOT EMSCRIPTEN AND NOT WIN32)
     # linked against a (nonexistent) libdl.
     target_link_libraries(mep_core PUBLIC ${CMAKE_DL_LIBS})
 endif()
+if(NOT EMSCRIPTEN AND NOT WIN32 AND NOT APPLE)
+    # In-house ALSA audio backend (gfx/backend_native_audio.cpp, see
+    # MINIAUDIO_REMOVAL_PLAN.md) -- Linux only, matching every other
+    # Linux-first gfx:: native-backend subsystem.
+    find_package(ALSA REQUIRED)
+    target_link_libraries(mep_core PUBLIC ALSA::ALSA)
+endif()
 
 # Defines one gfx-native smoke-test executable (${main_src} plus the
 # shared MEP_GFX_NATIVE_SOURCES above), wired for whichever of native
 # desktop or Emscripten this configure is targeting.
 function(mep_add_gfx_native_smoke name main_src)
-    add_executable(${name} ${main_src} ${MEP_GFX_NATIVE_SOURCES})
+    # src/wav_doc.cpp: gfx/backend_native_audio.cpp's own WAV decode
+    # (see MINIAUDIO_REMOVAL_PLAN.md). src/deflate.cpp: gfx/backend_native_
+    # model_m3d.cpp's own zlib-wrapped inflate for M3D's compressed body
+    # (see MINIZ_REMOVAL_PLAN.md). src/{png,jpeg,bmp,gif,image}_codec.cpp:
+    # gfx/backend_native_renderer2d.cpp's/backend_native_model_obj.cpp's/
+    # backend_native_model_gltf.cpp's image decode/encode (see
+    # STB_IMAGE_REMOVAL_PLAN.md). None of these are part of
+    # MEP_GFX_NATIVE_SOURCES itself since mep_core already lists them all
+    # separately (each is also used outside the gfx:: backend -- wav_doc.cpp
+    # by html_doc.cpp's media playback, deflate.cpp by office_doc.cpp/
+    # doc_export.cpp's ZIP support, image_codec.cpp by image_doc.cpp's
+    # image-editor document model) and listing them twice there would
+    # double-compile them.
+    add_executable(${name} ${main_src} ${MEP_GFX_NATIVE_SOURCES} src/wav_doc.cpp src/deflate.cpp
+        src/png_codec.cpp src/jpeg_codec.cpp src/bmp_codec.cpp src/gif_codec.cpp src/image_codec.cpp)
     target_include_directories(${name} PRIVATE src)
     target_compile_options(${name} PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
-    target_link_libraries(${name} PRIVATE miniz)
     if(EMSCRIPTEN)
         target_link_options(${name} PRIVATE "-sUSE_GLFW=3" "-sUSE_WEBGL2=1" "-sFULL_ES3=1" "-sALLOW_MEMORY_GROWTH=1")
     else()
         target_link_options(${name} PRIVATE ${MEP_SANITIZE_FLAGS})
         target_link_libraries(${name} PRIVATE glfw OpenGL::GL)
         if(NOT WIN32 AND NOT APPLE)
-            target_link_libraries(${name} PRIVATE Threads::Threads m)
+            target_link_libraries(${name} PRIVATE Threads::Threads m ALSA::ALSA)
         endif()
     endif()
 endfunction()
@@ -420,11 +420,13 @@ endif()
 # matching mep-workspace-test's own gating above (the feature itself is
 # native-only regardless, see MODEL3D_PLAN.md).
 if(NOT EMSCRIPTEN)
-    add_executable(mep-model3d-doc-test src/model3d_doc_test.cpp src/model3d_doc.cpp ${MEP_GFX_NATIVE_SOURCES})
+    add_executable(mep-model3d-doc-test src/model3d_doc_test.cpp src/model3d_doc.cpp src/wav_doc.cpp src/deflate.cpp
+        src/png_codec.cpp src/jpeg_codec.cpp src/bmp_codec.cpp src/gif_codec.cpp src/image_codec.cpp
+        ${MEP_GFX_NATIVE_SOURCES})
     target_include_directories(mep-model3d-doc-test PRIVATE src)
-    target_link_libraries(mep-model3d-doc-test PRIVATE glfw OpenGL::GL miniz)
+    target_link_libraries(mep-model3d-doc-test PRIVATE glfw OpenGL::GL)
     if(NOT WIN32 AND NOT APPLE)
-        target_link_libraries(mep-model3d-doc-test PRIVATE Threads::Threads m)
+        target_link_libraries(mep-model3d-doc-test PRIVATE Threads::Threads m ALSA::ALSA)
     endif()
     target_compile_options(mep-model3d-doc-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
     target_link_options(mep-model3d-doc-test PRIVATE ${MEP_SANITIZE_FLAGS})
@@ -504,9 +506,12 @@ if(NOT EMSCRIPTEN)
         # subsystem's SHA-1, since that's folded into the generated file too.
         add_executable(mep-amalgam EXCLUDE_FROM_ALL "${MEP_AMALGAM_SRC}")
         target_include_directories(mep-amalgam PRIVATE src)
-        target_link_libraries(mep-amalgam PRIVATE glfw OpenGL::GL lua tree_sitter ${TS_GRAMMAR_LIBS} pugixml miniz OpenSSL::SSL OpenSSL::Crypto)
+        target_link_libraries(mep-amalgam PRIVATE glfw OpenGL::GL lua tree_sitter ${TS_GRAMMAR_LIBS} OpenSSL::SSL OpenSSL::Crypto)
         if(NOT WIN32)
             target_link_libraries(mep-amalgam PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+        endif()
+        if(NOT WIN32 AND NOT APPLE)
+            target_link_libraries(mep-amalgam PRIVATE ALSA::ALSA)
         endif()
         target_link_libraries(mep-amalgam PRIVATE pdfium)
         if(WIN32)

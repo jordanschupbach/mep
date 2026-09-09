@@ -8,3 +8,4 @@ test/
 examples/gantt_example.gantt.*
 reports/
 tmp_assets/
+.cache/

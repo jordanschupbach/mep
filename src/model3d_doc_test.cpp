@@ -713,10 +713,10 @@ int main() {
     CHECK(!doc.contains("textures"));
 
     // --- Texture loading + glTF embedding (Phase 3 materials/textures) ---
-    // LoadImage/ExportImage/GenImageColor are pure CPU (stb_image/
-    // stb_image_write) -- no GL context needed, safe in this windowless
-    // binary, unlike LoadModel3DFile/AddPrimitiveToScene's own
-    // GPU-upload-dependent halves.
+    // LoadImage/ExportImage/GenImageColor are pure CPU (image_codec/
+    // png_codec, see STB_IMAGE_REMOVAL_PLAN.md) -- no GL context needed,
+    // safe in this windowless binary, unlike LoadModel3DFile/
+    // AddPrimitiveToScene's own GPU-upload-dependent halves.
     {
         gfx::Image gen_img = gfx::GenImageColor(4, 4, gfx::Red);
         char tex_tmpl[] = "/tmp/mep-model3d-doc-test-tex-XXXXXX.png";

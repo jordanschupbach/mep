@@ -337,11 +337,12 @@ int AddPrimitiveToScene(Scene *scene, PrimitiveKind kind);
 // AddPrimitiveToScene doesn't generate geometry for.
 bool DescribePrimitiveKind(PrimitiveKind kind, std::string *out_pivot, std::string *out_dimensions);
 
-// Loads an image file (PNG/JPG/BMP/... -- whatever raylib's LoadImage/
-// stb_image decodes) via raylib's LoadImage, normalizes it to RGBA8,
-// copies the pixel bytes out into a new TextureData (extraction pattern
-// mirrors ExtractMeshFromRaylib -- raylib decodes, we own the raw bytes
-// from then on), appends it to `scene->textures`, and returns its index.
+// Loads an image file (PNG/JPG/BMP/GIF -- whatever gfx::LoadImage's
+// backend decodes, see STB_IMAGE_REMOVAL_PLAN.md) via gfx::LoadImage,
+// normalizes it to RGBA8, copies the pixel bytes out into a new
+// TextureData (extraction pattern mirrors ExtractMeshFromRaylib -- the
+// backend decodes, we own the raw bytes from then on), appends it to
+// `scene->textures`, and returns its index.
 // A pure CPU decode -- unlike LoadModel3DFile/AddPrimitiveToScene, this
 // needs no GL context, so it's safe to call from a plain RPC/Lua handler
 // with no live viewport. Returns -1 and sets *error on a missing file or

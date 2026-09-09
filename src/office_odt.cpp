@@ -11,9 +11,9 @@
 #include <utility>
 #include <vector>
 
-#include "pugixml.hpp"
+#include "xml_doc.h"
 
-// ODT parsing (content.xml + styles.xml via pugixml, both extracted from
+// ODT parsing (content.xml + styles.xml via xml_doc.h, both extracted from
 // the .odt ZIP container via miniz -- see ReadZipEntry, shared with
 // office_doc.cpp's DOCX parser). Mirrors LoadDocxFromMemory's tolerance
 // convention (skip bad paragraphs/styles rather than fail the whole
@@ -100,25 +100,25 @@ using StyleMap = std::unordered_map<std::string, OdtStyle>;
  * @param style_node The <style:style> node to read.
  * @param s The style struct to populate (only fields the node actually sets are marked has_*).
  */
-void ParseStyleNode(const pugi::xml_node &style_node, OdtStyle &s) {
-    if (pugi::xml_node tp = style_node.child("style:text-properties")) {
-        if (pugi::xml_attribute a = tp.attribute("fo:font-weight")) {
+void ParseStyleNode(const xml::xml_node &style_node, OdtStyle &s) {
+    if (xml::xml_node tp = style_node.child("style:text-properties")) {
+        if (xml::xml_attribute a = tp.attribute("fo:font-weight")) {
             s.has_bold = true;
             s.bold = (std::string(a.as_string()) == "bold");
         }
-        if (pugi::xml_attribute a = tp.attribute("fo:font-style")) {
+        if (xml::xml_attribute a = tp.attribute("fo:font-style")) {
             s.has_italic = true;
             s.italic = (std::string(a.as_string()) == "italic");
         }
-        if (pugi::xml_attribute a = tp.attribute("style:text-underline-style")) {
+        if (xml::xml_attribute a = tp.attribute("style:text-underline-style")) {
             s.has_underline = true;
             s.underline = (std::string(a.as_string()) != "none");
         }
-        if (pugi::xml_attribute a = tp.attribute("style:text-line-through-style")) {
+        if (xml::xml_attribute a = tp.attribute("style:text-line-through-style")) {
             s.has_strike = true;
             s.strike = (std::string(a.as_string()) != "none");
         }
-        if (pugi::xml_attribute a = tp.attribute("style:text-position")) {
+        if (xml::xml_attribute a = tp.attribute("style:text-position")) {
             // e.g. "super 58%" / "sub 58%" / "0% 100%" -- only the leading
             // keyword matters here (the percentage is a size scale real
             // office suites apply; mep's own renderer picks its own fixed
@@ -130,14 +130,14 @@ void ParseStyleNode(const pugi::xml_node &style_node, OdtStyle &s) {
             s.is_super = v.rfind("super", 0) == 0;
             s.is_sub = v.rfind("sub", 0) == 0;
         }
-        if (pugi::xml_attribute a = tp.attribute("style:font-name")) {
+        if (xml::xml_attribute a = tp.attribute("style:font-name")) {
             s.has_font_family = true;
             s.font_family = OdtFontFamilyFromName(a.as_string());
-        } else if (pugi::xml_attribute a2 = tp.attribute("fo:font-family")) {
+        } else if (xml::xml_attribute a2 = tp.attribute("fo:font-family")) {
             s.has_font_family = true;
             s.font_family = OdtFontFamilyFromName(a2.as_string());
         }
-        if (pugi::xml_attribute a = tp.attribute("fo:font-size")) {
+        if (xml::xml_attribute a = tp.attribute("fo:font-size")) {
             std::string v = a.as_string();
             float pt = 0.0f;
             if (std::sscanf(v.c_str(), "%f", &pt) == 1 && pt > 0.0f) {
@@ -145,14 +145,14 @@ void ParseStyleNode(const pugi::xml_node &style_node, OdtStyle &s) {
                 s.font_size_pt = pt;
             }
         }
-        if (pugi::xml_attribute a = tp.attribute("fo:color")) {
+        if (xml::xml_attribute a = tp.attribute("fo:color")) {
             unsigned char r, g, b;
             if (ParseOdtHexColor(a.as_string(), &r, &g, &b)) {
                 s.has_color = true;
                 s.color_r = r; s.color_g = g; s.color_b = b;
             }
         }
-        if (pugi::xml_attribute a = tp.attribute("fo:background-color")) {
+        if (xml::xml_attribute a = tp.attribute("fo:background-color")) {
             unsigned char r, g, b;
             if (ParseOdtHexColor(a.as_string(), &r, &g, &b)) {
                 s.has_highlight = true;
@@ -160,8 +160,8 @@ void ParseStyleNode(const pugi::xml_node &style_node, OdtStyle &s) {
             }
         }
     }
-    if (pugi::xml_node pp = style_node.child("style:paragraph-properties")) {
-        if (pugi::xml_attribute a = pp.attribute("fo:text-align")) {
+    if (xml::xml_node pp = style_node.child("style:paragraph-properties")) {
+        if (xml::xml_attribute a = pp.attribute("fo:text-align")) {
             s.has_align = true;
             std::string v = a.as_string();
             if (v == "center") s.align = DocParagraph::Align::Center;
@@ -170,7 +170,7 @@ void ParseStyleNode(const pugi::xml_node &style_node, OdtStyle &s) {
             else s.align = DocParagraph::Align::Left;
         }
     }
-    if (pugi::xml_attribute parent = style_node.attribute("style:parent-style-name")) {
+    if (xml::xml_attribute parent = style_node.attribute("style:parent-style-name")) {
         s.parent = parent.as_string();
     }
 }
@@ -186,9 +186,9 @@ void ParseStyleNode(const pugi::xml_node &style_node, OdtStyle &s) {
  * @param container The <office:automatic-styles> or <office:styles> node to scan.
  * @param out The map to insert parsed styles into (merged with any existing entries).
  */
-void CollectStyles(const pugi::xml_node &container, StyleMap &out) {
-    for (pugi::xml_node style_node : container.children("style:style")) {
-        pugi::xml_attribute name_attr = style_node.attribute("style:name");
+void CollectStyles(const xml::xml_node &container, StyleMap &out) {
+    for (xml::xml_node style_node : container.children("style:style")) {
+        xml::xml_attribute name_attr = style_node.attribute("style:name");
         if (!name_attr) continue;
         OdtStyle s;
         ParseStyleNode(style_node, s);
@@ -264,9 +264,9 @@ OdtStyle ResolveStyle(const StyleMap &styles, const std::string &name) {
  * @param base_fmt The format inherited from the enclosing context, composed with any span-level overrides.
  * @param out The paragraph to append text/spans onto.
  */
-void CollectOdtInline(const pugi::xml_node &node, const StyleMap &styles, DocFormat base_fmt, DocParagraph &out) {
-    for (pugi::xml_node child : node.children()) {
-        if (child.type() == pugi::node_pcdata || child.type() == pugi::node_cdata) {
+void CollectOdtInline(const xml::xml_node &node, const StyleMap &styles, DocFormat base_fmt, DocParagraph &out) {
+    for (xml::xml_node child : node.children()) {
+        if (child.type() == xml::node_pcdata || child.type() == xml::node_cdata) {
             int start = static_cast<int>(out.text.size());
             out.text += child.value();
             int len = static_cast<int>(out.text.size()) - start;
@@ -278,7 +278,7 @@ void CollectOdtInline(const pugi::xml_node &node, const StyleMap &styles, DocFor
         std::string name = child.name();
         if (name == "text:span") {
             DocFormat fmt = base_fmt;
-            if (pugi::xml_attribute sn = child.attribute("text:style-name")) {
+            if (xml::xml_attribute sn = child.attribute("text:style-name")) {
                 OdtStyle s = ResolveStyle(styles, sn.as_string());
                 if (s.has_bold) fmt.bold = s.bold;
                 if (s.has_italic) fmt.italic = s.italic;
@@ -317,10 +317,10 @@ void CollectOdtInline(const pugi::xml_node &node, const StyleMap &styles, DocFor
  * @param in_list Whether this paragraph is inside a <text:list> (marks it as a bullet paragraph).
  * @return The parsed paragraph.
  */
-DocParagraph ParseOdtParagraph(const pugi::xml_node &p_node, const StyleMap &styles, bool in_list) {
+DocParagraph ParseOdtParagraph(const xml::xml_node &p_node, const StyleMap &styles, bool in_list) {
     DocParagraph out;
     std::string style_name;
-    if (pugi::xml_attribute sn = p_node.attribute("text:style-name")) style_name = sn.as_string();
+    if (xml::xml_attribute sn = p_node.attribute("text:style-name")) style_name = sn.as_string();
     OdtStyle pstyle = ResolveStyle(styles, style_name);
     if (pstyle.has_align) out.align = pstyle.align;
 
@@ -364,10 +364,10 @@ DocParagraph ParseOdtParagraph(const pugi::xml_node &p_node, const StyleMap &sty
  * @param styles The resolved style map (needed by CollectOdtInline, though spans are discarded here).
  * @return The cell's flattened plain text.
  */
-std::string OdtCellText(const pugi::xml_node &cell_node, const StyleMap &styles) {
+std::string OdtCellText(const xml::xml_node &cell_node, const StyleMap &styles) {
     std::string text;
     bool first_p = true;
-    for (pugi::xml_node p : cell_node.children("text:p")) {
+    for (xml::xml_node p : cell_node.children("text:p")) {
         if (!first_p) text += "\n";
         first_p = false;
         DocParagraph scratch;
@@ -391,12 +391,12 @@ std::string OdtCellText(const pugi::xml_node &cell_node, const StyleMap &styles)
  * @param styles The resolved style map, passed through to cell text extraction.
  * @return The parsed table, sized rows x (widest row's column count).
  */
-DocTable ParseOdtTable(const pugi::xml_node &table_node, const StyleMap &styles) {
+DocTable ParseOdtTable(const xml::xml_node &table_node, const StyleMap &styles) {
     std::vector<std::vector<std::string>> rows;
     int max_cols = 0;
-    for (pugi::xml_node tr : table_node.children("table:table-row")) {
+    for (xml::xml_node tr : table_node.children("table:table-row")) {
         std::vector<std::string> row;
-        for (pugi::xml_node tc : tr.children("table:table-cell")) {
+        for (xml::xml_node tc : tr.children("table:table-cell")) {
             int repeat = std::max(1, tc.attribute("table:number-columns-repeated").as_int(1));
             std::string text = OdtCellText(tc, styles);
             for (int i = 0; i < repeat; i++) row.push_back(text);
@@ -427,10 +427,10 @@ DocTable ParseOdtTable(const pugi::xml_node &table_node, const StyleMap &styles)
  * @param href Receives the image's package-relative href if found.
  * @return True if an image was found (`href` set); false otherwise.
  */
-bool FindOdtImageHref(const pugi::xml_node &node, std::string &href) {
-    for (pugi::xml_node child : node.children()) {
+bool FindOdtImageHref(const xml::xml_node &node, std::string &href) {
+    for (xml::xml_node child : node.children()) {
         if (std::string(child.name()) == "draw:image") {
-            if (pugi::xml_attribute h = child.attribute("xlink:href")) {
+            if (xml::xml_attribute h = child.attribute("xlink:href")) {
                 href = h.as_string();
                 return true;
             }
@@ -464,10 +464,10 @@ bool FindOdtImageHref(const pugi::xml_node &node, std::string &href) {
  * @param tables Receives one DocTable per <table:table> encountered.
  * @param images Receives one DocImage per resolvable embedded image encountered.
  */
-void CollectOdtBodyParagraphs(const pugi::xml_node &container, const StyleMap &styles, bool in_list,
+void CollectOdtBodyParagraphs(const xml::xml_node &container, const StyleMap &styles, bool in_list,
                                const unsigned char *zip_bytes, size_t zip_len, std::vector<DocParagraph> &out,
                                std::vector<DocTable> &tables, std::vector<DocImage> &images) {
-    for (pugi::xml_node child : container.children()) {
+    for (xml::xml_node child : container.children()) {
         std::string name = child.name();
         if (name == "text:p" || name == "text:h") {
             DocParagraph p = ParseOdtParagraph(child, styles, in_list);
@@ -510,9 +510,9 @@ bool LoadOdtFromMemory(const unsigned char *bytes, size_t len, OfficeDoc &out, s
         error = "not a valid .odt (missing content.xml)";
         return false;
     }
-    pugi::xml_document content_doc;
-    pugi::xml_parse_result result =
-        content_doc.load_buffer(content_bytes.data(), content_bytes.size(), pugi::parse_default, pugi::encoding_utf8);
+    xml::xml_document content_doc;
+    xml::xml_parse_result result =
+        content_doc.load_buffer(content_bytes.data(), content_bytes.size(), xml::parse_default, xml::encoding_utf8);
     if (!result) {
         error = std::string("malformed content.xml: ") + result.description();
         return false;
@@ -525,20 +525,20 @@ bool LoadOdtFromMemory(const unsigned char *bytes, size_t len, OfficeDoc &out, s
     // table. styles.xml is optional -- its absence just means named-style
     // fallback resolution silently finds nothing, not a load failure.
     StyleMap styles;
-    if (pugi::xml_node auto_styles = content_doc.child("office:document-content").child("office:automatic-styles")) {
+    if (xml::xml_node auto_styles = content_doc.child("office:document-content").child("office:automatic-styles")) {
         CollectStyles(auto_styles, styles);
     }
     std::vector<unsigned char> styles_bytes;
     if (ReadZipEntry(bytes, len, "styles.xml", styles_bytes)) {
-        pugi::xml_document styles_doc;
-        if (styles_doc.load_buffer(styles_bytes.data(), styles_bytes.size(), pugi::parse_default, pugi::encoding_utf8)) {
-            pugi::xml_node doc_styles = styles_doc.child("office:document-styles");
-            if (pugi::xml_node office_styles = doc_styles.child("office:styles")) CollectStyles(office_styles, styles);
-            if (pugi::xml_node auto2 = doc_styles.child("office:automatic-styles")) CollectStyles(auto2, styles);
+        xml::xml_document styles_doc;
+        if (styles_doc.load_buffer(styles_bytes.data(), styles_bytes.size(), xml::parse_default, xml::encoding_utf8)) {
+            xml::xml_node doc_styles = styles_doc.child("office:document-styles");
+            if (xml::xml_node office_styles = doc_styles.child("office:styles")) CollectStyles(office_styles, styles);
+            if (xml::xml_node auto2 = doc_styles.child("office:automatic-styles")) CollectStyles(auto2, styles);
         }
     }
 
-    pugi::xml_node body = content_doc.child("office:document-content").child("office:body").child("office:text");
+    xml::xml_node body = content_doc.child("office:document-content").child("office:body").child("office:text");
     if (!body) {
         error = "content.xml has no <office:text> body";
         return false;
@@ -587,17 +587,17 @@ std::string DocFormatCacheKey(const DocFormat &fmt) {
  * @param counter Running counter used to generate a unique style name, incremented on creation.
  * @return The style name to reference via text:style-name, or "" if `fmt` is the default format.
  */
-std::string GetOrCreateTextStyle(pugi::xml_node &auto_styles, std::unordered_map<std::string, std::string> &cache,
+std::string GetOrCreateTextStyle(xml::xml_node &auto_styles, std::unordered_map<std::string, std::string> &cache,
                                   const DocFormat &fmt, int &counter) {
     if (fmt == DocFormat{}) return "";
     std::string key = DocFormatCacheKey(fmt);
     auto it = cache.find(key);
     if (it != cache.end()) return it->second;
     std::string name = "MepT" + std::to_string(++counter);
-    pugi::xml_node style = auto_styles.append_child("style:style");
+    xml::xml_node style = auto_styles.append_child("style:style");
     style.append_attribute("style:name").set_value(name.c_str());
     style.append_attribute("style:family").set_value("text");
-    pugi::xml_node tp = style.append_child("style:text-properties");
+    xml::xml_node tp = style.append_child("style:text-properties");
     if (fmt.font_family != OfficeFontFamily::Sans) {
         const char *fam = fmt.font_family == OfficeFontFamily::Serif ? "Liberation Serif" : "Liberation Mono";
         tp.append_attribute("style:font-name").set_value(fam);
@@ -636,17 +636,17 @@ std::string GetOrCreateTextStyle(pugi::xml_node &auto_styles, std::unordered_map
  * @param counter Running counter used to generate a unique style name, incremented on creation.
  * @return The style name to reference via text:style-name, or "" if `align` is Left.
  */
-std::string GetOrCreateParaStyle(pugi::xml_node &auto_styles, std::unordered_map<int, std::string> &cache,
+std::string GetOrCreateParaStyle(xml::xml_node &auto_styles, std::unordered_map<int, std::string> &cache,
                                   DocParagraph::Align align, int &counter) {
     if (align == DocParagraph::Align::Left) return "";
     int key = static_cast<int>(align);
     auto it = cache.find(key);
     if (it != cache.end()) return it->second;
     std::string name = "MepP" + std::to_string(++counter);
-    pugi::xml_node style = auto_styles.append_child("style:style");
+    xml::xml_node style = auto_styles.append_child("style:style");
     style.append_attribute("style:name").set_value(name.c_str());
     style.append_attribute("style:family").set_value("paragraph");
-    pugi::xml_node pp = style.append_child("style:paragraph-properties");
+    xml::xml_node pp = style.append_child("style:paragraph-properties");
     const char *val =
         align == DocParagraph::Align::Center ? "center" : align == DocParagraph::Align::Right ? "end" : "justify";
     pp.append_attribute("fo:text-align").set_value(val);
@@ -670,10 +670,10 @@ std::string GetOrCreateParaStyle(pugi::xml_node &auto_styles, std::unordered_map
  * @param para_counter Running counter for generating unique paragraph style names.
  * @param p_node The <text:p> or <text:h> XML node to append attributes/children onto.
  */
-void SerializeOdtParagraph(const DocParagraph &p, pugi::xml_node &auto_styles,
+void SerializeOdtParagraph(const DocParagraph &p, xml::xml_node &auto_styles,
                             std::unordered_map<std::string, std::string> &text_style_cache, int &text_counter,
                             std::unordered_map<int, std::string> &para_style_cache, int &para_counter,
-                            pugi::xml_node &p_node) {
+                            xml::xml_node &p_node) {
     std::string pstyle = GetOrCreateParaStyle(auto_styles, para_style_cache, p.align, para_counter);
     if (!pstyle.empty()) p_node.append_attribute("text:style-name").set_value(pstyle.c_str());
 
@@ -686,7 +686,7 @@ void SerializeOdtParagraph(const DocParagraph &p, pugi::xml_node &auto_styles,
     auto emit_run = [&](int s, int e, const DocFormat &fmt) {
         if (e <= s) return;
         std::string tstyle = GetOrCreateTextStyle(auto_styles, text_style_cache, fmt, text_counter);
-        pugi::xml_node parent = p_node;
+        xml::xml_node parent = p_node;
         if (!tstyle.empty()) {
             parent = p_node.append_child("text:span");
             parent.append_attribute("text:style-name").set_value(tstyle.c_str());
@@ -698,7 +698,7 @@ void SerializeOdtParagraph(const DocParagraph &p, pugi::xml_node &auto_styles,
             bool is_br = !at_end && p.text[i] == '\n';
             if (is_tab || is_br || at_end) {
                 if (i > seg_start) {
-                    parent.append_child(pugi::node_pcdata).set_value(p.text.substr(seg_start, i - seg_start).c_str());
+                    parent.append_child(xml::node_pcdata).set_value(p.text.substr(seg_start, i - seg_start).c_str());
                 }
                 if (is_tab) parent.append_child("text:tab");
                 else if (is_br) parent.append_child("text:line-break");
@@ -732,17 +732,17 @@ void SerializeOdtParagraph(const DocParagraph &p, pugi::xml_node &auto_styles,
  * @param table_name The value for the table's table:name attribute.
  * @param cell_style_name The pre-registered table-cell style name to apply to every cell.
  */
-void SerializeOdtTable(const DocTable &t, pugi::xml_node &table_node, const std::string &table_name,
+void SerializeOdtTable(const DocTable &t, xml::xml_node &table_node, const std::string &table_name,
                        const std::string &cell_style_name) {
     table_node.append_attribute("table:name").set_value(table_name.c_str());
     for (int c = 0; c < t.cols; c++) table_node.append_child("table:table-column");
     for (int r = 0; r < t.rows; r++) {
-        pugi::xml_node tr = table_node.append_child("table:table-row");
+        xml::xml_node tr = table_node.append_child("table:table-row");
         for (int c = 0; c < t.cols; c++) {
-            pugi::xml_node tc = tr.append_child("table:table-cell");
+            xml::xml_node tc = tr.append_child("table:table-cell");
             tc.append_attribute("table:style-name").set_value(cell_style_name.c_str());
             tc.append_attribute("office:value-type").set_value("string");
-            pugi::xml_node p_node = tc.append_child("text:p");
+            xml::xml_node p_node = tc.append_child("text:p");
             const std::string &txt = t.Cell(r, c);
             size_t seg_start = 0;
             for (size_t i = 0; i <= txt.size(); i++) {
@@ -751,7 +751,7 @@ void SerializeOdtTable(const DocTable &t, pugi::xml_node &table_node, const std:
                 bool is_br = !at_end && txt[i] == '\n';
                 if (is_tab || is_br || at_end) {
                     if (i > seg_start) {
-                        p_node.append_child(pugi::node_pcdata).set_value(txt.substr(seg_start, i - seg_start).c_str());
+                        p_node.append_child(xml::node_pcdata).set_value(txt.substr(seg_start, i - seg_start).c_str());
                     }
                     if (is_tab) p_node.append_child("text:tab");
                     else if (is_br) p_node.append_child("text:line-break");
@@ -778,7 +778,7 @@ void SerializeOdtTable(const DocTable &t, pugi::xml_node &table_node, const std:
  * @param href The package-root-relative zip path to the image part (e.g. "Pictures/mepimage1.png").
  * @param frame_index Used to generate a unique draw:name for the frame.
  */
-void SerializeOdtDrawFrame(const DocImage &img, pugi::xml_node &p_node, const std::string &href, int frame_index) {
+void SerializeOdtDrawFrame(const DocImage &img, xml::xml_node &p_node, const std::string &href, int frame_index) {
     constexpr double kCmPerPx = 2.54 / 96.0;
     constexpr double kMaxWidthCm = 16.0;
     double w = static_cast<double>(img.natural_w) * kCmPerPx;
@@ -791,12 +791,12 @@ void SerializeOdtDrawFrame(const DocImage &img, pugi::xml_node &p_node, const st
     std::snprintf(w_buf, sizeof(w_buf), "%.3fcm", std::max(0.01, w));
     std::snprintf(h_buf, sizeof(h_buf), "%.3fcm", std::max(0.01, h));
 
-    pugi::xml_node frame = p_node.append_child("draw:frame");
+    xml::xml_node frame = p_node.append_child("draw:frame");
     frame.append_attribute("draw:name").set_value(("Image" + std::to_string(frame_index)).c_str());
     frame.append_attribute("svg:width").set_value(w_buf);
     frame.append_attribute("svg:height").set_value(h_buf);
     frame.append_attribute("text:anchor-type").set_value("as-char");
-    pugi::xml_node image_node = frame.append_child("draw:image");
+    xml::xml_node image_node = frame.append_child("draw:image");
     image_node.append_attribute("xlink:href").set_value(href.c_str());
     image_node.append_attribute("xlink:type").set_value("simple");
     image_node.append_attribute("xlink:show").set_value("embed");
@@ -812,29 +812,29 @@ bool SaveOdtToMemory(const OfficeDoc &doc, const std::vector<unsigned char> &ori
         error = "not a valid .odt (missing content.xml)";
         return false;
     }
-    pugi::xml_document xml;
-    pugi::xml_parse_result result =
-        xml.load_buffer(xml_bytes.data(), xml_bytes.size(), pugi::parse_default, pugi::encoding_utf8);
+    xml::xml_document xml;
+    xml::xml_parse_result result =
+        xml.load_buffer(xml_bytes.data(), xml_bytes.size(), xml::parse_default, xml::encoding_utf8);
     if (!result) {
         error = std::string("malformed content.xml: ") + result.description();
         return false;
     }
-    pugi::xml_node doc_content = xml.child("office:document-content");
+    xml::xml_node doc_content = xml.child("office:document-content");
     if (!doc_content) {
         error = "content.xml has no <office:document-content>";
         return false;
     }
-    pugi::xml_node body_el = doc_content.child("office:body");
+    xml::xml_node body_el = doc_content.child("office:body");
     if (!body_el) {
         error = "content.xml has no <office:body>";
         return false;
     }
-    pugi::xml_node text_body = body_el.child("office:text");
+    xml::xml_node text_body = body_el.child("office:text");
     if (!text_body) {
         error = "content.xml has no <office:text>";
         return false;
     }
-    pugi::xml_node auto_styles = doc_content.child("office:automatic-styles");
+    xml::xml_node auto_styles = doc_content.child("office:automatic-styles");
     if (!auto_styles) auto_styles = doc_content.insert_child_before("office:automatic-styles", body_el);
 
     // Removes every existing paragraph/heading/list/table child -- a
@@ -842,8 +842,8 @@ bool SaveOdtToMemory(const OfficeDoc &doc, const std::vector<unsigned char> &ori
     // track a list-style definition to regenerate it, so a round-tripped
     // bullet paragraph becomes a plain paragraph, a known, documented loss
     // rather than emitting a <text:list> ODF can't resolve a style for).
-    for (pugi::xml_node child = text_body.first_child(); child;) {
-        pugi::xml_node next = child.next_sibling();
+    for (xml::xml_node child = text_body.first_child(); child;) {
+        xml::xml_node next = child.next_sibling();
         std::string name = child.name();
         if (name == "text:p" || name == "text:h" || name == "text:list" || name == "table:table") {
             text_body.remove_child(child);
@@ -859,10 +859,10 @@ bool SaveOdtToMemory(const OfficeDoc &doc, const std::vector<unsigned char> &ori
     std::string table_cell_style_name;
     if (!doc.tables.empty()) {
         table_cell_style_name = "MepTableCellBordered";
-        pugi::xml_node cell_style = auto_styles.append_child("style:style");
+        xml::xml_node cell_style = auto_styles.append_child("style:style");
         cell_style.append_attribute("style:name").set_value(table_cell_style_name.c_str());
         cell_style.append_attribute("style:family").set_value("table-cell");
-        pugi::xml_node tc_props = cell_style.append_child("style:table-cell-properties");
+        xml::xml_node tc_props = cell_style.append_child("style:table-cell-properties");
         tc_props.append_attribute("fo:border").set_value("0.5pt solid #000000");
     }
 
@@ -887,13 +887,13 @@ bool SaveOdtToMemory(const OfficeDoc &doc, const std::vector<unsigned char> &ori
     std::unordered_map<int, std::string> para_style_cache;
     int text_counter = 0, para_counter = 0, table_counter = 0, image_counter = 0;
     for (const DocParagraph &p : doc.paragraphs) {
-        pugi::xml_node p_node = text_body.append_child(p.heading_level > 0 ? "text:h" : "text:p");
+        xml::xml_node p_node = text_body.append_child(p.heading_level > 0 ? "text:h" : "text:p");
         if (p.heading_level > 0) {
             p_node.append_attribute("text:outline-level").set_value(std::clamp(p.heading_level, 1, 6));
         }
         SerializeOdtParagraph(p, auto_styles, text_style_cache, text_counter, para_style_cache, para_counter, p_node);
         if (p.table_ref >= 0 && p.table_ref < static_cast<int>(doc.tables.size())) {
-            pugi::xml_node table_node = text_body.append_child("table:table");
+            xml::xml_node table_node = text_body.append_child("table:table");
             std::string table_name = "Table" + std::to_string(++table_counter);
             SerializeOdtTable(doc.tables[static_cast<size_t>(p.table_ref)], table_node, table_name,
                               table_cell_style_name);
@@ -905,7 +905,7 @@ bool SaveOdtToMemory(const OfficeDoc &doc, const std::vector<unsigned char> &ori
     }
 
     std::ostringstream ss;
-    xml.save(ss, "", pugi::format_raw);
+    xml.save(ss, "", xml::format_raw);
     std::vector<std::pair<std::string, std::string>> entries;
     entries.emplace_back("content.xml", ss.str());
 
@@ -917,21 +917,21 @@ bool SaveOdtToMemory(const OfficeDoc &doc, const std::vector<unsigned char> &ori
         std::vector<unsigned char> manifest_bytes;
         bool have_manifest =
             ReadZipEntry(original_bytes.data(), original_bytes.size(), "META-INF/manifest.xml", manifest_bytes);
-        pugi::xml_document manifest_doc;
-        pugi::xml_node manifest_root;
+        xml::xml_document manifest_doc;
+        xml::xml_node manifest_root;
         if (have_manifest && manifest_doc.load_buffer(manifest_bytes.data(), manifest_bytes.size(),
-                                                       pugi::parse_default, pugi::encoding_utf8)) {
+                                                       xml::parse_default, xml::encoding_utf8)) {
             manifest_root = manifest_doc.child("manifest:manifest");
         }
         if (manifest_root) {
             for (const NewImage &ni : new_images) {
-                pugi::xml_node entry = manifest_root.append_child("manifest:file-entry");
+                xml::xml_node entry = manifest_root.append_child("manifest:file-entry");
                 entry.append_attribute("manifest:full-path").set_value(ni.href.c_str());
                 std::string ext = ni.filename.substr(ni.filename.find_last_of('.') + 1);
                 entry.append_attribute("manifest:media-type").set_value(MimeForImageExt(ext).c_str());
             }
             std::ostringstream mss;
-            manifest_doc.save(mss, "", pugi::format_raw);
+            manifest_doc.save(mss, "", xml::format_raw);
             entries.emplace_back("META-INF/manifest.xml", mss.str());
         }
 

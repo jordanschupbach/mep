@@ -11,10 +11,11 @@
 // decoded RGBA8 buffer into a raylib Texture2D for drawing.
 class ImageDoc {
 public:
-    // Decodes a PNG/JPEG/BMP/GIF byte buffer (whatever stb_image.h supports)
-    // via stbi_load_from_memory, forcing 4 channels (RGBA8) regardless of
-    // the source format so main.cpp's texture upload path never needs to
-    // branch on channel count. Returns false (and sets Error()) on a
+    // Decodes a PNG/JPEG/BMP/GIF byte buffer via image_codec::Decode
+    // (mep's own in-house codecs, see STB_IMAGE_REMOVAL_PLAN.md), forcing
+    // 4 channels (RGBA8) regardless of the source format so main.cpp's
+    // texture upload path never needs to branch on channel count. Returns
+    // false (and sets Error()) on a
     // corrupt/unsupported file; leaves the ImageDoc in an unloaded state
     // (Width()/Height() == 0, Pixels() == nullptr).
     /**
@@ -28,7 +29,7 @@ public:
      * @brief Frees the decoded pixel buffer, if one was allocated by LoadFromMemory.
      */
     ~ImageDoc();
-    // pixels_ is an owned raw buffer freed via stbi_image_free in the
+    // pixels_ is an owned raw buffer freed via std::free in the
     // destructor -- an implicit copy would shallow-copy the pointer and
     // double-free it. Every current use is a local stack variable
     // (LoadFromMemory'd and read within one function), so copy/move are
@@ -63,13 +64,13 @@ public:
     const std::string &Error() const { return error_; }
 
 private:
-    unsigned char *pixels_ = nullptr;  // owned, freed via stbi_image_free
+    unsigned char *pixels_ = nullptr;  // owned, freed via std::free
     int width_ = 0, height_ = 0;
     std::string error_;
 };
 
-// Extension check (case-insensitive) for the raster formats stb_image
-// supports that this feature exposes: png, jpg/jpeg, bmp, gif.
+// Extension check (case-insensitive) for the raster formats image_codec
+// supports: png, jpg/jpeg, bmp, gif.
 /**
  * @brief Checks whether a path's extension names a raster format this module can decode.
  * @param path File path (or bare filename) to check.

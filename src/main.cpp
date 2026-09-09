@@ -23,12 +23,10 @@
 #include "pdf_doc.h"
 #include "office_doc.h"
 
-// raymath.h's own inline functions use old-style casts and partial `{0}`
-// brace-initialization throughout (its own coding style, not something we
-// control) -- both trip this codebase's -Werror strict flags (see
-// MEP_STRICT_FLAGS, CMakeLists.txt), so it needs the same third-party-header
-// warning suppression image_doc.cpp gives third_party/stb_image.h, unlike
-// raylib.h/rlgl.h above, which happen to already be clean under these flags.
+// Vestigial third-party-header warning-suppression block (raylib/raymath.h
+// are long gone from this file; nothing includes anything between the
+// push/pop below). Left as dead pragma scaffolding rather than deleted --
+// harmless, and not part of any in-flight removal plan's scope.
 #if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wold-style-cast"
@@ -200,11 +198,12 @@ std::vector<int> BuildIconCodepoints() {
 }
 
 #if !defined(__EMSCRIPTEN__)
-// Baking g_icon_font's atlas (~3,500 glyphs, rasterized via stb_truetype
-// inside LoadFontData/GenImageFontAtlas) measured at ~90ms on this
-// machine -- by far the single largest chunk of mep's own startup time
-// once this font grew past its original ~90-glyph curated set. Both
-// LoadFontData and GenImageFontAtlas are pure CPU work with no GL calls
+// Baking g_icon_font's atlas (~3,500 glyphs, rasterized via gfx::tt --
+// see gfx/truetype.h -- inside LoadFontData/GenImageFontAtlas) measured
+// at ~90ms on this machine -- by far the single largest chunk of mep's
+// own startup time once this font grew past its original ~90-glyph
+// curated set. Both LoadFontData and GenImageFontAtlas are pure CPU
+// work with no GL calls
 // at all (raylib's own decomposed API -- see rtext.c's LoadFontFromMemory
 // for the exact steps this mirrors), unlike LoadTextureFromImage (the
 // actual GPU upload), which must stay on the main thread since GL

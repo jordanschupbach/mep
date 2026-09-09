@@ -9,11 +9,13 @@
 // nothing going into Stage B: raylib's own Font/Mesh/Texture shapes are
 // themselves just "what a stb_truetype atlas / GL buffer / GL texture
 // naturally look like", so the in-house backend fills these same fields
-// from its own stb_truetype/OpenGL calls instead of raylib's.
+// from its own gfx::tt (see gfx/truetype.h)/OpenGL calls instead of
+// raylib's.
 //
 // Nothing in this header (or anywhere else in the project, as of Stage
 // B10) includes raylib.h -- gfx/backend_native.cpp and its siblings are
-// hand-rolled GLFW/OpenGL/miniaudio, no raylib left to wrap.
+// hand-rolled GLFW/OpenGL/ALSA, no raylib or miniaudio left to wrap
+// (see MINIAUDIO_REMOVAL_PLAN.md for the latter).
 
 #include <cstddef>
 

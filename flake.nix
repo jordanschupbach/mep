@@ -61,35 +61,19 @@
           sha256 = "9fbf5e28ef86c69858f6d3d34eccc32e911c1a28b4120ff3e84aaa70cfbf1e30";
         };
 
-        # pugixml/miniz/pdfium (office_doc.cpp/pdf_doc.cpp) were added to
-        # CMakeLists.txt's FetchContent set after lua was already wired up
-        # above, and this file wasn't updated to match -- with
-        # FETCHCONTENT_FULLY_DISCONNECTED=ON below, CMake never downloads
-        # them, leaving pugixml/miniz/pdfium_SOURCE_DIR empty and failing
-        # configure (pugixml has no sources, `add_library(miniz ...)` has
-        # no sources, and the pdfium imported-target paths don't exist).
-        # fetchzip (unlike fetchurl+manual tar for lua above) unpacks the
-        # archive itself and hands back a ready source directory, so no
-        # preConfigure extraction step is needed for any of the three.
+        # pdfium (pdf_doc.cpp) was added to CMakeLists.txt's FetchContent
+        # set after lua was already wired up above, and this file wasn't
+        # updated to match -- with FETCHCONTENT_FULLY_DISCONNECTED=ON
+        # below, CMake never downloads it, leaving pdfium_SOURCE_DIR empty
+        # and failing configure (the pdfium imported-target paths don't
+        # exist). fetchzip (unlike fetchurl+manual tar for lua above)
+        # unpacks the archive itself and hands back a ready source
+        # directory, so no preConfigure extraction step is needed.
         # Unlike fetchurl, fetchzip's fixed-output hash is of the
         # *unpacked* tree (post stripRoot), not the raw archive -- so
-        # these hashes are NOT the same as CMakeLists.txt's own URL_HASH
-        # pins and had to be computed separately (`nix hash path` /
-        # `nix-prefetch-url --unpack` against each archive).
-        pugixmlSrc = pkgs.fetchzip {
-          url = "https://github.com/zeux/pugixml/releases/download/v1.16/pugixml-1.16.tar.gz";
-          hash = "sha256-h2LGUgdr2wcDoz6DosFU3fELSNtiRwNWiod0Cbnvhcc=";
-        };
-        # miniz's release zip is a flat file:file pair (miniz.c/miniz.h,
-        # no wrapping directory) rather than the single wrapping directory
-        # fetchzip's default stripRoot=true expects -- pass stripRoot=false
-        # to keep it as a flat unpack instead of erroring.
-        minizSrc = pkgs.fetchzip {
-          url = "https://github.com/richgel999/miniz/releases/download/3.1.2/miniz-3.1.2.zip";
-          hash = "sha256-rG5ndTc+oiCqmSZE2+VgIBsItBDpCuLQsRR14C6UoWg=";
-          stripRoot = false;
-        };
-
+        # this hash is NOT the same as CMakeLists.txt's own URL_HASH pin
+        # and had to be computed separately (`nix hash path` /
+        # `nix-prefetch-url --unpack` against the archive).
         # Only the Linux x86_64 asset/hash is verified (mirrors
         # CMakeLists.txt's own `else()` branch, which is likewise the only
         # one it pins a real build/dev environment against); extend with
@@ -99,8 +83,8 @@
           url = "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/8009/pdfium-linux-x64.tgz";
           hash = "sha256-/TbTmcM7FRmCXpk42WXYTT/Mw1I4WscLmFMWTLr/ZTo=";
           # Release tarball has multiple top-level entries (LICENSE,
-          # include/, lib/, ...), not one wrapping directory -- same
-          # flat-layout case as miniz above.
+          # include/, lib/, ...), not one wrapping directory, so
+          # fetchzip's default stripRoot=true would error -- keep it flat.
           stripRoot = false;
         };
 
@@ -178,6 +162,10 @@
             pkgs.libxi
             pkgs.libxtst
             pkgs.openssl
+            # In-house ALSA audio backend (gfx/backend_native_audio.cpp,
+            # see MINIAUDIO_REMOVAL_PLAN.md) -- PulseAudio/PipeWire users
+            # are covered transparently via their ALSA compatibility shim.
+            pkgs.alsa-lib
           ];
 
           # Lua isn't a CMake project of its own (see CMakeLists.txt's own
@@ -191,8 +179,6 @@
             tar xzf ${luaTarball} --strip-components=1 -C "$NIX_BUILD_TOP/lua-src"
             cmakeFlagsArray+=(
               "-DFETCHCONTENT_SOURCE_DIR_LUA=$NIX_BUILD_TOP/lua-src"
-              "-DFETCHCONTENT_SOURCE_DIR_PUGIXML=${pugixmlSrc}"
-              "-DFETCHCONTENT_SOURCE_DIR_MINIZ=${minizSrc}"
               "-DFETCHCONTENT_SOURCE_DIR_PDFIUM=${pdfiumSrc}"
               "-DFETCHCONTENT_FULLY_DISCONNECTED=ON"
             )
@@ -229,6 +215,10 @@
             pkgs.libxi
             pkgs.libxtst
             pkgs.openssl
+            # In-house ALSA audio backend (gfx/backend_native_audio.cpp,
+            # see MINIAUDIO_REMOVAL_PLAN.md) -- PulseAudio/PipeWire users
+            # are covered transparently via their ALSA compatibility shim.
+            pkgs.alsa-lib
             # Runtime dep of webview_deno, used by the launcher to open a
             # native window around the wasm build.
             pkgs.webkitgtk_6_0

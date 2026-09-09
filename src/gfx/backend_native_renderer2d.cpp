@@ -33,45 +33,8 @@
 
 #include "gfx/gl_shader.h"
 #include "gfx/vecmath.h"
-
-// See backend_native_renderer2d.cpp/backend_native_text.cpp's shared note:
-// exactly one translation unit in the final binary may define each of
-// these STB_*_IMPLEMENTATION macros. image_doc.cpp already claims
-// STB_IMAGE_IMPLEMENTATION for mep_core/mep -- this file isn't linked
-// into that binary yet (only the standalone mep-gfx-native-smoke target),
-// so defining it here too is safe for now. Resolve this (drop one
-// definition, and add the *_STATIC macros image_doc.cpp uses to dodge
-// raylib's own internal stb copies) when Stage B10 merges the native
-// backend into mep_core.
-#define STB_IMAGE_IMPLEMENTATION
-#define STB_IMAGE_WRITE_IMPLEMENTATION
-// Vendored third-party headers -- suppress mep's own strict -Wall/
-// -Wextra/... flags (MEP_STRICT_FLAGS in CMakeLists.txt) for just these
-// includes, same as image_doc.cpp does for stb_image.h, rather than
-// editing vendored source to satisfy warnings we don't require of
-// third-party code.
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wsign-conversion"
-#pragma GCC diagnostic ignored "-Wconversion"
-#pragma GCC diagnostic ignored "-Wold-style-cast"
-#pragma GCC diagnostic ignored "-Wdouble-promotion"
-#pragma GCC diagnostic ignored "-Wcast-align"
-#pragma GCC diagnostic ignored "-Wunused-function"
-#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
-#pragma GCC diagnostic ignored "-Wnull-dereference"
-#pragma GCC diagnostic ignored "-Wimplicit-fallthrough"
-#endif
-#if defined(__GNUC__) && !defined(__clang__)
-#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
-#pragma GCC diagnostic ignored "-Wduplicated-branches"
-#pragma GCC diagnostic ignored "-Wuseless-cast"
-#endif
-#include "../third_party/stb_image.h"
-#include "../third_party/stb_image_write.h"
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC diagnostic pop
-#endif
+#include "image_codec.h"
+#include "png_codec.h"
 
 namespace gfx {
 
@@ -477,11 +440,12 @@ bool NativeRenderer2DBackend::CheckCollisionPointRec(gfx::Vector2 point, gfx::Re
     return point.x >= rec.x && point.x <= rec.x + rec.width && point.y >= rec.y && point.y <= rec.y + rec.height;
 }
 
-// -- Images (pure CPU, stb_image/stb_image_write) ------------------------
+// -- Images (pure CPU, mep's own image_codec/png_codec) -------------------
 
 gfx::Image NativeRenderer2DBackend::LoadImage(const char *file_name) {
-    int w = 0, h = 0, ch = 0;
-    unsigned char *data = stbi_load(file_name, &w, &h, &ch, 4);
+    int w = 0, h = 0;
+    std::string error;
+    unsigned char *data = image_codec::DecodeFile(file_name, &w, &h, &error);
     if (data == nullptr) return gfx::Image{};
     return gfx::Image{data, w, h, 1, gfx::kPixelFormatR8G8B8A8};
 }
@@ -542,7 +506,14 @@ void NativeRenderer2DBackend::ImageCrop(gfx::Image *image, gfx::Rectangle crop) 
 void NativeRenderer2DBackend::UnloadImage(gfx::Image image) { std::free(image.data); }
 
 bool NativeRenderer2DBackend::ExportImage(gfx::Image image, const char *file_name) {
-    return stbi_write_png(file_name, image.width, image.height, 4, image.data, image.width * 4) != 0;
+    std::string encoded = png::Encode(image.width, image.height, 4, static_cast<const unsigned char *>(image.data),
+                                       image.width * 4);
+    if (encoded.empty()) return false;
+    std::FILE *fp = std::fopen(file_name, "wb");
+    if (!fp) return false;
+    size_t written = std::fwrite(encoded.data(), 1, encoded.size(), fp);
+    std::fclose(fp);
+    return written == encoded.size();
 }
 
 std::vector<unsigned char> NativeRenderer2DBackend::ExportImageToMemory(gfx::Image image, const char *file_type) {
@@ -551,12 +522,9 @@ std::vector<unsigned char> NativeRenderer2DBackend::ExportImageToMemory(gfx::Ima
         std::fprintf(stderr, "gfx native: ExportImageToMemory: unsupported file type '%s' (only .png)\n", file_type);
         return out;
     }
-    auto write_cb = [](void *context, void *data, int size) {
-        auto *buf = static_cast<std::vector<unsigned char> *>(context);
-        auto *bytes = static_cast<unsigned char *>(data);
-        buf->insert(buf->end(), bytes, bytes + size);
-    };
-    stbi_write_png_to_func(write_cb, &out, image.width, image.height, 4, image.data, image.width * 4);
+    std::string encoded = png::Encode(image.width, image.height, 4, static_cast<const unsigned char *>(image.data),
+                                       image.width * 4);
+    out.assign(encoded.begin(), encoded.end());
     return out;
 }
 

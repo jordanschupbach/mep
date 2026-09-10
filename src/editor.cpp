@@ -5,6 +5,8 @@
 #include "regex.h"
 #include "vterm.h"
 #include "image_doc.h"
+#include "image_procgen.h"
+#include "jpeg_codec.h"
 #include "js_engine.h"
 #include "model3d_blend_import.h"
 #include "model3d_doc.h"
@@ -38,6 +40,7 @@
 #include "gfx/input.h"
 #include "gfx/platform.h"
 #include "gfx/renderer2d.h"
+#include "gfx/vecmath.h"
 #include "json.h"
 #include "persist.h"
 #include "collab_session.h"
@@ -1010,107 +1013,6 @@ bool Editor::ThemePalette(const std::string &name, Palette *out) const {
     if (!p) return false;
     *out = *p;
     return true;
-}
-
-std::vector<DiffHunk> MyersDiffHunks(const std::vector<std::string> &a, const std::vector<std::string> &b) {
-    int n = static_cast<int>(a.size()), m = static_cast<int>(b.size());
-    int max_d = n + m;
-    if (max_d == 0) return {};
-    // trace[d] stores the V array (x-coordinates of furthest-reaching D-paths
-    // for each diagonal k) at step d, needed to walk the path back afterward.
-    std::vector<std::vector<int>> trace;
-    std::vector<int> v(static_cast<size_t>(2 * max_d + 1), 0);
-    /**
-     * @brief Converts a diagonal index k (which may be negative) into a non-negative offset into the v array.
-     * @param k The diagonal index.
-     * @return The corresponding index into the v array.
-     */
-    auto vidx = [max_d](int k) { return k + max_d; };
-    int found_d = -1;
-    for (int d = 0; d <= max_d; d++) {
-        trace.push_back(v);
-        for (int k = -d; k <= d; k += 2) {
-            int x;
-            if (k == -d || (k != d && v[static_cast<size_t>(vidx(k - 1))] < v[static_cast<size_t>(vidx(k + 1))])) {
-                x = v[static_cast<size_t>(vidx(k + 1))];
-            } else {
-                x = v[static_cast<size_t>(vidx(k - 1))] + 1;
-            }
-            int y = x - k;
-            while (x < n && y < m && a[static_cast<size_t>(x)] == b[static_cast<size_t>(y)]) {
-                x++;
-                y++;
-            }
-            v[static_cast<size_t>(vidx(k))] = x;
-            if (x >= n && y >= m) {
-                found_d = d;
-                break;
-            }
-        }
-        if (found_d >= 0) break;
-    }
-
-    // Walk the recorded traces backward from (n,m) to (0,0), emitting
-    // per-line ops, then coalesce contiguous runs into hunks below.
-    struct Op {
-        char kind;  // '=' / '-' (only in a) / '+' (only in b)
-    };
-    std::vector<Op> ops;
-    int x = n, y = m;
-    for (int d = found_d; d > 0; d--) {
-        const std::vector<int> &vd = trace[static_cast<size_t>(d)];
-        int k = x - y;
-        int prev_k = (k == -d || (k != d && vd[static_cast<size_t>(vidx(k - 1))] < vd[static_cast<size_t>(vidx(k + 1))])) ? k + 1 : k - 1;
-        int prev_x = vd[static_cast<size_t>(vidx(prev_k))];
-        int prev_y = prev_x - prev_k;
-        while (x > prev_x && y > prev_y) {
-            ops.push_back({'='});
-            x--;
-            y--;
-        }
-        if (x == prev_x) {
-            ops.push_back({'+'});
-            y--;
-        } else {
-            ops.push_back({'-'});
-            x--;
-        }
-    }
-    while (x > 0 && y > 0) {
-        ops.push_back({'='});
-        x--;
-        y--;
-    }
-    std::reverse(ops.begin(), ops.end());
-
-    std::vector<DiffHunk> hunks;
-    size_t i = 0;
-    int a_pos = 0, b_pos = 0;  // 0-indexed count of `a`/`b` lines consumed so far
-    while (i < ops.size()) {
-        if (ops[i].kind == '=') {
-            a_pos++;
-            b_pos++;
-            i++;
-            continue;
-        }
-        // A pure insertion has no `a` anchor of its own -- gitsigns
-        // convention: report it at the line *after* which it was inserted
-        // (0 if at the very top), i.e. `a_pos` (0-indexed) before the hunk.
-        int old_start = a_pos, new_start = b_pos;
-        int old_count = 0, new_count = 0;
-        while (i < ops.size() && ops[i].kind != '=') {
-            if (ops[i].kind == '-') {
-                old_count++;
-                a_pos++;
-            } else {
-                new_count++;
-                b_pos++;
-            }
-            i++;
-        }
-        hunks.push_back({old_start + 1, old_count, new_start + 1, new_count});
-    }
-    return hunks;
 }
 
 // mep_lsp_filetype's own `'%.([%w_]+)$'` port: the last `.`-delimited
@@ -3996,6 +3898,9 @@ void Editor::HandleInput() {
         case Mode::Pdf:
             HandlePdfInput();
             break;
+        case Mode::Video:
+            HandleVideoInput();
+            break;
         case Mode::Html:
             HandleHtmlInput();
             break;
@@ -4834,7 +4739,7 @@ int Editor::FindOrCreateBuffer(const std::string &path, bool *existed) {
     return static_cast<int>(buffers_.size()) - 1;
 }
 
-void Editor::SplitCurrentPane(SplitDir dir, const std::string &file_arg) {
+void Editor::SplitCurrentPane(SplitDir dir, const std::string &file_arg, bool new_pane_first) {
     if (float_node_) CloseFloatPane();
     Tab &tab = ActiveTab();
     SplitNode *active = FindNode(tab.root.get(), tab.active_pane_id);
@@ -4875,12 +4780,18 @@ void Editor::SplitCurrentPane(SplitDir dir, const std::string &file_arg) {
     new_leaf->dir = SplitDir::Leaf;
     new_leaf->pane = new_pane;
 
-    // vim opens the new pane above/left of the old one and focuses it.
+    // vim opens the new pane above/left of the old one by default; either
+    // way the new pane is focused.
     active->dir = dir;
     active->pane = Pane{};
     active->children.clear();
-    active->children.push_back(std::move(new_leaf));
-    active->children.push_back(std::move(original_leaf));
+    if (new_pane_first) {
+        active->children.push_back(std::move(new_leaf));
+        active->children.push_back(std::move(original_leaf));
+    } else {
+        active->children.push_back(std::move(original_leaf));
+        active->children.push_back(std::move(new_leaf));
+    }
 
     tab.active_pane_id = new_pane.id;
     if (special) LoadFile(file_arg);
@@ -5269,6 +5180,8 @@ void Editor::SyncModeToActivePaneBuffer() {
         mode_ = Mode::Model3D;
     } else if (IsPdfBuffer(CurPane().buffer_id)) {
         mode_ = Mode::Pdf;
+    } else if (IsVideoBuffer(CurPane().buffer_id)) {
+        mode_ = Mode::Video;
     } else if (IsHtmlBuffer(CurPane().buffer_id)) {
         mode_ = Mode::Html;
     } else if (IsOfficeBuffer(CurPane().buffer_id)) {
@@ -5288,7 +5201,7 @@ void Editor::SyncModeToActivePaneBuffer() {
     } else if (IsGanttViewActive(CurPane().buffer_id)) {
         mode_ = Mode::GanttNormal;
     } else if (mode_ == Mode::Terminal || mode_ == Mode::Image || mode_ == Mode::ImageEditor || mode_ == Mode::Model3D ||
-               mode_ == Mode::Pdf ||
+               mode_ == Mode::Pdf || mode_ == Mode::Video ||
                mode_ == Mode::Html ||
                mode_ == Mode::OfficeNormal || mode_ == Mode::OfficeInsert || mode_ == Mode::OfficeVisual ||
                mode_ == Mode::SheetNormal || mode_ == Mode::SheetInsert || mode_ == Mode::SheetVisual ||
@@ -5992,6 +5905,105 @@ bool Editor::SaveImageEditorPng(ImageEditorSession &sess, const std::string &pat
 #endif
 }
 
+// CHESS_SET_BENCHMARK_PLAN.md Phase 4: headless image-editor creation and
+// procedural-fill support for the agent RPC surface (image.* methods,
+// agent_rpc.cpp). These deliberately don't go through EnterImageEditor
+// (which always seeds from an already-open ImageDoc/ImageSession) --
+// there is no source file for a brand-new procedural texture, so the
+// session is built directly, the same way NewModel3DScene builds a
+// Model3DSession with no source file either.
+int Editor::NewImageEditorBuffer(int width, int height, RgbaColor fill) {
+    if (width <= 0 || height <= 0) return -1;
+    int buffer_id = CreateEmptyBuffer();
+    ImageEditorSession sess;
+    sess.buffer_id = buffer_id;
+    sess.active = true;
+    sess.width = width;
+    sess.height = height;
+    ImageEditorLayer base;
+    base.name = "Background";
+    size_t n = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
+    base.pixels.resize(n);
+    for (size_t i = 0; i < n; i += 4) {
+        base.pixels[i + 0] = fill.r;
+        base.pixels[i + 1] = fill.g;
+        base.pixels[i + 2] = fill.b;
+        base.pixels[i + 3] = fill.a;
+    }
+    sess.layers.push_back(std::move(base));
+    image_editors_[buffer_id] = std::move(sess);
+    CurPane().buffer_id = buffer_id;
+    CurPane().cursor = {0, 0};
+    CurPane().scroll_row = 0;
+    mode_ = Mode::ImageEditor;
+    status_message_.clear();
+    return buffer_id;
+}
+
+bool Editor::ImageEditorSetActiveLayer(int buffer_id, int layer_index) {
+    auto it = image_editors_.find(buffer_id);
+    if (it == image_editors_.end()) return false;
+    ImageEditorSession &sess = it->second;
+    if (layer_index < 0 || layer_index >= static_cast<int>(sess.layers.size())) return false;
+    sess.active_layer = layer_index;
+    return true;
+}
+
+bool Editor::ImageEditorRenameLayer(int buffer_id, int layer_index, const std::string &name) {
+    auto it = image_editors_.find(buffer_id);
+    if (it == image_editors_.end()) return false;
+    ImageEditorSession &sess = it->second;
+    if (layer_index < 0 || layer_index >= static_cast<int>(sess.layers.size())) return false;
+    sess.layers[static_cast<size_t>(layer_index)].name = name;
+    return true;
+}
+
+bool Editor::ImageEditorApplyPixels(int buffer_id, int layer_index, const std::vector<unsigned char> &pixels) {
+    auto it = image_editors_.find(buffer_id);
+    if (it == image_editors_.end()) return false;
+    ImageEditorSession &sess = it->second;
+    int idx = layer_index >= 0 ? layer_index : sess.active_layer;
+    if (idx < 0 || idx >= static_cast<int>(sess.layers.size())) return false;
+    size_t n = static_cast<size_t>(sess.width) * static_cast<size_t>(sess.height) * 4;
+    if (pixels.size() != n) return false;
+    PushUndoImageEditor(buffer_id);
+    ImageEditorLayer &layer = sess.layers[static_cast<size_t>(idx)];
+    if (sess.selection.kind == ImageEditorSelectionKind::None) {
+        layer.pixels = pixels;
+    } else {
+        for (int y = 0; y < sess.height; ++y) {
+            for (int x = 0; x < sess.width; ++x) {
+                if (!ImageEditorSelectionContains(sess.selection, x, y)) continue;
+                size_t px = (static_cast<size_t>(y) * static_cast<size_t>(sess.width) + static_cast<size_t>(x)) * 4;
+                for (size_t c = 0; c < 4; ++c) layer.pixels[px + c] = pixels[px + c];
+            }
+        }
+    }
+    sess.modified = true;
+    sess.dirty = true;
+    return true;
+}
+
+bool Editor::ImageEditorBlurLayer(int buffer_id, int layer_index, int radius) {
+    if (radius <= 0) return false;
+    auto it = image_editors_.find(buffer_id);
+    if (it == image_editors_.end()) return false;
+    ImageEditorSession &sess = it->second;
+    int idx = layer_index >= 0 ? layer_index : sess.active_layer;
+    if (idx < 0 || idx >= static_cast<int>(sess.layers.size())) return false;
+    std::vector<unsigned char> blurred = sess.layers[static_cast<size_t>(idx)].pixels;
+    procgen::BoxBlur(&blurred, sess.width, sess.height, radius);
+    // Reuses ImageEditorApplyPixels for the undo push + selection masking
+    // (Phase 4 plan: "respecting an active selection if one exists").
+    return ImageEditorApplyPixels(buffer_id, idx, blurred);
+}
+
+bool Editor::ImageEditorExportPng(int buffer_id, const std::string &path) {
+    ImageEditorSession *sess = GetImageEditorMutable(buffer_id);
+    if (!sess) return false;
+    return SaveImageEditorPng(*sess, path);
+}
+
 // Tool hotkeys ('b'/'x'/'l'/'r'/'c'/'f'/'i'/'h' select Pencil/Eraser/Line/
 // Rectangle/Ellipse/Bucket/Eyedropper/Pan; 'm'/'o'/'w'/'v' select Rectangle-
 // select/Ellipse-select/Lasso/Move), '['/']' shrink/grow the brush, 'u'/
@@ -6114,14 +6126,40 @@ Vec3f RotateAroundAxisDeg(Vec3f v, char axis, float deg) {
     return Vec3f{v.x * c - v.y * s, v.x * s + v.y * c, v.z};  // 'z'
 }
 
+// "Fit the whole scene in view" camera target/distance from its true world
+// bounds (see ComputeSceneWorldBounds above).
+void ComputeSceneFitCamera(const Scene &scene, Vec3f *out_target, float *out_distance) {
+    Vec3f mn, mx;
+    ComputeSceneWorldBounds(scene, &mn, &mx);
+    out_target->x = (mn.x + mx.x) * 0.5f;
+    out_target->y = (mn.y + mx.y) * 0.5f;
+    out_target->z = (mn.z + mx.z) * 0.5f;
+    float extent = std::max({mx.x - mn.x, mx.y - mn.y, mx.z - mn.z}) * 0.5f;
+    *out_distance = std::clamp(extent * 2.5f + 2.0f, 2.0f, 500.0f);
+}
+
+// A fresh, never-repeated value every call -- see Model3DSession::
+// scene_generation's own comment for why this exists. Deliberately a
+// process-global counter (not reset per-buffer) so a brand-new
+// Model3DSession replacing an old one at the same buffer_id can never
+// coincidentally collide with whatever generation the old one had.
+int NextModel3DSceneGeneration() {
+    static int next = 1;
+    return next++;
+}
+}  // namespace
+
 // True world-space bounds of every visible-or-not object in the scene
 // (position+rotation+scale all applied to every mesh vertex) -- used by
-// both the initial import framing and Editor::Model3DFrameAll, so "fit the
-// whole scene" means the same thing in both places. Superseded a cruder
-// heuristic that only looked at scaled local vertex coordinates and
-// ignored position/rotation entirely, which visibly mis-framed any scene
-// whose objects weren't clustered at the origin (MODEL3D_PLAN.md's own
-// "camera framing differs after reimport" known gap, caught during live
+// both the initial import framing and Editor::Model3DFrameAll (via
+// ComputeSceneFitCamera above), so "fit the whole scene" means the same
+// thing in both places, and by main.cpp's shadow-map light-frustum fit
+// (CHESS_REALISM_PLAN.md Phase 3) -- external linkage (declared in
+// editor.h) for that second caller. Superseded a cruder heuristic that
+// only looked at scaled local vertex coordinates and ignored
+// position/rotation entirely, which visibly mis-framed any scene whose
+// objects weren't clustered at the origin (MODEL3D_PLAN.md's own "camera
+// framing differs after reimport" known gap, caught during live
 // multi-object testing).
 void ComputeSceneWorldBounds(const Scene &scene, Vec3f *out_min, Vec3f *out_max) {
     bool any = false;
@@ -6150,29 +6188,6 @@ void ComputeSceneWorldBounds(const Scene &scene, Vec3f *out_min, Vec3f *out_max)
     *out_min = any ? mn : Vec3f{-1, -1, -1};
     *out_max = any ? mx : Vec3f{1, 1, 1};
 }
-
-// "Fit the whole scene in view" camera target/distance from its true world
-// bounds (see ComputeSceneWorldBounds above).
-void ComputeSceneFitCamera(const Scene &scene, Vec3f *out_target, float *out_distance) {
-    Vec3f mn, mx;
-    ComputeSceneWorldBounds(scene, &mn, &mx);
-    out_target->x = (mn.x + mx.x) * 0.5f;
-    out_target->y = (mn.y + mx.y) * 0.5f;
-    out_target->z = (mn.z + mx.z) * 0.5f;
-    float extent = std::max({mx.x - mn.x, mx.y - mn.y, mx.z - mn.z}) * 0.5f;
-    *out_distance = std::clamp(extent * 2.5f + 2.0f, 2.0f, 500.0f);
-}
-
-// A fresh, never-repeated value every call -- see Model3DSession::
-// scene_generation's own comment for why this exists. Deliberately a
-// process-global counter (not reset per-buffer) so a brand-new
-// Model3DSession replacing an old one at the same buffer_id can never
-// coincidentally collide with whatever generation the old one had.
-int NextModel3DSceneGeneration() {
-    static int next = 1;
-    return next++;
-}
-}  // namespace
 
 bool Editor::IsModel3DBuffer(int buffer_id) const { return model3d_sessions_.find(buffer_id) != model3d_sessions_.end(); }
 
@@ -6397,6 +6412,50 @@ int Editor::Model3DAddPrimitive(int buffer_id, PrimitiveKind kind) {
     return id;
 }
 
+int Editor::Model3DAddLathe(int buffer_id, const std::vector<Vec2f> &profile, int segments, bool cap_top,
+                             bool cap_bottom) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return -1;
+    Model3DSession &sess = it->second;
+    PushUndoModel3D(buffer_id);
+    int id = AddLatheToScene(&sess.scene, profile, segments, cap_top, cap_bottom);
+    if (id < 0) {
+        sess.undo_stack.pop_back();  // no-op edit -- don't leave a spurious undo entry
+        return -1;
+    }
+    // Same quick-add X offset as Model3DAddPrimitive, so a run of lathed
+    // pieces (e.g. an agent building a whole chess set) doesn't stack
+    // every new one exactly on top of the last at the origin.
+    if (Object3D *obj = sess.scene.FindObject(id)) {
+        obj->position.x = static_cast<float>(sess.scene.objects.size() - 1) * 1.5f;
+    }
+    sess.selection = {id};
+    sess.modified = true;
+    sess.dirty = true;
+    return id;
+}
+
+int Editor::Model3DAddCustomMesh(int buffer_id, const std::vector<Vec3f> &positions, const std::vector<unsigned int> &indices,
+                                  const std::string &name, const std::vector<float> &texcoords) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return -1;
+    Model3DSession &sess = it->second;
+    PushUndoModel3D(buffer_id);
+    int id = AddCustomMeshToScene(&sess.scene, positions, indices, name, texcoords);
+    if (id < 0) {
+        sess.undo_stack.pop_back();  // no-op edit -- don't leave a spurious undo entry
+        return -1;
+    }
+    // Same quick-add X offset as Model3DAddLathe/Model3DAddPrimitive.
+    if (Object3D *obj = sess.scene.FindObject(id)) {
+        obj->position.x = static_cast<float>(sess.scene.objects.size() - 1) * 1.5f;
+    }
+    sess.selection = {id};
+    sess.modified = true;
+    sess.dirty = true;
+    return id;
+}
+
 bool Editor::Model3DDeleteObject(int buffer_id, int object_id, bool cascade) {
     auto it = model3d_sessions_.find(buffer_id);
     if (it == model3d_sessions_.end()) return false;
@@ -6487,7 +6546,8 @@ bool Editor::Model3DSetTransform(int buffer_id, int object_id, bool has_position
     return true;
 }
 
-bool Editor::Model3DSetMaterial(int buffer_id, int object_id, RgbaColorF color) {
+bool Editor::Model3DSetMaterial(int buffer_id, int object_id, RgbaColorF color, bool has_roughness, float roughness,
+                                 bool has_metallic, float metallic) {
     auto it = model3d_sessions_.find(buffer_id);
     if (it == model3d_sessions_.end()) return false;
     Model3DSession &sess = it->second;
@@ -6495,26 +6555,87 @@ bool Editor::Model3DSetMaterial(int buffer_id, int object_id, RgbaColorF color) 
     if (!obj) return false;
     PushUndoModel3D(buffer_id);
     obj->color = color;
+    if (has_roughness) obj->roughness = std::clamp(roughness, 0.0f, 1.0f);
+    if (has_metallic) obj->metallic = std::clamp(metallic, 0.0f, 1.0f);
     sess.modified = true;
     sess.dirty = true;
     return true;
 }
 
-bool Editor::Model3DSetTexture(int buffer_id, int object_id, const std::string &path) {
+int Editor::Model3DAddLight(int buffer_id, LightType type) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return -1;
+    Model3DSession &sess = it->second;
+    PushUndoModel3D(buffer_id);
+    Light light;
+    light.type = type;
+    light.name = type == LightType::Point ? "Point Light" : "Directional Light";
+    int id = sess.scene.AddLight(light);
+    sess.modified = true;
+    sess.dirty = true;
+    return id;
+}
+
+bool Editor::Model3DSetLight(int buffer_id, int light_id, const Model3DLightParams &params) {
     auto it = model3d_sessions_.find(buffer_id);
     if (it == model3d_sessions_.end()) return false;
     Model3DSession &sess = it->second;
-    if (!sess.scene.FindObject(object_id)) return false;
+    Light *light = sess.scene.FindLight(light_id);
+    if (!light) return false;
+    PushUndoModel3D(buffer_id);
+    if (params.has_type) light->type = params.type;
+    if (params.has_position) light->position = params.position;
+    if (params.has_direction) light->direction = params.direction;
+    if (params.has_color) light->color = params.color;
+    if (params.has_intensity) light->intensity = std::max(0.0f, params.intensity);
+    if (params.has_range) light->range = std::max(0.0f, params.range);
+    if (params.has_visible) light->visible = params.visible;
+    sess.modified = true;
+    sess.dirty = true;
+    return true;
+}
+
+bool Editor::Model3DDeleteLight(int buffer_id, int light_id) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return false;
+    Model3DSession &sess = it->second;
+    if (!sess.scene.FindLight(light_id)) return false;
+    PushUndoModel3D(buffer_id);
+    sess.scene.RemoveLight(light_id);
+    sess.modified = true;
+    sess.dirty = true;
+    return true;
+}
+
+bool Editor::Model3DSetTexture(int buffer_id, int object_id, const std::string &path, TextureMapKind kind) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return false;
+    Model3DSession &sess = it->second;
+    Object3D *obj = sess.scene.FindObject(object_id);
+    if (!obj) return false;
+    // Which Object3D field this call targets -- same object every time
+    // (FindObject re-run per branch below just mirrors this function's
+    // pre-Phase-1 shape/undo-then-load ordering, not a second lookup of a
+    // possibly-different object).
+    auto *target_index = [&]() -> int * {
+        switch (kind) {
+            case TextureMapKind::Albedo: return &obj->texture_index;
+            case TextureMapKind::Normal: return &obj->normal_map_index;
+            case TextureMapKind::Roughness: return &obj->roughness_map_index;
+            case TextureMapKind::Metallic: return &obj->metallic_map_index;
+        }
+        return &obj->texture_index;
+    }();
     if (path.empty()) {
         PushUndoModel3D(buffer_id);
-        sess.scene.FindObject(object_id)->texture_index = -1;
+        *target_index = -1;
         sess.modified = true;
         sess.dirty = true;
         return true;
     }
     // Undo pushed *before* loading -- Model3DSession's undo is a whole-
     // scene snapshot, so this makes one undo revert both the appended
-    // Scene::textures entry and the object's texture_index change
+    // Scene::textures entry and the object's texture-slot-index change
     // together, rather than leaving an orphaned texture behind (the same
     // "never garbage collected, another object might still reference it"
     // tradeoff Scene::RemoveObject already documents for meshes, just
@@ -6526,7 +6647,7 @@ bool Editor::Model3DSetTexture(int buffer_id, int object_id, const std::string &
         if (!sess.undo_stack.empty()) sess.undo_stack.pop_back();  // load failed -- drop the now-unneeded push
         return false;
     }
-    sess.scene.FindObject(object_id)->texture_index = texture_index;
+    *target_index = texture_index;
     sess.modified = true;
     sess.dirty = true;
     return true;
@@ -6578,6 +6699,187 @@ void Editor::Model3DSetCamera(int buffer_id, const Model3DCameraParams &params) 
     if (params.has_fov) sess.camera_fov = std::clamp(params.fov, 1.0f, 170.0f);
 }
 
+void Editor::Model3DAnimAddCameraKeyframe(int buffer_id, const Model3DSession::CameraKeyframe &kf) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return;
+    std::vector<Model3DSession::CameraKeyframe> &kfs = it->second.camera_keyframes;
+    auto pos = std::lower_bound(kfs.begin(), kfs.end(), kf.time,
+                                 [](const Model3DSession::CameraKeyframe &existing, float time) { return existing.time < time; });
+    if (pos != kfs.end() && pos->time == kf.time) {
+        *pos = kf;
+    } else {
+        kfs.insert(pos, kf);
+    }
+}
+
+void Editor::Model3DAnimClearCamera(int buffer_id) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return;
+    it->second.camera_keyframes.clear();
+}
+
+void Editor::Model3DAnimOrbitCamera(int buffer_id, Vec3f target, float distance, float pitch, float fov, float duration,
+                                     float start_yaw, float revolutions) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return;
+    Model3DSession &sess = it->second;
+    sess.camera_keyframes.clear();
+    duration = std::max(duration, 0.01f);
+    pitch = std::clamp(pitch, -89.0f, 89.0f);
+    distance = std::clamp(distance, 0.1f, 1000.0f);
+    fov = std::clamp(fov, 1.0f, 170.0f);
+    // 9 keyframes (every 45 degrees of a single revolution) is enough for
+    // Model3DSampleCameraAtTime's linear interpolation to read as a smooth
+    // orbit -- yaw itself is the only field that varies keyframe to
+    // keyframe, so there's no curvature to under-sample.
+    constexpr int kStepsPerRevolution = 8;
+    int steps = std::max(1, static_cast<int>(std::lround(kStepsPerRevolution * revolutions)));
+    for (int i = 0; i <= steps; i++) {
+        float t = static_cast<float>(i) / static_cast<float>(steps);
+        Model3DSession::CameraKeyframe kf;
+        kf.time = t * duration;
+        kf.target = target;
+        kf.yaw = start_yaw + t * (360.0f * revolutions);
+        kf.pitch = pitch;
+        kf.distance = distance;
+        kf.fov = fov;
+        sess.camera_keyframes.push_back(kf);
+    }
+}
+
+void Editor::Model3DAnimSetCameraTime(int buffer_id, float time) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return;
+    Model3DSession &sess = it->second;
+    if (sess.camera_keyframes.empty()) return;
+    Model3DSession::CameraKeyframe sample = Model3DSampleCameraAtTime(sess, time);
+    sess.camera_target = sample.target;
+    sess.camera_yaw = sample.yaw;
+    sess.camera_pitch = sample.pitch;
+    sess.camera_distance = sample.distance;
+    sess.camera_fov = sample.fov;
+}
+
+Model3DSession::CameraKeyframe Model3DSampleCameraAtTime(const Model3DSession &sess, float time) {
+    const std::vector<Model3DSession::CameraKeyframe> &kfs = sess.camera_keyframes;
+    if (kfs.empty()) {
+        Model3DSession::CameraKeyframe sample;
+        sample.target = sess.camera_target;
+        sample.yaw = sess.camera_yaw;
+        sample.pitch = sess.camera_pitch;
+        sample.distance = sess.camera_distance;
+        sample.fov = sess.camera_fov;
+        return sample;
+    }
+    if (kfs.size() == 1 || time <= kfs.front().time) return kfs.front();
+    if (time >= kfs.back().time) return kfs.back();
+    auto next = std::lower_bound(kfs.begin(), kfs.end(), time,
+                                  [](const Model3DSession::CameraKeyframe &kf, float t) { return kf.time < t; });
+    const Model3DSession::CameraKeyframe &b = *next;
+    const Model3DSession::CameraKeyframe &a = *(next - 1);
+    float span = b.time - a.time;
+    float t = span > 0.0f ? (time - a.time) / span : 0.0f;
+    Model3DSession::CameraKeyframe sample;
+    sample.time = time;
+    sample.target = Vec3f{gfx::Lerp(a.target.x, b.target.x, t), gfx::Lerp(a.target.y, b.target.y, t),
+                           gfx::Lerp(a.target.z, b.target.z, t)};
+    sample.yaw = gfx::Lerp(a.yaw, b.yaw, t);
+    sample.pitch = gfx::Lerp(a.pitch, b.pitch, t);
+    sample.distance = gfx::Lerp(a.distance, b.distance, t);
+    sample.fov = gfx::Lerp(a.fov, b.fov, t);
+    return sample;
+}
+
+void Editor::Model3DAnimAddObjectKeyframe(int buffer_id, int object_id, const Model3DSession::ObjectKeyframe &kf) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return;
+    Model3DSession &sess = it->second;
+    if (!sess.scene.FindObject(object_id)) return;
+    std::vector<Model3DSession::ObjectKeyframe> &kfs = sess.object_keyframes[object_id];
+    auto pos = std::lower_bound(kfs.begin(), kfs.end(), kf.time,
+                                 [](const Model3DSession::ObjectKeyframe &existing, float time) { return existing.time < time; });
+    if (pos != kfs.end() && pos->time == kf.time) {
+        *pos = kf;
+    } else {
+        kfs.insert(pos, kf);
+    }
+}
+
+void Editor::Model3DAnimClearObjectKeyframes(int buffer_id, int object_id) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return;
+    it->second.object_keyframes.erase(object_id);
+}
+
+void Editor::Model3DAnimSetObjectTime(int buffer_id, int object_id, float time) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return;
+    Model3DSession &sess = it->second;
+    auto track_it = sess.object_keyframes.find(object_id);
+    if (track_it == sess.object_keyframes.end() || track_it->second.empty()) return;
+    Object3D *obj = sess.scene.FindObject(object_id);
+    if (!obj) return;
+    Model3DSession::ObjectKeyframe sample = Model3DSampleObjectAtTime(sess, object_id, time);
+    obj->position = sample.position;
+    obj->rotation_deg = sample.rotation_deg;
+    obj->scale = sample.scale;
+}
+
+void Editor::Model3DAnimMoveObject(int buffer_id, int object_id, Vec3f from, Vec3f to, float duration) {
+    auto it = model3d_sessions_.find(buffer_id);
+    if (it == model3d_sessions_.end()) return;
+    Model3DSession &sess = it->second;
+    Object3D *obj = sess.scene.FindObject(object_id);
+    if (!obj) return;
+    duration = std::max(duration, 0.01f);
+    std::vector<Model3DSession::ObjectKeyframe> &kfs = sess.object_keyframes[object_id];
+    kfs.clear();
+    Model3DSession::ObjectKeyframe start;
+    start.time = 0.0f;
+    start.position = from;
+    start.rotation_deg = obj->rotation_deg;
+    start.scale = obj->scale;
+    Model3DSession::ObjectKeyframe end = start;
+    end.time = duration;
+    end.position = to;
+    kfs.push_back(start);
+    kfs.push_back(end);
+}
+
+Model3DSession::ObjectKeyframe Model3DSampleObjectAtTime(const Model3DSession &sess, int object_id, float time) {
+    const Object3D *obj = sess.scene.FindObject(object_id);
+    auto fallback = [&]() {
+        Model3DSession::ObjectKeyframe sample;
+        if (obj) {
+            sample.position = obj->position;
+            sample.rotation_deg = obj->rotation_deg;
+            sample.scale = obj->scale;
+        }
+        return sample;
+    };
+    auto track_it = sess.object_keyframes.find(object_id);
+    if (track_it == sess.object_keyframes.end()) return fallback();
+    const std::vector<Model3DSession::ObjectKeyframe> &kfs = track_it->second;
+    if (kfs.empty()) return fallback();
+    if (kfs.size() == 1 || time <= kfs.front().time) return kfs.front();
+    if (time >= kfs.back().time) return kfs.back();
+    auto next = std::lower_bound(kfs.begin(), kfs.end(), time,
+                                  [](const Model3DSession::ObjectKeyframe &kf, float t) { return kf.time < t; });
+    const Model3DSession::ObjectKeyframe &b = *next;
+    const Model3DSession::ObjectKeyframe &a = *(next - 1);
+    float span = b.time - a.time;
+    float t = span > 0.0f ? (time - a.time) / span : 0.0f;
+    Model3DSession::ObjectKeyframe sample;
+    sample.time = time;
+    sample.position = Vec3f{gfx::Lerp(a.position.x, b.position.x, t), gfx::Lerp(a.position.y, b.position.y, t),
+                             gfx::Lerp(a.position.z, b.position.z, t)};
+    sample.rotation_deg =
+        Vec3f{gfx::Lerp(a.rotation_deg.x, b.rotation_deg.x, t), gfx::Lerp(a.rotation_deg.y, b.rotation_deg.y, t),
+              gfx::Lerp(a.rotation_deg.z, b.rotation_deg.z, t)};
+    sample.scale = Vec3f{gfx::Lerp(a.scale.x, b.scale.x, t), gfx::Lerp(a.scale.y, b.scale.y, t), gfx::Lerp(a.scale.z, b.scale.z, t)};
+    return sample;
+}
+
 bool Editor::SaveModel3DFile(Model3DSession &sess, const std::string &path) {
 #if defined(__EMSCRIPTEN__)
     (void)sess;
@@ -6597,13 +6899,15 @@ bool Editor::SaveModel3DFile(Model3DSession &sess, const std::string &path) {
 }
 
 void Editor::Model3DSetView(int buffer_id, bool has_show_grid, bool show_grid, bool has_wireframe, bool wireframe, bool has_snap,
-                             bool snap) {
+                             bool snap, bool has_show_textures, bool show_textures, bool has_unlit, bool unlit) {
     auto it = model3d_sessions_.find(buffer_id);
     if (it == model3d_sessions_.end()) return;
     Model3DSession &sess = it->second;
     if (has_show_grid) sess.show_grid = show_grid;
     if (has_wireframe) sess.wireframe = wireframe;
     if (has_snap) sess.snap_enabled = snap;
+    if (has_show_textures) sess.show_textures = show_textures;
+    if (has_unlit) sess.unlit = unlit;
 }
 
 void Editor::Model3DFrameAll(int buffer_id) {
@@ -7250,6 +7554,7 @@ void Editor::OpenHtmlInPlace(const std::string &origin, const std::string &sourc
     CurPane().buffer_id = buffer_id;
     CurPane().cursor = {0, 0};
     CurPane().scroll_row = 0;
+    pending_g_ = false;  // avoid gg/G leakage from whatever mode preceded this
     status_message_.clear();
     // Unlike OpenImageInPlace/OpenPdfInPlace (whose only caller, LoadFile,
     // already calls this right afterward itself), this has exactly one
@@ -7382,28 +7687,49 @@ void Editor::HandleHtmlInput() {
     // lua_commands_ lookup + CallRefWithString pattern
     // TryRunOrgBabelAtCursor/TryRunOrgExport use -- the actual reload
     // (re-fetch if remote) / address-bar (mep.ui_input prompt) logic
-    // lives in Lua, this just triggers it. Every other printable key is a
-    // deliberate no-op -- there's no text to insert/operate on.
+    // lives in Lua, this just triggers it. gg/G (top/bottom of page) reuse
+    // pending_g_ the same way HandlePdfInput's own gg/G does -- reset on
+    // entry to this mode in OpenHtmlInPlace so it can't leak in from
+    // elsewhere. G's scroll_y is an intentionally unclamped sentinel: the
+    // real max isn't known here (only DrawPane's ClampHtmlScroll, main.cpp,
+    // knows it, after that frame's LayoutHtmlDoc runs -- see its own
+    // comment), and that same per-frame clamp already runs unconditionally,
+    // so any value at or past the true bottom lands exactly on it. Every
+    // other printable key is a deliberate no-op -- there's no text to
+    // insert/operate on.
     int cp = gfx::GetCharPressed();
     while (cp > 0) {
-        if (cp == ':') {
-            EnterCommand();
-            return;  // mode_ is no longer Html -- stop draining as this mode
-        } else if (cp == static_cast<int>(leader_key_) && !whichkey_bindings_.empty()) {
-            TriggerWhichKey();
-            return;
-        } else if (cp == '+') {
-            sess->zoom = std::min(3.0f, sess->zoom + 0.1f);
-        } else if (cp == '-') {
-            sess->zoom = std::max(0.3f, sess->zoom - 0.1f);
-        } else if (cp == '=') {
-            sess->zoom = 1.0f;
-        } else if (cp == 'r') {
-            auto it = lua_commands_.find("MepBrowseReload");
-            if (it != lua_commands_.end() && lua_) lua_->CallRefWithString(it->second, "");
-        } else if (cp == 'o') {
-            auto it = lua_commands_.find("MepBrowseOpen");
-            if (it != lua_commands_.end() && lua_) lua_->CallRefWithString(it->second, "");
+        if (cp == 'g') {
+            if (pending_g_) {
+                pending_g_ = false;
+                sess->scroll_y = 0.0f;
+            } else {
+                pending_g_ = true;
+            }
+        } else if (cp == 'G') {
+            pending_g_ = false;
+            sess->scroll_y = std::numeric_limits<float>::max();
+        } else {
+            pending_g_ = false;
+            if (cp == ':') {
+                EnterCommand();
+                return;  // mode_ is no longer Html -- stop draining as this mode
+            } else if (cp == static_cast<int>(leader_key_) && !whichkey_bindings_.empty()) {
+                TriggerWhichKey();
+                return;
+            } else if (cp == '+') {
+                sess->zoom = std::min(3.0f, sess->zoom + 0.1f);
+            } else if (cp == '-') {
+                sess->zoom = std::max(0.3f, sess->zoom - 0.1f);
+            } else if (cp == '=') {
+                sess->zoom = 1.0f;
+            } else if (cp == 'r') {
+                auto it = lua_commands_.find("MepBrowseReload");
+                if (it != lua_commands_.end() && lua_) lua_->CallRefWithString(it->second, "");
+            } else if (cp == 'o') {
+                auto it = lua_commands_.find("MepBrowseOpen");
+                if (it != lua_commands_.end() && lua_) lua_->CallRefWithString(it->second, "");
+            }
         }
         cp = gfx::GetCharPressed();
     }
@@ -7540,6 +7866,149 @@ void Editor::OpenPdfInPlace(const std::string &path, const unsigned char *bytes,
     CurPane().scroll_row = 0;
     pending_g_ = false;  // avoid gg/G leakage from whatever mode preceded this
     status_message_.clear();
+}
+
+bool Editor::IsVideoBuffer(int buffer_id) const { return video_sessions_.find(buffer_id) != video_sessions_.end(); }
+
+VideoSession *Editor::GetVideoMutable(int buffer_id) {
+    auto it = video_sessions_.find(buffer_id);
+    return it == video_sessions_.end() ? nullptr : &it->second;
+}
+
+void Editor::OpenVideoInPlace(const std::string &path) {
+    int buffer_id = -1;
+    for (size_t i = 0; i < buffers_.size(); i++) {
+        if (!BufferInActiveWorkspace(static_cast<int>(i))) continue;
+        if (!buffers_[i].filename.empty() && buffers_[i].filename == path) {
+            buffer_id = static_cast<int>(i);
+            break;
+        }
+    }
+    if (buffer_id < 0) {
+        mov::MovFile mf;
+        std::string error;
+        if (!mov::OpenMovFile(path, &mf, &error)) {
+            status_message_ = "E-\"" + path + "\": " + error;
+            return;
+        }
+        buffer_id = CreateEmptyBuffer();
+        buffers_[static_cast<size_t>(buffer_id)].filename = path;
+        VideoSession sess;
+        sess.buffer_id = buffer_id;
+        sess.path = path;
+        sess.mov = std::move(mf);
+        video_sessions_[buffer_id] = std::move(sess);
+        // No decode call here -- EnsureVideoFramesDecoded (called every
+        // frame from DrawPane, including the first) handles it lazily,
+        // same reasoning as OpenPdfInPlace's own no-render-here comment.
+    }
+    CurPane().buffer_id = buffer_id;
+    CurPane().cursor = {0, 0};
+    CurPane().scroll_row = 0;
+    status_message_.clear();
+}
+
+void Editor::EnsureVideoFramesDecoded(int buffer_id) {
+    auto it = video_sessions_.find(buffer_id);
+    if (it == video_sessions_.end()) return;
+    VideoSession &sess = it->second;
+    int frame_count = static_cast<int>(sess.mov.frame_index.size());
+    if (frame_count <= 0) return;
+
+    if (sess.playing) {
+        double elapsed = gfx::GetTime() - sess.play_started_wall_time;
+        int advanced = static_cast<int>(elapsed * sess.mov.fps);
+        int new_frame = sess.play_started_frame + advanced;
+        if (new_frame >= frame_count - 1) {
+            new_frame = frame_count - 1;
+            sess.playing = false;  // stop at the last frame -- no looping (ANIMATION_VIDEO_PLAN.md Non-goals)
+        }
+        sess.current_frame = std::clamp(new_frame, 0, frame_count - 1);
+    }
+
+    // Windowed around the playhead, one frame further ahead than behind
+    // (a little playback lookahead) -- mirrors EnsurePdfPagesRastered's
+    // {page-1,page,page+1}, just asymmetric since video has a direction.
+    int lo = std::max(0, sess.current_frame - 1);
+    int hi = std::min(frame_count - 1, sess.current_frame + 2);
+    for (int idx = lo; idx <= hi; idx++) {
+        if (sess.frames.find(idx) != sess.frames.end()) continue;
+        std::vector<unsigned char> jpeg_bytes = mov::ReadMovFrameJpeg(sess.path, sess.mov, idx);
+        if (jpeg_bytes.empty()) continue;
+        int w = 0, h = 0;
+        std::string error;
+        unsigned char *decoded = jpeg::Decode(jpeg_bytes.data(), jpeg_bytes.size(), &w, &h, &error);
+        if (!decoded) continue;
+        VideoSession::DecodedFrame df;
+        df.w = w;
+        df.h = h;
+        df.rgba.assign(decoded, decoded + static_cast<size_t>(w) * static_cast<size_t>(h) * 4);
+        std::free(decoded);
+        sess.frames[idx] = std::move(df);
+    }
+    for (auto fit = sess.frames.begin(); fit != sess.frames.end();) {
+        if (fit->first < lo || fit->first > hi) fit = sess.frames.erase(fit);
+        else ++fit;
+    }
+}
+
+void Editor::HandleVideoInput() {
+    VideoSession *sess = nullptr;
+    {
+        auto it = video_sessions_.find(CurPane().buffer_id);
+        if (it == video_sessions_.end()) {
+            mode_ = Mode::Normal;
+            return;
+        }
+        sess = &it->second;
+    }
+    int frame_count = static_cast<int>(sess->mov.frame_index.size());
+
+    // gfx::IsKeyPressed(Repeat) rather than draining gfx::GetKeyPressed(), same
+    // reasoning as HandleImageInput's own `held` lambda.
+    auto held = [](gfx::Key key) { return gfx::IsKeyPressed(key) || gfx::IsKeyPressedRepeat(key); };
+    if (held(gfx::Key::Left) && frame_count > 0) {
+        sess->playing = false;  // stepping pauses, like scrubbing in any ordinary video player
+        sess->current_frame = std::clamp(sess->current_frame - 1, 0, frame_count - 1);
+    }
+    if (held(gfx::Key::Right) && frame_count > 0) {
+        sess->playing = false;
+        sess->current_frame = std::clamp(sess->current_frame + 1, 0, frame_count - 1);
+    }
+
+    int cp = gfx::GetCharPressed();
+    while (cp > 0) {
+        if (cp == ':') {
+            EnterCommand();
+            return;  // mode_ is no longer Video -- stop draining as this mode
+        } else if (cp == ' ' && frame_count > 0) {
+            // Checked ahead of the leader-key branch below (unlike every
+            // other mode's char handling, which always lets leader win) --
+            // Space is this app's *default* leader_key_, so with default
+            // settings leader-via-space would otherwise make play/pause
+            // completely unreachable from the keyboard (confirmed live:
+            // ANIMATION_VIDEO_PLAN.md Phase 5's follow-up). Space-for-
+            // play/pause is an extremely strong, near-universal video-
+            // player convention -- worth this one narrow exception to the
+            // app's usual "leader always wins" invariant. Leader is still
+            // reachable from every other pane/mode, and (if leader_key_
+            // really is space) via the transport bar's play/pause button.
+            if (sess->playing) {
+                sess->playing = false;
+            } else {
+                if (sess->current_frame >= frame_count - 1) sess->current_frame = 0;  // replay from the start
+                sess->playing = true;
+                sess->play_started_wall_time = gfx::GetTime();
+                sess->play_started_frame = sess->current_frame;
+            }
+        } else if (cp == static_cast<int>(leader_key_) && !whichkey_bindings_.empty()) {
+            TriggerWhichKey();
+            return;
+        }
+        // Every other printable key is a deliberate no-op -- see Mode::Video's
+        // own comment for why (no text to insert/operate on).
+        cp = gfx::GetCharPressed();
+    }
 }
 
 void Editor::ReloadPdfBuffer(int buffer_id, const unsigned char *bytes, size_t len) {
@@ -17326,6 +17795,7 @@ const char *ModeName(Mode m, bool replace_mode) {
         case Mode::ImageEditor: return "IMAGE-EDIT";
         case Mode::Model3D: return "3D-MODEL";
         case Mode::Pdf: return "PDF";
+        case Mode::Video: return "VIDEO";
         case Mode::Html: return "HTML";
         case Mode::OfficeNormal: return "NORMAL";
         case Mode::OfficeInsert: return "INSERT";
@@ -22188,6 +22658,19 @@ void Editor::LoadFile(const std::string &path, bool force_text) {
         status_message_ = "E-3D modeler isn't supported in the browser build yet (see MODEL3D.md)";
 #else
         OpenModel3DInPlace(path);
+#endif
+        SyncModeToActivePaneBuffer();
+        return;
+    }
+    if (IsMovPath(path)) {
+        // Same "no bytes-bridge dance" reasoning as Model3D just above --
+        // mov::OpenMovFile is deliberately lazy (never reads `mdat`, see
+        // its own comment), so pre-reading the whole file into `bytes`
+        // here would defeat the point.
+#if defined(__EMSCRIPTEN__)
+        status_message_ = "E-video playback isn't supported in the browser build yet (see ANIMATION_VIDEO_PLAN.md)";
+#else
+        OpenVideoInPlace(path);
 #endif
         SyncModeToActivePaneBuffer();
         return;

@@ -12,23 +12,26 @@
 //
 // Deliberately its own translation unit, NOT included from main.cpp
 // alongside raylib.h: X11's Xlib.h typedefs `Font` (as `XID`), which
-// collides with raylib's own `Font` struct typedef the moment both
-// headers land in one translation unit. Keeping every Xlib/GLFW-native
-// include inside agent_ui_input.cpp (and out of this header) means
-// main.cpp only ever sees the plain, X11-free declarations below.
+// collided with raylib's own `Font` struct typedef the moment both
+// headers landed in one translation unit (raylib itself is gone now,
+// but gfx::types.h's own Font-shaped state means the same risk exists
+// for any future header that lands in main.cpp). Keeping every
+// Xlib-native include inside agent_ui_input.cpp (and out of this header)
+// means main.cpp only ever sees the plain, X11-free declarations below.
 //
 // Linux/X11 only (guarded by the same NOT EMSCRIPTEN/NOT WIN32/NOT APPLE
 // condition as CMakeLists.txt's link step) -- Available() reports false
 // everywhere else, and every function below is then a safe no-op.
 namespace mep::agent_ui {
 
-// Call once, after InitWindow() (so GLFW has a live window) and before
-// registering any "ui.*" RPC method -- `glfw_window_handle` is raylib's
-// own GetWindowHandle() (a GLFWwindow*, passed as void* so this header
-// stays GLFW-free). Resolves and caches the window's X11 Display/Window
-// and confirms the XTest extension is present; Available() reflects
-// whether that succeeded.
-void Init(void *glfw_window_handle);
+// Call once, after InitWindow() (so the backend has a live window) and
+// before registering any "ui.*" RPC method -- `native_window_handle` is
+// gfx::Platform::GetNativeWindowHandle()'s return value (a
+// gfx::NativeWindowHandle*, passed as void* so this header stays
+// Xlib-free -- see gfx/native_window_handle.h). Resolves and caches the
+// window's X11 Display/Window and confirms the XTest extension is
+// present; Available() reflects whether that succeeded.
+void Init(void *native_window_handle);
 
 // True once Init() has resolved a usable X11 Display/Window and XTest is
 // present. Every function below is a no-op (mouse/key: return false)

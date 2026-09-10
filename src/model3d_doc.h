@@ -214,6 +214,13 @@ struct Vec3f {
     float x = 0.0f, y = 0.0f, z = 0.0f;
 };
 
+// A lathe profile point (CHESS_SET_BENCHMARK_PLAN.md Phase 2) -- radius
+// from the Y axis and height along it, NOT a generic 2D point (there's no
+// other 2D-point use in this file to share the name/shape with).
+struct Vec2f {
+    float radius = 0.0f, height = 0.0f;
+};
+
 // One texture's CPU-side pixel data, always normalized to RGBA8 (4
 // bytes/pixel) regardless of the source file's format -- mirrors
 // MeshData's own "raylib decodes it, we copy the raw bytes out and own
@@ -240,6 +247,11 @@ struct RgbaColorF {
 // (not in this pass) know which primitives are safe to regenerate.
 enum class PrimitiveKind { None, Cube, Sphere, Cylinder, Cone, Plane, Torus, Wedge, Imported };
 
+// Which of Object3D's texture slots Editor::Model3DSetTexture targets
+// (CHESS_SET_BENCHMARK_PLAN.md Phase 1) -- mirrors PrimitiveKind's own
+// string-mapped-by-agent_rpc.cpp convention (RequireTextureMapKind).
+enum class TextureMapKind { Albedo, Normal, Roughness, Metallic };
+
 // One node in the scene. Deliberately flat, not a real parent/child scene
 // graph: `parent` is an optional object id used only for the Outliner's
 // nesting display and group-move semantics (mep_model_set_transform never
@@ -258,16 +270,47 @@ struct Object3D {
     // Index into Scene::textures, or -1 for no texture (flat `color` only,
     // the only material option before this field existed). When set, this
     // is glTF's baseColorTexture -- sampled and then tinted by `color`,
-    // same as raylib's own default shader does (texelColor * colDiffuse).
-    // Deliberately just this one texture slot: no normal/metallic-
-    // roughness/emissive maps, and no metallic/roughness *scalars* either
-    // -- raylib's default shader (main.cpp never installs a custom PBR
-    // shader) has no lighting model to apply them to, so they'd be data
-    // with zero visible effect in this app. See MODEL3D.md's own note on
-    // this scope boundary.
+    // same as the renderer's default shading does (texelColor * colDiffuse
+    // * lighting).
     int texture_index = -1;
+    // Basic-PBR material slots (CHESS_SET_BENCHMARK_PLAN.md Phase 1) --
+    // each *_map_index is an index into Scene::textures (-1 = none, same
+    // convention as texture_index above); `roughness`/`metallic` are the
+    // scalar used directly when the matching map is absent, or as a
+    // uniform fallback value the shader reads unconditionally (see
+    // SetModel3DObjectMaterial, main.cpp). Populated from glTF's own
+    // native metallic-roughness material model on import
+    // (backend_native_model_gltf.cpp) where present; every other
+    // importer/primitive leaves these at their defaults (a plausible
+    // semi-matte, non-metal material, not "no data").
+    int normal_map_index = -1;
+    int roughness_map_index = -1;
+    int metallic_map_index = -1;
+    float roughness = 0.5f;
+    float metallic = 0.0f;
     bool visible = true;
     int parent = -1;
+};
+
+// A light in the scene (MULTILIGHT_ANIMATION_PLAN.md Part A) -- real
+// scene content, undo-aware via the same whole-Scene-snapshot mechanism
+// as Object3D, not a session-only view setting. `direction` matches the
+// renderer's own existing `uLightDir` convention exactly: world-space,
+// pointing FROM the surface TOWARD the light (not the direction light
+// travels). `range` only affects Point lights (simple linear falloff --
+// see backend_native_renderer3d.cpp's own comment on why this isn't
+// inverse-square/physically-based).
+enum class LightType { Directional, Point };
+struct Light {
+    int id = 0;
+    std::string name;
+    LightType type = LightType::Directional;
+    Vec3f position;                     // Point lights only
+    Vec3f direction{0.4f, 0.8f, 0.5f};   // Directional lights only; default matches the renderer's old hardcoded key light
+    RgbaColorF color{1.0f, 1.0f, 1.0f, 1.0f};
+    float intensity = 1.0f;
+    float range = 10.0f;  // Point lights only
+    bool visible = true;
 };
 
 // A full scene: the CPU-side, raylib-free model behind editor.h's
@@ -279,6 +322,16 @@ struct Scene {
     std::vector<MeshData> meshes;
     std::vector<TextureData> textures;
     std::vector<Object3D> objects;
+    // Lights (MULTILIGHT_ANIMATION_PLAN.md Part A). Empty is a real,
+    // common, fully-supported state -- the renderer falls back to its
+    // own single hardcoded key light when this is empty, so every scene
+    // built before this field existed (including every saved .gltf file)
+    // keeps rendering exactly as before.
+    std::vector<Light> lights;
+    // Shared by AddObject and AddLight -- one monotonic id space for
+    // everything selectable/addressable in the scene, so an object and a
+    // light can never collide even though they're stored in separate
+    // vectors.
     int next_object_id = 1;
     std::string source_path;  // path this was imported/opened from, if any; empty for a new blank scene
 
@@ -287,6 +340,11 @@ struct Scene {
     int AddObject(Object3D obj);
     Object3D *FindObject(int id);
     const Object3D *FindObject(int id) const;
+    // Same shape as AddObject/FindObject/RemoveObject above, for lights.
+    int AddLight(Light light);
+    Light *FindLight(int id);
+    const Light *FindLight(int id) const;
+    bool RemoveLight(int id);
     // Removes the object with this id. Does NOT remove its mesh from
     // `meshes` (another object may share it) or reparent its children --
     // callers needing cascade-delete of children do that themselves.
@@ -327,6 +385,45 @@ bool LoadModel3DFile(const std::string &path, Scene *out, std::string *error);
 // `scene->meshes`, adds a matching Object3D, and returns the new object's
 // id. Returns -1 (no-op) for PrimitiveKind::None or ::Imported.
 int AddPrimitiveToScene(Scene *scene, PrimitiveKind kind);
+
+// Revolves `profile` (radius/height pairs, bottom to top, at least 2
+// points) around the Y axis into a new welded/indexed mesh + Object3D,
+// added to `scene` the same way AddPrimitiveToScene's fixed shapes are
+// (CHESS_SET_BENCHMARK_PLAN.md Phase 2 -- the primitive missing for
+// chess pieces' turned silhouettes). `segments` is the number of
+// angular divisions (e.g. 16-32 for a smooth turned look); `cap_top`/
+// `cap_bottom` fan-triangulate the top/bottom ring closed (a no-op where
+// that ring's radius is already ~0, i.e. the profile already tapers to a
+// point there). Returns the new object's id, or -1 if `profile` has
+// fewer than 2 points or `segments` < 3.
+int AddLatheToScene(Scene *scene, const std::vector<Vec2f> &profile, int segments, bool cap_top, bool cap_bottom);
+
+// Adds a new object built from an arbitrary hand-authored (or externally
+// generated) vertex/triangle list -- the primitive/lathe generators above
+// only ever produce a fixed family of shapes; this is the escape hatch
+// for anything else (CHESS_SET_BENCHMARK_PLAN.md Phase 8, added when a
+// knight's asymmetric horse-head silhouette turned out to need real
+// custom geometry no amount of primitive-combining or lathe-revolving
+// could produce). `positions` is one entry per vertex; `indices` is a
+// flat triangle list, 3 indices per triangle, each an index into
+// `positions` -- exactly `MeshData::indices`'s own convention, so a
+// caller that already has flat position/index arrays (e.g. decoded
+// straight from RPC JSON) doesn't need to repack them into anything
+// fancier. Normals are computed automatically via
+// `MeshData::RecalculateNormals()` (smooth, area-weighted) -- callers
+// don't supply their own. `texcoords` is optional (default empty) --
+// flat, 2 floats/vertex (u,v per vertex), exactly `MeshData::texcoords`'s
+// own convention, same as `indices` already is for triangles: pass it
+// when the mesh should sample a wrapped texture like any other object;
+// omit it and the object falls back to a solid color/roughness/metallic
+// from its own material, same as any object with texture_index left at
+// -1 (Phase 8's own knight head started this way, before UV support
+// existed here, and still works either way). Returns the new object's
+// id, or -1 if `positions` is empty, `indices` isn't a multiple of 3,
+// any index is out of range, or `texcoords` is non-empty but isn't
+// exactly 2 floats per vertex.
+int AddCustomMeshToScene(Scene *scene, const std::vector<Vec3f> &positions, const std::vector<unsigned int> &indices,
+                          const std::string &name, const std::vector<float> &texcoords = {});
 
 // Human-readable pivot/dimensions description for a primitive kind, kept in
 // sync with what AddPrimitiveToScene actually generates (single source of

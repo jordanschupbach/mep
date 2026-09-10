@@ -3,7 +3,7 @@
 #include <cstring>
 
 namespace {
-uint16_t Read16(const unsigned char *p) { return static_cast<uint16_t>(p[0]) | static_cast<uint16_t>(p[1]) << 8U; }
+uint16_t Read16(const unsigned char *p) { return static_cast<uint16_t>(static_cast<uint16_t>(p[0]) | static_cast<uint16_t>(p[1] << 8U)); }
 uint32_t Read32(const unsigned char *p) { return static_cast<uint32_t>(Read16(p)) | static_cast<uint32_t>(Read16(p + 2)) << 16U; }
 }
 

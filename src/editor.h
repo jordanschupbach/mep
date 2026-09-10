@@ -8,6 +8,7 @@
 #include "org_doc.h"
 #include "image_doc.h"
 #include "model3d_doc.h"
+#include "mov_container.h"
 #include "vterm.h"
 #include "gfx/types.h"
 
@@ -127,6 +128,14 @@ enum class Mode {
     // else a no-op) plus page navigation (Ctrl-f/Ctrl-b/PageDown/PageUp,
     // gg/G) since PDF content is paginated. See Editor::HandlePdfInput.
     Pdf,
+    // A focused video-playback pane (a VideoSession buffer -- see below,
+    // opened for a `.mov` file written by mov::WriteMovFile, see
+    // ANIMATION_VIDEO_PLAN.md Phase 5). Same "flat viewer, ':'/leader
+    // forwarded, everything else a no-op" shape as Mode::Image/Pdf: Space
+    // toggles play/pause, Left/Right step one frame (pausing playback if
+    // it was running, like scrubbing in any ordinary video player). See
+    // Editor::HandleVideoInput.
+    Video,
     // A focused HTML-preview pane (an HtmlSession buffer -- see below,
     // opened by mep.browse_command's in-pane default via mep.html_open,
     // kBuiltinTextTools). Same shape as Mode::Image/Pdf (h/j/k/l scroll,
@@ -1081,6 +1090,26 @@ struct Model3DCameraParams {
     float fov = 0.0f;
 };
 
+// Sparse update for Editor::Model3DSetLight (MULTILIGHT_ANIMATION_PLAN.md
+// Part A) -- same "only touch what's given" shape as Model3DCameraParams
+// above.
+struct Model3DLightParams {
+    bool has_type = false;
+    LightType type = LightType::Directional;
+    bool has_position = false;
+    Vec3f position;
+    bool has_direction = false;
+    Vec3f direction;
+    bool has_color = false;
+    RgbaColorF color;
+    bool has_intensity = false;
+    float intensity = 1.0f;
+    bool has_range = false;
+    float range = 10.0f;
+    bool has_visible = false;
+    bool visible = true;
+};
+
 // Sparse per-object update for Editor::Model3DSetTransformsBatch -- one
 // array element per object, only applying the has_* fields it sets, same
 // convention as Model3DSetTransform's own flags. Lets an agent reposition
@@ -1145,6 +1174,39 @@ struct Model3DSession {
     float camera_distance = 6.0f;
     float camera_fov = 45.0f;
 
+    // Optional camera keyframe animation (ANIMATION_VIDEO_PLAN.md Phase 1).
+    // Empty = no animation, today's behavior unaffected. Kept sorted by
+    // `time` on every insert so Model3DSampleCameraAtTime can binary-search
+    // for the bracketing pair. camera_yaw/pitch/distance/target/fov above
+    // remain the *live* viewport camera -- Model3DAnimSetCameraTime writes
+    // sampled values into those same fields for preview/scrub, it doesn't
+    // replace them with a separate "playback camera".
+    struct CameraKeyframe {
+        float time = 0.0f;
+        Vec3f target;
+        float yaw = 0.0f;
+        float pitch = 0.0f;
+        float distance = 0.0f;
+        float fov = 0.0f;
+    };
+    std::vector<CameraKeyframe> camera_keyframes;
+
+    // Optional per-object keyframe animation (MULTILIGHT_ANIMATION_PLAN.md
+    // Part B), mirroring camera_keyframes above exactly: session-only (not
+    // saved to the glTF file, not part of undo/redo -- a deliberate choice,
+    // not an oversight, matching camera animation's own scope), keyed by
+    // Object3D::id (stable across undo/redo -- see Scene::AddObject/
+    // next_object_id), each inner vector kept sorted by `time`. An object
+    // with no entry here (the common case) is simply not animated --
+    // Model3DSampleObjectAtTime falls back to its current live transform.
+    struct ObjectKeyframe {
+        float time = 0.0f;
+        Vec3f position;
+        Vec3f rotation_deg;
+        Vec3f scale{1.0f, 1.0f, 1.0f};
+    };
+    std::unordered_map<int, std::vector<ObjectKeyframe>> object_keyframes;
+
     std::vector<int> selection;  // Object3D ids, in selection order
     Model3DTool tool = Model3DTool::Select;
 
@@ -1165,6 +1227,16 @@ struct Model3DSession {
     int viewport_w = 0, viewport_h = 0;
     bool show_grid = true;
     bool wireframe = false;
+    // GUI-parity toggles (CHESS_SET_BENCHMARK_PLAN.md follow-up): let a
+    // user/agent A/B the live viewport's textured/lit look against a
+    // flat-colored and/or unlit one without touching any object's own
+    // material. show_textures=false makes SetModel3DObjectMaterial (main.cpp)
+    // skip every texture map, falling back to each object's plain color;
+    // unlit=true makes the renderer skip its lighting math entirely (see
+    // gfx::SetUnlitMode). Both view-only, same as wireframe/show_grid --
+    // never affect model.renderToImage unless that call's own params say so.
+    bool show_textures = true;
+    bool unlit = false;
     // When on, gizmo/free-drag Move/Scale/Rotate edits round their result to
     // a fixed grid/scale/angle step (main.cpp's kModel3DPosSnapStep etc.)
     // instead of the raw continuous drag value -- off by default to match
@@ -1215,6 +1287,37 @@ struct Model3DSession {
     // object selection changes.
     std::vector<int> vertex_selection;
 };
+
+// Samples `sess.camera_keyframes` at `time` (linear interpolation between
+// the two bracketing keyframes; clamped to the first/last keyframe outside
+// their time range) and returns the result as a keyframe-shaped value --
+// does not mutate `sess`. A free function (not an Editor method) so both
+// Editor::Model3DAnimSetCameraTime (editor.cpp, live preview/scrub) and
+// Model3DRenderAnimationToVideoFile (main.cpp, ANIMATION_VIDEO_PLAN.md
+// Phase 4, offline video export) share one implementation instead of
+// duplicating the interpolation. Returns camera_target/yaw/pitch/distance/
+// fov as they already are on `sess` (i.e. a no-op sample) if
+// `camera_keyframes` is empty.
+Model3DSession::CameraKeyframe Model3DSampleCameraAtTime(const Model3DSession &sess, float time);
+
+// True world-space bounds of every object in `scene` (position/rotation/
+// scale all applied to every mesh vertex), visible or not. Shared by
+// Editor::Model3DFrameAll's own camera-fit math and, from main.cpp, the
+// shadow-map pass's light-frustum fit (CHESS_REALISM_PLAN.md Phase 3) --
+// one definition of "the whole scene's bounds" for both. Falls back to
+// {-1,-1,-1}..{1,1,1} for an empty/meshless scene.
+void ComputeSceneWorldBounds(const Scene &scene, Vec3f *out_min, Vec3f *out_max);
+
+// Samples `sess.object_keyframes[object_id]` at `time`, mirroring
+// Model3DSampleCameraAtTime exactly (linear interpolation between
+// bracketing keyframes, clamped at the ends). If `object_id` has no
+// keyframe track at all (the common case -- most objects are never
+// animated), falls back to that object's *current live* transform
+// straight out of `sess.scene` (a no-op sample), the same "empty track
+// means unanimated" shape camera sampling already has. Returns a
+// keyframe of all zeros (position/rotation 0, scale 1) if `object_id`
+// doesn't exist in the scene at all.
+Model3DSession::ObjectKeyframe Model3DSampleObjectAtTime(const Model3DSession &sess, int object_id, float time);
 
 // Visual gap (screen pixels, unscaled by zoom) drawn between consecutive
 // pages in the PDF viewer's continuous-scroll stack. Shared between
@@ -1327,6 +1430,46 @@ struct PdfSession {
     // (Editor::GotoPdfMatch); -1 if there's no current match (e.g. a
     // search with zero hits). Drawn more prominently than other matches.
     int search_current = -1;
+};
+
+// One video-playback pane's state, keyed by buffer id the same way
+// Image/PdfSession are (see their comments) -- a video buffer's
+// Buffer::lines also stays a dummy single empty line, real content lives
+// here. Plays back a `.mov` file written by mov::WriteMovFile
+// (ANIMATION_VIDEO_PLAN.md Phase 4); `mov` is the demuxed frame index
+// (parsed once at open, cheap -- see mov::OpenMovFile's own comment on
+// not reading `mdat`), `path` is kept so individual frames can still be
+// read lazily via mov::ReadMovFrameJpeg on demand.
+//
+// Decoded frames are cached windowed around `current_frame`, evicted
+// outside that window every call to Editor::EnsureVideoFramesDecoded --
+// the exact same lazy/bounded-memory shape as PdfSession::rasters +
+// Editor::EnsurePdfPagesRastered, just windowed around a playhead moving
+// through time instead of a page anchor moving through scroll position.
+// Unlike a PDF page, a given frame index's decoded pixels never change
+// (no zoom/theme to re-render for), so there's no PageRaster-style
+// generation counter here -- a frame is either in the cache or it isn't.
+struct VideoSession {
+    int buffer_id = 0;
+    std::string path;
+    mov::MovFile mov;
+
+    int current_frame = 0;
+    bool playing = false;
+    // gfx::GetTime()/current_frame snapshot taken whenever playback starts
+    // (Editor::HandleVideoInput's Space toggle) -- Editor::
+    // EnsureVideoFramesDecoded advances current_frame from elapsed
+    // wallclock time relative to this snapshot each frame, rather than
+    // incrementing a counter once per draw call (which would tie playback
+    // speed to frame rate instead of real time).
+    double play_started_wall_time = 0.0;
+    int play_started_frame = 0;
+
+    struct DecodedFrame {
+        std::vector<unsigned char> rgba;
+        int w = 0, h = 0;
+    };
+    std::unordered_map<int, DecodedFrame> frames;
 };
 
 // One HTML-preview pane's state, keyed by buffer id the same way Image/
@@ -1662,25 +1805,21 @@ struct GanttSession {
 
 // Myers diff (NVIM_PARITY_PLAN.md Part IV Phase 17): the equivalent of
 // Neovim's built-in vim.diff(), needed so git-gutter hunks don't have to
-// shell `git diff` per keystroke. Declared here (not lua_env.cpp, where it
-// originated) so Editor::GitGutterRefresh/GitStageHunk (kBuiltinGit's own
-// port, editor.cpp) can call it directly -- mep.diff_lines (lua_env.cpp)
-// is the other, still-Lua-facing caller.
-struct DiffHunk {
-    int old_start, old_count, new_start, new_count;
-};
-
-// Classic O(ND) Myers diff (Myers 1986), operating on opaque line indices
-// via equality only -- returns the *edit script* as a sequence of (line
-// present only in `a`) / (line present only in `b`) markers, coalesced
-// into contiguous hunks.
-/**
- * @brief Computes the Myers O(ND) diff between two line sequences, coalesced into contiguous hunks.
- * @param a The "old" line sequence.
- * @param b The "new" line sequence.
- * @return The edit script as a sequence of DiffHunk ranges.
- */
-std::vector<DiffHunk> MyersDiffHunks(const std::vector<std::string> &a, const std::vector<std::string> &b);
+// shell `git diff` per keystroke. The actual implementation moved to the
+// small, dependency-free `mep.diff` C++20 module (CRDT_PERFORMANCE_PLAN.md
+// Phase 3 extracted it so collab_session.cpp could reuse it without
+// pulling in all of editor.cpp; BUILD_PERFORMANCE_PLAN.md Round 2 Phase D
+// converted it into this project's first real module) -- these aliases
+// keep every existing call site (Editor::GitGutterRefresh/GitStageHunk,
+// mep.diff_lines in lua_env.cpp) unchanged. The `import` below is valid
+// here despite editor.h being an ordinary (non-module) header included
+// partway through other headers/declarations in every consumer -- unlike
+// a module's own interface/implementation unit, an *ordinary* translation
+// unit has no "imports must come first" constraint; verified directly
+// against this exact shape before relying on it.
+import mep.diff;
+using DiffHunk = mep::diff::DiffHunk;
+using mep::diff::MyersDiffHunks;
 
 // mep_lsp_filetype/mep_lsp_abspath's own port (LUA_TO_CPP_PLAN.md Phase
 // 5 side quest): pure string utilities -- a bare file extension, and a
@@ -2751,6 +2890,61 @@ public:
      * @return True on success; false (with status_message_ set) on a write or encode failure.
      */
     bool SaveImageEditorPng(ImageEditorSession &sess, const std::string &path);
+    /**
+     * @brief Creates a brand-new image-editor buffer headlessly (no source image file needed),
+     * seeded with a single opaque layer filled with `fill`, and focuses the current pane on it.
+     * Mirrors NewModel3DScene's own "no pane/file required" shape (CHESS_SET_BENCHMARK_PLAN.md
+     * Phase 4) -- unlike EnterImageEditor, which always seeds from an already-open ImageDoc.
+     * @param width Canvas width in pixels; must be > 0.
+     * @param height Canvas height in pixels; must be > 0.
+     * @param fill The starting color for the base layer.
+     * @return The new buffer id, or -1 if width/height is invalid.
+     */
+    int NewImageEditorBuffer(int width, int height, RgbaColor fill);
+    /**
+     * @brief Selects which layer subsequent paints/fills apply to.
+     * @param buffer_id The image-editor buffer id to modify.
+     * @param layer_index The layer index to make active.
+     * @return True on success; false if the buffer or layer index doesn't exist.
+     */
+    bool ImageEditorSetActiveLayer(int buffer_id, int layer_index);
+    /**
+     * @brief Renames one layer.
+     * @param buffer_id The image-editor buffer id to modify.
+     * @param layer_index The layer index to rename.
+     * @param name The new name.
+     * @return True on success; false if the buffer or layer index doesn't exist.
+     */
+    bool ImageEditorRenameLayer(int buffer_id, int layer_index, const std::string &name);
+    /**
+     * @brief Overwrites one layer's pixels (e.g. with a procedurally-generated texture from
+     * image_procgen.h), pushing one undo entry first. If a selection is active, only pixels
+     * inside it are overwritten -- the rest of the layer is left untouched, matching every other
+     * paint operation's own selection-respecting behavior.
+     * @param buffer_id The image-editor buffer id to modify.
+     * @param layer_index The layer to overwrite, or -1 for the currently active layer.
+     * @param pixels Row-major RGBA8 pixels, must be exactly width*height*4 bytes.
+     * @return True on success; false if the buffer/layer doesn't exist or `pixels` is the wrong size.
+     */
+    bool ImageEditorApplyPixels(int buffer_id, int layer_index, const std::vector<unsigned char> &pixels);
+    /**
+     * @brief Box-blurs one layer in place (via image_procgen.h's BoxBlur), respecting the active
+     * selection the same way ImageEditorApplyPixels does.
+     * @param buffer_id The image-editor buffer id to modify.
+     * @param layer_index The layer to blur, or -1 for the currently active layer.
+     * @param radius Blur radius in pixels; must be > 0.
+     * @return True on success; false if the buffer/layer doesn't exist or radius <= 0.
+     */
+    bool ImageEditorBlurLayer(int buffer_id, int layer_index, int radius);
+    /**
+     * @brief Looks up an image-editor buffer by id and writes its flattened composite to a PNG
+     * file, wrapping GetImageEditorMutable + SaveImageEditorPng for RPC callers that only have a
+     * buffer id (not a live ImageEditorSession&).
+     * @param buffer_id The image-editor buffer id to export.
+     * @param path Destination file path.
+     * @return True on success; false if the buffer doesn't exist or the write/encode failed.
+     */
+    bool ImageEditorExportPng(int buffer_id, const std::string &path);
 
     // --- In-pane 3D modeler (MODEL3D.md), opened directly by LoadFile for
     // a .obj/.gltf/.glb/.iqm/.vox/.m3d/.blend path (Editor::
@@ -2816,6 +3010,34 @@ public:
      */
     int Model3DAddPrimitive(int buffer_id, PrimitiveKind kind);
     /**
+     * @brief Adds a lathed/revolved object to the scene, pushing undo first (CHESS_SET_BENCHMARK_PLAN.md
+     * Phase 2 -- the primitive missing for turned shapes like chess pieces).
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param profile Radius/height points (at least 2), revolved around the Y axis.
+     * @param segments Angular divisions (must be >= 3).
+     * @param cap_top Whether to fan-triangulate the top ring closed (a no-op if it's already a point).
+     * @param cap_bottom Whether to fan-triangulate the bottom ring closed (same no-op case).
+     * @return The new object's id, or -1 if buffer_id isn't a 3D-modeler buffer or the profile/segments
+     * are invalid.
+     */
+    int Model3DAddLathe(int buffer_id, const std::vector<Vec2f> &profile, int segments, bool cap_top,
+                         bool cap_bottom);
+    /**
+     * @brief Adds an object built from an arbitrary hand-authored vertex/triangle list, pushing undo
+     * first (CHESS_SET_BENCHMARK_PLAN.md Phase 8 -- the escape hatch for geometry no primitive/lathe
+     * combination can produce, e.g. a knight's asymmetric horse-head silhouette).
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param positions One entry per vertex.
+     * @param indices Flat triangle list, 3 indices per triangle, each an index into `positions`.
+     * @param name Object/mesh name shown in the Outliner.
+     * @param texcoords Optional flat UV list, 2 floats/vertex; omit (empty) for a solid-color object.
+     * @return The new object's id, or -1 if buffer_id isn't a 3D-modeler buffer or the mesh data is
+     * invalid (empty, index count not a multiple of 3, an out-of-range index, or texcoords present
+     * but not exactly 2 floats per vertex).
+     */
+    int Model3DAddCustomMesh(int buffer_id, const std::vector<Vec3f> &positions, const std::vector<unsigned int> &indices,
+                              const std::string &name, const std::vector<float> &texcoords = {});
+    /**
      * @brief Deletes an object from the scene, pushing undo first.
      * @param buffer_id The 3D-modeler buffer id to modify.
      * @param object_id The object id to delete.
@@ -2855,27 +3077,63 @@ public:
     bool Model3DSetTransform(int buffer_id, int object_id, bool has_position, Vec3f position, bool has_rotation, Vec3f rotation_deg,
                               bool has_scale, Vec3f scale);
     /**
-     * @brief Sets an object's base color, pushing undo first.
+     * @brief Sets an object's base color and (optionally) basic-PBR roughness/metallic scalars,
+     * pushing undo first.
      * @param buffer_id The 3D-modeler buffer id to modify.
      * @param object_id The object id to update.
      * @param color New base color (0..1 floats).
+     * @param has_roughness Whether `roughness` should be applied (false leaves the object's current
+     * value untouched, same has_/value pairing convention as Model3DSetTransform's own params).
+     * @param roughness New roughness scalar, clamped to [0,1] (CHESS_SET_BENCHMARK_PLAN.md Phase 1);
+     * ignored unless `has_roughness`.
+     * @param has_metallic Whether `metallic` should be applied.
+     * @param metallic New metallic scalar, clamped to [0,1]; ignored unless `has_metallic`.
      * @return True if the object existed.
      */
-    bool Model3DSetMaterial(int buffer_id, int object_id, RgbaColorF color);
+    bool Model3DSetMaterial(int buffer_id, int object_id, RgbaColorF color, bool has_roughness = false,
+                             float roughness = 0.0f, bool has_metallic = false, float metallic = 0.0f);
     /**
-     * @brief Sets (or clears) an object's base-color/albedo texture, pushing undo first. Loads
-     * `path` via LoadTextureIntoScene (a pure CPU image decode, no GL context needed) and appends it
-     * to the scene's texture list -- an existing Scene::textures entry is never reused/deduplicated
-     * even if the same path was already loaded once. The texture is sampled and then tinted by the
-     * object's own Model3DSetMaterial color, matching raylib's default shader (texelColor *
-     * colDiffuse) and glTF's own baseColorTexture + baseColorFactor semantics.
+     * @brief Adds a light to a scene (MULTILIGHT_ANIMATION_PLAN.md Part A), pushing undo first.
+     * Defaults match Light's own defaults (white, intensity 1, the Directional default direction
+     * matching the renderer's old single hardcoded key light).
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param type Directional or Point.
+     * @return The new light's id, or -1 if `buffer_id` isn't a 3D-modeler buffer.
+     */
+    int Model3DAddLight(int buffer_id, LightType type);
+    /**
+     * @brief Updates a light, applying only the fields `params` marks as set, pushing undo first.
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param light_id The light id to update.
+     * @param params Which fields to change and their new values.
+     * @return True if the light existed.
+     */
+    bool Model3DSetLight(int buffer_id, int light_id, const Model3DLightParams &params);
+    /**
+     * @brief Removes a light from a scene, pushing undo first.
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param light_id The light id to remove.
+     * @return True if the light existed.
+     */
+    bool Model3DDeleteLight(int buffer_id, int light_id);
+    /**
+     * @brief Sets (or clears) one of an object's texture slots, pushing undo first. Loads `path` via
+     * LoadTextureIntoScene (a pure CPU image decode, no GL context needed) and appends it to the
+     * scene's texture list -- an existing Scene::textures entry is never reused/deduplicated even if
+     * the same path was already loaded once. The albedo slot (the default `kind`) is sampled and then
+     * tinted by the object's own Model3DSetMaterial color, matching the renderer's default shading
+     * (texelColor * colDiffuse * lighting) and glTF's own baseColorTexture + baseColorFactor
+     * semantics; the other 3 slots (CHESS_SET_BENCHMARK_PLAN.md Phase 1) feed the basic-PBR shading
+     * terms instead (see kMeshFragmentSrc, backend_native_renderer3d.cpp).
      * @param buffer_id The 3D-modeler buffer id to modify.
      * @param object_id The object id to update.
-     * @param path Path to an image file (PNG/JPG/BMP/...), or empty to clear the current texture
-     * (falls back to flat `color`).
+     * @param path Path to an image file (PNG/JPG/BMP/...), or empty to clear the current texture in
+     * that slot (falls back to the flat `color`/`roughness`/`metallic` scalar).
+     * @param kind Which texture slot to set -- albedo/normal/roughness/metallic.
      * @return True if the object existed and (for a non-empty path) the image loaded successfully.
      */
-    bool Model3DSetTexture(int buffer_id, int object_id, const std::string &path);
+    bool Model3DSetTexture(int buffer_id, int object_id, const std::string &path,
+                            TextureMapKind kind = TextureMapKind::Albedo);
     /**
      * @brief Renames an object, pushing undo first.
      * @param buffer_id The 3D-modeler buffer id to modify.
@@ -2907,6 +3165,81 @@ public:
      */
     void Model3DSetCamera(int buffer_id, const Model3DCameraParams &params);
     /**
+     * @brief Adds (or replaces, if one already exists at the same `time`) a camera keyframe,
+     * keeping `camera_keyframes` sorted by time. Not an undoable edit -- animation state is cheap
+     * to regenerate, unlike geometry.
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param kf The keyframe to insert.
+     */
+    void Model3DAnimAddCameraKeyframe(int buffer_id, const Model3DSession::CameraKeyframe &kf);
+    /**
+     * @brief Removes every camera keyframe, turning the session back into an unanimated camera.
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     */
+    void Model3DAnimClearCamera(int buffer_id);
+    /**
+     * @brief Replaces any existing camera keyframes with an evenly-spaced full orbit around
+     * `target`: yaw sweeps from `start_yaw` through `start_yaw + revolutions * 360` over
+     * `duration` seconds at constant `pitch`/`distance`/`fov`.
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param target Orbit center.
+     * @param distance Orbit radius (camera distance from `target`).
+     * @param pitch Constant camera pitch, in degrees.
+     * @param fov Constant camera field of view, in degrees.
+     * @param duration Total animation length, in seconds. Clamped to a small positive minimum.
+     * @param start_yaw Starting yaw, in degrees.
+     * @param revolutions Number of full 360-degree sweeps over `duration` (1 = "once around").
+     */
+    void Model3DAnimOrbitCamera(int buffer_id, Vec3f target, float distance, float pitch, float fov, float duration,
+                                 float start_yaw = 0.0f, float revolutions = 1.0f);
+    /**
+     * @brief Samples `camera_keyframes` at `time` (linear interpolation between the bracketing
+     * pair, clamped to the first/last keyframe outside that range) and writes the result into the
+     * session's live camera_target/yaw/pitch/distance/fov, for preview/scrubbing. No-op if the
+     * session has no keyframes.
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param time Time to sample, in seconds.
+     */
+    void Model3DAnimSetCameraTime(int buffer_id, float time);
+    /**
+     * @brief Adds (or replaces, if one already exists at the same `time`) a keyframe on one
+     * object's animation track, keeping it sorted by time. Not an undoable edit, mirroring
+     * Model3DAnimAddCameraKeyframe's own choice.
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param object_id The object to animate. No-op if it doesn't exist in the scene.
+     * @param kf The keyframe to insert.
+     */
+    void Model3DAnimAddObjectKeyframe(int buffer_id, int object_id, const Model3DSession::ObjectKeyframe &kf);
+    /**
+     * @brief Removes every keyframe from one object's animation track, turning it back into an
+     * unanimated object.
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param object_id The object whose track to clear.
+     */
+    void Model3DAnimClearObjectKeyframes(int buffer_id, int object_id);
+    /**
+     * @brief Samples one object's animation track at `time` and writes the result into that
+     * object's live position/rotation_deg/scale, for preview/scrubbing -- not undoable. Scrubbing
+     * therefore changes what a `model.save` mid-scrub would capture, the same tradeoff camera
+     * animation already has, just newly visible here since (unlike the camera) object transforms
+     * are normally saved content. No-op if `object_id` has no keyframe track.
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param object_id The object to preview.
+     * @param time Time to sample, in seconds.
+     */
+    void Model3DAnimSetObjectTime(int buffer_id, int object_id, float time);
+    /**
+     * @brief Convenience wrapper mirroring Model3DAnimOrbitCamera's role for objects: replaces the
+     * object's keyframes with a simple two-keyframe linear move from `from` to `to` over `duration`
+     * seconds (position only -- rotation/scale hold the object's current values throughout).
+     * @param buffer_id The 3D-modeler buffer id to modify.
+     * @param object_id The object to move.
+     * @param from Starting position (keyframe at t=0).
+     * @param to Ending position (keyframe at t=duration).
+     * @param duration Total move length, in seconds. Clamped to a small positive minimum.
+     */
+    void Model3DAnimMoveObject(int buffer_id, int object_id, Vec3f from, Vec3f to, float duration);
+    /**
      * @brief Serializes a 3D-modeler session's scene as glTF and writes it to `path`.
      * @param sess The session to export.
      * @param path Destination file path.
@@ -2922,9 +3255,14 @@ public:
      * @param show_grid New grid-visibility state.
      * @param has_wireframe Whether to apply `wireframe`.
      * @param wireframe New wireframe-rendering state.
+     * @param has_show_textures Whether to apply `show_textures`.
+     * @param show_textures New "sample each object's own texture maps" state (false falls back to
+     * plain per-object colors, "Toggle Textures").
+     * @param has_unlit Whether to apply `unlit`.
+     * @param unlit New "skip lighting, output raw color" state ("Toggle Lighting").
      */
     void Model3DSetView(int buffer_id, bool has_show_grid, bool show_grid, bool has_wireframe, bool wireframe, bool has_snap,
-                         bool snap);
+                         bool snap, bool has_show_textures, bool show_textures, bool has_unlit, bool unlit);
     /**
      * @brief Reframes the orbit camera (target + distance) to fit the whole scene's true world
      * bounds (position/rotation/scale all accounted for) -- yaw/pitch are left as they are. Not an
@@ -3207,6 +3545,51 @@ public:
      * @param buffer_id The PDF buffer id to update.
      */
     void EnsurePdfPagesRastered(int buffer_id);
+
+    // --- Video-playback panes (opened via LoadFile for a `.mov` path
+    // written by mov::WriteMovFile -- see ANIMATION_VIDEO_PLAN.md Phase
+    // 5; IsMovPath, mov_container.h). Mirrors the Image-viewer block
+    // above for the buffer-identity plumbing, and EnsurePdfPagesRastered
+    // above for the windowed lazy-decode shape. ---
+    /**
+     * @brief Returns whether the given buffer id is backed by a video.
+     * @param buffer_id The buffer id to check.
+     * @return True if the buffer is a video pane.
+     */
+    bool IsVideoBuffer(int buffer_id) const;
+    /**
+     * @brief Returns the mutable video session for the given buffer id, if any -- mutable because
+     * DrawPane's own scrub-bar/play-pause click handling (main.cpp) mutates it directly, the same
+     * way Model3DSession's viewport-drag handling does.
+     * @param buffer_id The buffer id to look up.
+     * @return A pointer to the VideoSession, or nullptr if the buffer isn't a video pane.
+     */
+    VideoSession *GetVideoMutable(int buffer_id);
+    // Mirrors OpenImageInPlace/OpenPdfInPlace's dedup-by-filename shape,
+    // but (like OpenModel3DInPlace) reads the file itself via
+    // mov::OpenMovFile rather than LoadFile pre-reading it into a
+    // bytes-bridge -- mov::OpenMovFile is deliberately lazy (it never
+    // reads `mdat`, see its own comment), so pre-reading the whole file
+    // here would defeat that.
+    void OpenVideoInPlace(const std::string &path);
+    // Advances current_frame from elapsed wallclock time while playing
+    // (see VideoSession::play_started_wall_time's own comment), decodes
+    // whichever frames in a small window around current_frame aren't
+    // already cached (mov::ReadMovFrameJpeg + jpeg::Decode), and evicts
+    // anything outside that window. Called once per frame from DrawPane,
+    // before reading video_sessions_[...].frames to draw -- same
+    // "cheap on a cache hit, safe to call unconditionally" shape as
+    // EnsurePdfPagesRastered.
+    /**
+     * @brief Advances playback and ensures nearby frames are decoded, evicting the rest.
+     * @param buffer_id The video buffer id to update.
+     */
+    void EnsureVideoFramesDecoded(int buffer_id);
+    // Space toggles play/pause; Left/Right step one frame (pausing first
+    // if playing, like scrubbing in any ordinary video player); ':' and
+    // the leader key are forwarded, matching Mode::Image/Pdf. See
+    // Mode::Video's own comment.
+    void HandleVideoInput();
 
     // --- HTML-preview panes (opened via mep.html_open, kBuiltinTextTools
     // -- deliberately *not* reachable from LoadFile's extension dispatch,
@@ -5243,6 +5626,18 @@ public:
      * @param share The new pane's fraction of the tab's height, clamped to [kMinPaneShare, 1 - kMinPaneShare].
      */
     void SplitTabBottom(int buffer_id, float share);
+    // Thin public wrapper around the private SplitCurrentPane(dir,
+    // file_arg, new_pane_first=false) -- opens `file_arg` in a new
+    // vertical-split pane to the *right* of the focused one (focused
+    // afterward), the mirror image of `:vsplit`/mep.cmd('vsplit')'s own
+    // vim-standard left default. Exposed to Lua as mep.vsplit_right();
+    // built for the org-mode Run button's output preview
+    // (kBuiltinRunButton, main.cpp).
+    /**
+     * @brief Opens a file in a new vertical-split pane to the right of the focused one, and focuses it.
+     * @param file_arg The file to open in the new pane.
+     */
+    void SplitPaneRight(const std::string &file_arg) { SplitCurrentPane(SplitDir::Vertical, file_arg, false); }
     // Lua-facing FocusPaneById: reports whether `pane_id` was a real leaf
     // pane of the active tab (and so got focused) instead of silently
     // doing nothing, so a script can fall back to another target.
@@ -7975,7 +8370,14 @@ private:
     // anyway). -1 if the file isn't open.
     int FindOpenBufferForPath(const std::string &path) const;
 
-    void SplitCurrentPane(SplitDir dir, const std::string &file_arg);
+    // `new_pane_first`: true (default, every existing caller -- :split/
+    // :vsplit, the mod1 split shortcuts) puts the new pane above/left of
+    // the original, matching vim's own default splitbelow/splitright-off
+    // behavior; false puts it below/right instead (the new pane is still
+    // the one focused either way). Used by the org-mode Run button
+    // (kBuiltinRunButton, main.cpp) so its output preview opens to the
+    // right of the org buffer instead of shoving it rightward.
+    void SplitCurrentPane(SplitDir dir, const std::string &file_arg, bool new_pane_first = true);
     // `args`: empty runs an interactive shell ($SHELL, falling back to
     // /bin/sh); non-empty is run as a single command line via `shell -c
     // args` (so `:terminal htop` works the same way a real shell's own
@@ -8033,6 +8435,9 @@ private:
     // Keyed by buffer_id -- one entry per open PDF-viewer pane, same
     // never-reaped lifetime reasoning as images_ above.
     std::unordered_map<int, PdfSession> pdfs_;
+    // Keyed by buffer_id -- one entry per open video-playback pane, same
+    // never-reaped lifetime reasoning as images_ above.
+    std::unordered_map<int, VideoSession> video_sessions_;
     // Keyed by buffer_id -- one entry per open HTML-preview pane, same
     // never-reaped lifetime reasoning as images_ above.
     std::unordered_map<int, HtmlSession> htmldocs_;

@@ -1,5 +1,6 @@
 #include "agent_rpc.h"
 #include "editor.h"
+#include "image_procgen.h"
 
 #if !defined(__EMSCRIPTEN__) && !defined(_WIN32)
 
@@ -294,9 +295,9 @@ Vec3f JsonToVec3(const Json &j) {
  */
 Json Vec3Json(const Vec3f &v) {
     Json j = Json::Object();
-    j["x"] = v.x;
-    j["y"] = v.y;
-    j["z"] = v.z;
+    j["x"] = static_cast<double>(v.x);
+    j["y"] = static_cast<double>(v.y);
+    j["z"] = static_cast<double>(v.z);
     return j;
 }
 
@@ -315,10 +316,10 @@ Json ObjectJson(const Scene &scene, const Object3D &obj) {
     j["rotation"] = Vec3Json(obj.rotation_deg);
     j["scale"] = Vec3Json(obj.scale);
     Json color = Json::Object();
-    color["r"] = obj.color.r;
-    color["g"] = obj.color.g;
-    color["b"] = obj.color.b;
-    color["a"] = obj.color.a;
+    color["r"] = static_cast<double>(obj.color.r);
+    color["g"] = static_cast<double>(obj.color.g);
+    color["b"] = static_cast<double>(obj.color.b);
+    color["a"] = static_cast<double>(obj.color.a);
     j["color"] = color;
     j["tri_count"] = (obj.mesh_index >= 0 && obj.mesh_index < static_cast<int>(scene.meshes.size()))
                           ? scene.meshes[static_cast<size_t>(obj.mesh_index)].TriangleCount()
@@ -359,6 +360,70 @@ PrimitiveKind RequirePrimitiveKind(const std::string &name) {
     if (s == "torus") return PrimitiveKind::Torus;
     if (s == "wedge") return PrimitiveKind::Wedge;
     throw RpcError{-32602, "unknown primitive kind: " + name};
+}
+
+// model.setTexture's `kind` param (CHESS_SET_BENCHMARK_PLAN.md Phase 1) --
+// same lowercase-string-to-enum convention as RequirePrimitiveKind above.
+TextureMapKind RequireTextureMapKind(const std::string &name) {
+    std::string s = name;
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (s == "albedo") return TextureMapKind::Albedo;
+    if (s == "normal") return TextureMapKind::Normal;
+    if (s == "roughness") return TextureMapKind::Roughness;
+    if (s == "metallic") return TextureMapKind::Metallic;
+    throw RpcError{-32602, "unknown texture map kind: " + name};
+}
+
+/**
+ * @brief Looks up an image-editor session by buffer id, throwing an RpcError if it isn't one.
+ * @param editor The editor to look up the session on.
+ * @param buffer_id The buffer id to look up.
+ * @return A const reference to the ImageEditorSession.
+ */
+const ImageEditorSession &RequireImageEditor(const Editor &editor, int buffer_id) {
+    const ImageEditorSession *sess = editor.GetImageEditor(buffer_id);
+    if (!sess) throw RpcError{-32602, "not an image-editor buffer: " + std::to_string(buffer_id)};
+    return *sess;
+}
+
+// image.* methods' color params (CHESS_SET_BENCHMARK_PLAN.md Phase 4): a
+// JSON {r,g,b,a} object, 0-255 ints, `a` optional (defaults fully
+// opaque) -- ImageEditorSession's own RgbaColor convention (0-255 bytes),
+// unlike the 3D modeler's RgbaColorF (0-1 floats, see model.setMaterial).
+RgbaColor RequireColorParam(const Json &params, const std::string &key) {
+    const Json &c = params.get(key);
+    if (!c.is_object()) throw RpcError{-32602, "missing/invalid color param: " + key};
+    RgbaColor out;
+    out.r = static_cast<unsigned char>(std::clamp(c.get("r").as_int(0), 0, 255));
+    out.g = static_cast<unsigned char>(std::clamp(c.get("g").as_int(0), 0, 255));
+    out.b = static_cast<unsigned char>(std::clamp(c.get("b").as_int(0), 0, 255));
+    out.a = static_cast<unsigned char>(std::clamp(c.contains("a") ? c.get("a").as_int(255) : 255, 0, 255));
+    return out;
+}
+
+// Shared by every image.fill*/image.blur RPC method: resolves the target
+// layer's dimensions from the session (so callers only pass a buffer id,
+// never width/height they'd have to already know), throwing if the
+// buffer isn't an image-editor session.
+void RequireImageEditorSize(const Editor &editor, int buffer_id, int *out_width, int *out_height) {
+    const ImageEditorSession &sess = RequireImageEditor(editor, buffer_id);
+    *out_width = sess.width;
+    *out_height = sess.height;
+}
+
+// Shared by model.addPrimitive/model.addLathe: both accept an optional
+// `transform` object applied to the just-created object the same way, so
+// an agent doesn't need a separate model.setTransform round trip for the
+// common "create it already positioned" case.
+void ApplyOptionalTransform(Editor &editor, int buffer_id, int object_id, const Json &params) {
+    if (!params.contains("transform") || !params.get("transform").is_object()) return;
+    const Json &t = params.get("transform");
+    bool has_position = t.contains("position");
+    bool has_rotation = t.contains("rotation");
+    bool has_scale = t.contains("scale");
+    editor.Model3DSetTransform(buffer_id, object_id, has_position, has_position ? JsonToVec3(t.get("position")) : Vec3f{},
+                                has_rotation, has_rotation ? JsonToVec3(t.get("rotation")) : Vec3f{}, has_scale,
+                                has_scale ? JsonToVec3(t.get("scale")) : Vec3f{1, 1, 1});
 }
 
 // COLLAB_CURSORS_PLAN.md Phase 1g -- lets a connected agent see who else
@@ -929,15 +994,61 @@ Json Dispatch(Editor &editor, Connection &conn, const std::string &method, const
         PrimitiveKind kind = RequirePrimitiveKind(params.get("kind").as_string());
         int id = editor.Model3DAddPrimitive(buffer_id, kind);
         if (id < 0) throw RpcError{-32602, "not a 3D-modeler buffer: " + std::to_string(buffer_id)};
-        if (params.contains("transform") && params.get("transform").is_object()) {
-            const Json &t = params.get("transform");
-            bool has_position = t.contains("position");
-            bool has_rotation = t.contains("rotation");
-            bool has_scale = t.contains("scale");
-            editor.Model3DSetTransform(buffer_id, id, has_position, has_position ? JsonToVec3(t.get("position")) : Vec3f{},
-                                        has_rotation, has_rotation ? JsonToVec3(t.get("rotation")) : Vec3f{}, has_scale,
-                                        has_scale ? JsonToVec3(t.get("scale")) : Vec3f{1, 1, 1});
+        ApplyOptionalTransform(editor, buffer_id, id, params);
+        Json j = Json::Object();
+        j["object_id"] = id;
+        return j;
+    }
+    if (method == "model.addLathe") {
+        const int buffer_id = params.get("buffer_id").as_int(-1);
+        std::vector<Vec2f> profile;
+        for (const Json &pt : params.get("profile").items()) {
+            if (!pt.is_array() || pt.size() != 2) throw RpcError{-32602, "profile points must be [radius, height]"};
+            profile.push_back(Vec2f{static_cast<float>(pt.items()[0].as_double(0)), static_cast<float>(pt.items()[1].as_double(0))});
         }
+        int segments = params.contains("segments") ? params.get("segments").as_int(24) : 24;
+        bool cap_top = params.contains("cap_top") ? params.get("cap_top").as_bool(true) : true;
+        bool cap_bottom = params.contains("cap_bottom") ? params.get("cap_bottom").as_bool(true) : true;
+        int id = editor.Model3DAddLathe(buffer_id, profile, segments, cap_top, cap_bottom);
+        if (id < 0) {
+            throw RpcError{-32602, "not a 3D-modeler buffer, or invalid profile/segments: " + std::to_string(buffer_id)};
+        }
+        ApplyOptionalTransform(editor, buffer_id, id, params);
+        Json j = Json::Object();
+        j["object_id"] = id;
+        return j;
+    }
+    if (method == "model.addCustomMesh") {
+        const int buffer_id = params.get("buffer_id").as_int(-1);
+        std::vector<Vec3f> positions;
+        for (const Json &v : params.get("vertices").items()) {
+            if (!v.is_array() || v.size() != 3) throw RpcError{-32602, "vertices must be [x, y, z] triples"};
+            positions.push_back(Vec3f{static_cast<float>(v.items()[0].as_double(0)), static_cast<float>(v.items()[1].as_double(0)),
+                                       static_cast<float>(v.items()[2].as_double(0))});
+        }
+        std::vector<unsigned int> indices;
+        for (const Json &t : params.get("triangles").items()) {
+            if (!t.is_array() || t.size() != 3) throw RpcError{-32602, "triangles must be [i, j, k] vertex-index triples"};
+            for (const Json &comp : t.items()) {
+                int idx = comp.as_int(-1);
+                if (idx < 0) throw RpcError{-32602, "triangle vertex index must be >= 0"};
+                indices.push_back(static_cast<unsigned int>(idx));
+            }
+        }
+        std::vector<float> texcoords;
+        if (params.contains("uvs")) {
+            for (const Json &uv : params.get("uvs").items()) {
+                if (!uv.is_array() || uv.size() != 2) throw RpcError{-32602, "uvs must be [u, v] pairs"};
+                texcoords.push_back(static_cast<float>(uv.items()[0].as_double(0)));
+                texcoords.push_back(static_cast<float>(uv.items()[1].as_double(0)));
+            }
+        }
+        std::string name = params.contains("name") ? params.get("name").as_string() : "CustomMesh";
+        int id = editor.Model3DAddCustomMesh(buffer_id, positions, indices, name, texcoords);
+        if (id < 0) {
+            throw RpcError{-32602, "not a 3D-modeler buffer, or invalid vertices/triangles/uvs: " + std::to_string(buffer_id)};
+        }
+        ApplyOptionalTransform(editor, buffer_id, id, params);
         Json j = Json::Object();
         j["object_id"] = id;
         return j;
@@ -976,14 +1087,103 @@ Json Dispatch(Editor &editor, Connection &conn, const std::string &method, const
         c.g = static_cast<float>(color.get("g").as_double(0));
         c.b = static_cast<float>(color.get("b").as_double(0));
         c.a = static_cast<float>(color.contains("a") ? color.get("a").as_double(1.0) : 1.0);
-        bool ok = editor.Model3DSetMaterial(params.get("buffer_id").as_int(-1), params.get("object_id").as_int(-1), c);
+        // roughness/metallic (CHESS_SET_BENCHMARK_PLAN.md Phase 1): both
+        // optional, same has_/value pairing model.setTransform's
+        // position/rotation/scale already use -- omitted means "leave the
+        // object's current value alone", not "reset to 0".
+        bool has_roughness = params.contains("roughness");
+        float roughness = has_roughness ? static_cast<float>(params.get("roughness").as_double(0)) : 0.0f;
+        bool has_metallic = params.contains("metallic");
+        float metallic = has_metallic ? static_cast<float>(params.get("metallic").as_double(0)) : 0.0f;
+        bool ok = editor.Model3DSetMaterial(params.get("buffer_id").as_int(-1), params.get("object_id").as_int(-1), c,
+                                             has_roughness, roughness, has_metallic, metallic);
         Json j = Json::Object();
         j["ok"] = ok;
         return j;
     }
+    if (method == "model.addLight") {
+        std::string type_str = params.contains("type") ? params.get("type").as_string() : "directional";
+        LightType type = type_str == "point" ? LightType::Point : LightType::Directional;
+        int id = editor.Model3DAddLight(params.get("buffer_id").as_int(-1), type);
+        Json j = Json::Object();
+        j["light_id"] = id;
+        return j;
+    }
+    if (method == "model.setLight") {
+        Model3DLightParams p;
+        if (params.contains("type")) {
+            p.has_type = true;
+            p.type = params.get("type").as_string() == "point" ? LightType::Point : LightType::Directional;
+        }
+        if (params.contains("position")) {
+            p.has_position = true;
+            p.position = JsonToVec3(params.get("position"));
+        }
+        if (params.contains("direction")) {
+            p.has_direction = true;
+            p.direction = JsonToVec3(params.get("direction"));
+        }
+        if (params.contains("color")) {
+            const Json &color = params.get("color");
+            p.has_color = true;
+            p.color.r = static_cast<float>(color.get("r").as_double(0));
+            p.color.g = static_cast<float>(color.get("g").as_double(0));
+            p.color.b = static_cast<float>(color.get("b").as_double(0));
+            p.color.a = static_cast<float>(color.contains("a") ? color.get("a").as_double(1.0) : 1.0);
+        }
+        if (params.contains("intensity")) {
+            p.has_intensity = true;
+            p.intensity = static_cast<float>(params.get("intensity").as_double(1.0));
+        }
+        if (params.contains("range")) {
+            p.has_range = true;
+            p.range = static_cast<float>(params.get("range").as_double(10.0));
+        }
+        if (params.contains("visible")) {
+            p.has_visible = true;
+            p.visible = params.get("visible").as_bool(true);
+        }
+        bool ok = editor.Model3DSetLight(params.get("buffer_id").as_int(-1), params.get("light_id").as_int(-1), p);
+        Json j = Json::Object();
+        j["ok"] = ok;
+        return j;
+    }
+    if (method == "model.deleteLight") {
+        bool ok = editor.Model3DDeleteLight(params.get("buffer_id").as_int(-1), params.get("light_id").as_int(-1));
+        Json j = Json::Object();
+        j["ok"] = ok;
+        return j;
+    }
+    if (method == "model.listLights") {
+        const Model3DSession &sess = RequireModel3D(editor, params.get("buffer_id").as_int(-1));
+        Json arr = Json::Array();
+        for (const Light &l : sess.scene.lights) {
+            Json lj = Json::Object();
+            lj["light_id"] = l.id;
+            lj["name"] = l.name;
+            lj["type"] = l.type == LightType::Point ? "point" : "directional";
+            lj["position"] = Vec3Json(l.position);
+            lj["direction"] = Vec3Json(l.direction);
+            Json cj = Json::Object();
+            cj["r"] = static_cast<double>(l.color.r);
+            cj["g"] = static_cast<double>(l.color.g);
+            cj["b"] = static_cast<double>(l.color.b);
+            cj["a"] = static_cast<double>(l.color.a);
+            lj["color"] = cj;
+            lj["intensity"] = static_cast<double>(l.intensity);
+            lj["range"] = static_cast<double>(l.range);
+            lj["visible"] = l.visible;
+            arr.push_back(lj);
+        }
+        return arr;
+    }
     if (method == "model.setTexture") {
+        // kind (CHESS_SET_BENCHMARK_PLAN.md Phase 1): optional, defaults to
+        // "albedo" -- preserves every caller from before this param existed.
+        TextureMapKind kind =
+            params.contains("kind") ? RequireTextureMapKind(params.get("kind").as_string()) : TextureMapKind::Albedo;
         bool ok = editor.Model3DSetTexture(params.get("buffer_id").as_int(-1), params.get("object_id").as_int(-1),
-                                            params.get("path").as_string());
+                                            params.get("path").as_string(), kind);
         Json j = Json::Object();
         j["ok"] = ok;
         return j;
@@ -1033,11 +1233,65 @@ Json Dispatch(Editor &editor, Connection &conn, const std::string &method, const
         const Model3DSession &sess = RequireModel3D(editor, params.get("buffer_id").as_int(-1));
         Json j = Json::Object();
         j["target"] = Vec3Json(sess.camera_target);
-        j["yaw"] = sess.camera_yaw;
-        j["pitch"] = sess.camera_pitch;
-        j["distance"] = sess.camera_distance;
-        j["fov"] = sess.camera_fov;
+        j["yaw"] = static_cast<double>(sess.camera_yaw);
+        j["pitch"] = static_cast<double>(sess.camera_pitch);
+        j["distance"] = static_cast<double>(sess.camera_distance);
+        j["fov"] = static_cast<double>(sess.camera_fov);
         return j;
+    }
+    if (method == "model.animAddCameraKeyframe") {
+        Model3DSession::CameraKeyframe kf;
+        kf.time = static_cast<float>(params.get("time").as_double(0));
+        kf.target = JsonToVec3(params.get("target"));
+        kf.yaw = static_cast<float>(params.get("yaw").as_double(0));
+        kf.pitch = static_cast<float>(params.get("pitch").as_double(0));
+        kf.distance = static_cast<float>(params.get("distance").as_double(0));
+        kf.fov = static_cast<float>(params.get("fov").as_double(45));
+        editor.Model3DAnimAddCameraKeyframe(params.get("buffer_id").as_int(-1), kf);
+        return Json::Object();
+    }
+    if (method == "model.animClearCamera") {
+        editor.Model3DAnimClearCamera(params.get("buffer_id").as_int(-1));
+        return Json::Object();
+    }
+    if (method == "model.animOrbitCamera") {
+        editor.Model3DAnimOrbitCamera(params.get("buffer_id").as_int(-1), JsonToVec3(params.get("target")),
+                                       static_cast<float>(params.get("distance").as_double(6)),
+                                       static_cast<float>(params.get("pitch").as_double(30)),
+                                       static_cast<float>(params.get("fov").as_double(45)),
+                                       static_cast<float>(params.get("duration").as_double(4)),
+                                       static_cast<float>(params.get("start_yaw").as_double(0)),
+                                       static_cast<float>(params.get("revolutions").as_double(1)));
+        return Json::Object();
+    }
+    if (method == "model.animSetCameraTime") {
+        editor.Model3DAnimSetCameraTime(params.get("buffer_id").as_int(-1),
+                                         static_cast<float>(params.get("time").as_double(0)));
+        return Json::Object();
+    }
+    if (method == "model.animAddObjectKeyframe") {
+        Model3DSession::ObjectKeyframe kf;
+        kf.time = static_cast<float>(params.get("time").as_double(0));
+        kf.position = JsonToVec3(params.get("position"));
+        kf.rotation_deg = JsonToVec3(params.get("rotation"));
+        kf.scale = params.contains("scale") ? JsonToVec3(params.get("scale")) : Vec3f{1, 1, 1};
+        editor.Model3DAnimAddObjectKeyframe(params.get("buffer_id").as_int(-1), params.get("object_id").as_int(-1), kf);
+        return Json::Object();
+    }
+    if (method == "model.animClearObjectKeyframes") {
+        editor.Model3DAnimClearObjectKeyframes(params.get("buffer_id").as_int(-1), params.get("object_id").as_int(-1));
+        return Json::Object();
+    }
+    if (method == "model.animSetObjectTime") {
+        editor.Model3DAnimSetObjectTime(params.get("buffer_id").as_int(-1), params.get("object_id").as_int(-1),
+                                         static_cast<float>(params.get("time").as_double(0)));
+        return Json::Object();
+    }
+    if (method == "model.animMoveObject") {
+        editor.Model3DAnimMoveObject(params.get("buffer_id").as_int(-1), params.get("object_id").as_int(-1),
+                                      JsonToVec3(params.get("from")), JsonToVec3(params.get("to")),
+                                      static_cast<float>(params.get("duration").as_double(2)));
+        return Json::Object();
     }
     if (method == "model.undo") {
         editor.UndoModel3D(params.get("buffer_id").as_int(-1));
@@ -1051,8 +1305,12 @@ Json Dispatch(Editor &editor, Connection &conn, const std::string &method, const
         bool has_show_grid = params.contains("show_grid");
         bool has_wireframe = params.contains("wireframe");
         bool has_snap = params.contains("snap");
+        bool has_show_textures = params.contains("show_textures");
+        bool has_unlit = params.contains("unlit");
         editor.Model3DSetView(params.get("buffer_id").as_int(-1), has_show_grid, params.get("show_grid").as_bool(false),
-                               has_wireframe, params.get("wireframe").as_bool(false), has_snap, params.get("snap").as_bool(false));
+                               has_wireframe, params.get("wireframe").as_bool(false), has_snap, params.get("snap").as_bool(false),
+                               has_show_textures, params.get("show_textures").as_bool(false), has_unlit,
+                               params.get("unlit").as_bool(false));
         return Json::Object();
     }
     if (method == "model.frameAll") {
@@ -1143,13 +1401,13 @@ Json Dispatch(Editor &editor, Connection &conn, const std::string &method, const
             for (int v = 0; v < md.VertexCount(); v++) {
                 Json vj = Json::Object();
                 vj["index"] = v;
-                vj["x"] = md.positions[static_cast<size_t>(v) * 3 + 0];
-                vj["y"] = md.positions[static_cast<size_t>(v) * 3 + 1];
-                vj["z"] = md.positions[static_cast<size_t>(v) * 3 + 2];
+                vj["x"] = static_cast<double>(md.positions[static_cast<size_t>(v) * 3 + 0]);
+                vj["y"] = static_cast<double>(md.positions[static_cast<size_t>(v) * 3 + 1]);
+                vj["z"] = static_cast<double>(md.positions[static_cast<size_t>(v) * 3 + 2]);
                 if (has_normals) {
-                    vj["nx"] = md.normals[static_cast<size_t>(v) * 3 + 0];
-                    vj["ny"] = md.normals[static_cast<size_t>(v) * 3 + 1];
-                    vj["nz"] = md.normals[static_cast<size_t>(v) * 3 + 2];
+                    vj["nx"] = static_cast<double>(md.normals[static_cast<size_t>(v) * 3 + 0]);
+                    vj["ny"] = static_cast<double>(md.normals[static_cast<size_t>(v) * 3 + 1]);
+                    vj["nz"] = static_cast<double>(md.normals[static_cast<size_t>(v) * 3 + 2]);
                 }
                 arr.push_back(vj);
             }
@@ -1273,6 +1531,186 @@ Json Dispatch(Editor &editor, Connection &conn, const std::string &method, const
         j["ok"] = ok;
         return j;
     }
+
+    // --- Image editor (CHESS_SET_BENCHMARK_PLAN.md Phase 4): mirrors the
+    // 3D modeler's model.* surface shape (buffer_id-keyed sessions, plain
+    // {ok:true}/{...id} results, RequireImageEditor throwing the same way
+    // RequireModel3D does) so an agent can build a procedural texture,
+    // export it, and apply it via model.setTexture end to end with zero
+    // mouse/keyboard simulation. ---
+    if (method == "image.new") {
+        int width = params.get("width").as_int(0);
+        int height = params.get("height").as_int(0);
+        RgbaColor fill = params.contains("color") ? RequireColorParam(params, "color") : RgbaColor{255, 255, 255, 255};
+        int buffer_id = editor.NewImageEditorBuffer(width, height, fill);
+        if (buffer_id < 0) throw RpcError{-32602, "width/height must both be > 0"};
+        Json j = Json::Object();
+        j["buffer_id"] = buffer_id;
+        j["width"] = width;
+        j["height"] = height;
+        return j;
+    }
+    if (method == "image.info") {
+        const ImageEditorSession &sess = RequireImageEditor(editor, params.get("buffer_id").as_int(-1));
+        Json j = Json::Object();
+        j["width"] = sess.width;
+        j["height"] = sess.height;
+        j["active_layer"] = sess.active_layer;
+        Json layers = Json::Array();
+        for (const ImageEditorLayer &layer : sess.layers) {
+            Json lj = Json::Object();
+            lj["name"] = layer.name;
+            lj["visible"] = layer.visible;
+            lj["opacity"] = static_cast<double>(layer.opacity);
+            layers.push_back(lj);
+        }
+        j["layers"] = layers;
+        return j;
+    }
+    if (method == "image.newLayer") {
+        const int buffer_id = params.get("buffer_id").as_int(-1);
+        RequireImageEditor(editor, buffer_id);  // throws if not an image-editor buffer
+        editor.ImageEditorAddLayer(buffer_id);
+        int new_index = editor.GetImageEditor(buffer_id)->active_layer;
+        if (params.contains("name")) editor.ImageEditorRenameLayer(buffer_id, new_index, params.get("name").as_string());
+        Json j = Json::Object();
+        j["layer_index"] = new_index;
+        return j;
+    }
+    if (method == "image.setActiveLayer") {
+        bool ok = editor.ImageEditorSetActiveLayer(params.get("buffer_id").as_int(-1), params.get("layer_index").as_int(-1));
+        Json j = Json::Object();
+        j["ok"] = ok;
+        return j;
+    }
+    if (method == "image.exportPng") {
+        bool ok = editor.ImageEditorExportPng(params.get("buffer_id").as_int(-1), params.get("path").as_string());
+        if (!ok) throw RpcError{-32000, "failed to export PNG: " + params.get("path").as_string()};
+        Json j = Json::Object();
+        j["path"] = params.get("path").as_string();
+        return j;
+    }
+    if (method == "image.fillGradient") {
+        const int buffer_id = params.get("buffer_id").as_int(-1);
+        int width = 0, height = 0;
+        RequireImageEditorSize(editor, buffer_id, &width, &height);
+        RgbaColor a = RequireColorParam(params, "color_a");
+        RgbaColor b = RequireColorParam(params, "color_b");
+        procgen::Rgba8 pa{a.r, a.g, a.b, a.a}, pb{b.r, b.g, b.b, b.a};
+        std::string mode = params.contains("mode") ? params.get("mode").as_string() : "linear";
+        std::vector<unsigned char> pixels;
+        if (mode == "radial") {
+            procgen::FillRadialGradient(&pixels, width, height, pa, pb);
+        } else if (mode == "linear") {
+            float angle = params.contains("angle") ? static_cast<float>(params.get("angle").as_double(0)) : 0.0f;
+            procgen::FillLinearGradient(&pixels, width, height, pa, pb, angle);
+        } else {
+            throw RpcError{-32602, "unknown gradient mode (expected \"linear\" or \"radial\"): " + mode};
+        }
+        int layer_index = params.contains("layer_index") ? params.get("layer_index").as_int(-1) : -1;
+        bool ok = editor.ImageEditorApplyPixels(buffer_id, layer_index, pixels);
+        Json j = Json::Object();
+        j["ok"] = ok;
+        return j;
+    }
+    if (method == "image.fillNoise") {
+        const int buffer_id = params.get("buffer_id").as_int(-1);
+        int width = 0, height = 0;
+        RequireImageEditorSize(editor, buffer_id, &width, &height);
+        RgbaColor a = RequireColorParam(params, "color_a");
+        RgbaColor b = RequireColorParam(params, "color_b");
+        float scale = params.contains("scale") ? static_cast<float>(params.get("scale").as_double(0.05)) : 0.05f;
+        int octaves = params.contains("octaves") ? params.get("octaves").as_int(4) : 4;
+        uint32_t seed = static_cast<uint32_t>(params.contains("seed") ? params.get("seed").as_int(0) : 0);
+        std::vector<unsigned char> pixels;
+        procgen::FillNoise(&pixels, width, height, procgen::Rgba8{a.r, a.g, a.b, a.a}, procgen::Rgba8{b.r, b.g, b.b, b.a},
+                            scale, octaves, seed);
+        int layer_index = params.contains("layer_index") ? params.get("layer_index").as_int(-1) : -1;
+        bool ok = editor.ImageEditorApplyPixels(buffer_id, layer_index, pixels);
+        Json j = Json::Object();
+        j["ok"] = ok;
+        return j;
+    }
+    if (method == "image.fillWood") {
+        const int buffer_id = params.get("buffer_id").as_int(-1);
+        int width = 0, height = 0;
+        RequireImageEditorSize(editor, buffer_id, &width, &height);
+        RgbaColor a = RequireColorParam(params, "color_a");
+        RgbaColor b = RequireColorParam(params, "color_b");
+        float ring_scale = params.contains("ring_scale") ? static_cast<float>(params.get("ring_scale").as_double(0.3)) : 0.3f;
+        float warp = params.contains("warp") ? static_cast<float>(params.get("warp").as_double(6.0)) : 6.0f;
+        uint32_t seed = static_cast<uint32_t>(params.contains("seed") ? params.get("seed").as_int(0) : 0);
+        std::vector<unsigned char> pixels;
+        procgen::FillWood(&pixels, width, height, procgen::Rgba8{a.r, a.g, a.b, a.a}, procgen::Rgba8{b.r, b.g, b.b, b.a},
+                           ring_scale, warp, seed);
+        int layer_index = params.contains("layer_index") ? params.get("layer_index").as_int(-1) : -1;
+        bool ok = editor.ImageEditorApplyPixels(buffer_id, layer_index, pixels);
+        Json j = Json::Object();
+        j["ok"] = ok;
+        return j;
+    }
+    if (method == "image.fillWoodTurned") {
+        const int buffer_id = params.get("buffer_id").as_int(-1);
+        int width = 0, height = 0;
+        RequireImageEditorSize(editor, buffer_id, &width, &height);
+        RgbaColor a = RequireColorParam(params, "color_a");
+        RgbaColor b = RequireColorParam(params, "color_b");
+        float ring_scale = params.contains("ring_scale") ? static_cast<float>(params.get("ring_scale").as_double(4.0)) : 4.0f;
+        float warp = params.contains("warp") ? static_cast<float>(params.get("warp").as_double(3.0)) : 3.0f;
+        uint32_t seed = static_cast<uint32_t>(params.contains("seed") ? params.get("seed").as_int(0) : 0);
+        std::vector<unsigned char> pixels;
+        procgen::FillWoodTurned(&pixels, width, height, procgen::Rgba8{a.r, a.g, a.b, a.a},
+                                 procgen::Rgba8{b.r, b.g, b.b, b.a}, ring_scale, warp, seed);
+        int layer_index = params.contains("layer_index") ? params.get("layer_index").as_int(-1) : -1;
+        bool ok = editor.ImageEditorApplyPixels(buffer_id, layer_index, pixels);
+        Json j = Json::Object();
+        j["ok"] = ok;
+        return j;
+    }
+    if (method == "image.fillCheckerboard") {
+        const int buffer_id = params.get("buffer_id").as_int(-1);
+        int width = 0, height = 0;
+        RequireImageEditorSize(editor, buffer_id, &width, &height);
+        RgbaColor a = RequireColorParam(params, "color_a");
+        RgbaColor b = RequireColorParam(params, "color_b");
+        int squares_x = params.contains("squares_x") ? params.get("squares_x").as_int(8) : 8;
+        int squares_y = params.contains("squares_y") ? params.get("squares_y").as_int(8) : 8;
+        std::vector<unsigned char> pixels;
+        procgen::FillCheckerboard(&pixels, width, height, procgen::Rgba8{a.r, a.g, a.b, a.a},
+                                   procgen::Rgba8{b.r, b.g, b.b, b.a}, squares_x, squares_y);
+        int layer_index = params.contains("layer_index") ? params.get("layer_index").as_int(-1) : -1;
+        bool ok = editor.ImageEditorApplyPixels(buffer_id, layer_index, pixels);
+        Json j = Json::Object();
+        j["ok"] = ok;
+        return j;
+    }
+    if (method == "image.fillMarble") {
+        const int buffer_id = params.get("buffer_id").as_int(-1);
+        int width = 0, height = 0;
+        RequireImageEditorSize(editor, buffer_id, &width, &height);
+        RgbaColor a = RequireColorParam(params, "color_a");
+        RgbaColor b = RequireColorParam(params, "color_b");
+        float scale = params.contains("scale") ? static_cast<float>(params.get("scale").as_double(0.03)) : 0.03f;
+        float turbulence = params.contains("turbulence") ? static_cast<float>(params.get("turbulence").as_double(6.0)) : 6.0f;
+        uint32_t seed = static_cast<uint32_t>(params.contains("seed") ? params.get("seed").as_int(0) : 0);
+        std::vector<unsigned char> pixels;
+        procgen::FillMarble(&pixels, width, height, procgen::Rgba8{a.r, a.g, a.b, a.a}, procgen::Rgba8{b.r, b.g, b.b, b.a},
+                             scale, turbulence, seed);
+        int layer_index = params.contains("layer_index") ? params.get("layer_index").as_int(-1) : -1;
+        bool ok = editor.ImageEditorApplyPixels(buffer_id, layer_index, pixels);
+        Json j = Json::Object();
+        j["ok"] = ok;
+        return j;
+    }
+    if (method == "image.blur") {
+        int layer_index = params.contains("layer_index") ? params.get("layer_index").as_int(-1) : -1;
+        int radius = params.contains("radius") ? params.get("radius").as_int(2) : 2;
+        bool ok = editor.ImageEditorBlurLayer(params.get("buffer_id").as_int(-1), layer_index, radius);
+        Json j = Json::Object();
+        j["ok"] = ok;
+        return j;
+    }
+
     auto ui_it = UiMethods().find(method);
     if (ui_it != UiMethods().end()) return ui_it->second(params);
     throw RpcError{-32601, "method not found: " + method};

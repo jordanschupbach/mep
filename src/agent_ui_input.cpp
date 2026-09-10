@@ -6,14 +6,14 @@
 
 #if defined(MEP_AGENT_UI_X11)
 
-#define GLFW_EXPOSE_NATIVE_X11
-#include <GLFW/glfw3.h>
-#include <GLFW/glfw3native.h>
+#include <X11/Xlib.h>
 #include <X11/extensions/XTest.h>
 
 #include <cctype>
 #include <cstdlib>
 #include <unordered_map>
+
+#include "gfx/native_window_handle.h"
 
 namespace mep::agent_ui {
 namespace {
@@ -58,11 +58,11 @@ void WindowOrigin(int &out_x, int &out_y) {
 
 }  // namespace
 
-void Init(void *glfw_window_handle) {
-    auto *window = reinterpret_cast<GLFWwindow *>(glfw_window_handle);
-    if (!window) return;
-    g_display = glfwGetX11Display();
-    g_window = glfwGetX11Window(window);
+void Init(void *native_window_handle) {
+    auto *handle = reinterpret_cast<const gfx::NativeWindowHandle *>(native_window_handle);
+    if (!handle) return;
+    g_display = reinterpret_cast<Display *>(handle->display);
+    g_window = static_cast<Window>(handle->window);
     if (!g_display || !g_window) return;
     int major = 0, minor = 0;
     g_available = XTestQueryExtension(g_display, &major, &minor, &major, &minor);

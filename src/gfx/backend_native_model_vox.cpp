@@ -32,15 +32,11 @@
 
 #include "gfx/vecmath.h"
 
+import mep.gfx.model_read_util;
+
 namespace gfx {
 
 namespace {
-
-uint32_t ReadU32(const std::vector<char> &buf, size_t offset) {
-    uint32_t v = 0;
-    std::memcpy(&v, buf.data() + offset, sizeof(v));
-    return v;
-}
 
 struct Voxel {
     uint8_t x = 0, y = 0, z = 0, color_index = 0;

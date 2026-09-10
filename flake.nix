@@ -14,6 +14,23 @@
       let
         pkgs = nixpkgs.legacyPackages.${system};
 
+        # BUILD_PERFORMANCE_PLAN.md Round 2 Phase D: the project's default
+        # compiler, switched from the implicit default (GCC) to Clang --
+        # required for real C++20 modules (GCC 15's own module support was
+        # verified broken in this environment: it corrupts unrelated
+        # <iostream> parsing even in non-module translation units, where
+        # Clang's modules work correctly end to end). clangStdenv (not a
+        # bare `pkgs.clang` package inside the default GCC-based shell) so
+        # every wrapper script/env var (NIX_CFLAGS_COMPILE and friends)
+        # that make header discovery "just work" -- for both ordinary
+        # compilation *and* clang-scan-deps' own P1689 module-dependency
+        # scanning, which does NOT reuse the same implicit search paths a
+        # bare `pkgs.clang` inside a GCC-default shell gets -- are set up
+        # consistently by nixpkgs itself, not hand-reconstructed the way
+        # justfile's lint-iwyu recipe has to for its own separate,
+        # intentionally-pinned clang toolchain.
+        mepStdenv = pkgs.clangStdenv;
+
         # webview_deno downloads a prebuilt libwebview.so with no RPATH of
         # its own; it (and the webkitgtk stack it dlopen()s) needs every
         # library it was linked against to be findable via LD_LIBRARY_PATH,
@@ -142,7 +159,7 @@
           ]
         );
 
-        mepPackage = pkgs.stdenv.mkDerivation {
+        mepPackage = mepStdenv.mkDerivation {
           pname = "mep";
           version = "0.1.0";
           src = ./.;
@@ -151,14 +168,34 @@
             pkgs.cmake
             pkgs.ninja
             pkgs.pkg-config
+            # BUILD_PERFORMANCE_PLAN.md -- CMakeLists.txt auto-detects
+            # and wires this in via find_program(ccache); it only has to
+            # be on PATH here for that to take effect.
+            pkgs.ccache
+            # BUILD_PERFORMANCE_PLAN.md Round 2 -- CMakeLists.txt
+            # auto-detects both and prefers mold; only need to be on
+            # PATH for that find_program()/check_cxx_compiler_flag()
+            # logic to pick them up.
+            pkgs.mold
+            pkgs.lld
           ];
           buildInputs = [
-            pkgs.glfw
+            # gfx/backend_native.cpp's own hand-written X11/GLX windowing/
+            # input/context implementation (GLFW_REMOVAL_PLAN.md) --
+            # libGL provides both OpenGL and GLX (Mesa exports both from
+            # the same shared object), libx11 is core Xlib, libxtst is
+            # XTest (agent_ui_input.cpp's synthetic input). libxi is a
+            # real transitive dependency of libxtst (libXtst.so links
+            # libXi.so.6 on this distro), not something mep calls
+            # directly -- agent_ui_input.h's own comment explains why
+            # XInput2 itself was deliberately not used. No
+            # libxrandr/libxinerama/libxcursor: those were GLFW's own X11
+            # backend's dependencies (monitor enumeration, themed cursor
+            # loading) for functionality this backend never uses (no
+            # multi-monitor queries, no themed cursors -- XCreateFontCursor's
+            # core-Xlib cursor font is enough).
             pkgs.libGL
             pkgs.libx11
-            pkgs.libxrandr
-            pkgs.libxinerama
-            pkgs.libxcursor
             pkgs.libxi
             pkgs.libxtst
             pkgs.openssl
@@ -184,7 +221,12 @@
             )
           '';
 
-          cmakeFlags = [ "-DCMAKE_BUILD_TYPE=Release" ];
+          # BUILD_PERFORMANCE_PLAN.md -- explicit -GNinja rather than
+          # relying on nixpkgs' cmake setup hook to auto-select it just
+          # because pkgs.ninja is present in nativeBuildInputs; explicit
+          # here is one line and doesn't depend on that behavior holding
+          # across a nixpkgs bump.
+          cmakeFlags = [ "-DCMAKE_BUILD_TYPE=Release" "-GNinja" ];
 
           installPhase = ''
             runHook preInstall
@@ -197,21 +239,42 @@
         packages.default = mepPackage;
         apps.default = flake-utils.lib.mkApp { drv = mepPackage; };
 
-        devShells.default = pkgs.mkShell {
+        devShells.default = (pkgs.mkShell.override { stdenv = mepStdenv; }) {
           packages = [
             pkgs.cmake
             pkgs.ninja
+            # BUILD_PERFORMANCE_PLAN.md -- CMakeLists.txt auto-detects
+            # and wires this in via find_program(ccache); it only has to
+            # be on PATH here for that to take effect. `ccache -s` shows
+            # hit-rate stats; `ccache -C` clears the cache.
+            pkgs.ccache
+            # BUILD_PERFORMANCE_PLAN.md Round 2 -- CMakeLists.txt
+            # auto-detects both (mold preferred, lld independently
+            # selectable via -DMEP_LINKER=lld); just need to be on PATH.
+            pkgs.mold
+            pkgs.lld
+            # BUILD_PERFORMANCE_PLAN.md Round 2 Phase B -- clang (for a
+            # one-off -ftime-trace profiling build; the project's own
+            # default compiler stays gcc, see CMakeLists.txt) and
+            # ClangBuildAnalyzer, which aggregates those per-TU traces into
+            # a report of the most expensive headers/templates to compile.
+            # Not used by any `just` recipe by default -- an opt-in
+            # `-DCMAKE_CXX_COMPILER=clang++ -DCMAKE_CXX_FLAGS=-ftime-trace`
+            # build in a separate build dir, per this phase's own notes.
+            pkgs.clang
+            pkgs.clangbuildanalyzer
             pkgs.emscripten
             pkgs.deno
             pkgs.just
             pkgs.pkg-config
-            # Native (non-wasm) gfx:: backend build deps (GLFW/OpenGL/X11), for `just build-native`.
-            pkgs.glfw
+            # Native (non-wasm) gfx:: backend build deps (X11/GLX/OpenGL,
+            # see gfx/backend_native.cpp / GLFW_REMOVAL_PLAN.md), for
+            # `just build-native` -- see mepPackage's own buildInputs
+            # above for why this list is shorter than it used to be
+            # (libxrandr/libxinerama/libxcursor/glfw dropped; libxi kept,
+            # a real transitive dependency of libxtst).
             pkgs.libGL
             pkgs.libx11
-            pkgs.libxrandr
-            pkgs.libxinerama
-            pkgs.libxcursor
             pkgs.libxi
             pkgs.libxtst
             pkgs.openssl
@@ -397,6 +460,20 @@
           shellHook = ''
             export MEP_WEBVIEW_LD_LIBRARY_PATH="${webviewLibraryPath}"
             export MEP_TS_PARSER_PATH="${tsGrammars}"
+            # BUILD_PERFORMANCE_PLAN.md: CMake reads this env var as its
+            # default generator whenever a caller (the justfile's plain
+            # `cmake -S -B`, or a dev running cmake by hand) doesn't pass
+            # its own `-G` -- Ninja schedules the build graph with far
+            # less overhead than the default Unix Makefiles generator, on
+            # both a from-scratch build and a small incremental one. Only
+            # takes effect on a *fresh* build directory -- CMake refuses
+            # to change an existing one's generator in place, so an
+            # already-configured build/native or build/web from before
+            # this change needs a `rm -rf` + reconfigure once to pick it
+            # up (this is what `just build-native`/`build-web` already do
+            # every invocation anyway, just against a stale generator
+            # until that one-time wipe).
+            export CMAKE_GENERATOR=Ninja
           '';
         };
       }

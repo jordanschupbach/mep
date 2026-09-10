@@ -2,12 +2,14 @@
 
 // The Implementor side of the bridge: one small abstract interface per
 // subsystem (platform/window, input, audio, 2D rendering, text, 3D
-// rendering). gfx/backend_native.cpp implements all six, on GLFW+OpenGL+
-// an in-house ALSA audio backend (this app's raylib dependency was fully
-// removed in Stage B10 -- see PLAN; miniaudio was later removed too, see
-// MINIAUDIO_REMOVAL_PLAN.md). Everything in src/ outside gfx/ talks only to the
-// free-function facades in gfx/platform.h, gfx/input.h, etc. -- never to
-// these interfaces or to a concrete backend directly.
+// rendering). gfx/backend_native.cpp implements all six, on an in-house
+// X11/GLX windowing/input layer + OpenGL + an in-house ALSA audio backend
+// (this app's raylib dependency was fully removed in Stage B10 -- see
+// PLAN; miniaudio was later removed too, see MINIAUDIO_REMOVAL_PLAN.md;
+// GLFW was removed last, see GLFW_REMOVAL_PLAN.md). Everything in src/
+// outside gfx/ talks only to the free-function facades in gfx/platform.h,
+// gfx/input.h, etc. -- never to these interfaces or to a concrete backend
+// directly.
 
 #include <cstdarg>
 #include <cstdint>
@@ -36,10 +38,11 @@ public:
     virtual std::string GetClipboardText() = 0;
     virtual void SetClipboardText(const std::string &text) = 0;
     virtual void SetMouseCursor(MouseCursor cursor) = 0;
-    // Native window handle -- a GLFWwindow*, same as raylib's
-    // GetWindowHandle() today -- passed straight through to
-    // agent_ui_input.cpp's glfwGetX11Window() call, unchanged in both
-    // Stage A (raylib-owned GLFW window) and Stage B (mep-owned one).
+    // Native window handle -- on the native backend, a
+    // gfx::NativeWindowHandle* (an X11 Display*/Window pair, see
+    // gfx/native_window_handle.h) passed straight through to
+    // agent_ui_input.cpp's Init(), which unpacks it directly instead of
+    // resolving it from a GLFW/raylib window handle (GLFW_REMOVAL_PLAN.md).
     virtual void *GetNativeWindowHandle() = 0;
 
     // Redirects the backend's own internal diagnostic logging (raylib's
@@ -183,7 +186,12 @@ public:
 class IRenderer3DBackend {
 public:
     virtual ~IRenderer3DBackend() = default;
-    virtual void BeginMode3D(Camera3D camera) = 0;
+    // render_width/render_height: explicit render-target size to compute
+    // the projection aspect ratio from, for an offscreen render whose
+    // target dims differ from the live window's own framebuffer size.
+    // 0 (either) means "use the live window's framebuffer size", the
+    // live-viewport-drawing behavior this had before the params existed.
+    virtual void BeginMode3D(Camera3D camera, int render_width, int render_height) = 0;
     virtual void EndMode3D() = 0;
     virtual void DrawGrid(int slices, float spacing) = 0;
     virtual void DrawLine3D(Vector3 start, Vector3 end, Color color) = 0;
@@ -217,6 +225,38 @@ public:
 
     virtual void EnableWireMode() = 0;
     virtual void DisableWireMode() = 0;
+    // "Toggle Lighting" (CHESS_SET_BENCHMARK_PLAN.md's GUI-parity
+    // follow-up): when enabled, DrawMesh's fragment shader skips the
+    // Lambertian/Blinn-Phong lighting math entirely and outputs the raw
+    // textured/tinted base color, the same "flat" look the renderer had
+    // before Phase 1 -- lets a user (or agent) A/B a scene's own lit vs.
+    // unlit appearance without touching any material. Persists across
+    // DrawMesh calls until toggled again, same statefulness as wire mode.
+    virtual void SetUnlitMode(bool unlit) = 0;
+    // Multi-light mesh shading (MULTILIGHT_ANIMATION_PLAN.md Part A):
+    // replaces whatever lights were set by an earlier call, persisting
+    // across DrawMesh calls until changed again -- same per-frame-
+    // until-toggled statefulness as SetUnlitMode above, called once per
+    // frame (before the mesh-drawing loop) with the active Scene's own
+    // light list, not per DrawMesh call. An empty/zero-count call falls
+    // back to the renderer's own single hardcoded legacy key light, so
+    // every scene with no lights of its own (every scene saved before
+    // this existed) keeps rendering exactly as it always did.
+    virtual void SetSceneLights(const SceneLight *lights, int count) = 0;
+    // Shadow-map pass (CHESS_REALISM_PLAN.md Phase 3): a single
+    // shadow-casting directional light. Call BeginShadowPass, then
+    // DrawMeshShadow once per visible object (mirroring the main
+    // DrawMesh loop but with each object's own model matrix), then
+    // EndShadowPass -- this whole sequence must complete before the
+    // frame's normal BeginMode3D/DrawMesh sequence, not be nested
+    // inside it. `light_dir` is the direction light travels (from the
+    // light toward the scene); `scene_min`/`scene_max` are world-space
+    // scene bounds (e.g. from ComputeSceneWorldBounds) to fit the
+    // shadow frustum to. Every DrawMesh call after EndShadowPass
+    // automatically samples the resulting shadow map.
+    virtual void BeginShadowPass(Vector3 light_dir, Vector3 scene_min, Vector3 scene_max) = 0;
+    virtual void DrawMeshShadow(Mesh mesh, Matrix transform) = 0;
+    virtual void EndShadowPass() = 0;
     // Matrix-stack shim: ports main.cpp's rlPushMatrix/rlTranslatef/
     // rlMultMatrixf/rlPopMatrix gizmo-overlay code unchanged in Stage A.
     // Candidate for a cleanup (explicit transform args to DrawMesh/

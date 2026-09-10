@@ -179,6 +179,14 @@ extern void (*Uniform2f)(GLint, GLfloat, GLfloat);
 extern void (*Uniform3f)(GLint, GLfloat, GLfloat, GLfloat);
 extern void (*Uniform4f)(GLint, GLfloat, GLfloat, GLfloat, GLfloat);
 extern void (*UniformMatrix4fv)(GLint, GLsizei, GLboolean, const GLfloat *);
+extern void (*UniformMatrix3fv)(GLint, GLsizei, GLboolean, const GLfloat *);
+// Array-uniform setters (MULTILIGHT_ANIMATION_PLAN.md Part A's uLightType[]/
+// uLightPosOrDir[]/uLightColor[]/uLightIntensity[]/uLightRange[]) -- every
+// other uniform in this file so far has been scalar (Uniform1i/Uniform3f/
+// ...), one value per call.
+extern void (*Uniform1iv)(GLint, GLsizei, const GLint *);
+extern void (*Uniform1fv)(GLint, GLsizei, const GLfloat *);
+extern void (*Uniform3fv)(GLint, GLsizei, const GLfloat *);
 
 extern void (*DrawArrays)(GLenum, GLint, GLsizei);
 extern void (*DrawElements)(GLenum, GLsizei, GLenum, const void *);

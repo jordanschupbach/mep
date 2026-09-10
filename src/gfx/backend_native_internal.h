@@ -8,17 +8,19 @@
 
 #include "gfx/backend.h"
 
-struct GLFWwindow;
-
 namespace gfx {
 
 // The same NativeContext backend_native.cpp's Platform/Input classes use
 // (defined there); forward-declared here so the renderer2d/text classes
-// below can take a pointer to it without a circular include. Only
-// `window` is actually touched from outside backend_native.cpp today
-// (for framebuffer size queries).
+// below can take a pointer to it without a circular include. Only the
+// framebuffer size and swap-buffers operations are touched from outside
+// backend_native.cpp today -- exposed as plain functions rather than the
+// underlying X11 Display*/Window/GLXContext themselves, so those types
+// (and the Xlib.h/GL/glx.h includes they'd require) stay confined to
+// backend_native.cpp.
 struct NativeContext;
-GLFWwindow *NativeContextWindow(NativeContext *ctx);
+void NativeContextFramebufferSize(NativeContext *ctx, int *w, int *h);
+void NativeContextSwapBuffers(NativeContext *ctx);
 
 class NativeAudioBackend : public IAudioBackend {
 public:
@@ -149,7 +151,7 @@ public:
     NativeRenderer3DBackend(const NativeRenderer3DBackend &) = delete;
     NativeRenderer3DBackend &operator=(const NativeRenderer3DBackend &) = delete;
 
-    void BeginMode3D(Camera3D camera) override;
+    void BeginMode3D(Camera3D camera, int render_width, int render_height) override;
     void EndMode3D() override;
     void DrawGrid(int slices, float spacing) override;
     void DrawLine3D(Vector3 start, Vector3 end, Color color) override;
@@ -181,6 +183,11 @@ public:
 
     void EnableWireMode() override;
     void DisableWireMode() override;
+    void SetUnlitMode(bool unlit) override;
+    void SetSceneLights(const SceneLight *lights, int count) override;
+    void BeginShadowPass(Vector3 light_dir, Vector3 scene_min, Vector3 scene_max) override;
+    void DrawMeshShadow(Mesh mesh, Matrix transform) override;
+    void EndShadowPass() override;
     void PushMatrix() override;
     void PopMatrix() override;
     void TranslateMatrix(float x, float y, float z) override;

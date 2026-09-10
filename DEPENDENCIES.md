@@ -26,12 +26,13 @@ below.
 specific third-party codebase, and single-header libraries vendored under
 `third_party/`. It deliberately excludes:
 
-- **OS/platform APIs** -- OpenGL, X11 (core protocol + the Xtst extension
-  `agent_ui_input.cpp` uses for synthetic input), `Threads::Threads`
-  (pthread). These aren't swappable third-party *implementations*; they're
-  the interfaces mep's own code (and GLFW, until `GLFW_REMOVAL_PLAN.md`
-  lands) talks to. There's no "in-house OpenGL" to write short of a
-  software rasterizer, which is out of scope entirely.
+- **OS/platform APIs** -- OpenGL, X11 (core protocol + GLX + the Xtst
+  extension `agent_ui_input.cpp` uses for synthetic input, all now
+  talked to directly by `gfx::backend_native.cpp`, see
+  `GLFW_REMOVAL_PLAN.md`), `Threads::Threads` (pthread). These aren't
+  swappable third-party *implementations*; they're the interfaces
+  mep's own code talks to. There's no "in-house OpenGL" to write short
+  of a software rasterizer, which is out of scope entirely.
 - **Build/dev tooling** -- CMake, Emscripten, the Nix devShell's compilers
   and language runtimes (`deno`, `python3`, etc. used by `just` recipes).
   Not shipped in the built binary.
@@ -46,7 +47,7 @@ specific third-party codebase, and single-header libraries vendored under
 | ~~miniz~~ | DOCX/ODT/XLSX/ODS ZIP container read+write, M3D's compressed body (`office_doc.cpp`, `doc_export.cpp`, `sheet_xlsx.cpp`, `sheet_ods.cpp`, `backend_native_model_m3d.cpp`) | **Done** | [MINIZ_REMOVAL_PLAN.md](MINIZ_REMOVAL_PLAN.md) -- replaced by `src/deflate.h`/`.cpp` + `src/zip_archive.h`/`.cpp` |
 | tree-sitter (+ grammars) | syntax highlighting/parsing (`treesitter.cpp`) | Keep | [TREE_SITTER_REMOVAL_PLAN.md](TREE_SITTER_REMOVAL_PLAN.md) |
 | PDFium | PDF viewer backend (`pdf_doc.cpp`) | Keep | [PDFIUM_REMOVAL_PLAN.md](PDFIUM_REMOVAL_PLAN.md) |
-| GLFW | window/GL-context/input platform under `gfx::backend_native` | **Candidate** (large) | [GLFW_REMOVAL_PLAN.md](GLFW_REMOVAL_PLAN.md) |
+| ~~GLFW~~ | window/GL-context/input platform under `gfx::backend_native` | **Done** | [GLFW_REMOVAL_PLAN.md](GLFW_REMOVAL_PLAN.md) -- replaced by a hand-written X11/GLX implementation in `gfx/backend_native.cpp` (native only; the Emscripten/wasm build still goes through a GLFW-shaped API, `gfx/backend_native_emscripten_glfw.cpp`, since `-sUSE_GLFW=3` is emcc's own browser-canvas shim, not real GLFW -- see that plan's own non-goal) |
 | OpenSSL | WebSocket TLS (`wss://`) + handshake SHA-1 (`collab_websocket.cpp`) | Keep | [OPENSSL_REMOVAL_PLAN.md](OPENSSL_REMOVAL_PLAN.md) |
 | ~~stb_truetype~~ (vendored) | font rasterization (`gfx/backend_native_text.cpp`) | **Done** | [STB_TRUETYPE_REMOVAL_PLAN.md](STB_TRUETYPE_REMOVAL_PLAN.md) -- replaced by `gfx/truetype.h`/`.cpp`, an in-house TrueType parser/rasterizer |
 | ~~stb_image / stb_image_write~~ (vendored) | image decode (PNG/JPEG/BMP/GIF) + PNG encode | **Done** | [STB_IMAGE_REMOVAL_PLAN.md](STB_IMAGE_REMOVAL_PLAN.md) -- replaced by `src/png_codec.h`/`.cpp`, `src/jpeg_codec.h`/`.cpp`, `src/bmp_codec.h`/`.cpp`, `src/gif_codec.h`/`.cpp`, `src/image_codec.h`/`.cpp` |
@@ -102,10 +103,22 @@ in the DEFLATE case, reusable code) for the next one:
    GIF's LZW decoder matched an independent decoder byte-for-byte on
    every fixture including transparency and interlacing. See
    `STB_IMAGE_REMOVAL_PLAN.md` for the full writeup.
-6. **GLFW** -- by far the largest (real per-platform window/input/GL-
-   context backends), deliberately last. Genuinely optional: nothing
-   else here depends on it going away, and it's the same shape of
-   project raylib was.
+6. ~~**GLFW**~~ -- **done.** A real hand-written X11/GLX windowing/
+   input/context layer (`gfx/backend_native.cpp`), the same shape of
+   project raylib's own removal was, scoped to Linux/X11 only per the
+   plan (Wayland/Win32/Cocoa explicitly deferred). Genuinely the
+   fiddliest corner of the whole dependency-removal effort was X11
+   `SelectionRequest`/`SelectionNotify` clipboard handling (asynchronous,
+   must act as both requestor and owner) -- verified against a real
+   independent external X11 client (`xclip`) in both directions, not
+   just self-consistency. A platform split not anticipated by the
+   original plan text turned out to be necessary: this file is also
+   compiled for the Emscripten/wasm build, which still needs a
+   GLFW-*shaped* API there (`-sUSE_GLFW=3` is emcc's own browser-canvas
+   shim, not real GLFW) -- resolved by keeping the original GLFW-based
+   implementation in a separate, Emscripten-only file
+   (`gfx/backend_native_emscripten_glfw.cpp`). See
+   `GLFW_REMOVAL_PLAN.md` for the full writeup.
 
 Lua, tree-sitter, PDFium, OpenSSL, and Deno/webview_deno are **not**
 queued for removal -- see each one's own plan file for why (short

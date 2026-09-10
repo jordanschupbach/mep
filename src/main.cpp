@@ -18,8 +18,11 @@
 #include "sheet_doc.h"
 #include "vterm.h"
 #include "image_doc.h"
+#include "image_procgen.h"
+#include "jpeg_codec.h"
 #include "model3d_blend_import.h"
 #include "model3d_doc.h"
+#include "mov_container.h"
 #include "pdf_doc.h"
 #include "office_doc.h"
 
@@ -593,6 +596,11 @@ int g_model3d_dropdown_open = -1;  // which menubar dropdown (File=0/Edit=1/Add=
 constexpr float kModel3DMenubarH = 26.0f;
 constexpr float kModel3DToolSidebarW = 92.0f;
 constexpr float kModel3DSidebarW = 240.0f;
+// Height of DrawVideoPane's transport bar (play/pause button, scrub bar,
+// status text) -- shared with DrawPane's own catch-all pane-focus click
+// region (which must exclude this strip, the same way it excludes
+// Model3D's menubar/sidebars above), not just a DrawVideoPane-local detail.
+constexpr float kVideoTransportH = 32.0f;
 // Orbit/pan camera drag, grabbed at mouse-down -- same shape as
 // ImageEditorPanDragState above, but tracking yaw/pitch/target instead of
 // pixel pan offsets.
@@ -12573,22 +12581,55 @@ const char *kBuiltinRunButton =
     "      mep.cmd('e!')\n"
     "    end\n"
     "  else\n"
-    "    mep.cmd('vsplit')\n"
-    "    mep.open(path)\n"
+    // vsplit_right (Editor::SplitPaneRight), not mep.cmd('vsplit'): a bare
+    // vsplit opens to the left of the org buffer being run (vim's own
+    // splitright=off default) -- the preview reads better on the right,
+    // source-on-the-left/output-on-the-right, and takes a single call
+    // instead of vsplit-then-open.\n"
+    "    mep.vsplit_right(path)\n"
     "  end\n"
     "  mep.notify('Run: opened ' .. path)\n"
     "end\n"
+    // Guards against a second <leader>rr firing while the first run's
+    // export (org-babel code blocks, or a tectonic PDF compile -- both
+    // genuinely take real wall-clock time with no persistent "running"
+    // indicator beyond the one-shot notify() toasts below) is still in
+    // flight: without this, an impatient second press starts a fully
+    // independent second export racing the first, and whichever callback
+    // lands first does the real vsplit_right/reload -- which looks like
+    // "it took two presses" when really the first press was already
+    // working the whole time. Keyed by filename (not a single flag) so
+    // running file A doesn't block a run of file B. pcall wraps the
+    // synchronous portion so a Lua error before the export's callback is
+    // even registered still clears the flag instead of wedging that file's
+    // Run button forever; mep.job_start's own on_exit contract (always
+    // fires, code -1 if the process never started -- see l_job_start,
+    // lua_env.cpp) guarantees the async side reaches the callback below
+    // the same way.\n"
+    "local mep_run_button_org_running = {}\n"
     "function mep.run_button_run_org()\n"
     "  local fname = mep.filename()\n"
     "  if not fname or fname == '' then mep.notify('Run: save this buffer to a file first', 'warn') return end\n"
-    "  mep.cmd('write')\n"
-    "  local format = mep_run_button_org_format()\n"
-    "  local exporter = mep_run_button_org_exporters[format]\n"
-    "  if not exporter then\n"
-    "    mep.notify('Run: unknown #+EXPORT: ' .. format .. ', defaulting to html', 'warn')\n"
-    "    exporter = mep.org_export_html\n"
+    "  if mep_run_button_org_running[fname] then\n"
+    "    mep.notify('Run: already running, please wait...', 'warn')\n"
+    "    return\n"
     "  end\n"
-    "  exporter(mep_run_button_show_org_output)\n"
+    "  mep_run_button_org_running[fname] = true\n"
+    "  local function done() mep_run_button_org_running[fname] = nil end\n"
+    "  local ok, err = pcall(function()\n"
+    "    mep.cmd('write')\n"
+    "    local format = mep_run_button_org_format()\n"
+    "    local exporter = mep_run_button_org_exporters[format]\n"
+    "    if not exporter then\n"
+    "      mep.notify('Run: unknown #+EXPORT: ' .. format .. ', defaulting to html', 'warn')\n"
+    "      exporter = mep.org_export_html\n"
+    "    end\n"
+    "    exporter(function(path) done() mep_run_button_show_org_output(path) end)\n"
+    "  end)\n"
+    "  if not ok then\n"
+    "    done()\n"
+    "    mep.notify('Run: ' .. tostring(err), 'error')\n"
+    "  end\n"
     "end\n"
     // Runs (or compiles-then-runs) the *focused pane's* current file --
     // main.cpp's Run button click handler focuses that pane first, same
@@ -12727,11 +12768,12 @@ const char *kBuiltinAiTerminal =
     "Press 'e' while viewing an image (a PNG/JPG/etc. buffer opened with mep_file_open or mep_pane_split's file argument) to open it, in the same pane. Esc returns to the plain viewer without losing anything -- layers and undo history are kept per-buffer, so re-pressing 'e' resumes exactly where you left off.\n"
     "Layout (left to right): a two-column icon tool sidebar, the canvas, a Layers panel on the right; a thin toolbar (brush size, recent colors) sits above the canvas, under the menubar (File/Edit/Layer/View). The foreground/background swatches are at the bottom of the tool sidebar.\n"
     "Tools -- hotkey, or click the sidebar icon -- select one, then drag/click on the canvas: b Pencil, x Eraser (freehand, brush size via '['/']'); l Line, r Rectangle, c Ellipse (drag corner to corner/end to end, hold Shift while releasing to fill); f Bucket fill (click, 4-connected flood fill); i Eyedropper (click, samples a color); h Pan (drag to scroll; also middle-mouse drag with any tool; Ctrl+scroll or +/-/= to zoom); m Rectangle select, o Ellipse select, w Lasso (drag out a selection); v Move (drags the selection's content, or the whole layer if none is selected, cutting from the old spot). With a selection: Delete/BackSpace clears its pixels (selection stays); Edit > Deselect drops it. u/Ctrl-R undo/redo.\n"
-    ":w/:wq (or mep_command_run(\"w\")) flattens visible layers and writes a real PNG. To draw something recognizable: work out the shape in canvas-pixel coordinates (the status bar shows the live cursor position and zoom % while hovering), convert to screen coordinates as canvas_top_left + pixel * zoom, and take a mep_screenshot right after opening the editor to read both off directly rather than computing pane geometry from scratch. Prefer a few large Line/Rectangle/Ellipse drags (exact and fast) over many tiny Pencil strokes; pick tools by hotkey rather than clicking the small sidebar icons. Full reference: MEP_AGENT_API.md in mep's own source tree.\n"
+    ":w/:wq (or mep_command_run(\"w\")) flattens visible layers and writes a real PNG. To draw something recognizable: work out the shape in canvas-pixel coordinates (the status bar shows the live cursor position and zoom % while hovering), convert to screen coordinates as canvas_top_left + pixel * zoom, and take a mep_screenshot right after opening the editor to read both off directly rather than computing pane geometry from scratch. Prefer a few large Line/Rectangle/Ellipse drags (exact and fast) over many tiny Pencil strokes; pick tools by hotkey rather than clicking the small sidebar icons.\n"
+    "For a procedural texture (wood grain, marble, noise, a gradient, a checkerboard) instead of a hand-drawn shape, skip all of the above and use the headless mep_image_* tools: mep_image_new(width, height, color?) creates a buffer with no source file needed (returns buffer_id), mep_image_fill_wood_turned/fill_marble/fill_noise/fill_gradient/fill_checkerboard(buffer_id, ...) paint the whole active layer (or a given layer_index) in one call, mep_image_blur softens it, and mep_image_export_png writes the PNG -- pass that path straight to mep_model_set_texture. Use fill_wood_turned (not plain fill_wood, a cross-section pattern that spirals when wrapped around a cylinder) for anything going on a mep_model_add_lathe object's sides. No mep_mouse_*/mep_screenshot/window needed for any of this. Colors here are {r,g,b,a} 0..255 ints, unlike the 3D modeler's 0..1 floats. Full reference: MEP_AGENT_API.md in mep's own source tree.\n"
     "\n"
     "## The in-pane 3D modeler\n"
     "Opening a .obj/.gltf/.glb/.iqm/.vox/.m3d/.blend file (mep_file_open, or mep_pane_split's file argument) lands directly in the 3D modeler -- no separate viewer step first. .blend needs a real Blender install on PATH (converted to glTF via Blender's own command line, on a background job so opening it never blocks -- the pane switches to it immediately and shows a \"Converting...\" message until it finishes or fails; no dedicated \"still converting\" query exists yet, so list_objects/etc. against that buffer_id meanwhile just see an empty scene); everything else imports directly.\n"
-    "Unlike the image editor, this has a real scripting surface -- you don't need mep_mouse_*/mep_screenshot for it at all: mep_model_new() (build from scratch, returns buffer_id)/list_objects/scene_stats/primitive_info(kind?) (pivot+dimensions reference data, no buffer_id needed)/add_primitive(kind, transform?)/delete_object(cascade?)/duplicate_object(cascade?) (cascade, default false, also deletes/duplicates every transitive descendant instead of un-parenting/leaving them at the original -- duplicate's copies are re-parented to mirror the hierarchy under the new copy, correct through multiple levels)/set_transform(position?,rotation?,scale?)/set_material({r,g,b,a?})/set_texture(path) (base-color/albedo texture from an image file, empty path clears; no metallic/roughness -- this app's rendering has no lighting model to show them)/rename_object/set_visible/select/get_selection/camera_set({target?,yaw?,pitch?,distance?,fov?})/camera_get/undo/redo, plus vertex editing (list_vertices(object_id) -> index+local x/y/z per vertex, set_vertex_position(object_id, vertex_index, {x,y,z}), delete_vertices(object_id, vertex_indices) -- removes those vertices and every triangle referencing any of them, leaving a hole rather than retriangulating it -- merge_vertices(object_id, vertex_indices) -- welds 2+ vertices into one at their averaged position/normal/texcoord, dropping any triangle that becomes degenerate as a result (useful for stitching seams or welding a procedural mesh's own duplicate per-face corner vertices back together, though it doesn't renormalize the averaged normal) -- recalculate_normals(object_id) -- recomputes every vertex's normal (smooth/area-weighted average of adjacent triangles) from current geometry, zero visible effect in this app's own rendering, only matters for a tool like Blender that reads them on export -- subdivide_faces(object_id, vertex_indices) -- every triangle whose 3 corners are all in vertex_indices gets a new centroid vertex and fans into 3 triangles, returns the new centroid indices -- extrude_faces(object_id, vertex_indices, distance) -- lifts the fully-covered face along its own geometric normal, walling only the group's true boundary edges (internal diagonals stay unwalled) and respecting actual mesh connectivity (an unwelded primitive's faces extrude independently unless merged first), returns the new cap indices -- dissolve_vertex(object_id, vertex_index) -- removes one vertex, patching the hole via fan retriangulation when its incident triangles form a closed ring, else falling back to a plain hole-leaving removal (compare tri counts to tell which happened) -- inset_faces(object_id, vertex_indices, amount) -- duplicates the fully-covered face's vertices and moves them toward its own centroid by a 0..1 fraction, walling boundary edges like extrude but with no lift, returns the new cap indices (chain into extrude_faces for a raised-platform-with-border look) -- add_vertex(object_id, {x,y,z}) -> vertex_index -- appends one isolated vertex, invisible until connected -- make_face(object_id, vertex_indices) -- fan-connects existing vertices (including freshly add_vertex'd ones) into new triangle(s) from the first one, no requirement they already share a triangle (unlike every op above it) and no duplicate/overlap check -- list_triangles(object_id) -> every triangle's index+3 corner vertex indices, read-only, the way to actually discover a mesh's connectivity instead of inferring it from positions -- merge_by_distance(object_id, threshold) -> removed_count -- welds every group of mutually-close-enough vertices automatically (Blender's own Merge by Distance/Remove Doubles), the 'fix all the duplicates, whatever they are' counterpart to merge_vertices, useful right after add_primitive since raylib's generators emit unwelded duplicates at every shared corner -- flip_normals(object_id) -- reverses every triangle's winding and negates every normal, the fix for inside-out geometry (e.g. from a wrong-order make_face call) -- select/move/delete/merge/recalculate-normals/subdivide/extrude/dissolve/inset/add-vertex/make-face/merge-by-distance/flip-normals/list-triangles, but still no real edge/face selection (everything here treats 'vertices fully covering a triangle', or for make-face just 'vertices you picked', as the face); safely clones a shared mesh first so editing one instance never deforms another), batch (set_transforms/set_materials/delete_objects, array-of-updates in one call -- delete_objects also takes the same cascade? as single-object delete_object, default false), symmetry (duplicate_mirrored(axis), radial_array(count,axis) for fins/spokes instead of placing each by hand), grouping (group_objects(object_ids) -> group_id, set_parent(object_id, parent_id?) -- purely organizational, never composed into a child's own transform; the Move/Scale/axis-Rotate gizmo/free-drag cascade to descendants in the UI (Scale/Rotate actually orbit/scale each descendant's position around the dragged object's pivot, not just its own field in place; free-drag Rotate is the one exception that doesn't), but set_transform/set_transforms never cascade), and view/render (set_view({show_grid?,wireframe?,snap?}) -- snap rounds subsequent mouse-drag gizmo edits to a fixed grid/angle/scale step, has no effect on set_transform, frame_all, render_to_image(path,width?,height?,transparent?) -- a clean PNG of just the scene, unlike mep_screenshot which captures the whole window). kind is cube/sphere/cylinder/cone/plane/torus/wedge (cylinder/cone/wedge are base-pivoted, not centered -- see MEP_AGENT_API.md's pivot table, or call primitive_info, before stacking parts); rotation is Euler XYZ degrees; colors are 0..1 floats. A whole scene can be built, inspected, rendered, and saved through these tools alone -- save reuses mep_file_save (or mep_command_run(\"w\")), there's no separate export tool. Full reference and a worked example: MEP_AGENT_API.md's \"in-pane 3D modeler\" section.\n"
+    "Unlike the image editor, this has a real scripting surface -- you don't need mep_mouse_*/mep_screenshot for it at all: mep_model_new() (build from scratch, returns buffer_id)/list_objects/scene_stats/primitive_info(kind?) (pivot+dimensions reference data, no buffer_id needed)/add_primitive(kind, transform?)/add_lathe(profile, segments?, cap_top?, cap_bottom?, transform?) (revolves an ordered [radius,height] profile around the Y axis into a smooth welded mesh with real UVs -- for any turned form a fixed primitive can't express: bottles, table legs, every non-knight chess piece; a profile end at radius ~0 needs no cap, it's already a point)/delete_object(cascade?)/duplicate_object(cascade?) (cascade, default false, also deletes/duplicates every transitive descendant instead of un-parenting/leaving them at the original -- duplicate's copies are re-parented to mirror the hierarchy under the new copy, correct through multiple levels)/set_transform(position?,rotation?,scale?)/set_material({r,g,b,a?}, roughness?, metallic?) (color is 0..1 floats; roughness/metallic are each 0..1 and sparse -- omitted leaves the current value, not reset to 0 -- feeding a real, if deliberately simplified, metallic-roughness shading model: no full Cook-Torrance/GGX, one fixed key light, no shadows/reflections, but low-roughness+high-metallic genuinely reads as shiny metal against high-roughness+low-metallic matte wood/stone)/set_texture(path, kind?) (kind defaults \"albedo\", also takes \"normal\"/\"roughness\"/\"metallic\" for those map slots; albedo is tinted by the object's own set_material color, empty path clears)/rename_object/set_visible/select/get_selection/camera_set({target?,yaw?,pitch?,distance?,fov?})/camera_get/undo/redo, plus vertex editing (list_vertices(object_id) -> index+local x/y/z per vertex, set_vertex_position(object_id, vertex_index, {x,y,z}), delete_vertices(object_id, vertex_indices) -- removes those vertices and every triangle referencing any of them, leaving a hole rather than retriangulating it -- merge_vertices(object_id, vertex_indices) -- welds 2+ vertices into one at their averaged position/normal/texcoord, dropping any triangle that becomes degenerate as a result (useful for stitching seams or welding a procedural mesh's own duplicate per-face corner vertices back together, though it doesn't renormalize the averaged normal) -- recalculate_normals(object_id) -- recomputes every vertex's normal (smooth/area-weighted average of adjacent triangles) from current geometry, zero visible effect in this app's own rendering, only matters for a tool like Blender that reads them on export -- subdivide_faces(object_id, vertex_indices) -- every triangle whose 3 corners are all in vertex_indices gets a new centroid vertex and fans into 3 triangles, returns the new centroid indices -- extrude_faces(object_id, vertex_indices, distance) -- lifts the fully-covered face along its own geometric normal, walling only the group's true boundary edges (internal diagonals stay unwalled) and respecting actual mesh connectivity (an unwelded primitive's faces extrude independently unless merged first), returns the new cap indices -- dissolve_vertex(object_id, vertex_index) -- removes one vertex, patching the hole via fan retriangulation when its incident triangles form a closed ring, else falling back to a plain hole-leaving removal (compare tri counts to tell which happened) -- inset_faces(object_id, vertex_indices, amount) -- duplicates the fully-covered face's vertices and moves them toward its own centroid by a 0..1 fraction, walling boundary edges like extrude but with no lift, returns the new cap indices (chain into extrude_faces for a raised-platform-with-border look) -- add_vertex(object_id, {x,y,z}) -> vertex_index -- appends one isolated vertex, invisible until connected -- make_face(object_id, vertex_indices) -- fan-connects existing vertices (including freshly add_vertex'd ones) into new triangle(s) from the first one, no requirement they already share a triangle (unlike every op above it) and no duplicate/overlap check -- list_triangles(object_id) -> every triangle's index+3 corner vertex indices, read-only, the way to actually discover a mesh's connectivity instead of inferring it from positions -- merge_by_distance(object_id, threshold) -> removed_count -- welds every group of mutually-close-enough vertices automatically (Blender's own Merge by Distance/Remove Doubles), the 'fix all the duplicates, whatever they are' counterpart to merge_vertices, useful right after add_primitive since raylib's generators emit unwelded duplicates at every shared corner -- flip_normals(object_id) -- reverses every triangle's winding and negates every normal, the fix for inside-out geometry (e.g. from a wrong-order make_face call) -- select/move/delete/merge/recalculate-normals/subdivide/extrude/dissolve/inset/add-vertex/make-face/merge-by-distance/flip-normals/list-triangles, but still no real edge/face selection (everything here treats 'vertices fully covering a triangle', or for make-face just 'vertices you picked', as the face); safely clones a shared mesh first so editing one instance never deforms another), batch (set_transforms/set_materials/delete_objects, array-of-updates in one call -- delete_objects also takes the same cascade? as single-object delete_object, default false), symmetry (duplicate_mirrored(axis), radial_array(count,axis) for fins/spokes instead of placing each by hand), grouping (group_objects(object_ids) -> group_id, set_parent(object_id, parent_id?) -- purely organizational, never composed into a child's own transform; the Move/Scale/axis-Rotate gizmo/free-drag cascade to descendants in the UI (Scale/Rotate actually orbit/scale each descendant's position around the dragged object's pivot, not just its own field in place; free-drag Rotate is the one exception that doesn't), but set_transform/set_transforms never cascade), and view/render (set_view({show_grid?,wireframe?,snap?}) -- snap rounds subsequent mouse-drag gizmo edits to a fixed grid/angle/scale step, has no effect on set_transform, frame_all, render_to_image(path,width?,height?,transparent?) -- a clean PNG of just the scene, unlike mep_screenshot which captures the whole window). kind is cube/sphere/cylinder/cone/plane/torus/wedge (cylinder/cone/wedge are base-pivoted, not centered -- see MEP_AGENT_API.md's pivot table, or call primitive_info, before stacking parts); rotation is Euler XYZ degrees; colors are 0..1 floats. A whole scene can be built, inspected, rendered, and saved through these tools alone -- save reuses mep_file_save (or mep_command_run(\"w\")), there's no separate export tool. Full reference and a worked example: MEP_AGENT_API.md's \"in-pane 3D modeler\" section.\n"
     "\n"
     "If no mep_* tools are available, the mep-agent MCP server is not registered with Claude Code or failed to start. Tell the human; it is registered with:\n"
     "  claude mcp add mep-agent -- /path/to/mep/build/native/mep-mcp\n"
@@ -16361,6 +16403,155 @@ void PrunePdfPageTextures(int buffer_id, const PdfSession &sess) {
     }
 }
 
+// GPU upload cache for video-playback panes (Editor::VideoSession), keyed
+// by (buffer_id, frame index) -- mirrors g_pdf_page_textures above, but
+// simpler: a given frame index's decoded pixels never change once
+// decoded (no re-render/theme concern the way a PDF page has), so there's
+// no generation/theme tracking here -- a texture is either already
+// uploaded for that frame index or it isn't, ever.
+struct VideoTextureCacheEntry {
+    gfx::Texture2D tex{};
+};
+std::map<std::pair<int, int>, VideoTextureCacheEntry> g_video_frame_textures;
+
+gfx::Texture2D GetOrUpdateVideoFrameTexture(int buffer_id, int frame_index, const VideoSession::DecodedFrame &frame) {
+    auto key = std::make_pair(buffer_id, frame_index);
+    auto it = g_video_frame_textures.find(key);
+    if (it != g_video_frame_textures.end()) return it->second.tex;
+
+    gfx::Image img{};
+    img.data = const_cast<unsigned char *>(frame.rgba.data());
+    img.width = frame.w;
+    img.height = frame.h;
+    img.mipmaps = 1;
+    img.format = gfx::kPixelFormatR8G8B8A8;
+
+    VideoTextureCacheEntry entry;
+    entry.tex = gfx::LoadTextureFromImage(img);
+    g_video_frame_textures[key] = entry;
+    return entry.tex;
+}
+
+// Evicts GPU textures for any frame of `buffer_id` that Editor::
+// EnsureVideoFramesDecoded no longer keeps a CPU-side decode for (i.e. it
+// scrolled/played out of the decode window) -- mirrors PrunePdfPageTextures.
+void PruneVideoFrameTextures(int buffer_id, const VideoSession &sess) {
+    for (auto it = g_video_frame_textures.begin(); it != g_video_frame_textures.end();) {
+        if (it->first.first == buffer_id && sess.frames.find(it->first.second) == sess.frames.end()) {
+            gfx::UnloadTexture(it->second.tex);
+            it = g_video_frame_textures.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+/**
+ * @brief Draws one in-pane video-playback session (ANIMATION_VIDEO_PLAN.md Phase 5): the current
+ * frame scaled-to-fit (letterboxed) above a fixed-height transport bar (play/pause button, a
+ * click/drag scrub bar, and a "frame N/Total  time/duration" status readout).
+ * @param pane The pane this session is shown in.
+ * @param sess The video session to draw and interact with.
+ * @param x Left edge of the content rectangle (below the pane header).
+ * @param y Top edge of the content rectangle.
+ * @param w Width of the content rectangle.
+ * @param h Height of the content rectangle.
+ * @param is_active Whether this pane is the currently active one.
+ */
+void DrawVideoPane(const Pane &pane, VideoSession &sess, float x, float y, float w, float h, bool is_active) {
+    int buffer_id = pane.buffer_id;
+    g_editor.EnsureVideoFramesDecoded(buffer_id);
+    PruneVideoFrameTextures(buffer_id, sess);
+
+    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h), ResolveHlGroup("NormalBg"));
+
+    int frame_count = static_cast<int>(sess.mov.frame_index.size());
+    float video_h = std::max(0.0f, h - kVideoTransportH);
+
+    auto fit = sess.frames.find(sess.current_frame);
+    if (fit != sess.frames.end() && sess.mov.width > 0 && sess.mov.height > 0) {
+        gfx::Texture2D tex = GetOrUpdateVideoFrameTexture(buffer_id, sess.current_frame, fit->second);
+        float scale = std::max(0.0f, std::min(w / static_cast<float>(sess.mov.width), video_h / static_cast<float>(sess.mov.height)));
+        float dw = static_cast<float>(sess.mov.width) * scale;
+        float dh = static_cast<float>(sess.mov.height) * scale;
+        float dx = x + (w - dw) / 2.0f;
+        float dy = y + (video_h - dh) / 2.0f;
+        gfx::Rectangle src{0, 0, static_cast<float>(tex.width), static_cast<float>(tex.height)};
+        gfx::Rectangle dst{dx, dy, dw, dh};
+        gfx::DrawTexturePro(tex, src, dst, gfx::Vector2{0, 0}, 0.0f, gfx::White);
+    }
+
+    // --- Transport bar ---
+    float bar_y = y + video_h;
+    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(bar_y), static_cast<int>(w), static_cast<int>(kVideoTransportH), ResolveHlGroup("MenuBar"));
+    float font_size = MenuFontSize();
+
+    std::string play_glyph = Utf8FromCodepoint(sess.playing ? 0xf04c : 0xf04b);  // nf-fa-pause / nf-fa-play
+    // Floored at 44px regardless of the glyph's own measured width -- a
+    // single icon glyph measures quite narrow at typical UI font sizes,
+    // which made this button a genuinely hard-to-hit target (confirmed
+    // via live click testing, ANIMATION_VIDEO_PLAN.md Phase 5's follow-up).
+    float btn_w = std::max(44.0f, MeasureUiText(" " + play_glyph + " ", font_size) + 8.0f);
+    gfx::Rectangle btn_rect{x + 4, bar_y + 2, btn_w, kVideoTransportH - 4};
+    gfx::DrawRectangleRec(btn_rect, ResolveHlGroup(is_active ? "TabActive" : "NormalBg"));
+    DrawUiText(play_glyph, gfx::Vector2{btn_rect.x + 6, btn_rect.y + (btn_rect.height - font_size) / 2.0f}, font_size,
+               ResolveHlGroup("Normal"));
+    RegisterClickRegion(btn_rect, [buffer_id] {
+        VideoSession *s = g_editor.GetVideoMutable(buffer_id);
+        if (!s) return;
+        int fc = static_cast<int>(s->mov.frame_index.size());
+        if (s->playing) {
+            s->playing = false;
+        } else if (fc > 0) {
+            if (s->current_frame >= fc - 1) s->current_frame = 0;  // replay from the start
+            s->playing = true;
+            s->play_started_wall_time = gfx::GetTime();
+            s->play_started_frame = s->current_frame;
+        }
+    });
+
+    double duration = sess.mov.fps > 0 ? static_cast<double>(frame_count) / sess.mov.fps : 0.0;
+    double cur_time = sess.mov.fps > 0 ? static_cast<double>(sess.current_frame) / sess.mov.fps : 0.0;
+    char status_buf[64];
+    std::snprintf(status_buf, sizeof(status_buf), "%d/%d  %.1fs/%.1fs", frame_count > 0 ? sess.current_frame + 1 : 0,
+                  frame_count, cur_time, duration);
+    std::string status = status_buf;
+    float status_w = MeasureUiText(status, font_size);
+
+    float scrub_x = btn_rect.x + btn_rect.width + 8.0f;
+    float scrub_w = std::max(0.0f, w - (scrub_x - x) - status_w - 16.0f);
+    gfx::Rectangle scrub_rect{scrub_x, bar_y + kVideoTransportH / 2.0f - 3.0f, scrub_w, 6.0f};
+    gfx::DrawRectangleRec(scrub_rect, ResolveHlGroup("Border"));
+    if (frame_count > 1 && scrub_w > 0) {
+        float t = static_cast<float>(sess.current_frame) / static_cast<float>(frame_count - 1);
+        gfx::DrawRectangle(static_cast<int>(scrub_rect.x), static_cast<int>(scrub_rect.y), static_cast<int>(scrub_w * t),
+                       static_cast<int>(scrub_rect.height), ResolveHlGroup("TabActive"));
+        float knob_x = scrub_rect.x + scrub_w * t;
+        gfx::DrawRectangle(static_cast<int>(knob_x - 2), static_cast<int>(bar_y + 4), 4, static_cast<int>(kVideoTransportH - 8),
+                       ResolveHlGroup("Normal"));
+    }
+    // Click/drag anywhere in a slightly-taller hit region seeks to that position -- checked via
+    // direct per-frame polling (not RegisterClickRegion) so an in-progress drag keeps tracking the
+    // mouse every frame the button stays down, not just on the initial click. Trades away tracking
+    // a drag that strays outside the hit rect's vertical band (a plain "did you release near the
+    // bar" click-to-seek doesn't need that) for not needing a separate drag-state field on
+    // VideoSession -- a reasonable simplification for a first version of this control.
+    gfx::Rectangle scrub_hit{scrub_rect.x - 4, bar_y, scrub_rect.width + 8, kVideoTransportH};
+    gfx::Vector2 mouse = gfx::GetMousePosition();
+    bool mouse_in_hit = mouse.x >= scrub_hit.x && mouse.x <= scrub_hit.x + scrub_hit.width && mouse.y >= scrub_hit.y &&
+                         mouse.y <= scrub_hit.y + scrub_hit.height;
+    if (gfx::IsMouseButtonDown(gfx::MouseButton::Left) && mouse_in_hit && scrub_w > 0 && frame_count > 1) {
+        float t = std::clamp((mouse.x - scrub_rect.x) / scrub_w, 0.0f, 1.0f);
+        sess.current_frame = std::clamp(static_cast<int>(std::lround(t * static_cast<float>(frame_count - 1))), 0, frame_count - 1);
+        sess.playing = false;
+    }
+
+    DrawUiText(status, gfx::Vector2{scrub_x + scrub_w + 8.0f, bar_y + (kVideoTransportH - font_size) / 2.0f}, font_size,
+               ResolveHlGroup("Normal"));
+
+    RegisterClickRegion(gfx::Rectangle{x, y, w, video_h}, [pane_id = pane.id] { g_editor.FocusPaneById(pane_id); });
+}
+
 // Active pane gets a thicker outline (still the theme's own BorderActive
 // color, just more of it) so which pane has the cursor reads at a glance --
 // a plain 1px BorderActive/BorderInactive color swap was too subtle to
@@ -18871,6 +19062,193 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
            [buffer_id] {
                if (auto *s = g_editor.GetImageEditorMutable(buffer_id)) s->show_grid = !s->show_grid;
            }}}});
+    // CHESS_SET_BENCHMARK_PLAN.md Phase 4's by-hand UI: procedural fills
+    // built on image_procgen.h, applied via the same Editor::
+    // ImageEditorApplyPixels/ImageEditorBlurLayer methods the image.*
+    // RPC surface uses (one implementation, two entry points). Colors
+    // come from the existing primary/secondary swatches (no new color
+    // input needed -- the picker popup below already sets those);
+    // numeric params are gathered via chained BeginPromptNative prompts,
+    // the same std::stof-in-a-try/catch pattern the Mesh menu's "Extrude
+    // Faces.../Inset Faces..." items already use. Each generator's own
+    // GetImageEditorMutable lookup happens inside the innermost callback
+    // (not captured from `sess` above) since these fire on a later frame,
+    // after `sess`'s reference would be stale.
+    menus.push_back(
+        {"Texture",
+         {{"Fill Gradient (Linear)...",
+           [pane_id, buffer_id] {
+               g_editor.FocusPaneById(pane_id);
+               g_editor.BeginPromptNative("Angle in degrees (0 = left-to-right)", "0", [buffer_id](const std::string &text) {
+                   float angle = 0.0f;
+                   try {
+                       angle = std::stof(text);
+                   } catch (...) {
+                       return;
+                   }
+                   auto *s = g_editor.GetImageEditorMutable(buffer_id);
+                   if (!s) return;
+                   procgen::Rgba8 ca{s->primary_color.r, s->primary_color.g, s->primary_color.b, s->primary_color.a};
+                   procgen::Rgba8 cb{s->secondary_color.r, s->secondary_color.g, s->secondary_color.b, s->secondary_color.a};
+                   std::vector<unsigned char> pixels;
+                   procgen::FillLinearGradient(&pixels, s->width, s->height, ca, cb, angle);
+                   g_editor.ImageEditorApplyPixels(buffer_id, -1, pixels);
+               });
+           }},
+          {"Fill Gradient (Radial)",
+           [buffer_id] {
+               auto *s = g_editor.GetImageEditorMutable(buffer_id);
+               if (!s) return;
+               procgen::Rgba8 ca{s->primary_color.r, s->primary_color.g, s->primary_color.b, s->primary_color.a};
+               procgen::Rgba8 cb{s->secondary_color.r, s->secondary_color.g, s->secondary_color.b, s->secondary_color.a};
+               std::vector<unsigned char> pixels;
+               procgen::FillRadialGradient(&pixels, s->width, s->height, ca, cb);
+               g_editor.ImageEditorApplyPixels(buffer_id, -1, pixels);
+           }},
+          {"Fill Noise...",
+           [pane_id, buffer_id] {
+               g_editor.FocusPaneById(pane_id);
+               g_editor.BeginPromptNative("Noise scale (higher = finer grain)", "0.05", [pane_id, buffer_id](const std::string &scale_text) {
+                   float scale = 0.05f;
+                   try {
+                       scale = std::stof(scale_text);
+                   } catch (...) {
+                       return;
+                   }
+                   g_editor.FocusPaneById(pane_id);
+                   g_editor.BeginPromptNative("Seed (any integer)", "0", [buffer_id, scale](const std::string &seed_text) {
+                       uint32_t seed = 0;
+                       try {
+                           seed = static_cast<uint32_t>(std::stol(seed_text));
+                       } catch (...) {
+                           return;
+                       }
+                       auto *s = g_editor.GetImageEditorMutable(buffer_id);
+                       if (!s) return;
+                       procgen::Rgba8 ca{s->primary_color.r, s->primary_color.g, s->primary_color.b, s->primary_color.a};
+                       procgen::Rgba8 cb{s->secondary_color.r, s->secondary_color.g, s->secondary_color.b, s->secondary_color.a};
+                       std::vector<unsigned char> pixels;
+                       procgen::FillNoise(&pixels, s->width, s->height, ca, cb, scale, 4, seed);
+                       g_editor.ImageEditorApplyPixels(buffer_id, -1, pixels);
+                   });
+               });
+           }},
+          {"Fill Wood...",
+           [pane_id, buffer_id] {
+               g_editor.FocusPaneById(pane_id);
+               g_editor.BeginPromptNative("Ring scale (higher = tighter rings)", "0.3", [pane_id, buffer_id](const std::string &ring_text) {
+                   float ring_scale = 0.3f;
+                   try {
+                       ring_scale = std::stof(ring_text);
+                   } catch (...) {
+                       return;
+                   }
+                   g_editor.FocusPaneById(pane_id);
+                   g_editor.BeginPromptNative("Warp (grain waviness)", "6.0", [buffer_id, ring_scale](const std::string &warp_text) {
+                       float warp = 6.0f;
+                       try {
+                           warp = std::stof(warp_text);
+                       } catch (...) {
+                           return;
+                       }
+                       auto *s = g_editor.GetImageEditorMutable(buffer_id);
+                       if (!s) return;
+                       procgen::Rgba8 ca{s->primary_color.r, s->primary_color.g, s->primary_color.b, s->primary_color.a};
+                       procgen::Rgba8 cb{s->secondary_color.r, s->secondary_color.g, s->secondary_color.b, s->secondary_color.a};
+                       std::vector<unsigned char> pixels;
+                       procgen::FillWood(&pixels, s->width, s->height, ca, cb, ring_scale, warp, 0);
+                       g_editor.ImageEditorApplyPixels(buffer_id, -1, pixels);
+                   });
+               });
+           }},
+          {"Fill Wood (Turned)...",
+           [pane_id, buffer_id] {
+               g_editor.FocusPaneById(pane_id);
+               g_editor.BeginPromptNative("Ring scale (higher = more streaks)", "4.0", [pane_id, buffer_id](const std::string &ring_text) {
+                   float ring_scale = 4.0f;
+                   try {
+                       ring_scale = std::stof(ring_text);
+                   } catch (...) {
+                       return;
+                   }
+                   g_editor.FocusPaneById(pane_id);
+                   g_editor.BeginPromptNative("Warp (streak waviness)", "3.0", [buffer_id, ring_scale](const std::string &warp_text) {
+                       float warp = 3.0f;
+                       try {
+                           warp = std::stof(warp_text);
+                       } catch (...) {
+                           return;
+                       }
+                       auto *s = g_editor.GetImageEditorMutable(buffer_id);
+                       if (!s) return;
+                       procgen::Rgba8 ca{s->primary_color.r, s->primary_color.g, s->primary_color.b, s->primary_color.a};
+                       procgen::Rgba8 cb{s->secondary_color.r, s->secondary_color.g, s->secondary_color.b, s->secondary_color.a};
+                       std::vector<unsigned char> pixels;
+                       procgen::FillWoodTurned(&pixels, s->width, s->height, ca, cb, ring_scale, warp, 0);
+                       g_editor.ImageEditorApplyPixels(buffer_id, -1, pixels);
+                   });
+               });
+           }},
+          {"Fill Checkerboard...",
+           [pane_id, buffer_id] {
+               g_editor.FocusPaneById(pane_id);
+               g_editor.BeginPromptNative("Squares per side", "8", [buffer_id](const std::string &text) {
+                   int squares = 8;
+                   try {
+                       squares = std::stoi(text);
+                   } catch (...) {
+                       return;
+                   }
+                   auto *s = g_editor.GetImageEditorMutable(buffer_id);
+                   if (!s) return;
+                   procgen::Rgba8 ca{s->primary_color.r, s->primary_color.g, s->primary_color.b, s->primary_color.a};
+                   procgen::Rgba8 cb{s->secondary_color.r, s->secondary_color.g, s->secondary_color.b, s->secondary_color.a};
+                   std::vector<unsigned char> pixels;
+                   procgen::FillCheckerboard(&pixels, s->width, s->height, ca, cb, squares, squares);
+                   g_editor.ImageEditorApplyPixels(buffer_id, -1, pixels);
+               });
+           }},
+          {"Fill Marble...",
+           [pane_id, buffer_id] {
+               g_editor.FocusPaneById(pane_id);
+               g_editor.BeginPromptNative("Vein scale", "0.03", [pane_id, buffer_id](const std::string &scale_text) {
+                   float scale = 0.03f;
+                   try {
+                       scale = std::stof(scale_text);
+                   } catch (...) {
+                       return;
+                   }
+                   g_editor.FocusPaneById(pane_id);
+                   g_editor.BeginPromptNative("Turbulence", "6.0", [buffer_id, scale](const std::string &turb_text) {
+                       float turbulence = 6.0f;
+                       try {
+                           turbulence = std::stof(turb_text);
+                       } catch (...) {
+                           return;
+                       }
+                       auto *s = g_editor.GetImageEditorMutable(buffer_id);
+                       if (!s) return;
+                       procgen::Rgba8 ca{s->primary_color.r, s->primary_color.g, s->primary_color.b, s->primary_color.a};
+                       procgen::Rgba8 cb{s->secondary_color.r, s->secondary_color.g, s->secondary_color.b, s->secondary_color.a};
+                       std::vector<unsigned char> pixels;
+                       procgen::FillMarble(&pixels, s->width, s->height, ca, cb, scale, turbulence, 0);
+                       g_editor.ImageEditorApplyPixels(buffer_id, -1, pixels);
+                   });
+               });
+           }},
+          {"Blur...",
+           [pane_id, buffer_id] {
+               g_editor.FocusPaneById(pane_id);
+               g_editor.BeginPromptNative("Blur radius (pixels)", "2", [buffer_id](const std::string &text) {
+                   int radius = 2;
+                   try {
+                       radius = std::stoi(text);
+                   } catch (...) {
+                       return;
+                   }
+                   g_editor.ImageEditorBlurLayer(buffer_id, -1, radius);
+               });
+           }}}});
 
     float menu_x = x;
     std::vector<float> menu_starts(menus.size()), menu_widths(menus.size());
@@ -18887,26 +19265,32 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
         RegisterClickRegion(item_rect, [idx] { g_imgedit_dropdown_open = g_imgedit_dropdown_open == idx ? -1 : idx; });
         menu_x += mw;
     }
+    // Split into a registration half (here, before the toolbar/canvas/
+    // sidebar below) and a drawing half (at the very end of this
+    // function, after everything else). g_click_regions is first-match-
+    // wins by registration order, so the dropdown's item regions have to
+    // be registered *before* whatever's visually underneath them to win
+    // a click there -- but *drawing* the dropdown here, before the
+    // toolbar/canvas/layers sidebar, meant those later opaque draws
+    // immediately painted right over it every frame, so it was never
+    // actually visible on screen despite the click-to-open state
+    // toggling correctly (the same latent bug MODEL3D_PLAN.md's own
+    // menubar dropdown hit and fixed -- see DrawModel3DPane's identical
+    // comment). dd_x/dd_y/dd_w/dd_h/dd_item_h are computed once here and
+    // reused by the drawing half below (declared at function scope, not
+    // inside the `if`, so they survive to the end either way).
     bool dropdown_open = g_imgedit_dropdown_open >= 0 && g_imgedit_dropdown_open < static_cast<int>(menus.size());
+    float dd_x = 0.0f, dd_y = 0.0f, dd_w = 0.0f, dd_h = 0.0f, dd_item_h = 0.0f;
     if (dropdown_open) {
         const ImgEditMenu &menu = menus[static_cast<size_t>(g_imgedit_dropdown_open)];
-        float dd_x = menu_starts[static_cast<size_t>(g_imgedit_dropdown_open)];
-        float dd_y = y + kImgEditMenubarH;
-        float dd_w = 0.0f;
+        dd_x = menu_starts[static_cast<size_t>(g_imgedit_dropdown_open)];
+        dd_y = y + kImgEditMenubarH;
         for (const auto &item : menu.items) dd_w = std::max(dd_w, gfx::MeasureTextEx(g_font, item.label.c_str(), font_size, 0).x);
         dd_w += 24.0f;
-        float item_h = font_size + 12.0f;
-        float dd_h = item_h * static_cast<float>(menu.items.size());
-        gfx::DrawRectangle(static_cast<int>(dd_x), static_cast<int>(dd_y), static_cast<int>(dd_w), static_cast<int>(dd_h),
-                      ResolveHlGroup("Picker"));
-        gfx::DrawRectangleLinesEx(gfx::Rectangle{dd_x, dd_y, dd_w, dd_h}, 1.0f, ResolveHlGroup("Border"));
-        gfx::Vector2 dd_mouse = gfx::GetMousePosition();
+        dd_item_h = font_size + 12.0f;
+        dd_h = dd_item_h * static_cast<float>(menu.items.size());
         for (size_t i = 0; i < menu.items.size(); i++) {
-            gfx::Rectangle item_rect{dd_x, dd_y + static_cast<float>(i) * item_h, dd_w, item_h};
-            bool hovered = gfx::CheckCollisionPointRec(dd_mouse, item_rect);
-            if (hovered) gfx::DrawRectangleRec(item_rect, ResolveHlGroup("MenuHighlight"));
-            gfx::DrawTextEx(g_font, menu.items[i].label.c_str(), gfx::Vector2{dd_x + 10.0f, item_rect.y + 6.0f}, font_size, 0,
-                       ResolveHlGroup("MenuBarFg"));
+            gfx::Rectangle item_rect{dd_x, dd_y + static_cast<float>(i) * dd_item_h, dd_w, dd_item_h};
             std::function<void()> action = menu.items[i].action;
             RegisterClickRegion(item_rect, [action] {
                 action();
@@ -19489,6 +19873,26 @@ void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, fl
         gfx::DrawTextEx(g_font, "x", gfx::Vector2{close_rect.x + 4.0f, close_rect.y + 1.0f}, font_size, 0, ResolveHlGroup("MutedFg"));
         RegisterClickRegion(close_rect, [] { g_imgedit_picker_open = false; });
     }
+
+    // Draws the open menubar dropdown (if any) on top of literally
+    // everything else in this pane (toolbar, canvas, layers sidebar,
+    // color-picker popup) -- its click regions were already registered
+    // much earlier, see that block's own comment for why the two halves
+    // are split this way.
+    if (dropdown_open) {
+        const ImgEditMenu &menu = menus[static_cast<size_t>(g_imgedit_dropdown_open)];
+        gfx::DrawRectangle(static_cast<int>(dd_x), static_cast<int>(dd_y), static_cast<int>(dd_w), static_cast<int>(dd_h),
+                      ResolveHlGroup("Picker"));
+        gfx::DrawRectangleLinesEx(gfx::Rectangle{dd_x, dd_y, dd_w, dd_h}, 1.0f, ResolveHlGroup("Border"));
+        gfx::Vector2 dd_mouse = gfx::GetMousePosition();
+        for (size_t i = 0; i < menu.items.size(); i++) {
+            gfx::Rectangle item_rect{dd_x, dd_y + static_cast<float>(i) * dd_item_h, dd_w, dd_item_h};
+            bool hovered = gfx::CheckCollisionPointRec(dd_mouse, item_rect);
+            if (hovered) gfx::DrawRectangleRec(item_rect, ResolveHlGroup("MenuHighlight"));
+            gfx::DrawTextEx(g_font, menu.items[i].label.c_str(), gfx::Vector2{dd_x + 10.0f, item_rect.y + 6.0f}, font_size, 0,
+                       ResolveHlGroup("MenuBarFg"));
+        }
+    }
 }
 
 // --- In-pane 3D modeler (MODEL3D.md) ----------------------------------------
@@ -19650,6 +20054,50 @@ gfx::Matrix Model3DObjectMatrix(const Object3D &obj) {
 }
 
 /**
+ * @brief Fills in `material`'s albedo/normal/roughness/metallic maps from an Object3D, shared by both
+ * DrawPane's live viewport and Model3DRenderToImageFile's headless render so the two draw loops can't
+ * drift apart (CHESS_SET_BENCHMARK_PLAN.md's Phase 1 basic-PBR material model).
+ * @param material The shared g_model3d_default_material to mutate in place (its maps array is reused
+ * across every object drawn this frame, same as the pre-Phase-1 albedo-only code already did).
+ * @param obj The object whose material fields (color, roughness, metallic, texture indices) to apply.
+ * @param gpu_textures The active scene's GPU-uploaded textures, parallel to Scene::textures.
+ * @param white_texture The 1x1 white fallback bound whenever a map slot has no texture.
+ * @param apply_textures "Toggle Textures" (CHESS_SET_BENCHMARK_PLAN.md follow-up): false forces
+ * every map slot to its solid fallback regardless of what the object actually has assigned, so a
+ * viewer can A/B a scene's plain per-object color against its textured look. Does not affect
+ * roughness/metallic *scalars* (only their map textures) -- those still shade normally, since
+ * that's lighting response, not texturing, and is instead what the separate unlit toggle covers.
+ */
+void SetModel3DObjectMaterial(gfx::Material *material, const Object3D &obj,
+                               const std::vector<gfx::Texture2D> &gpu_textures, gfx::Texture2D white_texture,
+                               bool apply_textures = true) {
+    material->maps[gfx::kMaterialMapAlbedo].color =
+        gfx::Color{static_cast<unsigned char>(std::clamp(obj.color.r, 0.0f, 1.0f) * 255.0f),
+              static_cast<unsigned char>(std::clamp(obj.color.g, 0.0f, 1.0f) * 255.0f),
+              static_cast<unsigned char>(std::clamp(obj.color.b, 0.0f, 1.0f) * 255.0f),
+              static_cast<unsigned char>(std::clamp(obj.color.a, 0.0f, 1.0f) * 255.0f)};
+    // A textured object binds its own GPU texture (sampled, then tinted by
+    // the color set above -- texelColor * colDiffuse); reset to the
+    // default white texture otherwise so a textured/mapped object earlier
+    // in this frame's draw loop can't leak onto an untextured one later.
+    auto resolve_map = [&](int texture_index) -> gfx::Texture2D {
+        if (!apply_textures) return gfx::Texture2D{};
+        bool has = texture_index >= 0 && texture_index < static_cast<int>(gpu_textures.size()) &&
+                   gpu_textures[static_cast<size_t>(texture_index)].id > 0;
+        return has ? gpu_textures[static_cast<size_t>(texture_index)] : gfx::Texture2D{};
+    };
+    material->maps[gfx::kMaterialMapAlbedo].texture = resolve_map(obj.texture_index);
+    if (material->maps[gfx::kMaterialMapAlbedo].texture.id == 0) {
+        material->maps[gfx::kMaterialMapAlbedo].texture = white_texture;
+    }
+    material->maps[gfx::kMaterialMapNormal].texture = resolve_map(obj.normal_map_index);
+    material->maps[gfx::kMaterialMapRoughness].texture = resolve_map(obj.roughness_map_index);
+    material->maps[gfx::kMaterialMapRoughness].value = obj.roughness;
+    material->maps[gfx::kMaterialMapMetalness].texture = resolve_map(obj.metallic_map_index);
+    material->maps[gfx::kMaterialMapMetalness].value = obj.metallic;
+}
+
+/**
  * @brief Computes an orbit Camera3D from a Model3DSession's yaw/pitch/distance/target state.
  * @param sess The session to read the camera state from.
  * @return The equivalent raylib Camera3D.
@@ -19770,54 +20218,310 @@ std::vector<std::pair<int, int>> BuildOutlinerOrder(const Scene &scene) {
  * @param transparent If true, the background is transparent instead of the pane's own background color.
  * @param show_grid Whether to draw the ground grid.
  * @param wireframe Whether to render in wireframe mode.
+ * @param show_textures Whether to sample each object's own texture maps, or fall back to plain colors.
+ * @param unlit Whether to skip lighting entirely and output raw textured/tinted color.
  * @return True on success; false if `buffer_id` isn't a 3D-modeler buffer or the export failed.
  */
-bool Model3DRenderToImageFile(int buffer_id, const std::string &path, int width, int height, bool transparent,
-                               bool show_grid, bool wireframe) {
-    Model3DSession *sess = g_editor.GetModel3DMutable(buffer_id);
-    if (!sess) return false;
+/**
+ * @brief Renders one frame of `sess`'s scene from `camera` into an in-memory RGBA8 pixel buffer
+ * (top-down row order -- already vertically flipped from the GPU's bottom-up render-texture
+ * convention, ready for an image/JPEG encoder). The shared core Model3DRenderToImageFile and
+ * Model3DRenderAnimationToVideoFile (ANIMATION_VIDEO_PLAN.md Phase 4) both build on, so the
+ * RenderTexture2D/BeginMode3D/DrawMesh/LoadImageFromTexture/ImageFlipVertical sequence exists in
+ * exactly one place instead of being duplicated per caller.
+ * @param sess The session to render (mutable: GetOrBuildModel3DMeshes/Textures below may populate
+ * its GPU mesh/texture cache).
+ * @param camera The camera to render from -- callers decide whether that's the session's own live
+ * camera (Model3DBuildCamera) or a sampled animation keyframe (Model3DSampleCameraAtTime).
+ * @param width Output width in pixels.
+ * @param height Output height in pixels.
+ * @param transparent If true, the background is transparent instead of the pane's own background color.
+ * @param show_grid Whether to draw the ground grid.
+ * @param wireframe Whether to render in wireframe mode.
+ * @param show_textures Whether to sample each object's own texture maps, or fall back to plain colors.
+ * @param unlit Whether to skip lighting entirely and output raw textured/tinted color.
+ * @return `width*height*4` RGBA8 bytes, row-major, no padding.
+ */
+/**
+ * @brief Converts a Scene's lights (model3d_doc.h's own Light, document-model shape) into the flat
+ * gfx::SceneLight list the renderer backend actually consumes (MULTILIGHT_ANIMATION_PLAN.md Part
+ * A) -- keeps model3d_doc.h decoupled from gfx::, matching how Vec3f/gfx::Vector3 are already two
+ * independent types across that same boundary elsewhere in this codebase.
+ * @param scene The scene whose lights to convert.
+ * @return One gfx::SceneLight per visible Light in `scene.lights`, in order.
+ */
+std::vector<gfx::SceneLight> BuildSceneLights(const Scene &scene) {
+    std::vector<gfx::SceneLight> out;
+    out.reserve(scene.lights.size());
+    for (const Light &l : scene.lights) {
+        if (!l.visible) continue;
+        gfx::SceneLight gl;
+        gl.type = l.type == LightType::Point ? gfx::LightType::Point : gfx::LightType::Directional;
+        gfx::Vector3 pos_or_dir = l.type == LightType::Point ? gfx::Vector3{l.position.x, l.position.y, l.position.z}
+                                                              : gfx::Vector3{l.direction.x, l.direction.y, l.direction.z};
+        gl.direction_or_position = pos_or_dir;
+        gl.color = gfx::Vector3{l.color.r, l.color.g, l.color.b};
+        gl.intensity = l.intensity;
+        gl.range = l.range;
+        out.push_back(gl);
+    }
+    return out;
+}
 
-    gfx::Camera3D camera = Model3DBuildCamera(*sess);
-    std::vector<gfx::Mesh> &gpu_meshes = GetOrBuildModel3DMeshes(buffer_id, sess->scene, sess->scene_generation);
-    std::vector<gfx::Texture2D> &gpu_textures = GetOrBuildModel3DTextures(buffer_id, sess->scene, sess->scene_generation);
+/**
+ * @brief Runs the shadow-map depth pass for `sess`'s scene (CHESS_REALISM_PLAN.md Phase 3): picks
+ * the shadow-casting light (light index 0 if it's a visible Directional light, else the same
+ * legacy hardcoded key-light direction the renderer falls back to when a scene has no lights of its
+ * own), fits the light frustum to the scene's true world bounds (ComputeSceneWorldBounds), and draws
+ * every visible mesh into the shadow map. Must run before BeginMode3D/DrawMesh for the same frame --
+ * gfx::BeginShadowPass/DrawMeshShadow/EndShadowPass's own contract.
+ */
+void Model3DRunShadowPass(Model3DSession &sess, std::vector<gfx::Mesh> &gpu_meshes) {
+    // Light struct convention (model3d_doc.h): direction points FROM a lit
+    // surface TOWARD the light. BeginShadowPass wants the direction light
+    // *travels* (light toward scene) -- negate.
+    Vec3f surface_to_light{0.4f, 0.8f, 0.5f};  // legacy key light's own raw (unnormalized) direction
+    if (!sess.scene.lights.empty() && sess.scene.lights[0].visible && sess.scene.lights[0].type == LightType::Directional) {
+        surface_to_light = sess.scene.lights[0].direction;
+    }
+    Vec3f mn, mx;
+    ComputeSceneWorldBounds(sess.scene, &mn, &mx);
+    gfx::BeginShadowPass(gfx::Vector3{-surface_to_light.x, -surface_to_light.y, -surface_to_light.z},
+                          gfx::Vector3{mn.x, mn.y, mn.z}, gfx::Vector3{mx.x, mx.y, mx.z});
+    for (const Object3D &obj : sess.scene.objects) {
+        if (!obj.visible) continue;
+        if (obj.mesh_index < 0 || obj.mesh_index >= static_cast<int>(gpu_meshes.size())) continue;
+        gfx::DrawMeshShadow(gpu_meshes[static_cast<size_t>(obj.mesh_index)], Model3DObjectMatrix(obj));
+    }
+    gfx::EndShadowPass();
+}
+
+std::vector<unsigned char> Model3DRenderFrameToPixels(Model3DSession &sess, const gfx::Camera3D &camera, int width, int height,
+                                                        bool transparent, bool show_grid, bool wireframe, bool show_textures,
+                                                        bool unlit) {
+    std::vector<gfx::Mesh> &gpu_meshes = GetOrBuildModel3DMeshes(sess.buffer_id, sess.scene, sess.scene_generation);
+    std::vector<gfx::Texture2D> &gpu_textures = GetOrBuildModel3DTextures(sess.buffer_id, sess.scene, sess.scene_generation);
     if (!g_model3d_default_material_loaded) {
         g_model3d_default_material = gfx::LoadMaterialDefault();
         g_model3d_default_white_texture = g_model3d_default_material.maps[gfx::kMaterialMapAlbedo].texture;
         g_model3d_default_material_loaded = true;
     }
 
+    Model3DRunShadowPass(sess, gpu_meshes);
+
     gfx::RenderTexture2D rt = gfx::LoadRenderTexture(width, height);
     gfx::BeginTextureMode(rt);
     if (transparent) gfx::ClearBackground(gfx::Color{0, 0, 0, 0});
     else gfx::ClearBackground(ResolveHlGroup("NormalBg"));
-    gfx::BeginMode3D(camera);
+    gfx::BeginMode3D(camera, width, height);
     if (show_grid) gfx::DrawGrid(20, 1.0f);
     if (wireframe) gfx::EnableWireMode();
-    for (const Object3D &obj : sess->scene.objects) {
+    gfx::SetUnlitMode(unlit);
+    std::vector<gfx::SceneLight> scene_lights = BuildSceneLights(sess.scene);
+    gfx::SetSceneLights(scene_lights.data(), static_cast<int>(scene_lights.size()));
+    for (const Object3D &obj : sess.scene.objects) {
         if (!obj.visible) continue;
         if (obj.mesh_index < 0 || obj.mesh_index >= static_cast<int>(gpu_meshes.size())) continue;
         gfx::Matrix mat = Model3DObjectMatrix(obj);
-        g_model3d_default_material.maps[gfx::kMaterialMapAlbedo].color =
-            gfx::Color{static_cast<unsigned char>(std::clamp(obj.color.r, 0.0f, 1.0f) * 255.0f),
-                  static_cast<unsigned char>(std::clamp(obj.color.g, 0.0f, 1.0f) * 255.0f),
-                  static_cast<unsigned char>(std::clamp(obj.color.b, 0.0f, 1.0f) * 255.0f),
-                  static_cast<unsigned char>(std::clamp(obj.color.a, 0.0f, 1.0f) * 255.0f)};
-        bool has_texture = obj.texture_index >= 0 && obj.texture_index < static_cast<int>(gpu_textures.size()) &&
-                            gpu_textures[static_cast<size_t>(obj.texture_index)].id > 0;
-        g_model3d_default_material.maps[gfx::kMaterialMapAlbedo].texture =
-            has_texture ? gpu_textures[static_cast<size_t>(obj.texture_index)] : g_model3d_default_white_texture;
+        SetModel3DObjectMaterial(&g_model3d_default_material, obj, gpu_textures, g_model3d_default_white_texture,
+                                  show_textures);
         gfx::DrawMesh(gpu_meshes[static_cast<size_t>(obj.mesh_index)], g_model3d_default_material, mat);
     }
+    gfx::SetUnlitMode(false);
     if (wireframe) gfx::DisableWireMode();
     gfx::EndMode3D();
     gfx::EndTextureMode();
 
     gfx::Image img = gfx::LoadImageFromTexture(rt.texture);
     gfx::ImageFlipVertical(&img);  // render-texture textures are stored bottom-up (OpenGL convention)
-    bool ok = gfx::ExportImage(img, path.c_str());
+    std::vector<unsigned char> pixels(static_cast<size_t>(width) * static_cast<size_t>(height) * 4);
+    std::memcpy(pixels.data(), img.data, pixels.size());
     gfx::UnloadImage(img);
     gfx::UnloadRenderTexture(rt);
-    return ok;
+    return pixels;
+}
+
+/**
+ * @brief Box-downsamples an RGBA8 buffer from src_w x src_h to dst_w x dst_h, where src dims are
+ * each an exact integer multiple of the dst dims (the supersampled-anti-aliasing render path's own
+ * contract -- see CHESS_REALISM_PLAN.md Phase 2). Each destination pixel is the straight average of
+ * its corresponding factor_x * factor_y block of source pixels, per channel including alpha.
+ */
+std::vector<unsigned char> Model3DBoxDownsample(const std::vector<unsigned char> &src, int src_w, int src_h, int dst_w,
+                                                  int dst_h) {
+    if (src_w == dst_w && src_h == dst_h) return src;
+    int factor_x = src_w / dst_w;
+    int factor_y = src_h / dst_h;
+    std::vector<unsigned char> out(static_cast<size_t>(dst_w) * static_cast<size_t>(dst_h) * 4);
+    int sample_count = factor_x * factor_y;
+    for (int dy = 0; dy < dst_h; dy++) {
+        for (int dx = 0; dx < dst_w; dx++) {
+            int sum[4] = {0, 0, 0, 0};
+            for (int fy = 0; fy < factor_y; fy++) {
+                int sy = dy * factor_y + fy;
+                for (int fx = 0; fx < factor_x; fx++) {
+                    int sx = dx * factor_x + fx;
+                    size_t src_idx = (static_cast<size_t>(sy) * static_cast<size_t>(src_w) + static_cast<size_t>(sx)) * 4;
+                    sum[0] += src[src_idx + 0];
+                    sum[1] += src[src_idx + 1];
+                    sum[2] += src[src_idx + 2];
+                    sum[3] += src[src_idx + 3];
+                }
+            }
+            size_t dst_idx = (static_cast<size_t>(dy) * static_cast<size_t>(dst_w) + static_cast<size_t>(dx)) * 4;
+            out[dst_idx + 0] = static_cast<unsigned char>(sum[0] / sample_count);
+            out[dst_idx + 1] = static_cast<unsigned char>(sum[1] / sample_count);
+            out[dst_idx + 2] = static_cast<unsigned char>(sum[2] / sample_count);
+            out[dst_idx + 3] = static_cast<unsigned char>(sum[3] / sample_count);
+        }
+    }
+    return out;
+}
+
+// Default supersample factor for offscreen renders (renderToImage/renderAnimationToVideo):
+// render at width*S, height*S then box-downsample -- a real, if brute-force, anti-aliasing win
+// (CHESS_REALISM_PLAN.md Phase 2) with no new GL entry points needed. Clamped low (<=4) since cost
+// grows with the square of the factor.
+constexpr int kModel3DDefaultSupersample = 2;
+
+bool Model3DRenderToImageFile(int buffer_id, const std::string &path, int width, int height, bool transparent,
+                               bool show_grid, bool wireframe, bool show_textures, bool unlit, int supersample) {
+    Model3DSession *sess = g_editor.GetModel3DMutable(buffer_id);
+    if (!sess) return false;
+
+    int s = supersample > 0 ? supersample : 1;
+    gfx::Camera3D camera = Model3DBuildCamera(*sess);
+    std::vector<unsigned char> pixels = Model3DRenderFrameToPixels(*sess, camera, width * s, height * s, transparent,
+                                                                     show_grid, wireframe, show_textures, unlit);
+    pixels = Model3DBoxDownsample(pixels, width * s, height * s, width, height);
+    gfx::Image img{pixels.data(), width, height, 1, gfx::kPixelFormatR8G8B8A8};
+    return gfx::ExportImage(img, path.c_str());
+}
+
+/**
+ * @brief Renders `sess`'s camera-keyframe animation (Model3DSampleCameraAtTime) to a Motion-JPEG
+ * `.mov` file: samples the camera at `fps` intervals across the full keyframe range, renders each
+ * frame via Model3DRenderFrameToPixels, JPEG-encodes it (jpeg::Encode), and muxes the whole
+ * sequence in one `mov::WriteMovFile` call at the end (ANIMATION_VIDEO_PLAN.md Phase 4).
+ * @param buffer_id The 3D-modeler buffer id to render.
+ * @param path Destination `.mov` file path.
+ * @param fps Frames per second to sample the animation at (also the muxed file's frame rate).
+ * @param width Output width in pixels.
+ * @param height Output height in pixels.
+ * @param quality JPEG quality (1-100) for every frame.
+ * @param show_grid Whether to draw the ground grid.
+ * @param wireframe Whether to render in wireframe mode.
+ * @param show_textures Whether to sample each object's own texture maps, or fall back to plain colors.
+ * @param unlit Whether to skip lighting entirely and output raw textured/tinted color.
+ * @param out_error Set to a human-readable reason on failure.
+ * @return True on success.
+ */
+bool Model3DRenderAnimationToVideoFile(int buffer_id, const std::string &path, int fps, int width, int height, int quality,
+                                        bool show_grid, bool wireframe, bool show_textures, bool unlit, int supersample,
+                                        std::string *out_error) {
+    auto fail = [&](const char *msg) {
+        if (out_error) *out_error = msg;
+        return false;
+    };
+    Model3DSession *sess = g_editor.GetModel3DMutable(buffer_id);
+    if (!sess) return fail("not a 3D-modeler buffer");
+    // MULTILIGHT_ANIMATION_PLAN.md Part B: a camera-only animation (as
+    // before), an object-only animation (a static camera, one or more
+    // moving objects), or both together are all valid -- only reject if
+    // there's genuinely nothing to animate.
+    bool has_camera_anim = sess->camera_keyframes.size() >= 2;
+    bool has_object_anim = false;
+    for (const auto &kv : sess->object_keyframes) {
+        if (kv.second.size() >= 2) {
+            has_object_anim = true;
+            break;
+        }
+    }
+    if (!has_camera_anim && !has_object_anim) {
+        return fail("scene has no animation (need >=2 camera keyframes, or >=2 keyframes on at least one object)");
+    }
+    if (fps <= 0) return fail("fps must be positive");
+    int s = supersample > 0 ? supersample : 1;
+
+    // Duration is the max end time across the camera track and every
+    // object track -- whichever animation is longer wins; any shorter
+    // track just holds its own last value for the remaining frames
+    // (Model3DSampleCameraAtTime/Model3DSampleObjectAtTime already clamp
+    // past their own last keyframe, so this needs no special-casing here).
+    float duration = has_camera_anim ? sess->camera_keyframes.back().time : 0.0f;
+    for (const auto &kv : sess->object_keyframes) {
+        if (!kv.second.empty()) duration = std::max(duration, kv.second.back().time);
+    }
+    int num_frames = std::max(1, static_cast<int>(std::lround(duration * static_cast<float>(fps))) + 1);
+    std::vector<std::string> jpeg_frames;
+    jpeg_frames.reserve(static_cast<size_t>(num_frames));
+    for (int i = 0; i < num_frames; i++) {
+        float t = static_cast<float>(i) / static_cast<float>(fps);
+
+        // Model3DBuildCamera reads the session's own camera_target/yaw/pitch/distance/fov fields
+        // directly (it has no separate "camera params" argument) -- rather than duplicating its
+        // math here, temporarily substitute the sampled values, build, then restore, so the live
+        // viewport's own camera is never actually disturbed by an in-progress export. Skipped
+        // entirely for an object-only animation (has_camera_anim false) -- Model3DBuildCamera just
+        // reads whatever the live (static) camera already is.
+        gfx::Camera3D camera;
+        if (has_camera_anim) {
+            Model3DSession::CameraKeyframe sample = Model3DSampleCameraAtTime(*sess, t);
+            Vec3f saved_target = sess->camera_target;
+            float saved_yaw = sess->camera_yaw, saved_pitch = sess->camera_pitch, saved_distance = sess->camera_distance,
+                  saved_fov = sess->camera_fov;
+            sess->camera_target = sample.target;
+            sess->camera_yaw = sample.yaw;
+            sess->camera_pitch = sample.pitch;
+            sess->camera_distance = sample.distance;
+            sess->camera_fov = sample.fov;
+            camera = Model3DBuildCamera(*sess);
+            sess->camera_target = saved_target;
+            sess->camera_yaw = saved_yaw;
+            sess->camera_pitch = saved_pitch;
+            sess->camera_distance = saved_distance;
+            sess->camera_fov = saved_fov;
+        } else {
+            camera = Model3DBuildCamera(*sess);
+        }
+
+        // Same save/sample-write/render/restore shape as the camera above, applied to every
+        // animated object's transform instead of the camera fields.
+        struct SavedTransform {
+            int object_id;
+            Vec3f position, rotation_deg, scale;
+        };
+        std::vector<SavedTransform> saved;
+        for (const auto &kv : sess->object_keyframes) {
+            if (kv.second.size() < 2) continue;
+            Object3D *obj = sess->scene.FindObject(kv.first);
+            if (!obj) continue;
+            saved.push_back({kv.first, obj->position, obj->rotation_deg, obj->scale});
+            Model3DSession::ObjectKeyframe sample = Model3DSampleObjectAtTime(*sess, kv.first, t);
+            obj->position = sample.position;
+            obj->rotation_deg = sample.rotation_deg;
+            obj->scale = sample.scale;
+        }
+
+        std::vector<unsigned char> pixels = Model3DRenderFrameToPixels(*sess, camera, width * s, height * s,
+                                                                         /*transparent=*/false, show_grid, wireframe,
+                                                                         show_textures, unlit);
+        pixels = Model3DBoxDownsample(pixels, width * s, height * s, width, height);
+
+        for (const SavedTransform &saved_transform : saved) {
+            Object3D *obj = sess->scene.FindObject(saved_transform.object_id);
+            if (!obj) continue;
+            obj->position = saved_transform.position;
+            obj->rotation_deg = saved_transform.rotation_deg;
+            obj->scale = saved_transform.scale;
+        }
+
+        std::string frame_jpeg = jpeg::Encode(width, height, 4, pixels.data(), width * 4, quality);
+        if (frame_jpeg.empty()) return fail("JPEG encode failed for a frame");
+        jpeg_frames.push_back(std::move(frame_jpeg));
+    }
+
+    return mov::WriteMovFile(path, width, height, fps, 1, jpeg_frames, out_error);
 }
 
 /**
@@ -19879,13 +20583,15 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
                             std::string dir = slash == std::string::npos ? "" : current.substr(0, slash + 1);
                             g_editor.BeginPromptNative("Render to (.png)", dir + "render.png", [buffer_id](const std::string &path) {
                                 if (path.empty()) return;
-                                // Reads show_grid/wireframe live (not captured when the menu was
-                                // drawn) so the render matches whatever the viewport actually
-                                // looks like at the moment the path prompt is confirmed.
+                                // Reads show_grid/wireframe/show_textures/unlit live (not captured
+                                // when the menu was drawn) so the render matches whatever the
+                                // viewport actually looks like at the moment the path prompt is
+                                // confirmed.
                                 auto *s = g_editor.GetModel3DMutable(buffer_id);
                                 if (!s) return;
                                 bool ok = Model3DRenderToImageFile(buffer_id, path, 1024, 768, /*transparent=*/false, s->show_grid,
-                                                                    s->wireframe);
+                                                                    s->wireframe, s->show_textures, s->unlit,
+                                                                    kModel3DDefaultSupersample);
                                 if (!ok) g_editor.Notify("Failed to render \"" + path + "\"", Editor::NotifyLevel::Error);
                                 else g_editor.Notify("\"" + path + "\" written");
                             });
@@ -19999,6 +20705,14 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
                        {"Toggle Wireframe",
                         [buffer_id] {
                             if (auto *s = g_editor.GetModel3DMutable(buffer_id)) s->wireframe = !s->wireframe;
+                        }},
+                       {"Toggle Textures",
+                        [buffer_id] {
+                            if (auto *s = g_editor.GetModel3DMutable(buffer_id)) s->show_textures = !s->show_textures;
+                        }},
+                       {"Toggle Lighting",
+                        [buffer_id] {
+                            if (auto *s = g_editor.GetModel3DMutable(buffer_id)) s->unlit = !s->unlit;
                         }},
                        {"Frame All", [buffer_id] { g_editor.Model3DFrameAll(buffer_id); }}}});
     if (sess.mesh_edit_mode) {
@@ -20633,31 +21347,25 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
             }
         }
 
+        Model3DRunShadowPass(sess, gpu_meshes);
+
         gfx::BeginTextureMode(rt);
         gfx::ClearBackground(ResolveHlGroup("NormalBg"));
         gfx::BeginMode3D(camera);
         if (sess.show_grid) gfx::DrawGrid(20, 1.0f);
         if (sess.wireframe) gfx::EnableWireMode();
+        gfx::SetUnlitMode(sess.unlit);
+        std::vector<gfx::SceneLight> live_scene_lights = BuildSceneLights(sess.scene);
+        gfx::SetSceneLights(live_scene_lights.data(), static_cast<int>(live_scene_lights.size()));
         for (const Object3D &obj : sess.scene.objects) {
             if (!obj.visible) continue;
             if (obj.mesh_index < 0 || obj.mesh_index >= static_cast<int>(gpu_meshes.size())) continue;
             gfx::Matrix mat = Model3DObjectMatrix(obj);
-            g_model3d_default_material.maps[gfx::kMaterialMapAlbedo].color =
-                gfx::Color{static_cast<unsigned char>(std::clamp(obj.color.r, 0.0f, 1.0f) * 255.0f),
-                      static_cast<unsigned char>(std::clamp(obj.color.g, 0.0f, 1.0f) * 255.0f),
-                      static_cast<unsigned char>(std::clamp(obj.color.b, 0.0f, 1.0f) * 255.0f),
-                      static_cast<unsigned char>(std::clamp(obj.color.a, 0.0f, 1.0f) * 255.0f)};
-            // A textured object binds its own GPU texture (sampled, then
-            // tinted by the color set above -- texelColor * colDiffuse,
-            // raylib's default shader); reset to the default white texture
-            // otherwise so a textured object earlier in this loop can't
-            // leak onto an untextured one later in it.
-            bool has_texture = obj.texture_index >= 0 && obj.texture_index < static_cast<int>(gpu_textures.size()) &&
-                                gpu_textures[static_cast<size_t>(obj.texture_index)].id > 0;
-            g_model3d_default_material.maps[gfx::kMaterialMapAlbedo].texture =
-                has_texture ? gpu_textures[static_cast<size_t>(obj.texture_index)] : g_model3d_default_white_texture;
+            SetModel3DObjectMaterial(&g_model3d_default_material, obj, gpu_textures, g_model3d_default_white_texture,
+                                      sess.show_textures);
             gfx::DrawMesh(gpu_meshes[static_cast<size_t>(obj.mesh_index)], g_model3d_default_material, mat);
         }
+        gfx::SetUnlitMode(false);
         if (sess.wireframe) gfx::DisableWireMode();
         for (int sel_id : sess.selection) {
             const Object3D *sel_obj = sess.scene.FindObject(sel_id);
@@ -21353,6 +22061,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     ImageEditorSession *imgedit_sess = g_editor.GetImageEditorMutable(pane.buffer_id);
     bool imgedit_active = imgedit_sess && imgedit_sess->active;
     const PdfSession *pdf_sess = g_editor.GetPdf(pane.buffer_id);
+    // Mutable like model3d_sess below (not const like pdf_sess): the
+    // scrub-bar/play-pause click handling in DrawVideoPane mutates the
+    // session directly, the same reasoning as imgedit_sess/model3d_sess.
+    VideoSession *video_sess = g_editor.GetVideoMutable(pane.buffer_id);
     Model3DSession *model3d_sess = g_editor.GetModel3DMutable(pane.buffer_id);
     const OfficeSession *office_sess = g_editor.GetOffice(pane.buffer_id);
     if (office_sess || imgedit_active) header_bg = ResolveHlGroup("MenuBar");
@@ -21390,8 +22102,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // Lua chunks) for the *just-focused* pane, same "focus first" pattern
     // as vsplit/hsplit/close below; a right click opens the "Setup"
     // dropdown (DrawRunButtonMenu) instead of running anything.
-    const bool show_run_button = !term_sess && !img_sess && !pdf_sess && !office_sess && !sheet_sess && !html_sess &&
-                                   !kanban_sess && !gantt_sess && RunButtonSupportsExtension(LspFiletype(buf.filename));
+    const bool show_run_button = !term_sess && !img_sess && !pdf_sess && !video_sess && !office_sess && !sheet_sess &&
+                                   !html_sess && !kanban_sess && !gantt_sess &&
+                                   RunButtonSupportsExtension(LspFiletype(buf.filename));
     const std::string run_label = " " + Utf8FromCodepoint(0xf04b) + " ";  // nf-fa-play
     const float run_w = show_run_button ? MeasureUiText(run_label, font_size) : 0.0f;
     const float vsplit_w = MeasureUiText(vsplit_label, font_size);
@@ -21569,6 +22282,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             std::string label = "3D: " + buf.filename + " (" + std::to_string(model3d_sess->scene.objects.size()) + " objects, " +
                                   std::to_string(model3d_sess->scene.TotalTriangleCount()) + " tris)";
             if (buf.modified) label += " [+]";
+            gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
+        } else if (video_sess) {
+            std::string label = "Video: " + buf.filename + " (" + std::to_string(video_sess->mov.width) + "x" +
+                                  std::to_string(video_sess->mov.height) + ", " +
+                                  std::to_string(video_sess->mov.frame_index.size()) + " frames @ " +
+                                  std::to_string(static_cast<int>(std::lround(video_sess->mov.fps))) + "fps)";
             gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
         } else if (html_sess) {
             std::string title = html_sess->doc.title.empty() ? html_sess->source : html_sess->doc.title;
@@ -21774,6 +22493,18 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             float right_excl = (focus_click_w - kModel3DSidebarW > 200.0f) ? kModel3DSidebarW : 0.0f;
             focus_click_w = std::max(0.0f, focus_click_w - right_excl);
         }
+        if (video_sess) {
+            // Exclude the transport bar (bottom) -- same reasoning as the
+            // Model3D/ImageEditor/Office exclusions above: its play/pause
+            // button and scrub-bar click regions register later, inside
+            // DrawVideoPane. Missing this silently swallowed every click on
+            // the play/pause button specifically (caught live: the button
+            // never responded no matter how precisely it was clicked, while
+            // the scrub bar right next to it -- driven by direct per-frame
+            // polling inside DrawVideoPane, not a registered click region --
+            // worked immediately; ANIMATION_VIDEO_PLAN.md Phase 5 follow-up).
+            focus_click_h = std::max(0.0f, focus_click_h - kVideoTransportH);
+        }
         // Focuses this pane on a click anywhere in its content area (outside any more specific
         // widget registered below).
         RegisterClickRegion(gfx::Rectangle{focus_click_x, focus_click_y, focus_click_w, focus_click_h},
@@ -21836,6 +22567,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
 
     if (model3d_sess) {
         DrawModel3DPane(pane, *model3d_sess, x, content_y, w, content_h, is_active);
+        DrawPaneBorder(x, y, w, h, is_active);
+        return;
+    }
+
+    if (video_sess) {
+        DrawVideoPane(pane, *video_sess, x, content_y, w, content_h, is_active);
         DrawPaneBorder(x, y, w, h, is_active);
         return;
     }
@@ -26091,11 +26828,17 @@ void MepTraceLogCallback(int logLevel, const char *text, va_list args) {
     fputs(prefix, g_trace_log_file);
     // text is raylib's own runtime format string, forwarded verbatim from
     // this TraceLogCallback -- there's no literal to give the compiler
-    // here, and no annotation on this function changes that (clang's
-    // -Wformat-nonliteral flags this call under IWYU's clang; GCC's
-    // -Wformat=2, this project's own compiler, does not flag it, a real
-    // divergence between the two rather than a bug in this code).
+    // here, and no annotation on this function changes that. Clang's
+    // -Wformat-nonliteral flags this call (previously only visible via
+    // IWYU's own separate pinned clang; now a real -Werror blocker since
+    // BUILD_PERFORMANCE_PLAN.md Round 2 Phase D made Clang the project's
+    // default compiler) -- GCC's -Wformat=2 never flagged it, a genuine
+    // compiler divergence rather than a bug in this code, so suppressed
+    // narrowly here rather than dropping -Wformat-nonliteral project-wide.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-nonliteral"
     vfprintf(g_trace_log_file, text, args);
+#pragma GCC diagnostic pop
     fputc('\n', g_trace_log_file);
 }
 
@@ -26280,8 +27023,15 @@ void RegisterModel3DAgentMethods() {
         bool transparent = params.get("transparent").as_bool(false);
         bool show_grid = params.contains("show_grid") ? params.get("show_grid").as_bool(sess->show_grid) : sess->show_grid;
         bool wireframe = params.contains("wireframe") ? params.get("wireframe").as_bool(sess->wireframe) : sess->wireframe;
+        bool show_textures =
+            params.contains("show_textures") ? params.get("show_textures").as_bool(sess->show_textures) : sess->show_textures;
+        bool unlit = params.contains("unlit") ? params.get("unlit").as_bool(sess->unlit) : sess->unlit;
+        int supersample = std::clamp(
+            params.contains("supersample") ? params.get("supersample").as_int(kModel3DDefaultSupersample) : kModel3DDefaultSupersample,
+            1, 4);
 
-        if (!Model3DRenderToImageFile(buffer_id, path, width, height, transparent, show_grid, wireframe)) {
+        if (!Model3DRenderToImageFile(buffer_id, path, width, height, transparent, show_grid, wireframe, show_textures,
+                                       unlit, supersample)) {
             throw std::runtime_error("failed to write image: " + path);
         }
 
@@ -26289,6 +27039,43 @@ void RegisterModel3DAgentMethods() {
         result["path"] = path;
         result["width"] = width;
         result["height"] = height;
+        return result;
+    });
+
+    // ANIMATION_VIDEO_PLAN.md Phase 4: exports a camera-keyframe animation
+    // (model.animOrbitCamera/model.animAddCameraKeyframe) to a real
+    // Motion-JPEG .mov file, reusing Model3DRenderFrameToPixels the same
+    // way model.renderToImage above does -- same param shape/defaults.
+    mep::agent::RegisterUiMethod("model.renderAnimationToVideo", [](const Json &params) {
+        int buffer_id = params.get("buffer_id").as_int(-1);
+        Model3DSession *sess = g_editor.GetModel3DMutable(buffer_id);
+        if (!sess) throw std::runtime_error("not a 3D-modeler buffer: " + std::to_string(buffer_id));
+        std::string path = params.get("path").as_string();
+        if (path.empty()) throw std::runtime_error("path is required");
+        int fps = std::clamp(params.contains("fps") ? params.get("fps").as_int(30) : 30, 1, 120);
+        int width = std::clamp(params.contains("width") ? params.get("width").as_int(1024) : 1024, 16, 4096);
+        int height = std::clamp(params.contains("height") ? params.get("height").as_int(768) : 768, 16, 4096);
+        int quality = std::clamp(params.contains("quality") ? params.get("quality").as_int(85) : 85, 1, 100);
+        bool show_grid = params.contains("show_grid") ? params.get("show_grid").as_bool(sess->show_grid) : sess->show_grid;
+        bool wireframe = params.contains("wireframe") ? params.get("wireframe").as_bool(sess->wireframe) : sess->wireframe;
+        bool show_textures =
+            params.contains("show_textures") ? params.get("show_textures").as_bool(sess->show_textures) : sess->show_textures;
+        bool unlit = params.contains("unlit") ? params.get("unlit").as_bool(sess->unlit) : sess->unlit;
+        int supersample = std::clamp(
+            params.contains("supersample") ? params.get("supersample").as_int(kModel3DDefaultSupersample) : kModel3DDefaultSupersample,
+            1, 4);
+
+        std::string error;
+        if (!Model3DRenderAnimationToVideoFile(buffer_id, path, fps, width, height, quality, show_grid, wireframe,
+                                                show_textures, unlit, supersample, &error)) {
+            throw std::runtime_error("failed to render animation: " + error);
+        }
+
+        Json result = Json::Object();
+        result["path"] = path;
+        result["width"] = width;
+        result["height"] = height;
+        result["fps"] = fps;
         return result;
     });
 }

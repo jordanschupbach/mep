@@ -588,8 +588,8 @@ Value GetProp(const ObjectPtr &obj, const std::string &key) {
             else std::snprintf(text, sizeof(text), "rgba(%d, %d, %d, %g)", r, g, b, static_cast<double>(a) / 255.0);
             return Value::Str(text);
         }
-        if (key == "lineWidth") return Value::Num(obj->canvas_line_width);
-        if (key == "globalAlpha") return Value::Num(obj->canvas_global_alpha);
+        if (key == "lineWidth") return Value::Num(static_cast<double>(obj->canvas_line_width));
+        if (key == "globalAlpha") return Value::Num(static_cast<double>(obj->canvas_global_alpha));
         if (key == "font") return Value::Str(std::to_string(static_cast<int>(obj->canvas_font_size)) + "px monospace");
     }
     if (obj->style_node) {

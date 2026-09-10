@@ -28,9 +28,6 @@
 #include <cstring>
 #include <vector>
 
-#define GLFW_INCLUDE_NONE
-#include <GLFW/glfw3.h>
-
 #include "gfx/gl_shader.h"
 #include "gfx/vecmath.h"
 #include "image_codec.h"
@@ -242,14 +239,12 @@ void NativeRenderer2DBackend::EnsureInit() {
 void NativeRenderer2DBackend::BeginDrawing() {
     EnsureInit();
     int w = 0, h = 0;
-    glfwGetFramebufferSize(NativeContextWindow(impl_->ctx), &w, &h);
+    NativeContextFramebufferSize(impl_->ctx, &w, &h);
     gl::Viewport(0, 0, w, h);
     impl_->UpdateProjection(w, h);
 }
 
-void NativeRenderer2DBackend::EndDrawing() {
-    glfwSwapBuffers(NativeContextWindow(impl_->ctx));
-}
+void NativeRenderer2DBackend::EndDrawing() { NativeContextSwapBuffers(impl_->ctx); }
 
 void NativeRenderer2DBackend::ClearBackground(gfx::Color color) {
     gl::ClearColor(static_cast<float>(color.r) / 255.0f, static_cast<float>(color.g) / 255.0f,
@@ -616,7 +611,18 @@ void NativeRenderer2DBackend::DrawTextureEx(gfx::Texture2D texture, gfx::Vector2
 
 void NativeRenderer2DBackend::DrawTextureRec(gfx::Texture2D texture, gfx::Rectangle source, gfx::Vector2 position,
                                               gfx::Color tint) {
-    gfx::Rectangle dest{position.x, position.y, source.width, source.height};
+    // `source`'s width/height may be negative (a caller's deliberate trick
+    // to flip which part of the texture gets sampled -- e.g. the 3D
+    // modeler's render-texture blit, DrawModel3DPane, uses a negative
+    // source.height to flip a render-texture's bottom-up GL row order back
+    // to top-down). That sign is meaningful ONLY for the source UV
+    // computation inside DrawTexturePro below; the *destination* quad's
+    // on-screen size must stay positive regardless, or its geometry gets
+    // pushed in the wrong direction (found via CHESS_SET_BENCHMARK_PLAN.md's
+    // GUI-toggle work: the model3d viewport blit's quad was being drawn
+    // entirely above its own scissor rect and clipped away, rendering as a
+    // blank pane -- this was the root cause, not the toggle/lighting code).
+    gfx::Rectangle dest{position.x, position.y, std::fabs(source.width), std::fabs(source.height)};
     DrawTexturePro(texture, source, dest, {0, 0}, 0.0f, tint);
 }
 
@@ -677,7 +683,7 @@ void NativeRenderer2DBackend::EndTextureMode() {
     gl::BindFramebuffer(gl::GL_FRAMEBUFFER, 0);
     impl_->current_fbo = 0;
     int w = 0, h = 0;
-    glfwGetFramebufferSize(NativeContextWindow(impl_->ctx), &w, &h);
+    NativeContextFramebufferSize(impl_->ctx, &w, &h);
     gl::Viewport(0, 0, w, h);
     impl_->UpdateProjection(w, h);
 }

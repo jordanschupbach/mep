@@ -766,6 +766,25 @@ int l_pane_split_bottom(lua_State *L) {
     return 0;
 }
 
+// mep.vsplit_right(path): opens `path` in a new vertical-split pane to
+// the RIGHT of the focused one (focused afterward) -- the mirror image
+// of a bare `:vsplit path`/mep.cmd('vsplit') (which, matching vim's own
+// default splitright=off, opens to the left). No ex-command/`:` spelling
+// of this exists since nothing else in mep needs it today; added for the
+// org-mode Run button's output preview (kBuiltinRunButton, main.cpp),
+// which reads left-to-right (source on the left, result on the right)
+// better than vim's own split default gives it for free.
+/**
+ * @brief Implements mep.vsplit_right(path): opens path in a new vertical split to the right of the focused pane.
+ * @param L Lua state; arg 1 is the file path to open in the new pane.
+ * @return Number of values pushed (0).
+ */
+int l_vsplit_right(lua_State *L) {
+    const char *path = luaL_checkstring(L, 1);
+    GetEditor(L)->SplitPaneRight(path);
+    return 0;
+}
+
 // mep.cmd(str): runs str as if typed after ":" and Enter pressed. General
 // escape hatch for Lua to drive any ex-command (":vsplit", ":w", ...).
 /**
@@ -6899,11 +6918,11 @@ bool ReadVec3Field(lua_State *L, int idx, const char *name, Vec3f *out) {
  */
 void PushVec3(lua_State *L, const Vec3f &v) {
     lua_newtable(L);
-    lua_pushnumber(L, v.x);
+    lua_pushnumber(L, static_cast<lua_Number>(v.x));
     lua_setfield(L, -2, "x");
-    lua_pushnumber(L, v.y);
+    lua_pushnumber(L, static_cast<lua_Number>(v.y));
     lua_setfield(L, -2, "y");
-    lua_pushnumber(L, v.z);
+    lua_pushnumber(L, static_cast<lua_Number>(v.z));
     lua_setfield(L, -2, "z");
 }
 
@@ -6948,13 +6967,13 @@ void PushObject3DTable(lua_State *L, const Scene &scene, const Object3D &obj) {
     PushVec3(L, obj.scale);
     lua_setfield(L, -2, "scale");
     lua_newtable(L);
-    lua_pushnumber(L, obj.color.r);
+    lua_pushnumber(L, static_cast<lua_Number>(obj.color.r));
     lua_setfield(L, -2, "r");
-    lua_pushnumber(L, obj.color.g);
+    lua_pushnumber(L, static_cast<lua_Number>(obj.color.g));
     lua_setfield(L, -2, "g");
-    lua_pushnumber(L, obj.color.b);
+    lua_pushnumber(L, static_cast<lua_Number>(obj.color.b));
     lua_setfield(L, -2, "b");
-    lua_pushnumber(L, obj.color.a);
+    lua_pushnumber(L, static_cast<lua_Number>(obj.color.a));
     lua_setfield(L, -2, "a");
     lua_setfield(L, -2, "color");
     int tri_count = (obj.mesh_index >= 0 && obj.mesh_index < static_cast<int>(scene.meshes.size()))
@@ -7214,13 +7233,13 @@ int l_model_camera_get(lua_State *L) {
     lua_newtable(L);
     PushVec3(L, sess->camera_target);
     lua_setfield(L, -2, "target");
-    lua_pushnumber(L, sess->camera_yaw);
+    lua_pushnumber(L, static_cast<lua_Number>(sess->camera_yaw));
     lua_setfield(L, -2, "yaw");
-    lua_pushnumber(L, sess->camera_pitch);
+    lua_pushnumber(L, static_cast<lua_Number>(sess->camera_pitch));
     lua_setfield(L, -2, "pitch");
-    lua_pushnumber(L, sess->camera_distance);
+    lua_pushnumber(L, static_cast<lua_Number>(sess->camera_distance));
     lua_setfield(L, -2, "distance");
-    lua_pushnumber(L, sess->camera_fov);
+    lua_pushnumber(L, static_cast<lua_Number>(sess->camera_fov));
     lua_setfield(L, -2, "fov");
     return 1;
 }
@@ -7235,7 +7254,8 @@ int l_model_redo(lua_State *L) {
     return 0;
 }
 
-// mep.model_set_view(buffer_id, {show_grid=, wireframe=, snap=}) -- each field optional, not undoable.
+// mep.model_set_view(buffer_id, {show_grid=, wireframe=, snap=, show_textures=, unlit=}) -- each
+// field optional, not undoable.
 int l_model_set_view(lua_State *L) {
     int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
     luaL_checktype(L, 2, LUA_TTABLE);
@@ -7251,7 +7271,16 @@ int l_model_set_view(lua_State *L) {
     bool has_snap = !lua_isnil(L, -1);
     bool snap = lua_toboolean(L, -1) != 0;
     lua_pop(L, 1);
-    GetEditor(L)->Model3DSetView(buffer_id, has_show_grid, show_grid, has_wireframe, wireframe, has_snap, snap);
+    lua_getfield(L, 2, "show_textures");
+    bool has_show_textures = !lua_isnil(L, -1);
+    bool show_textures = lua_toboolean(L, -1) != 0;
+    lua_pop(L, 1);
+    lua_getfield(L, 2, "unlit");
+    bool has_unlit = !lua_isnil(L, -1);
+    bool unlit = lua_toboolean(L, -1) != 0;
+    lua_pop(L, 1);
+    GetEditor(L)->Model3DSetView(buffer_id, has_show_grid, show_grid, has_wireframe, wireframe, has_snap, snap,
+                                  has_show_textures, show_textures, has_unlit, unlit);
     return 0;
 }
 
@@ -7410,18 +7439,18 @@ int l_model_list_vertices(lua_State *L) {
             lua_newtable(L);
             lua_pushinteger(L, v);
             lua_setfield(L, -2, "index");
-            lua_pushnumber(L, md.positions[static_cast<size_t>(v) * 3 + 0]);
+            lua_pushnumber(L, static_cast<lua_Number>(md.positions[static_cast<size_t>(v) * 3 + 0]));
             lua_setfield(L, -2, "x");
-            lua_pushnumber(L, md.positions[static_cast<size_t>(v) * 3 + 1]);
+            lua_pushnumber(L, static_cast<lua_Number>(md.positions[static_cast<size_t>(v) * 3 + 1]));
             lua_setfield(L, -2, "y");
-            lua_pushnumber(L, md.positions[static_cast<size_t>(v) * 3 + 2]);
+            lua_pushnumber(L, static_cast<lua_Number>(md.positions[static_cast<size_t>(v) * 3 + 2]));
             lua_setfield(L, -2, "z");
             if (has_normals) {
-                lua_pushnumber(L, md.normals[static_cast<size_t>(v) * 3 + 0]);
+                lua_pushnumber(L, static_cast<lua_Number>(md.normals[static_cast<size_t>(v) * 3 + 0]));
                 lua_setfield(L, -2, "nx");
-                lua_pushnumber(L, md.normals[static_cast<size_t>(v) * 3 + 1]);
+                lua_pushnumber(L, static_cast<lua_Number>(md.normals[static_cast<size_t>(v) * 3 + 1]));
                 lua_setfield(L, -2, "ny");
-                lua_pushnumber(L, md.normals[static_cast<size_t>(v) * 3 + 2]);
+                lua_pushnumber(L, static_cast<lua_Number>(md.normals[static_cast<size_t>(v) * 3 + 2]));
                 lua_setfield(L, -2, "nz");
             }
             lua_rawseti(L, -2, v + 1);
@@ -7687,6 +7716,7 @@ const luaL_Reg kMepFuncs[] = {
     {"current_pane_id", l_current_pane_id},
     {"pane_focus", l_pane_focus},
     {"pane_split_bottom", l_pane_split_bottom},
+    {"vsplit_right", l_vsplit_right},
     {"cmd", l_cmd},
     {"open", l_open},
     {"terminal_here", l_terminal_here},

@@ -17,22 +17,11 @@
 #include "xml_doc.h"
 #include "zip_archive.h"
 
+import mep.path_util;
+
 namespace {
 
 // --- shared DOM-walk helpers -----------------------------------------------
-
-/**
- * @brief Returns the lowercased file extension of `path` (without the leading dot).
- * @param path File path to extract the extension from.
- * @return The lowercased extension, or an empty string if `path` has no '.'.
- */
-std::string LowerExt(const std::string &path) {
-    size_t dot = path.find_last_of('.');
-    if (dot == std::string::npos) return "";
-    std::string ext = path.substr(dot + 1);
-    for (char &c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return ext;
-}
 
 // Same resolution rule as main.cpp's own ResolveHtmlImagePath (the
 // in-pane browser's <img> loader) -- kept as a separate copy rather than

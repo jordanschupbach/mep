@@ -61,6 +61,10 @@ void (*Uniform2f)(GLint, GLfloat, GLfloat) = nullptr;
 void (*Uniform3f)(GLint, GLfloat, GLfloat, GLfloat) = nullptr;
 void (*Uniform4f)(GLint, GLfloat, GLfloat, GLfloat, GLfloat) = nullptr;
 void (*UniformMatrix4fv)(GLint, GLsizei, GLboolean, const GLfloat *) = nullptr;
+void (*UniformMatrix3fv)(GLint, GLsizei, GLboolean, const GLfloat *) = nullptr;
+void (*Uniform1iv)(GLint, GLsizei, const GLint *) = nullptr;
+void (*Uniform1fv)(GLint, GLsizei, const GLfloat *) = nullptr;
+void (*Uniform3fv)(GLint, GLsizei, const GLfloat *) = nullptr;
 
 void (*DrawArrays)(GLenum, GLint, GLsizei) = nullptr;
 void (*DrawElements)(GLenum, GLsizei, GLenum, const void *) = nullptr;
@@ -78,10 +82,11 @@ void (*FramebufferRenderbuffer)(GLenum, GLenum, GLenum, GLuint) = nullptr;
 
 namespace {
 
-// GLFW hands back a function pointer as void*; every GL entry point is
-// resolved through this one helper so a missing symbol is reported with
-// its name instead of silently leaving a null function pointer that
-// crashes on first use.
+// The caller-supplied get_proc_address (glXGetProcAddressARB on the
+// native backend) hands back a function pointer as void*; every GL entry
+// point is resolved through this one helper so a missing symbol is
+// reported with its name instead of silently leaving a null function
+// pointer that crashes on first use.
 template <typename Fn>
 bool Load(GLProcAddressFn get_proc_address, Fn &out, const char *name) {
     void *p = get_proc_address(name);
@@ -160,6 +165,10 @@ bool LoadGLFunctions(GLProcAddressFn get_proc_address) {
     GFX_GL_LOAD(Uniform3f);
     GFX_GL_LOAD(Uniform4f);
     GFX_GL_LOAD(UniformMatrix4fv);
+    GFX_GL_LOAD(UniformMatrix3fv);
+    GFX_GL_LOAD(Uniform1iv);
+    GFX_GL_LOAD(Uniform1fv);
+    GFX_GL_LOAD(Uniform3fv);
 
     GFX_GL_LOAD(DrawArrays);
     GFX_GL_LOAD(DrawElements);

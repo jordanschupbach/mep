@@ -1,5 +1,6 @@
 web_build_dir := "build/web"
 native_build_dir := "build/native"
+native_build_dev_dir := "build/native-dev"
 ts_grammar_dir := ".ts-grammars/lib"
 
 # Build the native (X11) binary and launch it directly (default).
@@ -14,6 +15,36 @@ build-web:
 build-native:
     cmake -S . -B {{native_build_dir}} -DCMAKE_BUILD_TYPE=Release
     cmake --build {{native_build_dir}} -j
+
+# Same as build-native, but -O0 (CMake's stock Debug flags) in a
+# separate build/native-dev directory that never collides with
+# build-native's own Release one -- both stay independently
+# incrementally-buildable side by side (BUILD_PERFORMANCE_PLAN.md).
+# Real payoff on the actual inner loop -O3 can't share with ccache: a
+# genuine same-file edit (not just a touch/no-op) still has to actually
+# recompile that one translation unit, and -O3's optimizer alone was
+# measured at over half of main.cpp's ~17s compile (-O0: ~7s, -O3:
+# ~17s) -- most of that difference is pure optimizer time this build
+# type skips, not something ccache or the build-graph generator can get
+# back. Use `./build/native-dev/mep` for fast local edit/test iteration
+# -- NOT for anything performance-sensitive or for shipping; `mep`
+# itself (build-native, unaffected by this recipe) stays the one built
+# and tested at full -O3 throughout this repo (`just test`/`just run`).
+build-native-dev:
+    cmake -S . -B {{native_build_dev_dir}} -DCMAKE_BUILD_TYPE=Debug
+    cmake --build {{native_build_dev_dir}} -j
+
+# Opt-in unity/jumbo build of mep_core (BUILD_PERFORMANCE_PLAN.md Round 2
+# Phase C): CMake's native UNITY_BUILD, batching mep_core's ~49
+# translation units into groups of 8 so each batch's shared headers are
+# parsed once per batch instead of once per file -- a real clean-build
+# win, but it comes straight out of incremental-rebuild speed (touching
+# any file now recompiles its whole batch). Its own build dir, never
+# build-native/build-native-dev -- neither of *those* pay this cost, and
+# `just test`/day-to-day iteration keep using them unchanged.
+build-native-unity:
+    cmake -S . -B build/native-unity -DCMAKE_BUILD_TYPE=Release -DMEP_UNITY_BUILD=ON
+    cmake --build build/native-unity -j
 
 # Build every Treesitter grammar mep has a highlight query for but doesn't
 # compile in (scripts/ts_grammars.tsv, ~49 languages -- see
@@ -60,12 +91,31 @@ clean:
 test: build-native
     #!/usr/bin/env bash
     set -euo pipefail
-    for t in mep-html-doc-test mep-org-doc-test mep-workspace-test mep-model3d-doc-test mep-collab-crdt-test mep-collab-session-test; do
+    for t in mep-html-doc-test mep-org-doc-test mep-workspace-test mep-model3d-doc-test mep-image-procgen-test mep-jpeg-codec-test mep-mov-container-test mep-collab-crdt-test mep-collab-session-test; do
         if [ -x "{{native_build_dir}}/$t" ]; then
             echo "== $t"
             "./{{native_build_dir}}/$t"
         fi
     done
+
+# CRDT_PERFORMANCE_PLAN.md Phase 1: run the persistent text-editing
+# benchmarks (mep-crdt-bench, mep-buffer-bench) and print a
+# latest-vs-previous-run comparison. Results accumulate in
+# bench_results/history.jsonl (git-tracked) across every invocation --
+# this never resets/rotates it, so history builds up over time as the
+# user asked. Run from the repo root (bench_results/ is a relative
+# path both the bench binaries and the report script resolve against
+# the cwd).
+bench: build-native
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p bench_results
+    for t in mep-crdt-bench mep-buffer-bench; do
+        echo "== $t"
+        "./{{native_build_dir}}/$t"
+    done
+    echo
+    python3 tools/bench_report.py
 
 # The tests that drive a real `mep` window: the agent-RPC test (spawns
 # mep, needs a display and a working GL driver -- under Xvfb that means a

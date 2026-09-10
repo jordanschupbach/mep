@@ -37,6 +37,7 @@ inline Vector3 Vector3Min(Vector3 a, Vector3 b) {
 inline Vector3 Vector3Max(Vector3 a, Vector3 b) {
     return {std::fmax(a.x, b.x), std::fmax(a.y, b.y), std::fmax(a.z, b.z)};
 }
+inline float Lerp(float a, float b, float t) { return a + (b - a) * t; }
 // Rotates `v` about unit axis `axis` by `angle` radians (Rodrigues' formula).
 inline Vector3 Vector3RotateByAxisAngle(Vector3 v, Vector3 axis, float angle) {
     axis = Vector3Normalize(axis);
@@ -167,6 +168,24 @@ inline Matrix MatrixPerspective(float fovy, float aspect, float near_plane, floa
     m.m10 = -(far_plane + near_plane) / (far_plane - near_plane);
     m.m11 = -1.0f;
     m.m14 = -(2.0f * far_plane * near_plane) / (far_plane - near_plane);
+    return m;
+}
+
+// Right-handed orthographic projection (OpenGL NDC z in [-1,1], same
+// convention as MatrixPerspective above) -- used by the shadow-map pass's
+// directional-light projection (CHESS_REALISM_PLAN.md Phase 3): a
+// directional light has no single eye position/FOV, so its "camera" is an
+// orthographic box tightly fit around the scene instead of a perspective
+// frustum.
+inline Matrix MatrixOrtho(float left, float right, float bottom, float top, float near_plane, float far_plane) {
+    Matrix m{};
+    m.m0 = 2.0f / (right - left);
+    m.m5 = 2.0f / (top - bottom);
+    m.m10 = -2.0f / (far_plane - near_plane);
+    m.m12 = -(right + left) / (right - left);
+    m.m13 = -(top + bottom) / (top - bottom);
+    m.m14 = -(far_plane + near_plane) / (far_plane - near_plane);
+    m.m15 = 1.0f;
     return m;
 }
 

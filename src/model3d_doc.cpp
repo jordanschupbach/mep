@@ -227,13 +227,13 @@ int AppendFloatAccessor(std::vector<unsigned char> &buffer, Json &buffer_views, 
             }
         }
         Json minj = Json::Array();
-        minj.push_back(lo[0]);
-        minj.push_back(lo[1]);
-        minj.push_back(lo[2]);
+        minj.push_back(static_cast<double>(lo[0]));
+        minj.push_back(static_cast<double>(lo[1]));
+        minj.push_back(static_cast<double>(lo[2]));
         Json maxj = Json::Array();
-        maxj.push_back(hi[0]);
-        maxj.push_back(hi[1]);
-        maxj.push_back(hi[2]);
+        maxj.push_back(static_cast<double>(hi[0]));
+        maxj.push_back(static_cast<double>(hi[1]));
+        maxj.push_back(static_cast<double>(hi[2]));
         acc["min"] = minj;
         acc["max"] = maxj;
     }
@@ -291,6 +291,33 @@ bool Scene::RemoveObject(int id) {
     auto it = std::find_if(objects.begin(), objects.end(), [id](const Object3D &o) { return o.id == id; });
     if (it == objects.end()) return false;
     objects.erase(it);
+    return true;
+}
+
+int Scene::AddLight(Light light) {
+    light.id = next_object_id++;
+    lights.push_back(std::move(light));
+    return lights.back().id;
+}
+
+Light *Scene::FindLight(int id) {
+    for (auto &l : lights) {
+        if (l.id == id) return &l;
+    }
+    return nullptr;
+}
+
+const Light *Scene::FindLight(int id) const {
+    for (const auto &l : lights) {
+        if (l.id == id) return &l;
+    }
+    return nullptr;
+}
+
+bool Scene::RemoveLight(int id) {
+    auto it = std::find_if(lights.begin(), lights.end(), [id](const Light &l) { return l.id == id; });
+    if (it == lights.end()) return false;
+    lights.erase(it);
     return true;
 }
 
@@ -1036,6 +1063,64 @@ bool IsModel3DPath(const std::string &path) {
     return ext == "obj" || ext == "gltf" || ext == "glb" || ext == "iqm" || ext == "vox" || ext == "m3d";
 }
 
+namespace {
+// Reads back the `extras.mep_lights` array SaveModel3DGltf writes (see
+// its own comment on why a custom extras field instead of
+// KHR_lights_punctual). `gfx::LoadModel`/`LoadGltfModel` (the path
+// LoadModel3DFile below uses for the actual mesh/material data) return a
+// gfx::Model -- a format-agnostic, lights-unaware shape shared with
+// every other importer (obj/iqm/vox/m3d) -- so this independently
+// re-opens and re-parses the same file's raw JSON, deliberately outside
+// that pipeline, to pull out this one mep-specific field. A no-op for
+// any file this app didn't itself save with lights (no `.gltf`
+// extension, a binary `.glb` container, no `extras.mep_lights` present,
+// or simply a scene that had zero lights when saved) -- `out->lights`
+// is simply left however LoadModel3DFile's own caller already set it up
+// (empty, for a fresh Scene).
+void LoadModel3DGltfLights(const std::string &path, Scene *out) {
+    size_t dot = path.find_last_of('.');
+    if (dot == std::string::npos) return;
+    std::string ext = path.substr(dot + 1);
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return std::tolower(c); });
+    if (ext != "gltf") return;  // .glb is a binary container; SaveModel3DGltf only ever writes plain-text .gltf
+
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return;
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+
+    Json doc;
+    if (!Json::Parse(text, &doc)) return;
+    if (!doc.contains("extras")) return;
+    const Json &extras = doc.get("extras");
+    if (!extras.contains("mep_lights")) return;
+
+    auto read_vec3 = [](const Json &arr, Vec3f fallback) -> Vec3f {
+        if (arr.items().size() != 3) return fallback;
+        const std::vector<Json> &v = arr.items();
+        return Vec3f{static_cast<float>(v[0].as_double(static_cast<double>(fallback.x))),
+                     static_cast<float>(v[1].as_double(static_cast<double>(fallback.y))),
+                     static_cast<float>(v[2].as_double(static_cast<double>(fallback.z)))};
+    };
+
+    for (const Json &lj : extras.get("mep_lights").items()) {
+        Light light;
+        light.name = lj.contains("name") ? lj.get("name").as_string("") : "";
+        light.type = lj.contains("type") && lj.get("type").as_string("") == "point" ? LightType::Point : LightType::Directional;
+        if (lj.contains("position")) light.position = read_vec3(lj.get("position"), light.position);
+        if (lj.contains("direction")) light.direction = read_vec3(lj.get("direction"), light.direction);
+        if (lj.contains("color") && lj.get("color").items().size() == 4) {
+            const std::vector<Json> &col = lj.get("color").items();
+            light.color = RgbaColorF{static_cast<float>(col[0].as_double(1.0)), static_cast<float>(col[1].as_double(1.0)),
+                                      static_cast<float>(col[2].as_double(1.0)), static_cast<float>(col[3].as_double(1.0))};
+        }
+        light.intensity = lj.contains("intensity") ? static_cast<float>(lj.get("intensity").as_double(1.0)) : 1.0f;
+        light.range = lj.contains("range") ? static_cast<float>(lj.get("range").as_double(10.0)) : 10.0f;
+        light.visible = lj.contains("visible") ? lj.get("visible").as_bool(true) : true;
+        out->AddLight(light);
+    }
+}
+}  // namespace
+
 bool LoadModel3DFile(const std::string &path, Scene *out, std::string *error) {
     gfx::Model model = gfx::LoadModel(path.c_str());
     if (model.meshCount <= 0) {
@@ -1058,47 +1143,55 @@ bool LoadModel3DFile(const std::string &path, Scene *out, std::string *error) {
         obj.name = model.meshCount > 1 ? (base_name + " " + std::to_string(i + 1)) : base_name;
         obj.mesh_index = mesh_index;
         obj.kind = PrimitiveKind::Imported;
-        // Base color, plus a base-color/albedo texture if the material has
-        // one bound -- still no normal/metallic-roughness/emissive maps or
-        // metallic/roughness scalars (see Object3D::texture_index's own
-        // comment on why: this app's 3D viewport has no lighting model to
-        // apply them to). model.meshMaterial[i] indexes model.materials;
-        // LoadModel always populates both (falling back to a single
-        // default material) so this is safe whenever any meshes loaded
-        // at all.
+        // Base color, roughness/metallic scalars, and up to 3 textures
+        // (albedo/normal -- roughness+metallic map slots too, though only
+        // the glTF importer ever actually populates any non-albedo slot
+        // today, see LoadGltfMaterial's own comment on why not the
+        // combined metallicRoughnessTexture specifically).
+        // model.meshMaterial[i] indexes model.materials; LoadModel always
+        // populates both (falling back to a single default material) so
+        // this is safe whenever any meshes loaded at all.
         if (model.meshMaterial && model.materialCount > 0) {
             int mat_idx = model.meshMaterial[i];
             if (mat_idx >= 0 && mat_idx < model.materialCount) {
-                gfx::Color c = model.materials[mat_idx].maps[gfx::kMaterialMapAlbedo].color;
+                const gfx::Material &src_mat = model.materials[mat_idx];
+                gfx::Color c = src_mat.maps[gfx::kMaterialMapAlbedo].color;
                 obj.color = RgbaColorF{static_cast<float>(c.r) / 255.0f, static_cast<float>(c.g) / 255.0f,
                                         static_cast<float>(c.b) / 255.0f, static_cast<float>(c.a) / 255.0f};
-                gfx::Texture2D tex = model.materials[mat_idx].maps[gfx::kMaterialMapAlbedo].texture;
-                if (tex.id != 0) {
-                    // Reads the texture back from the GPU (it's already
-                    // resident there -- LoadModel uploaded it as part of
-                    // loading the material) into a plain TextureData, so
-                    // the doc layer keeps owning real pixel bytes instead
-                    // of a GPU handle, same as every other texture path
-                    // here. Each object gets its own TextureData copy
-                    // even if several objects in this file share one
-                    // material/texture -- a little redundant for a
-                    // multi-mesh file with a shared texture, but simple
-                    // and still correct; not deduplicated this pass.
+                obj.roughness = src_mat.maps[gfx::kMaterialMapRoughness].value;
+                obj.metallic = src_mat.maps[gfx::kMaterialMapMetalness].value;
+                // Reads a texture back from the GPU (it's already resident
+                // there -- LoadModel uploaded it as part of loading the
+                // material) into a plain TextureData, so the doc layer
+                // keeps owning real pixel bytes instead of a GPU handle,
+                // same as every other texture path here. Each object gets
+                // its own TextureData copy per slot even if several
+                // objects/slots in this file share one texture -- a little
+                // redundant for a multi-mesh file with shared textures,
+                // but simple and still correct; not deduplicated this pass.
+                auto import_map = [&](int slot) -> int {
+                    gfx::Texture2D tex = src_mat.maps[slot].texture;
+                    if (tex.id == 0) return -1;
                     gfx::Image img = gfx::LoadImageFromTexture(tex);
-                    if (img.data) {
-                        TextureData td;
-                        ExtractImageToTextureData(img, base_name + "_tex", &td);
-                        gfx::UnloadImage(img);
-                        obj.texture_index = static_cast<int>(out->textures.size());
-                        out->textures.push_back(std::move(td));
-                    }
-                }
+                    if (!img.data) return -1;
+                    TextureData td;
+                    ExtractImageToTextureData(img, base_name + "_tex", &td);
+                    gfx::UnloadImage(img);
+                    int index = static_cast<int>(out->textures.size());
+                    out->textures.push_back(std::move(td));
+                    return index;
+                };
+                obj.texture_index = import_map(gfx::kMaterialMapAlbedo);
+                obj.normal_map_index = import_map(gfx::kMaterialMapNormal);
+                obj.roughness_map_index = import_map(gfx::kMaterialMapRoughness);
+                obj.metallic_map_index = import_map(gfx::kMaterialMapMetalness);
             }
         }
         out->AddObject(std::move(obj));
     }
     out->source_path = path;
     gfx::UnloadModel(model);
+    LoadModel3DGltfLights(path, out);
     return true;
 }
 
@@ -1162,6 +1255,148 @@ int AddPrimitiveToScene(Scene *scene, PrimitiveKind kind) {
     obj.name = name;
     obj.mesh_index = mesh_index;
     obj.kind = kind;
+    return scene->AddObject(std::move(obj));
+}
+
+// Revolves `profile` (radius/height pairs, bottom to top) around the Y
+// axis into a real, WELDED/indexed mesh -- deliberately NOT the "unwelded
+// per-quad" convention AddPrimitiveToScene's GenMesh* shapes inherited
+// from raylib (ExtrudeFace's own comment explains why those are unwelded:
+// legacy raylib behavior, not a deliberate choice here) -- a lathed piece
+// is exactly the kind of shape someone then wants to select/extrude/inset
+// around its own real connectivity, which only works on a genuinely
+// connected mesh. `segments+1` columns (not `segments`) so the seam has
+// distinct u=0/u=1 vertices for correct texture wrapping, at the cost of
+// one duplicated column -- normals are computed analytically from the
+// profile's own local tangent (rotated per-column), not by face-normal
+// averaging, so this duplication doesn't cost any shading smoothness the
+// way an unwelded mesh's would.
+int AddLatheToScene(Scene *scene, const std::vector<Vec2f> &profile, int segments, bool cap_top, bool cap_bottom) {
+    int n = static_cast<int>(profile.size());
+    if (n < 2 || segments < 3) return -1;
+
+    MeshData md;
+    md.name = "Lathe";
+    int cols = segments + 1;
+    md.positions.resize(static_cast<size_t>(cols) * static_cast<size_t>(n) * 3);
+    md.normals.resize(static_cast<size_t>(cols) * static_cast<size_t>(n) * 3);
+    md.texcoords.resize(static_cast<size_t>(cols) * static_cast<size_t>(n) * 2);
+
+    auto vertex_index = [cols](int row, int col) { return row * cols + col; };
+    for (int row = 0; row < n; row++) {
+        // The profile curve's own local tangent (in the r/height plane),
+        // central-differenced except at the two open ends -- the outward
+        // surface normal at this row is this tangent rotated -90 degrees
+        // (perpendicular, pointing away from the axis for a profile drawn
+        // with increasing height), same "derive the normal from the
+        // curve's own shape" idea RecalculateNormals uses for triangles.
+        float dr, dh;
+        if (row == 0) {
+            dr = profile[1].radius - profile[0].radius;
+            dh = profile[1].height - profile[0].height;
+        } else if (row == n - 1) {
+            dr = profile[static_cast<size_t>(row)].radius - profile[static_cast<size_t>(row - 1)].radius;
+            dh = profile[static_cast<size_t>(row)].height - profile[static_cast<size_t>(row - 1)].height;
+        } else {
+            dr = profile[static_cast<size_t>(row + 1)].radius - profile[static_cast<size_t>(row - 1)].radius;
+            dh = profile[static_cast<size_t>(row + 1)].height - profile[static_cast<size_t>(row - 1)].height;
+        }
+        float tangent_len = std::sqrt(dr * dr + dh * dh);
+        // n_r/n_h: the 2D outward normal in the (radius, height) plane,
+        // before it's rotated around Y per-column below. A degenerate
+        // (zero-length) tangent -- two identical consecutive profile
+        // points -- falls back to a straight-out radial normal rather
+        // than dividing by zero.
+        float n_r = tangent_len > 1e-6f ? dh / tangent_len : 1.0f;
+        float n_h = tangent_len > 1e-6f ? -dr / tangent_len : 0.0f;
+        for (int col = 0; col < cols; col++) {
+            float theta = 2.0f * kPi * static_cast<float>(col) / static_cast<float>(segments);
+            float c = std::cos(theta), s = std::sin(theta);
+            int vi = vertex_index(row, col);
+            md.positions[static_cast<size_t>(vi) * 3 + 0] = profile[static_cast<size_t>(row)].radius * c;
+            md.positions[static_cast<size_t>(vi) * 3 + 1] = profile[static_cast<size_t>(row)].height;
+            md.positions[static_cast<size_t>(vi) * 3 + 2] = profile[static_cast<size_t>(row)].radius * s;
+            md.normals[static_cast<size_t>(vi) * 3 + 0] = n_r * c;
+            md.normals[static_cast<size_t>(vi) * 3 + 1] = n_h;
+            md.normals[static_cast<size_t>(vi) * 3 + 2] = n_r * s;
+            md.texcoords[static_cast<size_t>(vi) * 2 + 0] = static_cast<float>(col) / static_cast<float>(segments);
+            md.texcoords[static_cast<size_t>(vi) * 2 + 1] = static_cast<float>(row) / static_cast<float>(n - 1);
+        }
+    }
+    for (int row = 0; row + 1 < n; row++) {
+        for (int col = 0; col < segments; col++) {
+            unsigned int a = static_cast<unsigned int>(vertex_index(row, col));
+            unsigned int b = static_cast<unsigned int>(vertex_index(row, col + 1));
+            unsigned int c = static_cast<unsigned int>(vertex_index(row + 1, col + 1));
+            unsigned int d = static_cast<unsigned int>(vertex_index(row + 1, col));
+            md.indices.insert(md.indices.end(), {a, b, c, a, c, d});
+        }
+    }
+
+    // Caps: a fan from a new center vertex to the top/bottom ring, only
+    // when that ring's radius is actually non-zero (a profile that
+    // already tapers to a point there, e.g. a pawn's rounded top,
+    // naturally needs no cap -- adding one anyway would just be a
+    // zero-area degenerate fan).
+    auto add_cap = [&](int row, bool is_bottom) {
+        if (profile[static_cast<size_t>(row)].radius <= 1e-6f) return;
+        int center = static_cast<int>(md.positions.size() / 3);
+        md.positions.insert(md.positions.end(), {0.0f, profile[static_cast<size_t>(row)].height, 0.0f});
+        md.normals.insert(md.normals.end(), {0.0f, is_bottom ? -1.0f : 1.0f, 0.0f});
+        md.texcoords.insert(md.texcoords.end(), {0.5f, 0.5f});
+        for (int col = 0; col < segments; col++) {
+            unsigned int a = static_cast<unsigned int>(vertex_index(row, col));
+            unsigned int b = static_cast<unsigned int>(vertex_index(row, col + 1));
+            if (is_bottom) {
+                md.indices.insert(md.indices.end(), {static_cast<unsigned int>(center), b, a});
+            } else {
+                md.indices.insert(md.indices.end(), {static_cast<unsigned int>(center), a, b});
+            }
+        }
+    };
+    if (cap_bottom) add_cap(0, true);
+    if (cap_top) add_cap(n - 1, false);
+
+    int mesh_index = static_cast<int>(scene->meshes.size());
+    scene->meshes.push_back(std::move(md));
+
+    Object3D obj;
+    obj.name = "Lathe";
+    obj.mesh_index = mesh_index;
+    obj.kind = PrimitiveKind::Imported;  // no PrimitiveKind::Lathe -- a variable-profile shape
+                                          // isn't "regenerate at a new size"-safe the way the
+                                          // fixed GenMesh* primitives are (DescribePrimitiveKind's
+                                          // own doc-comment on what Kind besides Imported means).
+    return scene->AddObject(std::move(obj));
+}
+
+int AddCustomMeshToScene(Scene *scene, const std::vector<Vec3f> &positions, const std::vector<unsigned int> &indices,
+                          const std::string &name, const std::vector<float> &texcoords) {
+    if (positions.empty() || indices.empty() || indices.size() % 3 != 0) return -1;
+    if (!texcoords.empty() && texcoords.size() != positions.size() * 2) return -1;
+    for (unsigned int idx : indices) {
+        if (idx >= positions.size()) return -1;
+    }
+
+    MeshData md;
+    md.name = name;
+    md.positions.resize(positions.size() * 3);
+    for (size_t i = 0; i < positions.size(); i++) {
+        md.positions[i * 3 + 0] = positions[i].x;
+        md.positions[i * 3 + 1] = positions[i].y;
+        md.positions[i * 3 + 2] = positions[i].z;
+    }
+    md.texcoords = texcoords;  // flat, 2 floats/vertex, matching MeshData::texcoords' own convention
+    md.indices = indices;
+    md.RecalculateNormals();
+
+    int mesh_index = static_cast<int>(scene->meshes.size());
+    scene->meshes.push_back(std::move(md));
+
+    Object3D obj;
+    obj.name = name;
+    obj.mesh_index = mesh_index;
+    obj.kind = PrimitiveKind::Imported;
     return scene->AddObject(std::move(obj));
 }
 
@@ -1286,24 +1521,24 @@ bool SaveModel3DGltf(const Scene &scene, const std::string &path, std::string *e
         node["extras"] = extras;
 
         Json trans = Json::Array();
-        trans.push_back(obj.position.x);
-        trans.push_back(obj.position.y);
-        trans.push_back(obj.position.z);
+        trans.push_back(static_cast<double>(obj.position.x));
+        trans.push_back(static_cast<double>(obj.position.y));
+        trans.push_back(static_cast<double>(obj.position.z));
         node["translation"] = trans;
 
         float q[4];
         EulerXYZDegToQuat(obj.rotation_deg, q);
         Json rot = Json::Array();
-        rot.push_back(q[0]);
-        rot.push_back(q[1]);
-        rot.push_back(q[2]);
-        rot.push_back(q[3]);
+        rot.push_back(static_cast<double>(q[0]));
+        rot.push_back(static_cast<double>(q[1]));
+        rot.push_back(static_cast<double>(q[2]));
+        rot.push_back(static_cast<double>(q[3]));
         node["rotation"] = rot;
 
         Json scl = Json::Array();
-        scl.push_back(obj.scale.x);
-        scl.push_back(obj.scale.y);
-        scl.push_back(obj.scale.z);
+        scl.push_back(static_cast<double>(obj.scale.x));
+        scl.push_back(static_cast<double>(obj.scale.y));
+        scl.push_back(static_cast<double>(obj.scale.z));
         node["scale"] = scl;
 
         if (obj.mesh_index >= 0 && obj.mesh_index < static_cast<int>(scene.meshes.size()) &&
@@ -1312,13 +1547,17 @@ bool SaveModel3DGltf(const Scene &scene, const std::string &path, std::string *e
 
             Json pbr = Json::Object();
             Json base_color = Json::Array();
-            base_color.push_back(obj.color.r);
-            base_color.push_back(obj.color.g);
-            base_color.push_back(obj.color.b);
-            base_color.push_back(obj.color.a);
+            base_color.push_back(static_cast<double>(obj.color.r));
+            base_color.push_back(static_cast<double>(obj.color.g));
+            base_color.push_back(static_cast<double>(obj.color.b));
+            base_color.push_back(static_cast<double>(obj.color.a));
             pbr["baseColorFactor"] = base_color;
-            pbr["metallicFactor"] = 0.0;
-            pbr["roughnessFactor"] = 0.8;
+            // Real scalars (CHESS_SET_BENCHMARK_PLAN.md Phase 1 added
+            // Object3D::roughness/metallic; this export previously
+            // hardcoded 0.0/0.8 regardless, silently dropping whatever an
+            // agent/user had actually tuned via model.setMaterial).
+            pbr["metallicFactor"] = static_cast<double>(obj.metallic);
+            pbr["roughnessFactor"] = static_cast<double>(obj.roughness);
             if (obj.texture_index >= 0 && obj.texture_index < static_cast<int>(texture_gltf_index.size()) &&
                 texture_gltf_index[static_cast<size_t>(obj.texture_index)] >= 0) {
                 Json base_color_tex = Json::Object();
@@ -1327,6 +1566,22 @@ bool SaveModel3DGltf(const Scene &scene, const std::string &path, std::string *e
             }
             Json material = Json::Object();
             material["pbrMetallicRoughness"] = pbr;
+            // normalTexture is glTF's own dedicated single-texture slot, so
+            // it round-trips directly; roughness/metallic *maps* (as
+            // opposed to the scalars above) have no such 1:1 slot -- glTF
+            // only offers one combined metallicRoughnessTexture
+            // (G=roughness/B=metallic), and repacking this app's two
+            // independent single-channel textures into that combined
+            // layout is real image-processing work with no benchmark need
+            // yet (mirrors LoadGltfMaterial's identical reasoning for NOT
+            // unpacking metallicRoughnessTexture on import) -- a documented
+            // scope cut, not an oversight.
+            if (obj.normal_map_index >= 0 && obj.normal_map_index < static_cast<int>(texture_gltf_index.size()) &&
+                texture_gltf_index[static_cast<size_t>(obj.normal_map_index)] >= 0) {
+                Json normal_tex = Json::Object();
+                normal_tex["index"] = texture_gltf_index[static_cast<size_t>(obj.normal_map_index)];
+                material["normalTexture"] = normal_tex;
+            }
             int material_index = static_cast<int>(materials_json.size());
             materials_json.push_back(material);
 
@@ -1359,6 +1614,53 @@ bool SaveModel3DGltf(const Scene &scene, const std::string &path, std::string *e
     asset["generator"] = "mep 3D modeler";
     doc["asset"] = asset;
     doc["scene"] = 0;
+
+    // Scene::lights (MULTILIGHT_ANIMATION_PLAN.md Part A) round-trip via a
+    // custom `extras.mep_lights` array -- CHESS_REALISM_PLAN.md's own
+    // follow-up fix, after live testing found lights silently didn't
+    // survive a save/reopen at all (no light-related code existed here
+    // previously). Deliberately not the standard KHR_lights_punctual
+    // extension: that encodes a directional light's direction via the
+    // owning node's own rotation quaternion, which is real complexity
+    // (and a real place to get the math wrong) this app's own `Light`
+    // struct has no need for, since it already stores direction/position
+    // directly -- `extras` is glTF-spec-legal free-form JSON for exactly
+    // this kind of app-specific data (the same bag `node.extras.visible`
+    // above already uses), so a direct field-for-field dump round-trips
+    // losslessly with no coordinate-system translation at all. Not
+    // standard-glTF-tool-readable, but this array is only ever written
+    // and read by mep itself, same as every other `extras` use here.
+    if (!scene.lights.empty()) {
+        Json lights_arr = Json::Array();
+        for (const Light &l : scene.lights) {
+            Json lj = Json::Object();
+            lj["name"] = l.name;
+            lj["type"] = l.type == LightType::Point ? "point" : "directional";
+            Json pos = Json::Array();
+            pos.push_back(static_cast<double>(l.position.x));
+            pos.push_back(static_cast<double>(l.position.y));
+            pos.push_back(static_cast<double>(l.position.z));
+            lj["position"] = pos;
+            Json dir = Json::Array();
+            dir.push_back(static_cast<double>(l.direction.x));
+            dir.push_back(static_cast<double>(l.direction.y));
+            dir.push_back(static_cast<double>(l.direction.z));
+            lj["direction"] = dir;
+            Json col = Json::Array();
+            col.push_back(static_cast<double>(l.color.r));
+            col.push_back(static_cast<double>(l.color.g));
+            col.push_back(static_cast<double>(l.color.b));
+            col.push_back(static_cast<double>(l.color.a));
+            lj["color"] = col;
+            lj["intensity"] = static_cast<double>(l.intensity);
+            lj["range"] = static_cast<double>(l.range);
+            lj["visible"] = l.visible;
+            lights_arr.push_back(lj);
+        }
+        Json extras = Json::Object();
+        extras["mep_lights"] = lights_arr;
+        doc["extras"] = extras;
+    }
 
     Json scene0 = Json::Object();
     scene0["nodes"] = scene_node_indices;

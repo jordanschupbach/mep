@@ -60,17 +60,32 @@ Status legend: `[x]` implemented this pass, `[ ]` planned/not yet done.
 - [ ] Canvas resize / resample (nearest, bilinear).
 - [ ] Flip/rotate layer or canvas (90°/180°/arbitrary).
 
-## Phase 3 — richer painting (not yet implemented)
+## Phase 3 — richer painting (partially implemented, see notes)
 
 - [ ] Soft/anti-aliased brush edges; brush hardness/opacity/spacing.
-- [ ] Gradient tool (linear/radial).
+- [x] Gradient tool (linear/radial) — CHESS_SET_BENCHMARK_PLAN.md Phase
+      4: `image_procgen.h`'s `FillLinearGradient`/`FillRadialGradient`,
+      reachable via the Texture menu's Fill Gradient (Linear/Radial)
+      items or the headless `image.fillGradient` RPC method. Not an
+      interactively-dragged gradient tool (no click-drag-to-set-endpoints
+      on the canvas) — linear takes an angle via a numeric prompt,
+      radial is always centered on the buffer; both fill the whole
+      active layer (or selection, if one exists) from the current
+      primary/secondary swatches in one step, closer to a generator than
+      a draggable tool.
 - [ ] Polygon/freehand lasso and freehand pen tool.
 - [ ] Text tool (rasterized, using `g_font`).
 - [ ] Blend modes beyond Normal (Multiply, Screen, Overlay...).
 - [ ] Layer masks; clipping masks; layer groups/folders.
 - [ ] Adjustment operations: brightness/contrast, hue/saturation,
       grayscale, invert, levels/curves.
-- [ ] Filters: Gaussian blur, sharpen, pixelate, noise.
+- [x] Filters: box blur (not Gaussian) — `image_procgen.h`'s `BoxBlur`
+      (separable, edge-clamped), reachable via the Texture menu's
+      Blur... item or `image.blur`. No sharpen/pixelate. "Noise" is
+      covered as a fill *generator* (`FillNoise`/`image.fillNoise`,
+      plus the wood-grain/marble generators the original checklist
+      didn't anticipate: `FillWood`/`FillMarble`), not a filter applied
+      over existing paint. Sharpen/pixelate still not implemented.
 - [ ] Onion-skinning / reference-layer opacity for tracing.
 
 ## Phase 4 — workflow (not yet implemented)

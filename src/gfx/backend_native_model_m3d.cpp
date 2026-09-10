@@ -35,27 +35,14 @@
 #include "deflate.h"
 #include "gfx/vecmath.h"
 
+import mep.gfx.model_read_util;
+
 namespace gfx {
 
 namespace {
 
 constexpr uint32_t kUndef = 0xFFFFFFFFu;
 
-uint32_t ReadU32(const std::vector<char> &buf, size_t offset) {
-    uint32_t v = 0;
-    std::memcpy(&v, buf.data() + offset, sizeof(v));
-    return v;
-}
-uint16_t ReadU16(const std::vector<char> &buf, size_t offset) {
-    uint16_t v = 0;
-    std::memcpy(&v, buf.data() + offset, sizeof(v));
-    return v;
-}
-float ReadF32(const std::vector<char> &buf, size_t offset) {
-    float v = 0.0f;
-    std::memcpy(&v, buf.data() + offset, sizeof(v));
-    return v;
-}
 double ReadF64(const std::vector<char> &buf, size_t offset) {
     double v = 0.0;
     std::memcpy(&v, buf.data() + offset, sizeof(v));

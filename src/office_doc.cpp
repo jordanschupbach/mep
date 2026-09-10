@@ -14,6 +14,8 @@
 #include "xml_doc.h"
 #include "zip_archive.h"
 
+import mep.path_util;
+
 // ============================================================================
 // Span-editing primitives
 // ============================================================================
@@ -268,22 +270,6 @@ void SetParagraphListKind(std::vector<DocParagraph> &paragraphs, int first, int 
 // ============================================================================
 // File path helpers
 // ============================================================================
-
-namespace {
-/**
- * @brief Extracts and lowercases a file path's extension (text after the last '.').
- * @param path The file path to inspect.
- * @return The lowercased extension, or "" if `path` has no '.'.
- */
-std::string LowerExt(const std::string &path) {
-    size_t dot = path.find_last_of('.');
-    if (dot == std::string::npos) return "";
-    std::string ext = path.substr(dot + 1);
-    // Lowercases each character of the extension in place.
-    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return std::tolower(c); });
-    return ext;
-}
-}  // namespace
 
 bool IsDocxPath(const std::string &path) { return LowerExt(path) == "docx"; }
 bool IsOdtPath(const std::string &path) { return LowerExt(path) == "odt"; }

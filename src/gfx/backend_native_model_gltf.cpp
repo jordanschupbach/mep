@@ -42,6 +42,8 @@
 #include "image_codec.h"
 #include "json.h"
 
+import mep.gfx.model_read_util;
+
 namespace gfx {
 
 namespace {
@@ -54,11 +56,6 @@ std::string ReadWholeFile(const std::string &path, bool binary) {
     std::ostringstream ss;
     ss << f.rdbuf();
     return ss.str();
-}
-
-std::string DirOf(const std::string &path) {
-    size_t slash = path.find_last_of("/\\");
-    return slash == std::string::npos ? std::string() : path.substr(0, slash + 1);
 }
 
 std::string UrlDecode(const std::string &s) {
@@ -364,15 +361,34 @@ gfx::Texture2D LoadGltfImageTexture(const GltfDoc &doc, int image_index, const s
 }
 
 // Reads materials[material_index].pbrMetallicRoughness.baseColorFactor/
-// baseColorTexture -- the only material data model3d_doc.h's Object3D
-// has anywhere to put (flat tint + one texture, see its own comment).
-// Default white, textureless material for material_index < 0 (no
-// material on the primitive) or any missing/malformed field, matching
-// glTF's own defaults (baseColorFactor defaults to opaque white).
+// baseColorTexture (Object3D's flat tint + albedo texture) plus, since
+// CHESS_SET_BENCHMARK_PLAN.md Phase 1 gave Object3D real roughness/
+// metallic scalars and a normal-map slot to put them in,
+// pbrMetallicRoughness.roughnessFactor/metallicFactor and
+// material.normalTexture. Default white, semi-matte, non-metal,
+// textureless material for material_index < 0 (no material on the
+// primitive) or any missing/malformed field, matching glTF's own
+// defaults (baseColorFactor opaque white, roughnessFactor/metallicFactor
+// both 1.0 per spec).
+//
+// Deliberately NOT read: pbrMetallicRoughness.metallicRoughnessTexture.
+// glTF packs that as ONE image (G channel = roughness, B channel =
+// metallic, "ORM" convention) -- unpacking it into this app's two
+// independent single-channel roughness/metallic texture slots would mean
+// decoding and re-splitting the source image at import time, real extra
+// work for a case the benchmark task this plan targets (procedurally-
+// generated or scalar-driven materials, not glTF ORM textures) doesn't
+// need. The *scalar* factors are read regardless of whether the source
+// asset also has that texture -- per spec they're always present as the
+// texture's multiplier (or the material's own value when there's no
+// texture), so this is never "silently wrong," only "doesn't pick up
+// per-pixel roughness/metallic variation from that one packed texture."
 gfx::Material LoadGltfMaterial(const GltfDoc &doc, int material_index, const std::string &base_dir) {
     gfx::Material mat{};
     auto *maps = new gfx::MaterialMap[gfx::kMaxMaterialMaps]();
     maps[gfx::kMaterialMapAlbedo].color = gfx::White;
+    maps[gfx::kMaterialMapRoughness].value = 1.0f;
+    maps[gfx::kMaterialMapMetalness].value = 1.0f;
     mat.maps = maps;
     if (material_index < 0) return mat;
 
@@ -397,6 +413,20 @@ gfx::Material LoadGltfMaterial(const GltfDoc &doc, int material_index, const std
         if (tex_index >= 0 && static_cast<size_t>(tex_index) < textures.size()) {
             int image_index = textures.items()[static_cast<size_t>(tex_index)].get("source").as_int(-1);
             maps[gfx::kMaterialMapAlbedo].texture = LoadGltfImageTexture(doc, image_index, base_dir);
+        }
+    }
+    if (pbr.contains("roughnessFactor")) {
+        maps[gfx::kMaterialMapRoughness].value = static_cast<float>(std::clamp(pbr.get("roughnessFactor").as_double(1.0), 0.0, 1.0));
+    }
+    if (pbr.contains("metallicFactor")) {
+        maps[gfx::kMaterialMapMetalness].value = static_cast<float>(std::clamp(pbr.get("metallicFactor").as_double(1.0), 0.0, 1.0));
+    }
+    if (m.contains("normalTexture")) {
+        int tex_index = m.get("normalTexture").get("index").as_int(-1);
+        const Json &textures = doc.root.get("textures");
+        if (tex_index >= 0 && static_cast<size_t>(tex_index) < textures.size()) {
+            int image_index = textures.items()[static_cast<size_t>(tex_index)].get("source").as_int(-1);
+            maps[gfx::kMaterialMapNormal].texture = LoadGltfImageTexture(doc, image_index, base_dir);
         }
     }
     return mat;

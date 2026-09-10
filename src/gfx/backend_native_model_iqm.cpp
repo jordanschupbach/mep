@@ -25,6 +25,8 @@
 
 #include "gfx/vecmath.h"
 
+import mep.gfx.model_read_util;
+
 namespace gfx {
 
 namespace {
@@ -33,17 +35,6 @@ constexpr uint32_t kIqmPosition = 0;
 constexpr uint32_t kIqmTexcoord = 1;
 constexpr uint32_t kIqmNormal = 2;
 constexpr uint32_t kIqmFloat = 7;
-
-uint32_t ReadU32(const std::vector<char> &buf, size_t offset) {
-    uint32_t v = 0;
-    std::memcpy(&v, buf.data() + offset, sizeof(v));
-    return v;
-}
-float ReadF32(const std::vector<char> &buf, size_t offset) {
-    float v = 0.0f;
-    std::memcpy(&v, buf.data() + offset, sizeof(v));
-    return v;
-}
 
 // One IQM_POSITION/TEXCOORD/NORMAL vertex array descriptor, resolved
 // from the file's iqmvertexarray list below.

@@ -479,6 +479,28 @@ const ToolSpec kTools[] = {
      "scene, optionally setting its initial transform. Returns the new object's id.",
      R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"kind":{"type":"string","enum":["cube","sphere","cylinder","cone","plane","torus","wedge"]},"transform":{"type":"object","description":"optional position/rotation/scale, each an optional {x,y,z}; rotation in degrees","properties":{"position":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"}}},"rotation":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"}}},"scale":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"}}}}}},"required":["buffer_id","kind"]})",
      false},
+    {"mep_model_add_lathe", "model.addLathe",
+     "Add a lathed/revolved object to a 3D-modeler scene: a 2D profile (ordered [radius, height] "
+     "pairs) is swept around the Y axis to build a smooth, closed, welded mesh with real per-vertex "
+     "UVs (u = angle around, v = normalized profile height) -- the tool for any turned form a fixed "
+     "primitive can't express (chess pieces, bottles, bowls, table legs). cap_top/cap_bottom (default "
+     "true) fan-triangulate a flat disc at each end unless that end's own radius is already ~0 (a "
+     "natural point needs no cap). Returns the new object's id.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"profile":{"type":"array","description":"ordered [radius, height] pairs, e.g. [[0.5,0.0],[0.3,0.5],[0.0,1.0]] for a simple cone-topped shape","items":{"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2}},"segments":{"type":"integer","description":"angular resolution around the axis, default 24"},"cap_top":{"type":"boolean","description":"default true"},"cap_bottom":{"type":"boolean","description":"default true"},"transform":{"type":"object","description":"optional position/rotation/scale, each an optional {x,y,z}; rotation in degrees","properties":{"position":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"}}},"rotation":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"}}},"scale":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"}}}}}},"required":["buffer_id","profile"]})",
+     false},
+    {"mep_model_add_custom_mesh", "model.addCustomMesh",
+     "Add an object built from an arbitrary hand-authored vertex/triangle list -- the escape hatch "
+     "for geometry no primitive or mep_model_add_lathe combination can produce (e.g. an asymmetric "
+     "shape like a chess knight's head). vertices is a flat list of [x,y,z] points; triangles is a "
+     "list of [i,j,k] vertex-index triples (0-indexed into vertices, 3 per triangle, winding matters "
+     "for which side is the visible front face -- counter-clockwise when viewed from outside, same "
+     "convention every other mep_model_* mesh uses). Normals are computed automatically (smooth, "
+     "area-weighted) -- do not pass your own. uvs is optional: a flat list of [u,v] pairs, one per "
+     "vertex in the same order as `vertices` -- give it and the object can sample a wrapped texture "
+     "via mep_model_set_texture like any other mesh; omit it and the object renders with a solid "
+     "color/roughness/metallic from mep_model_set_material instead. Returns the new object's id.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"vertices":{"type":"array","description":"flat list of [x,y,z] points","items":{"type":"array","items":{"type":"number"},"minItems":3,"maxItems":3}},"triangles":{"type":"array","description":"list of [i,j,k] 0-indexed vertex-index triples, CCW winding from outside","items":{"type":"array","items":{"type":"integer"},"minItems":3,"maxItems":3}},"uvs":{"type":"array","description":"optional, one [u,v] pair per vertex (same order/length as vertices) -- omit for a solid-color object","items":{"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2}},"name":{"type":"string","description":"object/mesh name shown in the Outliner, default \"CustomMesh\""},"transform":{"type":"object","description":"optional position/rotation/scale, each an optional {x,y,z}; rotation in degrees","properties":{"position":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"}}},"rotation":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"}}},"scale":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"}}}}}},"required":["buffer_id","vertices","triangles"]})",
+     false},
     {"mep_model_delete_object", "model.deleteObject",
      "Delete an object from a 3D-modeler scene. cascade (default false) also deletes every transitive "
      "descendant (Scene::Descendants) instead of just un-parenting them -- a real 'delete this group "
@@ -498,15 +520,48 @@ const ToolSpec kTools[] = {
      "ones given are changed.",
      R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"object_id":{"type":"integer"},"position":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"}}},"rotation":{"type":"object","description":"Euler XYZ, degrees","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"}}},"scale":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"}}}},"required":["buffer_id","object_id"]})",
      false},
-    {"mep_model_set_material", "model.setMaterial", "Set an object's base color (0..1 floats; a defaults to 1.0) in a 3D-modeler scene.",
-     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"object_id":{"type":"integer"},"color":{"type":"object","properties":{"r":{"type":"number"},"g":{"type":"number"},"b":{"type":"number"},"a":{"type":"number"}},"required":["r","g","b"]}},"required":["buffer_id","object_id","color"]})",
+    {"mep_model_set_material", "model.setMaterial",
+     "Set an object's base color (0..1 floats; a defaults to 1.0) in a 3D-modeler scene, plus "
+     "optional roughness/metallic scalars (each 0..1; omitted means leave the object's current value "
+     "alone, not reset to 0) feeding the renderer's simplified metallic-roughness shading -- low "
+     "roughness + high metallic gives a tight, color-tinted specular highlight (shiny metal); high "
+     "roughness + low metallic gives a soft/matte look (e.g. unfinished wood, stone).",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"object_id":{"type":"integer"},"color":{"type":"object","properties":{"r":{"type":"number"},"g":{"type":"number"},"b":{"type":"number"},"a":{"type":"number"}},"required":["r","g","b"]},"roughness":{"type":"number","description":"0 (mirror-smooth) .. 1 (fully matte); omit to leave unchanged"},"metallic":{"type":"number","description":"0 (dielectric) .. 1 (metal); omit to leave unchanged"}},"required":["buffer_id","object_id","color"]})",
      false},
+    {"mep_model_add_light", "model.addLight",
+     "Add a light to a 3D-modeler scene (MULTILIGHT_ANIMATION_PLAN.md Part A) -- real scene content, "
+     "undo-aware like any object, not a view-only setting. type is \"directional\" (a world-space "
+     "direction, like sunlight -- no falloff) or \"point\" (a world-space position with distance "
+     "falloff over its range). Starts white, intensity 1, with mep_model_set_light needed afterward to "
+     "actually position/color/aim it -- defaults alone reproduce the renderer's old single hardcoded "
+     "key light. A scene with zero lights renders exactly as before this feature existed; adding one "
+     "light replaces that implicit fallback, so add a second if you still want the original angle "
+     "alongside a new one rather than instead of it.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"type":{"type":"string","enum":["directional","point"],"description":"default \"directional\""}},"required":["buffer_id"]})",
+     false},
+    {"mep_model_set_light", "model.setLight",
+     "Update a light in a 3D-modeler scene, applying only the fields given (omitted fields keep their "
+     "current value). direction (Directional lights) is world-space and points FROM a lit surface "
+     "TOWARD the light, matching mep_model_camera_set's own convention, not the direction light "
+     "travels. position (Point lights) is world-space. color is 0..1 floats like "
+     "mep_model_set_material's own (a defaults to 1.0). intensity multiplies color (>1.0 is a "
+     "legitimate bright light, not clamped). range only affects Point lights: a simple linear falloff "
+     "to zero at that distance, not physically-based inverse-square.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"light_id":{"type":"integer"},"type":{"type":"string","enum":["directional","point"]},"position":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"}}},"direction":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"}}},"color":{"type":"object","properties":{"r":{"type":"number"},"g":{"type":"number"},"b":{"type":"number"},"a":{"type":"number"}}},"intensity":{"type":"number"},"range":{"type":"number","description":"Point lights only"},"visible":{"type":"boolean"}},"required":["buffer_id","light_id"]})",
+     false},
+    {"mep_model_delete_light", "model.deleteLight", "Remove a light from a 3D-modeler scene.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"light_id":{"type":"integer"}},"required":["buffer_id","light_id"]})",
+     false},
+    {"mep_model_list_lights", "model.listLights", "List every light in a 3D-modeler scene with its full current state.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"}},"required":["buffer_id"]})", true},
     {"mep_model_set_texture", "model.setTexture",
-     "Set (or, with an empty path, clear) an object's base-color/albedo texture in a 3D-modeler "
-     "scene, loaded from an image file (PNG/JPG/BMP/...). The texture is sampled and then tinted by "
-     "the object's own mep_model_set_material color, same as glTF's baseColorTexture + "
-     "baseColorFactor. No normal/metallic-roughness/emissive maps -- this is base color only.",
-     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"object_id":{"type":"integer"},"path":{"type":"string","description":"image file path, or empty string to clear"}},"required":["buffer_id","object_id","path"]})",
+     "Set (or, with an empty path, clear) one texture map slot on an object in a 3D-modeler scene, "
+     "loaded from an image file (PNG/JPG/BMP/...). kind (default \"albedo\") selects which slot: "
+     "\"albedo\" is the base color (sampled and tinted by the object's own mep_model_set_material "
+     "color, same as glTF's baseColorTexture + baseColorFactor), \"normal\" is a tangent-space normal "
+     "map, \"roughness\"/\"metallic\" are single-channel maps multiplied by the corresponding "
+     "mep_model_set_material scalar.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"object_id":{"type":"integer"},"path":{"type":"string","description":"image file path, or empty string to clear"},"kind":{"type":"string","enum":["albedo","normal","roughness","metallic"],"description":"defaults to \"albedo\""}},"required":["buffer_id","object_id","path"]})",
      false},
     {"mep_model_rename_object", "model.renameObject", "Rename an object in a 3D-modeler scene.",
      R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"object_id":{"type":"integer"},"name":{"type":"string"}},"required":["buffer_id","object_id","name"]})",
@@ -528,6 +583,72 @@ const ToolSpec kTools[] = {
      false},
     {"mep_model_camera_get", "model.cameraGet", "Get a 3D-modeler pane's current orbit camera state.",
      R"({"type":"object","properties":{"buffer_id":{"type":"integer"}},"required":["buffer_id"]})", true},
+    {"mep_model_anim_add_camera_keyframe", "model.animAddCameraKeyframe",
+     "Add (or replace, if one already exists at the same time) a camera keyframe -- the low-level building "
+     "block behind mep_model_anim_orbit_camera's convenience wrapper, for a custom (non-orbit) camera move. "
+     "Keyframes are linearly interpolated by time; not an undoable edit.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"time":{"type":"number","description":"seconds"},"target":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"}}},"yaw":{"type":"number","description":"degrees"},"pitch":{"type":"number","description":"degrees"},"distance":{"type":"number"},"fov":{"type":"number","description":"degrees, default 45"}},"required":["buffer_id","time","target","yaw","pitch","distance"]})",
+     false},
+    {"mep_model_anim_clear_camera", "model.animClearCamera",
+     "Remove every camera keyframe from a 3D-modeler scene, turning its camera back into a plain unanimated "
+     "orbit camera.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"}},"required":["buffer_id"]})", false},
+    {"mep_model_anim_orbit_camera", "model.animOrbitCamera",
+     "Replace any existing camera keyframes with an evenly-spaced full orbit around target: yaw sweeps from "
+     "start_yaw through start_yaw + revolutions*360 over duration seconds, at constant pitch/distance/fov -- "
+     "the one-call way to get \"pan the camera around the scene once,\" without hand-authoring keyframes. "
+     "Preview it with mep_model_anim_set_camera_time before spending time on mep_model_render_animation_to_video.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"target":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"}}},"distance":{"type":"number","description":"default 6"},"pitch":{"type":"number","description":"degrees, default 30"},"fov":{"type":"number","description":"degrees, default 45"},"duration":{"type":"number","description":"seconds, default 4"},"start_yaw":{"type":"number","description":"degrees, default 0"},"revolutions":{"type":"number","description":"default 1, i.e. once around"}},"required":["buffer_id","target"]})",
+     false},
+    {"mep_model_anim_set_camera_time", "model.animSetCameraTime",
+     "Sample a scene's camera keyframes at the given time (linear interpolation, clamped to the first/last "
+     "keyframe outside that range) and apply the result to the pane's live camera -- for previewing/scrubbing "
+     "an animation (e.g. with mep_model_render_to_image after each call) before exporting it. No-op if the "
+     "scene has no camera keyframes.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"time":{"type":"number","description":"seconds"}},"required":["buffer_id","time"]})",
+     false},
+    {"mep_model_anim_add_object_keyframe", "model.animAddObjectKeyframe",
+     "Add (or replace, if one already exists at the same time) a keyframe on one object's animation track -- "
+     "the low-level building block behind mep_model_anim_move_object's convenience wrapper, for a custom "
+     "(non-linear-move) animation involving rotation/scale too. Keyframes are linearly interpolated by time; "
+     "not an undoable edit. No-op if object_id doesn't exist in the scene.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"object_id":{"type":"integer"},"time":{"type":"number","description":"seconds"},"position":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"}}},"rotation":{"type":"object","description":"Euler XYZ, degrees","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"}}},"scale":{"type":"object","description":"default {x:1,y:1,z:1}","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"}}}},"required":["buffer_id","object_id","time","position","rotation"]})",
+     false},
+    {"mep_model_anim_clear_object_keyframes", "model.animClearObjectKeyframes",
+     "Remove every keyframe from one object's animation track, turning it back into an unanimated object.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"object_id":{"type":"integer"}},"required":["buffer_id","object_id"]})",
+     false},
+    {"mep_model_anim_set_object_time", "model.animSetObjectTime",
+     "Sample one object's animation track at the given time and apply the result to that object's live "
+     "position/rotation/scale -- for previewing/scrubbing before exporting (e.g. with "
+     "mep_model_render_to_image after each call). No-op if object_id has no keyframe track. Note: unlike "
+     "camera scrubbing, this changes the object's real (normally-saved) transform -- a mep_file_save while "
+     "scrubbed captures the scrubbed pose, not the object's original one.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"object_id":{"type":"integer"},"time":{"type":"number","description":"seconds"}},"required":["buffer_id","object_id","time"]})",
+     false},
+    {"mep_model_anim_move_object", "model.animMoveObject",
+     "Replace an object's keyframes with a simple two-keyframe linear move from `from` to `to` over duration "
+     "seconds (position only -- rotation/scale hold the object's current values throughout) -- the one-call "
+     "way to animate a piece moving across a scene, mirroring mep_model_anim_orbit_camera's role for objects. "
+     "For anything beyond a straight linear move (rotation, multiple waypoints, easing), use "
+     "mep_model_anim_add_object_keyframe directly instead.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"object_id":{"type":"integer"},"from":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"}}},"to":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"}}},"duration":{"type":"number","description":"seconds, default 2"}},"required":["buffer_id","object_id","from","to"]})",
+     false},
+    {"mep_model_render_animation_to_video", "model.renderAnimationToVideo",
+     "Render a 3D-modeler scene's animation to a real, standard Motion-JPEG .mov file -- camera-keyframe "
+     "animation (mep_model_anim_orbit_camera/mep_model_anim_add_camera_keyframe), object animation "
+     "(mep_model_anim_move_object/mep_model_anim_add_object_keyframe), or both together; only fails if the "
+     "scene has neither (a static single render has no reason to go through this instead of "
+     "mep_model_render_to_image). Duration is the longest of the camera track and every object track -- a "
+     "shorter track just holds its last value for the rest. Samples at fps intervals, offscreen (like "
+     "mep_model_render_to_image, independent of the live viewport). Needs the real GUI window (same "
+     "requirement as mep_model_render_to_image). Play the result back inside mep itself with mep_file_open "
+     "(opens a .mov path into a video-playback pane), or with any standard external player. Each frame is "
+     "rendered at width*supersample x height*supersample and box-downsampled to width x height for "
+     "anti-aliasing (CHESS_REALISM_PLAN.md Phase 2) -- costs render time roughly with the square of "
+     "supersample, so drop it to 1 for a fast draft pass.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"path":{"type":"string","description":"destination .mov path"},"fps":{"type":"integer","description":"default 30, clamped to [1,120]"},"width":{"type":"integer","description":"default 1024, clamped to [16,4096]"},"height":{"type":"integer","description":"default 768, clamped to [16,4096]"},"quality":{"type":"integer","description":"JPEG quality 1-100, default 85"},"show_grid":{"type":"boolean","description":"default: the pane's own current grid setting"},"wireframe":{"type":"boolean","description":"default: the pane's own current wireframe setting"},"show_textures":{"type":"boolean","description":"default: the pane's own current setting"},"unlit":{"type":"boolean","description":"default: the pane's own current setting"},"supersample":{"type":"integer","description":"anti-aliasing render-scale factor, default 2, clamped to [1,4]"}},"required":["buffer_id","path"]})",
+     true},
     {"mep_model_undo", "model.undo", "Undo the last edit in a 3D-modeler scene.",
      R"({"type":"object","properties":{"buffer_id":{"type":"integer"}},"required":["buffer_id"]})", false},
     {"mep_model_redo", "model.redo", "Redo the last undone edit in a 3D-modeler scene.",
@@ -535,16 +656,22 @@ const ToolSpec kTools[] = {
     {"mep_model_render_to_image", "model.renderToImage",
      "Render a 3D-modeler scene's viewport to a PNG file -- a clean render (no selection outline, no "
      "menubar/sidebars) at whatever resolution you ask for, unlike mep_screenshot which always captures the "
-     "whole mep window. Needs the real GUI window (same requirement as mep_screenshot/mep_mouse_*).",
-     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"path":{"type":"string","description":"destination PNG path"},"width":{"type":"integer","description":"default 1024, clamped to [16,4096]"},"height":{"type":"integer","description":"default 768, clamped to [16,4096]"},"transparent":{"type":"boolean","description":"clear to a transparent background instead of the theme background; default false"},"show_grid":{"type":"boolean","description":"default: the pane's own current grid setting"},"wireframe":{"type":"boolean","description":"default: the pane's own current wireframe setting"}},"required":["buffer_id","path"]})",
+     "whole mep window. Needs the real GUI window (same requirement as mep_screenshot/mep_mouse_*). Rendered "
+     "at width*supersample x height*supersample and box-downsampled to width x height for anti-aliasing "
+     "(CHESS_REALISM_PLAN.md Phase 2).",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"path":{"type":"string","description":"destination PNG path"},"width":{"type":"integer","description":"default 1024, clamped to [16,4096]"},"height":{"type":"integer","description":"default 768, clamped to [16,4096]"},"transparent":{"type":"boolean","description":"clear to a transparent background instead of the theme background; default false"},"show_grid":{"type":"boolean","description":"default: the pane's own current grid setting"},"wireframe":{"type":"boolean","description":"default: the pane's own current wireframe setting"},"show_textures":{"type":"boolean","description":"default: the pane's own current setting; false falls back to plain per-object colors instead of sampling texture maps"},"unlit":{"type":"boolean","description":"default: the pane's own current setting; true skips lighting entirely and outputs raw textured/tinted color"},"supersample":{"type":"integer","description":"anti-aliasing render-scale factor, default 2, clamped to [1,4]"}},"required":["buffer_id","path"]})",
      true},
     {"mep_model_set_view", "model.setView",
-     "Set a 3D-modeler pane's grid/wireframe/snap view toggles -- each field optional, only the ones given are "
-     "changed. Not an undoable edit. The same thing the tool sidebar's Grid/Wireframe/Snap buttons do, exposed for "
-     "scripting. snap makes subsequent Move/Rotate/Scale gizmo and free drags round to a fixed grid step (0.25 "
-     "units), angle step (15 degrees), or scale step (0.25); it does not affect mep_model_set_transform, which "
-     "always sets the exact value given.",
-     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"show_grid":{"type":"boolean"},"wireframe":{"type":"boolean"},"snap":{"type":"boolean"}},"required":["buffer_id"]})",
+     "Set a 3D-modeler pane's grid/wireframe/snap/textures/lighting view toggles -- each field optional, only the "
+     "ones given are changed. Not an undoable edit. The same thing the tool sidebar's Grid/Wireframe buttons and "
+     "the View menu's Toggle Textures/Toggle Lighting items do, exposed for scripting. snap makes subsequent "
+     "Move/Rotate/Scale gizmo and free drags round to a fixed grid step (0.25 units), angle step (15 degrees), or "
+     "scale step (0.25); it does not affect mep_model_set_transform, which always sets the exact value given. "
+     "show_textures=false forces every object to its plain color, ignoring any texture maps it has assigned -- "
+     "does not affect roughness/metallic scalars, which still shade normally. unlit=true skips the renderer's "
+     "lighting math entirely (Lambertian diffuse + Blinn-Phong specular) and outputs the raw textured/tinted "
+     "color, the flat look the renderer had before basic PBR lighting was added.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"show_grid":{"type":"boolean"},"wireframe":{"type":"boolean"},"snap":{"type":"boolean"},"show_textures":{"type":"boolean"},"unlit":{"type":"boolean"}},"required":["buffer_id"]})",
      false},
     {"mep_model_frame_all", "model.frameAll",
      "Reframe a 3D-modeler pane's orbit camera (target + distance) to fit the whole scene's true world bounds "
@@ -739,6 +866,91 @@ const ToolSpec kTools[] = {
      "the whole mesh, not a selection. Safely clones a shared mesh first, same as "
      "mep_model_set_vertex_position.",
      R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"object_id":{"type":"integer"}},"required":["buffer_id","object_id"]})",
+     false},
+
+    // --- Image editor: headless procedural texture generation
+    // (CHESS_SET_BENCHMARK_PLAN.md Phase 4). Unlike the by-hand paint
+    // tools (Pencil/Line/Rectangle/... -- still only reachable via
+    // mep_mouse_*/mep_key_press UI automation, see "The in-pane image
+    // editor" in this file's own doc comment / MEP_AGENT_API.md), these
+    // create/fill a buffer directly, no window or synthetic input
+    // needed -- the same "headless, buffer_id-addressed" shape as the
+    // model.* tools above. color_a/color_b are {r,g,b,a} 0..255 ints (a
+    // optional, defaults 255) -- ImageEditorLayer's own RGBA8
+    // convention, unlike the 3D modeler's 0..1-float mep_model_set_material.
+    {"mep_image_new", "image.new",
+     "Create a brand-new image-editor buffer headlessly (no source file needed), seeded with one "
+     "opaque layer filled with `color` (default opaque white). Returns the new buffer_id -- pass it "
+     "to every other mep_image_* tool, and to mep_model_set_texture's path after mep_image_export_png.",
+     R"({"type":"object","properties":{"width":{"type":"integer"},"height":{"type":"integer"},"color":{"type":"object","properties":{"r":{"type":"integer"},"g":{"type":"integer"},"b":{"type":"integer"},"a":{"type":"integer"}}}},"required":["width","height"]})",
+     false},
+    {"mep_image_info", "image.info", "Get an image-editor buffer's width/height, active layer index, and each layer's name/visible/opacity.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"}},"required":["buffer_id"]})", true},
+    {"mep_image_new_layer", "image.newLayer",
+     "Add a new blank (fully transparent) layer above the active layer and make it the active one. "
+     "Returns the new layer's index.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"name":{"type":"string","description":"optional; defaults to \"Layer N\""}},"required":["buffer_id"]})",
+     false},
+    {"mep_image_set_active_layer", "image.setActiveLayer",
+     "Select which layer subsequent mep_image_fill_*/mep_image_blur calls apply to (by index, from "
+     "mep_image_info's layers array or mep_image_new_layer's own return value).",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"layer_index":{"type":"integer"}},"required":["buffer_id","layer_index"]})",
+     false},
+    {"mep_image_export_png", "image.exportPng",
+     "Flatten an image-editor buffer's visible layers and write the result as a PNG file -- the "
+     "usual next step before mep_model_set_texture.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"path":{"type":"string"}},"required":["buffer_id","path"]})",
+     false},
+    {"mep_image_fill_gradient", "image.fillGradient",
+     "Fill a layer with a linear or radial gradient between two colors. Linear's angle (degrees, "
+     "default 0) is the gradient direction, 0 = left-to-right; radial is centered on the buffer, "
+     "radius = half the smaller dimension.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"mode":{"type":"string","enum":["linear","radial"],"description":"defaults to \"linear\""},"color_a":{"type":"object","properties":{"r":{"type":"integer"},"g":{"type":"integer"},"b":{"type":"integer"},"a":{"type":"integer"}}},"color_b":{"type":"object","properties":{"r":{"type":"integer"},"g":{"type":"integer"},"b":{"type":"integer"},"a":{"type":"integer"}}},"angle":{"type":"number","description":"linear mode only, degrees, default 0"},"layer_index":{"type":"integer","description":"defaults to the active layer"}},"required":["buffer_id","color_a","color_b"]})",
+     false},
+    {"mep_image_fill_noise", "image.fillNoise",
+     "Fill a layer with fractal value noise (fBm) mapped between two colors -- a general mottled/"
+     "grainy texture base. scale controls frequency (higher = finer grain), octaves controls detail "
+     "layering (more = rougher/more detailed), seed selects a specific deterministic pattern.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"color_a":{"type":"object","properties":{"r":{"type":"integer"},"g":{"type":"integer"},"b":{"type":"integer"},"a":{"type":"integer"}}},"color_b":{"type":"object","properties":{"r":{"type":"integer"},"g":{"type":"integer"},"b":{"type":"integer"},"a":{"type":"integer"}}},"scale":{"type":"number","description":"default 0.05"},"octaves":{"type":"integer","description":"default 4"},"seed":{"type":"integer","description":"default 0"},"layer_index":{"type":"integer","description":"defaults to the active layer"}},"required":["buffer_id","color_a","color_b"]})",
+     false},
+    {"mep_image_fill_wood", "image.fillWood",
+     "Fill a layer with a procedural wood cross-section texture: concentric rings around the "
+     "buffer's center, warped by noise, banded between two colors -- what a tree's end grain looks "
+     "like face-on (a round tabletop, a piece's flat cap). Do NOT use this for a mep_model_add_lathe "
+     "object's sides -- wrapping concentric rings around a cylinder by angle produces a spiral/"
+     "barber-pole look, not wood grain; use mep_image_fill_wood_turned for that instead. ring_scale "
+     "controls ring spacing (higher = tighter rings), warp controls grain waviness (0 = perfect "
+     "circles), seed selects a specific deterministic pattern.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"color_a":{"type":"object","properties":{"r":{"type":"integer"},"g":{"type":"integer"},"b":{"type":"integer"},"a":{"type":"integer"}}},"color_b":{"type":"object","properties":{"r":{"type":"integer"},"g":{"type":"integer"},"b":{"type":"integer"},"a":{"type":"integer"}}},"ring_scale":{"type":"number","description":"default 0.3"},"warp":{"type":"number","description":"default 6.0"},"seed":{"type":"integer","description":"default 0"},"layer_index":{"type":"integer","description":"defaults to the active layer"}},"required":["buffer_id","color_a","color_b"]})",
+     false},
+    {"mep_image_fill_wood_turned", "image.fillWoodTurned",
+     "Fill a layer with a procedural wood-grain texture for a surface UV-wrapped circumferentially "
+     "around a cylinder -- u=angle/2pi, v=length, exactly the convention mep_model_add_lathe's own "
+     "meshes use. Grain streaks run lengthwise along v (the way real wood-turning grain looks, since "
+     "a log's growth rings run parallel to the lathe axis) and are seamless across the u=0/u=1 wrap, "
+     "so it applies cleanly as an albedo texture (mep_model_set_texture) on a lathed object with no "
+     "visible seam. ring_scale controls how many grain streaks wrap around; warp controls how much "
+     "each streak wanders along its own length (0 = perfectly straight streaks); seed selects a "
+     "specific deterministic pattern.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"color_a":{"type":"object","properties":{"r":{"type":"integer"},"g":{"type":"integer"},"b":{"type":"integer"},"a":{"type":"integer"}}},"color_b":{"type":"object","properties":{"r":{"type":"integer"},"g":{"type":"integer"},"b":{"type":"integer"},"a":{"type":"integer"}}},"ring_scale":{"type":"number","description":"default 4.0"},"warp":{"type":"number","description":"default 3.0"},"seed":{"type":"integer","description":"default 0"},"layer_index":{"type":"integer","description":"defaults to the active layer"}},"required":["buffer_id","color_a","color_b"]})",
+     false},
+    {"mep_image_fill_checkerboard", "image.fillCheckerboard",
+     "Fill a layer with an alternating-color checkerboard, squares_x by squares_y tiles (default "
+     "8x8, a chess/checkers board), color_a in the (0,0) corner tile. Useful as a board texture on a "
+     "single plane object instead of placing 64 separate tile objects.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"color_a":{"type":"object","properties":{"r":{"type":"integer"},"g":{"type":"integer"},"b":{"type":"integer"},"a":{"type":"integer"}}},"color_b":{"type":"object","properties":{"r":{"type":"integer"},"g":{"type":"integer"},"b":{"type":"integer"},"a":{"type":"integer"}}},"squares_x":{"type":"integer","description":"default 8"},"squares_y":{"type":"integer","description":"default 8"},"layer_index":{"type":"integer","description":"defaults to the active layer"}},"required":["buffer_id","color_a","color_b"]})",
+     false},
+    {"mep_image_fill_marble", "image.fillMarble",
+     "Fill a layer with a procedural marble texture: fBm turbulence fed through a sine wave, banded "
+     "between two colors -- the classic marble-vein recipe. scale controls base vein frequency, "
+     "turbulence controls how much noise distorts the veins (0 = plain straight bands), seed selects "
+     "a specific deterministic pattern.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"color_a":{"type":"object","properties":{"r":{"type":"integer"},"g":{"type":"integer"},"b":{"type":"integer"},"a":{"type":"integer"}}},"color_b":{"type":"object","properties":{"r":{"type":"integer"},"g":{"type":"integer"},"b":{"type":"integer"},"a":{"type":"integer"}}},"scale":{"type":"number","description":"default 0.03"},"turbulence":{"type":"number","description":"default 6.0"},"seed":{"type":"integer","description":"default 0"},"layer_index":{"type":"integer","description":"defaults to the active layer"}},"required":["buffer_id","color_a","color_b"]})",
+     false},
+    {"mep_image_blur", "image.blur",
+     "Box-blur a layer in place (separable, edge-clamped) -- softens raw mep_image_fill_noise output "
+     "or any other layer content.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"radius":{"type":"integer","description":"blur radius in pixels, default 2"},"layer_index":{"type":"integer","description":"defaults to the active layer"}},"required":["buffer_id"]})",
      false},
 };
 

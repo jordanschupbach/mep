@@ -777,6 +777,76 @@ int main() {
     CHECK(empty_doc.get("nodes").items().empty());
     std::filesystem::remove(empty_path);
 
+    // --- AddCustomMeshToScene (CHESS_SET_BENCHMARK_PLAN.md Phase 8) ---
+    {
+        Scene cm_scene;
+        // A unit tetrahedron: 4 vertices, 4 CCW-from-outside triangular faces.
+        std::vector<Vec3f> verts = {
+            Vec3f{0.0f, 0.0f, 0.0f},
+            Vec3f{1.0f, 0.0f, 0.0f},
+            Vec3f{0.0f, 1.0f, 0.0f},
+            Vec3f{0.0f, 0.0f, 1.0f},
+        };
+        std::vector<unsigned int> tris = {
+            0, 2, 1,  // base (viewed from -Z)
+            0, 1, 3, 0, 3, 2, 1, 2, 3,
+        };
+        int cm_id = AddCustomMeshToScene(&cm_scene, verts, tris, "Tetra");
+        CHECK(cm_id >= 0);
+        CHECK(cm_scene.objects.size() == 1);
+        const Object3D *cm_obj = cm_scene.FindObject(cm_id);
+        CHECK(cm_obj != nullptr);
+        CHECK(cm_obj->name == "Tetra");
+        CHECK(cm_obj->mesh_index >= 0 && cm_obj->mesh_index < static_cast<int>(cm_scene.meshes.size()));
+        const MeshData &cm_mesh = cm_scene.meshes[static_cast<size_t>(cm_obj->mesh_index)];
+        CHECK(cm_mesh.VertexCount() == 4);
+        CHECK(cm_mesh.TriangleCount() == 4);
+        // Normals are computed automatically, never left empty for a
+        // caller-supplied mesh (RecalculateNormals populates one per vertex).
+        CHECK(static_cast<int>(cm_mesh.normals.size()) == cm_mesh.VertexCount() * 3);
+        // Every normal should come out unit-length (RecalculateNormals
+        // normalizes) -- a cheap sanity check that it actually ran rather
+        // than leaving the buffer zeroed.
+        for (int v = 0; v < cm_mesh.VertexCount(); v++) {
+            float nx = cm_mesh.normals[static_cast<size_t>(v) * 3 + 0];
+            float ny = cm_mesh.normals[static_cast<size_t>(v) * 3 + 1];
+            float nz = cm_mesh.normals[static_cast<size_t>(v) * 3 + 2];
+            float len = std::sqrt(nx * nx + ny * ny + nz * nz);
+            CHECK(std::fabs(len - 1.0f) < 1e-4f);
+        }
+
+        // Invalid inputs all rejected with -1, no partial mutation.
+        CHECK(AddCustomMeshToScene(&cm_scene, {}, tris, "Empty") == -1);
+        CHECK(AddCustomMeshToScene(&cm_scene, verts, {}, "NoTris") == -1);
+        std::vector<unsigned int> bad_count = {0, 1};  // not a multiple of 3
+        CHECK(AddCustomMeshToScene(&cm_scene, verts, bad_count, "BadCount") == -1);
+        std::vector<unsigned int> out_of_range = {0, 1, 99};  // 99 >= verts.size()
+        CHECK(AddCustomMeshToScene(&cm_scene, verts, out_of_range, "OutOfRange") == -1);
+
+        // Optional texcoords (CHESS_SET_BENCHMARK_PLAN.md Phase 8 follow-up
+        // -- added so a custom mesh can sample a wrapped texture, not just
+        // a solid material color): flat, 2 floats/vertex, one pair per
+        // vertex in `verts`' own order.
+        std::vector<float> uvs = {0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.5f, 0.5f};
+        int uv_id = AddCustomMeshToScene(&cm_scene, verts, tris, "TetraUV", uvs);
+        CHECK(uv_id >= 0);
+        const Object3D *uv_obj = cm_scene.FindObject(uv_id);
+        CHECK(uv_obj != nullptr);
+        const MeshData &uv_mesh = cm_scene.meshes[static_cast<size_t>(uv_obj->mesh_index)];
+        CHECK(static_cast<int>(uv_mesh.texcoords.size()) == uv_mesh.VertexCount() * 2);
+        CHECK(uv_mesh.texcoords[0] == 0.0f && uv_mesh.texcoords[1] == 0.0f);
+        CHECK(uv_mesh.texcoords[2] == 1.0f && uv_mesh.texcoords[3] == 0.0f);
+        // A mesh built with no texcoords at all still leaves them empty
+        // (the pre-UV-support behavior, unchanged for the common no-UV case).
+        CHECK(cm_scene.meshes[static_cast<size_t>(cm_obj->mesh_index)].texcoords.empty());
+        // Wrong-length uvs (not exactly 2 floats per vertex) rejected, same
+        // as every other malformed-input case above.
+        std::vector<float> bad_uvs = {0.0f, 0.0f, 1.0f};  // 3 floats, not a multiple of 2-per-4-verts
+        CHECK(AddCustomMeshToScene(&cm_scene, verts, tris, "BadUV", bad_uvs) == -1);
+
+        CHECK(cm_scene.objects.size() == 2);  // the tetrahedron plus the UV-textured one
+    }
+
     std::printf("model3d_doc_test passed\n");
     return 0;
 }

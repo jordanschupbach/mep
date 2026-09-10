@@ -9,7 +9,9 @@
 
 namespace gfx {
 
-inline void BeginMode3D(Camera3D camera) { GetBackends().renderer3d->BeginMode3D(camera); }
+inline void BeginMode3D(Camera3D camera, int render_width = 0, int render_height = 0) {
+    GetBackends().renderer3d->BeginMode3D(camera, render_width, render_height);
+}
 inline void EndMode3D() { GetBackends().renderer3d->EndMode3D(); }
 inline void DrawGrid(int slices, float spacing) { GetBackends().renderer3d->DrawGrid(slices, spacing); }
 inline void DrawLine3D(Vector3 start, Vector3 end, Color color) {
@@ -73,6 +75,13 @@ inline RayCollision GetRayCollisionBox(Ray ray, BoundingBox box) {
 
 inline void EnableWireMode() { GetBackends().renderer3d->EnableWireMode(); }
 inline void DisableWireMode() { GetBackends().renderer3d->DisableWireMode(); }
+inline void SetUnlitMode(bool unlit) { GetBackends().renderer3d->SetUnlitMode(unlit); }
+inline void SetSceneLights(const SceneLight *lights, int count) { GetBackends().renderer3d->SetSceneLights(lights, count); }
+inline void BeginShadowPass(Vector3 light_dir, Vector3 scene_min, Vector3 scene_max) {
+    GetBackends().renderer3d->BeginShadowPass(light_dir, scene_min, scene_max);
+}
+inline void DrawMeshShadow(Mesh mesh, Matrix transform) { GetBackends().renderer3d->DrawMeshShadow(mesh, transform); }
+inline void EndShadowPass() { GetBackends().renderer3d->EndShadowPass(); }
 inline void PushMatrix() { GetBackends().renderer3d->PushMatrix(); }
 inline void PopMatrix() { GetBackends().renderer3d->PopMatrix(); }
 inline void TranslateMatrix(float x, float y, float z) {

@@ -10,6 +10,8 @@
 
 #include "formula.h"
 
+import mep.path_util;
+
 namespace {
 
 /**
@@ -20,20 +22,6 @@ namespace {
  */
 uint64_t CellKey(int row, int col) {
     return (static_cast<uint64_t>(static_cast<uint32_t>(row)) << 32) | static_cast<uint32_t>(col);
-}
-
-/**
- * @brief Extracts a path's file extension, lowercased.
- * @param path File path to inspect.
- * @return The lowercased extension (no leading dot), or "" if path has no '.'.
- */
-std::string LowerExt(const std::string &path) {
-    size_t dot = path.find_last_of('.');
-    if (dot == std::string::npos) return "";
-    std::string ext = path.substr(dot + 1);
-    // Lowercases each character of ext in place.
-    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return std::tolower(c); });
-    return ext;
 }
 
 }  // namespace

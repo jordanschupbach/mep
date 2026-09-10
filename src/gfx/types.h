@@ -125,6 +125,14 @@ struct Mesh {
 };
 
 constexpr int kMaterialMapAlbedo = 0;
+// Metalness/normal/roughness: CHESS_SET_BENCHMARK_PLAN.md's Phase 1 basic-
+// PBR material slots. Index values match raylib's own MATERIAL_MAP_*
+// convention (not load-bearing here, just familiar) -- each map's
+// MaterialMap::value carries the scalar roughness/metalness/normal-map-
+// strength used when no texture is bound, or as a multiplier when one is.
+constexpr int kMaterialMapMetalness = 1;
+constexpr int kMaterialMapNormal = 2;
+constexpr int kMaterialMapRoughness = 3;
 constexpr int kMaxMaterialMaps = 12;
 
 // Image::format is an opaque backend-defined pixel-format id (raylib's
@@ -141,10 +149,10 @@ struct MaterialMap {
     float value = 0.0f;
 };
 
-// Deliberately opaque beyond `maps`: main.cpp only ever reads/writes
-// material.maps[kMaterialMapAlbedo].{texture,color} (there is no custom
-// shader/lighting in this app's 3D viewport -- see model3d_doc.h's own
-// "no lighting model" note), so `shader`/`params` stay backend-internal.
+// Deliberately opaque beyond `maps`: main.cpp reads/writes
+// material.maps[kMaterialMapAlbedo/Normal/Roughness/Metalness]
+// (CHESS_SET_BENCHMARK_PLAN.md's Phase 1 basic-PBR shading), but never
+// touches `shader`/`params` themselves -- those stay backend-internal.
 struct Material {
     MaterialMap *maps = nullptr;
     void *backend_shader = nullptr;
@@ -168,6 +176,27 @@ struct Camera3D {
     Vector3 up;
     float fovy = 45.0f;
     CameraProjection projection = CameraProjection::Perspective;
+};
+
+// One light for the mesh shader's multi-light loop (MULTILIGHT_ANIMATION_
+// PLAN.md Part A) -- deliberately its own small POD here rather than
+// model3d_doc.h's Light, matching this header's usual "gfx:: doesn't know
+// about the document model" layering; NativeRenderer3DBackend::
+// SetSceneLights (called once per frame, mirroring SetUnlitMode's own
+// per-frame-until-changed statefulness) is where a Scene's lights get
+// converted into these. `direction_or_position` is a world-space
+// direction (Directional, normalized before uploading) or world-space
+// position (Point) depending on `type` -- same dual-purpose-by-type shape
+// model3d_doc.h's own Light uses. `color` is 0..1 float (not the 0..255
+// gfx::Color), since intensity multiplies it and can push components
+// above 1.0 for a genuinely bright light.
+enum class LightType { Directional, Point };
+struct SceneLight {
+    LightType type = LightType::Directional;
+    Vector3 direction_or_position;
+    Vector3 color{1.0f, 1.0f, 1.0f};
+    float intensity = 1.0f;
+    float range = 10.0f;  // Point lights only
 };
 
 struct Ray {

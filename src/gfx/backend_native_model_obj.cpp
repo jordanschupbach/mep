@@ -33,6 +33,8 @@
 #include "gfx/vecmath.h"
 #include "image_codec.h"
 
+import mep.gfx.model_read_util;
+
 namespace gfx {
 
 namespace {
@@ -65,11 +67,6 @@ FaceVertex ParseFaceToken(const std::string &tok) {
     return fv;
 }
 
-std::string DirOf(const std::string &path) {
-    size_t slash = path.find_last_of("/\\");
-    return slash == std::string::npos ? std::string() : path.substr(0, slash + 1);
-}
-
 // Decodes an image file via image_codec and uploads it as a GPU texture
 // -- same "decode then upload, caller reads it back with
 // LoadImageFromTexture later" dance model3d_doc.cpp's own texture-import
@@ -98,6 +95,12 @@ gfx::Material LoadMaterialFromMtl(const std::string &mtl_path, const std::string
     gfx::Material mat{};
     auto *maps = new gfx::MaterialMap[gfx::kMaxMaterialMaps]();
     maps[gfx::kMaterialMapAlbedo].color = gfx::White;
+    // OBJ/MTL has no PBR roughness/metallic concept of its own (Phong-era
+    // Ns/Ks, not a natural roughness/metallic mapping) -- same plausible
+    // semi-matte default as LoadMaterialDefault's own (backend_native_
+    // renderer3d.cpp), not MaterialMap::value's mirror-smooth 0.0f default
+    // constructor value, since nothing below this ever sets it for OBJ.
+    maps[gfx::kMaterialMapRoughness].value = 0.5f;
     mat.maps = maps;
 
     std::ifstream file(mtl_path);

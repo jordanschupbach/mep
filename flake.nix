@@ -168,10 +168,32 @@
             pkgs.cmake
             pkgs.ninja
             pkgs.pkg-config
-            # BUILD_PERFORMANCE_PLAN.md -- CMakeLists.txt auto-detects
-            # and wires this in via find_program(ccache); it only has to
-            # be on PATH here for that to take effect.
-            pkgs.ccache
+            # CMakeLists.txt's own Clang-modules workaround (top of that
+            # file) shells out to a bare `gcc` at configure time to learn
+            # libstdc++'s header search paths, which it then passes to
+            # clang-scan-deps explicitly (that tool, unlike ordinary
+            # clang++ compiles, doesn't inherit the wrapper's own
+            # NIX_CFLAGS_COMPILE-injected -isystem paths). In the `nix
+            # develop` devShell this `gcc` happened to already be on PATH
+            # as a side effect of the gfortran babel toolchain below, which
+            # masked that mepPackage's own nativeBuildInputs never actually
+            # provided one -- so a plain sandboxed `nix build` had no real
+            # `gcc`, execute_process() silently found nothing, no -isystem
+            # flags got added, and every clang-scan-deps invocation failed
+            # with "'cstdio' file not found" (or similar) once it reached a
+            # target CMake schedules C++20 module dependency scanning for.
+            pkgs.gcc
+            # NOT pkgs.ccache here (unlike devShell below): CMakeLists.txt's
+            # find_program(ccache) auto-detects and wires it in unconditionally
+            # (no opt-out flag), and ccache needs a writable $HOME/cache dir to
+            # create its cache -- but the Nix build sandbox's $HOME isn't a
+            # real writable directory, so every compile fails with "ccache:
+            # error: Permission denied". A fixed-output, one-shot sandboxed
+            # build gets no benefit from ccache anyway (nothing persists
+            # between builds), so it's simplest to just keep ccache off this
+            # derivation's PATH and let devShell's copy handle interactive
+            # incremental builds instead.
+            #
             # BUILD_PERFORMANCE_PLAN.md Round 2 -- CMakeLists.txt
             # auto-detects both and prefers mold; only need to be on
             # PATH for that find_program()/check_cxx_compiler_flag()

@@ -68,6 +68,14 @@ void GetFontVMetrics(const FontInfo *info, int *ascent, int *descent, int *line_
 // (unscaled). 0/0 if the codepoint isn't in the font's cmap.
 void GetCodepointHMetrics(const FontInfo *info, int codepoint, int *advance_width, int *left_side_bearing);
 
+// Same as GetCodepointHMetrics, but addressed directly by glyph index,
+// bypassing cmap lookup -- the GID-direct sibling PDFIUM_REMOVAL_PLAN.md
+// Phase 10 needs to compute a fallback advance width for a code that
+// resolved to a glyph without going through a codepoint at all (the
+// same symbolic-no-cmap / direct-code-as-GID case GetGlyphBitmap's own
+// sibling was added for in Phase 9). 0/0 for an out-of-range index.
+void GetGlyphHMetrics(const FontInfo *info, int glyph_index, int *advance_width, int *left_side_bearing);
+
 // Rasterizes one codepoint's glyph outline (resolving composite glyphs
 // recursively) to a tightly-cropped, antialiased single-channel coverage
 // bitmap, scaled by (scale_x, scale_y). Returns nullptr (matching
@@ -78,6 +86,18 @@ void GetCodepointHMetrics(const FontInfo *info, int codepoint, int *advance_widt
 // the baseline). Caller frees the result via FreeBitmap.
 unsigned char *GetCodepointBitmap(const FontInfo *info, float scale_x, float scale_y, int codepoint, int *width,
                                    int *height, int *xoff, int *yoff);
+
+// Same as GetCodepointBitmap, but addressed directly by glyph index,
+// bypassing cmap lookup entirely -- needed for PDF embedded TrueType
+// fonts (PDFIUM_REMOVAL_PLAN.md Phase 9), where a character code maps
+// to a glyph index via the PDF font's own `/Encoding` + `/Differences`
+// or a `/CIDToGIDMap`, not necessarily the font's built-in Unicode
+// cmap. `glyph_index` 0 (.notdef) is rasterized like any other index,
+// not specially rejected -- only an out-of-range index or an empty
+// outline (e.g. space) returns nullptr, matching
+// GetCodepointBitmap's own "no outline" contract.
+unsigned char *GetGlyphBitmap(const FontInfo *info, float scale_x, float scale_y, int glyph_index, int *width,
+                               int *height, int *xoff, int *yoff);
 
 void FreeBitmap(unsigned char *bitmap);
 

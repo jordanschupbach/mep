@@ -7427,8 +7427,9 @@ namespace {
 // gfx::GetCharPressed() yields full Unicode codepoints (raylib's char callback,
 // not a raw keycode), so a PDF search query typed via HandlePdfSearchInput
 // needs to UTF-8-encode anything beyond ASCII itself -- std::string here is
-// always UTF-8 (matching PdfDoc::Search's own expectation, which decodes it
-// back to UTF-16 for PDFium).
+// always UTF-8, matching PdfDoc::Search's own expectation (PDFIUM_REMOVAL_PLAN.md
+// Phase 13: no longer decoded to UTF-16 for PDFium -- pdftext::Search now
+// matches directly against these UTF-8 bytes, ASCII-folded).
 /**
  * @brief Appends a Unicode codepoint to a string, UTF-8-encoded.
  * @param s The string to append to.

@@ -46,6 +46,16 @@ build-native-unity:
     cmake -S . -B build/native-unity -DCMAKE_BUILD_TYPE=Release -DMEP_UNITY_BUILD=ON
     cmake --build build/native-unity -j
 
+# Build every test/smoke/benchmark binary (BUILD_PERFORMANCE_PLAN.md
+# Round 3's `tests` CMake target -- every EXCLUDE_FROM_ALL binary in
+# CMakeLists.txt, i.e. everything build-native's own default `all` build
+# no longer builds for you). Convenience for "I want all of them on disk
+# right now" (e.g. before going offline, or poking at one by hand) --
+# `test`/`bench`/`test-gui` above each already build only the specific
+# subset they actually run, so none of them need this first.
+build-native-tests: build-native
+    cmake --build {{native_build_dir}} -j --target tests
+
 # Build every Treesitter grammar mep has a highlight query for but doesn't
 # compile in (scripts/ts_grammars.tsv, ~49 languages -- see
 # src/treesitter.cpp's own DynamicLanguageTable) into .ts-grammars/lib/,
@@ -88,10 +98,19 @@ clean:
 # Build and run every *-test binary that needs no display: the pure
 # DOM/CSS, workspace-helper and collab tests. Exits non-zero on the first
 # failure (each binary aborts on a failed CHECK()).
+#
+# BUILD_PERFORMANCE_PLAN.md Round 3: every test/smoke/benchmark binary is
+# EXCLUDE_FROM_ALL in CMakeLists.txt (so a plain `build-native`/`nix
+# build` -- production -- only builds `mep` + its two companion tools,
+# not a single test binary), so this recipe has to build the specific
+# targets it needs itself rather than getting them for free from
+# `build-native`'s own default-`all` build.
 test: build-native
     #!/usr/bin/env bash
     set -euo pipefail
-    for t in mep-html-doc-test mep-org-doc-test mep-workspace-test mep-model3d-doc-test mep-image-procgen-test mep-jpeg-codec-test mep-mov-container-test mep-collab-crdt-test mep-collab-session-test; do
+    targets=(mep-html-doc-test mep-org-doc-test mep-workspace-test mep-model3d-doc-test mep-image-procgen-test mep-jpeg-codec-test mep-pdf-object-test mep-pdf-xref-test mep-pdf-crypt-test mep-pdf-filters-test mep-pdf-document-test mep-rasterizer-test mep-pdf-content-test mep-cff-test mep-pdf-encodings-test mep-pdf-font-test mep-pdf-text-test mep-mov-container-test mep-collab-crdt-test mep-collab-session-test)
+    cmake --build {{native_build_dir}} -j --target "${targets[@]}"
+    for t in "${targets[@]}"; do
         if [ -x "{{native_build_dir}}/$t" ]; then
             echo "== $t"
             "./{{native_build_dir}}/$t"
@@ -105,10 +124,12 @@ test: build-native
 # this never resets/rotates it, so history builds up over time as the
 # user asked. Run from the repo root (bench_results/ is a relative
 # path both the bench binaries and the report script resolve against
-# the cwd).
+# the cwd). Builds its own two EXCLUDE_FROM_ALL targets explicitly, same
+# reasoning as `test` above.
 bench: build-native
     #!/usr/bin/env bash
     set -euo pipefail
+    cmake --build {{native_build_dir}} -j --target mep-crdt-bench mep-buffer-bench
     mkdir -p bench_results
     for t in mep-crdt-bench mep-buffer-bench; do
         echo "== $t"
@@ -121,10 +142,14 @@ bench: build-native
 # mep, needs a display and a working GL driver -- under Xvfb that means a
 # GPU-capable/llvmpipe driver; the sandbox WORKSPACES_PLAN.md was written
 # in segfaults in raylib's InitWindow) and the MCP server end-to-end test
-# (deno, same display requirement since it spawns mep too).
+# (deno, same display requirement since it spawns mep too). Builds its own
+# EXCLUDE_FROM_ALL target explicitly, same reasoning as `test` above --
+# `mep` itself doesn't need this since it's still part of the default
+# `all` build `build-native` already does.
 test-gui: build-native
     #!/usr/bin/env bash
     set -euo pipefail
+    cmake --build {{native_build_dir}} -j --target mep-agent-rpc-test
     echo "== mep-agent-rpc-test"
     "./{{native_build_dir}}/mep-agent-rpc-test" "./{{native_build_dir}}/mep"
     echo "== mcp/server_test.ts"

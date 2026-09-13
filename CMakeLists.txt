@@ -176,7 +176,7 @@ set(FETCHCONTENT_QUIET FALSE)
 # Strict warnings for mep's OWN targets only (mep_core, mep, mep-collabd,
 # the collab/agent-rpc test binaries, mep-amalgam) -- deliberately NOT
 # applied to vendored/fetched third-party targets (lua,
-# tree_sitter, the ts_* grammar libs, pdfium) since we don't own
+# tree_sitter, the ts_* grammar libs) since we don't own
 # that code and can't fix warnings inside it. Applied via
 # target_compile_options(... PRIVATE ${MEP_STRICT_FLAGS}) on each of our
 # own targets below, not injected globally through CMAKE_CXX_FLAGS.
@@ -312,72 +312,6 @@ foreach(gname ${TS_GRAMMAR_NAMES})
     list(APPEND TS_GRAMMAR_LIBS ts_${gname})
 endforeach()
 
-# PDFium (src/pdf_doc.cpp's PDF-viewer backend): PDFium itself is BSD-3,
-# and every third-party library it bundles (freetype/lcms/openjpeg/zlib/
-# libpng/libjpeg-turbo/abseil/icu/simdutf/fast_float/llvm-libc) is also
-# permissively licensed -- see third_party_licenses/pdfium-LICENSE.txt.
-# There's no CMake build for PDFium itself (upstream uses Google's own
-# GN/ninja toolchain, not CMake), so it's fetched here as a prebuilt
-# shared-library release from github.com/bblanchon/pdfium-binaries (MIT-
-# licensed packaging of Google's own binary builds) rather than vendored
-# as source, the same "prebuilt binary, not a source vendor" tradeoff
-# lua deliberately avoids elsewhere in this file. Not available for
-# the Emscripten/wasm build -- see the #if defined(__EMSCRIPTEN__) stub in
-# pdf_doc.cpp.
-if(NOT EMSCRIPTEN)
-    set(PDFIUM_RELEASE "chromium/8009")
-    if(APPLE)
-        if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
-            set(PDFIUM_ASSET "pdfium-mac-arm64.tgz")
-            set(PDFIUM_HASH "SHA256=b1f2f17c7432a9942514dda5094ee9822c743bdfd07e7187725efbd34fde941f")
-        else()
-            set(PDFIUM_ASSET "pdfium-mac-x64.tgz")
-            set(PDFIUM_HASH "SHA256=e0afb6905e97438a9159aaa5b6c4fe188d97a7e3be05dc4782422c3ca7e1ce1a")
-        endif()
-    elseif(WIN32)
-        # Only x86_64 Windows is pinned here; pdfium-binaries also
-        # publishes win-x86/win-arm64 if that's ever needed.
-        set(PDFIUM_ASSET "pdfium-win-x64.tgz")
-        set(PDFIUM_HASH "SHA256=c78a8cd51b48abafcb266d868e401afefda1d189aa01ebbe743dc1d144e06031")
-    else()
-        # Only x86_64 glibc Linux is pinned/verified here (this repo's own
-        # dev/build environment); other Linux targets (arm64, musl) would
-        # need their own branch + hash from the same release's assets.
-        set(PDFIUM_ASSET "pdfium-linux-x64.tgz")
-        set(PDFIUM_HASH "SHA256=be513e8021a5bf8eb2116e00d78c3bacb82c5a02b3785156ae14fe5e33084385")
-    endif()
-
-    FetchContent_Declare(
-        pdfium
-        URL "https://github.com/bblanchon/pdfium-binaries/releases/download/${PDFIUM_RELEASE}/${PDFIUM_ASSET}"
-        URL_HASH "${PDFIUM_HASH}"
-        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-    )
-    FetchContent_MakeAvailable(pdfium)
-
-    add_library(pdfium SHARED IMPORTED)
-    if(WIN32)
-        set_target_properties(pdfium PROPERTIES
-            IMPORTED_LOCATION "${pdfium_SOURCE_DIR}/bin/pdfium.dll"
-            IMPORTED_IMPLIB "${pdfium_SOURCE_DIR}/lib/pdfium.dll.lib"
-            INTERFACE_INCLUDE_DIRECTORIES "${pdfium_SOURCE_DIR}/include"
-        )
-        set(PDFIUM_RUNTIME_FILE "${pdfium_SOURCE_DIR}/bin/pdfium.dll")
-    elseif(APPLE)
-        set_target_properties(pdfium PROPERTIES
-            IMPORTED_LOCATION "${pdfium_SOURCE_DIR}/lib/libpdfium.dylib"
-            INTERFACE_INCLUDE_DIRECTORIES "${pdfium_SOURCE_DIR}/include"
-        )
-        set(PDFIUM_RUNTIME_FILE "${pdfium_SOURCE_DIR}/lib/libpdfium.dylib")
-    else()
-        set_target_properties(pdfium PROPERTIES
-            IMPORTED_LOCATION "${pdfium_SOURCE_DIR}/lib/libpdfium.so"
-            INTERFACE_INCLUDE_DIRECTORIES "${pdfium_SOURCE_DIR}/include"
-        )
-        set(PDFIUM_RUNTIME_FILE "${pdfium_SOURCE_DIR}/lib/libpdfium.so")
-    endif()
-endif()
-
 # The in-house OpenGL gfx:: backend: mep_core's rendering/windowing/input/
 # audio/model-import layer, and (below) four standalone smoke-test
 # executables that exercise it independently of the full app.
@@ -409,6 +343,7 @@ set(MEP_GFX_NATIVE_SOURCES
     src/gfx/backend_native_model_gltf.cpp
     src/gfx/backend_native_text.cpp
     src/gfx/truetype.cpp
+    src/gfx/rasterizer.cpp
     src/gfx/backend.cpp
 )
 if(EMSCRIPTEN)
@@ -445,6 +380,24 @@ add_library(mep_core STATIC
     src/wav_doc.cpp
     src/svg_doc.cpp
     src/pdf_doc.cpp
+    # PDFIUM_REMOVAL_PLAN.md Phase 13: pdf_doc.cpp's own backend, swapped
+    # from PDFium to this in-house parser/interpreter/rasterizer stack
+    # (Phases 2-12). gfx/truetype.cpp and gfx/rasterizer.cpp are NOT
+    # listed again here -- they're already part of MEP_GFX_NATIVE_SOURCES
+    # below (mep's own native UI text rendering uses the same TrueType
+    # engine Phase 9 extracted these from); gfx/cff.cpp and jpeg_codec.cpp
+    # are the only ones of this stack shared with nothing else already in
+    # this list (deflate.cpp already is, for zip_archive.cpp/png_codec.cpp).
+    src/pdf_object.cpp
+    src/pdf_xref.cpp
+    src/pdf_crypt.cpp
+    src/pdf_filters.cpp
+    src/pdf_document.cpp
+    src/pdf_content.cpp
+    src/pdf_encodings.cpp
+    src/pdf_font.cpp
+    src/pdf_text.cpp
+    src/gfx/cff.cpp
     src/formula.cpp
     src/html_doc.cpp
     src/job.cpp
@@ -541,7 +494,7 @@ if(NOT EMSCRIPTEN)
     # implementation (GLFW_REMOVAL_PLAN.md) -- GLX itself is part of
     # libGL/OpenGL::GL (Mesa exports both from the same shared object), so
     # no separate GLX find_package/target is needed.
-    target_link_libraries(mep_core PUBLIC pdfium OpenGL::GL X11::X11)
+    target_link_libraries(mep_core PUBLIC OpenGL::GL X11::X11)
 endif()
 if(NOT EMSCRIPTEN AND NOT WIN32)
     find_package(Threads REQUIRED)
@@ -577,7 +530,11 @@ function(mep_add_gfx_native_smoke name main_src)
     # doc_export.cpp's ZIP support, image_codec.cpp by image_doc.cpp's
     # image-editor document model) and listing them twice there would
     # double-compile them.
-    add_executable(${name} ${main_src} ${MEP_GFX_NATIVE_SOURCES} src/wav_doc.cpp src/deflate.cpp
+    # EXCLUDE_FROM_ALL (BUILD_PERFORMANCE_PLAN.md Round 3): a smoke test,
+    # not something `mep` needs -- see that plan's own note on the `tests`
+    # aggregate target these are collected into below, right after all
+    # three of these get created.
+    add_executable(${name} EXCLUDE_FROM_ALL ${main_src} ${MEP_GFX_NATIVE_SOURCES} src/wav_doc.cpp src/deflate.cpp
         src/png_codec.cpp src/jpeg_codec.cpp src/bmp_codec.cpp src/gif_codec.cpp src/image_codec.cpp)
     # This target compiles the gfx model loaders (part of
     # MEP_GFX_NATIVE_SOURCES) directly rather than linking mep_core, so
@@ -619,6 +576,18 @@ mep_add_gfx_native_smoke(mep-gfx-native-audio-smoke src/gfx/native_audio_smoke_m
 # renders it, see gfx/native_model_smoke_main.cpp.
 mep_add_gfx_native_smoke(mep-gfx-native-model-smoke src/gfx/native_model_smoke_main.cpp)
 
+# BUILD_PERFORMANCE_PLAN.md Round 3: a production build only needs `mep`
+# itself plus its two companion tools (mep-mcp, mep-collabd, both real
+# deliverables users run directly -- not test infrastructure). Every test/
+# smoke/benchmark binary below is marked EXCLUDE_FROM_ALL so a plain
+# `cmake --build .`/`nix build` (the default `all` target) skips all of
+# them, and collected into this one `tests` target instead so `just test`/
+# `bench`/`test-gui` can build exactly what each of them needs in one
+# `cmake --build . --target tests` (or an explicit smaller target list)
+# rather than relying on `all` to have built everything as a side effect.
+add_custom_target(tests)
+add_dependencies(tests mep-gfx-native-integration-smoke mep-gfx-native-audio-smoke mep-gfx-native-model-smoke)
+
 add_executable(mep
     src/main.cpp
     src/agent_ui_input.cpp
@@ -658,18 +627,20 @@ endif()
 
 # Pure DOM/CSS test: intentionally links only html_doc.cpp, so selector and
 # cascade behavior can be verified without opening a window.
-add_executable(mep-html-doc-test src/html_doc_test.cpp src/html_doc.cpp src/js_engine.cpp src/svg_doc.cpp src/wav_doc.cpp)
+add_executable(mep-html-doc-test EXCLUDE_FROM_ALL src/html_doc_test.cpp src/html_doc.cpp src/js_engine.cpp src/svg_doc.cpp src/wav_doc.cpp)
 target_include_directories(mep-html-doc-test PRIVATE src)
 target_compile_options(mep-html-doc-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-html-doc-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-html-doc-test)
 
 # Org outline helpers (org_doc.cpp is dependency-free): the Todo-panel
 # <-> TODO.org sync (OrgTodoListItems/OrgTodoListApply), same windowless
 # model as mep-html-doc-test above.
-add_executable(mep-org-doc-test src/org_doc_test.cpp src/org_doc.cpp)
+add_executable(mep-org-doc-test EXCLUDE_FROM_ALL src/org_doc_test.cpp src/org_doc.cpp)
 target_include_directories(mep-org-doc-test PRIVATE src)
 target_compile_options(mep-org-doc-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-org-doc-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-org-doc-test)
 
 # CHESS_SET_BENCHMARK_PLAN.md Phase 3: procedural texture generation
 # (value noise/fBm, gradients, wood, marble, box blur) -- pure
@@ -677,10 +648,11 @@ target_link_options(mep-org-doc-test PRIVATE ${MEP_SANITIZE_FLAGS})
 # links only image_procgen.cpp + png_codec.cpp (to dump sample PNGs for
 # visual inspection) + deflate.cpp (png_codec's zlib dependency), same
 # windowless model as mep-html-doc-test above.
-add_executable(mep-image-procgen-test src/image_procgen_test.cpp src/image_procgen.cpp src/png_codec.cpp src/deflate.cpp)
+add_executable(mep-image-procgen-test EXCLUDE_FROM_ALL src/image_procgen_test.cpp src/image_procgen.cpp src/png_codec.cpp src/deflate.cpp)
 target_include_directories(mep-image-procgen-test PRIVATE src)
 target_compile_options(mep-image-procgen-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-image-procgen-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-image-procgen-test)
 
 # ANIMATION_VIDEO_PLAN.md Phase 2: jpeg_codec.h's new Encode(), round-
 # tripped through its own pre-existing Decode(). Pure std::string/
@@ -688,28 +660,160 @@ target_link_options(mep-image-procgen-test PRIVATE ${MEP_SANITIZE_FLAGS})
 # windowless model as mep-image-procgen-test above. Links only
 # jpeg_codec.cpp itself (Encode/Decode have no dependency on the rest of
 # the image codec stack).
-add_executable(mep-jpeg-codec-test src/jpeg_encoder_test.cpp src/jpeg_codec.cpp)
+add_executable(mep-jpeg-codec-test EXCLUDE_FROM_ALL src/jpeg_encoder_test.cpp src/jpeg_codec.cpp)
 target_include_directories(mep-jpeg-codec-test PRIVATE src)
 target_compile_options(mep-jpeg-codec-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-jpeg-codec-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-jpeg-codec-test)
+
+# PDFIUM_REMOVAL_PLAN.md Phase 2: pdf_object.h/.cpp's object-model
+# parser/tokenizer, standalone -- no xref/document context needed yet.
+# Same windowless, pure-buffer-parsing shape as mep-jpeg-codec-test above.
+add_executable(mep-pdf-object-test EXCLUDE_FROM_ALL src/pdf_object_test.cpp src/pdf_object.cpp)
+target_include_directories(mep-pdf-object-test PRIVATE src)
+target_compile_options(mep-pdf-object-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-pdf-object-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-pdf-object-test)
+
+# PDFIUM_REMOVAL_PLAN.md Phase 3: pdf_xref.h/.cpp's cross-reference
+# table/trailer parser + recovery, and pdf_filters.h/.cpp's FlateDecode/
+# Predictor (landed early in Phase 3 -- see pdf_filters.h's own doc
+# comment). Needs deflate.cpp (FlateDecode's own dependency, and used
+# by this test to build synthetic compressed fixtures), pdf_object.cpp,
+# and jpeg_codec.cpp (pdf_filters.cpp's DCTDecode, added in Phase 4,
+# pulls this in transitively even though this test doesn't exercise it
+# directly). Same windowless, pure-buffer-parsing shape as
+# mep-pdf-object-test above.
+add_executable(mep-pdf-xref-test EXCLUDE_FROM_ALL src/pdf_xref_test.cpp src/pdf_xref.cpp src/pdf_crypt.cpp src/pdf_filters.cpp src/pdf_object.cpp src/deflate.cpp src/jpeg_codec.cpp)
+target_include_directories(mep-pdf-xref-test PRIVATE src)
+target_compile_options(mep-pdf-xref-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-pdf-xref-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-pdf-xref-test)
+
+# PDFIUM_REMOVAL_PLAN.md Phase 12: pdf_crypt.h/.cpp's hand-rolled MD5/
+# RC4/AES-128 primitives and Standard Security Handler key derivation --
+# deliberately dependency-free (see pdf_crypt.h's own "Scoping decision
+# -- no OpenSSL"), so this needs nothing beyond pdf_object.cpp (the
+# Object type SetupStandardSecurityHandler reads /Filter/V/R/O/U/P/
+# Length/CF from). Pure computational module otherwise, same windowless
+# shape as mep-pdf-object-test above.
+add_executable(mep-pdf-crypt-test EXCLUDE_FROM_ALL src/pdf_crypt_test.cpp src/pdf_crypt.cpp src/pdf_object.cpp)
+target_include_directories(mep-pdf-crypt-test PRIVATE src)
+target_compile_options(mep-pdf-crypt-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-pdf-crypt-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-pdf-crypt-test)
+
+# PDFIUM_REMOVAL_PLAN.md Phase 4: pdf_filters.h/.cpp's remaining stream
+# filters (ASCIIHex/ASCII85/RunLength/LZW/DCT) and the /Filter-array
+# chain dispatcher -- FlateDecode+Predictor already covered by
+# mep-pdf-xref-test in Phase 3. Needs jpeg_codec.cpp (DCTDecode's own
+# dependency, and jpeg::Encode to build this test's synthetic JPEG) and
+# deflate.cpp (FlateDecode, exercised via DecodeStream's chain test).
+add_executable(mep-pdf-filters-test EXCLUDE_FROM_ALL src/pdf_filters_test.cpp src/pdf_filters.cpp src/pdf_object.cpp src/deflate.cpp src/jpeg_codec.cpp)
+target_include_directories(mep-pdf-filters-test PRIVATE src)
+target_compile_options(mep-pdf-filters-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-pdf-filters-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-pdf-filters-test)
+
+# PDFIUM_REMOVAL_PLAN.md Phase 5: pdf_document.h/.cpp's page-tree
+# flattening (inheritance of /Resources/MediaBox/Rotate, cycle
+# protection). Needs pdf_xref.cpp/pdf_filters.cpp/pdf_object.cpp/
+# deflate.cpp/jpeg_codec.cpp transitively (pdf_document.cpp resolves
+# objects through pdf_xref.h, same as mep-pdf-xref-test above).
+add_executable(mep-pdf-document-test EXCLUDE_FROM_ALL src/pdf_document_test.cpp src/pdf_document.cpp src/pdf_xref.cpp src/pdf_crypt.cpp src/pdf_filters.cpp src/pdf_object.cpp src/deflate.cpp src/jpeg_codec.cpp)
+target_include_directories(mep-pdf-document-test PRIVATE src)
+target_compile_options(mep-pdf-document-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-pdf-document-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-pdf-document-test)
+
+# PDFIUM_REMOVAL_PLAN.md Phase 6: gfx/rasterizer.h/.cpp's even-odd fill
+# rule and cubic Bezier flattening -- the two additions on top of the
+# pure extraction from truetype.cpp (verified separately via live
+# glyph-rendering screenshots, since glyph rendering itself only
+# exercises the nonzero rule + quadratic flattening). Pure computational
+# module, no other dependencies.
+add_executable(mep-rasterizer-test EXCLUDE_FROM_ALL src/gfx/rasterizer_test.cpp src/gfx/rasterizer.cpp)
+target_include_directories(mep-rasterizer-test PRIVATE src)
+target_compile_options(mep-rasterizer-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-rasterizer-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-rasterizer-test)
+
+# PDFIUM_REMOVAL_PLAN.md Phase 7 (graphics state, paths, clipping,
+# color, Form XObjects) + Phase 10 (pdf_font.cpp's text-showing
+# operators, added to this same target rather than a separate one since
+# text rendering can only be verified meaningfully through the full
+# RenderContentStream pipeline -- a font's glyph bitmap in isolation,
+# covered by mep-pdf-font-test, doesn't prove it draws in the right
+# place). Needs the full pdf_* + gfx/cff.cpp + gfx/truetype.cpp +
+# gfx/rasterizer.cpp + deflate.cpp/jpeg_codec.cpp stack.
+add_executable(mep-pdf-content-test EXCLUDE_FROM_ALL src/pdf_content_test.cpp src/pdf_content.cpp src/pdf_document.cpp src/pdf_xref.cpp src/pdf_crypt.cpp src/pdf_filters.cpp src/pdf_object.cpp src/pdf_font.cpp src/pdf_encodings.cpp src/gfx/cff.cpp src/gfx/truetype.cpp src/gfx/rasterizer.cpp src/deflate.cpp src/jpeg_codec.cpp)
+target_include_directories(mep-pdf-content-test PRIVATE src)
+target_compile_options(mep-pdf-content-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-pdf-content-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-pdf-content-test)
+
+# PDFIUM_REMOVAL_PLAN.md Phase 11: pdf_text.h/.cpp's document-wide
+# Search/MatchRectsForPage, built on pdf_content.cpp's
+# ExtractContentStreamText -- same "standalone test target only" pattern,
+# not yet wired into mep_core/the live app (Phase 13's job).
+add_executable(mep-pdf-text-test EXCLUDE_FROM_ALL src/pdf_text_test.cpp src/pdf_text.cpp src/pdf_content.cpp src/pdf_document.cpp src/pdf_xref.cpp src/pdf_crypt.cpp src/pdf_filters.cpp src/pdf_object.cpp src/pdf_font.cpp src/pdf_encodings.cpp src/gfx/cff.cpp src/gfx/truetype.cpp src/gfx/rasterizer.cpp src/deflate.cpp src/jpeg_codec.cpp)
+target_include_directories(mep-pdf-text-test PRIVATE src)
+target_compile_options(mep-pdf-text-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-pdf-text-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-pdf-text-test)
+
+# PDFIUM_REMOVAL_PLAN.md Phase 9: gfx/cff.h/.cpp's CFF/Type2-charstring
+# outline engine -- not yet wired into mep_core/the live app (that's
+# Phase 13's swap-in job), same "standalone test target only" pattern
+# every other pdf_*.cpp module has followed throughout this plan. Needs
+# rasterizer.cpp for the shared scanline fill.
+add_executable(mep-cff-test EXCLUDE_FROM_ALL src/gfx/cff_test.cpp src/gfx/cff.cpp src/gfx/rasterizer.cpp)
+target_include_directories(mep-cff-test PRIVATE src)
+target_compile_options(mep-cff-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-cff-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-cff-test)
+
+# PDFIUM_REMOVAL_PLAN.md Phase 10: pdf_encodings.h/.cpp's Standard/
+# WinAnsi/MacRoman encoding tables, AGL-subset name->Unicode resolver,
+# and CFF standard-strings table. Pure static-data module, no other
+# dependencies.
+add_executable(mep-pdf-encodings-test EXCLUDE_FROM_ALL src/pdf_encodings_test.cpp src/pdf_encodings.cpp)
+target_include_directories(mep-pdf-encodings-test PRIVATE src)
+target_compile_options(mep-pdf-encodings-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-pdf-encodings-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-pdf-encodings-test)
+
+# PDFIUM_REMOVAL_PLAN.md Phase 10: pdf_font.h/.cpp's font-dict wiring
+# (simple + composite, standard-14 substitution). Needs the full pdf_*
+# + gfx/cff.cpp + gfx/truetype.cpp + gfx/rasterizer.cpp + deflate.cpp/
+# jpeg_codec.cpp stack (font-dict resolution walks Resources/Font,
+# decodes embedded FontFile2/3 streams, and falls back to mep's own
+# vendored Liberation fonts via office_font_data*.h).
+add_executable(mep-pdf-font-test EXCLUDE_FROM_ALL src/pdf_font_test.cpp src/pdf_font.cpp src/pdf_encodings.cpp src/pdf_xref.cpp src/pdf_crypt.cpp src/pdf_filters.cpp src/pdf_object.cpp src/gfx/cff.cpp src/gfx/truetype.cpp src/gfx/rasterizer.cpp src/deflate.cpp src/jpeg_codec.cpp)
+target_include_directories(mep-pdf-font-test PRIVATE src)
+target_compile_options(mep-pdf-font-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-pdf-font-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-pdf-font-test)
 
 # ANIMATION_VIDEO_PLAN.md Phase 3: mov_container.h's WriteMovFile/
 # OpenMovFile/ReadMovFrameJpeg, round-tripped against jpeg_codec.h-
 # encoded synthetic frames. Same windowless, pure-file-I/O shape as
 # mep-jpeg-codec-test above.
-add_executable(mep-mov-container-test src/mov_container_test.cpp src/mov_container.cpp src/jpeg_codec.cpp)
+add_executable(mep-mov-container-test EXCLUDE_FROM_ALL src/mov_container_test.cpp src/mov_container.cpp src/jpeg_codec.cpp)
 target_include_directories(mep-mov-container-test PRIVATE src)
 target_compile_options(mep-mov-container-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-mov-container-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-mov-container-test)
 
 # WORKSPACES_PLAN.md Phase 12: pure-helper test (worktree dir derivation,
 # porcelain parsing, name validation, session JSON round trip). Links only
 # workspace_git.cpp, same windowless model as mep-html-doc-test above.
 if(NOT EMSCRIPTEN)
-    add_executable(mep-workspace-test src/workspace_test.cpp src/workspace_git.cpp)
+    add_executable(mep-workspace-test EXCLUDE_FROM_ALL src/workspace_test.cpp src/workspace_git.cpp)
     target_include_directories(mep-workspace-test PRIVATE src)
     target_compile_options(mep-workspace-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
     target_link_options(mep-workspace-test PRIVATE ${MEP_SANITIZE_FLAGS})
+    add_dependencies(tests mep-workspace-test)
 endif()
 
 # MODEL3D.md: covers Scene bookkeeping and the glTF exporter -- the half of
@@ -725,7 +829,7 @@ endif()
 # matching mep-workspace-test's own gating above (the feature itself is
 # native-only regardless, see MODEL3D_PLAN.md).
 if(NOT EMSCRIPTEN)
-    add_executable(mep-model3d-doc-test src/model3d_doc_test.cpp src/model3d_doc.cpp src/wav_doc.cpp src/deflate.cpp
+    add_executable(mep-model3d-doc-test EXCLUDE_FROM_ALL src/model3d_doc_test.cpp src/model3d_doc.cpp src/wav_doc.cpp src/deflate.cpp
         src/png_codec.cpp src/jpeg_codec.cpp src/bmp_codec.cpp src/gif_codec.cpp src/image_codec.cpp
         ${MEP_GFX_NATIVE_SOURCES})
     # Own copy of mep.gfx.model_read_util's FILE_SET -- same reasoning as
@@ -738,6 +842,7 @@ if(NOT EMSCRIPTEN)
     endif()
     target_compile_options(mep-model3d-doc-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
     target_link_options(mep-model3d-doc-test PRIVATE ${MEP_SANITIZE_FLAGS})
+    add_dependencies(tests mep-model3d-doc-test)
 endif()
 
 # Collaboration's WebSocket handshake needs SHA-1.  OpenSSL is the one
@@ -757,22 +862,25 @@ if(NOT EMSCRIPTEN)
     else()
         target_link_libraries(mep-collabd PRIVATE ws2_32)
     endif()
-    add_executable(mep-collab-crdt-test src/collab_crdt_test.cpp src/collab_crdt.cpp)
+    add_executable(mep-collab-crdt-test EXCLUDE_FROM_ALL src/collab_crdt_test.cpp src/collab_crdt.cpp)
     target_include_directories(mep-collab-crdt-test PRIVATE src)
     target_compile_options(mep-collab-crdt-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
     target_link_options(mep-collab-crdt-test PRIVATE ${MEP_SANITIZE_FLAGS})
+    add_dependencies(tests mep-collab-crdt-test)
     # CRDT_PERFORMANCE_PLAN.md Phase 1: persistent benchmarks (`just
     # bench`), not part of `just test` -- these write timed results to
     # bench_results/history.jsonl rather than asserting pass/fail.
-    add_executable(mep-crdt-bench src/text_crdt_bench.cpp src/collab_crdt.cpp)
+    add_executable(mep-crdt-bench EXCLUDE_FROM_ALL src/text_crdt_bench.cpp src/collab_crdt.cpp)
     target_include_directories(mep-crdt-bench PRIVATE src)
     target_compile_options(mep-crdt-bench PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
     target_link_options(mep-crdt-bench PRIVATE ${MEP_SANITIZE_FLAGS})
-    add_executable(mep-buffer-bench src/text_buffer_bench.cpp)
+    add_dependencies(tests mep-crdt-bench)
+    add_executable(mep-buffer-bench EXCLUDE_FROM_ALL src/text_buffer_bench.cpp)
     target_include_directories(mep-buffer-bench PRIVATE src)
     target_compile_options(mep-buffer-bench PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
     target_link_options(mep-buffer-bench PRIVATE ${MEP_SANITIZE_FLAGS})
-    add_executable(mep-collab-session-test src/collab_session_test.cpp src/collab_session.cpp src/collab_crdt.cpp src/collab_websocket.cpp src/text_diff.cpp)
+    add_dependencies(tests mep-buffer-bench)
+    add_executable(mep-collab-session-test EXCLUDE_FROM_ALL src/collab_session_test.cpp src/collab_session.cpp src/collab_crdt.cpp src/collab_websocket.cpp src/text_diff.cpp)
     # This target deliberately doesn't link mep_core (see collab_session.cpp's
     # own decoupling comment), so it needs its own copy of mep.diff's
     # interface FILE_SET rather than inheriting mep_core's.
@@ -781,6 +889,7 @@ if(NOT EMSCRIPTEN)
     target_compile_options(mep-collab-session-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
     target_link_options(mep-collab-session-test PRIVATE ${MEP_SANITIZE_FLAGS})
     target_link_libraries(mep-collab-session-test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    add_dependencies(tests mep-collab-session-test)
     if(NOT WIN32)
         target_link_libraries(mep-collab-session-test PRIVATE Threads::Threads)
     else()
@@ -791,11 +900,12 @@ if(NOT EMSCRIPTEN)
         # binary (path given as argv[1]) and needs a live display -- run by
         # hand (`./mep-agent-rpc-test ./mep`), not wired into an automated
         # ctest suite, matching how the collab tests here aren't either.
-        add_executable(mep-agent-rpc-test src/agent_rpc_test.cpp)
+        add_executable(mep-agent-rpc-test EXCLUDE_FROM_ALL src/agent_rpc_test.cpp)
         target_include_directories(mep-agent-rpc-test PRIVATE src)
         target_compile_options(mep-agent-rpc-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
         target_link_options(mep-agent-rpc-test PRIVATE ${MEP_SANITIZE_FLAGS})
         target_link_libraries(mep-agent-rpc-test PRIVATE Threads::Threads)
+        add_dependencies(tests mep-agent-rpc-test)
     endif()
 endif()
 
@@ -836,45 +946,9 @@ if(NOT EMSCRIPTEN)
         if(NOT WIN32 AND NOT APPLE)
             target_link_libraries(mep-amalgam PRIVATE ALSA::ALSA)
         endif()
-        target_link_libraries(mep-amalgam PRIVATE pdfium)
         if(WIN32)
             target_link_libraries(mep-amalgam PRIVATE ws2_32)
-            add_custom_command(TARGET mep-amalgam POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${PDFIUM_RUNTIME_FILE}" "$<TARGET_FILE_DIR:mep-amalgam>"
-            )
-        else()
-            if(APPLE)
-                set_target_properties(mep-amalgam PROPERTIES BUILD_RPATH "@loader_path")
-            else()
-                set_target_properties(mep-amalgam PROPERTIES BUILD_RPATH "$ORIGIN")
-            endif()
-            add_custom_command(TARGET mep-amalgam POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${PDFIUM_RUNTIME_FILE}" "$<TARGET_FILE_DIR:mep-amalgam>"
-            )
         endif()
-    endif()
-endif()
-
-if(NOT EMSCRIPTEN)
-    # PDFium ships as a shared library, not something that can be linked
-    # statically into a single self-contained binary -- copy it next to
-    # the built executable and point mep's own rpath at its own directory
-    # ($ORIGIN/@loader_path) so a plain `./mep` launch finds it without
-    # needing LD_LIBRARY_PATH/DYLD_LIBRARY_PATH set, matching how an
-    # end-user launch would work.
-    if(WIN32)
-        add_custom_command(TARGET mep POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${PDFIUM_RUNTIME_FILE}" "$<TARGET_FILE_DIR:mep>"
-        )
-    else()
-        if(APPLE)
-            set_target_properties(mep PROPERTIES BUILD_RPATH "@loader_path")
-        else()
-            set_target_properties(mep PROPERTIES BUILD_RPATH "$ORIGIN")
-        endif()
-        add_custom_command(TARGET mep POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${PDFIUM_RUNTIME_FILE}" "$<TARGET_FILE_DIR:mep>"
-        )
     endif()
 endif()
 

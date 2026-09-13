@@ -7,25 +7,31 @@
 #include <vector>
 
 // Deliberately raylib-free (same reasoning as image_doc.h): rendering is
-// pure CPU-side work (a PDFium bitmap copied out to an RGBA8 buffer), so
-// this is usable/testable without a GL context. main.cpp is the only place
-// that turns a rendered page's RGBA8 buffer into a raylib Texture2D.
+// pure CPU-side work (a rendered page's RGBA8 buffer, produced by mep's
+// own pdf_content.h content-stream interpreter), so this is usable/
+// testable without a GL context. main.cpp is the only place that turns a
+// rendered page's RGBA8 buffer into a raylib Texture2D.
 //
-// Backed by PDFium (see third_party_licenses/pdfium-LICENSE.txt; vendored
-// as a prebuilt shared library via CMake FetchContent, not source -- see
-// CMakeLists.txt's `pdfium` target) rather than a hand-rolled parser. An
-// earlier hand-rolled implementation (object model, xref/xref-stream
-// parsing, a stb_truetype-based content-stream rasterizer) covered vector
-// graphics but not text; PDFium was substituted in to get a fully working
-// viewer (including text) immediately. It's kept behind this exact same
-// interface deliberately, so swapping backends again later -- back to the
-// hand-rolled parser, or to something else -- only touches this one file.
+// Backed by mep's own in-house PDF parser/interpreter/rasterizer
+// (pdf_object.h/pdf_xref.h/pdf_crypt.h/pdf_filters.h/pdf_document.h/
+// pdf_content.h/pdf_font.h/pdf_encodings.h/pdf_text.h, plus gfx::tt/
+// gfx::cff for glyph outlines) rather than a third-party library. This
+// was originally backed by PDFium (vendored as a prebuilt shared
+// library, not source), substituted in to get a fully working viewer
+// (including text) immediately after an even earlier hand-rolled
+// implementation covered vector graphics but not text -- see
+// PDFIUM_REMOVAL_PLAN.md for that full history and the 14-phase
+// from-scratch replacement that made this swap possible. Kept behind
+// this exact same interface deliberately, so swapping backends again
+// later would again only touch this one file.
 // One text-search match, in PDF-point space (page-native units, scale- and
 // rotation-independent) -- a match can cover more than one rect when it
-// wraps a line (PDFium merges same-line/same-font character boxes for us,
-// see FPDFText_CountRects's own doc comment). Converting to device pixels
-// for a given render scale is a separate step (PdfDoc::MatchRectsForPage)
-// so a search doesn't need re-running just because the user zoomed.
+// wraps a line (pdf_text.h's own Search merges same-line character boxes
+// for us, mirroring the original PDFium-backed contract's own
+// FPDFText_CountRects behavior exactly -- see that header's own doc
+// comment). Converting to device pixels for a given render scale is a
+// separate step (PdfDoc::MatchRectsForPage) so a search doesn't need
+// re-running just because the user zoomed.
 struct PdfTextRectPt {
     double left = 0, top = 0, right = 0, bottom = 0;
 };
@@ -121,11 +127,14 @@ public:
     bool RenderPage(int page_index, float px_per_pt, std::vector<unsigned char> &out_rgba, int &out_w,
                      int &out_h);
 
-    // Case-insensitive substring search (PDFium's own default
-    // FPDFText_FindStart flags -- MATCHCASE unset) across every page, in
-    // page order. Loads and re-extracts each page's text, so this is
-    // O(document size) -- call only when the query text actually changes,
-    // not per frame/per keystroke.
+    // Case-insensitive substring search (pdf_text.h's own ASCII-fold
+    // matching -- ordinary 'A'-'Z' lowering, applied to both query and
+    // extracted text -- see that header's own doc comment for why that's
+    // close enough to PDFium's original MATCHCASE-unset default for this
+    // codebase's needs) across every page, in page order. Loads and
+    // re-extracts each page's text, so this is O(document size) -- call
+    // only when the query text actually changes, not per frame/per
+    // keystroke.
     /**
      * @brief Performs a case-insensitive substring search for query text across every page.
      * @param query The text to search for.

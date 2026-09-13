@@ -1,5 +1,7 @@
 #include "gfx/truetype.h"
 
+#include "gfx/rasterizer.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -285,58 +287,18 @@ void ReadGlyphContours(const FontInfo *info, int glyph_index, std::vector<Contou
 }
 
 // -- Scanline rasterization ----------------------------------------------
-// Nonzero-winding polygon fill, horizontal coverage computed exactly
-// (fractional pixel coverage from real edge x-intersections) and
-// antialiased vertically via a fixed 4x supersample per pixel row -- see
-// STB_TRUETYPE_REMOVAL_PLAN.md's Phase 4 for why this hybrid approach was
-// chosen over full 2D analytic coverage (much simpler to implement
-// correctly, and glyph atlas baking is a one-time startup cost, not a
-// per-frame one, so the extra sub-scanline passes cost nothing that
-// matters).
+// The actual polygon-fill rasterizer (nonzero-winding, exact horizontal
+// coverage + 4x vertical supersample -- see STB_TRUETYPE_REMOVAL_PLAN.md's
+// Phase 4 for why this hybrid approach was chosen over full 2D analytic
+// coverage) now lives in gfx/rasterizer.h/.cpp, shared with PDF content-
+// stream path filling (PDFIUM_REMOVAL_PLAN.md Phase 6) -- this file keeps
+// only what's genuinely TrueType-specific: turning a glyf-table contour
+// (with its implied-on-curve-midpoint quadratic convention) into the
+// shared module's Edge list.
 
-struct Edge {
-    float x_at_ymin = 0, dxdy = 0;
-    float ymin = 0, ymax = 0;
-    int winding = 0;  // +1 if the original segment went downward (y increasing), -1 if upward
-};
-
-void AddLine(std::vector<Edge> &edges, float x0, float y0, float x1, float y1) {
-    if (y0 == y1) return;  // horizontal edges never cross a scanline
-    Edge e;
-    e.winding = y1 > y0 ? 1 : -1;
-    if (y0 < y1) {
-        e.ymin = y0;
-        e.ymax = y1;
-        e.x_at_ymin = x0;
-        e.dxdy = (x1 - x0) / (y1 - y0);
-    } else {
-        e.ymin = y1;
-        e.ymax = y0;
-        e.x_at_ymin = x1;
-        e.dxdy = (x0 - x1) / (y0 - y1);
-    }
-    edges.push_back(e);
-}
-
-// Flattens one quadratic Bezier (p0 on-curve, p1 control, p2 on-curve,
-// already in raster/pixel space) into line-segment edges via recursive
-// subdivision, stopping once the curve is flat enough (control point's
-// distance from the p0-p2 chord, squared, below a fixed pixel tolerance)
-// or a depth guard is hit.
-void FlattenQuad(std::vector<Edge> &edges, float x0, float y0, float cx, float cy, float x1, float y1, int depth) {
-    constexpr float kToleranceSq = 0.09f;  // ~0.3px chord deviation
-    float dx = x1 - x0, dy = y1 - y0;
-    float d = (cx - x1) * dy - (cy - y1) * dx;
-    if (depth >= 10 || d * d < kToleranceSq * (dx * dx + dy * dy)) {
-        AddLine(edges, x0, y0, x1, y1);
-        return;
-    }
-    float x01 = (x0 + cx) * 0.5f, y01 = (y0 + cy) * 0.5f;
-    float x12 = (cx + x1) * 0.5f, y12 = (cy + y1) * 0.5f;
-    float x012 = (x01 + x12) * 0.5f, y012 = (y01 + y12) * 0.5f;
-    FlattenQuad(edges, x0, y0, x01, y01, x012, y012, depth + 1);
-    FlattenQuad(edges, x012, y012, x12, y12, x1, y1, depth + 1);
-}
+using gfx::raster::AddLine;
+using gfx::raster::Edge;
+using gfx::raster::FlattenQuadratic;
 
 // Builds the edge list for every contour, applying the "expand implied
 // on-curve midpoints, then rotate to start on an on-curve point" TrueType
@@ -393,7 +355,7 @@ void BuildEdgesForContour(std::vector<Edge> &edges, const Contour &raw) {
             current = p;
         } else {
             const GlyphPoint &next = pts[static_cast<size_t>((i + 1) % m)];  // guaranteed on-curve by the expansion above
-            FlattenQuad(edges, current.x, current.y, p.x, p.y, next.x, next.y, 0);
+            FlattenQuadratic(edges, current.x, current.y, p.x, p.y, next.x, next.y);
             current = next;
             i++;
         }
@@ -402,71 +364,6 @@ void BuildEdgesForContour(std::vector<Edge> &edges, const Contour &raw) {
     // Close the contour back to its own start (a no-op AddLine if the
     // walk above already landed exactly on it).
     AddLine(edges, current.x, current.y, contour_start.x, contour_start.y);
-}
-
-constexpr int kSupersample = 4;
-
-// Rasterizes `edges` (already in pixel space, one glyph's full outline)
-// into a `width`x`height` single-channel coverage buffer.
-std::vector<unsigned char> Rasterize(std::vector<Edge> &edges, int width, int height) {
-    std::vector<unsigned char> out(static_cast<size_t>(width) * static_cast<size_t>(height), 0);
-    if (edges.empty() || width <= 0 || height <= 0) return out;
-    std::vector<float> row_coverage(static_cast<size_t>(width));
-    std::vector<std::pair<float, int>> crossings;  // (x, winding)
-    for (int y = 0; y < height; y++) {
-        std::fill(row_coverage.begin(), row_coverage.end(), 0.0f);
-        for (int s = 0; s < kSupersample; s++) {
-            float sy = static_cast<float>(y) + (static_cast<float>(s) + 0.5f) / static_cast<float>(kSupersample);
-            crossings.clear();
-            for (const Edge &e : edges) {
-                if (sy < e.ymin || sy >= e.ymax) continue;
-                float x = e.x_at_ymin + (sy - e.ymin) * e.dxdy;
-                crossings.emplace_back(x, e.winding);
-            }
-            if (crossings.empty()) continue;
-            std::sort(crossings.begin(), crossings.end(),
-                      [](const std::pair<float, int> &a, const std::pair<float, int> &b) { return a.first < b.first; });
-            // Walk spans between consecutive crossings where the
-            // accumulated winding is nonzero, adding exact fractional
-            // horizontal coverage (clipped to [0, width)) for this
-            // sub-scanline.
-            int winding = 0;
-            float span_start = 0.0f;
-            bool in_span = false;
-            for (const auto &cr : crossings) {
-                int before = winding;
-                winding += cr.second;
-                bool inside_before = before != 0;
-                bool inside_after = winding != 0;
-                if (!inside_before && inside_after) {
-                    span_start = cr.first;
-                    in_span = true;
-                } else if (inside_before && !inside_after && in_span) {
-                    float x0 = std::clamp(span_start, 0.0f, static_cast<float>(width));
-                    float x1 = std::clamp(cr.first, 0.0f, static_cast<float>(width));
-                    if (x1 > x0) {
-                        int ix0 = static_cast<int>(std::floor(x0));
-                        int ix1 = static_cast<int>(std::floor(x1));
-                        if (ix0 == ix1) {
-                            row_coverage[static_cast<size_t>(ix0)] += (x1 - x0);
-                        } else {
-                            row_coverage[static_cast<size_t>(ix0)] += (static_cast<float>(ix0 + 1) - x0);
-                            for (int px = ix0 + 1; px < ix1; px++) row_coverage[static_cast<size_t>(px)] += 1.0f;
-                            if (ix1 < width) row_coverage[static_cast<size_t>(ix1)] += (x1 - static_cast<float>(ix1));
-                        }
-                    }
-                    in_span = false;
-                }
-            }
-        }
-        for (int x = 0; x < width; x++) {
-            float coverage = row_coverage[static_cast<size_t>(x)] / static_cast<float>(kSupersample);
-            coverage = std::clamp(coverage, 0.0f, 1.0f);
-            out[static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)] =
-                static_cast<unsigned char>(coverage * 255.0f + 0.5f);
-        }
-    }
-    return out;
 }
 
 }  // namespace
@@ -489,8 +386,17 @@ bool InitFont(FontInfo *info, const unsigned char *data, int data_size, int offs
     RawTable cmap = FindTable(base, remaining, "cmap");
     RawTable loca = FindTable(base, remaining, "loca");
     RawTable glyf = FindTable(base, remaining, "glyf");
-    if (head.len == 0 || hhea.len == 0 || maxp.len == 0 || hmtx.len == 0 || cmap.len == 0 || loca.len == 0 ||
-        glyf.len == 0) {
+    // `cmap` is deliberately NOT required here (PDFIUM_REMOVAL_PLAN.md
+    // Phase 9 finding): PDF-embedded, subsetted TrueType fonts routinely
+    // omit it entirely -- PDF's own font-dict encoding (/Differences, a
+    // /CIDToGIDMap) addresses glyphs directly and has no use for a
+    // Unicode cmap, confirmed via a real font extracted from
+    // `test/pdf_fixtures/libreoffice_test.pdf` during this phase's own
+    // verification. A cmap-less font simply can't answer
+    // GetCodepointBitmap (cmap_format stays 0, FindGlyphIndex already
+    // returns 0 for that) -- GetGlyphBitmap's GID-direct path, this
+    // phase's whole reason for existing, needs no cmap at all.
+    if (head.len == 0 || hhea.len == 0 || maxp.len == 0 || hmtx.len == 0 || loca.len == 0 || glyf.len == 0) {
         return false;
     }
 
@@ -513,11 +419,14 @@ bool InitFont(FontInfo *info, const unsigned char *data, int data_size, int offs
 
     // cmap subtable selection: prefer format 12 (full Unicode, needed for
     // supplementary-plane PUA icon codepoints), fall back to format 4
-    // (BMP-only) -- see this file's own top comment. Every embedded font
-    // has at least one of these (confirmed by this plan's Phase 1 cmap
-    // inventory), so no legacy format 0/6 fallback is implemented.
+    // (BMP-only) -- see this file's own top comment. Mep's own UI fonts
+    // always have one of these (confirmed by STB_TRUETYPE_REMOVAL_PLAN.md's
+    // Phase 1 cmap inventory); PDF-embedded fonts routinely have neither
+    // (or no cmap at all, see this function's own comment above) --
+    // cmap_format simply stays 0 in that case, tolerated throughout
+    // (FindGlyphIndex/GetCodepointBitmap), not a load failure.
+    uint16_t num_subtables = cmap.len != 0 ? U16(base + cmap.off + 2) : 0;
     const unsigned char *cmap_base = base + cmap.off;
-    uint16_t num_subtables = U16(cmap_base + 2);
     uint32_t best_off = 0;
     int best_format = 0;
     for (int i = 0; i < num_subtables; i++) {
@@ -534,7 +443,7 @@ bool InitFont(FontInfo *info, const unsigned char *data, int data_size, int offs
     }
     info->cmap_subtable_off = best_off;
     info->cmap_format = best_format;
-    return best_format != 0;
+    return true;
 }
 
 float ScaleForPixelHeight(const FontInfo *info, float pixel_height) {
@@ -552,8 +461,7 @@ void GetFontVMetrics(const FontInfo *info, int *ascent, int *descent, int *line_
     *line_gap = S16(h + 8);
 }
 
-void GetCodepointHMetrics(const FontInfo *info, int codepoint, int *advance_width, int *left_side_bearing) {
-    int glyph_index = FindGlyphIndex(info, codepoint);
+void GetGlyphHMetrics(const FontInfo *info, int glyph_index, int *advance_width, int *left_side_bearing) {
     if (glyph_index < 0 || glyph_index >= info->num_glyphs) {
         *advance_width = 0;
         *left_side_bearing = 0;
@@ -573,11 +481,24 @@ void GetCodepointHMetrics(const FontInfo *info, int codepoint, int *advance_widt
     }
 }
 
+void GetCodepointHMetrics(const FontInfo *info, int codepoint, int *advance_width, int *left_side_bearing) {
+    GetGlyphHMetrics(info, FindGlyphIndex(info, codepoint), advance_width, left_side_bearing);
+}
+
 unsigned char *GetCodepointBitmap(const FontInfo *info, float scale_x, float scale_y, int codepoint, int *width,
                                    int *height, int *xoff, int *yoff) {
-    *width = *height = *xoff = *yoff = 0;
     int glyph_index = FindGlyphIndex(info, codepoint);
-    if (glyph_index <= 0) return nullptr;
+    if (glyph_index <= 0) {
+        *width = *height = *xoff = *yoff = 0;
+        return nullptr;
+    }
+    return GetGlyphBitmap(info, scale_x, scale_y, glyph_index, width, height, xoff, yoff);
+}
+
+unsigned char *GetGlyphBitmap(const FontInfo *info, float scale_x, float scale_y, int glyph_index, int *width,
+                               int *height, int *xoff, int *yoff) {
+    *width = *height = *xoff = *yoff = 0;
+    if (glyph_index < 0 || glyph_index >= info->num_glyphs) return nullptr;
 
     std::vector<Contour> contours;
     ReadGlyphContours(info, glyph_index, contours, 0);
@@ -616,7 +537,7 @@ unsigned char *GetCodepointBitmap(const FontInfo *info, float scale_x, float sca
         BuildEdgesForContour(edges, raster_space);
     }
 
-    std::vector<unsigned char> pixels = Rasterize(edges, w, h);
+    std::vector<unsigned char> pixels = gfx::raster::Rasterize(edges, w, h);
     auto *out = static_cast<unsigned char *>(std::malloc(pixels.size()));
     std::memcpy(out, pixels.data(), pixels.size());
 

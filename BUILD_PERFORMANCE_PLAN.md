@@ -582,3 +582,68 @@ building this project going forward:
   (Clang as default compiler). Full `just test` passes throughout,
   same single pre-existing unrelated `mep-collab-session-test` failure
   as every prior verification in this file.
+
+---
+
+# Round 3: separate test/smoke/benchmark binaries out of the default build
+
+The user noticed `nix build`/a plain `cmake --build .` was building every
+`mep-*-test`/`-bench`/`-smoke` binary along with `mep` itself, and asked
+for tests to be split out of the production build so a real production
+build only builds what `mep` actually needs (plus, by inspection, its two
+genuine companion tools -- `mep-mcp`, `mep-collabd` -- which aren't test
+infrastructure and stayed in).
+
+## Changes made
+
+- [x] Marked every test/smoke/benchmark `add_executable` in
+  `CMakeLists.txt` `EXCLUDE_FROM_ALL` (13 targets: `mep-html-doc-test`,
+  `mep-org-doc-test`, `mep-image-procgen-test`, `mep-jpeg-codec-test`,
+  `mep-mov-container-test`, `mep-workspace-test`, `mep-model3d-doc-test`,
+  `mep-collab-crdt-test`, `mep-crdt-bench`, `mep-buffer-bench`,
+  `mep-collab-session-test`, `mep-agent-rpc-test`, and the
+  `mep_add_gfx_native_smoke()` function shared by the 3 gfx smoke tests)
+  -- matching the pattern `mep-amalgam` already used. `mep`, `mep-mcp`,
+  `mep-collabd` stay in the default `all` target: real deliverables users
+  run directly, not test infrastructure.
+- [x] Added a `tests` custom target (`add_custom_target(tests)` +
+  `add_dependencies(tests <each>)` right after each target's own
+  definition, respecting each one's existing `if(NOT EMSCRIPTEN)`/
+  `if(NOT WIN32)` guards) so every excluded binary can still be built in
+  one shot (`cmake --build . --target tests`) without needing to name all
+  13 by hand.
+- [x] Updated `justfile`'s `test`/`bench`/`test-gui` recipes to build the
+  *specific* EXCLUDE_FROM_ALL targets each one actually runs, via
+  `cmake --build {{native_build_dir}} -j --target <names>` before their
+  existing run loops -- they no longer get those binaries "for free" from
+  `build-native`'s own (now test-free) default build. Added
+  `build-native-tests` (builds the whole `tests` target) as a convenience
+  for "I want every test/smoke binary on disk right now," which none of
+  `test`/`bench`/`test-gui` themselves need since each already builds
+  only its own subset.
+- [x] No `flake.nix` changes needed: `mepPackage` has no custom
+  `buildPhase` override, so nixpkgs' default `cmake --build . -j`
+  (the plain default-`all` target) already picks up the new, smaller
+  default build for free.
+
+## Results
+
+Default (`all`) build steps for `build/native`, from an empty build
+directory: **467 -> 191** (`mep` + `mep_core` + `mep-mcp` + `mep-collabd`
++ their shared static-lib/vendored dependencies only -- verified by
+listing every executable actually produced). `nix build .#default`'s own
+build log confirms the identical 191-step count for the exact same
+reason.
+
+## Verified via
+
+- Clean `build/native` default build (`cmake --build build/native -j`,
+  no `--target`) produces exactly `mep`, `mep-collabd`, `mep-mcp` (plus
+  static libs) -- listed the directory's executables directly to confirm,
+  not just step-counted.
+- `just test`, `just bench`, and `just build-native-tests` each build
+  their own needed EXCLUDE_FROM_ALL targets on demand and pass/produce
+  output correctly (same pre-existing unrelated `mep-collab-session-test`
+  no-relay-arg failure as every other verification in this file).
+- `nix build .#default` succeeds end to end and installs only `mep`,
+  with a build log confirming the same reduced (191-step) build.

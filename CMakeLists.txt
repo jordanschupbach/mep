@@ -397,6 +397,7 @@ add_library(mep_core STATIC
     src/pdf_encodings.cpp
     src/pdf_font.cpp
     src/pdf_text.cpp
+    src/pdf_outline.cpp
     src/gfx/cff.cpp
     src/formula.cpp
     src/html_doc.cpp
@@ -725,6 +726,17 @@ target_include_directories(mep-pdf-document-test PRIVATE src)
 target_compile_options(mep-pdf-document-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-pdf-document-test PRIVATE ${MEP_SANITIZE_FLAGS})
 add_dependencies(tests mep-pdf-document-test)
+
+# pdf_outline.h/.cpp's PDF /Outlines (bookmarks) tree reader -- the
+# Structure sidebar's PDF-buffer support, an independent successor to
+# PDFIUM_REMOVAL_PLAN.md's own 14 phases. Same dependency set as
+# mep-pdf-document-test above (pdf_outline.cpp only needs pdf_document.h
+# for the page-index lookup, no rendering/font/text-extraction stack).
+add_executable(mep-pdf-outline-test EXCLUDE_FROM_ALL src/pdf_outline_test.cpp src/pdf_outline.cpp src/pdf_document.cpp src/pdf_xref.cpp src/pdf_crypt.cpp src/pdf_filters.cpp src/pdf_object.cpp src/deflate.cpp src/jpeg_codec.cpp)
+target_include_directories(mep-pdf-outline-test PRIVATE src)
+target_compile_options(mep-pdf-outline-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-pdf-outline-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-pdf-outline-test)
 
 # PDFIUM_REMOVAL_PLAN.md Phase 6: gfx/rasterizer.h/.cpp's even-odd fill
 # rule and cubic Bezier flattening -- the two additions on top of the

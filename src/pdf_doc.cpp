@@ -2,6 +2,7 @@
 
 #include "pdf_content.h"
 #include "pdf_document.h"
+#include "pdf_outline.h"
 #include "pdf_text.h"
 #include "pdf_xref.h"
 
@@ -145,5 +146,16 @@ std::vector<PdfHighlightRect> PdfDoc::MatchRectsForPage(int page_index, float px
         pdftext::MatchRectsForPage(impl_->document_, page_index, px_per_pt, converted);
     out.reserve(hi.size());
     for (const pdftext::PdfHighlightRect &r : hi) out.push_back({r.match_index, r.x0, r.y0, r.x1, r.y1});
+    return out;
+}
+
+std::vector<PdfOutlineItem> PdfDoc::Outline() const {
+    std::vector<PdfOutlineItem> out;
+    if (!impl_) return out;
+    std::vector<pdfoutline::OutlineItem> items =
+        pdfoutline::GetOutline(impl_->file_data_.data(), impl_->file_data_.size(), impl_->document_.Xref(),
+                                impl_->document_);
+    out.reserve(items.size());
+    for (const pdfoutline::OutlineItem &it : items) out.push_back({it.title, it.page, it.depth});
     return out;
 }

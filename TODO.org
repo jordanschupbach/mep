@@ -54,3 +54,4 @@
   CLOCK: [2026-09-05 Sat 23:14]--[2026-09-05 Sat 23:20] =>  0:06
   :END:
 * TODO add pomodoro timer widget
+* TODO make todo list have line wrapping

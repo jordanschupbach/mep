@@ -3520,6 +3520,21 @@ public:
      * @return A const pointer to the PdfSession, or nullptr if the buffer isn't a PDF pane.
      */
     const PdfSession *GetPdf(int buffer_id) const;
+    // Jumps `buffer_id`'s own PdfSession to `page` (clamped to the valid
+    // page range), resetting vertical scroll to that page's top -- the
+    // exact same effect as HandlePdfInput's own local `goto_page` lambda
+    // (G/gg/PageDown/PageUp), extracted into a real method so the
+    // Structure sidebar's PDF-outline click-to-jump (mep.pdf_goto_page,
+    // lua_env.cpp) has something to call: those keys only ever run
+    // in-place inside HandlePdfInput itself, with no standalone
+    // "jump this session to page N" entry point until now. A no-op if
+    // `buffer_id` isn't a PDF pane or has no pages.
+    /**
+     * @brief Jumps a PDF buffer's viewer to a given page.
+     * @param buffer_id The PDF-backed buffer id to navigate.
+     * @param page Target 0-based page index (clamped to the valid range).
+     */
+    void GotoPdfPage(int buffer_id, int page);
     // Pure geometry clamp only (mirrors ResizeImageViewport): re-clamps
     // pan_x against the anchor page's on-screen width. Never triggers a
     // re-render itself -- that's EnsurePdfPagesRastered's job, called
@@ -8923,6 +8938,13 @@ private:
         // that window gets discarded even though the key itself has
         // already gone back up.
         double discard_until = -1.0;
+        // GetTime() this key last actually moved the cursor via the fast
+        // path, or -1.0 if it hasn't fired yet during the current hold.
+        // Without this, a confirmed hold moved the cursor once per
+        // rendered frame (up to the 60fps target, i.e. as fast as 60
+        // columns/lines per second) -- gated here to kMotionRepeatIntervalSec
+        // instead, independent of frame rate.
+        double last_move_time_ = -1.0;
     };
     MotionRepeatState motion_repeat_[4];
     // Accumulates digits typed before a command (e.g. the "5" in "5j");

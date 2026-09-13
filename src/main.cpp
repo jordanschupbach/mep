@@ -5528,20 +5528,193 @@ const char *kBuiltinStructure =
     "  impl = {icon = utf8.char(0xeb29), hl = 'Green'},\n"
     "  union = {icon = utf8.char(0xea91), hl = 'Purple'},\n"
     "  type = {icon = utf8.char(0xeb63), hl = 'Yellow'},\n"
+    // LaTeX sectioning commands (mep_structure_tex_items below) --
+    // Codicons has no distinct glyph per heading depth (VS Code's own
+    // outline draws every markdown/LaTeX heading level with the same
+    // "symbol-string" glyph too, relying on indentation alone for
+    // hierarchy) -- reusing already-baked codepoints from above (see
+    // kIconCodepointRanges, main.cpp) rather than guessing at an
+    // unbaked one that would just render blank, differentiated by
+    // color per depth instead.\n"
+    "  part = {icon = utf8.char(0xeb5b), hl = 'Orange'},\n"
+    "  chapter = {icon = utf8.char(0xeb5b), hl = 'Purple'},\n"
+    "  section = {icon = utf8.char(0xea91), hl = 'Blue'},\n"
+    "  subsection = {icon = utf8.char(0xea8c), hl = 'Blue'},\n"
+    "  subsubsection = {icon = utf8.char(0xea8c), hl = 'Cyan'},\n"
+    "  paragraph = {icon = utf8.char(0xeb63), hl = 'Yellow'},\n"
+    "  subparagraph = {icon = utf8.char(0xeb63), hl = 'Normal'},\n"
+    // A PDF's own outline (bookmarks) tree, mep_structure_pdf_items
+    // below -- reusing the Codicon "bookmark"-shaped glyph other Nerd
+    // Font sets export at a nearby PUA codepoint would need its own
+    // pyftsubset regeneration to bake in, so this reuses the already-
+    // baked 'namespace' icon instead (same reasoning as every other
+    // LaTeX kind above).\n"
+    "  bookmark = {icon = utf8.char(0xea8b), hl = 'Cyan'},\n"
     "}\n"
     "local mep_structure_default_style = {icon = utf8.char(0xeb63), hl = 'Normal'}\n"
     "local function mep_structure_style(kind)\n"
     "  return mep_structure_kind_style[kind] or mep_structure_default_style\n"
     "end\n"
 
-    // Shared by both entry points: current buffer's Treesitter structure
-    // outline, or (nil, message) if there's no grammar/query for it.
+    // LaTeX has no Treesitter grammar registered in this codebase at all
+    // (see treesitter.cpp's LanguageTable/DynamicLanguageTable -- no
+    // "tex" entry), so mep.ts_structure('tex', ...) always returns nil
+    // for it, same as any other unregistered filetype -- this is a
+    // small hand-rolled substitute for LaTeX specifically, in the same
+    // {row, col, start_row, end_row, name, kind, depth} shape
+    // TSStructureNode/mep.ts_structure produces, so it drops into every
+    // other part of this feature (label, icon/color lookup, current-item
+    // highlighting, click-to-jump) completely unmodified. Ordered by
+    // conventional LaTeX document hierarchy depth (part=0 .. subparagraph=6),
+    // not by which class (article/report/book) actually defines each one
+    // -- article has no \\chapter, book/report have no meaningful
+    // distinction some classes draw between \\part and \\chapter, but
+    // assigning every command a fixed depth regardless of what the
+    // active \\documentclass would actually accept still produces a
+    // sensible, correctly-nested outline for whichever subset a given
+    // document actually uses.\n"
+    "local mep_structure_tex_kinds = {\n"
+    "  {cmd = 'subparagraph', kind = 'subparagraph', depth = 6},\n"
+    "  {cmd = 'paragraph', kind = 'paragraph', depth = 5},\n"
+    "  {cmd = 'subsubsection', kind = 'subsubsection', depth = 4},\n"
+    "  {cmd = 'subsection', kind = 'subsection', depth = 3},\n"
+    "  {cmd = 'section', kind = 'section', depth = 2},\n"
+    "  {cmd = 'chapter', kind = 'chapter', depth = 1},\n"
+    "  {cmd = 'part', kind = 'part', depth = 0},\n"
+    "}\n"
+    // Returns the position right after `\\cmd` in `line` if it actually
+    // appears there as a real command (not, say, `\\sectionfoo`, some
+    // unrelated command `\\section` merely happens to be a text-prefix
+    // of) -- checked by requiring the next character not be a letter --
+    // or nil if `\\cmd` isn't in this line at all. Matching WITH the
+    // leading backslash included means none of this table's 7 commands
+    // can ever be mistaken for a substring of another even without this
+    // check (each has exactly one backslash, anchoring the comparison to
+    // its own start -- \"\\\\subsection\" is not a substring of
+    // \"\\\\subsubsection\" once the backslash itself is part of the
+    // comparison), but a real custom command sharing a plain-text prefix
+    // (\\sectionfoo) still needs this boundary check to be excluded.\n"
+    "local function mep_tex_match_command(line, cmd)\n"
+    "  local s, e = line:find('\\\\' .. cmd, 1, true)\n"
+    "  if not s then return nil end\n"
+    "  if line:sub(e + 1, e + 1):match('%a') then return nil end\n"
+    "  return e + 1\n"
+    "end\n"
+    // Reads one delimited argument starting at line:sub(pos) (which must
+    // actually be `open`), honoring nested delimiters of the same kind
+    // (braces nest routinely, e.g. \\section{Foo \\textit{bar}}) --
+    // returns the argument's own inner text and the position just past
+    // the matching close, or nil (leaving pos unchanged) if `pos` isn't
+    // at `open` or the close is never found on this same line (a title
+    // wrapped onto a second line is rare enough to just skip -- this is
+    // a quick heuristic scan, not a real LaTeX parser).\n"
+    "local function mep_tex_match_delim(line, pos, open, close)\n"
+    "  if line:sub(pos, pos) ~= open then return nil, pos end\n"
+    "  local depth = 1\n"
+    "  local i = pos + 1\n"
+    "  while i <= #line do\n"
+    "    local c = line:sub(i, i)\n"
+    "    if c == open then depth = depth + 1\n"
+    "    elseif c == close then\n"
+    "      depth = depth - 1\n"
+    "      if depth == 0 then return line:sub(pos + 1, i - 1), i + 1 end\n"
+    "    end\n"
+    "    i = i + 1\n"
+    "  end\n"
+    "  return nil, pos\n"
+    "end\n"
+    "local function mep_structure_tex_items(lines)\n"
+    "  local raw = {}\n"
+    "  for i, raw_line in ipairs(lines) do\n"
+    "    local line = mep_tex_strip_comment(raw_line)\n"
+    "    for _, spec in ipairs(mep_structure_tex_kinds) do\n"
+    "      local p = mep_tex_match_command(line, spec.cmd)\n"
+    "      if p then\n"
+    "        if line:sub(p, p) == '*' then p = p + 1 end\n"
+    "        while line:sub(p, p):match('%s') do p = p + 1 end\n"
+    "        if line:sub(p, p) == '[' then\n"
+    "          local _, after = mep_tex_match_delim(line, p, '[', ']')\n"
+    "          p = after\n"
+    "          while line:sub(p, p):match('%s') do p = p + 1 end\n"
+    "        end\n"
+    "        local title = mep_tex_match_delim(line, p, '{', '}')\n"
+    "        if title then\n"
+    "          raw[#raw + 1] = {row = i, col = 0, name = title, kind = spec.kind, depth = spec.depth}\n"
+    "        end\n"
+    "        break\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  if #raw == 0 then return nil end\n"
+    // Second pass: each entry's span runs from its own line through the
+    // line just before the next entry at the same-or-shallower depth
+    // (a sibling or an ancestor's own next section), or through the end
+    // of the file if nothing shallower-or-equal follows -- the same
+    // "next same-or-higher heading ends this one" convention any
+    // sectioned-document outline uses, computed here directly from the
+    // commands' own known depths rather than needing TreesitterStructure's
+    // more general containment-stack-over-sorted-spans algorithm (that
+    // one exists because a parse tree's spans aren't already ordered by
+    // depth the way this fixed sectioning-command hierarchy is).\n"
+    "  local last_row = #lines\n"
+    "  for k, item in ipairs(raw) do\n"
+    "    item.start_row = item.row\n"
+    "    item.end_row = last_row\n"
+    "    for j = k + 1, #raw do\n"
+    "      if raw[j].depth <= item.depth then\n"
+    "        item.end_row = raw[j].row - 1\n"
+    "        break\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  return raw\n"
+    "end\n"
+
+    // A PDF-backed buffer's own /Outlines (bookmarks) tree, in the same
+    // {name, kind, depth} shape every other structure item uses (so
+    // mep_structure_label/the sidebar's icon lookup/the split view's
+    // decoration code all work completely unmodified) -- plus a `page`
+    // field (1-indexed, 0 meaning "unresolved," see mep.pdf_outline's
+    // own doc comment) that the click handlers below check for instead
+    // of `row`/`col`, since a PDF-backed buffer's `mep.line_count()`/
+    // `mep.get_line()` are just a single dummy empty line (real content
+    // lives in the PdfSession, not the Buffer -- see editor.h's own
+    // comment on PdfSession/ImageSession/HtmlSession/OfficeSession/
+    // VideoSession all sharing this "hollow buffer" shape), so this
+    // never touches them at all. Returns nil (no items, not an error)
+    // if `mep.pdf_outline` itself returns nil -- the document has no
+    // /Outlines dict, which is true of most PDFs, not a malformed one.\n"
+    "local function mep_structure_pdf_items(buffer_id)\n"
+    "  local raw = mep.pdf_outline(buffer_id)\n"
+    "  if not raw then return nil end\n"
+    "  local items = {}\n"
+    "  for _, it in ipairs(raw) do\n"
+    "    items[#items + 1] = {name = it.title, kind = 'bookmark', depth = it.depth, page = it.page}\n"
+    "  end\n"
+    "  return items\n"
+    "end\n"
+    // Shared by both entry points: current buffer's structure outline --
+    // a PDF's own bookmarks tree for a PDF-backed buffer, LaTeX sections
+    // via the hand-rolled extractor above for a .tex one, everything
+    // else via Treesitter -- or (nil, message) if none of those has
+    // anything for it.\n"
     "local function mep_structure_items()\n"
+    "  local buffer_id = mep.current_buffer()\n"
+    "  if mep.is_pdf_buffer(buffer_id) then\n"
+    "    local items = mep_structure_pdf_items(buffer_id)\n"
+    "    if not items then return nil, 'This PDF has no outline/bookmarks' end\n"
+    "    return items, nil\n"
+    "  end\n"
     "  local ft = mep_lsp_filetype(mep.filename())\n"
     "  if not ft then return nil, 'No filetype for this buffer' end\n"
     "  local lines = {}\n"
     "  for i = 1, mep.line_count() do lines[i] = mep.get_line(i) end\n"
-    "  local items = mep.ts_structure(ft, table.concat(lines, '\\n'))\n"
+    "  local items\n"
+    "  if ft == 'tex' then\n"
+    "    items = mep_structure_tex_items(lines)\n"
+    "  else\n"
+    "    items = mep.ts_structure(ft, table.concat(lines, '\\n'))\n"
+    "  end\n"
     "  if not items then return nil, 'No structure available for this filetype' end\n"
     "  return items, nil\n"
     "end\n"
@@ -5574,6 +5747,25 @@ const char *kBuiltinStructure =
     "  end\n"
     "  return inside or before\n"
     "end\n"
+    // PDF-outline counterpart of mep_structure_current_index above: no
+    // cursor row to compare against (a PDF-backed buffer's own cursor is
+    // always (0,0), see mep_structure_pdf_items' own comment), so this
+    // compares each bookmark's own target `page` against whatever page
+    // the PDF viewer is actually showing right now (mep.pdf_current_page)
+    // instead -- same "last item at or before this position wins"
+    // tie-break, just keyed by page instead of row. A bookmark with an
+    // unresolved page (page == 0, a named destination this engine
+    // doesn't follow -- pdf_outline.h) never counts as "before," the
+    // same way it can never be jumped to either.\n"
+    "local function mep_structure_pdf_current_index(items, buffer_id)\n"
+    "  local cur_page = mep.pdf_current_page(buffer_id)\n"
+    "  if cur_page == 0 then return nil end\n"
+    "  local before = nil\n"
+    "  for i, it in ipairs(items) do\n"
+    "    if it.page ~= 0 and it.page <= cur_page then before = i end\n"
+    "  end\n"
+    "  return before\n"
+    "end\n"
 
     // --- <leader>sS: real-pane split ---------------------------------
     "local mep_structure_split_buf, mep_structure_split_source, mep_structure_split_items = nil, nil, nil\n"
@@ -5592,8 +5784,22 @@ const char *kBuiltinStructure =
     "  if not (mep_structure_split_buf and mep_structure_split_items) then return end\n"
     "  if not mep_structure_split_ns then mep_structure_split_ns = mep.ns_create('mep_structure_split') end\n"
     "  mep.buffer_ns_clear(mep_structure_split_buf, mep_structure_split_ns)\n"
-    "  local cur_row = mep_structure_split_source and mep.buffer_cursor_row(mep_structure_split_source)\n"
-    "  local current = mep_structure_current_index(mep_structure_split_items, cur_row)\n"
+    // PDF items carry a `page` field text/code items never do (see
+    // mep_structure_pdf_items) -- checked on the first item to pick
+    // which "current" computation applies, same test as
+    // mep_structure_sidebar_render's own is_pdf check below. Needed here
+    // too: text items' own start_row/end_row fields are simply absent on
+    // PDF items, and `nil <= cur_row` is a hard Lua error, not just a
+    // wrong answer, so this can't fall through to the row-based path by
+    // accident.\n"
+    "  local is_pdf = mep_structure_split_items[1] and mep_structure_split_items[1].page ~= nil\n"
+    "  local current\n"
+    "  if is_pdf then\n"
+    "    current = mep_structure_split_source and mep_structure_pdf_current_index(mep_structure_split_items, mep_structure_split_source)\n"
+    "  else\n"
+    "    local cur_row = mep_structure_split_source and mep.buffer_cursor_row(mep_structure_split_source)\n"
+    "    current = mep_structure_current_index(mep_structure_split_items, cur_row)\n"
+    "  end\n"
     "  for i, it in ipairs(mep_structure_split_items) do\n"
     "    local style = mep_structure_style(it.kind)\n"
     "    mep.buffer_deco_add(mep_structure_split_buf, mep_structure_split_ns,\n"
@@ -5616,7 +5822,11 @@ const char *kBuiltinStructure =
     "    mep.notify('Source pane is no longer open', 'warn')\n"
     "    return\n"
     "  end\n"
-    "  mep.set_cursor(item.row, item.col)\n"
+    "  if item.page then\n"
+    "    if item.page ~= 0 then mep.pdf_goto_page(mep_structure_split_source, item.page) end\n"
+    "  else\n"
+    "    mep.set_cursor(item.row, item.col)\n"
+    "  end\n"
     "end\n"
     "function mep.structure_split_open()\n"
     "  if mep_structure_split_buf and mep.current_buffer() == mep_structure_split_buf then\n"
@@ -5680,8 +5890,14 @@ const char *kBuiltinStructure =
     "  elseif #items == 0 then\n"
     "    widgets[1] = {id = 'msg', text = '(no definitions found)'}\n"
     "  else\n"
-    "    local current = mep_structure_current_index(items, mep.cursor())\n"
     "    local source_buf = mep.current_buffer()\n"
+    "    local is_pdf = mep.is_pdf_buffer(source_buf)\n"
+    "    local current\n"
+    "    if is_pdf then\n"
+    "      current = mep_structure_pdf_current_index(items, source_buf)\n"
+    "    else\n"
+    "      current = mep_structure_current_index(items, mep.cursor())\n"
+    "    end\n"
     "    for i, it in ipairs(items) do\n"
     "      local style = mep_structure_style(it.kind)\n"
     "      widgets[#widgets + 1] = {\n"
@@ -5699,8 +5915,18 @@ const char *kBuiltinStructure =
     // render (not mep.current_buffer() inside the closure) for the same
     // reason mep_structure_split_source is captured once per open --
     // stays correct even if the tracked pane's own buffer identity outlives
-    // this particular render.
-    "        on_click = function() mep.set_cursor(it.row, it.col) mep.pane_focus_buffer(source_buf) end,\n"
+    // this particular render. A PDF item has no row/col at all (see
+    // mep_structure_pdf_items' own comment) -- mep.pdf_goto_page instead,
+    // skipped entirely for an unresolved (page == 0) bookmark rather than
+    // jumping somewhere wrong.
+    "        on_click = function()\n"
+    "          mep.pane_focus_buffer(source_buf)\n"
+    "          if is_pdf then\n"
+    "            if it.page ~= 0 then mep.pdf_goto_page(source_buf, it.page) end\n"
+    "          else\n"
+    "            mep.set_cursor(it.row, it.col)\n"
+    "          end\n"
+    "        end,\n"
     "      }\n"
     "    end\n"
     "  end\n"
@@ -5716,7 +5942,12 @@ const char *kBuiltinStructure =
     "local function mep_structure_sidebar_on_preview(id)\n"
     "  local i = tonumber(id)\n"
     "  local it = i and mep_structure_sidebar_items and mep_structure_sidebar_items[i]\n"
-    "  if not it then mep.sidebar_set_preview('') return end\n"
+    // A PDF bookmark has no source line range to preview at all (see
+    // mep_structure_pdf_items' own comment) -- no code preview shown,
+    // same as "no item"; the sidebar's own click-to-jump already gets
+    // you there directly, and this feature's own PDF support was never
+    // about a page-thumbnail preview.\n"
+    "  if not it or it.page ~= nil then mep.sidebar_set_preview('') return end\n"
     "  local first = it.start_row\n"
     "  local last = math.min(it.end_row, first + 400, mep.line_count())\n"
     "  local lines = {}\n"
@@ -5771,10 +6002,17 @@ const char *kBuiltinStructure =
     // polls a row, just via mep.cursor() since here the tracked pane is
     // always the focused one.
     "local mep_structure_last_buf, mep_structure_last_row = nil, nil\n"
+    // A PDF-backed buffer is the "hollow buffer" pattern (see
+    // mep_structure_pdf_current_index's own comment): mep.cursor() is a
+    // meaningless dummy {0, 0} that never moves, so tracking only it here
+    // would leave the current-position highlight stuck at whichever
+    // bookmark was current when the sidebar first opened, never catching
+    // up as the user pages through -- track the PDF's own current page
+    // instead for exactly this poll's purpose (row == "what changed").
     "mep.on_frame(function()\n"
     "  if not (mep_structure_sidebar_id and mep.sidebar_is_open(mep_structure_sidebar_id)) then return end\n"
     "  local buf = mep.current_buffer()\n"
-    "  local row = mep.cursor()\n"
+    "  local row = mep.is_pdf_buffer(buf) and mep.pdf_current_page(buf) or mep.cursor()\n"
     "  if buf == mep_structure_last_buf and row == mep_structure_last_row then return end\n"
     "  mep_structure_last_buf = buf\n"
     "  mep_structure_last_row = row\n"
@@ -12556,16 +12794,20 @@ const char *kBuiltinRunButton =
     "  end\n"
     "  return nil\n"
     "end\n"
-    // Shows `path` (whatever mep_run_button_org_exporters[format] just
-    // wrote) in a vertical split, reusing one that's already open next to
-    // this org buffer instead of stacking up a new split on every run.
-    // Refreshes in place via the html/pdf/office *_reload primitives
-    // (editor.cpp, lua_env.cpp) when the existing pane is already that
-    // viewer type -- mep.open's own dedup-by-filename lookup in
-    // LoadFile/OpenPdfInPlace/OpenOfficeInPlace would otherwise just find
-    // and reuse the STALE session from the previous run instead of
-    // picking up the freshly recompiled bytes, exactly the gap
-    // mep.html_reload already existed to cover for HTML alone.\n"
+    // Shows `path` (whatever the caller -- an org exporter or the tex Run
+    // button below -- just wrote) in a vertical split, reusing one that's
+    // already open next to the source buffer instead of stacking up a new
+    // split on every run. Refreshes in place via the html/pdf/office
+    // *_reload primitives (editor.cpp, lua_env.cpp) when the existing
+    // pane is already that viewer type -- mep.open's own dedup-by-
+    // filename lookup in LoadFile/OpenPdfInPlace/OpenOfficeInPlace would
+    // otherwise just find and reuse the STALE session from the previous
+    // run instead of picking up the freshly recompiled bytes, exactly the
+    // gap mep.html_reload already existed to cover for HTML alone.
+    // Dispatches purely on `path`'s own extension, so despite the name
+    // this was already fully generic before the tex Run button became a
+    // second caller -- not renamed, to keep the diff to that feature
+    // small.\n"
     "local function mep_run_button_show_org_output(path)\n"
     "  local existing = mep_run_button_pane_for_path(path)\n"
     "  if existing then\n"
@@ -12631,6 +12873,111 @@ const char *kBuiltinRunButton =
     "    mep.notify('Run: ' .. tostring(err), 'error')\n"
     "  end\n"
     "end\n"
+    // tex Run button: compiles the current .tex file with tectonic (same
+    // devShell dependency + invocation shape as mep.org_export_pdf and
+    // kBuiltinOrgLatex's own mep_org_latex_render) and shows the result
+    // via mep_run_button_show_org_output above (reuse an already-open
+    // split next to this buffer, or vsplit_right a new one).
+    //
+    // Not every .tex file is a standalone compilable document -- a
+    // \\include'd chapter, a style/class file, a bibliography -- so
+    // mep_run_button_tex_has_document below scans for a literal
+    // \\begin{document} first and refuses to even invoke tectonic without
+    // one, rather than letting it fail with a confusing "missing
+    // \\documentclass" error. Deliberately NOT done as a Run-button
+    // *visibility* gate (RunButtonSupportsExtension/DrawPane's
+    // show_run_button, main.cpp): that check runs every frame for every
+    // visible .tex pane's header, so scanning file content there the way
+    // this scans the buffer's own already-in-memory lines once per click
+    // would instead mean re-scanning on every single frame -- real, easy-
+    // to-avoid overhead for zero benefit (a `.tex` file failing this
+    // check still shows the button, it just explains why it can't run
+    // instead of silently doing nothing or leaving the button missing
+    // with no explanation).\n"
+    // Strips a LaTeX line comment (an unescaped '%' to end of line) before
+    // the has-document search below -- without this, a file whose only
+    // \\begin{document} is inside a comment (e.g. a tutorial/template's own
+    // "% add \\begin{document} here" header, or commented-out boilerplate)
+    // false-positives the check and lets a real non-document reach
+    // tectonic anyway, producing exactly the confusing failure this check
+    // exists to avoid. Doesn't handle every LaTeX edge case (a verbatim
+    // environment containing a literal '%', for instance) -- a best-
+    // effort heuristic gate, not a real parser. Deliberately a plain
+    // global (not `local`) -- kBuiltinStructure's own LaTeX section
+    // extractor reuses this exact same helper rather than duplicating
+    // it; Lua resolves the reference when that code actually *runs*
+    // (long after every kBuiltin* chunk has loaded, triggered by a user
+    // opening the structure sidebar), not when either chunk is first
+    // loaded, so it doesn't matter that this chunk happens to load after
+    // kBuiltinStructure's own DoString call.\n"
+    "function mep_tex_strip_comment(line)\n"
+    "  local i = 1\n"
+    "  while true do\n"
+    "    local pos = line:find('%%', i)\n"
+    "    if not pos then return line end\n"
+    "    if pos == 1 or line:sub(pos - 1, pos - 1) ~= '\\\\' then return line:sub(1, pos - 1) end\n"
+    "    i = pos + 1\n"
+    "  end\n"
+    "end\n"
+    "local function mep_run_button_tex_has_document()\n"
+    "  for i = 1, mep.line_count() do\n"
+    "    if mep_tex_strip_comment(mep.get_line(i)):find('\\\\begin{document}', 1, true) then return true end\n"
+    "  end\n"
+    "  return false\n"
+    "end\n"
+    "local mep_run_button_tex_running = {}\n"
+    "function mep.run_button_run_tex()\n"
+    "  local fname = mep.filename()\n"
+    "  if not fname or fname == '' then mep.notify('Run: save this buffer to a file first', 'warn') return end\n"
+    "  if not mep_run_button_tex_has_document() then\n"
+    "    mep.notify('Run: no \\\\begin{document} found -- not a standalone LaTeX document', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  if mep_run_button_tex_running[fname] then\n"
+    "    mep.notify('Run: already running, please wait...', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  mep_run_button_tex_running[fname] = true\n"
+    "  local function done() mep_run_button_tex_running[fname] = nil end\n"
+    "  local ok, err = pcall(function()\n"
+    "    mep.cmd('write')\n"
+    // mep.filename() is whatever raw path this buffer was opened with --
+    // often relative to wherever mep's own process happened to be
+    // launched from (LspAbspath/mep_lsp_abspath just prepends the
+    // process's real cwd to a relative path, editor.cpp's LspAbspath),
+    // which is NOT necessarily the file's own directory. Passing that
+    // same possibly-relative fname straight to tectonic while ALSO
+    // setting the job's own cwd to the file's directory (below) only
+    // happens to work when those two coincide -- otherwise tectonic
+    // looks for the file relative to its OWN (different) cwd and fails
+    // with a confusing "failed to open input file <fname>". Resolving to
+    // an absolute path here once, and compiling *that*, is correct
+    // regardless of what mep's own process cwd is.\n"
+    "    local abs = mep_lsp_abspath(fname)\n"
+    "    local base_dir = abs:match('^(.*)/[^/]*$') or '.'\n"
+    "    local pdf_path = (fname:gsub('%.tex$', '')) .. '.pdf'\n"
+    "    mep.notify('Compiling ' .. fname .. ' (tectonic)...')\n"
+    "    local tex_err = {}\n"
+    "    mep.job_start({'tectonic', '-X', 'compile', abs, '--outfmt', 'pdf'}, {\n"
+    "      cwd = base_dir,\n"
+    "      on_stderr = function(line) tex_err[#tex_err + 1] = line end,\n"
+    "      on_exit = function(code)\n"
+    "        done()\n"
+    "        if code == 0 then\n"
+    "          mep.notify('Compiled ' .. pdf_path)\n"
+    "          mep_run_button_show_org_output(pdf_path)\n"
+    "        else\n"
+    "          mep.notify('LaTeX compile failed (tectonic exit ' .. code .. '): '\n"
+    "            .. (tex_err[#tex_err] or 'see terminal'), 'error')\n"
+    "        end\n"
+    "      end,\n"
+    "    })\n"
+    "  end)\n"
+    "  if not ok then\n"
+    "    done()\n"
+    "    mep.notify('Run: ' .. tostring(err), 'error')\n"
+    "  end\n"
+    "end\n"
     // Runs (or compiles-then-runs) the *focused pane's* current file --
     // main.cpp's Run button click handler focuses that pane first, same
     // convention as its vsplit/hsplit/close neighbors, so mep.filename()/
@@ -12641,6 +12988,7 @@ const char *kBuiltinRunButton =
     "  if not fname or fname == '' then mep.notify('Run: save this buffer to a file first', 'warn') return end\n"
     "  local ext = mep_lsp_filetype(fname)\n"
     "  if ext == 'org' then mep.run_button_run_org() return end\n"
+    "  if ext == 'tex' then mep.run_button_run_tex() return end\n"
     "  local cfg = ext and mep_run_config_for(ext)\n"
     "  if not cfg then mep.notify('Run: no run command configured for this filetype', 'warn') return end\n"
     "  mep.cmd('write')\n"
@@ -18902,7 +19250,7 @@ void DrawAgentStatusBadge(gfx::Vector2 center, float radius, const std::string &
  * @return True if the Run button should be shown for a buffer with this extension.
  */
 bool RunButtonSupportsExtension(const std::string &ext) {
-    static const std::unordered_set<std::string> kExts = {"py", "r", "R", "c", "cpp", "cc", "cxx", "org"};
+    static const std::unordered_set<std::string> kExts = {"py", "r", "R", "c", "cpp", "cc", "cxx", "org", "tex"};
     return kExts.count(ext) != 0;
 }
 

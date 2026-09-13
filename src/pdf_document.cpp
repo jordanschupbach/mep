@@ -180,4 +180,11 @@ double PdfDocument::PageHeightPt(int index) const {
     return (page->rotate == 90 || page->rotate == 270) ? w : h;
 }
 
+int PdfDocument::PageIndexForObjectNum(int object_num) const {
+    for (size_t i = 0; i < pages_.size(); ++i) {
+        if (pages_[i].object_num == object_num) return static_cast<int>(i);
+    }
+    return -1;
+}
+
 }  // namespace pdfdoc

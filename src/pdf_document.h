@@ -87,6 +87,15 @@ public:
 
     const pdfxref::XrefTable &Xref() const { return table_; }
 
+    // Returns the 0-based index of the page whose own Page dict has this
+    // exact object number (Page::object_num, set during page-tree
+    // flattening), or -1 if no page matches -- used to resolve a PDF
+    // outline (bookmarks) entry's destination page reference
+    // (PDFIUM_REMOVAL_PLAN.md's own successor work, pdf_outline.h) back
+    // to a page index. A plain linear scan: page counts are small and
+    // this only runs a handful of times per document open, not per frame.
+    int PageIndexForObjectNum(int object_num) const;
+
 private:
     pdfxref::XrefTable table_;
     std::vector<Page> pages_;

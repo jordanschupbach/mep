@@ -50,6 +50,21 @@ struct PdfHighlightRect {
     float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
 };
 
+// One entry of the document's own outline (bookmarks) tree -- spec
+// 12.3.3, what a PDF viewer's own "bookmarks"/"table of contents" panel
+// shows -- flattened out of the tree with a `depth` field rather than
+// returned as a real nested structure, since the only consumer (mep's
+// Structure sidebar, main.cpp's kBuiltinStructure) already expects
+// exactly this "flat list + depth" shape for every other filetype it
+// supports (Treesitter symbols, LaTeX sections). See pdf_outline.h for
+// the full contract (which destination shapes resolve to a real `page`,
+// which don't).
+struct PdfOutlineItem {
+    std::string title;
+    int page = -1;  // 0-based target page index, or -1 if unresolvable (e.g. a named destination)
+    int depth = 0;
+};
+
 class PdfDoc {
 public:
     /**
@@ -156,6 +171,18 @@ public:
      */
     std::vector<PdfHighlightRect> MatchRectsForPage(int page_index, float px_per_pt,
                                                      const std::vector<PdfTextMatch> &matches) const;
+
+    // The document's own outline (bookmarks) tree, flattened with a
+    // depth field -- empty if it has no /Outlines dict at all (most
+    // PDFs don't; only ones from tools like LaTeX's hyperref package, or
+    // "Save As PDF" from Word/LibreOffice with heading styles, typically
+    // do). See pdf_outline.h for exactly which destination shapes
+    // resolve to a real page vs. leave `page` at -1.
+    /**
+     * @brief Returns the document's own outline/bookmarks tree, flattened with a depth field.
+     * @return Outline entries in document order; empty if the document has no /Outlines dict, or isn't loaded.
+     */
+    std::vector<PdfOutlineItem> Outline() const;
 
     /**
      * @brief Returns the error message from the most recent failed LoadFromMemory call.

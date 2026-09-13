@@ -7743,6 +7743,15 @@ const PdfSession *Editor::GetPdf(int buffer_id) const {
     return it == pdfs_.end() ? nullptr : &it->second;
 }
 
+void Editor::GotoPdfPage(int buffer_id, int page) {
+    auto it = pdfs_.find(buffer_id);
+    if (it == pdfs_.end() || !it->second.doc) return;
+    int page_count = it->second.doc->PageCount();
+    if (page_count <= 0) return;
+    it->second.page = std::clamp(page, 0, page_count - 1);
+    it->second.scroll_y = 0;
+}
+
 std::pair<double, double> Editor::PdfPageSizePt(PdfSession &sess, int page_index) {
     auto it = sess.page_size_pt.find(page_index);
     if (it != sess.page_size_pt.end()) return it->second;
@@ -13553,8 +13562,17 @@ void Editor::HandleNormalInput() {
     //      swallowed too -- a minor, self-correcting annoyance (retrying
     //      once the window passes fixes it), traded against not replaying
     //      a stale backlog as visible extra motion.
+    //   3. kMotionRepeatIntervalSec -- once confirmed, the cursor only
+    //      actually moves this often, independent of frame rate (though
+    //      it can never move faster than once per rendered frame no
+    //      matter how small this is, since this whole loop only runs
+    //      once per frame -- at 0.005s/60fps that's the effective floor
+    //      already, i.e. this is intentionally set below the frame
+    //      budget to mean "as fast as a frame allows," not a real
+    //      independent 200/sec rate).
     constexpr double kMotionHoldConfirmSec = 0.2;
     constexpr double kMotionDiscardCooldownSec = 0.7;
+    constexpr double kMotionRepeatIntervalSec = 0.005;
     bool shift = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
     bool count_pending_now = pending_count_ != 0;
     bool no_pending_state_now = pending_op_ == 0 && !pending_g_ && !pending_bracket_prev_ && !pending_bracket_next_ &&
@@ -13575,7 +13593,9 @@ void Editor::HandleNormalInput() {
             bool confirmed = (now - st.down_since) >= kMotionHoldConfirmSec;
             if (confirmed) {
                 st.discard_until = now + kMotionDiscardCooldownSec;
-                if (no_pending_state_now && !ctrl && !shift) {
+                bool interval_elapsed = st.last_move_time_ < 0.0 || (now - st.last_move_time_) >= kMotionRepeatIntervalSec;
+                if (no_pending_state_now && !ctrl && !shift && interval_elapsed) {
+                    st.last_move_time_ = now;
                     HandleNormalChar(static_cast<int>(kMotionKeys[i].second), no_pending_state_now);
                     if (mode_ != Mode::Normal) return;  // key switched modes
                 }
@@ -13583,6 +13603,7 @@ void Editor::HandleNormalInput() {
         } else if (st.down_since >= 0.0) {
             if ((now - st.down_since) >= kMotionHoldConfirmSec) st.discard_until = now + kMotionDiscardCooldownSec;
             st.down_since = -1.0;
+            st.last_move_time_ = -1.0;
         }
     }
 

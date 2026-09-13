@@ -6597,6 +6597,77 @@ int l_pdf_reload(lua_State *L) {
     return 0;
 }
 
+// mep.is_pdf_buffer(buffer_id) -> bool: whether `buffer_id` is a PDF
+// pane -- lets Lua-side dispatch (the Structure sidebar, kBuiltinStructure)
+// distinguish a PDF buffer from a normal text one by something other
+// than sniffing the ".pdf" file extension.
+int l_is_pdf_buffer(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    lua_pushboolean(L, GetEditor(L)->GetPdf(buffer_id) != nullptr);
+    return 1;
+}
+
+// mep.pdf_outline(buffer_id) -> array of {title, page, depth}, or nil if
+// buffer_id isn't a PDF pane or its document has no /Outlines dict at
+// all (most PDFs don't). `page` is 1-indexed (matching mep.get_line's/
+// TSStructureNode's own row convention throughout this codebase) with 0
+// used as the "unresolved" sentinel -- PdfDoc::Outline's own -1 (a named
+// destination this engine doesn't resolve, pdf_outline.h) shifted by the
+// same +1 every real page index gets, landing on 0, which (unlike -1)
+// is never a legitimate 1-indexed page number, so Lua-side code can
+// just check `item.page == 0` rather than needing a second "resolved"
+// boolean field.
+int l_pdf_outline(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    const PdfSession *sess = GetEditor(L)->GetPdf(buffer_id);
+    if (!sess || !sess->doc) {
+        lua_pushnil(L);
+        return 1;
+    }
+    std::vector<PdfOutlineItem> items = sess->doc->Outline();
+    if (items.empty()) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_newtable(L);
+    for (size_t i = 0; i < items.size(); ++i) {
+        lua_newtable(L);
+        lua_pushstring(L, items[i].title.c_str());
+        lua_setfield(L, -2, "title");
+        lua_pushinteger(L, items[i].page + 1);
+        lua_setfield(L, -2, "page");
+        lua_pushinteger(L, items[i].depth);
+        lua_setfield(L, -2, "depth");
+        lua_rawseti(L, -2, static_cast<int>(i) + 1);
+    }
+    return 1;
+}
+
+// mep.pdf_goto_page(buffer_id, page): jumps buffer_id's own PDF viewer
+// to `page` (1-indexed, clamped to the valid range) -- a no-op if
+// buffer_id isn't a PDF pane. Built for the Structure sidebar's PDF-
+// outline click-to-jump (kBuiltinStructure, main.cpp), which has no
+// text row/col to hand mep.set_cursor the way every other filetype's
+// structure entries do.
+int l_pdf_goto_page(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    int page = static_cast<int>(luaL_checkinteger(L, 2)) - 1;
+    GetEditor(L)->GotoPdfPage(buffer_id, page);
+    return 0;
+}
+
+// mep.pdf_current_page(buffer_id) -> 1-indexed current page, or 0 if
+// buffer_id isn't a PDF pane. Lets the Structure sidebar highlight the
+// bookmark closest to the page currently on screen, the PDF-outline
+// equivalent of mep_structure_current_index's cursor-row-based "current
+// item" highlight for text buffers.
+int l_pdf_current_page(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    const PdfSession *sess = GetEditor(L)->GetPdf(buffer_id);
+    lua_pushinteger(L, sess ? sess->page + 1 : 0);
+    return 1;
+}
+
 // mep.office_reload(path): re-reads local file `path` (docx or odt) and
 // re-decodes it INTO the current pane's existing OfficeSession in place
 // (Editor::ReloadOfficeBuffer) -- same role mep.html_reload/mep.pdf_reload
@@ -7957,6 +8028,10 @@ const luaL_Reg kMepFuncs[] = {
     {"html_current_origin", l_html_current_origin},
     {"html_reload", l_html_reload},
     {"pdf_reload", l_pdf_reload},
+    {"is_pdf_buffer", l_is_pdf_buffer},
+    {"pdf_outline", l_pdf_outline},
+    {"pdf_goto_page", l_pdf_goto_page},
+    {"pdf_current_page", l_pdf_current_page},
     {"office_reload", l_office_reload},
     {"doc_export_html_to_latex", l_doc_export_html_to_latex},
     {"doc_export_html_to_odt", l_doc_export_html_to_odt},

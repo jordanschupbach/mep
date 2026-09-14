@@ -16264,7 +16264,7 @@ void BuildMenus() {
         {"File",
          {
              {"New", [] { g_editor.NewBuffer(); }},                // creates a new empty buffer
-             {"Open...", [] { g_editor.BeginCommand("e "); }},      // starts an ":e " command for the user to complete
+             {"Open...", [] { g_editor.RunCommand("lua mep.open_file_dialog()"); }},  // shows the platform-native file-open picker
              {"Save", [] { g_editor.RunCommand("w"); }},            // writes the current buffer
              {"Save As...", [] { g_editor.BeginCommand("w "); }},   // starts a ":w " command for the user to complete
              {"Quit", [] { g_editor.RunCommand("q"); }},            // runs ":q"

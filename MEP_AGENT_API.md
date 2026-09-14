@@ -78,6 +78,48 @@ opens one persistent connection and fires many requests over it.
   `projectclose`, ...) via `mep_command_run` unless explicitly asked.
 - Rows/columns are 0-indexed; line ranges are `[start, end)`.
 
+## Developing mep itself
+
+If your task is changing mep's own code (this repo), you are almost
+certainly running inside the very instance you'd want to rebuild and
+test: an agent terminal's shell, and anything its Bash tool starts
+without detaching it, is a child process in that mep instance's own
+process group (`Editor::TerminalSpawn`). Closing/quitting/restarting
+that instance -- `:qa!`, `:q`, the human closing the window, or a shell
+`kill`/`pkill` that happens to target its pid -- sends SIGTERM then
+SIGKILL to its *whole process group* on shutdown (`JobManager::
+ShutdownAll`), which takes the agent's own session down with it, not
+just the editor. `mep_session_info`'s `pid` field (or the `<pid>.sock`
+filename in the agent's own `MEP_AGENT_SOCKET`) identifies that pid --
+never target it, and never run a destructive quit against the
+containing instance while developing mep, even indirectly (a blanket
+`pkill mep` included).
+
+To test a change, build then launch a separate, detached instance
+rather than restarting the containing one:
+
+```
+setsid ./build/native/mep [path] </dev/null >/tmp/mep-test.log 2>&1 &
+```
+
+via the agent's own Bash tool -- not mep's own `:terminal`/
+`mep_command_run("terminal ...")`, which would just make the new
+instance another child of the containing one. `setsid` puts it in its
+own session so it survives even if the containing instance later
+closes. It binds its own `<new-pid>.sock` automatically (see
+Architecture above); drive it with its own `mep_*` tools via a fresh
+MCP connection pointed at `MEP_AGENT_SOCKET=<that path>`, or a raw
+JSON-RPC script (see "Writing your own raw-socket batch script"
+above), independently of whatever socket the agent's own tools are
+already wired to. When done testing, kill only that spawned pid --
+never anything upstream of the agent's own session.
+
+This is also why several independent agents are safe to run at once,
+each in its own mep window: every `mep-mcp` process is tied to exactly
+one socket (`MEP_AGENT_SOCKET`, inherited from the instance that
+spawned it), so concurrent agents never contend for or cross-talk over
+a shared server.
+
 ## Tool reference
 
 ### Identity & session

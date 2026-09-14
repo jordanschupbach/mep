@@ -15028,7 +15028,19 @@ const char *kBuiltinPaneZoom =
 // = this instance's own agent socket into the terminal's environment,
 // and the MCP server (a child of claude, so it inherits that) honors it
 // ahead of its directory scan -- so even with several mep windows open,
-// the agent always lands on the one it was launched from.
+// the agent always lands on the one it was launched from. This is also
+// what makes several independent agents safe to run at once, each in
+// its own mep window: every mep-mcp is its own process tied to exactly
+// one socket, so agents never contend for or cross-talk over a shared
+// server.
+//
+// The instructions also cover the case that motivated all of the above:
+// an agent developing mep itself is running as a child (in the process
+// group) of the very instance it would want to rebuild and test, so
+// restarting that instance to pick up a change kills the agent's own
+// session along with it (see JobManager::ShutdownAll). The "developing
+// mep itself" section tells it never to do that, and instead to launch
+// a separate, detached instance (`setsid ... &`) to test against.
 //
 // The MCP server itself is expected to already be registered with Claude
 // Code (`claude mcp add mep-agent -- /path/to/mep-mcp`, the documented
@@ -15065,6 +15077,10 @@ const char *kBuiltinAiTerminal =
     "- Never run destructive ex-commands (qa!, q!, wsdelete, projectclose) through mep_command_run unless the human explicitly asked for that.\n"
     "- Call mep_poll_events after a pause or before acting on assumptions: it returns everything that changed since your last check (cursor moves, buffer edits, pane focus, mode changes, notifications), including the human's own activity.\n"
     "\n"
+    "## If your task is to develop mep itself (this repo)\n"
+    "- You are almost certainly running inside the very mep instance you'd want to rebuild and test: your shell, and anything your Bash tool starts without detaching it, is a child process in that instance's own process group. Closing/quitting/restarting it -- :qa!, :q, the human closing the window, or a shell kill/pkill that happens to target its pid -- sends SIGTERM then SIGKILL to that whole process group on shutdown, which takes your own session down with it, not just the editor. mep_session_info's pid field (or the <pid>.sock filename in your own MEP_AGENT_SOCKET) is that pid -- never target it, and never run a destructive quit against this instance while developing mep, even indirectly (e.g. a blanket `pkill mep`).\n"
+    "- To test a change, build then launch a separate, detached instance rather than restarting this one: `setsid ./build/native/mep [path] </dev/null >/tmp/mep-test.log 2>&1 &` via your Bash tool -- not mep's own :terminal/mep_command_run(\"terminal ...\"), which would just make the new instance another child of this one. setsid puts it in its own session so it survives even if this containing instance later closes. It binds its own <new-pid>.sock automatically (~/.local/share/mep/agent-sockets/); drive it with its own mep_* tools by pointing a fresh MCP connection at MEP_AGENT_SOCKET=<that path> (or a raw JSON-RPC script -- see MEP_AGENT_API.md), independently of the socket your own tools are already wired to. When done, kill only that spawned pid, never anything upstream of your own session.\n"
+    "\n"
     "## API conventions\n"
     "- Rows and columns are 0-indexed. Line ranges are [start, end) with end exclusive.\n"
     "- You have your own virtual cursor (mep_cursor_get, mep_cursor_set, mep_buffer_switch), drawn in the human's panes under your name; moving it never moves the human's cursor or changes what their panes show. mep_buffer_insert_text, mep_buffer_set_line and mep_buffer_replace_lines act on the buffer your cursor is in; mep_buffer_get_lines and mep_buffer_set_lines take an explicit buffer_id. mep_buffer_create makes a new empty buffer without displaying it.\n"
@@ -15075,6 +15091,7 @@ const char *kBuiltinAiTerminal =
     "- mep_identify renames yourself; mep_list_participants shows everyone connected, humans and agents alike.\n"
     "\n"
     "## UI automation (screenshots, clicks, keystrokes)\n"
+    "- Prefer the structured mep_* editor-state tools above (buffers, cursor, panes, command_run, model.*, image.*) for functional interaction with any mep instance, including one you spawned to test a change. Reach for mep_screenshot/mep_mouse_*/mep_key_press/mep_type_text only when the task is specifically about testing mouse/keyboard/rendering/input behavior itself (e.g. verifying a gizmo drag or a hotkey) -- they depend on real X11 focus on the target window, are flakier, and don't compose the way a direct RPC call does.\n"
     "- mep_screenshot captures the actual window as a PNG and returns its path -- read the file to see it. Coordinates for every mep_mouse_*/mep_scroll tool are in that same pixel space (window-client, origin top-left), so take a screenshot first to find where things are before clicking.\n"
     "- mep_mouse_click(x, y, button, clicks) and mep_mouse_drag(x1, y1, x2, y2, button, steps) are the main tools; mep_mouse_down/mep_mouse_move/mep_mouse_up let you compose a custom gesture (e.g. hold a modifier across several calls: mep_key_down(\"Shift_L\"), then click/drag, then mep_key_up(\"Shift_L\")).\n"
     "- mep_key_press sends one keystroke (a single character, or an X11 name like \"Escape\"/\"Return\"/\"Tab\"/\"BackSpace\"/\"Left\"/\"F5\"); mep_type_text types a whole string (printable ASCII only). These drive real synthetic input at the OS level, so they work on anything drawn in the window, not just mep-aware widgets.\n"

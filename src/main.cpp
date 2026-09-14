@@ -951,6 +951,16 @@ bool PointInRect(gfx::Vector2 p, const gfx::Rectangle &r) {
 // not captured per-frame, so it can't answer "which pane/border is the
 // mouse over right now" without redoing the walk anyway.
 
+// Pixel gap left between sibling panes on either side of a split
+// (Horizontal or Vertical SplitNode), so adjacent panes read as distinct
+// neighbors instead of touching edge-to-edge -- the same "nice gap" the
+// docked sidebars already get against the pane tree (see the left_w/
+// right_w reservation in DrawEditor), now applied to every split
+// everywhere in the pane tree. Shared by ComputePaneScreenRects and
+// DrawPaneTree, which must stay in lockstep (see the comment above
+// ComputePaneScreenRects).
+constexpr float kPaneGapPx = 5.0f;
+
 // One leaf pane's on-screen rect this frame.
 struct PaneScreenRect {
     int pane_id;
@@ -1008,31 +1018,41 @@ void ComputePaneScreenRects(SplitNode *node, float x, float y, float w, float h)
     if (n == 0) return;
     bool has_shares = node->shares.size() == static_cast<size_t>(n);
     constexpr float kBorderGrabPx = 6.0f;
+    // Shares divide the FULL extent (matching Editor::ComputeRects, which
+    // has no notion of pixel gaps), so the gap space is carved out of that
+    // full extent rather than added on top of it -- an n-way split's total
+    // width/height on screen is unchanged, just redistributed between gaps
+    // and pane content.
+    float total_gap = kPaneGapPx * static_cast<float>(std::max(0, n - 1));
     if (node->dir == SplitDir::Horizontal) {
+        float avail = std::max(0.0f, h - total_gap);
         float cy = y;
         for (int i = 0; i < n; i++) {
-            float ch = has_shares ? h * node->shares[static_cast<size_t>(i)] : h / static_cast<float>(n);
-            float next_y = (i == n - 1) ? y + h : cy + ch;
-            ComputePaneScreenRects(node->children[static_cast<size_t>(i)].get(), x, cy, w, next_y - cy);
+            float ch = has_shares ? avail * node->shares[static_cast<size_t>(i)] : avail / static_cast<float>(n);
+            float child_end = (i == n - 1) ? y + h : cy + ch;
+            ComputePaneScreenRects(node->children[static_cast<size_t>(i)].get(), x, cy, w, child_end - cy);
             if (i < n - 1) {
-                float ch_next = has_shares ? h * node->shares[static_cast<size_t>(i) + 1] : h / static_cast<float>(n);
-                g_pane_border_rects.push_back({node, i, false, gfx::Rectangle{x, next_y - kBorderGrabPx / 2.0f, w, kBorderGrabPx},
-                                                gfx::Rectangle{x, cy, w, ch + ch_next}});
+                float ch_next = has_shares ? avail * node->shares[static_cast<size_t>(i) + 1] : avail / static_cast<float>(n);
+                float gap_mid = child_end + kPaneGapPx / 2.0f;
+                g_pane_border_rects.push_back({node, i, false, gfx::Rectangle{x, gap_mid - kBorderGrabPx / 2.0f, w, kBorderGrabPx},
+                                                gfx::Rectangle{x, cy, w, ch + kPaneGapPx + ch_next}});
             }
-            cy = next_y;
+            cy = child_end + (i < n - 1 ? kPaneGapPx : 0.0f);
         }
     } else {
+        float avail = std::max(0.0f, w - total_gap);
         float cx = x;
         for (int i = 0; i < n; i++) {
-            float cw = has_shares ? w * node->shares[static_cast<size_t>(i)] : w / static_cast<float>(n);
-            float next_x = (i == n - 1) ? x + w : cx + cw;
-            ComputePaneScreenRects(node->children[static_cast<size_t>(i)].get(), cx, y, next_x - cx, h);
+            float cw = has_shares ? avail * node->shares[static_cast<size_t>(i)] : avail / static_cast<float>(n);
+            float child_end = (i == n - 1) ? x + w : cx + cw;
+            ComputePaneScreenRects(node->children[static_cast<size_t>(i)].get(), cx, y, child_end - cx, h);
             if (i < n - 1) {
-                float cw_next = has_shares ? w * node->shares[static_cast<size_t>(i) + 1] : w / static_cast<float>(n);
-                g_pane_border_rects.push_back({node, i, true, gfx::Rectangle{next_x - kBorderGrabPx / 2.0f, y, kBorderGrabPx, h},
-                                                gfx::Rectangle{cx, y, cw + cw_next, h}});
+                float cw_next = has_shares ? avail * node->shares[static_cast<size_t>(i) + 1] : avail / static_cast<float>(n);
+                float gap_mid = child_end + kPaneGapPx / 2.0f;
+                g_pane_border_rects.push_back({node, i, true, gfx::Rectangle{gap_mid - kBorderGrabPx / 2.0f, y, kBorderGrabPx, h},
+                                                gfx::Rectangle{cx, y, cw + kPaneGapPx + cw_next, h}});
             }
-            cx = next_x;
+            cx = child_end + (i < n - 1 ? kPaneGapPx : 0.0f);
         }
     }
 }
@@ -28097,21 +28117,26 @@ void DrawPaneTree(const SplitNode *node, float x, float y, float w, float h, int
     int n = static_cast<int>(node->children.size());
     if (n == 0) return;
     bool has_shares = node->shares.size() == static_cast<size_t>(n);
+    // Mirrors ComputePaneScreenRects' own gap math exactly (see kPaneGapPx
+    // and that function's comment) -- must stay in lockstep with it.
+    float total_gap = kPaneGapPx * static_cast<float>(std::max(0, n - 1));
     if (node->dir == SplitDir::Horizontal) {
+        float avail = std::max(0.0f, h - total_gap);
         float cy = y;
         for (int i = 0; i < n; i++) {
-            float ch = has_shares ? h * node->shares[static_cast<size_t>(i)] : h / static_cast<float>(n);
-            float next_y = (i == n - 1) ? y + h : cy + ch;
-            DrawPaneTree(node->children[static_cast<size_t>(i)].get(), x, cy, w, next_y - cy, active_pane_id);
-            cy = next_y;
+            float ch = has_shares ? avail * node->shares[static_cast<size_t>(i)] : avail / static_cast<float>(n);
+            float child_end = (i == n - 1) ? y + h : cy + ch;
+            DrawPaneTree(node->children[static_cast<size_t>(i)].get(), x, cy, w, child_end - cy, active_pane_id);
+            cy = child_end + (i < n - 1 ? kPaneGapPx : 0.0f);
         }
     } else {
+        float avail = std::max(0.0f, w - total_gap);
         float cx = x;
         for (int i = 0; i < n; i++) {
-            float cw = has_shares ? w * node->shares[static_cast<size_t>(i)] : w / static_cast<float>(n);
-            float next_x = (i == n - 1) ? x + w : cx + cw;
-            DrawPaneTree(node->children[static_cast<size_t>(i)].get(), cx, y, next_x - cx, h, active_pane_id);
-            cx = next_x;
+            float cw = has_shares ? avail * node->shares[static_cast<size_t>(i)] : avail / static_cast<float>(n);
+            float child_end = (i == n - 1) ? x + w : cx + cw;
+            DrawPaneTree(node->children[static_cast<size_t>(i)].get(), cx, y, child_end - cx, h, active_pane_id);
+            cx = child_end + (i < n - 1 ? kPaneGapPx : 0.0f);
         }
     }
 }

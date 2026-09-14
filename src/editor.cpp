@@ -907,6 +907,10 @@ std::unordered_map<std::string, ThemeColor> BuildHighlightGroups(const Palette &
     g["WorkspaceActive"] = p.fg;
     g["WorkspaceActiveBg"] = Mix(p.blue, p.bg, 0.55f);
     g["WorkspaceInactive"] = Mix(p.fg, p.bg, 0.5f);
+    // An inactive workspace whose resident agent is awaiting_input/done
+    // (Editor::WorkspaceNeedsAttention) -- same fill technique as
+    // WorkspaceActiveBg, mixed toward red instead of blue.
+    g["WorkspaceAlertBg"] = Mix(p.red, p.bg, 0.55f);
     g["BorderActive"] = Mix(p.blue, p.fg, 0.3f);
     g["BorderInactive"] = p.border;
     g["CursorLine"] = Lighten(p.bg, 8);
@@ -11869,6 +11873,16 @@ std::string Editor::ResolveBufferPath(const Buffer &buf, const std::string &path
 bool Editor::WorkspaceHasModifiedBuffers(int id) const {
     for (const Buffer &buf : buffers_) {
         if (buf.workspace_id == id && buf.modified && !buf.deleted) return true;
+    }
+    return false;
+}
+
+bool Editor::WorkspaceNeedsAttention(int id) const {
+    for (const ParticipantInfo &p : Participants()) {
+        if (p.kind != ParticipantKind::Agent) continue;
+        if (p.status != "awaiting_input" && p.status != "done") continue;
+        int loc = p.terminal_buffer_id >= 0 ? p.terminal_buffer_id : (p.has_location ? p.buffer_id : -1);
+        if (loc >= 0 && BufferWorkspaceId(loc) == id) return true;
     }
     return false;
 }

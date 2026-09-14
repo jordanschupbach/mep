@@ -5240,6 +5240,12 @@ void Editor::SetImageNav(int buffer_id, int prev_ref, int next_ref) {
     it->second.nav_next_ref = next_ref;
 }
 
+void Editor::SetImageReturn(int buffer_id, int ref) {
+    auto it = images_.find(buffer_id);
+    if (it == images_.end()) return;
+    it->second.return_ref = ref;
+}
+
 void Editor::SetImageTheme(int buffer_id, bool theme_colors) {
     auto it = images_.find(buffer_id);
     if (it == images_.end()) return;
@@ -5524,6 +5530,9 @@ void Editor::HandleImageInput() {
         } else if (cp == 'e') {
             EnterImageEditor();
             return;  // mode_ is no longer Image -- stop draining as this mode
+        } else if (cp == 'I' && sess->return_ref != 0) {
+            CallLuaRef(sess->return_ref);
+            return;  // sess's buffer is no longer shown in this pane
         }
         // Every other printable key is a deliberate no-op -- see
         // Mode::Image's own comment for why (no text to insert/operate on).
@@ -14562,6 +14571,17 @@ bool Editor::DispatchNormalKey(int cp) {
         }
     }
 
+    // Shift+I: a registered buffer-scoped hook (SetBufferOnImageToggle, this
+    // class's own header comment) can claim it with no default behavior to
+    // preserve for that specific buffer -- checked ahead of the switch below
+    // the same way the Enter hook is checked ahead of its own drain loop,
+    // so kBuiltinFileTree's file tree can use it without shadowing the
+    // builtin 'I' (insert at first non-blank) anywhere else.
+    if (c == 'I' && image_toggle_hook_ref_ != 0 && CurPane().buffer_id == image_toggle_hook_buffer_id_ && lua_) {
+        lua_->CallRef(image_toggle_hook_ref_);
+        return true;
+    }
+
     switch (c) {
         case 'i': PushUndo(); EnterInsert(); break;
         case 'a':
@@ -23164,6 +23184,21 @@ void Editor::LoadFile(const std::string &path, bool force_text) {
         status_message_ = "E32: No file name";
         return;
     }
+#if !defined(__EMSCRIPTEN__)
+    // ":e"/"mep.open" on a directory: hand off to whatever's registered via
+    // mep.set_on_directory_open (kBuiltinFileTree's mep.tree_open_in_pane)
+    // instead of falling through to the FindOrCreateBuffer path below, which
+    // would otherwise silently create an empty buffer named after the
+    // directory (std::ifstream can't read one). Native-only for now, same
+    // as Model3D/mov above -- unlike those, a directory isn't bytes that
+    // could be pre-read through the wasm bridge, and nothing yet forwards
+    // "is this path a directory" across it.
+    std::error_code ec;
+    if (std::filesystem::is_directory(path, ec)) {
+        if (directory_open_hook_ref_ != 0 && lua_) lua_->CallRefWithString(directory_open_hook_ref_, path);
+        return;
+    }
+#endif
     if (IsImagePath(path)) {
 #if defined(__EMSCRIPTEN__)
         char *result = mep_js_read_file_binary(path.c_str());

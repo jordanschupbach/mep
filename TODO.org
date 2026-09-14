@@ -28,13 +28,25 @@
   :LOGBOOK:
   CLOCK: [2026-09-14 Mon 10:28]--[2026-09-14 Mon 10:28] =>  0:00
   :END:
-* TODO Filetree image viewer mode
-  Currently, the filetree is a buffer, just like any other. I'd like to open it
-  inside a window pane, whenever I open a directory (i.e. :e ./path/to/directory).
-  When inside it. I'd like an image viewer toggled with shift+i, that shows the
-  first image in the directory, has buttons < and > at the top for going up and
-  down the images list, and I can also go up and down the image list with h and l.
-  Can you implement this?
+* DONE Filetree image viewer mode :ARCHIVE:
+  - `:e`/`mep.open` on a directory now opens the file tree in the current
+    pane (Editor::LoadFile's new directory branch -> mep.set_on_directory_open
+    -> kBuiltinFileTree's mep.tree_open_in_pane, mep.buffer_switch) instead
+    of silently creating an empty buffer; `<leader>ff`/:MepFileTree's own
+    split-left mep.tree_open is unchanged.
+  - Shift+I on the tree buffer toggles an image viewer showing the first
+    image (alphabetically) in the tree's root directory, reusing the
+    existing "<"/">" nav-header and h/l-stepping machinery (ImageSession::
+    nav_prev_ref/nav_next_ref, built for kBuiltinLanguageUiR's Plot pane)
+    rather than new UI; stepping clamps at the first/last image. A new
+    ImageSession::return_ref + mep.image_set_return pairs with a new
+    Editor::SetBufferOnImageToggle/mep.buffer_set_on_image_toggle hook on
+    the tree buffer so Shift+I toggles back to the tree from the image.
+  - Verified end-to-end against a spawned native instance (raw agent-socket
+    RPC + xdotool-focused key injection): directory open, first-image open,
+    h/l clamp at both ends, Shift+I round-trip back to the tree, empty-
+    directory notification, and no regression to plain file opens or the
+    split-left tree toggle.
 
 * DONE ai tabbar notification :ARCHIVE:
   Add a notification to the tabbar workspace tab when finishing tasks or being

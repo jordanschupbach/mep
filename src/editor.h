@@ -1072,6 +1072,14 @@ struct ImageSession {
     // any other *InPlace buffer swap.
     int nav_prev_ref = 0;
     int nav_next_ref = 0;
+    // Lua registry ref (Editor::CallLuaRef), 0 = none: when set, Shift+I
+    // (Editor::HandleImageInput's char-press loop, alongside its 'e' ->
+    // EnterImageEditor case) calls this instead of falling through to
+    // whatever Shift+I would otherwise do for a plain image buffer (nothing,
+    // today). kBuiltinFileTree's image-viewer toggle is the first caller,
+    // pairing with its own buffer-scoped Shift+I hook on the tree buffer
+    // (Editor::SetBufferOnImageToggle) to switch back to the tree pane.
+    int return_ref = 0;
     // Ctrl-R toggle (Editor::HandleImageInput), mirroring PdfSession::
     // theme_colors/HtmlSession::theme_colors' own "recolor to match the
     // editor's color scheme" meaning and key -- DrawPane's image branch
@@ -2903,6 +2911,17 @@ public:
      * @param next_ref Lua registry ref called when ">" is clicked, or 0 for none.
      */
     void SetImageNav(int buffer_id, int prev_ref, int next_ref);
+    // mep.image_set_return(buffer_id, fn): fn() called on Shift+I whenever
+    // `buffer_id` is the active image buffer -- see ImageSession::return_ref's
+    // own comment. kBuiltinFileTree's image-viewer toggle is the first
+    // caller: switches the pane back to the file-tree buffer it was opened
+    // from. Same re-apply-on-every-reopen need as SetImageNav above.
+    /**
+     * @brief Sets an image buffer's Shift+I callback (0 = none).
+     * @param buffer_id The image buffer id to configure.
+     * @param ref Lua registry ref called on Shift+I, or 0 for none.
+     */
+    void SetImageReturn(int buffer_id, int ref);
     // Sets an image buffer's default theme_colors state -- see
     // ImageSession::theme_colors' own comment for why this is opt-in per
     // buffer rather than a global default the way PdfSession/HtmlSession's
@@ -7606,6 +7625,29 @@ public:
         write_hook_ref_ = lua_ref;
     }
 
+    // mep.buffer_set_on_image_toggle(buffer_id, fn): fn() called instead of
+    // Normal mode's builtin 'I' (insert at first non-blank) whenever the
+    // active pane's buffer is `buffer_id` -- lets a Lua-managed buffer claim
+    // Shift+I for its own purpose (kBuiltinFileTree's file tree is the first
+    // caller: toggling into an image-viewer pane for the tree's root
+    // directory) without shadowing 'I' anywhere else. Single-slot, last-
+    // registration-wins, same scope cut as SetBufferOnEnter/SetBufferOnWrite
+    // above.
+    void SetBufferOnImageToggle(int buffer_id, int lua_ref) {
+        image_toggle_hook_buffer_id_ = buffer_id;
+        image_toggle_hook_ref_ = lua_ref;
+    }
+
+    // mep.set_on_directory_open(fn): fn(path) called by LoadFile whenever
+    // the path it was asked to open (":e"/"mep.open", either one -- both
+    // funnel through LoadFile) turns out to be a directory, instead of the
+    // usual "file doesn't exist yet" empty-buffer fallback. Unlike the
+    // buffer-scoped hooks above, this fires before any buffer/pane exists
+    // for the path, so it's a single global slot (same shape as
+    // SetInsertTabHookRef) rather than buffer-scoped -- kBuiltinFileTree's
+    // mep.tree_open_in_pane is the first (and, so far, only) caller.
+    void SetDirectoryOpenHookRef(int lua_ref) { directory_open_hook_ref_ = lua_ref; }
+
     // --- Command-line completion (`:` command bar) -----------------------
     // Same Tab/Ctrl-N/Ctrl-P/Enter/Escape shape as the Insert-mode popup
     // above, reusing PickerItem and (in main.cpp) DrawCompletionPopup, but
@@ -9120,6 +9162,11 @@ private:
     // See SetBufferOnWrite's own comment above.
     int write_hook_buffer_id_ = -1;
     int write_hook_ref_ = 0;
+    // See SetBufferOnImageToggle's own comment above.
+    int image_toggle_hook_buffer_id_ = -1;
+    int image_toggle_hook_ref_ = 0;
+    // See SetDirectoryOpenHookRef's own comment above.
+    int directory_open_hook_ref_ = 0;
     bool completion_open_ = false;
     std::vector<CompletionCandidate> completion_items_;
     int completion_selected_ = 0;

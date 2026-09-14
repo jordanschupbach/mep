@@ -24710,6 +24710,13 @@ void DrawSidebarPaneContent(const Pane &pane, int sidebar_id, float x, float y, 
         const float chip_h = font_size + 4.0f;
         float tx = x + 8.0f;
         const float ty = y + 4.0f;
+        // Clip the tab strip to the pane's own width: unlike the docked path
+        // (DrawSidebarTabStrip), which draws under a scissor rect already
+        // established by DrawSidebars' draw_one for the whole sidebar pane,
+        // this function's own scissor (below) only covers the row list, not
+        // the tab strip -- so without this, tab chips bleed into whatever
+        // pane sits to the right when the sidebar pane is narrow.
+        gfx::BeginScissorMode(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(chip_h) + 4);
         for (size_t i = 0; i < sb->tabs.size(); i++) {
             const std::string &name = sb->tabs[i];
             const float tw = gfx::MeasureTextEx(g_font, name.c_str(), font_size, 0).x;
@@ -24725,6 +24732,7 @@ void DrawSidebarPaneContent(const Pane &pane, int sidebar_id, float x, float y, 
             });
             tx += rect.width + 2.0f;
         }
+        gfx::EndScissorMode();
         content_y += static_cast<float>(line_h);
         content_h -= static_cast<float>(line_h);
     }

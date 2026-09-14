@@ -2659,6 +2659,29 @@ int l_image_set_nav(lua_State *L) {
     return 0;
 }
 
+// mep.image_set_return(buffer_id, fn?): configures an image buffer's
+// Shift+I callback (Editor::SetImageReturn/ImageSession::return_ref) --
+// omit or pass nil to clear it. kBuiltinFileTree's image-viewer toggle is
+// the first caller, pairing this with its own mep.buffer_set_on_image_toggle
+// on the tree buffer so Shift+I switches between the two. Same re-apply-on-
+// every-reopen need as mep.image_set_nav above.
+/**
+ * @brief Implements mep.image_set_return(buffer_id, fn?): sets or clears an image buffer's
+ * Shift+I callback.
+ * @param L Lua state; arg 1 is the image buffer id, optional arg 2 is the callback (nil clears).
+ * @return Number of values pushed (0).
+ */
+int l_image_set_return(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    int ref = 0;
+    if (!lua_isnoneornil(L, 2)) {
+        lua_pushvalue(L, 2);
+        ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    }
+    GetEditor(L)->SetImageReturn(buffer_id, ref);
+    return 0;
+}
+
 // mep.image_set_theme(buffer_id, theme_colors): sets an image buffer's
 // default theme_colors state (Editor::SetImageTheme/ImageSession::
 // theme_colors, DrawPane's image branch, main.cpp) -- Ctrl-R still toggles
@@ -3119,6 +3142,25 @@ int l_buffer_set_on_write(lua_State *L) {
     lua_pushvalue(L, 2);
     int ref = luaL_ref(L, LUA_REGISTRYINDEX);
     GetEditor(L)->SetBufferOnWrite(buffer_id, ref);
+    return 0;
+}
+
+// mep.buffer_set_on_image_toggle(buffer_id, fn): fn() replaces the builtin
+// Shift+I (insert at first non-blank) for `buffer_id` (Editor::
+// SetBufferOnImageToggle's own comment, editor.h) while it's the active
+// pane's buffer. Single-slot, last-registration-wins.
+/**
+ * @brief Implements mep.buffer_set_on_image_toggle(buffer_id, fn): registers a callback that
+ * replaces bare Shift+I's default Normal-mode behavior for a buffer.
+ * @param L Lua state; arg 1 is the buffer id, arg 2 the callback function.
+ * @return Number of values pushed (0).
+ */
+int l_buffer_set_on_image_toggle(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    luaL_checktype(L, 2, LUA_TFUNCTION);
+    lua_pushvalue(L, 2);
+    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    GetEditor(L)->SetBufferOnImageToggle(buffer_id, ref);
     return 0;
 }
 
@@ -3796,6 +3838,23 @@ int l_list_dir(lua_State *L) {
         lua_setfield(L, -2, "mtime");
         lua_rawseti(L, -2, static_cast<int>(i) + 1);
     }
+    return 1;
+}
+
+// mep.is_image_path(path): thin wrapper around the native IsImagePath
+// (image_doc.h/cpp, the extension check Editor::LoadFile's own IsImagePath
+// branch uses) so Lua callers can filter a mep.list_dir listing down to
+// images without re-duplicating the extension list -- kBuiltinFileTree's
+// image-viewer toggle is the first caller.
+/**
+ * @brief Implements mep.is_image_path(path): checks whether a path's extension is a
+ * recognized image format.
+ * @param L Lua state; arg 1 is the path (only its extension is examined).
+ * @return Number of values pushed (1: true/false).
+ */
+int l_is_image_path(lua_State *L) {
+    const char *path = luaL_checkstring(L, 1);
+    lua_pushboolean(L, IsImagePath(path));
     return 1;
 }
 
@@ -6789,6 +6848,18 @@ int l_set_insert_tab_hook(lua_State *L) {
     return 0;
 }
 
+// mep.set_on_directory_open(fn): fn(path). Editor::LoadFile calls this
+// whenever ":e"/"mep.open" is asked to open a path that's a directory --
+// see SetDirectoryOpenHookRef's own comment (editor.h). kBuiltinFileTree's
+// mep.tree_open_in_pane is the intended (and, so far, only) registrant.
+int l_set_on_directory_open(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TFUNCTION);
+    lua_pushvalue(L, 1);
+    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    GetEditor(L)->SetDirectoryOpenHookRef(ref);
+    return 0;
+}
+
 int l_filename(lua_State *L) {
     lua_pushstring(L, GetEditor(L)->CurrentBuffer().filename.c_str());
     return 1;
@@ -8197,6 +8268,7 @@ const luaL_Reg kMepFuncs[] = {
     {"buffer_new", l_buffer_new},
     {"buffer_set_on_enter", l_buffer_set_on_enter},
     {"buffer_set_on_write", l_buffer_set_on_write},
+    {"buffer_set_on_image_toggle", l_buffer_set_on_image_toggle},
     {"buffer_set_filename", l_buffer_set_filename},
     {"buffer_set_hide_line_numbers", l_buffer_set_hide_line_numbers},
     {"buffer_set_wrap", l_buffer_set_wrap},
@@ -8256,6 +8328,7 @@ const luaL_Reg kMepFuncs[] = {
     {"font_size", l_font_size},
     {"image_size", l_image_size},
     {"image_set_nav", l_image_set_nav},
+    {"image_set_return", l_image_set_return},
     {"image_set_theme", l_image_set_theme},
     {"sidebar_create", l_sidebar_create},
     {"sidebar_set_sections", l_sidebar_set_sections},
@@ -8318,6 +8391,7 @@ const luaL_Reg kMepFuncs[] = {
     {"buffer_save_epoch", l_buffer_save_epoch},
     {"now", l_now},
     {"list_dir", l_list_dir},
+    {"is_image_path", l_is_image_path},
     {"fs_mkdir", l_fs_mkdir},
     {"fs_create_file", l_fs_create_file},
     {"fs_rename", l_fs_rename},
@@ -8374,6 +8448,7 @@ const luaL_Reg kMepFuncs[] = {
     {"set_completion_accept_hook", l_set_completion_accept_hook},
     {"set_completion_resolve_hook", l_set_completion_resolve_hook},
     {"set_insert_tab_hook", l_set_insert_tab_hook},
+    {"set_on_directory_open", l_set_on_directory_open},
     {"lsp_start", l_lsp_start},
     {"lsp_request", l_lsp_request},
     {"lsp_symbols_flatten", l_lsp_symbols_flatten},

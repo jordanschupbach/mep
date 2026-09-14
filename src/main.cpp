@@ -2980,9 +2980,60 @@ const char *kBuiltinFileTree =
     "local mep_tree_edit_buf = nil\n"
     "local mep_tree_edit_snapshot = nil\n"
     "local mep_tree_edit_ns = nil\n"
+    // Shift+I's image viewer (see mep_tree_toggle_image_viewer below):
+    // `mep_tree_images` is the sorted list of the tree root directory's
+    // image files, `mep_tree_image_index` the 1-based position within it
+    // currently shown -- both nil/0 until the viewer's first been opened.
+    // `mep_tree_image_step` is forward-declared here (assigned further
+    // down) purely so mep_tree_image_apply_nav, defined right below it,
+    // can already close over it as an upvalue.
+    "local mep_tree_images = nil\n"
+    "local mep_tree_image_index = 0\n"
+    "local mep_tree_image_step\n"
     "local function mep_tree_join(dir, name)\n"
     "  if dir:sub(-1) == '/' then return dir .. name end\n"
     "  return dir .. '/' .. name\n"
+    "end\n"
+    // Re-applies the "<"/">" nav header and Shift+I-back callback to
+    // whatever image buffer mep.open just pointed the pane at -- needed
+    // every time (mep_tree_toggle_image_viewer's first open, and every
+    // mep_tree_image_step) since a different path is a different buffer id
+    // and a fresh ImageSession starts with neither set (mirrors
+    // kBuiltinLanguageUiR's own merged Plot pane, main.cpp).
+    "local function mep_tree_image_apply_nav()\n"
+    "  local buf = mep.current_buffer()\n"
+    "  mep.image_set_nav(buf, function() mep_tree_image_step(-1) end, function() mep_tree_image_step(1) end)\n"
+    "  mep.image_set_return(buf, function() mep.buffer_switch(mep_tree_edit_buf) end)\n"
+    "end\n"
+    // Steps to the previous/next image in mep_tree_images, clamping at
+    // either end (a no-op past the first/last image, not a wraparound).
+    "mep_tree_image_step = function(delta)\n"
+    "  local i = mep_tree_image_index + delta\n"
+    "  if not mep_tree_images or i < 1 or i > #mep_tree_images then return end\n"
+    "  mep_tree_image_index = i\n"
+    "  mep.open(mep_tree_images[i])\n"
+    "  mep_tree_image_apply_nav()\n"
+    "end\n"
+    // mep.buffer_set_on_image_toggle's callback for the tree buffer (wired
+    // up in mep.tree_refresh below): opens the first image (alphabetically
+    // -- mep.list_dir already sorts that way) in the tree's root directory,
+    // scoped to that directory only (not the whole tree), matching "shows
+    // the first image in the directory" literally.
+    "local function mep_tree_toggle_image_viewer()\n"
+    "  local images = {}\n"
+    "  for _, e in ipairs(mep.list_dir(mep_tree_root)) do\n"
+    "    if not e.is_dir and mep.is_image_path(e.name) then\n"
+    "      images[#images + 1] = mep_tree_join(mep_tree_root, e.name)\n"
+    "    end\n"
+    "  end\n"
+    "  if #images == 0 then\n"
+    "    mep.notify('No images in ' .. mep_tree_root, 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  mep_tree_images = images\n"
+    "  mep_tree_image_index = 1\n"
+    "  mep.open(images[1])\n"
+    "  mep_tree_image_apply_nav()\n"
     "end\n"
     "local function mep_tree_refresh_ignored()\n"
     "  mep_tree_ignored = {}\n"
@@ -3262,6 +3313,7 @@ const char *kBuiltinFileTree =
     "    mep_tree_edit_buf = mep.buffer_new()\n"
     "    mep.buffer_set_on_enter(mep_tree_edit_buf, mep_tree_edit_on_enter)\n"
     "    mep.buffer_set_on_write(mep_tree_edit_buf, mep_tree_edit_on_write)\n"
+    "    mep.buffer_set_on_image_toggle(mep_tree_edit_buf, mep_tree_toggle_image_viewer)\n"
     // A row's line number isn't a meaningful position here (unlike a real
     // file, nothing refers to "line 7 of the tree") -- just visual noise
     // that also eats into the pane's already-narrow width.
@@ -3307,6 +3359,21 @@ const char *kBuiltinFileTree =
     "  end\n"
     "  mep_tree_refresh_ignored()\n"
     "end\n"
+    // ":e"/"mep.open" on a directory (Editor::LoadFile's directory branch,
+    // mep.set_on_directory_open below): unlike mep.tree_open above, this
+    // opens the tree in the CURRENT pane -- mep.buffer_switch, the same
+    // primitive every other LoadFile branch uses to point the active pane
+    // at a buffer -- instead of splitting a new one off to the left, since
+    // the whole point of ":e some/dir" is to show that directory in the
+    // pane you asked for it in.
+    "function mep.tree_open_in_pane(dir)\n"
+    "  mep_tree_root = dir or '.'\n"
+    "  mep_tree_expanded[mep_tree_root] = true\n"
+    "  mep.tree_refresh()\n"
+    "  mep.buffer_switch(mep_tree_edit_buf)\n"
+    "  mep_tree_refresh_ignored()\n"
+    "end\n"
+    "mep.set_on_directory_open(mep.tree_open_in_pane)\n"
     // No longer literally closes the tree pane on a second press (a real
     // pane, unlike the old docked sidebar, can't be hidden without
     // disturbing the rest of the split layout) -- it just (re)opens or

@@ -105,6 +105,17 @@ Can you implement this?
   this to be triggered in both, whether starting in the sidebar or in the
   TODO.org file.
 
+* TODO Fix cursor bug
+  There are certain times that an action will occur twice. I've noticed
+  sometimes in normal files the cursor will move two spaces when pressing j or
+  k. Other times, I'll see this behavior in the terminal, where deleting a
+  character will delete two. The behavior does seem inconsistent though. Can you
+  investigate and fix?
+
+* TODO Fix git tab rendering bug
+  The tabs in the git sidebar (the new one) bleed over into the neighboring pane
+  when the sidebar has a narrow enough width. This seems like a bug. Can you
+  investigate and fix?
 
 * DONE Add a direnv widget to the bottom bar :ARCHIVE:
   I'd like a direnv widget in the bottom bar that shows the current direnv

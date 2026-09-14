@@ -12874,6 +12874,20 @@ const char *kBuiltinActivityBar =
     "mep.activity_todo_file = nil\n"
     "local mep_activity_todo_sidebar_id = nil\n"
     "local mep_activity_todo_rendered = nil\n"
+    // Todo <-> agent-workspace assignments made by 'L'/'gL'
+    // (mep.activity_todo_start_agent, below), keyed by the todo's own
+    // headline title (matching OrgTodoItem.text / ParseOrgHeadline's
+    // title -- the one identifier the sidebar row, a gL press inside
+    // TODO.org, and a reorder or edit-in-float of the same headline all
+    // agree on). In-memory/session-only, deliberately mirroring
+    // kBuiltinAiTerminal's own mep.ai_terminals: whether the assigned
+    // workspace's agent is still actually running is never trusted from
+    // this table alone, only ever re-derived live (see
+    // mep_todo_workspace_has_live_agent) the same way the AI Agents
+    // sidebar re-derives its own rows every render, so a stale entry
+    // (the agent finished, the workspace was deleted) just stops
+    // showing a robot rather than needing to be cleaned up here.
+    "mep.activity_todo_agents = mep.activity_todo_agents or {}\n"
     "local function mep_activity_todo_path() return mep.activity_todo_file or (mep.getcwd() .. '/TODO.org') end\n"
     "local function mep_activity_todo_load() return mep.activity_todo_load(mep_activity_todo_path()) end\n"
     "local function mep_activity_todo_save(items) mep.activity_todo_save(mep_activity_todo_path(), items) end\n"
@@ -12887,12 +12901,54 @@ const char *kBuiltinActivityBar =
     "  end\n"
     "  return items[index]\n"
     "end\n"
+    // Is there a currently-connected AI agent (or a still-booting
+    // terminal mep.ai_terminal_open started) sitting in the named
+    // workspace? Same "workspace <- terminal buffer <- participant/
+    // ai_terminals" derivation kBuiltinAiTerminal's own AI Agents sidebar
+    // (mep_ai_agents_collect) uses, simplified down to the one boolean
+    // the Todo panel's robot marker needs -- deliberately re-checked live
+    // rather than cached, so an agent that finished or a workspace that
+    // was deleted just stops showing a robot on its own. Defined ahead of
+    // mep_activity_todo_key (right below) so that key function -- and so
+    // every existing refresh trigger that compares it (on_buffer_changed/
+    // on_buffer_saved/on_workspace_changed, plus the periodic poll further
+    // down) -- can fold each row's live-agent state in too, the same way
+    // it already folds in done/level/text/clock: without that, a robot
+    // appearing or disappearing wouldn't itself be recognized as "the
+    // panel is now stale," and would sit un-refreshed until some other,
+    // unrelated change happened to trigger a re-render.
+    "local function mep_todo_workspace_id_by_name(name)\n"
+    "  for _, ws in ipairs(mep.workspace_list()) do if ws.name == name then return ws.id end end\n"
+    "  return nil\n"
+    "end\n"
+    "local function mep_todo_workspace_has_live_agent(name)\n"
+    "  local ws_id = name and mep_todo_workspace_id_by_name(name)\n"
+    "  if not ws_id then return false end\n"
+    "  local function alive(buf)\n"
+    "    if not (buf and buf >= 0 and mep.is_terminal_buffer(buf)) then return false end\n"
+    "    if mep.buffer_workspace(buf) ~= ws_id then return false end\n"
+    "    local info = mep.terminal_info(buf)\n"
+    "    return not (info and info.exited)\n"
+    "  end\n"
+    "  for _, p in ipairs(mep.participants()) do\n"
+    "    if p.kind == 'agent' and alive(p.terminal_buffer_id) then return true end\n"
+    "  end\n"
+    "  for buf, _ in pairs(mep.ai_terminals) do\n"
+    "    if alive(buf) then return true end\n"
+    "  end\n"
+    "  return false\n"
+    "end\n"
     // The running clock is part of what's on screen (the [>] row), so a
     // clock started/stopped from inside TODO.org (:MepOrgClockIn/Out) is
-    // a change worth re-rendering for too.
+    // a change worth re-rendering for too -- same reasoning now covers
+    // each row's live-agent state (mep_todo_workspace_has_live_agent).
     "local function mep_activity_todo_key(items, clock)\n"
     "  local parts = {}\n"
-    "  for _, it in ipairs(items) do parts[#parts + 1] = (it.done and '1' or '0') .. (it.level or 1) .. (it.line or '') .. it.text end\n"
+    "  for _, it in ipairs(items) do\n"
+    "    local agent = mep.activity_todo_agents[it.text]\n"
+    "    local agent_live = agent ~= nil and mep_todo_workspace_has_live_agent(agent.workspace)\n"
+    "    parts[#parts + 1] = (it.done and '1' or '0') .. (it.level or 1) .. (it.line or '') .. (agent_live and 'R' or '') .. it.text\n"
+    "  end\n"
     "  if clock then parts[#parts + 1] = 'clock' .. clock.line .. clock.start_ts end\n"
     "  return table.concat(parts, '\\n')\n"
     "end\n"
@@ -12940,11 +12996,15 @@ const char *kBuiltinActivityBar =
     "  mep.sidebar_preview_code(sub, 'org', path .. ':' .. it.line, 1)\n"
     "end\n"
     // Rows: "[ ] title" / "[x] title", or "[>] title" (Add-tinted) for the
-    // one whose clock is running. Enter (and a click) on a row starts or
-    // stops its clock -- see mep.activity_todo_toggle_clock; done/edit/
-    // delete/add are the sidebar's own keys (mep.activity_todo_on_key).
-    // Split from mep.activity_todo_panel below (which additionally docks
-    // it) so that toggling a clock, adding/deleting a row, or the buffer-
+    // one whose clock is running -- or, taking priority over both, a
+    // small robot glyph (SidebarWidget.robot_icon_col, DrawRobotIcon)
+    // where the mark would be for a todo with an agent actively working
+    // on it (mep.activity_todo_start_agent's 'L'/'gL'). Enter (and a
+    // click) on a row starts or stops its clock -- see
+    // mep.activity_todo_toggle_clock; done/edit/delete/add are the
+    // sidebar's own keys (mep.activity_todo_on_key). Split from
+    // mep.activity_todo_panel below (which additionally docks it) so
+    // that toggling a clock, adding/deleting a row, or the buffer-
     // saved poll loop can refresh content without re-docking the sidebar
     // -- mep.sidebar_set_sections alone is enough to update whichever view
     // (docked or paneable, mep.activity_todo_open_pane) is currently
@@ -12958,14 +13018,22 @@ const char *kBuiltinActivityBar =
     "  for i, it in ipairs(items) do\n"
     "    local indent = string.rep('  ', (it.level or 1) - 1)\n"
     "    local running = clock ~= nil and it.line ~= nil and clock.line == it.line\n"
-    "    local mark = running and '[>] ' or (it.done and '[x] ' or '[ ] ')\n"
+    "    local agent = mep.activity_todo_agents[it.text]\n"
+    "    local agent_live = agent ~= nil and mep_todo_workspace_has_live_agent(agent.workspace)\n"
+    "    local mark = agent_live and '    ' or running and '[>] ' or (it.done and '[x] ' or '[ ] ')\n"
     // wrap/wrap_indent (SidebarWidget's own comment, editor.h): a long
     // task title wraps onto continuation rows indented to line up right
     // after the checkbox mark instead of restarting at column 0 --
     // wrap_indent is exactly the width of the indent+mark prefix just
     // built, so FlattenSidebar knows where the "hanging indent" prefix
-    // ends and the wrappable title text begins.\n"
-    "    widgets[#widgets + 1] = {id = tostring(i), text = indent .. mark .. it.text, hl = running and 'Add' or nil,\n"
+    // ends and the wrappable title text begins. robot_icon_col points at
+    // the mark's own first character (indent's width in), the one spot
+    // DrawSidebars overlays the robot glyph over -- always false/nil
+    // unless agent_live, so the char at that column stays the blank mark
+    // built above rather than a literal "[" the glyph would draw over.\n"
+    "    widgets[#widgets + 1] = {id = tostring(i), text = indent .. mark .. it.text,\n"
+    "      hl = agent_live and 'Cyan' or running and 'Add' or nil,\n"
+    "      robot_icon_col = agent_live and #indent or nil,\n"
     "      wrap = true, wrap_indent = #indent + #mark,\n"
     "      on_click = function() mep.activity_todo_toggle_clock(it, i) end}\n"
     "  end\n"
@@ -13122,13 +13190,66 @@ const char *kBuiltinActivityBar =
     "  mep.activity_todo_panel()\n"
     "  if id and new_row and mep.sidebar_is_focused(id) then mep.sidebar_focus_row(id, new_row) end\n"
     "end\n"
+    "local function mep_todo_slugify(text)\n"
+    "  local slug = text:lower():gsub('[^%w]+', '-'):gsub('^%-+', ''):gsub('%-+$', '')\n"
+    "  if slug == '' then slug = 'todo' end\n"
+    "  return slug:sub(1, 40)\n"
+    "end\n"
+    // 'L' (sidebar, below) / 'gL' (Normal mode on the headline under the
+    // cursor -- registered near the end of this same chunk) both land
+    // here: prompt for a workspace/branch name, create it
+    // (mep.workspace_new -- a real git worktree, WORKSPACES_PLAN.md), and
+    // once mep.on_workspace_changed reports it's actually the current
+    // workspace (creation is asynchronous -- a `git worktree add` job),
+    // open an AI agent terminal inside it (mep.ai_terminal_open, so it's
+    // scoped to the new worktree's directory) seeded with the todo's own
+    // text as the first line typed into it. That line is left unsent
+    // (no trailing \\r) rather than auto-submitted -- claude's TUI also
+    // needs a moment after launch before it's reading stdin at all, which
+    // is what the second timer below is really waiting out, not just
+    // politeness -- so the human reviews/edits it and presses Enter
+    // themselves, the same "you're still driving this terminal" feel
+    // every other mep.ai_terminal_open call site has.
+    // mep.activity_todo_agents[text] is what the Todo panel's robot
+    // marker (mep_todo_workspace_has_live_agent, mep_activity_todo_render
+    // above) keys off of; it's set optimistically before the workspace
+    // even finishes creating, but the marker itself only actually shows
+    // once mep_todo_workspace_has_live_agent finds a real terminal there
+    // -- right after mep.ai_terminal_open below, in practice.
+    "function mep.activity_todo_start_agent(text)\n"
+    "  mep.ui_input('Workspace name for agent on: ' .. text, mep_todo_slugify(text), function(name)\n"
+    "    if not name or name == '' then return end\n"
+    "    mep.activity_todo_agents[text] = {workspace = name}\n"
+    "    mep_activity_todo_rerender()\n"
+    "    mep.workspace_new(name)\n"
+    "    local started = false\n"
+    "    mep.on_frame(function()\n"
+    "      if started then return end\n"
+    "      local ws = mep.workspace_current()\n"
+    "      if not ws or ws.name ~= name then return end\n"
+    "      started = true\n"
+    "      mep.ai_terminal_open()\n"
+    "      local buf = mep.current_buffer()\n"
+    "      mep_activity_todo_rerender()\n"
+    "      local wrote, wait_start = false, mep.now()\n"
+    "      mep.on_frame(function()\n"
+    "        if wrote then return end\n"
+    "        if not mep.is_terminal_buffer(buf) then wrote = true return end\n"
+    "        if mep.now() - wait_start < 1.2 then return end\n"
+    "        wrote = true\n"
+    "        mep.terminal_write(buf, text)\n"
+    "      end)\n"
+    "    end)\n"
+    "  end)\n"
+    "end\n"
     // Sidebar keys (mep.sidebar_set_on_key; j/k/gg/G/q and Enter are
     // the sidebar's own). Enter = start/stop the clock, a = add, e = edit,
-    // d = done, x = delete, A = archive, o = open TODO.org, R = re-read,
-    // Ctrl-j/Ctrl-k = move down/up, ? = this list.
+    // d = done, x = delete, A = archive, L = start an AI agent on it in a
+    // new workspace, o = open TODO.org, R = re-read, Ctrl-j/Ctrl-k = move
+    // down/up, ? = this list.
     "function mep.activity_todo_on_key(k)\n"
     "  if k == '?' then\n"
-    "    mep.notify('Todo: Enter=start/stop clock  a=add  e=edit in float (Esc closes)  d=done  x=delete  A=archive  o=open file  R=refresh  C-j/C-k=move down/up  mod1+m=popout')\n"
+    "    mep.notify('Todo: Enter=start/stop clock  a=add  e=edit in float (Esc closes)  d=done  x=delete  A=archive  L=start AI agent  o=open file  R=refresh  C-j/C-k=move down/up  mod1+m=popout')\n"
     "    return\n"
     "  elseif k == 'a' then mep.activity_todo_add() return\n"
     "  elseif k == 'o' then mep.activity_todo_open() return\n"
@@ -13140,6 +13261,7 @@ const char *kBuiltinActivityBar =
     "  elseif k == 'd' then mep.activity_todo_mark_done(it, i)\n"
     "  elseif k == 'x' then mep.activity_todo_delete(it, i)\n"
     "  elseif k == 'A' then mep.activity_todo_archive_item(it, i)\n"
+    "  elseif k == 'L' then mep.activity_todo_start_agent(it.text)\n"
     "  elseif k == 'C-j' then mep.activity_todo_reorder(it, i, 1)\n"
     "  elseif k == 'C-k' then mep.activity_todo_reorder(it, i, -1)\n"
     "  end\n"
@@ -13190,6 +13312,28 @@ const char *kBuiltinActivityBar =
     "mep.command('MepActivityTodoOpen', mep.activity_todo_open)\n"
     "mep.command('MepActivityTodoAdd', mep.activity_todo_add)\n"
     "mep.command('MepActivityTodoClearDone', mep.activity_todo_clear_done)\n"
+    // 'gL': the Todo sidebar's own 'L' (mep.activity_todo_start_agent,
+    // above), but from Normal mode inside a .org buffer, on whichever
+    // TODO/DONE headline is at or above the cursor -- mep_org_current_
+    // headline_row/mep_org_parse_headline are the same bare-global org
+    // helpers kBuiltinOrg's other headline-scoped commands use (see e.g.
+    // mep.org_clock_effort). Registered here rather than in kBuiltinOrg
+    // itself since it's really just an alternate entry point into this
+    // file's own start_agent, not a general org feature -- guarded by
+    // filetype the same way every other org-only Normal-mode binding is
+    // (mep_lsp_filetype(mep.filename()) ~= 'org' short-circuits it
+    // outside a .org buffer, same pattern as e.g. main.cpp:11587).
+    "mep.map_g('L', function()\n"
+    "  if mep_lsp_filetype(mep.filename()) ~= 'org' then return end\n"
+    "  local row = mep_org_current_headline_row()\n"
+    "  if not row then mep.notify('No TODO headline at cursor', 'warn') return end\n"
+    "  local h = mep_org_parse_headline(mep.get_line(row))\n"
+    // mep_org_parse_headline's table has no has_todo boolean (see
+    // PushOrgHeadlineParse, lua_env.cpp) -- absence is just h.todo == nil,
+    // the same convention its priority/tags fields use.
+    "  if not h or not h.todo then mep.notify('Not a TODO headline', 'warn') return end\n"
+    "  mep.activity_todo_start_agent(h.title)\n"
+    "end)\n"
     // Tests panel: a configured command, else auto-detected from
     // project marker files (CMakeLists.txt -> ctest, package.json ->
     // npm test). Failure lines get a click handler; since sidebar
@@ -13289,6 +13433,47 @@ const char *kBuiltinActivityBar =
     "  mep.right_sidebar_note_pane_buf(mep_activity_todo_pane_buf)\n"
     "  mep.pane_prev_buffer()\n"
     "  mep.pane_close_buffer()\n"
+    "end\n"
+    // Live-agent status (mep_todo_workspace_has_live_agent) can change
+    // with nothing else about TODO.org itself changing -- an agent
+    // connects, finishes, or its terminal exits -- so, unlike every other
+    // refresh trigger above (buffer changed/saved, workspace changed),
+    // there's no edit/save/switch event to hang a refresh off of. Same
+    // "poll while the panel's actually visible" idiom as kBuiltinAiTerminal's
+    // own AI Agents sidebar (twice a second while it's open); the panel
+    // being "visible" here covers the docked view (mep.sidebar_is_open)
+    // and the paneable one (mep_activity_todo_pane_buf is the focused
+    // pane's buffer) -- not merely "exists somewhere in a background tab,"
+    // same scope cut the AI Agents sidebar's own identical poll already
+    // makes.
+    //
+    // Deliberately NOT mep_activity_todo_refresh() (used by the
+    // buffer/workspace hooks above): that helper's own visibility check
+    // only ever recognizes the docked view (mep.sidebar_is_open), so it
+    // would silently no-op here whenever only the paneable view is open --
+    // and even made visibility-aware, its refresh action is
+    // mep.activity_todo_panel(), which docks the sidebar (mep.sidebar_
+    // open) as a side effect, popping a second, redundant docked copy
+    // open right next to an already-open paneable one. mep_activity_todo_
+    // render (below, this same shape as mep.activity_todo_reorder/every
+    // other in-place-edit action's own mep_activity_todo_rerender) updates
+    // whichever view is actually showing via mep.sidebar_set_sections
+    // alone, with no docking side effect either way -- the key compare
+    // below is what keeps a quiet panel down to one cheap string comparison
+    // per tick rather than a real re-render.
+    "do\n"
+    "  local last_poll = 0\n"
+    "  mep.on_frame(function()\n"
+    "    local visible = (mep_activity_todo_sidebar_id and mep.sidebar_is_open(mep_activity_todo_sidebar_id))\n"
+    "      or (mep_activity_todo_pane_buf and mep.current_buffer() == mep_activity_todo_pane_buf)\n"
+    "    if not visible then return end\n"
+    "    local now = mep.now()\n"
+    "    if now - last_poll < 0.5 then return end\n"
+    "    last_poll = now\n"
+    "    if mep_activity_todo_key(mep_activity_todo_load(), mep_activity_todo_clock()) == mep_activity_todo_rendered then return end\n"
+    "    mep_activity_todo_render()\n"
+    "    mep.activity_todo_sync_active()\n"
+    "  end)\n"
     "end\n"
     "local mep_activity_test_pane_buf = nil\n"
     "function mep.activity_test_open_pane()\n"
@@ -16415,6 +16600,11 @@ float DrawSidebarTabStrip(const SidebarInstance &sb, float x, float y, float fon
     return x;
 }
 
+// Forward declaration: defined much further down this file (its own
+// comment there explains why it's hand-drawn rather than a font glyph),
+// but DrawSidebars' draw_one needs it to render SidebarLine::robot_icon_col.
+void DrawRobotIcon(gfx::Vector2 pos, float size, gfx::Color color);
+
 void DrawSidebars() {
     int screen_w = gfx::GetScreenWidth();
     int screen_h = gfx::GetScreenHeight();
@@ -16549,6 +16739,16 @@ void DrawSidebars() {
             if (lines[i].kind == SidebarLine::Kind::Widget) {
                 const SidebarSection &wsec = sb.sections[static_cast<size_t>(lines[i].section_index)];
                 const SidebarWidget &widget = wsec.widgets[static_cast<size_t>(lines[i].widget_index)];
+                // Leading vector icon overlay (SidebarLine::robot_icon_col,
+                // e.g. the Todo panel's "an agent is working on this"
+                // marker): drawn on top of the (blank) character cell
+                // DrawUiText just painted at that column, in the row's own
+                // color so it reads consistently with a plain text mark.
+                if (lines[i].robot_icon_col >= 0) {
+                    float icon_x = static_cast<float>(px + 8) + static_cast<float>(lines[i].robot_icon_col) * g_char_width;
+                    float icon_size = static_cast<float>(line_h) * 0.75f;
+                    DrawRobotIcon(gfx::Vector2{icon_x, ly + (static_cast<float>(line_h) - icon_size) / 2.0f}, icon_size, color);
+                }
                 if (!widget.trailing_icon.empty()) {
                     float icon_w = MeasureUiText(widget.trailing_icon, font_size);
                     gfx::Rectangle icon_rect{static_cast<float>(px) + row_w - icon_w, ly - 1, icon_w, static_cast<float>(line_h)};
@@ -24473,6 +24673,16 @@ void DrawSidebarPaneContent(const Pane &pane, int sidebar_id, float x, float y, 
         }
         gfx::Color color = lines[i].hl.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(lines[i].hl);
         DrawUiText(lines[i].text, gfx::Vector2{x + 8, ly}, font_size, color);
+        // Leading vector icon overlay -- see DrawSidebars' draw_one's own
+        // identical block (SidebarLine::robot_icon_col's comment, editor.h)
+        // for why this can't just be part of `text`; kept in sync with that
+        // one by hand since this is a separate draw path (this function's
+        // own top comment), not a shared row-drawing helper.
+        if (lines[i].robot_icon_col >= 0) {
+            float icon_x = x + 8 + static_cast<float>(lines[i].robot_icon_col) * g_char_width;
+            float icon_size = static_cast<float>(line_h) * 0.75f;
+            DrawRobotIcon(gfx::Vector2{icon_x, ly + (static_cast<float>(line_h) - icon_size) / 2.0f}, icon_size, color);
+        }
         int line_index = static_cast<int>(i);
         RegisterClickRegion(gfx::Rectangle{x, ly - 1, w, static_cast<float>(line_h)}, [pane_id, sidebar_id, line_index] {
             g_editor.FocusPaneById(pane_id);

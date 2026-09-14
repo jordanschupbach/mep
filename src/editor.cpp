@@ -16776,8 +16776,22 @@ std::string Editor::SidebarCursorWidgetId(int id) const {
     const SidebarInstance *sb = FindSidebar(id);
     if (!sb) return "";
     std::vector<SidebarLine> lines = FlattenSidebar(id);
-    if (sidebar_cursor_ < 0 || sidebar_cursor_ >= static_cast<int>(lines.size())) return "";
-    const SidebarLine &line = lines[static_cast<size_t>(sidebar_cursor_)];
+    // Mode-aware: a pane-hosted view of this same sidebar (Mode::SidebarPane,
+    // mep.sidebar_open_pane -- kBuiltinActivityBar's own mep.activity_todo_
+    // open_pane, e.g.) keeps its own cursor (sidebar_pane_cursor_) entirely
+    // separate from the docked one (sidebar_cursor_, HandleSidebarInput);
+    // falling back to sidebar_cursor_ unconditionally here (as before this
+    // mode check existed) meant every on_key_ref action that looks up "the
+    // widget under the cursor" via mep.sidebar_cursor_widget_id (e.g.
+    // mep_activity_todo_current, used by 'e'/'d'/'x'/'A'/'L'/reorder) would
+    // silently act on whatever stale row the docked cursor last pointed to
+    // instead of the row actually highlighted in the pane -- mouse clicks
+    // there were never affected (ActivateSidebarLine's on_click_ref already
+    // captures its own item directly), only keyboard actions were.
+    int cursor = sidebar_cursor_;
+    if (mode_ == Mode::SidebarPane && SidebarIdForPaneBuffer(CurPane().buffer_id) == id) cursor = sidebar_pane_cursor_;
+    if (cursor < 0 || cursor >= static_cast<int>(lines.size())) return "";
+    const SidebarLine &line = lines[static_cast<size_t>(cursor)];
     if (line.kind != SidebarLine::Kind::Widget) return "";
     return sb->sections[static_cast<size_t>(line.section_index)].widgets[static_cast<size_t>(line.widget_index)].id;
 }
@@ -17115,6 +17129,7 @@ std::vector<SidebarLine> Editor::FlattenSidebar(int id) const {
                 line.text = icon_prefix + w.text;
                 line.hl = w.hl;
                 line.current = w.current;
+                if (w.robot_icon_col >= 0) line.robot_icon_col = static_cast<int>(icon_prefix.size()) + w.robot_icon_col;
                 out.push_back(line);
                 continue;
             }
@@ -17140,6 +17155,7 @@ std::vector<SidebarLine> Editor::FlattenSidebar(int id) const {
                 line.text = icon_prefix + (k == 0 ? prefix : std::string(prefix.size(), ' ')) + wrapped[k];
                 line.hl = w.hl;
                 line.current = w.current;
+                if (k == 0 && w.robot_icon_col >= 0) line.robot_icon_col = static_cast<int>(icon_prefix.size()) + w.robot_icon_col;
                 out.push_back(line);
             }
         }

@@ -46,13 +46,18 @@ Can you implement this?
 * TODO Fix agents to be local to a mep instance. 
 
   Currently, it seems like while working on MEP, I can't have agents running
-  because it might need to close down MEP (and hence the agents that are running)
-  during the testing process. Instead, I'd like it to reliably be able to spawn
-  new instances of MEP and have instructions to not close the containing MEP
-  instance. I think this might require allowing multiple mcp servers running and
-  tying them to a mep instance and also modifying the agent terminal instructions
-  to be informed of which MEP instance it is running from and to be sure not to close
-  it if working on MEP. Can you implement these?
+  because it might need to close down MEP (and hence the agents that are
+  running) during the testing process. Instead, I'd like it to reliably be able
+  to spawn new instances of MEP and have instructions to not close the
+  containing MEP instance. I think this might require allowing multiple mcp
+  servers running and tying them to a mep instance and also modifying the agent
+  terminal instructions to be informed of which MEP instance it is running from
+  and to be sure not to close it if working on MEP. I'd also like ai agents to
+  be sure to only use the MEP api when interacting with any MEP instance and
+  not the x11 server, unless specifically working on testing mouse/keyboard
+  input. Can you implement these? This way, I can have multiple agents running
+  and working on MEP at the same time, and they won't interfere with each
+  other.
 
 * TODO Add a start agent binding to the todo sidebar
 
@@ -63,7 +68,6 @@ Can you implement this?
   or an x in the todo list, can you place a robot icon indicating that an agent is currently
   working on this todo? Can you implement this? I'd like this same behavior to work in a TODO.org file
   with the binding 'gL' in normal mode (i.e. on the current todod where the cursor is). 
-
 * DONE Add a direnv widget to the bottom bar :ARCHIVE:
   I'd like a direnv widget in the bottom bar that shows the current direnv
   status (active/inactive) and allows me to toggle it on/off with a click.

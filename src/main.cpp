@@ -28455,6 +28455,7 @@ void DrawTabBar(int y) {
         std::string suffix;  // "*" modified buffers, "+" git dirty, "..." creating
         bool active = false;
         bool creating = false;
+        bool needs_attention = false;
         std::string tip;
     };
     std::vector<WsLabel> labels;
@@ -28465,6 +28466,7 @@ void DrawTabBar(int y) {
         l.name = ws.name;
         l.active = i == g_editor.ActiveWorkspaceIndex();
         l.creating = ws.creating;
+        l.needs_attention = !l.active && g_editor.WorkspaceNeedsAttention(ws.id);
         if (ws.creating) {
             l.suffix = "...";
         } else {
@@ -28474,6 +28476,7 @@ void DrawTabBar(int y) {
         l.tip = ws.root;
         if (!ws.branch.empty()) l.tip += "  @ " + ws.branch;
         if (ws.creating) l.tip += "  (creating worktree...)";
+        if (l.needs_attention) l.tip += "  -- agent needs you";
         labels.push_back(std::move(l));
     }
     auto full_text = [](const WsLabel &l) { return " [" + l.name + l.suffix + "] "; };
@@ -28489,16 +28492,22 @@ void DrawTabBar(int y) {
         if (total > avail) mode = 2;
     }
     int hidden = 0;
+    bool hidden_needs_attention = false;
     for (const WsLabel &l : labels) {
         if (mode == 2 && !l.active) {
             hidden++;
+            hidden_needs_attention = hidden_needs_attention || l.needs_attention;
             continue;
         }
         const std::string text = (mode == 0 || l.active) ? full_text(l) : short_text(l);
         const float w = MeasureUiText(text, font_size);
         const gfx::Rectangle rect{x, fy, w, fbar_h};
-        gfx::Color c = ResolveHlGroup(l.active ? "WorkspaceActive" : "WorkspaceInactive");
-        if (l.active) gfx::DrawRectangleRounded(gfx::Rectangle{x, fy + 2.0f, w, fbar_h - 4.0f}, 0.3f, 4, ResolveHlGroup("WorkspaceActiveBg"));
+        gfx::Color c = ResolveHlGroup(l.active ? "WorkspaceActive" : (l.needs_attention ? "Red" : "WorkspaceInactive"));
+        if (l.active) {
+            gfx::DrawRectangleRounded(gfx::Rectangle{x, fy + 2.0f, w, fbar_h - 4.0f}, 0.3f, 4, ResolveHlGroup("WorkspaceActiveBg"));
+        } else if (l.needs_attention) {
+            gfx::DrawRectangleRounded(gfx::Rectangle{x, fy + 2.0f, w, fbar_h - 4.0f}, 0.3f, 4, ResolveHlGroup("WorkspaceAlertBg"));
+        }
         if (l.creating) c.a = static_cast<unsigned char>(c.a / 2);
         DrawUiText(text, gfx::Vector2{x, cy}, font_size, c);
         tooltip_if_hovered(rect, l.tip);
@@ -28514,7 +28523,7 @@ void DrawTabBar(int y) {
     if (hidden > 0) {
         const std::string more = " +" + std::to_string(hidden) + " ";
         const float w = MeasureUiText(more, font_size);
-        DrawUiText(more, gfx::Vector2{x, cy}, font_size, ResolveHlGroup("WorkspaceInactive"));
+        DrawUiText(more, gfx::Vector2{x, cy}, font_size, ResolveHlGroup(hidden_needs_attention ? "Red" : "WorkspaceInactive"));
         RegisterClickRegion(gfx::Rectangle{x, fy, w, fbar_h}, [] { g_editor.RunCommand("wslist"); });
         x += w;
     }

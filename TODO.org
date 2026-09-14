@@ -18,11 +18,6 @@
   :LOGBOOK:
   CLOCK: [2026-09-05 Sat 21:28]--[2026-09-05 Sat 21:47] =>  0:19
   :END:
-* TODO ai tabbar notification
-  Add a notification to the tabbar workspace tab when finishing tasks or being
-  asked to interact. I'd like the workspace tab background to be red (if not an
-  active workspace)
-
 * TODO Native file open popup
   Add platform native file-open popup (instead of :e , the current behavior) when using File->Open
 
@@ -49,6 +44,25 @@
   the same animation in the todo sidebar (currently just a robot icon). I'd like
   this to be triggered in both, whether starting in the sidebar or in the
   TODO.org file.
+
+* DONE ai tabbar notification :ARCHIVE:
+  Add a notification to the tabbar workspace tab when finishing tasks or being
+  asked to interact. I'd like the workspace tab background to be red (if not an
+  active workspace)
+  - An inactive workspace whose resident agent reports "awaiting_input" or
+    "done" (Editor::WorkspaceNeedsAttention, src/editor.cpp) now draws its
+    tab with a red background (new "WorkspaceAlertBg" highlight group,
+    src/editor.cpp's BuildHighlightGroups) and red text in the tabbar
+    (src/main.cpp's DrawTabBar). The join walks Editor::Participants(),
+    matching each agent's terminal buffer (falling back to its cursor
+    location) to a workspace via Editor::BufferWorkspaceId -- the same
+    pattern the Lua AI-agents sidebar already used. The collapsed "+N
+    hidden" indicator also turns red if any hidden workspace needs
+    attention, and the tab's tooltip gets an "-- agent needs you" suffix.
+    Verified live: spawned a second detached `mep` instance, created a
+    second workspace, identified a synthetic agent against a buffer in it,
+    set its status to "awaiting_input", switched away, and confirmed the
+    inactive tab rendered red via screenshot.
 
 * DONE Add a direnv widget to the bottom bar :ARCHIVE:
   I'd like a direnv widget in the bottom bar that shows the current direnv

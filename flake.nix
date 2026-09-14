@@ -357,13 +357,27 @@
             # listed here, but rpart.plot and ggplot2 are plain CRAN
             # packages that need to be pulled in explicitly, same as
             # languageserver above).
+            # rmarkdown/knitr back the .Rmd/.Rnw Run button
+            # (mep.run_button_run_rmd/run_button_run_rnw, kBuiltinRunButton
+            # in src/main.cpp): rmarkdown::render() for .Rmd, knitr::knit()
+            # (then tectonic, already above -- not knitr::knit2pdf's own
+            # pdflatex/texi2pdf, to avoid a second LaTeX toolchain) for
+            # .Rnw.
             (pkgs.rWrapper.override {
               packages = with pkgs.rPackages; [
                 languageserver
                 ggplot2
                 rpart_plot
+                rmarkdown
+                knitr
               ];
             })
+            # rmarkdown::render()'s HTML/Word output goes through pandoc --
+            # nixpkgs' rPackages.rmarkdown does NOT vendor its own copy the
+            # way RStudio Desktop's bundled installation does, so without
+            # this a render() call fails outright looking for a `pandoc`
+            # binary on PATH.
+            pkgs.pandoc
             pkgs.php
             pkgs.rustc
             pkgs.cargo

@@ -15,6 +15,8 @@ xseqmat <- spline.des(k, xseq, deg, outer.ok = TRUE)$design
 ypred <- xseqmat %*% beta
 lines(xseq, ypred, col = "red")
 
+plot(x, x)
+
 
 
 

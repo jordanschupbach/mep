@@ -65,6 +65,20 @@ struct PdfOutlineItem {
     int depth = 0;
 };
 
+// One Link annotation (spec 12.5.6.5) on a page, already converted to
+// device pixels for a given render scale -- same "point-space vs.
+// device-pixel-space is a separate conversion step" split as
+// PdfTextMatch/PdfHighlightRect above, except a link's own /Rect is
+// already in the page's coordinate space (no separate point-space form
+// exists to search-then-convert like text matches do), so PageLinks
+// below does both steps in one call. See pdf_links.h for exactly which
+// action shapes resolve to `target_page` vs. `uri` vs. neither.
+struct PdfLinkAnnot {
+    float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    int target_page = -1;  // 0-based, or -1 if this isn't an internal GoTo (see `uri`)
+    std::string uri;       // non-empty for a URI action; empty otherwise
+};
+
 class PdfDoc {
 public:
     /**
@@ -183,6 +197,18 @@ public:
      * @return Outline entries in document order; empty if the document has no /Outlines dict, or isn't loaded.
      */
     std::vector<PdfOutlineItem> Outline() const;
+
+    // Every /Subtype /Link annotation on page_index, converted to device
+    // pixels at px_per_pt (same convention as RenderPage/MatchRectsForPage)
+    // -- empty if the page has no links or isn't loaded. See pdf_links.h
+    // for exactly which action shapes resolve to a real target_page/uri.
+    /**
+     * @brief Returns every Link annotation on one page, converted to device pixels for a given render scale.
+     * @param page_index Zero-based page index to read links from.
+     * @param px_per_pt Scale factor from PDF points to device pixels, matching RenderPage's convention.
+     * @return Link rects/targets on page_index; empty if it has none or the document isn't loaded.
+     */
+    std::vector<PdfLinkAnnot> PageLinks(int page_index, float px_per_pt) const;
 
     /**
      * @brief Returns the error message from the most recent failed LoadFromMemory call.

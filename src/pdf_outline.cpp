@@ -126,6 +126,8 @@ bool ResolveNamedDestination(const unsigned char *data, size_t len, const pdfxre
     return FindNamedDestRec(data, len, table, dests_root, name, 0, out);
 }
 
+}  // namespace
+
 // Resolves a /Dest value (or an /A action dict's own /D) to a 0-based
 // page index -- see pdf_outline.h's own doc comment on exactly which
 // shapes this handles: a direct destination array (straight off /Dest,
@@ -209,8 +211,6 @@ void WalkOutline(const unsigned char *data, size_t len, const pdfxref::XrefTable
         ref = next->ref_val;
     }
 }
-
-}  // namespace
 
 std::vector<OutlineItem> GetOutline(const unsigned char *data, size_t len, const pdfxref::XrefTable &table,
                                      const pdfdoc::PdfDocument &document) {

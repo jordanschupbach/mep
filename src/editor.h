@@ -146,6 +146,23 @@ enum class Mode {
     // Pdf/Office/Sheet are, precisely so :e keeps editing the source).
     // See Editor::HandleHtmlInput.
     Html,
+    // A focused pane showing a sidebar's content as an ordinary tabbable
+    // buffer (mep.sidebar_open_pane, sidebar_pane_buffers_ below) rather
+    // than docked to a screen edge (Mode::Sidebar) -- e.g. the R language
+    // UI mode's Plot/Data/Help/Objects/Packages/History (kBuiltinLanguageUiR)
+    // so they can be split/moved/tab-cycled/merged with mod1's usual pane
+    // chords like any other buffer. Same flat-list navigation as
+    // Mode::Sidebar (j/k/gg/G move a row cursor, Enter/click activates a
+    // widget's on_click) via Editor::HandleSidebarPaneInput, but with its
+    // own cursor (sidebar_pane_cursor_) and none of Mode::Sidebar's
+    // docked-only concepts (popout, q-to-close, overlay_previous_mode_,
+    // ':'/leader forwarding -- like Mode::Sidebar, this captures all
+    // regular key input; closing this view is an ordinary pane/tab close,
+    // mod1+d, not a dedicated key of its own). See DrawPane's sidebar-
+    // pane-buffer branch (main.cpp) for how
+    // it's rendered, sharing SidebarLine/FlattenSidebar/ActivateSidebarLine
+    // with the docked path rather than duplicating them.
+    SidebarPane,
     // A focused WYSIWYG office-document pane (an OfficeSession buffer --
     // see below, opened for .docx/.odt). Unlike Image/Pdf's single flat
     // mode, this is a real modal editor over rich-text paragraphs -- three
@@ -445,6 +462,22 @@ struct SidebarWidget {
     // highlight (sidebar_cursor_) which only ever shows on the focused
     // sidebar. At most one widget should set this per render.
     bool current = false;
+    // Opt-in word-wrap (added for the Todo panel's own long task titles,
+    // kBuiltinActivityBar's mep.activity_todo_panel): when true,
+    // Editor::FlattenSidebar splits `text` into multiple SidebarLines --
+    // one row becomes several -- instead of the usual one, wrapped to
+    // the owning sidebar's own column width (SidebarInstance::size).
+    // Every other sidebar (Structure, git, file tree, ...) leaves this
+    // false and keeps today's single-row-per-widget behavior unchanged.
+    bool wrap = false;
+    // The number of leading characters of `text` treated as a fixed
+    // hanging-indent prefix when `wrap` is set (e.g. a per-level indent
+    // plus a "[ ] "/"[x] " checkbox mark) -- kept verbatim on the first
+    // wrapped line, replaced by that many spaces on every continuation
+    // line, so wrapped text stays left-justified starting right after
+    // the checkbox instead of restarting at column 0. Ignored when wrap
+    // is false.
+    int wrap_indent = 0;
 };
 struct SidebarSection {
     std::string id, title;
@@ -490,6 +523,16 @@ struct SidebarInstance {
     // mod1+Shift+j/k while one is focused (SetSidebarStackShares); the
     // default 1.0 everywhere means an even split.
     float stack_share = 1.0f;
+    // Non-empty groups this sidebar with every other open sidebar (same
+    // position) sharing the same string into ONE stack slot with a tab
+    // strip of their titles, instead of each getting its own slice of the
+    // stacked column -- e.g. the R language UI mode's Plot/Data/Help/R
+    // sidebars (kBuiltinLanguageUiR) all set tab_group = "r_ui" so they
+    // read as one tabbed panel rather than four stacked ones. Purely a
+    // rendering/layout grouping: each member keeps its own id, sections,
+    // and (if any) its own internal `tabs` strip underneath the group's
+    // -- see Editor::OpenSidebarIdsOn/TabGroupActiveId and DrawSidebars.
+    std::string tab_group;
     // First flattened-line index drawn at the top of the sidebar's content
     // area -- this sidebar's mirror of Pane::scroll_row. Kept per-instance
     // (rather than a single field alongside sidebar_cursor_) so a sidebar
@@ -945,6 +988,49 @@ struct ImageSession {
     // to whatever ZoomImageToFit computes so the whole image just fits the
     // current viewport.
     float zoom = 1.0f;
+    // While true (the default), Editor::ResizeImageViewport recomputes
+    // `zoom` every frame from the pane's current content size vs. the
+    // image's native size, so the image always fits the pane and rescales
+    // live as the pane is resized/split -- no stale zoom left over from a
+    // previous, differently-sized pane. Editor::HandleImageInput's +/- (and
+    // HandleMouseWheel's Ctrl-scroll) set this false and switch to manual
+    // zoom, starting from whatever zoom was last computed so the image
+    // doesn't jump; '=' sets it back to true, resuming auto-fit.
+    bool fit_to_pane = true;
+    // Bumped by Editor::OpenImageInPlace every time it (re-)decodes pixels
+    // for this buffer id, including a same-path reopen -- GetOrLoadImageTexture
+    // (main.cpp) caches its GPU upload keyed on this alongside buffer_id, so
+    // a file that gets rewritten in place (the R language UI mode's current
+    // figure, updated by further plotting on the same page rather than a
+    // new one -- see kBuiltinLanguageUiR's mep_capture_plot) actually shows
+    // its new pixels instead of the first upload forever, which is safe for
+    // every OTHER image buffer (whose file the codebase already assumes
+    // never changes post-decode) since this only moves for a buffer id that
+    // was actually re-decoded.
+    int decode_generation = 0;
+    // Lua registry refs (Editor::CallLuaRef), 0 = none: when either is set,
+    // DrawPane's image branch (main.cpp) draws a thin "<"/">" nav header
+    // above the image instead of the plain filename-only header, letting a
+    // caller (kBuiltinLanguageUiR's merged Plot pane) step through a
+    // sequence of images without a separate picker UI. Purely
+    // presentation/wiring -- stepping still means re-opening a different
+    // path into this pane (mep.open) and re-applying these refs, same as
+    // any other *InPlace buffer swap.
+    int nav_prev_ref = 0;
+    int nav_next_ref = 0;
+    // Ctrl-R toggle (Editor::HandleImageInput), mirroring PdfSession::
+    // theme_colors/HtmlSession::theme_colors' own "recolor to match the
+    // editor's color scheme" meaning and key -- DrawPane's image branch
+    // (main.cpp) does the actual luminance recolor. Deliberately defaults
+    // false here, UNLIKE those two: an arbitrary photo opened as a plain
+    // image buffer shouldn't be forced through a luminance-to-theme-
+    // gradient remap the way a mostly-text/diagram document (a PDF page,
+    // rendered HTML) already is by default -- callers that DO want that
+    // (kBuiltinLanguageUiR's merged Plot pane, whose images are R plots:
+    // white background, black/colored lines, much closer in spirit to a
+    // document page) opt in per-buffer via mep.image_set_theme/SetImageTheme
+    // below rather than this flipping for everyone.
+    bool theme_colors = false;
 };
 
 // Plain RGBA color (this header stays raylib-free, same reasoning as
@@ -1405,6 +1491,17 @@ struct PdfSession {
         // search_matches itself changes (Editor::RunPdfSearch), so
         // main.cpp's draw code never needs to touch PdfDoc/PDFium itself.
         std::vector<PdfHighlightRect> highlights;
+        // This page's own Link annotations (spec 12.5.6.5), device-pixel
+        // converted at this raster's own scale -- computed once alongside
+        // rgba/highlights above (Editor::EnsurePdfPagesRastered), not
+        // every frame: unlike highlights (which only exist for whichever
+        // pages currently have a search match), main.cpp's hint-system
+        // collection (HINT_SYSTEM.md) would otherwise re-walk this page's
+        // /Annots array from raw bytes every single frame a PDF pane with
+        // links is on screen, for no benefit -- a link's own rect only
+        // ever changes when the page is re-rastered anyway (a rescale),
+        // exactly the same event that already invalidates `highlights`.
+        std::vector<PdfLinkAnnot> links;
     };
     std::unordered_map<int, PageRaster> rasters;
     int next_raster_generation = 1;
@@ -2719,6 +2816,45 @@ public:
      * @param h The new viewport height in pixels.
      */
     void ResizeImageViewport(int buffer_id, int w, int h);
+    // Sets (or clears, passing 0) the Lua function refs DrawPane's image
+    // branch (main.cpp) calls when its "<"/">" nav-header chips are clicked
+    // -- see ImageSession::nav_prev_ref/nav_next_ref's own comment. Used by
+    // the R language UI mode (kBuiltinLanguageUiR) to merge its figure
+    // picker into the image viewer itself: every time it points the pane at
+    // a different figure file (mep.open), it re-applies these two refs to
+    // the (possibly new, since a different filename is a different buffer
+    // id) buffer, since a fresh ImageSession starts with neither set.
+    /**
+     * @brief Sets an image buffer's nav-header click targets (0 = none).
+     * @param buffer_id The image buffer id to configure.
+     * @param prev_ref Lua registry ref called when "<" is clicked, or 0 for none.
+     * @param next_ref Lua registry ref called when ">" is clicked, or 0 for none.
+     */
+    void SetImageNav(int buffer_id, int prev_ref, int next_ref);
+    // Sets an image buffer's default theme_colors state -- see
+    // ImageSession::theme_colors' own comment for why this is opt-in per
+    // buffer rather than a global default the way PdfSession/HtmlSession's
+    // own theme_colors already are. Same re-apply-on-every-reopen need as
+    // SetImageNav just above: a fresh ImageSession (a different filename is
+    // a different buffer id) always starts false, so a caller wanting its
+    // images themed by default (kBuiltinLanguageUiR's merged Plot pane)
+    // calls this again each time it points the pane at a new file.
+    /**
+     * @brief Sets an image buffer's default theme_colors state (whether it renders recolored to
+     * match the editor's color scheme, Ctrl-R-toggleable from there same as a PDF/HTML pane).
+     * @param buffer_id The image buffer id to configure.
+     * @param theme_colors The state to set.
+     */
+    void SetImageTheme(int buffer_id, bool theme_colors);
+    // Thin public wrapper so main.cpp's click-region lambdas (DrawPane's
+    // image nav header, same idiom as DrawSidebarPaneContent's own
+    // widget-click dispatch) can invoke a stored Lua ref without touching
+    // the private `lua_` member directly.
+    /**
+     * @brief Calls a Lua registry ref with no arguments (a no-op if `ref` is 0).
+     * @param ref The Lua registry ref to call.
+     */
+    void CallLuaRef(int ref);
 
     // --- In-pane image editor (IMAGE_EDITOR.md), opened via 'e' on a
     // focused Mode::Image pane (Editor::EnterImageEditor). Mirrors the
@@ -5401,6 +5537,18 @@ public:
      */
     std::string BufferFilenameForLua(int buffer_id) const;
     /**
+     * @brief Sets a buffer's raw filename (display label and, for a plain text buffer, its `:w` target).
+     * @param buffer_id The id of the buffer to rename.
+     * @param name The new filename.
+     */
+    void SetBufferFilenameForLua(int buffer_id, const std::string &name);
+    /**
+     * @brief Returns whether a buffer has unsaved changes.
+     * @param buffer_id The id of the buffer to check.
+     * @return True if modified; false if unmodified or `buffer_id` is out of range.
+     */
+    bool BufferModifiedForLua(int buffer_id) const;
+    /**
      * @brief Switches the active pane to show a specific buffer.
      * @param buffer_id The id of the buffer to switch to.
      */
@@ -5845,6 +5993,16 @@ public:
     struct DirEntry {
         std::string name;
         bool is_dir;
+        // An opaque, monotonically-comparable last-write-time value (native
+        // builds only -- always 0 under wasm) -- NOT a real epoch timestamp
+        // (std::filesystem::file_time_type's own epoch is unspecified), only
+        // meaningful for "did this change since I last looked" comparisons.
+        // Added for the R language UI mode's figure poll (kBuiltinLanguageUiR,
+        // main.cpp): a figure can now be rewritten in place (mep_capture_plot,
+        // same filename) without the containing directory's entry *count*
+        // changing, so detecting "did the currently-viewed one actually
+        // change" needs this instead.
+        double mtime = 0;
     };
     /**
      * @brief Lists the entries of a directory, unsorted and unfiltered.
@@ -6435,9 +6593,11 @@ public:
      * @param title The sidebar's title text.
      * @param position The dock edge to attach the sidebar to.
      * @param size The sidebar's fixed size in cells along its dock axis.
+     * @param tab_group Non-empty to merge this sidebar with every other open sidebar sharing the
+     * same group string (and position) into one tabbed stack slot; "" (default) keeps it standalone.
      * @return The new sidebar's id.
      */
-    int CreateSidebar(const std::string &title, const std::string &position, int size);
+    int CreateSidebar(const std::string &title, const std::string &position, int size, const std::string &tab_group = "");
     /**
      * @brief Sets a sidebar's section/widget content, replacing whatever it had.
      * @param id The id of the sidebar to update.
@@ -6487,6 +6647,33 @@ public:
      * @return The largest `size` among the edge's open sidebars, or 0 if none is open.
      */
     int DockSize(const std::string &position) const;
+    // Tab-group helpers (SidebarInstance::tab_group): OpenSidebarIdsOn
+    // above collapses every open member of a group into ONE representative
+    // id (TabGroupActiveId's answer) so the rest of the stacking/layout
+    // code never has to know grouping exists; these three give DrawSidebars
+    // (the group tab strip itself) and its click handler the rest of what
+    // they need -- the full open membership to draw as chips, and a way to
+    // change which member is active when one is clicked.
+    /**
+     * @brief Lists every OPEN sidebar sharing a tab_group and position, in registration order.
+     * @param group The tab_group string to match.
+     * @param position "left"/"right"/"top"/"bottom".
+     * @return The matching open sidebars' ids.
+     */
+    std::vector<int> OpenSidebarIdsInGroup(const std::string &group, const std::string &position) const;
+    /**
+     * @brief Resolves which member of a tab_group is currently shown.
+     * @param group The tab_group string to resolve.
+     * @param position "left"/"right"/"top"/"bottom".
+     * @return The explicitly-selected member if it's still open, else the first open member, else 0.
+     */
+    int TabGroupActiveId(const std::string &group, const std::string &position) const;
+    /**
+     * @brief Selects which member of a tab_group is shown (a group tab-strip chip click).
+     * @param group The tab_group string.
+     * @param id The member sidebar id to make active.
+     */
+    void SetTabGroupActive(const std::string &group, int id);
     /**
      * @brief Splits the combined height of two vertically adjacent stacked sidebars between them.
      * @param upper_id The sidebar drawn above the divider.
@@ -6530,6 +6717,11 @@ public:
      * @return The sidebar cursor position.
      */
     int SidebarCursor() const { return sidebar_cursor_; }
+    /**
+     * @brief Returns the currently focused Mode::SidebarPane pane's cursor row.
+     * @return The sidebar-pane cursor position.
+     */
+    int SidebarPaneCursor() const { return sidebar_pane_cursor_; }
     // Section-header/widget rows in display order -- one section header
     // line, then (if not collapsed) one line per widget, repeated per
     // section. Returns {} for an unknown id.
@@ -6727,6 +6919,38 @@ public:
      * @param line_index The line index to activate.
      */
     void ActivateSidebarLine(int id, int line_index);
+    /**
+     * @brief Opens (creating its backing buffer on first use) a sidebar's content as a tabbed
+     * buffer in the focused pane, the way mep.open/mep.pane_open opens a file -- see
+     * sidebar_pane_buffers_'s own comment.
+     * @param sidebar_id The id of the sidebar to open as a pane buffer.
+     */
+    void SidebarOpenPane(int sidebar_id);
+    /**
+     * @brief Returns whether the given buffer id is a sidebar-view buffer (mep.sidebar_open_pane).
+     * @param buffer_id The buffer id to check.
+     * @return True if the buffer renders a sidebar's content (Mode::SidebarPane).
+     */
+    bool IsSidebarPaneBuffer(int buffer_id) const;
+    /**
+     * @brief Resolves which sidebar a sidebar-view buffer renders.
+     * @param buffer_id The buffer id to look up.
+     * @return The bound SidebarInstance's id, or 0 if `buffer_id` isn't a sidebar-view buffer.
+     */
+    int SidebarIdForPaneBuffer(int buffer_id) const;
+    /**
+     * @brief Moves a pane-hosted sidebar-view's row cursor to a clamped line index, for a mouse
+     * click -- Mode::SidebarPane's analog of FocusSidebarRow, but without any of that one's
+     * docked-focus bookkeeping (mode_/focused_sidebar_id_/overlay_previous_mode_).
+     * @param sidebar_id The id of the sidebar being viewed.
+     * @param line_index The line index to move the cursor to (clamped in range).
+     */
+    void FocusSidebarPaneRow(int sidebar_id, int line_index);
+    /**
+     * @brief Per-frame input handling for a focused Mode::SidebarPane pane: j/k/gg/G move the row
+     * cursor, Enter activates it, mirroring HandleSidebarInput's own docked-sidebar navigation.
+     */
+    void HandleSidebarPaneInput();
     // Adjusts sidebar `id`'s scroll_offset so its cursor stays visible
     // within `visible_lines` rows, and clamps it back in range if the
     // sidebar's own content shrank (a collapsed section, a deleted file).
@@ -7084,6 +7308,15 @@ public:
     const std::vector<HintMatch> &HintMatches() const { return hint_matches_; }
     const std::string &HintTyped() const { return hint_typed_; }
 
+    // Whether the user's configured mod1 modifier (mod1_/mep.set_mod1,
+    // see its own comment near HandleMod1Shortcuts) is currently held --
+    // public (unlike mod1_/ModKey themselves) so main.cpp's own
+    // mod1+f-triggered hint system (HINT_SYSTEM.md, distinct from the
+    // buffer-text hints just above) can gate on the exact same modifier
+    // every mep.map_mod1 binding already does, without duplicating
+    // mod1_'s own Alt/Control/Shift/Super switch here.
+    bool IsMod1Down() const;
+
     // --- Window tiling-manager layer (NVIM_PARITY_PLAN.md Part III Phase 14) ---
     // Directional focus already existed pre-Phase-14 (NavigatePaneDirection,
     // bound as mep.nav_pane) -- nothing new needed there.
@@ -7211,6 +7444,23 @@ public:
     void SetBufferOnEnter(int buffer_id, int lua_ref) {
         enter_hook_buffer_id_ = buffer_id;
         enter_hook_ref_ = lua_ref;
+    }
+
+    // mep.buffer_set_on_write(buffer_id, fn): fn() called by SaveBuffer
+    // instead of writing `buffer_id`'s lines to disk -- lets a Lua-managed
+    // buffer whose content isn't really file text (kBuiltinFileTree's
+    // editable tree view is the first caller: its lines are a directory
+    // listing, `:w` diffs them against the last snapshot and applies
+    // fs_rename/fs_delete/fs_mkdir/fs_create_file) claim `:w`/`:wq`/`ZZ`
+    // with no real save to fall back to. Always treated as handled (buffer
+    // marked unmodified, save_epoch_ bumped) since -- unlike the Enter hook,
+    // which can legitimately want to defer to "no default behavior" --
+    // every registered write hook so far replaces the write outright.
+    // Single-slot, last-registration-wins, same scope cut as
+    // SetBufferOnEnter above.
+    void SetBufferOnWrite(int buffer_id, int lua_ref) {
+        write_hook_buffer_id_ = buffer_id;
+        write_hook_ref_ = lua_ref;
     }
 
     // --- Command-line completion (`:` command bar) -----------------------
@@ -8247,6 +8497,11 @@ private:
     // UpdateScrollForSidebar, the same lag ScrollHalfPage/ScrollFullPage's
     // own doc comment already accepts for pane scrolling.
     void WheelScrollSidebar(float dy);
+    // Same as WheelScrollSidebar, for Mode::SidebarPane's pane-hosted view
+    // (SidebarIdForPaneBuffer(CurPane().buffer_id) instead of
+    // focused_sidebar_id_) -- shares its scroll_offset field and wheel_accum_
+    // sidebar_ accumulator since the two modes are never active at once.
+    void WheelScrollSidebarPane(float dy);
     // Fractional-notch carry-over for each discrete-stepping content
     // type's WheelScroll* above -- see WheelSteps' own comment. Pixel-
     // based content (Pdf/Image/Html scroll_y/pan_x/pan_y) needs no
@@ -8516,16 +8771,14 @@ private:
     // Kills a workspace's terminals and soft-deletes its buffers (shared by
     // WorkspaceDelete and ProjectClose).
     void ReleaseWorkspaceResources(int workspace_id);
+    // ShouldShowDashboard()'s single-workspace/tab/pane/untouched-buffer
+    // check, generalized to any (not necessarily active) project -- lets
+    // ProjectLoad tell "already loaded, but never given a layout" (still
+    // sitting on the dashboard) from "already loaded with real content",
+    // since only the latter should skip mep.project_open's default layout.
+    bool ProjectIsPristine(const Project &project) const;
     Json WorkspaceStateJson(const Project &project) const;
     Json SplitStateJson(const Workspace &ws, const SplitNode &node) const;
-    // Rebuilds a split tree from SplitStateJson output with fresh pane ids;
-    // `leaves` collects (new pane id, pane JSON) for the caller to open
-    // buffers into afterwards, `id_map` old pane id -> new.
-    std::unique_ptr<SplitNode> SplitFromStateJson(const Json &node, std::vector<std::pair<int, Json>> &leaves,
-                                                  std::unordered_map<int, int> &id_map);
-    // Applies one saved workspace's tabs (opens files, terminals); returns
-    // the number of files skipped because they no longer exist.
-    int RestoreWorkspaceTabs(Workspace &ws, const Json &ws_json);
     uint64_t LayoutFingerprint() const;
     uint64_t last_layout_fingerprint_ = 0;
     double layout_dirty_since_ = -1.0;
@@ -8602,8 +8855,24 @@ private:
 
     std::vector<SidebarInstance> sidebars_;
     int next_sidebar_id_ = 1;
+    // Which member id is showing for each non-empty SidebarInstance::tab_group
+    // in use -- keyed by the group string itself (not position; a group name
+    // is expected to be used on one edge at a time, same as any other Lua-
+    // chosen sidebar id/title). Missing entry, or one naming a since-closed
+    // member, means TabGroupActiveId falls back to the first open member.
+    std::map<std::string, int> tab_group_active_;
     int focused_sidebar_id_ = 0;  // 0 = none
     int sidebar_cursor_ = 0;      // index into the focused sidebar's flattened line list
+    // mep.sidebar_open_pane's buffer_id -> SidebarInstance::id -- a pane
+    // showing one of these keys renders/navigates that sidebar's content
+    // (Mode::SidebarPane, IsSidebarPaneBuffer/SidebarIdForPaneBuffer) the
+    // same way images_/model3d_ etc. mark their own buffer ids as special.
+    // Separate from sidebar_cursor_/focused_sidebar_id_ above (those are
+    // Mode::Sidebar's docked-focus state) so a docked sidebar and a pane-
+    // hosted one can each hold their own row cursor without fighting over
+    // one slot.
+    std::unordered_map<int, int> sidebar_pane_buffers_;
+    int sidebar_pane_cursor_ = 0;  // index into the active sidebar-pane buffer's flattened line list
     // Floating pane (OpenFloatPane): the leaf node itself (null = none),
     // the sidebar row focus returns to on close (0 = none), the
     // workspace/tab it was opened over (ValidateFloatPane closes it when
@@ -8692,6 +8961,9 @@ private:
     // See SetBufferOnEnter's own comment above.
     int enter_hook_buffer_id_ = -1;
     int enter_hook_ref_ = 0;
+    // See SetBufferOnWrite's own comment above.
+    int write_hook_buffer_id_ = -1;
+    int write_hook_ref_ = 0;
     bool completion_open_ = false;
     std::vector<CompletionCandidate> completion_items_;
     int completion_selected_ = 0;
@@ -9058,7 +9330,6 @@ private:
 
     enum class ModKey { Alt, Control, Shift, Super };
     ModKey mod1_ = ModKey::Alt;
-    bool IsMod1Down() const;
 
     LuaEnv *lua_ = nullptr;
     std::unordered_map<std::string, int> lua_commands_;         // name -> lua ref

@@ -19,6 +19,8 @@
   :END:
 * TODO Add language specific, configurable run button to active pane bar
   :LOGBOOK:
+  CLOCK: [2026-09-13 Sun 12:44]--[2026-09-13 Sun 12:44] =>  0:00
+  CLOCK: [2026-09-13 Sun 12:44]--[2026-09-13 Sun 12:44] =>  0:00
   CLOCK: [2026-09-05 Sat 21:28]--[2026-09-05 Sat 21:45] =>  0:17
   :END:
 * TODO Add language modes
@@ -32,8 +34,8 @@
 * TODO add hex exploration to c++ ui
 * TODO Fix dap debug ui
 * TODO fix exiting sidebar bug (specifically when exiting todo editor)
-* TODO add image editor
-* TODO add latex run button
+* DONE add image editor :ARCHIVE:
+* DONE add latex run button :ARCHIVE:
 * DONE add orgmode run button :ARCHIVE:
   - Run button now shows for .org files; picks the target format from a
     `#+EXPORT:` header keyword (html/pdf/odt/markdown/ascii, default html),
@@ -53,5 +55,5 @@
   :LOGBOOK:
   CLOCK: [2026-09-05 Sat 23:14]--[2026-09-05 Sat 23:20] =>  0:06
   :END:
-* TODO add pomodoro timer widget
-* TODO make todo list have line wrapping
+* DONE add pomodoro timer widget :ARCHIVE:
+* DONE make todo list have line wrapping :ARCHIVE:

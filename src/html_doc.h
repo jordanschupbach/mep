@@ -166,6 +166,25 @@ struct ComputedStyle {
     bool is_list_item = false;
     bool ordered_list_item = false;  // marker is "N." vs a bullet
     int list_item_index = 0;         // 1-based position within its <ol>, for ordered markers
+    // The nearest enclosing <a href>'s own href value, inherited down to
+    // every descendant the same way color/bold/etc. do -- lets main.cpp's
+    // word-splitting layout (which only ever sees a leaf text/img/etc.
+    // node's own cascaded style, never walks back up to find an <a>
+    // ancestor itself) stamp each laid-out run with the link it belongs
+    // to, for the hint system's link-jump targets (HINT_SYSTEM.md). Empty
+    // when not inside a link. A nested `<a>` (invalid HTML, but tolerated
+    // like every other malformed-markup case this renderer sees) simply
+    // overrides its ancestor's href for its own subtree, same as any other
+    // cascaded property a descendant re-specifies.
+    std::string link_href = "";
+    // The <a> element link_href came from (null when link_href is empty)
+    // -- an identity key so main.cpp can group multiple runs belonging to
+    // the SAME anchor (e.g. "click <b>here</b> now") into one merged hint
+    // target instead of one per run, and tell apart two distinct <a>
+    // elements that happen to share the same href text (grouping by the
+    // href *string* alone would wrongly merge those into a single
+    // hint box spanning both, since they're indistinguishable by text).
+    const struct DomNode *link_node = nullptr;
 };
 
 struct DomNode {

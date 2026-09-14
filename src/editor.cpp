@@ -3904,6 +3904,9 @@ void Editor::HandleInput() {
         case Mode::Html:
             HandleHtmlInput();
             break;
+        case Mode::SidebarPane:
+            HandleSidebarPaneInput();
+            break;
         case Mode::OfficeNormal:
             HandleOfficeNormalInput();
             break;
@@ -4268,6 +4271,7 @@ void Editor::WheelScrollImage(float dx, float dy) {
     // Ctrl-scroll zooms instead of panning -- see WheelScrollPdf's own
     // comment for the sign/dx-ignored reasoning (identical here).
     if ((gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl)) && dy != 0.0f) {
+        sess.fit_to_pane = false;  // manual zoom, same as HandleImageInput's own +/-
         ApplyImageZoom(sess, sess.zoom * std::pow(kWheelZoomStepPerNotch, dy));
         return;
     }
@@ -4316,6 +4320,16 @@ void Editor::WheelScrollSidebar(float dy) {
     int steps = WheelSteps(wheel_accum_sidebar_, -dy, kWheelLinesPerNotch);
     if (steps == 0) return;
     int max_scroll = std::max(0, static_cast<int>(FlattenSidebar(focused_sidebar_id_).size()) - 1);
+    sb->scroll_offset = std::clamp(sb->scroll_offset + steps, 0, max_scroll);
+}
+
+void Editor::WheelScrollSidebarPane(float dy) {
+    int sidebar_id = SidebarIdForPaneBuffer(CurPane().buffer_id);
+    SidebarInstance *sb = FindSidebarMut(sidebar_id);
+    if (!sb) return;
+    int steps = WheelSteps(wheel_accum_sidebar_, -dy, kWheelLinesPerNotch);
+    if (steps == 0) return;
+    int max_scroll = std::max(0, static_cast<int>(FlattenSidebar(sidebar_id).size()) - 1);
     sb->scroll_offset = std::clamp(sb->scroll_offset + steps, 0, max_scroll);
 }
 
@@ -4370,6 +4384,9 @@ void Editor::HandleMouseWheel(float dx, float dy) {
             break;
         case Mode::Sidebar:
             WheelScrollSidebar(dy);
+            break;
+        case Mode::SidebarPane:
+            WheelScrollSidebarPane(dy);
             break;
         default:
             break;
@@ -4469,6 +4486,17 @@ void Editor::ClampCursor() {
     int len = LineLen(cursor.row);
     int max_col = (mode_ == Mode::Insert || mode_ == Mode::Command) ? len : std::max(0, len - 1);
     cursor.col = std::max(0, std::min(cursor.col, max_col));
+    // Never rest mid-codepoint: a byte-offset column surviving a vertical
+    // motion (Up/Down/G/gg/a row switch/...) carries over verbatim from
+    // whatever line it last made sense on, so it can land inside a multi-
+    // byte UTF-8 sequence this row never actually starts a character at
+    // (e.g. one of an icon glyph's continuation bytes) -- back up to the
+    // start of whatever sequence it landed in.
+    const std::string &line = Buf().lines[static_cast<size_t>(cursor.row)];
+    while (cursor.col > 0 && cursor.col < static_cast<int>(line.size()) &&
+           (static_cast<unsigned char>(line[static_cast<size_t>(cursor.col)]) & 0xC0) == 0x80) {
+        cursor.col--;
+    }
 }
 
 // --- Buffer/pane/tab plumbing ----------------------------------------------
@@ -4666,6 +4694,18 @@ bool Editor::ShouldShowDashboard() const {
     const SplitNode *root = Tabs()[0].root.get();
     if (!root || root->dir != SplitDir::Leaf) return false;
     const Buffer &buf = buffers_[0];
+    return !buf.modified && buf.filename.empty() && !buf.scratch && buf.lines.size() == 1 && buf.lines[0].empty();
+}
+
+bool Editor::ProjectIsPristine(const Project &project) const {
+    if (project.workspaces.size() != 1) return false;
+    const Workspace &ws = project.workspaces[0];
+    if (ws.tabs.size() != 1) return false;
+    const SplitNode *root = ws.tabs[0].root.get();
+    if (!root || root->dir != SplitDir::Leaf) return false;
+    const int bid = root->pane.buffer_id;
+    if (bid < 0 || bid >= static_cast<int>(buffers_.size())) return false;
+    const Buffer &buf = buffers_[static_cast<size_t>(bid)];
     return !buf.modified && buf.filename.empty() && !buf.scratch && buf.lines.size() == 1 && buf.lines[0].empty();
 }
 
@@ -5100,10 +5140,39 @@ void Editor::ResizeImageViewport(int buffer_id, int w, int h) {
     ImageSession &sess = it->second;
     sess.viewport_w = w;
     sess.viewport_h = h;
+    // Recomputed every frame (not cached) so a pane resize/split/unsplit
+    // re-fits for free, the same reasoning HandleImageInput's own '=' key
+    // already used for a one-shot fit -- this just applies that math
+    // continuously while fit_to_pane is on instead of only on demand.
+    if (sess.fit_to_pane && sess.doc && sess.doc->Width() > 0 && sess.doc->Height() > 0 && w > 0 && h > 0) {
+        float fit = std::min(static_cast<float>(w) / static_cast<float>(sess.doc->Width()),
+                              static_cast<float>(h) / static_cast<float>(sess.doc->Height()));
+        sess.zoom = std::clamp(fit, kMinImageZoom, kMaxImageZoom);
+        sess.pan_x = 0;
+        sess.pan_y = 0;
+        return;
+    }
     int max_pan_x = sess.doc ? std::max(0, static_cast<int>(static_cast<float>(sess.doc->Width()) * sess.zoom) - w) : 0;
     int max_pan_y = sess.doc ? std::max(0, static_cast<int>(static_cast<float>(sess.doc->Height()) * sess.zoom) - h) : 0;
     sess.pan_x = std::clamp(sess.pan_x, 0, max_pan_x);
     sess.pan_y = std::clamp(sess.pan_y, 0, max_pan_y);
+}
+
+void Editor::SetImageNav(int buffer_id, int prev_ref, int next_ref) {
+    auto it = images_.find(buffer_id);
+    if (it == images_.end()) return;
+    it->second.nav_prev_ref = prev_ref;
+    it->second.nav_next_ref = next_ref;
+}
+
+void Editor::SetImageTheme(int buffer_id, bool theme_colors) {
+    auto it = images_.find(buffer_id);
+    if (it == images_.end()) return;
+    it->second.theme_colors = theme_colors;
+}
+
+void Editor::CallLuaRef(int ref) {
+    if (ref != 0 && lua_) lua_->CallRef(ref);
 }
 
 void Editor::OpenImageInPlace(const std::string &path, const unsigned char *bytes, size_t len) {
@@ -5126,6 +5195,7 @@ void Editor::OpenImageInPlace(const std::string &path, const unsigned char *byte
         ImageSession sess;
         sess.buffer_id = buffer_id;
         sess.doc = std::move(doc);
+        sess.decode_generation = 1;
         images_[buffer_id] = std::move(sess);
     } else {
         // `path` is already open in a buffer -- re-decode `bytes` into it
@@ -5144,7 +5214,21 @@ void Editor::OpenImageInPlace(const std::string &path, const unsigned char *byte
             it->second.doc = std::move(doc);
             it->second.pan_x = 0;
             it->second.pan_y = 0;
+            it->second.decode_generation++;
         }
+    }
+    // Keeps this pane's tab strip truthful when `path` differs from
+    // whatever it was just showing (a different filename is a different
+    // buffer id -- e.g. the R language UI mode stepping between figure
+    // files): without this, EnsureBufferTabSeeded's own fallback (buffer_id
+    // not found in buffer_tabs) would collapse the WHOLE tab strip down to
+    // just this one buffer the next time anything reads it, silently
+    // dropping any sibling tab (e.g. Help) sharing this pane. Called with
+    // the OLD buffer_id still in place so it seeds/validates against the
+    // pane's actual current state before this function moves it.
+    EnsureBufferTabSeeded(CurPane());
+    if (!CurPane().buffer_tabs.empty()) {
+        CurPane().buffer_tabs[static_cast<size_t>(CurPane().buffer_tab_index)] = buffer_id;
     }
     CurPane().buffer_id = buffer_id;
     CurPane().cursor = {0, 0};
@@ -5184,6 +5268,17 @@ void Editor::SyncModeToActivePaneBuffer() {
         mode_ = Mode::Video;
     } else if (IsHtmlBuffer(CurPane().buffer_id)) {
         mode_ = Mode::Html;
+    } else if (IsSidebarPaneBuffer(CurPane().buffer_id)) {
+        // Always re-enters at row 0, same "no stale cross-buffer state"
+        // reasoning as Office/Sheet's own re-enter-fresh comments below --
+        // sidebar_pane_cursor_ is a single shared slot (SidebarInstance::
+        // scroll_offset is the only genuinely per-instance state, see its
+        // own comment), so switching which sidebar-pane buffer is focused
+        // (a buffer-tab click/cycle, or focus landing here from elsewhere)
+        // always starts its cursor back at the top rather than reusing
+        // whatever row a *different* sidebar-pane buffer left behind.
+        mode_ = Mode::SidebarPane;
+        sidebar_pane_cursor_ = 0;
     } else if (IsOfficeBuffer(CurPane().buffer_id)) {
         // Always re-enters at OfficeNormal, never resumes mid-
         // OfficeInsert/Visual -- matches every other mode transition here.
@@ -5206,7 +5301,7 @@ void Editor::SyncModeToActivePaneBuffer() {
                mode_ == Mode::OfficeNormal || mode_ == Mode::OfficeInsert || mode_ == Mode::OfficeVisual ||
                mode_ == Mode::SheetNormal || mode_ == Mode::SheetInsert || mode_ == Mode::SheetVisual ||
                mode_ == Mode::KanbanNormal || mode_ == Mode::KanbanInsert || mode_ == Mode::GanttNormal ||
-               mode_ == Mode::GanttInsert || mode_ == Mode::Sidebar) {
+               mode_ == Mode::GanttInsert || mode_ == Mode::Sidebar || mode_ == Mode::SidebarPane) {
         // Mode::Sidebar included here (unlike every other case above,
         // it's not a *buffer-type*-driven mode, it's an input-focus one)
         // -- opening a plain-text file from a sidebar (e.g. the built-in
@@ -5267,6 +5362,28 @@ void Editor::HandleImageInput() {
      * @return True if the key is freshly pressed or repeating this frame.
      */
     auto held = [](gfx::Key key) { return gfx::IsKeyPressed(key) || gfx::IsKeyPressedRepeat(key); };
+    // Plain h/l pan horizontally, same as every other image -- UNLESS this
+    // is a figure-nav-enabled one (ImageSession::nav_prev_ref/nav_next_ref,
+    // mep.image_set_nav -- currently only the R language UI mode's merged
+    // Plot pane), in which case h/l step to the previous/next figure
+    // instead (the same callback its "<"/">" click header already uses,
+    // DrawPane's image branch, main.cpp), matching vim's own left/right-as-
+    // previous/next convention for a picker rather than panning a single
+    // image. Left/Right arrows are unaffected either way, so horizontal
+    // panning (e.g. once zoomed in past +) is still reachable there too.
+    // Returns immediately after the call, same as EnterCommand/
+    // TriggerWhichKey/EnterImageEditor below -- the callback typically
+    // re-points this pane at a DIFFERENT figure's buffer (mep.open on a new
+    // path), which can leave `sess` referring to the now-not-shown image,
+    // so nothing after this should keep reading/mutating it this frame.
+    if (held(gfx::Key::H) && sess->nav_prev_ref != 0) {
+        CallLuaRef(sess->nav_prev_ref);
+        return;
+    }
+    if (held(gfx::Key::L) && sess->nav_next_ref != 0) {
+        CallLuaRef(sess->nav_next_ref);
+        return;
+    }
     if (held(gfx::Key::H) || held(gfx::Key::Left)) {
         sess->pan_x = std::clamp(sess->pan_x - kPanStep, 0, max_pan_x);
     }
@@ -5282,6 +5399,13 @@ void Editor::HandleImageInput() {
     bool ctrl = gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl);
     if (ctrl && held(gfx::Key::D)) sess->pan_y = std::clamp(sess->pan_y + sess->viewport_h / 2, 0, max_pan_y);
     if (ctrl && held(gfx::Key::U)) sess->pan_y = std::clamp(sess->pan_y - sess->viewport_h / 2, 0, max_pan_y);
+    // Mirrors PdfSession::theme_colors/HtmlSession::theme_colors' own
+    // Ctrl-R toggle (HandlePdfInput/HandleHtmlInput) -- same key, same
+    // "the editor's color scheme takes over" meaning; ImageSession::
+    // theme_colors' own comment explains why THIS session type defaults
+    // false instead of true. The actual recoloring is entirely a DrawPane
+    // concern (main.cpp); this just flips the flag.
+    if (ctrl && gfx::IsKeyPressed(gfx::Key::R)) sess->theme_colors = !sess->theme_colors;
 
     // +/-/= zoom: +/- multiply or divide the zoom factor by kImageZoomStep,
     // re-anchored on whatever image point is currently at the viewport's
@@ -5305,11 +5429,18 @@ void Editor::HandleImageInput() {
             TriggerWhichKey();
             return;
         } else if (cp == '+') {
+            sess->fit_to_pane = false;  // manual zoom from here on, starting from whatever fit last computed
             apply_zoom(sess->zoom * kImageZoomStep);
         } else if (cp == '-') {
+            sess->fit_to_pane = false;
             apply_zoom(sess->zoom / kImageZoomStep);
         } else if (cp == '=' && sess->doc && sess->doc->Width() > 0 && sess->doc->Height() > 0 &&
                    sess->viewport_w > 0 && sess->viewport_h > 0) {
+            // Resumes auto-fit (Editor::ResizeImageViewport recomputes zoom
+            // every frame while this is on) -- the fit computed right here
+            // is just this same frame's snap, so the view doesn't wait a
+            // frame to catch up.
+            sess->fit_to_pane = true;
             float fit = std::min(static_cast<float>(sess->viewport_w) / static_cast<float>(sess->doc->Width()),
                                   static_cast<float>(sess->viewport_h) / static_cast<float>(sess->doc->Height()));
             sess->zoom = std::clamp(fit, kMinImageZoom, kMaxImageZoom);
@@ -7798,6 +7929,7 @@ void Editor::EnsurePdfPagesRastered(int buffer_id) {
         if (!sess.doc->RenderPage(idx, sess.rendered_scale, pr.rgba, pr.w, pr.h)) continue;
         pr.generation = sess.next_raster_generation++;
         if (!sess.search_matches.empty()) pr.highlights = sess.doc->MatchRectsForPage(idx, sess.rendered_scale, sess.search_matches);
+        pr.links = sess.doc->PageLinks(idx, sess.rendered_scale);
         sess.rasters[idx] = std::move(pr);
     }
     for (auto rit = sess.rasters.begin(); rit != sess.rasters.end();) {
@@ -12096,7 +12228,11 @@ int Editor::ProjectLoad(const std::string &root_arg, bool *restored) {
     }
     for (size_t i = 0; i < projects_.size(); i++) {
         if (projects_[i].root != root) continue;
-        if (restored) *restored = true;  // already has whatever layout the user built
+        // Already loaded, but not necessarily already laid out: the
+        // bootstrap project sits pristine (dashboard-eligible) until
+        // something opens it for real, so opening *that* one still gets
+        // the standard default layout instead of leaving the dashboard up.
+        if (restored && !ProjectIsPristine(projects_[i])) *restored = true;
         ProjectSwitch(projects_[i].id);
         return projects_[i].id;
     }
@@ -12111,7 +12247,12 @@ int Editor::ProjectLoad(const std::string &root_arg, bool *restored) {
     const int id = projects_.back().id;
     active_project_ = static_cast<int>(projects_.size()) - 1;
     AfterWorkspaceActivated();
-    if (RestoreWorkspaces() && RestoreWorkspaceState(id, /*keep_primary_tabs=*/false) && restored) *restored = true;
+    // Only restores the saved workspace *list* -- callers still apply the
+    // standard default layout to whatever comes out of this (see
+    // mep.project_apply_default_layout_to_empty_workspaces), so this does
+    // not count as "already has whatever layout the user built" and leaves
+    // *restored false.
+    if (RestoreWorkspaces()) RestoreWorkspaceState(id, /*keep_primary_tabs=*/false);
     ProjectDetectGit(id);
     status_message_ = "project " + ActiveProject().name + " (" + root + ")";
     return id;
@@ -12336,147 +12477,6 @@ void Editor::SaveAllWorkspaceState() {
     for (const Project &p : projects_) SaveWorkspaceState(p.id);
 }
 
-std::unique_ptr<SplitNode> Editor::SplitFromStateJson(const Json &node, std::vector<std::pair<int, Json>> &leaves,
-                                                      std::unordered_map<int, int> &id_map) {
-    auto out = std::make_unique<SplitNode>();
-    const std::string dir = node.get("dir").as_string("leaf");
-    if (dir == "horizontal" || dir == "vertical") {
-        const Json &children = node.get("children");
-        if (children.is_array() && children.items().size() >= 2) {
-            out->dir = dir == "horizontal" ? SplitDir::Horizontal : SplitDir::Vertical;
-            for (const Json &child : children.items()) out->children.push_back(SplitFromStateJson(child, leaves, id_map));
-            const Json &shares = node.get("shares");
-            if (shares.is_array() && shares.items().size() == out->children.size()) {
-                for (const Json &sh : shares.items()) out->shares.push_back(static_cast<float>(sh.as_double(0.0)));
-            }
-            return out;
-        }
-        // A degenerate split (0-1 children) collapses to one leaf.
-    }
-    out->dir = SplitDir::Leaf;
-    out->pane.id = next_pane_id_++;
-    out->pane.buffer_id = 0;
-    const Json &pane = node.get("pane");
-    if (pane.is_object()) {
-        id_map[pane.get("id").as_int(-1)] = out->pane.id;
-        leaves.emplace_back(out->pane.id, pane);
-    } else {
-        leaves.emplace_back(out->pane.id, Json::Object());
-    }
-    return out;
-}
-
-int Editor::RestoreWorkspaceTabs(Workspace &ws, const Json &ws_json) {
-    // Assumes `ws` is the active workspace (so LoadFile's relative paths,
-    // FindOrCreateBuffer's scoping and OpenTerminalInPlace's cwd all land
-    // in it) -- RestoreWorkspaceState arranges that.
-    int skipped = 0;
-    const Json &tabs_json = ws_json.get("tabs");
-    std::vector<Tab> new_tabs;
-    struct PendingLeaf {
-        size_t tab_index;
-        int pane_id;
-        Json pane;
-    };
-    std::vector<PendingLeaf> pending;
-    std::vector<int> active_pane_ids;
-    if (tabs_json.is_array()) {
-        for (const Json &tj : tabs_json.items()) {
-            std::vector<std::pair<int, Json>> leaves;
-            std::unordered_map<int, int> id_map;
-            Tab tab;
-            tab.id = next_tab_id_++;
-            tab.root = SplitFromStateJson(tj.get("root"), leaves, id_map);
-            auto it = id_map.find(tj.get("active_pane").as_int(-1));
-            tab.active_pane_id = it != id_map.end() ? it->second : leaves.front().first;
-            for (auto &leaf : leaves) pending.push_back({new_tabs.size(), leaf.first, leaf.second});
-            new_tabs.push_back(std::move(tab));
-        }
-    }
-    if (new_tabs.empty()) return 0;  // unrestorable -> keep the single empty tab (decision 10)
-    // Every leaf starts on its own fresh empty buffer so a skipped file
-    // still leaves a valid pane.
-    for (Tab &tab : new_tabs) {
-        std::vector<int> ids;
-        CollectLeaves(tab.root.get(), ids);
-        for (int pid : ids) {
-            SplitNode *n = FindNode(tab.root.get(), pid);
-            if (n) n->pane.buffer_id = CreateEmptyBuffer();
-        }
-    }
-    // Retire the placeholder tab's buffer (MakeWorkspace's) if untouched.
-    for (Tab &old : ws.tabs) {
-        std::vector<int> bids;
-        CollectLeafBuffers(old.root.get(), bids);
-        for (int bid : bids) {
-            if (bid <= 0 || bid >= static_cast<int>(buffers_.size())) continue;
-            Buffer &b = buffers_[static_cast<size_t>(bid)];
-            if (b.filename.empty() && !b.modified && !GetTerminal(bid)) b.deleted = true;
-        }
-    }
-    ws.tabs = std::move(new_tabs);
-    ws.active_tab = std::max(0, std::min(ws_json.get("active_tab").as_int(0), static_cast<int>(ws.tabs.size()) - 1));
-    const int saved_active_tab = ws.active_tab;
-    for (const PendingLeaf &leaf : pending) {
-        ws.active_tab = static_cast<int>(leaf.tab_index);
-        Tab &tab = ws.tabs[leaf.tab_index];
-        const int saved_pane = tab.active_pane_id;
-        tab.active_pane_id = leaf.pane_id;
-        const int placeholder_buffer = CurPane().buffer_id;
-        const std::string kind = leaf.pane.get("kind").as_string("empty");
-        if (kind == "terminal") {
-            OpenTerminalInPlace("");
-        } else if (kind == "file") {
-            const std::string rel = leaf.pane.get("buffer").as_string("");
-            std::error_code ec;
-            const std::string abs = rel.empty() ? "" : (rel[0] == '/' ? rel : ws.root + "/" + rel);
-            if (!rel.empty() && std::filesystem::exists(abs, ec)) {
-                LoadFile(rel);
-            } else if (!rel.empty()) {
-                skipped++;
-            }
-        }
-        Pane &pane = CurPane();
-        // The pre-seeded empty buffer is only kept when nothing replaced it
-        // (kind "empty", or a skipped file); otherwise it would linger as a
-        // stray "[No Name]" in :ls.
-        if (pane.buffer_id != placeholder_buffer && placeholder_buffer > 0 &&
-            placeholder_buffer < static_cast<int>(buffers_.size())) {
-            buffers_[static_cast<size_t>(placeholder_buffer)].deleted = true;
-        }
-        const Json &cur = leaf.pane.get("cursor");
-        if (cur.is_array() && cur.items().size() == 2) {
-            pane.cursor.row = cur.items()[0].as_int(0);
-            pane.cursor.col = cur.items()[1].as_int(0);
-        }
-        pane.scroll_row = std::max(0, leaf.pane.get("scroll").as_int(0));
-        ClampCursor();
-        const Json &extra = leaf.pane.get("buffer_tabs");
-        if (extra.is_array()) {
-            EnsureBufferTabSeeded(pane);
-            for (const Json &e : extra.items()) {
-                const std::string rel = e.as_string("");
-                if (rel.empty()) continue;
-                std::error_code ec;
-                const std::string abs = rel[0] == '/' ? rel : ws.root + "/" + rel;
-                if (!std::filesystem::exists(abs, ec)) {
-                    skipped++;
-                    continue;
-                }
-                int bid = FindOrCreateBuffer(rel);
-                if (bid >= 0 && std::find(pane.buffer_tabs.begin(), pane.buffer_tabs.end(), bid) == pane.buffer_tabs.end()) {
-                    pane.buffer_tabs.push_back(bid);
-                }
-            }
-        }
-        tab.active_pane_id = saved_pane;
-    }
-    ws.active_tab = saved_active_tab;
-    if (mode_ == Mode::Terminal) mode_ = Mode::Normal;
-    SyncModeToActivePaneBuffer();
-    return skipped;
-}
-
 bool Editor::RestoreWorkspaceState(int project_id, bool keep_primary_tabs) {
 #if defined(__EMSCRIPTEN__)
     (void)project_id;
@@ -12498,13 +12498,15 @@ bool Editor::RestoreWorkspaceState(int project_id, bool keep_primary_tabs) {
         Notify("Ignoring workspace session file with unknown version", NotifyLevel::Warn);
         return false;
     }
-    // Restore runs with each workspace active in turn (see
-    // RestoreWorkspaceTabs); remember where to land afterwards.
+    // Only the workspace *list* (name/root/branch) is restored here, not
+    // each workspace's saved panes/tabs -- every restored (or newly created)
+    // non-primary workspace lands with a fresh single empty tab, and the
+    // caller is expected to apply the standard default layout to it (see
+    // mep.project_apply_default_layout_to_empty_workspaces).
     const int saved_project = active_project_;
     for (size_t i = 0; i < projects_.size(); i++) {
         if (projects_[i].id == project_id) active_project_ = static_cast<int>(i);
     }
-    int skipped = 0;
     int pruned = 0;
     bool any = false;
     for (const Json &wj : doc.get("workspaces").items()) {
@@ -12537,11 +12539,6 @@ bool Editor::RestoreWorkspaceState(int project_id, bool keep_primary_tabs) {
             }
         }
         if (!target) continue;
-        for (size_t i = 0; i < project->workspaces.size(); i++) {
-            if (&project->workspaces[i] == target) project->active_workspace = static_cast<int>(i);
-        }
-        ChdirToActiveRoot();
-        skipped += RestoreWorkspaceTabs(*target, wj);
         any = true;
     }
     const std::string active_name = doc.get("active_workspace").as_string("");
@@ -12553,10 +12550,8 @@ bool Editor::RestoreWorkspaceState(int project_id, bool keep_primary_tabs) {
         if (projects_[i].id == project_id) active_project_ = static_cast<int>(i);
     }
     AfterWorkspaceActivated();
-    std::string msg;
-    if (skipped > 0) msg += std::to_string(skipped) + " file(s) skipped (no longer exist)";
-    if (pruned > 0) msg += (msg.empty() ? "" : ", ") + std::to_string(pruned) + " workspace(s) pruned (worktree gone)";
-    if (!msg.empty()) Notify("Restored workspaces: " + msg, NotifyLevel::Warn);
+    if (pruned > 0) Notify("Restored workspaces: " + std::to_string(pruned) + " workspace(s) pruned (worktree gone)",
+                           NotifyLevel::Warn);
     return any;
 #endif
 }
@@ -14758,6 +14753,25 @@ void Editor::PlayMacro(char reg, int count) {
 
 // --- Insert mode -------------------------------------------------------
 
+namespace {
+// UTF-8 byte length of the codepoint starting at `line[i]` -- 1 for ASCII
+// or a stray/invalid lead byte, so callers always make forward progress.
+// Cursor.col is a byte offset everywhere in this file; without stepping by
+// whole codepoints here, Left/Right could park the cursor mid-sequence and
+// Backspace/DeleteForward could shave off just one byte of a multi-byte
+// character (an icon glyph in kBuiltinFileTree's editable tree rows, or
+// simply non-ASCII buffer content) -- corrupting it into orphaned
+// continuation bytes that redraw as their own garbled glyphs.
+int Utf8CodepointLen(const std::string &line, size_t i) {
+    unsigned char b = static_cast<unsigned char>(line[i]);
+    if ((b & 0x80) == 0) return 1;
+    if ((b & 0xE0) == 0xC0) return 2;
+    if ((b & 0xF0) == 0xE0) return 3;
+    if ((b & 0xF8) == 0xF0) return 4;
+    return 1;
+}
+}  // namespace
+
 void Editor::HandleInsertInput() {
     // See the same gfx::GetKeyPressed()-vs-gfx::IsKeyPressed() note in
     // HandleCommandInput(): a same-frame keydown+keyup is invisible to
@@ -14891,7 +14905,10 @@ void Editor::HandleInsertInput() {
     if (del || gfx::IsKeyPressedRepeat(gfx::Key::Delete)) ProcessInsertKey(kReplayDelete);
     if (gfx::IsKeyPressed(gfx::Key::Left) || gfx::IsKeyPressedRepeat(gfx::Key::Left)) {
         if (cursor.col > 0) {
-            cursor.col--;
+            const std::string &line = Buf().lines[static_cast<size_t>(cursor.row)];
+            int new_col = cursor.col - 1;
+            while (new_col > 0 && (static_cast<unsigned char>(line[static_cast<size_t>(new_col)]) & 0xC0) == 0x80) new_col--;
+            cursor.col = new_col;
         } else if (cursor.row > 0) {
             cursor.row--;
             cursor.col = LineLen(cursor.row);
@@ -14899,7 +14916,8 @@ void Editor::HandleInsertInput() {
     }
     if (gfx::IsKeyPressed(gfx::Key::Right) || gfx::IsKeyPressedRepeat(gfx::Key::Right)) {
         if (cursor.col < LineLen(cursor.row)) {
-            cursor.col++;
+            const std::string &line = Buf().lines[static_cast<size_t>(cursor.row)];
+            cursor.col = std::min(cursor.col + Utf8CodepointLen(line, static_cast<size_t>(cursor.col)), LineLen(cursor.row));
         } else if (cursor.row + 1 < Buf().LineCount()) {
             cursor.row++;
             cursor.col = 0;
@@ -14940,8 +14958,10 @@ void Editor::Backspace() {
     CursorPos &cursor = CurPane().cursor;
     if (cursor.col > 0) {
         std::string &line = Buf().lines[static_cast<size_t>(cursor.row)];
-        line.erase(static_cast<size_t>(cursor.col - 1), 1);
-        cursor.col--;
+        int start = cursor.col - 1;
+        while (start > 0 && (static_cast<unsigned char>(line[static_cast<size_t>(start)]) & 0xC0) == 0x80) start--;
+        line.erase(static_cast<size_t>(start), static_cast<size_t>(cursor.col - start));
+        cursor.col = start;
     } else if (cursor.row > 0) {
         std::string current = Buf().lines[static_cast<size_t>(cursor.row)];
         Buf().lines.erase(Buf().lines.begin() + cursor.row);
@@ -14958,7 +14978,7 @@ void Editor::DeleteForward() {
     CursorPos &cursor = CurPane().cursor;
     std::string &line = Buf().lines[static_cast<size_t>(cursor.row)];
     if (cursor.col < static_cast<int>(line.size())) {
-        line.erase(static_cast<size_t>(cursor.col), 1);
+        line.erase(static_cast<size_t>(cursor.col), static_cast<size_t>(Utf8CodepointLen(line, static_cast<size_t>(cursor.col))));
     } else if (cursor.row + 1 < Buf().LineCount()) {
         std::string next = Buf().lines[static_cast<size_t>(cursor.row) + 1];
         Buf().lines.erase(Buf().lines.begin() + cursor.row + 1);
@@ -16702,10 +16722,48 @@ void Editor::ActivateSidebarLine(int id, int line_index) {
             int max_idx = static_cast<int>(FlattenSidebar(id).size()) - 1;
             sidebar_cursor_ = std::min(sidebar_cursor_, std::max(0, max_idx));
         }
+        // Same clamp as focused_sidebar_id_'s own above, for a pane-hosted
+        // view of this same sidebar (Mode::SidebarPane) instead of the
+        // docked one.
+        if (SidebarIdForPaneBuffer(CurPane().buffer_id) == id) {
+            int max_idx = static_cast<int>(FlattenSidebar(id).size()) - 1;
+            sidebar_pane_cursor_ = std::min(sidebar_pane_cursor_, std::max(0, max_idx));
+        }
     } else if (line.kind == SidebarLine::Kind::Widget) {
         int ref = sb->sections[static_cast<size_t>(line.section_index)].widgets[static_cast<size_t>(line.widget_index)].on_click_ref;
         if (ref != 0 && lua_) lua_->CallRef(ref);
     }
+}
+
+void Editor::SidebarOpenPane(int sidebar_id) {
+    const SidebarInstance *sb = FindSidebar(sidebar_id);
+    if (!sb) return;
+    // A synthetic path, never a real file: FindOrCreateBuffer's own
+    // filename-dedup means re-opening the same sidebar_id always resolves
+    // back to the same buffer (so toggling a language UI mode off and back
+    // on reuses it rather than leaking a fresh empty one each time), and
+    // the leading "sidebar/" segment keeps it out of the way of any real
+    // relative path the user might actually open while still Basename()-ing
+    // down to just the sidebar's own title for the pane tab strip (DrawPane
+    // has no separate title-override concept for a buffer, so its filename
+    // IS its displayed name).
+    std::string path = "sidebar/" + sb->title;
+    int buffer_id = FindOrCreateBuffer(path, nullptr);
+    if (buffer_id < 0) return;
+    sidebar_pane_buffers_[buffer_id] = sidebar_id;
+    PaneOpenBufferInTab(path);
+}
+
+bool Editor::IsSidebarPaneBuffer(int buffer_id) const { return sidebar_pane_buffers_.find(buffer_id) != sidebar_pane_buffers_.end(); }
+
+int Editor::SidebarIdForPaneBuffer(int buffer_id) const {
+    auto it = sidebar_pane_buffers_.find(buffer_id);
+    return it == sidebar_pane_buffers_.end() ? 0 : it->second;
+}
+
+void Editor::FocusSidebarPaneRow(int sidebar_id, int line_index) {
+    std::vector<SidebarLine> lines = FlattenSidebar(sidebar_id);
+    sidebar_pane_cursor_ = std::clamp(line_index, 0, std::max(0, static_cast<int>(lines.size()) - 1));
 }
 
 void Editor::SetSidebarSize(int id, int size) {
@@ -16726,10 +16784,46 @@ void Editor::SetSidebarSize(int id, int size) {
 
 std::vector<int> Editor::OpenSidebarIdsOn(const std::string &position) const {
     std::vector<int> ids;
+    std::vector<std::string> seen_groups;
     for (const SidebarInstance &sb : sidebars_) {
-        if (sb.open && sb.position == position) ids.push_back(sb.id);
+        if (!sb.open || sb.position != position) continue;
+        if (sb.tab_group.empty()) {
+            ids.push_back(sb.id);
+            continue;
+        }
+        // A grouped sidebar contributes ONE representative id (whichever
+        // member is currently active) to its edge's stack, the first time
+        // its group is seen -- every later member of the same group is
+        // already accounted for by that one slot.
+        if (std::find(seen_groups.begin(), seen_groups.end(), sb.tab_group) != seen_groups.end()) continue;
+        seen_groups.push_back(sb.tab_group);
+        ids.push_back(TabGroupActiveId(sb.tab_group, position));
     }
     return ids;
+}
+
+std::vector<int> Editor::OpenSidebarIdsInGroup(const std::string &group, const std::string &position) const {
+    std::vector<int> ids;
+    if (group.empty()) return ids;
+    for (const SidebarInstance &sb : sidebars_) {
+        if (sb.open && sb.position == position && sb.tab_group == group) ids.push_back(sb.id);
+    }
+    return ids;
+}
+
+int Editor::TabGroupActiveId(const std::string &group, const std::string &position) const {
+    const std::vector<int> open_ids = OpenSidebarIdsInGroup(group, position);
+    if (open_ids.empty()) return 0;
+    auto it = tab_group_active_.find(group);
+    if (it != tab_group_active_.end() && std::find(open_ids.begin(), open_ids.end(), it->second) != open_ids.end()) {
+        return it->second;
+    }
+    return open_ids.front();
+}
+
+void Editor::SetTabGroupActive(const std::string &group, int id) {
+    if (group.empty()) return;
+    tab_group_active_[group] = id;
 }
 
 int Editor::DockSize(const std::string &position) const {
@@ -16778,12 +16872,13 @@ bool Editor::SwapSidebarInStack(int id, const std::string &direction) {
     return true;
 }
 
-int Editor::CreateSidebar(const std::string &title, const std::string &position, int size) {
+int Editor::CreateSidebar(const std::string &title, const std::string &position, int size, const std::string &tab_group) {
     SidebarInstance sb;
     sb.id = next_sidebar_id_++;
     sb.title = title;
     sb.position = position;
     sb.size = size;
+    sb.tab_group = tab_group;
     sidebars_.push_back(sb);
     return sb.id;
 }
@@ -16858,14 +16953,42 @@ std::vector<SidebarLine> Editor::FlattenSidebar(int id) const {
         if (sec.collapsed) continue;
         for (int wi = 0; wi < static_cast<int>(sec.widgets.size()); wi++) {
             const SidebarWidget &w = sec.widgets[static_cast<size_t>(wi)];
-            SidebarLine line;
-            line.kind = SidebarLine::Kind::Widget;
-            line.section_index = si;
-            line.widget_index = wi;
-            line.text = (w.icon.empty() ? "  " : "  " + w.icon + " ") + w.text;
-            line.hl = w.hl;
-            line.current = w.current;
-            out.push_back(line);
+            std::string icon_prefix = w.icon.empty() ? "  " : "  " + w.icon + " ";
+            if (!w.wrap) {
+                SidebarLine line;
+                line.kind = SidebarLine::Kind::Widget;
+                line.section_index = si;
+                line.widget_index = wi;
+                line.text = icon_prefix + w.text;
+                line.hl = w.hl;
+                line.current = w.current;
+                out.push_back(line);
+                continue;
+            }
+            // Wrapped (SidebarWidget::wrap, its own comment): the first
+            // wrap_indent characters of w.text (a checkbox mark, typically)
+            // stay verbatim on the first line and become that many spaces
+            // on every continuation line, so wrapped text lines up left-
+            // justified starting right after the mark instead of
+            // restarting at column 0. Wrap width is the sidebar's own
+            // column count (SidebarInstance::size) minus the icon prefix
+            // and the indent, less a small margin for the left inset
+            // draw_one (main.cpp) always applies.
+            int indent = std::clamp(w.wrap_indent, 0, static_cast<int>(w.text.size()));
+            std::string prefix = w.text.substr(0, static_cast<size_t>(indent));
+            std::string body = w.text.substr(static_cast<size_t>(indent));
+            int body_width = std::max(4, sb->size - 1 - static_cast<int>(icon_prefix.size()) - indent);
+            std::vector<std::string> wrapped = LspDiagWrap(body, body_width);
+            for (size_t k = 0; k < wrapped.size(); k++) {
+                SidebarLine line;
+                line.kind = SidebarLine::Kind::Widget;
+                line.section_index = si;
+                line.widget_index = wi;
+                line.text = icon_prefix + (k == 0 ? prefix : std::string(prefix.size(), ' ')) + wrapped[k];
+                line.hl = w.hl;
+                line.current = w.current;
+                out.push_back(line);
+            }
         }
     }
     return out;
@@ -16881,12 +17004,26 @@ void Editor::UpdateScrollForSidebar(int id, int visible_lines) {
     // one (another open sidebar, or this one after mod1+hjkl blurred it
     // back into the pane tree) just gets its scroll_offset clamped back in
     // range below, same as a pane that shrank out from under its own
-    // scroll_row.
+    // scroll_row. A pane-hosted view of this same sidebar (Mode::SidebarPane,
+    // sidebar_pane_cursor_) chases exactly the same way, just via its own
+    // cursor slot instead of the docked one's.
+    int cursor;
+    bool has_focus;
     if (id == focused_sidebar_id_ && mode_ == Mode::Sidebar) {
-        if (sidebar_cursor_ < sb->scroll_offset) {
-            sb->scroll_offset = sidebar_cursor_;
-        } else if (sidebar_cursor_ >= sb->scroll_offset + visible_lines) {
-            sb->scroll_offset = sidebar_cursor_ - visible_lines + 1;
+        cursor = sidebar_cursor_;
+        has_focus = true;
+    } else if (mode_ == Mode::SidebarPane && SidebarIdForPaneBuffer(CurPane().buffer_id) == id) {
+        cursor = sidebar_pane_cursor_;
+        has_focus = true;
+    } else {
+        cursor = 0;
+        has_focus = false;
+    }
+    if (has_focus) {
+        if (cursor < sb->scroll_offset) {
+            sb->scroll_offset = cursor;
+        } else if (cursor >= sb->scroll_offset + visible_lines) {
+            sb->scroll_offset = cursor - visible_lines + 1;
         }
     }
     sb->scroll_offset = std::clamp(sb->scroll_offset, 0, max_scroll);
@@ -17018,6 +17155,67 @@ void Editor::HandleSidebarInput() {
     }
     if ((gfx::IsKeyPressed(gfx::Key::Up) || gfx::IsKeyPressedRepeat(gfx::Key::Up)) && sidebar_cursor_ > 0) {
         sidebar_cursor_--;
+    }
+}
+
+// Mode::SidebarPane's own input handler: a trimmed HandleSidebarInput above
+// for a pane-hosted sidebar view instead of a docked one -- j/k/gg/G/Enter
+// and on_key_ref forwarding carry over unchanged in spirit, but there's no
+// popout/q-to-close/Tab-view-switch/Ctrl-e-v-j-k escape hatches (none of
+// those are docked-focus concepts; the pane itself is closed the ordinary
+// way, mod1+d) and it operates on sidebar_pane_cursor_/whichever sidebar
+// CurPane()'s buffer is bound to (SidebarIdForPaneBuffer) rather than
+// focused_sidebar_id_/sidebar_cursor_.
+void Editor::HandleSidebarPaneInput() {
+    int sidebar_id = SidebarIdForPaneBuffer(CurPane().buffer_id);
+    if (sidebar_id == 0) return;
+    std::vector<SidebarLine> lines = FlattenSidebar(sidebar_id);
+    bool enter = false;
+    for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
+        if (key == gfx::Key::Enter) enter = true;
+    }
+    if (enter) {
+        pending_g_ = false;
+        ActivateSidebarLine(sidebar_id, sidebar_pane_cursor_);
+        return;
+    }
+    int cp = gfx::GetCharPressed();
+    while (cp > 0) {
+        if (cp == 'G') {
+            sidebar_pane_cursor_ = std::max(0, static_cast<int>(lines.size()) - 1);
+            pending_g_ = false;
+        } else if (cp == 'g' && pending_g_) {
+            sidebar_pane_cursor_ = 0;
+            pending_g_ = false;
+        } else if (cp == 'g') {
+            pending_g_ = true;
+        } else if (cp == 'j' && sidebar_pane_cursor_ + 1 < static_cast<int>(lines.size())) {
+            sidebar_pane_cursor_++;
+            pending_g_ = false;
+        } else if (cp == 'k' && sidebar_pane_cursor_ > 0) {
+            sidebar_pane_cursor_--;
+            pending_g_ = false;
+        } else if (lua_) {
+            pending_g_ = false;
+            const SidebarInstance *sb = FindSidebar(sidebar_id);
+            if (sb && sb->on_key_ref != 0 && cp >= 32 && cp < 127) {
+                lua_->CallRefWithString(sb->on_key_ref, std::string(1, static_cast<char>(cp)));
+                // Same early-out as HandleSidebarInput's own: the callback
+                // may have opened a Prompt/Confirm overlay, which leaves
+                // Mode::SidebarPane -- stop draining so leftover queued
+                // characters roll over to next frame's (by-then-different)
+                // mode dispatch instead of still being fed here as commands.
+                if (mode_ != Mode::SidebarPane) return;
+            }
+        }
+        cp = gfx::GetCharPressed();
+    }
+    if ((gfx::IsKeyPressed(gfx::Key::Down) || gfx::IsKeyPressedRepeat(gfx::Key::Down)) &&
+        sidebar_pane_cursor_ + 1 < static_cast<int>(lines.size())) {
+        sidebar_pane_cursor_++;
+    }
+    if ((gfx::IsKeyPressed(gfx::Key::Up) || gfx::IsKeyPressedRepeat(gfx::Key::Up)) && sidebar_pane_cursor_ > 0) {
+        sidebar_pane_cursor_--;
     }
 }
 
@@ -17819,6 +18017,7 @@ const char *ModeName(Mode m, bool replace_mode) {
         case Mode::Pdf: return "PDF";
         case Mode::Video: return "VIDEO";
         case Mode::Html: return "HTML";
+        case Mode::SidebarPane: return "SIDEBAR";
         case Mode::OfficeNormal: return "NORMAL";
         case Mode::OfficeInsert: return "INSERT";
         case Mode::OfficeVisual: return "VISUAL";
@@ -22081,6 +22280,16 @@ std::string Editor::BufferFilenameForLua(int buffer_id) const {
     return buffers_[static_cast<size_t>(buffer_id)].filename;
 }
 
+void Editor::SetBufferFilenameForLua(int buffer_id, const std::string &name) {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
+    buffers_[static_cast<size_t>(buffer_id)].filename = name;
+}
+
+bool Editor::BufferModifiedForLua(int buffer_id) const {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return false;
+    return buffers_[static_cast<size_t>(buffer_id)].modified;
+}
+
 void Editor::SwitchToBufferForLua(int buffer_id) {
     if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
     CurPane().buffer_id = buffer_id;
@@ -22251,6 +22460,21 @@ std::vector<Editor::MappingDescription> Editor::AllMappingDescriptions() const {
 // --- File I/O ------------------------------------------------------------
 
 bool Editor::SaveBuffer(Buffer &buf, const std::string &path) {
+    // `buf` is always a reference to an element of buffers_ (both callers
+    // pass one) -- pointer arithmetic recovers its buffer_id to check
+    // images_/pdfs_/the write hook without threading an id through every
+    // SaveBuffer call site.
+    int buffer_id = static_cast<int>(&buf - buffers_.data());
+    // A write-hook buffer (mep.buffer_set_on_write) has no real file to
+    // write regardless of `path` -- checked ahead of the "no file name"
+    // guard below since it doesn't need a filename at all (kBuiltinFileTree's
+    // editable tree view, the first caller, never calls buffer_set_filename).
+    if (buffer_id == write_hook_buffer_id_ && write_hook_ref_ != 0 && lua_) {
+        lua_->CallRef(write_hook_ref_);
+        buf.modified = false;
+        save_epoch_++;
+        return true;
+    }
     if (path.empty()) {
         status_message_ = "E32: No file name";
         return false;
@@ -22262,16 +22486,12 @@ bool Editor::SaveBuffer(Buffer &buf, const std::string &path) {
     // below uses the resolved form; buf.filename/status text keep the
     // user's own spelling.
     const std::string io_path = ResolveBufferPath(buf, path);
-    // `buf` is always a reference to an element of buffers_ (both callers
-    // pass one) -- pointer arithmetic recovers its buffer_id to check
-    // images_/pdfs_ without threading an id through every SaveBuffer call
-    // site. An image/PDF buffer's Buffer::lines is a dummy single empty
-    // line (see OpenImageInPlace/OpenPdfInPlace); writing it out would
-    // silently replace the real file with that instead -- confirmed this
-    // was missing for PDF specifically (only the image guard existed),
-    // meaning `:w` on a focused PDF pane was overwriting the real PDF file
-    // on disk with a blank line.
-    int buffer_id = static_cast<int>(&buf - buffers_.data());
+    // An image/PDF buffer's Buffer::lines is a dummy single empty line
+    // (see OpenImageInPlace/OpenPdfInPlace); writing it out would silently
+    // replace the real file with that instead -- confirmed this was
+    // missing for PDF specifically (only the image guard existed), meaning
+    // `:w` on a focused PDF pane was overwriting the real PDF file on disk
+    // with a blank line.
     if (IsImageBuffer(buffer_id)) {
         // An opened-and-edited image-editor session (IMAGE_EDITOR.md)
         // flattens its layers and writes a real PNG; a plain, never-
@@ -22482,7 +22702,11 @@ std::vector<Editor::DirEntry> Editor::ListDirectory(const std::string &path) con
     std::error_code ec;
     for (const auto &entry : std::filesystem::directory_iterator(
              path, std::filesystem::directory_options::skip_permission_denied, ec)) {
-        entries.push_back({entry.path().filename().string(), entry.is_directory(ec)});
+        double mtime = 0;
+        std::error_code mtime_ec;
+        std::filesystem::file_time_type ftime = entry.last_write_time(mtime_ec);
+        if (!mtime_ec) mtime = std::chrono::duration<double>(ftime.time_since_epoch()).count();
+        entries.push_back({entry.path().filename().string(), entry.is_directory(ec), mtime});
     }
 #endif
     return entries;

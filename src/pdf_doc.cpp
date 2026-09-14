@@ -2,6 +2,7 @@
 
 #include "pdf_content.h"
 #include "pdf_document.h"
+#include "pdf_links.h"
 #include "pdf_outline.h"
 #include "pdf_text.h"
 #include "pdf_xref.h"
@@ -157,5 +158,16 @@ std::vector<PdfOutlineItem> PdfDoc::Outline() const {
                                 impl_->document_);
     out.reserve(items.size());
     for (const pdfoutline::OutlineItem &it : items) out.push_back({it.title, it.page, it.depth});
+    return out;
+}
+
+std::vector<PdfLinkAnnot> PdfDoc::PageLinks(int page_index, float px_per_pt) const {
+    std::vector<PdfLinkAnnot> out;
+    if (!impl_) return out;
+    std::vector<pdflinks::PdfLinkAnnot> links = pdflinks::GetPageLinks(
+        impl_->file_data_.data(), impl_->file_data_.size(), impl_->document_.Xref(), impl_->document_, page_index,
+        px_per_pt);
+    out.reserve(links.size());
+    for (const pdflinks::PdfLinkAnnot &l : links) out.push_back({l.x0, l.y0, l.x1, l.y1, l.target_page, l.uri});
     return out;
 }

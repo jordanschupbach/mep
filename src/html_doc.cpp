@@ -1180,6 +1180,14 @@ void WalkAndStyle(DomNode *n, const ComputedStyle &parent, const std::vector<Css
     s.monospace = s.monospace || parent.monospace;
     s.preserve_whitespace = s.preserve_whitespace || parent.preserve_whitespace;
     s.list_depth = list_depth;
+    s.link_href = parent.link_href;
+    s.link_node = parent.link_node;
+    if (n->tag == "a") {
+        if (auto it = n->attrs.find("href"); it != n->attrs.end()) {
+            s.link_href = it->second;
+            s.link_node = n;
+        }
+    }
 
     ApplyMatchingRules(n, s, rules);
     if (auto it = n->attrs.find("style"); it != n->attrs.end()) ApplyDeclarations(s, ParseDeclarations(it->second));

@@ -9,6 +9,7 @@
 // same way it already shows LaTeX sections/code symbols for others.
 
 #include "pdf_document.h"
+#include "pdf_object.h"
 #include "pdf_xref.h"
 
 #include <cstddef>
@@ -16,6 +17,17 @@
 #include <vector>
 
 namespace pdfoutline {
+
+// Resolves a /Dest value (or an /A action dict's own /D) to a 0-based
+// page index -- shared with pdf_links.cpp (spec 12.5.6.5 Link
+// annotations use exactly the same /Dest-or-/A shapes an outline item's
+// own destination does, see this header's own GetOutline comment for
+// which ones). Returns -1 for anything unresolvable (a malformed
+// destination, or a named one whose name isn't actually in
+// /Root/Names/Dests) rather than failing outright, matching every other
+// tolerant fallback in this PDF engine.
+int ResolveDestPage(const unsigned char *data, size_t len, const pdfxref::XrefTable &table,
+                     const pdfdoc::PdfDocument &document, const pdfobj::Object &dest_or_action);
 
 // One bookmark entry, flattened out of the tree with a `depth` field --
 // the same "flat list + depth, not a real nested structure" convention

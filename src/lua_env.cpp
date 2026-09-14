@@ -2514,17 +2514,66 @@ int l_image_size(lua_State *L) {
     return 2;
 }
 
+// mep.image_set_nav(buffer_id, prev_fn?, next_fn?): configures an image
+// buffer's "<"/">" nav-header (Editor::SetImageNav/ImageSession::
+// nav_prev_ref/nav_next_ref, DrawPane's image branch, main.cpp) -- omit or
+// pass nil for either to clear it. See kBuiltinLanguageUiR's merged Plot
+// pane for the intended use: every time it points an image pane at a
+// different figure file, it re-applies these two callbacks to the
+// (possibly new) buffer id.
+/**
+ * @brief Implements mep.image_set_nav(buffer_id, prev_fn?, next_fn?): sets or clears an image
+ * buffer's "<"/">" nav-header click callbacks.
+ * @param L Lua state; arg 1 is the image buffer id, optional args 2/3 are the prev/next callbacks (nil clears).
+ * @return Number of values pushed (0).
+ */
+int l_image_set_nav(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    int prev_ref = 0, next_ref = 0;
+    if (!lua_isnoneornil(L, 2)) {
+        lua_pushvalue(L, 2);
+        prev_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    }
+    if (!lua_isnoneornil(L, 3)) {
+        lua_pushvalue(L, 3);
+        next_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    }
+    GetEditor(L)->SetImageNav(buffer_id, prev_ref, next_ref);
+    return 0;
+}
+
+// mep.image_set_theme(buffer_id, theme_colors): sets an image buffer's
+// default theme_colors state (Editor::SetImageTheme/ImageSession::
+// theme_colors, DrawPane's image branch, main.cpp) -- Ctrl-R still toggles
+// it interactively from there same as a PDF/HTML pane; this just sets
+// where it starts. See ImageSession::theme_colors' own comment for why
+// this defaults false and is opt-in per buffer, unlike PdfSession/
+// HtmlSession's own theme_colors.
+/**
+ * @brief Implements mep.image_set_theme(buffer_id, theme_colors): sets an image buffer's
+ * default theme_colors state.
+ * @param L Lua state; arg 1 is the image buffer id, arg 2 the state to set.
+ * @return Number of values pushed (0).
+ */
+int l_image_set_theme(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    bool theme_colors = lua_toboolean(L, 2);
+    GetEditor(L)->SetImageTheme(buffer_id, theme_colors);
+    return 0;
+}
+
 // mep.sidebar_create(title, position, size) -> id.
 /**
- * @brief Implements mep.sidebar_create(title, position, size): creates a new sidebar panel.
- * @param L Lua state; arg 1 is the sidebar title, optional arg 2 the dock position (default "right"), optional arg 3 the size in columns (default 34).
+ * @brief Implements mep.sidebar_create(title, position, size, tab_group): creates a new sidebar panel.
+ * @param L Lua state; arg 1 is the sidebar title, optional arg 2 the dock position (default "right"), optional arg 3 the size in columns (default 34), optional arg 4 a tab_group string merging it with every other open sidebar sharing that string (and position) into one tabbed stack slot.
  * @return Number of values pushed (1: the new sidebar's id).
  */
 int l_sidebar_create(lua_State *L) {
     const char *title = luaL_checkstring(L, 1);
     const char *position = luaL_optstring(L, 2, "right");
     int size = static_cast<int>(luaL_optinteger(L, 3, 34));
-    lua_pushinteger(L, GetEditor(L)->CreateSidebar(title, position, size));
+    const char *tab_group = luaL_optstring(L, 4, "");
+    lua_pushinteger(L, GetEditor(L)->CreateSidebar(title, position, size, tab_group));
     return 1;
 }
 
@@ -2578,6 +2627,12 @@ int l_sidebar_set_sections(lua_State *L) {
                 lua_getfield(L, -1, "current");
                 w.current = lua_toboolean(L, -1);
                 lua_pop(L, 1);
+                lua_getfield(L, -1, "wrap");
+                w.wrap = lua_toboolean(L, -1);
+                lua_pop(L, 1);
+                lua_getfield(L, -1, "wrap_indent");
+                if (lua_isinteger(L, -1)) w.wrap_indent = static_cast<int>(lua_tointeger(L, -1));
+                lua_pop(L, 1);
                 w.on_click_ref = RefField(L, -1, "on_click");
                 lua_pop(L, 1);  // the widget table itself
                 sec.widgets.push_back(std::move(w));
@@ -2600,6 +2655,24 @@ int l_sidebar_open(lua_State *L) {
     int id = static_cast<int>(luaL_checkinteger(L, 1));
     bool focus = lua_gettop(L) < 2 || lua_toboolean(L, 2);
     GetEditor(L)->OpenSidebar(id, focus);
+    return 0;
+}
+
+// mep.sidebar_open_pane(id): opens a sidebar's content as an ordinary
+// tabbed buffer in the focused pane, the way mep.open/mep.pane_open opens
+// a file -- so a sidebar can be split/moved/tab-cycled/merged with mod1's
+// usual pane chords instead of staying docked to a screen edge. See
+// SidebarInstance::tab_group's own comment (editor.h) and
+// Mode::SidebarPane for the alternative this largely superseded for
+// kBuiltinLanguageUiR's own Plot/Data/Help/Objects/Packages/History.
+/**
+ * @brief Implements mep.sidebar_open_pane(id): opens a sidebar's content as a tabbed buffer in the
+ * focused pane.
+ * @param L Lua state; arg 1 is the sidebar id.
+ * @return Number of values pushed (0).
+ */
+int l_sidebar_open_pane(lua_State *L) {
+    GetEditor(L)->SidebarOpenPane(static_cast<int>(luaL_checkinteger(L, 1)));
     return 0;
 }
 
@@ -2873,6 +2946,46 @@ int l_buffer_set_on_enter(lua_State *L) {
     int ref = luaL_ref(L, LUA_REGISTRYINDEX);
     GetEditor(L)->SetBufferOnEnter(buffer_id, ref);
     return 0;
+}
+
+// mep.buffer_set_on_write(buffer_id, fn): fn() replaces `:w`/`:wq`/`ZZ`'s
+// real disk write for `buffer_id` (Editor::SetBufferOnWrite's own comment,
+// editor.h) while it's the active pane's buffer.
+/**
+ * @brief Implements mep.buffer_set_on_write(buffer_id, fn): registers a callback that replaces a buffer's real disk write.
+ * @param L Lua state; arg 1 is the buffer id, arg 2 the callback function.
+ * @return Number of values pushed (0).
+ */
+int l_buffer_set_on_write(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    luaL_checktype(L, 2, LUA_TFUNCTION);
+    lua_pushvalue(L, 2);
+    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    GetEditor(L)->SetBufferOnWrite(buffer_id, ref);
+    return 0;
+}
+
+/**
+ * @brief Implements mep.buffer_set_filename(id, name): sets a buffer's raw filename.
+ * @param L Lua state; arg 1 is the buffer id, arg 2 the new filename.
+ * @return Number of values pushed (0).
+ */
+int l_buffer_set_filename(lua_State *L) {
+    int id = static_cast<int>(luaL_checkinteger(L, 1));
+    const char *name = luaL_checkstring(L, 2);
+    GetEditor(L)->SetBufferFilenameForLua(id, name);
+    return 0;
+}
+
+/**
+ * @brief Implements mep.buffer_modified(id): returns whether a buffer has unsaved changes.
+ * @param L Lua state; arg 1 is the buffer id.
+ * @return Number of values pushed (1: true if modified).
+ */
+int l_buffer_modified(lua_State *L) {
+    int id = static_cast<int>(luaL_checkinteger(L, 1));
+    lua_pushboolean(L, GetEditor(L)->BufferModifiedForLua(id));
+    return 1;
 }
 
 /**
@@ -3471,15 +3584,17 @@ int l_layout(lua_State *L) {
     return 0;
 }
 
-// mep.list_dir(path) -> array of {name=, is_dir=}, directories first then
-// files, both alphabetical (Phase 15 file tree). Editor::ListDirectory
+// mep.list_dir(path) -> array of {name=, is_dir=, mtime=}, directories first
+// then files, both alphabetical (Phase 15 file tree). Editor::ListDirectory
 // handles native vs. wasm (routed through the `just run-wasm` loopback bridge,
 // same as :e/:w/:source -- empty when there's no bridge, e.g. a bare
-// browser tab) so this is just the Lua table conversion.
+// browser tab) so this is just the Lua table conversion. `mtime` (native
+// builds only, always 0 under wasm) is an opaque comparable number, not a
+// real timestamp -- see DirEntry::mtime's own comment (editor.h).
 /**
  * @brief Implements mep.list_dir(path): lists a directory's entries, directories first then alphabetically.
  * @param L Lua state; arg 1 is the directory path.
- * @return Number of values pushed (1: the array of {name=, is_dir=} entries).
+ * @return Number of values pushed (1: the array of {name=, is_dir=, mtime=} entries).
  */
 int l_list_dir(lua_State *L) {
     const char *path = luaL_checkstring(L, 1);
@@ -3496,6 +3611,8 @@ int l_list_dir(lua_State *L) {
         lua_setfield(L, -2, "name");
         lua_pushboolean(L, entries[i].is_dir);
         lua_setfield(L, -2, "is_dir");
+        lua_pushnumber(L, entries[i].mtime);
+        lua_setfield(L, -2, "mtime");
         lua_rawseti(L, -2, static_cast<int>(i) + 1);
     }
     return 1;
@@ -3571,6 +3688,25 @@ int l_fs_delete(lua_State *L) {
 #if !defined(__EMSCRIPTEN__)
     std::error_code ec;
     std::filesystem::remove_all(path, ec);
+    lua_pushboolean(L, !ec);
+#else
+    lua_pushboolean(L, false);
+#endif
+    return 1;
+}
+
+/**
+ * @brief Implements mep.fs_copy(from, to): recursively copies a file or directory (native builds only).
+ * @param L Lua state; arg 1 is the source path, arg 2 the destination path.
+ * @return Number of values pushed (1: true on success, false on error or under wasm).
+ */
+int l_fs_copy(lua_State *L) {
+    const char *from = luaL_checkstring(L, 1);
+    const char *to = luaL_checkstring(L, 2);
+#if !defined(__EMSCRIPTEN__)
+    std::error_code ec;
+    std::filesystem::copy(from, to, std::filesystem::copy_options::recursive | std::filesystem::copy_options::copy_symlinks,
+                           ec);
     lua_pushboolean(L, !ec);
 #else
     lua_pushboolean(L, false);
@@ -7872,6 +8008,9 @@ const luaL_Reg kMepFuncs[] = {
     {"term_resize", l_term_resize},
     {"buffer_new", l_buffer_new},
     {"buffer_set_on_enter", l_buffer_set_on_enter},
+    {"buffer_set_on_write", l_buffer_set_on_write},
+    {"buffer_set_filename", l_buffer_set_filename},
+    {"buffer_modified", l_buffer_modified},
     {"fold_create", l_fold_create},
     {"fold_clear_provider", l_fold_clear_provider},
     {"fold_toggle", l_fold_toggle},
@@ -7926,9 +8065,12 @@ const luaL_Reg kMepFuncs[] = {
     {"buf_clear_latex_inline", l_buf_clear_latex_inline},
     {"font_size", l_font_size},
     {"image_size", l_image_size},
+    {"image_set_nav", l_image_set_nav},
+    {"image_set_theme", l_image_set_theme},
     {"sidebar_create", l_sidebar_create},
     {"sidebar_set_sections", l_sidebar_set_sections},
     {"sidebar_open", l_sidebar_open},
+    {"sidebar_open_pane", l_sidebar_open_pane},
     {"sidebar_close", l_sidebar_close},
     {"sidebar_toggle", l_sidebar_toggle},
     {"sidebar_is_open", l_sidebar_is_open},
@@ -7988,6 +8130,7 @@ const luaL_Reg kMepFuncs[] = {
     {"fs_create_file", l_fs_create_file},
     {"fs_rename", l_fs_rename},
     {"fs_delete", l_fs_delete},
+    {"fs_copy", l_fs_copy},
     {"project_list", l_project_list},
     {"project_add", l_project_add},
     {"project_remove", l_project_remove},

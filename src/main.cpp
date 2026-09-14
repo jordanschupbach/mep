@@ -386,11 +386,29 @@ gfx::Font g_office_font_mono_italic;
 gfx::Font g_office_font_mono_bolditalic;
 
 // GPU upload cache for image-viewer panes (Editor::ImageSession), keyed by
-// buffer_id -- an ImageDoc is decoded once and never mutated, so its
-// Texture2D is uploaded lazily on first draw and reused every frame after,
-// same lifetime as buffers_ itself (never evicted; see the comment above
-// Editor::images_).
-std::unordered_map<int, gfx::Texture2D> g_image_textures;
+// buffer_id -- an ImageDoc is decoded once and never mutated for MOST image
+// buffers, so its Texture2D is uploaded lazily on first draw and reused
+// every frame after, same lifetime as buffers_ itself (never evicted; see
+// the comment above Editor::images_). The one exception is a same-path
+// reopen (Editor::OpenImageInPlace's re-decode branch -- e.g. the R
+// language UI mode's current figure, now rewritten in place by further
+// plotting on the same page rather than always getting a new file, see
+// kBuiltinLanguageUiR's mep_capture_plot): `generation` mirrors
+// ImageSession::decode_generation so a stale entry from before that
+// re-decode gets replaced instead of served forever.
+struct ImageTextureCacheEntry {
+    gfx::Texture2D tex{};
+    int generation = -1;
+    // theme_colors and theme_epoch mirror PdfTextureCacheEntry's own pair
+    // just below (see its comment for why theme_epoch, specifically,
+    // matters beyond theme_colors alone) -- ImageSession::theme_colors
+    // defaults false rather than true, but once a caller (kBuiltinLanguageUiR's
+    // merged Plot pane) opts a buffer into it, the same live-colorscheme-
+    // change case applies.
+    bool theme_colors = false;
+    int theme_epoch = -1;
+};
+std::unordered_map<int, ImageTextureCacheEntry> g_image_textures;
 
 // GPU upload cache for PDF-viewer panes (Editor::PdfSession), keyed by
 // (buffer_id, page index) -- PdfSession virtualizes its raster cache down
@@ -1042,6 +1060,20 @@ struct SidebarTabRect {
 };
 std::vector<SidebarTabRect> g_sidebar_tab_rects;
 
+// One GROUP tab-strip chip's rect this frame (SidebarInstance::tab_group):
+// drawn by draw_one (DrawSidebars) in place of a grouped representative's
+// plain title, one chip per OpenSidebarIdsInGroup member; a click turns
+// into Editor::SetTabGroupActive(group, member_id) rather than
+// SelectSidebarTab, since each chip here names a whole different
+// SidebarInstance (its own sections/tabs/etc.), not one view within a
+// single instance's own `tabs` list.
+struct SidebarGroupTabRect {
+    std::string group;
+    int member_id;
+    gfx::Rectangle rect;
+};
+std::vector<SidebarGroupTabRect> g_sidebar_group_tab_rects;
+
 // One sidebar's resizable inner edge (the border facing the pane tree,
 // not the screen edge -- there's nothing to drag the outer edge against)
 // this frame, also captured directly inside DrawSidebars. `sign` is +1 if
@@ -1055,6 +1087,61 @@ struct SidebarBorderRect {
     gfx::Rectangle grab_rect;
 };
 std::vector<SidebarBorderRect> g_sidebar_border_rects;
+
+// One open sidebar's whole on-screen panel rect this frame (its docked
+// column member's own slice, not the merged column) -- captured
+// alongside g_sidebar_row_rects by the same DrawSidebars loop. Unlike
+// the row rects (one per visible row, for clicking/activating a specific
+// item), this is one entry per open sidebar as a whole, for the hint
+// system's "jump keyboard focus to this sidebar" targets (HINT_SYSTEM.md)
+// -- there's no other per-frame record of where a docked sidebar's own
+// title row sits.
+struct SidebarPanelRect {
+    int sidebar_id;
+    gfx::Rectangle rect;
+};
+std::vector<SidebarPanelRect> g_sidebar_panel_rects;
+
+// One visible hyperlink target this frame, captured by DrawPane's own
+// PDF/HTML rendering branches -- the hint system's "jump to a hyperlink
+// visible in the pane" source (HINT_SYSTEM.md), same "collect during the
+// draw that already knows this geometry, consume once later" idiom as
+// every list above. `rect` is already in screen pixels, clipped to what
+// DrawPane actually drew (an off-screen/scrolled-past link on the same
+// page never gets pushed), so no separate visibility check is needed
+// when hinting. Exactly one of `target_page` (PDF: 0-based page to jump
+// to) or `uri` (PDF external link, or any HTML href) is meaningful,
+// selected by `is_pdf`; an HTML same-document jump (a "#fragment" href)
+// is also carried through `uri` verbatim, resolved when the hint fires
+// rather than here (DrawPane has no reason to search the DOM for a link
+// that's never clicked).
+struct LinkHintRect {
+    int pane_id;
+    int buffer_id;
+    gfx::Rectangle rect;
+    bool is_pdf;
+    int target_page = -1;
+    std::string uri;
+};
+std::vector<LinkHintRect> g_link_hint_rects;
+
+// One hint target (HINT_SYSTEM.md, see the fuller comment much further
+// down this file alongside CollectHintTargets/HandleHintModeInput/
+// DrawHintOverlay -- these three globals sit up here instead, ahead of
+// DrawEditor, purely because DrawEditor itself needs g_hint_mode_active
+// for its own final "draw the hint overlay last" check, and C++ has no
+// forward-declaration story for a plain global the way it does for a
+// function via DrawHintOverlay's own forward declaration just above
+// DrawEditor). `anchor` is where a target's label badge draws (its own
+// top-left corner); `action` is what running its label in full does.
+struct HintTarget {
+    gfx::Vector2 anchor;
+    std::string label;
+    std::function<void()> action;
+};
+bool g_hint_mode_active = false;
+std::vector<HintTarget> g_hint_targets;
+std::string g_hint_typed;
 
 // The divider between two sidebars stacked in the same left/right dock
 // (DrawSidebars merges same-edge sidebars into one column split
@@ -1181,6 +1268,7 @@ constexpr float kPaneDragThresholdPx = 4.0f;
 void DrawPaneDragOverlay();  // defined below, alongside UpdatePaneMouseInteraction; called from DrawEditor
 void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_active);  // defined below; also used by DrawFloatPane
 void DrawPaneBorder(float x, float y, float w, float h, bool is_active);  // defined below; also used by DrawSidebars so a focused sidebar gets the same active-border treatment as a focused pane
+void DrawSidebarPaneContent(const Pane &pane, int sidebar_id, float x, float y, float w, float h, bool is_active);  // defined just above DrawPane; called from its Mode::SidebarPane dispatch branch
 
 /**
  * @brief Computes the pixel height of one text line at the current global font size.
@@ -2201,7 +2289,20 @@ void DrawLineFast(const std::string &line, float x, float y, float font_size, gf
         col++;
         if (codepoint == ' ' || codepoint == '\t') continue;
         if (codepoint < 32 || codepoint > 126) {
-            gfx::DrawTextCodepoint(g_font, codepoint, gfx::Vector2{cx, y}, font_size, tint);
+            // An icon/symbol codepoint (kBuiltinFileTree's editable tree
+            // rows, so far the only built-in feature that puts one in real,
+            // cursor-navigable buffer text rather than sidebar/tab-bar/
+            // statusline chrome) isn't baked into g_font's atlas at all --
+            // DrawTextCodepoint(g_font, ...) would silently fall back to
+            // '?' for it. Route the same way DrawUiText already does for
+            // every other piece of UI that draws these codepoints.
+            if (IsIconCodepoint(codepoint) || IsSymbolCodepoint(codepoint)) {
+                const gfx::Font &f = IsIconCodepoint(codepoint) ? g_icon_font : g_symbol_font;
+                std::string glyph(&text[i - codepoint_size], static_cast<size_t>(codepoint_size));
+                gfx::DrawTextEx(f, glyph.c_str(), gfx::Vector2{cx, y}, font_size, 0, tint);
+            } else {
+                gfx::DrawTextCodepoint(g_font, codepoint, gfx::Vector2{cx, y}, font_size, tint);
+            }
             continue;
         }
         int index = g_glyph_index[codepoint - 32];
@@ -2305,6 +2406,38 @@ size_t ColumnToByteOffset(const std::string &line, int col) {
         column++;
     }
     return static_cast<size_t>(i);
+}
+
+// Inverse of ColumnToByteOffset: counts whole codepoints preceding byte
+// offset `byte_offset` in `line`. Every cursor-mutation/motion function in
+// editor.cpp indexes Pane::cursor.col as a raw std::string byte offset
+// (InsertChar/Backspace/DeleteForward/ClampCursor/LineLen etc. all treat it
+// that way), while DrawLineFast/WrapPos lay a row's glyphs out one column
+// per *codepoint* -- coinciding with the byte offset only for pure-ASCII
+// lines. Converting through this before feeding cursor.col into WrapPos is
+// what keeps the caret on the right glyph once a line has any multi-byte
+// UTF-8 content (an icon glyph in kBuiltinFileTree's editable tree rows,
+// or simply non-ASCII file content) before the cursor.
+/**
+ * @brief Converts a byte offset within a line into the character-column index DrawLineFast/WrapPos lay text out by.
+ * @param line Line text to scan.
+ * @param byte_offset Byte offset within `line` to convert.
+ * @return The character-column index corresponding to `byte_offset`.
+ */
+int ByteOffsetToColumn(const std::string &line, int byte_offset) {
+    if (byte_offset <= 0) return 0;
+    const char *text = line.c_str();
+    int byte_len = static_cast<int>(line.size());
+    byte_offset = std::min(byte_offset, byte_len);
+    int column = 0;
+    int i = 0;
+    while (i < byte_offset) {
+        int codepoint_size = 0;
+        gfx::GetCodepointNext(&text[i], &codepoint_size);
+        i += codepoint_size;
+        column++;
+    }
+    return column;
 }
 
 /**
@@ -2760,16 +2893,11 @@ const char *kBuiltinSidebarPopout =
 const char *kBuiltinFileTree =
     "local mep_tree_root = nil\n"
     "local mep_tree_expanded = {}\n"
-    // Populated by mep_tree_build_widgets alongside mep_tree_expanded, keyed
-    // by the same full path -- lets tree_on_key's 'a' handler below tell a
-    // directory target from a file target so it can create *inside* the
-    // former but as a *sibling* of the latter (mep.nvim's filetree.lua has
-    // always drawn this distinction via node.is_dir; this table gives the
-    // built-in tree the same information without a full node object).\n"
-    "local mep_tree_is_dir = {}\n"
-    "local mep_tree_sidebar_id = nil\n"
     "local mep_tree_show_hidden = false\n"
     "local mep_tree_ignored = {}\n"
+    "local mep_tree_edit_buf = nil\n"
+    "local mep_tree_edit_snapshot = nil\n"
+    "local mep_tree_edit_ns = nil\n"
     "local function mep_tree_join(dir, name)\n"
     "  if dir:sub(-1) == '/' then return dir .. name end\n"
     "  return dir .. '/' .. name\n"
@@ -2783,129 +2911,295 @@ const char *kBuiltinFileTree =
     "    on_exit = function() mep.tree_refresh() end,\n"
     "  })\n"
     "end\n"
-    // The recursive walk (hidden/gitignore filtering, expand-driven
-    // recursion, dirs-first-then-alpha order) moved to C++ --
-    // Editor::BuildFileTreeRows, exposed as mep.tree_build_rows
-    // (lua_env.cpp) -- flattened into one call instead of a Lua function
-    // recursing into itself. What's left is genuinely just widget
-    // construction: each row needs its own on_click Lua ref regardless
-    // (toggle-expand for a dir, open for a file), and mep_tree_is_dir's
-    // side-effect population (tree_on_key's 'a' handler reads it) has to
-    // happen from Lua since that table is Lua-owned state.\n"
-    "local function mep_tree_build_widgets(widgets)\n"
+    // oil.nvim-style editable tree (the recursive walk -- hidden/gitignore
+    // filtering, expand-driven recursion, dirs-first-then-alpha order --
+    // is Editor::BuildFileTreeRows/mep.tree_build_rows, unchanged): the
+    // sidebar is a real, ordinary Buffer (mep.buffer_new, same idiom as
+    // kBuiltinStructure's <leader>sS split) instead of a SidebarInstance's
+    // click-widget list, so it gets a real cursor and full Normal/Insert/
+    // Visual-mode editing for free. Each row renders as plain text --
+    // `<indent><icon> <name>` -- and mep_tree_edit_on_write (below) parses
+    // that same shape back apart at `:w` time.
+    // Two spaces, not one, between the icon and the name: nerd-font icon
+    // glyphs commonly render a little wider than the monospace column
+    // their one codepoint occupies (kBuiltinFileTree's editable tree rows
+    // are the first place such a glyph sits in real, fixed-column buffer
+    // text rather than icon-font-only UI chrome), so a single space's gap
+    // can look like none at all. mep_tree_edit_parse_current (below) trims
+    // any leading whitespace off of whatever follows the first space when
+    // reading a row back, so this doesn't have to be kept in lockstep with
+    // that parser beyond "at least one space right after the icon".
+    "local function mep_tree_edit_line_for_row(row)\n"
+    "  local indent = string.rep('  ', row.depth)\n"
+    "  if row.is_dir then\n"
+    "    local marker = row.expanded and mep.icons.dir_open or mep.icons.dir_closed\n"
+    "    return indent .. marker .. '  ' .. row.name\n"
+    "  end\n"
+    "  return indent .. mep.icon_for_file(row.name) .. '  ' .. row.name\n"
+    "end\n"
+    "local function mep_tree_edit_apply_highlight()\n"
+    "  if not mep_tree_edit_ns then mep_tree_edit_ns = mep.ns_create('mep_tree_edit') end\n"
+    "  mep.buffer_ns_clear(mep_tree_edit_buf, mep_tree_edit_ns)\n"
+    "  for i, row in ipairs(mep_tree_edit_snapshot) do\n"
+    "    local hl = row.is_dir and 'Blue' or mep.hl_for_file(row.name)\n"
+    "    local line = mep_tree_edit_line_for_row(row)\n"
+    "    mep.buffer_deco_add(mep_tree_edit_buf, mep_tree_edit_ns, {row = i, col_start = 1, col_end = #line + 1, hl_group = hl})\n"
+    "  end\n"
+    "end\n"
+    // Expanding/collapsing a directory or refreshing rebuilds every row
+    // (and hence every line) from scratch -- refused while the buffer has
+    // unsaved edits so an in-progress rename/create/delete isn't silently
+    // discarded out from under the cursor.
+    "local function mep_tree_edit_guard_modified()\n"
+    "  if mep_tree_edit_buf and mep.buffer_modified(mep_tree_edit_buf) then\n"
+    "    mep.notify('Save (:w) or undo pending tree changes first', 'warn')\n"
+    "    return true\n"
+    "  end\n"
+    "  return false\n"
+    "end\n"
+    // Parses the tree buffer's *current* text back into one row per
+    // non-blank line: `depth` from the leading 2-spaces-per-level indent
+    // (clamped to at most one level past the previous row's, since nothing
+    // can nest deeper than that), `name` from everything after the first
+    // space past the indent -- the icon and that one space are the only
+    // thing ever between the indent and the name, so this is the "ignore
+    // the icon" the rendering above promises, and it works unmodified even
+    // for a brand-new line typed with no icon at all (there's simply no
+    // space to split on unless the typed name itself contains one).
+    // `new_path` is computed structurally from depth plus a running stack
+    // of "current path at each depth", so it comes out right regardless of
+    // whether a row is unchanged, renamed in place, or freshly pasted
+    // somewhere else in the buffer.
+    "local function mep_tree_edit_parse_current()\n"
+    "  local rows = {}\n"
+    "  local stack = {[0] = mep_tree_root}\n"
+    "  for i = 1, mep.line_count() do\n"
+    "    local line = mep.get_line(i)\n"
+    "    local indent_len = #(line:match('^ *') or '')\n"
+    "    local prev_depth = rows[#rows] and rows[#rows].depth or -1\n"
+    "    local depth = math.floor(indent_len / 2)\n"
+    "    if depth > prev_depth + 1 then depth = prev_depth + 1 end\n"
+    "    local rest = line:sub(indent_len + 1)\n"
+    "    local sp = rest:find(' ')\n"
+    "    local name = sp and rest:sub(sp + 1) or rest\n"
+    "    name = name:gsub('^%s+', ''):gsub('%s+$', '')\n"
+    "    local is_new_dir_hint = false\n"
+    "    if name:sub(-1) == '/' then is_new_dir_hint = true; name = name:sub(1, -2) end\n"
+    "    if name ~= '' then\n"
+    "      local parent = stack[depth] or mep_tree_root\n"
+    "      local new_path = mep_tree_join(parent, name)\n"
+    "      stack[depth + 1] = new_path\n"
+    "      rows[#rows + 1] = {depth = depth, name = name, new_path = new_path, is_new_dir_hint = is_new_dir_hint}\n"
+    "    end\n"
+    "  end\n"
+    "  return rows\n"
+    "end\n"
+    // Diffs mep_tree_edit_snapshot (the tree as of the last refresh)
+    // against the buffer's current text -- via mep.diff_lines, the same
+    // Myers-diff primitive kBuiltinGit's gutter hunks use, run over just
+    // the row *names* so a rename doesn't look like an unrelated
+    // delete+create pair -- to produce the four kinds of change a write
+    // can imply:
+    //   - a hunk replacing exactly one old name with exactly one new name
+    //     at the same slot: that entry renamed in place (and moved too, if
+    //     its computed new_path's parent differs from its old one).
+    //   - a name the diff calls "deleted" that reappears elsewhere in the
+    //     new list: a move (cut here, pasted there); otherwise a real
+    //     delete.
+    //   - a name the diff calls "inserted" that matches a name still
+    //     present elsewhere: a copy (yanked, not deleted, then pasted);
+    //     otherwise a create (a new directory if the typed name ended
+    //     with `/`, else a new empty file).
+    // Two entries swapping names in the same write, or a simultaneous
+    // rename *and* move of the same entry, aren't distinguishable from an
+    // unrelated delete+create without real per-line identity (no extmark
+    // equivalent exists here) -- a known, narrow gap; one change at a time
+    // (the user's own cut/paste-to-move workflow already is) always
+    // resolves correctly.
+    "local function mep_tree_edit_compute_ops()\n"
+    "  local current = mep_tree_edit_parse_current()\n"
+    "  local old_names, new_names = {}, {}\n"
+    "  for i, e in ipairs(mep_tree_edit_snapshot) do old_names[i] = e.name end\n"
+    "  for i, r in ipairs(current) do new_names[i] = r.name end\n"
+    "  local hunks = mep.diff_lines(old_names, new_names)\n"
+    "  local matched_old, matched_new = {}, {}\n"
+    "  for _, h in ipairs(hunks) do\n"
+    "    if h.old_count == 1 and h.new_count == 1 then\n"
+    "      matched_old[h.old_start] = {kind = 'rename', new_index = h.new_start}\n"
+    "      matched_new[h.new_start] = true\n"
+    "    else\n"
+    // Anything else (a pure insert, a pure delete, or an ambiguous N:M
+    // replace) gets no individual rename pairing -- old-side positions
+    // are delete candidates (a same-named survivor elsewhere still
+    // reclaims one as a move, below); new-side positions are deliberately
+    // left unmarked here so the create/copy pass further down evaluates
+    // them, rather than treating every position a hunk merely touched as
+    // "already accounted for" and silently dropping it.
+    "      for i = h.old_start, h.old_start + h.old_count - 1 do matched_old[i] = matched_old[i] or {kind = 'delete'} end\n"
+    "    end\n"
+    "  end\n"
+    "  local new_by_name = {}\n"
+    "  for i, r in ipairs(current) do\n"
+    "    new_by_name[r.name] = new_by_name[r.name] or {}\n"
+    "    table.insert(new_by_name[r.name], i)\n"
+    "  end\n"
+    "  local moves, deletes, consumed_new = {}, {}, {}\n"
+    "  for i, e in ipairs(mep_tree_edit_snapshot) do\n"
+    "    local m = matched_old[i]\n"
+    "    if m and m.kind == 'rename' then\n"
+    "      local r = current[m.new_index]\n"
+    "      if r.new_path ~= e.path then table.insert(moves, {from = e.path, to = r.new_path, is_dir = e.is_dir}) end\n"
+    "      consumed_new[m.new_index] = true\n"
+    "    elseif m then\n"
+    "      local moved_to = nil\n"
+    "      for _, ni in ipairs(new_by_name[e.name] or {}) do\n"
+    "        if not consumed_new[ni] and not matched_new[ni] then moved_to = ni break end\n"
+    "      end\n"
+    "      if moved_to then\n"
+    "        consumed_new[moved_to] = true\n"
+    "        table.insert(moves, {from = e.path, to = current[moved_to].new_path, is_dir = e.is_dir})\n"
+    "      else\n"
+    "        table.insert(deletes, {path = e.path, name = e.name, is_dir = e.is_dir})\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  local copies, creates = {}, {}\n"
+    "  for i, r in ipairs(current) do\n"
+    "    if not matched_new[i] and not consumed_new[i] then\n"
+    "      local src = nil\n"
+    "      for _, e in ipairs(mep_tree_edit_snapshot) do\n"
+    "        if e.name == r.name and e.path ~= r.new_path then src = e break end\n"
+    "      end\n"
+    "      if src then table.insert(copies, {from = src.path, to = r.new_path, is_dir = src.is_dir})\n"
+    "      else table.insert(creates, {path = r.new_path, is_dir = r.is_new_dir_hint}) end\n"
+    "    end\n"
+    "  end\n"
+    "  return {moves = moves, copies = copies, creates = creates, deletes = deletes}\n"
+    "end\n"
+    // Applies moves shallowest-source-first, skipping any move whose
+    // source already sits inside another move just applied -- fs_rename-
+    // ing a directory relocates its whole subtree in one call, so a
+    // child's own (now-stale) move would otherwise fail or silently
+    // re-move an already-moved path.
+    "local function mep_tree_edit_apply_moves(moves)\n"
+    "  table.sort(moves, function(a, b) return #a.from < #b.from end)\n"
+    "  local applied_from = {}\n"
+    "  for _, mv in ipairs(moves) do\n"
+    "    local skip = false\n"
+    "    for _, done in ipairs(applied_from) do\n"
+    "      if mv.from:sub(1, #done + 1) == done .. '/' then skip = true break end\n"
+    "    end\n"
+    "    if not skip then\n"
+    "      if mep.fs_rename(mv.from, mv.to) then applied_from[#applied_from + 1] = mv.from\n"
+    "      else mep.notify('Failed to move ' .. mv.from .. ' to ' .. mv.to, 'error') end\n"
+    "    end\n"
+    "  end\n"
+    "end\n"
+    // Creates/copies/moves apply immediately (all recoverable by hand, same
+    // as the old tree's un-confirmed 'a'/'r' actions); deletes are
+    // destructive so they wait on one confirmation summarizing all of them,
+    // matching the old tree's own 'd' handler. Either way mep.tree_refresh
+    // re-syncs the buffer (and its snapshot) to whatever the filesystem
+    // actually ended up as, including any op that failed and got skipped.
+    "local function mep_tree_edit_on_write()\n"
+    "  if not mep_tree_edit_snapshot then return end\n"
+    "  local ops = mep_tree_edit_compute_ops()\n"
+    "  for _, cr in ipairs(ops.creates) do\n"
+    "    local ok = cr.is_dir and mep.fs_mkdir(cr.path) or mep.fs_create_file(cr.path)\n"
+    "    if not ok then mep.notify('Failed to create ' .. cr.path, 'error') end\n"
+    "  end\n"
+    "  for _, cp in ipairs(ops.copies) do\n"
+    "    if not mep.fs_copy(cp.from, cp.to) then mep.notify('Failed to copy to ' .. cp.to, 'error') end\n"
+    "  end\n"
+    "  mep_tree_edit_apply_moves(ops.moves)\n"
+    "  if #ops.deletes > 0 then\n"
+    "    local names = {}\n"
+    "    for _, d in ipairs(ops.deletes) do names[#names + 1] = d.name end\n"
+    "    mep.ui_confirm('Delete ' .. #ops.deletes .. ' item(s): ' .. table.concat(names, ', ') .. '?', false, function(yes)\n"
+    "      if yes then\n"
+    "        for _, d in ipairs(ops.deletes) do\n"
+    "          if not mep.fs_delete(d.path) then mep.notify('Failed to delete ' .. d.path, 'error') end\n"
+    "        end\n"
+    "      end\n"
+    "      mep.tree_refresh()\n"
+    "    end)\n"
+    "  else\n"
+    "    mep.tree_refresh()\n"
+    "  end\n"
+    "end\n"
+    // <CR>: expand/collapse a directory row, or open a file row in the main
+    // pane -- the tree buffer's only bespoke keybinding (mep.buffer_set_on_
+    // enter, editor.h's SetBufferOnEnter comment on why bare Enter is free
+    // to claim here). Every other keystroke is completely ordinary Normal/
+    // Insert/Visual-mode buffer editing: renaming is editing a row's name
+    // text in place, creating is typing a new line (end it with `/` for a
+    // new directory), deleting is `dd`, and moving/copying is deleting-or-
+    // yanking a row and pasting it elsewhere -- mep_tree_edit_on_write
+    // above turns whatever changed into the matching fs_* calls.\n"
+    "local function mep_tree_edit_on_enter()\n"
+    "  if mep_tree_edit_guard_modified() then return end\n"
+    "  local row = mep_tree_edit_snapshot and mep_tree_edit_snapshot[mep.cursor()]\n"
+    "  if not row then return end\n"
+    "  if row.is_dir then\n"
+    "    if mep_tree_expanded[row.path] then mep_tree_expanded[row.path] = nil\n"
+    "    else mep_tree_expanded[row.path] = true end\n"
+    "    mep.tree_refresh()\n"
+    "  else\n"
+    "    mep.focus_top_left_pane()\n"
+    "    mep.open(row.path)\n"
+    "  end\n"
+    "end\n"
+    "function mep.tree_refresh()\n"
+    "  if not mep_tree_root then return end\n"
+    "  if mep_tree_edit_guard_modified() then return end\n"
     "  local expanded_list = {}\n"
     "  for k, v in pairs(mep_tree_expanded) do if v then expanded_list[#expanded_list + 1] = k end end\n"
     "  local ignored_list = {}\n"
     "  for k, v in pairs(mep_tree_ignored) do if v then ignored_list[#ignored_list + 1] = k end end\n"
     "  local rows = mep.tree_build_rows(mep_tree_root, expanded_list, mep_tree_show_hidden, ignored_list)\n"
-    "  for _, row in ipairs(rows) do\n"
-    "    mep_tree_is_dir[row.path] = row.is_dir\n"
-    "    local indent = string.rep('  ', row.depth)\n"
-    "    if row.is_dir then\n"
-    "      local marker = row.expanded and mep.icons.dir_open or mep.icons.dir_closed\n"
-    "      widgets[#widgets + 1] = {\n"
-    "        id = row.path, text = indent .. marker .. ' ' .. row.name, hl = 'Blue',\n"
-    "        on_click = function()\n"
-    "          if mep_tree_expanded[row.path] then mep_tree_expanded[row.path] = nil\n"
-    "          else mep_tree_expanded[row.path] = true end\n"
-    "          mep.tree_refresh()\n"
-    "        end,\n"
-    "      }\n"
-    "    else\n"
-    "      widgets[#widgets + 1] = {\n"
-    "        id = row.path, text = indent .. mep.icon_for_file(row.name) .. ' ' .. row.name,\n"
-    "        hl = mep.hl_for_file(row.name),\n"
-    "        on_click = function() mep.focus_top_left_pane() mep.open(row.path) end,\n"
-    "      }\n"
-    "    end\n"
+    "  mep_tree_edit_snapshot = rows\n"
+    "  local lines = {}\n"
+    "  for i, row in ipairs(rows) do lines[i] = mep_tree_edit_line_for_row(row) end\n"
+    "  if #lines == 0 then lines = {'(empty)'} end\n"
+    "  if not mep_tree_edit_buf then\n"
+    "    mep_tree_edit_buf = mep.buffer_new()\n"
+    "    mep.buffer_set_on_enter(mep_tree_edit_buf, mep_tree_edit_on_enter)\n"
+    "    mep.buffer_set_on_write(mep_tree_edit_buf, mep_tree_edit_on_write)\n"
     "  end\n"
+    "  mep.buffer_set_filename(mep_tree_edit_buf, mep_tree_root)\n"
+    "  mep.buffer_set_lines(mep_tree_edit_buf, lines)\n"
+    "  mep_tree_edit_apply_highlight()\n"
     "end\n"
-    "function mep.tree_refresh()\n"
-    "  if not mep_tree_root then return end\n"
-    "  if not mep_tree_sidebar_id then\n"
-    "    mep_tree_sidebar_id = mep.sidebar_create('Files', 'left', mep.sidebar_default_cols(0.20))\n"
-    "    mep.sidebar_set_on_key(mep_tree_sidebar_id, mep.tree_on_key)\n"
-    "    mep.sidebar_set_on_preview(mep_tree_sidebar_id, mep.tree_on_preview)\n"
-    "  end\n"
-    "  local widgets = {}\n"
-    "  mep_tree_build_widgets(widgets)\n"
-    "  mep.sidebar_set_sections(mep_tree_sidebar_id, {\n"
-    "    {id = 'tree', title = mep_tree_root, collapsed = false, widgets = widgets},\n"
-    "  })\n"
-    "end\n"
+    // vsplit's new pane is focused and placed first (left, for a vertical
+    // split -- SplitCurrentPane's own comment); repurposing *that* one for
+    // the tree, rather than nav-ing to the other side the way a right-
+    // docked split would, is what puts the tree on the left with no
+    // nav_pane call needed.
     "function mep.tree_open(dir)\n"
     "  mep_tree_root = dir or '.'\n"
     "  mep_tree_expanded[mep_tree_root] = true\n"
     "  mep.tree_refresh()\n"
-    "  mep.sidebar_open(mep_tree_sidebar_id)\n"
+    "  if not mep.pane_focus_buffer(mep_tree_edit_buf) then\n"
+    "    mep.cmd('vsplit')\n"
+    "    mep.buffer_switch(mep_tree_edit_buf)\n"
+    "    mep.pane_set_share(0.20)\n"
+    "  end\n"
     "  mep_tree_refresh_ignored()\n"
     "end\n"
+    // No longer literally closes the tree pane on a second press (a real
+    // pane, unlike the old docked sidebar, can't be hidden without
+    // disturbing the rest of the split layout) -- it just (re)opens or
+    // refocuses it, which is what every other call site actually wants.
     "function mep.tree_toggle()\n"
-    "  if not mep_tree_sidebar_id then mep.tree_open('.') return end\n"
-    "  mep.sidebar_toggle(mep_tree_sidebar_id)\n"
-    "end\n"
-    // Popout preview (mod1+m): the row's path is its widget id; a
-    // directory row lists its contents, a file row shows the file.
-    "function mep.tree_on_preview(path)\n"
-    "  mep.sidebar_preview_path(path, mep_tree_is_dir[path] or false)\n"
-    "end\n"
-    "function mep.tree_on_key(k)\n"
-    "  local target = mep.sidebar_cursor_widget_id(mep_tree_sidebar_id)\n"
-    "  if k == 'R' then\n"
-    "    mep.tree_refresh(); mep_tree_refresh_ignored()\n"
-    "  elseif k == 'H' then\n"
-    "    mep_tree_show_hidden = not mep_tree_show_hidden; mep.tree_refresh()\n"
-    "  elseif k == 'o' and target then\n"
-    "    mep.open_url('file://' .. target)\n"
-    "  elseif k == 'a' then\n"
-    // `target` is the widget id under the cursor, which for a *file* is
-    // that file's own full path, not its containing directory -- using it
-    // directly as `base` (the previous behavior) tried to create the new
-    // entry *inside* the file (e.g. "…/existing.txt/new.txt"), which
-    // fs_mkdir/fs_create_file below can never succeed at: every intervening
-    // filesystem call sees a non-directory component and fails silently
-    // (both return a boolean the caller used to just ignore), so pressing
-    // 'a' on a file looked like the tree had locked up -- the prompt
-    // appeared and accepted a name, but no entry ever showed up. Mirrors
-    // mep.nvim/lua/mep/filetree/filetree.lua's add_node: create inside a
-    // directory target, but as a sibling of a file target.\n"
-    "    local base = mep_tree_root\n"
-    "    if target then\n"
-    "      base = mep_tree_is_dir[target] and target or (target:match('^(.*)/[^/]+$') or mep_tree_root)\n"
-    "    end\n"
-    "    mep.ui_input('New file/dir (end with / for dir):', '', function(name)\n"
-    "      if not name or name == '' then return end\n"
-    "      local full = mep_tree_join(base, name)\n"
-    "      local ok\n"
-    "      if name:sub(-1) == '/' then ok = mep.fs_mkdir(full:sub(1, -2)) else ok = mep.fs_create_file(full) end\n"
-    "      if not ok then mep.notify('mep.filetree: failed to create ' .. full, 'error') end\n"
-    "      mep.tree_refresh()\n"
-    "    end)\n"
-    "  elseif k == 'r' and target then\n"
-    "    mep.ui_input('Rename to:', target, function(name)\n"
-    "      if not name or name == '' then return end\n"
-    "      mep.fs_rename(target, name)\n"
-    "      mep.tree_refresh()\n"
-    "    end)\n"
-    "  elseif k == 'd' and target then\n"
-    "    mep.ui_confirm('Delete ' .. target .. '?', false, function(yes)\n"
-    "      if yes then mep.fs_delete(target); mep.tree_refresh() end\n"
-    "    end)\n"
-    // Html view-toggle escape hatch (Editor::HandleSidebarInput's own
-    // Ctrl-E/Ctrl-V comment) -- Enter (on_click, mep.open above) already
-    // opens the default view (rendered for .html/.htm), so these only
-    // matter for forcing the *other* view. `:e`, not mep.open, is what
-    // gives Ctrl-E force-text semantics (LoadFile's own comment).\n"
-    "  elseif k == 'C-e' and target then\n"
-    "    mep.cmd('e ' .. target)\n"
-    "  elseif k == 'C-v' and target then\n"
-    "    mep.open(target)\n"
-    "  elseif k == '?' then\n"
-    "    mep.notify('Files: Enter=open/toggle  a=create  r=rename  d=delete  R=refresh  H=hidden  o=open-with-OS  Ctrl-E/Ctrl-V=text/browser view  mod1+m=popout')\n"
-    "  end\n"
+    "  mep.tree_open(mep_tree_root or '.')\n"
     "end\n"
     "mep.command('MepFileTree', function() mep.tree_toggle() end)\n"
     "mep.leader_map('ff', 'Toggle file tree', function() mep.tree_toggle() end)\n"
+    "mep.leader_map('fh', 'Toggle hidden files in tree', function()\n"
+    "  mep_tree_show_hidden = not mep_tree_show_hidden\n"
+    "  mep.tree_refresh()\n"
+    "end)\n"
+    "mep.leader_map('fr', 'Refresh file tree', function() mep.tree_refresh() end)\n"
     // Native "Open File" dialog (<leader>fo / :MepOpenFile): the desktop's
     // own file picker, for browsing to a path visually instead of typing
     // one into `:e` or fuzzy-matching it via find_files (<leader>pf). No
@@ -2967,50 +3261,73 @@ const char *kBuiltinFileTree =
     // preferred over README.md etc. by that fixed priority order -- moved
     // to C++ (Editor::ProjectReadmePath), exposed as
     // mep.project_readme_path (lua_env.cpp); nil if none match.
-    // The legacy "fresh project" startup layout: README (if any) in the
-    // main pane, a terminal below it, the file tree in the left sidebar.
-    // Applied to the *active workspace* by mep.project_open (never-seen
-    // project only, see below) and rebuilt on demand by mep.project_clear
-    // (`:projectclear` / <leader>pc) after the workspace is emptied.
+    // The legacy "fresh project" startup layout: the file tree full-height
+    // on the left, README (if any) in the main pane to its right, a
+    // terminal below that. Applied to the *active workspace* by
+    // mep.project_open (never-seen project only, see below) and rebuilt on
+    // demand by mep.project_clear (`:projectclear` / <leader>pc) after the
+    // workspace is emptied.
+    //
+    // mep.tree_open runs first, on the tab's still-sole starting pane, so
+    // its own vsplit divides the *whole* tab (tree | rest) rather than
+    // just whatever narrower slot the readme/terminal split would
+    // otherwise have carved out -- splitting the readme's own pane instead
+    // would only give the tree that pane's height, not the full column.
+    // mep.tree_open leaves focus on the tree pane it just created; the
+    // readme/terminal split below happens entirely within the other
+    // (right) pane vsplit left untouched.
     "function mep.project_default_layout(dir)\n"
     "  dir = dir or mep.workspace_root()\n"
+    "  mep.tree_open(dir)\n"
     "  local readme = mep.project_readme_path(dir)\n"
-    "  local opened_readme = readme ~= nil\n"
-    "  if opened_readme then mep.open(readme) end\n"
+    "  if readme then\n"
+    "    mep.nav_pane('right')\n"
+    "    mep.open(readme)\n"
     // A bare `:terminal` always opens its new pane above/left of whatever
     // was focused (vim's default split direction) -- so to land the
     // terminal *below* the readme, split first (the readme's own pane
     // duplicates upward and keeps focus) then drop into the pane pushed
     // down to the bottom and turn it into a terminal in place.
-    "  if opened_readme then\n"
     "    mep.cmd('split')\n"
     "    mep.nav_pane('down')\n"
     "    mep.terminal_here()\n"
     "    mep.pane_set_share(1/3)\n"
     // Back to the readme pane (also drops Mode::Terminal -- see
-    // NavigatePaneDirection) before the tree steals focus below, so the
-    // final nav_pane('right') has the right pane (not the terminal) to
-    // land back on.
+    // NavigatePaneDirection), which is also this function's own final
+    // focus target when a readme was found.
     "    mep.nav_pane('up')\n"
     "  end\n"
-    "  mep.tree_open(dir)\n"
-    // mep.tree_open focuses the sidebar (matches tree_toggle's open-means-
-    // focus behavior); step focus back out into the pane tree so the user
-    // lands with the cursor in the readme, not the file list.
-    "  if opened_readme then mep.nav_pane('right') end\n"
+    "end\n"
+    // Only the saved workspace *list* (name/root/branch) is restored on
+    // project load, never each workspace's saved panes/tabs -- every
+    // workspace mep.project_load produces (freshly created, or matched from
+    // the saved list) lands with a single fresh empty tab. This applies the
+    // standard default layout to each of them, leaving `skip_primary`'s
+    // workspace alone (used at startup when a file was already opened into
+    // it, so the layout step doesn't stomp it).
+    "function mep.project_apply_default_layout_to_empty_workspaces(skip_primary)\n"
+    "  local current = mep.workspace_current()\n"
+    "  for _, ws in ipairs(mep.workspace_list()) do\n"
+    "    if not (skip_primary and ws.primary) then\n"
+    "      mep.workspace_switch(ws.id)\n"
+    "      mep.project_default_layout(mep.workspace_root())\n"
+    "    end\n"
+    "  end\n"
+    "  if current then mep.workspace_switch(current.id) end\n"
     "end\n"
     // WORKSPACES_PLAN.md Phase 9: mep.project_open is mep.project_load
     // (a real Project with its own workspaces, chdir'd to, git-detected,
-    // saved state restored) followed by the default layout above -- but
-    // *only* when the project had no saved layout and wasn't already
-    // loaded. A restored project is left exactly as saved: previously the
-    // tree_open/nav_pane tail still ran on top of the restored panes, so
-    // opening a project looked like a restore *and* a fresh startup.
+    // saved workspace list restored) followed by the default layout above,
+    // applied to every workspace -- but *only* when the project wasn't
+    // already loaded (an already-loaded project is left exactly as the
+    // user built it: previously the tree_open/nav_pane tail still ran on
+    // top of the restored panes, so opening a project looked like a
+    // restore *and* a fresh startup).
     "function mep.project_open(dir)\n"
     "  local id, restored = mep.project_load(dir)\n"
     "  if not id then return end\n"
     "  dir = mep.workspace_root()\n"
-    "  if not restored then mep.project_default_layout(dir) end\n"
+    "  if not restored then mep.project_apply_default_layout_to_empty_workspaces(false) end\n"
     "  mep.notify('Opened project: ' .. dir)\n"
     "end\n"
     // `:projectclear[!]` / <leader>pc: throw away the active workspace's
@@ -4750,12 +5067,15 @@ const char *kBuiltinLsp =
 // mep.language_for_buffer maps the current buffer's file extension to a
 // language key via mep.language_ui_extensions (populated by each module,
 // e.g. kBuiltinLanguageUiR below adds {r = 'r'}), and mode.open() builds
-// whatever pane layout that language wants and returns a close() function.
-// mep.language_ui_active tracks at most one active mode per tab, keyed by
-// mep.current_tab_id() so <leader>lu closes the right one regardless of
-// which of its own panes currently has focus (or whether the cursor is
-// back in the original source buffer, whose extension is what future
-// re-opens key off).
+// whatever pane layout that language wants and returns a {close=, run_source=}
+// handle: close() tears the layout back down, and the optional run_source(fname)
+// lets the Run button (kBuiltinRunButton) redirect "run this file" into the
+// mode's own live session instead of spawning a fresh one -- see its use in
+// mep.run_button_run. mep.language_ui_active tracks at most one active mode
+// per tab, keyed by mep.current_tab_id() so <leader>lu closes the right one
+// regardless of which of its own panes currently has focus (or whether the
+// cursor is back in the original source buffer, whose extension is what
+// future re-opens key off).
 const char *kBuiltinLanguageUi =
     "mep.language_ui_modes = mep.language_ui_modes or {}\n"
     "mep.language_ui_extensions = mep.language_ui_extensions or {}\n"
@@ -4779,45 +5099,195 @@ const char *kBuiltinLanguageUi =
     "    mep.notify('No language UI mode registered' .. (lang and (' for \"' .. lang .. '\"') or ' for this file'), 'warn')\n"
     "    return\n"
     "  end\n"
-    "  mep.language_ui_active[tid] = {lang = lang, close = mode.open()}\n"
+    "  local handle = mode.open()\n"
+    "  mep.language_ui_active[tid] = {lang = lang, close = handle.close, run_source = handle.run_source}\n"
     "end\n"
     "mep.command('MepLanguageUi', mep.language_ui_toggle)\n"
-    "mep.leader_map('lu', 'Language UI mode (toggle)', mep.language_ui_toggle)\n";
+    "mep.leader_map('lu', 'Language UI mode (toggle)', mep.language_ui_toggle)\n"
+    // Same toggle, second mnemonic ("u" for UI mode) -- kept alongside
+    // 'lu' rather than replacing it, since 'lu' predates this and other
+    // muscle memory/docs may already reference it.
+    "mep.leader_map('uu', 'Language UI mode (toggle)', mep.language_ui_toggle)\n";
 
-// R language UI mode (kBuiltinLanguageUi's first consumer): <leader>lu on
-// an .R buffer lays a Console/Figures/Help/Data strip below the source
-// pane -- Console is a real `R` REPL (mep.terminal_here_argv); the other
-// three are plain text/image files mep.r_ui_init_template teaches that
-// same R session to keep refreshed:
+// R language UI mode (kBuiltinLanguageUi's first consumer): <leader>lu/uu on
+// an .R buffer lays a Console pane below the source pane, plus a right
+// column split top/bottom -- Data/Objects/Packages/History/Help tabbed
+// together on top, Plot alone on the bottom (mep.opt.r_ui_bottom_info_share) --
+// each an independent SidebarInstance (mep.sidebar_create) opened as an
+// ordinary tab (mep.sidebar_open_pane, Mode::SidebarPane) rather than
+// docked to the edge, so any of them can be split/moved/tab-cycled/merged
+// with mod1's usual pane chords (mod1+Tab/Shift+Tab, mod1+s, mod1+Ctrl+hjkl)
+// exactly like any other buffer. Plot is the one exception: it isn't a
+// SidebarInstance at all, just a plain image buffer (a sidebar widget row
+// is text-only, nowhere to put a figure) with a merged-in "<"/">" nav
+// header (mep.image_set_nav, ImageSession::nav_prev_ref/nav_next_ref,
+// DrawPane's image branch in main.cpp) standing in for what used to be a
+// separate Prev/Next-list picker sidebar. Console is a real `R` REPL
+// (mep.terminal_here_argv); everything else is plain text/image files
+// mep.r_ui_init_template teaches that same R session to keep refreshed,
+// which mep then either shows directly (Plot) or renders as sidebar widget
+// rows, one per line (Data/Help -- see mep_r_ui_render_textbox):
 //   - options(pager = ...) redirects `?topic`/help() output, which R
 //     already writes to a temp file and hands to a pager function, into
-//     the Help pane's file instead of a terminal pager.
-//   - mep_show(expr) points a png() device at the Figures pane's file for
-//     the duration of `expr` -- works for base graphics (mep_show(plot(x)))
-//     and anything with a print method (mep_show(print(ggplot(...)))).
-//   - mep_view(x) writes head(x) to the Data pane's file -- the closest
+//     the Help sidebar's file instead of a terminal pager.
+//   - options(device = ...) installs a persistent "scratch" png device
+//     (display-list recording forced on via dev.control) as R's default,
+//     so ordinary plot(x)/print(ggplot(...)) calls need no wrapping at
+//     all -- the addTaskCallback hook below calls mep_capture_plot() after
+//     every top-level statement, which recordPlot()s the scratch device
+//     and, only if the display list actually changed since last time,
+//     replayPlot()s it into the figures directory -- into a FRESH
+//     sequentially numbered file only when a plot.new()/grid.newpage()
+//     hook fired since the last capture (a genuinely new page, e.g. a
+//     fresh plot() or ggplot print), otherwise back into the CURRENT
+//     figure's own file in place, so `plot(x, x)` then `lines(x, x)` then
+//     `abline(h = 0)` as three separate console statements is one evolving
+//     figure, not three, matching RStudio's own Plots-pane behavior (see
+//     mep_capture_plot's own comment for exactly which R functions fire
+//     which hook). mep_show(expr) still exists for one-off custom
+//     width/height/res and always draws to its own fresh numbered file,
+//     sharing the counter and directory so both mechanisms interleave
+//     cleanly in the figure history.
+//   - mep_view(x) writes head(x) to the Data sidebar's file -- the closest
 //     thing to RStudio's View() available to a plain-terminal R session.
-// None of these need mep to watch the filesystem: the Help/Data panes are
-// ordinary text buffers the user reopens like any externally-changed file,
-// and the poll loop at the bottom re-opens the Figures pane's path on a
-// timer purely because a stale plot is more likely to go unnoticed than a
-// stale text pane.
+//   - addTaskCallback registers a hook that runs after every top-level
+//     expression the console evaluates (whether typed by the user or sent
+//     via mep.terminal_write) and silently (wrapped in try(), and never
+//     printing to stdout) refreshes the Objects/Packages/History files --
+//     this is what gives the sidebar live introspection without mep ever
+//     needing to read the terminal's own output (:terminal buffers have
+//     no such API -- see mep.terminal_write's own doc comment) or inject
+//     visible commands into the console.
+// None of this needs mep to watch the filesystem directly: they're
+// ordinary files the Plot pane reopens, or sidebar content mep re-renders
+// from, like any externally-changed file; the poll loop at the bottom just
+// does that reading/reopening on a timer so changes show up without manual
+// action.
 const char *kBuiltinLanguageUiR =
     "mep.opt = mep.opt or {}\n"
     "mep.opt.r_ui_cmd = mep.opt.r_ui_cmd or {'R', '--no-save', '--quiet'}\n"
     "mep.opt.r_ui_bottom_share = mep.opt.r_ui_bottom_share or 0.4\n"
-    "mep.opt.r_ui_info_share = mep.opt.r_ui_info_share or 0.34\n"
-    "mep.opt.r_ui_figure_poll_interval = mep.opt.r_ui_figure_poll_interval or 1.0\n"
+    "mep.opt.r_ui_info_share = mep.opt.r_ui_info_share or 0.3\n"
+    // Fraction of the right column's height the Plot/Help pane (the
+    // bottom half) takes, leaving the rest to Data/Objects/Packages/
+    // History above it -- "most panes on top, plot(s)/help on the bottom".
+    "mep.opt.r_ui_bottom_info_share = mep.opt.r_ui_bottom_info_share or 0.4\n"
+    "mep.opt.r_ui_poll_interval = mep.opt.r_ui_poll_interval or 1.0\n"
     "mep.language_ui_extensions.r = mep.language_ui_extensions.r or 'r'\n"
-    // %s order when formatted: help_path, plot_path, data_path.
+    // R Markdown (.Rmd) and Sweave (.Rnw) documents are R-code-chunk
+    // documents just as much as a plain .R script -- <leader>uu's own
+    // extension lookup (mep.language_for_buffer) already lowercases
+    // before checking this table, so lowercase keys alone cover every
+    // real-world casing (.Rmd/.rmd/.RMD/...).\n"
+    "mep.language_ui_extensions.rmd = mep.language_ui_extensions.rmd or 'r'\n"
+    "mep.language_ui_extensions.rnw = mep.language_ui_extensions.rnw or 'r'\n"
+    // %s order when formatted: help_path, plot_dir, data_path,
+    // objects_path, packages_path, history_path. Every literal '%' meant
+    // for R's own sprintf() (not this substitution) is doubled ('%%') so
+    // Lua's string.format passes it through instead of consuming an arg.
     "local mep_r_ui_init_template = [==[\n"
     "options(help_type = \"text\")\n"
+    // Both of these default to a plain 80 columns -- narrow enough, next to
+    // the sidebar's own indent/icon columns, to wrap ordinary help text and
+    // wide print() output (mep_view's data.frame heads, str() in Objects,
+    // etc.) into a lot of short, choppy lines well before the sidebar's
+    // actual width would require it. Widening both here just gives R more
+    // room to lay text out on fewer, longer lines -- the sidebar (wrap =
+    // true widgets, see mep_r_ui_render_textbox) still re-wraps everything
+    // to whatever the pane is ACTUALLY drawn at, so this isn't in tension
+    // with that, it just stops R from double-wrapping first at a much
+    // narrower width than the pane really has.
+    //   - options(width=) governs ordinary print()/str()/cat() layout
+    //     (used by mep_view, mep_env_summary, mep_pkg_summary) -- the
+    //     normal, well-documented lever (?options).
+    //   - tools:::Rd2txt_options(width=) is a SEPARATE setting specific to
+    //     help()/?topic's own Rd2txt renderer -- confirmed empirically
+    //     (a real R session) that plain options(width=...) alone does NOT
+    //     move it; this is the one that actually widens help text.
+    // 200 turned out still not wide enough: an Rd argument list's longer
+    // entries (e.g. ?lm's `na.action`, `weights`) can run past 200 chars as
+    // ONE logical line, so at width=200 R itself still hard-wraps those
+    // across 2-3 raw lines -- each of which then becomes its own
+    // independently-word-wrapped sidebar row (mep_r_ui_render_textbox), so
+    // the seam between R's own break and the next one rarely lines up with
+    // where the sidebar would have wrapped it anyway, reintroducing choppy-
+    // looking text for exactly the longer entries. 500 was checked against
+    // a real R session too: every individual argument/paragraph in ?lm's
+    // help (its single longest paragraph included, ~400 chars) fits on ONE
+    // raw line at width=500, so the sidebar's own word-wrap (LspDiagWrap,
+    // used by every wrap=true widget) becomes the ONLY wrapping applied for
+    // prose -- no more seams. Usage:/Examples: code blocks are unaffected
+    // by either width (verified: identical output at 200 vs 500) since Rd2txt
+    // wraps deparsed function signatures via its own separate, fixed-width
+    // logic -- so this can't make code formatting worse, only prose better.\n"
+    "options(width = 500)\n"
+    "tools:::Rd2txt_options(width = 500)\n"
+    // R's plain-text help renderer (tools::Rd2txt, under help_type="text")
+    // formats bold/underline the classic nroff/terminal way: a literal
+    // backspace byte between two copies of a character means "bold this
+    // char" (X<BS>X), and one between an underscore and a character means
+    // "underline this char" (_<BS>X) -- meant for a pager like `less` that
+    // turns those into real bold/underline escapes, not for display as
+    // plain text. The Help pane just shows the file's raw text, so left
+    // alone these show up as literal doubled/underscore-prefixed
+    // characters. Strip both forms (the same fix `col -b`/`ul` apply to
+    // troff/man output) before writing the file mep actually displays,
+    // rather than copying the pager's own raw bytes verbatim.\n"
     "options(pager = function(files, header, title, delete.file) {\n"
-    "  try(file.copy(files[1], \"%s\", overwrite = TRUE), silent = TRUE)\n"
+    "  try({\n"
+    "    raw <- readLines(files[1], warn = FALSE)\n"
+    "    clean <- gsub(\"(.)\\b\\\\1\", \"\\\\1\", raw, perl = TRUE)\n"
+    "    clean <- gsub(\"_\\b(.)\", \"\\\\1\", clean, perl = TRUE)\n"
+    "    writeLines(clean, \"%s\")\n"
+    "  }, silent = TRUE)\n"
     "  if (isTRUE(delete.file)) unlink(files)\n"
     "})\n"
+    ".mep_fig_n <- 0\n"
+    ".mep_fig_dir <- \"%s\"\n"
+    ".mep_last_plot <- NULL\n"
+    // Tracks "does the NEXT capture belong to a brand new figure, or is it
+    // just this same one growing" -- graphics::plot.new() (any base-graphics
+    // high-level plot) and grid::grid.newpage() (anything grid-based,
+    // including every ggplot2 print) each fire their own hook exactly once
+    // per new page/frame, and NOT for a low-level addition to the existing
+    // one (lines()/points()/abline()/title()/...) -- confirmed empirically
+    // (a real R session: plot(x) fires "plot.new" once, a following
+    // lines()/abline() fires neither; print(ggplot(...)) fires
+    // "grid.newpage" once). mep_capture_plot only bumps .mep_fig_n (a new
+    // file) when this is TRUE, immediately clearing it -- otherwise it
+    // rewrites the CURRENT figure's file in place, so `plot(x, x)` then
+    // `lines(x, x)` then `abline(h = 0)` as three separate console
+    // statements is one evolving figure, not three, matching RStudio's own
+    // Plots-pane behavior. action = \"append\" so this can't clobber a hook
+    // the user's own .Rprofile/session already set for something else.\n"
+    ".mep_new_page <- TRUE\n"
+    "setHook(\"plot.new\", function(...) .mep_new_page <<- TRUE, action = \"append\")\n"
+    "setHook(\"grid.newpage\", function(...) .mep_new_page <<- TRUE, action = \"append\")\n"
+    "options(device = function(...) {\n"
+    "  grDevices::png(filename = file.path(tempdir(), \"mep_scratch.png\"), width = 900, height = 650, res = 120)\n"
+    "  grDevices::dev.control(displaylist = \"enable\")\n"
+    "})\n"
+    "mep_capture_plot <- function() {\n"
+    "  if (grDevices::dev.cur() <= 1) return(invisible(NULL))\n"
+    "  pl <- tryCatch(grDevices::recordPlot(), error = function(e) NULL)\n"
+    "  if (is.null(pl) || length(pl[[1]]) == 0 || identical(pl, .mep_last_plot)) return(invisible(NULL))\n"
+    "  .mep_last_plot <<- pl\n"
+    "  if (.mep_new_page) {\n"
+    "    .mep_fig_n <<- .mep_fig_n + 1\n"
+    "    .mep_new_page <<- FALSE\n"
+    "  }\n"
+    "  f <- file.path(.mep_fig_dir, sprintf(\"fig_%%04d.png\", .mep_fig_n))\n"
+    "  tryCatch({\n"
+    "    grDevices::png(filename = f, width = 900, height = 650, res = 120)\n"
+    "    grDevices::replayPlot(pl)\n"
+    "    grDevices::dev.off()\n"
+    "  }, error = function(e) NULL)\n"
+    "  invisible(NULL)\n"
+    "}\n"
     "mep_show <- function(expr) {\n"
-    "  grDevices::png(filename = \"%s\", width = 900, height = 650, res = 120)\n"
+    "  .mep_fig_n <<- .mep_fig_n + 1\n"
+    "  f <- file.path(.mep_fig_dir, sprintf(\"fig_%%04d.png\", .mep_fig_n))\n"
+    "  grDevices::png(filename = f, width = 900, height = 650, res = 120)\n"
     "  on.exit(grDevices::dev.off(), add = TRUE)\n"
     "  eval.parent(substitute(expr))\n"
     "  invisible(NULL)\n"
@@ -4826,36 +5296,262 @@ const char *kBuiltinLanguageUiR =
     "  writeLines(utils::capture.output(print(utils::head(x, n))), \"%s\")\n"
     "  invisible(x)\n"
     "}\n"
-    "cat(\"mep: language UI ready -- mep_show(expr) draws to the Figures pane, mep_view(x) writes to the Data pane, help() and ?topic go to the Help pane.\\n\")\n"
+    "mep_env_summary <- function() {\n"
+    "  nms <- sort(ls(envir = .GlobalEnv))\n"
+    "  if (length(nms) == 0) return(\"(no objects in .GlobalEnv)\")\n"
+    "  extra <- 0\n"
+    "  if (length(nms) > 200) { extra <- length(nms) - 200; nms <- nms[1:200] }\n"
+    "  lines <- vapply(nms, function(nm) {\n"
+    "    v <- get(nm, envir = .GlobalEnv)\n"
+    "    dims <- tryCatch({\n"
+    "      d <- dim(v)\n"
+    "      if (!is.null(d)) paste(d, collapse = \"x\") else paste0(\"length \", length(v))\n"
+    "    }, error = function(e) \"?\")\n"
+    "    sprintf(\"%%-20s <%%s> %%s\", nm, paste(class(v), collapse = \",\"), dims)\n"
+    "  }, character(1))\n"
+    "  out <- paste(lines, collapse = \"\\n\")\n"
+    "  if (extra > 0) out <- paste0(out, sprintf(\"\\n... and %%d more\", extra))\n"
+    "  out\n"
+    "}\n"
+    "mep_pkg_summary <- function() paste(sort(.packages()), collapse = \"\\n\")\n"
+    ".mep_task_cb <- function(expr, value, ok, visible) {\n"
+    "  try(mep_capture_plot(), silent = TRUE)\n"
+    "  try(writeLines(mep_env_summary(), \"%s\"), silent = TRUE)\n"
+    "  try(writeLines(mep_pkg_summary(), \"%s\"), silent = TRUE)\n"
+    "  try(savehistory(\"%s\"), silent = TRUE)\n"
+    "  TRUE\n"
+    "}\n"
+    "addTaskCallback(.mep_task_cb, name = \"mep_ui_refresh\")\n"
+    "cat(\"mep: language UI ready -- just plot (plot(x), print(ggplot(...)), etc.) and it appears in the Plot tab automatically; mep_show(expr) is still there for one-off custom width/height/res. mep_view(x) writes to the Data tab, help() and ?topic go to the Help tab. Objects/Packages/History live in their own tabs too.\\n\")\n"
     "]==]\n"
-    "local mep_r_ui_figures = {}\n"
+    // tab id -> {figure_pane, plot_dir, figures = {path, ...}, findex,
+    // follow_latest, objects_path, packages_path, history_path, help_path,
+    // data_path, objects_text, packages_text, help_text, data_text,
+    // history = {cmd, ...}, console_buf}. One state entry per tab (mirrors
+    // mep.language_ui_active's own per-tab scope), but each of the five
+    // sidebars below (Data/Help/Objects/Packages/History -- Plot isn't a
+    // SidebarInstance at all, see mep_r_ui_figure_goto's own comment) is a
+    // single global instance (mep.sidebar_create has no per-tab concept)
+    // that always renders whichever tab is currently active -- same
+    // single-slot scope cut as mep.term_jump's jump-source/target pair:
+    // switching to a tab with no R UI mode open just leaves them showing
+    // the last active one's stale content until you switch back or close
+    // it, rather than tracking one set of sidebars per tab.
+    //
+    // Data/Help/Objects/Packages/History are each their own independent
+    // SidebarInstance (mep.sidebar_create) opened as an ordinary tabbed
+    // buffer (mep.sidebar_open_pane, Mode::SidebarPane), split Data/
+    // Objects/Packages/History on top and Plot/Help on the bottom (see
+    // mep.r_ui_open) -- so the user can split/move/tab-cycle/merge any of
+    // them with mod1's usual pane chords (mod1+Tab/Shift+Tab cycles a
+    // pane's own tabs, mod1+s splits, mod1+Ctrl+hjkl moves the active one
+    // into a neighboring pane) like any other buffer. Objects/Packages/
+    // History used to be one sidebar's own internal tab strip
+    // (mep.sidebar_set_tabs); un-nested into top-level sidebars since the
+    // whole point now is "each thing is its own plain tabbable buffer",
+    // not a second tab hierarchy underneath the pane's own.\n"
+    "local mep_r_ui_state = {}\n"
+    "local mep_r_ui_data_sidebar_id = nil\n"
+    "local mep_r_ui_help_sidebar_id = nil\n"
+    "local mep_r_ui_objects_sidebar_id = nil\n"
+    "local mep_r_ui_packages_sidebar_id = nil\n"
+    "local mep_r_ui_history_sidebar_id = nil\n"
+    "local function mep_r_ui_read_file(path)\n"
+    "  local f = io.open(path, 'r')\n"
+    "  if not f then return nil end\n"
+    "  local s = f:read('*a')\n"
+    "  f:close()\n"
+    "  return s\n"
+    "end\n"
+    // Quotes an arbitrary path as an R single-quoted string literal --
+    // used for the user's own file (mep_run_button_shq, kBuiltinRunButton's
+    // own quoting helper, is chunk-local and shell-oriented, not
+    // R-literal-oriented, so not reusable here).\n"
+    "local function mep_r_ui_rquote(s)\n"
+    "  return \"'\" .. s:gsub('\\\\', '\\\\\\\\'):gsub(\"'\", \"\\\\'\") .. \"'\"\n"
+    "end\n"
+    "local mep_r_ui_render_all\n"  // forward-declared: figure_goto/step below call it before it's assigned
+    "local mep_r_ui_figure_step\n"  // forward-declared: figure_goto's own nav-click closures call it before it's assigned
+    // The Plot pane is a plain image buffer (mep.open), not a
+    // SidebarInstance -- a sidebar widget row is text-only, so there's
+    // nowhere in that model to actually show a figure. Merging the old
+    // separate Prev/Next-list picker into the image viewer itself instead
+    // means: whichever pane is currently showing a figure gets re-pointed
+    // at a different file (mep.open, an *InPlace swap -- Editor::
+    // OpenImageInPlace -- so this never grows into a pile of per-figure
+    // tabs), and mep.image_set_nav re-applies the "<"/">" callbacks since a
+    // different filename is a different buffer id (a fresh ImageSession,
+    // with neither ref set yet). See DrawPane's image branch (main.cpp)
+    // for the nav-header rendering/click side.\n"
+    "local function mep_r_ui_figure_goto(tid, i)\n"
+    "  local st = mep_r_ui_state[tid]\n"
+    "  if not st or #st.figures == 0 then return end\n"
+    "  st.findex = math.max(1, math.min(i, #st.figures))\n"
+    "  st.follow_latest = (st.findex == #st.figures)\n"
+    "  local cur = mep.current_pane_id()\n"
+    "  if mep.pane_focus(st.figure_pane) then\n"
+    "    mep.open(st.figures[st.findex])\n"
+    "    mep.image_set_nav(mep.current_buffer(), function() mep_r_ui_figure_step(tid, -1) end, function() mep_r_ui_figure_step(tid, 1) end)\n"
+    // Themed by default (ImageSession::theme_colors' own comment explains
+    // why that's opt-in rather than a global default) -- an R plot is much
+    // closer in spirit to a PDF page (mostly white background, black/
+    // colored lines) than an arbitrary photo, so recoloring it to match
+    // the editor's theme by default reads as consistent rather than
+    // surprising. Re-applied on every reopen for the same reason
+    // mep.image_set_nav is: a different figure file is a different buffer
+    // id, so a fresh ImageSession always starts back at false -- Ctrl-R
+    // still toggles it back to original colors from there, same as any
+    // other themed pane.\n"
+    "    mep.image_set_theme(mep.current_buffer(), true)\n"
+    "    mep.pane_focus(cur)\n"
+    "  end\n"
+    "end\n"
+    "function mep_r_ui_figure_step(tid, delta)\n"
+    "  local st = mep_r_ui_state[tid]\n"
+    "  if not st then return end\n"
+    "  mep_r_ui_figure_goto(tid, st.findex + delta)\n"
+    "end\n"  // assigns the forward-declared local above (no `local` keyword here -- see its own comment
+    "local function mep_r_ui_render_objects()\n"
+    "  if not mep_r_ui_objects_sidebar_id then return end\n"
+    "  local st = mep_r_ui_state[mep.current_tab_id()]\n"
+    "  local widgets = {}\n"
+    "  for line in ((st and st.objects_text) or ''):gmatch('[^\\n]+') do\n"
+    "    local name = line:match('^(%S+)')\n"
+    "    widgets[#widgets + 1] = {id = name or line, text = line,\n"
+    "      on_click = (name and st) and function() mep.terminal_write(st.console_buf, 'str(' .. name .. ')\\n') end or nil}\n"
+    "  end\n"
+    "  if #widgets == 0 then widgets[1] = {id = 'empty', text = '(no objects in .GlobalEnv)'} end\n"
+    "  mep.sidebar_set_sections(mep_r_ui_objects_sidebar_id, {{id = 'objects', title = '', collapsed = false, widgets = widgets}})\n"
+    "end\n"
+    "local function mep_r_ui_render_packages()\n"
+    "  if not mep_r_ui_packages_sidebar_id then return end\n"
+    "  local st = mep_r_ui_state[mep.current_tab_id()]\n"
+    "  local widgets = {}\n"
+    "  for line in ((st and st.packages_text) or ''):gmatch('[^\\n]+') do\n"
+    "    widgets[#widgets + 1] = {id = line, text = line}\n"
+    "  end\n"
+    "  if #widgets == 0 then widgets[1] = {id = 'empty', text = '(no packages attached)'} end\n"
+    "  mep.sidebar_set_sections(mep_r_ui_packages_sidebar_id, {{id = 'packages', title = '', collapsed = false, widgets = widgets}})\n"
+    "end\n"
+    "local function mep_r_ui_render_history()\n"
+    "  if not mep_r_ui_history_sidebar_id then return end\n"
+    "  local st = mep_r_ui_state[mep.current_tab_id()]\n"
+    "  local widgets = {}\n"
+    "  for i = (st and #st.history or 0), 1, -1 do\n"
+    "    local cmd = st.history[i]\n"
+    "    widgets[#widgets + 1] = {id = 'h' .. i, text = cmd, wrap = true, wrap_indent = 0,\n"
+    "      on_click = function() mep.terminal_write(st.console_buf, cmd .. '\\n') end}\n"
+    "  end\n"
+    "  if #widgets == 0 then widgets[1] = {id = 'empty', text = '(no history yet -- run something in the console)'} end\n"
+    "  mep.sidebar_set_sections(mep_r_ui_history_sidebar_id, {{id = 'history', title = '', collapsed = false, widgets = widgets}})\n"
+    "end\n"
+    // Shared by Data and Help below: both are just "the R session wrote a
+    // text file, show it one widget per line" (word-wrapped, like the Todo
+    // panel -- kBuiltinActivityBar's own wrap=true use -- since help text
+    // and printed data frames both routinely run past a sidebar's width).\n"
+    "local function mep_r_ui_render_textbox(sidebar_id, text, empty_msg)\n"
+    "  if not sidebar_id then return end\n"
+    "  local widgets = {}\n"
+    "  for line in (text or ''):gmatch('[^\\n]+') do\n"
+    "    widgets[#widgets + 1] = {id = tostring(#widgets + 1), text = line, wrap = true, wrap_indent = 0}\n"
+    "  end\n"
+    "  if #widgets == 0 then widgets[1] = {id = 'empty', text = empty_msg} end\n"
+    "  mep.sidebar_set_sections(sidebar_id, {{id = 'content', title = '', collapsed = false, widgets = widgets}})\n"
+    "end\n"
+    "local function mep_r_ui_render_data()\n"
+    "  local st = mep_r_ui_state[mep.current_tab_id()]\n"
+    "  mep_r_ui_render_textbox(mep_r_ui_data_sidebar_id, st and st.data_text, '(no data yet -- call mep_view(x) in the console)')\n"
+    "end\n"
+    "local function mep_r_ui_render_help()\n"
+    "  local st = mep_r_ui_state[mep.current_tab_id()]\n"
+    "  mep_r_ui_render_textbox(mep_r_ui_help_sidebar_id, st and st.help_text, '(no help viewed yet -- try ?topic or help(...) in the console)')\n"
+    "end\n"
+    "function mep_r_ui_render_all()\n"
+    "  mep_r_ui_render_objects()\n"
+    "  mep_r_ui_render_packages()\n"
+    "  mep_r_ui_render_history()\n"
+    "  mep_r_ui_render_data()\n"
+    "  mep_r_ui_render_help()\n"
+    "end\n"
     "function mep.r_ui_open()\n"
-    "  local plot_path = os.tmpname() .. '.png'\n"
-    "  local help_path = os.tmpname() .. '.txt'\n"
-    "  local data_path = os.tmpname() .. '.txt'\n"
-    "  local placeholder_path = os.tmpname() .. '.txt'\n"
-    "  local init_path = os.tmpname() .. '.R'\n"
+    // A single named session directory (rather than one anonymous
+    // os.tmpname() per file) so every pane's tab shows a plain,
+    // recognizable basename ("help.txt", "data.txt", ...) instead of a
+    // random generated name -- DrawTabBar titles a pane from its file's
+    // Basename(), which has no override, so the file's own name IS the
+    // tab title.\n"
+    "  local session_dir = os.tmpname() .. '_rui'\n"
+    "  mep.fs_mkdir(session_dir)\n"
+    "  local plot_dir = session_dir .. '/figures'\n"
+    "  mep.fs_mkdir(plot_dir)\n"
+    "  local help_path = session_dir .. '/help.txt'\n"
+    "  local data_path = session_dir .. '/data.txt'\n"
+    "  local objects_path = session_dir .. '/objects.txt'\n"
+    "  local packages_path = session_dir .. '/packages.txt'\n"
+    "  local history_path = session_dir .. '/history.txt'\n"
+    "  local placeholder_path = session_dir .. '/no_figure_yet.txt'\n"
+    "  local init_path = session_dir .. '/init.R'\n"
     "  local ph = io.open(placeholder_path, 'w')\n"
     "  if ph then\n"
-    "    ph:write('No figure yet.\\nCall mep_show(plot(...)) or mep_show(print(ggplot(...))) from the R console below.\\n')\n"
+    "    ph:write('No figure yet.\\nPlot from the R console below (e.g. plot(x) or print(ggplot(...))) and it will appear here automatically.\\n')\n"
     "    ph:close()\n"
     "  end\n"
-    "  local hf = io.open(help_path, 'w')\n"
-    "  if hf then hf:close() end\n"
-    "  local df = io.open(data_path, 'w')\n"
-    "  if df then df:close() end\n"
+    "  for _, p in ipairs({help_path, data_path, objects_path, packages_path, history_path}) do\n"
+    "    local f = io.open(p, 'w')\n"
+    "    if f then f:close() end\n"
+    "  end\n"
     "  local rf = io.open(init_path, 'w')\n"
     "  if rf then\n"
-    "    rf:write(string.format(mep_r_ui_init_template, help_path, plot_path, data_path))\n"
+    "    rf:write(string.format(mep_r_ui_init_template, help_path, plot_dir, data_path, objects_path, packages_path, history_path))\n"
     "    rf:close()\n"
     "  end\n"
     "\n"
+    // Full-height right column FIRST (before the bottom split below), so
+    // it's a sibling of the *whole* left side (source+console), not just of
+    // the source pane -- doing this after the bottom split instead would
+    // nest it under the source pane's own (now shorter) cell and only span
+    // that top portion's height. mep.cmd('vsplit') opens the NEW pane to
+    // the left of the current one and focuses it, shifting the pane that
+    // was already there (a copy of the same source buffer) to the right --
+    // so, counterintuitively, `source_pane` for the rest of this function
+    // is that new left pane (still the same source buffer, just a
+    // different Pane id showing it), and the ORIGINAL pane id becomes
+    // `info_pane` on the right.\n"
+    "  local orig_pane = mep.current_pane_id()\n"
+    "  mep.cmd('vsplit')\n"
     "  local source_pane = mep.current_pane_id()\n"
+    "  local info_pane = orig_pane\n"
+    "  mep.pane_focus(info_pane)\n"
+    "  mep.pane_set_share(mep.opt.r_ui_info_share)\n"
+    "\n"
+    // info_pane splits top/bottom -- top gets Data/Objects/Packages/
+    // History (the things you read/click, wanted more room), bottom gets
+    // Plot/Help (an image and reference text, wanted less). mep.cmd('split')
+    // creates a NEW pane and focuses IT as the top half, shifting the
+    // pane that was already there (info_pane's own id, still holding a
+    // copy of whatever it showed before) down to become the bottom half --
+    // same "new pane takes the primary spot, original shifts aside"
+    // direction mep.cmd('vsplit') documents for itself above, just
+    // top/bottom instead of left/right. mep.nav_pane('down') reaches that
+    // shifted-down original.\n"
     "  mep.cmd('split')\n"
+    "  local top_pane = mep.current_pane_id()\n"
+    "  mep.nav_pane('down')\n"
+    "  mep.pane_set_share(mep.opt.r_ui_bottom_info_share)\n"
+    "  local bottom_pane = mep.current_pane_id()\n"
+    "\n"
+    // Same "new pane takes top/left, original shifts down/right" direction
+    // as both splits above -- mep.cmd('split') here creates a NEW pane
+    // (still holding a copy of the .R source) and focuses it as the TOP
+    // half, shifting source_pane's own id down to become the bottom half
+    // (soon the console). editor_pane, not source_pane, is what every
+    // later "return focus to the source" call below actually wants --
+    // source_pane's own id is about to be repurposed into the console.\n"
+    "  mep.pane_focus(source_pane)\n"
+    "  mep.cmd('split')\n"
+    "  local editor_pane = mep.current_pane_id()\n"
     "  mep.nav_pane('down')\n"
     "  mep.pane_set_share(mep.opt.r_ui_bottom_share)\n"
-    "  mep.cmd('vsplit')\n"
-    "  mep.cmd('vsplit')\n"
     "  mep.terminal_here_argv(mep.opt.r_ui_cmd, 'R')\n"
     "  local console_pane = mep.current_pane_id()\n"
     "  local console_buf = mep.current_buffer()\n"
@@ -4863,54 +5559,163 @@ const char *kBuiltinLanguageUiR =
     "    mep.terminal_write(console_buf, string.format(\"source('%s', echo = FALSE)\\n\", init_path))\n"
     "  end\n"
     "\n"
-    "  mep.nav_pane('right')\n"
+    "  mep.pane_focus(editor_pane)\n"
+    "  local tid = mep.current_tab_id()\n"
+    "  mep_r_ui_state[tid] = {\n"
+    "    figure_pane = bottom_pane, plot_dir = plot_dir, figures = {}, findex = 0, findex_mtime = nil, follow_latest = true,\n"
+    "    objects_path = objects_path, packages_path = packages_path, history_path = history_path,\n"
+    "    help_path = help_path, data_path = data_path,\n"
+    "    objects_text = '', packages_text = '', help_text = '', data_text = '', history = {},\n"
+    "    console_buf = console_buf,\n"
+    "  }\n"
+    "\n"
+    "  if not mep_r_ui_data_sidebar_id then mep_r_ui_data_sidebar_id = mep.sidebar_create('Data', 'right', 44) end\n"
+    "  if not mep_r_ui_help_sidebar_id then mep_r_ui_help_sidebar_id = mep.sidebar_create('Help', 'right', 44) end\n"
+    "  if not mep_r_ui_objects_sidebar_id then mep_r_ui_objects_sidebar_id = mep.sidebar_create('Objects', 'right', 44) end\n"
+    "  if not mep_r_ui_packages_sidebar_id then mep_r_ui_packages_sidebar_id = mep.sidebar_create('Packages', 'right', 44) end\n"
+    "  if not mep_r_ui_history_sidebar_id then mep_r_ui_history_sidebar_id = mep.sidebar_create('History', 'right', 44) end\n"
+    "  mep_r_ui_render_all()\n"
+    "\n"
+    // Opened in this order (Data/Objects/Packages/History/Help) into
+    // top_pane's buffer_tabs -- mep.sidebar_open_pane inserts right after
+    // the current tab and focuses it (mirroring mep.pane_open/mep.open's
+    // own "open as a new tab" semantics), so top_pane ends up with
+    // [seed, Data, Objects, Packages, History, Help] focused on Help.
+    // `seed` is whatever buffer top_pane's own split carried over (a copy
+    // of info_pane's, itself a copy of the source file) -- stepping
+    // mep.pane_prev_buffer() back to it and closing it both drops that
+    // stray tab AND leaves Data (now at index 0) as the active one.\n"
+    "  mep.pane_focus(top_pane)\n"
+    "  mep.sidebar_open_pane(mep_r_ui_data_sidebar_id)\n"
+    "  mep.sidebar_open_pane(mep_r_ui_objects_sidebar_id)\n"
+    "  mep.sidebar_open_pane(mep_r_ui_packages_sidebar_id)\n"
+    "  mep.sidebar_open_pane(mep_r_ui_history_sidebar_id)\n"
+    "  mep.sidebar_open_pane(mep_r_ui_help_sidebar_id)\n"
+    "  for _ = 1, 5 do mep.pane_prev_buffer() end\n"
+    "  mep.pane_close_buffer()\n"
+    "\n"
+    // bottom_pane: just the figure/placeholder now that Help moved up to
+    // top_pane above -- mep.open (LoadFile's plain-text fallback, same as
+    // every *InPlace image/pdf/video/model3d/docx path) replaces
+    // bottom_pane's own split-carried seed buffer DIRECTLY, no tab added,
+    // so there's nothing left here to switch away from/back to.\n"
+    "  mep.pane_focus(bottom_pane)\n"
     "  mep.open(placeholder_path)\n"
-    "  local figure_pane = mep.current_pane_id()\n"
     "\n"
-    "  mep.nav_pane('right')\n"
-    "  mep.open(help_path)\n"
-    "  local help_pane = mep.current_pane_id()\n"
-    "  mep.pane_set_share(mep.opt.r_ui_info_share)\n"
-    "  mep.cmd('split')\n"
-    "  mep.open(data_path)\n"
-    "  local data_pane = mep.current_pane_id()\n"
+    "  mep.pane_focus(editor_pane)\n"
+    "  mep.notify('R language UI: console below (plots capture automatically); Data/Objects/Packages/History/Help tabbed top-right, Plot alone bottom-right (mod1+Tab cycles, mod1+s splits, mod1+Ctrl+hjkl moves a tab)')\n"
     "\n"
-    "  mep.pane_focus(source_pane)\n"
-    "  mep_r_ui_figures[mep.current_tab_id()] = {pane = figure_pane, path = plot_path}\n"
-    "  mep.notify('R language UI: console/figures/help/data below')\n"
-    "\n"
-    "  return function()\n"
-    "    mep_r_ui_figures[mep.current_tab_id()] = nil\n"
-    "    for _, pid in ipairs({console_pane, figure_pane, help_pane, data_pane}) do\n"
-    "      if mep.pane_focus(pid) then mep.cmd('close') end\n"
-    "    end\n"
-    "    if mep.is_terminal_buffer(console_buf) then mep.buffer_delete(console_buf, true) end\n"
-    "    mep.pane_focus(source_pane)\n"
-    "    mep.notify('R language UI mode closed')\n"
+    // run_source: what the Run button (kBuiltinRunButton's mep.run_button_run)
+    // calls instead of its normal "spawn/reuse a popup terminal" flow while
+    // this tab's R UI mode is open -- writes the buffer first (source()
+    // reads off disk, same as the normal Run button's own mep.cmd('write')),
+    // then sources it straight into this session's console, echoing each
+    // line so it reads like output from typing it there directly. Sharing
+    // the console this way is exactly why mep_show/mep_capture_plot,
+    // mep_view, and the Objects/Packages/History refresh all keep working
+    // for code run this way too -- it's the same R process, not a new one.\n"
+    "  local function run_source(fname)\n"
+    "    mep.cmd('write')\n"
+    "    mep.terminal_write(console_buf, 'source(' .. mep_r_ui_rquote(fname) .. ', echo = TRUE)\\n')\n"
     "  end\n"
+    "  return {\n"
+    "    run_source = run_source,\n"
+    "    close = function()\n"
+    "      mep_r_ui_state[tid] = nil\n"
+    // top_pane/bottom_pane's own buffer tabs (the sidebar-view buffers,
+    // plus the figure/placeholder image) are never deleted here, same as
+    // console_pane's terminal buffer isn't torn down by closing its pane
+    // alone -- Editor::ClosePane only detaches the pane node, never the
+    // underlying Buffer, so they're still found (and reused, not
+    // recreated) by the same FindOrCreateBuffer path next time
+    // mep.sidebar_open_pane/mep.open runs for them.\n"
+    "      for _, pid in ipairs({console_pane, top_pane, bottom_pane}) do\n"
+    "        if mep.pane_focus(pid) then mep.cmd('close') end\n"
+    "      end\n"
+    "      if mep.is_terminal_buffer(console_buf) then mep.buffer_delete(console_buf, true) end\n"
+    "      mep.pane_focus(editor_pane)\n"
+    "      mep.notify('R language UI mode closed')\n"
+    "    end,\n"
+    "  }\n"
     "end\n"
     "mep.language_ui_modes.r = {open = mep.r_ui_open}\n"
-    // Re-opens the Figures pane's path on a timer (only while its tab is
-    // the active one -- mep.pane_focus only ever resolves panes in the
-    // active tab) so a fresh mep_show(...) call shows up without the user
-    // having to reopen the file by hand. Cheap: a small PNG decode roughly
-    // once a second, and only for as long as an R UI mode is actually open.
+    // Re-lists the figures directory and re-reads the objects/packages/
+    // history files on a timer (only while their tab is the active one --
+    // mep.pane_focus only ever resolves panes in the active tab), so a
+    // fresh mep_show(...)/console command shows up without the user
+    // reopening anything by hand. Cheap: a directory listing plus a few
+    // small text-file reads roughly once a second, and only for as long
+    // as an R UI mode is actually open.
     "do\n"
     "  local last_poll = 0\n"
     "  mep.on_frame(function()\n"
-    "    local entry = mep_r_ui_figures[mep.current_tab_id()]\n"
-    "    if not entry then return end\n"
+    "    local tid = mep.current_tab_id()\n"
+    "    local st = mep_r_ui_state[tid]\n"
+    "    if not st then return end\n"
     "    local now = mep.now()\n"
-    "    if now - last_poll < mep.opt.r_ui_figure_poll_interval then return end\n"
+    "    if now - last_poll < mep.opt.r_ui_poll_interval then return end\n"
     "    last_poll = now\n"
-    "    local f = io.open(entry.path, 'rb')\n"
-    "    if not f then return end\n"
-    "    f:close()\n"
-    "    local cur = mep.current_pane_id()\n"
-    "    if mep.pane_focus(entry.pane) then\n"
-    "      mep.open(entry.path)\n"
-    "      mep.pane_focus(cur)\n"
+    "\n"
+    "    local figures, mtimes = {}, {}\n"
+    "    for _, e in ipairs(mep.list_dir(st.plot_dir)) do\n"
+    "      if not e.is_dir and e.name:match('^fig_%d+%.png$') then\n"
+    "        local path = st.plot_dir .. '/' .. e.name\n"
+    "        figures[#figures + 1] = path\n"
+    "        mtimes[path] = e.mtime\n"
+    "      end\n"
     "    end\n"
+    "    table.sort(figures)\n"
+    "    local grew = #figures > #st.figures\n"
+    "    st.figures = figures\n"
+    "    if grew and st.follow_latest then\n"
+    "      mep_r_ui_figure_goto(tid, #figures)\n"
+    "    elseif st.findex > #figures then\n"
+    "      st.findex = #figures\n"
+    // Not grown (or grown but not following latest): mep_capture_plot (the R
+    // init template) now rewrites a figure's OWN file in place while its
+    // plot is still on the same page (a new file only starts with a
+    // genuinely new one -- see its own comment), so the figure count alone
+    // can't tell this poll "nothing changed" -- comparing the currently-
+    // viewed file's own mtime (mep.list_dir's new field, added for exactly
+    // this) against what it was last poll catches an in-place rewrite
+    // without re-navigating on every tick regardless. That distinction
+    // matters beyond just avoiding needless work: mep_r_ui_figure_goto
+    // briefly focuses st.figure_pane and back (mep.open operates on "the
+    // current pane"), and refocusing ANY pane re-syncs its mode from its
+    // buffer's type (Editor::SyncModeToActivePaneBuffer) -- for a sidebar-
+    // pane buffer that unconditionally re-enters at row 0 (by design, for a
+    // genuine cross-buffer focus change), so doing this every second
+    // regardless of real change was resetting whatever sidebar-pane the
+    // user actually had scrolled (e.g. Objects), and separately collapsing
+    // a pending <leader> WhichKey sequence back to Normal mode the instant
+    // the round-trip landed back on an ordinary pane. Only re-navigating on
+    // an actual mtime change (a real plot update, not an idle tick) is what
+    // fixes both.\n"
+    "    else\n"
+    "      local cur_path = st.findex > 0 and st.figures[st.findex] or nil\n"
+    "      if cur_path and mtimes[cur_path] ~= st.findex_mtime then\n"
+    "        mep_r_ui_figure_goto(tid, st.findex)\n"
+    "      end\n"
+    "    end\n"
+    "    st.findex_mtime = st.findex > 0 and mtimes[st.figures[st.findex]] or nil\n"
+    "\n"
+    "    local changed = grew\n"
+    "    local objs = mep_r_ui_read_file(st.objects_path)\n"
+    "    if objs and objs ~= st.objects_text then st.objects_text = objs; changed = true end\n"
+    "    local pkgs = mep_r_ui_read_file(st.packages_path)\n"
+    "    if pkgs and pkgs ~= st.packages_text then st.packages_text = pkgs; changed = true end\n"
+    "    local help = mep_r_ui_read_file(st.help_path)\n"
+    "    if help and help ~= st.help_text then st.help_text = help; changed = true end\n"
+    "    local data = mep_r_ui_read_file(st.data_path)\n"
+    "    if data and data ~= st.data_text then st.data_text = data; changed = true end\n"
+    "    local hist_raw = mep_r_ui_read_file(st.history_path)\n"
+    "    if hist_raw then\n"
+    "      local hist = {}\n"
+    "      for line in hist_raw:gmatch('[^\\n]+') do hist[#hist + 1] = line end\n"
+    "      if #hist ~= #st.history then st.history = hist; changed = true end\n"
+    "    end\n"
+    "\n"
+    "    if changed then mep_r_ui_render_all() end\n"
     "  end)\n"
     "end\n";
 
@@ -5550,6 +6355,18 @@ const char *kBuiltinStructure =
     // baked 'namespace' icon instead (same reasoning as every other
     // LaTeX kind above).\n"
     "  bookmark = {icon = utf8.char(0xea8b), hl = 'Cyan'},\n"
+    // Markdown ATX headings (mep_structure_md_items below) -- same Red/
+    // Orange/Yellow/Green/Blue/Purple hottest-to-coolest-by-depth
+    // progression mep.md_highlight already colors heading lines with
+    // (kBuiltinMarkdown's own MEP_MD_HEADING_HL), so a heading's sidebar
+    // entry matches the color it renders in in the buffer itself. No
+    // dedicated per-level glyph, same reasoning as the LaTeX kinds above.\n"
+    "  heading1 = {icon = utf8.char(0xeb63), hl = 'Red'},\n"
+    "  heading2 = {icon = utf8.char(0xeb63), hl = 'Orange'},\n"
+    "  heading3 = {icon = utf8.char(0xeb63), hl = 'Yellow'},\n"
+    "  heading4 = {icon = utf8.char(0xeb63), hl = 'Green'},\n"
+    "  heading5 = {icon = utf8.char(0xeb63), hl = 'Blue'},\n"
+    "  heading6 = {icon = utf8.char(0xeb63), hl = 'Purple'},\n"
     "}\n"
     "local mep_structure_default_style = {icon = utf8.char(0xeb63), hl = 'Normal'}\n"
     "local function mep_structure_style(kind)\n"
@@ -5670,6 +6487,121 @@ const char *kBuiltinStructure =
     "  return raw\n"
     "end\n"
 
+    // Markdown has a Treesitter *highlight* grammar registered
+    // (treesitter.cpp's LanguageTable) but no *structure* query (no
+    // kStructureMarkdown in StructureQueryTable/DynamicStructureQueryTable),
+    // so mep.ts_structure('md', ...) always returns nil for it, same gap
+    // LaTeX has -- this is the Markdown counterpart to
+    // mep_structure_tex_items just above, same {row, col, start_row,
+    // end_row, name, kind, depth} shape. Only ATX headings ("# Title", not
+    // the "Title\\n=====" Setext style) are recognized, matching
+    // mep.md_highlight's own scope decision (kBuiltinMarkdown) -- and
+    // reuses that same function's exact heading pattern/fence-and-front-
+    // matter-tracking state machine so a heading-looking line inside a
+    // ```` ``` ```` code fence or --- front-matter block is correctly
+    // skipped here too, not just in the highlighter.\n"
+    "local function mep_structure_md_items(lines)\n"
+    "  local raw = {}\n"
+    "  local in_fence = false\n"
+    "  local in_frontmatter = false\n"
+    "  for i, line in ipairs(lines) do\n"
+    "    if i == 1 and line == '---' then\n"
+    "      in_frontmatter = true\n"
+    "    elseif in_frontmatter then\n"
+    "      if line == '---' then in_frontmatter = false end\n"
+    "    elseif line:match('^```') then\n"
+    "      in_fence = not in_fence\n"
+    "    elseif not in_fence then\n"
+    "      local hashes, title = line:match('^(#+)%s+(.*)$')\n"
+    "      if hashes then\n"
+    // Lenient overflow, matching mep.md_highlight's own math.min(#hashes,
+    // 6) rather than CommonMark's stricter "7+ hashes isn't a heading at
+    // all" rule -- consistency with what this same file already renders
+    // as a colored/signed heading line matters more here than spec
+    // purity for the rare document that actually has one.\n"
+    "        local level = math.min(#hashes, 6)\n"
+    // An optional ATX closing sequence ("## Title ##") is part of the
+    // heading text CommonMark itself strips -- trimmed here so it doesn't
+    // clutter the sidebar's own label.\n"
+    "        title = title:gsub('%s+#+%s*$', '')\n"
+    "        if title ~= '' then\n"
+    "          raw[#raw + 1] = {row = i, col = 0, name = title, kind = 'heading' .. level, depth = level - 1}\n"
+    "        end\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  if #raw == 0 then return nil end\n"
+    // Same second-pass span computation as mep_structure_tex_items above
+    // (format-agnostic once there's a {row, depth} tuple per item).\n"
+    "  local last_row = #lines\n"
+    "  for k, item in ipairs(raw) do\n"
+    "    item.start_row = item.row\n"
+    "    item.end_row = last_row\n"
+    "    for j = k + 1, #raw do\n"
+    "      if raw[j].depth <= item.depth then\n"
+    "        item.end_row = raw[j].row - 1\n"
+    "        break\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  return raw\n"
+    "end\n"
+
+    // Org has a Treesitter grammar registered for highlighting/folding
+    // (treesitter.cpp's LanguageTable/kFoldsOrg) but, like LaTeX and
+    // Markdown, no *structure* query, so mep.ts_structure('org', ...)
+    // always returns nil for it -- this is the org counterpart to
+    // mep_structure_md_items above, same {row, col, start_row, end_row,
+    // name, kind, depth} shape, plus a "respects the todo nature of it"
+    // checkbox mark for a headline that actually has an org TODO
+    // keyword, matching the exact done/not-done split the Todo sidebar
+    // itself uses (kBuiltinActivityBar, mep.activity_todo_panel) --
+    // reusing mep.activity_todo_load rather than re-deriving a file's own
+    // #+TODO:/#+DONE: keyword split a second time, so a headline that
+    // reads as "done" here is guaranteed to agree with the Todo sidebar's
+    // own notion of "done" for the exact same file. A plain headline
+    // with no TODO keyword at all gets no checkbox, matching the "only
+    // if it is there" scope this was asked for.\n"
+    "local function mep_structure_org_items(lines)\n"
+    "  local todo_by_line = {}\n"
+    "  local ok, todo_items = pcall(mep.activity_todo_load, mep.filename())\n"
+    "  if ok and todo_items then\n"
+    "    for _, it in ipairs(todo_items) do\n"
+    "      if it.line then todo_by_line[it.line] = it end\n"
+    "    end\n"
+    "  end\n"
+    "  local raw = {}\n"
+    "  for i, line in ipairs(lines) do\n"
+    "    local stars, title = line:match('^(%*+)%s+(.*)$')\n"
+    "    if stars then\n"
+    "      local level = #stars\n"
+    "      local todo_it = todo_by_line[i]\n"
+    // A keyworded headline shows the Todo sidebar's own [ ]/[x] mark and
+    // its already keyword/priority/tag-stripped title; a plain one shows
+    // its raw title text as scanned (tags and all -- this is a quick
+    // heuristic scan, not a real org parser, same tolerance every other
+    // hand-rolled scanner in this file already has).\n"
+    "      local name = todo_it and ((todo_it.done and '[x] ' or '[ ] ') .. todo_it.text) or title\n"
+    "      raw[#raw + 1] = {row = i, col = 0, name = name, kind = 'heading' .. math.min(level, 6), depth = level - 1}\n"
+    "    end\n"
+    "  end\n"
+    "  if #raw == 0 then return nil end\n"
+    // Same second-pass span computation as mep_structure_tex_items/
+    // mep_structure_md_items above.\n"
+    "  local last_row = #lines\n"
+    "  for k, item in ipairs(raw) do\n"
+    "    item.start_row = item.row\n"
+    "    item.end_row = last_row\n"
+    "    for j = k + 1, #raw do\n"
+    "      if raw[j].depth <= item.depth then\n"
+    "        item.end_row = raw[j].row - 1\n"
+    "        break\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  return raw\n"
+    "end\n"
+
     // A PDF-backed buffer's own /Outlines (bookmarks) tree, in the same
     // {name, kind, depth} shape every other structure item uses (so
     // mep_structure_label/the sidebar's icon lookup/the split view's
@@ -5712,6 +6644,10 @@ const char *kBuiltinStructure =
     "  local items\n"
     "  if ft == 'tex' then\n"
     "    items = mep_structure_tex_items(lines)\n"
+    "  elseif ft == 'md' or ft == 'markdown' then\n"
+    "    items = mep_structure_md_items(lines)\n"
+    "  elseif ft == 'org' then\n"
+    "    items = mep_structure_org_items(lines)\n"
     "  else\n"
     "    items = mep.ts_structure(ft, table.concat(lines, '\\n'))\n"
     "  end\n"
@@ -11439,7 +12375,14 @@ const char *kBuiltinActivityBar =
     "    local indent = string.rep('  ', (it.level or 1) - 1)\n"
     "    local running = clock ~= nil and it.line ~= nil and clock.line == it.line\n"
     "    local mark = running and '[>] ' or (it.done and '[x] ' or '[ ] ')\n"
+    // wrap/wrap_indent (SidebarWidget's own comment, editor.h): a long
+    // task title wraps onto continuation rows indented to line up right
+    // after the checkbox mark instead of restarting at column 0 --
+    // wrap_indent is exactly the width of the indent+mark prefix just
+    // built, so FlattenSidebar knows where the "hanging indent" prefix
+    // ends and the wrappable title text begins.\n"
     "    widgets[#widgets + 1] = {id = tostring(i), text = indent .. mark .. it.text, hl = running and 'Add' or nil,\n"
+    "      wrap = true, wrap_indent = #indent + #mark,\n"
     "      on_click = function() mep.activity_todo_toggle_clock(it, i) end}\n"
     "  end\n"
     "  if #widgets == 0 then\n"
@@ -12978,17 +13921,197 @@ const char *kBuiltinRunButton =
     "    mep.notify('Run: ' .. tostring(err), 'error')\n"
     "  end\n"
     "end\n"
+    // Rmd Run button: renders the current .Rmd with rmarkdown and shows
+    // whatever it produces (rmarkdown::render's own return value -- HTML,
+    // PDF, or Word, entirely decided by the document's own YAML `output:`
+    // front matter, never guessed here) via mep_run_button_show_org_output
+    // above. Passes the file as a plain trailing Rscript argument
+    // (commandArgs(trailingOnly = TRUE)[1]) rather than interpolating it
+    // into the -e expression string -- confirmed against a real R session
+    // that this works, and it sidesteps any quoting concerns entirely
+    // since mep.job_start execs argv directly (no shell involved either
+    // way). normalizePath() on the result: render() returns a path
+    // relative to ITS OWN cwd (the job's cwd = the file's directory, set
+    // below), not necessarily mep's own process cwd -- resolving it to
+    // absolute here removes that ambiguity before handing it to
+    // mep_run_button_show_org_output, the same reasoning
+    // mep.run_button_run_tex's own abs-path comment gives for the input
+    // side.\n"
+    // Strips every <script>...</script> block from a rendered .html/.htm
+    // file in place. mep's own HTML renderer never executes scripts
+    // usefully (html_doc.h's own "intentionally minimal... no external
+    // stylesheets or scripts" scope note) -- a default html_document's
+    // bundled jQuery/Bootstrap/highlight.js/MathJax-loader only ever
+    // surfaces as "script error: ..."/"'$' is not defined" toasts here,
+    // never a working feature. Confirmed empirically that this is more
+    // than cosmetic, too: pandoc's own small header-id-cleanup script
+    // (unrelated to jQuery -- just document.querySelectorAll +
+    // removeAttribute) silently blanks the ENTIRE rendered page when left
+    // in, even with theme/highlight/mathjax all otherwise disabled --
+    // whatever it does to the DOM trips something in RunScripts/
+    // js_engine.cpp this repo hasn't chased down. Stripping every script
+    // unconditionally sidesteps both problems at once without needing the
+    // .Rmd's own YAML to opt out of anything (theme/highlight/CSS are
+    // untouched -- only script *execution* is a no-op here, not the
+    // page's visual styling). Lua patterns have no true regex, but a
+    // non-greedy `.-` between open/close tags is enough for real-world
+    // script blocks (none of which contain a literal \"</script>\" inside
+    // their own content).\n"
+    "local function mep_rmd_strip_scripts(path)\n"
+    "  local f = io.open(path, 'r')\n"
+    "  if not f then return end\n"
+    "  local html = f:read('*a')\n"
+    "  f:close()\n"
+    "  local cleaned = html:gsub('<[Ss][Cc][Rr][Ii][Pp][Tt].-</[Ss][Cc][Rr][Ii][Pp][Tt]>', '')\n"
+    "  if cleaned == html then return end\n"
+    "  local out = io.open(path, 'w')\n"
+    "  if not out then return end\n"
+    "  out:write(cleaned)\n"
+    "  out:close()\n"
+    "end\n"
+    "local mep_run_button_rmd_running = {}\n"
+    "function mep.run_button_run_rmd()\n"
+    "  local fname = mep.filename()\n"
+    "  if not fname or fname == '' then mep.notify('Run: save this buffer to a file first', 'warn') return end\n"
+    "  if mep_run_button_rmd_running[fname] then\n"
+    "    mep.notify('Run: already running, please wait...', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  mep_run_button_rmd_running[fname] = true\n"
+    "  local function done() mep_run_button_rmd_running[fname] = nil end\n"
+    "  local ok, err = pcall(function()\n"
+    "    mep.cmd('write')\n"
+    "    local abs = mep_lsp_abspath(fname)\n"
+    "    local base_dir = abs:match('^(.*)/[^/]*$') or '.'\n"
+    "    mep.notify('Rendering ' .. fname .. ' (rmarkdown)...')\n"
+    "    local out_lines, rmd_err = {}, {}\n"
+    "    mep.job_start({'Rscript', '-e',\n"
+    "      'cat(normalizePath(rmarkdown::render(commandArgs(trailingOnly=TRUE)[1], quiet=TRUE)), \"\\\\n\", sep=\"\")',\n"
+    "      abs}, {\n"
+    "      cwd = base_dir,\n"
+    "      on_stdout = function(line) if line ~= '' then out_lines[#out_lines + 1] = line end end,\n"
+    "      on_stderr = function(line) rmd_err[#rmd_err + 1] = line end,\n"
+    "      on_exit = function(code)\n"
+    "        done()\n"
+    "        if code == 0 and #out_lines > 0 then\n"
+    "          local out_path = out_lines[#out_lines]\n"
+    "          if out_path:match('%.html?$') then mep_rmd_strip_scripts(out_path) end\n"
+    "          mep.notify('Rendered ' .. out_path)\n"
+    "          mep_run_button_show_org_output(out_path)\n"
+    "        else\n"
+    "          mep.notify('R Markdown render failed: '\n"
+    "            .. (rmd_err[#rmd_err] or 'see terminal'), 'error')\n"
+    "        end\n"
+    "      end,\n"
+    "    })\n"
+    "  end)\n"
+    "  if not ok then\n"
+    "    done()\n"
+    "    mep.notify('Run: ' .. tostring(err), 'error')\n"
+    "  end\n"
+    "end\n"
+    // Rnw Run button: two stages chained through nested on_exit callbacks --
+    // knitr::knit() first (weaves the R chunks into a plain .tex sibling
+    // file, same directory), then the SAME tectonic invocation
+    // mep.run_button_run_tex() already uses on that .tex, once knitting
+    // actually succeeded. Deliberately NOT knitr::knit2pdf (which shells
+    // out to pdflatex/texi2pdf) -- tectonic is this repo's one LaTeX
+    // engine everywhere else (mep.org_export_pdf, kBuiltinOrgLatex, the
+    // tex Run button above), and staying on it here too means .Rnw support
+    // doesn't need a second LaTeX toolchain installed alongside it.\n"
+    "local mep_run_button_rnw_running = {}\n"
+    "function mep.run_button_run_rnw()\n"
+    "  local fname = mep.filename()\n"
+    "  if not fname or fname == '' then mep.notify('Run: save this buffer to a file first', 'warn') return end\n"
+    "  if mep_run_button_rnw_running[fname] then\n"
+    "    mep.notify('Run: already running, please wait...', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  mep_run_button_rnw_running[fname] = true\n"
+    "  local function done() mep_run_button_rnw_running[fname] = nil end\n"
+    "  local ok, err = pcall(function()\n"
+    "    mep.cmd('write')\n"
+    "    local abs = mep_lsp_abspath(fname)\n"
+    "    local base_dir = abs:match('^(.*)/[^/]*$') or '.'\n"
+    "    local tex_path = (fname:gsub('%.[Rr]nw$', '')) .. '.tex'\n"
+    "    local pdf_path = (fname:gsub('%.[Rr]nw$', '')) .. '.pdf'\n"
+    "    mep.notify('Knitting ' .. fname .. ' (knitr)...')\n"
+    "    local knit_err = {}\n"
+    "    mep.job_start({'Rscript', '-e', 'knitr::knit(commandArgs(trailingOnly=TRUE)[1])', abs}, {\n"
+    "      cwd = base_dir,\n"
+    "      on_stderr = function(line) knit_err[#knit_err + 1] = line end,\n"
+    "      on_exit = function(code)\n"
+    "        if code ~= 0 then\n"
+    "          done()\n"
+    "          mep.notify('knitr failed: ' .. (knit_err[#knit_err] or 'see terminal'), 'error')\n"
+    "          return\n"
+    "        end\n"
+    "        local tex_abs = mep_lsp_abspath(tex_path)\n"
+    "        mep.notify('Compiling ' .. tex_path .. ' (tectonic)...')\n"
+    "        local tex_err = {}\n"
+    "        mep.job_start({'tectonic', '-X', 'compile', tex_abs, '--outfmt', 'pdf'}, {\n"
+    "          cwd = base_dir,\n"
+    "          on_stderr = function(line) tex_err[#tex_err + 1] = line end,\n"
+    "          on_exit = function(code2)\n"
+    "            done()\n"
+    "            if code2 == 0 then\n"
+    "              mep.notify('Compiled ' .. pdf_path)\n"
+    "              mep_run_button_show_org_output(pdf_path)\n"
+    "            else\n"
+    "              mep.notify('LaTeX compile failed (tectonic exit ' .. code2 .. '): '\n"
+    "                .. (tex_err[#tex_err] or 'see terminal'), 'error')\n"
+    "            end\n"
+    "          end,\n"
+    "        })\n"
+    "      end,\n"
+    "    })\n"
+    "  end)\n"
+    "  if not ok then\n"
+    "    done()\n"
+    "    mep.notify('Run: ' .. tostring(err), 'error')\n"
+    "  end\n"
+    "end\n"
     // Runs (or compiles-then-runs) the *focused pane's* current file --
     // main.cpp's Run button click handler focuses that pane first, same
     // convention as its vsplit/hsplit/close neighbors, so mep.filename()/
     // mep.getcwd() here are always the clicked pane's, not whichever pane
-    // had focus before the click.\n"
+    // had focus before the click.
+    //
+    // Extension-specific document pipelines (org export, tex/tectonic,
+    // rmarkdown, knitr+tectonic) always win, checked BEFORE the language-UI
+    // run_source redirect just below -- these formats have their own
+    // dedicated "compile the whole document" meaning for Run that's never
+    // "source this file's text as code in a REPL", even for a format (.Rmd/
+    // .Rnw) that ALSO maps to a language UI mode's language for <leader>uu
+    // purposes (mep.language_ui_extensions.rmd/rnw = 'r', kBuiltinLanguageUiR).
+    // Getting this order backwards was a real bug: with R UI mode open on a
+    // .Rmd file, the run_source check below matched (.Rmd's language is
+    // 'r', same as the open mode's), so Run tried to source(".../file.Rmd")
+    // in the R console like a plain script -- which errors immediately,
+    // since a .Rmd's markdown/code-fence prose is not valid R syntax.
+    //
+    // If a language UI mode (kBuiltinLanguageUi, <leader>uu) is open on
+    // this tab AND the focused pane's own language matches the mode that's
+    // open (so running an unrelated file in some other pane of the same
+    // tab doesn't get hijacked), and the file isn't one of the dedicated
+    // pipelines above, defer to its run_source(fname) instead of the
+    // generic spawn-a-popup-terminal flow below -- e.g. a plain .R file
+    // sources into the R UI mode's own already-running console rather than
+    // popping open a second, disconnected R process.\n"
     "function mep.run_button_run()\n"
     "  local fname = mep.filename()\n"
     "  if not fname or fname == '' then mep.notify('Run: save this buffer to a file first', 'warn') return end\n"
     "  local ext = mep_lsp_filetype(fname)\n"
     "  if ext == 'org' then mep.run_button_run_org() return end\n"
     "  if ext == 'tex' then mep.run_button_run_tex() return end\n"
+    "  local extl = ext and ext:lower()\n"
+    "  if extl == 'rmd' then mep.run_button_run_rmd() return end\n"
+    "  if extl == 'rnw' then mep.run_button_run_rnw() return end\n"
+    "  local ui_active = mep.language_ui_active and mep.language_ui_active[mep.current_tab_id()]\n"
+    "  if ui_active and ui_active.run_source and mep.language_for_buffer() == ui_active.lang then\n"
+    "    ui_active.run_source(fname)\n"
+    "    return\n"
+    "  end\n"
     "  local cfg = ext and mep_run_config_for(ext)\n"
     "  if not cfg then mep.notify('Run: no run command configured for this filetype', 'warn') return end\n"
     "  mep.cmd('write')\n"
@@ -14634,8 +15757,13 @@ void DrawSidebars() {
 
     // Paints one sidebar into its own rect (a whole dock column for a lone
     // sidebar, one vertical slice of it for a stacked one) and records its
-    // row hit-test rects. Shared by both dock shapes below.
-    auto draw_one = [&](const SidebarInstance &sb, int px, int py, int pw, int ph) {
+    // row hit-test rects. Shared by both dock shapes below. `group_ids`,
+    // when it has more than one member, is `sb`'s tab_group's full open
+    // membership (OpenSidebarIdsInGroup) -- draws a group tab strip (each
+    // member's title as a chip, sb.id the active one) in place of the
+    // plain title line, so a group reads as one tabbed panel rather than
+    // `sb`'s own title with no indication its siblings are one click away.
+    auto draw_one = [&](const SidebarInstance &sb, int px, int py, int pw, int ph, const std::vector<int> &group_ids) {
         std::vector<SidebarLine> lines = g_editor.FlattenSidebar(sb.id);
         bool is_focused = sb.id == focused_id;
         gfx::DrawRectangle(px, py, pw, ph, ResolveHlGroup("Sidebar"));
@@ -14654,8 +15782,27 @@ void DrawSidebars() {
         // next -- the pane tree to one side. Scissor to the sidebar's own
         // rect the same way DrawPane clips its content.
         gfx::BeginScissorMode(px, py, pw, ph);
-        gfx::DrawTextEx(g_font, sb.title.c_str(), gfx::Vector2{static_cast<float>(px + 8), static_cast<float>(py + 6)},
-                   MenuFontSize(), 0, ResolveHlGroup("SidebarTitle"));
+        if (group_ids.size() > 1) {
+            const float pad = 8.0f;
+            const float chip_h = MenuFontSize() + 4.0f;
+            float tx = static_cast<float>(px + 8);
+            const float ty = static_cast<float>(py + 6);
+            for (int member_id : group_ids) {
+                const SidebarInstance *member = g_editor.FindSidebar(member_id);
+                if (!member) continue;
+                const float tw = gfx::MeasureTextEx(g_font, member->title.c_str(), MenuFontSize(), 0).x;
+                const gfx::Rectangle rect{tx, ty - 2.0f, tw + 2 * pad, chip_h};
+                const bool active = member_id == sb.id;
+                if (active) gfx::DrawRectangleRec(rect, ResolveHlGroup("TabActive"));
+                gfx::DrawTextEx(g_font, member->title.c_str(), gfx::Vector2{tx + pad, ty}, MenuFontSize(), 0,
+                           ResolveHlGroup(active ? "Normal" : "Comment"));
+                g_sidebar_group_tab_rects.push_back({sb.tab_group, member_id, rect});
+                tx += rect.width + 2.0f;
+            }
+        } else {
+            gfx::DrawTextEx(g_font, sb.title.c_str(), gfx::Vector2{static_cast<float>(px + 8), static_cast<float>(py + 6)},
+                       MenuFontSize(), 0, ResolveHlGroup("SidebarTitle"));
+        }
         // A tabbed sidebar's view strip takes one extra header row.
         int hdr_h = header_h;
         if (!sb.tabs.empty()) {
@@ -14750,7 +15897,10 @@ void DrawSidebars() {
         int y = py;
         for (size_t k = 0; k < ids.size(); k++) {
             const SidebarInstance *sb = g_editor.FindSidebar(ids[k]);
-            draw_one(*sb, px, y, pw, heights[k]);
+            const std::vector<int> group_ids = sb->tab_group.empty() ? std::vector<int>{} : g_editor.OpenSidebarIdsInGroup(sb->tab_group, edge);
+            draw_one(*sb, px, y, pw, heights[k], group_ids);
+            g_sidebar_panel_rects.push_back({sb->id, gfx::Rectangle{static_cast<float>(px), static_cast<float>(y),
+                                                                     static_cast<float>(pw), static_cast<float>(heights[k])}});
             if (k + 1 < ids.size()) {
                 // Divider between this member and the next: dragging it
                 // re-splits just the two of them (SetSidebarStackShares).
@@ -14788,7 +15938,12 @@ void DrawSidebars() {
             const float gy = sb.position == "top" ? static_cast<float>(py + ph) - kBorderGrabPx / 2.0f : static_cast<float>(py) - kBorderGrabPx / 2.0f;
             g_sidebar_border_rects.push_back({sb.id, false, sign, gfx::Rectangle{static_cast<float>(px), gy, static_cast<float>(pw), kBorderGrabPx}});
         }
-        draw_one(sb, px, py, pw, ph);
+        // Top/bottom sidebars are drawn straight from Sidebars() rather than
+        // through OpenSidebarIdsOn's per-edge collapsing above, so tab_group
+        // grouping (Plot/Data/Help/R's own use case is all "right") isn't
+        // wired up for this axis yet -- each member would still get its own
+        // stacked slot here even if grouped, same as before tab_group existed.
+        draw_one(sb, px, py, pw, ph, {});
     }
 }
 
@@ -15379,7 +16534,9 @@ gfx::Rectangle g_float_pane_rect{};
 void DrawFloatPane() {
     if (!g_editor.IsFloatPaneOpen()) return;
     g_sidebar_row_rects.clear();
+    g_sidebar_panel_rects.clear();
     g_sidebar_tab_rects.clear();
+    g_sidebar_group_tab_rects.clear();
     g_sidebar_border_rects.clear();
     g_sidebar_stack_rects.clear();
     g_pane_border_rects.clear();
@@ -15407,7 +16564,9 @@ void DrawSidebarPopout() {
     if (!sb) return;
 
     g_sidebar_row_rects.clear();
+    g_sidebar_panel_rects.clear();
     g_sidebar_tab_rects.clear();
+    g_sidebar_group_tab_rects.clear();
     g_sidebar_border_rects.clear();
     g_sidebar_stack_rects.clear();
     g_pane_border_rects.clear();
@@ -16264,29 +17423,57 @@ void DrawTerminalGrid(const TerminalSession &sess, float x, float y, [[maybe_unu
     }
 }
 
-// Lazily uploads (once per buffer id, cached in g_image_textures -- see its
-// own comment) the decoded RGBA8 pixels from an ImageSession's ImageDoc as
-// a GPU texture, and returns it. `sess.doc` is decoded once by
-// Editor::OpenImageInPlace and never mutated, so nothing here ever needs to
-// re-upload once cached.
+// Lazily uploads (cached in g_image_textures, keyed by buffer id AND
+// ImageSession::decode_generation -- see its own comment) the decoded
+// RGBA8 pixels from an ImageSession's ImageDoc as a GPU texture, and
+// returns it. `sess.doc` is decoded once by Editor::OpenImageInPlace for
+// most buffers, so most never re-upload once cached -- the generation
+// check exists for the same-path-reopen exception.
 /**
- * @brief Lazily uploads an ImageSession's decoded RGBA8 pixels as a GPU texture, caching the
- * result per buffer id in g_image_textures so a given buffer never re-uploads.
+ * @brief Lazily uploads an ImageSession's decoded RGBA8 pixels as a GPU texture -- recolored
+ * through ThemedPdfChannel first when sess.theme_colors is set, same as a themed PDF page or
+ * HTML <img> -- caching the result per buffer id (and decode_generation/theme_colors/theme
+ * epoch) in g_image_textures.
  * @param buffer_id Id of the buffer the image session belongs to, used as the cache key.
  * @param sess The image session whose decoded pixels should be uploaded.
  * @return The cached or newly-uploaded GPU texture.
  */
 gfx::Texture2D GetOrLoadImageTexture(int buffer_id, const ImageSession &sess) {
+    int theme_epoch = g_editor.ThemeEpoch();
     auto it = g_image_textures.find(buffer_id);
-    if (it != g_image_textures.end()) return it->second;
+    if (it != g_image_textures.end() && it->second.generation == sess.decode_generation &&
+        it->second.theme_colors == sess.theme_colors &&
+        (!sess.theme_colors || it->second.theme_epoch == theme_epoch)) {
+        return it->second.tex;
+    }
+    const unsigned char *pixels = sess.doc->Pixels();
+    std::vector<unsigned char> themed;
+    if (sess.theme_colors) {
+        gfx::Color fg = ResolveHlGroup("Normal");
+        gfx::Color bg = ResolveHlGroup("NormalBg");
+        int iw = sess.doc->Width(), ih = sess.doc->Height();
+        themed.resize(static_cast<size_t>(iw) * static_cast<size_t>(ih) * 4);
+        size_t n = static_cast<size_t>(iw) * static_cast<size_t>(ih);
+        for (size_t i = 0; i < n; i++) {
+            const unsigned char *src = &pixels[i * 4];
+            float luminance = (0.299f * src[0] + 0.587f * src[1] + 0.114f * src[2]) / 255.0f;
+            unsigned char *dst = &themed[i * 4];
+            dst[0] = ThemedPdfChannel(fg.r, bg.r, luminance);
+            dst[1] = ThemedPdfChannel(fg.g, bg.g, luminance);
+            dst[2] = ThemedPdfChannel(fg.b, bg.b, luminance);
+            dst[3] = src[3];
+        }
+        pixels = themed.data();
+    }
     gfx::Image img{};
-    img.data = const_cast<unsigned char *>(sess.doc->Pixels());
+    img.data = const_cast<unsigned char *>(pixels);
     img.width = sess.doc->Width();
     img.height = sess.doc->Height();
     img.mipmaps = 1;
     img.format = gfx::kPixelFormatR8G8B8A8;
-    gfx::Texture2D tex = gfx::LoadTextureFromImage(img);  // copies pixel data to the GPU; img.data stays ImageDoc's
-    g_image_textures[buffer_id] = tex;
+    gfx::Texture2D tex = gfx::LoadTextureFromImage(img);  // copies pixel data to the GPU; img.data stays ImageDoc's/`themed`'s
+    if (it != g_image_textures.end()) gfx::UnloadTexture(it->second.tex);  // replace a stale GPU handle rather than leak it
+    g_image_textures[buffer_id] = {tex, sess.decode_generation, sess.theme_colors, theme_epoch};
     return tex;
 }
 
@@ -16438,6 +17625,113 @@ gfx::Texture2D *GetOrLoadOrgInlineImageTexture(const std::string &path) {
     img.mipmaps = 1;
     img.format = gfx::kPixelFormatR8G8B8A8;
     entry.tex = gfx::LoadTextureFromImage(img);  // copies pixel data to the GPU; doc goes out of scope right after
+    return &entry.tex;
+}
+
+// One data-URI <img> cache slot: decode-once-and-keep-forever, unlike
+// GetOrLoadOrgInlineImageTexture's own mtime-recheck-every-call shape --
+// there's no filesystem entry behind a "data:image/...;base64,..." src for
+// its bytes to change out from under, the whole point of embedding it
+// inline, so nothing here ever needs invalidating.
+std::unordered_map<std::string, gfx::Texture2D> g_data_uri_image_textures;
+
+// Lazily base64-decodes and GPU-uploads a "data:image/...;base64,..." <img>
+// src (rmarkdown::render()'s own default self_contained html_document
+// output embeds every figure this way, rather than as sibling files next
+// to the .html -- see ResolveHtmlImagePath's own comment on why this is
+// treated as local data, not a remote fetch), cached by the full URI
+// string in g_data_uri_image_textures. Returns nullptr if `uri` isn't a
+// "data:...;base64,..." image URI, or the payload doesn't base64- or
+// image-decode -- DrawPane's html branch already treats a null texture as
+// "skip drawing this image" for GetOrLoadOrgInlineImageTexture/
+// GetOrLoadThemedHtmlImageTexture, same contract here.
+/**
+ * @brief Lazily base64-decodes and GPU-uploads a "data:image/...;base64,..." <img> src,
+ * cached forever (by the full URI string) in g_data_uri_image_textures since inline data never
+ * changes out from under a running process the way a file on disk can.
+ * @param uri The <img> element's full "data:" src value.
+ * @return Pointer to the cached texture, or nullptr if `uri` isn't a decodable base64 image.
+ */
+// Shared by GetOrLoadDataUriImageTexture and GetOrLoadThemedDataUriImageTexture
+// below so the "data:...;base64,..." parsing/decoding lives in exactly one
+// place -- everything past this point (caching, GPU upload, optional
+// recoloring) differs between the two, but getting from the URI to raw
+// decoded pixels doesn't.
+bool DecodeDataUriImage(const std::string &uri, ImageDoc &doc) {
+    size_t comma = uri.find(',');
+    size_t b64_marker = uri.find(";base64,");
+    if (comma == std::string::npos || b64_marker == std::string::npos) return false;
+    std::vector<unsigned char> bytes = Base64Decode(uri.substr(comma + 1));
+    return !bytes.empty() && doc.LoadFromMemory(bytes.data(), bytes.size());
+}
+
+gfx::Texture2D *GetOrLoadDataUriImageTexture(const std::string &uri) {
+    auto cached = g_data_uri_image_textures.find(uri);
+    if (cached != g_data_uri_image_textures.end()) return &cached->second;
+    ImageDoc doc;
+    if (!DecodeDataUriImage(uri, doc)) return nullptr;
+
+    gfx::Image img{};
+    img.data = const_cast<unsigned char *>(doc.Pixels());
+    img.width = doc.Width();
+    img.height = doc.Height();
+    img.mipmaps = 1;
+    img.format = gfx::kPixelFormatR8G8B8A8;
+    gfx::Texture2D &tex = g_data_uri_image_textures[uri];
+    tex = gfx::LoadTextureFromImage(img);  // copies pixel data to the GPU; doc goes out of scope right after
+    return &tex;
+}
+
+// Themed (HtmlSession::theme_colors) counterpart of
+// GetOrLoadDataUriImageTexture, applying the exact same luminance recolor
+// GetOrLoadThemedHtmlImageTexture uses for a local-file <img> -- see that
+// function's own comment for why this needs its own independent decode
+// (raw pixels, not the plain decoder's already-uploaded texture) rather
+// than reusing GetOrLoadDataUriImageTexture's cache entry. Keyed by
+// theme_epoch (Editor::ThemeEpoch()), not mtime -- there's no file behind
+// a data: URI to go stale, but the CURRENT theme's colors can still change
+// out from under an already-open page.
+struct ThemedDataUriImageCacheEntry {
+    gfx::Texture2D tex{};
+    bool ok = false;
+    int theme_epoch = -1;
+};
+std::unordered_map<std::string, ThemedDataUriImageCacheEntry> g_themed_data_uri_image_textures;
+
+gfx::Texture2D *GetOrLoadThemedDataUriImageTexture(const std::string &uri) {
+    int theme_epoch = g_editor.ThemeEpoch();
+    ThemedDataUriImageCacheEntry &entry = g_themed_data_uri_image_textures[uri];
+    if (entry.theme_epoch == theme_epoch) return entry.ok ? &entry.tex : nullptr;
+
+    ImageDoc doc;
+    if (entry.ok) gfx::UnloadTexture(entry.tex);  // replace a stale GPU handle rather than leak it
+    entry.ok = DecodeDataUriImage(uri, doc);
+    entry.theme_epoch = theme_epoch;
+    if (!entry.ok) return nullptr;
+
+    int iw = doc.Width(), ih = doc.Height();
+    gfx::Color fg = ResolveHlGroup("Normal");
+    gfx::Color bg = ResolveHlGroup("NormalBg");
+    std::vector<unsigned char> themed(static_cast<size_t>(iw) * static_cast<size_t>(ih) * 4);
+    const unsigned char *src_pixels = doc.Pixels();
+    size_t n = static_cast<size_t>(iw) * static_cast<size_t>(ih);
+    for (size_t i = 0; i < n; i++) {
+        const unsigned char *src = &src_pixels[i * 4];
+        float luminance = (0.299f * src[0] + 0.587f * src[1] + 0.114f * src[2]) / 255.0f;
+        unsigned char *dst = &themed[i * 4];
+        dst[0] = ThemedPdfChannel(fg.r, bg.r, luminance);
+        dst[1] = ThemedPdfChannel(fg.g, bg.g, luminance);
+        dst[2] = ThemedPdfChannel(fg.b, bg.b, luminance);
+        dst[3] = src[3];  // alpha untouched -- only color channels ride the theme gradient
+    }
+
+    gfx::Image img{};
+    img.data = themed.data();
+    img.width = iw;
+    img.height = ih;
+    img.mipmaps = 1;
+    img.format = gfx::kPixelFormatR8G8B8A8;
+    entry.tex = gfx::LoadTextureFromImage(img);  // copies pixel data to the GPU; `themed` goes out of scope right after
     return &entry.tex;
 }
 
@@ -17484,6 +18778,8 @@ struct HtmlRun {
     std::string text;
     gfx::Color color{};
     bool bold = false, italic = false, underline = false, strikethrough = false;
+    std::string link_href = "";  // see HtmlPendingWord::link_href
+    const DomNode *link_node = nullptr;
 };
 struct HtmlRule {
     float x = 0, y = 0, w = 0;
@@ -17498,6 +18794,8 @@ struct HtmlRule {
 struct HtmlImageRun {
     float x = 0, y = 0, w = 0, h = 0;
     std::string path;
+    std::string link_href = "";  // see HtmlPendingWord::link_href
+    const DomNode *link_node = nullptr;
 };
 // A positioned \(..\)/\[..\]/$..$/$$..$$ span, already laid out by
 // LayoutMathExpression -- `layout` is drawn via DrawMathLayout at (x,y).
@@ -17612,6 +18910,14 @@ struct HtmlPendingWord {
     float image_w = 0, image_h = 0;
     bool is_math = false;
     MathLayoutResult math{};
+    // Copied straight from the source node's ComputedStyle::link_href/
+    // link_node (html_doc.h) -- empty/null when this word isn't inside an
+    // <a href>. Threaded through to HtmlRun/HtmlImageRun below so
+    // DrawPane's html branch can collect hint targets for visible links
+    // without re-walking the DOM (HINT_SYSTEM.md); link_node is the group
+    // key multiple runs of the same anchor merge under.
+    std::string link_href = "";
+    const DomNode *link_node = nullptr;
 };
 
 // Resolves an <img src> value against ctx.base_dir -- absolute local paths
@@ -17619,17 +18925,27 @@ struct HtmlPendingWord {
 // fetch here (WEBKIT_PARITY_PLAN.md Part IV Phase 13 is where subresource
 // fetching would land) and returns "" so callers fall back to the
 // existing [image: ...] placeholder text instead of a broken texture load.
+// A "data:" URI (a self-contained rmarkdown::render()'s own default for
+// html_document, e.g. `data:image/png;base64,...`) also passes through
+// unchanged, same as an absolute path -- it needs no filesystem resolution
+// at all, just base64-decoding at draw time (GetOrLoadDataUriImageTexture
+// below); this is NOT a network fetch (no bytes leave the process), just
+// the inline-data case this function's own doc comment already carves out
+// room for alongside "remote" and "local".
 /**
  * @brief Resolves an <img src> value against `base_dir` for local file loading. An absolute
- * path passes through unchanged; a remote (http/https) src returns "" since there is no local
- * file to fetch, so callers fall back to a bracketed placeholder instead of a broken texture load.
+ * path or a "data:" URI passes through unchanged; a remote (http/https) src returns "" since
+ * there is no local file to fetch, so callers fall back to a bracketed placeholder instead of a
+ * broken texture load.
  * @param src The <img> element's src attribute value.
  * @param base_dir Directory to resolve a relative `src` against.
- * @return The resolved local filesystem path, or "" if `src` is empty or a remote URL.
+ * @return The resolved local filesystem path, the original "data:" URI, or "" if `src` is empty
+ * or a remote URL.
  */
 std::string ResolveHtmlImagePath(const std::string &src, const std::string &base_dir) {
     if (src.empty()) return "";
     if (src.compare(0, 7, "http://") == 0 || src.compare(0, 8, "https://") == 0) return "";
+    if (src.compare(0, 5, "data:") == 0) return src;
     if (src[0] == '/') return src;
     if (base_dir.empty()) return src;
     return base_dir + "/" + src;
@@ -17708,12 +19024,12 @@ float HtmlFlushWords(std::vector<HtmlPendingWord> &words, float indent_x, float 
             const HtmlPendingWord &w = *pw.w;
             float y = cursor_y + (lh - word_line_height(w)) / 2.0f;
             if (w.is_image) {
-                out.images.push_back({pw.x, y, w.image_w, w.image_h, w.image_path});
+                out.images.push_back({pw.x, y, w.image_w, w.image_h, w.image_path, w.link_href, w.link_node});
             } else if (w.is_math) {
                 out.math_runs.push_back({pw.x, y, w.color, w.math});
             } else {
-                out.runs.push_back(
-                    {pw.x, y, w.font_size, w.text, w.color, w.bold, w.italic, w.underline, w.strikethrough});
+                out.runs.push_back({pw.x, y, w.font_size, w.text, w.color, w.bold, w.italic, w.underline,
+                                     w.strikethrough, w.link_href, w.link_node});
             }
         }
         cursor_y += lh;
@@ -17781,8 +19097,17 @@ void HtmlCollectTextWords(const std::string &text, const ComputedStyle &style, c
         size_t start = i;
         while (i < n && !std::isspace(static_cast<unsigned char>(text[i]))) i++;
         if (i > start) {
-            out.push_back({text.substr(start, i - start), fs, color, style.bold, style.italic, style.underline,
-                            style.strikethrough});
+            HtmlPendingWord word;
+            word.text = text.substr(start, i - start);
+            word.font_size = fs;
+            word.color = color;
+            word.bold = style.bold;
+            word.italic = style.italic;
+            word.underline = style.underline;
+            word.strikethrough = style.strikethrough;
+            word.link_href = style.link_href;
+            word.link_node = style.link_node;
+            out.push_back(std::move(word));
         }
     }
 }
@@ -17853,7 +19178,15 @@ void HtmlCollectInlineChild(DomNode *c, const ComputedStyle &parent_style, const
         auto src_it = c->attrs.find("src");
         std::string src = src_it != c->attrs.end() ? src_it->second : std::string();
         std::string resolved = ResolveHtmlImagePath(src, ctx.base_dir);
-        const gfx::Texture2D *tex = resolved.empty() ? nullptr : GetOrLoadOrgInlineImageTexture(resolved);
+        // A data: URI is sized here the same way a real texture load would
+        // resolve it later at draw time (DrawPane's html branch) -- both
+        // sites have to agree on whether this <img> "exists" (a texture
+        // load succeeded) or falls back to the bracketed placeholder text
+        // below, since only the winning branch here ever produces a
+        // pending image word for the draw phase to find.
+        const gfx::Texture2D *tex = resolved.empty()                        ? nullptr
+                                     : resolved.compare(0, 5, "data:") == 0 ? GetOrLoadDataUriImageTexture(resolved)
+                                                                             : GetOrLoadOrgInlineImageTexture(resolved);
         if (tex) {
             float natural_w = static_cast<float>(tex->width) * ctx.zoom;
             float natural_h = static_cast<float>(tex->height) * ctx.zoom;
@@ -17896,6 +19229,8 @@ void HtmlCollectInlineChild(DomNode *c, const ComputedStyle &parent_style, const
             word.image_path = resolved;
             word.image_w = w;
             word.image_h = h;
+            word.link_href = c->style.link_href;
+            word.link_node = c->style.link_node;
             out.push_back(std::move(word));
             return;
         }
@@ -19250,7 +20585,8 @@ void DrawAgentStatusBadge(gfx::Vector2 center, float radius, const std::string &
  * @return True if the Run button should be shown for a buffer with this extension.
  */
 bool RunButtonSupportsExtension(const std::string &ext) {
-    static const std::unordered_set<std::string> kExts = {"py", "r", "R", "c", "cpp", "cc", "cxx", "org", "tex"};
+    static const std::unordered_set<std::string> kExts = {"py",  "r",   "R",   "c",   "cpp", "cc",
+                                                            "cxx", "org", "tex", "Rmd", "rmd", "Rnw", "rnw"};
     return kExts.count(ext) != 0;
 }
 
@@ -22387,6 +23723,66 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
  * @param h Height of the pane's rectangle.
  * @param is_active Whether this pane is the currently active one.
  */
+// Renders a Mode::SidebarPane buffer's content: sidebar_id's flattened rows
+// in this pane's own content rect, sharing FlattenSidebar/ActivateSidebarLine
+// with DrawSidebars' docked draw_one lambda rather than duplicating them --
+// only the geometry source (a pane's rect vs. a dock column's) and the click
+// wiring differ. Click wiring deliberately does NOT reuse g_sidebar_row_rects/
+// FocusSidebarRow: those feed DispatchChromeClicks' docked-row handling
+// (double-click-to-activate, FileDrop drag-out, double-click state shared
+// across every docked sidebar), which sets mode_ = Mode::Sidebar and
+// Mode::Sidebar-specific bookkeeping (focused_sidebar_id_,
+// overlay_previous_mode_) that would be wrong to trigger from an ordinary
+// pane -- clicking a row here is instead an ordinary per-row
+// RegisterClickRegion (like every other pane-hosted widget: DrawVideoPane's
+// transport buttons, DrawModel3DPane's outliner rows), single-click
+// selecting AND activating in one step (unlike the docked path's select-
+// then-double-click-activates) since these rows behave like ordinary
+// buttons/list items in what is now, structurally, just another pane.
+void DrawSidebarPaneContent(const Pane &pane, int sidebar_id, float x, float y, float w, float h, bool is_active) {
+    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h), ResolveHlGroup("Sidebar"));
+    std::vector<SidebarLine> lines = g_editor.FlattenSidebar(sidebar_id);
+    int line_h = LineHeight();
+    float font_size = MenuFontSize();
+    int visible_lines = std::max(1, static_cast<int>(h) / line_h);
+    g_editor.UpdateScrollForSidebar(sidebar_id, visible_lines);
+    const SidebarInstance *sb = g_editor.FindSidebar(sidebar_id);
+    int scroll = sb ? sb->scroll_offset : 0;
+    int cursor = g_editor.SidebarPaneCursor();
+
+    gfx::BeginScissorMode(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h));
+    size_t first = static_cast<size_t>(scroll);
+    size_t last = std::min(lines.size(), first + static_cast<size_t>(visible_lines));
+    int pane_id = pane.id;
+    for (size_t i = first; i < last; i++) {
+        float ly = y + static_cast<float>(i - first) * static_cast<float>(line_h);
+        if (lines[i].current) {
+            gfx::DrawRectangle(static_cast<int>(x) + 2, static_cast<int>(ly) - 1, static_cast<int>(w) - 4, line_h, ResolveHlGroup("AccentTint"));
+        }
+        if (is_active && static_cast<int>(i) == cursor) {
+            gfx::DrawRectangle(static_cast<int>(x) + 2, static_cast<int>(ly) - 1, static_cast<int>(w) - 4, line_h, ResolveHlGroup("PickerSelected"));
+        }
+        gfx::Color color = lines[i].hl.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(lines[i].hl);
+        DrawUiText(lines[i].text, gfx::Vector2{x + 8, ly}, font_size, color);
+        int line_index = static_cast<int>(i);
+        RegisterClickRegion(gfx::Rectangle{x, ly - 1, w, static_cast<float>(line_h)}, [pane_id, sidebar_id, line_index] {
+            g_editor.FocusPaneById(pane_id);
+            g_editor.FocusSidebarPaneRow(sidebar_id, line_index);
+            g_editor.ActivateSidebarLine(sidebar_id, line_index);
+        });
+    }
+    gfx::EndScissorMode();
+    // Whole-content fallback -- registered AFTER (so DispatchChromeClicks'
+    // first-match-wins finds a row's own region first wherever they
+    // overlap) covering whatever's left below/around the rows (an empty
+    // tail, a sidebar with zero rows), the same "click anywhere in this
+    // pane's content focuses it" behavior every other pane content type
+    // gets from DrawPane's own generic catch-all -- which is unconditionally
+    // zeroed out for a sidebar-pane buffer specifically so it can't shadow
+    // the row regions above (see its own comment).
+    RegisterClickRegion(gfx::Rectangle{x, y, w, h}, [pane_id] { g_editor.FocusPaneById(pane_id); });
+}
+
 void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_active) {
     int line_height = LineHeight();
     int header_h = PaneHeaderHeight();
@@ -22414,6 +23810,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // session directly, the same reasoning as imgedit_sess/model3d_sess.
     VideoSession *video_sess = g_editor.GetVideoMutable(pane.buffer_id);
     Model3DSession *model3d_sess = g_editor.GetModel3DMutable(pane.buffer_id);
+    // Not a "session" struct like the ones above (there's nothing per-pane
+    // to store -- the content lives on the SidebarInstance itself, same as
+    // the docked path), just which sidebar (if any) this buffer renders.
+    int sidebar_pane_id = g_editor.SidebarIdForPaneBuffer(pane.buffer_id);
     const OfficeSession *office_sess = g_editor.GetOffice(pane.buffer_id);
     if (office_sess || imgedit_active) header_bg = ResolveHlGroup("MenuBar");
     const SheetSession *sheet_sess = g_editor.GetSheet(pane.buffer_id);
@@ -22539,15 +23939,23 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             gfx::DrawRectangle(static_cast<int>(seg_x), static_cast<int>(y), static_cast<int>(seg_w), header_h, seg_bg);
             // The active chip gives up its rightmost controls_w to the
             // split/close controls; the label centers (and clips) within
-            // what's left.
-            float chip_w = tab_active ? std::max(0.0f, seg_w - controls_w) : seg_w;
-            gfx::BeginScissorMode(static_cast<int>(seg_x), static_cast<int>(y), static_cast<int>(chip_w), header_h);
+            // what's left -- UNLESS this segment is too narrow to fit both
+            // (many same-width tabs sharing one modest pane, e.g. a
+            // sidebar-pane buffer group, mep.sidebar_open_pane), in which
+            // case the controls are dropped for this tab entirely rather
+            // than silently squeezing its own name down to nothing: the
+            // name is what tells a many-tabbed pane's tabs apart, the
+            // split/close buttons are a convenience the mod1 keybindings
+            // (already focus-agnostic) always cover anyway.
             float text_w = gfx::MeasureTextEx(g_font, name.c_str(), font_size, 0).x;
+            bool controls_fit = tab_active && (seg_w - controls_w) >= text_w;
+            float chip_w = controls_fit ? seg_w - controls_w : seg_w;
+            gfx::BeginScissorMode(static_cast<int>(seg_x), static_cast<int>(y), static_cast<int>(chip_w), header_h);
             float text_x = seg_x + std::max(0.0f, (chip_w - text_w) / 2.0f);
             gfx::DrawTextEx(g_font, name.c_str(), gfx::Vector2{text_x, label_y}, font_size, 0,
                        ResolveHlGroup(tab_active ? "Normal" : "Comment"));
             gfx::EndScissorMode();
-            if (tab_active) {
+            if (controls_fit) {
                 draw_header_controls(gfx::Rectangle{seg_x + chip_w, y, controls_w, static_cast<float>(header_h)}, seg_bg);
             }
             if (i > 0) {
@@ -22624,6 +24032,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 label += " (" + std::to_string(img_sess->doc->Width()) + "x" +
                           std::to_string(img_sess->doc->Height()) + ") " +
                           std::to_string(static_cast<int>(std::lround(img_sess->zoom * 100.0f))) + "%";
+                // Same hint PDF/HTML panes show unconditionally -- Ctrl-R
+                // works the same way here for ANY image (ImageSession::
+                // theme_colors just defaults false instead of true, see
+                // its own comment), so advertising it costs nothing even
+                // for a buffer nothing has opted into theming by default.
+                label += img_sess->theme_colors ? "  [theme, Ctrl-R]" : "  [original, Ctrl-R]";
             }
             gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
         } else if (model3d_sess) {
@@ -22853,6 +24267,26 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // worked immediately; ANIMATION_VIDEO_PLAN.md Phase 5 follow-up).
             focus_click_h = std::max(0.0f, focus_click_h - kVideoTransportH);
         }
+        if (sidebar_pane_id != 0) {
+            // Zeroed rather than excluded from one edge like the blocks
+            // above: DrawSidebarPaneContent below registers its own
+            // whole-content-area click regions (one per visible row, plus
+            // a focus-only fallback for the rest), so this generic
+            // catch-all would only ever shadow those first-match-wins.
+            focus_click_w = 0.0f;
+            focus_click_h = 0.0f;
+        }
+        if (img_sess && img_sess->doc && (img_sess->nav_prev_ref != 0 || img_sess->nav_next_ref != 0)) {
+            // Exclude the "<"/">" figure-nav header (top) -- same reasoning
+            // as every other exclusion above: its own click regions
+            // register later, inside the img_sess branch below. Missing
+            // this silently swallowed every nav click under the same
+            // first-match-wins ordering (caught live: clicking "<"/">"
+            // just refocused the pane instead of stepping the figure).
+            float nav_h = static_cast<float>(line_height);
+            focus_click_y += nav_h;
+            focus_click_h = std::max(0.0f, focus_click_h - nav_h);
+        }
         // Focuses this pane on a click anywhere in its content area (outside any more specific
         // widget registered below).
         RegisterClickRegion(gfx::Rectangle{focus_click_x, focus_click_y, focus_click_w, focus_click_h},
@@ -22926,12 +24360,42 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     }
 
     if (img_sess && img_sess->doc) {
-        g_editor.ResizeImageViewport(pane.buffer_id, static_cast<int>(w), static_cast<int>(content_h));
+        float img_y = content_y;
+        float img_h = content_h;
+        // A figure-nav-enabled image (ImageSession::nav_prev_ref/
+        // nav_next_ref, mep.image_set_nav -- the R language UI mode's
+        // merged Plot pane) gets a thin "<"/">" header carved out of the
+        // top of its own content rect, rather than a separate pane/widget
+        // list -- clicking either steps through history by re-pointing
+        // this same pane at a different figure file (Lua's job; this just
+        // dispatches the click, same RegisterClickRegion idiom
+        // DrawSidebarPaneContent uses for its own rows).
+        if (img_sess->nav_prev_ref != 0 || img_sess->nav_next_ref != 0) {
+            float nav_h = static_cast<float>(line_height);
+            gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(img_y), static_cast<int>(w), static_cast<int>(nav_h), ResolveHlGroup("MenuBar"));
+            float mid = x + w / 2.0f;
+            gfx::Color nav_color = ResolveHlGroup("Normal");
+            DrawUiText("<", gfx::Vector2{x + w * 0.25f - 4, img_y}, font_size, nav_color);
+            DrawUiText(">", gfx::Vector2{mid + w * 0.25f - 4, img_y}, font_size, nav_color);
+            int prev_ref = img_sess->nav_prev_ref;
+            int next_ref = img_sess->nav_next_ref;
+            RegisterClickRegion(gfx::Rectangle{x, img_y, w / 2.0f, nav_h}, [prev_ref] { g_editor.CallLuaRef(prev_ref); });
+            RegisterClickRegion(gfx::Rectangle{mid, img_y, w / 2.0f, nav_h}, [next_ref] { g_editor.CallLuaRef(next_ref); });
+            img_y += nav_h;
+            img_h -= nav_h;
+        }
+        g_editor.ResizeImageViewport(pane.buffer_id, static_cast<int>(w), static_cast<int>(img_h));
         gfx::Texture2D tex = GetOrLoadImageTexture(pane.buffer_id, *img_sess);
-        gfx::BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
-                          static_cast<int>(content_h));
-        gfx::DrawTextureEx(tex, gfx::Vector2{x - static_cast<float>(img_sess->pan_x), content_y - static_cast<float>(img_sess->pan_y)}, 0.0f, img_sess->zoom, gfx::White);
+        gfx::BeginScissorMode(static_cast<int>(x), static_cast<int>(img_y), static_cast<int>(w),
+                          static_cast<int>(img_h));
+        gfx::DrawTextureEx(tex, gfx::Vector2{x - static_cast<float>(img_sess->pan_x), img_y - static_cast<float>(img_sess->pan_y)}, 0.0f, img_sess->zoom, gfx::White);
         gfx::EndScissorMode();
+        DrawPaneBorder(x, y, w, h, is_active);
+        return;
+    }
+
+    if (sidebar_pane_id != 0) {
+        DrawSidebarPaneContent(pane, sidebar_pane_id, x, content_y, w, content_h, is_active);
         DrawPaneBorder(x, y, w, h, is_active);
         return;
     }
@@ -23132,6 +24596,36 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             gfx::DrawLine(static_cast<int>(x + kHtmlPad + r.x), static_cast<int>(ry),
                       static_cast<int>(x + kHtmlPad + r.x + r.w), static_cast<int>(ry), ResolveHlGroup("Border"));
         }
+        // Hint-system link targets (HINT_SYSTEM.md): runs/images sharing
+        // the same link_node (one anchor spanning several words, e.g.
+        // "click <b>here</b> now") merge into a single bounding rect
+        // instead of one hint per run -- see LinkHintRect's own comment.
+        // Grouped by node identity, not href text, since two distinct
+        // <a>s can legitimately share an href (two "Edit" links to the
+        // same target) and must stay separate hint targets. Only visible
+        // (vertically culled) runs/images are ever added, matching every
+        // other element in this loop, so a link scrolled off-screen never
+        // becomes a hint target.
+        struct HtmlLinkGroup {
+            std::string href;
+            gfx::Rectangle rect{};
+            bool has = false;
+        };
+        std::unordered_map<const DomNode *, HtmlLinkGroup> link_groups;
+        auto expand_link_group = [&](const DomNode *node, const std::string &href, float lx, float ly, float lw,
+                                       float lh) {
+            if (!node || href.empty()) return;
+            HtmlLinkGroup &g = link_groups[node];
+            if (!g.has) {
+                g.has = true;
+                g.href = href;
+                g.rect = gfx::Rectangle{lx, ly, lw, lh};
+                return;
+            }
+            float x0 = std::min(g.rect.x, lx), y0 = std::min(g.rect.y, ly);
+            float x1 = std::max(g.rect.x + g.rect.width, lx + lw), y1 = std::max(g.rect.y + g.rect.height, ly + lh);
+            g.rect = gfx::Rectangle{x0, y0, x1 - x0, y1 - y0};
+        };
         gfx::Color theme_fg = ResolveHlGroup("Normal");
         for (const HtmlRun &run : layout.runs) {
             float ry = top + run.y;
@@ -23143,20 +24637,37 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 themed_run.color = theme_fg;
                 DrawHtmlRun(x + kHtmlPad + run.x, ry, themed_run);
             }
+            if (!run.link_href.empty()) {
+                float rw = gfx::MeasureTextEx(g_font, run.text.c_str(), run.font_size, 0).x;
+                expand_link_group(run.link_node, run.link_href, x + kHtmlPad + run.x, ry, rw, run.font_size);
+            }
         }
         for (const HtmlImageRun &img : layout.images) {
             float ry = top + img.y;
             if (ry + img.h < content_y || ry > content_y + content_h) continue;
-            const gfx::Texture2D *tex = theme ? GetOrLoadThemedHtmlImageTexture(img.path) : GetOrLoadOrgInlineImageTexture(img.path);
+            // A data: URI gets the same theme-recolor treatment a local
+            // <img> does, just via its own decode path (GetOrLoadThemedDataUriImageTexture,
+            // decoding straight from the embedded base64 payload instead of
+            // a file on disk) since there's no path here for GetOrLoadThemedHtmlImageTexture's
+            // own stat()+ifstream to read.
+            bool is_data_uri = img.path.compare(0, 5, "data:") == 0;
+            const gfx::Texture2D *tex = is_data_uri ? (theme ? GetOrLoadThemedDataUriImageTexture(img.path) : GetOrLoadDataUriImageTexture(img.path))
+                                         : theme     ? GetOrLoadThemedHtmlImageTexture(img.path)
+                                                     : GetOrLoadOrgInlineImageTexture(img.path);
             if (!tex) continue;  // e.g. the file was removed/moved since layout ran this same frame
             gfx::Rectangle src{0, 0, static_cast<float>(tex->width), static_cast<float>(tex->height)};
             gfx::Rectangle dst{x + kHtmlPad + img.x, ry, img.w, img.h};
             gfx::DrawTexturePro(*tex, src, dst, gfx::Vector2{0, 0}, 0.0f, gfx::White);
+            if (!img.link_href.empty()) expand_link_group(img.link_node, img.link_href, dst.x, dst.y, dst.width, dst.height);
         }
         for (const HtmlMathRun &m : layout.math_runs) {
             float ry = top + m.y;
             if (ry + m.layout.height < content_y || ry > content_y + content_h) continue;
             DrawMathLayout(x + kHtmlPad + m.x, ry, m.layout, theme ? theme_fg : m.color);
+        }
+        for (const auto &kv : link_groups) {
+            if (!kv.second.has) continue;
+            g_link_hint_rects.push_back({pane.id, pane.buffer_id, kv.second.rect, false, -1, kv.second.href});
         }
         gfx::EndScissorMode();
         DrawPaneBorder(x, y, w, h, is_active);
@@ -23207,6 +24718,20 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                               static_cast<int>(pos.y + hr.y0 * pdf_sess->zoom),
                               static_cast<int>((hr.x1 - hr.x0) * pdf_sess->zoom),
                               static_cast<int>((hr.y1 - hr.y0) * pdf_sess->zoom), current ? match_cur : match_other);
+            }
+            // Hint-system link targets (HINT_SYSTEM.md) -- pr.links is
+            // already device-pixel space at pdf_sess->rendered_scale
+            // (Editor::EnsurePdfPagesRastered), one more `* zoom` away
+            // from screen pixels exactly like a highlight rect above.
+            // Vertical-culled against the same visible band every other
+            // element in this pane checks, so an off-screen link on a
+            // stacked neighbor page never becomes a hint target.
+            for (const PdfLinkAnnot &link : pr.links) {
+                float lx0 = pos.x + link.x0 * pdf_sess->zoom, ly0 = pos.y + link.y0 * pdf_sess->zoom;
+                float lx1 = pos.x + link.x1 * pdf_sess->zoom, ly1 = pos.y + link.y1 * pdf_sess->zoom;
+                if (ly1 < content_y || ly0 > content_y + content_h) continue;
+                g_link_hint_rects.push_back(
+                    {pane.id, pane.buffer_id, gfx::Rectangle{lx0, ly0, lx1 - lx0, ly1 - ly0}, true, link.target_page, link.uri});
             }
             return static_cast<float>(pr.h) * pdf_sess->zoom;
         };
@@ -24991,7 +26516,43 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                           int byte_b = std::min(static_cast<int>(line.size()),
                                                                  static_cast<int>(ColumnToByteOffset(line, pb)));
                                           std::string piece = line.substr(static_cast<size_t>(byte_a), static_cast<size_t>(byte_b - byte_a));
-                                          gfx::DrawTextEx(span_font, piece.c_str(), gfx::Vector2{px, py}, g_font_size, 0, c);
+                                          if (d.has_fg_color) {
+                                              gfx::DrawTextEx(span_font, piece.c_str(), gfx::Vector2{px, py}, g_font_size, 0, c);
+                                              return;
+                                          }
+                                          // This recolor is a second, independent draw of the same
+                                          // span's text over DrawLineFast's base pass (this whole
+                                          // function's own comment on draw order) -- without the same
+                                          // per-codepoint icon/symbol routing DrawLineFast does, a
+                                          // recolored span containing an icon glyph (kBuiltinFileTree's
+                                          // editable tree, hl_group='Blue' for a directory row) would
+                                          // silently repaint g_font's '?' fallback right on top of the
+                                          // correctly-drawn base glyph.
+                                          // Advances by the fixed per-column g_char_width, exactly
+                                          // matching DrawLineFast's own stride (its `cx = x + col *
+                                          // g_char_width`) -- not each glyph's actual measured width,
+                                          // which for the icon font in particular commonly isn't
+                                          // g_char_width at all. Using the real measured width here
+                                          // would desync this pass's column positions from the base
+                                          // pass's, so every character *after* an icon in the same
+                                          // span would be redrawn (in its recolor) at a different x
+                                          // than its base-pass glyph, smearing the two into a
+                                          // doubled/ghosted look instead of one sharp recolored glyph.
+                                          float dx = px;
+                                          const char *ps = piece.c_str();
+                                          int plen = static_cast<int>(piece.size());
+                                          for (int pi = 0; pi < plen;) {
+                                              int cp_size = 0;
+                                              int cp = gfx::GetCodepointNext(&ps[pi], &cp_size);
+                                              std::string glyph(ps + pi, static_cast<size_t>(cp_size));
+                                              pi += cp_size;
+                                              if (cp != ' ' && cp != '\t') {
+                                                  const gfx::Font &gf =
+                                                      IsIconCodepoint(cp) ? g_icon_font : (IsSymbolCodepoint(cp) ? g_symbol_font : g_font);
+                                                  gfx::DrawTextEx(gf, glyph.c_str(), gfx::Vector2{dx, py}, g_font_size, 0, c);
+                                              }
+                                              dx += g_char_width;
+                                          }
                                       });
                 }
             }
@@ -25308,7 +26869,15 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // below); pane.cursor.col picks out which of its visual sub-lines
         // the caret itself is drawn on.
         int cursor_wrap_cols = (!cursor_on_image && !cursor_on_latex) ? wrap_cols : 0;
-        gfx::Vector2 cursor_pos = WrapPos(pane.cursor.col, cursor_wrap_cols, text_x, content_y + static_cast<float>(cursor_slot * line_height),
+        // pane.cursor.col is a byte offset (every cursor-mutation/motion
+        // function in editor.cpp indexes a line that way), but WrapPos/
+        // DrawLineFast lay a row out one column per *codepoint* -- convert
+        // through ByteOffsetToColumn so the caret lands on the right glyph
+        // column instead of drifting right by 2 for every multi-byte
+        // UTF-8 character (e.g. an icon glyph) preceding it on the line.
+        const std::string &cursor_line = buf.lines[static_cast<size_t>(pane.cursor.row)];
+        int cursor_display_col = ByteOffsetToColumn(cursor_line, pane.cursor.col);
+        gfx::Vector2 cursor_pos = WrapPos(cursor_display_col, cursor_wrap_cols, text_x, content_y + static_cast<float>(cursor_slot * line_height),
                                       line_height);
         float cursor_x = cursor_pos.x, cursor_y = cursor_pos.y;
         int cursor_slots = cursor_on_image ? kOrgInlineImageSlots : (cursor_on_latex ? cursor_latex_it->second.slots : 1);
@@ -25325,7 +26894,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             gfx::Color cursor_bg = ResolveHlGroup("Normal");
             gfx::DrawRectangle(static_cast<int>(cursor_x), static_cast<int>(cursor_y), static_cast<int>(g_char_width),
                           line_height, gfx::Color{cursor_bg.r, cursor_bg.g, cursor_bg.b, 180});
-            const std::string &line = buf.lines[static_cast<size_t>(pane.cursor.row)];
+            const std::string &line = cursor_line;
             // Skip the usual "punch the raw character back through the
             // cursor block" redraw when the cursor sits inside a
             // concealed inline-math span (Buffer::org_latex_inline) --
@@ -25339,7 +26908,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 auto it = buf.org_latex_inline.find(pane.cursor.row);
                 if (it != buf.org_latex_inline.end()) {
                     for (const Buffer::OrgLatexInlineSpan &span : it->second) {
-                        if (pane.cursor.col >= span.col_start && pane.cursor.col < span.col_end) {
+                        if (cursor_display_col >= span.col_start && cursor_display_col < span.col_end) {
                             cursor_in_concealed_latex = true;
                             break;
                         }
@@ -25347,8 +26916,19 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 }
             }
             if (!cursor_in_concealed_latex && pane.cursor.col < static_cast<int>(line.size())) {
-                const char ch[2] = {line[static_cast<size_t>(pane.cursor.col)], '\0'};
-                gfx::DrawTextEx(g_font, ch, gfx::Vector2{cursor_x, cursor_y}, g_font_size, 0, ResolveHlGroup("NormalBg"));
+                // Decodes the whole codepoint at this byte offset (never
+                // just the one raw byte -- a multi-byte UTF-8 character,
+                // e.g. an icon glyph, would otherwise have only its lead
+                // byte punched back through as its own garbled glyph) and
+                // routes it to the same font DrawLineFast would have drawn
+                // it with, icon/symbol codepoints included.
+                int codepoint_size = 0;
+                int codepoint = gfx::GetCodepointNext(&line[static_cast<size_t>(pane.cursor.col)], &codepoint_size);
+                std::string ch = line.substr(static_cast<size_t>(pane.cursor.col), static_cast<size_t>(codepoint_size));
+                const gfx::Font &punch_font = IsIconCodepoint(codepoint) ? g_icon_font
+                                              : IsSymbolCodepoint(codepoint) ? g_symbol_font
+                                                                              : g_font;
+                gfx::DrawTextEx(punch_font, ch.c_str(), gfx::Vector2{cursor_x, cursor_y}, g_font_size, 0, ResolveHlGroup("NormalBg"));
             }
         }
         // Completion popup (Phase 22): positioned just below the cursor.
@@ -25903,6 +27483,12 @@ void DrawDashboard(float x, float y, float w, float h) {
     }
 }
 
+// Forward-declared: defined with the rest of the hint system
+// (HINT_SYSTEM.md), further down this file alongside DispatchChromeClicks
+// -- DrawEditor below (defined first) draws it last, after every other
+// overlay/toast, so a hint badge is never painted over.
+void DrawHintOverlay();
+
 /**
  * @brief Draws one full editor frame: chrome (menu/tab/status/command bars), the
  *        pane tree or dashboard, sidebars, and every active modal overlay/toast.
@@ -25918,9 +27504,12 @@ void DrawEditor() {
     g_pane_tab_chip_rects.clear();
     g_pane_border_rects.clear();
     g_sidebar_row_rects.clear();
+    g_sidebar_panel_rects.clear();
     g_sidebar_tab_rects.clear();
+    g_sidebar_group_tab_rects.clear();
     g_sidebar_border_rects.clear();
     g_sidebar_stack_rects.clear();
+    g_link_hint_rects.clear();
     // A tab/workspace switch or :bd underneath an open floating pane
     // (Editor::OpenFloatPane) ends it before anything below draws it.
     g_editor.ValidateFloatPane();
@@ -26249,6 +27838,7 @@ void DrawEditor() {
     if (g_editor.CurrentMode() == Mode::WhichKey) DrawWhichKeyOverlay();
     if (g_show_help_overlay) DrawHelpOverlay();
     DrawToastStack();
+    if (g_hint_mode_active) DrawHintOverlay();
 
     gfx::EndDrawing();
 }
@@ -26281,6 +27871,348 @@ bool IsModalOverlayMode(Mode m) {
     }
 }
 
+// --- Hint system (HINT_SYSTEM.md) -----------------------------------------
+//
+// Vimium-style "mod1+f labels everything clickable/jumpable, type the
+// label to activate it" navigation -- distinct from the existing
+// Mode::HintChar/HintLabel pair (Editor::BeginHints, editor.cpp), which
+// labels character positions *within the current buffer's own text* for a
+// fast in-document motion. This one labels UI chrome instead: menu bar/
+// toolbar buttons, sidebar rows and sidebar-focus targets, pane-focus
+// targets, and hyperlinks visible in a PDF/HTML pane -- none of which
+// Editor::Mode-based dispatch has any reach into (they're all main.cpp-
+// local per-frame geometry: g_click_regions, g_pane_screen_rects,
+// g_sidebar_row_rects/g_sidebar_panel_rects, g_link_hint_rects), so this
+// lives here as its own small self-contained modal-capture system rather
+// than a new Editor::Mode -- the same way g_open_menu's own menu-bar
+// handling already does (HandleMenuInput, gating g_editor.HandleInput()
+// the same way UpdateDrawFrame gates it for this).
+//
+// Triggered on mod1+f (mep's own configurable modifier -- Editor::
+// IsMod1Down/mep.set_mod1, defaulting to Alt so there's no collision with
+// vim's own plain 'F' (find-char-backward) motion in Normal/Visual mode
+// by default; a user who's remapped mod1 to Shift would get that
+// collision back, the same tradeoff any other mod1 binding already
+// accepts). ModeAllowsHintTrigger below excludes the genuine free-text-
+// entry/query-typing modes (Insert, the command/search line, Prompt,
+// Picker's own filter, WhichKey's key collection, an already-active
+// hint/terminal/insert-variant) -- moot for the default Alt modifier
+// (GLFW/X11 char callbacks normally only fire for un/Shift-modified
+// keys, so Alt+f is never seen as typed text to begin with), but still
+// the right guard for a Shift-remapped mod1, plus HoverFocus (its own
+// small popup has no useful hint targets and already claims hjkl/v/V/y
+// for pseudo-buffer navigation).
+/**
+ * @brief Reports whether mod1+f should open hint mode while in mode `m`.
+ * @param m The editor mode to check.
+ * @return False for a genuine free-text-entry/query-typing mode (relevant if mod1 is remapped to
+ * Shift) or one that already claims the key some other way; true otherwise.
+ */
+bool ModeAllowsHintTrigger(Mode m) {
+    switch (m) {
+        case Mode::Insert:
+        case Mode::Command:
+        case Mode::SearchForward:
+        case Mode::SearchBackward:
+        case Mode::Prompt:
+        case Mode::Confirm:
+        case Mode::Select:
+        case Mode::Picker:
+        case Mode::RoamGraph:
+        case Mode::WhichKey:
+        case Mode::HintChar:
+        case Mode::HintLabel:
+        case Mode::Terminal:
+        case Mode::OfficeInsert:
+        case Mode::SheetInsert:
+        case Mode::KanbanInsert:
+        case Mode::GanttInsert:
+        case Mode::Preview:
+        case Mode::HoverFocus:
+            return false;
+        default:
+            return true;
+    }
+}
+
+// Home-row-first label pool, mirroring hop.nvim/leap.nvim/flash.nvim's
+// convention -- same alphabet as editor.cpp's own (anonymous-namespace-
+// local, so not reachable from here) HintLabelForIndex for Mode::
+// HintChar/HintLabel, duplicated rather than shared since that system is
+// otherwise fully independent of this one (see this section's own top
+// comment). UNLIKE that one, every label here is padded to the SAME
+// fixed width (UiHintLabelWidthFor below) rather than mixing 1-char and
+// 2-char labels: a 1-char label that's also a valid PREFIX of some
+// 2-char label (e.g. "a" alone vs. "aa"/"as"/"ad"/...) would fire the
+// instant it's typed, in HandleHintModeInput's own "exact match wins
+// immediately" logic, before the user ever gets to type a second
+// character meant to pick one of the longer ones -- reproduced during
+// this feature's own testing (typing "a" toward the intended two-char
+// "ao" instead immediately activated whatever single-char-labeled "a"
+// target existed). A fixed width per collection makes every label the
+// same length, so no label can ever be a strict prefix of another --
+// the same reason real Vimium does this once a page has more links than
+// its own single-char capacity.
+constexpr char kUiHintLabelPool[] = "asdfghjklqwertyuiopzxcvbnm";
+constexpr int kUiHintPoolSize = 26;
+/**
+ * @brief Computes the fixed label width needed so kUiHintPoolSize^width can label every target
+ * uniquely.
+ * @param target_count Number of targets that need a label.
+ * @return 1 for up to 26 targets, 2 for up to 676, etc.
+ */
+int UiHintLabelWidthFor(size_t target_count) {
+    int width = 1;
+    size_t capacity = static_cast<size_t>(kUiHintPoolSize);
+    while (target_count > capacity) {
+        capacity *= static_cast<size_t>(kUiHintPoolSize);
+        width++;
+    }
+    return width;
+}
+/**
+ * @brief Produces the fixed-`width`-character hint label for a target at the given index.
+ * @param i Zero-based index of the target to label.
+ * @param width Label width (from UiHintLabelWidthFor), shared by every target in the same
+ * collection so no label is ever a prefix of another.
+ * @return A `width`-character label built from kUiHintLabelPool, most-significant digit first.
+ */
+std::string UiHintLabelForIndex(int i, int width) {
+    std::string label(static_cast<size_t>(width), kUiHintLabelPool[0]);
+    for (int pos = width - 1; pos >= 0; pos--) {
+        label[static_cast<size_t>(pos)] = kUiHintLabelPool[i % kUiHintPoolSize];
+        i /= kUiHintPoolSize;
+    }
+    return label;
+}
+
+// Resolves an HTML href (LinkHintRect::uri when !is_pdf) the way this
+// renderer's own existing navigation primitives already handle a URL --
+// mailto: has no in-app handler at all, so it always shells out via
+// mep.open_url (xdg-open's own default mail client) the same way
+// mep.open_url_under_cursor does; everything else (an absolute http(s)
+// URL, or a local path resolved against the *source* pane's own on-disk
+// directory the same way a local <img src> already is, ctx.base_dir
+// above) goes through mep.browse_open_in_pane, which already knows how
+// to tell those two apart (a curl fetch for a real URL, a direct
+// mep.html_open for a local path) -- reusing it here rather than
+// duplicating that dispatch. A bare "#fragment" same-page anchor has no
+// local-file component to resolve at all -- HINT_SYSTEM.md's own
+// documented gap: main.cpp keeps no persistent per-node layout position
+// outside a single frame's own draw call to scroll to, so this is
+// silently a no-op rather than a broken navigation.
+/**
+ * @brief Navigates an HTML pane's buffer to a clicked link's href, resolving a relative path against
+ * the page's own source directory.
+ * @param buffer_id Buffer id of the HTML pane the link was clicked in.
+ * @param href The <a href> value to navigate to.
+ */
+void NavigateHtmlLink(int buffer_id, const std::string &href) {
+    if (href.empty() || href[0] == '#') return;
+    if (href.rfind("mailto:", 0) == 0) {
+        g_editor.RunCommand("lua mep.open_url([[" + href + "]])");
+        return;
+    }
+    std::string target = href;
+    if (href.rfind("http://", 0) != 0 && href.rfind("https://", 0) != 0 && href[0] != '/') {
+        const HtmlSession *sess = g_editor.GetHtml(buffer_id);
+        std::string base_dir = sess ? std::filesystem::path(sess->source).parent_path().string() : std::string();
+        if (!base_dir.empty()) target = base_dir + "/" + href;
+    }
+    g_editor.RunCommand("lua mep.browse_open_in_pane([[" + target + "]])");
+}
+
+// Gathers every hint target visible this frame from every source
+// (HINT_SYSTEM.md), assigns each a label, and stores them in
+// g_hint_targets for HandleHintModeInput/DrawHintOverlay to consume.
+// Called once when hint mode is triggered (mod1+f), not every frame
+// hint mode stays open -- the targets/labels shouldn't shuffle out from
+// under a user mid-selection just because e.g. a toast expired.
+/**
+ * @brief Rebuilds g_hint_targets from every current per-frame hint source (menu bar, click regions,
+ * sidebar rows/panels, panes, PDF/HTML links), assigning each a home-row-first label.
+ */
+void CollectHintTargets() {
+    std::vector<HintTarget> targets;
+
+    // Topmost dropdown menus: if one is already open, hint its own items
+    // (closing the dropdown once fired); otherwise hint the menu bar's
+    // top-level triggers themselves (opening the dropdown, which a second
+    // mod1+f then hints the items of).
+    if (g_open_menu >= 0 && static_cast<size_t>(g_open_menu) < g_menus.size()) {
+        const Menu &menu = g_menus[static_cast<size_t>(g_open_menu)];
+        float dd_x = g_menu_starts[static_cast<size_t>(g_open_menu)];
+        float dd_y = static_cast<float>(MenuBarHeight());
+        float item_h = static_cast<float>(MenuItemHeight());
+        for (size_t i = 0; i < menu.items.size(); i++) {
+            std::function<void()> action = menu.items[i].action;
+            targets.push_back({gfx::Vector2{dd_x, dd_y + static_cast<float>(i) * item_h}, "",
+                                [action] {
+                                    action();
+                                    g_open_menu = -1;
+                                }});
+        }
+    } else {
+        for (size_t i = 0; i < g_menus.size() && i < g_menu_starts.size(); i++) {
+            int idx = static_cast<int>(i);
+            targets.push_back({gfx::Vector2{g_menu_starts[i], 0.0f}, "", [idx] { g_open_menu = idx; }});
+        }
+    }
+
+    // Every other registered click region: top-bar icon buttons, tab
+    // chips, gutter fold markers, pane header run/split/close controls,
+    // every other already-open dropdown (RunButtonMenu, image-editor/
+    // office toolbars, git panel rows, ...) -- anything that already
+    // wires a real click through RegisterClickRegion gets a hint for
+    // free, satisfying "all of the buttons on the top bar" and "any
+    // relevant widget that's a button" at once.
+    for (const ClickRegion &region : g_click_regions) {
+        std::function<void()> action = region.action;
+        targets.push_back({gfx::Vector2{region.rect.x, region.rect.y}, "", [action] { action(); }});
+    }
+
+    // Sidebar rows: activating one is exactly what Enter/a double-click
+    // already does (Editor::ActivateSidebarLine), preceded by focusing
+    // that row the same way a real click does first (FocusSidebarRow) so
+    // the row's own on_click sees a consistent cursor position.
+    for (const SidebarRowRect &row : g_sidebar_row_rects) {
+        int sidebar_id = row.sidebar_id, line_index = row.line_index;
+        targets.push_back({gfx::Vector2{row.rect.x, row.rect.y}, "", [sidebar_id, line_index] {
+                                g_editor.FocusSidebarRow(sidebar_id, line_index);
+                                g_editor.ActivateSidebarLine(sidebar_id, line_index);
+                            }});
+    }
+
+    // Sidebar-focus targets: jump keyboard focus into a whole open
+    // sidebar (its title row's own top-left) without activating any
+    // particular row -- "jumping to ... sidebars" as its own action,
+    // distinct from a specific row's own hint above.
+    for (const SidebarPanelRect &panel : g_sidebar_panel_rects) {
+        int sidebar_id = panel.sidebar_id;
+        targets.push_back({gfx::Vector2{panel.rect.x, panel.rect.y}, "",
+                            [sidebar_id] { g_editor.OpenSidebar(sidebar_id, true); }});
+    }
+
+    // Pane-focus targets, top-left of each pane (explicit user request).
+    for (const PaneScreenRect &pr : g_pane_screen_rects) {
+        int pane_id = pr.pane_id;
+        targets.push_back({gfx::Vector2{pr.rect.x, pr.rect.y}, "", [pane_id] { g_editor.FocusPaneById(pane_id); }});
+    }
+
+    // Hyperlinks visible in a PDF/HTML pane.
+    for (const LinkHintRect &link : g_link_hint_rects) {
+        gfx::Vector2 anchor{link.rect.x, link.rect.y};
+        int pane_id = link.pane_id, buffer_id = link.buffer_id;
+        if (link.is_pdf) {
+            int target_page = link.target_page;
+            std::string uri = link.uri;
+            targets.push_back({anchor, "", [pane_id, buffer_id, target_page, uri] {
+                                    g_editor.FocusPaneById(pane_id);
+                                    if (target_page >= 0) g_editor.GotoPdfPage(buffer_id, target_page);
+                                    else if (!uri.empty()) g_editor.RunCommand("lua mep.open_url([[" + uri + "]])");
+                                }});
+        } else {
+            std::string href = link.uri;
+            targets.push_back({anchor, "", [pane_id, buffer_id, href] {
+                                    g_editor.FocusPaneById(pane_id);
+                                    NavigateHtmlLink(buffer_id, href);
+                                }});
+        }
+    }
+
+    int label_width = UiHintLabelWidthFor(targets.size());
+    for (size_t i = 0; i < targets.size(); i++) targets[i].label = UiHintLabelForIndex(static_cast<int>(i), label_width);
+    g_hint_targets = std::move(targets);
+}
+
+// Drains this frame's key/char input while hint mode is active, narrowing
+// g_hint_typed and firing the first target whose label matches it
+// exactly -- same "accumulate, fire on exact match, cancel once no
+// target's label can still match the typed prefix" shape as Editor::
+// HandleHintLabelInput (editor.cpp), independently reimplemented here
+// since that one only ever sees Editor::Mode, never this system's own
+// g_hint_targets. Escape cancels immediately regardless of what's typed
+// so far. Always returns true once hint mode is active (even for a
+// keystroke that changed nothing), the same "modal capture" contract as
+// HandleMenuInput's own return value -- callers gate g_editor.HandleInput()
+// on it exactly the same way.
+/**
+ * @brief Handles keyboard input while hint mode is active (label narrowing, activation, Escape to
+ * cancel).
+ * @return True if hint mode is active (and therefore consumed this frame's input); false otherwise.
+ */
+bool HandleHintModeInput() {
+    if (!g_hint_mode_active) return false;
+    for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
+        if (key == gfx::Key::Escape) {
+            g_hint_mode_active = false;
+            g_hint_targets.clear();
+            g_hint_typed.clear();
+            return true;
+        }
+    }
+    int cp = gfx::GetCharPressed();
+    while (cp > 0) {
+        if (cp >= 'A' && cp <= 'Z') cp += 'a' - 'A';  // labels are lowercase; Shift-typed letters still match
+        if (cp < 32 || cp >= 127) {
+            cp = gfx::GetCharPressed();
+            continue;
+        }
+        g_hint_typed += static_cast<char>(cp);
+        const HintTarget *matched = nullptr;
+        for (const HintTarget &t : g_hint_targets) {
+            if (t.label == g_hint_typed) {
+                matched = &t;
+                break;
+            }
+        }
+        if (matched) {
+            std::function<void()> action = matched->action;
+            g_hint_mode_active = false;
+            g_hint_targets.clear();
+            g_hint_typed.clear();
+            action();
+            return true;
+        }
+        bool any_prefix = std::any_of(g_hint_targets.begin(), g_hint_targets.end(), [&](const HintTarget &t) {
+            return t.label.size() >= g_hint_typed.size() && t.label.compare(0, g_hint_typed.size(), g_hint_typed) == 0;
+        });
+        if (!any_prefix) {
+            g_hint_mode_active = false;
+            g_hint_targets.clear();
+            g_hint_typed.clear();
+            return true;
+        }
+        cp = gfx::GetCharPressed();
+    }
+    return true;
+}
+
+// Draws every hint target's label badge -- a solid yellow badge with
+// black text (matching real Vimium's own hint styling: high-contrast and
+// unmistakable against literally any pane content or theme colors behind
+// it, unlike a theme-derived highlight group which could disappear
+// against a similarly-colored background). Called last, after every
+// other overlay, so a badge is never painted over by anything else on
+// screen. A target whose label no longer has g_hint_typed as a prefix is
+// skipped, giving the same live-narrowing feedback flash.nvim/vimium's
+// own hint overlays give.
+/**
+ * @brief Draws every current hint target's label badge, skipping any that no longer match the
+ * characters typed so far.
+ */
+void DrawHintOverlay() {
+    constexpr gfx::Color kHintBg{255, 215, 0, 255};   // solid yellow, theme-independent
+    constexpr gfx::Color kHintFg{0, 0, 0, 255};        // black, for contrast against kHintBg
+    for (const HintTarget &t : g_hint_targets) {
+        if (t.label.size() < g_hint_typed.size() || t.label.compare(0, g_hint_typed.size(), g_hint_typed) != 0) continue;
+        float label_w = gfx::MeasureTextEx(g_font, t.label.c_str(), g_font_size, 0).x + 4.0f;
+        gfx::DrawRectangle(static_cast<int>(t.anchor.x), static_cast<int>(t.anchor.y), static_cast<int>(label_w),
+                      static_cast<int>(g_font_size + 2.0f), kHintBg);
+        gfx::DrawTextEx(g_font, t.label.c_str(), gfx::Vector2{t.anchor.x + 2.0f, t.anchor.y}, g_font_size, 0, kHintFg);
+    }
+}
+
 // Consumes this frame's mouse click (if any) against whatever click regions
 // DrawEditor() just registered (tab bar, gutter fold markers, pane header
 // breadcrumb, pane-body focus -- see g_click_regions above). First matching
@@ -26306,6 +28238,15 @@ void DispatchChromeClicks() {
         if (!PointInRect(mouse, t.rect)) continue;
         if (!(mode == Mode::Sidebar && g_editor.FocusedSidebarId() == t.sidebar_id)) g_editor.FocusSidebarRow(t.sidebar_id, 0);
         g_editor.SelectSidebarTab(t.sidebar_id, t.tab_index);
+        return;
+    }
+    // A GROUP tab-strip chip (SidebarInstance::tab_group): switch which
+    // member of the group is the dock slot's active/visible one, then
+    // focus that member the same way a plain tab-strip chip click does.
+    for (const SidebarGroupTabRect &t : g_sidebar_group_tab_rects) {
+        if (!PointInRect(mouse, t.rect)) continue;
+        g_editor.SetTabGroupActive(t.group, t.member_id);
+        if (!(mode == Mode::Sidebar && g_editor.FocusedSidebarId() == t.member_id)) g_editor.FocusSidebarRow(t.member_id, 0);
         return;
     }
     if (g_editor.SidebarPopoutActive()) {
@@ -27061,8 +29002,54 @@ void UpdateDrawFrame() {
         g_editor.SetNow(gfx::GetTime());
         if (g_editor.Lua()) g_editor.Lua()->RunFrameHooks();
         HandleFontSizeShortcuts();
-        bool menu_consumed = HandleMenuInput();
-        if (!menu_consumed) g_editor.HandleInput();
+        // Hint-system trigger (HINT_SYSTEM.md): mod1+f (mep's own
+        // configurable modifier -- Editor::IsMod1Down/mep.set_mod1,
+        // defaulting to Alt), checked before the menu bar/editor even get
+        // a look at this frame's input, same priority position as
+        // HandleFontSizeShortcuts' own global shortcut just above. Not
+        // wired through mep.map_mod1/HandleMod1Shortcuts like every other
+        // mod1 binding: this system's whole state (g_hint_mode_active,
+        // g_hint_targets, CollectHintTargets) is main.cpp-local, with no
+        // existing cross-TU exposure to lua_env.cpp the way Editor's own
+        // methods have -- a raw IsMod1Down()+IsKeyPressed() check here
+        // costs one more line than a real mep.map_mod1('f', ...)
+        // registration would and isn't worth the new plumbing. Only arms
+        // when the target collection actually found something -- an
+        // empty result (nothing hintable on screen right now) leaves
+        // hint mode off rather than opening an overlay with nothing in
+        // it.
+        bool hint_consumed;
+        if (!g_hint_mode_active && ModeAllowsHintTrigger(g_editor.CurrentMode()) && g_editor.IsMod1Down() &&
+            gfx::IsKeyPressed(gfx::Key::F)) {
+            CollectHintTargets();
+            if (!g_hint_targets.empty()) {
+                g_hint_mode_active = true;
+                // Discard this same keystroke's own already-queued char
+                // event, if any (a plain Alt-combo typically doesn't
+                // generate one at all -- GLFW/X11 char callbacks normally
+                // fire only for unmodified/Shift-modified keys -- but a
+                // user who's set mod1 to Shift via mep.set_mod1 would hit
+                // exactly this: GLFW's char callback fires for the same
+                // physical press gfx::IsKeyPressed(F) just matched above,
+                // still sitting in the char queue this same frame. Left
+                // alone, HandleHintModeInput (below) would immediately
+                // replay it as hint mode's own first typed label
+                // character before the user ever sees the overlay,
+                // instantly activating whatever target happens to be
+                // labeled "f" (reproduced during this feature's own
+                // testing, back when the trigger was hardcoded to
+                // mod1+f (or a Shift-remapped mod1): it silently opened the Help menu, whose hint
+                // label is "f" -- home-row-first labeling starts
+                // "a s d f ...", and Help is the 4th menu).
+                while (gfx::GetCharPressed() > 0) {
+                }
+            }
+            hint_consumed = g_hint_mode_active;
+        } else {
+            hint_consumed = HandleHintModeInput();
+        }
+        bool menu_consumed = !hint_consumed && HandleMenuInput();
+        if (!hint_consumed && !menu_consumed) g_editor.HandleInput();
         DrawEditor();
         if (g_pending_gantt_raster_export.buffer_id >= 0) {
             ExportGanttRaster(g_pending_gantt_raster_export.buffer_id, g_pending_gantt_raster_export.format.c_str());
@@ -27078,7 +29065,7 @@ void UpdateDrawFrame() {
         // per-frame update function, not a copy-pasted branch; sharing the
         // same guard is intentional (see the reasoning comments above/below
         // each call).
-        if (!menu_consumed) DispatchChromeClicks();
+        if (!hint_consumed && !menu_consumed) DispatchChromeClicks();
         // Same reasoning (needs this frame's freshly (re)populated pane/
         // border/chip geometry, and shouldn't fire under an open menu
         // dropdown either) -- also runs every frame regardless of a
@@ -27086,18 +29073,18 @@ void UpdateDrawFrame() {
         // in progress needs its own continuous per-frame update even
         // when IsMouseButtonPressed() is false this frame.
         // cppcheck-suppress duplicateCondition
-        if (!menu_consumed) UpdatePaneMouseInteraction();
+        if (!hint_consumed && !menu_consumed) UpdatePaneMouseInteraction();
         // Same reasoning again -- needs this frame's freshly-refreshed
         // KanbanSession/GanttSession::content_x/y/w/h (set by DrawKanban/
         // DrawGantt), and a drag already in progress needs its own
         // continuous per-frame update the same way pane-chrome dragging
         // does above.
         // cppcheck-suppress duplicateCondition
-        if (!menu_consumed) UpdateKanbanMouseInteraction();
+        if (!hint_consumed && !menu_consumed) UpdateKanbanMouseInteraction();
         // cppcheck-suppress duplicateCondition
-        if (!menu_consumed) UpdateGanttMouseInteraction();
+        if (!hint_consumed && !menu_consumed) UpdateGanttMouseInteraction();
         // cppcheck-suppress duplicateCondition
-        if (!menu_consumed) UpdateOfficeScrollbarInteraction();
+        if (!hint_consumed && !menu_consumed) UpdateOfficeScrollbarInteraction();
     } catch (const std::exception &e) {
         g_editor.Notify(std::string("Internal error (recovered): ") + e.what(), Editor::NotifyLevel::Error);
     }
@@ -27638,7 +29625,20 @@ int main(int argc, char **argv) {
     // and mep.opt.restore_workspaces are already known. Saved state is
     // applied first (synchronously, so the bar is right from the first
     // frame), then the async git detection confirms/adopts worktrees.
-    if (g_editor.RestoreWorkspaces()) g_editor.RestoreWorkspaceState(g_editor.ActiveProject().id, !file_arg.empty());
+    //
+    // Only an explicitly requested project (--project/$MEP_PROJECT) goes
+    // through workspace-list restore + the standard default layout; a bare
+    // `mep` leaves the pristine bootstrap workspace alone so the dashboard
+    // shows (Editor::ShouldShowDashboard), matching the pre-session-restore
+    // behavior. Restoring the workspace *list* is still list-only (see
+    // Editor::RestoreWorkspaceState) -- each resulting workspace gets a
+    // fresh default layout via project_apply_default_layout_to_empty_workspaces,
+    // skipping the primary workspace when a file was already loaded into it.
+    if (!project_arg.empty() && g_editor.RestoreWorkspaces()) {
+        g_editor.RestoreWorkspaceState(g_editor.ActiveProject().id, !file_arg.empty());
+        lua->DoString(std::string("mep.project_apply_default_layout_to_empty_workspaces(") +
+                      (file_arg.empty() ? "false" : "true") + ")");
+    }
     g_editor.ProjectDetectGit(g_editor.ActiveProject().id);
     mep::agent::Start();
     mep::agent_ui::Init(gfx::GetNativeWindowHandle());

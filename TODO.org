@@ -82,8 +82,7 @@ Can you implement this?
     reach for `mep_mouse_*`/`mep_key_press`/`mep_screenshot` only when the
     task is specifically about testing mouse/keyboard/rendering input.
 
-* TODO Add a start agent binding to the todo sidebar
-
+* DONE Add a start agent binding to the todo sidebar :ARCHIVE:
   I'd like a start agent binding for the todo sidebar activated with 'L'. It
   should take the todo, and its text, prompt the user for a workspace (branch)
   name, and create a new workspace and start up a project ai agent terminal
@@ -91,6 +90,22 @@ Can you implement this?
   or an x in the todo list, can you place a robot icon indicating that an agent is currently
   working on this todo? Can you implement this? I'd like this same behavior to work in a TODO.org file
   with the binding 'gL' in normal mode (i.e. on the current todod where the cursor is). 
+
+* TODO Add archive behavior
+  On archiving a todo item, i'd like its todo moved to the bottom of the todo
+  document. Can you implement this behavior
+
+* TODO Add robot animation to org files
+
+  When using the agents to complete a todo item in an org mode document (i.e.
+  with gL), I'd like it to activate a little animation at the end of the todo
+  item. Here, I'd like a robot icon, with a ... that animates . and then .. and
+  then ... and back to . and repeat. Can you implement this behavior? I'd like
+  the same animation in the todo sidebar (currently just a robot icon). I'd like
+  this to be triggered in both, whether starting in the sidebar or in the
+  TODO.org file.
+
+
 * DONE Add a direnv widget to the bottom bar :ARCHIVE:
   I'd like a direnv widget in the bottom bar that shows the current direnv
   status (active/inactive) and allows me to toggle it on/off with a click.

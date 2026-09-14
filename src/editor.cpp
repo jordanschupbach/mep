@@ -13419,6 +13419,26 @@ bool Editor::HandleTabShortcuts() {
         TabNew("");
         return true;
     }
+    // Ctrl-Tab / Ctrl-Shift-Tab while a *tabbed* sidebar pane has focus
+    // (Mode::SidebarPane -- kBuiltinGit's paneable Status/Log/Branches/
+    // Stash, e.g.) cycles that panel's own views instead of the
+    // workspace's file tabs below. The docked form of the same sidebar
+    // already gets plain Tab/Shift-Tab for this (HandleSidebarInput), but
+    // Mode::SidebarPane's own input handler deliberately has no Tab
+    // handling at all (see its header comment) -- and couldn't reach
+    // Ctrl-Tab specifically anyway, since this function (checked
+    // unconditionally before mode dispatch, this function's own header
+    // comment) would already have consumed it below. A sidebar pane with
+    // no tabs (the file tree, Buffers, Todo, ...) falls straight through
+    // to the ordinary file-tab cycling, unchanged.
+    if (ctrl && !alt && mode_ == Mode::SidebarPane && gfx::IsKeyPressed(gfx::Key::Tab)) {
+        int sidebar_id = SidebarIdForPaneBuffer(CurPane().buffer_id);
+        const SidebarInstance *sb = sidebar_id ? FindSidebar(sidebar_id) : nullptr;
+        if (sb && !sb->tabs.empty()) {
+            SelectSidebarTab(sidebar_id, SidebarActiveTab(sidebar_id) + (shift ? -1 : 1));
+            return true;
+        }
+    }
     // Ctrl-Tab / Ctrl-Shift-Tab: step through the active workspace's tabs
     // (the same relative move as :tabnext / :tabprevious). Ctrl+Alt+Tab is
     // left alone so it can't be confused with mod1+Tab's buffer cycling.
@@ -16687,6 +16707,12 @@ void Editor::SelectSidebarTab(int id, int index) {
     // something only in the previous one.
     sb->scroll_offset = 0;
     if (focused_sidebar_id_ == id) sidebar_cursor_ = 0;
+    // Same reset for a pane-hosted view of this same sidebar (Mode::
+    // SidebarPane, e.g. kBuiltinGit's paneable form) -- its own cursor
+    // (sidebar_pane_cursor_) is otherwise untouched by a view switch, same
+    // gap SidebarCursorWidgetId's own mode-aware branch fixed for widget
+    // lookups.
+    if (mode_ == Mode::SidebarPane && SidebarIdForPaneBuffer(CurPane().buffer_id) == id) sidebar_pane_cursor_ = 0;
     if (id == sidebar_popout_id_) sidebar_popout_preview_dirty_ = true;
     if (sb->on_tab_ref != 0 && lua_) lua_->CallRefWithInt(sb->on_tab_ref, sb->active_tab + 1);
 }

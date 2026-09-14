@@ -24687,21 +24687,56 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
 // buttons/list items in what is now, structurally, just another pane.
 void DrawSidebarPaneContent(const Pane &pane, int sidebar_id, float x, float y, float w, float h, bool is_active) {
     gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h), ResolveHlGroup("Sidebar"));
-    std::vector<SidebarLine> lines = g_editor.FlattenSidebar(sidebar_id);
     int line_h = LineHeight();
     float font_size = MenuFontSize();
-    int visible_lines = std::max(1, static_cast<int>(h) / line_h);
-    g_editor.UpdateScrollForSidebar(sidebar_id, visible_lines);
     const SidebarInstance *sb = g_editor.FindSidebar(sidebar_id);
+    int pane_id = pane.id;
+    // Tab strip header (SidebarInstance::tabs -- kBuiltinGit's Status/Log/
+    // Branches/Stash, e.g.), one extra header row exactly like DrawSidebars'
+    // own draw_one (hdr_h += line_h). Deliberately NOT DrawSidebarTabStrip
+    // (used by the docked path): that helper always pushes into the global
+    // g_sidebar_tab_rects, which DispatchChromeClicks' click handling
+    // resolves through docked-only bookkeeping (Editor::FocusSidebarRow --
+    // wrong to trigger from an ordinary pane, this function's own top
+    // comment). So this is its own small chip-drawing loop, visually
+    // matching it, wired through the same per-row RegisterClickRegion
+    // idiom the rest of this function already uses instead.
+    float content_y = y;
+    float content_h = h;
+    if (sb && !sb->tabs.empty()) {
+        const float pad = 8.0f;
+        const float chip_h = font_size + 4.0f;
+        float tx = x + 8.0f;
+        const float ty = y + 4.0f;
+        for (size_t i = 0; i < sb->tabs.size(); i++) {
+            const std::string &name = sb->tabs[i];
+            const float tw = gfx::MeasureTextEx(g_font, name.c_str(), font_size, 0).x;
+            const gfx::Rectangle rect{tx, ty - 2.0f, tw + 2 * pad, chip_h};
+            const bool active = static_cast<int>(i) == sb->active_tab;
+            if (active) gfx::DrawRectangleRec(rect, ResolveHlGroup("TabActive"));
+            gfx::DrawTextEx(g_font, name.c_str(), gfx::Vector2{tx + pad, ty}, font_size, 0,
+                       ResolveHlGroup(active ? "Normal" : "Comment"));
+            int tab_index = static_cast<int>(i);
+            RegisterClickRegion(rect, [pane_id, sidebar_id, tab_index] {
+                g_editor.FocusPaneById(pane_id);
+                g_editor.SelectSidebarTab(sidebar_id, tab_index);
+            });
+            tx += rect.width + 2.0f;
+        }
+        content_y += static_cast<float>(line_h);
+        content_h -= static_cast<float>(line_h);
+    }
+    std::vector<SidebarLine> lines = g_editor.FlattenSidebar(sidebar_id);
+    int visible_lines = std::max(1, static_cast<int>(content_h) / line_h);
+    g_editor.UpdateScrollForSidebar(sidebar_id, visible_lines);
     int scroll = sb ? sb->scroll_offset : 0;
     int cursor = g_editor.SidebarPaneCursor();
 
-    gfx::BeginScissorMode(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h));
+    gfx::BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w), static_cast<int>(content_h));
     size_t first = static_cast<size_t>(scroll);
     size_t last = std::min(lines.size(), first + static_cast<size_t>(visible_lines));
-    int pane_id = pane.id;
     for (size_t i = first; i < last; i++) {
-        float ly = y + static_cast<float>(i - first) * static_cast<float>(line_h);
+        float ly = content_y + static_cast<float>(i - first) * static_cast<float>(line_h);
         if (lines[i].current) {
             gfx::DrawRectangle(static_cast<int>(x) + 2, static_cast<int>(ly) - 1, static_cast<int>(w) - 4, line_h, ResolveHlGroup("AccentTint"));
         }

@@ -13175,9 +13175,11 @@ const char *kBuiltinActivityBar =
     // 'A': archive -- an :ARCHIVE: tag on the headline (org's own
     // convention), which OrgTodoListItems then skips along with the whole
     // subtree under it, so the row disappears but nothing is deleted:
-    // body, clock history and children all stay in the file. A running
-    // clock on it is stopped first, as marking it done would. The legacy
-    // "0|text" format has no headline to tag, so it can't archive.
+    // body, clock history and children all stay in the file, just moved
+    // (as a block) down to the end of it, out of the way of the still-
+    // active todos above. A running clock on it is stopped first, as
+    // marking it done would. The legacy "0|text" format has no headline
+    // to tag, so it can't archive.
     "function mep.activity_todo_archive_item(it, i)\n"
     "  if not it.line then mep.notify('Archive needs an org todo file') return end\n"
     "  local clock = mep_activity_todo_clock()\n"

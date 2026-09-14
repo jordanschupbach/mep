@@ -735,8 +735,21 @@ std::vector<std::string> OrgTodoListArchive(const std::vector<std::string> &line
         if (std::find(h.tags.begin(), h.tags.end(), kOrgArchiveTag) != h.tags.end()) break;
         std::vector<std::string> tags = h.tags;
         tags.emplace_back(kOrgArchiveTag);
-        std::vector<std::string> out = lines;
-        out[static_cast<size_t>(line)] = FormatHeadlineLine(h.level, h.todo_keyword, h.priority, h.title, tags);
+
+        // The tagged subtree (headline + body + children), relocated to
+        // the very end of the file so archived items sink out of the way
+        // instead of cluttering the spot they were working in.
+        const int end = std::min(h.line_end, static_cast<int>(lines.size()) - 1);
+        std::vector<std::string> subtree;
+        subtree.reserve(static_cast<size_t>(end - h.line_start + 1));
+        subtree.push_back(FormatHeadlineLine(h.level, h.todo_keyword, h.priority, h.title, tags));
+        for (int i = h.line_start + 1; i <= end; i++) subtree.push_back(lines[static_cast<size_t>(i)]);
+
+        std::vector<std::string> out;
+        out.reserve(lines.size());
+        for (int i = 0; i < h.line_start; i++) out.push_back(lines[static_cast<size_t>(i)]);
+        for (int i = end + 1; i < static_cast<int>(lines.size()); i++) out.push_back(lines[static_cast<size_t>(i)]);
+        for (std::string &l : subtree) out.push_back(std::move(l));
         return out;
     }
     return lines;

@@ -187,7 +187,9 @@ int main() {
     }
 
     // --- Archive (the sidebar's 'A' key): the tag goes after any existing
-    //     tags; the archived headline and its whole subtree vanish from
+    //     tags, and the whole tagged subtree (headline + body + children)
+    //     relocates to the end of the file, sinking below every other
+    //     headline; the archived headline and its subtree also vanish from
     //     the checklist, but a save of that checklist leaves them in the
     //     file (they're never "unreferenced" -- see OrgTodoListApply). A
     //     plain headline, a stale line or an already-archived one is a
@@ -196,25 +198,26 @@ int main() {
         Lines doc = {"#+TODO: TODO | DONE", "* TODO [#A] Parent :work:", "** TODO Child", "   body",
                      "* DONE Sibling", "* TODO Other"};
         Lines out = OrgTodoListArchive(doc, 1);
-        CHECK(out[1] == "* TODO [#A] Parent :work:ARCHIVE:");
-        CHECK(out[2] == "** TODO Child");  // the child keeps its own line untouched...
+        const Lines expect_out = {"#+TODO: TODO | DONE", "* DONE Sibling", "* TODO Other",
+                                   "* TODO [#A] Parent :work:ARCHIVE:", "** TODO Child", "   body"};
+        CHECK(out == expect_out);  // Parent's subtree moved below Sibling and Other
         std::vector<OrgTodoItem> items = OrgTodoListItems(out);
-        CHECK(items.size() == 2);  // ...but is hidden with its parent
-        CHECK(items[0].text == "Sibling" && items[0].line == 4);
-        CHECK(items[1].text == "Other" && items[1].line == 5);
+        CHECK(items.size() == 2);  // Parent (and Child with it) is hidden
+        CHECK(items[0].text == "Sibling" && items[0].line == 1);
+        CHECK(items[1].text == "Other" && items[1].line == 2);
         // Saving the (archived-free) checklist back must not drop the
         // archived subtree; toggling a visible sibling still works.
         items[1].done = true;
         Lines saved = OrgTodoListApply(out, items);
         CHECK(saved.size() == out.size());
-        CHECK(saved[1] == "* TODO [#A] Parent :work:ARCHIVE:");
-        CHECK(saved[2] == "** TODO Child");
-        CHECK(saved[3] == "   body");
-        CHECK(saved[5] == "* DONE Other");
+        CHECK(saved[2] == "* DONE Other");
+        CHECK(saved[3] == "* TODO [#A] Parent :work:ARCHIVE:");
+        CHECK(saved[4] == "** TODO Child");
+        CHECK(saved[5] == "   body");
         // Retitling the visible sibling doesn't disturb the archived rows either.
-        CHECK(OrgTodoListRetitle(saved, 5, "Renamed")[1] == "* TODO [#A] Parent :work:ARCHIVE:");
+        CHECK(OrgTodoListRetitle(saved, 2, "Renamed")[3] == "* TODO [#A] Parent :work:ARCHIVE:");
         // No-ops.
-        CHECK(OrgTodoListArchive(out, 1) == out);    // already archived
+        CHECK(OrgTodoListArchive(out, 3) == out);    // already archived (Parent, now at line 3)
         CHECK(OrgTodoListArchive(doc, 0) == doc);    // "#+TODO:" line, not a headline
         CHECK(OrgTodoListArchive(doc, 3) == doc);    // body text
         CHECK(OrgTodoListArchive(doc, 99) == doc);   // out of range

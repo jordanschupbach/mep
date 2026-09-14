@@ -282,10 +282,12 @@ std::vector<std::string> OrgTodoListRetitle(const std::vector<std::string> &line
 // `line` with ":ARCHIVE:" (appended after any tags it already has, via
 // FormatHeadlineLine over the parsed parts), which drops it -- and its
 // whole subtree -- out of the checklist from the next OrgTodoListItems
-// on. Returns `lines` unchanged when `line` doesn't name a keyworded
-// headline or it already carries the tag.
+// on, then relocates that whole subtree (headline, body, children) to
+// the end of the file so archived items sink to the bottom instead of
+// sitting where they were. Returns `lines` unchanged when `line` doesn't
+// name a keyworded headline or it already carries the tag.
 /**
- * @brief Adds the :ARCHIVE: tag to the keyworded headline at a 0-based line index, preserving keyword, priority, title and other tags.
+ * @brief Adds the :ARCHIVE: tag to the keyworded headline at a 0-based line index and moves its whole subtree to the end of the file.
  * @param lines the current full text of the org file
  * @param line the 0-based index of the headline to archive
  * @return the rewritten file lines (equal to `lines` when `line` isn't a keyworded headline or is already archived)

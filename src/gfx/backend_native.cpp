@@ -317,6 +317,41 @@ void HandleKeyPress(NativeContext *ctx, XKeyEvent *xkey) {
                 }
                 i += 1 + extra;
                 if (!valid) continue;
+                // Backspace/Enter/Escape/Delete's own keysyms carry a
+                // legacy ASCII control-code translation here (BS/CR-or-LF/
+                // ESC/DEL) alongside the proper gfx::Key already queued
+                // above -- every editor.cpp consumer of GetCharPressed()
+                // treats its queue as genuine typed/pasted text and reacts
+                // to these named keys separately (via GetKeyPressed()/
+                // IsKeyPressed(), an escape/enter/backspace/del bool from
+                // that queue, etc.), so letting the control byte through
+                // too double-handles a single physical keypress. Confirmed
+                // concretely for Backspace in a terminal pane (HandleTerminalInput
+                // forwards it once via the proper gfx::Key path, and used to
+                // forward this queue's raw 0x08 there too -- a single
+                // physical Backspace press deleted 3 characters before this
+                // filter, from that plus the separate gfx::IsKeyPressedRepeat
+                // double-count fixed alongside it there). Text-buffer editing
+                // (Editor::InsertChar) happens to already discard any
+                // codepoint below 32 on its own, so this filter is a no-op
+                // there rather than a second fix for the same symptom -- but
+                // every consumer of this queue should never have had to rely
+                // on that guard to begin with, since these bytes were never
+                // meant to reach it as "typed text" in the first place.
+                // Tab (0x09) is deliberately left unfiltered: it is NOT
+                // similarly guarded downstream (InsertChar's own guard above
+                // covers it too, incidentally, but nothing else in
+                // editor.cpp was checked), so removing it here without
+                // auditing every GetCharPressed() consumer risks silently
+                // breaking a legitimate use this filter isn't chasing.
+                // Terminal mode's own Tab forwarding filters this one byte
+                // itself instead (HandleTerminalInput), since that specific
+                // double-forward is confirmed and in scope here.
+                constexpr unsigned int kBackspace = 0x08, kLineFeed = 0x0A, kCarriageReturn = 0x0D, kEscape = 0x1B,
+                                        kDelete = 0x7F;
+                if (cp == kBackspace || cp == kLineFeed || cp == kCarriageReturn || cp == kEscape || cp == kDelete) {
+                    continue;
+                }
                 if (ctx->char_queue.size() < kMaxQueuedEvents) ctx->char_queue.push_back(cp);
             }
         }

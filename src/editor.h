@@ -9356,6 +9356,24 @@ private:
         // columns/lines per second) -- gated here to kMotionRepeatIntervalSec
         // instead, independent of frame rate.
         double last_move_time_ = -1.0;
+        // Set when the gfx::GetCharPressed() queue (driven by real OS
+        // key-repeat, the pre-confirm path) has already moved the cursor
+        // for this key since it last went down, and not yet consumed by
+        // the fast path's own next check. Exists because a hold whose
+        // duration lands close to kMotionHoldConfirmSec can have a real
+        // OS-repeat notification for this same tap still in flight when
+        // the fast path's *own* first (unconditional) fire lands on a
+        // later frame -- without this, both count as separate moves for
+        // what was one continuous tap (confirmed empirically: a hold a
+        // few ms past the threshold moved 2-3 rows/columns instead of 1,
+        // reproducing when the OS's own key-repeat delay is close to
+        // kMotionHoldConfirmSec, as this sandbox's 200ms/200ms is). The
+        // fast path checks and immediately clears this rather than gating
+        // on last_move_time_/kMotionRepeatIntervalSec (too short --
+        // 5ms -- to bridge a real ~16ms frame gap), so only that one
+        // transition fire is skipped; normal interval-paced repeat
+        // resumes the very next frame.
+        bool queue_moved_since_down_ = false;
     };
     MotionRepeatState motion_repeat_[4];
     // Accumulates digits typed before a command (e.g. the "5" in "5j");

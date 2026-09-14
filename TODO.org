@@ -30,73 +30,15 @@
   :LOGBOOK:
   CLOCK: [2026-09-14 Mon 10:28]--[2026-09-14 Mon 10:28] =>  0:00
   :END:
-* TODO Add image viewer mode for filetrees
-Currently, the filetree is a buffer, just like any other. I'd like to open it
-inside a window pane, whenever I open a directory (i.e. :e ./path/to/directory).
-When inside it. I'd like an image viewer toggled with shift+i, that shows the
-first image in the directory, has buttons < and > at the top for going up and
-down the images list, and I can also go up and down the image list with h and l.
-Can you implement this?
-* TODO Implement gaps
-  The old sidebars had a nice few pixel gap between them and the normal panes.
-  I like that, but, I think I want them in between all normal panes (i.e.
-  everywhere). Can you implement gaps betwen panes and set the gap width to be
-  5 pixels?
+* TODO Filetree image viewer mode
+  Currently, the filetree is a buffer, just like any other. I'd like to open it
+  inside a window pane, whenever I open a directory (i.e. :e ./path/to/directory).
+  When inside it. I'd like an image viewer toggled with shift+i, that shows the
+  first image in the directory, has buttons < and > at the top for going up and
+  down the images list, and I can also go up and down the image list with h and l.
+  Can you implement this?
 
-* DONE Fix agents to be local to a mep instance. :ARCHIVE:
-
-  Currently, it seems like while working on MEP, I can't have agents running
-  because it might need to close down MEP (and hence the agents that are
-  running) during the testing process. Instead, I'd like it to reliably be able
-  to spawn new instances of MEP and have instructions to not close the
-  containing MEP instance. I think this might require allowing multiple mcp
-  servers running and tying them to a mep instance and also modifying the agent
-  terminal instructions to be informed of which MEP instance it is running from
-  and to be sure not to close it if working on MEP. I'd also like ai agents to
-  be sure to only use the MEP api when interacting with any MEP instance and
-  not the x11 server, unless specifically working on testing mouse/keyboard
-  input. Can you implement these? This way, I can have multiple agents running
-  and working on MEP at the same time, and they won't interfere with each
-  other.
-
-  - Each running mep instance already binds its own agent-control socket
-    (`~/.local/share/mep/agent-sockets/<pid>.sock`) and exports it as
-    `MEP_AGENT_SOCKET` into any terminal it spawns, so a `mep-mcp` process
-    started from inside an AI terminal always drives the instance it was
-    launched from, never a sibling window -- multiple agents/mep windows
-    already don't contend for or cross-talk over a shared server.
-  - What was missing was telling the agent this, and warning it about the
-    real failure mode: an agent developing mep itself runs as a child (in
-    the process group) of the very instance it would want to rebuild and
-    test, so quitting/restarting that instance to pick up a change kills
-    the agent's own session along with it (`JobManager::ShutdownAll` SIGTERMs
-    the whole process group on shutdown). Added a new "developing mep
-    itself" section to `mep.opt.ai_terminal_instructions`
-    (`kBuiltinAiTerminal`, `src/main.cpp`) and `MEP_AGENT_API.md` telling
-    the agent to identify its own containing pid (`mep_session_info`'s
-    `pid`, or its own `MEP_AGENT_SOCKET`'s `<pid>.sock` filename), never
-    close/kill/restart it, and instead launch a separate `setsid`-detached
-    instance to test changes against and drive it via its own socket.
-  - Also strengthened the UI-automation section to say explicitly: prefer
-    the structured `mep_*` editor-state tools for any mep instance, and
-    reach for `mep_mouse_*`/`mep_key_press`/`mep_screenshot` only when the
-    task is specifically about testing mouse/keyboard/rendering input.
-
-* DONE Add a start agent binding to the todo sidebar :ARCHIVE:
-  I'd like a start agent binding for the todo sidebar activated with 'L'. It
-  should take the todo, and its text, prompt the user for a workspace (branch)
-  name, and create a new workspace and start up a project ai agent terminal
-  inside it. If a workspace is currently active with an agent running, instead of a space
-  or an x in the todo list, can you place a robot icon indicating that an agent is currently
-  working on this todo? Can you implement this? I'd like this same behavior to work in a TODO.org file
-  with the binding 'gL' in normal mode (i.e. on the current todod where the cursor is). 
-
-* TODO Add archive behavior
-  On archiving a todo item, i'd like its todo moved to the bottom of the todo
-  document. Can you implement this behavior
-
-* TODO Add robot animation to org files
-
+* TODO Org file robot animation
   When using the agents to complete a todo item in an org mode document (i.e.
   with gL), I'd like it to activate a little animation at the end of the todo
   item. Here, I'd like a robot icon, with a ... that animates . and then .. and
@@ -104,18 +46,6 @@ Can you implement this?
   the same animation in the todo sidebar (currently just a robot icon). I'd like
   this to be triggered in both, whether starting in the sidebar or in the
   TODO.org file.
-
-* TODO Fix cursor bug
-  There are certain times that an action will occur twice. I've noticed
-  sometimes in normal files the cursor will move two spaces when pressing j or
-  k. Other times, I'll see this behavior in the terminal, where deleting a
-  character will delete two. The behavior does seem inconsistent though. Can you
-  investigate and fix?
-
-* TODO Fix git tab rendering bug
-  The tabs in the git sidebar (the new one) bleed over into the neighboring pane
-  when the sidebar has a narrow enough width. This seems like a bug. Can you
-  investigate and fix?
 
 * DONE Add a direnv widget to the bottom bar :ARCHIVE:
   I'd like a direnv widget in the bottom bar that shows the current direnv
@@ -167,3 +97,71 @@ Can you implement this?
   :END:
 * DONE add pomodoro timer widget :ARCHIVE:
 * DONE make todo list have line wrapping :ARCHIVE:
+* DONE Fix cursor bug :ARCHIVE:
+  There are certain times that an action will occur twice. I've noticed
+  sometimes in normal files the cursor will move two spaces when pressing j or
+  k. Other times, I'll see this behavior in the terminal, where deleting a
+  character will delete two. The behavior does seem inconsistent though. Can you
+  investigate and fix?
+
+* DONE Add archive behavior :ARCHIVE:
+  On archiving a todo item, i'd like its todo moved to the bottom of the todo
+  document. Can you implement this behavior
+
+* DONE Implement gaps :ARCHIVE:
+  The old sidebars had a nice few pixel gap between them and the normal panes.
+  I like that, but, I think I want them in between all normal panes (i.e.
+  everywhere). Can you implement gaps betwen panes and set the gap width to be
+  5 pixels?
+
+* DONE Fix git tab rendering bug :ARCHIVE:
+  The tabs in the git sidebar (the new one) bleed over into the neighboring pane
+  when the sidebar has a narrow enough width. This seems like a bug. Can you
+  investigate and fix?
+* DONE Add a start agent binding to the todo sidebar :ARCHIVE:
+  I'd like a start agent binding for the todo sidebar activated with 'L'. It
+  should take the todo, and its text, prompt the user for a workspace (branch)
+  name, and create a new workspace and start up a project ai agent terminal
+  inside it. If a workspace is currently active with an agent running, instead of a space
+  or an x in the todo list, can you place a robot icon indicating that an agent is currently
+  working on this todo? Can you implement this? I'd like this same behavior to work in a TODO.org file
+  with the binding 'gL' in normal mode (i.e. on the current todod where the cursor is). 
+* DONE Fix agents to be local to a mep instance. :ARCHIVE:
+
+  Currently, it seems like while working on MEP, I can't have agents running
+  because it might need to close down MEP (and hence the agents that are
+  running) during the testing process. Instead, I'd like it to reliably be able
+  to spawn new instances of MEP and have instructions to not close the
+  containing MEP instance. I think this might require allowing multiple mcp
+  servers running and tying them to a mep instance and also modifying the agent
+  terminal instructions to be informed of which MEP instance it is running from
+  and to be sure not to close it if working on MEP. I'd also like ai agents to
+  be sure to only use the MEP api when interacting with any MEP instance and
+  not the x11 server, unless specifically working on testing mouse/keyboard
+  input. Can you implement these? This way, I can have multiple agents running
+  and working on MEP at the same time, and they won't interfere with each
+  other.
+
+  - Each running mep instance already binds its own agent-control socket
+    (`~/.local/share/mep/agent-sockets/<pid>.sock`) and exports it as
+    `MEP_AGENT_SOCKET` into any terminal it spawns, so a `mep-mcp` process
+    started from inside an AI terminal always drives the instance it was
+    launched from, never a sibling window -- multiple agents/mep windows
+    already don't contend for or cross-talk over a shared server.
+  - What was missing was telling the agent this, and warning it about the
+    real failure mode: an agent developing mep itself runs as a child (in
+    the process group) of the very instance it would want to rebuild and
+    test, so quitting/restarting that instance to pick up a change kills
+    the agent's own session along with it (`JobManager::ShutdownAll` SIGTERMs
+    the whole process group on shutdown). Added a new "developing mep
+    itself" section to `mep.opt.ai_terminal_instructions`
+    (`kBuiltinAiTerminal`, `src/main.cpp`) and `MEP_AGENT_API.md` telling
+    the agent to identify its own containing pid (`mep_session_info`'s
+    `pid`, or its own `MEP_AGENT_SOCKET`'s `<pid>.sock` filename), never
+    close/kill/restart it, and instead launch a separate `setsid`-detached
+    instance to test changes against and drive it via its own socket.
+  - Also strengthened the UI-automation section to say explicitly: prefer
+    the structured `mep_*` editor-state tools for any mep instance, and
+    reach for `mep_mouse_*`/`mep_key_press`/`mep_screenshot` only when the
+    task is specifically about testing mouse/keyboard/rendering input.
+

@@ -1,19 +1,10 @@
-* DONE Add tabs, nested within workspaces, nested within projects feature :ARCHIVE:
- - Need to have new git worktrees per workspace
- - Need to have buffers scoped to workspaces
- - Need to remove mode from top tab bar
- - Need to add project to left side of tab bar formatted like [project_name] and
- tabs formatted like [ws1] [ws2] highlighted by active workspace
- - Implemented 2026-09-03 across all 12 phases of WORKSPACES_PLAN.md (see its
-   Status section for what was verified how, and what still needs a GPU-capable
-   display to confirm by eye).
 
-* DONE Add reorder todo feature with ctrl+j,k :ARCHIVE:
+* TODO todo management :ARCHIVE:
   :LOGBOOK:
-  CLOCK: [2026-09-05 Sat 22:03]--[2026-09-05 Sat 22:12] =>  0:09
-  :END:
-* TODO todo management
-  :LOGBOOK:
+  CLOCK: [2026-09-14 Mon 10:10]--[2026-09-14 Mon 10:10] =>  0:00
+  CLOCK: [2026-09-14 Mon 10:06]--[2026-09-14 Mon 10:10] =>  0:04
+  CLOCK: [2026-09-14 Mon 10:06]--[2026-09-14 Mon 10:06] =>  0:00
+  CLOCK: [2026-09-14 Mon 10:02]--[2026-09-14 Mon 10:02] =>  0:00
   CLOCK: [2026-09-05 Sat 23:11]--[2026-09-05 Sat 23:11] =>  0:00
   CLOCK: [2026-09-05 Sat 21:29]--[2026-09-05 Sat 21:46] =>  0:17
   :END:
@@ -28,12 +19,78 @@
   CLOCK: [2026-09-05 Sat 21:28]--[2026-09-05 Sat 21:47] =>  0:19
   :END:
 * TODO add notification to workspace tab in tabbar for finished ai (should be red)
+  :LOGBOOK:
+  CLOCK: [2026-09-14 Mon 10:46]--[2026-09-14 Mon 10:46] =>  0:00
+  :END:
 * TODO Add platform native file-open popup (instead of :e , the current behavior)
-* DONE Add better styling to mode in bottom bar and remove filename :ARCHIVE:
 * TODO Add compiler explorer to c++ ui
 * TODO add hex exploration to c++ ui
 * TODO Fix dap debug ui
 * TODO fix exiting sidebar bug (specifically when exiting todo editor)
+  :LOGBOOK:
+  CLOCK: [2026-09-14 Mon 10:28]--[2026-09-14 Mon 10:28] =>  0:00
+  :END:
+* TODO Add image viewer mode for filetrees
+Currently, the filetree is a buffer, just like any other. I'd like to open it
+inside a window pane, whenever I open a directory (i.e. :e ./path/to/directory).
+When inside it. I'd like an image viewer toggled with shift+i, that shows the
+first image in the directory, has buttons < and > at the top for going up and
+down the images list, and I can also go up and down the image list with h and l.
+Can you implement this?
+* TODO Implement gaps
+  The old sidebars had a nice few pixel gap between them and the normal panes.
+  I like that, but, I think I want them in between all normal panes (i.e.
+  everywhere). Can you implement gaps betwen panes and set the gap width to be
+  5 pixels?
+
+* TODO Fix agents to be local to a mep instance. 
+
+  Currently, it seems like while working on MEP, I can't have agents running
+  because it might need to close down MEP (and hence the agents that are running)
+  during the testing process. Instead, I'd like it to reliably be able to spawn
+  new instances of MEP and have instructions to not close the containing MEP
+  instance. I think this might require allowing multiple mcp servers running and
+  tying them to a mep instance and also modifying the agent terminal instructions
+  to be informed of which MEP instance it is running from and to be sure not to close
+  it if working on MEP. Can you implement these?
+
+* TODO Add a start agent binding to the todo sidebar
+
+  I'd like a start agent binding for the todo sidebar activated with 'L'. It
+  should take the todo, and its text, prompt the user for a workspace (branch)
+  name, and create a new workspace and start up a project ai agent terminal
+  inside it. If a workspace is currently active with an agent running, instead of a space
+  or an x in the todo list, can you place a robot icon indicating that an agent is currently
+  working on this todo? Can you implement this? I'd like this same behavior to work in a TODO.org file
+  with the binding 'gL' in normal mode (i.e. on the current todod where the cursor is). 
+
+* DONE Add a direnv widget to the bottom bar :ARCHIVE:
+  I'd like a direnv widget in the bottom bar that shows the current direnv
+  status (active/inactive) and allows me to toggle it on/off with a click.
+  (note, it should activate by default when opening a project). Place it 
+  on the left side of the pomodoro timer, but on the right side of the line and
+  column indicator.
+
+* DONE Fix folded style for org mode files :ARCHIVE:
+  The fold style for org mode files doesnt look great. Can you make it look
+  better? I think it should have a different (highlighted) background color,
+  and should have a ... at the end of the line. Otherwise, it looks like a
+  normal line. Can you make it look better?
+
+* DONE Add tabs, nested within workspaces, nested within projects feature :ARCHIVE:
+ - Need to have new git worktrees per workspace
+ - Need to have buffers scoped to workspaces
+ - Need to remove mode from top tab bar
+ - Need to add project to left side of tab bar formatted like [project_name] and
+ tabs formatted like [ws1] [ws2] highlighted by active workspace
+ - Implemented 2026-09-03 across all 12 phases of WORKSPACES_PLAN.md (see its
+   Status section for what was verified how, and what still needs a GPU-capable
+   display to confirm by eye).
+* DONE Add reorder todo feature with ctrl+j,k :ARCHIVE:
+  :LOGBOOK:
+  CLOCK: [2026-09-05 Sat 22:03]--[2026-09-05 Sat 22:12] =>  0:09
+  :END:
+* DONE Add better styling to mode in bottom bar and remove filename :ARCHIVE:
 * DONE add image editor :ARCHIVE:
 * DONE add latex run button :ARCHIVE:
 * DONE add orgmode run button :ARCHIVE:

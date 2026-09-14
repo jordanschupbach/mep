@@ -478,6 +478,17 @@ struct SidebarWidget {
     // the checkbox instead of restarting at column 0. Ignored when wrap
     // is false.
     int wrap_indent = 0;
+    // Right-aligned per-row action (e.g. the Buffers sidebar's "x" to
+    // delete a buffer without disturbing the rest of the row's own
+    // on_click/open behavior): `trailing_icon` is drawn flush against the
+    // row's right edge, in its own hit rect carved out of the row's main
+    // click/drag rect (DrawSidebars' draw_one) so a click there fires
+    // ONLY trailing_on_click_ref (via Editor::ActivateSidebarLineTrailing),
+    // never the row's own on_click_ref too. Empty icon = no trailing
+    // action at all, the pre-existing single-click-region-per-row
+    // behavior every other sidebar keeps unchanged.
+    std::string trailing_icon;
+    int trailing_on_click_ref = 0;
 };
 struct SidebarSection {
     std::string id, title;
@@ -655,6 +666,21 @@ struct Buffer {
     // this flag only distinguishes it for :MepScratch's find-or-create and
     // its tab/status-line label ("[Scratch]" instead of "[No Name]").
     bool scratch = false;
+    // mep.buffer_set_hide_line_numbers(id, true): opts a real, ordinary
+    // buffer out of the :set number/relativenumber gutter regardless of
+    // that global setting -- for a buffer whose lines aren't really "line
+    // N of a file" at all (kBuiltinFileTree's editable tree view is the
+    // first caller: each row's own icon+name text is the meaningful
+    // "position", not its arbitrary line number).
+    bool hide_line_numbers = false;
+    // mep.buffer_set_wrap(id, false): opts a real, ordinary buffer out of
+    // :set wrap's soft-wrap regardless of that global setting -- same
+    // "this buffer's rows aren't prose to reflow" reasoning as
+    // hide_line_numbers just above, and the same first caller
+    // (kBuiltinFileTree's editable tree view: a long path wrapping onto a
+    // second visual row reads as a second, indented entry rather than a
+    // continuation of the first).
+    bool no_wrap = false;
     // `:bd`/`:bdelete` (Editor::BufferDelete) -- soft-delete, not a real
     // erase from buffers_: buffer_id is treated as a stable index
     // everywhere in this codebase (panes, terminals_, agent-rpc
@@ -2439,6 +2465,18 @@ public:
      * @brief Opens or closes the :MepNotifyPanel sidebar view of the notification history.
      */
     void ToggleNotifyHistoryPanel();
+    /**
+     * @brief Returns the Notifications SidebarInstance id, lazily creating it (empty) on first call.
+     */
+    int NotifySidebarId();
+    /**
+     * @brief Ensures the Notifications sidebar exists and its sections are fresh, then closes any
+     * currently-docked view -- kBuiltinActivityBar's mep.notify_open_pane (Lua) does the actual
+     * pane positioning/insertion afterward via mep.right_sidebar_position_pane +
+     * mep.sidebar_open_pane(mep.notify_sidebar_id()), the same "ensure+render, place separately"
+     * split as mep.activity_todo_panel/mep.sidebar_open_pane.
+     */
+    void RefreshNotifyPane();
 
     /**
      * @brief Returns whether the editor has requested the application quit.
@@ -5543,6 +5581,18 @@ public:
      */
     void SetBufferFilenameForLua(int buffer_id, const std::string &name);
     /**
+     * @brief Sets whether a buffer opts out of the :set number/relativenumber gutter regardless of that global setting.
+     * @param buffer_id The id of the buffer to change.
+     * @param hide True to hide line numbers for this buffer.
+     */
+    void SetBufferHideLineNumbers(int buffer_id, bool hide);
+    /**
+     * @brief Sets whether a buffer opts out of :set wrap's soft-wrap regardless of that global setting.
+     * @param buffer_id The id of the buffer to change.
+     * @param no_wrap True to disable soft-wrap for this buffer.
+     */
+    void SetBufferNoWrap(int buffer_id, bool no_wrap);
+    /**
      * @brief Returns whether a buffer has unsaved changes.
      * @param buffer_id The id of the buffer to check.
      * @return True if modified; false if unmodified or `buffer_id` is out of range.
@@ -5789,6 +5839,27 @@ public:
      * @param share The new pane's fraction of the tab's height, clamped to [kMinPaneShare, 1 - kMinPaneShare].
      */
     void SplitTabBottom(int buffer_id, float share);
+    /**
+     * @brief Opens a new full-height pane along the left of the active tab showing a buffer, and focuses it.
+     * @param buffer_id The buffer the new pane shows (a no-op if invalid or deleted).
+     * @param share The new pane's fraction of the tab's width, clamped to [kMinPaneShare, 1 - kMinPaneShare].
+     */
+    void SplitTabLeft(int buffer_id, float share);
+    // SplitTabLeft's mirror image: re-roots the *whole tab* into [everything
+    // else | new leaf] instead of splitting whichever single pane happens
+    // to be focused (SplitPaneRight below does that instead) -- so the new
+    // pane always spans the tab's full height along the right edge, however
+    // deeply nested the pane the user was just in. Exposed to Lua as
+    // mep.pane_split_right(); built for kBuiltinActivityBar's own right-
+    // docked-sidebar-as-pane commands (Structure/Todo/Tests/Notifications/
+    // AI Agents) to land beside each other the same way mep.pane_split_left
+    // already lands kBuiltinGit/kBuiltinBuffers beside the file tree.
+    /**
+     * @brief Opens a new full-height pane along the right of the active tab showing a buffer, and focuses it.
+     * @param buffer_id The buffer the new pane shows (a no-op if invalid or deleted).
+     * @param share The new pane's fraction of the tab's width, clamped to [kMinPaneShare, 1 - kMinPaneShare].
+     */
+    void SplitTabRight(int buffer_id, float share);
     // Thin public wrapper around the private SplitCurrentPane(dir,
     // file_arg, new_pane_first=false) -- opens `file_arg` in a new
     // vertical-split pane to the *right* of the focused one (focused
@@ -5801,6 +5872,19 @@ public:
      * @param file_arg The file to open in the new pane.
      */
     void SplitPaneRight(const std::string &file_arg) { SplitCurrentPane(SplitDir::Vertical, file_arg, false); }
+    // Mirror of SplitPaneRight, one axis over: a new horizontal-split pane
+    // *below* the focused one (focused afterward), instead of `:split`/
+    // mep.cmd('split')'s own vim-standard above default. `file_arg` empty
+    // duplicates the current buffer, same as a bare `:split`. Exposed to
+    // Lua as mep.split_below(); built for stacking a newly opened paneable
+    // sidebar (kBuiltinGit's mep.git_open_pane) *underneath* one that's
+    // already there instead of pushing it down and taking its place at
+    // the top.
+    /**
+     * @brief Opens a file (or duplicates the current buffer, if empty) in a new horizontal-split pane below the focused one, and focuses it.
+     * @param file_arg The file to open in the new pane, or empty to duplicate the current buffer.
+     */
+    void SplitPaneBelow(const std::string &file_arg) { SplitCurrentPane(SplitDir::Horizontal, file_arg, false); }
     // Lua-facing FocusPaneById: reports whether `pane_id` was a real leaf
     // pane of the active tab (and so got focused) instead of silently
     // doing nothing, so a script can fall back to another target.
@@ -6913,6 +6997,22 @@ public:
     // sidebars use the file path as the id, which is what main.cpp's
     // drag-a-file-onto-a-pane gesture keys off.
     std::string SidebarLineWidgetId(int id, int line_index) const;
+    // Generic "drag a row out of this ordinary buffer onto a pane" hook
+    // (PANE_DRAG_RESTORE: restores the drag-and-drop file open gesture for
+    // the file tree now that it's a real Buffer instead of a SidebarInstance
+    // -- g_sidebar_row_rects/SidebarLineWidgetId above only ever covered
+    // docked sidebar rows). mep.buffer_set_drag_resolver(buffer_id, fn)
+    // registers `fn`; BufferHasDragResolver is the cheap per-frame check
+    // DrawPane's own row loop uses to decide whether to bother pushing a
+    // hit-rect for a given row at all (every ordinary source buffer has no
+    // resolver and pays nothing), and BufferDragPathForRow calls `fn(row)`
+    // (0-based, same as every other buffer-row index in this codebase) only
+    // when a mouse-down actually lands on one of those rects -- returning
+    // "" (fn returned nil, errored, or isn't registered) means that row
+    // isn't draggable.
+    void SetBufferDragResolver(int buffer_id, int lua_ref);
+    bool BufferHasDragResolver(int buffer_id) const;
+    std::string BufferDragPathForRow(int buffer_id, int row);
     /**
      * @brief Activates the sidebar line at an index, as Enter would (toggling a section header's collapsed state or firing a widget's on_click).
      * @param id The id of the sidebar containing the line.
@@ -6920,12 +7020,21 @@ public:
      */
     void ActivateSidebarLine(int id, int line_index);
     /**
+     * @brief Fires a sidebar widget's trailing_on_click_ref (its right-aligned per-row action, e.g. a delete "x"), if the line at this index has one.
+     * @param id The id of the sidebar containing the line.
+     * @param line_index The line index whose trailing action to fire.
+     */
+    void ActivateSidebarLineTrailing(int id, int line_index);
+    /**
      * @brief Opens (creating its backing buffer on first use) a sidebar's content as a tabbed
      * buffer in the focused pane, the way mep.open/mep.pane_open opens a file -- see
      * sidebar_pane_buffers_'s own comment.
-     * @param sidebar_id The id of the sidebar to open as a pane buffer.
+     * @param sidebar_id The id of the sidebar to open as a pane buffer, or 0 (default) for
+     * whichever sidebar currently holds keyboard focus (Mode::Sidebar) -- mirrors
+     * ToggleSidebarPopout's own id=0 default, and is what mod1+o (kDefaultMod1Bindings) uses so
+     * the action works uniformly for any docked sidebar regardless of dock edge.
      */
-    void SidebarOpenPane(int sidebar_id);
+    void SidebarOpenPane(int sidebar_id = 0);
     /**
      * @brief Returns whether the given buffer id is a sidebar-view buffer (mep.sidebar_open_pane).
      * @param buffer_id The buffer id to check.
@@ -7551,6 +7660,16 @@ public:
         long long now = static_cast<long long>(std::time(nullptr));
         return std::max<long long>(0, pomodoro_end_epoch_ - now);
     }
+
+    // --- Direnv status-bar widget (kBuiltinDirenv) ---
+    // Whether the active project's direnv-exported environment is
+    // currently applied to this process. Same shape as the active-todo
+    // chip above: Lua owns all the real logic (running `direnv export
+    // json`, mep.setenv-ing the results, reverting them on toggle-off),
+    // this is just the flag its bottom-bar chip reads and the click
+    // handler flips indirectly via mep.direnv_toggle().
+    void SetDirenvActive(bool active) { direnv_active_ = active; }
+    bool DirenvActive() const { return direnv_active_; }
 
     // --- Winbar breadcrumb click hook (Part II Phase 11 click-dispatch gap) ---
     // The per-pane header (main.cpp's DrawPane) renders the active buffer's
@@ -8855,6 +8974,8 @@ private:
 
     std::vector<SidebarInstance> sidebars_;
     int next_sidebar_id_ = 1;
+    // See SetBufferDragResolver/BufferDragPathForRow's own comment above.
+    std::unordered_map<int, int> buffer_drag_resolvers_;
     // Which member id is showing for each non-empty SidebarInstance::tab_group
     // in use -- keyed by the group string itself (not position; a group name
     // is expected to be used on one edge at a time, same as any other Lua-
@@ -8941,6 +9062,7 @@ private:
     long long pomodoro_remaining_secs_ = 0;
     int pomodoro_work_secs_ = 25 * 60;
     int pomodoro_break_secs_ = 5 * 60;
+    bool direnv_active_ = false;
     int winbar_click_ref_ = 0;
     bool zen_mode_ = false;
     int zoomed_pane_id_ = -1;  // see TogglePaneZoom/ZoomedPaneId

@@ -923,6 +923,13 @@ std::unordered_map<std::string, ThemeColor> BuildHighlightGroups(const Palette &
     g["PomodoroIdle"] = Mix(p.fg, p.bg, 0.5f);
     g["PomodoroWork"] = Mix(p.orange, p.bg, 0.3f);
     g["PomodoroBreak"] = Mix(p.cyan, p.bg, 0.3f);
+    // Direnv chip (main.cpp's DrawFrame status line, docked left of
+    // Pomodoro): green while the active project's .envrc is loaded into
+    // this process, gray (PomodoroIdle's own "nothing going on" tone,
+    // not red -- direnv being off isn't an error state the way no active
+    // todo arguably is) otherwise.
+    g["DirenvActive"] = Mix(p.green, p.bg, 0.3f);
+    g["DirenvInactive"] = Mix(p.fg, p.bg, 0.5f);
     // Status bar's mode chip (main.cpp's DrawFrame status line): a filled
     // badge colored by editing mode, toned toward the background the same
     // way as the Todo chip above so StatusLineFg text stays legible on top.
@@ -4868,6 +4875,70 @@ void Editor::SplitTabBottom(int buffer_id, float share) {
     // mode's keystroke forwarding behind" rule as NavigatePaneDirection,
     // then SyncModeToActivePaneBuffer re-enters it if the *new* pane is
     // itself a terminal.
+    if (mode_ == Mode::Terminal) mode_ = Mode::Normal;
+    SyncModeToActivePaneBuffer();
+}
+
+void Editor::SplitTabLeft(int buffer_id, float share) {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
+    if (buffers_[static_cast<size_t>(buffer_id)].deleted) return;
+    if (float_node_) CloseFloatPane();
+    Tab &tab = ActiveTab();
+    if (!tab.root) return;
+
+    auto new_leaf = std::make_unique<SplitNode>();
+    new_leaf->dir = SplitDir::Leaf;
+    new_leaf->pane.id = next_pane_id_++;
+    new_leaf->pane.buffer_id = buffer_id;
+    new_leaf->pane.buffer_tabs = {buffer_id};
+    new_leaf->pane.buffer_tab_index = 0;
+    const int new_pane_id = new_leaf->pane.id;
+
+    // Vertical stacks its children left to right (ComputeRects), so [new
+    // leaf, old root] puts the new pane along the left, spanning the
+    // tab's full height whatever the old root was split into -- the
+    // mirror image of SplitTabBottom's own [old root, new leaf] (Horizontal
+    // stacks top to bottom, so the new pane there goes last/bottom
+    // instead of first/left).
+    auto new_root = std::make_unique<SplitNode>();
+    new_root->dir = SplitDir::Vertical;
+    new_root->children.push_back(std::move(new_leaf));
+    new_root->children.push_back(std::move(tab.root));
+    share = std::clamp(share, kMinPaneShare, 1.0f - kMinPaneShare);
+    new_root->shares = {share, 1.0f - share};
+    tab.root = std::move(new_root);
+
+    tab.active_pane_id = new_pane_id;
+    if (mode_ == Mode::Terminal) mode_ = Mode::Normal;
+    SyncModeToActivePaneBuffer();
+}
+
+void Editor::SplitTabRight(int buffer_id, float share) {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
+    if (buffers_[static_cast<size_t>(buffer_id)].deleted) return;
+    if (float_node_) CloseFloatPane();
+    Tab &tab = ActiveTab();
+    if (!tab.root) return;
+
+    auto new_leaf = std::make_unique<SplitNode>();
+    new_leaf->dir = SplitDir::Leaf;
+    new_leaf->pane.id = next_pane_id_++;
+    new_leaf->pane.buffer_id = buffer_id;
+    new_leaf->pane.buffer_tabs = {buffer_id};
+    new_leaf->pane.buffer_tab_index = 0;
+    const int new_pane_id = new_leaf->pane.id;
+
+    // SplitTabLeft's own [new leaf, old root] reversed -- the new pane
+    // goes last/right instead of first/left.
+    auto new_root = std::make_unique<SplitNode>();
+    new_root->dir = SplitDir::Vertical;
+    new_root->children.push_back(std::move(tab.root));
+    new_root->children.push_back(std::move(new_leaf));
+    share = std::clamp(share, kMinPaneShare, 1.0f - kMinPaneShare);
+    new_root->shares = {1.0f - share, share};
+    tab.root = std::move(new_root);
+
+    tab.active_pane_id = new_pane_id;
     if (mode_ == Mode::Terminal) mode_ = Mode::Normal;
     SyncModeToActivePaneBuffer();
 }
@@ -11437,6 +11508,19 @@ void Editor::PaneMoveBufferTabToNeighbor(const std::string &direction) {
     dst.buffer_id = moved_buffer_id;
 
     if (was_last_tab) ClosePane();
+    // Follow the moved buffer into its new pane -- left alone, focus would
+    // either strand behind in `src` (still a live pane when it keeps other
+    // tabs, just minus this one) or, worse, get reset by ClosePane's own
+    // "whichever leaf CollectLeaves lists first" fallback (usually the
+    // file tree) when `src` closed. Neither lets mod1+Ctrl+hjkl be pressed
+    // repeatedly to keep walking the same buffer further in one direction,
+    // which is the whole point of the gesture. `neighbor_id` (not
+    // neighbor_node, possibly dangling if closing `src` collapsed a
+    // now-single-child ancestor split around it) is still valid: ids are
+    // stable across that move, only tree position/pointers shift.
+    tab.active_pane_id = neighbor_id;
+    if (mode_ == Mode::Terminal) mode_ = Mode::Normal;
+    SyncModeToActivePaneBuffer();
 }
 
 std::unique_ptr<SplitNode> Editor::BuildSpiralLayout(const std::vector<Pane> &panes, bool horizontal_next) const {
@@ -12657,41 +12741,64 @@ int Editor::FindNeighborPaneId(int from_pane_id, const std::string &direction) c
     }
     if (!cur) return -1;
 
+    if (direction != "left" && direction != "right" && direction != "up" && direction != "down") return -1;
     constexpr float kEps = 0.001f;
-    const PaneRect *best = nullptr;
-    float best_overlap = 0, best_distance = 0;
 
+    // (candidate_ok, overlap, distance) for `r` as a neighbor of `cur` in
+    // `direction` -- shared by both passes below so they can't disagree.
+    auto measure = [&](const PaneRect &r, float *overlap, float *distance) -> bool {
+        if (direction == "left") {
+            *overlap = std::min(r.y1, cur->y1) - std::max(r.y0, cur->y0);
+            *distance = cur->x0 - r.x1;
+            return r.x1 <= cur->x0 + kEps;
+        }
+        if (direction == "right") {
+            *overlap = std::min(r.y1, cur->y1) - std::max(r.y0, cur->y0);
+            *distance = r.x0 - cur->x1;
+            return r.x0 >= cur->x1 - kEps;
+        }
+        if (direction == "up") {
+            *overlap = std::min(r.x1, cur->x1) - std::max(r.x0, cur->x0);
+            *distance = cur->y0 - r.y1;
+            return r.y1 <= cur->y0 + kEps;
+        }
+        *overlap = std::min(r.x1, cur->x1) - std::max(r.x0, cur->x0);
+        *distance = r.y0 - cur->y1;
+        return r.y0 >= cur->y1 - kEps;
+    };
+
+    // Nearest edge first, breaking ties by overlap -- not the reverse.
+    // Picking by overlap first (as this used to) means a pane spanning the
+    // *whole* perpendicular axis (e.g. a right-docked sidebar-as-pane
+    // column, full tab height) always outweighs a same-column neighbor
+    // that's merely stacked top/bottom with something else (so only half
+    // that height) -- a middle pane split horizontally (editor above a
+    // terminal, say) would then get skipped entirely: mod1+l from it jumps
+    // straight past to a *distant* full-height column instead of the
+    // immediately adjacent one, and mod1+h from that far column jumps
+    // straight back, so hjkl only ever bounces between the two full-height
+    // edges. Distance-first matches every other pane-navigation
+    // convention (vim's own included): the nearest edge always wins, and
+    // overlap only picks among panes tied on that edge.
+    float min_distance = std::numeric_limits<float>::max();
     for (const auto &r : rects) {
         if (r.pane_id == cur->pane_id) continue;
-        bool candidate_ok = false;
         float overlap = 0, distance = 0;
-        if (direction == "left") {
-            candidate_ok = r.x1 <= cur->x0 + kEps;
-            overlap = std::min(r.y1, cur->y1) - std::max(r.y0, cur->y0);
-            distance = cur->x0 - r.x1;
-        } else if (direction == "right") {
-            candidate_ok = r.x0 >= cur->x1 - kEps;
-            overlap = std::min(r.y1, cur->y1) - std::max(r.y0, cur->y0);
-            distance = r.x0 - cur->x1;
-        } else if (direction == "up") {
-            candidate_ok = r.y1 <= cur->y0 + kEps;
-            overlap = std::min(r.x1, cur->x1) - std::max(r.x0, cur->x0);
-            distance = cur->y0 - r.y1;
-        } else if (direction == "down") {
-            candidate_ok = r.y0 >= cur->y1 - kEps;
-            overlap = std::min(r.x1, cur->x1) - std::max(r.x0, cur->x0);
-            distance = r.y0 - cur->y1;
-        } else {
-            return -1;  // unknown direction
-        }
-        if (!candidate_ok || overlap <= kEps) continue;
+        if (!measure(r, &overlap, &distance) || overlap <= kEps) continue;
+        min_distance = std::min(min_distance, distance);
+    }
+    if (min_distance == std::numeric_limits<float>::max()) return -1;
 
-        bool better = !best || (overlap > best_overlap + kEps) ||
-                      (std::fabs(overlap - best_overlap) <= kEps && distance < best_distance);
-        if (better) {
+    const PaneRect *best = nullptr;
+    float best_overlap = 0;
+    for (const auto &r : rects) {
+        if (r.pane_id == cur->pane_id) continue;
+        float overlap = 0, distance = 0;
+        if (!measure(r, &overlap, &distance) || overlap <= kEps) continue;
+        if (distance > min_distance + kEps) continue;
+        if (!best || overlap > best_overlap + kEps) {
             best = &r;
             best_overlap = overlap;
-            best_distance = distance;
         }
     }
     return best ? best->pane_id : -1;
@@ -16710,6 +16817,24 @@ std::string Editor::SidebarLineWidgetId(int id, int line_index) const {
     return "";
 }
 
+void Editor::SetBufferDragResolver(int buffer_id, int lua_ref) {
+    if (lua_ref == 0) {
+        buffer_drag_resolvers_.erase(buffer_id);
+    } else {
+        buffer_drag_resolvers_[buffer_id] = lua_ref;
+    }
+}
+
+bool Editor::BufferHasDragResolver(int buffer_id) const { return buffer_drag_resolvers_.count(buffer_id) != 0; }
+
+std::string Editor::BufferDragPathForRow(int buffer_id, int row) {
+    auto it = buffer_drag_resolvers_.find(buffer_id);
+    if (it == buffer_drag_resolvers_.end() || !lua_) return "";
+    std::string out;
+    if (!lua_->CallRefWithIntForString(it->second, row, &out)) return "";
+    return out;
+}
+
 void Editor::ActivateSidebarLine(int id, int line_index) {
     std::vector<SidebarLine> lines = FlattenSidebar(id);
     if (line_index < 0 || line_index >= static_cast<int>(lines.size())) return;
@@ -16735,7 +16860,27 @@ void Editor::ActivateSidebarLine(int id, int line_index) {
     }
 }
 
+void Editor::ActivateSidebarLineTrailing(int id, int line_index) {
+    std::vector<SidebarLine> lines = FlattenSidebar(id);
+    if (line_index < 0 || line_index >= static_cast<int>(lines.size())) return;
+    const SidebarLine &line = lines[static_cast<size_t>(line_index)];
+    if (line.kind != SidebarLine::Kind::Widget) return;
+    SidebarInstance *sb = FindSidebarMut(id);
+    if (!sb) return;
+    int ref = sb->sections[static_cast<size_t>(line.section_index)].widgets[static_cast<size_t>(line.widget_index)].trailing_on_click_ref;
+    if (ref != 0 && lua_) lua_->CallRef(ref);
+}
+
 void Editor::SidebarOpenPane(int sidebar_id) {
+    // 0 (mod1+o's own call, kDefaultMod1Bindings) means "whichever sidebar
+    // has keyboard focus right now" -- same id=0 default as
+    // ToggleSidebarPopout, and gated on Mode::Sidebar the same way
+    // DrawSidebars' own focused-highlight is (rather than the raw
+    // focused_sidebar_id_, which can outlive focus after a mod1+hjkl blur --
+    // see that field's own comment) so a stray mod1+o while a pane has
+    // focus is a no-op instead of resurrecting whatever sidebar was last
+    // focused as a duplicate tab.
+    if (sidebar_id == 0) sidebar_id = mode_ == Mode::Sidebar ? focused_sidebar_id_ : 0;
     const SidebarInstance *sb = FindSidebar(sidebar_id);
     if (!sb) return;
     // A synthetic path, never a real file: FindOrCreateBuffer's own
@@ -16751,6 +16896,14 @@ void Editor::SidebarOpenPane(int sidebar_id) {
     int buffer_id = FindOrCreateBuffer(path, nullptr);
     if (buffer_id < 0) return;
     sidebar_pane_buffers_[buffer_id] = sidebar_id;
+    // Refocus an already-open pane showing this sidebar's buffer rather
+    // than stacking a duplicate tab -- the same "focus if already open,
+    // else create" guard kBuiltinGit's mep.git_open_pane and kBuiltinBuffers'
+    // mep.buffers_open_pane each hand-roll with their own captured buffer-id
+    // upvalue, pushed down here so every caller (repeated mod1+o presses,
+    // <leader>ss/tt/tT/aa's own pane-open commands) gets it for free instead
+    // of needing that same bookkeeping variable re-implemented per sidebar.
+    if (FocusPaneShowingBuffer(buffer_id)) return;
     PaneOpenBufferInTab(path);
 }
 
@@ -22285,6 +22438,16 @@ void Editor::SetBufferFilenameForLua(int buffer_id, const std::string &name) {
     buffers_[static_cast<size_t>(buffer_id)].filename = name;
 }
 
+void Editor::SetBufferHideLineNumbers(int buffer_id, bool hide) {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
+    buffers_[static_cast<size_t>(buffer_id)].hide_line_numbers = hide;
+}
+
+void Editor::SetBufferNoWrap(int buffer_id, bool no_wrap) {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
+    buffers_[static_cast<size_t>(buffer_id)].no_wrap = no_wrap;
+}
+
 bool Editor::BufferModifiedForLua(int buffer_id) const {
     if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return false;
     return buffers_[static_cast<size_t>(buffer_id)].modified;
@@ -22408,26 +22571,55 @@ void Editor::DismissAllToasts() { toasts_.clear(); }
 
 void Editor::ClearNotifyHistory() { notify_history_.clear(); }
 
+// Ensures notify_sidebar_id_ exists and rebuilds its sections from
+// notify_history_, without touching its docked open/closed state --
+// shared by ToggleNotifyHistoryPanel's own docking branch and
+// NotifyOpenPane below, so neither has to duplicate the row-building.
+namespace {
+void RefreshNotifySidebarSections(Editor &ed, int sidebar_id, const std::vector<Editor::NotifyEntry> &history) {
+    SidebarSection sec;
+    sec.title = "";  // bare list, no collapsible header
+    for (const Editor::NotifyEntry &e : history) {
+        SidebarWidget w;
+        const char *tag = e.level == Editor::NotifyLevel::Error   ? "[ERROR] "
+                           : e.level == Editor::NotifyLevel::Warn  ? "[WARN] "
+                           : e.level == Editor::NotifyLevel::Debug ? "[DEBUG] "
+                                                                    : "[INFO] ";
+        w.text = std::string(tag) + e.message;
+        w.hl = e.level == Editor::NotifyLevel::Error ? "Error" : e.level == Editor::NotifyLevel::Warn ? "Warn" : "";
+        sec.widgets.push_back(std::move(w));
+    }
+    ed.SetSidebarSections(sidebar_id, {sec});
+}
+}  // namespace
+
 void Editor::ToggleNotifyHistoryPanel() {
     if (notify_sidebar_id_ == 0) notify_sidebar_id_ = CreateSidebar("Notifications", "right", 44);
     if (IsSidebarOpen(notify_sidebar_id_)) {
         CloseSidebar(notify_sidebar_id_);
         return;
     }
-    SidebarSection sec;
-    sec.title = "";  // bare list, no collapsible header
-    for (const NotifyEntry &e : notify_history_) {
-        SidebarWidget w;
-        const char *tag = e.level == NotifyLevel::Error   ? "[ERROR] "
-                           : e.level == NotifyLevel::Warn  ? "[WARN] "
-                           : e.level == NotifyLevel::Debug ? "[DEBUG] "
-                                                            : "[INFO] ";
-        w.text = std::string(tag) + e.message;
-        w.hl = e.level == NotifyLevel::Error ? "Error" : e.level == NotifyLevel::Warn ? "Warn" : "";
-        sec.widgets.push_back(std::move(w));
-    }
-    SetSidebarSections(notify_sidebar_id_, {sec});
+    RefreshNotifySidebarSections(*this, notify_sidebar_id_, notify_history_);
     OpenSidebar(notify_sidebar_id_, true);
+}
+
+int Editor::NotifySidebarId() {
+    if (notify_sidebar_id_ == 0) notify_sidebar_id_ = CreateSidebar("Notifications", "right", 44);
+    return notify_sidebar_id_;
+}
+
+void Editor::RefreshNotifyPane() {
+    int id = NotifySidebarId();
+    RefreshNotifySidebarSections(*this, id, notify_history_);
+    // <leader>nn (kBuiltinActivityBar's mep.notify_open_pane) always ends
+    // undocked-and-paned (unlike ToggleNotifyHistoryPanel, which this
+    // deliberately doesn't call) -- close any currently-docked view first
+    // so re-pressing it never leaves both visible at once. Positioning and
+    // inserting the buffer into a pane is mep.notify_open_pane's own job
+    // (mep.right_sidebar_position_pane + mep.sidebar_open_pane), same
+    // split between "ensure+render" and "place the pane" as
+    // mep.activity_todo_panel/mep.sidebar_open_pane.
+    if (IsSidebarOpen(id)) CloseSidebar(id);
 }
 
 void Editor::RegisterLuaCommand(const std::string &name, int lua_ref) {

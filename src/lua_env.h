@@ -101,6 +101,16 @@ public:
      */
     bool CallRefWithStringForStrings(int ref, const std::string &arg, std::vector<std::string> *out);
     /**
+     * @brief Invokes ref with an integer argument (a buffer row, for Editor::BufferDragPathForRow) and reads
+     * back its return value as a single string, for a "given this row, what path is it?" resolver.
+     * @param ref Registry reference of the function to call.
+     * @param arg Integer argument to pass to the Lua function.
+     * @param out Receives the returned string; left untouched if ref returned nil, something other than a
+     * string, or errored.
+     * @return True on success (out set), false otherwise.
+     */
+    bool CallRefWithIntForString(int ref, long long arg, std::string *out);
+    /**
      * @brief Invokes ref with a string argument and reads back its return value as a list of completion
      * candidates (Phase 22 follow-up: kind/detail/doc alongside each item's text). Each returned array
      * element may be a plain string (kinds/details/docs get a matching "" entry, for a custom completion

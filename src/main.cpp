@@ -1049,6 +1049,21 @@ struct SidebarRowRect {
 };
 std::vector<SidebarRowRect> g_sidebar_row_rects;
 
+// Same idea as SidebarRowRect above, but for an ordinary buffer's own rows
+// (PANE_DRAG_RESTORE) -- captured by DrawPane's row loop, but ONLY for a
+// buffer id Editor::BufferHasDragResolver says has registered a row->path
+// resolver (mep.buffer_set_drag_resolver), so this stays empty (and free)
+// for the overwhelming majority of buffers that never register one.
+// Consumed by UpdatePaneMouseInteraction exactly like g_sidebar_row_rects'
+// own FileDrop-arming loop, just resolving row->path via
+// Editor::BufferDragPathForRow instead of SidebarLineWidgetId.
+struct BufferRowRect {
+    int buffer_id;
+    int row;
+    gfx::Rectangle rect;
+};
+std::vector<BufferRowRect> g_buffer_drag_row_rects;
+
 // One tab-strip entry's rect this frame (SidebarInstance::tabs), captured
 // by DrawSidebarTabStrip from both the docked header and the popout's
 // title row; DispatchChromeClicks turns a click on one into
@@ -2553,6 +2568,16 @@ const char *kDefaultMod1Bindings =
     // a preview column (Editor::ToggleSidebarPopout); a no-op unless a
     // sidebar has focus, so it's safe as a global binding.
     "mep.map_mod1('m', function() mep.sidebar_popout_toggle() end)\n"
+    // mod1+o: open the focused sidebar's content as an ordinary tabbed
+    // buffer in the pane tree (Editor::SidebarOpenPane) -- from there it's
+    // just a normal buffer, splittable/movable/closable/mergeable with
+    // every other mod1 pane chord here, the same "docked panel -> real
+    // pane" escape hatch kBuiltinGit's <leader>gt/mep.git_open_pane and
+    // kBuiltinBuffers' mep.buffers_open_pane already give the left-docked
+    // Git/Buffers sidebars, but wired generically so every sidebar gets it
+    // regardless of which edge it's docked to. Same "no-op unless a
+    // sidebar has focus" safety as mod1+m above.
+    "mep.map_mod1('o', function() mep.sidebar_open_pane() end)\n"
     "mep.map_mod1('n', function() mep.pane_next_buffer() end)\n"
     "mep.map_mod1('p', function() mep.pane_prev_buffer() end)\n"
     "mep.map_mod1('Tab', function() mep.pane_next_buffer() end)\n"
@@ -2885,6 +2910,43 @@ const char *kBuiltinSidebarPopout =
     "  mep.sidebar_preview_code(lines, mep_lsp_filetype(path), title)\n"
     "end\n";
 
+// Shared positioning helper for the right-docked sidebars' own pane-open
+// commands (Structure/Todo/Tests/Notifications/AI Agents, further down --
+// each a separate DoString chunk, so this needs to be a global rather than
+// a local any one of them could just call directly). Unlike kBuiltinGit/
+// kBuiltinBuffers' own left-side stacking (a hand-rolled 2-member fixed
+// preference chain: prefer Buffers over the tree), this is a real ordered
+// stack of every member ever opened -- each newly-opened member appends
+// its own buffer id here, and positioning searches back-to-front for the
+// first still-focusable one to split below, so closing e.g. the *last*
+// member (leaving earlier ones still open) doesn't lose the stack and
+// start a stray new column the next time something reopens: it just finds
+// the new bottom instead. A closed/no-longer-focusable entry is silently
+// skipped (mep.pane_focus_buffer just returns false) rather than needing
+// explicit cleanup when a pane closes.
+const char *kBuiltinRightSidebarPanes =
+    "local mep_right_sidebar_stack = {}\n"
+    // Positions the *focused* pane for a new right-docked-as-pane sidebar
+    // buffer that's about to be inserted via mep.sidebar_open_pane --
+    // callers are expected to have already checked their own buffer isn't
+    // open anywhere (mep.pane_focus_buffer) before calling this, the same
+    // "else split" branch shape as mep.git_open_pane/buffers_open_pane.
+    "function mep.right_sidebar_position_pane()\n"
+    "  for i = #mep_right_sidebar_stack, 1, -1 do\n"
+    "    if mep.pane_focus_buffer(mep_right_sidebar_stack[i]) then\n"
+    "      mep.split_below()\n"
+    "      mep.pane_set_share(0.5)\n"
+    "      return\n"
+    "    end\n"
+    "  end\n"
+    "  mep.pane_split_right(mep.current_buffer(), 0.25)\n"
+    "end\n"
+    "function mep.right_sidebar_note_pane_buf(buffer_id)\n"
+    "  if mep_right_sidebar_stack[#mep_right_sidebar_stack] ~= buffer_id then\n"
+    "    mep_right_sidebar_stack[#mep_right_sidebar_stack + 1] = buffer_id\n"
+    "  end\n"
+    "end\n";
+
 // File tree sidebar (Phase 15): built entirely in Lua atop the Phase 7
 // sidebar widget (mep.sidebar_*), Phase 10 icons, and the new
 // mep.list_dir/fs_* primitives -- the generic sidebar stays feature-free,
@@ -3145,7 +3207,22 @@ const char *kBuiltinFileTree =
     "    else mep_tree_expanded[row.path] = true end\n"
     "    mep.tree_refresh()\n"
     "  else\n"
-    "    mep.focus_top_left_pane()\n"
+    // mep.focus_top_left_pane() (the old docked-sidebar tree's own on_click
+    // behavior) meant "the main editing area" back when the tree lived
+    // outside the pane tree entirely -- now that it's a real pane pinned
+    // to the tab's own left column (mep.tree_open's own comment), that
+    // call resolves right back to the tree pane itself (top-*left*), so
+    // opening a file there replaced the tree buffer in place instead of
+    // landing next to it. mep.nav_pane('right') asks
+    // Editor::FindNeighborPaneId for whichever neighbor overlaps the
+    // most vertically -- for a full-height left column that's always the
+    // *larger* pane on the right, which for the standard default layout
+    // (kBuiltinFileTree's mep.project_default_layout) is the top one
+    // (readme) over the shorter terminal strip below it, matching "prefer
+    // top" with no extra bookkeeping. Content-free fallback when the tree
+    // is the only pane in the tab: nav_pane no-ops and mep.open lands in
+    // the tree's own pane, same as :e in Vim's last remaining window.
+    "    mep.nav_pane('right')\n"
     "    mep.open(row.path)\n"
     "  end\n"
     "end\n"
@@ -3165,24 +3242,48 @@ const char *kBuiltinFileTree =
     "    mep_tree_edit_buf = mep.buffer_new()\n"
     "    mep.buffer_set_on_enter(mep_tree_edit_buf, mep_tree_edit_on_enter)\n"
     "    mep.buffer_set_on_write(mep_tree_edit_buf, mep_tree_edit_on_write)\n"
+    // A row's line number isn't a meaningful position here (unlike a real
+    // file, nothing refers to "line 7 of the tree") -- just visual noise
+    // that also eats into the pane's already-narrow width.
+    "    mep.buffer_set_hide_line_numbers(mep_tree_edit_buf, true)\n"
+    // A long path soft-wrapping onto a second visual row would read as a
+    // second, indented tree entry rather than a continuation of the
+    // first -- row-per-entry only makes sense unwrapped, same reasoning
+    // as the line numbers just above.
+    "    mep.buffer_set_wrap(mep_tree_edit_buf, false)\n"
+    // PANE_DRAG_RESTORE: restores drag-a-file-row-onto-a-pane (lost when
+    // the tree moved off SidebarInstance, see mep.buffer_set_drag_
+    // resolver's own comment, lua_env.cpp) by resolving a dragged row's
+    // buffer index straight back through the same parser :w already
+    // trusts -- `row` arrives 0-based (every buffer-row index in this
+    // codebase is), so `row + 1` is `mep.get_line`'s 1-based row. Only
+    // ever consulted at mouse-down on a row the C++ side already knows
+    // this buffer registered a resolver for, so re-parsing the whole
+    // buffer here (rather than caching) costs nothing noticeable -- a
+    // click, not a per-frame poll.
+    "    mep.buffer_set_drag_resolver(mep_tree_edit_buf, function(row)\n"
+    "      local current = mep_tree_edit_parse_current()\n"
+    "      local r = current[row + 1]\n"
+    "      return r and r.new_path or nil\n"
+    "    end)\n"
     "  end\n"
     "  mep.buffer_set_filename(mep_tree_edit_buf, mep_tree_root)\n"
     "  mep.buffer_set_lines(mep_tree_edit_buf, lines)\n"
     "  mep_tree_edit_apply_highlight()\n"
     "end\n"
-    // vsplit's new pane is focused and placed first (left, for a vertical
-    // split -- SplitCurrentPane's own comment); repurposing *that* one for
-    // the tree, rather than nav-ing to the other side the way a right-
-    // docked split would, is what puts the tree on the left with no
-    // nav_pane call needed.
+    // mep.pane_split_left (Editor::SplitTabLeft) re-roots the *whole tab*
+    // into [tree | everything else], unlike mep.cmd('vsplit') (Editor::
+    // SplitCurrentPane), which only ever splits whichever single leaf
+    // happens to be focused -- if that leaf were some sub-pane of an
+    // already-existing split (e.g. a terminal inside a top/bottom stack),
+    // a plain vsplit there would give the tree only that sub-pane's
+    // height instead of the tab's full height.
     "function mep.tree_open(dir)\n"
     "  mep_tree_root = dir or '.'\n"
     "  mep_tree_expanded[mep_tree_root] = true\n"
     "  mep.tree_refresh()\n"
     "  if not mep.pane_focus_buffer(mep_tree_edit_buf) then\n"
-    "    mep.cmd('vsplit')\n"
-    "    mep.buffer_switch(mep_tree_edit_buf)\n"
-    "    mep.pane_set_share(0.20)\n"
+    "    mep.pane_split_left(mep_tree_edit_buf, 0.20)\n"
     "  end\n"
     "  mep_tree_refresh_ignored()\n"
     "end\n"
@@ -3192,6 +3293,15 @@ const char *kBuiltinFileTree =
     // refocuses it, which is what every other call site actually wants.
     "function mep.tree_toggle()\n"
     "  mep.tree_open(mep_tree_root or '.')\n"
+    "end\n"
+    // mep_tree_edit_buf is a chunk-local upvalue, invisible from other
+    // kBuiltin* DoString chunks (kBuiltinGit's mep.git_open_pane is the
+    // first caller, checking whether the tree is already open so it can
+    // stack its own pane alongside it) -- this is the read-only global
+    // bridge, nil until mep.tree_refresh has created the buffer at least
+    // once.
+    "function mep.tree_buffer_id()\n"
+    "  return mep_tree_edit_buf\n"
     "end\n"
     "mep.command('MepFileTree', function() mep.tree_toggle() end)\n"
     "mep.leader_map('ff', 'Toggle file tree', function() mep.tree_toggle() end)\n"
@@ -3447,6 +3557,122 @@ const char *kBuiltinFileTree =
     "mep.command('MepProjectAdd', function() mep.project_add('.') end)\n"
     "mep.leader_map('po', 'Projects', mep.projects)\n";
 
+// Buffers sidebar: a SidebarInstance that, like git status, can dock in
+// its own screen-edge column OR open paneably stacked with the file
+// tree/git (mep.buffers_open_pane, mirroring mep.git_open_pane below) --
+// mep.buffers_sidebar_toggle is the same "prefer an already-open pane,
+// else stack with whatever paneable dock member is open, else dock"
+// dispatcher git_status_toggle uses. `d` on a row and its trailing "x"
+// both delete that row's buffer (mep.buffer_delete, same safety net as
+// :bd -- refuses a modified buffer rather than silently discarding it);
+// a widget's own `id` is the buffer's real file path when it has one
+// (mep_buffers_sidebar_map then maps that back to the buffer id for
+// on_key/trailing_on_click, since a SidebarWidget only ever carries one
+// string id), which is also exactly what a DOCKED sidebar row needs to be
+// draggable onto a pane already (SidebarLineWidgetId + std::filesystem::
+// is_regular_file, main.cpp's UpdatePaneMouseInteraction) -- a buffer
+// with no real file (a terminal, a scratch buffer, another sidebar's own
+// pane-buffer) falls back to a synthetic 'buf:N' id instead, which simply
+// never matches is_regular_file -- not draggable, same as it not being a
+// real file to drag in the first place.
+const char *kBuiltinBuffers =
+    "local mep_buffers_sidebar_id = nil\n"
+    "local mep_buffers_sidebar_map = {}\n"
+    // mep.sidebar_open_pane's own buffer id, once opened paneably --
+    // mep_git_pane_buf's exact counterpart (kBuiltinGit below), including
+    // the same "focus it if it's already open" and "not the docked
+    // open/close sense of SidebarInstance::open" caveats.
+    "local mep_buffers_pane_buf = nil\n"
+    "function mep.buffers_pane_buffer_id() return mep_buffers_pane_buf end\n"
+    "function mep.buffers_sidebar_refresh()\n"
+    "  local widgets = {}\n"
+    "  local map = {}\n"
+    "  local cur = mep.current_buffer()\n"
+    "  for _, item in ipairs(mep.buffer_list()) do\n"
+    "    local id = tonumber(item.data)\n"
+    "    local path = mep.buffer_filename(id)\n"
+    "    local wid = (path ~= '') and path or ('buf:' .. item.data)\n"
+    "    map[wid] = id\n"
+    "    widgets[#widgets + 1] = {\n"
+    "      id = wid, text = item.display, hl = (id == cur) and 'Add' or nil, current = (id == cur),\n"
+    "      on_click = function() mep.buffer_switch(id) end,\n"
+    "      trailing_icon = ' \xe2\x9c\x95 ',\n"
+    "      trailing_on_click = function() mep.buffer_delete(id, false) mep.buffers_sidebar_refresh() end,\n"
+    "    }\n"
+    "  end\n"
+    "  if #widgets == 0 then widgets[1] = {id = 'empty', text = '(no buffers)'} end\n"
+    "  mep_buffers_sidebar_map = map\n"
+    "  if not mep_buffers_sidebar_id then\n"
+    "    mep_buffers_sidebar_id = mep.sidebar_create('Buffers', 'left', 34)\n"
+    "    mep.sidebar_set_on_key(mep_buffers_sidebar_id, mep.buffers_sidebar_on_key)\n"
+    "  end\n"
+    "  mep.sidebar_set_sections(mep_buffers_sidebar_id, {{id = 'buffers', title = '', collapsed = false, widgets = widgets}})\n"
+    "end\n"
+    "function mep.buffers_sidebar_on_key(k)\n"
+    "  if k ~= 'd' then return end\n"
+    "  local wid = mep.sidebar_cursor_widget_id(mep_buffers_sidebar_id)\n"
+    "  local id = wid and mep_buffers_sidebar_map[wid]\n"
+    "  if not id then return end\n"
+    "  mep.buffer_delete(id, false)\n"
+    "  mep.buffers_sidebar_refresh()\n"
+    "end\n"
+    // Paneable open (mep.git_open_pane's exact counterpart): stacks below
+    // whichever paneable dock member is currently the stack's bottom --
+    // preferring git's own pane (if open) over the tree, so opening
+    // Buffers after both tree AND git are already stacked appends it
+    // below git rather than sandwiching it between the two -- then falls
+    // back to its own 20%-width left column, same as git, if neither is
+    // open.
+    "function mep.buffers_open_pane()\n"
+    "  mep.buffers_sidebar_refresh()\n"
+    "  if mep_buffers_pane_buf and mep.pane_focus_buffer(mep_buffers_pane_buf) then return end\n"
+    "  if mep.git_pane_buffer_id and mep.git_pane_buffer_id() and mep.pane_focus_buffer(mep.git_pane_buffer_id()) then\n"
+    "    mep.split_below()\n"
+    "    mep.pane_set_share(0.5)\n"
+    "  elseif mep.tree_buffer_id() and mep.pane_focus_buffer(mep.tree_buffer_id()) then\n"
+    "    mep.split_below()\n"
+    "    mep.pane_set_share(0.5)\n"
+    "  else\n"
+    "    mep.pane_split_left(mep.current_buffer(), 0.20)\n"
+    "  end\n"
+    "  mep.sidebar_open_pane(mep_buffers_sidebar_id)\n"
+    "  mep_buffers_pane_buf = mep.current_buffer()\n"
+    "  mep.pane_prev_buffer()\n"
+    "  mep.pane_close_buffer()\n"
+    "end\n"
+    "mep.command('MepBuffersPane', mep.buffers_open_pane)\n"
+    // Smart toggle (git_status_toggle's exact counterpart): refocus an
+    // already-open pane; else stack paneably if the tree or git is
+    // already open that way; else dock in its own column.
+    "function mep.buffers_sidebar_toggle()\n"
+    "  if mep_buffers_pane_buf and mep.pane_focus_buffer(mep_buffers_pane_buf) then return end\n"
+    "  local git_pane_open = mep.git_pane_buffer_id and mep.git_pane_buffer_id() ~= nil\n"
+    "  if git_pane_open or mep.tree_buffer_id() then\n"
+    "    mep.buffers_open_pane()\n"
+    "    return\n"
+    "  end\n"
+    "  if mep_buffers_sidebar_id and mep.sidebar_is_open(mep_buffers_sidebar_id) then\n"
+    "    mep.sidebar_close(mep_buffers_sidebar_id)\n"
+    "  else\n"
+    "    mep.buffers_sidebar_refresh()\n"
+    "    mep.sidebar_open(mep_buffers_sidebar_id)\n"
+    "  end\n"
+    "end\n"
+    "mep.command('MepBuffers', mep.buffers_sidebar_toggle)\n"
+    "mep.leader_map('bB', 'Toggle buffers sidebar', mep.buffers_sidebar_toggle)\n"
+    // Kept fresh while open the same way the git panel/Todo re-render on
+    // relevant events instead of only at toggle time -- a buffer opened/
+    // closed/renamed elsewhere should show up without having to close and
+    // reopen this sidebar. Cheap: mep.buffer_list() is already the same
+    // O(open buffers) scan the picker pays on every <leader>bb. Checks
+    // both the docked-open and paneable-open cases -- SidebarInstance::
+    // open (mep.sidebar_is_open) is never true for the paneable path, see
+    // mep_buffers_pane_buf's own comment.
+    "mep.on_buffer_saved(function()\n"
+    "  local docked_open = mep_buffers_sidebar_id and mep.sidebar_is_open(mep_buffers_sidebar_id)\n"
+    "  if docked_open or mep_buffers_pane_buf then mep.buffers_sidebar_refresh() end\n"
+    "end)\n";
+
 // Git integration (Phase 17): gutter hunks (built on mep.diff_lines, the
 // Myers-diff C++ primitive) + hunk nav/stage/reset + a status sidebar.
 // All git-specific logic lives here in Lua; the only new C++ underneath is
@@ -3462,6 +3688,17 @@ const char *kBuiltinGit =
     // blocker" note) -- mep_git_hunks/mep_git_base_lines are now
     // Editor-owned state (git_hunks_/git_base_lines_), not Lua locals.
     "local mep_git_status_sidebar_id = nil\n"
+    // Buffer id of the paneable git-status view (mep.git_open_pane below),
+    // once opened -- lets mep.git_status_toggle refocus it instead of
+    // re-splitting a second copy, and tells it whether the docked-vs-
+    // paned choice was already made this session.
+    "local mep_git_pane_buf = nil\n"
+    // Public read-only bridge to the chunk-local mep_git_pane_buf above --
+    // mep.tree_buffer_id's exact counterpart -- so another paneable dock
+    // member (the Buffers sidebar, kBuiltinBuffers) can check whether git
+    // is currently the stack's bottom and, if so, stack below it instead
+    // of below the tree.
+    "function mep.git_pane_buffer_id() return mep_git_pane_buf end\n"
     // Bumped per refresh so a `git status` still in flight for the
     // previous workspace can't repaint the sidebar after a switch has
     // already kicked off the new one's (each on_exit checks it still
@@ -3971,6 +4208,63 @@ const char *kBuiltinGit =
     "    mep.sidebar_popout_toggle(mep_git_status_sidebar_id)\n"
     "  end\n"
     "end\n"
+    // Docked (mep.git_open_view above) is still the default `<leader>gg` --
+    // full popout support, Tab-cycling between Status/Log/Branches/Stash,
+    // and the live diff/log preview column all only exist there
+    // (Mode::SidebarPane, what mep.sidebar_open_pane below lands on, is
+    // row-navigation only, same as kBuiltinFileTree's tree pane was before
+    // its own move to a real editable buffer -- just without an
+    // equivalent for git status, since there's no text here to *edit*).
+    // This is the paneable alternative purely for the "stack it with the
+    // file tree, then split/move/merge them like any other panes" case:
+    // mep.sidebar_open_pane always lands its buffer in the *focused* pane
+    // (as an added tab, duplicating whatever was already showing there
+    // underneath it) -- stacking it directly alongside the tree pane
+    // specifically (rather than wherever focus already was) needs that
+    // pane created and focused first. mep.split_below (unlike `:split`,
+    // whose new pane always goes *above* the focused one -- vim's own
+    // default) puts the new pane, and hence the focus that lands git
+    // status there instead of back on the tree, *below* it: a newly
+    // opened sidebar joins underneath whatever's already there, the same
+    // top-to-bottom stacking order the right-docked sidebars use, rather
+    // than pushing the existing one down and taking its spot at the top.
+    // Either way, the stray duplicate tab this leaves behind (the new
+    // pane's inherited content, now tab 1 of 2 once git status is added
+    // as tab 2) is cleaned up right after: mep.pane_prev_buffer +
+    // mep.pane_close_buffer walks back to it and closes it, leaving only
+    // the git pane.
+    "function mep.git_open_pane()\n"
+    "  mep_git_ensure()\n"
+    // mep_git_ensure only builds the (empty) sidebar shell -- the docked
+    // path's own first content only ever appears because mep.git_open_view
+    // calls mep.sidebar_set_active_tab, whose on_tab callback (registered
+    // above) happens to call mep.git_refresh as a side effect. This path
+    // never called that, so the pane came up with whatever blank sections
+    // mep.sidebar_create left it with and never actually populated.
+    "  mep.git_refresh()\n"
+    "  if mep_git_pane_buf and mep.pane_focus_buffer(mep_git_pane_buf) then return end\n"
+    // Stacks below whichever paneable dock member is currently the
+    // stack's bottom -- preferring the Buffers sidebar (if it's open that
+    // way) over the tree, so opening git after both the tree AND Buffers
+    // are already stacked appends it below Buffers rather than
+    // sandwiching it between the two. mep.buffers_pane_buffer_id's exact
+    // mirror image (kBuiltinBuffers' own mep.buffers_open_pane).
+    "  if mep.buffers_pane_buffer_id and mep.buffers_pane_buffer_id() and mep.pane_focus_buffer(mep.buffers_pane_buffer_id()) then\n"
+    "    mep.split_below()\n"
+    "    mep.pane_set_share(0.5)\n"
+    "  elseif mep.tree_buffer_id() and mep.pane_focus_buffer(mep.tree_buffer_id()) then\n"
+    "    mep.split_below()\n"
+    "    mep.pane_set_share(0.5)\n"
+    "  else\n"
+    "    mep.pane_split_left(mep.current_buffer(), 0.20)\n"
+    "  end\n"
+    "  mep.sidebar_open_pane(mep_git_status_sidebar_id)\n"
+    "  mep_git_pane_buf = mep.current_buffer()\n"
+    "  mep.pane_prev_buffer()\n"
+    "  mep.pane_close_buffer()\n"
+    "end\n"
+    "mep.command('MepGitStatusPane', mep.git_open_pane)\n"
+    "mep.leader_map('gt', 'Git status (paneable, stacks with the file tree)', mep.git_open_pane)\n"
     "mep.command('MepGitStatus', function() mep.git_open_view('status', false) end)\n"
     "mep.command('MepGitLog', function() mep.git_open_view('log', true) end)\n"
     "mep.command('MepGitBranches', function() mep.git_open_view('branches', true) end)\n"
@@ -3979,7 +4273,23 @@ const char *kBuiltinGit =
     "mep.command('MepGitPush', mep.git_push)\n"
     "mep.command('MepGitPull', mep.git_pull)\n"
     "mep.command('MepGitFetch', mep.git_fetch)\n"
+    // A docked sidebar (mep.git_open_view's own mep.sidebar_open) lives in
+    // its own screen-edge column, entirely separate from the pane tree --
+    // opening it while the file-tree pane is already open would land the
+    // two side by side (docked column, then the pane tree starting with
+    // the tree pane) rather than stacked, which is what "toggle the git
+    // panel" should mean once there's already a paneable sidebar for it to
+    // stack with. So: refocus the paned view if it's already open;
+    // otherwise, paned (stacked with the tree, or with the Buffers
+    // sidebar if that's already stacked there instead) if either is open,
+    // docked (this function's original, still-default behavior) otherwise.
     "function mep.git_status_toggle()\n"
+    "  if mep_git_pane_buf and mep.pane_focus_buffer(mep_git_pane_buf) then return end\n"
+    "  local buffers_pane_open = mep.buffers_pane_buffer_id and mep.buffers_pane_buffer_id() ~= nil\n"
+    "  if buffers_pane_open or mep.tree_buffer_id() then\n"
+    "    mep.git_open_pane()\n"
+    "    return\n"
+    "  end\n"
     "  if mep_git_status_sidebar_id and mep.sidebar_is_open(mep_git_status_sidebar_id) then\n"
     "    mep.sidebar_close(mep_git_status_sidebar_id)\n"
     "  else\n"
@@ -4098,6 +4408,94 @@ const char *kBuiltinGit =
     "end\n"
     "mep.command('MepGitWorkspaces', mep.workspace_git_picker)\n"
     "mep.leader_map('gw', 'Git workspaces', mep.workspace_git_picker)\n";
+
+// Direnv status-bar widget: a chip (main.cpp's DrawEditor, docked between
+// the Ln/Col readout and the Pomodoro chip) showing whether the active
+// project's .envrc has been loaded (via `direnv export json`) into this
+// process's own environment, clickable to toggle it back off/on. Auto-
+// activates whenever a project with an .envrc is opened (mep.on_workspace_
+// changed, plus one immediate call at load time for the project already
+// open at startup -- that hook's own epoch is seeded at registration and
+// so skips it otherwise, same caveat kBuiltinActivityBar's own todo-clock
+// sync documents). mep.setenv/unsetenv (lua_env.cpp) are the only new
+// primitives this needed -- everything else (mep.job_start, io.open,
+// mep_ai_json_decode, mep.on_workspace_changed) already existed.
+const char *kBuiltinDirenv =
+    // Whatever mep.setenv this process's environment for the *last*
+    // activation (root -> {var -> its value just before we overwrote it,
+    // or false if it wasn't set at all}), so deactivating reverts exactly
+    // those vars instead of needing direnv's own "null means unset" export
+    // semantics (which mep_ai_json_decode can't even represent -- a JSON
+    // null decodes to a Lua nil, and a table can't hold a nil value at a
+    // real key, so a var direnv wants *removed* would be indistinguishable
+    // from one it never mentioned at all).
+    "local mep_direnv_applied = {}\n"
+    "local mep_direnv_root = nil\n"
+    "local mep_direnv_active = false\n"
+    "local function mep_direnv_has_envrc(root)\n"
+    "  local f = io.open(root .. '/.envrc', 'r')\n"
+    "  if f then f:close() return true end\n"
+    "  return false\n"
+    "end\n"
+    "local function mep_direnv_deactivate()\n"
+    "  for k, old in pairs(mep_direnv_applied) do\n"
+    "    if old == false then mep.unsetenv(k) else mep.setenv(k, old) end\n"
+    "  end\n"
+    "  mep_direnv_applied = {}\n"
+    "  mep_direnv_active = false\n"
+    "  mep_direnv_root = nil\n"
+    "  mep.direnv_set_active(false)\n"
+    "end\n"
+    // `direnv export json`'s stdout is one compact JSON object -- job_start
+    // delivers it line-buffered (mep.job_start's own doc comment), so this
+    // accumulates every line with no separator rather than assuming
+    // exactly one, and only applies string-valued keys (a null-valued one,
+    // direnv asking to unset a var, can't reach here at all -- see this
+    // whole chunk's header comment).
+    "local function mep_direnv_activate(root)\n"
+    "  if not mep_direnv_has_envrc(root) then\n"
+    "    mep.direnv_set_active(false)\n"
+    "    return\n"
+    "  end\n"
+    "  local out = {}\n"
+    "  mep.job_start({'direnv', 'export', 'json'}, {\n"
+    "    cwd = root,\n"
+    "    on_stdout = function(line) out[#out + 1] = line end,\n"
+    "    on_exit = function(code)\n"
+    "      if code ~= 0 then mep.direnv_set_active(false) return end\n"
+    "      local decoded = mep_ai_json_decode(table.concat(out)) or {}\n"
+    "      local applied = {}\n"
+    "      for k, v in pairs(decoded) do\n"
+    "        if type(v) == 'string' then\n"
+    "          applied[k] = os.getenv(k) or false\n"
+    "          mep.setenv(k, v)\n"
+    "        end\n"
+    "      end\n"
+    "      mep_direnv_applied = applied\n"
+    "      mep_direnv_active = true\n"
+    "      mep_direnv_root = root\n"
+    "      mep.direnv_set_active(true)\n"
+    "    end,\n"
+    "  })\n"
+    "end\n"
+    "function mep.direnv_toggle()\n"
+    "  local ws = mep.workspace_current()\n"
+    "  if not ws then return end\n"
+    "  if mep_direnv_active then mep_direnv_deactivate() else mep_direnv_activate(ws.root) end\n"
+    "end\n"
+    // Re-synced on every workspace/project switch: deactivates first if
+    // the *previous* activation was for a different root (so switching
+    // projects doesn't leak one project's env into another), then
+    // activates the new one if it has its own .envrc and isn't already
+    // active. Also called once directly below (not just registered as a
+    // hook) to cover the project already open when mep starts.
+    "local function mep_direnv_sync(ws)\n"
+    "  if not ws then return end\n"
+    "  if mep_direnv_active and mep_direnv_root ~= ws.root then mep_direnv_deactivate() end\n"
+    "  if not mep_direnv_active then mep_direnv_activate(ws.root) end\n"
+    "end\n"
+    "mep.on_workspace_changed(mep_direnv_sync)\n"
+    "mep_direnv_sync(mep.workspace_current())\n";
 
 // Todoscan (Phase 18): project-wide keyword scan (ripgrep-backed -- no
 // synchronous walk+match fallback for the project-wide scan specifically,
@@ -5242,6 +5640,97 @@ const char *kBuiltinLanguageUiR =
     "  }, silent = TRUE)\n"
     "  if (isTRUE(delete.file)) unlink(files)\n"
     "})\n"
+    // help()/?topic routing to the Help tab (mep.r_ui_open's own comment on
+    // the sidebar itself): a topic with more than one match (e.g.
+    // help(plot), matching both graphics::plot and base::plot) is where
+    // this needs real intervention, not just the pager override above --
+    // confirmed empirically (a real R session, options(menu.graphics)
+    // left at its own default TRUE, capabilities("tcltk")/("X11") both
+    // TRUE under this sandbox's real Xorg server) that stock R's own
+    // disambiguation calls menu(..., graphics = TRUE), which on Unix opens
+    // a *native Tk dialog window* (tcltk::tk_select.list) -- not a text
+    // prompt printed to this PTY at all -- and blocks the R process on
+    // Tcl/Tk's own event loop, completely unresponsive to any further
+    // Console keystrokes, since it was never reading stdin in the first
+    // place. Rather than merely suppressing that (options(menu.graphics =
+    // FALSE) would at least fall back to a real, PTY-readable text menu +
+    // blocking readline()), `help` is overridden outright so the choice
+    // list becomes real widget rows in the Help sidebar instead of
+    // anything printed to the console at all: multiple matches are
+    // stashed in .mep_help_pending and their paths written verbatim (one
+    // per line -- mep_r_ui_render_help, main.cpp, derives each one's
+    // package name and topic straight out of the standard .../PKG/help/
+    // TOPIC path shape, no extra parsing needed here) to
+    // .mep_help_choices_path for mep to pick up next poll tick; a single
+    // match is unaffected (prints immediately, same as stock help(), which
+    // still flows through the pager override above as always). Confirmed
+    // empirically too that a wrapper forwarding `...` straight into
+    // utils::help(...) preserves its non-standard evaluation correctly
+    // (help(plot) still resolves the bare symbol `plot`, not a "no visible
+    // binding" error) -- R's `...`-forwarding keeps a promise's original
+    // expression intact for the callee's own substitute()/match.call() to
+    // see, unlike forwarding through a named parameter (see `?` below,
+    // which needs the match.call()-and-redispatch workaround for exactly
+    // that reason).\n"
+    ".mep_help_choices_path <- \"%s\"\n"
+    ".mep_help_pending <- NULL\n"
+    "help <- function(...) {\n"
+    "  h <- utils::help(...)\n"
+    "  if (length(h) > 1) {\n"
+    "    .mep_help_pending <<- h\n"
+    "    try(writeLines(h, .mep_help_choices_path), silent = TRUE)\n"
+    "  } else {\n"
+    "    .mep_help_pending <<- NULL\n"
+    "    try(writeLines(character(0), .mep_help_choices_path), silent = TRUE)\n"
+    "    if (length(h) >= 1) print(h)\n"
+    "  }\n"
+    "  invisible(h)\n"
+    "}\n"
+    // `?topic` is its own separate function (utils::`?`), not a thin
+    // wrapper around help() -- confirmed empirically that overriding the
+    // global help() alone leaves ?plot completely unaffected, since
+    // utils::`?`'s own bare `help(...)` call inside its body resolves
+    // lexically within the utils *namespace* (always utils::help, never
+    // whatever help happens to mean in .GlobalEnv). Only the single
+    // bare-symbol form (?topic, by far the common case) is handled
+    // directly here, by re-dispatching to the (now-overridden) global
+    // help(); everything else (?"quoted", ?pkg::topic, ?type?topic,
+    // method?generic, the ??double-? easter egg) falls through to the
+    // real utils::`?` completely unchanged. That fallback has to go
+    // through match.call()+eval.parent(), not a direct
+    // utils::`?`(e1, e2) call with the two arguments forwarded by name --
+    // confirmed empirically that forwarding by name (unlike `...`
+    // forwarding, see help() above) loses the original expression
+    // substitute() needs, breaking e.g. ?\"if\" and ?base::mean (both came
+    // back with zero matches once forwarded that way).\n"
+    "`?` <- function(e1, e2) {\n"
+    "  te <- if (missing(e2)) substitute(e1) else substitute(e2)\n"
+    "  if (missing(e2) && is.name(te)) return(help(as.character(te)))\n"
+    "  mc <- match.call()\n"
+    "  mc[[1]] <- quote(utils::`?`)\n"
+    "  eval.parent(mc)\n"
+    "}\n"
+    // Invoked by mep itself (mep.terminal_write into the console, never
+    // typed by the user) when a Help-sidebar choice row is picked.
+    // Reconstructing the class/attributes lost by subsetting (confirmed
+    // empirically: h[i] alone degrades to a plain character vector, so
+    // print()ing it directly would just print the raw file path as text
+    // instead of triggering print.help_files_with_topic's real display
+    // logic) is what lets this go through the exact same single-match
+    // print(h) -> pager -> Help-tab path as an unambiguous topic.\n"
+    ".mep_help_pick <- function(i) {\n"
+    "  if (is.null(.mep_help_pending) || i < 1 || i > length(.mep_help_pending)) return(invisible(NULL))\n"
+    "  h <- .mep_help_pending\n"
+    "  pick <- h[i]\n"
+    "  attr(pick, \"topic\") <- attr(h, \"topic\")\n"
+    "  attr(pick, \"call\") <- attr(h, \"call\")\n"
+    "  attr(pick, \"tried_all_packages\") <- attr(h, \"tried_all_packages\")\n"
+    "  attr(pick, \"type\") <- attr(h, \"type\")\n"
+    "  class(pick) <- \"help_files_with_topic\"\n"
+    "  .mep_help_pending <<- NULL\n"
+    "  try(writeLines(character(0), .mep_help_choices_path), silent = TRUE)\n"
+    "  print(pick)\n"
+    "}\n"
     ".mep_fig_n <- 0\n"
     ".mep_fig_dir <- \"%s\"\n"
     ".mep_last_plot <- NULL\n"
@@ -5462,8 +5951,35 @@ const char *kBuiltinLanguageUiR =
     "  local st = mep_r_ui_state[mep.current_tab_id()]\n"
     "  mep_r_ui_render_textbox(mep_r_ui_data_sidebar_id, st and st.data_text, '(no data yet -- call mep_view(x) in the console)')\n"
     "end\n"
+    // An ambiguous topic (help()'s own comment above, mep_r_ui_init_template)
+    // shows its candidates as real selectable rows instead of the usual
+    // plain text -- one per line of help_choices_text, each just an
+    // absolute help-file path (.../PKG/help/TOPIC, the standard shape
+    // every installed package's help files share regardless of install
+    // prefix); pressing Enter on a row (on_click also fires from keyboard
+    // row-activation, the same as every other sidebar-pane widget in this
+    // file, e.g. mep_r_ui_render_objects' str(name) rows) sends
+    // .mep_help_pick(n) to the console, which prints that match's real
+    // help text -- flowing through the ordinary pager -> help_path path
+    // below like any single-match topic, which is what clears
+    // help_choices_text back to empty and switches this back to plain
+    // text on the next poll tick.\n"
     "local function mep_r_ui_render_help()\n"
     "  local st = mep_r_ui_state[mep.current_tab_id()]\n"
+    "  local choices = st and st.help_choices_text\n"
+    "  if choices and choices:match('%S') then\n"
+    "    local widgets = {}\n"
+    "    for line in choices:gmatch('[^\\n]+') do\n"
+    "      local n = #widgets + 1\n"
+    "      local pkg = line:match('([^/]+)/help/[^/]+$') or '?'\n"
+    "      local topic = line:match('([^/]+)$') or line\n"
+    "      widgets[#widgets + 1] = {id = tostring(n), text = n .. ': ' .. topic .. '  (' .. pkg .. ')',\n"
+    "        on_click = function() mep.terminal_write(st.console_buf, '.mep_help_pick(' .. n .. ')\\n') end}\n"
+    "    end\n"
+    "    if #widgets == 0 then widgets[1] = {id = 'empty', text = '(no choices)'} end\n"
+    "    mep.sidebar_set_sections(mep_r_ui_help_sidebar_id, {{id = 'help_choices', title = 'Choose a package', collapsed = false, widgets = widgets}})\n"
+    "    return\n"
+    "  end\n"
     "  mep_r_ui_render_textbox(mep_r_ui_help_sidebar_id, st and st.help_text, '(no help viewed yet -- try ?topic or help(...) in the console)')\n"
     "end\n"
     "function mep_r_ui_render_all()\n"
@@ -5485,6 +6001,7 @@ const char *kBuiltinLanguageUiR =
     "  local plot_dir = session_dir .. '/figures'\n"
     "  mep.fs_mkdir(plot_dir)\n"
     "  local help_path = session_dir .. '/help.txt'\n"
+    "  local help_choices_path = session_dir .. '/help_choices.txt'\n"
     "  local data_path = session_dir .. '/data.txt'\n"
     "  local objects_path = session_dir .. '/objects.txt'\n"
     "  local packages_path = session_dir .. '/packages.txt'\n"
@@ -5496,13 +6013,13 @@ const char *kBuiltinLanguageUiR =
     "    ph:write('No figure yet.\\nPlot from the R console below (e.g. plot(x) or print(ggplot(...))) and it will appear here automatically.\\n')\n"
     "    ph:close()\n"
     "  end\n"
-    "  for _, p in ipairs({help_path, data_path, objects_path, packages_path, history_path}) do\n"
+    "  for _, p in ipairs({help_path, help_choices_path, data_path, objects_path, packages_path, history_path}) do\n"
     "    local f = io.open(p, 'w')\n"
     "    if f then f:close() end\n"
     "  end\n"
     "  local rf = io.open(init_path, 'w')\n"
     "  if rf then\n"
-    "    rf:write(string.format(mep_r_ui_init_template, help_path, plot_dir, data_path, objects_path, packages_path, history_path))\n"
+    "    rf:write(string.format(mep_r_ui_init_template, help_path, help_choices_path, plot_dir, data_path, objects_path, packages_path, history_path))\n"
     "    rf:close()\n"
     "  end\n"
     "\n"
@@ -5564,9 +6081,9 @@ const char *kBuiltinLanguageUiR =
     "  mep_r_ui_state[tid] = {\n"
     "    figure_pane = bottom_pane, plot_dir = plot_dir, figures = {}, findex = 0, findex_mtime = nil, follow_latest = true,\n"
     "    objects_path = objects_path, packages_path = packages_path, history_path = history_path,\n"
-    "    help_path = help_path, data_path = data_path,\n"
-    "    objects_text = '', packages_text = '', help_text = '', data_text = '', history = {},\n"
-    "    console_buf = console_buf,\n"
+    "    help_path = help_path, help_choices_path = help_choices_path, data_path = data_path,\n"
+    "    objects_text = '', packages_text = '', help_text = '', help_choices_text = '', data_text = '', history = {},\n"
+    "    console_buf = console_buf, help_buf = nil,\n"
     "  }\n"
     "\n"
     "  if not mep_r_ui_data_sidebar_id then mep_r_ui_data_sidebar_id = mep.sidebar_create('Data', 'right', 44) end\n"
@@ -5591,6 +6108,15 @@ const char *kBuiltinLanguageUiR =
     "  mep.sidebar_open_pane(mep_r_ui_packages_sidebar_id)\n"
     "  mep.sidebar_open_pane(mep_r_ui_history_sidebar_id)\n"
     "  mep.sidebar_open_pane(mep_r_ui_help_sidebar_id)\n"
+    // sidebar_open_pane leaves the just-added buffer focused/current (this
+    // whole block's own comment above) -- captured here since there's no
+    // other way to learn a sidebar-pane's buffer id (mep.sidebar_open_pane
+    // itself returns nothing): the poll loop below needs it to jump the
+    // Help tab into focus (mep.jump_to_buffer) whenever help() writes new
+    // content, since it's tabbed together with Data/Objects/Packages/
+    // History in top_pane and so isn't reachable by mep.pane_focus_buffer
+    // alone once some other tab is the one currently showing.\n"
+    "  mep_r_ui_state[tid].help_buf = mep.current_buffer()\n"
     "  for _ = 1, 5 do mep.pane_prev_buffer() end\n"
     "  mep.pane_close_buffer()\n"
     "\n"
@@ -5704,8 +6230,13 @@ const char *kBuiltinLanguageUiR =
     "    if objs and objs ~= st.objects_text then st.objects_text = objs; changed = true end\n"
     "    local pkgs = mep_r_ui_read_file(st.packages_path)\n"
     "    if pkgs and pkgs ~= st.packages_text then st.packages_text = pkgs; changed = true end\n"
+    "    local help_changed = false\n"
     "    local help = mep_r_ui_read_file(st.help_path)\n"
-    "    if help and help ~= st.help_text then st.help_text = help; changed = true end\n"
+    "    if help and help ~= st.help_text then st.help_text = help; changed = true; help_changed = true end\n"
+    "    local help_choices = mep_r_ui_read_file(st.help_choices_path)\n"
+    "    if help_choices and help_choices ~= st.help_choices_text then\n"
+    "      st.help_choices_text = help_choices; changed = true; help_changed = true\n"
+    "    end\n"
     "    local data = mep_r_ui_read_file(st.data_path)\n"
     "    if data and data ~= st.data_text then st.data_text = data; changed = true end\n"
     "    local hist_raw = mep_r_ui_read_file(st.history_path)\n"
@@ -5716,6 +6247,20 @@ const char *kBuiltinLanguageUiR =
     "    end\n"
     "\n"
     "    if changed then mep_r_ui_render_all() end\n"
+    // Unlike the Plot pane (mep_r_ui_figure_goto's own comment on why it
+    // always focuses and immediately restores), a new help() result is
+    // something the user just explicitly asked to go look at -- so this
+    // actually leaves the cursor there, on whichever tab/pane holds
+    // help_buf right now (mep.jump_to_buffer, unlike mep.pane_focus_buffer,
+    // finds it even hidden in top_pane's own tab strip behind Data/
+    // Objects/Packages/History -- FindLeafHoldingBuffer checks every
+    // buffer_tabs entry, not just each pane's single visible buffer_id).
+    // Gated on a real content change for the same reason the Plot poll's
+    // own mtime check is: jumping unconditionally every tick would yank
+    // focus there once a second for as long as help.txt/help_choices.txt
+    // both happen to already be non-empty from an earlier lookup, not just
+    // the one time content actually arrives.\n"
+    "    if help_changed and st.help_buf then mep.jump_to_buffer(st.help_buf) end\n"
     "  end)\n"
     "end\n";
 
@@ -6902,9 +7447,41 @@ const char *kBuiltinStructure =
     "  mep.sidebar_open(mep_structure_sidebar_id)\n"
     "end\n"
     "mep.command('MepStructure', mep.structure_sidebar_open)\n"
-    // <leader>ss / <leader>sS toggles. The sidebar one is the usual
-    // is_open/close-else-open shape; the split one checks whether the
-    // outline buffer is showing in any pane of the active tab
+    // mep.structure_sidebar_open's near-counterpart: lands the same
+    // ensure+render on a pane stacked with the other right-side sidebar
+    // panes (mep.right_sidebar_position_pane) instead of the dock. A true
+    // toggle: re-invoking while already sitting in the pane closes it;
+    // invoking while it's open elsewhere just brings it into view. Unlike
+    // Git/Buffers/Todo/Tests/AI-Agents' own pane content (all globally
+    // scoped), Structure's render step derives its outline from
+    // mep.current_buffer() -- once the pane IS the structure pane itself,
+    // re-rendering would rebuild it from its own synthetic buffer ("No
+    // filetype for this buffer") instead of whatever file it was opened
+    // for, so the self-check below has to come before mep_structure_
+    // sidebar_render() runs, not after (mep.structure_split_toggle's own
+    // jump-else-close avoids the same trap for <leader>sS).
+    "local mep_structure_pane_buf = nil\n"
+    "function mep.structure_open_pane()\n"
+    "  if mep_structure_pane_buf and mep.current_buffer() == mep_structure_pane_buf then\n"
+    "    mep.pane_close_buffer()\n"
+    "    return\n"
+    "  end\n"
+    "  if not mep_structure_sidebar_id then\n"
+    "    mep_structure_sidebar_id = mep.sidebar_create('Structure', 'right', 34)\n"
+    "    mep.sidebar_set_on_preview(mep_structure_sidebar_id, mep_structure_sidebar_on_preview)\n"
+    "  end\n"
+    "  mep_structure_sidebar_render()\n"
+    "  if mep_structure_pane_buf and mep.pane_focus_buffer(mep_structure_pane_buf) then return end\n"
+    "  mep.right_sidebar_position_pane()\n"
+    "  mep.sidebar_open_pane(mep_structure_sidebar_id)\n"
+    "  mep_structure_pane_buf = mep.current_buffer()\n"
+    "  mep.right_sidebar_note_pane_buf(mep_structure_pane_buf)\n"
+    "  mep.pane_prev_buffer()\n"
+    "  mep.pane_close_buffer()\n"
+    "end\n"
+    // <leader>sS still toggles the docked view (used by MepStructure/the
+    // activity-bar icon, kept around for now) -- the split one checks
+    // whether the outline buffer is showing in any pane of the active tab
     // (mep.pane_focus_buffer both answers that and focuses the pane) and
     // closes just that buffer tab (or the pane, when it's the only tab)
     // via mep.pane_close_buffer -- the buffer itself is kept, so the
@@ -6924,7 +7501,11 @@ const char *kBuiltinStructure =
     "    mep.structure_split_open()\n"
     "  end\n"
     "end\n"
-    "mep.leader_map('ss', 'Toggle structure sidebar (treesitter)', mep.structure_sidebar_toggle)\n"
+    // <leader>ss now opens the paneable outline (mergeable/splittable/
+    // closable like any other buffer) instead of docking it -- the docked
+    // view (mep.structure_sidebar_toggle) stays reachable via :MepStructure/
+    // the activity-bar icon for now, but is slated for deprecation.\n"
+    "mep.leader_map('ss', 'Open structure pane (treesitter)', mep.structure_open_pane)\n"
     "mep.leader_map('sS', 'Toggle structure split (buffer-local)', mep.structure_split_toggle)\n"
     // Keeps the sidebar showing whichever pane is currently focused, and
     // now also which item that pane's cursor is on -- mep.current_buffer()
@@ -12362,12 +12943,15 @@ const char *kBuiltinActivityBar =
     // one whose clock is running. Enter (and a click) on a row starts or
     // stops its clock -- see mep.activity_todo_toggle_clock; done/edit/
     // delete/add are the sidebar's own keys (mep.activity_todo_on_key).
-    // Re-rendering an already-open panel keeps focus and the cursor where
-    // they are (mep.sidebar_open only focuses -- and so resets the cursor
-    // -- when the panel was closed), so an action on row N leaves the
-    // cursor on row N, and a refresh triggered by editing TODO.org in a
-    // pane never yanks focus into the sidebar.
-    "function mep.activity_todo_panel()\n"
+    // Split from mep.activity_todo_panel below (which additionally docks
+    // it) so that toggling a clock, adding/deleting a row, or the buffer-
+    // saved poll loop can refresh content without re-docking the sidebar
+    // -- mep.sidebar_set_sections alone is enough to update whichever view
+    // (docked or paneable, mep.activity_todo_open_pane) is currently
+    // showing this same sidebar id, and calling mep.sidebar_open here too
+    // used to re-dock a *second*, docked copy right next to an already-
+    // open paneable one on every clock toggle.
+    "local function mep_activity_todo_render()\n"
     "  local items = mep_activity_todo_load()\n"
     "  local clock = mep_activity_todo_clock()\n"
     "  local widgets = {}\n"
@@ -12388,7 +12972,6 @@ const char *kBuiltinActivityBar =
     "  if #widgets == 0 then\n"
     "    widgets[1] = {id = 'empty', text = '(no TODO headlines in ' .. mep_activity_todo_path() .. ' -- a to add)', on_click = mep.activity_todo_open}\n"
     "  end\n"
-    "  local was_open = mep_activity_todo_sidebar_id ~= nil and mep.sidebar_is_open(mep_activity_todo_sidebar_id)\n"
     "  if not mep_activity_todo_sidebar_id then\n"
     "    mep_activity_todo_sidebar_id = mep.sidebar_create('Todo', 'right', 40)\n"
     "    mep.sidebar_set_on_preview(mep_activity_todo_sidebar_id, mep_activity_todo_on_preview)\n"
@@ -12396,6 +12979,15 @@ const char *kBuiltinActivityBar =
     "  end\n"
     "  mep.sidebar_set_sections(mep_activity_todo_sidebar_id, {{id = 'todos', title = '', collapsed = false, widgets = widgets}})\n"
     "  mep_activity_todo_rendered = mep_activity_todo_key(items, clock)\n"
+    "end\n"
+    // Re-rendering an already-open panel keeps focus and the cursor where
+    // they are (mep.sidebar_open only focuses -- and so resets the cursor
+    // -- when the panel was closed), so an action on row N leaves the
+    // cursor on row N, and a refresh triggered by editing TODO.org in a
+    // pane never yanks focus into the sidebar.
+    "function mep.activity_todo_panel()\n"
+    "  local was_open = mep_activity_todo_sidebar_id ~= nil and mep.sidebar_is_open(mep_activity_todo_sidebar_id)\n"
+    "  mep_activity_todo_render()\n"
     "  mep.sidebar_open(mep_activity_todo_sidebar_id, not was_open)\n"
     "  mep.activity_todo_sync_active()\n"
     "end\n"
@@ -12407,7 +12999,8 @@ const char *kBuiltinActivityBar =
     "local function mep_activity_todo_rerender()\n"
     "  local id = mep_activity_todo_sidebar_id\n"
     "  local row = mep.sidebar_cursor()\n"
-    "  mep.activity_todo_panel()\n"
+    "  mep_activity_todo_render()\n"
+    "  mep.activity_todo_sync_active()\n"
     "  if id and mep.sidebar_is_focused(id) then mep.sidebar_focus_row(id, row) end\n"
     "end\n"
     // The item under the sidebar cursor (widget ids are 1-based item
@@ -12666,9 +13259,76 @@ const char *kBuiltinActivityBar =
     "  end\n"
     "end\n"
     "function mep.notify_panel_toggle() mep.cmd('MepNotifyPanel') end\n"
-    "mep.leader_map('tt', 'Toggle todo sidebar', mep.activity_todo_toggle)\n"
-    "mep.leader_map('tT', 'Toggle tests sidebar', mep.activity_test_toggle)\n"
-    "mep.leader_map('nn', 'Toggle notifications sidebar', mep.notify_panel_toggle)\n"
+    // <leader>tt/tT/nn now toggle the paneable view instead of docking,
+    // stacked with the other right-side sidebar panes (mep.right_sidebar_
+    // position_pane, kBuiltinRightSidebarPanes) instead of wherever the
+    // focused pane happened to be. mep.activity_todo_panel()/
+    // activity_test_panel() each end by docking (mep.sidebar_open), so
+    // these reuse that same ensure+render step and then immediately
+    // undock again right after, before ever drawing a frame in between --
+    // cheaper than teasing dock and render apart inside those two
+    // functions (which a poll loop and a was_open cursor-preserving check
+    // both already depend on). A true toggle: already sitting in the pane
+    // closes it; open elsewhere just brings it into view (refreshed). The
+    // docked view (mep.activity_todo_toggle/activity_test_toggle, still
+    // reachable via the activity-bar icon) is untouched for now.
+    // mep.notify_open_pane is editor.cpp's own Editor::NotifyOpenPane, the
+    // C++-owned Notifications panel's counterpart to the two below.
+    "local mep_activity_todo_pane_buf = nil\n"
+    "function mep.activity_todo_open_pane()\n"
+    "  if mep_activity_todo_pane_buf and mep.current_buffer() == mep_activity_todo_pane_buf then\n"
+    "    mep.pane_close_buffer()\n"
+    "    return\n"
+    "  end\n"
+    "  mep.activity_todo_panel()\n"
+    "  mep.sidebar_close(mep_activity_todo_sidebar_id)\n"
+    "  if mep_activity_todo_pane_buf and mep.pane_focus_buffer(mep_activity_todo_pane_buf) then return end\n"
+    "  mep.right_sidebar_position_pane()\n"
+    "  mep.sidebar_open_pane(mep_activity_todo_sidebar_id)\n"
+    "  mep_activity_todo_pane_buf = mep.current_buffer()\n"
+    "  mep.right_sidebar_note_pane_buf(mep_activity_todo_pane_buf)\n"
+    "  mep.pane_prev_buffer()\n"
+    "  mep.pane_close_buffer()\n"
+    "end\n"
+    "local mep_activity_test_pane_buf = nil\n"
+    "function mep.activity_test_open_pane()\n"
+    "  if mep_activity_test_pane_buf and mep.current_buffer() == mep_activity_test_pane_buf then\n"
+    "    mep.pane_close_buffer()\n"
+    "    return\n"
+    "  end\n"
+    "  mep.activity_test_panel()\n"
+    "  mep.sidebar_close(mep_activity_test_sidebar_id)\n"
+    "  if mep_activity_test_pane_buf and mep.pane_focus_buffer(mep_activity_test_pane_buf) then return end\n"
+    "  mep.right_sidebar_position_pane()\n"
+    "  mep.sidebar_open_pane(mep_activity_test_sidebar_id)\n"
+    "  mep_activity_test_pane_buf = mep.current_buffer()\n"
+    "  mep.right_sidebar_note_pane_buf(mep_activity_test_pane_buf)\n"
+    "  mep.pane_prev_buffer()\n"
+    "  mep.pane_close_buffer()\n"
+    "end\n"
+    // mep.notify_sidebar_id/mep.notify_refresh_pane are editor.cpp's own
+    // Editor::NotifySidebarId/RefreshNotifyPane -- the Notifications panel
+    // is owned entirely in C++, so this wrapper is the Lua-side half of
+    // the exact same shape as the two above.
+    "local mep_notify_pane_buf = nil\n"
+    "function mep.notify_open_pane()\n"
+    "  if mep_notify_pane_buf and mep.current_buffer() == mep_notify_pane_buf then\n"
+    "    mep.pane_close_buffer()\n"
+    "    return\n"
+    "  end\n"
+    "  mep.notify_refresh_pane()\n"
+    "  local id = mep.notify_sidebar_id()\n"
+    "  if mep_notify_pane_buf and mep.pane_focus_buffer(mep_notify_pane_buf) then return end\n"
+    "  mep.right_sidebar_position_pane()\n"
+    "  mep.sidebar_open_pane(id)\n"
+    "  mep_notify_pane_buf = mep.current_buffer()\n"
+    "  mep.right_sidebar_note_pane_buf(mep_notify_pane_buf)\n"
+    "  mep.pane_prev_buffer()\n"
+    "  mep.pane_close_buffer()\n"
+    "end\n"
+    "mep.leader_map('tt', 'Toggle todo pane', mep.activity_todo_open_pane)\n"
+    "mep.leader_map('tT', 'Toggle tests pane', mep.activity_test_open_pane)\n"
+    "mep.leader_map('nn', 'Toggle notifications pane', mep.notify_open_pane)\n"
     // Aggregating entry point: a picker over the four panels rather than
     // a persistent icon column (see the phase's own scope-cut note).
     "function mep.activity_bar_open()\n"
@@ -14428,9 +15088,14 @@ const char *kBuiltinAiTerminal =
     "end\n"
     "mep.command('MepAiAgents', mep.ai_agents_panel)\n"
     "mep.command('aiagents', mep.ai_agents_panel)\n"
-    "mep.leader_map('al', 'AI: agents sidebar', mep.ai_agents_panel)\n"
-    // <leader>aa toggles: closes the sidebar when it's open, otherwise
-    // opens it (same shape as mep.structure_sidebar_toggle).
+    // <leader>aa toggles the docked view: closes the sidebar when it's
+    // open, otherwise opens it (same shape as mep.structure_sidebar_toggle).
+    // Kept for now (:MepAiAgentsToggle, the activity-bar icon), but <leader>
+    // al/aa below both now open the paneable view instead -- same "reuse
+    // ensure+render, dock then immediately undock again" shape as
+    // kBuiltinActivityBar's own mep.activity_todo_open_pane/
+    // activity_test_open_pane, since mep.ai_agents_panel fuses its dock
+    // call the same way those two do.
     "function mep.ai_agents_toggle()\n"
     "  if mep_ai_agents_sidebar_id and mep.sidebar_is_open(mep_ai_agents_sidebar_id) then\n"
     "    mep.sidebar_close(mep_ai_agents_sidebar_id)\n"
@@ -14439,7 +15104,27 @@ const char *kBuiltinAiTerminal =
     "  end\n"
     "end\n"
     "mep.command('MepAiAgentsToggle', mep.ai_agents_toggle)\n"
-    "mep.leader_map('aa', 'AI: toggle agents sidebar', mep.ai_agents_toggle)\n"
+    // <leader>al/aa: true toggle, stacked with the other right-side
+    // sidebar panes (mep.right_sidebar_position_pane) instead of wherever
+    // the focused pane happened to be.
+    "local mep_ai_agents_pane_buf = nil\n"
+    "function mep.ai_agents_open_pane()\n"
+    "  if mep_ai_agents_pane_buf and mep.current_buffer() == mep_ai_agents_pane_buf then\n"
+    "    mep.pane_close_buffer()\n"
+    "    return\n"
+    "  end\n"
+    "  mep.ai_agents_panel()\n"
+    "  mep.sidebar_close(mep_ai_agents_sidebar_id)\n"
+    "  if mep_ai_agents_pane_buf and mep.pane_focus_buffer(mep_ai_agents_pane_buf) then return end\n"
+    "  mep.right_sidebar_position_pane()\n"
+    "  mep.sidebar_open_pane(mep_ai_agents_sidebar_id)\n"
+    "  mep_ai_agents_pane_buf = mep.current_buffer()\n"
+    "  mep.right_sidebar_note_pane_buf(mep_ai_agents_pane_buf)\n"
+    "  mep.pane_prev_buffer()\n"
+    "  mep.pane_close_buffer()\n"
+    "end\n"
+    "mep.leader_map('al', 'Toggle AI agents pane', mep.ai_agents_open_pane)\n"
+    "mep.leader_map('aa', 'Toggle AI agents pane', mep.ai_agents_open_pane)\n"
     "do\n"
     "  local last_poll = 0\n"
     "  mep.on_frame(function()\n"
@@ -15852,8 +16537,32 @@ void DrawSidebars() {
             }
             gfx::Color color = lines[i].hl.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(lines[i].hl);
             DrawUiText(lines[i].text, gfx::Vector2{static_cast<float>(px + 8), ly}, font_size, color);
+            // Right-aligned per-row trailing action (SidebarWidget::
+            // trailing_icon, e.g. the Buffers sidebar's "x" to delete):
+            // drawn flush against the row's right edge and given its own
+            // hit rect, registered as a plain click region so it fires
+            // independently of (and takes precedence over, being on top
+            // of) the row's own on_click/drag/double-click-open handling
+            // below -- `row_w` is shrunk by the icon's width so that
+            // handling's own rect never overlaps it.
+            float row_w = static_cast<float>(pw);
+            if (lines[i].kind == SidebarLine::Kind::Widget) {
+                const SidebarSection &wsec = sb.sections[static_cast<size_t>(lines[i].section_index)];
+                const SidebarWidget &widget = wsec.widgets[static_cast<size_t>(lines[i].widget_index)];
+                if (!widget.trailing_icon.empty()) {
+                    float icon_w = MeasureUiText(widget.trailing_icon, font_size);
+                    gfx::Rectangle icon_rect{static_cast<float>(px) + row_w - icon_w, ly - 1, icon_w, static_cast<float>(line_h)};
+                    bool icon_hovered = PointInRect(gfx::GetMousePosition(), icon_rect);
+                    DrawUiText(widget.trailing_icon, gfx::Vector2{icon_rect.x, ly}, font_size,
+                               ResolveHlGroup(icon_hovered ? "Red" : "Comment"));
+                    int sidebar_id = sb.id;
+                    int row_index = static_cast<int>(i);
+                    RegisterClickRegion(icon_rect, [sidebar_id, row_index] { g_editor.ActivateSidebarLineTrailing(sidebar_id, row_index); });
+                    row_w -= icon_w;
+                }
+            }
             g_sidebar_row_rects.push_back(
-                {sb.id, static_cast<int>(i), gfx::Rectangle{static_cast<float>(px), ly - 1, static_cast<float>(pw), static_cast<float>(line_h)}});
+                {sb.id, static_cast<int>(i), gfx::Rectangle{static_cast<float>(px), ly - 1, row_w, static_cast<float>(line_h)}});
         }
         gfx::EndScissorMode();
     };
@@ -23830,17 +24539,33 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     float label_y = y + (static_cast<float>(header_h) - font_size) / 2.0f;
     // Header controls docked at the far right of the header, on the
     // *visible* buffer only (the active chip of a multi-tab strip, or a
-    // plain single-buffer header), left to right: a '|' vertical-split
-    // button, a '_' horizontal-split button, then the close 'x' (same
-    // nf-fa-times glyph as DrawTabBar's own tab-close button). The split
+    // plain single-buffer header), left to right: a vertical-split button
+    // (nf-cod-split_horizontal -- codicon's name describes the resulting
+    // *pane* arrangement, side by side, but the glyph itself is a
+    // vertical divider bar, confirmed against the actual codicons SVG
+    // source rather than guessed from the name alone), a horizontal-split
+    // button (nf-cod-split_vertical, the mirror image: a horizontal
+    // divider bar, panes stacked), then the close 'x' (same nf-fa-times
+    // glyph as DrawTabBar's own tab-close button). All three drawn at
+    // control_font_size, smaller than the header's own text -- pure icon
+    // buttons read fine smaller than label text does, and it keeps them
+    // from dominating a header that's often mostly filename. The split
     // buttons focus this pane and run :vsplit / :split on it (the new
-    // pane shares this one's buffer); the 'x' runs
-    // PaneCloseBufferTabAndDelete -- closes the tab (and the pane, once
-    // empty) AND :bd's the buffer. The whole strip's rect is carved out of
-    // the chip/header click+drag rects below so a press on any of the
-    // three never arms a TabMove drag or double-fires as a focus click.
-    const std::string vsplit_label = " | ";
-    const std::string hsplit_label = " -- ";  // reads as one long dash, and sits mid-height unlike "_"
+    // pane shares this one's buffer); the 'x' runs PaneCloseBufferTab --
+    // closes this pane's tab (and the pane itself, once its tab strip is
+    // empty) WITHOUT touching the underlying buffer, so the same buffer
+    // stays open in any other pane/tab still showing it (and stays alive,
+    // unsaved changes and all, even if this was the only pane showing it --
+    // deliberately different from :bd/PaneCloseBufferTabAndDelete, which
+    // still exists for callers that do want the buffer gone, e.g. the
+    // Buffers sidebar's own delete action). The whole strip's rect is
+    // carved out of the chip/header click+drag rects below so a press on
+    // any of the three never arms a TabMove drag or double-fires as a
+    // focus click.
+    const float control_font_size = font_size * 0.5f;
+    const float control_label_y = y + (static_cast<float>(header_h) - control_font_size) / 2.0f;
+    const std::string vsplit_label = " " + Utf8FromCodepoint(0xeb56) + " ";
+    const std::string hsplit_label = " " + Utf8FromCodepoint(0xeb57) + " ";
     const std::string close_label = " " + Utf8FromCodepoint(0xf00d) + " ";
     // Run button (RUNBUTTON_PLAN): left of the split controls, shown only
     // for a plain source-file pane (no terminal/image/pdf/office/sheet/
@@ -23855,9 +24580,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                    RunButtonSupportsExtension(LspFiletype(buf.filename));
     const std::string run_label = " " + Utf8FromCodepoint(0xf04b) + " ";  // nf-fa-play
     const float run_w = show_run_button ? MeasureUiText(run_label, font_size) : 0.0f;
-    const float vsplit_w = MeasureUiText(vsplit_label, font_size);
-    const float hsplit_w = MeasureUiText(hsplit_label, font_size);
-    const float close_w = MeasureUiText(close_label, font_size);
+    const float vsplit_w = MeasureUiText(vsplit_label, control_font_size);
+    const float hsplit_w = MeasureUiText(hsplit_label, control_font_size);
+    const float close_w = MeasureUiText(close_label, control_font_size);
     const float controls_w = run_w + vsplit_w + hsplit_w + close_w;
     const gfx::Vector2 header_mouse = gfx::GetMousePosition();
     // Draws the three controls over `bg` filling controls_rect (each
@@ -23870,12 +24595,17 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // rect, for DrawRunButtonMenu to anchor on) on a right-click
         // while hovered -- independent of `action`, which is always a
         // left-click-only g_click_regions registration like every other
-        // header control's.
+        // header control's. `btn_font_size`/`btn_label_y` are required (a
+        // lambda parameter's default can't reference an enclosing-scope
+        // local like font_size/label_y, only the body can capture those)
+        // -- the run button passes font_size/label_y, vsplit/hsplit/close
+        // pass control_font_size/control_label_y instead.
         auto button = [&](const std::string &label, float bw, const char *color, const char *tooltip,
-                            std::function<void()> action, std::function<void(gfx::Rectangle)> on_right_click = nullptr) {
+                            std::function<void()> action, std::function<void(gfx::Rectangle)> on_right_click,
+                            float btn_font_size, float btn_label_y) {
             const gfx::Rectangle rect{bx, controls_rect.y, bw, controls_rect.height};
             const bool hovered = PointInRect(header_mouse, rect);
-            DrawUiText(label, gfx::Vector2{rect.x, label_y}, font_size, ResolveHlGroup(hovered ? "Normal" : color));
+            DrawUiText(label, gfx::Vector2{rect.x, btn_label_y}, btn_font_size, ResolveHlGroup(hovered ? "Normal" : color));
             if (hovered) {
                 g_pane_control_tooltip_text = tooltip;
                 g_pane_control_tooltip_anchor = rect;
@@ -23899,23 +24629,35 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 [pane_id](gfx::Rectangle r) {
                     g_run_button_menu_pane = (g_run_button_menu_pane == pane_id) ? -1 : pane_id;
                     g_run_button_menu_anchor = r;
-                });
+                },
+                font_size, label_y);
         }
         // Focuses this pane, then splits it vertically (side by side).
-        button(vsplit_label, vsplit_w, "Cyan", "Split vertically", [pane_id] {
-            g_editor.FocusPaneById(pane_id);
-            g_editor.RunCommand("vsplit");
-        });
+        button(
+            vsplit_label, vsplit_w, "Cyan", "Split vertically",
+            [pane_id] {
+                g_editor.FocusPaneById(pane_id);
+                g_editor.RunCommand("vsplit");
+            },
+            nullptr, control_font_size, control_label_y);
         // Focuses this pane, then splits it horizontally (stacked).
-        button(hsplit_label, hsplit_w, "Yellow", "Split horizontally", [pane_id] {
-            g_editor.FocusPaneById(pane_id);
-            g_editor.RunCommand("split");
-        });
-        // Focuses this pane, then closes its visible buffer tab and deletes that buffer.
-        button(close_label, close_w, "Red", "Close buffer", [pane_id] {
-            g_editor.FocusPaneById(pane_id);
-            g_editor.PaneCloseBufferTabAndDelete();
-        });
+        button(
+            hsplit_label, hsplit_w, "Yellow", "Split horizontally",
+            [pane_id] {
+                g_editor.FocusPaneById(pane_id);
+                g_editor.RunCommand("split");
+            },
+            nullptr, control_font_size, control_label_y);
+        // Focuses this pane, then closes its visible buffer tab (and the
+        // pane, once empty) -- the buffer itself is left alone, see the
+        // comment above control_font_size.
+        button(
+            close_label, close_w, "Red", "Close pane",
+            [pane_id] {
+                g_editor.FocusPaneById(pane_id);
+                g_editor.PaneCloseBufferTab();
+            },
+            nullptr, control_font_size, control_label_y);
     };
     if (pane.buffer_tabs.size() > 1) {
         // Per-pane buffer-tab strip: more than one buffer open in this pane
@@ -26109,7 +26851,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // (selection highlight, cursor, and the line text itself) rather
     // than threading it through each of them individually.
     float number_w = 0.0f;
-    if (g_editor.ShowLineNumbers() || g_editor.ShowRelativeNumbers()) {
+    if ((g_editor.ShowLineNumbers() || g_editor.ShowRelativeNumbers()) && !buf.hide_line_numbers) {
         int digits = 1;
         for (int n = buf.LineCount(); n >= 10; n /= 10) digits++;
         number_w = static_cast<float>(digits + 1) * g_char_width;
@@ -26128,7 +26870,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // reach Editor::UpdateScrollForPane, which needs the same budget to
     // keep the cursor's own wrapped row from scrolling half off-screen.
     int wrap_cols = 0;
-    if (g_editor.Wrap()) {
+    if (g_editor.Wrap() && !buf.no_wrap) {
         float avail_w = x + w - text_x - kMarginX;
         wrap_cols = std::max(1, static_cast<int>(avail_w / g_char_width));
     }
@@ -26193,6 +26935,65 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     }
     static const std::vector<const Decoration *> kNoDecos;
 
+    // A closed fold's one-line summary (further down) shows its own real
+    // first line rather than a synthetic placeholder, and that line
+    // deserves the same syntax highlighting as it would get if it weren't
+    // folded (org's TODO/DONE keyword coloring included) instead of
+    // reading as flat, uncolored text. This is the same base-text-plus-
+    // recolor drawing the main per-row loop below does for the "unwrapped
+    // single line" case (row_wrap_cols<=0) -- deliberately not shared with
+    // it via a wider refactor, since that loop's own version also has to
+    // handle wrapping, selection, the number gutter and every other
+    // decoration kind (virt text, swatches, underline/bold/italic) a
+    // one-line fold summary doesn't need any of.
+    auto draw_fold_summary_text = [&](int fold_row, float fold_ly) {
+        const std::string &line = buf.lines[static_cast<size_t>(fold_row)];
+        DrawLineFast(line, text_x, fold_ly, g_font_size, ResolveHlGroup("Normal"));
+        auto it = decos_by_row.find(fold_row);
+        const std::vector<const Decoration *> &row_decos = (it != decos_by_row.end()) ? it->second : kNoDecos;
+        for (const Decoration *dp : row_decos) {
+            const Decoration &d = *dp;
+            if (d.whole_line || d.underline || d.bold || d.italic || d.col_end <= d.col_start) continue;
+            if (d.hl_group.empty() && !d.has_fg_color) continue;
+            int a, b;
+            if (d.has_fg_color) {
+                a = std::min(static_cast<int>(line.size()), static_cast<int>(ColumnToByteOffset(line, d.col_start)));
+                b = std::min(static_cast<int>(line.size()), static_cast<int>(ColumnToByteOffset(line, d.col_end)));
+            } else {
+                a = std::min(static_cast<int>(line.size()), d.col_start);
+                b = std::min(static_cast<int>(line.size()), d.col_end);
+            }
+            if (b <= a) continue;
+            gfx::Color c = d.has_fg_color ? gfx::Color{d.fg_color.r, d.fg_color.g, d.fg_color.b, d.fg_color.a}
+                                      : ResolveHlGroup(d.hl_group);
+            int col_a = d.has_fg_color ? d.col_start : a;
+            std::string piece = line.substr(static_cast<size_t>(a), static_cast<size_t>(b - a));
+            if (d.has_fg_color) {
+                gfx::DrawTextEx(g_terminal_font, piece.c_str(), gfx::Vector2{text_x + static_cast<float>(col_a) * g_char_width, fold_ly},
+                           g_font_size, 0, c);
+                continue;
+            }
+            // Per-codepoint, matching DrawLineFast's own icon/symbol
+            // routing (see the main loop's identical comment on this) --
+            // otherwise a recolored span containing an icon glyph would
+            // repaint g_font's '?' fallback over the correctly-drawn base.
+            float dx = text_x + static_cast<float>(col_a) * g_char_width;
+            const char *ps = piece.c_str();
+            int plen = static_cast<int>(piece.size());
+            for (int pi = 0; pi < plen;) {
+                int cp_size = 0;
+                int cp = gfx::GetCodepointNext(&ps[pi], &cp_size);
+                std::string glyph(ps + pi, static_cast<size_t>(cp_size));
+                pi += cp_size;
+                if (cp != ' ' && cp != '\t') {
+                    const gfx::Font &gf = IsIconCodepoint(cp) ? g_icon_font : (IsSymbolCodepoint(cp) ? g_symbol_font : g_font);
+                    gfx::DrawTextEx(gf, glyph.c_str(), gfx::Vector2{dx, fold_ly}, g_font_size, 0, c);
+                }
+                dx += g_char_width;
+            }
+        }
+    };
+
     // Bounded by *visual* slots, not buffer rows: `visible_lines` is how
     // many lines the pane's pixel height fits, but a closed fold collapses
     // however many buffer rows it hides into one of them, so a row-count
@@ -26222,6 +27023,16 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     fold_here = &f;
                 }
             }
+        }
+        // Background fill for the fold's summary row -- the same tint
+        // :set cursorline uses for the current line (not a separate,
+        // more saturated color of its own), just always on for a folded
+        // line instead of only while the cursor sits there. Drawn before
+        // the cursorline check below so the two combine (rather than the
+        // second one painting flatly over the first) when the cursor
+        // actually is inside this (collapsed) range.
+        if (fold_here) {
+            gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(ly), static_cast<int>(w), line_height, ResolveHlGroup("CursorLine"));
         }
 
         // :set wrap (row_wrap_cols>0) -- how many extra visual slots this
@@ -26336,9 +27147,18 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         }
 
         if (fold_here) {
-            int hidden = fold_here->end_row - fold_here->start_row;
-            std::string summary = "+-- " + std::to_string(hidden + 1) + " lines: " + buf.lines[static_cast<size_t>(row)] + " ---";
-            gfx::DrawTextEx(g_font, summary.c_str(), gfx::Vector2{text_x, ly}, g_font_size, 0, ResolveHlGroup("SidebarTitle"));
+            // Reads as the row's own real first line -- syntax-highlighted
+            // the same as it would be unfolded (draw_fold_summary_text,
+            // above the main loop) -- plus a trailing, muted ellipsis
+            // marking it collapsed, rather than a synthetic "+-- N lines:
+            // ... ---" placeholder that looked like just another oddly-
+            // formatted, uncolored line with nothing to set it apart --
+            // the background fill drawn above now carries that job
+            // instead.
+            draw_fold_summary_text(row, ly);
+            const std::string &folded_line = buf.lines[static_cast<size_t>(row)];
+            gfx::DrawTextEx(g_font, " ...", gfx::Vector2{text_x + static_cast<float>(folded_line.size()) * g_char_width, ly},
+                       g_font_size, 0, ResolveHlGroup("Comment"));
             // Fold marker click-to-toggle (Phase 11 click-dispatch gap):
             // mep has no separate statuscolumn widget row, so the fold
             // marker lives in the gutter's own trailing-space column
@@ -26450,6 +27270,15 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 sign_badge = d.sign_badge;
                 sign_priority = d.priority;
             }
+        }
+        // PANE_DRAG_RESTORE: this row's hit-rect for the generic buffer-row
+        // drag-to-open gesture (mep.buffer_set_drag_resolver), gated on
+        // BufferHasDragResolver so every ordinary source buffer (no
+        // resolver registered) skips this entirely -- see
+        // g_buffer_drag_row_rects' own comment.
+        if (g_editor.BufferHasDragResolver(pane.buffer_id)) {
+            g_buffer_drag_row_rects.push_back(
+                {pane.buffer_id, row, gfx::Rectangle{x, ly, w, static_cast<float>(line_height * row_wrap_slots)}});
         }
         if (row_wrap_cols <= 0) {
             DrawLineFast(buf.lines[static_cast<size_t>(row)], text_x, ly, g_font_size, ResolveHlGroup("Normal"));
@@ -27142,6 +27971,7 @@ void DrawTabBar(int y) {
     };
     static const SidebarButton kSidebarButtons[] = {
         {"Files", "MepFileTree", 0xf07b, 0xf07c, "Files", "Yellow"},                       // nf-fa-folder / folder_open
+        {"Buffers", "MepBuffers", 0xf0c5, 0, "Buffers", "Blue"},                            // nf-fa-files_o
         {"Git", "MepGitStatus", 0xe725, 0, "Git: status, log, branches, stash", "Orange"},                 // nf-dev-git_branch
         {"Symbols", "MepSymbols", 0xf121, 0, "Symbols", "Purple"},                         // nf-fa-code
         {"Structure", "MepStructure", 0xf0e8, 0, "Structure", "Cyan"},                   // nf-fa-sitemap
@@ -27504,6 +28334,7 @@ void DrawEditor() {
     g_pane_tab_chip_rects.clear();
     g_pane_border_rects.clear();
     g_sidebar_row_rects.clear();
+    g_buffer_drag_row_rects.clear();
     g_sidebar_panel_rects.clear();
     g_sidebar_tab_rects.clear();
     g_sidebar_group_tab_rects.clear();
@@ -27691,6 +28522,28 @@ void DrawEditor() {
             DrawUiText(chip, gfx::Vector2{chip_rect.x + 7.0f, static_cast<float>(status_y + 3)}, status_font_size,
                        ResolveHlGroup("StatusLineFg"));
             RegisterClickRegion(chip_rect, [] { g_editor.PomodoroTogglePause(); });
+            chip_left = chip_rect.x - 12.0f;
+        }
+        // Direnv chip (kBuiltinDirenv): docked just left of Pomodoro, right
+        // of the Ln/Col readout further down. Shows whether the active
+        // project's direnv-exported environment is currently applied to
+        // this process (a toggle-on/toggle-off icon, not a fixed glyph,
+        // same idiom as Pomodoro's play/pause icon above); clicking it
+        // calls into Lua the same fixed-entry-point way the Todo chip's
+        // click handler does.
+        {
+            bool active = g_editor.DirenvActive();
+            std::string icon = Utf8FromCodepoint(active ? 0xf205 : 0xf204);  // nf-fa-toggle_on / nf-fa-toggle_off
+            std::string chip = icon + "  direnv";
+            float chip_w = MeasureUiText(chip, status_font_size) + 14.0f;
+            gfx::Rectangle chip_rect{chip_left - chip_w, static_cast<float>(status_y + 2), chip_w,
+                                static_cast<float>(status_bar_height - 4)};
+            gfx::DrawRectangleRounded(chip_rect, 0.3f, 4, ResolveHlGroup(active ? "DirenvActive" : "DirenvInactive"));
+            DrawUiText(chip, gfx::Vector2{chip_rect.x + 7.0f, static_cast<float>(status_y + 3)}, status_font_size,
+                       ResolveHlGroup("StatusLineFg"));
+            RegisterClickRegion(chip_rect, [] {
+                if (g_editor.Lua()) g_editor.Lua()->DoString("mep.direnv_toggle()");
+            });
             chip_left = chip_rect.x - 12.0f;
         }
         std::vector<std::pair<std::string, std::string>> widgets;
@@ -28822,6 +29675,30 @@ void UpdatePaneMouseInteraction() {
                     break;
                 }
             }
+            // PANE_DRAG_RESTORE: the same FileDrop arming as the sidebar-row
+            // loop above, for an ordinary buffer's own row (the file tree,
+            // the Buffers sidebar's paneable cousin if it ever gets one,
+            // ...) via its registered drag resolver instead of a
+            // SidebarWidget id -- see g_buffer_drag_row_rects' own comment.
+            // Purely additive: it only ever arms a *potential* drag (real
+            // only once threshold_passed), so it can never interfere with
+            // that buffer's own ordinary click-to-place-cursor/Enter-to-
+            // open handling, which happens on a completely separate path.
+            if (g_pane_drag.kind == PaneDragKind::None) {
+                for (const BufferRowRect &r : g_buffer_drag_row_rects) {
+                    if (!PointInRect(mouse, r.rect)) continue;
+                    const std::string path = g_editor.BufferDragPathForRow(r.buffer_id, r.row);
+                    std::error_code ec;
+                    if (!path.empty() && std::filesystem::is_regular_file(path, ec)) {
+                        g_pane_drag.kind = PaneDragKind::FileDrop;
+                        g_pane_drag.start_pos = mouse;
+                        g_pane_drag.threshold_passed = false;
+                        g_pane_drag.dragged_path = path;
+                        g_pane_drag.target_pane_id = -1;
+                    }
+                    break;
+                }
+            }
         }
     } else if (gfx::IsMouseButtonDown(gfx::MouseButton::Left)) {
         if (!g_pane_drag.threshold_passed) {
@@ -29533,10 +30410,13 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinEditHooks);
     lua->DoString(kBuiltinIcons);
     lua->DoString(kBuiltinSidebarPopout);
+    lua->DoString(kBuiltinRightSidebarPanes);
     lua->DoString(kBuiltinPickerSources);
     lua->DoString(kBuiltinTextTools);
     lua->DoString(kBuiltinFileTree);
+    lua->DoString(kBuiltinBuffers);
     lua->DoString(kBuiltinGit);
+    lua->DoString(kBuiltinDirenv);
     lua->DoString(kBuiltinTodo);
     lua->DoString(kBuiltinLsp);
     lua->DoString(kBuiltinLanguageUi);

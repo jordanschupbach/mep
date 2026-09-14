@@ -766,6 +766,41 @@ int l_pane_split_bottom(lua_State *L) {
     return 0;
 }
 
+// mep.pane_split_left(buffer_id?, share?): opens a new full-height pane
+// along the left of the active tab (Editor::SplitTabLeft), the mirror
+// image of mep.pane_split_bottom above -- same "the current buffer when
+// nil" and "spans the whole tab even when the focused pane sits inside a
+// split" behavior, just along the left edge instead of the bottom.
+/**
+ * @brief Implements mep.pane_split_left(buffer_id?, share?): opens and focuses a full-height left pane in the active tab.
+ * @param L Lua state; optional arg 1 the buffer to show (default: the current buffer), optional arg 2 its width share (default 0.3).
+ * @return Number of values pushed (0).
+ */
+int l_pane_split_left(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    int buffer_id = lua_isnoneornil(L, 1) ? ed->CurrentBufferId() : static_cast<int>(luaL_checkinteger(L, 1));
+    float share = static_cast<float>(luaL_optnumber(L, 2, 0.3));
+    ed->SplitTabLeft(buffer_id, share);
+    return 0;
+}
+
+// mep.pane_split_right(buffer_id?, share?): mep.pane_split_left's exact
+// mirror image (Editor::SplitTabRight) -- same "the current buffer when
+// nil" and "spans the whole tab even when the focused pane sits inside a
+// split" behavior, just along the right edge instead of the left.
+/**
+ * @brief Implements mep.pane_split_right(buffer_id?, share?): opens and focuses a full-height right pane in the active tab.
+ * @param L Lua state; optional arg 1 the buffer to show (default: the current buffer), optional arg 2 its width share (default 0.3).
+ * @return Number of values pushed (0).
+ */
+int l_pane_split_right(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    int buffer_id = lua_isnoneornil(L, 1) ? ed->CurrentBufferId() : static_cast<int>(luaL_checkinteger(L, 1));
+    float share = static_cast<float>(luaL_optnumber(L, 2, 0.3));
+    ed->SplitTabRight(buffer_id, share);
+    return 0;
+}
+
 // mep.vsplit_right(path): opens `path` in a new vertical-split pane to
 // the RIGHT of the focused one (focused afterward) -- the mirror image
 // of a bare `:vsplit path`/mep.cmd('vsplit') (which, matching vim's own
@@ -782,6 +817,21 @@ int l_pane_split_bottom(lua_State *L) {
 int l_vsplit_right(lua_State *L) {
     const char *path = luaL_checkstring(L, 1);
     GetEditor(L)->SplitPaneRight(path);
+    return 0;
+}
+
+// mep.split_below(path?): opens `path` (or duplicates the current buffer,
+// like a bare `:split`, when omitted) in a new horizontal-split pane
+// below the focused one -- the mirror image of mep.vsplit_right above,
+// one axis over.
+/**
+ * @brief Implements mep.split_below(path?): opens a new horizontal split below the focused pane.
+ * @param L Lua state; optional arg 1 the file path to open (default: duplicate the current buffer).
+ * @return Number of values pushed (0).
+ */
+int l_split_below(lua_State *L) {
+    const char *path = luaL_optstring(L, 1, "");
+    GetEditor(L)->SplitPaneBelow(path);
     return 0;
 }
 
@@ -1136,6 +1186,30 @@ int l_buffer_delete(lua_State *L) {
     int id = static_cast<int>(luaL_checkinteger(L, 1));
     bool force = lua_toboolean(L, 2) != 0;
     GetEditor(L)->BufferDeleteForLua(id, force);
+    return 0;
+}
+
+// mep.buffer_set_drag_resolver(buffer_id, fn): registers `fn(row) -> path
+// or nil` as this buffer's "drag a row out onto a pane" hook (see
+// Editor::SetBufferDragResolver's own comment, editor.h) -- e.g. the file
+// tree buffer's row-to-path parser, or the Buffers sidebar's row-to-
+// filename lookup, restoring/extending the drag-and-drop-to-open gesture
+// for buffers that aren't a docked SidebarInstance (which gets it for
+// free from g_sidebar_row_rects/SidebarLineWidgetId already). Pass fn as
+// nil/false to unregister.
+/**
+ * @brief Implements mep.buffer_set_drag_resolver(buffer_id, fn): registers a row->path resolver so a buffer's own rows can be dragged onto a pane to open.
+ * @param L Lua state; arg 1 buffer id, arg 2 the resolver function (or nil/false to unregister).
+ * @return Number of values pushed (0).
+ */
+int l_buffer_set_drag_resolver(lua_State *L) {
+    int id = static_cast<int>(luaL_checkinteger(L, 1));
+    int ref = 0;
+    if (lua_isfunction(L, 2)) {
+        lua_pushvalue(L, 2);
+        ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    }
+    GetEditor(L)->SetBufferDragResolver(id, ref);
     return 0;
 }
 
@@ -1746,6 +1820,49 @@ int l_active_todo_set(lua_State *L) {
     const char *text = luaL_checklstring(L, 1, &len);
     long long start = luaL_optinteger(L, 2, static_cast<lua_Integer>(std::time(nullptr)));
     GetEditor(L)->SetActiveTodo(std::string(text, len), start);
+    return 0;
+}
+
+// mep.setenv(name, value)/mep.unsetenv(name): set or clear a variable in
+// mep's own process environment -- kBuiltinDirenv's way of actually
+// applying (or reverting) a project's `direnv export json` output. A job
+// or terminal spawned afterward (Job's fork()+execvp(), job.cpp) inherits
+// the ambient process environment automatically, so nothing else needs to
+// plumb this through explicitly; anything already running when this is
+// called keeps its own already-inherited copy, same as a real shell.
+/**
+ * @brief Implements mep.setenv(name, value): sets a variable in this process's environment.
+ * @param L Lua state; arg 1 the variable name, arg 2 its value.
+ * @return Number of values pushed (0).
+ */
+int l_setenv(lua_State *L) {
+    const char *name = luaL_checkstring(L, 1);
+    const char *value = luaL_checkstring(L, 2);
+    ::setenv(name, value, 1);
+    return 0;
+}
+
+/**
+ * @brief Implements mep.unsetenv(name): clears a variable from this process's environment.
+ * @param L Lua state; arg 1 the variable name.
+ * @return Number of values pushed (0).
+ */
+int l_unsetenv(lua_State *L) {
+    const char *name = luaL_checkstring(L, 1);
+    ::unsetenv(name);
+    return 0;
+}
+
+// mep.direnv_set_active(active): what the status bar's direnv chip shows
+// -- see Editor::SetDirenvActive.
+/**
+ * @brief Implements mep.direnv_set_active(active): sets the status bar's direnv chip state.
+ * @param L Lua state; arg 1 whether direnv's environment is currently applied.
+ * @return Number of values pushed (0).
+ */
+int l_direnv_set_active(lua_State *L) {
+    bool active = lua_toboolean(L, 1) != 0;
+    GetEditor(L)->SetDirenvActive(active);
     return 0;
 }
 
@@ -2633,6 +2750,10 @@ int l_sidebar_set_sections(lua_State *L) {
                 lua_getfield(L, -1, "wrap_indent");
                 if (lua_isinteger(L, -1)) w.wrap_indent = static_cast<int>(lua_tointeger(L, -1));
                 lua_pop(L, 1);
+                lua_getfield(L, -1, "trailing_icon");
+                if (lua_isstring(L, -1)) w.trailing_icon = lua_tostring(L, -1);
+                lua_pop(L, 1);
+                w.trailing_on_click_ref = RefField(L, -1, "trailing_on_click");
                 w.on_click_ref = RefField(L, -1, "on_click");
                 lua_pop(L, 1);  // the widget table itself
                 sec.widgets.push_back(std::move(w));
@@ -2658,21 +2779,25 @@ int l_sidebar_open(lua_State *L) {
     return 0;
 }
 
-// mep.sidebar_open_pane(id): opens a sidebar's content as an ordinary
+// mep.sidebar_open_pane([id]): opens a sidebar's content as an ordinary
 // tabbed buffer in the focused pane, the way mep.open/mep.pane_open opens
 // a file -- so a sidebar can be split/moved/tab-cycled/merged with mod1's
 // usual pane chords instead of staying docked to a screen edge. See
 // SidebarInstance::tab_group's own comment (editor.h) and
 // Mode::SidebarPane for the alternative this largely superseded for
-// kBuiltinLanguageUiR's own Plot/Data/Help/Objects/Packages/History.
+// kBuiltinLanguageUiR's own Plot/Data/Help/Objects/Packages/History. With
+// `id` omitted (or 0), same "whichever sidebar has focus" default as
+// mep.sidebar_popout_toggle -- what mod1+o (kDefaultMod1Bindings) calls, so
+// every sidebar (left- or right-docked) gets this without needing its own
+// bespoke _open_pane wrapper like kBuiltinGit's mep.git_open_pane.
 /**
- * @brief Implements mep.sidebar_open_pane(id): opens a sidebar's content as a tabbed buffer in the
- * focused pane.
- * @param L Lua state; arg 1 is the sidebar id.
+ * @brief Implements mep.sidebar_open_pane([id]): opens a sidebar's content as a tabbed buffer in
+ * the focused pane.
+ * @param L Lua state; optional arg 1 is the sidebar id (default: whichever sidebar has focus).
  * @return Number of values pushed (0).
  */
 int l_sidebar_open_pane(lua_State *L) {
-    GetEditor(L)->SidebarOpenPane(static_cast<int>(luaL_checkinteger(L, 1)));
+    GetEditor(L)->SidebarOpenPane(static_cast<int>(luaL_optinteger(L, 1, 0)));
     return 0;
 }
 
@@ -2883,6 +3008,35 @@ int l_sidebar_popout_toggle(lua_State *L) {
     return 0;
 }
 
+// mep.notify_sidebar_id()/mep.notify_refresh_pane(): the Notifications
+// panel's ensure+render step, split out the same way mep.activity_todo_
+// panel/mep_activity_todo_sidebar_id are for the Lua-owned sidebars --
+// kBuiltinActivityBar's own mep.notify_open_pane (Lua, <leader>nn) calls
+// these then positions/inserts the pane itself via mep.right_sidebar_
+// position_pane + mep.sidebar_open_pane(id), since this panel is owned
+// entirely in C++ (Editor::RefreshNotifyPane/NotifySidebarId) unlike the
+// Lua-owned Todo/Tests sidebars.
+/**
+ * @brief Implements mep.notify_sidebar_id(): returns the Notifications SidebarInstance id, creating it if needed.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the sidebar id).
+ */
+int l_notify_sidebar_id(lua_State *L) {
+    lua_pushinteger(L, GetEditor(L)->NotifySidebarId());
+    return 1;
+}
+
+/**
+ * @brief Implements mep.notify_refresh_pane(): ensures the Notifications sidebar exists, refreshes
+ * its content, and closes any currently-docked view.
+ * @param L Lua state.
+ * @return Number of values pushed (0).
+ */
+int l_notify_refresh_pane(lua_State *L) {
+    GetEditor(L)->RefreshNotifyPane();
+    return 0;
+}
+
 /**
  * @brief Implements mep.sidebar_popout_close(): collapses the popped-out sidebar (if any) back to its docked panel.
  * @param L Lua state.
@@ -2974,6 +3128,30 @@ int l_buffer_set_filename(lua_State *L) {
     int id = static_cast<int>(luaL_checkinteger(L, 1));
     const char *name = luaL_checkstring(L, 2);
     GetEditor(L)->SetBufferFilenameForLua(id, name);
+    return 0;
+}
+
+/**
+ * @brief Implements mep.buffer_set_hide_line_numbers(id, hide): opts a buffer out of the number/relativenumber gutter.
+ * @param L Lua state; arg 1 is the buffer id, arg 2 whether to hide line numbers.
+ * @return Number of values pushed (0).
+ */
+int l_buffer_set_hide_line_numbers(lua_State *L) {
+    int id = static_cast<int>(luaL_checkinteger(L, 1));
+    bool hide = lua_toboolean(L, 2) != 0;
+    GetEditor(L)->SetBufferHideLineNumbers(id, hide);
+    return 0;
+}
+
+/**
+ * @brief Implements mep.buffer_set_wrap(id, wrap): opts a buffer out of :set wrap's soft-wrap.
+ * @param L Lua state; arg 1 is the buffer id, arg 2 whether soft-wrap stays enabled for it.
+ * @return Number of values pushed (0).
+ */
+int l_buffer_set_wrap(lua_State *L) {
+    int id = static_cast<int>(luaL_checkinteger(L, 1));
+    bool wrap = lua_toboolean(L, 2) != 0;
+    GetEditor(L)->SetBufferNoWrap(id, !wrap);
     return 0;
 }
 
@@ -7923,7 +8101,10 @@ const luaL_Reg kMepFuncs[] = {
     {"current_pane_id", l_current_pane_id},
     {"pane_focus", l_pane_focus},
     {"pane_split_bottom", l_pane_split_bottom},
+    {"pane_split_left", l_pane_split_left},
+    {"pane_split_right", l_pane_split_right},
     {"vsplit_right", l_vsplit_right},
+    {"split_below", l_split_below},
     {"cmd", l_cmd},
     {"open", l_open},
     {"terminal_here", l_terminal_here},
@@ -7970,6 +8151,9 @@ const luaL_Reg kMepFuncs[] = {
     {"activity_todo_archive", l_activity_todo_archive},
     {"activity_todo_move", l_activity_todo_move},
     {"active_todo_set", l_active_todo_set},
+    {"setenv", l_setenv},
+    {"unsetenv", l_unsetenv},
+    {"direnv_set_active", l_direnv_set_active},
     {"activity_test_failure_lines", l_activity_test_failure_lines},
     {"syntax_highlight_fallback", l_syntax_highlight_fallback},
     {"org_highlight_emphasis", l_org_highlight_emphasis},
@@ -8002,6 +8186,7 @@ const luaL_Reg kMepFuncs[] = {
     {"ts_apply_captures", l_ts_apply_captures},
     {"buffer_set_lines", l_buffer_set_lines},
     {"buffer_delete", l_buffer_delete},
+    {"buffer_set_drag_resolver", l_buffer_set_drag_resolver},
     {"buffer_ns_clear", l_buffer_ns_clear},
     {"buffer_deco_add", l_buffer_deco_add},
     {"term_start", l_term_start},
@@ -8010,6 +8195,8 @@ const luaL_Reg kMepFuncs[] = {
     {"buffer_set_on_enter", l_buffer_set_on_enter},
     {"buffer_set_on_write", l_buffer_set_on_write},
     {"buffer_set_filename", l_buffer_set_filename},
+    {"buffer_set_hide_line_numbers", l_buffer_set_hide_line_numbers},
+    {"buffer_set_wrap", l_buffer_set_wrap},
     {"buffer_modified", l_buffer_modified},
     {"fold_create", l_fold_create},
     {"fold_clear_provider", l_fold_clear_provider},
@@ -8082,6 +8269,8 @@ const luaL_Reg kMepFuncs[] = {
     {"sidebar_set_on_preview", l_sidebar_set_on_preview},
     {"sidebar_set_preview", l_sidebar_set_preview},
     {"sidebar_popout_toggle", l_sidebar_popout_toggle},
+    {"notify_sidebar_id", l_notify_sidebar_id},
+    {"notify_refresh_pane", l_notify_refresh_pane},
     {"sidebar_popout_close", l_sidebar_popout_close},
     {"sidebar_is_popout", l_sidebar_is_popout},
     {"read_lines", l_read_lines},
@@ -8420,6 +8609,25 @@ bool LuaEnv::CallRefWithStringForStrings(int ref, const std::string &arg, std::v
         if (lua_isstring(L_, -1)) out->emplace_back(lua_tostring(L_, -1));
         lua_pop(L_, 1);
     }
+    lua_pop(L_, 1);
+    return true;
+}
+
+bool LuaEnv::CallRefWithIntForString(int ref, long long arg, std::string *out) {
+    if (ref == LUA_NOREF || ref == LUA_REFNIL || ref == 0) return false;
+    lua_rawgeti(L_, LUA_REGISTRYINDEX, ref);
+    lua_pushinteger(L_, arg);
+    if (lua_pcall(L_, 1, 1, 0) != LUA_OK) {
+        const char *msg = lua_tostring(L_, -1);
+        if (editor_) editor_->SetStatusMessage(std::string("Lua error: ") + (msg ? msg : "?"));
+        lua_pop(L_, 1);
+        return false;
+    }
+    if (!lua_isstring(L_, -1)) {
+        lua_pop(L_, 1);
+        return false;
+    }
+    *out = lua_tostring(L_, -1);
     lua_pop(L_, 1);
     return true;
 }

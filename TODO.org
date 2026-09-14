@@ -1,4 +1,8 @@
 
+
+* TODO filetree button fix
+The filetree button in the tabbar doesnt toggle the filetree (it just opens it). Can you fix this?
+
 * TODO todo management
   :LOGBOOK:
   CLOCK: [2026-09-14 Mon 10:10]--[2026-09-14 Mon 10:10] =>  0:00

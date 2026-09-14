@@ -10,3 +10,4 @@ reports/
 tmp_assets/
 .cache/
 *.pdf
+README.html

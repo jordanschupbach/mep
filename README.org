@@ -549,7 +549,7 @@ implemented in =src/collab_websocket.cpp=. It keeps transient rooms and
 presence only, forwarding opaque CRDT operations without inspecting document
 contents. Build and run it with:
 
-#+begin_src sh
+#+begin_src sh :eval no
 MEP_COLLAB_ADMIN_TOKEN=replace-with-a-long-secret \
 MEP_COLLAB_PUBLIC_URL=wss://collab.example.com \
 ./build/native/mep-collabd --port 8787

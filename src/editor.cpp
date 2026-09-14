@@ -10892,16 +10892,41 @@ void Editor::HandleTerminalInput() {
     }
 
     if (!sess->exited) {
-        // Auto-repeat for the keys most likely to be held down.
-        if (gfx::IsKeyPressedRepeat(gfx::Key::Backspace)) SendTerminalKey(*sess, gfx::Key::Backspace, 0, false);
-        if (gfx::IsKeyPressedRepeat(gfx::Key::Up)) SendTerminalKey(*sess, gfx::Key::Up, 0, false);
-        if (gfx::IsKeyPressedRepeat(gfx::Key::Down)) SendTerminalKey(*sess, gfx::Key::Down, 0, false);
-        if (gfx::IsKeyPressedRepeat(gfx::Key::Left)) SendTerminalKey(*sess, gfx::Key::Left, 0, false);
-        if (gfx::IsKeyPressedRepeat(gfx::Key::Right)) SendTerminalKey(*sess, gfx::Key::Right, 0, false);
+        // Auto-repeat for the keys most likely to be held down. Must be
+        // *genuine* repeat only, not gfx::IsKeyPressedRepeat() on its own --
+        // that's also true on a key's initial down-transition (it's
+        // IsKeyPressed() || "was already down and repeated"), the same
+        // frame the drain loop above already forwards that same initial
+        // press for any of these five (all are in kForwardedKeys). Without
+        // excluding IsKeyPressed() here, every fresh Backspace/arrow press
+        // in a terminal fires twice -- confirmed empirically (a single
+        // Backspace press deleted 3 characters: twice from this, once more
+        // from the control byte the char-queue loop below used to also see
+        // for it).
+        bool backspace_repeat = gfx::IsKeyPressedRepeat(gfx::Key::Backspace) && !gfx::IsKeyPressed(gfx::Key::Backspace);
+        bool up_repeat = gfx::IsKeyPressedRepeat(gfx::Key::Up) && !gfx::IsKeyPressed(gfx::Key::Up);
+        bool down_repeat = gfx::IsKeyPressedRepeat(gfx::Key::Down) && !gfx::IsKeyPressed(gfx::Key::Down);
+        bool left_repeat = gfx::IsKeyPressedRepeat(gfx::Key::Left) && !gfx::IsKeyPressed(gfx::Key::Left);
+        bool right_repeat = gfx::IsKeyPressedRepeat(gfx::Key::Right) && !gfx::IsKeyPressed(gfx::Key::Right);
+        if (backspace_repeat) SendTerminalKey(*sess, gfx::Key::Backspace, 0, false);
+        if (up_repeat) SendTerminalKey(*sess, gfx::Key::Up, 0, false);
+        if (down_repeat) SendTerminalKey(*sess, gfx::Key::Down, 0, false);
+        if (left_repeat) SendTerminalKey(*sess, gfx::Key::Left, 0, false);
+        if (right_repeat) SendTerminalKey(*sess, gfx::Key::Right, 0, false);
     }
 
     int cp = gfx::GetCharPressed();
     while (cp > 0) {
+        // Tab is deliberately not one of the control bytes HandleKeyPress
+        // (backend_native.cpp) already filters out of this queue -- plain
+        // Insert-mode Tab relies on seeing it here (see that filter's own
+        // comment) -- so it still needs excluding just in this mode: Tab is
+        // in kForwardedKeys above (the drain loop already sends it), and
+        // it's a real key event here, not typed text.
+        if (cp == '\t') {
+            cp = gfx::GetCharPressed();
+            continue;
+        }
         sess->scroll_offset = 0;
         if (!sess->exited) SendTerminalKey(*sess, gfx::Key::None, cp, false);
         cp = gfx::GetCharPressed();
@@ -13715,17 +13740,29 @@ void Editor::HandleNormalInput() {
             bool confirmed = (now - st.down_since) >= kMotionHoldConfirmSec;
             if (confirmed) {
                 st.discard_until = now + kMotionDiscardCooldownSec;
-                bool interval_elapsed = st.last_move_time_ < 0.0 || (now - st.last_move_time_) >= kMotionRepeatIntervalSec;
-                if (no_pending_state_now && !ctrl && !shift && interval_elapsed) {
-                    st.last_move_time_ = now;
-                    HandleNormalChar(static_cast<int>(kMotionKeys[i].second), no_pending_state_now);
-                    if (mode_ != Mode::Normal) return;  // key switched modes
+                // A queued real-repeat move already landed for this exact
+                // hold (see queue_moved_since_down_'s own comment) --
+                // that already satisfies this transition's "due" move, so
+                // consume the flag and skip firing again here instead of
+                // double-counting; normal interval pacing resumes next
+                // frame since the flag only ever suppresses one fire.
+                if (st.queue_moved_since_down_) {
+                    st.queue_moved_since_down_ = false;
+                } else {
+                    bool interval_elapsed =
+                        st.last_move_time_ < 0.0 || (now - st.last_move_time_) >= kMotionRepeatIntervalSec;
+                    if (no_pending_state_now && !ctrl && !shift && interval_elapsed) {
+                        st.last_move_time_ = now;
+                        HandleNormalChar(static_cast<int>(kMotionKeys[i].second), no_pending_state_now);
+                        if (mode_ != Mode::Normal) return;  // key switched modes
+                    }
                 }
             }
         } else if (st.down_since >= 0.0) {
             if ((now - st.down_since) >= kMotionHoldConfirmSec) st.discard_until = now + kMotionDiscardCooldownSec;
             st.down_since = -1.0;
             st.last_move_time_ = -1.0;
+            st.queue_moved_since_down_ = false;
         }
     }
 
@@ -13746,14 +13783,23 @@ void Editor::HandleNormalInput() {
         // shifted (H/L), or counted/operator-pending never enters this
         // window at all and falls through to the normal handling below,
         // completely unaffected.
+        int motion_idx = -1;
         if (no_pending_state && !ctrl && !shift) {
-            int idx = cp == 'h' ? 0 : cp == 'j' ? 1 : cp == 'k' ? 2 : cp == 'l' ? 3 : -1;
-            if (idx >= 0 && now < motion_repeat_[idx].discard_until) {
+            motion_idx = cp == 'h' ? 0 : cp == 'j' ? 1 : cp == 'k' ? 2 : cp == 'l' ? 3 : -1;
+            if (motion_idx >= 0 && now < motion_repeat_[motion_idx].discard_until) {
                 cp = gfx::GetCharPressed();
                 continue;
             }
         }
         HandleNormalChar(cp, no_pending_state);
+        // See queue_moved_since_down_'s own comment (editor.h): a queued
+        // real-repeat notification processed here can land on an earlier
+        // frame than the one where the fast path above first considers
+        // this same hold "confirmed" -- flagging it lets that later
+        // frame's fast path recognize this tap already moved and skip
+        // its own otherwise-unconditional first fire, instead of
+        // double-counting one physical tap as two moves.
+        if (motion_idx >= 0) motion_repeat_[motion_idx].queue_moved_since_down_ = true;
         if (mode_ != Mode::Normal) break;  // key switched modes mid-loop
         cp = gfx::GetCharPressed();
     }

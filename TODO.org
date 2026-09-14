@@ -18,11 +18,14 @@
   :LOGBOOK:
   CLOCK: [2026-09-05 Sat 21:28]--[2026-09-05 Sat 21:47] =>  0:19
   :END:
-* TODO add notification to workspace tab in tabbar for finished ai (should be red)
-  :LOGBOOK:
-  CLOCK: [2026-09-14 Mon 10:46]--[2026-09-14 Mon 10:46] =>  0:00
-  :END:
-* TODO Add platform native file-open popup (instead of :e , the current behavior)
+* TODO ai tabbar notification
+  Add a notification to the tabbar workspace tab when finishing tasks or being
+  asked to interact. I'd like the workspace tab background to be red (if not an
+  active workspace)
+
+* TODO Native file open popup
+  Add platform native file-open popup (instead of :e , the current behavior) when using File->Open
+
 * TODO Add compiler explorer to c++ ui
 * TODO add hex exploration to c++ ui
 * TODO Fix dap debug ui

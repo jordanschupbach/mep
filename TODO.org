@@ -43,7 +43,7 @@ Can you implement this?
   everywhere). Can you implement gaps betwen panes and set the gap width to be
   5 pixels?
 
-* TODO Fix agents to be local to a mep instance. 
+* DONE Fix agents to be local to a mep instance. :ARCHIVE:
 
   Currently, it seems like while working on MEP, I can't have agents running
   because it might need to close down MEP (and hence the agents that are
@@ -58,6 +58,29 @@ Can you implement this?
   input. Can you implement these? This way, I can have multiple agents running
   and working on MEP at the same time, and they won't interfere with each
   other.
+
+  - Each running mep instance already binds its own agent-control socket
+    (`~/.local/share/mep/agent-sockets/<pid>.sock`) and exports it as
+    `MEP_AGENT_SOCKET` into any terminal it spawns, so a `mep-mcp` process
+    started from inside an AI terminal always drives the instance it was
+    launched from, never a sibling window -- multiple agents/mep windows
+    already don't contend for or cross-talk over a shared server.
+  - What was missing was telling the agent this, and warning it about the
+    real failure mode: an agent developing mep itself runs as a child (in
+    the process group) of the very instance it would want to rebuild and
+    test, so quitting/restarting that instance to pick up a change kills
+    the agent's own session along with it (`JobManager::ShutdownAll` SIGTERMs
+    the whole process group on shutdown). Added a new "developing mep
+    itself" section to `mep.opt.ai_terminal_instructions`
+    (`kBuiltinAiTerminal`, `src/main.cpp`) and `MEP_AGENT_API.md` telling
+    the agent to identify its own containing pid (`mep_session_info`'s
+    `pid`, or its own `MEP_AGENT_SOCKET`'s `<pid>.sock` filename), never
+    close/kill/restart it, and instead launch a separate `setsid`-detached
+    instance to test changes against and drive it via its own socket.
+  - Also strengthened the UI-automation section to say explicitly: prefer
+    the structured `mep_*` editor-state tools for any mep instance, and
+    reach for `mep_mouse_*`/`mep_key_press`/`mep_screenshot` only when the
+    task is specifically about testing mouse/keyboard/rendering input.
 
 * TODO Add a start agent binding to the todo sidebar
 

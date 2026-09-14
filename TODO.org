@@ -38,15 +38,6 @@
   down the images list, and I can also go up and down the image list with h and l.
   Can you implement this?
 
-* TODO Org file robot animation
-  When using the agents to complete a todo item in an org mode document (i.e.
-  with gL), I'd like it to activate a little animation at the end of the todo
-  item. Here, I'd like a robot icon, with a ... that animates . and then .. and
-  then ... and back to . and repeat. Can you implement this behavior? I'd like
-  the same animation in the todo sidebar (currently just a robot icon). I'd like
-  this to be triggered in both, whether starting in the sidebar or in the
-  TODO.org file.
-
 * DONE Add a direnv widget to the bottom bar :ARCHIVE:
   I'd like a direnv widget in the bottom bar that shows the current direnv
   status (active/inactive) and allows me to toggle it on/off with a click.
@@ -164,4 +155,41 @@
     the structured `mep_*` editor-state tools for any mep instance, and
     reach for `mep_mouse_*`/`mep_key_press`/`mep_screenshot` only when the
     task is specifically about testing mouse/keyboard/rendering input.
+
+* DONE Org file robot animation :ARCHIVE:
+  When using the agents to complete a todo item in an org mode document (i.e.
+  with gL), I'd like it to activate a little animation at the end of the todo
+  item. Here, I'd like a robot icon, with a ... that animates . and then .. and
+  then ... and back to . and repeat. Can you implement this behavior? I'd like
+  the same animation in the todo sidebar (currently just a robot icon). I'd like
+  this to be triggered in both, whether starting in the sidebar or in the
+  TODO.org file.
+
+  - Added `Decoration::virt_robot_icon` (editor.h) so a buffer decoration's
+    `virt_text` can be prefixed with the same hand-drawn `DrawRobotIcon`
+    glyph the Todo sidebar already overlays, exposed through
+    `mep.deco_add`/`mep.buffer_deco_add`'s `virt_robot_icon` option
+    (lua_env.cpp) and drawn in `DrawPane`'s decoration loop (main.cpp)
+    just before `virt_text`, shifting it right by the icon's own width.
+  - Added a shared `mep_todo_agent_dots()` Lua helper (kBuiltinActivityBar,
+    main.cpp) cycling ". -> .. -> ... -> .. -> repeat" off `mep.now()`,
+    used by both the Todo sidebar's row text (after the existing robot
+    mark) and a new `mep_activity_todo_decorate_buffer()` that finds
+    TODO.org's own open buffer (by filename, across workspaces) and adds
+    a `virt_text_eol` + `virt_robot_icon` decoration on each headline with
+    a live agent -- so the animation shows up in-buffer too, wherever the
+    agent was started from ('L' in the sidebar or 'gL' on the headline).
+  - `mep_activity_todo_key` now folds the dots' own phase in whenever any
+    row is agent-live, and the sidebar's poll interval tightened from
+    0.5s to 0.15s (still just a cheap string compare when nothing
+    changed) so the animation reads as smooth rather than jumpy; a
+    separate 0.15s poll (gated on `mep.activity_todo_agents` being
+    non-empty) drives the in-buffer decoration independently of sidebar
+    visibility.
+  - Verified by spawning a separate `setsid`-detached mep instance
+    (native-GUI build, real X11/GPU in this sandbox) and driving it over
+    its own raw agent-control socket: injected a `virt_robot_icon`
+    decoration on a headline and a matching sidebar row directly, and
+    confirmed both render the robot glyph followed by the animated dots
+    with correct spacing, across all four dot-count states.
 

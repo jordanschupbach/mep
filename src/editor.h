@@ -395,6 +395,17 @@ struct Decoration {
     std::string virt_text;
     std::string virt_text_hl;
     bool virt_overlay = false;
+    // Prefixes virt_text with the same hand-drawn robot glyph the Todo
+    // sidebar overlays over SidebarLine::robot_icon_col (DrawRobotIcon,
+    // main.cpp) -- for an org headline an AI agent is actively working on
+    // (kBuiltinActivityBar's mep.activity_todo_start_agent), so `virt_text`
+    // itself only needs to carry the animated "."/".."/"..."/".." dots
+    // text, not a font substitute for a glyph the embedded icon font
+    // doesn't have (DrawRobotIcon's own comment explains why). Drawn just
+    // before virt_text at the same anchor (col_start, or just past the
+    // row's own end when virt_text_eol is set), which is then shifted
+    // right by the icon's own width.
+    bool virt_robot_icon = false;
     // Anchors virt_text to just past the *end of this row's own text*
     // (buf.lines[row].size()) instead of col_start -- for an annotation
     // that describes the whole line (e.g. a diagnostic message) rather

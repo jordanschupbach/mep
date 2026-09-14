@@ -1411,6 +1411,9 @@ Decoration ReadDecorationTable(lua_State *L, int idx) {
     lua_getfield(L, idx, "virt_text_eol");
     d.virt_text_eol = lua_toboolean(L, -1);
     lua_pop(L, 1);
+    lua_getfield(L, idx, "virt_robot_icon");
+    d.virt_robot_icon = lua_toboolean(L, -1);
+    lua_pop(L, 1);
     lua_getfield(L, idx, "sign");
     if (lua_isstring(L, -1)) d.sign = lua_tostring(L, -1);
     lua_pop(L, 1);

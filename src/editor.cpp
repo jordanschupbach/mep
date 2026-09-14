@@ -23398,10 +23398,19 @@ void Editor::LoadFile(const std::string &path, bool force_text) {
 
 void Editor::DropUnusedInitialBuffer() {
     if (buffers_.size() < 2 || CurPane().buffer_id == 0) return;
-    const Buffer &first = buffers_[0];
-    if (!first.filename.empty() || first.modified || first.lines.size() != 1 || !first.lines[0].empty()) return;
-    buffers_.erase(buffers_.begin());
-    CurPane().buffer_id--;
+    Buffer &first = buffers_[0];
+    if (first.deleted || !first.filename.empty() || first.modified || first.lines.size() != 1 || !first.lines[0].empty()) return;
+    // Soft-delete (Buffer::deleted's own comment) rather than erase+shift:
+    // a directory argument's on_directory_open hook (kBuiltinFileTree's
+    // mep.tree_open_in_pane) runs synchronously inside the LoadFile call
+    // just above this function's own call site (main()), and caches the
+    // buffer id it creates in a Lua upvalue (mep_tree_edit_buf) before this
+    // function ever runs -- so "narrow, startup-only, nothing has cached an
+    // id yet" doesn't actually hold here. Erasing shifted every later
+    // buffer down by one without any way to patch that cached id, silently
+    // pointing the tree's own bookkeeping at the wrong buffer (or an
+    // out-of-range one) for the rest of the process.
+    first.deleted = true;
 }
 
 // --- Menu-facing API -------------------------------------------------------

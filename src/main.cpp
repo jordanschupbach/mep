@@ -3374,12 +3374,19 @@ const char *kBuiltinFileTree =
     "  mep_tree_refresh_ignored()\n"
     "end\n"
     "mep.set_on_directory_open(mep.tree_open_in_pane)\n"
-    // No longer literally closes the tree pane on a second press (a real
-    // pane, unlike the old docked sidebar, can't be hidden without
-    // disturbing the rest of the split layout) -- it just (re)opens or
-    // refocuses it, which is what every other call site actually wants.
+    // Mirrors mep.structure_split_toggle's pattern for a real (non-sidebar)
+    // pane: if the tree buffer is already showing in some pane of the
+    // active tab, mep.pane_focus_buffer both finds it and focuses it, so a
+    // second press closes just that buffer tab (or the pane, if it's the
+    // only tab) via mep.pane_close_buffer -- the buffer itself is kept, so
+    // reopening reuses it and its expanded-dir state. Otherwise (re)opens
+    // or refocuses it same as before.
     "function mep.tree_toggle()\n"
-    "  mep.tree_open(mep_tree_root or '.')\n"
+    "  if mep_tree_edit_buf and mep.pane_focus_buffer(mep_tree_edit_buf) then\n"
+    "    mep.pane_close_buffer()\n"
+    "  else\n"
+    "    mep.tree_open(mep_tree_root or '.')\n"
+    "  end\n"
     "end\n"
     // mep_tree_edit_buf is a chunk-local upvalue, invisible from other
     // kBuiltin* DoString chunks (kBuiltinGit's mep.git_open_pane is the

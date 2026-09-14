@@ -712,13 +712,18 @@ struct Buffer {
     // `:bd`/`:bdelete` (Editor::BufferDelete) -- soft-delete, not a real
     // erase from buffers_: buffer_id is treated as a stable index
     // everywhere in this codebase (panes, terminals_, agent-rpc
-    // connections' cursor_buffer_id, ...), and only one place
-    // (DropUnusedInitialBuffer, a narrow startup-only case) ever actually
-    // shifts it -- reindexing every one of those sites for a general
-    // "delete any buffer at any time" command would be exactly the kind
-    // of invasive, easy-to-miss-a-site change that class of bug comes
-    // from. A deleted buffer is closed out of every pane/tab currently
-    // showing it (like `:bd` in real vim) and hidden from buffer_list/
+    // connections' cursor_buffer_id, ...). DropUnusedInitialBuffer used to
+    // be the one place that erased-and-shifted instead (a "narrow,
+    // startup-only" case, or so the reasoning went) -- it now soft-deletes
+    // too, since a directory argument's on_directory_open hook can cache
+    // the pre-shift id of a *later* buffer (kBuiltinFileTree's
+    // mep_tree_edit_buf) before that shift ever ran, silently pointing it
+    // at the wrong buffer for the rest of the process. Reindexing every
+    // buffer_id-holding site for a general "delete any buffer at any time"
+    // command would be exactly the kind of invasive, easy-to-miss-a-site
+    // change that class of bug comes from. A deleted buffer is closed out
+    // of every pane/tab currently showing it (like `:bd` in real vim) and
+    // hidden from buffer_list/
     // bnext/bprev (BufferLabelForLua/BufferNext/BufferPrevious all check
     // this), but its Buffer object -- content, undo history -- stays put
     // at its same index; FindOrCreateBuffer clears this again if the same

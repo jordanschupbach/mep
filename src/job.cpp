@@ -415,7 +415,10 @@ void JobManager::PollAll() {
         std::shared_ptr<Job> job = jobs_[i].job;
         auto on_stdout_raw = jobs_[i].callbacks.on_stdout_raw;
         if (on_stdout_raw) {
-            for (const std::string &chunk : job->DrainRaw()) on_stdout_raw(chunk);
+            auto should_poll_raw = jobs_[i].callbacks.should_poll_raw;
+            if (!should_poll_raw || should_poll_raw()) {
+                for (const std::string &chunk : job->DrainRaw()) on_stdout_raw(chunk);
+            }
         }
         auto on_stdout = jobs_[i].callbacks.on_stdout;
         auto on_stderr = jobs_[i].callbacks.on_stderr;

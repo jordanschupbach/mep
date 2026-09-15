@@ -2382,6 +2382,17 @@ public:
      * @return The cursor row (0-indexed) of the pane showing that buffer, or -1 if none does.
      */
     int CursorRowForBuffer(int buffer_id) const;
+    // Same "does any pane in the active tab currently show this buffer"
+    // lookup CursorRowForBuffer uses, exposed as a plain bool -- lets a
+    // background job's callback (a terminal's PTY output feeding its
+    // VTerm, see TerminalSpawn) check whether it's worth doing expensive
+    // per-chunk work at all before doing it, rather than after.
+    /**
+     * @brief Reports whether any pane in the active tab currently shows the given buffer on screen.
+     * @param buffer_id The buffer id to look up.
+     * @return True if some pane in the active tab is currently displaying that buffer.
+     */
+    bool IsBufferOnScreen(int buffer_id) const;
     // Moves focus to whichever pane in the active tab's split layout is
     // topmost, then (among ties) leftmost -- PaneRect's y0 then x0. The
     // file tree's on_click calls this before mep.open so a click always

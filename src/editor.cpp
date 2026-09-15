@@ -4649,6 +4649,10 @@ int Editor::CursorRowForBuffer(int buffer_id) const {
     return node ? node->pane.cursor.row : -1;
 }
 
+bool Editor::IsBufferOnScreen(int buffer_id) const {
+    return FindPaneIdForBuffer(ActiveTab().root.get(), buffer_id) >= 0;
+}
+
 void Editor::FocusTopLeftPane() {
     Tab &tab = ActiveTab();
     std::vector<PaneRect> rects;
@@ -5040,6 +5044,18 @@ void Editor::TerminalSpawn(TerminalSession &sess, const std::vector<std::string>
      * @param chunk The raw bytes received from the child process.
      */
     cb.on_stdout_raw = [vterm_ptr](const std::string &chunk) { vterm_ptr->Feed(chunk); };
+    // Skip parsing this terminal's output while its pane isn't on screen
+    // (a different workspace/tab is active) -- a chatty child (a spinner,
+    // an AI agent's own animated status line) would otherwise get its
+    // whole ANSI stream fed through VTerm::Feed on the main thread every
+    // frame regardless of visibility, which is exactly what made j/k feel
+    // laggy with an AI terminal left running in a background workspace.
+    // Left undrained, the job's own kMaxPendingRawBytes backpressure
+    // (job.h) simply pauses the child once its buffered output fills,
+    // same as a slow consumer of any other terminal's output; the
+    // backlog gets caught up in one go the moment this buffer is back
+    // on screen.
+    cb.should_poll_raw = [this, buffer_id]() { return IsBufferOnScreen(buffer_id); };
     /**
      * @brief Marks this terminal session as exited and records its exit code, once the child process terminates.
      * @param code The child process's exit code.

@@ -222,6 +222,20 @@ public:
         // protocol; see Job's `raw_stdout` constructor parameter. Setting
         // it switches this job into raw mode at Spawn() time.
         std::function<void(const std::string &)> on_stdout_raw;
+        // Optional gate checked before draining raw stdout each frame,
+        // only when on_stdout_raw is set. When present and it returns
+        // false, this job's buffered raw output is left queued in the Job
+        // itself (subject to the kMaxPendingRawBytes backpressure above)
+        // instead of being drained and fed to on_stdout_raw this frame.
+        // Lets a consumer whose on_stdout_raw does real per-byte work (a
+        // terminal's VTerm::Feed parsing ANSI escapes) skip that work
+        // entirely while there's nowhere on screen to show the result --
+        // e.g. an AI terminal's PTY left running in a workspace/tab that
+        // isn't the one currently active would otherwise still have every
+        // frame of its spinner animation parsed on the main thread, ahead
+        // of input handling, even though none of it is visible (see
+        // Editor::IsBufferOnScreen and its use in TerminalSpawn).
+        std::function<bool()> should_poll_raw;
     };
 
     /**

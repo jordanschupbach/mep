@@ -12,13 +12,29 @@
   to show up in (e.g. that appear when running .show() methods). Can you
   implement these?
 
-* TODO quickjump capability
+* DONE quickjump capability :ARCHIVE:
   I'd like a quickjump capability. In particular, when pressing 's' in normal
   mode, I'd like to then be able to start typing, and any non-matches to the
   thing I'm typing to appear more opaque and for the matches to appear less
   opaque with a hint I can type (just a letter or two ideally) to jump to that
   matching location, or when I finish typing and there are no matches to jump to
   it. Can you implement this feature?
+  - Done as a new Editor::Mode::QuickJump (editor.cpp, next to the older
+    HintChar/HintLabel pair) bound to `s` by kBuiltinQuickJump (main.cpp)
+    via mep.quick_jump(), so it can be rebound with a plain mep.map. Every
+    keystroke rescans the pane's visible rows (smart-case): DrawPane
+    washes the text area with translucent NormalBg, repaints each match
+    at full strength on an IncSearch backdrop, and draws a one-key label
+    right after it. Labels are drawn from the home-row-first pool minus
+    every character that would extend the query at some match, so a key
+    is never ambiguous (label -> jump, else -> narrow); nearest match
+    gets the first label. A query that narrows to one match jumps at
+    once; Enter jumps to the nearest, Backspace edits, Esc cancels; the
+    command line echoes "jump: <query>" (+ "(no matches)"). Landing
+    records the jumplist so `` / Ctrl-O return. README "Keys" documents
+    it. Verified against a spawned instance over its agent socket
+    (ui.key_press/type_text + screenshots): label jump, unique-match
+    auto-jump, Esc/Enter-with-no-match leaving the cursor put, Backspace.
 
 * TODO r help format
   The formatting of help documentation in R help sidebar looks off. It looks

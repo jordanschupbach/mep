@@ -3890,6 +3890,9 @@ void Editor::HandleInput() {
         case Mode::HintLabel:
             HandleHintLabelInput();
             break;
+        case Mode::QuickJump:
+            HandleQuickJumpInput();
+            break;
         case Mode::Terminal:
             HandleTerminalInput();
             break;
@@ -18155,6 +18158,143 @@ void Editor::HandleHintLabelInput() {
     if (!any_prefix) RestoreFromOverlay();
 }
 
+// --- Quick jump (TODO.org "quickjump capability") --------------------------
+//
+// flash.nvim/leap-style typed-query jump, bound to `s` in Normal mode by
+// kBuiltinQuickJump (main.cpp) via mep.quick_jump(). Distinct from the
+// HintChar/HintLabel pair above (one fixed target character, then a
+// separate label phase): here the query grows one character per
+// keystroke, and after every keystroke the current pane's visible rows
+// are rescanned so the on-screen matches (DrawPane dims everything else
+// and repaints the matches at full strength) and their labels track what
+// has been typed so far. There's no separate label phase because a
+// keystroke is never ambiguous: labels are drawn from kHintLabelPool
+// *minus* every character that would extend the query at some current
+// match (the character right after that match's text) -- so a key that
+// is some match's label can't possibly narrow the query, and a key that
+// could narrow the query is never a label. Whichever one a key is decides
+// what it does: label -> jump there; anything else -> append to the
+// query and rescan. Matches are ordered nearest-to-cursor first so the
+// home-row labels land on the likeliest targets; a scan with more
+// matches than usable labels leaves the far ones unlabeled (still
+// highlighted) -- typing more narrows them down. Smart-case: an
+// all-lowercase query matches case-insensitively, any uppercase in it
+// makes the whole query exact. A query that narrows to exactly one
+// match jumps immediately (the user is done typing at that point, by
+// the TODO's own description); Enter jumps to the nearest match, Escape
+// cancels, Backspace shortens the query. Landing records the jumplist
+// (RecordJumpFrom, so `` and Ctrl-O return here), which HintLabel's own
+// jump doesn't.
+
+void Editor::BeginQuickJump() {
+    quickjump_matches_.clear();
+    quickjump_query_.clear();
+    status_message_.clear();
+    overlay_previous_mode_ = mode_;
+    mode_ = Mode::QuickJump;
+}
+
+void Editor::RecomputeQuickJumpMatches() {
+    quickjump_matches_.clear();
+    const std::string &query = quickjump_query_;
+    if (query.empty()) return;
+    bool case_sensitive = std::any_of(query.begin(), query.end(), [](char c) { return std::isupper(static_cast<unsigned char>(c)) != 0; });
+    auto fold = [case_sensitive](char c) {
+        return case_sensitive ? c : static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    };
+    const Buffer &buf = Buf();
+    const Pane &pane = CurPane();
+    const CursorPos cursor = pane.cursor;
+    int last_row = std::min(pane.scroll_row + std::max(1, pane.visible_lines), buf.LineCount());
+    // Every (folded) character that follows some match -- typing one of
+    // these would still narrow the query, so none of them may be a label.
+    std::string next_chars;
+    std::vector<HintMatch> matches;
+    const int n = static_cast<int>(query.size());
+    for (int row = std::max(0, pane.scroll_row); row < last_row; row++) {
+        const std::string &line = buf.lines[static_cast<size_t>(row)];
+        const int len = static_cast<int>(line.size());
+        for (int col = 0; col + n <= len; col++) {
+            bool hit = true;
+            for (int k = 0; k < n && hit; k++) {
+                hit = fold(line[static_cast<size_t>(col + k)]) == fold(query[static_cast<size_t>(k)]);
+            }
+            if (!hit) continue;
+            matches.push_back({row, col, ""});
+            if (col + n < len) next_chars += fold(line[static_cast<size_t>(col + n)]);
+        }
+    }
+    std::stable_sort(matches.begin(), matches.end(), [&cursor](const HintMatch &a, const HintMatch &b) {
+        int da = std::abs(a.row - cursor.row), db = std::abs(b.row - cursor.row);
+        if (da != db) return da < db;
+        return std::abs(a.col - cursor.col) < std::abs(b.col - cursor.col);
+    });
+    // Label pool: home-row-first order, minus any character that would
+    // extend the query (compared folded, the same way the scan matched:
+    // with an all-lowercase query a match followed by 'X' rules out the
+    // label 'x' too, since typing 'x' would match that 'X').
+    std::string pool;
+    for (const char *p = kHintLabelPool; *p != '\0'; p++) {
+        if (next_chars.find(*p) == std::string::npos) pool += *p;
+    }
+    for (size_t i = 0; i < matches.size() && i < pool.size(); i++) matches[i].label = std::string(1, pool[i]);
+    quickjump_matches_ = std::move(matches);
+}
+
+void Editor::QuickJumpTo(CursorPos target) {
+    CursorPos from = CurPane().cursor;
+    RestoreFromOverlay();
+    if (from.row != target.row || from.col != target.col) RecordJumpFrom(from);
+    CurPane().cursor = target;
+    ClampCursor();
+}
+
+void Editor::HandleQuickJumpInput() {
+    // Same gfx::GetKeyPressed()-vs-gfx::IsKeyPressed() reasoning as HandleCommandInput.
+    bool escape = false, enter = false, backspace = false;
+    for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
+        if (key == gfx::Key::Escape) escape = true;
+        else if (key == gfx::Key::Enter || key == gfx::Key::KpEnter) enter = true;
+        else if (key == gfx::Key::Backspace) backspace = true;
+    }
+    if (escape) {
+        RestoreFromOverlay();
+        return;
+    }
+    if (backspace) {
+        if (!quickjump_query_.empty()) quickjump_query_.pop_back();
+        RecomputeQuickJumpMatches();
+        return;
+    }
+    if (enter) {
+        if (quickjump_matches_.empty()) {
+            if (!quickjump_query_.empty()) status_message_ = "No matches for '" + quickjump_query_ + "'";
+            RestoreFromOverlay();
+            return;
+        }
+        QuickJumpTo({quickjump_matches_[0].row, quickjump_matches_[0].col});
+        return;
+    }
+    for (int cp = gfx::GetCharPressed(); cp > 0; cp = gfx::GetCharPressed()) {
+        if (cp < 32 || cp > 126) continue;  // printable ASCII only, same as the hint modes above
+        char c = static_cast<char>(cp);
+        for (const HintMatch &m : quickjump_matches_) {
+            if (!m.label.empty() && m.label[0] == c) {
+                QuickJumpTo({m.row, m.col});
+                return;
+            }
+        }
+        quickjump_query_ += c;
+        RecomputeQuickJumpMatches();
+        if (quickjump_matches_.size() == 1) {
+            QuickJumpTo({quickjump_matches_[0].row, quickjump_matches_[0].col});
+            return;
+        }
+        // No matches at all: stay open (the command line says so) so
+        // Backspace can fix a typo, rather than dropping the whole query.
+    }
+}
+
 // --- Completion engine (NVIM_PARITY_PLAN.md Part V Phase 22) --------------
 
 void Editor::UpdateCompletionPopup() {
@@ -18285,6 +18425,7 @@ const char *ModeName(Mode m, bool replace_mode) {
         case Mode::HintChar:
         case Mode::HintLabel:
             return "HINT";
+        case Mode::QuickJump: return "QUICKJUMP";
         case Mode::Terminal: return "TERMINAL";
         case Mode::Image: return "IMAGE";
         case Mode::ImageEditor: return "IMAGE-EDIT";

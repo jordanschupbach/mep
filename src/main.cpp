@@ -2672,6 +2672,16 @@ const char *kBuiltinIcons =
     "  notify = 'i', todo = 'o', tests = 'T', git = 'G', add = '+', clear = 'x',\n"
     "}\n";
 
+// Quick jump (TODO.org "quickjump capability"): `s` in Normal mode opens
+// Editor::BeginQuickJump's typed-query jump (editor.cpp). Bound here as a
+// plain mep.map() rather than hardcoded in DispatchNormalKey -- the same
+// way kBuiltinPickerSources binds `/` -- so it shows up in mep.keymaps()
+// with a description and a user config can rebind it with its own
+// mep.map('n', 's', ...). Nothing is shadowed: Vim's own `s` (substitute
+// character, `cl`) was never implemented in DispatchNormalKey.
+const char *kBuiltinQuickJump =
+    "mep.map('n', 's', mep.quick_jump, {desc = 'Quick jump: type text, then its label, to jump to a match on screen'})\n";
+
 // Colorizer + URL detection/open (Phase 13). Both are plain-Lua consumers
 // of existing primitives (decorations for swatches, jobs for opening a
 // URL) -- no new C++ needed beyond the swatch-rendering support in
@@ -28599,6 +28609,51 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 gfx::DrawTextEx(g_font, hm.label.c_str(), gfx::Vector2{hx + 2, hy}, g_font_size, 0, ResolveHlGroup("Warn"));
             }
         }
+        // Quick jump (Editor::BeginQuickJump, editor.cpp): the TODO asks
+        // for non-matches to fade and matches to stand out with a typed
+        // label. Done as an overlay on top of the row's finished render
+        // rather than by recoloring the glyph passes above: a NormalBg
+        // wash at partial alpha over the whole text area dims everything
+        // (syntax colors, decorations and selection alike, so it composes
+        // with all of them for free), then each match's own characters
+        // are repainted at full strength over an IncSearch backdrop, and
+        // its one-key label sits right after the match (flash.nvim's
+        // placement -- over the very character the label pool excluded,
+        // so it never hides part of the match itself). Per character via
+        // WrapPos so a match straddling a soft-wrap boundary lands on the
+        // right visual line, and via ByteOffsetToColumn so a multi-byte
+        // prefix on the line doesn't shift it. A closed fold's summary row
+        // is skipped: its matches (inside the fold) aren't on screen.
+        if (is_active && g_editor.IsQuickJumpActive() && !fold_here) {
+            gfx::DrawRectangle(static_cast<int>(text_x), static_cast<int>(ly), static_cast<int>(x + w - text_x),
+                          line_height * row_wrap_slots, gfx::Fade(ResolveHlGroup("NormalBg"), 0.6f));
+            const std::string &qj_line = buf.lines[static_cast<size_t>(row)];
+            const int qj_len = static_cast<int>(g_editor.QuickJumpQuery().size());
+            for (const HintMatch &hm : g_editor.QuickJumpMatches()) {
+                if (hm.row != row) continue;
+                int col = ByteOffsetToColumn(qj_line, hm.col);
+                int i = hm.col;
+                int end = std::min(static_cast<int>(qj_line.size()), hm.col + qj_len);
+                while (i < end) {
+                    int cp_size = 0;
+                    gfx::GetCodepointNext(&qj_line[static_cast<size_t>(i)], &cp_size);
+                    if (cp_size <= 0) cp_size = 1;
+                    gfx::Vector2 cpos = WrapPos(col, row_wrap_cols, text_x, ly, line_height);
+                    gfx::DrawRectangle(static_cast<int>(cpos.x), static_cast<int>(cpos.y), static_cast<int>(g_char_width) + 1,
+                                  line_height, gfx::Fade(ResolveHlGroup("IncSearch"), 0.45f));
+                    gfx::DrawTextEx(g_font, qj_line.substr(static_cast<size_t>(i), static_cast<size_t>(cp_size)).c_str(), cpos,
+                               g_font_size, 0, ResolveHlGroup("Normal"));
+                    i += cp_size;
+                    col++;
+                }
+                if (hm.label.empty()) continue;
+                gfx::Vector2 lpos = WrapPos(col, row_wrap_cols, text_x, ly, line_height);
+                float label_w = gfx::MeasureTextEx(g_font, hm.label.c_str(), g_font_size, 0).x + 4;
+                gfx::DrawRectangle(static_cast<int>(lpos.x), static_cast<int>(lpos.y), static_cast<int>(label_w), line_height,
+                              ResolveHlGroup("PickerSelected"));
+                gfx::DrawTextEx(g_font, hm.label.c_str(), gfx::Vector2{lpos.x + 2, lpos.y}, g_font_size, 0, ResolveHlGroup("Warn"));
+            }
+        }
     }
 
     // `row` here is the drawing loop's own variable, left at one past
@@ -29610,6 +29665,20 @@ void DrawEditor() {
             float cx = kMarginX + gfx::MeasureTextEx(g_font, line.c_str(), g_font_size, 0).x;
             gfx::DrawRectangle(static_cast<int>(cx), cmd_y + 3, 2, static_cast<int>(g_font_size), ResolveHlGroup("Normal"));
         }
+    } else if (g_editor.IsQuickJumpActive()) {
+        // Quick jump (Editor::BeginQuickJump): echo the query the way the
+        // search prompt echoes its own above, plus a "no matches" note
+        // once there's a query nothing on screen matches (the mode stays
+        // open then, for Backspace -- see HandleQuickJumpInput).
+        std::string line = "jump: " + g_editor.QuickJumpQuery();
+        gfx::DrawTextEx(g_font, line.c_str(), gfx::Vector2{static_cast<float>(kMarginX), static_cast<float>(cmd_y + 3)},
+                   g_font_size, 0, ResolveHlGroup("Normal"));
+        float cx = kMarginX + gfx::MeasureTextEx(g_font, line.c_str(), g_font_size, 0).x;
+        gfx::DrawRectangle(static_cast<int>(cx), cmd_y + 3, 2, static_cast<int>(g_font_size), ResolveHlGroup("Normal"));
+        if (!g_editor.QuickJumpQuery().empty() && g_editor.QuickJumpMatches().empty()) {
+            gfx::DrawTextEx(g_font, "  (no matches)", gfx::Vector2{cx + 4, static_cast<float>(cmd_y + 3)}, g_font_size, 0,
+                       ResolveHlGroup("Comment"));
+        }
     } else if (!g_editor.StatusMessage().empty()) {
         gfx::DrawTextEx(g_font, g_editor.StatusMessage().c_str(),
                    gfx::Vector2{static_cast<float>(kMarginX), static_cast<float>(cmd_y + 3)}, g_font_size, 0, ResolveHlGroup("Normal"));
@@ -29757,6 +29826,7 @@ bool ModeAllowsHintTrigger(Mode m) {
         case Mode::WhichKey:
         case Mode::HintChar:
         case Mode::HintLabel:
+        case Mode::QuickJump:
         case Mode::Terminal:
         case Mode::OfficeInsert:
         case Mode::SheetInsert:
@@ -31396,6 +31466,7 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinRightSidebarPanes);
     lua->DoString(kBuiltinPickerSources);
     lua->DoString(kBuiltinTextTools);
+    lua->DoString(kBuiltinQuickJump);
     lua->DoString(kBuiltinFileTree);
     lua->DoString(kBuiltinBuffers);
     lua->DoString(kBuiltinGit);

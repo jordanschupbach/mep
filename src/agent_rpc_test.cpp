@@ -497,6 +497,76 @@ int main(int argc, char **argv) {
 
     close(fd3);
 
+    // --- A stalled client must never stall the editor --------------------
+    // The mep-mcp bridge only reads its socket while it's inside a tool
+    // call; between Claude Code's tool calls nobody drains the event.*
+    // notifications mep pushes to it. Before Connection got its
+    // non-blocking outbox, that meant: a few hundred cursor moves after the
+    // agent's last tool call, the kernel send buffer toward that client was
+    // full and every later frame with a cursor move blocked the main thread
+    // in send() for the full 200ms SO_SNDTIMEO -- "hold j/k for a couple of
+    // seconds with an AI terminal open and the editor drops to ~5fps".
+    // Model that client exactly: connect, never read, and keep moving the
+    // human's cursor through a *different* connection while timing each
+    // round trip. Each Call() here costs one editor frame; a stall of the
+    // old kind shows up as ~200ms per call, so the bound below is generous
+    // for any healthy machine (even a 60Hz vsync frame is ~17ms) while
+    // still an order of magnitude under the failure mode.
+    {
+        const int stalled_fd = ConnectOnce(socket_path);
+        CHECK(stalled_fd >= 0);
+
+        // A buffer with enough lines that alternating between two rows
+        // always genuinely moves the cursor (and so always emits an
+        // event.cursorMoved), regardless of what earlier sections left on
+        // screen.
+        std::error_code ec;
+        const std::string tall_path = (std::filesystem::temp_directory_path(ec) / ("mep-agent-rpc-test-" + std::to_string(static_cast<long>(getpid())) + ".txt")).string();
+        {
+            std::string tall;
+            for (int i = 0; i < 200; i++) tall += "line " + std::to_string(i) + "\n";
+            FILE *f = std::fopen(tall_path.c_str(), "w");
+            CHECK(f != nullptr);
+            CHECK(std::fwrite(tall.data(), 1, tall.size(), f) == tall.size());
+            std::fclose(f);
+        }
+        Json open_tall = Call(fd, 27, "file.open", [&] { Json p = Json::Object(); p["path"] = tall_path; return p; }(), &read_buf);
+        CHECK_CTX(open_tall.contains("result"), "file.open=[" + open_tall.dump() + "]");
+
+        // Well past the point where a 212992-byte (Linux default) send
+        // buffer full of ~100-byte notifications (each charged its skb
+        // overhead, so roughly 300 of them) used to start blocking.
+        constexpr int kMoves = 1200;
+        constexpr double kMaxRoundTripMs = 100.0;
+        double worst_ms = 0.0;
+        double total_ms = 0.0;
+        for (int i = 0; i < kMoves; i++) {
+            const std::string cmd = "normal " + std::to_string(i % 2 == 0 ? 10 : 150) + "G";
+            const auto t0 = std::chrono::steady_clock::now();
+            Json moved = Call(fd, 28, "command.run", [&] { Json p = Json::Object(); p["cmd"] = cmd; return p; }(), &read_buf);
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            CHECK(moved.contains("result"));
+            worst_ms = std::max(worst_ms, ms);
+            total_ms += ms;
+            CHECK_CTX(ms < kMaxRoundTripMs,
+                      "cursor move #" + std::to_string(i) + " took " + std::to_string(ms) +
+                          "ms with a connected client that never reads -- the main thread is blocking on a full socket send buffer");
+        }
+        std::fprintf(stderr, "stalled-client section: %d cursor moves, worst %.1fms, mean %.2fms\n", kMoves, worst_ms, total_ms / kMoves);
+
+        // The healthy connection kept getting its own events the whole
+        // time -- shedding load toward the stalled peer must not affect
+        // anyone else -- and still works after the stalled one goes away.
+        std::vector<Json> after_events;
+        Call(fd, 29, "command.run", [] { Json p = Json::Object(); p["cmd"] = "normal 100G"; return p; }(), &read_buf, &after_events);
+        DrainEvents(fd, &read_buf, &after_events, 200);
+        CHECK_CTX(has_event(after_events, "event.cursorMoved"), "healthy connection should still receive events while another client is stalled");
+        close(stalled_fd);
+        Json still_alive = Call(fd, 30, "session.info", Json::Object(), &read_buf);
+        CHECK(still_alive.contains("result"));
+        std::filesystem::remove(tall_path, ec);
+    }
+
     Json quit_params = Json::Object();
     quit_params["cmd"] = "qa!";
     Json quit_resp = Call(fd, 26, "command.run", quit_params, &read_buf);

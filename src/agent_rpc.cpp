@@ -11,7 +11,6 @@
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
-#include <sys/time.h>
 #include <sys/types.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -147,20 +146,106 @@ struct Connection {
         }
     }
 
+    // --- Outbound queue (main-thread only, like participant_id above) ---
+    // Every byte written to this socket goes through Send()/FlushOutbox()
+    // below, and neither ever blocks the caller: send() is issued with
+    // MSG_DONTWAIT, and whatever the kernel won't take right now is
+    // parked here until a later frame's PollOnce retries it.
+    //
+    // Why this matters: PollOnce runs on the main thread, ahead of input
+    // handling and drawing, and Broadcast() pushes one event.* notification
+    // per connected client per cursor move / mode change / etc. The
+    // mep-mcp bridge (src/mcp_bridge.cpp) only reads its socket while it
+    // is inside a tool call -- between Claude Code's tool calls, which is
+    // most of the time, nobody drains it. With a plain blocking send()
+    // (even one capped by SO_SNDTIMEO) the socket's send buffer filled up
+    // after a few hundred cursor moves, and from then on *every* frame
+    // with a cursor move stalled the main thread for the full 200ms
+    // timeout: holding j/k with an AI terminal open turned into a
+    // ~5fps editor whose queued key repeats kept trickling in long after
+    // the key was released. Reproduced deterministically with a connected
+    // client that never reads (see agent_rpc_test.cpp's stalled-client
+    // section), and exactly what a plain blocking write to a slow peer on
+    // a UI thread does.
+    //
+    // Bounding: a queued event.* notification is `droppable` -- once the
+    // unsent backlog exceeds kMaxOutboxSoftBytes, the oldest droppable
+    // entries go (never a partially written one: that would corrupt the
+    // Content-Length framing mid-stream). That is the same "coalesce a
+    // burst, don't flood" contract FlushAgentEvents already documents,
+    // extended to a client that isn't listening at the moment; the bridge
+    // itself already caps its own queued events at 2000. Responses to the
+    // client's own requests are never dropped; a peer that keeps sending
+    // requests without ever reading the replies is broken beyond helping,
+    // so past kMaxOutboxHardBytes of undroppable backlog the connection is
+    // closed rather than growing without bound.
+    struct Outbound {
+        std::string bytes;  // one complete framed message
+        bool droppable;     // an event.* notification (no "id"), not a response
+    };
+    std::deque<Outbound> outbox;
+    size_t outbox_bytes = 0;         // sum of every queued entry's bytes.size()
+    size_t outbox_front_offset = 0;  // bytes of outbox.front() the kernel has already accepted
+    size_t dropped_events = 0;       // diagnostics only: notifications shed by TrimOutbox
+    static constexpr size_t kMaxOutboxSoftBytes = 256 * 1024;
+    static constexpr size_t kMaxOutboxHardBytes = 8 * 1024 * 1024;
+
     /**
-     * @brief Blocking-writes a framed JSON-RPC message to this connection's socket.
+     * @brief Queues a framed JSON-RPC message for this connection and writes as much of the backlog as the socket will take right now, without ever blocking.
      * @param message The JSON-RPC message (response or notification) to send.
-     * @return true if the entire framed message was written; false on a send failure.
+     * @return true if the connection is still usable (the message is either written or queued); false if the peer is gone and the connection has been marked closed.
      */
     bool Send(const Json &message) {
-        const std::string framed = FrameRpcMessage(message.dump());
-        size_t offset = 0;
-        while (offset < framed.size()) {
-            ssize_t n = send(fd, framed.data() + offset, framed.size() - offset, MSG_NOSIGNAL);
-            if (n <= 0) return false;
-            offset += static_cast<size_t>(n);
+        std::string framed = FrameRpcMessage(message.dump());
+        outbox_bytes += framed.size();
+        outbox.push_back(Outbound{std::move(framed), !message.contains("id")});
+        TrimOutbox();
+        return FlushOutbox();
+    }
+
+    /**
+     * @brief Non-blocking drain of the outbound queue: writes queued messages in order until the queue is empty or the kernel's send buffer is full.
+     * @return true if the connection is still usable (possibly with bytes left queued for a later call); false if a hard send error marked it closed.
+     */
+    bool FlushOutbox() {
+        while (!outbox.empty() && !closed) {
+            const std::string &bytes = outbox.front().bytes;
+            const ssize_t n = send(fd, bytes.data() + outbox_front_offset, bytes.size() - outbox_front_offset, MSG_NOSIGNAL | MSG_DONTWAIT);
+            if (n < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return true;  // peer isn't reading right now -- retry next frame
+                closed = true;  // EPIPE/ECONNRESET/...: peer gone; PollOnce prunes us
+                return false;
+            }
+            if (n == 0) return true;  // nothing accepted; don't spin, try again next frame
+            outbox_front_offset += static_cast<size_t>(n);
+            if (outbox_front_offset >= bytes.size()) {
+                outbox_bytes -= bytes.size();
+                outbox.pop_front();
+                outbox_front_offset = 0;
+            }
         }
-        return true;
+        return !closed;
+    }
+
+    /**
+     * @brief Sheds the oldest droppable (notification) entries once the unsent backlog exceeds the soft cap, never touching a partially written front entry; closes the connection if undroppable backlog alone exceeds the hard cap.
+     */
+    void TrimOutbox() {
+        if (outbox_bytes <= kMaxOutboxSoftBytes) return;
+        for (auto it = outbox.begin(); it != outbox.end() && outbox_bytes > kMaxOutboxSoftBytes;) {
+            const bool partially_sent = it == outbox.begin() && outbox_front_offset > 0;
+            if (it->droppable && !partially_sent) {
+                outbox_bytes -= it->bytes.size();
+                dropped_events++;
+                it = outbox.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        if (outbox_bytes > kMaxOutboxHardBytes) {
+            closed = true;
+            if (fd >= 0) shutdown(fd, SHUT_RDWR);
+        }
     }
 };
 
@@ -1856,12 +1941,12 @@ void AcceptLoop(int listener_fd, int wakeup_fd) {
             if (errno == EINTR || errno == EAGAIN) continue;
             return;  // listener gone or a fatal accept error -- either way, done
         }
-        // Bounds Connection::Send's worst-case blocking time so a hung/
-        // malicious client can stall PollOnce (main thread) for at most
-        // this long instead of indefinitely.
-        timeval timeout{};
-        timeout.tv_usec = 200000;  // 200ms
-        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+        // No SO_SNDTIMEO here any more: writes to this fd never block at
+        // all (Connection::Send/FlushOutbox use MSG_DONTWAIT and queue the
+        // rest), so a hung or merely idle client can't stall PollOnce
+        // (main thread) for even a moment. A 200ms send timeout used to
+        // live here, and it *was* the stall -- see Connection's outbox
+        // comment.
 
         State &state = Instance();
         auto conn = std::make_unique<Connection>();
@@ -2181,6 +2266,12 @@ void PollOnce(Editor &editor) {
     }
 
     for (Connection *conn : conns) {
+        // Retry whatever a previous frame couldn't write (the peer's socket
+        // buffer was full then) before doing anything else for this
+        // connection -- keeps replies and events in order and makes
+        // progress on a slow reader even on frames where nothing new is
+        // sent to it.
+        conn->FlushOutbox();
         std::deque<Json> requests;
         {
             std::lock_guard<std::mutex> conn_lock(conn->mutex);

@@ -7394,6 +7394,13 @@ int l_hint_jump(lua_State *L) {
     return 0;
 }
 
+// mep.quick_jump(): Editor::BeginQuickJump (TODO.org "quickjump
+// capability") -- the typed-query jump kBuiltinQuickJump binds to `s`.
+int l_quick_jump(lua_State *L) {
+    GetEditor(L)->BeginQuickJump();
+    return 0;
+}
+
 // mep.platform() -> "linux"/"macos"/"windows"/"wasm" (Phase 13 URL open).
 int l_platform(lua_State *L) {
 #if defined(__EMSCRIPTEN__)
@@ -8681,6 +8688,7 @@ const luaL_Reg kMepFuncs[] = {
     {"lsp_stop", l_lsp_stop},
     {"lsp_is_running", l_lsp_is_running},
     {"hint_jump", l_hint_jump},
+    {"quick_jump", l_quick_jump},
     {"platform", l_platform},
     {"pane_open", l_pane_open},
     {"pane_next_buffer", l_pane_next_buffer},

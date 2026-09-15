@@ -86,6 +86,11 @@ enum class Mode {
     // occurrence to jump to.
     HintChar,
     HintLabel,
+    // Quick jump (TODO.org "quickjump capability"): a flash.nvim/leap-style
+    // typed-query jump. Unlike HintChar/HintLabel above, there's no
+    // separate label phase -- every keystroke is either a label (jump) or
+    // one more query character (narrow), see Editor::BeginQuickJump.
+    QuickJump,
     // A focused `:terminal`/`:term` pane (Part VI Phase 27+): keystrokes
     // are encoded and forwarded live to the PTY-backed shell/program
     // instead of editing a buffer, the way Insert mode edits one. See
@@ -7452,6 +7457,19 @@ public:
     const std::vector<HintMatch> &HintMatches() const { return hint_matches_; }
     const std::string &HintTyped() const { return hint_typed_; }
 
+    // --- Quick jump (TODO.org "quickjump capability") ---
+    // Enters Mode::QuickJump (bound to `s` by kBuiltinQuickJump, main.cpp;
+    // mep.quick_jump() from Lua). The user types a query; every match in
+    // the current pane's visible rows gets a one-key label, typing that
+    // key jumps there. See the implementation's own comment in editor.cpp.
+    void BeginQuickJump();
+    bool IsQuickJumpActive() const { return mode_ == Mode::QuickJump; }
+    // The current matches (nearest-to-cursor first; `label` is empty for
+    // a match that didn't get one) and the query typed so far, for
+    // DrawPane's dim/highlight/label pass and the command line's prompt.
+    const std::vector<HintMatch> &QuickJumpMatches() const { return quickjump_matches_; }
+    const std::string &QuickJumpQuery() const { return quickjump_query_; }
+
     // Whether the user's configured mod1 modifier (mod1_/mep.set_mod1,
     // see its own comment near HandleMod1Shortcuts) is currently held --
     // public (unlike mod1_/ModKey themselves) so main.cpp's own
@@ -7819,6 +7837,9 @@ private:
     void HandleWhichKeyInput();
     void HandleHintCharInput();
     void HandleHintLabelInput();
+    void HandleQuickJumpInput();
+    void RecomputeQuickJumpMatches();
+    void QuickJumpTo(CursorPos target);
     void HandleTerminalInput();
     TerminalSession *FindTerminal(int buffer_id);
     // Encodes one keypress as the bytes a real terminal would send for it
@@ -9133,6 +9154,9 @@ private:
 
     std::vector<HintMatch> hint_matches_;
     std::string hint_typed_;
+
+    std::vector<HintMatch> quickjump_matches_;
+    std::string quickjump_query_;
 
     int completion_source_ref_ = 0;
     int completion_accept_hook_ref_ = 0;

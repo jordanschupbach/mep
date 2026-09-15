@@ -112,6 +112,17 @@ Search: =/= =?= =n= =N= =*= =#=, plain substring (no regex), wrapping
 around the buffer by default (=:set nowrapscan= to disable) with a
 "search hit BOTTOM/TOP" status message like Vim's.
 
+Quick jump: =s= opens a typed-query jump (flash.nvim/leap-style). Keep
+typing to narrow the matches on screen: everything else fades, and each
+match gets a one-key label drawn right after it -- press that key to
+jump there (=Ctrl-O= / =``= come back). A label never reuses a
+character that would extend the query at some current match, so a key
+is never ambiguous; a query that narrows to a single match jumps
+immediately, =Enter= jumps to the nearest match, =Backspace= edits the
+query, =Esc= cancels. Smart-case: an all-lowercase query matches
+case-insensitively. It's a plain =mep.map('n', 's', mep.quick_jump)=
+builtin, so it can be rebound.
+
 Repeat and macros: =.= replays the last change (a count before it,
 =3.=, overrides the original count); =q{a-z}= records a macro
 (=q{A-Z}= appends, =q= again stops), =@{a-z}= replays it =[count]=

@@ -6046,6 +6046,83 @@ const char *kBuiltinLanguageUiR =
     "  local st = mep_r_ui_state[mep.current_tab_id()]\n"
     "  mep_r_ui_render_textbox(mep_r_ui_data_sidebar_id, st and st.data_text, '(no data yet -- call mep_view(x) in the console)')\n"
     "end\n"
+    // Help text rendering (the plain, single-match case) -- mirrors what
+    // the 'K' hover popup (DrawHoverPopup, main.cpp) gets for free by
+    // drawing tools::Rd2txt's output line-for-line in the monospace font:
+    // the same text pushed through mep_r_ui_render_textbox instead came
+    // out visibly wrong, for three separate reasons this fixes --
+    //   - gmatch('[^\n]+') silently drops every blank line, so the
+    //     Description/Usage/Arguments sections all ran together;
+    //   - wrap=true widgets word-wrap through LspDiagWrap, which collapses
+    //     leading whitespace and rewraps freely -- fine for prose, but it
+    //     mangled Usage:/Examples: code (indentation gone, deparsed
+    //     signatures re-broken mid-argument) and lost every argument
+    //     entry's hanging indent;
+    //   - the header line (`lm    package:stats    R Documentation`) is
+    //     padded by Rd2txt to the full options(width=500) it's given (see
+    //     mep_r_ui_init_template's own comment on why 500), so it wrapped
+    //     into several rows of mostly spaces.
+    // So: keep blank lines as empty rows; the header collapses to
+    // `topic  {pkg}` (deliberately unhighlighted: it is row 0, so it sits
+    // under the pane cursor's own highlight whenever the tab is first
+    // focused, where a muted color all but vanished); the title line (the
+    // first unindented non-header line) and the `Section:` headers get
+    // their own highlight; lines
+    // under Usage:/Examples: are verbatim, never wrapped (clipped at the
+    // pane edge if too wide, exactly like the popup); everything else is
+    // prose, wrapped to the pane's real width (SidebarInstance::wrap_cols)
+    // with wrap_indent set so continuation lines line up under the
+    // entry's own text -- after `name: ` for an Arguments:/Value: item,
+    // after the bullet for a list item, else at the line's own indent.
+    // Curly quotes/bullets are ASCII-fied first: LspDiagWrap measures in
+    // bytes, and Rd2txt's UTF-8 quotes (3 bytes each, ~6 per paragraph)
+    // otherwise wrap every line visibly short of the pane's edge.
+    "local mep_r_ui_help_code_sections = {['usage:'] = true, ['examples:'] = true}\n"
+    "local function mep_r_ui_help_widgets(text)\n"
+    "  text = text:gsub('\\u{2018}', \"'\"):gsub('\\u{2019}', \"'\"):gsub('\\u{201c}', '\"'):gsub('\\u{201d}', '\"'):gsub('\\u{2022}', '*')\n"
+    "  local lines = {}\n"
+    "  for line in (text .. '\\n'):gmatch('(.-)\\n') do lines[#lines + 1] = line end\n"
+    "  while #lines > 0 and not lines[#lines]:match('%S') do lines[#lines] = nil end\n"
+    "  local widgets = {}\n"
+    "  local function add(w) w.id = tostring(#widgets + 1); widgets[#widgets + 1] = w end\n"
+    "  local section, seen_title, prev_len = nil, false, 0\n"
+    "  for i, line in ipairs(lines) do\n"
+    "    local topic, pkg = line:match('^(%S+)%s+package:(%S+)%s+R Documentation%s*$')\n"
+    "    local indent = #line:match('^(%s*)')\n"
+    "    local prev = widgets[#widgets]\n"
+    "    if i == 1 and topic then\n"
+    "      add({text = topic .. '  {' .. pkg .. '}'})\n"
+    "    elseif not line:match('%S') then\n"
+    "      add({text = ''})\n"
+    "    elseif line:match('^%u[%w%s%-]*:$') then\n"
+    "      section = line:lower()\n"
+    "      add({text = line, hl = 'Accent'})\n"
+    "    elseif not section and not seen_title and indent == 0 then\n"
+    "      seen_title = true\n"
+    "      add({text = line, hl = 'PickerTitle'})\n"
+    "    elseif section and mep_r_ui_help_code_sections[section] then\n"
+    "      add({text = line})\n"
+    "    elseif prev and prev.wrap and prev_len >= 300 and indent > 0 then\n"
+    // A continuation of the previous paragraph: Rd2txt still hard-breaks
+    // a single paragraph longer than its width (~450 chars in practice,
+    // see mep_r_ui_init_template's width=500 comment), indenting the rest
+    // to the same body column. Rejoined here so the sidebar's own
+    // word-wrap is the only wrapping the paragraph gets -- no seam where
+    // R's break and the pane's don't line up. Only ever taken after a
+    // raw line long enough to have been R's doing: a genuinely short
+    // preceding line (a one-line item, a preformatted block's row) can't
+    // have been broken, so it's never joined.\n"
+    "      prev.text = prev.text .. ' ' .. line:match('^%s*(.-)%s*$')\n"
+    "    else\n"
+    "      local bullet = line:match('^(%s*[%*%-]%s+)')\n"
+    "      local item = (section == 'arguments:' or section == 'value:') and line:match('^(%s*[^%s:][^:]-:%s)') or nil\n"
+    "      if item then indent = #item elseif bullet then indent = #bullet end\n"
+    "      add({text = line, wrap = true, wrap_indent = indent})\n"
+    "    end\n"
+    "    prev_len = #line\n"
+    "  end\n"
+    "  return widgets\n"
+    "end\n"
     // An ambiguous topic (help()'s own comment above, mep_r_ui_init_template)
     // shows its candidates as real selectable rows instead of the usual
     // plain text -- one per line of help_choices_text, each just an
@@ -6075,7 +6152,9 @@ const char *kBuiltinLanguageUiR =
     "    mep.sidebar_set_sections(mep_r_ui_help_sidebar_id, {{id = 'help_choices', title = 'Choose a package', collapsed = false, widgets = widgets}})\n"
     "    return\n"
     "  end\n"
-    "  mep_r_ui_render_textbox(mep_r_ui_help_sidebar_id, st and st.help_text, '(no help viewed yet -- try ?topic or help(...) in the console)')\n"
+    "  local widgets = mep_r_ui_help_widgets((st and st.help_text) or '')\n"
+    "  if #widgets == 0 then widgets[1] = {id = 'empty', text = '(no help viewed yet -- try ?topic, help(...) in the console, or gh on a symbol)'} end\n"
+    "  mep.sidebar_set_sections(mep_r_ui_help_sidebar_id, {{id = 'content', title = '', collapsed = false, widgets = widgets}})\n"
     "end\n"
     "function mep_r_ui_render_all()\n"
     "  mep_r_ui_render_objects()\n"
@@ -6357,7 +6436,46 @@ const char *kBuiltinLanguageUiR =
     // the one time content actually arrives.\n"
     "    if help_changed and st.help_buf then mep.jump_to_buffer(st.help_buf) end\n"
     "  end)\n"
-    "end\n";
+    "end\n"
+    // gh ("go to help"): while this tab's R UI mode is open, look up the
+    // symbol under the cursor in the Help tab -- sends help('sym') (or
+    // help('sym', package = 'pkg') for a `pkg::sym` spelling) to the
+    // session's console, so it flows through exactly the same overridden
+    // help() -> pager -> help.txt -> poll path as a typed ?topic, choice
+    // list for an ambiguous topic included -- and reveals the Help tab
+    // immediately (mep.jump_to_buffer finds it even hidden behind Data/
+    // Objects/... in top_pane's tab strip, or after the user moved it
+    // elsewhere) rather than waiting on the poll tick's own jump, which
+    // only fires on a real content CHANGE and so wouldn't fire at all for
+    // a repeat lookup of the same topic. The symbol scan is R's own
+    // identifier shape ([%w_.], so na.omit/read.csv stay whole) rather
+    // than mep.lsp_word_at_cursor's [%w_], which would split at the dot.
+    // Outside an R UI mode (any language), gh falls back to the LSP hover
+    // popup, the generic "show me the docs for this" mep already has.
+    "local function mep_r_ui_symbol_at_cursor()\n"
+    "  local row, col = mep.cursor()\n"
+    "  local line = mep.get_line(row) or ''\n"
+    "  if col > #line then col = #line end\n"
+    "  local function isw(i) return i >= 1 and i <= #line and line:sub(i, i):match('[%w_.]') ~= nil end\n"
+    "  if not isw(col) then return nil end\n"
+    "  local s, e = col, col\n"
+    "  while isw(s - 1) do s = s - 1 end\n"
+    "  while isw(e + 1) do e = e + 1 end\n"
+    "  local sym = line:sub(s, e)\n"
+    "  local pkg = line:sub(1, s - 1):match('([%w.]+):::?$')\n"
+    "  return sym, pkg\n"
+    "end\n"
+    "function mep.r_ui_help_at_cursor()\n"
+    "  local st = mep_r_ui_state[mep.current_tab_id()]\n"
+    "  if not st or not mep.is_terminal_buffer(st.console_buf) then return false end\n"
+    "  local sym, pkg = mep_r_ui_symbol_at_cursor()\n"
+    "  if not sym then mep.notify('gh: no R symbol under the cursor', 'warn') return true end\n"
+    "  local cmd = pkg and string.format(\"help('%s', package = '%s')\", sym, pkg) or string.format(\"help('%s')\", sym)\n"
+    "  mep.terminal_write(st.console_buf, cmd .. '\\n')\n"
+    "  if st.help_buf then mep.jump_to_buffer(st.help_buf) end\n"
+    "  return true\n"
+    "end\n"
+    "mep.map_g('h', function() if not mep.r_ui_help_at_cursor() then mep.lsp_hover() end end)\n";
 
 // Completion sources (Phase 22): buffer-word is the always-available
 // default, now joined by two more sources folded into the same function --
@@ -17381,6 +17499,10 @@ void DrawSidebars() {
     // plain title line, so a group reads as one tabbed panel rather than
     // `sb`'s own title with no indication its siblings are one click away.
     auto draw_one = [&](const SidebarInstance &sb, int px, int py, int pw, int ph, const std::vector<int> &group_ids) {
+        // Report the real column count before flattening so wrap=true rows
+        // (SidebarInstance::wrap_cols) wrap to this dock column's width --
+        // DockSize's largest-member width, not necessarily sb.size itself.
+        g_editor.SetSidebarWrapCols(sb.id, static_cast<int>(static_cast<float>(pw) / std::max(1.0f, g_char_width)));
         std::vector<SidebarLine> lines = g_editor.FlattenSidebar(sb.id);
         bool is_focused = sb.id == focused_id;
         gfx::DrawRectangle(px, py, pw, ph, ResolveHlGroup("Sidebar"));
@@ -25428,6 +25550,16 @@ void DrawSidebarPaneContent(const Pane &pane, int sidebar_id, float x, float y, 
         gfx::EndScissorMode();
         content_y += static_cast<float>(line_h);
         content_h -= static_cast<float>(line_h);
+    }
+    // Wrap width for wrap=true rows (SidebarInstance::wrap_cols): the
+    // pane's own width in cells of the font actually drawn below
+    // (MenuFontSize, narrower than g_char_width's g_font_size), less the
+    // 8px inset on each side -- so a wide Help pane fills its width and a
+    // narrow one wraps before clipping, instead of both using the stale
+    // docked `size` the sidebar was created with.
+    {
+        const float cell_w = std::max(1.0f, MeasureUiText("M", font_size));
+        g_editor.SetSidebarWrapCols(sidebar_id, static_cast<int>((w - 16.0f) / cell_w));
     }
     std::vector<SidebarLine> lines = g_editor.FlattenSidebar(sidebar_id);
     int visible_lines = std::max(1, static_cast<int>(content_h) / line_h);

@@ -20,14 +20,6 @@
   matching location, or when I finish typing and there are no matches to jump to
   it. Can you implement this feature?
 
-* TODO r help format
-  The formatting of help documentation in R help sidebar looks off. It looks
-  good when in the popup though when I press 'K' over a function name in an R
-  document. Can you fix the sidebar formatting to match that of the help popup?
-  Also, I'd like gh to be added as a keybinding to 'go to help' that, when in ui mode
-  in R will open the help for that function in the help sidebar (and move
-  visibility to the help pane if not an actively viewable pane). Can you implement these?
-
 * TODO fix buffer sidebar
   The buffer sidebar has some behavior, where, if I click on a buffer, it opens
   that buffer within the current pane (which is the buffer sidebar). Instead,
@@ -41,6 +33,32 @@
   I'd like in the status tab in the git sidebar, for pressing P to push.
   Can you implement this?
 * TODO fix exiting sidebar bug (specifically when exiting todo editor)
+* DONE r help format :ARCHIVE:
+  - The Help tab (kBuiltinLanguageUiR) now renders tools::Rd2txt output
+    the way the K hover popup does instead of one word-wrapped widget per
+    non-blank line (mep_r_ui_help_widgets, main.cpp): blank lines kept,
+    the width-padded `lm   package:stats   R Documentation` header
+    collapsed to `lm  {stats}`, title/`Section:` lines highlighted,
+    Usage:/Examples: verbatim (never wrapped), prose wrapped with a
+    hanging indent after `name: ` for Arguments:/Value: items, and R's
+    own hard breaks in >450-char paragraphs rejoined so the pane's wrap
+    is the only wrap. Curly quotes/bullets ASCII-fied so LspDiagWrap's
+    byte-count width stops wrapping short.
+  - Pane-hosted sidebars wrapped to the stale docked `size` (44 cols)
+    regardless of pane width -- new SidebarInstance::wrap_cols, set each
+    frame by DrawSidebarPaneContent/DrawSidebars from the real drawn
+    width, is what FlattenSidebar wraps to now (all wrap=true sidebars
+    benefit, e.g. the Todo panel when opened as a pane).
+  - `gh` (mep.map_g) = go to help: in an open R UI mode, sends
+    help('sym'[, package = 'pkg'] for pkg::sym) for the [%w_.] symbol
+    under the cursor to the session console and mep.jump_to_buffer()s the
+    Help tab immediately (revealing it if hidden behind Data/Objects/...);
+    outside R UI mode it falls back to mep.lsp_hover().
+  - Verified against a spawned native instance: help('lm') via the
+    function, then a real XTest `gh` keypress on `stats::sd` -> console
+    shows help('sd', package = 'stats') and the Help tab reflows to
+    the pane's actual width.
+
 * DONE Filetree image viewer mode :ARCHIVE:
   - `:e`/`mep.open` on a directory now opens the file tree in the current
     pane (Editor::LoadFile's new directory branch -> mep.set_on_directory_open

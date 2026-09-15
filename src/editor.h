@@ -552,6 +552,16 @@ struct SidebarInstance {
     // sharing one slot with whichever sidebar happens to be focused right
     // now. Updated once per rendered frame by Editor::UpdateScrollForSidebar
     // (main.cpp's DrawSidebars, the same call shape as UpdateScrollForPane).
+    // Column width Editor::FlattenSidebar wraps wrap=true widgets to when
+    // > 0, refreshed every frame by whichever draw path last drew this
+    // sidebar from the width it ACTUALLY drew at: DrawSidebarPaneContent
+    // (main.cpp) measures the hosting pane, DrawSidebars' docked draw_one
+    // its dock column. 0 (never drawn yet) falls back to `size`, which is
+    // only the docked width -- a pane-hosted sidebar (mep.sidebar_open_pane,
+    // e.g. kBuiltinLanguageUiR's Help tab) can be drawn at any width the
+    // pane tree gives it, so wrapping to `size` there left long text
+    // either clipped or wrapped far short of the pane's right edge.
+    int wrap_cols = 0;
     int scroll_offset = 0;
 };
 
@@ -7120,6 +7130,9 @@ public:
      * @param size The desired size in cells, clamped to a minimum.
      */
     void SetSidebarSize(int id, int size);
+    // See SidebarInstance::wrap_cols -- called by the two sidebar draw
+    // paths (main.cpp) with the column count they are drawing at.
+    void SetSidebarWrapCols(int id, int cols);
 
     // --- Fuzzy picker (NVIM_PARITY_PLAN.md Part I Phase 8) ---
     // Opens the picker over `items` (a *static* list -- a Lua-side

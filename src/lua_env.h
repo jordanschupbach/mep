@@ -91,6 +91,17 @@ public:
      */
     void CallRefWithJson(int ref, const Json &arg);
     /**
+     * @brief Like CallRefWithJson, but reads back ref's return value as a Json
+     * value instead of discarding it -- needed for DAP's server-initiated
+     * *requests* (e.g. runInTerminal), which expect a JSON-RPC response
+     * built from whatever the handler returns, unlike a plain notification.
+     * @param ref Registry reference of the function to call.
+     * @param arg Json value to convert and pass to the Lua function.
+     * @return The Lua function's return value converted to Json (an empty
+     * object if it returned nothing/nil, or on error).
+     */
+    Json CallRefWithJsonReturningJson(int ref, const Json &arg);
+    /**
      * @brief Invokes ref with a string argument and reads back its return value as an array of strings
      * (Part V Phase 22 completion sources).
      * @param ref Registry reference of the function to call.

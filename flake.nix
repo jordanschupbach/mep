@@ -256,6 +256,30 @@
             runHook postInstall
           '';
         };
+
+        # R DAP support (mep.dap_adapters.r, kBuiltinDap in src/main.cpp):
+        # vscDebugger isn't on CRAN, so nixpkgs has no rPackages.vscDebugger
+        # -- built by hand the same way nixpkgs itself packages GitHub-only
+        # R packages, via rPackages.buildRPackage + fetchFromGitHub. Pinned
+        # to the latest tag (v0.5.9) at the time this was added; bump `rev`/
+        # `hash` together if a newer release is needed (`nix run
+        # nixpkgs#nix-prefetch-github -- ManuelHentschel vscDebugger --rev
+        # <new-rev>` prints the matching hash). jsonlite/R6 are its own
+        # declared Imports (DESCRIPTION); `tcltk` is a base R package
+        # already built into rWrapper's R, not a separate rPackages entry.
+        vscDebuggerR = pkgs.rPackages.buildRPackage {
+          name = "vscDebugger";
+          src = pkgs.fetchFromGitHub {
+            owner = "ManuelHentschel";
+            repo = "vscDebugger";
+            rev = "aab10b8412c04df12d2f9138c132ab73c336f0d3"; # v0.5.9
+            hash = "sha256-xSrsZ/xPaqfRu0QvcFoTcfmjsPdaTarG8+MhH/wt1RM=";
+          };
+          propagatedBuildInputs = with pkgs.rPackages; [
+            jsonlite
+            R6
+          ];
+        };
       in
       {
         packages.default = mepPackage;
@@ -334,7 +358,10 @@
             # bitwise operators) are 5.4 syntax LuaJIT's 5.1-with-
             # extensions dialect doesn't accept.
             pkgs.lua5_4
-            (pkgs.python3.withPackages (ps: [ ps.numpy ])) # Python
+            # debugpy backs mep.dap_adapters.python (kBuiltinDap,
+            # src/main.cpp: `python3 -m debugpy.adapter`), a real stdio DAP
+            # server -- alongside numpy for org-babel Python blocks.
+            (pkgs.python3.withPackages (ps: [ ps.numpy ps.debugpy ])) # Python
             pkgs.nodejs # JavaScript
             pkgs.ruby
             # perl.withPackages, not bare pkgs.perl -- Perl::LanguageServer
@@ -370,7 +397,7 @@
                 rpart_plot
                 rmarkdown
                 knitr
-              ];
+              ] ++ [ vscDebuggerR ]; # mep.dap_adapters.r (see vscDebuggerR above)
             })
             # rmarkdown::render()'s HTML/Word output goes through pandoc --
             # nixpkgs' rPackages.rmarkdown does NOT vendor its own copy the
@@ -433,6 +460,13 @@
             pkgs.typescript-language-server # javascript, typescript
             pkgs.clang-tools # c, cpp -- provides clangd (plus clang-tidy/
             # -format etc, harmless extras from the same derivation)
+            # lldb-dap backs mep.dap_adapters.cpp/c/rust (kBuiltinDap,
+            # src/main.cpp) -- LLVM's own DAP server, confirmed to ship as
+            # a sibling binary in pkgs.lldb (not a separate attribute; same
+            # "one derivation, multiple binaries" shape as clang-tools
+            # above). Not an LSP server -- lives here next to clang-tools
+            # since both are the same C/C++ toolchain family.
+            pkgs.lldb
 
             # Static analysis for mep's own C++ (justfile's `lint` recipes):
             # clang-tidy/clangd come from pkgs.clang-tools above already.

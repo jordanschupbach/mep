@@ -2,6 +2,7 @@
 #include "doc_export.h"
 #include "editor.h"
 #include "job.h"
+#include "tcp_client.h"
 #include "treesitter.h"
 
 #include <algorithm>
@@ -6555,12 +6556,33 @@ int l_run_config_save(lua_State *L) {
 // framed protocol actually calls for.
 struct LspClientState {
     LuaEnv *env = nullptr;
-    int client_id = 0;      // set right after JobManager::Spawn returns (l_lsp_start)
+    int client_id = 0;      // set right after JobManager::Spawn (l_lsp_start) or
+                             // TcpJsonRpcManager::Connect (l_lsp_connect) returns
     std::string buffer;     // raw bytes accumulated, header+body(es) consumed as they complete
     int expected_len = -1;  // -1 = still accumulating headers for the next message
     int next_request_id = 1;
     std::unordered_map<int, int> pending;                    // request id -> Lua callback ref
     std::unordered_map<std::string, int> notification_refs;  // method -> Lua callback ref
+    // method -> Lua callback ref, for server-initiated *requests* (they
+    // carry both "id" and "method", unlike a plain notification) -- e.g.
+    // DAP's runInTerminal. See DispatchLspMessage's request branch below.
+    std::unordered_map<std::string, int> request_refs;
+    // True for a DAP client (mep.lsp_start/lsp_connect's `dap` opt).
+    // Real-adapter testing (spawning an actual lldb-dap and sending it a
+    // JSON-RPC-2.0-shaped `initialize`) turned up a genuine, previously
+    // unverified protocol mismatch: only the Content-Length *header*
+    // framing is shared between LSP and DAP -- the JSON body underneath
+    // is a completely different shape. LSP: {jsonrpc, id, method, params}
+    // requests, responses keyed by "id". DAP: {seq, type: "request",
+    // command, arguments} requests; {seq, type: "response", request_seq,
+    // success, command, body} responses; {seq, type: "event", event,
+    // body} server-initiated events -- no "jsonrpc"/"method"/"id" fields
+    // at all. l_lsp_request/DispatchLspMessage below branch on this flag
+    // to build/parse the right shape; every other part of this client
+    // (framing, buffering, the pending/notification_refs/request_refs
+    // maps, JobManager vs. TcpJsonRpcManager transport selection) is
+    // unaffected and stays shared between LSP and DAP.
+    bool dap_mode = false;
 };
 
 std::unordered_map<int, std::shared_ptr<LspClientState>> g_lsp_clients;
@@ -6576,14 +6598,116 @@ std::string LspFrame(const Json &msg) {
 }
 
 /**
- * @brief Parses one complete JSON-RPC message body and routes it to the matching pending-request callback or notification handler.
- * @param state LSP client state whose pending requests/notification handlers are consulted; silently returns if body doesn't parse as JSON.
+ * @brief Writes a framed JSON-RPC message to a client's transport -- a spawned
+ * process's stdin (JobManager) or a raw TCP socket (TcpJsonRpcManager),
+ * chosen by whether `client_id` falls in the kTcpClientIdBase+ range
+ * TcpJsonRpcManager::Connect hands out. The only place either manager's
+ * write path is called from, so every caller (requests, notifications,
+ * and DispatchLspMessage's own auto-responses to server requests) is
+ * transport-agnostic.
+ * @param client_id Id of the target LSP/DAP client.
+ * @param framed Already Content-Length-framed bytes (see LspFrame).
+ */
+void SendLspRaw(int client_id, const std::string &framed) {
+    if (client_id >= kTcpClientIdBase) {
+        TcpJsonRpcManager::Instance().Send(client_id, framed);
+    } else {
+        JobManager::Instance().WriteStdin(client_id, framed);
+    }
+}
+
+/**
+ * @brief Parses one complete DAP message (see LspClientState::dap_mode) and
+ * routes it to the matching pending-request callback (a "response", matched
+ * by request_seq), event handler (an "event"), or request handler (a
+ * server-initiated "request", answered with a synthesized DAP response).
+ * A response/event handler is called with a normalized {result=...} or
+ * {error={message=...}} table (response) or the event's own body (event) --
+ * the same shape kBuiltinDap's Lua already expects from the LSP path, so
+ * that code needs no transport-aware branching of its own.
+ * @param state DAP client state whose pending requests/notification/request handlers are consulted.
+ * @param msg Parsed DAP message.
+ */
+void DispatchDapMessage(LspClientState &state, const Json &msg) {
+    std::string type = msg.contains("type") ? msg.get("type").as_string("") : "";
+    if (type == "response") {
+        int request_seq = msg.contains("request_seq") ? msg.get("request_seq").as_int(-1) : -1;
+        auto it = state.pending.find(request_seq);
+        if (it == state.pending.end()) return;
+        int ref = it->second;
+        state.pending.erase(it);
+        Json normalized = Json::Object();
+        if (msg.contains("success") ? msg.get("success").as_bool(true) : true) {
+            normalized["result"] = msg.contains("body") ? msg.get("body") : Json::Object();
+        } else {
+            Json err = Json::Object();
+            err["message"] = msg.contains("message") ? msg.get("message") : Json("DAP request failed");
+            normalized["error"] = err;
+        }
+        state.env->CallRefWithJson(ref, normalized);
+        state.env->UnrefFunction(ref);
+    } else if (type == "event") {
+        const std::string &event = msg.contains("event") ? msg.get("event").as_string() : std::string();
+        auto it = state.notification_refs.find(event);
+        if (it != state.notification_refs.end()) {
+            state.env->CallRefWithJson(it->second, msg.contains("body") ? msg.get("body") : Json::Object());
+        }
+    } else if (type == "request") {
+        // Server-initiated request (e.g. runInTerminal) -- DAP requires a
+        // response here too, same reasoning as the LSP path's request
+        // branch below: always answer, with {} if no handler is registered.
+        const std::string &command = msg.contains("command") ? msg.get("command").as_string() : std::string();
+        Json arguments = msg.contains("arguments") ? msg.get("arguments") : Json::Object();
+        auto it = state.request_refs.find(command);
+        Json result = it != state.request_refs.end() ? state.env->CallRefWithJsonReturningJson(it->second, arguments)
+                                                       : Json::Object();
+        Json response = Json::Object();
+        response["seq"] = Json(state.next_request_id++);
+        response["type"] = Json("response");
+        response["request_seq"] = msg.contains("seq") ? msg.get("seq") : Json(0);
+        response["success"] = Json(true);
+        response["command"] = Json(command);
+        response["body"] = result;
+        SendLspRaw(state.client_id, LspFrame(response));
+    }
+}
+
+/**
+ * @brief Parses one complete JSON-RPC message body and routes it to the matching
+ * pending-request callback, notification handler, or (for a server-initiated
+ * *request* -- both "id" and "method" present) request handler, writing a
+ * JSON-RPC response back for the latter. Dispatches to DispatchDapMessage
+ * instead when the client is in DAP mode (see LspClientState::dap_mode) --
+ * DAP and LSP share Content-Length framing but not the JSON body shape.
+ * @param state LSP client state whose pending requests/notification/request handlers are consulted; silently returns if body doesn't parse as JSON.
  * @param body Decoded JSON-RPC message body (no framing headers).
  */
 void DispatchLspMessage(LspClientState &state, const std::string &body) {
     Json msg;
     if (!Json::Parse(body, &msg)) return;
-    if (msg.contains("id") && !msg.contains("method")) {
+    if (state.dap_mode) {
+        DispatchDapMessage(state, msg);
+        return;
+    }
+    if (msg.contains("id") && msg.contains("method")) {
+        // A server-initiated *request* (e.g. DAP's runInTerminal) -- unlike
+        // a plain notification, the protocol requires a reply. Previously
+        // this fell into the notification branch below and got no reply at
+        // all, leaving the adapter waiting forever for one (a real,
+        // documented gap -- see kBuiltinDap's own comment in main.cpp).
+        // Always answer, even with an empty {} result, if no handler is
+        // registered -- an unanswered request is worse than a no-op one.
+        const std::string &method = msg.get("method").as_string();
+        Json params = msg.contains("params") ? msg.get("params") : Json::Object();
+        auto it = state.request_refs.find(method);
+        Json result = it != state.request_refs.end() ? state.env->CallRefWithJsonReturningJson(it->second, params)
+                                                       : Json::Object();
+        Json response = Json::Object();
+        response["jsonrpc"] = Json("2.0");
+        response["id"] = msg.get("id");
+        response["result"] = result;
+        SendLspRaw(state.client_id, LspFrame(response));
+    } else if (msg.contains("id")) {
         int id = msg.get("id").as_int();
         auto it = state.pending.find(id);
         if (it != state.pending.end()) {
@@ -6633,9 +6757,41 @@ void PumpLspBuffer(LspClientState &state) {
     }
 }
 
+// NVIM_PARITY_PLAN.md Phase 20 gap: a request pending when the server
+// process/connection dies used to never fire its callback at all --
+// state->pending's callback refs, and the Lua coroutines/closures waiting
+// on them, just leaked/hung forever. Fires each with a synthetic JSON-RPC
+// error response (same shape a real error reply would have, so callers
+// already checking `.error` need no new code path) and mirrors
+// l_lsp_stop's own g_lsp_clients cleanup so a later
+// mep.lsp_is_running/lsp_request against this client_id correctly sees it
+// as gone rather than silently queuing forever. Shared by l_lsp_start's
+// on_exit (a spawned process died) and l_lsp_connect's on_exit (a TCP
+// connection closed) -- from this dispatch layer's point of view they're
+// the same event.
+/**
+ * @brief Fires every still-pending request's callback on `state` with a synthetic JSON-RPC error and removes it from g_lsp_clients.
+ * @param state The client whose pending requests should be failed and which should be forgotten.
+ */
+void FireLspExitErrorAndCleanup(const std::shared_ptr<LspClientState> &state) {
+    for (auto &kv : state->pending) {
+        Json err = Json::Object();
+        err["jsonrpc"] = Json("2.0");
+        err["id"] = Json(kv.first);
+        Json err_obj = Json::Object();
+        err_obj["code"] = Json(-32000);
+        err_obj["message"] = Json("LSP/DAP server exited");
+        err["error"] = err_obj;
+        state->env->CallRefWithJson(kv.second, err);
+        state->env->UnrefFunction(kv.second);
+    }
+    state->pending.clear();
+    if (state->client_id != 0) g_lsp_clients.erase(state->client_id);
+}
+
 /**
  * @brief Implements mep.lsp_start(argv[, opts]): spawns an LSP server process and registers it as a tracked client.
- * @param L Lua state; arg 1 is a Lua array of argv strings for the server command, optional arg 2 is an {cwd=} options table.
+ * @param L Lua state; arg 1 is a Lua array of argv strings for the server command, optional arg 2 is an {cwd=, dap=} options table.
  * @return Number of values pushed (1: the new client id, or 0 if the spawn failed).
  */
 int l_lsp_start(lua_State *L) {
@@ -6648,14 +6804,19 @@ int l_lsp_start(lua_State *L) {
         lua_pop(L, 1);
     }
     std::string cwd;
+    bool dap_mode = false;
     if (lua_gettop(L) >= 2 && lua_istable(L, 2)) {
         lua_getfield(L, 2, "cwd");
         if (lua_isstring(L, -1)) cwd = lua_tostring(L, -1);
+        lua_pop(L, 1);
+        lua_getfield(L, 2, "dap");
+        dap_mode = lua_toboolean(L, -1);
         lua_pop(L, 1);
     }
 
     auto state = std::make_shared<LspClientState>();
     state->env = GetLuaEnv(L);
+    state->dap_mode = dap_mode;
     JobManager::Callbacks cb;
     /**
      * @brief Job stdout callback: appends raw output bytes to the client's buffer and pumps out any complete LSP messages.
@@ -6665,39 +6826,60 @@ int l_lsp_start(lua_State *L) {
         state->buffer += chunk;
         PumpLspBuffer(*state);
     };
-    // NVIM_PARITY_PLAN.md Phase 20 gap: a request pending when the server
-    // process dies used to never fire its callback at all (no on_exit was
-    // registered here) -- state->pending's callback refs, and the Lua
-    // coroutines/closures waiting on them, just leaked/hung forever. Fires
-    // each with a synthetic JSON-RPC error response (same shape a real
-    // error reply would have, so callers already checking `.error` need
-    // no new code path) and mirrors l_lsp_stop's own g_lsp_clients cleanup
-    // so a later mep.lsp_is_running/lsp_request against this client_id
-    // correctly sees it as gone rather than silently queuing forever.
     /**
-     * @brief Job exit callback: fires every still-pending request's callback with a synthetic JSON-RPC error and removes the client from g_lsp_clients.
+     * @brief Job exit callback: see FireLspExitErrorAndCleanup.
      * @param (unused) The server process's exit code.
      */
-    cb.on_exit = [state](int) {
-        for (auto &kv : state->pending) {
-            Json err = Json::Object();
-            err["jsonrpc"] = Json("2.0");
-            err["id"] = Json(kv.first);
-            Json err_obj = Json::Object();
-            err_obj["code"] = Json(-32000);
-            err_obj["message"] = Json("LSP server exited");
-            err["error"] = err_obj;
-            state->env->CallRefWithJson(kv.second, err);
-            state->env->UnrefFunction(kv.second);
-        }
-        state->pending.clear();
-        if (state->client_id != 0) g_lsp_clients.erase(state->client_id);
-    };
+    cb.on_exit = [state](int) { FireLspExitErrorAndCleanup(state); };
     int id = JobManager::Instance().Spawn(argv, cwd, std::move(cb));
     if (id != 0) {
         state->client_id = id;
         g_lsp_clients[id] = state;
     }
+    lua_pushinteger(L, id);
+    return 1;
+}
+
+// mep.lsp_connect(host, port) -> client_id (always in the kTcpClientIdBase+
+// range; never 0). A TCP-transport sibling of mep.lsp_start for DAP
+// adapters that speak JSON-RPC over a raw socket instead of stdio (R's
+// vscDebugger: mep.dap_start spawns the R process itself separately via
+// mep.term_start, waits for it to start listening, then calls this to
+// open the actual DAP channel). The returned id works with every other
+// mep.lsp_* function exactly like a mep.lsp_start id does -- g_lsp_clients/
+// LspClientState/DispatchLspMessage don't know or care which transport
+// backs a given client.
+/**
+ * @brief Implements mep.lsp_connect(host, port): opens a TCP connection and registers it as a tracked JSON-RPC client.
+ * @param L Lua state; arg 1 is the host, arg 2 is the port.
+ * @return Number of values pushed (1: the new client id, always in the kTcpClientIdBase+ range).
+ */
+int l_lsp_connect(lua_State *L) {
+    const char *host = luaL_checkstring(L, 1);
+    int port = static_cast<int>(luaL_checkinteger(L, 2));
+
+    auto state = std::make_shared<LspClientState>();
+    state->env = GetLuaEnv(L);
+    // Its only consumer today (kBuiltinDap's R/vscDebugger path) is DAP
+    // over TCP -- always DAP-shaped messages (see LspClientState::dap_mode).
+    state->dap_mode = true;
+    TcpJsonRpcManager::Callbacks cb;
+    /**
+     * @brief TCP data callback: appends raw bytes to the client's buffer and pumps out any complete LSP/DAP messages.
+     * @param chunk Raw bytes received from the socket.
+     */
+    cb.on_data_raw = [state](const std::string &chunk) {
+        state->buffer += chunk;
+        PumpLspBuffer(*state);
+    };
+    /**
+     * @brief TCP exit callback: see FireLspExitErrorAndCleanup.
+     * @param (unused) Always -1 for a socket (no process exit code).
+     */
+    cb.on_exit = [state](int) { FireLspExitErrorAndCleanup(state); };
+    int id = TcpJsonRpcManager::Instance().Connect(host, port, std::move(cb));
+    state->client_id = id;
+    g_lsp_clients[id] = state;
     lua_pushinteger(L, id);
     return 1;
 }
@@ -6729,11 +6911,22 @@ int l_lsp_request(lua_State *L) {
     int req_id = state.next_request_id++;
     if (cb_ref != 0) state.pending[req_id] = cb_ref;
     Json msg = Json::Object();
-    msg["jsonrpc"] = Json("2.0");
-    msg["id"] = Json(req_id);
-    msg["method"] = Json(method);
-    msg["params"] = params;
-    JobManager::Instance().WriteStdin(client_id, LspFrame(msg));
+    if (state.dap_mode) {
+        // Real DAP wire shape (see LspClientState::dap_mode) -- confirmed
+        // against an actually-spawned lldb-dap: it rejects a JSON-RPC-2.0
+        // {jsonrpc, id, method, params} message outright ("DAP session
+        // error: missing value at (root).type").
+        msg["seq"] = Json(req_id);
+        msg["type"] = Json("request");
+        msg["command"] = Json(method);
+        msg["arguments"] = params;
+    } else {
+        msg["jsonrpc"] = Json("2.0");
+        msg["id"] = Json(req_id);
+        msg["method"] = Json(method);
+        msg["params"] = params;
+    }
+    SendLspRaw(client_id, LspFrame(msg));
     lua_pushinteger(L, req_id);
     return 1;
 }
@@ -6752,7 +6945,33 @@ int l_lsp_notify(lua_State *L) {
     msg["jsonrpc"] = Json("2.0");
     msg["method"] = Json(method);
     msg["params"] = params;
-    JobManager::Instance().WriteStdin(client_id, LspFrame(msg));
+    SendLspRaw(client_id, LspFrame(msg));
+    return 0;
+}
+
+// mep.lsp_on_request(client_id, method, fn): like mep.lsp_on_notification,
+// but for a server-initiated *request* (has both "id" and "method") --
+// DAP's runInTerminal is the motivating case. fn(params) is called and
+// whatever it returns (a table, or nothing) becomes the JSON-RPC
+// response's `result`; DispatchLspMessage sends {} automatically if no
+// handler is registered for a given method, so a request is never simply
+// left unanswered.
+/**
+ * @brief Implements mep.lsp_on_request(client_id, method, fn): registers fn(params) to run each time the server sends a given request, replying with fn's return value; a second registration for the same method replaces the first.
+ * @param L Lua state; arg 1 is the client id, arg 2 is the request method name, arg 3 is the handler function.
+ * @return Number of values pushed (0).
+ */
+int l_lsp_on_request(lua_State *L) {
+    int client_id = static_cast<int>(luaL_checkinteger(L, 1));
+    const char *method = luaL_checkstring(L, 2);
+    luaL_checktype(L, 3, LUA_TFUNCTION);
+    auto it = g_lsp_clients.find(client_id);
+    if (it == g_lsp_clients.end()) return 0;
+    lua_pushvalue(L, 3);
+    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    int &slot = it->second->request_refs[method];
+    if (slot != 0) GetLuaEnv(L)->UnrefFunction(slot);
+    slot = ref;
     return 0;
 }
 
@@ -6785,19 +7004,25 @@ int l_lsp_on_notification(lua_State *L) {
  */
 int l_lsp_stop(lua_State *L) {
     int client_id = static_cast<int>(luaL_checkinteger(L, 1));
-    JobManager::Instance().Kill(client_id);
+    if (client_id >= kTcpClientIdBase) {
+        TcpJsonRpcManager::Instance().Close(client_id);
+    } else {
+        JobManager::Instance().Kill(client_id);
+    }
     g_lsp_clients.erase(client_id);
     return 0;
 }
 
 /**
- * @brief Implements mep.lsp_is_running(client_id): checks whether an LSP client's server process is still running.
+ * @brief Implements mep.lsp_is_running(client_id): checks whether an LSP client's server process/connection is still running.
  * @param L Lua state; arg 1 is the client id to check.
- * @return Number of values pushed (1: boolean, whether the process is running).
+ * @return Number of values pushed (1: boolean, whether the process/connection is running).
  */
 int l_lsp_is_running(lua_State *L) {
     int client_id = static_cast<int>(luaL_checkinteger(L, 1));
-    lua_pushboolean(L, JobManager::Instance().IsRunning(client_id));
+    bool running = client_id >= kTcpClientIdBase ? TcpJsonRpcManager::Instance().IsRunning(client_id)
+                                                  : JobManager::Instance().IsRunning(client_id);
+    lua_pushboolean(L, running);
     return 1;
 }
 
@@ -8457,6 +8682,8 @@ const luaL_Reg kMepFuncs[] = {
     {"lsp_symbols_flatten", l_lsp_symbols_flatten},
     {"lsp_notify", l_lsp_notify},
     {"lsp_on_notification", l_lsp_on_notification},
+    {"lsp_on_request", l_lsp_on_request},
+    {"lsp_connect", l_lsp_connect},
     {"lsp_stop", l_lsp_stop},
     {"lsp_is_running", l_lsp_is_running},
     {"hint_jump", l_hint_jump},
@@ -8668,6 +8895,21 @@ void LuaEnv::CallRefWithJson(int ref, const Json &arg) {
         if (editor_) editor_->SetStatusMessage(std::string("Lua error: ") + (msg ? msg : "?"));
         lua_pop(L_, 1);
     }
+}
+
+Json LuaEnv::CallRefWithJsonReturningJson(int ref, const Json &arg) {
+    if (ref == LUA_NOREF || ref == LUA_REFNIL || ref == 0) return Json::Object();
+    lua_rawgeti(L_, LUA_REGISTRYINDEX, ref);
+    PushJson(L_, arg);
+    if (lua_pcall(L_, 1, 1, 0) != LUA_OK) {
+        const char *msg = lua_tostring(L_, -1);
+        if (editor_) editor_->SetStatusMessage(std::string("Lua error: ") + (msg ? msg : "?"));
+        lua_pop(L_, 1);
+        return Json::Object();
+    }
+    Json result = lua_isnoneornil(L_, -1) ? Json::Object() : LuaToJson(L_, -1);
+    lua_pop(L_, 1);
+    return result;
 }
 
 bool LuaEnv::CallRefWithStringForStrings(int ref, const std::string &arg, std::vector<std::string> *out) {

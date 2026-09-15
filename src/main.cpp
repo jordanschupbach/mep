@@ -15,6 +15,7 @@
 #include "job.h"
 #include "lua_env.h"
 #include "org_doc.h"
+#include "tcp_client.h"
 #include "sheet_doc.h"
 #include "vterm.h"
 #include "image_doc.h"
@@ -7870,20 +7871,32 @@ const char *kBuiltinDocs =
     "mep.command('MepKeymaps', mep.keymaps)\n"
     "mep.leader_map('hk', 'Help: keymaps', mep.keymaps)\n";
 
-// DAP client (Phase 26): reuses Phase 20's mep.lsp_start/request/notify
-// wholesale -- despite the name, that's a generic Content-Length-framed
-// JSON-RPC client, not LSP-specific, and DAP uses the identical wire
-// framing. **Scoped down significantly, and not verified against a live
-// adapter in this session** (no DAP adapter -- lldb-dap/debugpy/etc --
-// was confirmed available, unlike Phase 20's lua-language-server): session
-// start (spawn, initialize -> launch -> configurationDone), breakpoint
-// toggle (gutter sign via Phase 4 decorations) + setBreakpoints, and
-// continue/step-over/step-in/step-out/terminate. **Not implemented**:
-// the stack/scopes/variables sidebar, the REPL console, and responding to
-// server-initiated requests (e.g. runInTerminal) -- DAP requires the
-// client to send a response back for those (a real protocol gap this
-// client doesn't cover yet, since Phase 20 only ever needed to handle
-// server->client *notifications*, not server->client *requests*).
+// DAP client (Phase 26, extended for full debugging support -- see
+// TODO.org's "Add DAP debugging capabilities"): reuses Phase 20's
+// mep.lsp_start/request/notify wholesale -- despite the name, that's a
+// generic Content-Length-framed JSON-RPC client, not LSP-specific, and
+// DAP uses the identical wire framing. Session start (spawn, initialize ->
+// launch -> configurationDone), breakpoint toggle (gutter sign via Phase 4
+// decorations) + setBreakpoints, continue/step-over/step-in/step-out/
+// terminate, a real `stopped`-event control-flow chain (threads ->
+// stackTrace -> scopes -> variables, plus a gutter "current line" arrow),
+// `output`/`terminated`/`exited` event handling, and a minimal
+// `runInTerminal` reply now that server-initiated *requests* actually get
+// a JSON-RPC response (lua_env.cpp's DispatchLspMessage/mep.lsp_on_request
+// -- previously a real protocol gap: such a request fell into the
+// notification branch and never got answered, leaving the adapter waiting
+// forever). `r` uses a TCP transport (mep.lsp_connect, lua_env.cpp/
+// tcp_client.*) instead of stdio: vscDebugger opens a socket rather than
+// speaking DAP over stdin/stdout the way lldb-dap/debugpy do.
+//
+// This chunk is session/event *mechanics* only, deliberately free of
+// keybindings and UI -- mirrors this file's existing kBuiltinRun (spawn/
+// stream logic) vs. kBuiltinRunButton (config + keybinding) split.
+// kBuiltinDebugUi, loaded right after this chunk, owns the sidebar,
+// console, and every <leader>d* binding, calling back into the mep.dap_*
+// functions defined here. It also defines mep_dap_console_append and
+// mep_dap_ui_refresh, which this chunk calls (guarded with an `if` --
+// harmless if ever loaded standalone, e.g. from a test).
 const char *kBuiltinDap =
     "mep.dap_adapters = {\n"
     "  cpp = {cmd = {'lldb-dap'}, filetypes = {'c', 'cpp'}},\n"
@@ -7917,46 +7930,509 @@ const char *kBuiltinDap =
     // netcoredbg's `--interpreter=vscode` flag is the one common adapter
     // here that *does* speak DAP over stdio directly, same as lldb-dap.\n"
     "  csharp = {cmd = {'netcoredbg', '--interpreter=vscode'}, filetypes = {'cs'}},\n"
+    // R has no adapter that speaks DAP over stdio -- the real one,
+    // vscDebugger, starts an R process that opens a plain TCP listener
+    // instead (see mep_dap_start_r below and mep.lsp_connect/tcp_client.*
+    // for the transport this actually rides on). Its `launch` request
+    // also takes a different argument shape than every other adapter here
+    // (confirmed against vscDebugger v0.5.9's own R/launch.R:
+    // `file`+`debugMode`, not `program`) -- see launch_args below and
+    // mep_dap_launch's use of it.
+    //
+    // Verified live against a real vscDebugger 0.5.9 process (flake.nix's
+    // vscDebuggerR): the TCP connect, initialize, launch, setBreakpoints,
+    // and configurationDone handshake all complete correctly, and a real
+    // `stopped`/`breakpoint` event does fire when execution reaches a
+    // breakpoint line. **Not yet verified working end-to-end**: unlike
+    // lldb-dap/debugpy, the session ended (an `exited` event) as soon as
+    // this client sent its next request (`threads`) after that stop --
+    // vscDebugger's `debugMode = 'file'` runs the whole script via
+    // `.vsc.debugSource()` from inside `configurationDoneRequest` and
+    // sets `session$stopListeningOnPort <- TRUE` right after, per its own
+    // R/launch.R, so a paused breakpoint may not keep the DAP socket
+    // session alive for follow-up stackTrace/scopes/variables requests
+    // the way this client's stopped-event handler expects. Whether that
+    // needs a different `debugMode`/launch argument, or vscDebugger
+    // simply doesn't support this client's request pattern for plain
+    // script debugging, needs further investigation with more time on
+    // vscDebugger's own source (breakpoints.R/flow.R) than this change
+    // had left for it -- the R *transport* (the actual point of this
+    // change) is solid; R *session* behavior past the first breakpoint is
+    // the open item.\n"
+    "  r = {\n"
+    "    cmd = {'R', '--no-save', '--slave'}, filetypes = {'r', 'R'}, transport = 'r-tcp',\n"
+    "    launch_args = function(path) return {file = path, debugMode = 'file'} end,\n"
+    "  },\n"
     "}\n"
-    "local mep_dap_client = nil\n"
+    "mep.opt = mep.opt or {}\n"
+    "mep.opt.dap_r_port = mep.opt.dap_r_port or 18721\n"
+    // Session state, grouped under one table (rather than scattered
+    // globals) so kBuiltinDebugUi's sidebar/console can read it directly
+    // (mep.dap_state.stack/scopes/variables) without new accessor
+    // functions -- current_frame_id tracks whichever stack frame the
+    // Variables section is currently showing (defaults to the top frame
+    // on every stop, but the Call Stack sidebar section can re-point it
+    // at any frame by calling mep_dap_fetch_scopes again).\n"
+    "mep.dap_state = {client = nil, lang = nil, thread_id = 1, stack = {}, scopes = {}, variables = {}, current_frame_id = nil}\n"
     // The breakpoint list + toggle logic (per-file line array, gutter
     // decoration sync) moved to C++ -- Editor::DapToggleBreakpoint/
     // DapBreakpointLines (editor.cpp), exposed as
     // mep.dap_toggle_breakpoint/mep.dap_breakpoint_lines (lua_env.cpp) --
-    // so mep.dap_toggle_breakpoint below is directly the C function, not a
-    // Lua wrapper around one.
+    // so mep.dap_toggle_breakpoint is directly the C function, not a Lua
+    // wrapper around one. Its own gutter dot lives in namespace "dap"; the
+    // "current line" arrow below deliberately uses a *different*
+    // namespace ("dap_current_line") since DapToggleBreakpoint fully
+    // clears and rebuilds the "dap" namespace on every toggle and would
+    // otherwise wipe the current-line arrow out from under a stopped
+    // session.\n"
+    "local mep_dap_current_line_ns = mep.ns_create('dap_current_line')\n"
+    "local mep_dap_r_job = nil\n"
+    "local mep_dap_r_pending = false\n"
+    "local function mep_dap_clear_current_line() mep.ns_clear(mep_dap_current_line_ns) end\n"
+    "local function mep_dap_jump_to_frame(frame)\n"
+    "  local path = frame.source and frame.source.path\n"
+    "  if path and path ~= '' then mep.cmd('edit ' .. path) end\n"
+    "  local line = frame.line or 1\n"
+    "  mep.set_cursor(line, 1)\n"
+    // The editor's own CursorLine highlight already shows the stopped
+    // line (set_cursor just moved there) -- only a gutter arrow is
+    // needed. priority 20 is above LSP diagnostics' own 10 (main.cpp's
+    // sign-priority-wins gutter logic) so the arrow always wins the sign
+    // slot over a diagnostic on the same line.\n"
+    "  mep_dap_clear_current_line()\n"
+    "  mep.deco_add(mep_dap_current_line_ns, {row = line, sign = '\xE2\x96\xB6', sign_hl = 'Green', priority = 20})\n"
+    "end\n"
+    // Global (not local): kBuiltinDebugUi's Call Stack section calls this
+    // directly when the user clicks a different frame, to re-point
+    // Variables at that frame without re-fetching the whole stack.\n"
+    "function mep_dap_fetch_scopes(frame_id)\n"
+    "  local id = mep.dap_state.client\n"
+    "  if not id then return end\n"
+    "  mep.dap_state.current_frame_id = frame_id\n"
+    "  mep.lsp_request(id, 'scopes', {frameId = frame_id}, function(sresp)\n"
+    "    local scopes = (sresp.result and sresp.result.scopes) or {}\n"
+    "    mep.dap_state.scopes = scopes\n"
+    "    mep.dap_state.variables = {}\n"
+    "    for _, scope in ipairs(scopes) do\n"
+    "      mep.lsp_request(id, 'variables', {variablesReference = scope.variablesReference}, function(vresp)\n"
+    "        mep.dap_state.variables[scope.name] = (vresp.result and vresp.result.variables) or {}\n"
+    "        if mep_dap_ui_refresh then mep_dap_ui_refresh() end\n"
+    "      end)\n"
+    "    end\n"
+    "    if mep_dap_ui_refresh then mep_dap_ui_refresh() end\n"
+    "  end)\n"
+    "end\n"
+    "local function mep_dap_on_stopped(body)\n"
+    "  mep.notify('Stopped: ' .. (body.reason or '?'))\n"
+    "  local id = mep.dap_state.client\n"
+    "  if not id then return end\n"
+    "  mep.lsp_request(id, 'threads', {}, function(tresp)\n"
+    "    local threads = (tresp.result and tresp.result.threads) or {}\n"
+    "    local thread_id = (threads[1] and threads[1].id) or body.threadId or 1\n"
+    "    mep.dap_state.thread_id = thread_id\n"
+    "    mep.lsp_request(id, 'stackTrace', {threadId = thread_id}, function(sresp)\n"
+    "      local frames = (sresp.result and sresp.result.stackFrames) or {}\n"
+    "      mep.dap_state.stack = frames\n"
+    "      local top = frames[1]\n"
+    "      if top then\n"
+    "        mep_dap_jump_to_frame(top)\n"
+    "        mep_dap_fetch_scopes(top.id)\n"
+    "      end\n"
+    "      if mep_dap_ui_refresh then mep_dap_ui_refresh() end\n"
+    "    end)\n"
+    "  end)\n"
+    "end\n"
+    "local function mep_dap_session_ended(reason, code)\n"
+    "  mep_dap_clear_current_line()\n"
+    "  mep.dap_state.client = nil\n"
+    "  mep.dap_state.stack = {}\n"
+    "  mep.dap_state.scopes = {}\n"
+    "  mep.dap_state.variables = {}\n"
+    "  mep.dap_state.current_frame_id = nil\n"
+    "  if mep_dap_ui_refresh then mep_dap_ui_refresh() end\n"
+    "  local msg = 'DAP session ' .. reason\n"
+    "  if code then msg = msg .. ' (exit code ' .. tostring(code) .. ')' end\n"
+    "  mep.notify(msg)\n"
+    "end\n"
+    // A DAP `launch` needs an actual executable, not a source file --
+    // fine for the interpreted adapters (python/r, and javascript/csharp
+    // if their stdio gap is ever closed), but not for cpp/c/rust, which
+    // need compiling first. Reuses the exact per-extension compiler
+    // config kBuiltinRunButton's mep.opt.run_button_defaults already
+    // defines (`{compiler=, flags=}`) rather than inventing a separate
+    // one -- read at call time, not chunk-load time, so this works
+    // regardless of kBuiltinRunButton loading after this chunk. No
+    // config for this extension, or no `compiler` field (the interpreted
+    // case): launch the source file directly, unchanged from before.
+    //
+    // `stopOnEntry = true`: confirmed live against lldb-dap that its
+    // `launch` response arrives (and the debuggee starts running)
+    // *before* the client's own setBreakpoints/configurationDone -- which
+    // this client, like most, only sends once it's seen the `initialized`
+    // event, itself only fired from inside the `initialize` response
+    // callback. For a program that runs to completion in a few
+    // milliseconds (true of every examples/*.{c,cpp} fixture) that race
+    // meant a breakpoint set via `<leader>db` came back `verified: false`
+    // and was never actually hit -- the program had already exited by
+    // the time setBreakpoints reached the adapter. stopOnEntry halts at
+    // the very first instruction regardless of that race, so breakpoints
+    // are always in place before `mep.dap_continue` (`<leader>dd` again)
+    // resumes it -- the standard, spec-documented way DAP clients avoid
+    // this exact race, not a workaround specific to this client.\n"
+    // adapter.launch_args(path), when an adapter declares one (only `r`
+    // does, so far), builds the launch request's own arguments in place
+    // of the {program=, stopOnEntry=true} shape every stdio adapter here
+    // shares -- DAP only standardizes the envelope, not `launch`'s body,
+    // and vscDebugger's really is different (`file`/`debugMode`, no
+    // `program`/`stopOnEntry` at all -- confirmed against its source).\n"
+    "local function mep_dap_launch_args(path) return {program = path, stopOnEntry = true} end\n"
+    "local function mep_dap_launch(id, fname, adapter)\n"
+    "  local make_args = adapter.launch_args or mep_dap_launch_args\n"
+    "  local ext = mep_lsp_filetype(fname)\n"
+    "  local cfg = ext and mep.opt and mep.opt.run_button_defaults and mep.opt.run_button_defaults[ext]\n"
+    "  if not (cfg and cfg.compiler) then\n"
+    "    mep.lsp_request(id, 'launch', make_args(mep.getcwd() .. '/' .. fname))\n"
+    "    mep.notify('DAP session started: ' .. adapter.cmd[1])\n"
+    "    return\n"
+    "  end\n"
+    "  local out_path = mep.getcwd() .. '/' .. fname .. '.dapbin'\n"
+    "  local argv = {cfg.compiler}\n"
+    "  for flag in tostring(cfg.flags or ''):gmatch('%S+') do argv[#argv + 1] = flag end\n"
+    // -O0 after -g, not just -g alone: confirmed live that this toolchain's
+    // cc wrapper (nixpkgs' _FORTIFY_SOURCE hardening) silently adds -O2
+    // when no -O flag is given, which the compiler then uses to fully
+    // inline small functions like examples/cpp_example.cpp's distanceTo --
+    // its body has zero line-table entries at -O2, so lldb reports "no
+    // locations (pending)" for any breakpoint inside it and the debugger
+    // never stops there, no matter how correct the DAP request sequence
+    // is. A later -O0 on the same command line overrides the wrapper's
+    // earlier -O2 (last one wins for both gcc and clang) -- the standard
+    // "-g -O0" debug-build combination, not a workaround specific to this
+    // wrapper.\n"
+    "  argv[#argv + 1] = '-g'\n"
+    "  argv[#argv + 1] = '-O0'\n"
+    "  argv[#argv + 1] = '-o'\n"
+    "  argv[#argv + 1] = out_path\n"
+    "  argv[#argv + 1] = fname\n"
+    "  if mep_dap_console_append then mep_dap_console_append('Compiling: ' .. table.concat(argv, ' ')) end\n"
+    "  mep.job_start(argv, {\n"
+    "    cwd = mep.getcwd(),\n"
+    "    on_stdout = function(line) if mep_dap_console_append then mep_dap_console_append(line) end end,\n"
+    "    on_stderr = function(line) if mep_dap_console_append then mep_dap_console_append(line) end end,\n"
+    "    on_exit = function(code)\n"
+    "      if code ~= 0 then mep.notify('Debug: compile failed (exit ' .. tostring(code) .. ')', 'error') return end\n"
+    "      mep.lsp_request(id, 'launch', make_args(out_path))\n"
+    "      mep.notify('DAP session started: ' .. adapter.cmd[1])\n"
+    "    end,\n"
+    "  })\n"
+    "end\n"
+    "local function mep_dap_after_connect(id, lang, adapter)\n"
+    "  mep.dap_state.client = id\n"
+    "  mep.dap_state.lang = lang\n"
+    "  mep.lsp_on_notification(id, 'stopped', function(body) mep_dap_on_stopped(body) end)\n"
+    "  mep.lsp_on_notification(id, 'continued', function() mep_dap_clear_current_line() end)\n"
+    "  mep.lsp_on_notification(id, 'output', function(body)\n"
+    "    if mep_dap_console_append then\n"
+    "      local prefix = (body.category and body.category ~= 'stdout') and (body.category .. ': ') or ''\n"
+    "      mep_dap_console_append(prefix .. (body.output or ''))\n"
+    "    end\n"
+    "  end)\n"
+    "  mep.lsp_on_notification(id, 'terminated', function() mep_dap_session_ended('terminated') end)\n"
+    "  mep.lsp_on_notification(id, 'exited', function(body) mep_dap_session_ended('exited', body and body.exitCode) end)\n"
+    // Minimal spec-compliant reply to a real, previously-unanswered
+    // protocol gap (see this chunk's own header comment): just run the
+    // requested command in the background and reply with {} (both
+    // processId/shellProcessId are optional in the DAP spec).\n"
+    "  mep.lsp_on_request(id, 'runInTerminal', function(params)\n"
+    "    if params.args and #params.args > 0 then mep.term_start(params.args, {cwd = params.cwd}) end\n"
+    "    return {}\n"
+    "  end)\n"
+    "  mep.lsp_on_notification(id, 'initialized', function()\n"
+    "    local f = mep.filename()\n"
+    "    local lines = {}\n"
+    "    for _, r in ipairs(mep.dap_breakpoint_lines(f)) do lines[#lines + 1] = {line = r} end\n"
+    "    mep.lsp_request(id, 'setBreakpoints', {source = {path = mep.getcwd() .. '/' .. f}, breakpoints = lines})\n"
+    "    mep.lsp_request(id, 'configurationDone', {})\n"
+    "  end)\n"
+    "  mep_dap_launch(id, mep.filename(), adapter)\n"
+    "end\n"
+    // R path: vscDebugger doesn't speak DAP over stdio, so this doesn't
+    // call mep.lsp_start at all -- it spawns R itself via mep.term_start
+    // (R's own stdout is plain console text, not LSP-framed, so streaming
+    // it through mep.lsp_start's Content-Length parser would be wrong),
+    // waits for the socket it's told to listen on to come up, then opens
+    // the actual DAP channel with mep.lsp_connect. Retries every ~0.2s
+    // for ~5s (mep.on_frame, gated on mep_dap_r_pending so this stays a
+    // no-op every other frame once connected or given up).\n"
+    "local function mep_dap_start_r(adapter)\n"
+    "  local port = mep.opt.dap_r_port\n"
+    "  local cmd = {}\n"
+    "  for _, a in ipairs(adapter.cmd) do cmd[#cmd + 1] = a end\n"
+    "  cmd[#cmd + 1] = '-e'\n"
+    // .vsc.listenForDAP, not launchServer -- confirmed against the real
+    // package (v0.5.9's NAMESPACE): every vscDebugger entry point is
+    // internal (dot-prefixed, `ls("package:vscDebugger")` returns nothing
+    // -- R hides dot-prefixed names by default), so it needs `:::`
+    // namespace access, not `::`. It also blocks in its own read loop for
+    // as long as the session lives, exactly what a background mep.term_start
+    // job wants; its `library(splines)` counterpart (this fixture's own
+    // r_example.r) never runs until vscDebugger actually launches it via
+    // a `source()`-alike inside the debuggee frame.\n"
+    "  cmd[#cmd + 1] = string.format('vscDebugger:::.vsc.listenForDAP(port=%d)', port)\n"
+    "  mep_dap_r_job = mep.term_start(cmd, {\n"
+    "    on_stdout_raw = function(chunk) if mep_dap_console_append then mep_dap_console_append(chunk) end end,\n"
+    "    on_exit = function()\n"
+    "      mep_dap_r_job = nil\n"
+    "      if mep_dap_r_pending then\n"
+    "        mep_dap_r_pending = false\n"
+    "        mep.notify('R exited before the debug server came up', 'error')\n"
+    "      end\n"
+    "    end,\n"
+    "  })\n"
+    "  mep_dap_r_pending = true\n"
+    "  local deadline = mep.now() + 5.0\n"
+    "  local next_try = mep.now() + 0.3\n"
+    "  mep.on_frame(function()\n"
+    "    if not mep_dap_r_pending then return end\n"
+    "    local now = mep.now()\n"
+    "    if now < next_try then return end\n"
+    "    if now > deadline then\n"
+    "      mep_dap_r_pending = false\n"
+    "      mep.notify('Timed out connecting to vscDebugger on port ' .. port, 'error')\n"
+    "      if mep_dap_r_job then mep.job_kill(mep_dap_r_job) end\n"
+    "      return\n"
+    "    end\n"
+    "    next_try = now + 0.2\n"
+    "    local id = mep.lsp_connect('127.0.0.1', port)\n"
+    "    if mep.lsp_is_running(id) then\n"
+    "      mep_dap_r_pending = false\n"
+    "      mep.lsp_request(id, 'initialize', {adapterID = 'r', linesStartAt1 = true, columnsStartAt1 = true, pathFormat = 'path', supportsRunInTerminalRequest = true},\n"
+    "        function() mep_dap_after_connect(id, 'r', adapter) end)\n"
+    "    end\n"
+    "  end)\n"
+    "end\n"
     "function mep.dap_start(lang)\n"
     "  local adapter = mep.dap_adapters[lang]\n"
     "  if not adapter then mep.notify('No DAP adapter for ' .. tostring(lang), 'warn') return end\n"
-    "  local id = mep.lsp_start(adapter.cmd, {cwd = '.'})\n"
+    "  if adapter.transport == 'r-tcp' then mep_dap_start_r(adapter) return end\n"
+    "  local id = mep.lsp_start(adapter.cmd, {cwd = '.', dap = true})\n"
     "  if id <= 0 then mep.notify('Failed to start ' .. adapter.cmd[1], 'error') return end\n"
-    "  mep_dap_client = id\n"
-    "  mep.lsp_request(id, 'initialize', {adapterID = lang, linesStartAt1 = true, columnsStartAt1 = true},\n"
-    "  function()\n"
-    "    mep.lsp_on_notification(id, 'stopped', function(body)\n"
-    "      mep.notify('Stopped: ' .. (body.reason or '?'))\n"
-    "    end)\n"
-    "    mep.lsp_on_notification(id, 'initialized', function()\n"
-    "      local f = mep.filename()\n"
-    "      local lines = {}\n"
-    "      for _, r in ipairs(mep.dap_breakpoint_lines(f)) do lines[#lines + 1] = {line = r} end\n"
-    "      mep.lsp_request(id, 'setBreakpoints', {source = {path = mep.getcwd() .. '/' .. f}, breakpoints = lines})\n"
-    "      mep.lsp_request(id, 'configurationDone', {})\n"
-    "    end)\n"
-    "    mep.lsp_request(id, 'launch', {program = mep.getcwd() .. '/' .. mep.filename()})\n"
-    "    mep.notify('DAP session started: ' .. adapter.cmd[1])\n"
-    "  end)\n"
+    // pathFormat is required by lldb-dap (confirmed live: it rejects
+    // `initialize` outright without it, "missing value at
+    // arguments.pathFormat") -- real DAP clients (VS Code) always send
+    // it too, this just never got exercised without a live adapter to
+    // catch it.\n"
+    "  mep.lsp_request(id, 'initialize', {adapterID = lang, linesStartAt1 = true, columnsStartAt1 = true, pathFormat = 'path', supportsRunInTerminalRequest = true},\n"
+    "    function() mep_dap_after_connect(id, lang, adapter) end)\n"
     "end\n"
-    "function mep.dap_continue() if mep_dap_client then mep.lsp_request(mep_dap_client, 'continue', {threadId = 1}) end end\n"
-    "function mep.dap_step_over() if mep_dap_client then mep.lsp_request(mep_dap_client, 'next', {threadId = 1}) end end\n"
-    "function mep.dap_step_into() if mep_dap_client then mep.lsp_request(mep_dap_client, 'stepIn', {threadId = 1}) end end\n"
-    "function mep.dap_step_out() if mep_dap_client then mep.lsp_request(mep_dap_client, 'stepOut', {threadId = 1}) end end\n"
+    "function mep.dap_continue()\n"
+    "  if mep.dap_state.client then mep_dap_clear_current_line() mep.lsp_request(mep.dap_state.client, 'continue', {threadId = mep.dap_state.thread_id}) end\n"
+    "end\n"
+    "function mep.dap_step_over()\n"
+    "  if mep.dap_state.client then mep_dap_clear_current_line() mep.lsp_request(mep.dap_state.client, 'next', {threadId = mep.dap_state.thread_id}) end\n"
+    "end\n"
+    "function mep.dap_step_into()\n"
+    "  if mep.dap_state.client then mep_dap_clear_current_line() mep.lsp_request(mep.dap_state.client, 'stepIn', {threadId = mep.dap_state.thread_id}) end\n"
+    "end\n"
+    "function mep.dap_step_out()\n"
+    "  if mep.dap_state.client then mep_dap_clear_current_line() mep.lsp_request(mep.dap_state.client, 'stepOut', {threadId = mep.dap_state.thread_id}) end\n"
+    "end\n"
     "function mep.dap_terminate()\n"
-    "  if mep_dap_client then mep.lsp_request(mep_dap_client, 'terminate', {}); mep.lsp_stop(mep_dap_client); mep_dap_client = nil end\n"
+    "  local was_active = mep.dap_state.client ~= nil or mep_dap_r_job ~= nil or mep_dap_r_pending\n"
+    "  if mep.dap_state.client then\n"
+    "    mep.lsp_request(mep.dap_state.client, 'terminate', {})\n"
+    "    mep.lsp_stop(mep.dap_state.client)\n"
+    "  end\n"
+    "  if mep_dap_r_job then mep.job_kill(mep_dap_r_job) mep_dap_r_job = nil end\n"
+    "  mep_dap_r_pending = false\n"
+    "  if was_active then mep_dap_session_ended('terminated') else mep.notify('No DAP session running', 'warn') end\n"
     "end\n"
     "mep.command('MepDapBreakpoint', mep.dap_toggle_breakpoint)\n"
     "mep.command('MepDapContinue', mep.dap_continue)\n"
     "mep.command('MepDapTerminate', mep.dap_terminate)\n";
+
+// Debug UI: the sidebar (Call Stack/Variables/Breakpoints), the Debug
+// Console pane, and every <leader>d* keybinding -- kBuiltinDap above is
+// session/event mechanics only, mirroring this file's existing
+// kBuiltinRun/kBuiltinRunButton split. Sidebar plumbing reuses exactly
+// the mep.sidebar_create/set_sections/open/close/is_open API kBuiltinSymbols
+// and kBuiltinStructure already establish (see kBuiltinSymbols above for
+// the simplest reference: one sidebar, one section, click-to-jump
+// widgets); the console pane reuses kBuiltinRun's mep_term_open_pane
+// shape (a fresh split switched to a dedicated buffer).
+const char *kBuiltinDebugUi =
+    "local mep_dap_sidebar_id = nil\n"
+    "local mep_dap_console_buf = nil\n"
+    "local mep_dap_console_raw = ''\n"
+    "local mep_dap_known_bp_files = {}\n"
+    // Global (not local): kBuiltinDap's `output`/R-stdout handlers call
+    // this directly. Always re-derives the full line list from the whole
+    // accumulated raw text (like kBuiltinRun's mep_term_redraw) rather
+    // than appending pre-split chunks, so a line split across two `output`
+    // events/PTY reads still renders as one line.\n"
+    "function mep_dap_console_append(text)\n"
+    "  mep_dap_console_raw = mep_dap_console_raw .. text\n"
+    "  if not mep_dap_console_buf then return end\n"
+    "  local lines = {}\n"
+    "  for line in (mep_dap_console_raw .. '\\n'):gmatch('([^\\n]*)\\n') do lines[#lines + 1] = line end\n"
+    "  mep.buffer_set_lines(mep_dap_console_buf, lines)\n"
+    "  if mep.current_buffer() == mep_dap_console_buf then mep.set_cursor(#lines, 1) end\n"
+    "end\n"
+    "local function mep_dap_console_open_pane()\n"
+    "  if not mep_dap_console_buf then mep_dap_console_buf = mep.buffer_new() end\n"
+    "  mep.cmd('split')\n"
+    "  mep.buffer_switch(mep_dap_console_buf)\n"
+    "  mep_dap_console_append('')\n"
+    "end\n"
+    "local function mep_dap_stack_widgets()\n"
+    "  local widgets = {}\n"
+    "  for _, frame in ipairs(mep.dap_state.stack) do\n"
+    "    local loc = (frame.source and frame.source.name) or '?'\n"
+    "    widgets[#widgets + 1] = {\n"
+    "      id = 'frame_' .. tostring(frame.id),\n"
+    "      text = (frame.name or '?') .. ' - ' .. loc .. ':' .. tostring(frame.line or '?'),\n"
+    "      current = (frame.id == mep.dap_state.current_frame_id),\n"
+    "      on_click = function()\n"
+    "        mep_dap_fetch_scopes(frame.id)\n"
+    "        local path = frame.source and frame.source.path\n"
+    "        if path and path ~= '' then mep.cmd('edit ' .. path) end\n"
+    "        mep.set_cursor(frame.line or 1, 1)\n"
+    "      end,\n"
+    "    }\n"
+    "  end\n"
+    "  if #widgets == 0 then widgets[1] = {id = 'none', text = '(not stopped)'} end\n"
+    "  return widgets\n"
+    "end\n"
+    "local function mep_dap_variables_widgets()\n"
+    "  local widgets = {}\n"
+    "  for _, scope in ipairs(mep.dap_state.scopes) do\n"
+    "    widgets[#widgets + 1] = {id = 'scope_' .. scope.name, text = scope.name, hl = 'Comment'}\n"
+    "    for _, v in ipairs(mep.dap_state.variables[scope.name] or {}) do\n"
+    "      widgets[#widgets + 1] = {id = 'var_' .. scope.name .. '_' .. v.name, text = '  ' .. v.name .. ' = ' .. tostring(v.value)}\n"
+    "    end\n"
+    "  end\n"
+    "  if #widgets == 0 then widgets[1] = {id = 'none', text = '(no variables)'} end\n"
+    "  return widgets\n"
+    "end\n"
+    // No C++ "list every file with a breakpoint" API exists (breakpoints
+    // are tracked per-filename, only queryable one file at a time via
+    // mep.dap_breakpoint_lines) -- mep_dap_known_bp_files is this chunk's
+    // own small registry of files ever toggled via <leader>db, pruned here
+    // once a file's breakpoint list comes back empty.\n"
+    "local function mep_dap_breakpoints_widgets()\n"
+    "  local widgets = {}\n"
+    "  local keep = {}\n"
+    "  for _, file in ipairs(mep_dap_known_bp_files) do\n"
+    "    local lines = mep.dap_breakpoint_lines(file)\n"
+    "    if #lines > 0 then\n"
+    "      keep[#keep + 1] = file\n"
+    "      for _, line in ipairs(lines) do\n"
+    "        widgets[#widgets + 1] = {\n"
+    "          id = file .. ':' .. tostring(line), text = file .. ':' .. tostring(line),\n"
+    "          on_click = function() mep.cmd('edit ' .. file) mep.set_cursor(line, 1) end,\n"
+    "        }\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  mep_dap_known_bp_files = keep\n"
+    "  if #widgets == 0 then widgets[1] = {id = 'none', text = '(no breakpoints)'} end\n"
+    "  return widgets\n"
+    "end\n"
+    // Global: kBuiltinDap's stopped/scopes/variables/session-ended
+    // handlers call this after updating mep.dap_state, guarded with `if
+    // mep_dap_ui_refresh then` there so this chunk stays optional.\n"
+    "function mep_dap_ui_refresh()\n"
+    "  if not mep_dap_sidebar_id then return end\n"
+    "  mep.sidebar_set_sections(mep_dap_sidebar_id, {\n"
+    "    {id = 'stack', title = 'Call Stack', collapsed = false, widgets = mep_dap_stack_widgets()},\n"
+    "    {id = 'variables', title = 'Variables', collapsed = false, widgets = mep_dap_variables_widgets()},\n"
+    "    {id = 'breakpoints', title = 'Breakpoints', collapsed = false, widgets = mep_dap_breakpoints_widgets()},\n"
+    "  })\n"
+    "end\n"
+    "function mep.dap_ui_toggle()\n"
+    "  if not mep_dap_sidebar_id then mep_dap_sidebar_id = mep.sidebar_create('Debug', 'right', 40) end\n"
+    "  if mep.sidebar_is_open(mep_dap_sidebar_id) then\n"
+    "    mep.sidebar_close(mep_dap_sidebar_id)\n"
+    "  else\n"
+    "    mep_dap_ui_refresh()\n"
+    "    mep.sidebar_open(mep_dap_sidebar_id)\n"
+    "    if not mep_dap_console_buf then mep_dap_console_open_pane() end\n"
+    "  end\n"
+    "end\n"
+    "local function mep_dap_lang_for_ext(ext)\n"
+    "  for lang, adapter in pairs(mep.dap_adapters) do\n"
+    "    for _, ft in ipairs(adapter.filetypes) do\n"
+    "      if ft == ext then return lang end\n"
+    "    end\n"
+    "  end\n"
+    "  return nil\n"
+    "end\n"
+    "function mep.dap_toggle_start_or_continue()\n"
+    "  if mep.dap_state.client and mep.lsp_is_running(mep.dap_state.client) then mep.dap_continue() return end\n"
+    "  local fname = mep.filename()\n"
+    "  if not fname or fname == '' then mep.notify('Debug: save this buffer to a file first', 'warn') return end\n"
+    "  local ext = mep_lsp_filetype(fname)\n"
+    "  local lang = ext and mep_dap_lang_for_ext(ext)\n"
+    "  if not lang then mep.notify('No DAP adapter for .' .. tostring(ext), 'warn') return end\n"
+    "  mep.dap_start(lang)\n"
+    "end\n"
+    "local function mep_dap_toggle_breakpoint_here()\n"
+    "  local f = mep.filename()\n"
+    "  mep.dap_toggle_breakpoint()\n"
+    "  if f and f ~= '' then\n"
+    "    local found = false\n"
+    "    for _, existing in ipairs(mep_dap_known_bp_files) do if existing == f then found = true end end\n"
+    "    if not found then mep_dap_known_bp_files[#mep_dap_known_bp_files + 1] = f end\n"
+    "  end\n"
+    "  mep_dap_ui_refresh()\n"
+    "end\n"
+    "function mep.dap_restart()\n"
+    "  local lang = mep.dap_state.lang\n"
+    "  mep.dap_terminate()\n"
+    "  if lang then mep.dap_start(lang) else mep.notify('Debug: nothing to restart', 'warn') end\n"
+    "end\n"
+    // No C++ "clear every breakpoint in a file" API either -- toggling
+    // twice would just re-add, so this walks the cursor to each of the
+    // file's own breakpoint lines and toggles it off there (the only
+    // operation mep.dap_toggle_breakpoint supports), restoring the
+    // cursor afterwards.\n"
+    "function mep.dap_clear_breakpoints()\n"
+    "  local f = mep.filename()\n"
+    "  if not f or f == '' then return end\n"
+    "  local lines = {}\n"
+    "  for _, line in ipairs(mep.dap_breakpoint_lines(f)) do lines[#lines + 1] = line end\n"
+    "  if #lines == 0 then return end\n"
+    "  local saved_row, saved_col = mep.cursor()\n"
+    "  for _, line in ipairs(lines) do\n"
+    "    mep.set_cursor(line, 1)\n"
+    "    mep.dap_toggle_breakpoint()\n"
+    "  end\n"
+    "  mep.set_cursor(saved_row, saved_col)\n"
+    "  mep_dap_ui_refresh()\n"
+    "end\n"
+    "function mep.dap_evaluate_at_cursor()\n"
+    "  local id = mep.dap_state.client\n"
+    "  if not id then mep.notify('Debug: no active session', 'warn') return end\n"
+    "  local word = mep.lsp_word_at_cursor()\n"
+    "  if not word or word == '' then mep.notify('Debug: no expression under cursor', 'warn') return end\n"
+    "  mep.lsp_request(id, 'evaluate', {expression = word, frameId = mep.dap_state.current_frame_id, context = 'hover'},\n"
+    "  function(resp)\n"
+    "    local result = resp.result and resp.result.result\n"
+    "    local text = word .. ' = ' .. tostring(result)\n"
+    "    mep.notify(text)\n"
+    "    mep_dap_console_append(text)\n"
+    "  end)\n"
+    "end\n"
+    "mep.leader_map('du', 'Debug: toggle UI', mep.dap_ui_toggle)\n"
+    "mep.leader_map('dd', 'Debug: start/continue', mep.dap_toggle_start_or_continue)\n"
+    "mep.leader_map('db', 'Debug: toggle breakpoint', mep_dap_toggle_breakpoint_here)\n"
+    "mep.leader_map('dn', 'Debug: step over', mep.dap_step_over)\n"
+    "mep.leader_map('di', 'Debug: step into', mep.dap_step_into)\n"
+    "mep.leader_map('do', 'Debug: step out', mep.dap_step_out)\n"
+    "mep.leader_map('dt', 'Debug: terminate', mep.dap_terminate)\n"
+    "mep.leader_map('dr', 'Debug: restart', mep.dap_restart)\n"
+    "mep.leader_map('dc', 'Debug: clear breakpoints in file', mep.dap_clear_breakpoints)\n"
+    "mep.leader_map('dv', 'Debug: evaluate under cursor', mep.dap_evaluate_at_cursor)\n";
 
 // Syntax highlighting (Phase 19): a real Treesitter integration --
 // vendored libtree-sitter plus a curated set of grammar sources (c, cpp,
@@ -15930,7 +16406,8 @@ const char *kBuiltinWhichKeyGroups =
     // (Todo/Tests activity panels), 'n' (notification history).
     "mep.leader_group('s', 'structure')\n"
     "mep.leader_group('t', 'todo/tests')\n"
-    "mep.leader_group('n', 'notifications')\n";
+    "mep.leader_group('n', 'notifications')\n"
+    "mep.leader_group('d', 'debug')\n";
 
 const char *kBuiltinPickerSources =
     "function mep.themes()\n"
@@ -30389,6 +30866,7 @@ void UpdateDrawFrame() {
     // std::exception& can't describe via what().
     try {
         JobManager::Instance().PollAll();
+        TcpJsonRpcManager::Instance().PollAll();
         mep::agent::PollOnce(g_editor);
         DrainUiInputQueueOneStep();
         g_editor.PollTerminals();
@@ -30944,6 +31422,7 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinStructure);
     lua->DoString(kBuiltinDocs);
     lua->DoString(kBuiltinDap);
+    lua->DoString(kBuiltinDebugUi);
     lua->DoString(kBuiltinSyntax);
     lua->DoString(kBuiltinRun);
     lua->DoString(kBuiltinTermSend);
@@ -31075,6 +31554,7 @@ int main(int argc, char **argv) {
     // children go away so terminal panes are recorded as terminals.
     g_editor.SaveAllWorkspaceState();
     JobManager::Instance().ShutdownAll();
+    TcpJsonRpcManager::Instance().ShutdownAll();
     mep::agent::Stop();
 #endif
 

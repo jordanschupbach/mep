@@ -1,6 +1,3 @@
-* TODO add simple todo
-  Add the word flummoxed to the top of the README file
-
 * TODO todo management
   :LOGBOOK:
   CLOCK: [2026-09-14 Mon 10:10]--[2026-09-14 Mon 10:10] =>  0:00
@@ -369,4 +366,7 @@ The filetree button in the tabbar doesnt toggle the filetree (it just opens it).
     hidden" logic from DrawTabBar (main.cpp) -- inactive tabs render exactly
     as they did before that feature, plain "WorkspaceInactive".
   - Verified `just build-native` still builds clean.
+
+* DONE add simple todo :ARCHIVE:
+  Added the word "flummoxed" to the top of README.org.
 

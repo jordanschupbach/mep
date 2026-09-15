@@ -12,39 +12,9 @@
   to show up in (e.g. that appear when running .show() methods). Can you
   implement these?
 
-* DONE quickjump capability :ARCHIVE:
-  I'd like a quickjump capability. In particular, when pressing 's' in normal
-  mode, I'd like to then be able to start typing, and any non-matches to the
-  thing I'm typing to appear more opaque and for the matches to appear less
-  opaque with a hint I can type (just a letter or two ideally) to jump to that
-  matching location, or when I finish typing and there are no matches to jump to
-  it. Can you implement this feature?
-  - Done as a new Editor::Mode::QuickJump (editor.cpp, next to the older
-    HintChar/HintLabel pair) bound to `s` by kBuiltinQuickJump (main.cpp)
-    via mep.quick_jump(), so it can be rebound with a plain mep.map. Every
-    keystroke rescans the visible rows of every text pane in the tab (the
-    active one first, then the rest in split order; a label in another
-    pane focuses it before moving its cursor; smart-case): DrawPane
-    washes each pane's text area with translucent NormalBg, repaints each match
-    at full strength on an IncSearch backdrop, and draws a one-key label
-    right after it. Labels are drawn from the home-row-first pool minus
-    every character that would extend the query at some match, so a key
-    is never ambiguous (label -> jump, else -> narrow); nearest match
-    gets the first label. A query that narrows to one match jumps at
-    once; Enter jumps to the nearest, Backspace edits, Esc cancels; the
-    command line echoes "jump: <query>" (+ "(no matches)"). Landing
-    records the jumplist so `` / Ctrl-O return. README "Keys" documents
-    it. Verified against a spawned instance over its agent socket
-    (ui.key_press/type_text + screenshots): label jump, unique-match
-    auto-jump, Esc/Enter-with-no-match leaving the cursor put, Backspace.
-    Cross-pane: verified over the agent socket alone via the scriptable
-    surface added for it -- mep.quick_jump(query?), mep.quick_jump_matches()
-    (pane_id/row/col/label), mep.quick_jump_pick(label) -- so no synthetic
-    keyboard input is needed: labels span both panes, picking another
-    pane's label focuses it, a unique match elsewhere auto-jumps, and a
-    terminal pane is skipped.
 
 * TODO r help format
+
   The formatting of help documentation in R help sidebar looks off. It looks
   good when in the popup though when I press 'K' over a function name in an R
   document. Can you fix the sidebar formatting to match that of the help popup?
@@ -53,8 +23,14 @@
   visibility to the help pane if not an actively viewable pane). Can you implement these?
 
 * TODO r gh binding
-In R, I'd like 'gh' when in ui mode and over a function name to send that
-function the the help (and appear in the help sidebar). Can you implement this?
+  In R, I'd like 'gh' when in ui mode and over a function name to send that
+  function the the help (and appear in the help sidebar). Can you implement this?
+
+* TODO add jupyter notebook mode
+  I'd like the ability to edit jupiter notebook files, much like the interface
+  of standard web-based jupyter interface. CAn you add these capabilities? Add a
+  jupyter notebook file in the in the examples folder to test things out
+
 
 * TODO fix buffer sidebar
   The buffer sidebar has some behavior, where, if I click on a buffer, it opens
@@ -410,3 +386,34 @@ The filetree button in the tabbar doesnt toggle the filetree (it just opens it).
 * DONE add simple todo :ARCHIVE:
   Added the word "flummoxed" to the top of README.org.
 * DONE Add language specific, configurable run button to active pane bar :ARCHIVE:
+* DONE quickjump capability :ARCHIVE:
+  I'd like a quickjump capability. In particular, when pressing 's' in normal
+  mode, I'd like to then be able to start typing, and any non-matches to the
+  thing I'm typing to appear more opaque and for the matches to appear less
+  opaque with a hint I can type (just a letter or two ideally) to jump to that
+  matching location, or when I finish typing and there are no matches to jump to
+  it. Can you implement this feature?
+  - Done as a new Editor::Mode::QuickJump (editor.cpp, next to the older
+    HintChar/HintLabel pair) bound to `s` by kBuiltinQuickJump (main.cpp)
+    via mep.quick_jump(), so it can be rebound with a plain mep.map. Every
+    keystroke rescans the visible rows of every text pane in the tab (the
+    active one first, then the rest in split order; a label in another
+    pane focuses it before moving its cursor; smart-case): DrawPane
+    washes each pane's text area with translucent NormalBg, repaints each match
+    at full strength on an IncSearch backdrop, and draws a one-key label
+    right after it. Labels are drawn from the home-row-first pool minus
+    every character that would extend the query at some match, so a key
+    is never ambiguous (label -> jump, else -> narrow); nearest match
+    gets the first label. A query that narrows to one match jumps at
+    once; Enter jumps to the nearest, Backspace edits, Esc cancels; the
+    command line echoes "jump: <query>" (+ "(no matches)"). Landing
+    records the jumplist so `` / Ctrl-O return. README "Keys" documents
+    it. Verified against a spawned instance over its agent socket
+    (ui.key_press/type_text + screenshots): label jump, unique-match
+    auto-jump, Esc/Enter-with-no-match leaving the cursor put, Backspace.
+    Cross-pane: verified over the agent socket alone via the scriptable
+    surface added for it -- mep.quick_jump(query?), mep.quick_jump_matches()
+    (pane_id/row/col/label), mep.quick_jump_pick(label) -- so no synthetic
+    keyboard input is needed: labels span both panes, picking another
+    pane's label focuses it, a unique match elsewhere auto-jumps, and a
+    terminal pane is skipped.

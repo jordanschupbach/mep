@@ -1412,9 +1412,6 @@ Decoration ReadDecorationTable(lua_State *L, int idx) {
     lua_getfield(L, idx, "virt_text_eol");
     d.virt_text_eol = lua_toboolean(L, -1);
     lua_pop(L, 1);
-    lua_getfield(L, idx, "virt_robot_icon");
-    d.virt_robot_icon = lua_toboolean(L, -1);
-    lua_pop(L, 1);
     lua_getfield(L, idx, "sign");
     if (lua_isstring(L, -1)) d.sign = lua_tostring(L, -1);
     lua_pop(L, 1);
@@ -2779,9 +2776,6 @@ int l_sidebar_set_sections(lua_State *L) {
                 lua_pop(L, 1);
                 lua_getfield(L, -1, "trailing_icon");
                 if (lua_isstring(L, -1)) w.trailing_icon = lua_tostring(L, -1);
-                lua_pop(L, 1);
-                lua_getfield(L, -1, "robot_icon_col");
-                if (lua_isinteger(L, -1)) w.robot_icon_col = static_cast<int>(lua_tointeger(L, -1));
                 lua_pop(L, 1);
                 w.trailing_on_click_ref = RefField(L, -1, "trailing_on_click");
                 w.on_click_ref = RefField(L, -1, "on_click");

@@ -17235,7 +17235,6 @@ std::vector<SidebarLine> Editor::FlattenSidebar(int id) const {
                 line.text = icon_prefix + w.text;
                 line.hl = w.hl;
                 line.current = w.current;
-                if (w.robot_icon_col >= 0) line.robot_icon_col = static_cast<int>(icon_prefix.size()) + w.robot_icon_col;
                 out.push_back(line);
                 continue;
             }
@@ -17261,7 +17260,6 @@ std::vector<SidebarLine> Editor::FlattenSidebar(int id) const {
                 line.text = icon_prefix + (k == 0 ? prefix : std::string(prefix.size(), ' ')) + wrapped[k];
                 line.hl = w.hl;
                 line.current = w.current;
-                if (k == 0 && w.robot_icon_col >= 0) line.robot_icon_col = static_cast<int>(icon_prefix.size()) + w.robot_icon_col;
                 out.push_back(line);
             }
         }

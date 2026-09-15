@@ -395,17 +395,6 @@ struct Decoration {
     std::string virt_text;
     std::string virt_text_hl;
     bool virt_overlay = false;
-    // Prefixes virt_text with the same hand-drawn robot glyph the Todo
-    // sidebar overlays over SidebarLine::robot_icon_col (DrawRobotIcon,
-    // main.cpp) -- for an org headline an AI agent is actively working on
-    // (kBuiltinActivityBar's mep.activity_todo_start_agent), so `virt_text`
-    // itself only needs to carry the animated "."/".."/"..."/".." dots
-    // text, not a font substitute for a glyph the embedded icon font
-    // doesn't have (DrawRobotIcon's own comment explains why). Drawn just
-    // before virt_text at the same anchor (col_start, or just past the
-    // row's own end when virt_text_eol is set), which is then shifted
-    // right by the icon's own width.
-    bool virt_robot_icon = false;
     // Anchors virt_text to just past the *end of this row's own text*
     // (buf.lines[row].size()) instead of col_start -- for an annotation
     // that describes the whole line (e.g. a diagnostic message) rather
@@ -500,17 +489,6 @@ struct SidebarWidget {
     // behavior every other sidebar keeps unchanged.
     std::string trailing_icon;
     int trailing_on_click_ref = 0;
-    // Character column (0-based, within `text` -- so it lands wherever a
-    // caller's own leading indent puts it, e.g. the Todo panel's robot
-    // marker replacing a "[ ]"/"[x]" mark for a todo an AI agent is
-    // actively working on) at which DrawSidebars' draw_one overlays a
-    // small hand-drawn robot glyph (DrawRobotIcon, main.cpp) instead of
-    // drawing a font glyph there -- there's no robot codepoint in the
-    // embedded icon font (see DrawRobotIcon's own comment), so this is a
-    // vector-drawn overlay rather than the plain `icon` string prefix
-    // above. -1 = no icon. The character(s) at that column should
-    // themselves be blank (a space) so the glyph isn't drawn over text.
-    int robot_icon_col = -1;
 };
 struct SidebarSection {
     std::string id, title;
@@ -587,12 +565,6 @@ struct SidebarLine {
     std::string text;
     std::string hl;
     bool current = false;  // mirrors SidebarWidget::current; see its comment
-    // Mirrors SidebarWidget::robot_icon_col, adjusted for the leading
-    // icon-prefix FlattenSidebar prepends to `text` -- so DrawSidebars can
-    // draw the overlay without re-deriving that offset itself. Only ever
-    // set on a widget's *first* rendered line (wrap's continuation lines
-    // repeat the indent as plain spaces, with nothing there to mark).
-    int robot_icon_col = -1;
 };
 
 // A compact palette (mep.nvim's palettes.lua SPECS/FALLBACKS shape,

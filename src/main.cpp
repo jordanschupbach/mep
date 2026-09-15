@@ -13573,37 +13573,30 @@ const char *kBuiltinActivityBar =
     "    end\n"
     "  end\n"
     "end\n"
-    // Animated "." -> ".." -> "..." -> ".." -> repeat dots for a todo an
-    // agent is actively working on (Org file robot animation), shared by
-    // the sidebar's own row text (mep_activity_todo_render, below) and the
-    // in-buffer robot+dots decoration on the org headline itself
-    // (mep_activity_todo_decorate_buffer, further below) so both stay in
-    // lockstep rather than drifting out of phase against each other.
-    // Always exactly 3 characters wide (space-padded) so the text that
-    // follows it doesn't jitter sideways as the dot count changes.
-    "local mep_todo_dot_seq = {'.', '..', '...', '..'}\n"
+    // Static "..." marker for a todo an agent is actively working on (Org
+    // file robot icon), shared by the sidebar's own row text
+    // (mep_activity_todo_render, below) and the in-buffer robot decoration
+    // on the org headline itself (mep_activity_todo_decorate_buffer,
+    // further below). No longer time-based -- the previous per-tick dot
+    // animation forced the polls below down to a 0.15s interval (a full
+    // TODO.org reparse that often) for as long as any agent was live,
+    // which showed up as noticeable overhead with several agents running.
+    // Still exactly 3 characters wide so downstream padding math is
+    // unchanged.
     "local function mep_todo_agent_dots()\n"
-    "  local dots = mep_todo_dot_seq[math.floor(mep.now() / 0.35) % #mep_todo_dot_seq + 1]\n"
-    "  return dots .. string.rep(' ', 3 - #dots)\n"
+    "  return '...'\n"
     "end\n"
     // The running clock is part of what's on screen (the [>] row), so a
     // clock started/stopped from inside TODO.org (:MepOrgClockIn/Out) is
-    // a change worth re-rendering for too -- same reasoning now covers
-    // each row's live-agent state (mep_todo_workspace_has_live_agent), and
-    // the animated dots' own phase (mep_todo_agent_dots) whenever at least
-    // one row is showing them, so the periodic poll (below) actually
-    // notices each tick of the animation instead of only redrawing on a
-    // real content change.
+    // a change worth re-rendering for too -- same reasoning covers each
+    // row's live-agent state (mep_todo_workspace_has_live_agent).
     "local function mep_activity_todo_key(items, clock)\n"
     "  local parts = {}\n"
-    "  local any_live = false\n"
     "  for _, it in ipairs(items) do\n"
     "    local agent_live = mep_todo_agent_live(it.text)\n"
-    "    if agent_live then any_live = true end\n"
     "    parts[#parts + 1] = (it.done and '1' or '0') .. (it.level or 1) .. (it.line or '') .. (agent_live and 'R' or '') .. it.text\n"
     "  end\n"
     "  if clock then parts[#parts + 1] = 'clock' .. clock.line .. clock.start_ts end\n"
-    "  if any_live then parts[#parts + 1] = 'dots' .. mep_todo_agent_dots() end\n"
     "  return table.concat(parts, '\\n')\n"
     "end\n"
     // The bottom bar's active-todo chip (mep.active_todo_set, drawn by
@@ -13650,11 +13643,11 @@ const char *kBuiltinActivityBar =
     "  mep.sidebar_preview_code(sub, 'org', path .. ':' .. it.line, 1)\n"
     "end\n"
     // Rows: "[ ] title" / "[x] title", or "[>] title" (Add-tinted) for the
-    // one whose clock is running -- or, taking priority over both, a
-    // small robot glyph (SidebarWidget.robot_icon_col, DrawRobotIcon)
-    // where the mark would be for a todo with an agent actively working
-    // on it (mep.activity_todo_start_agent's 'L'/'gL'). Enter (and a
-    // click) on a row starts or stops its clock -- see
+    // one whose clock is running -- or, taking priority over both, a blank
+    // mark (Cyan-tinted, with a trailing "..." after the title) for a todo
+    // with an agent actively working on it (mep.activity_todo_start_agent's
+    // 'L'/'gL'). Enter (and a click) on a row starts or stops its clock --
+    // see
     // mep.activity_todo_toggle_clock; done/edit/delete/add are the
     // sidebar's own keys (mep.activity_todo_on_key). Split from
     // mep.activity_todo_panel below (which additionally docks it) so
@@ -13674,26 +13667,19 @@ const char *kBuiltinActivityBar =
     "    local running = clock ~= nil and it.line ~= nil and clock.line == it.line\n"
     "    local agent_live = mep_todo_agent_live(it.text)\n"
     "    local mark = agent_live and '    ' or running and '[>] ' or (it.done and '[x] ' or '[ ] ')\n"
-    // Animated dots (mep_todo_agent_dots, above) after the robot mark, on
-    // their own extra ' ' + 3-char-padded slot rather than inside `mark`
-    // itself -- DrawRobotIcon's glyph is visually wider than one character
-    // cell (see its own draw-site comment) and already bleeds rightward
-    // into `mark`'s own trailing blanks, so the dots need a slot that
-    // starts past all of that instead of right at the mark's own edge.
+    // Static "..." marker (mep_todo_agent_dots, above) after the mark, on
+    // its own extra ' ' + 3-char-padded slot rather than inside `mark`
+    // itself, so the dots don't jitter the title's start column against
+    // the checkbox rows.
     "    local dots = agent_live and (' ' .. mep_todo_agent_dots()) or ''\n"
     // wrap/wrap_indent (SidebarWidget's own comment, editor.h): a long
     // task title wraps onto continuation rows indented to line up right
     // after the checkbox mark instead of restarting at column 0 --
     // wrap_indent is exactly the width of the indent+mark+dots prefix just
     // built, so FlattenSidebar knows where the "hanging indent" prefix
-    // ends and the wrappable title text begins. robot_icon_col points at
-    // the mark's own first character (indent's width in), the one spot
-    // DrawSidebars overlays the robot glyph over -- always false/nil
-    // unless agent_live, so the char at that column stays the blank mark
-    // built above rather than a literal "[" the glyph would draw over.\n"
+    // ends and the wrappable title text begins.\n"
     "    widgets[#widgets + 1] = {id = tostring(i), text = indent .. mark .. dots .. it.text,\n"
     "      hl = agent_live and 'Cyan' or running and 'Add' or nil,\n"
-    "      robot_icon_col = agent_live and #indent or nil,\n"
     "      wrap = true, wrap_indent = #indent + #mark + #dots,\n"
     "      on_click = function() mep.activity_todo_toggle_clock(it, i) end}\n"
     "  end\n"
@@ -14137,28 +14123,26 @@ const char *kBuiltinActivityBar =
     "      or (mep_activity_todo_pane_buf and mep.current_buffer() == mep_activity_todo_pane_buf)\n"
     "    if not visible then return end\n"
     "    local now = mep.now()\n"
-    // Tightened from the original 0.5s so the robot's animated dots
-    // (mep_todo_agent_dots, whose own phase mep_activity_todo_key now
-    // folds in for any agent_live row) actually get sampled often enough
-    // to read as a smooth ". .. ... .." animation rather than a jumpy one
-    // -- still just a cheap string compare on every other tick, same as
-    // before, since mep_activity_todo_render only runs when the key
-    // actually changed.\n"
-    "    if now - last_poll < 0.15 then return end\n"
+    // Poll at 0.5s -- the robot mark no longer animates (mep_todo_agent_dots
+    // is now a static "..." marker), so there's no need to sample faster
+    // than that just to catch a live-agent state change; still just a
+    // cheap string compare on every tick, since mep_activity_todo_render
+    // only runs when the key actually changed.\n"
+    "    if now - last_poll < 0.5 then return end\n"
     "    last_poll = now\n"
     "    if mep_activity_todo_key(mep_activity_todo_load(), mep_activity_todo_clock()) == mep_activity_todo_rendered then return end\n"
     "    mep_activity_todo_render()\n"
     "    mep.activity_todo_sync_active()\n"
     "  end)\n"
     "end\n"
-    // In-buffer counterpart (Org file robot animation): the same robot +
-    // animated dots the sidebar row shows, but as an end-of-line
-    // decoration on the org headline itself, in TODO.org's own buffer --
-    // wherever an agent was started from ('L' in the sidebar or 'gL' on
-    // the headline, both mep.activity_todo_start_agent) -- so the
-    // animation shows up "whether starting in the sidebar or in the
-    // TODO.org file" as long as that file happens to be open in a buffer
-    // somewhere, independent of whether the sidebar itself is visible.
+    // In-buffer counterpart: the same dots marker the sidebar row shows,
+    // but as an end-of-line decoration on the org headline itself, in
+    // TODO.org's own buffer -- wherever an agent was started from ('L' in
+    // the sidebar or 'gL' on the headline, both
+    // mep.activity_todo_start_agent) -- so the indicator shows up
+    // "whether starting in the sidebar or in the TODO.org file" as long as
+    // that file happens to be open in a buffer somewhere, independent of
+    // whether the sidebar itself is visible.
     "local function mep_activity_todo_buffer_id()\n"
     "  local path = mep_activity_todo_path()\n"
     "  for _, e in ipairs(mep.buffer_list(true)) do\n"
@@ -14181,7 +14165,7 @@ const char *kBuiltinActivityBar =
     "    if it.line then\n"
     "      if mep_todo_agent_live(it.text) then\n"
     "        mep.buffer_deco_add(buf, mep_activity_todo_agent_ns, {\n"
-    "          row = it.line, virt_text_eol = true, virt_robot_icon = true,\n"
+    "          row = it.line, virt_text_eol = true,\n"
     "          virt_text = ' ' .. dots, virt_text_hl = 'Cyan',\n"
     "        })\n"
     "      end\n"
@@ -14190,10 +14174,10 @@ const char *kBuiltinActivityBar =
     "end\n"
     // Gated on mep.activity_todo_agents being non-empty (cheap -- next()
     // short-circuits before the per-row live-agent scan) rather than on
-    // any pane being focused on TODO.org, since the animation should keep
-    // running in the buffer even while the user's looking at the agent's
+    // any pane being focused on TODO.org, since the decoration should keep
+    // showing in the buffer even while the user's looking at the agent's
     // own terminal, not the org file. mep_todo_agents_prune() runs first
-    // (also throttled to once per 0.15s tick, and itself cheap -- it only
+    // (also throttled to once per 0.5s tick, and itself cheap -- it only
     // ever iterates this same small table) so an entry whose todo has been
     // archived out of mep_activity_todo_load()'s view -- otherwise
     // unreachable by mep_todo_agent_live's own per-item pruning, see that
@@ -14206,7 +14190,7 @@ const char *kBuiltinActivityBar =
     "  mep.on_frame(function()\n"
     "    if next(mep.activity_todo_agents) == nil then return end\n"
     "    local now = mep.now()\n"
-    "    if now - last_poll < 0.15 then return end\n"
+    "    if now - last_poll < 0.5 then return end\n"
     "    last_poll = now\n"
     "    mep_todo_agents_prune()\n"
     "    if next(mep.activity_todo_agents) == nil then return end\n"
@@ -17363,11 +17347,6 @@ float DrawSidebarTabStrip(const SidebarInstance &sb, float x, float y, float fon
     return x;
 }
 
-// Forward declaration: defined much further down this file (its own
-// comment there explains why it's hand-drawn rather than a font glyph),
-// but DrawSidebars' draw_one needs it to render SidebarLine::robot_icon_col.
-void DrawRobotIcon(gfx::Vector2 pos, float size, gfx::Color color);
-
 void DrawSidebars() {
     int screen_w = gfx::GetScreenWidth();
     int screen_h = gfx::GetScreenHeight();
@@ -17502,16 +17481,6 @@ void DrawSidebars() {
             if (lines[i].kind == SidebarLine::Kind::Widget) {
                 const SidebarSection &wsec = sb.sections[static_cast<size_t>(lines[i].section_index)];
                 const SidebarWidget &widget = wsec.widgets[static_cast<size_t>(lines[i].widget_index)];
-                // Leading vector icon overlay (SidebarLine::robot_icon_col,
-                // e.g. the Todo panel's "an agent is working on this"
-                // marker): drawn on top of the (blank) character cell
-                // DrawUiText just painted at that column, in the row's own
-                // color so it reads consistently with a plain text mark.
-                if (lines[i].robot_icon_col >= 0) {
-                    float icon_x = static_cast<float>(px + 8) + static_cast<float>(lines[i].robot_icon_col) * g_char_width;
-                    float icon_size = static_cast<float>(line_h) * 0.75f;
-                    DrawRobotIcon(gfx::Vector2{icon_x, ly + (static_cast<float>(line_h) - icon_size) / 2.0f}, icon_size, color);
-                }
                 if (!widget.trailing_icon.empty()) {
                     float icon_w = MeasureUiText(widget.trailing_icon, font_size);
                     gfx::Rectangle icon_rect{static_cast<float>(px) + row_w - icon_w, ly - 1, icon_w, static_cast<float>(line_h)};
@@ -25479,16 +25448,6 @@ void DrawSidebarPaneContent(const Pane &pane, int sidebar_id, float x, float y, 
         }
         gfx::Color color = lines[i].hl.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(lines[i].hl);
         DrawUiText(lines[i].text, gfx::Vector2{x + 8, ly}, font_size, color);
-        // Leading vector icon overlay -- see DrawSidebars' draw_one's own
-        // identical block (SidebarLine::robot_icon_col's comment, editor.h)
-        // for why this can't just be part of `text`; kept in sync with that
-        // one by hand since this is a separate draw path (this function's
-        // own top comment), not a shared row-drawing helper.
-        if (lines[i].robot_icon_col >= 0) {
-            float icon_x = x + 8 + static_cast<float>(lines[i].robot_icon_col) * g_char_width;
-            float icon_size = static_cast<float>(line_h) * 0.75f;
-            DrawRobotIcon(gfx::Vector2{icon_x, ly + (static_cast<float>(line_h) - icon_size) / 2.0f}, icon_size, color);
-        }
         int line_index = static_cast<int>(i);
         RegisterClickRegion(gfx::Rectangle{x, ly - 1, w, static_cast<float>(line_h)}, [pane_id, sidebar_id, line_index] {
             g_editor.FocusPaneById(pane_id);
@@ -28529,19 +28488,6 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 int vcol = d.virt_text_eol ? static_cast<int>(buf.lines[static_cast<size_t>(row)].size()) + 1 : d.col_start;
                 gfx::Vector2 vpos = WrapPos(vcol, row_wrap_cols, text_x, ly, line_height);
                 float vx = vpos.x, vy = vpos.y;
-                // Robot glyph prefix (Decoration::virt_robot_icon, its own
-                // comment) -- an org headline an AI agent is actively
-                // working on (kBuiltinActivityBar). Drawn as the same
-                // hand-drawn vector icon the Todo sidebar overlays
-                // (DrawRobotIcon), not part of `virt_text` itself, since
-                // there's no robot glyph in either font; `virt_text` then
-                // starts right after it rather than on top of it.
-                if (d.virt_robot_icon) {
-                    float icon_size = static_cast<float>(line_height) * 0.75f;
-                    DrawRobotIcon(gfx::Vector2{vx, vy + (static_cast<float>(line_height) - icon_size) / 2.0f}, icon_size,
-                                  ResolveHlGroup(d.virt_text_hl));
-                    vx += icon_size + g_char_width * 0.3f;
-                }
                 if (d.virt_overlay) {
                     // Cover whichever is wider: the replacement text, or
                     // the original [col_start, col_end) span it's

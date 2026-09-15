@@ -29,9 +29,11 @@
   day or so of updates. Just moving around the TODO.org file seems to be clunky
   and slow. In some places, it takes two clicks of the j or k keys to move past
   a line.  It could be related to the robot animations while agents are running.
-  Can you investigate and fix? Note, also just take a general pass at improving
-  performance. Write up a few low hanging fruit benchmarks and see if you can
-  use those benchmarks to make common tasks faster.
+  Because this seems to be when its noticable in the TODO.org file (its fast
+  without it running). Can you investigate and fix? Note, also just take a
+  general pass at improving performance. Write up a few low hanging fruit
+  benchmarks and see if you can use those benchmarks to make common tasks
+  faster.
 
 * TODO fix exiting sidebar bug (specifically when exiting todo editor)
   :LOGBOOK:

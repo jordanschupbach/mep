@@ -17060,6 +17060,12 @@ void Editor::SetSidebarSize(int id, int size) {
     }
 }
 
+void Editor::SetSidebarWrapCols(int id, int cols) {
+    SidebarInstance *sb = FindSidebarMut(id);
+    if (!sb) return;
+    sb->wrap_cols = std::max(0, cols);
+}
+
 std::vector<int> Editor::OpenSidebarIdsOn(const std::string &position) const {
     std::vector<int> ids;
     std::vector<std::string> seen_groups;
@@ -17252,10 +17258,14 @@ std::vector<SidebarLine> Editor::FlattenSidebar(int id) const {
             // column count (SidebarInstance::size) minus the icon prefix
             // and the indent, less a small margin for the left inset
             // draw_one (main.cpp) always applies.
+            // Wrap width: whatever the sidebar was last drawn at
+            // (SidebarInstance::wrap_cols, its own comment) -- the docked
+            // `size` only until a first draw reports the real one.
             int indent = std::clamp(w.wrap_indent, 0, static_cast<int>(w.text.size()));
             std::string prefix = w.text.substr(0, static_cast<size_t>(indent));
             std::string body = w.text.substr(static_cast<size_t>(indent));
-            int body_width = std::max(4, sb->size - 1 - static_cast<int>(icon_prefix.size()) - indent);
+            int cols = sb->wrap_cols > 0 ? sb->wrap_cols : sb->size;
+            int body_width = std::max(4, cols - 1 - static_cast<int>(icon_prefix.size()) - indent);
             std::vector<std::string> wrapped = LspDiagWrap(body, body_width);
             for (size_t k = 0; k < wrapped.size(); k++) {
                 SidebarLine line;

@@ -8192,15 +8192,24 @@ const char *kBuiltinDap =
     "  mep_dap_r_pending = true\n"
     "  local deadline = mep.now() + 5.0\n"
     "  local next_try = mep.now() + 0.3\n"
+    // Returns true (dropping this hook -- LuaEnv::RunFrameHooks) as soon as
+    // mep_dap_r_pending goes false, whichever way that happens: connected,
+    // timed out, or the R job's own on_exit handler (above) got there
+    // first. Without this, every mep.dap_start('r') retry permanently
+    // registered one more closure that ran forever doing nothing but a
+    // `not mep_dap_r_pending` check -- the same one-shot-disguised-as-
+    // permanent shape the frame-hook fix for the Todo panel's agent-wait
+    // hooks (mep.activity_todo_start_agent) was written to rule out
+    // everywhere else in this file.
     "  mep.on_frame(function()\n"
-    "    if not mep_dap_r_pending then return end\n"
+    "    if not mep_dap_r_pending then return true end\n"
     "    local now = mep.now()\n"
     "    if now < next_try then return end\n"
     "    if now > deadline then\n"
     "      mep_dap_r_pending = false\n"
     "      mep.notify('Timed out connecting to vscDebugger on port ' .. port, 'error')\n"
     "      if mep_dap_r_job then mep.job_kill(mep_dap_r_job) end\n"
-    "      return\n"
+    "      return true\n"
     "    end\n"
     "    next_try = now + 0.2\n"
     "    local id = mep.lsp_connect('127.0.0.1', port)\n"
@@ -8208,6 +8217,7 @@ const char *kBuiltinDap =
     "      mep_dap_r_pending = false\n"
     "      mep.lsp_request(id, 'initialize', {adapterID = 'r', linesStartAt1 = true, columnsStartAt1 = true, pathFormat = 'path', supportsRunInTerminalRequest = true},\n"
     "        function() mep_dap_after_connect(id, 'r', adapter) end)\n"
+    "      return true\n"
     "    end\n"
     "  end)\n"
     "end\n"
@@ -13534,6 +13544,35 @@ const char *kBuiltinActivityBar =
     "  end\n"
     "  return live\n"
     "end\n"
+    // mep_todo_agent_live only ever prunes an entry it is asked to check --
+    // and every call site reaches it by walking mep_activity_todo_load()'s
+    // *current* items, keyed by headline text. A todo that got archived
+    // (or deleted, or retitled) after 'L'/'gL' started an agent on it drops
+    // out of that load forever (OrgTodoListItems excludes :ARCHIVE:
+    // subtrees -- org_doc.h), so its mep.activity_todo_agents[text] entry
+    // is never visited again and never pruned, even once the agent itself
+    // is long gone. That standing entry alone is harmless, but the
+    // in-buffer decorator's poll below exists specifically to skip its own
+    // per-tick work (mep_activity_todo_buffer_id's buffer_list scan +
+    // mep_activity_todo_load's full file reparse) via a cheap
+    // `next(mep.activity_todo_agents) == nil` check -- an orphaned entry
+    // defeats that check permanently, so archiving the very first
+    // agent-worked todo (the normal end of the 'L'/'gL' workflow) silently
+    // turns the decorator back into an unconditional full reparse every
+    // 0.15s for the rest of the session, exactly the shape of slowdown the
+    // frame-hook fix above was meant to end. This prunes the table
+    // directly, independent of which todos are still loaded, so a
+    // workspace whose agent has actually gone away is forgotten regardless
+    // of whether its todo is still around to ask about it.
+    "local function mep_todo_agents_prune()\n"
+    "  for text, agent in pairs(mep.activity_todo_agents) do\n"
+    "    if mep_todo_workspace_has_live_agent(agent.workspace) then\n"
+    "      agent.was_live = true\n"
+    "    elseif agent.was_live then\n"
+    "      mep.activity_todo_agents[text] = nil\n"
+    "    end\n"
+    "  end\n"
+    "end\n"
     // Animated "." -> ".." -> "..." -> ".." -> repeat dots for a todo an
     // agent is actively working on (Org file robot animation), shared by
     // the sidebar's own row text (mep_activity_todo_render, below) and the
@@ -14153,7 +14192,15 @@ const char *kBuiltinActivityBar =
     // short-circuits before the per-row live-agent scan) rather than on
     // any pane being focused on TODO.org, since the animation should keep
     // running in the buffer even while the user's looking at the agent's
-    // own terminal, not the org file.
+    // own terminal, not the org file. mep_todo_agents_prune() runs first
+    // (also throttled to once per 0.15s tick, and itself cheap -- it only
+    // ever iterates this same small table) so an entry whose todo has been
+    // archived out of mep_activity_todo_load()'s view -- otherwise
+    // unreachable by mep_todo_agent_live's own per-item pruning, see that
+    // function's comment -- still gets dropped once its workspace's agent
+    // actually goes away, instead of permanently defeating the next()
+    // check below and turning this into an unconditional full reparse
+    // every tick for the rest of the session.
     "do\n"
     "  local last_poll = 0\n"
     "  mep.on_frame(function()\n"
@@ -14161,6 +14208,8 @@ const char *kBuiltinActivityBar =
     "    local now = mep.now()\n"
     "    if now - last_poll < 0.15 then return end\n"
     "    last_poll = now\n"
+    "    mep_todo_agents_prune()\n"
+    "    if next(mep.activity_todo_agents) == nil then return end\n"
     "    mep_activity_todo_decorate_buffer()\n"
     "  end)\n"
     "end\n"

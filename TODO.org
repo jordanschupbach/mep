@@ -1,3 +1,6 @@
+* TODO remove flamboozled
+  Can you remove the flamboozled word at the top of the TODO file?
+
 * TODO todo management
   :LOGBOOK:
   CLOCK: [2026-09-14 Mon 10:10]--[2026-09-14 Mon 10:10] =>  0:00

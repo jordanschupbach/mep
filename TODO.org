@@ -18,11 +18,13 @@
   :LOGBOOK:
   CLOCK: [2026-09-05 Sat 21:28]--[2026-09-05 Sat 21:47] =>  0:19
   :END:
-* TODO Native file open popup
-  Add platform native file-open popup (instead of :e , the current behavior) when using File->Open
-
 * TODO Add compiler explorer to c++ ui
 * TODO add hex exploration to c++ ui
+* TODO simple-todo-test
+  This is just a simple test. You are supposed to add the word flamboozled to
+  the top of the README.org file. While you're doing this, I'll be testing out 
+  the performance of the todo org file.
+
 * TODO fix exiting sidebar bug (specifically when exiting todo editor)
   :LOGBOOK:
   CLOCK: [2026-09-14 Mon 10:28]--[2026-09-14 Mon 10:28] =>  0:00
@@ -344,3 +346,7 @@ The filetree button in the tabbar doesnt toggle the filetree (it just opens it).
     exists) is solid and reusable; R *session* behavior past the first
     breakpoint is the one open item, noted in kBuiltinDap's own comment
     next to `mep.dap_adapters.r`.
+
+* DONE Native file open popup :ARCHIVE:
+  Add platform native file-open popup (instead of :e , the current behavior) when using File->Open
+

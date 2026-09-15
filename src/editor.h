@@ -2740,12 +2740,6 @@ public:
     void TickWorkspacePersistence(double now);
     std::string WorkspaceStateFile(const Project &project) const;
     bool WorkspaceHasModifiedBuffers(int id) const;
-    // True if any agent resident in this workspace (its terminal buffer,
-    // falling back to its cursor location -- same join mep_ai_agents_collect()
-    // does in Lua) currently reports "awaiting_input" or "done": the two
-    // statuses that mean a human should look at it. Drives the tabbar's red
-    // workspace-tab notification (AI_TABBAR_NOTIFICATION).
-    bool WorkspaceNeedsAttention(int id) const;
     // A relative buffer path resolved against the buffer's own workspace
     // root when that workspace isn't the active one (whose root is the
     // process cwd already); absolute paths and unscoped buffers pass through.

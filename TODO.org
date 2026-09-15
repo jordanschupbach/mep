@@ -1,6 +1,3 @@
-* TODO remove flamboozled
-  Can you remove the flamboozled word at the top of the TODO file?
-
 * TODO todo management
   :LOGBOOK:
   CLOCK: [2026-09-14 Mon 10:10]--[2026-09-14 Mon 10:10] =>  0:00
@@ -352,4 +349,21 @@ The filetree button in the tabbar doesnt toggle the filetree (it just opens it).
 
 * DONE Native file open popup :ARCHIVE:
   Add platform native file-open popup (instead of :e , the current behavior) when using File->Open
+
+* DONE remove flamboozled :ARCHIVE:
+  Removed the stray "flamboozled" line from the top of README.org.
+
+* DONE Remove ai tabbar notification (agent-attention highlight) :ARCHIVE:
+  Reverted the "ai tabbar notification" feature: an inactive workspace tab
+  no longer turns red when its resident agent reports "awaiting_input" or
+  "done". Suspected as a performance culprit -- Editor::WorkspaceNeedsAttention
+  called Editor::Participants() (which allocates a fresh vector by walking
+  collaboration peers, AI agents, and local participants) once per workspace,
+  every single frame in main.cpp's DrawTabBar.
+  - Removed Editor::WorkspaceNeedsAttention (editor.h/editor.cpp) and the
+    "WorkspaceAlertBg" highlight group (editor.cpp's BuildHighlightGroups).
+  - Removed the needs_attention field and all red-tab/red-tooltip/red-"+N
+    hidden" logic from DrawTabBar (main.cpp) -- inactive tabs render exactly
+    as they did before that feature, plain "WorkspaceInactive".
+  - Verified `just build-native` still builds clean.
 

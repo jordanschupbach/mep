@@ -6359,6 +6359,1213 @@ const char *kBuiltinLanguageUiR =
     "  end)\n"
     "end\n";
 
+const char *kBuiltinLanguageUiCommon =
+    // Shared plumbing for the language UI modes (kBuiltinLanguageUi): the
+    // Python (kBuiltinLanguageUiPython) and C/C++ (kBuiltinLanguageUiC) modes
+    // below are built from these, so each of them only has to say what's
+    // actually language-specific -- what runs in the console pane, which
+    // sidebars sit where, and what each sidebar shows. The R mode
+    // (kBuiltinLanguageUiR, older) still carries its own private copies of
+    // the same layout/figure/textbox logic these were lifted from; left as
+    // is rather than re-plumbed, so this change adds two modes without
+    // touching the one that already works.
+    //
+    // Every mode shares the same shape (mep.language_ui_layout): the source
+    // buffer top-left, a "console" pane below it (a real terminal:
+    // mep.terminal_here/terminal_here_argv, whatever the mode's `console`
+    // callback opens), and a right column that's either one pane or a
+    // top/bottom pair, each holding the mode's own SidebarInstances opened
+    // as ordinary tabbed buffers (mep.sidebar_open_pane, Mode::SidebarPane
+    // -- see kBuiltinLanguageUiR's own comment for why that beats docking
+    // them to the window edge: any of them can then be split/moved/tab-
+    // cycled/merged with mod1's usual pane chords like any other buffer).
+    "mep.opt = mep.opt or {}\n"
+    "mep.opt.language_ui_poll_interval = mep.opt.language_ui_poll_interval or 1.0\n"
+    "function mep.language_ui_read_file(path)\n"
+    "  local f = io.open(path, 'rb')\n"
+    "  if not f then return nil end\n"
+    "  local s = f:read('*a')\n"
+    "  f:close()\n"
+    "  return s\n"
+    "end\n"
+    "function mep.language_ui_write_file(path, text)\n"
+    "  local f = io.open(path, 'w')\n"
+    "  if not f then return false end\n"
+    "  f:write(text or '')\n"
+    "  f:close()\n"
+    "  return true\n"
+    "end\n"
+    // Single-quotes `s` for a POSIX shell (same trick as kBuiltinRunButton's
+    // chunk-local mep_run_button_shq, which isn't reachable from here).
+    "function mep.language_ui_shq(s)\n"
+    "  return \"'\" .. tostring(s):gsub(\"'\", \"'\\\\''\") .. \"'\"\n"
+    "end\n"
+    // A fresh per-session scratch directory: one named directory (rather
+    // than an anonymous os.tmpname() per file) so every pane's tab shows a
+    // plain, recognizable basename -- DrawTabBar titles a pane from its
+    // file's Basename(), so the file's own name IS the tab title.
+    "function mep.language_ui_session_dir(suffix)\n"
+    "  local dir = os.tmpname() .. '_' .. suffix\n"
+    "  mep.fs_mkdir(dir)\n"
+    "  return dir\n"
+    "end\n"
+    // "The session wrote a text file, show it one widget per line" --
+    // word-wrapped (wrap = true, like the Todo panel), since help text and
+    // printed data frames both routinely run past a sidebar's width. Blank
+    // lines are kept as a single-space row (unlike a bare gmatch('[^\n]+'))
+    // so paragraphs in help text stay visually separated.
+    "function mep.language_ui_render_textbox(sidebar_id, text, empty_msg)\n"
+    "  if not sidebar_id then return end\n"
+    "  local widgets = {}\n"
+    "  local body = (text or ''):gsub('\\r', '')\n"
+    "  for line in (body .. '\\n'):gmatch('([^\\n]*)\\n') do\n"
+    "    if line ~= '' or #widgets > 0 then\n"
+    "      widgets[#widgets + 1] = {id = tostring(#widgets + 1), text = (line == '' and ' ' or line), wrap = true, wrap_indent = 0}\n"
+    "    end\n"
+    "  end\n"
+    "  while #widgets > 0 and widgets[#widgets].text == ' ' do widgets[#widgets] = nil end\n"
+    "  if #widgets == 0 then widgets[1] = {id = 'empty', text = empty_msg} end\n"
+    "  mep.sidebar_set_sections(sidebar_id, {{id = 'content', title = '', collapsed = false, widgets = widgets}})\n"
+    "end\n"
+    // Builds the standard three-region layout around the CURRENT pane (the
+    // source buffer) and returns {editor_pane, console_pane, console_buf,
+    // top_pane, bottom_pane}. `opts.console` is called with the (soon to be)
+    // console pane focused and must replace that pane's content -- e.g.
+    // mep.terminal_here_argv(...) for a REPL, mep.terminal_here() for a plain
+    // shell. `opts.bottom_info_share` = nil means the right column is one
+    // pane (top_pane only, bottom_pane nil).
+    //
+    // The split choreography is exactly kBuiltinLanguageUiR's, see the
+    // comments there: mep.cmd('vsplit') opens the NEW pane to the LEFT and
+    // focuses it (so the original pane id becomes the right column), and
+    // mep.cmd('split') opens the NEW pane on TOP (so the original id shifts
+    // down to become the bottom half) -- which is why the console ends up
+    // being the pane id the source started in, and every later "back to the
+    // source" call wants editor_pane, not that original id.
+    "function mep.language_ui_layout(opts)\n"
+    "  local orig_pane = mep.current_pane_id()\n"
+    "  mep.cmd('vsplit')\n"
+    "  local source_pane = mep.current_pane_id()\n"
+    "  local info_pane = orig_pane\n"
+    "  mep.pane_focus(info_pane)\n"
+    "  mep.pane_set_share(opts.info_share or 0.3)\n"
+    "  local top_pane, bottom_pane = info_pane, nil\n"
+    "  if opts.bottom_info_share then\n"
+    "    mep.cmd('split')\n"
+    "    top_pane = mep.current_pane_id()\n"
+    "    mep.nav_pane('down')\n"
+    "    mep.pane_set_share(opts.bottom_info_share)\n"
+    "    bottom_pane = mep.current_pane_id()\n"
+    "  end\n"
+    "  mep.pane_focus(source_pane)\n"
+    "  mep.cmd('split')\n"
+    "  local editor_pane = mep.current_pane_id()\n"
+    "  mep.nav_pane('down')\n"
+    "  mep.pane_set_share(opts.bottom_share or 0.4)\n"
+    "  if opts.console then opts.console() end\n"
+    "  local console_pane = mep.current_pane_id()\n"
+    "  local console_buf = mep.current_buffer()\n"
+    "  mep.pane_focus(editor_pane)\n"
+    "  return {editor_pane = editor_pane, console_pane = console_pane, console_buf = console_buf,\n"
+    "    top_pane = top_pane, bottom_pane = bottom_pane}\n"
+    "end\n"
+    // Opens each sidebar in `sidebar_ids` (in order) as a tab of `pane`,
+    // drops the seed buffer the split carried into that pane (a copy of the
+    // source), and leaves the FIRST sidebar as the active tab. Returns
+    // sidebar id -> buffer id -- captured here since mep.sidebar_open_pane
+    // itself returns nothing and there's no other way to learn a sidebar-
+    // pane's buffer id (needed for mep.jump_to_buffer into a tab that's
+    // hidden behind its siblings).
+    "function mep.language_ui_open_tabs(pane, sidebar_ids)\n"
+    "  local bufs = {}\n"
+    "  mep.pane_focus(pane)\n"
+    "  for _, sid in ipairs(sidebar_ids) do\n"
+    "    mep.sidebar_open_pane(sid)\n"
+    "    bufs[sid] = mep.current_buffer()\n"
+    "  end\n"
+    "  for _ = 1, #sidebar_ids do mep.pane_prev_buffer() end\n"
+    "  mep.pane_close_buffer()\n"
+    "  return bufs\n"
+    "end\n"
+    // Tears a mep.language_ui_layout back down: closes the console and
+    // right-column panes, deletes the console's terminal buffer (a pane
+    // close alone never deletes the underlying Buffer -- Editor::ClosePane
+    // only detaches the node), and puts focus back on the source. Extra
+    // terminal buffers a mode spawned itself go in `extra_term_bufs`.
+    "function mep.language_ui_teardown(layout, extra_term_bufs)\n"
+    "  local panes = {layout.console_pane, layout.top_pane}\n"
+    "  if layout.bottom_pane then panes[#panes + 1] = layout.bottom_pane end\n"
+    "  for _, pid in ipairs(panes) do\n"
+    "    if mep.pane_focus(pid) then mep.cmd('close') end\n"
+    "  end\n"
+    "  local bufs = {layout.console_buf}\n"
+    "  for _, b in ipairs(extra_term_bufs or {}) do bufs[#bufs + 1] = b end\n"
+    "  for _, b in ipairs(bufs) do\n"
+    "    if b and mep.is_terminal_buffer(b) then mep.buffer_delete(b, true) end\n"
+    "  end\n"
+    "  mep.pane_focus(layout.editor_pane)\n"
+    "end\n"
+    // Figure gallery: a plain image buffer in `pane` (a sidebar widget row
+    // is text-only, nowhere to put a figure) showing one of the numbered
+    // fig_NNNN.png files in `dir`, with a merged-in "<"/">" nav header
+    // (mep.image_set_nav) stepping through them. gallery:poll() re-lists the
+    // directory: a NEW file is followed automatically when the newest one was
+    // already showing (follow_latest), and an in-place rewrite of the file
+    // currently showing (same count, newer mtime -- how both the R and
+    // Python sessions grow an "evolving" figure) reopens it; anything else is
+    // left alone, since re-navigating every tick would reset scroll/focus
+    // state in unrelated panes (kBuiltinLanguageUiR's poll comment has the
+    // full story on why that matters).
+    "function mep.language_ui_gallery(pane, dir, placeholder_path)\n"
+    "  local g = {pane = pane, dir = dir, figures = {}, findex = 0, findex_mtime = nil, follow_latest = true}\n"
+    "  function g:show(i)\n"
+    "    if #self.figures == 0 then return end\n"
+    "    self.findex = math.max(1, math.min(i, #self.figures))\n"
+    "    self.follow_latest = (self.findex == #self.figures)\n"
+    "    local cur = mep.current_pane_id()\n"
+    "    if mep.pane_focus(self.pane) then\n"
+    "      mep.open(self.figures[self.findex])\n"
+    "      mep.image_set_nav(mep.current_buffer(), function() self:step(-1) end, function() self:step(1) end)\n"
+    "      mep.image_set_theme(mep.current_buffer(), true)\n"
+    "      mep.pane_focus(cur)\n"
+    "    end\n"
+    "  end\n"
+    "  function g:step(delta) self:show(self.findex + delta) end\n"
+    "  function g:poll()\n"
+    "    local figures, mtimes = {}, {}\n"
+    "    for _, e in ipairs(mep.list_dir(self.dir)) do\n"
+    "      if not e.is_dir and e.name:match('^fig_%d+%.png$') then\n"
+    "        local path = self.dir .. '/' .. e.name\n"
+    "        figures[#figures + 1] = path\n"
+    "        mtimes[path] = e.mtime\n"
+    "      end\n"
+    "    end\n"
+    "    table.sort(figures)\n"
+    "    local grew = #figures > #self.figures\n"
+    "    self.figures = figures\n"
+    "    if grew and self.follow_latest then\n"
+    "      self:show(#figures)\n"
+    "    elseif self.findex > #figures then\n"
+    "      self.findex = #figures\n"
+    "    else\n"
+    "      local cur_path = self.findex > 0 and self.figures[self.findex] or nil\n"
+    "      if cur_path and mtimes[cur_path] ~= self.findex_mtime then self:show(self.findex) end\n"
+    "    end\n"
+    "    self.findex_mtime = self.findex > 0 and mtimes[self.figures[self.findex]] or nil\n"
+    "    return grew\n"
+    "  end\n"
+    "  if placeholder_path then\n"
+    "    local cur = mep.current_pane_id()\n"
+    "    if mep.pane_focus(pane) then\n"
+    "      mep.open(placeholder_path)\n"
+    "      mep.pane_focus(cur)\n"
+    "    end\n"
+    "  end\n"
+    "  return g\n"
+    "end\n";
+
+const char *kBuiltinLanguageUiPython =
+    // Python language UI mode (kBuiltinLanguageUi's second consumer, built
+    // on kBuiltinLanguageUiCommon): <leader>uu on a .py buffer lays a Python
+    // console below the source pane, plus a right column split top/bottom --
+    // Objects/Data/Modules/History/Help tabbed together on top, Plot alone on
+    // the bottom -- the same shape as the R mode (kBuiltinLanguageUiR).
+    //
+    // The console is a real Python process (mep.opt.py_ui_cmd, default
+    // python3) running mep_py_ui_init_template below as its script. Rather
+    // than returning to the stock REPL (`python3 -i`), the script drives its
+    // own code.InteractiveConsole subclass whose runcode() refreshes the
+    // sidebar files after EVERY top-level statement -- Python's equivalent of
+    // the R mode's addTaskCallback hook, and the one approach that works the
+    // same on every Python version (3.13+'s new _pyrepl-based interactive
+    // prompt no longer reliably str()s a custom sys.ps1 object, the classic
+    // trick for "run something before each prompt", and -i can't be told to
+    // stay on the old REPL from inside the script). readline/rlcompleter
+    // give it history and tab completion; what's lost is only the newer
+    // REPL's colored prompt/multi-line editing.
+    //   - Objects/Modules: every name in the console's own namespace, one
+    //     line each ("name <type> shape-or-len-or-repr"), modules listed
+    //     separately; clicking an Objects row sends mep_view(name) so the
+    //     Data tab shows it.
+    //   - help(x) is overridden (builtins.help) to write pydoc's plain-text
+    //     rendering into the Help tab's file instead of paging it inside the
+    //     console; help('topic') strings work too.
+    //   - mep_view(x) writes x (a pandas DataFrame's head().to_string(), or
+    //     pprint for anything else) to the Data tab.
+    //   - Plots: MPLBACKEND is pointed at a tiny custom matplotlib backend
+    //     module (mep_mplbackend_template below, written next to the init
+    //     script and put on sys.path) BEFORE the user can import matplotlib,
+    //     so matplotlib's own backend resolution loads it. It subclasses the
+    //     Agg canvas and makes plt.show() (and fig.show()) save every open
+    //     figure to a numbered fig_NNNN.png in the figures directory and
+    //     close them -- so a script's usual `plt.show()` "shows" into the
+    //     Plot tab, and the next plt.plot() starts a fresh figure like it
+    //     would after a real GUI window closed. Independently, the per-
+    //     statement refresh also saves any open figure that has axes and is
+    //     `stale` (matplotlib's own "something changed since the last draw"
+    //     flag, propagated from every artist up to its Figure), rewriting
+    //     that figure's OWN file in place -- so plt.plot(x) then
+    //     plt.title('t') as two console statements is one evolving figure,
+    //     not two, matching the R mode / RStudio's Plots pane, and a plot
+    //     appears without ever calling show() at all. seaborn draws through
+    //     pyplot, so it's covered by the same two paths.
+    //   - History: readline's own history, newest last.
+    // None of this needs mep to read the console's output: everything is an
+    // ordinary file the poll loop at the bottom reads/re-lists on a timer.
+    "mep.opt = mep.opt or {}\n"
+    "mep.opt.py_ui_cmd = mep.opt.py_ui_cmd or {'python3'}\n"
+    "mep.opt.py_ui_info_share = mep.opt.py_ui_info_share or 0.3\n"
+    "mep.opt.py_ui_bottom_share = mep.opt.py_ui_bottom_share or 0.4\n"
+    "mep.opt.py_ui_bottom_info_share = mep.opt.py_ui_bottom_info_share or 0.4\n"
+    "mep.language_ui_extensions.py = mep.language_ui_extensions.py or 'python'\n"
+    // The console script. Lua prepends a single `MEP_DIR = '<session dir>'`
+    // line (mep_py_ui_pyquote), and everything else derives its paths from
+    // that -- deliberately not a string.format template, so no `%` in the
+    // Python below ever needs doubling.
+    "local mep_py_ui_init_template = [==[\n"
+    "import sys, os, code, types, pydoc, pprint, builtins\n"
+    "_MEP_DIR = MEP_DIR\n"
+    "os.environ['MPLBACKEND'] = 'module://mep_mplbackend'\n"
+    "sys.path.insert(0, _MEP_DIR)\n"
+    "sys.path.insert(0, '')\n"
+    "sys.argv = ['']\n"
+    "try:\n"
+    "    import readline, rlcompleter\n"
+    "except ImportError:\n"
+    "    readline = None\n"
+    "\n"
+    "def _mep_write(name, text):\n"
+    "    try:\n"
+    "        with open(os.path.join(_MEP_DIR, name), 'w', encoding='utf-8', errors='replace') as f:\n"
+    "            f.write(text)\n"
+    "    except Exception:\n"
+    "        pass\n"
+    "\n"
+    "def _mep_short(v, limit=48):\n"
+    "    try:\n"
+    "        r = repr(v)\n"
+    "    except Exception:\n"
+    "        return '?'\n"
+    "    r = r.replace('\\n', ' ')\n"
+    "    return r if len(r) <= limit else r[:limit - 3] + '...'\n"
+    "\n"
+    "def _mep_describe(v):\n"
+    "    try:\n"
+    "        shape = getattr(v, 'shape', None)\n"
+    "        if shape is not None and not callable(shape):\n"
+    "            dtype = getattr(v, 'dtype', None)\n"
+    "            dims = 'x'.join(str(s) for s in shape)\n"
+    "            return dims + (' ' + str(dtype) if dtype is not None else '')\n"
+    "        if isinstance(v, (str, bytes)):\n"
+    "            return 'len ' + str(len(v)) + ' ' + _mep_short(v)\n"
+    "        if hasattr(v, '__len__'):\n"
+    "            return 'len ' + str(len(v))\n"
+    "        if isinstance(v, type):\n"
+    "            return 'class'\n"
+    "        if callable(v):\n"
+    "            doc = (getattr(v, '__doc__', None) or '').strip().split('\\n')[0]\n"
+    "            return doc[:60]\n"
+    "        return _mep_short(v)\n"
+    "    except Exception:\n"
+    "        return '?'\n"
+    "\n"
+    "_MEP_NS = {'__name__': '__main__', '__builtins__': builtins}\n"
+    "_MEP_HIDDEN = set()\n"
+    "\n"
+    "def _mep_env_summary():\n"
+    "    objs, mods = [], []\n"
+    "    for name in sorted(_MEP_NS):\n"
+    "        if name.startswith('_') or name in _MEP_HIDDEN:\n"
+    "            continue\n"
+    "        v = _MEP_NS[name]\n"
+    "        if isinstance(v, types.ModuleType):\n"
+    "            ver = getattr(v, '__version__', '')\n"
+    "            mods.append(name + ' -> ' + getattr(v, '__name__', '?') + (' ' + str(ver) if ver else ''))\n"
+    "        else:\n"
+    "            objs.append('{:<20} <{}> {}'.format(name, type(v).__name__, _mep_describe(v)))\n"
+    "    return '\\n'.join(objs), '\\n'.join(mods)\n"
+    "\n"
+    "def _mep_history_text():\n"
+    "    if readline is None:\n"
+    "        return ''\n"
+    "    n = readline.get_current_history_length()\n"
+    "    lines = []\n"
+    "    for i in range(max(1, n - 199), n + 1):\n"
+    "        item = readline.get_history_item(i)\n"
+    "        if item:\n"
+    "            lines.append(item.replace('\\n', ' '))\n"
+    "    return '\\n'.join(lines)\n"
+    "\n"
+    "def _mep_capture_figures(force=False, close=False):\n"
+    "    mod = sys.modules.get('mep_mplbackend')\n"
+    "    if mod is not None:\n"
+    "        mod.capture(force=force, close=close)\n"
+    "\n"
+    "def _mep_refresh():\n"
+    "    try:\n"
+    "        _mep_capture_figures()\n"
+    "    except Exception:\n"
+    "        pass\n"
+    "    try:\n"
+    "        objs, mods = _mep_env_summary()\n"
+    "        _mep_write('objects.txt', objs)\n"
+    "        _mep_write('modules.txt', mods)\n"
+    "    except Exception:\n"
+    "        pass\n"
+    "    try:\n"
+    "        _mep_write('history.txt', _mep_history_text())\n"
+    "    except Exception:\n"
+    "        pass\n"
+    "\n"
+    "class _MepHelp:\n"
+    "    def __call__(self, *args, **kwargs):\n"
+    "        if not args:\n"
+    "            text = 'help(object): its documentation appears in this Help tab. help(\"topic\") strings work too.'\n"
+    "        else:\n"
+    "            try:\n"
+    "                text = pydoc.render_doc(args[0], renderer=pydoc.plaintext)\n"
+    "            except Exception as e:\n"
+    "                text = 'help: ' + str(e)\n"
+    "        _mep_write('help.txt', text)\n"
+    "        print('mep: help written to the Help tab')\n"
+    "    def __repr__(self):\n"
+    "        return 'help(object) writes documentation to the Help tab.'\n"
+    "builtins.help = _MepHelp()\n"
+    "\n"
+    "def mep_view(x, n=100):\n"
+    "    try:\n"
+    "        head = getattr(x, 'head', None)\n"
+    "        if callable(head):\n"
+    "            h = head(n)\n"
+    "            to_string = getattr(h, 'to_string', None)\n"
+    "            text = to_string() if callable(to_string) else repr(h)\n"
+    "            try:\n"
+    "                text = type(x).__name__ + ' ' + 'x'.join(str(s) for s in x.shape) + '\\n' + text\n"
+    "            except Exception:\n"
+    "                pass\n"
+    "        else:\n"
+    "            text = pprint.pformat(x, width=200)\n"
+    "            lines = text.split('\\n')\n"
+    "            if len(lines) > n:\n"
+    "                text = '\\n'.join(lines[:n]) + '\\n... (' + str(len(lines) - n) + ' more lines)'\n"
+    "    except Exception as e:\n"
+    "        text = 'mep_view: ' + str(e)\n"
+    "    _mep_write('data.txt', text)\n"
+    "    return x\n"
+    "\n"
+    "def mep_show():\n"
+    "    _mep_capture_figures(force=True, close=False)\n"
+    "\n"
+    "def mep_run(path):\n"
+    "    d = os.path.dirname(os.path.abspath(path))\n"
+    "    if d not in sys.path:\n"
+    "        sys.path.insert(0, d)\n"
+    "    with open(path, 'r', encoding='utf-8') as f:\n"
+    "        src = f.read()\n"
+    "    exec(compile(src, path, 'exec'), _MEP_NS)\n"
+    "\n"
+    "class _MepConsole(code.InteractiveConsole):\n"
+    "    def runcode(self, code_obj):\n"
+    "        try:\n"
+    "            super().runcode(code_obj)\n"
+    "        finally:\n"
+    "            _mep_refresh()\n"
+    "\n"
+    "_MEP_NS['mep_view'] = mep_view\n"
+    "_MEP_NS['mep_show'] = mep_show\n"
+    "_MEP_NS['mep_run'] = mep_run\n"
+    "_MEP_HIDDEN.update(['mep_view', 'mep_show', 'mep_run'])\n"
+    "if readline is not None:\n"
+    "    readline.set_completer(rlcompleter.Completer(_MEP_NS).complete)\n"
+    "    readline.parse_and_bind('tab: complete')\n"
+    "sys.ps1 = '>>> '\n"
+    "sys.ps2 = '... '\n"
+    "_mep_refresh()\n"
+    "_MepConsole(locals=_MEP_NS).interact(\n"
+    "    banner='Python ' + sys.version.split()[0] + ' -- mep language UI: plots go to the Plot tab (plt.show(), or just plot), help(x) to the Help tab, mep_view(x) to the Data tab; mep_run(path) sources a file.',\n"
+    "    exitmsg='')\n"
+    "]==]\n"
+    // The matplotlib backend module (see the header comment). Only ever
+    // imported by matplotlib itself, and only once something actually
+    // imports matplotlib -- a session that never plots never loads it.
+    // Saving goes through a temp file + os.replace so the poll loop never
+    // opens a half-written PNG. dpi='figure' (not a custom value) matters:
+    // print_figure temporarily sets the figure's dpi, and Figure._set_dpi
+    // only skips raising `stale` when the value is unchanged -- with any
+    // other dpi every save would immediately re-mark the figure stale and
+    // the next refresh would save it again, forever. `fig.stale = False`
+    // after the save is belt-and-braces for the same reason.
+    "local mep_py_ui_backend_template = [==[\n"
+    "import os\n"
+    "from matplotlib.backend_bases import _Backend, FigureManagerBase\n"
+    "from matplotlib.backends.backend_agg import FigureCanvasAgg\n"
+    "from matplotlib._pylab_helpers import Gcf\n"
+    "\n"
+    "FIG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'figures')\n"
+    "_counter = [0]\n"
+    "\n"
+    "def _save(fig):\n"
+    "    path = getattr(fig, '_mep_path', None)\n"
+    "    if path is None:\n"
+    "        _counter[0] += 1\n"
+    "        path = os.path.join(FIG_DIR, 'fig_{:04d}.png'.format(_counter[0]))\n"
+    "        fig._mep_path = path\n"
+    "    tmp = path + '.tmp'\n"
+    "    fig.savefig(tmp, format='png', dpi='figure')\n"
+    "    os.replace(tmp, path)\n"
+    "    fig.stale = False\n"
+    "\n"
+    "def capture(force=False, close=False):\n"
+    "    for manager in Gcf.get_all_fig_managers():\n"
+    "        fig = manager.canvas.figure\n"
+    "        if not fig.axes:\n"
+    "            continue\n"
+    "        if force or fig.stale:\n"
+    "            _save(fig)\n"
+    "    if close:\n"
+    "        Gcf.destroy_all()\n"
+    "\n"
+    "class FigureManagerMep(FigureManagerBase):\n"
+    "    def show(self):\n"
+    "        fig = self.canvas.figure\n"
+    "        if fig.axes:\n"
+    "            _save(fig)\n"
+    "\n"
+    "class FigureCanvasMep(FigureCanvasAgg):\n"
+    "    manager_class = FigureManagerMep\n"
+    "\n"
+    "@_Backend.export\n"
+    "class _BackendMep(_Backend):\n"
+    "    FigureCanvas = FigureCanvasMep\n"
+    "    FigureManager = FigureManagerMep\n"
+    "\n"
+    "    @classmethod\n"
+    "    def show(cls, *args, **kwargs):\n"
+    "        capture(force=True, close=True)\n"
+    "]==]\n"
+    // tab id -> session state (mirrors mep.language_ui_active's own per-tab
+    // scope); the five sidebars are single global instances that always
+    // render whichever tab is active -- same scope cut as the R mode.
+    "local mep_py_ui_state = {}\n"
+    "local mep_py_ui_sidebars = nil\n"
+    // Quotes a path as a Python string literal.
+    "local function mep_py_ui_pyquote(s)\n"
+    "  return \"'\" .. s:gsub('\\\\', '\\\\\\\\'):gsub(\"'\", \"\\\\'\") .. \"'\"\n"
+    "end\n"
+    "local function mep_py_ui_ensure_sidebars()\n"
+    "  if mep_py_ui_sidebars then return end\n"
+    "  mep_py_ui_sidebars = {\n"
+    "    objects = mep.sidebar_create('Objects', 'right', 44),\n"
+    "    data = mep.sidebar_create('Data', 'right', 44),\n"
+    "    modules = mep.sidebar_create('Modules', 'right', 44),\n"
+    "    history = mep.sidebar_create('History', 'right', 44),\n"
+    "    help = mep.sidebar_create('Help', 'right', 44),\n"
+    "  }\n"
+    "end\n"
+    "local function mep_py_ui_render_objects()\n"
+    "  local sb = mep_py_ui_sidebars\n"
+    "  if not sb then return end\n"
+    "  local st = mep_py_ui_state[mep.current_tab_id()]\n"
+    "  local widgets = {}\n"
+    "  for line in ((st and st.objects_text) or ''):gmatch('[^\\n]+') do\n"
+    "    local name = line:match('^(%S+)')\n"
+    "    widgets[#widgets + 1] = {id = name or line, text = line, tooltip = name and ('mep_view(' .. name .. ')') or nil,\n"
+    "      on_click = (name and st) and function() mep.terminal_write(st.console_buf, 'mep_view(' .. name .. ')\\n') end or nil}\n"
+    "  end\n"
+    "  if #widgets == 0 then widgets[1] = {id = 'empty', text = '(no objects yet -- assign something in the console)'} end\n"
+    "  mep.sidebar_set_sections(sb.objects, {{id = 'objects', title = '', collapsed = false, widgets = widgets}})\n"
+    "end\n"
+    "local function mep_py_ui_render_modules()\n"
+    "  local sb = mep_py_ui_sidebars\n"
+    "  if not sb then return end\n"
+    "  local st = mep_py_ui_state[mep.current_tab_id()]\n"
+    "  local widgets = {}\n"
+    "  for line in ((st and st.modules_text) or ''):gmatch('[^\\n]+') do\n"
+    "    widgets[#widgets + 1] = {id = line, text = line}\n"
+    "  end\n"
+    "  if #widgets == 0 then widgets[1] = {id = 'empty', text = '(no modules imported)'} end\n"
+    "  mep.sidebar_set_sections(sb.modules, {{id = 'modules', title = '', collapsed = false, widgets = widgets}})\n"
+    "end\n"
+    "local function mep_py_ui_render_history()\n"
+    "  local sb = mep_py_ui_sidebars\n"
+    "  if not sb then return end\n"
+    "  local st = mep_py_ui_state[mep.current_tab_id()]\n"
+    "  local widgets = {}\n"
+    "  for i = (st and #st.history or 0), 1, -1 do\n"
+    "    local cmd = st.history[i]\n"
+    "    widgets[#widgets + 1] = {id = 'h' .. i, text = cmd, wrap = true, wrap_indent = 0,\n"
+    "      on_click = function() mep.terminal_write(st.console_buf, cmd .. '\\n') end}\n"
+    "  end\n"
+    "  if #widgets == 0 then widgets[1] = {id = 'empty', text = '(no history yet -- run something in the console)'} end\n"
+    "  mep.sidebar_set_sections(sb.history, {{id = 'history', title = '', collapsed = false, widgets = widgets}})\n"
+    "end\n"
+    "local function mep_py_ui_render_all()\n"
+    "  local sb = mep_py_ui_sidebars\n"
+    "  if not sb then return end\n"
+    "  local st = mep_py_ui_state[mep.current_tab_id()]\n"
+    "  mep_py_ui_render_objects()\n"
+    "  mep_py_ui_render_modules()\n"
+    "  mep_py_ui_render_history()\n"
+    "  mep.language_ui_render_textbox(sb.data, st and st.data_text, '(no data yet -- call mep_view(x) in the console, or click an Objects row)')\n"
+    "  mep.language_ui_render_textbox(sb.help, st and st.help_text, '(no help viewed yet -- try help(len) or help(\"os.path\") in the console)')\n"
+    "end\n"
+    "function mep.py_ui_open()\n"
+    "  local session_dir = mep.language_ui_session_dir('pyui')\n"
+    "  local fig_dir = session_dir .. '/figures'\n"
+    "  mep.fs_mkdir(fig_dir)\n"
+    "  local paths = {\n"
+    "    objects = session_dir .. '/objects.txt', modules = session_dir .. '/modules.txt',\n"
+    "    history = session_dir .. '/history.txt', data = session_dir .. '/data.txt',\n"
+    "    help = session_dir .. '/help.txt',\n"
+    "  }\n"
+    "  for _, p in pairs(paths) do mep.language_ui_write_file(p, '') end\n"
+    "  local placeholder_path = session_dir .. '/no_figure_yet.txt'\n"
+    "  mep.language_ui_write_file(placeholder_path,\n"
+    "    'No figure yet.\\nPlot from the Python console below (e.g. import matplotlib.pyplot as plt; plt.plot([1, 2, 3]); plt.show()) and it will appear here automatically.\\n')\n"
+    "  local init_path = session_dir .. '/mep_init.py'\n"
+    "  mep.language_ui_write_file(init_path, 'MEP_DIR = ' .. mep_py_ui_pyquote(session_dir) .. '\\n' .. mep_py_ui_init_template)\n"
+    "  mep.language_ui_write_file(session_dir .. '/mep_mplbackend.py', mep_py_ui_backend_template)\n"
+    "  local argv = {}\n"
+    "  for _, a in ipairs(mep.opt.py_ui_cmd) do argv[#argv + 1] = a end\n"
+    "  argv[#argv + 1] = init_path\n"
+    "  local layout = mep.language_ui_layout({\n"
+    "    info_share = mep.opt.py_ui_info_share, bottom_share = mep.opt.py_ui_bottom_share,\n"
+    "    bottom_info_share = mep.opt.py_ui_bottom_info_share,\n"
+    "    console = function() mep.terminal_here_argv(argv, 'python') end,\n"
+    "  })\n"
+    "  local tid = mep.current_tab_id()\n"
+    "  mep_py_ui_ensure_sidebars()\n"
+    "  local sb = mep_py_ui_sidebars\n"
+    "  local st = {\n"
+    "    paths = paths, console_buf = layout.console_buf,\n"
+    "    objects_text = '', modules_text = '', help_text = '', data_text = '', history = {},\n"
+    "    help_buf = nil, gallery = nil,\n"
+    "  }\n"
+    "  mep_py_ui_state[tid] = st\n"
+    "  mep_py_ui_render_all()\n"
+    "  local bufs = mep.language_ui_open_tabs(layout.top_pane, {sb.objects, sb.data, sb.modules, sb.history, sb.help})\n"
+    "  st.help_buf = bufs[sb.help]\n"
+    "  st.gallery = mep.language_ui_gallery(layout.bottom_pane, fig_dir, placeholder_path)\n"
+    "  mep.pane_focus(layout.editor_pane)\n"
+    "  mep.notify('Python language UI: console below (plots capture automatically); Objects/Data/Modules/History/Help tabbed top-right, Plot alone bottom-right (mod1+Tab cycles, mod1+s splits, mod1+Ctrl+hjkl moves a tab)')\n"
+    // run_source: what <leader>rr / the Run button (kBuiltinRunButton's
+    // mep.run_button_run) calls while this tab's mode is open -- writes
+    // the buffer, then execs the file into the console's own namespace
+    // (mep_run, the init script) so its top-level names show up in
+    // Objects and its plots land in the Plot tab, instead of spawning a
+    // fresh disconnected python in a popup terminal.
+    "  local function run_source(fname)\n"
+    "    mep.cmd('write')\n"
+    "    mep.terminal_write(layout.console_buf, 'mep_run(' .. mep_py_ui_pyquote(mep_lsp_abspath(fname)) .. ')\\n')\n"
+    "  end\n"
+    "  return {\n"
+    "    run_source = run_source,\n"
+    "    close = function()\n"
+    "      mep_py_ui_state[tid] = nil\n"
+    "      mep.language_ui_teardown(layout)\n"
+    "      mep.notify('Python language UI mode closed')\n"
+    "    end,\n"
+    "  }\n"
+    "end\n"
+    "mep.language_ui_modes.python = {open = mep.py_ui_open}\n"
+    // Poll loop: re-lists the figures directory and re-reads the sidebar
+    // files on a timer, only while a Python mode is open on the active tab.
+    "do\n"
+    "  local last_poll = 0\n"
+    "  mep.on_frame(function()\n"
+    "    local tid = mep.current_tab_id()\n"
+    "    local st = mep_py_ui_state[tid]\n"
+    "    if not st then return end\n"
+    "    local now = mep.now()\n"
+    "    if now - last_poll < mep.opt.language_ui_poll_interval then return end\n"
+    "    last_poll = now\n"
+    "    if st.gallery then st.gallery:poll() end\n"
+    "    local changed, help_changed = false, false\n"
+    "    local objs = mep.language_ui_read_file(st.paths.objects)\n"
+    "    if objs and objs ~= st.objects_text then st.objects_text = objs; changed = true end\n"
+    "    local mods = mep.language_ui_read_file(st.paths.modules)\n"
+    "    if mods and mods ~= st.modules_text then st.modules_text = mods; changed = true end\n"
+    "    local help = mep.language_ui_read_file(st.paths.help)\n"
+    "    if help and help ~= st.help_text then st.help_text = help; changed = true; help_changed = true end\n"
+    "    local data = mep.language_ui_read_file(st.paths.data)\n"
+    "    if data and data ~= st.data_text then st.data_text = data; changed = true end\n"
+    "    local hist_raw = mep.language_ui_read_file(st.paths.history)\n"
+    "    if hist_raw then\n"
+    "      local hist = {}\n"
+    "      for line in hist_raw:gmatch('[^\\n]+') do hist[#hist + 1] = line end\n"
+    "      if #hist ~= #st.history or (hist[#hist] ~= st.history[#st.history]) then st.history = hist; changed = true end\n"
+    "    end\n"
+    "    if changed then mep_py_ui_render_all() end\n"
+    // A new help() result is something the user explicitly asked to go
+    // look at, so land the cursor on the Help tab (mep.jump_to_buffer
+    // finds it even hidden behind its sibling tabs) -- gated on a real
+    // content change so it's once per lookup, not once per tick.
+    "    if help_changed and st.help_buf then mep.jump_to_buffer(st.help_buf) end\n"
+    "  end)\n"
+    "end\n";
+
+const char *kBuiltinLanguageUiC =
+    // C/C++ language UI mode (kBuiltinLanguageUi's third consumer, built on
+    // kBuiltinLanguageUiCommon): <leader>uu on a .c/.cpp/.cc/.cxx buffer lays
+    // a plain shell terminal below the source pane (where the compiled
+    // program runs), plus a right column split top/bottom -- Assembly and
+    // Build tabbed together on top, Hex alone on the bottom.
+    //   - Assembly: a Compiler-Explorer-style view of the current file.
+    //     `compiler -S -g file flags -o -` (the same compiler/flags the Run
+    //     button's Setup configured for this project -- mep.run_button_
+    //     config_for, kBuiltinRunButton -- piped through c++filt when one is
+    //     on PATH so C++ symbols read demangled), regenerated on every save
+    //     (mep.buffer_save_epoch, polled) and every <leader>rr, with the
+    //     assembler noise filtered out the way Compiler Explorer's default
+    //     filters do: directives (.cfi_*/.p2align/.type/.size/...), comment
+    //     lines, unreferenced local labels, and everything inside .debug_*/
+    //     .note/.comment sections are dropped; data definitions (.asciz/
+    //     .long/.quad/... for string constants and tables) and referenced
+    //     labels stay. -g is what makes the `.file`/`.loc` directives appear
+    //     in the output: every instruction is mapped back to the source
+    //     line the most recent .loc named (only for the file being viewed
+    //     -- inlined header code stays unmapped/dim), rows are colored by
+    //     source line (Compiler Explorer's rainbow), the rows for the line
+    //     the source cursor is on are highlighted live, and clicking a row
+    //     jumps the source cursor to its line.
+    //   - Build: the compiler's own diagnostics from the last build/asm run,
+    //     one row per line, file:line:col rows clickable to jump there.
+    //   - Hex: a paged hex dump (mep.opt.c_ui_hex_page bytes per page, 16
+    //     per row) of the compiled executable, with the ELF header decoded
+    //     (class/endianness/type/machine/entry point) and the section table
+    //     listed above it -- clicking a section jumps the dump to its file
+    //     offset; n/p page, g goes to an offset, r reloads (sidebar keys).
+    // <leader>rr (run_source): writes the buffer, compiles it into the
+    // session directory (Build tab shows the command and any diagnostics),
+    // then on success reloads the Hex tab, regenerates the assembly, and
+    // runs the binary in the terminal below -- respawning that shell first
+    // if the user had exited it.
+    "mep.opt = mep.opt or {}\n"
+    "mep.opt.c_ui_info_share = mep.opt.c_ui_info_share or 0.38\n"
+    "mep.opt.c_ui_bottom_share = mep.opt.c_ui_bottom_share or 0.3\n"
+    "mep.opt.c_ui_bottom_info_share = mep.opt.c_ui_bottom_info_share or 0.4\n"
+    "mep.opt.c_ui_hex_page = mep.opt.c_ui_hex_page or 4096\n"
+    "mep.opt.c_ui_filter_directives = (mep.opt.c_ui_filter_directives ~= false)\n"
+    "for _, e in ipairs({'c', 'cpp', 'cc', 'cxx'}) do\n"
+    "  mep.language_ui_extensions[e] = mep.language_ui_extensions[e] or 'c'\n"
+    "end\n"
+    "local mep_c_ui_state = {}\n"
+    "local mep_c_ui_sidebars = nil\n"
+    // Rows are colored by the source line they came from, cycling this
+    // palette (Compiler Explorer's rainbow gutter, minus Yellow, which marks
+    // the cursor's own line below, and Red/Error, kept for diagnostics).
+    "local MEP_C_UI_PALETTE = {'Cyan', 'Green', 'Purple', 'Orange', 'Blue'}\n"
+    "local function mep_c_ui_ensure_sidebars()\n"
+    "  if mep_c_ui_sidebars then return end\n"
+    "  mep_c_ui_sidebars = {\n"
+    "    asm = mep.sidebar_create('Assembly', 'right', 60),\n"
+    "    build = mep.sidebar_create('Build', 'right', 60),\n"
+    "    hex = mep.sidebar_create('Hex', 'right', 60),\n"
+    "  }\n"
+    "  mep.sidebar_set_on_key(mep_c_ui_sidebars.hex, function(k) mep.c_ui_hex_on_key(k) end)\n"
+    "end\n"
+    "local function mep_c_ui_basename(path) return path:match('([^/]+)$') or path end\n"
+    // Assembly filter + source mapping. Returns an array of {text=, line=}
+    // (line = 1-based source line, or nil when unmapped).
+    "local MEP_C_UI_DATA_DIRECTIVES = {\n"
+    "  ['.byte'] = true, ['.short'] = true, ['.value'] = true, ['.word'] = true, ['.long'] = true,\n"
+    "  ['.quad'] = true, ['.ascii'] = true, ['.asciz'] = true, ['.string'] = true, ['.zero'] = true,\n"
+    "  ['.space'] = true, ['.skip'] = true, ['.float'] = true, ['.double'] = true, ['.octa'] = true,\n"
+    "}\n"
+    // Sections whose whole content is dropped (DWARF, notes, unwind
+    // tables): nothing in them is code or data the reader came to see.
+    "local function mep_c_ui_section_kept(name)\n"
+    "  return not (name:match('^%.debug') or name:match('^%.note') or name == '.comment'\n"
+    "    or name:match('^%.eh_frame') or name:match('^%.gcc_except') or name:match('^%.llvm'))\n"
+    "end\n"
+    "local function mep_c_ui_section_of(first, trimmed)\n"
+    "  if first == '.section' then return trimmed:match('^%.section%s+([^,%s]+)') or '' end\n"
+    "  if first == '.text' or first == '.data' or first == '.bss' or first == '.rodata' then return first end\n"
+    "  return nil\n"
+    "end\n"
+    // Drops a trailing assembler comment ("# @main", "# 8-byte Spill") --
+    // only a '#' preceded by whitespace and followed by whitespace/end, so
+    // ARM-style "#1" immediates are left alone.
+    "local function mep_c_ui_strip_comment(s)\n"
+    "  return (s:gsub('%s+#%s.*$', ''):gsub('%s+#$', ''))\n"
+    "end\n"
+    "function mep_c_ui_parse_asm(text, src_basename)\n"
+    "  local raw = {}\n"
+    "  for line in (text .. '\\n'):gmatch('([^\\n]*)\\n') do raw[#raw + 1] = line end\n"
+    // Pass 1: which local labels are actually referenced by something
+    // other than their own definition, counting only references from
+    // sections that are kept -- a .Ltmp/.Lfunc_begin label referenced
+    // solely by DWARF's own .quad tables is the assembler's scaffolding,
+    // not code, and Compiler Explorer hides those too.
+    "  local referenced = {}\n"
+    "  local keep_section = true\n"
+    "  for _, line in ipairs(raw) do\n"
+    "    local trimmed = line:match('^%s*(.-)%s*$')\n"
+    "    local first = trimmed:match('^(%S+)') or ''\n"
+    "    local sec = mep_c_ui_section_of(first, trimmed)\n"
+    "    if sec then keep_section = mep_c_ui_section_kept(sec)\n"
+    "    elseif keep_section and not trimmed:match('^[%.%w_$@]+:') then\n"
+    "      for tok in mep_c_ui_strip_comment(trimmed):gmatch('%.L[%w_%.%$]+') do referenced[tok] = true end\n"
+    "    end\n"
+    "  end\n"
+    "  local main_files = {}\n"
+    "  local out, cur_line = {}, nil\n"
+    "  keep_section = true\n"
+    "  for _, line in ipairs(raw) do\n"
+    "    local trimmed = line:match('^%s*(.-)%s*$')\n"
+    "    local first = trimmed:match('^(%S+)') or ''\n"
+    "    local sec = mep_c_ui_section_of(first, trimmed)\n"
+    "    if trimmed == '' or trimmed:sub(1, 1) == '#' or trimmed:sub(1, 2) == '//' then\n"
+    // blank / comment (clang's "# %bb.0:", gcc's "# -- End function")
+    "    elseif first == '.file' then\n"
+    // `.file N "dir" "name"` (clang, DWARF5 gcc) or `.file N "name"`: the
+    // last quoted string is the file's own name; remember every number
+    // that names the file being viewed so .loc can tell its lines from
+    // inlined header code's.
+    "      local num = trimmed:match('^%.file%s+(%d+)')\n"
+    "      local last = nil\n"
+    "      for q in trimmed:gmatch('\"([^\"]*)\"') do last = q end\n"
+    "      if num and last and mep_c_ui_basename(last) == src_basename then main_files[num] = true end\n"
+    "    elseif first == '.loc' then\n"
+    // line 0 is the compiler's own "no source line" marker
+    "      local num, ln = trimmed:match('^%.loc%s+(%d+)%s+(%d+)')\n"
+    "      if num and main_files[num] and tonumber(ln) > 0 then cur_line = tonumber(ln) else cur_line = nil end\n"
+    "    elseif sec then\n"
+    "      keep_section = mep_c_ui_section_kept(sec)\n"
+    "      cur_line = nil\n"
+    "    elseif not keep_section then\n"
+    // inside a dropped section: everything is DWARF/notes bytes
+    "    elseif trimmed:match('^[%.%w_$@]+:') then\n"
+    "      local label = trimmed:match('^([%.%w_$@]+):')\n"
+    "      if not label:match('^%.L') or referenced[label] or not mep.opt.c_ui_filter_directives then\n"
+    "        out[#out + 1] = {text = mep_c_ui_strip_comment(trimmed), line = nil, label = true}\n"
+    "      end\n"
+    "    elseif first:sub(1, 1) == '.' then\n"
+    "      if MEP_C_UI_DATA_DIRECTIVES[first] or not mep.opt.c_ui_filter_directives then\n"
+    "        out[#out + 1] = {text = '    ' .. trimmed, line = cur_line}\n"
+    "      end\n"
+    "    else\n"
+    "      out[#out + 1] = {text = '    ' .. mep_c_ui_strip_comment(trimmed):gsub('\\t', ' '), line = cur_line}\n"
+    "    end\n"
+    "  end\n"
+    "  return out\n"
+    "end\n"
+    "local function mep_c_ui_render_asm()\n"
+    "  local sb = mep_c_ui_sidebars\n"
+    "  if not sb then return end\n"
+    "  local st = mep_c_ui_state[mep.current_tab_id()]\n"
+    "  local widgets = {}\n"
+    "  local cur = st and st.cursor_line or nil\n"
+    "  local marked = false\n"
+    "  for i, row in ipairs((st and st.asm_rows) or {}) do\n"
+    "    local hl = 'Comment'\n"
+    "    if row.label then hl = 'Normal' end\n"
+    "    if row.line then hl = MEP_C_UI_PALETTE[(row.line % #MEP_C_UI_PALETTE) + 1] end\n"
+    "    local is_cur = (cur ~= nil and row.line == cur)\n"
+    "    if is_cur then hl = 'Yellow' end\n"
+    "    local w = {id = 'a' .. i, text = row.text, hl = hl,\n"
+    "      tooltip = row.line and ('source line ' .. row.line) or nil,\n"
+    "      current = (is_cur and not marked) or nil}\n"
+    "    if is_cur then marked = true end\n"
+    "    if row.line and st then\n"
+    "      local line = row.line\n"
+    "      w.on_click = function()\n"
+    "        if mep.pane_focus_buffer(st.src_buf) or mep.jump_to_buffer(st.src_buf) then mep.set_cursor(line, 1) end\n"
+    "      end\n"
+    "    end\n"
+    "    widgets[#widgets + 1] = w\n"
+    "  end\n"
+    "  if #widgets == 0 then\n"
+    "    widgets[1] = {id = 'empty', text = (st and st.asm_status) or '(no assembly yet -- save the file or press <leader>rr)', wrap = true, wrap_indent = 0}\n"
+    "  end\n"
+    "  mep.sidebar_set_sections(sb.asm, {{id = 'asm', title = (st and st.asm_title) or '', collapsed = false, widgets = widgets}})\n"
+    "end\n"
+    // Build tab: `file:line:col: kind: message` rows jump to that spot;
+    // everything else (the command line, notes, the exit status) is plain.
+    "local function mep_c_ui_render_build()\n"
+    "  local sb = mep_c_ui_sidebars\n"
+    "  if not sb then return end\n"
+    "  local st = mep_c_ui_state[mep.current_tab_id()]\n"
+    "  local widgets = {}\n"
+    "  for i, line in ipairs((st and st.build_lines) or {}) do\n"
+    "    local file, ln, col, kind = line:match('^([^:%s][^:]*):(%d+):(%d+):%s*(%a+)')\n"
+    "    local hl = nil\n"
+    "    if kind == 'error' or kind == 'fatal' then hl = 'Error'\n"
+    "    elseif kind == 'warning' then hl = 'Warn'\n"
+    "    elseif line:sub(1, 2) == '$ ' then hl = 'Comment'\n"
+    "    elseif line:match('^%[build ok') then hl = 'Add' end\n"
+    // The file being viewed shows as its basename rather than the long
+    // absolute path the compiler was handed (the click below still
+    // resolves the original).
+    "    local shown = line\n"
+    "    if st and st.src_abs and line:sub(1, #st.src_abs) == st.src_abs then\n"
+    "      shown = mep_c_ui_basename(st.src_abs) .. line:sub(#st.src_abs + 1)\n"
+    "    end\n"
+    "    local w = {id = 'b' .. i, text = shown, hl = hl, wrap = true, wrap_indent = 4}\n"
+    "    if file and ln then\n"
+    "      w.on_click = function()\n"
+    "        local abs = mep_lsp_abspath(file)\n"
+    "        if st and abs == st.src_abs then\n"
+    "          if not mep.pane_focus_buffer(st.src_buf) then mep.jump_to_buffer(st.src_buf) end\n"
+    "        else\n"
+    "          if st then mep.pane_focus(st.editor_pane) end\n"
+    "          mep.open(abs)\n"
+    "        end\n"
+    "        mep.set_cursor(tonumber(ln), tonumber(col) or 1)\n"
+    "      end\n"
+    "    end\n"
+    "    widgets[#widgets + 1] = w\n"
+    "  end\n"
+    "  if #widgets == 0 then widgets[1] = {id = 'empty', text = '(nothing built yet -- <leader>rr compiles and runs the current file)'} end\n"
+    "  mep.sidebar_set_sections(sb.build, {{id = 'build', title = '', collapsed = false, widgets = widgets}})\n"
+    "end\n"
+    // ELF header + section table decode (both 32- and 64-bit, either
+    // endianness) via string.unpack -- just enough to label what the hex
+    // dump is showing. Returns nil for anything that isn't an ELF file.
+    "local MEP_C_UI_ELF_TYPES = {[1] = 'REL (relocatable)', [2] = 'EXEC (executable)', [3] = 'DYN (shared object / PIE)', [4] = 'CORE'}\n"
+    "local MEP_C_UI_ELF_MACHINES = {[3] = 'x86', [8] = 'MIPS', [20] = 'PowerPC', [21] = 'PowerPC64', [40] = 'ARM',\n"
+    "  [62] = 'x86-64', [183] = 'AArch64', [243] = 'RISC-V'}\n"
+    "function mep_c_ui_parse_elf(data)\n"
+    "  if #data < 52 or data:sub(1, 4) ~= '\\127ELF' then return nil end\n"
+    "  local class, endian = data:byte(5), data:byte(6)\n"
+    "  local le = (endian == 1) and '<' or '>'\n"
+    "  local info = {bits = (class == 2) and 64 or 32, little = (endian == 1)}\n"
+    "  local ok, err = pcall(function()\n"
+    "    local fmt = (class == 2) and 'I2 I2 I4 I8 I8 I8 I4 I2 I2 I2 I2 I2 I2' or 'I2 I2 I4 I4 I4 I4 I4 I2 I2 I2 I2 I2 I2'\n"
+    "    local h = {string.unpack(le .. fmt, data, 17)}\n"
+    "    info.type, info.machine, info.entry, info.phoff, info.shoff = h[1], h[2], h[4], h[5], h[6]\n"
+    "    info.phentsize, info.phnum, info.shentsize, info.shnum, info.shstrndx = h[9], h[10], h[11], h[12], h[13]\n"
+    "    local sections = {}\n"
+    "    if info.shoff > 0 and info.shnum > 0 and info.shoff + info.shnum * info.shentsize <= #data then\n"
+    "      for i = 0, info.shnum - 1 do\n"
+    "        local off = info.shoff + i * info.shentsize + 1\n"
+    "        local s = {}\n"
+    "        if class == 2 then\n"
+    "          s.name_off, s.type, s.flags, s.addr, s.offset, s.size = string.unpack(le .. 'I4 I4 I8 I8 I8 I8', data, off)\n"
+    "        else\n"
+    "          s.name_off, s.type, s.flags, s.addr, s.offset, s.size = string.unpack(le .. 'I4 I4 I4 I4 I4 I4', data, off)\n"
+    "        end\n"
+    "        sections[#sections + 1] = s\n"
+    "      end\n"
+    "      local strtab = sections[info.shstrndx + 1]\n"
+    "      for _, s in ipairs(sections) do\n"
+    "        s.name = ''\n"
+    "        if strtab and strtab.offset + s.name_off < #data then\n"
+    "          local start = strtab.offset + s.name_off + 1\n"
+    "          local nul = data:find('\\0', start, true)\n"
+    "          if nul then s.name = data:sub(start, nul - 1) end\n"
+    "        end\n"
+    "      end\n"
+    "    end\n"
+    "    info.sections = sections\n"
+    "  end)\n"
+    "  if not ok then info.error = tostring(err) end\n"
+    "  return info\n"
+    "end\n"
+    "local function mep_c_ui_hex_rows(data, from, to)\n"
+    "  local rows = {}\n"
+    "  local off = from\n"
+    "  while off < to do\n"
+    "    local n = math.min(16, to - off)\n"
+    "    local hex, asc = {}, {}\n"
+    "    for i = 1, n do\n"
+    "      local b = data:byte(off + i)\n"
+    "      hex[#hex + 1] = string.format('%02x', b)\n"
+    "      if i == 8 then hex[#hex + 1] = '' end\n"
+    "      asc[#asc + 1] = (b >= 32 and b < 127) and string.char(b) or '.'\n"
+    "    end\n"
+    "    local hexs = table.concat(hex, ' ')\n"
+    "    rows[#rows + 1] = {offset = off, text = string.format('%08x  %-49s |%s|', off, hexs, table.concat(asc))}\n"
+    "    off = off + n\n"
+    "  end\n"
+    "  return rows\n"
+    "end\n"
+    "local function mep_c_ui_render_hex()\n"
+    "  local sb = mep_c_ui_sidebars\n"
+    "  if not sb then return end\n"
+    "  local st = mep_c_ui_state[mep.current_tab_id()]\n"
+    "  local sections = {}\n"
+    "  local data = st and st.hex_data\n"
+    "  if not data then\n"
+    "    sections[1] = {id = 'hex', title = '', collapsed = false, widgets = {\n"
+    "      {id = 'empty', text = (st and st.hex_status) or '(no binary yet -- <leader>rr compiles the current file)', wrap = true, wrap_indent = 0}}}\n"
+    "    mep.sidebar_set_sections(sb.hex, sections)\n"
+    "    return\n"
+    "  end\n"
+    "  local page_size = mep.opt.c_ui_hex_page\n"
+    "  local pages = math.max(1, math.ceil(#data / page_size))\n"
+    "  st.hex_page = math.max(1, math.min(st.hex_page or 1, pages))\n"
+    "  local from = (st.hex_page - 1) * page_size\n"
+    "  local to = math.min(#data, from + page_size)\n"
+    "  local nav = {\n"
+    "    {id = 'file', text = mep_c_ui_basename(st.prog_path) .. '  ' .. #data .. ' bytes', hl = 'Normal'},\n"
+    "    {id = 'nav', text = string.format('page %d/%d  0x%08x-0x%08x   [p] prev  [n] next  [g] go to offset  [r] reload', st.hex_page, pages, from, to - 1), hl = 'Comment'},\n"
+    "    {id = 'prev', text = '  < previous page', on_click = function() mep.c_ui_hex_on_key('p') end},\n"
+    "    {id = 'next', text = '  > next page', on_click = function() mep.c_ui_hex_on_key('n') end},\n"
+    "  }\n"
+    "  sections[#sections + 1] = {id = 'nav', title = '', collapsed = false, widgets = nav}\n"
+    "  local elf = st.hex_elf\n"
+    "  if elf then\n"
+    "    local hw = {\n"
+    "      {id = 'e1', text = string.format('ELF%d %s-endian, %s', elf.bits, elf.little and 'little' or 'big',\n"
+    "        MEP_C_UI_ELF_TYPES[elf.type] or ('type ' .. tostring(elf.type))), hl = 'Cyan'},\n"
+    "      {id = 'e2', text = string.format('machine %s   entry 0x%x   %d program headers   %d sections',\n"
+    "        MEP_C_UI_ELF_MACHINES[elf.machine] or tostring(elf.machine), elf.entry or 0, elf.phnum or 0, elf.shnum or 0), hl = 'Cyan'},\n"
+    "    }\n"
+    "    sections[#sections + 1] = {id = 'elf', title = 'ELF header', collapsed = false, widgets = hw}\n"
+    "    local sw = {}\n"
+    "    for i, s in ipairs(elf.sections or {}) do\n"
+    "      if s.name ~= '' and s.size > 0 then\n"
+    "        local offset = s.offset\n"
+    "        sw[#sw + 1] = {id = 's' .. i, text = string.format('%-22s off 0x%-8x size %-8d addr 0x%x', s.name, s.offset, s.size, s.addr),\n"
+    "          tooltip = 'jump the dump to this section', hl = (s.name == '.text') and 'Green' or nil,\n"
+    "          on_click = function()\n"
+    "            st.hex_page = math.floor(offset / page_size) + 1\n"
+    "            mep_c_ui_render_hex()\n"
+    "          end}\n"
+    "      end\n"
+    "    end\n"
+    "    if #sw > 0 then sections[#sections + 1] = {id = 'sections', title = 'Sections (click to jump)', collapsed = true, widgets = sw} end\n"
+    "  end\n"
+    "  local rows = {}\n"
+    "  for i, r in ipairs(mep_c_ui_hex_rows(data, from, to)) do\n"
+    "    rows[#rows + 1] = {id = 'r' .. i, text = r.text}\n"
+    "  end\n"
+    "  sections[#sections + 1] = {id = 'bytes', title = '', collapsed = false, widgets = rows}\n"
+    "  mep.sidebar_set_sections(sb.hex, sections)\n"
+    "end\n"
+    "function mep.c_ui_hex_on_key(k)\n"
+    "  local st = mep_c_ui_state[mep.current_tab_id()]\n"
+    "  if not st then return end\n"
+    "  if k == 'n' then\n"
+    "    st.hex_page = (st.hex_page or 1) + 1\n"
+    "    mep_c_ui_render_hex()\n"
+    "  elseif k == 'p' then\n"
+    "    st.hex_page = math.max(1, (st.hex_page or 1) - 1)\n"
+    "    mep_c_ui_render_hex()\n"
+    "  elseif k == 'r' then\n"
+    "    mep.c_ui_reload_hex(st)\n"
+    "  elseif k == 'g' then\n"
+    "    mep.ui_input('Hex: go to offset (decimal or 0x...)', '0x', function(s)\n"
+    "      if not s or s == '' then return end\n"
+    "      local n = tonumber(s)\n"
+    "      if not n then mep.notify('Hex: not a number: ' .. s, 'warn') return end\n"
+    "      st.hex_page = math.floor(n / mep.opt.c_ui_hex_page) + 1\n"
+    "      mep_c_ui_render_hex()\n"
+    "    end)\n"
+    "  elseif k == '?' then\n"
+    "    mep.notify('Hex: n/p page, g go to offset, r reload')\n"
+    "  end\n"
+    "end\n"
+    "function mep.c_ui_reload_hex(st)\n"
+    "  local data = mep.language_ui_read_file(st.prog_path)\n"
+    "  if not data or #data == 0 then\n"
+    "    st.hex_data, st.hex_elf = nil, nil\n"
+    "    st.hex_status = '(no binary yet -- <leader>rr compiles the current file)'\n"
+    "  else\n"
+    "    st.hex_data = data\n"
+    "    st.hex_elf = mep_c_ui_parse_elf(data)\n"
+    "  end\n"
+    "  mep_c_ui_render_hex()\n"
+    "end\n"
+    "local function mep_c_ui_render_all()\n"
+    "  mep_c_ui_render_asm()\n"
+    "  mep_c_ui_render_build()\n"
+    "  mep_c_ui_render_hex()\n"
+    "end\n"
+    // The compiler/flags for this file: the Run button's own per-project
+    // Setup (mep.run_button_config_for, kBuiltinRunButton -- loaded after
+    // this chunk, resolved at call time) so both features agree on how the
+    // file is built; `cc`/`c++` when nothing was ever configured.
+    "local function mep_c_ui_config(st)\n"
+    "  local cfg = mep.run_button_config_for and mep.run_button_config_for(st.ext) or nil\n"
+    "  local compiler = (cfg and cfg.compiler) or ((st.ext == 'c') and 'cc' or 'c++')\n"
+    "  local flags = (cfg and cfg.flags) or ''\n"
+    "  return compiler, (flags ~= '' and (' ' .. flags) or '')\n"
+    "end\n"
+    // Regenerates the Assembly tab (see the header comment). Diagnostics
+    // from this run land in the Build tab too, so a syntax error shows up
+    // on save without a full build.
+    "function mep.c_ui_regen_asm(st)\n"
+    "  if st.asm_running then st.asm_pending = true return end\n"
+    "  st.asm_running = true\n"
+    "  local shq = mep.language_ui_shq\n"
+    "  local compiler, flags = mep_c_ui_config(st)\n"
+    "  local cmd = compiler .. ' -S -g ' .. shq(st.src_abs) .. flags .. ' -o - | { command -v c++filt >/dev/null 2>&1 && c++filt || cat; } > ' .. shq(st.asm_path)\n"
+    "  local errs = {}\n"
+    "  mep.job_start({'sh', '-c', cmd}, {\n"
+    "    cwd = st.src_dir,\n"
+    "    on_stderr = function(line) errs[#errs + 1] = line end,\n"
+    "    on_exit = function(code)\n"
+    "      st.asm_running = false\n"
+    "      if code == 0 then\n"
+    "        local text = mep.language_ui_read_file(st.asm_path) or ''\n"
+    "        st.asm_rows = mep_c_ui_parse_asm(text, mep_c_ui_basename(st.src_abs))\n"
+    "        st.asm_title = compiler .. flags .. '  (' .. #st.asm_rows .. ' lines)'\n"
+    "        st.asm_status = nil\n"
+    "      else\n"
+    "        st.asm_status = 'assembly failed (exit ' .. code .. ') -- see the Build tab'\n"
+    "        st.asm_rows = {}\n"
+    "        st.asm_title = ''\n"
+    "      end\n"
+    "      if #errs > 0 or code ~= 0 then\n"
+    "        st.build_lines = {'$ ' .. compiler .. ' -S -g ' .. shq(st.src_abs) .. flags}\n"
+    "        for _, l in ipairs(errs) do st.build_lines[#st.build_lines + 1] = l end\n"
+    "        st.build_lines[#st.build_lines + 1] = (code == 0) and '[assembly ok]' or ('[assembly failed: exit ' .. code .. ']')\n"
+    "      elseif st.build_from_asm then\n"
+    "        st.build_lines = {}\n"
+    "      end\n"
+    "      st.build_from_asm = (#errs > 0 or code ~= 0)\n"
+    "      if mep_c_ui_state[mep.current_tab_id()] == st then mep_c_ui_render_asm(); mep_c_ui_render_build() end\n"
+    "      if st.asm_pending then st.asm_pending = false; mep.c_ui_regen_asm(st) end\n"
+    "    end,\n"
+    "  })\n"
+    "end\n"
+    // Makes sure the console pane still has a live shell to run the program
+    // in (the user may have `exit`ed it), respawning one in place otherwise.
+    "local function mep_c_ui_ensure_terminal(st)\n"
+    "  local buf = st.term_buf\n"
+    "  if buf and mep.is_terminal_buffer(buf) then\n"
+    "    local info = mep.terminal_info(buf)\n"
+    "    if info and not info.exited then return buf, false end\n"
+    "  end\n"
+    "  local cur = mep.current_pane_id()\n"
+    "  if not mep.pane_focus(st.console_pane) then\n"
+    "    mep.pane_focus(st.editor_pane)\n"
+    "    mep.pane_split_bottom(nil, mep.opt.c_ui_bottom_share)\n"
+    "    st.console_pane = mep.current_pane_id()\n"
+    "  end\n"
+    "  mep.terminal_here()\n"
+    "  st.term_buf = mep.current_buffer()\n"
+    "  st.extra_term_bufs[#st.extra_term_bufs + 1] = st.term_buf\n"
+    "  mep.pane_focus(cur)\n"
+    "  return st.term_buf, true\n"
+    "end\n"
+    "function mep.c_ui_build_and_run(st, fname)\n"
+    "  if st.building then mep.notify('Build: already running, please wait...', 'warn') return end\n"
+    "  mep.cmd('write')\n"
+    // The write above bumps the save epoch the frame hook below watches;
+    // syncing it here keeps that hook from launching a second, redundant
+    // assembly run that would race this build for the Build tab (success
+    // regenerates the assembly itself, below).
+    "  st.last_save_epoch = mep.buffer_save_epoch()\n"
+    "  st.building = true\n"
+    "  local shq = mep.language_ui_shq\n"
+    "  local compiler, flags = mep_c_ui_config(st)\n"
+    "  local cmd = compiler .. ' ' .. shq(st.src_abs) .. flags .. ' -o ' .. shq(st.prog_path)\n"
+    "  st.build_lines = {'$ ' .. cmd}\n"
+    "  st.build_from_asm = false\n"
+    "  mep_c_ui_render_build()\n"
+    "  mep.notify('Building ' .. mep_c_ui_basename(fname) .. '...')\n"
+    "  local function add(line) st.build_lines[#st.build_lines + 1] = line end\n"
+    "  mep.job_start({'sh', '-c', cmd}, {\n"
+    "    cwd = st.src_dir,\n"
+    "    on_stdout = add,\n"
+    "    on_stderr = add,\n"
+    "    on_exit = function(code)\n"
+    "      st.building = false\n"
+    "      local active = (mep_c_ui_state[mep.current_tab_id()] == st)\n"
+    "      if code == 0 then\n"
+    "        add('[build ok -> ' .. st.prog_path .. ']')\n"
+    "        if active then mep_c_ui_render_build() end\n"
+    "        mep.c_ui_reload_hex(st)\n"
+    "        mep.c_ui_regen_asm(st)\n"
+    "        local term, is_new = mep_c_ui_ensure_terminal(st)\n"
+    "        if is_new then\n"
+    // A freshly respawned shell's PTY isn't necessarily reading yet
+    // (kBuiltinRunButton's own pending-queue comment) -- the same
+    // short deferral, drained by this chunk's own frame hook below.
+    "          st.run_at, st.run_cmd = mep.now() + 0.3, shq(st.prog_path)\n"
+    "        else\n"
+    "          mep.terminal_write(term, shq(st.prog_path) .. '\\n')\n"
+    "        end\n"
+    "      else\n"
+    "        add('[build failed: exit ' .. code .. ']')\n"
+    "        if active then\n"
+    "          mep_c_ui_render_build()\n"
+    "          if st.build_buf then mep.jump_to_buffer(st.build_buf) end\n"
+    "        end\n"
+    "        mep.notify('Build failed (exit ' .. code .. ') -- see the Build tab', 'error')\n"
+    "      end\n"
+    "    end,\n"
+    "  })\n"
+    "end\n"
+    "function mep.c_ui_open()\n"
+    "  local fname = mep.filename()\n"
+    "  local src_abs = mep_lsp_abspath(fname)\n"
+    "  local session_dir = mep.language_ui_session_dir('cui')\n"
+    "  local base = mep_c_ui_basename(src_abs):gsub('%.[^.]+$', '')\n"
+    "  local st = {\n"
+    "    ext = mep_lsp_filetype(fname), src_buf = mep.current_buffer(), src_abs = src_abs,\n"
+    "    src_dir = src_abs:match('^(.*)/[^/]*$') or '.',\n"
+    "    session_dir = session_dir, prog_path = session_dir .. '/' .. base, asm_path = session_dir .. '/' .. base .. '.s',\n"
+    "    asm_rows = {}, asm_title = '', asm_status = nil, build_lines = {}, hex_data = nil, hex_elf = nil, hex_page = 1,\n"
+    "    cursor_line = nil, last_save_epoch = mep.buffer_save_epoch(), extra_term_bufs = {},\n"
+    "  }\n"
+    "  local layout = mep.language_ui_layout({\n"
+    "    info_share = mep.opt.c_ui_info_share, bottom_share = mep.opt.c_ui_bottom_share,\n"
+    "    bottom_info_share = mep.opt.c_ui_bottom_info_share,\n"
+    "    console = function() mep.terminal_here() end,\n"
+    "  })\n"
+    "  st.editor_pane, st.console_pane, st.term_buf = layout.editor_pane, layout.console_pane, layout.console_buf\n"
+    "  local tid = mep.current_tab_id()\n"
+    "  mep_c_ui_ensure_sidebars()\n"
+    "  local sb = mep_c_ui_sidebars\n"
+    "  mep_c_ui_state[tid] = st\n"
+    "  mep_c_ui_render_all()\n"
+    "  local bufs = mep.language_ui_open_tabs(layout.top_pane, {sb.asm, sb.build})\n"
+    "  st.build_buf = bufs[sb.build]\n"
+    "  st.asm_buf = bufs[sb.asm]\n"
+    "  mep.language_ui_open_tabs(layout.bottom_pane, {sb.hex})\n"
+    "  mep.pane_focus(layout.editor_pane)\n"
+    "  mep.c_ui_regen_asm(st)\n"
+    "  mep.notify('C/C++ language UI: terminal below, Assembly/Build tabbed top-right, Hex bottom-right; <leader>rr builds and runs (mod1+Tab cycles tabs)')\n"
+    "  return {\n"
+    "    run_source = function(f) mep.c_ui_build_and_run(st, f) end,\n"
+    "    close = function()\n"
+    "      mep_c_ui_state[tid] = nil\n"
+    "      layout.console_pane = st.console_pane\n"
+    "      mep.language_ui_teardown(layout, st.extra_term_bufs)\n"
+    "      mep.notify('C/C++ language UI mode closed')\n"
+    "    end,\n"
+    "  }\n"
+    "end\n"
+    "mep.language_ui_modes.c = {open = mep.c_ui_open}\n"
+    // Frame hook: (1) tracks the source cursor's line to re-highlight the
+    // matching assembly rows -- only when the source buffer is the focused
+    // one and the line actually changed, since re-rendering a few thousand
+    // widgets per frame regardless would be real work for nothing; (2)
+    // regenerates the assembly after a save (Editor::SaveEpoch bumps on
+    // every write, of any buffer -- a cheap over-approximation, the compile
+    // itself is async and never blocks a frame); (3) drains a deferred run
+    // command into a freshly respawned terminal.
+    "do\n"
+    "  local last_poll = 0\n"
+    "  mep.on_frame(function()\n"
+    "    local st = mep_c_ui_state[mep.current_tab_id()]\n"
+    "    if not st then return end\n"
+    "    if mep.current_buffer() == st.src_buf then\n"
+    "      local row = mep.cursor()\n"
+    "      if row ~= st.cursor_line then\n"
+    "        st.cursor_line = row\n"
+    "        mep_c_ui_render_asm()\n"
+    "      end\n"
+    "    end\n"
+    "    if st.run_at and mep.now() >= st.run_at then\n"
+    "      mep.terminal_write(st.term_buf, st.run_cmd .. '\\n')\n"
+    "      st.run_at, st.run_cmd = nil, nil\n"
+    "    end\n"
+    "    local now = mep.now()\n"
+    "    if now - last_poll < mep.opt.language_ui_poll_interval then return end\n"
+    "    last_poll = now\n"
+    "    local epoch = mep.buffer_save_epoch()\n"
+    "    if epoch ~= st.last_save_epoch then\n"
+    "      st.last_save_epoch = epoch\n"
+    "      mep.c_ui_regen_asm(st)\n"
+    "    end\n"
+    "  end)\n"
+    "end\n";
+
 // Completion sources (Phase 22): buffer-word is the always-available
 // default, now joined by two more sources folded into the same function --
 // mep still only has one completion-source *slot*
@@ -15177,6 +16384,12 @@ const char *kBuiltinRunButton =
     "  all[mep.getcwd()] = proj\n"
     "  mep.run_config_save(all)\n"
     "end\n"
+    // Exported for the C/C++ language UI mode (kBuiltinLanguageUiC's
+    // Assembly tab and <leader>rr build): the same per-project compiler/
+    // flags Setup configured here, so both features build the file the
+    // same way. Global (not the chunk-local above) since separate DoString
+    // chunks never share locals.
+    "mep.run_button_config_for = mep_run_config_for\n"
     // Single-quotes `s` for a POSIX shell, closing/reopening around any
     // embedded single quote -- the standard sh trick, needed since a
     // filename or flags string can contain spaces (or, for flags,
@@ -31404,6 +32617,9 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinLsp);
     lua->DoString(kBuiltinLanguageUi);
     lua->DoString(kBuiltinLanguageUiR);
+    lua->DoString(kBuiltinLanguageUiCommon);
+    lua->DoString(kBuiltinLanguageUiPython);
+    lua->DoString(kBuiltinLanguageUiC);
     lua->DoString(kBuiltinCompletion);
     lua->DoString(kBuiltinSnippets);
     lua->DoString(kBuiltinSymbols);

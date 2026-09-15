@@ -1,17 +1,5 @@
 * TODO todo management
 
-* TODO language modes
-  We've added 'ui modes' for languages before (I think just R so far). I'd like
-  <leader>rr to run the current document in language modes (and there to be a ui
-  mode with a terminal associated to it for running the code in). I'd like to
-  add other languages. Let's focus on C/C++ and python. For C/C++, I know I'd
-  like a compiler explorer like buffer sidebar and a hex exploration as well.
-  I'd also like a terminal that we can run the current file's executable in. For
-  python, I'd like object introspection sidebars (like R) and a terminal to run
-  the code in and ideally a figure sidebar for matplotlib/seaborn like figures
-  to show up in (e.g. that appear when running .show() methods). Can you
-  implement these?
-
 * TODO quickjump capability
   I'd like a quickjump capability. In particular, when pressing 's' in normal
   mode, I'd like to then be able to start typing, and any non-matches to the
@@ -382,3 +370,52 @@ The filetree button in the tabbar doesnt toggle the filetree (it just opens it).
 * DONE add simple todo :ARCHIVE:
   Added the word "flummoxed" to the top of README.org.
 * DONE Add language specific, configurable run button to active pane bar :ARCHIVE:
+
+* DONE language modes :ARCHIVE:
+  We've added 'ui modes' for languages before (I think just R so far). I'd like
+  <leader>rr to run the current document in language modes (and there to be a ui
+  mode with a terminal associated to it for running the code in). I'd like to
+  add other languages. Let's focus on C/C++ and python. For C/C++, I know I'd
+  like a compiler explorer like buffer sidebar and a hex exploration as well.
+  I'd also like a terminal that we can run the current file's executable in. For
+  python, I'd like object introspection sidebars (like R) and a terminal to run
+  the code in and ideally a figure sidebar for matplotlib/seaborn like figures
+  to show up in (e.g. that appear when running .show() methods). Can you
+  implement these?
+  - Two new language UI modes on the existing <leader>uu/<leader>rr
+    framework (kBuiltinLanguageUi), built on a new shared chunk
+    (kBuiltinLanguageUiCommon, src/main.cpp: layout builder, tabbed
+    sidebar opener, textbox renderer, figure gallery) that the Python and
+    C/C++ modes both use; the R mode is left as it was.
+  - Python (kBuiltinLanguageUiPython, .py): console = a python3 process
+    running a code.InteractiveConsole subclass that refreshes sidebar
+    files after every statement (the Python equivalent of R's
+    addTaskCallback). Objects/Data/Modules/History/Help tabs top-right,
+    Plot bottom-right. matplotlib/seaborn figures capture through a tiny
+    custom backend module (MPLBACKEND=module://mep_mplbackend, written
+    into the session dir): plt.show()/fig.show() save-and-close, and any
+    open figure that is `stale` after a statement is (re)saved in place,
+    so plots appear without show() too. help(x) writes pydoc text to the
+    Help tab, mep_view(x) to Data (pandas head().to_string() or pprint),
+    <leader>rr execs the file into the console namespace (mep_run).
+  - C/C++ (kBuiltinLanguageUiC, .c/.cpp/.cc/.cxx): shell terminal below
+    the source; Assembly + Build tabbed top-right, Hex bottom-right.
+    Assembly is a Compiler-Explorer-style view (`compiler -S -g`, through
+    c++filt when present, regenerated on every save and every run):
+    directives/comments/unreferenced labels/debug sections filtered,
+    .loc-driven source-line mapping, rows colored by source line, the
+    cursor's line highlighted live, click a row to jump to its line.
+    Build shows the compiler's diagnostics (file:line:col rows jump
+    there). Hex is a paged dump of the built executable with the ELF
+    header decoded and a clickable section table (n/p/g/r keys).
+    <leader>rr builds with the Run button's per-project compiler/flags
+    (mep.run_button_config_for, newly exported from kBuiltinRunButton)
+    into the session dir, then reloads Hex, regenerates Assembly and
+    runs the binary in the terminal.
+  - Verified live against a spawned native instance (agent-socket RPC +
+    screenshots): both layouts, Run into the live console, Objects/Help
+    updates, two matplotlib figures (with and without show()), C build +
+    run output in the terminal, Hex/ELF decode, cursor-line asm
+    highlighting, and a compile error landing in the Build tab.
+  - examples/python_example.py now exercises the Python mode (plots,
+    help, mep_view); examples/c_example.c already works for the C mode.

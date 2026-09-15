@@ -22,8 +22,10 @@
   - Done as a new Editor::Mode::QuickJump (editor.cpp, next to the older
     HintChar/HintLabel pair) bound to `s` by kBuiltinQuickJump (main.cpp)
     via mep.quick_jump(), so it can be rebound with a plain mep.map. Every
-    keystroke rescans the pane's visible rows (smart-case): DrawPane
-    washes the text area with translucent NormalBg, repaints each match
+    keystroke rescans the visible rows of every text pane in the tab (the
+    active one first, then the rest in split order; a label in another
+    pane focuses it before moving its cursor; smart-case): DrawPane
+    washes each pane's text area with translucent NormalBg, repaints each match
     at full strength on an IncSearch backdrop, and draws a one-key label
     right after it. Labels are drawn from the home-row-first pool minus
     every character that would extend the query at some match, so a key
@@ -35,6 +37,12 @@
     it. Verified against a spawned instance over its agent socket
     (ui.key_press/type_text + screenshots): label jump, unique-match
     auto-jump, Esc/Enter-with-no-match leaving the cursor put, Backspace.
+    Cross-pane: verified over the agent socket alone via the scriptable
+    surface added for it -- mep.quick_jump(query?), mep.quick_jump_matches()
+    (pane_id/row/col/label), mep.quick_jump_pick(label) -- so no synthetic
+    keyboard input is needed: labels span both panes, picking another
+    pane's label focuses it, a unique match elsewhere auto-jumps, and a
+    terminal pane is skipped.
 
 * TODO r help format
   The formatting of help documentation in R help sidebar looks off. It looks

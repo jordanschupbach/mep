@@ -31,6 +31,14 @@
   of standard web-based jupyter interface. CAn you add these capabilities? Add a
   jupyter notebook file in the in the examples folder to test things out
 
+* TODO fix pdf rendering
+  While pdf rendering works, there are some pdfs it fails spectacularly on, in
+  particular, ones with math. I think this used to work when we were using
+  pdfium to do this. I'd like to fix it eventually, but in the short run, would
+  like it to just work. Can you fix the backend so that we can swap out our
+  inhouse pdf rendering engine with the pdfium rendering engin. Maybe we need a
+  bridge pattern or something so these can be swapped in and out easily.
+
 
 * TODO fix buffer sidebar
   The buffer sidebar has some behavior, where, if I click on a buffer, it opens

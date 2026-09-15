@@ -37,7 +37,9 @@
   visible in the windows. We have this capability for the filetree, so maybe we
   can reuse some of that logic there. Can you implement these?
 
-
+* TODO git sidebar binding
+  I'd like in the status tab in the git sidebar, for pressing P to push.
+  Can you implement this?
 * TODO fix exiting sidebar bug (specifically when exiting todo editor)
 * DONE Filetree image viewer mode :ARCHIVE:
   - `:e`/`mep.open` on a directory now opens the file tree in the current

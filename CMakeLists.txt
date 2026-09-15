@@ -405,6 +405,7 @@ add_library(mep_core STATIC
     src/job.cpp
     src/tcp_client.cpp
     src/org_doc.cpp
+    src/notebook_doc.cpp
     src/text_diff.cpp
     src/agent_rpc.cpp
     src/lua_env.cpp
@@ -644,6 +645,17 @@ target_include_directories(mep-org-doc-test PRIVATE src)
 target_compile_options(mep-org-doc-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-org-doc-test PRIVATE ${MEP_SANITIZE_FLAGS})
 add_dependencies(tests mep-org-doc-test)
+
+# Jupyter notebook helpers (notebook_doc.cpp is dependency-free apart from
+# the header-only json.h): nbformat parse/serialize round trips, the
+# percent-format text view and cell re-matching, output display/slot
+# math, and the kernel wire protocol. Same CHECK()-based shape as
+# mep-org-doc-test.
+add_executable(mep-notebook-doc-test EXCLUDE_FROM_ALL src/notebook_doc_test.cpp src/notebook_doc.cpp)
+target_include_directories(mep-notebook-doc-test PRIVATE src)
+target_compile_options(mep-notebook-doc-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-notebook-doc-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-notebook-doc-test)
 
 # CHESS_SET_BENCHMARK_PLAN.md Phase 3: procedural texture generation
 # (value noise/fBm, gradients, wood, marble, box blur) -- pure

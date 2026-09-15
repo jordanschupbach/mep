@@ -9987,6 +9987,41 @@ const char *kBuiltinSyntax =
     "    end\n"
     "  end\n"
     "end\n"
+    // Jupyter notebook buffers (.ipynb, opened as percent-format cell text
+    // by Editor::OpenNotebookInPlace -- see notebook_doc.h): no grammar
+    // for the file as a whole; instead each cell body is highlighted with
+    // its own language (python for code cells, markdown for markdown
+    // cells, nothing for raw), the same body-relative capture offsetting
+    // mep_syntax_highlight_org_src_blocks does for org src blocks, and
+    // every `# %%` marker line is styled as a comment.
+    "local function mep_syntax_notebook_marker(l)\n"
+    "  local rest = l:match('^%s*# %%%%(.*)$')\n"
+    "  if not rest then return nil end\n"
+    "  if rest ~= '' and not rest:match('^%s') then return nil end\n"
+    "  if rest:find('[markdown]', 1, true) or rest:find('[md]', 1, true) then return 'md' end\n"
+    "  if rest:find('[raw]', 1, true) then return 'raw' end\n"
+    "  return 'py'\n"
+    "end\n"
+    "local function mep_syntax_highlight_notebook(ns, lines)\n"
+    "  local n = #lines\n"
+    "  local start, ft = 1, 'py'\n"
+    "  local function flush(stop)\n"
+    "    if stop < start or ft == 'raw' then return end\n"
+    "    local body = {}\n"
+    "    for k = start, stop do body[#body + 1] = lines[k] end\n"
+    "    local captures = mep.ts_captures(ft, table.concat(body, '\\n'))\n"
+    "    if captures then mep.ts_apply_captures(ns, captures, mep.ts_capture_hl, start - 1) end\n"
+    "  end\n"
+    "  for i = 1, n do\n"
+    "    local t = mep_syntax_notebook_marker(lines[i])\n"
+    "    if t then\n"
+    "      flush(i - 1)\n"
+    "      mep.deco_add(ns, {row = i, col_start = 1, col_end = #lines[i] + 1, hl_group = 'Comment'})\n"
+    "      start, ft = i + 1, t\n"
+    "    end\n"
+    "  end\n"
+    "  flush(n)\n"
+    "end\n"
     "function mep.syntax_highlight()\n"
     "  if not mep_syntax_ns then mep_syntax_ns = mep.ns_create('syntax') end\n"
     "  mep.ns_clear(mep_syntax_ns)\n"
@@ -9994,6 +10029,10 @@ const char *kBuiltinSyntax =
     "  if not ft then return end\n"
     "  local lines = {}\n"
     "  for i = 1, mep.line_count() do lines[i] = mep.get_line(i) end\n"
+    "  if ft == 'ipynb' and mep.notebook_is_buffer() then\n"
+    "    mep_syntax_highlight_notebook(mep_syntax_ns, lines)\n"
+    "    return\n"
+    "  end\n"
     // Real grammar available: parse + run its highlights.scm query
     // (mep.ts_captures, backed by src/treesitter.cpp) and stop -- this
     // *is* Treesitter syntax highlighting, not a fallback path.
@@ -17019,6 +17058,7 @@ const char *kBuiltinRunButton =
     "  local ext = mep_lsp_filetype(fname)\n"
     "  if ext == 'org' then mep.run_button_run_org() return end\n"
     "  if ext == 'tex' then mep.run_button_run_tex() return end\n"
+    "  if ext == 'ipynb' and mep.notebook_is_buffer() then mep.notebook_run_all() return end\n"
     "  local extl = ext and ext:lower()\n"
     "  if extl == 'rmd' then mep.run_button_run_rmd() return end\n"
     "  if extl == 'rnw' then mep.run_button_run_rnw() return end\n"
@@ -17765,6 +17805,109 @@ const char *kBuiltinLeetcode =
 // actual majority of what's bound there -- if "buffer" was the intended
 // meaning of <leader>b, bo/bO should move to a different prefix (e.g.
 // <leader>wo for "web") to free it up.
+// Jupyter notebook mode (notebook_doc.h, Editor::Notebook* in editor.cpp,
+// DrawPane's notebook branch in this file): the user-facing commands and
+// keybindings over the C++ core. Opening a .ipynb already lands in the
+// cell view (Editor::LoadFile), so there's nothing to "enter" here --
+// unlike the language UI modes, which build a whole layout around a
+// source file, a notebook IS its own pane. Every binding is global but
+// no-ops (with a notification for the leader/command forms) outside a
+// notebook buffer, the same "gate on state, fall through otherwise"
+// pattern R's gh/mep.r_ui_help_at_cursor uses, since mep.map/leader_map
+// have no buffer-local flavor. Enter/Shift+Enter/Ctrl+Enter/mod1+Enter
+// are C++ (HandleNormalInput/HandleInsertInput/HandleMod1Shortcuts) --
+// mep.map can't bind Enter or modifier combos.
+//
+// Leader keys follow Jupyter's own command-mode letters under <leader>j:
+//   jr run cell        jn run & go to next   ja insert above   jb insert below
+//   jA run all         jd delete cell        jm to markdown    jy to code
+//   jk move cell up    jj move cell down     jc clear outputs  jC clear all
+//   ji interrupt       j0 restart kernel     ]j / [j next/previous cell
+const char *kBuiltinNotebook =
+    "mep.opt = mep.opt or {}\n"
+    // mep.opt.notebook_python: the interpreter kernels launch with
+    // ("python3" by default; e.g. a venv's bin/python). Applied on every
+    // kernel start, so changing it in init.lua or at runtime affects the
+    // next (re)start.
+    "mep.opt.notebook_python = mep.opt.notebook_python or 'python3'\n"
+    "local mep_nb_python_applied = nil\n"
+    "local function mep_nb_apply_python()\n"
+    "  local want = mep.opt.notebook_python\n"
+    "  if want and want ~= mep_nb_python_applied then\n"
+    "    mep.notebook_set_python(want)\n"
+    "    mep_nb_python_applied = want\n"
+    "  end\n"
+    "end\n"
+    // Re-applied every frame (a cheap string compare) rather than only
+    // from the Lua-side commands: the Enter/Shift+Enter run path is C++
+    // (HandleNormalInput) and never passes through this chunk, so an
+    // init.lua that sets mep.opt.notebook_python must still take effect
+    // before the first kernel launch.
+    "mep.on_frame(mep_nb_apply_python)\n"
+    "local function mep_nb_guard(fn, quiet)\n"
+    "  return function(...)\n"
+    "    if not mep.notebook_is_buffer() then\n"
+    "      if not quiet then mep.notify('Not a Jupyter notebook buffer (.ipynb)', 'warn') end\n"
+    "      return\n"
+    "    end\n"
+    "    mep_nb_apply_python()\n"
+    "    return fn(...)\n"
+    "  end\n"
+    "end\n"
+    "local function mep_nb_step(delta)\n"
+    "  local i = mep.notebook_cell_index()\n"
+    "  local n = mep.notebook_cell_count()\n"
+    "  if n == 0 then return end\n"
+    "  if i < 0 then i = delta > 0 and -1 or n end\n"
+    "  local target = i + delta\n"
+    "  if target < 0 or target >= n then mep.notify(delta > 0 and 'Last cell' or 'First cell') return end\n"
+    "  mep.notebook_goto_cell(target)\n"
+    "end\n"
+    "local defs = {\n"
+    "  {'NotebookRun', 'jr', 'Notebook: run cell', function() mep.notebook_run_cell() end},\n"
+    "  {'NotebookRunAndAdvance', 'jn', 'Notebook: run cell, go to next', mep.notebook_run_and_advance},\n"
+    "  {'NotebookRunAndInsert', 'jo', 'Notebook: run cell, insert below', mep.notebook_run_and_insert},\n"
+    "  {'NotebookRunAll', 'jA', 'Notebook: run all cells', mep.notebook_run_all},\n"
+    "  {'NotebookInsertAbove', 'ja', 'Notebook: insert cell above', function() mep.notebook_insert_cell(false, 'code') end},\n"
+    "  {'NotebookInsertBelow', 'jb', 'Notebook: insert cell below', function() mep.notebook_insert_cell(true, 'code') end},\n"
+    "  {'NotebookDelete', 'jd', 'Notebook: delete cell', function() mep.notebook_delete_cell() end},\n"
+    "  {'NotebookToMarkdown', 'jm', 'Notebook: cell to markdown', function() mep.notebook_set_cell_type('markdown') end},\n"
+    "  {'NotebookToCode', 'jy', 'Notebook: cell to code', function() mep.notebook_set_cell_type('code') end},\n"
+    "  {'NotebookToRaw', nil, 'Notebook: cell to raw', function() mep.notebook_set_cell_type('raw') end},\n"
+    "  {'NotebookMoveUp', 'jk', 'Notebook: move cell up', function() mep.notebook_move_cell(-1) end},\n"
+    "  {'NotebookMoveDown', 'jj', 'Notebook: move cell down', function() mep.notebook_move_cell(1) end},\n"
+    "  {'NotebookClearOutputs', 'jc', 'Notebook: clear cell outputs', function() mep.notebook_clear_outputs() end},\n"
+    "  {'NotebookClearAllOutputs', 'jC', 'Notebook: clear all outputs', function() mep.notebook_clear_outputs(-1) end},\n"
+    "  {'NotebookInterrupt', 'ji', 'Notebook: interrupt kernel', mep.notebook_interrupt},\n"
+    "  {'NotebookRestartKernel', 'j0', 'Notebook: restart kernel', mep.notebook_restart_kernel},\n"
+    "  {'NotebookNextCell', nil, 'Notebook: next cell', function() mep_nb_step(1) end},\n"
+    "  {'NotebookPrevCell', nil, 'Notebook: previous cell', function() mep_nb_step(-1) end},\n"
+    "}\n"
+    "for _, d in ipairs(defs) do\n"
+    "  local guarded = mep_nb_guard(d[4])\n"
+    "  mep.command(d[1], guarded)\n"
+    "  if d[2] then mep.leader_map(d[2], d[3], guarded) end\n"
+    "end\n"
+    // ]j / [j: cell navigation. Quiet outside a notebook -- a bracket
+    // motion that fires a warning in every other buffer would be noise.
+    "mep.map_bracket_next('j', mep_nb_guard(function() mep_nb_step(1) end, true))\n"
+    "mep.map_bracket_prev('j', mep_nb_guard(function() mep_nb_step(-1) end, true))\n"
+    // :NotebookNew [path]: a fresh one-cell notebook file (written to
+    // disk first, since Editor::LoadFile's .ipynb branch reads a file).
+    "mep.command('NotebookNew', function(args)\n"
+    "  local path = args and args:match('^%s*(.-)%s*$') or ''\n"
+    "  if path == '' then path = 'untitled.ipynb' end\n"
+    "  if not path:match('%.ipynb$') then path = path .. '.ipynb' end\n"
+    "  local f = io.open(path, 'r')\n"
+    "  if f then f:close() else\n"
+    "    local w = io.open(path, 'w')\n"
+    "    if not w then mep.notify('NotebookNew: cannot create ' .. path, 'error') return end\n"
+    "    w:write('{\\n \"cells\": [\\n  {\\n   \"cell_type\": \"code\",\\n   \"execution_count\": null,\\n   \"id\": \"00000001\",\\n   \"metadata\": {},\\n   \"outputs\": [],\\n   \"source\": []\\n  }\\n ],\\n \"metadata\": {\\n  \"kernelspec\": {\"display_name\": \"Python 3\", \"language\": \"python\", \"name\": \"python3\"},\\n  \"language_info\": {\"name\": \"python\"}\\n },\\n \"nbformat\": 4,\\n \"nbformat_minor\": 5\\n}\\n')\n"
+    "    w:close()\n"
+    "  end\n"
+    "  mep.open(path)\n"
+    "end)\n";
+
 const char *kBuiltinWhichKeyGroups =
     "mep.leader_group('o', 'org')\n"
     "mep.leader_group('oe', 'export')\n"
@@ -17781,6 +17924,7 @@ const char *kBuiltinWhichKeyGroups =
     "mep.leader_group('s', 'structure')\n"
     "mep.leader_group('t', 'todo/tests')\n"
     "mep.leader_group('n', 'notifications')\n"
+    "mep.leader_group('j', 'jupyter')\n"
     "mep.leader_group('d', 'debug')\n";
 
 const char *kBuiltinPickerSources =
@@ -20612,6 +20756,45 @@ gfx::Texture2D *GetOrLoadOrgInlineImageTexture(const std::string &path) {
     img.format = gfx::kPixelFormatR8G8B8A8;
     entry.tex = gfx::LoadTextureFromImage(img);  // copies pixel data to the GPU; doc goes out of scope right after
     return &entry.tex;
+}
+
+// Jupyter notebook image/png outputs (NotebookOutput::image_png, base64
+// straight out of the .ipynb or the kernel), decoded once per distinct
+// payload and kept for the process lifetime -- keyed by the output's
+// content hash (NotebookOutput::image_key) rather than the base64 text
+// itself so the per-frame lookup hashes 16 bytes, not a 100KB string.
+// Same decode-once contract as g_data_uri_image_textures below: nothing
+// behind the bytes can change, so nothing here needs invalidating. A
+// payload that fails to decode is remembered too, so a corrupt image
+// doesn't retry the decode every frame.
+std::unordered_map<std::string, gfx::Texture2D> g_notebook_image_textures;
+std::unordered_set<std::string> g_notebook_image_failed;
+
+/**
+ * @brief Lazily decodes and GPU-uploads a notebook output's PNG, cached by its content key.
+ * @param out The output carrying a base64 image/png payload.
+ * @return Pointer to the cached texture, or nullptr if the payload doesn't decode.
+ */
+const gfx::Texture2D *GetOrLoadNotebookImageTexture(const NotebookOutput &out) {
+    if (out.image_png.empty()) return nullptr;
+    auto cached = g_notebook_image_textures.find(out.image_key);
+    if (cached != g_notebook_image_textures.end()) return &cached->second;
+    if (g_notebook_image_failed.count(out.image_key)) return nullptr;
+    std::vector<unsigned char> bytes = Base64Decode(out.image_png);
+    ImageDoc doc;
+    if (bytes.empty() || !doc.LoadFromMemory(bytes.data(), bytes.size())) {
+        g_notebook_image_failed.insert(out.image_key);
+        return nullptr;
+    }
+    gfx::Image img{};
+    img.data = const_cast<unsigned char *>(doc.Pixels());
+    img.width = doc.Width();
+    img.height = doc.Height();
+    img.mipmaps = 1;
+    img.format = gfx::kPixelFormatR8G8B8A8;
+    gfx::Texture2D tex = gfx::LoadTextureFromImage(img);
+    auto inserted = g_notebook_image_textures.emplace(out.image_key, tex);
+    return &inserted.first->second;
 }
 
 // One data-URI <img> cache slot: decode-once-and-keep-forever, unlike
@@ -29205,6 +29388,14 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         wrap_cols = std::max(1, static_cast<int>(avail_w / g_char_width));
     }
 
+    // Jupyter notebook buffer (Editor::notebooks_): rescans the cell
+    // markers and rebuilds the per-row output-block heights FIRST, so
+    // UpdateScrollForPane just below, this pane's row loop, and its
+    // RowSlot cursor lookup all see one agreed layout for this frame
+    // (Editor::NotebookTrailingSlots). nullptr for every other buffer.
+    g_editor.SetNotebookCharAspect(static_cast<double>(g_char_width) / static_cast<double>(line_height));
+    const NotebookSession *nb_sess = g_editor.NotebookRefresh(pane.buffer_id);
+
     g_editor.UpdateScrollForPane(pane.id, visible_lines, wrap_cols);
 
     gfx::BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
@@ -29387,6 +29578,90 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         }
         int row_wrap_cols = row_wraps ? wrap_cols : 0;  // fed to WrapPos/ForEachWrapPiece below
 
+        // Jupyter notebook chrome (notebook_doc.h): a `# %%` marker row
+        // draws as a cell header band with an "In [n]:"/"Markdown" label
+        // and a Run chip at the right; every row of a cell gets a left
+        // bar (Accent for the cell under the cursor, like Jupyter's blue
+        // selection bar); markdown bodies get a faint wash. A code cell's
+        // outputs hang under its last row as an extra block claiming
+        // NotebookTrailingSlots visual slots -- the same "one row, more
+        // than one slot" mechanism as org inline images, but *after* the
+        // row's own text rather than replacing it, so the row itself
+        // still draws/wraps/edits normally below. Drawn here, before the
+        // cursorline tint and text, so the bands sit underneath both.
+        if (nb_sess && !fold_here) {
+            const int nb_cell_idx = NotebookSpanAtRow(nb_sess->spans, row);
+            const NotebookCellSpan *nb_span = nb_cell_idx >= 0 ? &nb_sess->spans[static_cast<size_t>(nb_cell_idx)] : nullptr;
+            const NotebookCell *nb_cell = (nb_cell_idx >= 0 && nb_cell_idx < static_cast<int>(nb_sess->doc.cells.size()))
+                                              ? &nb_sess->doc.cells[static_cast<size_t>(nb_cell_idx)]
+                                              : nullptr;
+            const bool nb_cursor_in_cell = nb_span && is_active && NotebookSpanAtRow(nb_sess->spans, pane.cursor.row) == nb_cell_idx;
+            const float nb_row_h = static_cast<float>(line_height * row_wrap_slots);
+            const gfx::Color nb_accent = ResolveHlGroup("Accent");
+            const gfx::Color nb_border = ResolveHlGroup("Border");
+            const gfx::Color nb_bar = nb_cursor_in_cell ? nb_accent : nb_border;
+            if (nb_span) {
+                const bool nb_is_marker = row == nb_span->marker_row;
+                if (nb_span->type == NotebookCellType::Markdown && !nb_is_marker) {
+                    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(ly), static_cast<int>(w), static_cast<int>(nb_row_h),
+                                       gfx::Fade(ResolveHlGroup("Comment"), 0.08f));
+                }
+                if (nb_is_marker) {
+                    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(ly), static_cast<int>(w), line_height,
+                                       gfx::Fade(nb_cursor_in_cell ? nb_accent : nb_border, nb_cursor_in_cell ? 0.18f : 0.22f));
+                }
+                gfx::DrawRectangle(static_cast<int>(x) + 2, static_cast<int>(ly), 3, static_cast<int>(nb_row_h), nb_bar);
+            }
+            const int nb_trailing = g_editor.NotebookTrailingSlots(pane.buffer_id, row);
+            if (nb_trailing > 0 && nb_cell) {
+                const float block_y = ly + nb_row_h;
+                const float block_h = static_cast<float>(nb_trailing * line_height);
+                gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(block_y), static_cast<int>(w), static_cast<int>(block_h),
+                                   gfx::Fade(ResolveHlGroup("CursorLine"), 0.55f));
+                gfx::DrawRectangle(static_cast<int>(x) + 2, static_cast<int>(block_y), 3, static_cast<int>(block_h), nb_bar);
+                const float avail_w = std::max(40.0f, w - (text_x - x) - kMarginX);
+                float oy = block_y;
+                for (const NotebookOutput &out : nb_cell->outputs) {
+                    const int out_slots = NotebookOutputSlots(out, g_editor.NotebookCharAspect());
+                    if (out_slots <= 0) continue;
+                    const float out_h = static_cast<float>(out_slots * line_height);
+                    if (!out.image_png.empty()) {
+                        const gfx::Texture2D *tex = GetOrLoadNotebookImageTexture(out);
+                        if (tex) {
+                            float target_w = std::min(avail_w, static_cast<float>(kNotebookImageWidthChars) * g_char_width);
+                            float scale = std::min(target_w / static_cast<float>(tex->width), out_h / static_cast<float>(tex->height));
+                            gfx::DrawTextureEx(*tex, gfx::Vector2{text_x, oy}, 0.0f, scale, gfx::White);
+                        } else {
+                            gfx::DrawTextEx(g_font, "[image/png: could not decode]", gfx::Vector2{text_x, oy}, g_font_size, 0,
+                                            ResolveHlGroup("Warn"));
+                        }
+                    } else {
+                        const bool is_err = out.kind == NotebookOutput::Kind::Error;
+                        const bool is_stderr = out.kind == NotebookOutput::Kind::Stream && out.name == "stderr";
+                        if (is_err || is_stderr) {
+                            gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(oy), static_cast<int>(w), static_cast<int>(out_h),
+                                               gfx::Fade(ResolveHlGroup(is_err ? "Error" : "Warn"), 0.10f));
+                        }
+                        const gfx::Color out_color = ResolveHlGroup(is_err ? "Error" : (is_stderr ? "Warn" : "Normal"));
+                        std::vector<std::string> out_lines = NotebookOutputDisplayLines(out);
+                        for (size_t li = 0; li < out_lines.size(); li++) {
+                            DrawLineFast(out_lines[li], text_x, oy + static_cast<float>(li) * static_cast<float>(line_height), g_font_size,
+                                         out_color);
+                        }
+                        // "Out[n]" in the gutter for a result, when the gutter is wide enough to hold it.
+                        if (out.kind == NotebookOutput::Kind::ExecuteResult && text_x - x >= 5.0f * g_char_width + kMarginX) {
+                            std::string tag = out.execution_count >= 0 ? "Out[" + std::to_string(out.execution_count) + "]" : "Out";
+                            float tag_w = static_cast<float>(tag.size()) * g_char_width;
+                            gfx::DrawTextEx(g_font, tag.c_str(), gfx::Vector2{std::max(x + kMarginX, text_x - tag_w - g_char_width * 0.5f), oy},
+                                            g_font_size, 0, ResolveHlGroup("Comment"));
+                        }
+                    }
+                    oy += out_h;
+                }
+                visual_slot += nb_trailing;
+            }
+        }
+
         // :set cursorline (Phase 11 option) -- a full-width tint drawn
         // beneath everything else on this visual row, so fold-summary
         // text, the selection rectangles, and the line-number gutter all
@@ -29405,6 +29680,55 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             for (int s = 0; s < tint_slots; s++) {
                 gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(ly) + s * line_height, static_cast<int>(w),
                               line_height, ResolveHlGroup("CursorLine"));
+            }
+        }
+
+        // Notebook cell-header text (label + Run chip): drawn after the
+        // cursorline tint above so it stays visible when the cursor sits
+        // on the marker row itself; the header's band/bar were painted
+        // with the other backgrounds further up.
+        if (nb_sess && !fold_here) {
+            const int nb_cell_idx = NotebookSpanAtRow(nb_sess->spans, row);
+            const NotebookCellSpan *nb_span = nb_cell_idx >= 0 ? &nb_sess->spans[static_cast<size_t>(nb_cell_idx)] : nullptr;
+            if (nb_span && row == nb_span->marker_row) {
+                const NotebookCell *nb_cell = (nb_cell_idx < static_cast<int>(nb_sess->doc.cells.size()))
+                                                  ? &nb_sess->doc.cells[static_cast<size_t>(nb_cell_idx)]
+                                                  : nullptr;
+                const bool nb_cursor_in_cell = is_active && NotebookSpanAtRow(nb_sess->spans, pane.cursor.row) == nb_cell_idx;
+                const gfx::Color nb_accent = ResolveHlGroup("Accent");
+                {
+                    std::string nb_label;
+                    if (nb_span->type == NotebookCellType::Code) {
+                        std::string count = " ";
+                        if (nb_cell && nb_cell->run_state != NotebookCell::RunState::Idle) count = "*";
+                        else if (nb_cell && nb_cell->execution_count >= 0) count = std::to_string(nb_cell->execution_count);
+                        nb_label = "In [" + count + "]:";
+                    } else {
+                        nb_label = nb_span->type == NotebookCellType::Markdown ? "Markdown" : "Raw";
+                    }
+                    if (nb_cursor_in_cell) {
+                        std::string kernel = nb_sess->status;
+                        if (!nb_sess->python_version.empty() && kernel != "not started" && kernel != "dead") {
+                            kernel = "python " + nb_sess->python_version + " " + kernel;
+                        }
+                        nb_label += "   kernel: " + kernel;
+                    }
+                    const gfx::Color nb_label_color = nb_cursor_in_cell ? nb_accent : ResolveHlGroup("Comment");
+                    float nb_right = x + w - kMarginX - 2.0f;
+                    if (nb_span->type == NotebookCellType::Code && is_active) {
+                        const std::string nb_run_text = "Run";
+                        const float nb_run_w = MeasureUiText(nb_run_text, g_font_size) + 10.0f;
+                        gfx::Rectangle nb_run_rect{nb_right - nb_run_w, ly + 1.0f, nb_run_w, static_cast<float>(line_height - 2)};
+                        gfx::DrawRectangleRounded(nb_run_rect, 0.3f, 4, gfx::Fade(nb_accent, 0.35f));
+                        gfx::DrawRectangleRoundedLines(nb_run_rect, 0.3f, 4, nb_accent);
+                        DrawUiText(nb_run_text, gfx::Vector2{nb_run_rect.x + 5.0f, ly}, g_font_size, ResolveHlGroup("Normal"));
+                        const int run_buffer = pane.buffer_id, run_cell = nb_cell_idx;
+                        RegisterClickRegion(nb_run_rect, [run_buffer, run_cell] { g_editor.NotebookRunCell(run_buffer, run_cell); });
+                        nb_right = nb_run_rect.x - 8.0f;
+                    }
+                    const float nb_label_w = MeasureUiText(nb_label, g_font_size);
+                    DrawUiText(nb_label, gfx::Vector2{nb_right - nb_label_w, ly}, g_font_size, nb_label_color);
+                }
             }
         }
 
@@ -30043,19 +30367,23 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 if (fold.closed && fold.start_row == r) f = &fold;
             }
             auto latex_it = buf.org_latex_rows.find(r);
+            // A notebook code cell's output block hangs under row r (see
+            // the draw loop's notebook branch); it counts with that row.
+            const int nb_trailing = nb_sess ? g_editor.NotebookTrailingSlots(pane.buffer_id, r) : 0;
             if (f) {
                 r = f->end_row + 1;
                 slot += 1;
             } else if (g_editor.OrgImagesVisible() && buf.org_image_rows.count(r)) {
                 r += 1;
-                slot += kOrgInlineImageSlots;
+                slot += kOrgInlineImageSlots + nb_trailing;
             } else if (g_editor.OrgLatexVisible() && latex_it != buf.org_latex_rows.end()) {
                 r = latex_it->second.end_row + 1;  // skip the fragment's remaining raw source rows outright
-                slot += latex_it->second.slots;
+                slot += latex_it->second.slots + nb_trailing;
             } else {
                 slot += (wrap_cols > 0)
                             ? std::max(1, (static_cast<int>(buf.lines[static_cast<size_t>(r)].size()) + wrap_cols - 1) / wrap_cols)
                             : 1;
+                slot += nb_trailing;
                 r += 1;
             }
         }
@@ -32858,6 +33186,7 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinPaneZoom);
     lua->DoString(kBuiltinAiTerminal);
     lua->DoString(kBuiltinLeetcode);
+    lua->DoString(kBuiltinNotebook);
     lua->DoString(kBuiltinWhichKeyGroups);
 
 #if !defined(__EMSCRIPTEN__)

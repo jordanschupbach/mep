@@ -978,6 +978,253 @@ int l_terminal_write(lua_State *L) {
  * @param L Lua state; arg 1 is an array of argv strings, optional arg 2 a table with cwd/on_stdout/on_stderr/on_exit.
  * @return Number of values pushed (1: the new job's id).
  */
+// --- Jupyter notebook (notebook_doc.h / Editor::Notebook*) ------------------
+// All operate on the active pane's buffer (what the keybindings in
+// kBuiltinNotebook, main.cpp, want); an explicit index argument is a
+// 0-based cell index, nil/-1 meaning "the cell under the cursor".
+
+namespace {
+NotebookCellType NotebookTypeFromString(const char *s) {
+    std::string t = s ? s : "code";
+    if (t == "markdown" || t == "md") return NotebookCellType::Markdown;
+    if (t == "raw") return NotebookCellType::Raw;
+    return NotebookCellType::Code;
+}
+int NotebookIndexArg(lua_State *L, int idx) {
+    return lua_isnoneornil(L, idx) ? -1 : static_cast<int>(luaL_checkinteger(L, idx));
+}
+}  // namespace
+
+/**
+ * @brief Implements mep.notebook_is_buffer(buffer_id?): whether a buffer (default: the current one) is an open .ipynb notebook.
+ * @param L Lua state; optional arg 1 is a buffer id.
+ * @return Number of values pushed (1: boolean).
+ */
+int l_notebook_is_buffer(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    int id = lua_isnoneornil(L, 1) ? ed->CurrentBufferId() : static_cast<int>(luaL_checkinteger(L, 1));
+    lua_pushboolean(L, ed->IsNotebookBuffer(id));
+    return 1;
+}
+
+/**
+ * @brief Implements mep.notebook_run_cell(index?): queues a code cell (default: the one under the cursor) on the kernel.
+ * @param L Lua state; optional arg 1 is a 0-based cell index.
+ * @return Number of values pushed (1: true if the cell was queued).
+ */
+int l_notebook_run_cell(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    lua_pushboolean(L, ed->NotebookRunCell(ed->CurrentBufferId(), NotebookIndexArg(L, 1)));
+    return 1;
+}
+
+/** @brief Implements mep.notebook_run_all(): queues every code cell of the current notebook in order. */
+int l_notebook_run_all(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    ed->NotebookRunAll(ed->CurrentBufferId());
+    return 0;
+}
+
+/** @brief Implements mep.notebook_run_and_advance(): runs the cell under the cursor and moves to the next (Shift+Enter). */
+int l_notebook_run_and_advance(lua_State *L) {
+    GetEditor(L)->NotebookRunCellAtCursor(/*advance=*/true, /*insert_below=*/false);
+    return 0;
+}
+
+/** @brief Implements mep.notebook_run_and_insert(): runs the cell under the cursor and inserts a new one below (Alt+Enter). */
+int l_notebook_run_and_insert(lua_State *L) {
+    GetEditor(L)->NotebookRunCellAtCursor(/*advance=*/false, /*insert_below=*/true);
+    return 0;
+}
+
+/** @brief Implements mep.notebook_interrupt(): sends KeyboardInterrupt to the running cell and drops the queue. */
+int l_notebook_interrupt(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    ed->NotebookInterrupt(ed->CurrentBufferId());
+    return 0;
+}
+
+/** @brief Implements mep.notebook_restart_kernel(): kills and relaunches the current notebook's kernel. */
+int l_notebook_restart_kernel(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    ed->NotebookRestartKernel(ed->CurrentBufferId());
+    return 0;
+}
+
+/**
+ * @brief Implements mep.notebook_clear_outputs(index?): clears one cell's outputs (default: the cursor's cell); pass -1 for every cell.
+ * @param L Lua state; optional arg 1 is a 0-based cell index or -1.
+ * @return Number of values pushed (0).
+ */
+int l_notebook_clear_outputs(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    int idx = lua_isnoneornil(L, 1) ? ed->NotebookCellAtCursor() : static_cast<int>(luaL_checkinteger(L, 1));
+    if (lua_isnoneornil(L, 1) && idx < 0) return 0;
+    ed->NotebookClearOutputs(ed->CurrentBufferId(), idx);
+    return 0;
+}
+
+/**
+ * @brief Implements mep.notebook_insert_cell(below, type?): inserts an empty cell above/below the cursor's cell and moves into it.
+ * @param L Lua state; arg 1 is a boolean (true = below), optional arg 2 is "code"/"markdown"/"raw".
+ * @return Number of values pushed (1: the new cell's 0-based index, or -1).
+ */
+int l_notebook_insert_cell(lua_State *L) {
+    bool below = lua_toboolean(L, 1) != 0;
+    NotebookCellType type = NotebookTypeFromString(luaL_optstring(L, 2, "code"));
+    lua_pushinteger(L, GetEditor(L)->NotebookInsertCell(-1, below, type));
+    return 1;
+}
+
+/** @brief Implements mep.notebook_delete_cell(index?): deletes a cell (default: the cursor's). */
+int l_notebook_delete_cell(lua_State *L) {
+    GetEditor(L)->NotebookDeleteCell(NotebookIndexArg(L, 1));
+    return 0;
+}
+
+/**
+ * @brief Implements mep.notebook_set_cell_type(type, index?): changes a cell's type ("code"/"markdown"/"raw").
+ * @param L Lua state; arg 1 is the type name, optional arg 2 a 0-based cell index.
+ * @return Number of values pushed (0).
+ */
+int l_notebook_set_cell_type(lua_State *L) {
+    NotebookCellType type = NotebookTypeFromString(luaL_checkstring(L, 1));
+    GetEditor(L)->NotebookSetCellType(NotebookIndexArg(L, 2), type);
+    return 0;
+}
+
+/**
+ * @brief Implements mep.notebook_move_cell(delta): swaps the cursor's cell with its neighbor (-1 up, +1 down).
+ * @param L Lua state; arg 1 is the delta.
+ * @return Number of values pushed (0).
+ */
+int l_notebook_move_cell(lua_State *L) {
+    GetEditor(L)->NotebookMoveCell(-1, static_cast<int>(luaL_checkinteger(L, 1)));
+    return 0;
+}
+
+/**
+ * @brief Implements mep.notebook_cell_index(): the 0-based index of the cell under the cursor, or -1.
+ * @param L Lua state.
+ * @return Number of values pushed (1: integer).
+ */
+int l_notebook_cell_index(lua_State *L) {
+    lua_pushinteger(L, GetEditor(L)->NotebookCellAtCursor());
+    return 1;
+}
+
+/**
+ * @brief Implements mep.notebook_cell_count(): how many cells the current notebook buffer's text has.
+ * @param L Lua state.
+ * @return Number of values pushed (1: integer, 0 for a non-notebook buffer).
+ */
+int l_notebook_cell_count(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    const NotebookSession *sess = ed->NotebookRefresh(ed->CurrentBufferId());
+    lua_pushinteger(L, sess ? static_cast<lua_Integer>(sess->spans.size()) : 0);
+    return 1;
+}
+
+/**
+ * @brief Implements mep.notebook_goto_cell(index): moves the cursor to a cell's first body row (index clamped).
+ * @param L Lua state; arg 1 is a 0-based cell index.
+ * @return Number of values pushed (1: true if the cursor moved).
+ */
+int l_notebook_goto_cell(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->NotebookGotoCell(static_cast<int>(luaL_checkinteger(L, 1))));
+    return 1;
+}
+
+/**
+ * @brief Implements mep.notebook_set_python(command): sets the interpreter notebook kernels launch with (default "python3").
+ * @param L Lua state; arg 1 is the executable name or path.
+ * @return Number of values pushed (0).
+ */
+int l_notebook_set_python(lua_State *L) {
+    GetEditor(L)->SetNotebookPython(luaL_checkstring(L, 1));
+    return 0;
+}
+
+/**
+ * @brief Implements mep.notebook_status(): {status=, python=, cells=, running=, queued=} for the current notebook, or nil.
+ * @param L Lua state.
+ * @return Number of values pushed (1).
+ */
+int l_notebook_status(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    const NotebookSession *sess = ed->NotebookRefresh(ed->CurrentBufferId());
+    if (!sess) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_newtable(L);
+    lua_pushstring(L, sess->status.c_str());
+    lua_setfield(L, -2, "status");
+    lua_pushstring(L, sess->python_version.c_str());
+    lua_setfield(L, -2, "python");
+    lua_pushinteger(L, static_cast<lua_Integer>(sess->doc.cells.size()));
+    lua_setfield(L, -2, "cells");
+    lua_pushboolean(L, sess->running_uid != 0);
+    lua_setfield(L, -2, "running");
+    lua_pushinteger(L, static_cast<lua_Integer>(sess->run_queue.size()));
+    lua_setfield(L, -2, "queued");
+    lua_pushstring(L, sess->last_error.c_str());
+    lua_setfield(L, -2, "error");
+    return 1;
+}
+
+/**
+ * @brief Implements mep.notebook_cell_outputs(index): array of {kind=, name=, text=, has_image=, execution_count=} for a cell's
+ * outputs (cell_type/execution_count/source on the table too), or nil -- what tests/agents use to read results back.
+ * @param L Lua state; arg 1 is a 0-based cell index.
+ * @return Number of values pushed (1).
+ */
+int l_notebook_cell_outputs(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    const NotebookSession *sess = ed->NotebookRefresh(ed->CurrentBufferId());
+    int idx = static_cast<int>(luaL_checkinteger(L, 1));
+    if (!sess || idx < 0 || idx >= static_cast<int>(sess->doc.cells.size())) {
+        lua_pushnil(L);
+        return 1;
+    }
+    const NotebookCell &cell = sess->doc.cells[static_cast<size_t>(idx)];
+    lua_newtable(L);
+    lua_pushstring(L, cell.type == NotebookCellType::Code ? "code" : cell.type == NotebookCellType::Markdown ? "markdown" : "raw");
+    lua_setfield(L, -2, "cell_type");
+    lua_pushinteger(L, cell.execution_count);
+    lua_setfield(L, -2, "execution_count");
+    lua_pushstring(L, cell.source.c_str());
+    lua_setfield(L, -2, "source");
+    lua_pushstring(L, cell.run_state == NotebookCell::RunState::Idle      ? "idle"
+                      : cell.run_state == NotebookCell::RunState::Queued ? "queued"
+                                                                          : "running");
+    lua_setfield(L, -2, "run_state");
+    lua_newtable(L);
+    int n = 0;
+    for (const NotebookOutput &o : cell.outputs) {
+        lua_newtable(L);
+        const char *kind = o.kind == NotebookOutput::Kind::Stream          ? "stream"
+                           : o.kind == NotebookOutput::Kind::ExecuteResult ? "execute_result"
+                           : o.kind == NotebookOutput::Kind::DisplayData   ? "display_data"
+                                                                           : "error";
+        lua_pushstring(L, kind);
+        lua_setfield(L, -2, "kind");
+        lua_pushstring(L, o.name.c_str());
+        lua_setfield(L, -2, "name");
+        lua_pushstring(L, o.text.c_str());
+        lua_setfield(L, -2, "text");
+        lua_pushboolean(L, !o.image_png.empty());
+        lua_setfield(L, -2, "has_image");
+        lua_pushinteger(L, o.execution_count);
+        lua_setfield(L, -2, "execution_count");
+        lua_pushstring(L, o.ename.c_str());
+        lua_setfield(L, -2, "ename");
+        lua_rawseti(L, -2, ++n);
+    }
+    lua_setfield(L, -2, "outputs");
+    return 1;
+}
+
 int l_job_start(lua_State *L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     std::vector<std::string> argv;
@@ -8453,6 +8700,24 @@ const luaL_Reg kMepFuncs[] = {
     {"sidebar_default_cols", l_sidebar_default_cols},
     {"quit", l_quit},
     {"job_start", l_job_start},
+    {"notebook_is_buffer", l_notebook_is_buffer},
+    {"notebook_run_cell", l_notebook_run_cell},
+    {"notebook_run_all", l_notebook_run_all},
+    {"notebook_run_and_advance", l_notebook_run_and_advance},
+    {"notebook_run_and_insert", l_notebook_run_and_insert},
+    {"notebook_interrupt", l_notebook_interrupt},
+    {"notebook_restart_kernel", l_notebook_restart_kernel},
+    {"notebook_clear_outputs", l_notebook_clear_outputs},
+    {"notebook_insert_cell", l_notebook_insert_cell},
+    {"notebook_delete_cell", l_notebook_delete_cell},
+    {"notebook_set_cell_type", l_notebook_set_cell_type},
+    {"notebook_move_cell", l_notebook_move_cell},
+    {"notebook_cell_index", l_notebook_cell_index},
+    {"notebook_cell_count", l_notebook_cell_count},
+    {"notebook_goto_cell", l_notebook_goto_cell},
+    {"notebook_set_python", l_notebook_set_python},
+    {"notebook_status", l_notebook_status},
+    {"notebook_cell_outputs", l_notebook_cell_outputs},
     {"job_write", l_job_write},
     {"job_close_stdin", l_job_close_stdin},
     {"job_kill", l_job_kill},

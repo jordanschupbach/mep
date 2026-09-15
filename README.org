@@ -517,6 +517,30 @@ Available to =:lua=, =:source=, and =init.lua=:
   only searches the active tab).
 - =mep.quit()=
 
+** Jupyter notebooks
+
+Opening a =.ipynb= file shows the notebook as an ordinary editable buffer in
+the "percent" cell format that Jupytext/VS Code/Spyder use: every cell starts
+with a =# %%= marker (=# %% [markdown]= for markdown cells, whose bodies stay
+raw markdown), so all the usual motions, edits, undo and search apply to cell
+sources, and each cell body is syntax-highlighted in its own language. What the
+text can't carry -- outputs, execution counts, ids, metadata -- is kept
+alongside and written back as real nbformat JSON on =:w= (with Jupyter's own
+indentation, so diffs stay clean). Each code cell draws a header
+(=In [n]:= plus a clickable =Run= chip) and its outputs directly underneath:
+stdout/stderr, the last expression's value, tracebacks, and inline
+=matplotlib= figures.
+
+Cells run on one persistent =python3= process per notebook (no
+=jupyter_client= needed; =mep.opt.notebook_python= picks the interpreter):
+=Enter= or =Ctrl+Enter= runs the cell under the cursor, =Shift+Enter= runs it
+and moves to the next cell, and =mod1+Enter= runs it and inserts a new cell
+below. The =<leader>j= group holds the rest -- =jA= run all, =ja=/=jb= insert
+above/below, =jd= delete, =jm=/=jy= to markdown/code, =jk=/=jj= move, =jc=/=jC=
+clear outputs, =ji= interrupt, =j0= restart the kernel -- with =]j=/=[j= to step
+between cells and =:Notebook*= commands (and =:NotebookNew [path]=) for all of
+it. =examples/notebook_example.ipynb= is a ready-made notebook to try.
+
 ** Layout
 
 - =src/main.cpp= — raylib init/loop/rendering; owns the embedded font

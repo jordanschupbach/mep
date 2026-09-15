@@ -360,8 +360,13 @@
             pkgs.lua5_4
             # debugpy backs mep.dap_adapters.python (kBuiltinDap,
             # src/main.cpp: `python3 -m debugpy.adapter`), a real stdio DAP
-            # server -- alongside numpy for org-babel Python blocks.
-            (pkgs.python3.withPackages (ps: [ ps.numpy ps.debugpy ])) # Python
+            # server -- alongside numpy for org-babel Python blocks, and
+            # matplotlib for the Jupyter notebook mode's inline figures
+            # (src/notebook_doc.cpp's kernel captures every open figure as
+            # PNG at the end of a cell; examples/notebook_example.ipynb
+            # has a cell that draws one) and the Python language UI's plot
+            # pane (kBuiltinLanguageUiPython).
+            (pkgs.python3.withPackages (ps: [ ps.numpy ps.debugpy ps.matplotlib ])) # Python
             pkgs.nodejs # JavaScript
             pkgs.ruby
             # perl.withPackages, not bare pkgs.perl -- Perl::LanguageServer

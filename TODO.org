@@ -1,34 +1,44 @@
 * TODO todo management
-  :LOGBOOK:
-  CLOCK: [2026-09-14 Mon 10:10]--[2026-09-14 Mon 10:10] =>  0:00
-  CLOCK: [2026-09-14 Mon 10:06]--[2026-09-14 Mon 10:10] =>  0:04
-  CLOCK: [2026-09-14 Mon 10:06]--[2026-09-14 Mon 10:06] =>  0:00
-  CLOCK: [2026-09-14 Mon 10:02]--[2026-09-14 Mon 10:02] =>  0:00
-  CLOCK: [2026-09-05 Sat 23:11]--[2026-09-05 Sat 23:11] =>  0:00
-  CLOCK: [2026-09-05 Sat 21:29]--[2026-09-05 Sat 21:46] =>  0:17
-  :END:
 
-* TODO Add language specific, configurable run button to active pane bar
-  :LOGBOOK:
-  CLOCK: [2026-09-13 Sun 12:44]--[2026-09-13 Sun 12:44] =>  0:00
-  CLOCK: [2026-09-13 Sun 12:44]--[2026-09-13 Sun 12:44] =>  0:00
-  CLOCK: [2026-09-05 Sat 21:28]--[2026-09-05 Sat 21:45] =>  0:17
-  :END:
-* TODO Add language modes
-  :LOGBOOK:
-  CLOCK: [2026-09-05 Sat 21:28]--[2026-09-05 Sat 21:47] =>  0:19
-  :END:
-* TODO Add compiler explorer to c++ ui
-* TODO add hex exploration to c++ ui
-* TODO another-todo-test
-  This is another simple test. You are supposed to add the word boozled to
-  the top of the README.org file. While you're doing this, I'll be testing out 
-  the performance of the todo org file.
+* TODO language modes
+  We've added 'ui modes' for languages before (I think just R so far). I'd like
+  <leader>rr to run the current document in language modes (and there to be a ui
+  mode with a terminal associated to it for running the code in). I'd like to
+  add other languages. Let's focus on C/C++ and python. For C/C++, I know I'd
+  like a compiler explorer like buffer sidebar and a hex exploration as well.
+  I'd also like a terminal that we can run the current file's executable in. For
+  python, I'd like object introspection sidebars (like R) and a terminal to run
+  the code in and ideally a figure sidebar for matplotlib/seaborn like figures
+  to show up in (e.g. that appear when running .show() methods). Can you
+  implement these?
+
+* TODO quickjump capability
+  I'd like a quickjump capability. In particular, when pressing 's' in normal
+  mode, I'd like to then be able to start typing, and any non-matches to the
+  thing I'm typing to appear more opaque and for the matches to appear less
+  opaque with a hint I can type (just a letter or two ideally) to jump to that
+  matching location, or when I finish typing and there are no matches to jump to
+  it. Can you implement this feature?
+
+* TODO r help format
+  The formatting of help documentation in R help sidebar looks off. It looks
+  good when in the popup though when I press 'K' over a function name in an R
+  document. Can you fix the sidebar formatting to match that of the help popup?
+  Also, I'd like gh to be added as a keybinding to 'go to help' that, when in ui mode
+  in R will open the help for that function in the help sidebar (and move
+  visibility to the help pane if not an actively viewable pane). Can you implement these?
+
+* TODO fix buffer sidebar
+  The buffer sidebar has some behavior, where, if I click on a buffer, it opens
+  that buffer within the current pane (which is the buffer sidebar). Instead,
+  I'd like that behavior on double click, except opening to a buffer to its
+  right (i.e not inside the buffer sidebar buffer). Then, I'd also like
+  click-hold and drag capabilities to drag and drop those buffers into panes
+  visible in the windows. We have this capability for the filetree, so maybe we
+  can reuse some of that logic there. Can you implement these?
+
 
 * TODO fix exiting sidebar bug (specifically when exiting todo editor)
-  :LOGBOOK:
-  CLOCK: [2026-09-14 Mon 10:28]--[2026-09-14 Mon 10:28] =>  0:00
-  :END:
 * DONE Filetree image viewer mode :ARCHIVE:
   - `:e`/`mep.open` on a directory now opens the file tree in the current
     pane (Editor::LoadFile's new directory branch -> mep.set_on_directory_open
@@ -369,4 +379,4 @@ The filetree button in the tabbar doesnt toggle the filetree (it just opens it).
 
 * DONE add simple todo :ARCHIVE:
   Added the word "flummoxed" to the top of README.org.
-
+* DONE Add language specific, configurable run button to active pane bar :ARCHIVE:

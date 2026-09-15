@@ -16,7 +16,7 @@ ypred <- xseqmat %*% beta
 lines(xseq, ypred, col = "red")
 
 plot(x, x)
-
+?plot
 
 
 

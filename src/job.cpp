@@ -224,6 +224,7 @@ std::vector<std::string> Job::DrainRaw() {
     std::lock_guard<std::mutex> lk(mu_);
     std::vector<std::string> out(pending_raw_.begin(), pending_raw_.end());
     pending_raw_.clear();
+    pending_raw_bytes_ = 0;
     return out;
 }
 
@@ -263,10 +264,24 @@ void Job::ReaderLoop() {
     char buf[4096];
 
     while (out_open || err_open) {
+        // Backpressure (see pending_raw_bytes_'s own comment, job.h): while
+        // raw-mode output is backlogged past the cap, simply don't ask
+        // poll() about stdout_fd_ this round -- the child's own write()s
+        // block once the PTY's kernel buffer (bounded, unlike our queue)
+        // fills up, so it naturally stalls until DrainRaw() catches up
+        // instead of mep buffering an unbounded amount of unprocessed
+        // output in RAM. Re-checked every iteration (the same 200ms poll
+        // timeout below already paces this loop), so reading resumes the
+        // moment the main thread drains enough to drop back under the cap.
+        bool out_backlogged = false;
+        if (out_open && raw_stdout_) {
+            std::lock_guard<std::mutex> lk(mu_);
+            out_backlogged = pending_raw_bytes_ >= kMaxPendingRawBytes;
+        }
         struct pollfd fds[2];
         int nfds = 0;
         int out_idx = -1, err_idx = -1;
-        if (out_open) {
+        if (out_open && !out_backlogged) {
             fds[nfds] = {stdout_fd_, POLLIN, 0};
             out_idx = nfds++;
         }
@@ -277,7 +292,7 @@ void Job::ReaderLoop() {
         int rc = poll(fds, static_cast<nfds_t>(nfds), 200);  // 200ms so a kill mid-read isn't stuck forever
         if (rc < 0) break;
 
-        if (out_open && (fds[out_idx].revents & (POLLIN | POLLHUP | POLLERR))) {
+        if (out_open && out_idx >= 0 && (fds[out_idx].revents & (POLLIN | POLLHUP | POLLERR))) {
             ssize_t n = read(stdout_fd_, buf, sizeof(buf));
             if (n <= 0) {
                 if (!raw_stdout_ && !stdout_partial.empty()) {
@@ -289,6 +304,7 @@ void Job::ReaderLoop() {
             } else if (raw_stdout_) {
                 std::lock_guard<std::mutex> lk(mu_);
                 pending_raw_.emplace_back(buf, static_cast<size_t>(n));
+                pending_raw_bytes_ += static_cast<size_t>(n);
             } else {
                 FeedChunk(stdout_partial, buf, static_cast<size_t>(n), false, mu_, pending_);
             }

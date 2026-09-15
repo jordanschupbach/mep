@@ -175,6 +175,21 @@ private:
     std::mutex mu_;
     std::deque<JobLine> pending_;
     std::deque<std::string> pending_raw_;
+    size_t pending_raw_bytes_ = 0;
+    // Backpressure cap for raw-mode (PTY/terminal) output: a child that
+    // writes faster than the main thread can drain DrainRaw()+on_stdout_raw
+    // (VTerm::Feed, whose per-byte cost includes scrolling the whole grid
+    // on every newline) would otherwise let pending_raw_ grow without
+    // bound -- confirmed the hard way, piping `yes` into a :terminal grew
+    // mep to tens of GB of RSS within under two minutes since the reader
+    // thread has no reason of its own to ever stop calling read(). Once
+    // queued-but-undrained bytes hit this cap, ReaderLoop (job.cpp) simply
+    // stops polling stdout_fd_ for readability until the main thread
+    // catches up -- the PTY's own kernel buffer then applies real flow
+    // control back to the child (its write() blocks once that fills),
+    // exactly the backpressure a real terminal emulator gives a chatty
+    // program, rather than mep silently buffering everything in RAM.
+    static constexpr size_t kMaxPendingRawBytes = 8 * 1024 * 1024;
     std::atomic<bool> finished_{false};
     std::atomic<bool> killed_{false};
     bool spawn_failed_ = false;

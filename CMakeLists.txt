@@ -905,6 +905,15 @@ if(NOT EMSCRIPTEN)
     target_compile_options(mep-buffer-bench PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
     target_link_options(mep-buffer-bench PRIVATE ${MEP_SANITIZE_FLAGS})
     add_dependencies(tests mep-buffer-bench)
+    # Links only against `lua` (not mep_core/editor.cpp) -- see the bench
+    # file's own top comment for why a bare lua_State is enough to measure
+    # the mep.on_frame dispatch cost this guards (FIX_PERFORMANCE_ISSUES).
+    add_executable(mep-lua-frame-hook-bench EXCLUDE_FROM_ALL src/lua_frame_hook_bench.cpp)
+    target_include_directories(mep-lua-frame-hook-bench PRIVATE src)
+    target_compile_options(mep-lua-frame-hook-bench PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-lua-frame-hook-bench PRIVATE ${MEP_SANITIZE_FLAGS})
+    target_link_libraries(mep-lua-frame-hook-bench PRIVATE lua)
+    add_dependencies(tests mep-lua-frame-hook-bench)
     add_executable(mep-collab-session-test EXCLUDE_FROM_ALL src/collab_session_test.cpp src/collab_session.cpp src/collab_crdt.cpp src/collab_websocket.cpp src/text_diff.cpp)
     # This target deliberately doesn't link mep_core (see collab_session.cpp's
     # own decoupling comment), so it needs its own copy of mep.diff's

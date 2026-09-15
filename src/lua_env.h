@@ -177,7 +177,9 @@ public:
     void RegisterFrameHook(int ref);
     /**
      * @brief Invokes every frame hook previously registered with RegisterFrameHook. main.cpp calls this
-     * once per frame; a no-op (empty vector) when nothing has registered.
+     * once per frame; a no-op (empty vector) when nothing has registered. A hook that returns `true` is
+     * treated as done and dropped instead of being called again next frame -- see RunFrameHooks's own
+     * comment (lua_env.cpp) for why this matters.
      */
     void RunFrameHooks();
 
@@ -200,6 +202,12 @@ private:
     lua_State *L_ = nullptr;
     Editor *editor_ = nullptr;
     std::vector<int> frame_hook_refs_;
+
+    /**
+     * @brief Calls a frame hook ref with 0 args, 1 result. Returns whether it asked to be dropped
+     * (returned a truthy value) -- see RunFrameHooks.
+     */
+    bool CallFrameHookRef(int ref);
 };
 
 #endif  // MEP_LUA_ENV_H

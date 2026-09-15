@@ -24,29 +24,10 @@
 * TODO Add compiler explorer to c++ ui
 * TODO add hex exploration to c++ ui
 * TODO Fix dap debug ui
-* TODO Fix performance issues
-  There seems to be some funny performance issues that have arisen in the past
-  day or so of updates. Just moving around the TODO.org file seems to be clunky
-  and slow. In some places, it takes two clicks of the j or k keys to move past
-  a line.  It could be related to the robot animations while agents are running.
-  Because this seems to be when its noticable in the TODO.org file (its fast
-  without it running). Can you investigate and fix? Note, also just take a
-  general pass at improving performance. Write up a few low hanging fruit
-  benchmarks and see if you can use those benchmarks to make common tasks
-  faster.
-
 * TODO fix exiting sidebar bug (specifically when exiting todo editor)
   :LOGBOOK:
   CLOCK: [2026-09-14 Mon 10:28]--[2026-09-14 Mon 10:28] =>  0:00
   :END:
-* TODO Fix tabbar buttons
-  The tabbars associated to the right tabbar use the old sidebar style sidebars.
-  I'd like to replace them with the buffer style tabbars. The ones on the left
-  side work. However, they don't open them as a vertical split towards the
-  bottom of the left side. Instead, they open them side-by-side even though it
-  works when I use the bindings (e.g. <leader>ff, <leader>bB, and <leader>gg).
-  Can you investigate and fix this so that the tabbar buttons have the same
-  behavior.
 * TODO Add DAP debugging capabilities.
   Add DAP debugging capabilities. Start with R, Python, and C/C++. I also want a
   debugging ui, triggered with <leader>du that has all of the symbols and such
@@ -251,3 +232,43 @@
     with correct spacing, across all four dot-count states.
 * DONE filetree button fix :ARCHIVE:
 The filetree button in the tabbar doesnt toggle the filetree (it just opens it). Can you fix this?
+
+* DONE Fix tabbar buttons :ARCHIVE:
+  The tabbars associated to the right tabbar use the old sidebar style sidebars.
+  I'd like to replace them with the buffer style tabbars. The ones on the left
+  side work. However, they don't open them as a vertical split towards the
+  bottom of the left side. Instead, they open them side-by-side even though it
+  works when I use the bindings (e.g. <leader>ff, <leader>bB, and <leader>gg).
+  Can you investigate and fix this so that the tabbar buttons have the same
+  behavior.
+
+* DONE Fix performance issues :ARCHIVE:
+  Root cause: mep.on_frame(fn) had no way to unregister a hook -- every call
+  permanently registered a per-frame Lua call. mep.activity_todo_start_agent's
+  own wait-state hooks (used by both 'L' in the Todo sidebar and 'gL' on a
+  TODO.org headline) had a `done`-style flag but the hook body itself kept
+  being invoked every single frame forever after finishing -- so each agent
+  start left two more dead closures in the per-frame dispatch permanently,
+  and repeating it over a session degraded the whole editor's frame
+  throughput (including plain keyboard input like j/k), exactly matching
+  "clunky, needs two keypresses, fast without an agent running."
+  - LuaEnv::RunFrameHooks/CallFrameHookRef (lua_env.cpp) now let a hook
+    signal it's done by returning a truthy value, dropping it from
+    frame_hook_refs_ instead of calling it forever; mep.activity_todo_
+    start_agent's two wait-state hooks (kBuiltinActivityBar, main.cpp) were
+    converted to this shape, including the "terminal went away mid-wait"
+    abort path so they can never re-leak.
+  - Also fixed: mep.activity_todo_agents never pruned a finished agent's
+    entry, so every todo an agent had ever touched kept paying a live-agent
+    scan (workspace_list + participants + ai_terminals) on every 0.15s
+    sidebar/decorator poll for the rest of the session -- mep_todo_agent_
+    live() now drops an entry once an agent actually seen alive goes away.
+  - New mep-lua-frame-hook-bench (bench_results/history.jsonl, `just bench`)
+    demonstrates the shape: permanent no-op hooks get linearly more
+    expensive per frame as they accumulate, while one-shot self-removing
+    hooks cost ~nothing on the very next pass after they fire.
+  - Verified: `just bench` builds clean and runs (crdt/buffer/frame-hook
+    benchmarks all recorded); re-read every mep.on_frame hook in main.cpp
+    (20 call sites) to confirm no other one-shot-disguised-as-permanent
+    leak of this shape exists elsewhere.
+

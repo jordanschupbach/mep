@@ -18164,27 +18164,46 @@ void Editor::HandleHintLabelInput() {
 // kBuiltinQuickJump (main.cpp) via mep.quick_jump(). Distinct from the
 // HintChar/HintLabel pair above (one fixed target character, then a
 // separate label phase): here the query grows one character per
-// keystroke, and after every keystroke the current pane's visible rows
-// are rescanned so the on-screen matches (DrawPane dims everything else
-// and repaints the matches at full strength) and their labels track what
-// has been typed so far. There's no separate label phase because a
-// keystroke is never ambiguous: labels are drawn from kHintLabelPool
-// *minus* every character that would extend the query at some current
-// match (the character right after that match's text) -- so a key that
-// is some match's label can't possibly narrow the query, and a key that
-// could narrow the query is never a label. Whichever one a key is decides
-// what it does: label -> jump there; anything else -> append to the
-// query and rescan. Matches are ordered nearest-to-cursor first so the
-// home-row labels land on the likeliest targets; a scan with more
-// matches than usable labels leaves the far ones unlabeled (still
-// highlighted) -- typing more narrows them down. Smart-case: an
-// all-lowercase query matches case-insensitively, any uppercase in it
-// makes the whole query exact. A query that narrows to exactly one
-// match jumps immediately (the user is done typing at that point, by
-// the TODO's own description); Enter jumps to the nearest match, Escape
-// cancels, Backspace shortens the query. Landing records the jumplist
-// (RecordJumpFrom, so `` and Ctrl-O return here), which HintLabel's own
-// jump doesn't.
+// keystroke, and after every keystroke every text pane on screen is
+// rescanned -- not just the active one: every leaf of the active tab's
+// split tree (or only the zoomed pane while one is zoomed, since that's
+// all that's drawn then -- see DrawEditor's zoomed_leaf branch), plus a
+// floating pane if one is open, each over its own visible rows. Panes
+// showing a terminal/image/PDF/office/... buffer are skipped
+// (IsQuickJumpTextBuffer): their content isn't buf.lines text and their
+// DrawPane path never runs the row loop that paints the overlay anyway.
+// DrawPane dims every scanned pane and repaints that pane's own matches
+// at full strength with their labels; picking a match in another pane
+// focuses it (FocusPaneById) before moving its cursor. There's no
+// separate label phase because a keystroke is never ambiguous: labels
+// are drawn from kHintLabelPool *minus* every character that would
+// extend the query at some current match (the character right after
+// that match's text, across all panes) -- so a key that is some match's
+// label can't possibly narrow the query, and a key that could narrow the
+// query is never a label. Whichever one a key is decides what it does:
+// label -> jump there; anything else -> append to the query and rescan.
+// Matches are ordered active pane first (nearest-to-cursor within it),
+// then the other panes in split-tree order, so the home-row labels land
+// on the likeliest targets; a scan with more matches than usable labels
+// leaves the far ones unlabeled (still highlighted) -- typing more
+// narrows them down. Smart-case: an all-lowercase query matches
+// case-insensitively, any uppercase in it makes the whole query exact. A
+// query that narrows to exactly one match jumps immediately (the user is
+// done typing at that point, by the TODO's own description); Enter jumps
+// to the first match, Escape cancels, Backspace shortens the query.
+// Landing records the jumplist on the pane being left (RecordJumpFrom,
+// so `` and Ctrl-O return there), which HintLabel's own jump doesn't.
+
+bool Editor::IsQuickJumpTextBuffer(int buffer_id) const {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return false;
+    // The same buffer kinds SyncModeToActivePaneBuffer routes to a
+    // non-text mode -- each has its own DrawPane branch instead of the
+    // buf.lines row loop.
+    return !IsTerminalBuffer(buffer_id) && !IsImageBuffer(buffer_id) && !IsImageEditorActive(buffer_id) &&
+           !IsModel3DBuffer(buffer_id) && !IsPdfBuffer(buffer_id) && !IsVideoBuffer(buffer_id) &&
+           !IsHtmlBuffer(buffer_id) && !IsSidebarPaneBuffer(buffer_id) && !IsOfficeBuffer(buffer_id) &&
+           !IsSheetBuffer(buffer_id) && !IsKanbanViewActive(buffer_id) && !IsGanttViewActive(buffer_id);
+}
 
 void Editor::BeginQuickJump() {
     quickjump_matches_.clear();
@@ -18202,33 +18221,60 @@ void Editor::RecomputeQuickJumpMatches() {
     auto fold = [case_sensitive](char c) {
         return case_sensitive ? c : static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     };
-    const Buffer &buf = Buf();
-    const Pane &pane = CurPane();
-    const CursorPos cursor = pane.cursor;
-    int last_row = std::min(pane.scroll_row + std::max(1, pane.visible_lines), buf.LineCount());
+
+    // The panes to scan, mirroring what DrawEditor actually draws this
+    // frame: the active pane first (so its matches take the first
+    // labels), then every other visible leaf in split-tree order.
+    const Pane &active = CurPane();
+    std::vector<const Pane *> panes;
+    panes.push_back(&active);
+    if (zoomed_pane_id_ == -1 || zoomed_pane_id_ != ActivePaneId()) {
+        std::function<void(const SplitNode *)> collect = [&](const SplitNode *node) {
+            if (!node) return;
+            if (node->dir == SplitDir::Leaf) {
+                if (node->pane.id != active.id) panes.push_back(&node->pane);
+                return;
+            }
+            for (const auto &child : node->children) collect(child.get());
+        };
+        collect(ActiveTabRoot());
+    }
+
     // Every (folded) character that follows some match -- typing one of
     // these would still narrow the query, so none of them may be a label.
     std::string next_chars;
-    std::vector<HintMatch> matches;
+    std::vector<QuickJumpMatch> matches;
     const int n = static_cast<int>(query.size());
-    for (int row = std::max(0, pane.scroll_row); row < last_row; row++) {
-        const std::string &line = buf.lines[static_cast<size_t>(row)];
-        const int len = static_cast<int>(line.size());
-        for (int col = 0; col + n <= len; col++) {
-            bool hit = true;
-            for (int k = 0; k < n && hit; k++) {
-                hit = fold(line[static_cast<size_t>(col + k)]) == fold(query[static_cast<size_t>(k)]);
+    for (const Pane *pane : panes) {
+        if (!IsQuickJumpTextBuffer(pane->buffer_id)) continue;
+        const Buffer &buf = GetBuffer(pane->buffer_id);
+        const CursorPos cursor = pane->cursor;
+        const int first_row = std::max(0, pane->scroll_row);
+        const int last_row = std::min(first_row + std::max(1, pane->visible_lines), buf.LineCount());
+        std::vector<QuickJumpMatch> pane_matches;
+        for (int row = first_row; row < last_row; row++) {
+            const std::string &line = buf.lines[static_cast<size_t>(row)];
+            const int len = static_cast<int>(line.size());
+            for (int col = 0; col + n <= len; col++) {
+                bool hit = true;
+                for (int k = 0; k < n && hit; k++) {
+                    hit = fold(line[static_cast<size_t>(col + k)]) == fold(query[static_cast<size_t>(k)]);
+                }
+                if (!hit) continue;
+                pane_matches.push_back({pane->id, row, col, ""});
+                if (col + n < len) next_chars += fold(line[static_cast<size_t>(col + n)]);
             }
-            if (!hit) continue;
-            matches.push_back({row, col, ""});
-            if (col + n < len) next_chars += fold(line[static_cast<size_t>(col + n)]);
         }
+        // Nearest to that pane's own cursor first (only really matters
+        // for the active pane, whose matches lead the list; another
+        // pane's cursor is still the most likely point of interest there).
+        std::stable_sort(pane_matches.begin(), pane_matches.end(), [&cursor](const QuickJumpMatch &a, const QuickJumpMatch &b) {
+            int da = std::abs(a.row - cursor.row), db = std::abs(b.row - cursor.row);
+            if (da != db) return da < db;
+            return std::abs(a.col - cursor.col) < std::abs(b.col - cursor.col);
+        });
+        matches.insert(matches.end(), pane_matches.begin(), pane_matches.end());
     }
-    std::stable_sort(matches.begin(), matches.end(), [&cursor](const HintMatch &a, const HintMatch &b) {
-        int da = std::abs(a.row - cursor.row), db = std::abs(b.row - cursor.row);
-        if (da != db) return da < db;
-        return std::abs(a.col - cursor.col) < std::abs(b.col - cursor.col);
-    });
     // Label pool: home-row-first order, minus any character that would
     // extend the query (compared folded, the same way the scan matched:
     // with an all-lowercase query a match followed by 'X' rules out the
@@ -18241,11 +18287,18 @@ void Editor::RecomputeQuickJumpMatches() {
     quickjump_matches_ = std::move(matches);
 }
 
-void Editor::QuickJumpTo(CursorPos target) {
+void Editor::QuickJumpTo(const QuickJumpMatch &m) {
     CursorPos from = CurPane().cursor;
+    const bool same_pane = m.pane_id == CurPane().id;
     RestoreFromOverlay();
-    if (from.row != target.row || from.col != target.col) RecordJumpFrom(from);
-    CurPane().cursor = target;
+    // Another pane: the jumplist entry belongs to the pane being left
+    // (RecordJumpFrom works on CurPane()), so record before focusing.
+    if (!same_pane || from.row != m.row || from.col != m.col) RecordJumpFrom(from);
+    if (!same_pane) {
+        FocusPaneById(m.pane_id);
+        if (CurPane().id != m.pane_id) return;  // pane vanished mid-scan (e.g. closed by a job); stay put
+    }
+    CurPane().cursor = {m.row, m.col};
     ClampCursor();
 }
 
@@ -18272,27 +18325,50 @@ void Editor::HandleQuickJumpInput() {
             RestoreFromOverlay();
             return;
         }
-        QuickJumpTo({quickjump_matches_[0].row, quickjump_matches_[0].col});
+        QuickJumpTo(quickjump_matches_[0]);
         return;
     }
     for (int cp = gfx::GetCharPressed(); cp > 0; cp = gfx::GetCharPressed()) {
         if (cp < 32 || cp > 126) continue;  // printable ASCII only, same as the hint modes above
-        char c = static_cast<char>(cp);
-        for (const HintMatch &m : quickjump_matches_) {
-            if (!m.label.empty() && m.label[0] == c) {
-                QuickJumpTo({m.row, m.col});
-                return;
-            }
-        }
-        quickjump_query_ += c;
-        RecomputeQuickJumpMatches();
-        if (quickjump_matches_.size() == 1) {
-            QuickJumpTo({quickjump_matches_[0].row, quickjump_matches_[0].col});
-            return;
-        }
-        // No matches at all: stay open (the command line says so) so
-        // Backspace can fix a typo, rather than dropping the whole query.
+        if (QuickJumpTypeChar(static_cast<char>(cp))) return;
     }
+}
+
+bool Editor::QuickJumpTypeChar(char c) {
+    if (mode_ != Mode::QuickJump) return true;
+    for (const QuickJumpMatch &m : quickjump_matches_) {
+        if (!m.label.empty() && m.label[0] == c) {
+            QuickJumpTo(m);
+            return true;
+        }
+    }
+    quickjump_query_ += c;
+    RecomputeQuickJumpMatches();
+    if (quickjump_matches_.size() == 1) {
+        QuickJumpTo(quickjump_matches_[0]);
+        return true;
+    }
+    // No matches at all: stay open (the command line says so) so
+    // Backspace can fix a typo, rather than dropping the whole query.
+    return false;
+}
+
+void Editor::QuickJumpFeed(const std::string &text) {
+    for (char c : text) {
+        if (c < 32 || c > 126) continue;
+        if (QuickJumpTypeChar(c)) return;
+    }
+}
+
+bool Editor::QuickJumpPick(const std::string &label) {
+    if (mode_ != Mode::QuickJump || label.empty()) return false;
+    for (const QuickJumpMatch &m : quickjump_matches_) {
+        if (m.label == label) {
+            QuickJumpTo(m);
+            return true;
+        }
+    }
+    return false;
 }
 
 // --- Completion engine (NVIM_PARITY_PLAN.md Part V Phase 22) --------------

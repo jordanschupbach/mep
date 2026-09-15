@@ -28623,13 +28623,17 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // WrapPos so a match straddling a soft-wrap boundary lands on the
         // right visual line, and via ByteOffsetToColumn so a multi-byte
         // prefix on the line doesn't shift it. A closed fold's summary row
-        // is skipped: its matches (inside the fold) aren't on screen.
-        if (is_active && g_editor.IsQuickJumpActive() && !fold_here) {
+        // is skipped: its matches (inside the fold) aren't on screen. Every
+        // text pane gets this, not just the active one -- the scan covers
+        // them all (RecomputeQuickJumpMatches) and each pane paints only its
+        // own matches, by pane_id.
+        if (g_editor.IsQuickJumpActive() && !fold_here) {
             gfx::DrawRectangle(static_cast<int>(text_x), static_cast<int>(ly), static_cast<int>(x + w - text_x),
                           line_height * row_wrap_slots, gfx::Fade(ResolveHlGroup("NormalBg"), 0.6f));
             const std::string &qj_line = buf.lines[static_cast<size_t>(row)];
             const int qj_len = static_cast<int>(g_editor.QuickJumpQuery().size());
-            for (const HintMatch &hm : g_editor.QuickJumpMatches()) {
+            for (const QuickJumpMatch &hm : g_editor.QuickJumpMatches()) {
+                if (hm.pane_id != pane.id) continue;
                 if (hm.row != row) continue;
                 int col = ByteOffsetToColumn(qj_line, hm.col);
                 int i = hm.col;

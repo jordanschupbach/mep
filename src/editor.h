@@ -649,6 +649,17 @@ struct HintMatch {
     std::string label;
 };
 
+// One quick jump target (Editor::BeginQuickJump): which pane it's in --
+// the scan covers every visible text pane, not just the active one --
+// plus its position and the one-key label it was given ("" for a match
+// past the usable label pool; still highlighted, just not pickable until
+// the query narrows further).
+struct QuickJumpMatch {
+    int pane_id = -1;
+    int row = 0, col = 0;
+    std::string label;
+};
+
 // One leader-key binding (NVIM_PARITY_PLAN.md Part II Phase 11 whichkey):
 // `sequence` is the key(s) typed *after* the leader (e.g. "ff" for a
 // "find files" bound at <leader>ff). Registered via Lua; executed when the
@@ -7464,11 +7475,17 @@ public:
     // key jumps there. See the implementation's own comment in editor.cpp.
     void BeginQuickJump();
     bool IsQuickJumpActive() const { return mode_ == Mode::QuickJump; }
-    // The current matches (nearest-to-cursor first; `label` is empty for
+    // The current matches across every visible text pane (active pane
+    // first, nearest-to-cursor within it; `label` is empty for
     // a match that didn't get one) and the query typed so far, for
     // DrawPane's dim/highlight/label pass and the command line's prompt.
-    const std::vector<HintMatch> &QuickJumpMatches() const { return quickjump_matches_; }
+    const std::vector<QuickJumpMatch> &QuickJumpMatches() const { return quickjump_matches_; }
     const std::string &QuickJumpQuery() const { return quickjump_query_; }
+    // Scripting surface (mep.quick_jump(query) / mep.quick_jump_pick, lua_env.cpp):
+    // feed characters exactly as if typed (a label picks, anything else
+    // narrows; stops once a jump ends the mode), or pick a label directly.
+    void QuickJumpFeed(const std::string &text);
+    bool QuickJumpPick(const std::string &label);
 
     // Whether the user's configured mod1 modifier (mod1_/mep.set_mod1,
     // see its own comment near HandleMod1Shortcuts) is currently held --
@@ -7839,7 +7856,9 @@ private:
     void HandleHintLabelInput();
     void HandleQuickJumpInput();
     void RecomputeQuickJumpMatches();
-    void QuickJumpTo(CursorPos target);
+    void QuickJumpTo(const QuickJumpMatch &m);
+    bool IsQuickJumpTextBuffer(int buffer_id) const;
+    bool QuickJumpTypeChar(char c);  // true once the mode has ended (a jump happened)
     void HandleTerminalInput();
     TerminalSession *FindTerminal(int buffer_id);
     // Encodes one keypress as the bytes a real terminal would send for it
@@ -9155,7 +9174,7 @@ private:
     std::vector<HintMatch> hint_matches_;
     std::string hint_typed_;
 
-    std::vector<HintMatch> quickjump_matches_;
+    std::vector<QuickJumpMatch> quickjump_matches_;
     std::string quickjump_query_;
 
     int completion_source_ref_ = 0;

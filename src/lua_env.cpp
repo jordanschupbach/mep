@@ -7394,11 +7394,47 @@ int l_hint_jump(lua_State *L) {
     return 0;
 }
 
-// mep.quick_jump(): Editor::BeginQuickJump (TODO.org "quickjump
-// capability") -- the typed-query jump kBuiltinQuickJump binds to `s`.
+// mep.quick_jump(query?): Editor::BeginQuickJump (TODO.org "quickjump
+// capability") -- the typed-query jump kBuiltinQuickJump binds to `s`. An
+// optional query is fed exactly as if typed (so a unique match jumps at
+// once), which together with mep.quick_jump_matches()/quick_jump_pick()
+// below makes the whole flow scriptable -- and testable over the agent
+// socket without synthetic keyboard input.
 int l_quick_jump(lua_State *L) {
-    GetEditor(L)->BeginQuickJump();
+    Editor *ed = GetEditor(L);
+    ed->BeginQuickJump();
+    if (lua_gettop(L) >= 1 && lua_isstring(L, 1)) ed->QuickJumpFeed(lua_tostring(L, 1));
     return 0;
+}
+
+// mep.quick_jump_matches() -> array of {pane_id=, row=, col=, label=}
+// (row/col 1-indexed like mep.cursor(); label "" for an unlabeled match),
+// active pane's matches first -- empty when quick jump isn't active.
+int l_quick_jump_matches(lua_State *L) {
+    const Editor *ed = GetEditor(L);
+    lua_newtable(L);
+    if (!ed->IsQuickJumpActive()) return 1;
+    const std::vector<QuickJumpMatch> &matches = ed->QuickJumpMatches();
+    for (size_t i = 0; i < matches.size(); i++) {
+        lua_newtable(L);
+        lua_pushinteger(L, matches[i].pane_id);
+        lua_setfield(L, -2, "pane_id");
+        lua_pushinteger(L, matches[i].row + 1);
+        lua_setfield(L, -2, "row");
+        lua_pushinteger(L, matches[i].col + 1);
+        lua_setfield(L, -2, "col");
+        lua_pushstring(L, matches[i].label.c_str());
+        lua_setfield(L, -2, "label");
+        lua_rawseti(L, -2, static_cast<int>(i) + 1);
+    }
+    return 1;
+}
+
+// mep.quick_jump_pick(label) -> true if a current match carried that label
+// (and the jump happened, focusing its pane when it's another one).
+int l_quick_jump_pick(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->QuickJumpPick(luaL_checkstring(L, 1)) ? 1 : 0);
+    return 1;
 }
 
 // mep.platform() -> "linux"/"macos"/"windows"/"wasm" (Phase 13 URL open).
@@ -8689,6 +8725,8 @@ const luaL_Reg kMepFuncs[] = {
     {"lsp_is_running", l_lsp_is_running},
     {"hint_jump", l_hint_jump},
     {"quick_jump", l_quick_jump},
+    {"quick_jump_matches", l_quick_jump_matches},
+    {"quick_jump_pick", l_quick_jump_pick},
     {"platform", l_platform},
     {"pane_open", l_pane_open},
     {"pane_next_buffer", l_pane_next_buffer},

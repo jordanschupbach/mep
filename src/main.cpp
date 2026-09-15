@@ -4359,7 +4359,7 @@ const char *kBuiltinGit =
     "end\n"
     "mep.command('MepGitStatusPane', mep.git_open_pane)\n"
     "mep.leader_map('gt', 'Git status (paneable, stacks with the file tree)', mep.git_open_pane)\n"
-    "mep.command('MepGitStatus', function() mep.git_open_view('status', false) end)\n"
+    "mep.command('MepGitStatus', function() mep.git_status_toggle() end)\n"
     "mep.command('MepGitLog', function() mep.git_open_view('log', true) end)\n"
     "mep.command('MepGitBranches', function() mep.git_open_view('branches', true) end)\n"
     "mep.command('MepGitStash', function() mep.git_open_view('stash', true) end)\n"
@@ -7540,7 +7540,7 @@ const char *kBuiltinStructure =
     "  mep_structure_sidebar_render()\n"
     "  mep.sidebar_open(mep_structure_sidebar_id)\n"
     "end\n"
-    "mep.command('MepStructure', mep.structure_sidebar_open)\n"
+    "mep.command('MepStructure', function() mep.structure_open_pane() end)\n"
     // mep.structure_sidebar_open's near-counterpart: lands the same
     // ensure+render on a pane stacked with the other right-side sidebar
     // panes (mep.right_sidebar_position_pane) instead of the dock. A true
@@ -7573,8 +7573,9 @@ const char *kBuiltinStructure =
     "  mep.pane_prev_buffer()\n"
     "  mep.pane_close_buffer()\n"
     "end\n"
-    // <leader>sS still toggles the docked view (used by MepStructure/the
-    // activity-bar icon, kept around for now) -- the split one checks
+    // <leader>sS still toggles the docked view (mep.structure_sidebar_toggle
+    // itself is otherwise unused now that :MepStructure opens the paneable
+    // view too, see below) -- the split one checks
     // whether the outline buffer is showing in any pane of the active tab
     // (mep.pane_focus_buffer both answers that and focuses the pane) and
     // closes just that buffer tab (or the pane, when it's the only tab)
@@ -7596,9 +7597,10 @@ const char *kBuiltinStructure =
     "  end\n"
     "end\n"
     // <leader>ss now opens the paneable outline (mergeable/splittable/
-    // closable like any other buffer) instead of docking it -- the docked
-    // view (mep.structure_sidebar_toggle) stays reachable via :MepStructure/
-    // the activity-bar icon for now, but is slated for deprecation.\n"
+    // closable like any other buffer) instead of docking it -- :MepStructure
+    // (the tabbar button) now opens the same paneable view (see its
+    // mep.command registration above), matching every other right-side
+    // panel's tabbar-button/leader-binding parity.\n"
     "mep.leader_map('ss', 'Open structure pane (treesitter)', mep.structure_open_pane)\n"
     "mep.leader_map('sS', 'Toggle structure split (buffer-local)', mep.structure_split_toggle)\n"
     // Keeps the sidebar showing whichever pane is currently focused, and
@@ -13431,7 +13433,7 @@ const char *kBuiltinActivityBar =
     "  mep_activity_todo_save(kept)\n"
     "  mep_activity_todo_rerender()\n"
     "end\n"
-    "mep.command('MepActivityTodoPanel', mep.activity_todo_panel)\n"
+    "mep.command('MepActivityTodoPanel', function() mep.activity_todo_open_pane() end)\n"
     "mep.command('MepActivityTodoOpen', mep.activity_todo_open)\n"
     "mep.command('MepActivityTodoAdd', mep.activity_todo_add)\n"
     "mep.command('MepActivityTodoClearDone', mep.activity_todo_clear_done)\n"
@@ -13506,11 +13508,13 @@ const char *kBuiltinActivityBar =
     "  mep.notify('Running tests...')\n"
     "end\n"
     "mep.command('MepActivityTestRun', mep.activity_test_run)\n"
-    "mep.command('MepActivityTestPanel', mep.activity_test_panel)\n"
+    "mep.command('MepActivityTestPanel', function() mep.activity_test_open_pane() end)\n"
     // <leader>tt / <leader>tT / <leader>nn toggles. Todo and Tests are
     // Lua-owned sidebars, so close-if-open else (re)build+open; the
-    // Notifications panel is editor.cpp's own ToggleNotifyHistoryPanel
-    // behind :MepNotifyPanel, which already toggles.
+    // Notifications panel's docked toggle is editor.cpp's own
+    // Editor::ToggleNotifyHistoryPanel (no longer wired to :MepNotifyPanel,
+    // which now opens the paneable view instead -- see mep.notify_open_pane's
+    // own mep.command registration below).
     "function mep.activity_todo_toggle()\n"
     "  if mep_activity_todo_sidebar_id and mep.sidebar_is_open(mep_activity_todo_sidebar_id) then\n"
     "    mep.sidebar_close(mep_activity_todo_sidebar_id)\n"
@@ -13694,6 +13698,13 @@ const char *kBuiltinActivityBar =
     "  mep.pane_prev_buffer()\n"
     "  mep.pane_close_buffer()\n"
     "end\n"
+    // Was a hardcoded C++ dispatch straight to the docked Editor::
+    // ToggleNotifyHistoryPanel (editor.cpp's ExecuteCommandLine); now
+    // routed through the generic lua_commands_ fallback there instead, so
+    // the tabbar button/activity-bar picker's :MepNotifyPanel matches
+    // <leader>nn's paneable behavior (same fix as MepGitStatus/MepStructure/
+    // MepActivityTodoPanel/MepActivityTestPanel/MepAiAgents above).
+    "mep.command('MepNotifyPanel', function() mep.notify_open_pane() end)\n"
     "mep.leader_map('tt', 'Toggle todo pane', mep.activity_todo_open_pane)\n"
     "mep.leader_map('tT', 'Toggle tests pane', mep.activity_test_open_pane)\n"
     "mep.leader_map('nn', 'Toggle notifications pane', mep.notify_open_pane)\n"
@@ -15471,7 +15482,7 @@ const char *kBuiltinAiTerminal =
     "  mep_ai_agents_refresh(true)\n"
     "  mep.sidebar_open(mep_ai_agents_sidebar_id)\n"
     "end\n"
-    "mep.command('MepAiAgents', mep.ai_agents_panel)\n"
+    "mep.command('MepAiAgents', function() mep.ai_agents_open_pane() end)\n"
     "mep.command('aiagents', mep.ai_agents_panel)\n"
     // <leader>aa toggles the docked view: closes the sidebar when it's
     // open, otherwise opens it (same shape as mep.structure_sidebar_toggle).

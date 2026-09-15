@@ -20682,8 +20682,6 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
         ClearNotifyHistory();
     } else if (name == "MepNotifyDismiss") {
         DismissAllToasts();
-    } else if (name == "MepNotifyPanel") {
-        ToggleNotifyHistoryPanel();
     } else if (name == "MepLayout") {
         ApplyLayout(args);
     } else if (name == "MepScratch") {

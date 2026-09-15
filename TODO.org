@@ -1,8 +1,3 @@
-
-
-* TODO filetree button fix
-The filetree button in the tabbar doesnt toggle the filetree (it just opens it). Can you fix this?
-
 * TODO todo management
   :LOGBOOK:
   CLOCK: [2026-09-14 Mon 10:10]--[2026-09-14 Mon 10:10] =>  0:00
@@ -12,6 +7,7 @@ The filetree button in the tabbar doesnt toggle the filetree (it just opens it).
   CLOCK: [2026-09-05 Sat 23:11]--[2026-09-05 Sat 23:11] =>  0:00
   CLOCK: [2026-09-05 Sat 21:29]--[2026-09-05 Sat 21:46] =>  0:17
   :END:
+
 * TODO Add language specific, configurable run button to active pane bar
   :LOGBOOK:
   CLOCK: [2026-09-13 Sun 12:44]--[2026-09-13 Sun 12:44] =>  0:00
@@ -28,10 +24,36 @@ The filetree button in the tabbar doesnt toggle the filetree (it just opens it).
 * TODO Add compiler explorer to c++ ui
 * TODO add hex exploration to c++ ui
 * TODO Fix dap debug ui
+* TODO Fix performance issues
+  There seems to be some funny performance issues that have arisen in the past
+  day or so of updates. Just moving around the TODO.org file seems to be clunky
+  and slow. In some places, it takes two clicks of the j or k keys to move past
+  a line.  It could be related to the robot animations while agents are running.
+  Can you investigate and fix? Note, also just take a general pass at improving
+  performance. Write up a few low hanging fruit benchmarks and see if you can
+  use those benchmarks to make common tasks faster.
+
 * TODO fix exiting sidebar bug (specifically when exiting todo editor)
   :LOGBOOK:
   CLOCK: [2026-09-14 Mon 10:28]--[2026-09-14 Mon 10:28] =>  0:00
   :END:
+* TODO Fix tabbar buttons
+  The tabbars associated to the right tabbar use the old sidebar style sidebars.
+  I'd like to replace them with the buffer style tabbars. The ones on the left
+  side work. However, they don't open them as a vertical split towards the
+  bottom of the left side. Instead, they open them side-by-side even though it
+  works when I use the bindings (e.g. <leader>ff, <leader>bB, and <leader>gg).
+  Can you investigate and fix this so that the tabbar buttons have the same
+  behavior.
+* TODO Add DAP debugging capabilities.
+  Add DAP debugging capabilities. Start with R, Python, and C/C++. I also want a
+  debugging ui, triggered with <leader>du that has all of the symbols and such
+  in sidebars and a console, etc. Buttons for going stepping into, out of, etc.
+  Use examples in the example folder to test out and the flake.nix for adding
+  dependencies to the shell. I'd like <leader>dd to continue/start debugging. I'd
+  like <leader>db to toggle a break point (visible in the side line number gutter),
+  <leader>di to step into, <leader>do to step out of, and a couple others that might make
+  sense if you can think of them. Can you implement these?
 * DONE Filetree image viewer mode :ARCHIVE:
   - `:e`/`mep.open` on a directory now opens the file tree in the current
     pane (Editor::LoadFile's new directory branch -> mep.set_on_directory_open
@@ -225,4 +247,5 @@ The filetree button in the tabbar doesnt toggle the filetree (it just opens it).
     decoration on a headline and a matching sidebar row directly, and
     confirmed both render the robot glyph followed by the animated dots
     with correct spacing, across all four dot-count states.
-
+* DONE filetree button fix :ARCHIVE:
+The filetree button in the tabbar doesnt toggle the filetree (it just opens it). Can you fix this?

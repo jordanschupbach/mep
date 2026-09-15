@@ -20,8 +20,8 @@
   :END:
 * TODO Add compiler explorer to c++ ui
 * TODO add hex exploration to c++ ui
-* TODO simple-todo-test
-  This is just a simple test. You are supposed to add the word flamboozled to
+* TODO another-todo-test
+  This is another simple test. You are supposed to add the word boozled to
   the top of the README.org file. While you're doing this, I'll be testing out 
   the performance of the todo org file.
 

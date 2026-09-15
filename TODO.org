@@ -1,5 +1,17 @@
 * TODO todo management
 
+* TODO language modes
+  We've added 'ui modes' for languages before (I think just R so far). I'd like
+  <leader>rr to run the current document in language modes (and there to be a ui
+  mode with a terminal associated to it for running the code in). I'd like to
+  add other languages. Let's focus on C/C++ and python. For C/C++, I know I'd
+  like a compiler explorer like buffer sidebar and a hex exploration as well.
+  I'd also like a terminal that we can run the current file's executable in. For
+  python, I'd like object introspection sidebars (like R) and a terminal to run
+  the code in and ideally a figure sidebar for matplotlib/seaborn like figures
+  to show up in (e.g. that appear when running .show() methods). Can you
+  implement these?
+
 * DONE quickjump capability :ARCHIVE:
   I'd like a quickjump capability. In particular, when pressing 's' in normal
   mode, I'd like to then be able to start typing, and any non-matches to the
@@ -24,6 +36,18 @@
     (ui.key_press/type_text + screenshots): label jump, unique-match
     auto-jump, Esc/Enter-with-no-match leaving the cursor put, Backspace.
 
+* TODO r help format
+  The formatting of help documentation in R help sidebar looks off. It looks
+  good when in the popup though when I press 'K' over a function name in an R
+  document. Can you fix the sidebar formatting to match that of the help popup?
+  Also, I'd like gh to be added as a keybinding to 'go to help' that, when in ui mode
+  in R will open the help for that function in the help sidebar (and move
+  visibility to the help pane if not an actively viewable pane). Can you implement these?
+
+* TODO r gh binding
+In R, I'd like 'gh' when in ui mode and over a function name to send that
+function the the help (and appear in the help sidebar). Can you implement this?
+
 * TODO fix buffer sidebar
   The buffer sidebar has some behavior, where, if I click on a buffer, it opens
   that buffer within the current pane (which is the buffer sidebar). Instead,
@@ -37,32 +61,6 @@
   I'd like in the status tab in the git sidebar, for pressing P to push.
   Can you implement this?
 * TODO fix exiting sidebar bug (specifically when exiting todo editor)
-* DONE r help format :ARCHIVE:
-  - The Help tab (kBuiltinLanguageUiR) now renders tools::Rd2txt output
-    the way the K hover popup does instead of one word-wrapped widget per
-    non-blank line (mep_r_ui_help_widgets, main.cpp): blank lines kept,
-    the width-padded `lm   package:stats   R Documentation` header
-    collapsed to `lm  {stats}`, title/`Section:` lines highlighted,
-    Usage:/Examples: verbatim (never wrapped), prose wrapped with a
-    hanging indent after `name: ` for Arguments:/Value: items, and R's
-    own hard breaks in >450-char paragraphs rejoined so the pane's wrap
-    is the only wrap. Curly quotes/bullets ASCII-fied so LspDiagWrap's
-    byte-count width stops wrapping short.
-  - Pane-hosted sidebars wrapped to the stale docked `size` (44 cols)
-    regardless of pane width -- new SidebarInstance::wrap_cols, set each
-    frame by DrawSidebarPaneContent/DrawSidebars from the real drawn
-    width, is what FlattenSidebar wraps to now (all wrap=true sidebars
-    benefit, e.g. the Todo panel when opened as a pane).
-  - `gh` (mep.map_g) = go to help: in an open R UI mode, sends
-    help('sym'[, package = 'pkg'] for pkg::sym) for the [%w_.] symbol
-    under the cursor to the session console and mep.jump_to_buffer()s the
-    Help tab immediately (revealing it if hidden behind Data/Objects/...);
-    outside R UI mode it falls back to mep.lsp_hover().
-  - Verified against a spawned native instance: help('lm') via the
-    function, then a real XTest `gh` keypress on `stats::sd` -> console
-    shows help('sd', package = 'stats') and the Help tab reflows to
-    the pane's actual width.
-
 * DONE Filetree image viewer mode :ARCHIVE:
   - `:e`/`mep.open` on a directory now opens the file tree in the current
     pane (Editor::LoadFile's new directory branch -> mep.set_on_directory_open
@@ -404,52 +402,3 @@ The filetree button in the tabbar doesnt toggle the filetree (it just opens it).
 * DONE add simple todo :ARCHIVE:
   Added the word "flummoxed" to the top of README.org.
 * DONE Add language specific, configurable run button to active pane bar :ARCHIVE:
-
-* DONE language modes :ARCHIVE:
-  We've added 'ui modes' for languages before (I think just R so far). I'd like
-  <leader>rr to run the current document in language modes (and there to be a ui
-  mode with a terminal associated to it for running the code in). I'd like to
-  add other languages. Let's focus on C/C++ and python. For C/C++, I know I'd
-  like a compiler explorer like buffer sidebar and a hex exploration as well.
-  I'd also like a terminal that we can run the current file's executable in. For
-  python, I'd like object introspection sidebars (like R) and a terminal to run
-  the code in and ideally a figure sidebar for matplotlib/seaborn like figures
-  to show up in (e.g. that appear when running .show() methods). Can you
-  implement these?
-  - Two new language UI modes on the existing <leader>uu/<leader>rr
-    framework (kBuiltinLanguageUi), built on a new shared chunk
-    (kBuiltinLanguageUiCommon, src/main.cpp: layout builder, tabbed
-    sidebar opener, textbox renderer, figure gallery) that the Python and
-    C/C++ modes both use; the R mode is left as it was.
-  - Python (kBuiltinLanguageUiPython, .py): console = a python3 process
-    running a code.InteractiveConsole subclass that refreshes sidebar
-    files after every statement (the Python equivalent of R's
-    addTaskCallback). Objects/Data/Modules/History/Help tabs top-right,
-    Plot bottom-right. matplotlib/seaborn figures capture through a tiny
-    custom backend module (MPLBACKEND=module://mep_mplbackend, written
-    into the session dir): plt.show()/fig.show() save-and-close, and any
-    open figure that is `stale` after a statement is (re)saved in place,
-    so plots appear without show() too. help(x) writes pydoc text to the
-    Help tab, mep_view(x) to Data (pandas head().to_string() or pprint),
-    <leader>rr execs the file into the console namespace (mep_run).
-  - C/C++ (kBuiltinLanguageUiC, .c/.cpp/.cc/.cxx): shell terminal below
-    the source; Assembly + Build tabbed top-right, Hex bottom-right.
-    Assembly is a Compiler-Explorer-style view (`compiler -S -g`, through
-    c++filt when present, regenerated on every save and every run):
-    directives/comments/unreferenced labels/debug sections filtered,
-    .loc-driven source-line mapping, rows colored by source line, the
-    cursor's line highlighted live, click a row to jump to its line.
-    Build shows the compiler's diagnostics (file:line:col rows jump
-    there). Hex is a paged dump of the built executable with the ELF
-    header decoded and a clickable section table (n/p/g/r keys).
-    <leader>rr builds with the Run button's per-project compiler/flags
-    (mep.run_button_config_for, newly exported from kBuiltinRunButton)
-    into the session dir, then reloads Hex, regenerates Assembly and
-    runs the binary in the terminal.
-  - Verified live against a spawned native instance (agent-socket RPC +
-    screenshots): both layouts, Run into the live console, Objects/Help
-    updates, two matplotlib figures (with and without show()), C build +
-    run output in the terminal, Hex/ELF decode, cursor-line asm
-    highlighting, and a compile error landing in the Build tab.
-  - examples/python_example.py now exercises the Python mode (plots,
-    help, mep_view); examples/c_example.c already works for the C mode.

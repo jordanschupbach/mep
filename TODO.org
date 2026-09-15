@@ -26,12 +26,6 @@
   In R, I'd like 'gh' when in ui mode and over a function name to send that
   function the the help (and appear in the help sidebar). Can you implement this?
 
-* TODO add jupyter notebook mode
-  I'd like the ability to edit jupiter notebook files, much like the interface
-  of standard web-based jupyter interface. CAn you add these capabilities? Add a
-  jupyter notebook file in the in the examples folder to test things out
-
-
 * TODO fix buffer sidebar
   The buffer sidebar has some behavior, where, if I click on a buffer, it opens
   that buffer within the current pane (which is the buffer sidebar). Instead,
@@ -45,6 +39,54 @@
   I'd like in the status tab in the git sidebar, for pressing P to push.
   Can you implement this?
 * TODO fix exiting sidebar bug (specifically when exiting todo editor)
+* DONE add jupyter notebook mode :ARCHIVE:
+  I'd like the ability to edit jupiter notebook files, much like the interface
+  of standard web-based jupyter interface. CAn you add these capabilities? Add a
+  jupyter notebook file in the in the examples folder to test things out
+  - Opening a `.ipynb` (Editor::LoadFile -> OpenNotebookInPlace) shows it as
+    an ordinary editable text buffer in the "percent" cell format (`# %%` /
+    `# %% [markdown]` markers, raw markdown bodies -- src/notebook_doc.h's
+    top comment), so every vim motion/edit/undo/search works on cell
+    sources; outputs, execution counts, ids and metadata live in a
+    NotebookSession side model (Editor::notebooks_) re-attached to the text
+    by cell index/source (SyncNotebookFromLines) and written back as
+    nbformat 4 JSON on `:w` (SaveBuffer's notebook arm, Jupyter's own
+    1-space indent so diffs stay clean). Cell chrome (header band with
+    "In [n]:"/Markdown label + a clickable Run chip, Accent left bar on the
+    cursor's cell) and each code cell's outputs (stdout/stderr/result text,
+    red tracebacks, inline PNG figures) are drawn by DrawPane's notebook
+    branch as extra visual slots under the cell's last row --
+    Editor::NotebookTrailingSlots, the org-inline-image "one row, N slots"
+    mechanism, kept in agreement across the draw loop, its RowSlot cursor
+    lookup and UpdateScrollForPane.
+  - Execution: one persistent `python3` process per notebook (JobManager,
+    stdin/stdout JSON lines -- NotebookKernelScript() in notebook_doc.cpp:
+    shared namespace, IPython-style last-expression display with `;`
+    suppression, tracebacks trimmed to the cell's frames, streaming stdout,
+    KeyboardInterrupt via a new JobManager::Interrupt/SIGINT, and an inline
+    matplotlib backend that ships every open figure as PNG at the end of a
+    cell or on plt.show()). No jupyter_client/ZMQ dependency; the
+    interpreter is `mep.opt.notebook_python` (default python3; flake.nix's
+    devShell python now carries matplotlib for the figure cell).
+  - Keys: Enter / Ctrl+Enter run the cell under the cursor, Shift+Enter
+    runs and moves to the next cell (creating one at the end), mod1+Enter
+    runs and inserts below -- in Normal and Insert mode, C++-side since
+    mep.map can't bind Enter. `<leader>j` group (kBuiltinNotebook): jr run,
+    jn run+next, jo run+insert, jA run all, ja/jb insert above/below, jd
+    delete, jm/jy to markdown/code, jk/jj move up/down, jc/jC clear cell/all
+    outputs, ji interrupt, j0 restart kernel; `]j`/`[j` step cells; `:Notebook*`
+    commands for all of them plus `:NotebookNew [path]`; `<leader>rr` runs
+    all cells. Cell bodies are syntax-highlighted per cell (python /
+    markdown) by kBuiltinSyntax's notebook branch.
+  - Lua surface for scripts/agents: mep.notebook_is_buffer/run_cell/run_all/
+    run_and_advance/run_and_insert/interrupt/restart_kernel/clear_outputs/
+    insert_cell/delete_cell/set_cell_type/move_cell/cell_index/cell_count/
+    goto_cell/set_python/status/cell_outputs.
+  - Tests: src/notebook_doc_test.cpp (mep-notebook-doc-test, in `just test`)
+    covers parse/serialize round trips, the text view, cell re-matching after
+    inserts/deletes, output display/slot math and the wire protocol.
+    examples/notebook_example.ipynb (generated through the real kernel, with
+    a stored matplotlib figure and a traceback) is the fixture to try it on.
 * DONE Filetree image viewer mode :ARCHIVE:
   - `:e`/`mep.open` on a directory now opens the file tree in the current
     pane (Editor::LoadFile's new directory branch -> mep.set_on_directory_open

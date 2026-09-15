@@ -4005,10 +4005,17 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) 
          * @return The number of visual slots the row contributes.
          */
         auto row_slots = [&](int r) {
-            if (org_images_visible_ && buf.org_image_rows.count(r)) return kOrgInlineImageSlots;
+            // A notebook code cell's output block hangs under its last
+            // row (Editor::NotebookTrailingSlots, rebuilt each frame by
+            // NotebookRefresh before this runs) -- those slots belong to
+            // that row for scroll purposes, so running a cell scrolls its
+            // output into view the same way stepping onto an org image
+            // brings the whole image up.
+            int trailing = NotebookTrailingSlots(pane.buffer_id, r);
+            if (org_images_visible_ && buf.org_image_rows.count(r)) return kOrgInlineImageSlots + trailing;
             if (org_latex_visible_) {
                 auto it = buf.org_latex_rows.find(r);
-                if (it != buf.org_latex_rows.end()) return it->second.slots;
+                if (it != buf.org_latex_rows.end()) return it->second.slots + trailing;
             }
             // Soft-wrap (:set wrap, wrap_cols>0): a row's *raw* text length
             // determines how many visual slots it claims, same "one row ->
@@ -4027,10 +4034,10 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) 
                 }
                 if (!fold_start) {
                     int len = static_cast<int>(buf.lines[static_cast<size_t>(r)].size());
-                    return std::max(1, (len + wrap_cols - 1) / wrap_cols);
+                    return std::max(1, (len + wrap_cols - 1) / wrap_cols) + trailing;
                 }
             }
-            return 1;
+            return 1 + trailing;
         };
         int slots = row_slots(pane.cursor.row);  // the cursor's own row is always the first slot(s)
         int row = pane.cursor.row;
@@ -11465,6 +11472,7 @@ void Editor::BufferDeleteById(int target, bool force) {
     }
     if (float_node_ && float_node_->pane.buffer_id == target) CloseFloatPane();
     buf.deleted = true;
+    NotebookCloseSession(target);
 
     // Computed lazily -- only if some pane actually ends up with nothing
     // left in its own buffer_tabs once `target` is removed from it.
@@ -13420,6 +13428,16 @@ bool Editor::HandleMod1Shortcuts() {
     // Visual apart itself via mep.visual_selection() rather than needing
     // two separate registrations here.
     if (gfx::IsKeyPressed(gfx::Key::Enter) || gfx::IsKeyPressed(gfx::Key::KpEnter)) {
+        // A notebook buffer claims mod1+Enter for "run cell and insert a
+        // new one below" (Jupyter's Alt+Enter) ahead of the default
+        // terminal-send binding, which has no terminal to target here.
+        if (IsNotebookBuffer(CurPane().buffer_id) && (mode_ == Mode::Normal || mode_ == Mode::Insert)) {
+            if (mode_ == Mode::Insert) ProcessInsertKey(kReplayEscape);
+            NotebookRunCellAtCursor(/*advance=*/false, /*insert_below=*/true);
+            while (gfx::GetCharPressed() > 0) {
+            }
+            return true;
+        }
         std::string k = extra_shift ? "S-CR" : "CR";
         auto it = mod1_mappings_.find(k);
         if (it != mod1_mappings_.end() && lua_) {
@@ -13699,6 +13717,17 @@ void Editor::HandleNormalInput() {
     if ((gfx::IsKeyPressed(gfx::Key::Enter) || gfx::IsKeyPressed(gfx::Key::KpEnter)) && enter_hook_ref_ != 0 &&
         CurPane().buffer_id == enter_hook_buffer_id_ && lua_) {
         lua_->CallRef(enter_hook_ref_);
+        return;
+    }
+    // Notebook buffer: Enter/Ctrl+Enter run the cell under the cursor in
+    // place, Shift+Enter runs it and moves to the next cell (creating one
+    // at the end) -- Jupyter's own bindings, on the one Normal-mode key
+    // this editor never gave a default motion (see the hook just above).
+    // mod1+Enter (run and insert below) is HandleMod1Shortcuts' business.
+    if ((gfx::IsKeyPressed(gfx::Key::Enter) || gfx::IsKeyPressed(gfx::Key::KpEnter)) &&
+        IsNotebookBuffer(CurPane().buffer_id)) {
+        bool shift_held = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
+        NotebookRunCellAtCursor(/*advance=*/shift_held, /*insert_below=*/false);
         return;
     }
 
@@ -15112,6 +15141,14 @@ void Editor::HandleInsertInput() {
     }
 
     CursorPos &cursor = CurPane().cursor;
+    // Notebook buffer: Shift+Enter runs the cell and steps to the next one
+    // in Normal mode (Jupyter's edit-mode Shift+Enter), Ctrl+Enter runs it
+    // in place and keeps typing. Plain Enter stays a newline.
+    if (enter && (shift_down || ctrl) && IsNotebookBuffer(CurPane().buffer_id)) {
+        if (shift_down) ProcessInsertKey(kReplayEscape);
+        NotebookRunCellAtCursor(/*advance=*/shift_down, /*insert_below=*/false);
+        return;
+    }
     if (enter || gfx::IsKeyPressedRepeat(gfx::Key::Enter)) ProcessInsertKey(kReplayEnter);
     if (backspace || gfx::IsKeyPressedRepeat(gfx::Key::Backspace)) ProcessInsertKey(kReplayBackspace);
     if (del || gfx::IsKeyPressedRepeat(gfx::Key::Delete)) ProcessInsertKey(kReplayDelete);
@@ -23187,6 +23224,21 @@ bool Editor::SaveBuffer(Buffer &buf, const std::string &path) {
         return true;
 #endif
     }
+    if (IsNotebookBuffer(buffer_id)) {
+        // The buffer's lines are cell sources in percent format, not the
+        // file's bytes -- SaveNotebook re-serializes text + stored outputs
+        // as nbformat JSON (see notebook_doc.h).
+        std::string error;
+        if (!SaveNotebook(buffer_id, io_path, &error)) {
+            status_message_ = "E-notebook: " + error;
+            return false;
+        }
+        buf.filename = path;
+        buf.modified = false;
+        save_epoch_++;
+        status_message_ = "\"" + path + "\" " + std::to_string(notebooks_[buffer_id].doc.cells.size()) + " cells written";
+        return true;
+    }
 #if defined(__EMSCRIPTEN__)
     std::string content;
     for (const auto &l : buf.lines) {
@@ -23586,6 +23638,33 @@ void Editor::LoadFile(const std::string &path, bool force_text) {
         // through to the ordinary plain-text open below (FindOrCreateBuffer
         // reads it fresh, same as any other file).
     }
+    if (IsIpynbPath(path) && !force_text) {
+        // Same shape as the sheet branch below; the notebook's JSON text
+        // is handed over whole and converted to percent-format cell text
+        // by OpenNotebookInPlace. `:e` (force_text) shows the raw JSON.
+#if defined(__EMSCRIPTEN__)
+        char *result = mep_js_read_file_binary(path.c_str());
+        std::string res(result);
+        std::free(result);
+        if (res.rfind("OK\n", 0) == 0) {
+            std::vector<unsigned char> bytes = Base64Decode(res.substr(3));
+            OpenNotebookInPlace(path, std::string(bytes.begin(), bytes.end()));
+        } else {
+            status_message_ = "E212: Can't open \"" + path + "\"" +
+                               (res.rfind("ERR\n", 0) == 0 ? " (" + res.substr(4) + ")" : "");
+        }
+#else
+        std::ifstream in(path, std::ios::binary);
+        if (!in) {
+            status_message_ = "E484: Can't open file \"" + path + "\"";
+        } else {
+            std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            OpenNotebookInPlace(path, text);
+        }
+#endif
+        SyncModeToActivePaneBuffer();
+        return;
+    }
     if (IsCsvPath(path) || IsXlsxPath(path) || IsOdsPath(path)) {
 #if defined(__EMSCRIPTEN__)
         char *result = mep_js_read_file_binary(path.c_str());
@@ -23762,4 +23841,614 @@ bool Editor::JumpToParticipant(const std::string &id) {
     }
     status_message_ = "No such participant";
     return false;
+}
+
+// --- Jupyter notebook panes (notebook_doc.h) ------------------------------
+//
+// A notebook buffer's lines ARE its cell sources (percent format); this
+// section owns everything the text can't carry -- outputs, execution
+// counts, the kernel process and its queue -- and the cell-structure
+// edits (insert/delete/move/retype) that are just undoable line splices
+// on Buf(), same shape as KanbanNewCard/KanbanMoveCardBefore above.
+// Rendering (cell headers, left bars, output blocks) is DrawPane's, in
+// main.cpp.
+
+bool Editor::IsNotebookBuffer(int buffer_id) const { return notebooks_.find(buffer_id) != notebooks_.end(); }
+
+const NotebookSession *Editor::GetNotebook(int buffer_id) const {
+    auto it = notebooks_.find(buffer_id);
+    return it == notebooks_.end() ? nullptr : &it->second;
+}
+
+NotebookSession *Editor::GetNotebookMutable(int buffer_id) {
+    auto it = notebooks_.find(buffer_id);
+    return it == notebooks_.end() ? nullptr : &it->second;
+}
+
+// Full re-attach: spans from the text, then every cell's source/type
+// re-read (SyncNotebookFromLines) so the model is exact -- what run/save
+// need. NotebookRefresh's per-frame path only does the cheap part unless
+// the cell count changed.
+void Editor::NotebookSyncFromText(NotebookSession &sess) {
+    if (sess.buffer_id < 0 || sess.buffer_id >= static_cast<int>(buffers_.size())) return;
+    const Buffer &buf = buffers_[static_cast<size_t>(sess.buffer_id)];
+    sess.spans = ScanNotebookCells(buf.lines);
+    SyncNotebookFromLines(&sess.doc, buf.lines, sess.spans, &sess.next_uid);
+    NotebookRebuildSlotCache(sess);
+}
+
+void Editor::NotebookRebuildSlotCache(NotebookSession &sess) {
+    sess.trailing_slots.clear();
+    if (sess.buffer_id < 0 || sess.buffer_id >= static_cast<int>(buffers_.size())) return;
+    const Buffer &buf = buffers_[static_cast<size_t>(sess.buffer_id)];
+    size_t n = std::min(sess.spans.size(), sess.doc.cells.size());
+    for (size_t i = 0; i < n; i++) {
+        int slots = NotebookCellOutputSlots(sess.doc.cells[i], notebook_char_aspect_);
+        if (slots <= 0) continue;
+        const NotebookCellSpan &span = sess.spans[i];
+        // The block hangs under the cell's last non-blank body row, so the
+        // blank separator line NotebookToLines writes between cells stays
+        // *below* the outputs rather than wedged between code and output.
+        int row = span.end_row - 1;
+        while (row >= span.first_row &&
+               buf.lines[static_cast<size_t>(row)].find_first_not_of(" \t\r") == std::string::npos) {
+            row--;
+        }
+        if (row < span.first_row) row = span.marker_row >= 0 ? span.marker_row : span.first_row;
+        if (row < 0 || row >= buf.LineCount()) continue;
+        sess.trailing_slots[row] += slots;
+    }
+}
+
+const NotebookSession *Editor::NotebookRefresh(int buffer_id) {
+    NotebookSession *sess = GetNotebookMutable(buffer_id);
+    if (!sess) return nullptr;
+    const Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
+    sess->spans = ScanNotebookCells(buf.lines);
+    if (sess->spans.size() != sess->doc.cells.size()) {
+        SyncNotebookFromLines(&sess->doc, buf.lines, sess->spans, &sess->next_uid);
+    } else {
+        // Same cell count: sources are only re-read on run/save (joining
+        // every body each frame is needless), but a marker edit that
+        // changed a cell's *type* has to land now -- it decides whether
+        // the cell has an output block at all, and a cell leaving Code
+        // drops its outputs exactly as SyncNotebookFromLines would.
+        for (size_t i = 0; i < sess->spans.size(); i++) {
+            NotebookCell &cell = sess->doc.cells[i];
+            if (cell.type == sess->spans[i].type) continue;
+            cell.type = sess->spans[i].type;
+            if (cell.type != NotebookCellType::Code) {
+                cell.outputs.clear();
+                cell.execution_count = -1;
+            }
+        }
+    }
+    NotebookRebuildSlotCache(*sess);
+    return sess;
+}
+
+int Editor::NotebookTrailingSlots(int buffer_id, int row) const {
+    auto it = notebooks_.find(buffer_id);
+    if (it == notebooks_.end()) return 0;
+    auto slot_it = it->second.trailing_slots.find(row);
+    return slot_it == it->second.trailing_slots.end() ? 0 : slot_it->second;
+}
+
+void Editor::OpenNotebookInPlace(const std::string &path, const std::string &json_text) {
+    int buffer_id = -1;
+    for (size_t i = 0; i < buffers_.size(); i++) {
+        if (!BufferInActiveWorkspace(static_cast<int>(i))) continue;
+        if (!buffers_[i].filename.empty() && buffers_[i].filename == path && notebooks_.count(static_cast<int>(i))) {
+            buffer_id = static_cast<int>(i);
+            break;
+        }
+    }
+    if (buffer_id < 0) {
+        NotebookDoc doc;
+        std::string error;
+        if (!ParseNotebook(json_text, &doc, &error)) {
+            // Not a notebook we can read: show the raw JSON as text so the
+            // user can at least see (and fix) it, and say why.
+            bool existed = false;
+            int id = FindOrCreateBuffer(path, &existed);
+            if (id < 0) return;
+            CurPane().buffer_id = id;
+            CurPane().cursor = {0, 0};
+            CurPane().scroll_row = 0;
+            status_message_ = "E-\"" + path + "\" opened as text: " + error;
+            return;
+        }
+        buffer_id = CreateEmptyBuffer();
+        Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
+        buf.filename = path;
+        buf.lines = NotebookToLines(doc);
+        buf.modified = false;
+        NotebookSession sess;
+        sess.buffer_id = buffer_id;
+        sess.doc = std::move(doc);
+        notebooks_[buffer_id] = std::move(sess);
+        NotebookSyncFromText(notebooks_[buffer_id]);
+        // Same reasoning as ConvertHtmlBufferToText's bump: the polling
+        // mep.on_buffer_changed hooks (syntax highlighting) should see
+        // this buffer's fresh content without waiting for an edit.
+        change_epoch_++;
+    }
+    CurPane().buffer_id = buffer_id;
+    CurPane().cursor = {0, 0};
+    CurPane().scroll_row = 0;
+    pending_g_ = false;
+    const NotebookSession &sess = notebooks_[buffer_id];
+    status_message_ = "\"" + path + "\" " + std::to_string(sess.doc.cells.size()) + " cells loaded";
+}
+
+bool Editor::SaveNotebook(int buffer_id, const std::string &io_path, std::string *error) {
+    NotebookSession *sess = GetNotebookMutable(buffer_id);
+    if (!sess) {
+        if (error) *error = "not a notebook buffer";
+        return false;
+    }
+    NotebookSyncFromText(*sess);
+    std::string text = SerializeNotebook(sess->doc);
+#if defined(__EMSCRIPTEN__)
+    char *result = mep_js_write_file(io_path.c_str(), text.c_str());
+    std::string res(result);
+    std::free(result);
+    if (res != "OK") {
+        if (error) *error = "can't open file for writing" + (res.rfind("ERR\n", 0) == 0 ? " (" + res.substr(4) + ")" : "");
+        return false;
+    }
+#else
+    std::ofstream out(io_path, std::ios::binary);
+    if (!out) {
+        if (error) *error = "can't open file for writing";
+        return false;
+    }
+    out << text;
+#endif
+    return true;
+}
+
+int Editor::NotebookCellAtCursor() {
+    const NotebookSession *sess = NotebookRefresh(CurPane().buffer_id);
+    if (!sess) return -1;
+    return NotebookSpanAtRow(sess->spans, CurPane().cursor.row);
+}
+
+// --- Kernel -----------------------------------------------------------------
+
+void Editor::NotebookEnsureKernel(NotebookSession &sess) {
+    if (sess.kernel_job != 0 && JobManager::Instance().IsRunning(sess.kernel_job)) return;
+    sess.kernel_job = 0;
+    sess.kernel_ready = false;
+    sess.running_uid = 0;
+    sess.running_request_id = 0;
+    sess.last_error.clear();
+    const int generation = ++sess.spawn_generation;
+    const int buffer_id = sess.buffer_id;
+    // The kernel's cwd is the notebook's own directory (relative paths in
+    // cells resolve the way they do under `jupyter notebook`), falling
+    // back to the workspace root for an unsaved one.
+    std::string cwd;
+    if (buffer_id >= 0 && buffer_id < static_cast<int>(buffers_.size())) {
+        const Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
+        if (!buf.filename.empty()) {
+            std::string full = ResolveBufferPath(buf, buf.filename);
+            size_t slash = full.find_last_of('/');
+            if (slash != std::string::npos && slash > 0) cwd = full.substr(0, slash);
+        }
+    }
+    if (cwd.empty()) cwd = ActiveRoot();
+    std::vector<std::string> argv = {notebook_python_, "-u", "-c", NotebookKernelScript()};
+    JobManager::Callbacks cb;
+    cb.on_stdout = [this, buffer_id, generation](const std::string &line) {
+        NotebookHandleKernelLine(buffer_id, generation, line);
+    };
+    cb.on_stderr = [this, buffer_id, generation](const std::string &line) {
+        // Kernel-level stderr (user code's stderr travels as protocol
+        // messages): an interpreter that failed to start, a hard crash.
+        NotebookSession *s = GetNotebookMutable(buffer_id);
+        if (s && s->spawn_generation == generation && !line.empty()) s->last_error = line;
+    };
+    cb.on_exit = [this, buffer_id, generation](int code) { NotebookKernelExited(buffer_id, generation, code); };
+    std::vector<std::pair<std::string, std::string>> env = {{"PYTHONUNBUFFERED", "1"}};
+    sess.kernel_job = JobManager::Instance().Spawn(argv, cwd, std::move(cb), /*use_pty=*/false, env);
+    sess.status = sess.kernel_job != 0 ? "starting" : "dead";
+    if (sess.kernel_job == 0) sess.last_error = "could not start " + notebook_python_;
+}
+
+void Editor::NotebookPumpQueue(NotebookSession &sess) {
+    while (sess.kernel_ready && sess.running_uid == 0 && !sess.run_queue.empty()) {
+        int uid = sess.run_queue.front();
+        sess.run_queue.pop_front();
+        NotebookCell *cell = nullptr;
+        for (NotebookCell &c : sess.doc.cells) {
+            if (c.uid == uid) {
+                cell = &c;
+                break;
+            }
+        }
+        if (!cell) continue;  // deleted while queued
+        cell->run_state = NotebookCell::RunState::Running;
+        sess.running_uid = uid;
+        sess.running_request_id = sess.next_request_id++;
+        sess.status = "busy";
+        if (!JobManager::Instance().WriteStdin(sess.kernel_job, NotebookKernelExecuteRequest(sess.running_request_id, cell->source))) {
+            NotebookFailRunning(sess, "could not send the cell to the kernel");
+            sess.kernel_ready = false;
+            sess.status = "dead";
+        }
+    }
+}
+
+// The in-flight cell (if any) and everything queued behind it get an
+// error output naming `reason` and go back to idle -- for a kernel that
+// died, or whose stdin closed under us.
+void Editor::NotebookFailRunning(NotebookSession &sess, const std::string &reason) {
+    auto fail = [&](int uid) {
+        for (NotebookCell &c : sess.doc.cells) {
+            if (c.uid != uid) continue;
+            NotebookOutput err;
+            err.kind = NotebookOutput::Kind::Error;
+            err.ename = "KernelError";
+            err.evalue = reason;
+            err.text = "KernelError: " + reason;
+            NotebookAppendOutput(&c, std::move(err));
+            c.run_state = NotebookCell::RunState::Idle;
+        }
+    };
+    if (sess.running_uid != 0) fail(sess.running_uid);
+    sess.running_uid = 0;
+    sess.running_request_id = 0;
+    for (int uid : sess.run_queue) {
+        for (NotebookCell &c : sess.doc.cells) {
+            if (c.uid == uid) c.run_state = NotebookCell::RunState::Idle;
+        }
+    }
+    sess.run_queue.clear();
+}
+
+void Editor::NotebookHandleKernelLine(int buffer_id, int generation, const std::string &line) {
+    NotebookSession *sess = GetNotebookMutable(buffer_id);
+    if (!sess || sess->spawn_generation != generation) return;
+    NotebookKernelMessage m;
+    NotebookCell *cell = nullptr;
+    for (NotebookCell &c : sess->doc.cells) {
+        if (sess->running_uid != 0 && c.uid == sess->running_uid) {
+            cell = &c;
+            break;
+        }
+    }
+    if (!ParseNotebookKernelMessage(line, &m)) {
+        // Not protocol -- something wrote straight to fd 1 (a C extension's
+        // printf). Show it as stdout of the running cell rather than lose it.
+        if (cell) {
+            NotebookOutput out;
+            out.kind = NotebookOutput::Kind::Stream;
+            out.name = "stdout";
+            out.text = line + "\n";
+            NotebookAppendOutput(cell, std::move(out));
+        }
+        return;
+    }
+    if (m.type == "ready") {
+        sess->kernel_ready = true;
+        sess->status = "idle";
+        sess->python_version = m.python;
+        NotebookPumpQueue(*sess);
+        return;
+    }
+    if (!cell || m.id != sess->running_request_id) return;  // stale reply from a cancelled request
+    if (m.type == "stream") {
+        NotebookOutput out;
+        out.kind = NotebookOutput::Kind::Stream;
+        out.name = m.name.empty() ? "stdout" : m.name;
+        out.text = m.text;
+        NotebookAppendOutput(cell, std::move(out));
+    } else if (m.type == "execute_result" || m.type == "display_data") {
+        NotebookOutput out;
+        out.kind = m.type == "execute_result" ? NotebookOutput::Kind::ExecuteResult : NotebookOutput::Kind::DisplayData;
+        out.text = m.text;
+        if (!m.png.empty()) {
+            out.image_png = m.png;
+            out.image_key = NotebookContentKey(m.png);
+            PngDimensionsFromBase64(m.png, &out.image_width, &out.image_height);
+        }
+        NotebookAppendOutput(cell, std::move(out));
+    } else if (m.type == "error") {
+        NotebookOutput out;
+        out.kind = NotebookOutput::Kind::Error;
+        out.ename = m.ename;
+        out.evalue = m.evalue;
+        for (size_t i = 0; i < m.traceback.size(); i++) {
+            if (i > 0) out.text += '\n';
+            out.text += m.traceback[i];
+        }
+        if (out.text.empty()) out.text = m.ename + ": " + m.evalue;
+        NotebookAppendOutput(cell, std::move(out));
+    } else if (m.type == "done") {
+        // The kernel's own counter is the notebook's In[N] -- one shared
+        // sequence across cells, like Jupyter.
+        cell->execution_count = m.execution_count;
+        cell->run_state = NotebookCell::RunState::Idle;
+        // Jupyter drops an execute_result's own count in favor of the
+        // cell's; keep them in step so a saved notebook reads right.
+        for (NotebookOutput &o : cell->outputs) {
+            if (o.kind == NotebookOutput::Kind::ExecuteResult && o.raw.is_null()) o.execution_count = m.execution_count;
+        }
+        sess->running_uid = 0;
+        sess->running_request_id = 0;
+        sess->status = "idle";
+        NotebookPumpQueue(*sess);
+    }
+}
+
+void Editor::NotebookKernelExited(int buffer_id, int generation, int code) {
+    NotebookSession *sess = GetNotebookMutable(buffer_id);
+    if (!sess || sess->spawn_generation != generation) return;  // a restarted kernel's old process
+    std::string reason = "kernel exited";
+    if (code == -1) reason = sess->last_error.empty() ? "kernel could not be started (" + notebook_python_ + ")" : sess->last_error;
+    else if (code != 0) reason += " with status " + std::to_string(code) + (sess->last_error.empty() ? "" : ": " + sess->last_error);
+    NotebookFailRunning(*sess, reason);
+    sess->kernel_job = 0;
+    sess->kernel_ready = false;
+    sess->status = "dead";
+    if (code != 0) status_message_ = "Notebook: " + reason;
+}
+
+bool Editor::NotebookRunCell(int buffer_id, int cell_index) {
+    if (cell_index < 0) {
+        if (buffer_id != CurPane().buffer_id) return false;
+        cell_index = NotebookCellAtCursor();
+        if (cell_index < 0) return false;
+    }
+    NotebookSession *sess = GetNotebookMutable(buffer_id);
+    if (!sess) return false;
+    NotebookSyncFromText(*sess);
+    if (cell_index >= static_cast<int>(sess->doc.cells.size())) return false;
+    NotebookCell &cell = sess->doc.cells[static_cast<size_t>(cell_index)];
+    if (cell.type != NotebookCellType::Code) return false;
+    if (cell.run_state != NotebookCell::RunState::Idle) return true;
+    cell.outputs.clear();
+    cell.execution_count = -1;
+    cell.run_state = NotebookCell::RunState::Queued;
+    sess->run_queue.push_back(cell.uid);
+    NotebookEnsureKernel(*sess);
+    NotebookPumpQueue(*sess);
+    NotebookRebuildSlotCache(*sess);
+    return true;
+}
+
+void Editor::NotebookRunAll(int buffer_id) {
+    NotebookSession *sess = GetNotebookMutable(buffer_id);
+    if (!sess) return;
+    NotebookSyncFromText(*sess);
+    int n = static_cast<int>(sess->doc.cells.size());
+    for (int i = 0; i < n; i++) NotebookRunCell(buffer_id, i);
+}
+
+void Editor::NotebookRunCellAtCursor(bool advance, bool insert_below) {
+    int buffer_id = CurPane().buffer_id;
+    int idx = NotebookCellAtCursor();
+    if (idx < 0) return;
+    NotebookRunCell(buffer_id, idx);
+    if (insert_below) {
+        NotebookInsertCell(idx, /*below=*/true, NotebookCellType::Code);
+        return;
+    }
+    if (!advance) return;
+    const NotebookSession *sess = NotebookRefresh(buffer_id);
+    if (!sess) return;
+    if (idx + 1 < static_cast<int>(sess->spans.size())) {
+        NotebookGotoCell(idx + 1);
+    } else {
+        NotebookInsertCell(idx, /*below=*/true, NotebookCellType::Code);
+    }
+}
+
+void Editor::NotebookInterrupt(int buffer_id) {
+    NotebookSession *sess = GetNotebookMutable(buffer_id);
+    if (!sess) return;
+    for (int uid : sess->run_queue) {
+        for (NotebookCell &c : sess->doc.cells) {
+            if (c.uid == uid) c.run_state = NotebookCell::RunState::Idle;
+        }
+    }
+    sess->run_queue.clear();
+    if (sess->kernel_job != 0 && sess->running_uid != 0) {
+        JobManager::Instance().Interrupt(sess->kernel_job);
+        status_message_ = "Notebook: interrupt sent to kernel";
+    } else {
+        status_message_ = "Notebook: kernel is idle";
+    }
+}
+
+void Editor::NotebookRestartKernel(int buffer_id) {
+    NotebookSession *sess = GetNotebookMutable(buffer_id);
+    if (!sess) return;
+    NotebookFailRunning(*sess, "kernel restarted");
+    if (sess->kernel_job != 0) {
+        JobManager::Instance().WriteStdin(sess->kernel_job, NotebookKernelShutdownRequest());
+        JobManager::Instance().Kill(sess->kernel_job);
+        sess->kernel_job = 0;
+    }
+    sess->kernel_ready = false;
+    sess->status = "not started";
+    NotebookEnsureKernel(*sess);
+    status_message_ = "Notebook: kernel restarted";
+}
+
+void Editor::NotebookClearOutputs(int buffer_id, int cell_index) {
+    NotebookSession *sess = GetNotebookMutable(buffer_id);
+    if (!sess) return;
+    NotebookSyncFromText(*sess);
+    auto clear = [](NotebookCell &c) {
+        c.outputs.clear();
+        c.execution_count = -1;
+    };
+    if (cell_index < 0) {
+        for (NotebookCell &c : sess->doc.cells) clear(c);
+    } else if (cell_index < static_cast<int>(sess->doc.cells.size())) {
+        clear(sess->doc.cells[static_cast<size_t>(cell_index)]);
+    }
+    NotebookRebuildSlotCache(*sess);
+    // Cleared outputs are a document change the file doesn't have yet.
+    buffers_[static_cast<size_t>(buffer_id)].modified = true;
+}
+
+void Editor::NotebookCloseSession(int buffer_id) {
+    auto it = notebooks_.find(buffer_id);
+    if (it == notebooks_.end()) return;
+    if (it->second.kernel_job != 0) {
+        JobManager::Instance().WriteStdin(it->second.kernel_job, NotebookKernelShutdownRequest());
+        JobManager::Instance().Kill(it->second.kernel_job);
+    }
+    notebooks_.erase(it);
+}
+
+// --- Cell structure edits (all on the active pane's buffer) -----------------
+
+namespace {
+bool NotebookLineBlank(const std::string &l) { return l.find_first_not_of(" \t\r") == std::string::npos; }
+}  // namespace
+
+int Editor::NotebookInsertCell(int cell_index, bool below, NotebookCellType type) {
+    int buffer_id = CurPane().buffer_id;
+    const NotebookSession *sess = NotebookRefresh(buffer_id);
+    if (!sess) return -1;
+    Buffer &buf = Buf();
+    const std::string marker = NotebookCellMarker(type);
+    int at = 0;
+    std::vector<std::string> lines;
+    int new_index = 0;
+    if (sess->spans.empty()) {
+        at = buf.LineCount();
+        bool tail_blank = at == 0 || NotebookLineBlank(buf.lines[static_cast<size_t>(at - 1)]);
+        if (!tail_blank) lines.emplace_back("");
+        lines.push_back(marker);
+        lines.emplace_back("");
+        new_index = 0;
+    } else {
+        if (cell_index < 0) cell_index = NotebookSpanAtRow(sess->spans, CurPane().cursor.row);
+        if (cell_index < 0) cell_index = 0;
+        cell_index = std::min(cell_index, static_cast<int>(sess->spans.size()) - 1);
+        const NotebookCellSpan &span = sess->spans[static_cast<size_t>(cell_index)];
+        if (below) {
+            at = span.end_row;
+            // Keep one blank separator between the previous body and the
+            // new marker, an empty body line for the cursor, and a blank
+            // separator before whatever follows (unless this is the end).
+            bool prev_blank = at > 0 && NotebookLineBlank(buf.lines[static_cast<size_t>(at - 1)]);
+            if (!prev_blank) lines.emplace_back("");
+            lines.push_back(marker);
+            lines.emplace_back("");
+            if (at < buf.LineCount()) lines.emplace_back("");
+            new_index = cell_index + 1;
+        } else {
+            at = span.marker_row >= 0 ? span.marker_row : span.first_row;
+            lines.push_back(marker);
+            lines.emplace_back("");
+            lines.emplace_back("");
+            new_index = cell_index;
+        }
+    }
+    ReplaceLinesForLua(at, at, lines);
+    // Cursor onto the new cell's empty body line.
+    int body_row = at + static_cast<int>(lines.size()) - 1;
+    for (int r = at; r < at + static_cast<int>(lines.size()); r++) {
+        if (buf.lines[static_cast<size_t>(r)] == marker) {
+            body_row = std::min(r + 1, buf.LineCount() - 1);
+            break;
+        }
+    }
+    CurPane().cursor = {body_row, 0};
+    NotebookRefresh(buffer_id);
+    return new_index;
+}
+
+void Editor::NotebookDeleteCell(int cell_index) {
+    int buffer_id = CurPane().buffer_id;
+    const NotebookSession *sess = NotebookRefresh(buffer_id);
+    if (!sess || sess->spans.empty()) return;
+    if (cell_index < 0) cell_index = NotebookSpanAtRow(sess->spans, CurPane().cursor.row);
+    if (cell_index < 0 || cell_index >= static_cast<int>(sess->spans.size())) return;
+    NotebookCellSpan span = sess->spans[static_cast<size_t>(cell_index)];
+    int start = span.marker_row >= 0 ? span.marker_row : span.first_row;
+    int end = span.end_row;
+    std::vector<std::string> replacement;
+    if (sess->spans.size() == 1) replacement = {NotebookCellMarker(NotebookCellType::Code), ""};
+    ReplaceLinesForLua(start, end, replacement);
+    CurPane().cursor = {std::min(start, std::max(0, Buf().LineCount() - 1)), 0};
+    // Land on the next cell's body if there is one (its marker now sits at `start`).
+    const NotebookSession *after = NotebookRefresh(buffer_id);
+    if (after) {
+        int idx = NotebookSpanAtRow(after->spans, CurPane().cursor.row);
+        if (idx >= 0) NotebookGotoCell(idx);
+    }
+}
+
+void Editor::NotebookSetCellType(int cell_index, NotebookCellType type) {
+    int buffer_id = CurPane().buffer_id;
+    const NotebookSession *sess = NotebookRefresh(buffer_id);
+    if (!sess || sess->spans.empty()) return;
+    if (cell_index < 0) cell_index = NotebookSpanAtRow(sess->spans, CurPane().cursor.row);
+    if (cell_index < 0 || cell_index >= static_cast<int>(sess->spans.size())) return;
+    NotebookCellSpan span = sess->spans[static_cast<size_t>(cell_index)];
+    if (span.type == type) return;
+    CursorPos keep = CurPane().cursor;
+    if (span.marker_row >= 0) {
+        ReplaceLinesForLua(span.marker_row, span.marker_row + 1, {NotebookCellMarker(type)});
+    } else {
+        ReplaceLinesForLua(span.first_row, span.first_row, {NotebookCellMarker(type)});
+        keep.row += 1;
+    }
+    CurPane().cursor = keep;
+    ClampCursor();
+    NotebookRefresh(buffer_id);
+}
+
+void Editor::NotebookMoveCell(int cell_index, int delta) {
+    int buffer_id = CurPane().buffer_id;
+    const NotebookSession *sess = NotebookRefresh(buffer_id);
+    if (!sess || sess->spans.size() < 2 || delta == 0) return;
+    if (cell_index < 0) cell_index = NotebookSpanAtRow(sess->spans, CurPane().cursor.row);
+    if (cell_index < 0 || cell_index >= static_cast<int>(sess->spans.size())) return;
+    int other = cell_index + (delta < 0 ? -1 : 1);
+    if (other < 0 || other >= static_cast<int>(sess->spans.size())) return;
+    int a_idx = std::min(cell_index, other), b_idx = std::max(cell_index, other);
+    NotebookCellSpan a = sess->spans[static_cast<size_t>(a_idx)];
+    NotebookCellSpan b = sess->spans[static_cast<size_t>(b_idx)];
+    // The implicit leading cell has no marker line to move with it; give it one first.
+    if (a.marker_row < 0) {
+        NotebookSetCellType(a_idx, a.type == NotebookCellType::Code ? NotebookCellType::Markdown : NotebookCellType::Code);
+        NotebookSetCellType(a_idx, a.type);
+        NotebookMoveCell(cell_index, delta);
+        return;
+    }
+    Buffer &buf = Buf();
+    int a_start = a.marker_row, a_end = a.end_row;
+    int b_start = b.marker_row, b_end = b.end_row;
+    std::vector<std::string> block_a(buf.lines.begin() + a_start, buf.lines.begin() + a_end);
+    std::vector<std::string> block_b(buf.lines.begin() + b_start, buf.lines.begin() + b_end);
+    // Each block keeps its own trailing separator; make sure the one that
+    // ends up first has one so the two markers never touch.
+    if (block_b.empty() || !NotebookLineBlank(block_b.back())) block_b.emplace_back("");
+    int cursor_offset = CurPane().cursor.row - (cell_index == a_idx ? a_start : b_start);
+    std::vector<std::string> merged = block_b;
+    merged.insert(merged.end(), block_a.begin(), block_a.end());
+    ReplaceLinesForLua(a_start, b_end, merged);
+    int new_start = (cell_index == a_idx) ? a_start + static_cast<int>(block_b.size()) : a_start;
+    CurPane().cursor = {std::max(0, new_start + std::max(0, cursor_offset)), CurPane().cursor.col};
+    ClampCursor();
+    NotebookRefresh(buffer_id);
+}
+
+bool Editor::NotebookGotoCell(int cell_index) {
+    int buffer_id = CurPane().buffer_id;
+    const NotebookSession *sess = NotebookRefresh(buffer_id);
+    if (!sess || sess->spans.empty()) return false;
+    cell_index = std::max(0, std::min(cell_index, static_cast<int>(sess->spans.size()) - 1));
+    const NotebookCellSpan &span = sess->spans[static_cast<size_t>(cell_index)];
+    int row = span.end_row > span.first_row ? span.first_row : (span.marker_row >= 0 ? span.marker_row : span.first_row);
+    CurPane().cursor = {std::max(0, std::min(row, Buf().LineCount() - 1)), 0};
+    return true;
 }

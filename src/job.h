@@ -145,6 +145,13 @@ public:
      */
     bool WriteStdin(const std::string &data);
     /**
+     * @brief Sends SIGINT to the child's process group (a REPL/kernel's
+     * "interrupt the current computation" signal -- unlike Kill's SIGTERM
+     * the child is expected to keep running afterwards). No-op if the job
+     * has finished or this isn't a POSIX build.
+     */
+    void Interrupt();
+    /**
      * @brief Closes the write end of the child's stdin, signalling EOF to it.
      * No-op for a PTY job, since stdin and stdout share one fd there.
      */
@@ -273,6 +280,11 @@ public:
      * @param id Id of the target job, as returned by Spawn().
      */
     void Kill(int id);
+    /**
+     * @brief Sends SIGINT to the given job's process group (see Job::Interrupt).
+     * @param id Id of the target job, as returned by Spawn().
+     */
+    void Interrupt(int id);
     /**
      * @brief Reports whether the given job is still registered and not yet finished.
      * @param id Id of the target job, as returned by Spawn().

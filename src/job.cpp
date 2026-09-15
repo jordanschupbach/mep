@@ -164,6 +164,12 @@ void Job::Kill() {
 #endif
 }
 
+void Job::Interrupt() {
+#if MEP_JOB_POSIX
+    if (pid_ > 0 && !finished_.load()) kill(-pid_, SIGINT);
+#endif
+}
+
 void Job::KillHard() {
 #if MEP_JOB_POSIX
     if (pid_ > 0 && !finished_.load()) {
@@ -364,6 +370,10 @@ void JobManager::CloseStdin(int id) {
 
 void JobManager::Kill(int id) {
     if (Job *j = Find(id)) j->Kill();
+}
+
+void JobManager::Interrupt(int id) {
+    if (Job *j = Find(id)) j->Interrupt();
 }
 
 bool JobManager::IsRunning(int id) const {

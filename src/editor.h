@@ -4,6 +4,7 @@
 #include "pdf_doc.h"
 #include "office_doc.h"
 #include "sheet_doc.h"
+#include "notebook_doc.h"
 #include "html_doc.h"
 #include "org_doc.h"
 #include "image_doc.h"
@@ -14,6 +15,7 @@
 
 #include <stddef.h>
 #include <ctime>
+#include <deque>
 #include <functional>
 #include <iterator>
 #include <map>
@@ -1827,6 +1829,44 @@ struct SheetSession {
     bool editing = false;
     std::string edit_buffer;
     int edit_cursor = 0;
+};
+
+// One open Jupyter notebook's side model, keyed by buffer id (Editor::
+// notebooks_). Unlike SheetSession this is NOT the document's storage:
+// the buffer's own lines are the cell sources in percent format (see
+// notebook_doc.h's top comment), so ordinary text editing/undo/search
+// all apply. This holds what the text can't -- outputs, execution
+// counts, ids, metadata (NotebookDoc) -- plus the kernel process and its
+// run queue. `spans`/`trailing_slots` are a per-frame cache rebuilt from
+// the text by Editor::NotebookRefresh (called from DrawPane before the
+// scroll-follow pass) so DrawPane's row loop, its cursor lookup and
+// Editor::UpdateScrollForPane all read one agreed "output block height
+// after row R" answer (NotebookTrailingSlots) -- the same three-site
+// invariant kOrgInlineImageSlots is under, just table-driven.
+struct NotebookSession {
+    int buffer_id = -1;
+    NotebookDoc doc;
+    std::vector<NotebookCellSpan> spans;
+    // Buffer row -> visual slots the code cell ending on that row claims
+    // below itself for its output block (absent = 0).
+    std::unordered_map<int, int> trailing_slots;
+    int next_uid = 1;
+
+    // Kernel process (JobManager id; 0 = none). `status` is the
+    // human-readable state drawn in cell headers: "not started",
+    // "starting", "idle", "busy", "dead". `spawn_generation` is captured
+    // by each spawn's callbacks so a stale exit notification from a
+    // killed (restarted) kernel can't clobber its replacement's state.
+    int kernel_job = 0;
+    int spawn_generation = 0;
+    bool kernel_ready = false;
+    std::string status = "not started";
+    std::string python_version;
+    std::string last_error;   // last kernel-level stderr line / spawn failure, for the status line
+    std::deque<int> run_queue;  // cell uids waiting for the kernel
+    int running_uid = 0;        // cell whose reply is in flight, 0 = idle
+    int running_request_id = 0;
+    int next_request_id = 1;
 };
 
 // Fixed Kanban card/column geometry (screen pixels, unscaled) -- shared
@@ -4266,6 +4306,154 @@ public:
      * @return A const pointer to the SheetSession, or nullptr if none exists.
      */
     const SheetSession *GetSheet(int buffer_id) const;
+
+    // --- Jupyter notebook panes (notebook_doc.h) ------------------------
+    /**
+     * @brief Returns whether a buffer is an open .ipynb notebook (has a NotebookSession).
+     * @param buffer_id The buffer id to check.
+     * @return True if a notebook session exists for the buffer.
+     */
+    bool IsNotebookBuffer(int buffer_id) const;
+    /**
+     * @brief Returns the NotebookSession for a buffer, if it is a notebook pane.
+     * @param buffer_id The buffer id to look up.
+     * @return A const pointer to the session, or nullptr if none exists.
+     */
+    const NotebookSession *GetNotebook(int buffer_id) const;
+    /**
+     * @brief Re-scans the buffer's cell markers into the session's span/output-slot
+     * cache (and re-attaches the side model when the cell count changed). Called by
+     * DrawPane once per frame before UpdateScrollForPane, so every slot-counting site
+     * sees the same cell layout for the frame.
+     * @param buffer_id The notebook buffer.
+     * @return The refreshed session, or nullptr if the buffer isn't a notebook.
+     */
+    const NotebookSession *NotebookRefresh(int buffer_id);
+    /**
+     * @brief Visual slots (line-heights) drawn below buffer row `row` for a code cell's
+     * output block, 0 for any other row or a non-notebook buffer.
+     * @param buffer_id The buffer id.
+     * @param row The buffer row.
+     * @return The trailing slot count.
+     */
+    int NotebookTrailingSlots(int buffer_id, int row) const;
+    /**
+     * @brief Opens `json_text` (an .ipynb's contents) as a notebook buffer in the active
+     * pane, converting its cells to percent-format text; on a parse failure falls back to
+     * opening the file as plain text with an error in the status line.
+     * @param path The notebook's path (becomes the buffer filename).
+     * @param json_text The file's contents.
+     */
+    void OpenNotebookInPlace(const std::string &path, const std::string &json_text);
+    /**
+     * @brief Serializes a notebook buffer (current text + stored outputs) to `io_path`
+     * as nbformat 4 JSON.
+     * @param buffer_id The notebook buffer.
+     * @param io_path The resolved path to write.
+     * @param error Receives a reason on failure (may be null).
+     * @return True on success.
+     */
+    bool SaveNotebook(int buffer_id, const std::string &io_path, std::string *error);
+    /**
+     * @brief Index (into the session's spans/cells) of the cell containing the active
+     * pane's cursor, or -1 if the active buffer isn't a notebook or the cursor is above
+     * the first cell.
+     * @return The cell index or -1.
+     */
+    int NotebookCellAtCursor();
+    /**
+     * @brief Queues a code cell for execution, starting the kernel if needed. Clears its
+     * previous outputs immediately (Jupyter's own behavior). Markdown/raw cells are ignored.
+     * @param buffer_id The notebook buffer.
+     * @param cell_index The cell index; -1 = the cell at the active pane's cursor.
+     * @return True if the cell was queued (or already queued/running).
+     */
+    bool NotebookRunCell(int buffer_id, int cell_index);
+    /**
+     * @brief Queues every code cell of a notebook in document order.
+     * @param buffer_id The notebook buffer.
+     */
+    void NotebookRunAll(int buffer_id);
+    /**
+     * @brief Runs the cell under the cursor; with `advance`, moves the cursor to the next
+     * cell afterwards (creating one at the end if there is none, like Shift+Enter in
+     * Jupyter); with `insert_below`, inserts a fresh code cell below and moves into it
+     * (Alt+Enter).
+     * @param advance Move to (or create) the following cell.
+     * @param insert_below Insert a new cell below and move into it.
+     */
+    void NotebookRunCellAtCursor(bool advance, bool insert_below);
+    /**
+     * @brief Sends SIGINT to the notebook's kernel (KeyboardInterrupt in the running cell)
+     * and drops the queued cells.
+     * @param buffer_id The notebook buffer.
+     */
+    void NotebookInterrupt(int buffer_id);
+    /**
+     * @brief Kills the notebook's kernel (all state lost) and starts a fresh one.
+     * @param buffer_id The notebook buffer.
+     */
+    void NotebookRestartKernel(int buffer_id);
+    /**
+     * @brief Clears the outputs and execution count of one cell, or of every cell.
+     * @param buffer_id The notebook buffer.
+     * @param cell_index The cell index; -1 = all cells.
+     */
+    void NotebookClearOutputs(int buffer_id, int cell_index);
+    /**
+     * @brief Inserts a new empty cell above/below `cell_index` in the active pane's
+     * notebook buffer (an ordinary undoable text edit) and moves the cursor into it.
+     * @param cell_index The reference cell; -1 = the cell at the cursor.
+     * @param below True to insert below, false above.
+     * @param type The new cell's type.
+     * @return The new cell's index, or -1 if nothing was inserted.
+     */
+    int NotebookInsertCell(int cell_index, bool below, NotebookCellType type);
+    /**
+     * @brief Deletes a cell's marker and body from the active pane's notebook buffer
+     * (undoable). A notebook left with no cells gets one empty code cell.
+     * @param cell_index The cell index; -1 = the cell at the cursor.
+     */
+    void NotebookDeleteCell(int cell_index);
+    /**
+     * @brief Rewrites a cell's marker to change its type (code/markdown/raw); a cell leaving
+     * Code loses its outputs.
+     * @param cell_index The cell index; -1 = the cell at the cursor.
+     * @param type The new type.
+     */
+    void NotebookSetCellType(int cell_index, NotebookCellType type);
+    /**
+     * @brief Swaps a cell with its neighbor (delta -1 = up, +1 = down), cursor following it.
+     * @param cell_index The cell index; -1 = the cell at the cursor.
+     * @param delta -1 or +1.
+     */
+    void NotebookMoveCell(int cell_index, int delta);
+    /**
+     * @brief Moves the active pane's cursor to the first body row of a cell (its marker row
+     * when the body is empty).
+     * @param cell_index The cell index (clamped to the valid range).
+     * @return True if the cursor moved.
+     */
+    bool NotebookGotoCell(int cell_index);
+    /**
+     * @brief Sets the interpreter used to launch notebook kernels (default "python3").
+     * @param command The executable name/path.
+     */
+    void SetNotebookPython(const std::string &command) { notebook_python_ = command; }
+    /**
+     * @brief Records the renderer's current char-width / line-height ratio, which sizes
+     * image output blocks (NotebookImageSlots). DrawPane reports it every frame before
+     * NotebookRefresh so the reserved slots match the drawn texture at any font size.
+     * @param aspect g_char_width / line height.
+     */
+    void SetNotebookCharAspect(double aspect) { notebook_char_aspect_ = aspect > 0.0 ? aspect : notebook_char_aspect_; }
+    double NotebookCharAspect() const { return notebook_char_aspect_; }
+    /**
+     * @brief Shuts down a notebook buffer's kernel and forgets its session (called when the
+     * buffer is deleted).
+     * @param buffer_id The notebook buffer.
+     */
+    void NotebookCloseSession(int buffer_id);
     // Unlike ResizeOfficeViewport, this DOES do the full scroll-follow
     // job itself (see SheetSession::scroll_row's own comment for why --
     // fixed-size grid cells need no font measurement) -- records
@@ -8516,6 +8704,18 @@ private:
 
     void PushUndo();
 
+    // Notebook internals (see the public Notebook* block above).
+    NotebookSession *GetNotebookMutable(int buffer_id);
+    void NotebookSyncFromText(NotebookSession &sess);
+    void NotebookRebuildSlotCache(NotebookSession &sess);
+    void NotebookEnsureKernel(NotebookSession &sess);
+    void NotebookPumpQueue(NotebookSession &sess);
+    void NotebookHandleKernelLine(int buffer_id, int generation, const std::string &line);
+    void NotebookKernelExited(int buffer_id, int generation, int code);
+    void NotebookFailRunning(NotebookSession &sess, const std::string &reason);
+    std::string notebook_python_ = "python3";
+    double notebook_char_aspect_ = kNotebookDefaultCharAspect;
+
     // Shared by Visual mode's d/x/y and the menu-bar Copy/Cut: operates on
     // the current selection, or the current line if there is none.
     void ApplyOperatorToSelectionOrCurrentLine(char op);
@@ -8947,6 +9147,9 @@ private:
     // Keyed by buffer_id -- one entry per open spreadsheet pane, same
     // never-reaped lifetime reasoning as images_ above.
     std::unordered_map<int, SheetSession> sheetdocs_;
+    // Keyed by buffer_id -- one entry per open Jupyter notebook pane; erased
+    // (and its kernel killed) by NotebookCloseSession when the buffer is :bd'd.
+    std::unordered_map<int, NotebookSession> notebooks_;
     // Which overlay (if any) each .org buffer is currently being shown
     // through -- absent means Text (see OrgViewMode's own comment).
     // Deliberately separate from kanban_views_/gantt_views_'s own

@@ -108,7 +108,7 @@ clean:
 test: build-native
     #!/usr/bin/env bash
     set -euo pipefail
-    targets=(mep-html-doc-test mep-org-doc-test mep-workspace-test mep-model3d-doc-test mep-image-procgen-test mep-jpeg-codec-test mep-pdf-object-test mep-pdf-xref-test mep-pdf-crypt-test mep-pdf-filters-test mep-pdf-document-test mep-pdf-outline-test mep-pdf-links-test mep-rasterizer-test mep-pdf-content-test mep-cff-test mep-pdf-encodings-test mep-pdf-font-test mep-pdf-text-test mep-mov-container-test mep-collab-crdt-test mep-collab-session-test)
+    targets=(mep-html-doc-test mep-org-doc-test mep-notebook-doc-test mep-workspace-test mep-model3d-doc-test mep-image-procgen-test mep-jpeg-codec-test mep-pdf-object-test mep-pdf-xref-test mep-pdf-crypt-test mep-pdf-filters-test mep-pdf-document-test mep-pdf-outline-test mep-pdf-links-test mep-rasterizer-test mep-pdf-content-test mep-cff-test mep-pdf-encodings-test mep-pdf-font-test mep-pdf-text-test mep-mov-container-test mep-collab-crdt-test mep-collab-session-test)
     cmake --build {{native_build_dir}} -j --target "${targets[@]}"
     for t in "${targets[@]}"; do
         if [ -x "{{native_build_dir}}/$t" ]; then

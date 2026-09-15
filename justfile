@@ -118,20 +118,20 @@ test: build-native
     done
 
 # CRDT_PERFORMANCE_PLAN.md Phase 1: run the persistent text-editing
-# benchmarks (mep-crdt-bench, mep-buffer-bench) and print a
-# latest-vs-previous-run comparison. Results accumulate in
+# benchmarks (mep-crdt-bench, mep-buffer-bench, mep-lua-frame-hook-bench)
+# and print a latest-vs-previous-run comparison. Results accumulate in
 # bench_results/history.jsonl (git-tracked) across every invocation --
 # this never resets/rotates it, so history builds up over time as the
 # user asked. Run from the repo root (bench_results/ is a relative
 # path both the bench binaries and the report script resolve against
-# the cwd). Builds its own two EXCLUDE_FROM_ALL targets explicitly, same
+# the cwd). Builds its own EXCLUDE_FROM_ALL targets explicitly, same
 # reasoning as `test` above.
 bench: build-native
     #!/usr/bin/env bash
     set -euo pipefail
-    cmake --build {{native_build_dir}} -j --target mep-crdt-bench mep-buffer-bench
+    cmake --build {{native_build_dir}} -j --target mep-crdt-bench mep-buffer-bench mep-lua-frame-hook-bench
     mkdir -p bench_results
-    for t in mep-crdt-bench mep-buffer-bench; do
+    for t in mep-crdt-bench mep-buffer-bench mep-lua-frame-hook-bench; do
         echo "== $t"
         "./{{native_build_dir}}/$t"
     done

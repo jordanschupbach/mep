@@ -8831,8 +8831,52 @@ bool LuaEnv::CallRefForWidgets(int ref, std::vector<std::pair<std::string, std::
 
 void LuaEnv::RegisterFrameHook(int ref) { frame_hook_refs_.push_back(ref); }
 
+// A hook that returns `true` is a one-shot state machine announcing it's
+// done (e.g. mep.activity_todo_start_agent's "wait for the workspace to
+// switch, then wait for the terminal to come up" pair) -- without this,
+// every such hook had no way to ever stop running and degenerated into a
+// permanent no-op ("if done then return end") called every frame for the
+// rest of the process, forever accumulating one more pointless Lua call
+// per frame each time the action that registered it (e.g. starting an AI
+// agent from the Todo panel) ran again. Existing hooks that return nothing
+// (nil, the overwhelming majority -- the debounced buffer-changed/saved
+// pollers this primitive was built for) are unaffected and stay
+// registered exactly as before.
+bool LuaEnv::CallFrameHookRef(int ref) {
+    lua_rawgeti(L_, LUA_REGISTRYINDEX, ref);
+    if (lua_pcall(L_, 0, 1, 0) != LUA_OK) {
+        const char *msg = lua_tostring(L_, -1);
+        if (editor_) editor_->SetStatusMessage(std::string("Lua error: ") + (msg ? msg : "?"));
+        lua_pop(L_, 1);
+        return false;
+    }
+    bool done = lua_toboolean(L_, -1);
+    lua_pop(L_, 1);
+    return done;
+}
+
 void LuaEnv::RunFrameHooks() {
-    for (int ref : frame_hook_refs_) CallRef(ref);
+    // Index-based, bounded to this frame's starting count, and re-reading
+    // frame_hook_refs_[i] fresh each iteration rather than caching an
+    // iterator/pointer across the call: a hook can itself call
+    // mep.on_frame (chaining a second wait-state, as the agent-start hooks
+    // above do), which push_back's into this same vector and may
+    // reallocate its buffer out from under a range-for/iterator -- this
+    // loop only ever indexes into whatever buffer currently backs the
+    // vector, so that reallocation is harmless. Newly-registered hooks are
+    // left in place for next frame's pass rather than run immediately.
+    size_t count = frame_hook_refs_.size();
+    size_t write = 0;
+    for (size_t i = 0; i < count; i++) {
+        int ref = frame_hook_refs_[i];
+        if (CallFrameHookRef(ref)) {
+            luaL_unref(L_, LUA_REGISTRYINDEX, ref);
+        } else {
+            frame_hook_refs_[write++] = ref;
+        }
+    }
+    for (size_t i = count; i < frame_hook_refs_.size(); i++) frame_hook_refs_[write++] = frame_hook_refs_[i];
+    frame_hook_refs_.resize(write);
 }
 
 std::vector<std::string> LuaEnv::GetOrgTodoKeywords() const { return ReadOrgTodoKeywords(L_); }

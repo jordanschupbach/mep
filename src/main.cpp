@@ -13034,6 +13034,30 @@ const char *kBuiltinActivityBar =
     "  end\n"
     "  return false\n"
     "end\n"
+    // Wraps the mep.activity_todo_agents[text] lookup (three call sites:
+    // the sidebar's key/render functions and the in-buffer decorator)
+    // with pruning: mep.activity_todo_agents never had anything removing
+    // a finished agent's entry, so every todo an agent had ever been
+    // started on -- including ones from long-finished agents, hours or
+    // days ago -- stayed in the table forever, each one costing a fresh
+    // mep_todo_workspace_has_live_agent scan (mep.workspace_list() +
+    // mep.participants() + the ai_terminals table) on every 0.15s poll
+    // tick for the rest of the session. `was_live` records that the
+    // agent was actually seen alive at least once, so a not-yet-started
+    // agent (the brief window between mep.activity_todo_agents[text]
+    // being set and its workspace/terminal actually existing) isn't
+    // mistaken for a finished one and pruned before it ever ran.
+    "local function mep_todo_agent_live(text)\n"
+    "  local agent = mep.activity_todo_agents[text]\n"
+    "  if agent == nil then return false end\n"
+    "  local live = mep_todo_workspace_has_live_agent(agent.workspace)\n"
+    "  if live then\n"
+    "    agent.was_live = true\n"
+    "  elseif agent.was_live then\n"
+    "    mep.activity_todo_agents[text] = nil\n"
+    "  end\n"
+    "  return live\n"
+    "end\n"
     // Animated "." -> ".." -> "..." -> ".." -> repeat dots for a todo an
     // agent is actively working on (Org file robot animation), shared by
     // the sidebar's own row text (mep_activity_todo_render, below) and the
@@ -13059,8 +13083,7 @@ const char *kBuiltinActivityBar =
     "  local parts = {}\n"
     "  local any_live = false\n"
     "  for _, it in ipairs(items) do\n"
-    "    local agent = mep.activity_todo_agents[it.text]\n"
-    "    local agent_live = agent ~= nil and mep_todo_workspace_has_live_agent(agent.workspace)\n"
+    "    local agent_live = mep_todo_agent_live(it.text)\n"
     "    if agent_live then any_live = true end\n"
     "    parts[#parts + 1] = (it.done and '1' or '0') .. (it.level or 1) .. (it.line or '') .. (agent_live and 'R' or '') .. it.text\n"
     "  end\n"
@@ -13134,8 +13157,7 @@ const char *kBuiltinActivityBar =
     "  for i, it in ipairs(items) do\n"
     "    local indent = string.rep('  ', (it.level or 1) - 1)\n"
     "    local running = clock ~= nil and it.line ~= nil and clock.line == it.line\n"
-    "    local agent = mep.activity_todo_agents[it.text]\n"
-    "    local agent_live = agent ~= nil and mep_todo_workspace_has_live_agent(agent.workspace)\n"
+    "    local agent_live = mep_todo_agent_live(it.text)\n"
     "    local mark = agent_live and '    ' or running and '[>] ' or (it.done and '[x] ' or '[ ] ')\n"
     // Animated dots (mep_todo_agent_dots, above) after the robot mark, on
     // their own extra ' ' + 3-char-padded slot rather than inside `mark`
@@ -13347,23 +13369,28 @@ const char *kBuiltinActivityBar =
     "    mep.activity_todo_agents[text] = {workspace = name}\n"
     "    mep_activity_todo_rerender()\n"
     "    mep.workspace_new(name)\n"
-    "    local started = false\n"
+    // Each of these two hooks returns `true` once its one-time job is
+    // done (or can never complete, e.g. the terminal buffer went away)
+    // so LuaEnv::RunFrameHooks drops it instead of leaving a permanent
+    // no-op behind -- starting an AI agent on a todo item is a repeatable
+    // user action (the 'L'/'gL' binding), and before this the pair of
+    // "wait for state X" watchers registered here never went away, so
+    // every agent start over a long session left two more dead closures
+    // being called on every single frame for good.
     "    mep.on_frame(function()\n"
-    "      if started then return end\n"
     "      local ws = mep.workspace_current()\n"
     "      if not ws or ws.name ~= name then return end\n"
-    "      started = true\n"
     "      mep.ai_terminal_open()\n"
     "      local buf = mep.current_buffer()\n"
     "      mep_activity_todo_rerender()\n"
-    "      local wrote, wait_start = false, mep.now()\n"
+    "      local wait_start = mep.now()\n"
     "      mep.on_frame(function()\n"
-    "        if wrote then return end\n"
-    "        if not mep.is_terminal_buffer(buf) then wrote = true return end\n"
+    "        if not mep.is_terminal_buffer(buf) then return true end\n"
     "        if mep.now() - wait_start < 1.2 then return end\n"
-    "        wrote = true\n"
     "        mep.terminal_write(buf, text)\n"
+    "        return true\n"
     "      end)\n"
+    "      return true\n"
     "    end)\n"
     "  end)\n"
     "end\n"
@@ -13637,8 +13664,7 @@ const char *kBuiltinActivityBar =
     "  local dots = mep_todo_agent_dots()\n"
     "  for _, it in ipairs(mep_activity_todo_load()) do\n"
     "    if it.line then\n"
-    "      local agent = mep.activity_todo_agents[it.text]\n"
-    "      if agent ~= nil and mep_todo_workspace_has_live_agent(agent.workspace) then\n"
+    "      if mep_todo_agent_live(it.text) then\n"
     "        mep.buffer_deco_add(buf, mep_activity_todo_agent_ns, {\n"
     "          row = it.line, virt_text_eol = true, virt_robot_icon = true,\n"
     "          virt_text = ' ' .. dots, virt_text_hl = 'Cyan',\n"

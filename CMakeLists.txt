@@ -403,6 +403,7 @@ add_library(mep_core STATIC
     src/formula.cpp
     src/html_doc.cpp
     src/job.cpp
+    src/tcp_client.cpp
     src/org_doc.cpp
     src/text_diff.cpp
     src/agent_rpc.cpp

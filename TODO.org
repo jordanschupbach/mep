@@ -23,20 +23,10 @@
 
 * TODO Add compiler explorer to c++ ui
 * TODO add hex exploration to c++ ui
-* TODO Fix dap debug ui
 * TODO fix exiting sidebar bug (specifically when exiting todo editor)
   :LOGBOOK:
   CLOCK: [2026-09-14 Mon 10:28]--[2026-09-14 Mon 10:28] =>  0:00
   :END:
-* TODO Add DAP debugging capabilities.
-  Add DAP debugging capabilities. Start with R, Python, and C/C++. I also want a
-  debugging ui, triggered with <leader>du that has all of the symbols and such
-  in sidebars and a console, etc. Buttons for going stepping into, out of, etc.
-  Use examples in the example folder to test out and the flake.nix for adding
-  dependencies to the shell. I'd like <leader>dd to continue/start debugging. I'd
-  like <leader>db to toggle a break point (visible in the side line number gutter),
-  <leader>di to step into, <leader>do to step out of, and a couple others that might make
-  sense if you can think of them. Can you implement these?
 * DONE Filetree image viewer mode :ARCHIVE:
   - `:e`/`mep.open` on a directory now opens the file tree in the current
     pane (Editor::LoadFile's new directory branch -> mep.set_on_directory_open
@@ -272,3 +262,85 @@ The filetree button in the tabbar doesnt toggle the filetree (it just opens it).
     (20 call sites) to confirm no other one-shot-disguised-as-permanent
     leak of this shape exists elsewhere.
 
+* DONE Add DAP debugging capabilities. :ARCHIVE:
+  Add DAP debugging capabilities. Start with R, Python, and C/C++. I also want a
+  debugging ui, triggered with <leader>du that has all of the symbols and such
+  in sidebars and a console, etc. Buttons for going stepping into, out of, etc.
+  Use examples in the example folder to test out and the flake.nix for adding
+  dependencies to the shell. I'd like <leader>dd to continue/start debugging. I'd
+  like <leader>db to toggle a break point (visible in the side line number gutter),
+  <leader>di to step into, <leader>do to step out of, and a couple others that might make
+  sense if you can think of them. Can you implement these?
+
+  Also folds in the separate "Fix dap debug ui" todo -- this same change is
+  what actually builds the debug UI for the first time.
+
+  - The pre-existing DAP client (kBuiltinDap) only ever sent breakpoint
+    toggles and one-line continue/step requests, with no keybindings, no
+    reaction to the `stopped` event beyond a toast, and -- a real protocol
+    gap -- no way to answer a server-initiated *request* (e.g.
+    runInTerminal), which left such adapters hanging forever. Fixed in
+    lua_env.cpp: DispatchLspMessage now answers server requests
+    (mep.lsp_on_request), and kBuiltinDap's `stopped` handler now runs a
+    real threads -> stackTrace -> scopes -> variables chain, jumps the
+    cursor to the paused line, and drops a green "▶" gutter arrow
+    (namespace `dap_current_line`, kept separate from the breakpoint
+    dot's own namespace so toggling a breakpoint mid-session can't wipe
+    it).
+  - New `kBuiltinDebugUi` (loaded right after kBuiltinDap, mirroring this
+    file's existing kBuiltinRun/kBuiltinRunButton mechanics-vs-UI split):
+    a "Debug" sidebar (Call Stack / Variables / Breakpoints sections) and
+    a Debug Console pane, plus every requested keybinding under a new `d`
+    leader group -- `<leader>du` (toggle the sidebar+console), `dd`
+    (start/continue, resolving the language from the current file's
+    extension), `db` (toggle breakpoint), `dn`/`di`/`do` (step over/into/
+    out -- `dn` since `do` was already spoken for), `dt` (terminate),
+    `dr` (restart), `dc` (clear all breakpoints in the file), and `dv`
+    (evaluate the expression under the cursor).
+  - R has no DAP adapter that speaks stdio the way lldb-dap/debugpy do --
+    the real one, vscDebugger, opens a plain TCP socket instead. Built a
+    real TCP transport for this rather than just documenting the gap:
+    new `TcpJsonRpcManager`/`TcpConnection` (src/tcp_client.h/.cpp,
+    mirrors job.h's threading/PollAll shape) plus `mep.lsp_connect`
+    (lua_env.cpp). `mep.dap_start('r')` spawns R itself via
+    `mep.term_start` (R's own stdout isn't LSP-framed) running
+    vscDebugger's real (undocumented/unexported, confirmed against its
+    source) `.vsc.listenForDAP()`, then retries `mep.lsp_connect` for a
+    few seconds until R's socket comes up.
+  - Along the way, live-testing against a *real* lldb-dap surfaced (and
+    fixed) two protocol bugs this client had never had a live adapter to
+    catch before: (1) DAP is NOT JSON-RPC 2.0 -- only the Content-Length
+    header framing is shared; the JSON body is `{seq, type, command,
+    arguments}` / `{seq, type: "response", request_seq, success, body}` /
+    `{event, body}`, nothing like `{jsonrpc, id, method, params}`. Added
+    a `dap_mode` flag to the LSP/DAP client (lua_env.cpp) with its own
+    DispatchDapMessage, so this client now speaks real DAP instead of a
+    shape no adapter actually accepts. (2) Debug builds compiled for the
+    new C/C++/Rust launch path came out fully optimized regardless of the
+    `-g` flag -- this toolchain's `_FORTIFY_SOURCE` hardening silently
+    adds `-O2` when no `-O` is given, which inlines away small functions
+    (examples/cpp_example.cpp's `distanceTo` had zero line-table entries
+    at -O2, so lldb reported every breakpoint inside it as an unresolved
+    "pending" location and never stopped). Fixed by always appending
+    `-O0` after `-g`.
+  - flake.nix: added `pkgs.lldb` (ships `lldb-dap`), `debugpy` to the
+    existing Python package set, and a hand-packaged `vscDebuggerR`
+    (`rPackages.buildRPackage` + `fetchFromGitHub`, since vscDebugger
+    isn't on CRAN) added to the R package set.
+  - Verified end-to-end against real spawned adapters (a detached mep
+    instance driven over its own raw agent-control socket, per
+    MEP_AGENT_API.md): C++ (lldb-dap) and Python (debugpy) both go
+    start -> stop at entry -> continue -> hit a real breakpoint -> show
+    correct call stack/locals -> step over -> terminate, exactly as
+    intended. R (vscDebugger) verified up through a real TCP connect,
+    initialize, launch, setBreakpoints, configurationDone, and a genuine
+    `stopped`/breakpoint event -- but the session then ended before this
+    client's follow-up stackTrace/variables requests could complete;
+    vscDebugger's `debugMode = 'file'` runs the whole script from inside
+    `configurationDoneRequest` and stops listening right after, per its
+    own source, so sustaining an interactive pause for `file` mode may
+    need a different launch shape than this change had time to track
+    down. The R *transport* (the actual ask, given no stdio adapter
+    exists) is solid and reusable; R *session* behavior past the first
+    breakpoint is the one open item, noted in kBuiltinDap's own comment
+    next to `mep.dap_adapters.r`.

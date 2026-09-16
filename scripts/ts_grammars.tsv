@@ -90,6 +90,15 @@ fish	ram02z/tree-sitter-fish	3.7.0
 groovy	murtaza64/tree-sitter-groovy	deb0dcf8c4544f07564060f6e9b9f6e4b0bfc27d
 elixir	elixir-lang/tree-sitter-elixir	v0.3.5
 erlang	WhatsApp/tree-sitter-erlang	0.1.0
+# bibtex's rev is the same commit nixpkgs' 0-unstable-2025-04-19 pin
+# resolves (flake.nix builds the identical grammar). Its sibling latex
+# grammar (latex-lsp/tree-sitter-latex, DynamicLanguageTable's "tex"/
+# "sty"/"cls" entries) deliberately has NO row here: it commits no
+# generated src/parser.c (see third_party/README.md's "never vendorable"
+# note), so this script can't build it -- the Nix devShell (flake.nix's
+# tsGrammars) or a hand-run `tree-sitter build` into ~/.config/mep/
+# parsers are the ways to get LaTeX highlighting.
+bibtex	latex-lsp/tree-sitter-bibtex	8d04ed27b3bc7929f14b7df9236797dab9f3fa66
 perl	ganezdragon/tree-sitter-perl	v1.1.1
 fortran	stadelmanma/tree-sitter-fortran	v0.5.1
 d	gdamore/tree-sitter-d	fb028c8f14f4188286c2eef143f105def6fbf24f

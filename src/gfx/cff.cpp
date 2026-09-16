@@ -179,6 +179,83 @@ void ParseCharset(const unsigned char *data, int data_size, uint32_t offset, int
     }
 }
 
+// -- Standard Encoding (CFF spec Appendix B): code -> SID -------------------
+// The predefined encoding a CFF font declares by omitting its Encoding
+// offset (or writing 0) -- and the one `seac`'s bchar/achar codes are
+// always interpreted through, whatever the font's own encoding is.
+
+const uint16_t kStandardEncodingSid[256] = {
+    0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,    // 0-15
+    0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,    // 16-31
+    1,   2,   3,   4,   5,   6,   7,   8,   9,   10,  11,  12,  13,  14,  15,  16,   // 32-47
+    17,  18,  19,  20,  21,  22,  23,  24,  25,  26,  27,  28,  29,  30,  31,  32,   // 48-63
+    33,  34,  35,  36,  37,  38,  39,  40,  41,  42,  43,  44,  45,  46,  47,  48,   // 64-79
+    49,  50,  51,  52,  53,  54,  55,  56,  57,  58,  59,  60,  61,  62,  63,  64,   // 80-95
+    65,  66,  67,  68,  69,  70,  71,  72,  73,  74,  75,  76,  77,  78,  79,  80,   // 96-111
+    81,  82,  83,  84,  85,  86,  87,  88,  89,  90,  91,  92,  93,  94,  95,  0,    // 112-127
+    0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,    // 128-143
+    0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,    // 144-159
+    0,   96,  97,  98,  99,  100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110,  // 160-175
+    0,   111, 112, 113, 114, 0,   115, 116, 117, 118, 119, 120, 121, 122, 0,   123,  // 176-191
+    0,   124, 125, 126, 127, 128, 129, 130, 131, 0,   132, 133, 0,   134, 135, 136,  // 192-207
+    137, 0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,    // 208-223
+    0,   138, 0,   139, 0,   0,   0,   0,   140, 141, 142, 143, 0,   0,   0,   0,    // 224-239
+    0,   144, 0,   0,   0,   145, 0,   0,   146, 147, 148, 149, 0,   0,   0,   0,    // 240-255
+};
+
+// -- Encoding (CFF spec section 12) ----------------------------------------
+// Maps code -> GID for a font's own built-in encoding: format 0 (a
+// code per glyph, in GID order) or 1 (ranges of consecutive codes),
+// either optionally followed (high bit of the format byte) by
+// supplements mapping extra codes to glyphs by SID.
+
+void ParseEncoding(const unsigned char *data, int data_size, uint32_t offset, const std::vector<uint16_t> &charset,
+                   int num_glyphs, FontInfo *info) {
+    if (offset >= static_cast<uint32_t>(data_size)) return;
+    info->encoding_standard = false;
+    info->builtin_encoding.assign(256, -1);
+    const unsigned char *p = data + offset;
+    size_t remaining = static_cast<size_t>(data_size) - offset;
+    if (remaining < 1) return;
+    uint8_t format = p[0];
+    size_t pos = 1;
+    auto set_code = [&](int code, int gid) {
+        if (code >= 0 && code < 256 && gid >= 0 && gid < num_glyphs) info->builtin_encoding[static_cast<size_t>(code)] = static_cast<int16_t>(gid);
+    };
+    if ((format & 0x7f) == 0) {
+        if (pos >= remaining) return;
+        int n_codes = p[pos++];
+        for (int i = 1; i <= n_codes && pos < remaining; ++i) set_code(p[pos++], i);
+    } else if ((format & 0x7f) == 1) {
+        if (pos >= remaining) return;
+        int n_ranges = p[pos++];
+        int gid = 1;
+        for (int r = 0; r < n_ranges && pos + 2 <= remaining; ++r) {
+            int first = p[pos];
+            int n_left = p[pos + 1];
+            pos += 2;
+            for (int k = 0; k <= n_left; ++k) set_code(first + k, gid++);
+        }
+    } else {
+        return;
+    }
+    if (format & 0x80) {
+        if (pos >= remaining) return;
+        int n_sups = p[pos++];
+        for (int i = 0; i < n_sups && pos + 3 <= remaining; ++i) {
+            int code = p[pos];
+            uint16_t sid = U16(p + pos + 1);
+            pos += 3;
+            for (int gid = 1; gid < static_cast<int>(charset.size()); ++gid) {
+                if (charset[static_cast<size_t>(gid)] == sid) {
+                    set_code(code, gid);
+                    break;
+                }
+            }
+        }
+    }
+}
+
 // -- FDSelect (CFF spec section 19) ----------------------------------------
 
 void ParseFdSelect(const unsigned char *data, int data_size, uint32_t offset, int num_glyphs,
@@ -209,16 +286,8 @@ void ParseFdSelect(const unsigned char *data, int data_size, uint32_t offset, in
 
 // -- Type2 charstring interpreter ------------------------------------------
 
-struct PathElem {
-    enum Kind { kLine, kCurve } kind = kLine;
-    float x = 0, y = 0;
-    float c1x = 0, c1y = 0, c2x = 0, c2y = 0;
-};
-
-struct Contour {
-    float start_x = 0, start_y = 0;
-    std::vector<PathElem> elems;
-};
+using raster::OutlineContour;
+using raster::OutlineSegment;
 
 double ReadT2Number(const unsigned char *p, size_t &i) {
     uint8_t b0 = p[i];
@@ -255,7 +324,12 @@ struct T2Interp {
     int stem_count = 0;
     bool width_parsed = false;
     bool open_contour = false;
-    std::vector<Contour> contours;
+    std::vector<OutlineContour> contours;
+    // Set by a 4-argument `endchar` (the deprecated seac-like accented-
+    // character form): BuildGlyphContours composes base + accent glyphs.
+    bool has_seac = false;
+    float seac_adx = 0, seac_ady = 0;
+    int seac_bchar = 0, seac_achar = 0;
     const Index *global_subrs = nullptr;
     const Index *local_subrs = nullptr;
     int global_bias = 0, local_bias = 0;
@@ -274,7 +348,7 @@ struct T2Interp {
     void MoveTo(float dx, float dy) {
         x += dx;
         y += dy;
-        Contour c;
+        OutlineContour c;
         c.start_x = x;
         c.start_y = y;
         contours.push_back(c);
@@ -284,26 +358,25 @@ struct T2Interp {
         if (!open_contour) MoveTo(0, 0);  // tolerate a charstring lacking an initial moveto
         x += dx;
         y += dy;
-        PathElem e;
-        e.kind = PathElem::kLine;
+        OutlineSegment e;
         e.x = x;
         e.y = y;
-        contours.back().elems.push_back(e);
+        contours.back().segments.push_back(e);
     }
     void CurveTo(float dx1, float dy1, float dx2, float dy2, float dx3, float dy3) {
         if (!open_contour) MoveTo(0, 0);
         float c1x = x + dx1, c1y = y + dy1;
         float c2x = c1x + dx2, c2y = c1y + dy2;
         float ex = c2x + dx3, ey = c2y + dy3;
-        PathElem e;
-        e.kind = PathElem::kCurve;
+        OutlineSegment e;
+        e.is_curve = true;
         e.c1x = c1x;
         e.c1y = c1y;
         e.c2x = c2x;
         e.c2y = c2y;
         e.x = ex;
         e.y = ey;
-        contours.back().elems.push_back(e);
+        contours.back().segments.push_back(e);
         x = ex;
         y = ey;
     }
@@ -493,10 +566,19 @@ void RunCharstring(const unsigned char *data, size_t len, T2Interp &t) {
                 return;
             case 14:  // endchar
                 t.ConsumeWidthIfPresent(t.stack.size() == 4 ? 4 : 0);
-                // A remaining 4 operands here would be the deprecated
-                // seac-like accent-composition form -- not implemented
-                // (see this file's own top comment); the base glyph
-                // outline built so far is still used as-is.
+                // 4 remaining operands: the deprecated seac-like accent-
+                // composition form (adx ady bchar achar, Standard
+                // Encoding codes) -- recorded here, composed by
+                // BuildGlyphContours, since it needs whole-font state
+                // (charset, other charstrings) this interpreter doesn't.
+                if (t.stack.size() >= 4) {
+                    size_t n = t.stack.size();
+                    t.has_seac = true;
+                    t.seac_adx = static_cast<float>(t.stack[n - 4]);
+                    t.seac_ady = static_cast<float>(t.stack[n - 3]);
+                    t.seac_bchar = static_cast<int>(t.stack[n - 2]);
+                    t.seac_achar = static_cast<int>(t.stack[n - 1]);
+                }
                 t.stack.clear();
                 t.done = true;
                 break;
@@ -618,6 +700,17 @@ bool InitFont(FontInfo *info, const unsigned char *data, int data_size) {
         }
     }
 
+    if (!info->is_cid) {
+        // Encoding offset 0 (or absent) = Standard Encoding, 1 = Expert
+        // (treated as Standard: vanishingly rare, and harmless), else a
+        // custom table at that offset. CID-keyed fonts have no encoding
+        // at all (codes map to CIDs via the PDF's own CMap).
+        if (const std::vector<double> *enc_off = DictGet(top_dict, 16); enc_off && !enc_off->empty()) {
+            uint32_t off = static_cast<uint32_t>((*enc_off)[0]);
+            if (off > 1) ParseEncoding(data, data_size, off, info->charset, info->num_glyphs, info);
+        }
+    }
+
     if (info->is_cid) {
         const std::vector<double> *fda = DictGet(top_dict, 1236);  // FDArray
         const std::vector<double> *fds = DictGet(top_dict, 1237);  // FDSelect
@@ -679,14 +772,42 @@ bool InitFont(FontInfo *info, const unsigned char *data, int data_size) {
     return info->num_glyphs > 0;
 }
 
-unsigned char *GetGlyphBitmap(const FontInfo *info, float scale_x, float scale_y, int glyph_index, int *width,
-                               int *height, int *xoff, int *yoff) {
-    *width = *height = *xoff = *yoff = 0;
-    if (glyph_index < 0 || glyph_index >= info->num_glyphs) return nullptr;
+int StandardEncodingSid(int code) { return code >= 0 && code < 256 ? kStandardEncodingSid[code] : 0; }
 
+int GidForSid(const FontInfo *info, int sid) {
+    if (info->is_cid) return -1;
+    if (sid == 0) return 0;
+    if (info->charset.empty()) {
+        // Predefined ISOAdobe charset: SIDs 0..228 in GID order.
+        return sid < info->num_glyphs ? sid : -1;
+    }
+    for (int gid = 1; gid < static_cast<int>(info->charset.size()); ++gid) {
+        if (info->charset[static_cast<size_t>(gid)] == sid) return gid;
+    }
+    return -1;
+}
+
+int BuiltinEncodingGid(const FontInfo *info, int code) {
+    if (code < 0 || code > 255 || info->is_cid) return -1;
+    if (!info->encoding_standard) {
+        return info->builtin_encoding.size() == 256 ? info->builtin_encoding[static_cast<size_t>(code)] : -1;
+    }
+    int sid = kStandardEncodingSid[code];
+    return sid == 0 ? -1 : GidForSid(info, sid);
+}
+
+namespace {
+
+// Runs `glyph_index`'s charstring and appends its contours (font units)
+// to `out`, composing a seac-style accented character (base glyph plus
+// accent glyph offset by (adx, ady)) recursively when `endchar` asked
+// for one. `depth` guards a malformed self-referential seac chain.
+void BuildGlyphContours(const FontInfo *info, int glyph_index, std::vector<OutlineContour> *out, float dx, float dy,
+                        int depth) {
+    if (depth > 4 || glyph_index < 0 || glyph_index >= info->num_glyphs) return;
     const unsigned char *cs_data = nullptr;
     uint32_t cs_len = 0;
-    if (!GetItem(info->charstrings, glyph_index, &cs_data, &cs_len)) return nullptr;
+    if (!GetItem(info->charstrings, glyph_index, &cs_data, &cs_len)) return;
 
     T2Interp t;
     t.global_subrs = &info->global_subrs;
@@ -702,59 +823,44 @@ unsigned char *GetGlyphBitmap(const FontInfo *info, float scale_x, float scale_y
     t.local_bias = t.local_subrs ? SubrBias(t.local_subrs->count) : 0;
 
     RunCharstring(cs_data, cs_len, t);
-    if (t.contours.empty()) return nullptr;
 
-    float xmin = 1e30f, ymin = 1e30f, xmax = -1e30f, ymax = -1e30f;
-    auto consider = [&](float px, float py) {
-        xmin = std::min(xmin, px);
-        xmax = std::max(xmax, px);
-        ymin = std::min(ymin, py);
-        ymax = std::max(ymax, py);
-    };
-    for (const Contour &c : t.contours) {
-        consider(c.start_x, c.start_y);
-        for (const PathElem &e : c.elems) consider(e.x, e.y);
-    }
-    if (xmax <= xmin || ymax <= ymin) return nullptr;
-
-    int ix0 = static_cast<int>(std::floor(xmin * scale_x));
-    int ix1 = static_cast<int>(std::ceil(xmax * scale_x));
-    int iy0 = static_cast<int>(std::floor(-ymax * scale_y));  // font y-up -> raster y-down
-    int iy1 = static_cast<int>(std::ceil(-ymin * scale_y));
-    int w = ix1 - ix0;
-    int h = iy1 - iy0;
-    if (w <= 0 || h <= 0) return nullptr;
-
-    auto to_raster_x = [&](float px) { return px * scale_x - static_cast<float>(ix0); };
-    auto to_raster_y = [&](float py) { return -py * scale_y - static_cast<float>(iy0); };
-
-    std::vector<raster::Edge> edges;
-    for (const Contour &c : t.contours) {
-        float cur_x = to_raster_x(c.start_x), cur_y = to_raster_y(c.start_y);
-        float start_x = cur_x, start_y = cur_y;
-        for (const PathElem &e : c.elems) {
-            float ex = to_raster_x(e.x), ey = to_raster_y(e.y);
-            if (e.kind == PathElem::kLine) {
-                raster::AddLine(edges, cur_x, cur_y, ex, ey);
-            } else {
-                raster::FlattenCubic(edges, cur_x, cur_y, to_raster_x(e.c1x), to_raster_y(e.c1y), to_raster_x(e.c2x),
-                                      to_raster_y(e.c2y), ex, ey);
+    for (OutlineContour &c : t.contours) {
+        if (dx != 0 || dy != 0) {
+            c.start_x += dx;
+            c.start_y += dy;
+            for (OutlineSegment &e : c.segments) {
+                e.x += dx;
+                e.y += dy;
+                e.c1x += dx;
+                e.c1y += dy;
+                e.c2x += dx;
+                e.c2y += dy;
             }
-            cur_x = ex;
-            cur_y = ey;
         }
-        raster::AddLine(edges, cur_x, cur_y, start_x, start_y);  // implicit close, matches endchar's own semantics
+        out->push_back(std::move(c));
     }
+    if (t.has_seac) {
+        int base = GidForSid(info, StandardEncodingSid(t.seac_bchar));
+        int accent = GidForSid(info, StandardEncodingSid(t.seac_achar));
+        if (base >= 0) BuildGlyphContours(info, base, out, dx, dy, depth + 1);
+        if (accent >= 0) BuildGlyphContours(info, accent, out, dx + t.seac_adx, dy + t.seac_ady, depth + 1);
+    }
+}
 
-    std::vector<unsigned char> pixels = raster::Rasterize(edges, w, h);
-    auto *out = static_cast<unsigned char *>(std::malloc(pixels.size()));
-    std::memcpy(out, pixels.data(), pixels.size());
+}  // namespace
 
-    *width = w;
-    *height = h;
-    *xoff = ix0;
-    *yoff = iy0;
-    return out;
+unsigned char *GetGlyphBitmapMatrix(const FontInfo *info, float a, float b, float c, float d, int glyph_index,
+                                    int *width, int *height, int *xoff, int *yoff) {
+    *width = *height = *xoff = *yoff = 0;
+    if (glyph_index < 0 || glyph_index >= info->num_glyphs) return nullptr;
+    std::vector<OutlineContour> contours;
+    BuildGlyphContours(info, glyph_index, &contours, 0, 0, 0);
+    return raster::RasterizeOutline(contours, a, b, c, d, width, height, xoff, yoff);
+}
+
+unsigned char *GetGlyphBitmap(const FontInfo *info, float scale_x, float scale_y, int glyph_index, int *width,
+                               int *height, int *xoff, int *yoff) {
+    return GetGlyphBitmapMatrix(info, scale_x, 0, 0, -scale_y, glyph_index, width, height, xoff, yoff);
 }
 
 void FreeBitmap(unsigned char *bitmap) { std::free(bitmap); }

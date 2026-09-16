@@ -153,6 +153,38 @@ std::string BuildSimpleCff(const std::vector<std::string> &charstrings, const st
     return out;
 }
 
+// Like BuildSimpleCff (no subrs), plus a raw charset table (Top DICT op
+// 15) and a raw Encoding table (op 16) appended after the CharStrings
+// INDEX -- `charset_bytes`/`encoding_bytes` are the tables' own bytes
+// including their format byte; an empty encoding means "Standard".
+std::string BuildCffWithEncoding(const std::vector<std::string> &charstrings, const std::string &charset_bytes,
+                                 const std::string &encoding_bytes) {
+    std::string header(4, '\0');
+    header[0] = 1;
+    header[1] = 0;
+    header[2] = 4;
+    header[3] = 1;
+    std::string name_index = EncodeIndex({});
+    std::string string_index = EncodeIndex({});
+    std::string global_subr_index = EncodeIndex({});
+    auto make_top_dict = [&](int32_t cs_off, int32_t charset_off, int32_t enc_off) {
+        std::string d = EncodeDictEntry(17, {cs_off}) + EncodeDictEntry(15, {charset_off});
+        if (!encoding_bytes.empty()) d += EncodeDictEntry(16, {enc_off});
+        return d;
+    };
+    std::string placeholder = EncodeIndex({make_top_dict(0, 0, 0)});
+    size_t prefix_len = header.size() + name_index.size() + placeholder.size() + string_index.size() + global_subr_index.size();
+    std::string charstrings_index = EncodeIndex(charstrings);
+    size_t cs_off = prefix_len;
+    size_t charset_off = cs_off + charstrings_index.size();
+    size_t enc_off = charset_off + charset_bytes.size();
+    std::string top_dict_index = EncodeIndex({make_top_dict(static_cast<int32_t>(cs_off), static_cast<int32_t>(charset_off), static_cast<int32_t>(enc_off))});
+    CHECK(top_dict_index.size() == placeholder.size());
+    return header + name_index + top_dict_index + string_index + global_subr_index + charstrings_index + charset_bytes + encoding_bytes;
+}
+
+std::string Be16(int v) { return std::string{static_cast<char>((v >> 8) & 0xFF), static_cast<char>(v & 0xFF)}; }
+
 double BitmapArea(const unsigned char *bmp, int w, int h) {
     double area = 0;
     for (int i = 0; i < w * h; ++i) area += static_cast<double>(bmp[i]) / 255.0;
@@ -401,7 +433,105 @@ void TestMultiGlyphGidDirectAccess() {
 
 }  // namespace
 
+// gid 1: a 100x100 square at the origin; gid 2: a 50x50 square at (0,200).
+std::vector<std::string> EncodingTestGlyphs() {
+    CharstringBuilder notdef;
+    notdef.Op(14);
+    CharstringBuilder sq;
+    sq.Num(0).Num(0).Op(21).Num(100).Op(6).Num(100).Op(7).Num(-100).Op(6).Op(14);
+    CharstringBuilder small;
+    small.Num(0).Num(200).Op(21).Num(50).Op(6).Num(50).Op(7).Num(-50).Op(6).Op(14);
+    return {notdef.bytes, sq.bytes, small.bytes};
+}
+
+void TestBuiltinEncodingFormats() {
+    // charset format 0: gid1 -> SID 34 ('A'), gid2 -> SID 124 ('grave').
+    std::string charset = std::string(1, '\0') + Be16(34) + Be16(124);
+
+    // Encoding format 0: code 0x41 -> gid 1, code 0x42 -> gid 2.
+    std::string enc0 = std::string(1, '\0') + std::string(1, 2) + std::string(1, 0x41) + std::string(1, 0x42);
+    std::string font = BuildCffWithEncoding(EncodingTestGlyphs(), charset, enc0);
+    gfx::cff::FontInfo fi;
+    CHECK(gfx::cff::InitFont(&fi, reinterpret_cast<const unsigned char *>(font.data()), static_cast<int>(font.size())));
+    CHECK(!fi.encoding_standard);
+    CHECK(gfx::cff::BuiltinEncodingGid(&fi, 0x41) == 1);
+    CHECK(gfx::cff::BuiltinEncodingGid(&fi, 0x42) == 2);
+    CHECK(gfx::cff::BuiltinEncodingGid(&fi, 0x43) == -1);
+    CHECK(gfx::cff::GidForSid(&fi, 124) == 2);
+    CHECK(gfx::cff::GidForSid(&fi, 999) == -1);
+
+    // Encoding format 1 with a supplement (high bit): range 0x61 + 1 more
+    // -> gids 1,2; supplement maps code 0x7A to SID 124 (gid 2).
+    std::string enc1 = std::string(1, static_cast<char>(0x81)) + std::string(1, 1) + std::string(1, 0x61) + std::string(1, 1) +
+                       std::string(1, 1) + std::string(1, 0x7A) + Be16(124);
+    font = BuildCffWithEncoding(EncodingTestGlyphs(), charset, enc1);
+    CHECK(gfx::cff::InitFont(&fi, reinterpret_cast<const unsigned char *>(font.data()), static_cast<int>(font.size())));
+    CHECK(gfx::cff::BuiltinEncodingGid(&fi, 0x61) == 1);
+    CHECK(gfx::cff::BuiltinEncodingGid(&fi, 0x62) == 2);
+    CHECK(gfx::cff::BuiltinEncodingGid(&fi, 0x7A) == 2);
+    CHECK(gfx::cff::BuiltinEncodingGid(&fi, 0x41) == -1);
+
+    // No Encoding entry at all: Standard Encoding through the charset --
+    // code 65 'A' is SID 34 -> gid 1; code 193 'grave' is SID 124 -> gid 2.
+    font = BuildCffWithEncoding(EncodingTestGlyphs(), charset, "");
+    CHECK(gfx::cff::InitFont(&fi, reinterpret_cast<const unsigned char *>(font.data()), static_cast<int>(font.size())));
+    CHECK(fi.encoding_standard);
+    CHECK(gfx::cff::StandardEncodingSid(65) == 34);
+    CHECK(gfx::cff::StandardEncodingSid(193) == 124);
+    CHECK(gfx::cff::StandardEncodingSid(128) == 0);
+    CHECK(gfx::cff::BuiltinEncodingGid(&fi, 65) == 1);
+    CHECK(gfx::cff::BuiltinEncodingGid(&fi, 193) == 2);
+    CHECK(gfx::cff::BuiltinEncodingGid(&fi, 66) == -1);
+}
+
+void TestSeacEndcharComposesBaseAndAccent() {
+    std::string charset = std::string(1, '\0') + Be16(34) + Be16(124);
+    std::vector<std::string> glyphs = EncodingTestGlyphs();
+    // gid 3: `adx ady bchar achar endchar` -> base 'A' (code 65) plus the
+    // accent 'grave' (code 193) displaced by (30, 50).
+    CharstringBuilder comp;
+    comp.Num(30).Num(50).Num(65).Num(193).Op(14);
+    glyphs.push_back(comp.bytes);
+    charset += Be16(300);
+    std::string font = BuildCffWithEncoding(glyphs, charset, "");
+    gfx::cff::FontInfo fi;
+    CHECK(gfx::cff::InitFont(&fi, reinterpret_cast<const unsigned char *>(font.data()), static_cast<int>(font.size())));
+    int w, h, xo, yo;
+    unsigned char *bmp = gfx::cff::GetGlyphBitmap(&fi, 1.0f, 1.0f, 3, &w, &h, &xo, &yo);
+    CHECK(bmp != nullptr);
+    // Base: 0..100 x 0..100. Accent: (30..80) x (250..300).
+    CHECK(xo == 0 && w == 100);
+    CHECK(yo == -300 && h == 300);
+    CHECK(std::fabs(BitmapArea(bmp, w, h) - (100.0 * 100.0 + 50.0 * 50.0)) < 5.0);
+    CHECK(bmp[(300 - 275) * w + 55] == 255);  // inside accent
+    CHECK(bmp[(300 - 150) * w + 55] == 0);    // gap
+    gfx::cff::FreeBitmap(bmp);
+}
+
+void TestMatrixRenderingRotates() {
+    std::string charset = std::string(1, '\0') + Be16(34) + Be16(124);
+    std::string font = BuildCffWithEncoding(EncodingTestGlyphs(), charset, "");
+    gfx::cff::FontInfo fi;
+    CHECK(gfx::cff::InitFont(&fi, reinterpret_cast<const unsigned char *>(font.data()), static_cast<int>(font.size())));
+    int w, h, xo, yo;
+    // gid 2's 50x50 square at (0..50, 200..250), rotated 90 degrees:
+    // rx = -y, ry = x -> x in [-250,-200], y in [0,50].
+    unsigned char *bmp = gfx::cff::GetGlyphBitmapMatrix(&fi, 0, 1, -1, 0, 2, &w, &h, &xo, &yo);
+    CHECK(bmp != nullptr);
+    CHECK(w == 50 && h == 50 && xo == -250 && yo == 0);
+    CHECK(std::fabs(BitmapArea(bmp, w, h) - 2500.0) < 2.0);
+    gfx::cff::FreeBitmap(bmp);
+    // The plain-scale entry point is the {sx, 0, 0, -sy} special case.
+    bmp = gfx::cff::GetGlyphBitmap(&fi, 1.0f, 1.0f, 2, &w, &h, &xo, &yo);
+    CHECK(bmp != nullptr);
+    CHECK(w == 50 && h == 50 && xo == 0 && yo == -250);
+    gfx::cff::FreeBitmap(bmp);
+}
+
 int main() {
+    TestBuiltinEncodingFormats();
+    TestSeacEndcharComposesBaseAndAccent();
+    TestMatrixRenderingRotates();
     TestSimpleSquare();
     TestRRCurveToCircle();
     TestVhCurveToCircleMatchesRRCurveTo();

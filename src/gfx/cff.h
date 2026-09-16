@@ -38,10 +38,11 @@
 // - CharstringType 1 (old Type 1 charstrings inside a CFF wrapper --
 //   vanishingly rare; virtually every modern CFF-in-OpenType/PDF font
 //   uses CharstringType 2).
-// - The deprecated 4-argument "seac-like" form of `endchar` (accented
-//   character composition via Standard Encoding) -- rare in modern
-//   fonts (Adobe deprecated it); detected and tolerated by simply not
-//   drawing the accent, not by crashing/failing the glyph.
+// (The deprecated 4-argument "seac-like" form of `endchar` -- accented
+// character composition via Standard Encoding codes -- IS supported:
+// Type 1 fonts converted to CFF by dvipdfmx/xdvipdfmx, i.e. every
+// tectonic-produced PDF's text fonts, routinely keep their seac-built
+// accented glyphs.)
 // - The arithmetic/logical/storage escape operators (and/or/not/abs/
 //   add/sub/div/mul/sqrt/drop/put/get/ifelse/random, `12 3`-`12 28`
 //   apart from the flex ones) -- a leftover-from-Type1 extension real
@@ -112,6 +113,18 @@ struct FontInfo {
     // `b`/`c`/`e`/`f` are read but unused (a skewed/offset FontMatrix is
     // vanishingly rare in practice for embedded PDF fonts).
     double font_matrix[6] = {0.001, 0, 0, 0.001, 0, 0};
+
+    // Built-in Encoding (spec section 12), code -> GID -- what a PDF
+    // simple font with no /Encoding of its own (a "Builtin"-encoded
+    // font, e.g. every Computer Modern math font dvipdfmx embeds) uses
+    // to map character codes. `encoding_standard` means the font
+    // declared the predefined Standard Encoding (Top DICT Encoding
+    // offset 0/absent -- resolved through this module's own code->SID
+    // table plus the charset, see BuiltinEncodingGid); otherwise
+    // `builtin_encoding` holds the custom table (256 entries, -1 =
+    // unmapped). Never set for CID-keyed fonts.
+    bool encoding_standard = true;
+    std::vector<int16_t> builtin_encoding;
 };
 
 // Parses a bare CFF table's header, top DICT, and the INDEXes/DICTs
@@ -140,7 +153,26 @@ bool GetIndexItem(const Index &index, int i, const unsigned char **out_ptr, uint
 unsigned char *GetGlyphBitmap(const FontInfo *info, float scale_x, float scale_y, int glyph_index, int *width,
                                int *height, int *xoff, int *yoff);
 
+// Same as GetGlyphBitmap, but through a full 2x2 matrix [a b; c d]
+// (font units -> device pixels, gfx::raster::RasterizeOutline's own
+// convention: rx = a*x + c*y, ry = b*x + d*y; GetGlyphBitmap itself is
+// exactly this with {scale_x, 0, 0, -scale_y}) so rotated/skewed text
+// renders rotated/skewed instead of upright.
+unsigned char *GetGlyphBitmapMatrix(const FontInfo *info, float a, float b, float c, float d, int glyph_index,
+                                    int *width, int *height, int *xoff, int *yoff);
+
 void FreeBitmap(unsigned char *bitmap);
+
+// Standard Encoding (spec Appendix B) code -> SID; 0 for an unencoded code.
+int StandardEncodingSid(int code);
+
+// GID whose charset entry is `sid` (non-CID fonts only; 0 for SID 0/
+// .notdef), or -1 if the font has no such glyph.
+int GidForSid(const FontInfo *info, int sid);
+
+// The font's own built-in encoding's GID for `code` (see
+// FontInfo::encoding_standard), or -1 if the code is unencoded there.
+int BuiltinEncodingGid(const FontInfo *info, int code);
 
 }  // namespace cff
 }  // namespace gfx

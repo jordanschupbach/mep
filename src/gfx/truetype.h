@@ -99,7 +99,20 @@ unsigned char *GetCodepointBitmap(const FontInfo *info, float scale_x, float sca
 unsigned char *GetGlyphBitmap(const FontInfo *info, float scale_x, float scale_y, int glyph_index, int *width,
                                int *height, int *xoff, int *yoff);
 
+// Same as GetGlyphBitmap, but through a full 2x2 matrix [a b; c d]
+// (font units -> device pixels, rx = a*x + c*y, ry = b*x + d*y --
+// GetGlyphBitmap itself is exactly this with {scale_x, 0, 0, -scale_y})
+// so rotated/skewed PDF text renders rotated/skewed instead of upright.
+unsigned char *GetGlyphBitmapMatrix(const FontInfo *info, float a, float b, float c, float d, int glyph_index,
+                                    int *width, int *height, int *xoff, int *yoff);
+
 void FreeBitmap(unsigned char *bitmap);
+
+// cmap lookup: glyph index for `codepoint`, 0 (.notdef) if the font has
+// no usable cmap subtable or doesn't map it. Exposed so PDF simple-font
+// wiring can try the symbolic-font (3,0) convention (code, then
+// 0xF000+code) itself before falling back to code-as-GID.
+int FindGlyphIndex(const FontInfo *info, int codepoint);
 
 }  // namespace tt
 }  // namespace gfx

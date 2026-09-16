@@ -400,6 +400,7 @@ add_library(mep_core STATIC
     src/pdf_outline.cpp
     src/pdf_links.cpp
     src/gfx/cff.cpp
+    src/gfx/type1.cpp
     src/formula.cpp
     src/html_doc.cpp
     src/job.cpp
@@ -784,7 +785,7 @@ add_dependencies(tests mep-rasterizer-test)
 # covered by mep-pdf-font-test, doesn't prove it draws in the right
 # place). Needs the full pdf_* + gfx/cff.cpp + gfx/truetype.cpp +
 # gfx/rasterizer.cpp + deflate.cpp/jpeg_codec.cpp stack.
-add_executable(mep-pdf-content-test EXCLUDE_FROM_ALL src/pdf_content_test.cpp src/pdf_content.cpp src/pdf_document.cpp src/pdf_xref.cpp src/pdf_crypt.cpp src/pdf_filters.cpp src/pdf_object.cpp src/pdf_font.cpp src/pdf_encodings.cpp src/gfx/cff.cpp src/gfx/truetype.cpp src/gfx/rasterizer.cpp src/deflate.cpp src/jpeg_codec.cpp)
+add_executable(mep-pdf-content-test EXCLUDE_FROM_ALL src/pdf_content_test.cpp src/pdf_content.cpp src/pdf_document.cpp src/pdf_xref.cpp src/pdf_crypt.cpp src/pdf_filters.cpp src/pdf_object.cpp src/pdf_font.cpp src/pdf_encodings.cpp src/gfx/cff.cpp src/gfx/type1.cpp src/gfx/truetype.cpp src/gfx/rasterizer.cpp src/deflate.cpp src/jpeg_codec.cpp)
 target_include_directories(mep-pdf-content-test PRIVATE src)
 target_compile_options(mep-pdf-content-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-pdf-content-test PRIVATE ${MEP_SANITIZE_FLAGS})
@@ -794,7 +795,7 @@ add_dependencies(tests mep-pdf-content-test)
 # Search/MatchRectsForPage, built on pdf_content.cpp's
 # ExtractContentStreamText -- same "standalone test target only" pattern,
 # not yet wired into mep_core/the live app (Phase 13's job).
-add_executable(mep-pdf-text-test EXCLUDE_FROM_ALL src/pdf_text_test.cpp src/pdf_text.cpp src/pdf_content.cpp src/pdf_document.cpp src/pdf_xref.cpp src/pdf_crypt.cpp src/pdf_filters.cpp src/pdf_object.cpp src/pdf_font.cpp src/pdf_encodings.cpp src/gfx/cff.cpp src/gfx/truetype.cpp src/gfx/rasterizer.cpp src/deflate.cpp src/jpeg_codec.cpp)
+add_executable(mep-pdf-text-test EXCLUDE_FROM_ALL src/pdf_text_test.cpp src/pdf_text.cpp src/pdf_content.cpp src/pdf_document.cpp src/pdf_xref.cpp src/pdf_crypt.cpp src/pdf_filters.cpp src/pdf_object.cpp src/pdf_font.cpp src/pdf_encodings.cpp src/gfx/cff.cpp src/gfx/type1.cpp src/gfx/truetype.cpp src/gfx/rasterizer.cpp src/deflate.cpp src/jpeg_codec.cpp)
 target_include_directories(mep-pdf-text-test PRIVATE src)
 target_compile_options(mep-pdf-text-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-pdf-text-test PRIVATE ${MEP_SANITIZE_FLAGS})
@@ -810,6 +811,17 @@ target_include_directories(mep-cff-test PRIVATE src)
 target_compile_options(mep-cff-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-cff-test PRIVATE ${MEP_SANITIZE_FLAGS})
 add_dependencies(tests mep-cff-test)
+
+# gfx/type1.h/.cpp's Type 1 font program parser + charstring
+# interpreter (the /FontFile sibling of gfx/cff.cpp -- what pdflatex
+# embeds for every Computer Modern font). Builds its own synthetic,
+# eexec-encrypted fonts in the test, so it needs only the shared
+# rasterizer.
+add_executable(mep-type1-test EXCLUDE_FROM_ALL src/gfx/type1_test.cpp src/gfx/type1.cpp src/gfx/rasterizer.cpp)
+target_include_directories(mep-type1-test PRIVATE src)
+target_compile_options(mep-type1-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-type1-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-type1-test)
 
 # PDFIUM_REMOVAL_PLAN.md Phase 10: pdf_encodings.h/.cpp's Standard/
 # WinAnsi/MacRoman encoding tables, AGL-subset name->Unicode resolver,
@@ -827,7 +839,7 @@ add_dependencies(tests mep-pdf-encodings-test)
 # jpeg_codec.cpp stack (font-dict resolution walks Resources/Font,
 # decodes embedded FontFile2/3 streams, and falls back to mep's own
 # vendored Liberation fonts via office_font_data*.h).
-add_executable(mep-pdf-font-test EXCLUDE_FROM_ALL src/pdf_font_test.cpp src/pdf_font.cpp src/pdf_encodings.cpp src/pdf_xref.cpp src/pdf_crypt.cpp src/pdf_filters.cpp src/pdf_object.cpp src/gfx/cff.cpp src/gfx/truetype.cpp src/gfx/rasterizer.cpp src/deflate.cpp src/jpeg_codec.cpp)
+add_executable(mep-pdf-font-test EXCLUDE_FROM_ALL src/pdf_font_test.cpp src/pdf_font.cpp src/pdf_encodings.cpp src/pdf_xref.cpp src/pdf_crypt.cpp src/pdf_filters.cpp src/pdf_object.cpp src/gfx/cff.cpp src/gfx/type1.cpp src/gfx/truetype.cpp src/gfx/rasterizer.cpp src/deflate.cpp src/jpeg_codec.cpp)
 target_include_directories(mep-pdf-font-test PRIVATE src)
 target_compile_options(mep-pdf-font-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-pdf-font-test PRIVATE ${MEP_SANITIZE_FLAGS})

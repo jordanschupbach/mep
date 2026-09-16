@@ -2,6 +2,7 @@
 
 #include "gfx/cff.h"
 #include "gfx/truetype.h"
+#include "gfx/type1.h"
 #include "office_font_data.h"
 #include "office_font_data_mono.h"
 #include "office_font_data_serif.h"
@@ -10,6 +11,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 
 namespace pdffont {
 
@@ -21,7 +23,7 @@ pdfobj::Object Deref(const unsigned char *data, size_t len, const pdfxref::XrefT
     return pdfxref::ResolveObject(data, len, table, obj.ref_val.num, obj.ref_val.gen);
 }
 
-enum class Engine { kNone, kTrueType, kCff };
+enum class Engine { kNone, kTrueType, kCff, kType1 };
 
 // -- Standard-14 substitution -----------------------------------------
 // Matches a /BaseFont name (subset tag already stripped by the caller)
@@ -216,6 +218,7 @@ struct PdfFont::Impl {
     std::string font_bytes;  // owns the decoded (or substitute) font program; tt_info/cff_info point into this
     gfx::tt::FontInfo tt_info;
     gfx::cff::FontInfo cff_info;
+    gfx::t1::FontInfo t1_info;
     double unit_scale = 0.001;  // font units -> text space (1/1000 em); TrueType: 1.0/unitsPerEm, CFF: its own FontMatrix[0]
     bool skip_glyphs = false;   // Symbol/ZapfDingbats substitution: track widths, draw nothing
 
@@ -242,6 +245,14 @@ struct PdfFont::Impl {
     // GetUnicodeText falls back to the encoding-implied code_to_unicode
     // table above (simple fonts only).
     std::unordered_map<uint32_t, std::string> to_unicode;
+
+    // Type 3 state (spec 9.6.5): glyphs are content streams, not
+    // outlines -- pdf_content.cpp runs them through its own interpreter
+    // via Type3CharProc/Type3FontMatrix/Type3Resources.
+    bool is_type3 = false;
+    double type3_matrix[6] = {0.001, 0, 0, 0.001, 0, 0};
+    pdfobj::Object type3_resources;  // Null if the font has no /Resources of its own
+    std::unordered_map<uint32_t, std::string> type3_procs;  // code -> decoded /CharProcs stream
 
     Impl() {
         std::fill(std::begin(code_to_unicode), std::end(code_to_unicode), -1);
@@ -289,6 +300,8 @@ struct PdfFont::Impl {
                             const pdfobj::Object &font_dict);
     void LoadToUnicode(const unsigned char *doc_data, size_t doc_len, const pdfxref::XrefTable &table,
                         const pdfobj::Object &font_dict);
+    void LoadType3Font(const unsigned char *doc_data, size_t doc_len, const pdfxref::XrefTable &table,
+                       const pdfobj::Object &font_dict);
 };
 
 PdfFont::PdfFont() : impl_(std::make_unique<Impl>()) {}
@@ -298,73 +311,56 @@ PdfFont &PdfFont::operator=(PdfFont &&) noexcept = default;
 
 namespace {
 
-// Builds code(0-255) -> glyph name from /Encoding (a Base name, or a
-// dict with /BaseEncoding + /Differences). When /Encoding is absent
-// entirely, spec 9.6.6.2's own default kicks in: StandardEncoding for a
-// non-symbolic font (crucially including every standard-14 substitute
-// this module picks, none of which are symbolic -- Symbol/ZapfDingbats
-// already skip glyph rendering entirely via IsSymbolFont before this is
-// ever called) -- ONLY a genuinely symbolic font gets `has_encoding =
-// false` (empty table throughout), the real case Phase 9's own
-// verification found (an embedded, subsetted, cmap-less TrueType font),
-// where callers fall back to a direct code/GID path instead of name
-// lookup.
-//
-// **Bug found and fixed here (not just documented as a scope note):**
-// the first version of this function treated "no /Encoding" as always
-// meaning "leave empty, use code-as-GID" regardless of the symbolic
-// flag -- correct for the real embedded-symbolic case, but wrong for a
-// standard-14 substitute (`Helvetica` with no /Encoding, the common
-// case), where "code == GID" is nonsense against a freshly-loaded
-// Liberation Sans's own unrelated internal glyph ordering: found via
-// this phase's own live-render check producing a wildly wrong,
-// enormous glyph bitmap (garbage contour data from an arbitrary GID),
-// not a clean failure.
-void BuildSimpleEncoding(const unsigned char *doc_data, size_t doc_len, const pdfxref::XrefTable &table,
-                          const pdfobj::Object *encoding_obj, bool symbolic, std::vector<std::string> &code_to_name,
-                          bool &has_encoding) {
-    code_to_name.assign(256, std::string());
+// What the PDF's own /Encoding entry says, kept separate from any
+// implicit default so the engine-specific resolution in
+// LoadSimpleFontEngine can apply spec 9.6.6's real precedence: an
+// explicit /Differences name wins, then an explicitly named base
+// encoding, then -- for an embedded font -- the font program's OWN
+// built-in encoding, and only then StandardEncoding (non-symbolic fonts
+// and every standard-14 substitute). An earlier version collapsed all
+// of that into one "StandardEncoding unless symbolic, else code-as-GID"
+// table, which drew nothing (or the wrong glyph) for every "Builtin"-
+// encoded font: exactly what dvipdfmx/xdvipdfmx emit for Computer
+// Modern math fonts (CMMI/CMSY/CMEX...), whose glyphs live at codes the
+// font's own custom encoding defines, not at their GIDs. Caught by a
+// live render of a tectonic-produced page whose display math was blank
+// apart from the fraction rule.
+struct SimpleEncoding {
+    bool has_base = false;  // a named /Encoding, or a dict with /BaseEncoding
     pdfenc::Base base = pdfenc::Base::kStandard;
-    const pdfobj::Object *differences = nullptr;
-    // `resolved` must outlive this whole function, NOT just the `else`
-    // branch below: `differences` is a raw pointer into `resolved`'s own
-    // dict_val map (via Find), so it dangles the moment `resolved` goes
-    // out of scope. **Real bug found and fixed**: an earlier version
-    // declared `resolved` block-local to the `else` branch -- undefined
-    // behavior once `differences->IsArray()` ran after that block
-    // closed, caught by a real /Differences override silently not
-    // taking effect in a live test (code 65 kept resolving via the base
-    // encoding instead of the Differences-overridden name), not a
-    // crash -- exactly the kind of "looks like it mostly works" UB
-    // symptom that makes this class of bug dangerous.
-    pdfobj::Object resolved;
+    std::vector<std::string> differences = std::vector<std::string>(256);
 
-    if (!encoding_obj) {
-        has_encoding = !symbolic;  // non-symbolic default: StandardEncoding; symbolic: empty, caller falls back to code-as-GID/cmap-direct
-    } else {
-        resolved = Deref(doc_data, doc_len, table, *encoding_obj);
-        if (resolved.IsName()) {
-            has_encoding = true;
-            const std::string &n = resolved.str_val;
-            if (n == "WinAnsiEncoding") base = pdfenc::Base::kWinAnsi;
-            else if (n == "MacRomanEncoding") base = pdfenc::Base::kMacRoman;
-        } else if (resolved.IsDict()) {
-            has_encoding = true;
-            if (const pdfobj::Object *be = resolved.Find("BaseEncoding")) {
-                const std::string &n = be->AsString("");
-                if (n == "WinAnsiEncoding") base = pdfenc::Base::kWinAnsi;
-                else if (n == "MacRomanEncoding") base = pdfenc::Base::kMacRoman;
-            }
-            differences = resolved.Find("Differences");
-        } else {
-            has_encoding = false;
+    // The PDF's explicit instruction for `code`, or "" if it gave none.
+    std::string Explicit(int code) const {
+        if (!differences[static_cast<size_t>(code)].empty()) return differences[static_cast<size_t>(code)];
+        if (has_base) {
+            const char *n = pdfenc::EncodingName(base, code);
+            if (n) return n;
         }
+        return "";
     }
-    if (!has_encoding) return;
+};
 
-    for (int c = 0; c < 256; ++c) {
-        const char *name = pdfenc::EncodingName(base, c);
-        if (name) code_to_name[static_cast<size_t>(c)] = name;
+SimpleEncoding ReadSimpleEncoding(const unsigned char *doc_data, size_t doc_len, const pdfxref::XrefTable &table,
+                                  const pdfobj::Object *encoding_obj) {
+    SimpleEncoding enc;
+    if (!encoding_obj) return enc;
+    // `resolved` owns the dict `differences` points into -- must outlive
+    // the loop below (an earlier block-local version of it dangled).
+    pdfobj::Object resolved = Deref(doc_data, doc_len, table, *encoding_obj);
+    auto base_from_name = [&](const std::string &n) {
+        if (n == "WinAnsiEncoding") enc.base = pdfenc::Base::kWinAnsi;
+        else if (n == "MacRomanEncoding") enc.base = pdfenc::Base::kMacRoman;
+        else if (n == "StandardEncoding" || n == "MacExpertEncoding") enc.base = pdfenc::Base::kStandard;
+        else return false;
+        return true;
+    };
+    const pdfobj::Object *differences = nullptr;
+    if (resolved.IsName()) {
+        enc.has_base = base_from_name(resolved.str_val);
+    } else if (resolved.IsDict()) {
+        if (const pdfobj::Object *be = resolved.Find("BaseEncoding")) enc.has_base = base_from_name(be->AsString(""));
+        differences = resolved.Find("Differences");
     }
     if (differences && differences->IsArray()) {
         int cur = 0;
@@ -372,11 +368,36 @@ void BuildSimpleEncoding(const unsigned char *doc_data, size_t doc_len, const pd
             if (item.IsNumber()) {
                 cur = static_cast<int>(item.AsInt());
             } else if (item.IsName() && cur >= 0 && cur < 256) {
-                code_to_name[static_cast<size_t>(cur)] = item.str_val;
+                enc.differences[static_cast<size_t>(cur)] = item.str_val;
                 ++cur;
             }
         }
     }
+    return enc;
+}
+
+// Locates the 'CFF ' table inside an OpenType (OTTO) wrapper -- what a
+// /FontFile3 with /Subtype /OpenType holds -- so the bare-CFF parser
+// can run on it. Returns false if `bytes` isn't an sfnt with a CFF table.
+bool FindOpenTypeCffTable(const std::string &bytes, size_t *off, size_t *len) {
+    if (bytes.size() < 12) return false;
+    const unsigned char *p = reinterpret_cast<const unsigned char *>(bytes.data());
+    uint32_t tag = (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) | (static_cast<uint32_t>(p[2]) << 8) | p[3];
+    if (tag != 0x4F54544F && tag != 0x00010000 && tag != 0x74727565) return false;  // 'OTTO', 1.0, 'true'
+    int num_tables = (p[4] << 8) | p[5];
+    for (int i = 0; i < num_tables; ++i) {
+        size_t rec = 12 + static_cast<size_t>(i) * 16;
+        if (rec + 16 > bytes.size()) return false;
+        if (std::memcmp(p + rec, "CFF ", 4) == 0) {
+            uint32_t o = (static_cast<uint32_t>(p[rec + 8]) << 24) | (static_cast<uint32_t>(p[rec + 9]) << 16) | (static_cast<uint32_t>(p[rec + 10]) << 8) | p[rec + 11];
+            uint32_t l = (static_cast<uint32_t>(p[rec + 12]) << 24) | (static_cast<uint32_t>(p[rec + 13]) << 16) | (static_cast<uint32_t>(p[rec + 14]) << 8) | p[rec + 15];
+            if (o >= bytes.size() || l > bytes.size() - o) return false;
+            *off = o;
+            *len = l;
+            return true;
+        }
+    }
+    return false;
 }
 
 }  // namespace
@@ -418,14 +439,11 @@ void PdfFont::Impl::LoadSimpleFontEngine(const unsigned char *doc_data, size_t d
     const pdfobj::Object *descriptor_ref = font_dict.Find("FontDescriptor");
     pdfobj::Object descriptor = descriptor_ref ? Deref(doc_data, doc_len, table, *descriptor_ref) : pdfobj::Object();
 
-    // The FontDescriptor's Symbolic flag (bit 3, value 0x4) determines
-    // BuildSimpleEncoding's default when /Encoding is entirely absent
-    // (see that function's own doc comment for the real bug this
-    // distinction fixes) -- beyond that one default choice, this module
-    // doesn't separately implement full cmap-subtable-priority selection
-    // for symbolic TrueType fonts (real symbolic subsetted fonts found
-    // during Phase 9's own verification had no cmap at all, making the
-    // direct code-as-GID fallback the one that actually matters there).
+    // The FontDescriptor's Symbolic flag (bit 3, value 0x4) only decides
+    // whether StandardEncoding is an acceptable last-resort default for
+    // a code the PDF and the font program itself both say nothing about
+    // (spec 9.6.6.2); everything else below is driven by what the
+    // /Encoding entry and the embedded font actually contain.
     bool symbolic = false;
     if (const pdfobj::Object *flags = descriptor.Find("Flags")) symbolic = (flags->AsInt() & 0x4) != 0;
     if (const pdfobj::Object *mw = descriptor.Find("MissingWidth")) {
@@ -433,34 +451,52 @@ void PdfFont::Impl::LoadSimpleFontEngine(const unsigned char *doc_data, size_t d
         has_missing_width = true;
     }
 
-    const pdfobj::Object *ff2 = descriptor.Find("FontFile2");
-    const pdfobj::Object *ff3 = descriptor.Find("FontFile3");
-    std::string raw, decoded;
-    pdfobj::Object stream_dict;
+    auto load_stream = [&](const pdfobj::Object *ref, std::string *decoded) {
+        pdfobj::Object stream_dict;
+        std::string raw;
+        return ref && ref->IsReference() &&
+               pdfxref::ResolveStream(doc_data, doc_len, table, ref->ref_val.num, ref->ref_val.gen, &stream_dict, &raw) &&
+               pdffilter::DecodeStream(raw, &stream_dict, decoded);
+    };
 
-    if (ff2 && ff2->IsReference() &&
-        pdfxref::ResolveStream(doc_data, doc_len, table, ff2->ref_val.num, ff2->ref_val.gen, &stream_dict, &raw) &&
-        pdffilter::DecodeStream(raw, &stream_dict, &decoded)) {
+    // Embedded font program, by descriptor key: /FontFile2 (TrueType),
+    // /FontFile3 (bare CFF, or an OpenType wrapper around either), or
+    // /FontFile (Type 1 -- what pdflatex/dvips embed for everything,
+    // previously unsupported entirely and silently substituted).
+    std::string decoded;
+    if (load_stream(descriptor.Find("FontFile2"), &decoded)) {
         font_bytes = std::move(decoded);
         if (gfx::tt::InitFont(&tt_info, reinterpret_cast<const unsigned char *>(font_bytes.data()),
                                static_cast<int>(font_bytes.size()))) {
             engine = Engine::kTrueType;
             unit_scale = tt_info.units_per_em > 0 ? 1.0 / tt_info.units_per_em : 0.001;
         }
-    } else if (ff3 && ff3->IsReference() &&
-               pdfxref::ResolveStream(doc_data, doc_len, table, ff3->ref_val.num, ff3->ref_val.gen, &stream_dict,
-                                       &raw) &&
-               pdffilter::DecodeStream(raw, &stream_dict, &decoded)) {
+    }
+    if (engine == Engine::kNone && load_stream(descriptor.Find("FontFile3"), &decoded)) {
         font_bytes = std::move(decoded);
-        if (gfx::cff::InitFont(&cff_info, reinterpret_cast<const unsigned char *>(font_bytes.data()),
-                                static_cast<int>(font_bytes.size()))) {
+        size_t cff_off = 0, cff_len = font_bytes.size();
+        bool is_sfnt = FindOpenTypeCffTable(font_bytes, &cff_off, &cff_len);
+        if (gfx::cff::InitFont(&cff_info, reinterpret_cast<const unsigned char *>(font_bytes.data()) + cff_off,
+                                static_cast<int>(cff_len))) {
             engine = Engine::kCff;
             unit_scale = cff_info.font_matrix[0];
+        } else if (!is_sfnt && gfx::tt::InitFont(&tt_info, reinterpret_cast<const unsigned char *>(font_bytes.data()),
+                                                  static_cast<int>(font_bytes.size()))) {
+            engine = Engine::kTrueType;  // glyf-flavored OpenType mislabeled as FontFile3
+            unit_scale = tt_info.units_per_em > 0 ? 1.0 / tt_info.units_per_em : 0.001;
         }
     }
+    if (engine == Engine::kNone && load_stream(descriptor.Find("FontFile"), &decoded)) {
+        if (gfx::t1::InitFont(&t1_info, reinterpret_cast<const unsigned char *>(decoded.data()),
+                               static_cast<int>(decoded.size()))) {
+            engine = Engine::kType1;  // t1_info copies what it needs; `decoded` need not outlive this
+            unit_scale = t1_info.font_matrix[0];
+        }
+    }
+    bool embedded = engine != Engine::kNone;
 
     if (engine == Engine::kNone) {
-        // No embedded font program: standard-14 substitution.
+        // No (usable) embedded font program: standard-14 substitution.
         std::string base_font;
         if (const pdfobj::Object *bf = font_dict.Find("BaseFont")) base_font = StripSubsetTag(bf->AsString(""));
         std::string lower = base_font;
@@ -477,87 +513,150 @@ void PdfFont::Impl::LoadSimpleFontEngine(const unsigned char *doc_data, size_t d
         }
     }
 
-    std::vector<std::string> code_to_name;
-    bool has_encoding = false;
-    const pdfobj::Object *encoding_obj = font_dict.Find("Encoding");
-    BuildSimpleEncoding(doc_data, doc_len, table, encoding_obj, symbolic, code_to_name, has_encoding);
+    SimpleEncoding enc = ReadSimpleEncoding(doc_data, doc_len, table, font_dict.Find("Encoding"));
+    // StandardEncoding as the last resort: always for a substitute (its
+    // glyphs are only reachable by name), and for a non-symbolic
+    // embedded font (spec 9.6.6.2's default).
+    bool standard_fallback = !embedded || !symbolic;
+    auto standard_name = [&](int c) -> std::string {
+        const char *n = standard_fallback ? pdfenc::EncodingName(pdfenc::Base::kStandard, c) : nullptr;
+        return n ? n : "";
+    };
 
-    if (engine == Engine::kTrueType) {
+    if (engine == Engine::kCff) {
+        // Name -> GID once (charset walk), rather than per code.
+        std::unordered_map<std::string, int> name_to_gid;
+        if (!cff_info.is_cid) {
+            for (int gid = 1; gid < cff_info.num_glyphs; ++gid) {
+                int sid = gid < static_cast<int>(cff_info.charset.size()) ? cff_info.charset[static_cast<size_t>(gid)] : (cff_info.charset.empty() ? gid : 0);
+                std::string n = CffSidToName(cff_info, sid);
+                if (!n.empty()) name_to_gid.emplace(n, gid);
+            }
+        }
+        auto gid_for_name = [&](const std::string &n) {
+            auto it = name_to_gid.find(n);
+            return it == name_to_gid.end() ? -1 : it->second;
+        };
         for (int c = 0; c < 256; ++c) {
-            if (has_encoding && !code_to_name[static_cast<size_t>(c)].empty()) {
-                int unicode = pdfenc::GlyphNameToUnicode(code_to_name[static_cast<size_t>(c)]);
+            std::string name = enc.Explicit(c);
+            int gid = name.empty() ? -1 : gid_for_name(name);
+            if (gid < 0) {
+                int builtin = gfx::cff::BuiltinEncodingGid(&cff_info, c);
+                if (builtin >= 0) {
+                    gid = builtin;
+                    if (name.empty()) {
+                        int sid = builtin < static_cast<int>(cff_info.charset.size()) ? cff_info.charset[static_cast<size_t>(builtin)] : 0;
+                        name = CffSidToName(cff_info, sid);
+                    }
+                }
+            }
+            if (gid < 0 && name.empty()) {
+                name = standard_name(c);
+                if (!name.empty()) gid = gid_for_name(name);
+            }
+            code_to_gid[c] = gid;
+            if (!name.empty()) {
+                int unicode = pdfenc::GlyphNameToUnicode(name);
                 if (unicode >= 0) code_to_unicode[c] = unicode;
             }
-            // No usable name (symbolic-and-no-encoding, or an
-            // unrecognized Differences name): fall back to using the
-            // code directly as a glyph index -- correct for the real
-            // no-cmap subsetted-font case this plan's own Phase 9
-            // verification found, and a reasonable tolerant guess
-            // otherwise (spec's own (3,0)-cmap-at-0xF000+code priority
-            // for symbolic fonts is not separately implemented -- most
-            // real symbolic subsetted fonts have no cmap at all, per
-            // that same finding, making this fallback the one that
-            // actually matters in practice).
-            if (code_to_unicode[c] < 0) code_to_gid[c] = c;
-
-            // Fallback advance width for this code, from the resolved
-            // engine's own hmtx -- used by GetWidth only when the PDF's
-            // own /Widths doesn't cover this code (pdf_font.h's own
-            // design note: keep shape and spacing self-consistent by
-            // using the SAME substitute font's own metrics, rather than
-            // a flat 0/MissingWidth default. **Real gap found and
-            // fixed here**: this fallback was documented in pdf_font.h
-            // from the start but never actually implemented -- caught
-            // by a live text-advance test where consecutive glyphs
-            // rendered stacked on top of each other, since every
-            // unwidthed code silently advanced by 0).
-            int advance = 0, lsb = 0;
-            if (code_to_unicode[c] >= 0) {
-                gfx::tt::GetCodepointHMetrics(&tt_info, code_to_unicode[c], &advance, &lsb);
-            } else if (code_to_gid[c] >= 0) {
-                gfx::tt::GetGlyphHMetrics(&tt_info, code_to_gid[c], &advance, &lsb);
-            }
-            if (advance > 0) code_engine_width[c] = static_cast<double>(advance) * unit_scale * 1000.0;
         }
-    } else if (engine == Engine::kCff) {
+    } else if (engine == Engine::kType1) {
         for (int c = 0; c < 256; ++c) {
-            if (!has_encoding || code_to_name[static_cast<size_t>(c)].empty()) {
-                code_to_gid[c] = c;  // no PDF /Encoding: fall back to code-as-GID, same reasoning as TrueType above
-                continue;
+            std::string name = enc.Explicit(c);
+            int gid = name.empty() ? -1 : gfx::t1::GidForName(&t1_info, name);
+            if (gid < 0 && t1_info.builtin_encoding[c] >= 0) {
+                gid = t1_info.builtin_encoding[c];
+                if (name.empty()) name = t1_info.glyph_names[static_cast<size_t>(gid)];
             }
-            const std::string &name = code_to_name[static_cast<size_t>(c)];
-            // Encoding-implied Unicode for GetUnicodeText's fallback
-            // (PDFIUM_REMOVAL_PLAN.md Phase 11) -- entirely independent
-            // of the GID resolution loop below (which drives what's
-            // actually drawn), added here purely so simple CFF fonts
-            // (mep's own flagship real fixture's font subtype) get the
-            // same text-extraction fallback TrueType already had.
-            int unicode = pdfenc::GlyphNameToUnicode(name);
-            if (unicode >= 0) code_to_unicode[c] = unicode;
-            for (int gid = 0; gid < cff_info.num_glyphs; ++gid) {
-                // **Off-by-one bug found and fixed here**: `charset` is
-                // indexed DIRECTLY by gid (gfx::cff::FontInfo::charset's
-                // own ParseCharset sizes the array to num_glyphs and
-                // leaves index 0 as an unused placeholder -- .notdef's
-                // SID 0 is never written there, not omitted from the
-                // array's length), NOT offset by one the way an earlier
-                // version of this loop read it (`charset[gid-1]`).
-                // That off-by-one silently resolved every simple CFF
-                // font's code to an adjacent-but-wrong glyph -- caught
-                // by a live end-to-end render showing real, legible-
-                // looking-but-wrong text (most letters shifted by
-                // +1 in the font's own glyph order, e.g. "Lua" ->
-                // "Mvb"), not a crash or an empty page.
-                int sid = gid == 0 ? 0
-                                    : (gid < static_cast<int>(cff_info.charset.size()) ? cff_info.charset[static_cast<size_t>(gid)] : 0);
-                if (CffSidToName(cff_info, sid) == name) {
-                    code_to_gid[c] = gid;
-                    break;
+            if (gid < 0 && name.empty()) {
+                name = standard_name(c);
+                if (!name.empty()) gid = gfx::t1::GidForName(&t1_info, name);
+            }
+            code_to_gid[c] = gid;
+            if (!name.empty()) {
+                int unicode = pdfenc::GlyphNameToUnicode(name);
+                if (unicode >= 0) code_to_unicode[c] = unicode;
+            }
+            if (gid >= 0) {
+                double adv = gfx::t1::GetGlyphAdvance(&t1_info, gid);
+                if (adv > 0) code_engine_width[c] = adv * unit_scale * 1000.0;
+            }
+        }
+    } else if (engine == Engine::kTrueType) {
+        bool has_cmap = tt_info.cmap_format != 0;
+        for (int c = 0; c < 256; ++c) {
+            std::string name = enc.Explicit(c);
+            if (name.empty()) name = standard_name(c);
+            int gid = 0;
+            if (!name.empty()) {
+                int unicode = pdfenc::GlyphNameToUnicode(name);
+                if (unicode >= 0) {
+                    code_to_unicode[c] = unicode;
+                    gid = gfx::tt::FindGlyphIndex(&tt_info, unicode);
                 }
+            }
+            if (gid == 0 && embedded && has_cmap) {
+                // Symbolic-font convention (spec 9.6.6.4): a (3,0) cmap
+                // keyed by 0xF000+code, or plain code.
+                gid = gfx::tt::FindGlyphIndex(&tt_info, 0xF000 + c);
+                if (gid == 0) gid = gfx::tt::FindGlyphIndex(&tt_info, c);
+            }
+            if (gid == 0 && embedded && !has_cmap) gid = c;  // cmap-less subset font: code IS the glyph index
+            if (gid > 0 || (embedded && !has_cmap)) {
+                code_to_gid[c] = gid;
+                int advance = 0, lsb = 0;
+                gfx::tt::GetGlyphHMetrics(&tt_info, gid, &advance, &lsb);
+                if (advance > 0) code_engine_width[c] = static_cast<double>(advance) * unit_scale * 1000.0;
             }
         }
     }
 
+    LoadSimpleFontWidths(doc_data, doc_len, table, font_dict);
+}
+
+// Type 3 (spec 9.6.5): no outline engine at all -- /CharProcs are
+// content streams pdf_content.cpp executes per glyph, in the glyph
+// space /FontMatrix maps to text space. Widths (/Widths) are in that
+// same glyph space, so GetWidth converts them through the matrix.
+// Previously these fonts (matplotlib's default PDF output, pdflatex with
+// bitmap PK fonts, many scanned/OCR'd documents) fell through to a
+// Liberation substitute keyed by /Differences names -- passable for
+// plain Latin text, blank or wrong for anything else.
+void PdfFont::Impl::LoadType3Font(const unsigned char *doc_data, size_t doc_len, const pdfxref::XrefTable &table,
+                                  const pdfobj::Object &font_dict) {
+    is_type3 = true;
+    if (const pdfobj::Object *fm = font_dict.Find("FontMatrix")) {
+        pdfobj::Object m = Deref(doc_data, doc_len, table, *fm);
+        if (m.IsArray() && m.array_val.size() == 6) {
+            for (size_t k = 0; k < 6; ++k) type3_matrix[k] = m.array_val[k].AsDouble();
+        }
+    }
+    if (const pdfobj::Object *r = font_dict.Find("Resources")) type3_resources = Deref(doc_data, doc_len, table, *r);
+
+    const pdfobj::Object *descriptor_ref = font_dict.Find("FontDescriptor");
+    pdfobj::Object descriptor = descriptor_ref ? Deref(doc_data, doc_len, table, *descriptor_ref) : pdfobj::Object();
+    if (const pdfobj::Object *mw = descriptor.Find("MissingWidth")) {
+        missing_width = mw->AsDouble();
+        has_missing_width = true;
+    }
+
+    pdfobj::Object procs;
+    if (const pdfobj::Object *cp = font_dict.Find("CharProcs")) procs = Deref(doc_data, doc_len, table, *cp);
+    SimpleEncoding enc = ReadSimpleEncoding(doc_data, doc_len, table, font_dict.Find("Encoding"));
+    for (int c = 0; c < 256; ++c) {
+        std::string name = enc.Explicit(c);
+        if (name.empty()) continue;
+        int unicode = pdfenc::GlyphNameToUnicode(name);
+        if (unicode >= 0) code_to_unicode[c] = unicode;
+        const pdfobj::Object *proc = procs.IsDict() ? procs.Find(name) : nullptr;
+        if (!proc || !proc->IsReference()) continue;
+        pdfobj::Object stream_dict;
+        std::string raw, decoded;
+        if (pdfxref::ResolveStream(doc_data, doc_len, table, proc->ref_val.num, proc->ref_val.gen, &stream_dict, &raw) &&
+            pdffilter::DecodeStream(raw, &stream_dict, &decoded)) {
+            type3_procs[static_cast<uint32_t>(c)] = std::move(decoded);
+        }
+    }
     LoadSimpleFontWidths(doc_data, doc_len, table, font_dict);
 }
 
@@ -748,6 +847,8 @@ void PdfFont::Load(const unsigned char *doc_data, size_t doc_len, const pdfxref:
     is_composite_ = subtype && subtype->AsString("") == "Type0";
     if (is_composite_) {
         impl_->LoadCompositeFont(doc_data, doc_len, table, font_dict);
+    } else if (subtype && subtype->AsString("") == "Type3") {
+        impl_->LoadType3Font(doc_data, doc_len, table, font_dict);
     } else {
         impl_->LoadSimpleFontEngine(doc_data, doc_len, table, font_dict);
     }
@@ -763,6 +864,13 @@ double PdfFont::GetWidth(uint32_t code) const {
         return it != impl_->cid_width.end() ? it->second : impl_->default_width;
     }
     if (code > 255) return impl_->missing_width;
+    if (impl_->is_type3) {
+        // Glyph space -> text space: the advance vector (w, 0) through
+        // /FontMatrix has x component w*a; then to the 1/1000 units
+        // every other simple font's /Widths already use.
+        double w = impl_->code_width[code] >= 0 ? impl_->code_width[code] : impl_->missing_width;
+        return w * impl_->type3_matrix[0] * 1000.0;
+    }
     if (impl_->code_width[code] >= 0) return impl_->code_width[code];
     // Precedence (see pdf_font.h's own design note): the PDF's own
     // explicit /MissingWidth, when given, is the document author's
@@ -780,58 +888,83 @@ double PdfFont::GetWidth(uint32_t code) const {
     return impl_->missing_width;
 }
 
-unsigned char *PdfFont::GetGlyphBitmap(uint32_t code, float scale_x, float scale_y, int *width, int *height,
-                                       int *xoff, int *yoff) const {
+unsigned char *PdfFont::GetGlyphBitmapMatrix(uint32_t code, float a, float b, float c, float d, int *width,
+                                             int *height, int *xoff, int *yoff) const {
     *width = *height = *xoff = *yoff = 0;
     if (impl_->skip_glyphs || impl_->engine == Engine::kNone) return nullptr;
 
-    // unit_scale converts the font's OWN internal glyph-outline units
-    // (1/unitsPerEm for TrueType, FontMatrix[0] -- typically also 0.001
-    // -- for CFF) to text-space em fractions, so `scale_x * unit_scale`
-    // is "device pixels per font-internal-unit", exactly the convention
-    // gfx::tt::GetCodepointBitmap/gfx::cff::GetGlyphBitmap's own
-    // scale_x/scale_y already expect -- callers of THIS function pass
-    // scale_x/scale_y as plain "device pixels per em" (e.g. `font_size *
-    // ctm_scale`, no /1000 anywhere). **Bug found and fixed here**: an
-    // earlier version multiplied by an extra 1000.0, wrongly conflating
-    // this font-internal-units scale with GetWidth's UNRELATED "/Widths
-    // values are in 1/1000-em text-space units" convention -- caught by
-    // a live end-to-end render producing a wildly oversized, garbled
-    // glyph bitmap (a ~1000x-too-large scale factor), not a clean
-    // failure. Cross-checked against gfx::tt directly (bypassing this
-    // module) to confirm the corrected formula, before and after.
-    float fx = static_cast<float>(static_cast<double>(scale_x) * impl_->unit_scale);
-    float fy = static_cast<float>(static_cast<double>(scale_y) * impl_->unit_scale);
-
-    if (is_composite_) {
-        int gid = impl_->GidForCid(static_cast<int>(code));
-        if (impl_->engine == Engine::kTrueType) return gfx::tt::GetGlyphBitmap(&impl_->tt_info, fx, fy, gid, width, height, xoff, yoff);
-        return gfx::cff::GetGlyphBitmap(&impl_->cff_info, fx, fy, gid, width, height, xoff, yoff);
-    }
-
-    if (code > 255) return nullptr;
-    if (impl_->engine == Engine::kTrueType) {
-        int unicode = impl_->code_to_unicode[code];
-        if (unicode >= 0) return gfx::tt::GetCodepointBitmap(&impl_->tt_info, fx, fy, unicode, width, height, xoff, yoff);
-        int gid = impl_->code_to_gid[code];
-        if (gid >= 0) return gfx::tt::GetGlyphBitmap(&impl_->tt_info, fx, fy, gid, width, height, xoff, yoff);
-        return nullptr;
-    }
+    // Callers pass [a b; c d] as text-space em units -> device pixels.
+    // Prepend the font program's own units -> em transform (its full
+    // FontMatrix for CFF/Type 1 -- a skewed one, e.g. a synthetic
+    // oblique, now renders skewed -- or the uniform 1/unitsPerEm for
+    // TrueType) to get font units -> device pixels, the convention every
+    // engine's GetGlyphBitmapMatrix expects. (An earlier scale-only
+    // version of this multiplied by an extra 1000.0 here, conflating
+    // this with GetWidth's unrelated 1/1000-em /Widths units -- caught
+    // by a live render of wildly oversized glyphs.)
+    double fm[4] = {impl_->unit_scale, 0, 0, impl_->unit_scale};
     if (impl_->engine == Engine::kCff) {
-        int gid = impl_->code_to_gid[code];
-        if (gid < 0) return nullptr;
-        return gfx::cff::GetGlyphBitmap(&impl_->cff_info, fx, fy, gid, width, height, xoff, yoff);
+        for (int k = 0; k < 4; ++k) fm[k] = impl_->cff_info.font_matrix[k];
+    } else if (impl_->engine == Engine::kType1) {
+        for (int k = 0; k < 4; ++k) fm[k] = impl_->t1_info.font_matrix[k];
+    }
+    double da = static_cast<double>(a), db = static_cast<double>(b), dc = static_cast<double>(c), dd = static_cast<double>(d);
+    float ma = static_cast<float>(fm[0] * da + fm[1] * dc);
+    float mb = static_cast<float>(fm[0] * db + fm[1] * dd);
+    float mc = static_cast<float>(fm[2] * da + fm[3] * dc);
+    float md = static_cast<float>(fm[2] * db + fm[3] * dd);
+
+    int gid = -1;
+    if (is_composite_) {
+        gid = impl_->GidForCid(static_cast<int>(code));
+    } else {
+        if (code > 255) return nullptr;
+        gid = impl_->code_to_gid[code];
+    }
+    if (gid < 0) return nullptr;
+    switch (impl_->engine) {
+        case Engine::kTrueType:
+            return gfx::tt::GetGlyphBitmapMatrix(&impl_->tt_info, ma, mb, mc, md, gid, width, height, xoff, yoff);
+        case Engine::kCff:
+            return gfx::cff::GetGlyphBitmapMatrix(&impl_->cff_info, ma, mb, mc, md, gid, width, height, xoff, yoff);
+        case Engine::kType1:
+            return gfx::t1::GetGlyphBitmapMatrix(&impl_->t1_info, ma, mb, mc, md, gid, width, height, xoff, yoff);
+        case Engine::kNone:
+            break;
     }
     return nullptr;
 }
 
+unsigned char *PdfFont::GetGlyphBitmap(uint32_t code, float scale_x, float scale_y, int *width, int *height,
+                                       int *xoff, int *yoff) const {
+    return GetGlyphBitmapMatrix(code, scale_x, 0, 0, -scale_y, width, height, xoff, yoff);
+}
+
 void PdfFont::FreeGlyphBitmap(unsigned char *bitmap) const {
     if (!bitmap) return;
-    if (impl_->engine == Engine::kTrueType) {
-        gfx::tt::FreeBitmap(bitmap);
-    } else if (impl_->engine == Engine::kCff) {
-        gfx::cff::FreeBitmap(bitmap);
+    switch (impl_->engine) {
+        case Engine::kTrueType:
+            gfx::tt::FreeBitmap(bitmap);
+            break;
+        case Engine::kCff:
+            gfx::cff::FreeBitmap(bitmap);
+            break;
+        case Engine::kType1:
+            gfx::t1::FreeBitmap(bitmap);
+            break;
+        case Engine::kNone:
+            break;
     }
+}
+
+bool PdfFont::IsType3() const { return impl_->is_type3; }
+const double *PdfFont::Type3FontMatrix() const { return impl_->type3_matrix; }
+const pdfobj::Object &PdfFont::Type3Resources() const { return impl_->type3_resources; }
+bool PdfFont::Type3CharProc(uint32_t code, std::string *out_content) const {
+    auto it = impl_->type3_procs.find(code);
+    if (it == impl_->type3_procs.end()) return false;
+    *out_content = it->second;
+    return true;
 }
 
 }  // namespace pdffont

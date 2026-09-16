@@ -13,7 +13,12 @@
 
 #include "pdf_font.h"
 
+#include "gfx/cff.h"
+#include "gfx/type1.h"
+#include "pdf_encodings.h"
+
 #include <algorithm>
+#include <cstring>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -220,7 +225,160 @@ void TestCompositeFontDefaultWidthWithNoW() {
 
 }  // namespace
 
+void TestType3FontLoadsCharProcsAndScalesWidths() {
+    std::string proc = "100 0 d0 0 0 100 100 re f";
+    std::string doc = BuildDoc(
+        {
+            {1, "<< /Type /Catalog /Pages 2 0 R >>"},
+            {2, "<< /Type /Pages /Kids [] >>"},
+            {3, "<< /Type /Font /Subtype /Type3 /FontMatrix [0.01 0 0 0.01 0 0] /CharProcs 4 0 R "
+                "/Encoding << /Differences [65 /sq] >> /FirstChar 65 /LastChar 66 /Widths [50 80] /Resources 6 0 R >>"},
+            {4, "<< /sq 5 0 R >>"},
+            {5, "<< /Length " + std::to_string(proc.size()) + " >>\nstream\n" + proc + "\nendstream"},
+            {6, "<< /ProcSet [/PDF] >>"},
+        },
+        1);
+    pdfxref::XrefTable table;
+    pdfobj::Object font_dict = LoadFontDict(doc, &table, 3);
+    pdffont::PdfFont font;
+    font.Load(B(doc), doc.size(), table, font_dict);
+    CHECK(font.IsType3());
+    CHECK(font.BytesPerCode() == 1);
+    // /Widths are in glyph space: 50 * FontMatrix.a (0.01) = 0.5 em = 500/1000.
+    CHECK(font.GetWidth(65) == 500);
+    CHECK(font.GetWidth(66) == 800);
+    CHECK(font.Type3FontMatrix()[0] == 0.01);
+    CHECK(font.Type3Resources().IsDict());
+    std::string content;
+    CHECK(font.Type3CharProc(65, &content));
+    CHECK(content == proc);
+    CHECK(!font.Type3CharProc(66, &content));  // no /Differences name -> no glyph procedure
+    int w, h, xoff, yoff;
+    CHECK(font.GetGlyphBitmap(65, 20.0f, 20.0f, &w, &h, &xoff, &yoff) == nullptr);  // no outline engine
+    CHECK(font.GetUnicodeText(65).empty());  // "sq" is no AGL name; nothing to extract
+}
+
+// The three copies of StandardEncoding (pdf_encodings.h's name table,
+// gfx/cff.cpp's code -> SID table, gfx/type1.cpp's code -> name table)
+// must agree, or a seac/"Builtin"-encoded glyph resolves differently
+// depending on which engine happens to draw it.
+void TestStandardEncodingTablesAgree() {
+    for (int c = 0; c < 256; ++c) {
+        const char *name = pdfenc::EncodingName(pdfenc::Base::kStandard, c);
+        int sid = gfx::cff::StandardEncodingSid(c);
+        const char *t1_name = gfx::t1::StandardEncodingName(c);
+        CHECK((name == nullptr) == (sid == 0));
+        CHECK((name == nullptr) == (t1_name == nullptr));
+        if (!name) continue;
+        CHECK(std::strcmp(pdfenc::CffStandardString(sid), name) == 0);
+        CHECK(std::strcmp(t1_name, name) == 0);
+    }
+}
+
+// -- Minimal Type 1 font program builder (same scheme as gfx/type1_test.cpp) --
+std::string T1Num(int v) {
+    std::string s;
+    s.push_back(static_cast<char>(255));
+    s.push_back(static_cast<char>((v >> 24) & 0xFF));
+    s.push_back(static_cast<char>((v >> 16) & 0xFF));
+    s.push_back(static_cast<char>((v >> 8) & 0xFF));
+    s.push_back(static_cast<char>(v & 0xFF));
+    return s;
+}
+std::string T1Op(int op) { return std::string(1, static_cast<char>(op)); }
+std::string T1Encrypt(const std::string &plain, uint16_t r) {
+    std::string in(4, 'X');
+    in += plain;
+    std::string out;
+    for (char ch : in) {
+        unsigned char p = static_cast<unsigned char>(ch);
+        unsigned char c = static_cast<unsigned char>(p ^ (r >> 8));
+        r = static_cast<uint16_t>((c + r) * 52845 + 22719);
+        out.push_back(static_cast<char>(c));
+    }
+    return out;
+}
+std::string BuildType1Program() {
+    // Glyph "box": sidebearing 0, width 600, a 100x100 square; glyph
+    // "eacute" (a math-style name no substitute font could resolve): a
+    // 50x50 square, at code 11 in the font's OWN encoding only.
+    std::string box = T1Num(0) + T1Num(600) + T1Op(13) + T1Num(0) + T1Num(0) + T1Op(21) + T1Num(100) + T1Op(6) +
+                      T1Num(100) + T1Op(7) + T1Num(-100) + T1Op(6) + T1Op(9) + T1Op(14);
+    std::string alpha = T1Num(0) + T1Num(400) + T1Op(13) + T1Num(0) + T1Num(0) + T1Op(21) + T1Num(50) + T1Op(6) +
+                        T1Num(50) + T1Op(7) + T1Num(-50) + T1Op(6) + T1Op(9) + T1Op(14);
+    std::string notdef = T1Num(0) + T1Num(250) + T1Op(13) + T1Op(14);
+    auto entry = [](const std::string &name, const std::string &cs) {
+        std::string enc = T1Encrypt(cs, 4330);  // declared length includes the 4 lenIV lead bytes
+        return "/" + name + " " + std::to_string(enc.size()) + " RD " + enc + " ND\n";
+    };
+    std::string priv = "dup /Private 8 dict dup begin\n/lenIV 4 def\nend\n/CharStrings 3 dict dup begin\n" +
+                       entry(".notdef", notdef) + entry("box", box) + entry("eacute", alpha) + "end\nend\n";
+    std::string clear =
+        "%!PS-AdobeFont-1.0: SynthT1\n/FontMatrix [0.001 0 0 0.001 0 0] readonly def\n/Encoding 256 array\n"
+        "0 1 255 {1 index exch /.notdef put} for\ndup 65 /box put\ndup 11 /eacute put\nreadonly def\n"
+        "currentdict end\ncurrentfile eexec\n";
+    return clear + T1Encrypt(priv, 55665) + std::string(512, '0') + "\ncleartomark\n";
+}
+
+void TestEmbeddedType1FontFileUsesBuiltinEncoding() {
+    std::string program = BuildType1Program();
+    std::string doc = BuildDoc(
+        {
+            {1, "<< /Type /Catalog /Pages 2 0 R >>"},
+            {2, "<< /Type /Pages /Kids [] >>"},
+            // No /Encoding, symbolic flags: exactly how pdflatex embeds a
+            // Computer Modern math font -- codes resolve through the
+            // font program's own encoding.
+            {3, "<< /Type /Font /Subtype /Type1 /BaseFont /ABCDEF+SynthT1 /FirstChar 11 /LastChar 11 /Widths [400] "
+                "/FontDescriptor 4 0 R >>"},
+            {4, "<< /Type /FontDescriptor /FontName /ABCDEF+SynthT1 /Flags 4 /FontFile 5 0 R >>"},
+            {5, "<< /Length " + std::to_string(program.size()) + " >>\nstream\n" + program + "\nendstream"},
+        },
+        1);
+    pdfxref::XrefTable table;
+    pdfobj::Object font_dict = LoadFontDict(doc, &table, 3);
+    pdffont::PdfFont font;
+    font.Load(B(doc), doc.size(), table, font_dict);
+    CHECK(!font.IsType3());
+    int w, h, xoff, yoff;
+    unsigned char *bmp = font.GetGlyphBitmap(11, 100.0f, 100.0f, &w, &h, &xoff, &yoff);  // 100px/em: 50 units -> 5px
+    CHECK(bmp != nullptr);
+    CHECK(w == 5 && h == 5);
+    font.FreeGlyphBitmap(bmp);
+    CHECK(font.GetWidth(11) == 400);   // /Widths
+    CHECK(font.GetWidth(65) == 600);   // outside /Widths, no /MissingWidth: the glyph's own hsbw advance
+    bmp = font.GetGlyphBitmap(65, 100.0f, 100.0f, &w, &h, &xoff, &yoff);
+    CHECK(bmp != nullptr);
+    CHECK(w == 10 && h == 10);
+    font.FreeGlyphBitmap(bmp);
+    CHECK(font.GetGlyphBitmap(66, 100.0f, 100.0f, &w, &h, &xoff, &yoff) == nullptr);  // unencoded, symbolic: nothing
+    CHECK(font.GetUnicodeText(11) == "\xC3\xA9");  // "eacute" via the Adobe Glyph List, no /ToUnicode needed
+
+    // A /Differences override still wins over the built-in encoding.
+    std::string doc2 = BuildDoc(
+        {
+            {1, "<< /Type /Catalog /Pages 2 0 R >>"},
+            {2, "<< /Type /Pages /Kids [] >>"},
+            {3, "<< /Type /Font /Subtype /Type1 /BaseFont /ABCDEF+SynthT1 /Encoding << /Differences [65 /eacute] >> "
+                "/FontDescriptor 4 0 R >>"},
+            {4, "<< /Type /FontDescriptor /FontName /ABCDEF+SynthT1 /Flags 4 /FontFile 5 0 R >>"},
+            {5, "<< /Length " + std::to_string(program.size()) + " >>\nstream\n" + program + "\nendstream"},
+        },
+        1);
+    pdfxref::XrefTable table2;
+    pdfobj::Object font_dict2 = LoadFontDict(doc2, &table2, 3);
+    pdffont::PdfFont font2;
+    font2.Load(B(doc2), doc2.size(), table2, font_dict2);
+    bmp = font2.GetGlyphBitmap(65, 100.0f, 100.0f, &w, &h, &xoff, &yoff);
+    CHECK(bmp != nullptr);
+    CHECK(w == 5 && h == 5);  // alpha's 50-unit square, not box's 100
+    font2.FreeGlyphBitmap(bmp);
+}
+
 int main() {
+    TestType3FontLoadsCharProcsAndScalesWidths();
+    TestStandardEncodingTablesAgree();
+    TestEmbeddedType1FontFileUsesBuiltinEncoding();
     TestStandard14SubstitutionResolvesGlyphs();
     TestStandard14BoldItalicSelection();
     TestSymbolFontSkipsGlyphsButKeepsWidths();

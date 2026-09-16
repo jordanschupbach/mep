@@ -560,6 +560,102 @@ void TestBasicTextShowing() {
     CHECK(CountDarkPixels(canvas) > 0);  // an 'A' actually got drawn somewhere
 }
 
+// Bounding box of every dark pixel: {min_x, min_y, max_x, max_y}, or
+// all -1 if nothing is dark.
+struct DarkBox {
+    int x0 = -1, y0 = -1, x1 = -1, y1 = -1;
+};
+DarkBox DarkBounds(const Canvas &c) {
+    DarkBox b;
+    for (int y = 0; y < c.height; ++y) {
+        for (int x = 0; x < c.width; ++x) {
+            if (PixelAt(c, x, y).r >= 128) continue;
+            if (b.x0 < 0 || x < b.x0) b.x0 = x;
+            if (b.y0 < 0 || y < b.y0) b.y0 = y;
+            if (x > b.x1) b.x1 = x;
+            if (y > b.y1) b.y1 = y;
+        }
+    }
+    return b;
+}
+
+void TestRotatedTextRendersRotated() {
+    // A lowercase 'l' is a tall thin bar upright; under a 90-degree Tm
+    // it must come out as a wide flat bar (an earlier version rendered
+    // every glyph upright regardless of Tm/CTM rotation -- visibly
+    // wrong for the rotated y-axis labels every R/matplotlib plot has).
+    std::string doc = BuildDoc(
+        {
+            {1, "<< /Type /Catalog /Pages 2 0 R >>"},
+            {2, "<< /Type /Pages /Kids [3 0 R] /MediaBox [0 0 100 100] >>"},
+            {3, "<< /Type /Page /Parent 2 0 R >>"},
+            {4, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"},
+        },
+        1);
+    Canvas upright = RenderDoc(doc, MakeFontResources(4, "F1"), "BT /F1 40 Tf 40 30 Td (l) Tj ET", 100, 100);
+    DarkBox u = DarkBounds(upright);
+    CHECK(u.x0 >= 0);
+    CHECK((u.y1 - u.y0) > 3 * (u.x1 - u.x0));
+
+    Canvas rotated = RenderDoc(doc, MakeFontResources(4, "F1"), "BT /F1 40 Tf 0 1 -1 0 60 30 Tm (l) Tj ET", 100, 100);
+    DarkBox r = DarkBounds(rotated);
+    CHECK(r.x0 >= 0);
+    CHECK((r.x1 - r.x0) > 3 * (r.y1 - r.y0));
+    // Same ink either way, just turned.
+    CHECK(std::abs(CountDarkPixels(upright) - CountDarkPixels(rotated)) < CountDarkPixels(upright) / 5 + 4);
+}
+
+void TestType3GlyphProcedureDraws() {
+    // A Type 3 font whose one glyph is a filled unit square in a
+    // 100-unit glyph space (FontMatrix 0.01): at 20pt it covers exactly
+    // 20x20 device pixels from the text origin. Previously Type 3 fonts
+    // fell through to a Liberation substitute keyed by /Differences
+    // names ("sq" here, so: nothing drawn at all).
+    std::string proc = "100 0 d0 0 0 100 100 re f";
+    std::string doc = BuildDoc(
+        {
+            {1, "<< /Type /Catalog /Pages 2 0 R >>"},
+            {2, "<< /Type /Pages /Kids [3 0 R] /MediaBox [0 0 100 50] >>"},
+            {3, "<< /Type /Page /Parent 2 0 R >>"},
+            {4, "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 100 100] /FontMatrix [0.01 0 0 0.01 0 0] "
+                "/CharProcs 5 0 R /Encoding << /Type /Encoding /Differences [65 /sq] >> /FirstChar 65 /LastChar 65 "
+                "/Widths [100] >>"},
+            {5, "<< /sq 6 0 R >>"},
+            {6, "<< /Length " + std::to_string(proc.size()) + " >>\nstream\n" + proc + "\nendstream"},
+        },
+        1);
+    Canvas canvas = RenderDoc(doc, MakeFontResources(4, "F1"), "BT /F1 20 Tf 10 10 Td (AA) Tj ET", 100, 50);
+    DarkBox b = DarkBounds(canvas);
+    // First glyph: user x 10..30, y 10..30 -> device y 20..40; the
+    // second follows at the /Widths advance (100 glyph units = 1 em =
+    // 20pt): x 30..50. Together: x 10..50.
+    CHECK(b.x0 == 10 && b.x1 == 49);
+    CHECK(b.y0 == 20 && b.y1 == 39);
+    RGB inside = PixelAt(canvas, 20, 30);
+    CHECK(inside.r < 10 && inside.g < 10 && inside.b < 10);
+}
+
+void TestType3D1GlyphIgnoresItsOwnColorAndUsesTextFill() {
+    // A `d1` glyph is a stencil: its own `1 0 0 rg` must be ignored and
+    // the text fill color (blue, set before BT) painted instead.
+    std::string proc = "100 0 0 0 100 100 d1 1 0 0 rg 0 0 100 100 re f";
+    std::string doc = BuildDoc(
+        {
+            {1, "<< /Type /Catalog /Pages 2 0 R >>"},
+            {2, "<< /Type /Pages /Kids [3 0 R] /MediaBox [0 0 100 50] >>"},
+            {3, "<< /Type /Page /Parent 2 0 R >>"},
+            {4, "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 100 100] /FontMatrix [0.01 0 0 0.01 0 0] "
+                "/CharProcs 5 0 R /Encoding << /Type /Encoding /Differences [65 /sq] >> /FirstChar 65 /LastChar 65 "
+                "/Widths [100] >>"},
+            {5, "<< /sq 6 0 R >>"},
+            {6, "<< /Length " + std::to_string(proc.size()) + " >>\nstream\n" + proc + "\nendstream"},
+        },
+        1);
+    Canvas canvas = RenderDoc(doc, MakeFontResources(4, "F1"), "0 0 1 rg BT /F1 20 Tf 10 10 Td (A) Tj ET", 100, 50);
+    RGB p = PixelAt(canvas, 20, 30);
+    CHECK(p.r < 10 && p.g < 10 && p.b > 245);  // blue, not the glyph's own red
+}
+
 void TestInvisibleRenderModeDrawsNothing() {
     std::string doc = BuildDoc(
         {
@@ -991,6 +1087,9 @@ int main() {
     TestInlineImageUnfiltered();
     TestDctImageXObject();
     TestBasicTextShowing();
+    TestRotatedTextRendersRotated();
+    TestType3GlyphProcedureDraws();
+    TestType3D1GlyphIgnoresItsOwnColorAndUsesTextFill();
     TestInvisibleRenderModeDrawsNothing();
     TestTdAdvancesBetweenGlyphs();
     TestCharSpacingIncreasesAdvance();

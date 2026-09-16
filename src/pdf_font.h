@@ -10,6 +10,16 @@
 // Phase 10's other half) live in pdf_content.cpp and call this class
 // per glyph; this header only resolves the font itself.
 //
+// Font programs handled: embedded TrueType (/FontFile2), bare CFF or
+// OpenType-wrapped CFF (/FontFile3), Type 1 (/FontFile -- gfx/type1.h,
+// what pdflatex/dvips embed for every Computer Modern font), Type 3
+// (glyphs as content streams, run by pdf_content.cpp -- see IsType3),
+// and standard-14 substitution when nothing is embedded. A simple
+// font's code -> glyph resolution follows spec 9.6.6: /Differences,
+// then an explicit base encoding, then the embedded program's OWN
+// built-in encoding (the "Builtin" case every dvipdfmx-embedded math
+// font relies on), then StandardEncoding for non-symbolic fonts.
+//
 // Scoping decisions:
 // - Composite fonts: `/Encoding Identity-H` (2-byte, direct CID==code)
 //   and a `/CIDToGIDMap` that's either `/Identity` or an embedded
@@ -95,7 +105,24 @@ public:
     // non-null result via FreeGlyphBitmap.
     unsigned char *GetGlyphBitmap(uint32_t code, float scale_x, float scale_y, int *width, int *height, int *xoff,
                                    int *yoff) const;
+    // Same, through a full 2x2 matrix [a b; c d] mapping text-space em
+    // units -> device pixels (rx = a*x + c*y, ry = b*x + d*y; the text
+    // rendering matrix's own linear part, so rotated/skewed text renders
+    // rotated/skewed). GetGlyphBitmap is exactly {scale_x, 0, 0, -scale_y}.
+    unsigned char *GetGlyphBitmapMatrix(uint32_t code, float a, float b, float c, float d, int *width, int *height,
+                                        int *xoff, int *yoff) const;
     void FreeGlyphBitmap(unsigned char *bitmap) const;
+
+    // Type 3 fonts (spec 9.6.5) have no outlines: each glyph is a content
+    // stream the caller (pdf_content.cpp) runs itself, with CTM =
+    // Type3FontMatrix() x text rendering matrix and Type3Resources() (the
+    // font's own /Resources; a Null object if it has none, in which case
+    // the page's apply). GetGlyphBitmap* return nullptr for these;
+    // GetWidth already includes the /FontMatrix conversion.
+    bool IsType3() const;
+    const double *Type3FontMatrix() const;  // 6 entries, PDF [a b c d e f]
+    const pdfobj::Object &Type3Resources() const;
+    bool Type3CharProc(uint32_t code, std::string *out_content) const;
 
     // Best-known Unicode text for `code`, UTF-8 encoded -- for text
     // extraction/search (PDFIUM_REMOVAL_PLAN.md Phase 11), entirely

@@ -110,6 +110,8 @@ int LookupFormat12(const unsigned char *sub, int codepoint) {
     return 0;
 }
 
+}  // namespace
+
 int FindGlyphIndex(const FontInfo *info, int codepoint) {
     if (info->cmap_format == 0 || info->cmap_subtable_off == 0) return 0;
     const unsigned char *sub = info->data + info->cmap_subtable_off;
@@ -117,6 +119,8 @@ int FindGlyphIndex(const FontInfo *info, int codepoint) {
     if (info->cmap_format == 12) return LookupFormat12(sub, codepoint);
     return 0;
 }
+
+namespace {
 
 // -- glyf/loca: glyph outlines -------------------------------------------
 
@@ -495,8 +499,8 @@ unsigned char *GetCodepointBitmap(const FontInfo *info, float scale_x, float sca
     return GetGlyphBitmap(info, scale_x, scale_y, glyph_index, width, height, xoff, yoff);
 }
 
-unsigned char *GetGlyphBitmap(const FontInfo *info, float scale_x, float scale_y, int glyph_index, int *width,
-                               int *height, int *xoff, int *yoff) {
+unsigned char *GetGlyphBitmapMatrix(const FontInfo *info, float a, float b, float c, float d, int glyph_index,
+                                    int *width, int *height, int *xoff, int *yoff) {
     *width = *height = *xoff = *yoff = 0;
     if (glyph_index < 0 || glyph_index >= info->num_glyphs) return nullptr;
 
@@ -504,37 +508,41 @@ unsigned char *GetGlyphBitmap(const FontInfo *info, float scale_x, float scale_y
     ReadGlyphContours(info, glyph_index, contours, 0);
     if (contours.empty()) return nullptr;
 
+    // Transform every point (on- and off-curve alike -- an affine map
+    // preserves the quadratic control-point relationship, so the
+    // contour convention BuildEdgesForContour relies on survives) into
+    // device space first, then take the bounding box there.
     float xmin = 1e30f, ymin = 1e30f, xmax = -1e30f, ymax = -1e30f;
-    for (const Contour &c : contours) {
-        for (const GlyphPoint &p : c) {
-            xmin = std::min(xmin, p.x);
-            xmax = std::max(xmax, p.x);
-            ymin = std::min(ymin, p.y);
-            ymax = std::max(ymax, p.y);
+    for (Contour &ct : contours) {
+        for (GlyphPoint &p : ct) {
+            float px = a * p.x + c * p.y;
+            float py = b * p.x + d * p.y;
+            p.x = px;
+            p.y = py;
+            xmin = std::min(xmin, px);
+            xmax = std::max(xmax, px);
+            ymin = std::min(ymin, py);
+            ymax = std::max(ymax, py);
         }
     }
-    if (xmax <= xmin || ymax <= ymin) return nullptr;
+    if (!(xmax > xmin) || !(ymax > ymin)) return nullptr;
+    if (xmax - xmin > 1e6f || ymax - ymin > 1e6f) return nullptr;
 
-    int ix0 = static_cast<int>(std::floor(xmin * scale_x));
-    int ix1 = static_cast<int>(std::ceil(xmax * scale_x));
-    int iy0 = static_cast<int>(std::floor(-ymax * scale_y));  // font y-up -> raster y-down
-    int iy1 = static_cast<int>(std::ceil(-ymin * scale_y));
+    int ix0 = static_cast<int>(std::floor(xmin));
+    int ix1 = static_cast<int>(std::ceil(xmax));
+    int iy0 = static_cast<int>(std::floor(ymin));
+    int iy1 = static_cast<int>(std::ceil(ymax));
     int w = ix1 - ix0;
     int h = iy1 - iy0;
     if (w <= 0 || h <= 0) return nullptr;
 
     std::vector<Edge> edges;
-    for (const Contour &c : contours) {
-        Contour raster_space;
-        raster_space.reserve(c.size());
-        for (const GlyphPoint &p : c) {
-            GlyphPoint rp;
-            rp.x = p.x * scale_x - static_cast<float>(ix0);
-            rp.y = -p.y * scale_y - static_cast<float>(iy0);
-            rp.on_curve = p.on_curve;
-            raster_space.push_back(rp);
+    for (Contour &ct : contours) {
+        for (GlyphPoint &p : ct) {
+            p.x -= static_cast<float>(ix0);
+            p.y -= static_cast<float>(iy0);
         }
-        BuildEdgesForContour(edges, raster_space);
+        BuildEdgesForContour(edges, ct);
     }
 
     std::vector<unsigned char> pixels = gfx::raster::Rasterize(edges, w, h);
@@ -546,6 +554,11 @@ unsigned char *GetGlyphBitmap(const FontInfo *info, float scale_x, float scale_y
     *xoff = ix0;
     *yoff = iy0;
     return out;
+}
+
+unsigned char *GetGlyphBitmap(const FontInfo *info, float scale_x, float scale_y, int glyph_index, int *width,
+                               int *height, int *xoff, int *yoff) {
+    return GetGlyphBitmapMatrix(info, scale_x, 0, 0, -scale_y, glyph_index, width, height, xoff, yoff);
 }
 
 void FreeBitmap(unsigned char *bitmap) { std::free(bitmap); }

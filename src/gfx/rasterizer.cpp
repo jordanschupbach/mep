@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
 #include <utility>
 
 namespace gfx {
@@ -145,6 +147,77 @@ std::vector<unsigned char> Rasterize(std::vector<Edge> &edges, int width, int he
                 static_cast<unsigned char>(coverage * 255.0f + 0.5f);
         }
     }
+    return out;
+}
+
+unsigned char *RasterizeOutline(const std::vector<OutlineContour> &contours, float a, float b, float c, float d,
+                                int *width, int *height, int *xoff, int *yoff) {
+    *width = *height = *xoff = *yoff = 0;
+    if (contours.empty()) return nullptr;
+
+    auto tx = [&](float x, float y) { return a * x + c * y; };
+    auto ty = [&](float x, float y) { return b * x + d * y; };
+
+    // Bounding box over every point including cubic control points: a
+    // curve never leaves its control hull, so this can only over-cover,
+    // whereas an endpoints-only box can crop a bulging curve segment.
+    float xmin = 1e30f, ymin = 1e30f, xmax = -1e30f, ymax = -1e30f;
+    auto consider = [&](float x, float y) {
+        float px = tx(x, y), py = ty(x, y);
+        xmin = std::min(xmin, px);
+        xmax = std::max(xmax, px);
+        ymin = std::min(ymin, py);
+        ymax = std::max(ymax, py);
+    };
+    for (const OutlineContour &ct : contours) {
+        consider(ct.start_x, ct.start_y);
+        for (const OutlineSegment &s : ct.segments) {
+            consider(s.x, s.y);
+            if (s.is_curve) {
+                consider(s.c1x, s.c1y);
+                consider(s.c2x, s.c2y);
+            }
+        }
+    }
+    if (!(xmax > xmin) || !(ymax > ymin)) return nullptr;
+    if (xmax - xmin > 1e6f || ymax - ymin > 1e6f) return nullptr;  // absurd matrix/outline: refuse rather than allocate gigabytes
+
+    int ix0 = static_cast<int>(std::floor(xmin));
+    int ix1 = static_cast<int>(std::ceil(xmax));
+    int iy0 = static_cast<int>(std::floor(ymin));
+    int iy1 = static_cast<int>(std::ceil(ymax));
+    int w = ix1 - ix0, h = iy1 - iy0;
+    if (w <= 0 || h <= 0) return nullptr;
+
+    auto rx = [&](float x, float y) { return tx(x, y) - static_cast<float>(ix0); };
+    auto ry = [&](float x, float y) { return ty(x, y) - static_cast<float>(iy0); };
+
+    std::vector<Edge> edges;
+    for (const OutlineContour &ct : contours) {
+        float cur_x = rx(ct.start_x, ct.start_y), cur_y = ry(ct.start_x, ct.start_y);
+        float start_x = cur_x, start_y = cur_y;
+        for (const OutlineSegment &s : ct.segments) {
+            float ex = rx(s.x, s.y), ey = ry(s.x, s.y);
+            if (s.is_curve) {
+                FlattenCubic(edges, cur_x, cur_y, rx(s.c1x, s.c1y), ry(s.c1x, s.c1y), rx(s.c2x, s.c2y), ry(s.c2x, s.c2y),
+                             ex, ey);
+            } else {
+                AddLine(edges, cur_x, cur_y, ex, ey);
+            }
+            cur_x = ex;
+            cur_y = ey;
+        }
+        AddLine(edges, cur_x, cur_y, start_x, start_y);  // implicit close (charstring closepath/endchar semantics)
+    }
+
+    std::vector<unsigned char> pixels = Rasterize(edges, w, h);
+    auto *out = static_cast<unsigned char *>(std::malloc(pixels.size()));
+    if (!out) return nullptr;
+    std::memcpy(out, pixels.data(), pixels.size());
+    *width = w;
+    *height = h;
+    *xoff = ix0;
+    *yoff = iy0;
     return out;
 }
 

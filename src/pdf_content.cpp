@@ -780,6 +780,16 @@ struct Interpreter {
     // sets this.
     std::vector<TextGlyph> *text_output = nullptr;
 
+    // The resources dict the current Run() executes against -- kept
+    // here so ShowText can hand a Type 3 glyph procedure the page's (or
+    // enclosing Form's) resources when the font has none of its own.
+    const pdfobj::Object *run_resources = nullptr;
+
+    // Set by a Type 3 glyph procedure's `d1` operator (spec 9.6.5): the
+    // glyph is a stencil painted in the text fill color, and any color
+    // operators inside it shall be ignored.
+    bool color_locked = false;
+
     GState &Top() { return gs.back(); }
 
     std::shared_ptr<pdffont::PdfFont> ResolveFont(const std::string &name, const pdfobj::Object &resources) {
@@ -820,18 +830,22 @@ struct Interpreter {
             Mat2D trm = Multiply(text_space_matrix, Multiply(text_matrix, g.ctm));
             double origin_x, origin_y;
             Transform(trm, 0, 0, &origin_x, &origin_y);
-            // Isotropic-per-axis approximation of Trm's linear part
-            // (Scoping decision: rotated/skewed text renders upright at
-            // the right position/size rather than actually rotated --
-            // exact for every one of this plan's own real fixtures,
-            // none of which have page rotation or artistically rotated
-            // text runs; see PDFIUM_REMOVAL_PLAN.md's Phase 10 writeup).
-            float scale_x = static_cast<float>(std::sqrt(trm.a * trm.a + trm.b * trm.b));
+            // Per-axis scale of Trm's linear part -- only used for the
+            // extracted-text box heights below; glyphs themselves go
+            // through the full matrix (rotated axis labels in R/matplotlib
+            // plots, landscape pages, etc. used to render upright).
             float scale_y = static_cast<float>(std::sqrt(trm.c * trm.c + trm.d * trm.d));
 
             if (g.render_mode != 3) {  // 3 = invisible
                 int gw, gh, xoff, yoff;
-                unsigned char *bmp = g.font->GetGlyphBitmap(code, scale_x, scale_y, &gw, &gh, &xoff, &yoff);
+                unsigned char *bmp = nullptr;
+                if (g.font->IsType3()) {
+                    DrawType3Glyph(code, trm);
+                } else {
+                    bmp = g.font->GetGlyphBitmapMatrix(code, static_cast<float>(trm.a), static_cast<float>(trm.b),
+                                                       static_cast<float>(trm.c), static_cast<float>(trm.d), &gw, &gh,
+                                                       &xoff, &yoff);
+                }
                 if (bmp) {
                     const float *rgb = (g.render_mode == 1) ? g.stroke_rgb : g.fill_rgb;  // 1=stroke-only: approximate with stroke color, no separate outline-only rendering
                     float alpha = (g.render_mode == 1) ? g.stroke_alpha : g.fill_alpha;
@@ -876,6 +890,33 @@ struct Interpreter {
         double h_frac = g.h_scale / 100.0;
         double tx = (-adjustment / 1000.0) * g.font_size * h_frac;
         text_matrix = Multiply(Mat2D{1, 0, 0, 1, tx, 0}, text_matrix);
+    }
+
+    // Type 3 glyph (spec 9.6.5): runs the code's /CharProcs content
+    // stream in a sub-interpreter whose CTM is FontMatrix x Trm, exactly
+    // like a Form XObject (DoXObject) but with the text state's fill
+    // color as both fill and stroke color (a `d1` stencil glyph paints
+    // in the fill color, and even `d0` glyphs conventionally inherit it).
+    void DrawType3Glyph(uint32_t code, const Mat2D &trm) {
+        if (form_depth > 16) return;
+        std::string proc;
+        if (!Top().font->Type3CharProc(code, &proc)) return;
+        const double *fm = Top().font->Type3FontMatrix();
+        Mat2D glyph_ctm = Multiply(Mat2D{fm[0], fm[1], fm[2], fm[3], fm[4], fm[5]}, trm);
+        const pdfobj::Object &font_res = Top().font->Type3Resources();
+        const pdfobj::Object *res = font_res.IsDict() ? &font_res : run_resources;
+
+        ++form_depth;
+        Interpreter sub{canvas, doc_data, doc_len, table};
+        sub.gs.push_back(Top());
+        sub.Top().ctm = glyph_ctm;
+        for (int k = 0; k < 3; ++k) sub.Top().stroke_rgb[k] = Top().fill_rgb[k];
+        sub.Top().stroke_alpha = Top().fill_alpha;
+        sub.form_depth = form_depth;
+        // No text_output: a glyph procedure's own nested text (rare) is
+        // not this glyph's extractable text -- the code's /ToUnicode is.
+        sub.Run(proc, res ? *res : pdfobj::Object());
+        --form_depth;
     }
 
     double Num(size_t index_from_end) const {
@@ -997,7 +1038,13 @@ struct Interpreter {
 
     void DoXObject(const std::string &name, const pdfobj::Object &resources);
 
+    static bool IsColorOperator(const std::string &op) {
+        return op == "g" || op == "G" || op == "rg" || op == "RG" || op == "k" || op == "K" || op == "cs" ||
+               op == "CS" || op == "sc" || op == "scn" || op == "SC" || op == "SCN";
+    }
+
     void Run(const std::string &content, const pdfobj::Object &resources) {
+        run_resources = &resources;
         size_t pos = 0;
         const unsigned char *data = reinterpret_cast<const unsigned char *>(content.data());
         size_t len = content.size();
@@ -1008,7 +1055,11 @@ struct Interpreter {
                 continue;
             }
             const std::string &op = tok.op;
-            if (op == "q") {
+            if (color_locked && IsColorOperator(op)) {
+                // Inside a `d1` Type 3 glyph: color operators are ignored (spec 9.6.5).
+            } else if (op == "d1") {
+                color_locked = true;  // `d0` (colored glyph) needs nothing: colors apply normally
+            } else if (op == "q") {
                 gs.push_back(Top());
             } else if (op == "Q") {
                 if (gs.size() > 1) gs.pop_back();

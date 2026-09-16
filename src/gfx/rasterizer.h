@@ -65,5 +65,32 @@ void FlattenCubic(std::vector<Edge> &edges, float x0, float y0, float c1x, float
 std::vector<unsigned char> Rasterize(std::vector<Edge> &edges, int width, int height,
                                       FillRule rule = FillRule::kNonZero);
 
+// A cubic-Bezier outline contour in font units (y-up): the shared output
+// shape of the CFF/Type 2 (gfx/cff.cpp) and Type 1 (gfx/type1.cpp)
+// charstring interpreters, so both feed the one RasterizeOutline below
+// instead of each carrying its own bounding-box/edge-list/malloc
+// boilerplate.
+struct OutlineSegment {
+    bool is_curve = false;
+    float x = 0, y = 0;                         // end point
+    float c1x = 0, c1y = 0, c2x = 0, c2y = 0;   // cubic control points (is_curve only)
+};
+struct OutlineContour {
+    float start_x = 0, start_y = 0;
+    std::vector<OutlineSegment> segments;  // implicitly closed back to (start_x, start_y)
+};
+
+// Rasterizes `contours` through the 2x2 matrix [a b; c d] (font units ->
+// device pixels, PDF's own row-vector convention: rx = a*x + c*y,
+// ry = b*x + d*y). A y-down device space is expressed by the caller
+// through the matrix itself (a plain "scale by sx/sy" is {sx, 0, 0,
+// -sy}), which is what lets one function serve upright, rotated and
+// skewed text alike. Returns a malloc'd width*height coverage bitmap
+// (caller std::free()s it), or nullptr for an empty/degenerate outline;
+// *xoff/*yoff are the bitmap's top-left offset from the glyph origin in
+// device pixels (the same contract as gfx::tt::GetGlyphBitmap).
+unsigned char *RasterizeOutline(const std::vector<OutlineContour> &contours, float a, float b, float c, float d,
+                                int *width, int *height, int *xoff, int *yoff);
+
 }  // namespace raster
 }  // namespace gfx

@@ -9,8 +9,10 @@ VTerm::VTerm(int rows, int cols) : rows_(std::max(1, rows)), cols_(std::max(1, c
     bottom_margin_ = rows_ - 1;
 }
 
-void VTerm::Feed(const std::string &data) {
+std::string VTerm::Feed(const std::string &data) {
+    replies_.clear();
     for (char raw : data) PutByte(static_cast<unsigned char>(raw));
+    return std::move(replies_);
 }
 
 void VTerm::Resize(int rows, int cols) {
@@ -236,7 +238,22 @@ void VTerm::ParseOscTitle() {
     size_t semi = osc_buf_.find(';');
     if (semi == std::string::npos) return;
     std::string num = osc_buf_.substr(0, semi);
-    if (num == "0" || num == "1" || num == "2") title_ = osc_buf_.substr(semi + 1);
+    const std::string value = osc_buf_.substr(semi + 1);
+    if (num == "0" || num == "1" || num == "2") {
+        title_ = value;
+    } else if (value == "?" && num == "10") {
+        // OSC 10/11 color queries are used by modern TUIs (including
+        // Codex) during startup to choose a legible prompt treatment.
+        // These standard neutral defaults merely describe this terminal;
+        // applications still paint their explicit SGR colors cell by cell.
+        Reply("\x1b]10;rgb:ffff/ffff/ffff\x1b\\");
+    } else if (value == "?" && num == "11") {
+        Reply("\x1b]11;rgb:0000/0000/0000\x1b\\");
+    }
+}
+
+void VTerm::Reply(const std::string &bytes) {
+    replies_ += bytes;
 }
 
 // --- CSI / SGR dispatch --------------------------------------------------
@@ -274,6 +291,32 @@ void VTerm::ExecuteCsi(char final_byte) {
     auto param = [&](size_t i, int def) { return (i < p.size() && p[i] != 0) ? p[i] : def; };
 
     switch (final_byte) {
+        case 'n':
+            // DSR 6 (cursor position report).  Codex probes this as part
+            // of its terminal initialization and waits for the response
+            // before drawing its fully styled input area.
+            if (!priv && !p.empty() && p[0] == 6) {
+                Reply("\x1b[" + std::to_string(cursor_row_ + 1) + ";" + std::to_string(cursor_col_ + 1) + "R");
+            }
+            break;
+        case 'c':
+            // A conservative xterm primary-device-attributes reply.  It
+            // advertises only capabilities VTerm implements sufficiently
+            // for normal TUI operation, rather than claiming a full xterm.
+            if (!priv) Reply("\x1b[?62;4;6;22c");
+            break;
+        case 'u':
+            // Kitty keyboard-protocol capability query (CSI ? u).  We do
+            // not enable that input protocol, so report its baseline state
+            // explicitly instead of leaving the querying TUI waiting.
+            if (priv && p.size() == 1 && p[0] == 0) {
+                Reply("\x1b[?0u");
+            } else if (!priv) {
+                cursor_row_ = saved_cursor_row_;
+                cursor_col_ = saved_cursor_col_;
+                pending_wrap_ = false;
+            }
+            break;
         case 'A':
             cursor_row_ = std::max(top_margin_, cursor_row_ - param(0, 1));
             break;
@@ -369,11 +412,6 @@ void VTerm::ExecuteCsi(char final_byte) {
         case 's':
             saved_cursor_row_ = cursor_row_;
             saved_cursor_col_ = cursor_col_;
-            break;
-        case 'u':
-            cursor_row_ = saved_cursor_row_;
-            cursor_col_ = saved_cursor_col_;
-            pending_wrap_ = false;
             break;
         case 'm':
             ExecuteSgr(p);

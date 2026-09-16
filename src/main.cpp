@@ -1903,7 +1903,7 @@ void ApplyFontSize(float size) {
         {0x2500, 0x257f},  // box drawing
         {0x2580, 0x259f},  // block elements
         {0x25a0, 0x25ff},  // geometric shapes
-        {0x2010, 0x2027},  // general punctuation (dashes, quotes, bullet, ellipsis)
+        {0x2010, 0x203a},  // general punctuation (dashes, quotes, bullet, ellipsis, right-angle prompt mark)
         {0x2190, 0x21ff},  // arrows
     };
     constexpr int kTerminalExtraCount = sizeof(kTerminalExtraCodepoints) / sizeof(kTerminalExtraCodepoints[0]);
@@ -31196,6 +31196,7 @@ void DrawDashboard(float x, float y, float w, float h) {
     float max_w = 0;
     for (const auto &line : lines) max_w = std::max(max_w, gfx::MeasureTextEx(g_font, line.c_str(), font_size, 0).x);
     struct DashboardButton {
+        char shortcut;
         const char *label;
         const char *command;
     };
@@ -31203,14 +31204,17 @@ void DrawDashboard(float x, float y, float w, float h) {
     // the dashboard is the empty-workspace starting point.  Projects comes
     // first because it is the usual next step; Help opens the wiki's intro.
     static constexpr DashboardButton kDashboardButtons[] = {
-        {"Projects", "MepProjects"},
-        {"Help", "MepHelp"},
+        {'p', "Projects", "MepProjects"},
+        {'h', "Help", "MepHelp"},
     };
     const float button_h = static_cast<float>(line_h) + 4.0f;
     const float button_gap = 6.0f;
     float button_w = max_w;
+    float actions_w = 0.0f;
     for (const DashboardButton &button : kDashboardButtons) {
-        button_w = std::max(button_w, gfx::MeasureTextEx(g_font, button.label, font_size, 0).x + 28.0f);
+        const std::string row_label = std::string(1, button.shortcut) + " " + button.label;
+        button_w = std::max(button_w, gfx::MeasureTextEx(g_font, row_label.c_str(), font_size, 0).x + 28.0f);
+        actions_w = std::max(actions_w, gfx::MeasureTextEx(g_font, row_label.c_str(), font_size, 0).x);
     }
     // A theme is light when its resolved canvas background is perceptually
     // light.  This handles all palettes consistently, including custom names.
@@ -31247,20 +31251,29 @@ void DrawDashboard(float x, float y, float w, float h) {
                    ResolveHlGroup("Comment"));
     }
     const float buttons_y = start_y + static_cast<float>(hint_line) * static_cast<float>(line_h);
+    // Center the action list as a block, not each row independently: shortcut
+    // letters therefore form one left-aligned column even when labels differ.
+    const float actions_x = x + std::max(0.0f, (w - actions_w) / 2.0f);
     for (size_t i = 0; i < std::size(kDashboardButtons); ++i) {
         const DashboardButton &button = kDashboardButtons[i];
         const gfx::Rectangle rect{x + std::max(0.0f, (w - button_w) / 2.0f), buttons_y + static_cast<float>(i) * (button_h + button_gap), button_w, button_h};
-        const float label_w = gfx::MeasureTextEx(g_font, button.label, font_size, 0).x;
-        // These are buffer-like action lines, not raised buttons: only the
-        // virtual Normal-mode cursor marks the selected row.  Hovering is
-        // intentionally visual-no-op; UpdatePaneMouseInteraction supplies
-        // the pointing-hand cursor for the click region below.
+        const std::string shortcut(1, button.shortcut);
+        const float shortcut_w = gfx::MeasureTextEx(g_font, shortcut.c_str(), font_size, 0).x;
+        const float space_w = gfx::MeasureTextEx(g_font, " ", font_size, 0).x;
+        const float row_y = rect.y + (rect.height - font_size) / 2.0f;
+        // Match a normal buffer's cursorline: tint the full available row,
+        // then draw the shortcut and label above it. Hovering remains a
+        // visual no-op; keyboard cursor movement is the selected state.
         if (g_editor.DashboardSelection() == static_cast<int>(i)) {
-            const float cursor_x = rect.x + (rect.width - label_w) / 2.0f - 10.0f;
-            gfx::DrawTextEx(g_font, ">", gfx::Vector2{cursor_x, rect.y + (rect.height - font_size) / 2.0f},
-                            font_size, 0, ResolveHlGroup("WorkspaceActive"));
+            gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(rect.y), static_cast<int>(w),
+                               static_cast<int>(rect.height), ResolveHlGroup("CursorLine"));
         }
-        gfx::DrawTextEx(g_font, button.label, gfx::Vector2{rect.x + (rect.width - label_w) / 2.0f, rect.y + (rect.height - font_size) / 2.0f},
+        // g_font has no bold variant. Draw the shortcut a second pixel to
+        // the right, the same faux-bold treatment used for formatted text.
+        const gfx::Color accent = ResolveHlGroup("Accent");
+        gfx::DrawTextEx(g_font, shortcut.c_str(), gfx::Vector2{actions_x, row_y}, font_size, 0, accent);
+        gfx::DrawTextEx(g_font, shortcut.c_str(), gfx::Vector2{actions_x + 1.0f, row_y}, font_size, 0, accent);
+        gfx::DrawTextEx(g_font, button.label, gfx::Vector2{actions_x + shortcut_w + space_w, row_y},
                         font_size, 0, ResolveHlGroup("StatusLineFg"));
         RegisterClickRegion(rect, [command = button.command] { g_editor.RunCommand(command); });
     }

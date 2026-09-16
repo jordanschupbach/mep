@@ -7730,6 +7730,9 @@ public:
     int DashboardSelection() const { return dashboard_selection_; }
     void MoveDashboardSelection(int delta);
     void ActivateDashboardSelection();
+    // Activates an action by its displayed single-letter dashboard shortcut.
+    // Returns false when `shortcut` is not a dashboard action.
+    bool ActivateDashboardShortcut(char shortcut);
     // Finds the existing scratch buffer if one exists in this session,
     // otherwise creates one; switches the current pane to it either way.
     void OpenScratchBuffer();

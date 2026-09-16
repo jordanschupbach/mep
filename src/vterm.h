@@ -59,12 +59,9 @@ struct VTermCell {
 // Deliberately not attempted: mouse reporting, sixel/image protocols,
 // bracketed-paste as anything other than a no-op, DEC special-graphics
 // character sets (ESC ( / ESC ) -- the following byte is consumed and
-// ignored rather than switching glyph sets), and device-status-report
-// replies (CSI n / CSI c) -- these would need a way to write back to the
-// PTY from inside the parser, which this class doesn't have; the couple
-// of programs that block waiting on one (rare -- mostly legacy status-line
-// tricks) will simply see no reply, same as a terminal that doesn't
-// support the query. All unrecognized CSI/ESC/OSC/DCS sequences are
+// ignored rather than switching glyph sets). It replies to the common DSR,
+// device-attributes, and OSC default-color queries that modern TUIs use at
+// startup; all other unrecognized CSI/ESC/OSC/DCS sequences are
 // parsed structurally (so their bytes never leak into the visible grid as
 // stray text) and then silently discarded.
 class VTerm {
@@ -84,7 +81,10 @@ public:
      * @brief Parses a chunk of raw child-process output byte by byte, updating parser and grid state.
      * @param data Raw bytes to feed; may contain a partial UTF-8 or escape sequence continued from a previous call.
      */
-    void Feed(const std::string &data);
+    // Returns replies to terminal capability/status queries received in
+    // `data`.  The embedding PTY must write a non-empty reply back to its
+    // child, just as a real terminal emulator would.
+    std::string Feed(const std::string &data);
 
     // Resizes the *visible* grid in place. The alternate screen is
     // reallocated blank (a full-screen program redraws on resize
@@ -201,6 +201,9 @@ private:
     bool pen_bold_ = false, pen_faint_ = false, pen_italic_ = false, pen_underline_ = false, pen_reverse_ = false;
 
     std::string title_;
+    // Accumulates replies while one input chunk is parsed.  Feed() returns
+    // and clears it, keeping protocol handling independent of the PTY.
+    std::string replies_;
 
     // Parser state.
     ParseState state_ = ParseState::Ground;
@@ -274,9 +277,12 @@ private:
      */
     void ExecuteEscFinal(unsigned char c);
     /**
-     * @brief Parses the accumulated OSC payload and updates the window title if it is an OSC 0/1/2 (title-setting) sequence.
+     * @brief Parses the accumulated OSC payload, updating an OSC 0/1/2 title or replying to an OSC 10/11 default-color query.
      */
     void ParseOscTitle();
+    // Appends a terminal-to-application protocol response for the current
+    // input chunk.  Kept private so only recognized queries can emit data.
+    void Reply(const std::string &bytes);
 
     /**
      * @brief Clamps the cursor position to stay within the current grid bounds.

@@ -4791,6 +4791,25 @@ void Editor::ActivateDashboardSelection() {
     RunCommand(dashboard_selection_ == 0 ? "MepProjects" : "MepHelp");
 }
 
+bool Editor::ActivateDashboardShortcut(char shortcut) {
+    // Keep these in the same order as DrawDashboard's action rows.  Besides
+    // making the shortcut direct, updating the virtual cursor first leaves
+    // the dashboard in the expected state if the command does not replace it
+    // (for example, if a command is unavailable in a custom setup).
+    switch (shortcut) {
+        case 'p':
+            dashboard_selection_ = 0;
+            RunCommand("MepProjects");
+            return true;
+        case 'h':
+            dashboard_selection_ = 1;
+            RunCommand("MepHelp");
+            return true;
+        default:
+            return false;
+    }
+}
+
 bool Editor::ProjectIsPristine(const Project &project) const {
     if (project.workspaces.size() != 1) return false;
     const Workspace &ws = project.workspaces[0];
@@ -5130,7 +5149,14 @@ void Editor::TerminalSpawn(TerminalSession &sess, const std::vector<std::string>
      * @brief Feeds a chunk of raw child-process output into the terminal's VTerm for parsing/rendering.
      * @param chunk The raw bytes received from the child process.
      */
-    cb.on_stdout_raw = [vterm_ptr](const std::string &chunk) { vterm_ptr->Feed(chunk); };
+    cb.on_stdout_raw = [this, buffer_id, vterm_ptr](const std::string &chunk) {
+        std::string reply = vterm_ptr->Feed(chunk);
+        if (reply.empty()) return;
+        // VTerm parses an application's terminal queries while consuming
+        // stdout; return its response through this session's PTY so TUIs
+        // such as Codex can finish their styled prompt initialization.
+        if (TerminalSession *live = FindTerminal(buffer_id)) TerminalWrite(*live, reply);
+    };
     // Skip parsing this terminal's output while its pane isn't on screen
     // (a different workspace/tab is active) -- a chatty child (a spinner,
     // an AI agent's own animated status line) would otherwise get its
@@ -5253,7 +5279,10 @@ void Editor::PollTerminals() {
         char *ptr = mep_js_pty_poll(sess.job_id);
         int len = mep_js_pty_poll_len();
         if (ptr) {
-            if (len > 0 && sess.vterm) sess.vterm->Feed(std::string(ptr, len));
+            if (len > 0 && sess.vterm) {
+                std::string reply = sess.vterm->Feed(std::string(ptr, len));
+                if (!reply.empty()) TerminalWrite(sess, reply);
+            }
             std::free(ptr);
         }
         if (mep_js_pty_exited(sess.job_id)) {
@@ -14157,8 +14186,9 @@ void Editor::HandleNormalInput() {
                 continue;
             }
         }
-        if (ShouldShowDashboard() && no_pending_state && !ctrl && !shift && (cp == 'j' || cp == 'k')) {
-            MoveDashboardSelection(cp == 'j' ? 1 : -1);
+        if (ShouldShowDashboard() && no_pending_state && !ctrl && !shift &&
+            (cp == 'j' || cp == 'k' || ActivateDashboardShortcut(static_cast<char>(cp)))) {
+            if (cp == 'j' || cp == 'k') MoveDashboardSelection(cp == 'j' ? 1 : -1);
         } else {
             HandleNormalChar(cp, no_pending_state);
         }
@@ -18132,11 +18162,13 @@ void Editor::HandlePickerInput() {
             query_changed = true;
         }
     }
-    if ((ctrl && gfx::IsKeyPressed(gfx::Key::N)) || gfx::IsKeyPressed(gfx::Key::Down) || gfx::IsKeyPressedRepeat(gfx::Key::Down)) {
+    if ((ctrl && (gfx::IsKeyPressed(gfx::Key::N) || gfx::IsKeyPressedRepeat(gfx::Key::N))) ||
+        gfx::IsKeyPressed(gfx::Key::Down) || gfx::IsKeyPressedRepeat(gfx::Key::Down)) {
         int n = static_cast<int>(PickerFilteredResults().size());
         if (picker_selected_ + 1 < n) picker_selected_++;
     }
-    if ((ctrl && gfx::IsKeyPressed(gfx::Key::P)) || gfx::IsKeyPressed(gfx::Key::Up) || gfx::IsKeyPressedRepeat(gfx::Key::Up)) {
+    if ((ctrl && (gfx::IsKeyPressed(gfx::Key::P) || gfx::IsKeyPressedRepeat(gfx::Key::P))) ||
+        gfx::IsKeyPressed(gfx::Key::Up) || gfx::IsKeyPressedRepeat(gfx::Key::Up)) {
         if (picker_selected_ > 0) picker_selected_--;
     }
     int cp = gfx::GetCharPressed();

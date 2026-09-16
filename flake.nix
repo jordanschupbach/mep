@@ -253,7 +253,7 @@
           installPhase = ''
             runHook preInstall
             install -Dm755 mep "$out/bin/mep"
-            install -Dm644 "$sourceRoot"/help/*.html -t "$out/share/mep/help"
+            install -Dm644 "$NIX_BUILD_TOP/$sourceRoot"/help/*.html -t "$out/share/mep/help"
             runHook postInstall
           '';
         };

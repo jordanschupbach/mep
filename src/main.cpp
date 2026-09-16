@@ -5968,6 +5968,9 @@ const char *kBuiltinLanguageUiR =
     "  st.follow_latest = (st.findex == #st.figures)\n"
     "  local cur = mep.current_pane_id()\n"
     "  if mep.pane_focus(st.figure_pane) then\n"
+    // Read this before mep.open replaces the image buffer. nil means this
+    // is the Plot pane's first image, which retains its themed default.
+    "    local theme_colors = mep.image_get_theme(mep.current_buffer())\n"
     "    mep.open(st.figures[st.findex])\n"
     "    mep.image_set_nav(mep.current_buffer(), function() mep_r_ui_figure_step(tid, -1) end, function() mep_r_ui_figure_step(tid, 1) end)\n"
     // Themed by default (ImageSession::theme_colors' own comment explains
@@ -5977,10 +5980,9 @@ const char *kBuiltinLanguageUiR =
     // the editor's theme by default reads as consistent rather than
     // surprising. Re-applied on every reopen for the same reason
     // mep.image_set_nav is: a different figure file is a different buffer
-    // id, so a fresh ImageSession always starts back at false -- Ctrl-R
-    // still toggles it back to original colors from there, same as any
-    // other themed pane.\n"
-    "    mep.image_set_theme(mep.current_buffer(), true)\n"
+    // id, so its freshly created ImageSession needs the current figure's
+    // Ctrl-R selection copied over. The first R figure starts themed.\n"
+    "    mep.image_set_theme(mep.current_buffer(), theme_colors == nil and true or theme_colors)\n"
     "    mep.pane_focus(cur)\n"
     "  end\n"
     "end\n"
@@ -27653,8 +27655,17 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             DrawUiText(">", gfx::Vector2{mid + w * 0.25f - 4, img_y}, font_size, nav_color);
             int prev_ref = img_sess->nav_prev_ref;
             int next_ref = img_sess->nav_next_ref;
-            RegisterClickRegion(gfx::Rectangle{x, img_y, w / 2.0f, nav_h}, [prev_ref] { g_editor.CallLuaRef(prev_ref); });
-            RegisterClickRegion(gfx::Rectangle{mid, img_y, w / 2.0f, nav_h}, [next_ref] { g_editor.CallLuaRef(next_ref); });
+            gfx::Rectangle prev_rect{x, img_y, w / 2.0f, nav_h};
+            gfx::Rectangle next_rect{mid, img_y, w / 2.0f, nav_h};
+            if (gfx::CheckCollisionPointRec(gfx::GetMousePosition(), prev_rect)) {
+                g_pane_control_tooltip_text = "Previous image (h)";
+                g_pane_control_tooltip_anchor = prev_rect;
+            } else if (gfx::CheckCollisionPointRec(gfx::GetMousePosition(), next_rect)) {
+                g_pane_control_tooltip_text = "Next image (l)";
+                g_pane_control_tooltip_anchor = next_rect;
+            }
+            RegisterClickRegion(prev_rect, [prev_ref] { g_editor.CallLuaRef(prev_ref); });
+            RegisterClickRegion(next_rect, [next_ref] { g_editor.CallLuaRef(next_ref); });
             img_y += nav_h;
             img_h -= nav_h;
         }

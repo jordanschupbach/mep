@@ -4659,6 +4659,20 @@ int Editor::CursorRowForBuffer(int buffer_id) const {
     return node ? node->pane.cursor.row : -1;
 }
 
+int Editor::TextColsForBuffer(int buffer_id) const {
+    const Tab &tab = ActiveTab();
+    int pane_id = FindPaneIdForBuffer(tab.root.get(), buffer_id);
+    if (pane_id < 0) return 0;
+    const SplitNode *node = FindNode(tab.root.get(), pane_id);
+    return node ? node->pane.text_cols : 0;
+}
+
+void Editor::SetPaneTextCols(int pane_id, int cols) {
+    SplitNode *node = (float_node_ && float_node_->pane.id == pane_id) ? float_node_.get()
+                                                                        : FindNode(ActiveTab().root.get(), pane_id);
+    if (node) node->pane.text_cols = std::max(0, cols);
+}
+
 bool Editor::IsBufferOnScreen(int buffer_id) const {
     return FindPaneIdForBuffer(ActiveTab().root.get(), buffer_id) >= 0;
 }

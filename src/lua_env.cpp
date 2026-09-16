@@ -3872,6 +3872,26 @@ int l_jump_to_buffer(lua_State *L) {
     return 1;
 }
 
+// mep.buffer_text_cols(id) -> how many text columns the pane (in the active
+// tab) showing `id` draws, or nil if no pane shows it / it was never drawn
+// -- see Pane::text_cols. Lets a Lua-rendered buffer (kBuiltinLanguageUiR's
+// Help tab) hard-wrap prose to the pane's real width.
+/**
+ * @brief Implements mep.buffer_text_cols(id): returns the text column budget of the pane showing a buffer.
+ * @param L Lua state; arg 1 is the buffer id.
+ * @return Number of values pushed (1: the column count, or nil if no pane in the active tab shows that buffer).
+ */
+int l_buffer_text_cols(lua_State *L) {
+    int id = static_cast<int>(luaL_checkinteger(L, 1));
+    int cols = GetEditor(L)->TextColsForBuffer(id);
+    if (cols <= 0) {
+        lua_pushnil(L);
+    } else {
+        lua_pushinteger(L, cols);
+    }
+    return 1;
+}
+
 // mep.buffer_workspace(id) -> workspace id owning the buffer, or nil for an
 // unscoped buffer (-1: dashboard/scratch) or an invalid id. Pair with
 // mep.workspace_list() for the name.
@@ -8901,6 +8921,7 @@ const luaL_Reg kMepFuncs[] = {
     {"buffer_workspace", l_buffer_workspace},
     {"terminal_info", l_terminal_info},
     {"buffer_cursor_row", l_buffer_cursor_row},
+    {"buffer_text_cols", l_buffer_text_cols},
     {"command_names", l_command_names},
     {"colorscheme", l_colorscheme},
     {"theme_names", l_theme_names},

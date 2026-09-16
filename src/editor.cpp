@@ -12165,11 +12165,46 @@ std::string Editor::ResolveBufferPath(const Buffer &buf, const std::string &path
     return ws->root + "/" + path;
 }
 
+bool Editor::BufferUnsavable(int buffer_id) const {
+    // Mirrors SaveBuffer's unconditional rejects (plus terminals, which it
+    // rejects via the empty-filename E32 path): the write-hook buffer and
+    // every other special type (image editor, model3d, sheet, office) can
+    // save, so only these three have a `modified` flag nothing can clear.
+    if (IsTerminalBuffer(buffer_id)) return true;
+    if (IsPdfBuffer(buffer_id)) return true;
+    if (IsImageBuffer(buffer_id) && image_editors_.find(buffer_id) == image_editors_.end()) return true;
+    return false;
+}
+
 bool Editor::WorkspaceHasModifiedBuffers(int id) const {
-    for (const Buffer &buf : buffers_) {
-        if (buf.workspace_id == id && buf.modified && !buf.deleted) return true;
+    for (size_t i = 0; i < buffers_.size(); i++) {
+        const Buffer &buf = buffers_[i];
+        if (buf.workspace_id != id || !buf.modified || buf.deleted) continue;
+        // An unclearable modified flag (an edited terminal-normal-mode
+        // snapshot was the observed case) must not block workspace
+        // deletion: there is no "save" the refusal could be asking for,
+        // and ReleaseWorkspaceResources kills the terminal regardless.
+        if (BufferUnsavable(static_cast<int>(i))) continue;
+        return true;
     }
     return false;
+}
+
+std::string Editor::WorkspaceModifiedBufferNames(int id) const {
+    constexpr int kMaxNamed = 4;
+    std::string names;
+    int count = 0;
+    for (size_t i = 0; i < buffers_.size(); i++) {
+        const Buffer &buf = buffers_[i];
+        if (buf.workspace_id != id || !buf.modified || buf.deleted) continue;
+        if (BufferUnsavable(static_cast<int>(i))) continue;
+        count++;
+        if (count > kMaxNamed) continue;
+        if (!names.empty()) names += ", ";
+        names += buf.filename.empty() ? "[No Name]" : buf.filename;
+    }
+    if (count > kMaxNamed) names += " (+" + std::to_string(count - kMaxNamed) + " more)";
+    return names;
 }
 
 bool Editor::WorkspaceDelete(int id, bool force) {
@@ -12187,7 +12222,8 @@ bool Editor::WorkspaceDelete(int id, bool force) {
                 return false;
             }
             if (!force && WorkspaceHasModifiedBuffers(id)) {
-                status_message_ = "E37: workspace '" + ws.name + "' has unsaved buffers (add ! to override)";
+                status_message_ = "E37: workspace '" + ws.name + "' has unsaved buffers: " +
+                                  WorkspaceModifiedBufferNames(id) + " (add ! to override)";
                 return false;
             }
             ReleaseWorkspaceResources(id);
@@ -12224,7 +12260,8 @@ bool Editor::WorkspaceReset(int id, bool force) {
                 return false;
             }
             if (!force && WorkspaceHasModifiedBuffers(id)) {
-                status_message_ = "E37: workspace '" + ws.name + "' has unsaved buffers (add ! to override)";
+                status_message_ = "E37: workspace '" + ws.name + "' has unsaved buffers: " +
+                                  WorkspaceModifiedBufferNames(id) + " (add ! to override)";
                 return false;
             }
             ReleaseWorkspaceResources(id);
@@ -12419,7 +12456,8 @@ void Editor::WorkspaceRemove(const std::string &arg, bool force) {
         return;
     }
     if (!force && WorkspaceHasModifiedBuffers(id)) {
-        status_message_ = "E37: workspace '" + ws->name + "' has unsaved buffers (add ! to override)";
+        status_message_ = "E37: workspace '" + ws->name + "' has unsaved buffers: " +
+                          WorkspaceModifiedBufferNames(id) + " (add ! to override)";
         return;
     }
 #if !defined(__EMSCRIPTEN__)
@@ -12693,7 +12731,7 @@ bool Editor::ProjectClose(int id, bool force) {
             for (const Workspace &ws : p.workspaces) {
                 if (WorkspaceHasModifiedBuffers(ws.id)) {
                     status_message_ = "E37: project '" + p.name + "' has unsaved buffers in workspace '" + ws.name +
-                                      "' (add ! to override)";
+                                      "': " + WorkspaceModifiedBufferNames(ws.id) + " (add ! to override)";
                     return false;
                 }
             }
@@ -23660,21 +23698,33 @@ void Editor::RemoveProject(const std::string &path) {
 
 bool Editor::WriteAllModified() {
     int written = 0;
-    bool all_ok = true;
-    for (auto &buf : buffers_) {
-        if (!buf.modified) continue;
+    std::string failed;
+    int failed_count = 0;
+    for (size_t i = 0; i < buffers_.size(); i++) {
+        Buffer &buf = buffers_[i];
+        if (!buf.modified || buf.deleted) continue;
+        // A buffer with no possible save (terminal snapshot, PDF/image
+        // viewer -- BufferUnsavable) isn't a failure, it's simply not
+        // :wa's business: attempting it would fail every single time and
+        // bury real write errors under a permanent E141.
+        if (BufferUnsavable(static_cast<int>(i))) continue;
         if (SaveBuffer(buf, buf.filename)) {
             written++;
         } else {
-            all_ok = false;
+            failed_count++;
+            if (failed_count <= 4) {
+                if (!failed.empty()) failed += ", ";
+                failed += buf.filename.empty() ? "[No Name]" : buf.filename;
+            }
         }
     }
-    if (all_ok) {
+    if (failed_count == 0) {
         status_message_ = std::to_string(written) + " buffer(s) written";
-    } else {
-        status_message_ = "E141: Some buffers were not written (no file name, or a write error)";
+        return true;
     }
-    return all_ok;
+    if (failed_count > 4) failed += " (+" + std::to_string(failed_count - 4) + " more)";
+    status_message_ = "E141: not written: " + failed + " (no file name, or a write error)";
+    return false;
 }
 
 bool Editor::IsOnlyPaneOverall() const { return Tabs().size() == 1 && Tabs()[0].root->dir == SplitDir::Leaf; }

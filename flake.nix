@@ -156,6 +156,11 @@
             tree-sitter-perl
             tree-sitter-nim
             tree-sitter-d
+            # LaTeX/BibTeX highlighting (src/treesitter_queries.h's
+            # kHighlightsLatex/kHighlightsBibtex -- written for these
+            # grammars specifically, see that header's comment).
+            tree-sitter-latex
+            tree-sitter-bibtex
           ]
         );
 

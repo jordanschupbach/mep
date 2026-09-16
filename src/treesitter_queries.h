@@ -9041,6 +9041,212 @@ static const char *kHighlightsCrystal = R"TSQ(
   method: (identifier) @function.call)
 )TSQ";
 
+// LaTeX (latex-lsp/tree-sitter-latex, a dynamically-loaded grammar like
+// every other DynamicLanguageTable entry -- see flake.nix's tsGrammars
+// list). Unlike most grammars, upstream ships no highlights.scm of its
+// own, so this query is written from scratch against the grammar's
+// node-types.json (verified against the nixpkgs-pinned 0.6.0 build by
+// compiling a real TSQuery, same as every other query in this file) --
+// with nvim-treesitter's community query as a structural reference, but
+// captures renamed to ones mep.ts_capture_hl (kBuiltinSyntax, main.cpp)
+// actually resolves: sectioning titles reuse markdown's own
+// text.title.1..6 per-depth progression so a \section heading colors
+// like the equivalent `##` markdown heading; math zones use text.math
+// (added to ts_capture_hl alongside this query). Span ordering does the
+// rest: TreesitterHighlight paints widest-first, so a whole
+// displayed_equation's text.math wash goes down first and narrower
+// captures inside it (command_name, delimiters) win over it.
+static const char *kHighlightsLatex = R"TSQ(
+; Comments
+[
+  (line_comment)
+  (block_comment)
+  (comment_environment)
+] @comment
+
+; Every \command gets the function color as the baseline; more specific
+; patterns below (sectioning, includes, begin/end) paint over it. TeX
+; conditionals are excluded here rather than just recaptured by the
+; @keyword patterns at the bottom: both captures would cover the exact
+; same span, and TreesitterHighlight's widest-first paint order breaks
+; equal-length ties arbitrarily -- excluding them from the baseline is
+; what makes the keyword color deterministic.
+((command_name) @function
+  (#not-match? @function "^\\\\(if[a-zA-Z@]*|fi|else)$"))
+
+; \begin{env} / \end{env}
+(begin
+  command: _ @keyword
+  name: (curly_group_text
+    (text) @type))
+(end
+  command: _ @keyword
+  name: (curly_group_text
+    (text) @type))
+
+; Sectioning: same hottest-to-coolest-by-depth text.title.N progression
+; markdown headings use, so the sidebar/structure colors match the buffer.
+(part
+  command: _ @keyword
+  text: (curly_group
+    (_) @text.title.1))
+(chapter
+  command: _ @keyword
+  text: (curly_group
+    (_) @text.title.1))
+(section
+  command: _ @keyword
+  text: (curly_group
+    (_) @text.title.2))
+(subsection
+  command: _ @keyword
+  text: (curly_group
+    (_) @text.title.3))
+(subsubsection
+  command: _ @keyword
+  text: (curly_group
+    (_) @text.title.4))
+(paragraph
+  command: _ @keyword
+  text: (curly_group
+    (_) @text.title.5))
+(subparagraph
+  command: _ @keyword
+  text: (curly_group
+    (_) @text.title.6))
+(title_declaration
+  command: _ @keyword
+  text: (curly_group
+    (_) @text.title.1))
+(author_declaration
+  command: _ @keyword)
+
+; Math zones: a flat wash over the whole formula; commands/delimiters
+; inside repaint themselves via narrower captures.
+[
+  (displayed_equation)
+  (inline_formula)
+] @text.math
+(math_environment) @text.math
+
+; Preamble / file inclusion
+(class_include
+  command: _ @include
+  path: (curly_group_path) @string)
+(package_include
+  command: _ @include
+  paths: (curly_group_path_list) @string)
+(latex_include
+  command: _ @include
+  path: (curly_group_path) @string)
+(bibtex_include
+  command: _ @include
+  paths: (curly_group_path_list) @string)
+(biblatex_include
+  glob: (curly_group_glob_pattern) @string)
+(graphics_include
+  command: _ @include
+  path: (curly_group_path) @string)
+
+; Labels, references, citations
+(label_definition
+  command: _ @function
+  name: (curly_group_label
+    (_) @text.reference))
+(label_reference
+  command: _ @function
+  names: (curly_group_label_list
+    (_) @text.reference))
+(citation
+  command: _ @function
+  keys: (curly_group_text_list
+    (_) @text.reference))
+(hyperlink
+  command: _ @function
+  uri: (curly_group_uri
+    (_) @text.uri))
+
+; Command/environment definitions
+(new_command_definition
+  command: _ @function.macro)
+(old_command_definition
+  command: _ @function.macro)
+(environment_definition
+  command: _ @function.macro
+  name: (curly_group_text
+    (_) @type))
+
+; Key-value options ([width=0.5\textwidth, ...])
+(key_value_pair
+  key: (_) @attribute)
+
+; Inline emphasis, mirroring markdown's text.strong/text.emphasis colors
+((generic_command
+  command: (command_name) @_cmd
+  arg: (curly_group
+    (_) @text.emphasis))
+  (#any-of? @_cmd "\\emph" "\\textit" "\\itshape"))
+((generic_command
+  command: (command_name) @_cmd
+  arg: (curly_group
+    (_) @text.strong))
+  (#any-of? @_cmd "\\textbf" "\\bfseries"))
+
+; Verbatim bodies render literal-green, like markdown code spans
+(verbatim_environment) @text.literal
+
+; TeX conditionals (\ifdefined ... \else ... \fi)
+((generic_command
+  command: (command_name) @keyword)
+  (#match? @keyword "^\\\\if[a-zA-Z@]*$"))
+((generic_command
+  command: (command_name) @keyword)
+  (#any-of? @keyword "\\fi" "\\else"))
+
+; \todo{...} and friends stand out as warnings
+(todo
+  command: _ @warn)
+)TSQ";
+
+// BibTeX (latex-lsp/tree-sitter-bibtex, dynamically loaded like the
+// latex grammar above -- .bib files sit alongside .tex ones in any real
+// LaTeX project, so the two ship together). Adapted from upstream's own
+// queries/highlights.scm with captures renamed to mep.ts_capture_hl's
+// vocabulary: entry keys use text.reference so a key colors the same in
+// the .bib file as its \cite{key} usage does in the .tex one.
+static const char *kHighlightsBibtex = R"TSQ(
+[
+  (string_type)
+  (preamble_type)
+  (entry_type)
+] @keyword
+
+[
+  (junk)
+  (comment)
+] @comment
+
+(command) @function
+
+(number) @number
+
+(field
+  name: (identifier) @attribute)
+
+[
+  (brace_word)
+  (quote_word)
+] @string
+
+[
+  (key_brace)
+  (key_paren)
+] @text.reference
+
+(string
+  name: (identifier) @constant)
+)TSQ";
+
 // Fold queries (Phase 19's own noted gap -- "No fold-query support",
 // see main.cpp's kBuiltinSyntax comment): one `@fold` capture per
 // syntactic block worth collapsing, for the core compiled-in languages

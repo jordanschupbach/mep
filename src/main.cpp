@@ -7886,6 +7886,63 @@ const char *kBuiltinCompletion =
     // call site below doesn't need to spell out MEP_COMPLETION_MAX_ITEMS
     // itself.
     "function mep_completion_rank(items) return mep.completion_rank(items, MEP_COMPLETION_MAX_ITEMS) end\n"
+    // LaTeX command completion source: candidate names (backslash-less --
+    // AcceptCompletion splices over the alnum prefix only, so the '\' the
+    // user already typed stays put and the name lands right after it).
+    // Offered whenever the character before the completion prefix is '\'
+    // in a tex/sty/cls buffer -- Editor::UpdateCompletionPopup's
+    // backslash_trigger lets those queries through at any prefix length,
+    // including the empty one right after '\' itself is typed. A curated
+    // common-usage list (structure, formatting, math, Greek, arrows/
+    // relations, spacing), not a kernel dump -- mep.latex_commands is a
+    // plain user-visible table, so init.lua can extend it the same way
+    // mep.syntax_keywords/mep.snippets are extendable.
+    "mep.latex_commands = {\n"
+    // Document structure / preamble
+    "  'documentclass','usepackage','begin','end','title','author','date','maketitle','tableofcontents',\n"
+    "  'listoffigures','listoftables','appendix','part','chapter','section','subsection','subsubsection',\n"
+    "  'paragraph','subparagraph','abstract','input','include','includeonly','includegraphics','graphicspath',\n"
+    "  'bibliography','bibliographystyle','bibitem','cite','citep','citet','nocite','ref','eqref','pageref',\n"
+    "  'autoref','cref','label','caption','footnote','marginpar','item','newpage','clearpage','cleardoublepage',\n"
+    "  'pagebreak','linebreak','newline','vspace','hspace','vfill','hfill','smallskip','medskip','bigskip',\n"
+    "  'noindent','indent','par','centering','raggedright','raggedleft','newcommand','renewcommand',\n"
+    "  'providecommand','newenvironment','renewenvironment','newtheorem','DeclareMathOperator','ensuremath',\n"
+    "  'setlength','addtolength','setcounter','addtocounter','stepcounter','pagestyle','thispagestyle',\n"
+    "  'pagenumbering','numberwithin','hypersetup','href','url','verb',\n"
+    // Text formatting
+    "  'textbf','textit','textsc','textsf','texttt','textrm','textmd','textup','textsl','textnormal','emph',\n"
+    "  'underline','textcolor','colorbox','fbox','mbox','makebox','framebox','parbox','raisebox','rotatebox',\n"
+    "  'scalebox','resizebox','textsuperscript','textsubscript','tiny','scriptsize','footnotesize','small',\n"
+    "  'normalsize','large','Large','LARGE','huge','Huge','bfseries','itshape','scshape','ttfamily','sffamily',\n"
+    "  'rmfamily','mdseries','upshape','slshape','LaTeX','TeX','today',\n"
+    // Math: operators, delimiters, accents, fonts, big constructs
+    "  'frac','dfrac','tfrac','cfrac','sqrt','sum','prod','coprod','int','iint','iiint','oint','lim','limsup',\n"
+    "  'liminf','sup','inf','max','min','arg','det','gcd','deg','dim','exp','log','ln','lg','sin','cos','tan',\n"
+    "  'cot','sec','csc','arcsin','arccos','arctan','sinh','cosh','tanh','coth','left','right','big','Big',\n"
+    "  'bigg','Bigg','langle','rangle','lceil','rceil','lfloor','rfloor','overline','overbrace','underbrace',\n"
+    "  'overrightarrow','overleftarrow','widehat','widetilde','hat','tilde','bar','vec','dot','ddot','acute',\n"
+    "  'grave','breve','check','mathring','prime','partial','nabla','infty','aleph','hbar','ell','wp','Re','Im',\n"
+    "  'mathbb','mathcal','mathfrak','mathscr','mathbf','mathit','mathrm','mathsf','mathtt','operatorname',\n"
+    "  'text','binom','pmatrix','bmatrix','vmatrix','matrix','cases','substack','stackrel','overset','underset',\n"
+    "  'xrightarrow','xleftarrow','displaystyle','textstyle','scriptstyle','intertext','nonumber','notag','tag',\n"
+    // Greek
+    "  'alpha','beta','gamma','delta','epsilon','varepsilon','zeta','eta','theta','vartheta','iota','kappa',\n"
+    "  'lambda','mu','nu','xi','pi','varpi','rho','varrho','sigma','varsigma','tau','upsilon','phi','varphi',\n"
+    "  'chi','psi','omega','Gamma','Delta','Theta','Lambda','Xi','Pi','Sigma','Upsilon','Phi','Psi','Omega',\n"
+    // Binary operators / relations / arrows / logic / sets
+    "  'times','div','pm','mp','cdot','cdots','ldots','vdots','ddots','ast','star','circ','bullet','cap','cup',\n"
+    "  'uplus','sqcap','sqcup','vee','wedge','setminus','wr','diamond','oplus','ominus','otimes','oslash',\n"
+    "  'odot','bigcap','bigcup','bigoplus','bigotimes','bigvee','bigwedge','dagger','ddagger','leq','geq',\n"
+    "  'equiv','models','prec','succ','preceq','succeq','sim','simeq','approx','cong','neq','ne','doteq',\n"
+    "  'propto','subset','supset','subseteq','supseteq','sqsubseteq','sqsupseteq','in','notin','ni','vdash',\n"
+    "  'dashv','perp','mid','parallel','smile','frown','asymp','bowtie','leftarrow','rightarrow',\n"
+    "  'leftrightarrow','Leftarrow','Rightarrow','Leftrightarrow','mapsto','hookleftarrow','hookrightarrow',\n"
+    "  'nearrow','searrow','swarrow','nwarrow','uparrow','downarrow','updownarrow','iff','implies','to','gets',\n"
+    "  'forall','exists','nexists','neg','lnot','land','lor','emptyset','varnothing','angle','triangle',\n"
+    "  'square','therefore','because',\n"
+    // Spacing / misc
+    "  'quad','qquad','enspace','thinspace','phantom','hphantom','vphantom','smash','strut','kern',\n"
+    "}\n"
     // Path completion source (new): returns dir, base if the text right
     // before the current alnum-prefix (as computed by
     // UpdateCompletionPopup, editor.cpp) looks like a filesystem path,
@@ -8005,6 +8062,33 @@ const char *kBuiltinCompletion =
     "      end\n"
     "    end\n"
     "    return mep_completion_rank(words)\n"
+    "  end\n"
+    // LaTeX command context: the character right before the prefix is a
+    // backslash. In a tex-family buffer this takes over the whole source,
+    // same reasoning as the path context above -- buffer words sitting
+    // next to a half-typed \\command are noise, mep.latex_commands is the
+    // signal. In every other filetype it merely *suppresses* the sub-2-
+    // char queries Editor::UpdateCompletionPopup's backslash_trigger now
+    // lets through (see its comment: a '\\n' in a C string must not pop a
+    // 1-char buffer-word query), while a 2+ char prefix after a backslash
+    // falls through to the ordinary sources exactly as it always did.
+    // The double-backslash check keeps LaTeX's own line-break command
+    // ('\\\\', and any command right after it on the same line-break
+    // token) from popping the full list every time a tabular row ends.
+    "  local bs_col = col - #prefix - 1\n"
+    "  if bs_col >= 1 and line:sub(bs_col, bs_col) == '\\\\' then\n"
+    "    local ft = mep_lsp_filetype(mep.filename())\n"
+    "    local double_bs = bs_col > 1 and line:sub(bs_col - 1, bs_col - 1) == '\\\\'\n"
+    "    if (ft == 'tex' or ft == 'sty' or ft == 'cls') and not double_bs then\n"
+    "      for _, name in ipairs(mep.latex_commands) do\n"
+    "        if #name > #prefix and name:sub(1, #prefix) == prefix and not seen[name] then\n"
+    "          seen[name] = true\n"
+    "          words[#words + 1] = {text = name, kind = 'latex'}\n"
+    "        end\n"
+    "      end\n"
+    "      return mep_completion_rank(words)\n"
+    "    end\n"
+    "    if #prefix < 2 then return {} end\n"
     "  end\n"
     // Member-access trigger (NVIM_PARITY_PLAN.md Phase 22 gap: "np." never
     // reached any completion source at all -- Editor::UpdateCompletionPopup
@@ -8504,11 +8588,15 @@ const char *kBuiltinStructure =
     "  return mep_structure_kind_style[kind] or mep_structure_default_style\n"
     "end\n"
 
-    // LaTeX has no Treesitter grammar registered in this codebase at all
-    // (see treesitter.cpp's LanguageTable/DynamicLanguageTable -- no
-    // "tex" entry), so mep.ts_structure('tex', ...) always returns nil
-    // for it, same as any other unregistered filetype -- this is a
-    // small hand-rolled substitute for LaTeX specifically, in the same
+    // LaTeX *highlighting* now goes through a dynamically-loaded
+    // Treesitter grammar (treesitter.cpp's DynamicLanguageTable "tex"
+    // entry), but no structure query is registered for it and
+    // mep.ts_structure('tex', ...) still returns nil -- deliberately
+    // kept that way: this hand-rolled extractor works even where the
+    // grammar .so isn't available (the wasm build, a machine without
+    // MEP_TS_PARSER_PATH/the other DynamicSearchPaths sources), and a
+    // dlopen'd-grammar structure query would gain nothing over it. It
+    // produces the same
     // {row, col, start_row, end_row, name, kind, depth} shape
     // TSStructureNode/mep.ts_structure produces, so it drops into every
     // other part of this feature (label, icon/color lookup, current-item
@@ -10020,6 +10108,10 @@ const char *kBuiltinSyntax =
     "  ['text.title.6'] = 'Orange',\n"
     "  ['text.strong'] = 'Yellow', ['text.emphasis'] = 'Cyan',\n"
     "  ['text.literal'] = 'Green', ['text.uri'] = 'Blue', ['text.reference'] = 'Blue',\n"
+    // LaTeX (kHighlightsLatex): the flat wash over a whole math zone
+    // ($..$/\[..\]/equation environments); commands inside repaint
+    // themselves Blue via the narrower command_name capture.
+    "  ['text.math'] = 'Cyan',\n"
     // Org (queries/highlights.scm ships only this one example query,
     // using its own Org-prefixed capture names rather than the nvim-style
     // dotted convention every other vendored grammar's query uses).
@@ -13549,8 +13641,10 @@ const char *kBuiltinOrgPolyglot =
 
 // Org LaTeX/math-mode inline rendering, a sibling feature to
 // kBuiltinOrgImages (defined earlier in this file): <leader>otl /
-// mep.org_latex_toggle_ui detects $$..$$/\[..\]/\(..\)/$..$ math fragments
-// and #+BEGIN_LaTeX/#+BEGIN_SRC latex "chunks", each rendered offline to a
+// mep.org_latex_toggle_ui detects $$..$$/\[..\]/\(..\)/$..$ math fragments,
+// display-math environments (\begin{equation}/align/gather/..., see
+// MathEnvOpen in editor.cpp), and -- in org buffers --
+// #+BEGIN_LaTeX/#+BEGIN_SRC latex "chunks", each rendered offline to a
 // tightly-cropped PNG (tectonic -> pdftoppm, see flake.nix's devShell)
 // and displayed through the same
 // inline-texture pipeline kBuiltinOrgImages uses (GetOrLoadOrgInlineImageTexture,
@@ -13688,12 +13782,26 @@ const char *kBuiltinOrgLatex =
     "  end)\n"
     "end\n"
     "\n"
+    // 'tex' alongside 'org' (here and in the two rescan hooks below):
+    // the whole fragment pipeline -- Editor::OrgLatexScanFragments'
+    // $..$/\[..\]/$$..$$/display-math-environment forms, the tectonic
+    // render, the inline/row texture registries -- is not org-specific
+    // at all (only the #+BEGIN_LaTeX/#+BEGIN_SRC latex block forms are,
+    // and those simply never match in a .tex buffer), so a real LaTeX
+    // document gets the same in-buffer math preview under the same
+    // toggle. Deliberately not .sty/.cls: package/class code is macro
+    // definitions, where "render this math" is rarely what a stray $ in
+    // a definition body means.
+    "local function mep_latex_preview_ft(fname)\n"
+    "  local ft = mep_lsp_filetype(fname)\n"
+    "  return ft == 'org' or ft == 'tex'\n"
+    "end\n"
     "function mep.org_latex_scan()\n"
     "  mep.buf_clear_latex_rows()\n"
     "  mep.buf_clear_latex_inline()\n"
     "  mep.fold_clear_provider('latex')\n"
     "  if not mep.org_latex_visible() then return end\n"
-    "  if mep_lsp_filetype(mep.filename()) ~= 'org' then return end\n"
+    "  if not mep_latex_preview_ft(mep.filename()) then return end\n"
     "  local fragments = mep.org_latex_scan_fragments()\n"
     "  for _, b in ipairs(fragments.blocks) do\n"
     "    mep_org_latex_register(b.start_row, b.end_row, b.body)\n"
@@ -13707,21 +13815,21 @@ const char *kBuiltinOrgLatex =
     "\n"
     "function mep.org_latex_toggle_ui()\n"
     "  local visible = mep.org_latex_toggle()\n"
-    "  mep.notify('Org LaTeX preview: ' .. (visible and 'on' or 'off'))\n"
+    "  mep.notify('LaTeX preview: ' .. (visible and 'on' or 'off'))\n"
     "  mep.org_latex_scan()\n"
     "end\n"
     "mep.command('MepOrgLatexToggle', mep.org_latex_toggle_ui)\n"
-    "mep.leader_map('otl', 'Org: toggle LaTeX/math preview', mep.org_latex_toggle_ui)\n"
+    "mep.leader_map('otl', 'Toggle LaTeX/math preview (org/tex)', mep.org_latex_toggle_ui)\n"
     "\n"
     "mep.on_buffer_changed(function()\n"
-    "  if mep_lsp_filetype(mep.filename()) == 'org' then mep.org_latex_scan() end\n"
+    "  if mep_latex_preview_ft(mep.filename()) then mep.org_latex_scan() end\n"
     "end)\n"
     "local mep_org_latex_last_file = nil\n"
     "mep.on_frame(function()\n"
     "  local fname = mep.filename()\n"
     "  if fname ~= mep_org_latex_last_file then\n"
     "    mep_org_latex_last_file = fname\n"
-    "    if mep_lsp_filetype(fname) == 'org' then mep.org_latex_scan() end\n"
+    "    if mep_latex_preview_ft(fname) then mep.org_latex_scan() end\n"
     "  end\n"
     "end)\n";
 
@@ -20323,7 +20431,7 @@ void DrawHelpOverlay() {
 // row to row.
 /**
  * @brief Maps a completion candidate's source kind to a fixed-width dim badge label.
- * @param kind The candidate's source kind ("lsp", "file", "snippet", or "buffer").
+ * @param kind The candidate's source kind ("lsp", "file", "snippet", "buffer", or "latex").
  * @return A 4-character badge string, or four spaces for an unrecognized kind.
  */
 const char *CompletionKindBadge(const std::string &kind) {
@@ -20331,6 +20439,7 @@ const char *CompletionKindBadge(const std::string &kind) {
     if (kind == "file") return "file";
     if (kind == "snippet") return "snip";
     if (kind == "buffer") return "buf ";
+    if (kind == "latex") return "tex ";
     return "    ";
 }
 

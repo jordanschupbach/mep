@@ -122,11 +122,19 @@ generated `parser.c`, only `grammar.js`/`grammar.json` — would need the
 tree-sitter CLI + a Node/Rust toolchain to compile, which is exactly the
 kind of extra build-time dependency this project avoids): `tree-sitter-sql`
 (derekstride), `tree-sitter-latex` (latex-lsp), `tree-sitter-swift`
-(alex-pinkus). Not in `DynamicLanguageTable` either (no `highlights.scm`
-was ever fetched for them) — SQL/LaTeX/Swift files render through
+(alex-pinkus). SQL/Swift are not in `DynamicLanguageTable` either (no
+`highlights.scm` was ever fetched for them) — those files render through
 `kBuiltinSyntax`'s hand-rolled fallback lexer today, not Treesitter.
-Adding one is mechanical: fetch its `queries/highlights.scm`, embed it in
-`src/treesitter_queries.h`, and add a `DynamicLanguageTable` entry in
-`src/treesitter.cpp` naming the grammar's `tree_sitter_<name>` symbol —
-no local grammar source needed, since Nix (or the tree-sitter CLI) does
-the actual compiling.
+LaTeX **is** registered there now (`tex`/`sty`/`cls`, plus `bib` via its
+sibling `tree-sitter-bibtex`, with queries written from scratch in
+`src/treesitter_queries.h` — upstream ships none): "not vendorable"
+never meant "not loadable", just that the grammar `.so` has to come
+from a source that can generate `parser.c` — the Nix devShell
+(`flake.nix`'s `tsGrammars`) or a hand-run `tree-sitter build` into
+`~/.config/mep/parsers`; `just fetch-grammars` covers `bibtex` (which
+does commit its `parser.c`) but cannot build `latex` itself.
+Adding another such language is mechanical: fetch or write its
+highlight query, embed it in `src/treesitter_queries.h`, and add a
+`DynamicLanguageTable` entry in `src/treesitter.cpp` naming the
+grammar's `tree_sitter_<name>` symbol — no local grammar source needed,
+since Nix (or the tree-sitter CLI) does the actual compiling.

@@ -1,0 +1,24 @@
+#+TITLE: Writing help pages
+
+* Add a topic
+
+Create one =.org= file in the =help/= directory.  Give it a =#+TITLE:= line;
+that title becomes the label in the Help sidebar.  The sidebar refreshes
+after a save.
+
+* Link pages
+
+Use relative Org file links, for example:
+
+#+begin_example
+[[file:editing.org][Editing basics]]
+#+end_example
+
+With the cursor on a link, press =Enter= to follow it.  Link back to
+[[file:intro.org][mep Help]] when a topic needs a natural return path.
+
+* Searchable content
+
+Help search scans each document line by line, including the title and
+headings.  Keep important terms close to the relevant explanation so search
+previews remain useful.

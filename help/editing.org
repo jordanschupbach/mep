@@ -1,0 +1,18 @@
+#+TITLE: Editing basics
+
+* Buffers and panes
+
+mep uses modal editing.  Files are buffers, and panes are views onto those
+buffers.  Use =:e path= to open a file and =:w= to save it.
+
+* Org help pages
+
+Help pages are Org files.  Headings use stars, lists use normal Org list
+syntax, and links can connect pages using =[[file:page.org][label]]=.
+
+For the conventions used by this help workspace, see
+[[file:writing-help.org][Writing help pages]].
+
+* More
+
+Return to [[file:intro.org][mep Help]] or review [[file:shortcuts.org][Keyboard shortcuts]].

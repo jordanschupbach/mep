@@ -85,6 +85,7 @@
 #pragma GCC diagnostic ignored "-Wcomment"
 #endif
 #include "font_data.h"
+#include "emoji_font_data.h"
 #include "icon_font_data.h"
 #include "symbol_font_data.h"
 #include "office_font_data.h"
@@ -183,7 +184,7 @@ bool IsIconCodepoint(int cp) {
 
 // Flattens kIconCodepointRanges + kIconCodepointExtras into the actual
 // codepoint list LoadFontData/LoadFontFromMemory need -- shared by
-// ApplyFontSize's synchronous path and StartIconFontBakeAsync's
+// ApplyFontSize's synchronous path and StartFontBakesAsync's
 // background one below, so the two can never drift out of sync.
 /**
  * @brief Flattens kIconCodepointRanges and kIconCodepointExtras into one codepoint list for font loading.
@@ -201,6 +202,83 @@ std::vector<int> BuildIconCodepoints() {
     return out;
 }
 
+// Fourth-tier fallback font, below g_icon_font and g_symbol_font -- for
+// emoji, which none of the other embedded fonts have any coverage of at
+// all (JetBrains Mono, Symbols Nerd Font Mono, and Noto Sans Symbols 2
+// each map zero codepoints above U+1F000; starship's default deno module
+// prompt-emitting U+1F995 into :terminal was the motivating case).
+// Backing data (emoji_font_data.h) is a pyftsubset subset of MONOCHROME
+// Noto Emoji -- see that header for why not NotoColorEmoji.
+gfx::Font g_emoji_font{};
+
+// Exactly the codepoints emoji_font_data.h's cmap actually maps
+// (generated from it via tools/font_coverage.py, not hand-curated) --
+// NOT the full pictograph blocks: Noto Emoji covers 1,294 of those
+// blocks' ~3,900 codepoints, and this array is both the routing
+// predicate (IsEmojiCodepoint) and the bake list (BuildEmojiCodepoints).
+// Keeping the two derived from this one array, and this array a subset
+// of the font's real cmap, is load-bearing: a codepoint routed to
+// g_emoji_font but missing from its atlas doesn't degrade to '?' the way
+// g_terminal_font misses do (this subset has no '?' glyph), it draws
+// atlas glyph 0 -- a random unrelated emoji -- via GetGlyphIndex's
+// index-0 fallback (gfx/backend_native_text.cpp). Regenerate alongside
+// the font: tools/font_coverage.py --diff-ranges must report full
+// coverage of this table. Overlaps with kIconCodepointRanges/
+// kSymbolCodepointRanges (26xx/27xx) are fine -- routing checks those
+// tiers first, so this tier only ever sees what they passed on.
+constexpr std::pair<int, int> kEmojiCodepointRanges[] = {
+    {0x2600, 0x2604}, {0x260e, 0x260e}, {0x2611, 0x2611}, {0x2614, 0x2615}, {0x2618, 0x2618}, {0x261d, 0x261d},
+    {0x2620, 0x2620}, {0x2622, 0x2623}, {0x2626, 0x2626}, {0x262a, 0x262a}, {0x262e, 0x262f}, {0x2638, 0x263a},
+    {0x2640, 0x2640}, {0x2642, 0x2642}, {0x2648, 0x2653}, {0x265f, 0x2660}, {0x2663, 0x2663}, {0x2665, 0x2666},
+    {0x2668, 0x2668}, {0x267b, 0x267b}, {0x267e, 0x267f}, {0x2692, 0x2697}, {0x2699, 0x2699}, {0x269b, 0x269c},
+    {0x26a0, 0x26a1}, {0x26a7, 0x26a7}, {0x26aa, 0x26ab}, {0x26b0, 0x26b1}, {0x26bd, 0x26be}, {0x26c4, 0x26c5},
+    {0x26c8, 0x26c8}, {0x26ce, 0x26cf}, {0x26d1, 0x26d1}, {0x26d3, 0x26d4}, {0x26e9, 0x26ea}, {0x26f0, 0x26f5},
+    {0x26f7, 0x26fa}, {0x26fd, 0x26fd}, {0x2702, 0x2702}, {0x2705, 0x2705}, {0x2708, 0x270d}, {0x270f, 0x270f},
+    {0x2712, 0x2712}, {0x2714, 0x2714}, {0x2716, 0x2716}, {0x271d, 0x271d}, {0x2721, 0x2721}, {0x2728, 0x2728},
+    {0x2733, 0x2734}, {0x2744, 0x2744}, {0x2747, 0x2747}, {0x274c, 0x274c}, {0x274e, 0x274e}, {0x2753, 0x2755},
+    {0x2757, 0x2757}, {0x2763, 0x2764}, {0x2795, 0x2797}, {0x27a1, 0x27a1}, {0x27b0, 0x27b0}, {0x27bf, 0x27bf},
+    {0x2b05, 0x2b07}, {0x2b1b, 0x2b1c}, {0x2b50, 0x2b50}, {0x2b55, 0x2b55}, {0x1f300, 0x1f321}, {0x1f324, 0x1f393},
+    {0x1f396, 0x1f397}, {0x1f399, 0x1f39b}, {0x1f39e, 0x1f3f0}, {0x1f3f3, 0x1f3f5}, {0x1f3f7, 0x1f4fd},
+    {0x1f4ff, 0x1f53d}, {0x1f549, 0x1f54e}, {0x1f550, 0x1f567}, {0x1f56f, 0x1f570}, {0x1f573, 0x1f57a},
+    {0x1f587, 0x1f587}, {0x1f58a, 0x1f58d}, {0x1f590, 0x1f590}, {0x1f595, 0x1f596}, {0x1f5a4, 0x1f5a5},
+    {0x1f5a8, 0x1f5a8}, {0x1f5b1, 0x1f5b2}, {0x1f5bc, 0x1f5bc}, {0x1f5c2, 0x1f5c4}, {0x1f5d1, 0x1f5d3},
+    {0x1f5dc, 0x1f5de}, {0x1f5e1, 0x1f5e1}, {0x1f5e3, 0x1f5e3}, {0x1f5e8, 0x1f5e8}, {0x1f5ef, 0x1f5ef},
+    {0x1f5f3, 0x1f5f3}, {0x1f5fa, 0x1f64f}, {0x1f680, 0x1f6c5}, {0x1f6cb, 0x1f6d2}, {0x1f6d5, 0x1f6d7},
+    {0x1f6dc, 0x1f6e5}, {0x1f6e9, 0x1f6e9}, {0x1f6eb, 0x1f6ec}, {0x1f6f0, 0x1f6f0}, {0x1f6f3, 0x1f6fc},
+    {0x1f90c, 0x1f93a}, {0x1f93c, 0x1f945}, {0x1f947, 0x1f9ff}, {0x1fa70, 0x1fa7c}, {0x1fa80, 0x1fa88},
+    {0x1fa90, 0x1fabd}, {0x1fabf, 0x1fac5}, {0x1face, 0x1fadb}, {0x1fae0, 0x1fae8}, {0x1faf0, 0x1faf8},
+};
+
+/**
+ * @brief Checks whether a Unicode codepoint falls within the emoji-font glyph set.
+ * @param cp Unicode codepoint to test.
+ * @return True if `cp` is covered by kEmojiCodepointRanges.
+ */
+bool IsEmojiCodepoint(int cp) {
+    for (const auto &range : kEmojiCodepointRanges) {
+        if (cp >= range.first && cp <= range.second) return true;
+    }
+    return false;
+}
+
+// Same shared-list pattern as BuildIconCodepoints above, for the same
+// can't-drift reason (see kEmojiCodepointRanges's comment for why drift
+// is worse here: a random glyph, not a '?').
+/**
+ * @brief Flattens kEmojiCodepointRanges into one codepoint list for font loading.
+ * @return All emoji-font codepoints, ranges expanded.
+ */
+std::vector<int> BuildEmojiCodepoints() {
+    std::vector<int> out;
+    int range_total = 0;
+    for (const auto &range : kEmojiCodepointRanges) range_total += range.second - range.first + 1;
+    out.reserve(static_cast<size_t>(range_total));
+    for (const auto &range : kEmojiCodepointRanges) {
+        for (int c = range.first; c <= range.second; c++) out.push_back(c);
+    }
+    return out;
+}
+
 #if !defined(__EMSCRIPTEN__)
 // Baking g_icon_font's atlas (~3,500 glyphs, rasterized via gfx::tt --
 // see gfx/truetype.h -- inside LoadFontData/GenImageFontAtlas) measured
@@ -211,24 +289,31 @@ std::vector<int> BuildIconCodepoints() {
 // at all (raylib's own decomposed API -- see rtext.c's LoadFontFromMemory
 // for the exact steps this mirrors), unlike LoadTextureFromImage (the
 // actual GPU upload), which must stay on the main thread since GL
-// contexts aren't thread-safe here. StartIconFontBakeAsync is called as
+// contexts aren't thread-safe here. StartFontBakesAsync is called as
 // the very first thing main() does, before InitWindow itself, so this
-// ~90ms of CPU work overlaps with InitWindow's own GL/driver setup and
+// CPU work (the icon bake, plus g_emoji_font's -- same slot pattern)
+// overlaps with InitWindow's own GL/driver setup and
 // every other startup step ahead of ApplyFontSize instead of adding to
 // them serially. ApplyFontSize's own icon-font block joins this thread
 // (an instant no-op if it already finished) and does only the remaining
 // GPU-upload step. Emscripten-only-gated: wasm's single-threaded model
 // doesn't support this, so that build keeps the plain synchronous
 // LoadFontFromMemory call it already used.
-struct IconFontBakeResult {
+struct FontBakeResult {
     gfx::GlyphInfo *glyphs = nullptr;
     gfx::Rectangle *recs = nullptr;
     gfx::Image atlas{};
     int glyph_count = 0;
     int base_size = 0;  // the exact LoadFontData/GenImageFontAtlas fontSize this was baked for
 };
-std::thread g_icon_font_bake_thread;
-IconFontBakeResult g_icon_font_bake_result;
+// One background thread bakes both big fallback atlases (icon then
+// emoji, sequentially -- a second thread would save nothing: the pair
+// still finishes well inside InitWindow's own GL/driver setup) into these
+// two slots; ApplyFontSize joins once and consumes each slot at its
+// font's own reload point.
+std::thread g_font_bake_thread;
+FontBakeResult g_icon_font_bake_result;
+FontBakeResult g_emoji_font_bake_result;
 
 // FONT_TTF_DEFAULT_CHARS_PADDING (rtext.c) -- not part of raylib's public
 // API, so mirrored here; LoadFontFromMemory's own padding for the exact
@@ -236,20 +321,70 @@ IconFontBakeResult g_icon_font_bake_result;
 constexpr int kFontTtfDefaultCharsPadding = 4;
 
 /**
- * @brief Kicks off the icon-font glyph/atlas bake on a background thread so it overlaps window init.
- * @param base_size Font size (pixels) to bake the icon font's glyph data and atlas for.
+ * @brief Kicks off the icon- and emoji-font glyph/atlas bakes on a background thread so they overlap window init.
+ * @param base_size Font size (pixels) to bake each font's glyph data and atlas for.
  */
-void StartIconFontBakeAsync(int base_size) {
-    // Background worker: builds the icon codepoint list and bakes the glyph data + atlas image for base_size.
-    g_icon_font_bake_thread = std::thread([base_size] {
-        std::vector<int> codepoints = BuildIconCodepoints();
-        gfx::GlyphInfo *glyphs = gfx::LoadFontData(kIconFontTtf, static_cast<int>(kIconFontTtfLen), base_size, codepoints.data(),
-                                          static_cast<int>(codepoints.size()));
-        gfx::Rectangle *recs = nullptr;
-        gfx::Image atlas = gfx::GenImageFontAtlas(glyphs, &recs, static_cast<int>(codepoints.size()), base_size,
-                                         kFontTtfDefaultCharsPadding);
-        g_icon_font_bake_result = {glyphs, recs, atlas, static_cast<int>(codepoints.size()), base_size};
+void StartFontBakesAsync(int base_size) {
+    // Background worker: builds each codepoint list and bakes the glyph data + atlas image for base_size.
+    g_font_bake_thread = std::thread([base_size] {
+        auto bake = [base_size](const unsigned char *ttf, int ttf_len, const std::vector<int> &codepoints,
+                                FontBakeResult &out) {
+            gfx::GlyphInfo *glyphs = gfx::LoadFontData(ttf, ttf_len, base_size, const_cast<int *>(codepoints.data()),
+                                              static_cast<int>(codepoints.size()));
+            gfx::Rectangle *recs = nullptr;
+            gfx::Image atlas = gfx::GenImageFontAtlas(glyphs, &recs, static_cast<int>(codepoints.size()), base_size,
+                                             kFontTtfDefaultCharsPadding);
+            out = {glyphs, recs, atlas, static_cast<int>(codepoints.size()), base_size};
+        };
+        bake(kIconFontTtf, static_cast<int>(kIconFontTtfLen), BuildIconCodepoints(), g_icon_font_bake_result);
+        bake(kEmojiFontTtf, static_cast<int>(kEmojiFontTtfLen), BuildEmojiCodepoints(), g_emoji_font_bake_result);
     });
+}
+
+// Consumes one background-baked FontBakeResult into `font`: uploads the
+// atlas (the GPU half LoadFontData/GenImageFontAtlas deliberately left
+// for the main thread -- GL contexts aren't thread-safe here) when the
+// bake matches base_size, discards it otherwise. Either way the slot is
+// cleared. Returns true if `font` was populated; on false the caller
+// falls through to its plain synchronous LoadFontFromMemory path.
+/**
+ * @brief Uploads a background font bake into `font`, or discards a size-mismatched one.
+ * @param result The bake slot to consume (cleared in all cases).
+ * @param font The font to populate.
+ * @param base_size The bake size the caller is reloading at.
+ * @return True if the font was populated from the bake.
+ */
+bool ConsumeFontBake(FontBakeResult &result, gfx::Font &font, int base_size) {
+    if (result.glyphs == nullptr) return false;
+    if (result.base_size != base_size) {
+        // Never actually reached given the call pattern (only the startup
+        // ApplyFontSize call can observe a pending bake, and
+        // StartFontBakesAsync was sized for exactly that call), but cheap
+        // insurance against a future refactor breaking the invariant.
+        gfx::UnloadFontData(result.glyphs, result.glyph_count);
+        gfx::FreeGlyphRects(result.recs);
+        gfx::UnloadImage(result.atlas);
+        result = {};
+        return false;
+    }
+    font.baseSize = base_size;
+    font.glyphCount = result.glyph_count;
+    font.glyphPadding = kFontTtfDefaultCharsPadding;
+    font.glyphs = result.glyphs;
+    font.recs = result.recs;
+    font.texture = gfx::LoadTextureFromImage(result.atlas);
+    // Mirrors LoadFontFromMemory's own post-atlas step (rtext.c): each
+    // glyph's individual image is replaced with an alpha crop of the
+    // atlas, required for ImageDrawText even though mep itself never
+    // calls that -- kept for exact behavioral parity with the
+    // synchronous path.
+    for (int i = 0; i < font.glyphCount; i++) {
+        gfx::UnloadImage(font.glyphs[i].image);
+        font.glyphs[i].image = gfx::ImageFromImage(result.atlas, font.recs[i]);
+    }
+    gfx::UnloadImage(result.atlas);
+    result = {};
+    return true;
 }
 #endif
 
@@ -263,13 +398,15 @@ void StartIconFontBakeAsync(int base_size) {
 // requested codepoint list can't fix a glyph the source font simply
 // doesn't contain. Backing data (symbol_font_data.h) is a pyftsubset
 // subset of Noto Sans Symbols 2 covering Miscellaneous Symbols/Dingbats/
-// media-control-symbols -- broad enough to also preempt likely-similar
-// future gaps (star/weather/card-suit/media-transport glyphs some other
-// TUI reaches for) without embedding the much larger full Noto Sans
-// Symbols family.
+// media-control-symbols plus the full Braille Patterns block (CLI
+// spinner glyphs, absent from every other embedded font) -- broad
+// enough to also preempt likely-similar future gaps (star/weather/
+// card-suit/media-transport glyphs some other TUI reaches for) without
+// embedding the much larger full Noto Sans Symbols family.
 gfx::Font g_symbol_font{};
 
 constexpr std::pair<int, int> kSymbolCodepointRanges[] = {
+    {0x2800, 0x28ff},  // Braille patterns (CLI spinner glyphs -- see g_terminal_font's comment)
     {0x23e9, 0x23ea}, {0x23ed, 0x23ef}, {0x23f1, 0x23fa},  // media control symbols
     {0x2600, 0x2609}, {0x260e, 0x2612}, {0x2614, 0x2623}, {0x2630, 0x2637}, {0x263c, 0x263c},
     {0x2654, 0x2668}, {0x267f, 0x268f}, {0x269e, 0x26a1}, {0x26aa, 0x26ac}, {0x26bd, 0x26cd},
@@ -345,8 +482,9 @@ constexpr int kMathCodepoints[] = {
 // requesting a codepoint the font doesn't actually have is harmless
 // (raylib just skips it), but there's no point bloating the atlas with
 // ranges verified absent (Braille patterns U+2800-28FF, used by some
-// spinner styles, are NOT in this font at all -- a real, currently
-// unfixed gap, not merely unrequested).
+// spinner styles, are NOT in this font at all -- covered instead by
+// g_symbol_font's Noto Sans Symbols 2 subset, which has the whole
+// block; TerminalCellFont's symbol tier picks them up).
 gfx::Font g_terminal_font{};
 
 // Individual extra codepoints for g_terminal_font that aren't part of a
@@ -1748,7 +1886,10 @@ float DrawUiText(const std::string &text, gfx::Vector2 pos, float font_size, gfx
         int cp = gfx::GetCodepointNext(&s[i], &cp_size);
         std::string glyph(s + i, static_cast<size_t>(cp_size));
         i += cp_size;
-        const gfx::Font &f = IsIconCodepoint(cp) ? g_icon_font : (IsSymbolCodepoint(cp) ? g_symbol_font : g_font);
+        const gfx::Font &f = IsIconCodepoint(cp)   ? g_icon_font
+                             : IsSymbolCodepoint(cp) ? g_symbol_font
+                             : IsEmojiCodepoint(cp)  ? g_emoji_font
+                                                     : g_font;
         if (!measure_only) gfx::DrawTextEx(f, glyph.c_str(), gfx::Vector2{x, pos.y}, font_size, 0, tint);
         x += gfx::MeasureTextEx(f, glyph.c_str(), font_size, 0).x;
     }
@@ -1821,48 +1962,21 @@ void ApplyFontSize(float size) {
     g_icon_font = gfx::Font{};
     const int icon_base_size = static_cast<int>(g_font_size * 2);
 #if !defined(__EMSCRIPTEN__)
-    // Consume StartIconFontBakeAsync's background work if it's there --
+    // Consume StartFontBakesAsync's background work if it's there --
     // join() is an instant no-op once the thread has already finished
-    // (the common case: ~90ms of CPU work easily fits inside everything
-    // main() does between spawning it and reaching here). The size check
-    // is defensive, not load-bearing in practice: the only call site that
-    // can ever observe g_icon_font_bake_thread.joinable() as true is the
-    // startup ApplyFontSize(kDefaultFontSize) call StartIconFontBakeAsync
-    // itself was sized for -- every later call (mod1+=/mod1+- zoom) finds
-    // the thread already joined-and-cleared from that first call and
-    // falls straight through to the plain synchronous path below, same
-    // as before this existed.
-    if (g_icon_font_bake_thread.joinable()) {
-        g_icon_font_bake_thread.join();
-        if (g_icon_font_bake_result.base_size == icon_base_size) {
-            g_icon_font.baseSize = icon_base_size;
-            g_icon_font.glyphCount = g_icon_font_bake_result.glyph_count;
-            g_icon_font.glyphPadding = kFontTtfDefaultCharsPadding;
-            g_icon_font.glyphs = g_icon_font_bake_result.glyphs;
-            g_icon_font.recs = g_icon_font_bake_result.recs;
-            g_icon_font.texture = gfx::LoadTextureFromImage(g_icon_font_bake_result.atlas);
-            // Mirrors LoadFontFromMemory's own post-atlas step (rtext.c):
-            // each glyph's individual image is replaced with an alpha
-            // crop of the atlas, required for ImageDrawText even though
-            // mep itself never calls that -- kept for exact behavioral
-            // parity with the synchronous path below.
-            for (int i = 0; i < g_icon_font.glyphCount; i++) {
-                gfx::UnloadImage(g_icon_font.glyphs[i].image);
-                g_icon_font.glyphs[i].image = gfx::ImageFromImage(g_icon_font_bake_result.atlas, g_icon_font.recs[i]);
-            }
-            gfx::UnloadImage(g_icon_font_bake_result.atlas);
-            g_icon_font_bake_result = {};
-        } else {
-            // Never actually reached given the call pattern above, but
-            // cheap insurance against a future refactor breaking that
-            // invariant: discard the mismatched-size bake and fall
-            // through to baking g_icon_font fresh, synchronously.
-            gfx::UnloadFontData(g_icon_font_bake_result.glyphs, g_icon_font_bake_result.glyph_count);
-            gfx::FreeGlyphRects(g_icon_font_bake_result.recs);
-            gfx::UnloadImage(g_icon_font_bake_result.atlas);
-            g_icon_font_bake_result = {};
-        }
-    }
+    // (the common case: the icon+emoji bakes' CPU work easily fits
+    // inside everything main() does between spawning it and reaching
+    // here). ConsumeFontBake's size check is defensive, not load-bearing
+    // in practice: the only call site that can ever observe
+    // g_font_bake_thread.joinable() as true is the startup
+    // ApplyFontSize(kDefaultFontSize) call StartFontBakesAsync itself
+    // was sized for -- every later call (mod1+=/mod1+- zoom) finds the
+    // thread already joined-and-cleared from that first call and falls
+    // straight through to the plain synchronous paths, same as before
+    // this existed. The join also publishes g_emoji_font_bake_result,
+    // consumed at g_emoji_font's own reload point further down.
+    if (g_font_bake_thread.joinable()) g_font_bake_thread.join();
+    ConsumeFontBake(g_icon_font_bake_result, g_icon_font, icon_base_size);
     if (g_icon_font.texture.id == 0) {
 #endif
         std::vector<int> icon_codepoints = BuildIconCodepoints();
@@ -1905,6 +2019,7 @@ void ApplyFontSize(float size) {
         {0x25a0, 0x25ff},  // geometric shapes
         {0x2010, 0x203a},  // general punctuation (dashes, quotes, bullet, ellipsis, right-angle prompt mark)
         {0x2190, 0x21ff},  // arrows
+        {0x0370, 0x03ff},  // Greek (starship's haskell λ et al. -- in the font, was just unbaked)
     };
     constexpr int kTerminalExtraCount = sizeof(kTerminalExtraCodepoints) / sizeof(kTerminalExtraCodepoints[0]);
     int terminal_range_total = 0;
@@ -1935,6 +2050,25 @@ void ApplyFontSize(float size) {
                                         static_cast<int>(g_font_size * 2), symbol_codepoints.data(),
                                         static_cast<int>(symbol_codepoints.size()));
     gfx::SetTextureFilter(g_symbol_font.texture, gfx::TextureFilter::Bilinear);
+
+    if (g_emoji_font.texture.id != 0) gfx::UnloadFont(g_emoji_font);
+    // Same UnloadFont-takes-by-value reset as g_icon_font above -- see
+    // that comment for the use-after-free this prevents on zoom reloads.
+    g_emoji_font = gfx::Font{};
+#if !defined(__EMSCRIPTEN__)
+    // The bake thread was already joined at the g_icon_font block above;
+    // this either uploads the startup bake or (every later reload) finds
+    // an empty slot and falls through to the synchronous path.
+    ConsumeFontBake(g_emoji_font_bake_result, g_emoji_font, icon_base_size);
+    if (g_emoji_font.texture.id == 0) {
+#endif
+        std::vector<int> emoji_codepoints = BuildEmojiCodepoints();
+        g_emoji_font = gfx::LoadFontFromMemory(".ttf", kEmojiFontTtf, static_cast<int>(kEmojiFontTtfLen), icon_base_size,
+                                           emoji_codepoints.data(), static_cast<int>(emoji_codepoints.size()));
+#if !defined(__EMSCRIPTEN__)
+    }
+#endif
+    gfx::SetTextureFilter(g_emoji_font.texture, gfx::TextureFilter::Bilinear);
 }
 
 // The office pane's special-character insert palette (main.cpp's DrawPane
@@ -20562,6 +20696,7 @@ const gfx::Font &TerminalCellFont(const std::string &ch) {
     int cp = gfx::GetCodepointNext(ch.c_str(), &cp_size);
     if (IsIconCodepoint(cp)) return g_icon_font;
     if (IsSymbolCodepoint(cp)) return g_symbol_font;  // see g_symbol_font's own comment
+    if (IsEmojiCodepoint(cp)) return g_emoji_font;    // see g_emoji_font's own comment
     return g_terminal_font;
 }
 
@@ -20612,6 +20747,11 @@ void DrawTerminalGrid(const TerminalSession &sess, float x, float y, [[maybe_unu
             } else {
                 cell = &term->At(combined_index - sb_lines, c);
             }
+            // Continuation half of a wide (CJK/emoji) pair: the lead cell
+            // one column left already drew the glyph, background, and
+            // underline across both columns.
+            if (cell->width == 0) continue;
+            float cell_w = cell->width == 2 ? cw * 2 : cw;
             float cx = x + static_cast<float>(c) * cw;
             const VTermColor &fg_c = cell->reverse ? cell->bg : cell->fg;
             const VTermColor &bg_c = cell->reverse ? cell->fg : cell->bg;
@@ -20620,7 +20760,7 @@ void DrawTerminalGrid(const TerminalSession &sess, float x, float y, [[maybe_unu
             if (cell->faint) fg = gfx::Color{static_cast<unsigned char>(fg.r / 2), static_cast<unsigned char>(fg.g / 2),
                                          static_cast<unsigned char>(fg.b / 2), fg.a};
             if (bg_c.kind != VTermColorKind::Default || cell->reverse) {
-                gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(ry), static_cast<int>(cw) + 1,
+                gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(ry), static_cast<int>(cell_w) + 1,
                               static_cast<int>(lh), bg);
             }
             if (cell->ch != " " && !cell->ch.empty()) {
@@ -20638,7 +20778,7 @@ void DrawTerminalGrid(const TerminalSession &sess, float x, float y, [[maybe_unu
                 if (cell->bold) gfx::DrawTextEx(cell_font, cell->ch.c_str(), gfx::Vector2{cx + 1, ry}, g_font_size, 0, fg);
             }
             if (cell->underline) {
-                gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(ry + lh - 2), static_cast<int>(cw), 1, fg);
+                gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(ry + lh - 2), static_cast<int>(cell_w), 1, fg);
             }
         }
     }
@@ -20646,10 +20786,15 @@ void DrawTerminalGrid(const TerminalSession &sess, float x, float y, [[maybe_unu
     if (sess.scroll_offset == 0 && term->CursorVisible() && !sess.exited) {
         float cx = x + static_cast<float>(term->CursorCol()) * cw;
         float cy = y + static_cast<float>(term->CursorRow()) * lh;
-        gfx::Color cursor_bg = ResolveHlGroup("Normal");
-        gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(cy), static_cast<int>(cw), static_cast<int>(lh),
-                      gfx::Color{cursor_bg.r, cursor_bg.g, cursor_bg.b, 180});
         const VTermCell &under = term->At(term->CursorRow(), term->CursorCol());
+        // A cursor on the lead of a wide pair covers both of the glyph's
+        // columns; on a continuation cell it stays one column wide (a
+        // legal-but-transient position -- degrade rather than special-case
+        // redrawing the neighbor's glyph).
+        float cursor_w = under.width == 2 ? cw * 2 : cw;
+        gfx::Color cursor_bg = ResolveHlGroup("Normal");
+        gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(cy), static_cast<int>(cursor_w), static_cast<int>(lh),
+                      gfx::Color{cursor_bg.r, cursor_bg.g, cursor_bg.b, 180});
         if (under.ch != " " && !under.ch.empty()) {
             gfx::DrawTextEx(TerminalCellFont(under.ch), under.ch.c_str(), gfx::Vector2{cx, cy}, g_font_size, 0, ResolveHlGroup("NormalBg"));
         }
@@ -33478,23 +33623,23 @@ int main(int argc, char **argv) {
     // facade function dereferences the backend pointers this sets up.
     gfx::SetBackends(gfx::ToBackends(gfx::CreateNativeBackendSet()));
 
-    // First thing of all -- StartIconFontBakeAsync's background thread
+    // First thing of all -- StartFontBakesAsync's background thread
     // (right below) calls LoadFontData too, and its own "size is bigger
     // than expected" warnings need somewhere to go from the moment that
     // thread starts, not just from here on the main thread.
     SetUpTraceLogFile();
 #if !defined(__EMSCRIPTEN__)
     // Kicked off before InitWindow (before anything else in main(), in
-    // fact) so its ~90ms of pure-CPU font-atlas work has the longest
-    // possible window to overlap with -- InitWindow's own GL/driver
-    // setup, ApplyFontSize's other (much cheaper) font loads,
+    // fact) so its pure-CPU font-atlas work (icon + emoji bakes) has the
+    // longest possible window to overlap with -- InitWindow's own
+    // GL/driver setup, ApplyFontSize's other (much cheaper) font loads,
     // LoadOfficeFonts, BuildMenus, LuaEnv construction and every
     // kBuiltin* script it runs, treesitter grammar registration -- all
     // of it, before ApplyFontSize's icon-font block actually needs the
-    // result. See StartIconFontBakeAsync's own comment for the full
+    // result. See StartFontBakesAsync's own comment for the full
     // reasoning and why this is safe (no GL calls happen on the
     // background thread).
-    StartIconFontBakeAsync(static_cast<int>(kDefaultFontSize * 2));
+    StartFontBakesAsync(static_cast<int>(kDefaultFontSize * 2));
 
     // Writing to a subprocess's stdin pipe after that process has already
     // exited (an LSP server that failed to start, crashed, or exited

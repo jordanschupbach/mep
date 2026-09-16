@@ -256,6 +256,15 @@ const std::unordered_map<std::string, DynLangEntry> &DynamicLanguageTable() {
         {"d", {"d", kHighlightsD}},
         {"nim", {"nim", kHighlightsNim}},
         {"cr", {"crystal", kHighlightsCrystal}},
+        // LaTeX + BibTeX (latex-lsp's grammars; see kHighlightsLatex's
+        // own comment for why the query is written from scratch). .sty/
+        // .cls are the same language as .tex proper -- package/class
+        // files are just LaTeX with \makeatletter conventions, and the
+        // grammar parses them fine.
+        {"tex", {"latex", kHighlightsLatex}},
+        {"sty", {"latex", kHighlightsLatex}},
+        {"cls", {"latex", kHighlightsLatex}},
+        {"bib", {"bibtex", kHighlightsBibtex}},
     };
     return table;
 }

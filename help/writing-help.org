@@ -15,3 +15,7 @@ Use relative HTML links, for example:
 
 Click a link to follow it. Link back to [[file:intro.html][mep Help]] when a
 topic needs a natural return path.
+
+* Page navigation
+
+[[file:shortcuts.html][<]]

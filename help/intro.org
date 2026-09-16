@@ -18,3 +18,7 @@ Use the left sidebar or click a page link to move between pages.
 
 From Normal mode, press =<leader>hh= to return here at any time.  =:MepHelp=
 does the same thing.
+
+* Page navigation
+
+[[file:editing.html][>]]

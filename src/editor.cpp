@@ -2688,6 +2688,39 @@ bool IsSrcClose(const std::string &line) {
     return MatchCiLiteral(line, i + 2, "END_SRC");
 }
 
+// Display-math environments recognized as whole preview blocks -- the
+// amsmath family (all in MEP_ORG_LATEX_PREAMBLE's own \usepackage
+// {amsmath} set, so the rendered preview actually compiles) plus core
+// LaTeX's displaymath/equation/eqnarray. Added alongside the .tex-buffer
+// preview (mep.org_latex_scan's tex gating, kBuiltinOrgLatex): a real
+// LaTeX document writes its display math as environments far more often
+// than as bare \[..\]/$$..$$, which were the only whole-line block forms
+// this scanner knew. Org files get the same recognition for free --
+// real org-mode treats \begin{equation}..\end{equation} at line start
+// as a LaTeX fragment too, so this is parity there, not a behavior fork.
+/**
+ * @brief If `trimmed` opens a display-math environment (`\begin{align}`,
+ * `\begin{equation*}`, ...), returns the environment name as written
+ * (star included); otherwise returns an empty string.
+ * @param trimmed The whitespace-trimmed line to check.
+ * @return The environment name, or "" if this isn't a display-math `\begin` line.
+ */
+std::string MathEnvOpen(const std::string &trimmed) {
+    static const char *kMathEnvs[] = {"equation", "align",   "alignat", "gather",     "multline",
+                                      "flalign",  "eqnarray", "displaymath"};
+    const std::string kBegin = "\\begin{";
+    if (trimmed.compare(0, kBegin.size(), kBegin) != 0) return "";
+    size_t close = trimmed.find('}', kBegin.size());
+    if (close == std::string::npos) return "";
+    std::string name = trimmed.substr(kBegin.size(), close - kBegin.size());
+    std::string base = name;
+    if (!base.empty() && base.back() == '*') base.pop_back();
+    for (const char *env : kMathEnvs) {
+        if (base == env) return name;
+    }
+    return "";
+}
+
 /**
  * @brief Joins a list of lines into a single string with `\n` separators.
  * @param lines The lines to join.
@@ -2808,6 +2841,31 @@ Editor::OrgLatexScanResult Editor::OrgLatexScanFragments() const {
             if (j <= n) {
                 body = JoinNewline(lines);
                 end_row = j;
+            }
+        } else if (std::string env = MathEnvOpen(trimmed); !env.empty()) {
+            // \begin{equation}..\end{equation} and friends: the whole
+            // environment, \begin/\end lines included, is the body --
+            // unlike the \[..\]/$$..$$ branches below there's nothing to
+            // re-wrap, the environment already compiles as-is under
+            // MEP_ORG_LATEX_PREAMBLE.
+            const std::string close = "\\end{" + env + "}";
+            if (trimmed.size() > close.size() &&
+                trimmed.compare(trimmed.size() - close.size(), close.size(), close) == 0) {
+                body = trimmed;
+                end_row = i;
+            } else {
+                std::vector<std::string> lines;
+                lines.push_back(line);
+                int j = i + 1;
+                while (j <= n && LatexTrim(Buf().lines[static_cast<size_t>(j - 1)]) != close) {
+                    lines.push_back(Buf().lines[static_cast<size_t>(j - 1)]);
+                    j++;
+                }
+                if (j <= n) {
+                    lines.push_back(Buf().lines[static_cast<size_t>(j - 1)]);
+                    body = JoinNewline(lines);
+                    end_row = j;
+                }
             }
         } else if (LatexWrapped(trimmed, "\\[", "\\]")) {
             body = trimmed;
@@ -4791,6 +4849,25 @@ void Editor::ActivateDashboardSelection() {
     RunCommand(dashboard_selection_ == 0 ? "MepProjects" : "MepHelp");
 }
 
+bool Editor::ActivateDashboardShortcut(char shortcut) {
+    // Keep these in the same order as DrawDashboard's action rows.  Besides
+    // making the shortcut direct, updating the virtual cursor first leaves
+    // the dashboard in the expected state if the command does not replace it
+    // (for example, if a command is unavailable in a custom setup).
+    switch (shortcut) {
+        case 'p':
+            dashboard_selection_ = 0;
+            RunCommand("MepProjects");
+            return true;
+        case 'h':
+            dashboard_selection_ = 1;
+            RunCommand("MepHelp");
+            return true;
+        default:
+            return false;
+    }
+}
+
 bool Editor::ProjectIsPristine(const Project &project) const {
     if (project.workspaces.size() != 1) return false;
     const Workspace &ws = project.workspaces[0];
@@ -5130,7 +5207,14 @@ void Editor::TerminalSpawn(TerminalSession &sess, const std::vector<std::string>
      * @brief Feeds a chunk of raw child-process output into the terminal's VTerm for parsing/rendering.
      * @param chunk The raw bytes received from the child process.
      */
-    cb.on_stdout_raw = [vterm_ptr](const std::string &chunk) { vterm_ptr->Feed(chunk); };
+    cb.on_stdout_raw = [this, buffer_id, vterm_ptr](const std::string &chunk) {
+        std::string reply = vterm_ptr->Feed(chunk);
+        if (reply.empty()) return;
+        // VTerm parses an application's terminal queries while consuming
+        // stdout; return its response through this session's PTY so TUIs
+        // such as Codex can finish their styled prompt initialization.
+        if (TerminalSession *live = FindTerminal(buffer_id)) TerminalWrite(*live, reply);
+    };
     // Skip parsing this terminal's output while its pane isn't on screen
     // (a different workspace/tab is active) -- a chatty child (a spinner,
     // an AI agent's own animated status line) would otherwise get its
@@ -5253,7 +5337,10 @@ void Editor::PollTerminals() {
         char *ptr = mep_js_pty_poll(sess.job_id);
         int len = mep_js_pty_poll_len();
         if (ptr) {
-            if (len > 0 && sess.vterm) sess.vterm->Feed(std::string(ptr, len));
+            if (len > 0 && sess.vterm) {
+                std::string reply = sess.vterm->Feed(std::string(ptr, len));
+                if (!reply.empty()) TerminalWrite(sess, reply);
+            }
             std::free(ptr);
         }
         if (mep_js_pty_exited(sess.job_id)) {
@@ -14157,8 +14244,9 @@ void Editor::HandleNormalInput() {
                 continue;
             }
         }
-        if (ShouldShowDashboard() && no_pending_state && !ctrl && !shift && (cp == 'j' || cp == 'k')) {
-            MoveDashboardSelection(cp == 'j' ? 1 : -1);
+        if (ShouldShowDashboard() && no_pending_state && !ctrl && !shift &&
+            (cp == 'j' || cp == 'k' || ActivateDashboardShortcut(static_cast<char>(cp)))) {
+            if (cp == 'j' || cp == 'k') MoveDashboardSelection(cp == 'j' ? 1 : -1);
         } else {
             HandleNormalChar(cp, no_pending_state);
         }
@@ -15344,6 +15432,7 @@ void Editor::HandleInsertInput() {
     bool shift_down = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
     bool escape = false, enter = false, backspace = false, del = false, ctrl_w = false, ctrl_u = false;
     bool tab_key = false, ctrl_n = false, ctrl_p = false, ctrl_o = false, ctrl_r = false, ctrl_shift_v = false;
+    bool ctrl_y = false;
     for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
         if (key == gfx::Key::Escape) escape = true;
         else if (key == gfx::Key::Enter) enter = true;
@@ -15356,6 +15445,7 @@ void Editor::HandleInsertInput() {
         else if (key == gfx::Key::P && ctrl) ctrl_p = true;
         else if (key == gfx::Key::O && ctrl) ctrl_o = true;
         else if (key == gfx::Key::R && ctrl) ctrl_r = true;
+        else if (key == gfx::Key::Y && ctrl) ctrl_y = true;
         else if (key == gfx::Key::V && ctrl && shift_down) ctrl_shift_v = true;
     }
     // A pending Ctrl-R only survives until the next *character*; any
@@ -15384,7 +15474,11 @@ void Editor::HandleInsertInput() {
             CompletionPrev();
             return;
         }
-        if (tab_key || enter) {
+        // Ctrl-Y: vim's own popup-accept key, alongside Tab/Enter --
+        // matters for LaTeX command completion specifically, where Enter
+        // legitimately means "newline, keep typing" mid-paragraph and
+        // Tab may be claimed by a snippet tabstop jump.
+        if (tab_key || enter || ctrl_y) {
             AcceptCompletion();
             return;
         }
@@ -18132,11 +18226,13 @@ void Editor::HandlePickerInput() {
             query_changed = true;
         }
     }
-    if ((ctrl && gfx::IsKeyPressed(gfx::Key::N)) || gfx::IsKeyPressed(gfx::Key::Down) || gfx::IsKeyPressedRepeat(gfx::Key::Down)) {
+    if ((ctrl && (gfx::IsKeyPressed(gfx::Key::N) || gfx::IsKeyPressedRepeat(gfx::Key::N))) ||
+        gfx::IsKeyPressed(gfx::Key::Down) || gfx::IsKeyPressedRepeat(gfx::Key::Down)) {
         int n = static_cast<int>(PickerFilteredResults().size());
         if (picker_selected_ + 1 < n) picker_selected_++;
     }
-    if ((ctrl && gfx::IsKeyPressed(gfx::Key::P)) || gfx::IsKeyPressed(gfx::Key::Up) || gfx::IsKeyPressedRepeat(gfx::Key::Up)) {
+    if ((ctrl && (gfx::IsKeyPressed(gfx::Key::P) || gfx::IsKeyPressedRepeat(gfx::Key::P))) ||
+        gfx::IsKeyPressed(gfx::Key::Up) || gfx::IsKeyPressedRepeat(gfx::Key::Up)) {
         if (picker_selected_ > 0) picker_selected_--;
     }
     int cp = gfx::GetCharPressed();
@@ -18752,7 +18848,17 @@ void Editor::UpdateCompletionPopup() {
     // Phase 22 gap: dotted/member completion never reached the
     // completion source at all before this).
     bool dot_trigger = prefix.empty() && start > 0 && line[static_cast<size_t>(start - 1)] == '.';
-    if (prefix.size() < 2 && !dot_trigger) {
+    // Backslash trigger: LaTeX command completion (kBuiltinCompletion's
+    // mep.latex_commands source) wants candidates from the very first
+    // keystroke after '\' -- unlike dot_trigger this stays live at ANY
+    // prefix length ('\s' has a 1-char prefix that the 2+ rule below
+    // would otherwise close the popup for). Whether a backslash context
+    // actually yields candidates is the Lua source's decision (it checks
+    // the filetype and returns nothing for a sub-2-char prefix outside
+    // tex/sty/cls, so a '\n' inside a C string doesn't suddenly pop a
+    // 1-char buffer-word query where none appeared before).
+    bool backslash_trigger = start > 0 && line[static_cast<size_t>(start - 1)] == '\\';
+    if (prefix.size() < 2 && !dot_trigger && !backslash_trigger) {
         completion_open_ = false;
         completion_last_query_prefix_ = "\x01";
         return;
@@ -18771,8 +18877,9 @@ void Editor::UpdateCompletionPopup() {
     // genuine prefix changes to a modest interval so a fast typing burst
     // doesn't demand a full rescan for every single character.
     // completion_last_query_prefix_ is reset to "\x01" (a value prefix can
-    // never equal -- it's always either "" for a dot-trigger or >=2 chars
-    // otherwise, never a single byte) on Insert-mode exit (EnterNormal) so
+    // never equal -- prefix characters are always alnum/'_', so even the
+    // 1-byte prefixes the backslash trigger allows can't be that byte) on
+    // Insert-mode exit (EnterNormal) so
     // a later session can't skip its first query by coincidentally
     // starting with the same prefix text some earlier, unrelated session
     // ended on -- "" specifically can't be reused as that sentinel once a
@@ -23730,14 +23837,21 @@ bool Editor::WriteAllModified() {
 bool Editor::IsOnlyPaneOverall() const { return Tabs().size() == 1 && Tabs()[0].root->dir == SplitDir::Leaf; }
 
 bool Editor::AnyBufferModified() const {
-    for (const auto &buf : buffers_) {
-        if (buf.modified) return true;
+    // Same skips as WriteAllModified/WorkspaceHasModifiedBuffers: a deleted
+    // buffer or one with no possible save (terminal snapshot, PDF viewer)
+    // has a `modified` flag nothing can clear, so counting it here would
+    // make :qa refuse forever even right after a successful :wa.
+    for (size_t i = 0; i < buffers_.size(); i++) {
+        const Buffer &buf = buffers_[i];
+        if (!buf.modified || buf.deleted) continue;
+        if (BufferUnsavable(static_cast<int>(i))) continue;
+        return true;
     }
     return false;
 }
 
 void Editor::QuitCurrent(bool force) {
-    if (!force && Buf().modified) {
+    if (!force && Buf().modified && !Buf().deleted && !BufferUnsavable(CurrentBufferId())) {
         status_message_ = "E37: No write since last change (add ! to override)";
         return;
     }

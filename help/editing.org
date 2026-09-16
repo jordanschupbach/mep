@@ -16,3 +16,7 @@ For the conventions used by this help workspace, see
 * More
 
 Return to [[file:intro.html][mep Help]] or review [[file:shortcuts.html][Keyboard shortcuts]].
+
+* Page navigation
+
+[[file:intro.html][<]] [[file:shortcuts.html][>]]

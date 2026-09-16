@@ -38,7 +38,23 @@ struct VTermCell {
     bool italic = false;
     bool underline = false;
     bool reverse = false;
+    // Display width of this cell: 1 for a normal cell, 2 for the lead cell
+    // of a double-width (CJK/emoji) glyph, 0 for the continuation cell
+    // occupying the second column of such a pair (ch is "" there; the lead
+    // draws across both columns). Keeping the grid's column arithmetic in
+    // step with the wcwidth arithmetic the child process does is what makes
+    // prompts/TUIs that emit wide glyphs stay column-aligned.
+    uint8_t width = 1;
 };
+
+// Display width of a codepoint as a terminal grid column count: 0 for
+// zero-width characters (variation selectors, ZWJ/ZWNJ, combining marks),
+// 2 for wide glyphs (East Asian Wide/Fullwidth + emoji-presentation
+// pictographs), 1 for everything else. Self-contained range tables rather
+// than libc wcwidth(): glibc's is locale-dependent and predates emoji
+// width conventions, and emscripten's differs again -- this must be
+// deterministic across native and wasm builds, and unit-testable.
+int VTermCharWidth(uint32_t cp);
 
 // A minimal-but-broadly-compatible VT100/ANSI/xterm terminal emulator:
 // parses a raw child-process output byte stream into a cursor-addressable
@@ -59,12 +75,9 @@ struct VTermCell {
 // Deliberately not attempted: mouse reporting, sixel/image protocols,
 // bracketed-paste as anything other than a no-op, DEC special-graphics
 // character sets (ESC ( / ESC ) -- the following byte is consumed and
-// ignored rather than switching glyph sets), and device-status-report
-// replies (CSI n / CSI c) -- these would need a way to write back to the
-// PTY from inside the parser, which this class doesn't have; the couple
-// of programs that block waiting on one (rare -- mostly legacy status-line
-// tricks) will simply see no reply, same as a terminal that doesn't
-// support the query. All unrecognized CSI/ESC/OSC/DCS sequences are
+// ignored rather than switching glyph sets). It replies to the common DSR,
+// device-attributes, and OSC default-color queries that modern TUIs use at
+// startup; all other unrecognized CSI/ESC/OSC/DCS sequences are
 // parsed structurally (so their bytes never leak into the visible grid as
 // stray text) and then silently discarded.
 class VTerm {
@@ -84,7 +97,10 @@ public:
      * @brief Parses a chunk of raw child-process output byte by byte, updating parser and grid state.
      * @param data Raw bytes to feed; may contain a partial UTF-8 or escape sequence continued from a previous call.
      */
-    void Feed(const std::string &data);
+    // Returns replies to terminal capability/status queries received in
+    // `data`.  The embedding PTY must write a non-empty reply back to its
+    // child, just as a real terminal emulator would.
+    std::string Feed(const std::string &data);
 
     // Resizes the *visible* grid in place. The alternate screen is
     // reallocated blank (a full-screen program redraws on resize
@@ -201,6 +217,9 @@ private:
     bool pen_bold_ = false, pen_faint_ = false, pen_italic_ = false, pen_underline_ = false, pen_reverse_ = false;
 
     std::string title_;
+    // Accumulates replies while one input chunk is parsed.  Feed() returns
+    // and clears it, keeping protocol handling independent of the PTY.
+    std::string replies_;
 
     // Parser state.
     ParseState state_ = ParseState::Ground;
@@ -274,14 +293,29 @@ private:
      */
     void ExecuteEscFinal(unsigned char c);
     /**
-     * @brief Parses the accumulated OSC payload and updates the window title if it is an OSC 0/1/2 (title-setting) sequence.
+     * @brief Parses the accumulated OSC payload, updating an OSC 0/1/2 title or replying to an OSC 10/11 default-color query.
      */
     void ParseOscTitle();
+    // Appends a terminal-to-application protocol response for the current
+    // input chunk.  Kept private so only recognized queries can emit data.
+    void Reply(const std::string &bytes);
 
     /**
      * @brief Clamps the cursor position to stay within the current grid bounds.
      */
     void ClampCursor();
+    // If the cell at (row, col) is half of a wide (width-2) pair, resets
+    // the *other* half to a blank width-1 cell, so overwriting or erasing
+    // either half never leaves an orphaned lead (drawing into a column
+    // that now belongs to something else) or an orphaned continuation
+    // (an empty cell whose lead is gone). The target cell itself is left
+    // for the caller, which is about to overwrite or blank it anyway.
+    /**
+     * @brief Blanks the other half of a wide-glyph pair when (row, col) is one of its halves.
+     * @param row Row of the cell about to be overwritten or erased.
+     * @param col Column of the cell about to be overwritten or erased.
+     */
+    void ClearWideOverwrite(int row, int col);
     /**
      * @brief Moves the cursor down one row, scrolling the region up when already at the bottom margin.
      */

@@ -17948,6 +17948,140 @@ const char *kBuiltinWhichKeyGroups =
     "mep.leader_group('j', 'jupyter')\n"
     "mep.leader_group('d', 'debug')\n";
 
+// Help workspace.  Help pages deliberately stay as ordinary Org buffers:
+// authors can edit them with all of mep's existing Org support, while this
+// small layer supplies wiki navigation, a persistent document sidebar, and
+// a scoped line search.  Keeping the index filesystem-backed (rather than a
+// compiled-in table) makes adding a page as simple as dropping a .org file
+// into help/.
+const char *kBuiltinHelp =
+    "local mep_help_sidebar_id = nil\n"
+    "local mep_help_root = nil\n"
+    "local mep_help_pages = {}\n"
+    "local mep_help_search_state = {active = false, query = ''}\n"
+    "local function mep_help_join(a, b) return a:gsub('/+$', '') .. '/' .. b end\n"
+    "local function mep_help_title(lines, fallback)\n"
+    "  for _, line in ipairs(lines or {}) do\n"
+    "    local title = line:match('^%s*#%+[Tt][Ii][Tt][Ll][Ee]:%s*(.+)%s*$')\n"
+    "    if title then return title end\n"
+    "  end\n"
+    "  return fallback:gsub('%.org$', '')\n"
+    "end\n"
+    "function mep.help_refresh_index()\n"
+    "  mep_help_root = mep_help_join(mep.workspace_root(), 'help')\n"
+    "  mep_help_pages = {}\n"
+    "  for _, entry in ipairs(mep.list_dir(mep_help_root)) do\n"
+    "    if not entry.is_dir and entry.name:match('%.org$') then\n"
+    "      local path = mep_help_join(mep_help_root, entry.name)\n"
+    "      local lines = mep.read_lines(path) or {}\n"
+    "      mep_help_pages[#mep_help_pages + 1] = {path = path, name = entry.name, title = mep_help_title(lines, entry.name)}\n"
+    "    end\n"
+    "  end\n"
+    "  table.sort(mep_help_pages, function(a, b)\n"
+    "    if a.name == 'intro.org' then return true end\n"
+    "    if b.name == 'intro.org' then return false end\n"
+    "    return a.title:lower() < b.title:lower()\n"
+    "  end)\n"
+    "end\n"
+    "local function mep_help_install_link_key()\n"
+    "  local buffer = mep.current_buffer()\n"
+    "  mep.buffer_set_on_enter(buffer, function()\n"
+    "    if mep.org_link_at_cursor() then mep.org_link_follow()\n"
+    "    else mep.notify('Move the cursor onto a help link, then press Enter', 'info') end\n"
+    "  end)\n"
+    "end\n"
+    "function mep.help_open_page(path, line)\n"
+    "  if not path or path == '' then return end\n"
+    "  mep.open(path)\n"
+    "  if line then mep.set_cursor(line, 1) end\n"
+    "  mep_help_install_link_key()\n"
+    "  if mep_help_sidebar_id and mep.sidebar_is_open(mep_help_sidebar_id) then mep.help_render_sidebar() end\n"
+    "end\n"
+    "function mep.help_render_sidebar()\n"
+    "  if not mep_help_sidebar_id then\n"
+    "    mep_help_sidebar_id = mep.sidebar_create('Help', 'left', 30)\n"
+    "  end\n"
+    "  local current = mep.filename()\n"
+    "  local widgets = {}\n"
+    "  for _, page in ipairs(mep_help_pages) do\n"
+    "    local p = page\n"
+    "    widgets[#widgets + 1] = {id = p.path, text = p.title, current = current == p.path,\n"
+    "      hl = current == p.path and 'Add' or nil, on_click = function() mep.help_open_page(p.path) end}\n"
+    "  end\n"
+    "  if #widgets == 0 then widgets[1] = {id = 'empty', text = '(no help pages in help/)'} end\n"
+    "  mep.sidebar_set_sections(mep_help_sidebar_id, {{id = 'pages', title = 'Documentation', collapsed = false, widgets = widgets}})\n"
+    "end\n"
+    "local function mep_help_spans(line, query, row)\n"
+    "  local out, lower, needle, at = {}, line:lower(), query:lower(), 1\n"
+    "  while needle ~= '' do\n"
+    "    local s, e = lower:find(needle, at, true)\n"
+    "    if not s then break end\n"
+    "    out[#out + 1] = {row = row, col_start = s, col_end = e + 1, hl = 'Search'}\n"
+    "    at = e + 1\n"
+    "  end\n"
+    "  return out\n"
+    "end\n"
+    "local function mep_help_preview(path, line_no, query)\n"
+    "  local lines = mep.read_lines(path) or {}\n"
+    "  local first, last = math.max(1, line_no - 3), math.min(#lines, line_no + 3)\n"
+    "  local out, spans = {}, {}\n"
+    "  for row = first, last do\n"
+    "    local prefix = row == line_no and '> ' or '  '\n"
+    "    out[#out + 1] = prefix .. string.format('%4d  %s', row, lines[row])\n"
+    "    for _, span in ipairs(mep_help_spans(lines[row], query, #out)) do\n"
+    "      span.col_start, span.col_end = span.col_start + 8, span.col_end + 8\n"
+    "      spans[#spans + 1] = span\n"
+    "    end\n"
+    "  end\n"
+    "  mep.picker_set_preview(table.concat(out, '\\n'), spans)\n"
+    "end\n"
+    "local function mep_help_search(query)\n"
+    "  mep_help_search_state.query = query\n"
+    "  if query == '' then mep.picker_set_items({}); mep.picker_set_preview('Type to search every help page.') return end\n"
+    "  local items = {}\n"
+    "  for _, page in ipairs(mep_help_pages) do\n"
+    "    local lines = mep.read_lines(page.path) or {}\n"
+    "    for line_no, text in ipairs(lines) do\n"
+    "      if text:lower():find(query:lower(), 1, true) then\n"
+    "        local display = page.title .. ':' .. line_no .. '  ' .. text\n"
+    "        local spans = mep_help_spans(display, query, 1)\n"
+    "        items[#items + 1] = {display = display, data = page.path .. '\\t' .. line_no, hl = spans}\n"
+    "      end\n"
+    "  end\n"
+    "  mep.picker_set_items(items)\n"
+    "  if #items > 0 then\n"
+    "    local path, line = items[1].data:match('^(.-)\\t(%d+)$')\n"
+    "    mep_help_preview(path, tonumber(line), query)\n"
+    "  else mep.picker_set_preview('No matching help lines.') end\n"
+    "end\n"
+    "function mep.help_search()\n"
+    "  mep.help_refresh_index()\n"
+    "  mep_help_search_state.active = true\n"
+    "  mep.picker_open('Help Search', {}, function(item)\n"
+    "    mep_help_search_state.active = false\n"
+    "    if item then local path, line = item:match('^(.-)\\t(%d+)$'); mep.help_open_page(path, tonumber(line)) end\n"
+    "  end, mep_help_search, nil, function(item)\n"
+    "    if item then local path, line = item:match('^(.-)\\t(%d+)$'); mep_help_preview(path, tonumber(line), mep_help_search_state.query) end\n"
+    "  end, true)\n"
+    "  mep.picker_set_preview('Type to search every help page.')\n"
+    "end\n"
+    "function mep.help_open()\n"
+    "  mep.help_refresh_index()\n"
+    "  mep.help_render_sidebar()\n"
+    "  mep.sidebar_open(mep_help_sidebar_id)\n"
+    "  local intro = mep_help_join(mep_help_root, 'intro.org')\n"
+    "  mep.help_open_page(intro)\n"
+    "end\n"
+    "mep.command('MepHelp', mep.help_open)\n"
+    "mep.command('MepHelpSearch', mep.help_search)\n"
+    "mep.leader_map('hh', 'Open help', mep.help_open)\n"
+    "mep.map('n', '/', function()\n"
+    "  if mep.filename():match('help/[^/]+%.org$') then mep.help_search() else mep.buffer_search() end\n"
+    "end, {desc = 'Search help or current buffer'})\n"
+    "mep.on_buffer_saved(function()\n"
+    "  if mep_help_sidebar_id and mep.sidebar_is_open(mep_help_sidebar_id) then mep.help_refresh_index(); mep.help_render_sidebar() end\n"
+    "end)\n";
+
 const char *kBuiltinPickerSources =
     "function mep.themes()\n"
     "  local before = mep.current_theme()\n"
@@ -18627,12 +18761,12 @@ struct FloatFrame {
  * @param title Optional title line drawn at the top of the box (skipped if empty).
  * @return A FloatFrame describing the box's bounds and the content origin (content_x/content_y).
  */
-FloatFrame DrawFloatFrame(int w, int h, const std::string &title) {
+FloatFrame DrawFloatFrame(int w, int h, const std::string &title, int top_y = -1, bool dim_background = true) {
     int screen_w = gfx::GetScreenWidth();
     int screen_h = gfx::GetScreenHeight();
-    gfx::DrawRectangle(0, 0, screen_w, screen_h, ResolveHlGroup("Overlay"));
+    if (dim_background) gfx::DrawRectangle(0, 0, screen_w, screen_h, ResolveHlGroup("Overlay"));
     int box_x = (screen_w - w) / 2;
-    int box_y = (screen_h - h) / 2;
+    int box_y = top_y >= 0 ? top_y : (screen_h - h) / 2;
     gfx::DrawRectangle(box_x, box_y, w, h, ResolveHlGroup("FloatBg"));
     gfx::DrawRectangleLines(box_x, box_y, w, h, ResolveHlGroup("FloatBorder"));
     float content_y = static_cast<float>(box_y + 10);
@@ -19524,9 +19658,14 @@ void DrawPickerOverlay() {
     // since this overlay is one box rather than mep.nvim's three separate
     // floating windows and reads busier at the same fraction. Floors keep
     // it usable in a small window.
-    int box_w = std::max(400, static_cast<int>(static_cast<float>(gfx::GetScreenWidth()) * 0.8f));
-    int box_h = std::max(300, static_cast<int>(static_cast<float>(gfx::GetScreenHeight()) * 0.8f));
-    FloatFrame f = DrawFloatFrame(box_w, box_h, g_editor.PickerTitle());
+    const bool help_search = g_editor.PickerTitle() == "Help Search";
+    int box_w = help_search ? std::max(400, static_cast<int>(static_cast<float>(gfx::GetScreenWidth()) * 0.96f))
+                            : std::max(400, static_cast<int>(static_cast<float>(gfx::GetScreenWidth()) * 0.8f));
+    // Help search is intentionally a compact dropdown so its input remains
+    // the viewer's top search bar while the document stays visible below.
+    int box_h = help_search ? std::max(180, static_cast<int>(static_cast<float>(gfx::GetScreenHeight()) / 3.0f))
+                            : std::max(300, static_cast<int>(static_cast<float>(gfx::GetScreenHeight()) * 0.8f));
+    FloatFrame f = DrawFloatFrame(box_w, box_h, g_editor.PickerTitle(), help_search ? MenuBarHeight() + 4 : -1, !help_search);
 
     std::string prompt_line = "> " + g_editor.PickerQuery();
     gfx::DrawTextEx(g_font, prompt_line.c_str(), gfx::Vector2{f.content_x, f.content_y}, g_font_size, 0, ResolveHlGroup("Normal"));
@@ -33222,6 +33361,9 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinAiTerminal);
     lua->DoString(kBuiltinLeetcode);
     lua->DoString(kBuiltinNotebook);
+    // Loaded last because Help overrides '/' only for an active help page;
+    // every other buffer still routes it to the normal buffer search.
+    lua->DoString(kBuiltinHelp);
     lua->DoString(kBuiltinWhichKeyGroups);
 
 #if !defined(__EMSCRIPTEN__)

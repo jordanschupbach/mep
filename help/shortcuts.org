@@ -1,0 +1,15 @@
+#+TITLE: Keyboard shortcuts
+
+* Help
+
+- =<leader>hh=: open the help workspace on its introduction page.
+- =/=: search all help pages when a help document is active.
+- =Enter=: follow the Org link under the cursor in a help document.
+- =Esc=: close the search dropdown without leaving the current help page.
+
+* Everyday movement
+
+Use =h=, =j=, =k=, and =l= in Normal mode to move.  Use =i= to enter Insert
+mode and =Esc= to return to Normal mode.
+
+See [[file:editing.org][Editing basics]] for a short overview.

@@ -65,6 +65,7 @@
 #include <string>
 #include <sys/stat.h>
 #include <system_error>
+#include <atomic>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -100,8 +101,8 @@ namespace {
 constexpr int kInitialWidth = 1000;
 constexpr int kInitialHeight = 650;
 constexpr float kDefaultFontSize = 33.75f;
-constexpr float kMinFontSize = 8.0f;
-constexpr float kMaxFontSize = 48.0f;
+constexpr float kMinFontSize = 6.0f;
+constexpr float kMaxFontSize = 96.0f;
 constexpr float kFontSizeStep = 2.0f;
 constexpr int kMarginX = 8;
 constexpr int kMenuPaddingX = 14;
@@ -111,6 +112,25 @@ Editor g_editor;
 gfx::Font g_font;
 float g_font_size = kDefaultFontSize;
 float g_char_width = 0;
+
+// Ceiling on the icon font's *bake* size (not its draw size). g_icon_font
+// holds ~3,500 glyphs, so its atlas area grows quadratically with the bake
+// size: at the old kMaxFontSize of 48 (bake 96px) the atlas already came
+// out around 6k x 6k -- close to the 8192 GL_MAX_TEXTURE_SIZE floor some
+// GPUs still report. kMaxFontSize now goes to 96, and an uncapped 192px
+// bake would blow well past that limit and fail (or silently truncate) the
+// atlas. 96px is the largest bake the pre-raise code ever produced, i.e. a
+// proven-safe ceiling; past font size 48 icons are bilinear-upscaled from
+// that bake instead, which the icon shapes tolerate fine. The text fonts
+// (g_font/g_math_font/g_terminal_font) have far fewer glyphs and keep
+// their uncapped 2x-supersampled bake.
+constexpr int kMaxIconFontBakePx = 96;
+
+/**
+ * @brief Computes the icon-font bake size for the current g_font_size: 2x-supersampled, capped at kMaxIconFontBakePx.
+ * @return Icon font base size in pixels.
+ */
+int IconFontBaseSize() { return std::min(static_cast<int>(g_font_size * 2), kMaxIconFontBakePx); }
 
 // Nerd Font icon glyphs (Private Use Area codepoints), reloaded alongside
 // g_font at the same size in ApplyFontSize -- a *separate* font rather
@@ -229,6 +249,12 @@ struct IconFontBakeResult {
 };
 std::thread g_icon_font_bake_thread;
 IconFontBakeResult g_icon_font_bake_result;
+// Completion flag for g_icon_font_bake_thread, so PollFontRebake (the
+// zoom settle path below HandleFontSizeShortcuts) can check whether the
+// background bake finished without join()-blocking the frame. seq_cst
+// store/load doubles as the publication barrier for
+// g_icon_font_bake_result's plain fields.
+std::atomic<bool> g_icon_font_bake_done{false};
 
 // FONT_TTF_DEFAULT_CHARS_PADDING (rtext.c) -- not part of raylib's public
 // API, so mirrored here; LoadFontFromMemory's own padding for the exact
@@ -240,6 +266,7 @@ constexpr int kFontTtfDefaultCharsPadding = 4;
  * @param base_size Font size (pixels) to bake the icon font's glyph data and atlas for.
  */
 void StartIconFontBakeAsync(int base_size) {
+    g_icon_font_bake_done = false;
     // Background worker: builds the icon codepoint list and bakes the glyph data + atlas image for base_size.
     g_icon_font_bake_thread = std::thread([base_size] {
         std::vector<int> codepoints = BuildIconCodepoints();
@@ -249,6 +276,7 @@ void StartIconFontBakeAsync(int base_size) {
         gfx::Image atlas = gfx::GenImageFontAtlas(glyphs, &recs, static_cast<int>(codepoints.size()), base_size,
                                          kFontTtfDefaultCharsPadding);
         g_icon_font_bake_result = {glyphs, recs, atlas, static_cast<int>(codepoints.size()), base_size};
+        g_icon_font_bake_done = true;
     });
 }
 #endif
@@ -1819,7 +1847,7 @@ void ApplyFontSize(float size) {
     // crash live (a same-session real-keyboard test aimed at the wrong
     // window first, so it couldn't be trusted either way).
     g_icon_font = gfx::Font{};
-    const int icon_base_size = static_cast<int>(g_font_size * 2);
+    const int icon_base_size = IconFontBaseSize();
 #if !defined(__EMSCRIPTEN__)
     // Consume StartIconFontBakeAsync's background work if it's there --
     // join() is an instant no-op once the thread has already finished
@@ -2476,18 +2504,94 @@ int ByteOffsetToColumn(const std::string &line, int byte_offset) {
     return column;
 }
 
+// Zoom settle state (HandleFontSizeShortcuts/PollFontRebake). Calling
+// ApplyFontSize on every Ctrl+Shift+=/- press re-baked all five font
+// atlases synchronously -- ~100ms+ per press, which under key-repeat made
+// zooming visibly laggy. Instead each press only updates g_font_size and
+// g_char_width (PreviewFontSize below): every draw call already sizes
+// text by g_font_size and raylib scales the existing atlases bilinearly,
+// so the zoom is visually instant, merely a little soft when scaling up.
+// The real re-bake happens once, kFontRebakeSettleSeconds after the last
+// press, and even then the expensive part (the ~90ms icon-font bake --
+// StartIconFontBakeAsync's own comment) runs on the background thread
+// first so the final ApplyFontSize only pays for the small text fonts and
+// the GPU uploads.
+constexpr double kFontRebakeSettleSeconds = 0.25;
+double g_font_settle_deadline = 0.0;  // 0 = no re-bake pending
+bool g_font_settle_bake_started = false;  // settle-triggered icon bake is in flight
+
+/**
+ * @brief Applies a new global font size immediately without re-baking any font atlas, and schedules the settle re-bake.
+ * @param size Requested font size in pixels, clamped to [kMinFontSize, kMaxFontSize].
+ */
+void PreviewFontSize(float size) {
+    g_font_size = std::max(kMinFontSize, std::min(size, kMaxFontSize));
+    // Stale-atlas measurement is proportionally exact (MeasureTextEx
+    // scales advances by size/baseSize), so layout tracks the preview
+    // size correctly; ApplyFontSize re-measures against the fresh bake at
+    // settle, which can shift widths by a subpixel at most.
+    g_char_width = gfx::MeasureTextEx(g_font, "M", g_font_size, 0).x;
+    g_font_settle_deadline = gfx::GetTime() + kFontRebakeSettleSeconds;
+    // Re-zoomed while a settle bake was already in flight: drop back to
+    // the waiting phase. PollFontRebake joins-and-discards the now
+    // stale-sized bake before starting the new one.
+    g_font_settle_bake_started = false;
+}
+
+/**
+ * @brief Runs the deferred font re-bake once zoom input has settled; called every frame.
+ */
+void PollFontRebake() {
+    if (g_font_settle_deadline == 0.0) return;
+#if defined(__EMSCRIPTEN__)
+    // No threads in the wasm build: one synchronous re-bake at settle.
+    if (gfx::GetTime() < g_font_settle_deadline) return;
+    g_font_settle_deadline = 0.0;
+    ApplyFontSize(g_font_size);
+    RecomputeMenuLabelLayout();
+#else
+    if (!g_font_settle_bake_started) {
+        if (gfx::GetTime() < g_font_settle_deadline) return;
+        if (g_icon_font_bake_thread.joinable()) {
+            // Orphaned bake from a settle that got interrupted by more
+            // zooming (PreviewFontSize reset g_font_settle_bake_started):
+            // its size is stale, so free everything it produced. The join
+            // can block for whatever remains of that ~90ms bake -- rare
+            // (needs a press landing inside the previous bake window) and
+            // still far cheaper than the old every-press full re-bake.
+            g_icon_font_bake_thread.join();
+            gfx::UnloadFontData(g_icon_font_bake_result.glyphs, g_icon_font_bake_result.glyph_count);
+            gfx::FreeGlyphRects(g_icon_font_bake_result.recs);
+            gfx::UnloadImage(g_icon_font_bake_result.atlas);
+            g_icon_font_bake_result = {};
+        }
+        StartIconFontBakeAsync(IconFontBaseSize());
+        g_font_settle_bake_started = true;
+        return;
+    }
+    if (!g_icon_font_bake_done.load()) return;
+    g_font_settle_deadline = 0.0;
+    g_font_settle_bake_started = false;
+    // Joins the (already finished) bake thread, consumes its
+    // matching-size result, and re-bakes the cheaper text fonts.
+    ApplyFontSize(g_font_size);
+    RecomputeMenuLabelLayout();
+#endif
+}
+
 /**
  * @brief Handles Ctrl+Shift+=/- keyboard shortcuts to grow/shrink the global font size.
  */
 void HandleFontSizeShortcuts() {
+    PollFontRebake();
     bool ctrl = gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl);
     bool shift = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
     if (!ctrl || !shift) return;
     if (gfx::IsKeyPressed(gfx::Key::Equal) || gfx::IsKeyPressedRepeat(gfx::Key::Equal)) {
-        ApplyFontSize(g_font_size + kFontSizeStep);
+        PreviewFontSize(g_font_size + kFontSizeStep);
         RecomputeMenuLabelLayout();
     } else if (gfx::IsKeyPressed(gfx::Key::Minus) || gfx::IsKeyPressedRepeat(gfx::Key::Minus)) {
-        ApplyFontSize(g_font_size - kFontSizeStep);
+        PreviewFontSize(g_font_size - kFontSizeStep);
         RecomputeMenuLabelLayout();
     }
 }
@@ -33472,7 +33576,10 @@ int main(int argc, char **argv) {
     // result. See StartIconFontBakeAsync's own comment for the full
     // reasoning and why this is safe (no GL calls happen on the
     // background thread).
-    StartIconFontBakeAsync(static_cast<int>(kDefaultFontSize * 2));
+    // IconFontBaseSize() reads g_font_size, still at its kDefaultFontSize
+    // initializer here -- the same size the startup ApplyFontSize call
+    // below will compute when it consumes this bake.
+    StartIconFontBakeAsync(IconFontBaseSize());
 
     // Writing to a subprocess's stdin pipe after that process has already
     // exited (an LSP server that failed to start, crashed, or exited

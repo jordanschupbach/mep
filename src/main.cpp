@@ -25773,6 +25773,17 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             std::string label = "HTML: " + title + "  " + std::to_string(static_cast<int>(std::lround(html_sess->zoom * 100.0f))) + "%" +
                                  (html_sess->theme_colors ? "  [theme, Ctrl-R]" : "  [page colors, Ctrl-R]");
             gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
+        } else if (pdf_sess && pdf_sess->nav_goto_active) {
+            // Mode::PdfNav's 'g' go-to-page prompt: same blinking-cursor
+            // header takeover as the '/' search branch below, just a
+            // ":page " digit prompt instead of a query line.
+            std::string line = ":page " + pdf_sess->nav_goto_input;
+            gfx::DrawTextEx(g_font, line.c_str(), gfx::Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
+            {
+                float cx = x + 6 + gfx::MeasureTextEx(g_font, line.c_str(), font_size, 0).x;
+                gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(label_y), 2, static_cast<int>(font_size),
+                              ResolveHlGroup("Normal"));
+            }
         } else if (pdf_sess && pdf_sess->search_active) {
             // Takes over the header the same way Mode::Command's cmdline
             // takes over the bottom bar -- a blinking-cursor '/' input line
@@ -25797,7 +25808,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                  ? "  /" + pdf_sess->search_query + " (no matches)"
                                  : "  /" + pdf_sess->search_query + " (" +
                                        std::to_string(pdf_sess->search_current + 1) + "/" +
-                                       std::to_string(pdf_sess->search_matches.size()) + ", n/p)";
+                                       std::to_string(pdf_sess->search_matches.size()) + ", N/P)";
                 }
             }
             gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
@@ -29554,6 +29565,7 @@ void DrawEditor() {
             else if (mode_name == "INSERT" || mode_name == "REPLACE") mode_group = mode_name == "REPLACE" ? "ModeReplace" : "ModeInsert";
             else if (mode_name == "VISUAL" || mode_name == "V-LINE" || mode_name == "V-BLOCK" || mode_name == "SELECT") mode_group = "ModeVisual";
             else if (mode_name == "COMMAND" || mode_name == "SEARCH") mode_group = "ModeCommand";
+            else if (mode_name == "PDF-NAV") mode_group = "ModePdfNav";
             else mode_group = "ModeOther";
             std::string mode_chip = " " + mode_name + " ";
             std::string rest = "  " + register_indicator + count_indicator + buf_label + (buf.modified ? " [+]" : "");

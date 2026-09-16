@@ -939,6 +939,7 @@ std::unordered_map<std::string, ThemeColor> BuildHighlightGroups(const Palette &
     g["ModeVisual"] = Mix(p.purple, p.bg, 0.35f);
     g["ModeCommand"] = Mix(p.yellow, p.bg, 0.35f);
     g["ModeOther"] = Mix(p.cyan, p.bg, 0.35f);
+    g["ModePdfNav"] = Mix(p.orange, p.bg, 0.35f);
     // incsearch's live match preview (Phase 4 stretch item) -- a span
     // recolor via the plain Decoration/hl_group pipeline (see
     // Editor::UpdateIncSearch), so it wants to read as "found" against
@@ -3903,6 +3904,7 @@ void Editor::HandleInput() {
             HandleModel3DInput();
             break;
         case Mode::Pdf:
+        case Mode::PdfNav:
             HandlePdfInput();
             break;
         case Mode::Video:
@@ -4367,6 +4369,7 @@ void Editor::HandleMouseWheel(float dx, float dy) {
             WheelScrollSheet(dx, dy);
             break;
         case Mode::Pdf:
+        case Mode::PdfNav:
             WheelScrollPdf(dx, dy);
             break;
         case Mode::Image:
@@ -5389,7 +5392,7 @@ void Editor::SyncModeToActivePaneBuffer() {
     } else if (IsGanttViewActive(CurPane().buffer_id)) {
         mode_ = Mode::GanttNormal;
     } else if (mode_ == Mode::Terminal || mode_ == Mode::Image || mode_ == Mode::ImageEditor || mode_ == Mode::Model3D ||
-               mode_ == Mode::Pdf || mode_ == Mode::Video ||
+               mode_ == Mode::Pdf || mode_ == Mode::PdfNav || mode_ == Mode::Video ||
                mode_ == Mode::Html ||
                mode_ == Mode::OfficeNormal || mode_ == Mode::OfficeInsert || mode_ == Mode::OfficeVisual ||
                mode_ == Mode::SheetNormal || mode_ == Mode::SheetInsert || mode_ == Mode::SheetVisual ||
@@ -8017,19 +8020,42 @@ void Editor::EnsurePdfPagesRastered(int buffer_id) {
     int page_count = sess.doc->PageCount();
     if (page_count <= 0) return;
 
-    int lo = std::max(0, sess.page - 1);
-    int hi = std::min(page_count - 1, sess.page + 1);
-    for (int idx = lo; idx <= hi; idx++) {
+    // At most ONE page render per call (i.e. per frame), anchor page
+    // first, then the next/previous neighbors: RenderPage is a synchronous
+    // CPU rasterization on this (the main) thread, so rendering the whole
+    // window in one frame stalled the UI for up to 3 pages' worth of work
+    // on every page jump -- with Mode::PdfNav's count jumps (5<space>)
+    // that was the difference between "snappy" and "laggy". The keystroke
+    // frame now pays for the page actually being looked at; the neighbors
+    // fill in over the following frames (DrawPane's draw_page already
+    // skips a page whose raster isn't cached yet, so a neighbor is at
+    // worst briefly blank in the continuous-scroll stack, never a stall).
+    const int order[3] = {sess.page, sess.page + 1, sess.page - 1};
+    for (int idx : order) {
+        if (idx < 0 || idx >= page_count) continue;
         if (sess.rasters.find(idx) != sess.rasters.end()) continue;
         PdfSession::PageRaster pr;
+        // A failed render falls through to the next candidate rather than
+        // breaking (same every-frame retry it always had -- a failing page
+        // never enters `rasters` -- but its neighbors still make progress).
         if (!sess.doc->RenderPage(idx, sess.rendered_scale, pr.rgba, pr.w, pr.h)) continue;
         pr.generation = sess.next_raster_generation++;
         if (!sess.search_matches.empty()) pr.highlights = sess.doc->MatchRectsForPage(idx, sess.rendered_scale, sess.search_matches);
         pr.links = sess.doc->PageLinks(idx, sess.rendered_scale);
         sess.rasters[idx] = std::move(pr);
+        break;
     }
+    // Eviction keeps a wider band than the +-1 render window above: pages
+    // outside it were already paid for, and Mode::PdfNav's back-and-forth
+    // paging (space / shift+space) kept re-rendering the page just left
+    // when eviction hugged the render window. +-3 bounds memory at ~7
+    // rendered pages (~50MB at the 144dpi baseline) regardless of
+    // document length, same reasoning as the old +-1 bound just traded a
+    // little higher for instant short back-jumps.
+    const int keep_lo = std::max(0, sess.page - 3);
+    const int keep_hi = std::min(page_count - 1, sess.page + 3);
     for (auto rit = sess.rasters.begin(); rit != sess.rasters.end();) {
-        if (rit->first < lo || rit->first > hi) rit = sess.rasters.erase(rit);
+        if (rit->first < keep_lo || rit->first > keep_hi) rit = sess.rasters.erase(rit);
         else ++rit;
     }
 }
@@ -8350,6 +8376,15 @@ void Editor::HandlePdfInput() {
         HandlePdfSearchInput(*sess);
         return;
     }
+    // Mode::PdfNav shares this handler rather than getting its own (unlike
+    // Office/Sheet's split functions): ~everything below is common to both
+    // modes, and both input-drain loops consume the whole queue, so a
+    // second copy would drift. `nav` gates the nav-only branches.
+    const bool nav = (mode_ == Mode::PdfNav);
+    if (nav && sess->nav_goto_active) {
+        HandlePdfNavGotoInput(*sess);
+        return;
+    }
     int page_count = sess->doc ? sess->doc->PageCount() : 0;
     if (page_count <= 0) return;
 
@@ -8386,24 +8421,45 @@ void Editor::HandlePdfInput() {
         sess->page = std::clamp(new_page, 0, page_count - 1);
         sess->scroll_y = 0;
     };
+    /**
+     * @brief Consumes the pending count prefix (Mode::PdfNav digits), defaulting to 1.
+     * @return The count to apply to the next Space screenful scroll or f/b page jump.
+     */
+    auto take_count = [&]() {
+        int n = pending_count_ > 0 ? pending_count_ : 1;
+        pending_count_ = 0;
+        return n;
+    };
 
     // Ctrl-f/Ctrl-b/Ctrl-r: same gfx::GetKeyPressed()-drain-while-ctrl-held
     // pattern as HandleNormalInput's own Ctrl-combos (gfx::IsKeyPressed() alone
     // was found flaky for these under slow/software-rendered frames -- see
     // its comment at this function's normal-mode counterpart).
     bool ctrl = gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl);
-    bool next_page = false, prev_page = false, toggle_theme = false;
+    bool shift = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
+    // Ctrl-f/Ctrl-b and PageDown/PageUp are full-viewport scrolls, not page
+    // jumps -- zathura's sc_scroll FULL_DOWN/FULL_UP, same semantics as nav
+    // mode's Space/Shift-Space below. Whole-page jumps stay on f/b (nav)
+    // and gg/G.
+    bool full_down = false, full_up = false, toggle_theme = false;
     if (ctrl && held(gfx::Key::D)) { sess->scroll_y += static_cast<float>(sess->viewport_h) * 0.5f; rebase_scroll(); }
     if (ctrl && held(gfx::Key::U)) { sess->scroll_y -= static_cast<float>(sess->viewport_h) * 0.5f; rebase_scroll(); }
     for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
-        if (key == gfx::Key::PageDown) next_page = true;
-        else if (key == gfx::Key::PageUp) prev_page = true;
-        else if (ctrl && key == gfx::Key::F) next_page = true;
-        else if (ctrl && key == gfx::Key::B) prev_page = true;
+        if (key == gfx::Key::PageDown) full_down = true;
+        else if (key == gfx::Key::PageUp) full_up = true;
+        else if (ctrl && key == gfx::Key::F) full_down = true;
+        else if (ctrl && key == gfx::Key::B) full_up = true;
         else if (ctrl && key == gfx::Key::R) toggle_theme = true;
+        else if (nav && key == gfx::Key::Escape) {
+            // Back to plain Mode::Pdf. In normal PDF mode Escape stays a
+            // silently-consumed no-op (no case here matches it), so nav
+            // claiming it takes nothing away.
+            mode_ = Mode::Pdf;
+            pending_count_ = 0;
+        }
     }
-    if (next_page) goto_page(sess->page + 1);
-    if (prev_page) goto_page(sess->page - 1);
+    if (full_down) { sess->scroll_y += static_cast<float>(sess->viewport_h); rebase_scroll(); }
+    if (full_up) { sess->scroll_y -= static_cast<float>(sess->viewport_h); rebase_scroll(); }
     if (toggle_theme) sess->theme_colors = !sess->theme_colors;
 
     // +/-/= zoom: same center-anchored shape as HandleImageInput's
@@ -8430,6 +8486,20 @@ void Editor::HandlePdfInput() {
         if (cp == ':') {
             EnterCommand();
             return;  // mode_ is no longer Pdf -- stop draining as this mode
+        } else if (nav && cp == ' ') {
+            // Checked ahead of the leader branch: Space is the app's
+            // default leader_key_, but scroll-on-Space is nav mode's
+            // whole point -- same narrow exception as HandleVideoInput's
+            // play/pause Space (see its comment). The leader stays
+            // reachable from plain Mode::Pdf. Shift+Space still delivers
+            // ' ' through the char path, so the modifier is read directly.
+            // Zathura semantics (sc_scroll FULL_DOWN/FULL_UP): one full
+            // viewport height per press, scrolling continuously through
+            // the page stack, not a jump to the next page's top -- f/b
+            // below keep the hard page-jump role (zathura's J/K).
+            int n = take_count();
+            sess->scroll_y += static_cast<float>(sess->viewport_h) * static_cast<float>(shift ? -n : n);
+            rebase_scroll();
         } else if (cp == static_cast<int>(leader_key_) && !whichkey_bindings_.empty()) {
             TriggerWhichKey();
             return;
@@ -8448,6 +8518,32 @@ void Editor::HandlePdfInput() {
                 sess->scroll_y = 0;
                 settle_zoom();
             }
+        } else if (nav && cp >= '0' && cp <= '9') {
+            // Count prefix for Space/f/b, accumulated into the shared
+            // pending_count_ (same digit rules as normal mode's own count:
+            // a bare '0' only continues an existing count). The status bar
+            // already renders PendingCount(), so the pending digits are
+            // visible with no extra wiring. Capped before the multiply so
+            // absurd input can't overflow; goto_page's clamp does the rest.
+            if (cp != '0' || pending_count_ != 0) {
+                if (pending_count_ < 100000000) pending_count_ = pending_count_ * 10 + (cp - '0');
+            }
+        } else if (nav && cp == 'g') {
+            // Nav's 'g' opens the go-to-page prompt (HandlePdfNavGotoInput
+            // takes over next frame) instead of normal mode's gg chord --
+            // 'gg' would collapse into "count then jump", which the count
+            // prefix already covers.
+            sess->nav_goto_active = true;
+            sess->nav_goto_input.clear();
+            pending_count_ = 0;
+        } else if (nav && (cp == 'd' || cp == 'u')) {
+            // Same half-page math as the Ctrl-d/u lines above (no clash:
+            // Ctrl-chords don't deliver chars, so plain d/u are free here).
+            sess->scroll_y += static_cast<float>(sess->viewport_h) * (cp == 'd' ? 0.5f : -0.5f);
+            rebase_scroll();
+        } else if (nav && (cp == 'f' || cp == 'b')) {
+            int n = take_count();
+            goto_page(sess->page + (cp == 'f' ? n : -n));
         } else if (cp == 'g') {
             // gg -> first page, reusing pending_g_ the same way normal mode's
             // own gg does (see HandleNormalInput) -- reset on entry to this
@@ -8460,19 +8556,32 @@ void Editor::HandlePdfInput() {
             }
         } else if (cp == 'G') {
             pending_g_ = false;
+            pending_count_ = 0;
             goto_page(page_count - 1);
         } else if (cp == '/') {
             pending_g_ = false;
+            pending_count_ = 0;
             sess->search_active = true;
             sess->search_input.clear();
-        } else if (cp == 'n' && !sess->search_matches.empty()) {
+        } else if (!nav && cp == 'n') {
+            // Enter Mode::PdfNav unconditionally ('N'/'P' below took over
+            // the old n/p match-jump role). Same "mode_ is no longer this
+            // mode -- stop draining" reasoning as EnterCommand above.
             pending_g_ = false;
+            pending_count_ = 0;
+            mode_ = Mode::PdfNav;
+            return;
+        } else if (cp == 'N' && !sess->search_matches.empty()) {
+            pending_g_ = false;
+            pending_count_ = 0;
             GotoPdfMatch(*sess, sess->search_current + 1);
-        } else if (cp == 'p' && !sess->search_matches.empty()) {
+        } else if (cp == 'P' && !sess->search_matches.empty()) {
             pending_g_ = false;
+            pending_count_ = 0;
             GotoPdfMatch(*sess, sess->search_current - 1);
         } else {
             pending_g_ = false;
+            pending_count_ = 0;
         }
         // Every other printable key is a deliberate no-op -- see
         // Mode::Pdf's own comment for why (read-only content).
@@ -8509,6 +8618,41 @@ void Editor::HandlePdfSearchInput(PdfSession &sess) {
         if (!sess.search_input.empty()) sess.search_input.pop_back();
     }
     for (int cp = gfx::GetCharPressed(); cp > 0; cp = gfx::GetCharPressed()) AppendUtf8(sess.search_input, cp);
+}
+
+void Editor::HandlePdfNavGotoInput(PdfSession &sess) {
+    if (gfx::IsKeyPressed(gfx::Key::Escape)) {
+        // Cancel the prompt only, staying in Mode::PdfNav (a second Escape
+        // then exits nav mode) -- mirrors HandlePdfSearchInput's cancel.
+        sess.nav_goto_active = false;
+        sess.nav_goto_input.clear();
+        return;
+    }
+    if (gfx::IsKeyPressed(gfx::Key::Enter) || gfx::IsKeyPressed(gfx::Key::KpEnter)) {
+        sess.nav_goto_active = false;
+        if (!sess.nav_goto_input.empty() && sess.doc) {
+            int page_count = sess.doc->PageCount();
+            if (page_count > 0) {
+                // Entered 1-indexed to match the pane header's "page N/M".
+                long target = std::strtol(sess.nav_goto_input.c_str(), nullptr, 10);
+                sess.page = std::clamp(static_cast<int>(target) - 1, 0, page_count - 1);
+                sess.scroll_y = 0;
+            }
+        }
+        sess.nav_goto_input.clear();
+        return;
+    }
+    if (gfx::IsKeyPressed(gfx::Key::Backspace) || gfx::IsKeyPressedRepeat(gfx::Key::Backspace)) {
+        if (!sess.nav_goto_input.empty()) sess.nav_goto_input.pop_back();
+    }
+    for (int cp = gfx::GetCharPressed(); cp > 0; cp = gfx::GetCharPressed()) {
+        // Digits only (a page number is all the prompt accepts); the length
+        // cap keeps strtol comfortably inside long range, the page clamp
+        // above handles anything still out of bounds.
+        if (cp >= '0' && cp <= '9' && sess.nav_goto_input.size() < 9) {
+            sess.nav_goto_input.push_back(static_cast<char>(cp));
+        }
+    }
 }
 
 // --- WYSIWYG office-document panes ------------------------------------------
@@ -18290,6 +18434,7 @@ const char *ModeName(Mode m, bool replace_mode) {
         case Mode::ImageEditor: return "IMAGE-EDIT";
         case Mode::Model3D: return "3D-MODEL";
         case Mode::Pdf: return "PDF";
+        case Mode::PdfNav: return "PDF-NAV";
         case Mode::Video: return "VIDEO";
         case Mode::Html: return "HTML";
         case Mode::SidebarPane: return "SIDEBAR";

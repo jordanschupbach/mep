@@ -125,9 +125,23 @@ enum class Mode {
     Model3D,
     // A focused PDF-viewer pane (a PdfSession buffer -- see below): same
     // shape as Mode::Image (h/j/k/l pan, ':'/leader forwarded, everything
-    // else a no-op) plus page navigation (Ctrl-f/Ctrl-b/PageDown/PageUp,
-    // gg/G) since PDF content is paginated. See Editor::HandlePdfInput.
+    // else a no-op) plus zathura-style screenful scrolls (Ctrl-f/Ctrl-b/
+    // PageDown/PageUp) and gg/G page jumps since PDF content is paginated.
+    // See Editor::HandlePdfInput.
     Pdf,
+    // Vim-like page-navigation sub-mode over a focused PDF pane, entered
+    // with 'n' from Mode::Pdf (Editor::HandlePdfInput serves both modes):
+    // count-prefixed Space/Shift-Space screenful scrolls (zathura's
+    // sc_scroll FULL_DOWN/FULL_UP), a 'g' go-to-page prompt
+    // (PdfSession::nav_goto_active), d/u half-page scrolls and f/b page
+    // jumps.
+    // Escape returns to Mode::Pdf. A distinct Mode value rather than a
+    // PdfSession flag for the same reason Office/Sheet split their
+    // Normal/Insert variants (see the comment above Mode::OfficeNormal):
+    // it's a different key-handling regime, not a text-input capture. Like
+    // those modes, a pane refocus always re-enters at plain Mode::Pdf
+    // (SyncModeToActivePaneBuffer), never resumes mid-nav.
+    PdfNav,
     // A focused video-playback pane (a VideoSession buffer -- see below,
     // opened for a `.mov` file written by mov::WriteMovFile, see
     // ANIMATION_VIDEO_PLAN.md Phase 5). Same "flat viewer, ':'/leader
@@ -1476,10 +1490,12 @@ inline constexpr int kSheetRowHeight = 22;
 // page -- the one `scroll_y` is measured from the top of -- and a small
 // virtualized window of rasters (anchor page, plus its immediate
 // neighbors) is kept rendered at any time via Editor::
-// EnsurePdfPagesRastered, evicting everything else. This keeps memory
-// bounded regardless of document length (a 400-page PDF never rasterizes
-// more than ~3 pages at once) while still letting h/j/k/l scroll smoothly
-// through page boundaries instead of hard-cutting between pages.
+// EnsurePdfPagesRastered (one page per frame, anchor first -- see its
+// comment), evicting anything outside a slightly wider +-3 keep band so
+// short back-jumps stay instant. This keeps memory bounded regardless of
+// document length (a 400-page PDF never holds more than ~7 rendered
+// pages) while still letting h/j/k/l scroll smoothly through page
+// boundaries instead of hard-cutting between pages.
 struct PdfSession {
     int buffer_id = 0;
     std::unique_ptr<PdfDoc> doc;
@@ -1566,6 +1582,14 @@ struct PdfSession {
     // (Editor::GotoPdfMatch); -1 if there's no current match (e.g. a
     // search with zero hits). Drawn more prominently than other matches.
     int search_current = -1;
+
+    // --- 'g' go-to-page prompt (Mode::PdfNav, Editor::HandlePdfInput) ---
+    // True while the user is typing a 1-indexed target page after pressing
+    // 'g' in Mode::PdfNav -- captures digit/Backspace/Enter/Escape input
+    // instead of the nav keys (same session-scoped input-capture shape as
+    // search_active above). nav_goto_input is the in-progress digit string.
+    bool nav_goto_active = false;
+    std::string nav_goto_input;
 };
 
 // One video-playback pane's state, keyed by buffer id the same way
@@ -7968,8 +7992,13 @@ private:
     // HandleImageInput's apply_zoom, folding drift into rendered_scale
     // (clearing the raster cache) when it leaves its settled band.
     // Ctrl-R toggles PdfSession::theme_colors. '/' starts a text search
-    // (delegates to HandlePdfSearchInput while sess.search_active), n/p
+    // (delegates to HandlePdfSearchInput while sess.search_active), N/P
     // jump to the next/previous match (GotoPdfMatch) once one exists.
+    // Serves both Mode::Pdf and Mode::PdfNav (see the enum): 'n' enters
+    // PdfNav, which adds count-prefixed Space/Shift-Space page jumps
+    // (reusing pending_count_), a 'g' go-to-page prompt (delegates to
+    // HandlePdfNavGotoInput while sess.nav_goto_active), d/u half-page,
+    // f/b full-page, and Escape back to Mode::Pdf.
     void HandlePdfInput();
     // While sess.search_active: captures Escape (cancel, discarding
     // search_input but leaving any prior completed search's highlights
@@ -7978,6 +8007,12 @@ private:
     // all other character input into sess.search_input, instead of the
     // normal pan/zoom/page-nav keys HandlePdfInput handles otherwise.
     void HandlePdfSearchInput(PdfSession &sess);
+    // While sess.nav_goto_active (Mode::PdfNav's 'g' prompt): captures
+    // Escape (cancel the prompt only -- stays in Mode::PdfNav, mirroring
+    // HandlePdfSearchInput's cancel), Enter (jump to the typed 1-indexed
+    // page, clamped; empty input cancels), Backspace, and digit input into
+    // sess.nav_goto_input. All other characters are ignored.
+    void HandlePdfNavGotoInput(PdfSession &sess);
     // Case-insensitive document-wide search (PdfDoc::Search) for `query`,
     // replacing sess.search_query/search_matches and resetting
     // search_current to -1 (caller -- HandlePdfSearchInput or a
@@ -7993,7 +8028,7 @@ private:
     // entered the render window (its raster is new, so it has no
     // highlights yet even if a search was already active).
     void RecomputePdfPageHighlights(PdfSession &sess);
-    // Jumps to search_matches[index] (wrapping around either end so n/p
+    // Jumps to search_matches[index] (wrapping around either end so N/P
     // cycle through the whole document): sets page/pan_x/scroll_y so the
     // match is in view (vertically centered where possible), and updates
     // search_current. No-op if search_matches is empty.

@@ -5710,18 +5710,18 @@ const char *kBuiltinLanguageUiR =
     // 200 turned out still not wide enough: an Rd argument list's longer
     // entries (e.g. ?lm's `na.action`, `weights`) can run past 200 chars as
     // ONE logical line, so at width=200 R itself still hard-wraps those
-    // across 2-3 raw lines -- each of which then becomes its own
-    // independently-word-wrapped sidebar row (mep_r_ui_render_textbox), so
-    // the seam between R's own break and the next one rarely lines up with
-    // where the sidebar would have wrapped it anyway, reintroducing choppy-
-    // looking text for exactly the longer entries. 500 was checked against
-    // a real R session too: every individual argument/paragraph in ?lm's
-    // help (its single longest paragraph included, ~400 chars) fits on ONE
-    // raw line at width=500, so the sidebar's own word-wrap (LspDiagWrap,
-    // used by every wrap=true widget) becomes the ONLY wrapping applied for
-    // prose -- no more seams. Usage:/Examples: code blocks are unaffected
-    // by either width (verified: identical output at 200 vs 500) since Rd2txt
-    // wraps deparsed function signatures via its own separate, fixed-width
+    // across 2-3 raw lines -- and the seam between R's own break and the
+    // next one rarely lines up with where the Help tab would have wrapped
+    // it anyway, reintroducing choppy-looking text for exactly the longer
+    // entries. 500 was checked against a real R session too: every
+    // individual argument/paragraph in ?lm's help (its single longest
+    // paragraph included, ~400 chars) fits on ONE raw line at width=500,
+    // so the Help tab's own word-wrap (mep_r_ui_help_lines: LspDiagWrap
+    // to the pane's real width, mep.buffer_text_cols, with hanging
+    // indents) becomes the ONLY wrapping applied for prose -- no more
+    // seams. Usage:/Examples: code blocks are unaffected by either width
+    // (verified: identical output at 200 vs 500) since Rd2txt wraps
+    // deparsed function signatures via its own separate, fixed-width
     // logic -- so this can't make code formatting worse, only prose better.\n"
     "options(width = 500)\n"
     "tools:::Rd2txt_options(width = 500)\n"
@@ -5760,9 +5760,9 @@ const char *kBuiltinLanguageUiR =
     // place. Rather than merely suppressing that (options(menu.graphics =
     // FALSE) would at least fall back to a real, PTY-readable text menu +
     // blocking readline()), `help` is overridden outright so the choice
-    // list becomes real widget rows in the Help sidebar instead of
-    // anything printed to the console at all: multiple matches are
-    // stashed in .mep_help_pending and their paths written verbatim (one
+    // list becomes runnable help(...) lines in the Help tab instead of
+    // anything printed to the console at all: multiple matches have their
+    // paths written verbatim (one
     // per line -- mep_r_ui_render_help, main.cpp, derives each one's
     // package name and topic straight out of the standard .../PKG/help/
     // TOPIC path shape, no extra parsing needed here) to
@@ -5778,14 +5778,11 @@ const char *kBuiltinLanguageUiR =
     // which needs the match.call()-and-redispatch workaround for exactly
     // that reason).\n"
     ".mep_help_choices_path <- \"%s\"\n"
-    ".mep_help_pending <- NULL\n"
     "help <- function(...) {\n"
     "  h <- utils::help(...)\n"
     "  if (length(h) > 1) {\n"
-    "    .mep_help_pending <<- h\n"
     "    try(writeLines(h, .mep_help_choices_path), silent = TRUE)\n"
     "  } else {\n"
-    "    .mep_help_pending <<- NULL\n"
     "    try(writeLines(character(0), .mep_help_choices_path), silent = TRUE)\n"
     "    if (length(h) >= 1) print(h)\n"
     "  }\n"
@@ -5815,27 +5812,14 @@ const char *kBuiltinLanguageUiR =
     "  mc[[1]] <- quote(utils::`?`)\n"
     "  eval.parent(mc)\n"
     "}\n"
-    // Invoked by mep itself (mep.terminal_write into the console, never
-    // typed by the user) when a Help-sidebar choice row is picked.
-    // Reconstructing the class/attributes lost by subsetting (confirmed
-    // empirically: h[i] alone degrades to a plain character vector, so
-    // print()ing it directly would just print the raw file path as text
-    // instead of triggering print.help_files_with_topic's real display
-    // logic) is what lets this go through the exact same single-match
-    // print(h) -> pager -> Help-tab path as an unambiguous topic.\n"
-    ".mep_help_pick <- function(i) {\n"
-    "  if (is.null(.mep_help_pending) || i < 1 || i > length(.mep_help_pending)) return(invisible(NULL))\n"
-    "  h <- .mep_help_pending\n"
-    "  pick <- h[i]\n"
-    "  attr(pick, \"topic\") <- attr(h, \"topic\")\n"
-    "  attr(pick, \"call\") <- attr(h, \"call\")\n"
-    "  attr(pick, \"tried_all_packages\") <- attr(h, \"tried_all_packages\")\n"
-    "  attr(pick, \"type\") <- attr(h, \"type\")\n"
-    "  class(pick) <- \"help_files_with_topic\"\n"
-    "  .mep_help_pending <<- NULL\n"
-    "  try(writeLines(character(0), .mep_help_choices_path), silent = TRUE)\n"
-    "  print(pick)\n"
-    "}\n"
+    // Picking one of those choices needs no R-side helper of its own: the
+    // Help tab renders each candidate as a literal, runnable
+    // `help('topic', package = 'pkg')` line (mep_r_ui_render_help, main.cpp)
+    // that the user sends to this console with mod1+Enter like any other
+    // line there -- a package-qualified lookup is always a single match,
+    // so it flows through the ordinary print(h) -> pager -> Help-tab path
+    // above (clearing .mep_help_choices_path along the way, which is what
+    // switches the tab back from the choice list to plain help text).\n"
     ".mep_fig_n <- 0\n"
     ".mep_fig_dir <- \"%s\"\n"
     ".mep_last_plot <- NULL\n"
@@ -5946,7 +5930,7 @@ const char *kBuiltinLanguageUiR =
     // not a second tab hierarchy underneath the pane's own.\n"
     "local mep_r_ui_state = {}\n"
     "local mep_r_ui_data_sidebar_id = nil\n"
-    "local mep_r_ui_help_sidebar_id = nil\n"
+    "local mep_r_ui_help_ns = nil\n"
     "local mep_r_ui_objects_sidebar_id = nil\n"
     "local mep_r_ui_packages_sidebar_id = nil\n"
     "local mep_r_ui_history_sidebar_id = nil\n"
@@ -6056,122 +6040,136 @@ const char *kBuiltinLanguageUiR =
     "  local st = mep_r_ui_state[mep.current_tab_id()]\n"
     "  mep_r_ui_render_textbox(mep_r_ui_data_sidebar_id, st and st.data_text, '(no data yet -- call mep_view(x) in the console)')\n"
     "end\n"
-    // Help text rendering (the plain, single-match case) -- mirrors what
-    // the 'K' hover popup (DrawHoverPopup, main.cpp) gets for free by
-    // drawing tools::Rd2txt's output line-for-line in the monospace font:
-    // the same text pushed through mep_r_ui_render_textbox instead came
-    // out visibly wrong, for three separate reasons this fixes --
-    //   - gmatch('[^\n]+') silently drops every blank line, so the
-    //     Description/Usage/Arguments sections all ran together;
-    //   - wrap=true widgets word-wrap through LspDiagWrap, which collapses
-    //     leading whitespace and rewraps freely -- fine for prose, but it
-    //     mangled Usage:/Examples: code (indentation gone, deparsed
-    //     signatures re-broken mid-argument) and lost every argument
-    //     entry's hanging indent;
-    //   - the header line (`lm    package:stats    R Documentation`) is
-    //     padded by Rd2txt to the full options(width=500) it's given (see
-    //     mep_r_ui_init_template's own comment on why 500), so it wrapped
-    //     into several rows of mostly spaces.
-    // So: keep blank lines as empty rows; the header collapses to
-    // `topic  {pkg}` (deliberately unhighlighted: it is row 0, so it sits
-    // under the pane cursor's own highlight whenever the tab is first
-    // focused, where a muted color all but vanished); the title line (the
-    // first unindented non-header line) and the `Section:` headers get
-    // their own highlight; lines
-    // under Usage:/Examples: are verbatim, never wrapped (clipped at the
-    // pane edge if too wide, exactly like the popup); everything else is
-    // prose, wrapped to the pane's real width (SidebarInstance::wrap_cols)
-    // with wrap_indent set so continuation lines line up under the
-    // entry's own text -- after `name: ` for an Arguments:/Value: item,
-    // after the bullet for a list item, else at the line's own indent.
-    // Curly quotes/bullets are ASCII-fied first: LspDiagWrap measures in
-    // bytes, and Rd2txt's UTF-8 quotes (3 bytes each, ~6 per paragraph)
-    // otherwise wrap every line visibly short of the pane's edge.
+    // Help tab rendering: a real, ordinary text buffer (mep.pane_open of a
+    // session-dir path named just "Help", so the tab strip title is that
+    // basename -- same idiom as kBuiltinFileTree's editable tree view and
+    // kBuiltinStructure's split) rather than a SidebarInstance widget list,
+    // so it gets a real cursor and full Normal/Visual/Visual-block editing,
+    // search, yank etc. for free -- and, registered as a mep.termsend
+    // source targeting this session's console (mep.r_ui_open below), the
+    // stock mod1+Enter (kBuiltinTermSend: send the current line and step
+    // down, or send the Visual selection) runs any line of a Usage:/
+    // Examples: block straight in R. Content is Rd2txt's text (rendered at
+    // width 500, mep_r_ui_init_template's own comment on why) laid out
+    // here for the pane's REAL width (mep.buffer_text_cols, re-rendered by
+    // the poll loop below whenever that changes): blank lines are kept;
+    // the padded header line collapses to `topic  {pkg}`; the title line
+    // (first unindented non-header line) and the `Section:` headers get a
+    // text highlight through a decoration namespace (mep.buffer_deco_add)
+    // that every re-render clears first; lines under Usage:/Examples: are
+    // verbatim, never wrapped (:set wrap's soft-wrap catches a rare
+    // over-wide one, and they stay whole lines so mod1+Enter runs exactly
+    // what R printed); everything else is prose, word-wrapped through
+    // mep.lsp_diag_wrap with continuation rows padded to line up under
+    // the entry's own text -- after `name: ` for an Arguments:/Value:
+    // item, after the bullet for a list item, else at the line's own
+    // indent. Curly quotes/bullets are ASCII-fied first: LspDiagWrap
+    // measures in bytes, and Rd2txt's UTF-8 quotes (3 bytes each, ~6 per
+    // paragraph) otherwise wrap every row visibly short of the edge. A
+    // raw line that R itself still hard-broke despite width 500 (the
+    // Arguments: paragraph longer than ~450 chars, indented to the same
+    // body column) is rejoined onto its paragraph so this wrap is the
+    // only one it gets -- only ever after a raw line long enough (>= 300)
+    // to have been R's doing, so a genuinely short line is never joined.
     "local mep_r_ui_help_code_sections = {['usage:'] = true, ['examples:'] = true}\n"
-    "local function mep_r_ui_help_widgets(text)\n"
+    "local function mep_r_ui_help_lines(text, width)\n"
     "  text = text:gsub('\\u{2018}', \"'\"):gsub('\\u{2019}', \"'\"):gsub('\\u{201c}', '\"'):gsub('\\u{201d}', '\"'):gsub('\\u{2022}', '*')\n"
-    "  local lines = {}\n"
-    "  for line in (text .. '\\n'):gmatch('(.-)\\n') do lines[#lines + 1] = line end\n"
-    "  while #lines > 0 and not lines[#lines]:match('%S') do lines[#lines] = nil end\n"
-    "  local widgets = {}\n"
-    "  local function add(w) w.id = tostring(#widgets + 1); widgets[#widgets + 1] = w end\n"
+    "  local raw = {}\n"
+    "  for line in (text .. '\\n'):gmatch('(.-)\\n') do raw[#raw + 1] = line end\n"
+    "  while #raw > 0 and not raw[#raw]:match('%S') do raw[#raw] = nil end\n"
+    "  local items = {}\n"
     "  local section, seen_title, prev_len = nil, false, 0\n"
-    "  for i, line in ipairs(lines) do\n"
+    "  for i, line in ipairs(raw) do\n"
     "    local topic, pkg = line:match('^(%S+)%s+package:(%S+)%s+R Documentation%s*$')\n"
     "    local indent = #line:match('^(%s*)')\n"
-    "    local prev = widgets[#widgets]\n"
+    "    local prev = items[#items]\n"
     "    if i == 1 and topic then\n"
-    "      add({text = topic .. '  {' .. pkg .. '}'})\n"
+    "      items[#items + 1] = {text = topic .. '  {' .. pkg .. '}'}\n"
     "    elseif not line:match('%S') then\n"
-    "      add({text = ''})\n"
+    "      items[#items + 1] = {text = ''}\n"
     "    elseif line:match('^%u[%w%s%-]*:$') then\n"
     "      section = line:lower()\n"
-    "      add({text = line, hl = 'Accent'})\n"
+    "      items[#items + 1] = {text = line, hl = 'Accent'}\n"
     "    elseif not section and not seen_title and indent == 0 then\n"
     "      seen_title = true\n"
-    "      add({text = line, hl = 'PickerTitle'})\n"
+    "      items[#items + 1] = {text = line, hl = 'PickerTitle'}\n"
     "    elseif section and mep_r_ui_help_code_sections[section] then\n"
-    "      add({text = line})\n"
+    "      items[#items + 1] = {text = line}\n"
     "    elseif prev and prev.wrap and prev_len >= 300 and indent > 0 then\n"
-    // A continuation of the previous paragraph: Rd2txt still hard-breaks
-    // a single paragraph longer than its width (~450 chars in practice,
-    // see mep_r_ui_init_template's width=500 comment), indenting the rest
-    // to the same body column. Rejoined here so the sidebar's own
-    // word-wrap is the only wrapping the paragraph gets -- no seam where
-    // R's break and the pane's don't line up. Only ever taken after a
-    // raw line long enough to have been R's doing: a genuinely short
-    // preceding line (a one-line item, a preformatted block's row) can't
-    // have been broken, so it's never joined.\n"
     "      prev.text = prev.text .. ' ' .. line:match('^%s*(.-)%s*$')\n"
     "    else\n"
     "      local bullet = line:match('^(%s*[%*%-]%s+)')\n"
     "      local item = (section == 'arguments:' or section == 'value:') and line:match('^(%s*[^%s:][^:]-:%s)') or nil\n"
     "      if item then indent = #item elseif bullet then indent = #bullet end\n"
-    "      add({text = line, wrap = true, wrap_indent = indent})\n"
+    "      items[#items + 1] = {text = line, wrap = true, indent = indent}\n"
     "    end\n"
     "    prev_len = #line\n"
     "  end\n"
-    "  return widgets\n"
+    "  local lines, decos = {}, {}\n"
+    "  for _, it in ipairs(items) do\n"
+    "    if it.wrap then\n"
+    "      local ind = math.min(it.indent, #it.text)\n"
+    "      local pieces = mep.lsp_diag_wrap(it.text:sub(ind + 1), math.max(8, width - ind))\n"
+    "      if #pieces == 0 then pieces[1] = '' end\n"
+    "      for k, piece in ipairs(pieces) do\n"
+    "        lines[#lines + 1] = (k == 1 and it.text:sub(1, ind) or string.rep(' ', ind)) .. piece\n"
+    "      end\n"
+    "    else\n"
+    "      lines[#lines + 1] = it.text\n"
+    "      if it.hl then decos[#decos + 1] = {row = #lines, len = #it.text, hl = it.hl} end\n"
+    "    end\n"
+    "  end\n"
+    "  return lines, decos\n"
     "end\n"
-    // An ambiguous topic (help()'s own comment above, mep_r_ui_init_template)
-    // shows its candidates as real selectable rows instead of the usual
-    // plain text -- one per line of help_choices_text, each just an
-    // absolute help-file path (.../PKG/help/TOPIC, the standard shape
-    // every installed package's help files share regardless of install
-    // prefix); pressing Enter on a row (on_click also fires from keyboard
-    // row-activation, the same as every other sidebar-pane widget in this
-    // file, e.g. mep_r_ui_render_objects' str(name) rows) sends
-    // .mep_help_pick(n) to the console, which prints that match's real
-    // help text -- flowing through the ordinary pager -> help_path path
-    // below like any single-match topic, which is what clears
-    // help_choices_text back to empty and switches this back to plain
-    // text on the next poll tick.\n"
+    // An ambiguous topic (help()'s own comment, mep_r_ui_init_template)
+    // renders its candidates as literal `help('topic', package = 'pkg')`
+    // lines -- each candidate arrives as just an absolute help-file path
+    // (.../PKG/help/TOPIC, the standard shape every installed package's
+    // help files share regardless of install prefix) in
+    // help_choices_text -- so picking one is the same mod1+Enter as
+    // running any other line of the tab: a package-qualified lookup is a
+    // single match, which prints through the ordinary pager -> help_path
+    // path and clears help_choices_text on the next poll tick, switching
+    // the tab back to plain text.
+    "local function mep_r_ui_help_choice_lines(choices)\n"
+    "  local lines = {'Choose a package (mod1+Enter runs a line):', ''}\n"
+    "  local decos = {{row = 1, len = #lines[1], hl = 'Accent'}}\n"
+    "  for path in choices:gmatch('[^\\n]+') do\n"
+    "    local pkg = path:match('([^/]+)/help/[^/]+$') or '?'\n"
+    "    local topic = path:match('([^/]+)$') or path\n"
+    "    lines[#lines + 1] = 'help(' .. mep_r_ui_rquote(topic) .. ', package = ' .. mep_r_ui_rquote(pkg) .. ')'\n"
+    "  end\n"
+    "  if #lines == 2 then lines[3] = '(no choices)' end\n"
+    "  return lines, decos\n"
+    "end\n"
+    // Re-clamps the cursor when the help buffer is the focused one
+    // (mep.set_cursor clamps; Editor::SetBufferLinesForLua itself never
+    // touches any pane's cursor), since running a choice line from inside
+    // the tab replaces its content out from under the cursor.
     "local function mep_r_ui_render_help()\n"
     "  local st = mep_r_ui_state[mep.current_tab_id()]\n"
-    "  local choices = st and st.help_choices_text\n"
-    "  if choices and choices:match('%S') then\n"
-    "    local widgets = {}\n"
-    "    for line in choices:gmatch('[^\\n]+') do\n"
-    "      local n = #widgets + 1\n"
-    "      local pkg = line:match('([^/]+)/help/[^/]+$') or '?'\n"
-    "      local topic = line:match('([^/]+)$') or line\n"
-    "      widgets[#widgets + 1] = {id = tostring(n), text = n .. ': ' .. topic .. '  (' .. pkg .. ')',\n"
-    "        on_click = function() mep.terminal_write(st.console_buf, '.mep_help_pick(' .. n .. ')\\n') end}\n"
-    "    end\n"
-    "    if #widgets == 0 then widgets[1] = {id = 'empty', text = '(no choices)'} end\n"
-    "    mep.sidebar_set_sections(mep_r_ui_help_sidebar_id, {{id = 'help_choices', title = 'Choose a package', collapsed = false, widgets = widgets}})\n"
-    "    return\n"
+    "  if not st or not st.help_buf then return end\n"
+    "  local lines, decos\n"
+    "  st.help_cols = mep.buffer_text_cols(st.help_buf) or st.help_cols or 80\n"
+    "  if st.help_choices_text and st.help_choices_text:match('%S') then\n"
+    "    lines, decos = mep_r_ui_help_choice_lines(st.help_choices_text)\n"
+    "  else\n"
+    "    lines, decos = mep_r_ui_help_lines(st.help_text or '', st.help_cols - 1)\n"
     "  end\n"
-    "  local widgets = mep_r_ui_help_widgets((st and st.help_text) or '')\n"
-    "  if #widgets == 0 then widgets[1] = {id = 'empty', text = '(no help viewed yet -- try ?topic, help(...) in the console, or gh on a symbol)'} end\n"
-    "  mep.sidebar_set_sections(mep_r_ui_help_sidebar_id, {{id = 'content', title = '', collapsed = false, widgets = widgets}})\n"
+    "  if #lines == 0 then lines = {'(no help viewed yet -- try ?topic or help(...) in the console, or gh on a symbol)'} end\n"
+    "  mep.buffer_set_lines(st.help_buf, lines)\n"
+    "  if mep.current_buffer() == st.help_buf then local r, c = mep.cursor(); mep.set_cursor(r, c) end\n"
+    "  if not mep_r_ui_help_ns then mep_r_ui_help_ns = mep.ns_create('mep_r_ui_help') end\n"
+    "  mep.buffer_ns_clear(st.help_buf, mep_r_ui_help_ns)\n"
+    "  for _, d in ipairs(decos) do\n"
+    "    mep.buffer_deco_add(st.help_buf, mep_r_ui_help_ns, {row = d.row, col_start = 1, col_end = d.len + 1, hl_group = d.hl})\n"
+    "  end\n"
     "end\n"
     "function mep_r_ui_render_all()\n"
     "  mep_r_ui_render_objects()\n"
     "  mep_r_ui_render_packages()\n"
     "  mep_r_ui_render_history()\n"
     "  mep_r_ui_render_data()\n"
-    "  mep_r_ui_render_help()\n"
     "end\n"
     "function mep.r_ui_open()\n"
     // A single named session directory (rather than one anonymous
@@ -6271,7 +6269,6 @@ const char *kBuiltinLanguageUiR =
     "  }\n"
     "\n"
     "  if not mep_r_ui_data_sidebar_id then mep_r_ui_data_sidebar_id = mep.sidebar_create('Data', 'right', 44) end\n"
-    "  if not mep_r_ui_help_sidebar_id then mep_r_ui_help_sidebar_id = mep.sidebar_create('Help', 'right', 44) end\n"
     "  if not mep_r_ui_objects_sidebar_id then mep_r_ui_objects_sidebar_id = mep.sidebar_create('Objects', 'right', 44) end\n"
     "  if not mep_r_ui_packages_sidebar_id then mep_r_ui_packages_sidebar_id = mep.sidebar_create('Packages', 'right', 44) end\n"
     "  if not mep_r_ui_history_sidebar_id then mep_r_ui_history_sidebar_id = mep.sidebar_create('History', 'right', 44) end\n"
@@ -6291,16 +6288,27 @@ const char *kBuiltinLanguageUiR =
     "  mep.sidebar_open_pane(mep_r_ui_objects_sidebar_id)\n"
     "  mep.sidebar_open_pane(mep_r_ui_packages_sidebar_id)\n"
     "  mep.sidebar_open_pane(mep_r_ui_history_sidebar_id)\n"
-    "  mep.sidebar_open_pane(mep_r_ui_help_sidebar_id)\n"
-    // sidebar_open_pane leaves the just-added buffer focused/current (this
-    // whole block's own comment above) -- captured here since there's no
-    // other way to learn a sidebar-pane's buffer id (mep.sidebar_open_pane
-    // itself returns nothing): the poll loop below needs it to jump the
-    // Help tab into focus (mep.jump_to_buffer) whenever help() writes new
-    // content, since it's tabbed together with Data/Objects/Packages/
-    // History in top_pane and so isn't reachable by mep.pane_focus_buffer
-    // alone once some other tab is the one currently showing.\n"
-    "  mep_r_ui_state[tid].help_buf = mep.current_buffer()\n"
+    // The Help tab itself: a plain buffer (mep_r_ui_render_help's own
+    // comment above) opened as one more tab of top_pane -- mep.pane_open
+    // inserts right after the current tab and focuses it, the same "open
+    // as a new tab" semantics mep.sidebar_open_pane just used four times,
+    // so the strip still reads [seed, Data, Objects, Packages, History,
+    // Help]. The path is a fresh, nonexistent session-dir file (LoadFile's
+    // Vim-style "start an empty buffer named that" case) nothing ever
+    // writes: `Help` with no extension, so Basename() gives the tab its
+    // title and no syntax/LSP client latches onto it. Captured as
+    // help_buf for the poll loop below (mep.jump_to_buffer finds it even
+    // hidden behind Data/Objects/... in the strip, or after the user has
+    // moved it elsewhere) and for close() to drop it. Registered right
+    // away as a mep.termsend source aimed at this session's console
+    // (kBuiltinTermSend), so mod1+Enter there needs no "which terminal?"
+    // prompt -- it just runs the line under the cursor in R.\n"
+    "  mep.pane_open(session_dir .. '/Help')\n"
+    "  local help_buf = mep.current_buffer()\n"
+    "  mep_r_ui_state[tid].help_buf = help_buf\n"
+    "  mep.buffer_set_hide_line_numbers(help_buf, true)\n"
+    "  if mep.is_terminal_buffer(console_buf) then mep.termsend_register(help_buf, console_buf) end\n"
+    "  mep_r_ui_render_help()\n"
     "  for _ = 1, 5 do mep.pane_prev_buffer() end\n"
     "  mep.pane_close_buffer()\n"
     "\n"
@@ -6313,7 +6321,7 @@ const char *kBuiltinLanguageUiR =
     "  mep.open(placeholder_path)\n"
     "\n"
     "  mep.pane_focus(editor_pane)\n"
-    "  mep.notify('R language UI: console below (plots capture automatically); Data/Objects/Packages/History/Help tabbed top-right, Plot alone bottom-right (mod1+Tab cycles, mod1+s splits, mod1+Ctrl+hjkl moves a tab)')\n"
+    "  mep.notify('R language UI: console below (plots capture automatically); Data/Objects/Packages/History/Help tabbed top-right, Plot alone bottom-right (mod1+Tab cycles, mod1+s splits, mod1+Ctrl+hjkl moves a tab); mod1+Enter in Help runs the line under the cursor in the console')\n"
     "\n"
     // run_source: what the Run button (kBuiltinRunButton's mep.run_button_run)
     // calls instead of its normal "spawn/reuse a popup terminal" flow while
@@ -6343,6 +6351,7 @@ const char *kBuiltinLanguageUiR =
     "        if mep.pane_focus(pid) then mep.cmd('close') end\n"
     "      end\n"
     "      if mep.is_terminal_buffer(console_buf) then mep.buffer_delete(console_buf, true) end\n"
+    "      mep.buffer_delete(help_buf, true)\n"
     "      mep.pane_focus(editor_pane)\n"
     "      mep.notify('R language UI mode closed')\n"
     "    end,\n"
@@ -6444,7 +6453,17 @@ const char *kBuiltinLanguageUiR =
     // focus there once a second for as long as help.txt/help_choices.txt
     // both happen to already be non-empty from an earlier lookup, not just
     // the one time content actually arrives.\n"
-    "    if help_changed and st.help_buf then mep.jump_to_buffer(st.help_buf) end\n"
+    // A resized/moved Help pane (or one just brought on screen from
+    // behind another tab, where mep.buffer_text_cols is nil and the last
+    // known width stands) gets its prose re-wrapped to the new width --
+    // gated on the width actually differing from the one it was last
+    // rendered at (st.help_cols), so a stationary layout costs one call.\n"
+    "    local help_cols = st.help_buf and mep.buffer_text_cols(st.help_buf)\n"
+    "    if help_cols and help_cols ~= st.help_cols and not help_changed then mep_r_ui_render_help() end\n"
+    "    if help_changed then\n"
+    "      mep_r_ui_render_help()\n"
+    "      if st.help_buf and mep.jump_to_buffer(st.help_buf) then mep.set_cursor(1, 1) end\n"
+    "    end\n"
     "  end)\n"
     "end\n"
     // gh ("go to help"): while this tab's R UI mode is open, look up the
@@ -29205,6 +29224,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         wrap_cols = std::max(1, static_cast<int>(avail_w / g_char_width));
     }
 
+    // Pane::text_cols: the same column budget, but reported whether or not
+    // wrap is on (Lua's own hard-wrapping readers want the width either way).
+    g_editor.SetPaneTextCols(pane.id, std::max(1, static_cast<int>((x + w - text_x - kMarginX) / g_char_width)));
     g_editor.UpdateScrollForPane(pane.id, visible_lines, wrap_cols);
 
     gfx::BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),

@@ -890,6 +890,14 @@ struct Pane {
     // have something to work with without editor.cpp needing to know
     // anything about rendering.
     int visible_lines = 1;
+    // Also set each frame by DrawPane (main.cpp, via SetPaneTextCols): how
+    // many monospace columns of text fit between this pane's gutter and its
+    // right edge, regardless of :set wrap. Read back through
+    // TextColsForBuffer / mep.buffer_text_cols so Lua-rendered buffers
+    // (kBuiltinLanguageUiR's Help tab) can hard-wrap prose with hanging
+    // indents to the pane's real width instead of a guessed one. 0 until
+    // first drawn.
+    int text_cols = 0;
     // Per-pane buffer tabs (NVIM_PARITY_PLAN.md Part III Phase 14): buffer
     // ids opened in *this* pane, cycled independently of sibling panes and
     // distinct from the top-level tab bar (Tab). Lazily (re)seeded from
@@ -2408,6 +2416,11 @@ public:
      * @return The cursor row (0-indexed) of the pane showing that buffer, or -1 if none does.
      */
     int CursorRowForBuffer(int buffer_id) const;
+    // Pane::text_cols of whichever pane in the active tab shows `buffer_id`
+    // (the same lookup as CursorRowForBuffer), or 0 if none does / it has
+    // never been drawn. SetPaneTextCols is DrawPane's per-frame setter.
+    int TextColsForBuffer(int buffer_id) const;
+    void SetPaneTextCols(int pane_id, int cols);
     // Same "does any pane in the active tab currently show this buffer"
     // lookup CursorRowForBuffer uses, exposed as a plain bool -- lets a
     // background job's callback (a terminal's PTY output feeding its

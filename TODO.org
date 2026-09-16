@@ -52,9 +52,48 @@
   in R will open the help for that function in the help sidebar (and move
   visibility to the help pane if not an actively viewable pane). Can you implement these?
 
-* TODO r gh binding
-In R, I'd like 'gh' when in ui mode and over a function name to send that
-function the the help (and appear in the help sidebar). Can you implement this?
+* DONE r gh binding :ARCHIVE:
+  In R, I'd like 'gh' when in ui mode and over a function name to send that
+  function the the help (and appear in the help sidebar). Can you implement this?
+  - Already landed with the r-help-format branch (kBuiltinLanguageUiR,
+    main.cpp): `gh` is a mep.map_g binding calling mep.r_ui_help_at_cursor(),
+    which, while the tab's R UI mode is open, reads the R identifier under
+    the cursor ([%w_.], so spline.des stays whole; a `pkg::sym` prefix
+    becomes package = 'pkg'), writes help('sym') into the session console
+    (same overridden help() -> help.txt -> poll path as a typed ?topic, choice
+    list for an ambiguous topic included) and mep.jump_to_buffer()s the Help
+    tab so it is revealed even when hidden behind Data/Objects/... or after a
+    repeat lookup of the same topic. Outside an R UI mode it falls back to
+    mep.lsp_hover(). Verified in this branch's fresh build against a spawned
+    instance over its agent socket (:normal gh, so no X focus needed): plot
+    (choice list), lines, spline.des, stats::lm -> help('lm', package =
+    'stats'), and the "no R symbol under the cursor" warning on a blank line.
+
+* DONE r help: run lines + vim modal editing :ARCHIVE:
+  I'd like to be able to run lines of code from the R help. On a line, I should
+  be able to run the line of code with mod+<return>. Also, I'd like to be able to
+  use vim modal editing here too, so I can see the cursor and enter visual,
+  visual-block mode, etc.
+  - The R UI mode's Help tab is now a real text buffer (mep.pane_open of a
+    session-dir file named `Help`, so the tab title stays "Help"; same idiom
+    as the editable file tree) instead of a sidebar widget list, so it has a
+    real cursor and every Normal/Visual/Visual-block/search/yank motion for
+    free. It is registered as a mep.termsend source aimed at the session's
+    console, so the stock mod1+Enter (kBuiltinTermSend) runs the line under
+    the cursor in R and steps down, or sends the Visual selection. Rd2txt
+    text (width 500) is laid out by mep_r_ui_help_lines (main.cpp): prose
+    word-wrapped to the pane's real width with hanging indents, Usage:/
+    Examples: lines verbatim so mod1+Enter runs exactly what R printed,
+    title/section highlights via buffer decorations, header collapsed to
+    `topic  {pkg}`. The pane width comes from a new mep.buffer_text_cols(id)
+    (Pane::text_cols, set by DrawPane; Editor::TextColsForBuffer), and the
+    poll loop re-wraps whenever it changes. An ambiguous topic renders its
+    candidates as literal `help('topic', package = 'pkg')` lines, so picking
+    one is just mod1+Enter on it (.mep_help_pick is gone). gh still reveals
+    the tab and puts the cursor at its top on new content; closing the mode
+    deletes the buffer. Verified on a spawned instance over its agent socket:
+    gh -> lines/plot (choice list), running the base choice with the
+    termsend line sender, resize re-wrap, close cleanup.
 
 * TODO fix buffer sidebar
   The buffer sidebar has some behavior, where, if I click on a buffer, it opens

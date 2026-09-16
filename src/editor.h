@@ -2858,6 +2858,19 @@ public:
     void TickWorkspacePersistence(double now);
     std::string WorkspaceStateFile(const Project &project) const;
     bool WorkspaceHasModifiedBuffers(int id) const;
+    // True when SaveBuffer can never succeed for this buffer no matter the
+    // path: a terminal (its "content" is a throwaway normal-mode snapshot
+    // of the grid -- EnterTerminalNormalMode), a PDF viewer, or a plain
+    // image viewer with no image-editor session. Such a buffer's
+    // `modified` flag is unclearable by :w/:wa, so it must not count as
+    // "unsaved work" anywhere that would otherwise block forever
+    // (WorkspaceHasModifiedBuffers) or fail forever (WriteAllModified).
+    bool BufferUnsavable(int buffer_id) const;
+    // "name1, name2, ... (+N more)" over the buffers that make
+    // WorkspaceHasModifiedBuffers(id) true -- so an E37 refusal can say
+    // *which* buffers need saving instead of leaving the user to hunt for
+    // a [+] marker. Empty string when there are none.
+    std::string WorkspaceModifiedBufferNames(int id) const;
     // A relative buffer path resolved against the buffer's own workspace
     // root when that workspace isn't the active one (whose root is the
     // process cwd already); absolute paths and unscoped buffers pass through.

@@ -21384,8 +21384,9 @@ void DrawVideoPane(const Pane &pane, VideoSession &sess, float x, float y, float
     RegisterClickRegion(gfx::Rectangle{x, y, w, video_h}, [pane_id = pane.id] { g_editor.FocusPaneById(pane_id); });
 }
 
-// Active pane gets a thicker outline in BorderActive (a brightened copy
-// of the theme's accent color, see BuildHighlightGroups in editor.cpp) so
+// Active pane gets a thicker outline in BorderActive (the theme's accent
+// pushed away from its bg -- brighter on dark themes, darker on light ones,
+// see BuildHighlightGroups in editor.cpp) so
 // which pane has the cursor reads at a glance -- a plain 1px
 // BorderActive/BorderInactive color swap was too subtle to notice in a
 // quick glance across a busy split. Shared by DrawPane's own

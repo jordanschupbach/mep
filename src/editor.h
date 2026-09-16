@@ -1682,6 +1682,14 @@ struct VideoSession {
 // frame is fine at the page sizes this renderer targets); `scroll_y` is
 // just a plain pixel offset into that flow, clamped by DrawPane against
 // whatever total content height that frame's layout pass computed.
+struct HtmlHistoryEntry {
+    std::string origin;
+    std::string source;
+    // Keep the bytes rather than re-reading `source`: remote pages use
+    // throwaway fetch files, and browser history should be a snapshot.
+    std::string bytes;
+};
+
 struct HtmlSession {
     int buffer_id = 0;
     HtmlDoc doc;
@@ -1714,6 +1722,8 @@ struct HtmlSession {
     // page renders with its own CSS colors/images instead, same as a real
     // browser. Toggled by Ctrl-R (Editor::HandleHtmlInput).
     bool theme_colors = true;
+    std::vector<HtmlHistoryEntry> history;
+    size_t history_index = 0;
 };
 
 // One WYSIWYG office-document pane's state, keyed by buffer id the same
@@ -3951,8 +3961,9 @@ public:
     // g_link_hint_rects, HINT_SYSTEM.md) is main.cpp-local, so the
     // html-mode key handler can only *ask* for hints, not open them.
     // Unlike the global mod1+f trigger, main.cpp answers this with
-    // CollectLinkHintTargets(ActivePaneId()) -- only the requesting
-    // pane's own visible links get labels, not every widget on screen.
+    // CollectLinkHintTargets(ActivePaneId()) -- the requesting pane's
+    // visible links get labels, plus visible Help-sidebar rows when that
+    // pane is a local help/ HTML page, not every widget on screen.
     // Reading it clears it. RequestLinkHints is the same ask from
     // outside the key handler (main.cpp's own "ui.hints" agent RPC).
     void RequestLinkHints() { link_hint_request_ = true; }
@@ -4009,8 +4020,8 @@ public:
     // does a dedup-by-source lookup; a hard in-place overwrite (fresh DOM,
     // scripts re-run, scroll reset to 0), used for both "reload this page"
     // (mep.browse_reload, kBuiltinTextTools -- same origin/source, fresh
-    // bytes) and "navigate this pane to a different address" (the address
-    // bar, mep.browse_open_bar -- a new origin/source entirely). A no-op
+    // bytes). Navigation to a different address is handled by
+    // NavigateHtmlBuffer so it can retain browser history. A no-op
     // if `buffer_id` isn't a live HTML session.
     /**
      * @brief Re-parses HTML bytes into an existing HtmlSession in place, overwriting its DOM and resetting scroll.
@@ -4022,6 +4033,12 @@ public:
      */
     void ReloadHtmlBuffer(int buffer_id, const std::string &origin, const std::string &source,
                            const unsigned char *bytes, size_t len);
+    // Navigates an existing HTML pane, recording a new back/forward entry.
+    void NavigateHtmlBuffer(int buffer_id, const std::string &origin, const std::string &source,
+                            const unsigned char *bytes, size_t len);
+    // Restores the previous (negative) or next (positive) HTML history entry.
+    // Returns false when there is no entry in that direction.
+    bool NavigateHtmlHistory(int buffer_id, int direction);
     // Re-decodes `bytes` INTO the existing PdfSession at `buffer_id` --
     // unlike OpenPdfInPlace, never creates a new buffer/session and never
     // does a dedup-by-filename lookup; a hard in-place overwrite (fresh

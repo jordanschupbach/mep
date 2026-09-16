@@ -2769,17 +2769,18 @@ const char *kBuiltinTextTools =
     // for the same stale page (see its own .cpp comment); a local path
     // just opens directly, no fetch needed.
     "function mep.browse_open_in_pane(target)\n"
+    "  local land_fn = mep.html_current_origin() and mep.html_navigate or mep.html_open\n"
     "  if target:match('^https?://') then\n"
     "    local tmpfile = os.tmpname()\n"
     "    mep.notify('Fetching ' .. target .. '...')\n"
     "    mep.job_start({'curl', '-sL', '-o', tmpfile, target}, {\n"
     "      on_exit = function(code)\n"
-    "        if code == 0 then mep.html_open(tmpfile, target)\n"
+    "        if code == 0 then land_fn(tmpfile, target)\n"
     "        else mep.notify('mep.browse: failed to fetch ' .. target, 'error') end\n"
     "      end,\n"
     "    })\n"
     "  else\n"
-    "    mep.html_open(target)\n"
+    "    land_fn(target)\n"
     "  end\n"
     "end\n"
     // Fetches `target` (curl, if it looks like a remote URL) or just
@@ -2827,7 +2828,7 @@ const char *kBuiltinTextTools =
     "  local current = mep.html_current_origin()\n"
     "  if not current then return end\n"
     "  mep.ui_input('Open:', current, function(input)\n"
-    "    if input and input ~= '' then mep_browse_fetch_then(input, mep.html_reload) end\n"
+    "    if input and input ~= '' then mep_browse_fetch_then(input, mep.html_navigate) end\n"
     "  end)\n"
     "end\n"
     "mep.command('MepBrowseOpen', mep.browse_open_bar)\n"
@@ -31983,31 +31984,50 @@ void CollectHintTargets() {
 // The html viewer's own plain-'f' (Editor::HandleHtmlInput ->
 // TakeLinkHintRequest, drained in UpdateDrawFrame right after
 // HandleInput()): same overlay, labels and label-narrowing as the global
-// mod1+f trigger above, but only the requesting pane's own visible links
-// become targets -- Vimium's 'f' hints the page's links, not the browser
-// chrome around it, and a help page's half-dozen links deserve one-letter
-// labels rather than the two-letter ones every menu/tab/sidebar row on
-// screen would otherwise push the label width up to. Same one-frame-stale
-// g_link_hint_rects source as CollectHintTargets (populated by the
-// previous DrawEditor, cleared at the top of the next one) -- the
-// request fires from HandleInput, which runs before this frame's own
-// draw, exactly like mod1+f does. Pdf panes never set the request today
-// but are handled identically for when they do.
+// mod1+f trigger above, but normally only the requesting pane's own
+// visible links become targets -- Vimium's 'f' hints the page's links,
+// not the browser chrome around it. A page opened from a help/ directory
+// is the one exception: its visible Help sidebar rows join the page links,
+// so a reader can choose another documentation page without leaving hint
+// mode. Same one-frame-stale g_link_hint_rects source as
+// CollectHintTargets (populated by the previous DrawEditor, cleared at
+// the top of the next one) -- the request fires from HandleInput, which
+// runs before this frame's own draw, exactly like mod1+f does. Pdf panes
+// never set the request today but are handled identically for when they do.
 /**
- * @brief Rebuilds g_hint_targets from only the links DrawPane collected inside pane `pane_id`
- * last frame, assigning each a home-row-first label.
- * @param pane_id The pane whose visible links (and nothing else) should get hint labels.
+ * @brief Rebuilds g_hint_targets from links in pane `pane_id` and, for a help page, visible Help-sidebar rows.
+ * @param pane_id The pane whose visible links should get hint labels.
  */
 void CollectLinkHintTargets(int pane_id) {
     std::vector<HintTarget> targets;
+    // MepHelp opens local HTML files directly from its configured help/
+    // directory (either the workspace's help/ or the bundled fallback).
+    // Keep ordinary HTML viewers page-local, but let a help reader choose
+    // one of the currently visible documentation rows in the companion
+    // Help sidebar too. Matching the sidebar title here is intentional:
+    // the Lua workspace owns its id, while this renderer only sees the
+    // per-frame clickable row geometry.
+    const HtmlSession *html = g_editor.GetHtml(g_editor.CurrentBufferId());
+    bool is_help_page = html && std::filesystem::path(html->source).parent_path().filename() == "help";
+    if (is_help_page) {
+        for (const SidebarRowRect &row : g_sidebar_row_rects) {
+            const SidebarInstance *sidebar = g_editor.FindSidebar(row.sidebar_id);
+            if (!sidebar || sidebar->title != "Help") continue;
+            int sidebar_id = row.sidebar_id, line_index = row.line_index;
+            targets.push_back({gfx::Vector2{row.rect.x, row.rect.y}, "", [sidebar_id, line_index] {
+                                   g_editor.FocusSidebarRow(sidebar_id, line_index);
+                                   g_editor.ActivateSidebarLine(sidebar_id, line_index);
+                               }});
+        }
+    }
     for (const LinkHintRect &link : g_link_hint_rects) {
         if (link.pane_id != pane_id) continue;
         targets.push_back(HintTargetForLink(link));
     }
     // Reading order (top-to-bottom, then left-to-right) before labeling,
-    // so "a s d f ..." runs down the page the way a reader scans it --
-    // DrawPane's html branch collects links out of an unordered_map keyed
-    // by DOM node, so their arrival order here is effectively random.
+    // so "a s d f ..." runs down the page/sidebar the way a reader scans
+    // it. DrawPane's html branch collects links out of an unordered_map
+    // keyed by DOM node, so their arrival order here is effectively random.
     std::stable_sort(targets.begin(), targets.end(), [](const HintTarget &a, const HintTarget &b) {
         if (a.anchor.y != b.anchor.y) return a.anchor.y < b.anchor.y;
         return a.anchor.x < b.anchor.x;

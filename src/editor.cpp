@@ -7871,6 +7871,7 @@ void Editor::OpenHtmlInPlace(const std::string &origin, const std::string &sourc
         HtmlSession sess;
         sess.buffer_id = buffer_id;
         PopulateHtmlSession(sess, origin, source, bytes, len);
+        sess.history.push_back({origin, source, std::string(reinterpret_cast<const char *>(bytes), len)});
         htmldocs_[buffer_id] = std::move(sess);
     }
     CurPane().buffer_id = buffer_id;
@@ -7900,6 +7901,34 @@ void Editor::ReloadHtmlBuffer(int buffer_id, const std::string &origin, const st
     if (it == htmldocs_.end()) return;
     buffers_[static_cast<size_t>(buffer_id)].filename = source;
     PopulateHtmlSession(it->second, origin, source, bytes, len);
+}
+
+void Editor::NavigateHtmlBuffer(int buffer_id, const std::string &origin, const std::string &source,
+                                const unsigned char *bytes, size_t len) {
+    auto it = htmldocs_.find(buffer_id);
+    if (it == htmldocs_.end()) return;
+    HtmlSession &sess = it->second;
+    if (!sess.history.empty()) {
+        sess.history.erase(sess.history.begin() + static_cast<std::ptrdiff_t>(sess.history_index + 1), sess.history.end());
+    }
+    sess.history.push_back({origin, source, std::string(reinterpret_cast<const char *>(bytes), len)});
+    sess.history_index = sess.history.size() - 1;
+    buffers_[static_cast<size_t>(buffer_id)].filename = source;
+    PopulateHtmlSession(sess, origin, source, bytes, len);
+}
+
+bool Editor::NavigateHtmlHistory(int buffer_id, int direction) {
+    auto it = htmldocs_.find(buffer_id);
+    if (it == htmldocs_.end() || direction == 0 || it->second.history.empty()) return false;
+    HtmlSession &sess = it->second;
+    if ((direction < 0 && sess.history_index == 0) ||
+        (direction > 0 && sess.history_index + 1 >= sess.history.size())) return false;
+    sess.history_index = static_cast<size_t>(static_cast<int>(sess.history_index) + (direction < 0 ? -1 : 1));
+    const HtmlHistoryEntry &entry = sess.history[sess.history_index];
+    buffers_[static_cast<size_t>(buffer_id)].filename = entry.source;
+    PopulateHtmlSession(sess, entry.origin, entry.source,
+                        reinterpret_cast<const unsigned char *>(entry.bytes.data()), entry.bytes.size());
+    return true;
 }
 
 void Editor::ConvertHtmlBufferToText(int buffer_id) {
@@ -7944,6 +7973,7 @@ void Editor::ConvertTextBufferToHtml(int buffer_id) {
     HtmlSession sess;
     sess.buffer_id = buffer_id;
     PopulateHtmlSession(sess, path, path, reinterpret_cast<const unsigned char *>(content.data()), content.size());
+    sess.history.push_back({path, path, content});
     htmldocs_[buffer_id] = std::move(sess);
     buffers_[static_cast<size_t>(buffer_id)].lines.clear();
     // See ConvertHtmlBufferToText's own comment on this bump.
@@ -7963,6 +7993,7 @@ void Editor::HandleHtmlInput() {
 
     constexpr float kScrollStep = 60.0f;
     bool ctrl = gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl);
+    bool shift = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
     // gfx::IsKeyPressed(Repeat) rather than draining gfx::GetKeyPressed(): GLFW only
     // enqueues the initial key-down into the gfx::GetKeyPressed() queue, so
     // holding a key down (OS auto-repeat) would otherwise scroll exactly
@@ -7973,6 +8004,8 @@ void Editor::HandleHtmlInput() {
      * @return True if the key is freshly pressed or repeating this frame.
      */
     auto held = [](gfx::Key key) { return gfx::IsKeyPressed(key) || gfx::IsKeyPressedRepeat(key); };
+    if (shift && held(gfx::Key::H)) NavigateHtmlHistory(CurPane().buffer_id, -1);
+    if (shift && held(gfx::Key::L)) NavigateHtmlHistory(CurPane().buffer_id, 1);
     if (held(gfx::Key::J) || held(gfx::Key::Down)) sess->scroll_y += kScrollStep;
     if (held(gfx::Key::K) || held(gfx::Key::Up)) sess->scroll_y = std::max(0.0f, sess->scroll_y - kScrollStep);
     if ((ctrl && held(gfx::Key::D)) || held(gfx::Key::PageDown)) {

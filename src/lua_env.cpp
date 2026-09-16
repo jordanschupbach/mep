@@ -7505,6 +7505,34 @@ int l_html_reload(lua_State *L) {
     return 0;
 }
 
+// mep.html_navigate(path [, origin]) is html_reload's history-recording
+// counterpart, used by the in-pane browser for links and the address bar.
+int l_html_navigate(lua_State *L) {
+    const char *path = luaL_checkstring(L, 1);
+    const char *origin = luaL_optstring(L, 2, path);
+#if !defined(__EMSCRIPTEN__)
+    Editor *ed = GetEditor(L);
+    int buffer_id = ed->CurrentBufferId();
+    if (!ed->GetHtml(buffer_id)) {
+        ed->Notify("Not an HTML pane", Editor::NotifyLevel::Warn);
+        return 0;
+    }
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        ed->Notify("Can't open \"" + std::string(path) + "\"", Editor::NotifyLevel::Error);
+        return 0;
+    }
+    std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    std::error_code abs_ec;
+    std::filesystem::path abs_path = std::filesystem::absolute(path, abs_ec);
+    std::string source = abs_ec ? path : abs_path.string();
+    ed->NavigateHtmlBuffer(buffer_id, origin, source, bytes.data(), bytes.size());
+#else
+    GetEditor(L)->Notify("mep.html_navigate: not supported in the wasm build", Editor::NotifyLevel::Error);
+#endif
+    return 0;
+}
+
 // mep.pdf_reload(path): re-reads local file `path` and re-decodes it INTO
 // the current pane's existing PdfSession in place (Editor::ReloadPdfBuffer)
 // -- same "hard overwrite of whichever <type> pane is currently active,
@@ -9049,6 +9077,7 @@ const luaL_Reg kMepFuncs[] = {
     {"html_open", l_html_open},
     {"html_current_origin", l_html_current_origin},
     {"html_reload", l_html_reload},
+    {"html_navigate", l_html_navigate},
     {"pdf_reload", l_pdf_reload},
     {"is_pdf_buffer", l_is_pdf_buffer},
     {"pdf_outline", l_pdf_outline},

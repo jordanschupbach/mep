@@ -9105,8 +9105,8 @@ private:
     // `args`: empty runs an interactive shell ($SHELL, falling back to
     // /bin/sh); non-empty is run as a single command line via `shell -c
     // args` (so `:terminal htop` works the same way a real shell's own
-    // command-line-in-one-string does). Opens a horizontal split (same as
-    // a bare `:split`) with a fresh buffer standing in for the terminal
+    // command-line-in-one-string does). Opens a horizontal split below the
+    // current pane with a fresh buffer standing in for the terminal
     // (see TerminalSession -- its actual content is the VTerm grid, not
     // that buffer's text) and enters Mode::Terminal immediately, keys
     // forwarding live to the child.

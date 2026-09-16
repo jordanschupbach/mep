@@ -388,6 +388,9 @@ hiding it from another pane leaves focus where it was.
 =mep.opt.tab_terminal_share= (default =0.3=) is its share of the tab's
 height.
 
+Terminal: =:terminal= (or =:term=) opens a shell in a horizontal split
+*below* the current pane.  Its grid keeps one terminal-cell of left padding.
+
 AI terminal: =<leader>a<CR>= (also =:aiterminal= / =:aiterm= /
 =:MepAiTerminal=, or =mep.ai_terminal_open()=) splits the current pane
 and runs Claude Code in a =:terminal= pane *below* it, focused, with an

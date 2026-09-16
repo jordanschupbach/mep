@@ -5019,7 +5019,11 @@ void Editor::SplitTabRight(int buffer_id, float share) {
 // --- Terminal panes (`:terminal`/`:term`, Part VI Phase 27+) -------------
 
 void Editor::OpenTerminal(const std::string &args) {
-    SplitCurrentPane(SplitDir::Horizontal, "");
+    // A terminal is normally an auxiliary pane for the buffer the user is
+    // working in, so keep that buffer where it is and put the focused new
+    // terminal below it.  Ordinary :split retains its Vim-compatible
+    // above-first default.
+    SplitCurrentPane(SplitDir::Horizontal, "", false);
     OpenTerminalInPlace(args);
 }
 

@@ -27718,8 +27718,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // Kept sized to the pane's real geometry regardless of which view
         // (below) is currently drawn, so a full-screen program inside it
         // (or the live grid itself, once shown again) is never wrapping
-        // against a stale size.
-        int cols = std::max(1, static_cast<int>(w / g_char_width));
+        // against a stale size.  Reserve one complete cell at the left for
+        // breathing room, matching the terminal's visual origin and keeping
+        // a child application's idea of its width in sync with it.
+        const float terminal_pad_left = g_char_width;
+        const float terminal_x = x + terminal_pad_left;
+        const float terminal_w = std::max(0.0f, w - terminal_pad_left);
+        int cols = std::max(1, static_cast<int>(terminal_w / g_char_width));
         int trows = std::max(1, static_cast<int>(content_h / static_cast<float>(line_height)));
         g_editor.ResizeTerminal(pane.buffer_id, trows, cols);
 
@@ -27734,9 +27739,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // it still running while browsing a different one.
         bool show_live_grid = !is_active || g_editor.CurrentMode() != Mode::Normal;
         if (show_live_grid) {
-            gfx::BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
+            gfx::BeginScissorMode(static_cast<int>(terminal_x), static_cast<int>(content_y), static_cast<int>(terminal_w),
                               static_cast<int>(content_h));
-            DrawTerminalGrid(*term_sess, x, content_y, w, content_h);
+            DrawTerminalGrid(*term_sess, terminal_x, content_y, terminal_w, content_h);
             gfx::EndScissorMode();
             DrawPaneBorder(x, y, w, h, is_active);
             return;

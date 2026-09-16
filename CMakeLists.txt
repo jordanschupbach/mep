@@ -601,12 +601,15 @@ add_executable(mep
     src/agent_ui_input.cpp
 )
 target_include_directories(mep PRIVATE src)
+target_compile_definitions(mep PRIVATE MEP_SOURCE_ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets")
 target_compile_options(mep PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep PRIVATE ${MEP_SANITIZE_FLAGS})
 target_link_libraries(mep PRIVATE mep_core)
 install(TARGETS mep RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(DIRECTORY help/ DESTINATION ${CMAKE_INSTALL_DATADIR}/mep/help
-        FILES_MATCHING PATTERN "*.org")
+        FILES_MATCHING PATTERN "*.html")
+install(FILES assets/mep-light.png assets/mep-dark.png
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/mep/assets)
 # Same PCH as mep_core (defined above) -- main.cpp is the single largest
 # translation unit in the whole project (~27k lines) and uses this same
 # set of standard headers throughout.

@@ -4368,7 +4368,7 @@ int l_workspace_root(lua_State *L) {
     return 1;
 }
 
-// mep.bundled_help_root(): the installed help directory. Project-local
+// mep.bundled_help_root(): the installed rendered help directory. Project-local
 // help/ remains supported by kBuiltinHelp, but normal projects should not
 // make the built-in Help command appear to do nothing just because they do
 // not carry a copy of the documentation.
@@ -4376,7 +4376,7 @@ int l_bundled_help_root(lua_State *L) {
 #if !defined(__EMSCRIPTEN__)
     std::error_code ec;
     auto is_help_root = [&ec](const std::filesystem::path &path) {
-        return std::filesystem::is_regular_file(path / "intro.org", ec);
+        return std::filesystem::is_regular_file(path / "intro.html", ec);
     };
 
 #if defined(__linux__)

@@ -199,6 +199,16 @@ those, unlike text editing (see "The in-pane image editor" below for
   real keystrokes (exercising mep's own key handling, a text field with
   no buffer-level API, e.g. a `BeginPromptNative` numeric-parameter
   prompt like the image editor's Texture menu opens).
+- Hint mode (the Vimium-style link/widget labels a plain `f` opens in an
+  HTML pane, or mod1+f opens for everything on screen) also has a
+  focus-independent path for a raw socket client, with no XTest keystroke
+  involved: `ui.hints` (`{"scope":"links"}` for the active pane's own
+  visible links -- the default, the same route `f` takes -- or
+  `{"scope":"all"}` for the mod1+f set) opens it, `ui.hint_targets`
+  lists every `{label, x, y}` plus what has been typed so far,
+  `ui.hint_pick` `{"label":"s"}` types a label (a full one fires that
+  target, a partial one narrows), and `ui.hint_cancel` is Escape. These
+  are not (yet) wrapped as `mep_*` MCP tools.
 
 **Reliability note**: input is injected via the real X server and mep's
 own per-frame event queue, so a single action can very occasionally not

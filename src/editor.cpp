@@ -4780,6 +4780,17 @@ bool Editor::ShouldShowDashboard() const {
     return !buf.modified && buf.filename.empty() && !buf.scratch && buf.lines.size() == 1 && buf.lines[0].empty();
 }
 
+void Editor::MoveDashboardSelection(int delta) {
+    // Keep the virtual cursor on one of the two action rows.  This is
+    // intentionally separate from CurPane().cursor: the backing startup
+    // buffer remains empty until the user starts editing it.
+    dashboard_selection_ = std::clamp(dashboard_selection_ + delta, 0, 1);
+}
+
+void Editor::ActivateDashboardSelection() {
+    RunCommand(dashboard_selection_ == 0 ? "MepProjects" : "MepHelp");
+}
+
 bool Editor::ProjectIsPristine(const Project &project) const {
     if (project.workspaces.size() != 1) return false;
     const Workspace &ws = project.workspaces[0];
@@ -8001,7 +8012,10 @@ void Editor::HandleHtmlInput() {
     // lives in Lua, this just triggers it. gg/G (top/bottom of page) reuse
     // pending_g_ the same way HandlePdfInput's own gg/G does -- reset on
     // entry to this mode in OpenHtmlInPlace so it can't leak in from
-    // elsewhere. G's scroll_y is an intentionally unclamped sentinel: the
+    // elsewhere. 'f' asks main.cpp for link hints scoped to this pane
+    // (TakeLinkHintRequest's own comment) -- vim's find-char has no
+    // meaning here, so the key is free for Vimium's own use of it.
+    // G's scroll_y is an intentionally unclamped sentinel: the
     // real max isn't known here (only DrawPane's ClampHtmlScroll, main.cpp,
     // knows it, after that frame's LayoutHtmlDoc runs -- see its own
     // comment), and that same per-frame clamp already runs unconditionally,
@@ -8040,6 +8054,8 @@ void Editor::HandleHtmlInput() {
             } else if (cp == 'o') {
                 auto it = lua_commands_.find("MepBrowseOpen");
                 if (it != lua_commands_.end() && lua_) lua_->CallRefWithString(it->second, "");
+            } else if (cp == 'f') {
+                link_hint_request_ = true;
             }
         }
         cp = gfx::GetCharPressed();
@@ -13928,6 +13944,10 @@ void Editor::HandleNormalInput() {
     // this class's own header comment) can claim it with no default
     // behavior to preserve. Checked ahead of the gfx::GetCharPressed() loop
     // below since raylib never reports Enter as a char event there anyway.
+    if ((gfx::IsKeyPressed(gfx::Key::Enter) || gfx::IsKeyPressed(gfx::Key::KpEnter)) && ShouldShowDashboard()) {
+        ActivateDashboardSelection();
+        return;
+    }
     if ((gfx::IsKeyPressed(gfx::Key::Enter) || gfx::IsKeyPressed(gfx::Key::KpEnter)) && enter_hook_ref_ != 0 &&
         CurPane().buffer_id == enter_hook_buffer_id_ && lua_) {
         lua_->CallRef(enter_hook_ref_);
@@ -14024,7 +14044,11 @@ void Editor::HandleNormalInput() {
                         st.last_move_time_ < 0.0 || (now - st.last_move_time_) >= kMotionRepeatIntervalSec;
                     if (no_pending_state_now && !ctrl && !shift && interval_elapsed) {
                         st.last_move_time_ = now;
-                        HandleNormalChar(static_cast<int>(kMotionKeys[i].second), no_pending_state_now);
+                        if (ShouldShowDashboard() && (kMotionKeys[i].second == 'j' || kMotionKeys[i].second == 'k')) {
+                            MoveDashboardSelection(kMotionKeys[i].second == 'j' ? 1 : -1);
+                        } else {
+                            HandleNormalChar(static_cast<int>(kMotionKeys[i].second), no_pending_state_now);
+                        }
                         if (mode_ != Mode::Normal) return;  // key switched modes
                     }
                 }
@@ -14062,7 +14086,11 @@ void Editor::HandleNormalInput() {
                 continue;
             }
         }
-        HandleNormalChar(cp, no_pending_state);
+        if (ShouldShowDashboard() && no_pending_state && !ctrl && !shift && (cp == 'j' || cp == 'k')) {
+            MoveDashboardSelection(cp == 'j' ? 1 : -1);
+        } else {
+            HandleNormalChar(cp, no_pending_state);
+        }
         // See queue_moved_since_down_'s own comment (editor.h): a queued
         // real-repeat notification processed here can land on an earlier
         // frame than the one where the fast path above first considers

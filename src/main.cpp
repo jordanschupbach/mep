@@ -8992,10 +8992,8 @@ const char *kBuiltinStructure =
     "  if mep_structure_sidebar_id and mep.sidebar_is_open(mep_structure_sidebar_id) then mep_structure_sidebar_render() end\n"
     "end)\n";
 
-// Docs (generate + lookup) + Help picker (Phase 25). Help picker reuses
-// mep.commands() (Phase 8/13's command palette) as-is -- "a live index
-// over registered commands... <CR> runs the selected entry" is exactly
-// what that picker already does.
+// Docs (generate + lookup) and keybinding introspection (Phase 25).
+// The built-in Help workspace below owns :MepHelp.
 //
 // Keybinding introspection (the plan's other half of this bullet) now has
 // a real consumer: mep.keymaps()/:MepKeymaps below, a Phase 8-style
@@ -9197,7 +9195,6 @@ const char *kBuiltinDocs =
     "  mep.open_url('https://devdocs.io/#q=' .. word)\n"
     "end\n"
     "mep.command('MepDocLookup', mep.docs_lookup)\n"
-    "mep.command('MepHelp', mep.commands)\n"
     // Keybinding introspection: a Phase 8-style searchable picker (typing
     // filters, <CR> selects, same as mep.commands()) listing every
     // described mapping from both registries -- mep.mapping_descriptions()
@@ -17948,57 +17945,44 @@ const char *kBuiltinWhichKeyGroups =
     "mep.leader_group('j', 'jupyter')\n"
     "mep.leader_group('d', 'debug')\n";
 
-// Help workspace.  Help pages deliberately stay as ordinary Org buffers:
-// authors can edit them with all of mep's existing Org support, while this
-// small layer supplies wiki navigation, a persistent document sidebar, and
-// a scoped line search.  Keeping the index filesystem-backed (rather than a
-// compiled-in table) makes adding a page as simple as dropping a .org file
-// into help/.
+// Help workspace. Help source may still be maintained as Org, but the
+// workspace presents its exported HTML pages so the rendered documentation
+// (including its links) is what readers see.
 const char *kBuiltinHelp =
     "local mep_help_sidebar_id = nil\n"
     "local mep_help_root = nil\n"
     "local mep_help_pages = {}\n"
-    "local mep_help_search_state = {active = false, query = ''}\n"
     "local function mep_help_join(a, b) return a:gsub('/+$', '') .. '/' .. b end\n"
     "local function mep_help_title(lines, fallback)\n"
     "  for _, line in ipairs(lines or {}) do\n"
-    "    local title = line:match('^%s*#%+[Tt][Ii][Tt][Ll][Ee]:%s*(.+)%s*$')\n"
+    "    local title = line:match('<[Tt][Ii][Tt][Ll][Ee][^>]*>%s*(.-)%s*</[Tt][Ii][Tt][Ll][Ee]>')\n"
     "    if title then return title end\n"
     "  end\n"
-    "  return fallback:gsub('%.org$', '')\n"
+    "  return fallback:gsub('%.html?$', '')\n"
     "end\n"
     "function mep.help_refresh_index()\n"
     "  local workspace_help = mep_help_join(mep.workspace_root(), 'help')\n"
     "  local entries = mep.list_dir(workspace_help)\n"
     "  local has_project_pages = false\n"
-    "  for _, entry in ipairs(entries) do if not entry.is_dir and entry.name:match('%.org$') then has_project_pages = true break end end\n"
+    "  for _, entry in ipairs(entries) do if not entry.is_dir and entry.name:match('%.html?$') then has_project_pages = true break end end\n"
     "  mep_help_root = has_project_pages and workspace_help or mep.bundled_help_root()\n"
     "  mep_help_pages = {}\n"
     "  for _, entry in ipairs(mep.list_dir(mep_help_root)) do\n"
-    "    if not entry.is_dir and entry.name:match('%.org$') then\n"
+    "    if not entry.is_dir and entry.name:match('%.html?$') then\n"
     "      local path = mep_help_join(mep_help_root, entry.name)\n"
     "      local lines = mep.read_lines(path) or {}\n"
     "      mep_help_pages[#mep_help_pages + 1] = {path = path, name = entry.name, title = mep_help_title(lines, entry.name)}\n"
     "    end\n"
     "  end\n"
     "  table.sort(mep_help_pages, function(a, b)\n"
-    "    if a.name == 'intro.org' then return true end\n"
-    "    if b.name == 'intro.org' then return false end\n"
+    "    if a.name == 'intro.html' then return true end\n"
+    "    if b.name == 'intro.html' then return false end\n"
     "    return a.title:lower() < b.title:lower()\n"
     "  end)\n"
     "end\n"
-    "local function mep_help_install_link_key()\n"
-    "  local buffer = mep.current_buffer()\n"
-    "  mep.buffer_set_on_enter(buffer, function()\n"
-    "    if mep.org_link_at_cursor() then mep.org_link_follow()\n"
-    "    else mep.notify('Move the cursor onto a help link, then press Enter', 'info') end\n"
-    "  end)\n"
-    "end\n"
-    "function mep.help_open_page(path, line)\n"
+    "function mep.help_open_page(path)\n"
     "  if not path or path == '' then return end\n"
     "  mep.open(path)\n"
-    "  if line then mep.set_cursor(line, 1) end\n"
-    "  mep_help_install_link_key()\n"
     "  if mep_help_sidebar_id and mep.sidebar_is_open(mep_help_sidebar_id) then mep.help_render_sidebar() end\n"
     "end\n"
     "function mep.help_render_sidebar()\n"
@@ -18015,77 +17999,28 @@ const char *kBuiltinHelp =
     "  if #widgets == 0 then widgets[1] = {id = 'empty', text = '(no help pages in help/)'} end\n"
     "  mep.sidebar_set_sections(mep_help_sidebar_id, {{id = 'pages', title = 'Documentation', collapsed = false, widgets = widgets}})\n"
     "end\n"
-    "local function mep_help_spans(line, query, row)\n"
-    "  local out, lower, needle, at = {}, line:lower(), query:lower(), 1\n"
-    "  while needle ~= '' do\n"
-    "    local s, e = lower:find(needle, at, true)\n"
-    "    if not s then break end\n"
-    "    out[#out + 1] = {row = row, col_start = s, col_end = e + 1, hl = 'Search'}\n"
-    "    at = e + 1\n"
-    "  end\n"
-    "  return out\n"
-    "end\n"
-    "local function mep_help_preview(path, line_no, query)\n"
-    "  local lines = mep.read_lines(path) or {}\n"
-    "  local first, last = math.max(1, line_no - 3), math.min(#lines, line_no + 3)\n"
-    "  local out, spans = {}, {}\n"
-    "  for row = first, last do\n"
-    "    local prefix = row == line_no and '> ' or '  '\n"
-    "    out[#out + 1] = prefix .. string.format('%4d  %s', row, lines[row])\n"
-    "    for _, span in ipairs(mep_help_spans(lines[row], query, #out)) do\n"
-    "      span.col_start, span.col_end = span.col_start + 8, span.col_end + 8\n"
-    "      spans[#spans + 1] = span\n"
-    "    end\n"
-    "  end\n"
-    "  mep.picker_set_preview(table.concat(out, '\\n'), spans)\n"
-    "end\n"
-    "local function mep_help_search(query)\n"
-    "  mep_help_search_state.query = query\n"
-    "  if query == '' then mep.picker_set_items({}); mep.picker_set_preview('Type to search every help page.') return end\n"
-    "  local items = {}\n"
-    "  for _, page in ipairs(mep_help_pages) do\n"
-    "    local lines = mep.read_lines(page.path) or {}\n"
-    "    for line_no, text in ipairs(lines) do\n"
-    "      if text:lower():find(query:lower(), 1, true) then\n"
-    "        local display = page.title .. ':' .. line_no .. '  ' .. text\n"
-    "        local spans = mep_help_spans(display, query, 1)\n"
-    "        items[#items + 1] = {display = display, data = page.path .. '\\t' .. line_no, hl = spans}\n"
-    "      end\n"
-    "  end\n"
-    "  mep.picker_set_items(items)\n"
-    "  if #items > 0 then\n"
-    "    local path, line = items[1].data:match('^(.-)\\t(%d+)$')\n"
-    "    mep_help_preview(path, tonumber(line), query)\n"
-    "  else mep.picker_set_preview('No matching help lines.') end\n"
-    "end\n"
-    "function mep.help_search()\n"
-    "  mep.help_refresh_index()\n"
-    "  mep_help_search_state.active = true\n"
-    "  mep.picker_open('Help Search', {}, function(item)\n"
-    "    mep_help_search_state.active = false\n"
-    "    if item then local path, line = item:match('^(.-)\\t(%d+)$'); mep.help_open_page(path, tonumber(line)) end\n"
-    "  end, mep_help_search, nil, function(item)\n"
-    "    if item then local path, line = item:match('^(.-)\\t(%d+)$'); mep_help_preview(path, tonumber(line), mep_help_search_state.query) end\n"
-    "  end, true)\n"
-    "  mep.picker_set_preview('Type to search every help page.')\n"
-    "end\n"
     "function mep.help_open()\n"
     "  mep.help_refresh_index()\n"
     "  if #mep_help_pages == 0 then mep.notify('Built-in help files are unavailable', 'error') return end\n"
     "  mep.help_render_sidebar()\n"
     "  mep.sidebar_open(mep_help_sidebar_id)\n"
-    "  local intro = mep_help_join(mep_help_root, 'intro.org')\n"
+    "  local intro = mep_help_join(mep_help_root, 'intro.html')\n"
     "  mep.help_open_page(intro)\n"
     "end\n"
     "mep.command('MepHelp', mep.help_open)\n"
-    "mep.command('MepHelpSearch', mep.help_search)\n"
-    "mep.leader_map('hh', 'Open help', mep.help_open)\n"
-    "mep.map('n', '/', function()\n"
-    "  if mep.filename():match('help/[^/]+%.org$') then mep.help_search() else mep.buffer_search() end\n"
-    "end, {desc = 'Search help or current buffer'})\n"
     "mep.on_buffer_saved(function()\n"
     "  if mep_help_sidebar_id and mep.sidebar_is_open(mep_help_sidebar_id) then mep.help_refresh_index(); mep.help_render_sidebar() end\n"
     "end)\n";
+
+// Keep Help's public entry points independent from the workspace setup
+// above.  A startup error in the optional viewer must not make :MepHelp (or
+// its documented leader binding) disappear; when the viewer initialized,
+// the wrapper simply delegates to it.
+const char *kBuiltinHelpKeymap =
+    "mep.command('MepHelp', function()\n"
+    "  if mep.help_open then mep.help_open() else mep.notify('Help workspace is unavailable', 'error') end\n"
+    "end)\n"
+    "mep.leader_map('hh', 'Open help', function() mep.cmd('MepHelp') end)\n";
 
 const char *kBuiltinPickerSources =
     "function mep.themes()\n"
@@ -18505,10 +18440,8 @@ const char *kBuiltinPickerSources =
     "mep.set_winbar_click(mep.winbar_navigate)\n";
 
 const char *kAboutText =
-    "mep\n"
     "\n"
-    "A modal text editor with embedded Lua scripting.\n"
-    "raylib + Lua 5.4, compiled to wasm or native.\n"
+    "An editor where everything is in place.\n"
     "\n"
     "github.com/jordanschupbach/mep";
 
@@ -19663,14 +19596,9 @@ void DrawPickerOverlay() {
     // since this overlay is one box rather than mep.nvim's three separate
     // floating windows and reads busier at the same fraction. Floors keep
     // it usable in a small window.
-    const bool help_search = g_editor.PickerTitle() == "Help Search";
-    int box_w = help_search ? std::max(400, static_cast<int>(static_cast<float>(gfx::GetScreenWidth()) * 0.96f))
-                            : std::max(400, static_cast<int>(static_cast<float>(gfx::GetScreenWidth()) * 0.8f));
-    // Help search is intentionally a compact dropdown so its input remains
-    // the viewer's top search bar while the document stays visible below.
-    int box_h = help_search ? std::max(180, static_cast<int>(static_cast<float>(gfx::GetScreenHeight()) / 3.0f))
-                            : std::max(300, static_cast<int>(static_cast<float>(gfx::GetScreenHeight()) * 0.8f));
-    FloatFrame f = DrawFloatFrame(box_w, box_h, g_editor.PickerTitle(), help_search ? MenuBarHeight() + 4 : -1, !help_search);
+    int box_w = std::max(400, static_cast<int>(static_cast<float>(gfx::GetScreenWidth()) * 0.8f));
+    int box_h = std::max(300, static_cast<int>(static_cast<float>(gfx::GetScreenHeight()) * 0.8f));
+    FloatFrame f = DrawFloatFrame(box_w, box_h, g_editor.PickerTitle());
 
     std::string prompt_line = "> " + g_editor.PickerQuery();
     gfx::DrawTextEx(g_font, prompt_line.c_str(), gfx::Vector2{f.content_x, f.content_y}, g_font_size, 0, ResolveHlGroup("Normal"));
@@ -31196,13 +31124,59 @@ void DrawTabBar(int y) {
 // window) -- disappears the instant that stops being true, since this is
 // just a per-frame check, not a one-shot flag to remember to clear.
 /**
- * @brief Draws the startup dashboard's about text and hint line, vertically and
- *        horizontally centered within the given rectangle.
+ * @brief Draws the startup dashboard's about text, quick-action buttons, and
+ *        hint line, vertically and horizontally centered within the given
+ *        rectangle.
  * @param x left edge of the rectangle to center within.
  * @param y top edge of the rectangle to center within.
  * @param w width of the rectangle to center within.
  * @param h height of the rectangle to center within.
  */
+// Resolves dashboard artwork alongside the executable when installed, while
+// retaining the source-tree path for development builds.  The active workspace
+// is deliberately not consulted: it may be any project and need not carry
+// mep's own assets.
+std::string DashboardAssetPath(const char *filename) {
+#if defined(__linux__)
+    std::array<char, 4096> exe_path{};
+    ssize_t len = readlink("/proc/self/exe", exe_path.data(), exe_path.size() - 1);
+    if (len > 0) {
+        std::filesystem::path installed = std::filesystem::path(std::string(exe_path.data(), static_cast<size_t>(len)))
+                                              .parent_path().parent_path() / "share/mep/assets" / filename;
+        std::error_code ec;
+        if (std::filesystem::is_regular_file(installed, ec)) return installed.string();
+    }
+#endif
+#if defined(MEP_SOURCE_ASSETS_DIR)
+    return (std::filesystem::path(MEP_SOURCE_ASSETS_DIR) / filename).string();
+#else
+    return std::string("assets/") + filename;
+#endif
+}
+
+// Texture uploads must happen after the graphics context exists, so the two
+// logos are loaded lazily on the dashboard's first frame and then reused.
+const gfx::Texture2D &DashboardLogoTexture(bool light_theme) {
+    static bool loaded = false;
+    static gfx::Texture2D light{};
+    static gfx::Texture2D dark{};
+    if (!loaded) {
+        auto load = [](const char *filename) {
+            gfx::Image image = gfx::LoadImage(DashboardAssetPath(filename).c_str());
+            gfx::Texture2D texture{};
+            if (image.data != nullptr) {
+                texture = gfx::LoadTextureFromImage(image);
+                gfx::UnloadImage(image);
+            }
+            return texture;
+        };
+        light = load("mep-light.png");
+        dark = load("mep-dark.png");
+        loaded = true;
+    }
+    return light_theme ? light : dark;
+}
+
 void DrawDashboard(float x, float y, float w, float h) {
     std::vector<std::string> lines = SplitLines(kAboutText);
     lines.emplace_back();
@@ -31211,14 +31185,79 @@ void DrawDashboard(float x, float y, float w, float h) {
     int line_h = static_cast<int>(font_size) + 8;
     float max_w = 0;
     for (const auto &line : lines) max_w = std::max(max_w, gfx::MeasureTextEx(g_font, line.c_str(), font_size, 0).x);
-    float box_h = static_cast<float>(lines.size() * static_cast<size_t>(line_h));
+    struct DashboardButton {
+        const char *label;
+        const char *command;
+    };
+    // Keep this a small, ordered list rather than a row of unrelated chrome:
+    // the dashboard is the empty-workspace starting point.  Projects comes
+    // first because it is the usual next step; Help opens the wiki's intro.
+    static constexpr DashboardButton kDashboardButtons[] = {
+        {"Projects", "MepProjects"},
+        {"Help", "MepHelp"},
+    };
+    const float button_h = static_cast<float>(line_h) + 4.0f;
+    const float button_gap = 6.0f;
+    float button_w = max_w;
+    for (const DashboardButton &button : kDashboardButtons) {
+        button_w = std::max(button_w, gfx::MeasureTextEx(g_font, button.label, font_size, 0).x + 28.0f);
+    }
+    // A theme is light when its resolved canvas background is perceptually
+    // light.  This handles all palettes consistently, including custom names.
+    const gfx::Color background = ResolveHlGroup("NormalBg");
+    const float background_luminance = 0.2126f * static_cast<float>(background.r) +
+                                       0.7152f * static_cast<float>(background.g) +
+                                       0.0722f * static_cast<float>(background.b);
+    const gfx::Texture2D &logo = DashboardLogoTexture(background_luminance >= 128.0f);
+    // `lines` already includes the spacer above its hint.  Reserve a compact
+    // two-row action list between the about text and that hint.
+    const float content_h = static_cast<float>(lines.size() * static_cast<size_t>(line_h)) +
+                            static_cast<float>(std::size(kDashboardButtons)) * (button_h + button_gap);
+    float logo_h = 0.0f;
+    float logo_w = 0.0f;
+    if (logo.id != 0 && logo.width > 0 && logo.height > 0) {
+        const float aspect = static_cast<float>(logo.width) / static_cast<float>(logo.height);
+        logo_h = std::min({440.0f, h * 0.64f, std::max(0.0f, h - content_h - 16.0f), w * 1.30f / aspect});
+        if (logo_h < 64.0f) logo_h = 0.0f;  // preserve usable controls in a very short window
+        logo_w = logo_h * aspect;
+    }
+    const float logo_gap = logo_h > 0.0f ? 16.0f : 0.0f;
+    const float box_h = logo_h + logo_gap + content_h;
     float start_y = y + std::max(0.0f, (h - box_h) / 2.0f);
-    for (size_t i = 0; i < lines.size(); i++) {
+    if (logo_h > 0.0f) {
+        gfx::DrawTexturePro(logo, gfx::Rectangle{0.0f, 0.0f, static_cast<float>(logo.width), static_cast<float>(logo.height)},
+                            gfx::Rectangle{x + (w - logo_w) / 2.0f, start_y, logo_w, logo_h}, gfx::Vector2{0, 0}, 0.0f, gfx::White);
+    }
+    start_y += logo_h + logo_gap;
+    const size_t hint_line = lines.size() - 1;
+    for (size_t i = 0; i < hint_line; i++) {
         float lw = gfx::MeasureTextEx(g_font, lines[i].c_str(), font_size, 0).x;
         float lx = x + std::max(0.0f, (w - lw) / 2.0f);
         gfx::DrawTextEx(g_font, lines[i].c_str(), gfx::Vector2{lx, start_y + static_cast<float>(i) * static_cast<float>(line_h)}, font_size, 0,
                    ResolveHlGroup("Comment"));
     }
+    const float buttons_y = start_y + static_cast<float>(hint_line) * static_cast<float>(line_h);
+    for (size_t i = 0; i < std::size(kDashboardButtons); ++i) {
+        const DashboardButton &button = kDashboardButtons[i];
+        const gfx::Rectangle rect{x + std::max(0.0f, (w - button_w) / 2.0f), buttons_y + static_cast<float>(i) * (button_h + button_gap), button_w, button_h};
+        const float label_w = gfx::MeasureTextEx(g_font, button.label, font_size, 0).x;
+        // These are buffer-like action lines, not raised buttons: only the
+        // virtual Normal-mode cursor marks the selected row.  Hovering is
+        // intentionally visual-no-op; UpdatePaneMouseInteraction supplies
+        // the pointing-hand cursor for the click region below.
+        if (g_editor.DashboardSelection() == static_cast<int>(i)) {
+            const float cursor_x = rect.x + (rect.width - label_w) / 2.0f - 10.0f;
+            gfx::DrawTextEx(g_font, ">", gfx::Vector2{cursor_x, rect.y + (rect.height - font_size) / 2.0f},
+                            font_size, 0, ResolveHlGroup("WorkspaceActive"));
+        }
+        gfx::DrawTextEx(g_font, button.label, gfx::Vector2{rect.x + (rect.width - label_w) / 2.0f, rect.y + (rect.height - font_size) / 2.0f},
+                        font_size, 0, ResolveHlGroup("StatusLineFg"));
+        RegisterClickRegion(rect, [command = button.command] { g_editor.RunCommand(command); });
+    }
+    const float hint_y = buttons_y + static_cast<float>(std::size(kDashboardButtons)) * (button_h + button_gap);
+    const std::string &hint = lines[hint_line];
+    const float hint_w = gfx::MeasureTextEx(g_font, hint.c_str(), font_size, 0).x;
+    gfx::DrawTextEx(g_font, hint.c_str(), gfx::Vector2{x + std::max(0.0f, (w - hint_w) / 2.0f), hint_y}, font_size, 0, ResolveHlGroup("Comment"));
 }
 
 // Forward-declared: defined with the rest of the hint system
@@ -31799,6 +31838,64 @@ void NavigateHtmlLink(int buffer_id, const std::string &href) {
     g_editor.RunCommand("lua mep.browse_open_in_pane([[" + target + "]])");
 }
 
+// HTML links are collected while DrawPane has their exact screen geometry.
+// Consume a primary click against those freshly drawn targets before the
+// generic pane-body click handler, which otherwise only focuses the pane.
+// This gives rendered help pages ordinary click-through navigation as well
+// as preserving the existing hint-mode path below.
+void DispatchHtmlLinkClicks() {
+    if (!gfx::IsMouseButtonPressed(gfx::MouseButton::Left)) return;
+    Mode mode = g_editor.CurrentMode();
+    if (IsModalOverlayMode(mode) && mode != Mode::Sidebar) return;
+    gfx::Vector2 mouse = gfx::GetMousePosition();
+    for (const LinkHintRect &link : g_link_hint_rects) {
+        if (link.is_pdf || !PointInRect(mouse, link.rect)) continue;
+        g_editor.FocusPaneById(link.pane_id);
+        NavigateHtmlLink(link.buffer_id, link.uri);
+        return;
+    }
+}
+
+// One PDF/HTML link's hint target (shared by CollectHintTargets and the
+// html viewer's own pane-scoped CollectLinkHintTargets below): firing it
+// focuses the link's pane, then either jumps to a PDF-internal target
+// page / shells out a PDF URI via mep.open_url, or navigates an HTML
+// href through NavigateHtmlLink (same dispatch a real click takes,
+// DispatchHtmlLinkClicks).
+/**
+ * @brief Builds the (unlabeled) hint target for one collected PDF/HTML link rect.
+ * @param link The link rect DrawPane collected this frame.
+ * @return A HintTarget anchored at the link's top-left whose action follows the link.
+ */
+HintTarget HintTargetForLink(const LinkHintRect &link) {
+    gfx::Vector2 anchor{link.rect.x, link.rect.y};
+    int pane_id = link.pane_id, buffer_id = link.buffer_id;
+    if (link.is_pdf) {
+        int target_page = link.target_page;
+        std::string uri = link.uri;
+        return {anchor, "", [pane_id, buffer_id, target_page, uri] {
+                    g_editor.FocusPaneById(pane_id);
+                    if (target_page >= 0) g_editor.GotoPdfPage(buffer_id, target_page);
+                    else if (!uri.empty()) g_editor.RunCommand("lua mep.open_url([[" + uri + "]])");
+                }};
+    }
+    std::string href = link.uri;
+    return {anchor, "", [pane_id, buffer_id, href] {
+                g_editor.FocusPaneById(pane_id);
+                NavigateHtmlLink(buffer_id, href);
+            }};
+}
+
+/**
+ * @brief Assigns every target in `targets` a fixed-width home-row-first label (see
+ * UiHintLabelWidthFor for why they all share one width).
+ * @param targets The targets to label, in order.
+ */
+void AssignHintLabels(std::vector<HintTarget> &targets) {
+    int label_width = UiHintLabelWidthFor(targets.size());
+    for (size_t i = 0; i < targets.size(); i++) targets[i].label = UiHintLabelForIndex(static_cast<int>(i), label_width);
+}
+
 // Gathers every hint target visible this frame from every source
 // (HINT_SYSTEM.md), assigns each a label, and stores them in
 // g_hint_targets for HandleHintModeInput/DrawHintOverlay to consume.
@@ -31877,28 +31974,45 @@ void CollectHintTargets() {
     }
 
     // Hyperlinks visible in a PDF/HTML pane.
-    for (const LinkHintRect &link : g_link_hint_rects) {
-        gfx::Vector2 anchor{link.rect.x, link.rect.y};
-        int pane_id = link.pane_id, buffer_id = link.buffer_id;
-        if (link.is_pdf) {
-            int target_page = link.target_page;
-            std::string uri = link.uri;
-            targets.push_back({anchor, "", [pane_id, buffer_id, target_page, uri] {
-                                    g_editor.FocusPaneById(pane_id);
-                                    if (target_page >= 0) g_editor.GotoPdfPage(buffer_id, target_page);
-                                    else if (!uri.empty()) g_editor.RunCommand("lua mep.open_url([[" + uri + "]])");
-                                }});
-        } else {
-            std::string href = link.uri;
-            targets.push_back({anchor, "", [pane_id, buffer_id, href] {
-                                    g_editor.FocusPaneById(pane_id);
-                                    NavigateHtmlLink(buffer_id, href);
-                                }});
-        }
-    }
+    for (const LinkHintRect &link : g_link_hint_rects) targets.push_back(HintTargetForLink(link));
 
-    int label_width = UiHintLabelWidthFor(targets.size());
-    for (size_t i = 0; i < targets.size(); i++) targets[i].label = UiHintLabelForIndex(static_cast<int>(i), label_width);
+    AssignHintLabels(targets);
+    g_hint_targets = std::move(targets);
+}
+
+// The html viewer's own plain-'f' (Editor::HandleHtmlInput ->
+// TakeLinkHintRequest, drained in UpdateDrawFrame right after
+// HandleInput()): same overlay, labels and label-narrowing as the global
+// mod1+f trigger above, but only the requesting pane's own visible links
+// become targets -- Vimium's 'f' hints the page's links, not the browser
+// chrome around it, and a help page's half-dozen links deserve one-letter
+// labels rather than the two-letter ones every menu/tab/sidebar row on
+// screen would otherwise push the label width up to. Same one-frame-stale
+// g_link_hint_rects source as CollectHintTargets (populated by the
+// previous DrawEditor, cleared at the top of the next one) -- the
+// request fires from HandleInput, which runs before this frame's own
+// draw, exactly like mod1+f does. Pdf panes never set the request today
+// but are handled identically for when they do.
+/**
+ * @brief Rebuilds g_hint_targets from only the links DrawPane collected inside pane `pane_id`
+ * last frame, assigning each a home-row-first label.
+ * @param pane_id The pane whose visible links (and nothing else) should get hint labels.
+ */
+void CollectLinkHintTargets(int pane_id) {
+    std::vector<HintTarget> targets;
+    for (const LinkHintRect &link : g_link_hint_rects) {
+        if (link.pane_id != pane_id) continue;
+        targets.push_back(HintTargetForLink(link));
+    }
+    // Reading order (top-to-bottom, then left-to-right) before labeling,
+    // so "a s d f ..." runs down the page the way a reader scans it --
+    // DrawPane's html branch collects links out of an unordered_map keyed
+    // by DOM node, so their arrival order here is effectively random.
+    std::stable_sort(targets.begin(), targets.end(), [](const HintTarget &a, const HintTarget &b) {
+        if (a.anchor.y != b.anchor.y) return a.anchor.y < b.anchor.y;
+        return a.anchor.x < b.anchor.x;
+    });
+    AssignHintLabels(targets);
     g_hint_targets = std::move(targets);
 }
 
@@ -31918,49 +32032,62 @@ void CollectHintTargets() {
  * cancel).
  * @return True if hint mode is active (and therefore consumed this frame's input); false otherwise.
  */
+/**
+ * @brief Leaves hint mode without firing anything (Escape, a non-matching label, or "ui.hint_cancel").
+ */
+void CancelHintMode() {
+    g_hint_mode_active = false;
+    g_hint_targets.clear();
+    g_hint_typed.clear();
+}
+
+/**
+ * @brief Feeds one typed character into active hint mode: appends it to g_hint_typed, fires the
+ * target whose label now matches exactly, or cancels once no label can still match the prefix.
+ * Shared by HandleHintModeInput (real keystrokes) and the "ui.hint_pick" agent RPC.
+ * @param cp The typed character (upper-case letters are folded to lower-case; other non-printable
+ * input is ignored).
+ * @return True once hint mode has ended (a target fired or the prefix went dead), false while it
+ * is still narrowing.
+ */
+bool HintModeTypeChar(int cp) {
+    if (!g_hint_mode_active) return true;
+    if (cp >= 'A' && cp <= 'Z') cp += 'a' - 'A';  // labels are lowercase; Shift-typed letters still match
+    if (cp < 32 || cp >= 127) return false;
+    g_hint_typed += static_cast<char>(cp);
+    const HintTarget *matched = nullptr;
+    for (const HintTarget &t : g_hint_targets) {
+        if (t.label == g_hint_typed) {
+            matched = &t;
+            break;
+        }
+    }
+    if (matched) {
+        std::function<void()> action = matched->action;
+        CancelHintMode();
+        action();
+        return true;
+    }
+    bool any_prefix = std::any_of(g_hint_targets.begin(), g_hint_targets.end(), [&](const HintTarget &t) {
+        return t.label.size() >= g_hint_typed.size() && t.label.compare(0, g_hint_typed.size(), g_hint_typed) == 0;
+    });
+    if (!any_prefix) {
+        CancelHintMode();
+        return true;
+    }
+    return false;
+}
+
 bool HandleHintModeInput() {
     if (!g_hint_mode_active) return false;
     for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
         if (key == gfx::Key::Escape) {
-            g_hint_mode_active = false;
-            g_hint_targets.clear();
-            g_hint_typed.clear();
+            CancelHintMode();
             return true;
         }
     }
-    int cp = gfx::GetCharPressed();
-    while (cp > 0) {
-        if (cp >= 'A' && cp <= 'Z') cp += 'a' - 'A';  // labels are lowercase; Shift-typed letters still match
-        if (cp < 32 || cp >= 127) {
-            cp = gfx::GetCharPressed();
-            continue;
-        }
-        g_hint_typed += static_cast<char>(cp);
-        const HintTarget *matched = nullptr;
-        for (const HintTarget &t : g_hint_targets) {
-            if (t.label == g_hint_typed) {
-                matched = &t;
-                break;
-            }
-        }
-        if (matched) {
-            std::function<void()> action = matched->action;
-            g_hint_mode_active = false;
-            g_hint_targets.clear();
-            g_hint_typed.clear();
-            action();
-            return true;
-        }
-        bool any_prefix = std::any_of(g_hint_targets.begin(), g_hint_targets.end(), [&](const HintTarget &t) {
-            return t.label.size() >= g_hint_typed.size() && t.label.compare(0, g_hint_typed.size(), g_hint_typed) == 0;
-        });
-        if (!any_prefix) {
-            g_hint_mode_active = false;
-            g_hint_targets.clear();
-            g_hint_typed.clear();
-            return true;
-        }
-        cp = gfx::GetCharPressed();
+    for (int cp = gfx::GetCharPressed(); cp > 0; cp = gfx::GetCharPressed()) {
+        if (HintModeTypeChar(cp)) return true;
     }
     return true;
 }
@@ -32495,6 +32622,17 @@ void UpdatePaneMouseInteraction() {
                 }
             }
         }
+        // Click regions include the dashboard's plain action lines.  Give
+        // them a discoverable pointer without imposing a hover fill (and
+        // extend that same affordance to the rest of the registered chrome).
+        if (!over_border && want_cursor == gfx::MouseCursor::Default) {
+            for (const ClickRegion &region : g_click_regions) {
+                if (PointInRect(mouse, region.rect)) {
+                    want_cursor = gfx::MouseCursor::PointingHand;
+                    break;
+                }
+            }
+        }
         if (gfx::IsMouseButtonPressed(gfx::MouseButton::Left)) {
             for (const PaneBorderRect &b : g_pane_border_rects) {
                 if (!PointInRect(mouse, b.grab_rect)) continue;
@@ -32852,6 +32990,20 @@ void UpdateDrawFrame() {
         }
         bool menu_consumed = !hint_consumed && HandleMenuInput();
         if (!hint_consumed && !menu_consumed) g_editor.HandleInput();
+        // The html viewer's plain-'f' link hints (Editor::HandleHtmlInput
+        // -> TakeLinkHintRequest): answered here, after HandleInput() has
+        // had its say this frame, with a pane-scoped collection instead
+        // of mod1+f's everything-on-screen one (CollectLinkHintTargets'
+        // own comment). The 'f' char itself was already drained by the
+        // html handler, so nothing leaks into HandleHintModeInput next
+        // frame the way the mod1+f path has to guard against above. An
+        // empty collection (nothing linked in view) says so instead of
+        // silently doing nothing.
+        if (!g_hint_mode_active && g_editor.TakeLinkHintRequest()) {
+            CollectLinkHintTargets(g_editor.ActivePaneId());
+            if (!g_hint_targets.empty()) g_hint_mode_active = true;
+            else g_editor.SetStatusMessage("No links visible");
+        }
         DrawEditor();
         if (g_pending_gantt_raster_export.buffer_id >= 0) {
             ExportGanttRaster(g_pending_gantt_raster_export.buffer_id, g_pending_gantt_raster_export.format.c_str());
@@ -32867,6 +33019,7 @@ void UpdateDrawFrame() {
         // per-frame update function, not a copy-pasted branch; sharing the
         // same guard is intentional (see the reasoning comments above/below
         // each call).
+        if (!hint_consumed && !menu_consumed) DispatchHtmlLinkClicks();
         if (!hint_consumed && !menu_consumed) DispatchChromeClicks();
         // Same reasoning (needs this frame's freshly (re)populated pane/
         // border/chip geometry, and shouldn't fire under an open menu
@@ -33135,6 +33288,65 @@ void RegisterUiAutomationMethods() {
         for (char c : text) g_ui_input_queue.push_back([c] { mep::agent_ui::TypeChar(c); });
         return Json::Object();
     });
+
+    // Hint mode (HINT_SYSTEM.md) driven directly, with no XTest keystroke
+    // and therefore no dependency on X11 focus: the same state the
+    // keyboard triggers reach (mod1+f for everything on screen, the html
+    // viewer's plain 'f' for the active pane's own links), just entered
+    // and narrowed through RPC. "ui.hints" {scope:"links"|"all"} opens it
+    // -- "links" (the default) goes through Editor::RequestLinkHints, so
+    // UpdateDrawFrame's own 'f'-answering branch is what actually opens
+    // it one frame later, exactly as a real 'f' would; "all" mirrors the
+    // mod1+f branch synchronously. "ui.hint_targets" reads back every
+    // label with its badge anchor; "ui.hint_pick" {label} feeds the label
+    // through HintModeTypeChar one character at a time (so a partial
+    // label narrows, a full one fires, a dead prefix cancels -- same
+    // rules as typing); "ui.hint_cancel" is Escape.
+    mep::agent::RegisterUiMethod("ui.hints", [](const Json &params) {
+        std::string scope = params.get("scope").as_string("links");
+        if (scope == "all") {
+            if (!g_hint_mode_active) {
+                CollectHintTargets();
+                g_hint_mode_active = !g_hint_targets.empty();
+            }
+        } else if (scope == "links") {
+            g_editor.RequestLinkHints();
+        } else {
+            throw std::runtime_error("scope must be \"links\" or \"all\"");
+        }
+        return Json::Object();
+    });
+    mep::agent::RegisterUiMethod("ui.hint_targets", [](const Json &) {
+        Json result = Json::Object();
+        result["active"] = g_hint_mode_active;
+        result["typed"] = g_hint_typed;
+        Json targets = Json::Array();
+        for (const HintTarget &t : g_hint_targets) {
+            Json entry = Json::Object();
+            entry["label"] = t.label;
+            entry["x"] = static_cast<double>(t.anchor.x);
+            entry["y"] = static_cast<double>(t.anchor.y);
+            targets.push_back(std::move(entry));
+        }
+        result["targets"] = std::move(targets);
+        return result;
+    });
+    mep::agent::RegisterUiMethod("ui.hint_pick", [](const Json &params) {
+        if (!g_hint_mode_active) throw std::runtime_error("hint mode is not active (call ui.hints first)");
+        std::string label = params.get("label").as_string();
+        if (label.empty()) throw std::runtime_error("label is required");
+        for (char c : label) {
+            if (HintModeTypeChar(static_cast<unsigned char>(c))) break;
+        }
+        Json result = Json::Object();
+        result["active"] = g_hint_mode_active;
+        result["typed"] = g_hint_typed;
+        return result;
+    });
+    mep::agent::RegisterUiMethod("ui.hint_cancel", [](const Json &) {
+        CancelHintMode();
+        return Json::Object();
+    });
 }
 
 // Registered the same way RegisterUiAutomationMethods's methods are (via
@@ -33386,6 +33598,9 @@ int main(int argc, char **argv) {
     // every other buffer still routes it to the normal buffer search.
     lua->DoString(kBuiltinHelp);
     lua->DoString(kBuiltinWhichKeyGroups);
+    // Deliberately separate from kBuiltinHelp: a failure in optional Help
+    // UI setup must not make its documented leader binding disappear.
+    lua->DoString(kBuiltinHelpKeymap);
 
 #if !defined(__EMSCRIPTEN__)
     // Command line (WORKSPACES_PLAN.md Phase 9/10):

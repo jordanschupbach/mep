@@ -2,22 +2,19 @@
 
 * Welcome
 
-This is the starting point for mep's built-in help workspace.  Help pages
-are ordinary Org documents, so they can be maintained with the editor's
-normal Org tooling.
+This is the starting point for mep's built-in help workspace. Help pages are
+rendered HTML documents, generated from Org sources maintained with the
+editor's normal Org tooling.
 
-Use the left sidebar to move between pages.  Press =/= while viewing a help
-page to search every help document; the top dropdown shows matching lines
-and a highlighted context preview.  Press =Enter= while your cursor is on a
-link to follow it.
+Use the left sidebar or click a page link to move between pages.
 
 * Start here
 
-- [[file:editing.org][Editing basics]] explains the normal editing model.
-- [[file:shortcuts.org][Keyboard shortcuts]] lists the initial help bindings.
-- [[file:writing-help.org][Writing help pages]] describes the document format.
+- [[file:editing.html][Editing basics]] explains the normal editing model.
+- [[file:shortcuts.html][Keyboard shortcuts]] lists the initial help bindings.
+- [[file:writing-help.html][Writing help pages]] describes the document format.
 
 * Navigation
 
 From Normal mode, press =<leader>hh= to return here at any time.  =:MepHelp=
-does the same thing, and =:MepHelpSearch= opens the cross-document search.
+does the same thing.

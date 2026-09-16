@@ -3945,6 +3945,22 @@ public:
      * @return A const pointer to the HtmlSession, or nullptr if the buffer isn't an HTML pane.
      */
     const HtmlSession *GetHtml(int buffer_id) const;
+    // One-shot flag set by HandleHtmlInput's plain 'f' and drained once
+    // per frame by main.cpp's UpdateDrawFrame right after HandleInput():
+    // the hint system's whole state (g_hint_mode_active/g_hint_targets/
+    // g_link_hint_rects, HINT_SYSTEM.md) is main.cpp-local, so the
+    // html-mode key handler can only *ask* for hints, not open them.
+    // Unlike the global mod1+f trigger, main.cpp answers this with
+    // CollectLinkHintTargets(ActivePaneId()) -- only the requesting
+    // pane's own visible links get labels, not every widget on screen.
+    // Reading it clears it. RequestLinkHints is the same ask from
+    // outside the key handler (main.cpp's own "ui.hints" agent RPC).
+    void RequestLinkHints() { link_hint_request_ = true; }
+    bool TakeLinkHintRequest() {
+        bool requested = link_hint_request_;
+        link_hint_request_ = false;
+        return requested;
+    }
     // Every live HTML session's buffer id (main.cpp's media playback sweep).
     std::vector<int> HtmlBufferIds() const;
     /**
@@ -7679,6 +7695,11 @@ public:
     // filename) -- recomputed fresh each frame rather than cached, so it
     // disappears the instant any of that stops being true.
     bool ShouldShowDashboard() const;
+    // The dashboard is still Normal mode, but its two action lines use a
+    // virtual cursor so j/k cannot leave the actionable part of the view.
+    int DashboardSelection() const { return dashboard_selection_; }
+    void MoveDashboardSelection(int delta);
+    void ActivateDashboardSelection();
     // Finds the existing scratch buffer if one exists in this session,
     // otherwise creates one; switches the current pane to it either way.
     void OpenScratchBuffer();
@@ -8241,7 +8262,8 @@ private:
     // registered Lua command, MepBrowseReload/MepBrowseOpen -- the actual
     // curl-fetch-if-remote logic lives in Lua, kBuiltinTextTools). No page
     // concept to navigate (Ctrl-f/gg/G etc, unlike HandlePdfInput) -- an
-    // HTML page is one continuous flow.
+    // HTML page is one continuous flow. Plain 'f' requests Vimium-style
+    // link hints for this pane only (TakeLinkHintRequest below).
     void HandleHtmlInput();
     // Shared by OpenHtmlInPlace's create-branch and ReloadHtmlBuffer:
     // (re)parses `bytes` into `sess` (fresh HtmlDoc, scripts re-run,
@@ -9259,6 +9281,9 @@ private:
     void AdoptWorktrees(int project_id, const std::vector<WorktreeEntry> &entries);
     std::string worktree_dir_override_;
     bool restore_workspaces_ = true;
+    // Zero-based virtual cursor for the startup dashboard's action rows.
+    // It deliberately is not the empty buffer's real cursor.
+    int dashboard_selection_ = 0;
     bool session_enabled_ = true;
     // Kills a workspace's terminals and soft-deletes its buffers (shared by
     // WorkspaceDelete and ProjectClose).
@@ -9641,6 +9666,7 @@ private:
     int pending_op_count_ = 0;
     // 'g' waiting for a second key (gg / ge / gE).
     bool pending_g_ = false;
+    bool link_hint_request_ = false;  // see TakeLinkHintRequest
     // '[' / ']' waiting for a second key -- Lua-registered only
     // (mep.map_bracket_prev/mep.map_bracket_next, e.g. "[e"/"]e" for LSP
     // diagnostic navigation); mep has no built-in bracket motion of its

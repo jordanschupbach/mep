@@ -656,6 +656,16 @@ target_compile_options(mep-org-doc-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITI
 target_link_options(mep-org-doc-test PRIVATE ${MEP_SANITIZE_FLAGS})
 add_dependencies(tests mep-org-doc-test)
 
+# :terminal's VT emulator (vterm.cpp is dependency-free): Unicode width
+# classification (VTermCharWidth), zero-width drops, and wide (CJK/emoji)
+# lead+continuation pair integrity across overwrite/wrap/erase/shift/
+# resize. Same CHECK()-based shape as mep-org-doc-test.
+add_executable(mep-vterm-test EXCLUDE_FROM_ALL src/vterm_test.cpp src/vterm.cpp)
+target_include_directories(mep-vterm-test PRIVATE src)
+target_compile_options(mep-vterm-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-vterm-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-vterm-test)
+
 # Jupyter notebook helpers (notebook_doc.cpp is dependency-free apart from
 # the header-only json.h): nbformat parse/serialize round trips, the
 # percent-format text view and cell re-matching, output display/slot

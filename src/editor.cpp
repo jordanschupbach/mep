@@ -23837,14 +23837,21 @@ bool Editor::WriteAllModified() {
 bool Editor::IsOnlyPaneOverall() const { return Tabs().size() == 1 && Tabs()[0].root->dir == SplitDir::Leaf; }
 
 bool Editor::AnyBufferModified() const {
-    for (const auto &buf : buffers_) {
-        if (buf.modified) return true;
+    // Same skips as WriteAllModified/WorkspaceHasModifiedBuffers: a deleted
+    // buffer or one with no possible save (terminal snapshot, PDF viewer)
+    // has a `modified` flag nothing can clear, so counting it here would
+    // make :qa refuse forever even right after a successful :wa.
+    for (size_t i = 0; i < buffers_.size(); i++) {
+        const Buffer &buf = buffers_[i];
+        if (!buf.modified || buf.deleted) continue;
+        if (BufferUnsavable(static_cast<int>(i))) continue;
+        return true;
     }
     return false;
 }
 
 void Editor::QuitCurrent(bool force) {
-    if (!force && Buf().modified) {
+    if (!force && Buf().modified && !Buf().deleted && !BufferUnsavable(CurrentBufferId())) {
         status_message_ = "E37: No write since last change (add ! to override)";
         return;
     }

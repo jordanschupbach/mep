@@ -253,6 +253,7 @@
           installPhase = ''
             runHook preInstall
             install -Dm755 mep "$out/bin/mep"
+            install -Dm644 "$sourceRoot"/help/*.org -t "$out/share/mep/help"
             runHook postInstall
           '';
         };

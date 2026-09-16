@@ -643,19 +643,6 @@ ThemeColor Mix(ThemeColor a, ThemeColor b, float t) {
                      static_cast<int>(a.b + (b.b - a.b) * t));
 }
 
-/**
- * @brief Whether a palette is a light theme (light background, dark text).
- * @param p The palette to classify.
- * @return true when the background's perceived luminance is above mid-gray.
- */
-bool IsLightPalette(const Palette &p) {
-    // Rec. 601 luma weights -- the same eye-weighted split the PDF/image
-    // recolor paths use, so a warm off-white bg (solarized-light,
-    // everforest-light) still counts as light.
-    float luma = 0.299f * p.bg.r + 0.587f * p.bg.g + 0.114f * p.bg.b;
-    return luma > 127.5f;
-}
-
 // mep's original hardcoded look (main.cpp's pre-Phase-9 literals), kept as
 // the default palette so nothing visually changes for existing users.
 const Palette kPaletteMepDark = {
@@ -962,12 +949,10 @@ std::unordered_map<std::string, ThemeColor> BuildHighlightGroups(const Palette &
     g["WorkspaceActive"] = p.fg;
     g["WorkspaceActiveBg"] = Mix(p.accent, p.bg, 0.55f);
     g["WorkspaceInactive"] = Mix(p.fg, p.bg, 0.5f);
-    // The active pane's outline: the scheme's accent pushed a step away
-    // from the background -- brighter on a dark theme, darker on a light
-    // one -- so it pops against the (bg-toned) TabActive header it runs
-    // along while still reading as the same family as the rest of the
-    // accent-derived chrome.
-    g["BorderActive"] = IsLightPalette(p) ? Darken(p.accent, 30) : Lighten(p.accent, 30);
+    // The active pane's outline matches the active pane header exactly.
+    // Both use the accent toned toward the background, so the border does
+    // not become brighter in dark themes or darker in light ones.
+    g["BorderActive"] = Mix(p.accent, p.bg, 0.55f);
     g["BorderInactive"] = p.border;
     g["CursorLine"] = Lighten(p.bg, 8);
     g["Visual"] = Mix(p.blue, p.bg, 0.35f);

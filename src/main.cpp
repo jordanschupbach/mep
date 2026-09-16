@@ -17968,7 +17968,11 @@ const char *kBuiltinHelp =
     "  return fallback:gsub('%.org$', '')\n"
     "end\n"
     "function mep.help_refresh_index()\n"
-    "  mep_help_root = mep_help_join(mep.workspace_root(), 'help')\n"
+    "  local workspace_help = mep_help_join(mep.workspace_root(), 'help')\n"
+    "  local entries = mep.list_dir(workspace_help)\n"
+    "  local has_project_pages = false\n"
+    "  for _, entry in ipairs(entries) do if not entry.is_dir and entry.name:match('%.org$') then has_project_pages = true break end end\n"
+    "  mep_help_root = has_project_pages and workspace_help or mep.bundled_help_root()\n"
     "  mep_help_pages = {}\n"
     "  for _, entry in ipairs(mep.list_dir(mep_help_root)) do\n"
     "    if not entry.is_dir and entry.name:match('%.org$') then\n"
@@ -18067,6 +18071,7 @@ const char *kBuiltinHelp =
     "end\n"
     "function mep.help_open()\n"
     "  mep.help_refresh_index()\n"
+    "  if #mep_help_pages == 0 then mep.notify('Built-in help files are unavailable', 'error') return end\n"
     "  mep.help_render_sidebar()\n"
     "  mep.sidebar_open(mep_help_sidebar_id)\n"
     "  local intro = mep_help_join(mep_help_root, 'intro.org')\n"
@@ -21523,9 +21528,8 @@ void DrawVideoPane(const Pane &pane, VideoSession &sess, float x, float y, float
     RegisterClickRegion(gfx::Rectangle{x, y, w, video_h}, [pane_id = pane.id] { g_editor.FocusPaneById(pane_id); });
 }
 
-// Active pane gets a thicker outline in BorderActive (the theme's accent
-// pushed away from its bg -- brighter on dark themes, darker on light ones,
-// see BuildHighlightGroups in editor.cpp) so
+// Active pane gets a thicker outline in BorderActive (the same accent-toned
+// color as its TabActive header, see BuildHighlightGroups in editor.cpp) so
 // which pane has the cursor reads at a glance -- a plain 1px
 // BorderActive/BorderInactive color swap was too subtle to notice in a
 // quick glance across a busy split. Shared by DrawPane's own

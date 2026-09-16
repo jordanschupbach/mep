@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.28)
 project(mep LANGUAGES C CXX)
 
+include(GNUInstallDirs)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -442,6 +444,7 @@ add_library(mep_core STATIC
 # implementation units' module membership from their content.
 target_sources(mep_core PUBLIC FILE_SET CXX_MODULES FILES src/text_diff.cppm src/path_util.cppm src/gfx/model_read_util.cppm)
 target_include_directories(mep_core PUBLIC src)
+target_compile_definitions(mep_core PRIVATE MEP_SOURCE_HELP_DIR="${CMAKE_SOURCE_DIR}/help")
 target_compile_options(mep_core PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep_core PRIVATE ${MEP_SANITIZE_FLAGS})
 
@@ -601,6 +604,9 @@ target_include_directories(mep PRIVATE src)
 target_compile_options(mep PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep PRIVATE ${MEP_SANITIZE_FLAGS})
 target_link_libraries(mep PRIVATE mep_core)
+install(TARGETS mep RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(DIRECTORY help/ DESTINATION ${CMAKE_INSTALL_DATADIR}/mep/help
+        FILES_MATCHING PATTERN "*.org")
 # Same PCH as mep_core (defined above) -- main.cpp is the single largest
 # translation unit in the whole project (~27k lines) and uses this same
 # set of standard headers throughout.

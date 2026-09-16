@@ -6,6 +6,7 @@
 #include "treesitter.h"
 
 #include <algorithm>
+#include <array>
 #include <ctime>
 #include <cctype>
 #include <cstdint>
@@ -26,6 +27,9 @@
 
 #if !defined(__EMSCRIPTEN__)
 #include <filesystem>
+#if defined(__linux__)
+#include <unistd.h>
+#endif
 #endif
 
 extern "C" {
@@ -4361,6 +4365,45 @@ int l_workspace_current(lua_State *L) {
  */
 int l_workspace_root(lua_State *L) {
     lua_pushstring(L, GetEditor(L)->ActiveRoot().c_str());
+    return 1;
+}
+
+// mep.bundled_help_root(): the installed help directory. Project-local
+// help/ remains supported by kBuiltinHelp, but normal projects should not
+// make the built-in Help command appear to do nothing just because they do
+// not carry a copy of the documentation.
+int l_bundled_help_root(lua_State *L) {
+#if !defined(__EMSCRIPTEN__)
+    std::error_code ec;
+    auto is_help_root = [&ec](const std::filesystem::path &path) {
+        return std::filesystem::is_regular_file(path / "intro.org", ec);
+    };
+
+#if defined(__linux__)
+    // A packaged native binary lives in <prefix>/bin; its data is installed
+    // in <prefix>/share/mep/help. Resolve /proc rather than relying on the
+    // process CWD, which follows the active workspace.
+    std::array<char, 4096> exe_path{};
+    ssize_t len = readlink("/proc/self/exe", exe_path.data(), exe_path.size() - 1);
+    if (len > 0) {
+        std::filesystem::path installed = std::filesystem::path(std::string(exe_path.data(), static_cast<size_t>(len)))
+                                              .parent_path().parent_path() / "share/mep/help";
+        if (is_help_root(installed)) {
+            lua_pushstring(L, installed.string().c_str());
+            return 1;
+        }
+    }
+#endif
+
+#if defined(MEP_SOURCE_HELP_DIR)
+    std::filesystem::path source = MEP_SOURCE_HELP_DIR;
+    if (is_help_root(source)) {
+        lua_pushstring(L, source.string().c_str());
+        return 1;
+    }
+#endif
+#endif
+    lua_pushliteral(L, "");
     return 1;
 }
 
@@ -8978,6 +9021,7 @@ const luaL_Reg kMepFuncs[] = {
     {"workspace_list", l_workspace_list},
     {"workspace_current", l_workspace_current},
     {"workspace_root", l_workspace_root},
+    {"bundled_help_root", l_bundled_help_root},
     {"workspace_new", l_workspace_new},
     {"workspace_switch", l_workspace_switch},
     {"workspace_delete", l_workspace_delete},

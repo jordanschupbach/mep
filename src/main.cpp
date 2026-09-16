@@ -1534,7 +1534,7 @@ bool ExportGanttSvg(int buffer_id, const std::string &path) {
     int row_h = GanttRowHeight();
     std::ofstream out(path);
     if (!out) return false;
-    gfx::Color bg = ResolveHlGroup("NormalBg"), border = ResolveHlGroup("Border"), accent = ResolveHlGroup("BorderActive");
+    gfx::Color bg = ResolveHlGroup("NormalBg"), border = ResolveHlGroup("Border"), accent = ResolveHlGroup("Accent");
     gfx::Color normal = ResolveHlGroup("Normal"), comment = ResolveHlGroup("Comment");
     out << "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"" << width << "\" height=\"" << height
         << "\" viewBox=\"0 0 " << width << " " << height << "\"><rect width=\"100%\" height=\"100%\" fill=\""
@@ -19585,7 +19585,7 @@ void DrawPickerOverlay() {
                 SwatchRow rows[] = {
                     {"bg", pal.bg},     {"fg", pal.fg},     {"red", pal.red},       {"green", pal.green},
                     {"yellow", pal.yellow}, {"blue", pal.blue}, {"purple", pal.purple}, {"cyan", pal.cyan},
-                    {"orange", pal.orange}, {"border", pal.border},
+                    {"orange", pal.orange}, {"border", pal.border}, {"accent", pal.accent},
                 };
                 int swatch_size = static_cast<int>(g_font_size);
                 for (int i = 0; i < static_cast<int>(sizeof(rows) / sizeof(rows[0])); i++) {
@@ -21382,10 +21382,11 @@ void DrawVideoPane(const Pane &pane, VideoSession &sess, float x, float y, float
     RegisterClickRegion(gfx::Rectangle{x, y, w, video_h}, [pane_id = pane.id] { g_editor.FocusPaneById(pane_id); });
 }
 
-// Active pane gets a thicker outline (still the theme's own BorderActive
-// color, just more of it) so which pane has the cursor reads at a glance --
-// a plain 1px BorderActive/BorderInactive color swap was too subtle to
-// notice in a quick glance across a busy split. Shared by DrawPane's own
+// Active pane gets a thicker outline in BorderActive (a brightened copy
+// of the theme's accent color, see BuildHighlightGroups in editor.cpp) so
+// which pane has the cursor reads at a glance -- a plain 1px
+// BorderActive/BorderInactive color swap was too subtle to notice in a
+// quick glance across a busy split. Shared by DrawPane's own
 // ordinary-buffer path at the bottom of this function and each special-
 // content branch above it (terminal/image/pdf/office/sheet), which each
 // `return` early with their own border draw instead of falling through.
@@ -23299,7 +23300,7 @@ void DrawKanban(const Pane &pane, float x, float y, float w, float h, bool is_ac
             float preview_y = y + static_cast<float>(header_h * 2 + kKanbanCardGap) +
                                static_cast<float>(sess->drop_row * (kKanbanCardHeight + kKanbanCardGap)) - static_cast<float>(kKanbanCardGap) / 2.0f;
             gfx::DrawRectangle(static_cast<int>(col_x + 4), static_cast<int>(preview_y), static_cast<int>(col_w - 12), 3,
-                          ResolveHlGroup("BorderActive"));
+                          ResolveHlGroup("Accent"));
         }
 
         col_x += col_w;
@@ -23312,7 +23313,7 @@ void DrawKanban(const Pane &pane, float x, float y, float w, float h, bool is_ac
         sess->column_drop_slot >= 0 && sess->column_drop_slot <= static_cast<int>(columns.size())) {
         float marker_x = x + static_cast<float>(sess->column_drop_slot * kKanbanColumnWidth);
         gfx::DrawRectangle(static_cast<int>(marker_x) - 2, static_cast<int>(col_header_y), 4, header_h,
-                      ResolveHlGroup("BorderActive"));
+                      ResolveHlGroup("Accent"));
     }
 
     // The dragged card (or new-card ghost) itself, following the live mouse
@@ -23330,7 +23331,7 @@ void DrawKanban(const Pane &pane, float x, float y, float w, float h, bool is_ac
             gfx::Rectangle card_rect{mouse.x - 20, mouse.y - 12, static_cast<float>(kKanbanColumnWidth) - 12,
                                  static_cast<float>(kKanbanCardHeight)};
             gfx::DrawRectangleRec(card_rect, ResolveHlGroup("Visual"));
-            gfx::DrawRectangleLinesEx(card_rect, 2, ResolveHlGroup("BorderActive"));
+            gfx::DrawRectangleLinesEx(card_rect, 2, ResolveHlGroup("Accent"));
             gfx::BeginScissorMode(static_cast<int>(card_rect.x), static_cast<int>(card_rect.y),
                               static_cast<int>(card_rect.width), static_cast<int>(card_rect.height));
             gfx::DrawTextEx(g_font, ghost_title.c_str(), gfx::Vector2{card_rect.x + 6, card_rect.y + 4}, g_font_size, 0,
@@ -23344,7 +23345,7 @@ void DrawKanban(const Pane &pane, float x, float y, float w, float h, bool is_ac
         gfx::Rectangle header_ghost{mouse.x - 20, mouse.y - static_cast<float>(header_h) / 2,
                                static_cast<float>(kKanbanColumnWidth) - 4, static_cast<float>(header_h)};
         gfx::DrawRectangleRec(header_ghost, ResolveHlGroup("Visual"));
-        gfx::DrawRectangleLinesEx(header_ghost, 2, ResolveHlGroup("BorderActive"));
+        gfx::DrawRectangleLinesEx(header_ghost, 2, ResolveHlGroup("Accent"));
         gfx::DrawTextEx(g_font, columns[static_cast<size_t>(sess->drag_column_index)].c_str(), gfx::Vector2{header_ghost.x + 6, header_ghost.y + 4},
                    g_font_size, 0, ResolveHlGroup("Normal"));
     }
@@ -23385,7 +23386,7 @@ void DrawGanttDependencies(const GanttSession &sess, const std::vector<int> &row
         const std::string &id = sess.outline.headlines[static_cast<size_t>(rows[static_cast<size_t>(ri)])].id;
         if (!id.empty()) id_to_headline[id] = rows[static_cast<size_t>(ri)];
     }
-    gfx::Color arrow_color = gfx::Fade(ResolveHlGroup("BorderActive"), 0.8f);
+    gfx::Color arrow_color = gfx::Fade(ResolveHlGroup("Accent"), 0.8f);
     for (int target_hi : rows) {
         const OrgHeadline &target = sess.outline.headlines[static_cast<size_t>(target_hi)];
         for (const std::string &blocker : target.blockers) {
@@ -23450,7 +23451,7 @@ void DrawGantt(const Pane &pane, float x, float y, float w, float h, bool is_act
             float gx = timeline_x + static_cast<float>(month_start - sess->anchor_day) * sess->pixels_per_day;
             float next_x = timeline_x + static_cast<float>(next_start - sess->anchor_day) * sess->pixels_per_day;
             gfx::DrawLine(static_cast<int>(gx), static_cast<int>(y), static_cast<int>(gx), static_cast<int>(y + h),
-                     ResolveHlGroup("BorderActive"));
+                     ResolveHlGroup("Accent"));
             const char *month_name = GanttMonthAbbrev(mm);
             float month_text_w = gfx::MeasureTextEx(g_font, month_name, g_font_size * 0.8f, 0).x;
             gfx::DrawTextEx(g_font, month_name, gfx::Vector2{(gx + next_x - month_text_w) / 2.0f, y + static_cast<float>(PaneHeaderHeight()) + 4},
@@ -23483,7 +23484,7 @@ void DrawGantt(const Pane &pane, float x, float y, float w, float h, bool is_act
             bool draw_gridline = sess->ruler_scale == GanttSession::RulerScale::Days || year_boundary;
             if (!draw_gridline) continue;
             gfx::DrawLine(static_cast<int>(gx), static_cast<int>(y + ruler_h), static_cast<int>(gx), static_cast<int>(y + h),
-                     ResolveHlGroup(sess->ruler_scale == GanttSession::RulerScale::Days ? "Border" : "BorderActive"));
+                     ResolveHlGroup(sess->ruler_scale == GanttSession::RulerScale::Days ? "Border" : "Accent"));
             if (sess->ruler_scale == GanttSession::RulerScale::Days && sess->pixels_per_day > 14.0f) {
                 char buf[8];
                 std::snprintf(buf, sizeof(buf), "%02d", dd);
@@ -23509,7 +23510,7 @@ void DrawGantt(const Pane &pane, float x, float y, float w, float h, bool is_act
     }
     bool divider_hot = sess->resizing_label_col;
     gfx::DrawRectangle(static_cast<int>(timeline_x) - 1, static_cast<int>(y), divider_hot ? 3 : 1, static_cast<int>(h),
-                  ResolveHlGroup(divider_hot ? "BorderActive" : "Border"));
+                  ResolveHlGroup(divider_hot ? "Accent" : "Border"));
 
     // Draw below bars/labels so dependency arrows stay visible in the open
     // chart space but never cover a task's own interval or text.
@@ -23575,7 +23576,7 @@ void DrawGantt(const Pane &pane, float x, float y, float w, float h, bool is_act
 
         long long start_day = OrgDayNumber(live_scheduled.year, live_scheduled.month, live_scheduled.day);
         float bar_x = timeline_x + static_cast<float>(start_day - sess->anchor_day) * sess->pixels_per_day;
-        gfx::Color bar_color = hd.is_done_keyword ? ResolveHlGroup("Comment") : ResolveHlGroup("BorderActive");
+        gfx::Color bar_color = hd.is_done_keyword ? ResolveHlGroup("Comment") : ResolveHlGroup("Accent");
 
         if (live_deadline.present) {
             long long end_day = OrgDayNumber(live_deadline.year, live_deadline.month, live_deadline.day);

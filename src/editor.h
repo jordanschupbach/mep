@@ -587,10 +587,14 @@ struct SidebarLine {
 // A compact palette (mep.nvim's palettes.lua SPECS/FALLBACKS shape,
 // scoped down): a handful of named "role" colors that BuildHighlightGroups
 // (editor.cpp) expands into the full named highlight-group set every
-// chrome/decoration consumer targets by name.
+// chrome/decoration consumer targets by name. `accent` is the scheme's own
+// signature color (gruvbox's orange, dracula's purple, everforest's green,
+// ...) -- the one tint the active pane border/header, the highlighted
+// workspace/sidebar tab, picker titles/selection and the Accent/AccentTint
+// groups all derive from, so switching themes changes more than just bg/fg.
 struct Palette {
     std::string name;
-    ThemeColor bg, fg, red, green, yellow, blue, purple, cyan, orange, border;
+    ThemeColor bg, fg, red, green, yellow, blue, purple, cyan, orange, border, accent;
 };
 
 // One highlight span over a picker's item display text or its preview

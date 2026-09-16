@@ -651,105 +651,126 @@ const Palette kPaletteMepDark = {
     /*green*/ {152, 195, 121, 255}, /*yellow*/ {229, 192, 123, 255}, /*blue*/ {97, 175, 239, 255},
     /*purple*/ {198, 120, 221, 255}, /*cyan*/ {86, 182, 194, 255}, /*orange*/ {209, 154, 102, 255},
     /*border*/ {90, 90, 95, 255},
+    /*accent*/ {97, 175, 239, 255},
 };
 const Palette kPaletteGruvboxDark = {
     "gruvbox-dark",
     {40, 40, 40, 255}, {235, 219, 178, 255}, {251, 73, 82, 255}, {184, 187, 38, 255}, {250, 189, 47, 255},
     {131, 165, 152, 255}, {211, 134, 155, 255}, {142, 192, 124, 255}, {254, 128, 25, 255}, {146, 131, 116, 255},
+    /*accent*/ {254, 128, 25, 255},
 };
 const Palette kPaletteNord = {
     "nord",
     {46, 52, 64, 255}, {216, 222, 233, 255}, {191, 97, 106, 255}, {163, 190, 140, 255}, {235, 203, 139, 255},
     {129, 161, 193, 255}, {180, 142, 173, 255}, {136, 192, 208, 255}, {208, 135, 112, 255}, {76, 86, 106, 255},
+    /*accent*/ {136, 192, 208, 255},
 };
 const Palette kPaletteGruvboxLight = {
     "gruvbox-light",
     {251, 241, 199, 255}, {60, 56, 54, 255}, {204, 36, 29, 255}, {152, 151, 26, 255}, {215, 153, 33, 255},
     {69, 133, 136, 255}, {177, 98, 134, 255}, {104, 157, 106, 255}, {214, 93, 14, 255}, {168, 153, 132, 255},
+    /*accent*/ {214, 93, 14, 255},
 };
 
 // NVIM_PARITY_PLAN.md's own "Full theme palette set (28 in mep.nvim)" note
 // says the registry is just data, low-value to front-load, trivial to grow
 // later -- growing it here. Every palette below is a real, published
 // colorscheme's actual hex values (not invented), ported into this
-// compact bg/fg/red/green/yellow/blue/purple/cyan/orange/border shape;
-// `border` is each scheme's own subtle "selection/line-highlight" tone,
-// not a literal border color, matching how the four original palettes
-// above already used that slot.
+// compact bg/fg/red/green/yellow/blue/purple/cyan/orange/border/accent
+// shape; `border` is each scheme's own subtle "selection/line-highlight"
+// tone, not a literal border color, matching how the four original
+// palettes above already used that slot, and `accent` is a copy of
+// whichever of the scheme's own role colors it is best known for (see
+// Palette in editor.h).
 const Palette kPaletteDracula = {
     "dracula",
     {40, 42, 54, 255}, {248, 248, 242, 255}, {255, 85, 85, 255}, {80, 250, 123, 255}, {241, 250, 140, 255},
     {98, 114, 164, 255}, {189, 147, 249, 255}, {139, 233, 253, 255}, {255, 184, 108, 255}, {68, 71, 90, 255},
+    /*accent*/ {189, 147, 249, 255},
 };
 const Palette kPaletteTokyonightStorm = {
     "tokyonight-storm",
     {36, 40, 59, 255}, {192, 202, 245, 255}, {247, 118, 142, 255}, {158, 206, 106, 255}, {224, 175, 104, 255},
     {122, 162, 247, 255}, {187, 154, 247, 255}, {125, 207, 255, 255}, {255, 158, 100, 255}, {65, 72, 104, 255},
+    /*accent*/ {122, 162, 247, 255},
 };
 const Palette kPaletteTokyonightNight = {
     "tokyonight-night",
     {26, 27, 38, 255}, {192, 202, 245, 255}, {247, 118, 142, 255}, {158, 206, 106, 255}, {224, 175, 104, 255},
     {122, 162, 247, 255}, {187, 154, 247, 255}, {125, 207, 255, 255}, {255, 158, 100, 255}, {41, 46, 66, 255},
+    /*accent*/ {187, 154, 247, 255},
 };
 const Palette kPaletteTokyonightMoon = {
     "tokyonight-moon",
     {34, 36, 54, 255}, {200, 211, 245, 255}, {255, 117, 127, 255}, {195, 232, 141, 255}, {255, 199, 119, 255},
     {130, 170, 255, 255}, {192, 153, 255, 255}, {134, 225, 252, 255}, {255, 150, 108, 255}, {47, 51, 77, 255},
+    /*accent*/ {134, 225, 252, 255},
 };
 const Palette kPaletteCatppuccinMocha = {
     "catppuccin-mocha",
     {30, 30, 46, 255}, {205, 214, 244, 255}, {243, 139, 168, 255}, {166, 227, 161, 255}, {249, 226, 175, 255},
     {137, 180, 250, 255}, {203, 166, 247, 255}, {148, 226, 213, 255}, {250, 179, 135, 255}, {69, 71, 90, 255},
+    /*accent*/ {203, 166, 247, 255},
 };
 const Palette kPaletteCatppuccinMacchiato = {
     "catppuccin-macchiato",
     {36, 39, 58, 255}, {202, 211, 245, 255}, {237, 135, 150, 255}, {166, 218, 149, 255}, {238, 212, 159, 255},
     {138, 173, 244, 255}, {198, 160, 246, 255}, {139, 213, 202, 255}, {245, 169, 127, 255}, {73, 77, 100, 255},
+    /*accent*/ {245, 169, 127, 255},
 };
 const Palette kPaletteCatppuccinFrappe = {
     "catppuccin-frappe",
     {48, 52, 70, 255}, {198, 208, 245, 255}, {231, 130, 132, 255}, {166, 209, 137, 255}, {229, 200, 144, 255},
     {140, 170, 238, 255}, {202, 158, 230, 255}, {129, 200, 190, 255}, {239, 159, 118, 255}, {81, 87, 109, 255},
+    /*accent*/ {129, 200, 190, 255},
 };
 const Palette kPaletteCatppuccinLatte = {
     "catppuccin-latte",
     {239, 241, 245, 255}, {76, 79, 105, 255}, {210, 15, 57, 255}, {64, 160, 43, 255}, {223, 142, 29, 255},
     {30, 102, 245, 255}, {136, 57, 239, 255}, {23, 146, 153, 255}, {254, 100, 11, 255}, {188, 192, 204, 255},
+    /*accent*/ {136, 57, 239, 255},
 };
 const Palette kPaletteEverforestDark = {
     "everforest-dark",
     {45, 53, 59, 255}, {211, 198, 170, 255}, {230, 126, 128, 255}, {167, 192, 128, 255}, {219, 188, 127, 255},
     {127, 187, 179, 255}, {214, 153, 182, 255}, {131, 192, 146, 255}, {230, 152, 117, 255}, {79, 88, 94, 255},
+    /*accent*/ {167, 192, 128, 255},
 };
 const Palette kPaletteEverforestLight = {
     "everforest-light",
     {253, 246, 227, 255}, {92, 106, 114, 255}, {248, 85, 82, 255}, {141, 161, 1, 255}, {223, 160, 0, 255},
     {58, 148, 197, 255}, {223, 105, 186, 255}, {53, 167, 124, 255}, {245, 125, 38, 255}, {224, 220, 199, 255},
+    /*accent*/ {141, 161, 1, 255},
 };
 const Palette kPaletteKanagawa = {
     "kanagawa",
     {31, 31, 40, 255}, {220, 215, 186, 255}, {195, 64, 67, 255}, {118, 148, 106, 255}, {192, 163, 110, 255},
     {126, 156, 216, 255}, {149, 127, 184, 255}, {106, 149, 137, 255}, {255, 160, 102, 255}, {84, 84, 109, 255},
+    /*accent*/ {149, 127, 184, 255},
 };
 const Palette kPaletteOnedark = {
     "one-dark",
     {40, 44, 52, 255}, {171, 178, 191, 255}, {224, 108, 117, 255}, {152, 195, 121, 255}, {229, 192, 123, 255},
     {97, 175, 239, 255}, {198, 120, 221, 255}, {86, 182, 194, 255}, {209, 154, 102, 255}, {62, 68, 81, 255},
+    /*accent*/ {97, 175, 239, 255},
 };
 const Palette kPaletteOneLight = {
     "one-light",
     {250, 250, 250, 255}, {56, 58, 66, 255}, {228, 86, 73, 255}, {80, 161, 79, 255}, {193, 132, 1, 255},
     {64, 120, 242, 255}, {166, 38, 164, 255}, {1, 132, 188, 255}, {152, 104, 1, 255}, {211, 211, 211, 255},
+    /*accent*/ {166, 38, 164, 255},
 };
 const Palette kPaletteSolarizedDark = {
     "solarized-dark",
     {0, 43, 54, 255}, {131, 148, 150, 255}, {220, 50, 47, 255}, {133, 153, 0, 255}, {181, 137, 0, 255},
     {38, 139, 210, 255}, {108, 113, 196, 255}, {42, 161, 152, 255}, {203, 75, 22, 255}, {88, 110, 117, 255},
+    /*accent*/ {181, 137, 0, 255},
 };
 const Palette kPaletteSolarizedLight = {
     "solarized-light",
     {253, 246, 227, 255}, {101, 123, 131, 255}, {220, 50, 47, 255}, {133, 153, 0, 255}, {181, 137, 0, 255},
     {38, 139, 210, 255}, {108, 113, 196, 255}, {42, 161, 152, 255}, {203, 75, 22, 255}, {147, 161, 161, 255},
+    /*accent*/ {42, 161, 152, 255},
 };
 // The remaining palettes below close out full parity with mep.nvim/lua/
 // mep/theme/palettes.lua's 28-entry set (every name in that file's
@@ -760,76 +781,91 @@ const Palette kPaletteNordLight = {
     "nord-light",
     {236, 239, 244, 255}, {46, 52, 64, 255}, {191, 97, 106, 255}, {163, 190, 140, 255}, {235, 203, 139, 255},
     {94, 129, 172, 255}, {180, 142, 173, 255}, {136, 192, 208, 255}, {208, 135, 112, 255}, {216, 222, 233, 255},
+    /*accent*/ {94, 129, 172, 255},
 };
 const Palette kPaletteTokyoNight = {
     "tokyo-night",
     {26, 27, 38, 255}, {192, 202, 245, 255}, {247, 118, 142, 255}, {158, 206, 106, 255}, {224, 175, 104, 255},
     {122, 162, 247, 255}, {187, 154, 247, 255}, {125, 207, 255, 255}, {255, 158, 100, 255}, {65, 72, 104, 255},
+    /*accent*/ {122, 162, 247, 255},
 };
 const Palette kPaletteRosePine = {
     "rose-pine",
     {25, 23, 36, 255}, {224, 222, 244, 255}, {235, 111, 146, 255}, {49, 116, 143, 255}, {246, 193, 119, 255},
     {156, 207, 216, 255}, {196, 167, 231, 255}, {156, 207, 216, 255}, {235, 188, 186, 255}, {64, 61, 82, 255},
+    /*accent*/ {196, 167, 231, 255},
 };
 const Palette kPaletteRosePineDawn = {
     "rose-pine-dawn",
     {250, 244, 237, 255}, {87, 82, 121, 255}, {180, 99, 122, 255}, {40, 105, 131, 255}, {234, 157, 52, 255},
     {86, 148, 159, 255}, {144, 122, 169, 255}, {86, 148, 159, 255}, {215, 130, 126, 255}, {223, 218, 217, 255},
+    /*accent*/ {215, 130, 126, 255},
 };
 const Palette kPaletteMonokai = {
     "monokai",
     {39, 40, 34, 255}, {248, 248, 242, 255}, {249, 38, 114, 255}, {166, 226, 46, 255}, {230, 219, 116, 255},
     {102, 217, 239, 255}, {174, 129, 255, 255}, {102, 217, 239, 255}, {253, 151, 31, 255}, {73, 72, 62, 255},
+    /*accent*/ {166, 226, 46, 255},
 };
 const Palette kPaletteAyuDark = {
     "ayu-dark",
     {10, 14, 20, 255}, {179, 177, 173, 255}, {255, 51, 51, 255}, {194, 217, 76, 255}, {255, 180, 84, 255},
     {89, 194, 255, 255}, {210, 166, 255, 255}, {149, 230, 203, 255}, {255, 143, 64, 255}, {19, 23, 33, 255},
+    /*accent*/ {255, 143, 64, 255},
 };
 const Palette kPaletteAyuMirage = {
     "ayu-mirage",
     {33, 39, 51, 255}, {217, 215, 206, 255}, {255, 51, 51, 255}, {187, 230, 126, 255}, {255, 196, 76, 255},
     {128, 212, 255, 255}, {212, 191, 255, 255}, {92, 207, 230, 255}, {255, 174, 87, 255}, {61, 71, 81, 255},
+    /*accent*/ {255, 196, 76, 255},
 };
 const Palette kPaletteGithubDark = {
     "github-dark",
     {13, 17, 23, 255}, {201, 209, 217, 255}, {255, 123, 114, 255}, {63, 185, 80, 255}, {210, 153, 34, 255},
     {88, 166, 255, 255}, {210, 168, 255, 255}, {57, 197, 207, 255}, {255, 166, 87, 255}, {48, 54, 61, 255},
+    /*accent*/ {88, 166, 255, 255},
 };
 const Palette kPaletteGithubLight = {
     "github-light",
     {255, 255, 255, 255}, {36, 41, 47, 255}, {207, 34, 46, 255}, {26, 127, 55, 255}, {154, 103, 0, 255},
     {9, 105, 218, 255}, {130, 80, 223, 255}, {27, 124, 131, 255}, {149, 56, 0, 255}, {208, 215, 222, 255},
+    /*accent*/ {9, 105, 218, 255},
 };
 const Palette kPaletteNightfox = {
     "nightfox",
     {19, 26, 36, 255}, {205, 206, 207, 255}, {201, 79, 109, 255}, {129, 178, 154, 255}, {219, 192, 116, 255},
     {113, 156, 214, 255}, {157, 121, 214, 255}, {99, 205, 207, 255}, {244, 162, 97, 255}, {43, 59, 81, 255},
+    /*accent*/ {99, 205, 207, 255},
 };
 const Palette kPaletteHorizon = {
     "horizon",
     {28, 30, 38, 255}, {213, 216, 218, 255}, {233, 86, 120, 255}, {9, 247, 160, 255}, {250, 183, 149, 255},
     {37, 176, 188, 255}, {184, 119, 219, 255}, {33, 191, 194, 255}, {240, 148, 131, 255}, {46, 48, 62, 255},
+    /*accent*/ {233, 86, 120, 255},
 };
 const Palette kPaletteZenburn = {
     "zenburn",
     {63, 63, 63, 255}, {220, 220, 204, 255}, {204, 147, 147, 255}, {127, 159, 127, 255}, {240, 223, 175, 255},
     {140, 176, 211, 255}, {220, 140, 195, 255}, {147, 224, 227, 255}, {223, 175, 143, 255}, {95, 95, 95, 255},
+    /*accent*/ {240, 223, 175, 255},
 };
 const Palette kPaletteSynthwave84 = {
     "synthwave84",
     {38, 35, 53, 255}, {255, 255, 255, 255}, {254, 68, 80, 255}, {114, 241, 184, 255}, {254, 222, 93, 255},
     {46, 226, 250, 255}, {255, 126, 219, 255}, {54, 249, 246, 255}, {255, 139, 57, 255}, {64, 61, 78, 255},
+    /*accent*/ {255, 126, 219, 255},
 };
 const Palette kPaletteOxocarbonDark = {
     "oxocarbon-dark",
     {22, 22, 22, 255}, {242, 244, 248, 255}, {238, 83, 150, 255}, {66, 190, 101, 255}, {255, 126, 182, 255},
     {120, 169, 255, 255}, {190, 149, 255, 255}, {61, 219, 217, 255}, {255, 126, 182, 255}, {57, 57, 57, 255},
+    /*accent*/ {190, 149, 255, 255},
 };
 const Palette kPaletteOxocarbonLight = {
     "oxocarbon-light",
     {242, 244, 248, 255}, {22, 22, 22, 255}, {238, 83, 150, 255}, {66, 190, 101, 255}, {255, 171, 145, 255},
     {15, 98, 254, 255}, {103, 58, 183, 255}, {8, 189, 186, 255}, {255, 111, 0, 255}, {82, 82, 82, 255},
+    /*accent*/ {15, 98, 254, 255},
 };
 
 /**
@@ -858,12 +894,12 @@ const Palette *FindPalette(const std::string &name) {
     return nullptr;
 }
 
-// Expands a compact 10-color palette into every named highlight group main.cpp's
+// Expands a compact 11-color palette into every named highlight group main.cpp's
 // chrome rendering and ResolveHlGroup's decoration-color fallback target --
 // mirrors mep.nvim's palette-to-highlight-group renderer, scoped to the
 // groups mep actually has consumers for today (grows as more land).
 /**
- * @brief Expands a compact 10-color palette into the full set of named highlight groups used by the UI.
+ * @brief Expands a compact 11-color palette into the full set of named highlight groups used by the UI.
  * @param p The source palette to expand.
  * @return A map from highlight-group name to resolved ThemeColor.
  */
@@ -891,23 +927,33 @@ std::unordered_map<std::string, ThemeColor> BuildHighlightGroups(const Palette &
     g["Delete"] = p.red;
     g["Change"] = p.yellow;
     g["Comment"] = p.border;
-    // Chrome.
+    // Chrome. Everything that marks "the active/selected one" (pane
+    // header, workspace pill, sidebar tab, picker title/selection, menu
+    // hover) tints from p.accent -- the scheme's own signature color --
+    // rather than p.blue, so the chrome varies across themes the way the
+    // syntax colors already do. Visual/ModeNormal/Info stay on p.blue:
+    // they sit over code text where a yellow or green accent would fight
+    // the syntax highlighting.
     g["StatusLine"] = Lighten(p.bg, 15);
     g["StatusLineFg"] = p.fg;
     g["MenuBar"] = Lighten(p.bg, 10);
     g["MenuBarFg"] = p.fg;
-    g["MenuHighlight"] = Mix(p.blue, p.bg, 0.55f);
+    g["MenuHighlight"] = Mix(p.accent, p.bg, 0.55f);
     g["TabBar"] = Darken(p.bg, 5);
-    g["TabActive"] = Mix(p.blue, p.bg, 0.55f);
+    g["TabActive"] = Mix(p.accent, p.bg, 0.55f);
     g["TabInactive"] = Lighten(p.bg, 5);
     // WORKSPACES_PLAN.md Phase 8: the `[project] [ws1] [ws2*]` labels. Text,
     // not glyph fills, so the inactive one needs to stay legible (a muted
     // fg) where TabInactive's near-bg tint only works for circle outlines.
-    g["ProjectLabel"] = Mix(p.blue, p.fg, 0.4f);
+    g["ProjectLabel"] = Mix(p.accent, p.fg, 0.4f);
     g["WorkspaceActive"] = p.fg;
-    g["WorkspaceActiveBg"] = Mix(p.blue, p.bg, 0.55f);
+    g["WorkspaceActiveBg"] = Mix(p.accent, p.bg, 0.55f);
     g["WorkspaceInactive"] = Mix(p.fg, p.bg, 0.5f);
-    g["BorderActive"] = Mix(p.blue, p.fg, 0.3f);
+    // The active pane's outline: the scheme's accent pushed a step
+    // brighter than the raw role color, so it pops against the (bg-toned)
+    // TabActive header it runs along while still reading as the same
+    // family as the rest of the accent-derived chrome.
+    g["BorderActive"] = Lighten(p.accent, 30);
     g["BorderInactive"] = p.border;
     g["CursorLine"] = Lighten(p.bg, 8);
     g["Visual"] = Mix(p.blue, p.bg, 0.35f);
@@ -950,24 +996,24 @@ std::unordered_map<std::string, ThemeColor> BuildHighlightGroups(const Palette &
     g["Overlay"] = ThemeColor{0, 0, 0, 140};
     g["Sidebar"] = Lighten(p.bg, 5);
     g["SidebarBorder"] = p.border;
-    g["SidebarTitle"] = Mix(p.blue, p.fg, 0.4f);
+    g["SidebarTitle"] = Mix(p.accent, p.fg, 0.4f);
     g["Picker"] = Lighten(p.bg, 5);
     g["PickerBorder"] = p.border;
-    g["PickerTitle"] = Mix(p.blue, p.fg, 0.4f);
-    g["PickerSelected"] = Mix(p.blue, p.bg, 0.45f);
+    g["PickerTitle"] = Mix(p.accent, p.fg, 0.4f);
+    g["PickerSelected"] = Mix(p.accent, p.bg, 0.45f);
     // Office (docx/odt WYSIWYG) pane's own chrome -- kept as its own small
     // group of names, rather than reusing e.g. TabActive/Visual for the
     // page/active-button fill the way the pane's toolbar briefly hardcoded
     // a fixed light palette, so :colorscheme still governs it like
-    // everything else. "Accent" is deliberately the palette's raw blue
-    // (not blended toward bg/fg like BorderActive/MenuHighlight/Visual
-    // already are) so an active toolbar/format-panel control reads clearly
-    // as "the accent color" against any theme; "AccentTint" is that same
-    // blue blended toward the current bg for its active-state fill, so the
-    // tint stays subtle in both light and dark palettes instead of a fixed
-    // light-blue that would glow against a dark one.
-    g["Accent"] = p.blue;
-    g["AccentTint"] = Mix(p.blue, p.bg, 0.18f);
+    // everything else. "Accent" is deliberately the palette's raw accent
+    // (not blended toward bg/fg like MenuHighlight/Visual already are) so
+    // an active toolbar/format-panel control reads clearly as "the accent
+    // color" against any theme; "AccentTint" is that same color blended
+    // toward the current bg for its active-state fill, so the tint stays
+    // subtle in both light and dark palettes instead of a fixed pastel
+    // that would glow against a dark one.
+    g["Accent"] = p.accent;
+    g["AccentTint"] = Mix(p.accent, p.bg, 0.18f);
     // A dimmer foreground than Normal for secondary text (word/page count,
     // placeholder text, inert rail icons) -- Comment (p.border) already
     // fills a similar role for syntax comments, but that's tuned for

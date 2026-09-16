@@ -2950,6 +2950,23 @@ int l_image_set_theme(lua_State *L) {
     return 0;
 }
 
+// mep.image_get_theme(buffer_id) -> bool|nil: returns the current Ctrl-R
+// viewing mode for an image buffer, or nil for a non-image buffer. Navigation
+// UIs use this before mep.open changes the active image buffer so they can
+// preserve the user's chosen viewing mode on the replacement image.
+/**
+ * @brief Implements mep.image_get_theme(buffer_id): gets an image buffer's current theme-colors state.
+ * @param L Lua state; arg 1 is the image buffer id.
+ * @return One value: boolean for an image buffer, otherwise nil.
+ */
+int l_image_get_theme(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    bool theme_colors = false;
+    if (GetEditor(L)->GetImageTheme(buffer_id, theme_colors)) lua_pushboolean(L, theme_colors);
+    else lua_pushnil(L);
+    return 1;
+}
+
 // mep.sidebar_create(title, position, size) -> id.
 /**
  * @brief Implements mep.sidebar_create(title, position, size, tab_group): creates a new sidebar panel.
@@ -8880,6 +8897,7 @@ const luaL_Reg kMepFuncs[] = {
     {"image_set_nav", l_image_set_nav},
     {"image_set_return", l_image_set_return},
     {"image_set_theme", l_image_set_theme},
+    {"image_get_theme", l_image_get_theme},
     {"sidebar_create", l_sidebar_create},
     {"sidebar_set_sections", l_sidebar_set_sections},
     {"sidebar_open", l_sidebar_open},

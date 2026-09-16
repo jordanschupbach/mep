@@ -5334,6 +5334,13 @@ void Editor::SetImageTheme(int buffer_id, bool theme_colors) {
     it->second.theme_colors = theme_colors;
 }
 
+bool Editor::GetImageTheme(int buffer_id, bool &theme_colors) const {
+    auto it = images_.find(buffer_id);
+    if (it == images_.end()) return false;
+    theme_colors = it->second.theme_colors;
+    return true;
+}
+
 void Editor::CallLuaRef(int ref) {
     if (ref != 0 && lua_) lua_->CallRef(ref);
 }

@@ -3002,6 +3002,13 @@ public:
      * @param theme_colors The state to set.
      */
     void SetImageTheme(int buffer_id, bool theme_colors);
+    /**
+     * @brief Gets an image buffer's current theme-colors state.
+     * @param buffer_id The image buffer to inspect.
+     * @param theme_colors Receives the state when the buffer is an image.
+     * @return True if `buffer_id` is an image buffer, false otherwise.
+     */
+    bool GetImageTheme(int buffer_id, bool &theme_colors) const;
     // Thin public wrapper so main.cpp's click-region lambdas (DrawPane's
     // image nav header, same idiom as DrawSidebarPaneContent's own
     // widget-click dispatch) can invoke a stored Lua ref without touching

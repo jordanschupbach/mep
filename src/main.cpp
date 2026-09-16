@@ -17953,6 +17953,7 @@ const char *kBuiltinHelp =
     "local mep_help_sidebar_id = nil\n"
     "local mep_help_root = nil\n"
     "local mep_help_pages = {}\n"
+    "local mep_help_current_path = nil\n"
     "local function mep_help_join(a, b) return a:gsub('/+$', '') .. '/' .. b end\n"
     "local function mep_help_title(lines, fallback)\n"
     "  for _, line in ipairs(lines or {}) do\n"
@@ -17991,6 +17992,7 @@ const char *kBuiltinHelp =
     "    mep_help_sidebar_id = mep.sidebar_create('Help', 'left', 30)\n"
     "  end\n"
     "  local current = mep.filename()\n"
+    "  mep_help_current_path = current\n"
     "  local widgets = {}\n"
     "  for _, page in ipairs(mep_help_pages) do\n"
     "    local p = page\n"
@@ -18011,6 +18013,13 @@ const char *kBuiltinHelp =
     "mep.command('MepHelp', mep.help_open)\n"
     "mep.on_buffer_saved(function()\n"
     "  if mep_help_sidebar_id and mep.sidebar_is_open(mep_help_sidebar_id) then mep.help_refresh_index(); mep.help_render_sidebar() end\n"
+    "end)\n"
+    // HTML link navigation replaces the page in the current viewer, rather
+    // than going through mep.help_open_page(), so watch the active buffer
+    // while Help is visible and redraw only when its filename changes.
+    "mep.on_frame(function()\n"
+    "  if not mep_help_sidebar_id or not mep.sidebar_is_open(mep_help_sidebar_id) then return end\n"
+    "  if mep.filename() ~= mep_help_current_path then mep.help_render_sidebar() end\n"
     "end)\n";
 
 // Keep Help's public entry points independent from the workspace setup

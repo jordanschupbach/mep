@@ -3606,47 +3606,47 @@ const char *kBuiltinFileTree =
     "mep.command('MepOpenFile', mep.open_file_dialog)\n"
     "mep.leader_map('fo', 'Open file (native dialog)', mep.open_file_dialog)\n"
     // Shared by mep.project_open below and mep.projects()'s picker preview
-    // pane further down: first of README.md/README.org/README.txt/README
-    // present as a file (not a dir) in `dir` wins, so README.org is only
+    // pane further down: first of README.org/README.md/README.txt/README
+    // present as a file (not a dir) in `dir` wins, so README.org is
     // preferred over README.md etc. by that fixed priority order -- moved
     // to C++ (Editor::ProjectReadmePath), exposed as
     // mep.project_readme_path (lua_env.cpp); nil if none match.
     // The legacy "fresh project" startup layout: the file tree full-height
-    // on the left, README (if any) in the main pane to its right, a
-    // terminal below that. Applied to the *active workspace* by
-    // mep.project_open (never-seen project only, see below) and rebuilt on
-    // demand by mep.project_clear (`:projectclear` / <leader>pc) after the
-    // workspace is emptied.
+    // on the left, a main pane to its right (the project README if one
+    // exists, else the empty starting buffer), and a terminal below that.
+    // The tree/main/terminal split is unconditional -- only the README
+    // *file open* is skipped when no README is present, so a project
+    // without one still lands with tree + empty main pane + terminal.
+    // Applied to the *active workspace* by mep.project_open (never-seen
+    // project only, see below) and rebuilt on demand by mep.project_clear
+    // (`:projectclear` / <leader>pc) after the workspace is emptied.
     //
     // mep.tree_open runs first, on the tab's still-sole starting pane, so
     // its own vsplit divides the *whole* tab (tree | rest) rather than
-    // just whatever narrower slot the readme/terminal split would
-    // otherwise have carved out -- splitting the readme's own pane instead
+    // just whatever narrower slot the main/terminal split would
+    // otherwise have carved out -- splitting the main pane instead
     // would only give the tree that pane's height, not the full column.
     // mep.tree_open leaves focus on the tree pane it just created; the
-    // readme/terminal split below happens entirely within the other
+    // main/terminal split below happens entirely within the other
     // (right) pane vsplit left untouched.
     "function mep.project_default_layout(dir)\n"
     "  dir = dir or mep.workspace_root()\n"
     "  mep.tree_open(dir)\n"
     "  local readme = mep.project_readme_path(dir)\n"
-    "  if readme then\n"
-    "    mep.nav_pane('right')\n"
-    "    mep.open(readme)\n"
+    "  mep.nav_pane('right')\n"
+    "  if readme then mep.open(readme) end\n"
     // A bare `:terminal` always opens its new pane above/left of whatever
     // was focused (vim's default split direction) -- so to land the
-    // terminal *below* the readme, split first (the readme's own pane
+    // terminal *below* the main pane, split first (the main pane
     // duplicates upward and keeps focus) then drop into the pane pushed
     // down to the bottom and turn it into a terminal in place.
-    "    mep.cmd('split')\n"
-    "    mep.nav_pane('down')\n"
-    "    mep.terminal_here()\n"
-    "    mep.pane_set_share(1/3)\n"
-    // Back to the readme pane (also drops Mode::Terminal -- see
-    // NavigatePaneDirection), which is also this function's own final
-    // focus target when a readme was found.
-    "    mep.nav_pane('up')\n"
-    "  end\n"
+    "  mep.cmd('split')\n"
+    "  mep.nav_pane('down')\n"
+    "  mep.terminal_here()\n"
+    "  mep.pane_set_share(1/3)\n"
+    // Back to the main pane (also drops Mode::Terminal -- see
+    // NavigatePaneDirection); this function's own final focus target.
+    "  mep.nav_pane('up')\n"
     "end\n"
     // Only the saved workspace *list* (name/root/branch) is restored on
     // project load, never each workspace's saved panes/tabs -- every

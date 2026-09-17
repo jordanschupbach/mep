@@ -182,6 +182,77 @@ int l_visual_selection(lua_State *L) {
     return 1;
 }
 
+// --- Spell checking (src/spell.h, backed by Editor's SpellChecker) ---------
+// Thin bindings the kBuiltinSpell Lua module (main.cpp) drives: it owns the
+// squiggle-decoration hook, leader-key menu, and suggestion picker, and calls
+// through to these for the actual dictionary work.
+
+// mep.spell_ready() -> bool. False until the wordlist has loaded (in which
+// case the Lua module skips all squiggle/correction work).
+int l_spell_ready(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->SpellReady());
+    return 1;
+}
+
+// mep.spell_bad(word) -> bool. True if `word` should be flagged.
+int l_spell_bad(lua_State *L) {
+    size_t len = 0;
+    const char *s = luaL_checklstring(L, 1, &len);
+    lua_pushboolean(L, GetEditor(L)->SpellIsBad(std::string(s, len)));
+    return 1;
+}
+
+// mep.spell_suggest(word) -> { "best", ... }. Empty table if none.
+int l_spell_suggest(lua_State *L) {
+    size_t len = 0;
+    const char *s = luaL_checklstring(L, 1, &len);
+    std::vector<std::string> sugg = GetEditor(L)->SpellSuggest(std::string(s, len));
+    lua_createtable(L, static_cast<int>(sugg.size()), 0);
+    for (size_t i = 0; i < sugg.size(); i++) {
+        lua_pushlstring(L, sugg[i].data(), sugg[i].size());
+        lua_rawseti(L, -2, static_cast<lua_Integer>(i) + 1);
+    }
+    return 1;
+}
+
+// mep.spell_add(word): add to the personal "good" dictionary (nvim zg).
+int l_spell_add(lua_State *L) {
+    size_t len = 0;
+    const char *s = luaL_checklstring(L, 1, &len);
+    GetEditor(L)->SpellAddGood(std::string(s, len));
+    return 0;
+}
+
+// mep.spell_wrong(word): mark as always-misspelled (nvim zw).
+int l_spell_wrong(lua_State *L) {
+    size_t len = 0;
+    const char *s = luaL_checklstring(L, 1, &len);
+    GetEditor(L)->SpellAddWrong(std::string(s, len));
+    return 0;
+}
+
+// mep.spell_enabled([bool]) -> bool. With no argument, queries; with a
+// boolean argument, sets and returns the new state.
+int l_spell_enabled(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    if (lua_gettop(L) >= 1 && !lua_isnil(L, 1)) ed->SetSpellEnabled(lua_toboolean(L, 1) != 0);
+    lua_pushboolean(L, ed->SpellEnabled());
+    return 1;
+}
+
+// mep.spell_fix_selection() -> count. Fixes every misspelled word in the
+// current Visual selection with its top suggestion, in one undo step.
+int l_spell_fix_selection(lua_State *L) {
+    lua_pushinteger(L, GetEditor(L)->FixSpellingInVisualSelection());
+    return 1;
+}
+
+// mep.spell_fix_word() -> count (0 or 1). Fixes the word under the cursor.
+int l_spell_fix_word(lua_State *L) {
+    lua_pushinteger(L, GetEditor(L)->FixSpellingWordUnderCursor());
+    return 1;
+}
+
 // mep.cursor() -> row, col (both 1-indexed).
 /**
  * @brief Implements mep.cursor(): returns the current cursor position.
@@ -8762,6 +8833,14 @@ const luaL_Reg kMepFuncs[] = {
     {"replace_lines", l_replace_lines},
     {"line_count", l_line_count},
     {"visual_selection", l_visual_selection},
+    {"spell_ready", l_spell_ready},
+    {"spell_bad", l_spell_bad},
+    {"spell_suggest", l_spell_suggest},
+    {"spell_add", l_spell_add},
+    {"spell_wrong", l_spell_wrong},
+    {"spell_enabled", l_spell_enabled},
+    {"spell_fix_selection", l_spell_fix_selection},
+    {"spell_fix_word", l_spell_fix_word},
     {"cursor", l_cursor},
     {"set_cursor", l_set_cursor},
     {"current_buffer", l_current_buffer},

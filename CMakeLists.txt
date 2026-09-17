@@ -429,6 +429,7 @@ add_library(mep_core STATIC
     src/sheet_ods.cpp
     src/js_engine.cpp
     src/editor.cpp
+    src/spell.cpp
     src/workspace_git.cpp
     ${MEP_GFX_NATIVE_SOURCES}
 )
@@ -610,6 +611,12 @@ install(DIRECTORY help/ DESTINATION ${CMAKE_INSTALL_DATADIR}/mep/help
         FILES_MATCHING PATTERN "*.html")
 install(FILES assets/mep-light.png assets/mep-dark.png
         DESTINATION ${CMAKE_INSTALL_DATADIR}/mep/assets)
+# The bundled spell-check wordlist (SCOWL-derived; see
+# third_party_licenses/SCOWL-wordlist-LICENSE.txt). Resolved at runtime by
+# DashboardAssetPath("spell/en_US.words") (main.cpp) the same way the dashboard
+# PNGs are -- installed here, or read from MEP_SOURCE_ASSETS_DIR in dev builds.
+install(FILES assets/spell/en_US.words
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/mep/assets/spell)
 # Same PCH as mep_core (defined above) -- main.cpp is the single largest
 # translation unit in the whole project (~27k lines) and uses this same
 # set of standard headers throughout.
@@ -665,6 +672,16 @@ target_include_directories(mep-vterm-test PRIVATE src)
 target_compile_options(mep-vterm-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-vterm-test PRIVATE ${MEP_SANITIZE_FLAGS})
 add_dependencies(tests mep-vterm-test)
+
+# The dependency-free spell checker (spell.cpp): edit-distance/Soundex
+# helpers, case-insensitive IsMisspelled with its skip rules and personal
+# good/wrong overrides, Suggest ranking + capitalization, and spellfile
+# persistence. Same CHECK()-based shape as mep-org-doc-test.
+add_executable(mep-spell-test EXCLUDE_FROM_ALL src/spell_test.cpp src/spell.cpp)
+target_include_directories(mep-spell-test PRIVATE src)
+target_compile_options(mep-spell-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-spell-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-spell-test)
 
 # Jupyter notebook helpers (notebook_doc.cpp is dependency-free apart from
 # the header-only json.h): nbformat parse/serialize round trips, the

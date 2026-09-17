@@ -10350,6 +10350,150 @@ const char *kBuiltinSyntax =
     "  end\n"
     "end)\n";
 
+// Spell checking: a red squiggle (SpellBad underline decoration) under every
+// misspelled word, plus a <leader>z... correction menu (suggestions picker,
+// auto-fix, add/mark-wrong personal dictionary, jump-to-next). All backed by
+// the dependency-free C++ SpellChecker via the mep.spell_* bindings
+// (lua_env.cpp). Modeled directly on kBuiltinSyntax (an on_buffer_changed
+// decoration hook) and kBuiltinLsp (which draws diagnostic underlines the
+// same way). The <leader> menu works in Visual mode too now that
+// DispatchVisualKey triggers whichkey on the leader key.
+const char *kBuiltinSpell =
+    "local mep_spell_ns = nil\n"
+    // Auto-squiggle prose filetypes only by default, so code buffers aren't
+    // flooded with false positives on identifiers. <leader>zt forces it on for
+    // the current buffer regardless (clears spell_prose_only). A buffer with
+    // no extension (READMEs, commit messages, scratch) counts as prose.
+    "mep.spell_prose_only = true\n"
+    "local mep_spell_prose = {txt=true,text=true,md=true,markdown=true,mkd=true,\n"
+    "  org=true,tex=true,latex=true,rst=true,adoc=true,asciidoc=true,mepml=true,wiki=true}\n"
+    "local function mep_spell_active_here()\n"
+    "  if not mep.spell_ready() or not mep.spell_enabled() then return false end\n"
+    "  if not mep.spell_prose_only then return true end\n"
+    "  local fn = mep.filename() or ''\n"
+    "  local ext = fn:match('%.([%w]+)$')\n"
+    "  if not ext then return true end\n"
+    "  return mep_spell_prose[ext:lower()] == true\n"
+    "end\n"
+    // Calls fn(word, start_col, end_col) for every word on `line`, both cols
+    // 1-indexed and inclusive. A word is a run of letters/apostrophes with the
+    // apostrophes trimmed off each end (so \"don't\" is one word). Long-bracket
+    // pattern to embed the apostrophe without C/Lua quote gymnastics. Shared by
+    // the highlighter, the cursor helper and the jump helper so what gets
+    // underlined is exactly what gets corrected (matches C++ TokenizeSpellWords).
+    "local function mep_spell_each_word(line, fn)\n"
+    "  for s, w, e in line:gmatch([==[()([%a']+)()]==]) do\n"
+    "    local ws, we = s, e - 1\n"
+    "    while ws <= we and line:sub(ws, ws) == \"'\" do ws = ws + 1 end\n"
+    "    while we >= ws and line:sub(we, we) == \"'\" do we = we - 1 end\n"
+    "    if we >= ws then fn(line:sub(ws, we), ws, we) end\n"
+    "  end\n"
+    "end\n"
+    "function mep.spell_highlight()\n"
+    "  if not mep_spell_ns then mep_spell_ns = mep.ns_create('spell') end\n"
+    "  mep.ns_clear(mep_spell_ns)\n"
+    "  if not mep_spell_active_here() then return end\n"
+    "  local n = mep.line_count()\n"
+    "  for row = 1, n do\n"
+    "    local line = mep.get_line(row) or ''\n"
+    "    mep_spell_each_word(line, function(word, ws, we)\n"
+    "      if mep.spell_bad(word) then\n"
+    "        mep.deco_add(mep_spell_ns, {row=row, col_start=ws, col_end=we+1, hl_group='SpellBad', underline=true})\n"
+    "      end\n"
+    "    end)\n"
+    "  end\n"
+    "end\n"
+    "mep.on_buffer_changed(function() mep.spell_highlight() end)\n"
+    // The word under (or immediately after) the cursor, with its row + column
+    // span. Returns a {word,row,s,e} table or nil.
+    "local function mep_spell_word_at_cursor()\n"
+    "  local row, col = mep.cursor()\n"
+    "  local line = mep.get_line(row) or ''\n"
+    "  local found = nil\n"
+    "  mep_spell_each_word(line, function(word, ws, we)\n"
+    "    if not found and col >= ws and col <= we + 1 then found = {word=word, row=row, s=ws, e=we} end\n"
+    "  end)\n"
+    "  return found\n"
+    "end\n"
+    // <leader>zf -- fix. In Visual mode (detected via a non-empty selection,
+    // which survives the whichkey overlay) correct every flagged word in the
+    // selection; otherwise correct the word under the cursor. The C++ helpers
+    // make it one undo step.
+    "mep.leader_map('zf', 'Spell: fix', function()\n"
+    "  if mep.visual_selection() ~= '' then\n"
+    "    local n = mep.spell_fix_selection()\n"
+    "    mep.enter_normal()\n"
+    "    mep.notify('Spell: corrected ' .. n .. ' word(s)')\n"
+    "  else\n"
+    "    if mep.spell_fix_word() == 0 then mep.notify('Spell: nothing to fix under cursor') end\n"
+    "  end\n"
+    "  mep.spell_highlight()\n"
+    "end)\n"
+    // <leader>zs -- open a picker of suggestions for the word under the cursor.
+    "mep.leader_map('zs', 'Spell: suggestions', function()\n"
+    "  local w = mep_spell_word_at_cursor()\n"
+    "  if not w then mep.notify('Spell: no word under cursor'); return end\n"
+    "  if not mep.spell_bad(w.word) then mep.notify('Spell: \"' .. w.word .. '\" is fine'); return end\n"
+    "  local sugg = mep.spell_suggest(w.word)\n"
+    "  if #sugg == 0 then mep.notify('Spell: no suggestions for \"' .. w.word .. '\"'); return end\n"
+    "  mep.picker_open('Correct \"' .. w.word .. '\"', sugg, function(choice)\n"
+    "    if not choice then return end\n"
+    "    local line = mep.get_line(w.row) or ''\n"
+    "    mep.set_line(w.row, line:sub(1, w.s - 1) .. choice .. line:sub(w.e + 1))\n"
+    "    mep.set_cursor(w.row, w.s)\n"
+    "    mep.spell_highlight()\n"
+    "  end)\n"
+    "end)\n"
+    // <leader>zg / zw -- add to / mark wrong in the personal dictionary.
+    "mep.leader_map('zg', 'Spell: add word to dictionary', function()\n"
+    "  local w = mep_spell_word_at_cursor()\n"
+    "  if not w then mep.notify('Spell: no word under cursor'); return end\n"
+    "  mep.spell_add(w.word); mep.spell_highlight(); mep.notify('Spell: added \"' .. w.word .. '\"')\n"
+    "end)\n"
+    "mep.leader_map('zw', 'Spell: mark word wrong', function()\n"
+    "  local w = mep_spell_word_at_cursor()\n"
+    "  if not w then mep.notify('Spell: no word under cursor'); return end\n"
+    "  mep.spell_wrong(w.word); mep.spell_highlight(); mep.notify('Spell: marked \"' .. w.word .. '\" wrong')\n"
+    "end)\n"
+    // <leader>zn / zp -- jump to the next / previous misspelled word.
+    "local function mep_spell_jump(dir)\n"
+    "  if not mep.spell_ready() then return end\n"
+    "  local crow, ccol = mep.cursor()\n"
+    "  local n = mep.line_count()\n"
+    "  local hits = {}\n"
+    "  for row = 1, n do\n"
+    "    local line = mep.get_line(row) or ''\n"
+    "    mep_spell_each_word(line, function(word, ws, we)\n"
+    "      if mep.spell_bad(word) then hits[#hits + 1] = {row = row, col = ws} end\n"
+    "    end)\n"
+    "  end\n"
+    "  if #hits == 0 then mep.notify('Spell: no misspellings'); return end\n"
+    "  local target = nil\n"
+    "  if dir > 0 then\n"
+    "    for _, h in ipairs(hits) do\n"
+    "      if h.row > crow or (h.row == crow and h.col > ccol) then target = h; break end\n"
+    "    end\n"
+    "    target = target or hits[1]\n"
+    "  else\n"
+    "    for i = #hits, 1, -1 do local h = hits[i]\n"
+    "      if h.row < crow or (h.row == crow and h.col < ccol) then target = h; break end\n"
+    "    end\n"
+    "    target = target or hits[#hits]\n"
+    "  end\n"
+    "  mep.set_cursor(target.row, target.col)\n"
+    "end\n"
+    "mep.leader_map('zn', 'Spell: next misspelled', function() mep_spell_jump(1) end)\n"
+    "mep.leader_map('zp', 'Spell: previous misspelled', function() mep_spell_jump(-1) end)\n"
+    // <leader>zt -- toggle squiggles. Turning on also drops the prose-only
+    // restriction so it applies to the current buffer whatever its filetype.
+    "mep.leader_map('zt', 'Spell: toggle', function()\n"
+    "  local on = not mep.spell_enabled()\n"
+    "  mep.spell_enabled(on)\n"
+    "  if on then mep.spell_prose_only = false end\n"
+    "  mep.spell_highlight()\n"
+    "  mep.notify('Spell ' .. (on and 'on' or 'off'))\n"
+    "end)\n";
+
 // Embedded terminal/PTY + Run + REPL (Phase 27). **Scoped down
 // significantly** from a real interactive terminal: output is rendered
 // into an ordinary buffer (dedicated per Run/REPL session, opened in a
@@ -18183,6 +18327,7 @@ const char *kBuiltinWhichKeyGroups =
     // Sidebar toggles: 's' (Treesitter structure sidebar/split), 't'
     // (Todo/Tests activity panels), 'n' (notification history).
     "mep.leader_group('s', 'structure')\n"
+    "mep.leader_group('z', 'spell')\n"
     "mep.leader_group('t', 'todo/tests')\n"
     "mep.leader_group('n', 'notifications')\n"
     "mep.leader_group('j', 'jupyter')\n"
@@ -33866,6 +34011,16 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinDap);
     lua->DoString(kBuiltinDebugUi);
     lua->DoString(kBuiltinSyntax);
+    // Load the bundled spell wordlist + the user's personal spellfiles before
+    // the kBuiltinSpell module below wires up its squiggle hook. Best-effort:
+    // if the wordlist asset is missing, SpellReady() stays false and the
+    // module no-ops (nothing flagged) rather than erroring the whole config.
+    {
+        std::string spell_good, spell_wrong;
+        spell::DefaultPersonalPaths(&spell_good, &spell_wrong);
+        g_editor.SpellLoad(DashboardAssetPath("spell/en_US.words"), spell_good, spell_wrong);
+    }
+    lua->DoString(kBuiltinSpell);
     lua->DoString(kBuiltinRun);
     lua->DoString(kBuiltinTermSend);
     lua->DoString(kBuiltinMarkdown);

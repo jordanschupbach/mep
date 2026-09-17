@@ -1,0 +1,36 @@
+assets/spell/en_US.words is derived from SCOWL (Spell Checker Oriented Word
+Lists), the same word data GNU Aspell's English dictionary (aspell-dict-en)
+is built from. It was produced by dumping the aspell en_US master word list
+(`aspell -d en_US dump master`), filtering to letter/apostrophe/hyphen tokens,
+and sorting. No aspell code or compiled data is bundled -- only the plain word
+list, used by mep's own dependency-free checker in src/spell.cpp.
+
+SCOWL is Copyright 2000-2019 by Kevin Atkinson and contributors. It is
+distributed under the following permissive license.
+
+-----------------------------------------------------------
+
+Copyright 2000-2019 by Kevin Atkinson
+
+Permission to use, copy, modify, distribute and sell these word lists, the
+associated scripts, the output created from the scripts, and its documentation
+for any purpose is hereby granted without fee, provided that the above
+copyright notice appears in all copies and that both that copyright notice and
+this permission notice appear in supporting documentation. Kevin Atkinson makes
+no representations about the suitability of this array for any purpose. It is
+provided "as is" without express or implied warranty.
+
+-----------------------------------------------------------
+
+The word lists incorporate material from a number of sources, several of which
+carry their own permissive notices. In particular the core word list derives
+from a version of the "UK Advanced Cryptics Dictionary" and from public-domain
+and freely redistributable material. The full provenance and per-source
+notices are documented in the SCOWL distribution ("Copying" file) at:
+http://wordlist.aspell.net/
+
+Some proper nouns and inflected forms are ultimately derived from WordNet:
+
+  WordNet 3.0 Copyright 2006 by Princeton University. All rights reserved.
+  Provided "as is" under a permissive license; see
+  https://wordnet.princeton.edu/license-and-commercial-use

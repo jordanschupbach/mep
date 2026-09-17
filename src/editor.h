@@ -11,6 +11,7 @@
 #include "model3d_doc.h"
 #include "mov_container.h"
 #include "vterm.h"
+#include "spell.h"
 #include "gfx/types.h"
 
 #include <stddef.h>
@@ -6870,6 +6871,29 @@ public:
      * @return The added decoration's id.
      */
     int AddDecoration(int ns, Decoration deco);
+
+    // --- Spell checking (src/spell.h) -------------------------------------
+    // Loads the bundled wordlist (`dict_path`) and the user's personal
+    // spellfiles (`good_path`/`wrong_path`, either may be empty). Called once
+    // from main.cpp at startup with paths resolved via DashboardAssetPath /
+    // DefaultPersonalPaths. Returns true if the wordlist loaded.
+    bool SpellLoad(const std::string &dict_path, const std::string &good_path,
+                   const std::string &wrong_path);
+    bool SpellReady() const { return spell_.ready(); }
+    bool SpellIsBad(const std::string &word) const { return spell_.IsMisspelled(word); }
+    std::vector<std::string> SpellSuggest(const std::string &word) const { return spell_.Suggest(word); }
+    void SpellAddGood(const std::string &word) { spell_.AddGood(word); }
+    void SpellAddWrong(const std::string &word) { spell_.AddWrong(word); }
+    bool SpellEnabled() const { return spell_enabled_; }
+    void SetSpellEnabled(bool on) { spell_enabled_ = on; }
+    // Replaces every misspelled word in the current visual selection with its
+    // top suggestion, in one undo step; returns how many were changed. A no-op
+    // (returns 0) if there is no selection or the checker isn't ready.
+    int FixSpellingInVisualSelection();
+    // Replaces the misspelled word under the cursor with its top suggestion,
+    // in one undo step; returns 1 if a word was changed, else 0.
+    int FixSpellingWordUnderCursor();
+
     // Flattened view across every namespace in the current buffer, for
     // main.cpp's per-line rendering pass.
     /**
@@ -9416,6 +9440,19 @@ private:
     // always maps to the same id everywhere, mirroring nvim_create_namespace.
     std::unordered_map<std::string, int> namespace_ids_;
     int next_namespace_id_ = 1;
+
+    // Dependency-free spell checker (src/spell.h). Loaded once at startup from
+    // the bundled wordlist + the user's personal spellfiles (SpellLoad, called
+    // from main.cpp). The squiggle decorations and leader-key correction UI
+    // live in the kBuiltinSpell Lua module (main.cpp), which reaches this
+    // through the mep.spell_* bindings (lua_env.cpp); the two range-aware fix
+    // helpers below stay in C++ so they share the undo stack and word
+    // tokenizer. spell_enabled_ gates whether the Lua hook draws squiggles.
+    spell::SpellChecker spell_;
+    bool spell_enabled_ = true;
+    // Corrects misspellings whose start is in [a, b) on `row` (caller pushes
+    // one undo entry first). Shared by the two public fix helpers.
+    int FixSpellingInLineSpan(int row, int a, int b);
 
     // Theme engine state. current_theme_groups_ is rebuilt (BuildHighlightGroups
     // in editor.cpp) whenever ApplyTheme() succeeds; main.cpp's ResolveHlGroup

@@ -922,6 +922,12 @@ std::unordered_map<std::string, ThemeColor> BuildHighlightGroups(const Palette &
     g["Warn"] = p.yellow;
     g["Info"] = p.blue;
     g["Hint"] = p.blue;
+    // Spell checker (kBuiltinSpell): a misspelling underlines Red, a
+    // lowercase-where-capitalization-is-expected/rare word Yellow, matching
+    // vim's SpellBad/SpellCap/SpellRare highlight-group convention.
+    g["SpellBad"] = p.red;
+    g["SpellCap"] = p.yellow;
+    g["SpellRare"] = p.yellow;
     g["Debug"] = p.border;
     g["Add"] = p.green;
     g["Delete"] = p.red;
@@ -4610,6 +4616,115 @@ std::string Editor::CurrentVisualSelectionText() const {
 int Editor::LineLen(int row) const {
     if (row < 0 || row >= Buf().LineCount()) return 0;
     return static_cast<int>(Buf().lines[static_cast<size_t>(row)].size());
+}
+
+namespace {
+// A word for spell purposes: a maximal run of ASCII letters and apostrophes,
+// trimmed of leading/trailing apostrophes (so "don't" is one word but the
+// quotes in 'foo' are not). Hyphens split words, matching the kBuiltinSpell
+// Lua tokenizer so what gets underlined is exactly what gets fixed. Returns
+// tokens whose *start* column falls in [a, b).
+struct SpellTok {
+    int start;
+    std::string word;
+};
+std::vector<SpellTok> TokenizeSpellWords(const std::string &line, int a, int b) {
+    std::vector<SpellTok> toks;
+    const int n = static_cast<int>(line.size());
+    if (a < 0) a = 0;
+    if (b > n) b = n;
+    int i = 0;
+    auto is_word_char = [](char c) {
+        return std::isalpha(static_cast<unsigned char>(c)) != 0 || c == '\'';
+    };
+    while (i < n) {
+        if (!is_word_char(line[static_cast<size_t>(i)])) {
+            i++;
+            continue;
+        }
+        int s = i;
+        while (i < n && is_word_char(line[static_cast<size_t>(i)])) i++;
+        int ws = s, we = i;
+        while (ws < we && line[static_cast<size_t>(ws)] == '\'') ws++;
+        while (we > ws && line[static_cast<size_t>(we) - 1] == '\'') we--;
+        if (we > ws && ws >= a && ws < b) {
+            toks.push_back({ws, line.substr(static_cast<size_t>(ws), static_cast<size_t>(we - ws))});
+        }
+    }
+    return toks;
+}
+}  // namespace
+
+// Replaces each misspelled word whose start is in [a, b) on `row` with its top
+// suggestion, right-to-left so earlier columns stay valid. Assumes the caller
+// already pushed one undo entry. Returns how many words were changed.
+int Editor::FixSpellingInLineSpan(int row, int a, int b) {
+    if (row < 0 || row >= Buf().LineCount()) return 0;
+    std::string &line = Buf().lines[static_cast<size_t>(row)];
+    std::vector<SpellTok> toks = TokenizeSpellWords(line, a, b);
+    int count = 0;
+    for (auto it = toks.rbegin(); it != toks.rend(); ++it) {
+        if (!spell_.IsMisspelled(it->word)) continue;
+        std::vector<std::string> sugg = spell_.Suggest(it->word);
+        if (sugg.empty()) continue;
+        line.replace(static_cast<size_t>(it->start), it->word.size(), sugg[0]);
+        count++;
+    }
+    return count;
+}
+
+int Editor::FixSpellingInVisualSelection() {
+    if (!spell_.ready() || !HasVisualSelection()) return 0;
+    PushUndo();
+    int total = 0;
+    if (IsVisualBlock()) {
+        int top, bottom, left, right;
+        VisualBlockRange(top, bottom, left, right);
+        for (int r = top; r <= bottom; r++) {
+            int b = (right < 0) ? LineLen(r) : right + 1;
+            total += FixSpellingInLineSpan(r, left, b);
+        }
+    } else {
+        CursorPos s, e;
+        VisualRange(s, e);
+        bool linewise = (mode_ == Mode::VisualLine);
+        for (int r = s.row; r <= e.row; r++) {
+            int a = (linewise || r > s.row) ? 0 : s.col;
+            int b = (linewise || r < e.row) ? LineLen(r) : e.col + 1;
+            total += FixSpellingInLineSpan(r, a, b);
+        }
+    }
+    if (total > 0) Buf().modified = true;
+    ClampCursor();
+    return total;
+}
+
+int Editor::FixSpellingWordUnderCursor() {
+    if (!spell_.ready()) return 0;
+    CursorPos c = CurPane().cursor;
+    if (c.row < 0 || c.row >= Buf().LineCount()) return 0;
+    const std::string &line = Buf().lines[static_cast<size_t>(c.row)];
+    std::vector<SpellTok> toks = TokenizeSpellWords(line, 0, LineLen(c.row));
+    for (const SpellTok &t : toks) {
+        int end = t.start + static_cast<int>(t.word.size());
+        if (c.col < t.start || c.col > end) continue;  // cursor not on this word
+        if (!spell_.IsMisspelled(t.word)) return 0;
+        std::vector<std::string> sugg = spell_.Suggest(t.word);
+        if (sugg.empty()) return 0;
+        PushUndo();
+        Buf().lines[static_cast<size_t>(c.row)].replace(static_cast<size_t>(t.start), t.word.size(), sugg[0]);
+        Buf().modified = true;
+        CurPane().cursor.col = t.start;
+        ClampCursor();
+        return 1;
+    }
+    return 0;
+}
+
+bool Editor::SpellLoad(const std::string &dict_path, const std::string &good_path,
+                       const std::string &wrong_path) {
+    spell_.SetPersonalFiles(good_path, wrong_path);
+    return spell_.LoadDictionary(dict_path);
 }
 
 void Editor::ClampCursor() {
@@ -16167,6 +16282,22 @@ void Editor::DispatchVisualKey(int cp) {
             pending_count_ = pending_count_ * 10;
             return;
         }
+    }
+
+    // Leader key (Space by default) opens the whichkey menu in Visual mode
+    // too, mirroring HandleNormalChar's own trigger -- the previously
+    // Normal-only leader. The selection survives the overlay:
+    // HandleWhichKeyInput calls RestoreFromOverlay (which restores this Visual
+    // mode) *before* running the mapped action, so a <leader> spell/format/
+    // case binding operates on the still-live selection. Only takes over once
+    // at least one binding exists and nothing else is mid-sequence, so a bare
+    // Space with no leader configured still falls through to its ordinary
+    // rightward motion below.
+    if (pending_find_ == 0 && !pending_g_ && pending_textobj_scope_ == 0 &&
+        !awaiting_register_name_ && pending_count_ == 0 &&
+        cp == static_cast<int>(leader_key_) && !whichkey_bindings_.empty()) {
+        TriggerWhichKey();
+        return;
     }
 
     if (pending_find_) {

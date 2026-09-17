@@ -4497,14 +4497,29 @@ void Editor::HandleMouseWheel(float dx, float dy) {
         case Mode::Html:
             WheelScrollHtml(dx, dy);
             break;
-        case Mode::Terminal:
-            // Only affects TerminalSession::scroll_offset (the scrollback
-            // view), never forwarded to the child process -- safe
-            // regardless of what program is running, unlike Ctrl-D/Ctrl-U
-            // (see HandleTerminalInput's own comment on why those stay as
-            // plain forwarded keystrokes here instead).
-            WheelScrollTerminal(dy);
+        case Mode::Terminal: {
+            // When the running program has enabled mouse tracking (an
+            // alt-screen app like Claude Code, vim, less, htop that scrolls
+            // its own viewport), forward the wheel as xterm wheel buttons
+            // (64 up / 65 down) at the mouse's grid cell so the program
+            // scrolls -- Shift held overrides this to scroll mep's own
+            // scrollback view instead. Otherwise (a plain shell) the wheel
+            // moves TerminalSession::scroll_offset as before.
+            TerminalSession *sess = FindTerminal(CurPane().buffer_id);
+            bool shift = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
+            if (sess && sess->vterm && sess->cell_w > 0 && sess->cell_h > 0 &&
+                sess->vterm->MouseTracking() != VTermMouseTracking::Off && !shift && dy != 0.0f) {
+                gfx::Vector2 m = gfx::GetMousePosition();
+                int col = std::clamp(static_cast<int>((m.x - sess->grid_x) / sess->cell_w), 0, sess->grid_cols - 1);
+                int row = std::clamp(static_cast<int>((m.y - sess->grid_y) / sess->cell_h), 0, sess->grid_rows - 1);
+                int notches = std::max(1, static_cast<int>(std::round(std::abs(dy))));
+                int btn = dy > 0.0f ? 64 : 65;
+                for (int i = 0; i < notches; i++) SendTerminalMouse(*sess, btn, col, row, true, false);
+            } else {
+                WheelScrollTerminal(dy);
+            }
             break;
+        }
         case Mode::Sidebar:
             WheelScrollSidebar(dy);
             break;
@@ -11241,18 +11256,10 @@ void Editor::HandleTerminalInput() {
         // so a yank from any mep buffer pastes here too) into the child,
         // the terminal-emulator convention -- plain Ctrl-V stays a
         // literal 0x16 for the child, same as in any other terminal.
-        // Newlines go as CR: that's what a terminal sends for Enter, and
-        // what a shell reading pasted lines expects. Sent raw (no
-        // bracketed-paste wrapping): VTerm doesn't track whether the
-        // child ever enabled mode 2004 (vterm.h), so it can't know when
-        // the child would want the brackets.
+        // TerminalPaste wraps the text in bracketed-paste markers when the
+        // child enabled DECSET 2004 (Claude Code, vim, readline).
         if (key == gfx::Key::V && ctrl && shift) {
-            std::string text = RegisterTextForPaste('"');
-            for (char &c : text) {
-                if (c == '\n') c = '\r';
-            }
-            sess->scroll_offset = 0;
-            if (!sess->exited && !text.empty()) TerminalWrite(*sess, text);
+            TerminalPaste(*sess);
             continue;
         }
         if (shift && (key == gfx::Key::PageUp || key == gfx::Key::PageDown) && sess->vterm) {
@@ -11273,6 +11280,7 @@ void Editor::HandleTerminalInput() {
         }
         if (!is_forwarded && !(ctrl && key >= gfx::Key::A && key <= gfx::Key::Z)) continue;
         sess->scroll_offset = 0;
+        sess->sel_active = false;  // any keystroke invalidates a mouse selection
         if (!sess->exited) SendTerminalKey(*sess, key, 0, ctrl, shift);
     }
 
@@ -11312,7 +11320,18 @@ void Editor::HandleTerminalInput() {
             cp = gfx::GetCharPressed();
             continue;
         }
+        // With a live mouse selection, 'y' copies it (Vim-style yank) and is
+        // swallowed rather than typed to the child -- the selection is
+        // already highlighted on screen, so this reads naturally. Release
+        // already auto-copied; this is the keyboard path the user asked for.
+        if (sess->sel_active && cp == 'y') {
+            TerminalCopySelection(CurPane().buffer_id);
+            sess->sel_active = false;
+            cp = gfx::GetCharPressed();
+            continue;
+        }
         sess->scroll_offset = 0;
+        sess->sel_active = false;  // typing invalidates a mouse selection
         if (!sess->exited) SendTerminalKey(*sess, gfx::Key::None, cp, false);
         cp = gfx::GetCharPressed();
     }
@@ -11380,6 +11399,7 @@ ThemeColor Editor::ResolveVTermColor(const VTermColor &c, bool is_fg) const {
 // applies, and switches back to the live grid the instant it doesn't
 // (mode_ != Mode::Normal, or focus moves to a different pane).
 void Editor::EnterTerminalNormalMode(TerminalSession &sess) {
+    sess.sel_active = false;  // the snapshot path has its own Normal-mode selection
     Buffer &buf = Buf();
     buf.lines.clear();
     buf.undo_stack.clear();
@@ -11583,6 +11603,179 @@ void Editor::SendTerminalKey(const TerminalSession &sess, gfx::Key key, int code
         }
     }
     TerminalWrite(sess, bytes);
+}
+
+void Editor::SendTerminalMouse(const TerminalSession &sess, int button, int col, int row, bool pressed, bool motion) {
+    if (!sess.vterm || sess.vterm->MouseTracking() == VTermMouseTracking::Off) return;
+    if (col < 0) col = 0;
+    if (row < 0) row = 0;
+    // Low two bits select the button (or wheel/motion code the caller
+    // already folded in via 64/65); +32 marks a drag/motion report.
+    int cb = button + (motion ? 32 : 0);
+    std::string bytes;
+    if (sess.vterm->MouseSgr()) {
+        // SGR 1006: ESC [ < cb ; x ; y (M press | m release), 1-based coords,
+        // no 223-column ceiling. The encoding every modern TUI negotiates.
+        bytes = "\x1b[<" + std::to_string(cb) + ";" + std::to_string(col + 1) + ";" + std::to_string(row + 1) +
+                (pressed ? "M" : "m");
+    } else {
+        // Legacy X10: ESC [ M then three bytes, each a coordinate/button
+        // value offset by 32. A release reports button 3 (the low two bits
+        // set) since the classic encoding can't say which button came up;
+        // wheel codes (64/65) keep their own value. Coordinates are 1-based
+        // and clamped -- the classic usable maximum is column/row 223
+        // (byte 255), beyond which legacy mode simply can't report.
+        int rel_cb = pressed ? cb : ((cb & ~0x3) | 0x3);
+        auto enc = [](int v) {
+            v += 33;  // 32 + 1 (1-based)
+            if (v > 255) v = 255;
+            return static_cast<char>(v);
+        };
+        bytes = "\x1b[M";
+        bytes += static_cast<char>(32 + rel_cb);
+        bytes += enc(col);
+        bytes += enc(row);
+    }
+    TerminalWrite(sess, bytes);
+}
+
+bool Editor::TerminalChildWantsMouse(int buffer_id) {
+    TerminalSession *sess = FindTerminal(buffer_id);
+    return sess && sess->vterm && sess->vterm->MouseTracking() != VTermMouseTracking::Off;
+}
+
+bool Editor::TerminalChildAnyMotion(int buffer_id) {
+    TerminalSession *sess = FindTerminal(buffer_id);
+    if (!sess || !sess->vterm) return false;
+    VTermMouseTracking t = sess->vterm->MouseTracking();
+    return t == VTermMouseTracking::ButtonEvent || t == VTermMouseTracking::AnyMotion;
+}
+
+void Editor::SendTerminalMouseAt(int buffer_id, int button, int col, int row, bool pressed, bool motion) {
+    TerminalSession *sess = FindTerminal(buffer_id);
+    if (sess && !sess->exited) SendTerminalMouse(*sess, button, col, row, pressed, motion);
+}
+
+void Editor::SetTerminalGridGeometry(int buffer_id, float grid_x, float grid_y, float cell_w, float cell_h, int cols,
+                                     int rows) {
+    TerminalSession *sess = FindTerminal(buffer_id);
+    if (!sess) return;
+    sess->grid_x = grid_x;
+    sess->grid_y = grid_y;
+    sess->cell_w = cell_w;
+    sess->cell_h = cell_h;
+    sess->grid_cols = cols;
+    sess->grid_rows = rows;
+}
+
+// Maps a 0-based live-grid row to the combined scrollback+grid coordinate
+// space DrawTerminalGrid uses (inverse of its `combined_index = sb_lines -
+// scroll_offset + r`). Absolute over history, so the selection endpoint
+// stays anchored to the same text as the view scrolls.
+static int TerminalCombinedRow(const TerminalSession &sess, int grid_row) {
+    int sb = sess.vterm ? sess.vterm->ScrollbackLines() : 0;
+    return sb - sess.scroll_offset + grid_row;
+}
+
+void Editor::TerminalScrollToLive(int buffer_id) {
+    TerminalSession *sess = FindTerminal(buffer_id);
+    if (sess) sess->scroll_offset = 0;
+}
+
+void Editor::TerminalSelectionPress(int buffer_id, int grid_col, int grid_row) {
+    TerminalSession *sess = FindTerminal(buffer_id);
+    if (!sess || !sess->vterm) return;
+    int crow = TerminalCombinedRow(*sess, grid_row);
+    sess->sel_active = true;
+    sess->sel_anchor_row = sess->sel_head_row = crow;
+    sess->sel_anchor_col = sess->sel_head_col = grid_col;
+}
+
+void Editor::TerminalSelectionDrag(int buffer_id, int grid_col, int grid_row) {
+    TerminalSession *sess = FindTerminal(buffer_id);
+    if (!sess || !sess->vterm || !sess->sel_active) return;
+    sess->sel_head_row = TerminalCombinedRow(*sess, grid_row);
+    sess->sel_head_col = grid_col;
+}
+
+bool Editor::TerminalSelectionRelease(int buffer_id) {
+    TerminalSession *sess = FindTerminal(buffer_id);
+    if (!sess || !sess->sel_active) return false;
+    // A press with no drag is just a click -- drop the (empty) selection so
+    // it doesn't clobber the clipboard or draw a stray highlight.
+    if (sess->sel_anchor_row == sess->sel_head_row && sess->sel_anchor_col == sess->sel_head_col) {
+        sess->sel_active = false;
+        return false;
+    }
+    TerminalCopySelection(buffer_id);
+    return true;
+}
+
+void Editor::TerminalCopySelection(int buffer_id) {
+    TerminalSession *sess = FindTerminal(buffer_id);
+    if (!sess || !sess->vterm || !sess->sel_active) return;
+    VTerm *vt = sess->vterm.get();
+    int sb = vt->ScrollbackLines();
+    int cols = vt->Cols();
+    // Normalize so (start_row, start_col) precedes (end_row, end_col) in
+    // stream order.
+    int start_row = sess->sel_anchor_row, start_col = sess->sel_anchor_col;
+    int end_row = sess->sel_head_row, end_col = sess->sel_head_col;
+    if (start_row > end_row || (start_row == end_row && start_col > end_col)) {
+        std::swap(start_row, end_row);
+        std::swap(start_col, end_col);
+    }
+    std::string out;
+    for (int crow = start_row; crow <= end_row; crow++) {
+        int c0 = (crow == start_row) ? start_col : 0;
+        int c1 = (crow == end_row) ? end_col : cols - 1;
+        if (c0 < 0) c0 = 0;
+        if (c1 > cols - 1) c1 = cols - 1;
+        std::string line;
+        for (int c = c0; c <= c1; c++) {
+            const VTermCell &cell = (crow < 0) ? VTermCell{}
+                                    : (crow < sb) ? vt->ScrollbackAt(crow, c)
+                                                  : vt->At(crow - sb, c);
+            if (cell.width == 0) continue;  // continuation half of a wide glyph
+            line += cell.ch.empty() ? " " : cell.ch;
+        }
+        // Trim trailing blanks so a selection over a short line doesn't
+        // capture the row's padding out to the right margin.
+        size_t last = line.find_last_not_of(' ');
+        line = (last == std::string::npos) ? "" : line.substr(0, last + 1);
+        if (crow != start_row) out += '\n';
+        out += line;
+    }
+    Register &unnamed = registers_['"'];
+    unnamed.text = out;
+    unnamed.linewise = false;
+    unnamed.blockwise = false;
+    SyncUnnamedToSystemClipboard();
+}
+
+void Editor::TerminalPaste(TerminalSession &sess) {
+    std::string text = RegisterTextForPaste('"');
+    if (text.empty() || sess.exited) return;
+    // Newlines go as CR: what a terminal sends for Enter and what a shell's
+    // line editor expects.
+    for (char &c : text) {
+        if (c == '\n') c = '\r';
+    }
+    sess.scroll_offset = 0;
+    sess.sel_active = false;
+    if (sess.vterm && sess.vterm->BracketedPaste()) {
+        // The child asked (DECSET 2004) to have pastes bracketed so it can
+        // tell typed input from pasted text (disable autoindent, treat it
+        // as literal, etc.) -- Claude Code, vim, bash's readline all do.
+        TerminalWrite(sess, "\x1b[200~" + text + "\x1b[201~");
+    } else {
+        TerminalWrite(sess, text);
+    }
+}
+
+void Editor::TerminalPasteById(int buffer_id) {
+    TerminalSession *sess = FindTerminal(buffer_id);
+    if (sess) TerminalPaste(*sess);
 }
 
 void Editor::ClosePane() {

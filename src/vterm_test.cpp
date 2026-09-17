@@ -215,6 +215,48 @@ int main() {
         CHECK(t.CursorCol() == 2);
     }
 
+    // --- Mouse-tracking + bracketed-paste mode set/reset.
+    {
+        VTerm t(10, 40);
+        CHECK(t.MouseTracking() == VTermMouseTracking::Off);
+        CHECK(!t.MouseSgr());
+        CHECK(!t.BracketedPaste());
+        t.Feed("\x1b[?1000h");
+        CHECK(t.MouseTracking() == VTermMouseTracking::Normal);
+        t.Feed("\x1b[?1002h");
+        CHECK(t.MouseTracking() == VTermMouseTracking::ButtonEvent);
+        t.Feed("\x1b[?1003h");
+        CHECK(t.MouseTracking() == VTermMouseTracking::AnyMotion);
+        t.Feed("\x1b[?1006h");
+        CHECK(t.MouseSgr());
+        t.Feed("\x1b[?2004h");
+        CHECK(t.BracketedPaste());
+        t.Feed("\x1b[?1000l");  // resetting any tracking level -> Off
+        CHECK(t.MouseTracking() == VTermMouseTracking::Off);
+        t.Feed("\x1b[?1006l");
+        CHECK(!t.MouseSgr());
+        t.Feed("\x1b[?2004l");
+        CHECK(!t.BracketedPaste());
+    }
+
+    // --- Combined DECSET list ("?1002;1006h") sets tracking and encoding.
+    {
+        VTerm t(10, 40);
+        t.Feed("\x1b[?1002;1006h");
+        CHECK(t.MouseTracking() == VTermMouseTracking::ButtonEvent);
+        CHECK(t.MouseSgr());
+    }
+
+    // --- RIS (ESC c) clears mouse/paste state.
+    {
+        VTerm t(10, 40);
+        t.Feed("\x1b[?1003h\x1b[?1006h\x1b[?2004h");
+        t.Feed("\x1b" "c");
+        CHECK(t.MouseTracking() == VTermMouseTracking::Off);
+        CHECK(!t.MouseSgr());
+        CHECK(!t.BracketedPaste());
+    }
+
     std::printf("vterm_test: all checks passed\n");
     return 0;
 }

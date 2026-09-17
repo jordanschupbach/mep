@@ -1067,8 +1067,90 @@ void TestWrongPasswordDocumentReportsZeroPages() {
 
 }  // namespace
 
+void TestContentsIndirectRefToArrayConcatenates() {
+    // Regression: a page whose /Contents is an *indirect reference* to an
+    // array of content streams (`/Contents 6 0 R` where obj 6 is
+    // `[4 0 R 5 0 R]`) -- the shape linearized/object-stream producers
+    // emit. GetPageContent must peel the reference, see the array, and
+    // concatenate both member streams. Before the fix it treated the lone
+    // ref as a single stream, failed to resolve it (an array is not a
+    // stream), and returned "" -> a completely blank page.
+    std::string s1 = "1 0 0 rg 0 0 10 10 re f";
+    std::string s2 = "0 0 1 rg 10 10 10 10 re f";
+    std::string doc = BuildDoc(
+        {
+            {1, "<< /Type /Catalog /Pages 2 0 R >>"},
+            {2, "<< /Type /Pages /Kids [3 0 R] /MediaBox [0 0 20 20] >>"},
+            {3, "<< /Type /Page /Parent 2 0 R /Contents 6 0 R >>"},
+            {4, "<< /Length " + std::to_string(s1.size()) + " >>\nstream\n" + s1 + "\nendstream"},
+            {5, "<< /Length " + std::to_string(s2.size()) + " >>\nstream\n" + s2 + "\nendstream"},
+            {6, "[4 0 R 5 0 R]"},
+        },
+        1);
+    pdfxref::XrefTable table;
+    table.Load(reinterpret_cast<const unsigned char *>(doc.data()), doc.size());
+    pdfdoc::PdfDocument pdoc;
+    pdoc.Load(reinterpret_cast<const unsigned char *>(doc.data()), doc.size());
+    CHECK(pdoc.PageCount() == 1);
+    std::string content = pdfrender::GetPageContent(reinterpret_cast<const unsigned char *>(doc.data()), doc.size(),
+                                                     table, *pdoc.GetPage(0));
+    CHECK(content.find("1 0 0 rg") != std::string::npos);  // first array member resolved
+    CHECK(content.find("0 0 1 rg") != std::string::npos);  // second array member resolved
+}
+
+void TestUndecodableContentReportsStreamFailure() {
+    // Diagnostic path: a page whose sole content stream declares an
+    // image-only filter (/DCTDecode) can't be decoded as a content stream,
+    // so it renders blank. GetPageContent must report streams_total=1,
+    // streams_failed=1 (the signal RenderPage turns into a user warning)
+    // rather than the same empty string a legitimately content-less page
+    // yields.
+    std::string junk = "not really jpeg";
+    std::string doc = BuildDoc(
+        {
+            {1, "<< /Type /Catalog /Pages 2 0 R >>"},
+            {2, "<< /Type /Pages /Kids [3 0 R] /MediaBox [0 0 20 20] >>"},
+            {3, "<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>"},
+            {4, "<< /Filter /DCTDecode /Length " + std::to_string(junk.size()) + " >>\nstream\n" + junk +
+                    "\nendstream"},
+        },
+        1);
+    pdfxref::XrefTable table;
+    table.Load(reinterpret_cast<const unsigned char *>(doc.data()), doc.size());
+    pdfdoc::PdfDocument pdoc;
+    pdoc.Load(reinterpret_cast<const unsigned char *>(doc.data()), doc.size());
+    pdfrender::PageContentStatus st;
+    std::string content = pdfrender::GetPageContent(reinterpret_cast<const unsigned char *>(doc.data()), doc.size(),
+                                                     table, *pdoc.GetPage(0), &st);
+    CHECK(content.empty());
+    CHECK(st.streams_total == 1);
+    CHECK(st.streams_failed == 1);
+
+    // A well-formed page, by contrast, reports zero failures.
+    std::string ok = "0 0 10 10 re f";
+    std::string doc2 = BuildDoc(
+        {
+            {1, "<< /Type /Catalog /Pages 2 0 R >>"},
+            {2, "<< /Type /Pages /Kids [3 0 R] /MediaBox [0 0 20 20] >>"},
+            {3, "<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>"},
+            {4, "<< /Length " + std::to_string(ok.size()) + " >>\nstream\n" + ok + "\nendstream"},
+        },
+        1);
+    pdfxref::XrefTable table2;
+    table2.Load(reinterpret_cast<const unsigned char *>(doc2.data()), doc2.size());
+    pdfdoc::PdfDocument pdoc2;
+    pdoc2.Load(reinterpret_cast<const unsigned char *>(doc2.data()), doc2.size());
+    pdfrender::PageContentStatus st2;
+    pdfrender::GetPageContent(reinterpret_cast<const unsigned char *>(doc2.data()), doc2.size(), table2,
+                               *pdoc2.GetPage(0), &st2);
+    CHECK(st2.streams_total == 1);
+    CHECK(st2.streams_failed == 0);
+}
+
 int main() {
     TestPageToDeviceMatrixCorners();
+    TestContentsIndirectRefToArrayConcatenates();
+    TestUndecodableContentReportsStreamFailure();
     TestFillRectangleKnownColor();
     TestGraphicsStateStackIsolation();
     TestEvenOddVsNonZeroThroughOperators();

@@ -74,14 +74,26 @@ struct TextGlyph {
     std::string utf8_text;
 };
 
+// Diagnostic tally GetPageContent optionally fills in, so a caller can
+// tell a legitimately empty page (no /Contents, or a genuinely empty
+// content stream) apart from one that rendered blank because content it
+// *should* have had couldn't be resolved/decoded -- an unsupported
+// filter, a corrupt/mislocated stream, etc. `streams_failed > 0` is the
+// "this page is missing content" signal RenderPage surfaces to the user.
+struct PageContentStatus {
+    int streams_total = 0;   // stream references /Contents pointed at
+    int streams_failed = 0;  // of those, how many failed to resolve or filter-decode
+};
+
 // Reads and fully filter-decodes a page's /Contents (a single stream
 // reference, or an array of them concatenated with a separating space
 // per spec 7.8.2) via pdf_xref.h + pdf_filters.h. Returns an empty
 // string (not a failure signal, matching this codebase's tolerant
 // convention) if /Contents is missing or every stream in it fails to
-// resolve/decode.
+// resolve/decode. When `out_status` is non-null it receives the
+// resolve/decode tally (see PageContentStatus) for blank-page diagnostics.
 std::string GetPageContent(const unsigned char *data, size_t len, const pdfxref::XrefTable &table,
-                            const pdfdoc::Page &page);
+                            const pdfdoc::Page &page, PageContentStatus *out_status = nullptr);
 
 // Executes one already-decoded content stream against `canvas`,
 // starting from `initial_ctm` (typically PageToDeviceMatrix's result,

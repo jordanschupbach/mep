@@ -151,10 +151,14 @@ public:
      * @param out_rgba Output buffer, resized to out_w*out_h*4 bytes and filled with the rendered page over an opaque white background.
      * @param out_w Output: rendered width in pixels.
      * @param out_h Output: rendered height in pixels.
+     * @param out_warning Optional output: set to a human-readable message when the page rendered
+     *        with missing content (one or more /Contents streams couldn't be resolved/decoded, so
+     *        the page is blank or partial); left untouched when the page rendered its content fully.
+     *        Lets the caller surface a diagnostic instead of a silently-blank page.
      * @return true on success; false if page_index is out of range or the document failed to load.
      */
     bool RenderPage(int page_index, float px_per_pt, std::vector<unsigned char> &out_rgba, int &out_w,
-                     int &out_h);
+                     int &out_h, std::string *out_warning = nullptr);
 
     // Case-insensitive substring search (pdf_text.h's own ASCII-fold
     // matching -- ordinary 'A'-'Z' lowering, applied to both query and

@@ -1364,22 +1364,44 @@ void Interpreter::DoXObject(const std::string &name, const pdfobj::Object &resou
 }
 
 std::string GetPageContent(const unsigned char *data, size_t len, const pdfxref::XrefTable &table,
-                            const pdfdoc::Page &page) {
+                            const pdfdoc::Page &page, PageContentStatus *out_status) {
+    if (out_status) *out_status = PageContentStatus{};
     const pdfobj::Object *contents = page.dict.Find("Contents");
     if (!contents) return "";
     std::string result;
     auto append_stream = [&](const pdfobj::Object &ref) {
         if (!ref.IsReference()) return;
+        if (out_status) out_status->streams_total++;
         pdfobj::Object dict;
         std::string raw;
-        if (!pdfxref::ResolveStream(data, len, table, ref.ref_val.num, ref.ref_val.gen, &dict, &raw)) return;
+        if (!pdfxref::ResolveStream(data, len, table, ref.ref_val.num, ref.ref_val.gen, &dict, &raw)) {
+            if (out_status) out_status->streams_failed++;
+            return;
+        }
         std::string decoded;
-        if (!pdffilter::DecodeStream(raw, &dict, &decoded)) return;
+        if (!pdffilter::DecodeStream(raw, &dict, &decoded)) {
+            if (out_status) out_status->streams_failed++;
+            return;
+        }
         if (!result.empty()) result.push_back(' ');
         result += decoded;
     };
-    if (contents->IsArray()) {
-        for (const auto &c : contents->array_val) append_stream(c);
+    // /Contents (spec 7.7.3.3) is either a single content stream or an
+    // array of them -- but in either case the page dict usually holds an
+    // *indirect reference*, and that reference may point straight at the
+    // array rather than at a stream (common in linearized/object-stream
+    // producers, where the array object itself lives in an ObjStm). Peel
+    // one level of indirection so such a `/Contents 6466 0 R -> [ ... ]`
+    // is walked as the array it is; otherwise the lone ref falls through
+    // to append_stream, which resolves it as a single stream.
+    pdfobj::Object resolved;
+    const pdfobj::Object *eff = contents;
+    if (contents->IsReference()) {
+        resolved = pdfxref::ResolveObject(data, len, table, contents->ref_val.num, contents->ref_val.gen);
+        if (resolved.IsArray()) eff = &resolved;
+    }
+    if (eff->IsArray()) {
+        for (const auto &c : eff->array_val) append_stream(c);
     } else {
         append_stream(*contents);
     }

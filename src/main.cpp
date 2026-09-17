@@ -1317,6 +1317,29 @@ bool g_hint_mode_active = false;
 std::vector<HintTarget> g_hint_targets;
 std::string g_hint_typed;
 
+// --- Pane picker (open-file-in-chosen-window) ----------------------------
+// When a file is opened via mep.pick_pane_open (the file tree's Enter-on-a-
+// file) and the active tab has more than one candidate pane to host it,
+// each candidate window gets a big letter (a, b, c ... in split-tree order)
+// drawn centered over it; pressing that letter opens the file in that
+// window. Its own small modal-capture system, a sibling of the Vimium hint
+// system above, deliberately kept main.cpp-local for the same reason: it
+// needs this frame's per-pane pixel geometry (g_pane_screen_rects), which
+// lives here, not in Editor. Unlike the hint overlay's top-left label
+// badges, this draws a large letter centered in each window, since choosing
+// a whole window (not a point in it) is the entire interaction. Armed right
+// after HandleInput() answers Editor::TakePanePickRequest, exactly where the
+// html link-hint request is answered. `label` is a single lowercase letter;
+// `pane_id` is looked up against g_pane_screen_rects each frame so a window
+// resize mid-pick can't leave a stale rect behind.
+struct PanePickTarget {
+    int pane_id;
+    std::string label;
+};
+bool g_pane_pick_active = false;
+std::vector<PanePickTarget> g_pane_pick_targets;
+std::string g_pane_pick_path;  // the file to open once a window is chosen
+
 // The divider between two sidebars stacked in the same left/right dock
 // (DrawSidebars merges same-edge sidebars into one column split
 // vertically by SidebarInstance::stack_share), captured per frame like
@@ -3424,23 +3447,17 @@ const char *kBuiltinFileTree =
     "    else mep_tree_expanded[row.path] = true end\n"
     "    mep.tree_refresh()\n"
     "  else\n"
-    // mep.focus_top_left_pane() (the old docked-sidebar tree's own on_click
-    // behavior) meant "the main editing area" back when the tree lived
-    // outside the pane tree entirely -- now that it's a real pane pinned
-    // to the tab's own left column (mep.tree_open's own comment), that
-    // call resolves right back to the tree pane itself (top-*left*), so
-    // opening a file there replaced the tree buffer in place instead of
-    // landing next to it. mep.nav_pane('right') asks
-    // Editor::FindNeighborPaneId for whichever neighbor overlaps the
-    // most vertically -- for a full-height left column that's always the
-    // *larger* pane on the right, which for the standard default layout
-    // (kBuiltinFileTree's mep.project_default_layout) is the top one
-    // (readme) over the shorter terminal strip below it, matching "prefer
-    // top" with no extra bookkeeping. Content-free fallback when the tree
-    // is the only pane in the tab: nav_pane no-ops and mep.open lands in
-    // the tree's own pane, same as :e in Vim's last remaining window.
-    "    mep.nav_pane('right')\n"
-    "    mep.open(row.path)\n"
+    // Opening a file from the tree lands it in another pane, never
+    // replacing the tree buffer in the tree's own (top-left) pane. Rather
+    // than always defaulting to one fixed neighbor, mep.pick_pane_open lets
+    // the user choose *which* window when there's more than one candidate:
+    // each candidate pane (every pane in the tab except the tree's own) gets
+    // a big letter drawn over it and the pressed letter opens the file there
+    // (main.cpp's pane picker). With exactly one candidate it opens straight
+    // away with no prompt; with none (the tree is the tab's only pane) it
+    // falls back to opening in the tree's own pane, same as :e in Vim's last
+    // remaining window.
+    "    mep.pick_pane_open(row.path)\n"
     "  end\n"
     "end\n"
     "function mep.tree_refresh()\n"
@@ -31542,6 +31559,9 @@ void DrawDashboard(float x, float y, float w, float h) {
 // -- DrawEditor below (defined first) draws it last, after every other
 // overlay/toast, so a hint badge is never painted over.
 void DrawHintOverlay();
+// Pane picker overlay (see g_pane_pick_active), likewise defined further
+// down but drawn by DrawEditor last, after the hint badge.
+void DrawPanePickOverlay();
 
 /**
  * @brief Draws one full editor frame: chrome (menu/tab/status/command bars), the
@@ -31931,6 +31951,7 @@ void DrawEditor() {
     if (g_show_help_overlay) DrawHelpOverlay();
     DrawToastStack();
     if (g_hint_mode_active) DrawHintOverlay();
+    if (g_pane_pick_active) DrawPanePickOverlay();
 
     gfx::EndDrawing();
 }
@@ -32410,6 +32431,90 @@ void DrawHintOverlay() {
         gfx::DrawRectangle(static_cast<int>(t.anchor.x), static_cast<int>(t.anchor.y), static_cast<int>(label_w),
                       static_cast<int>(g_font_size + 2.0f), kHintBg);
         gfx::DrawTextEx(g_font, t.label.c_str(), gfx::Vector2{t.anchor.x + 2.0f, t.anchor.y}, g_font_size, 0, kHintFg);
+    }
+}
+
+// --- Pane picker input + overlay (see g_pane_pick_active above) ------------
+
+/**
+ * @brief Leaves pane-pick mode without opening anything (Escape, a non-letter key, or a label
+ * that matches no candidate window).
+ */
+void CancelPanePick() {
+    g_pane_pick_active = false;
+    g_pane_pick_targets.clear();
+    g_pane_pick_path.clear();
+}
+
+// Drains this frame's input while the pane picker is open: a candidate
+// window's letter opens g_pane_pick_path in that window, Escape (or any
+// other key) cancels. Same "modal capture, always consume the frame once
+// active" contract as HandleHintModeInput above, so its caller gates
+// g_editor.HandleInput() on the return value exactly the same way.
+/**
+ * @brief Handles input while the pane picker is active (letter picks a window, Escape/other cancels).
+ * @return True if the picker is active (and therefore consumed this frame's input); false otherwise.
+ */
+bool HandlePanePickInput() {
+    if (!g_pane_pick_active) return false;
+    for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
+        if (key == gfx::Key::Escape) {
+            CancelPanePick();
+            return true;
+        }
+    }
+    for (int cp = gfx::GetCharPressed(); cp > 0; cp = gfx::GetCharPressed()) {
+        if (cp >= 'A' && cp <= 'Z') cp += 'a' - 'A';  // labels are lowercase; Shift-typed letters still match
+        if (cp < 32 || cp >= 127) continue;
+        for (const PanePickTarget &t : g_pane_pick_targets) {
+            if (t.label.size() == 1 && static_cast<int>(static_cast<unsigned char>(t.label[0])) == cp) {
+                int pane_id = t.pane_id;
+                std::string path = g_pane_pick_path;
+                CancelPanePick();
+                g_editor.FocusPaneById(pane_id);
+                g_editor.LoadFile(path);
+                return true;
+            }
+        }
+        // Any other printable key: cancel rather than swallow it silently.
+        CancelPanePick();
+        return true;
+    }
+    return true;
+}
+
+// Draws the pane picker: a dim veil over each candidate window with its
+// letter in a large yellow badge centered in it, matching DrawHintOverlay's
+// theme-independent high-contrast styling. The pane's current rect is looked
+// up live from g_pane_screen_rects (a window resize mid-pick moves the
+// badge with it; a candidate that has since vanished is silently skipped).
+// Called last in DrawEditor so nothing paints over it.
+/**
+ * @brief Draws a large centered letter over each candidate window while the pane picker is active.
+ */
+void DrawPanePickOverlay() {
+    if (!g_pane_pick_active) return;
+    constexpr gfx::Color kBadgeBg{255, 215, 0, 255};  // solid yellow, theme-independent
+    constexpr gfx::Color kBadgeFg{0, 0, 0, 255};       // black, for contrast against kBadgeBg
+    const float letter_size = g_font_size * 3.0f;
+    for (const PanePickTarget &t : g_pane_pick_targets) {
+        const gfx::Rectangle *rect = nullptr;
+        for (const PaneScreenRect &pr : g_pane_screen_rects) {
+            if (pr.pane_id == t.pane_id) {
+                rect = &pr.rect;
+                break;
+            }
+        }
+        if (!rect) continue;
+        gfx::DrawRectangle(static_cast<int>(rect->x), static_cast<int>(rect->y), static_cast<int>(rect->width),
+                           static_cast<int>(rect->height), gfx::Fade(gfx::Color{0, 0, 0, 255}, 0.35f));
+        gfx::Vector2 sz = gfx::MeasureTextEx(g_font, t.label.c_str(), letter_size, 0);
+        const float pad = letter_size * 0.3f;
+        float badge_x = rect->x + (rect->width - sz.x) / 2.0f;
+        float badge_y = rect->y + (rect->height - sz.y) / 2.0f;
+        gfx::DrawRectangle(static_cast<int>(badge_x - pad), static_cast<int>(badge_y - pad * 0.5f),
+                           static_cast<int>(sz.x + pad * 2.0f), static_cast<int>(sz.y + pad), kBadgeBg);
+        gfx::DrawTextEx(g_font, t.label.c_str(), gfx::Vector2{badge_x, badge_y}, letter_size, 0, kBadgeFg);
     }
 }
 
@@ -33284,8 +33389,13 @@ void UpdateDrawFrame() {
         } else {
             hint_consumed = HandleHintModeInput();
         }
-        bool menu_consumed = !hint_consumed && HandleMenuInput();
-        if (!hint_consumed && !menu_consumed) g_editor.HandleInput();
+        // Pane picker (mep.pick_pane_open): a sibling modal capture to the
+        // hint system, gated the same way -- once a window letter is showing
+        // it eats the keystroke that picks (or cancels) it before the menu
+        // bar or editor get a look. Armed below, after HandleInput().
+        bool pane_pick_consumed = !hint_consumed && HandlePanePickInput();
+        bool menu_consumed = !hint_consumed && !pane_pick_consumed && HandleMenuInput();
+        if (!hint_consumed && !pane_pick_consumed && !menu_consumed) g_editor.HandleInput();
         // The html viewer's plain-'f' link hints (Editor::HandleHtmlInput
         // -> TakeLinkHintRequest): answered here, after HandleInput() has
         // had its say this frame, with a pane-scoped collection instead
@@ -33299,6 +33409,41 @@ void UpdateDrawFrame() {
             CollectLinkHintTargets(g_editor.ActivePaneId());
             if (!g_hint_targets.empty()) g_hint_mode_active = true;
             else g_editor.SetStatusMessage("No links visible");
+        }
+        // Pane picker (mep.pick_pane_open, e.g. the file tree's Enter-on-a-
+        // file): answered here, after HandleInput() set the request this
+        // frame, using the same one-frame-stale per-pane geometry the link
+        // hints above rely on (g_pane_screen_rects, populated by the previous
+        // DrawEditor -- the pending open didn't restructure the layout). The
+        // candidate windows are every pane drawn this tab except the one the
+        // request came from (the file tree's own pane), in split-tree order.
+        // None -> open in the current pane (vim's last-window fallback); one
+        // -> open there straight away, no prompt; several -> arm the picker.
+        std::string pane_pick_path;
+        if (!g_pane_pick_active && g_editor.TakePanePickRequest(&pane_pick_path)) {
+            int active_id = g_editor.ActivePaneId();
+            std::vector<PanePickTarget> targets;
+            for (const PaneScreenRect &pr : g_pane_screen_rects) {
+                if (pr.pane_id == active_id) continue;
+                targets.push_back({pr.pane_id, std::string()});
+            }
+            if (targets.empty()) {
+                g_editor.LoadFile(pane_pick_path);
+            } else if (targets.size() == 1) {
+                g_editor.FocusPaneById(targets[0].pane_id);
+                g_editor.LoadFile(pane_pick_path);
+            } else {
+                for (size_t i = 0; i < targets.size(); i++)
+                    targets[i].label = std::string(1, static_cast<char>('a' + static_cast<int>(i)));
+                g_pane_pick_targets = std::move(targets);
+                g_pane_pick_path = pane_pick_path;
+                g_pane_pick_active = true;
+                // Drop any char already queued for this same frame so it
+                // can't replay as the picker's first letter before the
+                // overlay is even drawn (same guard the mod1+f arm uses).
+                while (gfx::GetCharPressed() > 0) {
+                }
+            }
         }
         DrawEditor();
         if (g_pending_gantt_raster_export.buffer_id >= 0) {

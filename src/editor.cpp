@@ -8390,7 +8390,14 @@ void Editor::EnsurePdfPagesRastered(int buffer_id) {
         // A failed render falls through to the next candidate rather than
         // breaking (same every-frame retry it always had -- a failing page
         // never enters `rasters` -- but its neighbors still make progress).
-        if (!sess.doc->RenderPage(idx, sess.rendered_scale, pr.rgba, pr.w, pr.h)) continue;
+        std::string render_warning;
+        if (!sess.doc->RenderPage(idx, sess.rendered_scale, pr.rgba, pr.w, pr.h, &render_warning)) continue;
+        // Surface a silently-blank/partial page once per document rather than
+        // every frame it stays on screen (see PdfSession::content_warning_shown).
+        if (!render_warning.empty() && !sess.content_warning_shown) {
+            Notify("PDF: " + render_warning, NotifyLevel::Warn);
+            sess.content_warning_shown = true;
+        }
         pr.generation = sess.next_raster_generation++;
         if (!sess.search_matches.empty()) pr.highlights = sess.doc->MatchRectsForPage(idx, sess.rendered_scale, sess.search_matches);
         pr.links = sess.doc->PageLinks(idx, sess.rendered_scale);

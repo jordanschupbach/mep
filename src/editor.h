@@ -1650,6 +1650,12 @@ struct PdfSession {
     // search_active above). nav_goto_input is the in-progress digit string.
     bool nav_goto_active = false;
     std::string nav_goto_input;
+
+    // Set once the first time any page reports missing/undecodable content
+    // (PdfDoc::RenderPage's out_warning), so Editor::EnsurePdfPagesRastered
+    // surfaces the blank-page diagnostic a single time per document instead
+    // of re-Notifying every frame the same broken page stays on screen.
+    bool content_warning_shown = false;
 };
 
 // One video-playback pane's state, keyed by buffer id the same way

@@ -79,7 +79,7 @@ double PdfDoc::PageWidthPt(int page_index) const { return impl_ ? impl_->documen
 double PdfDoc::PageHeightPt(int page_index) const { return impl_ ? impl_->document_.PageHeightPt(page_index) : 0; }
 
 bool PdfDoc::RenderPage(int page_index, float px_per_pt, std::vector<unsigned char> &out_rgba, int &out_w,
-                         int &out_h) {
+                         int &out_h, std::string *out_warning) {
     if (!impl_) return false;
     const pdfdoc::Page *page = impl_->document_.GetPage(page_index);
     if (!page) return false;
@@ -92,10 +92,22 @@ bool PdfDoc::RenderPage(int page_index, float px_per_pt, std::vector<unsigned ch
     pdfrender::Mat2D ctm = pdfrender::PageToDeviceMatrix(page->effective_box[0], page->effective_box[1],
                                                           page->effective_box[2], page->effective_box[3],
                                                           page->rotate, scale);
+    pdfrender::PageContentStatus status;
     std::string content = pdfrender::GetPageContent(impl_->file_data_.data(), impl_->file_data_.size(),
-                                                      impl_->document_.Xref(), *page);
+                                                      impl_->document_.Xref(), *page, &status);
     pdfrender::RenderContentStream(content, canvas, ctm, page->resources, impl_->file_data_.data(),
                                     impl_->file_data_.size(), impl_->document_.Xref());
+
+    // A page whose /Contents stream(s) couldn't be resolved/decoded rendered
+    // blank (all failed) or partial (some failed) with no other signal --
+    // report it so the caller can warn instead of showing a silent white page.
+    if (out_warning && status.streams_failed > 0) {
+        bool all = status.streams_failed >= status.streams_total;
+        *out_warning = "page " + std::to_string(page_index + 1) + " rendered " +
+                       (all ? "blank" : "partially") + ": " + std::to_string(status.streams_failed) + " of " +
+                       std::to_string(status.streams_total) +
+                       " content stream(s) could not be decoded (unsupported or corrupt PDF feature)";
+    }
 
     out_rgba = std::move(canvas.rgba);
     out_w = w;

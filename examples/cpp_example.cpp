@@ -2,19 +2,20 @@
 #include <vector>
 #include <cmath>
 
-class Point {
-public:
-    Point(double x, double y) : x_(x), y_(y) {}
-
-    double distanceTo(const Point& other) const {
-        double dx = x_ - other.x_;
-        double dy = y_ - other.y_;
-        return std::sqrt(dx * dx + dy * dy);
-    }
-
-private:
-    double x_;
-    double y_;
+class Point 
+{
+  public:
+      Point(double x, double y) : x_(x), y_(y) {}
+  
+      double distanceTo(const Point& other) const {
+          double dx = x_ - other.x_;
+          double dy = y_ - other.y_;
+          return std::sqrt(dx * dx + dy * dy);
+      }
+  
+  private:
+      double x_;
+      double y_;
 };
 
 template <typename T>

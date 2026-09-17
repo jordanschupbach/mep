@@ -1056,6 +1056,10 @@ struct TerminalSession {
     int job_id = 0;
     std::unique_ptr<VTerm> vterm;
     std::string title;      // argv[0], overridden by an OSC-title if the program sets one
+    // Codex's prompt background is selected independently of the embedding
+    // theme.  When enabled, DrawTerminalGrid leaves its ANSI backgrounds
+    // transparent so the pane's theme background remains authoritative.
+    bool ignore_ansi_backgrounds = false;
     // wasm build only: set by TerminalSpawn right after
     // mep_js_pty_connect_start() returns a slot id, cleared by
     // PollTerminals() once mep_js_pty_connect_status() reports ready or

@@ -115,6 +115,21 @@ public:
     // child, just as a real terminal emulator would.
     std::string Feed(const std::string &data);
 
+    // Sets the terminal's reported default colors for OSC 10/11 queries.
+    // These queries inform applications' startup styling; cell colors still
+    // use the normal SGR parsing and rendering path.
+    /**
+     * @brief Sets the RGB default foreground and background reported to applications through OSC 10/11 queries.
+     * @param foreground The terminal default foreground color; only its RGB channels are used.
+     * @param background The terminal default background color; only its RGB channels are used.
+     */
+    void SetOscDefaultColors(VTermColor foreground, VTermColor background);
+    /**
+     * @brief Reports whether the application has queried both OSC 10 and OSC 11 default colors.
+     * @return True once the application has queried the terminal's foreground and background defaults.
+     */
+    bool QueriesOscDefaultColors() const { return queried_osc_default_fg_ && queried_osc_default_bg_; }
+
     // Resizes the *visible* grid in place. The alternate screen is
     // reallocated blank (a full-screen program redraws on resize
     // regardless -- it gets a SIGWINCH and repaints), while the primary
@@ -250,6 +265,16 @@ private:
     bool pen_bold_ = false, pen_faint_ = false, pen_italic_ = false, pen_underline_ = false, pen_reverse_ = false;
 
     std::string title_;
+    // The values returned to OSC 10/11 default-color queries.  Kept here,
+    // rather than hardcoded in ParseOscTitle(), so applications such as
+    // Codex can choose startup styling that matches the embedding theme.
+    VTermColor osc_default_fg_{VTermColorKind::Rgb, 0, 255, 255, 255};
+    VTermColor osc_default_bg_{VTermColorKind::Rgb, 0, 0, 0, 0};
+    // Codex probes both defaults during startup.  The embedding terminal
+    // uses this protocol-level signature even when Codex was started from
+    // an already-open shell rather than as the original terminal command.
+    bool queried_osc_default_fg_ = false;
+    bool queried_osc_default_bg_ = false;
     // Accumulates replies while one input chunk is parsed.  Feed() returns
     // and clears it, keeping protocol handling independent of the PTY.
     std::string replies_;

@@ -1061,6 +1061,14 @@ void RegisterClickRegion(gfx::Rectangle rect, std::function<void()> action) {
     g_click_regions.push_back({rect, std::move(action)});
 }
 
+// Registers a region above the ordinary pane chrome.  DispatchChromeClicks
+// visits this vector from front to back, so controls drawn after the
+// pane-wide focus fallback need this when they overlap it (notably floating
+// notebook menus and cell-header buttons).
+void RegisterClickRegionOnTop(gfx::Rectangle rect, std::function<void()> action) {
+    g_click_regions.insert(g_click_regions.begin(), {rect, std::move(action)});
+}
+
 // A multi-step gesture (the agent-control socket's ui.mouse_click's
 // down+up, ui.mouse_drag's down/move.../up -- main.cpp's
 // RegisterUiAutomationMethods) can't be played out by simply calling
@@ -2626,6 +2634,71 @@ void ForEachWrapPiece(int col_a, int col_b, int wrap_cols, float text_x, float b
         draw(base_ly + static_cast<float>(sub * line_height), x0, x1, c, piece_end);
         c = piece_end;
     }
+}
+
+// A delimiter pair which spans at least two buffer rows. `close_col` is a
+// byte offset: it is converted to a display column only when drawing, using
+// the same UTF-8-aware helper used by the cursor and highlight spans. The
+// closing delimiter is the guide's anchor because a scope opened at the end
+// of `if (...) {` conventionally closes under that line's first code column.
+struct ScopeGuide {
+    int open_row = 0;
+    int close_row = 0;
+    int close_col = 0;
+};
+
+// Collect the multi-line (), [] and {} pairs in a buffer for the editor's
+// scope guides.  This deliberately is a small lexical pass rather than a
+// language-specific parser: delimiter guides remain useful in every text
+// language we edit, including ones without a bundled tree-sitter grammar.
+// Quotes and the common line/block comment forms are skipped so braces in a
+// C/C++ string or comment do not create a misleading guide.
+std::vector<ScopeGuide> FindScopeGuides(const std::vector<std::string> &lines) {
+    struct OpenDelimiter { char character; int row; int col; };
+    std::vector<OpenDelimiter> stack;
+    std::vector<ScopeGuide> guides;
+    bool in_block_comment = false;
+    char quote = 0;
+    bool escaped = false;
+    auto closing_for = [](char c) {
+        if (c == '(') return ')';
+        if (c == '[') return ']';
+        return '}';
+    };
+    for (int row = 0; row < static_cast<int>(lines.size()); ++row) {
+        const std::string &line = lines[static_cast<size_t>(row)];
+        for (int col = 0; col < static_cast<int>(line.size()); ++col) {
+            const char c = line[static_cast<size_t>(col)];
+            const char next = col + 1 < static_cast<int>(line.size()) ? line[static_cast<size_t>(col + 1)] : '\0';
+            if (in_block_comment) {
+                if (c == '*' && next == '/') { in_block_comment = false; ++col; }
+                continue;
+            }
+            if (quote != 0) {
+                if (escaped) { escaped = false; continue; }
+                if (c == '\\') { escaped = true; continue; }
+                if (c == quote) quote = 0;
+                continue;
+            }
+            if (c == '/' && next == '*') { in_block_comment = true; ++col; continue; }
+            // //, #, and -- cover the line-comment spellings used by the
+            // bundled C-family, Python/shell, SQL/Haskell, and Lua modes.
+            if ((c == '/' && next == '/') || c == '#' || (c == '-' && next == '-')) break;
+            if (c == '\'' || c == '"' || c == '`') { quote = c; escaped = false; continue; }
+            if (c == '(' || c == '[' || c == '{') {
+                stack.push_back({c, row, col});
+            } else if (c == ')' || c == ']' || c == '}') {
+                if (stack.empty() || closing_for(stack.back().character) != c) continue;
+                OpenDelimiter open = stack.back();
+                stack.pop_back();
+                if (open.row < row) guides.push_back({open.row, row, col});
+            }
+        }
+        // Ordinary quoted strings do not cross a physical line in the
+        // languages this lightweight scanner recognizes.  Block comments do.
+        if (quote != 0 && quote != '`') { quote = 0; escaped = false; }
+    }
+    return guides;
 }
 
 // Converts a character-column index into a byte offset within `line`,
@@ -19325,7 +19398,10 @@ void DrawNotebookKernelMenu() {
         gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{dd_x + kMenuItemPaddingX, text_y}, font_size, 0,
                         ResolveHlGroup(is_current ? "Accent" : "MenuBarFg"));
         const std::string kernel_name = specs[i].name;
-        RegisterClickRegion(item_rect, [buffer_id, cell_index, kernel_name] {
+        // The pane's broad focus region is registered while drawing its
+        // content, before this floating menu.  Put menu items above it so a
+        // selection is not swallowed as a mere focus click.
+        RegisterClickRegionOnTop(item_rect, [buffer_id, cell_index, kernel_name] {
             g_editor.NotebookSetCellKernel(buffer_id, cell_index, kernel_name);
             g_notebook_kernel_menu_buffer = -1;
             g_notebook_kernel_menu_cell = -1;
@@ -21293,7 +21369,11 @@ void DrawTerminalGrid(const TerminalSession &sess, float x, float y, [[maybe_unu
             if (selected) {
                 gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(ry), static_cast<int>(cell_w) + 1,
                               static_cast<int>(lh), sel_bg);
-            } else if (bg_c.kind != VTermColorKind::Default || cell->reverse) {
+            // Codex applies its own dark prompt fills even when the editor
+            // uses a light theme.  Its terminal sessions opt out so their
+            // text inherits the pane canvas; every other terminal retains
+            // normal ANSI background rendering.
+            } else if (!sess.ignore_ansi_backgrounds && (bg_c.kind != VTermColorKind::Default || cell->reverse)) {
                 gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(ry), static_cast<int>(cell_w) + 1,
                               static_cast<int>(lh), bg);
             }
@@ -22170,17 +22250,15 @@ void DrawVideoPane(const Pane &pane, VideoSession &sess, float x, float y, float
  * @param is_active Whether this pane is the currently active one (drawn with a thicker border).
  */
 void DrawPaneBorder(float x, float y, float w, float h, bool is_active) {
-    gfx::Color border_color = is_active ? ResolveHlGroup("BorderActive") : ResolveHlGroup("BorderInactive");
-    float top_thick = is_active ? 3.0f : 1.0f;
-    float side_thick = is_active ? 6.0f : 1.0f;
-    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(top_thick),
+    const float top_thick = is_active ? 3.0f : 1.0f;
+    const float side_thick = is_active ? 6.0f : 1.0f;
+    const gfx::Color border_color = is_active ? ResolveHlGroup("BorderActive") : ResolveHlGroup("BorderInactive");
+    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(top_thick), border_color);
+    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(side_thick), static_cast<int>(h), border_color);
+    gfx::DrawRectangle(static_cast<int>(x + w - side_thick), static_cast<int>(y), static_cast<int>(side_thick), static_cast<int>(h),
                   border_color);
-    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(side_thick), static_cast<int>(h),
+    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y + h - side_thick), static_cast<int>(w), static_cast<int>(side_thick),
                   border_color);
-    gfx::DrawRectangle(static_cast<int>(x + w - side_thick), static_cast<int>(y), static_cast<int>(side_thick),
-                  static_cast<int>(h), border_color);
-    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y + h - side_thick), static_cast<int>(w),
-                  static_cast<int>(side_thick), border_color);
 }
 
 // --- Mini LaTeX math layout -------------------------------------------------
@@ -28076,7 +28154,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // Focuses this pane, then runs/compiles its current file in
             // this tab's popup terminal.
             button(
-                run_label, run_w, "Green", "Run",
+                run_label, run_w, "Green", "Run (<Space>rr)",
                 [pane_id] {
                     g_editor.FocusPaneById(pane_id);
                     g_editor.RunCommand("lua mep.run_button_run()");
@@ -28092,7 +28170,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         }
         // Focuses this pane, then splits it vertically (side by side).
         button(
-            vsplit_label, vsplit_w, "Cyan", "Split vertically",
+            vsplit_label, vsplit_w, "Cyan", "Split vertically (Ctrl-W v / Alt+v)",
             [pane_id] {
                 g_editor.FocusPaneById(pane_id);
                 g_editor.RunCommand("vsplit");
@@ -28100,7 +28178,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             nullptr, control_font_size, control_label_y);
         // Focuses this pane, then splits it horizontally (stacked).
         button(
-            hsplit_label, hsplit_w, "Yellow", "Split horizontally",
+            hsplit_label, hsplit_w, "Yellow", "Split horizontally (Ctrl-W s / Alt+s)",
             [pane_id] {
                 g_editor.FocusPaneById(pane_id);
                 g_editor.RunCommand("split");
@@ -28110,7 +28188,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // pane, once empty) -- the buffer itself is left alone, see the
         // comment above control_font_size.
         button(
-            close_label, close_w, "Red", "Close pane",
+            close_label, close_w, "Red", "Close pane (Ctrl-W c / Alt+d)",
             [pane_id] {
                 g_editor.FocusPaneById(pane_id);
                 g_editor.PaneCloseBufferTab();
@@ -30402,6 +30480,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     gfx::BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
                       static_cast<int>(content_h));
 
+    // Scope guides are derived from the buffer rather than its syntax
+    // decorations, so they work in every text mode (including a filetype
+    // which has no tree-sitter query).  They are painted with row
+    // backgrounds, before text/selection, and their x position stays at
+    // the closing delimiter's column for the full multi-line scope.
+    const std::vector<ScopeGuide> scope_guides = FindScopeGuides(buf.lines);
+
     // Jupyter notebook cell cards: a rounded box behind each cell so code
     // and markdown blocks read as distinct blocks (markdown tinted apart
     // from code, and the cursor's cell accented). Fills are drawn here,
@@ -30456,7 +30541,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // text_x) so the card doesn't bleed over the numbers; clamped so
             // it can't cross to the right of the text either.
             const float nb_box_left = std::min(text_x + g_char_width * 2.0f, std::max(x + 3.0f, text_x - g_char_width * 0.5f));
-            const float nb_box_right = x + w - 3.0f;
+            // Leave the pane's normal horizontal breathing room plus four
+            // pixels on the right, so the outline is clearly distinct from
+            // the pane border.
+            const float nb_box_right = x + w - static_cast<float>(kMarginX + 4);
             const gfx::Rectangle box{nb_box_left, top, nb_box_right - nb_box_left, bottom - top};
             gfx::Color fill;
             if (sp.type == NotebookCellType::Markdown) fill = gfx::Fade(ResolveHlGroup("Purple"), 0.10f);
@@ -30674,7 +30762,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // text_x so the header band and output shade stay clear of the
             // line-number gutter.
             const float nb_card_x = std::max(x + 3.0f, text_x - g_char_width * 0.5f);
-            const float nb_card_w = (x + w - 3.0f) - nb_card_x;
+            const float nb_card_w = (x + w - static_cast<float>(kMarginX + 4)) - nb_card_x;
             if (nb_span && row == nb_span->marker_row) {
                 gfx::DrawRectangle(static_cast<int>(nb_card_x), static_cast<int>(ly), static_cast<int>(nb_card_w), line_height,
                                    gfx::Fade(nb_cursor_in_cell ? nb_accent : nb_border, nb_cursor_in_cell ? 0.20f : 0.12f));
@@ -30685,6 +30773,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 const float block_h = static_cast<float>(nb_trailing * line_height);
                 gfx::DrawRectangle(static_cast<int>(nb_card_x), static_cast<int>(block_y), static_cast<int>(nb_card_w), static_cast<int>(block_h),
                                    gfx::Fade(ResolveHlGroup("CursorLine"), 0.4f));
+                // Divide source from its result at the card's full inner
+                // width. The cell-card border is stroked in the post-pass,
+                // over these endpoints, so this line reads as connected to
+                // the enclosing block rather than floating inside it.
+                gfx::DrawLine(static_cast<int>(nb_card_x), static_cast<int>(block_y),
+                              static_cast<int>(nb_card_x + nb_card_w), static_cast<int>(block_y),
+                              gfx::Fade(nb_cursor_in_cell ? nb_accent : nb_border, nb_cursor_in_cell ? 0.80f : 0.65f));
                 const float avail_w = std::max(40.0f, w - (text_x - x) - kMarginX);
                 float oy = block_y;
                 for (const NotebookOutput &out : nb_cell->outputs) {
@@ -30749,6 +30844,22 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             }
         }
 
+        // A scope guide occupies only the lines *between* its delimiters.
+        // Every enclosing guide becomes accent-colored in the focused pane
+        // while its cursor is inside that scope; guides in an unfocused pane
+        // remain a quiet border color.  The two-pixel bar is intentionally
+        // drawn before selections and glyphs, preserving both readability
+        // and the ordinary cursor/selection layering.
+        for (const ScopeGuide &guide : scope_guides) {
+            if (row <= guide.open_row || row >= guide.close_row) continue;
+            const int guide_col = ByteOffsetToColumn(buf.lines[static_cast<size_t>(guide.close_row)], guide.close_col);
+            const bool active_scope = is_active && pane.cursor.row > guide.open_row && pane.cursor.row < guide.close_row;
+            const gfx::Color guide_color = ResolveHlGroup(active_scope ? "Accent" : "Border");
+            const float guide_x = text_x + static_cast<float>(guide_col) * g_char_width + g_char_width * 0.5f;
+            gfx::DrawRectangle(static_cast<int>(guide_x), static_cast<int>(ly), 2,
+                               line_height * row_wrap_slots, gfx::Fade(guide_color, active_scope ? 0.9f : 0.55f));
+        }
+
         // Notebook cell-header text (label + Run chip): drawn after the
         // cursorline tint above so it stays visible when the cursor sits
         // on the marker row itself; the header's band/bar were painted
@@ -30782,7 +30893,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                         gfx::DrawRectangleRoundedLines(nb_run_rect, 0.3f, 4, nb_accent);
                         DrawUiText(nb_run_text, gfx::Vector2{nb_run_rect.x + 5.0f, ly}, g_font_size, ResolveHlGroup("Normal"));
                         const int run_buffer = pane.buffer_id, run_cell = nb_cell_idx;
-                        RegisterClickRegion(nb_run_rect, [run_buffer, run_cell] { g_editor.NotebookRunCell(run_buffer, run_cell); });
+                        RegisterClickRegionOnTop(nb_run_rect, [run_buffer, run_cell] { g_editor.NotebookRunCell(run_buffer, run_cell); });
                         nb_right = nb_run_rect.x - 8.0f;
                     }
                     // Per-cell kernel dropdown chip: the kernel this block
@@ -30825,7 +30936,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                         if (is_active) {
                             const int chip_buffer = pane.buffer_id, chip_cell = nb_cell_idx;
                             const gfx::Rectangle anchor_rect = chip_rect;
-                            RegisterClickRegion(chip_rect, [chip_buffer, chip_cell, anchor_rect] {
+                            // DrawPane registered its pane-wide focus region
+                            // before reaching this cell header.  This chip
+                            // overlaps that fallback, so it must take click
+                            // precedence or the kernel menu can never open.
+                            RegisterClickRegionOnTop(chip_rect, [chip_buffer, chip_cell, anchor_rect] {
                                 // Toggle: a second click on the open cell's chip closes it.
                                 if (g_notebook_kernel_menu_buffer == chip_buffer && g_notebook_kernel_menu_cell == chip_cell) {
                                     g_notebook_kernel_menu_buffer = -1;
@@ -33219,8 +33334,7 @@ bool HandlePanePickInput() {
 }
 
 // Draws the pane picker: a dim veil over each candidate window with its
-// letter in a large yellow badge centered in it, matching DrawHintOverlay's
-// theme-independent high-contrast styling. The pane's current rect is looked
+// letter in a compact, theme-accent badge centered in it. The pane's current rect is looked
 // up live from g_pane_screen_rects (a window resize mid-pick moves the
 // badge with it; a candidate that has since vanished is silently skipped).
 // Called last in DrawEditor so nothing paints over it.
@@ -33229,9 +33343,13 @@ bool HandlePanePickInput() {
  */
 void DrawPanePickOverlay() {
     if (!g_pane_pick_active) return;
-    constexpr gfx::Color kBadgeBg{255, 215, 0, 255};  // solid yellow, theme-independent
-    constexpr gfx::Color kBadgeFg{0, 0, 0, 255};       // black, for contrast against kBadgeBg
-    const float letter_size = g_font_size * 3.0f;
+    // AccentTint is the theme's accent intended for filled UI controls. It
+    // keeps a bright, readable orange in Gruvbox Light rather than using
+    // Accent's darker syntax-color variant directly.
+    const gfx::Color badge_bg = ResolveHlGroup("AccentTint");
+    const gfx::Color badge_fg = ResolveHlGroup("Normal");
+    const gfx::Color badge_border = ResolveHlGroup("Accent");
+    const float letter_size = g_font_size * 1.75f;
     for (const PanePickTarget &t : g_pane_pick_targets) {
         const gfx::Rectangle *rect = nullptr;
         for (const PaneScreenRect &pr : g_pane_screen_rects) {
@@ -33247,9 +33365,10 @@ void DrawPanePickOverlay() {
         const float pad = letter_size * 0.3f;
         float badge_x = rect->x + (rect->width - sz.x) / 2.0f;
         float badge_y = rect->y + (rect->height - sz.y) / 2.0f;
-        gfx::DrawRectangle(static_cast<int>(badge_x - pad), static_cast<int>(badge_y - pad * 0.5f),
-                           static_cast<int>(sz.x + pad * 2.0f), static_cast<int>(sz.y + pad), kBadgeBg);
-        gfx::DrawTextEx(g_font, t.label.c_str(), gfx::Vector2{badge_x, badge_y}, letter_size, 0, kBadgeFg);
+        gfx::Rectangle badge{badge_x - pad, badge_y - pad * 0.5f, sz.x + pad * 2.0f, sz.y + pad};
+        gfx::DrawRectangleRounded(badge, 0.35f, 6, badge_bg);
+        gfx::DrawRectangleRoundedLinesEx(badge, 0.35f, 6, 1.0f, badge_border);
+        gfx::DrawTextEx(g_font, t.label.c_str(), gfx::Vector2{badge_x, badge_y}, letter_size, 0, badge_fg);
     }
 }
 

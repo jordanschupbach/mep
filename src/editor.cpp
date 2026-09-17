@@ -5313,11 +5313,26 @@ void Editor::OpenTerminalInPlaceArgv(const std::vector<std::string> &argv, const
     TerminalSession sess;
     sess.buffer_id = buffer_id;
     sess.title = title.empty() ? argv[0] : title;
+    // Direct argv calls (including the configurable AI terminal) name
+    // Codex in argv[0].  :terminal codex is shell-wrapped, where its title
+    // instead holds the command text.  Cover both launch paths without
+    // changing ordinary terminal programs' ANSI background behavior.
+    const auto is_codex_command = [](const std::string &command) {
+        const size_t slash = command.find_last_of('/');
+        const std::string name = slash == std::string::npos ? command : command.substr(slash + 1);
+        return name == "codex" || name.rfind("codex ", 0) == 0;
+    };
+    sess.ignore_ansi_backgrounds = is_codex_command(argv[0]) || is_codex_command(sess.title);
     // 24x80 is only a placeholder -- DrawPane calls ResizeTerminal with
     // the real pane's character-cell size on the very first frame it's
     // drawn, before any output can have arrived to be misjudged against
     // the wrong size.
     sess.vterm = std::make_unique<VTerm>(24, 80);
+    ThemeColor default_fg, default_bg;
+    ResolveHighlight("Normal", &default_fg);
+    ResolveHighlight("NormalBg", &default_bg);
+    sess.vterm->SetOscDefaultColors(VTermColor{VTermColorKind::Rgb, 0, default_fg.r, default_fg.g, default_fg.b},
+                                    VTermColor{VTermColorKind::Rgb, 0, default_bg.r, default_bg.g, default_bg.b});
     TerminalSpawn(sess, argv);
 
     terminals_[buffer_id] = std::move(sess);
@@ -5357,6 +5372,12 @@ void Editor::TerminalSpawn(TerminalSession &sess, const std::vector<std::string>
      */
     cb.on_stdout_raw = [this, buffer_id, vterm_ptr](const std::string &chunk) {
         std::string reply = vterm_ptr->Feed(chunk);
+        // Codex sends both OSC 10 and OSC 11 queries when it starts.  This
+        // lets a shell-launched `codex` opt into the same transparent prompt
+        // background as a terminal originally opened with `:terminal codex`.
+        if (vterm_ptr->QueriesOscDefaultColors()) {
+            if (TerminalSession *live = FindTerminal(buffer_id)) live->ignore_ansi_backgrounds = true;
+        }
         if (reply.empty()) return;
         // VTerm parses an application's terminal queries while consuming
         // stdout; return its response through this session's PTY so TUIs

@@ -682,6 +682,17 @@ int g_office_dropdown_open = -1;
 int g_run_button_menu_pane = -1;
 gfx::Rectangle g_run_button_menu_anchor{};
 
+// Which notebook code cell's kernel dropdown is open (DrawPane's cell
+// header). buffer id + 0-based cell index identify the cell; -1/-1 = none.
+// Same single-target, no-modal-mode convention as g_run_button_menu_pane
+// above. The anchor is the kernel chip's screen rect as of the frame it
+// was opened/last redrawn, so DrawNotebookKernelMenu can drop the list
+// right below it.
+int g_notebook_kernel_menu_buffer = -1;
+int g_notebook_kernel_menu_cell = -1;
+gfx::Rectangle g_notebook_kernel_menu_anchor{};
+gfx::Rectangle g_notebook_kernel_menu_rect{};
+
 // Populated by DrawPane's office branch (a full-document wrap-height scan
 // -- see the comment where it's filled in) and consumed by that same
 // pane's own Docs-style status footer (word/page count, zoom) right after,
@@ -10405,6 +10416,11 @@ const char *kBuiltinSyntax =
     "    if t then\n"
     "      flush(i - 1)\n"
     "      mep.deco_add(ns, {row = i, col_start = 1, col_end = #lines[i] + 1, hl_group = 'Comment'})\n"
+    // A code cell is highlighted in its own kernel's language (an R cell
+    // as R, ...), asked of the notebook model per marker row; markdown/raw
+    // keep the marker's own type. Falls back to the marker's guess when
+    // the model has no answer (e.g. before the session exists).
+    "      if t == 'py' then t = mep.notebook_cell_language(i) or t end\n"
     "      start, ft = i + 1, t\n"
     "    end\n"
     "  end\n"
@@ -16569,7 +16585,7 @@ const char *kBuiltinAi =
     "end\n"
     "mep.command('MepAiContextPicker', mep.ai_context_picker)\n"
     "mep.leader_map('ai', 'AI: context picker', mep.ai_context_picker)\n"
-    // Speech-to-text (<leader>v toggles): press once to start recording,
+    // Speech-to-text (<leader>vv toggles): press once to start recording,
     // press again to stop -- while it's running, the transcript streams in
     // at the cursor a few seconds behind your voice, entering Insert mode
     // first if the buffer wasn't already there, so dictated text behaves
@@ -16825,7 +16841,7 @@ const char *kBuiltinAi =
     "  mep.notify('Recording -- transcribing as you talk. Press <leader>v again to stop.')\n"
     "end\n"
     "mep.command('MepSttToggle', mep.stt_toggle)\n"
-    "mep.leader_map('v', 'Speech-to-text: toggle live transcription', mep.stt_toggle)\n"
+    "mep.leader_map('vv', 'Speech-to-text: toggle live transcription', mep.stt_toggle)\n"
     // Tools: read_file/list_dir/run_command, each gated by a permission
     // prompt. run_command always re-prompts (no blanket approval, per
     // the plan); the other two support an allow-always-this-session
@@ -17036,7 +17052,7 @@ const char *kBuiltinTabTerminal =
     "mep.command('MepTabTerminal', mep.tab_terminal_toggle)\n"
     "mep.command('tabterminal', mep.tab_terminal_toggle)\n"
     "mep.command('tabterm', mep.tab_terminal_toggle)\n"
-    "mep.leader_map('<CR>', 'Toggle this tab\\'s terminal (bottom)', mep.tab_terminal_toggle)\n";
+    "mep.leader_map('<CR>', 'terminal', mep.tab_terminal_toggle, 0xf120, 'Green')\n";
 
 // RUNBUTTON_PLAN: the pane-header Run button (main.cpp's DrawPane, next to
 // the vsplit/hsplit/close controls) for R/Python/C/C++ source files.
@@ -18363,14 +18379,16 @@ const char *kBuiltinLeetcode =
 // notebook buffer, the same "gate on state, fall through otherwise"
 // pattern R's gh/mep.r_ui_help_at_cursor uses, since mep.map/leader_map
 // have no buffer-local flavor. Enter/Shift+Enter/Ctrl+Enter/mod1+Enter
-// are C++ (HandleNormalInput/HandleInsertInput/HandleMod1Shortcuts) --
-// mep.map can't bind Enter or modifier combos.
+// and the Ctrl-C Ctrl-C chord are C++ (HandleNormalInput/
+// HandleInsertInput/HandleMod1Shortcuts) -- mep.map can't bind Enter or
+// modifier combos.
 //
 // Leader keys follow Jupyter's own command-mode letters under <leader>j:
 //   jr run cell        jn run & go to next   ja insert above   jb insert below
 //   jA run all         jd delete cell        jm to markdown    jy to code
 //   jk move cell up    jj move cell down     jc clear outputs  jC clear all
-//   ji interrupt       j0 restart kernel     ]j / [j next/previous cell
+//   ji interrupt       j0 restart kernel     jK set cell kernel
+//   ]j / [j next/previous cell
 const char *kBuiltinNotebook =
     "mep.opt = mep.opt or {}\n"
     // mep.opt.notebook_python: the interpreter kernels launch with
@@ -18392,6 +18410,34 @@ const char *kBuiltinNotebook =
     // init.lua that sets mep.opt.notebook_python must still take effect
     // before the first kernel launch.
     "mep.on_frame(mep_nb_apply_python)\n"
+    "mep.opt.notebook_kernels = mep.opt.notebook_kernels or {\n"
+    "  {name='python3', display_name='Python 3', language='py', mode='python'},\n"
+    "  {name='ir', display_name='R', language='r', mode='script', command={'R', '--slave', '--no-save'}},\n"
+    "  {name='javascript', display_name='JavaScript', language='js', mode='script', command={'node'}},\n"
+    "  {name='ruby', display_name='Ruby', language='', mode='script', command={'ruby'}},\n"
+    "  {name='bash', display_name='Bash', language='', mode='script', command={'bash'}},\n"
+    "}\n"
+    "local mep_nb_kernels_applied = nil\n"
+    "local function mep_nb_apply_kernels()\n"
+    "  if mep.opt.notebook_kernels ~= mep_nb_kernels_applied then\n"
+    "    mep.notebook_set_kernels(mep.opt.notebook_kernels)\n"
+    "    mep_nb_kernels_applied = mep.opt.notebook_kernels\n"
+    "  end\n"
+    "end\n"
+    "mep_nb_apply_kernels()\n"
+    "mep.on_frame(mep_nb_apply_kernels)\n"
+    "function mep.notebook_pick_kernel()\n"
+    "  local ks = mep.notebook_kernels()\n"
+    "  if not ks or #ks == 0 then mep.notify('No kernels registered', 'warn') return end\n"
+    "  local cur = mep.notebook_cell_kernel()\n"
+    "  local labels = {}\n"
+    "  for i, k in ipairs(ks) do\n"
+    "    labels[i] = (k.name == cur and '* ' or '  ') .. (k.display_name ~= '' and k.display_name or k.name)\n"
+    "  end\n"
+    "  mep.ui_select(labels, 'Cell kernel', function(idx)\n"
+    "    if idx then mep.notebook_set_cell_kernel(ks[idx].name) end\n"
+    "  end)\n"
+    "end\n"
     "local function mep_nb_guard(fn, quiet)\n"
     "  return function(...)\n"
     "    if not mep.notebook_is_buffer() then\n"
@@ -18428,6 +18474,7 @@ const char *kBuiltinNotebook =
     "  {'NotebookClearAllOutputs', 'jC', 'Notebook: clear all outputs', function() mep.notebook_clear_outputs(-1) end},\n"
     "  {'NotebookInterrupt', 'ji', 'Notebook: interrupt kernel', mep.notebook_interrupt},\n"
     "  {'NotebookRestartKernel', 'j0', 'Notebook: restart kernel', mep.notebook_restart_kernel},\n"
+    "  {'NotebookKernel', 'jK', 'Notebook: set cell kernel', function() mep.notebook_pick_kernel() end},\n"
     "  {'NotebookNextCell', nil, 'Notebook: next cell', function() mep_nb_step(1) end},\n"
     "  {'NotebookPrevCell', nil, 'Notebook: previous cell', function() mep_nb_step(-1) end},\n"
     "}\n"
@@ -18457,24 +18504,33 @@ const char *kBuiltinNotebook =
     "end)\n";
 
 const char *kBuiltinWhichKeyGroups =
-    "mep.leader_group('o', 'org')\n"
-    "mep.leader_group('oe', 'export')\n"
-    "mep.leader_group('ot', 'toggle')\n"
-    "mep.leader_group('or', 'roam')\n"
-    "mep.leader_group('l', 'lsp/lang')\n"
-    "mep.leader_group('p', 'project')\n"
-    "mep.leader_group('w', 'workspace')\n"
-    "mep.leader_group('g', 'git')\n"
-    "mep.leader_group('b', 'browse')\n"
-    "mep.leader_group('a', 'ai')\n"
-    // Sidebar toggles: 's' (Treesitter structure sidebar/split), 't'
-    // (Todo/Tests activity panels), 'n' (notification history).
-    "mep.leader_group('s', 'structure')\n"
-    "mep.leader_group('z', 'spell')\n"
-    "mep.leader_group('t', 'todo/tests')\n"
-    "mep.leader_group('n', 'notifications')\n"
-    "mep.leader_group('j', 'jupyter')\n"
-    "mep.leader_group('d', 'debug')\n";
+    // Every first-key prefix with a multi-key mapping gets a named group so
+    // the initial <Space> popup is a compact, navigable hierarchy instead
+    // of a flat list of two-/three-key sequences. The icon is drawn before
+    // the key (not embedded in its label), preserving clean key alignment.
+    "mep.leader_group('a', 'ai', 0xf0e0, 'Cyan')\n"
+    "mep.leader_group('b', 'buffers/browse', 0xf0c5, 'Blue')\n"
+    "mep.leader_group('c', 'code', 0xf121, 'Purple')\n"
+    "mep.leader_group('d', 'debug', 0xf188, 'Red')\n"
+    "mep.leader_group('f', 'file', 0xf15b, 'Yellow')\n"
+    "mep.leader_group('g', 'git', 0xe725, 'Orange')\n"
+    "mep.leader_group('h', 'help', 0xf059, 'Blue')\n"
+    "mep.leader_group('j', 'jupyter', 0xf02d, 'Orange')\n"
+    "mep.leader_group('l', 'lsp/lang', 0xf121, 'Cyan')\n"
+    "mep.leader_group('n', 'notifications', 0xf0f3, 'Red')\n"
+    "mep.leader_group('o', 'org', 0xf15c, 'Green')\n"
+    "mep.leader_group('p', 'project', 0xf1b3, 'Yellow')\n"
+    "mep.leader_group('r', 'run', 0xf04b, 'Green')\n"
+    "mep.leader_group('s', 'structure', 0xf0e8, 'Cyan')\n"
+    "mep.leader_group('t', 'todo/tests', 0xf046, 'Green')\n"
+    "mep.leader_group('u', 'ui', 0xf013, 'Purple')\n"
+    "mep.leader_group('v', 'Vocal', 0xf130, 'Cyan')\n"
+    "mep.leader_group('w', 'workspace', 0xf1ad, 'Blue')\n"
+    "mep.leader_group('y', 'snippets', 0xf121, 'Purple')\n"
+    "mep.leader_group('z', 'spell', 0xf00c, 'Purple')\n"
+    "mep.leader_group('oe', 'export', 0xf15b)\n"
+    "mep.leader_group('ot', 'toggle', 0xf011)\n"
+    "mep.leader_group('or', 'roam', 0xf0e8)\n";
 
 // Help workspace. Help source may still be maintained as Org, but the
 // workspace presents its exported HTML pages so the rendered documentation
@@ -18877,7 +18933,7 @@ const char *kBuiltinPickerSources =
     "  if n > 0 then show_preview(1) end\n"
     "end\n"
     "mep.command('MepBufferSearch', mep.buffer_search)\n"
-    "mep.leader_map('/', 'Buffer fuzzy find', mep.buffer_search)\n"
+    "mep.leader_map('/', 'search', mep.buffer_search, 0xf002, 'Yellow')\n"
     "mep.map('n', '/', mep.buffer_search, {desc = 'Buffer fuzzy find (picker)'})\n"
     "function mep.buffers()\n"
     "  mep.picker_open('Buffers', mep.buffer_list(), function(item)\n"
@@ -19219,6 +19275,65 @@ void DrawRunButtonMenu() {
     gfx::DrawRectangleLines(static_cast<int>(dd_x), static_cast<int>(dd_y), static_cast<int>(dd_w), item_h,
                         ResolveHlGroup("PickerBorder"));
     RegisterClickRegion(gfx::Rectangle{dd_x, dd_y, dd_w, static_cast<float>(item_h)}, menu.items[0].action);
+}
+
+/**
+ * @brief Draws the open per-cell kernel dropdown (a code cell's kernel chip, DrawPane's notebook header)
+ * when one is open, listing every registered kernel with the cell's current one checked.
+ */
+void DrawNotebookKernelMenu() {
+    if (g_notebook_kernel_menu_buffer == -1) return;
+    const int buffer_id = g_notebook_kernel_menu_buffer;
+    const int cell_index = g_notebook_kernel_menu_cell;
+    // The cell (or notebook) may have gone away since the menu opened.
+    if (!g_editor.IsNotebookBuffer(buffer_id)) {
+        g_notebook_kernel_menu_buffer = -1;
+        g_notebook_kernel_menu_cell = -1;
+        g_notebook_kernel_menu_rect = {};
+        return;
+    }
+    const std::vector<NotebookKernelSpec> &specs = g_editor.NotebookKernels();
+    const std::string current = g_editor.NotebookCellKernelName(buffer_id, cell_index);
+    const float font_size = MenuFontSize();
+    const int item_h = MenuItemHeight();
+    // Reuses DrawMenuBar's dropdown look, same as DrawRunButtonMenu.
+    float dd_w = 0.0f;
+    for (const NotebookKernelSpec &spec : specs) {
+        const std::string label = "  " + (spec.display_name.empty() ? spec.name : spec.display_name);
+        dd_w = std::max(dd_w, MeasureUiText(label, font_size) + 2.0f * kMenuItemPaddingX + 16.0f);
+    }
+    dd_w = std::max(dd_w, g_notebook_kernel_menu_anchor.width);
+    float dd_x = g_notebook_kernel_menu_anchor.x + g_notebook_kernel_menu_anchor.width - dd_w;   // right-align under the chip
+    if (dd_x < static_cast<float>(kMarginX)) dd_x = static_cast<float>(kMarginX);
+    float dd_y = g_notebook_kernel_menu_anchor.y + g_notebook_kernel_menu_anchor.height;
+    const float dd_h = static_cast<float>(specs.size()) * static_cast<float>(item_h);
+    g_notebook_kernel_menu_rect = gfx::Rectangle{dd_x, dd_y, dd_w, dd_h};
+    gfx::Vector2 mouse = gfx::GetMousePosition();
+    gfx::DrawRectangle(static_cast<int>(dd_x), static_cast<int>(dd_y), static_cast<int>(dd_w), static_cast<int>(dd_h),
+                       ResolveHlGroup("Picker"));
+    for (size_t i = 0; i < specs.size(); i++) {
+        const float item_y = dd_y + static_cast<float>(i) * static_cast<float>(item_h);
+        const gfx::Rectangle item_rect{dd_x, item_y, dd_w, static_cast<float>(item_h)};
+        if (PointInRect(mouse, item_rect)) {
+            gfx::DrawRectangle(static_cast<int>(dd_x), static_cast<int>(item_y), static_cast<int>(dd_w), item_h,
+                               ResolveHlGroup("MenuHighlight"));
+        }
+        const bool is_current = specs[i].name == current;
+        const std::string label = (is_current ? std::string("✓ ") : std::string("  ")) +
+                                   (specs[i].display_name.empty() ? specs[i].name : specs[i].display_name);
+        const float text_y = item_y + (static_cast<float>(item_h) - font_size) / 2.0f;
+        gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{dd_x + kMenuItemPaddingX, text_y}, font_size, 0,
+                        ResolveHlGroup(is_current ? "Accent" : "MenuBarFg"));
+        const std::string kernel_name = specs[i].name;
+        RegisterClickRegion(item_rect, [buffer_id, cell_index, kernel_name] {
+            g_editor.NotebookSetCellKernel(buffer_id, cell_index, kernel_name);
+            g_notebook_kernel_menu_buffer = -1;
+            g_notebook_kernel_menu_cell = -1;
+            g_notebook_kernel_menu_rect = {};
+        });
+    }
+    gfx::DrawRectangleLines(static_cast<int>(dd_x), static_cast<int>(dd_y), static_cast<int>(dd_w), static_cast<int>(dd_h),
+                            ResolveHlGroup("PickerBorder"));
 }
 
 // Generic floating overlay frame: dims the screen, draws a centered
@@ -20602,7 +20717,7 @@ void DrawRoamGraphOverlay() {
  * bindings under the currently typed leader prefix flowed into as many columns as fit.
  */
 void DrawWhichKeyOverlay() {
-    std::vector<std::pair<std::string, std::string>> matches = g_editor.WhichKeyDisplayEntries();
+    std::vector<WhichKeyDisplayEntry> matches = g_editor.WhichKeyDisplayEntries();
     float font_size = g_font_size;
     int line_h = static_cast<int>(font_size) + 6;
 
@@ -20611,10 +20726,10 @@ void DrawWhichKeyOverlay() {
     int margin_x = 40;
     int box_w = std::max(screen_w - margin_x * 2, 200);
 
-    // "<leader>" is a non-empty literal prefix, so `title` can never be
+    // "<Space>" is a non-empty literal prefix, so `title` can never be
     // empty here (unlike the sibling `title.empty()`-gated overlays
     // elsewhere in this file, whose title strings really can be empty).
-    std::string title = "<leader>" + Editor::WhichKeySequenceDisplay(g_editor.WhichKeyPrefix());
+    std::string title = "<Space>" + Editor::WhichKeySequenceDisplay(g_editor.WhichKeyPrefix());
     float title_size = MenuFontSize();
     int title_h = static_cast<int>(title_size) + 8;
 
@@ -20623,8 +20738,10 @@ void DrawWhichKeyOverlay() {
     // grid layout instead of leaving most of the width empty).
     int item_w = 0;
     for (const auto &m : matches) {
-        std::string line = m.first + "  " + m.second;
-        item_w = std::max(item_w, static_cast<int>(gfx::MeasureTextEx(g_font, line.c_str(), font_size, 0).x));
+        std::string line;
+        if (m.icon != 0) line = Utf8FromCodepoint(m.icon) + " ";
+        line += m.key + "  " + m.label;
+        item_w = std::max(item_w, static_cast<int>(MeasureUiText(line, font_size)));
     }
     item_w += 28;
     int content_w = box_w - 28;
@@ -20657,10 +20774,15 @@ void DrawWhichKeyOverlay() {
         int row = static_cast<int>(i) / columns;
         float x = content_x + static_cast<float>(col) * static_cast<float>(item_w);
         float y = content_y + static_cast<float>(row) * static_cast<float>(line_h);
-        gfx::DrawTextEx(g_font, matches[i].first.c_str(), gfx::Vector2{x, y}, font_size, 0, ResolveHlGroup("PickerTitle"));
-        float key_w = gfx::MeasureTextEx(g_font, matches[i].first.c_str(), font_size, 0).x;
-        gfx::DrawTextEx(g_font, matches[i].second.c_str(), gfx::Vector2{x + key_w + 16, y}, font_size, 0,
-                   ResolveHlGroup("Normal"));
+        if (matches[i].icon != 0) {
+            const std::string icon = Utf8FromCodepoint(matches[i].icon);
+            DrawUiText(icon, gfx::Vector2{x, y}, font_size,
+                       ResolveHlGroup(matches[i].icon_hl.empty() ? "Accent" : matches[i].icon_hl));
+            x += MeasureUiText(icon, font_size) + 6.0f;
+        }
+        DrawUiText(matches[i].key, gfx::Vector2{x, y}, font_size, ResolveHlGroup("PickerTitle"));
+        x += MeasureUiText(matches[i].key, font_size) + 16.0f;
+        DrawUiText(matches[i].label, gfx::Vector2{x, y}, font_size, ResolveHlGroup("Normal"));
     }
 }
 
@@ -22610,6 +22732,11 @@ struct HtmlRun {
     bool bold = false, italic = false, underline = false, strikethrough = false;
     std::string link_href = "";  // see HtmlPendingWord::link_href
     const DomNode *link_node = nullptr;
+    // Null retains the legacy JetBrains Mono fallback used for synthetic
+    // widgets/math placeholders; normal HTML text points at a real generic
+    // family face selected from the embedded Liberation set.
+    const gfx::Font *font = nullptr;
+    float letter_spacing = 0.0f;
 };
 struct HtmlRule {
     float x = 0, y = 0, w = 0;
@@ -22694,6 +22821,8 @@ struct HtmlLayoutCtx {
     // real on-disk source, in which case only absolute local paths resolve).
     std::string base_dir = "";
     float zoom = 1.0f;  // matches HtmlSession::zoom -- local images scale with the same pane zoom as text does
+    HtmlTextAlign text_align = HtmlTextAlign::Left;
+    bool no_wrap = false;
 };
 
 /**
@@ -22748,7 +22877,33 @@ struct HtmlPendingWord {
     // key multiple runs of the same anchor merge under.
     std::string link_href = "";
     const DomNode *link_node = nullptr;
+    const gfx::Font *font = nullptr;
+    float line_height = 0.0f;
+    float letter_spacing = 0.0f;
+    bool no_wrap = false;
 };
+
+// HTML's generic CSS families share the already-loaded office font atlases.
+// Keeping this selection at the layout boundary leaves html_doc.h raylib-free
+// and lets the DOM/style unit test run without a graphics context.
+const gfx::Font &HtmlFontFor(const ComputedStyle &style) {
+    if (style.font_family == HtmlFontFamily::Serif) {
+        if (style.bold && style.italic) return g_office_font_serif_bolditalic;
+        if (style.bold) return g_office_font_serif_bold;
+        if (style.italic) return g_office_font_serif_italic;
+        return g_office_font_serif_regular;
+    }
+    if (style.font_family == HtmlFontFamily::Mono) {
+        // Keep the editor's primary monospace face for code/pre content.
+        // Its atlas tracks the current UI font size and has the broadest
+        // terminal-oriented fallback behavior.
+        return g_font;
+    }
+    if (style.bold && style.italic) return g_office_font_bolditalic;
+    if (style.bold) return g_office_font_bold;
+    if (style.italic) return g_office_font_italic;
+    return g_office_font_regular;
+}
 
 // Resolves an <img src> value against ctx.base_dir -- absolute local paths
 // pass through unchanged; a remote (http/https) src has no local file to
@@ -22823,7 +22978,7 @@ float HtmlFlushWords(std::vector<HtmlPendingWord> &words, float indent_x, float 
     auto word_width = [](const HtmlPendingWord &w) -> float {
         if (w.is_image) return w.image_w;
         if (w.is_math) return w.math.width;
-        return gfx::MeasureTextEx(g_font, w.text.c_str(), w.font_size, 0).x;
+        return gfx::MeasureTextEx(w.font ? *w.font : g_font, w.text.c_str(), w.font_size, w.letter_spacing).x;
     };
     /**
      * @brief Returns the line height one pending word requires (image height, math height, or
@@ -22834,7 +22989,7 @@ float HtmlFlushWords(std::vector<HtmlPendingWord> &words, float indent_x, float 
     auto word_line_height = [](const HtmlPendingWord &w) -> float {
         if (w.is_image) return w.image_h + 6.0f;
         if (w.is_math) return std::max(w.math.height, w.font_size) + 6.0f;
-        return HtmlLineHeight(w.font_size);
+        return w.line_height > 0.0f ? w.line_height : HtmlLineHeight(w.font_size);
     };
     float x = indent_x;
     struct PlacedWord {
@@ -22846,20 +23001,40 @@ float HtmlFlushWords(std::vector<HtmlPendingWord> &words, float indent_x, float 
      * @brief Emits the words buffered in `line` as centered runs/images/math runs at the
      * current cursor_y, advances cursor_y past the line, and resets `line`/`x` for the next line.
      */
-    auto flush_line = [&]() {
+    auto flush_line = [&](bool is_last_line = false) {
         if (line.empty()) return;
         float lh = 0;
         for (const PlacedWord &pw : line) lh = std::max(lh, word_line_height(*pw.w));
-        for (const PlacedWord &pw : line) {
+        // `x` is just past the final word, so it includes the ordinary
+        // inter-word spacing inserted by this layout pass.  Shift the whole
+        // completed line as one unit; this naturally preserves mixed font
+        // sizes, images, and math within centered/right-aligned content.
+        const float line_width = x - indent_x;
+        float align_offset = 0.0f;
+        if (ctx.text_align == HtmlTextAlign::Center) align_offset = std::max(0.0f, (ctx.layout_width - indent_x - line_width) / 2.0f);
+        else if (ctx.text_align == HtmlTextAlign::Right) align_offset = std::max(0.0f, ctx.layout_width - indent_x - line_width);
+        // Justification expands only wrapped (not final/explicit-break)
+        // lines, the common browser behavior.  The extra width goes between
+        // words and leaves word glyph metrics themselves untouched.
+        const float justify_gap = (ctx.text_align == HtmlTextAlign::Justify && !is_last_line && line.size() > 1)
+                                      ? std::max(0.0f, (ctx.layout_width - indent_x - line_width) /
+                                                           static_cast<float>(line.size() - 1))
+                                      : 0.0f;
+        for (size_t word_index = 0; word_index < line.size(); ++word_index) {
+            const PlacedWord &pw = line[word_index];
             const HtmlPendingWord &w = *pw.w;
             float y = cursor_y + (lh - word_line_height(w)) / 2.0f;
+            const float placed_x = pw.x + align_offset + static_cast<float>(word_index) * justify_gap;
             if (w.is_image) {
-                out.images.push_back({pw.x, y, w.image_w, w.image_h, w.image_path, w.link_href, w.link_node});
+                out.images.push_back({placed_x, y, w.image_w, w.image_h, w.image_path, w.link_href, w.link_node});
             } else if (w.is_math) {
-                out.math_runs.push_back({pw.x, y, w.color, w.math});
+                out.math_runs.push_back({placed_x, y, w.color, w.math});
             } else {
-                out.runs.push_back({pw.x, y, w.font_size, w.text, w.color, w.bold, w.italic, w.underline,
-                                     w.strikethrough, w.link_href, w.link_node});
+                HtmlRun run{placed_x, y, w.font_size, w.text, w.color, w.bold, w.italic, w.underline,
+                            w.strikethrough, w.link_href, w.link_node};
+                run.font = w.font;
+                run.letter_spacing = w.letter_spacing;
+                out.runs.push_back(std::move(run));
             }
         }
         cursor_y += lh;
@@ -22868,11 +23043,12 @@ float HtmlFlushWords(std::vector<HtmlPendingWord> &words, float indent_x, float 
     };
     for (const HtmlPendingWord &w : words) {
         if (w.text == "\n" && !w.is_image && !w.is_math) {
-            flush_line();
+            flush_line(true);
             continue;
         }
         float word_w = word_width(w);
-        float space_w = line.empty() ? 0 : gfx::MeasureTextEx(g_font, " ", w.font_size, 0).x;
+        const gfx::Font &font = w.font ? *w.font : g_font;
+        float space_w = line.empty() ? 0 : gfx::MeasureTextEx(font, " ", w.font_size, w.letter_spacing).x;
         // ctx.layout_width is the page's absolute right edge (measured
         // from the same x=0 indent_x itself is), constant regardless of
         // indent -- matching every box-width formula elsewhere in this
@@ -22884,12 +23060,12 @@ float HtmlFlushWords(std::vector<HtmlPendingWord> &words, float indent_x, float 
         // nested lists produce, but badly wrong for a deliberately
         // narrowed+centered block (ComputedStyle::has_max_width), whose
         // indent_x can be hundreds of pixels.
-        if (!line.empty() && x + space_w + word_w > ctx.layout_width) flush_line();
-        if (!line.empty()) x += gfx::MeasureTextEx(g_font, " ", w.font_size, 0).x;
+        if (!line.empty() && !ctx.no_wrap && !w.no_wrap && x + space_w + word_w > ctx.layout_width) flush_line(false);
+        if (!line.empty()) x += gfx::MeasureTextEx(font, " ", w.font_size, w.letter_spacing).x;
         line.push_back({&w, x});
         x += word_w;
     }
-    flush_line();
+    flush_line(true);
     return cursor_y;
 }
 
@@ -22935,6 +23111,14 @@ void HtmlCollectTextWords(const std::string &text, const ComputedStyle &style, c
             word.italic = style.italic;
             word.underline = style.underline;
             word.strikethrough = style.strikethrough;
+            word.font = &HtmlFontFor(style);
+            word.letter_spacing = ResolveCssLength(style.letter_spacing, fs, ctx.layout_width);
+            word.line_height = style.line_height_multiplier > 0.0f
+                                   ? style.line_height_multiplier * fs
+                                   : (style.line_height_length.set
+                                          ? ResolveCssLength(style.line_height_length, fs, ctx.layout_width)
+                                          : HtmlLineHeight(fs));
+            word.no_wrap = style.white_space == HtmlWhiteSpace::NoWrap;
             word.link_href = style.link_href;
             word.link_node = style.link_node;
             out.push_back(std::move(word));
@@ -23333,6 +23517,8 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
     float content_x = border_x + border_l + pad_l;
     HtmlLayoutCtx box_ctx = eff_ctx;
     box_ctx.layout_width = content_x + std::max(0.0f, border_w - extras_w);
+    box_ctx.text_align = cs.text_align;
+    box_ctx.no_wrap = cs.white_space == HtmlWhiteSpace::NoWrap;
     cursor_y += std::max(out.pending_margin_bottom, margin_t);
     out.pending_margin_bottom = 0.0f;
 
@@ -23504,6 +23690,27 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
         cursor_y += static_cast<float>(node->style.margin_bottom_lines) * line_h;
         return;
     }
+    if (node->tag == "iframe") {
+        // Nested browsing contexts need their own document, navigation, and
+        // security model, so they deliberately remain outside this in-pane
+        // renderer.  Leave a sized, legible replaced-element placeholder
+        // rather than silently producing an empty block.
+        std::string src;
+        if (auto it = node->attrs.find("src"); it != node->attrs.end()) src = it->second;
+        const std::string label = "[iframe" + (src.empty() ? std::string{} : ": " + src) + "]";
+        std::vector<HtmlPendingWord> words;
+        words.push_back({label, font_size, HtmlResolveColor(node->style, box_ctx), false, false, false, false});
+        cursor_y = HtmlFlushWords(words, content_x, cursor_y, box_ctx, out);
+        const float requested_h = cs.height.set ? ResolveCssLength(cs.height, font_size, available_w) : 150.0f;
+        cursor_y += std::max(0.0f, requested_h - line_h);
+        enforce_height();
+        cursor_y += tail_inset;
+        finish_bg();
+        finish_border();
+        out.pending_margin_bottom = std::max(out.pending_margin_bottom, margin_b);
+        cursor_y += static_cast<float>(node->style.margin_bottom_lines) * line_h;
+        return;
+    }
 
     float my_indent = content_x + static_cast<float>(node->style.list_depth) * kHtmlListIndentPx;
     std::vector<HtmlPendingWord> words;
@@ -23550,11 +23757,10 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
     cursor_y += static_cast<float>(node->style.margin_bottom_lines) * line_h;
 }
 
-// Basic table grid layout: determine intrinsic column widths from each cell's
-// text, fit the grid into the containing block, then lay every row's cells
-// independently at the shared row origin. This deliberately leaves CSS's
-// elaborate table algorithm/border-collapse semantics for later, while giving
-// normal HTML data tables stable columns, wrapping, and visible cell bounds.
+// Basic table grid layout. Cells first occupy a coordinate grid, so a rowspan
+// reserves its columns in later rows before widths and positions are chosen.
+// This remains deliberately smaller than the CSS table algorithm, but gives
+// ordinary colspan/rowspan tables stable, non-overlapping cells.
 void HtmlLayoutTable(DomNode *table, float content_x, float &cursor_y, const HtmlLayoutCtx &ctx, HtmlLayout &out) {
     std::vector<DomNode *> rows;
     std::function<void(DomNode *)> collect_rows = [&](DomNode *n) {
@@ -23566,55 +23772,80 @@ void HtmlLayoutTable(DomNode *table, float content_x, float &cursor_y, const Htm
     };
     collect_rows(table);
     if (rows.empty()) return;
+    struct TableCell { DomNode *node; size_t row, column, colspan, rowspan; };
+    const size_t row_count = rows.size();
+    std::vector<std::vector<bool>> occupied(row_count);
+    std::vector<TableCell> cells;
     size_t columns = 0;
-    for (DomNode *row : rows) {
-        size_t count = 0;
-        for (auto &cell : row->children) if (cell->type == DomNodeType::Element && (cell->tag == "td" || cell->tag == "th")) {
-            int span = 1; auto it = cell->attrs.find("colspan"); if (it != cell->attrs.end()) span = std::max(1, std::atoi(it->second.c_str()));
-            count += static_cast<size_t>(span);
+    auto span_attr = [](const DomNode *node, const char *name) -> size_t {
+        auto it = node->attrs.find(name);
+        return it == node->attrs.end() ? 1U : static_cast<size_t>(std::max(1, std::atoi(it->second.c_str())));
+    };
+    for (size_t r = 0; r < row_count; ++r) {
+        size_t column = 0;
+        for (auto &child : rows[r]->children) {
+            if (child->type != DomNodeType::Element || (child->tag != "td" && child->tag != "th")) continue;
+            while (column < occupied[r].size() && occupied[r][column]) ++column;
+            const size_t colspan = span_attr(child.get(), "colspan");
+            const size_t rowspan = std::min(span_attr(child.get(), "rowspan"), row_count - r);
+            const size_t end = column + colspan;
+            for (size_t rr = r; rr < r + rowspan; ++rr) {
+                if (occupied[rr].size() < end) occupied[rr].resize(end, false);
+                for (size_t cc = column; cc < end; ++cc) occupied[rr][cc] = true;
+            }
+            cells.push_back({child.get(), r, column, colspan, rowspan});
+            columns = std::max(columns, end);
+            column = end;
         }
-        columns = std::max(columns, count);
     }
     if (columns == 0) return;
     std::vector<float> widths(columns, 24.0f);
-    for (DomNode *row : rows) {
-        size_t column = 0;
-        for (auto &cell : row->children) {
-            if (cell->type != DomNodeType::Element || (cell->tag != "td" && cell->tag != "th")) continue;
-            int span = 1; auto it = cell->attrs.find("colspan"); if (it != cell->attrs.end()) span = std::max(1, std::atoi(it->second.c_str()));
-            std::string text; HtmlCollectRawText(cell.get(), text);
-            float natural = gfx::MeasureTextEx(g_font, text.c_str(), ctx.base_font_size * cell->style.font_scale, 0).x + 12.0f;
-            float each = natural / static_cast<float>(span);
-            for (int i = 0; i < span && column + static_cast<size_t>(i) < columns; ++i) widths[column + static_cast<size_t>(i)] = std::max(widths[column + static_cast<size_t>(i)], each);
-            column += static_cast<size_t>(span);
-        }
+    for (const TableCell &cell : cells) {
+        std::string text; HtmlCollectRawText(cell.node, text);
+        const float font_size = ctx.base_font_size * cell.node->style.font_scale;
+        const float natural = gfx::MeasureTextEx(HtmlFontFor(cell.node->style), text.c_str(), font_size, 0).x + 12.0f;
+        const float each = natural / static_cast<float>(cell.colspan);
+        for (size_t i = 0; i < cell.colspan; ++i) widths[cell.column + i] = std::max(widths[cell.column + i], each);
     }
     float available = std::max(1.0f, ctx.layout_width - content_x), total = 0.0f;
     for (float width : widths) total += width;
     if (total > available) for (float &width : widths) width *= available / total;
     else for (float &width : widths) width += (available - total) / static_cast<float>(columns);
-    for (DomNode *row : rows) {
-        float row_top = cursor_y, row_bottom = row_top;
-        float x = content_x; size_t column = 0;
-        for (auto &cell : row->children) {
-            if (cell->type != DomNodeType::Element || (cell->tag != "td" && cell->tag != "th")) continue;
-            int span = 1; auto it = cell->attrs.find("colspan"); if (it != cell->attrs.end()) span = std::max(1, std::atoi(it->second.c_str()));
-            float cell_w = 0.0f; for (int i = 0; i < span && column + static_cast<size_t>(i) < columns; ++i) cell_w += widths[column + static_cast<size_t>(i)];
-            HtmlLayoutCtx cell_ctx = ctx; cell_ctx.layout_width = x + cell_w;
-            float cell_y = row_top + 4.0f;
-            HtmlLayoutBlock(cell.get(), x + 6.0f, cell_y, cell_ctx, out);
-            row_bottom = std::max(row_bottom, cell_y + 4.0f);
-            x += cell_w; column += static_cast<size_t>(span);
+    std::vector<float> row_heights(row_count, HtmlLineHeight(ctx.base_font_size) + 8.0f);
+    for (const TableCell &cell : cells) {
+        float cell_w = 0.0f; for (size_t i = 0; i < cell.colspan; ++i) cell_w += widths[cell.column + i];
+        std::string text; HtmlCollectRawText(cell.node, text);
+        const float font_size = ctx.base_font_size * cell.node->style.font_scale;
+        const gfx::Font &font = HtmlFontFor(cell.node->style);
+        float used = 0.0f; size_t lines = 1, pos = 0;
+        const float space = gfx::MeasureTextEx(font, " ", font_size, 0).x;
+        while (pos < text.size()) {
+            while (pos < text.size() && std::isspace(static_cast<unsigned char>(text[pos]))) ++pos;
+            size_t start = pos; while (pos < text.size() && !std::isspace(static_cast<unsigned char>(text[pos]))) ++pos;
+            if (start == pos) continue;
+            const float word_w = gfx::MeasureTextEx(font, text.substr(start, pos - start).c_str(), font_size, 0).x;
+            if (used > 0.0f && used + space + word_w > cell_w - 12.0f) { ++lines; used = 0.0f; }
+            used += (used > 0.0f ? space : 0.0f) + word_w;
         }
-        float row_h = std::max(HtmlLineHeight(ctx.base_font_size) + 8.0f, row_bottom - row_top);
-        x = content_x;
-        for (size_t column_index = 0; column_index < columns; ++column_index) {
-            HtmlBorderRect grid{ x, row_top, widths[column_index], row_h, 1, 1, 1, 1,
-                                 ResolveHlGroup("Border"), ResolveHlGroup("Border"), ResolveHlGroup("Border"), ResolveHlGroup("Border") };
-            out.borders.push_back(grid); x += widths[column_index];
-        }
-        cursor_y = row_top + row_h;
+        const float wanted = static_cast<float>(lines) * HtmlLineHeight(font_size) + 8.0f;
+        float have = 0.0f; for (size_t rr = cell.row; rr < cell.row + cell.rowspan; ++rr) have += row_heights[rr];
+        if (wanted > have) row_heights[cell.row + cell.rowspan - 1] += wanted - have;
     }
+    std::vector<float> row_tops(row_count);
+    float table_bottom = cursor_y;
+    for (size_t r = 0; r < row_count; ++r) { row_tops[r] = table_bottom; table_bottom += row_heights[r]; }
+    const gfx::Color border = ResolveHlGroup("Border");
+    for (const TableCell &cell : cells) {
+        float x = content_x, cell_w = 0.0f, cell_h = 0.0f;
+        for (size_t i = 0; i < cell.column; ++i) x += widths[i];
+        for (size_t i = 0; i < cell.colspan; ++i) cell_w += widths[cell.column + i];
+        for (size_t rr = cell.row; rr < cell.row + cell.rowspan; ++rr) cell_h += row_heights[rr];
+        HtmlLayoutCtx cell_ctx = ctx; cell_ctx.layout_width = x + cell_w;
+        float cell_y = row_tops[cell.row] + 4.0f;
+        HtmlLayoutBlock(cell.node, x + 6.0f, cell_y, cell_ctx, out);
+        out.borders.push_back({x, row_tops[cell.row], cell_w, cell_h, 1, 1, 1, 1, border, border, border, border});
+    }
+    cursor_y = table_bottom;
 }
 
 /**
@@ -23711,7 +23942,10 @@ HtmlLayout LayoutHtmlDoc(const HtmlDoc &doc, const HtmlLayoutCtx &ctx) {
  * @param run The run to draw (text, font size, color, and style flags).
  */
 void DrawHtmlRun(float x, float y, const HtmlRun &run) {
-    bool sheared = run.italic;
+    const gfx::Font &font = run.font ? *run.font : g_font;
+    // Liberation has true weight/style faces; retain the old approximation
+    // only for the editor's single-face monospace fallback.
+    bool sheared = run.italic && !run.font;
     if (sheared) {
         gfx::PushMatrix();
         float baseline_y = y + run.font_size;
@@ -23727,14 +23961,14 @@ void DrawHtmlRun(float x, float y, const HtmlRun &run) {
         gfx::MultMatrix(shear);
         gfx::TranslateMatrix(-x, -baseline_y, 0);
     }
-    gfx::DrawTextEx(g_font, run.text.c_str(), gfx::Vector2{x, y}, run.font_size, 0, run.color);
+    gfx::DrawTextEx(font, run.text.c_str(), gfx::Vector2{x, y}, run.font_size, run.letter_spacing, run.color);
     // Same double-draw-offset-1px bold fake as org emphasis (g_font has no
     // real bold face) -- drawn inside the same shear so a bold+italic run
     // doesn't end up half-sheared.
-    if (run.bold) gfx::DrawTextEx(g_font, run.text.c_str(), gfx::Vector2{x + 1, y}, run.font_size, 0, run.color);
+    if (run.bold && !run.font) gfx::DrawTextEx(font, run.text.c_str(), gfx::Vector2{x + 1, y}, run.font_size, run.letter_spacing, run.color);
     if (sheared) gfx::PopMatrix();
     if (run.underline || run.strikethrough) {
-        int text_w = std::max(1, static_cast<int>(gfx::MeasureTextEx(g_font, run.text.c_str(), run.font_size, 0).x));
+        int text_w = std::max(1, static_cast<int>(gfx::MeasureTextEx(font, run.text.c_str(), run.font_size, run.letter_spacing).x));
         if (run.underline) {
             gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y + run.font_size + 2), text_w, 1, run.color);
         }
@@ -27666,6 +27900,56 @@ void DrawSidebarPaneContent(const Pane &pane, int sidebar_id, float x, float y, 
     RegisterClickRegion(gfx::Rectangle{x, y, w, h}, [pane_id] { g_editor.FocusPaneById(pane_id); });
 }
 
+// Jupyter notebook in-pane toolbar (a "within buffer menu"): a compact
+// strip of structural-action buttons below the pane header and above the
+// first cell, reserved from the top of the content area the same way the
+// office ribbon is. Buttons register through RegisterClickRegion like all
+// other pane chrome; the cell-insert ones focus the pane first (so
+// NotebookInsertCell, which acts on CurPane, targets this pane), while the
+// kernel/run actions take the buffer id explicitly and need no focus.
+void DrawNotebookToolbar(const Pane &pane, float x, float ty, float w, float th) {
+    const int buffer_id = pane.buffer_id;
+    const int pane_id = pane.id;
+    const float font_size = MenuFontSize();
+    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(ty), static_cast<int>(w), static_cast<int>(th), ResolveHlGroup("MenuBar"));
+    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(ty + th - 1.0f), static_cast<int>(w), 1, ResolveHlGroup("Border"));
+    const gfx::Vector2 mouse = gfx::GetMousePosition();
+    const float bh = th - 8.0f;
+    const float by = ty + 4.0f;
+    struct TbBtn {
+        const char *label;
+        const char *color;
+        std::function<void()> action;
+    };
+    const std::vector<TbBtn> btns = {
+        {"+ Code", "Green", [pane_id] {
+             g_editor.FocusPaneById(pane_id);
+             g_editor.NotebookInsertCell(-1, /*below=*/true, NotebookCellType::Code);
+         }},
+        {"+ Markdown", "Purple", [pane_id] {
+             g_editor.FocusPaneById(pane_id);
+             g_editor.NotebookInsertCell(-1, /*below=*/true, NotebookCellType::Markdown);
+         }},
+        {"Run All", "Cyan", [buffer_id] { g_editor.NotebookRunAll(buffer_id); }},
+        {"Interrupt", "Yellow", [buffer_id] { g_editor.NotebookInterrupt(buffer_id); }},
+        {"Restart", "Red", [buffer_id] { g_editor.NotebookRestartKernel(buffer_id); }},
+        {"Clear", "Comment", [buffer_id] { g_editor.NotebookClearOutputs(buffer_id, -1); }},
+    };
+    float bx = x + 6.0f;
+    for (const TbBtn &b : btns) {
+        const float bw = MeasureUiText(b.label, font_size) + 14.0f;
+        if (bx + bw > x + w - 4.0f) break;   // too narrow: drop the overflow rather than clip
+        const gfx::Rectangle r{bx, by, bw, bh};
+        const bool hov = PointInRect(mouse, r);
+        gfx::DrawRectangleRounded(r, 0.3f, 4, gfx::Fade(ResolveHlGroup(hov ? "MenuHighlight" : "Comment"), hov ? 0.9f : 0.12f));
+        gfx::DrawRectangleRoundedLines(r, 0.3f, 4, gfx::Fade(ResolveHlGroup(b.color), 0.55f));
+        DrawUiText(b.label, gfx::Vector2{r.x + 7.0f, by + (bh - font_size) / 2.0f}, font_size,
+                   ResolveHlGroup(hov ? "Normal" : b.color));
+        RegisterClickRegion(r, b.action);
+        bx += bw + 6.0f;
+    }
+}
+
 void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_active) {
     int line_height = LineHeight();
     int header_h = PaneHeaderHeight();
@@ -28085,6 +28369,22 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
 
     float content_y = y + static_cast<float>(header_h);
     float content_h = h - static_cast<float>(header_h);
+
+    // Jupyter notebook toolbar: a within-pane button strip reserved from
+    // the top of the content area (offsetting content_y/content_h the same
+    // way the office ribbon does below), drawn BEFORE the catch-all focus
+    // click region below so that region -- now covering only the shrunken
+    // content area -- can't shadow the toolbar's own buttons (the exact
+    // first-match-wins hazard the office branch documents). Skipped on a
+    // pane too short to spare the room.
+    if (g_editor.IsNotebookBuffer(pane.buffer_id)) {
+        const float nb_toolbar_h = static_cast<float>(header_h) + 4.0f;
+        if (content_h > nb_toolbar_h + static_cast<float>(line_height)) {
+            DrawNotebookToolbar(pane, x, content_y, w, nb_toolbar_h);
+            content_y += nb_toolbar_h;
+            content_h -= nb_toolbar_h;
+        }
+    }
 
     // Click anywhere in the pane's own content area (below the header,
     // which already has its own focus-on-click handling above) to focus
@@ -30102,6 +30402,72 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     gfx::BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
                       static_cast<int>(content_h));
 
+    // Jupyter notebook cell cards: a rounded box behind each cell so code
+    // and markdown blocks read as distinct blocks (markdown tinted apart
+    // from code, and the cursor's cell accented). Fills are drawn here,
+    // under the row loop's text; the matching borders are stroked in a
+    // post-pass just before EndScissorMode so they stay crisp over the
+    // per-row backgrounds. Geometry is a prefix sum of each row's visual
+    // slots (soft-wrap rows + a code cell's trailing output block), so a
+    // cell scrolled partly off the top still gets a correctly placed card
+    // (the scissor clips whatever overflows the content area).
+    struct NbCellBox {
+        gfx::Rectangle rect;
+        NotebookCellType type;
+        bool active;
+    };
+    std::vector<NbCellBox> nb_cell_boxes;
+    if (nb_sess) {
+        const int nb_rows = buf.LineCount();
+        std::vector<int> slot_prefix(static_cast<size_t>(nb_rows) + 1, 0);
+        for (int r = 0; r < nb_rows; r++) {
+            int slots = 1;
+            if (wrap_cols > 0) {
+                int len = static_cast<int>(buf.lines[static_cast<size_t>(r)].size());
+                slots = std::max(1, (len + wrap_cols - 1) / wrap_cols);
+            }
+            slots += g_editor.NotebookTrailingSlots(pane.buffer_id, r);
+            slot_prefix[static_cast<size_t>(r) + 1] = slot_prefix[static_cast<size_t>(r)] + slots;
+        }
+        const int scroll_clamped = std::clamp(pane.scroll_row, 0, nb_rows);
+        auto nb_screen_top = [&](int r) -> float {
+            r = std::clamp(r, 0, nb_rows);
+            return content_y + static_cast<float>(slot_prefix[static_cast<size_t>(r)] - slot_prefix[static_cast<size_t>(scroll_clamped)]) *
+                                   static_cast<float>(line_height);
+        };
+        const int nb_cursor_cell = is_active ? NotebookSpanAtRow(nb_sess->spans, pane.cursor.row) : -1;
+        const int nspans = static_cast<int>(nb_sess->spans.size());
+        for (int i = 0; i < nspans; i++) {
+            const NotebookCellSpan &sp = nb_sess->spans[static_cast<size_t>(i)];
+            const int mrow = sp.marker_row >= 0 ? sp.marker_row : sp.first_row;
+            int next_mrow = nb_rows;
+            if (i + 1 < nspans) {
+                const NotebookCellSpan &nx = nb_sess->spans[static_cast<size_t>(i + 1)];
+                next_mrow = nx.marker_row >= 0 ? nx.marker_row : nx.first_row;
+            }
+            const float top = nb_screen_top(mrow) + 2.0f;
+            // End the card short of the next marker so the blank separator
+            // line between cells becomes a visible gutter between cards,
+            // rather than the cards butting together into one striped slab.
+            float bottom = nb_screen_top(next_mrow) - (static_cast<float>(line_height) * 0.5f + 4.0f);
+            if (bottom < top + static_cast<float>(line_height)) bottom = top + static_cast<float>(line_height);
+            if (bottom < content_y || top > content_y + content_h) continue;   // fully off-screen
+            // Left edge sits just right of the line-number gutter (keyed off
+            // text_x) so the card doesn't bleed over the numbers; clamped so
+            // it can't cross to the right of the text either.
+            const float nb_box_left = std::min(text_x + g_char_width * 2.0f, std::max(x + 3.0f, text_x - g_char_width * 0.5f));
+            const float nb_box_right = x + w - 3.0f;
+            const gfx::Rectangle box{nb_box_left, top, nb_box_right - nb_box_left, bottom - top};
+            gfx::Color fill;
+            if (sp.type == NotebookCellType::Markdown) fill = gfx::Fade(ResolveHlGroup("Purple"), 0.10f);
+            else if (sp.type == NotebookCellType::Code) fill = gfx::Fade(ResolveHlGroup("Comment"), 0.07f);
+            else fill = gfx::Fade(ResolveHlGroup("Comment"), 0.04f);
+            const float rr = std::min(1.0f, 16.0f / std::max(1.0f, std::min(box.width, box.height)));
+            gfx::DrawRectangleRounded(box, rr, 5, fill);
+            nb_cell_boxes.push_back({box, sp.type, i == nb_cursor_cell});
+        }
+    }
+
     bool has_selection = is_active && g_editor.HasVisualSelection();
     bool linewise_selection = g_editor.CurrentMode() == Mode::VisualLine;
     bool block_selection = g_editor.CurrentMode() == Mode::VisualBlock;
@@ -30300,26 +30666,25 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             const float nb_row_h = static_cast<float>(line_height * row_wrap_slots);
             const gfx::Color nb_accent = ResolveHlGroup("Accent");
             const gfx::Color nb_border = ResolveHlGroup("Border");
-            const gfx::Color nb_bar = nb_cursor_in_cell ? nb_accent : nb_border;
-            if (nb_span) {
-                const bool nb_is_marker = row == nb_span->marker_row;
-                if (nb_span->type == NotebookCellType::Markdown && !nb_is_marker) {
-                    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(ly), static_cast<int>(w), static_cast<int>(nb_row_h),
-                                       gfx::Fade(ResolveHlGroup("Comment"), 0.08f));
-                }
-                if (nb_is_marker) {
-                    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(ly), static_cast<int>(w), line_height,
-                                       gfx::Fade(nb_cursor_in_cell ? nb_accent : nb_border, nb_cursor_in_cell ? 0.18f : 0.22f));
-                }
-                gfx::DrawRectangle(static_cast<int>(x) + 2, static_cast<int>(ly), 3, static_cast<int>(nb_row_h), nb_bar);
+            // The cell's background and border are the rounded card drawn by
+            // the box pre/post-pass (nb_cell_boxes); here we only add the
+            // marker row's header band and the output block's shade, both
+            // inset to sit inside the card rather than a full-width bar.
+            // Same left inset as the cell card (nb_box_left above): keyed off
+            // text_x so the header band and output shade stay clear of the
+            // line-number gutter.
+            const float nb_card_x = std::max(x + 3.0f, text_x - g_char_width * 0.5f);
+            const float nb_card_w = (x + w - 3.0f) - nb_card_x;
+            if (nb_span && row == nb_span->marker_row) {
+                gfx::DrawRectangle(static_cast<int>(nb_card_x), static_cast<int>(ly), static_cast<int>(nb_card_w), line_height,
+                                   gfx::Fade(nb_cursor_in_cell ? nb_accent : nb_border, nb_cursor_in_cell ? 0.20f : 0.12f));
             }
             const int nb_trailing = g_editor.NotebookTrailingSlots(pane.buffer_id, row);
             if (nb_trailing > 0 && nb_cell) {
                 const float block_y = ly + nb_row_h;
                 const float block_h = static_cast<float>(nb_trailing * line_height);
-                gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(block_y), static_cast<int>(w), static_cast<int>(block_h),
-                                   gfx::Fade(ResolveHlGroup("CursorLine"), 0.55f));
-                gfx::DrawRectangle(static_cast<int>(x) + 2, static_cast<int>(block_y), 3, static_cast<int>(block_h), nb_bar);
+                gfx::DrawRectangle(static_cast<int>(nb_card_x), static_cast<int>(block_y), static_cast<int>(nb_card_w), static_cast<int>(block_h),
+                                   gfx::Fade(ResolveHlGroup("CursorLine"), 0.4f));
                 const float avail_w = std::max(40.0f, w - (text_x - x) - kMarginX);
                 float oy = block_y;
                 for (const NotebookOutput &out : nb_cell->outputs) {
@@ -30407,13 +30772,6 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     } else {
                         nb_label = nb_span->type == NotebookCellType::Markdown ? "Markdown" : "Raw";
                     }
-                    if (nb_cursor_in_cell) {
-                        std::string kernel = nb_sess->status;
-                        if (!nb_sess->python_version.empty() && kernel != "not started" && kernel != "dead") {
-                            kernel = "python " + nb_sess->python_version + " " + kernel;
-                        }
-                        nb_label += "   kernel: " + kernel;
-                    }
                     const gfx::Color nb_label_color = nb_cursor_in_cell ? nb_accent : ResolveHlGroup("Comment");
                     float nb_right = x + w - kMarginX - 2.0f;
                     if (nb_span->type == NotebookCellType::Code && is_active) {
@@ -30426,6 +30784,60 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                         const int run_buffer = pane.buffer_id, run_cell = nb_cell_idx;
                         RegisterClickRegion(nb_run_rect, [run_buffer, run_cell] { g_editor.NotebookRunCell(run_buffer, run_cell); });
                         nb_right = nb_run_rect.x - 8.0f;
+                    }
+                    // Per-cell kernel dropdown chip: the kernel this block
+                    // runs on (its own metadata.kernel, or the notebook
+                    // default -- so it always reads filled in), plus a
+                    // caret. Clicking it (active pane only, like Run)
+                    // opens the kernel list (DrawNotebookKernelMenu).
+                    if (nb_span->type == NotebookCellType::Code) {
+                        std::string kernel_name = g_editor.NotebookCellKernelName(pane.buffer_id, nb_cell_idx);
+                        std::string chip_label = kernel_name;
+                        for (const NotebookKernelSpec &spec : g_editor.NotebookKernels()) {
+                            if (spec.name == kernel_name && !spec.display_name.empty()) { chip_label = spec.display_name; break; }
+                        }
+                        // A busy/dead marker for this cell's own kernel so
+                        // the header still reports kernel state per block.
+                        const NotebookSession::KernelProc *kp = g_editor.NotebookKernelState(pane.buffer_id, kernel_name);
+                        const char *dot = "";
+                        if (kp && kp->status == "busy") dot = " *";
+                        else if (kp && kp->status == "dead") dot = " x";
+                        // The caret is a drawn triangle, not a glyph: g_font
+                        // carries only ASCII, so a unicode chevron renders as
+                        // tofu (see draw_dropdown_btn's own note). Reserve a
+                        // fixed slot on the right of the chip for it.
+                        const std::string chip_text = chip_label + std::string(dot);
+                        const float chip_caret_w = 14.0f;
+                        const float chip_w = MeasureUiText(chip_text, g_font_size) + 12.0f + chip_caret_w;
+                        gfx::Rectangle chip_rect{nb_right - chip_w, ly + 1.0f, chip_w, static_cast<float>(line_height - 2)};
+                        const gfx::Color chip_fg = nb_cursor_in_cell ? nb_accent : ResolveHlGroup("Comment");
+                        const gfx::Color chip_border = nb_cursor_in_cell ? nb_accent : ResolveHlGroup("Border");
+                        gfx::DrawRectangleRounded(chip_rect, 0.3f, 4, gfx::Fade(ResolveHlGroup("Comment"), 0.12f));
+                        gfx::DrawRectangleRoundedLines(chip_rect, 0.3f, 4, chip_border);
+                        DrawUiText(chip_text, gfx::Vector2{chip_rect.x + 6.0f, ly}, g_font_size, chip_fg);
+                        {
+                            // (right, left, bottom) winding -- matches the
+                            // working DrawTriangle calls elsewhere in this file.
+                            const float tx = chip_rect.x + chip_rect.width - 9.0f, ty = chip_rect.y + chip_rect.height / 2.0f;
+                            gfx::DrawTriangle(gfx::Vector2{tx + 3.5f, ty - 2.0f}, gfx::Vector2{tx - 3.5f, ty - 2.0f},
+                                              gfx::Vector2{tx, ty + 2.5f}, chip_fg);
+                        }
+                        if (is_active) {
+                            const int chip_buffer = pane.buffer_id, chip_cell = nb_cell_idx;
+                            const gfx::Rectangle anchor_rect = chip_rect;
+                            RegisterClickRegion(chip_rect, [chip_buffer, chip_cell, anchor_rect] {
+                                // Toggle: a second click on the open cell's chip closes it.
+                                if (g_notebook_kernel_menu_buffer == chip_buffer && g_notebook_kernel_menu_cell == chip_cell) {
+                                    g_notebook_kernel_menu_buffer = -1;
+                                    g_notebook_kernel_menu_cell = -1;
+                                } else {
+                                    g_notebook_kernel_menu_buffer = chip_buffer;
+                                    g_notebook_kernel_menu_cell = chip_cell;
+                                    g_notebook_kernel_menu_anchor = anchor_rect;
+                                }
+                            });
+                        }
+                        nb_right = chip_rect.x - 8.0f;
                     }
                     const float nb_label_w = MeasureUiText(nb_label, g_font_size);
                     DrawUiText(nb_label, gfx::Vector2{nb_right - nb_label_w, ly}, g_font_size, nb_label_color);
@@ -31225,6 +31637,20 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         gfx::DrawTextEx(g_font, label_text.c_str(), gfx::Vector2{text_draw_x, p_label_y + (label_h - g_font_size) / 2.0f}, g_font_size, 0, gfx::White);
     }
 
+    // Notebook cell-card borders (see nb_cell_boxes above): stroked last,
+    // over the row text, so the rounded outline stays crisp. Code and
+    // markdown cards get different border hues; the cursor's cell is
+    // accented with a thicker stroke, the "which block am I in" cue the
+    // old full-height left bar used to give.
+    for (const NbCellBox &cb : nb_cell_boxes) {
+        gfx::Color border;
+        if (cb.active) border = ResolveHlGroup("Accent");
+        else if (cb.type == NotebookCellType::Markdown) border = gfx::Fade(ResolveHlGroup("Purple"), 0.55f);
+        else border = gfx::Fade(ResolveHlGroup("Border"), 0.9f);
+        const float rr = std::min(1.0f, 16.0f / std::max(1.0f, std::min(cb.rect.width, cb.rect.height)));
+        gfx::DrawRectangleRoundedLinesEx(cb.rect, rr, 5, cb.active ? 2.0f : 1.0f, border);
+    }
+
     gfx::EndScissorMode();
 
     DrawPaneBorder(x, y, w, h, is_active);
@@ -31380,19 +31806,20 @@ void DrawTabBar(int y) {
         int icon;             // Nerd Font codepoint, 0 = DrawRobotIcon
         int icon_open;        // codepoint while open, 0 = same as `icon`
         const char *tooltip;
+        const char *binding;  // equivalent shortcut, if one exists
         const char *color;    // highlight group for the icon at rest (hover/open still override to WorkspaceActive)
     };
     static const SidebarButton kSidebarButtons[] = {
-        {"Files", "MepFileTree", 0xf07b, 0xf07c, "Files", "Yellow"},                       // nf-fa-folder / folder_open
-        {"Buffers", "MepBuffers", 0xf0c5, 0, "Buffers", "Blue"},                            // nf-fa-files_o
-        {"Git", "MepGitStatus", 0xe725, 0, "Git: status, log, branches, stash", "Orange"},                 // nf-dev-git_branch
-        {"Symbols", "MepSymbols", 0xf121, 0, "Symbols", "Purple"},                         // nf-fa-code
-        {"Structure", "MepStructure", 0xf0e8, 0, "Structure", "Cyan"},                   // nf-fa-sitemap
-        {"Todo", "MepActivityTodoPanel", 0xf046, 0, "Todo", "Green"},                     // nf-fa-check_square_o
-        {"Tests", "MepActivityTestPanel", 0xf0c3, 0, "Tests", "Blue"},                    // nf-fa-flask
-        {"Notifications", "MepNotifyPanel", 0xf0f3, 0, "Notifications", "Red"},           // nf-fa-bell
-        {"AI Agent", "MepAiAgent", 0, 0, "AI agent", "Cyan"},
-        {"AI Agents", "MepAiAgents", 0xf0c0, 0, "AI agents (connected Claude Code sessions)", "Purple"},  // nf-fa-users
+        {"Files", "MepFileTree", 0xf07b, 0xf07c, "Files", "<Space>ff", "Yellow"},                       // nf-fa-folder / folder_open
+        {"Buffers", "MepBuffers", 0xf0c5, 0, "Buffers", "<Space>bB", "Blue"},                            // nf-fa-files_o
+        {"Git", "MepGitStatus", 0xe725, 0, "Git: status, log, branches, stash", "<Space>gg", "Orange"},  // nf-dev-git_branch
+        {"Symbols", "MepSymbols", 0xf121, 0, "Symbols", nullptr, "Purple"},                                // nf-fa-code
+        {"Structure", "MepStructure", 0xf0e8, 0, "Structure", "<Space>ss", "Cyan"},                       // nf-fa-sitemap
+        {"Todo", "MepActivityTodoPanel", 0xf046, 0, "Todo", "<Space>tt", "Green"},                         // nf-fa-check_square_o
+        {"Tests", "MepActivityTestPanel", 0xf0c3, 0, "Tests", "<Space>tT", "Blue"},                        // nf-fa-flask
+        {"Notifications", "MepNotifyPanel", 0xf0f3, 0, "Notifications", "<Space>nn", "Red"},              // nf-fa-bell
+        {"AI Agent", "MepAiAgent", 0, 0, "AI agent", nullptr, "Cyan"},
+        {"AI Agents", "MepAiAgents", 0xf0c0, 0, "AI agents (connected Claude Code sessions)", "<Space>al / <Space>aa", "Purple"},  // nf-fa-users
     };
     auto find_sidebar_by_title = [](const char *title) -> const SidebarInstance * {
         for (const SidebarInstance &sb : g_editor.Sidebars()) {
@@ -31426,7 +31853,10 @@ void DrawTabBar(int y) {
             const float gw = MeasureUiText(glyph, font_size);
             DrawUiText(glyph, gfx::Vector2{rect.x + (button_size - gw) / 2.0f, cy}, font_size, icon_color);
         }
-        tooltip_if_hovered(rect, std::string(button.tooltip) + (open ? " (click to close)" : ""));
+        std::string tooltip = button.tooltip;
+        if (button.binding) tooltip += " (" + std::string(button.binding) + ")";
+        if (open) tooltip += " (click to close)";
+        tooltip_if_hovered(rect, tooltip);
         RegisterClickRegion(rect, [title = button.title, command = button.command] {
             for (const SidebarInstance &sb : g_editor.Sidebars()) {
                 if (sb.title == title && sb.open) {
@@ -31451,12 +31881,13 @@ void DrawTabBar(int y) {
         const char *command;  // :command that opens the picker
         int icon;             // Nerd Font codepoint
         const char *tooltip;
+        const char *binding;  // equivalent shortcut
         const char *color;    // highlight group for the icon at rest
     };
     static const SearchButton kSearchButtons[] = {
-        {"lua mep.buffer_search()", 0xf002, "Search in buffer", "Yellow"},           // nf-fa-search
-        {"lua mep.live_grep()", 0xf1e5, "Search project (live grep)", "Green"},      // nf-fa-binoculars
-        {"lua mep.buffers()", 0xf0c5, "Switch buffer", "Cyan"},                      // nf-fa-files_o
+        {"lua mep.buffer_search()", 0xf002, "Search in buffer", "/ or <Space>/", "Yellow"},           // nf-fa-search
+        {"lua mep.live_grep()", 0xf1e5, "Search project (live grep)", "<Space>pr", "Green"},          // nf-fa-binoculars
+        {"lua mep.buffers()", 0xf0c5, "Switch buffer", "<Space>bb", "Cyan"},                            // nf-fa-files_o
     };
     for (size_t bi = std::size(kSearchButtons); bi-- > 0;) {
         const SearchButton &button = kSearchButtons[bi];
@@ -31468,7 +31899,7 @@ void DrawTabBar(int y) {
         const float gw = MeasureUiText(glyph, font_size);
         DrawUiText(glyph, gfx::Vector2{rect.x + (button_size - gw) / 2.0f, cy}, font_size,
                    ResolveHlGroup(hovered ? "WorkspaceActive" : button.color));
-        tooltip_if_hovered(rect, button.tooltip);
+        tooltip_if_hovered(rect, std::string(button.tooltip) + " (" + button.binding + ")");
         RegisterClickRegion(rect, [command = button.command] { g_editor.RunCommand(command); });
     }
     // Divider between the search buttons and the chips to their left.
@@ -31537,6 +31968,7 @@ void DrawTabBar(int y) {
         const gfx::Rectangle rect{x, fy, w, fbar_h};
         std::string tip = project.root;
         if (g_editor.ProjectCount() > 1) tip += "  (" + std::to_string(g_editor.ProjectCount()) + " projects loaded)";
+        tip += "  (<Space>pp)";
         tooltip_if_hovered(rect, tip);
         RegisterClickRegion(rect, [] { g_editor.RunCommand("lua mep.projects_open()"); });
         x += w + 2;
@@ -31645,7 +32077,7 @@ void DrawTabBar(int y) {
         const gfx::Rectangle rect{x, fy, w, fbar_h};
         const bool hovered = gfx::CheckCollisionPointRec(mouse, rect);
         DrawUiText(ws_add_label, gfx::Vector2{x, cy}, font_size, ResolveHlGroup(hovered ? "WorkspaceActive" : "Green"));
-        tooltip_if_hovered(rect, "New workspace");
+        tooltip_if_hovered(rect, "New workspace (<Space>wn or Ctrl-Shift-T)");
         RegisterClickRegion(rect, [] { g_editor.RunCommand("lua mep.workspace_new_prompt()"); });
         x += w;
     }
@@ -31654,7 +32086,7 @@ void DrawTabBar(int y) {
         const gfx::Rectangle rect{x, fy, w, fbar_h};
         const bool hovered = gfx::CheckCollisionPointRec(mouse, rect);
         DrawUiText(ws_close_label, gfx::Vector2{x, cy}, font_size, ResolveHlGroup(hovered ? "WorkspaceActive" : "Red"));
-        tooltip_if_hovered(rect, "Close active workspace");
+        tooltip_if_hovered(rect, "Close active workspace (<Space>wd)");
         RegisterClickRegion(rect, [] { g_editor.RunCommand("wsdelete"); });
         x += w;
     }
@@ -31669,7 +32101,9 @@ void DrawTabBar(int y) {
         // Tooltip only for the open (hollow) circles of the other tabs --
         // with one tab there's nothing to switch to, and the active tab's
         // filled circle isn't a meaningful click target.
-        if (!active && g_editor.TabCount() > 1) tooltip_if_hovered(rect, "Switch to tab " + std::to_string(i + 1));
+        if (!active && g_editor.TabCount() > 1) {
+            tooltip_if_hovered(rect, "Switch to tab " + std::to_string(i + 1) + " (Ctrl-Tab / Ctrl-Shift-Tab)");
+        }
         // Click-to-switch (Phase 11 click-dispatch gap): a click anywhere on
         // this tab's circle jumps straight to it via GoToTab, same as :tabn N.
         RegisterClickRegion(rect, [i] { g_editor.GoToTab(i); });
@@ -31681,7 +32115,7 @@ void DrawTabBar(int y) {
     // Opens a new (unnamed) tab.
     {
         const gfx::Rectangle rect{x, fy, add_w, fbar_h};
-        tooltip_if_hovered(rect, "New tab");
+        tooltip_if_hovered(rect, "New tab (Ctrl-T)");
         RegisterClickRegion(rect, [] { g_editor.TabNew(""); });
     }
     x += add_w;
@@ -31759,7 +32193,7 @@ const gfx::Texture2D &DashboardLogoTexture(bool light_theme) {
 void DrawDashboard(float x, float y, float w, float h) {
     std::vector<std::string> lines = SplitLines(kAboutText);
     lines.emplace_back();
-    lines.emplace_back("i to start typing  :e to open a file  <leader> for keys  :q to quit");
+    lines.emplace_back("i to start typing  :e to open a file  <Space> for keys  :q to quit");
     float font_size = g_font_size;
     int line_h = static_cast<int>(font_size) + 8;
     float max_w = 0;
@@ -32218,6 +32652,8 @@ void DrawEditor() {
     // DrawMenuBar's own dropdown just above -- a Run button lives inside a
     // pane header, so its own "Setup" dropdown needs the same treatment.
     DrawRunButtonMenu();
+    // A notebook code cell's kernel dropdown -- same on-top treatment.
+    DrawNotebookKernelMenu();
     // Same reasoning as the comment just above (drawn after sidebars, not
     // before, so it sits on top instead of being painted over by one) --
     // this used to be drawn inline with the command-line text itself,
@@ -32862,6 +33298,16 @@ void DispatchChromeClicks() {
     if (g_editor.IsFloatPaneOpen() && !PointInRect(mouse, g_float_pane_rect)) {
         g_editor.CloseFloatPane();
         return;
+    }
+    // A click outside an open notebook kernel dropdown closes it. Not a
+    // `return`: the click still falls through to the region loop so
+    // clicking straight onto a different cell's kernel chip both closes
+    // this menu and opens that one in a single click (a click inside the
+    // menu is one of its own item regions, handled by the loop below).
+    if (g_notebook_kernel_menu_buffer != -1 && !PointInRect(mouse, g_notebook_kernel_menu_rect)) {
+        g_notebook_kernel_menu_buffer = -1;
+        g_notebook_kernel_menu_cell = -1;
+        g_notebook_kernel_menu_rect = {};
     }
     for (const ClickRegion &r : g_click_regions) {
         if (PointInRect(mouse, r.rect)) {

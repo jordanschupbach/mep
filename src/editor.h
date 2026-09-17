@@ -699,6 +699,25 @@ struct WhichKeyBinding {
     std::string sequence;
     std::string description;
     int lua_ref = 0;
+    int icon = 0;
+    std::string icon_hl;
+};
+
+// A named leader-key group. `icon` is a Nerd Font codepoint (or zero for
+// text-only groups) displayed before the group's key in the which-key popup.
+struct WhichKeyGroup {
+    std::string label;
+    int icon = 0;
+    std::string icon_hl;
+};
+
+// One row rendered by the which-key popup. Group rows carry their optional
+// icon; ordinary command rows leave it at zero.
+struct WhichKeyDisplayEntry {
+    std::string key;
+    std::string label;
+    int icon = 0;
+    std::string icon_hl;
 };
 
 // The in-memory content of one file (or scratch buffer). Undo history is
@@ -1918,21 +1937,38 @@ struct NotebookSession {
     std::unordered_map<int, int> trailing_slots;
     int next_uid = 1;
 
-    // Kernel process (JobManager id; 0 = none). `status` is the
+    // One persistent kernel process per kernel *name* this notebook has
+    // run a cell on (NotebookKernelSpec::Mode::Python/Protocol; a
+    // Script-mode kernel has no resident process and no entry here),
+    // started lazily by the first cell that picks it. `status` is the
     // human-readable state drawn in cell headers: "not started",
-    // "starting", "idle", "busy", "dead". `spawn_generation` is captured
-    // by each spawn's callbacks so a stale exit notification from a
-    // killed (restarted) kernel can't clobber its replacement's state.
-    int kernel_job = 0;
+    // "starting", "idle", "busy", "dead". `generation` (drawn from the
+    // session-wide spawn_generation counter) is captured by each spawn's
+    // callbacks so a stale exit notification from a killed (restarted)
+    // kernel can't clobber its replacement's state.
+    struct KernelProc {
+        int job = 0;   // JobManager id; 0 = none
+        int generation = 0;
+        bool ready = false;
+        std::string status = "not started";
+        std::string version;      // the interpreter's own version, from its "ready" message
+        std::string last_error;   // last kernel-level stderr line / spawn failure, for the status line
+    };
+    std::map<std::string, KernelProc> kernels;
     int spawn_generation = 0;
-    bool kernel_ready = false;
-    std::string status = "not started";
-    std::string python_version;
-    std::string last_error;   // last kernel-level stderr line / spawn failure, for the status line
-    std::deque<int> run_queue;  // cell uids waiting for the kernel
+    // Runs are strictly sequential across every kernel of the notebook
+    // (one in-flight cell at a time, in run order, like Jupyter) -- so a
+    // "run all" over mixed cells still executes top to bottom.
+    std::deque<int> run_queue;  // cell uids waiting to run
     int running_uid = 0;        // cell whose reply is in flight, 0 = idle
+    std::string running_kernel; // its kernel's name
     int running_request_id = 0;
+    int running_job = 0;        // Script-mode: the per-cell process; 0 for a protocol kernel's request
     int next_request_id = 1;
+    // In[N] is one shared sequence per notebook regardless of which
+    // kernel ran the cell (what Jupyter shows too), so the editor counts
+    // rather than trusting any one kernel's own counter.
+    int next_execution_count = 1;
 };
 
 // Fixed Kanban card/column geometry (screen pixels, unscaled) -- shared
@@ -4574,6 +4610,32 @@ public:
      * @param command The executable name/path.
      */
     void SetNotebookPython(const std::string &command) { notebook_python_ = command; }
+    // The kernels offered in every code cell's dropdown (see
+    // NotebookKernelSpec). Replaces the whole registry; specs whose
+    // command can't be found on PATH are dropped so the dropdown only
+    // lists kernels that can actually run here. Kernel processes already
+    // running keep going under their old spec until restarted.
+    void SetNotebookKernels(std::vector<NotebookKernelSpec> specs);
+    const std::vector<NotebookKernelSpec> &NotebookKernels() const { return notebook_kernels_; }
+    // The kernel a notebook's cells run on when they don't pick one
+    // (NotebookDefaultKernel over the registry); "" for a non-notebook.
+    std::string NotebookDefaultKernelName(int buffer_id) const;
+    // The kernel cell `cell_index` (or the cursor's cell when < 0)
+    // effectively runs on: its own metadata.kernel, else the default.
+    // "" when the buffer isn't a notebook or the index is out of range.
+    std::string NotebookCellKernelName(int buffer_id, int cell_index);
+    // Records `name` as the cell's kernel (its metadata.kernel, saved with
+    // the file) and re-highlights the buffer so the cell body picks up
+    // the kernel's language. `name` need not be registered -- a file may
+    // name a kernel this machine lacks; running such a cell reports it.
+    bool NotebookSetCellKernel(int buffer_id, int cell_index, const std::string &name);
+    // Resident process state for one kernel name of a notebook, or
+    // nullptr when it has never been started (or is a Script kernel).
+    const NotebookSession::KernelProc *NotebookKernelState(int buffer_id, const std::string &name) const;
+    // Treesitter filetype key for the cell containing buffer row `row`
+    // (a code cell's kernel language; "md" for markdown), or "" for none
+    // -- what the syntax chunk asks per `# %%` marker row.
+    std::string NotebookCellLanguageAtRow(int buffer_id, int row);
     /**
      * @brief Records the renderer's current char-width / line-height ratio, which sizes
      * image output blocks (NotebookImageSlots). DrawPane reports it every frame before
@@ -7722,8 +7784,11 @@ public:
      * @param sequence The key sequence following the leader key.
      * @param description Human-readable description shown in the which-key overlay.
      * @param lua_ref The Lua registry reference to invoke when the sequence is completed.
+     * @param icon Optional Nerd Font codepoint shown before the key.
+     * @param icon_hl Optional highlight group used to color the icon.
      */
-    void RegisterWhichKey(const std::string &sequence, const std::string &description, int lua_ref);
+    void RegisterWhichKey(const std::string &sequence, const std::string &description, int lua_ref, int icon = 0,
+                          const std::string &icon_hl = "");
     // Enters Mode::WhichKey with an empty prefix -- called when the leader
     // key is pressed in Normal mode (see the char-dispatch loop).
     /**
@@ -7743,9 +7808,9 @@ public:
      * @return The matching sequence/remainder pairs.
      */
     std::vector<std::pair<std::string, std::string>> WhichKeyMatches() const;
-    // mep.leader_group(prefix, label): names a group of bindings that
+    // mep.leader_group(prefix, label[, icon[, icon_hl]]): names a group of bindings that
     // share `prefix` (e.g. "o" -> "org") so DrawWhichKeyOverlay can show
-    // one collapsed "o  +org" row instead of every leaf under it spelled
+    // one collapsed, icon-decorated "icon  o  org" row instead of every leaf under it spelled
     // out in full -- real which-key.nvim requires the same explicit
     // per-group naming (there's no reliable way to auto-derive "org" from
     // a mix of "Org: ..."/"Org-roam: ..." descriptions in general).
@@ -7753,9 +7818,12 @@ public:
      * @brief Names a group of which-key bindings sharing a prefix, so the overlay can show one collapsed row for them.
      * @param prefix The shared key sequence prefix.
      * @param label The group's display label.
+     * @param icon Optional Nerd Font codepoint shown before the key.
+     * @param icon_hl Optional highlight group used to color the icon.
      */
-    void RegisterWhichKeyGroup(const std::string &prefix, const std::string &label) {
-        whichkey_groups_[NormalizeWhichKeySequence(prefix)] = label;
+    void RegisterWhichKeyGroup(const std::string &prefix, const std::string &label, int icon = 0,
+                               const std::string &icon_hl = "") {
+        whichkey_groups_[NormalizeWhichKeySequence(prefix)] = {label, icon, icon_hl};
     }
     // Leader sequences are stored one byte per key. Enter is the one
     // non-printable key HandleWhichKeyInput accepts (so a binding like
@@ -7775,17 +7843,15 @@ public:
      */
     static std::string WhichKeySequenceDisplay(const std::string &seq);
     // What DrawWhichKeyOverlay actually lists: WhichKeyMatches() bucketed
-    // by their next character, collapsed to one "+label" row per bucket
-    // that both has more than one leaf *and* a registered group label;
-    // every other bucket (a lone leaf, or an unlabeled multi-leaf one)
-    // falls through to listing its own leaf/leaves exactly as before, so
-    // an unnamed group degrades to today's flat behavior rather than
-    // hiding anything.
+    // by their next character, collapsed to one labeled row per explicitly
+    // registered group. This also lets a single two-key command (e.g. yy)
+    // retain a useful named hierarchy. Unnamed buckets fall through to
+    // listing their leaf/leaves exactly as before.
     /**
-     * @brief Buckets the current which-key matches by their next character, collapsing labeled multi-leaf buckets into a single "+label" row.
+     * @brief Buckets the current which-key matches by their next character, collapsing explicitly labeled buckets into a single row.
      * @return The display rows to render in the which-key overlay.
      */
-    std::vector<std::pair<std::string, std::string>> WhichKeyDisplayEntries() const;
+    std::vector<WhichKeyDisplayEntry> WhichKeyDisplayEntries() const;
     // Every registered leader-sequence binding, unfiltered by any typed
     // prefix -- the leader-sequence half of the keybinding-introspection
     // picker (mep.leader_bindings(), NVIM_PARITY_PLAN.md Phase 25), the
@@ -8916,12 +8982,29 @@ private:
     NotebookSession *GetNotebookMutable(int buffer_id);
     void NotebookSyncFromText(NotebookSession &sess);
     void NotebookRebuildSlotCache(NotebookSession &sess);
-    void NotebookEnsureKernel(NotebookSession &sess);
+    // Starts (if needed) the resident process for a Python/Protocol
+    // kernel and returns its state; nullptr for an unregistered name or a
+    // Script kernel (which has no resident process).
+    NotebookSession::KernelProc *NotebookEnsureKernel(NotebookSession &sess, const std::string &kernel_name);
     void NotebookPumpQueue(NotebookSession &sess);
-    void NotebookHandleKernelLine(int buffer_id, int generation, const std::string &line);
-    void NotebookKernelExited(int buffer_id, int generation, int code);
+    void NotebookHandleKernelLine(int buffer_id, const std::string &kernel_name, int generation, const std::string &line);
+    void NotebookKernelExited(int buffer_id, const std::string &kernel_name, int generation, int code);
+    // Script-mode per-cell process callbacks, matched to the in-flight
+    // request by (uid, request_id) so a cell re-run after a kill can't
+    // receive the old process's tail.
+    void NotebookScriptOutput(int buffer_id, int uid, int request_id, const char *stream, const std::string &line);
+    void NotebookScriptExited(int buffer_id, int uid, int request_id, int code);
+    void NotebookFinishRunning(NotebookSession &sess, NotebookCell &cell);
     void NotebookFailRunning(NotebookSession &sess, const std::string &reason);
+    void NotebookFailRunningCell(NotebookCell &cell, const std::string &reason);
+    void NotebookKillKernels(NotebookSession &sess);
+    std::string NotebookKernelCwd(int buffer_id);
     std::string notebook_python_ = "python3";
+    // Kernel registry (SetNotebookKernels). Starts with just the built-in
+    // python3 kernel so a notebook works before kBuiltinNotebook's Lua
+    // has pushed mep.opt.notebook_kernels.
+    std::vector<NotebookKernelSpec> notebook_kernels_ = {
+        {"python3", "Python 3", "py", {}, NotebookKernelSpec::Mode::Python}};
     double notebook_char_aspect_ = kNotebookDefaultCharAspect;
 
     // Shared by Visual mode's d/x/y and the menu-bar Copy/Cut: operates on
@@ -9586,10 +9669,9 @@ private:
     std::vector<WhichKeyBinding> whichkey_bindings_;
     char leader_key_ = ' ';
     std::string whichkey_prefix_;
-    // Sequence prefix (e.g. "o", "oe") -> group label (e.g. "org",
-    // "export"), registered via mep.leader_group -- WhichKeyDisplayEntries'
-    // own lookup table.
-    std::unordered_map<std::string, std::string> whichkey_groups_;
+    // Sequence prefix (e.g. "o", "oe") -> group metadata, registered via
+    // mep.leader_group -- WhichKeyDisplayEntries' own lookup table.
+    std::unordered_map<std::string, WhichKeyGroup> whichkey_groups_;
     int statusline_ref_ = 0;
     bool active_todo_ = false;
     std::string active_todo_text_;
@@ -9835,9 +9917,11 @@ private:
     // Ctrl-W waiting for a second key (window commands: w/W/c/s/v).
     bool pending_ctrl_w_ = false;
     // Ctrl-C waiting for a second chord key -- Ctrl-C (org-babel "execute
-    // this source block") or Ctrl-E (org export-format dispatch, see
-    // pending_org_export_ below), mirroring real Emacs org-mode's own
-    // C-c C-c / C-c C-e bindings. Unlike pending_g_/pending_ctrl_w_'s
+    // this source block", or "run this cell" in a Jupyter notebook buffer,
+    // where HandleInsertInput honors the chord as well) or Ctrl-E (org
+    // export-format dispatch, see pending_org_export_ below), mirroring
+    // real Emacs org-mode's own C-c C-c / C-c C-e bindings (and EIN's
+    // C-c C-c for notebooks). Unlike pending_g_/pending_ctrl_w_'s
     // second key (an ordinary unmodified char, consumed via
     // HandleNormalChar's char loop), every key in a Ctrl-C-led chord
     // holds Ctrl, so none of them ever produce a GetCharPressed() char

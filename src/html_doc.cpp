@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
+#include <filesystem>
 #include <functional>
 #include <iterator>
 #include <initializer_list>
@@ -441,6 +442,15 @@ void ParseHtml(const std::string &html, HtmlDoc &out) {
             std::string raw_text = (close_start == std::string::npos) ? html.substr(i) : html.substr(i, close_start - i);
             if (tr.tag == "script") {
                 out.scripts.push_back(raw_text);
+                // Keep the source on the element as well as in the legacy
+                // execution list.  Session-level resource loading rebuilds
+                // that list in DOM order once local `src` files are folded
+                // in, so inline and external scripts interleave correctly.
+                auto tnode = std::make_unique<DomNode>();
+                tnode->type = DomNodeType::Text;
+                tnode->text = raw_text;
+                tnode->parent = raw;
+                raw->children.push_back(std::move(tnode));
             } else if (tr.tag == "style") {
                 auto tnode = std::make_unique<DomNode>();
                 tnode->type = DomNodeType::Text;
@@ -480,6 +490,50 @@ void ParseHtml(const std::string &html, HtmlDoc &out) {
 
     ExtractMathSpans(out);
     ComputeStyles(out);
+}
+
+void LoadLocalHtmlResources(HtmlDoc &doc, const std::string &base_dir) {
+    doc.resource_base_dir = base_dir;
+    const std::filesystem::path base(base_dir);
+    auto read_resource = [&](const std::string &href, std::string &contents) {
+        if (href.empty() || href.find("://") != std::string::npos) return false;
+        std::filesystem::path resolved(href);
+        if (resolved.is_relative()) resolved = base / resolved;
+        std::ifstream input(resolved, std::ios::binary);
+        if (!input) return false;
+        contents.assign(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+        return true;
+    };
+    std::function<void(DomNode *)> load_styles = [&](DomNode *node) {
+        if (!node) return;
+        if (node->type == DomNodeType::Element && node->tag == "link") {
+            auto rel = node->attrs.find("rel"), href = node->attrs.find("href");
+            if (rel != node->attrs.end() && href != node->attrs.end() && ToLower(rel->second) == "stylesheet") {
+                std::string css;
+                if (read_resource(href->second, css)) {
+                    node->tag = "style";
+                    auto text = std::make_unique<DomNode>(); text->type = DomNodeType::Text; text->text = std::move(css); text->parent = node;
+                    node->children.push_back(std::move(text));
+                }
+            }
+        }
+        for (const auto &child : node->children) load_styles(child.get());
+    };
+    load_styles(doc.root.get());
+    doc.scripts.clear();
+    std::function<void(const DomNode *)> collect_scripts = [&](const DomNode *node) {
+        if (!node) return;
+        if (node->type == DomNodeType::Element && node->tag == "script") {
+            std::string code;
+            auto src = node->attrs.find("src");
+            if (src != node->attrs.end()) read_resource(src->second, code);
+            else for (const auto &child : node->children) if (child->type == DomNodeType::Text) code += child->text;
+            if (!code.empty()) doc.scripts.push_back(std::move(code));
+        }
+        for (const auto &child : node->children) collect_scripts(child.get());
+    };
+    collect_scripts(doc.root.get());
+    ComputeStyles(doc);
 }
 
 namespace {
@@ -523,9 +577,12 @@ ComputedStyle TagDefaults(const std::string &tag) {
     } else if (tag == "code" || tag == "tt" || tag == "kbd" || tag == "samp") {
         s.block = false;
         s.monospace = true;
+        s.font_family = HtmlFontFamily::Mono;
     } else if (tag == "pre") {
         s.monospace = true;
+        s.font_family = HtmlFontFamily::Mono;
         s.preserve_whitespace = true;
+        s.white_space = HtmlWhiteSpace::Pre;
         s.margin_top_lines = 1;
         s.margin_bottom_lines = 1;
     } else if (tag == "ul" || tag == "ol") {
@@ -702,9 +759,9 @@ bool MatchesSimple(const DomNode *node, const CssSimpleSelector &simple) {
         }
         if (name == "nth-child" && !NthMatches(argument, ElementIndex(node, false))) return false;
         if (name == "nth-of-type" && !NthMatches(argument, ElementIndex(node, true))) return false;
-        // Interaction state is added with the event system; unsupported
-        // pseudo classes never match rather than incorrectly styling all nodes.
-        if (name == "hover" || name == "focus" || name == "active") return false;
+        if (name == "hover" && !node->interaction_hover) return false;
+        if (name == "focus" && !node->interaction_focus) return false;
+        if (name == "active" && !node->interaction_active) return false;
     }
     return true;
 }
@@ -1003,6 +1060,39 @@ void ApplyDeclarations(ComputedStyle &s, const std::unordered_map<std::string, s
         if (auto it = decls.find(name); it != decls.end()) ParseCssLength(it->second, *target, std::string(name).find("margin") == 0);
     }
     if (auto it = decls.find("box-sizing"); it != decls.end()) s.border_box = it->second == "border-box";
+    if (auto it = decls.find("text-align"); it != decls.end()) {
+        if (it->second == "center") s.text_align = HtmlTextAlign::Center;
+        else if (it->second == "right" || it->second == "end") s.text_align = HtmlTextAlign::Right;
+        else if (it->second == "justify") s.text_align = HtmlTextAlign::Justify;
+        else s.text_align = HtmlTextAlign::Left;
+    }
+    if (auto it = decls.find("white-space"); it != decls.end()) {
+        if (it->second == "pre" || it->second == "pre-wrap") s.white_space = HtmlWhiteSpace::Pre;
+        else if (it->second == "nowrap") s.white_space = HtmlWhiteSpace::NoWrap;
+        else s.white_space = HtmlWhiteSpace::Normal;
+    }
+    if (auto it = decls.find("letter-spacing"); it != decls.end()) ParseCssLength(it->second, s.letter_spacing);
+    if (auto it = decls.find("line-height"); it != decls.end()) {
+        char *end = nullptr;
+        const double value = std::strtod(it->second.c_str(), &end);
+        if (end != it->second.c_str() && *end == '\0' && value > 0.0) {
+            s.line_height_multiplier = static_cast<float>(value);
+            s.line_height_length = CssLength{};
+        } else if (ParseCssLength(it->second, s.line_height_length)) {
+            s.line_height_multiplier = 0.0f;
+        }
+    }
+    if (auto it = decls.find("font-family"); it != decls.end()) {
+        std::string family = ToLower(it->second);
+        // CSS font-family is an ordered fallback list.  We only ship the
+        // three generic faces, so select the first generic family we know;
+        // an otherwise unknown name lands on the standard sans fallback.
+        if (family.find("monospace") != std::string::npos) s.font_family = HtmlFontFamily::Mono;
+        else if (family.find("sans-serif") != std::string::npos || family.find("sans") != std::string::npos)
+            s.font_family = HtmlFontFamily::Sans;
+        else if (family.find("serif") != std::string::npos) s.font_family = HtmlFontFamily::Serif;
+        else s.font_family = HtmlFontFamily::Sans;
+    }
     if (auto it = decls.find("font-weight"); it != decls.end()) {
         const std::string &v = it->second;
         if (v == "bold" || v == "bolder" || (!v.empty() && std::isdigit(static_cast<unsigned char>(v[0])) && v >= "600")) {
@@ -1178,7 +1268,12 @@ void WalkAndStyle(DomNode *n, const ComputedStyle &parent, const std::vector<Css
     s.underline = s.underline || parent.underline;
     s.strikethrough = s.strikethrough || parent.strikethrough;
     s.monospace = s.monospace || parent.monospace;
-    s.preserve_whitespace = s.preserve_whitespace || parent.preserve_whitespace;
+    if (!s.monospace) s.font_family = parent.font_family;
+    s.text_align = parent.text_align;
+    s.line_height_multiplier = parent.line_height_multiplier;
+    s.line_height_length = parent.line_height_length;
+    s.letter_spacing = parent.letter_spacing;
+    if (n->tag != "pre") s.white_space = parent.white_space;
     s.list_depth = list_depth;
     s.link_href = parent.link_href;
     s.link_node = parent.link_node;
@@ -1191,6 +1286,7 @@ void WalkAndStyle(DomNode *n, const ComputedStyle &parent, const std::vector<Css
 
     ApplyMatchingRules(n, s, rules);
     if (auto it = n->attrs.find("style"); it != n->attrs.end()) ApplyDeclarations(s, ParseDeclarations(it->second));
+    s.preserve_whitespace = s.white_space == HtmlWhiteSpace::Pre;
     n->style = s;
 
     bool is_list_container = n->tag == "ul" || n->tag == "ol";

@@ -1241,6 +1241,139 @@ int l_notebook_set_python(lua_State *L) {
     return 0;
 }
 
+namespace {
+// Reads a kernel "mode" string into the enum (default Script -- the
+// safest for an unknown value, since a stateless run can't corrupt a
+// long-lived process's namespace).
+NotebookKernelSpec::Mode NotebookModeFromString(const char *s) {
+    std::string m = s ? s : "";
+    if (m == "python") return NotebookKernelSpec::Mode::Python;
+    if (m == "protocol") return NotebookKernelSpec::Mode::Protocol;
+    return NotebookKernelSpec::Mode::Script;
+}
+}  // namespace
+
+/**
+ * @brief Implements mep.notebook_set_kernels(list): replaces the code-cell kernel registry.
+ * @param L Lua state; arg 1 is an array of {name=, display_name=, language=, command=<array>, mode=} tables.
+ * @return Number of values pushed (0).
+ */
+int l_notebook_set_kernels(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    std::vector<NotebookKernelSpec> specs;
+    lua_Integer n = luaL_len(L, 1);
+    for (lua_Integer i = 1; i <= n; i++) {
+        lua_rawgeti(L, 1, i);
+        if (lua_istable(L, -1)) {
+            NotebookKernelSpec spec;
+            lua_getfield(L, -1, "name");
+            spec.name = lua_isstring(L, -1) ? lua_tostring(L, -1) : "";
+            lua_pop(L, 1);
+            lua_getfield(L, -1, "display_name");
+            spec.display_name = lua_isstring(L, -1) ? lua_tostring(L, -1) : "";
+            lua_pop(L, 1);
+            lua_getfield(L, -1, "language");
+            spec.language = lua_isstring(L, -1) ? lua_tostring(L, -1) : "";
+            lua_pop(L, 1);
+            lua_getfield(L, -1, "mode");
+            spec.mode = NotebookModeFromString(lua_isstring(L, -1) ? lua_tostring(L, -1) : nullptr);
+            lua_pop(L, 1);
+            lua_getfield(L, -1, "command");
+            if (lua_istable(L, -1)) {
+                lua_Integer cn = luaL_len(L, -1);
+                for (lua_Integer c = 1; c <= cn; c++) {
+                    lua_rawgeti(L, -1, c);
+                    if (lua_isstring(L, -1)) spec.command.emplace_back(lua_tostring(L, -1));
+                    lua_pop(L, 1);
+                }
+            } else if (lua_isstring(L, -1)) {
+                spec.command.emplace_back(lua_tostring(L, -1));
+            }
+            lua_pop(L, 1);
+            specs.push_back(std::move(spec));
+        }
+        lua_pop(L, 1);
+    }
+    GetEditor(L)->SetNotebookKernels(std::move(specs));
+    return 0;
+}
+
+/**
+ * @brief Implements mep.notebook_kernels(): array of {name=, display_name=, language=} for every registered kernel.
+ * @param L Lua state.
+ * @return Number of values pushed (1).
+ */
+int l_notebook_kernels(lua_State *L) {
+    const std::vector<NotebookKernelSpec> &specs = GetEditor(L)->NotebookKernels();
+    lua_createtable(L, static_cast<int>(specs.size()), 0);
+    for (size_t i = 0; i < specs.size(); i++) {
+        lua_newtable(L);
+        lua_pushstring(L, specs[i].name.c_str());
+        lua_setfield(L, -2, "name");
+        lua_pushstring(L, specs[i].display_name.c_str());
+        lua_setfield(L, -2, "display_name");
+        lua_pushstring(L, specs[i].language.c_str());
+        lua_setfield(L, -2, "language");
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+    return 1;
+}
+
+/**
+ * @brief Implements mep.notebook_cell_kernel(index?): the kernel name a cell effectively runs on (its own or the default).
+ * @param L Lua state; optional arg 1 is a 0-based cell index (default: the cursor's cell).
+ * @return Number of values pushed (1: string, or nil outside a notebook).
+ */
+int l_notebook_cell_kernel(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    std::string name = ed->NotebookCellKernelName(ed->CurrentBufferId(), NotebookIndexArg(L, 1));
+    if (name.empty() && !ed->IsNotebookBuffer(ed->CurrentBufferId())) {
+        lua_pushnil(L);
+    } else {
+        lua_pushstring(L, name.c_str());
+    }
+    return 1;
+}
+
+/**
+ * @brief Implements mep.notebook_set_cell_kernel(name, index?): sets which kernel a cell runs on.
+ * @param L Lua state; arg 1 is the kernel name (or "" to follow the notebook default), optional arg 2 a 0-based cell index.
+ * @return Number of values pushed (1: true on success).
+ */
+int l_notebook_set_cell_kernel(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    const char *name = luaL_optstring(L, 1, "");
+    lua_pushboolean(L, ed->NotebookSetCellKernel(ed->CurrentBufferId(), NotebookIndexArg(L, 2), name));
+    return 1;
+}
+
+/**
+ * @brief Implements mep.notebook_default_kernel(): the kernel name cells run on when they pick none.
+ * @param L Lua state.
+ * @return Number of values pushed (1: string, or nil outside a notebook).
+ */
+int l_notebook_default_kernel(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    std::string name = ed->NotebookDefaultKernelName(ed->CurrentBufferId());
+    if (name.empty()) lua_pushnil(L);
+    else lua_pushstring(L, name.c_str());
+    return 1;
+}
+
+/**
+ * @brief Implements mep.notebook_cell_language(row): the treesitter filetype for the cell containing a 1-based buffer row.
+ * @param L Lua state; arg 1 is a 1-based buffer row.
+ * @return Number of values pushed (1: string like "py"/"r"/"md", or nil for none).
+ */
+int l_notebook_cell_language(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    int row = static_cast<int>(luaL_checkinteger(L, 1)) - 1;   // Lua rows are 1-based
+    std::string lang = ed->NotebookCellLanguageAtRow(ed->CurrentBufferId(), row);
+    if (lang.empty()) lua_pushnil(L);
+    else lua_pushstring(L, lang.c_str());
+    return 1;
+}
+
 /**
  * @brief Implements mep.notebook_status(): {status=, python=, cells=, running=, queued=} for the current notebook, or nil.
  * @param L Lua state.
@@ -1253,18 +1386,25 @@ int l_notebook_status(lua_State *L) {
         lua_pushnil(L);
         return 1;
     }
+    // The reported status/python/error describe the notebook's default
+    // kernel (what a cell runs on unless it picks another); `running`/
+    // `queued` are notebook-wide since runs are sequential across kernels.
+    std::string default_kernel = ed->NotebookDefaultKernelName(ed->CurrentBufferId());
+    const NotebookSession::KernelProc *kp = ed->NotebookKernelState(ed->CurrentBufferId(), default_kernel);
     lua_newtable(L);
-    lua_pushstring(L, sess->status.c_str());
+    lua_pushstring(L, kp ? kp->status.c_str() : "not started");
     lua_setfield(L, -2, "status");
-    lua_pushstring(L, sess->python_version.c_str());
+    lua_pushstring(L, kp ? kp->version.c_str() : "");
     lua_setfield(L, -2, "python");
+    lua_pushstring(L, default_kernel.c_str());
+    lua_setfield(L, -2, "kernel");
     lua_pushinteger(L, static_cast<lua_Integer>(sess->doc.cells.size()));
     lua_setfield(L, -2, "cells");
     lua_pushboolean(L, sess->running_uid != 0);
     lua_setfield(L, -2, "running");
     lua_pushinteger(L, static_cast<lua_Integer>(sess->run_queue.size()));
     lua_setfield(L, -2, "queued");
-    lua_pushstring(L, sess->last_error.c_str());
+    lua_pushstring(L, kp ? kp->last_error.c_str() : "");
     lua_setfield(L, -2, "error");
     return 1;
 }
@@ -7974,25 +8114,33 @@ int l_set_leader(lua_State *L) {
     return 0;
 }
 
-// mep.leader_map(sequence, description, fn): binds a key sequence typed
-// after the leader (e.g. mep.leader_map('ff', 'Find files', mep.find_files)).
+// mep.leader_map(sequence, description, fn[, icon[, icon_hl]]): binds a key
+// sequence typed after the leader (e.g. mep.leader_map('ff', 'Find files',
+// mep.find_files)). `icon` is an optional Nerd Font codepoint and `icon_hl`
+// names its optional highlight group in the which-key popup.
 int l_leader_map(lua_State *L) {
     const char *sequence = luaL_checkstring(L, 1);
     const char *description = luaL_checkstring(L, 2);
     luaL_checktype(L, 3, LUA_TFUNCTION);
     lua_pushvalue(L, 3);
     int ref = luaL_ref(L, LUA_REGISTRYINDEX);
-    GetEditor(L)->RegisterWhichKey(sequence, description, ref);
+    int icon = lua_isnoneornil(L, 4) ? 0 : static_cast<int>(luaL_checkinteger(L, 4));
+    const char *icon_hl = lua_isnoneornil(L, 5) ? "" : luaL_checkstring(L, 5);
+    GetEditor(L)->RegisterWhichKey(sequence, description, ref, icon, icon_hl);
     return 0;
 }
 
-// mep.leader_group(prefix, label): names a group of leader.map bindings
+// mep.leader_group(prefix, label[, icon[, icon_hl]]): names a group of leader.map bindings
 // sharing `prefix` (e.g. mep.leader_group('o', 'org')) so the whichkey
-// popup shows one collapsed "o  +org" row instead of every leaf under it.
+// popup shows one collapsed, optionally icon-decorated row instead of every
+// leaf under it. `icon`, when supplied, is a Nerd Font codepoint; `icon_hl`
+// optionally names the highlight group used to color it.
 int l_leader_group(lua_State *L) {
     const char *prefix = luaL_checkstring(L, 1);
     const char *label = luaL_checkstring(L, 2);
-    GetEditor(L)->RegisterWhichKeyGroup(prefix, label);
+    int icon = lua_isnoneornil(L, 3) ? 0 : static_cast<int>(luaL_checkinteger(L, 3));
+    const char *icon_hl = lua_isnoneornil(L, 4) ? "" : luaL_checkstring(L, 4);
+    GetEditor(L)->RegisterWhichKeyGroup(prefix, label, icon, icon_hl);
     return 0;
 }
 
@@ -8925,6 +9073,12 @@ const luaL_Reg kMepFuncs[] = {
     {"notebook_cell_count", l_notebook_cell_count},
     {"notebook_goto_cell", l_notebook_goto_cell},
     {"notebook_set_python", l_notebook_set_python},
+    {"notebook_set_kernels", l_notebook_set_kernels},
+    {"notebook_kernels", l_notebook_kernels},
+    {"notebook_cell_kernel", l_notebook_cell_kernel},
+    {"notebook_set_cell_kernel", l_notebook_set_cell_kernel},
+    {"notebook_default_kernel", l_notebook_default_kernel},
+    {"notebook_cell_language", l_notebook_cell_language},
     {"notebook_status", l_notebook_status},
     {"notebook_cell_outputs", l_notebook_cell_outputs},
     {"job_write", l_job_write},

@@ -648,7 +648,7 @@ endif()
 
 # Pure DOM/CSS test: intentionally links only html_doc.cpp, so selector and
 # cascade behavior can be verified without opening a window.
-add_executable(mep-html-doc-test EXCLUDE_FROM_ALL src/html_doc_test.cpp src/html_doc.cpp src/js_engine.cpp src/svg_doc.cpp src/wav_doc.cpp)
+add_executable(mep-html-doc-test EXCLUDE_FROM_ALL src/html_doc_test.cpp src/html_doc.cpp src/js_engine.cpp src/regex.cpp src/svg_doc.cpp src/wav_doc.cpp)
 target_include_directories(mep-html-doc-test PRIVATE src)
 target_compile_options(mep-html-doc-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-html-doc-test PRIVATE ${MEP_SANITIZE_FLAGS})

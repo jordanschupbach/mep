@@ -40,9 +40,15 @@
 //     its text/plain fallback, or a one-line placeholder without one.
 //   - Markdown cells are shown as raw markdown source with markdown
 //     syntax highlighting -- not rendered to rich text.
-//   - One kernel: the local `python3` driven through NotebookKernelScript()
-//     over stdin/stdout JSON lines. No jupyter_client/ZMQ, no other
-//     languages, no stdin (input()) from a cell.
+//   - Kernels are local processes, not Jupyter kernelspecs: the built-in
+//     `python3` kernel is the local interpreter driven through
+//     NotebookKernelScript() over stdin/stdout JSON lines; every other
+//     kernel (NotebookKernelSpec below -- R, node, bash, ... by default,
+//     configurable from mep.opt.notebook_kernels) is either another
+//     process speaking that same protocol or a stateless "script" runner
+//     that gets each cell's code on stdin. No jupyter_client/ZMQ, no
+//     stdin (input()) from a cell. A cell picks its kernel per cell
+//     (`metadata.kernel`, see "Per-cell kernels" below).
 //   - Cell attachments, nbformat < 4, and per-cell "title" text on a
 //     `# %%` marker are not modeled (a title typed after the marker is
 //     ignored and dropped on save).
@@ -137,9 +143,66 @@ int NotebookSpanAtRow(const std::vector<NotebookCellSpan> &spans, int row);
 // count (a marker was added/removed): cells are re-matched to spans by
 // exact source+type in document order; unmatched spans become fresh
 // cells (new id, uid from *next_uid), unmatched old cells are dropped.
-// A cell whose type changed away from Code loses its outputs.
+// A fresh cell inherits the kernel (metadata.kernel) of the cell right
+// above it in the new order -- a new block keeps running on whatever
+// the previous one used, whether it came from NotebookInsertCell or a
+// hand-typed `# %%`. A cell whose type changed away from Code loses its
+// outputs.
 void SyncNotebookFromLines(NotebookDoc *doc, const std::vector<std::string> &lines,
                            const std::vector<NotebookCellSpan> &spans, int *next_uid);
+
+// --- Per-cell kernels ----------------------------------------------------
+// One runnable kernel as offered in each code cell's kernel dropdown
+// (main.cpp's DrawPane notebook header) and registered from Lua
+// (mep.opt.notebook_kernels -> mep.notebook_set_kernels). `name` is what a
+// cell's `metadata.kernel` stores -- kept short and file-friendly, since
+// it is written into the .ipynb; `display_name` is the dropdown label.
+struct NotebookKernelSpec {
+    enum class Mode {
+        // The interpreter in `command` runs NotebookKernelScript() as a
+        // persistent process (state carries across cells, matplotlib
+        // figures come back inline) -- the built-in python3 kernel.
+        Python,
+        // `command` itself is a persistent process speaking the JSON-line
+        // wire protocol at the bottom of this header (a user-supplied
+        // driver for some other language).
+        Protocol,
+        // Stateless: every run spawns `command` afresh with the cell's
+        // code on stdin and shows its stdout/stderr (Rscript, node, bash,
+        // ...). Nothing carries over between cells.
+        Script,
+    };
+    std::string name;
+    std::string display_name;
+    // Treesitter filetype key the cell body is highlighted with ("py",
+    // "r", "js", "lua", ...; see treesitter.cpp's grammar table). Empty:
+    // no highlighting for that kernel's cells.
+    std::string language;
+    std::vector<std::string> command;   // argv (Python mode: just the interpreter)
+    Mode mode = Mode::Script;
+};
+// The cell-metadata key holding a cell's kernel name. Jupyter itself has
+// no per-cell kernel; the key mirrors the SoS polyglot notebook's own
+// convention, so such files load with their kernels intact.
+constexpr const char *kNotebookCellKernelKey = "kernel";
+// The cell's explicit kernel name (metadata.kernel), or "" when the cell
+// follows the notebook default.
+std::string NotebookCellKernel(const NotebookCell &cell);
+void NotebookSetCellKernel(NotebookCell *cell, const std::string &name);
+const NotebookKernelSpec *FindNotebookKernel(const std::vector<NotebookKernelSpec> &specs, const std::string &name);
+// The kernel a cell with no explicit choice runs on: the notebook's own
+// kernelspec (metadata.kernelspec.name, or one whose language matches
+// metadata.kernelspec.language / language_info.name) when that is a
+// registered kernel, else the first registered kernel, else "python3".
+std::string NotebookDefaultKernel(const NotebookDoc &doc, const std::vector<NotebookKernelSpec> &specs);
+// A spec's Jupyter-style language name ("python" for a "py" spec, ...),
+// what NotebookDefaultKernel matches kernelspec.language against.
+std::string NotebookKernelLanguageName(const NotebookKernelSpec &spec);
+// A stateless Script-mode kernel's finished run, folded into outputs the
+// same shape a protocol kernel would have sent: `exit_code` != 0 becomes
+// an Error output naming it (after any stderr text, which stays a plain
+// stderr stream), -1 (could not start) names `command` instead.
+void NotebookAppendScriptExit(NotebookCell *cell, int exit_code, const std::string &command);
 
 // --- Output display ------------------------------------------------------
 // How many text lines of one output block are shown before it's cut off

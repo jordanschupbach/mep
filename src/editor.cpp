@@ -4150,13 +4150,28 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) 
             }
             return 1 + trailing;
         };
-        int slots = row_slots(pane.cursor.row);  // the cursor's own row is always the first slot(s)
+        int slots = row_slots(pane.cursor.row);  // the cursor's own row (with any output block) is the first slot(s)
         int row = pane.cursor.row;
-        while (row > pane.scroll_row && slots < visible_lines) {
-            row--;
+        // Walk up from the cursor, admitting a row above it only while the
+        // cursor's own row -- and, for a notebook code cell, the output
+        // block that hangs *below* it (row_slots includes those trailing
+        // slots) -- still fits within visible_lines. Crucially, stop
+        // *before* admitting the row that would tip the running total over,
+        // rather than after: including that overflowing top row (as this
+        // once did) leaves `row` one notch too high, so a tall trailing
+        // block gets pushed off the bottom of the pane with no way to
+        // scroll it into view -- the cursor is on the last buffer line, so
+        // nothing below it can pull the view down. Ending on the highest
+        // top row that still leaves the whole cursor row on screen lets the
+        // std::max below scroll down to it. Not bounded by the current
+        // scroll_row (that bound is re-applied by the std::max), so even a
+        // cursor whose own row is taller than the pane resolves to a
+        // definite target (its own row at the top) instead of stalling.
+        while (row > 0) {
+            int candidate = row - 1;
             for (const Fold &f : buf.folds) {
-                if (f.closed && row > f.start_row && row <= f.end_row) {
-                    row = f.start_row;
+                if (f.closed && candidate > f.start_row && candidate <= f.end_row) {
+                    candidate = f.start_row;
                     break;
                 }
             }
@@ -4165,16 +4180,19 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) 
             // only knows how to answer for a fragment's *start* row, so
             // landing anywhere else inside one (its remaining raw source
             // rows, skipped outright by DrawPane/the cursor-Y lookup,
-            // main.cpp) needs the same rewind before calling it.
+            // main.cpp) needs the same rewind before measuring it.
             if (org_latex_visible_) {
                 for (const auto &kv : buf.org_latex_rows) {
-                    if (row > kv.first && row <= kv.second.end_row) {
-                        row = kv.first;
+                    if (candidate > kv.first && candidate <= kv.second.end_row) {
+                        candidate = kv.first;
                         break;
                     }
                 }
             }
-            slots += row_slots(row);
+            int candidate_slots = row_slots(candidate);
+            if (slots + candidate_slots > visible_lines) break;  // admitting it would overflow -> keep `row` as the top
+            slots += candidate_slots;
+            row = candidate;
         }
         target = std::max(row, pane.scroll_row);
     }
@@ -8043,6 +8061,11 @@ void Editor::PopulateHtmlSession(HtmlSession &sess, const std::string &origin, c
     sess.source = source;
     sess.doc = HtmlDoc();
     ParseHtml(std::string(reinterpret_cast<const char *>(bytes), len), sess.doc);
+    // Local linked assets share the page's directory and are safe to load
+    // synchronously with the document. Remote subresources belong to
+    // Phase 14's curl-backed job queue, not to the page's script sandbox.
+    const bool remote_origin = origin.rfind("http://", 0) == 0 || origin.rfind("https://", 0) == 0;
+    if (!remote_origin) LoadLocalHtmlResources(sess.doc, std::filesystem::path(source).parent_path().string());
     // Local <audio>/<video> sources are decoded before scripts so
     // `duration`/`readyState` are already meaningful to inline code.
     LoadHtmlMedia(sess.doc, std::filesystem::path(source).parent_path().string());
@@ -14364,7 +14387,17 @@ void Editor::HandleNormalInput() {
     if (ctrl_c) {
         if (pending_ctrl_c_ && (now_ - pending_ctrl_c_time_) < kCtrlCChordTimeoutSec) {
             pending_ctrl_c_ = false;
-            TryRunOrgBabelAtCursor();
+            // Ctrl-C Ctrl-C is "execute the thing under the cursor": the
+            // org-babel source block in a .org buffer, or the cell under
+            // the cursor (run in place, exactly like Ctrl+Enter) in a
+            // Jupyter notebook buffer -- Emacs' own C-c C-c in both
+            // org-mode and EIN. HandleInsertInput honors the same chord
+            // for notebooks so it works mid-typing too.
+            if (IsNotebookBuffer(CurPane().buffer_id)) {
+                NotebookRunCellAtCursor(/*advance=*/false, /*insert_below=*/false);
+            } else {
+                TryRunOrgBabelAtCursor();
+            }
         } else {
             pending_ctrl_c_ = true;
             pending_ctrl_c_time_ = now_;
@@ -15747,6 +15780,7 @@ void Editor::HandleInsertInput() {
     bool escape = false, enter = false, backspace = false, del = false, ctrl_w = false, ctrl_u = false;
     bool tab_key = false, ctrl_n = false, ctrl_p = false, ctrl_o = false, ctrl_r = false, ctrl_shift_v = false;
     bool ctrl_y = false;
+    bool ctrl_c = false;
     for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
         if (key == gfx::Key::Escape) escape = true;
         else if (key == gfx::Key::Enter) enter = true;
@@ -15761,13 +15795,32 @@ void Editor::HandleInsertInput() {
         else if (key == gfx::Key::R && ctrl) ctrl_r = true;
         else if (key == gfx::Key::Y && ctrl) ctrl_y = true;
         else if (key == gfx::Key::V && ctrl && shift_down) ctrl_shift_v = true;
+        else if (key == gfx::Key::C && ctrl) ctrl_c = true;
     }
     // A pending Ctrl-R only survives until the next *character*; any
     // special key in between (Escape especially) cancels it, so an
     // abandoned Ctrl-R can't swallow the first letter typed after Escape
     // and re-entering Insert.
-    if (escape || enter || backspace || del || ctrl_w || ctrl_u || tab_key || ctrl_o || ctrl_shift_v) {
+    if (escape || enter || backspace || del || ctrl_w || ctrl_u || tab_key || ctrl_o || ctrl_shift_v || ctrl_c) {
         insert_pending_ctrl_r_ = false;
+    }
+    // Notebook buffer: Ctrl-C Ctrl-C runs the cell under the cursor in
+    // place without leaving Insert mode -- Emacs/EIN's chord, same effect
+    // as the Ctrl+Enter handled further down. Shares pending_ctrl_c_ and
+    // its timeout with HandleNormalInput's org/notebook chord (a chord
+    // may even straddle the two modes, e.g. Ctrl-C in Normal, `i`, Ctrl-C
+    // -- harmless). Ctrl-C is otherwise unbound in Insert mode (it never
+    // produces a char event, and the drain loop above already discarded
+    // it), so non-notebook buffers see no change at all.
+    if (ctrl_c && IsNotebookBuffer(CurPane().buffer_id)) {
+        if (pending_ctrl_c_ && (now_ - pending_ctrl_c_time_) < kCtrlCChordTimeoutSec) {
+            pending_ctrl_c_ = false;
+            NotebookRunCellAtCursor(/*advance=*/false, /*insert_below=*/false);
+            return;
+        }
+        pending_ctrl_c_ = true;
+        pending_ctrl_c_time_ = now_;
+        return;
     }
     // Completion popup (Phase 22): intercepts only its own navigation/
     // accept/dismiss keys, and only while open -- a first Escape closes
@@ -18767,8 +18820,9 @@ std::string Editor::WhichKeySequenceDisplay(const std::string &seq) {
     return out;
 }
 
-void Editor::RegisterWhichKey(const std::string &sequence, const std::string &description, int lua_ref) {
-    whichkey_bindings_.push_back({NormalizeWhichKeySequence(sequence), description, lua_ref});
+void Editor::RegisterWhichKey(const std::string &sequence, const std::string &description, int lua_ref, int icon,
+                              const std::string &icon_hl) {
+    whichkey_bindings_.push_back({NormalizeWhichKeySequence(sequence), description, lua_ref, icon, icon_hl});
 }
 
 void Editor::TriggerWhichKey() {
@@ -18788,7 +18842,7 @@ std::vector<std::pair<std::string, std::string>> Editor::WhichKeyMatches() const
     return out;
 }
 
-std::vector<std::pair<std::string, std::string>> Editor::WhichKeyDisplayEntries() const {
+std::vector<WhichKeyDisplayEntry> Editor::WhichKeyDisplayEntries() const {
     // Bucket the raw (remaining-suffix, description) matches by their very
     // next character -- a "()" (empty-remainder) entry can't occur here,
     // since HandleWhichKeyInput fires and leaves WhichKey mode the instant
@@ -18796,14 +18850,22 @@ std::vector<std::pair<std::string, std::string>> Editor::WhichKeyDisplayEntries(
     std::map<char, std::vector<std::pair<std::string, std::string>>> by_next_char;
     for (const auto &m : WhichKeyMatches()) by_next_char[m.first[0]].push_back(m);
 
-    std::vector<std::pair<std::string, std::string>> out;
+    std::vector<WhichKeyDisplayEntry> out;
     for (const auto &bucket : by_next_char) {
         const auto &leaves = bucket.second;
-        auto group_it = leaves.size() > 1 ? whichkey_groups_.find(whichkey_prefix_ + bucket.first) : whichkey_groups_.end();
+        auto group_it = whichkey_groups_.find(whichkey_prefix_ + bucket.first);
         if (group_it != whichkey_groups_.end()) {
-            out.emplace_back(WhichKeySequenceDisplay(std::string(1, bucket.first)), "+" + group_it->second);
+            out.push_back({WhichKeySequenceDisplay(std::string(1, bucket.first)), group_it->second.label,
+                           group_it->second.icon, group_it->second.icon_hl});
         } else {
-            for (const auto &leaf : leaves) out.emplace_back(WhichKeySequenceDisplay(leaf.first), leaf.second);
+            for (const auto &leaf : leaves) {
+                const std::string sequence = whichkey_prefix_ + leaf.first;
+                auto binding_it = std::find_if(whichkey_bindings_.begin(), whichkey_bindings_.end(),
+                                               [&sequence](const WhichKeyBinding &binding) { return binding.sequence == sequence; });
+                const int icon = binding_it == whichkey_bindings_.end() ? 0 : binding_it->icon;
+                const std::string icon_hl = binding_it == whichkey_bindings_.end() ? "" : binding_it->icon_hl;
+                out.push_back({WhichKeySequenceDisplay(leaf.first), leaf.second, icon, icon_hl});
+            }
         }
     }
     return out;
@@ -24786,15 +24848,7 @@ int Editor::NotebookCellAtCursor() {
 
 // --- Kernel -----------------------------------------------------------------
 
-void Editor::NotebookEnsureKernel(NotebookSession &sess) {
-    if (sess.kernel_job != 0 && JobManager::Instance().IsRunning(sess.kernel_job)) return;
-    sess.kernel_job = 0;
-    sess.kernel_ready = false;
-    sess.running_uid = 0;
-    sess.running_request_id = 0;
-    sess.last_error.clear();
-    const int generation = ++sess.spawn_generation;
-    const int buffer_id = sess.buffer_id;
+std::string Editor::NotebookKernelCwd(int buffer_id) {
     // The kernel's cwd is the notebook's own directory (relative paths in
     // cells resolve the way they do under `jupyter notebook`), falling
     // back to the workspace root for an unsaved one.
@@ -24808,28 +24862,57 @@ void Editor::NotebookEnsureKernel(NotebookSession &sess) {
         }
     }
     if (cwd.empty()) cwd = ActiveRoot();
-    std::vector<std::string> argv = {notebook_python_, "-u", "-c", NotebookKernelScript()};
+    return cwd;
+}
+
+// Starts (if not already running) the resident process for a Python- or
+// Protocol-mode kernel and returns its state. nullptr when `kernel_name`
+// isn't a registered Python/Protocol kernel -- a Script kernel has no
+// resident process (each run spawns its own; see NotebookPumpQueue), and
+// an unknown name has nothing to start.
+NotebookSession::KernelProc *Editor::NotebookEnsureKernel(NotebookSession &sess, const std::string &kernel_name) {
+    const NotebookKernelSpec *spec = FindNotebookKernel(notebook_kernels_, kernel_name);
+    if (!spec || spec->mode == NotebookKernelSpec::Mode::Script) return nullptr;
+    NotebookSession::KernelProc &kp = sess.kernels[kernel_name];
+    if (kp.job != 0 && JobManager::Instance().IsRunning(kp.job)) return &kp;
+    kp.job = 0;
+    kp.ready = false;
+    kp.last_error.clear();
+    const int generation = ++sess.spawn_generation;
+    kp.generation = generation;
+    const int buffer_id = sess.buffer_id;
+    const std::string name = kernel_name;
+    std::vector<std::string> argv;
+    if (spec->mode == NotebookKernelSpec::Mode::Python) {
+        // The built-in python3 kernel carries no command of its own; it
+        // runs mep.opt.notebook_python (notebook_python_) so that option
+        // keeps steering the default interpreter.
+        std::string interpreter = spec->command.empty() ? notebook_python_ : spec->command.front();
+        argv = {interpreter, "-u", "-c", NotebookKernelScript()};
+    } else {
+        argv = spec->command;   // Protocol: a user driver speaking the JSON-line protocol
+    }
     JobManager::Callbacks cb;
-    cb.on_stdout = [this, buffer_id, generation](const std::string &line) {
-        NotebookHandleKernelLine(buffer_id, generation, line);
+    cb.on_stdout = [this, buffer_id, name, generation](const std::string &line) {
+        NotebookHandleKernelLine(buffer_id, name, generation, line);
     };
-    cb.on_stderr = [this, buffer_id, generation](const std::string &line) {
-        // Kernel-level stderr (user code's stderr travels as protocol
-        // messages): an interpreter that failed to start, a hard crash.
+    cb.on_stderr = [this, buffer_id, name, generation](const std::string &line) {
         NotebookSession *s = GetNotebookMutable(buffer_id);
-        if (s && s->spawn_generation == generation && !line.empty()) s->last_error = line;
+        if (!s || line.empty()) return;
+        auto it = s->kernels.find(name);
+        if (it != s->kernels.end() && it->second.generation == generation) it->second.last_error = line;
     };
-    cb.on_exit = [this, buffer_id, generation](int code) { NotebookKernelExited(buffer_id, generation, code); };
+    cb.on_exit = [this, buffer_id, name, generation](int code) { NotebookKernelExited(buffer_id, name, generation, code); };
     std::vector<std::pair<std::string, std::string>> env = {{"PYTHONUNBUFFERED", "1"}};
-    sess.kernel_job = JobManager::Instance().Spawn(argv, cwd, std::move(cb), /*use_pty=*/false, env);
-    sess.status = sess.kernel_job != 0 ? "starting" : "dead";
-    if (sess.kernel_job == 0) sess.last_error = "could not start " + notebook_python_;
+    kp.job = JobManager::Instance().Spawn(argv, NotebookKernelCwd(buffer_id), std::move(cb), /*use_pty=*/false, env);
+    kp.status = kp.job != 0 ? "starting" : "dead";
+    if (kp.job == 0) kp.last_error = "could not start " + (argv.empty() ? kernel_name : argv.front());
+    return &kp;
 }
 
 void Editor::NotebookPumpQueue(NotebookSession &sess) {
-    while (sess.kernel_ready && sess.running_uid == 0 && !sess.run_queue.empty()) {
+    while (sess.running_uid == 0 && !sess.run_queue.empty()) {
         int uid = sess.run_queue.front();
-        sess.run_queue.pop_front();
         NotebookCell *cell = nullptr;
         for (NotebookCell &c : sess.doc.cells) {
             if (c.uid == uid) {
@@ -24837,38 +24920,98 @@ void Editor::NotebookPumpQueue(NotebookSession &sess) {
                 break;
             }
         }
-        if (!cell) continue;  // deleted while queued
+        if (!cell) {  // deleted while queued
+            sess.run_queue.pop_front();
+            continue;
+        }
+        std::string kernel_name = NotebookCellKernel(*cell);
+        if (kernel_name.empty()) kernel_name = NotebookDefaultKernel(sess.doc, notebook_kernels_);
+        const NotebookKernelSpec *spec = FindNotebookKernel(notebook_kernels_, kernel_name);
+        if (!spec) {
+            sess.run_queue.pop_front();
+            NotebookOutput err;
+            err.kind = NotebookOutput::Kind::Error;
+            err.ename = "KernelError";
+            err.evalue = "no kernel named '" + kernel_name + "' is available";
+            err.text = "KernelError: " + err.evalue;
+            NotebookAppendOutput(cell, std::move(err));
+            cell->run_state = NotebookCell::RunState::Idle;
+            continue;
+        }
+        if (spec->mode == NotebookKernelSpec::Mode::Script) {
+            sess.run_queue.pop_front();
+            cell->run_state = NotebookCell::RunState::Running;
+            sess.running_uid = uid;
+            sess.running_kernel = kernel_name;
+            sess.running_request_id = sess.next_request_id++;
+            const int buffer_id = sess.buffer_id;
+            const int req = sess.running_request_id;
+            const std::string code = cell->source;
+            JobManager::Callbacks cb;
+            cb.on_stdout = [this, buffer_id, uid, req](const std::string &line) {
+                NotebookScriptOutput(buffer_id, uid, req, "stdout", line);
+            };
+            cb.on_stderr = [this, buffer_id, uid, req](const std::string &line) {
+                NotebookScriptOutput(buffer_id, uid, req, "stderr", line);
+            };
+            cb.on_exit = [this, buffer_id, uid, req](int c) { NotebookScriptExited(buffer_id, uid, req, c); };
+            sess.running_job = JobManager::Instance().Spawn(spec->command, NotebookKernelCwd(buffer_id), std::move(cb));
+            if (sess.running_job == 0) {
+                NotebookScriptExited(buffer_id, uid, req, -1);
+            } else {
+                JobManager::Instance().WriteStdin(sess.running_job, code);
+                JobManager::Instance().CloseStdin(sess.running_job);
+            }
+            continue;  // running_uid set; the while condition ends the loop
+        }
+        // Python/Protocol: needs its resident process ready before we send.
+        NotebookSession::KernelProc *kp = NotebookEnsureKernel(sess, kernel_name);
+        if (!kp) {
+            sess.run_queue.pop_front();
+            NotebookFailRunningCell(*cell, "could not start kernel '" + kernel_name + "'");
+            continue;
+        }
+        if (!kp->ready) return;  // wait for its "ready"; the cell stays at the front of the queue
+        sess.run_queue.pop_front();
         cell->run_state = NotebookCell::RunState::Running;
         sess.running_uid = uid;
+        sess.running_kernel = kernel_name;
         sess.running_request_id = sess.next_request_id++;
-        sess.status = "busy";
-        if (!JobManager::Instance().WriteStdin(sess.kernel_job, NotebookKernelExecuteRequest(sess.running_request_id, cell->source))) {
+        sess.running_job = 0;
+        kp->status = "busy";
+        if (!JobManager::Instance().WriteStdin(kp->job, NotebookKernelExecuteRequest(sess.running_request_id, cell->source))) {
             NotebookFailRunning(sess, "could not send the cell to the kernel");
-            sess.kernel_ready = false;
-            sess.status = "dead";
+            kp->ready = false;
+            kp->status = "dead";
         }
     }
+}
+
+// Marks one cell as errored-and-idle (used when its kernel is missing or
+// dead). Does not touch the queue -- NotebookPumpQueue's caller owns that.
+void Editor::NotebookFailRunningCell(NotebookCell &cell, const std::string &reason) {
+    NotebookOutput err;
+    err.kind = NotebookOutput::Kind::Error;
+    err.ename = "KernelError";
+    err.evalue = reason;
+    err.text = "KernelError: " + reason;
+    NotebookAppendOutput(&cell, std::move(err));
+    cell.run_state = NotebookCell::RunState::Idle;
 }
 
 // The in-flight cell (if any) and everything queued behind it get an
 // error output naming `reason` and go back to idle -- for a kernel that
 // died, or whose stdin closed under us.
 void Editor::NotebookFailRunning(NotebookSession &sess, const std::string &reason) {
-    auto fail = [&](int uid) {
+    if (sess.running_uid != 0) {
         for (NotebookCell &c : sess.doc.cells) {
-            if (c.uid != uid) continue;
-            NotebookOutput err;
-            err.kind = NotebookOutput::Kind::Error;
-            err.ename = "KernelError";
-            err.evalue = reason;
-            err.text = "KernelError: " + reason;
-            NotebookAppendOutput(&c, std::move(err));
-            c.run_state = NotebookCell::RunState::Idle;
+            if (c.uid == sess.running_uid) NotebookFailRunningCell(c, reason);
         }
-    };
-    if (sess.running_uid != 0) fail(sess.running_uid);
+    }
     sess.running_uid = 0;
+    sess.running_kernel.clear();
     sess.running_request_id = 0;
+    sess.running_job = 0;
     for (int uid : sess.run_queue) {
         for (NotebookCell &c : sess.doc.cells) {
             if (c.uid == uid) c.run_state = NotebookCell::RunState::Idle;
@@ -24877,15 +25020,41 @@ void Editor::NotebookFailRunning(NotebookSession &sess, const std::string &reaso
     sess.run_queue.clear();
 }
 
-void Editor::NotebookHandleKernelLine(int buffer_id, int generation, const std::string &line) {
+// A finished run (protocol "done" or a script process exit): stamp the
+// notebook's shared In[N] counter, drop back to idle, and pump the next.
+void Editor::NotebookFinishRunning(NotebookSession &sess, NotebookCell &cell) {
+    cell.execution_count = sess.next_execution_count++;
+    cell.run_state = NotebookCell::RunState::Idle;
+    for (NotebookOutput &o : cell.outputs) {
+        if (o.kind == NotebookOutput::Kind::ExecuteResult && o.raw.is_null()) o.execution_count = cell.execution_count;
+    }
+    if (!sess.running_kernel.empty()) {
+        auto it = sess.kernels.find(sess.running_kernel);
+        if (it != sess.kernels.end() && it->second.job != 0) it->second.status = "idle";
+    }
+    sess.running_uid = 0;
+    sess.running_kernel.clear();
+    sess.running_request_id = 0;
+    sess.running_job = 0;
+    NotebookPumpQueue(sess);
+}
+
+void Editor::NotebookHandleKernelLine(int buffer_id, const std::string &kernel_name, int generation, const std::string &line) {
     NotebookSession *sess = GetNotebookMutable(buffer_id);
-    if (!sess || sess->spawn_generation != generation) return;
+    if (!sess) return;
+    auto kit = sess->kernels.find(kernel_name);
+    if (kit == sess->kernels.end() || kit->second.generation != generation) return;
+    NotebookSession::KernelProc &kp = kit->second;
     NotebookKernelMessage m;
+    // The running cell -- only when this reply is from the kernel that is
+    // actually in flight (a stray line from an idle kernel has no cell).
     NotebookCell *cell = nullptr;
-    for (NotebookCell &c : sess->doc.cells) {
-        if (sess->running_uid != 0 && c.uid == sess->running_uid) {
-            cell = &c;
-            break;
+    if (sess->running_uid != 0 && sess->running_kernel == kernel_name) {
+        for (NotebookCell &c : sess->doc.cells) {
+            if (c.uid == sess->running_uid) {
+                cell = &c;
+                break;
+            }
         }
     }
     if (!ParseNotebookKernelMessage(line, &m)) {
@@ -24901,9 +25070,9 @@ void Editor::NotebookHandleKernelLine(int buffer_id, int generation, const std::
         return;
     }
     if (m.type == "ready") {
-        sess->kernel_ready = true;
-        sess->status = "idle";
-        sess->python_version = m.python;
+        kp.ready = true;
+        kp.status = "idle";
+        kp.version = m.python;
         NotebookPumpQueue(*sess);
         return;
     }
@@ -24936,32 +25105,63 @@ void Editor::NotebookHandleKernelLine(int buffer_id, int generation, const std::
         if (out.text.empty()) out.text = m.ename + ": " + m.evalue;
         NotebookAppendOutput(cell, std::move(out));
     } else if (m.type == "done") {
-        // The kernel's own counter is the notebook's In[N] -- one shared
-        // sequence across cells, like Jupyter.
-        cell->execution_count = m.execution_count;
-        cell->run_state = NotebookCell::RunState::Idle;
-        // Jupyter drops an execute_result's own count in favor of the
-        // cell's; keep them in step so a saved notebook reads right.
-        for (NotebookOutput &o : cell->outputs) {
-            if (o.kind == NotebookOutput::Kind::ExecuteResult && o.raw.is_null()) o.execution_count = m.execution_count;
-        }
-        sess->running_uid = 0;
-        sess->running_request_id = 0;
-        sess->status = "idle";
-        NotebookPumpQueue(*sess);
+        NotebookFinishRunning(*sess, *cell);
     }
 }
 
-void Editor::NotebookKernelExited(int buffer_id, int generation, int code) {
+void Editor::NotebookScriptOutput(int buffer_id, int uid, int request_id, const char *stream, const std::string &line) {
     NotebookSession *sess = GetNotebookMutable(buffer_id);
-    if (!sess || sess->spawn_generation != generation) return;  // a restarted kernel's old process
-    std::string reason = "kernel exited";
-    if (code == -1) reason = sess->last_error.empty() ? "kernel could not be started (" + notebook_python_ + ")" : sess->last_error;
-    else if (code != 0) reason += " with status " + std::to_string(code) + (sess->last_error.empty() ? "" : ": " + sess->last_error);
-    NotebookFailRunning(*sess, reason);
-    sess->kernel_job = 0;
-    sess->kernel_ready = false;
-    sess->status = "dead";
+    if (!sess || sess->running_uid != uid || sess->running_request_id != request_id) return;
+    for (NotebookCell &c : sess->doc.cells) {
+        if (c.uid != uid) continue;
+        NotebookOutput out;
+        out.kind = NotebookOutput::Kind::Stream;
+        out.name = stream;
+        out.text = line + "\n";
+        NotebookAppendOutput(&c, std::move(out));
+        return;
+    }
+}
+
+void Editor::NotebookScriptExited(int buffer_id, int uid, int request_id, int code) {
+    NotebookSession *sess = GetNotebookMutable(buffer_id);
+    if (!sess || sess->running_uid != uid || sess->running_request_id != request_id) return;
+    std::string command;
+    const NotebookKernelSpec *spec = FindNotebookKernel(notebook_kernels_, sess->running_kernel);
+    if (spec && !spec->command.empty()) command = spec->command.front();
+    if (command.empty()) command = sess->running_kernel;
+    for (NotebookCell &c : sess->doc.cells) {
+        if (c.uid != uid) continue;
+        NotebookAppendScriptExit(&c, code, command);
+        NotebookFinishRunning(*sess, c);
+        return;
+    }
+    // Cell vanished mid-run: still clear the in-flight state.
+    sess->running_uid = 0;
+    sess->running_kernel.clear();
+    sess->running_request_id = 0;
+    sess->running_job = 0;
+    NotebookPumpQueue(*sess);
+}
+
+void Editor::NotebookKernelExited(int buffer_id, const std::string &kernel_name, int generation, int code) {
+    NotebookSession *sess = GetNotebookMutable(buffer_id);
+    if (!sess) return;
+    auto kit = sess->kernels.find(kernel_name);
+    if (kit == sess->kernels.end() || kit->second.generation != generation) return;  // a restarted kernel's old process
+    NotebookSession::KernelProc &kp = kit->second;
+    std::string interp = kernel_name;
+    const NotebookKernelSpec *spec = FindNotebookKernel(notebook_kernels_, kernel_name);
+    if (spec && !spec->command.empty()) interp = spec->command.front();
+    else if (spec && spec->mode == NotebookKernelSpec::Mode::Python) interp = notebook_python_;
+    std::string reason = "kernel '" + kernel_name + "' exited";
+    if (code == -1) reason = kp.last_error.empty() ? "kernel '" + kernel_name + "' could not be started (" + interp + ")" : kp.last_error;
+    else if (code != 0) reason += " with status " + std::to_string(code) + (kp.last_error.empty() ? "" : ": " + kp.last_error);
+    // Only fail the run if it was this kernel's cell in flight.
+    if (sess->running_uid != 0 && sess->running_kernel == kernel_name) NotebookFailRunning(*sess, reason);
+    kp.job = 0;
+    kp.ready = false;
+    kp.status = "dead";
     if (code != 0) status_message_ = "Notebook: " + reason;
 }
 
@@ -24982,7 +25182,12 @@ bool Editor::NotebookRunCell(int buffer_id, int cell_index) {
     cell.execution_count = -1;
     cell.run_state = NotebookCell::RunState::Queued;
     sess->run_queue.push_back(cell.uid);
-    NotebookEnsureKernel(*sess);
+    // Warm up this cell's kernel now (a no-op for a Script kernel and for
+    // one already running) so it can be ready by the time the queue
+    // reaches the cell rather than only starting then.
+    std::string kernel_name = NotebookCellKernel(cell);
+    if (kernel_name.empty()) kernel_name = NotebookDefaultKernel(sess->doc, notebook_kernels_);
+    NotebookEnsureKernel(*sess, kernel_name);
     NotebookPumpQueue(*sess);
     NotebookRebuildSlotCache(*sess);
     return true;
@@ -25024,8 +25229,14 @@ void Editor::NotebookInterrupt(int buffer_id) {
         }
     }
     sess->run_queue.clear();
-    if (sess->kernel_job != 0 && sess->running_uid != 0) {
-        JobManager::Instance().Interrupt(sess->kernel_job);
+    if (sess->running_uid != 0) {
+        if (sess->running_job != 0) {
+            // A stateless Script kernel: SIGTERM the per-cell process.
+            JobManager::Instance().Kill(sess->running_job);
+        } else {
+            auto it = sess->kernels.find(sess->running_kernel);
+            if (it != sess->kernels.end() && it->second.job != 0) JobManager::Instance().Interrupt(it->second.job);
+        }
         status_message_ = "Notebook: interrupt sent to kernel";
     } else {
         status_message_ = "Notebook: kernel is idle";
@@ -25036,15 +25247,30 @@ void Editor::NotebookRestartKernel(int buffer_id) {
     NotebookSession *sess = GetNotebookMutable(buffer_id);
     if (!sess) return;
     NotebookFailRunning(*sess, "kernel restarted");
-    if (sess->kernel_job != 0) {
-        JobManager::Instance().WriteStdin(sess->kernel_job, NotebookKernelShutdownRequest());
-        JobManager::Instance().Kill(sess->kernel_job);
-        sess->kernel_job = 0;
+    NotebookKillKernels(*sess);
+    sess->kernels.clear();
+    // In[N] restarts from 1, matching a fresh kernel session.
+    sess->next_execution_count = 1;
+    status_message_ = "Notebook: kernels restarted";
+}
+
+// Shuts down and kills every resident kernel of a notebook plus any
+// in-flight Script process; leaves the map entries in place (the caller
+// clears them when it wants a from-scratch restart).
+void Editor::NotebookKillKernels(NotebookSession &sess) {
+    if (sess.running_job != 0) {
+        JobManager::Instance().Kill(sess.running_job);
+        sess.running_job = 0;
     }
-    sess->kernel_ready = false;
-    sess->status = "not started";
-    NotebookEnsureKernel(*sess);
-    status_message_ = "Notebook: kernel restarted";
+    for (auto &kv : sess.kernels) {
+        if (kv.second.job != 0) {
+            JobManager::Instance().WriteStdin(kv.second.job, NotebookKernelShutdownRequest());
+            JobManager::Instance().Kill(kv.second.job);
+            kv.second.job = 0;
+        }
+        kv.second.ready = false;
+        kv.second.status = "not started";
+    }
 }
 
 void Editor::NotebookClearOutputs(int buffer_id, int cell_index) {
@@ -25068,10 +25294,7 @@ void Editor::NotebookClearOutputs(int buffer_id, int cell_index) {
 void Editor::NotebookCloseSession(int buffer_id) {
     auto it = notebooks_.find(buffer_id);
     if (it == notebooks_.end()) return;
-    if (it->second.kernel_job != 0) {
-        JobManager::Instance().WriteStdin(it->second.kernel_job, NotebookKernelShutdownRequest());
-        JobManager::Instance().Kill(it->second.kernel_job);
-    }
+    NotebookKillKernels(it->second);
     notebooks_.erase(it);
 }
 
@@ -25221,4 +25444,110 @@ bool Editor::NotebookGotoCell(int cell_index) {
     int row = span.end_row > span.first_row ? span.first_row : (span.marker_row >= 0 ? span.marker_row : span.first_row);
     CurPane().cursor = {std::max(0, std::min(row, Buf().LineCount() - 1)), 0};
     return true;
+}
+
+// --- Per-cell kernels -------------------------------------------------------
+
+namespace {
+// Whether the first word of `command` names an executable found on PATH
+// (or is itself an absolute/relative path to one). Used to drop kernels
+// whose interpreter isn't installed here from the dropdown.
+bool NotebookCommandAvailable(const std::string &program) {
+    if (program.empty()) return false;
+    if (program.find('/') != std::string::npos) return access(program.c_str(), X_OK) == 0;
+    const char *path_env = getenv("PATH");
+    if (!path_env) return false;
+    std::string paths = path_env;
+    size_t start = 0;
+    while (start <= paths.size()) {
+        size_t colon = paths.find(':', start);
+        std::string dir = paths.substr(start, colon == std::string::npos ? std::string::npos : colon - start);
+        if (!dir.empty() && access((dir + "/" + program).c_str(), X_OK) == 0) return true;
+        if (colon == std::string::npos) break;
+        start = colon + 1;
+    }
+    return false;
+}
+}  // namespace
+
+void Editor::SetNotebookKernels(std::vector<NotebookKernelSpec> specs) {
+    std::vector<NotebookKernelSpec> kept;
+    for (NotebookKernelSpec &spec : specs) {
+        if (spec.name.empty()) continue;
+        // The built-in python3 kernel with no command of its own is
+        // steered by notebook_python_; keep it regardless (a missing
+        // interpreter surfaces as a run error, same as before). Every
+        // other kernel is dropped when its program isn't on PATH so the
+        // dropdown never offers a kernel that can't run.
+        bool builtin_python = spec.mode == NotebookKernelSpec::Mode::Python && spec.command.empty();
+        if (!builtin_python && !NotebookCommandAvailable(spec.command.empty() ? std::string() : spec.command.front())) continue;
+        if (spec.display_name.empty()) spec.display_name = spec.name;
+        kept.push_back(std::move(spec));
+    }
+    if (kept.empty()) {
+        kept.push_back({"python3", "Python 3", "py", {}, NotebookKernelSpec::Mode::Python});
+    }
+    notebook_kernels_ = std::move(kept);
+}
+
+std::string Editor::NotebookDefaultKernelName(int buffer_id) const {
+    auto it = notebooks_.find(buffer_id);
+    if (it == notebooks_.end()) return "";
+    return NotebookDefaultKernel(it->second.doc, notebook_kernels_);
+}
+
+std::string Editor::NotebookCellKernelName(int buffer_id, int cell_index) {
+    const NotebookSession *sess = NotebookRefresh(buffer_id);
+    if (!sess) return "";
+    if (cell_index < 0) cell_index = NotebookSpanAtRow(sess->spans, CurPane().cursor.row);
+    if (cell_index < 0 || cell_index >= static_cast<int>(sess->doc.cells.size())) return "";
+    std::string name = NotebookCellKernel(sess->doc.cells[static_cast<size_t>(cell_index)]);
+    if (name.empty()) name = NotebookDefaultKernel(sess->doc, notebook_kernels_);
+    return name;
+}
+
+bool Editor::NotebookSetCellKernel(int buffer_id, int cell_index, const std::string &name) {
+    NotebookSession *sess = GetNotebookMutable(buffer_id);
+    if (!sess) return false;
+    NotebookSyncFromText(*sess);
+    if (cell_index < 0) cell_index = NotebookSpanAtRow(sess->spans, CurPane().cursor.row);
+    if (cell_index < 0 || cell_index >= static_cast<int>(sess->doc.cells.size())) return false;
+    NotebookCell &cell = sess->doc.cells[static_cast<size_t>(cell_index)];
+    // Store "" (follow the notebook default) as an absent key rather than
+    // an explicit empty one, so a cell on the default kernel writes no
+    // extra metadata to the file.
+    std::string effective_default = NotebookDefaultKernel(sess->doc, notebook_kernels_);
+    if (name.empty() || name == effective_default) {
+        ::NotebookSetCellKernel(&cell, "");
+    } else {
+        ::NotebookSetCellKernel(&cell, name);
+    }
+    if (buffer_id >= 0 && buffer_id < static_cast<int>(buffers_.size())) buffers_[static_cast<size_t>(buffer_id)].modified = true;
+    // The cell body is highlighted with its kernel's language, so a kernel
+    // change re-colors it -- ask the Lua syntax layer to re-run.
+    if (lua_) lua_->DoString("if mep.syntax_auto then mep.syntax_highlight() end");
+    return true;
+}
+
+const NotebookSession::KernelProc *Editor::NotebookKernelState(int buffer_id, const std::string &name) const {
+    auto it = notebooks_.find(buffer_id);
+    if (it == notebooks_.end()) return nullptr;
+    auto kit = it->second.kernels.find(name);
+    return kit == it->second.kernels.end() ? nullptr : &kit->second;
+}
+
+std::string Editor::NotebookCellLanguageAtRow(int buffer_id, int row) {
+    const NotebookSession *sess = NotebookRefresh(buffer_id);
+    if (!sess) return "";
+    int idx = NotebookSpanAtRow(sess->spans, row);
+    if (idx < 0 || idx >= static_cast<int>(sess->spans.size())) return "";
+    const NotebookCellSpan &span = sess->spans[static_cast<size_t>(idx)];
+    if (span.type == NotebookCellType::Markdown) return "md";
+    if (span.type != NotebookCellType::Code) return "";
+    std::string name = idx < static_cast<int>(sess->doc.cells.size())
+                           ? NotebookCellKernel(sess->doc.cells[static_cast<size_t>(idx)])
+                           : "";
+    if (name.empty()) name = NotebookDefaultKernel(sess->doc, notebook_kernels_);
+    const NotebookKernelSpec *spec = FindNotebookKernel(notebook_kernels_, name);
+    return spec ? spec->language : "py";
 }

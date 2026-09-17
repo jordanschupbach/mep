@@ -18,17 +18,23 @@
 // (absolute/fixed/relative), no external stylesheets or scripts (<link
 // rel=stylesheet>, <script src>), no forms/inputs, no tables, no cascade
 // specificity beyond "tag < class/id selector < inline style, later rule
-// wins a tie within the same bucket". Rendering is monospace throughout
-// (mep has exactly one font atlas, g_font, reloaded at one size at a time
-// -- see main.cpp's ApplyFontSize) at varying *sizes* (headings scale up
-// the same way MenuFontSize() already draws g_font at a size other than
-// g_font_size), not a real proportional face. Remote <img> is out of
+// wins a tie within the same bucket". Rendering resolves the generic
+// sans-serif/serif/monospace CSS families to embedded faces at varying
+// sizes. Remote <img> is out of
 // scope entirely (no network fetch for anything but the page itself, and
 // that's the caller's job -- see mep.browse_command, kBuiltinTextTools);
 // a local-file <img src> is supported. See js_engine.h for the paired
 // (also intentionally tiny) JS interpreter this hands its DOM tree to.
 
 enum class DomNodeType { Element, Text };
+
+// The small generic-family set the in-pane renderer can resolve without
+// fetching web fonts.  Unknown author-specified families intentionally fall
+// back to Sans, matching the browser convention of trying the next generic
+// family rather than making text disappear.
+enum class HtmlFontFamily { Sans, Serif, Mono };
+enum class HtmlTextAlign { Left, Center, Right, Justify };
+enum class HtmlWhiteSpace { Normal, Pre, NoWrap };
 
 // A compact, renderer-independent display list for a canvas element.  The
 // JavaScript binding records commands here; main.cpp replays them into the
@@ -107,6 +113,13 @@ struct ComputedStyle {
     bool underline = false;
     bool strikethrough = false;
     bool monospace = false;  // <code>/<pre> -- purely cosmetic here (everything's monospace already), kept for a future proportional-font pass
+    HtmlFontFamily font_family = HtmlFontFamily::Sans;
+    HtmlTextAlign text_align = HtmlTextAlign::Left;
+    HtmlWhiteSpace white_space = HtmlWhiteSpace::Normal;
+    // A positive unitless value is a multiplier of the resolved font size;
+    // otherwise line_height_length carries a CSS px/em/rem/% length.
+    float line_height_multiplier = 0.0f;
+    CssLength line_height_length, letter_spacing;
     bool preserve_whitespace = false;  // <pre> -- layout skips word-wrap/whitespace-collapse for this node's own text
     bool has_color = false;
     unsigned char color_r = 0, color_g = 0, color_b = 0;
@@ -212,6 +225,9 @@ struct DomNode {
     bool form_checked = false;
     bool form_disabled = false;
     bool details_open = false;
+    bool interaction_hover = false;
+    bool interaction_focus = false;
+    bool interaction_active = false;
     bool media_paused = true;
     bool media_muted = false;
     double media_current_time = 0.0;
@@ -264,6 +280,13 @@ struct HtmlDoc {
     // Nodes made through document.createElement/createTextNode remain here
     // until insertion. This gives detached DOM wrappers stable ownership.
     std::vector<std::unique_ptr<DomNode>> detached_nodes;
+    // Base directory for local subresources, assigned by session/resource
+    // loading. Empty means page-side fetch has no local origin to resolve.
+    std::string resource_base_dir;
+    // Interpreter-private, document-lifetime state for JS listener
+    // registries.  Kept opaque here so the DOM model remains independent of
+    // the JS runtime's Value/ObjectData implementation.
+    std::shared_ptr<void> js_event_state;
 };
 
 // Renderer-independent accessibility projection.  The editor can later map
@@ -328,6 +351,12 @@ AccessibleNode BuildAccessibilityTree(const HtmlDoc &doc);
 // are left unloaded (Part IV networking is where fetching would land).
 // Called once per parse, before scripts run, so `duration` is observable.
 void LoadHtmlMedia(HtmlDoc &doc, const std::string &base_dir);
+
+// Resolves only local relative/absolute `<link rel="stylesheet">` and
+// `<script src>` assets against `base_dir`. Remote URI resources are never
+// fetched here. Linked styles are folded into the DOM and scripts are
+// rebuilt in document order alongside inline scripts.
+void LoadLocalHtmlResources(HtmlDoc &doc, const std::string &base_dir);
 
 // Advances every playing media element's clock by `seconds`; clamps at the
 // duration, honoring `loop`, and flips paused/ended at the end. The editor

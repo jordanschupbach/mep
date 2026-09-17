@@ -419,6 +419,75 @@ int main() {
         CHECK(script.find("mep_nb_backend") != std::string::npos);
     }
 
+    // --- Per-cell kernels
+    {
+        std::vector<NotebookKernelSpec> specs = {
+            {"python3", "Python 3", "py", {}, NotebookKernelSpec::Mode::Python},
+            {"ir", "R", "r", {"R", "--slave"}, NotebookKernelSpec::Mode::Script},
+            {"javascript", "JavaScript", "js", {"node"}, NotebookKernelSpec::Mode::Script},
+        };
+        CHECK(FindNotebookKernel(specs, "ir") != nullptr);
+        CHECK(FindNotebookKernel(specs, "ir")->language == "r");
+        CHECK(FindNotebookKernel(specs, "nope") == nullptr);
+
+        NotebookCell cell;
+        CHECK(NotebookCellKernel(cell).empty());
+        NotebookSetCellKernel(&cell, "ir");
+        CHECK(NotebookCellKernel(cell) == "ir");
+        CHECK(cell.metadata.get("kernel").as_string() == "ir");
+        NotebookSetCellKernel(&cell, "");
+        CHECK(cell.metadata.get("kernel").as_string() == "");
+
+        // Default kernel: kernelspec.name wins when registered.
+        NotebookDoc d;
+        d.metadata = Json::Object();
+        d.metadata["kernelspec"] = Json::Object();
+        d.metadata["kernelspec"]["name"] = Json("ir");
+        CHECK(NotebookDefaultKernel(d, specs) == "ir");
+        // An unregistered kernelspec.name falls to a language match...
+        d.metadata["kernelspec"]["name"] = Json("ir64");
+        d.metadata["kernelspec"]["language"] = Json("javascript");
+        CHECK(NotebookDefaultKernel(d, specs) == "javascript");
+        // ...then to the first registered kernel.
+        d.metadata = Json::Object();
+        CHECK(NotebookDefaultKernel(d, specs) == "python3");
+        // Empty registry: the built-in python3 name.
+        CHECK(NotebookDefaultKernel(d, {}) == "python3");
+
+        CHECK(NotebookKernelLanguageName(specs[0]) == "python");
+        CHECK(NotebookKernelLanguageName(specs[1]) == "r");
+
+        // Script exit folding.
+        NotebookCell sc;
+        NotebookAppendScriptExit(&sc, 0, "node");   // success: no output
+        CHECK(sc.outputs.empty());
+        NotebookAppendScriptExit(&sc, 3, "node");
+        CHECK(sc.outputs.size() == 1 && sc.outputs[0].kind == NotebookOutput::Kind::Error);
+        CHECK(sc.outputs[0].evalue.find("status 3") != std::string::npos);
+        NotebookCell sc2;
+        NotebookAppendScriptExit(&sc2, -1, "R");
+        CHECK(sc2.outputs[0].evalue.find("could not start R") != std::string::npos);
+    }
+
+    // --- Kernel inheritance: a hand-typed new marker keeps the previous cell's kernel
+    {
+        NotebookDoc d;
+        std::vector<std::string> lines = {"# %%", "a = 1"};
+        std::vector<NotebookCellSpan> spans = ScanNotebookCells(lines);
+        int uid = 1;
+        SyncNotebookFromLines(&d, lines, spans, &uid);
+        CHECK(d.cells.size() == 1);
+        NotebookSetCellKernel(&d.cells[0], "ir");
+
+        // Append a second cell in the text; it should inherit "ir".
+        lines = {"# %%", "a = 1", "", "# %%", "b = 2"};
+        spans = ScanNotebookCells(lines);
+        SyncNotebookFromLines(&d, lines, spans, &uid);
+        CHECK(d.cells.size() == 2);
+        CHECK(NotebookCellKernel(d.cells[0]) == "ir");
+        CHECK(NotebookCellKernel(d.cells[1]) == "ir");
+    }
+
     std::printf("notebook_doc tests passed\n");
     return 0;
 }

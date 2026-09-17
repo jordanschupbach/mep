@@ -472,9 +472,11 @@ Available to =:lua=, =:source=, and =init.lua=:
 - =mep.cmd(str)= — runs =str= as if typed after =:= and Enter pressed
   (e.g. =mep.cmd(\"vsplit\")=); a general escape hatch for driving any
   ex-command from Lua.
-- =mep.leader_map(seq, desc, fn)= — binds a key sequence after the
-  leader (space), shown in the which-key popup; =mep.leader_group(prefix,
-  label)= names a group. =seq= is one character per key, except Enter,
+- =mep.leader_map(seq, desc, fn, icon?, icon_hl?)= — binds a key sequence
+  after the leader (space), shown in the which-key popup; =mep.leader_group(prefix,
+  label, icon?, icon_hl?)= names a group. In either API, =icon= is an
+  optional Nerd Font codepoint displayed before its key and =icon_hl=
+  optionally names the highlight group that colors it. =seq= is one character per key, except Enter,
   spelled =<CR>= (=<Return>=/=<Enter>= also accepted): =mep.leader_map('a<CR>', ...)=.
 - =mep.current_tab_id()= — the active tab's stable id (unchanged by
   =:tabdelete=/=:tabnew= around it, unlike its index); =mep.current_pane_id()=
@@ -534,15 +536,48 @@ indentation, so diffs stay clean). Each code cell draws a header
 stdout/stderr, the last expression's value, tracebacks, and inline
 =matplotlib= figures.
 
-Cells run on one persistent =python3= process per notebook (no
-=jupyter_client= needed; =mep.opt.notebook_python= picks the interpreter):
-=Enter= or =Ctrl+Enter= runs the cell under the cursor, =Shift+Enter= runs it
-and moves to the next cell, and =mod1+Enter= runs it and inserts a new cell
-below. The =<leader>j= group holds the rest -- =jA= run all, =ja=/=jb= insert
-above/below, =jd= delete, =jm=/=jy= to markdown/code, =jk=/=jj= move, =jc=/=jC=
-clear outputs, =ji= interrupt, =j0= restart the kernel -- with =]j=/=[j= to step
+Cells run without =jupyter_client=: =Enter=, =Ctrl+Enter= or the Emacs-style
+=Ctrl-C Ctrl-C= chord runs the cell under the cursor (the chord works in Insert
+mode too), =Shift+Enter= runs it and moves to the next cell, and =mod1+Enter=
+runs it and inserts a new cell below. The =<leader>j= group holds the rest --
+=jA= run all, =ja=/=jb= insert above/below, =jd= delete, =jm=/=jy= to
+markdown/code, =jk=/=jj= move, =jc=/=jC= clear outputs, =ji= interrupt, =j0=
+restart the kernels, =jK= set the cell's kernel -- with =]j=/=[j= to step
 between cells and =:Notebook*= commands (and =:NotebookNew [path]=) for all of
 it. =examples/notebook_example.ipynb= is a ready-made notebook to try.
+
+Each cell is drawn as its own rounded card so code and markdown blocks read as
+distinct blocks (markdown cards are tinted apart from code, and the cell under
+the cursor is accented). A toolbar across the top of the notebook pane has
+buttons for the common structural actions -- =+ Code=, =+ Markdown=, =Run All=,
+=Interrupt=, =Restart=, =Clear= -- alongside the =<leader>j= keys.
+
+*Per-cell kernels.* Every code cell picks its own kernel, chosen from the
+dropdown at the top-right of the cell (click it, or =jK=). The list is
+=mep.opt.notebook_kernels=; out of the box it offers Python 3 plus whichever of
+R, JavaScript (Node), Ruby and Bash are found on =PATH=. Python 3 is one
+persistent process (state and inline =matplotlib= figures carry across cells,
+driven through =mep.opt.notebook_python=); the others are stateless "script"
+kernels that get each cell's code on stdin and show its output. A cell with no
+explicit choice follows the notebook default (its =kernelspec=, else the first
+kernel); a new cell inherits the previous cell's kernel, so a block keeps
+running on whatever the one above it used. Each cell's choice is written to its
+=metadata.kernel= on =:w=, and =In [n]:= counts up as one shared sequence across
+every kernel. Runs execute one at a time in order regardless of kernel, so a
+mixed "run all" still goes top to bottom. Add or replace kernels from =init.lua=:
+
+#+begin_src lua
+mep.opt.notebook_kernels = {
+  {name='python3', display_name='Python 3', language='py', mode='python'},
+  {name='ir', display_name='R', language='r', mode='script', command={'R', '--slave', '--no-save'}},
+  {name='deno', display_name='Deno', language='js', mode='script', command={'deno', 'run', '-'}},
+}
+#+end_src
+
+=mode= is =python= (the built-in persistent kernel, no =command=), =protocol=
+(your own long-lived process speaking mep's JSON-line kernel protocol), or
+=script= (a fresh process per run, code on stdin). =language= is the Treesitter
+filetype the cell body is highlighted with.
 
 ** Layout
 

@@ -56,6 +56,15 @@ struct VTermCell {
 // deterministic across native and wasm builds, and unit-testable.
 int VTermCharWidth(uint32_t cp);
 
+// Mouse-tracking level the child has requested via DECSET. Off is the
+// default; the three active levels are the mutually-exclusive xterm modes
+// 1000 (report press/release), 1002 (also report drag with a button held),
+// 1003 (report all motion). Modeled as one enum rather than three bools
+// because they're levels of a single tracking machine -- setting one and
+// resetting any turns tracking off, matching real xterm. The wire
+// *encoding* (SGR vs legacy X10) is a separate axis (see MouseSgr()).
+enum class VTermMouseTracking : uint8_t { Off, Normal, ButtonEvent, AnyMotion };
+
 // A minimal-but-broadly-compatible VT100/ANSI/xterm terminal emulator:
 // parses a raw child-process output byte stream into a cursor-addressable
 // grid of VTermCells, unlike kBuiltinRun's mep_ansi_render (main.cpp) --
@@ -72,10 +81,14 @@ int VTermCharWidth(uint32_t cp);
 // swap in and out without trashing scrollback), cursor save/restore (both
 // ESC 7/8 and CSI s/u), and UTF-8 text.
 //
-// Deliberately not attempted: mouse reporting, sixel/image protocols,
-// bracketed-paste as anything other than a no-op, DEC special-graphics
-// character sets (ESC ( / ESC ) -- the following byte is consumed and
-// ignored rather than switching glyph sets). It replies to the common DSR,
+// Tracks (but does not itself act on) the xterm mouse-reporting modes
+// (DECSET 1000/1002/1003 tracking level, 1006 SGR encoding) and
+// bracketed-paste mode (2004): the embedding UI reads MouseTracking()/
+// MouseSgr()/BracketedPaste() to decide whether to encode and forward
+// mouse events / wrap pasted text -- this class has no input side of its
+// own. Deliberately not attempted: sixel/image protocols, DEC
+// special-graphics character sets (ESC ( / ESC ) -- the following byte is
+// consumed and ignored rather than switching glyph sets). It replies to the common DSR,
 // device-attributes, and OSC default-color queries that modern TUIs use at
 // startup; all other unrecognized CSI/ESC/OSC/DCS sequences are
 // parsed structurally (so their bytes never leak into the visible grid as
@@ -164,6 +177,22 @@ public:
     bool ApplicationCursorKeys() const { return app_cursor_keys_; }
 
     /**
+     * @brief Returns the mouse-tracking level the child has requested (DECSET 1000/1002/1003).
+     * @return The active tracking level, or Off if the child hasn't enabled mouse reporting.
+     */
+    VTermMouseTracking MouseTracking() const { return mouse_tracking_; }
+    /**
+     * @brief Returns whether the child requested SGR extended mouse encoding (DECSET 1006).
+     * @return True if mouse reports should use the ESC[<b;x;yM form instead of legacy X10.
+     */
+    bool MouseSgr() const { return mouse_sgr_; }
+    /**
+     * @brief Returns whether the child enabled bracketed-paste mode (DECSET 2004).
+     * @return True if pasted text should be wrapped in ESC[200~ ... ESC[201~.
+     */
+    bool BracketedPaste() const { return bracketed_paste_; }
+
+    /**
      * @brief Returns the number of lines currently held in scrollback.
      * @return Count of scrollback lines.
      */
@@ -199,6 +228,10 @@ private:
     std::vector<VTermCell> alt_;
     bool alt_active_ = false;
     bool app_cursor_keys_ = false;
+    VTermMouseTracking mouse_tracking_ = VTermMouseTracking::Off;
+    bool mouse_sgr_ = false;        // DECSET 1006 (SGR extended coordinates)
+    bool mouse_urxvt_ = false;      // DECSET 1015 (urxvt encoding -- tracked, not emitted)
+    bool bracketed_paste_ = false;  // DECSET 2004
     std::deque<std::vector<VTermCell>> scrollback_;
     static constexpr size_t kMaxScrollback = 5000;
 

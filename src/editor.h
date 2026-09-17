@@ -1050,6 +1050,25 @@ struct TerminalSession {
     // Mode::Terminal or interrupting keystroke forwarding.
     int scroll_offset = 0;
     int last_rows = 0, last_cols = 0;  // last size ResizePty/VTerm::Resize was called with
+
+    // Live-grid pixel geometry, refreshed every frame by DrawPane on the
+    // live-grid path. Lets HandleMouseWheel (editor.cpp) translate the
+    // mouse position into a grid cell for wheel-forwarding without reaching
+    // into main.cpp's per-frame globals; main.cpp's own mouse dispatch uses
+    // its g_terminal_grid capture instead. cell_w/cell_h are the character
+    // cell size; grid_x/grid_y the top-left pixel of cell (0,0).
+    float grid_x = 0, grid_y = 0, cell_w = 0, cell_h = 0;
+    int grid_cols = 0, grid_rows = 0;
+
+    // Mouse text selection, in COMBINED-HISTORY coordinates: row indexes
+    // the scrollback+live-grid continuum (the same space as
+    // DrawTerminalGrid's combined_index), col is the grid column. Absolute
+    // over history so the selection stays put as the view scrolls. anchor
+    // is the fixed press point; head follows the drag. Inactive when
+    // !sel_active.
+    bool sel_active = false;
+    int sel_anchor_row = 0, sel_anchor_col = 0;
+    int sel_head_row = 0, sel_head_col = 0;
 };
 
 // One image-viewer pane's decoded content, keyed by buffer id the same way
@@ -4614,6 +4633,21 @@ public:
      * @return A pointer to the KanbanSession, or nullptr if none exists.
      */
     KanbanSession *GetKanbanMutable(int buffer_id);
+    // Terminal mouse dispatch surface, called each frame from main.cpp's
+    // UpdateTerminalMouseInteraction / HandleMouseWheel (free functions that
+    // reach VTerm state only through g_editor). All take a buffer id and
+    // 0-based live-grid cells; selection coords are converted to combined
+    // scrollback+grid history internally so a highlight survives scrolling.
+    bool TerminalChildWantsMouse(int buffer_id);  // MouseTracking() != Off
+    bool TerminalChildAnyMotion(int buffer_id);   // tracking is ButtonEvent or AnyMotion
+    void SendTerminalMouseAt(int buffer_id, int button, int col, int row, bool pressed, bool motion);
+    void SetTerminalGridGeometry(int buffer_id, float grid_x, float grid_y, float cell_w, float cell_h, int cols,
+                                 int rows);
+    void TerminalSelectionPress(int buffer_id, int grid_col, int grid_row);
+    void TerminalSelectionDrag(int buffer_id, int grid_col, int grid_row);
+    bool TerminalSelectionRelease(int buffer_id);  // true iff a non-empty selection was copied
+    void TerminalScrollToLive(int buffer_id);      // snap the scrollback view to the live tail
+    void TerminalPasteById(int buffer_id);         // middle-click paste entry point
     /**
      * @brief Returns the GanttSession for a buffer, if a Gantt view is active for it.
      * @param buffer_id The buffer id to look up.
@@ -8173,6 +8207,14 @@ private:
     // second key turns out not to be Ctrl-N) can buffer one key before
     // deciding whether to call this.
     void SendTerminalKey(const TerminalSession &sess, gfx::Key key, int codepoint, bool ctrl, bool shift = false);
+    // Encodes a mouse event as an xterm report (SGR 1006 when the child
+    // enabled it via DECSET, else legacy X10) and forwards it to the child
+    // over the PTY. button: 0=left, 1=middle, 2=right, 64=wheel-up,
+    // 65=wheel-down. col/row are 0-based live-grid cells. `pressed`
+    // distinguishes press (M) from release (m) in SGR; ignored for wheel.
+    // `motion` sets the +32 drag/motion bit. No-op unless the child has
+    // enabled mouse tracking (MouseTracking()!=Off).
+    void SendTerminalMouse(const TerminalSession &sess, int button, int col, int row, bool pressed, bool motion);
     // Ctrl-\ Ctrl-N (Neovim's terminal-normal chord): snapshots the
     // session's current VTerm scrollback+grid into CurPane()'s own buffer
     // (see the comment above the definition for why this is a snapshot,
@@ -8197,6 +8239,14 @@ private:
     void TerminalSpawn(TerminalSession &sess, const std::vector<std::string> &argv);
     void TerminalWrite(const TerminalSession &sess, const std::string &bytes);
     void TerminalResizeBackend(const TerminalSession &sess, int cols, int rows);
+    // Extracts the active mouse selection's text (stream/line-wrapping
+    // semantics, trailing blanks trimmed per line) and copies it to the
+    // unnamed register + system clipboard. No-op if no selection is active.
+    void TerminalCopySelection(int buffer_id);
+    // Pastes the unnamed register into the child, wrapped in bracketed-paste
+    // markers when the child enabled DECSET 2004. Shared by Ctrl-Shift-V and
+    // middle-click paste. Newlines are sent as CR (the Enter convention).
+    void TerminalPaste(TerminalSession &sess);
     // h/j/k/l and arrow keys pan; ':' and the leader key are forwarded
     // (EnterCommand/TriggerWhichKey) so the command line and whichkey/
     // leader mappings keep working; everything else is a no-op -- there's

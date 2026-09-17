@@ -1107,6 +1107,21 @@ struct PaneScreenRect {
 };
 std::vector<PaneScreenRect> g_pane_screen_rects;
 
+// The active-pane terminal's live-grid rect + cell geometry this frame,
+// captured in DrawPane's term_sess branch (live-grid path only) and
+// consumed by UpdateTerminalMouseInteraction to hit-test and translate the
+// mouse into a grid cell. buffer_id < 0 means no interactive terminal grid
+// was drawn this frame (Ctrl-\ Ctrl-N snapshot, or no terminal focused) --
+// the same stale-guard style as g_pane_border_rects.
+struct TerminalGridCapture {
+    int buffer_id = -1;
+    bool is_active = false;
+    float grid_x = 0, grid_y = 0;  // top-left pixel of cell (0,0)
+    float cell_w = 0, cell_h = 0;
+    int cols = 0, rows = 0;
+};
+TerminalGridCapture g_terminal_grid;
+
 // One draggable header/tab-chip region this frame -- pushed for every
 // chip in a multi-tab pane's strip AND for a single-buffer pane's whole
 // plain header (dragging that pane's sole buffer counts too; see
@@ -20831,6 +20846,16 @@ void DrawTerminalGrid(const TerminalSession &sess, float x, float y, [[maybe_unu
     float cw = g_char_width, lh = static_cast<float>(LineHeight());
 
     int sb_lines = term->ScrollbackLines();
+    // Mouse selection, normalized to stream order (start precedes end) in
+    // the same combined-history coordinate space as combined_index below.
+    bool has_sel = sess.sel_active;
+    int sel_r0 = sess.sel_anchor_row, sel_c0 = sess.sel_anchor_col;
+    int sel_r1 = sess.sel_head_row, sel_c1 = sess.sel_head_col;
+    if (sel_r0 > sel_r1 || (sel_r0 == sel_r1 && sel_c0 > sel_c1)) {
+        std::swap(sel_r0, sel_r1);
+        std::swap(sel_c0, sel_c1);
+    }
+    gfx::Color sel_bg = ResolveHlGroup("Visual");
     for (int r = 0; r < rows; r++) {
         float ry = y + static_cast<float>(r) * lh;
         if (ry + lh < y || ry > y + h) continue;
@@ -20868,7 +20893,12 @@ void DrawTerminalGrid(const TerminalSession &sess, float x, float y, [[maybe_unu
             gfx::Color fg = VTermColorToRaylib(fg_c, true);
             if (cell->faint) fg = gfx::Color{static_cast<unsigned char>(fg.r / 2), static_cast<unsigned char>(fg.g / 2),
                                          static_cast<unsigned char>(fg.b / 2), fg.a};
-            if (bg_c.kind != VTermColorKind::Default || cell->reverse) {
+            bool selected = has_sel && (combined_index > sel_r0 || (combined_index == sel_r0 && c >= sel_c0)) &&
+                            (combined_index < sel_r1 || (combined_index == sel_r1 && c <= sel_c1));
+            if (selected) {
+                gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(ry), static_cast<int>(cell_w) + 1,
+                              static_cast<int>(lh), sel_bg);
+            } else if (bg_c.kind != VTermColorKind::Default || cell->reverse) {
                 gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(ry), static_cast<int>(cell_w) + 1,
                               static_cast<int>(lh), bg);
             }
@@ -27942,6 +27972,18 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // it still running while browsing a different one.
         bool show_live_grid = !is_active || g_editor.CurrentMode() != Mode::Normal;
         if (show_live_grid) {
+            // Publish this frame's grid geometry both onto the session (so
+            // editor.cpp's wheel handler can map the mouse to a cell) and
+            // into the per-frame capture consumed by
+            // UpdateTerminalMouseInteraction. Only the active pane is
+            // interactive; a background terminal still draws its live grid
+            // but takes no mouse.
+            g_editor.SetTerminalGridGeometry(pane.buffer_id, terminal_x, content_y, g_char_width,
+                                             static_cast<float>(line_height), cols, trows);
+            if (is_active) {
+                g_terminal_grid = {pane.buffer_id, true, terminal_x, content_y, g_char_width,
+                                   static_cast<float>(line_height), cols, trows};
+            }
             gfx::BeginScissorMode(static_cast<int>(terminal_x), static_cast<int>(content_y), static_cast<int>(terminal_w),
                               static_cast<int>(content_h));
             DrawTerminalGrid(*term_sess, terminal_x, content_y, terminal_w, content_h);
@@ -31557,6 +31599,7 @@ void DrawEditor() {
     g_pane_screen_rects.clear();
     g_pane_tab_chip_rects.clear();
     g_pane_border_rects.clear();
+    g_terminal_grid = TerminalGridCapture{};
     g_sidebar_row_rects.clear();
     g_buffer_drag_row_rects.clear();
     g_sidebar_panel_rects.clear();
@@ -32864,6 +32907,97 @@ void UpdateOfficeScrollbarInteraction() {
     }
 }
 
+// Per-frame mouse handling for the focused terminal pane's live grid.
+// Two behaviors, chosen by whether the child program has enabled mouse
+// tracking (DECSET 1000/1002/1003) and whether Shift is held:
+//   * Forward to child (Claude Code, vim, htop, less, fzf): plain
+//     press/drag/release + wheel go to the program as xterm mouse reports,
+//     so it drives its own scrolling/clicking. This is the default when the
+//     program wants the mouse.
+//   * Local selection + paste: when no program wants the mouse, OR the user
+//     holds Shift to override, a left-drag selects terminal text (auto-
+//     copied on release) and middle-click pastes.
+// An in-progress gesture (forwarding or selecting) always runs to its
+// release regardless of the current Shift/tracking state, so toggling
+// Shift mid-drag can't strand a half-finished press.
+void UpdateTerminalMouseInteraction() {
+    static bool forwarding = false;   // a press was forwarded to the child; awaiting drag/release
+    static int forward_button = 0;
+    static int last_fwd_col = -1, last_fwd_row = -1;
+    static bool selecting = false;    // a local text-selection drag is in progress
+
+    const TerminalGridCapture &g = g_terminal_grid;
+    if (g_editor.CurrentMode() != Mode::Terminal || g.buffer_id < 0 || !g.is_active || g.cell_w <= 0 ||
+        g.cell_h <= 0) {
+        forwarding = false;
+        selecting = false;
+        return;
+    }
+
+    gfx::Vector2 m = gfx::GetMousePosition();
+    gfx::Rectangle grid{g.grid_x, g.grid_y, g.cell_w * static_cast<float>(g.cols), g.cell_h * static_cast<float>(g.rows)};
+    bool in_grid = PointInRect(m, grid);
+    int col = std::clamp(static_cast<int>((m.x - g.grid_x) / g.cell_w), 0, g.cols - 1);
+    int row = std::clamp(static_cast<int>((m.y - g.grid_y) / g.cell_h), 0, g.rows - 1);
+
+    // Complete an already-started forwarded gesture first.
+    if (forwarding) {
+        bool down = (forward_button == 0 && gfx::IsMouseButtonDown(gfx::MouseButton::Left)) ||
+                    (forward_button == 1 && gfx::IsMouseButtonDown(gfx::MouseButton::Middle)) ||
+                    (forward_button == 2 && gfx::IsMouseButtonDown(gfx::MouseButton::Right));
+        if (down) {
+            if (g_editor.TerminalChildAnyMotion(g.buffer_id) && (col != last_fwd_col || row != last_fwd_row)) {
+                g_editor.SendTerminalMouseAt(g.buffer_id, forward_button, col, row, true, true);
+                last_fwd_col = col;
+                last_fwd_row = row;
+            }
+        } else {
+            g_editor.SendTerminalMouseAt(g.buffer_id, forward_button, col, row, false, false);
+            forwarding = false;
+        }
+        return;
+    }
+    // Complete an already-started local selection gesture.
+    if (selecting) {
+        if (gfx::IsMouseButtonDown(gfx::MouseButton::Left)) {
+            g_editor.TerminalSelectionDrag(g.buffer_id, col, row);
+        } else {
+            g_editor.TerminalSelectionRelease(g.buffer_id);
+            selecting = false;
+        }
+        return;
+    }
+
+    bool shift = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
+    bool forward = g_editor.TerminalChildWantsMouse(g.buffer_id) && !shift;
+
+    if (forward) {
+        int btn = -1;
+        if (gfx::IsMouseButtonPressed(gfx::MouseButton::Left)) btn = 0;
+        else if (gfx::IsMouseButtonPressed(gfx::MouseButton::Middle)) btn = 1;
+        else if (gfx::IsMouseButtonPressed(gfx::MouseButton::Right)) btn = 2;
+        if (btn >= 0 && in_grid) {
+            g_editor.TerminalScrollToLive(g.buffer_id);
+            g_editor.SendTerminalMouseAt(g.buffer_id, btn, col, row, true, false);
+            forwarding = true;
+            forward_button = btn;
+            last_fwd_col = col;
+            last_fwd_row = row;
+        }
+        return;
+    }
+
+    // Local path: middle-click pastes (X11 convention); left-drag selects.
+    if (gfx::IsMouseButtonPressed(gfx::MouseButton::Middle) && in_grid) {
+        g_editor.TerminalPasteById(g.buffer_id);
+        return;
+    }
+    if (gfx::IsMouseButtonPressed(gfx::MouseButton::Left) && in_grid) {
+        g_editor.TerminalSelectionPress(g.buffer_id, col, row);
+        selecting = true;
+    }
+}
+
 void UpdatePaneMouseInteraction() {
     Mode mode = g_editor.CurrentMode();
     if (IsModalOverlayMode(mode) && mode != Mode::Sidebar) {
@@ -33325,6 +33459,10 @@ void UpdateDrawFrame() {
         // when IsMouseButtonPressed() is false this frame.
         // cppcheck-suppress duplicateCondition
         if (!hint_consumed && !menu_consumed) UpdatePaneMouseInteraction();
+        // After pane-chrome dragging (so a border/tab-chip drag near the
+        // grid edge wins), forward/select the focused terminal's mouse.
+        // cppcheck-suppress duplicateCondition
+        if (!hint_consumed && !menu_consumed) UpdateTerminalMouseInteraction();
         // Same reasoning again -- needs this frame's freshly-refreshed
         // KanbanSession/GanttSession::content_x/y/w/h (set by DrawKanban/
         // DrawGantt), and a drag already in progress needs its own

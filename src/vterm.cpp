@@ -622,9 +622,24 @@ void VTerm::ExecuteCsi(char final_byte) {
                     } else if (mode == 1049 || mode == 47 || mode == 1047) {
                         if (set) EnterAltScreen();
                         else LeaveAltScreen();
+                    } else if (mode == 1000) {
+                        mouse_tracking_ = set ? VTermMouseTracking::Normal : VTermMouseTracking::Off;
+                    } else if (mode == 1002) {
+                        mouse_tracking_ = set ? VTermMouseTracking::ButtonEvent : VTermMouseTracking::Off;
+                    } else if (mode == 1003) {
+                        mouse_tracking_ = set ? VTermMouseTracking::AnyMotion : VTermMouseTracking::Off;
+                    } else if (mode == 1006) {
+                        mouse_sgr_ = set;
+                    } else if (mode == 1015) {
+                        mouse_urxvt_ = set;
+                    } else if (mode == 2004) {
+                        bracketed_paste_ = set;
                     }
-                    // Other private modes (mouse tracking, bracketed
-                    // paste, ...) are structurally consumed and ignored.
+                    // The tracking-level modes 1000/1002/1003 are mutually
+                    // exclusive levels of one machine: resetting any of them
+                    // turns tracking fully Off (an app disables the mouse by
+                    // resetting whatever level it set). Other unrecognized
+                    // private modes are structurally consumed and ignored.
                 }
             }
             break;
@@ -718,6 +733,10 @@ void VTerm::ExecuteEscFinal(unsigned char c) {
             for (VTermCell &cell : alt_) cell = VTermCell{};
             alt_active_ = false;
             app_cursor_keys_ = false;
+            mouse_tracking_ = VTermMouseTracking::Off;
+            mouse_sgr_ = false;
+            mouse_urxvt_ = false;
+            bracketed_paste_ = false;
             cursor_row_ = 0;
             cursor_col_ = 0;
             pending_wrap_ = false;

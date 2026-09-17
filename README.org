@@ -324,7 +324,7 @@ each workspace edits its own checkout on its own branch; =:wsnew! <name>=
 attaches to an already-existing branch instead. The process working
 directory always follows the active workspace's root, so =<leader>ff=,
 live grep, =:e=, LSP (one client per language *per workspace root*) and
-=:terminal= (which also gets =$MEP_WORKSPACE= / =$MEP_PROJECT=) all act
+=:terminal= (which also gets =$MEP_WORKSPACE_NAME= / =$MEP_PROJECT_NAME=) all act
 on that worktree. Buffers belong to the workspace they were opened in:
 =:ls=, =<leader>bb=, =:bnext= and the agent's =buffer.list= only show
 the active workspace's, while =:wa= and the =:qa= unsaved-changes guard

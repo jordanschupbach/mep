@@ -5286,7 +5286,13 @@ void Editor::TerminalSpawn(TerminalSession &sess, const std::vector<std::string>
     // cwd is the active workspace root (WORKSPACES_PLAN.md decision 4) --
     // explicit rather than inherited so a terminal opened in one worktree
     // stays there even after the process cwd follows a workspace switch.
-    // MEP_WORKSPACE/MEP_PROJECT let shell prompts show where they are.
+    // MEP_WORKSPACE_NAME/MEP_PROJECT_NAME let shell prompts show where they
+    // are. These are deliberately NOT named MEP_PROJECT: that name is the
+    // launcher's "--project <dir>" equivalent (main.cpp reads $MEP_PROJECT as
+    // a directory to open at startup), so exporting the project *name* under
+    // it would make every mep launched from inside a mep terminal treat its
+    // parent's project name as an explicit project request -- skipping the
+    // dashboard and restoring saved workspace state instead.
     //
     // MEP_AGENT_SOCKET pins this window's own agent-control socket
     // (agent_rpc.cpp) for anything started from inside the terminal --
@@ -5299,8 +5305,8 @@ void Editor::TerminalSpawn(TerminalSession &sess, const std::vector<std::string>
     // agent_rpc.h's wasm/Windows stub returns "").
     std::vector<std::pair<std::string, std::string>> extra_env = {{"TERM", "xterm-256color"},
                                                                   {"COLORTERM", "truecolor"},
-                                                                  {"MEP_WORKSPACE", ActiveWorkspace().name},
-                                                                  {"MEP_PROJECT", ActiveProject().name}};
+                                                                  {"MEP_WORKSPACE_NAME", ActiveWorkspace().name},
+                                                                  {"MEP_PROJECT_NAME", ActiveProject().name}};
     std::string agent_socket = mep::agent::SocketPath();
     if (!agent_socket.empty()) extra_env.emplace_back("MEP_AGENT_SOCKET", agent_socket);
     // MEP_TERMINAL_BUFFER: this terminal's own buffer id, so an agent
@@ -22801,7 +22807,7 @@ std::vector<Editor::FileTreeRow> Editor::BuildFileTreeRows(const std::string &ro
 }
 
 std::string Editor::ProjectReadmePath(const std::string &dir) const {
-    static const char *const kNames[] = {"README.md", "README.org", "README.txt", "README"};
+    static const char *const kNames[] = {"README.org", "README.md", "README.txt", "README"};
     std::vector<DirEntry> entries = ListDirectory(dir);
     for (const char *name : kNames) {
         for (const DirEntry &e : entries) {

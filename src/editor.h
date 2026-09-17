@@ -4004,6 +4004,26 @@ public:
         link_hint_request_ = false;
         return requested;
     }
+    // Pane picker (mep.pick_pane_open): the file tree's Enter-on-a-file
+    // asks to open `path`, but leaves *which* pane it lands in up to the
+    // user when the active tab has more than one candidate window. Like
+    // TakeLinkHintRequest above, the picker's whole state
+    // (g_pane_pick_active/g_pane_pick_targets, main.cpp) is main.cpp-local
+    // per-frame pane geometry (g_pane_screen_rects), so lua_env can only
+    // *ask* to open the picker, not build it; main.cpp answers this right
+    // after HandleInput() (the same spot it answers TakeLinkHintRequest).
+    // Reading it clears it and hands back the pending path.
+    void RequestPanePick(const std::string &path) {
+        pane_pick_request_ = true;
+        pane_pick_path_ = path;
+    }
+    bool TakePanePickRequest(std::string *out) {
+        if (!pane_pick_request_) return false;
+        pane_pick_request_ = false;
+        if (out) *out = pane_pick_path_;
+        pane_pick_path_.clear();
+        return true;
+    }
     // Every live HTML session's buffer id (main.cpp's media playback sweep).
     std::vector<int> HtmlBufferIds() const;
     /**
@@ -9750,6 +9770,8 @@ private:
     // 'g' waiting for a second key (gg / ge / gE).
     bool pending_g_ = false;
     bool link_hint_request_ = false;  // see TakeLinkHintRequest
+    bool pane_pick_request_ = false;  // see TakePanePickRequest
+    std::string pane_pick_path_;      // path the pane picker will open once a window is chosen
     // '[' / ']' waiting for a second key -- Lua-registered only
     // (mep.map_bracket_prev/mep.map_bracket_next, e.g. "[e"/"]e" for LSP
     // diagnostic navigation); mep has no built-in bracket motion of its

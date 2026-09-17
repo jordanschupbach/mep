@@ -874,6 +874,27 @@ int l_open(lua_State *L) {
     return 0;
 }
 
+// mep.pick_pane_open(path): like mep.open, but when the active tab has more
+// than one candidate pane to host the file, first lets the user choose
+// which window it opens in -- each candidate window gets a big centered
+// letter (a, b, c ... in split order) and pressing it opens `path` there
+// (main.cpp's pane picker, armed via Editor::RequestPanePick right after
+// this frame's HandleInput). One candidate opens immediately with no
+// prompt; none falls back to opening in the current pane. The file tree's
+// Enter-on-a-file uses this so a file no longer always lands in one fixed
+// default pane.
+/**
+ * @brief Implements mep.pick_pane_open(path): opens a file, prompting for the destination window when several exist.
+ * @param L Lua state; arg 1 is the file path to open.
+ * @return Number of values pushed (0).
+ */
+int l_pick_pane_open(lua_State *L) {
+    size_t len = 0;
+    const char *s = luaL_checklstring(L, 1, &len);
+    GetEditor(L)->RequestPanePick(std::string(s, len));
+    return 0;
+}
+
 // mep.sidebar_default_cols(fraction?): character-column width equal to
 // `fraction` (0..1, default 0.2) of the current window's pixel width --
 // lets a sidebar's opening size scale with the window instead of being a
@@ -8801,6 +8822,7 @@ const luaL_Reg kMepFuncs[] = {
     {"split_below", l_split_below},
     {"cmd", l_cmd},
     {"open", l_open},
+    {"pick_pane_open", l_pick_pane_open},
     {"terminal_here", l_terminal_here},
     {"terminal_here_argv", l_terminal_here_argv},
     {"is_terminal_buffer", l_is_terminal_buffer},

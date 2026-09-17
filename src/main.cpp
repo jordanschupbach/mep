@@ -13888,9 +13888,37 @@ const char *kBuiltinOrgPolyglot =
     // (every unsupported case just falls through to the caller's own
     // normal, non-polyglot behavior).
     "function mep_polyglot_context_at_cursor()\n"
+    // Notebook code cells use the same virtual-document bridge as org
+    // source blocks. Their selected kernel supplies the LSP filetype, but
+    // only a code cell body (never a # %% marker, markdown, or output) is
+    // exposed to the server. Keeping each cell as a per-block shadow avoids
+    // unrelated kernels/languages sharing one synthetic document.
+    "  local row, col = mep.cursor()\n"
+    "  if mep_lsp_filetype(mep.filename()) == 'ipynb' then\n"
+    "    local ctx = mep.notebook_lsp_context(row)\n"
+    "    if not ctx then return nil end\n"
+    "    local aliases = {python = 'py', javascript = 'js', typescript = 'ts', shell = 'sh', bash = 'sh', ['c++'] = 'cpp'}\n"
+    "    local ft = aliases[ctx.language] or ctx.language\n"
+    // Keep the notebook source verbatim (no babel wrap_main), but retain
+    // the compiler metadata needed for clangd's per-cell compile database.
+    "    local base_def = mep.org_babel_langs and mep.org_babel_langs[ft]\n"
+    "    local lang_def = {extension = '.' .. ft, executable = base_def and base_def.executable, compile_cmd = base_def and base_def.compile_cmd}\n"
+    "    local server = mep_polyglot_server_for(ft, lang_def)\n"
+    "    if not server then return nil end\n"
+    "    local notebook_abspath = mep_lsp_abspath(mep.filename())\n"
+    "    local blk = {lang = ft, start_row = ctx.first_row - 1, end_row = ctx.end_row, args_str = ''}\n"
+    "    local key = notebook_abspath .. '|notebook|' .. ft .. '|' .. ctx.first_row\n"
+    "    local shadow = mep_polyglot_shadows[key]\n"
+    "    if not shadow then\n"
+    "      shadow = mep_polyglot_create_shadow(key, notebook_abspath, blk, lang_def, server, true)\n"
+    "      if not shadow then return nil end\n"
+    "      shadow.notebook = true\n"
+    "    end\n"
+    "    return {client = shadow.client, uri = mep_lsp_uri(shadow.path),\n"
+    "            position = {line = row - blk.start_row - 1, character = col - 1}}\n"
+    "  end\n"
     "  if not mep.org_polyglot_enabled then return nil end\n"
     "  if mep_lsp_filetype(mep.filename()) ~= 'org' then return nil end\n"
-    "  local row, col = mep.cursor()\n"
     "  local blk = mep_org_src_block_at(row)\n"
     "  if not blk or not blk.lang or blk.lang == '' then return nil end\n"
     "  local lang_def = mep.org_babel_langs[blk.lang]\n"
@@ -13982,10 +14010,28 @@ const char *kBuiltinOrgPolyglot =
     // mep.on_buffer_changed below.
     "function mep_polyglot_resync()\n"
     "  local org_file = mep.filename()\n"
-    "  if mep_lsp_filetype(org_file) ~= 'org' then return end\n"
+    "  local notebook = mep_lsp_filetype(org_file) == 'ipynb'\n"
+    "  if not notebook and mep_lsp_filetype(org_file) ~= 'org' then return end\n"
     "  local org_abspath = mep_lsp_abspath(org_file)\n"
     "  for _, key in ipairs(mep_polyglot_shadows_by_file[org_abspath] or {}) do\n"
     "    local shadow = mep_polyglot_shadows[key]\n"
+    "    if notebook and shadow and shadow.notebook then\n"
+    "      local ctx = mep.notebook_lsp_context(shadow.start_row + 1)\n"
+    "      if ctx then\n"
+    "        local lines = {}\n"
+    "        for i = ctx.first_row, ctx.end_row - 1 do lines[#lines + 1] = mep.get_line(i) end\n"
+    "        local content = table.concat(lines, '\\n')\n"
+    "        shadow.start_row, shadow.end_row = ctx.first_row - 1, ctx.end_row\n"
+    "        local f = io.open(shadow.path, 'w')\n"
+    "        if f then f:write(content) f:close() end\n"
+    "        if shadow.client and mep.lsp_is_running(shadow.client) then\n"
+    "          shadow.version = shadow.version + 1\n"
+    "          mep.lsp_notify(shadow.client, 'textDocument/didChange', {\n"
+    "            textDocument = {uri = mep_lsp_uri(shadow.path), version = shadow.version}, contentChanges = {{text = content}},\n"
+    "          })\n"
+    "        end\n"
+    "      end\n"
+    "    else\n"
     "    local lang_def = shadow and mep.org_babel_langs[shadow.lang]\n"
     "    if shadow and lang_def then\n"
     "      local content\n"
@@ -14010,6 +14056,7 @@ const char *kBuiltinOrgPolyglot =
     "          })\n"
     "        end\n"
     "      end\n"
+    "    end\n"
     "    end\n"
     "  end\n"
     "end\n"
@@ -30800,7 +30847,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                         const bool is_err = out.kind == NotebookOutput::Kind::Error;
                         const bool is_stderr = out.kind == NotebookOutput::Kind::Stream && out.name == "stderr";
                         if (is_err || is_stderr) {
-                            gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(oy), static_cast<int>(w), static_cast<int>(out_h),
+                            // Keep failure emphasis inside this cell's output card;
+                            // the line-number gutter and neighboring pane margin are
+                            // navigation chrome, not part of the result.
+                            gfx::DrawRectangle(static_cast<int>(nb_card_x), static_cast<int>(oy), static_cast<int>(nb_card_w), static_cast<int>(out_h),
                                                gfx::Fade(ResolveHlGroup(is_err ? "Error" : "Warn"), 0.10f));
                         }
                         const gfx::Color out_color = ResolveHlGroup(is_err ? "Error" : (is_stderr ? "Warn" : "Normal"));

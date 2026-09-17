@@ -25572,3 +25572,20 @@ std::string Editor::NotebookCellLanguageAtRow(int buffer_id, int row) {
     const NotebookKernelSpec *spec = FindNotebookKernel(notebook_kernels_, name);
     return spec ? spec->language : "py";
 }
+
+bool Editor::NotebookCellLspContext(int buffer_id, int row, int *first_row, int *end_row, std::string *language) {
+    const NotebookSession *sess = NotebookRefresh(buffer_id);
+    if (!sess) return false;
+    int idx = NotebookSpanAtRow(sess->spans, row);
+    if (idx < 0 || idx >= static_cast<int>(sess->spans.size())) return false;
+    const NotebookCellSpan &span = sess->spans[static_cast<size_t>(idx)];
+    // A marker selects the cell in the UI, but isn't source text the kernel
+    // (or an LSP) can parse.
+    if (span.type != NotebookCellType::Code || row < span.first_row || row >= span.end_row) return false;
+    std::string lang = NotebookCellLanguageAtRow(buffer_id, row);
+    if (lang.empty()) return false;
+    if (first_row) *first_row = span.first_row;
+    if (end_row) *end_row = span.end_row;
+    if (language) *language = std::move(lang);
+    return true;
+}

@@ -1374,6 +1374,24 @@ int l_notebook_cell_language(lua_State *L) {
     return 1;
 }
 
+// Returns the current code cell's source bounds and its selected kernel
+// language. Bounds are 1-based and end-exclusive, matching replace_lines.
+int l_notebook_lsp_context(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    int row = static_cast<int>(luaL_checkinteger(L, 1)) - 1;
+    int first = 0, end = 0;
+    std::string language;
+    if (!ed->NotebookCellLspContext(ed->CurrentBufferId(), row, &first, &end, &language)) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_newtable(L);
+    lua_pushinteger(L, first + 1); lua_setfield(L, -2, "first_row");
+    lua_pushinteger(L, end + 1); lua_setfield(L, -2, "end_row");
+    lua_pushstring(L, language.c_str()); lua_setfield(L, -2, "language");
+    return 1;
+}
+
 /**
  * @brief Implements mep.notebook_status(): {status=, python=, cells=, running=, queued=} for the current notebook, or nil.
  * @param L Lua state.
@@ -9079,6 +9097,7 @@ const luaL_Reg kMepFuncs[] = {
     {"notebook_set_cell_kernel", l_notebook_set_cell_kernel},
     {"notebook_default_kernel", l_notebook_default_kernel},
     {"notebook_cell_language", l_notebook_cell_language},
+    {"notebook_lsp_context", l_notebook_lsp_context},
     {"notebook_status", l_notebook_status},
     {"notebook_cell_outputs", l_notebook_cell_outputs},
     {"job_write", l_job_write},

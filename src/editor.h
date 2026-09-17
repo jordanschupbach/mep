@@ -4640,6 +4640,11 @@ public:
     // (a code cell's kernel language; "md" for markdown), or "" for none
     // -- what the syntax chunk asks per `# %%` marker row.
     std::string NotebookCellLanguageAtRow(int buffer_id, int row);
+    // Returns the half-open source-row range and kernel language for the code
+    // cell containing `row`. Used by the LSP bridge to expose one cell as a
+    // virtual language-server document; false for markers, markdown, and
+    // rows outside a notebook code cell.
+    bool NotebookCellLspContext(int buffer_id, int row, int *first_row, int *end_row, std::string *language);
     /**
      * @brief Records the renderer's current char-width / line-height ratio, which sizes
      * image output blocks (NotebookImageSlots). DrawPane reports it every frame before

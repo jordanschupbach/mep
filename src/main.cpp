@@ -2980,6 +2980,8 @@ const char *kKeybindingsText =
     "  :close                         close current pane\n"
     "  Ctrl-W w / W                   cycle to next / previous pane\n"
     "  Ctrl-W c / s / v               close / split-h / split-v pane\n"
+    "  Alt-m                          maximize pane (others shrink to minimum) / restore layout;\n"
+    "                                 with a sidebar focused, pop it out instead\n"
     "  Ctrl-W h j k l                 move focus left / down / up / right\n"
     "  :tabnew [file]  :tabdelete     new / close tab (Ctrl-T = new)\n"
     "  :tabnext  :tabprevious         switch tabs\n"
@@ -3050,10 +3052,12 @@ const char *kDefaultMod1Bindings =
     "mep.map_mod1('C-k', function() mep.pane_move_buffer('up') end)\n"
     "mep.map_mod1('C-l', function() mep.pane_move_buffer('right') end)\n"
     "mep.map_mod1('d', function() mep.pane_close_buffer() end)\n"
-    // mod1+m: pop the focused sidebar out into a large centered float with
-    // a preview column (Editor::ToggleSidebarPopout); a no-op unless a
-    // sidebar has focus, so it's safe as a global binding.
-    "mep.map_mod1('m', function() mep.sidebar_popout_toggle() end)\n"
+    // mod1+m: with a sidebar focused, pop it out into a large centered
+    // float with a preview column (Editor::ToggleSidebarPopout); otherwise
+    // maximize the active pane / restore the layout from before
+    // (Editor::TogglePaneMaximize) -- sidebar_popout_toggle returns false
+    // when no sidebar has focus.
+    "mep.map_mod1('m', function() if not mep.sidebar_popout_toggle() then mep.pane_maximize_toggle() end end)\n"
     // mod1+o: open the focused sidebar's content as an ordinary tabbed
     // buffer in the pane tree (Editor::SidebarOpenPane) -- from there it's
     // just a normal buffer, splittable/movable/closable/mergeable with
@@ -9698,17 +9702,16 @@ const char *kBuiltinStructure =
     // via the hand-rolled extractor above for a .tex one, everything
     // else via Treesitter -- or (nil, message) if none of those has
     // anything for it.\n"
-    "local function mep_structure_items()\n"
-    "  local buffer_id = mep.current_buffer()\n"
+    "local function mep_structure_items(buffer_id)\n"
+    "  buffer_id = buffer_id or mep.current_buffer()\n"
     "  if mep.is_pdf_buffer(buffer_id) then\n"
     "    local items = mep_structure_pdf_items(buffer_id)\n"
     "    if not items then return nil, 'This PDF has no outline/bookmarks' end\n"
     "    return items, nil\n"
     "  end\n"
-    "  local ft = mep_lsp_filetype(mep.filename())\n"
+    "  local ft = mep_lsp_filetype(mep.buffer_filename(buffer_id) or '')\n"
     "  if not ft then return nil, 'No filetype for this buffer' end\n"
-    "  local lines = {}\n"
-    "  for i = 1, mep.line_count() do lines[i] = mep.get_line(i) end\n"
+    "  local lines = mep.buffer_get_lines(buffer_id) or {}\n"
     "  local items\n"
     "  if ft == 'tex' then\n"
     "    items = mep_structure_tex_items(lines)\n"
@@ -9873,7 +9876,8 @@ const char *kBuiltinStructure =
     "local mep_structure_split_last_row = nil\n"
     "mep.on_frame(function()\n"
     "  if not (mep_structure_split_buf and mep_structure_split_items and mep_structure_split_source) then return end\n"
-    "  local row = mep.buffer_cursor_row(mep_structure_split_source)\n"
+    "  local src = mep_structure_split_source\n"
+    "  local row = mep.is_pdf_buffer(src) and mep.pdf_current_page(src) or mep.buffer_cursor_row(src)\n"
     "  if row == mep_structure_split_last_row then return end\n"
     "  mep_structure_split_last_row = row\n"
     "  mep_structure_split_apply_decos()\n"
@@ -9885,8 +9889,31 @@ const char *kBuiltinStructure =
     // preview can resolve a row's index id back to its [start_row,
     // end_row] span without re-parsing the buffer per cursor move.
     "local mep_structure_sidebar_items = nil\n"
+    // The buffer the outline describes: the last focused buffer that is a
+    // real document (a file or PDF) -- not the Structure pane itself, another
+    // sidebar pane, a terminal or the <leader>sS split -- so focusing any of
+    // those keeps showing (and following) the file you were in instead of
+    // re-deriving an outline from them ("No filetype for this buffer").
+    "local mep_structure_source = nil\n"
+    "local function mep_structure_is_source(buf)\n"
+    "  if not buf or mep.sidebar_for_buffer(buf) or buf == mep_structure_split_buf then return false end\n"
+    "  if mep.is_terminal_buffer(buf) then return false end\n"
+    "  return mep.is_pdf_buffer(buf) or (mep.buffer_filename(buf) or '') ~= ''\n"
+    "end\n"
+    "local function mep_structure_update_source()\n"
+    "  local cur = mep.current_buffer()\n"
+    "  if mep_structure_is_source(cur) or not mep_structure_source then mep_structure_source = cur end\n"
+    "  return mep_structure_source\n"
+    "end\n"
+    // Where the source is: its PDF page, else its cursor row (tracked per
+    // buffer, so it's right even while the Structure pane has focus).
+    "local function mep_structure_source_pos(buf)\n"
+    "  if mep.is_pdf_buffer(buf) then return mep.pdf_current_page(buf) end\n"
+    "  return mep.buffer_cursor_row(buf)\n"
+    "end\n"
     "local function mep_structure_sidebar_render()\n"
-    "  local items, err = mep_structure_items()\n"
+    "  local source_buf = mep_structure_update_source()\n"
+    "  local items, err = mep_structure_items(source_buf)\n"
     "  mep_structure_sidebar_items = items\n"
     "  local widgets = {}\n"
     "  if not items then\n"
@@ -9894,13 +9921,12 @@ const char *kBuiltinStructure =
     "  elseif #items == 0 then\n"
     "    widgets[1] = {id = 'msg', text = '(no definitions found)'}\n"
     "  else\n"
-    "    local source_buf = mep.current_buffer()\n"
     "    local is_pdf = mep.is_pdf_buffer(source_buf)\n"
     "    local current\n"
     "    if is_pdf then\n"
     "      current = mep_structure_pdf_current_index(items, source_buf)\n"
     "    else\n"
-    "      current = mep_structure_current_index(items, mep.cursor())\n"
+    "      current = mep_structure_current_index(items, mep.buffer_cursor_row(source_buf))\n"
     "    end\n"
     "    for i, it in ipairs(items) do\n"
     "      local style = mep_structure_style(it.kind)\n"
@@ -9934,7 +9960,8 @@ const char *kBuiltinStructure =
     "      }\n"
     "    end\n"
     "  end\n"
-    "  local fname = mep.filename()\n"
+    "  local fname = mep.buffer_filename(source_buf) or ''\n"
+    "  fname = fname:match('([^/]+)$') or fname\n"
     "  mep.sidebar_set_sections(mep_structure_sidebar_id,\n"
     "    {{id = 'structure', title = (fname ~= '' and fname) or '[No Name]', collapsed = false, widgets = widgets}})\n"
     "end\n"
@@ -9952,12 +9979,13 @@ const char *kBuiltinStructure =
     // you there directly, and this feature's own PDF support was never
     // about a page-thumbnail preview.\n"
     "  if not it or it.page ~= nil then mep.sidebar_set_preview('') return end\n"
+    "  local src_lines = mep.buffer_get_lines(mep_structure_source or mep.current_buffer()) or {}\n"
     "  local first = it.start_row\n"
-    "  local last = math.min(it.end_row, first + 400, mep.line_count())\n"
+    "  local last = math.min(it.end_row, first + 400, #src_lines)\n"
     "  local lines = {}\n"
-    "  for r = first, last do lines[#lines + 1] = mep.get_line(r) end\n"
+    "  for r = first, last do lines[#lines + 1] = src_lines[r] end\n"
     "  if last < it.end_row then lines[#lines + 1] = '...' end\n"
-    "  local fname = mep.filename()\n"
+    "  local fname = mep.buffer_filename(mep_structure_source or mep.current_buffer()) or ''\n"
     "  local title = ((fname ~= '' and fname) or '[No Name]') .. ':' .. it.row\n"
     "  mep.sidebar_preview_code(lines, mep_lsp_filetype(fname), title, it.row - first + 1)\n"
     "end\n"
@@ -10051,17 +10079,27 @@ const char *kBuiltinStructure =
     // bookmark was current when the sidebar first opened, never catching
     // up as the user pages through -- track the PDF's own current page
     // instead for exactly this poll's purpose (row == "what changed").
+    // Docked, popped out, or hosted in a pane (<leader>ss / :MepStructure
+    // open the pane view, which sidebar_is_open -- docked-only -- never
+    // reported, so the outline used to stop following entirely there).
+    "local function mep_structure_visible()\n"
+    "  if not mep_structure_sidebar_id then return false end\n"
+    "  if mep.sidebar_is_open(mep_structure_sidebar_id) then return true end\n"
+    "  return mep_structure_pane_buf ~= nil and mep.buffer_on_screen(mep_structure_pane_buf)\n"
+    "end\n"
     "mep.on_frame(function()\n"
-    "  if not (mep_structure_sidebar_id and mep.sidebar_is_open(mep_structure_sidebar_id)) then return end\n"
-    "  local buf = mep.current_buffer()\n"
-    "  local row = mep.is_pdf_buffer(buf) and mep.pdf_current_page(buf) or mep.cursor()\n"
+    "  if not mep_structure_visible() then return end\n"
+    "  local cur = mep.current_buffer()\n"
+    "  local buf = mep_structure_is_source(cur) and cur or mep_structure_source\n"
+    "  if not buf then return end\n"
+    "  local row = mep_structure_source_pos(buf)\n"
     "  if buf == mep_structure_last_buf and row == mep_structure_last_row then return end\n"
     "  mep_structure_last_buf = buf\n"
     "  mep_structure_last_row = row\n"
     "  mep_structure_sidebar_render()\n"
     "end)\n"
     "mep.on_buffer_changed(function()\n"
-    "  if mep_structure_sidebar_id and mep.sidebar_is_open(mep_structure_sidebar_id) then mep_structure_sidebar_render() end\n"
+    "  if mep_structure_visible() then mep_structure_sidebar_render() end\n"
     "end)\n";
 
 // Docs (generate + lookup) and keybinding introspection (Phase 25).
@@ -33374,21 +33412,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                               ResolveHlGroup("Normal"));
             }
         } else if (pdf_sess) {
-            std::string label = "PDF: " + buf.filename;
-            if (pdf_sess->doc) {
-                label += " (page " + std::to_string(pdf_sess->page + 1) + "/" +
-                         std::to_string(pdf_sess->doc->PageCount()) + ") " +
-                         std::to_string(static_cast<int>(std::lround(pdf_sess->zoom * 100.0f))) + "%" +
-                         (pdf_sess->theme_colors ? "  [theme, Ctrl-R]" : "  [original, Ctrl-R]");
-                if (!pdf_sess->search_query.empty()) {
-                    label += pdf_sess->search_matches.empty()
-                                 ? "  /" + pdf_sess->search_query + " (no matches)"
-                                 : "  /" + pdf_sess->search_query + " (" +
-                                       std::to_string(pdf_sess->search_current + 1) + "/" +
-                                       std::to_string(pdf_sess->search_matches.size()) + ", N/P)";
-                }
-            }
-            gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
+            // Just the filename, centered -- same as an ordinary text
+            // buffer's header (the full path is on the status line; page/
+            // zoom/search state moved there too, the status line's Ln/Col slot).
+            std::string label = buf.filename.empty() ? "[No Name]" : Basename(buf.filename);
+            float text_w = gfx::MeasureTextEx(g_font, label.c_str(), font_size, 0).x;
+            float text_x = x + std::max(0.0f, (w - text_w) / 2.0f);
+            gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{text_x, label_y}, font_size, 0, ResolveHlGroup("Normal"));
         } else if (office_sess) {
             // Just the filename -- no more "(para X/Y) Z%" (the Docs-style
             // status line below now carries page/word-count/zoom instead).
@@ -34066,11 +34096,16 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
          * along with its search-match highlight rectangles.
          * @param idx Page index to draw.
          * @param top_y Y position of the page's top edge.
-         * @return The page's on-screen height (zoom-scaled), or 0 if no raster is cached for it.
+         * @return The page's on-screen height (zoom-scaled) -- from the document's own page size, so the
+         *         stack keeps its layout while a page is still rendering in the background (not drawn yet).
          */
         auto draw_page = [&](int idx, float top_y) -> float {
+            // Same height Editor::PdfPageScreenHeightPx gives the scroll-rebase math.
+            const float page_h = static_cast<float>(pdf_sess->doc->PageHeightPt(idx) *
+                                                    static_cast<double>(pdf_sess->rendered_scale) *
+                                                    static_cast<double>(pdf_sess->zoom));
             auto rit = pdf_sess->rasters.find(idx);
-            if (rit == pdf_sess->rasters.end()) return 0.0f;
+            if (rit == pdf_sess->rasters.end() || rit->second.w <= 0 || rit->second.h <= 0) return page_h;
             const PdfSession::PageRaster &pr = rit->second;
             gfx::Texture2D tex = GetOrUpdatePdfPageTexture(pane.buffer_id, idx, pr, pdf_sess->theme_colors);
             gfx::Vector2 pos{x - static_cast<float>(pdf_sess->pan_x), top_y};
@@ -34096,15 +34131,14 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 g_link_hint_rects.push_back(
                     {pane.id, pane.buffer_id, gfx::Rectangle{lx0, ly0, lx1 - lx0, ly1 - ly0}, true, link.target_page, link.uri});
             }
-            return static_cast<float>(pr.h) * pdf_sess->zoom;
+            return page_h;
         };
         float anchor_h = draw_page(pdf_sess->page, anchor_y);
         if (pdf_sess->page > 0) {
-            auto rit = pdf_sess->rasters.find(pdf_sess->page - 1);
-            if (rit != pdf_sess->rasters.end()) {
-                float prev_h = static_cast<float>(rit->second.h) * pdf_sess->zoom;
-                draw_page(pdf_sess->page - 1, anchor_y - kPdfPageGapPx - prev_h);
-            }
+            float prev_h = static_cast<float>(pdf_sess->doc->PageHeightPt(pdf_sess->page - 1) *
+                                              static_cast<double>(pdf_sess->rendered_scale) *
+                                              static_cast<double>(pdf_sess->zoom));
+            draw_page(pdf_sess->page - 1, anchor_y - kPdfPageGapPx - prev_h);
         }
         draw_page(pdf_sess->page + 1, anchor_y + anchor_h + kPdfPageGapPx);
         gfx::EndScissorMode();
@@ -37721,6 +37755,20 @@ void DrawEditor() {
             std::string rest = "  " + register_indicator + count_indicator + buf_label + (buf.modified ? " [+]" : "");
             std::string left = mode_chip + rest;
             std::string right = "Ln " + std::to_string(cursor.row + 1) + ", Col " + std::to_string(cursor.col + 1);
+            // A PDF has no text cursor: its page/zoom/theme/search state
+            // takes the Ln/Col slot instead (it used to crowd the pane header).
+            if (const PdfSession *pdf = g_editor.GetPdf(g_editor.CurrentBufferId()); pdf && pdf->doc) {
+                right = "Page " + std::to_string(pdf->page + 1) + "/" + std::to_string(pdf->doc->PageCount()) + "  " +
+                        std::to_string(static_cast<int>(std::lround(pdf->zoom * 100.0f))) + "%  " +
+                        (pdf->theme_colors ? "[theme, Ctrl-R]" : "[original, Ctrl-R]");
+                if (!pdf->search_query.empty()) {
+                    right = (pdf->search_matches.empty()
+                                 ? "/" + pdf->search_query + " (no matches)"
+                                 : "/" + pdf->search_query + " (" + std::to_string(pdf->search_current + 1) + "/" +
+                                       std::to_string(pdf->search_matches.size()) + ", N/P)") +
+                            "  " + right;
+                }
+            }
             // Collaboration presence stays in the editor's ordinary chrome,
             // not a modal: each compact chip identifies a peer and their
             // shared cursor location. Clicking a chip jumps there.

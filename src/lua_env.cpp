@@ -3425,6 +3425,28 @@ int l_sidebar_toggle(lua_State *L) {
 }
 
 /**
+ * @brief Implements mep.sidebar_for_buffer(buffer_id): the id of the sidebar a pane-hosted sidebar buffer shows, or nil.
+ * @param L Lua state; arg 1 is the buffer id.
+ * @return Number of values pushed (1).
+ */
+int l_sidebar_for_buffer(lua_State *L) {
+    int id = GetEditor(L)->SidebarIdForPaneBuffer(static_cast<int>(luaL_checkinteger(L, 1)));
+    if (id == 0) lua_pushnil(L);
+    else lua_pushinteger(L, id);
+    return 1;
+}
+
+/**
+ * @brief Implements mep.buffer_on_screen(buffer_id): whether some pane in the active tab shows the buffer.
+ * @param L Lua state; arg 1 is the buffer id.
+ * @return Number of values pushed (1, a boolean).
+ */
+int l_buffer_on_screen(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->IsBufferOnScreen(static_cast<int>(luaL_checkinteger(L, 1))));
+    return 1;
+}
+
+/**
  * @brief Implements mep.sidebar_is_open(id): reports whether a sidebar is currently open.
  * @param L Lua state; arg 1 is the sidebar id.
  * @return Number of values pushed (1: true if open).
@@ -3655,8 +3677,29 @@ int l_sidebar_set_preview(lua_State *L) {
  */
 int l_sidebar_popout_toggle(lua_State *L) {
     int id = static_cast<int>(luaL_optinteger(L, 1, 0));
-    GetEditor(L)->ToggleSidebarPopout(id);
-    return 0;
+    Editor *ed = GetEditor(L);
+    // With no id it targets the focused sidebar -- and returns false,
+    // doing nothing, when no sidebar has focus (the mod1+m binding then
+    // maximizes the active pane instead, mep.pane_maximize_toggle).
+    if (id == 0 && ed->CurrentMode() != Mode::Sidebar && !ed->SidebarPopoutActive()) {
+        lua_pushboolean(L, 0);
+        return 1;
+    }
+    ed->ToggleSidebarPopout(id);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/**
+ * @brief Implements mep.pane_maximize_toggle(): maximizes the active pane, or restores the layout from before (Editor::TogglePaneMaximize).
+ * @param L Lua state.
+ * @return Number of values pushed (1: whether a pane is maximized afterwards).
+ */
+int l_pane_maximize_toggle(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    ed->TogglePaneMaximize();
+    lua_pushboolean(L, ed->IsPaneMaximized());
+    return 1;
 }
 
 // mep.notify_sidebar_id()/mep.notify_refresh_pane(): the Notifications
@@ -9661,6 +9704,8 @@ const luaL_Reg kMepFuncs[] = {
     {"sidebar_close", l_sidebar_close},
     {"sidebar_toggle", l_sidebar_toggle},
     {"sidebar_is_open", l_sidebar_is_open},
+    {"sidebar_for_buffer", l_sidebar_for_buffer},
+    {"buffer_on_screen", l_buffer_on_screen},
     {"sidebar_set_on_key", l_sidebar_set_on_key},
     {"sidebar_set_help", l_sidebar_set_help},
     {"sidebar_toggle_help", l_sidebar_toggle_help},
@@ -9672,6 +9717,7 @@ const luaL_Reg kMepFuncs[] = {
     {"sidebar_set_on_preview", l_sidebar_set_on_preview},
     {"sidebar_set_preview", l_sidebar_set_preview},
     {"sidebar_popout_toggle", l_sidebar_popout_toggle},
+    {"pane_maximize_toggle", l_pane_maximize_toggle},
     {"notify_sidebar_id", l_notify_sidebar_id},
     {"notify_refresh_pane", l_notify_refresh_pane},
     {"sidebar_popout_open", l_sidebar_popout_open},

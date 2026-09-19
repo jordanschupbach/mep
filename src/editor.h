@@ -18,6 +18,7 @@
 #include <ctime>
 #include <deque>
 #include <functional>
+#include <future>
 #include <iterator>
 #include <map>
 #include <memory>
@@ -636,6 +637,10 @@ struct SidebarInstance {
     // pane tree gives it, so wrapping to `size` there left long text
     // either clipped or wrapped far short of the pane's right edge.
     int wrap_cols = 0;
+    // Flattened index of the row last seen with SidebarLine::current set
+    // (-1 = none), so UpdateScrollForSidebar scrolls an unfocused sidebar
+    // to it only when it moves.
+    int last_current_row = -1;
     int scroll_offset = 0;
 };
 
@@ -1056,6 +1061,15 @@ struct Tab {
     int id = 0;
     std::unique_ptr<SplitNode> root;
     int active_pane_id = 0;
+    // Alt+M pane maximize (Editor::TogglePaneMaximize): the pane currently
+    // maximized (-1 = none; pane ids start at 0), and every split's `shares` from just before
+    // the first maximize (pre-order over the tree), restored by the toggle
+    // back -- only if the tree still has the same shape (maximize_signature,
+    // Editor's LayoutSignature), since a split/close since then makes the
+    // saved sizes meaningless.
+    int maximized_pane_id = -1;
+    std::string maximize_signature;
+    std::vector<std::vector<float>> maximize_saved_shares;
 };
 
 struct WorktreeEntry;  // workspace_git.h
@@ -1641,7 +1655,10 @@ inline constexpr int kSheetRowHeight = 22;
 // boundaries instead of hard-cutting between pages.
 struct PdfSession {
     int buffer_id = 0;
-    std::unique_ptr<PdfDoc> doc;
+    // shared_ptr: a background render (render_job below) holds its own
+    // reference, so reloading the document mid-render can't free it
+    // under the worker.
+    std::shared_ptr<PdfDoc> doc;
     int page = 0;  // 0-indexed anchor page
     // Vertical: device pixels (post-zoom, i.e. "on-screen" pixels) scrolled
     // into `page` from its top -- can transiently go negative or past the
@@ -1703,6 +1720,22 @@ struct PdfSession {
     };
     std::unordered_map<int, PageRaster> rasters;
     int next_raster_generation = 1;
+    // The one page render in flight on a worker thread (Editor::
+    // EnsurePdfPagesRastered): PdfDoc::RenderPage only reads the loaded
+    // document, and a heavy page (a plotted mesh of tens of thousands of
+    // paths) can take far longer than a frame -- rendered inline it froze
+    // the UI mid-scroll. Collected on a later frame and dropped if the
+    // document or render scale changed meanwhile.
+    struct RenderResult {
+        bool ok = false;
+        std::vector<unsigned char> rgba;
+        int w = 0, h = 0;
+        std::string warning;
+    };
+    std::future<RenderResult> render_job;
+    int render_job_page = -1;
+    float render_job_scale = 0.0f;
+    const PdfDoc *render_job_doc = nullptr;
     // Memoized PdfDoc::PageWidthPt/HeightPt results -- avoids repeated
     // FPDF_LoadPage/ClosePage round-trips for page-size queries the
     // scroll/rebase math needs every frame while actively scrolling.
@@ -8099,6 +8132,16 @@ public:
     // about every navigation command; switching back re-applies it.
     // Re-toggling while a *different* pane is now active zooms that one
     // instead of unzooming the stale target.
+    // Alt+M: maximizes the active pane within the split tree -- every split
+    // on its path from the root gives it all the room, squeezing every
+    // other pane to kMinPaneShare (the floor manual resizing stops at),
+    // unlike <leader>zz's TogglePaneZoom, which hides them -- or, pressed
+    // again in the maximized pane, restores the layout saved when it was
+    // first maximized (Tab::maximize_saved_shares). Pressed in a different
+    // pane while one is maximized, maximizes that one instead, keeping the
+    // original saved layout for the eventual restore.
+    void TogglePaneMaximize();
+    bool IsPaneMaximized() const;
     void TogglePaneZoom() { zoomed_pane_id_ = (zoomed_pane_id_ == ActivePaneId()) ? -1 : ActivePaneId(); }
     int ZoomedPaneId() const { return zoomed_pane_id_; }
 

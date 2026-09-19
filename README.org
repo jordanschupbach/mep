@@ -373,7 +373,12 @@ heuristic tmux/i3 use) -- a no-op if there isn't one that way.
 against a neighbor on that side if there is one, otherwise shrinks
 against whichever neighbor it does have on that axis, so opposite keys
 always do opposite things; a no-op if the pane is alone on that axis
-(mirroring mep.nvim's =mep.window.panes.resize=). =mod1+Ctrl+h/j/k/l=
+(mirroring mep.nvim's =mep.window.panes.resize=). =mod1+m= maximizes
+the current pane -- every other pane shrinks to the minimum size those
+resize keys stop at -- and pressed again restores the layout from
+before (pressed in another pane while one is maximized, it maximizes
+that one instead; from a focused sidebar it pops the sidebar out, see
+above; =mep.pane_maximize_toggle()= from Lua). =mod1+Ctrl+h/j/k/l=
 moves the pane's active buffer tab into the neighboring pane that way,
 closing the current pane if that was its last tab (from inside a
 sidebar, =mod1+Ctrl+j/k= instead swap that sidebar with its stack
@@ -519,6 +524,12 @@ Available to =:lua=, =:source=, and =init.lua=:
   =mep.sidebar_toggle_help(id)= / =mep.sidebar_help_open(id)= drive it
   from Lua. The file tree (=<leader>ff=, a pane rather than a sidebar)
   works the same way.
+- A sidebar widget marked =current = true= (the Structure outline's
+  "you are here" item, the Buffers list's current buffer, ...) is scrolled
+  into view whenever it moves while the sidebar isn't focused.
+  =mep.sidebar_for_buffer(buf)= -> the sidebar id a pane-hosted sidebar
+  buffer shows (or nil); =mep.buffer_on_screen(buf)= -> whether some pane
+  in the active tab shows =buf=.
 - =mep.buffer_set_footer(id, text, hl?)= draws a one-line hint along the
   bottom row of every pane showing buffer =id= (the pane-hosted version of
   a sidebar's =?: help= footer); an empty =text= removes it. A buffer's

@@ -8754,39 +8754,63 @@ void Editor::EnsurePdfPagesRastered(int buffer_id) {
     int page_count = sess.doc->PageCount();
     if (page_count <= 0) return;
 
-    // At most ONE page render per call (i.e. per frame), anchor page
-    // first, then the next/previous neighbors: RenderPage is a synchronous
-    // CPU rasterization on this (the main) thread, so rendering the whole
-    // window in one frame stalled the UI for up to 3 pages' worth of work
-    // on every page jump -- with Mode::PdfNav's count jumps (5<space>)
-    // that was the difference between "snappy" and "laggy". The keystroke
-    // frame now pays for the page actually being looked at; the neighbors
-    // fill in over the following frames (DrawPane's draw_page already
-    // skips a page whose raster isn't cached yet, so a neighbor is at
-    // worst briefly blank in the continuous-scroll stack, never a stall).
-    const int order[3] = {sess.page, sess.page + 1, sess.page - 1};
-    for (int idx : order) {
-        if (idx < 0 || idx >= page_count) continue;
-        if (sess.rasters.find(idx) != sess.rasters.end()) continue;
-        PdfSession::PageRaster pr;
-        // A failed render falls through to the next candidate rather than
-        // breaking (same every-frame retry it always had -- a failing page
-        // never enters `rasters` -- but its neighbors still make progress).
-        std::string render_warning;
-        if (!sess.doc->RenderPage(idx, sess.rendered_scale, pr.rgba, pr.w, pr.h, &render_warning)) continue;
-        // Surface a silently-blank/partial page once per document rather than
-        // every frame it stays on screen (see PdfSession::content_warning_shown).
-        if (!render_warning.empty() && !sess.content_warning_shown) {
-            Notify("PDF: " + render_warning, NotifyLevel::Warn);
-            sess.content_warning_shown = true;
+    // Pages render on a worker thread, one at a time (see
+    // PdfSession::render_job): this frame collects a finished render,
+    // then starts the next page the view needs -- anchor first, then its
+    // neighbors, two either side so continuous j/k scrolling finds the
+    // next page ready. A page not rendered yet is simply skipped by
+    // DrawPane's draw_page (briefly blank), never waited on. Rendering
+    // inline here used to stall the whole UI for as long as the page took
+    // (up to seconds for a dense figure), which read as scrolling that
+    // "pauses" while j/k is held.
+    if (sess.render_job.valid() &&
+        sess.render_job.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+        PdfSession::RenderResult res = sess.render_job.get();
+        const int idx = sess.render_job_page;
+        sess.render_job_page = -1;
+        // Stale: the document was reloaded or the page re-scaled (zoom
+        // settle) while it rendered.
+        const bool current = sess.render_job_doc == sess.doc.get() && sess.render_job_scale == sess.rendered_scale;
+        if (res.ok && current && idx >= 0 && idx < page_count) {
+            // Surface a silently-blank/partial page once per document rather than
+            // every frame it stays on screen (see PdfSession::content_warning_shown).
+            if (!res.warning.empty() && !sess.content_warning_shown) {
+                Notify("PDF: " + res.warning, NotifyLevel::Warn);
+                sess.content_warning_shown = true;
+            }
+            PdfSession::PageRaster pr;
+            pr.rgba = std::move(res.rgba);
+            pr.w = res.w;
+            pr.h = res.h;
+            pr.generation = sess.next_raster_generation++;
+            if (!sess.search_matches.empty()) pr.highlights = sess.doc->MatchRectsForPage(idx, sess.rendered_scale, sess.search_matches);
+            pr.links = sess.doc->PageLinks(idx, sess.rendered_scale);
+            sess.rasters[idx] = std::move(pr);
+        } else if (!res.ok && current) {
+            // A failed render still takes a raster slot (an empty one, which
+            // draw_page skips) so it isn't retried every frame.
+            sess.rasters[idx] = PdfSession::PageRaster{};
         }
-        pr.generation = sess.next_raster_generation++;
-        if (!sess.search_matches.empty()) pr.highlights = sess.doc->MatchRectsForPage(idx, sess.rendered_scale, sess.search_matches);
-        pr.links = sess.doc->PageLinks(idx, sess.rendered_scale);
-        sess.rasters[idx] = std::move(pr);
-        break;
     }
-    // Eviction keeps a wider band than the +-1 render window above: pages
+    if (!sess.render_job.valid()) {
+        const int order[5] = {sess.page, sess.page + 1, sess.page - 1, sess.page + 2, sess.page - 2};
+        for (int idx : order) {
+            if (idx < 0 || idx >= page_count) continue;
+            if (sess.rasters.find(idx) != sess.rasters.end()) continue;
+            std::shared_ptr<PdfDoc> doc = sess.doc;
+            const float scale = sess.rendered_scale;
+            sess.render_job_page = idx;
+            sess.render_job_scale = scale;
+            sess.render_job_doc = doc.get();
+            sess.render_job = std::async(std::launch::async, [doc, idx, scale]() {
+                PdfSession::RenderResult res;
+                res.ok = doc->RenderPage(idx, scale, res.rgba, res.w, res.h, &res.warning);
+                return res;
+            });
+            break;
+        }
+    }
+    // Eviction keeps a wider band than the +-2 render window above: pages
     // outside it were already paid for, and Mode::PdfNav's back-and-forth
     // paging (space / shift+space) kept re-rendering the page just left
     // when eviction hugged the render window. +-3 bounds memory at ~7
@@ -14182,6 +14206,79 @@ void Editor::ResizeActivePane(const std::string &direction, float step) {
     }
 }
 
+namespace {
+// The split tree's shape: directions, child counts and leaf pane ids, in
+// pre-order -- two trees with the same signature have `shares` vectors
+// that mean the same thing node for node.
+void LayoutSignature(const SplitNode *node, std::string &out) {
+    if (node->dir == SplitDir::Leaf) {
+        out += "L" + std::to_string(node->pane.id) + ",";
+        return;
+    }
+    out += node->dir == SplitDir::Horizontal ? "H(" : "V(";
+    for (const auto &child : node->children) LayoutSignature(child.get(), out);
+    out += ")";
+}
+
+void SnapshotShares(const SplitNode *node, std::vector<std::vector<float>> &out) {
+    if (node->dir == SplitDir::Leaf) return;
+    out.push_back(node->shares);
+    for (const auto &child : node->children) SnapshotShares(child.get(), out);
+}
+
+void RestoreShares(SplitNode *node, const std::vector<std::vector<float>> &saved, size_t &i) {
+    if (node->dir == SplitDir::Leaf) return;
+    if (i < saved.size()) node->shares = saved[i];
+    ++i;
+    for (auto &child : node->children) RestoreShares(child.get(), saved, i);
+}
+}  // namespace
+
+bool Editor::IsPaneMaximized() const { return ActiveTab().maximized_pane_id >= 0; }
+
+void Editor::TogglePaneMaximize() {
+    Tab &tab = ActiveTab();
+    if (!tab.root) return;
+    std::string signature;
+    LayoutSignature(tab.root.get(), signature);
+    if (tab.maximized_pane_id >= 0) {
+        if (signature != tab.maximize_signature) {
+            // Panes were split/closed while maximized: the saved sizes no
+            // longer fit this tree -- forget them rather than misapply.
+            tab.maximized_pane_id = -1;
+            tab.maximize_saved_shares.clear();
+            SetStatusMessage("Layout changed since maximizing -- nothing to restore");
+            return;
+        }
+        if (tab.maximized_pane_id == tab.active_pane_id) {
+            size_t i = 0;
+            RestoreShares(tab.root.get(), tab.maximize_saved_shares, i);
+            tab.maximized_pane_id = -1;
+            tab.maximize_saved_shares.clear();
+            return;
+        }
+        // Another pane: maximize it instead, keeping the original layout.
+    } else {
+        tab.maximize_saved_shares.clear();
+        SnapshotShares(tab.root.get(), tab.maximize_saved_shares);
+        tab.maximize_signature = signature;
+    }
+    std::vector<std::pair<SplitNode *, int>> path;  // leaf-to-root
+    if (!FindPathToPane(tab.root.get(), tab.active_pane_id, path) || path.empty()) {
+        SetStatusMessage("Only one pane -- nothing to maximize");
+        tab.maximized_pane_id = -1;
+        tab.maximize_saved_shares.clear();
+        return;
+    }
+    for (auto &[node, child_index] : path) {
+        const size_t n = node->children.size();
+        node->shares.assign(n, kMinPaneShare);
+        node->shares[static_cast<size_t>(child_index)] =
+            std::max(kMinPaneShare, 1.0f - kMinPaneShare * static_cast<float>(n - 1));
+    }
+    tab.maximized_pane_id = tab.active_pane_id;
+}
+
 void Editor::SetActivePaneShare(float fraction) {
     fraction = std::clamp(fraction, kMinPaneShare, 1.0f - kMinPaneShare);
     Tab &tab = ActiveTab();
@@ -18677,7 +18774,8 @@ void Editor::UpdateScrollForSidebar(int id, int visible_lines) {
     SidebarInstance *sb = FindSidebarMut(id);
     if (!sb) return;
     visible_lines = std::max(1, visible_lines);
-    int total = static_cast<int>(FlattenSidebar(id).size());
+    const std::vector<SidebarLine> lines = FlattenSidebar(id);
+    int total = static_cast<int>(lines.size());
     int max_scroll = std::max(0, total - visible_lines);
     // Only the focused sidebar has a live cursor to chase -- an unfocused
     // one (another open sidebar, or this one after mod1+hjkl blurred it
@@ -18703,6 +18801,25 @@ void Editor::UpdateScrollForSidebar(int id, int visible_lines) {
             sb->scroll_offset = cursor;
         } else if (cursor >= sb->scroll_offset + visible_lines) {
             sb->scroll_offset = cursor - visible_lines + 1;
+        }
+    }
+    // An unfocused sidebar follows its `current` row instead (SidebarWidget::
+    // current -- e.g. the Structure outline's "you are here" item as the
+    // source buffer's cursor or PDF page moves): brought into view, a few
+    // rows of context above it, whenever it changes -- only on a change, so
+    // wheel-scrolling the outline by hand isn't yanked back every frame.
+    int current_row = -1;
+    for (int i = 0; i < total; ++i) {
+        if (lines[static_cast<size_t>(i)].current) {
+            current_row = i;
+            break;
+        }
+    }
+    if (current_row != sb->last_current_row) {
+        sb->last_current_row = current_row;
+        if (!has_focus && current_row >= 0 &&
+            (current_row < sb->scroll_offset || current_row >= sb->scroll_offset + visible_lines)) {
+            sb->scroll_offset = current_row - std::min(3, visible_lines / 3);
         }
     }
     sb->scroll_offset = std::clamp(sb->scroll_offset, 0, max_scroll);

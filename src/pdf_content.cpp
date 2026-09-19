@@ -272,7 +272,27 @@ void ApplyColor(const ColorSpaceInfo &cs, const std::vector<double> &comps, floa
 
 // -- Graphics state ----------------------------------------------------
 
-using ClipMask = std::shared_ptr<const std::vector<unsigned char>>;  // canvas-sized 0-255 coverage; null = unclipped
+// A path's coverage over just its own device-space bounding box (clipped
+// to the canvas) rather than the whole page: a page of thousands of tiny
+// strokes (a plotted mesh) used to allocate, rasterize and composite a
+// full-page buffer per stroke, which took seconds to minutes per page.
+struct Coverage {
+    int x0 = 0, y0 = 0, w = 0, h = 0;
+    std::vector<unsigned char> data;  // w*h, row-major; (0,0) is canvas (x0,y0)
+};
+
+// The current clip: a Coverage rectangle, fully clipped (0) outside it,
+// so intersecting clips and compositing under one only touch that
+// rectangle rather than the whole page. null = unclipped.
+using ClipMask = std::shared_ptr<const Coverage>;
+
+// `clip`'s 0-1 factor at canvas pixel (x, y).
+double ClipFactor(const ClipMask &clip, int x, int y) {
+    if (!clip) return 1.0;
+    int cx = x - clip->x0, cy = y - clip->y0;
+    if (cx < 0 || cy < 0 || cx >= clip->w || cy >= clip->h) return 0.0;
+    return static_cast<double>(clip->data[static_cast<size_t>(cy) * static_cast<size_t>(clip->w) + static_cast<size_t>(cx)]) / 255.0;
+}
 
 struct GState {
     Mat2D ctm;
@@ -336,23 +356,64 @@ void FlattenCubicToPoints(std::vector<DPoint> &pts, DPoint p0, DPoint c1, DPoint
 
 // -- Compositing ---------------------------------------------------------
 
-void CompositeCoverage(Canvas &canvas, const std::vector<unsigned char> &coverage, const ClipMask &clip,
-                        const float rgb[3], float alpha) {
+Coverage RasterizeEdges(std::vector<gfx::raster::Edge> &edges, int canvas_w, int canvas_h,
+                        gfx::raster::FillRule rule) {
+    Coverage cov;
+    if (edges.empty()) return cov;
+    float min_x = edges.front().x_at_ymin, max_x = min_x;
+    float min_y = edges.front().ymin, max_y = edges.front().ymax;
+    for (const auto &e : edges) {
+        float x_end = e.x_at_ymin + (e.ymax - e.ymin) * e.dxdy;
+        min_x = std::min({min_x, e.x_at_ymin, x_end});
+        max_x = std::max({max_x, e.x_at_ymin, x_end});
+        min_y = std::min(min_y, e.ymin);
+        max_y = std::max(max_y, e.ymax);
+    }
+    // Clamp in float before converting: a far-off-page path can put
+    // coordinates outside int's range.
+    auto clampf = [](float v, int hi) { return std::clamp(v, 0.0f, static_cast<float>(hi)); };
+    int x0 = static_cast<int>(std::floor(clampf(min_x, canvas_w))), x1 = static_cast<int>(std::ceil(clampf(max_x, canvas_w)));
+    int y0 = static_cast<int>(std::floor(clampf(min_y, canvas_h))), y1 = static_cast<int>(std::ceil(clampf(max_y, canvas_h)));
+    x1 = std::min(canvas_w, x1 + 1);
+    y1 = std::min(canvas_h, y1 + 1);
+    if (x1 <= x0 || y1 <= y0) return cov;
+    cov.x0 = x0;
+    cov.y0 = y0;
+    cov.w = x1 - x0;
+    cov.h = y1 - y0;
+    cov.data = gfx::raster::RasterizeRegion(edges, x0, y0, cov.w, cov.h, rule);
+    return cov;
+}
+
+void CompositeCoverage(Canvas &canvas, const Coverage &coverage, const ClipMask &clip, const float rgb[3],
+                       float alpha) {
     unsigned char r = static_cast<unsigned char>(std::clamp(rgb[0], 0.0f, 1.0f) * 255.0f + 0.5f);
     unsigned char g = static_cast<unsigned char>(std::clamp(rgb[1], 0.0f, 1.0f) * 255.0f + 0.5f);
     unsigned char b = static_cast<unsigned char>(std::clamp(rgb[2], 0.0f, 1.0f) * 255.0f + 0.5f);
-    size_t n = static_cast<size_t>(canvas.width) * static_cast<size_t>(canvas.height);
-    for (size_t i = 0; i < n; ++i) {
-        double cov = static_cast<double>(coverage[i]) / 255.0;
-        if (clip) cov *= static_cast<double>((*clip)[i]) / 255.0;
-        double a = cov * static_cast<double>(std::clamp(alpha, 0.0f, 1.0f));
-        if (a <= 0.0) continue;
-        unsigned char *px = &canvas.rgba[i * 4];
-        px[0] = static_cast<unsigned char>(px[0] + (static_cast<double>(r) - px[0]) * a + 0.5);
-        px[1] = static_cast<unsigned char>(px[1] + (static_cast<double>(g) - px[1]) * a + 0.5);
-        px[2] = static_cast<unsigned char>(px[2] + (static_cast<double>(b) - px[2]) * a + 0.5);
-        // px[3] (alpha channel) left at 255 -- canvas is always opaque,
-        // matching pdf_doc.h's RenderPage contract.
+    // Only where the path's own rectangle and the clip's overlap.
+    int ylo = 0, yhi = coverage.h, xlo = 0, xhi = coverage.w;
+    if (clip) {
+        ylo = std::max(ylo, clip->y0 - coverage.y0);
+        yhi = std::min(yhi, clip->y0 + clip->h - coverage.y0);
+        xlo = std::max(xlo, clip->x0 - coverage.x0);
+        xhi = std::min(xhi, clip->x0 + clip->w - coverage.x0);
+    }
+    for (int y = ylo; y < yhi; ++y) {
+        for (int x = xlo; x < xhi; ++x) {
+            unsigned char c = coverage.data[static_cast<size_t>(y) * static_cast<size_t>(coverage.w) + static_cast<size_t>(x)];
+            if (c == 0) continue;
+            size_t i = static_cast<size_t>(coverage.y0 + y) * static_cast<size_t>(canvas.width) +
+                       static_cast<size_t>(coverage.x0 + x);
+            double cov = static_cast<double>(c) / 255.0 * ClipFactor(clip, coverage.x0 + x, coverage.y0 + y);
+            double a = cov * static_cast<double>(std::clamp(alpha, 0.0f, 1.0f));
+            if (a <= 0.0) continue;
+            unsigned char *px = &canvas.rgba[i * 4];
+            px[0] = static_cast<unsigned char>(px[0] + (static_cast<double>(r) - px[0]) * a + 0.5);
+            px[1] = static_cast<unsigned char>(px[1] + (static_cast<double>(g) - px[1]) * a + 0.5);
+            px[2] = static_cast<unsigned char>(px[2] + (static_cast<double>(b) - px[2]) * a + 0.5);
+            // px[3] (alpha channel) left at 255 -- canvas is always opaque,
+            // matching pdf_doc.h's RenderPage contract.
+        }
     }
 }
 
@@ -379,7 +440,7 @@ void CompositeGlyphBitmap(Canvas &canvas, const unsigned char *bitmap, int gw, i
             double cov = static_cast<double>(bitmap[static_cast<size_t>(y) * static_cast<size_t>(gw) + static_cast<size_t>(x)]) / 255.0;
             if (cov <= 0.0) continue;
             size_t cpx = static_cast<size_t>(py) * static_cast<size_t>(canvas.width) + static_cast<size_t>(px_x);
-            if (clip) cov *= static_cast<double>((*clip)[cpx]) / 255.0;
+            cov *= ClipFactor(clip, px_x, py);
             double a = cov * static_cast<double>(std::clamp(alpha, 0.0f, 1.0f));
             if (a <= 0.0) continue;
             unsigned char *dst = &canvas.rgba[cpx * 4];
@@ -390,8 +451,7 @@ void CompositeGlyphBitmap(Canvas &canvas, const unsigned char *bitmap, int gw, i
     }
 }
 
-std::vector<unsigned char> RasterizeFill(const std::vector<SubPath> &path, int width, int height,
-                                          gfx::raster::FillRule rule) {
+Coverage RasterizeFill(const std::vector<SubPath> &path, int width, int height, gfx::raster::FillRule rule) {
     std::vector<gfx::raster::Edge> edges;
     for (const SubPath &sp : path) {
         if (sp.points.size() < 2) continue;
@@ -406,7 +466,7 @@ std::vector<unsigned char> RasterizeFill(const std::vector<SubPath> &path, int w
         gfx::raster::AddLine(edges, static_cast<float>(last.x), static_cast<float>(last.y),
                               static_cast<float>(first.x), static_cast<float>(first.y));
     }
-    return gfx::raster::Rasterize(edges, width, height, rule);
+    return RasterizeEdges(edges, width, height, rule);
 }
 
 void AddQuadClockwise(std::vector<gfx::raster::Edge> &edges, DPoint a, DPoint b, DPoint c, DPoint d) {
@@ -425,8 +485,7 @@ void AddQuadClockwise(std::vector<gfx::raster::Edge> &edges, DPoint a, DPoint b,
 // decision 6) -- overlapping per-segment quads at each join are simply
 // unioned via nonzero fill (consistently-wound quads mean overlaps just
 // accumulate winding > 1, still "inside", no seam/gap artifacts).
-std::vector<unsigned char> RasterizeStroke(const std::vector<SubPath> &path, double half_width, int width,
-                                            int height) {
+Coverage RasterizeStroke(const std::vector<SubPath> &path, double half_width, int width, int height) {
     std::vector<gfx::raster::Edge> edges;
     for (const SubPath &sp : path) {
         size_t n = sp.points.size();
@@ -443,7 +502,7 @@ std::vector<unsigned char> RasterizeStroke(const std::vector<SubPath> &path, dou
                               {p0.x - nx, p0.y - ny});
         }
     }
-    return gfx::raster::Rasterize(edges, width, height, gfx::raster::FillRule::kNonZero);
+    return RasterizeEdges(edges, width, height, gfx::raster::FillRule::kNonZero);
 }
 
 // Splits `path` into the "on" pieces of a dash pattern (device-space
@@ -511,13 +570,28 @@ std::vector<SubPath> DashPath(const std::vector<SubPath> &path, const std::vecto
 
 double CtmScale(const Mat2D &m) { return std::sqrt(std::abs(m.a * m.d - m.b * m.c)); }
 
-std::vector<unsigned char> IntersectMask(const ClipMask &existing, const std::vector<unsigned char> &fresh) {
-    if (!existing) return fresh;
-    std::vector<unsigned char> out(fresh.size());
-    for (size_t i = 0; i < fresh.size(); ++i) {
-        out[i] = static_cast<unsigned char>((static_cast<int>((*existing)[i]) * static_cast<int>(fresh[i])) / 255);
+// The clip after intersecting `existing` with a new clip path's coverage:
+// the overlap of the two rectangles (possibly empty = everything clipped).
+ClipMask IntersectMask(const ClipMask &existing, Coverage fresh) {
+    if (!existing) return std::make_shared<const Coverage>(std::move(fresh));
+    Coverage out;
+    out.x0 = std::max(existing->x0, fresh.x0);
+    out.y0 = std::max(existing->y0, fresh.y0);
+    out.w = std::max(0, std::min(existing->x0 + existing->w, fresh.x0 + fresh.w) - out.x0);
+    out.h = std::max(0, std::min(existing->y0 + existing->h, fresh.y0 + fresh.h) - out.y0);
+    if (out.w == 0 || out.h == 0) out.w = out.h = 0;
+    out.data.resize(static_cast<size_t>(out.w) * static_cast<size_t>(out.h));
+    for (int y = 0; y < out.h; ++y) {
+        for (int x = 0; x < out.w; ++x) {
+            auto at = [&](const Coverage &c) {
+                return static_cast<int>(c.data[static_cast<size_t>(out.y0 + y - c.y0) * static_cast<size_t>(c.w) +
+                                               static_cast<size_t>(out.x0 + x - c.x0)]);
+            };
+            out.data[static_cast<size_t>(y) * static_cast<size_t>(out.w) + static_cast<size_t>(x)] =
+                static_cast<unsigned char>(at(*existing) * at(fresh) / 255);
+        }
     }
-    return out;
+    return std::make_shared<const Coverage>(std::move(out));
 }
 
 // -- Images ----------------------------------------------------------------
@@ -806,7 +880,7 @@ void DrawImage(Canvas &canvas, const DecodedImage &img, const Mat2D &ctm, const 
             if (src_alpha <= 0) continue;
             size_t cpx = static_cast<size_t>(py) * static_cast<size_t>(canvas.width) + static_cast<size_t>(px);
             double a = src_alpha * static_cast<double>(std::clamp(alpha, 0.0f, 1.0f));
-            if (clip) a *= static_cast<double>((*clip)[cpx]) / 255.0;
+            a *= ClipFactor(clip, px, py);
             if (a <= 0) continue;
             unsigned char r, g, b;
             if (img.is_mask) {
@@ -1078,9 +1152,7 @@ struct Interpreter {
             CompositeCoverage(canvas, coverage, Top().clip, Top().stroke_rgb, Top().stroke_alpha);
         }
         if (pending_clip && !path.empty()) {
-            auto fresh = RasterizeFill(path, canvas.width, canvas.height, pending_clip_rule);
-            auto merged = IntersectMask(Top().clip, fresh);
-            Top().clip = std::make_shared<const std::vector<unsigned char>>(std::move(merged));
+            Top().clip = IntersectMask(Top().clip, RasterizeFill(path, canvas.width, canvas.height, pending_clip_rule));
         }
         pending_clip = false;
         path.clear();
@@ -1466,8 +1538,8 @@ void Interpreter::DoXObject(const std::string &name, const pdfobj::Object &resou
             Transform(Top().ctm, x1, y1, &p2.x, &p2.y);
             Transform(Top().ctm, x0, y1, &p3.x, &p3.y);
             clip_path.push_back(SubPath{{p0, p1, p2, p3}, true});
-            auto fresh = RasterizeFill(clip_path, canvas.width, canvas.height, gfx::raster::FillRule::kNonZero);
-            Top().clip = std::make_shared<const std::vector<unsigned char>>(IntersectMask(Top().clip, fresh));
+            Top().clip = IntersectMask(Top().clip,
+                                       RasterizeFill(clip_path, canvas.width, canvas.height, gfx::raster::FillRule::kNonZero));
         }
     }
 

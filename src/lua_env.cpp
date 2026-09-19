@@ -3451,6 +3451,56 @@ int l_sidebar_set_on_key(lua_State *L) {
     return 0;
 }
 
+// mep.sidebar_set_help(id, {{key, description}, ...}): the sidebar-specific
+// keys its `?` view lists (above the navigation keys every sidebar shares).
+// An entry with an empty key is drawn as a sub-heading. Replaces any
+// previous list -- a tabbed sidebar re-sets it per view.
+/**
+ * @brief Implements mep.sidebar_set_help(id, entries): sets the key bindings a sidebar's `?` help view lists.
+ * @param L Lua state; arg 1 is the sidebar id, arg 2 an array of {key, description} pairs.
+ * @return Number of values pushed (0).
+ */
+int l_sidebar_set_help(lua_State *L) {
+    int id = static_cast<int>(luaL_checkinteger(L, 1));
+    luaL_checktype(L, 2, LUA_TTABLE);
+    std::vector<std::pair<std::string, std::string>> keys;
+    const lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 2));
+    for (lua_Integer i = 1; i <= n; i++) {
+        lua_rawgeti(L, 2, i);
+        if (lua_istable(L, -1)) {
+            lua_rawgeti(L, -1, 1);
+            lua_rawgeti(L, -2, 2);
+            const char *key = lua_tostring(L, -2);
+            const char *desc = lua_tostring(L, -1);
+            keys.emplace_back(key ? key : "", desc ? desc : "");
+            lua_pop(L, 2);
+        }
+        lua_pop(L, 1);
+    }
+    GetEditor(L)->SetSidebarHelp(id, std::move(keys));
+    return 0;
+}
+
+/**
+ * @brief Implements mep.sidebar_toggle_help(id): flips a sidebar between its rows and its `?` key-binding view.
+ * @param L Lua state; arg 1 is the sidebar id.
+ * @return Number of values pushed (0).
+ */
+int l_sidebar_toggle_help(lua_State *L) {
+    GetEditor(L)->ToggleSidebarHelp(static_cast<int>(luaL_checkinteger(L, 1)));
+    return 0;
+}
+
+/**
+ * @brief Implements mep.sidebar_help_open(id): whether a sidebar is showing its `?` key-binding view.
+ * @param L Lua state; arg 1 is the sidebar id.
+ * @return Number of values pushed (1, a boolean).
+ */
+int l_sidebar_help_open(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->SidebarHelpOpen(static_cast<int>(luaL_checkinteger(L, 1))));
+    return 1;
+}
+
 // mep.sidebar_set_tabs(id, {name, ...}, active?): gives sidebar `id` a tab
 // strip (SidebarInstance::tabs) -- one view name per entry, `active` the
 // 1-based one to start on (default 1). Tab/Shift-Tab while focused, a
@@ -9598,6 +9648,9 @@ const luaL_Reg kMepFuncs[] = {
     {"sidebar_toggle", l_sidebar_toggle},
     {"sidebar_is_open", l_sidebar_is_open},
     {"sidebar_set_on_key", l_sidebar_set_on_key},
+    {"sidebar_set_help", l_sidebar_set_help},
+    {"sidebar_toggle_help", l_sidebar_toggle_help},
+    {"sidebar_help_open", l_sidebar_help_open},
     {"sidebar_set_tabs", l_sidebar_set_tabs},
     {"sidebar_set_on_tab", l_sidebar_set_on_tab},
     {"sidebar_set_active_tab", l_sidebar_set_active_tab},

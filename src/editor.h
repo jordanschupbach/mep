@@ -608,6 +608,16 @@ struct SidebarInstance {
     // and collapsing the popout closes it outright instead of leaving a
     // docked panel behind. Cleared by a plain OpenSidebar/CloseSidebar.
     bool popout_only = false;
+    // Sidebar-specific key bindings ({key, description}, in display order)
+    // listed by the `?` help view (mep.sidebar_set_help), above the
+    // generic navigation keys every sidebar shares.
+    std::vector<std::pair<std::string, std::string>> help_keys;
+    // `?` toggled the help view on: FlattenSidebar returns the key list
+    // (SidebarLine::Kind::Text rows) instead of the sections until Escape/
+    // `?`/q toggles it back, restoring the cursor/scroll saved here.
+    bool help_open = false;
+    int help_saved_cursor = 0;
+    int help_saved_scroll = 0;
     // First flattened-line index drawn at the top of the sidebar's content
     // area -- this sidebar's mirror of Pane::scroll_row. Kept per-instance
     // (rather than a single field alongside sidebar_cursor_) so a sidebar
@@ -633,7 +643,9 @@ struct SidebarInstance {
 // header (collapse toggle) or a widget row. Shared by main.cpp's renderer
 // and Editor::HandleSidebarInput so the two can't disagree about layout.
 struct SidebarLine {
-    enum class Kind { SectionHeader, Widget } kind = Kind::SectionHeader;
+    // Text: a non-interactive row (the `?` key-binding view's lines) --
+    // neither a collapse toggle nor backed by a widget.
+    enum class Kind { SectionHeader, Widget, Text } kind = Kind::SectionHeader;
     int section_index = 0;
     int widget_index = -1;  // -1 for a header line
     std::string text;
@@ -7419,6 +7431,17 @@ public:
      * @param lua_ref The Lua registry reference to invoke on a keypress.
      */
     void SetSidebarOnKey(int id, int lua_ref);
+    // mep.sidebar_set_help: the sidebar-specific keys its `?` view lists.
+    void SetSidebarHelp(int id, std::vector<std::pair<std::string, std::string>> keys);
+    // Flips sidebar `id` between its sections and its `?` key-binding view
+    // (`?` while it's focused, or mep.sidebar_toggle_help), saving/restoring
+    // the cursor -- the pane-hosted one when the focused pane shows `id`
+    // (Mode::SidebarPane), the docked one otherwise.
+    void ToggleSidebarHelp(int id);
+    bool SidebarHelpOpen(int id) const {
+        const SidebarInstance *sb = FindSidebar(id);
+        return sb && sb->help_open;
+    }
     /**
      * @brief Registers a Lua callback that supplies the popout preview for a sidebar (see SidebarInstance::on_preview_ref).
      * @param id The id of the sidebar to register the callback on.
@@ -8466,6 +8489,10 @@ private:
     void HandlePreviewInput();
     void HandleHoverFocusInput();
     void HandleSidebarInput();
+    // Input while sidebar `id` shows its `?` key-binding view: j/k/gg/G/
+    // arrows scroll it, Escape/?/q go back, everything else is swallowed
+    // (so e.g. the git panel's `s` can't stage a file behind the help).
+    void HandleSidebarHelpInput(int id, bool escape);
     void HandlePickerInput();
     void HandleRoamGraphInput();
     void HandleWhichKeyInput();

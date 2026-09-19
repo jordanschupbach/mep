@@ -2995,7 +2995,7 @@ const char *kKeybindingsText =
     "  Alt-1 .. Alt-9                 switch to workspace by number\n"
     "  <leader>w n/w/r/d/l/h          new / list / rename / delete / next / prev workspace\n"
     "  <leader>gw                     git workspaces picker (branch, ahead/behind)\n"
-    "  <leader>gg                     git popup (Tab / 1-5: Status, Log, Graph, Branches, Stash; ? lists keys)\n"
+    "  <leader>gg                     git popup (Tab / 1-5: Status, Log, Graph, Branches, Stash; P pushes; ? lists keys)\n"
     "  <leader>gG                     git sidebar (docked, or stacked with the file tree)\n"
     "  <leader>gl / gb / gs           git log / branches / stash, popped out\n"
     "  <leader>gc / gp                git commit (message in a floating pane) / push\n"
@@ -4407,6 +4407,7 @@ const char *kBuiltinBuffers =
     "  if not mep_buffers_sidebar_id then\n"
     "    mep_buffers_sidebar_id = mep.sidebar_create('Buffers', 'left', 34)\n"
     "    mep.sidebar_set_on_key(mep_buffers_sidebar_id, mep.buffers_sidebar_on_key)\n"
+    "    mep.sidebar_set_help(mep_buffers_sidebar_id, {{'Enter', 'switch to the buffer'}, {'d', 'delete the buffer'}})\n"
     "  end\n"
     "  mep.sidebar_set_sections(mep_buffers_sidebar_id, {{id = 'buffers', title = '', collapsed = false, widgets = widgets}})\n"
     "end\n"
@@ -4591,6 +4592,40 @@ const char *kBuiltinGit =
     "local mep_git_view = 'status'\n"
     "local mep_git_rows = {}\n"
     "local mep_git_head = ''\n"
+    // Branch vs. its upstream, parsed from `git status --branch`'s `## `
+    // line (mep_git_parse_head): shown in every view's head section so a
+    // local-only commit is never out of sight -- P pushes it.
+    "local mep_git_upstream = nil\n"
+    "local mep_git_refresh_gen = 0\n"
+    "local function mep_git_parse_head(line)\n"
+    "  local h = line:sub(4)\n"
+    "  if h:match('^HEAD %(no branch%)') then return {detached = true} end\n"
+    "  if h:match('^No commits yet') or h:match('^Initial commit') then return {unborn = true} end\n"
+    "  local branch, upstream = h:match('^(.-)%.%.%.(%S+)')\n"
+    "  return {branch = branch or h:match('^(%S+)'), upstream = upstream,\n"
+    "    ahead = tonumber(h:match('ahead (%d+)')) or 0, behind = tonumber(h:match('behind (%d+)')) or 0,\n"
+    "    gone = h:find('[gone]', 1, true) ~= nil}\n"
+    "end\n"
+    "local function mep_git_plural(n, word) return n .. ' ' .. word .. ((n == 1) and '' or 's') end\n"
+    "local function mep_git_head_widgets()\n"
+    "  local u = mep_git_upstream\n"
+    "  if not u or u.detached or u.unborn or not u.branch then return {} end\n"
+    "  if not u.upstream then\n"
+    "    return {{wrap = true, id = 'head:noup', text = 'No upstream -- P pushes to origin/' .. u.branch, hl = 'Yellow'}}\n"
+    "  end\n"
+    "  if u.gone then return {{wrap = true, id = 'head:gone', text = 'Upstream ' .. u.upstream .. ' is gone', hl = 'Red'}} end\n"
+    "  local w = {}\n"
+    "  if u.ahead > 0 then\n"
+    "    w[#w + 1] = {wrap = true, id = 'head:ahead', hl = 'Yellow',\n"
+    "      text = mep_git_plural(u.ahead, 'commit') .. ' ahead of ' .. u.upstream .. ' -- P to push'}\n"
+    "  end\n"
+    "  if u.behind > 0 then\n"
+    "    w[#w + 1] = {wrap = true, id = 'head:behind', hl = 'Cyan',\n"
+    "      text = mep_git_plural(u.behind, 'commit') .. ' behind ' .. u.upstream .. ' -- l to pull'}\n"
+    "  end\n"
+    "  if #w == 0 then w[1] = {id = 'head:sync', text = 'Up to date with ' .. u.upstream, hl = 'Comment'} end\n"
+    "  return w\n"
+    "end\n"
     "local function mep_git_root() return mep.workspace_root() end\n"
     "local function mep_git_run(argv, cb)\n"
     "  local out, err = {}, {}\n"
@@ -4623,14 +4658,17 @@ const char *kBuiltinGit =
     "    cb((code == 0 and out[1]) or nil)\n"
     "  end)\n"
     "end\n"
+    "local mep_git_set_help\n"
     "local function mep_git_ensure()\n"
     "  if mep_git_status_sidebar_id then return end\n"
     "  mep_git_status_sidebar_id = mep.sidebar_create('Git', 'left', 44)\n"
     "  mep.sidebar_set_on_key(mep_git_status_sidebar_id, mep.git_status_on_key)\n"
     "  mep.sidebar_set_on_preview(mep_git_status_sidebar_id, mep.git_status_on_preview)\n"
     "  mep.sidebar_set_tabs(mep_git_status_sidebar_id, MEP_GIT_TABS, 1)\n"
+    "  mep_git_set_help()\n"
     "  mep.sidebar_set_on_tab(mep_git_status_sidebar_id, function(i)\n"
     "    mep_git_view = MEP_GIT_VIEWS[i] or 'status'\n"
+    "    mep_git_set_help()\n"
     "    mep.git_refresh()\n"
     "  end)\n"
     "end\n"
@@ -4674,6 +4712,7 @@ const char *kBuiltinGit =
     "    for _, line in ipairs(out) do\n"
     "      if line:sub(1, 2) == '##' then\n"
     "        mep_git_head = line:sub(4)\n"
+    "        mep_git_upstream = mep_git_parse_head(line)\n"
     "      elseif #line > 3 then\n"
     "        local x, y, path = line:sub(1, 1), line:sub(2, 2), line:sub(4)\n"
     "        codes[path] = x .. y\n"
@@ -4689,7 +4728,7 @@ const char *kBuiltinGit =
     "    end\n"
     "    mep_git_status_codes = codes\n"
     "    mep_git_set({\n"
-    "      {id = 'head', title = mep_git_head_title(), collapsed = false, widgets = {}},\n"
+    "      {id = 'head', title = mep_git_head_title(), collapsed = false, widgets = mep_git_head_widgets()},\n"
     "      {id = 'staged', title = 'Staged (' .. #staged .. ')', collapsed = false,\n"
     "        widgets = (#staged > 0) and staged or mep_git_placeholder('staged-none', '(nothing staged -- s stages a change)')},\n"
     "      {id = 'unstaged', title = 'Changes (' .. #unstaged .. ')', collapsed = false,\n"
@@ -4724,7 +4763,7 @@ const char *kBuiltinGit =
     "    if code ~= 0 then widgets = mep_git_placeholder('log-none', '(git log failed)') end\n"
     "    if #widgets == 0 then widgets = mep_git_placeholder('log-none', '(no commits yet)') end\n"
     "    mep_git_set({\n"
-    "      {id = 'head', title = mep_git_head_title(), collapsed = false, widgets = {}},\n"
+    "      {id = 'head', title = mep_git_head_title(), collapsed = false, widgets = mep_git_head_widgets()},\n"
     "      {id = 'log', title = title, collapsed = false, widgets = widgets},\n"
     "    }, rows)\n"
     "  end)\n"
@@ -4789,7 +4828,7 @@ const char *kBuiltinGit =
     "    if code ~= 0 then widgets = mep_git_placeholder('graph-none', '(git log --graph failed)') end\n"
     "    if #widgets == 0 then widgets = mep_git_placeholder('graph-none', '(no commits yet)') end\n"
     "    mep_git_set({\n"
-    "      {id = 'head', title = mep_git_head_title(), collapsed = false, widgets = {}},\n"
+    "      {id = 'head', title = mep_git_head_title(), collapsed = false, widgets = mep_git_head_widgets()},\n"
     "      {id = 'graph', title = title, collapsed = false, widgets = widgets},\n"
     "    }, rows)\n"
     "  end)\n"
@@ -4829,7 +4868,7 @@ const char *kBuiltinGit =
     "    if #locals == 0 then locals = mep_git_placeholder('br-none', '(no branches)') end\n"
     "    if #remotes == 0 then remotes = mep_git_placeholder('rb-none', '(no remote branches -- f fetches)') end\n"
     "    mep_git_set({\n"
-    "      {id = 'head', title = mep_git_head_title(), collapsed = false, widgets = {}},\n"
+    "      {id = 'head', title = mep_git_head_title(), collapsed = false, widgets = mep_git_head_widgets()},\n"
     "      {id = 'local', title = 'Local (' .. #locals .. ')', collapsed = false, widgets = locals},\n"
     "      {id = 'remote', title = 'Remote (' .. #remotes .. ')', collapsed = false, widgets = remotes},\n"
     "    }, rows)\n"
@@ -4853,18 +4892,31 @@ const char *kBuiltinGit =
     "    if code ~= 0 then widgets = mep_git_placeholder('st-none', '(git stash list failed)') end\n"
     "    if #widgets == 0 then widgets = mep_git_placeholder('st-none', '(no stashes -- n stashes the working tree)') end\n"
     "    mep_git_set({\n"
-    "      {id = 'head', title = mep_git_head_title(), collapsed = false, widgets = {}},\n"
+    "      {id = 'head', title = mep_git_head_title(), collapsed = false, widgets = mep_git_head_widgets()},\n"
     "      {id = 'stash', title = 'Stashes (' .. #widgets .. ')', collapsed = false, widgets = widgets},\n"
     "    }, rows)\n"
     "  end)\n"
     "end\n"
+    // Status gets the branch/upstream line from its own `git status
+    // --branch`; the other views ask for just that line first (no
+    // untracked scan) so their head section's ahead/behind is fresh too.
+    // mep_git_refresh_gen drops a render whose upstream query a newer
+    // refresh (or a view switch) has since overtaken.
     "function mep.git_refresh()\n"
     "  mep_git_ensure()\n"
-    "  if mep_git_view == 'log' then mep_git_render_log()\n"
-    "  elseif mep_git_view == 'graph' then mep_git_render_graph()\n"
-    "  elseif mep_git_view == 'branches' then mep_git_render_branches()\n"
-    "  elseif mep_git_view == 'stash' then mep_git_render_stash()\n"
-    "  else mep.git_status_refresh() end\n"
+    "  mep_git_refresh_gen = mep_git_refresh_gen + 1\n"
+    "  local render = ({log = mep_git_render_log, graph = mep_git_render_graph,\n"
+    "    branches = mep_git_render_branches, stash = mep_git_render_stash})[mep_git_view]\n"
+    "  if not render then mep.git_status_refresh() return end\n"
+    "  local gen = mep_git_refresh_gen\n"
+    "  mep_git_run({'git', '--no-optional-locks', 'status', '--porcelain', '--branch', '--untracked-files=no'}, function(code, out)\n"
+    "    if gen ~= mep_git_refresh_gen then return end\n"
+    "    if code == 0 and out[1] and out[1]:sub(1, 2) == '##' then\n"
+    "      mep_git_head = out[1]:sub(4)\n"
+    "      mep_git_upstream = mep_git_parse_head(out[1])\n"
+    "    end\n"
+    "    render()\n"
+    "  end)\n"
     "end\n"
     "local function mep_git_preview_cmd(argv, title, empty_text, as_diff)\n"
     "  mep_git_status_preview_gen = mep_git_status_preview_gen + 1\n"
@@ -4973,22 +5025,37 @@ const char *kBuiltinGit =
     "function mep.git_stash_apply(ref, pop)\n"
     "  mep_git_action({'git', 'stash', pop and 'pop' or 'apply', ref}, (pop and 'Pop ' or 'Apply ') .. ref)\n"
     "end\n"
-    "local MEP_GIT_HELP = {\n"
-    "  status = 'Git status: Enter=open  s/u=stage/unstage  S/U=all  d=discard  c=commit  C=amend  p=push  l=pull  f=fetch  R=refresh  Tab/1-5=view  mod1+m=popout',\n"
-    "  log = 'Git log: Enter=show in popout  y=copy hash  c=commit  p=push  l=pull  f=fetch  R=refresh  Tab/1-5=view',\n"
-    "  graph = 'Git graph (all branches): Enter=show in popout  y=copy hash  c=commit  p=push  l=pull  f=fetch  R=refresh  Tab/1-5=view',\n"
-    "  branches = 'Git branches: Enter=checkout  n=new branch  x/D=delete  m=merge into current  r=rebase current onto  f=fetch  p=push  l=pull  R=refresh  Tab/1-5=view',\n"
-    "  stash = 'Git stash: Enter/a=apply  o=pop  x=drop  n=stash changes  R=refresh  Tab/1-5=view',\n"
+    // Per-view key lists for the sidebar's `?` view (mep.sidebar_set_help),
+    // swapped in by mep_git_set_help whenever the view changes.
+    "local MEP_GIT_COMMON_KEYS = {\n"
+    "  {'c', 'commit (message in a float, ZZ confirms)'}, {'C', 'amend the last commit'},\n"
+    "  {'P / p', 'push'}, {'l', 'pull'}, {'f', 'fetch --all --prune'}, {'R', 'refresh'},\n"
+    "  {'1-5', 'Status / Log / Graph / Branches / Stash'},\n"
     "}\n"
+    "local MEP_GIT_KEYS = {\n"
+    "  status = {{'Enter', 'open the file'}, {'s', 'stage'}, {'u', 'unstage'}, {'S', 'stage all'}, {'U', 'unstage all'},\n"
+    "    {'d', 'discard changes / delete untracked'}},\n"
+    "  log = {{'Enter', 'show the commit (popout)'}, {'y', 'copy the hash'}},\n"
+    "  graph = {{'Enter', 'show the commit (popout)'}, {'y', 'copy the hash'}},\n"
+    "  branches = {{'Enter / o', 'check out'}, {'n', 'new branch from HEAD'}, {'x / D', 'delete'},\n"
+    "    {'m', 'merge into the current branch'}, {'r', 'rebase the current branch onto it'}},\n"
+    "  stash = {{'Enter / a', 'apply'}, {'o', 'pop'}, {'x', 'drop'}, {'n', 'stash the working tree'}},\n"
+    "}\n"
+    "function mep_git_set_help()\n"
+    "  local keys = {}\n"
+    "  for _, kv in ipairs(MEP_GIT_KEYS[mep_git_view] or MEP_GIT_KEYS.status) do keys[#keys + 1] = kv end\n"
+    "  for _, kv in ipairs(MEP_GIT_COMMON_KEYS) do keys[#keys + 1] = kv end\n"
+    "  mep.sidebar_set_help(mep_git_status_sidebar_id, keys)\n"
+    "end\n"
+
     "function mep.git_status_on_key(k)\n"
     "  local id = mep_git_status_sidebar_id\n"
     "  local n = tonumber(k)\n"
     "  if n and MEP_GIT_VIEWS[n] then mep.sidebar_set_active_tab(id, n) return end\n"
-    "  if k == '?' then mep.notify(MEP_GIT_HELP[mep_git_view] or MEP_GIT_HELP.status) return\n"
-    "  elseif k == 'R' then mep.git_refresh() return\n"
+    "  if k == 'R' then mep.git_refresh() return\n"
     "  elseif k == 'c' then mep.git_commit(false) return\n"
     "  elseif k == 'C' then mep.git_commit(true) return\n"
-    "  elseif k == 'p' then mep.git_push() return\n"
+    "  elseif k == 'P' or k == 'p' then mep.git_push() return\n"
     "  elseif k == 'l' then mep.git_pull() return\n"
     "  elseif k == 'f' then mep.git_fetch() return\n"
     "  end\n"
@@ -8043,6 +8110,7 @@ const char *kBuiltinLanguageUiC =
     "    hex = mep.sidebar_create('Hex', 'right', 60),\n"
     "  }\n"
     "  mep.sidebar_set_on_key(mep_c_ui_sidebars.hex, function(k) mep.c_ui_hex_on_key(k) end)\n"
+    "  mep.sidebar_set_help(mep_c_ui_sidebars.hex, {{'n / p', 'next / previous page'}, {'r', 'reload the binary'}})\n"
     "end\n"
     "local function mep_c_ui_basename(path) return path:match('([^/]+)$') or path end\n"
     // Assembly filter + source mapping. Returns an array of {text=, line=}
@@ -8333,8 +8401,6 @@ const char *kBuiltinLanguageUiC =
     "      st.hex_page = math.floor(n / mep.opt.c_ui_hex_page) + 1\n"
     "      mep_c_ui_render_hex()\n"
     "    end)\n"
-    "  elseif k == '?' then\n"
-    "    mep.notify('Hex: n/p page, g go to offset, r reload')\n"
     "  end\n"
     "end\n"
     "function mep.c_ui_reload_hex(st)\n"
@@ -19266,6 +19332,10 @@ const char *kBuiltinActivityBar =
     "    mep_activity_todo_sidebar_id = mep.sidebar_create('Todo', 'right', 40)\n"
     "    mep.sidebar_set_on_preview(mep_activity_todo_sidebar_id, mep_activity_todo_on_preview)\n"
     "    mep.sidebar_set_on_key(mep_activity_todo_sidebar_id, mep.activity_todo_on_key)\n"
+    "    mep.sidebar_set_help(mep_activity_todo_sidebar_id, {\n"
+    "      {'Enter', 'start / stop the clock'}, {'a', 'add'}, {'e', 'edit in a float (Esc closes)'}, {'d', 'mark done'},\n"
+    "      {'x', 'delete'}, {'A', 'archive'}, {'L', 'start an AI agent on it'}, {'o', 'open the TODO file'},\n"
+    "      {'R', 'refresh'}, {'C-j / C-k', 'move down / up'}})\n"
     "  end\n"
     "  mep.sidebar_set_sections(mep_activity_todo_sidebar_id, {{id = 'todos', title = '', collapsed = false, widgets = widgets}})\n"
     "  mep_activity_todo_rendered = mep_activity_todo_key(items, clock)\n"
@@ -19475,12 +19545,9 @@ const char *kBuiltinActivityBar =
     // the sidebar's own). Enter = start/stop the clock, a = add, e = edit,
     // d = done, x = delete, A = archive, L = start an AI agent on it in a
     // new workspace, o = open TODO.org, R = re-read, Ctrl-j/Ctrl-k = move
-    // down/up, ? = this list.
+    // down/up (listed by the sidebar's `?` view, mep.sidebar_set_help).
     "function mep.activity_todo_on_key(k)\n"
-    "  if k == '?' then\n"
-    "    mep.notify('Todo: Enter=start/stop clock  a=add  e=edit in float (Esc closes)  d=done  x=delete  A=archive  L=start AI agent  o=open file  R=refresh  C-j/C-k=move down/up  mod1+m=popout')\n"
-    "    return\n"
-    "  elseif k == 'a' then mep.activity_todo_add() return\n"
+    "  if k == 'a' then mep.activity_todo_add() return\n"
     "  elseif k == 'o' then mep.activity_todo_open() return\n"
     "  elseif k == 'R' then mep_activity_todo_rerender() return\n"
     "  end\n"
@@ -21615,6 +21682,7 @@ const char *kBuiltinAiTerminal =
     "  if not mep_ai_agents_sidebar_id then\n"
     "    mep_ai_agents_sidebar_id = mep.sidebar_create('AI Agents', 'right', 44)\n"
     "    mep.sidebar_set_on_key(mep_ai_agents_sidebar_id, mep_ai_agents_on_key)\n"
+    "    mep.sidebar_set_help(mep_ai_agents_sidebar_id, {{'Enter', 'jump to the agent'}, {'n', 'open a new AI terminal'}, {'r', 're-scan agents'}})\n"
     "  end\n"
     "  mep_ai_agents_refresh(true)\n"
     "  mep.sidebar_open(mep_ai_agents_sidebar_id)\n"
@@ -24276,6 +24344,22 @@ float DrawSidebarTabStrip(const SidebarInstance &sb, float x, float y, float fon
     return x;
 }
 
+// The one-line key hint along a sidebar's bottom edge: how to open its `?`
+// key-binding view, or -- while that view is showing -- how to get back.
+std::string SidebarFooterHint(const SidebarInstance &sb) {
+    return sb.help_open ? "Esc: back to " + sb.title : "?: help";
+}
+
+// Draws SidebarFooterHint over the bottom `line_h` of a sidebar's rect
+// (x, bottom - line_h .. bottom), in the dimmed hint color, with a rule
+// above it separating it from the rows.
+void DrawSidebarFooter(const SidebarInstance &sb, float x, float w, float bottom, int line_h) {
+    const float fy = bottom - static_cast<float>(line_h);
+    gfx::DrawRectangle(static_cast<int>(x) + 2, static_cast<int>(fy) - 2, static_cast<int>(w) - 4, 1, ResolveHlGroup("Border"));
+    const std::string hint = SidebarFooterHint(sb);
+    DrawUiText(hint, gfx::Vector2{x + 8.0f, fy + 1.0f}, MenuFontSize(), ResolveHlGroup(sb.help_open ? "Yellow" : "Comment"));
+}
+
 void DrawSidebars() {
     int screen_w = gfx::GetScreenWidth();
     int screen_h = gfx::GetScreenHeight();
@@ -24370,7 +24454,8 @@ void DrawSidebars() {
         // off-screen cursor back into view, so moving past the last visible
         // row (or a mouse wheel, previously not even wired into Mode::Sidebar
         // in Editor::HandleMouseWheel) had nowhere to go.
-        int visible_lines = std::max(1, (ph - hdr_h - 10) / line_h);
+        // The bottom row is the footer hint (DrawSidebarFooter).
+        int visible_lines = std::max(1, (ph - hdr_h - 10 - line_h) / line_h);
         // A popped-out sidebar's scroll is owned by DrawSidebarPopout's
         // own (much taller) viewport: clamping it to this docked one
         // first would keep yanking the float's view so the cursor sits
@@ -24429,6 +24514,7 @@ void DrawSidebars() {
             g_sidebar_row_rects.push_back(
                 {sb.id, static_cast<int>(i), gfx::Rectangle{static_cast<float>(px), ly - 1, row_w, static_cast<float>(line_h)}});
         }
+        if (ph >= hdr_h + 2 * line_h) DrawSidebarFooter(sb, static_cast<float>(px), static_cast<float>(pw), static_cast<float>(py + ph - 4), line_h);
         gfx::EndScissorMode();
     };
 
@@ -24493,7 +24579,7 @@ void DrawSidebars() {
     for (const SidebarInstance &sb : g_editor.Sidebars()) {
         if (!sb.open || sb.popout_only || (sb.position != "top" && sb.position != "bottom")) continue;
         const std::vector<SidebarLine> lines = g_editor.FlattenSidebar(sb.id);
-        const int content_h = static_cast<int>(lines.size()) * line_h + header_h + 10;
+        const int content_h = static_cast<int>(lines.size() + 1) * line_h + header_h + 10;  // +1: footer hint
         const int ph = std::min(content_h, (content_bottom - content_top) / 2);
         const int px = 0;
         const int pw = screen_w;
@@ -25215,7 +25301,8 @@ void DrawSidebarPopout() {
     const int line_h = static_cast<int>(font_size) + 4;
     const float hint_size = MenuFontSize();
     const int hint_h = static_cast<int>(hint_size) + 16;
-    const bool has_preview = sb->on_preview_ref != 0;
+    // The `?` key list gets the whole width -- there's no row to preview.
+    const bool has_preview = sb->on_preview_ref != 0 && !sb->help_open;
     const int right_edge = f.box_x + f.box_w;
     const int list_w = has_preview ? static_cast<int>((static_cast<float>(right_edge) - f.content_x) * 0.38f)
                                    : right_edge - static_cast<int>(f.content_x) - 4;
@@ -25313,6 +25400,9 @@ void DrawSidebarPopout() {
     std::string hint = sb->popout_only ? "Esc/q/mod1+m: close" : "Esc/q/mod1+m: dock";
     if (has_preview) hint += "   mod1+j/k: scroll preview";
     if (!sb->tabs.empty()) hint = "Tab/S-Tab: switch view   " + hint;
+    hint = "?: help   " + hint;
+    // The help view's Escape/q step back to the list, not out of the popout.
+    if (sb->help_open) hint = SidebarFooterHint(*sb);
     const float hint_w = gfx::MeasureTextEx(g_font, hint.c_str(), hint_size, 0).x;
     gfx::DrawTextEx(g_font, hint.c_str(),
                gfx::Vector2{static_cast<float>(right_edge) - hint_w - 14, static_cast<float>(f.box_y + f.box_h) - hint_size - 10.0f},
@@ -32773,6 +32863,11 @@ void DrawSidebarPaneContent(const Pane &pane, int sidebar_id, float x, float y, 
     {
         const float cell_w = std::max(1.0f, MeasureUiText("M", font_size));
         g_editor.SetSidebarWrapCols(sidebar_id, static_cast<int>((w - 16.0f) / cell_w));
+    }
+    // The bottom row is the footer hint (DrawSidebarFooter).
+    if (sb && content_h >= static_cast<float>(2 * line_h)) {
+        DrawSidebarFooter(*sb, x, w, content_y + content_h - 2.0f, line_h);
+        content_h -= static_cast<float>(line_h);
     }
     std::vector<SidebarLine> lines = g_editor.FlattenSidebar(sidebar_id);
     int visible_lines = std::max(1, static_cast<int>(content_h) / line_h);

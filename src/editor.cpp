@@ -17999,6 +17999,33 @@ void Editor::SetSidebarOnKey(int id, int lua_ref) {
     if (SidebarInstance *sb = FindSidebarMut(id)) sb->on_key_ref = lua_ref;
 }
 
+void Editor::SetSidebarHelp(int id, std::vector<std::pair<std::string, std::string>> keys) {
+    if (SidebarInstance *sb = FindSidebarMut(id)) sb->help_keys = std::move(keys);
+}
+
+void Editor::ToggleSidebarHelp(int id) {
+    SidebarInstance *sb = FindSidebarMut(id);
+    if (!sb) return;
+    const bool pane_hosted = mode_ == Mode::SidebarPane && SidebarIdForPaneBuffer(CurPane().buffer_id) == id;
+    int &cursor = pane_hosted ? sidebar_pane_cursor_ : sidebar_cursor_;
+    pending_g_ = false;
+    if (!sb->help_open) {
+        sb->help_saved_cursor = cursor;
+        sb->help_saved_scroll = sb->scroll_offset;
+        sb->help_open = true;
+        cursor = 0;
+        sb->scroll_offset = 0;
+    } else {
+        sb->help_open = false;
+        const int max_idx = std::max(0, static_cast<int>(FlattenSidebar(id).size()) - 1);
+        cursor = std::clamp(sb->help_saved_cursor, 0, max_idx);
+        sb->scroll_offset = sb->help_saved_scroll;
+    }
+    // The cursor row's identity changed under the popout preview without
+    // the cursor itself necessarily moving -- make it re-ask.
+    if (id == sidebar_popout_id_) sidebar_popout_preview_dirty_ = true;
+}
+
 void Editor::SetSidebarOnPreview(int id, int lua_ref) {
     if (SidebarInstance *sb = FindSidebarMut(id)) sb->on_preview_ref = lua_ref;
 }
@@ -18448,6 +18475,7 @@ void Editor::CloseSidebar(int id) {
     if (!sb) return;
     sb->open = false;
     sb->popout_only = false;
+    sb->help_open = false;
     if (id == sidebar_popout_id_) CloseSidebarPopout();
     if (focused_sidebar_id_ == id) {
         focused_sidebar_id_ = 0;
@@ -18468,10 +18496,98 @@ bool Editor::IsSidebarOpen(int id) const {
     return sb && sb->open;
 }
 
+// The `?` key-binding view (SidebarInstance::help_open): the sidebar's own
+// keys (mep.sidebar_set_help), then the navigation keys every sidebar
+// shares -- worded for wherever it's showing (docked, popped out, or
+// hosted in a pane, which has no popout/q-to-close of its own).
+static std::vector<SidebarLine> FlattenSidebarHelp(const SidebarInstance &sb, bool pane_hosted, bool popped_out) {
+    std::vector<std::pair<std::string, std::string>> nav;
+    nav.push_back({"j / k", "move down / up"});
+    nav.push_back({"gg / G", "first / last row"});
+    nav.push_back({"Enter", "open / activate the row"});
+    if (!sb.tabs.empty()) nav.push_back({"Tab / S-Tab", "next / previous view"});
+    if (!pane_hosted) {
+        if (popped_out) {
+            nav.push_back({"Esc / q", sb.popout_only ? "close the popup" : "dock back into the sidebar"});
+        } else {
+            nav.push_back({"q", "close the sidebar"});
+            nav.push_back({"mod1+m", "pop out into a float"});
+        }
+    }
+    nav.push_back({"?", "show / hide this help"});
+
+    size_t key_w = 0;
+    for (const auto &kv : sb.help_keys) key_w = std::max(key_w, kv.first.size());
+    for (const auto &kv : nav) key_w = std::max(key_w, kv.first.size());
+    key_w = std::min<size_t>(key_w, 14);
+
+    std::vector<SidebarLine> out;
+    auto heading = [&](const std::string &text) {
+        SidebarLine line;
+        line.kind = SidebarLine::Kind::Text;
+        line.text = text;
+        line.hl = "SidebarTitle";
+        out.push_back(line);
+    };
+    // Descriptions wrap to the width the sidebar was last drawn at, the
+    // continuation lines hanging under the description column.
+    const int cols = sb.wrap_cols > 0 ? sb.wrap_cols : sb.size;
+    const int desc_w = std::max(8, cols - 1 - static_cast<int>(key_w) - 4);
+    auto add = [&](const std::string &key, const std::string &desc) {
+        std::string k = key;
+        if (k.size() < key_w) k.append(key_w - k.size(), ' ');
+        const std::vector<std::string> wrapped = LspDiagWrap(desc, desc_w);
+        for (size_t i = 0; i < std::max<size_t>(1, wrapped.size()); i++) {
+            SidebarLine line;
+            line.kind = SidebarLine::Kind::Text;
+            const std::string part = i < wrapped.size() ? wrapped[i] : "";
+            if (i == 0) {
+                line.text = "  " + k + "  " + part;
+                PickerHlSpan span;
+                span.col_start = 2;
+                span.col_end = 2 + static_cast<int>(key.size());
+                span.hl_group = "Cyan";
+                line.spans.push_back(span);
+            } else {
+                line.text = std::string(key_w + 4, ' ') + part;
+            }
+            out.push_back(line);
+        }
+    };
+    heading(sb.title + " keys");
+    if (sb.help_keys.empty()) {
+        SidebarLine line;
+        line.kind = SidebarLine::Kind::Text;
+        line.text = "  (no sidebar-specific keys)";
+        line.hl = "Comment";
+        out.push_back(line);
+    }
+    for (const auto &kv : sb.help_keys) {
+        // An empty key is a sub-heading (e.g. a tabbed sidebar grouping its
+        // keys per view).
+        if (kv.first.empty()) {
+            heading(kv.second);
+        } else {
+            add(kv.first, kv.second);
+        }
+    }
+    SidebarLine blank;
+    blank.kind = SidebarLine::Kind::Text;
+    out.push_back(blank);
+    heading("Navigation");
+    for (const auto &kv : nav) add(kv.first, kv.second);
+    return out;
+}
+
 std::vector<SidebarLine> Editor::FlattenSidebar(int id) const {
     std::vector<SidebarLine> out;
     const SidebarInstance *sb = FindSidebar(id);
     if (!sb) return out;
+    if (sb->help_open) {
+        // Not docked-open at all = only ever drawn hosted in a pane.
+        const bool pane_hosted = !sb->open || (mode_ == Mode::SidebarPane && SidebarIdForPaneBuffer(CurPane().buffer_id) == id);
+        return FlattenSidebarHelp(*sb, pane_hosted, sidebar_popout_id_ == id);
+    }
     for (int si = 0; si < static_cast<int>(sb->sections.size()); si++) {
         const SidebarSection &sec = sb->sections[static_cast<size_t>(si)];
         if (!sec.title.empty()) {
@@ -18598,6 +18714,10 @@ void Editor::HandleSidebarInput() {
         else if (key == gfx::Key::Enter) enter = true;
         else if (key == gfx::Key::Tab) tab_delta += shift ? -1 : 1;
     }
+    if (SidebarHelpOpen(focused_sidebar_id_)) {
+        HandleSidebarHelpInput(focused_sidebar_id_, escape);
+        return;
+    }
     // Tab/Shift-Tab: next/previous view of a tabbed sidebar
     // (SidebarInstance::tabs) -- a no-op for one without tabs.
     if (tab_delta != 0) {
@@ -18671,6 +18791,9 @@ void Editor::HandleSidebarInput() {
         } else if (cp == 'k' && sidebar_cursor_ > 0) {
             sidebar_cursor_--;
             pending_g_ = false;
+        } else if (cp == '?') {
+            ToggleSidebarHelp(focused_sidebar_id_);
+            return;
         } else if (cp == 'q') {
             pending_g_ = false;  // don't leak a lone unmatched 'g' into whatever mode q restores
             if (popped_out) {
@@ -18717,6 +18840,36 @@ void Editor::HandleSidebarInput() {
     }
 }
 
+void Editor::HandleSidebarHelpInput(int id, bool escape) {
+    int &cursor = mode_ == Mode::SidebarPane ? sidebar_pane_cursor_ : sidebar_cursor_;
+    const int count = static_cast<int>(FlattenSidebar(id).size());
+    if (escape) {
+        ToggleSidebarHelp(id);
+        return;
+    }
+    for (int cp = gfx::GetCharPressed(); cp > 0; cp = gfx::GetCharPressed()) {
+        if (cp == '?' || cp == 'q') {
+            ToggleSidebarHelp(id);
+            return;
+        }
+        if (cp == 'G') {
+            cursor = std::max(0, count - 1);
+            pending_g_ = false;
+        } else if (cp == 'g' && pending_g_) {
+            cursor = 0;
+            pending_g_ = false;
+        } else if (cp == 'g') {
+            pending_g_ = true;
+        } else {
+            pending_g_ = false;
+            if (cp == 'j' && cursor + 1 < count) cursor++;
+            else if (cp == 'k' && cursor > 0) cursor--;
+        }
+    }
+    if ((gfx::IsKeyPressed(gfx::Key::Down) || gfx::IsKeyPressedRepeat(gfx::Key::Down)) && cursor + 1 < count) cursor++;
+    if ((gfx::IsKeyPressed(gfx::Key::Up) || gfx::IsKeyPressedRepeat(gfx::Key::Up)) && cursor > 0) cursor--;
+}
+
 // Mode::SidebarPane's own input handler: a trimmed HandleSidebarInput above
 // for a pane-hosted sidebar view instead of a docked one -- j/k/gg/G/Enter
 // and on_key_ref forwarding carry over unchanged in spirit, but there's no
@@ -18729,9 +18882,14 @@ void Editor::HandleSidebarPaneInput() {
     int sidebar_id = SidebarIdForPaneBuffer(CurPane().buffer_id);
     if (sidebar_id == 0) return;
     std::vector<SidebarLine> lines = FlattenSidebar(sidebar_id);
-    bool enter = false;
+    bool enter = false, escape = false;
     for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
         if (key == gfx::Key::Enter) enter = true;
+        else if (key == gfx::Key::Escape) escape = true;
+    }
+    if (SidebarHelpOpen(sidebar_id)) {
+        HandleSidebarHelpInput(sidebar_id, escape);
+        return;
     }
     if (enter) {
         pending_g_ = false;
@@ -18754,6 +18912,9 @@ void Editor::HandleSidebarPaneInput() {
         } else if (cp == 'k' && sidebar_pane_cursor_ > 0) {
             sidebar_pane_cursor_--;
             pending_g_ = false;
+        } else if (cp == '?') {
+            ToggleSidebarHelp(sidebar_id);
+            return;
         } else if (lua_) {
             pending_g_ = false;
             const SidebarInstance *sb = FindSidebar(sidebar_id);

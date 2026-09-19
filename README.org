@@ -275,9 +275,11 @@ In every view =c= commits and =C= amends -- the message is edited in a
 floating pane over the repository's own =COMMIT_EDITMSG=, with the
 usual =#= status comment block below; =ZZ= in Normal mode commits the
 message, while =Escape= (or =:q=, or clicking away) aborts and discards
-it -- =p= pushes (offering to set the upstream when the branch has
+it -- =P= (or =p=) pushes (offering to set the upstream when the branch has
 none), =l= pulls, =f= fetches (=--all --prune=), =R= re-reads and =?=
-lists the keys. Every action reports its result as a toast and
+lists the keys. Every view's head section says how far the branch is
+ahead of / behind its upstream (or that it has none), so unpushed
+commits stay in sight. Every action reports its result as a toast and
 refreshes the view. =<leader>gl= / =gL= / =gb= / =gs= open the log, graph,
 branches or stash view popped out, =<leader>gc= / =gp= commit / push, and
 =:MepGitLog=, =:MepGitGraph=, =:MepGitBranches=, =:MepGitStash=, =:MepGitCommit=,
@@ -509,6 +511,13 @@ Available to =:lua=, =:source=, and =init.lua=:
   =mep.sidebar_set_on_tab(id, fn(index))= callback (1-based) so the
   consumer re-renders its sections for that view;
   =mep.sidebar_active_tab(id)= reads it. The git panel is built on it.
+- Every sidebar's bottom row hints =?: help=: =?= swaps its rows for a
+  list of its key bindings (the footer then reads =Esc: back to ...=;
+  =Escape=, =?= or =q= return). =mep.sidebar_set_help(id, {{key,
+  description}, ...})= sets the sidebar-specific keys listed above the
+  shared navigation keys (an empty key is a sub-heading);
+  =mep.sidebar_toggle_help(id)= / =mep.sidebar_help_open(id)= drive it
+  from Lua.
 - =mep.float_open(path, line?, {save_on_close=bool}?)= -> bool opens a
   file in a floating editable pane centered over everything -- a real
   pane over a real buffer (every editing mode, =:w=, the wheel all work

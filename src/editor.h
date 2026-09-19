@@ -441,6 +441,18 @@ struct Decoration {
     // line (2 errors vs. 1) is visually distinguishable at a glance, not
     // just by which single glyph happened to win priority.
     bool sign_badge = false;
+    // Draws a geometric mark in the sign column instead of a text glyph
+    // (`sign` is ignored when this is set): "bar" is a full-height
+    // vertical stripe, "delete"/"topdelete" a short horizontal stripe
+    // along the row's bottom/top edge, "changedelete" both a bar and a
+    // bottom stripe. This is what the git gutter draws its hunk marks
+    // with -- gitsigns.nvim's own look, which in Neovim comes from box-
+    // drawing/block glyphs (U+2503, U+2581, U+2594). None of those are
+    // in any of mep's four embedded UI fonts (g_font is an ASCII-only
+    // bake; see kIconCodepointRanges/kSymbolCodepointRanges, main.cpp),
+    // so asking for them by text would draw blanks -- rectangles get the
+    // same look with no font coverage to depend on.
+    std::string sign_shape;
     int priority = 0;
     // Colorizer swatch (Part III Phase 13): a literal RGB drawn as a small
     // filled square at col_start, bypassing the named-highlight-group
@@ -5524,8 +5536,8 @@ public:
     // real std::function callbacks (see LUA_TO_CPP_PLAN.md's "async is
     // not actually the blocker" note), so `git show`'s on_exit runs pure
     // C++ -- no Lua ref stored or invoked anywhere in this path. State
-    // (git_hunks_/git_base_lines_, below) moved off Lua-local tables onto
-    // Editor for the same reason. `base` (a git revision -- HEAD, a
+    // (git_signs_, below -- one cached diff per buffer) moved off
+    // Lua-local tables onto Editor for the same reason. `base` (a git revision -- HEAD, a
     // branch, a SHA) is still read from the Lua-configurable
     // mep.git_gutter_base each call rather than cached here, matching
     // this plan's usual "config stays Lua, passed in as a parameter"
@@ -5533,9 +5545,48 @@ public:
     // one-line wrapper threading that global through.
     /**
      * @brief Asynchronously diffs the current buffer against `base` and refreshes the git gutter hunks.
-     * @param base The git revision (HEAD, a branch, or a SHA) to diff against.
+     * @param base The git revision (a branch, HEAD, or a SHA) to diff against; empty means the index.
      */
     void GitGutterRefresh(const std::string &base);
+    /**
+     * @brief Asynchronously diffs one specific buffer against `base` and refreshes its git gutter hunks.
+     * @param buffer_id The buffer to diff; ignored if it has no filename.
+     * @param base The git revision to diff against; empty means the index.
+     */
+    void GitGutterRefreshBuffer(int buffer_id, const std::string &base);
+    // The always-on driver behind mep.git_gutter_auto: called once per
+    // frame, it re-diffs the *current* buffer only when something has
+    // actually changed since its last diff (a different buffer is
+    // focused, the text was edited, the base ref moved, the whole-line
+    // tint was toggled) and never more often than kGitGutterDebounceSec,
+    // since each recompute is a `git show` subprocess. The steady-state
+    // cost when nothing changed is one hash lookup and two int compares
+    // -- cheap enough to sit on the frame hook, which the old
+    // mep.on_buffer_changed wiring was not: that fired only on edits, so
+    // the gutter went stale the moment you switched buffers.
+    /**
+     * @brief Per-frame git-gutter driver: re-diffs the current buffer only when its cached diff is stale.
+     * @param base The git revision to diff against.
+     * @param line_hl Whether hunk rows also get a whole-line background tint.
+     */
+    void GitGutterTick(const std::string &base, bool line_hl);
+    // Drops every buffer's cached diff so the next GitGutterTick
+    // recomputes it -- for when the *repository* moved under the
+    // unchanged buffer text (a commit, a checkout, a stage/unstage from
+    // the git panel), which nothing in the buffer's own state reflects.
+    /**
+     * @brief Invalidates every buffer's cached git-gutter diff so the next tick recomputes it.
+     */
+    void GitGutterInvalidate();
+    /**
+     * @brief Removes every buffer's git-gutter marks and drops the cached diffs (`:MepGitGutter off`).
+     */
+    void GitGutterClear();
+    /**
+     * @brief Summarizes the current buffer's git hunks for a statusline.
+     * @return "+a ~c -d" over the non-zero counts, or "" when the buffer has no hunks (or no diff at all).
+     */
+    std::string GitGutterSummary() const;
     // 1-indexed target row, or 0 if there are no hunks at all -- the
     // find-next/prev-hunk-relative-to-cursor half of mep.git_next_hunk/
     // mep.git_prev_hunk; the cursor move + opt-in preview-on-jump stay a
@@ -10391,13 +10442,43 @@ private:
     std::unordered_map<std::string, std::vector<int>> dap_breakpoints_;
     std::unordered_map<int, int> termsend_targets_;  // source buffer id -> target (terminal) buffer id
     // GitGutterRefresh/GitNextHunkRow/GitPrevHunkRow/GitPreviewHunkText/
-    // GitResetHunk/GitStageHunk state: the most recently computed hunks
-    // and the diff base's own line content (1-indexed DiffHunk fields
-    // index into git_base_lines_ 1-based, i.e. git_base_lines_[i-1]).
-    std::vector<DiffHunk> git_hunks_;
-    std::vector<std::string> git_base_lines_;
-    // Pointer into git_hunks_, valid only until the next GitGutterRefresh
-    // call -- every caller uses it immediately, never stores it.
+    // GitResetHunk/GitStageHunk state, per buffer: the most recently
+    // computed hunks and the diff base's own line content (1-indexed
+    // DiffHunk fields index into base_lines 1-based, i.e.
+    // base_lines[i-1]). Per buffer rather than one global set because
+    // every consumer of it is cursor-relative -- with a single shared
+    // set, splitting the window or switching buffers left ]c/hunk
+    // preview/stage/reset acting on whichever file happened to be
+    // diffed last, against the cursor of a different one.
+    struct GitSignState {
+        std::vector<DiffHunk> hunks;
+        std::vector<std::string> base_lines;
+        std::string base;          // the revision `hunks` was computed against
+        std::string filename;      // the buffer's path at spawn time, to catch a reused buffer id
+        int change_epoch = -1;     // ChangeEpoch() when the diff was spawned
+        bool line_hl = false;      // whole-line tint setting the decorations were built with
+        bool pending = false;      // a `git show` for this buffer is in flight
+        bool valid = false;        // false = no usable diff (not a repo, bad ref, git missing)
+        double last_run = 0.0;     // Now() of the last spawn, for the debounce
+    };
+    std::unordered_map<int, GitSignState> git_signs_;
+    // vim-gitgutter's `highlight_lines`: tint every hunk row's background
+    // as well as marking it in the sign column. Off by default (gitsigns'
+    // own default too) -- pushed here from mep.git_gutter_line_hl through
+    // GitGutterTick, which invalidates every cached diff when it flips so
+    // the change shows up without waiting for the next edit.
+    bool git_gutter_line_hl_ = false;
+    // Minimum seconds between two `git show` spawns for the same buffer.
+    static constexpr double kGitGutterDebounceSec = 0.4;
+    // The same, for a buffer whose last diff produced nothing usable --
+    // see GitGutterTick.
+    static constexpr double kGitGutterRetrySec = 5.0;
+    /**
+     * @brief Returns the current buffer's cached git-gutter diff, or nullptr if it has none.
+     */
+    const GitSignState *CurGitSigns() const;
+    // Pointer into the current buffer's hunks, valid only until the next
+    // refresh of that buffer -- every caller uses it immediately.
     const DiffHunk *GitHunkAtCursor() const;
     // SnippetSplice/SnippetJump state -- see SnippetTabstop's own comment.
     bool has_snippet_state_ = false;

@@ -1937,6 +1937,9 @@ Decoration ReadDecorationTable(lua_State *L, int idx) {
     lua_getfield(L, idx, "sign_hl");
     if (lua_isstring(L, -1)) d.sign_hl = lua_tostring(L, -1);
     lua_pop(L, 1);
+    lua_getfield(L, idx, "sign_shape");
+    if (lua_isstring(L, -1)) d.sign_shape = lua_tostring(L, -1);
+    lua_pop(L, 1);
     lua_getfield(L, idx, "sign_badge");
     d.sign_badge = lua_toboolean(L, -1);
     lua_pop(L, 1);
@@ -7167,6 +7170,59 @@ int l_git_gutter_refresh_native(lua_State *L) {
     return 0;
 }
 
+// mep.git_gutter_tick(base, line_hl): see Editor::GitGutterTick -- the
+// per-frame driver behind mep.git_gutter_auto, cheap enough to call
+// unconditionally (it does its own staleness check and debounce).
+/**
+ * @brief Implements mep.git_gutter_tick(base, line_hl): re-diffs the current buffer only when its cached git-gutter diff is stale.
+ * @param L Lua state; arg 1 is the base ref, arg 2 whether hunk rows also get a whole-line tint.
+ * @return Number of values pushed (0).
+ */
+int l_git_gutter_tick(lua_State *L) {
+    const char *base = luaL_checkstring(L, 1);
+    GetEditor(L)->GitGutterTick(base, lua_toboolean(L, 2) != 0);
+    return 0;
+}
+
+// mep.git_gutter_invalidate(): see Editor::GitGutterInvalidate -- for
+// when the repository moved under unchanged buffer text (commit,
+// checkout, stage/unstage from the git panel).
+/**
+ * @brief Implements mep.git_gutter_invalidate(): marks every buffer's cached git-gutter diff stale.
+ * @param L Lua state.
+ * @return Number of values pushed (0).
+ */
+int l_git_gutter_invalidate(lua_State *L) {
+    GetEditor(L)->GitGutterInvalidate();
+    return 0;
+}
+
+// mep.git_gutter_clear(): see Editor::GitGutterClear -- drops the marks
+// in *every* buffer, not just the current one, which is what turning the
+// gutter off has to do.
+/**
+ * @brief Implements mep.git_gutter_clear(): removes every buffer's git-gutter marks.
+ * @param L Lua state.
+ * @return Number of values pushed (0).
+ */
+int l_git_gutter_clear(lua_State *L) {
+    GetEditor(L)->GitGutterClear();
+    return 0;
+}
+
+// mep.git_gutter_summary() -> "+3 ~1 -2" (or "" for a clean/undiffed
+// buffer): see Editor::GitGutterSummary, for a statusline segment.
+/**
+ * @brief Implements mep.git_gutter_summary(): the current buffer's added/changed/removed line counts as a short string.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the summary string, "" when there is nothing to report).
+ */
+int l_git_gutter_summary(lua_State *L) {
+    std::string s = GetEditor(L)->GitGutterSummary();
+    lua_pushlstring(L, s.data(), s.size());
+    return 1;
+}
+
 // mep.git_next_hunk_row()/mep.git_prev_hunk_row() -> 1-indexed row or
 // nil: see Editor::GitNextHunkRow/GitPrevHunkRow.
 /**
@@ -9615,6 +9671,10 @@ const luaL_Reg kMepFuncs[] = {
     {"ansi_render", l_ansi_render},
     {"leetcode_html_to_text", l_leetcode_html_to_text},
     {"git_gutter_refresh_native", l_git_gutter_refresh_native},
+    {"git_gutter_tick", l_git_gutter_tick},
+    {"git_gutter_invalidate", l_git_gutter_invalidate},
+    {"git_gutter_clear", l_git_gutter_clear},
+    {"git_gutter_summary", l_git_gutter_summary},
     {"git_next_hunk_row", l_git_next_hunk_row},
     {"git_prev_hunk_row", l_git_prev_hunk_row},
     {"git_preview_hunk_text", l_git_preview_hunk_text},

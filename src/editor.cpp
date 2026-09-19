@@ -24231,8 +24231,73 @@ std::vector<std::string> Editor::ListUrls() const {
     return urls;
 }
 
-void Editor::GitGutterRefresh(const std::string &base) {
-    const std::string &fname = Buf().filename;
+namespace {
+// Where a hunk's mark sits, and which row counts as "on" it -- shared by
+// the cursor lookup (GitHunkAtCursor) and by staging, which re-derives
+// its own hunks against the index and has to resolve the cursor the same
+// way. A pure deletion covers no row of its own, so it answers for the
+// surviving line above the gap (see GitGutterRefreshBuffer).
+/**
+ * @brief Returns the 1-indexed buffer row a hunk's gutter mark is drawn on.
+ * @param h The hunk.
+ * @return The anchor row.
+ */
+int GitHunkAnchorRow(const DiffHunk &h) { return h.new_count == 0 ? std::max(1, h.new_start - 1) : h.new_start; }
+/**
+ * @brief Reports whether a 1-indexed row belongs to a hunk.
+ * @param h The hunk.
+ * @param row_1idx The 1-indexed row to test.
+ * @return True if the row is inside the hunk (or is a pure deletion's anchor row).
+ */
+bool GitHunkCoversRow(const DiffHunk &h, int row_1idx) {
+    if (h.new_count == 0) return row_1idx == GitHunkAnchorRow(h);
+    return row_1idx >= h.new_start && row_1idx <= h.new_start + h.new_count - 1;
+}
+// The path `git apply` wants in a patch header: relative to the repo
+// root it runs in. An absolute one is rejected outright ("<path>: does
+// not exist in index"), and most buffers are opened by absolute path.
+/**
+ * @brief Strips a repo root prefix off a path, for use in a patch header.
+ * @param path The buffer's filename.
+ * @param root The repository root the patch will be applied in.
+ * @return `path` relative to `root`, or `path` unchanged if it isn't under it.
+ */
+std::string GitPatchPath(const std::string &path, const std::string &root) {
+    if (!root.empty() && path.size() > root.size() && path.compare(0, root.size(), root) == 0 && path[root.size()] == '/') {
+        return path.substr(root.size() + 1);
+    }
+    return path;
+}
+// `git show` failing with one of these means "that revision simply has
+// no such path" -- a file newer than the base, or untracked. Every other
+// failure (not a repository, unknown ref, no commits yet, git missing)
+// carries no information about the file at all.
+/**
+ * @brief Reports whether a `git show` failure means the path is absent from the revision rather than unreadable.
+ * @param stderr_text The collected stderr of the failed `git show`.
+ * @return True if the path is simply new/untracked in that revision.
+ */
+bool GitShowSaysPathIsNew(const std::string &stderr_text) {
+    return stderr_text.find("does not exist in") != std::string::npos ||
+           stderr_text.find("exists on disk, but not in") != std::string::npos;
+}
+}  // namespace
+
+// Git gutter (kBuiltinGit, main.cpp): `git show <base>:<file>` fetches the
+// base revision's text (`base` empty -- the default -- makes that `:<file>`,
+// i.e. the index, which is what gitsigns/vim-gitgutter compare against), MyersDiffHunks turns it into hunks against the
+// buffer's *live* (possibly unsaved) lines -- the whole point of diffing in
+// the editor rather than shelling `git diff`, which only ever sees what's
+// on disk -- and each hunk becomes a mark in the always-reserved sign
+// column. Sign placement follows vim-gitgutter/gitsigns: added and changed
+// rows get a stripe on every row they cover, while a pure deletion has no
+// row of its own and is marked on the surviving line *above* the gap (or,
+// for a deletion off the top of the file, along the top edge of line 1).
+void Editor::GitGutterRefresh(const std::string &base) { GitGutterRefreshBuffer(CurPane().buffer_id, base); }
+
+void Editor::GitGutterRefreshBuffer(int buffer_id, const std::string &base) {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
+    const std::string fname = buffers_[static_cast<size_t>(buffer_id)].filename;
     if (fname.empty()) return;
     int ns = CreateNamespace("git");
     // `base:path` is a pathspec, resolved relative to its own cwd -- run
@@ -24244,7 +24309,16 @@ void Editor::GitGutterRefresh(const std::string &base) {
     std::string base_name = slash == std::string::npos ? fname : fname.substr(slash + 1);
     std::string spec = base + ":" + base_name;
 
+    GitSignState &st = git_signs_[buffer_id];
+    st.base = base;
+    st.filename = fname;
+    st.change_epoch = change_epoch_;
+    st.line_hl = git_gutter_line_hl_;
+    st.pending = true;
+    st.last_run = now_;
+
     auto lines = std::make_shared<std::vector<std::string>>();
+    auto err = std::make_shared<std::string>();
     JobManager::Callbacks cb;
     /**
      * @brief Collects one line of `git show`'s stdout output as it streams in.
@@ -24252,44 +24326,101 @@ void Editor::GitGutterRefresh(const std::string &base) {
      */
     cb.on_stdout = [lines](const std::string &line) { lines->push_back(line); };
     /**
-     * @brief Once `git show` exits, diffs the fetched base-revision lines against the current buffer and redraws the git-gutter decorations.
-     * @param code The process exit code (unused).
+     * @brief Collects `git show`'s stderr, which is how a failure says *why* it failed.
+     * @param line The next line of error output.
      */
-    cb.on_exit = [this, ns, lines](int /*code*/) {
-        git_base_lines_ = *lines;
-        std::vector<std::string> cur;
-        const int n = Buf().LineCount();
-        cur.reserve(static_cast<size_t>(n));
-        for (int i = 0; i < n; i++) cur.push_back(Buf().lines[static_cast<size_t>(i)]);
-        git_hunks_ = MyersDiffHunks(*lines, cur);
-        ClearNamespace(ns);
-        for (const DiffHunk &h : git_hunks_) {
+    cb.on_stderr = [err](const std::string &line) {
+        if (err->size() < 4096) *err += line;
+    };
+    /**
+     * @brief Once `git show` exits, diffs the fetched base-revision lines against the buffer and rebuilds its git-gutter signs.
+     * @param code The process exit code; non-zero means the base revision has no such path (or this isn't a repo at all).
+     */
+    cb.on_exit = [this, ns, buffer_id, fname, lines, err](int code) {
+        auto it = git_signs_.find(buffer_id);
+        if (it == git_signs_.end()) return;
+        GitSignState &st2 = it->second;
+        st2.pending = false;
+        // The buffer can have been closed, or its id reused for a
+        // different file, while `git show` was in flight -- painting this
+        // diff onto whatever is there now would mark the wrong lines.
+        if (buffer_id >= static_cast<int>(buffers_.size()) || buffers_[static_cast<size_t>(buffer_id)].filename != fname) {
+            git_signs_.erase(it);
+            return;
+        }
+        ClearNamespaceInBuffer(buffer_id, ns);
+        if (code != 0) {
+            // git failed. The one failure that still means something is
+            // "this path isn't in that revision" -- a file that's new
+            // since `base` (or untracked), where every line really is an
+            // addition, which is exactly what gitsigns shows for one.
+            // Everything else (not a repository, unknown ref, no commits
+            // yet, git not installed) is *no information*, not "the whole
+            // file is new", so it clears the gutter instead of flooding
+            // it.
+            if (!GitShowSaysPathIsNew(*err)) {
+                st2.valid = false;
+                st2.hunks.clear();
+                st2.base_lines.clear();
+                return;
+            }
+            lines->clear();
+        }
+        st2.valid = true;
+        st2.base_lines = *lines;
+        const Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
+        std::vector<std::string> cur = buf.lines;
+        st2.hunks = MyersDiffHunks(*lines, cur);
+        const int n = static_cast<int>(cur.size());
+        const bool line_hl = st2.line_hl;
+        /**
+         * @brief Adds one git-gutter mark on a 0-indexed row, clamped into the buffer.
+         * @param row0 The 0-indexed row to mark.
+         * @param shape The Decoration::sign_shape to draw ("bar", "delete", "topdelete", "changedelete").
+         * @param hl The highlight group naming the mark's color.
+         */
+        auto mark = [&](int row0, const char *shape, const char *hl) {
+            if (n == 0) return;
+            Decoration d;
+            d.row = std::clamp(row0, 0, n - 1);
+            d.sign_shape = shape;
+            d.sign_hl = hl;
+            // Off by default: gitsigns' own default is signs only. A tint
+            // across every changed line competes with the syntax
+            // highlighting underneath it, which on a large diff means the
+            // whole file reads as highlighted -- opt in with
+            // mep.git_gutter_line_hl if you want vim-gitgutter's
+            // `highlight_lines` look.
+            if (line_hl) {
+                d.whole_line = true;
+                d.hl_group = hl;
+            }
+            AddDecorationToBuffer(buffer_id, ns, d);
+        };
+        for (const DiffHunk &h : st2.hunks) {
             if (h.old_count == 0) {
-                for (int r = h.new_start; r < h.new_start + h.new_count; r++) {
-                    Decoration d;
-                    d.row = r - 1;
-                    d.whole_line = true;
-                    d.hl_group = "Add";
-                    d.sign = "+";
-                    d.sign_hl = "Add";
-                    AddDecoration(ns, d);
-                }
+                for (int r = h.new_start; r < h.new_start + h.new_count; r++) mark(r - 1, "bar", "Add");
             } else if (h.new_count == 0) {
-                Decoration d;
-                d.row = std::max(0, h.new_start - 1);
-                d.whole_line = false;
-                d.sign = "_";
-                d.sign_hl = "Red";
-                AddDecoration(ns, d);
+                // A deletion occupies no row of its own: h.new_start is
+                // the row the removed text *would* have started at, so
+                // the last surviving line above the gap is new_start - 1
+                // (1-indexed). new_start == 1 means the deletion ran off
+                // the top of the file, with no line above it to mark --
+                // that one goes along the top edge of line 1 instead.
+                if (h.new_start <= 1) {
+                    mark(0, "topdelete", "Delete");
+                } else {
+                    mark(h.new_start - 2, "delete", "Delete");
+                }
             } else {
-                for (int r = h.new_start; r < h.new_start + h.new_count; r++) {
-                    Decoration d;
-                    d.row = r - 1;
-                    d.whole_line = true;
-                    d.hl_group = "Yellow";
-                    d.sign = "~";
-                    d.sign_hl = "Yellow";
-                    AddDecoration(ns, d);
+                // A change that also dropped lines (more old than new)
+                // is gitsigns' "changedelete": the last changed row
+                // carries the removal mark as well, so the dropped lines
+                // aren't silently invisible.
+                int last = h.new_start + h.new_count - 1;
+                bool shrank = h.old_count > h.new_count;
+                for (int r = h.new_start; r <= last; r++) {
+                    mark(r - 1, (shrank && r == last) ? "changedelete" : "bar", "Change");
                 }
             }
         }
@@ -24297,47 +24428,123 @@ void Editor::GitGutterRefresh(const std::string &base) {
     JobManager::Instance().Spawn({"git", "show", spec}, dir, cb);
 }
 
+void Editor::GitGutterTick(const std::string &base, bool line_hl) {
+    if (line_hl != git_gutter_line_hl_) {
+        git_gutter_line_hl_ = line_hl;
+        GitGutterInvalidate();
+    }
+    int buffer_id = CurPane().buffer_id;
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
+    if (buffers_[static_cast<size_t>(buffer_id)].filename.empty()) return;
+    auto it = git_signs_.find(buffer_id);
+    if (it != git_signs_.end()) {
+        const GitSignState &st = it->second;
+        if (st.pending) return;
+        if (st.change_epoch == change_epoch_ && st.base == base && st.line_hl == line_hl &&
+            st.filename == buffers_[static_cast<size_t>(buffer_id)].filename) {
+            return;  // cached diff is still current: the steady state
+        }
+        // A buffer git can say nothing useful about (not in a repo, no
+        // such ref) would otherwise re-spawn `git show` every debounce
+        // window for as long as you keep typing in it, always to be told
+        // the same thing. Retry it on the slow interval instead, which
+        // still picks up a `git init` or a corrected base ref within a
+        // few seconds.
+        double interval = st.valid ? kGitGutterDebounceSec : kGitGutterRetrySec;
+        if (now_ - st.last_run < interval) return;
+    }
+    GitGutterRefreshBuffer(buffer_id, base);
+}
+
+void Editor::GitGutterInvalidate() {
+    // Only the *epoch* is reset, not the hunks/decorations themselves --
+    // the existing marks stay on screen until the recompute lands, which
+    // is a beat of staleness instead of a visible flash of empty gutter
+    // on every commit or stage.
+    for (auto &entry : git_signs_) entry.second.change_epoch = -1;
+}
+
+void Editor::GitGutterClear() {
+    int ns = CreateNamespace("git");
+    for (const auto &entry : git_signs_) ClearNamespaceInBuffer(entry.first, ns);
+    git_signs_.clear();
+}
+
+const Editor::GitSignState *Editor::CurGitSigns() const {
+    auto it = git_signs_.find(CurPane().buffer_id);
+    if (it == git_signs_.end() || !it->second.valid) return nullptr;
+    return &it->second;
+}
+
+std::string Editor::GitGutterSummary() const {
+    const GitSignState *st = CurGitSigns();
+    if (!st) return "";
+    int added = 0, changed = 0, removed = 0;
+    for (const DiffHunk &h : st->hunks) {
+        if (h.old_count == 0) {
+            added += h.new_count;
+        } else if (h.new_count == 0) {
+            removed += h.old_count;
+        } else {
+            changed += h.new_count;
+            if (h.old_count > h.new_count) removed += h.old_count - h.new_count;
+        }
+    }
+    std::string out;
+    if (added > 0) out += "+" + std::to_string(added);
+    if (changed > 0) out += (out.empty() ? "" : " ") + ("~" + std::to_string(changed));
+    if (removed > 0) out += (out.empty() ? "" : " ") + ("-" + std::to_string(removed));
+    return out;
+}
+
 const DiffHunk *Editor::GitHunkAtCursor() const {
+    const GitSignState *st = CurGitSigns();
+    if (!st) return nullptr;
     int row = 0, col = 0;
     GetCursorForLua(&row, &col);
     int row_1idx = row + 1;
-    for (const DiffHunk &h : git_hunks_) {
-        int lo = h.new_start;
-        int hi = h.new_start + std::max(1, h.new_count) - 1;
-        if (row_1idx >= lo && row_1idx <= hi) return &h;
+    for (const DiffHunk &h : st->hunks) {
+        if (GitHunkCoversRow(h, row_1idx)) return &h;
     }
     return nullptr;
 }
 
+// ]c / [c: the next/previous hunk relative to the cursor, wrapping around
+// the ends the way vim-gitgutter's own jumps do.
 int Editor::GitNextHunkRow() const {
+    const GitSignState *st = CurGitSigns();
+    if (!st || st->hunks.empty()) return 0;
     int row = 0, col = 0;
     GetCursorForLua(&row, &col);
     int row_1idx = row + 1;
-    for (const DiffHunk &h : git_hunks_) {
-        if (h.new_start > row_1idx) return h.new_start;
+    for (const DiffHunk &h : st->hunks) {
+        int target = GitHunkAnchorRow(h);
+        if (target > row_1idx) return target;
     }
-    if (!git_hunks_.empty()) return git_hunks_.front().new_start;
-    return 0;
+    return GitHunkAnchorRow(st->hunks.front());
 }
 
 int Editor::GitPrevHunkRow() const {
+    const GitSignState *st = CurGitSigns();
+    if (!st || st->hunks.empty()) return 0;
     int row = 0, col = 0;
     GetCursorForLua(&row, &col);
     int row_1idx = row + 1;
-    for (auto it = git_hunks_.rbegin(); it != git_hunks_.rend(); ++it) {
-        if (it->new_start < row_1idx) return it->new_start;
+    for (auto it = st->hunks.rbegin(); it != st->hunks.rend(); ++it) {
+        int target = GitHunkAnchorRow(*it);
+        if (target < row_1idx) return target;
     }
-    if (!git_hunks_.empty()) return git_hunks_.back().new_start;
-    return 0;
+    return GitHunkAnchorRow(st->hunks.back());
 }
 
 std::pair<bool, std::string> Editor::GitPreviewHunkText() const {
+    const GitSignState *st = CurGitSigns();
     const DiffHunk *h = GitHunkAtCursor();
-    if (!h) return {false, ""};
+    if (!st || !h) return {false, ""};
     std::vector<std::string> lines;
     for (int i = h->old_start; i < h->old_start + h->old_count; i++) {
         std::string old_line =
-            (i - 1 >= 0 && i - 1 < static_cast<int>(git_base_lines_.size())) ? git_base_lines_[static_cast<size_t>(i - 1)] : "";
+            (i - 1 >= 0 && i - 1 < static_cast<int>(st->base_lines.size())) ? st->base_lines[static_cast<size_t>(i - 1)] : "";
         lines.push_back("-" + old_line);
     }
     const int n = Buf().LineCount();
@@ -24355,61 +24562,141 @@ std::pair<bool, std::string> Editor::GitPreviewHunkText() const {
 }
 
 void Editor::GitResetHunk(const std::string &base) {
+    const GitSignState *st = CurGitSigns();
     const DiffHunk *h = GitHunkAtCursor();
-    if (!h) {
+    if (!st || !h) {
         Notify("No hunk under cursor", NotifyLevel::Warn);
         return;
     }
     std::vector<std::string> repl;
     for (int i = h->old_start; i < h->old_start + h->old_count; i++) {
-        if (i - 1 >= 0 && i - 1 < static_cast<int>(git_base_lines_.size())) repl.push_back(git_base_lines_[static_cast<size_t>(i - 1)]);
+        if (i - 1 >= 0 && i - 1 < static_cast<int>(st->base_lines.size())) repl.push_back(st->base_lines[static_cast<size_t>(i - 1)]);
     }
     int new_start = h->new_start, new_count = h->new_count;
     ReplaceLinesForLua(new_start - 1, new_start - 1 + new_count, repl);
     GitGutterRefresh(base);
 }
 
+// Staging always means "move this change from the working buffer into
+// the index", so it re-diffs the buffer against the *index* here rather
+// than reusing the gutter's own hunks: those are computed against
+// mep.git_gutter_base, which defaults to HEAD and can be pointed at any
+// revision at all. With HEAD as the base and something already staged,
+// the displayed hunk's line numbers describe neither the index nor a
+// patch that would apply to it. One `git show :<file>` buys correctness
+// independent of whatever the gutter happens to be showing.
 void Editor::GitStageHunk() {
-    const DiffHunk *h = GitHunkAtCursor();
-    const std::string &fname = Buf().filename;
-    if (!h || fname.empty()) {
+    const std::string fname = Buf().filename;
+    if (fname.empty()) {
         Notify("No hunk under cursor", NotifyLevel::Warn);
         return;
     }
-    std::string old_hdr = h->old_count == 0 ? (std::to_string(h->old_start) + ",0")
-                                             : (std::to_string(h->old_start) + "," + std::to_string(h->old_count));
-    std::string new_hdr = h->new_count == 0 ? (std::to_string(h->new_start) + ",0")
-                                             : (std::to_string(h->new_start) + "," + std::to_string(h->new_count));
-    std::string patch;
-    patch += "diff --git a/" + fname + " b/" + fname + "\n";
-    patch += "--- a/" + fname + "\n";
-    patch += "+++ b/" + fname + "\n";
-    patch += "@@ -" + old_hdr + " +" + new_hdr + " @@\n";
-    const int n = Buf().LineCount();
-    for (int i = h->old_start; i < h->old_start + h->old_count; i++) {
-        std::string old_line =
-            (i - 1 >= 0 && i - 1 < static_cast<int>(git_base_lines_.size())) ? git_base_lines_[static_cast<size_t>(i - 1)] : "";
-        patch += "-" + old_line + "\n";
-    }
-    for (int i = h->new_start; i < h->new_start + h->new_count; i++) {
-        std::string cur_line = (i - 1 >= 0 && i - 1 < n) ? Buf().lines[static_cast<size_t>(i - 1)] : "";
-        patch += "+" + cur_line + "\n";
-    }
+    int buffer_id = CurPane().buffer_id;
+    int row = 0, col = 0;
+    GetCursorForLua(&row, &col);
+    const int cursor_row = row + 1;
+    size_t slash = fname.find_last_of('/');
+    std::string dir = slash == std::string::npos ? "." : fname.substr(0, slash);
+    std::string base_name = slash == std::string::npos ? fname : fname.substr(slash + 1);
+    const std::string rel = GitPatchPath(fname, ActiveRoot());
+
+    auto index_lines = std::make_shared<std::vector<std::string>>();
+    auto err = std::make_shared<std::string>();
     JobManager::Callbacks cb;
     /**
-     * @brief Reports whether `git apply --cached` succeeded in staging the hunk.
-     * @param code The process exit code; 0 means success.
+     * @brief Collects one line of the index copy of the file.
+     * @param line The next line of output.
      */
-    cb.on_exit = [this](int code) {
-        if (code == 0) {
-            Notify("Staged hunk");
-        } else {
-            Notify("git apply failed", NotifyLevel::Error);
-        }
+    cb.on_stdout = [index_lines](const std::string &line) { index_lines->push_back(line); };
+    /**
+     * @brief Collects `git show`'s stderr so a failure can be told apart from an untracked file.
+     * @param line The next line of error output.
+     */
+    cb.on_stderr = [err](const std::string &line) {
+        if (err->size() < 4096) *err += line;
     };
-    int id = JobManager::Instance().Spawn({"git", "apply", "--cached", "--unidiff-zero", "-"}, ActiveRoot(), cb);
-    JobManager::Instance().WriteStdin(id, patch);
-    JobManager::Instance().CloseStdin(id);
+    /**
+     * @brief Diffs the buffer against its index copy, then applies the hunk under the cursor to the index.
+     * @param code `git show`'s exit code; non-zero means the file isn't in the index (or isn't in a repo at all).
+     */
+    cb.on_exit = [this, buffer_id, cursor_row, rel, index_lines, err](int code) {
+        if (code != 0) {
+            if (!GitShowSaysPathIsNew(*err)) {
+                Notify("Can't stage: no git index here", NotifyLevel::Error);
+                return;
+            }
+            index_lines->clear();  // untracked: every line is an addition
+        }
+        if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
+        const std::vector<std::string> &cur = buffers_[static_cast<size_t>(buffer_id)].lines;
+        std::vector<DiffHunk> hunks = MyersDiffHunks(*index_lines, cur);
+        const DiffHunk *h = nullptr;
+        for (const DiffHunk &candidate : hunks) {
+            if (GitHunkCoversRow(candidate, cursor_row)) {
+                h = &candidate;
+                break;
+            }
+        }
+        if (!h) {
+            Notify("No unstaged hunk under cursor", NotifyLevel::Warn);
+            return;
+        }
+        // Both sides of the header are anchored on the *index's* line
+        // numbers, not on h->new_start. The patch carries this one hunk
+        // and is applied to a file that still has the index's content,
+        // so h->new_start -- a position in the working buffer, past
+        // however many earlier hunks this patch doesn't carry -- names
+        // the wrong line as soon as the buffer has more than one change.
+        // It matters because `--unidiff-zero` leaves git no context to
+        // search with: it applies each hunk at the line its *new* side
+        // names, verbatim.
+        // DiffHunk::old_start for a pure insertion is the index line the
+        // text goes *before*, one past unified-diff's own "insert after
+        // line N" convention, so that side gets the -1.
+        int old_at = h->old_count == 0 ? std::max(0, h->old_start - 1) : h->old_start;
+        std::string patch;
+        patch += "diff --git a/" + rel + " b/" + rel + "\n";
+        patch += "--- a/" + rel + "\n";
+        patch += "+++ b/" + rel + "\n";
+        patch += "@@ -" + std::to_string(old_at) + "," + std::to_string(h->old_count) + " +" +
+                 std::to_string(h->old_start) + "," + std::to_string(h->new_count) + " @@\n";
+        for (int i = h->old_start; i < h->old_start + h->old_count; i++) {
+            std::string old_line =
+                (i - 1 >= 0 && i - 1 < static_cast<int>(index_lines->size())) ? (*index_lines)[static_cast<size_t>(i - 1)] : "";
+            patch += "-" + old_line + "\n";
+        }
+        const int n = static_cast<int>(cur.size());
+        for (int i = h->new_start; i < h->new_start + h->new_count; i++) {
+            std::string cur_line = (i - 1 >= 0 && i - 1 < n) ? cur[static_cast<size_t>(i - 1)] : "";
+            patch += "+" + cur_line + "\n";
+        }
+        JobManager::Callbacks apply_cb;
+        /**
+         * @brief Reports whether `git apply --cached` succeeded in staging the hunk.
+         * @param apply_code The process exit code; 0 means success.
+         */
+        apply_cb.on_exit = [this](int apply_code) {
+            if (apply_code == 0) {
+                Notify("Staged hunk");
+                // Staging moves the index without touching a single
+                // buffer line, so nothing in a buffer's own state would
+                // mark the cached diff stale -- and with the index as
+                // the base, every remaining hunk's line numbers just
+                // shifted.
+                GitGutterInvalidate();
+            } else {
+                Notify("git apply failed", NotifyLevel::Error);
+            }
+        };
+        // Spawning from inside another job's on_exit is supported --
+        // JobManager::PollAll is written for exactly this (see its own
+        // comment on re-entrant Spawn).
+        int apply_id =
+            JobManager::Instance().Spawn({"git", "apply", "--cached", "--unidiff-zero", "-"}, ActiveRoot(), apply_cb);
+        JobManager::Instance().WriteStdin(apply_id, patch);
+        JobManager::Instance().CloseStdin(apply_id);
+    };
+    JobManager::Instance().Spawn({"git", "show", ":" + base_name}, dir, cb);
 }
 
 void Editor::ReplaceLinesForLua(int start_row, int end_row, const std::vector<std::string> &lines) {

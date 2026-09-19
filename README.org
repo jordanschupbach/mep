@@ -1,25 +1,24 @@
 * MEP - An editor where everything is in place
 
 A modal (vim-like), cross-platform text editor written in C++ with
-[[https://www.raylib.com/][raylib]], embedded [[https://www.lua.org/][Lua]] scripting, built with CMake,
-compiled to WebAssembly by default, and launched as a native window via
-[[https://deno.com/][Deno]] + [[https://github.com/webview/webview_deno][webview]].
+[[https://www.raylib.com/][raylib]], embedded [[https://www.lua.org/][Lua]]
+scripting, built with CMake, compiled to WebAssembly by default, and launched as
+a native window via [[https://deno.com/][Deno]] +
+[[https://github.com/webview/webview_deno][webview]].
 
-Not a Vim clone in the full sense -- search and =:s=/=:g= substitution
-are plain-substring, not regex. Pane navigation via =Ctrl-W= is
-directional (=Ctrl-W hjkl=, not just cycle-order =w=/=W=), matched by
-=mod1+hjkl= (see below); pane resize (=mod1+Shift+hjkl=) is a manual
-two-way boundary drag rather than Vim's full window-layout resize
-algorithm. What it does have, by now, is a lot: Normal/Insert/Replace/
-Visual/Visual-Line/Visual-Block/Command-line modes, counted motions and
-operators with text objects, registers, marks and jumps, search,
-substitute/global ex commands, =.=-repeat and macros, undo/redo,
-buffers/split-panes/tabs, real embedded Lua for scripting and
-configuration, and a mouse-driven File/Edit/Window/Help menu bar
-(rendered by the editor itself, not a native OS menu -- raylib has no
-such integration). See =VIM_PARITY_PLAN.md= for the detailed,
-phase-by-phase account of what's implemented and what's an intentional,
-documented gap.
+Not a Vim clone in the full sense -- search and =:s=/=:g= substitution are
+plain-substring, not regex. Pane navigation via =Ctrl-W= is directional (=Ctrl-W
+hjkl=, not just cycle-order =w=/=W=), matched by =mod1+hjkl= (see below); pane
+resize (=mod1+Shift+hjkl=) is a manual two-way boundary drag rather than Vim's
+full window-layout resize algorithm. What it does have, by now, is a lot:
+Normal/Insert/Replace/ Visual/Visual-Line/Visual-Block/Command-line modes,
+counted motions and operators with text objects, registers, marks and jumps,
+search, substitute/global ex commands, =.=-repeat and macros, undo/redo,
+buffers/split-panes/tabs, real embedded Lua for scripting and configuration, and
+a mouse-driven File/Edit/Window/Help menu bar (rendered by the editor itself,
+not a native OS menu -- raylib has no such integration). See
+=VIM_PARITY_PLAN.md= for the detailed, phase-by-phase account of what's
+implemented and what's an intentional, documented gap.
 
 ** Requirements
 
@@ -171,7 +170,7 @@ cursor's own line still shows its real, left-aligned line number, the
 usual Vim/Neovim "hybrid" look), so a plain =:set nonumber
 norelativenumber= is what turns them off entirely. The same gutter
 column also always carries fold markers and any git-gutter/LSP-
-diagnostic/DAP-breakpoint/TODO-scan sign for that line (one glyph per
+diagnostic/DAP-breakpoint/TODO-scan sign for that line (one mark per
 row, highest-priority sign wins), regardless of whether either number
 option is on. =:set ignorecase= (=noignorecase=) makes search and
 =:s=/=:g= case-insensitive; =:set wrapscan= (=nowrapscan=, on by
@@ -248,6 +247,41 @@ current_row)= (=spans= as in =mep.picker_set_preview=), or through the
 panels use; =mep.read_lines(path, max_lines)= reads a file for it,
 preferring an open buffer's unsaved text. =mep.sidebar_popout_toggle()=
 is what =mod1+m= calls.
+The git gutter marks every changed line in the sign column, the way
+gitsigns.nvim / vim-gitgutter do, and is *on by default*: a green bar on
+each added line, a yellow bar on each changed one, and a red stripe along
+the edge of the line a deletion happened next to (the top edge of line 1
+when the deletion ran off the top of the file; a changed line that also
+dropped lines gets both a bar and a stripe). The marks are rectangles
+rather than glyphs -- none of the embedded fonts cover the box-drawing
+block Neovim's defaults use.
+
+It diffs the buffer's *live, unsaved* text, not what's on disk, and
+recomputes on a debounce as you type, when you switch buffers, and after
+any action from the git panel; a file that isn't in a repository gets no
+marks at all, and one that's in a repository but not in the base (a new
+or untracked file) reads as all-added. The default base is =HEAD=, so
+staging a change doesn't make its marks disappear -- unlike gitsigns and
+vim-gitgutter, which both compare against the index and so go blank the
+moment you =git add=. =:MepGitGutter base index= is that stage-aware
+view if you want it, and =:MepGitGutter base <ref>= takes any other
+revision (a branch, =HEAD~1=, a SHA). =:MepGitGutter on|off|toggle= (or
+=<leader>gd=, which reports which way it went) turns it off and on,
+=:MepGitGutter= alone recomputes, and =:lua mep.git_gutter_line_hl =
+true= adds vim-gitgutter's whole-line tint on top of the sign-column
+marks.
+
+=]g= / =[g= (or =]c= / =[c=, vim's own diff-mode motions) jump to the
+next/previous hunk, wrapping at either end. =<leader>gv= previews the
+hunk under the cursor as a unified diff in a dismiss-on-any-key float
+(=:MepGitPreviewHunk=; =:lua mep.git_hunk_preview_on_jump = true= pops
+it on every jump too), =<leader>ga= stages that one hunk and
+=<leader>gr= resets it back to the base. Staging re-diffs against the
+index itself rather than reusing the displayed hunks, so it stages
+exactly the change under the cursor whatever the gutter's base is set
+to. =mep.git_gutter_summary()= returns the buffer's =+a ~c -d= counts
+for a statusline.
+
 The git panel (=<leader>gG= docked, =<leader>gg= popped out, the tab bar's Git button, or
 =:MepGitStatus=) is one sidebar with five views on a tab strip --
 =Tab=/=Shift-Tab=, the =1=-=5= keys or a click switch them, and

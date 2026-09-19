@@ -4580,7 +4580,8 @@ const char *kBuiltinGit =
     // Lua refs entirely (JobManager::Spawn already takes real C++
     // callbacks -- see LUA_TO_CPP_PLAN.md's "async is not actually the
     // blocker" note) -- mep_git_hunks/mep_git_base_lines are now
-    // Editor-owned state (git_hunks_/git_base_lines_), not Lua locals.
+    // Editor-owned state (git_signs_, one entry per buffer), not Lua
+    // locals.
     "local mep_git_status_sidebar_id = nil\n"
     // Buffer id of the paneable git-status view (mep.git_open_pane below),
     // once opened -- lets mep.git_status_toggle refocus it instead of
@@ -4599,17 +4600,34 @@ const char *kBuiltinGit =
     // owns the latest generation before touching the sections).
     "local mep_git_status_gen = 0\n"
     // Configurable diff base (Phase 17 gap): a single global ref name,
-    // not per-buffer -- same-global convention as mep_git_hunks/
-    // mep_git_base_lines above, and simpler for the common case of
-    // reviewing one buffer's history against a moving point (a branch,
-    // HEAD~1, a SHA) rather than pinning a base per file. Overridable
-    // with `:MepGitGutter base <ref>`; `:MepGitGutter base` with no ref
+    // not per-buffer -- same-global convention as the Editor-side hunk
+    // cache above, and simpler for the common case of reviewing one
+    // buffer's history against a moving point (a branch, HEAD~1, a SHA)
+    // rather than pinning a base per file. Overridable with
+    // `:MepGitGutter base <ref>`; `:MepGitGutter base` with no ref
     // reports the current one. Every `git show <ref>:<file>` shell-out
-    // in this module reads this instead of a hardcoded 'HEAD'.
+    // in this module reads this instead of a hardcoded ref.
+    // The default is HEAD -- deliberately *not* gitsigns'/vim-gitgutter's
+    // own default of the index. Those hide a change the moment you stage
+    // it, which reads as "the gutter stopped working": `git add -A` and
+    // the git panel's own `S` are both one keystroke, and after either
+    // one an index-based gutter is empty on a file full of changes.
+    // HEAD keeps every change since the last commit marked, staged or
+    // not, which is what "show me what I've changed" means to most
+    // people. `:MepGitGutter base index` switches to the stage-aware
+    // view. Staging a hunk is unaffected either way -- GitStageHunk
+    // (editor.cpp) re-diffs against the index itself rather than
+    // trusting whatever this is set to.
     "mep.git_gutter_base = 'HEAD'\n"
+    // Display name for the base: the empty ref is the index, which has
+    // no ref name to print.
+    "function mep.git_gutter_base_label()\n"
+    "  return (mep.git_gutter_base == '') and 'index' or mep.git_gutter_base\n"
+    "end\n"
     "function mep.git_gutter_refresh() mep.git_gutter_refresh_native(mep.git_gutter_base) end\n"
-    // Opt-in (off by default, same convention as mep.git_gutter_auto/
-    // mep.colorize_auto): mep.float_preview dismisses on *any* keypress,
+    // Opt-in (off by default, same convention as mep.colorize_auto --
+    // mep.git_gutter_auto itself is the one exception, see its own
+    // comment): mep.float_preview dismisses on *any* keypress,
     // so auto-popping the hunk preview on every jump would make repeated
     // ]c/]c-style navigation need two presses per hop (one to dismiss the
     // still-open preview, one to actually jump) -- opt-in keeps that the
@@ -4642,7 +4660,7 @@ const char *kBuiltinGit =
     "function mep.git_preview_hunk()\n"
     "  local text = mep.git_preview_hunk_text()\n"
     "  if not text then mep.notify('No hunk under cursor', 'warn') return end\n"
-    "  mep.float_preview('Hunk preview  (base: ' .. mep.git_gutter_base .. ')', text)\n"
+    "  mep.float_preview('Hunk preview  (base: ' .. mep.git_gutter_base_label() .. ')', text)\n"
     "end\n"
     // Reset/stage both moved entirely to C++ -- Editor::GitResetHunk/
     // GitStageHunk (editor.cpp). GitStageHunk needs no Lua wrapper at all
@@ -4739,6 +4757,10 @@ const char *kBuiltinGit =
     "      mep.notify(label .. ' failed: ' .. mep_git_fail_text(code, out, err), 'error')\n"
     "    end\n"
     "    if after then after(code, out, err) end\n"
+    // A commit/checkout/stash moves HEAD under buffer text that never
+    // changed, so nothing in a buffer's own state says its cached diff
+    // is stale -- say so explicitly here.
+    "    mep.git_gutter_invalidate()\n"
     "    mep.git_refresh()\n"
     "  end)\n"
     "end\n"
@@ -5410,15 +5432,40 @@ const char *kBuiltinGit =
     // line verbatim (Editor::ExecuteCommandLine's lua_commands_ lookup),
     // so one registration covers both forms instead of needing a
     // separate :MepGitGutterBase command.
+    // `:MepGitGutter on|off|toggle` -- turning it off clears the marks
+    // immediately rather than leaving the last computed set frozen on
+    // screen until something else redraws them.
+    "function mep.git_gutter_enable(on, quiet)\n"
+    "  mep.git_gutter_auto = on and true or false\n"
+    "  if mep.git_gutter_auto then\n"
+    "    mep.git_gutter_invalidate()\n"
+    "  else\n"
+    "    mep.git_gutter_clear()\n"
+    "  end\n"
+    // Always says which way it went: on a file whose hunks happen to be
+    // empty (everything committed, or everything staged with the index
+    // as the base) a toggle has no visible effect at all, and silence
+    // there is indistinguishable from an unbound key.
+    "  if not quiet then\n"
+    "    mep.notify('Git gutter ' .. (mep.git_gutter_auto and 'on' or 'off') ..\n"
+    "      (mep.git_gutter_auto and (' (base: ' .. mep.git_gutter_base_label() .. ')') or ''))\n"
+    "  end\n"
+    "end\n"
     "function mep.git_gutter_command(args)\n"
     "  local sub, rest = (args or ''):match('^(%S*)%s*(.*)$')\n"
-    "  if sub == 'base' then\n"
+    "  if sub == 'on' or sub == 'off' or sub == 'toggle' then\n"
+    "    local on = (sub == 'on') or (sub == 'toggle' and not mep.git_gutter_auto)\n"
+    "    mep.git_gutter_enable(on)\n"
+    "  elseif sub == 'base' then\n"
     "    local ref = rest:match('^%s*(.-)%s*$')\n"
     "    if ref == '' then\n"
-    "      mep.notify('Git diff base: ' .. mep.git_gutter_base)\n"
+    "      mep.notify('Git diff base: ' .. mep.git_gutter_base_label())\n"
     "    else\n"
-    "      mep.git_gutter_base = ref\n"
-    "      mep.notify('Git diff base set to ' .. ref)\n"
+    // 'index' is the spoken name for the empty ref -- there's no way to
+    // type the empty string as an argument.
+    "      mep.git_gutter_base = (ref == 'index') and '' or ref\n"
+    "      mep.notify('Git diff base set to ' .. mep.git_gutter_base_label())\n"
+    "      mep.git_gutter_invalidate()\n"
     "      mep.git_gutter_refresh()\n"
     "    end\n"
     "  else\n"
@@ -5427,11 +5474,44 @@ const char *kBuiltinGit =
     "end\n"
     "mep.command('MepGitGutter', mep.git_gutter_command)\n"
     "mep.command('MepGitPreviewHunk', mep.git_preview_hunk)\n"
-    // Opt-in auto-recompute; :lua mep.git_gutter_auto = true to enable.
-    // A longer default debounce interval than colorize/todo_mark since
-    // this spawns a git subprocess per recompute.
-    "mep.git_gutter_auto = false\n"
-    "mep.on_buffer_changed(function() if mep.git_gutter_auto then mep.git_gutter_refresh() end end, 0.6)\n"
+    // On by default, unlike every other mep.*_auto flag in this file: a
+    // git gutter you have to switch on is a git gutter nobody sees, and
+    // the always-reserved sign column means turning it on costs no
+    // layout shift either. The cost it *does* have -- a `git show` per
+    // recompute -- is what mep.git_gutter_tick's staleness check and
+    // debounce are for (Editor::GitGutterTick): in the steady state, a
+    // frame where nothing changed spawns nothing at all. Driven off the
+    // frame hook rather than mep.on_buffer_changed so switching buffers,
+    // opening a file, or moving the diff base refreshes too -- an
+    // edits-only hook left the gutter showing the previous buffer's
+    // hunks on every switch.
+    "mep.git_gutter_auto = true\n"
+    // vim-gitgutter's `highlight_lines`: tint the whole line as well as
+    // marking the sign column. Off by default -- see
+    // GitGutterRefreshBuffer's own comment (editor.cpp).
+    "mep.git_gutter_line_hl = false\n"
+    "mep.on_frame(function()\n"
+    "  if mep.git_gutter_auto then mep.git_gutter_tick(mep.git_gutter_base, mep.git_gutter_line_hl) end\n"
+    "end)\n"
+    // ]c / [c: vim's own diff-mode hunk motions, which vim-gitgutter and
+    // gitsigns both adopt. ]g / [g is the same jump under a mnemonic
+    // letter -- `c` reads as "change" only if you already know vim's
+    // diff mode, and `g` is the letter every other git binding here is
+    // already under. Both are bound; neither shadows anything (nothing
+    // else registers a ]/[ suffix of `c` or `g`).
+    // mep.map_bracket_next/prev is the general "key after a leading ]/["
+    // registry (Editor::RegisterBracketNextMapping).
+    "mep.map_bracket_next('c', mep.git_next_hunk)\n"
+    "mep.map_bracket_prev('c', mep.git_prev_hunk)\n"
+    "mep.map_bracket_next('g', mep.git_next_hunk)\n"
+    "mep.map_bracket_prev('g', mep.git_prev_hunk)\n"
+    // Hunk actions under the existing <leader>g (git) group -- the four
+    // letters still free there. gitsigns puts these on <leader>h, which
+    // is already mep's help group.
+    "mep.leader_map('ga', 'Git stage hunk at cursor', mep.git_stage_hunk)\n"
+    "mep.leader_map('gr', 'Git reset hunk at cursor', mep.git_reset_hunk)\n"
+    "mep.leader_map('gv', 'Git preview hunk at cursor', mep.git_preview_hunk)\n"
+    "mep.leader_map('gd', 'Toggle git gutter', function() mep.git_gutter_enable(not mep.git_gutter_auto) end)\n"
     // WORKSPACES_PLAN.md Phase 7: opt-in `+` marker per workspace label
     // (mep.opt.workspace_git_dirty = true) from a debounced `git status
     // --porcelain` per workspace -- every 5s, never per frame, and only
@@ -36204,6 +36284,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // sign column" this comment used to call a documented follow-up).
         std::string sign;
         std::string sign_hl;
+        std::string sign_shape;
         bool sign_badge = false;
         int sign_priority = -1;
         auto row_decos_it = decos_by_row.find(row);
@@ -36219,8 +36300,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                   line_height, tint);
                 }
             }
-            if (!d.sign.empty() && d.priority > sign_priority) {
+            if ((!d.sign.empty() || !d.sign_shape.empty()) && d.priority > sign_priority) {
                 sign = d.sign;
+                sign_shape = d.sign_shape;
                 sign_hl = d.sign_hl;
                 sign_badge = d.sign_badge;
                 sign_priority = d.priority;
@@ -36549,7 +36631,34 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 }
             }
         }
-        if (!sign.empty()) {
+        if (!sign_shape.empty()) {
+            // Geometric sign marks (Decoration::sign_shape) -- the git
+            // gutter's hunk stripes. Drawn as rectangles rather than as
+            // box-drawing glyphs because none of the UI fonts cover that
+            // block; see sign_shape's own comment in editor.h. The
+            // vertical bar is inset from the sign column's left edge so
+            // it reads as a margin rule rather than as part of the line
+            // numbers next to it; the deletion stripes hug the row's top
+            // or bottom edge, pointing at the gap where the removed
+            // lines used to be.
+            const gfx::Color mark = ResolveHlGroup(sign_hl);
+            const float bar_w = std::max(2.0f, g_char_width * 0.26f);
+            const float bar_x = x + kMarginX + g_char_width * 0.22f;
+            const float stripe_w = std::max(4.0f, g_char_width * 0.80f);
+            const float stripe_h = std::max(3.0f, static_cast<float>(line_height) * 0.16f);
+            const bool bar = sign_shape == "bar" || sign_shape == "changedelete";
+            if (bar) {
+                gfx::DrawRectangle(static_cast<int>(bar_x), static_cast<int>(ly) + 1, static_cast<int>(bar_w),
+                              std::max(1, line_height - 2), mark);
+            }
+            if (sign_shape == "delete" || sign_shape == "changedelete") {
+                gfx::DrawRectangle(static_cast<int>(bar_x), static_cast<int>(ly + static_cast<float>(line_height) - stripe_h),
+                              static_cast<int>(stripe_w), static_cast<int>(stripe_h), mark);
+            } else if (sign_shape == "topdelete") {
+                gfx::DrawRectangle(static_cast<int>(bar_x), static_cast<int>(ly), static_cast<int>(stripe_w),
+                              static_cast<int>(stripe_h), mark);
+            }
+        } else if (!sign.empty()) {
             if (sign_badge) {
                 // A filled circle (sign_hl's own color) behind the sign
                 // glyph -- e.g. a diagnostic count -- centered in the

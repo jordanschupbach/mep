@@ -213,6 +213,13 @@ Structure, Todo, Tests, Notifications, AI Agent -- lit while that panel
 is open, click to open or close it) dock right. Every pane header ends
 in =| _ x= buttons: split that pane vertically, split it horizontally,
 or close its visible buffer (and the pane, once empty).
+The open-buffers picker (=<leader>bb=) previews the highlighted buffer's
+live contents (unsaved edits included) around its cursor; =Enter= shows
+it in the focused pane, =C-v= / =C-s= open it in a new vertical /
+horizontal split, =C-t= in a new tab page, =C-i= as a buffer tab of the
+focused pane, and =C-d= deletes it (confirming first if it has unsaved
+changes). =mep.buffer_open_with(id, how)= is the scriptable form. Every
+picker lists its keys along its bottom edge.
 Clicking a workspace label switches, middle-click closes it, hovering
 shows its directory and branch; clicking the project label opens the
 loaded-projects switcher. Sidebars docked on the same left/right edge
@@ -242,8 +249,8 @@ panels use; =mep.read_lines(path, max_lines)= reads a file for it,
 preferring an open buffer's unsaved text. =mep.sidebar_popout_toggle()=
 is what =mod1+m= calls.
 The git panel (=<leader>gG= docked, =<leader>gg= popped out, the tab bar's Git button, or
-=:MepGitStatus=) is one sidebar with four views on a tab strip --
-=Tab=/=Shift-Tab=, the =1=-=4= keys or a click switch them, and
+=:MepGitStatus=) is one sidebar with five views on a tab strip --
+=Tab=/=Shift-Tab=, the =1=-=5= keys or a click switch them, and
 =mod1+m= pops the panel out with a preview column beside the list:
 - *Status*: staged, changed and untracked files in their own sections
   (the preview is =git diff --cached= / =git diff= for the row, the file
@@ -252,6 +259,9 @@ The git panel (=<leader>gG= docked, =<leader>gg= popped out, the tab bar's Git b
   file), =Enter= opens the file.
 - *Log*: =git log= (latest 300), the preview is =git show= for the
   commit; =y= copies its hash, =Enter= pops the panel out.
+- *Graph*: =git log --graph --all= (latest 500), every branch's history
+  drawn as colored lanes with the refs on their commits; same preview
+  and keys as *Log*.
 - *Branches*: local and remote branches, newest commit first, with
   ahead/behind and upstream; the preview is that branch's =git log
   --oneline=. =Enter= checks one out (a remote one as a tracking
@@ -268,9 +278,9 @@ message, while =Escape= (or =:q=, or clicking away) aborts and discards
 it -- =p= pushes (offering to set the upstream when the branch has
 none), =l= pulls, =f= fetches (=--all --prune=), =R= re-reads and =?=
 lists the keys. Every action reports its result as a toast and
-refreshes the view. =<leader>gl= / =gb= / =gs= open the log, branches
-or stash view popped out, =<leader>gc= / =gp= commit / push, and
-=:MepGitLog=, =:MepGitBranches=, =:MepGitStash=, =:MepGitCommit=,
+refreshes the view. =<leader>gl= / =gL= / =gb= / =gs= open the log, graph,
+branches or stash view popped out, =<leader>gc= / =gp= commit / push, and
+=:MepGitLog=, =:MepGitGraph=, =:MepGitBranches=, =:MepGitStash=, =:MepGitCommit=,
 =:MepGitPush=, =:MepGitPull= and =:MepGitFetch= are the command forms.
 
 The Todo sidebar (=<leader>tt=, the tab bar's Todo button, or

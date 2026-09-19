@@ -914,6 +914,21 @@ int l_split_below(lua_State *L) {
     return 0;
 }
 
+// mep.tab_new(buffer_id?): opens a new tab page showing an existing
+// buffer (the current one when nil) -- `:tabnew` without a path would
+// create a throwaway empty buffer first. The Buffers picker's C-t.
+/**
+ * @brief Implements mep.tab_new(buffer_id?): opens and focuses a new tab page showing an existing buffer.
+ * @param L Lua state; optional arg 1 the buffer to show (default: the current buffer).
+ * @return Number of values pushed (0).
+ */
+int l_tab_new(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    int buffer_id = lua_isnoneornil(L, 1) ? ed->CurrentBufferId() : static_cast<int>(luaL_checkinteger(L, 1));
+    ed->TabNewWithBuffer(buffer_id);
+    return 0;
+}
+
 // mep.cmd(str): runs str as if typed after ":" and Enter pressed. General
 // escape hatch for Lua to drive any ex-command (":vsplit", ":w", ...).
 /**
@@ -4069,6 +4084,20 @@ int l_picker_close(lua_State *L) {
     return 0;
 }
 
+// mep.picker_set_hint(text): the open picker's own keys (its on_key
+// Ctrl-letters, e.g. "C-a: add current dir"), drawn in the footer ahead
+// of the standard Enter/Esc/C-n/C-p hint. Call right after picker_open --
+// every open starts with no hint.
+/**
+ * @brief Implements mep.picker_set_hint(text): sets the open picker's footer key hint.
+ * @param L Lua state; arg 1 is the hint text.
+ * @return Number of values pushed (0).
+ */
+int l_picker_set_hint(lua_State *L) {
+    GetEditor(L)->SetPickerHint(luaL_checkstring(L, 1));
+    return 0;
+}
+
 // mep.roam_graph_open(title, nodes, edges, on_select): opens the Roam
 // backlink-graph view (NVIM_PARITY_PLAN.md Phase 37's flagged "no fuzzy
 // backlink-graph visualization" gap, closed -- see Editor::OpenRoamGraph's
@@ -4403,12 +4432,20 @@ int l_current_theme(lua_State *L) {
 }
 
 // Per-pane buffer tabs + auto-layouts (Phase 14).
+// mep.pane_open(path_or_buffer_id): a string opens (or reuses) that
+// file's buffer; an integer adds that already-open buffer -- a terminal
+// or unsaved one included, which have no path to reopen by (the Buffers
+// picker's C-i).
 /**
- * @brief Implements mep.pane_open(path): opens a file as a buffer tab in the focused pane.
- * @param L Lua state; arg 1 is the file path.
+ * @brief Implements mep.pane_open(path_or_buffer_id): opens a file, or an existing buffer by id, as a buffer tab in the focused pane.
+ * @param L Lua state; arg 1 is the file path, or an integer buffer id.
  * @return Number of values pushed (0).
  */
 int l_pane_open(lua_State *L) {
+    if (lua_isinteger(L, 1)) {
+        GetEditor(L)->PaneOpenBufferIdInTab(static_cast<int>(lua_tointeger(L, 1)));
+        return 0;
+    }
     const char *path = luaL_checkstring(L, 1);
     GetEditor(L)->PaneOpenBufferInTab(path);
     return 0;
@@ -9372,6 +9409,7 @@ const luaL_Reg kMepFuncs[] = {
     {"pane_split_right", l_pane_split_right},
     {"vsplit_right", l_vsplit_right},
     {"split_below", l_split_below},
+    {"tab_new", l_tab_new},
     {"cmd", l_cmd},
     {"open", l_open},
     {"pick_pane_open", l_pick_pane_open},
@@ -9581,6 +9619,7 @@ const luaL_Reg kMepFuncs[] = {
     {"picker_set_items", l_picker_set_items},
     {"picker_set_preview", l_picker_set_preview},
     {"picker_close", l_picker_close},
+    {"picker_set_hint", l_picker_set_hint},
     {"picker_set_tabs", l_picker_set_tabs},
     {"picker_is_open", l_picker_is_open},
     {"roam_graph_open", l_roam_graph_open},

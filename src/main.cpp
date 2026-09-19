@@ -2995,11 +2995,11 @@ const char *kKeybindingsText =
     "  Alt-1 .. Alt-9                 switch to workspace by number\n"
     "  <leader>w n/w/r/d/l/h          new / list / rename / delete / next / prev workspace\n"
     "  <leader>gw                     git workspaces picker (branch, ahead/behind)\n"
-    "  <leader>gg                     git popup (Tab / 1-4: Status, Log, Branches, Stash; ? lists keys)\n"
+    "  <leader>gg                     git popup (Tab / 1-5: Status, Log, Graph, Branches, Stash; ? lists keys)\n"
     "  <leader>gG                     git sidebar (docked, or stacked with the file tree)\n"
     "  <leader>gl / gb / gs           git log / branches / stash, popped out\n"
     "  <leader>gc / gp                git commit (message in a floating pane) / push\n"
-    "  :MepGitStatus :MepGitLog :MepGitBranches :MepGitStash :MepGitCommit :MepGitPush :MepGitPull :MepGitFetch\n"
+    "  :MepGitStatus :MepGitLog :MepGitGraph :MepGitBranches :MepGitStash :MepGitCommit :MepGitPush :MepGitPull :MepGitFetch\n"
     "  :project [dir]  :projects      open/switch project / loaded-projects picker\n"
     "  :projectclose[!]  :projectnext :projectprevious\n"
     "  :wssave  :wsrestore            save / restore this project's layout\n"
@@ -4347,6 +4347,7 @@ const char *kBuiltinFileTree =
     "      mep.picker_close()\n"
     "    end\n"
     "  end, preview_project)\n"
+    "  mep.picker_set_hint('C-a: add current dir')\n"
     // on_select_change (just wired above) only fires once the highlighted
     // row actually *changes*, so the picker would otherwise open on the
     // first project with an empty preview pane until the user pressed an
@@ -4567,9 +4568,10 @@ const char *kBuiltinGit =
     "local mep_git_status_codes = {}\n"
     "local mep_git_status_preview_gen = 0\n"
     // Tabbed git panel (SidebarInstance::tabs, mep.sidebar_set_tabs):
-    // one sidebar, four views -- Status (staged / changes / untracked
+    // one sidebar, five views -- Status (staged / changes / untracked
     // sections, each row's diff as the popout preview), Log (git log,
-    // `git show` preview), Branches (local + remote, `git log` preview),
+    // `git show` preview), Graph (git log --graph --all, same preview),
+    // Branches (local + remote, `git log` preview),
     // Stash (`git stash show -p` preview). Every view is one async git
     // job re-run per refresh, generation-guarded like before, and the
     // widget-id -> row table (mep_git_rows) is what the key handler and
@@ -4584,8 +4586,8 @@ const char *kBuiltinGit =
     // commits): ZZ in Normal mode is the explicit confirm
     // (CloseFloatPane's force_write, DispatchNormalKey), running
     // `git commit -F <file> --cleanup=strip` against whatever was typed.
-    "local MEP_GIT_TABS = {'Status', 'Log', 'Branches', 'Stash'}\n"
-    "local MEP_GIT_VIEWS = {'status', 'log', 'branches', 'stash'}\n"
+    "local MEP_GIT_TABS = {'Status', 'Log', 'Graph', 'Branches', 'Stash'}\n"
+    "local MEP_GIT_VIEWS = {'status', 'log', 'graph', 'branches', 'stash'}\n"
     "local mep_git_view = 'status'\n"
     "local mep_git_rows = {}\n"
     "local mep_git_head = ''\n"
@@ -4727,6 +4729,71 @@ const char *kBuiltinGit =
     "    }, rows)\n"
     "  end)\n"
     "end\n"
+    // Graph: `git log --graph --all` with git's own lane coloring. The
+    // UI font is ASCII-only, so the graph stays git's `* | / \\ _`
+    // characters; --color=always colors each lane consistently from row
+    // to row, and mep.ansi_render turns those escapes into the row's
+    // spans (byte columns of the graph prefix, left as-is). The commit
+    // fields follow a \\x1f marker so they're uncolored and split off
+    // cleanly; rows with no marker are pure connector lines (merges/
+    // forks) and carry no mep_git_rows entry, so they preview nothing.
+    "local function mep_git_render_graph()\n"
+    "  mep_git_status_gen = mep_git_status_gen + 1\n"
+    "  local gen = mep_git_status_gen\n"
+    "  local argv = {'git', 'log', '--graph', '--all', '--color=always', '--date=short',\n"
+    "    '--format=%x1f%h%x1f%ad%x1f%an%x1f%D%x1f%s', '-n', '500'}\n"
+    "  mep_git_run(argv, function(code, out)\n"
+    "    if gen ~= mep_git_status_gen then return end\n"
+    "    local lines, spans = mep.ansi_render(table.concat(out, '\\n'))\n"
+    "    local row_spans = {}\n"
+    "    for _, s in ipairs(spans) do\n"
+    "      local t = row_spans[s.row] or {}\n"
+    "      t[#t + 1] = {col_start = s.col_start, col_end = s.col_end, hl = s.hl}\n"
+    "      row_spans[s.row] = t\n"
+    "    end\n"
+    "    local widgets, rows, commits = {}, {}, 0\n"
+    "    for i, line in ipairs(lines) do\n"
+    "      local mark = line:find('\\31', 1, true)\n"
+    "      local sp = row_spans[i] or {}\n"
+    "      local graph = mark and line:sub(1, mark - 1) or line\n"
+    "      local w = {id = 'g:' .. i, text = graph, spans = sp}\n"
+    "      if mark then\n"
+    "        local f = {}\n"
+    "        for part in (line:sub(mark + 1) .. '\\31'):gmatch('([^\\31]*)\\31') do f[#f + 1] = part end\n"
+    "        local hash, date, author, decor, subject = f[1] or '', f[2] or '', f[3] or '', f[4] or '', f[5] or ''\n"
+    "        if hash ~= '' then\n"
+    "          commits = commits + 1\n"
+    "          w.id = 'c:' .. hash\n"
+    "          rows[w.id] = {kind = 'commit', hash = hash, subject = subject}\n"
+    "          local function add(s, hl)\n"
+    "            local start = #w.text + 1\n"
+    "            w.text = w.text .. s\n"
+    "            sp[#sp + 1] = {col_start = start, col_end = #w.text + 1, hl = hl}\n"
+    "          end\n"
+    "          add(hash, 'Yellow')\n"
+    "          if decor ~= '' then\n"
+    "            w.text = w.text .. ' '\n"
+    "            add('(' .. decor .. ')', decor:find('HEAD') and 'Add' or 'Cyan')\n"
+    "          end\n"
+    "          w.text = w.text .. ' ' .. subject\n"
+    "          add('  ' .. date .. ' ' .. author, 'Comment')\n"
+    "          w.tooltip = author .. ', ' .. date\n"
+    "          w.on_click = function()\n"
+    "            if not mep.sidebar_is_popout(mep_git_status_sidebar_id) then mep.sidebar_popout_toggle(mep_git_status_sidebar_id) end\n"
+    "          end\n"
+    "        end\n"
+    "      end\n"
+    "      if w.text ~= '' then widgets[#widgets + 1] = w end\n"
+    "    end\n"
+    "    local title = 'Graph, all branches' .. ((commits >= 500) and ' (latest 500)' or (' (' .. commits .. ')'))\n"
+    "    if code ~= 0 then widgets = mep_git_placeholder('graph-none', '(git log --graph failed)') end\n"
+    "    if #widgets == 0 then widgets = mep_git_placeholder('graph-none', '(no commits yet)') end\n"
+    "    mep_git_set({\n"
+    "      {id = 'head', title = mep_git_head_title(), collapsed = false, widgets = {}},\n"
+    "      {id = 'graph', title = title, collapsed = false, widgets = widgets},\n"
+    "    }, rows)\n"
+    "  end)\n"
+    "end\n"
     "local function mep_git_render_branches()\n"
     "  mep_git_status_gen = mep_git_status_gen + 1\n"
     "  local gen = mep_git_status_gen\n"
@@ -4794,6 +4861,7 @@ const char *kBuiltinGit =
     "function mep.git_refresh()\n"
     "  mep_git_ensure()\n"
     "  if mep_git_view == 'log' then mep_git_render_log()\n"
+    "  elseif mep_git_view == 'graph' then mep_git_render_graph()\n"
     "  elseif mep_git_view == 'branches' then mep_git_render_branches()\n"
     "  elseif mep_git_view == 'stash' then mep_git_render_stash()\n"
     "  else mep.git_status_refresh() end\n"
@@ -4906,10 +4974,11 @@ const char *kBuiltinGit =
     "  mep_git_action({'git', 'stash', pop and 'pop' or 'apply', ref}, (pop and 'Pop ' or 'Apply ') .. ref)\n"
     "end\n"
     "local MEP_GIT_HELP = {\n"
-    "  status = 'Git status: Enter=open  s/u=stage/unstage  S/U=all  d=discard  c=commit  C=amend  p=push  l=pull  f=fetch  R=refresh  Tab/1-4=view  mod1+m=popout',\n"
-    "  log = 'Git log: Enter=show in popout  y=copy hash  c=commit  p=push  l=pull  f=fetch  R=refresh  Tab/1-4=view',\n"
-    "  branches = 'Git branches: Enter=checkout  n=new branch  x/D=delete  m=merge into current  r=rebase current onto  f=fetch  p=push  l=pull  R=refresh  Tab/1-4=view',\n"
-    "  stash = 'Git stash: Enter/a=apply  o=pop  x=drop  n=stash changes  R=refresh  Tab/1-4=view',\n"
+    "  status = 'Git status: Enter=open  s/u=stage/unstage  S/U=all  d=discard  c=commit  C=amend  p=push  l=pull  f=fetch  R=refresh  Tab/1-5=view  mod1+m=popout',\n"
+    "  log = 'Git log: Enter=show in popout  y=copy hash  c=commit  p=push  l=pull  f=fetch  R=refresh  Tab/1-5=view',\n"
+    "  graph = 'Git graph (all branches): Enter=show in popout  y=copy hash  c=commit  p=push  l=pull  f=fetch  R=refresh  Tab/1-5=view',\n"
+    "  branches = 'Git branches: Enter=checkout  n=new branch  x/D=delete  m=merge into current  r=rebase current onto  f=fetch  p=push  l=pull  R=refresh  Tab/1-5=view',\n"
+    "  stash = 'Git stash: Enter/a=apply  o=pop  x=drop  n=stash changes  R=refresh  Tab/1-5=view',\n"
     "}\n"
     "function mep.git_status_on_key(k)\n"
     "  local id = mep_git_status_sidebar_id\n"
@@ -4945,7 +5014,7 @@ const char *kBuiltinGit =
     "        end)\n"
     "      end\n"
     "    end\n"
-    "  elseif mep_git_view == 'log' then\n"
+    "  elseif mep_git_view == 'log' or mep_git_view == 'graph' then\n"
     "    if row and k == 'y' then mep.clipboard_set(row.hash) mep.notify('Copied ' .. row.hash) end\n"
     "  elseif mep_git_view == 'branches' then\n"
     "    if k == 'n' then\n"
@@ -5077,6 +5146,7 @@ const char *kBuiltinGit =
     "mep.leader_map('gt', 'Git status (paneable, stacks with the file tree)', mep.git_open_pane)\n"
     "mep.command('MepGitStatus', function() mep.git_status_toggle() end)\n"
     "mep.command('MepGitLog', function() mep.git_open_popup('log') end)\n"
+    "mep.command('MepGitGraph', function() mep.git_open_popup('graph') end)\n"
     "mep.command('MepGitBranches', function() mep.git_open_popup('branches') end)\n"
     "mep.command('MepGitStash', function() mep.git_open_popup('stash') end)\n"
     "mep.command('MepGitCommit', function() mep.git_commit(false) end)\n"
@@ -5121,6 +5191,7 @@ const char *kBuiltinGit =
     "mep.leader_map('gg', 'Toggle git popup', mep.git_popup_toggle)\n"
     "mep.leader_map('gG', 'Toggle git sidebar', mep.git_status_toggle)\n"
     "mep.leader_map('gl', 'Git log (popout)', function() mep.git_open_popup('log') end)\n"
+    "mep.leader_map('gL', 'Git graph (popout)', function() mep.git_open_popup('graph') end)\n"
     "mep.leader_map('gb', 'Git branches (popout)', function() mep.git_open_popup('branches') end)\n"
     "mep.leader_map('gs', 'Git stash (popout)', function() mep.git_open_popup('stash') end)\n"
     "mep.leader_map('gc', 'Git commit', function() mep.git_commit(false) end)\n"
@@ -20032,7 +20103,7 @@ const char *kBuiltinAi =
     "  local current_query = ''\n"
     "  local items = mep_ai_context_filtered_items(current_query)\n"
     "  local highlighted = items[1] and items[1].data or nil\n"
-    "  mep.picker_open('AI context (C-y toggle, C-a add, C-d delete)', items,\n"
+    "  mep.picker_open('AI context', items,\n"
     "    function(data)\n"
     // Editor::HandlePickerInput's escape branch tears the picker down
     // completely -- mode_ restored, callbacks unreffed -- *before* ever
@@ -20107,6 +20178,7 @@ const char *kBuiltinAi =
     "      highlighted = data\n"
     "    end,\n"
     "    true)\n"
+    "  mep.picker_set_hint('C-y: toggle   C-a: add   C-d: delete')\n"
     "end\n"
     "mep.command('MepAiContextPicker', mep.ai_context_picker)\n"
     "mep.leader_map('ai', 'AI: context picker', mep.ai_context_picker)\n"
@@ -22889,7 +22961,7 @@ const char *kBuiltinRunners =
     "    for i, t in ipairs(S.tabs) do if t == kind then S.tab = i end end\n"
     "  end\n"
     "  if not kind and not R[S.tabs[1]] then S.tab = #S.tabs - 1 end\n"
-    "  local title = 'Run  ' .. rn_rel(S.root) .. '    Enter run | C-e edit first | C-o open source | C-r reload'\n"
+    "  local title = 'Run  ' .. rn_rel(S.root)\n"
     "  function S.on_select(data)\n"
     "    if rn_session == S then rn_session = nil end\n"
     "    local entry = data and S.entries[data]\n"
@@ -22950,6 +23022,7 @@ const char *kBuiltinRunners =
     "    end\n"
     "  end\n"
     "  mep.picker_open(title, {}, S.on_select, nil, S.on_key, function(data) if rn_session == S then rn_preview(S, data) end end)\n"
+    "  mep.picker_set_hint('Enter: run   C-e: edit first   C-o: open source   C-r: reload   C-b: next build dir')\n"
     "  rn_load_tab(S)\n"
     "end\n"
     // mep.runner_key(key): scriptable counterpart of the open runner picker's keys ('<Tab>',
@@ -23200,6 +23273,7 @@ const char *kBuiltinPickerSources =
     "        mep.picker_preview_file(item, 200)\n"
     "      end\n"
     "    end)\n"
+    "    mep.picker_set_hint('C-i: open as tab   C-e: open as text   C-v: open rendered')\n"
     // on_select_change only fires on an actual highlight *change* -- prime
     // it with the first result so Ctrl-I (and the preview column) work
     // immediately, without requiring an arrow-key press first.\n"
@@ -23425,10 +23499,97 @@ const char *kBuiltinPickerSources =
     "mep.command('MepBufferSearch', mep.buffer_search)\n"
     "mep.leader_map('/', 'search', mep.buffer_search, 0xf002, 'Yellow')\n"
     "mep.map('n', '/', mep.buffer_search, {desc = 'Buffer fuzzy find (picker)'})\n"
+    // <leader>bb: every open buffer, previewing the highlighted one's
+    // live contents (unsaved edits and terminals included -- read from
+    // the buffer, not the file on disk) around its cursor, Treesitter-
+    // colored like mep.buffer_search's preview. Only a window of lines is
+    // parsed per preview so a 30k-line buffer stays instant. Enter shows
+    // it in the focused pane; C-v/C-s open it in a new vertical/
+    // horizontal split, C-t in a new tab page, C-i as a buffer tab of the
+    // focused pane, and C-d deletes it (confirming first when modified).
+    // The opened buffer lands on the row a pane in this tab already has
+    // it at, else line 1 -- :split/:vsplit copy the old pane's cursor and
+    // buffer_switch keeps it, which would otherwise drop the cursor at
+    // the previous buffer's row.\n"
+    "local kBuffersPreviewBefore, kBuffersPreviewLines = 15, 300\n"
+    // mep.buffer_open_with(id, how): the picker's open actions, scriptable --
+    // how = 'vsplit' | 'split' | 'tab' (new tab page) | 'pane_tab' (buffer
+    // tab of the focused pane) | anything else (show it in the focused pane).\n"
+    "function mep.buffer_open_with(id, how)\n"
+    "  local row = mep.buffer_cursor_row(id) or 1\n"
+    "  if how == 'vsplit' then mep.cmd('vsplit') mep.buffer_switch(id)\n"
+    "  elseif how == 'split' then mep.cmd('split') mep.buffer_switch(id)\n"
+    "  elseif how == 'tab' then mep.tab_new(id)\n"
+    "  elseif how == 'pane_tab' then mep.pane_open(id)\n"
+    "  else mep.buffer_switch(id) end\n"
+    "  mep.set_cursor(row, 1)\n"
+    "end\n"
     "function mep.buffers()\n"
-    "  mep.picker_open('Buffers', mep.buffer_list(), function(item)\n"
-    "    if item then mep.buffer_switch(tonumber(item)) end\n"
+    "  local highlighted = nil\n"
+    "  local function preview(id)\n"
+    "    local lines = id and mep.buffer_get_lines(id)\n"
+    "    if not lines then mep.picker_set_preview('') return end\n"
+    "    local n = #lines\n"
+    "    if n == 0 or (n == 1 and lines[1] == '') then mep.picker_set_preview('(empty buffer)') return end\n"
+    "    local cur = mep.buffer_cursor_row(id)\n"
+    "    local from = math.max(1, (cur or 1) - kBuffersPreviewBefore)\n"
+    "    local to = math.min(n, from + kBuffersPreviewLines - 1)\n"
+    "    local slice = {}\n"
+    "    for r = from, to do slice[#slice + 1] = lines[r] end\n"
+    "    local fname = mep.buffer_filename(id)\n"
+    "    local ft = fname ~= '' and mep_lsp_filetype(fname) or nil\n"
+    "    local captures = ft and mep.ts_captures(ft, table.concat(slice, '\\n'))\n"
+    "    local width = #tostring(to)\n"
+    "    local out, spans = {}, {}\n"
+    "    for i, line in ipairs(slice) do\n"
+    "      local r = from + i - 1\n"
+    "      out[i] = ((r == cur) and '> ' or '  ') .. string.format('%' .. width .. 'd  ', r) .. line\n"
+    "      spans[#spans + 1] = {row = i, col_start = 1, col_end = width + 5, hl = (r == cur) and 'Yellow' or 'Comment'}\n"
+    "    end\n"
+    "    local shift = width + 4\n"
+    "    for _, c in ipairs(captures or {}) do\n"
+    "      local hl = mep_buffer_search_resolve_hl(c.capture)\n"
+    "      if hl and c.row >= 1 and c.row <= #slice then\n"
+    "        spans[#spans + 1] = {row = c.row, col_start = c.col_start + shift, col_end = c.col_end + shift, hl = hl}\n"
+    "      end\n"
+    "    end\n"
+    "    mep.picker_set_preview(table.concat(out, '\\n'), spans)\n"
+    "  end\n"
+    "  local items = mep.buffer_list()\n"
+    "  local function reopen_items()\n"
+    "    items = mep.buffer_list()\n"
+    "    mep.picker_set_items(items)\n"
+    "    highlighted = items[1] and items[1].data or nil\n"
+    "    preview(highlighted and tonumber(highlighted))\n"
+    "  end\n"
+    "  local actions = {v = 'vsplit', s = 'split', t = 'tab', i = 'pane_tab'}\n"
+    "  mep.picker_open('Buffers', items, function(item)\n"
+    "    if item then mep.buffer_open_with(tonumber(item), 'switch') end\n"
+    "  end, nil, function(key)\n"
+    "    local id = highlighted and tonumber(highlighted)\n"
+    "    if not id then return end\n"
+    "    if actions[key] then\n"
+    "      mep.picker_close()\n"
+    "      mep.buffer_open_with(id, actions[key])\n"
+    "    elseif key == 'd' then\n"
+    "      if mep.buffer_modified(id) then\n"
+    "        mep.picker_close()\n"
+    "        mep.ui_confirm('Buffer has unsaved changes. Delete it anyway?', false, function(yes)\n"
+    "          if yes then mep.buffer_delete(id, true) end\n"
+    "          mep.buffers()\n"
+    "        end)\n"
+    "      else\n"
+    "        mep.buffer_delete(id, false)\n"
+    "        reopen_items()\n"
+    "      end\n"
+    "    end\n"
+    "  end, function(item)\n"
+    "    highlighted = item\n"
+    "    preview(item and tonumber(item))\n"
     "  end)\n"
+    "  mep.picker_set_hint('C-v: vsplit   C-s: split   C-t: new tab   C-i: pane tab   C-d: delete')\n"
+    "  highlighted = items[1] and items[1].data or nil\n"
+    "  preview(highlighted and tonumber(highlighted))\n"
     "end\n"
     "mep.leader_map('bb', 'Buffers', mep.buffers)\n"
     // <leader>bs: the session's scratch buffer (:MepScratch -- reuses the
@@ -24748,6 +24909,34 @@ void DrawPickerOverlay() {
     int box_h = std::max(300, static_cast<int>(static_cast<float>(gfx::GetScreenHeight()) * 0.8f));
     FloatFrame f = DrawFloatFrame(box_w, box_h, g_editor.PickerTitle());
 
+    // Key hint footer, bottom-right, same placement/color as the sidebar
+    // popout's: the picker's own keys (mep.picker_set_hint) ahead of the
+    // standard ones every picker shares, on one line when it fits and the
+    // picker's own on a line above otherwise. The list and preview stop
+    // at content_bottom so neither runs under it.
+    const float hint_size = MenuFontSize();
+    std::vector<std::string> hint_lines;
+    {
+        std::string standard = "Enter: select   Esc: close   C-n/C-p: move";
+        if (has_preview) standard += "   mod1+j/k: scroll preview";
+        const std::string &own = g_editor.PickerHint();
+        const std::string joined = own.empty() ? standard : own + "   " + standard;
+        if (own.empty() || gfx::MeasureTextEx(g_font, joined.c_str(), hint_size, 0).x <= static_cast<float>(f.box_w - 28)) {
+            hint_lines.push_back(joined);
+        } else {
+            hint_lines.push_back(own);
+            hint_lines.push_back(standard);
+        }
+    }
+    const int hint_line_h = static_cast<int>(hint_size) + 4;
+    const int content_bottom = f.box_y + f.box_h - static_cast<int>(hint_lines.size()) * hint_line_h - 12;
+    for (size_t i = 0; i < hint_lines.size(); i++) {
+        const float hw = gfx::MeasureTextEx(g_font, hint_lines[i].c_str(), hint_size, 0).x;
+        const float hy = static_cast<float>(content_bottom + 4 + static_cast<int>(i) * hint_line_h);
+        gfx::DrawTextEx(g_font, hint_lines[i].c_str(), gfx::Vector2{static_cast<float>(f.box_x + f.box_w) - hw - 14, hy},
+                        hint_size, 0, ResolveHlGroup("Comment"));
+    }
+
     // Tab strip (mep.picker_set_tabs): one row above the prompt, the active
     // tab on the selection highlight; everything below shifts down a row.
     const std::vector<std::string> &tabs = g_editor.PickerTabs();
@@ -24787,9 +24976,9 @@ void DrawPickerOverlay() {
 
     float list_y = f.content_y + g_font_size + 14;
     int line_h = static_cast<int>(g_font_size) + 4;
-    int max_rows = std::max(1, static_cast<int>((static_cast<float>(f.box_y + f.box_h) - list_y) / static_cast<float>(line_h)));
+    int max_rows = std::max(1, static_cast<int>((static_cast<float>(content_bottom) - list_y) / static_cast<float>(line_h)));
     int start = std::max(0, selected - max_rows + 1);
-    gfx::BeginScissorMode(f.box_x, static_cast<int>(list_y) - 2, list_w, f.box_y + f.box_h - static_cast<int>(list_y));
+    gfx::BeginScissorMode(f.box_x, static_cast<int>(list_y) - 2, list_w, content_bottom - static_cast<int>(list_y));
     for (int i = start; i < static_cast<int>(results.size()) && i < start + max_rows; i++) {
         float ry = list_y + static_cast<float>((i - start) * line_h);
         if (i == selected) {
@@ -24809,7 +24998,7 @@ void DrawPickerOverlay() {
 
     if (has_preview) {
         int div_x = f.box_x + list_w + 6;
-        gfx::DrawLine(div_x, static_cast<int>(list_y) - 4, div_x, f.box_y + f.box_h - 6, ResolveHlGroup("PickerBorder"));
+        gfx::DrawLine(div_x, static_cast<int>(list_y) - 4, div_x, content_bottom - 6, ResolveHlGroup("PickerBorder"));
         // Mirrors mep.nvim's own preview window, which carries a " Preview
         // " title on its border -- this box has no separate border to
         // caption, so the label sits at the same row as the prompt line.
@@ -24817,7 +25006,7 @@ void DrawPickerOverlay() {
                    ResolveHlGroup("Comment"));
         float px = static_cast<float>(div_x + 10);
         int preview_w = (f.box_x + f.box_w) - div_x - 20;
-        gfx::BeginScissorMode(div_x, static_cast<int>(list_y) - 2, preview_w + 20, f.box_y + f.box_h - static_cast<int>(list_y));
+        gfx::BeginScissorMode(div_x, static_cast<int>(list_y) - 2, preview_w + 20, content_bottom - static_cast<int>(list_y));
         if (IsSwatchPreviewPicker()) {
             // One row per named palette role: a filled swatch of that
             // role's color, its hex value, and the role name -- looked up
@@ -24854,7 +25043,7 @@ void DrawPickerOverlay() {
         } else {
             int max_chars = std::max(10, static_cast<int>(static_cast<float>(preview_w) / g_char_width));
             int row = 0;
-            int max_preview_rows = static_cast<int>((static_cast<float>(f.box_y + f.box_h) - list_y) / static_cast<float>(line_h));
+            int max_preview_rows = static_cast<int>((static_cast<float>(content_bottom) - list_y) / static_cast<float>(line_h));
             // mod1+j/k (Editor::HandleMod1Shortcuts' own Mode::Picker special
             // case) scrolls by skipping raw lines here -- PickerPreviewScroll()
             // counts the same raw lines SplitLines() returns, not the wrapped

@@ -12433,10 +12433,22 @@ void Editor::EnsureBufferTabSeeded(Pane &p) const {
 void Editor::PaneOpenBufferInTab(const std::string &path) {
     int buffer_id = FindOrCreateBuffer(path, nullptr);
     if (buffer_id < 0) return;
+    PaneOpenBufferIdInTab(buffer_id);
+}
+
+void Editor::PaneOpenBufferIdInTab(int buffer_id) {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
     Pane &p = CurPane();
     EnsureBufferTabSeeded(p);
-    p.buffer_tabs.insert(p.buffer_tabs.begin() + p.buffer_tab_index + 1, buffer_id);
-    p.buffer_tab_index++;
+    // Already one of this pane's tabs: switch to it rather than add a
+    // duplicate tab for the same buffer.
+    auto existing = std::find(p.buffer_tabs.begin(), p.buffer_tabs.end(), buffer_id);
+    if (existing != p.buffer_tabs.end()) {
+        p.buffer_tab_index = static_cast<int>(existing - p.buffer_tabs.begin());
+    } else {
+        p.buffer_tabs.insert(p.buffer_tabs.begin() + p.buffer_tab_index + 1, buffer_id);
+        p.buffer_tab_index++;
+    }
     p.buffer_id = buffer_id;
     ClampCursor();
     SyncModeToActivePaneBuffer();
@@ -12738,6 +12750,11 @@ void Editor::ApplyLayout(const std::string &kind) {
 void Editor::TabNew(const std::string &file_arg) {
     int buffer_id = file_arg.empty() ? CreateEmptyBuffer() : FindOrCreateBuffer(file_arg);
     if (buffer_id < 0) return;
+    TabNewWithBuffer(buffer_id);
+}
+
+void Editor::TabNewWithBuffer(int buffer_id) {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
 
     Tab tab;
     tab.root = std::make_unique<SplitNode>();
@@ -14456,9 +14473,12 @@ bool Editor::HandleMod1Shortcuts() {
     // open, that pane-nav mapping would just blur focus behind the picker
     // overlay to no visible effect -- so intercept it here and scroll the
     // preview instead, same reasoning as the Sidebar+D case above.
+    // Held keys auto-repeat (IsKeyPressedRepeat), like j/k anywhere else:
+    // a long preview shouldn't take one mod1+j tap per line.
+    auto scroll_key = [](gfx::Key key) { return gfx::IsKeyPressed(key) || gfx::IsKeyPressedRepeat(key); };
     if (mode_ == Mode::Picker && !extra_ctrl && !extra_shift && !PickerPreview().empty() &&
-        (gfx::IsKeyPressed(gfx::Key::J) || gfx::IsKeyPressed(gfx::Key::K))) {
-        ScrollPickerPreview(gfx::IsKeyPressed(gfx::Key::J) ? 1 : -1);
+        (scroll_key(gfx::Key::J) || scroll_key(gfx::Key::K))) {
+        ScrollPickerPreview(scroll_key(gfx::Key::J) ? 1 : -1);
         while (gfx::GetCharPressed() > 0) {
         }
         return true;
@@ -14472,8 +14492,8 @@ bool Editor::HandleMod1Shortcuts() {
     // different sidebar, simply ends the popout -- see
     // RefreshSidebarPopoutPreview).
     if (SidebarPopoutActive() && !extra_ctrl && !extra_shift && !SidebarPopoutPreview().empty() &&
-        (gfx::IsKeyPressed(gfx::Key::J) || gfx::IsKeyPressed(gfx::Key::K))) {
-        ScrollSidebarPopoutPreview(gfx::IsKeyPressed(gfx::Key::J) ? 1 : -1);
+        (scroll_key(gfx::Key::J) || scroll_key(gfx::Key::K))) {
+        ScrollSidebarPopoutPreview(scroll_key(gfx::Key::J) ? 1 : -1);
         while (gfx::GetCharPressed() > 0) {
         }
         return true;
@@ -18981,6 +19001,7 @@ void Editor::OpenPicker(const std::string &title, std::vector<PickerItem> items,
     overlay_previous_mode_ = mode_;
     picker_open_ = true;
     picker_title_ = title;
+    picker_hint_.clear();
     picker_query_.clear();
     picker_items_ = std::move(items);
     picker_items_generation_++;

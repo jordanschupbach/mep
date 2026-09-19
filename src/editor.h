@@ -7757,6 +7757,16 @@ public:
      */
     const std::string &PickerTitle() const { return picker_title_; }
     /**
+     * @brief Returns the open picker's own key hint (mep.picker_set_hint), shown in its footer.
+     * @return The hint text; empty if the picker set none.
+     */
+    const std::string &PickerHint() const { return picker_hint_; }
+    /**
+     * @brief Sets the open picker's own key hint, drawn in its footer ahead of the standard keys.
+     * @param hint The hint text, e.g. "C-a: add current dir"; cleared by the next OpenPicker.
+     */
+    void SetPickerHint(const std::string &hint) { picker_hint_ = hint; }
+    /**
      * @brief Returns the open picker's current query text.
      * @return The picker query.
      */
@@ -8097,6 +8107,11 @@ public:
     // Per-pane buffer tabs: opens `path` as a new tab within the *current*
     // pane (find-or-create the buffer, insert after the current tab).
     void PaneOpenBufferInTab(const std::string &path);
+    /**
+     * @brief Adds an already-open buffer as a new buffer tab in the focused pane, right after the active tab, and switches to it.
+     * @param buffer_id The buffer to show; out-of-range ids are ignored.
+     */
+    void PaneOpenBufferIdInTab(int buffer_id);
     void PaneNextBufferTab();
     void PanePrevBufferTab();
     // Click-to-switch (same reasoning as GoToTab): jumps directly to buffer
@@ -8385,6 +8400,11 @@ public:
     // buttons (and HandleTabShortcuts' Ctrl-T) call these directly, unlike
     // TabNext/TabPrevious which only ever run through ex-commands.
     void TabNew(const std::string &file_arg);
+    /**
+     * @brief Opens a new tab page (right after the active one) whose single pane shows an existing buffer, and focuses it.
+     * @param buffer_id The buffer to show; out-of-range ids are ignored.
+     */
+    void TabNewWithBuffer(int buffer_id);
     void TabDelete();
 
     // --- Hover tooltip (NVIM_PARITY_PLAN.md Phase 3 gap, closed) ---
@@ -9796,6 +9816,7 @@ private:
 
     bool picker_open_ = false;
     std::string picker_title_;
+    std::string picker_hint_;
     std::string picker_query_;
     std::vector<PickerItem> picker_items_;
     // PickerFilteredResults() cache: valid while picker_items_generation_

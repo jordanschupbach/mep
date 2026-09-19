@@ -11,3 +11,4 @@ tmp_assets/
 .cache/
 *.pdf
 README.html
+./tmp

@@ -2796,6 +2796,32 @@ int l_buffer_set_lines(lua_State *L) {
     return 0;
 }
 
+// mep.buffer_get_lines(buffer_id) -> array of a specific (possibly
+// background) buffer's lines, or nil for an out-of-range id --
+// mep.buffer_set_lines' read-side counterpart. kBuiltinFileTree's oil-style
+// directory buffers are the first caller: their :w hook can fire for a
+// buffer that isn't the active pane's (:wa), so mep.get_line won't do.
+/**
+ * @brief Implements mep.buffer_get_lines(buffer_id): returns a buffer's lines.
+ * @param L Lua state; arg 1 is the buffer id.
+ * @return Number of values pushed (1: the array of lines, or nil).
+ */
+int l_buffer_get_lines(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    Editor *ed = GetEditor(L);
+    if (buffer_id < 0 || buffer_id >= ed->BufferCountForLua()) {
+        lua_pushnil(L);
+        return 1;
+    }
+    const std::vector<std::string> &lines = ed->GetBuffer(buffer_id).lines;
+    lua_createtable(L, static_cast<int>(lines.size()), 0);
+    for (size_t i = 0; i < lines.size(); i++) {
+        lua_pushlstring(L, lines[i].data(), lines[i].size());
+        lua_rawseti(L, -2, static_cast<int>(i) + 1);
+    }
+    return 1;
+}
+
 /**
  * @brief Implements mep.buffer_ns_clear(buffer_id, ns): clears every decoration under a namespace in a specific (possibly background) buffer.
  * @param L Lua state; arg 1 is the buffer id, arg 2 the namespace id.
@@ -3647,7 +3673,7 @@ int l_read_lines(lua_State *L) {
 // mep.buffer_set_on_enter(buffer_id, fn): fn() replaces whatever bare
 // Enter/KP_Enter already does in Normal mode (nothing, by default -- see
 // SetBufferOnEnter's own comment, editor.h) while `buffer_id` is the
-// active pane's buffer. Single-slot, last-registration-wins.
+// active pane's buffer. One callback per buffer; re-registering replaces it.
 /**
  * @brief Implements mep.buffer_set_on_enter(buffer_id, fn): registers a callback that replaces bare Enter/KP_Enter's default Normal-mode behavior for a buffer.
  * @param L Lua state; arg 1 is the buffer id, arg 2 the callback function.
@@ -3682,7 +3708,7 @@ int l_buffer_set_on_write(lua_State *L) {
 // mep.buffer_set_on_image_toggle(buffer_id, fn): fn() replaces the builtin
 // Shift+I (insert at first non-blank) for `buffer_id` (Editor::
 // SetBufferOnImageToggle's own comment, editor.h) while it's the active
-// pane's buffer. Single-slot, last-registration-wins.
+// pane's buffer. One callback per buffer; re-registering replaces it.
 /**
  * @brief Implements mep.buffer_set_on_image_toggle(buffer_id, fn): registers a callback that
  * replaces bare Shift+I's default Normal-mode behavior for a buffer.
@@ -3695,6 +3721,28 @@ int l_buffer_set_on_image_toggle(lua_State *L) {
     lua_pushvalue(L, 2);
     int ref = luaL_ref(L, LUA_REGISTRYINDEX);
     GetEditor(L)->SetBufferOnImageToggle(buffer_id, ref);
+    return 0;
+}
+
+// mep.buffer_set_on_key(buffer_id, fn): fn(key) is offered every plain
+// Normal-mode keypress (a one-character string) while `buffer_id` is the
+// active pane's buffer and no operator/count/prefix is pending; returning
+// true swallows the key, anything else lets the builtin command run
+// (Editor::SetBufferOnKey's own comment, editor.h). Pass nil to clear.
+/**
+ * @brief Implements mep.buffer_set_on_key(buffer_id, fn): registers a buffer-scoped Normal-mode key filter.
+ * @param L Lua state; arg 1 is the buffer id, arg 2 the callback function (or nil to clear).
+ * @return Number of values pushed (0).
+ */
+int l_buffer_set_on_key(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    int ref = 0;
+    if (!lua_isnoneornil(L, 2)) {
+        luaL_checktype(L, 2, LUA_TFUNCTION);
+        lua_pushvalue(L, 2);
+        ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    }
+    GetEditor(L)->SetBufferOnKey(buffer_id, ref);
     return 0;
 }
 
@@ -9386,6 +9434,8 @@ const luaL_Reg kMepFuncs[] = {
     {"buffer_set_on_enter", l_buffer_set_on_enter},
     {"buffer_set_on_write", l_buffer_set_on_write},
     {"buffer_set_on_image_toggle", l_buffer_set_on_image_toggle},
+    {"buffer_set_on_key", l_buffer_set_on_key},
+    {"buffer_get_lines", l_buffer_get_lines},
     {"buffer_set_filename", l_buffer_set_filename},
     {"buffer_set_hide_line_numbers", l_buffer_set_hide_line_numbers},
     {"buffer_set_wrap", l_buffer_set_wrap},
@@ -9930,6 +9980,21 @@ bool LuaEnv::CallRefWithBoolForBool(int ref, bool arg) {
     if (ref == LUA_NOREF || ref == LUA_REFNIL || ref == 0) return false;
     lua_rawgeti(L_, LUA_REGISTRYINDEX, ref);
     lua_pushboolean(L_, arg);
+    if (lua_pcall(L_, 1, 1, 0) != LUA_OK) {
+        const char *msg = lua_tostring(L_, -1);
+        if (editor_) editor_->SetStatusMessage(std::string("Lua error: ") + (msg ? msg : "?"));
+        lua_pop(L_, 1);
+        return false;
+    }
+    bool result = lua_toboolean(L_, -1);
+    lua_pop(L_, 1);
+    return result;
+}
+
+bool LuaEnv::CallRefWithStringForBool(int ref, const std::string &arg) {
+    if (ref == LUA_NOREF || ref == LUA_REFNIL || ref == 0) return false;
+    lua_rawgeti(L_, LUA_REGISTRYINDEX, ref);
+    lua_pushlstring(L_, arg.data(), arg.size());
     if (lua_pcall(L_, 1, 1, 0) != LUA_OK) {
         const char *msg = lua_tostring(L_, -1);
         if (editor_) editor_->SetStatusMessage(std::string("Lua error: ") + (msg ? msg : "?"));

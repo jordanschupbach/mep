@@ -14782,10 +14782,11 @@ void Editor::HandleNormalInput() {
         ActivateDashboardSelection();
         return;
     }
-    if ((gfx::IsKeyPressed(gfx::Key::Enter) || gfx::IsKeyPressed(gfx::Key::KpEnter)) && enter_hook_ref_ != 0 &&
-        CurPane().buffer_id == enter_hook_buffer_id_ && lua_) {
-        lua_->CallRef(enter_hook_ref_);
-        return;
+    if ((gfx::IsKeyPressed(gfx::Key::Enter) || gfx::IsKeyPressed(gfx::Key::KpEnter)) && lua_) {
+        if (int ref = BufferHookRef(enter_hook_refs_, CurPane().buffer_id)) {
+            lua_->CallRef(ref);
+            return;
+        }
     }
     // Notebook buffer: Enter/Ctrl+Enter run the cell under the cursor in
     // place, Shift+Enter runs it and moves to the next cell (creating one
@@ -14949,6 +14950,8 @@ void Editor::HandleNormalChar(int cp, bool no_pending_state) {
     if (no_pending_state && cp == static_cast<int>(leader_key_) && !whichkey_bindings_.empty()) {
         TriggerWhichKey();
         consumed = true;
+    } else if (TryBufferKeyHook(cp)) {
+        consumed = true;
     } else if (no_pending_state && cp != '"' && cp <= 127) {
         consumed = TryLuaMapping(Mode::Normal, std::string(1, static_cast<char>(cp)));
     }
@@ -14957,6 +14960,20 @@ void Editor::HandleNormalChar(int cp, bool no_pending_state) {
     } else {
         ProcessNormalKey(cp);
     }
+}
+
+bool Editor::TryBufferKeyHook(int cp) {
+    if (cp <= 0 || cp > 127 || !lua_) return false;
+    int ref = BufferHookRef(key_hook_refs_, CurPane().buffer_id);
+    if (ref == 0) return false;
+    int count = pending_count_;
+    pending_count_ = 0;
+    bool mid = IsMidNormalCommand();
+    pending_count_ = count;
+    if (mid) return false;
+    if (!lua_->CallRefWithStringForBool(ref, std::string(1, static_cast<char>(cp)))) return false;
+    pending_count_ = 0;
+    return true;
 }
 
 int Editor::TakeRawCount() {
@@ -15688,9 +15705,11 @@ bool Editor::DispatchNormalKey(int cp) {
     // the same way the Enter hook is checked ahead of its own drain loop,
     // so kBuiltinFileTree's file tree can use it without shadowing the
     // builtin 'I' (insert at first non-blank) anywhere else.
-    if (c == 'I' && image_toggle_hook_ref_ != 0 && CurPane().buffer_id == image_toggle_hook_buffer_id_ && lua_) {
-        lua_->CallRef(image_toggle_hook_ref_);
-        return true;
+    if (c == 'I' && lua_) {
+        if (int ref = BufferHookRef(image_toggle_hook_refs_, CurPane().buffer_id)) {
+            lua_->CallRef(ref);
+            return true;
+        }
     }
 
     switch (c) {
@@ -22189,7 +22208,10 @@ void Editor::RunNormalKeys(const std::string &keys) {
         if (mode_ == Mode::Insert) {
             ProcessInsertKey(c == 27 ? static_cast<int>(kReplayEscape) : static_cast<int>(c));
         } else if (mode_ == Mode::Normal) {
-            ProcessNormalKey(static_cast<int>(c));
+            // Buffer-scoped key hooks (SetBufferOnKey) see :normal's keys
+            // too, so e.g. the file tree's read-only guard can't be
+            // sidestepped with `:normal dd`.
+            if (!TryBufferKeyHook(static_cast<int>(c))) ProcessNormalKey(static_cast<int>(c));
         } else {
             break;  // Visual/Command/Search mid-:normal: not supported, bail (see header comment)
         }
@@ -24211,8 +24233,8 @@ bool Editor::SaveBuffer(Buffer &buf, const std::string &path) {
     // write regardless of `path` -- checked ahead of the "no file name"
     // guard below since it doesn't need a filename at all (kBuiltinFileTree's
     // editable tree view, the first caller, never calls buffer_set_filename).
-    if (buffer_id == write_hook_buffer_id_ && write_hook_ref_ != 0 && lua_) {
-        lua_->CallRef(write_hook_ref_);
+    if (int write_ref = lua_ ? BufferHookRef(write_hook_refs_, buffer_id) : 0) {
+        lua_->CallRef(write_ref);
         buf.modified = false;
         save_epoch_++;
         return true;
@@ -24893,7 +24915,7 @@ void Editor::DropUnusedInitialBuffer() {
     // a directory argument's on_directory_open hook (kBuiltinFileTree's
     // mep.tree_open_in_pane) runs synchronously inside the LoadFile call
     // just above this function's own call site (main()), and caches the
-    // buffer id it creates in a Lua upvalue (mep_tree_edit_buf) before this
+    // buffer id it creates in a Lua upvalue (mep_oil_by_dir) before this
     // function ever runs -- so "narrow, startup-only, nothing has cached an
     // id yet" doesn't actually hold here. Erasing shifted every later
     // buffer down by one without any way to patch that cached id, silently

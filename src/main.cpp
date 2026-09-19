@@ -3542,46 +3542,101 @@ const char *kBuiltinRightSidebarPanes =
     "  end\n"
     "end\n";
 
-// File tree sidebar (Phase 15): built entirely in Lua atop the Phase 7
-// sidebar widget (mep.sidebar_*), Phase 10 icons, and the new
-// mep.list_dir/fs_* primitives -- the generic sidebar stays feature-free,
-// tree-specific behavior (expand/collapse/create/rename/delete/refresh/
-// toggle-hidden) all lives here via sidebar_set_on_key.
+// File tree: a docked sidebar tree with single-key file operations
+// (mep.tree_*, <leader>ff) plus oil.nvim-style editable directory buffers
+// (mep.oil_open, what :e <dir> opens), both built in Lua atop
+// mep.tree_build_rows, the Phase 10 icons, the mep.fs_* primitives and
+// the buffer-scoped hooks (mep.buffer_set_on_enter/_on_write/_on_key/
+// _on_image_toggle).
 const char *kBuiltinFileTree =
+    // Two views share the row-building/rendering code below:
+    //  * the sidebar tree (mep.tree_open/<leader>ff): a real Buffer (so it
+    //    keeps a cursor, search, pane docking, Shift+I image viewer) whose text
+    //    is NOT editable -- mep.buffer_set_on_key swallows every editing key
+    //    and file operations are single keys that prompt (a=add, r=rename,
+    //    d=delete, c=copy, ...), nvim-tree style.
+    //  * oil.nvim-style directory buffers (mep.oil_open), opened by :e/mep.open
+    //    on a directory (mep.set_on_directory_open): one ordinary, fully
+    //    editable buffer per directory; editing its lines and :w applies the
+    //    renames/moves/copies/creates/deletes (mep_oil_on_write).
+    // The recursive walk -- hidden/gitignore filtering, expand-driven
+    // recursion, dirs-first-then-alpha order -- is Editor::BuildFileTreeRows/
+    // mep.tree_build_rows for both.
     "local mep_tree_root = nil\n"
     "local mep_tree_expanded = {}\n"
     "local mep_tree_show_hidden = false\n"
     "local mep_tree_ignored = {}\n"
-    "local mep_tree_edit_buf = nil\n"
-    "local mep_tree_edit_snapshot = nil\n"
-    "local mep_tree_edit_ns = nil\n"
-    // Shift+I's image viewer (see mep_tree_toggle_image_viewer below):
-    // `mep_tree_images` is the sorted list of the tree root directory's
-    // image files, `mep_tree_image_index` the 1-based position within it
-    // currently shown -- both nil/0 until the viewer's first been opened.
-    // `mep_tree_image_step` is forward-declared here (assigned further
-    // down) purely so mep_tree_image_apply_nav, defined right below it,
-    // can already close over it as an upvalue.
+    "local mep_tree_buf = nil\n"
+    "local mep_tree_rows = nil\n"
+    "local mep_tree_ns = nil\n"
+    // Oil-style directory buffers, keyed both ways: normalized absolute dir ->
+    // state and buffer id -> state. state = {root, buf, expanded, snapshot}.
+    "local mep_oil_by_dir = {}\n"
+    "local mep_oil_by_buf = {}\n"
+    // Image viewer (Shift+I) state: `mep_tree_images` is the ordered list of
+    // image paths in the directory it was opened for, `mep_tree_image_index`
+    // the 1-based position currently shown, `mep_tree_image_return_buf` the
+    // tree/oil buffer Shift+I in the viewer goes back to. `mep_tree_image_step`
+    // is forward-declared so mep_tree_image_apply_nav can close over it.
     "local mep_tree_images = nil\n"
     "local mep_tree_image_index = 0\n"
+    "local mep_tree_image_return_buf = nil\n"
     "local mep_tree_image_step\n"
     "local function mep_tree_join(dir, name)\n"
     "  if dir:sub(-1) == '/' then return dir .. name end\n"
     "  return dir .. '/' .. name\n"
     "end\n"
-    // Re-applies the "<"/">" nav header and Shift+I-back callback to
-    // whatever image buffer mep.open just pointed the pane at -- needed
-    // every time (mep_tree_toggle_image_viewer's first open, and every
-    // mep_tree_image_step) since a different path is a different buffer id
-    // and a fresh ImageSession starts with neither set (mirrors
-    // kBuiltinLanguageUiR's own merged Plot pane, main.cpp).
+    "local function mep_tree_parent(path)\n"
+    "  local p = path:match('^(.*)/[^/]+$')\n"
+    "  if p == nil then return '.' end\n"
+    "  if p == '' then return '/' end\n"
+    "  return p\n"
+    "end\n"
+    "local function mep_tree_basename(path)\n"
+    "  return path:match('([^/]+)/*$') or path\n"
+    "end\n"
+    // Absolute, '.'/'..'-free, no trailing slash -- so ':e src', ':e ./src/'
+    // and ':e /abs/path/src' all land on the same oil buffer.
+    "local function mep_tree_normalize(path)\n"
+    "  if path:sub(1, 1) ~= '/' and not path:match('^%a:') then path = mep_tree_join(mep.getcwd(), path) end\n"
+    "  local prefix = path:match('^%a:') or ''\n"
+    "  local parts = {}\n"
+    "  for part in path:sub(#prefix + 1):gmatch('[^/]+') do\n"
+    "    if part == '..' then\n"
+    "      if #parts > 0 then parts[#parts] = nil end\n"
+    "    elseif part ~= '.' then\n"
+    "      parts[#parts + 1] = part\n"
+    "    end\n"
+    "  end\n"
+    "  return prefix .. '/' .. table.concat(parts, '/')\n"
+    "end\n"
+    "local function mep_tree_exists(path)\n"
+    "  local f = io.open(path, 'r')\n"
+    "  if f then f:close() return true end\n"
+    "  local name = mep_tree_basename(path)\n"
+    "  for _, e in ipairs(mep.list_dir(mep_tree_parent(path))) do\n"
+    "    if e.name == name then return true end\n"
+    "  end\n"
+    "  return false\n"
+    "end\n"
+    // mkdir -p for everything above `path`, so a typed 'a/b/c.txt' works.
+    "local function mep_tree_mkdir_parents(path)\n"
+    "  local parent = mep_tree_parent(path)\n"
+    "  if parent == '.' or parent == '/' or mep_tree_exists(parent) then return end\n"
+    "  mep_tree_mkdir_parents(parent)\n"
+    "  mep.fs_mkdir(parent)\n"
+    "end\n"
+    // Re-applies the "<"/">" nav header and Shift+I-back callback to whatever
+    // image buffer mep.open just pointed the pane at -- needed on every open
+    // since a different path is a different buffer id and a fresh
+    // ImageSession starts with neither set.
     "local function mep_tree_image_apply_nav()\n"
     "  local buf = mep.current_buffer()\n"
+    "  local return_buf = mep_tree_image_return_buf\n"
     "  mep.image_set_nav(buf, function() mep_tree_image_step(-1) end, function() mep_tree_image_step(1) end)\n"
-    "  mep.image_set_return(buf, function() mep.buffer_switch(mep_tree_edit_buf) end)\n"
+    "  mep.image_set_return(buf, function() mep.buffer_switch(return_buf) end)\n"
     "end\n"
-    // Steps to the previous/next image in mep_tree_images, clamping at
-    // either end (a no-op past the first/last image, not a wraparound).
+    // Steps to the previous/next image, clamping at either end.
     "mep_tree_image_step = function(delta)\n"
     "  local i = mep_tree_image_index + delta\n"
     "  if not mep_tree_images or i < 1 or i > #mep_tree_images then return end\n"
@@ -3589,24 +3644,23 @@ const char *kBuiltinFileTree =
     "  mep.open(mep_tree_images[i])\n"
     "  mep_tree_image_apply_nav()\n"
     "end\n"
-    // mep.buffer_set_on_image_toggle's callback for the tree buffer (wired
-    // up in mep.tree_refresh below): opens the first image (alphabetically
-    // -- mep.list_dir already sorts that way) in the tree's root directory,
-    // scoped to that directory only (not the whole tree), matching "shows
-    // the first image in the directory" literally.
-    "local function mep_tree_toggle_image_viewer()\n"
+    // Shift+I in the tree or an oil buffer: opens the first image
+    // (alphabetically -- mep.list_dir already sorts that way) in `dir` only,
+    // not the whole expanded tree.
+    "local function mep_tree_toggle_image_viewer(dir, return_buf)\n"
     "  local images = {}\n"
-    "  for _, e in ipairs(mep.list_dir(mep_tree_root)) do\n"
+    "  for _, e in ipairs(mep.list_dir(dir)) do\n"
     "    if not e.is_dir and mep.is_image_path(e.name) then\n"
-    "      images[#images + 1] = mep_tree_join(mep_tree_root, e.name)\n"
+    "      images[#images + 1] = mep_tree_join(dir, e.name)\n"
     "    end\n"
     "  end\n"
     "  if #images == 0 then\n"
-    "    mep.notify('No images in ' .. mep_tree_root, 'warn')\n"
+    "    mep.notify('No images in ' .. dir, 'warn')\n"
     "    return\n"
     "  end\n"
     "  mep_tree_images = images\n"
     "  mep_tree_image_index = 1\n"
+    "  mep_tree_image_return_buf = return_buf\n"
     "  mep.open(images[1])\n"
     "  mep_tree_image_apply_nav()\n"
     "end\n"
@@ -3619,25 +3673,14 @@ const char *kBuiltinFileTree =
     "    on_exit = function() mep.tree_refresh() end,\n"
     "  })\n"
     "end\n"
-    // oil.nvim-style editable tree (the recursive walk -- hidden/gitignore
-    // filtering, expand-driven recursion, dirs-first-then-alpha order --
-    // is Editor::BuildFileTreeRows/mep.tree_build_rows, unchanged): the
-    // sidebar is a real, ordinary Buffer (mep.buffer_new, same idiom as
-    // kBuiltinStructure's <leader>sS split) instead of a SidebarInstance's
-    // click-widget list, so it gets a real cursor and full Normal/Insert/
-    // Visual-mode editing for free. Each row renders as plain text --
-    // `<indent><icon> <name>` -- and mep_tree_edit_on_write (below) parses
-    // that same shape back apart at `:w` time.
-    // Two spaces, not one, between the icon and the name: nerd-font icon
-    // glyphs commonly render a little wider than the monospace column
-    // their one codepoint occupies (kBuiltinFileTree's editable tree rows
-    // are the first place such a glyph sits in real, fixed-column buffer
-    // text rather than icon-font-only UI chrome), so a single space's gap
-    // can look like none at all. mep_tree_edit_parse_current (below) trims
-    // any leading whitespace off of whatever follows the first space when
-    // reading a row back, so this doesn't have to be kept in lockstep with
-    // that parser beyond "at least one space right after the icon".
-    "local function mep_tree_edit_line_for_row(row)\n"
+    // Each row renders as `<indent><icon>  <name>`. Two spaces, not one,
+    // between the icon and the name: nerd-font icon glyphs commonly render a
+    // little wider than the monospace column their one codepoint occupies, so
+    // a single space's gap can look like none at all. mep_oil_parse (below)
+    // trims any leading whitespace off of whatever follows the first space
+    // when reading a row back, so this doesn't have to be kept in lockstep
+    // with that parser beyond "at least one space right after the icon".
+    "local function mep_tree_line_for_row(row)\n"
     "  local indent = string.rep('  ', row.depth)\n"
     "  if row.is_dir then\n"
     "    local marker = row.expanded and mep.icons.dir_open or mep.icons.dir_closed\n"
@@ -3645,44 +3688,48 @@ const char *kBuiltinFileTree =
     "  end\n"
     "  return indent .. mep.icon_for_file(row.name) .. '  ' .. row.name\n"
     "end\n"
-    "local function mep_tree_edit_apply_highlight()\n"
-    "  if not mep_tree_edit_ns then mep_tree_edit_ns = mep.ns_create('mep_tree_edit') end\n"
-    "  mep.buffer_ns_clear(mep_tree_edit_buf, mep_tree_edit_ns)\n"
-    "  for i, row in ipairs(mep_tree_edit_snapshot) do\n"
+    "local function mep_tree_build(root, expanded, ignored)\n"
+    "  local expanded_list = {}\n"
+    "  for k, v in pairs(expanded) do if v then expanded_list[#expanded_list + 1] = k end end\n"
+    "  local ignored_list = {}\n"
+    "  for k, v in pairs(ignored) do if v then ignored_list[#ignored_list + 1] = k end end\n"
+    "  return mep.tree_build_rows(root, expanded_list, mep_tree_show_hidden, ignored_list)\n"
+    "end\n"
+    "local function mep_tree_render(buf, rows)\n"
+    "  if not mep_tree_ns then mep_tree_ns = mep.ns_create('mep_tree') end\n"
+    "  local lines = {}\n"
+    "  for i, row in ipairs(rows) do lines[i] = mep_tree_line_for_row(row) end\n"
+    "  if #lines == 0 then lines = {''} end\n"
+    "  mep.buffer_set_lines(buf, lines)\n"
+    "  mep.buffer_ns_clear(buf, mep_tree_ns)\n"
+    "  for i, row in ipairs(rows) do\n"
     "    local hl = row.is_dir and 'Blue' or mep.hl_for_file(row.name)\n"
-    "    local line = mep_tree_edit_line_for_row(row)\n"
-    "    mep.buffer_deco_add(mep_tree_edit_buf, mep_tree_edit_ns, {row = i, col_start = 1, col_end = #line + 1, hl_group = hl})\n"
+    "    mep.buffer_deco_add(buf, mep_tree_ns, {row = i, col_start = 1, col_end = #lines[i] + 1, hl_group = hl})\n"
     "  end\n"
     "end\n"
-    // Expanding/collapsing a directory or refreshing rebuilds every row
-    // (and hence every line) from scratch -- refused while the buffer has
-    // unsaved edits so an in-progress rename/create/delete isn't silently
-    // discarded out from under the cursor.
-    "local function mep_tree_edit_guard_modified()\n"
-    "  if mep_tree_edit_buf and mep.buffer_modified(mep_tree_edit_buf) then\n"
-    "    mep.notify('Save (:w) or undo pending tree changes first', 'warn')\n"
-    "    return true\n"
-    "  end\n"
-    "  return false\n"
+    // Shared buffer setup for both views.
+    "local function mep_tree_new_buffer()\n"
+    "  local buf = mep.buffer_new()\n"
+    "  mep.buffer_set_hide_line_numbers(buf, true)\n"
+    "  mep.buffer_set_wrap(buf, false)\n"
+    "  return buf\n"
     "end\n"
-    // Parses the tree buffer's *current* text back into one row per
-    // non-blank line: `depth` from the leading 2-spaces-per-level indent
-    // (clamped to at most one level past the previous row's, since nothing
-    // can nest deeper than that), `name` from everything after the first
-    // space past the indent -- the icon and that one space are the only
-    // thing ever between the indent and the name, so this is the "ignore
-    // the icon" the rendering above promises, and it works unmodified even
-    // for a brand-new line typed with no icon at all (there's simply no
-    // space to split on unless the typed name itself contains one).
-    // `new_path` is computed structurally from depth plus a running stack
-    // of "current path at each depth", so it comes out right regardless of
-    // whether a row is unchanged, renamed in place, or freshly pasted
-    // somewhere else in the buffer.
-    "local function mep_tree_edit_parse_current()\n"
+    // ---- oil.nvim-style editable directory buffers ----------------------
+    "local mep_oil_refresh\n"
+    // Parses an oil buffer's *current* text back into one row per non-blank
+    // line: `depth` from the leading 2-spaces-per-level indent (clamped to at
+    // most one level past the previous row's), `name` from everything after
+    // the first space past the indent -- the icon and its spaces are the only
+    // thing ever between the indent and the name, and a brand-new line typed
+    // with no icon at all works too (there's simply no space to split on
+    // unless the typed name itself contains one). `new_path` is computed
+    // structurally from depth plus a running stack of "current path at each
+    // depth", so it comes out right whether a row is unchanged, renamed in
+    // place, or freshly pasted somewhere else in the buffer.
+    "local function mep_oil_parse(st)\n"
     "  local rows = {}\n"
-    "  local stack = {[0] = mep_tree_root}\n"
-    "  for i = 1, mep.line_count() do\n"
-    "    local line = mep.get_line(i)\n"
+    "  local stack = {[0] = st.root}\n"
+    "  for _, line in ipairs(mep.buffer_get_lines(st.buf) or {}) do\n"
     "    local indent_len = #(line:match('^ *') or '')\n"
     "    local prev_depth = rows[#rows] and rows[#rows].depth or -1\n"
     "    local depth = math.floor(indent_len / 2)\n"
@@ -3694,7 +3741,7 @@ const char *kBuiltinFileTree =
     "    local is_new_dir_hint = false\n"
     "    if name:sub(-1) == '/' then is_new_dir_hint = true; name = name:sub(1, -2) end\n"
     "    if name ~= '' then\n"
-    "      local parent = stack[depth] or mep_tree_root\n"
+    "      local parent = stack[depth] or st.root\n"
     "      local new_path = mep_tree_join(parent, name)\n"
     "      stack[depth + 1] = new_path\n"
     "      rows[#rows + 1] = {depth = depth, name = name, new_path = new_path, is_new_dir_hint = is_new_dir_hint}\n"
@@ -3702,32 +3749,15 @@ const char *kBuiltinFileTree =
     "  end\n"
     "  return rows\n"
     "end\n"
-    // Diffs mep_tree_edit_snapshot (the tree as of the last refresh)
-    // against the buffer's current text -- via mep.diff_lines, the same
-    // Myers-diff primitive kBuiltinGit's gutter hunks use, run over just
-    // the row *names* so a rename doesn't look like an unrelated
-    // delete+create pair -- to produce the four kinds of change a write
-    // can imply:
-    //   - a hunk replacing exactly one old name with exactly one new name
-    //     at the same slot: that entry renamed in place (and moved too, if
-    //     its computed new_path's parent differs from its old one).
-    //   - a name the diff calls "deleted" that reappears elsewhere in the
-    //     new list: a move (cut here, pasted there); otherwise a real
-    //     delete.
-    //   - a name the diff calls "inserted" that matches a name still
-    //     present elsewhere: a copy (yanked, not deleted, then pasted);
-    //     otherwise a create (a new directory if the typed name ended
-    //     with `/`, else a new empty file).
-    // Two entries swapping names in the same write, or a simultaneous
-    // rename *and* move of the same entry, aren't distinguishable from an
-    // unrelated delete+create without real per-line identity (no extmark
-    // equivalent exists here) -- a known, narrow gap; one change at a time
-    // (the user's own cut/paste-to-move workflow already is) always
-    // resolves correctly.
-    "local function mep_tree_edit_compute_ops()\n"
-    "  local current = mep_tree_edit_parse_current()\n"
+    // Diffs the snapshot's names against the parsed buffer (mep.diff_lines):
+    // a 1:1 changed hunk is a rename in place; an old row that vanished but
+    // whose name reappears elsewhere is a move; a new row whose name matches
+    // a still-present old row is a copy; anything else new is a create and
+    // anything else gone is a delete.
+    "local function mep_oil_compute_ops(st)\n"
+    "  local current = mep_oil_parse(st)\n"
     "  local old_names, new_names = {}, {}\n"
-    "  for i, e in ipairs(mep_tree_edit_snapshot) do old_names[i] = e.name end\n"
+    "  for i, e in ipairs(st.snapshot) do old_names[i] = e.name end\n"
     "  for i, r in ipairs(current) do new_names[i] = r.name end\n"
     "  local hunks = mep.diff_lines(old_names, new_names)\n"
     "  local matched_old, matched_new = {}, {}\n"
@@ -3736,23 +3766,21 @@ const char *kBuiltinFileTree =
     "      matched_old[h.old_start] = {kind = 'rename', new_index = h.new_start}\n"
     "      matched_new[h.new_start] = true\n"
     "    else\n"
-    // Anything else (a pure insert, a pure delete, or an ambiguous N:M
-    // replace) gets no individual rename pairing -- old-side positions
-    // are delete candidates (a same-named survivor elsewhere still
-    // reclaims one as a move, below); new-side positions are deliberately
-    // left unmarked here so the create/copy pass further down evaluates
-    // them, rather than treating every position a hunk merely touched as
-    // "already accounted for" and silently dropping it.
     "      for i = h.old_start, h.old_start + h.old_count - 1 do matched_old[i] = matched_old[i] or {kind = 'delete'} end\n"
     "    end\n"
     "  end\n"
+    // Snapshot rows outside every hunk are unchanged (mep.diff_lines only
+    // reports changed hunks): the rows still sitting at their paths are
+    // never a create, and never the target of a move onto them.
+    "  local unchanged_path = {}\n"
+    "  for i, e in ipairs(st.snapshot) do if not matched_old[i] then unchanged_path[e.path] = true end end\n"
     "  local new_by_name = {}\n"
     "  for i, r in ipairs(current) do\n"
     "    new_by_name[r.name] = new_by_name[r.name] or {}\n"
     "    table.insert(new_by_name[r.name], i)\n"
     "  end\n"
     "  local moves, deletes, consumed_new = {}, {}, {}\n"
-    "  for i, e in ipairs(mep_tree_edit_snapshot) do\n"
+    "  for i, e in ipairs(st.snapshot) do\n"
     "    local m = matched_old[i]\n"
     "    if m and m.kind == 'rename' then\n"
     "      local r = current[m.new_index]\n"
@@ -3761,11 +3789,13 @@ const char *kBuiltinFileTree =
     "    elseif m then\n"
     "      local moved_to = nil\n"
     "      for _, ni in ipairs(new_by_name[e.name] or {}) do\n"
-    "        if not consumed_new[ni] and not matched_new[ni] then moved_to = ni break end\n"
+    "        if not consumed_new[ni] and not matched_new[ni] and not unchanged_path[current[ni].new_path] then moved_to = ni break end\n"
     "      end\n"
     "      if moved_to then\n"
     "        consumed_new[moved_to] = true\n"
-    "        table.insert(moves, {from = e.path, to = current[moved_to].new_path, is_dir = e.is_dir})\n"
+    "        if current[moved_to].new_path ~= e.path then\n"
+    "          table.insert(moves, {from = e.path, to = current[moved_to].new_path, is_dir = e.is_dir})\n"
+    "        end\n"
     "      else\n"
     "        table.insert(deletes, {path = e.path, name = e.name, is_dir = e.is_dir})\n"
     "      end\n"
@@ -3773,9 +3803,9 @@ const char *kBuiltinFileTree =
     "  end\n"
     "  local copies, creates = {}, {}\n"
     "  for i, r in ipairs(current) do\n"
-    "    if not matched_new[i] and not consumed_new[i] then\n"
+    "    if not matched_new[i] and not consumed_new[i] and not unchanged_path[r.new_path] then\n"
     "      local src = nil\n"
-    "      for _, e in ipairs(mep_tree_edit_snapshot) do\n"
+    "      for _, e in ipairs(st.snapshot) do\n"
     "        if e.name == r.name and e.path ~= r.new_path then src = e break end\n"
     "      end\n"
     "      if src then table.insert(copies, {from = src.path, to = r.new_path, is_dir = src.is_dir})\n"
@@ -3784,12 +3814,9 @@ const char *kBuiltinFileTree =
     "  end\n"
     "  return {moves = moves, copies = copies, creates = creates, deletes = deletes}\n"
     "end\n"
-    // Applies moves shallowest-source-first, skipping any move whose
-    // source already sits inside another move just applied -- fs_rename-
-    // ing a directory relocates its whole subtree in one call, so a
-    // child's own (now-stale) move would otherwise fail or silently
-    // re-move an already-moved path.
-    "local function mep_tree_edit_apply_moves(moves)\n"
+    // Shortest source path first; a move whose source sits under an
+    // already-moved directory is skipped since it moved along with it.
+    "local function mep_oil_apply_moves(moves)\n"
     "  table.sort(moves, function(a, b) return #a.from < #b.from end)\n"
     "  local applied_from = {}\n"
     "  for _, mv in ipairs(moves) do\n"
@@ -3803,23 +3830,27 @@ const char *kBuiltinFileTree =
     "    end\n"
     "  end\n"
     "end\n"
-    // Creates/copies/moves apply immediately (all recoverable by hand, same
-    // as the old tree's un-confirmed 'a'/'r' actions); deletes are
-    // destructive so they wait on one confirmation summarizing all of them,
-    // matching the old tree's own 'd' handler. Either way mep.tree_refresh
-    // re-syncs the buffer (and its snapshot) to whatever the filesystem
-    // actually ended up as, including any op that failed and got skipped.
-    "local function mep_tree_edit_on_write()\n"
-    "  if not mep_tree_edit_snapshot then return end\n"
-    "  local ops = mep_tree_edit_compute_ops()\n"
+    // Refreshes the sidebar and every unmodified oil buffer after anything
+    // touched the filesystem (either view), so neither shows stale rows.
+    "local function mep_tree_after_fs_change()\n"
+    "  mep.tree_refresh()\n"
+    "  for _, st in pairs(mep_oil_by_buf) do mep_oil_refresh(st) end\n"
+    "end\n"
+    "local function mep_oil_on_write(st)\n"
+    "  if not st.snapshot then return end\n"
+    "  local ops = mep_oil_compute_ops(st)\n"
     "  for _, cr in ipairs(ops.creates) do\n"
+    "    mep_tree_mkdir_parents(cr.path)\n"
     "    local ok = cr.is_dir and mep.fs_mkdir(cr.path) or mep.fs_create_file(cr.path)\n"
     "    if not ok then mep.notify('Failed to create ' .. cr.path, 'error') end\n"
     "  end\n"
     "  for _, cp in ipairs(ops.copies) do\n"
     "    if not mep.fs_copy(cp.from, cp.to) then mep.notify('Failed to copy to ' .. cp.to, 'error') end\n"
     "  end\n"
-    "  mep_tree_edit_apply_moves(ops.moves)\n"
+    "  mep_oil_apply_moves(ops.moves)\n"
+    "  --! The buffer only gets marked unmodified once this hook returns, so the\n"
+    "  --! refresh below has to be told to rebuild anyway.\n"
+    "  st.force_refresh = true\n"
     "  if #ops.deletes > 0 then\n"
     "    local names = {}\n"
     "    for _, d in ipairs(ops.deletes) do names[#names + 1] = d.name end\n"
@@ -3829,150 +3860,253 @@ const char *kBuiltinFileTree =
     "          if not mep.fs_delete(d.path) then mep.notify('Failed to delete ' .. d.path, 'error') end\n"
     "        end\n"
     "      end\n"
-    "      mep.tree_refresh()\n"
+    "      st.force_refresh = true\n"
+    "      mep_tree_after_fs_change()\n"
     "    end)\n"
-    "  else\n"
-    "    mep.tree_refresh()\n"
     "  end\n"
+    "  mep_tree_after_fs_change()\n"
     "end\n"
-    // <CR>: expand/collapse a directory row, or open a file row in the main
-    // pane -- the tree buffer's only bespoke keybinding (mep.buffer_set_on_
-    // enter, editor.h's SetBufferOnEnter comment on why bare Enter is free
-    // to claim here). Every other keystroke is completely ordinary Normal/
-    // Insert/Visual-mode buffer editing: renaming is editing a row's name
-    // text in place, creating is typing a new line (end it with `/` for a
-    // new directory), deleting is `dd`, and moving/copying is deleting-or-
-    // yanking a row and pasting it elsewhere -- mep_tree_edit_on_write
-    // above turns whatever changed into the matching fs_* calls.\n"
-    "local function mep_tree_edit_on_enter()\n"
-    "  if mep_tree_edit_guard_modified() then return end\n"
-    "  local row = mep_tree_edit_snapshot and mep_tree_edit_snapshot[mep.cursor()]\n"
+    // Rebuilds the rows from disk -- skipped while the buffer has unsaved
+    // edits (unless `force_refresh` is set by the :w hook) so an in-progress
+    // rename/create/delete isn't silently discarded. Returns false if skipped.
+    "mep_oil_refresh = function(st)\n"
+    "  if not st.force_refresh and mep.buffer_modified(st.buf) then return false end\n"
+    "  st.force_refresh = false\n"
+    "  st.snapshot = mep_tree_build(st.root, st.expanded, {})\n"
+    "  mep_tree_render(st.buf, st.snapshot)\n"
+    "  return true\n"
+    "end\n"
+    "local function mep_oil_on_enter(st)\n"
+    "  if mep.buffer_modified(st.buf) then\n"
+    "    mep.notify('Save (:w) or undo pending changes first', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  local row = st.snapshot and st.snapshot[mep.cursor()]\n"
     "  if not row then return end\n"
     "  if row.is_dir then\n"
-    "    if mep_tree_expanded[row.path] then mep_tree_expanded[row.path] = nil\n"
-    "    else mep_tree_expanded[row.path] = true end\n"
+    "    st.expanded[row.path] = not st.expanded[row.path] or nil\n"
+    "    mep_oil_refresh(st)\n"
+    "  else\n"
+    "    mep.open(row.path)\n"
+    "  end\n"
+    "end\n"
+    "local function mep_oil_on_key(st, k)\n"
+    "  if k == '-' then\n"
+    "    if st.root ~= '/' then mep.oil_open(mep_tree_parent(st.root)) end\n"
+    "    return true\n"
+    "  end\n"
+    "  return false\n"
+    "end\n"
+    "function mep.oil_open(dir)\n"
+    "  local root = mep_tree_normalize(dir or '.')\n"
+    "  local st = mep_oil_by_dir[root]\n"
+    "  if not st then\n"
+    "    st = {root = root, expanded = {[root] = true}, buf = mep_tree_new_buffer()}\n"
+    "    mep_oil_by_dir[root] = st\n"
+    "    mep_oil_by_buf[st.buf] = st\n"
+    "    mep.buffer_set_filename(st.buf, root)\n"
+    "    mep.buffer_set_on_enter(st.buf, function() mep_oil_on_enter(st) end)\n"
+    "    mep.buffer_set_on_write(st.buf, function() mep_oil_on_write(st) end)\n"
+    "    mep.buffer_set_on_key(st.buf, function(k) return mep_oil_on_key(st, k) end)\n"
+    "    mep.buffer_set_on_image_toggle(st.buf, function() mep_tree_toggle_image_viewer(st.root, st.buf) end)\n"
+    "    mep.buffer_set_drag_resolver(st.buf, function(row)\n"
+    "      local r = mep_oil_parse(st)[row + 1]\n"
+    "      return r and r.new_path or nil\n"
+    "    end)\n"
+    "  end\n"
+    "  mep_oil_refresh(st)\n"
+    "  mep.buffer_switch(st.buf)\n"
+    "end\n"
+    "mep.set_on_directory_open(mep.oil_open)\n"
+    // Old name, kept for anything still calling it.
+    "mep.tree_open_in_pane = mep.oil_open\n"
+    "mep.command('MepOil', function(args)\n"
+    "  mep.oil_open((args and args ~= '') and args or mep.getcwd())\n"
+    "end)\n"
+    // ---- sidebar tree (read-only text, single-key file operations) -------
+    "local function mep_tree_cursor_row()\n"
+    "  return mep_tree_rows and mep_tree_rows[mep.cursor()]\n"
+    "end\n"
+    // Directory a new entry goes into: the row itself if it's a directory,
+    // else the directory containing it, else the tree's root.
+    "local function mep_tree_target_dir(row)\n"
+    "  if not row then return mep_tree_root end\n"
+    "  if row.is_dir then return row.path end\n"
+    "  return mep_tree_parent(row.path)\n"
+    "end\n"
+    "local function mep_tree_resolve(base, name)\n"
+    "  if name:sub(1, 1) == '/' then return name end\n"
+    "  return mep_tree_join(base, name)\n"
+    "end\n"
+    "local function mep_tree_add(row)\n"
+    "  local base = mep_tree_target_dir(row)\n"
+    "  mep.ui_input('New file in ' .. base .. '/ (end with / for a directory):', '', function(name)\n"
+    "    if not name or name == '' then return end\n"
+    "    local is_dir = name:sub(-1) == '/'\n"
+    "    local full = mep_tree_resolve(base, (name:gsub('/+$', '')))\n"
+    "    if mep_tree_exists(full) then\n"
+    "      mep.notify(full .. ' already exists', 'warn')\n"
+    "      return\n"
+    "    end\n"
+    "    mep_tree_mkdir_parents(full)\n"
+    "    local ok\n"
+    "    if is_dir then ok = mep.fs_mkdir(full) else ok = mep.fs_create_file(full) end\n"
+    "    if not ok then mep.notify('Failed to create ' .. full, 'error') end\n"
+    "    mep_tree_expanded[base] = true\n"
+    "    mep_tree_after_fs_change()\n"
+    "  end)\n"
+    "end\n"
+    "local function mep_tree_rename(row)\n"
+    "  if not row then return end\n"
+    "  local parent = mep_tree_parent(row.path)\n"
+    "  mep.ui_input('Rename ' .. row.name .. ' to:', row.name, function(name)\n"
+    "    if not name or name == '' or name == row.name then return end\n"
+    "    local dest = mep_tree_resolve(parent, (name:gsub('/+$', '')))\n"
+    "    if mep_tree_exists(dest) then\n"
+    "      mep.notify(dest .. ' already exists', 'warn')\n"
+    "      return\n"
+    "    end\n"
+    "    mep_tree_mkdir_parents(dest)\n"
+    "    if mep.fs_rename(row.path, dest) then\n"
+    "      if mep_tree_expanded[row.path] then mep_tree_expanded[dest] = true end\n"
+    "    else\n"
+    "      mep.notify('Failed to rename ' .. row.path .. ' to ' .. dest, 'error')\n"
+    "    end\n"
+    "    mep_tree_after_fs_change()\n"
+    "  end)\n"
+    "end\n"
+    "local function mep_tree_copy(row)\n"
+    "  if not row then return end\n"
+    "  local parent = mep_tree_parent(row.path)\n"
+    "  mep.ui_input('Copy ' .. row.name .. ' to:', row.name, function(name)\n"
+    "    if not name or name == '' or name == row.name then return end\n"
+    "    local dest = mep_tree_resolve(parent, (name:gsub('/+$', '')))\n"
+    "    if mep_tree_exists(dest) then\n"
+    "      mep.notify(dest .. ' already exists', 'warn')\n"
+    "      return\n"
+    "    end\n"
+    "    mep_tree_mkdir_parents(dest)\n"
+    "    if not mep.fs_copy(row.path, dest) then mep.notify('Failed to copy to ' .. dest, 'error') end\n"
+    "    mep_tree_after_fs_change()\n"
+    "  end)\n"
+    "end\n"
+    "local function mep_tree_delete(row)\n"
+    "  if not row then return end\n"
+    "  local what = row.is_dir and ('directory ' .. row.name .. '/ and everything in it') or row.name\n"
+    "  mep.ui_confirm('Delete ' .. what .. '?', false, function(yes)\n"
+    "    if not yes then return end\n"
+    "    if not mep.fs_delete(row.path) then mep.notify('Failed to delete ' .. row.path, 'error') end\n"
+    "    mep_tree_after_fs_change()\n"
+    "  end)\n"
+    "end\n"
+    "local function mep_tree_set_root(dir)\n"
+    "  mep_tree_root = dir\n"
+    "  mep_tree_expanded[dir] = true\n"
+    "  mep.tree_refresh()\n"
+    "  mep_tree_refresh_ignored()\n"
+    "end\n"
+    "local mep_tree_help = 'Files: Enter=open/toggle  a=add (end with / for dir)  r=rename  d=delete  c=copy  '\n"
+    "  .. 'y=yank path  e=edit dir (oil)  o=open with OS  -=root up  C=root here  R=refresh  H=hidden  I=images  q=close'\n"
+    // Keys that only move/search/scroll/yank pass through to their normal
+    // Normal-mode meaning; everything else is either a tree action below or
+    // swallowed, so the tree's text can't be edited in place (edit a
+    // directory's contents as text with 'e' / :e <dir> instead).
+    "local mep_tree_passthrough = {}\n"
+    "for c in ('hjklgGwbWBE0^$HML/?nN*#zZ:\\'`m{}()%fFtT;,123456789Iy'):gmatch('.') do mep_tree_passthrough[c] = true end\n"
+    "local function mep_tree_on_key(k)\n"
+    "  local row = mep_tree_cursor_row()\n"
+    "  if k == 'a' then mep_tree_add(row)\n"
+    "  elseif k == 'r' then mep_tree_rename(row)\n"
+    "  elseif k == 'd' then mep_tree_delete(row)\n"
+    "  elseif k == 'c' then mep_tree_copy(row)\n"
+    "  elseif k == 'Y' then\n"
+    "    if row then\n"
+    "      mep.clipboard_set(row.path)\n"
+    "      mep.notify('Copied ' .. row.path)\n"
+    "    end\n"
+    "  elseif k == 'e' then mep.pick_pane_open(mep_tree_target_dir(row))\n"
+    "  elseif k == 'o' then\n"
+    "    if row then mep.open_url('file://' .. mep_tree_normalize(row.path)) end\n"
+    "  elseif k == '-' then\n"
+    "    mep_tree_set_root(mep_tree_parent(mep_tree_normalize(mep_tree_root)))\n"
+    "  elseif k == 'C' then\n"
+    "    if row and row.is_dir then mep_tree_set_root(row.path) end\n"
+    "  elseif k == 'R' then\n"
+    "    mep.tree_refresh()\n"
+    "    mep_tree_refresh_ignored()\n"
+    "  elseif k == 'H' then\n"
+    "    mep_tree_show_hidden = not mep_tree_show_hidden\n"
+    "    mep_tree_after_fs_change()\n"
+    "  elseif k == 'q' then\n"
+    "    if mep.pane_focus_buffer(mep_tree_buf) then mep.pane_close_buffer() end\n"
+    "  elseif k == '?' then\n"
+    "    mep.notify(mep_tree_help)\n"
+    "  elseif mep_tree_passthrough[k] then\n"
+    "    return false\n"
+    "  end\n"
+    "  return true\n"
+    "end\n"
+    "local function mep_tree_on_enter()\n"
+    "  local row = mep_tree_cursor_row()\n"
+    "  if not row then return end\n"
+    "  if row.is_dir then\n"
+    "    mep_tree_expanded[row.path] = not mep_tree_expanded[row.path] or nil\n"
     "    mep.tree_refresh()\n"
     "  else\n"
-    // Opening a file from the tree lands it in another pane, never
-    // replacing the tree buffer in the tree's own (top-left) pane. Rather
-    // than always defaulting to one fixed neighbor, mep.pick_pane_open lets
-    // the user choose *which* window when there's more than one candidate:
-    // each candidate pane (every pane in the tab except the tree's own) gets
-    // a big letter drawn over it and the pressed letter opens the file there
-    // (main.cpp's pane picker). With exactly one candidate it opens straight
-    // away with no prompt; with none (the tree is the tab's only pane) it
-    // falls back to opening in the tree's own pane, same as :e in Vim's last
-    // remaining window.
     "    mep.pick_pane_open(row.path)\n"
     "  end\n"
     "end\n"
     "function mep.tree_refresh()\n"
     "  if not mep_tree_root then return end\n"
-    "  if mep_tree_edit_guard_modified() then return end\n"
-    "  local expanded_list = {}\n"
-    "  for k, v in pairs(mep_tree_expanded) do if v then expanded_list[#expanded_list + 1] = k end end\n"
-    "  local ignored_list = {}\n"
-    "  for k, v in pairs(mep_tree_ignored) do if v then ignored_list[#ignored_list + 1] = k end end\n"
-    "  local rows = mep.tree_build_rows(mep_tree_root, expanded_list, mep_tree_show_hidden, ignored_list)\n"
-    "  mep_tree_edit_snapshot = rows\n"
-    "  local lines = {}\n"
-    "  for i, row in ipairs(rows) do lines[i] = mep_tree_edit_line_for_row(row) end\n"
-    "  if #lines == 0 then lines = {'(empty)'} end\n"
-    "  if not mep_tree_edit_buf then\n"
-    "    mep_tree_edit_buf = mep.buffer_new()\n"
-    "    mep.buffer_set_on_enter(mep_tree_edit_buf, mep_tree_edit_on_enter)\n"
-    "    mep.buffer_set_on_write(mep_tree_edit_buf, mep_tree_edit_on_write)\n"
-    "    mep.buffer_set_on_image_toggle(mep_tree_edit_buf, mep_tree_toggle_image_viewer)\n"
-    // A row's line number isn't a meaningful position here (unlike a real
-    // file, nothing refers to "line 7 of the tree") -- just visual noise
-    // that also eats into the pane's already-narrow width.
-    "    mep.buffer_set_hide_line_numbers(mep_tree_edit_buf, true)\n"
-    // A long path soft-wrapping onto a second visual row would read as a
-    // second, indented tree entry rather than a continuation of the
-    // first -- row-per-entry only makes sense unwrapped, same reasoning
-    // as the line numbers just above.
-    "    mep.buffer_set_wrap(mep_tree_edit_buf, false)\n"
-    // PANE_DRAG_RESTORE: restores drag-a-file-row-onto-a-pane (lost when
-    // the tree moved off SidebarInstance, see mep.buffer_set_drag_
-    // resolver's own comment, lua_env.cpp) by resolving a dragged row's
-    // buffer index straight back through the same parser :w already
-    // trusts -- `row` arrives 0-based (every buffer-row index in this
-    // codebase is), so `row + 1` is `mep.get_line`'s 1-based row. Only
-    // ever consulted at mouse-down on a row the C++ side already knows
-    // this buffer registered a resolver for, so re-parsing the whole
-    // buffer here (rather than caching) costs nothing noticeable -- a
-    // click, not a per-frame poll.
-    "    mep.buffer_set_drag_resolver(mep_tree_edit_buf, function(row)\n"
-    "      local current = mep_tree_edit_parse_current()\n"
-    "      local r = current[row + 1]\n"
-    "      return r and r.new_path or nil\n"
+    "  mep_tree_rows = mep_tree_build(mep_tree_root, mep_tree_expanded, mep_tree_ignored)\n"
+    "  if not mep_tree_buf then\n"
+    "    mep_tree_buf = mep_tree_new_buffer()\n"
+    "    mep.buffer_set_on_enter(mep_tree_buf, mep_tree_on_enter)\n"
+    "    mep.buffer_set_on_key(mep_tree_buf, mep_tree_on_key)\n"
+    "    --! :w on the (read-only) tree just re-syncs it with disk instead of\n"
+    "    --! writing its text anywhere.\n"
+    "    mep.buffer_set_on_write(mep_tree_buf, function() mep.tree_refresh() end)\n"
+    "    mep.buffer_set_on_image_toggle(mep_tree_buf, function() mep_tree_toggle_image_viewer(mep_tree_root, mep_tree_buf) end)\n"
+    "    mep.buffer_set_drag_resolver(mep_tree_buf, function(row)\n"
+    "      local r = mep_tree_rows and mep_tree_rows[row + 1]\n"
+    "      return r and r.path or nil\n"
     "    end)\n"
     "  end\n"
-    "  mep.buffer_set_filename(mep_tree_edit_buf, mep_tree_root)\n"
-    "  mep.buffer_set_lines(mep_tree_edit_buf, lines)\n"
-    "  mep_tree_edit_apply_highlight()\n"
+    "  mep.buffer_set_filename(mep_tree_buf, mep_tree_root)\n"
+    "  mep_tree_render(mep_tree_buf, mep_tree_rows)\n"
     "end\n"
-    // mep.pane_split_left (Editor::SplitTabLeft) re-roots the *whole tab*
-    // into [tree | everything else], unlike mep.cmd('vsplit') (Editor::
-    // SplitCurrentPane), which only ever splits whichever single leaf
-    // happens to be focused -- if that leaf were some sub-pane of an
-    // already-existing split (e.g. a terminal inside a top/bottom stack),
-    // a plain vsplit there would give the tree only that sub-pane's
-    // height instead of the tab's full height.
     "function mep.tree_open(dir)\n"
     "  mep_tree_root = dir or '.'\n"
     "  mep_tree_expanded[mep_tree_root] = true\n"
     "  mep.tree_refresh()\n"
-    "  if not mep.pane_focus_buffer(mep_tree_edit_buf) then\n"
-    "    mep.pane_split_left(mep_tree_edit_buf, 0.20)\n"
+    "  if not mep.pane_focus_buffer(mep_tree_buf) then\n"
+    "    mep.pane_split_left(mep_tree_buf, 0.20)\n"
     "  end\n"
     "  mep_tree_refresh_ignored()\n"
     "end\n"
-    // ":e"/"mep.open" on a directory (Editor::LoadFile's directory branch,
-    // mep.set_on_directory_open below): unlike mep.tree_open above, this
-    // opens the tree in the CURRENT pane -- mep.buffer_switch, the same
-    // primitive every other LoadFile branch uses to point the active pane
-    // at a buffer -- instead of splitting a new one off to the left, since
-    // the whole point of ":e some/dir" is to show that directory in the
-    // pane you asked for it in.
-    "function mep.tree_open_in_pane(dir)\n"
-    "  mep_tree_root = dir or '.'\n"
-    "  mep_tree_expanded[mep_tree_root] = true\n"
-    "  mep.tree_refresh()\n"
-    "  mep.buffer_switch(mep_tree_edit_buf)\n"
-    "  mep_tree_refresh_ignored()\n"
-    "end\n"
-    "mep.set_on_directory_open(mep.tree_open_in_pane)\n"
-    // Mirrors mep.structure_split_toggle's pattern for a real (non-sidebar)
-    // pane: if the tree buffer is already showing in some pane of the
-    // active tab, mep.pane_focus_buffer both finds it and focuses it, so a
-    // second press closes just that buffer tab (or the pane, if it's the
-    // only tab) via mep.pane_close_buffer -- the buffer itself is kept, so
-    // reopening reuses it and its expanded-dir state. Otherwise (re)opens
-    // or refocuses it same as before.
     "function mep.tree_toggle()\n"
-    "  if mep_tree_edit_buf and mep.pane_focus_buffer(mep_tree_edit_buf) then\n"
+    "  if mep_tree_buf and mep.pane_focus_buffer(mep_tree_buf) then\n"
     "    mep.pane_close_buffer()\n"
     "  else\n"
     "    mep.tree_open(mep_tree_root or '.')\n"
     "  end\n"
     "end\n"
-    // mep_tree_edit_buf is a chunk-local upvalue, invisible from other
+    // mep_tree_buf is a chunk-local upvalue, invisible from other
     // kBuiltin* DoString chunks (kBuiltinGit's mep.git_open_pane is the
     // first caller, checking whether the tree is already open so it can
     // stack its own pane alongside it) -- this is the read-only global
     // bridge, nil until mep.tree_refresh has created the buffer at least
     // once.
     "function mep.tree_buffer_id()\n"
-    "  return mep_tree_edit_buf\n"
+    "  return mep_tree_buf\n"
     "end\n"
     "mep.command('MepFileTree', function() mep.tree_toggle() end)\n"
     "mep.leader_map('ff', 'Toggle file tree', function() mep.tree_toggle() end)\n"
     "mep.leader_map('fh', 'Toggle hidden files in tree', function()\n"
     "  mep_tree_show_hidden = not mep_tree_show_hidden\n"
-    "  mep.tree_refresh()\n"
+    "  mep_tree_after_fs_change()\n"
     "end)\n"
-    "mep.leader_map('fr', 'Refresh file tree', function() mep.tree_refresh() end)\n"
+    "mep.leader_map('fr', 'Refresh file tree', function() mep_tree_after_fs_change() end)\n"
     // Native "Open File" dialog (<leader>fo / :MepOpenFile): the desktop's
     // own file picker, for browsing to a path visually instead of typing
     // one into `:e` or fuzzy-matching it via find_files (<leader>pf). No

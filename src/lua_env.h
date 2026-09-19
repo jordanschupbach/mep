@@ -162,6 +162,17 @@ public:
      */
     bool CallRefWithBoolForBool(int ref, bool arg);
     /**
+     * @brief Calls a Lua callback with a single string argument and reads back a boolean result.
+     *
+     * Buffer-scoped Normal-mode key hook (mep.buffer_set_on_key): the Lua side returns true when it
+     * handled the key so the C++ key handler (editor.cpp HandleNormalChar) swallows it instead of
+     * falling through to the builtin Normal-mode command for that key.
+     * @param ref Registry reference of the function to call.
+     * @param arg String argument to pass to the Lua function.
+     * @return The truthiness of ref's return value, or false if ref is unset or errors.
+     */
+    bool CallRefWithStringForBool(int ref, const std::string &arg);
+    /**
      * @brief Releases a registered callback so it can be garbage-collected -- call once a callback
      * (e.g. a finished job's on_exit) will never fire again.
      * @param ref Registry reference to release.

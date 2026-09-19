@@ -783,7 +783,7 @@ struct Buffer {
     // startup-only" case, or so the reasoning went) -- it now soft-deletes
     // too, since a directory argument's on_directory_open hook can cache
     // the pre-shift id of a *later* buffer (kBuiltinFileTree's
-    // mep_tree_edit_buf) before that shift ever ran, silently pointing it
+    // mep_oil_by_dir) before that shift ever ran, silently pointing it
     // at the wrong buffer for the rest of the process. Reindexing every
     // buffer_id-holding site for a general "delete any buffer at any time"
     // command would be exactly the kind of invasive, easy-to-miss-a-site
@@ -8145,18 +8145,15 @@ public:
     // today; unlike Insert mode's CR this editor has never bound Normal
     // mode's own Enter to a motion the way real Vim's "+"/CR is, so
     // intercepting it here doesn't take anything away -- whenever the
-    // active pane's buffer is `buffer_id`. Single-slot, last-registration-
-    // wins, same scope cut as SetCompletionSourceRef/SetSidebarOnKey above:
-    // one buffer needs this at a time, not a general per-buffer registry.
-    // kBuiltinStructure's structure-split pane (main.cpp) is the first
+    // active pane's buffer is `buffer_id`. One callback per buffer (a
+    // re-registration replaces it) -- kBuiltinFileTree's sidebar tree and
+    // its oil-style directory buffers each claim Enter at the same time as
+    // kBuiltinStructure's split pane. kBuiltinStructure's structure-split pane (main.cpp) is the first
     // caller -- lets <CR> jump to the entry under the cursor there the
     // same way ActivateSidebarLine already does for the full-sidebar
     // version (HandleSidebarInput), instead of requiring :MepStructureSplit
     // to be re-run from inside the pane.
-    void SetBufferOnEnter(int buffer_id, int lua_ref) {
-        enter_hook_buffer_id_ = buffer_id;
-        enter_hook_ref_ = lua_ref;
-    }
+    void SetBufferOnEnter(int buffer_id, int lua_ref) { SetBufferHookRef(&enter_hook_refs_, buffer_id, lua_ref); }
 
     // mep.buffer_set_on_write(buffer_id, fn): fn() called by SaveBuffer
     // instead of writing `buffer_id`'s lines to disk -- lets a Lua-managed
@@ -8168,25 +8165,31 @@ public:
     // marked unmodified, save_epoch_ bumped) since -- unlike the Enter hook,
     // which can legitimately want to defer to "no default behavior" --
     // every registered write hook so far replaces the write outright.
-    // Single-slot, last-registration-wins, same scope cut as
-    // SetBufferOnEnter above.
-    void SetBufferOnWrite(int buffer_id, int lua_ref) {
-        write_hook_buffer_id_ = buffer_id;
-        write_hook_ref_ = lua_ref;
-    }
+    // One callback per buffer, same as SetBufferOnEnter above.
+    void SetBufferOnWrite(int buffer_id, int lua_ref) { SetBufferHookRef(&write_hook_refs_, buffer_id, lua_ref); }
 
     // mep.buffer_set_on_image_toggle(buffer_id, fn): fn() called instead of
     // Normal mode's builtin 'I' (insert at first non-blank) whenever the
     // active pane's buffer is `buffer_id` -- lets a Lua-managed buffer claim
     // Shift+I for its own purpose (kBuiltinFileTree's file tree is the first
     // caller: toggling into an image-viewer pane for the tree's root
-    // directory) without shadowing 'I' anywhere else. Single-slot, last-
-    // registration-wins, same scope cut as SetBufferOnEnter/SetBufferOnWrite
-    // above.
+    // directory) without shadowing 'I' anywhere else. One callback per
+    // buffer, same as SetBufferOnEnter/SetBufferOnWrite above.
     void SetBufferOnImageToggle(int buffer_id, int lua_ref) {
-        image_toggle_hook_buffer_id_ = buffer_id;
-        image_toggle_hook_ref_ = lua_ref;
+        SetBufferHookRef(&image_toggle_hook_refs_, buffer_id, lua_ref);
     }
+
+    // mep.buffer_set_on_key(buffer_id, fn): fn(key) is offered each plain
+    // Normal-mode keypress (one ASCII character) while the active pane's
+    // buffer is `buffer_id` and nothing (operator, count, g/z/[ prefix,
+    // register) is pending; a truthy return swallows the key, otherwise the
+    // builtin command runs as usual. The leader key is always checked
+    // first so whichkey still works. kBuiltinFileTree's sidebar tree is the
+    // first caller: single-key a/r/d/... file operations, and swallowing
+    // every editing key so the tree's text can't be modified in place (the
+    // oil-style editable directory view is a separate buffer). lua_ref 0
+    // clears it. One callback per buffer, same as SetBufferOnEnter above.
+    void SetBufferOnKey(int buffer_id, int lua_ref) { SetBufferHookRef(&key_hook_refs_, buffer_id, lua_ref); }
 
     // mep.set_on_directory_open(fn): fn(path) called by LoadFile whenever
     // the path it was asked to open (":e"/"mep.open", either one -- both
@@ -9789,15 +9792,24 @@ private:
     int completion_accept_hook_ref_ = 0;
     int completion_resolve_hook_ref_ = 0;
     int insert_tab_hook_ref_ = 0;
-    // See SetBufferOnEnter's own comment above.
-    int enter_hook_buffer_id_ = -1;
-    int enter_hook_ref_ = 0;
-    // See SetBufferOnWrite's own comment above.
-    int write_hook_buffer_id_ = -1;
-    int write_hook_ref_ = 0;
-    // See SetBufferOnImageToggle's own comment above.
-    int image_toggle_hook_buffer_id_ = -1;
-    int image_toggle_hook_ref_ = 0;
+    // buffer_id -> Lua registry ref; see SetBufferOnEnter/SetBufferOnWrite/
+    // SetBufferOnImageToggle/SetBufferOnKey's own comments above.
+    std::unordered_map<int, int> enter_hook_refs_;
+    std::unordered_map<int, int> write_hook_refs_;
+    std::unordered_map<int, int> image_toggle_hook_refs_;
+    std::unordered_map<int, int> key_hook_refs_;
+    static void SetBufferHookRef(std::unordered_map<int, int> *hooks, int buffer_id, int lua_ref) {
+        if (lua_ref == 0) hooks->erase(buffer_id);
+        else (*hooks)[buffer_id] = lua_ref;
+    }
+    static int BufferHookRef(const std::unordered_map<int, int> &hooks, int buffer_id) {
+        auto it = hooks.find(buffer_id);
+        return it == hooks.end() ? 0 : it->second;
+    }
+    // Offers `cp` to the active buffer's SetBufferOnKey hook when no Normal-
+    // mode command is mid-flight (a bare pending count is fine -- it's
+    // dropped if the hook swallows the key); true = swallowed.
+    bool TryBufferKeyHook(int cp);
     // See SetDirectoryOpenHookRef's own comment above.
     int directory_open_hook_ref_ = 0;
     bool completion_open_ = false;

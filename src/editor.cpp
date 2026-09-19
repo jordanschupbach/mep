@@ -14803,6 +14803,10 @@ void Editor::HandleNormalInput() {
         return;
     }
     if (gfx::IsKeyPressed(gfx::Key::Escape)) {
+        // A "nothing pending" Escape is offered to the buffer's
+        // SetBufferOnKey hook as "\x1b" first (the file tree closes its `?`
+        // help view with it); a hook that doesn't want it returns false.
+        if (!insert_one_shot_normal_ && TryBufferKeyHook(27)) return;
         // In a floating pane, the "nothing pending" Escape that is Vim's
         // harmless no-op everywhere else dismisses the float instead
         // (Insert-mode Escape still just returns to Normal first, and one
@@ -24438,6 +24442,12 @@ void Editor::SetBufferFilenameForLua(int buffer_id, const std::string &name) {
 void Editor::SetBufferHideLineNumbers(int buffer_id, bool hide) {
     if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
     buffers_[static_cast<size_t>(buffer_id)].hide_line_numbers = hide;
+}
+
+void Editor::SetBufferFooter(int buffer_id, const std::string &text, const std::string &hl) {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
+    buffers_[static_cast<size_t>(buffer_id)].footer_hint = text;
+    buffers_[static_cast<size_t>(buffer_id)].footer_hint_hl = hl;
 }
 
 void Editor::SetBufferNoWrap(int buffer_id, bool no_wrap) {

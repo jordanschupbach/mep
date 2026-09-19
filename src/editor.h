@@ -800,6 +800,13 @@ struct Buffer {
     // second visual row reads as a second, indented entry rather than a
     // continuation of the first).
     bool no_wrap = false;
+    // mep.buffer_set_footer(id, text, hl?): a one-line key hint drawn along
+    // the bottom row of every pane showing this buffer (that row is taken
+    // out of the text area) -- the pane-hosted counterpart of a sidebar's
+    // `?: help` footer (DrawSidebarFooter). kBuiltinFileTree's tree is the
+    // first caller. Empty = no footer.
+    std::string footer_hint;
+    std::string footer_hint_hl;
     // `:bd`/`:bdelete` (Editor::BufferDelete) -- soft-delete, not a real
     // erase from buffers_: buffer_id is treated as a stable index
     // everywhere in this codebase (panes, terminals_, agent-rpc
@@ -6174,6 +6181,13 @@ public:
      */
     void SetBufferNoWrap(int buffer_id, bool no_wrap);
     /**
+     * @brief Sets the one-line key hint drawn along the bottom of every pane showing a buffer (see Buffer::footer_hint).
+     * @param buffer_id The id of the buffer to change.
+     * @param text The hint text; empty removes the footer.
+     * @param hl The highlight group to draw it in (empty = Comment).
+     */
+    void SetBufferFooter(int buffer_id, const std::string &text, const std::string &hl);
+    /**
      * @brief Returns whether a buffer has unsaved changes.
      * @param buffer_id The id of the buffer to check.
      * @return True if modified; false if unmodified or `buffer_id` is out of range.
@@ -8286,8 +8300,10 @@ public:
     // first so whichkey still works. kBuiltinFileTree's sidebar tree is the
     // first caller: single-key a/r/d/... file operations, and swallowing
     // every editing key so the tree's text can't be modified in place (the
-    // oil-style editable directory view is a separate buffer). lua_ref 0
-    // clears it. One callback per buffer, same as SetBufferOnEnter above.
+    // oil-style editable directory view is a separate buffer). A bare
+    // Normal-mode Escape is offered too, as "\x1b" (return false to keep
+    // its usual meaning). lua_ref 0 clears it. One callback per buffer,
+    // same as SetBufferOnEnter above.
     void SetBufferOnKey(int buffer_id, int lua_ref) { SetBufferHookRef(&key_hook_refs_, buffer_id, lua_ref); }
 
     // mep.set_on_directory_open(fn): fn(path) called by LoadFile whenever

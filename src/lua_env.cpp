@@ -3847,6 +3847,19 @@ int l_buffer_set_hide_line_numbers(lua_State *L) {
 }
 
 /**
+ * @brief Implements mep.buffer_set_footer(id, text, hl?): sets the key hint drawn along the bottom of panes showing a buffer.
+ * @param L Lua state; arg 1 is the buffer id, arg 2 the hint text (nil/"" removes it), arg 3 an optional highlight group.
+ * @return Number of values pushed (0).
+ */
+int l_buffer_set_footer(lua_State *L) {
+    int id = static_cast<int>(luaL_checkinteger(L, 1));
+    const char *text = luaL_optstring(L, 2, "");
+    const char *hl = luaL_optstring(L, 3, "");
+    GetEditor(L)->SetBufferFooter(id, text, hl);
+    return 0;
+}
+
+/**
  * @brief Implements mep.buffer_set_wrap(id, wrap): opts a buffer out of :set wrap's soft-wrap.
  * @param L Lua state; arg 1 is the buffer id, arg 2 whether soft-wrap stays enabled for it.
  * @return Number of values pushed (0).
@@ -9581,6 +9594,7 @@ const luaL_Reg kMepFuncs[] = {
     {"buffer_set_filename", l_buffer_set_filename},
     {"buffer_set_hide_line_numbers", l_buffer_set_hide_line_numbers},
     {"buffer_set_wrap", l_buffer_set_wrap},
+    {"buffer_set_footer", l_buffer_set_footer},
     {"buffer_modified", l_buffer_modified},
     {"fold_create", l_fold_create},
     {"fold_clear_provider", l_fold_clear_provider},

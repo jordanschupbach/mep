@@ -517,7 +517,13 @@ Available to =:lua=, =:source=, and =init.lua=:
   description}, ...})= sets the sidebar-specific keys listed above the
   shared navigation keys (an empty key is a sub-heading);
   =mep.sidebar_toggle_help(id)= / =mep.sidebar_help_open(id)= drive it
-  from Lua.
+  from Lua. The file tree (=<leader>ff=, a pane rather than a sidebar)
+  works the same way.
+- =mep.buffer_set_footer(id, text, hl?)= draws a one-line hint along the
+  bottom row of every pane showing buffer =id= (the pane-hosted version of
+  a sidebar's =?: help= footer); an empty =text= removes it. A buffer's
+  =mep.buffer_set_on_key= hook is also offered a bare Normal-mode Escape,
+  as ="\27"= (return false to keep its usual meaning).
 - =mep.float_open(path, line?, {save_on_close=bool}?)= -> bool opens a
   file in a floating editable pane centered over everything -- a real
   pane over a real buffer (every editing mode, =:w=, the wheel all work

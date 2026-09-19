@@ -4009,8 +4009,83 @@ const char *kBuiltinFileTree =
     "  mep.tree_refresh()\n"
     "  mep_tree_refresh_ignored()\n"
     "end\n"
-    "local mep_tree_help = 'Files: Enter=open/toggle  a=add (end with / for dir)  r=rename  d=delete  c=copy  '\n"
-    "  .. 'y=yank path  e=edit dir (oil)  o=open with OS  -=root up  C=root here  R=refresh  H=hidden  I=images  q=close'\n"
+    // `?` help view, same shape as a SidebarInstance's (FlattenSidebarHelp,
+    // editor.cpp): the tree's buffer text is swapped for its key list until
+    // Escape/`?`/q swaps the tree back (restoring the cursor), and the
+    // pane's footer (mep.buffer_set_footer) says which way to go.
+    "local MEP_TREE_KEYS = {\n"
+    "  {'Enter', 'open the file / expand or collapse the directory'},\n"
+    "  {'a', 'add (end with / for a directory)'}, {'r', 'rename'}, {'d', 'delete'}, {'c', 'copy'},\n"
+    "  {'Y', 'copy the path'}, {'e', 'edit the directory as text (oil)'}, {'o', 'open with the OS'},\n"
+    "  {'-', 'root up one directory'}, {'C', 'make the directory the root'}, {'R', 'refresh'},\n"
+    "  {'H', 'show / hide hidden files'}, {'I', 'image viewer for the directory'}, {'q', 'close the tree'},\n"
+    "}\n"
+    "local MEP_TREE_NAV_KEYS = {\n"
+    "  {'j / k', 'move down / up'}, {'gg / G', 'first / last row'}, {'/', 'search'}, {'?', 'show / hide this help'},\n"
+    "}\n"
+    "local mep_tree_help_open = false\n"
+    "local mep_tree_help_saved = {1, 1}\n"
+    "local function mep_tree_set_footer()\n"
+    "  if not mep_tree_buf then return end\n"
+    "  if mep_tree_help_open then mep.buffer_set_footer(mep_tree_buf, 'Esc: back to Files', 'Yellow')\n"
+    "  else mep.buffer_set_footer(mep_tree_buf, '?: help', 'Comment') end\n"
+    "end\n"
+    "local function mep_tree_wrap(text, width)\n"
+    "  local out, cur = {}, ''\n"
+    "  for word in text:gmatch('%S+') do\n"
+    "    if cur == '' then cur = word\n"
+    "    elseif #cur + 1 + #word <= width then cur = cur .. ' ' .. word\n"
+    "    else out[#out + 1] = cur; cur = word end\n"
+    "  end\n"
+    "  out[#out + 1] = cur\n"
+    "  return out\n"
+    "end\n"
+    "local function mep_tree_render_help()\n"
+    "  if not mep_tree_ns then mep_tree_ns = mep.ns_create('mep_tree') end\n"
+    "  local key_w = 0\n"
+    "  for _, kv in ipairs(MEP_TREE_KEYS) do key_w = math.max(key_w, #kv[1]) end\n"
+    "  for _, kv in ipairs(MEP_TREE_NAV_KEYS) do key_w = math.max(key_w, #kv[1]) end\n"
+    "  local desc_w = math.max(8, (mep.buffer_text_cols(mep_tree_buf) or 30) - key_w - 5)\n"
+    "  local lines, decos = {}, {}\n"
+    "  local function heading(text)\n"
+    "    lines[#lines + 1] = text\n"
+    "    decos[#decos + 1] = {row = #lines, col_start = 1, col_end = #text + 1, hl_group = 'SidebarTitle'}\n"
+    "  end\n"
+    "  local function add(kv)\n"
+    "    local key = kv[1] .. string.rep(' ', key_w - #kv[1])\n"
+    "    for i, part in ipairs(mep_tree_wrap(kv[2], desc_w)) do\n"
+    "      if i == 1 then\n"
+    "        lines[#lines + 1] = '  ' .. key .. '  ' .. part\n"
+    "        decos[#decos + 1] = {row = #lines, col_start = 3, col_end = 3 + #kv[1], hl_group = 'Cyan'}\n"
+    "      else\n"
+    "        lines[#lines + 1] = string.rep(' ', key_w + 4) .. part\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  heading('Files keys')\n"
+    "  for _, kv in ipairs(MEP_TREE_KEYS) do add(kv) end\n"
+    "  lines[#lines + 1] = ''\n"
+    "  heading('Navigation')\n"
+    "  for _, kv in ipairs(MEP_TREE_NAV_KEYS) do add(kv) end\n"
+    "  mep.buffer_set_lines(mep_tree_buf, lines)\n"
+    "  mep.buffer_ns_clear(mep_tree_buf, mep_tree_ns)\n"
+    "  for _, d in ipairs(decos) do mep.buffer_deco_add(mep_tree_buf, mep_tree_ns, d) end\n"
+    "end\n"
+    // Only ever called with the tree focused (its own on_key), so
+    // mep.cursor/mep.set_cursor are the tree pane's.
+    "local function mep_tree_toggle_help()\n"
+    "  if not mep_tree_help_open then\n"
+    "    mep_tree_help_saved = {mep.cursor()}\n"
+    "    mep_tree_help_open = true\n"
+    "    mep_tree_render_help()\n"
+    "    mep.set_cursor(1, 1)\n"
+    "  else\n"
+    "    mep_tree_help_open = false\n"
+    "    mep_tree_render(mep_tree_buf, mep_tree_rows or {})\n"
+    "    mep.set_cursor(math.max(1, math.min(mep_tree_help_saved[1], #(mep_tree_rows or {}))), mep_tree_help_saved[2] or 1)\n"
+    "  end\n"
+    "  mep_tree_set_footer()\n"
+    "end\n"
     // Keys that only move/search/scroll/yank pass through to their normal
     // Normal-mode meaning; everything else is either a tree action below or
     // swallowed, so the tree's text can't be edited in place (edit a
@@ -4018,6 +4093,13 @@ const char *kBuiltinFileTree =
     "local mep_tree_passthrough = {}\n"
     "for c in ('hjklgGwbWBE0^$HML/?nN*#zZ:\\'`m{}()%fFtT;,123456789Iy'):gmatch('.') do mep_tree_passthrough[c] = true end\n"
     "local function mep_tree_on_key(k)\n"
+    // While the help view shows, only movement/search passes through (not
+    // I's image viewer); every tree action is swallowed.
+    "  if mep_tree_help_open then\n"
+    "    if k == '?' or k == 'q' or k == '\\27' then mep_tree_toggle_help() return true end\n"
+    "    return k == 'I' or not mep_tree_passthrough[k]\n"
+    "  end\n"
+    "  if k == '\\27' then return false end\n"
     "  local row = mep_tree_cursor_row()\n"
     "  if k == 'a' then mep_tree_add(row)\n"
     "  elseif k == 'r' then mep_tree_rename(row)\n"
@@ -4044,13 +4126,14 @@ const char *kBuiltinFileTree =
     "  elseif k == 'q' then\n"
     "    if mep.pane_focus_buffer(mep_tree_buf) then mep.pane_close_buffer() end\n"
     "  elseif k == '?' then\n"
-    "    mep.notify(mep_tree_help)\n"
+    "    mep_tree_toggle_help()\n"
     "  elseif mep_tree_passthrough[k] then\n"
     "    return false\n"
     "  end\n"
     "  return true\n"
     "end\n"
     "local function mep_tree_on_enter()\n"
+    "  if mep_tree_help_open then return end\n"
     "  local row = mep_tree_cursor_row()\n"
     "  if not row then return end\n"
     "  if row.is_dir then\n"
@@ -4072,14 +4155,18 @@ const char *kBuiltinFileTree =
     "    mep.buffer_set_on_write(mep_tree_buf, function() mep.tree_refresh() end)\n"
     "    mep.buffer_set_on_image_toggle(mep_tree_buf, function() mep_tree_toggle_image_viewer(mep_tree_root, mep_tree_buf) end)\n"
     "    mep.buffer_set_drag_resolver(mep_tree_buf, function(row)\n"
-    "      local r = mep_tree_rows and mep_tree_rows[row + 1]\n"
+    "      local r = not mep_tree_help_open and mep_tree_rows and mep_tree_rows[row + 1]\n"
     "      return r and r.path or nil\n"
     "    end)\n"
     "  end\n"
     "  mep.buffer_set_filename(mep_tree_buf, mep_tree_root)\n"
-    "  mep_tree_render(mep_tree_buf, mep_tree_rows)\n"
+    // An async refresh (git-ignore scan, fs change) mustn't paint the tree
+    // over the help view -- closing the help renders the fresh rows.
+    "  if not mep_tree_help_open then mep_tree_render(mep_tree_buf, mep_tree_rows) end\n"
+    "  mep_tree_set_footer()\n"
     "end\n"
     "function mep.tree_open(dir)\n"
+    "  mep_tree_help_open = false\n"
     "  mep_tree_root = dir or '.'\n"
     "  mep_tree_expanded[mep_tree_root] = true\n"
     "  mep.tree_refresh()\n"
@@ -35370,6 +35457,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     }
 
     int visible_lines = std::max(1, static_cast<int>(content_h / static_cast<float>(line_height)));
+    // Buffer::footer_hint takes the bottom row away from the text (drawn
+    // after the rows below), so the cursor can never scroll under it.
+    const bool draw_footer = !buf.footer_hint.empty() && visible_lines > 1;
+    if (draw_footer) visible_lines--;
 
     // Sign column: one character wide, *always* reserved (unlike
     // number_w below) for git/LSP-diagnostic/DAP-breakpoint/todo signs
@@ -36715,6 +36806,17 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     }
 
     gfx::EndScissorMode();
+
+    // Same look as DrawSidebarFooter: a rule, then the hint, over the
+    // bottom row reserved from visible_lines above.
+    if (draw_footer) {
+        const float fy = y + h - static_cast<float>(line_height);
+        gfx::DrawRectangle(static_cast<int>(x) + 2, static_cast<int>(fy) - 2, static_cast<int>(w) - 4, 1, ResolveHlGroup("Border"));
+        gfx::BeginScissorMode(static_cast<int>(x), static_cast<int>(fy), static_cast<int>(w), line_height);
+        DrawUiText(buf.footer_hint, gfx::Vector2{x + 8.0f, fy + 1.0f}, MenuFontSize(),
+                   ResolveHlGroup(buf.footer_hint_hl.empty() ? "Comment" : buf.footer_hint_hl));
+        gfx::EndScissorMode();
+    }
 
     DrawPaneBorder(x, y, w, h, is_active);
     // Hover tooltip (Phase 3 gap): recorded here but drawn later, once, by

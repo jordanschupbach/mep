@@ -11,6 +11,7 @@
 #include "editor.h"
 #include "formula.h"
 #include "html_doc.h"
+#include "url_util.h"
 #include "svg_doc.h"
 #include "job.h"
 #include "lua_env.h"
@@ -1363,6 +1364,19 @@ struct LinkHintRect {
 };
 std::vector<LinkHintRect> g_link_hint_rects;
 
+// Where each laid-out piece of an html pane's DOM landed on screen this
+// frame, so a click can be delivered to the node under the pointer as a
+// DOM event (buttons, inputs, anything with a listener). Rebuilt by
+// DrawPane's html branch every frame, like g_link_hint_rects.
+struct HtmlClickRect {
+    int pane_id;
+    int buffer_id;
+    gfx::Rectangle rect;
+    DomNode *node;
+    std::string link_href;  // the enclosing <a href>, followed unless the click is cancelled
+};
+std::vector<HtmlClickRect> g_html_click_rects;
+
 // One hint target (HINT_SYSTEM.md, see the fuller comment much further
 // down this file alongside CollectHintTargets/HandleHintModeInput/
 // DrawHintOverlay -- these three globals sit up here instead, ahead of
@@ -1991,6 +2005,86 @@ float DrawUiText(const std::string &text, gfx::Vector2 pos, float font_size, gfx
  */
 float MeasureUiText(const std::string &text, float font_size) {
     return DrawUiText(text, gfx::Vector2{0, 0}, font_size, gfx::Blank, true);
+}
+
+// DrawUiText with per-byte coloring: `spans` (PickerHlSpan, byte offsets
+// into `text`, later spans winning where they overlap -- the same
+// "layer in order, last wins" rule DrawPickerOverlay's PickerLineColors
+// applies) override `tint` for the bytes they cover; everything else
+// draws in `tint`. A codepoint takes the color of its first byte. Used
+// for a sidebar row carrying SidebarWidget::spans (Treesitter-colored
+// code in kBuiltinLearn's identify-the-code pane); an empty `spans` is
+// exactly DrawUiText.
+/**
+ * @brief Draws UI chrome text with optional per-byte highlight spans overriding the base tint.
+ * @param text Text to draw.
+ * @param pos Top-left screen position to start drawing at.
+ * @param font_size Font size in pixels.
+ * @param tint Base text color for bytes no span covers.
+ * @param spans Highlight spans (byte ranges into `text` plus highlight group), later ones winning on overlap.
+ * @return The total width drawn, in pixels.
+ */
+float DrawUiTextSpans(const std::string &text, gfx::Vector2 pos, float font_size, gfx::Color tint,
+                      const std::vector<PickerHlSpan> &spans) {
+    if (spans.empty()) return DrawUiText(text, pos, font_size, tint);
+    std::vector<gfx::Color> colors(text.size(), tint);
+    for (const PickerHlSpan &sp : spans) {
+        const gfx::Color c = ResolveHlGroup(sp.hl_group);
+        const int cs = std::max(0, sp.col_start);
+        const int ce = std::min(static_cast<int>(text.size()), sp.col_end);
+        for (int i = cs; i < ce; i++) colors[static_cast<size_t>(i)] = c;
+    }
+    float x = pos.x;
+    const char *s = text.c_str();
+    const int len = static_cast<int>(text.size());
+    for (int i = 0; i < len;) {
+        int cp_size = 0;
+        const int cp = gfx::GetCodepointNext(&s[i], &cp_size);
+        const std::string glyph(s + i, static_cast<size_t>(cp_size));
+        const gfx::Color color = colors[static_cast<size_t>(i)];
+        i += cp_size;
+        const gfx::Font &f = IsIconCodepoint(cp)   ? g_icon_font
+                             : IsSymbolCodepoint(cp) ? g_symbol_font
+                             : IsEmojiCodepoint(cp)  ? g_emoji_font
+                                                     : g_font;
+        gfx::DrawTextEx(f, glyph.c_str(), gfx::Vector2{x, pos.y}, font_size, 0, color);
+        x += gfx::MeasureTextEx(f, glyph.c_str(), font_size, 0).x;
+    }
+    return x - pos.x;
+}
+
+gfx::Texture2D *GetOrLoadOrgInlineImageTexture(const std::string &path);  // defined with the org inline-image cache below
+
+// Draws one sidebar row (SidebarLine): an image row positions the row's
+// texture from its offset within the block (so a block whose first row
+// scrolled off still shows its visible remainder under the caller's
+// scissor), scaled to fit `image_rows` rows tall and the available width;
+// a text row goes through DrawUiTextSpans. `avail_w` is the width from
+// `pos.x` to the pane's right edge, `line_h` the row height.
+/**
+ * @brief Draws a flattened sidebar row: its inline image block, or its (span-colored) text.
+ * @param line The row to draw.
+ * @param pos Top-left of this row.
+ * @param font_size Font size for a text row.
+ * @param tint Base text color.
+ * @param line_h Row height in pixels.
+ * @param avail_w Width available to the right of `pos.x`.
+ */
+void DrawSidebarRow(const SidebarLine &line, gfx::Vector2 pos, float font_size, gfx::Color tint, int line_h, float avail_w) {
+    if (line.image.empty()) {
+        DrawUiTextSpans(line.text, pos, font_size, tint, line.spans);
+        return;
+    }
+    if (line.image_index != 0) return;  // the block draws once, from its first row
+    const gfx::Texture2D *tex = GetOrLoadOrgInlineImageTexture(line.image);
+    if (!tex) {
+        DrawUiText("[image not found: " + line.image + "]", pos, font_size, ResolveHlGroup("Warn"));
+        return;
+    }
+    const float box_h = static_cast<float>(line_h * std::max(1, line.image_rows)) - 4.0f;
+    const float box_w = std::max(40.0f, avail_w - 8.0f);
+    const float scale = std::min(box_w / static_cast<float>(tex->width), box_h / static_cast<float>(tex->height));
+    gfx::DrawTextureEx(*tex, gfx::Vector2{pos.x, pos.y + 2.0f}, 0.0f, scale, gfx::White);
 }
 
 // raylib's GetGlyphIndex(font, codepoint) -- called by DrawTextEx once and
@@ -3135,70 +3229,172 @@ const char *kBuiltinTextTools =
     // Editor::OpenHtmlInPlace's dedup-by-source can't mistake a re-fetch
     // for the same stale page (see its own .cpp comment); a local path
     // just opens directly, no fetch needed.
+    // Loading a URL is a blocking mep.http_get (http_client.h: plain
+    // sockets for http://, so a page served from localhost -- :Serve --
+    // needs nothing but mep; a curl subprocess for https://). The body
+    // goes to a *fresh* temp file per load so OpenHtmlInPlace's dedup (by
+    // source path) can never serve a stale copy, and `land_fn(tmpfile,
+    // url)` gets the final URL after redirects as the page's origin --
+    // which is what its subresources, fetch() calls and links resolve
+    // against (Editor::PopulateHtmlSession / LoadRemoteHtmlResources).
+    "local function mep_browse_fetch(url, land_fn)\n"
+    "  local res = mep.http_get(url)\n"
+    "  if not res.ok then\n"
+    "    mep.notify('Browse: cannot load ' .. url .. ' (' .. res.error .. ')', 'error')\n"
+    "    return false\n"
+    "  end\n"
+    "  if res.status >= 400 then mep.notify('Browse: HTTP ' .. res.status .. ' for ' .. url, 'warn') end\n"
+    "  local tmpfile = os.tmpname()\n"
+    "  local f = io.open(tmpfile, 'wb')\n"
+    "  if not f then mep.notify('Browse: cannot write a temp file', 'error') return false end\n"
+    "  f:write(res.body)\n"
+    "  f:close()\n"
+    "  land_fn(tmpfile, res.url ~= '' and res.url or url)\n"
+    "  return true\n"
+    "end\n"
     "function mep.browse_open_in_pane(target)\n"
     "  local land_fn = mep.html_current_origin() and mep.html_navigate or mep.html_open\n"
     "  if target:match('^https?://') then\n"
-    "    local tmpfile = os.tmpname()\n"
-    "    mep.notify('Fetching ' .. target .. '...')\n"
-    "    mep.job_start({'curl', '-sL', '-o', tmpfile, target}, {\n"
-    "      on_exit = function(code)\n"
-    "        if code == 0 then land_fn(tmpfile, target)\n"
-    "        else mep.notify('mep.browse: failed to fetch ' .. target, 'error') end\n"
-    "      end,\n"
-    "    })\n"
+    "    mep_browse_fetch(target, land_fn)\n"
     "  else\n"
     "    land_fn(target)\n"
     "  end\n"
     "end\n"
-    // Fetches `target` (curl, if it looks like a remote URL) or just
-    // passes it straight through (a local path, nothing to fetch), then
-    // calls `land_fn(local_path, target)` -- shared by mep.browse_reload
-    // (same origin, fresh fetch/re-read) and mep.browse_open_bar (a new
-    // origin the user just typed), both of which pass mep.html_reload as
-    // `land_fn` so the result lands in the *current* pane's existing
-    // session (Editor::ReloadHtmlBuffer) rather than opening a new
-    // buffer the way mep.browse_open_in_pane's own mep.html_open call
-    // does -- matching a real browser's address bar, which navigates the
-    // current tab in place rather than opening a new one.
+    // Fetches `target` (if it's a URL) or just passes it straight through
+    // (a local path, nothing to fetch), then calls `land_fn(local_path,
+    // target)` -- shared by mep.browse_reload (same origin, fresh fetch/
+    // re-read) and the omnibar (a new origin the user just typed), which
+    // pass mep.html_reload / mep.html_navigate as `land_fn` so the result
+    // lands in the *current* pane's existing session rather than opening a
+    // new buffer -- matching a real browser's address bar, which navigates
+    // the current tab in place rather than opening a new one.
     "local function mep_browse_fetch_then(target, land_fn)\n"
     "  if target:match('^https?://') then\n"
-    "    local tmpfile = os.tmpname()\n"
-    "    mep.notify('Fetching ' .. target .. '...')\n"
-    "    mep.job_start({'curl', '-sL', '-o', tmpfile, target}, {\n"
-    "      on_exit = function(code)\n"
-    "        if code == 0 then land_fn(tmpfile, target)\n"
-    "        else mep.notify('mep.browse: failed to fetch ' .. target, 'error') end\n"
-    "      end,\n"
-    "    })\n"
+    "    mep_browse_fetch(target, land_fn)\n"
     "  else\n"
     "    land_fn(target, target)\n"
     "  end\n"
     "end\n"
-    // 'r' while parked on the in-pane browser (Editor::HandleHtmlInput)
-    // dispatches here via MepBrowseReload: re-fetches HtmlSession::origin
-    // if it's a remote URL, or just re-reads the local file otherwise --
-    // either way picks up whatever changed since the page was first
-    // opened. A no-op if the current pane isn't an HTML pane
-    // (mep.html_current_origin returns nil).
+    // 'r' while parked on the in-pane browser (Editor::HandleHtmlInput),
+    // or the omnibar's R button, dispatches here via MepBrowseReload:
+    // re-fetches HtmlSession::origin if it's a URL, or just re-reads the
+    // local file otherwise -- either way picks up whatever changed since
+    // the page was first opened. A no-op if the current pane isn't an HTML
+    // pane (mep.html_current_origin returns nil).
     "function mep.browse_reload()\n"
     "  local origin = mep.html_current_origin()\n"
     "  if not origin then return end\n"
     "  mep_browse_fetch_then(origin, mep.html_reload)\n"
     "end\n"
     "mep.command('MepBrowseReload', mep.browse_reload)\n"
-    // 'o' while parked on the in-pane browser dispatches here: a small
-    // address-bar-style prompt (mep.ui_input, prefilled with the current
-    // page's own origin so a quick edit -- adding a path segment, say --
-    // is a couple keystrokes) that navigates the *current* pane to
-    // whatever's entered. A no-op if the current pane isn't an HTML pane.
+    // The omnibar's Enter (Editor::HandleHtmlInput) lands here with the
+    // typed text: mep.url_normalize turns "localhost:8000" / ":8000/app" /
+    // "example.com" into a URL (a URL or a local path passes through), and
+    // the current html pane navigates there in place. Outside an html pane
+    // it behaves like :Browse.
+    "function mep.browse_go(input)\n"
+    "  if not input or input == '' then return end\n"
+    "  local target = mep.url_normalize(input)\n"
+    "  if mep.html_current_origin() then mep_browse_fetch_then(target, mep.html_navigate)\n"
+    "  else mep.browse_open_in_pane(target) end\n"
+    "end\n"
+    "mep.command('MepBrowseGo', mep.browse_go)\n"
+    // :MepBrowseOpen used to be a modal mep.ui_input prompt; the pane now
+    // has a real omnibar, so this just puts it into edit mode ('o' and
+    // Ctrl-L do the same from the keyboard, a click on the field from the
+    // mouse).
     "function mep.browse_open_bar()\n"
-    "  local current = mep.html_current_origin()\n"
-    "  if not current then return end\n"
-    "  mep.ui_input('Open:', current, function(input)\n"
-    "    if input and input ~= '' then mep_browse_fetch_then(input, mep.html_navigate) end\n"
-    "  end)\n"
+    "  if not mep.html_current_origin() then return end\n"
+    "  mep.html_omnibar_edit()\n"
     "end\n"
     "mep.command('MepBrowseOpen', mep.browse_open_bar)\n"
+    // The built-in static web server (http_server.h), so a web project can
+    // be served to http://localhost and opened in the browser pane without
+    // leaving mep:
+    //   :Serve [dir] [port]   serve `dir` (default: the current file's
+    //                         directory, else the workspace root) on
+    //                         127.0.0.1 -- port 0/omitted picks a free
+    //                         one -- and open it in the browser pane
+    //   :ServeStop [port]     stop that server (or all of them)
+    //   :Servers              list what's being served
+    "local function mep_serve_default_dir()\n"
+    "  local fname = mep.filename()\n"
+    "  if fname ~= '' and not fname:match('^sidebar/') then\n"
+    "    local dir = mep_lsp_abspath(fname):match('^(.*)/[^/]*$')\n"
+    "    if dir then return dir end\n"
+    "  end\n"
+    "  return mep.workspace_root and mep.workspace_root() or '.'\n"
+    "end\n"
+    "function mep.serve(dir, port, open)\n"
+    "  dir = (dir and dir ~= '') and dir or mep_serve_default_dir()\n"
+    "  local bound, err = mep.http_serve(dir, port or 0)\n"
+    "  if not bound then mep.notify('Serve: ' .. tostring(err), 'error') return nil end\n"
+    "  local url = 'http://localhost:' .. bound .. '/'\n"
+    "  mep.notify('Serving ' .. dir .. ' at ' .. url)\n"
+    "  if open ~= false then mep.browse_open_in_pane(url) end\n"
+    "  return bound, url\n"
+    "end\n"
+    "mep.command('Serve', function(args)\n"
+    "  local dir, port = nil, nil\n"
+    "  for word in (args or ''):gmatch('%S+') do\n"
+    "    if tonumber(word) and not port then port = tonumber(word) else dir = word end\n"
+    "  end\n"
+    "  mep.serve(dir, port)\n"
+    "end)\n"
+    "mep.command('ServeStop', function(args)\n"
+    "  local n = mep.http_stop(tonumber(args or '') or 0)\n"
+    "  mep.notify('Stopped ' .. n .. ' server(s)')\n"
+    "end)\n"
+    "mep.command('Servers', function()\n"
+    "  local list = mep.http_servers()\n"
+    "  if #list == 0 then mep.notify('No servers running (:Serve [dir] [port])') return end\n"
+    "  local lines = {}\n"
+    "  for _, srv in ipairs(list) do\n"
+    "    lines[#lines + 1] = 'http://localhost:' .. srv.port .. '/  ->  ' .. srv.root .. '  (' .. srv.requests .. ' requests)'\n"
+    "  end\n"
+    "  mep.float_preview('Servers', table.concat(lines, '\\n'))\n"
+    "end)\n"
+    "mep.leader_map('bh', 'Host (serve) this directory and browse it', function() mep.serve() end)\n"
+    // The browser-capability ladder (examples/web): twelve self-checking
+    // sites, simplest to a bundled React app. :WebLadder [dir] serves it
+    // and opens its index in the browser pane; :WebLadderRun loads every
+    // level in turn and reports each page's own verdict (its <title>:
+    // "PASS 7/7 - ..." / "FAIL ..." / "RUNNING ..." when the page needed
+    // an event loop that never ran) -- the in-editor counterpart of the
+    // headless mep-web-ladder-test binary.
+    "local function mep_web_ladder_dir(arg)\n"
+    "  if arg and arg ~= '' then return arg end\n"
+    "  local root = mep.workspace_root and mep.workspace_root() or '.'\n"
+    "  return root .. '/examples/web'\n"
+    "end\n"
+    "mep.command('WebLadder', function(args) mep.serve(mep_web_ladder_dir(args)) end)\n"
+    "function mep.web_ladder_run(dir)\n"
+    "  dir = mep_web_ladder_dir(dir)\n"
+    "  local port = mep.serve(dir, 0, false)\n"
+    "  if not port then return nil end\n"
+    "  local levels = {}\n"
+    "  for _, entry in ipairs(mep.list_dir(dir) or {}) do\n"
+    "    if entry.is_dir and entry.name:match('^%d%d%-') then levels[#levels + 1] = entry.name end\n"
+    "  end\n"
+    "  table.sort(levels)\n"
+    "  local results, passed = {}, 0\n"
+    "  for _, level in ipairs(levels) do\n"
+    "    mep.browse_open_in_pane('http://localhost:' .. port .. '/' .. level .. '/index.html')\n"
+    // Most levels finish asynchronously (timers, fetch, React's scheduler):
+    // let the page run until it is idle before reading its verdict.
+    "    mep.html_settle(8000)\n"
+    "    local title = mep.html_title() or '(did not open)'\n"
+    "    local ok = title:match('^PASS') ~= nil or level:match('^01%-') ~= nil\n"
+    "    if ok then passed = passed + 1 end\n"
+    "    results[#results + 1] = {level = level, title = title, ok = ok}\n"
+    "  end\n"
+    "  local lines = {passed .. ' of ' .. #levels .. ' levels pass', ''}\n"
+    "  for _, r in ipairs(results) do lines[#lines + 1] = (r.ok and 'ok    ' or 'FAIL  ') .. r.level .. '   ' .. r.title end\n"
+    "  mep.browse_open_in_pane('http://localhost:' .. port .. '/index.html')\n"
+    "  mep.float_preview('Web ladder', table.concat(lines, '\\n'))\n"
+    "  return results\n"
+    "end\n"
+    "mep.command('WebLadderRun', function(args) mep.web_ladder_run(args) end)\n"
     // Shared target-resolution for :Browse/:BrowseExternal alike: an
     // explicit argument wins; otherwise the URL under the cursor;
     // otherwise the current buffer's own file if it looks like an HTML
@@ -13161,9 +13357,31 @@ const char *kBuiltinOrgBabel =
     "  mep.org_babel_insert_results(blk, lines, raw)\n"
     "  mep.org_image_scan()\n"
     "end\n"
+    // In-process `mep-lua` blocks: org-babel's own `emacs-lisp` analogue.
+    // Every other language above is a subprocess with no access to the
+    // editor, so a block that needs mep's Lua API (a learning deck's own
+    // launcher block, examples/learn_basic_datastructures.org's
+    // `LearnMCFlashCards()`; any :var-free automation of the editor
+    // itself) runs here instead: the body is compiled by load() into the
+    // one live LuaEnv, its return values (tostring'd, one per line) become
+    // the #+RESULTS: unless :results silent, and a compile/runtime error
+    // surfaces as a warn toast the way a failed subprocess does. No temp
+    // file, no cache, no :var prelude -- the block already sees every
+    // mep.* global directly.
+    "local function mep_org_babel_execute_meplua(blk)\n"
+    "  local chunk, err = load(blk.body, '=mep-lua block', 't')\n"
+    "  if not chunk then mep.notify('Babel: mep-lua compile error: ' .. tostring(err), 'warn') return end\n"
+    "  local results = table.pack(pcall(chunk))\n"
+    "  if not results[1] then mep.notify('Babel: mep-lua error: ' .. tostring(results[2]), 'warn') return end\n"
+    "  if blk.results_modes.silent then return end\n"
+    "  local out_lines = {}\n"
+    "  for i = 2, results.n do out_lines[#out_lines + 1] = tostring(results[i]) end\n"
+    "  mep.org_babel_insert_results(blk, out_lines, false)\n"
+    "end\n"
     "function mep.org_babel_execute()\n"
     "  local blk = mep_org_src_block_at(mep.cursor())\n"
     "  if not blk then mep.notify('Not in a src block', 'warn') return end\n"
+    "  if blk.lang == 'mep-lua' then mep_org_babel_execute_meplua(blk) return end\n"
     "  local lang_def, exe_or_err = mep_org_babel_resolve_lang(blk.lang)\n"
     "  if not lang_def then mep.notify(exe_or_err, 'warn') return end\n"
     "  local exe = exe_or_err\n"
@@ -13404,6 +13622,11 @@ const char *kBuiltinOrgBabel =
     "  for _, blk in ipairs(blocks) do\n"
     "    local eval_arg = blk.args_str:match(':eval%s+(%S+)')\n"
     "    local skip = eval_arg and (eval_arg == 'no' or eval_arg == 'never' or eval_arg:match('%-export$') or eval_arg:match('^query'))\n"
+    // An in-process `mep-lua` block (mep.org_babel_execute) drives the
+    // editor itself -- a deck's launcher opening its game pane, say --
+    // which an export run must never trigger; its existing #+RESULTS: (if
+    // any) are kept as-is, the same as an :eval no-export block.
+    "    if blk.lang == 'mep-lua' then skip = true end\n"
     "    if skip then\n"
     "      plan[#plan + 1] = {kind = 'skip'}\n"
     "    else\n"
@@ -15339,6 +15562,3028 @@ const char *kBuiltinOrgDrill =
     "  next_card(1)\n"
     "end\n"
     "mep.command('MepOrgDrillReview', mep.org_drill_review)\n";
+
+// Learn -- org-file-driven learning games (Duolingo-style). An org file is
+// the question database: every headline tagged :card: (mep.learn_card_tag)
+// is one entry whose title is the term and whose body is the definition,
+// with optional per-card properties (:CATEGORY:, :HINT:, :QUESTION:,
+// :DISTRACTORS:, :ALIASES:, :HIDE:, :POINTS:, fact properties), cloze
+// markup ({{answer|hint}}) in its prose, ordered lists (steps), 2-column
+// tables (facts) and #+begin_src blocks (the implementation, plus
+// `:learn cloze|bug|output` variants) -- see plans/LEARN_GAMES_PLAN.md for
+// the format and examples/learn_basic_datastructures.org for a deck that
+// uses all of it. Each game projects that same deck into its own
+// randomized session, rendered as a widget pane (mep.sidebar_open_pane)
+// so single keys and mouse clicks both play. Games: flashcards, matching,
+// identify the code, true/false, cloze, type the term, odd one out, which
+// category, fact quiz, put in order, jeopardy, hangman, complete the code,
+// spot the bug, predict the output, mixed practice, and a timed mode over
+// any choice game -- each a :Learn* command, a <leader>o? key and a bare
+// global a deck's own `mep-lua` launcher block can call.
+// The chunk is split into sub-64 KB literals (the concatenated-literal
+// length C++ compilers must support) and joined back into one Lua chunk
+// at load time, so every game still shares the shell/engine locals.
+const char *const kBuiltinLearnParts[] = {
+    "mep.learn_card_tag = 'card'\n"
+    "mep.learn_defaults = {choices = 4, direction = 'both', rounds = 0, match_size = 5, time_limit = 0}\n"
+    // Property keys that describe a card rather than state a fact about it,
+    // so the fact quiz's auto-detection skips them.
+    "mep.learn_reserved_props = {\n"
+    "  CATEGORY = true, QUESTION = true, HINT = true, DISTRACTORS = true, ALIASES = true, HIDE = true,\n"
+    "  POINTS = true, ID = true, CUSTOM_ID = true, EFFORT = true, DRILL_EF = true, DRILL_REPS = true,\n"
+    "  DRILL_INTERVAL = true, DRILL_DUE = true,\n"
+    "}\n"
+    // Nothing else in mep seeds Lua's PRNG, and an unseeded math.random
+    // deals the identical "shuffled" session every launch.
+    "math.randomseed(os.time())\n"
+    "local function mep_learn_trim(s) return (s:gsub('^%s+', ''):gsub('%s+$', '')) end\n"
+    "local function mep_learn_split_bar(s)\n"
+    "  local out = {}\n"
+    "  if not s then return out end\n"
+    "  for piece in s:gmatch('[^|]+') do\n"
+    "    local t = mep_learn_trim(piece)\n"
+    "    if t ~= '' then out[#out + 1] = t end\n"
+    "  end\n"
+    "  return out\n"
+    "end\n"
+    "local function mep_learn_split_words(s)\n"
+    "  local out = {}\n"
+    "  for w in (s or ''):gmatch('%S+') do out[#out + 1] = w end\n"
+    "  return out\n"
+    "end\n"
+    // Fisher-Yates, in place; returns t for chaining.
+    "function mep.learn_shuffle(t)\n"
+    "  for i = #t, 2, -1 do\n"
+    "    local j = math.random(i)\n"
+    "    t[i], t[j] = t[j], t[i]\n"
+    "  end\n"
+    "  return t\n"
+    "end\n"
+    "local function mep_learn_copy(t) return {table.unpack(t)} end\n"
+    // Truncates an array to its first n entries (n <= 0 leaves it alone).
+    "local function mep_learn_cap(t, n)\n"
+    "  if n and n > 0 and n < #t then\n"
+    "    for i = #t, n + 1, -1 do t[i] = nil end\n"
+    "  end\n"
+    "  return t\n"
+    "end\n"
+    // mep.learn_cloze_strip(text) -> plain text, blanks: `{{answer|hint}}`
+    // markup removed (the answer stays in place), plus one {answer=, hint=,
+    // start=, stop=} per blank with byte offsets into the plain text.
+    "function mep.learn_cloze_strip(text)\n"
+    "  local blanks, out, pos = {}, {}, 1\n"
+    "  while true do\n"
+    "    local s, e, inner = text:find('{{(.-)}}', pos)\n"
+    "    if not s then break end\n"
+    "    out[#out + 1] = text:sub(pos, s - 1)\n"
+    "    local answer, hint = inner:match('^(.-)|(.*)$')\n"
+    "    if not answer then answer = inner end\n"
+    "    answer = mep_learn_trim(answer)\n"
+    "    local plain = table.concat(out)\n"
+    "    blanks[#blanks + 1] = {answer = answer, hint = hint and mep_learn_trim(hint) or nil, start = #plain + 1, stop = #plain + #answer}\n"
+    "    out[#out + 1] = answer\n"
+    "    pos = e + 1\n"
+    "  end\n"
+    "  out[#out + 1] = text:sub(pos)\n"
+    "  return table.concat(out), blanks\n"
+    "end\n"
+    // Body lines -> the card's prose paragraphs, its steps (the first ordered
+    // list), its fact rows (2-column tables) and its raw cloze sentences.
+    // Consecutive non-blank prose lines join with a space, a blank line
+    // starts a new paragraph. Block delimiters and their contents, #+keyword
+    // and #+RESULTS: lines, fixed-width `: ` results, planning lines, table
+    // rows, ordered-list items and [[file:...]] image links are not
+    // definition text.
+    "local function mep_learn_body(body)\n"
+    "  local paras, cur, in_block = {}, {}, false\n"
+    "  local steps, facts, steps_title, images = {}, {}, nil, {}\n"
+    "  local in_list, list_done = false, false\n"
+    "  local function flush()\n"
+    "    if #cur > 0 then paras[#paras + 1] = table.concat(cur, ' ') end\n"
+    "    cur = {}\n"
+    "  end\n"
+    "  for _, raw in ipairs(body) do\n"
+    "    local line = mep_learn_trim(raw)\n"
+    "    local lower = line:lower()\n"
+    "    local item = line:match('^%d+[%.%)]%s+(.*)$')\n"
+    "    if lower:match('^#%+begin_') then in_block = true\n"
+    "    elseif lower:match('^#%+end_') then in_block = false\n"
+    "    elseif in_block or line:sub(1, 1) == '#' or line:sub(1, 1) == ':' then\n"
+    "      -- skip (block contents, keywords, results, drawers)\n"
+    "    elseif line:match('^SCHEDULED:') or line:match('^DEADLINE:') or line:match('^CLOSED:') then\n"
+    "      -- skip\n"
+    "    elseif line:match('^%[%[file:[^%]]+%]%]%s*$') or line:match('^%[%[file:[^%]]+%]%[[^%]]*%]%]%s*$') then\n"
+    "      -- An image link on its own line is a picture of the card, not prose.\n"
+    "      images[#images + 1] = line:match('^%[%[file:([^%]]+)%]')\n"
+    "    elseif line:sub(1, 1) == '|' then\n"
+    "      if not line:match('^|%-') then\n"
+    "        local cells = {}\n"
+    "        for cell in line:gmatch('|([^|]*)') do cells[#cells + 1] = mep_learn_trim(cell) end\n"
+    "        if #cells >= 2 and cells[1] ~= '' and cells[2] ~= '' then facts[#facts + 1] = {key = cells[1], value = cells[2]} end\n"
+    "      end\n"
+    "    elseif item and not list_done then\n"
+    "      -- An ordered list is a sequence; a continuation line (indented,\n"
+    "      -- no marker) belongs to the last item. Only the first list counts.\n"
+    "      -- A lead-in line ending in ':' right before it (\"Inserting a\n"
+    "      -- key:\") titles the list rather than trailing the definition.\n"
+    "      if #steps == 0 and #cur > 0 and cur[#cur]:match(':$') then\n"
+    "        steps_title = table.remove(cur)\n"
+    "      end\n"
+    "      flush()\n"
+    "      in_list = true\n"
+    "      steps[#steps + 1] = item\n"
+    "    elseif in_list and raw:match('^%s+%S') and line ~= '' and #steps > 0 then\n"
+    "      steps[#steps] = steps[#steps] .. ' ' .. line\n"
+    "    elseif line == '' then\n"
+    "      if in_list then in_list, list_done = false, true end\n"
+    "      flush()\n"
+    "    else\n"
+    "      if in_list then in_list, list_done = false, true end\n"
+    "      cur[#cur + 1] = line\n"
+    "    end\n"
+    "  end\n"
+    "  flush()\n"
+    "  return paras, steps, facts, steps_title, images\n"
+    "end\n"
+    // Every `#+begin_src <lang> [args]` ... `#+end_src` in a card body, as
+    // {lang=, lines=, args=, learn=, line=, results=}: `learn` is the
+    // `:learn <kind>` header argument (nil for the card's plain
+    // implementation), `line` the `:line N` argument, and `results` the
+    // fixed-width lines of a `#+RESULTS:` drawer right after the block. The
+    // body keeps its indentation, which is the code.
+    "local function mep_learn_src_blocks(body)\n"
+    "  local blocks, code, lang, args = {}, nil, nil, nil\n"
+    "  local i = 1\n"
+    "  while i <= #body do\n"
+    "    local raw = body[i]\n"
+    "    if code then\n"
+    "      if raw:lower():match('^%s*#%+end_src') then\n"
+    "        local blk = {lang = lang, lines = code, args = args}\n"
+    "        blk.learn = args:match(':learn%s+(%S+)')\n"
+    "        blk.line = tonumber(args:match(':line%s+(%d+)'))\n"
+    "        -- #+RESULTS: (optionally after blank lines): fixed-width `: x`\n"
+    "        -- lines, or an example block.\n"
+    "        local j = i + 1\n"
+    "        while body[j] and mep_learn_trim(body[j]) == '' do j = j + 1 end\n"
+    "        if body[j] and body[j]:match('^%s*#%+RESULTS:') then\n"
+    "          local results = {}\n"
+    "          j = j + 1\n"
+    "          if body[j] and body[j]:lower():match('^%s*#%+begin_example') then\n"
+    "            j = j + 1\n"
+    "            while body[j] and not body[j]:lower():match('^%s*#%+end_example') do\n"
+    "              results[#results + 1] = body[j]\n"
+    "              j = j + 1\n"
+    "            end\n"
+    "            j = j + 1\n"
+    "          else\n"
+    "            while body[j] and body[j]:match('^%s*:') do\n"
+    "              results[#results + 1] = (body[j]:match('^%s*:%s?(.*)$'))\n"
+    "              j = j + 1\n"
+    "            end\n"
+    "          end\n"
+    "          blk.results = results\n"
+    "          i = j - 1\n"
+    "        end\n"
+    "        blocks[#blocks + 1] = blk\n"
+    "        code = nil\n"
+    "      else\n"
+    "        code[#code + 1] = raw\n"
+    "      end\n"
+    "    else\n"
+    "      local l, rest = raw:match('^%s*#%+[Bb][Ee][Gg][Ii][Nn]_[Ss][Rr][Cc]%s+(%S+)%s*(.*)$')\n"
+    "      if l then lang, args, code = l:lower(), rest or '', {} end\n"
+    "    end\n"
+    "    i = i + 1\n"
+    "  end\n"
+    "  return blocks\n"
+    "end\n"
+    // mep.learn_parse_deck(path[, lines]) -> deck: {path=, title=, keywords=,
+    // options={choices=,direction=,rounds=,match_size=,time_limit=,facts=,
+    // mixed=,rank=,srs=}, categories={name, ...}, cards={{term=, definition=,
+    // paragraphs=, clozes=, steps=, steps_title=, facts=, category=, hint=, question=,
+    // distractors=, aliases=, hide=, points=, code=, blocks=, tags=, props=,
+    // line=, level=}, ...}}. A card is a headline tagged with
+    // mep.learn_card_tag (or #+LEARN_TAG:); when no headline in the file
+    // carries that tag, every headline with a non-empty body is a card, so a
+    // plain glossary works untagged. :CATEGORY: defaults to the nearest
+    // ancestor headline's title, which is what groups distractors. A card's
+    // first plain #+begin_src block becomes card.code; every block (plain
+    // and `:learn` variants) is in card.blocks. Cloze markup is stripped from
+    // the definition text (card.clozes keeps the blanks); facts merge the
+    // drawer's fact properties with any 2-column table in the body.
+    "function mep.learn_parse_deck(path, lines)\n"
+    "  -- mep.read_lines prefers the live buffer, so unsaved deck edits count.\n"
+    "  lines = lines or mep.read_lines(path)\n"
+    "  local deck = {path = path, keywords = {}, cards = {}}\n"
+    "  if not lines then return nil, 'Cannot read ' .. tostring(path) end\n"
+    "  local abs_path = (mep_lsp_abspath and mep_lsp_abspath(path)) or path\n"
+    "  local deck_dir = abs_path:match('^(.*)/[^/]*$') or '.'\n"
+    "  local ancestors, cur, in_drawer = {}, nil, false\n"
+    "  local function finish()\n"
+    "    if not cur then return end\n"
+    "    local paras, steps, table_facts, steps_title, images = mep_learn_body(cur.body)\n"
+    "    cur.clozes = {}\n"
+    "    for i, p in ipairs(paras) do\n"
+    "      local plain, blanks = mep.learn_cloze_strip(p)\n"
+    "      paras[i] = plain\n"
+    "      for _, b in ipairs(blanks) do\n"
+    "        b.sentence = plain\n"
+    "        cur.clozes[#cur.clozes + 1] = b\n"
+    "      end\n"
+    "    end\n"
+    "    cur.paragraphs = paras\n"
+    "    cur.definition = table.concat(paras, '\\n')\n"
+    "    cur.steps = steps\n"
+    "    cur.steps_title = steps_title\n"
+    "    -- Image paths resolve against the deck file's own directory.\n"
+    "    cur.images = {}\n"
+    "    for i, rel in ipairs(images) do\n"
+    "      local abs = rel\n"
+    "      if rel:sub(1, 1) == '~' then abs = (os.getenv('HOME') or '') .. rel:sub(2)\n"
+    "      elseif rel:sub(1, 1) ~= '/' then abs = deck_dir .. '/' .. rel end\n"
+    "      cur.images[i] = abs\n"
+    "    end\n"
+    "    cur.table_facts = table_facts\n"
+    "    cur.blocks = mep_learn_src_blocks(cur.body)\n"
+    "    for _, b in ipairs(cur.blocks) do\n"
+    "      if not b.learn and not cur.code then cur.code = b end\n"
+    "    end\n"
+    "    cur.body = nil\n"
+    "    deck.cards[#deck.cards + 1] = cur\n"
+    "    cur = nil\n"
+    "  end\n"
+    "  for i, line in ipairs(lines) do\n"
+    "    local h = mep_org_parse_headline(line)\n"
+    "    if h then\n"
+    "      finish()\n"
+    "      local parent\n"
+    "      for l = h.level - 1, 1, -1 do\n"
+    "        if ancestors[l] then parent = ancestors[l] break end\n"
+    "      end\n"
+    "      ancestors[h.level] = h.title\n"
+    "      for l = h.level + 1, #ancestors do ancestors[l] = nil end\n"
+    "      local tags = {}\n"
+    "      if h.tags then for t in h.tags:gmatch('[^:]+') do tags[t] = true end end\n"
+    "      cur = {term = h.title, level = h.level, line = i, tags = tags, body = {}, props = {}, parent = parent}\n"
+    "      in_drawer = false\n"
+    "    elseif cur then\n"
+    "      if line:match('^%s*:PROPERTIES:%s*$') then in_drawer = true\n"
+    "      elseif in_drawer and line:match('^%s*:END:%s*$') then in_drawer = false\n"
+    "      elseif in_drawer then\n"
+    "        local k, v = line:match('^%s*:([%w_%-]+):%s*(.-)%s*$')\n"
+    "        if k then cur.props[k:upper()] = v end\n"
+    "      else cur.body[#cur.body + 1] = line end\n"
+    "    else\n"
+    "      local k, v = line:match('^#%+([%w_]+):%s*(.-)%s*$')\n"
+    "      if k then deck.keywords[k:upper()] = v end\n"
+    "    end\n"
+    "  end\n"
+    "  finish()\n"
+    "  local kw = deck.keywords\n"
+    "  deck.title = kw.LEARN_TITLE or kw.TITLE or (path:match('([^/]+)%.org$') or path)\n"
+    "  deck.options = {\n"
+    "    choices = tonumber(kw.LEARN_CHOICES) or mep.learn_defaults.choices,\n"
+    "    direction = (kw.LEARN_DIRECTION or mep.learn_defaults.direction):lower(),\n"
+    "    rounds = tonumber(kw.LEARN_ROUNDS) or mep.learn_defaults.rounds,\n"
+    "    match_size = tonumber(kw.LEARN_MATCH_SIZE) or mep.learn_defaults.match_size,\n"
+    "    time_limit = tonumber(kw.LEARN_TIME_LIMIT) or mep.learn_defaults.time_limit,\n"
+    "    facts = kw.LEARN_FACTS and mep_learn_split_words(kw.LEARN_FACTS:upper()) or nil,\n"
+    "    mixed = kw.LEARN_MIXED and mep_learn_split_words(kw.LEARN_MIXED:lower()) or nil,\n"
+    "    rank = kw.LEARN_RANK and mep_learn_split_words(kw.LEARN_RANK:upper()) or nil,\n"
+    "    -- #+LEARN_SRS: yes deals due/unreviewed cards first (org-drill's\n"
+    "    -- :DRILL_DUE:, written by the summary's grade key).\n"
+    "    srs = (kw.LEARN_SRS or ''):lower():match('^yes') ~= nil or (kw.LEARN_SRS or ''):lower():match('^t') ~= nil,\n"
+    "  }\n"
+    "  local tag = kw.LEARN_TAG or mep.learn_card_tag\n"
+    "  local tagged = {}\n"
+    "  for _, c in ipairs(deck.cards) do\n"
+    "    if c.tags[tag] then tagged[#tagged + 1] = c end\n"
+    "  end\n"
+    "  local cards, categories, seen_cat = {}, {}, {}\n"
+    "  local per_category = {}\n"
+    "  for _, c in ipairs(#tagged > 0 and tagged or deck.cards) do\n"
+    "    if #tagged > 0 or c.definition ~= '' then\n"
+    "      c.category = c.props.CATEGORY or c.parent\n"
+    "      c.hint = c.props.HINT\n"
+    "      c.question = c.props.QUESTION\n"
+    "      c.distractors = mep_learn_split_bar(c.props.DISTRACTORS)\n"
+    "      c.aliases = mep_learn_split_bar(c.props.ALIASES)\n"
+    "      c.hide = mep_learn_split_bar(c.props.HIDE)\n"
+    "      -- Facts: the drawer's fact properties (every non-reserved key, or\n"
+    "      -- exactly #+LEARN_FACTS: when given) plus the body's table rows.\n"
+    "      c.facts = {}\n"
+    "      local keys = deck.options.facts\n"
+    "      if keys then\n"
+    "        for _, k in ipairs(keys) do\n"
+    "          if c.props[k] then c.facts[#c.facts + 1] = {key = k, value = c.props[k]} end\n"
+    "        end\n"
+    "      else\n"
+    "        local sorted = {}\n"
+    "        for k in pairs(c.props) do if not mep.learn_reserved_props[k] then sorted[#sorted + 1] = k end end\n"
+    "        table.sort(sorted)\n"
+    "        for _, k in ipairs(sorted) do c.facts[#c.facts + 1] = {key = k, value = c.props[k]} end\n"
+    "      end\n"
+    "      for _, f in ipairs(c.table_facts) do c.facts[#c.facts + 1] = f end\n"
+    "      c.table_facts = nil\n"
+    "      -- Spaced repetition: org-drill's :DRILL_DUE: (YYYY-MM-DD); nil =\n"
+    "      -- never reviewed, which mep.learn_deal treats as due.\n"
+    "      c.due = c.props.DRILL_DUE\n"
+    "      -- Points: :POINTS:, else 100, 200, ... by position in the category.\n"
+    "      local cat = c.category or ''\n"
+    "      per_category[cat] = (per_category[cat] or 0) + 1\n"
+    "      c.points = tonumber(c.props.POINTS) or (100 * per_category[cat])\n"
+    "      if c.category and not seen_cat[c.category] then\n"
+    "        seen_cat[c.category] = true\n"
+    "        categories[#categories + 1] = c.category\n"
+    "      end\n"
+    "      cards[#cards + 1] = c\n"
+    "    end\n"
+    "  end\n"
+    "  deck.cards = cards\n"
+    "  deck.categories = categories\n"
+    "  return deck\n"
+    "end\n"
+    // Cards of `deck` other than `card`, same category first (each group
+    // shuffled) -- the distractor order every choice game draws from.
+    "local function mep_learn_others(deck, card)\n"
+    "  local same, other = {}, {}\n"
+    "  for _, c in ipairs(deck.cards) do\n"
+    "    if c ~= card then\n"
+    "      if card.category and c.category == card.category then same[#same + 1] = c\n"
+    "      else other[#other + 1] = c end\n"
+    "    end\n"
+    "  end\n"
+    "  mep.learn_shuffle(same)\n"
+    "  mep.learn_shuffle(other)\n"
+    "  for _, c in ipairs(other) do same[#same + 1] = c end\n"
+    "  return same\n"
+    "end\n"
+    // mep.learn_deal(deck[, n]) -> a fresh card order for a session: a plain
+    // shuffle, or with #+LEARN_SRS: yes the due cards (:DRILL_DUE: on or
+    // before today, or never graded) shuffled ahead of the rest -- so a
+    // #+LEARN_ROUNDS: cap reviews what's due first. `n` > 0 caps the count.
+    "function mep.learn_deal(deck, n)\n"
+    "  local cards = mep.learn_shuffle(mep_learn_copy(deck.cards))\n"
+    "  if deck.options.srs then\n"
+    "    local today = os.date('%Y-%m-%d')\n"
+    "    local due, later = {}, {}\n"
+    "    for _, c in ipairs(cards) do\n"
+    "      if not c.due or c.due <= today then due[#due + 1] = c else later[#later + 1] = c end\n"
+    "    end\n"
+    "    for _, c in ipairs(later) do due[#due + 1] = c end\n"
+    "    cards = due\n"
+    "  end\n"
+    "  return mep_learn_cap(cards, n)\n"
+    "end\n"
+    // Builds a shuffled choice list around `answer`: `candidates` (in
+    // preference order) fill the remaining slots, skipping duplicates and
+    // empty strings. Returns choices, answer index.
+    "local function mep_learn_choices(answer, candidates, n_choices)\n"
+    "  local seen, choices = {[answer] = true}, {answer}\n"
+    "  for _, text in ipairs(candidates) do\n"
+    "    if #choices >= n_choices then break end\n"
+    "    if text and text ~= '' and not seen[text] then\n"
+    "      seen[text] = true\n"
+    "      choices[#choices + 1] = text\n"
+    "    end\n"
+    "  end\n"
+    "  mep.learn_shuffle(choices)\n"
+    "  for i, c in ipairs(choices) do if c == answer then return choices, i end end\n"
+    "  return choices, 1\n"
+    "end\n"
+    // mep.learn_mc_questions(deck[, opts]) -> array of {card=, direction=,
+    // prompt=, choices={text, ...}, answer=<1-based index>}. One question per
+    // card in shuffled order (opts.rounds > 0 caps the count). direction
+    // 'definition' shows the definition (or :QUESTION:) and offers terms;
+    // 'term' shows the term and offers definitions; 'both' picks per card.
+    // Distractors come from the card's own :DISTRACTORS: first, then cards in
+    // the same category, then the rest of the deck -- so wrong answers stay
+    // plausible when the deck is grouped -- and never repeat the answer text.
+    "function mep.learn_mc_questions(deck, opts)\n"
+    "  opts = opts or {}\n"
+    "  local n_choices = opts.choices or deck.options.choices\n"
+    "  local direction = opts.direction or deck.options.direction\n"
+    "  local order = mep.learn_deal(deck, opts.rounds or deck.options.rounds)\n"
+    "  local questions = {}\n"
+    "  for _, card in ipairs(order) do\n"
+    "    local dir = direction\n"
+    "    if dir ~= 'term' and dir ~= 'definition' then\n"
+    "      dir = (math.random(2) == 1) and 'term' or 'definition'\n"
+    "    end\n"
+    "    local function text_of(c) return dir == 'definition' and c.term or c.definition end\n"
+    "    local candidates = {}\n"
+    "    if dir == 'definition' then\n"
+    "      for _, d in ipairs(mep.learn_shuffle(mep_learn_copy(card.distractors))) do candidates[#candidates + 1] = d end\n"
+    "    end\n"
+    "    for _, c in ipairs(mep_learn_others(deck, card)) do candidates[#candidates + 1] = text_of(c) end\n"
+    "    local choices, answer = mep_learn_choices(text_of(card), candidates, n_choices)\n"
+    "    local prompt\n"
+    "    if dir == 'definition' then prompt = card.question or card.definition\n"
+    "    else prompt = card.term end\n"
+    "    questions[#questions + 1] = {card = card, direction = dir, prompt = prompt, choices = choices, answer = answer}\n"
+    "  end\n"
+    "  return questions\n"
+    "end\n"
+    // mep.learn_match_rounds(deck[, opts]) -> array of rounds, each
+    // {cards={...}, defs={<card index>, ...}}: the deck shuffled and dealt into
+    // groups of opts.size (#+LEARN_MATCH_SIZE:, default 5, clamped to 2..9 so
+    // every definition gets one letter a-i), with `defs` a separate shuffle of
+    // the group's card indices -- the order the definitions are listed in, so
+    // term i's definition sits at some other row. A leftover of one card is
+    // folded into the previous round (a one-pair round would answer itself).
+    // opts.rounds (#+LEARN_ROUNDS:) caps the round count.
+    "function mep.learn_match_rounds(deck, opts)\n"
+    "  opts = opts or {}\n"
+    "  local size = math.max(2, math.min(9, opts.size or deck.options.match_size))\n"
+    "  local rounds_cap = opts.rounds or deck.options.rounds\n"
+    "  local order = mep.learn_deal(deck)\n"
+    "  local rounds = {}\n"
+    "  local i = 1\n"
+    "  while i <= #order do\n"
+    "    local group = {}\n"
+    "    for j = i, math.min(i + size - 1, #order) do group[#group + 1] = order[j] end\n"
+    "    i = i + size\n"
+    "    if #group == 1 and #rounds > 0 then\n"
+    "      table.insert(rounds[#rounds].cards, group[1])\n"
+    "    else\n"
+    "      rounds[#rounds + 1] = {cards = group}\n"
+    "    end\n"
+    "  end\n"
+    "  for _, r in ipairs(rounds) do\n"
+    "    local defs = {}\n"
+    "    for k = 1, #r.cards do defs[k] = k end\n"
+    "    r.defs = mep.learn_shuffle(defs)\n"
+    "    -- A round where every definition sits on its own term's row would be\n"
+    "    -- a giveaway; one swap breaks that (only reachable with a full\n"
+    "    -- fixed-point shuffle, rare past size 2 but cheap to rule out).\n"
+    "    if #defs > 1 then\n"
+    "      local fixed = true\n"
+    "      for k = 1, #defs do if defs[k] ~= k then fixed = false break end end\n"
+    "      if fixed then defs[1], defs[2] = defs[2], defs[1] end\n"
+    "    end\n"
+    "  end\n"
+    "  return mep_learn_cap(rounds, rounds_cap)\n"
+    "end\n"
+    // --- Game session shell ---------------------------------------------------
+    // One session at a time (mep_learn_state), one 'Learn' sidebar shown as a
+    // pane (mep.sidebar_open_pane) whose on_key/on_click both route into the
+    // active game's own table: {name=, unit=, reset(st), widgets(st) -> widget
+    // list, on_key(st, k) -> handled, current_card(st), validate(deck) ->
+    // message|nil, shell_keys={r=,o=,q=,g=} (a game that consumes letters,
+    // like hangman, remaps the shell keys)}. Quit/restart/open-card/summary are
+    // shared.
+    "local mep_learn_sidebar_id = nil\n"
+    "local mep_learn_state = nil\n"
+    "local MEP_LEARN_GAMES = {}\n"
+    "mep.learn_games = MEP_LEARN_GAMES\n"
+    "local function mep_learn_ensure_sidebar()\n"
+    "  if mep_learn_sidebar_id then return end\n"
+    "  mep_learn_sidebar_id = mep.sidebar_create('Learn', 'right', 72)\n"
+    "  mep.sidebar_set_on_key(mep_learn_sidebar_id, function(k) mep.learn_on_key(k) end)\n"
+    "end\n"
+    "local function mep_learn_blank(id) return {id = id, text = ''} end\n"
+    "function mep.learn_split_lines(s)\n"
+    "  local out = {}\n"
+    "  for line in (s .. '\\n'):gmatch('([^\\n]*)\\n') do out[#out + 1] = line end\n"
+    "  return out\n"
+    "end\n"
+    "local function mep_learn_shell_keys(st)\n"
+    "  return (st.game.shell_keys or {r = 'r', o = 'o', q = 'q'})\n"
+    "end\n"
+    // Shared end-of-session screen: score line, the cards to review (each a
+    // click-to-open row), play again / quit. `st.score`/`st.total` are the
+    // game's own units (questions, pairs, points, ...).
+    "local function mep_learn_summary_widgets(st)\n"
+    "  local w = {}\n"
+    "  local keys = mep_learn_shell_keys(st)\n"
+    "  local pct = st.total > 0 and math.floor(100 * st.score / st.total + 0.5) or 0\n"
+    "  w[#w + 1] = {id = 'done', text = string.format('Session complete: %d/%d %s (%d%%)', st.score, st.total, st.game.unit, pct), hl = 'Accent'}\n"
+    "  if st.best_streak then\n"
+    "    w[#w + 1] = {id = 'best', text = string.format('Best streak: %d', st.best_streak), hl = 'Comment'}\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b1')\n"
+    "  if #st.missed > 0 then\n"
+    "    w[#w + 1] = {id = 'missed', text = 'Review these:', hl = 'Warn'}\n"
+    "    for i, card in ipairs(st.missed) do\n"
+    "      w[#w + 1] = {\n"
+    "        id = 'missed' .. i, text = card.term .. ' -- ' .. card.definition, hl = 'Normal',\n"
+    "        wrap = true, wrap_indent = 0,\n"
+    "        on_click = function() mep.learn_open_card(card) end,\n"
+    "      }\n"
+    "    end\n"
+    "  else\n"
+    "    w[#w + 1] = {id = 'perfect', text = 'Perfect run!', hl = 'Add'}\n"
+    "  end\n"
+    "  if st.players then\n"
+    "    local a, b = st.hs_scores[1], st.hs_scores[2]\n"
+    "    local verdict = a == b and \"It's a tie!\" or string.format('Player %d wins!', a > b and 1 or 2)\n"
+    "    w[#w + 1] = {id = 'winner', text = verdict, hl = 'Accent'}\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b2')\n"
+    "  if st.seen and #st.seen > 0 and mep.org_drill_grade then\n"
+    "    if st.graded_srs then\n"
+    "      w[#w + 1] = {id = 'srs', text = string.format('Recorded %d card(s) for spaced repetition.', st.graded_srs), hl = 'Comment'}\n"
+    "    else\n"
+    "      w[#w + 1] = {id = 'srs', text = '> Record results for spaced repetition (:DRILL_*: properties)  [' .. (keys.g or 'g') .. ']', hl = 'Blue', on_click = function() mep.learn_srs_grade() end}\n"
+    "    end\n"
+    "  end\n"
+    "  w[#w + 1] = {id = 'again', text = '> Play again  [' .. keys.r .. ']', hl = 'Blue', on_click = function() mep.learn_restart() end}\n"
+    "  w[#w + 1] = {id = 'quit', text = '> Quit  [' .. keys.q .. ']', hl = 'Blue', on_click = function() mep.learn_quit() end}\n"
+    "  return w\n"
+    "end\n"
+    "local function mep_learn_add_missed(st, card)\n"
+    "  for _, c in ipairs(st.missed) do if c == card then return end end\n"
+    "  st.missed[#st.missed + 1] = card\n"
+    "end\n"
+    // Every card the session actually asked about (for SRS grading: a card
+    // never shown gets no grade).
+    "local function mep_learn_add_seen(st, card)\n"
+    "  st.seen = st.seen or {}\n"
+    "  for _, c in ipairs(st.seen) do if c == card then return end end\n"
+    "  st.seen[#st.seen + 1] = card\n"
+    "end\n"
+    // mep.learn_srs_grade(): records the finished session into org-drill's
+    // SM-2 properties (mep.org_drill_grade -> :DRILL_EF:/:DRILL_REPS:/
+    // :DRILL_INTERVAL:/:DRILL_DUE: in each card's drawer): quality 4 (Good)
+    // for a card the session got right, 1 (Again) for one it missed. The
+    // grader works on the current buffer, so the deck is opened first; cards
+    // are graded from the bottom up because a grade can grow a drawer and
+    // shift every line below it. Returns the number of cards graded.
+    "function mep.learn_srs_grade()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or not st.seen or #st.seen == 0 or st.graded_srs then return 0 end\n"
+    "  if not mep.org_drill_grade then mep.notify('Learn: org-drill grading is not available in this build', 'warn') return 0 end\n"
+    "  local missed = {}\n"
+    "  for _, c in ipairs(st.missed) do missed[c] = true end\n"
+    "  local cards = mep_learn_copy(st.seen)\n"
+    "  table.sort(cards, function(a, b) return a.line > b.line end)\n"
+    "  mep.pane_open(st.deck.path)\n"
+    "  for _, c in ipairs(cards) do mep.org_drill_grade(c.line, missed[c] and 1 or 4) end\n"
+    "  st.graded_srs = #cards\n"
+    "  -- Grading grows drawers, so every headline below a graded card moved:\n"
+    "  -- re-read the deck and re-point the session's cards (by term) so the\n"
+    "  -- summary's open-card rows still land on the right headline.\n"
+    "  local fresh = mep.learn_parse_deck(st.deck.path)\n"
+    "  if fresh then\n"
+    "    local line_of = {}\n"
+    "    for _, c in ipairs(fresh.cards) do line_of[c.term] = line_of[c.term] or c.line end\n"
+    "    for _, c in ipairs(st.deck.cards) do if line_of[c.term] then c.line = line_of[c.term] end end\n"
+    "  end\n"
+    "  -- Back to the game pane: pane_open put the deck in another pane.\n"
+    "  mep.sidebar_open_pane(mep_learn_sidebar_id)\n"
+    "  mep.notify(string.format('Learn: graded %d card(s) into their :DRILL_*: properties', #cards))\n"
+    "  mep.learn_render()\n"
+    "  return #cards\n"
+    "end\n"
+    // Hot-seat two-player mode (opts.players = 2): the shell attributes each
+    // score change to whoever's turn it is and passes the turn whenever the
+    // game moves to its next question/round/cell -- tracked from
+    // mep.learn_render, which every state change goes through, so no game
+    // needs to know about players. `game.position(st)` names the game's
+    // own notion of "where we are" (default: st.index or st.round).
+    "local function mep_learn_hotseat_track(st)\n"
+    "  if not st.players then return end\n"
+    "  local pos\n"
+    "  if st.game.position then pos = st.game.position(st) else pos = st.index or st.round or 0 end\n"
+    "  if not st.hs_scores then\n"
+    "    st.hs_scores, st.turn, st.hs_last_score, st.hs_last_pos = {0, 0}, 1, st.score, pos\n"
+    "    return\n"
+    "  end\n"
+    "  local delta = st.score - st.hs_last_score\n"
+    "  if delta ~= 0 then\n"
+    "    st.hs_scores[st.turn] = st.hs_scores[st.turn] + delta\n"
+    "    st.hs_last_score = st.score\n"
+    "  end\n"
+    "  if pos ~= st.hs_last_pos then\n"
+    "    st.turn = 3 - st.turn\n"
+    "    st.hs_last_pos = pos\n"
+    "  end\n"
+    "end\n"
+    "local function mep_learn_hotseat_widget(st)\n"
+    "  if not st.players then return nil end\n"
+    "  local text = string.format('Player 1: %d   Player 2: %d', st.hs_scores[1], st.hs_scores[2])\n"
+    "  if not st.finished then text = text .. string.format(\"   -> Player %d's turn\", st.turn) end\n"
+    "  return {id = 'hotseat', text = text, hl = 'Yellow'}\n"
+    "end\n"
+    "function mep.learn_render()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st then return end\n"
+    "  mep_learn_ensure_sidebar()\n"
+    "  mep_learn_hotseat_track(st)\n"
+    "  local widgets = st.finished and mep_learn_summary_widgets(st) or st.game.widgets(st)\n"
+    "  local banner = mep_learn_hotseat_widget(st)\n"
+    "  if banner then table.insert(widgets, 2, banner) end\n"
+    "  mep.sidebar_set_sections(mep_learn_sidebar_id, {{id = 'learn', title = '', collapsed = false, widgets = widgets}})\n"
+    "end\n"
+    "function mep.learn_restart()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st then return end\n"
+    "  st.finished, st.missed, st.score, st.seen, st.graded_srs, st.hs_scores = false, {}, 0, nil, nil, nil\n"
+    "  st.game.reset(st)\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function mep.learn_quit()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st then return end\n"
+    "  mep_learn_state = nil\n"
+    "  -- Close the game's own tab, wherever focus is now (an open-card pane,\n"
+    "  -- the deck opened for grading): focusing it first keeps\n"
+    "  -- pane_close_buffer from closing whatever else happened to be current.\n"
+    "  if st.pane_buf and mep.pane_focus_buffer then mep.pane_focus_buffer(st.pane_buf) end\n"
+    "  mep.pane_close_buffer()\n"
+    "end\n"
+    // 'o': jump to a card's headline in the deck file, in a fresh pane so the
+    // game stays where it is (default: the game's current card).
+    "function mep.learn_open_card(card)\n"
+    "  local st = mep_learn_state\n"
+    "  if not st then return end\n"
+    "  card = card or (st.game.current_card and st.game.current_card(st))\n"
+    "  if not card then return end\n"
+    "  mep.pane_open(st.deck.path)\n"
+    "  mep.set_cursor(card.line, 1)\n"
+    "end\n"
+    "function mep.learn_on_key(k)\n"
+    "  local st = mep_learn_state\n"
+    "  if not st then return end\n"
+    "  if not st.finished and st.game.on_key(st, k) then return end\n"
+    "  local keys = mep_learn_shell_keys(st)\n"
+    "  if k == keys.r then mep.learn_restart()\n"
+    "  elseif k == keys.o then mep.learn_open_card()\n"
+    "  elseif k == keys.q then mep.learn_quit()\n"
+    "  elseif k == (keys.g or 'g') and st.finished then mep.learn_srs_grade()\n"
+    "  end\n"
+    "end\n"
+    // mep.learn_state() -> the live session (nil when no game is open): for
+    // tests and for a deck's own mep-lua blocks to inspect progress.
+    "function mep.learn_state() return mep_learn_state end\n"
+    // Common entry: resolves the deck (default: the current org buffer),
+    // validates it (plus the game's own `validate(deck) -> message|nil`),
+    // and opens the pane on a fresh session of `game`.
+    "local function mep_learn_start(game, path, opts)\n"
+    "  if not path or path == '' then path = mep.filename() end\n"
+    "  if not path or path == '' or not path:lower():match('%.org$') then\n"
+    "    mep.notify('Learn: open an org deck first (or pass its path)', 'warn')\n"
+    "    return false\n"
+    "  end\n"
+    "  local deck, err = mep.learn_parse_deck(path)\n"
+    "  if not deck then mep.notify('Learn: ' .. err, 'warn') return false end\n"
+    "  if #deck.cards < 2 then\n"
+    "    mep.notify('Learn: the deck needs at least two cards (headlines tagged :' .. (deck.keywords.LEARN_TAG or mep.learn_card_tag) .. ':)', 'warn')\n"
+    "    return false\n"
+    "  end\n"
+    "  local problem = game.validate and game.validate(deck)\n"
+    "  if problem then mep.notify('Learn: ' .. problem, 'warn') return false end\n"
+    "  mep_learn_ensure_sidebar()\n"
+    "  mep_learn_state = {game = game, deck = deck, opts = opts or {}, missed = {}, score = 0, total = 0, finished = false}\n"
+    "  if (opts or {}).players and opts.players >= 2 then mep_learn_state.players = 2 end\n"
+    "  game.reset(mep_learn_state)\n"
+    "  mep.learn_render()\n"
+    "  mep.sidebar_open_pane(mep_learn_sidebar_id)\n"
+    "  mep_learn_state.pane_buf = mep.current_buffer()\n"
+    "  return true\n"
+    "end\n"
+    // --- Typed-answer engine -------------------------------------------------
+    // mep.learn_normalize(s): lower-cased, punctuation dropped, whitespace
+    // collapsed -- so "Hash-Table " matches "hash table".
+    "function mep.learn_normalize(s)\n"
+    "  s = (s or ''):lower():gsub('[%p]', ' '):gsub('%s+', ' ')\n"
+    "  return mep_learn_trim(s)\n"
+    "end\n"
+    "local function mep_learn_edit_distance(a, b)\n"
+    "  local la, lb = #a, #b\n"
+    "  if la == 0 then return lb end\n"
+    "  if lb == 0 then return la end\n"
+    "  local prev = {}\n"
+    "  for j = 0, lb do prev[j] = j end\n"
+    "  for i = 1, la do\n"
+    "    local cur = {[0] = i}\n"
+    "    for j = 1, lb do\n"
+    "      local cost = (a:sub(i, i) == b:sub(j, j)) and 0 or 1\n"
+    "      cur[j] = math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)\n"
+    "    end\n"
+    "    prev = cur\n"
+    "  end\n"
+    "  return prev[lb]\n"
+    "end\n"
+    // mep.learn_answer_matches(typed, accepted) -> 'exact' | 'near' | nil:
+    // `accepted` is an array of strings (a term plus its :ALIASES:); a near
+    // miss is one edit away on an answer of five or more characters. A raw
+    // (trimmed, case-sensitive) match is checked first so a code answer
+    // made of punctuation (`%`, `//`) -- which normalization would erase --
+    // still counts.
+    "function mep.learn_answer_matches(typed, accepted)\n"
+    "  local raw = mep_learn_trim(typed or '')\n"
+    "  for _, a in ipairs(accepted) do\n"
+    "    if raw ~= '' and raw == mep_learn_trim(a) then return 'exact' end\n"
+    "  end\n"
+    "  local t = mep.learn_normalize(typed)\n"
+    "  if t == '' then return nil end\n"
+    "  for _, a in ipairs(accepted) do\n"
+    "    if mep.learn_normalize(a) == t then return 'exact' end\n"
+    "  end\n"
+    "  for _, a in ipairs(accepted) do\n"
+    "    local n = mep.learn_normalize(a)\n"
+    "    if #n >= 5 and mep_learn_edit_distance(n, t) <= 1 then return 'near' end\n"
+    "  end\n"
+    "  return nil\n"
+    "end\n"
+    // --- Choice-question engine -----------------------------------------------
+    // Most games are "one prompt, pick one of N" sessions over st.questions
+    // ({card=, choices=, answer=, ...}); they differ only in how the prompt is
+    // drawn (spec.prompt_widgets) and what the reveal after an answer adds
+    // (spec.reveal_widgets), so the answer/next/scoring/streak/timer logic
+    // lives here once. spec: {name=, ask=, questions(st) -> list,
+    // prompt_widgets(st, q, w), reveal_widgets(st, q, w), validate(deck),
+    // typed=true (a `t` key answers through the typed-answer engine)}. A
+    // question may carry its own `spec` (mixed practice), which wins over the
+    // game's for drawing.
+    "local MEP_LEARN_CHOICE_HELP = '[1-9] answer   [n/Enter] next   [o] open card   [r] restart   [q] quit'\n"
+    "local mep_learn_frame_hook_installed = false\n"
+    // Timed mode: while a timed question is open, a once-per-frame poll
+    // (mep.on_frame) re-renders when the displayed second changes and
+    // answers with 0 ("time's up") once the deadline passes.
+    "local function mep_learn_tick()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.finished or not st.deadline or st.answered then return end\n"
+    "  local left = math.ceil(st.deadline - mep.now())\n"
+    "  if left <= 0 then\n"
+    "    mep.learn_choice_answer(0)\n"
+    "  elseif left ~= st.shown_left then\n"
+    "    st.shown_left = left\n"
+    "    mep.learn_render()\n"
+    "  end\n"
+    "end\n"
+    "local function mep_learn_arm_timer(st)\n"
+    "  local limit = st.opts.time_limit\n"
+    "  if not limit or limit <= 0 then limit = st.deck.options.time_limit or 0 end\n"
+    "  -- mep.learn_timed with no explicit limit and no deck default: 10 s.\n"
+    "  if st.opts.timed and limit <= 0 then limit = 10 end\n"
+    "  if limit <= 0 then st.deadline = nil return end\n"
+    "  st.deadline = mep.now() + limit\n"
+    "  st.shown_left = nil\n"
+    "  if not mep_learn_frame_hook_installed and mep.on_frame then\n"
+    "    mep_learn_frame_hook_installed = true\n"
+    "    mep.on_frame(mep_learn_tick)\n"
+    "  end\n"
+    "end\n"
+    "local function mep_learn_choice_game(spec)\n"
+    "  local game = {name = spec.name, unit = 'questions', is_choice = true, spec = spec, validate = spec.validate}\n"
+    "  function game.reset(st)\n"
+    "    st.questions = spec.questions(st)\n"
+    "    st.total = #st.questions\n"
+    "    st.index, st.streak, st.best_streak, st.answered, st.typed = 1, 0, 0, nil, nil\n"
+    "    mep_learn_arm_timer(st)\n"
+    "  end\n"
+    "  function game.current_card(st) return st.questions[st.index] and st.questions[st.index].card end\n"
+    "  function game.widgets(st)\n"
+    "    local q = st.questions[st.index]\n"
+    "    local qspec = q.spec or spec\n"
+    "    local w = {}\n"
+    "    local timer = ''\n"
+    "    if st.deadline and not st.answered then\n"
+    "      timer = string.format('   Time %ds', math.max(0, math.ceil(st.deadline - mep.now())))\n"
+    "    end\n"
+    "    w[#w + 1] = {\n"
+    "      id = 'head', hl = 'Accent',\n"
+    "      text = string.format('%s  --  %s   Question %d/%d   Score %d   Streak %d%s',\n"
+    "        st.deck.title, st.opts.survival and ('Survival: ' .. spec.name) or spec.name, st.index, #st.questions, st.score, st.streak, timer),\n"
+    "    }\n"
+    "    w[#w + 1] = mep_learn_blank('b1')\n"
+    "    qspec.prompt_widgets(st, q, w)\n"
+    "    w[#w + 1] = mep_learn_blank('b2')\n"
+    "    for i, choice in ipairs(q.choices) do\n"
+    "      local hl, mark = 'Normal', ' '\n"
+    "      if st.answered then\n"
+    "        if i == q.answer then hl, mark = 'Add', '*'\n"
+    "        elseif i == st.answered then hl, mark = 'Red', 'x'\n"
+    "        else hl = 'Comment' end\n"
+    "      end\n"
+    "      w[#w + 1] = {\n"
+    "        id = 'choice' .. i, text = string.format('%s %d) %s', mark, i, choice), hl = hl,\n"
+    "        wrap = true, wrap_indent = 5,\n"
+    "        on_click = function() mep.learn_choice_answer(i) end,\n"
+    "      }\n"
+    "    end\n"
+    "    if qspec.typed and not st.answered then\n"
+    "      w[#w + 1] = {id = 'type', text = '> Type the answer instead  [t]', hl = 'Blue', on_click = function() mep.learn_choice_type() end}\n"
+    "    end\n"
+    "    w[#w + 1] = mep_learn_blank('b3')\n"
+    "    if st.answered then\n"
+    "      if st.answered == q.answer then\n"
+    "        local how = st.typed == 'near' and ' (close enough: \"' .. st.typed_text .. '\")' or (st.typed and ' (typed)' or '')\n"
+    "        w[#w + 1] = {id = 'fb', text = 'Correct!' .. how, hl = 'Add'}\n"
+    "      else\n"
+    "        local lead = 'Not quite'\n"
+    "        if st.typed then lead = '\"' .. st.typed_text .. '\" is not it'\n"
+    "        elseif st.answered == 0 then lead = \"Time's up\" end\n"
+    "        w[#w + 1] = {id = 'fb', text = lead .. ' -- the answer is: ' .. q.choices[q.answer], hl = 'Error', wrap = true, wrap_indent = 0}\n"
+    "        if q.card.hint then\n"
+    "          w[#w + 1] = {id = 'hint', text = 'Hint: ' .. q.card.hint, hl = 'Yellow', wrap = true, wrap_indent = 0}\n"
+    "        end\n"
+    "      end\n"
+    "      if qspec.reveal_widgets then qspec.reveal_widgets(st, q, w) end\n"
+    "      w[#w + 1] = mep_learn_blank('b4')\n"
+    "      local label = st.index < #st.questions and '> Next question  [n]' or '> See results  [n]'\n"
+    "      w[#w + 1] = {id = 'next', text = label, hl = 'Blue', on_click = function() mep.learn_choice_next() end}\n"
+    "    end\n"
+    "    w[#w + 1] = mep_learn_blank('b5')\n"
+    "    w[#w + 1] = {id = 'help', text = (qspec.typed and '[t] type   ' or '') .. MEP_LEARN_CHOICE_HELP, hl = 'Comment'}\n"
+    "    return w\n"
+    "  end\n"
+    "  function game.on_key(st, k)\n"
+    "    local q = st.questions[st.index]\n"
+    "    local digit = tonumber(k)\n"
+    "    if digit then mep.learn_choice_answer(digit) return true end\n"
+    "    if k == 'n' or k == ' ' then mep.learn_choice_next() return true end\n"
+    "    if k == 't' and (q.spec or spec).typed then mep.learn_choice_type() return true end\n"
+    "    return false\n"
+    "  end\n"
+    "  return game\n"
+    "end\n"
+    // Records answer `i` (0 = timed out) for the current question.
+    "function mep.learn_choice_answer(i, typed_kind, typed_text)\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or not st.game.is_choice or st.finished or st.answered then return end\n"
+    "  local q = st.questions[st.index]\n"
+    "  if i < 0 or i > #q.choices then return end\n"
+    "  st.answered = i\n"
+    "  st.typed, st.typed_text = typed_kind, typed_text\n"
+    "  mep_learn_add_seen(st, q.card)\n"
+    "  if i == q.answer then\n"
+    "    st.score = st.score + 1\n"
+    "    st.streak = st.streak + 1\n"
+    "    if st.streak > st.best_streak then st.best_streak = st.streak end\n"
+    "  else\n"
+    "    st.streak = 0\n"
+    "    mep_learn_add_missed(st, q.card)\n"
+    "  end\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function mep.learn_choice_next()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or not st.game.is_choice or st.finished or not st.answered then return end\n"
+    "  -- Survival (opts.survival): the first miss ends the run; the score is\n"
+    "  -- how many were answered before it.\n"
+    "  local q = st.questions[st.index]\n"
+    "  if st.index >= #st.questions or (st.opts.survival and st.answered ~= q.answer) then\n"
+    "    st.finished = true\n"
+    "    st.deadline = nil\n"
+    "    if st.opts.survival then st.total = st.index end\n"
+    "  else\n"
+    "    st.index = st.index + 1\n"
+    "    st.answered, st.typed, st.typed_text = nil, nil, nil\n"
+    "    mep_learn_arm_timer(st)\n"
+    "  end\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    // `t`: answer the current choice question by typing it (mep.ui_input);
+    // the text is matched against the right choice plus the card's aliases
+    // through the typed-answer engine. Escape leaves the question open.
+    "function mep.learn_choice_type()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or not st.game.is_choice or st.finished or st.answered then return end\n"
+    "  local q = st.questions[st.index]\n"
+    "  local accepted = {q.choices[q.answer]}\n"
+    "  for _, a in ipairs(q.accepted or {}) do accepted[#accepted + 1] = a end\n"
+    "  mep.ui_input('Your answer', '', function(text)\n"
+    "    if text == nil then return end\n"
+    "    local live = mep_learn_state\n"
+    "    if live ~= st or st.answered or st.questions[st.index] ~= q then return end\n"
+    "    local kind = mep.learn_answer_matches(text, accepted)\n"
+    "    if kind then mep.learn_choice_answer(q.answer, kind, text)\n"
+    "    else\n"
+    "      -- A wrong typed answer marks no choice (0 is the \"none picked\" slot).\n"
+    "      mep.learn_choice_answer(0, 'typed', text)\n"
+    "    end\n"
+    "  end)\n"
+    "end\n"
+    // --- Selection engine helpers ----------------------------------------------
+    "local MEP_LEARN_LETTERS = 'abcdefghi'\n"
+    "local function mep_learn_letter(i) return MEP_LEARN_LETTERS:sub(i, i) end\n"
+    "local function mep_learn_letter_index(k)\n"
+    "  if #k ~= 1 then return nil end\n"
+    "  return (MEP_LEARN_LETTERS:find(k, 1, true))\n"
+    "end\n"
+    // --- Code helpers ---------------------------------------------------------
+    // Names hidden by mep.learn_anonymize_code, in order: column-0 `class X`
+    // -> Thing, Thing2, ...; column-0 `def f` (or `function f`) -> solve,
+    // solve2, ...; the card's :HIDE: identifiers -> op1, op2, ...; and every
+    // word of the term itself (3+ letters, case-insensitively, keeping a
+    // leading capital, `_` counting as a word break) -> thing/Thing, so
+    // `stack` in a comment, `self.tree` or `tree_size` can't leak the answer
+    // -- except words that are also Python keywords/builtins (set, hash,
+    // list, ...), which would corrupt the code instead of hiding anything.
+    // Every rename is a whole-identifier replacement across the block, so
+    // uses stay consistent with definitions. Returns the anonymized lines
+    // and the renames as {{from=, to=, count=}, ...} in document order
+    // (count = occurrences actually replaced), for the post-answer reveal.
+    "local MEP_LEARN_CODE_KEEP = {}\n"
+    "for word in ([[and as assert async await break class continue def del elif else except\n"
+    "  finally for from global if import in is lambda nonlocal not or pass raise return\n"
+    "  try while with yield True False None self cls abs all any bin bool bytes callable\n"
+    "  chr dict dir divmod enumerate eval filter float format frozenset getattr hasattr\n"
+    "  hash hex id input int isinstance iter len list map max min next object open ord\n"
+    "  pow print range repr reversed round set slice sorted str sum super tuple type\n"
+    "  vars zip array key value node item items data size index count left right root\n"
+    "  head tail next prev value front back top end start]]):gmatch('%S+') do\n"
+    "  MEP_LEARN_CODE_KEEP[word] = true\n"
+    "end\n"
+    "local function mep_learn_pattern_escape(s) return (s:gsub('%W', '%%%0')) end\n"
+    // Whole-identifier pattern for `word`. The case-insensitive form (term
+    // words: "stack" -> "%f[%w][sS][tT][aA][cC][kK]%f[^%w]") treats `_` as a
+    // separator too, so `stack_items` becomes `thing_items` -- a snake_case
+    // part leaks the answer as readily as a whole name; an exact rename
+    // (class/def/:HIDE:) matches the full identifier only.
+    "local function mep_learn_word_pattern(word, ignore_case)\n"
+    "  if ignore_case then\n"
+    "    local body = word:gsub('%a', function(c) return '[' .. c:lower() .. c:upper() .. ']' end)\n"
+    "    return '%f[%w]' .. body .. '%f[^%w]'\n"
+    "  end\n"
+    "  return '%f[%w_]' .. mep_learn_pattern_escape(word) .. '%f[^%w_]'\n"
+    "end\n"
+    "function mep.learn_anonymize_code(lines, card)\n"
+    "  local renames, seen = {}, {}\n"
+    "  local function add(from, to, ignore_case)\n"
+    "    if from == '' or seen[from:lower()] then return end\n"
+    "    seen[from:lower()] = true\n"
+    "    renames[#renames + 1] = {from = from, to = to, ignore_case = ignore_case, count = 0}\n"
+    "  end\n"
+    "  -- Term words go in unconditionally (their own dedupe only): a class\n"
+    "  -- already renamed case-sensitively (`Stack` -> Thing) still leaves a\n"
+    "  -- lowercase `stack` variable or comment for the case-insensitive pass.\n"
+    "  local term_words = {}\n"
+    "  local function add_term_word(word)\n"
+    "    local key = word:lower()\n"
+    "    if term_words[key] then return end\n"
+    "    term_words[key] = true\n"
+    "    renames[#renames + 1] = {from = word, to = 'thing', ignore_case = true, count = 0}\n"
+    "  end\n"
+    "  local n_class, n_def = 0, 0\n"
+    "  for _, line in ipairs(lines) do\n"
+    "    local cls = line:match('^class%s+([%a_][%w_]*)')\n"
+    "    local fn = line:match('^def%s+([%a_][%w_]*)') or line:match('^function%s+([%a_][%w_]*)')\n"
+    "    if cls and not seen[cls:lower()] then\n"
+    "      n_class = n_class + 1\n"
+    "      add(cls, n_class == 1 and 'Thing' or ('Thing' .. n_class))\n"
+    "    elseif fn and not seen[fn:lower()] then\n"
+    "      n_def = n_def + 1\n"
+    "      add(fn, n_def == 1 and 'solve' or ('solve' .. n_def))\n"
+    "    end\n"
+    "  end\n"
+    "  for i, ident in ipairs(card.hide or {}) do add(ident, 'op' .. i) end\n"
+    "  for word in card.term:gmatch('%a+') do\n"
+    "    if #word >= 3 and not MEP_LEARN_CODE_KEEP[word:lower()] then add_term_word(word) end\n"
+    "  end\n"
+    "  local out = {}\n"
+    "  for i, line in ipairs(lines) do\n"
+    "    for _, r in ipairs(renames) do\n"
+    "      local n\n"
+    "      if r.ignore_case then\n"
+    "        line, n = line:gsub(mep_learn_word_pattern(r.from, true), function(m)\n"
+    "          return m:sub(1, 1):match('%u') and ('T' .. r.to:sub(2)) or r.to\n"
+    "        end)\n"
+    "      else\n"
+    "        line, n = line:gsub(mep_learn_word_pattern(r.from, false), r.to)\n"
+    "      end\n"
+    "      r.count = r.count + n\n"
+    "    end\n"
+    "    out[i] = line\n"
+    "  end\n"
+    "  return out, renames\n"
+    "end\n"
+    // mep.learn_code_spans(lines, lang) -> per-line span arrays: Treesitter
+    // captures (mep.ts_captures) over the joined block, mapped to highlight
+    // groups through mep.ts_capture_hl and bucketed by line in the
+    // {col_start=, col_end=, hl=} shape a sidebar widget's `spans` takes.
+    // `lang` is the block's babel tag (python, lua, ...), bridged to the
+    // grammar's own filetype key (py, lua, ...) by mep_org_babel_lang_ts_ft
+    // (kBuiltinOrgPolyglot) -- unknown tag or no grammar: every line gets an
+    // empty array and the code simply draws unhighlighted.
+    "function mep.learn_code_spans(lines, lang)\n"
+    "  local by_line = {}\n"
+    "  for i = 1, #lines do by_line[i] = {} end\n"
+    "  local ft_map = mep_org_babel_lang_ts_ft or {}\n"
+    "  local ft = ft_map[lang] or lang\n"
+    "  local map = mep.ts_capture_hl\n"
+    "  if not (ft and map and mep.ts_captures) then return by_line end\n"
+    "  local ok, caps = pcall(mep.ts_captures, ft, table.concat(lines, '\\n'))\n"
+    "  if not ok or not caps then return by_line end\n"
+    "  for _, c in ipairs(caps) do\n"
+    "    local hl = map[c.capture] or map[c.capture:match('^([^.]+)')]\n"
+    "    if hl and by_line[c.row] then\n"
+    "      by_line[c.row][#by_line[c.row] + 1] = {col_start = c.col_start, col_end = c.col_end, hl = hl}\n"
+    "    end\n"
+    "  end\n"
+    "  return by_line\n"
+    "end\n"
+    // Appends one widget row per code line, Treesitter-colored. `opts`:
+    // numbered=true prefixes "NN  ", on_click(i) makes rows clickable,
+    // hl_line(i) -> hl overrides the row color (a marked line), blank=true
+    // draws lines holding `{{...}}` with the blank as ____.
+    "local function mep_learn_code_widgets(w, id_prefix, lines, lang, opts)\n"
+    "  opts = opts or {}\n"
+    "  local shown = lines\n"
+    "  if opts.blank then\n"
+    "    shown = {}\n"
+    "    for i, line in ipairs(lines) do shown[i] = (line:gsub('{{.-}}', '____')) end\n"
+    "  end\n"
+    "  local spans = mep.learn_code_spans(shown, lang)\n"
+    "  local width = #tostring(#lines)\n"
+    "  for i, line in ipairs(shown) do\n"
+    "    local prefix = ''\n"
+    "    if opts.numbered then prefix = string.format('%' .. width .. 'd  ', i) end\n"
+    "    local row_spans = spans[i]\n"
+    "    if prefix ~= '' then\n"
+    "      row_spans = {}\n"
+    "      for _, sp in ipairs(spans[i]) do\n"
+    "        row_spans[#row_spans + 1] = {col_start = sp.col_start + #prefix, col_end = sp.col_end + #prefix, hl = sp.hl}\n"
+    "      end\n"
+    "      row_spans[#row_spans + 1] = {col_start = 1, col_end = #prefix + 1, hl = 'Comment'}\n"
+    "    end\n"
+    "    -- A blank code line still needs a non-empty text to keep its row.\n"
+    "    local hl = opts.hl_line and opts.hl_line(i) or 'Normal'\n"
+    "    -- A marked row (a bug line, a reveal) shows its own color whole,\n"
+    "    -- not token colors.\n"
+    "    if hl ~= 'Normal' then row_spans = nil end\n"
+    "    local widget = {id = id_prefix .. i, text = (prefix .. line) == '' and ' ' or (prefix .. line), hl = hl, spans = row_spans}\n"
+    "    if opts.on_click then widget.on_click = function() opts.on_click(i) end end\n"
+    "    w[#w + 1] = widget\n"
+    "  end\n"
+    "end\n"
+    // --- Game: multiple-choice flashcards ---------------------------------------
+    "local MEP_LEARN_MC_SPEC = {\n"
+    "  name = 'Multiple choice',\n"
+    "  questions = function(st) return mep.learn_mc_questions(st.deck, st.opts) end,\n"
+    "  prompt_widgets = function(st, q, w)\n"
+    "    if q.direction == 'definition' then\n"
+    "      w[#w + 1] = {id = 'ask', text = 'Which term does this describe?', hl = 'Comment'}\n"
+    "    else\n"
+    "      w[#w + 1] = {id = 'ask', text = 'Which definition matches this term?', hl = 'Comment'}\n"
+    "    end\n"
+    "    for i, para in ipairs(mep.learn_split_lines(q.prompt)) do\n"
+    "      w[#w + 1] = {id = 'prompt' .. i, text = para, hl = 'Normal', wrap = true, wrap_indent = 0}\n"
+    "    end\n"
+    "  end,\n"
+    "  reveal_widgets = function(st, q, w)\n"
+    "    if q.direction == 'definition' and q.card.definition ~= '' then\n"
+    "      w[#w + 1] = {id = 'def', text = q.card.term .. ': ' .. q.card.definition, hl = 'Comment', wrap = true, wrap_indent = 0}\n"
+    "    end\n"
+    "  end,\n"
+    "}\n"
+    "MEP_LEARN_GAMES.mc = mep_learn_choice_game(MEP_LEARN_MC_SPEC)\n"
+    // mep.learn_mc_flashcards([path][, opts]): a multiple-choice flashcard
+    // session over the deck at `path` (default: the current org buffer). opts
+    // overrides the deck's own #+LEARN_* options (choices=, direction=,
+    // rounds=, time_limit=).
+    "function mep.learn_mc_flashcards(path, opts) return mep_learn_start(MEP_LEARN_GAMES.mc, path, opts) end\n"
+    // --- Game: matching ---------------------------------------------------------
+    // A round lists its terms (1-9) above its definitions (a-i, shuffled); the
+    // player pairs every term with a definition -- digit then letter, either
+    // order, or a click on each -- and only then submits, so a round is
+    // graded as a whole the way a matching exercise is. Pairing a term or a
+    // definition that's already taken moves it; 'u' clears the selection or
+    // unpairs the selected row.
+    "MEP_LEARN_GAMES.match = {name = 'Matching', unit = 'pairs'}\n"
+    "local MEP_LEARN_MATCH_HELP = '[1-9] pick term   [a-i] pick definition   [u] unpair   [s/Enter] submit   [n] next   [o] open card   [r] restart   [q] quit'\n"
+    "function MEP_LEARN_GAMES.match.reset(st)\n"
+    "  st.rounds = mep.learn_match_rounds(st.deck, st.opts)\n"
+    "  st.total = 0\n"
+    "  for _, r in ipairs(st.rounds) do st.total = st.total + #r.cards end\n"
+    "  st.round = 1\n"
+    "  st.pairs, st.sel_term, st.sel_def, st.submitted = {}, nil, nil, nil\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.match.current_card(st)\n"
+    "  local r = st.rounds[st.round]\n"
+    "  if not r then return nil end\n"
+    "  if st.sel_term then return r.cards[st.sel_term] end\n"
+    "  if st.sel_def then return r.cards[r.defs[st.sel_def]] end\n"
+    "  return r.cards[1]\n"
+    "end\n"
+    // pairs[term_index] = definition slot (1-based position in r.defs).
+    "local function mep_learn_match_term_of_slot(st, slot)\n"
+    "  for t, s in pairs(st.pairs) do if s == slot then return t end end\n"
+    "  return nil\n"
+    "end\n"
+    "local function mep_learn_match_all_paired(st)\n"
+    "  local r = st.rounds[st.round]\n"
+    "  for t = 1, #r.cards do if not st.pairs[t] then return false end end\n"
+    "  return true\n"
+    "end\n"
+    "local function mep_learn_match_try_pair(st)\n"
+    "  if not (st.sel_term and st.sel_def) then return end\n"
+    "  local old_term = mep_learn_match_term_of_slot(st, st.sel_def)\n"
+    "  if old_term then st.pairs[old_term] = nil end\n"
+    "  st.pairs[st.sel_term] = st.sel_def\n"
+    "  st.sel_term, st.sel_def = nil, nil\n"
+    "end\n"
+    "function mep.learn_match_pick_term(t)\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.match or st.finished or st.submitted then return end\n"
+    "  local r = st.rounds[st.round]\n"
+    "  if t < 1 or t > #r.cards then return end\n"
+    "  if st.sel_term == t then st.sel_term = nil else st.sel_term = t end\n"
+    "  mep_learn_match_try_pair(st)\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function mep.learn_match_pick_def(slot)\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.match or st.finished or st.submitted then return end\n"
+    "  local r = st.rounds[st.round]\n"
+    "  if slot < 1 or slot > #r.cards then return end\n"
+    "  if st.sel_def == slot then st.sel_def = nil else st.sel_def = slot end\n"
+    "  mep_learn_match_try_pair(st)\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function mep.learn_match_unpair()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.match or st.finished or st.submitted then return end\n"
+    "  if st.sel_term then st.pairs[st.sel_term] = nil\n"
+    "  elseif st.sel_def then\n"
+    "    local t = mep_learn_match_term_of_slot(st, st.sel_def)\n"
+    "    if t then st.pairs[t] = nil end\n"
+    "  end\n"
+    "  st.sel_term, st.sel_def = nil, nil\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function mep.learn_match_submit()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.match or st.finished or st.submitted then return end\n"
+    "  if not mep_learn_match_all_paired(st) then\n"
+    "    mep.notify('Learn: pair every term before submitting', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  local r = st.rounds[st.round]\n"
+    "  local correct = 0\n"
+    "  for t = 1, #r.cards do\n"
+    "    mep_learn_add_seen(st, r.cards[t])\n"
+    "    if r.defs[st.pairs[t]] == t then correct = correct + 1\n"
+    "    else mep_learn_add_missed(st, r.cards[t]) end\n"
+    "  end\n"
+    "  st.score = st.score + correct\n"
+    "  st.submitted = correct\n"
+    "  st.sel_term, st.sel_def = nil, nil\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function mep.learn_match_next()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.match or st.finished or not st.submitted then return end\n"
+    "  if st.round >= #st.rounds then\n"
+    "    st.finished = true\n"
+    "  else\n"
+    "    st.round = st.round + 1\n"
+    "    st.pairs, st.submitted = {}, nil\n"
+    "  end\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.match.widgets(st)\n"
+    "  local r = st.rounds[st.round]\n"
+    "  local w = {}\n"
+    "  w[#w + 1] = {\n"
+    "    id = 'head', hl = 'Accent',\n"
+    "    text = string.format('%s  --  Matching   Round %d/%d   Score %d/%d', st.deck.title, st.round, #st.rounds, st.score, st.total),\n"
+    "  }\n"
+    "  w[#w + 1] = mep_learn_blank('b1')\n"
+    "  if st.submitted then\n"
+    "    local hl = st.submitted == #r.cards and 'Add' or (st.submitted == 0 and 'Error' or 'Yellow')\n"
+    "    w[#w + 1] = {id = 'ask', text = string.format('%d of %d pairs correct', st.submitted, #r.cards), hl = hl}\n"
+    "  else\n"
+    "    w[#w + 1] = {id = 'ask', text = 'Pair every term with its definition, then submit.', hl = 'Comment'}\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b2')\n"
+    "  w[#w + 1] = {id = 'terms', text = 'Terms', hl = 'PickerTitle'}\n"
+    "  for t, card in ipairs(r.cards) do\n"
+    "    local slot = st.pairs[t]\n"
+    "    local hl, mark, tail = 'Normal', ' ', '-> _'\n"
+    "    if slot then tail = '-> ' .. mep_learn_letter(slot) end\n"
+    "    if st.submitted then\n"
+    "      if r.defs[slot] == t then hl, mark = 'Add', '*'\n"
+    "      else\n"
+    "        hl, mark = 'Red', 'x'\n"
+    "        for s = 1, #r.defs do if r.defs[s] == t then tail = tail .. '  (answer: ' .. mep_learn_letter(s) .. ')' end end\n"
+    "      end\n"
+    "    elseif st.sel_term == t then hl, mark = 'Yellow', '>'\n"
+    "    elseif slot then hl = 'Cyan' end\n"
+    "    w[#w + 1] = {\n"
+    "      id = 'term' .. t, text = string.format('%s %d) %s  %s', mark, t, card.term, tail), hl = hl,\n"
+    "      wrap = true, wrap_indent = 5,\n"
+    "      on_click = function() mep.learn_match_pick_term(t) end,\n"
+    "    }\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b3')\n"
+    "  w[#w + 1] = {id = 'defs', text = 'Definitions', hl = 'PickerTitle'}\n"
+    "  for slot, ci in ipairs(r.defs) do\n"
+    "    local card = r.cards[ci]\n"
+    "    local t = mep_learn_match_term_of_slot(st, slot)\n"
+    "    local hl, mark = 'Normal', ' '\n"
+    "    local tag = t and ('[' .. t .. ']') or '[ ]'\n"
+    "    if st.submitted then\n"
+    "      if t == ci then hl, mark = 'Add', '*'\n"
+    "      else hl, mark, tag = 'Red', 'x', '[' .. ci .. ']' end\n"
+    "    elseif st.sel_def == slot then hl, mark = 'Yellow', '>'\n"
+    "    elseif t then hl = 'Cyan' end\n"
+    "    w[#w + 1] = {\n"
+    "      id = 'def' .. slot, text = string.format('%s %s) %s %s', mark, mep_learn_letter(slot), tag, card.definition), hl = hl,\n"
+    "      wrap = true, wrap_indent = 9,\n"
+    "      on_click = function() mep.learn_match_pick_def(slot) end,\n"
+    "    }\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b4')\n"
+    "  if st.submitted then\n"
+    "    local label = st.round < #st.rounds and '> Next round  [n]' or '> See results  [n]'\n"
+    "    w[#w + 1] = {id = 'next', text = label, hl = 'Blue', on_click = function() mep.learn_match_next() end}\n"
+    "  elseif mep_learn_match_all_paired(st) then\n"
+    "    w[#w + 1] = {id = 'submit', text = '> Submit  [s]', hl = 'Blue', on_click = function() mep.learn_match_submit() end}\n"
+    "  else\n"
+    "    local left = 0\n"
+    "    for t = 1, #r.cards do if not st.pairs[t] then left = left + 1 end end\n"
+    "    w[#w + 1] = {id = 'submit', text = string.format('  Submit  (%d left to pair)', left), hl = 'Comment'}\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b5')\n"
+    "  w[#w + 1] = {id = 'help', text = MEP_LEARN_MATCH_HELP, hl = 'Comment'}\n"
+    "  return w\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.match.on_key(st, k)\n"
+    "  local digit = tonumber(k)\n"
+    "  if digit then mep.learn_match_pick_term(digit) return true end\n"
+    "  local slot = mep_learn_letter_index(k)\n"
+    "  if slot then mep.learn_match_pick_def(slot) return true end\n"
+    "  if k == 'u' then mep.learn_match_unpair() return true end\n"
+    "  if k == 's' then mep.learn_match_submit() return true end\n"
+    "  if k == 'n' or k == ' ' then mep.learn_match_next() return true end\n"
+    "  return false\n"
+    "end\n"
+    // mep.learn_matching([path][, opts]): a matching session over the deck at
+    // `path` (default: the current org buffer); opts.size / opts.rounds
+    // override #+LEARN_MATCH_SIZE: / #+LEARN_ROUNDS:.
+    "function mep.learn_matching(path, opts) return mep_learn_start(MEP_LEARN_GAMES.match, path, opts) end\n"
+    // --- Game: identify the code ------------------------------------------------
+    // mep.learn_code_questions(deck[, opts]) -> choice questions for every
+    // card that carries a code block, in shuffled order (opts.rounds caps),
+    // each with q.code (the anonymized lines), q.renames and q.lang.
+    // Distractors come from the whole deck, code or not, so a handful of
+    // implementations still gets four plausible options.
+    "function mep.learn_code_questions(deck, opts)\n"
+    "  opts = opts or {}\n"
+    "  local n_choices = opts.choices or deck.options.choices\n"
+    "  local order = {}\n"
+    "  for _, c in ipairs(deck.cards) do if c.code then order[#order + 1] = c end end\n"
+    "  mep_learn_cap(mep.learn_shuffle(order), opts.rounds or deck.options.rounds)\n"
+    "  local questions = {}\n"
+    "  for _, card in ipairs(order) do\n"
+    "    local candidates = mep.learn_shuffle(mep_learn_copy(card.distractors))\n"
+    "    for _, c in ipairs(mep_learn_others(deck, card)) do candidates[#candidates + 1] = c.term end\n"
+    "    local choices, answer = mep_learn_choices(card.term, candidates, n_choices)\n"
+    "    local code, renames = mep.learn_anonymize_code(card.code.lines, card)\n"
+    "    questions[#questions + 1] = {\n"
+    "      card = card, direction = 'definition', prompt = card.term, choices = choices, answer = answer,\n"
+    "      code = code, renames = renames, lang = card.code.lang, accepted = card.aliases,\n"
+    "    }\n"
+    "  end\n"
+    "  return questions\n"
+    "end\n"
+    "local function mep_learn_count(deck, pred)\n"
+    "  local n = 0\n"
+    "  for _, c in ipairs(deck.cards) do if pred(c) then n = n + 1 end end\n"
+    "  return n\n"
+    "end\n"
+    "local MEP_LEARN_CODE_SPEC = {\n"
+    "  name = 'Identify the code',\n"
+    "  questions = function(st) return mep.learn_code_questions(st.deck, st.opts) end,\n"
+    "  validate = function(deck)\n"
+    "    if mep_learn_count(deck, function(c) return c.code end) < 2 then\n"
+    "      return 'the deck needs at least two cards with a #+begin_src block'\n"
+    "    end\n"
+    "  end,\n"
+    "  prompt_widgets = function(st, q, w)\n"
+    "    w[#w + 1] = {id = 'ask', text = string.format('Which of these does this %s implement?', q.lang), hl = 'Comment'}\n"
+    "    mep_learn_code_widgets(w, 'code', st.answered and q.card.code.lines or q.code, q.lang)\n"
+    "  end,\n"
+    "  reveal_widgets = function(st, q, w)\n"
+    "    local parts = {}\n"
+    "    for _, r in ipairs(q.renames) do\n"
+    "      if r.count > 0 then parts[#parts + 1] = r.to .. ' = ' .. r.from end\n"
+    "    end\n"
+    "    if #parts > 0 then\n"
+    "      w[#w + 1] = {id = 'names', text = 'Real names: ' .. table.concat(parts, ', '), hl = 'Cyan', wrap = true, wrap_indent = 0}\n"
+    "    end\n"
+    "    if q.card.definition ~= '' then\n"
+    "      w[#w + 1] = {id = 'def', text = q.card.term .. ': ' .. q.card.definition, hl = 'Comment', wrap = true, wrap_indent = 0}\n"
+    "    end\n"
+    "  end,\n"
+    "}\n"
+    "MEP_LEARN_GAMES.code = mep_learn_choice_game(MEP_LEARN_CODE_SPEC)\n"
+    // mep.learn_code_id([path][, opts]): an identify-the-code session over
+    // the deck's cards that carry a #+begin_src block (needs at least two).
+    "function mep.learn_code_id(path, opts) return mep_learn_start(MEP_LEARN_GAMES.code, path, opts) end\n"
+    // --- Game: true or false ----------------------------------------------------
+    // mep.learn_tf_questions(deck[, opts]): one statement per card, "Term --
+    // definition", half of them swapped to another card's definition (same
+    // category first, so the false ones are plausible). choices are True /
+    // False; q.shown_card is whose definition was actually shown.
+    "function mep.learn_tf_questions(deck, opts)\n"
+    "  opts = opts or {}\n"
+    "  local order = mep_learn_cap(mep.learn_shuffle(mep_learn_copy(deck.cards)), opts.rounds or deck.options.rounds)\n"
+    "  local questions = {}\n"
+    "  for i, card in ipairs(order) do\n"
+    "    local truth = (i % 2 == 1)\n"
+    "    local shown = card\n"
+    "    if not truth then\n"
+    "      local others = mep_learn_others(deck, card)\n"
+    "      shown = others[1]\n"
+    "      for _, c in ipairs(others) do if c.definition ~= card.definition then shown = c break end end\n"
+    "    end\n"
+    "    if shown == card then truth = true end\n"
+    "    questions[#questions + 1] = {\n"
+    "      card = card, shown_card = shown, prompt = card.term .. ' -- ' .. shown.definition,\n"
+    "      choices = {'True', 'False'}, answer = truth and 1 or 2,\n"
+    "    }\n"
+    "  end\n"
+    "  return questions\n"
+    "end\n"
+    "local MEP_LEARN_TF_SPEC = {\n"
+    "  name = 'True or false',\n"
+    "  questions = function(st) return mep.learn_tf_questions(st.deck, st.opts) end,\n"
+    "  prompt_widgets = function(st, q, w)\n"
+    "    w[#w + 1] = {id = 'ask', text = 'Is this statement true?', hl = 'Comment'}\n"
+    "    w[#w + 1] = {id = 'prompt', text = q.prompt, hl = 'Normal', wrap = true, wrap_indent = 0}\n"
+    "  end,\n"
+    "  reveal_widgets = function(st, q, w)\n"
+    "    if q.shown_card ~= q.card then\n"
+    "      w[#w + 1] = {id = 'real', text = 'That was ' .. q.shown_card.term .. \"'s definition. \" .. q.card.term .. ': ' .. q.card.definition, hl = 'Comment', wrap = true, wrap_indent = 0}\n"
+    "    end\n"
+    "  end,\n"
+    "}\n"
+    "MEP_LEARN_GAMES.tf = mep_learn_choice_game(MEP_LEARN_TF_SPEC)\n"
+    "do\n"
+    "  local base = MEP_LEARN_GAMES.tf.on_key\n"
+    "  MEP_LEARN_GAMES.tf.on_key = function(st, k)\n"
+    "    if k == 't' or k == 'y' then mep.learn_choice_answer(1) return true end\n"
+    "    if k == 'f' then mep.learn_choice_answer(2) return true end\n"
+    "    return base(st, k)\n"
+    "  end\n"
+    "end\n"
+    "function mep.learn_true_false(path, opts) return mep_learn_start(MEP_LEARN_GAMES.tf, path, opts) end\n"
+    // --- Game: fill in the blank (cloze) ----------------------------------------
+    // mep.learn_cloze_questions(deck[, opts]): one question per `{{answer}}`
+    // blank in any card's prose; the sentence shows ____ for the blank and the
+    // choices are the answer plus other cards' cloze answers (same category
+    // first), then terms. `t` types the answer instead.
+    "function mep.learn_cloze_questions(deck, opts)\n"
+    "  opts = opts or {}\n"
+    "  local n_choices = opts.choices or deck.options.choices\n"
+    "  local all = {}\n"
+    "  for _, c in ipairs(deck.cards) do\n"
+    "    for _, b in ipairs(c.clozes) do all[#all + 1] = {card = c, blank = b} end\n"
+    "  end\n"
+    "  mep_learn_cap(mep.learn_shuffle(all), opts.rounds or deck.options.rounds)\n"
+    "  local questions = {}\n"
+    "  for _, item in ipairs(all) do\n"
+    "    local card, b = item.card, item.blank\n"
+    "    local candidates = {}\n"
+    "    for _, c in ipairs(mep_learn_others(deck, card)) do\n"
+    "      for _, ob in ipairs(c.clozes) do candidates[#candidates + 1] = ob.answer end\n"
+    "    end\n"
+    "    for _, ob in ipairs(card.clozes) do if ob ~= b then candidates[#candidates + 1] = ob.answer end end\n"
+    "    for _, c in ipairs(mep_learn_others(deck, card)) do candidates[#candidates + 1] = c.term end\n"
+    "    local choices, answer = mep_learn_choices(b.answer, candidates, n_choices)\n"
+    "    local sentence = b.sentence:sub(1, b.start - 1) .. '____' .. b.sentence:sub(b.stop + 1)\n"
+    "    questions[#questions + 1] = {card = card, blank = b, prompt = sentence, choices = choices, answer = answer, accepted = {}}\n"
+    "  end\n"
+    "  return questions\n"
+    "end\n"
+    "local MEP_LEARN_CLOZE_SPEC = {\n"
+    "  name = 'Fill in the blank',\n"
+    "  typed = true,\n"
+    "  questions = function(st) return mep.learn_cloze_questions(st.deck, st.opts) end,\n"
+    "  validate = function(deck)\n"
+    "    if mep_learn_count(deck, function(c) return #c.clozes > 0 end) < 1 then\n"
+    "      return 'the deck has no {{blank}} markup in any card'\n"
+    "    end\n"
+    "  end,\n"
+    "  prompt_widgets = function(st, q, w)\n"
+    "    w[#w + 1] = {id = 'ask', text = 'Fill in the blank  (' .. q.card.term .. ')', hl = 'Comment'}\n"
+    "    w[#w + 1] = {id = 'prompt', text = q.prompt, hl = 'Normal', wrap = true, wrap_indent = 0}\n"
+    "    if q.blank.hint and not st.answered then\n"
+    "      w[#w + 1] = {id = 'bhint', text = 'Hint: ' .. q.blank.hint, hl = 'Yellow', wrap = true, wrap_indent = 0}\n"
+    "    end\n"
+    "  end,\n"
+    "  reveal_widgets = function(st, q, w)\n"
+    "    w[#w + 1] = {id = 'full', text = q.blank.sentence, hl = 'Comment', wrap = true, wrap_indent = 0}\n"
+    "  end,\n"
+    "}\n"
+    "MEP_LEARN_GAMES.cloze = mep_learn_choice_game(MEP_LEARN_CLOZE_SPEC)\n"
+    "function mep.learn_cloze(path, opts) return mep_learn_start(MEP_LEARN_GAMES.cloze, path, opts) end\n"
+    // --- Game: odd one out ------------------------------------------------------
+    // mep.learn_oddone_questions(deck[, opts]): three terms from one category
+    // plus one from another; the odd one is the answer. Only categories with
+    // three or more cards seed a question.
+    "function mep.learn_oddone_questions(deck, opts)\n"
+    "  opts = opts or {}\n"
+    "  local by_cat = {}\n"
+    "  for _, c in ipairs(deck.cards) do\n"
+    "    if c.category then\n"
+    "      by_cat[c.category] = by_cat[c.category] or {}\n"
+    "      table.insert(by_cat[c.category], c)\n"
+    "    end\n"
+    "  end\n"
+    "  local questions = {}\n"
+    "  for _, odd in ipairs(mep.learn_shuffle(mep_learn_copy(deck.cards))) do\n"
+    "    if odd.category then\n"
+    "      local cats = {}\n"
+    "      for name, cards in pairs(by_cat) do\n"
+    "        if name ~= odd.category and #cards >= 3 then cats[#cats + 1] = name end\n"
+    "      end\n"
+    "      if #cats > 0 then\n"
+    "        local group = mep.learn_shuffle(mep_learn_copy(by_cat[cats[math.random(#cats)]]))\n"
+    "        local choices = {odd.term, group[1].term, group[2].term, group[3].term}\n"
+    "        mep.learn_shuffle(choices)\n"
+    "        local answer\n"
+    "        for i, t in ipairs(choices) do if t == odd.term then answer = i end end\n"
+    "        questions[#questions + 1] = {card = odd, group_category = group[1].category, choices = choices, answer = answer}\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  return mep_learn_cap(questions, opts.rounds or deck.options.rounds)\n"
+    "end\n"
+    "local MEP_LEARN_ODDONE_SPEC = {\n"
+    "  name = 'Odd one out',\n"
+    "  questions = function(st) return mep.learn_oddone_questions(st.deck, st.opts) end,\n"
+    "  validate = function(deck)\n"
+    "    if #mep.learn_oddone_questions(deck, {rounds = 1}) == 0 then\n"
+    "      return 'odd one out needs two categories, one with three or more cards'\n"
+    "    end\n"
+    "  end,\n"
+    "  prompt_widgets = function(st, q, w)\n"
+    "    w[#w + 1] = {id = 'ask', text = \"Which one doesn't belong?\", hl = 'Comment'}\n"
+    "  end,\n"
+    "  reveal_widgets = function(st, q, w)\n"
+    "    w[#w + 1] = {id = 'why', text = q.card.term .. ' is a ' .. q.card.category .. '; the others are ' .. q.group_category .. '.', hl = 'Comment', wrap = true, wrap_indent = 0}\n"
+    "  end,\n"
+    "}\n"
+    "MEP_LEARN_GAMES.oddone = mep_learn_choice_game(MEP_LEARN_ODDONE_SPEC)\n"
+    "function mep.learn_odd_one_out(path, opts) return mep_learn_start(MEP_LEARN_GAMES.oddone, path, opts) end\n"
+    // --- Game: which category? --------------------------------------------------
+    "function mep.learn_category_questions(deck, opts)\n"
+    "  opts = opts or {}\n"
+    "  local n_choices = opts.choices or deck.options.choices\n"
+    "  local order = {}\n"
+    "  for _, c in ipairs(deck.cards) do if c.category then order[#order + 1] = c end end\n"
+    "  mep_learn_cap(mep.learn_shuffle(order), opts.rounds or deck.options.rounds)\n"
+    "  local questions = {}\n"
+    "  for _, card in ipairs(order) do\n"
+    "    local candidates = mep.learn_shuffle(mep_learn_copy(deck.categories))\n"
+    "    local choices, answer = mep_learn_choices(card.category, candidates, n_choices)\n"
+    "    questions[#questions + 1] = {card = card, prompt = card.term, choices = choices, answer = answer}\n"
+    "  end\n"
+    "  return questions\n"
+    "end\n"
+    "local MEP_LEARN_CATEGORY_SPEC = {\n"
+    "  name = 'Which category',\n"
+    "  questions = function(st) return mep.learn_category_questions(st.deck, st.opts) end,\n"
+    "  validate = function(deck)\n"
+    "    if #deck.categories < 2 then return 'which-category needs cards under at least two category headlines' end\n"
+    "  end,\n"
+    "  prompt_widgets = function(st, q, w)\n"
+    "    w[#w + 1] = {id = 'ask', text = 'Which category does this belong to?', hl = 'Comment'}\n"
+    "    w[#w + 1] = {id = 'prompt', text = q.card.term, hl = 'Normal'}\n"
+    "  end,\n"
+    "  reveal_widgets = function(st, q, w)\n"
+    "    w[#w + 1] = {id = 'def', text = q.card.term .. ': ' .. q.card.definition, hl = 'Comment', wrap = true, wrap_indent = 0}\n"
+    "  end,\n"
+    "}\n"
+    "MEP_LEARN_GAMES.category = mep_learn_choice_game(MEP_LEARN_CATEGORY_SPEC)\n"
+    "function mep.learn_which_category(path, opts) return mep_learn_start(MEP_LEARN_GAMES.category, path, opts) end\n"
+    // --- Game: fact quiz --------------------------------------------------------
+    // mep.learn_fact_questions(deck[, opts]): one question per (card, fact)
+    // whose key has at least two distinct values across the deck -- "Term --
+    // KEY?" with the other values as choices (same category first).
+    "function mep.learn_fact_questions(deck, opts)\n"
+    "  opts = opts or {}\n"
+    "  local n_choices = opts.choices or deck.options.choices\n"
+    "  local values_by_key = {}\n"
+    "  for _, c in ipairs(deck.cards) do\n"
+    "    for _, f in ipairs(c.facts) do\n"
+    "      values_by_key[f.key] = values_by_key[f.key] or {}\n"
+    "      values_by_key[f.key][f.value] = true\n"
+    "    end\n"
+    "  end\n"
+    "  local all = {}\n"
+    "  for _, c in ipairs(deck.cards) do\n"
+    "    for _, f in ipairs(c.facts) do\n"
+    "      local n = 0\n"
+    "      for _ in pairs(values_by_key[f.key]) do n = n + 1 end\n"
+    "      if n >= 2 then all[#all + 1] = {card = c, fact = f} end\n"
+    "    end\n"
+    "  end\n"
+    "  mep_learn_cap(mep.learn_shuffle(all), opts.rounds or deck.options.rounds)\n"
+    "  local questions = {}\n"
+    "  for _, item in ipairs(all) do\n"
+    "    local card, f = item.card, item.fact\n"
+    "    local candidates = {}\n"
+    "    for _, c in ipairs(mep_learn_others(deck, card)) do\n"
+    "      for _, of in ipairs(c.facts) do if of.key == f.key then candidates[#candidates + 1] = of.value end end\n"
+    "    end\n"
+    "    local choices, answer = mep_learn_choices(f.value, candidates, n_choices)\n"
+    "    local label = f.key:lower():gsub('_', ' ')\n"
+    "    questions[#questions + 1] = {card = card, fact = f, prompt = card.term .. ' -- ' .. label .. '?', choices = choices, answer = answer}\n"
+    "  end\n"
+    "  return questions\n"
+    "end\n"
+    "local MEP_LEARN_FACTS_SPEC = {\n"
+    "  name = 'Fact quiz',\n"
+    "  questions = function(st) return mep.learn_fact_questions(st.deck, st.opts) end,\n"
+    "  validate = function(deck)\n"
+    "    if #mep.learn_fact_questions(deck, {rounds = 1}) == 0 then\n"
+    "      return 'the fact quiz needs a property (#+LEARN_FACTS: or any non-reserved key) or a 2-column table with differing values across cards'\n"
+    "    end\n"
+    "  end,\n"
+    "  prompt_widgets = function(st, q, w)\n"
+    "    w[#w + 1] = {id = 'ask', text = 'Which is right?', hl = 'Comment'}\n"
+    "    w[#w + 1] = {id = 'prompt', text = q.prompt, hl = 'Normal', wrap = true, wrap_indent = 0}\n"
+    "  end,\n"
+    "  reveal_widgets = function(st, q, w)\n"
+    "    local parts = {}\n"
+    "    for _, f in ipairs(q.card.facts) do parts[#parts + 1] = f.key:lower():gsub('_', ' ') .. ' = ' .. f.value end\n"
+    "    w[#w + 1] = {id = 'facts', text = q.card.term .. ': ' .. table.concat(parts, ', '), hl = 'Comment', wrap = true, wrap_indent = 0}\n"
+    "  end,\n"
+    "}\n"
+    "MEP_LEARN_GAMES.facts = mep_learn_choice_game(MEP_LEARN_FACTS_SPEC)\n"
+    "function mep.learn_fact_quiz(path, opts) return mep_learn_start(MEP_LEARN_GAMES.facts, path, opts) end\n"
+    // --- Game: complete the code ------------------------------------------------
+    // mep.learn_code_cloze_questions(deck[, opts]): every `{{...}}` in a
+    // `:learn cloze` block is one question: the block shown with that blank
+    // as ____ (other blanks of the same block show their answers), choices
+    // from the deck's other code blanks. `t` types it.
+    "local function mep_learn_block_clozes(blk)\n"
+    "  local out = {}\n"
+    "  for i, line in ipairs(blk.lines) do\n"
+    "    local plain, blanks = mep.learn_cloze_strip(line)\n"
+    "    for _, b in ipairs(blanks) do out[#out + 1] = {line = i, answer = b.answer, hint = b.hint} end\n"
+    "  end\n"
+    "  return out\n"
+    "end\n"
+    "function mep.learn_code_cloze_questions(deck, opts)\n"
+    "  opts = opts or {}\n"
+    "  local n_choices = opts.choices or deck.options.choices\n"
+    "  local all, pool = {}, {}\n"
+    "  for _, c in ipairs(deck.cards) do\n"
+    "    for _, blk in ipairs(c.blocks) do\n"
+    "      if blk.learn == 'cloze' then\n"
+    "        for _, b in ipairs(mep_learn_block_clozes(blk)) do\n"
+    "          all[#all + 1] = {card = c, block = blk, blank = b}\n"
+    "          pool[#pool + 1] = b.answer\n"
+    "        end\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  mep_learn_cap(mep.learn_shuffle(all), opts.rounds or deck.options.rounds)\n"
+    "  local questions = {}\n"
+    "  for _, item in ipairs(all) do\n"
+    "    local card, blk, b = item.card, item.block, item.blank\n"
+    "    -- Show the block with only this blank open: every other {{x}} in\n"
+    "    -- the block is resolved to its answer, and the one asked stays as\n"
+    "    -- {{x}} for mep_learn_code_widgets' blank=true to draw as ____.\n"
+    "    local shown, seen_target = {}, false\n"
+    "    for i, line in ipairs(blk.lines) do\n"
+    "      if i == b.line then\n"
+    "        local n = 0\n"
+    "        shown[i] = line:gsub('{{(.-)}}', function(inner)\n"
+    "          n = n + 1\n"
+    "          local ans = mep_learn_trim(inner:match('^(.-)|') or inner)\n"
+    "          if not seen_target and ans == b.answer then seen_target = true return '{{' .. inner .. '}}' end\n"
+    "          return ans\n"
+    "        end)\n"
+    "      else\n"
+    "        shown[i] = (mep.learn_cloze_strip(line))\n"
+    "      end\n"
+    "    end\n"
+    "    local candidates = mep.learn_shuffle(mep_learn_copy(pool))\n"
+    "    local choices, answer = mep_learn_choices(b.answer, candidates, n_choices)\n"
+    "    questions[#questions + 1] = {card = card, block = blk, blank = b, code = shown, lang = blk.lang, choices = choices, answer = answer, accepted = {}}\n"
+    "  end\n"
+    "  return questions\n"
+    "end\n"
+    "local MEP_LEARN_CODE_CLOZE_SPEC = {\n"
+    "  name = 'Complete the code',\n"
+    "  typed = true,\n"
+    "  questions = function(st) return mep.learn_code_cloze_questions(st.deck, st.opts) end,\n"
+    "  validate = function(deck)\n"
+    "    if #mep.learn_code_cloze_questions(deck, {rounds = 1}) == 0 then\n"
+    "      return 'complete-the-code needs a `#+begin_src <lang> :learn cloze` block with {{blank}} markup'\n"
+    "    end\n"
+    "  end,\n"
+    "  prompt_widgets = function(st, q, w)\n"
+    "    w[#w + 1] = {id = 'ask', text = 'What goes in the blank?  (' .. q.card.term .. ')', hl = 'Comment'}\n"
+    "    mep_learn_code_widgets(w, 'code', q.code, q.lang, {blank = true, hl_line = function(i) return i == q.blank.line and 'Yellow' or 'Normal' end})\n"
+    "    if q.blank.hint and not st.answered then\n"
+    "      w[#w + 1] = {id = 'bhint', text = 'Hint: ' .. q.blank.hint, hl = 'Yellow', wrap = true, wrap_indent = 0}\n"
+    "    end\n"
+    "  end,\n"
+    "  reveal_widgets = function(st, q, w)\n"
+    "    w[#w + 1] = {id = 'full', text = 'Line ' .. q.blank.line .. ': ' .. (mep.learn_cloze_strip(q.block.lines[q.blank.line])):gsub('^%s+', ''), hl = 'Cyan', wrap = true, wrap_indent = 0}\n"
+    "  end,\n"
+    "}\n"
+    "MEP_LEARN_GAMES.code_cloze = mep_learn_choice_game(MEP_LEARN_CODE_CLOZE_SPEC)\n"
+    "function mep.learn_complete_code(path, opts) return mep_learn_start(MEP_LEARN_GAMES.code_cloze, path, opts) end\n"
+    // --- Game: predict the output -----------------------------------------------
+    // mep.learn_output_questions(deck[, opts]): one question per `:learn
+    // output` block that has a #+RESULTS: drawer: the card's implementation
+    // (if any) plus the block are shown, the choices are the other output
+    // blocks' results.
+    "function mep.learn_output_questions(deck, opts)\n"
+    "  opts = opts or {}\n"
+    "  local n_choices = opts.choices or deck.options.choices\n"
+    "  local all, pool = {}, {}\n"
+    "  for _, c in ipairs(deck.cards) do\n"
+    "    for _, blk in ipairs(c.blocks) do\n"
+    "      if blk.learn == 'output' and blk.results and #blk.results > 0 then\n"
+    "        all[#all + 1] = {card = c, block = blk}\n"
+    "        pool[#pool + 1] = table.concat(blk.results, ' | ')\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  mep_learn_cap(mep.learn_shuffle(all), opts.rounds or deck.options.rounds)\n"
+    "  local questions = {}\n"
+    "  for _, item in ipairs(all) do\n"
+    "    local answer_text = table.concat(item.block.results, ' | ')\n"
+    "    local choices, answer = mep_learn_choices(answer_text, mep.learn_shuffle(mep_learn_copy(pool)), n_choices)\n",
+    "    questions[#questions + 1] = {card = item.card, block = item.block, lang = item.block.lang, choices = choices, answer = answer}\n"
+    "  end\n"
+    "  return questions\n"
+    "end\n"
+    "local MEP_LEARN_OUTPUT_SPEC = {\n"
+    "  name = 'Predict the output',\n"
+    "  questions = function(st) return mep.learn_output_questions(st.deck, st.opts) end,\n"
+    "  validate = function(deck)\n"
+    "    if #mep.learn_output_questions(deck, {rounds = 0}) < 2 then\n"
+    "      return 'predict-the-output needs two or more `:learn output` blocks each followed by #+RESULTS:'\n"
+    "    end\n"
+    "  end,\n"
+    "  prompt_widgets = function(st, q, w)\n"
+    "    w[#w + 1] = {id = 'ask', text = 'What does this print?  (lines joined with \" | \")', hl = 'Comment'}\n"
+    "    if q.card.code then\n"
+    "      mep_learn_code_widgets(w, 'impl', q.card.code.lines, q.card.code.lang)\n"
+    "      w[#w + 1] = mep_learn_blank('bimpl')\n"
+    "    end\n"
+    "    mep_learn_code_widgets(w, 'code', q.block.lines, q.lang)\n"
+    "  end,\n"
+    "}\n"
+    "MEP_LEARN_GAMES.output = mep_learn_choice_game(MEP_LEARN_OUTPUT_SPEC)\n"
+    "function mep.learn_predict_output(path, opts) return mep_learn_start(MEP_LEARN_GAMES.output, path, opts) end\n"
+    // --- Game: mixed practice ---------------------------------------------------
+    // Every choice-engine generator the deck can feed, shuffled together;
+    // each question keeps its own spec for drawing. #+LEARN_MIXED: (or
+    // opts.mixed) names the subset.
+    "local MEP_LEARN_MIXED_SOURCES = {\n"
+    "  {key = 'mc', spec = MEP_LEARN_MC_SPEC},\n"
+    "  {key = 'code', spec = MEP_LEARN_CODE_SPEC},\n"
+    "  {key = 'tf', spec = MEP_LEARN_TF_SPEC},\n"
+    "  {key = 'cloze', spec = MEP_LEARN_CLOZE_SPEC},\n"
+    "  {key = 'oddone', spec = MEP_LEARN_ODDONE_SPEC},\n"
+    "  {key = 'category', spec = MEP_LEARN_CATEGORY_SPEC},\n"
+    "  {key = 'facts', spec = MEP_LEARN_FACTS_SPEC},\n"
+    "  {key = 'code_cloze', spec = MEP_LEARN_CODE_CLOZE_SPEC},\n"
+    "  {key = 'output', spec = MEP_LEARN_OUTPUT_SPEC},\n"
+    "}\n"
+    "function mep.learn_mixed_questions(deck, opts)\n"
+    "  opts = opts or {}\n"
+    "  local wanted = opts.mixed or deck.options.mixed\n"
+    "  local allow = nil\n"
+    "  if wanted then\n"
+    "    allow = {}\n"
+    "    for _, k in ipairs(wanted) do allow[k] = true end\n"
+    "  end\n"
+    "  local all = {}\n"
+    "  for _, src in ipairs(MEP_LEARN_MIXED_SOURCES) do\n"
+    "    if not allow or allow[src.key] then\n"
+    "      local fake = {deck = deck, opts = {choices = opts.choices, rounds = 0}}\n"
+    "      local ok, qs = pcall(src.spec.questions, fake)\n"
+    "      if ok and qs and not (src.spec.validate and src.spec.validate(deck)) then\n"
+    "        for _, q in ipairs(qs) do\n"
+    "          q.spec = src.spec\n"
+    "          all[#all + 1] = q\n"
+    "        end\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  return mep_learn_cap(mep.learn_shuffle(all), opts.rounds or deck.options.rounds)\n"
+    "end\n"
+    "MEP_LEARN_GAMES.mixed = mep_learn_choice_game({\n"
+    "  name = 'Mixed practice',\n"
+    "  questions = function(st) return mep.learn_mixed_questions(st.deck, st.opts) end,\n"
+    "  validate = function(deck)\n"
+    "    if #mep.learn_mixed_questions(deck, {rounds = 1}) == 0 then return 'nothing to practice in this deck' end\n"
+    "  end,\n"
+    "  prompt_widgets = function(st, q, w) end,\n"
+    "})\n"
+    "function mep.learn_mixed(path, opts) return mep_learn_start(MEP_LEARN_GAMES.mixed, path, opts) end\n"
+    // mep.learn_timed([path][, seconds]): mixed practice against the clock --
+    // `seconds` per question (default #+LEARN_TIME_LIMIT:, else 10).
+    "function mep.learn_timed(path, seconds)\n"
+    "  return mep_learn_start(MEP_LEARN_GAMES.mixed, path, {time_limit = tonumber(seconds), timed = true})\n"
+    "end\n"
+    // --- Game: type the term ----------------------------------------------------
+    // The definition (or :QUESTION:) is the prompt and the answer is typed
+    // (`t` or Enter opens the prompt); the term and its :ALIASES: are accepted,
+    // a one-edit slip on a longer term counts as a near miss. `n` skips
+    // (a miss).
+    "MEP_LEARN_GAMES.typed = {name = 'Type the term', unit = 'questions'}\n"
+    "function MEP_LEARN_GAMES.typed.reset(st)\n"
+    "  st.questions = mep_learn_cap(mep.learn_shuffle(mep_learn_copy(st.deck.cards)), st.opts.rounds or st.deck.options.rounds)\n"
+    "  st.total = #st.questions\n"
+    "  st.index, st.streak, st.best_streak, st.result = 1, 0, 0, nil\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.typed.current_card(st) return st.questions[st.index] end\n"
+    "function mep.learn_typed_prompt()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.typed or st.finished or st.result then return end\n"
+    "  local card = st.questions[st.index]\n"
+    "  mep.ui_input('Which term is this?', '', function(text)\n"
+    "    if text == nil then return end\n"
+    "    local live = mep_learn_state\n"
+    "    if live ~= st or st.result or st.questions[st.index] ~= card then return end\n"
+    "    local accepted = {card.term}\n"
+    "    for _, a in ipairs(card.aliases) do accepted[#accepted + 1] = a end\n"
+    "    local kind = mep.learn_answer_matches(text, accepted)\n"
+    "    st.result = {kind = kind or 'wrong', text = text}\n"
+    "    mep_learn_add_seen(st, card)\n"
+    "    if kind then\n"
+    "      st.score = st.score + 1\n"
+    "      st.streak = st.streak + 1\n"
+    "      if st.streak > st.best_streak then st.best_streak = st.streak end\n"
+    "    else\n"
+    "      st.streak = 0\n"
+    "      mep_learn_add_missed(st, card)\n"
+    "    end\n"
+    "    mep.learn_render()\n"
+    "  end)\n"
+    "end\n"
+    "function mep.learn_typed_next()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.typed or st.finished then return end\n"
+    "  if not st.result then\n"
+    "    -- Skipping is a miss.\n"
+    "    st.result = {kind = 'skipped', text = ''}\n"
+    "    st.streak = 0\n"
+    "    mep_learn_add_seen(st, st.questions[st.index])\n"
+    "    mep_learn_add_missed(st, st.questions[st.index])\n"
+    "    mep.learn_render()\n"
+    "    return\n"
+    "  end\n"
+    "  if st.index >= #st.questions then st.finished = true\n"
+    "  else st.index, st.result = st.index + 1, nil end\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.typed.widgets(st)\n"
+    "  local card = st.questions[st.index]\n"
+    "  local w = {}\n"
+    "  w[#w + 1] = {\n"
+    "    id = 'head', hl = 'Accent',\n"
+    "    text = string.format('%s  --  Type the term   Question %d/%d   Score %d   Streak %d', st.deck.title, st.index, #st.questions, st.score, st.streak),\n"
+    "  }\n"
+    "  w[#w + 1] = mep_learn_blank('b1')\n"
+    "  w[#w + 1] = {id = 'ask', text = 'Which term is this? Type it.', hl = 'Comment'}\n"
+    "  for i, para in ipairs(mep.learn_split_lines(card.question or card.definition)) do\n"
+    "    w[#w + 1] = {id = 'prompt' .. i, text = para, hl = 'Normal', wrap = true, wrap_indent = 0}\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b2')\n"
+    "  if not st.result then\n"
+    "    w[#w + 1] = {id = 'type', text = '> Type your answer  [t/Enter]', hl = 'Blue', on_click = function() mep.learn_typed_prompt() end}\n"
+    "    w[#w + 1] = {id = 'skip', text = '  Skip  [n]', hl = 'Comment', on_click = function() mep.learn_typed_next() end}\n"
+    "  else\n"
+    "    local r = st.result\n"
+    "    if r.kind == 'exact' then w[#w + 1] = {id = 'fb', text = 'Correct: ' .. card.term, hl = 'Add'}\n"
+    "    elseif r.kind == 'near' then w[#w + 1] = {id = 'fb', text = 'Close enough (\"' .. r.text .. '\"): ' .. card.term, hl = 'Add'}\n"
+    "    elseif r.kind == 'skipped' then w[#w + 1] = {id = 'fb', text = 'Skipped -- it was: ' .. card.term, hl = 'Error'}\n"
+    "    else w[#w + 1] = {id = 'fb', text = '\"' .. r.text .. '\" is not it -- the answer is: ' .. card.term, hl = 'Error', wrap = true, wrap_indent = 0} end\n"
+    "    if r.kind ~= 'exact' and card.hint then\n"
+    "      w[#w + 1] = {id = 'hint', text = 'Hint: ' .. card.hint, hl = 'Yellow', wrap = true, wrap_indent = 0}\n"
+    "    end\n"
+    "    if #card.aliases > 0 then\n"
+    "      w[#w + 1] = {id = 'aliases', text = 'Also accepted: ' .. table.concat(card.aliases, ', '), hl = 'Comment', wrap = true, wrap_indent = 0}\n"
+    "    end\n"
+    "    w[#w + 1] = mep_learn_blank('b3')\n"
+    "    local label = st.index < #st.questions and '> Next question  [n]' or '> See results  [n]'\n"
+    "    w[#w + 1] = {id = 'next', text = label, hl = 'Blue', on_click = function() mep.learn_typed_next() end}\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b4')\n"
+    "  w[#w + 1] = {id = 'help', text = '[t/Enter] type   [n] next/skip   [o] open card   [r] restart   [q] quit', hl = 'Comment'}\n"
+    "  return w\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.typed.on_key(st, k)\n"
+    "  if k == 't' then mep.learn_typed_prompt() return true end\n"
+    "  if k == 'n' or k == ' ' then mep.learn_typed_next() return true end\n"
+    "  return false\n"
+    "end\n"
+    "function mep.learn_type_term(path, opts) return mep_learn_start(MEP_LEARN_GAMES.typed, path, opts) end\n"
+    // --- Game: put in order -----------------------------------------------------
+    // Every card with an ordered list (two or more steps) is one round: the
+    // steps are shown shuffled with letters, pressing letters builds the
+    // order, `u` drops the last pick, and the round grades itself once every
+    // step is placed (score = steps in the right position).
+    // A round is {title=, items={{text=, card=, value=}, ...}, perm=}: items
+    // in their correct order, `perm` the shuffled display order (slot ->
+    // item index). Graded by position: a slot is right when the item it
+    // shows carries the value the correct order has at that position --
+    // equal values (a tie in rank-by-fact) are right in either order.
+    "local function mep_learn_sequence_round(title, items, cards)\n"
+    "  local perm = {}\n"
+    "  for i = 1, #items do perm[i] = i end\n"
+    "  mep.learn_shuffle(perm)\n"
+    "  local fixed = true\n"
+    "  for i = 1, #perm do if perm[i] ~= i then fixed = false break end end\n"
+    "  if fixed then perm[1], perm[2] = perm[2], perm[1] end\n"
+    "  return {title = title, items = items, perm = perm, cards = cards}\n"
+    "end\n"
+    // mep.learn_step_rounds(deck): one round per card with an ordered list.
+    "function mep.learn_step_rounds(deck)\n"
+    "  local rounds = {}\n"
+    "  for _, c in ipairs(deck.cards) do\n"
+    "    if #c.steps >= 2 and #c.steps <= 9 then\n"
+    "      local items = {}\n"
+    "      for i, step in ipairs(c.steps) do items[i] = {text = step, value = i} end\n"
+    "      local what = c.steps_title and (c.term .. ' -- ' .. c.steps_title:gsub(':$', '')) or ('the steps of \"' .. c.term .. '\"')\n"
+    "      rounds[#rounds + 1] = mep_learn_sequence_round(what, items, {c})\n"
+    "    end\n"
+    "  end\n"
+    "  return rounds\n"
+    "end\n"
+    // mep.learn_rank_rounds(deck[, opts]): rounds of up to opts.size cards
+    // (default #+LEARN_MATCH_SIZE:) ordered by a numeric fact, lowest first.
+    // Keys come from #+LEARN_RANK:, else every fact key whose value parses
+    // as a number on three or more cards.
+    "function mep.learn_rank_rounds(deck, opts)\n"
+    "  opts = opts or {}\n"
+    "  local size = math.max(2, math.min(9, opts.size or deck.options.match_size))\n"
+    "  local by_key = {}\n"
+    "  local function add(k, c, v)\n"
+    "    local n = tonumber((v:gsub(',', '')))\n"
+    "    if n then\n"
+    "      by_key[k] = by_key[k] or {}\n"
+    "      table.insert(by_key[k], {card = c, value = n, text = c.term})\n"
+    "    end\n"
+    "  end\n"
+    "  local keys = deck.options.rank\n"
+    "  if keys then\n"
+    "    -- Explicit keys read the drawer directly, so a :YEAR: used only for\n"
+    "    -- ranking needn't also be a fact-quiz property.\n"
+    "    for _, c in ipairs(deck.cards) do\n"
+    "      for _, k in ipairs(keys) do if c.props[k] then add(k, c, c.props[k]) end end\n"
+    "    end\n"
+    "  else\n"
+    "    for _, c in ipairs(deck.cards) do\n"
+    "      for _, f in ipairs(c.facts) do add(f.key, c, f.value) end\n"
+    "    end\n"
+    "    keys = {}\n"
+    "    for k, list in pairs(by_key) do if #list >= 3 then keys[#keys + 1] = k end end\n"
+    "    table.sort(keys)\n"
+    "  end\n"
+    "  local rounds = {}\n"
+    "  for _, k in ipairs(keys) do\n"
+    "    local list = by_key[k]\n"
+    "    if list and #list >= 2 then\n"
+    "      mep.learn_shuffle(list)\n"
+    "      local i = 1\n"
+    "      while i <= #list do\n"
+    "        local group = {}\n"
+    "        for j = i, math.min(i + size - 1, #list) do group[#group + 1] = list[j] end\n"
+    "        i = i + size\n"
+    "        if #group == 1 and #rounds > 0 then\n"
+    "          -- fold a leftover into the previous round of the same key\n"
+    "          local prev = rounds[#rounds]\n"
+    "          if prev.key == k then\n"
+    "            table.insert(prev.items, group[1])\n"
+    "            table.insert(prev.cards, group[1].card)\n"
+    "            table.sort(prev.items, function(a, b) return a.value < b.value end)\n"
+    "            prev.perm[#prev.perm + 1] = #prev.items\n"
+    "            mep.learn_shuffle(prev.perm)\n"
+    "          end\n"
+    "        elseif #group >= 2 then\n"
+    "          table.sort(group, function(a, b) return a.value < b.value end)\n"
+    "          local cards = {}\n"
+    "          for _, it in ipairs(group) do cards[#cards + 1] = it.card end\n"
+    "          local label = k:lower():gsub('_', ' ')\n"
+    "          local r = mep_learn_sequence_round('these by ' .. label .. ', lowest first', group, cards)\n"
+    "          r.key = k\n"
+    "          rounds[#rounds + 1] = r\n"
+    "        end\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  return rounds\n"
+    "end\n"
+    "local function mep_learn_sequence_game(name, unit, rounds_of)\n"
+    "  local game = {name = name, unit = unit}\n"
+    "  function game.reset(st)\n"
+    "    st.rounds = mep_learn_cap(mep.learn_shuffle(rounds_of(st)), st.opts.rounds or st.deck.options.rounds)\n"
+    "    st.total = 0\n"
+    "    for _, r in ipairs(st.rounds) do st.total = st.total + #r.items end\n"
+    "    st.round, st.picks, st.graded = 1, {}, nil\n"
+    "  end\n"
+    "  function game.current_card(st) return st.rounds[st.round] and st.rounds[st.round].cards[1] end\n"
+    "  game.widgets = function(st) return mep.learn_order_widgets(st) end\n"
+    "  game.on_key = function(st, k) return mep.learn_order_on_key(st, k) end\n"
+    "  game.is_sequence = true\n"
+    "  return game\n"
+    "end\n"
+    "MEP_LEARN_GAMES.order = mep_learn_sequence_game('Put in order', 'steps', function(st) return mep.learn_step_rounds(st.deck) end)\n"
+    "function MEP_LEARN_GAMES.order.validate(deck)\n"
+    "  if mep_learn_count(deck, function(c) return #c.steps >= 2 end) == 0 then\n"
+    "    return 'put-in-order needs a card with an ordered list (1. 2. 3. ...) in its body'\n"
+    "  end\n"
+    "end\n"
+    "MEP_LEARN_GAMES.rank = mep_learn_sequence_game('Rank by fact', 'positions', function(st) return mep.learn_rank_rounds(st.deck, st.opts) end)\n"
+    "function MEP_LEARN_GAMES.rank.validate(deck)\n"
+    "  if #mep.learn_rank_rounds(deck) == 0 then\n"
+    "    return 'rank-by-fact needs a numeric property on three or more cards (#+LEARN_RANK: names the keys)'\n"
+    "  end\n"
+    "end\n"
+    "local function mep_learn_order_grade(st)\n"
+    "  local r = st.rounds[st.round]\n"
+    "  local correct = 0\n"
+    "  for pos, slot in ipairs(st.picks) do\n"
+    "    if r.items[r.perm[slot]].value == r.items[pos].value then correct = correct + 1 end\n"
+    "  end\n"
+    "  st.score = st.score + correct\n"
+    "  st.graded = correct\n"
+    "  for _, c in ipairs(r.cards) do mep_learn_add_seen(st, c) end\n"
+    "  if correct < #r.items then\n"
+    "    for _, c in ipairs(r.cards) do mep_learn_add_missed(st, c) end\n"
+    "  end\n"
+    "end\n"
+    "function mep.learn_order_pick(slot)\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or not st.game.is_sequence or st.finished or st.graded then return end\n"
+    "  local r = st.rounds[st.round]\n"
+    "  if slot < 1 or slot > #r.perm then return end\n"
+    "  for _, p in ipairs(st.picks) do if p == slot then return end end\n"
+    "  st.picks[#st.picks + 1] = slot\n"
+    "  if #st.picks == #r.perm then mep_learn_order_grade(st) end\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function mep.learn_order_undo()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or not st.game.is_sequence or st.finished or st.graded then return end\n"
+    "  st.picks[#st.picks] = nil\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function mep.learn_order_next()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or not st.game.is_sequence or st.finished or not st.graded then return end\n"
+    "  if st.round >= #st.rounds then st.finished = true\n"
+    "  else st.round, st.picks, st.graded = st.round + 1, {}, nil end\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function mep.learn_order_widgets(st)\n"
+    "  local r = st.rounds[st.round]\n"
+    "  local items = r.items\n"
+    "  local w = {}\n"
+    "  w[#w + 1] = {\n"
+    "    id = 'head', hl = 'Accent',\n"
+    "    text = string.format('%s  --  %s   Round %d/%d   Score %d/%d', st.deck.title, st.game.name, st.round, #st.rounds, st.score, st.total),\n"
+    "  }\n"
+    "  w[#w + 1] = mep_learn_blank('b1')\n"
+    "  if st.graded then\n"
+    "    local hl = st.graded == #items and 'Add' or (st.graded == 0 and 'Error' or 'Yellow')\n"
+    "    w[#w + 1] = {id = 'ask', text = string.format('%d of %d in the right place', st.graded, #items), hl = hl}\n"
+    "  else\n"
+    "    w[#w + 1] = {id = 'ask', text = 'Put in order: ' .. r.title .. '. Press the letters first to last.', hl = 'Comment', wrap = true, wrap_indent = 0}\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b2')\n"
+    "  local position_of = {}\n"
+    "  for pos, slot in ipairs(st.picks) do position_of[slot] = pos end\n"
+    "  for slot, item_index in ipairs(r.perm) do\n"
+    "    local pos = position_of[slot]\n"
+    "    local hl, mark, tag = 'Normal', ' ', '[ ]'\n"
+    "    if pos then tag = '[' .. pos .. ']' end\n"
+    "    if st.graded then\n"
+    "      if pos and items[item_index].value == items[pos].value then hl, mark = 'Add', '*'\n"
+    "      else hl, mark, tag = 'Red', 'x', '[' .. (pos or '-') .. ' -> ' .. item_index .. ']' end\n"
+    "    elseif pos then hl = 'Cyan' end\n"
+    "    w[#w + 1] = {\n"
+    "      id = 'step' .. slot, text = string.format('%s %s) %s %s', mark, mep_learn_letter(slot), tag, items[item_index].text), hl = hl,\n"
+    "      wrap = true, wrap_indent = 9,\n"
+    "      on_click = function() mep.learn_order_pick(slot) end,\n"
+    "    }\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b3')\n"
+    "  if st.graded then\n"
+    "    w[#w + 1] = {id = 'right', text = 'Correct order:', hl = 'PickerTitle'}\n"
+    "    for i, it in ipairs(items) do\n"
+    "      local shown = it.text\n"
+    "      if r.key then shown = shown .. '  (' .. it.value .. ')' end\n"
+    "      w[#w + 1] = {id = 'right' .. i, text = string.format('  %d. %s', i, shown), hl = 'Comment', wrap = true, wrap_indent = 5}\n"
+    "    end\n"
+    "    w[#w + 1] = mep_learn_blank('b4')\n"
+    "    local label = st.round < #st.rounds and '> Next  [n]' or '> See results  [n]'\n"
+    "    w[#w + 1] = {id = 'next', text = label, hl = 'Blue', on_click = function() mep.learn_order_next() end}\n"
+    "  else\n"
+    "    local parts = {}\n"
+    "    for _, slot in ipairs(st.picks) do parts[#parts + 1] = mep_learn_letter(slot) end\n"
+    "    w[#w + 1] = {id = 'sofar', text = 'Your order: ' .. (#parts > 0 and table.concat(parts, ' ') or '(none yet)'), hl = 'Cyan'}\n"
+    "    if #st.picks > 0 then\n"
+    "      w[#w + 1] = {id = 'undo', text = '  Undo last  [u]', hl = 'Comment', on_click = function() mep.learn_order_undo() end}\n"
+    "    end\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b5')\n"
+    "  w[#w + 1] = {id = 'help', text = '[a-i] pick next   [u] undo   [n] next   [o] open card   [r] restart   [q] quit', hl = 'Comment'}\n"
+    "  return w\n"
+    "end\n"
+    "function mep.learn_order_on_key(st, k)\n"
+    "  local slot = mep_learn_letter_index(k)\n"
+    "  if slot then mep.learn_order_pick(slot) return true end\n"
+    "  if k == 'u' then mep.learn_order_undo() return true end\n"
+    "  if k == 'n' or k == ' ' then mep.learn_order_next() return true end\n"
+    "  return false\n"
+    "end\n"
+    "function mep.learn_put_in_order(path, opts) return mep_learn_start(MEP_LEARN_GAMES.order, path, opts) end\n"
+    "function mep.learn_rank(path, opts) return mep_learn_start(MEP_LEARN_GAMES.rank, path, opts) end\n"
+    // --- Game: spot the bug -----------------------------------------------------
+    // A `:learn bug :line N` block is shown with numbered lines; pick the
+    // wrong one (j/k + Enter or a click on the row, or type the number and
+    // press `s`). The reveal marks the bug line and shows the card's real
+    // implementation for comparison.
+    "MEP_LEARN_GAMES.bug = {name = 'Spot the bug', unit = 'bugs'}\n"
+    "local function mep_learn_bug_blocks(deck)\n"
+    "  local all = {}\n"
+    "  for _, c in ipairs(deck.cards) do\n"
+    "    for _, blk in ipairs(c.blocks) do\n"
+    "      if blk.learn == 'bug' and blk.line and blk.lines[blk.line] then all[#all + 1] = {card = c, block = blk} end\n"
+    "    end\n"
+    "  end\n"
+    "  return all\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.bug.validate(deck)\n"
+    "  if #mep_learn_bug_blocks(deck) == 0 then\n"
+    "    return 'spot-the-bug needs a `#+begin_src <lang> :learn bug :line N` block'\n"
+    "  end\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.bug.reset(st)\n"
+    "  st.rounds = mep_learn_cap(mep.learn_shuffle(mep_learn_bug_blocks(st.deck)), st.opts.rounds or st.deck.options.rounds)\n"
+    "  st.total = #st.rounds\n"
+    "  st.round, st.picked, st.typed_line = 1, nil, ''\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.bug.current_card(st) return st.rounds[st.round] and st.rounds[st.round].card end\n"
+    "function mep.learn_bug_pick(line)\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.bug or st.finished or st.picked then return end\n"
+    "  local r = st.rounds[st.round]\n"
+    "  if not line or line < 1 or line > #r.block.lines then return end\n"
+    "  st.picked = line\n"
+    "  mep_learn_add_seen(st, r.card)\n"
+    "  if line == r.block.line then st.score = st.score + 1\n"
+    "  else mep_learn_add_missed(st, r.card) end\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function mep.learn_bug_next()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.bug or st.finished or not st.picked then return end\n"
+    "  if st.round >= #st.rounds then st.finished = true\n"
+    "  else st.round, st.picked, st.typed_line = st.round + 1, nil, '' end\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.bug.widgets(st)\n"
+    "  local r = st.rounds[st.round]\n"
+    "  local w = {}\n"
+    "  w[#w + 1] = {\n"
+    "    id = 'head', hl = 'Accent',\n"
+    "    text = string.format('%s  --  Spot the bug   Round %d/%d   Score %d/%d', st.deck.title, st.round, #st.rounds, st.score, st.total),\n"
+    "  }\n"
+    "  w[#w + 1] = mep_learn_blank('b1')\n"
+    "  if st.picked then\n"
+    "    if st.picked == r.block.line then\n"
+    "      w[#w + 1] = {id = 'ask', text = 'Correct -- line ' .. r.block.line .. ' is the bug.', hl = 'Add'}\n"
+    "    else\n"
+    "      w[#w + 1] = {id = 'ask', text = 'Not line ' .. st.picked .. ' -- the bug is on line ' .. r.block.line .. '.', hl = 'Error'}\n"
+    "    end\n"
+    "    if r.card.hint then w[#w + 1] = {id = 'hint', text = 'Hint: ' .. r.card.hint, hl = 'Yellow', wrap = true, wrap_indent = 0} end\n"
+    "  else\n"
+    "    w[#w + 1] = {id = 'ask', text = 'One line of this ' .. r.card.term .. ' is wrong. Which?' .. (st.typed_line ~= '' and ('   typed: ' .. st.typed_line) or ''), hl = 'Comment'}\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b2')\n"
+    "  mep_learn_code_widgets(w, 'line', r.block.lines, r.block.lang, {\n"
+    "    numbered = true,\n"
+    "    on_click = function(i) mep.learn_bug_pick(i) end,\n"
+    "    hl_line = function(i)\n"
+    "      if not st.picked then return 'Normal' end\n"
+    "      if i == r.block.line then return 'Add' end\n"
+    "      if i == st.picked then return 'Red' end\n"
+    "      return 'Normal'\n"
+    "    end,\n"
+    "  })\n"
+    "  w[#w + 1] = mep_learn_blank('b3')\n"
+    "  if st.picked then\n"
+    "    if r.card.code then\n"
+    "      w[#w + 1] = {id = 'realt', text = 'The real implementation:', hl = 'PickerTitle'}\n"
+    "      mep_learn_code_widgets(w, 'real', r.card.code.lines, r.card.code.lang)\n"
+    "      w[#w + 1] = mep_learn_blank('b4')\n"
+    "    end\n"
+    "    local label = st.round < #st.rounds and '> Next  [n]' or '> See results  [n]'\n"
+    "    w[#w + 1] = {id = 'next', text = label, hl = 'Blue', on_click = function() mep.learn_bug_next() end}\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b5')\n"
+    "  w[#w + 1] = {id = 'help', text = '[j/k + Enter] or click a line   [digits then s] pick by number   [n] next   [o] open card   [r] restart   [q] quit', hl = 'Comment'}\n"
+    "  return w\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.bug.on_key(st, k)\n"
+    "  if k:match('^%d$') and not st.picked then\n"
+    "    st.typed_line = st.typed_line .. k\n"
+    "    mep.learn_render()\n"
+    "    return true\n"
+    "  end\n"
+    "  if k == 's' then\n"
+    "    local n = tonumber(st.typed_line)\n"
+    "    st.typed_line = ''\n"
+    "    if n then mep.learn_bug_pick(n) end\n"
+    "    -- An out-of-range or empty number picks nothing; redraw so the\n"
+    "    -- cleared \"typed:\" readout disappears either way.\n"
+    "    if not st.picked then mep.learn_render() end\n"
+    "    return true\n"
+    "  end\n"
+    "  if k == 'n' or k == ' ' then mep.learn_bug_next() return true end\n"
+    "  return false\n"
+    "end\n"
+    "function mep.learn_spot_bug(path, opts) return mep_learn_start(MEP_LEARN_GAMES.bug, path, opts) end\n"
+    // --- Game: hangman ----------------------------------------------------------
+    // The definition is the clue and the term the word: letters press in
+    // guesses (a-z), non-letters show from the start, six misses lose the
+    // word. Because letters are taken, the shell keys are Q/R/O here.
+    "MEP_LEARN_GAMES.hangman = {name = 'Hangman', unit = 'words', shell_keys = {r = 'R', o = 'O', q = 'Q'}}\n"
+    "local MEP_LEARN_HANGMAN_LIVES = 6\n"
+    "function MEP_LEARN_GAMES.hangman.reset(st)\n"
+    "  st.words = mep_learn_cap(mep.learn_shuffle(mep_learn_copy(st.deck.cards)), st.opts.rounds or st.deck.options.rounds)\n"
+    "  st.total = #st.words\n"
+    "  st.round, st.guessed, st.misses, st.outcome = 1, {}, 0, nil\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.hangman.current_card(st) return st.words[st.round] end\n"
+    "local function mep_learn_hangman_masked(term, guessed)\n"
+    "  local out = {}\n"
+    "  local solved = true\n"
+    "  for ch in term:gmatch('.') do\n"
+    "    local lower = ch:lower()\n"
+    "    if lower:match('%a') then\n"
+    "      if guessed[lower] then out[#out + 1] = ch\n"
+    "      else out[#out + 1] = '_' solved = false end\n"
+    "    else out[#out + 1] = ch end\n"
+    "  end\n"
+    "  return table.concat(out, ' '), solved\n"
+    "end\n"
+    "function mep.learn_hangman_guess(letter)\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.hangman or st.finished or st.outcome then return end\n"
+    "  letter = letter:lower()\n"
+    "  if not letter:match('^%a$') or st.guessed[letter] then return end\n"
+    "  st.guessed[letter] = true\n"
+    "  local term = st.words[st.round].term\n"
+    "  if not term:lower():find(letter, 1, true) then st.misses = st.misses + 1 end\n"
+    "  local _, solved = mep_learn_hangman_masked(term, st.guessed)\n"
+    "  if solved then\n"
+    "    st.outcome = 'won'\n"
+    "    st.score = st.score + 1\n"
+    "    mep_learn_add_seen(st, st.words[st.round])\n"
+    "  elseif st.misses >= MEP_LEARN_HANGMAN_LIVES then\n"
+    "    st.outcome = 'lost'\n"
+    "    mep_learn_add_seen(st, st.words[st.round])\n"
+    "    mep_learn_add_missed(st, st.words[st.round])\n"
+    "  end\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function mep.learn_hangman_next()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.hangman or st.finished or not st.outcome then return end\n"
+    "  if st.round >= #st.words then st.finished = true\n"
+    "  else st.round, st.guessed, st.misses, st.outcome = st.round + 1, {}, 0, nil end\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.hangman.widgets(st)\n"
+    "  local card = st.words[st.round]\n"
+    "  local w = {}\n"
+    "  w[#w + 1] = {\n"
+    "    id = 'head', hl = 'Accent',\n"
+    "    text = string.format('%s  --  Hangman   Word %d/%d   Score %d   Misses %d/%d', st.deck.title, st.round, #st.words, st.score, st.misses, MEP_LEARN_HANGMAN_LIVES),\n"
+    "  }\n"
+    "  w[#w + 1] = mep_learn_blank('b1')\n"
+    "  for i, para in ipairs(mep.learn_split_lines(card.question or card.definition)) do\n"
+    "    w[#w + 1] = {id = 'clue' .. i, text = para, hl = 'Comment', wrap = true, wrap_indent = 0}\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b2')\n"
+    "  local masked = mep_learn_hangman_masked(card.term, st.guessed)\n"
+    "  if st.outcome then\n"
+    "    w[#w + 1] = {id = 'word', text = (card.term:gsub('.', '%0 ')), hl = st.outcome == 'won' and 'Add' or 'Error'}\n"
+    "    w[#w + 1] = {id = 'fb', text = st.outcome == 'won' and 'Solved!' or 'Out of guesses.', hl = st.outcome == 'won' and 'Add' or 'Error'}\n"
+    "    if st.outcome == 'lost' and card.hint then\n"
+    "      w[#w + 1] = {id = 'hint', text = 'Hint: ' .. card.hint, hl = 'Yellow', wrap = true, wrap_indent = 0}\n"
+    "    end\n"
+    "  else\n"
+    "    w[#w + 1] = {id = 'word', text = masked, hl = 'Normal'}\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b3')\n"
+    "  local tried, wrong = {}, {}\n"
+    "  for l in ('abcdefghijklmnopqrstuvwxyz'):gmatch('.') do\n"
+    "    if st.guessed[l] then\n"
+    "      tried[#tried + 1] = l\n"
+    "      if not card.term:lower():find(l, 1, true) then wrong[#wrong + 1] = l end\n"
+    "    end\n"
+    "  end\n"
+    "  w[#w + 1] = {id = 'tried', text = 'Tried: ' .. (#tried > 0 and table.concat(tried, ' ') or '-') .. '    Wrong: ' .. (#wrong > 0 and table.concat(wrong, ' ') or '-'), hl = 'Comment'}\n"
+    "  local gallows = {'', 'O', 'O |', 'O/|', 'O/|\\\\', 'O/|\\\\ /', 'O/|\\\\ /\\\\'}\n"
+    "  w[#w + 1] = {id = 'gallows', text = 'Misses: ' .. string.rep('x ', st.misses) .. string.rep('. ', MEP_LEARN_HANGMAN_LIVES - st.misses) .. '  ' .. (gallows[st.misses + 1] or ''), hl = st.misses >= 4 and 'Red' or 'Yellow'}\n"
+    "  if st.outcome then\n"
+    "    w[#w + 1] = mep_learn_blank('b4')\n"
+    "    local label = st.round < #st.words and '> Next word  [n]' or '> See results  [n]'\n"
+    "    w[#w + 1] = {id = 'next', text = label, hl = 'Blue', on_click = function() mep.learn_hangman_next() end}\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b5')\n"
+    "  w[#w + 1] = {id = 'help', text = '[a-z] guess   [n] next   [O] open card   [R] restart   [Q] quit', hl = 'Comment'}\n"
+    "  return w\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.hangman.on_key(st, k)\n"
+    "  if k == 'n' and st.outcome then mep.learn_hangman_next() return true end\n"
+    "  if k == ' ' then mep.learn_hangman_next() return true end\n"
+    "  if k:match('^%l$') then mep.learn_hangman_guess(k) return true end\n"
+    "  return false\n"
+    "end\n"
+    "function mep.learn_hangman(path, opts) return mep_learn_start(MEP_LEARN_GAMES.hangman, path, opts) end\n"
+    // --- Game: jeopardy ---------------------------------------------------------
+    // A board of category rows (a-i) with one cell per card, valued by
+    // :POINTS: (default 100, 200, ... by position). A letter then a digit
+    // (or a click) opens a cell: the card's :QUESTION: or definition with four
+    // terms to choose from. Right adds the value, wrong subtracts it; the
+    // cell is used either way. `n` returns to the board; the session ends
+    // when the board is empty.
+    "MEP_LEARN_GAMES.jeopardy = {name = 'Jeopardy', unit = 'points'}\n"
+    "function MEP_LEARN_GAMES.jeopardy.validate(deck)\n"
+    "  if #deck.categories < 1 then return 'jeopardy needs cards grouped under category headlines' end\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.jeopardy.reset(st)\n"
+    "  local rows = {}\n"
+    "  for _, name in ipairs(st.deck.categories) do\n"
+    "    local cells = {}\n"
+    "    for _, c in ipairs(st.deck.cards) do\n"
+    "      if c.category == name then cells[#cells + 1] = {card = c, value = c.points, used = false} end\n"
+    "    end\n"
+    "    table.sort(cells, function(a, b) return a.value < b.value end)\n"
+    "    mep_learn_cap(cells, 9)\n"
+    "    if #cells > 0 then rows[#rows + 1] = {name = name, cells = cells} end\n"
+    "  end\n"
+    "  mep_learn_cap(rows, 9)\n"
+    "  st.rows = rows\n"
+    "  st.total = 0\n"
+    "  for _, r in ipairs(rows) do for _, cell in ipairs(r.cells) do st.total = st.total + cell.value end end\n"
+    "  st.score, st.sel_row, st.cell, st.answered = 0, nil, nil, nil\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.jeopardy.position(st)\n"
+    "  local used = 0\n"
+    "  for _, r in ipairs(st.rows) do for _, cell in ipairs(r.cells) do if cell.used then used = used + 1 end end end\n"
+    "  return used\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.jeopardy.current_card(st)\n"
+    "  if st.cell then return st.cell.card end\n"
+    "  local r = st.rows[st.sel_row or 1]\n"
+    "  return r and r.cells[1] and r.cells[1].card\n"
+    "end\n"
+    "local function mep_learn_jeopardy_open(st, row, col)\n"
+    "  local r = st.rows[row]\n"
+    "  local cell = r and r.cells[col]\n"
+    "  if not cell or cell.used then return end\n"
+    "  local card = cell.card\n"
+    "  local candidates = mep.learn_shuffle(mep_learn_copy(card.distractors))\n"
+    "  for _, c in ipairs(mep_learn_others(st.deck, card)) do candidates[#candidates + 1] = c.term end\n"
+    "  local choices, answer = mep_learn_choices(card.term, candidates, st.opts.choices or st.deck.options.choices)\n"
+    "  st.cell, st.sel_row, st.answered = cell, nil, nil\n"
+    "  st.question = {card = card, choices = choices, answer = answer}\n"
+    "end\n"
+    "function mep.learn_jeopardy_pick_row(row)\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.jeopardy or st.finished or st.cell then return end\n"
+    "  if not st.rows[row] then return end\n"
+    "  if st.sel_row == row then st.sel_row = nil else st.sel_row = row end\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function mep.learn_jeopardy_pick_cell(row, col)\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.jeopardy or st.finished or st.cell then return end\n"
+    "  mep_learn_jeopardy_open(st, row, col)\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function mep.learn_jeopardy_answer(i)\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.jeopardy or st.finished or not st.cell or st.answered then return end\n"
+    "  local q = st.question\n"
+    "  if i < 1 or i > #q.choices then return end\n"
+    "  st.answered = i\n"
+    "  st.cell.used = true\n"
+    "  mep_learn_add_seen(st, q.card)\n"
+    "  if i == q.answer then st.score = st.score + st.cell.value\n"
+    "  else\n"
+    "    st.score = st.score - st.cell.value\n"
+    "    mep_learn_add_missed(st, q.card)\n"
+    "  end\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function mep.learn_jeopardy_back()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.jeopardy or st.finished or not st.cell or not st.answered then return end\n"
+    "  st.cell, st.question, st.answered = nil, nil, nil\n"
+    "  local left = 0\n"
+    "  for _, r in ipairs(st.rows) do for _, cell in ipairs(r.cells) do if not cell.used then left = left + 1 end end end\n"
+    "  if left == 0 then st.finished = true end\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.jeopardy.widgets(st)\n"
+    "  local w = {}\n"
+    "  w[#w + 1] = {\n"
+    "    id = 'head', hl = 'Accent',\n"
+    "    text = string.format('%s  --  Jeopardy   Score %d   (board total %d)', st.deck.title, st.score, st.total),\n"
+    "  }\n"
+    "  w[#w + 1] = mep_learn_blank('b1')\n"
+    "  if st.cell then\n"
+    "    local q = st.question\n"
+    "    w[#w + 1] = {id = 'ask', text = string.format('%s for %d: which term is this?', st.cell.card.category, st.cell.value), hl = 'Comment'}\n"
+    "    for i, para in ipairs(mep.learn_split_lines(q.card.question or q.card.definition)) do\n"
+    "      w[#w + 1] = {id = 'prompt' .. i, text = para, hl = 'Normal', wrap = true, wrap_indent = 0}\n"
+    "    end\n"
+    "    w[#w + 1] = mep_learn_blank('b2')\n"
+    "    for i, choice in ipairs(q.choices) do\n"
+    "      local hl, mark = 'Normal', ' '\n"
+    "      if st.answered then\n"
+    "        if i == q.answer then hl, mark = 'Add', '*'\n"
+    "        elseif i == st.answered then hl, mark = 'Red', 'x'\n"
+    "        else hl = 'Comment' end\n"
+    "      end\n"
+    "      w[#w + 1] = {id = 'choice' .. i, text = string.format('%s %d) %s', mark, i, choice), hl = hl, wrap = true, wrap_indent = 5,\n"
+    "        on_click = function() mep.learn_jeopardy_answer(i) end}\n"
+    "    end\n"
+    "    w[#w + 1] = mep_learn_blank('b3')\n"
+    "    if st.answered then\n"
+    "      if st.answered == q.answer then\n"
+    "        w[#w + 1] = {id = 'fb', text = string.format('Correct! +%d', st.cell.value), hl = 'Add'}\n"
+    "      else\n"
+    "        w[#w + 1] = {id = 'fb', text = string.format('Wrong, -%d -- it was: %s', st.cell.value, q.card.term), hl = 'Error', wrap = true, wrap_indent = 0}\n"
+    "        if q.card.hint then w[#w + 1] = {id = 'hint', text = 'Hint: ' .. q.card.hint, hl = 'Yellow', wrap = true, wrap_indent = 0} end\n"
+    "      end\n"
+    "      w[#w + 1] = mep_learn_blank('b4')\n"
+    "      w[#w + 1] = {id = 'back', text = '> Back to the board  [n]', hl = 'Blue', on_click = function() mep.learn_jeopardy_back() end}\n"
+    "    end\n"
+    "  else\n"
+    "    w[#w + 1] = {id = 'ask', text = 'Pick a cell: a letter for the row, then a digit for the value (or click).', hl = 'Comment', wrap = true, wrap_indent = 0}\n"
+    "    w[#w + 1] = mep_learn_blank('b2')\n"
+    "    for ri, r in ipairs(st.rows) do\n"
+    "      local hl = st.sel_row == ri and 'Yellow' or 'PickerTitle'\n"
+    "      w[#w + 1] = {id = 'row' .. ri, text = string.format('%s %s) %s', st.sel_row == ri and '>' or ' ', mep_learn_letter(ri), r.name), hl = hl,\n"
+    "        on_click = function() mep.learn_jeopardy_pick_row(ri) end}\n"
+    "      for ci, cell in ipairs(r.cells) do\n"
+    "        local text = cell.used and string.format('      %d) ----', ci) or string.format('      %d) %d', ci, cell.value)\n"
+    "        w[#w + 1] = {id = 'cell' .. ri .. '_' .. ci, text = text, hl = cell.used and 'Comment' or 'Cyan',\n"
+    "          on_click = function() mep.learn_jeopardy_pick_cell(ri, ci) end}\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b5')\n"
+    "  w[#w + 1] = {id = 'help', text = '[a-i] row   [1-9] cell / answer   [n] back to board   [o] open card   [r] restart   [q] quit', hl = 'Comment'}\n"
+    "  return w\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.jeopardy.on_key(st, k)\n"
+    "  local digit = tonumber(k)\n"
+    "  if st.cell then\n"
+    "    if digit then mep.learn_jeopardy_answer(digit) return true end\n"
+    "    if k == 'n' or k == ' ' then mep.learn_jeopardy_back() return true end\n"
+    "    return false\n"
+    "  end\n"
+    "  local row = mep_learn_letter_index(k)\n"
+    "  if row then mep.learn_jeopardy_pick_row(row) return true end\n"
+    "  if digit and st.sel_row then mep.learn_jeopardy_pick_cell(st.sel_row, digit) return true end\n"
+    "  return false\n"
+    "end\n"
+    "function mep.learn_jeopardy(path, opts) return mep_learn_start(MEP_LEARN_GAMES.jeopardy, path, opts) end\n"
+    // --- Game: reverse identify (term -> code) ----------------------------------
+    // The mirror of identify-the-code: the term is the prompt and the
+    // choices are anonymized implementations, drawn above the answer row as
+    // "Snippet 1..4" (same category first). Needs two coded cards.
+    "function mep.learn_code_reverse_questions(deck, opts)\n"
+    "  opts = opts or {}\n"
+    "  local n_choices = opts.choices or deck.options.choices\n"
+    "  local coded = {}\n"
+    "  for _, c in ipairs(deck.cards) do if c.code then coded[#coded + 1] = c end end\n"
+    "  local order = mep_learn_cap(mep.learn_shuffle(mep_learn_copy(coded)), opts.rounds or deck.options.rounds)\n"
+    "  local questions = {}\n"
+    "  for _, card in ipairs(order) do\n"
+    "    local pool = {card}\n"
+    "    for _, c in ipairs(mep_learn_others(deck, card)) do\n"
+    "      if #pool >= n_choices then break end\n"
+    "      if c.code then pool[#pool + 1] = c end\n"
+    "    end\n"
+    "    mep.learn_shuffle(pool)\n"
+    "    local snippets, choices, answer = {}, {}, 1\n"
+    "    for i, c in ipairs(pool) do\n"
+    "      local code = mep.learn_anonymize_code(c.code.lines, c)\n"
+    "      snippets[i] = {card = c, code = code, lang = c.code.lang}\n"
+    "      choices[i] = 'Snippet ' .. i\n"
+    "      if c == card then answer = i end\n"
+    "    end\n"
+    "    questions[#questions + 1] = {card = card, prompt = card.term, snippets = snippets, choices = choices, answer = answer}\n"
+    "  end\n"
+    "  return questions\n"
+    "end\n"
+    "local MEP_LEARN_CODE_REV_SPEC = {\n"
+    "  name = 'Which code is it',\n"
+    "  questions = function(st) return mep.learn_code_reverse_questions(st.deck, st.opts) end,\n"
+    "  validate = MEP_LEARN_CODE_SPEC.validate,\n"
+    "  prompt_widgets = function(st, q, w)\n"
+    "    w[#w + 1] = {id = 'ask', text = 'Which snippet implements: ' .. q.card.term .. '?', hl = 'Comment'}\n"
+    "    if q.card.definition ~= '' then\n"
+    "      w[#w + 1] = {id = 'def', text = q.card.definition, hl = 'Comment', wrap = true, wrap_indent = 0}\n"
+    "    end\n"
+    "    for i, sn in ipairs(q.snippets) do\n"
+    "      w[#w + 1] = mep_learn_blank('bs' .. i)\n"
+    "      local hl = 'PickerTitle'\n"
+    "      if st.answered then hl = (i == q.answer) and 'Add' or ((i == st.answered) and 'Red' or 'Comment') end\n"
+    "      local label = 'Snippet ' .. i\n"
+    "      if st.answered then label = label .. '  (' .. sn.card.term .. ')' end\n"
+    "      w[#w + 1] = {id = 'sn' .. i, text = label, hl = hl, on_click = function() mep.learn_choice_answer(i) end}\n"
+    "      mep_learn_code_widgets(w, 'sn' .. i .. 'l', st.answered and sn.card.code.lines or sn.code, sn.lang)\n"
+    "    end\n"
+    "  end,\n"
+    "}\n"
+    "MEP_LEARN_GAMES.code_rev = mep_learn_choice_game(MEP_LEARN_CODE_REV_SPEC)\n"
+    "function mep.learn_code_reverse(path, opts) return mep_learn_start(MEP_LEARN_GAMES.code_rev, path, opts) end\n"
+    // --- Game: sort into buckets ------------------------------------------------
+    // A round of #+LEARN_MATCH_SIZE: terms (1-9) and the deck's categories
+    // (a-i): put every term in its category -- digit then letter, either
+    // order, or clicks -- then submit. Many terms may share a bucket.
+    "MEP_LEARN_GAMES.buckets = {name = 'Sort into buckets', unit = 'terms'}\n"
+    "function MEP_LEARN_GAMES.buckets.validate(deck)\n"
+    "  if #deck.categories < 2 then return 'sort-into-buckets needs cards under at least two category headlines' end\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.buckets.reset(st)\n"
+    "  local size = math.max(2, math.min(9, st.opts.size or st.deck.options.match_size))\n"
+    "  local cards = {}\n"
+    "  for _, c in ipairs(mep.learn_deal(st.deck)) do if c.category then cards[#cards + 1] = c end end\n"
+    "  local rounds, i = {}, 1\n"
+    "  while i <= #cards do\n"
+    "    local group = {}\n"
+    "    for j = i, math.min(i + size - 1, #cards) do group[#group + 1] = cards[j] end\n"
+    "    i = i + size\n"
+    "    if #group == 1 and #rounds > 0 then table.insert(rounds[#rounds].cards, group[1])\n"
+    "    else rounds[#rounds + 1] = {cards = group} end\n"
+    "  end\n"
+    "  mep_learn_cap(rounds, st.opts.rounds or st.deck.options.rounds)\n"
+    "  st.rounds = rounds\n"
+    "  st.buckets = mep_learn_cap(mep_learn_copy(st.deck.categories), 9)\n"
+    "  st.total = 0\n"
+    "  for _, r in ipairs(rounds) do st.total = st.total + #r.cards end\n"
+    "  st.round, st.placed, st.sel_term, st.sel_bucket, st.submitted = 1, {}, nil, nil, nil\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.buckets.current_card(st)\n"
+    "  local r = st.rounds[st.round]\n"
+    "  return r and (r.cards[st.sel_term or 1])\n"
+    "end\n"
+    "local function mep_learn_buckets_try_place(st)\n"
+    "  if not (st.sel_term and st.sel_bucket) then return end\n"
+    "  st.placed[st.sel_term] = st.sel_bucket\n"
+    "  st.sel_term, st.sel_bucket = nil, nil\n"
+    "end\n"
+    "function mep.learn_buckets_pick_term(t)\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.buckets or st.finished or st.submitted then return end\n"
+    "  if t < 1 or t > #st.rounds[st.round].cards then return end\n"
+    "  if st.sel_term == t then st.sel_term = nil else st.sel_term = t end\n"
+    "  mep_learn_buckets_try_place(st)\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function mep.learn_buckets_pick_bucket(b)\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.buckets or st.finished or st.submitted then return end\n"
+    "  if b < 1 or b > #st.buckets then return end\n"
+    "  if st.sel_bucket == b then st.sel_bucket = nil else st.sel_bucket = b end\n"
+    "  mep_learn_buckets_try_place(st)\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function mep.learn_buckets_unplace()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.buckets or st.finished or st.submitted then return end\n"
+    "  if st.sel_term then st.placed[st.sel_term] = nil end\n"
+    "  st.sel_term, st.sel_bucket = nil, nil\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "local function mep_learn_buckets_all_placed(st)\n"
+    "  for t = 1, #st.rounds[st.round].cards do if not st.placed[t] then return false end end\n"
+    "  return true\n"
+    "end\n"
+    "function mep.learn_buckets_submit()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.buckets or st.finished or st.submitted then return end\n"
+    "  if not mep_learn_buckets_all_placed(st) then mep.notify('Learn: place every term before submitting', 'warn') return end\n"
+    "  local r = st.rounds[st.round]\n"
+    "  local correct = 0\n"
+    "  for t, c in ipairs(r.cards) do\n"
+    "    mep_learn_add_seen(st, c)\n"
+    "    if st.buckets[st.placed[t]] == c.category then correct = correct + 1\n"
+    "    else mep_learn_add_missed(st, c) end\n"
+    "  end\n"
+    "  st.score = st.score + correct\n"
+    "  st.submitted = correct\n"
+    "  st.sel_term, st.sel_bucket = nil, nil\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function mep.learn_buckets_next()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.buckets or st.finished or not st.submitted then return end\n"
+    "  if st.round >= #st.rounds then st.finished = true\n"
+    "  else st.round, st.placed, st.submitted = st.round + 1, {}, nil end\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.buckets.widgets(st)\n"
+    "  local r = st.rounds[st.round]\n"
+    "  local w = {}\n"
+    "  w[#w + 1] = {\n"
+    "    id = 'head', hl = 'Accent',\n"
+    "    text = string.format('%s  --  Sort into buckets   Round %d/%d   Score %d/%d', st.deck.title, st.round, #st.rounds, st.score, st.total),\n"
+    "  }\n"
+    "  w[#w + 1] = mep_learn_blank('b1')\n"
+    "  if st.submitted then\n"
+    "    local hl = st.submitted == #r.cards and 'Add' or (st.submitted == 0 and 'Error' or 'Yellow')\n"
+    "    w[#w + 1] = {id = 'ask', text = string.format('%d of %d in the right bucket', st.submitted, #r.cards), hl = hl}\n"
+    "  else\n"
+    "    w[#w + 1] = {id = 'ask', text = 'Put every term in its category, then submit.', hl = 'Comment'}\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b2')\n"
+    "  w[#w + 1] = {id = 'terms', text = 'Terms', hl = 'PickerTitle'}\n"
+    "  for t, c in ipairs(r.cards) do\n"
+    "    local b = st.placed[t]\n"
+    "    local hl, mark, tail = 'Normal', ' ', '-> _'\n"
+    "    if b then tail = '-> ' .. mep_learn_letter(b) end\n"
+    "    if st.submitted then\n"
+    "      if st.buckets[b] == c.category then hl, mark = 'Add', '*'\n"
+    "      else\n"
+    "        hl, mark = 'Red', 'x'\n"
+    "        for i, name in ipairs(st.buckets) do if name == c.category then tail = tail .. '  (answer: ' .. mep_learn_letter(i) .. ')' end end\n"
+    "      end\n"
+    "    elseif st.sel_term == t then hl, mark = 'Yellow', '>'\n"
+    "    elseif b then hl = 'Cyan' end\n"
+    "    w[#w + 1] = {id = 'term' .. t, text = string.format('%s %d) %s  %s', mark, t, c.term, tail), hl = hl, on_click = function() mep.learn_buckets_pick_term(t) end}\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b3')\n"
+    "  w[#w + 1] = {id = 'buckets', text = 'Buckets', hl = 'PickerTitle'}\n"
+    "  for b, name in ipairs(st.buckets) do\n"
+    "    local members = {}\n"
+    "    for t, c in ipairs(r.cards) do if st.placed[t] == b then members[#members + 1] = tostring(t) end end\n"
+    "    local hl, mark = 'Normal', ' '\n"
+    "    if st.sel_bucket == b then hl, mark = 'Yellow', '>' elseif #members > 0 then hl = 'Cyan' end\n"
+    "    w[#w + 1] = {id = 'bucket' .. b, text = string.format('%s %s) %s  [%s]', mark, mep_learn_letter(b), name, table.concat(members, ' ')), hl = hl,\n"
+    "      on_click = function() mep.learn_buckets_pick_bucket(b) end}\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b4')\n"
+    "  if st.submitted then\n"
+    "    local label = st.round < #st.rounds and '> Next round  [n]' or '> See results  [n]'\n"
+    "    w[#w + 1] = {id = 'next', text = label, hl = 'Blue', on_click = function() mep.learn_buckets_next() end}\n"
+    "  elseif mep_learn_buckets_all_placed(st) then\n"
+    "    w[#w + 1] = {id = 'submit', text = '> Submit  [s]', hl = 'Blue', on_click = function() mep.learn_buckets_submit() end}\n"
+    "  else\n"
+    "    local left = 0\n"
+    "    for t = 1, #r.cards do if not st.placed[t] then left = left + 1 end end\n"
+    "    w[#w + 1] = {id = 'submit', text = string.format('  Submit  (%d left to place)', left), hl = 'Comment'}\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b5')\n"
+    "  w[#w + 1] = {id = 'help', text = '[1-9] pick term   [a-i] pick bucket   [u] unplace   [s/Enter] submit   [n] next   [o] open card   [r] restart   [q] quit', hl = 'Comment'}\n"
+    "  return w\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.buckets.on_key(st, k)\n"
+    "  local digit = tonumber(k)\n"
+    "  if digit then mep.learn_buckets_pick_term(digit) return true end\n"
+    "  local b = mep_learn_letter_index(k)\n"
+    "  if b then mep.learn_buckets_pick_bucket(b) return true end\n"
+    "  if k == 'u' then mep.learn_buckets_unplace() return true end\n"
+    "  if k == 's' then mep.learn_buckets_submit() return true end\n"
+    "  if k == 'n' or k == ' ' then mep.learn_buckets_next() return true end\n"
+    "  return false\n"
+    "end\n"
+    "function mep.learn_sort_buckets(path, opts) return mep_learn_start(MEP_LEARN_GAMES.buckets, path, opts) end\n"
+    // --- Modifiers: survival, hot-seat ----------------------------------------
+    // mep.learn_survival([path][, game_key]): a choice game (default mixed)
+    // that ends at the first miss.
+    "function mep.learn_survival(path, game_key)\n"
+    "  local game = MEP_LEARN_GAMES[game_key or 'mixed']\n"
+    "  if not game or not game.is_choice then game = MEP_LEARN_GAMES.mixed end\n"
+    "  return mep_learn_start(game, path, {survival = true})\n"
+    "end\n"
+    // mep.learn_hotseat([path][, game_key]): any game (default mixed) for two
+    // players taking turns; the shell keeps both scores.
+    "function mep.learn_hotseat(path, game_key)\n"
+    "  local game = MEP_LEARN_GAMES[game_key or 'mixed'] or MEP_LEARN_GAMES.mixed\n"
+    "  return mep_learn_start(game, path, {players = 2})\n"
+    "end\n"
+    // --- Game: picture quiz ---------------------------------------------------
+    // A card's `[[file:...]]` image (on its own line in the body) is shown
+    // through the sidebar's image rows and the term is the answer among four.
+    "function mep.learn_picture_questions(deck, opts)\n"
+    "  opts = opts or {}\n"
+    "  local n_choices = opts.choices or deck.options.choices\n"
+    "  local order = {}\n"
+    "  for _, c in ipairs(mep.learn_deal(deck)) do if #c.images > 0 then order[#order + 1] = c end end\n"
+    "  mep_learn_cap(order, opts.rounds or deck.options.rounds)\n"
+    "  local questions = {}\n"
+    "  for _, card in ipairs(order) do\n"
+    "    local candidates = mep.learn_shuffle(mep_learn_copy(card.distractors))\n"
+    "    for _, c in ipairs(mep_learn_others(deck, card)) do candidates[#candidates + 1] = c.term end\n"
+    "    local choices, answer = mep_learn_choices(card.term, candidates, n_choices)\n"
+    "    questions[#questions + 1] = {card = card, image = card.images[math.random(#card.images)], choices = choices, answer = answer, accepted = card.aliases}\n"
+    "  end\n"
+    "  return questions\n"
+    "end\n"
+    "local MEP_LEARN_PICTURE_SPEC = {\n"
+    "  name = 'Picture quiz',\n"
+    "  typed = true,\n"
+    "  questions = function(st) return mep.learn_picture_questions(st.deck, st.opts) end,\n"
+    "  validate = function(deck)\n"
+    "    if mep_learn_count(deck, function(c) return #c.images > 0 end) < 2 then\n"
+    "      return 'the picture quiz needs two or more cards with a [[file:...]] image on its own line'\n"
+    "    end\n"
+    "  end,\n"
+    "  prompt_widgets = function(st, q, w)\n"
+    "    w[#w + 1] = {id = 'ask', text = 'Which structure is pictured?', hl = 'Comment'}\n"
+    "    w[#w + 1] = {id = 'img', text = '', image = q.image, image_rows = st.opts.image_rows or 12}\n"
+    "  end,\n"
+    "  reveal_widgets = function(st, q, w)\n"
+    "    if q.card.definition ~= '' then\n"
+    "      w[#w + 1] = {id = 'def', text = q.card.term .. ': ' .. q.card.definition, hl = 'Comment', wrap = true, wrap_indent = 0}\n"
+    "    end\n"
+    "  end,\n"
+    "}\n"
+    "MEP_LEARN_GAMES.picture = mep_learn_choice_game(MEP_LEARN_PICTURE_SPEC)\n"
+    "function mep.learn_picture_quiz(path, opts) return mep_learn_start(MEP_LEARN_GAMES.picture, path, opts) end\n"
+    "MEP_LEARN_MIXED_SOURCES[#MEP_LEARN_MIXED_SOURCES + 1] = {key = 'picture', spec = MEP_LEARN_PICTURE_SPEC}\n"
+    // --- Game: crossword --------------------------------------------------------
+    // Terms are the answers (letters only, upper-cased) and definitions (or
+    // :QUESTION:) the clues. mep.learn_crossword_build lays the words out
+    // greedily -- longest first across the middle, then each next word on a
+    // crossing letter, alternating direction, never touching another word
+    // side-on -- and skips what won't fit. The grid draws as text rows (one
+    // cell = a letter or `_`, black = blank) with spans, so it needs no new
+    // widget: pick a clue (its number then `a`/`d`, click it, or `n` for the
+    // next) and type its answer (`t`); `s` checks the whole puzzle.
+    "local function mep_learn_word_of(term)\n"
+    "  local w = term:upper():gsub('[^A-Z]', '')\n"
+    "  return w\n"
+    "end\n"
+    "function mep.learn_crossword_build(cards, max_words)\n"
+    "  local words = {}\n"
+    "  for _, c in ipairs(cards) do\n"
+    "    local wd = mep_learn_word_of(c.term)\n"
+    "    if #wd >= 3 and #wd <= 16 then words[#words + 1] = {card = c, word = wd} end\n"
+    "  end\n"
+    "  table.sort(words, function(a, b) return #a.word > #b.word end)\n"
+    "  mep_learn_cap(words, max_words)\n"
+    "  local grid = {}  -- grid[y][x] = letter\n"
+    "  local function get(x, y) return grid[y] and grid[y][x] end\n"
+    "  local function set(x, y, ch)\n"
+    "    grid[y] = grid[y] or {}\n"
+    "    grid[y][x] = ch\n"
+    "  end\n"
+    "  local placed = {}\n"
+    "  local function fits(word, x, y, dx, dy)\n"
+    "    -- The cell before the start and after the end must be free, every\n"
+    "    -- cell either free (with free side neighbours) or the same letter.\n"
+    "    if get(x - dx, y - dy) or get(x + dx * #word, y + dy * #word) then return false end\n"
+    "    local crossings = 0\n"
+    "    for i = 1, #word do\n"
+    "      local cx, cy = x + dx * (i - 1), y + dy * (i - 1)\n"
+    "      local ch = get(cx, cy)\n"
+    "      if ch then\n"
+    "        if ch ~= word:sub(i, i) then return false end\n"
+    "        crossings = crossings + 1\n"
+    "      else\n"
+    "        if get(cx + dy, cy + dx) or get(cx - dy, cy - dx) then return false end\n"
+    "      end\n"
+    "    end\n"
+    "    return true, crossings\n"
+    "  end\n"
+    "  local function place(entry, x, y, dx, dy)\n"
+    "    for i = 1, #entry.word do set(x + dx * (i - 1), y + dy * (i - 1), entry.word:sub(i, i)) end\n"
+    "    placed[#placed + 1] = {card = entry.card, word = entry.word, x = x, y = y, dx = dx, dy = dy}\n"
+    "  end\n"
+    "  for wi, entry in ipairs(words) do\n"
+    "    if wi == 1 then\n"
+    "      place(entry, 0, 0, 1, 0)\n"
+    "    else\n"
+    "      local best, best_score = nil, -1\n"
+    "      for _, p in ipairs(placed) do\n"
+    "        for i = 1, #p.word do\n"
+    "          for j = 1, #entry.word do\n"
+    "            if p.word:sub(i, i) == entry.word:sub(j, j) then\n"
+    "              local dx, dy = p.dy, p.dx  -- perpendicular to the crossed word\n"
+    "              local cx, cy = p.x + p.dx * (i - 1), p.y + p.dy * (i - 1)\n"
+    "              local x, y = cx - dx * (j - 1), cy - dy * (j - 1)\n"
+    "              local ok, crossings = fits(entry.word, x, y, dx, dy)\n"
+    "              if ok and crossings > best_score then best, best_score = {x = x, y = y, dx = dx, dy = dy}, crossings end\n"
+    "            end\n"
+    "          end\n"
+    "        end\n"
+    "      end\n"
+    "      if best then place(entry, best.x, best.y, best.dx, best.dy) end\n"
+    "    end\n"
+    "  end\n"
+    "  if #placed == 0 then return nil end\n"
+    "  -- Normalize to a 1-based box and number the starts in reading order.\n"
+    "  local minx, miny, maxx, maxy = math.huge, math.huge, -math.huge, -math.huge\n"
+    "  for _, p in ipairs(placed) do\n"
+    "    minx, miny = math.min(minx, p.x), math.min(miny, p.y)\n"
+    "    maxx = math.max(maxx, p.x + p.dx * (#p.word - 1))\n"
+    "    maxy = math.max(maxy, p.y + p.dy * (#p.word - 1))\n"
+    "  end\n"
+    "  for _, p in ipairs(placed) do p.x, p.y = p.x - minx + 1, p.y - miny + 1 end\n"
+    "  table.sort(placed, function(a, b)\n"
+    "    if a.y ~= b.y then return a.y < b.y end\n"
+    "    if a.x ~= b.x then return a.x < b.x end\n"
+    "    return a.dx > b.dx\n"
+    "  end)\n"
+    "  local numbers, next_number = {}, 0\n"
+    "  for _, p in ipairs(placed) do\n"
+    "    local key = p.x .. ',' .. p.y\n"
+    "    if not numbers[key] then next_number = next_number + 1 numbers[key] = next_number end\n"
+    "    p.number = numbers[key]\n"
+    "    p.dir = p.dx == 1 and 'across' or 'down'\n"
+    "  end\n"
+    "  return {width = maxx - minx + 1, height = maxy - miny + 1, words = placed}\n"
+    "end\n"
+    "MEP_LEARN_GAMES.crossword = {name = 'Crossword', unit = 'words'}\n"
+    "function MEP_LEARN_GAMES.crossword.validate(deck)\n"
+    "  local n = 0\n"
+    "  for _, c in ipairs(deck.cards) do if #mep_learn_word_of(c.term) >= 3 then n = n + 1 end end\n"
+    "  if n < 2 then return 'a crossword needs at least two terms of three or more letters' end\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.crossword.reset(st)\n"
+    "  local rounds = st.opts.rounds or st.deck.options.rounds\n"
+    "  local puzzle = mep.learn_crossword_build(mep.learn_deal(st.deck), rounds > 0 and rounds or 12)\n"
+    "  st.puzzle = puzzle\n"
+    "  st.total = puzzle and #puzzle.words or 0\n"
+    "  st.letters, st.sel, st.typed_num, st.checked = {}, nil, '', nil\n"
+    "  -- Fresh cell map: cells[y][x] = {answer=, words={...}}.\n"
+    "  st.cells = {}\n"
+    "  for _, w in ipairs(puzzle.words) do\n"
+    "    for i = 1, #w.word do\n"
+    "      local x, y = w.x + w.dx * (i - 1), w.y + w.dy * (i - 1)\n"
+    "      st.cells[y] = st.cells[y] or {}\n"
+    "      st.cells[y][x] = st.cells[y][x] or {answer = w.word:sub(i, i)}\n"
+    "    end\n"
+    "  end\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.crossword.current_card(st)\n"
+    "  local w = st.sel and st.puzzle.words[st.sel]\n"
+    "  return w and w.card or (st.puzzle.words[1] and st.puzzle.words[1].card)\n"
+    "end\n"
+    "local function mep_learn_crossword_letter(st, x, y) return st.letters[y] and st.letters[y][x] end\n"
+    "local function mep_learn_crossword_set(st, x, y, ch)\n"
+    "  st.letters[y] = st.letters[y] or {}\n"
+    "  st.letters[y][x] = ch\n"
+    "end\n"
+    "function mep.learn_crossword_select(index)\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.crossword or st.finished or st.checked then return end\n"
+    "  if not st.puzzle.words[index] then return end\n"
+    "  st.sel = index\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    // Selects clue `number` in direction `dir` ('across'/'down').
+    "function mep.learn_crossword_select_clue(number, dir)\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.crossword then return end\n"
+    "  for i, w in ipairs(st.puzzle.words) do\n"
+    "    if w.number == number and w.dir == dir then mep.learn_crossword_select(i) return end\n"
+    "  end\n"
+    "  mep.notify('Learn: no ' .. number .. ' ' .. dir, 'warn')\n"
+    "end\n"
+    "function mep.learn_crossword_next()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.crossword or st.finished or st.checked then return end\n"
+    "  local n = #st.puzzle.words\n"
+    "  local start = st.sel or 0\n"
+    "  for step = 1, n do\n"
+    "    local i = (start + step - 1) % n + 1\n"
+    "    local w = st.puzzle.words[i]\n"
+    "    local complete = true\n"
+    "    for k = 1, #w.word do\n"
+    "      if not mep_learn_crossword_letter(st, w.x + w.dx * (k - 1), w.y + w.dy * (k - 1)) then complete = false break end\n"
+    "    end\n"
+    "    if not complete then st.sel = i mep.learn_render() return end\n"
+    "  end\n"
+    "  st.sel = (start % n) + 1\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function mep.learn_crossword_type()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.crossword or st.finished or st.checked or not st.sel then return end\n"
+    "  local w = st.puzzle.words[st.sel]\n"
+    "  mep.ui_input(string.format('%d %s (%d letters)', w.number, w.dir, #w.word), '', function(text)\n"
+    "    if text == nil then return end\n"
+    "    if mep_learn_state ~= st or st.checked then return end\n"
+    "    local letters = text:upper():gsub('[^A-Z]', '')\n"
+    "    for k = 1, math.min(#letters, #w.word) do\n"
+    "      mep_learn_crossword_set(st, w.x + w.dx * (k - 1), w.y + w.dy * (k - 1), letters:sub(k, k))\n"
+    "    end\n"
+    "    mep.learn_crossword_next()\n"
+    "  end)\n"
+    "end\n"
+    "function mep.learn_crossword_clear()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.crossword or st.finished or st.checked or not st.sel then return end\n"
+    "  local w = st.puzzle.words[st.sel]\n"
+    "  for k = 1, #w.word do\n"
+    "    local x, y = w.x + w.dx * (k - 1), w.y + w.dy * (k - 1)\n"
+    "    -- keep a letter another completed word still needs\n"
+    "    local shared = false\n"
+    "    for _, o in ipairs(st.puzzle.words) do\n"
+    "      if o ~= w then\n"
+    "        for m = 1, #o.word do\n"
+    "          if o.x + o.dx * (m - 1) == x and o.y + o.dy * (m - 1) == y then shared = true end\n"
+    "        end\n"
+    "      end\n"
+    "    end\n"
+    "    if not shared and st.letters[y] then st.letters[y][x] = nil end\n"
+    "  end\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "local function mep_learn_crossword_word_ok(st, w)\n"
+    "  for k = 1, #w.word do\n"
+    "    if mep_learn_crossword_letter(st, w.x + w.dx * (k - 1), w.y + w.dy * (k - 1)) ~= w.word:sub(k, k) then return false end\n"
+    "  end\n"
+    "  return true\n"
+    "end\n"
+    "function mep.learn_crossword_check()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.crossword or st.finished or st.checked then return end\n"
+    "  local correct = 0\n"
+    "  for _, w in ipairs(st.puzzle.words) do\n"
+    "    mep_learn_add_seen(st, w.card)\n"
+    "    if mep_learn_crossword_word_ok(st, w) then correct = correct + 1 else mep_learn_add_missed(st, w.card) end\n"
+    "  end\n"
+    "  st.score = correct\n"
+    "  st.checked = correct\n"
+    "  st.sel = nil\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function mep.learn_crossword_finish()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.crossword or st.finished or not st.checked then return end\n"
+    "  st.finished = true\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.crossword.widgets(st)\n"
+    "  local pz = st.puzzle\n"
+    "  local w = {}\n"
+    "  w[#w + 1] = {\n"
+    "    id = 'head', hl = 'Accent',\n"
+    "    text = string.format('%s  --  Crossword   %d words   Score %d/%d', st.deck.title, #pz.words, st.score, st.total),\n"
+    "  }\n"
+    "  w[#w + 1] = mep_learn_blank('b1')\n"
+    "  if st.checked then\n"
+    "    w[#w + 1] = {id = 'ask', text = string.format('%d of %d words correct', st.checked, #pz.words), hl = st.checked == #pz.words and 'Add' or 'Yellow'}\n"
+    "  else\n"
+    "    local sel = st.sel and pz.words[st.sel]\n"
+    "    local hint = sel and string.format('Selected: %d %s (%d letters) -- [t] to type it', sel.number, sel.dir, #sel.word) or 'Pick a clue: its number then a/d, click it, or [n] for the next open one.'\n"
+    "    w[#w + 1] = {id = 'ask', text = hint .. (st.typed_num ~= '' and ('   typed: ' .. st.typed_num) or ''), hl = 'Comment', wrap = true, wrap_indent = 0}\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b2')\n"
+    "  -- Cells of the selected word (highlighted) and, after checking, of the\n"
+    "  -- wrong ones (red).\n"
+    "  local sel_cells, wrong_cells = {}, {}\n"
+    "  if st.sel and not st.checked then\n"
+    "    local s = pz.words[st.sel]\n"
+    "    for k = 1, #s.word do sel_cells[(s.x + s.dx * (k - 1)) .. ',' .. (s.y + s.dy * (k - 1))] = true end\n"
+    "  end\n"
+    "  if st.checked then\n"
+    "    for _, wd in ipairs(pz.words) do\n"
+    "      if not mep_learn_crossword_word_ok(st, wd) then\n"
+    "        for k = 1, #wd.word do\n"
+    "          local x, y = wd.x + wd.dx * (k - 1), wd.y + wd.dy * (k - 1)\n"
+    "          if mep_learn_crossword_letter(st, x, y) ~= wd.word:sub(k, k) then wrong_cells[x .. ',' .. y] = true end\n"
+    "        end\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  for y = 1, pz.height do\n"
+    "    local parts, spans = {}, {}\n"
+    "    for x = 1, pz.width do\n"
+    "      local cell = st.cells[y] and st.cells[y][x]\n"
+    "      local col = 2 + (x - 1) * 2\n"
+    "      if not cell then parts[#parts + 1] = '  '\n"
+    "      else\n"
+    "        local letter = mep_learn_crossword_letter(st, x, y)\n"
+    "        local shown = st.checked and (letter or cell.answer) or (letter or '_')\n"
+    "        parts[#parts + 1] = shown .. ' '\n"
+    "        local hl = letter and 'Cyan' or 'Comment'\n"
+    "        if st.checked then hl = wrong_cells[x .. ',' .. y] and 'Red' or 'Add'\n"
+    "        elseif sel_cells[x .. ',' .. y] then hl = 'Yellow' end\n"
+    "        spans[#spans + 1] = {col_start = col, col_end = col + 1, hl = hl}\n"
+    "      end\n"
+    "    end\n"
+    "    w[#w + 1] = {id = 'row' .. y, text = ' ' .. table.concat(parts), hl = 'Normal', spans = spans}\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b3')\n"
+    "  for _, dir in ipairs({'across', 'down'}) do\n"
+    "    w[#w + 1] = {id = 'clues_' .. dir, text = dir:sub(1, 1):upper() .. dir:sub(2), hl = 'PickerTitle'}\n"
+    "    for i, wd in ipairs(pz.words) do\n"
+    "      if wd.dir == dir then\n"
+    "        local clue = wd.card.question or wd.card.definition\n"
+    "        local hl = 'Normal'\n"
+    "        if st.checked then hl = mep_learn_crossword_word_ok(st, wd) and 'Add' or 'Red'\n"
+    "        elseif st.sel == i then hl = 'Yellow' end\n"
+    "        local mark = (st.sel == i and not st.checked) and '>' or ' '\n"
+    "        local text = string.format('%s %d%s (%d) %s', mark, wd.number, dir:sub(1, 1), #wd.word, clue)\n"
+    "        if st.checked then text = text .. '  = ' .. wd.card.term end\n"
+    "        w[#w + 1] = {id = 'clue' .. i, text = text, hl = hl, wrap = true, wrap_indent = 8, on_click = function() mep.learn_crossword_select(i) end}\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b4')\n"
+    "  if st.checked then\n"
+    "    w[#w + 1] = {id = 'next', text = '> See results  [n]', hl = 'Blue', on_click = function() mep.learn_crossword_finish() end}\n"
+    "  else\n"
+    "    w[#w + 1] = {id = 'check', text = '> Check the puzzle  [s]', hl = 'Blue', on_click = function() mep.learn_crossword_check() end}\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b5')\n"
+    "  w[#w + 1] = {id = 'help', text = '[digits + a/d] pick clue   [n] next open clue   [t] type answer   [u] clear word   [s] check   [o] open card   [r] restart   [q] quit', hl = 'Comment'}\n"
+    "  return w\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.crossword.on_key(st, k)\n"
+    "  if st.checked then\n"
+    "    if k == 'n' or k == ' ' then mep.learn_crossword_finish() return true end\n"
+    "    return false\n"
+    "  end\n"
+    "  if k:match('^%d$') then st.typed_num = st.typed_num .. k mep.learn_render() return true end\n"
+    "  if k == 'a' or k == 'd' then\n"
+    "    local n = tonumber(st.typed_num)\n"
+    "    st.typed_num = ''\n"
+    "    if n then mep.learn_crossword_select_clue(n, k == 'a' and 'across' or 'down') else mep.learn_render() end\n"
+    "    return true\n"
+    "  end\n"
+    "  if k == 'n' or k == ' ' then mep.learn_crossword_next() return true end\n"
+    "  if k == 't' then mep.learn_crossword_type() return true end\n"
+    "  if k == 'u' then mep.learn_crossword_clear() return true end\n"
+    "  if k == 's' then mep.learn_crossword_check() return true end\n"
+    "  return false\n"
+    "end\n"
+    "function mep.learn_crossword(path, opts) return mep_learn_start(MEP_LEARN_GAMES.crossword, path, opts) end\n"
+    // --- Registration ---------------------------------------------------------
+    // Every game: {key=, name=, start=, command=, leader=, global=}. `global`
+    // is the bare-global alias a deck's own `#+begin_src mep-lua` launcher
+    // block calls (examples/learn_basic_datastructures.org); `command` the
+    // :Learn* ex-command (an optional path argument); `leader` the key under
+    // the <leader>og "learn games" group. mep.learn_pick (:Learn, <leader>ol)
+    // lists them all.
+    "mep.learn_catalog = {\n"
+    "  {key = 'mc', name = 'Multiple-choice flashcards', start = mep.learn_mc_flashcards, command = 'LearnMCFlashCards', leader = 'f', global = 'LearnMCFlashCards'},\n"
+    "  {key = 'match', name = 'Matching', start = mep.learn_matching, command = 'LearnMatching', leader = 'm', global = 'LearnMatching'},\n"
+    "  {key = 'code', name = 'Identify the code', start = mep.learn_code_id, command = 'LearnCodeID', leader = 'c', global = 'LearnCodeID'},\n"
+    "  {key = 'tf', name = 'True or false', start = mep.learn_true_false, command = 'LearnTrueFalse', leader = 't', global = 'LearnTrueFalse'},\n"
+    "  {key = 'cloze', name = 'Fill in the blank', start = mep.learn_cloze, command = 'LearnCloze', leader = 'b', global = 'LearnCloze'},\n"
+    "  {key = 'typed', name = 'Type the term', start = mep.learn_type_term, command = 'LearnTypeTerm', leader = 'y', global = 'LearnTypeTerm'},\n"
+    "  {key = 'oddone', name = 'Odd one out', start = mep.learn_odd_one_out, command = 'LearnOddOneOut', leader = 'o', global = 'LearnOddOneOut'},\n"
+    "  {key = 'category', name = 'Which category', start = mep.learn_which_category, command = 'LearnWhichCategory', leader = 'k', global = 'LearnWhichCategory'},\n"
+    "  {key = 'facts', name = 'Fact quiz', start = mep.learn_fact_quiz, command = 'LearnFactQuiz', leader = 'a', global = 'LearnFactQuiz'},\n"
+    "  {key = 'order', name = 'Put in order', start = mep.learn_put_in_order, command = 'LearnPutInOrder', leader = 's', global = 'LearnPutInOrder'},\n"
+    "  {key = 'jeopardy', name = 'Jeopardy', start = mep.learn_jeopardy, command = 'LearnJeopardy', leader = 'j', global = 'LearnJeopardy'},\n"
+    "  {key = 'hangman', name = 'Hangman', start = mep.learn_hangman, command = 'LearnHangman', leader = 'h', global = 'LearnHangman'},\n"
+    "  {key = 'code_cloze', name = 'Complete the code', start = mep.learn_complete_code, command = 'LearnCompleteCode', leader = 'x', global = 'LearnCompleteCode'},\n"
+    "  {key = 'bug', name = 'Spot the bug', start = mep.learn_spot_bug, command = 'LearnSpotBug', leader = 'd', global = 'LearnSpotBug'},\n"
+    "  {key = 'output', name = 'Predict the output', start = mep.learn_predict_output, command = 'LearnPredictOutput', leader = 'p', global = 'LearnPredictOutput'},\n"
+    "  {key = 'mixed', name = 'Mixed practice', start = mep.learn_mixed, command = 'LearnMixed', leader = 'g', global = 'LearnMixed'},\n"
+    "  {key = 'timed', name = 'Timed mixed practice', start = mep.learn_timed, command = 'LearnTimed', leader = 'T', global = 'LearnTimed', arg = 'number'},\n"
+    "  {key = 'code_rev', name = 'Which code is it (term -> code)', start = mep.learn_code_reverse, command = 'LearnCodeReverse', leader = 'v', global = 'LearnCodeReverse'},\n"
+    "  {key = 'buckets', name = 'Sort into buckets', start = mep.learn_sort_buckets, command = 'LearnSortBuckets', leader = 'u', global = 'LearnSortBuckets'},\n"
+    "  {key = 'rank', name = 'Rank by fact', start = mep.learn_rank, command = 'LearnRank', leader = 'n', global = 'LearnRank'},\n"
+    "  {key = 'survival', name = 'Survival (mixed, until the first miss)', start = mep.learn_survival, command = 'LearnSurvival', leader = 'S', global = 'LearnSurvival', arg = 'game'},\n"
+    "  {key = 'hotseat', name = 'Hot-seat two player (mixed)', start = mep.learn_hotseat, command = 'LearnHotSeat', leader = '2', global = 'LearnHotSeat', arg = 'game'},\n"
+    "  {key = 'picture', name = 'Picture quiz', start = mep.learn_picture_quiz, command = 'LearnPictureQuiz', leader = 'i', global = 'LearnPictureQuiz'},\n"
+    "  {key = 'crossword', name = 'Crossword', start = mep.learn_crossword, command = 'LearnCrossword', leader = 'w', global = 'LearnCrossword'},\n"
+    "}\n"
+    // mep.learn_pick([path]): a chooser over every game (mep.ui_select),
+    // starting the chosen one on `path` (default: the current org buffer).
+    "function mep.learn_pick(path)\n"
+    "  local names = {}\n",
+    "  for i, g in ipairs(mep.learn_catalog) do names[i] = g.name end\n"
+    "  mep.ui_select(names, 'Learn: pick a game', function(i)\n"
+    "    if i then mep.learn_catalog[i].start(path) end\n"
+    "  end)\n"
+    "end\n"
+    "mep.command('Learn', function(args) mep.learn_pick(mep_learn_trim(args or '')) end)\n"
+    "mep.leader_map('ol', 'Learn: pick a game for this deck', function() mep.learn_pick() end)\n"
+    "mep.leader_group('og', 'learn games', 0xf11b, 'Green')\n"
+    "for _, g in ipairs(mep.learn_catalog) do\n"
+    "  local start = g.start\n"
+    "  _G[g.global] = function(path, extra) return start(path, extra) end\n"
+    "  -- :LearnTimed [seconds] and :LearnSurvival/:LearnHotSeat [game key]\n"
+    "  -- take their own argument in place of a path; a path still works\n"
+    "  -- (anything ending in .org).\n"
+    "  mep.command(g.command, function(args)\n"
+    "    local a = mep_learn_trim(args or '')\n"
+    "    if g.arg == 'number' and tonumber(a) then start(nil, tonumber(a))\n"
+    "    elseif g.arg == 'game' and a ~= '' and not a:lower():match('%.org$') then start(nil, a)\n"
+    "    else start(a) end\n"
+    "  end)\n"
+    "  mep.leader_map('og' .. g.leader, 'Learn: ' .. g.name:lower(), function() start() end)\n"
+    "end\n"
+};
 
 // Phase 39 -- Bib (bibliography / org-ref). A hand-rolled BibTeX parser
 // using Lua's `%b{}` balanced-match pattern item for brace-nested field
@@ -19828,7 +23073,7 @@ void DrawSidebars() {
                 gfx::DrawRectangle(px + 2, static_cast<int>(ly) - 1, pw - 4, line_h, ResolveHlGroup("PickerSelected"));
             }
             gfx::Color color = lines[i].hl.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(lines[i].hl);
-            DrawUiText(lines[i].text, gfx::Vector2{static_cast<float>(px + 8), ly}, font_size, color);
+            DrawSidebarRow(lines[i], gfx::Vector2{static_cast<float>(px + 8), ly}, font_size, color, line_h, static_cast<float>(pw) - 16.0f);
             // Right-aligned per-row trailing action (SidebarWidget::
             // trailing_icon, e.g. the Buffers sidebar's "x" to delete):
             // drawn flush against the row's right edge and given its own
@@ -20619,7 +23864,7 @@ void DrawSidebarPopout() {
             gfx::DrawRectangle(f.box_x + 4, static_cast<int>(ly) - 1, list_w - 8, line_h, ResolveHlGroup("PickerSelected"));
         }
         const gfx::Color color = lines[i].hl.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(lines[i].hl);
-        DrawUiText(lines[i].text, gfx::Vector2{f.content_x, ly}, font_size, color);
+        DrawSidebarRow(lines[i], gfx::Vector2{f.content_x, ly}, font_size, color, line_h, static_cast<float>(f.box_x + f.box_w) - f.content_x - 8.0f);
         g_sidebar_row_rects.push_back(
             {sb->id, static_cast<int>(i), gfx::Rectangle{static_cast<float>(f.box_x), ly - 1, static_cast<float>(list_w), static_cast<float>(line_h)}});
     }
@@ -22857,6 +26102,7 @@ struct HtmlRun {
     bool bold = false, italic = false, underline = false, strikethrough = false;
     std::string link_href = "";  // see HtmlPendingWord::link_href
     const DomNode *link_node = nullptr;
+    DomNode *node = nullptr;  // the element this text belongs to: the target of a click on it
     // Null retains the legacy JetBrains Mono fallback used for synthetic
     // widgets/math placeholders; normal HTML text points at a real generic
     // family face selected from the embedded Liberation set.
@@ -23006,6 +26252,7 @@ struct HtmlPendingWord {
     float line_height = 0.0f;
     float letter_spacing = 0.0f;
     bool no_wrap = false;
+    DomNode *node = nullptr;  // innermost element that produced this word (click target)
 };
 
 // HTML's generic CSS families share the already-loaded office font atlases.
@@ -23043,19 +26290,49 @@ const gfx::Font &HtmlFontFor(const ComputedStyle &style) {
 // the inline-data case this function's own doc comment already carves out
 // room for alongside "remote" and "local".
 /**
- * @brief Resolves an <img src> value against `base_dir` for local file loading. An absolute
- * path or a "data:" URI passes through unchanged; a remote (http/https) src returns "" since
- * there is no local file to fetch, so callers fall back to a bracketed placeholder instead of a
- * broken texture load.
+ * @brief Resolves an <img src> value to something the texture loaders can open. An absolute
+ * path or a "data:" URI passes through unchanged; a network image (an http(s) `src`, or any
+ * `src` when `base_dir` is itself the page's http(s) URL) is fetched once into a temp file.
  * @param src The <img> element's src attribute value.
- * @param base_dir Directory to resolve a relative `src` against.
- * @return The resolved local filesystem path, the original "data:" URI, or "" if `src` is empty
- * or a remote URL.
+ * @param base_dir Directory -- or, for a page that came from the network, its URL -- to resolve
+ * a relative `src` against.
+ * @return A local filesystem path, the original "data:" URI, or "" if `src` is empty or the
+ * network image could not be fetched (callers then draw the bracketed placeholder).
  */
+// A network image (an absolute http(s) src, or any src on a page that
+// itself came from a URL -- `base_dir` is then that page's URL) is fetched
+// once through the DOM layer's HtmlUrlFetcher into a temp file, memoized
+// by URL for the process lifetime (failures too, so a missing image isn't
+// re-requested every frame); from there the ordinary mtime-cached texture
+// loader takes over as if it had been a local file all along.
+static std::string CachedRemoteImagePath(const std::string &url) {
+    static std::unordered_map<std::string, std::string> cache;
+    auto it = cache.find(url);
+    if (it != cache.end()) return it->second;
+    std::string path;
+    const HtmlUrlFetcher &fetch = GetHtmlUrlFetcher();
+    if (fetch) {
+        HtmlFetchResult result = fetch(url);
+        if (result.status == 200 && !result.body.empty()) {
+            std::string ext = std::filesystem::path(urlutil::ParseUrl(url).path).extension().string();
+            if (ext.empty() || ext.size() > 6) ext = ".img";
+            std::error_code ec;
+            const std::filesystem::path dir = std::filesystem::temp_directory_path(ec) / "mep-web-images";
+            std::filesystem::create_directories(dir, ec);
+            const std::filesystem::path file = dir / (std::to_string(std::hash<std::string>{}(url)) + ext);
+            std::ofstream out(file, std::ios::binary);
+            if (out.write(result.body.data(), static_cast<std::streamsize>(result.body.size()))) path = file.string();
+        }
+    }
+    cache[url] = path;
+    return path;
+}
+
 std::string ResolveHtmlImagePath(const std::string &src, const std::string &base_dir) {
     if (src.empty()) return "";
-    if (src.compare(0, 7, "http://") == 0 || src.compare(0, 8, "https://") == 0) return "";
     if (src.compare(0, 5, "data:") == 0) return src;
+    if (urlutil::IsHttpUrl(src)) return CachedRemoteImagePath(src);
+    if (urlutil::IsHttpUrl(base_dir)) return CachedRemoteImagePath(urlutil::ResolveUrl(base_dir, src));
     if (src[0] == '/') return src;
     if (base_dir.empty()) return src;
     return base_dir + "/" + src;
@@ -23159,6 +26436,7 @@ float HtmlFlushWords(std::vector<HtmlPendingWord> &words, float indent_x, float 
                             w.strikethrough, w.link_href, w.link_node};
                 run.font = w.font;
                 run.letter_spacing = w.letter_spacing;
+                run.node = w.node;
                 out.runs.push_back(std::move(run));
             }
         }
@@ -23303,6 +26581,14 @@ void HtmlCollectRawText(DomNode *node, std::string &out) {
  */
 void HtmlCollectInlineChild(DomNode *c, const ComputedStyle &parent_style, const HtmlLayoutCtx &ctx,
                              std::vector<HtmlPendingWord> &out) {
+    // Every word produced below that a deeper element hasn't already claimed
+    // belongs to this one (a text node's words to its parent element).
+    struct ClaimWords {
+        std::vector<HtmlPendingWord> &words;
+        size_t first;
+        DomNode *owner;
+        ~ClaimWords() { for (size_t i = first; i < words.size(); ++i) if (!words[i].node) words[i].node = owner; }
+    } claim{out, out.size(), c->type == DomNodeType::Text ? c->parent : c};
     if (c->type == DomNodeType::Text) {
         HtmlCollectTextWords(c->text, parent_style, ctx, out);
         return;
@@ -23401,8 +26687,23 @@ void HtmlCollectInlineChild(DomNode *c, const ComputedStyle &parent_style, const
         return;
     }
     if (c->tag == "select") {
-        std::string selected = c->form_value;
-        if (selected.empty()) for (auto &option : c->children) if (option->type == DomNodeType::Element && option->tag == "option") { HtmlCollectRawText(option.get(), selected); break; }
+        // The chosen option's label: the one a script/click selected, else
+        // the `selected` attribute, else the first.
+        std::string selected;
+        DomNode *first_option = nullptr, *chosen = nullptr;
+        std::function<void(DomNode *)> scan = [&](DomNode *at) {
+            for (auto &option : at->children) {
+                if (option->type != DomNodeType::Element) continue;
+                if (option->tag != "option") { scan(option.get()); continue; }
+                if (!first_option) first_option = option.get();
+                auto live = option->attrs.find("\x01selected");
+                const bool is_selected = live != option->attrs.end() ? live->second == "1" : option->attrs.count("selected") != 0;
+                if (is_selected && (!chosen || live != option->attrs.end())) chosen = option.get();
+            }
+        };
+        scan(c);
+        if (!chosen) chosen = first_option;
+        if (chosen) HtmlCollectRawText(chosen, selected);
         out.push_back({"[" + selected + " v]", ctx.base_font_size * c->style.font_scale, HtmlResolveColor(c->style, ctx), false, false, false, false});
         return;
     }
@@ -23862,7 +27163,9 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
         if (node->tag == "details" && !node->details_open &&
             (c->type != DomNodeType::Element || c->tag != "summary")) continue;
         if (c->type == DomNodeType::Text) {
+            const size_t first_word = words.size();
             HtmlCollectTextWords(c->text, node->style, box_ctx, words);
+            for (size_t i = first_word; i < words.size(); ++i) words[i].node = node;
             continue;
         }
         if (c->style.display_none) continue;
@@ -27900,6 +31203,108 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
     }
 }
 
+// The browser pane's omnibar: one chrome row across the top of an html
+// pane -- back / forward / reload buttons, then the URL field, with the
+// page's title right-aligned inside it. Idle, the field shows
+// HtmlSession::origin; in edit mode (HtmlSession::omnibar_active -- `o`,
+// Ctrl-L or a click, see Editor::HandleHtmlInput) it shows the text being
+// typed with a caret, tinted whole while the initial select-all is still
+// in effect (typing replaces it, like a real address bar). Everything
+// clickable registers through RegisterClickRegion like the rest of the
+// pane chrome and focuses this pane first, so a click works from another
+// pane. Returns the height it took, which DrawPane removes from the
+// page's own viewport.
+/**
+ * @brief Draws an html pane's omnibar and registers its click regions.
+ * @param pane The pane being drawn.
+ * @param sess The pane's html session (URL, history, omnibar edit state).
+ * @param x Left edge of the pane content.
+ * @param y Top edge of the pane content (below the pane header).
+ * @param w Pane content width.
+ * @param is_active Whether this pane has focus (the caret only blinks in the focused pane).
+ * @return The bar's height in pixels.
+ */
+float DrawHtmlOmnibar(const Pane &pane, const HtmlSession &sess, float x, float y, float w, bool is_active) {
+    const float font_size = MenuFontSize();
+    const float bar_h = static_cast<float>(LineHeight()) + 8.0f;
+    const int pane_id = pane.id;
+    const int buffer_id = pane.buffer_id;
+    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(bar_h), ResolveHlGroup("MenuBar"));
+    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y + bar_h - 1.0f), static_cast<int>(w), 1, ResolveHlGroup("Border"));
+
+    const float text_y = y + (bar_h - font_size) * 0.5f;
+    float cx = x + 6.0f;
+    const bool can_back = sess.history_index > 0;
+    const bool can_forward = sess.history_index + 1 < sess.history.size();
+    struct Button {
+        const char *label;
+        bool enabled;
+        std::function<void()> action;
+    };
+    const Button buttons[] = {
+        {"<", can_back, [buffer_id] { g_editor.NavigateHtmlHistory(buffer_id, -1); }},
+        {">", can_forward, [buffer_id] { g_editor.NavigateHtmlHistory(buffer_id, 1); }},
+        {"R", true, [] { g_editor.RunCommand("MepBrowseReload"); }},
+    };
+    for (const Button &b : buttons) {
+        const float bw = font_size + 10.0f;
+        const gfx::Rectangle rect{cx, y + 3.0f, bw, bar_h - 7.0f};
+        const float label_w = MeasureUiText(b.label, font_size);
+        DrawUiText(b.label, gfx::Vector2{cx + (bw - label_w) * 0.5f, text_y}, font_size, ResolveHlGroup(b.enabled ? "Normal" : "Comment"));
+        if (b.enabled) {
+            std::function<void()> action = b.action;
+            RegisterClickRegion(rect, [pane_id, action] {
+                g_editor.FocusPaneById(pane_id);
+                action();
+            });
+        }
+        cx += bw + 2.0f;
+    }
+
+    // The URL field takes the rest of the row.
+    const gfx::Rectangle field{cx + 4.0f, y + 3.0f, std::max(40.0f, x + w - cx - 10.0f), bar_h - 7.0f};
+    gfx::DrawRectangleRec(field, ResolveHlGroup("NormalBg"));
+    gfx::DrawRectangleLinesEx(field, 1.0f, ResolveHlGroup(sess.omnibar_active ? "Accent" : "Border"));
+    const float inner_x = field.x + 6.0f;
+    const float inner_w = field.width - 12.0f;
+    gfx::BeginScissorMode(static_cast<int>(field.x + 1.0f), static_cast<int>(field.y), static_cast<int>(field.width - 2.0f), static_cast<int>(field.height));
+    if (sess.omnibar_active) {
+        const std::string &text = sess.omnibar_text;
+        const size_t caret = std::min(sess.omnibar_cursor, text.size());
+        const float caret_px = MeasureUiText(text.substr(0, caret), font_size);
+        // Keep the caret in view: slide the text left once it would pass the field's right edge.
+        const float shift = std::max(0.0f, caret_px - (inner_w - 4.0f));
+        if (sess.omnibar_select_all && !text.empty()) {
+            gfx::DrawRectangle(static_cast<int>(inner_x - 2.0f), static_cast<int>(field.y + 2.0f),
+                               static_cast<int>(std::min(inner_w + 4.0f, MeasureUiText(text, font_size) + 4.0f)),
+                               static_cast<int>(field.height - 4.0f), ResolveHlGroup("Visual"));
+        }
+        DrawUiText(text, gfx::Vector2{inner_x - shift, text_y}, font_size, ResolveHlGroup("Normal"));
+        if (is_active && std::fmod(gfx::GetTime(), 1.0) < 0.6) {
+            gfx::DrawRectangle(static_cast<int>(inner_x - shift + caret_px), static_cast<int>(field.y + 3.0f), 2,
+                               static_cast<int>(field.height - 6.0f), ResolveHlGroup("Accent"));
+        }
+    } else {
+        const std::string &title = sess.doc.title;
+        float title_w = 0.0f;
+        if (!title.empty()) {
+            title_w = std::min(inner_w * 0.45f, MeasureUiText(title, font_size));
+            DrawUiText(title, gfx::Vector2{field.x + field.width - 6.0f - title_w, text_y}, font_size, ResolveHlGroup("Comment"));
+        }
+        // The URL is clipped (its own scissor) so a long one never runs under the title.
+        gfx::EndScissorMode();
+        gfx::BeginScissorMode(static_cast<int>(field.x + 1.0f), static_cast<int>(field.y),
+                              static_cast<int>(std::max(10.0f, field.width - 2.0f - (title_w > 0.0f ? title_w + 16.0f : 0.0f))), static_cast<int>(field.height));
+        DrawUiText(sess.origin, gfx::Vector2{inner_x, text_y}, font_size, ResolveHlGroup("Normal"));
+    }
+    gfx::EndScissorMode();
+    RegisterClickRegion(field, [pane_id, buffer_id] {
+        g_editor.FocusPaneById(pane_id);
+        g_editor.BeginHtmlOmnibarEdit(buffer_id);
+    });
+    return bar_h;
+}
+
 /**
  * @brief Draws one pane's full contents: the header (single filename label or a multi-buffer
  * tab strip), then dispatches to the appropriate content renderer for the pane's buffer kind
@@ -28005,7 +31410,7 @@ void DrawSidebarPaneContent(const Pane &pane, int sidebar_id, float x, float y, 
             gfx::DrawRectangle(static_cast<int>(x) + 2, static_cast<int>(ly) - 1, static_cast<int>(w) - 4, line_h, ResolveHlGroup("PickerSelected"));
         }
         gfx::Color color = lines[i].hl.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(lines[i].hl);
-        DrawUiText(lines[i].text, gfx::Vector2{x + 8, ly}, font_size, color);
+        DrawSidebarRow(lines[i], gfx::Vector2{x + 8, ly}, font_size, color, line_h, w - 16.0f);
         int line_index = static_cast<int>(i);
         RegisterClickRegion(gfx::Rectangle{x, ly - 1, w, static_cast<float>(line_h)}, [pane_id, sidebar_id, line_index] {
             g_editor.FocusPaneById(pane_id);
@@ -28779,6 +32184,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     }
 
     if (html_sess) {
+        // The omnibar is pane chrome: it takes the top row, the page gets the rest.
+        const float omnibar_h = DrawHtmlOmnibar(pane, *html_sess, x, content_y, w, is_active);
+        content_y += omnibar_h;
+        content_h = std::max(0.0f, content_h - omnibar_h);
         g_editor.ResizeHtmlViewport(pane.buffer_id, static_cast<int>(w), static_cast<int>(content_h));
         constexpr float kHtmlPad = 12.0f;
         HtmlLayoutCtx ctx{std::max(50.0f, w - kHtmlPad * 2.0f), g_font_size * html_sess->zoom, ResolveHlGroup("Normal")};
@@ -28787,10 +32196,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // curl-to-tempfile fetch -- has no useful "directory" of its own for
         // this, so its images just fall back to the bracketed placeholder;
         // see ResolveHtmlImagePath's own header).
-        ctx.base_dir = std::filesystem::path(html_sess->source).parent_path().string();
+        ctx.base_dir = urlutil::IsHttpUrl(html_sess->origin) ? html_sess->origin
+                                                             : std::filesystem::path(html_sess->source).parent_path().string();
         ctx.zoom = html_sess->zoom;
         // Media clocks tick with the frame, then the device mirrors the DOM.
         g_editor.AdvanceHtmlMedia(pane.buffer_id, static_cast<double>(gfx::GetFrameTime()));
+        // The page's own event loop turn for this frame (timers, rAF, promise jobs), before it is laid out.
+        g_editor.PumpHtmlScripts(pane.buffer_id);
         SyncHtmlMediaPlayback();
         HtmlLayout layout = LayoutHtmlDoc(html_sess->doc, ctx);
         // Layout depends on real font metrics (MeasureTextEx), so unlike
@@ -29018,6 +32430,15 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             if (!run.link_href.empty()) {
                 float rw = gfx::MeasureTextEx(g_font, run.text.c_str(), run.font_size, 0).x;
                 expand_link_group(run.link_node, run.link_href, x + kHtmlPad + run.x, ry, rw, run.font_size);
+            }
+            if (run.node) {
+                const float rw = gfx::MeasureTextEx(run.font ? *run.font : g_font, run.text.c_str(), run.font_size, 0).x;
+                g_html_click_rects.push_back({pane.id, pane.buffer_id, gfx::Rectangle{x + kHtmlPad + run.x, ry, rw, run.font_size * 1.2f}, run.node, run.link_href});
+                // The field that owns the keyboard shows a caret at the end of its text.
+                if (run.node == g_editor.HtmlFocusedField(pane.buffer_id) && std::fmod(gfx::GetTime(), 1.0) < 0.6) {
+                    const float caret_x = x + kHtmlPad + run.x + rw - gfx::MeasureTextEx(run.font ? *run.font : g_font, "]", run.font_size, 0).x;
+                    gfx::DrawRectangle(static_cast<int>(caret_x), static_cast<int>(ry), 2, static_cast<int>(run.font_size), ResolveHlGroup("Cursor"));
+                }
             }
         }
         for (const HtmlImageRun &img : layout.images) {
@@ -32483,6 +35904,7 @@ void DrawEditor() {
     g_sidebar_border_rects.clear();
     g_sidebar_stack_rects.clear();
     g_link_hint_rects.clear();
+    g_html_click_rects.clear();
     // A tab/workspace switch or :bd underneath an open floating pane
     // (Editor::OpenFloatPane) ends it before anything below draws it.
     g_editor.ValidateFloatPane();
@@ -33028,8 +36450,12 @@ void NavigateHtmlLink(int buffer_id, const std::string &href) {
         return;
     }
     std::string target = href;
-    if (href.rfind("http://", 0) != 0 && href.rfind("https://", 0) != 0 && href[0] != '/') {
-        const HtmlSession *sess = g_editor.GetHtml(buffer_id);
+    const HtmlSession *sess = g_editor.GetHtml(buffer_id);
+    if (sess && urlutil::IsHttpUrl(sess->origin)) {
+        // A page that came from the network: every href, root-relative
+        // ones included, resolves against the page's own URL.
+        target = urlutil::ResolveUrl(sess->origin, href);
+    } else if (href.rfind("http://", 0) != 0 && href.rfind("https://", 0) != 0 && href[0] != '/') {
         std::string base_dir = sess ? std::filesystem::path(sess->source).parent_path().string() : std::string();
         if (!base_dir.empty()) target = base_dir + "/" + href;
     }
@@ -33046,6 +36472,23 @@ void DispatchHtmlLinkClicks() {
     Mode mode = g_editor.CurrentMode();
     if (IsModalOverlayMode(mode) && mode != Mode::Sidebar) return;
     gfx::Vector2 mouse = gfx::GetMousePosition();
+    // The DOM sees the click first, at the smallest laid-out piece under the
+    // pointer; a listener that calls preventDefault() (a client-side router
+    // on an <a>) keeps the link below from being followed.
+    const HtmlClickRect *hit = nullptr;
+    for (const HtmlClickRect &candidate : g_html_click_rects) {
+        if (!PointInRect(mouse, candidate.rect)) continue;
+        if (!hit || candidate.rect.width * candidate.rect.height <= hit->rect.width * hit->rect.height) hit = &candidate;
+    }
+    if (hit) {
+        const int pane_id = hit->pane_id, buffer_id = hit->buffer_id;
+        const std::string href = hit->link_href;
+        DomNode *node = hit->node;
+        g_editor.FocusPaneById(pane_id);
+        const bool proceed = g_editor.ClickHtmlNode(buffer_id, node);  // may re-render: `hit` is stale after this
+        if (proceed && !href.empty()) NavigateHtmlLink(buffer_id, href);
+        return;
+    }
     for (const LinkHintRect &link : g_link_hint_rects) {
         if (link.is_pdf || !PointInRect(mouse, link.rect)) continue;
         g_editor.FocusPaneById(link.pane_id);
@@ -35048,6 +38491,11 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinOrgExport);
     lua->DoString(kBuiltinOrgRoam);
     lua->DoString(kBuiltinOrgDrill);
+    {
+        std::string learn;
+        for (const char *part : kBuiltinLearnParts) learn += part;
+        lua->DoString(learn);
+    }
     lua->DoString(kBuiltinOrgBib);
     lua->DoString(kBuiltinActivityBar);
     lua->DoString(kBuiltinAi);

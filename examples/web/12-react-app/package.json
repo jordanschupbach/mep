@@ -1,0 +1,17 @@
+{
+  "name": "mep-ladder-react-app",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Level 12 of mep's browser-capability ladder: a bundled React application.",
+  "scripts": {
+    "build": "esbuild src/main.jsx --bundle --minify --format=iife --target=es2019 --jsx=automatic --define:process.env.NODE_ENV='\"production\"' --outfile=dist/bundle.js",
+    "build:dev": "esbuild src/main.jsx --bundle --format=iife --target=es2019 --jsx=automatic --define:process.env.NODE_ENV='\"development\"' --sourcemap --outfile=dist/bundle.js"
+  },
+  "dependencies": {
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "esbuild": "0.23.1"
+  }
+}

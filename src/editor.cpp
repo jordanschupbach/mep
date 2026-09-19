@@ -1,4 +1,5 @@
 #include "editor.h"
+#include "http_client.h"
 #include "agent_rpc.h"
 #include "lua_env.h"
 #include "job.h"
@@ -15,6 +16,8 @@
 #include "workspace_git.h"
 
 #include <algorithm>
+#include <chrono>
+#include <thread>
 #include <cctype>
 #include <random>
 #include <cmath>
@@ -8069,6 +8072,113 @@ void Editor::AdvanceHtmlMedia(int buffer_id, double seconds) {
     AdvanceHtmlMediaClock(it->second.doc, seconds);
 }
 
+bool Editor::PumpHtmlScripts(int buffer_id) {
+    auto it = htmldocs_.find(buffer_id);
+    if (it == htmldocs_.end() || !it->second.js) return false;
+    return PumpScripts(*it->second.js);
+}
+
+bool Editor::SettleHtmlScripts(int buffer_id, int budget_ms) {
+    auto it = htmldocs_.find(buffer_id);
+    if (it == htmldocs_.end() || !it->second.js) return true;
+    JsRuntime &runtime = *it->second.js;
+    const auto start = std::chrono::steady_clock::now();
+    for (;;) {
+        PumpScripts(runtime);
+        const double wake = ScriptsNextWakeMs(runtime);
+        if (wake < 0) return true;
+        // A self-testing page announces it is still working in its title.
+        const bool running = it->second.doc.title.rfind("RUNNING", 0) == 0;
+        if (!running && wake > 1500) return true;
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count() > budget_ms) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<long>(std::min(wake, 16.0))));
+    }
+}
+
+const DomNode *Editor::HtmlFocusedField(int buffer_id) const {
+    auto it = htmldocs_.find(buffer_id);
+    return it == htmldocs_.end() ? nullptr : it->second.focused_field;
+}
+
+namespace {
+bool IsHtmlTextField(const DomNode *node) {
+    if (!node || node->type != DomNodeType::Element) return false;
+    if (node->tag == "textarea") return true;
+    if (node->tag != "input") return false;
+    auto type = node->attrs.find("type");
+    if (type == node->attrs.end()) return true;
+    static const char *const kTextTypes[] = {"", "text", "search", "email", "url", "tel", "password", "number"};
+    for (const char *text_type : kTextTypes) if (type->second == text_type) return true;
+    return false;
+}
+void ClearHtmlFocus(DomNode *node) {
+    if (!node) return;
+    node->interaction_focus = false;
+    for (const auto &child : node->children) ClearHtmlFocus(child.get());
+}
+}  // namespace
+
+bool Editor::ClickHtmlNode(int buffer_id, DomNode *node) {
+    auto it = htmldocs_.find(buffer_id);
+    if (it == htmldocs_.end() || !node) return true;
+    HtmlSession &sess = it->second;
+    // Leaving a text field commits it: `change` fires on blur, as in a browser.
+    if (sess.focused_field && sess.focused_field != node) {
+        DomNode *left = sess.focused_field;
+        sess.focused_field = nullptr;
+        left->interaction_focus = false;
+        if (sess.js) { ScriptsDispatchEvent(*sess.js, left, "change", true); ScriptsDispatchEvent(*sess.js, left, "blur", false); }
+    }
+    // A <label> forwards its click to the control it labels.
+    DomNode *target = node;
+    for (DomNode *cur = node; cur; cur = cur->parent) {
+        if (cur->tag != "label") continue;
+        std::function<DomNode *(DomNode *)> first_control = [&](DomNode *at) -> DomNode * {
+            for (const auto &child : at->children) {
+                if (child->tag == "input" || child->tag == "select" || child->tag == "textarea" || child->tag == "button") return child.get();
+                if (DomNode *found = first_control(child.get())) return found;
+            }
+            return nullptr;
+        };
+        if (DomNode *control = first_control(cur)) target = control;
+        break;
+    }
+    if (IsHtmlTextField(target) && !target->attrs.count("disabled") && !target->attrs.count("readonly")) {
+        ClearHtmlFocus(sess.doc.root.get());
+        target->interaction_focus = true;
+        sess.focused_field = target;
+        if (sess.js) ScriptsDispatchEvent(*sess.js, target, "focus", false);
+    }
+    if (target->tag == "select" && !target->attrs.count("disabled")) {
+        // No popup list yet: each click steps to the next option.
+        std::vector<DomNode *> options;
+        std::function<void(DomNode *)> collect = [&](DomNode *at) { for (const auto &child : at->children) { if (child->tag == "option") options.push_back(child.get()); else collect(child.get()); } };
+        collect(target);
+        if (!options.empty()) {
+            size_t current = 0;
+            for (size_t i = 0; i < options.size(); ++i) {
+                auto live = options[i]->attrs.find("\x01selected");
+                if (live != options[i]->attrs.end() ? live->second == "1" : options[i]->attrs.count("selected") != 0) current = i;
+            }
+            const size_t next = (current + 1) % options.size();
+            for (size_t i = 0; i < options.size(); ++i) options[i]->attrs["\x01selected"] = i == next ? "1" : "0";
+            auto value = options[next]->attrs.find("value");
+            std::string text;
+            for (const auto &child : options[next]->children) if (child->type == DomNodeType::Text) text += child->text;
+            target->form_value = value != options[next]->attrs.end() ? value->second : text;
+        }
+    }
+    if (!sess.js) {
+        // A static page still gets the control's own behaviour.
+        auto type = target->attrs.find("type");
+        if (target->tag == "input" && type != target->attrs.end() && type->second == "checkbox") target->form_checked = !target->form_checked;
+        return true;
+    }
+    const bool proceed = ScriptsClick(*sess.js, target);
+    if (target->tag == "select") { ScriptsDispatchEvent(*sess.js, target, "input", true); ScriptsDispatchEvent(*sess.js, target, "change", true); }
+    return proceed;
+}
+
 // Parses `bytes` into `sess`'s DOM and runs its scripts -- shared by
 // OpenHtmlInPlace's create-branch (a fresh HtmlSession) and
 // ReloadHtmlBuffer (an existing one, overwritten in place). Runs any
@@ -8080,21 +8190,50 @@ void Editor::PopulateHtmlSession(HtmlSession &sess, const std::string &origin, c
                                   const unsigned char *bytes, size_t len) {
     sess.origin = origin;
     sess.source = source;
+    sess.js.reset();  // the old page's runtime points into the tree being replaced
+    sess.focused_field = nullptr;
     sess.doc = HtmlDoc();
     ParseHtml(std::string(reinterpret_cast<const char *>(bytes), len), sess.doc);
-    // Local linked assets share the page's directory and are safe to load
-    // synchronously with the document. Remote subresources belong to
-    // Phase 14's curl-backed job queue, not to the page's script sandbox.
     const bool remote_origin = origin.rfind("http://", 0) == 0 || origin.rfind("https://", 0) == 0;
-    if (!remote_origin) LoadLocalHtmlResources(sess.doc, std::filesystem::path(source).parent_path().string());
+    // The DOM/JS layer reaches the network only through this hook (see
+    // HtmlUrlFetcher, html_doc.h): plain sockets for http://, a curl
+    // subprocess for https:// (http_client.h). Installed once, lazily.
+    static const bool fetcher_installed = [] {
+        SetHtmlUrlFetcher([](const std::string &url) {
+            HtmlFetchResult out;
+            HttpResponse response = HttpGet(url, 10000);
+            if (!response.ok) {
+                out.error = response.error;
+                return out;
+            }
+            out.status = response.status;
+            out.content_type = response.ContentType();
+            out.url = response.url;
+            out.body = std::move(response.body);
+            return out;
+        });
+        return true;
+    }();
+    (void)fetcher_installed;
+    if (remote_origin) {
+        // A page that came over http(s) loads its stylesheets and scripts
+        // from there too, resolved against its own URL, before its scripts
+        // run -- without this a served page is unstyled and inert.
+        sess.doc.document_url = origin;
+        LoadRemoteHtmlResources(sess.doc, origin);
+    } else {
+        sess.doc.document_url = "file://" + source;
+        LoadLocalHtmlResources(sess.doc, std::filesystem::path(source).parent_path().string());
+    }
     // Local <audio>/<video> sources are decoded before scripts so
     // `duration`/`readyState` are already meaningful to inline code.
     LoadHtmlMedia(sess.doc, std::filesystem::path(source).parent_path().string());
     // Info-level console messages surface as plain notifications; script errors are prefixed with the page's source.
-    RunScripts(
+    sess.js = StartScripts(
         sess.doc, [this](const std::string &msg) { Notify(msg, NotifyLevel::Info); },
         [this, source](const std::string &msg) { Notify(source + ": " + msg, NotifyLevel::Error); });
     sess.scroll_y = 0;
+    sess.omnibar_active = false;
 }
 
 // Dedup is by `source`, not by Buffer::filename the way OpenImageInPlace/
@@ -8135,11 +8274,12 @@ void Editor::OpenHtmlInPlace(const std::string &origin, const std::string &sourc
     }
     if (!IsHtmlBuffer(buffer_id)) {
         buffers_[static_cast<size_t>(buffer_id)].lines.clear();
-        HtmlSession sess;
+        // Built in its final home: the page's live script runtime keeps
+        // pointers into sess.doc, so the session must never be moved.
+        HtmlSession &sess = htmldocs_[buffer_id];
         sess.buffer_id = buffer_id;
         PopulateHtmlSession(sess, origin, source, bytes, len);
         sess.history.push_back({origin, source, std::string(reinterpret_cast<const char *>(bytes), len)});
-        htmldocs_[buffer_id] = std::move(sess);
     }
     CurPane().buffer_id = buffer_id;
     CurPane().cursor = {0, 0};
@@ -8182,6 +8322,21 @@ void Editor::NavigateHtmlBuffer(int buffer_id, const std::string &origin, const 
     sess.history_index = sess.history.size() - 1;
     buffers_[static_cast<size_t>(buffer_id)].filename = source;
     PopulateHtmlSession(sess, origin, source, bytes, len);
+}
+
+void Editor::BeginHtmlOmnibarEdit(int buffer_id) {
+    auto it = htmldocs_.find(buffer_id);
+    if (it == htmldocs_.end()) return;
+    HtmlSession &sess = it->second;
+    sess.omnibar_active = true;
+    sess.omnibar_text = sess.origin;
+    sess.omnibar_cursor = sess.omnibar_text.size();
+    sess.omnibar_select_all = true;
+}
+
+std::string Editor::HtmlTitle(int buffer_id) const {
+    auto it = htmldocs_.find(buffer_id);
+    return it == htmldocs_.end() ? std::string() : it->second.doc.title;
 }
 
 bool Editor::NavigateHtmlHistory(int buffer_id, int direction) {
@@ -8237,11 +8392,11 @@ void Editor::ConvertTextBufferToHtml(int buffer_id) {
         content += "\n";
     }
     const std::string &path = buffers_[static_cast<size_t>(buffer_id)].filename;
-    HtmlSession sess;
+    const std::string path_copy = path;  // `path` aliases the buffer; keep it stable across the session setup
+    HtmlSession &sess = htmldocs_[buffer_id];  // in place: see OpenHtmlInPlace
     sess.buffer_id = buffer_id;
-    PopulateHtmlSession(sess, path, path, reinterpret_cast<const unsigned char *>(content.data()), content.size());
-    sess.history.push_back({path, path, content});
-    htmldocs_[buffer_id] = std::move(sess);
+    PopulateHtmlSession(sess, path_copy, path_copy, reinterpret_cast<const unsigned char *>(content.data()), content.size());
+    sess.history.push_back({path_copy, path_copy, content});
     buffers_[static_cast<size_t>(buffer_id)].lines.clear();
     // See ConvertHtmlBufferToText's own comment on this bump.
     change_epoch_++;
@@ -8261,6 +8416,151 @@ void Editor::HandleHtmlInput() {
     constexpr float kScrollStep = 60.0f;
     bool ctrl = gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl);
     bool shift = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
+
+    // A focused form field owns the keyboard the way the omnibar does:
+    // characters edit its value and raise `input` (what frameworks listen
+    // to), Enter submits the enclosing form, Escape/Tab leave the field.
+    if (sess->focused_field && !sess->omnibar_active) {
+        DomNode *field = sess->focused_field;
+        auto press = [](gfx::Key key) { return gfx::IsKeyPressed(key) || gfx::IsKeyPressedRepeat(key); };
+        auto notify_input = [&]() { if (sess->js) ScriptsDispatchEvent(*sess->js, field, "input", true); };
+        auto leave = [&]() {
+            field->interaction_focus = false;
+            sess->focused_field = nullptr;
+            if (sess->js) { ScriptsDispatchEvent(*sess->js, field, "change", true); ScriptsDispatchEvent(*sess->js, field, "blur", false); }
+        };
+        if (gfx::IsKeyPressed(gfx::Key::Escape) || gfx::IsKeyPressed(gfx::Key::Tab)) {
+            while (gfx::GetCharPressed() > 0) {}
+            leave();
+            return;
+        }
+        if (press(gfx::Key::Backspace) && !field->form_value.empty()) {
+            size_t at = field->form_value.size() - 1;
+            while (at > 0 && (static_cast<unsigned char>(field->form_value[at]) & 0xC0) == 0x80) at--;
+            field->form_value.erase(at);
+            notify_input();
+        }
+        if (ctrl && gfx::IsKeyPressed(gfx::Key::U)) { field->form_value.clear(); notify_input(); }
+        if (ctrl && gfx::IsKeyPressed(gfx::Key::V)) { field->form_value += gfx::GetClipboardText(); notify_input(); }
+        if (gfx::IsKeyPressed(gfx::Key::Enter) || gfx::IsKeyPressed(gfx::Key::KpEnter)) {
+            while (gfx::GetCharPressed() > 0) {}
+            if (field->tag == "textarea") { field->form_value += '\n'; notify_input(); return; }
+            if (sess->js) {
+                ScriptsDispatchEvent(*sess->js, field, "change", true);
+                for (DomNode *form = field->parent; form; form = form->parent) {
+                    if (form->tag == "form") { ScriptsDispatchEvent(*sess->js, form, "submit", true); break; }
+                }
+            }
+            return;
+        }
+        bool typed = false;
+        for (int codepoint = gfx::GetCharPressed(); codepoint > 0; codepoint = gfx::GetCharPressed()) {
+            if (ctrl || codepoint < 0x20) continue;
+            const unsigned cp = static_cast<unsigned>(codepoint);
+            if (cp < 0x80) field->form_value += static_cast<char>(cp);
+            else if (cp < 0x800) { field->form_value += static_cast<char>(0xC0 | (cp >> 6)); field->form_value += static_cast<char>(0x80 | (cp & 0x3F)); }
+            else if (cp < 0x10000) { field->form_value += static_cast<char>(0xE0 | (cp >> 12)); field->form_value += static_cast<char>(0x80 | ((cp >> 6) & 0x3F)); field->form_value += static_cast<char>(0x80 | (cp & 0x3F)); }
+            else { field->form_value += static_cast<char>(0xF0 | (cp >> 18)); field->form_value += static_cast<char>(0x80 | ((cp >> 12) & 0x3F)); field->form_value += static_cast<char>(0x80 | ((cp >> 6) & 0x3F)); field->form_value += static_cast<char>(0x80 | (cp & 0x3F)); }
+            typed = true;
+        }
+        if (typed) notify_input();
+        return;
+    }
+
+    // Omnibar edit mode owns the keyboard: printable characters insert at
+    // the caret, the usual line-editing keys move/delete, Enter navigates
+    // (through the Lua :MepBrowseGo command, which normalizes the text --
+    // "localhost:8000" -> http://localhost:8000 -- and loads it into this
+    // pane), Escape abandons. Nothing below (scrolling, zoom, link hints)
+    // may see these keys, so this returns unconditionally.
+    if (sess->omnibar_active) {
+        std::string &text = sess->omnibar_text;
+        size_t &caret = sess->omnibar_cursor;
+        caret = std::min(caret, text.size());
+        auto press = [](gfx::Key key) { return gfx::IsKeyPressed(key) || gfx::IsKeyPressedRepeat(key); };
+        auto prev_boundary = [&](size_t at) {
+            if (at == 0) return at;
+            at--;
+            while (at > 0 && (static_cast<unsigned char>(text[at]) & 0xC0) == 0x80) at--;
+            return at;
+        };
+        auto next_boundary = [&](size_t at) {
+            if (at >= text.size()) return text.size();
+            at++;
+            while (at < text.size() && (static_cast<unsigned char>(text[at]) & 0xC0) == 0x80) at++;
+            return at;
+        };
+        if (gfx::IsKeyPressed(gfx::Key::Escape)) {
+            sess->omnibar_active = false;
+            while (gfx::GetCharPressed() > 0) {}
+            return;
+        }
+        if (gfx::IsKeyPressed(gfx::Key::Enter) || gfx::IsKeyPressed(gfx::Key::KpEnter)) {
+            const std::string target = text;
+            sess->omnibar_active = false;
+            while (gfx::GetCharPressed() > 0) {}
+            auto it = lua_commands_.find("MepBrowseGo");
+            if (!target.empty() && it != lua_commands_.end() && lua_) lua_->CallRefWithString(it->second, target);
+            return;  // `sess` may have been repopulated by the navigation
+        }
+        if (ctrl && gfx::IsKeyPressed(gfx::Key::V)) {
+            std::string pasted = gfx::GetClipboardText();
+            pasted.erase(std::remove_if(pasted.begin(), pasted.end(), [](char c) { return c == '\n' || c == '\r'; }), pasted.end());
+            if (sess->omnibar_select_all) { text.clear(); caret = 0; }
+            text.insert(caret, pasted);
+            caret += pasted.size();
+            sess->omnibar_select_all = false;
+        } else if (ctrl && gfx::IsKeyPressed(gfx::Key::U)) {
+            text.erase(0, caret);
+            caret = 0;
+            sess->omnibar_select_all = false;
+        } else if (ctrl && gfx::IsKeyPressed(gfx::Key::A)) {
+            sess->omnibar_select_all = true;
+            caret = text.size();
+        } else if (press(gfx::Key::Backspace)) {
+            if (sess->omnibar_select_all) { text.clear(); caret = 0; }
+            else if (caret > 0) { const size_t from = prev_boundary(caret); text.erase(from, caret - from); caret = from; }
+            sess->omnibar_select_all = false;
+        } else if (press(gfx::Key::Delete)) {
+            if (sess->omnibar_select_all) { text.clear(); caret = 0; }
+            else if (caret < text.size()) text.erase(caret, next_boundary(caret) - caret);
+            sess->omnibar_select_all = false;
+        } else if (press(gfx::Key::Left)) {
+            caret = sess->omnibar_select_all ? 0 : prev_boundary(caret);
+            sess->omnibar_select_all = false;
+        } else if (press(gfx::Key::Right)) {
+            caret = sess->omnibar_select_all ? text.size() : next_boundary(caret);
+            sess->omnibar_select_all = false;
+        } else if (gfx::IsKeyPressed(gfx::Key::Home)) {
+            caret = 0;
+            sess->omnibar_select_all = false;
+        } else if (gfx::IsKeyPressed(gfx::Key::End)) {
+            caret = text.size();
+            sess->omnibar_select_all = false;
+        }
+        if (!ctrl) {
+            for (int ch = gfx::GetCharPressed(); ch > 0; ch = gfx::GetCharPressed()) {
+                if (ch < 32) continue;
+                if (sess->omnibar_select_all) { text.clear(); caret = 0; sess->omnibar_select_all = false; }
+                std::string utf8;
+                if (ch < 0x80) utf8 += static_cast<char>(ch);
+                else if (ch < 0x800) { utf8 += static_cast<char>(0xC0 | (ch >> 6)); utf8 += static_cast<char>(0x80 | (ch & 0x3F)); }
+                else if (ch < 0x10000) { utf8 += static_cast<char>(0xE0 | (ch >> 12)); utf8 += static_cast<char>(0x80 | ((ch >> 6) & 0x3F)); utf8 += static_cast<char>(0x80 | (ch & 0x3F)); }
+                else { utf8 += static_cast<char>(0xF0 | (ch >> 18)); utf8 += static_cast<char>(0x80 | ((ch >> 12) & 0x3F)); utf8 += static_cast<char>(0x80 | ((ch >> 6) & 0x3F)); utf8 += static_cast<char>(0x80 | (ch & 0x3F)); }
+                text.insert(caret, utf8);
+                caret += utf8.size();
+            }
+        } else {
+            while (gfx::GetCharPressed() > 0) {}
+        }
+        return;
+    }
+    // Ctrl-L, the browser convention, joins 'o' as a way into the omnibar.
+    if (ctrl && gfx::IsKeyPressed(gfx::Key::L)) {
+        BeginHtmlOmnibarEdit(CurPane().buffer_id);
+        while (gfx::GetCharPressed() > 0) {}
+        return;
+    }
     // gfx::IsKeyPressed(Repeat) rather than draining gfx::GetKeyPressed(): GLFW only
     // enqueues the initial key-down into the gfx::GetKeyPressed() queue, so
     // holding a key down (OS auto-repeat) would otherwise scroll exactly
@@ -8352,8 +8652,9 @@ void Editor::HandleHtmlInput() {
                 auto it = lua_commands_.find("MepBrowseReload");
                 if (it != lua_commands_.end() && lua_) lua_->CallRefWithString(it->second, "");
             } else if (cp == 'o') {
-                auto it = lua_commands_.find("MepBrowseOpen");
-                if (it != lua_commands_.end() && lua_) lua_->CallRefWithString(it->second, "");
+                BeginHtmlOmnibarEdit(CurPane().buffer_id);
+                while (gfx::GetCharPressed() > 0) {}
+                return;
             } else if (cp == 'f') {
                 link_hint_request_ = true;
             }
@@ -18093,6 +18394,22 @@ std::vector<SidebarLine> Editor::FlattenSidebar(int id) const {
         for (int wi = 0; wi < static_cast<int>(sec.widgets.size()); wi++) {
             const SidebarWidget &w = sec.widgets[static_cast<size_t>(wi)];
             std::string icon_prefix = w.icon.empty() ? "  " : "  " + w.icon + " ";
+            if (!w.image.empty()) {
+                // An image block: image_rows lines, each pointing at the
+                // widget (so Enter/click on any of them fires its on_click)
+                // and carrying its offset for the renderer.
+                for (int k = 0; k < w.image_rows; k++) {
+                    SidebarLine line;
+                    line.kind = SidebarLine::Kind::Widget;
+                    line.section_index = si;
+                    line.widget_index = wi;
+                    line.image = w.image;
+                    line.image_index = k;
+                    line.image_rows = w.image_rows;
+                    out.push_back(line);
+                }
+                continue;
+            }
             if (!w.wrap) {
                 SidebarLine line;
                 line.kind = SidebarLine::Kind::Widget;
@@ -18101,6 +18418,14 @@ std::vector<SidebarLine> Editor::FlattenSidebar(int id) const {
                 line.text = icon_prefix + w.text;
                 line.hl = w.hl;
                 line.current = w.current;
+                if (!w.spans.empty()) {
+                    line.spans = w.spans;
+                    const int shift = static_cast<int>(icon_prefix.size());
+                    for (PickerHlSpan &sp : line.spans) {
+                        sp.col_start += shift;
+                        sp.col_end += shift;
+                    }
+                }
                 out.push_back(line);
                 continue;
             }

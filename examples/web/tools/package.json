@@ -1,0 +1,8 @@
+{
+  "name": "mep-ladder-tools",
+  "private": true,
+  "type": "module",
+  "description": "Reference run of the browser-capability ladder in a real browser (Chromium via puppeteer-core).",
+  "scripts": { "baseline": "node baseline.mjs" },
+  "dependencies": { "puppeteer-core": "23.4.1" }
+}

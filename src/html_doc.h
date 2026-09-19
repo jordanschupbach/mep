@@ -1,6 +1,7 @@
 #ifndef MEP_HTML_DOC_H
 #define MEP_HTML_DOC_H
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -277,12 +278,31 @@ struct HtmlDoc {
     // on exactly that: a later block seeing an earlier one's globals).
     // External <script src> is out of scope entirely (never populated).
     std::vector<std::string> scripts;
+    // Parallel to `scripts`: what kind each one is and where it came from.
+    // A classic script runs in document order in the shared global scope; a
+    // module (<script type="module">) runs after them, in its own scope, with
+    // `url` as the base its import specifiers resolve against. Shorter than
+    // `scripts` (or empty) means "all classic, at the document's URL".
+    struct ScriptInfo {
+        bool is_module = false;
+        std::string url;  // absolute URL of an external script; empty for an inline one
+    };
+    std::vector<ScriptInfo> script_info;
     // Nodes made through document.createElement/createTextNode remain here
     // until insertion. This gives detached DOM wrappers stable ownership.
     std::vector<std::unique_ptr<DomNode>> detached_nodes;
     // Base directory for local subresources, assigned by session/resource
     // loading. Empty means page-side fetch has no local origin to resolve.
     std::string resource_base_dir;
+    // The document's own absolute URL when it came over the network
+    // (http:// or https://) -- the base a relative href/src/fetch()
+    // resolves against and the origin page-side requests are confined to.
+    // Empty for a local file, where resource_base_dir plays that role.
+    std::string resource_base_url;
+    // What window.location reports: resource_base_url for a network
+    // document, a file:// URL for a local one. Set by the session before
+    // scripts run; pushState/replaceState then move it in-interpreter.
+    std::string document_url;
     // Interpreter-private, document-lifetime state for JS listener
     // registries.  Kept opaque here so the DOM model remains independent of
     // the JS runtime's Value/ObjectData implementation.
@@ -357,6 +377,35 @@ void LoadHtmlMedia(HtmlDoc &doc, const std::string &base_dir);
 // fetched here. Linked styles are folded into the DOM and scripts are
 // rebuilt in document order alongside inline scripts.
 void LoadLocalHtmlResources(HtmlDoc &doc, const std::string &base_dir);
+
+// One fetched network resource, as the page-facing layers need it.
+struct HtmlFetchResult {
+    int status = 0;            // HTTP status; 0 = transport failure
+    std::string content_type;  // media type without parameters, lower-cased
+    std::string url;           // final URL after redirects
+    std::string body;
+    std::string error;         // set when status == 0
+};
+
+// The process-wide hook this DOM/JS layer uses to reach the network,
+// installed by the host (the editor wires it to http_client.h's HttpGet;
+// the headless ladder test does the same). Keeping it a hook is what lets
+// html_doc/js_engine stay free of sockets and subprocesses -- with none
+// installed, network subresources and page-side fetch() of a URL simply
+// fail, exactly as they did before networking existed. Blocking by
+// contract: the caller has the bytes when it returns.
+using HtmlUrlFetcher = std::function<HtmlFetchResult(const std::string &url)>;
+void SetHtmlUrlFetcher(HtmlUrlFetcher fetcher);
+const HtmlUrlFetcher &GetHtmlUrlFetcher();
+
+// The network counterpart of LoadLocalHtmlResources, for a document whose
+// own URL is `base_url`: every `<link rel="stylesheet" href>` and
+// `<script src>` is resolved against it, fetched through the installed
+// HtmlUrlFetcher (only a 200 counts) and folded in the same way -- styles
+// into the DOM, scripts rebuilt in document order alongside inline ones.
+// Sets doc.resource_base_url. Cross-origin subresources are allowed, as in
+// a browser; it is page-side fetch()/XHR that stays same-origin.
+void LoadRemoteHtmlResources(HtmlDoc &doc, const std::string &base_url);
 
 // Advances every playing media element's clock by `seconds`; clamps at the
 // duration, honoring `loop`, and flips paused/ended at the end. The editor

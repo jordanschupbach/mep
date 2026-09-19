@@ -83,7 +83,7 @@ int main() {
     HtmlDoc document_roots;
     ParseHtml("<html><head><title>roots</title></head><body id=\"body\">body</body></html><script>document.title = document.documentElement.tagName + document.head.tagName + document.body.tagName;</script>", document_roots);
     RunScripts(document_roots, [](const std::string &) {}, [](const std::string &error) { std::fprintf(stderr, "%s\n", error.c_str()); std::abort(); });
-    CHECK(document_roots.title == "htmlheadbody");
+    CHECK(document_roots.title == "HTMLHEADBODY");  // tagName is uppercase for HTML elements
     HtmlDoc modern_operators;
     ParseHtml("<script>var missing = null?.name ?? 'fallback'; var zero = ({x: 0})?.x ?? 7; var called = null?.fn() ?? 'not-called'; document.title = missing + ':' + zero + ':' + called;</script>", modern_operators);
     RunScripts(modern_operators, [](const std::string &) {}, [](const std::string &error) { std::fprintf(stderr, "%s\n", error.c_str()); std::abort(); });
@@ -224,7 +224,7 @@ int main() {
     ParseHtml("<style>input:focus { color: red; }</style><input id=\"field\"><script>document.getElementById('field').focus(); document.title = document.activeElement.tagName;</script>", focus);
     RunScripts(focus, [](const std::string &) {}, [](const std::string &error) { std::fprintf(stderr, "%s\\n", error.c_str()); std::abort(); });
     DomNode *focused_field = FindById(focus.root.get(), "field");
-    CHECK(focused_field && focused_field->interaction_focus && focus.title == "input" && focused_field->style.has_color && focused_field->style.color_r == 0xdc && focused_field->style.color_g == 0x32);
+    CHECK(focused_field && focused_field->interaction_focus && focus.title == "INPUT" && focused_field->style.has_color && focused_field->style.color_r == 0xdc && focused_field->style.color_g == 0x32);
     HtmlDoc microtasks;
     ParseHtml("<script>var order = 'sync'; queueMicrotask(function() { order += ':first'; queueMicrotask(function() { document.title = order + ':second'; }); });</script>", microtasks);
     RunScripts(microtasks, [](const std::string &) {}, [](const std::string &error) { std::fprintf(stderr, "%s\\n", error.c_str()); std::abort(); });
@@ -269,7 +269,7 @@ int main() {
     HtmlDoc property_events;
     ParseHtml("<button id='button'></button><script>var button = document.getElementById('button'); button.onclick = function(event) { document.title = event.currentTarget.tagName; }; button.dispatchEvent(new MouseEvent('click'));</script>", property_events);
     RunScripts(property_events, [](const std::string &) {}, [](const std::string &error) { std::fprintf(stderr, "%s\\n", error.c_str()); std::abort(); });
-    CHECK(property_events.title == "button");
+    CHECK(property_events.title == "BUTTON");
     HtmlDoc shared_scripts;
     ParseHtml("<script>var shared = 'global'; function suffix() { return shared + '-scope'; }</script><script>document.title = suffix();</script>", shared_scripts);
     RunScripts(shared_scripts, [](const std::string &) {}, [](const std::string &error) { std::fprintf(stderr, "%s\n", error.c_str()); std::abort(); });
@@ -379,7 +379,7 @@ int main() {
     ParseHtml("<div id=\"host\"><b slot=\"title\">light</b></div><script>var host = document.getElementById('host'); var root = host.attachShadow({mode: 'open'}); root.innerHTML = '<slot name=\"title\">fallback</slot>'; document.title = host.shadowRoot.children[0].tagName;</script>", shadow);
     RunScripts(shadow, [](const std::string &) {}, [](const std::string &error) { std::fprintf(stderr, "%s\n", error.c_str()); std::abort(); });
     DomNode *host = FindById(shadow.root.get(), "host");
-    CHECK(host && host->shadow_root && host->shadow_root->children.size() == 1 && host->shadow_root->children[0]->tag == "slot" && shadow.title == "slot");
+    CHECK(host && host->shadow_root && host->shadow_root->children.size() == 1 && host->shadow_root->children[0]->tag == "slot" && shadow.title == "SLOT");
     HtmlDoc custom_elements;
     ParseHtml("<script>var definition = {}; customElements.define('x-card', definition); document.title = customElements.get('x-card') == definition;</script>", custom_elements);
     RunScripts(custom_elements, [](const std::string &) {}, [](const std::string &error) { std::fprintf(stderr, "%s\n", error.c_str()); std::abort(); });

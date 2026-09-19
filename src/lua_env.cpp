@@ -1,4 +1,7 @@
 #include "lua_env.h"
+#include "http_client.h"
+#include "http_server.h"
+#include "url_util.h"
 #include "doc_export.h"
 #include "editor.h"
 #include "job.h"
@@ -3221,6 +3224,8 @@ int l_image_get_theme(lua_State *L) {
     return 1;
 }
 
+std::vector<PickerHlSpan> ReadPreviewSpans(lua_State *L, int idx);  // defined below, with mep.sidebar_set_preview
+
 // mep.sidebar_create(title, position, size) -> id.
 /**
  * @brief Implements mep.sidebar_create(title, position, size, tab_group): creates a new sidebar panel.
@@ -3237,7 +3242,7 @@ int l_sidebar_create(lua_State *L) {
 }
 
 // mep.sidebar_set_sections(id, sections): sections is an array of
-// {id=, title=, collapsed=, widgets={{id=,text=,icon=,hl=,tooltip=,on_click=fn},...}}.
+// {id=, title=, collapsed=, widgets={{id=,text=,icon=,hl=,tooltip=,on_click=fn,spans={{col_start=,col_end=,hl=},...},image=path,image_rows=n},...}}.
 /**
  * @brief Implements mep.sidebar_set_sections(id, sections): replaces a sidebar's whole content with a new set of collapsible sections of widgets.
  * @param L Lua state; arg 1 is the sidebar id, arg 2 an array of section tables (each with id/title/collapsed/widgets).
@@ -3297,6 +3302,19 @@ int l_sidebar_set_sections(lua_State *L) {
                 lua_pop(L, 1);
                 w.trailing_on_click_ref = RefField(L, -1, "trailing_on_click");
                 w.on_click_ref = RefField(L, -1, "on_click");
+                // Optional `spans` (SidebarWidget::spans): mep.ts_captures'
+                // own {col_start=, col_end=, hl=} shape, 1-indexed and
+                // col_end-exclusive, read by the same helper the popout
+                // preview's spans go through (`row` is read too but unused).
+                lua_getfield(L, -1, "spans");
+                w.spans = ReadPreviewSpans(L, lua_gettop(L));
+                lua_pop(L, 1);
+                lua_getfield(L, -1, "image");
+                if (lua_isstring(L, -1)) w.image = lua_tostring(L, -1);
+                lua_pop(L, 1);
+                lua_getfield(L, -1, "image_rows");
+                if (lua_isinteger(L, -1)) w.image_rows = std::max(1, static_cast<int>(lua_tointeger(L, -1)));
+                lua_pop(L, 1);
                 lua_pop(L, 1);  // the widget table itself
                 sec.widgets.push_back(std::move(w));
             }
@@ -7664,6 +7682,193 @@ int l_filename(lua_State *L) {
     return 1;
 }
 
+// --- The browser pane's networking surface ---------------------------------
+// mep.http_get(url [, timeout_ms]) -> {ok=, status=, status_text=, url=,
+// content_type=, body=, error=}: a blocking GET (http_client.h). What
+// :Browse uses to load a page from a URL -- plain sockets for http://
+// (so a page served from localhost needs nothing but mep), curl for
+// https://. `ok` is "a response arrived", whatever its status.
+/**
+ * @brief Implements mep.http_get(url, timeout_ms): performs a blocking HTTP GET.
+ * @param L Lua state; arg 1 the URL, optional arg 2 the timeout in milliseconds (default 10000).
+ * @return Number of values pushed (1: the response table).
+ */
+int l_http_get(lua_State *L) {
+    const char *url = luaL_checkstring(L, 1);
+    const int timeout_ms = static_cast<int>(luaL_optinteger(L, 2, 10000));
+    HttpResponse response = HttpGet(url, timeout_ms);
+    lua_createtable(L, 0, 7);
+    lua_pushboolean(L, response.ok);
+    lua_setfield(L, -2, "ok");
+    lua_pushinteger(L, response.status);
+    lua_setfield(L, -2, "status");
+    lua_pushlstring(L, response.status_text.data(), response.status_text.size());
+    lua_setfield(L, -2, "status_text");
+    lua_pushlstring(L, response.url.data(), response.url.size());
+    lua_setfield(L, -2, "url");
+    const std::string content_type = response.ContentType();
+    lua_pushlstring(L, content_type.data(), content_type.size());
+    lua_setfield(L, -2, "content_type");
+    lua_pushlstring(L, response.body.data(), response.body.size());
+    lua_setfield(L, -2, "body");
+    lua_pushlstring(L, response.error.data(), response.error.size());
+    lua_setfield(L, -2, "error");
+    return 1;
+}
+
+namespace {
+// Every static server this process has started (mep.http_serve). Process
+// lifetime: a server keeps running until mep.http_stop or exit, whatever
+// buffer/workspace is active -- it serves files, it doesn't belong to a pane.
+std::vector<std::unique_ptr<HttpStaticServer>> &HttpServers() {
+    static std::vector<std::unique_ptr<HttpStaticServer>> servers;
+    return servers;
+}
+}  // namespace
+
+// mep.http_serve(dir [, port]) -> port | nil, err: serves `dir` on
+// 127.0.0.1 (http_server.h). Port 0/omitted lets the OS pick a free one;
+// asking again for a directory that is already being served returns that
+// server's port instead of starting a second one.
+/**
+ * @brief Implements mep.http_serve(dir, port): starts an in-process static file server on 127.0.0.1.
+ * @param L Lua state; arg 1 the directory, optional arg 2 the port (0 = any free port).
+ * @return Number of values pushed (1: the bound port; or 2: nil and an error message).
+ */
+int l_http_serve(lua_State *L) {
+    const char *dir = luaL_checkstring(L, 1);
+    const int port = static_cast<int>(luaL_optinteger(L, 2, 0));
+    std::error_code ec;
+    const std::string canonical = std::filesystem::weakly_canonical(std::filesystem::path(dir), ec).string();
+    for (const auto &server : HttpServers()) {
+        if (server->Running() && server->Root() == canonical && (port == 0 || port == server->Port())) {
+            lua_pushinteger(L, server->Port());
+            return 1;
+        }
+    }
+    auto server = std::make_unique<HttpStaticServer>();
+    std::string error;
+    if (!server->Start(dir, port, &error)) {
+        lua_pushnil(L);
+        lua_pushlstring(L, error.data(), error.size());
+        return 2;
+    }
+    lua_pushinteger(L, server->Port());
+    HttpServers().push_back(std::move(server));
+    return 1;
+}
+
+/**
+ * @brief Implements mep.http_stop(port): stops the server on `port`, or every server when omitted/0.
+ * @param L Lua state; optional arg 1 the port.
+ * @return Number of values pushed (1: how many servers were stopped).
+ */
+int l_http_stop(lua_State *L) {
+    const int port = static_cast<int>(luaL_optinteger(L, 1, 0));
+    auto &servers = HttpServers();
+    int stopped = 0;
+    for (auto it = servers.begin(); it != servers.end();) {
+        if (port == 0 || (*it)->Port() == port) {
+            (*it)->Stop();
+            it = servers.erase(it);
+            stopped++;
+        } else {
+            ++it;
+        }
+    }
+    lua_pushinteger(L, stopped);
+    return 1;
+}
+
+/**
+ * @brief Implements mep.http_servers(): lists the running static servers.
+ * @param L Lua state.
+ * @return Number of values pushed (1: array of {port=, root=, requests=}).
+ */
+int l_http_servers(lua_State *L) {
+    const auto &servers = HttpServers();
+    lua_createtable(L, static_cast<int>(servers.size()), 0);
+    int index = 1;
+    for (const auto &server : servers) {
+        if (!server->Running()) continue;
+        lua_createtable(L, 0, 3);
+        lua_pushinteger(L, server->Port());
+        lua_setfield(L, -2, "port");
+        lua_pushlstring(L, server->Root().data(), server->Root().size());
+        lua_setfield(L, -2, "root");
+        lua_pushinteger(L, static_cast<lua_Integer>(server->RequestCount()));
+        lua_setfield(L, -2, "requests");
+        lua_rawseti(L, -2, index++);
+    }
+    return 1;
+}
+
+// mep.url_normalize(text) -> what the omnibar would load for `text`
+// (urlutil::NormalizeOmnibarInput): "localhost:8000" -> "http://localhost:8000",
+// ":8080/x" -> "http://localhost:8080/x", "example.com" -> "https://example.com";
+// a URL with a scheme or a local path comes back unchanged.
+/**
+ * @brief Implements mep.url_normalize(text): normalizes omnibar input into a loadable target.
+ * @param L Lua state; arg 1 the typed text.
+ * @return Number of values pushed (1: the normalized target).
+ */
+int l_url_normalize(lua_State *L) {
+    const std::string out = urlutil::NormalizeOmnibarInput(luaL_checkstring(L, 1));
+    lua_pushlstring(L, out.data(), out.size());
+    return 1;
+}
+
+/**
+ * @brief Implements mep.url_resolve(base, ref): resolves a reference against an absolute URL.
+ * @param L Lua state; arg 1 the base URL, arg 2 the reference.
+ * @return Number of values pushed (1: the absolute URL).
+ */
+int l_url_resolve(lua_State *L) {
+    const std::string out = urlutil::ResolveUrl(luaL_checkstring(L, 1), luaL_checkstring(L, 2));
+    lua_pushlstring(L, out.data(), out.size());
+    return 1;
+}
+
+/**
+ * @brief Implements mep.html_settle([timeout_ms]): runs the focused html pane's page (timers, promises, animation frames) until it goes idle or the budget is spent.
+ * @param L Lua state; optional arg 1 is the wall-clock budget in ms (default 3000).
+ * @return 1 (pushes whether the page went idle within the budget).
+ */
+int l_html_settle(lua_State *L) {
+    Editor *e = GetEditor(L);
+    const int budget = static_cast<int>(luaL_optinteger(L, 1, 3000));
+    lua_pushboolean(L, e->SettleHtmlScripts(e->CurrentBufferId(), budget));
+    return 1;
+}
+
+/**
+ * @brief Implements mep.html_title(): the focused html pane's document title (what a page's script last set).
+ * @param L Lua state.
+ * @return Number of values pushed (1: the title, or nil when the focused buffer isn't an html pane).
+ */
+int l_html_title(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    const int buffer_id = ed->CurrentBufferId();
+    if (!ed->IsHtmlBuffer(buffer_id)) {
+        lua_pushnil(L);
+        return 1;
+    }
+    const std::string title = ed->HtmlTitle(buffer_id);
+    lua_pushlstring(L, title.data(), title.size());
+    return 1;
+}
+
+/**
+ * @brief Implements mep.html_omnibar_edit(): puts the focused html pane's omnibar into edit mode.
+ * @param L Lua state.
+ * @return Number of values pushed (0).
+ */
+int l_html_omnibar_edit(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    ed->BeginHtmlOmnibarEdit(ed->CurrentBufferId());
+    return 0;
+}
+
 // mep.html_open(path [, origin]): opens `path` (a real local .html file's
 // path -- see html_doc.h) as a rendered HtmlSession preview pane in the
 // current pane, parsing+running its scripts (Editor::OpenHtmlInPlace).
@@ -9349,6 +9554,15 @@ const luaL_Reg kMepFuncs[] = {
     {"diff_lines", l_diff_lines},
     {"filename", l_filename},
     {"html_open", l_html_open},
+    {"http_get", l_http_get},
+    {"http_serve", l_http_serve},
+    {"http_stop", l_http_stop},
+    {"http_servers", l_http_servers},
+    {"url_normalize", l_url_normalize},
+    {"url_resolve", l_url_resolve},
+    {"html_title", l_html_title},
+    {"html_settle", l_html_settle},
+    {"html_omnibar_edit", l_html_omnibar_edit},
     {"html_current_origin", l_html_current_origin},
     {"html_reload", l_html_reload},
     {"html_navigate", l_html_navigate},

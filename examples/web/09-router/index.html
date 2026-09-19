@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>09 - Client-side router</title>
+<link rel="stylesheet" href="../shared/style.css">
+<script src="../shared/harness.js"></script>
+</head>
+<body>
+<nav><a href="../index.html">All levels</a></nav>
+<h1>09 - Client-side router</h1>
+<p class="lead">A single page with three views switched by history.pushState; the links never reload the document.</p>
+<div class="card">
+  <p><a href="?view=home" data-link>Home</a> <a href="?view=about" data-link>About</a> <a href="?view=item&amp;id=7" data-link>Item 7</a></p>
+  <div id="view"></div>
+</div>
+<script>
+Harness.start('09-router', 8);
+var loads = (window.__loads = (window.__loads || 0) + 1);
+var views = {
+  home: function () { return '<h2>Home</h2><p>The home view.</p>'; },
+  about: function () { return '<h2>About</h2><p>The about view.</p>'; },
+  item: function (params) { return '<h2>Item</h2><p>Item number ' + params.get('id') + '.</p>'; }
+};
+function render() {
+  var params = new URLSearchParams(location.search);
+  var name = params.get('view') || 'home';
+  document.getElementById('view').innerHTML = (views[name] || views.home)(params);
+}
+function navigate(url) {
+  history.pushState({ url: url }, '', url);
+  render();
+}
+document.addEventListener('click', function (e) {
+  var a = e.target.closest ? e.target.closest('a[data-link]') : null;
+  if (!a) return;
+  e.preventDefault();
+  navigate(a.getAttribute('href'));
+});
+var popped = 0;
+window.addEventListener('popstate', function () { popped++; render(); });
+render();
+
+Harness.attempt('location parts', function () {
+  return typeof location.href === 'string' && location.pathname.indexOf('09-router') >= 0 && typeof location.origin === 'string';
+});
+Harness.attempt('URLSearchParams', function () {
+  var p = new URLSearchParams('?a=1&b=two');
+  return p.get('a') === '1' && p.get('b') === 'two' && p.has('a') && !p.has('c');
+});
+Harness.attempt('URL object', function () {
+  var u = new URL('?view=about', location.href);
+  return u.searchParams.get('view') === 'about' && u.pathname === location.pathname;
+});
+Harness.attempt('pushState changes location without reloading', function () {
+  var before = history.length;
+  navigate('?view=about');
+  return location.search === '?view=about' && document.querySelector('#view h2').textContent === 'About' && window.__loads === 1 && history.length >= before;
+});
+Harness.attempt('link click is intercepted (preventDefault)', function () {
+  var a = document.querySelector('a[href="?view=item&id=7"]');
+  var ev = new MouseEvent('click', { bubbles: true, cancelable: true });
+  a.dispatchEvent(ev);
+  return ev.defaultPrevented && location.search === '?view=item&id=7' && document.querySelector('#view p').textContent === 'Item number 7.';
+});
+Harness.attempt('history.state', function () {
+  return history.state && history.state.url === '?view=item&id=7';
+});
+Harness.attempt('replaceState', function () {
+  history.replaceState({ url: '?view=home' }, '', '?view=home');
+  render();
+  return location.search === '?view=home' && document.querySelector('#view h2').textContent === 'Home';
+});
+history.back();
+setTimeout(function () {
+  Harness.check('history.back() fires popstate and re-renders', popped >= 1 && location.search === '?view=about', 'popped=' + popped + ' search=' + location.search);
+  Harness.done();
+}, 100);
+</script>
+</body>
+</html>

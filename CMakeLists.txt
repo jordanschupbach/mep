@@ -428,6 +428,8 @@ add_library(mep_core STATIC
     src/sheet_xlsx.cpp
     src/sheet_ods.cpp
     src/js_engine.cpp
+    src/http_client.cpp
+    src/http_server.cpp
     src/editor.cpp
     src/spell.cpp
     src/workspace_git.cpp
@@ -657,6 +659,19 @@ add_dependencies(tests mep-html-doc-test)
 # Org outline helpers (org_doc.cpp is dependency-free): the Todo-panel
 # <-> TODO.org sync (OrgTodoListItems/OrgTodoListApply), same windowless
 # model as mep-html-doc-test above.
+# Networking for the browser pane (url_util.h, http_client, http_server) plus
+# the examples/web capability ladder run headlessly through html_doc/js_engine.
+# The unit checks gate; the ladder is a report (pass --strict to gate on it).
+add_executable(mep-web-ladder-test EXCLUDE_FROM_ALL src/web_ladder_test.cpp src/http_client.cpp src/http_server.cpp
+               src/html_doc.cpp src/js_engine.cpp src/regex.cpp src/svg_doc.cpp src/wav_doc.cpp)
+target_include_directories(mep-web-ladder-test PRIVATE src)
+target_compile_definitions(mep-web-ladder-test PRIVATE MEP_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_compile_options(mep-web-ladder-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-web-ladder-test PRIVATE ${MEP_SANITIZE_FLAGS})
+find_package(Threads REQUIRED)
+target_link_libraries(mep-web-ladder-test PRIVATE Threads::Threads)
+add_dependencies(tests mep-web-ladder-test)
+
 add_executable(mep-org-doc-test EXCLUDE_FROM_ALL src/org_doc_test.cpp src/org_doc.cpp)
 target_include_directories(mep-org-doc-test PRIVATE src)
 target_compile_options(mep-org-doc-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})

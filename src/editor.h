@@ -466,6 +466,23 @@ struct Fold {
     std::string provider = "manual";
 };
 
+// One highlight span over a picker's item display text or its preview
+// column (Treesitter-backed syntax highlighting for `/`'s buffer-search
+// picker, kBuiltinPickerSources' mep.buffer_search -- see
+// Editor::SetPickerPreview and DrawPickerOverlay, main.cpp). `row` is
+// unused (always 0) on a PickerItem's own single-line `display`; for the
+// preview column it indexes into SplitLines(PickerPreview()) the same
+// way Decoration::row indexes into buffer lines. col_start/col_end are
+// byte offsets, [col_start, col_end) exclusive, matching Decoration's
+// own convention. Also a SidebarWidget's per-row `spans` (below), where
+// `row` is likewise unused.
+struct PickerHlSpan {
+    int row = 0;
+    int col_start = 0;
+    int col_end = 0;
+    std::string hl_group;
+};
+
 // A generic reusable side/dock panel (NVIM_PARITY_PLAN.md Part I Phase 7):
 // sections of clickable/hoverable widgets. Scoped down from the plan's
 // full design -- rendered as a docked floating box (Phase 3's float
@@ -511,6 +528,23 @@ struct SidebarWidget {
     // behavior every other sidebar keeps unchanged.
     std::string trailing_icon;
     int trailing_on_click_ref = 0;
+    // Optional per-byte syntax coloring over `text` (PickerHlSpan; `row`
+    // unused), layered over `hl` the way a PickerItem's own spans are
+    // (mep.sidebar_set_sections' widget `spans` field). Ignored for a
+    // wrap=true widget: FlattenSidebar would have to re-split every span
+    // across the wrapped rows, and the one consumer (kBuiltinLearn's
+    // identify-the-code rows, Treesitter-highlighted through
+    // mep.ts_captures) never wraps code.
+    std::vector<PickerHlSpan> spans;
+    // Optional inline image (mep.sidebar_set_sections' widget `image` =
+    // an already-resolved path, `image_rows` = the row height it takes,
+    // default 8): FlattenSidebar expands the widget into image_rows
+    // SidebarLines and the renderers draw the texture (the same
+    // GetOrLoadOrgInlineImageTexture cache org inline images use) scaled
+    // into that box; `text` is ignored for an image widget. kBuiltinLearn's
+    // picture quiz is the first consumer.
+    std::string image;
+    int image_rows = 8;
 };
 struct SidebarSection {
     std::string id, title;
@@ -597,6 +631,16 @@ struct SidebarLine {
     std::string text;
     std::string hl;
     bool current = false;  // mirrors SidebarWidget::current; see its comment
+    // SidebarWidget::spans shifted past the icon prefix FlattenSidebar
+    // prepends to `text`, so they index this line's own bytes directly.
+    std::vector<PickerHlSpan> spans;
+    // Image rows (SidebarWidget::image): every line of the expansion
+    // carries the path plus its 0-based offset within the block and the
+    // block's total rows, so a renderer can position the texture from
+    // whichever of the rows is on screen.
+    std::string image;
+    int image_index = 0;
+    int image_rows = 0;
 };
 
 // A compact palette (mep.nvim's palettes.lua SPECS/FALLBACKS shape,
@@ -610,22 +654,6 @@ struct SidebarLine {
 struct Palette {
     std::string name;
     ThemeColor bg, fg, red, green, yellow, blue, purple, cyan, orange, border, accent;
-};
-
-// One highlight span over a picker's item display text or its preview
-// column (Treesitter-backed syntax highlighting for `/`'s buffer-search
-// picker, kBuiltinPickerSources' mep.buffer_search -- see
-// Editor::SetPickerPreview and DrawPickerOverlay, main.cpp). `row` is
-// unused (always 0) on a PickerItem's own single-line `display`; for the
-// preview column it indexes into SplitLines(PickerPreview()) the same
-// way Decoration::row indexes into buffer lines. col_start/col_end are
-// byte offsets, [col_start, col_end) exclusive, matching Decoration's
-// own convention.
-struct PickerHlSpan {
-    int row = 0;
-    int col_start = 0;
-    int col_end = 0;
-    std::string hl_group;
 };
 
 // One entry in a picker's item list (NVIM_PARITY_PLAN.md Part I Phase 8).
@@ -1739,6 +1767,8 @@ struct HtmlHistoryEntry {
     std::string bytes;
 };
 
+struct JsRuntime;  // js_engine.h
+
 struct HtmlSession {
     int buffer_id = 0;
     HtmlDoc doc;
@@ -1771,8 +1801,26 @@ struct HtmlSession {
     // page renders with its own CSS colors/images instead, same as a real
     // browser. Toggled by Ctrl-R (Editor::HandleHtmlInput).
     bool theme_colors = true;
+    // The omnibar: the URL strip DrawPane draws across the top of the
+    // pane. Idle, it shows `origin` (plus the page title); `o`, Ctrl-L or a
+    // click puts it in edit mode, where HandleHtmlInput routes typing into
+    // `omnibar_text` instead of scrolling the page -- Enter hands the text
+    // to the Lua :MepBrowseGo command (which normalizes "localhost:8000"
+    // into a URL and navigates this pane), Escape abandons the edit.
+    bool omnibar_active = false;
+    std::string omnibar_text;
+    size_t omnibar_cursor = 0;   // byte offset into omnibar_text
+    bool omnibar_select_all = false;  // a fresh edit starts with the URL selected: typing replaces it
     std::vector<HtmlHistoryEntry> history;
     size_t history_index = 0;
+    // The page's scripts, still running: pumped once a frame so timers,
+    // animation frames, promises and async functions make progress, and
+    // handed the pane's clicks and keystrokes as DOM events. Declared after
+    // `doc` on purpose -- it points into the tree and must be destroyed
+    // first (and reset before `doc` is re-parsed).
+    std::shared_ptr<JsRuntime> js;
+    // The form field that owns the keyboard (clicked into); null otherwise.
+    DomNode *focused_field = nullptr;
 };
 
 // One WYSIWYG office-document pane's state, keyed by buffer id the same
@@ -4095,6 +4143,22 @@ public:
     // Advances the page's <audio>/<video> clocks by `seconds` (DrawPane calls
     // this once per frame with GetFrameTime()); see AdvanceHtmlMediaClock.
     void AdvanceHtmlMedia(int buffer_id, double seconds);
+    /** @brief Runs the page's due timers/animation frames/promise jobs for one frame; true when script ran. */
+    bool PumpHtmlScripts(int buffer_id);
+    /**
+     * @brief Blocks while the page's scripts still have work queued: pumps until nothing is scheduled (or only slow background timers remain once the page has a verdict), or `budget_ms` elapses.
+     * @return True when the page went idle within the budget.
+     */
+    bool SettleHtmlScripts(int buffer_id, int budget_ms);
+    /**
+     * @brief A primary click on a laid-out DOM node in the html pane: dispatches the DOM click (and its default action), focuses a text field for typing.
+     * @param buffer_id The html buffer.
+     * @param node The innermost node under the pointer (from this frame's layout).
+     * @return False when a listener called preventDefault() -- the caller must then not follow an enclosing link.
+     */
+    bool ClickHtmlNode(int buffer_id, DomNode *node);
+    /** @brief The html buffer's keyboard-focused form field, or null. */
+    const DomNode *HtmlFocusedField(int buffer_id) const;
     // Parses `bytes` (already-read HTML text) and opens it as a new
     // HtmlSession in the *current* pane (mirrors OpenImageInPlace/
     // OpenPdfInPlace exactly: dedup-by-`source` reuses an existing session
@@ -4138,6 +4202,13 @@ public:
     // Restores the previous (negative) or next (positive) HTML history entry.
     // Returns false when there is no entry in that direction.
     bool NavigateHtmlHistory(int buffer_id, int direction);
+    /**
+     * @brief Puts an html pane's omnibar into edit mode, prefilled with its current URL (selected).
+     * @param buffer_id The html buffer whose omnibar to edit (no-op for any other buffer).
+     */
+    void BeginHtmlOmnibarEdit(int buffer_id);
+    /** @brief The html session's page title, or "" when `buffer_id` isn't an html buffer. */
+    std::string HtmlTitle(int buffer_id) const;
     // Re-decodes `bytes` INTO the existing PdfSession at `buffer_id` --
     // unlike OpenPdfInPlace, never creates a new buffer/session and never
     // does a dedup-by-filename lookup; a hard in-place overwrite (fresh

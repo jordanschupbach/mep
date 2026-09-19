@@ -263,6 +263,74 @@ unimplemented — Phase 1 (full CSS box model) is next up in Part I proper.
 
 ---
 
+## Addendum: the capability ladder, localhost serving, the omnibar (landed 2026-09-18)
+
+**The yardstick.** `examples/web/` is a ladder of twelve self-checking
+JavaScript sites, simplest first, ending in a bundled React application
+(its README has the table). Every level passes in real Chromium
+(`examples/web/tools/baseline.mjs`), so a level that fails in mep names a
+missing browser feature. Each page writes its verdict into `document.title`
+(`PASS 7/7 - ...` / `FAIL ...` / `RUNNING ...` when it needed an event
+loop that never ran). Two runners read it: `mep-web-ladder-test` (headless,
+through `html_doc`/`js_engine`; also `--eval file.js` to see what the
+engine says about one script) and `:WebLadderRun` in the editor. **Phase
+12's finish line is now concrete: levels 11 and 12 passing.**
+
+**What landed to make the ladder loadable at all** (this closes most of
+Phase 13 and the transport half of Phase 14):
+
+- `src/http_server.*` -- an in-process static file server (127.0.0.1 only,
+  GET/HEAD, root-confined, index/redirect/listing, `no-store`):
+  `:Serve [dir] [port]`, `:ServeStop`, `:Servers`, `mep.http_serve/stop/servers`.
+- `src/http_client.*` -- a blocking GET: plain sockets for `http://` (so a
+  page on localhost needs nothing but mep), a `curl` subprocess for
+  `https://` -- the "no in-house TLS" decision stands.
+- `src/url_util.h` -- parsing, RFC 3986 reference resolution, same-origin,
+  omnibar normalization (`localhost:8000`, `:8000/x`, `example.com`).
+- `HtmlUrlFetcher` (`html_doc.h`): the one hook through which the DOM/JS
+  layer reaches the network, so `html_doc`/`js_engine` stay socket-free.
+  `LoadRemoteHtmlResources` folds a network page's `<link>`/`<script src>`
+  in document order; `<img>` fetches into a temp cache; `fetch()`/XHR go
+  over HTTP same-origin with real status and content type; link clicks
+  resolve against the page URL; `window.location` starts at the document
+  URL, resolves relative `pushState` URLs and exposes
+  `protocol/host/hostname/port/origin`.
+- The omnibar: a persistent URL row on the html pane (back / forward /
+  reload, URL, page title). `o`, `Ctrl-L` or a click edits it, `Enter`
+  goes through `:MepBrowseGo`.
+
+**Score: 12 of 12** (2026-09-18, later the same day; it started at 1 of 12).
+`mep-web-ladder-test --strict` now gates on it, `:WebLadderRun` shows the
+same result inside the pane, and the React application (level 12) takes
+real mouse clicks and typing. What closing each gap took, since the same
+list is the map of what the engine now contains:
+
+| Gap the ladder named | What landed |
+|---|---|
+| Language basics the harness itself tripped on | Regex literals (with `/`-vs-division tracking in the lexer), hex/octal/binary/separators, `typeof undeclared`, `var` hoisting and function-scoped `var`, per-iteration `let` in `for`, `do...while`, comma/bitwise/shift/`**`/`in`/`instanceof`, loose `==`, every compound and logical assignment, `void`/`delete`/`~`, labels, ASI on `return`, `of` as an identifier |
+| "Ordinary modern code" parse errors | Getters/setters and async/generator/computed members in object literals and classes, class fields, optional catch binding, rest in patterns, destructuring in `for` heads; declarators run in source order (`let [a] = f(), b = a`) |
+| Constructor functions | `new F()` for plain functions with a lazily created `F.prototype`, object-return override, `arguments`, arrow functions with lexical `this`/`arguments`, strict-mode `this` (`"use strict"`, modules), member reads return the function itself (identity) with the receiver passed by the call |
+| Standard library | Insertion-ordered properties (`PropertyMap`), symbols as property keys, enumerability, the iteration protocol everywhere (spread, destructuring, `for...of`, `Array.from`), real `Array/String/Function/Object.prototype` objects so `X.prototype.m.call(...)` works, `Date`, `Number()`/`String()`/`Boolean()`, `Symbol.for`, `Object.*` statics, a native `JSON.stringify`, Error types with a prototype chain (engine errors surface as `Error` objects with `message`), named capture groups; `js_prelude.inc` adds typed arrays, `URL`/`URLSearchParams` and more in JavaScript itself |
+| Generators and `async`/`await` were eager fakes | Real suspension: each generator/async body runs as a `ucontext` coroutine on its own stack, so `yield` is an expression, `next(v)`/`throw`/`return` work, infinite generators are lazy, and `await` parks the function until the promise settles |
+| No persistent runtime | `StartScripts`/`PumpScripts` (`js_engine.h`): `HtmlSession` owns the runtime and pumps it every frame -- timers, `requestAnimationFrame`, promise jobs, `DOMContentLoaded`/`load`. A session is now built in place (the runtime points into its DOM) |
+| DOM surface | One wrapper per node (identity + expando properties, which React relies on), `click()` with default actions (checkbox, form submit), document/window as event targets, `dataset`, `closest`/`matches`, `getElementsBy*`, element `querySelector(All)`, `append`/`prepend`/`before`/`after`/`insertAdjacentHTML`, attribute reflection, uppercase `tagName`, `ownerDocument`, `<select>`/`<option>` state, `img.naturalWidth` (header sniffing), DOM interface objects (`HTMLInputElement.prototype.value` etc.) so `instanceof` and React's value setter work, `'oninput' in document` |
+| ES modules | `<script type="module">` (deferred, own scope), every `import`/`export` form, live bindings (imports alias the exporter's binding), namespace objects, `import.meta.url`, `import()`; non-JavaScript `<script type>` blocks are no longer executed |
+| Real input | Runs carry their DOM node; the pane hit-tests clicks to the innermost node and dispatches a DOM click (a cancelled click does not follow the link); a clicked text field takes the keyboard and raises `input`/`change`, Enter submits its form |
+
+Diagnostics that made the rest tractable, and stay: parse errors carry
+line:column and a source excerpt, runtime `TypeError`/`ReferenceError`
+messages name the expression and quote the source, `console.error` prints
+an Error's stack, `mep-web-ladder-test --level N` prints one level's
+console and errors.
+
+Known limits, not exercised by the ladder: strings are UTF-8 bytes (so
+`length`/indices count bytes, not UTF-16 units); the regex engine has no
+lookaround/backreferences/multiline flag; typed arrays coerce on
+construction but not on element assignment; no top-level `await` in
+modules; a suspended coroutine that is never resumed leaks its frame's
+references until the page closes; `<select>` has no popup (a click steps
+to the next option); no layout geometry (`getBoundingClientRect` is zeros).
+
 ## Addendum: local `<img>` + LaTeX math rendering (landed 2026-08-21)
 
 Implemented ahead of the phase order above because org-mode's default

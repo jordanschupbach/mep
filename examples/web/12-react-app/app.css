@@ -1,0 +1,6 @@
+.tabs button { border: 1px solid #9fb3c8; background: #ffffff; }
+.tabs button.active { background: #1d6fb8; color: #ffffff; }
+.theme-dark .card { background: #243b53; color: #f0f4f8; }
+.error { color: #b42318; }
+.inventory td, .inventory th { border: 1px solid #9fb3c8; padding: 3px 10px; }
+.inventory { border-collapse: collapse; }

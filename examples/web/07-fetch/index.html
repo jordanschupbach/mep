@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>07 - fetch and XMLHttpRequest</title>
+<link rel="stylesheet" href="../shared/style.css">
+<script src="../shared/harness.js"></script>
+</head>
+<body>
+<nav><a href="../index.html">All levels</a></nav>
+<h1>07 - fetch and XMLHttpRequest</h1>
+<p class="lead">Loads JSON and text from the server the page came from. This level needs http:// (it cannot pass from a file path).</p>
+<div class="card"><ul id="structures"></ul><pre id="notes"></pre></div>
+<script>
+Harness.start('07-fetch', 7);
+Harness.check('page is served over http', location.protocol === 'http:' || location.protocol === 'https:', location.protocol);
+fetch('data.json')
+  .then(function (res) {
+    Harness.check('fetch resolves with ok + status', res.ok === true && res.status === 200, 'status=' + res.status);
+    Harness.check('content-type header readable', String(res.headers.get('content-type')).indexOf('json') >= 0, res.headers.get('content-type'));
+    return res.json();
+  })
+  .then(function (data) {
+    var ul = document.getElementById('structures');
+    data.structures.forEach(function (s) {
+      var li = document.createElement('li');
+      li.textContent = s.name + ' - ' + s.access;
+      ul.appendChild(li);
+    });
+    Harness.check('res.json() parsed and rendered', ul.children.length === 3 && data.structures[0].name === 'Array');
+    return fetch('notes.txt');
+  })
+  .then(function (res) { return res.text(); })
+  .then(function (text) {
+    document.getElementById('notes').textContent = text;
+    Harness.check('res.text()', text.indexOf('plain text') >= 0);
+    return fetch('missing-file.json');
+  })
+  .then(function (res) {
+    Harness.check('a 404 resolves with ok=false', res.ok === false && res.status === 404, 'status=' + res.status);
+  })
+  .catch(function (e) { Harness.check('fetch chain', false, String(e)); })
+  .then(function () {
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', 'data.json');
+    xhr.onload = function () {
+      var ok = xhr.status === 200 && JSON.parse(xhr.responseText).structures.length === 3;
+      Harness.check('XMLHttpRequest GET', ok, 'status=' + xhr.status);
+      Harness.done();
+    };
+    xhr.onerror = function () { Harness.check('XMLHttpRequest GET', false, 'onerror'); Harness.done(); };
+    xhr.send();
+  });
+</script>
+</body>
+</html>

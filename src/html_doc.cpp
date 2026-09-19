@@ -1,4 +1,6 @@
 #include "html_doc.h"
+
+#include "url_util.h"
 #include "wav_doc.h"
 
 #include <algorithm>
@@ -355,12 +357,33 @@ bool IsHtmlPath(const std::string &path) {
                : (lower.size() >= 4 && lower.compare(lower.size() - 4, 4, ".htm") == 0);
 }
 
+namespace {
+std::string ScriptTypeOf(const std::unordered_map<std::string, std::string> &attrs) {
+    auto type = attrs.find("type");
+    std::string text = type == attrs.end() ? "" : type->second;
+    for (char &c : text) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    const size_t semicolon = text.find(';');
+    if (semicolon != std::string::npos) text.resize(semicolon);
+    while (!text.empty() && text.back() == ' ') text.pop_back();
+    return text;
+}
+// A <script> whose type names JavaScript (or nothing at all) runs; any other type is a data block.
+bool IsExecutableScriptType(const std::unordered_map<std::string, std::string> &attrs) {
+    const std::string type = ScriptTypeOf(attrs);
+    return type.empty() || type == "module" || type == "text/javascript" || type == "application/javascript" ||
+           type == "text/ecmascript" || type == "application/ecmascript";
+}
+bool IsModuleScriptType(const std::unordered_map<std::string, std::string> &attrs) { return ScriptTypeOf(attrs) == "module"; }
+}  // namespace
+
+
 void ParseHtml(const std::string &html, HtmlDoc &out) {
     out.root = std::make_unique<DomNode>();
     out.root->type = DomNodeType::Element;
     out.root->tag = "#document";
     out.title.clear();
     out.scripts.clear();
+    out.script_info.clear();
     out.detached_nodes.clear();
 
     std::vector<DomNode *> stack;
@@ -440,12 +463,21 @@ void ParseHtml(const std::string &html, HtmlDoc &out) {
         if (IsRawTextTag(tr.tag)) {
             size_t close_start = FindCloseTagCI(html, tr.tag, i);
             std::string raw_text = (close_start == std::string::npos) ? html.substr(i) : html.substr(i, close_start - i);
-            if (tr.tag == "script") {
+            if (tr.tag == "script" && IsExecutableScriptType(raw->attrs)) {
                 out.scripts.push_back(raw_text);
+                out.script_info.push_back({IsModuleScriptType(raw->attrs), ""});
                 // Keep the source on the element as well as in the legacy
                 // execution list.  Session-level resource loading rebuilds
                 // that list in DOM order once local `src` files are folded
                 // in, so inline and external scripts interleave correctly.
+                auto tnode = std::make_unique<DomNode>();
+                tnode->type = DomNodeType::Text;
+                tnode->text = raw_text;
+                tnode->parent = raw;
+                raw->children.push_back(std::move(tnode));
+            } else if (tr.tag == "script") {
+                // A data block (type="application/json", a template, ...):
+                // never executed, but its text stays readable from the DOM.
                 auto tnode = std::make_unique<DomNode>();
                 tnode->type = DomNodeType::Text;
                 tnode->text = raw_text;
@@ -492,10 +524,38 @@ void ParseHtml(const std::string &html, HtmlDoc &out) {
     ComputeStyles(out);
 }
 
+namespace {
+HtmlUrlFetcher &UrlFetcherSlot() {
+    static HtmlUrlFetcher fetcher;
+    return fetcher;
+}
+
+// Shared by the local and network loaders: folds every stylesheet
+// `read_resource` can produce into the DOM as a <style> node, then
+// rebuilds doc.scripts in document order (external bodies via
+// `read_resource`, inline ones from their text children).
+void FoldLinkedResources(HtmlDoc &doc, const std::function<bool(const std::string &, std::string &)> &read_resource);
+}  // namespace
+
+void SetHtmlUrlFetcher(HtmlUrlFetcher fetcher) { UrlFetcherSlot() = std::move(fetcher); }
+const HtmlUrlFetcher &GetHtmlUrlFetcher() { return UrlFetcherSlot(); }
+
+void LoadRemoteHtmlResources(HtmlDoc &doc, const std::string &base_url) {
+    doc.resource_base_url = base_url;
+    FoldLinkedResources(doc, [&](const std::string &href, std::string &contents) {
+        const HtmlUrlFetcher &fetch = GetHtmlUrlFetcher();
+        if (href.empty() || !fetch) return false;
+        HtmlFetchResult result = fetch(urlutil::ResolveUrl(base_url, href));
+        if (result.status != 200) return false;
+        contents = std::move(result.body);
+        return true;
+    });
+}
+
 void LoadLocalHtmlResources(HtmlDoc &doc, const std::string &base_dir) {
     doc.resource_base_dir = base_dir;
     const std::filesystem::path base(base_dir);
-    auto read_resource = [&](const std::string &href, std::string &contents) {
+    FoldLinkedResources(doc, [&](const std::string &href, std::string &contents) {
         if (href.empty() || href.find("://") != std::string::npos) return false;
         std::filesystem::path resolved(href);
         if (resolved.is_relative()) resolved = base / resolved;
@@ -503,7 +563,11 @@ void LoadLocalHtmlResources(HtmlDoc &doc, const std::string &base_dir) {
         if (!input) return false;
         contents.assign(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
         return true;
-    };
+    });
+}
+
+namespace {
+void FoldLinkedResources(HtmlDoc &doc, const std::function<bool(const std::string &, std::string &)> &read_resource) {
     std::function<void(DomNode *)> load_styles = [&](DomNode *node) {
         if (!node) return;
         if (node->type == DomNodeType::Element && node->tag == "link") {
@@ -521,20 +585,28 @@ void LoadLocalHtmlResources(HtmlDoc &doc, const std::string &base_dir) {
     };
     load_styles(doc.root.get());
     doc.scripts.clear();
+    doc.script_info.clear();
     std::function<void(const DomNode *)> collect_scripts = [&](const DomNode *node) {
         if (!node) return;
-        if (node->type == DomNodeType::Element && node->tag == "script") {
+        if (node->type == DomNodeType::Element && node->tag == "script" && IsExecutableScriptType(node->attrs)) {
             std::string code;
+            HtmlDoc::ScriptInfo info;
+            info.is_module = IsModuleScriptType(node->attrs);
             auto src = node->attrs.find("src");
-            if (src != node->attrs.end()) read_resource(src->second, code);
+            if (src != node->attrs.end()) {
+                read_resource(src->second, code);
+                if (!doc.resource_base_url.empty()) info.url = urlutil::ResolveUrl(doc.resource_base_url, src->second);
+                else if (!doc.resource_base_dir.empty()) info.url = "file://" + (std::filesystem::path(doc.resource_base_dir) / src->second).lexically_normal().string();
+            }
             else for (const auto &child : node->children) if (child->type == DomNodeType::Text) code += child->text;
-            if (!code.empty()) doc.scripts.push_back(std::move(code));
+            if (!code.empty()) { doc.scripts.push_back(std::move(code)); doc.script_info.push_back(std::move(info)); }
         }
         for (const auto &child : node->children) collect_scripts(child.get());
     };
     collect_scripts(doc.root.get());
     ComputeStyles(doc);
 }
+}  // namespace
 
 namespace {
 

@@ -1,3 +1,6 @@
+* TODO add theme
+investigate what themes there are and add one that seems missing
+
 * TODO todo management
 
 * TODO language modes

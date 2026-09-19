@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>06 - Modern JavaScript</title>
+<link rel="stylesheet" href="../shared/style.css">
+<script src="../shared/harness.js"></script>
+</head>
+<body>
+<nav><a href="../index.html">All levels</a></nav>
+<h1>06 - Modern JavaScript</h1>
+<p class="lead">One check per language feature, each in its own &lt;script&gt; element: a syntax the engine cannot parse costs that one check, and the last script reports every feature whose script never ran.</p>
+<script>
+var EXPECTED = ["let/const block scoping", "arrow functions + lexical this", "template literals", "destructuring", "spread / rest", "default parameters", "classes + inheritance + static + getter", "class fields + private", "for...of + iterators", "generators", "Map / Set / WeakMap", "Symbol", "optional chaining + nullish", "Promise chain", "async function syntax", "Array methods", "Object statics", "String methods", "JSON", "RegExp", "getters / setters / defineProperty", "closures + IIFE", "try / catch / finally + custom Error", "Proxy / Reflect", "typed arrays", "Date + Math + Number", "label + switch + do/while + comma", "globalThis + typeof window"];
+var ran = {};
+Harness.start('06-language', EXPECTED.length + 2);
+function feature(name, fn) {
+  ran[name] = true;
+  Harness.attempt(name, function () { return fn() === true; });
+}
+</script>
+<script>
+feature("let/const block scoping", function () {
+  let a = 1; { let a = 2; } const b = 3; return a === 1 && b === 3;
+});
+</script>
+<script>
+feature("arrow functions + lexical this", function () {
+  var o = {v: 7, f: function () { return [1].map(x => x + this.v)[0]; }}; return o.f() === 8;
+});
+</script>
+<script>
+feature("template literals", function () {
+  var n = 3; return `n=${n + 1}` === 'n=4';
+});
+</script>
+<script>
+feature("destructuring", function () {
+  var {a, b: [c, d = 9], ...rest} = {a: 1, b: [2], x: 5, y: 6}; return a === 1 && c === 2 && d === 9 && rest.y === 6;
+});
+</script>
+<script>
+feature("spread / rest", function () {
+  function f(first, ...others) { return first + others.length; } var arr = [1, 2, 3]; return f(...arr) === 3 && [...arr, 4].length === 4 && Object.keys({...{p: 1}, q: 2}).length === 2;
+});
+</script>
+<script>
+feature("default parameters", function () {
+  function f(a, b = a * 2) { return a + b; } return f(2) === 6;
+});
+</script>
+<script>
+feature("classes + inheritance + static + getter", function () {
+  class A { constructor(n) { this.n = n; } get double() { return this.n * 2; } static make() { return new this(4); } hi() { return 'A'; } } class B extends A { hi() { return super.hi() + 'B'; } } var b = B.make(); return b instanceof A && b.double === 8 && b.hi() === 'AB';
+});
+</script>
+<script>
+feature("class fields + private", function () {
+  class C { x = 1; #y = 2; sum() { return this.x + this.#y; } } return new C().sum() === 3;
+});
+</script>
+<script>
+feature("for...of + iterators", function () {
+  var s = 0; for (var v of [1, 2, 3]) s += v; var it = [7][Symbol.iterator](); return s === 6 && it.next().value === 7;
+});
+</script>
+<script>
+feature("generators", function () {
+  function* g() { var x = yield 1; yield x * 2; } var it = g(); it.next(); return it.next(5).value === 10;
+});
+</script>
+<script>
+feature("Map / Set / WeakMap", function () {
+  var m = new Map([[1, 'a']]); m.set('k', 2); var s = new Set([1, 1, 2]); var k = {}; var w = new WeakMap(); w.set(k, 9); return m.get('k') === 2 && m.size === 2 && s.size === 2 && s.has(2) && w.get(k) === 9;
+});
+</script>
+<script>
+feature("Symbol", function () {
+  var sym = Symbol('d'); var o = {[sym]: 1}; return o[sym] === 1 && typeof sym === 'symbol' && Object.keys(o).length === 0;
+});
+</script>
+<script>
+feature("optional chaining + nullish", function () {
+  var o = {a: {b: 0}}; return o?.a?.b === 0 && o?.x?.y === undefined && (o.a.b ?? 5) === 0 && (o.z ?? 5) === 5;
+});
+</script>
+<script>
+feature("Promise chain", function () {
+  return typeof Promise === 'function' && typeof Promise.all === 'function' && typeof Promise.resolve(1).then === 'function';
+});
+</script>
+<script>
+feature("async function syntax", function () {
+  async function f() { var v = await Promise.resolve(2); return v * 2; } return typeof f().then === 'function';
+});
+</script>
+<script>
+feature("Array methods", function () {
+  var a = [3, 1, 2]; return a.slice().sort().join('') === '123' && a.includes(2) && a.find(x => x > 2) === 3 && a.findIndex(x => x === 1) === 1 && a.flatMap(x => [x, x]).length === 6 && Array.from({length: 2}, (_, i) => i).join() === '0,1' && a.reduce((p, c) => p + c, 0) === 6 && a.some(x => x > 2) && a.every(x => x > 0);
+});
+</script>
+<script>
+feature("Object statics", function () {
+  var o = {a: 1, b: 2}; return Object.entries(o).length === 2 && Object.values(o).join() === '1,2' && Object.assign({}, o, {c: 3}).c === 3 && Object.fromEntries([['k', 1]]).k === 1 && Object.freeze && Object.getPrototypeOf([]) === Array.prototype;
+});
+</script>
+<script>
+feature("String methods", function () {
+  return 'abc'.padStart(5, '-') === '--abc' && 'a-b'.split('-').length === 2 && ' x '.trim() === 'x' && 'abc'.startsWith('ab') && 'abc'.endsWith('bc') && 'ab'.repeat(2) === 'abab' && 'aXbX'.replaceAll('X', '') === 'ab';
+});
+</script>
+<script>
+feature("JSON", function () {
+  var s = JSON.stringify({a: [1, {b: null}], c: 'x'}); return JSON.parse(s).a[1].b === null && s.indexOf('"c":"x"') > 0;
+});
+</script>
+<script>
+feature("RegExp", function () {
+  var m = /(\d+)-(?<tail>\w+)/.exec('id 42-ok'); return m[1] === '42' && m.groups.tail === 'ok' && 'a1b2'.replace(/\d/g, '#') === 'a#b#' && /^x/i.test('Xy');
+});
+</script>
+<script>
+feature("getters / setters / defineProperty", function () {
+  var o = {_v: 1, get v() { return this._v; }, set v(n) { this._v = n * 2; }}; o.v = 4; var p = {}; Object.defineProperty(p, 'q', {value: 5, enumerable: false}); return o.v === 8 && p.q === 5 && Object.keys(p).length === 0;
+});
+</script>
+<script>
+feature("closures + IIFE", function () {
+  var c = (function () { var n = 0; return function () { return ++n; }; })(); c(); return c() === 2;
+});
+</script>
+<script>
+feature("try / catch / finally + custom Error", function () {
+  class MyErr extends Error { constructor(m) { super(m); this.name = 'MyErr'; } } var f = 0; try { throw new MyErr('boom'); } catch (e) { f = (e instanceof MyErr && e instanceof Error && e.message === 'boom') ? 1 : 0; } finally { f += 1; } return f === 2;
+});
+</script>
+<script>
+feature("Proxy / Reflect", function () {
+  var p = new Proxy({}, {get: function (t, k) { return k === 'x' ? 42 : Reflect.get(t, k); }}); return p.x === 42 && p.y === undefined && Reflect.ownKeys({a: 1}).length === 1;
+});
+</script>
+<script>
+feature("typed arrays", function () {
+  var u = new Uint8Array([1, 2, 300]); return u.length === 3 && u[2] === 44 && new Float64Array(2).length === 2;
+});
+</script>
+<script>
+feature("Date + Math + Number", function () {
+  var d = new Date(2026, 0, 15); return d.getFullYear() === 2026 && d.getMonth() === 0 && Math.max(1, 5) === 5 && Math.round(2.5) === 3 && Number.isInteger(4) && (12.345).toFixed(1) === '12.3' && parseInt('42px', 10) === 42;
+});
+</script>
+<script>
+feature("label + switch + do/while + comma", function () {
+  var n = 0; outer: for (var i = 0; i < 3; i++) { for (var j = 0; j < 3; j++) { if (j === 1) continue outer; n++; } } var s; switch (n) { case 3: s = 'three'; break; default: s = 'other'; } do { n--; } while (n > 0); return s === 'three' && n === 0;
+});
+</script>
+<script>
+feature("globalThis + typeof window", function () {
+  return typeof globalThis === 'object' && globalThis === window && typeof window.document === 'object';
+});
+</script>
+<script>
+for (var i = 0; i < EXPECTED.length; i++) {
+  if (!ran[EXPECTED[i]]) Harness.check(EXPECTED[i], false, 'the script did not parse or run');
+}
+</script>
+<script>
+// Two checks that need the event loop: a resolved await and Promise.all.
+var asyncDone = false;
+(async function () {
+  var a = await Promise.all([Promise.resolve(1), new Promise(function (r) { setTimeout(function () { r(2); }, 10); })]);
+  return a[0] + a[1];
+})()
+  .then(function (v) { Harness.check('await Promise.all resolves', v === 3, 'v=' + v); })
+  .catch(function (e) { Harness.check('await Promise.all resolves', false, '' + e); })
+  .then(function () { return Promise.reject(new Error('nope')).catch(function (e) { return e.message; }); })
+  .then(function (m) { asyncDone = true; Harness.check('rejection reaches catch', m === 'nope'); Harness.done(); });
+</script>
+<script>
+// If the async script above failed to parse, nothing will ever call done().
+setTimeout(function () {
+  if (!asyncDone) { Harness.check('await Promise.all resolves', false, 'the async script did not parse or finish'); Harness.done(); }
+}, 1500);
+</script>
+</body>
+</html>

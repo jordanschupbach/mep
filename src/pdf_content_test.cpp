@@ -235,6 +235,27 @@ void TestStrokeLine() {
     CHECK(off_line.r > 240);
 }
 
+void TestDashPattern() {
+    // [4 4] 0 d: on for x 0-4, off 4-8, on 8-12, ...; a phase of 4 shifts
+    // it by one dash so the gaps and dashes trade places.
+    for (int phase : {0, 4}) {
+        Canvas canvas = Canvas::MakeWhite(40, 40);
+        Render("4 w [4 4] " + std::to_string(phase) + " d 0 0 0 RG 0 20 m 40 20 l S", canvas, IdentityPageMatrix(40, 40));
+        const bool first_on = phase == 0;
+        CHECK((PixelAt(canvas, 2, 20).r < 30) == first_on);
+        CHECK((PixelAt(canvas, 6, 20).r < 30) == !first_on);
+        CHECK((PixelAt(canvas, 10, 20).r < 30) == first_on);
+        CHECK((PixelAt(canvas, 14, 20).r < 30) == !first_on);
+    }
+    // An odd-length array repeats ([4] = 4 on, 4 off), and [] 0 d is solid again.
+    Canvas odd = Canvas::MakeWhite(40, 40);
+    Render("4 w [4] 0 d 0 0 0 RG 0 20 m 40 20 l S", odd, IdentityPageMatrix(40, 40));
+    CHECK(PixelAt(odd, 2, 20).r < 30 && PixelAt(odd, 6, 20).r > 240);
+    Canvas solid = Canvas::MakeWhite(40, 40);
+    Render("4 w [4 4] 0 d [] 0 d 0 0 0 RG 0 20 m 40 20 l S", solid, IdentityPageMatrix(40, 40));
+    CHECK(PixelAt(solid, 6, 20).r < 30);
+}
+
 void TestExtGStateAlphaBlends() {
     Canvas canvas = Canvas::MakeWhite(10, 10);
     // 50% alpha black over white should land near mid-gray. No real
@@ -486,6 +507,37 @@ void TestInlineImageUnfiltered() {
     Render(content, canvas, IdentityPageMatrix(10, 10));
     RGB p = PixelAt(canvas, 5, 5);
     CHECK(p.r < 30 && p.g > 200 && p.b < 30);
+}
+
+// A Separation-space JPEG's samples are ink amounts (1 = full ink), so a
+// sample of 255 must draw dark -- the DCT path used to pass the decoded
+// gray straight through, rendering such figures as negatives. /Decode
+// [1 0] flips it back.
+Canvas RenderGrayDct(const std::string &cs, const std::string &extra) {
+    constexpr int W = 8, H = 8;
+    std::vector<unsigned char> pixels(static_cast<size_t>(W * H), 255);
+    std::string jpeg_bytes = jpeg::Encode(W, H, 1, pixels.data(), W, 95);
+    CHECK(!jpeg_bytes.empty());
+    std::string doc = BuildDoc(
+        {
+            {1, "<< /Type /Catalog /Pages 2 0 R >>"},
+            {2, "<< /Type /Pages /Kids [3 0 R] /MediaBox [0 0 20 20] >>"},
+            {3, "<< /Type /Page /Parent 2 0 R /Contents 5 0 R >>"},
+            {4, "<< /Type /XObject /Subtype /Image /Width 8 /Height 8 /BitsPerComponent 8 /ColorSpace " + cs + extra +
+                    " /Filter /DCTDecode /Length " + std::to_string(jpeg_bytes.size()) + " >>\nstream\n" + jpeg_bytes +
+                    "\nendstream"},
+            {5, "<< /Length 20 >>\nstream\n20 0 0 20 0 0 cm /Im1 Do\nendstream"},
+            {6, "<< /FunctionType 2 /Domain [0 1] /C0 [1] /C1 [0] /N 1 >>"},
+        },
+        1);
+    return RenderDoc(doc, MakeXObjectResources(4, "Im1"), "20 0 0 20 0 0 cm /Im1 Do", 20, 20);
+}
+
+void TestDctSeparationImageIsInkAmount() {
+    CHECK(PixelAt(RenderGrayDct("/DeviceGray", ""), 10, 10).r > 230);
+    CHECK(PixelAt(RenderGrayDct("[/Separation /Black /DeviceGray 6 0 R]", ""), 10, 10).r < 25);
+    CHECK(PixelAt(RenderGrayDct("/DeviceGray", " /Decode [1 0]"), 10, 10).r < 25);
+    CHECK(PixelAt(RenderGrayDct("[/Separation /Black /DeviceGray 6 0 R]", " /Decode [1 0]"), 10, 10).r > 230);
 }
 
 void TestDctImageXObject() {
@@ -1157,6 +1209,7 @@ int main() {
     TestCmykConversion();
     TestClipRestrictsFill();
     TestStrokeLine();
+    TestDashPattern();
     TestExtGStateAlphaBlends();
     TestExtGStateAlphaViaResources();
     TestIndexedColorSpace();
@@ -1168,6 +1221,7 @@ int main() {
     TestSMaskAlpha();
     TestInlineImageUnfiltered();
     TestDctImageXObject();
+    TestDctSeparationImageIsInkAmount();
     TestBasicTextShowing();
     TestRotatedTextRendersRotated();
     TestType3GlyphProcedureDraws();

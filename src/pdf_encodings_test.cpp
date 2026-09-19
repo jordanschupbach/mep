@@ -227,7 +227,15 @@ void TestCffStandardStringsBasics() {
     CHECK(std::string(pdfenc::CffStandardString(1)) == "space");
     CHECK(pdfenc::CffStandardString(-1) == nullptr);
     CHECK(pdfenc::CffStandardString(pdfenc::CffStandardStringCount()) == nullptr);
-    CHECK(pdfenc::CffStandardStringCount() > 200);  // sanity: the real table is large
+    // CFF spec Appendix A: exactly 391 standard strings (SIDs 0-390) -- one
+    // stray entry shifts every custom (font String INDEX) glyph name, e.g.
+    // f_i/uni2032.var resolving to the wrong glyph.
+    CHECK(pdfenc::CffStandardStringCount() == 391);
+    CHECK(std::string(pdfenc::CffStandardString(266)) == "ff");
+    CHECK(std::string(pdfenc::CffStandardString(267)) == "ffi");
+    CHECK(std::string(pdfenc::CffStandardString(268)) == "ffl");
+    CHECK(std::string(pdfenc::CffStandardString(378)) == "Ydieresissmall");
+    CHECK(std::string(pdfenc::CffStandardString(390)) == "Semibold");
 }
 
 void TestGlyphNameToUnicodeEscapes() {

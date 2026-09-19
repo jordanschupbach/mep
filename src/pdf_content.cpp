@@ -277,6 +277,10 @@ using ClipMask = std::shared_ptr<const std::vector<unsigned char>>;  // canvas-s
 struct GState {
     Mat2D ctm;
     double line_width = 1.0;
+    // `d` (spec 8.4.3.6): on/off lengths in user space, and the phase
+    // into them each subpath starts at. Empty = solid.
+    std::vector<double> dash;
+    double dash_phase = 0;
     float fill_rgb[3] = {0, 0, 0};
     float stroke_rgb[3] = {0, 0, 0};
     float fill_alpha = 1, stroke_alpha = 1;
@@ -442,6 +446,69 @@ std::vector<unsigned char> RasterizeStroke(const std::vector<SubPath> &path, dou
     return gfx::raster::Rasterize(edges, width, height, gfx::raster::FillRule::kNonZero);
 }
 
+// Splits `path` into the "on" pieces of a dash pattern (device-space
+// lengths, already scaled from user space), each one an open subpath --
+// RasterizeStroke then strokes them like any other. The pattern restarts
+// at `phase` for every subpath (spec 8.4.3.6); a closed subpath's closing
+// segment is dashed too. A degenerate pattern (all zero / negative)
+// leaves the path solid.
+std::vector<SubPath> DashPath(const std::vector<SubPath> &path, const std::vector<double> &dash, double phase) {
+    double total = 0;
+    for (double d : dash) {
+        if (d < 0) return path;
+        total += d;
+    }
+    if (dash.empty() || total <= 1e-9) return path;
+    std::vector<SubPath> out;
+    for (const SubPath &sp : path) {
+        size_t n = sp.points.size();
+        if (n < 2) continue;
+        // Position within the pattern: index `di`, `left` length remaining in it.
+        size_t di = 0;
+        double left = dash[0];
+        double ph = std::fmod(std::max(0.0, phase), total);
+        while (ph > 0) {
+            if (ph >= left) {
+                ph -= left;
+                di = (di + 1) % dash.size();
+                left = dash[di];
+            } else {
+                left -= ph;
+                ph = 0;
+            }
+        }
+        bool on = di % 2 == 0;
+        SubPath cur;
+        if (on) cur.points.push_back(sp.points[0]);
+        size_t segments = sp.closed ? n : n - 1;
+        for (size_t i = 0; i < segments; ++i) {
+            DPoint a = sp.points[i];
+            const DPoint &b = sp.points[(i + 1) % n];
+            double seg = std::hypot(b.x - a.x, b.y - a.y);
+            while (seg > 1e-12) {
+                double step = std::min(seg, left);
+                double t = step / seg;
+                DPoint p{a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t};
+                if (on) cur.points.push_back(p);
+                a = p;
+                seg -= step;
+                left -= step;
+                if (left <= 1e-12) {
+                    // Dash boundary: close out an "on" piece, start the next.
+                    if (on && cur.points.size() >= 2) out.push_back(std::move(cur));
+                    cur = SubPath{};
+                    di = (di + 1) % dash.size();
+                    left = dash[di];
+                    on = di % 2 == 0;
+                    if (on) cur.points.push_back(a);
+                }
+            }
+        }
+        if (on && cur.points.size() >= 2) out.push_back(std::move(cur));
+    }
+    return out;
+}
+
 double CtmScale(const Mat2D &m) { return std::sqrt(std::abs(m.a * m.d - m.b * m.c)); }
 
 std::vector<unsigned char> IntersectMask(const ClipMask &existing, const std::vector<unsigned char> &fresh) {
@@ -595,6 +662,26 @@ bool DecodeSMask(const unsigned char *doc_data, size_t doc_len, const pdfxref::X
     return true;
 }
 
+// An image dict's /ColorSpace, resolved through the page's
+// /Resources /ColorSpace when it's a named (non-device) space.
+ColorSpaceInfo ImageColorSpace(const pdfobj::Object &dict, const pdfobj::Object &resources,
+                               const unsigned char *doc_data, size_t doc_len, const pdfxref::XrefTable &table) {
+    const pdfobj::Object *cs_obj = FindKey(dict, "ColorSpace", "CS");
+    if (!cs_obj) return {CsKind::kDeviceGray, 1, nullptr, ""};
+    pdfobj::Object resolved_cs = *cs_obj;
+    if (cs_obj->IsName()) {
+        const std::string &n = cs_obj->str_val;
+        if (n != "DeviceGray" && n != "DeviceRGB" && n != "DeviceCMYK" && n != "G" && n != "RGB" && n != "CMYK") {
+            const pdfobj::Object *cs_dict = resources.IsDict() ? resources.Find("ColorSpace") : nullptr;
+            if (cs_dict) {
+                pdfobj::Object rd = Deref(doc_data, doc_len, table, *cs_dict);
+                if (const pdfobj::Object *found = rd.Find(n)) resolved_cs = *found;
+            }
+        }
+    }
+    return BuildColorSpaceInfo(doc_data, doc_len, table, resolved_cs);
+}
+
 // Top-level image decode: dispatches DCTDecode straight to jpeg::Decode
 // (spec 7.4.8: never combined with another filter), else runs the
 // generic filter chain and unpacks samples. Bakes /SMask alpha into the
@@ -631,6 +718,23 @@ bool DecodeImageDict(const pdfobj::Object &dict, const std::string &raw, const p
         out->height = jh;
         out->is_mask = false;
         out->rgba.assign(rgba_buf.begin(), rgba_buf.end());
+        // The JPEG decoder yields plain gray/RGB; a /Decode [1 0 ...] and a
+        // Separation/DeviceN space (samples are ink *amounts*: 1 = full
+        // ink, i.e. dark -- same 1 - tint approximation as ColorToRgb) each
+        // invert that, e.g. a /Separation /Black figure drawn as a negative
+        // before this.
+        bool invert = ImageColorSpace(dict, resources, doc_data, doc_len, table).kind == CsKind::kSeparation;
+        if (const pdfobj::Object *decode = FindKey(dict, "Decode", "D")) {
+            if (decode->IsArray() && decode->array_val.size() >= 2 &&
+                decode->array_val[0].AsDouble(0) > decode->array_val[1].AsDouble(0)) {
+                invert = !invert;
+            }
+        }
+        if (invert) {
+            for (size_t i = 0; i + 3 < out->rgba.size(); i += 4) {
+                for (size_t c = 0; c < 3; ++c) out->rgba[i + c] = static_cast<unsigned char>(255 - out->rgba[i + c]);
+            }
+        }
     } else {
         std::string decoded;
         if (!pdffilter::DecodeStream(raw, &dict, &decoded)) return false;  // CCITT/JBIG2/JPX: skip, Scoping decision 4
@@ -641,23 +745,8 @@ bool DecodeImageDict(const pdfobj::Object &dict, const std::string &raw, const p
         ColorSpaceInfo cs{CsKind::kDeviceGray, 1, nullptr, ""};
         bool is_indexed = false;
         if (!is_mask) {
-            const pdfobj::Object *cs_obj = FindKey(dict, "ColorSpace", "CS");
-            if (cs_obj) {
-                pdfobj::Object resolved_cs = *cs_obj;
-                if (cs_obj->IsName()) {
-                    const std::string &n = cs_obj->str_val;
-                    if (n != "DeviceGray" && n != "DeviceRGB" && n != "DeviceCMYK" && n != "G" && n != "RGB" &&
-                        n != "CMYK") {
-                        const pdfobj::Object *cs_dict = resources.IsDict() ? resources.Find("ColorSpace") : nullptr;
-                        if (cs_dict) {
-                            pdfobj::Object rd = Deref(doc_data, doc_len, table, *cs_dict);
-                            if (const pdfobj::Object *found = rd.Find(n)) resolved_cs = *found;
-                        }
-                    }
-                }
-                cs = BuildColorSpaceInfo(doc_data, doc_len, table, resolved_cs);
-                is_indexed = cs.kind == CsKind::kIndexed;
-            }
+            cs = ImageColorSpace(dict, resources, doc_data, doc_len, table);
+            is_indexed = cs.kind == CsKind::kIndexed;
         }
         int n_comps = is_mask ? 1 : cs.n;
         *out = UnpackSamples(decoded, width, height, bpc, n_comps, cs, is_indexed, is_mask,
@@ -977,8 +1066,15 @@ struct Interpreter {
             CompositeCoverage(canvas, coverage, Top().clip, Top().fill_rgb, Top().fill_alpha);
         }
         if (do_stroke && !path.empty()) {
-            double half = std::max(1.0, Top().line_width * CtmScale(Top().ctm)) / 2.0;
-            auto coverage = RasterizeStroke(path, half, canvas.width, canvas.height);
+            const double scale = CtmScale(Top().ctm);
+            double half = std::max(1.0, Top().line_width * scale) / 2.0;
+            std::vector<SubPath> dashed;
+            if (!Top().dash.empty()) {
+                std::vector<double> dev_dash = Top().dash;
+                for (double &d : dev_dash) d *= scale;
+                dashed = DashPath(path, dev_dash, Top().dash_phase * scale);
+            }
+            auto coverage = RasterizeStroke(Top().dash.empty() ? path : dashed, half, canvas.width, canvas.height);
             CompositeCoverage(canvas, coverage, Top().clip, Top().stroke_rgb, Top().stroke_alpha);
         }
         if (pending_clip && !path.empty()) {
@@ -1025,6 +1121,20 @@ struct Interpreter {
         dst[2] = rgb[2];
     }
 
+    // `d` / an ExtGState's /D: `arr` is the on/off array (an odd-length
+    // one repeats -- spec: [3] means 3 on, 3 off).
+    void SetDash(const pdfobj::Object &arr, double phase) {
+        Top().dash.clear();
+        if (arr.IsArray()) {
+            for (const auto &v : arr.array_val) Top().dash.push_back(v.AsDouble());
+        }
+        if (Top().dash.size() % 2 == 1) {
+            const std::vector<double> once = Top().dash;
+            Top().dash.insert(Top().dash.end(), once.begin(), once.end());
+        }
+        Top().dash_phase = phase;
+    }
+
     void ApplyExtGState(const std::string &name, const pdfobj::Object &resources) {
         const pdfobj::Object *eg_dict = resources.IsDict() ? resources.Find("ExtGState") : nullptr;
         if (!eg_dict) return;
@@ -1034,6 +1144,13 @@ struct Interpreter {
         pdfobj::Object eg = Deref(doc_data, doc_len, table, *entry);
         if (const pdfobj::Object *ca = eg.Find("ca")) Top().fill_alpha = static_cast<float>(ca->AsDouble(1.0));
         if (const pdfobj::Object *CA = eg.Find("CA")) Top().stroke_alpha = static_cast<float>(CA->AsDouble(1.0));
+        if (const pdfobj::Object *lw = eg.Find("LW")) Top().line_width = lw->AsDouble(Top().line_width);
+        if (const pdfobj::Object *d = eg.Find("D")) {
+            pdfobj::Object dd = Deref(doc_data, doc_len, table, *d);
+            if (dd.IsArray() && dd.array_val.size() >= 2) {
+                SetDash(Deref(doc_data, doc_len, table, dd.array_val[0]), dd.array_val[1].AsDouble());
+            }
+        }
     }
 
     void DoXObject(const std::string &name, const pdfobj::Object &resources);
@@ -1068,6 +1185,8 @@ struct Interpreter {
                 Top().ctm = Multiply(m, Top().ctm);
             } else if (op == "w" && !operands.empty()) {
                 Top().line_width = Num(0);
+            } else if (op == "d" && operands.size() >= 2) {
+                SetDash(operands[operands.size() - 2], Num(0));
             } else if (op == "m" && operands.size() >= 2) {
                 MoveTo(Num(1), Num(0));
             } else if (op == "l" && operands.size() >= 2) {

@@ -233,7 +233,7 @@ const char *const kCffStandardStrings[] = {
     "sixoldstyle","sevenoldstyle","eightoldstyle","nineoldstyle","commasuperior",
     "threequartersemdash","periodsuperior","questionsmall","asuperior","bsuperior","centsuperior",
     "dsuperior","esuperior","isuperior","lsuperior","msuperior","nsuperior","osuperior","rsuperior",
-    "ssuperior","tsuperior","ff","fi","fl","ffi","ffl","parenleftinferior","parenrightinferior",
+    "ssuperior","tsuperior","ff","ffi","ffl","parenleftinferior","parenrightinferior",
     "Circumflexsmall","hyphensuperior","Gravesmall","Asmall","Bsmall","Csmall","Dsmall","Esmall",
     "Fsmall","Gsmall","Hsmall","Ismall","Jsmall","Ksmall","Lsmall","Msmall","Nsmall","Osmall",
     "Psmall","Qsmall","Rsmall","Ssmall","Tsmall","Usmall","Vsmall","Wsmall","Xsmall","Ysmall",

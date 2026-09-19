@@ -4983,11 +4983,18 @@ int Editor::CreateEmptyBuffer() {
 // --- Dashboard/scratch/zen (NVIM_PARITY_PLAN.md Part III Phase 12) -------
 
 bool Editor::ShouldShowDashboard() const {
-    if (ProjectCount() != 1 || WorkspaceCount() != 1 || Tabs().size() != 1 || buffers_.size() != 1) return false;
-    const SplitNode *root = Tabs()[0].root.get();
-    if (!root || root->dir != SplitDir::Leaf) return false;
-    const Buffer &buf = buffers_[0];
-    return !buf.modified && buf.filename.empty() && !buf.scratch && buf.lines.size() == 1 && buf.lines[0].empty();
+    // Not WorkspaceCount() == 1 / buffers_.size() == 1: ProjectDetectGit
+    // adopts existing git worktrees as extra workspaces (each with its own
+    // fresh empty buffer) a moment after startup, which used to hide the
+    // dashboard right after its first frame whenever the repo had any
+    // worktree. Those adopted workspaces are just as untouched as the
+    // bootstrap one, so "every workspace and every buffer is pristine"
+    // is the real condition.
+    if (ProjectCount() != 1 || !ProjectIsPristine(ActiveProject())) return false;
+    for (size_t i = 0; i < buffers_.size(); i++) {
+        if (!BufferIsPristine(static_cast<int>(i))) return false;
+    }
+    return true;
 }
 
 void Editor::MoveDashboardSelection(int delta) {
@@ -5020,16 +5027,27 @@ bool Editor::ActivateDashboardShortcut(char shortcut) {
     }
 }
 
-bool Editor::ProjectIsPristine(const Project &project) const {
-    if (project.workspaces.size() != 1) return false;
-    const Workspace &ws = project.workspaces[0];
+bool Editor::BufferIsPristine(int buffer_id) const {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return false;
+    const Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
+    return !buf.modified && buf.filename.empty() && !buf.scratch && buf.lines.size() == 1 && buf.lines[0].empty();
+}
+
+bool Editor::WorkspaceIsPristine(const Workspace &ws) const {
     if (ws.tabs.size() != 1) return false;
     const SplitNode *root = ws.tabs[0].root.get();
     if (!root || root->dir != SplitDir::Leaf) return false;
-    const int bid = root->pane.buffer_id;
-    if (bid < 0 || bid >= static_cast<int>(buffers_.size())) return false;
-    const Buffer &buf = buffers_[static_cast<size_t>(bid)];
-    return !buf.modified && buf.filename.empty() && !buf.scratch && buf.lines.size() == 1 && buf.lines[0].empty();
+    return BufferIsPristine(root->pane.buffer_id);
+}
+
+bool Editor::ProjectIsPristine(const Project &project) const {
+    // Every workspace, not just a single one: git-worktree adoption
+    // (ProjectDetectGit) adds untouched workspaces on its own.
+    if (project.workspaces.empty()) return false;
+    for (const Workspace &ws : project.workspaces) {
+        if (!WorkspaceIsPristine(ws)) return false;
+    }
+    return true;
 }
 
 void Editor::OpenScratchBuffer() {
@@ -18024,10 +18042,23 @@ void Editor::OpenSidebarPopout(int id) {
 }
 
 void Editor::CloseSidebarPopout() {
+    const int id = sidebar_popout_id_;
     sidebar_popout_id_ = 0;
     sidebar_popout_preview_key_.clear();
     sidebar_popout_preview_dirty_ = false;
     SetSidebarPopoutPreview("");
+    // A popout-only sidebar has no docked panel to collapse back into.
+    const SidebarInstance *sb = FindSidebar(id);
+    if (sb && sb->popout_only) CloseSidebar(id);
+}
+
+void Editor::OpenSidebarPopoutOnly(int id) {
+    SidebarInstance *sb = FindSidebarMut(id);
+    if (!sb) return;
+    const bool docked = sb->open && !sb->popout_only;
+    OpenSidebar(id, true);
+    sb->popout_only = !docked;
+    OpenSidebarPopout(id);
 }
 
 void Editor::ToggleSidebarPopout(int id) {
@@ -18264,7 +18295,7 @@ std::vector<int> Editor::OpenSidebarIdsOn(const std::string &position) const {
     std::vector<int> ids;
     std::vector<std::string> seen_groups;
     for (const SidebarInstance &sb : sidebars_) {
-        if (!sb.open || sb.position != position) continue;
+        if (!sb.open || sb.popout_only || sb.position != position) continue;
         if (sb.tab_group.empty()) {
             ids.push_back(sb.id);
             continue;
@@ -18284,7 +18315,7 @@ std::vector<int> Editor::OpenSidebarIdsInGroup(const std::string &group, const s
     std::vector<int> ids;
     if (group.empty()) return ids;
     for (const SidebarInstance &sb : sidebars_) {
-        if (sb.open && sb.position == position && sb.tab_group == group) ids.push_back(sb.id);
+        if (sb.open && !sb.popout_only && sb.position == position && sb.tab_group == group) ids.push_back(sb.id);
     }
     return ids;
 }
@@ -18307,7 +18338,7 @@ void Editor::SetTabGroupActive(const std::string &group, int id) {
 int Editor::DockSize(const std::string &position) const {
     int size = 0;
     for (const SidebarInstance &sb : sidebars_) {
-        if (sb.open && sb.position == position) size = std::max(size, sb.size);
+        if (sb.open && !sb.popout_only && sb.position == position) size = std::max(size, sb.size);
     }
     return size;
 }
@@ -18373,6 +18404,7 @@ void Editor::OpenSidebar(int id, bool focus) {
     SidebarInstance *sb = FindSidebarMut(id);
     if (!sb) return;
     sb->open = true;
+    sb->popout_only = false;
     if (focus) {
         // Only capture the mode to return to on the genuine transition into
         // sidebar focus. Refocusing from one sidebar to another (mod1+j/k
@@ -18395,6 +18427,7 @@ void Editor::CloseSidebar(int id) {
     SidebarInstance *sb = FindSidebarMut(id);
     if (!sb) return;
     sb->open = false;
+    sb->popout_only = false;
     if (id == sidebar_popout_id_) CloseSidebarPopout();
     if (focused_sidebar_id_ == id) {
         focused_sidebar_id_ = 0;
@@ -18835,30 +18868,112 @@ int FuzzyScore(const std::string &str, const std::string &query, std::vector<int
      * @return `c` unchanged if `smart_case` is set, otherwise its lowercased form.
      */
     auto norm = [&](char c) { return smart_case ? c : static_cast<char>(std::tolower(static_cast<unsigned char>(c))); };
-    size_t si = 0, qi = 0;
-    std::vector<int> pos;
-    int score = 0;
-    int consecutive = 0;
-    while (si < str.size() && qi < query.size()) {
-        if (norm(str[si]) == norm(query[qi])) {
-            bool boundary = si == 0 || str[si - 1] == ' ' || str[si - 1] == '-' || str[si - 1] == '_' ||
-                             str[si - 1] == '/' || str[si - 1] == '.';
-            score += (consecutive > 0) ? (15 + 5 * consecutive) : 1;
-            if (boundary) score += 10;
-            consecutive++;
-            pos.push_back(static_cast<int>(si));
-            qi++;
-        } else {
-            consecutive = 0;
-        }
-        si++;
+    /**
+     * @brief True if `c` separates words (so the character after it starts a new word).
+     * @param c The character to test.
+     * @return Whether `c` is whitespace or one of the path/identifier separators.
+     */
+    auto is_sep = [](char c) {
+        return c == ' ' || c == '\t' || c == '-' || c == '_' || c == '/' || c == '.' || c == ':' || c == ',';
+    };
+    const int n = static_cast<int>(str.size());
+    const int m = static_cast<int>(query.size());
+
+    // Cheap greedy subsequence check first: most candidates don't match at
+    // all, and those shouldn't pay for the alignment below.
+    {
+        int qi = 0;
+        for (int si = 0; si < n && qi < m; si++)
+            if (norm(str[static_cast<size_t>(si)]) == norm(query[static_cast<size_t>(qi)])) qi++;
+        if (qi < m) return -1;  // not every query char matched, in order
     }
-    if (qi < query.size()) return -1;  // not every query char matched, in order
-    int span = pos.empty() ? 0 : (pos.back() - pos.front() + 1);
-    score -= (span - static_cast<int>(query.size()));
-    score -= static_cast<int>(static_cast<double>(str.size()) * 0.01);
+
+    // Per-position bonus for a match landing there: word starts (string
+    // start, after a separator, camelCase humps) are worth more than
+    // mid-word hits, so "bn" prefers "build-native" over "cabin".
+    constexpr int kMatch = 16, kBoundary = 10, kCamel = 8, kConsecutive = 12, kGapOpen = 3, kGapExtend = 1;
+    std::vector<int> bonus(static_cast<size_t>(n), 0);
+    for (int j = 0; j < n; j++) {
+        char c = str[static_cast<size_t>(j)];
+        char prev = j > 0 ? str[static_cast<size_t>(j - 1)] : ' ';
+        if (is_sep(prev)) bonus[static_cast<size_t>(j)] = kBoundary;
+        else if (std::islower(static_cast<unsigned char>(prev)) && std::isupper(static_cast<unsigned char>(c)))
+            bonus[static_cast<size_t>(j)] = kCamel;
+    }
+
+    // Optimal alignment (fzf v2-style DP) instead of first-occurrence
+    // greedy matching: greedy grabs the earliest 'r','u','n' scattered
+    // through "rebuild unit" and never sees the contiguous "run" later on.
+    // M[i][j] = best score with query[i] matched at str[j]; from[i][j] = the
+    // str index query[i-1] was matched at on that best path (for positions).
+    constexpr int kNone = std::numeric_limits<int>::min() / 2;
+    std::vector<int> M(static_cast<size_t>(m) * static_cast<size_t>(n), kNone);
+    std::vector<int> from(static_cast<size_t>(m) * static_cast<size_t>(n), -1);
+    auto at = [n](int i, int j) { return static_cast<size_t>(i) * static_cast<size_t>(n) + static_cast<size_t>(j); };
+    for (int i = 0; i < m; i++) {
+        char qc = norm(query[static_cast<size_t>(i)]);
+        // Best M[i-1][k] - gap cost over k < j-1, rolled forward as j grows.
+        int gap_best = kNone, gap_from = -1;
+        for (int j = i; j < n; j++) {
+            if (i > 0 && j >= 2) {
+                int k = j - 2;
+                if (gap_best != kNone) gap_best -= kGapExtend;
+                int cand = M[at(i - 1, k)];
+                if (cand != kNone && cand - kGapOpen > gap_best) {
+                    gap_best = cand - kGapOpen;
+                    gap_from = k;
+                }
+            }
+            if (norm(str[static_cast<size_t>(j)]) != qc) continue;
+            int b = bonus[static_cast<size_t>(j)];
+            if (i == 0) {
+                M[at(i, j)] = kMatch + b;
+                continue;
+            }
+            int best = kNone, best_from = -1;
+            int prev = M[at(i - 1, j - 1)];
+            if (prev != kNone) {
+                best = prev + kMatch + std::max(b, kConsecutive);
+                best_from = j - 1;
+            }
+            if (gap_best != kNone && gap_best + kMatch + b > best) {
+                best = gap_best + kMatch + b;
+                best_from = gap_from;
+            }
+            M[at(i, j)] = best;
+            from[at(i, j)] = best_from;
+        }
+    }
+    int score = kNone, end = -1;
+    for (int j = m - 1; j < n; j++) {
+        if (M[at(m - 1, j)] > score) {
+            score = M[at(m - 1, j)];
+            end = j;
+        }
+    }
+    std::vector<int> pos(static_cast<size_t>(m));
+    for (int i = m - 1, j = end; i >= 0; i--) {
+        pos[static_cast<size_t>(i)] = j;
+        j = from[at(i, j)];
+    }
+
+    // Whole-word bonus: the query matched one contiguous run that is an
+    // entire word ("run" in "run-wasm"/"run  languages...", not in
+    // "runner"), and more if that word is the whole string ("run" itself),
+    // so typing a name exactly always puts that name first.
+    bool contiguous = pos.back() - pos.front() + 1 == m;
+    if (contiguous && bonus[static_cast<size_t>(pos.front())] == kBoundary) {
+        int after = pos.back() + 1;
+        bool word_end = after >= n || is_sep(str[static_cast<size_t>(after)]);
+        if (word_end) score += 3 * kMatch;
+        size_t rest = str.find_first_not_of(" \t", static_cast<size_t>(after));
+        if (pos.front() == 0 && rest == std::string::npos) score += 3 * kMatch;
+    }
+    // Shorter strings win ties (trailing padding doesn't count).
+    size_t trimmed = str.find_last_not_of(" \t");
+    score -= static_cast<int>(trimmed == std::string::npos ? 0 : trimmed + 1) / 16;
     if (positions) *positions = std::move(pos);
-    return score;
+    return std::max(score, 0);
 }
 
 void Editor::OpenPicker(const std::string &title, std::vector<PickerItem> items, int on_select_ref,
@@ -18868,6 +18983,7 @@ void Editor::OpenPicker(const std::string &title, std::vector<PickerItem> items,
     picker_title_ = title;
     picker_query_.clear();
     picker_items_ = std::move(items);
+    picker_items_generation_++;
     picker_selected_ = 0;
     picker_on_select_ref_ = on_select_ref;
     picker_on_query_change_ref_ = on_query_change_ref;
@@ -18902,24 +19018,36 @@ void Editor::ClosePickerDiscardingCallbacks() {
 
 void Editor::SetPickerItems(std::vector<PickerItem> items) {
     picker_items_ = std::move(items);
+    picker_items_generation_++;
     int max_idx = static_cast<int>(PickerFilteredResults().size()) - 1;
     picker_selected_ = std::max(0, std::min(picker_selected_, max_idx));
 }
 
-std::vector<PickerItem> Editor::PickerFilteredResults() const {
+const std::vector<PickerItem> &Editor::PickerFilteredResults() const {
     if (picker_raw_results_ || picker_query_.empty()) return picker_items_;
-    std::vector<std::pair<int, const PickerItem *>> scored;
+    if (picker_filtered_generation_ == picker_items_generation_ && picker_filtered_query_ == picker_query_)
+        return picker_filtered_;
+    // (tier, score): tier 1 = the item's `key` matched, 0 = only `display` did.
+    std::vector<std::pair<std::pair<int, int>, const PickerItem *>> scored;
     for (const PickerItem &it : picker_items_) {
+        int key_score = it.key.empty() ? -1 : FuzzyScore(it.key, picker_query_, nullptr);
+        if (key_score >= 0) {
+            scored.push_back({{1, key_score}, &it});
+            continue;
+        }
         int score = FuzzyScore(it.display, picker_query_, nullptr);
-        if (score >= 0) scored.emplace_back(score, &it);
+        if (score >= 0) scored.push_back({{0, score}, &it});
     }
-    // Orders scored items by descending fuzzy-match score (best match first).
+    // Orders scored items best match first: key matches before display-only
+    // matches, then by descending fuzzy-match score.
     std::stable_sort(scored.begin(), scored.end(),
                       [](const auto &a, const auto &b) { return a.first > b.first; });
-    std::vector<PickerItem> out;
-    out.reserve(scored.size());
-    for (auto &[score, item] : scored) out.push_back(*item);
-    return out;
+    picker_filtered_.clear();
+    picker_filtered_.reserve(scored.size());
+    for (auto &[score, item] : scored) picker_filtered_.push_back(*item);
+    picker_filtered_generation_ = picker_items_generation_;
+    picker_filtered_query_ = picker_query_;
+    return picker_filtered_;
 }
 
 void Editor::HandlePickerInput() {
@@ -18948,7 +19076,7 @@ void Editor::HandlePickerInput() {
     // similar consumers only want to fire on a real change, not every frame.
     std::string pre_nav_data;
     if (picker_on_select_change_ref_ != 0) {
-        std::vector<PickerItem> pre_nav = PickerFilteredResults();
+        const std::vector<PickerItem> &pre_nav = PickerFilteredResults();
         if (picker_selected_ >= 0 && picker_selected_ < static_cast<int>(pre_nav.size())) {
             pre_nav_data = pre_nav[static_cast<size_t>(picker_selected_)].data;
         }
@@ -19039,7 +19167,7 @@ void Editor::HandlePickerInput() {
     // top match. Deliberately compares by `data` rather than by index --
     // an unchanged index after a query edit can point at a different item.
     if (lua_ && picker_on_select_change_ref_ != 0) {
-        std::vector<PickerItem> post_nav = PickerFilteredResults();
+        const std::vector<PickerItem> &post_nav = PickerFilteredResults();
         if (picker_selected_ >= 0 && picker_selected_ < static_cast<int>(post_nav.size())) {
             const std::string &post_nav_data = post_nav[static_cast<size_t>(picker_selected_)].data;
             if (post_nav_data != pre_nav_data) {
@@ -19952,7 +20080,7 @@ void Editor::UpdateCmdlineCompletion() {
     }
     command_line_.replace(static_cast<size_t>(word_start), std::string::npos, common);
 
-    for (const std::string &c : candidates) cmdline_completion_items_.push_back({c, c, {}});
+    for (const std::string &c : candidates) cmdline_completion_items_.push_back({c, c, {}, {}});
     cmdline_completion_selected_ = 0;
     cmdline_completion_word_start_ = word_start;
     cmdline_completion_open_ = true;

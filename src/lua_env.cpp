@@ -3624,6 +3624,17 @@ int l_notify_refresh_pane(lua_State *L) {
 }
 
 /**
+ * @brief Implements mep.sidebar_popout_open(id): opens a sidebar focused and popped out, with no
+ * docked column behind the float (closing the popout closes the sidebar).
+ * @param L Lua state; arg 1 is the sidebar id.
+ * @return Number of values pushed (0).
+ */
+int l_sidebar_popout_open(lua_State *L) {
+    GetEditor(L)->OpenSidebarPopoutOnly(static_cast<int>(luaL_checkinteger(L, 1)));
+    return 0;
+}
+
+/**
  * @brief Implements mep.sidebar_popout_close(): collapses the popped-out sidebar (if any) back to its docked panel.
  * @param L Lua state.
  * @return Number of values pushed (0).
@@ -3891,9 +3902,11 @@ void ReadPickerHlSpans(lua_State *L, int idx, int row, std::vector<PickerHlSpan>
 }
 
 // Reads a Lua array of items (each either a plain string, or a
-// {display=, data=, hl=} table) at stack index `idx` into `out`. `hl`
+// {display=, data=, hl=, key=} table) at stack index `idx` into `out`. `hl`
 // (optional) is an array of {col_start=, col_end=, hl=} spans over
-// `display` -- see ReadPickerHlSpans above.
+// `display` -- see ReadPickerHlSpans above. `key` (optional) is the item's
+// primary match text: items whose key matches the query rank above items
+// that only match elsewhere in `display` (e.g. in a description column).
 /**
  * @brief Reads a Lua array of picker items (each a plain string, or a {display=, data=, hl=} table) into PickerItem structs.
  * @param L Lua state.
@@ -3916,6 +3929,9 @@ void ReadPickerItems(lua_State *L, int idx, std::vector<PickerItem> &out) {
             lua_pop(L, 1);
             lua_getfield(L, -1, "hl");
             if (lua_istable(L, -1)) ReadPickerHlSpans(L, lua_gettop(L), 0, item.spans);
+            lua_pop(L, 1);
+            lua_getfield(L, -1, "key");
+            if (lua_isstring(L, -1)) item.key = lua_tostring(L, -1);
             lua_pop(L, 1);
         }
         out.push_back(std::move(item));
@@ -9553,6 +9569,7 @@ const luaL_Reg kMepFuncs[] = {
     {"sidebar_popout_toggle", l_sidebar_popout_toggle},
     {"notify_sidebar_id", l_notify_sidebar_id},
     {"notify_refresh_pane", l_notify_refresh_pane},
+    {"sidebar_popout_open", l_sidebar_popout_open},
     {"sidebar_popout_close", l_sidebar_popout_close},
     {"sidebar_is_popout", l_sidebar_is_popout},
     {"read_lines", l_read_lines},

@@ -241,7 +241,7 @@ current_row)= (=spans= as in =mep.picker_set_preview=), or through the
 panels use; =mep.read_lines(path, max_lines)= reads a file for it,
 preferring an open buffer's unsaved text. =mep.sidebar_popout_toggle()=
 is what =mod1+m= calls.
-The git panel (=<leader>gg=, the tab bar's Git button, or
+The git panel (=<leader>gG= docked, =<leader>gg= popped out, the tab bar's Git button, or
 =:MepGitStatus=) is one sidebar with four views on a tab strip --
 =Tab=/=Shift-Tab=, the =1=-=4= keys or a click switch them, and
 =mod1+m= pops the panel out with a preview column beside the list:

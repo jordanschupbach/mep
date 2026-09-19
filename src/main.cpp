@@ -2995,7 +2995,8 @@ const char *kKeybindingsText =
     "  Alt-1 .. Alt-9                 switch to workspace by number\n"
     "  <leader>w n/w/r/d/l/h          new / list / rename / delete / next / prev workspace\n"
     "  <leader>gw                     git workspaces picker (branch, ahead/behind)\n"
-    "  <leader>gg                     git panel (Tab / 1-4: Status, Log, Branches, Stash; ? lists keys)\n"
+    "  <leader>gg                     git popup (Tab / 1-4: Status, Log, Branches, Stash; ? lists keys)\n"
+    "  <leader>gG                     git sidebar (docked, or stacked with the file tree)\n"
     "  <leader>gl / gb / gs           git log / branches / stash, popped out\n"
     "  <leader>gc / gp                git commit (message in a floating pane) / push\n"
     "  :MepGitStatus :MepGitLog :MepGitBranches :MepGitStash :MepGitCommit :MepGitPush :MepGitPull :MepGitFetch\n"
@@ -5008,7 +5009,16 @@ const char *kBuiltinGit =
     "    mep.sidebar_popout_toggle(mep_git_status_sidebar_id)\n"
     "  end\n"
     "end\n"
-    // Docked (mep.git_open_view above) is still the default `<leader>gg` --
+    // The popup-only counterpart: no docked column behind the float, and
+    // collapsing it (Escape/q/mod1+m) closes the panel outright.
+    "function mep.git_open_popup(view)\n"
+    "  mep_git_ensure()\n"
+    "  local idx = 1\n"
+    "  for i, v in ipairs(MEP_GIT_VIEWS) do if v == view then idx = i end end\n"
+    "  mep.sidebar_popout_open(mep_git_status_sidebar_id)\n"
+    "  mep.sidebar_set_active_tab(mep_git_status_sidebar_id, idx)\n"
+    "end\n"
+    // Docked (mep.git_open_view above) is still the default `<leader>gG` --
     // full popout support, Tab-cycling between Status/Log/Branches/Stash,
     // and the live diff/log preview column all only exist there
     // (Mode::SidebarPane, what mep.sidebar_open_pane below lands on, is
@@ -5066,9 +5076,9 @@ const char *kBuiltinGit =
     "mep.command('MepGitStatusPane', mep.git_open_pane)\n"
     "mep.leader_map('gt', 'Git status (paneable, stacks with the file tree)', mep.git_open_pane)\n"
     "mep.command('MepGitStatus', function() mep.git_status_toggle() end)\n"
-    "mep.command('MepGitLog', function() mep.git_open_view('log', true) end)\n"
-    "mep.command('MepGitBranches', function() mep.git_open_view('branches', true) end)\n"
-    "mep.command('MepGitStash', function() mep.git_open_view('stash', true) end)\n"
+    "mep.command('MepGitLog', function() mep.git_open_popup('log') end)\n"
+    "mep.command('MepGitBranches', function() mep.git_open_popup('branches') end)\n"
+    "mep.command('MepGitStash', function() mep.git_open_popup('stash') end)\n"
     "mep.command('MepGitCommit', function() mep.git_commit(false) end)\n"
     "mep.command('MepGitPush', mep.git_push)\n"
     "mep.command('MepGitPull', mep.git_pull)\n"
@@ -5096,10 +5106,23 @@ const char *kBuiltinGit =
     "    mep.git_open_view(mep_git_view, false)\n"
     "  end\n"
     "end\n"
-    "mep.leader_map('gg', 'Toggle git panel', mep.git_status_toggle)\n"
-    "mep.leader_map('gl', 'Git log (popout)', function() mep.git_open_view('log', true) end)\n"
-    "mep.leader_map('gb', 'Git branches (popout)', function() mep.git_open_view('branches', true) end)\n"
-    "mep.leader_map('gs', 'Git stash (popout)', function() mep.git_open_view('stash', true) end)\n"
+    // <leader>gg: the full popped-out panel (Status/Log/Branches/Stash
+    // tabs + preview column), toggled. Collapsing a popup-only panel
+    // closes it; one popped out of an already-docked <leader>gG sidebar
+    // falls back to that docked sidebar.
+    "function mep.git_popup_toggle()\n"
+    "  if mep_git_status_sidebar_id and mep.sidebar_is_popout(mep_git_status_sidebar_id) then\n"
+    "    mep.sidebar_popout_close()\n"
+    "  else\n"
+    "    mep.git_open_popup(mep_git_view)\n"
+    "  end\n"
+    "end\n"
+    "mep.command('MepGitPopup', mep.git_popup_toggle)\n"
+    "mep.leader_map('gg', 'Toggle git popup', mep.git_popup_toggle)\n"
+    "mep.leader_map('gG', 'Toggle git sidebar', mep.git_status_toggle)\n"
+    "mep.leader_map('gl', 'Git log (popout)', function() mep.git_open_popup('log') end)\n"
+    "mep.leader_map('gb', 'Git branches (popout)', function() mep.git_open_popup('branches') end)\n"
+    "mep.leader_map('gs', 'Git stash (popout)', function() mep.git_open_popup('stash') end)\n"
     "mep.leader_map('gc', 'Git commit', function() mep.git_commit(false) end)\n"
     "mep.leader_map('gp', 'Git push', mep.git_push)\n"
     "mep.on_workspace_changed(function()\n"
@@ -18781,7 +18804,7 @@ const char *kBuiltinOrgBib =
     "  local items = {}\n"
     "  for _, e in ipairs(entries) do\n"
     "    local label = e.key .. '  ' .. (e.fields.title or '') .. (e.fields.author and (' -- ' .. e.fields.author) or '')\n"
-    "    items[#items + 1] = {display = label, data = e.key}\n"
+    "    items[#items + 1] = {display = label, data = e.key, key = e.key}\n"
     "  end\n"
     "  mep.picker_open('Insert Citation', items, function(key)\n"
     "    if key then mep.insert_text('[cite:@' .. key .. ']') end\n"
@@ -22659,7 +22682,8 @@ const char *kBuiltinRunners =
     "    hl[#hl + 1] = {col_start = #text + 1, col_end = #text + #extra + 1, hl = 'Comment'}\n"
     "    text = text .. extra\n"
     "  end\n"
-    "  return {display = text, data = data, hl = hl}\n"
+    // `key`: rank a match on the name above one found only in the description.
+    "  return {display = text, data = data, hl = hl, key = display}\n"
     "end\n"
     "local function rn_live(S) return rn_session == S and mep.picker_is_open() end\n"
     "local function rn_set_preview(S, data, lines, spans)\n"
@@ -24264,7 +24288,7 @@ void DrawSidebars() {
     // each sized to its own content (capped at half the content band).
     float top_offset = 0, bottom_offset = 0;
     for (const SidebarInstance &sb : g_editor.Sidebars()) {
-        if (!sb.open || (sb.position != "top" && sb.position != "bottom")) continue;
+        if (!sb.open || sb.popout_only || (sb.position != "top" && sb.position != "bottom")) continue;
         const std::vector<SidebarLine> lines = g_editor.FlattenSidebar(sb.id);
         const int content_h = static_cast<int>(lines.size()) * line_h + header_h + 10;
         const int ph = std::min(content_h, (content_bottom - content_top) / 2);
@@ -24711,7 +24735,7 @@ static float DrawPickerColoredRun(const std::string &text, const std::vector<gfx
  * highlighted text.
  */
 void DrawPickerOverlay() {
-    std::vector<PickerItem> results = g_editor.PickerFilteredResults();
+    const std::vector<PickerItem> &results = g_editor.PickerFilteredResults();
     int selected = g_editor.PickerSelected();
     bool has_preview = !g_editor.PickerPreview().empty() || IsSwatchPreviewPicker();
     // Sized like mep.nvim's own picker (mep.nvim/lua/mep/picker/ui.lua's
@@ -25054,7 +25078,9 @@ void DrawSidebarPopout() {
     }
 
     // Key hint, bottom-right, same placement/color as DrawPreviewOverlay's.
-    std::string hint = has_preview ? "Esc/q/mod1+m: dock   mod1+j/k: scroll preview" : "Esc/q/mod1+m: dock";
+    // A popout-only sidebar has nothing to dock back into -- collapsing it closes it.
+    std::string hint = sb->popout_only ? "Esc/q/mod1+m: close" : "Esc/q/mod1+m: dock";
+    if (has_preview) hint += "   mod1+j/k: scroll preview";
     if (!sb->tabs.empty()) hint = "Tab/S-Tab: switch view   " + hint;
     const float hint_w = gfx::MeasureTextEx(g_font, hint.c_str(), hint_size, 0).x;
     gfx::DrawTextEx(g_font, hint.c_str(),

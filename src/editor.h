@@ -290,9 +290,11 @@ struct CursorPos {
 // Dependency-free fzf-style fuzzy subsequence scorer (NVIM_PARITY_PLAN.md
 // Part I Phase 8): every character of `query` must appear in `str`, in
 // order (not necessarily contiguous). Returns -1 if it doesn't match at
-// all; otherwise a score where higher is a better match (consecutive runs
-// and word-boundary starts score higher; longer overall spans and longer
-// strings score lower, as a tiebreaker). Smart-case: case-insensitive
+// all; otherwise a non-negative score where higher is a better match. The
+// best-scoring alignment is used, not the first greedy one: consecutive
+// runs and word-boundary starts score higher, gaps cost, a contiguous
+// whole-word match scores higher still and an exact whole-string match
+// highest; longer strings score slightly lower, as a tiebreaker. Smart-case: case-insensitive
 // unless `query` itself contains an uppercase letter. `positions`, if
 // non-null, receives the matched byte offsets in `str` (for highlighting).
 /**
@@ -600,6 +602,12 @@ struct SidebarInstance {
     // and (if any) its own internal `tabs` strip underneath the group's
     // -- see Editor::OpenSidebarIdsOn/TabGroupActiveId and DrawSidebars.
     std::string tab_group;
+    // Opened straight into the popout (mep.sidebar_popout_open, e.g. the
+    // git panel's <leader>gg): while set the sidebar has no docked
+    // footprint -- OpenSidebarIdsOn/DockSize/DrawSidebars all skip it --
+    // and collapsing the popout closes it outright instead of leaving a
+    // docked panel behind. Cleared by a plain OpenSidebar/CloseSidebar.
+    bool popout_only = false;
     // First flattened-line index drawn at the top of the sidebar's content
     // area -- this sidebar's mirror of Pane::scroll_row. Kept per-instance
     // (rather than a single field alongside sidebar_cursor_) so a sidebar
@@ -665,6 +673,11 @@ struct PickerItem {
     std::string display;
     std::string data;
     std::vector<PickerHlSpan> spans;
+    // Optional primary match text (e.g. a runner entry's recipe name when
+    // `display` also carries its description). When set, items whose `key`
+    // matches the query always rank above items that only match somewhere
+    // else in `display`. Empty = match against `display` alone.
+    std::string key;
 };
 
 // One insert-mode completion candidate (NVIM_PARITY_PLAN.md Phase 22
@@ -7484,6 +7497,10 @@ public:
      * @brief Collapses the popped-out sidebar (if any) back to its docked panel, keeping its focus and cursor.
      */
     void CloseSidebarPopout();
+    // Open `id` focused and popped out with no docked column behind it
+    // (SidebarInstance::popout_only). An already docked-open sidebar is
+    // just popped out as usual and stays docked afterwards.
+    void OpenSidebarPopoutOnly(int id);
     /**
      * @brief Reports whether a sidebar popout is currently showing.
      * @return True if a sidebar is popped out and still has input focus.
@@ -7749,15 +7766,17 @@ public:
      * @return The selected index.
      */
     int PickerSelected() const { return picker_selected_; }
-    // Recomputed on demand (not cached) from the current query -- items
-    // scoring < 0 (no match) are dropped, the rest sorted by score desc.
-    // Returns `picker_items_` verbatim, unfiltered/unsorted, when the
-    // picker was opened with raw_results (see OpenPicker above).
+    // Items scoring < 0 (no match) are dropped, the rest sorted by score
+    // desc. Cached until the query or the item list changes -- it's asked
+    // for several times a frame, and scoring a large list (Find Files) every
+    // frame is not free. Returns `picker_items_` verbatim, unfiltered/
+    // unsorted, when the picker was opened with raw_results (see OpenPicker
+    // above).
     /**
-     * @brief Recomputes the picker's items filtered and sorted by fuzzy match score against the current query.
+     * @brief Returns the picker's items filtered and sorted by fuzzy match score against the current query.
      * @return The filtered, score-sorted items, or `picker_items_` verbatim when opened with raw_results.
      */
-    std::vector<PickerItem> PickerFilteredResults() const;
+    const std::vector<PickerItem> &PickerFilteredResults() const;
 
     // --- Picker preview pane (NVIM_PARITY_PLAN.md Phase 8 gap, closed) ---
     // mep.picker_set_preview(text): a source (e.g. find_files' on_select_
@@ -7990,9 +8009,11 @@ public:
     const std::vector<WhichKeyBinding> &AllWhichKeyBindings() const { return whichkey_bindings_; }
 
     // --- Dashboard/scratch/zen (NVIM_PARITY_PLAN.md Part III Phase 12) ---
-    // True exactly when the dashboard should render: single tab, single
-    // pane, single buffer, that buffer untouched (empty, unmodified, no
-    // filename) -- recomputed fresh each frame rather than cached, so it
+    // True exactly when the dashboard should render: single project whose
+    // every workspace (the bootstrap one plus any auto-adopted git
+    // worktrees) is one tab / one pane on an untouched buffer (empty,
+    // unmodified, no filename), and no other buffer has been touched
+    // either -- recomputed fresh each frame rather than cached, so it
     // disappears the instant any of that stops being true.
     bool ShouldShowDashboard() const;
     // The dashboard is still Normal mode, but its two action lines use a
@@ -9633,6 +9654,10 @@ private:
     // sitting on the dashboard) from "already loaded with real content",
     // since only the latter should skip mep.project_open's default layout.
     bool ProjectIsPristine(const Project &project) const;
+    // An untouched empty buffer / a single-tab, single-leaf workspace
+    // showing one (the shared pieces of the two checks above).
+    bool BufferIsPristine(int buffer_id) const;
+    bool WorkspaceIsPristine(const Workspace &ws) const;
     Json WorkspaceStateJson(const Project &project) const;
     Json SplitStateJson(const Workspace &ws, const SplitNode &node) const;
     uint64_t LayoutFingerprint() const;
@@ -9773,6 +9798,12 @@ private:
     std::string picker_title_;
     std::string picker_query_;
     std::vector<PickerItem> picker_items_;
+    // PickerFilteredResults() cache: valid while picker_items_generation_
+    // and the query match what it was computed from.
+    unsigned picker_items_generation_ = 0;
+    mutable unsigned picker_filtered_generation_ = ~0u;
+    mutable std::string picker_filtered_query_;
+    mutable std::vector<PickerItem> picker_filtered_;
     int picker_selected_ = 0;
     int picker_on_select_ref_ = 0;
     int picker_on_query_change_ref_ = 0;

@@ -4656,7 +4656,7 @@ const char *kBuiltinGit =
     "  mep_git_ensure()\n"
     "  mep_git_status_gen = mep_git_status_gen + 1\n"
     "  local gen = mep_git_status_gen\n"
-    "  mep_git_run({'git', 'status', '--porcelain', '--branch'}, function(code, out)\n"
+    "  mep_git_run({'git', '--no-optional-locks', 'status', '--porcelain', '--branch'}, function(code, out)\n"
     "    if gen ~= mep_git_status_gen then return end\n"
     "    if code ~= 0 then\n"
     "      mep_git_set({{id = 'status', title = 'Not a git repository', collapsed = false,\n"
@@ -5196,10 +5196,52 @@ const char *kBuiltinGit =
     "mep.leader_map('gs', 'Git stash (popout)', function() mep.git_open_popup('stash') end)\n"
     "mep.leader_map('gc', 'Git commit', function() mep.git_commit(false) end)\n"
     "mep.leader_map('gp', 'Git push', mep.git_push)\n"
-    "mep.on_workspace_changed(function()\n"
-    "  if mep_git_status_sidebar_id and mep.sidebar_is_open(mep_git_status_sidebar_id) then\n"
-    "    mep.git_refresh()\n"
+    // Auto-refresh while the panel is visible -- docked, popped out, or
+    // as a pane (<leader>gt, or <leader>gG with the tree open; that one
+    // never reports sidebar_is_open). Changes can come from anywhere (a
+    // save here, `git commit` in a terminal, another editor), so every
+    // 2 s -- and on the next frame after any save -- a cheap fingerprint
+    // (porcelain v2 status: HEAD, upstream ahead/behind, stash count,
+    // changed paths; plus every ref's commit) is compared with the last
+    // one, and the current view re-renders only when it differs, so an
+    // idle panel never reloads its preview. --no-optional-locks keeps the
+    // background `git status` from taking index.lock and failing a git
+    // command the user runs at the same moment.
+    "local function mep_git_visible()\n"
+    "  local id = mep_git_status_sidebar_id\n"
+    "  if not id then return false end\n"
+    "  if mep.sidebar_is_open(id) or mep.sidebar_is_popout(id) then return true end\n"
+    "  if mep_git_pane_buf then\n"
+    "    for _, b in ipairs(mep.pane_buffers()) do if b == mep_git_pane_buf then return true end end\n"
     "  end\n"
+    "  return false\n"
+    "end\n"
+    "local kGitPollSec = 2\n"
+    "local mep_git_poll_last, mep_git_poll_busy, mep_git_fingerprint = 0, false, nil\n"
+    "local function mep_git_poll()\n"
+    "  if mep_git_poll_busy or not mep_git_visible() then return end\n"
+    "  mep_git_poll_busy = true\n"
+    "  mep_git_run({'git', '--no-optional-locks', 'status', '--porcelain=v2', '--branch', '--show-stash'}, function(_, status)\n"
+    "    mep_git_run({'git', 'for-each-ref', '--format=%(objectname) %(refname)'}, function(_, refs)\n"
+    "      mep_git_poll_busy = false\n"
+    "      local fp = mep_git_root() .. '\\n' .. table.concat(status, '\\n') .. '\\n' .. table.concat(refs, '\\n')\n"
+    "      if fp ~= mep_git_fingerprint then\n"
+    "        mep_git_fingerprint = fp\n"
+    "        if mep_git_visible() then mep.git_refresh() end\n"
+    "      end\n"
+    "    end)\n"
+    "  end)\n"
+    "end\n"
+    "mep.on_frame(function()\n"
+    "  local now = mep.now()\n"
+    "  if now - mep_git_poll_last >= kGitPollSec then\n"
+    "    mep_git_poll_last = now\n"
+    "    mep_git_poll()\n"
+    "  end\n"
+    "end)\n"
+    "mep.on_buffer_saved(function() mep_git_poll_last = 0 end)\n"
+    "mep.on_workspace_changed(function()\n"
+    "  if mep_git_visible() then mep.git_refresh() end\n"
     "end)\n"
     // `:MepGitGutter` alone just recomputes against the current base
     // (unchanged default behavior); `:MepGitGutter base <ref>` (Phase

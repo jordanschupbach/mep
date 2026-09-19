@@ -4007,6 +4007,42 @@ int l_picker_set_preview(lua_State *L) {
     return 0;
 }
 
+// mep.picker_is_open() -> true while the fuzzy picker overlay is up, so an
+// async source (e.g. kBuiltinRunners' target loader) can tell its own
+// picker is still showing before calling mep.picker_set_items.
+/**
+ * @brief Implements mep.picker_is_open(): reports whether the picker overlay is open.
+ * @param L Lua state.
+ * @return Number of values pushed (1: boolean).
+ */
+int l_picker_is_open(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->IsPickerOpen());
+    return 1;
+}
+
+// mep.picker_set_tabs(names, active): shows a tab strip above the open
+// picker's prompt (names = array of labels, active = 1-indexed) -- see
+// Editor::SetPickerTabs. The caller swaps items itself (typically from
+// on_key's "<Tab>"/"<S-Tab>"); pass {} to hide the strip.
+/**
+ * @brief Implements mep.picker_set_tabs(names, active): sets the open picker's tab-strip labels and 1-indexed active tab.
+ * @param L Lua state; arg 1 array of label strings, arg 2 1-indexed active tab.
+ * @return Number of values pushed (0).
+ */
+int l_picker_set_tabs(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    std::vector<std::string> tabs;
+    lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 1));
+    for (lua_Integer i = 1; i <= n; i++) {
+        lua_rawgeti(L, 1, i);
+        if (lua_isstring(L, -1)) tabs.emplace_back(lua_tostring(L, -1));
+        lua_pop(L, 1);
+    }
+    int active = static_cast<int>(luaL_optinteger(L, 2, 1)) - 1;
+    GetEditor(L)->SetPickerTabs(std::move(tabs), active);
+    return 0;
+}
+
 /**
  * @brief Implements mep.picker_close(): closes the open picker without invoking its on_select callback.
  * @param L Lua state.
@@ -4503,7 +4539,7 @@ int l_fs_create_file(lua_State *L) {
 }
 
 /**
- * @brief Implements mep.fs_rename(from, to): renames/moves a file or directory (native builds only).
+ * @brief Implements mep.fs_rename(from, to): renames/moves a file or directory (native builds only), retargeting any open buffers under `from`.
  * @param L Lua state; arg 1 is the source path, arg 2 the destination path.
  * @return Number of values pushed (1: true on success, false on error or under wasm).
  */
@@ -4513,6 +4549,7 @@ int l_fs_rename(lua_State *L) {
 #if !defined(__EMSCRIPTEN__)
     std::error_code ec;
     std::filesystem::rename(from, to, ec);
+    if (!ec) GetEditor(L)->RetargetBuffersForRenamedPath(from, to);
     lua_pushboolean(L, !ec);
 #else
     lua_pushboolean(L, false);
@@ -4521,7 +4558,7 @@ int l_fs_rename(lua_State *L) {
 }
 
 /**
- * @brief Implements mep.fs_delete(path): recursively deletes a file or directory (native builds only).
+ * @brief Implements mep.fs_delete(path): recursively deletes a file or directory (native builds only), closing any open buffers under it.
  * @param L Lua state; arg 1 is the path to delete.
  * @return Number of values pushed (1: true on success, false on error or under wasm).
  */
@@ -4530,6 +4567,7 @@ int l_fs_delete(lua_State *L) {
 #if !defined(__EMSCRIPTEN__)
     std::error_code ec;
     std::filesystem::remove_all(path, ec);
+    if (!ec) GetEditor(L)->CloseBuffersForRemovedPath(path);
     lua_pushboolean(L, !ec);
 #else
     lua_pushboolean(L, false);
@@ -9526,6 +9564,8 @@ const luaL_Reg kMepFuncs[] = {
     {"picker_set_items", l_picker_set_items},
     {"picker_set_preview", l_picker_set_preview},
     {"picker_close", l_picker_close},
+    {"picker_set_tabs", l_picker_set_tabs},
+    {"picker_is_open", l_picker_is_open},
     {"roam_graph_open", l_roam_graph_open},
     {"roam_graph_close", l_roam_graph_close},
     {"fuzzy_score", l_fuzzy_score},

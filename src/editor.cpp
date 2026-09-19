@@ -31,6 +31,7 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <optional>
 #include <sstream>
 #include <system_error>
 #include <unordered_set>
@@ -5050,23 +5051,43 @@ int Editor::FindOrCreateBuffer(const std::string &path, bool *existed) {
     // Keyed by (workspace, filename) -- decision 3: the same out-of-tree
     // file opened from two workspaces is two buffers; inside worktrees the
     // paths differ anyway.
+    int reuse = -1;
     for (size_t i = 0; i < buffers_.size(); i++) {
         if (!BufferInActiveWorkspace(static_cast<int>(i))) continue;
         if (!buffers_[i].filename.empty() && buffers_[i].filename == path) {
-            if (existed) *existed = true;
+            if (!buffers_[i].deleted) {
+                if (existed) *existed = true;
+                return static_cast<int>(i);
+            }
             // Un-deletes it (BufferDelete's own comment) -- re-opening a
             // path whose buffer was `:bd`'d reuses that same buffer
-            // object (its content/undo history is still sitting right
-            // there, this dedup-by-filename match already found it)
-            // rather than silently staying hidden from buffer_list/
-            // bnext/bprev while LoadFile happily starts editing it again.
-            buffers_[i].deleted = false;
-            return static_cast<int>(i);
+            // object/index rather than silently staying hidden from
+            // buffer_list/bnext/bprev while LoadFile happily starts
+            // editing it again. Its contents are re-read from disk below,
+            // like vim's :bd + :e, never resurrected from memory: the file
+            // may have been deleted and recreated (the file tree's d then
+            // a) or edited externally since, and showing the old text
+            // back as if it were the file's is exactly the stale-buffer
+            // bug this guards against.
+            if (reuse < 0) reuse = static_cast<int>(i);  // keep looking: a live match wins
         }
     }
 
     Buffer buf;
     buf.filename = path;
+    /**
+     * @brief Stores the freshly read `buf`: over the revived deleted buffer when there is one, else as a new buffer.
+     * @return The buffer's id.
+     */
+    auto store = [&]() {
+        if (reuse >= 0) {
+            buf.workspace_id = buffers_[static_cast<size_t>(reuse)].workspace_id;
+            buffers_[static_cast<size_t>(reuse)] = std::move(buf);
+            return reuse;
+        }
+        buffers_.push_back(std::move(buf));
+        return static_cast<int>(buffers_.size()) - 1;
+    };
 
 #if defined(__EMSCRIPTEN__)
     char *result = mep_js_read_file(path.c_str());
@@ -5089,16 +5110,14 @@ int Editor::FindOrCreateBuffer(const std::string &path, bool *existed) {
         // `path`, same as Vim -- this is how you create a file, not an
         // error. Genuine write failures still surface later, at :w.
         if (existed) *existed = false;
-        buffers_.push_back(std::move(buf));
-        return static_cast<int>(buffers_.size()) - 1;
+        return store();
     }
     if (existed) *existed = true;
     std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     buf.lines = SplitIntoLines(content);
 #endif
 
-    buffers_.push_back(std::move(buf));
-    return static_cast<int>(buffers_.size()) - 1;
+    return store();
 }
 
 void Editor::SplitCurrentPane(SplitDir dir, const std::string &file_arg, bool new_pane_first) {
@@ -5631,7 +5650,7 @@ void Editor::OpenImageInPlace(const std::string &path, const unsigned char *byte
     int buffer_id = -1;
     for (size_t i = 0; i < buffers_.size(); i++) {
         if (!BufferInActiveWorkspace(static_cast<int>(i))) continue;
-        if (!buffers_[i].filename.empty() && buffers_[i].filename == path) {
+        if (!buffers_[i].deleted && !buffers_[i].filename.empty() && buffers_[i].filename == path) {
             buffer_id = static_cast<int>(i);
             break;
         }
@@ -6829,7 +6848,7 @@ void Editor::OpenModel3DInPlace(const std::string &path) {
     int buffer_id = -1;
     for (size_t i = 0; i < buffers_.size(); i++) {
         if (!BufferInActiveWorkspace(static_cast<int>(i))) continue;
-        if (!buffers_[i].filename.empty() && buffers_[i].filename == path) {
+        if (!buffers_[i].deleted && !buffers_[i].filename.empty() && buffers_[i].filename == path) {
             buffer_id = static_cast<int>(i);
             break;
         }
@@ -8808,7 +8827,7 @@ void Editor::OpenPdfInPlace(const std::string &path, const unsigned char *bytes,
     int buffer_id = -1;
     for (size_t i = 0; i < buffers_.size(); i++) {
         if (!BufferInActiveWorkspace(static_cast<int>(i))) continue;
-        if (!buffers_[i].filename.empty() && buffers_[i].filename == path) {
+        if (!buffers_[i].deleted && !buffers_[i].filename.empty() && buffers_[i].filename == path) {
             buffer_id = static_cast<int>(i);
             break;
         }
@@ -8847,7 +8866,7 @@ void Editor::OpenVideoInPlace(const std::string &path) {
     int buffer_id = -1;
     for (size_t i = 0; i < buffers_.size(); i++) {
         if (!BufferInActiveWorkspace(static_cast<int>(i))) continue;
-        if (!buffers_[i].filename.empty() && buffers_[i].filename == path) {
+        if (!buffers_[i].deleted && !buffers_[i].filename.empty() && buffers_[i].filename == path) {
             buffer_id = static_cast<int>(i);
             break;
         }
@@ -9459,7 +9478,7 @@ void Editor::OpenOfficeInPlace(const std::string &path, const unsigned char *byt
     int buffer_id = -1;
     for (size_t i = 0; i < buffers_.size(); i++) {
         if (!BufferInActiveWorkspace(static_cast<int>(i))) continue;
-        if (!buffers_[i].filename.empty() && buffers_[i].filename == path) {
+        if (!buffers_[i].deleted && !buffers_[i].filename.empty() && buffers_[i].filename == path) {
             buffer_id = static_cast<int>(i);
             break;
         }
@@ -10491,7 +10510,7 @@ void Editor::OpenSheetInPlace(const std::string &path, const unsigned char *byte
     int buffer_id = -1;
     for (size_t i = 0; i < buffers_.size(); i++) {
         if (!BufferInActiveWorkspace(static_cast<int>(i))) continue;
-        if (!buffers_[i].filename.empty() && buffers_[i].filename == path) {
+        if (!buffers_[i].deleted && !buffers_[i].filename.empty() && buffers_[i].filename == path) {
             buffer_id = static_cast<int>(i);
             break;
         }
@@ -18858,6 +18877,8 @@ void Editor::OpenPicker(const std::string &title, std::vector<PickerItem> items,
     picker_preview_text_.clear();
     picker_preview_spans_.clear();
     picker_preview_scroll_ = 0;
+    picker_tabs_.clear();
+    picker_active_tab_ = 0;
     mode_ = Mode::Picker;
 }
 
@@ -18902,13 +18923,23 @@ std::vector<PickerItem> Editor::PickerFilteredResults() const {
 }
 
 void Editor::HandlePickerInput() {
-    bool escape = false, enter = false, backspace = false;
+    bool escape = false, enter = false, backspace = false, tab = false;
     for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
         if (key == gfx::Key::Escape) escape = true;
         else if (key == gfx::Key::Enter) enter = true;
         else if (key == gfx::Key::Backspace) backspace = true;
+        else if (key == gfx::Key::Tab) tab = true;
     }
     bool ctrl = gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl);
+    // Tab/Shift-Tab: handed to on_key as "<Tab>"/"<S-Tab>" (tabbed pickers
+    // -- see SetPickerTabs) and otherwise ignored, as before.
+    if (tab && !escape && !enter && picker_on_key_ref_ != 0 && lua_) {
+        bool shift = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
+        lua_->CallRefWithString(picker_on_key_ref_, shift ? "<S-Tab>" : "<Tab>");
+        while (gfx::GetCharPressed() > 0) {
+        }
+        return;
+    }
     // Snapshot the currently-highlighted item's `data` *before* this frame's
     // navigation/query edits are applied below, so the on_select_change_ref
     // firing at the bottom of this function can tell whether the effective
@@ -19152,9 +19183,12 @@ void Editor::HandleRoamGraphInput() {
 // "<CR>" at the Lua/display boundary. Case-insensitive on the way in
 // ("<cr>"/"<Cr>"), and "<Return>"/"<Enter>" are accepted too, since all
 // three spellings are common in vim configs -- the display form is
-// always the canonical "<CR>".
+// always the canonical "<CR>". "<Space>"/"<Spc>" spell a literal space
+// (the leader itself, e.g. <leader><Space> for the command runner),
+// displayed back as "<Space>".
 std::string Editor::NormalizeWhichKeySequence(const std::string &seq) {
     static const char *const kEnterSpellings[] = {"<cr>", "<return>", "<enter>"};
+    static const char *const kSpaceSpellings[] = {"<space>", "<spc>"};
     std::string out;
     size_t i = 0;
     while (i < seq.size()) {
@@ -19174,6 +19208,20 @@ std::string Editor::NormalizeWhichKeySequence(const std::string &seq) {
                     break;
                 }
             }
+            for (const char *spelling : kSpaceSpellings) {
+                if (matched) break;
+                size_t n = std::strlen(spelling);
+                if (i + n > seq.size()) continue;
+                bool eq = true;
+                for (size_t k = 0; k < n && eq; k++) {
+                    eq = std::tolower(static_cast<unsigned char>(seq[i + k])) == spelling[k];
+                }
+                if (eq) {
+                    out += ' ';
+                    i += n;
+                    matched = true;
+                }
+            }
         }
         if (!matched) out += seq[i++];
     }
@@ -19185,6 +19233,8 @@ std::string Editor::WhichKeySequenceDisplay(const std::string &seq) {
     for (char c : seq) {
         if (c == '\r') {
             out += "<CR>";
+        } else if (c == ' ') {
+            out += "<Space>";
         } else {
             out += c;
         }
@@ -22379,6 +22429,71 @@ int Editor::FindOpenBufferForPath(const std::string &path) const {
         if (NormalizedAbsolutePath(ResolveBufferPath(buf, buf.filename)) == want) return static_cast<int>(i);
     }
     return -1;
+}
+
+namespace {
+
+// The part of `candidate` below `root` ("" for root itself, "/rest" for a
+// descendant), or nullopt if it's neither -- both already normalized.
+std::optional<std::string> PathSuffixUnder(const std::string &candidate, const std::string &root) {
+    if (candidate == root) return std::string();
+    if (candidate.size() > root.size() && candidate.compare(0, root.size(), root) == 0 && candidate[root.size()] == '/') {
+        return candidate.substr(root.size());
+    }
+    return std::nullopt;
+}
+
+}  // namespace
+
+void Editor::CloseBuffersForRemovedPath(const std::string &path) {
+    if (path.empty()) return;
+    const std::string root = NormalizedAbsolutePath(path);
+    for (size_t i = 0; i < buffers_.size(); i++) {
+        const Buffer &buf = buffers_[i];
+        if (buf.deleted || buf.filename.empty() || GetTerminal(static_cast<int>(i))) continue;
+        if (write_hook_refs_.count(static_cast<int>(i))) continue;  // an oil directory view -- Lua owns its lifetime
+        if (!PathSuffixUnder(NormalizedAbsolutePath(ResolveBufferPath(buf, buf.filename)), root)) continue;
+        BufferDeleteById(static_cast<int>(i), true);
+    }
+}
+
+void Editor::RetargetBuffersForRenamedPath(const std::string &from, const std::string &to) {
+    if (from.empty() || to.empty()) return;
+    const std::string root = NormalizedAbsolutePath(from);
+    const std::string dest = NormalizedAbsolutePath(to);
+    std::vector<size_t> moved;
+    std::vector<int> stale;
+    for (size_t i = 0; i < buffers_.size(); i++) {
+        const Buffer &buf = buffers_[i];
+        if (buf.deleted || buf.filename.empty() || GetTerminal(static_cast<int>(i))) continue;
+        if (write_hook_refs_.count(static_cast<int>(i))) continue;  // an oil directory view, keyed by its dir in Lua
+        const std::string abs = NormalizedAbsolutePath(ResolveBufferPath(buf, buf.filename));
+        if (PathSuffixUnder(abs, root)) {
+            moved.push_back(i);
+        } else if (PathSuffixUnder(abs, dest) && !buf.modified) {
+            // Already named after the destination but not backed by it (the
+            // rename only succeeded because nothing was there on disk) --
+            // e.g. an unsaved `:e new.txt`. Left alone it would shadow the
+            // renamed buffer in FindOrCreateBuffer's dedup-by-filename.
+            stale.push_back(static_cast<int>(i));
+        }
+    }
+    for (int id : stale) BufferDeleteById(id, false);
+    for (size_t i : moved) {
+        Buffer &buf = buffers_[i];
+        const bool relative = buf.filename[0] != '/';
+        const std::string abs = NormalizedAbsolutePath(ResolveBufferPath(buf, buf.filename));
+        std::string renamed = dest + *PathSuffixUnder(abs, root);
+        if (relative) {
+            // Keep a relatively-opened buffer's name relative (to the same
+            // base it resolved against) so its tab/buffer-list label keeps
+            // its short form -- unless the new location left that base.
+            const std::filesystem::path base = std::filesystem::path(NormalizedAbsolutePath(ResolveBufferPath(buf, "x"))).parent_path();
+            const std::filesystem::path rel = std::filesystem::path(renamed).lexically_relative(base);
+            if (!rel.empty() && *rel.begin() != "..") renamed = rel.string();
+        }
+        buf.filename = renamed;
+    }
 }
 
 std::vector<Editor::ActivityTodoItem> Editor::ActivityTodoLoad(const std::string &path) const {

@@ -6098,6 +6098,16 @@ public:
     int FindOrCreateBufferForLua(const std::string &path) { return FindOrCreateBuffer(path); }
     /** @brief mep.buffer_delete: public shim over BufferDeleteById. */
     void BufferDeleteForLua(int buffer_id, bool force) { BufferDeleteById(buffer_id, force); }
+    // mep.fs_delete/mep.fs_rename (the file tree's d/r keys) call these
+    // after a successful filesystem change so no open buffer keeps
+    // pointing at the old path: otherwise FindOrCreateBuffer's dedup-by-
+    // filename would hand the stale buffer (the deleted file's content)
+    // back the next time a file of that same name is created and opened.
+    // Both match `path` itself and, for a directory, everything under it.
+    // Removal force-closes the buffers (the user already confirmed the
+    // delete); rename retargets their filenames to the new location.
+    void CloseBuffersForRemovedPath(const std::string &path);
+    void RetargetBuffersForRenamedPath(const std::string &from, const std::string &to);
     /**
      * @brief Returns the number of open buffers.
      * @return The buffer count.
@@ -7785,6 +7795,36 @@ public:
      * @return The preview scroll offset.
      */
     int PickerPreviewScroll() const { return picker_preview_scroll_; }
+
+    // --- Picker tab strip (mep.picker_set_tabs) ---
+    // A multi-view picker (kBuiltinRunners' command-runner picker is the
+    // first) swaps its own items per tab from Lua and uses this only for
+    // the strip DrawPickerOverlay draws above the prompt; Tab/Shift-Tab
+    // reach the picker's on_key callback as "<Tab>"/"<S-Tab>". Cleared on
+    // every OpenPicker() so an unrelated picker never inherits a strip.
+    /**
+     * @brief Sets the picker's tab-strip labels and active tab; switching to a different tab clears the query.
+     * @param tabs Tab labels, left to right (empty hides the strip).
+     * @param active 0-indexed active tab.
+     */
+    void SetPickerTabs(std::vector<std::string> tabs, int active) {
+        if (active != picker_active_tab_) {
+            picker_query_.clear();
+            picker_selected_ = 0;
+        }
+        picker_tabs_ = std::move(tabs);
+        picker_active_tab_ = active;
+    }
+    /**
+     * @brief Returns the picker's tab-strip labels.
+     * @return The tab labels, empty when the picker has no tabs.
+     */
+    const std::vector<std::string> &PickerTabs() const { return picker_tabs_; }
+    /**
+     * @brief Returns the picker's active tab.
+     * @return The 0-indexed active tab.
+     */
+    int PickerActiveTab() const { return picker_active_tab_; }
 
     // --- Roam backlink-graph view (NVIM_PARITY_PLAN.md Phase 37's flagged
     // "no fuzzy backlink-graph visualization" gap, closed) ---
@@ -9746,6 +9786,8 @@ private:
     // doesn't leave a later item's preview scrolled to wherever the
     // previous one happened to be.
     int picker_preview_scroll_ = 0;
+    std::vector<std::string> picker_tabs_;
+    int picker_active_tab_ = 0;
 
     bool roam_graph_open_ = false;
     std::string roam_graph_title_;

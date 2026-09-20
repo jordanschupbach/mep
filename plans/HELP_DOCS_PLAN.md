@@ -210,11 +210,11 @@ These block the page work, or make it much worse if skipped. Do them first.
 
 ## Part 7 — Themes and appearance (2 pages)
 
-- [ ] **7.1 `themes` — Colorschemes.** `:colorscheme` / `:colo`, the picker
+- [x] **7.1 `themes` — Colorschemes.** `:colorscheme` / `:colo`, the picker
   with live preview (`<leader>ut`), the full 62-palette list, light/dark
   detection (the dashboard logo swap), `mep.colorscheme`,
   `mep.current_theme`, `mep.theme_names`.
-- [ ] **7.2 `highlight-groups` — Highlight groups and decorations.** Named
+- [x] **7.2 `highlight-groups` — Highlight groups and decorations.** Named
   groups, how syntax/LSP/spell/git all render through the one decoration
   pipeline, `mep.deco_add`/`buffer_deco_add`/`ns_create`/`ns_clear`,
   `mep.hl_for_file`, `mep.icon_for_file`, fonts (JetBrains Mono, the Nerd

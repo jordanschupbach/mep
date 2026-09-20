@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Highlight groups</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Interface">
+<meta name="help-order" content="70">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Highlight groups</h1>
+<h1>Colours have names, not values</h1>
+<p>Nothing in mep draws with a literal colour. Everything names a *highlight
+group*, and the active <a href="themes.html">theme</a> resolves that name. Write code that says
+<code>Error</code> rather than red, and it stays correct across all sixty-two themes.</p>
+<p>There are two families.</p>
+<p><b>Colour groups</b>, used by syntax highlighting and anything that wants a
+specific hue: <code>Red</code>, <code>Green</code>, <code>Yellow</code>, <code>Blue</code>, <code>Purple</code>, <code>Cyan</code>, <code>Orange</code>,
+<code>Comment</code>, <code>Accent</code>.</p>
+<p><b>Interface groups</b>, used by the chrome: <code>Normal</code>, <code>NormalBg</code>, <code>Cursor</code>,
+<code>CursorLine</code>, <code>Visual</code>, <code>IncSearch</code>, <code>LineNr</code>, <code>StatusLine</code>,
+<code>StatusLineFg</code>, <code>TabBar</code>, <code>TabActive</code>, <code>TabInactive</code>, <code>Sidebar</code>,
+<code>SidebarTitle</code>, <code>Picker</code>, <code>PickerTitle</code>, <code>PickerSelected</code>, <code>PickerBorder</code>,
+<code>FloatBg</code>, <code>FloatBorder</code>, <code>Border</code>, <code>BorderActive</code>, <code>BorderInactive</code>,
+<code>MenuBar</code>, <code>MenuHighlight</code>, <code>Error</code>, <code>ErrorText</code>, <code>Warn</code>, <code>Info</code>, <code>Debug</code>,
+<code>Add</code>, <code>MutedFg</code>, <code>Overlay</code>, <code>ProjectLabel</code>, <code>WorkspaceActiveBg</code>,
+<code>WorkspaceInactive</code>, <code>AccentTint</code>, <code>OfficePage</code>.</p>
+<h1>Decorations</h1>
+<p>A decoration is a coloured span laid over a buffer's text: a syntax token, a
+spelling squiggle, a search match, an LSP diagnostic, a git-gutter mark.
+They all go through one pipeline, which is why they compose predictably and
+why a theme change re-tints every one of them at once.</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-purple">local</span> ns = mep.<span class="tok-blue">ns_create</span>(<span class="tok-green">'my_feature'</span>)
+mep.<span class="tok-blue">buffer_deco_add</span>(mep.current_buffer(), ns, {
+  row = <span class="tok-cyan">3</span>, col_start = <span class="tok-cyan">1</span>, col_end = <span class="tok-cyan">11</span>,   <span class="tok-comment">-- the line's first 10 characters</span>
+  hl_group = <span class="tok-green">'Error'</span>,
+  priority = <span class="tok-cyan">100</span>,
+<span class="tok-blue">}</span>)</code></pre></div>
+<table>
+<tr><th>Function</th><th>Does</th></tr>
+<tr><td><code>mep.ns_create(name)</code></td><td>make a namespace</td></tr>
+<tr><td><code>mep.buffer_deco_add(buf, ns, deco)</code></td><td>add a span</td></tr>
+<tr><td><code>mep.buffer_ns_clear(buf, ns)</code></td><td>clear that namespace's spans</td></tr>
+<tr><td><code>mep.deco_add(ns, deco)</code> / <code>mep.ns_clear(ns)</code></td><td>the current buffer's versions</td></tr>
+</table>
+<p>Namespaces are the whole point: your feature clears and redraws only its own
+spans, without disturbing syntax highlighting or anyone else's.</p>
+<p>Rows and columns here are 1-indexed, and <code>col_end</code> is exclusive.</p>
+<p>A decoration can do more than recolour a span:</p>
+<table>
+<tr><th>Option</th><th>Effect</th></tr>
+<tr><td><code>hl_group</code></td><td>the colour to use</td></tr>
+<tr><td><code>whole_line</code></td><td>tint the whole line rather than a span</td></tr>
+<tr><td><code>underline</code></td><td>draw a thin underline instead of recolouring text</td></tr>
+<tr><td><code>virt_text</code></td><td>text drawn after the line, not in the buffer</td></tr>
+<tr><td><code>virt_text_hl</code></td><td>that text's highlight group</td></tr>
+<tr><td><code>virt_overlay</code></td><td>virtual text drawn <b>over</b> the line</td></tr>
+<tr><td><code>sign</code></td><td>a one-character mark in the gutter</td></tr>
+<tr><td><code>sign_hl</code></td><td>the sign's highlight group</td></tr>
+<tr><td><code>priority</code></td><td>who wins where two decorations overlap</td></tr>
+</table>
+<p><code>virt_text</code> is how an inline diagnostic message or an end-of-line hint is
+drawn without touching the buffer's real contents, and <code>sign</code> is what puts
+the git and diagnostic marks in the gutter column.</p>
+<h1>Syntax capture mapping</h1>
+<p>Treesitter captures are mapped to colour groups by <code>mep.ts_capture_hl</code>, a
+plain Lua table you can read or change:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.ts_capture_hl[<span class="tok-green">'keyword'</span>] = <span class="tok-green">'Red'</span></code></pre></div>
+<p>A capture falls back to its own first component, so <code>function.call</code> uses
+<code>function</code>'s colour when it has no entry of its own.</p>
+<h1>Per-file colours and icons</h1>
+<table>
+<tr><th>Function</th><th>Returns</th></tr>
+<tr><td><code>mep.icon_for_file(path)</code></td><td>the Nerd Font icon for that file type</td></tr>
+<tr><td><code>mep.hl_for_file(path)</code></td><td>the highlight group that colours it</td></tr>
+</table>
+<p>The file tree, the buffer picker and the tab strips all use these, so a
+panel of your own can match them with two calls.</p>
+<h1>Fonts</h1>
+<p>mep embeds every font it uses, so both the native and wasm builds start with
+real text and no asset-fetching step:</p>
+<table>
+<tr><th>Font</th><th>Used for</th></tr>
+<tr><td>JetBrains Mono</td><td>all editor text</td></tr>
+<tr><td>a Nerd Font set</td><td>file-type and UI icons</td></tr>
+<tr><td>an emoji font</td><td>colour emoji</td></tr>
+<tr><td>a symbol font</td><td>maths and box-drawing glyphs</td></tr>
+<tr><td>serif and mono faces</td><td>rendering office documents</td></tr>
+</table>
+<p><code>Ctrl+Shift+=</code> and <code>Ctrl+Shift+-</code> change the size in any mode. Panels,
+gutters and chrome are laid out from the same size, so everything scales
+together.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="themes.html">Colorschemes</a> -- what resolves these names.</li>
+<li><a href="sidebars.html">Sidebars</a> -- where <code>SidebarTitle</code> and friends show up.</li>
+</ul>
+</body>
+</html>

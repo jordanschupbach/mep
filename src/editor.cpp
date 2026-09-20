@@ -872,27 +872,211 @@ const Palette kPaletteOxocarbonLight = {
     /*accent*/ {15, 98, 254, 255},
 };
 
+// Past mep.nvim's own set: more real, published colorschemes in the same
+// ported-hex-values shape as the block above (same `border` = the scheme's
+// own selection/line-highlight tone, same `accent` = a copy of whichever
+// role color the scheme is best known for). Ordered so each one sits next
+// to the family it belongs to where it completes one (tokyonight's day,
+// ayu's light, rose-pine's moon, kanagawa's dragon/lotus, github's dimmed)
+// and roughly popularity-first after that.
+const Palette kPaletteTokyonightDay = {
+    "tokyonight-day",
+    {225, 226, 231, 255}, {55, 96, 191, 255}, {245, 42, 101, 255}, {88, 117, 57, 255}, {140, 108, 62, 255},
+    {46, 125, 233, 255}, {152, 84, 241, 255}, {0, 113, 151, 255}, {177, 92, 0, 255}, {196, 200, 218, 255},
+    /*accent*/ {46, 125, 233, 255},
+};
+const Palette kPaletteAyuLight = {
+    "ayu-light",
+    {252, 252, 252, 255}, {92, 97, 102, 255}, {240, 113, 113, 255}, {134, 179, 0, 255}, {242, 174, 73, 255},
+    {57, 158, 230, 255}, {163, 122, 204, 255}, {76, 191, 153, 255}, {250, 141, 62, 255}, {231, 232, 233, 255},
+    /*accent*/ {250, 141, 62, 255},
+};
+const Palette kPaletteRosePineMoon = {
+    "rose-pine-moon",
+    {35, 33, 54, 255}, {224, 222, 244, 255}, {235, 111, 146, 255}, {62, 143, 176, 255}, {246, 193, 119, 255},
+    {156, 207, 216, 255}, {196, 167, 231, 255}, {156, 207, 216, 255}, {234, 154, 151, 255}, {68, 65, 90, 255},
+    /*accent*/ {196, 167, 231, 255},
+};
+const Palette kPaletteKanagawaDragon = {
+    "kanagawa-dragon",
+    {24, 22, 22, 255}, {197, 201, 197, 255}, {196, 116, 110, 255}, {138, 154, 123, 255}, {196, 178, 138, 255},
+    {139, 164, 176, 255}, {162, 146, 163, 255}, {142, 164, 162, 255}, {182, 146, 123, 255}, {40, 39, 39, 255},
+    /*accent*/ {139, 164, 176, 255},
+};
+const Palette kPaletteKanagawaLotus = {
+    "kanagawa-lotus",
+    {242, 236, 188, 255}, {84, 84, 100, 255}, {200, 64, 83, 255}, {111, 137, 78, 255}, {119, 113, 63, 255},
+    {77, 105, 155, 255}, {179, 91, 121, 255}, {89, 123, 117, 255}, {204, 109, 0, 255}, {229, 221, 176, 255},
+    /*accent*/ {77, 105, 155, 255},
+};
+const Palette kPaletteGithubDarkDimmed = {
+    "github-dark-dimmed",
+    {34, 39, 46, 255}, {173, 186, 199, 255}, {244, 112, 103, 255}, {87, 171, 90, 255}, {218, 170, 63, 255},
+    {83, 155, 245, 255}, {176, 131, 240, 255}, {57, 197, 207, 255}, {224, 130, 61, 255}, {68, 76, 86, 255},
+    /*accent*/ {83, 155, 245, 255},
+};
+const Palette kPaletteNightOwl = {
+    "night-owl",
+    {1, 22, 39, 255}, {214, 222, 235, 255}, {239, 83, 80, 255}, {173, 219, 103, 255}, {236, 196, 141, 255},
+    {130, 170, 255, 255}, {199, 146, 234, 255}, {33, 199, 168, 255}, {247, 140, 108, 255}, {29, 59, 83, 255},
+    /*accent*/ {130, 170, 255, 255},
+};
+const Palette kPaletteMaterialPalenight = {
+    "material-palenight",
+    {41, 45, 62, 255}, {166, 172, 205, 255}, {240, 113, 120, 255}, {195, 232, 141, 255}, {255, 203, 107, 255},
+    {130, 170, 255, 255}, {199, 146, 234, 255}, {137, 221, 255, 255}, {247, 140, 108, 255}, {68, 66, 103, 255},
+    /*accent*/ {199, 146, 234, 255},
+};
+const Palette kPaletteMaterialDarker = {
+    "material-darker",
+    {33, 33, 33, 255}, {238, 255, 255, 255}, {240, 113, 120, 255}, {195, 232, 141, 255}, {255, 203, 107, 255},
+    {130, 170, 255, 255}, {199, 146, 234, 255}, {137, 221, 255, 255}, {247, 140, 108, 255}, {66, 66, 66, 255},
+    /*accent*/ {137, 221, 255, 255},
+};
+const Palette kPaletteNightfly = {
+    "nightfly",
+    {1, 22, 39, 255}, {195, 204, 220, 255}, {252, 81, 78, 255}, {161, 205, 94, 255}, {227, 209, 138, 255},
+    {130, 170, 255, 255}, {174, 129, 255, 255}, {127, 219, 202, 255}, {247, 140, 108, 255}, {29, 59, 83, 255},
+    /*accent*/ {130, 170, 255, 255},
+};
+const Palette kPaletteMoonfly = {
+    "moonfly",
+    {8, 8, 8, 255}, {189, 189, 189, 255}, {255, 84, 84, 255}, {140, 200, 95, 255}, {227, 199, 138, 255},
+    {128, 160, 255, 255}, {207, 135, 232, 255}, {121, 218, 200, 255}, {222, 147, 95, 255}, {50, 52, 55, 255},
+    /*accent*/ {128, 160, 255, 255},
+};
+const Palette kPaletteOceanicNext = {
+    "oceanic-next",
+    {27, 43, 52, 255}, {205, 211, 222, 255}, {236, 95, 103, 255}, {153, 199, 148, 255}, {250, 200, 99, 255},
+    {102, 153, 204, 255}, {197, 148, 197, 255}, {95, 179, 179, 255}, {249, 145, 87, 255}, {52, 61, 70, 255},
+    /*accent*/ {102, 153, 204, 255},
+};
+const Palette kPaletteIcebergDark = {
+    "iceberg-dark",
+    {22, 24, 33, 255}, {198, 200, 209, 255}, {226, 120, 120, 255}, {180, 190, 130, 255}, {226, 164, 120, 255},
+    {132, 160, 198, 255}, {160, 147, 199, 255}, {137, 184, 194, 255}, {226, 164, 120, 255}, {58, 63, 75, 255},
+    /*accent*/ {132, 160, 198, 255},
+};
+const Palette kPaletteIcebergLight = {
+    "iceberg-light",
+    {232, 233, 236, 255}, {51, 55, 76, 255}, {204, 81, 122, 255}, {102, 142, 61, 255}, {197, 115, 57, 255},
+    {45, 83, 158, 255}, {119, 89, 180, 255}, {63, 131, 166, 255}, {197, 115, 57, 255}, {202, 208, 222, 255},
+    /*accent*/ {45, 83, 158, 255},
+};
+const Palette kPaletteMelange = {
+    "melange",
+    {41, 37, 34, 255}, {236, 225, 215, 255}, {212, 119, 102, 255}, {133, 182, 149, 255}, {235, 192, 109, 255},
+    {163, 169, 206, 255}, {207, 155, 194, 255}, {137, 179, 182, 255}, {228, 155, 93, 255}, {64, 58, 54, 255},
+    /*accent*/ {235, 192, 109, 255},
+};
+const Palette kPaletteGruvboxMaterial = {
+    "gruvbox-material",
+    {40, 40, 40, 255}, {212, 190, 152, 255}, {234, 105, 98, 255}, {169, 182, 101, 255}, {216, 166, 87, 255},
+    {125, 174, 163, 255}, {211, 134, 155, 255}, {137, 180, 130, 255}, {231, 138, 78, 255}, {91, 83, 77, 255},
+    /*accent*/ {231, 138, 78, 255},
+};
+const Palette kPaletteSonokai = {
+    "sonokai",
+    {44, 46, 52, 255}, {226, 226, 227, 255}, {252, 93, 124, 255}, {158, 208, 114, 255}, {231, 198, 100, 255},
+    {118, 204, 224, 255}, {179, 157, 243, 255}, {133, 211, 242, 255}, {243, 150, 96, 255}, {127, 132, 144, 255},
+    /*accent*/ {158, 208, 114, 255},
+};
+const Palette kPaletteSrcery = {
+    "srcery",
+    {28, 27, 25, 255}, {252, 232, 195, 255}, {239, 47, 39, 255}, {81, 159, 80, 255}, {251, 184, 41, 255},
+    {44, 120, 191, 255}, {224, 44, 109, 255}, {10, 174, 179, 255}, {255, 95, 0, 255}, {145, 129, 117, 255},
+    /*accent*/ {255, 95, 0, 255},
+};
+const Palette kPaletteJellybeans = {
+    "jellybeans",
+    {21, 21, 21, 255}, {232, 232, 211, 255}, {207, 106, 76, 255}, {153, 173, 106, 255}, {250, 208, 122, 255},
+    {129, 151, 191, 255}, {198, 182, 238, 255}, {143, 191, 220, 255}, {232, 125, 62, 255}, {64, 60, 65, 255},
+    /*accent*/ {250, 208, 122, 255},
+};
+const Palette kPaletteTomorrowNight = {
+    "tomorrow-night",
+    {29, 31, 33, 255}, {197, 200, 198, 255}, {204, 102, 102, 255}, {181, 189, 104, 255}, {240, 198, 116, 255},
+    {129, 162, 190, 255}, {178, 148, 187, 255}, {138, 190, 183, 255}, {222, 147, 95, 255}, {55, 59, 65, 255},
+    /*accent*/ {129, 162, 190, 255},
+};
+const Palette kPaletteCobalt2 = {
+    "cobalt2",
+    {25, 53, 73, 255}, {255, 255, 255, 255}, {255, 98, 140, 255}, {58, 217, 0, 255}, {255, 198, 0, 255},
+    {0, 136, 255, 255}, {251, 148, 255, 255}, {128, 252, 255, 255}, {255, 157, 0, 255}, {31, 70, 98, 255},
+    /*accent*/ {255, 198, 0, 255},
+};
+const Palette kPaletteFlexokiDark = {
+    "flexoki-dark",
+    {16, 15, 15, 255}, {206, 205, 195, 255}, {209, 77, 65, 255}, {135, 154, 57, 255}, {208, 162, 21, 255},
+    {67, 133, 190, 255}, {139, 126, 200, 255}, {58, 169, 159, 255}, {218, 112, 44, 255}, {64, 62, 60, 255},
+    /*accent*/ {218, 112, 44, 255},
+};
+const Palette kPaletteFlexokiLight = {
+    "flexoki-light",
+    {255, 252, 240, 255}, {16, 15, 15, 255}, {175, 48, 41, 255}, {102, 128, 11, 255}, {173, 131, 1, 255},
+    {32, 94, 166, 255}, {94, 64, 157, 255}, {36, 131, 123, 255}, {188, 82, 21, 255}, {230, 228, 217, 255},
+    /*accent*/ {188, 82, 21, 255},
+};
+const Palette kPaletteModusVivendi = {
+    "modus-vivendi",
+    {0, 0, 0, 255}, {255, 255, 255, 255}, {255, 128, 89, 255}, {68, 188, 68, 255}, {208, 188, 0, 255},
+    {47, 175, 255, 255}, {254, 172, 208, 255}, {0, 211, 208, 255}, {239, 139, 80, 255}, {83, 83, 83, 255},
+    /*accent*/ {47, 175, 255, 255},
+};
+const Palette kPaletteModusOperandi = {
+    "modus-operandi",
+    {255, 255, 255, 255}, {0, 0, 0, 255}, {166, 0, 0, 255}, {0, 104, 0, 255}, {111, 85, 0, 255},
+    {0, 49, 169, 255}, {114, 16, 69, 255}, {0, 94, 139, 255}, {168, 82, 0, 255}, {215, 215, 215, 255},
+    /*accent*/ {0, 49, 169, 255},
+};
+const Palette kPaletteVscodeDark = {
+    "vscode-dark",
+    {30, 30, 30, 255}, {212, 212, 212, 255}, {244, 71, 71, 255}, {106, 153, 85, 255}, {220, 220, 170, 255},
+    {86, 156, 214, 255}, {197, 134, 192, 255}, {78, 201, 176, 255}, {206, 145, 120, 255}, {62, 62, 66, 255},
+    /*accent*/ {86, 156, 214, 255},
+};
+const Palette kPaletteApprentice = {
+    "apprentice",
+    {38, 38, 38, 255}, {188, 188, 188, 255}, {175, 95, 95, 255}, {95, 135, 95, 255}, {255, 255, 175, 255},
+    {95, 135, 175, 255}, {135, 135, 175, 255}, {95, 135, 135, 255}, {255, 135, 0, 255}, {68, 68, 68, 255},
+    /*accent*/ {95, 135, 175, 255},
+};
+const Palette kPaletteTerafox = {
+    "terafox",
+    {21, 37, 40, 255}, {230, 234, 234, 255}, {232, 92, 81, 255}, {122, 164, 161, 255}, {253, 164, 127, 255},
+    {90, 147, 170, 255}, {173, 92, 124, 255}, {161, 205, 216, 255}, {255, 131, 73, 255}, {41, 62, 64, 255},
+    /*accent*/ {90, 147, 170, 255},
+};
+
+// Every registered palette, in the order the :colorscheme picker lists them.
+// Single source of truth: both FindPalette (name lookup) and
+// Editor::ThemeNames (the picker's list) read this one table, so adding a
+// theme means adding its Palette above and one entry here -- there is no
+// second list to keep in sync.
+const Palette *const kAllPalettes[] = {
+    &kPaletteMepDark, &kPaletteGruvboxDark, &kPaletteNord, &kPaletteGruvboxLight, &kPaletteDracula,
+    &kPaletteTokyonightStorm, &kPaletteTokyonightNight, &kPaletteTokyonightMoon, &kPaletteCatppuccinMocha,
+    &kPaletteCatppuccinMacchiato, &kPaletteCatppuccinFrappe, &kPaletteCatppuccinLatte, &kPaletteEverforestDark,
+    &kPaletteEverforestLight, &kPaletteKanagawa, &kPaletteOnedark, &kPaletteOneLight, &kPaletteSolarizedDark,
+    &kPaletteSolarizedLight, &kPaletteNordLight, &kPaletteTokyoNight, &kPaletteRosePine, &kPaletteRosePineDawn,
+    &kPaletteMonokai, &kPaletteAyuDark, &kPaletteAyuMirage, &kPaletteGithubDark, &kPaletteGithubLight,
+    &kPaletteNightfox, &kPaletteHorizon, &kPaletteZenburn, &kPaletteSynthwave84, &kPaletteOxocarbonDark,
+    &kPaletteOxocarbonLight, &kPaletteTokyonightDay, &kPaletteAyuLight, &kPaletteRosePineMoon,
+    &kPaletteKanagawaDragon, &kPaletteKanagawaLotus, &kPaletteGithubDarkDimmed, &kPaletteNightOwl,
+    &kPaletteMaterialPalenight, &kPaletteMaterialDarker, &kPaletteNightfly, &kPaletteMoonfly, &kPaletteOceanicNext,
+    &kPaletteIcebergDark, &kPaletteIcebergLight, &kPaletteMelange, &kPaletteGruvboxMaterial, &kPaletteSonokai,
+    &kPaletteSrcery, &kPaletteJellybeans, &kPaletteTomorrowNight, &kPaletteCobalt2, &kPaletteFlexokiDark,
+    &kPaletteFlexokiLight, &kPaletteModusVivendi, &kPaletteModusOperandi, &kPaletteVscodeDark, &kPaletteApprentice,
+    &kPaletteTerafox,
+};
+
 /**
  * @brief Looks up a registered color palette by name.
  * @param name The palette name to search for (e.g. "gruvbox-dark").
  * @return A pointer to the matching Palette, or nullptr if no palette has that name.
  */
 const Palette *FindPalette(const std::string &name) {
-    static const Palette *kAll[] = {
-        &kPaletteMepDark,        &kPaletteGruvboxDark,          &kPaletteNord,
-        &kPaletteGruvboxLight,   &kPaletteDracula,              &kPaletteTokyonightStorm,
-        &kPaletteTokyonightNight, &kPaletteTokyonightMoon,      &kPaletteCatppuccinMocha,
-        &kPaletteCatppuccinMacchiato, &kPaletteCatppuccinFrappe, &kPaletteCatppuccinLatte,
-        &kPaletteEverforestDark, &kPaletteEverforestLight,      &kPaletteKanagawa,
-        &kPaletteOnedark,        &kPaletteOneLight,             &kPaletteSolarizedDark,
-        &kPaletteSolarizedLight, &kPaletteNordLight,            &kPaletteTokyoNight,
-        &kPaletteRosePine,       &kPaletteRosePineDawn,         &kPaletteMonokai,
-        &kPaletteAyuDark,        &kPaletteAyuMirage,            &kPaletteGithubDark,
-        &kPaletteGithubLight,    &kPaletteNightfox,             &kPaletteHorizon,
-        &kPaletteZenburn,        &kPaletteSynthwave84,          &kPaletteOxocarbonDark,
-        &kPaletteOxocarbonLight,
-    };
-    for (const Palette *p : kAll) {
+    for (const Palette *p : kAllPalettes) {
         if (p->name == name) return p;
     }
     return nullptr;
@@ -1048,20 +1232,10 @@ bool Editor::ApplyTheme(const std::string &name) {
 }
 
 std::vector<std::string> Editor::ThemeNames() const {
-    return {
-        kPaletteMepDark.name,        kPaletteGruvboxDark.name,          kPaletteNord.name,
-        kPaletteGruvboxLight.name,   kPaletteDracula.name,              kPaletteTokyonightStorm.name,
-        kPaletteTokyonightNight.name, kPaletteTokyonightMoon.name,      kPaletteCatppuccinMocha.name,
-        kPaletteCatppuccinMacchiato.name, kPaletteCatppuccinFrappe.name, kPaletteCatppuccinLatte.name,
-        kPaletteEverforestDark.name, kPaletteEverforestLight.name,      kPaletteKanagawa.name,
-        kPaletteOnedark.name,        kPaletteOneLight.name,             kPaletteSolarizedDark.name,
-        kPaletteSolarizedLight.name, kPaletteNordLight.name,            kPaletteTokyoNight.name,
-        kPaletteRosePine.name,       kPaletteRosePineDawn.name,         kPaletteMonokai.name,
-        kPaletteAyuDark.name,        kPaletteAyuMirage.name,            kPaletteGithubDark.name,
-        kPaletteGithubLight.name,    kPaletteNightfox.name,             kPaletteHorizon.name,
-        kPaletteZenburn.name,        kPaletteSynthwave84.name,          kPaletteOxocarbonDark.name,
-        kPaletteOxocarbonLight.name,
-    };
+    std::vector<std::string> names;
+    names.reserve(std::size(kAllPalettes));
+    for (const Palette *p : kAllPalettes) names.push_back(p->name);
+    return names;
 }
 
 bool Editor::ResolveHighlight(const std::string &name, ThemeColor *out) const {

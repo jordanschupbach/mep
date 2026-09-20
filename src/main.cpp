@@ -1288,6 +1288,23 @@ struct BufferRowRect {
 };
 std::vector<BufferRowRect> g_buffer_drag_row_rects;
 
+// Same idea again, for the rows of a sidebar hosted in a *pane*
+// (DrawSidebarPaneContent) rather than docked to a screen edge. Those rows
+// do their own clicking through RegisterClickRegion (see that function's
+// header for why they deliberately don't share the docked path's
+// bookkeeping), but a drag has to be armed on mouse-*down* from
+// UpdatePaneMouseInteraction like every other drag gesture, which needs
+// the geometry out here. `pane_id` is the hosting pane, so a drop back
+// onto the sidebar itself can be ignored rather than replacing the list
+// you were dragging out of.
+struct SidebarPaneRowRect {
+    int sidebar_id;
+    int line_index;
+    int pane_id;
+    gfx::Rectangle rect;
+};
+std::vector<SidebarPaneRowRect> g_sidebar_pane_row_rects;
+
 // One tab-strip entry's rect this frame (SidebarInstance::tabs), captured
 // by DrawSidebarTabStrip from both the docked header and the popout's
 // title row; DispatchChromeClicks turns a click on one into
@@ -1511,8 +1528,20 @@ struct PaneDragState {
     int target_pane_id = -1;
     PaneDropZone drop_zone = PaneDropZone::Center;
 
-    // FileDrop fields.
+    // FileDrop fields. `dragged_path` is empty when the drag carries an
+    // already-open buffer instead of a path (a Buffers sidebar row, which
+    // may stand for a terminal or a scratch buffer with no file at all):
+    // then `dragged_drop_buffer_id` is >= 0 and the drop shows that exact
+    // buffer (Editor::OpenBufferInPane) rather than opening a path.
+    // `dragged_label` is what the drag overlay captions itself with,
+    // falling back to the path's basename when empty. source_pane_id
+    // (shared with TabMove) is the pane the row was dragged out of, or -1
+    // for a docked sidebar row that belongs to no pane -- a center drop
+    // back onto that same pane is ignored, since "replace the list I'm
+    // dragging out of" is never what the gesture meant.
     std::string dragged_path;
+    int dragged_drop_buffer_id = -1;
+    std::string dragged_label;
 
     // BorderResize fields.
     SplitNode *border_node = nullptr;
@@ -4580,7 +4609,20 @@ const char *kBuiltinBuffers =
     "    map[wid] = id\n"
     "    widgets[#widgets + 1] = {\n"
     "      id = wid, text = item.display, hl = (id == cur) and 'Add' or nil, current = (id == cur),\n"
-    "      on_click = function() mep.buffer_switch(id) end,\n"
+    // Never mep.buffer_switch: that shows the buffer in the *focused*
+    // pane, which -- when this sidebar is itself the focused pane
+    // (mep.buffers_open_pane) -- is the sidebar, so activating a row
+    // replaced the very list being clicked in. buffer_open_beside opens
+    // into the pane to the right instead, and still switches in place
+    // for the docked sidebar, whose rows activate against whatever
+    // ordinary pane last had focus.
+    "      on_click = function() mep.buffer_open_beside(id, 'right') end,\n"
+    // Makes the row draggable onto any visible pane, the same gesture
+    // the file tree's rows have (SidebarWidget::drag_buffer_id). By
+    // buffer rather than by path, so a terminal or a scratch buffer
+    // drags too, and dropping a modified buffer shows the edits rather
+    // than re-reading the file.
+    "      drag_buffer = id,\n"
     "      trailing_icon = ' \xe2\x9c\x95 ',\n"
     "      trailing_on_click = function() mep.buffer_delete(id, false) mep.buffers_sidebar_refresh() end,\n"
     "    }\n"
@@ -4590,7 +4632,12 @@ const char *kBuiltinBuffers =
     "  if not mep_buffers_sidebar_id then\n"
     "    mep_buffers_sidebar_id = mep.sidebar_create('Buffers', 'left', 34)\n"
     "    mep.sidebar_set_on_key(mep_buffers_sidebar_id, mep.buffers_sidebar_on_key)\n"
-    "    mep.sidebar_set_help(mep_buffers_sidebar_id, {{'Enter', 'switch to the buffer'}, {'d', 'delete the buffer'}})\n"
+    // Opening a buffer moves it into another pane and takes focus with
+    // it -- too disruptive to fire off a stray single click while
+    // scrolling the list. A single click only moves the row cursor; see
+    // SidebarInstance::activate_on_double_click.
+    "    mep.sidebar_set_double_click(mep_buffers_sidebar_id, true)\n"
+    "    mep.sidebar_set_help(mep_buffers_sidebar_id, {{'Enter', 'open the buffer in the pane to the right'}, {'double-click', 'same, with the mouse'}, {'drag', 'drop the row on a pane to open it there'}, {'d', 'delete the buffer'}})\n"
     "  end\n"
     "  mep.sidebar_set_sections(mep_buffers_sidebar_id, {{id = 'buffers', title = '', collapsed = false, widgets = widgets}})\n"
     "end\n"
@@ -4654,9 +4701,34 @@ const char *kBuiltinBuffers =
     // both the docked-open and paneable-open cases -- SidebarInstance::
     // open (mep.sidebar_is_open) is never true for the paneable path, see
     // mep_buffers_pane_buf's own comment.
+    "local function mep_buffers_visible()\n"
+    "  if mep_buffers_sidebar_id and mep.sidebar_is_open(mep_buffers_sidebar_id) then return true end\n"
+    "  return mep_buffers_pane_buf ~= nil\n"
+    "end\n"
     "mep.on_buffer_saved(function()\n"
-    "  local docked_open = mep_buffers_sidebar_id and mep.sidebar_is_open(mep_buffers_sidebar_id)\n"
-    "  if docked_open or mep_buffers_pane_buf then mep.buffers_sidebar_refresh() end\n"
+    "  if mep_buffers_visible() then mep.buffers_sidebar_refresh() end\n"
+    "end)\n"
+    // on_buffer_saved alone only ever caught `:w`, leaving the "a buffer
+    // opened/closed/renamed elsewhere should show up without having to
+    // close and reopen this sidebar" above unmet: neither opening a file
+    // nor `:bd`ing one bumps the save epoch. Polled instead of hooked
+    // because there is no open/close epoch to hook, throttled to 4Hz so
+    // the one non-O(1) call here (mep.buffer_list, which builds a label
+    // per buffer -- mep.buffer_count would be the cheap per-frame poll,
+    // but it counts `:bd`'d buffers too and so can't see a close at all)
+    // costs nothing noticeable, and only while the sidebar is actually on
+    // screen. Watching the current buffer as well keeps the highlighted
+    // row following the focused pane.
+    "local mep_buffers_last_n, mep_buffers_last_cur, mep_buffers_last_poll = -1, -1, 0\n"
+    "mep.on_frame(function()\n"
+    "  if not mep_buffers_visible() then return end\n"
+    "  local now = mep.now()\n"
+    "  if now - mep_buffers_last_poll < 0.25 then return end\n"
+    "  mep_buffers_last_poll = now\n"
+    "  local n, cur = #mep.buffer_list(), mep.current_buffer()\n"
+    "  if n == mep_buffers_last_n and cur == mep_buffers_last_cur then return end\n"
+    "  mep_buffers_last_n, mep_buffers_last_cur = n, cur\n"
+    "  mep.buffers_sidebar_refresh()\n"
     "end)\n";
 
 // Git integration (Phase 17): gutter hunks (built on mep.diff_lines, the
@@ -34001,10 +34073,40 @@ void DrawSidebarPaneContent(const Pane &pane, int sidebar_id, float x, float y, 
         gfx::Color color = lines[i].hl.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(lines[i].hl);
         DrawSidebarRow(lines[i], gfx::Vector2{x + 8, ly}, font_size, color, line_h, w - 16.0f);
         int line_index = static_cast<int>(i);
-        RegisterClickRegion(gfx::Rectangle{x, ly - 1, w, static_cast<float>(line_h)}, [pane_id, sidebar_id, line_index] {
+        const gfx::Rectangle row_rect{x, ly - 1, w, static_cast<float>(line_h)};
+        // Drag-out geometry (g_sidebar_pane_row_rects): arming a drag
+        // happens on mouse-down in UpdatePaneMouseInteraction, not in the
+        // click region below, which only ever sees a completed click.
+        g_sidebar_pane_row_rects.push_back({sidebar_id, line_index, pane_id, row_rect});
+        RegisterClickRegion(row_rect, [pane_id, sidebar_id, line_index] {
             g_editor.FocusPaneById(pane_id);
             g_editor.FocusSidebarPaneRow(sidebar_id, line_index);
-            g_editor.ActivateSidebarLine(sidebar_id, line_index);
+            if (!g_editor.SidebarActivatesOnDoubleClick(sidebar_id)) {
+                g_editor.ActivateSidebarLine(sidebar_id, line_index);
+                return;
+            }
+            // Opt-in double-click (SidebarInstance::activate_on_double_click):
+            // the same "compare against the previous click's own time and
+            // row" test the docked path runs in UpdatePaneMouseInteraction,
+            // sharing its g_last_sidebar_click_* state -- a given sidebar is
+            // either docked or pane-hosted, never both at once, so the two
+            // paths can't be mid-double-click on the same one at the same
+            // time. A single click has still moved the row cursor above,
+            // which is the whole point: it selects without firing.
+            const double now = gfx::GetTime();
+            const bool is_double = g_last_sidebar_click_id == sidebar_id && g_last_sidebar_click_row == line_index &&
+                                   (now - g_last_sidebar_click_time) < kDoubleClickThresholdSec;
+            if (is_double) {
+                g_editor.ActivateSidebarLine(sidebar_id, line_index);
+                // A third rapid click starts fresh, same as the docked path.
+                g_last_sidebar_click_time = -1.0;
+                g_last_sidebar_click_id = -1;
+                g_last_sidebar_click_row = -1;
+            } else {
+                g_last_sidebar_click_time = now;
+                g_last_sidebar_click_id = sidebar_id;
+                g_last_sidebar_click_row = line_index;
+            }
         });
     }
     gfx::EndScissorMode();
@@ -38596,6 +38698,7 @@ void DrawEditor() {
     g_terminal_grid = TerminalGridCapture{};
     g_sidebar_row_rects.clear();
     g_buffer_drag_row_rects.clear();
+    g_sidebar_pane_row_rects.clear();
     g_sidebar_panel_rects.clear();
     g_sidebar_tab_rects.clear();
     g_sidebar_group_tab_rects.clear();
@@ -40269,12 +40372,26 @@ void UpdatePaneMouseInteraction() {
                     // mouse travels past kPaneDragThresholdPx.
                     {
                         const std::string wid = g_editor.SidebarLineWidgetId(r.sidebar_id, r.line_index);
+                        // A row can be draggable for either reason: it
+                        // names a real file (the file tree, git status),
+                        // or it stands for an already-open buffer
+                        // (SidebarWidget::drag_buffer_id -- the Buffers
+                        // sidebar, where a row may well have no file at
+                        // all). The buffer payload wins where both apply:
+                        // dropping the row the user is looking at should
+                        // show *that* buffer, unsaved edits and all, not
+                        // re-read its path.
+                        const int drag_buf = g_editor.SidebarLineDragBufferId(r.sidebar_id, r.line_index);
                         std::error_code ec;
-                        if (!wid.empty() && std::filesystem::is_regular_file(wid, ec)) {
+                        const bool is_file = !wid.empty() && std::filesystem::is_regular_file(wid, ec);
+                        if (drag_buf >= 0 || is_file) {
                             g_pane_drag.kind = PaneDragKind::FileDrop;
                             g_pane_drag.start_pos = mouse;
                             g_pane_drag.threshold_passed = false;
-                            g_pane_drag.dragged_path = wid;
+                            g_pane_drag.dragged_path = drag_buf >= 0 ? std::string() : wid;
+                            g_pane_drag.dragged_drop_buffer_id = drag_buf;
+                            g_pane_drag.dragged_label = drag_buf >= 0 ? g_editor.BufferLabelForLua(drag_buf) : std::string();
+                            g_pane_drag.source_pane_id = -1;  // docked: not a pane of its own
                             g_pane_drag.target_pane_id = -1;
                         }
                     }
@@ -40298,11 +40415,38 @@ void UpdatePaneMouseInteraction() {
                     break;
                 }
             }
-            // PANE_DRAG_RESTORE: the same FileDrop arming as the sidebar-row
-            // loop above, for an ordinary buffer's own row (the file tree,
-            // the Buffers sidebar's paneable cousin if it ever gets one,
-            // ...) via its registered drag resolver instead of a
-            // SidebarWidget id -- see g_buffer_drag_row_rects' own comment.
+            // The same arming again for a *pane-hosted* sidebar's rows
+            // (g_sidebar_pane_row_rects): identical payload rules to the
+            // docked loop above, except the row's own pane is recorded so
+            // a center drop back onto it can be ignored on release. The
+            // row's ordinary click handling is a RegisterClickRegion and
+            // runs independently, so this only ever arms a *potential*
+            // drag, real once threshold_passed.
+            if (g_pane_drag.kind == PaneDragKind::None) {
+                for (const SidebarPaneRowRect &r : g_sidebar_pane_row_rects) {
+                    if (!PointInRect(mouse, r.rect)) continue;
+                    const std::string wid = g_editor.SidebarLineWidgetId(r.sidebar_id, r.line_index);
+                    const int drag_buf = g_editor.SidebarLineDragBufferId(r.sidebar_id, r.line_index);
+                    std::error_code ec;
+                    const bool is_file = !wid.empty() && std::filesystem::is_regular_file(wid, ec);
+                    if (drag_buf >= 0 || is_file) {
+                        g_pane_drag.kind = PaneDragKind::FileDrop;
+                        g_pane_drag.start_pos = mouse;
+                        g_pane_drag.threshold_passed = false;
+                        g_pane_drag.dragged_path = drag_buf >= 0 ? std::string() : wid;
+                        g_pane_drag.dragged_drop_buffer_id = drag_buf;
+                        g_pane_drag.dragged_label = drag_buf >= 0 ? g_editor.BufferLabelForLua(drag_buf) : std::string();
+                        g_pane_drag.source_pane_id = r.pane_id;
+                        g_pane_drag.target_pane_id = -1;
+                    }
+                    break;
+                }
+            }
+            // PANE_DRAG_RESTORE: the same FileDrop arming as the two
+            // sidebar-row loops above, for an ordinary buffer's own row
+            // (the file tree) via its registered drag resolver instead of
+            // a SidebarWidget id -- see g_buffer_drag_row_rects' own
+            // comment.
             // Purely additive: it only ever arms a *potential* drag (real
             // only once threshold_passed), so it can never interfere with
             // that buffer's own ordinary click-to-place-cursor/Enter-to-
@@ -40317,6 +40461,7 @@ void UpdatePaneMouseInteraction() {
                         g_pane_drag.start_pos = mouse;
                         g_pane_drag.threshold_passed = false;
                         g_pane_drag.dragged_path = path;
+                        g_pane_drag.source_pane_id = -1;
                         g_pane_drag.target_pane_id = -1;
                     }
                     break;
@@ -40366,8 +40511,22 @@ void UpdatePaneMouseInteraction() {
             const bool center = g_pane_drag.drop_zone == PaneDropZone::Center;
             bool side = g_pane_drag.drop_zone == PaneDropZone::Left || g_pane_drag.drop_zone == PaneDropZone::Right;
             bool before = g_pane_drag.drop_zone == PaneDropZone::Left || g_pane_drag.drop_zone == PaneDropZone::Top;
-            g_editor.OpenFileInPane(g_pane_drag.target_pane_id, g_pane_drag.dragged_path, !center,
-                                    side ? SplitDir::Vertical : SplitDir::Horizontal, before);
+            // Dropped back into the middle of the very pane it came out of
+            // (a sidebar hosted in a pane): the gesture asked for this
+            // buffer to be shown *somewhere*, and "somewhere" is never the
+            // list itself -- dropping it there would replace that list.
+            // An edge drop onto the same pane is still a real split.
+            const bool onto_self = center && g_pane_drag.source_pane_id >= 0 &&
+                                   g_pane_drag.source_pane_id == g_pane_drag.target_pane_id;
+            if (!onto_self) {
+                if (g_pane_drag.dragged_drop_buffer_id >= 0) {
+                    g_editor.OpenBufferInPane(g_pane_drag.target_pane_id, g_pane_drag.dragged_drop_buffer_id, !center,
+                                              side ? SplitDir::Vertical : SplitDir::Horizontal, before);
+                } else {
+                    g_editor.OpenFileInPane(g_pane_drag.target_pane_id, g_pane_drag.dragged_path, !center,
+                                            side ? SplitDir::Vertical : SplitDir::Horizontal, before);
+                }
+            }
         }
         if (g_pane_drag.threshold_passed && g_pane_drag.kind == PaneDragKind::TabMove &&
             g_pane_drag.target_pane_id >= 0) {
@@ -40406,7 +40565,8 @@ void DrawPaneDragOverlay() {
         // sidebar, say): just the floating name so the gesture reads as
         // "carrying a file", no zone to highlight.
         if (file_drop) {
-            const std::string label = Basename(g_pane_drag.dragged_path);
+            const std::string label =
+                g_pane_drag.dragged_label.empty() ? Basename(g_pane_drag.dragged_path) : g_pane_drag.dragged_label;
             gfx::Vector2 mp = gfx::GetMousePosition();
             float fs = MenuFontSize();
             float tw = gfx::MeasureTextEx(g_font, label.c_str(), fs, 0).x;

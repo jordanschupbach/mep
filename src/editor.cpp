@@ -14659,6 +14659,106 @@ void Editor::OpenFileInPane(int dest_pane_id, const std::string &path, bool spli
     SyncModeToActivePaneBuffer();
 }
 
+bool Editor::IsNavigatorPaneBuffer(int buffer_id) const {
+    return SidebarIdForPaneBuffer(buffer_id) != 0 || BufferHasDragResolver(buffer_id);
+}
+
+void Editor::OpenBufferInPane(int dest_pane_id, int buffer_id, bool split, SplitDir dir, bool before) {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
+    if (buffers_[static_cast<size_t>(buffer_id)].deleted) return;
+    Tab &tab = ActiveTab();
+    SplitNode *dst_node = FindNode(tab.root.get(), dest_pane_id);
+    if (!dst_node) return;
+    if (!split) {
+        // MoveBufferTabToPane's destination half exactly, minus the
+        // RemoveBufferTabFromPane that precedes it there: a sidebar row is
+        // not a tab, so nothing is being moved *out* of anywhere. Showing
+        // a buffer the pane already has a tab for just selects that tab
+        // rather than listing it twice.
+        Pane &dst = dst_node->pane;
+        EnsureBufferTabSeeded(dst);
+        auto it = std::find(dst.buffer_tabs.begin(), dst.buffer_tabs.end(), buffer_id);
+        if (it == dst.buffer_tabs.end()) {
+            dst.buffer_tabs.insert(dst.buffer_tabs.begin() + dst.buffer_tab_index + 1, buffer_id);
+            dst.buffer_tab_index++;
+        } else {
+            dst.buffer_tab_index = static_cast<int>(it - dst.buffer_tabs.begin());
+        }
+        dst.buffer_id = buffer_id;
+        tab.active_pane_id = dest_pane_id;
+        ClampCursor();
+        SyncModeToActivePaneBuffer();
+        return;
+    }
+    // Same tree surgery as OpenFileInPane above, except the new leaf can
+    // start on the real buffer straight away -- there's no LoadFile to
+    // route through, hence no throwaway placeholder buffer to retire.
+    Pane new_pane;
+    new_pane.id = next_pane_id_++;
+    new_pane.buffer_id = buffer_id;
+    new_pane.buffer_tabs = {buffer_id};
+    new_pane.buffer_tab_index = 0;
+
+    Pane existing_pane = dst_node->pane;
+
+    auto new_leaf = std::make_unique<SplitNode>();
+    new_leaf->dir = SplitDir::Leaf;
+    new_leaf->pane = std::move(new_pane);
+    auto existing_leaf = std::make_unique<SplitNode>();
+    existing_leaf->dir = SplitDir::Leaf;
+    existing_leaf->pane = std::move(existing_pane);
+
+    const int new_pane_id = new_leaf->pane.id;
+    dst_node->dir = dir;
+    dst_node->pane = Pane{};
+    dst_node->children.clear();
+    dst_node->shares.clear();
+    if (before) {
+        dst_node->children.push_back(std::move(new_leaf));
+        dst_node->children.push_back(std::move(existing_leaf));
+    } else {
+        dst_node->children.push_back(std::move(existing_leaf));
+        dst_node->children.push_back(std::move(new_leaf));
+    }
+    FocusPaneById(new_pane_id);
+    ClampCursor();
+    SyncModeToActivePaneBuffer();
+}
+
+int Editor::OpenBufferBeside(int buffer_id, const std::string &direction) {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return -1;
+    if (buffers_[static_cast<size_t>(buffer_id)].deleted) return -1;
+    const int active = ActiveTab().active_pane_id;
+    // Focused in an ordinary document pane (which is what a *docked*
+    // sidebar's rows activate against -- CurPane() is still the last real
+    // pane there, mode_ == Mode::Sidebar or not): open right here, the
+    // plain mep.buffer_switch behavior.
+    if (!IsNavigatorPaneBuffer(CurPane().buffer_id)) {
+        OpenBufferInPane(active, buffer_id, false, SplitDir::Vertical, false);
+        return active;
+    }
+    // Otherwise walk outward in `direction` past any further navigators
+    // (Buffers commonly sits in a left column stacked with the file tree
+    // and git status), bounded by the pane count so a cycle can't spin.
+    std::vector<int> leaves;
+    CollectLeaves(ActiveTab().root.get(), leaves);
+    int target = FindNeighborPaneId(active, direction);
+    for (size_t hops = 0; target >= 0 && hops < leaves.size(); hops++) {
+        const SplitNode *node = FindNode(ActiveTab().root.get(), target);
+        if (!node || !IsNavigatorPaneBuffer(node->pane.buffer_id)) break;
+        target = FindNeighborPaneId(target, direction);
+    }
+    if (target >= 0) {
+        OpenBufferInPane(target, buffer_id, false, SplitDir::Vertical, false);
+        return target;
+    }
+    // Nothing but navigators that way: make a document pane there.
+    const bool horizontal = direction == "left" || direction == "right";
+    OpenBufferInPane(active, buffer_id, true, horizontal ? SplitDir::Vertical : SplitDir::Horizontal,
+                     direction == "left" || direction == "up");
+    return ActiveTab().active_pane_id;
+}
+
 void Editor::SetPaneBorderShare(SplitNode *node, int child_index, float new_share) {
     if (!node || child_index < 0 || child_index + 1 >= static_cast<int>(node->children.size())) return;
     EnsureShares(node);
@@ -18520,6 +18620,31 @@ std::string Editor::SidebarLineWidgetId(int id, int line_index) const {
         return section.widgets[static_cast<size_t>(line.widget_index)].id;
     }
     return "";
+}
+
+int Editor::SidebarLineDragBufferId(int id, int line_index) const {
+    std::vector<SidebarLine> lines = FlattenSidebar(id);
+    if (line_index < 0 || line_index >= static_cast<int>(lines.size())) return -1;
+    const SidebarLine &line = lines[static_cast<size_t>(line_index)];
+    if (line.kind != SidebarLine::Kind::Widget) return -1;
+    for (const SidebarInstance &sb : sidebars_) {
+        if (sb.id != id) continue;
+        if (line.section_index < 0 || line.section_index >= static_cast<int>(sb.sections.size())) return -1;
+        const SidebarSection &section = sb.sections[static_cast<size_t>(line.section_index)];
+        if (line.widget_index < 0 || line.widget_index >= static_cast<int>(section.widgets.size())) return -1;
+        return section.widgets[static_cast<size_t>(line.widget_index)].drag_buffer_id;
+    }
+    return -1;
+}
+
+void Editor::SetSidebarDoubleClickActivate(int id, bool enabled) {
+    SidebarInstance *sb = FindSidebarMut(id);
+    if (sb) sb->activate_on_double_click = enabled;
+}
+
+bool Editor::SidebarActivatesOnDoubleClick(int id) const {
+    const SidebarInstance *sb = FindSidebar(id);
+    return sb && sb->activate_on_double_click;
 }
 
 void Editor::SetBufferDragResolver(int buffer_id, int lua_ref) {

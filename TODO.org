@@ -52,12 +52,36 @@ implement them. The more the better.
   python it should use pdb, and in C/C++ it should use gdb or lldb. Can you
   implement these?
 
-* TODO Add a 'gt' binding for 'go test' to run the tests for the current file in the
+* DONE Add a 'gt' binding for 'go test' to run the tests for the current file in the
   language's testing framework. This should be language specific, and should use
   the language's testing framework (e.g. for R, it should use testthat to run
   the tests for the current file). Can you implement this? In python it should
   use unittest or pytest, and in C/C++ it should use googletest or catch2. Can
   you implement these?
+  - Landed as kBuiltinLangTest (main.cpp): `gt` (mep.map_g, same shape as
+    gd/gh) and :MepLangTest resolve the *test* file covering the current
+    buffer, then run it in this tab's popup terminal (mep.tab_terminal_run),
+    wrapped in a `(cd <root> && ...)` subshell. Per language: go test -v on
+    the file's package, narrowed to the Test/Fuzz/Example functions in a
+    _test.go buffer (-run '^(TestA|TestB)$'); pytest when the tree has any
+    pytest marker, else `python3 -m unittest discover -p <file>`
+    (mep.opt.lang_test_python forces either); testthat::test_file() on
+    tests/testthat/test-<name>.R, falling back to test_local() over the
+    DESCRIPTION package; for C/C++ the file's own test binary -- the CMake
+    target is found via <build>/CMakeFiles/<target>.dir (present whether or
+    not it was ever built, Ninja and Make alike), built, then run, with an
+    already-built binary or `ctest -R <name>` as fallbacks and
+    mep.opt.lang_test_build_dirs as the override; plus cargo test <module>,
+    vitest/jest/mocha/npm test, busted, rspec/minitest, Pkg.test() and zig
+    test. mep.lang_test_command(path) exposes the resolution without running
+    anything. Verified in a spawned instance (xdotool key --window, no focus
+    steal): `gt` in cproj/src/pdf_text.cpp resolved pdf_text_test.cpp ->
+    mep-pdf-text-test and really executed it, and the emitted go/unittest/
+    C++ commands were each run in a shell and passed (mep's own
+    src/vterm.cpp -> `cmake --build build/native --target mep-vterm-test &&
+    .../mep-vterm-test` -> "vterm_test: all checks passed"). testthat isn't
+    installed in this sandbox, so the R command shape is unverified at
+    runtime.
 
 * TODO Add C++ language mode
 I'd like a C++ language mode that has a terminal for running the current file's

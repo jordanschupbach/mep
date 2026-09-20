@@ -16,8 +16,8 @@
 <p>mep builds with CMake and a C++20 compiler. The repository ships a Nix flake
 that provides everything -- cmake, the compiler, emscripten, deno, just --
 at the right versions:</p>
-<p>direnv allow      # or, per shell:
-nix develop</p>
+<pre>direnv allow      # or, per shell:
+nix develop</pre>
 <p>Everything below assumes you are inside that shell.</p>
 <h1>Building and running</h1>
 <table>
@@ -33,8 +33,8 @@ nix develop</p>
 in its own directory that never collides with the release one. Use it for
 iteration, not for anything performance-sensitive.</p>
 <h1>The command line</h1>
-<p>mep [--project &lt;dir&gt;] [--no-session] [file]
-mep --export-org &lt;in.org&gt; &lt;out.html&gt;</p>
+<pre>mep [--project &lt;dir&gt;] [--no-session] [file]
+mep --export-org &lt;in.org&gt; &lt;out.html&gt;</pre>
 <table>
 <tr><th>Option</th><th>Effect</th></tr>
 <tr><td><code>--project &lt;dir&gt;</code></td><td>open <code>dir</code> as the project instead of the current directory</td></tr>

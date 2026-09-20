@@ -74,21 +74,21 @@ These block the page work, or make it much worse if skipped. Do them first.
 
 ## Part 1 — Getting started (5 pages)
 
-- [~] **1.1 `intro` — mep Help.** Rewrite as a real landing page: what mep
+- [x] **1.1 `intro` — mep Help.** Rewrite as a real landing page: what mep
   is (modal editor, raylib, embedded Lua, native + wasm), a "learn in 5
   minutes" path, and a card grid linking every section below.
-- [ ] **1.2 `first-steps` — Your first ten minutes.** Open a file, move,
+- [x] **1.2 `first-steps` — Your first ten minutes.** Open a file, move,
   edit, save, quit. Modes explained once, properly. The `<Space>` which-key
   popup as the discovery mechanism.
-- [ ] **1.3 `dashboard` — The start screen.** When it shows (every project
+- [x] **1.3 `dashboard` — The start screen.** When it shows (every project
   and buffer pristine), `p` Projects / `h` Help, `j`/`k`, the hint row, and
   what makes it disappear.
-- [ ] **1.4 `installing` — Installing and running.** `just run`,
+- [x] **1.4 `installing` — Installing and running.** `just run`,
   `just run-wasm`, `just build-native`, `just build-web`, `just clean`; the
   nix/direnv dev shell; `mep [--project <dir>] [--no-session] [file]`;
   `$MEP_PROJECT`; `~/.config/mep/init.lua`; what the wasm build cannot do
   (no host filesystem, `--no-session`-equivalent, clipboard is best-effort).
-- [ ] **1.5 `differences-from-vim` — What is and isn't Vim.** The honest
+- [x] **1.5 `vim-differences` — What is and isn't Vim.** The honest
   list: plain-substring search and `:s`/`:g` (no regex, no backreferences),
   directional `Ctrl-W hjkl`, two-way boundary `mod1+Shift+hjkl` resize,
   Visual-mode changes not `.`-repeatable, no `s`-as-substitute. Links to
@@ -96,30 +96,30 @@ These block the page work, or make it much worse if skipped. Do them first.
 
 ## Part 2 — Core editing (8 pages)
 
-- [ ] **2.1 `modes` — Modes.** Normal / Insert / Replace / Visual /
+- [x] **2.1 `modes` — Modes.** Normal / Insert / Replace / Visual /
   Visual-Line / Visual-Block / Command-line / Terminal, how to enter and
   leave each, `Ctrl-\ Ctrl-n`.
-- [ ] **2.2 `motions` — Motions.** `hjkl 0 ^ $ gg G w b e ge W B E gE { } %
+- [x] **2.2 `motions` — Motions.** `hjkl 0 ^ $ gg G w b e ge W B E gE { } %
   H M L f F t T ; ,`, counts (`5j`, `10G`), the pending-count/register
   display in the status line.
-- [~] **2.3 `operators` — Operators and text objects.** `d y c`, `D C Y`,
+- [x] **2.3 `operators` — Operators and text objects.** `d y c`, `D C Y`,
   `gu gU`, `gq`/`gqq` reflow with `textwidth`, `> <`, `~`; doubling for the
   current line; the full text-object list (`iw aw i" a" i( a( ip ap` …);
   `x p P`, `r{char}`.
-- [ ] **2.4 `insert-mode` — Insert and Replace.** `i a I A o O`, `R` with
+- [x] **2.4 `insert-mode` — Insert and Replace.** `i a I A o O`, `R` with
   Backspace-restores, `Ctrl-W`/`Ctrl-U`, `Ctrl-R {reg}`, `Ctrl-Shift-V`.
-- [ ] **2.5 `visual-mode` — Visual modes.** `v V Ctrl-V`, `o`, text objects
+- [x] **2.5 `visual-mode` — Visual modes.** `v V Ctrl-V`, `o`, text objects
   as selection, repeatable `>`/`<`, Visual Block `d`/`y`/`I`/`A` and the
   ragged-right `$A`.
-- [ ] **2.6 `registers-marks` — Registers, marks, jumps.** `"{a-z}` /
+- [x] **2.6 `registers-marks` — Registers, marks, jumps.** `"{a-z}` /
   `"{A-Z}`; the unnamed register *is* the system clipboard (`"+`/`"*` as
   aliases, linewise vs charwise by trailing newline, X11 ownership caveat,
   `mep.clipboard_get/set`); `m{a-z}`, `` ` ``/`'`, `` `` ``/`''`, `gv`;
   `Ctrl-O`/`Ctrl-I` jumplist (per pane, crosses buffers).
-- [ ] **2.7 `undo-repeat-macros` — Undo, repeat, macros.** `u`/`Ctrl-r`
+- [x] **2.7 `undo-repeat-macros` — Undo, repeat, macros.** `u`/`Ctrl-r`
   (per-buffer, shared between panes on the same buffer), `.` and `3.`,
   `q{a-z}`/`q{A-Z}`/`@{a-z}`/`@@`, and the documented Visual-mode gap.
-- [ ] **2.8 `scrolling` — Scrolling and view.** `Ctrl-D/U/F/B`, `zz/zt/zb`,
+- [x] **2.8 `scrolling` — Scrolling and view.** `Ctrl-D/U/F/B`, `zz/zt/zb`,
   `Ctrl-A`/`Ctrl-X` with counts and leading-zero preservation, soft `wrap`
   and why `j`/`k` still move by buffer line.
 
@@ -549,7 +549,7 @@ too).
   raylib-free doc modules, the `kBuiltin*` Lua chunk system and its
   pitfalls (the 64 KB literal limit, trigraphs in Lua-in-C strings), how to
   add a feature, `just test`.
-- [~] **21.7 `writing-help`** — Rewrite the existing stub for the final
+- [x] **21.7 `writing-help`** — Rewrite the existing stub for the final
   system: the Org source convention, `#+HELP_SECTION:`/`#+HELP_ORDER:`,
   the template, running `just help`, adding a page, linking, the freshness
   test, and the project-local `help/` override.

@@ -12,17 +12,44 @@
 </head>
 <body>
 <h1>Editing basics</h1>
+<h1>The model</h1>
+<p>Three ideas carry almost all of mep's editing.</p>
+<p><b>Modes.</b> What a key does depends on the mode. In Normal mode letters are
+commands; in Insert mode they are text. See <a href="modes.html">Modes</a>.</p>
+<p><b>Operator plus motion.</b> A command that changes text is usually an operator
+(<code>d</code> delete, <code>c</code> change, <code>y</code> yank) followed by something describing the
+range: a <a href="motions.html">motion</a> (<code>dw</code>, delete to the next word) or a text object (<code>diw</code>,
+delete the word the cursor is in). Learn the operators once and every motion
+you already know composes with them. See <a href="operators.html">Operators and text objects</a>.</p>
+<p><b>Counts.</b> Almost anything takes a leading number, and it means "do this that
+many times": <code>3j</code>, <code>d2w</code>, <code>5dd</code>, <code>10G</code>.</p>
 <h1>Buffers and panes</h1>
-<p>mep uses modal editing.  Files are buffers, and panes are views onto those
-buffers.  Use <code>:e path</code> to open a file and <code>:w</code> to save it.</p>
-<h1>Help pages</h1>
-<p>Help pages are rendered HTML files. Their Org sources use headings, lists,
-and links, then export to the HTML pages shown in the Help workspace.</p>
-<p>For the conventions used by this help workspace, see
-<a href="writing-help.html">Writing help pages</a>.</p>
-<h1>More</h1>
-<p>Return to <a href="intro.html">mep Help</a> or review <a href="shortcuts.html">Keyboard shortcuts</a>.</p>
-<h1>Page navigation</h1>
-<p><a href="intro.html">&lt;</a> <a href="shortcuts.html">&gt;</a></p>
+<p>A <b>buffer</b> is an open file's contents in memory. A <b>pane</b> is a view onto a
+buffer. The two are separate, which is why several panes can show the same
+buffer -- including the same buffer twice, with independent cursors but one
+shared undo history.</p>
+<p><code>:e path</code> opens a file into a buffer, <code>:w</code> writes it back. <code>:split</code> and
+<code>:vsplit</code> divide the current pane; <code>Ctrl-W</code> followed by <code>h</code>, <code>j</code>, <code>k</code> or <code>l</code>
+moves focus between them.</p>
+<p>Buffers belong to the workspace they were opened in, which is why <code>:ls</code> and
+the buffer picker show that workspace's buffers rather than everything open
+in the process.</p>
+<h1>Where to go next</h1>
+<table>
+<tr><th>Page</th><th>Covers</th></tr>
+<tr><td><a href="modes.html">Modes</a></td><td>every mode and how to move between them</td></tr>
+<tr><td><a href="motions.html">Motions</a></td><td>moving the cursor, and counts</td></tr>
+<tr><td><a href="operators.html">Operators and text objects</a></td><td>changing text</td></tr>
+<tr><td><a href="insert-mode.html">Insert and Replace</a></td><td>typing, and the keys that work while typing</td></tr>
+<tr><td><a href="visual-mode.html">Visual modes</a></td><td>selecting first, acting second</td></tr>
+<tr><td><a href="registers-marks.html">Registers, marks and jumps</a></td><td>the clipboard, and getting back</td></tr>
+<tr><td><a href="undo-repeat-macros.html">Undo, repeat and macros</a></td><td>doing it again</td></tr>
+<tr><td><a href="scrolling.html">Scrolling and the view</a></td><td>moving the window, not the cursor</td></tr>
+</table>
+<h1>See also</h1>
+<ul>
+<li><a href="vim-differences.html">What is and isn't Vim</a> -- where this stops matching Vim.</li>
+<li><a href="first-steps.html">Your first ten minutes</a> -- the short version of this page.</li>
+</ul>
 </body>
 </html>

@@ -17,7 +17,7 @@
 beside it. The exported HTML is what ships and what the Help sidebar lists;
 the Org file is the source you edit.</p>
 <p>The export is done by mep itself, with no window involved:</p>
-<p>mep --export-org help/topic.org help/topic.html</p>
+<pre>mep --export-org help/topic.org help/topic.html</pre>
 <p><code>just help</code> runs that over every source in <code>help/</code>. Both the <code>.org</code> and the
 <code>.html</code> are committed, so a checkout has working documentation without
 needing to build anything first.</p>
@@ -71,7 +71,7 @@ in prose without escaping anything.</p>
 <p>Wrap anything the reader would type -- a key, a command, a path, an option --
 in <code>=verbatim=</code> markers. It is the most common markup in this manual.</p>
 <h1>Checking your work</h1>
-<p>just help-check</p>
+<pre>just help-check</pre>
 <p>It verifies that every <code>.html</code> is exactly what its <code>.org</code> exports today, that
 every page declares a title and a section, and that every internal link
 resolves. It also reports how much of mep's command and key surface the

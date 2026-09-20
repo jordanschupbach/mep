@@ -1,0 +1,88 @@
+#+TITLE: Scrolling and the view
+#+HTML_HEAD: <meta name="help-section" content="Editing">
+#+HTML_HEAD: <meta name="help-order" content="90">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Scrolling
+
+| Key      | Scrolls                        |
+|----------+--------------------------------|
+| =Ctrl-D= | down half a screen             |
+| =Ctrl-U= | up half a screen               |
+| =Ctrl-F= | forward a full screen          |
+| =Ctrl-B= | back a full screen             |
+
+The cursor travels with the view, so these move you through the file rather
+than just moving the window over it.
+
+* Repositioning without moving
+
+These scroll the window so that the cursor's line sits somewhere particular,
+leaving the cursor exactly where it is:
+
+| Key  | Puts the cursor's line       |
+|------+------------------------------|
+| =zz= | in the middle of the pane    |
+| =zt= | at the top                   |
+| =zb= | at the bottom                |
+
+=zz= after a jump is the habit worth forming: it gives you context above and
+below whatever you just landed on.
+
+* Folds
+
+The same =z= prefix opens and closes folds.
+
+| Key  | Does                                  |
+|------+---------------------------------------|
+| =za= | toggle the fold at the cursor         |
+| =zo= | open it                               |
+| =zc= | close it                              |
+| =zR= | open every fold in the buffer         |
+| =zM= | close every fold                      |
+| =zr= | one fold level less                   |
+| =zm= | one fold level more                   |
+
+Folds come from the buffer's structure -- Treesitter for code, headline
+depth for Org and Markdown, and =:MepSyntaxFold= on demand. The fold marker
+appears in the gutter column beside the line number.
+
+* Numbers in the gutter
+
+Line numbers are on by default in the hybrid style: the cursor's own line
+shows its real number, left-aligned, and every other row shows its distance
+from the cursor. That makes =8j= or =d5k= a matter of reading the number
+rather than counting.
+
+| Command                     | Effect                          |
+|-----------------------------+---------------------------------|
+| =:set number=               | absolute numbers                |
+| =:set relativenumber=       | distances                       |
+| =:set nonumber norelativenumber= | no numbers at all          |
+
+The same gutter column also carries fold markers and any git, diagnostic,
+breakpoint or TODO sign for that line -- one mark per row, highest priority
+winning -- whether or not either number option is on.
+
+* Wrapping
+
+Soft wrap is on by default: a line too wide for the pane continues on extra
+visual rows instead of running off the edge. =:set nowrap= turns it off.
+
+A soft-wrapped line is still *one* buffer line. It gets one line number, and
+=j= and =k= move past the whole thing in one press.
+
+* Changing numbers in the text
+
+=Ctrl-A= increments the next number on the line, =Ctrl-X= decrements it. Both
+take a count, so =5 Ctrl-A= adds five. Leading-zero padding is preserved, so
+=007= becomes =008= rather than =8=.
+
+* Font size
+
+=Ctrl+Shift+== and =Ctrl+Shift+-= grow and shrink the font, in any mode.
+
+* See also
+
+- [[file:motions.html][Motions]] -- moving the cursor rather than the view.
+- [[file:modes.html][Modes]] -- the =z= prefix as pending state.

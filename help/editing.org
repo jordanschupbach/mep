@@ -3,23 +3,51 @@
 #+HTML_HEAD: <meta name="help-order" content="10">
 #+HTML_HEAD: <link rel="stylesheet" href="help.css">
 
+* The model
+
+Three ideas carry almost all of mep's editing.
+
+*Modes.* What a key does depends on the mode. In Normal mode letters are
+commands; in Insert mode they are text. See [[file:modes.html][Modes]].
+
+*Operator plus motion.* A command that changes text is usually an operator
+(=d= delete, =c= change, =y= yank) followed by something describing the
+range: a [[file:motions.html][motion]] (=dw=, delete to the next word) or a text object (=diw=,
+delete the word the cursor is in). Learn the operators once and every motion
+you already know composes with them. See [[file:operators.html][Operators and text objects]].
+
+*Counts.* Almost anything takes a leading number, and it means "do this that
+many times": =3j=, =d2w=, =5dd=, =10G=.
+
 * Buffers and panes
 
-mep uses modal editing.  Files are buffers, and panes are views onto those
-buffers.  Use =:e path= to open a file and =:w= to save it.
+A *buffer* is an open file's contents in memory. A *pane* is a view onto a
+buffer. The two are separate, which is why several panes can show the same
+buffer -- including the same buffer twice, with independent cursors but one
+shared undo history.
 
-* Help pages
+=:e path= opens a file into a buffer, =:w= writes it back. =:split= and
+=:vsplit= divide the current pane; =Ctrl-W= followed by =h=, =j=, =k= or =l=
+moves focus between them.
 
-Help pages are rendered HTML files. Their Org sources use headings, lists,
-and links, then export to the HTML pages shown in the Help workspace.
+Buffers belong to the workspace they were opened in, which is why =:ls= and
+the buffer picker show that workspace's buffers rather than everything open
+in the process.
 
-For the conventions used by this help workspace, see
-[[file:writing-help.html][Writing help pages]].
+* Where to go next
 
-* More
+| Page                                      | Covers                                |
+|-------------------------------------------+---------------------------------------|
+| [[file:modes.html][Modes]]                             | every mode and how to move between them |
+| [[file:motions.html][Motions]]                         | moving the cursor, and counts         |
+| [[file:operators.html][Operators and text objects]]   | changing text                         |
+| [[file:insert-mode.html][Insert and Replace]]         | typing, and the keys that work while typing |
+| [[file:visual-mode.html][Visual modes]]               | selecting first, acting second        |
+| [[file:registers-marks.html][Registers, marks and jumps]] | the clipboard, and getting back |
+| [[file:undo-repeat-macros.html][Undo, repeat and macros]] | doing it again          |
+| [[file:scrolling.html][Scrolling and the view]]         | moving the window, not the cursor     |
 
-Return to [[file:intro.html][mep Help]] or review [[file:shortcuts.html][Keyboard shortcuts]].
+* See also
 
-* Page navigation
-
-[[file:intro.html][<]] [[file:shortcuts.html][>]]
+- [[file:vim-differences.html][What is and isn't Vim]] -- where this stops matching Vim.
+- [[file:first-steps.html][Your first ten minutes]] -- the short version of this page.

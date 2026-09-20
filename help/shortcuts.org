@@ -3,6 +3,10 @@
 * Help
 
 - =<leader>hh=: open the help workspace on its introduction page.
+- =gh= ("go help"): open the documentation for the function under the
+  cursor.  A language UI mode shows it in its own Help tab (R's =help()=,
+  Python's pydoc, =man= for C/C++); otherwise the LSP hover popup answers,
+  the same one =K= opens.  =<leader>hs= and =:MepGoHelp= do the same thing.
 - Click a link in a help page to open the linked page.
 - =f= in a help page: label every visible link with a letter; type a
   label to follow that link, or press =Esc= to cancel.

@@ -32,13 +32,6 @@ implement them. The more the better.
   implement this? In python it should use black, and in C/C++ it should use
   clang-format. Can you implement these?
 
-* TODO Add a 'gh' binding for 'go help' to open the help for the current function
-  under the cursor in the help sidebar. This should be language specific, and
-  should use the language's help system (e.g. for R, it should use help() to
-  open the help for the current function). Can you implement this? In python it
-  should use pydoc, and in C/C++ it should use man pages. Can you implement
-  these?
-
 * TODO Add a 'gr' binding for 'go run' to run the current file in the language's
   interpreter or compiler. This should be language specific, and should use the
   language's interpreter or compiler (e.g. for R, it should use Rscript to run
@@ -63,6 +56,41 @@ implement them. The more the better.
 I'd like a C++ language mode that has a terminal for running the current file's
 executable, a compiler explorer like sidebar, and a hex exploration like sidebar. Can you implement these?
 
+
+* DONE go help binding :ARCHIVE:
+  Add a 'gh' binding for 'go help' to open the help for the current function
+  under the cursor in the help sidebar. This should be language specific, and
+  should use the language's help system (e.g. for R, it should use help() to
+  open the help for the current function). Can you implement this? In python it
+  should use pydoc, and in C/C++ it should use man pages. Can you implement
+  these?
+  - `gh` is now a language dispatch (kBuiltinGoHelp, main.cpp) instead of the
+    R-only binding the r-help-format branch left behind: each language UI mode
+    registers a provider (mep.help_register_provider) that gates on its own
+    per-tab state and returns true once it has handled the lookup, and when
+    none claims the buffer the chain ends at mep.lsp_hover -- the same popup K
+    already gave. Also :MepGoHelp and <leader>hs (mep.map_g takes no
+    description, so the leader spelling is what makes it discoverable in the
+    keymaps picker).
+  - R: unchanged behavior (help('sym') / help('sym', package = 'pkg') into the
+    Help tab), now registered as the 'r' provider and sharing the new
+    mep.help_symbol_at_cursor scanner.
+  - Python: mep_help('sym') into the console, a new helper in the session's
+    init script that evaluates the name in the console's own namespace first
+    (so `sorted` and a dotted `os.path.join` both resolve) and falls back to
+    handing pydoc the bare string; it flows through the same overridden help()
+    -> pydoc -> help.txt -> poll path as a typed help(x), and the Help tab is
+    revealed immediately.
+  - C/C++: the mode grew a Help tab (Assembly/Build/Help top-right now), and
+    gh runs `man 3 sym || man 2 sym || man sym` (piped through `col -bx` when
+    installed) into it, MANWIDTH set to the tab's own width; the identifier
+    scan takes ':' too, so std::vector stays one topic.
+  - Verified on a spawned instance on its own Xvfb display, driving real `gh`
+    keystrokes (xdotool --window) and the agent socket: printf(3)/strcpy(3)
+    into the C mode's Help tab, "No man page for buf." for a local variable,
+    sorted + os.path.join in the Python mode, stats::lm -> help('lm', package
+    = 'stats') in the R mode, and "No LSP attached" for gh in a plain buffer
+    with no mode open.
 
 * DONE r help format :ARCHIVE:
 

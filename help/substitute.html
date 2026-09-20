@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Substitute and global</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Editing">
+<meta name="help-order" content="110">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Substitute and global</h1>
+<h1>Substitute</h1>
+<pre>:[range]s/pattern/replacement/[g]</pre>
+<p>Without a range it acts on the current line. The pattern is a regular
+expression, the same flavour <a href="search.html">search</a> uses.</p>
+<table>
+<tr><th>Typed</th><th>Does</th></tr>
+<tr><td><code>:s/old/new/</code></td><td>first match on this line</td></tr>
+<tr><td><code>:s/old/new/g</code></td><td>every match on this line</td></tr>
+<tr><td><code>:%s/old/new/g</code></td><td>every match in the buffer</td></tr>
+<tr><td><code>:5,10s/old/new/</code></td><td>lines 5 to 10</td></tr>
+<tr><td><code>:.,+3s/old/new/</code></td><td>this line and the next three</td></tr>
+<tr><td><code>:'a,'bs/old/new/</code></td><td>between marks <code>a</code> and <code>b</code></td></tr>
+</table>
+<p><code>g</code> is the only flag. There is no <code>c</code> (confirm) and no <code>i</code> -- use
+<code>:set ignorecase</code> for case-insensitivity.</p>
+<p>The delimiter is whatever character follows the <code>s</code>, so when the pattern
+contains slashes another one saves escaping:</p>
+<pre>:%s#/usr/local#/opt#g</pre>
+<h1>Referring to the match</h1>
+<p>A replacement can refer back to what the pattern matched:</p>
+<table>
+<tr><th>In the replacement</th><th>Means</th></tr>
+<tr><td><code>&amp;</code> or <code>\0</code></td><td>the whole match</td></tr>
+<tr><td><code>\1</code> to <code>\9</code></td><td>that capture group</td></tr>
+</table>
+<pre>:%s/(\w+)@(\w+)/\2 at \1/g</pre>
+<p>These only mean anything when the pattern actually compiled as a regex. If
+it did not, the substitution falls back to a literal splice and a <code>\1</code> in
+the replacement is just those two characters.</p>
+<h1>Ranges</h1>
+<table>
+<tr><th>Address</th><th>Means</th></tr>
+<tr><td><code>5</code></td><td>line 5</td></tr>
+<tr><td><code>.</code></td><td>the current line</td></tr>
+<tr><td><code>$</code></td><td>the last line</td></tr>
+<tr><td><code>%</code></td><td>the whole buffer</td></tr>
+<tr><td><code>+3</code> <code>-2</code></td><td>relative to the current line</td></tr>
+<tr><td>='a=</td><td>the line holding mark <code>a</code></td></tr>
+</table>
+<h1>Global</h1>
+<p><code>:g</code> runs a command on every line matching a pattern; <code>:v</code> (also <code>:g!</code>) on
+every line that does <b>not</b> match.</p>
+<pre>:g/TODO/d
+:v/^#/normal A;
+:g/error/t$</pre>
+<p><b>Their pattern is a plain substring, not a regex.</b> This is the one place the
+two differ: <code>:s/a.c/x/</code> treats <code>a.c</code> as a pattern, while <code>:g/a.c/d</code> looks
+for the literal text <code>a.c</code>. It is an easy trap, so it is worth reading a
+<code>:g</code> pattern as literal text every time.</p>
+<p><code>:g</code> pairs naturally with <code>:normal</code>, which runs Normal-mode keys on each
+matching line.</p>
+<h1>Line commands</h1>
+<p>These take the same ranges and are often what you actually wanted:</p>
+<table>
+<tr><th>Command</th><th>Does</th></tr>
+<tr><td><code>:d</code> <code>:delete</code></td><td>delete the range</td></tr>
+<tr><td><code>:y</code> <code>:yank</code></td><td>yank the range</td></tr>
+<tr><td><code>:m {addr}</code></td><td>move the range below <code>addr</code></td></tr>
+<tr><td><code>:t</code> <code>:co {addr}</code></td><td>copy the range below <code>addr</code></td></tr>
+</table>
+<p><code>:m 0</code> moves lines to the top of the file; <code>:t $</code> copies them to the end.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="search.html">Searching</a> -- the pattern syntax in full.</li>
+<li><a href="command-line.html">The command line</a> -- <code>:normal</code> and the rest.</li>
+<li><a href="operators.html">Operators and text objects</a> -- the Normal-mode equivalents.</li>
+</ul>
+</body>
+</html>

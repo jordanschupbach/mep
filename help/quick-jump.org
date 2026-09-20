@@ -1,0 +1,70 @@
+#+TITLE: Quick jump
+#+HTML_HEAD: <meta name="help-section" content="Editing">
+#+HTML_HEAD: <meta name="help-order" content="130">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Jumping to what you can see
+
+Press =s= in Normal mode and start typing the text you are aiming at.
+
+As you type, every match across *every visible text pane* narrows, the rest
+of the screen dims, and each surviving match gets a single-character label
+drawn immediately after it. Press that character to jump there.
+
+This is usually faster than searching, because you are not describing where
+you want to go -- you are pointing at it.
+
+| Key         | Does                                               |
+|-------------+----------------------------------------------------|
+| =s=         | start a jump                                       |
+| any letter  | extend the query, narrowing the matches            |
+| a label key | jump to that match                                 |
+| =Enter=     | jump to the nearest match                          |
+| =Backspace= | remove the last query character                    |
+| =Esc=       | cancel                                             |
+
+A query that narrows to exactly one match jumps immediately, without
+needing a label.
+
+* Why labels are never ambiguous
+
+A label is never a character that could extend the query at some live match.
+If =th= currently matches =the= and =this=, neither =e= nor =i= can be a
+label, so pressing one always means "keep typing" and pressing a label
+always means "jump". You never have to know which mode you are in.
+
+* Across panes
+
+Matches are collected from every visible text pane, with the active one
+first. Jumping to a match in another pane focuses that pane as well, so =s=
+doubles as a way to move between splits by pointing at their contents.
+
+=Ctrl-O= or =``= come back afterwards -- a quick jump records a jumplist
+entry like any other big jump.
+
+* Case
+
+The query is smart-case: an all-lowercase query matches case-insensitively,
+and typing any capital makes the whole query case-sensitive.
+
+* Rebinding it
+
+Quick jump is bound in ordinary Lua, not hardcoded:
+
+#+begin_src lua
+mep.map('n', 's', mep.quick_jump)
+#+end_src
+
+So =mep.map('n', 's', ...)= in =init.lua= replaces it, and binding it to
+another key is the same one-liner. Nothing is shadowed by the default: Vim's
+own =s= (substitute character) was never implemented, and =cl= does that job.
+
+From Lua, =mep.quick_jump(query)= starts a jump with =query= already typed,
+=mep.quick_jump_matches()= returns the live matches as
+={pane_id, row, col, label}=, and =mep.quick_jump_pick(label)= jumps to one.
+
+* See also
+
+- [[file:motions.html][Motions]] -- moving by structure rather than by sight.
+- [[file:search.html][Searching]] -- for text that is not on screen.
+- [[file:registers-marks.html][Registers, marks and jumps]] -- the jumplist.

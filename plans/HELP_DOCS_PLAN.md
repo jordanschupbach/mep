@@ -125,40 +125,40 @@ These block the page work, or make it much worse if skipped. Do them first.
 
 ## Part 3 — Search, substitute, the command line (4 pages)
 
-- [ ] **3.1 `search` — Searching.** `/ ? n N * #`, plain substring,
+- [x] **3.1 `search` — Searching.** `/ ? n N * #`, plain substring,
   `wrapscan` and the hit BOTTOM/TOP messages, `ignorecase`, search history
   with Up/Down.
-- [ ] **3.2 `substitute` — `:s`, `:g`, `:v`.** Ranges (`5,10`, `.,+3`,
+- [x] **3.2 `substitute` — `:s`, `:g`, `:v`.** Ranges (`5,10`, `.,+3`,
   `'a,'b`, `%`), flags, `:g`/`:v` with `:normal`, and `:d :y :m :t/:co`.
-- [ ] **3.3 `command-line` — The `:` command line.** History, completion
+- [x] **3.3 `command-line` — The `:` command line.** History, completion
   (command names, and file paths for path-taking commands), `:lua`,
   `:source`, `:normal`, `:<N>`, `:e` on a nonexistent path.
-- [ ] **3.4 `quick-jump` — `s` quick jump.** The flash/leap-style typed
+- [x] **3.4 `quick-jump` — `s` quick jump.** The flash/leap-style typed
   query across every visible text pane, label assignment rules, smart-case,
   Enter/Backspace/Esc, `mep.quick_jump*` from Lua, rebinding it.
 
 ## Part 4 — Files, buffers, panes, tabs (6 pages)
 
-- [ ] **4.1 `files` — Opening and saving.** `:e :w :wa :q :q! :qa :wq :wqa
+- [x] **4.1 `files` — Opening and saving.** `:e :w :wa :q :q! :qa :wq :wqa
   :x`, the unsaved-changes guards, `:bnext`/`:bprevious`/`:bdelete`,
   workspace-scoped buffer lists.
-- [ ] **4.2 `panes-tabs` — Panes and tabs.** `:split`/`:vsplit`/`:close`,
+- [x] **4.2 `panes-tabs` — Panes and tabs.** `:split`/`:vsplit`/`:close`,
   `Ctrl-W w/W/h/j/k/l/c/s/v`, `:tabnew`/`:tabdelete`/`:tabnext`, `Ctrl-T`,
   `Ctrl-Tab`; shared buffers and shared undo; pane header `| _ x` buttons;
   buffer tabs per pane; drag-and-drop from the file tree with the drop-zone
   pinwheel.
-- [ ] **4.3 `mod1-keys` — The `mod1` layer.** `mod1+s/v`, `mod1+hjkl`
+- [x] **4.3 `mod1-keys` — The `mod1` layer.** `mod1+s/v`, `mod1+hjkl`
   directional focus (the tmux/i3 overlap heuristic), `mod1+Shift+hjkl`
   resize, `mod1+Ctrl+hjkl` move buffer tab, `mod1+d` close tab, `mod1+m`
   maximize / sidebar popout, `mod1+Enter`; `mep.set_mod1`, `mep.map_mod1`.
-- [ ] **4.4 `layouts-zen` — Layouts, zoom, zen.** `:MepLayout master-left/
+- [x] **4.4 `layouts-zen` — Layouts, zoom, zen.** `:MepLayout master-left/
   right/top/bottom` and friends, `:MepPaneZoom` / `<leader>zz`, `:MepZen`,
   `:MepScratch` / `<leader>bs`, font size `Ctrl+Shift+=` / `-`.
-- [ ] **4.5 `file-tree` — The file tree.** `<leader>ff`, hidden files
+- [x] **4.5 `file-tree` — The file tree.** `<leader>ff`, hidden files
   (`<leader>fh`), refresh (`<leader>fr`), the native open dialog
   (`<leader>fo`), `:MepOil`, per-file icons, `?` help overlay, creating /
   renaming / deleting.
-- [ ] **4.6 `pickers` — Pickers.** Find files (`<leader>ff`/`pf`), live grep
+- [x] **4.6 `pickers` — Pickers.** Find files (`<leader>ff`/`pf`), live grep
   (`<leader>pr`), buffers (`<leader>bb`) with live preview and `C-v`/`C-s`/
   `C-t`/`C-i`/`C-d`, commands, themes (`<leader>ut`, with live preview),
   keymaps (`<leader>hk`), snippets, Activity; the shared key row along the

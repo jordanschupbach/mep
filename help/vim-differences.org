@@ -11,18 +11,21 @@ registers, marks, the jumplist, search, =.=-repeat, macros, buffers, splits
 and tabs. The list below is the part that will surprise you, so it is worth
 two minutes now rather than a confusing hour later.
 
-* Search and substitute are plain substring
+* The regex flavour is not Vim's
 
-There is no regular-expression engine behind =/=, =?=, =:s= or =:g=. A
-pattern is matched literally.
+=/=, =?= and =:s= do take regular expressions, but an ECMAScript/PCRE-style
+subset rather than Vim's own magic/=\v=/=\zs= system. Write =\d+= and
+=(foo|bar)=, not =\d\+= and =\(foo\|bar\)=.
 
-- =/foo.bar= finds the literal text =foo.bar=, not "foo, any character, bar".
-- =:%s/a/b/g= replaces literal =a= with literal =b=.
-- There are no capture groups, so a replacement cannot refer back to what it
-  matched.
-- =:set ignorecase= makes search and substitute case-insensitive;
-  =:set wrapscan= (on by default) controls whether search wraps around the
-  end of the buffer.
+There are no backreferences *inside* a pattern, no lookaround, no
+=\p{...}=, and no POSIX =[:alpha:]= classes. A pattern that fails to
+compile is not an error -- it is matched literally instead, which is why a
+stray =(= searches for a parenthesis rather than complaining.
+
+=:g= and =:v= are the exception: their pattern is always a plain substring,
+never a regex.
+
+See [[file:search.html][Searching]] and [[file:substitute.html][Substitute and global]] for the detail.
 
 * =s= is a jump, not a substitute
 

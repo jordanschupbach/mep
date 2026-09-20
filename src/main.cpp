@@ -15928,6 +15928,31 @@ const char *kBuiltinOrgExport =
     // already-expanded array is a harmless no-op scan, not a
     // correctness risk) so a caller passing a raw lines array (not run
     // through mep_org_export_prepare) still gets correct behavior.
+    // Splits one table row's interior on its cell separators, honouring
+    // org's `\\|` escape for a literal pipe inside a cell. A plain
+    // gmatch on '|' cannot: it breaks every row that documents an
+    // alternation pattern, a shell pipeline or a union type into extra
+    // cells, silently mangling the row rather than failing.
+    "function mep_org_table_cells(trimmed)\n"
+    "  local cells, cur, i, n = {}, {}, 1, #trimmed\n"
+    "  while i <= n do\n"
+    "    local c = trimmed:sub(i, i)\n"
+    "    if c == '\\\\' and trimmed:sub(i + 1, i + 1) == '|' then\n"
+    "      cur[#cur + 1] = '|'\n"
+    "      i = i + 2\n"
+    "    elseif c == '|' then\n"
+    "      cells[#cells + 1] = table.concat(cur)\n"
+    "      cur = {}\n"
+    "      i = i + 1\n"
+    "    else\n"
+    "      cur[#cur + 1] = c\n"
+    "      i = i + 1\n"
+    "    end\n"
+    "  end\n"
+    "  cells[#cells + 1] = table.concat(cur)\n"
+    "  for idx, cell in ipairs(cells) do cells[idx] = cell:match('^%s*(.-)%s*$') end\n"
+    "  return cells\n"
+    "end\n"
     "function mep.org_export(format, lines_override)\n"
     "  local marks = mep.org_export_marks[format]\n"
     "  local lines = lines_override or mep.org_resolve_includes()\n"
@@ -16077,8 +16102,7 @@ const char *kBuiltinOrgExport =
     "          header_done = true\n"
     "        else\n"
     "          local trimmed = row:match('^%s*|(.-)|%s*$') or ''\n"
-    "          local cells = {}\n"
-    "          for cell in (trimmed .. '|'):gmatch('(.-)|') do cells[#cells + 1] = cell:match('^%s*(.-)%s*$') end\n"
+    "          local cells = mep_org_table_cells(trimmed)\n"
     "          local tag = header_done and 'td' or 'th'\n"
     "          local cells_html = {}\n"
     "          for _, c in ipairs(cells) do\n"

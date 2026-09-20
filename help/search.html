@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Searching</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Editing">
+<meta name="help-order" content="100">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Searching</h1>
+<h1>The keys</h1>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>/</code></td><td>search forward</td></tr>
+<tr><td><code>?</code></td><td>search backward</td></tr>
+<tr><td><code>n</code></td><td>repeat, in the same direction</td></tr>
+<tr><td><code>N</code></td><td>repeat, in the opposite direction</td></tr>
+<tr><td><code>*</code></td><td>search forward for the word under the cursor</td></tr>
+<tr><td><code>#</code></td><td>search backward for the word under the cursor</td></tr>
+</table>
+<p>Up and Down at the <code>/</code> prompt walk through previous searches, the same way
+the <code>:</code> command line remembers commands.</p>
+<h1>Patterns are regular expressions</h1>
+<p>A search pattern is a regular expression -- an ECMAScript/PCRE-flavoured
+subset, <b>not</b> Vim's magic/=\v= system.</p>
+<table>
+<tr><th>Supported</th><th>Example</th></tr>
+<tr><td>literals and <code>.</code></td><td><code>f.o</code></td></tr>
+<tr><td><code>*</code> <code>+</code> <code>?</code> <code>{n}</code> <code>{n,}</code> <code>{n,m}</code></td><td><code>ab{2,4}</code></td></tr>
+<tr><td>non-greedy <code>*?</code> <code>+?</code> <code>??</code></td><td><code>&lt;.+?&gt;</code></td></tr>
+<tr><td>classes <code>[a-z]</code> <code>[^0-9]</code></td><td><code>[A-Fa-f0-9]+</code></td></tr>
+<tr><td>shorthands <code>\d \w \s \D \W \S</code></td><td><code>\w+\d</code></td></tr>
+<tr><td>word boundaries <code>\b</code> <code>\B</code></td><td><code>\bword\b</code></td></tr>
+<tr><td>groups <code>( )</code> and <code>(?: )</code></td><td><code>(foo)(bar)</code></td></tr>
+<tr><td>alternation <code>|</code></td><td><code>cat|dog</code></td></tr>
+<tr><td>anchors <code>^</code> <code>$</code></td><td><code>^end$</code></td></tr>
+<tr><td>escapes <code>\.</code> <code>\*</code> <code>\(</code> <code>\\</code></td><td><code>3\.14</code></td></tr>
+</table>
+<p>Deliberately not implemented: backreferences inside a pattern, lookaround
+(<code>(?</code>...)=), Unicode property classes (<code>\p{...}</code>), and POSIX classes
+(<code>[:alpha:]</code>).</p>
+<h1>A pattern that will not compile is used literally</h1>
+<p>This is worth knowing, because it turns a whole class of errors into quiet
+surprises. If the pattern is not valid, mep does not report an error -- it
+searches for the text literally instead.</p>
+<p>So <code>/(</code> finds a literal opening parenthesis, and <code>/a{</code> finds <code>a{</code>. Most of
+the time that is exactly what you wanted. When it is not, the symptom is a
+search that matches too little rather than a message.</p>
+<h1>Case and wrapping</h1>
+<table>
+<tr><th>Command</th><th>Effect</th></tr>
+<tr><td><code>:set ignorecase</code></td><td>match case-insensitively</td></tr>
+<tr><td><code>:set noignorecase</code></td><td>match case-sensitively (the default)</td></tr>
+<tr><td><code>:set wrapscan</code></td><td>wrap around the end of the buffer (the default)</td></tr>
+<tr><td><code>:set nowrapscan</code></td><td>stop at the end instead</td></tr>
+</table>
+<p>When a search wraps, the status line says so:</p>
+<pre>search hit BOTTOM, continuing at TOP</pre>
+<p><code>ignorecase</code> applies to <code>:s</code> as well, since both compile the same pattern.</p>
+<h1>Searching across files</h1>
+<p><code>/</code> searches the current buffer. To search the project, use live grep
+(<code>&lt;leader&gt;pr</code>), which lists matching lines from every file under the
+workspace root and opens the one you pick.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="substitute.html">Substitute and global</a> -- acting on what you find.</li>
+<li><a href="quick-jump.html">Quick jump</a> -- for somewhere already on screen, which is usually faster.</li>
+<li><a href="pickers.html">Pickers</a> -- live grep and the rest.</li>
+</ul>
+</body>
+</html>

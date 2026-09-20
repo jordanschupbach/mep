@@ -18,15 +18,17 @@ already know works: modes, counted motions, operators and text objects,
 registers, marks, the jumplist, search, <code>.</code>-repeat, macros, buffers, splits
 and tabs. The list below is the part that will surprise you, so it is worth
 two minutes now rather than a confusing hour later.</p>
-<h1>Search and substitute are plain substring</h1>
-<p>There is no regular-expression engine behind <code>/</code>, <code>?</code>, <code>:s</code> or <code>:g</code>. A
-pattern is matched literally.</p>
-<ul>
-<li><code>/foo.bar</code> finds the literal text <code>foo.bar</code>, not "foo, any character, bar".</li>
-<li><code>:%s/a/b/g</code> replaces literal <code>a</code> with literal <code>b</code>.</li>
-<li>There are no capture groups, so a replacement cannot refer back to what it matched.</li>
-<li><code>:set ignorecase</code> makes search and substitute case-insensitive; <code>:set wrapscan</code> (on by default) controls whether search wraps around the end of the buffer.</li>
-</ul>
+<h1>The regex flavour is not Vim's</h1>
+<p><code>/</code>, <code>?</code> and <code>:s</code> do take regular expressions, but an ECMAScript/PCRE-style
+subset rather than Vim's own magic/=\v=/=\zs= system. Write <code>\d+</code> and
+<code>(foo|bar)</code>, not <code>\d\+</code> and <code>\(foo\|bar\)</code>.</p>
+<p>There are no backreferences <b>inside</b> a pattern, no lookaround, no
+<code>\p{...}</code>, and no POSIX <code>[:alpha:]</code> classes. A pattern that fails to
+compile is not an error -- it is matched literally instead, which is why a
+stray <code>(</code> searches for a parenthesis rather than complaining.</p>
+<p><code>:g</code> and <code>:v</code> are the exception: their pattern is always a plain substring,
+never a regex.</p>
+<p>See <a href="search.html">Searching</a> and <a href="substitute.html">Substitute and global</a> for the detail.</p>
 <h1><code>s</code> is a jump, not a substitute</h1>
 <p>In Vim, <code>s</code> substitutes the character under the cursor. In mep, <code>s</code> starts a
 typed-query jump: keep typing and every match across every visible pane gets

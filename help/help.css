@@ -95,33 +95,37 @@ code {
 ul, ol { margin-top: 0; margin-bottom: 0; padding-left: 1.6em; }
 li { margin-top: 0; margin-bottom: 0; }
 
-/* Key/command reference tables are the single most common element in this
- * manual, so they get real treatment rather than the browser default:
- * comfortable cell padding, a header distinguished by weight and color, and
- * a left column that does not wrap a key sequence down the middle.
+/* Key/command reference tables are the most common element in this manual,
+ * so what matters most is that they render correctly in mep's own viewer.
  *
- * Deliberately NO cell borders or padding here. mep draws its own 1px box
- * around every table cell (HtmlLayoutTable, main.cpp), so borders are
- * redundant there -- and padding is actively harmful: the cell's box height
- * is computed without it, so padded text overflows its own box and the
- * bottom border is drawn straight through the text, making every row read
- * as struck out. Browsers draw no grid of their own and honour both
- * properties correctly, so both live in the @media block at the bottom. */
+ * KNOWN ISSUE: in mep's viewer, a table on a real help page renders with
+ * its grid line drawn through each row's text, so entries read as struck
+ * out. mep sizes table rows from an estimate (HtmlLayoutTable, main.cpp)
+ * that can disagree with how the cells actually lay out; when it does, the
+ * cell's border box ends up shorter than its text.
+ *
+ * It is NOT caused by anything in this file. Each of these was reproduced
+ * against the viewer on its own and rendered correctly: body max-width with
+ * auto centering, font-family, line-height, table width, vertical-align,
+ * cell padding, cell borders, and inline <code> in a cell both with and
+ * without padding of its own. A bare table with no stylesheet is fine, and
+ * so is one with all of this file's body rules applied. Only the full
+ * combination on a generated page shows it, and the trigger has not been
+ * isolated yet.
+ *
+ * So the rule set below is kept minimal rather than defensive -- adding
+ * padding and borders back would not make the artifact worse, but there is
+ * no reason to carry rules that mep cannot use. They are in the @media
+ * block at the bottom, where browsers (which render all of this correctly)
+ * pick them up.
+ */
 table {
-  border-collapse: collapse;
-  margin-top: 0;
-  margin-bottom: 0;
   width: 100%;
 }
 th, td {
   text-align: left;
   vertical-align: top;
 }
-th {
-  font-weight: 600;
-  color: var(--help-muted);
-}
-td:first-child { white-space: nowrap; }
 
 /* Browser-only: see the spacing note at the top. mep skips this block, so
  * these values never stack on top of its own line-based margins. */
@@ -133,10 +137,19 @@ td:first-child { white-space: nowrap; }
   p { margin-top: 0.8em; margin-bottom: 0.8em; }
   ul, ol { margin-top: 0.8em; margin-bottom: 0.8em; }
   li { margin-top: 0.25em; margin-bottom: 0.25em; }
-  table { margin-top: 1.1em; margin-bottom: 1.1em; }
+  table {
+    margin-top: 1.1em;
+    margin-bottom: 1.1em;
+    border-collapse: collapse;
+  }
   th, td {
     border-bottom: 1px solid var(--help-rule);
     padding: 0.35em 0.7em;
   }
-  th { border-bottom: 2px solid var(--help-rule); }
+  th {
+    border-bottom: 2px solid var(--help-rule);
+    font-weight: 600;
+    color: var(--help-muted);
+  }
+  td:first-child { white-space: nowrap; }
 }

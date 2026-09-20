@@ -1,0 +1,80 @@
+#+TITLE: Files and buffers
+#+HTML_HEAD: <meta name="help-section" content="Files and windows">
+#+HTML_HEAD: <meta name="help-order" content="10">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Buffers are not files
+
+A *buffer* is a file's contents in memory, together with its undo history,
+cursor and modified flag. Opening a file creates a buffer; writing a buffer
+sends it back to disk. Everything in between is buffer work.
+
+A buffer does not need a file at all -- =:e notes.txt= on a path that does
+not exist gives you a buffer named =notes.txt= that appears on disk only
+when you =:w=. That is how you create a file, not an error.
+
+* Opening and writing
+
+| Command       | Does                                          |
+|---------------+-----------------------------------------------|
+| =:e {file}=   | open a file into a buffer                     |
+| =:e!=         | reload from disk, discarding changes          |
+| =:w=          | write the buffer to its file                  |
+| =:w {file}=   | write it somewhere else                       |
+| =:wa=         | write every modified buffer that has a name   |
+| =:q=          | close the pane; quit once it is the last one  |
+| =:q!=         | close it even with unsaved changes            |
+| =:wq= =:x=    | write, then close                             |
+| =:qa= =:qa!=  | quit the whole session                        |
+| =:wqa= =:xa=  | write everything, then quit                   |
+
+=:q= refusing means the buffer has unsaved changes. =:qa= applies that check
+across every buffer in every workspace, so quitting never loses something
+you had forgotten about in another tab.
+
+* Moving between buffers
+
+| Command                     | Does                          |
+|-----------------------------+-------------------------------|
+| =:bnext= =:bn=              | next buffer                   |
+| =:bprevious= =:bp=          | previous buffer               |
+| =:bdelete= =:bd= =:bd!=     | close a buffer                |
+| =<leader>bb=                | the buffer picker             |
+| =:ls=                       | list buffers                  |
+
+These cycle through the *current workspace's* buffers, not everything open
+in the process, and they include buffers that are not currently shown in any
+pane. See [[file:pickers.html][Pickers]] for the picker's own keys.
+
+* Buffers belong to a workspace
+
+Buffers are scoped to the workspace they were opened in. =:ls=, the buffer
+picker and =:bnext= all show that workspace's buffers.
+
+The guards are deliberately *not* scoped that way: =:wa= writes modified
+buffers everywhere, and =:qa= refuses if anything anywhere is unsaved. The
+listing is scoped so it stays useful; the safety net is global so nothing
+hidden is ever lost.
+
+* Scratch buffers
+
+=<leader>bs= (=:MepScratch=) opens a scratch buffer: a real, editable buffer
+with no file behind it, for notes and experiments. It is not one of the
+"pristine" buffers the [[file:dashboard.html][start screen]] looks for, so opening one dismisses
+the dashboard.
+
+* What opens as what
+
+mep decides how to present a file from its extension. A =.md= or =.org= file
+is text with extra rendering; a =.pdf=, =.docx=, =.xlsx=, =.ipynb=, =.png=
+or =.obj= opens in a viewer or editor built for it, in an ordinary pane.
+
+An HTML file is a special case worth knowing: =:e page.html= opens the
+*source* as text, while opening it through a link, the file tree or
+=:Browse= renders it.
+
+* See also
+
+- [[file:panes-tabs.html][Panes and tabs]] -- showing buffers on screen.
+- [[file:file-tree.html][The file tree]] -- opening files by browsing.
+- [[file:pickers.html][Pickers]] -- opening files by typing.

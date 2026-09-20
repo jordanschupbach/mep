@@ -1,0 +1,69 @@
+#+TITLE: Layouts, zoom and zen
+#+HTML_HEAD: <meta name="help-section" content="Files and windows">
+#+HTML_HEAD: <meta name="help-order" content="40">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Rearranging every pane at once
+
+=:MepLayout {kind}= rebuilds the current tab's split tree, keeping the same
+panes and the same buffers but arranging them differently. It is the fast
+way out of a layout that grew organically into a mess.
+
+| Kind              | Arrangement                                       |
+|-------------------+---------------------------------------------------|
+| =master-left=     | the first pane down the left, the rest stacked right |
+| =master-right=    | the first pane down the right                     |
+| =master-top=      | the first pane across the top                     |
+| =master-bottom=   | the first pane across the bottom                  |
+| =grid=            | an even grid                                      |
+| =grid-h=          | a grid, filling horizontally                      |
+| =grid-v=          | a grid, filling vertically                        |
+| =spiral=          | each pane splitting the remaining space in turn   |
+
+=master-left= with a wide editor and a stack of terminals beside it is the
+common one. With one pane the command does nothing.
+
+* Zoom
+
+=<leader>zz= (=:MepPaneZoom=) makes the current pane fill the tab, hiding the
+others, and pressing it again restores the layout. Useful for reading
+something wide without losing your arrangement.
+
+=mod1+m= is the related key: instead of hiding the other panes it shrinks
+them to the minimum, so they stay visible at the edges. Use =zz= to
+concentrate, =mod1+m= to keep context.
+
+* Zen mode
+
+=:MepZen= strips the interface back to the text: no tab bar, no sidebars, no
+status line. Run it again to bring them back.
+
+Pair it with =:set nonumber norelativenumber= and a wide =textwidth= for
+prose.
+
+* Scratch space
+
+=<leader>bs= (=:MepScratch=) opens a scratch buffer -- a real editable
+buffer with no file behind it. Combined with a split, it is the quickest
+place to paste something, reshape it and throw it away.
+
+* Font size
+
+=Ctrl+Shift+== and =Ctrl+Shift+-= grow and shrink the font in any mode. The
+window opens maximized, and both the native window and the wasm canvas
+resize the editor to whatever space they are given.
+
+* Saving a layout
+
+Layouts are not saved by name, but they do not need to be: each project's
+whole arrangement -- workspaces, tabs, split trees, open files, cursors and
+terminals -- is written to disk half a second after any structural change
+and restored when the project is next opened.
+
+So the arrangement you leave is the arrangement you come back to, without
+naming it. =:wssave= and =:wsrestore= do it by hand.
+
+* See also
+
+- [[file:mod1-keys.html][The mod1 layer]] -- adjusting panes one at a time.
+- [[file:panes-tabs.html][Panes and tabs]] -- splitting and closing.

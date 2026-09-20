@@ -10,7 +10,9 @@ Run by `just help-check` (and by `just test`). Four checks:
      rebased branch could pass one while shipping stale HTML.
   2. Structure -- every page declares a <title> and a help-section, the two
      things the Help sidebar reads to place it.
-  3. Links -- every internal href in a page resolves to a file that exists.
+  3. Links -- every internal href in a page resolves to a file that exists,
+     and no Org source has a link straddling a line break (which the exporter
+     silently renders as literal text).
   4. Coverage -- how much of mep's command and <leader> surface the manual
      actually mentions. Reported always; enforced only under --strict,
      because the manual is being written incrementally and a hard gate here
@@ -70,14 +72,36 @@ def check_structure(problems):
 
 
 def check_links(problems):
-    """Internal hrefs must resolve. External and in-page ones are skipped."""
+    """Internal hrefs must resolve. External and in-page ones are skipped.
+
+    Code blocks are stripped first: a page documenting HTML legitimately
+    contains href="..." inside a <pre>, and that is sample text, not a link.
+    """
     for page in sorted(HELP.glob("*.html")):
-        for href in re.findall(r'href="([^"]+)"', page.read_text(errors="replace")):
+        text = page.read_text(errors="replace")
+        text = re.sub(r"<pre.*?</pre>", "", text, flags=re.S)
+        text = re.sub(r"<code.*?</code>", "", text, flags=re.S)
+        for href in re.findall(r'href="([^"]+)"', text):
             if href.startswith(("http://", "https://", "mailto:", "#")):
                 continue
             target = (HELP / href.split("#", 1)[0]).resolve()
             if not target.exists():
                 fail(problems, f"{page.name}: broken link to {href}")
+
+
+def check_source_links(problems):
+    """An Org link must not straddle a line break.
+
+    mep's exporter converts inline markup one line at a time, so
+    `[[file:x.html][some\ndescription]]` is never recognised -- it renders as
+    the literal bracket soup instead of a link, on a page that otherwise looks
+    fine. Nothing downstream can catch it (it never becomes an href), so it has
+    to be caught in the source.
+    """
+    for src in sorted(HELP.glob("*.org")):
+        for match in re.finditer(r"\[\[[^\]]*\]\[[^\]]*\n[^\]]*\]\]", src.read_text(errors="replace")):
+            snippet = " ".join(match.group(0).split())[:60]
+            fail(problems, f"{src.name}: link split across lines -- {snippet}")
 
 
 def coverage(problems, strict, minimum):
@@ -124,6 +148,7 @@ def main():
     check_freshness(args.mep, problems)
     check_structure(problems)
     check_links(problems)
+    check_source_links(problems)
     coverage(problems, args.strict, args.min_coverage)
 
     if problems:

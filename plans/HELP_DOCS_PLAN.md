@@ -324,46 +324,46 @@ These block the page work, or make it much worse if skipped. Do them first.
 
 ## Part 12 — Org mode (12 pages)
 
-- [ ] **12.1 `org-basics` — Org files in mep.** The render/edit split,
+- [x] **12.1 `org-basics` — Org files in mep.** The render/edit split,
   `:Org`/`:Text` to leave a rendered view, headings, `:MepOrgCycle`/`Fold`,
   promote/demote (`:MepOrgPromote`/`Demote`(`Subtree`)),
   `:MepOrgInsertHeading`/`InsertTodoHeading`, `:MepOrgNarrow`/`Widen`,
   `:MepOrgNext`/`Prev`, `:MepOrgMatch`, emphasis highlighting.
-- [ ] **12.2 `org-todo` — TODO keywords, priorities, tags.** `:MepOrgTodo`,
+- [x] **12.2 `org-todo` — TODO keywords, priorities, tags.** `:MepOrgTodo`,
   `:MepOrgPriority`, `:MepOrgTags`/`TagsPicker`, `:MepOrgCheckbox`,
   `:MepOrgSortTodo`/`SortAlpha`/`SortPriority`, `:MepOrgSparseTodo`,
   `:MepOrgArchive`, `:MepOrgRefile`.
-- [ ] **12.3 `org-dates` — Timestamps, scheduling, deadlines.**
+- [x] **12.3 `org-dates` — Timestamps, scheduling, deadlines.**
   `:MepOrgTimestamp` (and `Inactive`/`Range`/`Repeater`/`Incr`/`Decr`/
   `Highlight`), `:MepOrgScheduled`, `:MepOrgDeadline`.
-- [ ] **12.4 `org-agenda` — Agenda.** `:MepOrgAgendaToday`/`Week`/`Todo`/
+- [x] **12.4 `org-agenda` — Agenda.** `:MepOrgAgendaToday`/`Week`/`Todo`/
   `Overdue`/`Search`, `:MepOrgAgendaAddFile`, glob expansion.
-- [ ] **12.5 `org-clock` — Clocking and the Todo panel.**
+- [x] **12.5 `org-clock` — Clocking and the Todo panel.**
   `:MepOrgClockIn`/`ClockOut`/`ClockTable`, the `:LOGBOOK:` `CLOCK:` lines,
   one running clock at a time; the Todo sidebar (`<leader>tt`,
   `:MepActivityTodoPanel`) with `a`/`e`/`d`/`x`/`Enter`/`o`/`R`/`?`, the
   float editor, `mep.activity_todo_file`, the status-bar chip.
-- [ ] **12.6 `org-capture` — Capture and templates.** `:MepOrgCapture`,
+- [x] **12.6 `org-capture` — Capture and templates.** `:MepOrgCapture`,
   `:MepOrgCaptureCommit`/`Abort`, `:MepOrgTemplate`, template expansion.
-- [ ] **12.7 `org-links` — Links, footnotes, bibliography.**
+- [x] **12.7 `org-links` — Links, footnotes, bibliography.**
   `:MepOrgLinkFollow`/`LinkInsert`/`StoreLink`, `:MepOrgFootnoteJump`,
   `:MepOrgBibInsertCitation`/`CiteGoto`/`CitePreview`.
-- [ ] **12.8 `org-babel` — Executing code blocks.** `C-c C-c`,
+- [x] **12.8 `org-babel` — Executing code blocks.** `C-c C-c`,
   `:MepOrgBabelExecute`/`BabelTangle`, `#+RESULTS:`, `:results` modes,
   `:var` bindings, the per-language table (interpreted and compiled), the
   `mep-lua` block that runs inside mep's own Lua, and `:eval no`.
-- [ ] **12.9 `org-polyglot` — LSP inside code blocks.** How shadow buffers
+- [x] **12.9 `org-polyglot` — LSP inside code blocks.** How shadow buffers
   and per-block clients work, and the documented gaps (`:var` invisible to
   the server, no code actions/formatting/symbols bridging, no teardown).
-- [ ] **12.10 `org-visuals` — Images, LaTeX, tables.**
+- [x] **12.10 `org-visuals` — Images, LaTeX, tables.**
   `:MepOrgImagesToggle`/`ImageScan` / `<leader>oti`,
   `:MepOrgLatexToggle`/`LatexScan` / `<leader>otl`, `:MepOrgTableAlign`,
   `:MepOrgListIndent`/`Outdent`/`NewItem`/`Renumber`.
-- [ ] **12.11 `org-export` — Exporting.** `<leader>oe{a,h,m,o,p}` →
+- [x] **12.11 `org-export` — Exporting.** `<leader>oe{a,h,m,o,p}` →
   ASCII / HTML / Markdown / ODT / PDF, subtree exports, the generated
   stylesheet and syntax-highlighted code blocks, `doc_export.h`'s
   HTML→LaTeX and HTML→ODT paths.
-- [ ] **12.12 `org-roam` — Zettelkasten.** `:MepOrgRoamNewNote`/`FindNotes`/
+- [x] **12.12 `org-roam` — Zettelkasten.** `:MepOrgRoamNewNote`/`FindNotes`/
   `InsertLink`/`Backlinks`/`Daily`/`EnsureId`/`Sync`, `<leader>or{a,r,s}`,
   the Backlinks sidebar, `:MepRoamGraph`.
 
@@ -586,7 +586,8 @@ too).
   link. Several "See also" entries were dropped for this reason: completion →
   copilot, folding → org-basics, spell → writing, lsp → org-babel,
   repl → notebooks, terminals → ai-terminal,
-  r-mode and python-mode → notebooks. Once every
+  r-mode and python-mode → notebooks, org-babel → learn-decks,
+  org-roam → learn-games. Once every
   page exists, do one pass adding the links back.
 
 ## Open questions

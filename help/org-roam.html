@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Org-roam</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Org mode">
+<meta name="help-order" content="120">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Org-roam</h1>
+<h1>Notes that link to each other</h1>
+<p>Org-roam is the Zettelkasten pattern: many small notes, each with a stable
+id, linked densely. The value is in the links -- you find a note by
+following a trail rather than by remembering where you filed it.</p>
+<table>
+<tr><th>Key / command</th><th>Does</th></tr>
+<tr><td><code>&lt;leader&gt;ora</code></td><td>add a note</td></tr>
+<tr><td><code>&lt;leader&gt;orr</code></td><td>find a note</td></tr>
+<tr><td><code>&lt;leader&gt;ors</code></td><td>sync the note index</td></tr>
+<tr><td><code>:MepOrgRoamNewNote</code></td><td>new note</td></tr>
+<tr><td><code>:MepOrgRoamFindNotes</code></td><td>search notes by title</td></tr>
+<tr><td><code>:MepOrgRoamInsertLink</code></td><td>link to another note</td></tr>
+<tr><td><code>:MepOrgRoamBacklinks</code></td><td>what links <b>here</b></td></tr>
+<tr><td><code>:MepOrgRoamDaily</code></td><td>today's daily note</td></tr>
+<tr><td><code>:MepOrgRoamEnsureId</code></td><td>give this heading an id</td></tr>
+<tr><td><code>:MepOrgRoamSync</code></td><td>rebuild the index</td></tr>
+</table>
+<h1>Backlinks</h1>
+<p>The Backlinks sidebar shows every note that links to the one you are
+reading. This is the half that makes the method work: forward links you
+made deliberately, backlinks you get for free.</p>
+<h1>The graph</h1>
+<p><code>:MepRoamGraph</code> draws the note graph -- clusters of linked notes, and the
+orphans that nothing points at.</p>
+<h1>Daily notes</h1>
+<p><code>:MepOrgRoamDaily</code> opens today's note, creating it if needed. A running log
+that needs no filing decision.</p>
+<h1>Ids</h1>
+<p>Links are by id rather than by filename, so renaming a note or moving it
+between files does not break anything pointing at it.
+<code>:MepOrgRoamEnsureId</code> adds one to a heading that has none.</p>
+<p><code>:MepOrgDrillReview</code> is a neighbour worth knowing: it reviews notes as
+spaced-repetition cards, using the same <code>:DRILL_*:</code> properties the learning
+games write.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="org-links.html">Links, footnotes and citations</a> -- ordinary org links.</li>
+<li><a href="org-capture.html">Capture</a> -- getting a note started quickly.</li>
+</ul>
+</body>
+</html>

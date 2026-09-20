@@ -1,0 +1,49 @@
+#+TITLE: Collaborative editing
+#+HTML_HEAD: <meta name="help-section" content="Collaboration">
+#+HTML_HEAD: <meta name="help-order" content="10">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Joining a session
+
+Each participant opens the same document, then:
+
+#+begin_example
+:CollabJoin <link> [display-name]
+#+end_example
+
+| Command          | Does                             |
+|------------------+----------------------------------|
+| =:CollabJoin=    | join a session                   |
+| =:CollabStatus=  | who is connected                 |
+| =:CollabLeave=   | disconnect                       |
+
+* Seeing each other
+
+Connected participants appear as chips on the [[file:status-line.html][status line]], showing name
+and cursor position -- =Ada @12:4=. Click a chip to jump to that person's
+cursor.
+
+=mep.participants()= gives Lua the same snapshot, which is also what the
+tab bar draws from.
+
+* How it works
+
+Edits are merged as CRDT operations, so two people typing in the same place
+converge rather than conflicting.
+
+The relay is *stateless by design*: it keeps transient rooms and presence
+only, and forwards opaque operations without inspecting document contents.
+
+That has one practical consequence worth planning around: *the document's
+history lives in the participants, not the server.* Keeping the document
+open in at least one participant preserves it. A reconnecting client
+exchanges operation snapshots to catch up.
+
+* The link is the credential
+
+Treat a capability link as private. Anyone holding it can join that room.
+
+* See also
+
+- [[file:collab-server.html][Running a relay]] -- hosting your own.
+- [[file:status-line.html][The status line]] -- the participant chips.

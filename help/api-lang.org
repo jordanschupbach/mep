@@ -1,0 +1,81 @@
+#+TITLE: Language tooling
+#+HTML_HEAD: <meta name="help-section" content="Lua API">
+#+HTML_HEAD: <meta name="help-order" content="40">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* What is here
+
+Language servers, completion, snippets, syntax, spell checking, formatting, debugging and git.
+
+This page is generated from mep's own binding table, so it lists what
+the running editor actually exposes. Call any of these from
+=init.lua=, from =:lua=, or from a =mep-lua= org block.
+
+* The bindings (56)
+
+A dash means that binding has no doc comment in the source yet, not
+that it does nothing.
+
+| Function | Does |
+|----------+------|
+| =mep.accept_inline_suggestion= | bool. `what` is 'all' (default), |
+| =mep.clear_inline_suggestion= | -- |
+| =mep.colorize= | re-runs syntax highlighting for the current buffer |
+| =mep.completion_path_prefix= | detects a path fragment ending at the cursor for path completion |
+| =mep.completion_rank= | sorts completion items by text length then alphabetically, capped to a maximum count |
+| =mep.completion_scan_buffer_words= | scans the current buffer for words starting with a prefix |
+| =mep.dap_breakpoint_lines= | lists the breakpoint line numbers set for a file |
+| =mep.dap_toggle_breakpoint= | toggles a debugger breakpoint at the cursor's current line |
+| =mep.diff_lines= | -- |
+| =mep.docs_signature_info= | given an LSP SignatureInformation object and a syntactic-fallback signature string, returns the label to display, the parsed parameter list, and a... |
+| =mep.git_gutter_clear= | removes every buffer's git-gutter marks |
+| =mep.git_gutter_invalidate= | marks every buffer's cached git-gutter diff stale |
+| =mep.git_gutter_refresh_native= | recomputes the git diff gutter markers against a base ref |
+| =mep.git_gutter_summary= | the current buffer's added/changed/removed line counts as a short string |
+| =mep.git_gutter_tick= | re-diffs the current buffer only when its cached git-gutter diff is stale |
+| =mep.git_next_hunk_row= | finds the row of the next git diff hunk after the cursor |
+| =mep.git_prev_hunk_row= | finds the row of the previous git diff hunk before the cursor |
+| =mep.git_preview_hunk_text= | builds the preview text for the git diff hunk at the cursor |
+| =mep.git_reset_hunk_native= | reverts the git diff hunk at the cursor back to its base-ref content |
+| =mep.git_stage_hunk= | stages the git diff hunk at the cursor |
+| =mep.inline_suggestion= | text, visible. `text` is whatever is left of |
+| =mep.leetcode_html_to_text= | converts LeetCode problem HTML into an array of plain-text lines |
+| =mep.lsp_apply_edits_current_buffer= | -- |
+| =mep.lsp_apply_text_edit= | -- |
+| =mep.lsp_connect= | opens a TCP connection and registers it as a tracked JSON-RPC client |
+| =mep.lsp_diag_wrap= | word-wraps LSP diagnostic text to a given column width |
+| =mep.lsp_is_running= | checks whether an LSP client's server process/connection is still running |
+| =mep.lsp_notify= | sends a fire-and-forget JSON-RPC notification to an LSP client |
+| =mep.lsp_on_notification= | registers fn(params) to run each time the server sends a given notification; a second registration for the same method replaces the first |
+| =mep.lsp_on_request= | registers fn(params) to run each time the server sends a given request, replying with fn's return value; a second registration for the same method... |
+| =mep.lsp_request= | sends a JSON-RPC request to an LSP client, optionally registering a callback for its reply |
+| =mep.lsp_start= | spawns an LSP server process and registers it as a tracked client |
+| =mep.lsp_stop= | kills an LSP server process and removes its tracked client state |
+| =mep.lsp_symbols_flatten= | flattens a nested LSP DocumentSymbol/SymbolInformation tree into a flat list of display rows |
+| =mep.lsp_word_at_cursor= | -- |
+| =mep.set_completion_accept_hook= | registers fn as the hook invoked when a completion item is accepted (used for LSP insertTextFormatSnippet expansion) |
+| =mep.set_completion_resolve_hook= | see SetCompletionResolveHookRef's |
+| =mep.set_completion_source= | registers fn(prefix) -> array of candidate words as the buffer's completion source |
+| =mep.set_inline_suggestion= | show `text` dimmed at the |
+| =mep.set_inline_suggestion_accept_hook= | fn(accepted_length) -- 0 for a |
+| =mep.set_insert_tab_hook= | fn(shift) -> bool |
+| =mep.snippet_jump= | moves to the next/previous snippet tab-stop |
+| =mep.snippet_splice= | splices a multi-line snippet body into the buffer at a row |
+| =mep.spell_add= | add to the personal "good" dictionary (nvim zg) |
+| =mep.spell_bad= | bool |
+| =mep.spell_enabled= | bool |
+| =mep.spell_fix_selection= | count |
+| =mep.spell_fix_word= | count (0 or 1) |
+| =mep.spell_ready= | bool |
+| =mep.spell_suggest= | { "best", ... }. Empty table if none |
+| =mep.spell_wrong= | mark as always-misspelled (nvim zw) |
+| =mep.syntax_highlight_fallback= | runs the no-vendored-grammar fallback lexer over the current buffer |
+| =mep.ts_apply_captures= | resolves each Treesitter capture to a highlight group via hl_map and adds a decoration for it |
+| =mep.ts_captures= | runs the vendored Treesitter grammar (if any) for a filetype over source text |
+| =mep.ts_fold_ranges= | runs the vendored Treesitter fold query (if any) over source text |
+| =mep.ts_structure= | runs the vendored Treesitter structure query (if any) over source text to build a document outline |
+
+* See also
+
+- [[file:config.html][Configuration]] -- where to call these from.
+- [[file:recipes.html][Configuration recipes]] -- worked examples.

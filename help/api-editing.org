@@ -1,0 +1,88 @@
+#+TITLE: Buffers, text and the cursor
+#+HTML_HEAD: <meta name="help-section" content="Lua API">
+#+HTML_HEAD: <meta name="help-order" content="10">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* What is here
+
+Reading and changing buffer contents, moving the cursor, the clipboard, folds and undo.
+
+This page is generated from mep's own binding table, so it lists what
+the running editor actually exposes. Call any of these from
+=init.lua=, from =:lua=, or from a =mep-lua= org block.
+
+* The bindings (63)
+
+A dash means that binding has no doc comment in the source yet, not
+that it does nothing.
+
+| Function | Does |
+|----------+------|
+| =mep.buffer_change_epoch= | -- |
+| =mep.buffer_count= | returns the number of currently open buffers |
+| =mep.buffer_cursor_row= | returns the cursor row of whichever pane in the active tab shows a given buffer |
+| =mep.buffer_deco_add= | adds a decoration to a specific (possibly background) buffer |
+| =mep.buffer_delete= | deletes a buffer by id |
+| =mep.buffer_filename= | returns a buffer's file path |
+| =mep.buffer_get_lines= | returns a buffer's lines |
+| =mep.buffer_list= | lists every open buffer as {display, data} picker items |
+| =mep.buffer_modified= | returns whether a buffer has unsaved changes |
+| =mep.buffer_new= | creates a new empty buffer without switching any pane to it |
+| =mep.buffer_ns_clear= | clears every decoration under a namespace in a specific (possibly background) buffer |
+| =mep.buffer_on_screen= | whether some pane in the active tab shows the buffer |
+| =mep.buffer_open_beside= | shows a buffer in a pane that isn't a navigator, splitting if need be |
+| =mep.buffer_save_epoch= | -- |
+| =mep.buffer_set_drag_resolver= | registers a row->path resolver so a buffer's own rows can be dragged onto a pane to open |
+| =mep.buffer_set_filename= | sets a buffer's raw filename |
+| =mep.buffer_set_footer= | sets the key hint drawn along the bottom of panes showing a buffer |
+| =mep.buffer_set_hide_line_numbers= | opts a buffer out of the number/relativenumber gutter |
+| =mep.buffer_set_lines= | replaces the entire contents of a (possibly background) buffer |
+| =mep.buffer_set_on_enter= | registers a callback that replaces bare Enter/KP_Enter's default Normal-mode behavior for a buffer |
+| =mep.buffer_set_on_image_toggle= | registers a callback that replaces bare Shift+I's default Normal-mode behavior for a buffer |
+| =mep.buffer_set_on_key= | registers a buffer-scoped Normal-mode key filter |
+| =mep.buffer_set_on_write= | registers a callback that replaces a buffer's real disk write |
+| =mep.buffer_set_wrap= | opts a buffer out of :set wrap's soft-wrap |
+| =mep.buffer_switch= | switches the focused pane to show a given buffer |
+| =mep.buffer_text_cols= | returns the text column budget of the pane showing a buffer |
+| =mep.buffer_workspace= | the stable id of the workspace a buffer belongs to |
+| =mep.clipboard_get= | returns the system clipboard's text |
+| =mep.clipboard_set= | copies text to the system clipboard |
+| =mep.current_buffer= | returns the active pane's buffer id |
+| =mep.current_pane_id= | returns the active pane's id |
+| =mep.current_tab_id= | returns the active tab's stable id |
+| =mep.cursor= | returns the current cursor position |
+| =mep.filename= | -- |
+| =mep.fold_clear_provider= | removes every fold previously created under a given provider name |
+| =mep.fold_create= | creates a fold over a line range |
+| =mep.fold_toggle= | opens or closes the fold at the cursor |
+| =mep.get_line= | returns the text of a 1-indexed line |
+| =mep.insert_text= | inserts text at the cursor position |
+| =mep.jump_to_buffer= | switches workspace/tab/pane to land on a buffer wherever it lives |
+| =mep.line_count= | returns the number of lines in the current buffer |
+| =mep.replace_lines= | replaces a 1-indexed, end-exclusive line range with a new set of lines |
+| =mep.set_cursor= | moves the cursor to a 1-indexed position |
+| =mep.set_line= | replaces the content of a 1-indexed line |
+| =mep.split_below= | opens a new horizontal split below the focused pane |
+| =mep.term_resize= | resizes a PTY-backed job's terminal dimensions |
+| =mep.term_start= | spawns a subprocess against a real PTY (raw stdout only, no separate stderr stream) instead of plain pipes |
+| =mep.termsend_candidates= | lists terminal buffer ids currently shown by a pane in the active tab |
+| =mep.termsend_register= | registers a source buffer's default termsend target |
+| =mep.termsend_target= | looks up the registered termsend target buffer for a source buffer |
+| =mep.termsend_unregister= | removes a source buffer's registered termsend target |
+| =mep.todo_scan_matches= | scans the current buffer for TODO/FIXME/HACK/NOTE-style markers |
+| =mep.toggle_zen= | -- |
+| =mep.tree_build_rows= | builds the flattened row list for the file-tree sidebar |
+| =mep.ui_confirm= | shows a yes/no confirmation prompt and calls on_done with the choice |
+| =mep.ui_input= | shows a text prompt overlay and calls on_done with the entered text (or nothing on Escape) |
+| =mep.ui_select= | shows a fixed-list chooser and calls on_done with the chosen 1-indexed index (or nothing on Escape) |
+| =mep.url_normalize= | normalizes omnibar input into a loadable target |
+| =mep.url_resolve= | resolves a reference against an absolute URL |
+| =mep.url_under_cursor= | returns the URL under the cursor, if any |
+| =mep.visual_change= | deletes the current Visual selection and enters Insert mode at the deletion point, like pressing "c" |
+| =mep.visual_selection= | returns the currently selected text without altering the selection or any register |
+| =mep.vsplit_right= | opens path in a new vertical split to the right of the focused pane |
+
+* See also
+
+- [[file:config.html][Configuration]] -- where to call these from.
+- [[file:recipes.html][Configuration recipes]] -- worked examples.

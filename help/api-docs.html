@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Documents and formats</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Lua API">
+<meta name="help-order" content="50">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Documents and formats</h1>
+<h1>What is here</h1>
+<p>Org, Markdown, HTML, PDF, office, spreadsheet, notebook, image, 3D model and learning-deck bindings -- everything that drives one of mep's document viewers or editors.</p>
+<p>This page is generated from mep's own binding table, so it lists what
+the running editor actually exposes. Call any of these from
+<code>init.lua</code>, from <code>:lua</code>, or from a <code>mep-lua</code> org block.</p>
+<h1>The bindings (146)</h1>
+<p>A dash means that binding has no doc comment in the source yet, not
+that it does nothing.</p>
+<table>
+<tr><th>Function</th><th>Does</th></tr>
+<tr><td><code>mep.ansi_render</code></td><td>parses raw terminal output into plain lines and SGR color-highlight spans</td></tr>
+<tr><td><code>mep.babel_cache_load</code></td><td>loads the persisted babel result cache from disk</td></tr>
+<tr><td><code>mep.babel_cache_save</code></td><td>persists the babel result cache to disk (a no-op on the wasm build)</td></tr>
+<tr><td><code>mep.buf_add_latex_inline</code></td><td>appends one inline-math span for a line of the current buffer</td></tr>
+<tr><td><code>mep.buf_clear_image_rows</code></td><td>clears the current buffer's whole inline-image row registry</td></tr>
+<tr><td><code>mep.buf_clear_latex_inline</code></td><td>clears the current buffer's whole inline-LaTeX span registry</td></tr>
+<tr><td><code>mep.buf_clear_latex_rows</code></td><td>clears the current buffer's whole rendered-LaTeX row registry</td></tr>
+<tr><td><code>mep.buf_set_image_row</code></td><td>registers an inline-image target for a line of the current buffer</td></tr>
+<tr><td><code>mep.buf_set_latex_row</code></td><td>registers a rendered LaTeX fragment for a source-line span of the current buffer</td></tr>
+<tr><td><code>mep.doc_export_html_to_latex</code></td><td>thin</td></tr>
+<tr><td><code>mep.doc_export_html_to_odt</code></td><td>--</td></tr>
+<tr><td><code>mep.html_current_origin</code></td><td>the current pane's HtmlSession::origin, or</td></tr>
+<tr><td><code>mep.html_navigate</code></td><td>is html_reload's history-recording</td></tr>
+<tr><td><code>mep.html_omnibar_edit</code></td><td>puts the focused html pane's omnibar into edit mode</td></tr>
+<tr><td><code>mep.html_open</code></td><td>opens `path` (a real local .html file's</td></tr>
+<tr><td><code>mep.html_reload</code></td><td>re-reads local file `path` and</td></tr>
+<tr><td><code>mep.html_settle</code></td><td>runs the focused html pane's page (timers, promises, animation frames) until it goes idle or the budget is spent</td></tr>
+<tr><td><code>mep.html_title</code></td><td>the focused html pane's document title (what a page's script last set)</td></tr>
+<tr><td><code>mep.image_get_theme</code></td><td>gets an image buffer's current theme-colors state</td></tr>
+<tr><td><code>mep.image_set_nav</code></td><td>sets or clears an image buffer's "&lt;"/"&gt;" nav-header click callbacks</td></tr>
+<tr><td><code>mep.image_set_return</code></td><td>sets or clears an image buffer's Shift+I callback</td></tr>
+<tr><td><code>mep.image_set_theme</code></td><td>sets an image buffer's default theme_colors state</td></tr>
+<tr><td><code>mep.image_size</code></td><td>reads a PNG's pixel dimensions from just its signature + IHDR chunk, without a full decode</td></tr>
+<tr><td><code>mep.is_image_path</code></td><td>checks whether a path's extension is a recognized image format</td></tr>
+<tr><td><code>mep.is_pdf_buffer</code></td><td>bool: whether `buffer_id` is a PDF</td></tr>
+<tr><td><code>mep.md_conceal_scan</code></td><td>runs the link/emphasis concealment scan over the current buffer</td></tr>
+<tr><td><code>mep.md_fold</code></td><td>computes Markdown heading-based folds for the current buffer</td></tr>
+<tr><td><code>mep.md_table_align</code></td><td>reflows the GFM table under the cursor into aligned columns</td></tr>
+<tr><td><code>mep.md_table_insert_col</code></td><td>inserts a new column into the GFM table under the cursor</td></tr>
+<tr><td><code>mep.md_table_insert_row</code></td><td>inserts a new row into the GFM table under the cursor</td></tr>
+<tr><td><code>mep.md_toggle_checkbox</code></td><td>toggles the Markdown checkbox on the current line</td></tr>
+<tr><td><code>mep.model_add_primitive</code></td><td>object_id</td></tr>
+<tr><td><code>mep.model_add_vertex</code></td><td>vertex_index (-1 on failure)</td></tr>
+<tr><td><code>mep.model_camera_get</code></td><td>{target, yaw, pitch, distance, fov}</td></tr>
+<tr><td><code>mep.model_camera_set</code></td><td>each field</td></tr>
+<tr><td><code>mep.model_delete_object</code></td><td>bool</td></tr>
+<tr><td><code>mep.model_delete_objects</code></td><td>count actually deleted</td></tr>
+<tr><td><code>mep.model_delete_vertices</code></td><td>bool</td></tr>
+<tr><td><code>mep.model_dissolve_vertex</code></td><td>bool</td></tr>
+<tr><td><code>mep.model_duplicate_mirrored</code></td><td>new_object_id (-1 on failure). axis is</td></tr>
+<tr><td><code>mep.model_duplicate_object</code></td><td>new_object_id (-1 on failure). cascade</td></tr>
+<tr><td><code>mep.model_extrude_faces</code></td><td>table of new "cap" vertex</td></tr>
+<tr><td><code>mep.model_flip_normals</code></td><td>bool</td></tr>
+<tr><td><code>mep.model_frame_all</code></td><td>reframes the orbit camera to fit the whole scene</td></tr>
+<tr><td><code>mep.model_get_selection</code></td><td>array of currently selected object ids</td></tr>
+<tr><td><code>mep.model_group_objects</code></td><td>new group_id (-1 on failure)</td></tr>
+<tr><td><code>mep.model_inset_faces</code></td><td>table of new cap vertex</td></tr>
+<tr><td><code>mep.model_list_objects</code></td><td>array of object tables (see PushObject3DTable)</td></tr>
+<tr><td><code>mep.model_list_triangles</code></td><td>array of {index, a, b, c} (vertex-unit indices of</td></tr>
+<tr><td><code>mep.model_list_vertices</code></td><td>array of {index, x, y, z} (local mesh space,</td></tr>
+<tr><td><code>mep.model_make_face</code></td><td>bool</td></tr>
+<tr><td><code>mep.model_merge_by_distance</code></td><td>removed_count</td></tr>
+<tr><td><code>mep.model_merge_vertices</code></td><td>bool</td></tr>
+<tr><td><code>mep.model_new</code></td><td>buffer_id</td></tr>
+<tr><td><code>mep.model_primitive_info</code></td><td>table</td></tr>
+<tr><td><code>mep.model_radial_array</code></td><td>array of the `count - 1` new object</td></tr>
+<tr><td><code>mep.model_recalculate_normals</code></td><td>bool</td></tr>
+<tr><td><code>mep.model_redo</code></td><td>--</td></tr>
+<tr><td><code>mep.model_rename_object</code></td><td>bool</td></tr>
+<tr><td><code>mep.model_scene_stats</code></td><td>{object_count, triangle_count}</td></tr>
+<tr><td><code>mep.model_select</code></td><td>replaces the current selection, silently</td></tr>
+<tr><td><code>mep.model_set_material</code></td><td>bool. r/g/b/a are 0..1 floats;</td></tr>
+<tr><td><code>mep.model_set_materials</code></td><td>count actually applied</td></tr>
+<tr><td><code>mep.model_set_parent</code></td><td>bool. parent_id may be -1/nil to clear</td></tr>
+<tr><td><code>mep.model_set_texture</code></td><td>bool. `path` is an image file</td></tr>
+<tr><td><code>mep.model_set_transform</code></td><td>bool</td></tr>
+<tr><td><code>mep.model_set_transforms</code></td><td>count</td></tr>
+<tr><td><code>mep.model_set_vertex_position</code></td><td>bool</td></tr>
+<tr><td><code>mep.model_set_view</code></td><td>each</td></tr>
+<tr><td><code>mep.model_set_visible</code></td><td>bool</td></tr>
+<tr><td><code>mep.model_subdivide_faces</code></td><td>table of new centroid vertex</td></tr>
+<tr><td><code>mep.model_undo</code></td><td>/ mep.model_redo(buffer_id)</td></tr>
+<tr><td><code>mep.notebook_cell_count</code></td><td>how many cells the current notebook buffer's text has</td></tr>
+<tr><td><code>mep.notebook_cell_index</code></td><td>the 0-based index of the cell under the cursor, or -1</td></tr>
+<tr><td><code>mep.notebook_cell_kernel</code></td><td>the kernel name a cell effectively runs on (its own or the default)</td></tr>
+<tr><td><code>mep.notebook_cell_language</code></td><td>the treesitter filetype for the cell containing a 1-based buffer row</td></tr>
+<tr><td><code>mep.notebook_cell_outputs</code></td><td>array of {kind, name, text, has_image, execution_count} for a cell's outputs (cell_type/execution_count/source on the table too), or nil -- what...</td></tr>
+<tr><td><code>mep.notebook_clear_outputs</code></td><td>--</td></tr>
+<tr><td><code>mep.notebook_default_kernel</code></td><td>the kernel name cells run on when they pick none</td></tr>
+<tr><td><code>mep.notebook_delete_cell</code></td><td>deletes a cell (default: the cursor's). */ int l_notebook_delete_cell(lua_State *L) { GetEditor(L)-&gt;NotebookDeleteCell(NotebookIndexArg(L, 1));...</td></tr>
+<tr><td><code>mep.notebook_goto_cell</code></td><td>moves the cursor to a cell's first body row (index clamped)</td></tr>
+<tr><td><code>mep.notebook_insert_cell</code></td><td>inserts an empty cell above/below the cursor's cell and moves into it</td></tr>
+<tr><td><code>mep.notebook_interrupt</code></td><td>--</td></tr>
+<tr><td><code>mep.notebook_is_buffer</code></td><td>whether a buffer (default: the current one) is an open .ipynb notebook</td></tr>
+<tr><td><code>mep.notebook_kernels</code></td><td>array of {name, display_name, language} for every registered kernel</td></tr>
+<tr><td><code>mep.notebook_lsp_context</code></td><td>--</td></tr>
+<tr><td><code>mep.notebook_move_cell</code></td><td>swaps the cursor's cell with its neighbor (-1 up, +1 down)</td></tr>
+<tr><td><code>mep.notebook_restart_kernel</code></td><td>--</td></tr>
+<tr><td><code>mep.notebook_run_all</code></td><td>queues every code cell of the current notebook in order. */ int l_notebook_run_all(lua_State *L) { Editor *ed  GetEditor(L);...</td></tr>
+<tr><td><code>mep.notebook_run_and_advance</code></td><td>--</td></tr>
+<tr><td><code>mep.notebook_run_and_insert</code></td><td>--</td></tr>
+<tr><td><code>mep.notebook_run_cell</code></td><td>queues a code cell (default: the one under the cursor) on the kernel</td></tr>
+<tr><td><code>mep.notebook_set_cell_kernel</code></td><td>sets which kernel a cell runs on</td></tr>
+<tr><td><code>mep.notebook_set_cell_type</code></td><td>--</td></tr>
+<tr><td><code>mep.notebook_set_kernels</code></td><td>replaces the code-cell kernel registry</td></tr>
+<tr><td><code>mep.notebook_set_python</code></td><td>sets the interpreter notebook kernels launch with (default "python3")</td></tr>
+<tr><td><code>mep.notebook_status</code></td><td>{status, python, cells, running, queued} for the current notebook, or nil</td></tr>
+<tr><td><code>mep.office_reload</code></td><td>re-reads local file `path` (docx or odt) and</td></tr>
+<tr><td><code>mep.org_agenda_expand_glob</code></td><td>expands a glob pattern into matching agenda file paths</td></tr>
+<tr><td><code>mep.org_agenda_scan_lines</code></td><td>scans a set of lines for org agenda entries (headlines with TODO/scheduling info)</td></tr>
+<tr><td><code>mep.org_babel_format_literal</code></td><td>formats a raw babel result value as a literal-example string</td></tr>
+<tr><td><code>mep.org_bib_parse_files</code></td><td>parses BibTeX-style file contents into bibliography entries</td></tr>
+<tr><td><code>mep.org_capture_expand_template</code></td><td>expands %-escapes in an org capture template string</td></tr>
+<tr><td><code>mep.org_clock_in</code></td><td>starts an org clock entry at the current headline</td></tr>
+<tr><td><code>mep.org_clock_out</code></td><td>stops the currently running org clock entry</td></tr>
+<tr><td><code>mep.org_clock_table_items</code></td><td>builds the list of clocked-time entries for the buffer</td></tr>
+<tr><td><code>mep.org_collect_macros</code></td><td>collects #+MACRO: definitions from a set of lines</td></tr>
+<tr><td><code>mep.org_drill_grade</code></td><td>records a spaced-repetition drill grade against a headline</td></tr>
+<tr><td><code>mep.org_expand_macro_line</code></td><td>expands {{{macro(...)}}} references in a line using a table of macro definitions</td></tr>
+<tr><td><code>mep.org_export_heading</code></td><td>formats a heading string for the given export format</td></tr>
+<tr><td><code>mep.org_footnote_jump</code></td><td>jumps between an org footnote reference and its definition</td></tr>
+<tr><td><code>mep.org_highlight_emphasis</code></td><td>highlights org emphasis markup over the current buffer</td></tr>
+<tr><td><code>mep.org_html_escape</code></td><td>HTML-escapes a string for org HTML export</td></tr>
+<tr><td><code>mep.org_image_invalidate</code></td><td>forces the next render of an inline org image to reload from disk, bypassing the mtime cache</td></tr>
+<tr><td><code>mep.org_image_scan</code></td><td>scans the current org buffer for image links to render inline</td></tr>
+<tr><td><code>mep.org_images_toggle</code></td><td>toggles inline org image rendering on/off</td></tr>
+<tr><td><code>mep.org_latex_scan_fragments</code></td><td>scans the buffer for LaTeX fragments (block and inline)</td></tr>
+<tr><td><code>mep.org_latex_toggle</code></td><td>toggles inline org LaTeX rendering on/off</td></tr>
+<tr><td><code>mep.org_latex_visible</code></td><td>reports whether inline org LaTeX rendering is currently on</td></tr>
+<tr><td><code>mep.org_link_at_cursor</code></td><td>reads the org link under the cursor, if any</td></tr>
+<tr><td><code>mep.org_parse_results</code></td><td>parses a babel header args string's :results modes</td></tr>
+<tr><td><code>mep.org_parse_vars</code></td><td>parses a babel header args string's :var entries</td></tr>
+<tr><td><code>mep.org_property_get</code></td><td>reads an org property drawer value from a headline</td></tr>
+<tr><td><code>mep.org_property_remove</code></td><td>removes a property from a headline's property drawer</td></tr>
+<tr><td><code>mep.org_property_set</code></td><td>writes an org property drawer value on a headline</td></tr>
+<tr><td><code>mep.org_refile_move</code></td><td>moves the current subtree under a target headline</td></tr>
+<tr><td><code>mep.org_roam_ensure_id</code></td><td>ensures the current org-roam note has an :ID:, generating one if missing</td></tr>
+<tr><td><code>mep.org_roam_files_in</code></td><td>lists org-roam note files under the given directories</td></tr>
+<tr><td><code>mep.org_roam_find_backlink_lines</code></td><td>finds lines linking to a given org-roam ID</td></tr>
+<tr><td><code>mep.org_roam_parse_file_index</code></td><td>extracts an org-roam file's ID, title, and outgoing links for index-building</td></tr>
+<tr><td><code>mep.org_roam_slugify</code></td><td>converts a note title into a filesystem-safe slug</td></tr>
+<tr><td><code>mep.org_roam_title_of</code></td><td>extracts an org-roam note's title from its file lines</td></tr>
+<tr><td><code>mep.org_set_planning</code></td><td>sets/updates a SCHEDULED or DEADLINE planning line on the current headline</td></tr>
+<tr><td><code>mep.org_subtree_end_lines</code></td><td>finds the last row of the subtree rooted at row, given a plain line array instead of a buffer</td></tr>
+<tr><td><code>mep.org_table_align</code></td><td>reformats the org table under the cursor to align its columns</td></tr>
+<tr><td><code>mep.org_timestamp_at</code></td><td>finds an org timestamp overlapping a given column in a line</td></tr>
+<tr><td><code>mep.org_timestamp_insert</code></td><td>inserts an org timestamp at the cursor</td></tr>
+<tr><td><code>mep.org_timestamp_shift</code></td><td>shifts the org timestamp under/near the cursor by a number of days</td></tr>
+<tr><td><code>mep.pdf_current_page</code></td><td>1-indexed current page, or 0 if</td></tr>
+<tr><td><code>mep.pdf_goto_page</code></td><td>jumps buffer_id's own PDF viewer</td></tr>
+<tr><td><code>mep.pdf_outline</code></td><td>array of {title, page, depth}, or nil if</td></tr>
+<tr><td><code>mep.pdf_reload</code></td><td>re-reads local file `path` and re-decodes it INTO</td></tr>
+<tr><td><code>mep.roam_graph_close</code></td><td>closes the Roam graph overlay without invoking its on_select callback</td></tr>
+<tr><td><code>mep.roam_graph_open</code></td><td>opens the Roam backlink-graph overlay</td></tr>
+<tr><td><code>mep.sheet_next</code></td><td>/ mep.sheet_prev() -- Lua-reachable equivalent of the</td></tr>
+<tr><td><code>mep.sheet_prev</code></td><td>--</td></tr>
+</table>
+<h1>See also</h1>
+<ul>
+<li><a href="config.html">Configuration</a> -- where to call these from.</li>
+<li><a href="recipes.html">Configuration recipes</a> -- worked examples.</li>
+</ul>
+</body>
+</html>

@@ -464,13 +464,13 @@ These block the page work, or make it much worse if skipped. Do them first.
 
 ## Part 17 — Learning games (2 pages)
 
-- [ ] **17.1 `learn-decks` — Writing a deck.** `:card:` headlines, the
+- [x] **17.1 `learn-decks` — Writing a deck.** `:card:` headlines, the
   deck-wide `#+LEARN_*` keywords, per-card properties (`:CATEGORY:`,
   `:QUESTION:`, `:HINT:`, `:DISTRACTORS:`, `:ALIASES:`, `:HIDE:`,
   `:POINTS:`), `{{answer|hint}}` blanks, ordered lists, 2-column fact
   tables, `:learn cloze`/`:learn bug :line N`/`:learn output` src blocks,
   image cards, and the plain-glossary fallback.
-- [ ] **17.2 `learn-games` — Playing.** `:Learn` / `<leader>ol`; the full
+- [x] **17.2 `learn-games` — Playing.** `:Learn` / `<leader>ol`; the full
   24-game table (command, `<leader>og?` key, data each needs); the shared
   pane keys (digits/letters, `t` to type, `n`/Enter, `o`, `r`, `q`); typed-
   answer matching rules; code anonymization; timed and survival and hot-seat
@@ -479,29 +479,29 @@ These block the page work, or make it much worse if skipped. Do them first.
 
 ## Part 18 — Collaboration (2 pages)
 
-- [ ] **18.1 `collab` — Collaborative editing.** `:CollabJoin <link> [name]`,
+- [x] **18.1 `collab` — Collaborative editing.** `:CollabJoin <link> [name]`,
   `:CollabStatus`, `:CollabLeave`; participant chips and click-to-jump; the
   CRDT model and what "transient room" means for history.
-- [ ] **18.2 `collab-server` — Running `mep-collabd`.** Build and run,
+- [x] **18.2 `collab-server` — Running `mep-collabd`.** Build and run,
   `MEP_COLLAB_ADMIN_TOKEN`, `MEP_COLLAB_PUBLIC_URL`, the session-creation
   API, TLS termination at Caddy/nginx, `wss://` validation, and the security
   note that the capability link is the credential.
 
 ## Part 19 — Configuration (4 pages)
 
-- [ ] **19.1 `config` — `init.lua`.** Where it lives, when it runs (before
+- [x] **19.1 `config` — `init.lua`.** Where it lives, when it runs (before
   session restore), what a minimal one looks like, `:source`, `:lua`,
   reloading.
-- [ ] **19.2 `options` — Options.** Every `:set` option (`number`/`nu`,
+- [x] **19.2 `options` — Options.** Every `:set` option (`number`/`nu`,
   `relativenumber`/`rnu`, `cursorline`/`cul`, `wrap`, `ignorecase`,
   `wrapscan`, `textwidth`/`tw`) with defaults; and every `mep.opt.*` key
   grouped by feature, with its default and effect.
-- [ ] **19.3 `keymaps` — Remapping.** `mep.map`, `mep.map_g`,
+- [x] **19.3 `keymaps` — Remapping.** `mep.map`, `mep.map_g`,
   `mep.map_g_visual`, `mep.map_bracket_next`/`_prev`, `mep.map_mod1`,
   `mep.leader_map`/`leader_group`, `mep.set_mod1`, `mep.set_leader`,
   `mep.command`; which builtins are plain Lua mappings and therefore
   overridable; `<leader>hk` / `:MepKeymaps` to see what is bound.
-- [ ] **19.4 `recipes` — Configuration recipes.** A dozen copy-pasteable
+- [x] **19.4 `recipes` — Configuration recipes.** A dozen copy-pasteable
   snippets: disable Copilot, add a formatter, add a notebook kernel, add a
   test runner, add a language UI mode, custom statusline, custom sidebar,
   a `mep-lua` babel block, relocating worktrees.
@@ -513,17 +513,17 @@ return value and a one-line example. Generated from `src/lua_env.cpp`'s
 doc comments where possible (see 0.5 — the coverage test should apply here
 too).
 
-- [ ] **20.1 `api-editing`** — buffers, lines, cursor, text, registers,
+- [x] **20.1 `api-editing`** — buffers, lines, cursor, text, registers,
   clipboard, undo, marks, search, folds, decorations, namespaces.
-- [ ] **20.2 `api-ui`** — panes, tabs, sidebars, pickers, floats, hovers,
+- [x] **20.2 `api-ui`** — panes, tabs, sidebars, pickers, floats, hovers,
   notifications, statusline, winbar, icons, themes, hints.
-- [ ] **20.3 `api-workspace`** — workspaces, projects, files, directories,
+- [x] **20.3 `api-workspace`** — workspaces, projects, files, directories,
   filesystem ops, jobs, processes, env, platform, cwd.
-- [ ] **20.4 `api-lang`** — LSP, completion, snippets, syntax/treesitter,
+- [x] **20.4 `api-lang`** — LSP, completion, snippets, syntax/treesitter,
   spell, format, docs, DAP, diff/git gutter.
-- [ ] **20.5 `api-docs`** — org, markdown, html/browser, http, pdf, office,
+- [x] **20.5 `api-docs`** — org, markdown, html/browser, http, pdf, office,
   sheets, notebooks, images, 3D model, learn.
-- [ ] **20.6 `api-events`** — `on_frame`, `on_buffer_changed`,
+- [x] **20.6 `api-events`** — `on_frame`, `on_buffer_changed`,
   `on_buffer_saved`, `on_workspace_changed`, `buffer_set_on_key`/`on_enter`/
   `on_write`/`on_image_toggle`, `set_on_directory_open`, the completion and
   inline-suggestion hooks, and the polling rationale.

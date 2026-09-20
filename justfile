@@ -103,6 +103,10 @@ help: build-native
     #!/usr/bin/env bash
     set -euo pipefail
     shopt -s nullglob
+    # The Lua API reference is generated from src/lua_env.cpp's own binding
+    # table -- ~445 entries is not something to hand-maintain -- so refresh
+    # those sources before exporting anything.
+    python3 scripts/gen_api_pages.py
     for src in help/*.org; do
         # _-prefixed sources are not pages: help/_template.org is the
         # starting point a new page is copied from, and would otherwise

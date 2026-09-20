@@ -26,12 +26,6 @@ implement them. The more the better.
   can reuse some of that logic there. Can you implement these?
 
 * TODO fix exiting sidebar bug (specifically when exiting todo editor)
-* TODO Add a 'gf' binding for 'go format' to format the current buffer. This
-  should be language specific, and should use the language's formatter (e.g. for
-  R, it should use styler::style_file() to format the current file). Can you
-  implement this? In python it should use black, and in C/C++ it should use
-  clang-format. Can you implement these?
-
 * TODO Add a 'gh' binding for 'go help' to open the help for the current function
   under the cursor in the help sidebar. This should be language specific, and
   should use the language's help system (e.g. for R, it should use help() to
@@ -63,6 +57,37 @@ implement them. The more the better.
 I'd like a C++ language mode that has a terminal for running the current file's
 executable, a compiler explorer like sidebar, and a hex exploration like sidebar. Can you implement these?
 
+
+* DONE gf binding :ARCHIVE:
+  Add a 'gf' binding for 'go format' to format the current buffer. This should
+  be language specific, and should use the language's formatter (e.g. for R, it
+  should use styler::style_file() to format the current file). In python it
+  should use black, and in C/C++ it should use clang-format.
+  - Landed as kBuiltinFormat (main.cpp): `gf` is a mep.map_g binding (also
+    `:MepFormat`) calling mep.format_buffer(), which looks the buffer's
+    filetype up in a new mep.format_languages table -- clang-format for
+    C/C++ (c/h/cc/cpp/cxx/hh/hpp/hxx/ipp/inl/cu/cuh), black for Python
+    (py/pyi), styler::style_file() for R (R/r) -- the same "one filetype ->
+    argv table a config can extend" shape kBuiltinRun's mep.run_languages
+    already uses. Two formatter shapes are supported: a stdin/stdout filter
+    (the default) and an in-place file rewriter (mode = 'file', what styler
+    needs), so either way it is the *buffer's* text that gets formatted,
+    unsaved edits included, and nothing is written to the real file. '{}'
+    in an argv element expands to the buffer's absolute path (filter mode)
+    or the temp file (file mode) -- that is what lets clang-format/black
+    find the project's .clang-format/pyproject.toml even though they are
+    reading stdin. Nothing is applied if the formatter fails, is not
+    installed (its own error message), prints nothing, or if the buffer was
+    edited/left while it ran; an already-formatted buffer is left clean
+    rather than re-written. Filetypes with no entry fall back to
+    mep.lsp_format when a server is attached. Verified against a spawned
+    instance on its own Xvfb display: real clang-format (honouring a
+    fixture .clang-format's IndentWidth), real black, real styler, the gf
+    keystroke itself, unsaved-buffer text, missing/failing formatters, and
+    the LSP fallback -- which turned up a pre-existing mep.lsp_format bug
+    (it applied clangd's mid-line edits as whole-line replacements and
+    collapsed the file to a single space), fixed here by routing it through
+    mep.lsp_apply_edits_current_buffer.
 
 * DONE r help format :ARCHIVE:
 

@@ -6224,13 +6224,18 @@ const char *kBuiltinLsp =
     "  }, function(msg)\n"
     "    local edits = mep_lsp_result(msg)\n"
     "    if not edits then return end\n"
-    "    table.sort(edits, function(a, b) return a.range.start.line > b.range.start.line end)\n"
-    "    for _, e in ipairs(edits) do\n"
-    "      local lines = {}\n"
-    "      for s in (e.newText .. '\\n'):gmatch('(.-)\\n') do lines[#lines + 1] = s end\n"
-    "      if #lines > 0 and lines[#lines] == '' then lines[#lines] = nil end\n"
-    "      mep.replace_lines(e.range.start.line + 1, e.range['end'].line + 2, lines)\n"
-    "    end\n"
+    // Applied through mep.lsp_apply_edits_current_buffer (the same
+    // character-range-aware applier rename/code-action use, which also
+    // does the reverse-document-order sort itself) rather than the
+    // whole-line mep.replace_lines loop this used to hand-roll. That
+    // loop assumed a formatting response is always whole-line or
+    // whole-file edits; clangd's is neither -- it answers with a
+    // handful of tiny mid-line splices (delete two spaces here, insert
+    // one there), and replacing each edit's *entire line* with that
+    // fragment collapsed the file (a one-line C++ file came back as a
+    // single space). Caught by gf's own no-table-entry fallback path
+    // landing here against clangd during verification.
+    "    mep.lsp_apply_edits_current_buffer(edits)\n"
     "    mep.notify('Formatted')\n"
     "  end)\n"
     "end\n"
@@ -6321,23 +6326,20 @@ const char *kBuiltinLsp =
     "    mep.lsp_signature_help()\n"
     "  end\n"
     "end, 0.2)\n"
-    // General TextEdit application, character-range-aware -- unlike
-    // mep.lsp_format's own line-based apply above (which only works
-    // because formatting edits happen to already be whole-line/whole-
-    // file). Rename/code-action edits are typically just a few characters
-    // mid-line, so reusing replace_lines the way mep.lsp_format does would
-    // clobber the rest of the line; this splices newText between the
-    // edit's start/end *character* offsets instead. Splits newText on
-    // '\n' with an explicit pos-cursor loop rather than mep.lsp_format's
-    // own `(e.newText..'\\n'):gmatch('(.-)\\n')` + "drop a trailing empty
-    // element" trick -- that trick silently eats a genuine trailing
-    // newline (e.g. newText = "foo\\n", a whole-new-line insertion) by
-    // merging it back into the following line, which mep.lsp_format never
-    // notices only because its own edits happen to never end in '\\n'
-    // followed by more content. Caught by hand-tracing this function
-    // against a code-action edit that inserts "marker\\n" at column 0
-    // during verification (see report) -- a real bug, fixed before ever
-    // reaching the live test.
+    // General TextEdit application, character-range-aware -- what
+    // rename, code actions and (since gf, see kBuiltinFormat) formatting
+    // all apply their edits through. Such edits are typically just a few
+    // characters mid-line, so replacing each edit's whole line the way
+    // mep.lsp_format used to would clobber the rest of that line; this
+    // splices newText between the edit's start/end *character* offsets
+    // instead. Splits newText on '\n' with an explicit pos-cursor loop
+    // rather than a `(e.newText..'\\n'):gmatch('(.-)\\n')` + "drop a
+    // trailing empty element" trick -- that trick silently eats a genuine
+    // trailing newline (e.g. newText = "foo\\n", a whole-new-line
+    // insertion) by merging it back into the following line. Caught by
+    // hand-tracing this function against a code-action edit that inserts
+    // "marker\\n" at column 0 during verification (see report) -- a real
+    // bug, fixed before ever reaching the live test.
     // mep_lsp_apply_text_edit/mep_lsp_apply_edits_current_buffer ported to
     // Editor::LspApplyTextEdit/LspApplyEditsCurrentBuffer (editor.cpp) --
     // LUA_TO_CPP_PLAN.md Phase LSP, bound as mep.lsp_apply_text_edit/
@@ -11778,6 +11780,196 @@ const char *kBuiltinRun =
     "mep.command('MepReplStart', function() mep.repl_start() end)\n"
     "mep.command('MepReplSendLine', mep.repl_send_line)\n"
     "mep.command('MepReplSendBuffer', mep.repl_send_buffer)\n";
+
+// "gf" ("go format"): run the current buffer's own language formatter
+// over it in place -- clang-format for C/C++, black for Python, styler
+// for R (TODO.org's own list). Modeled on kBuiltinRun's mep.run_languages
+// above: one filetype -> argv table (keyed by mep_lsp_filetype's bare
+// extension, with the usual aliases) a user's config can extend or
+// override, rather than the three commands being hardcoded in the
+// dispatch below.
+//
+// Two shapes of formatter exist and both are supported, because neither
+// covers the other: a stdin/stdout filter (the default -- clang-format,
+// black) and an in-place file rewriter (mode = 'file' -- styler's
+// style_file(), the exact call TODO.org asks for). Either way the text
+// that gets formatted is the *buffer's* current text, unsaved edits
+// included: the filter gets it on stdin, the file rewriter gets it in a
+// temp file carrying the buffer's own extension (styler::style_file
+// dispatches on that, and errors without it), so gf never needs the
+// buffer written to disk first and never formats a stale copy.
+//
+// '{}' anywhere in an argv element is replaced by a path: the buffer's
+// real (absolute) filename in filter mode, the temp file in file mode.
+// The filter case matters as much as the file one -- a formatter reading
+// stdin has no idea what file it is looking at, so both clang-format and
+// black have to be told (--assume-filename/--stdin-filename) or they
+// can't find the .clang-format / pyproject.toml the project configures
+// them with.
+//
+// Anything with no entry here falls back to mep.lsp_format (kBuiltinLsp)
+// when a server is attached, which is how every other language with a
+// formatting-capable LSP gets gf for free.
+const char *kBuiltinFormat =
+    "mep.format_languages = {\n"
+    "  c = {'clang-format', '--assume-filename={}'},\n"
+    "  py = {'black', '--quiet', '--stdin-filename={}', '-'},\n"
+    // Not --vanilla: an renv project keeps styler in its own per-project
+    // library, reachable only through the .Rprofile that renv writes --
+    // which --vanilla would skip, turning "styler is installed" into
+    // "there is no package called 'styler'" in exactly the projects most
+    // likely to have it. cwd is the workspace root below, so that
+    // .Rprofile is the one found.
+    "  R = {'Rscript', '-e', 'styler::style_file(\"{}\")', mode = 'file'},\n"
+    "}\n"
+    // Same aliasing as mep.run_languages': entries are looked up by bare
+    // extension, so every extension of a language needs its own key.
+    "mep.format_languages.h = mep.format_languages.c\n"
+    "mep.format_languages.cc = mep.format_languages.c\n"
+    "mep.format_languages.cpp = mep.format_languages.c\n"
+    "mep.format_languages.cxx = mep.format_languages.c\n"
+    "mep.format_languages.hh = mep.format_languages.c\n"
+    "mep.format_languages.hpp = mep.format_languages.c\n"
+    "mep.format_languages.hxx = mep.format_languages.c\n"
+    "mep.format_languages.ipp = mep.format_languages.c\n"
+    "mep.format_languages.inl = mep.format_languages.c\n"
+    "mep.format_languages.cu = mep.format_languages.c\n"
+    "mep.format_languages.cuh = mep.format_languages.c\n"
+    "mep.format_languages.pyi = mep.format_languages.py\n"
+    "mep.format_languages.r = mep.format_languages.R\n"
+    "local function mep_format_buffer_text()\n"
+    "  local lines = {}\n"
+    "  for i = 1, mep.line_count() do lines[i] = mep.get_line(i) or '' end\n"
+    "  return table.concat(lines, '\\n') .. '\\n'\n"
+    "end\n"
+    // Splits a formatter's output file back into buffer lines. The
+    // trailing element the final newline produces is dropped (a file
+    // ending in '\\n' is N lines, not N + 1) -- but only when the text
+    // really ends in one, so a formatter that omits it doesn't lose its
+    // last line. (See kBuiltinLsp's mep_lsp_apply_text_edit comment for
+    // what dropping that element unconditionally costs.)
+    "local function mep_format_split(text)\n"
+    "  local lines = {}\n"
+    "  for s in (text .. '\\n'):gmatch('(.-)\\n') do lines[#lines + 1] = s end\n"
+    "  if text:sub(-1) == '\\n' then lines[#lines] = nil end\n"
+    "  return lines\n"
+    "end\n"
+    // The formatter ran asynchronously, so by the time its output lands
+    // the buffer it was asked about may have been left (another pane
+    // focused) or edited -- in either case the text on screen is no
+    // longer the text that was formatted, and overwriting it would
+    // silently discard whatever the user did in between. `before` is the
+    // exact text sent to the formatter; comparing against it is a per-
+    // buffer check that an unrelated edit elsewhere can't trip (unlike
+    // mep.buffer_change_epoch, which counts every buffer's edits).
+    "local function mep_format_apply(name, buf, before, lines)\n"
+    "  if mep.current_buffer() ~= buf then\n"
+    "    mep.notify('gf: moved off the buffer being formatted -- nothing applied', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  if #lines == 0 then\n"
+    "    mep.notify('gf: ' .. name .. ' produced no output -- nothing applied', 'error')\n"
+    "    return\n"
+    "  end\n"
+    "  if mep_format_buffer_text() ~= before then\n"
+    "    mep.notify('gf: buffer edited while ' .. name .. ' ran -- nothing applied', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    // An already-formatted buffer is left completely alone rather than
+    // replaced with an identical copy: mep.replace_lines pushes an undo
+    // entry and sets modified, so the no-op would otherwise turn a
+    // clean buffer dirty and put an empty change on the undo stack.
+    "  if table.concat(lines, '\\n') .. '\\n' == before then\n"
+    "    mep.notify('gf: already formatted')\n"
+    "    return\n"
+    "  end\n"
+    "  local row, col = mep.cursor()\n"
+    "  mep.replace_lines(1, mep.line_count() + 1, lines)\n"
+    // Formatting usually moves the line the cursor was on; keeping the
+    // row number (clamped -- a formatter can end up with fewer lines
+    // than it started with) is the same approximation every editor's
+    // format-on-demand makes. mep.set_cursor clamps the column itself.
+    "  mep.set_cursor(math.min(row, mep.line_count()), col)\n"
+    "  mep.notify('gf: formatted with ' .. name)\n"
+    "end\n"
+    "function mep.format_buffer()\n"
+    "  local fname = mep.filename()\n"
+    "  local ft = fname ~= '' and mep_lsp_filetype(fname) or ''\n"
+    "  local spec = mep.format_languages[ft]\n"
+    "  if not spec then\n"
+    "    if mep.lsp_client_for() then mep.lsp_format() return end\n"
+    "    mep.notify('gf: no formatter for ' .. (ft ~= '' and ('.' .. ft) or 'this buffer'), 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  local buf = mep.current_buffer()\n"
+    "  local text = mep_format_buffer_text()\n"
+    "  local tmp, subst = nil, mep_lsp_abspath(fname)\n"
+    "  if spec.mode == 'file' then\n"
+    // os.tmpname() creates the file it names, but with no extension --
+    // useless to a formatter that dispatches on one -- so it is removed
+    // again and only its (unique) name is kept as a stem.
+    "    local stem = os.tmpname()\n"
+    "    os.remove(stem)\n"
+    "    tmp = stem .. '.' .. ft\n"
+    "    local f = io.open(tmp, 'wb')\n"
+    "    if not f then mep.notify('gf: cannot write ' .. tmp, 'error') return end\n"
+    "    f:write(text)\n"
+    "    f:close()\n"
+    "    subst = tmp\n"
+    "  end\n"
+    // '%' is the escape character in a gsub *replacement*, so a path
+    // containing one has to be doubled or gsub errors out on it.
+    "  local escaped = subst:gsub('%%', '%%%%')\n"
+    "  local argv = {}\n"
+    "  for i, a in ipairs(spec) do argv[i] = (a:gsub('{}', escaped)) end\n"
+    "  local out, errs = {}, {}\n"
+    "  local job = mep.job_start(argv, {\n"
+    "    cwd = mep.workspace_root(),\n"
+    "    on_stdout = function(line) out[#out + 1] = line end,\n"
+    "    on_stderr = function(line) errs[#errs + 1] = line end,\n"
+    "    on_exit = function(code)\n"
+    "      local lines = out\n"
+    "      if tmp then\n"
+    "        if code == 0 then\n"
+    "          local f = io.open(tmp, 'rb')\n"
+    "          if f then lines = mep_format_split(f:read('*a')) f:close() else lines = {} end\n"
+    "        end\n"
+    "        os.remove(tmp)\n"
+    "      end\n"
+    "      if code ~= 0 then\n"
+    // 127 is what job.cpp's child _exit()s with when execvp fails, -1
+    // what JobManager reports when the fork/pipe setup itself did --
+    // i.e. both mean "that formatter isn't here", which deserves a
+    // different message from "that formatter rejected this file".
+    "        if code == 127 or code == -1 then\n"
+    "          mep.notify('gf: ' .. argv[1] .. ' is not installed (not on PATH)', 'error')\n"
+    "        else\n"
+    "          mep.notify('gf: ' .. argv[1] .. ' exited ' .. code .. (errs[1] and (': ' .. errs[1]) or ''), 'error')\n"
+    "        end\n"
+    "        return\n"
+    "      end\n"
+    "      mep_format_apply(argv[1], buf, text, lines)\n"
+    "    end,\n"
+    "  })\n"
+    // Filter mode feeds the buffer in and closes stdin so the formatter
+    // sees EOF and gets to work. The write can block if the text exceeds
+    // the pipe buffer (64K) and the child is slow to drain it, but every
+    // formatter here reads its whole input before writing anything, and
+    // the job's own reader thread drains stdout meanwhile, so it can't
+    // deadlock. A missing binary makes this a no-op (EPIPE, SIGPIPE
+    // being ignored process-wide) and the 127 above reports it.
+    "  if spec.mode ~= 'file' then\n"
+    "    mep.job_write(job, text)\n"
+    "    mep.job_close_stdin(job)\n"
+    "  end\n"
+    "end\n"
+    "mep.command('MepFormat', mep.format_buffer)\n"
+    // Bound via mep.map_g, not plain mep.map: only the former can see a
+    // key typed after a pending 'g' (see mep.map_g('d', ...) in
+    // kBuiltinLsp). 'f' after 'g' is free -- mep's built-in g-motions are
+    // gg/ge/gE/gu/gU/gq/gJ/gv, and DispatchNormalKey checks this table
+    // before f/F/t/T's own pending-find prefix ever sees the key.
+    "mep.map_g('f', mep.format_buffer)\n";
 
 // vim-slime-style "send to a terminal buffer of your own choosing"
 // (distinct from mep.repl_start above, which spawns and owns one REPL
@@ -41191,6 +41383,7 @@ int main(int argc, char **argv) {
     }
     lua->DoString(kBuiltinSpell);
     lua->DoString(kBuiltinRun);
+    lua->DoString(kBuiltinFormat);
     lua->DoString(kBuiltinTermSend);
     lua->DoString(kBuiltinMarkdown);
     lua->DoString(kBuiltinOrg);

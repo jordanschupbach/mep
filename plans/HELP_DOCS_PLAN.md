@@ -222,21 +222,21 @@ These block the page work, or make it much worse if skipped. Do them first.
 
 ## Part 8 — Git (4 pages)
 
-- [ ] **8.1 `git-gutter` — The git gutter.** On by default; green/yellow/red
+- [x] **8.1 `git-gutter` — The git gutter.** On by default; green/yellow/red
   marks and why they are rectangles; live unsaved-text diffing on a debounce;
   base `HEAD` by default (and why that differs from gitsigns/vim-gitgutter),
   `:MepGitGutter base index|<ref>`, `on|off|toggle` / `<leader>gd`,
   `mep.git_gutter_line_hl`, `mep.git_gutter_summary`.
-- [ ] **8.2 `git-hunks` — Working with hunks.** `]g`/`[g` (and `]c`/`[c`),
+- [x] **8.2 `git-hunks` — Working with hunks.** `]g`/`[g` (and `]c`/`[c`),
   `<leader>gv` preview float, `mep.git_hunk_preview_on_jump`, `<leader>ga`
   stage / `<leader>gr` reset, and why staging re-diffs against the index.
-- [ ] **8.3 `git-panel` — The git panel.** `<leader>gG` / `<leader>gg` /
+- [x] **8.3 `git-panel` — The git panel.** `<leader>gG` / `<leader>gg` /
   `:MepGitStatus`; the five views (Status, Log, Graph, Branches, Stash) with
   every key each defines; `Tab`/`1`-`5`; the shared `c`/`C` commit editor
   over `COMMIT_EDITMSG` (`ZZ` commits, `Escape` aborts), `P`/`l`/`f`/`R`/`?`;
   the ahead/behind head section; `<leader>gl/gL/gb/gs/gc/gp`; the `:MepGit*`
   command forms.
-- [ ] **8.4 `git-workspaces` — Branch-per-workspace workflow.** The
+- [x] **8.4 `git-workspaces` — Branch-per-workspace workflow.** The
   worktree model end to end: create a workspace per branch, `<leader>gw`,
   ahead/behind, merging and rebasing from the Branches view, cleaning up.
 

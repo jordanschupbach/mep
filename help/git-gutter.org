@@ -1,0 +1,79 @@
+#+TITLE: The git gutter
+#+HTML_HEAD: <meta name="help-section" content="Git">
+#+HTML_HEAD: <meta name="help-order" content="10">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Marks beside changed lines
+
+The gutter is *on by default*. Every line you have changed since the base
+revision gets a mark in the sign column:
+
+| Mark                | Means                                         |
+|---------------------+-----------------------------------------------|
+| a green bar         | this line was added                           |
+| a yellow bar        | this line was changed                         |
+| a red stripe        | lines were deleted next to this one           |
+
+A deletion that ran off the top of the file marks the top edge of line 1. A
+changed line that also dropped lines gets both a bar and a stripe.
+
+The marks are drawn as rectangles rather than glyphs, because none of the
+embedded fonts cover the box-drawing block Neovim's defaults use.
+
+* It diffs what you are typing
+
+The gutter diffs the buffer's *live, unsaved* text -- not what is on disk.
+Marks appear as you type, on a debounce, and update when you switch buffers
+or act from the git panel.
+
+A file outside a repository gets no marks. A file inside one but not in the
+base -- new or untracked -- reads as entirely added.
+
+* The base is HEAD, and that is deliberate
+
+By default the gutter compares against =HEAD=, so *staging a change does not
+make its marks disappear*.
+
+This differs from gitsigns.nvim and vim-gitgutter, which both compare
+against the index and so go blank the moment you =git add=. Both staging a
+hunk (=<leader>ga=) and the git panel's =S= are one keystroke, and after
+either one an index-based gutter shows nothing on a file full of changes --
+which is not what most people want to see.
+
+#+begin_example
+:MepGitGutter base index     " the stage-aware view, if you prefer it
+:MepGitGutter base HEAD~1    " or any other revision
+:MepGitGutter base           " report the current base
+#+end_example
+
+Any revision works: a branch name, =HEAD~3=, a SHA.
+
+* Turning it on and off
+
+| Command                  | Does                            |
+|--------------------------+---------------------------------|
+| =:MepGitGutter=          | recompute now                   |
+| =:MepGitGutter on=       | enable                          |
+| =:MepGitGutter off=      | disable                         |
+| =:MepGitGutter toggle=   | flip it, reporting which way it went |
+| =<leader>gd=             | the same toggle                 |
+
+#+begin_src lua
+-- vim-gitgutter's whole-line tint, on top of the sign-column marks
+mep.git_gutter_line_hl = true
+#+end_src
+
+* For a statusline
+
+#+begin_src lua
+mep.git_gutter_summary()   --> "+12 ~3 -1"
+#+end_src
+
+Returns the current buffer's added, changed and deleted counts, ready to
+drop into a custom [[file:status-line.html][status line]].
+
+* See also
+
+- [[file:git-hunks.html][Working with hunks]] -- jumping to, previewing and staging them.
+- [[file:git-panel.html][The git panel]] -- the full interface.
+- [[file:scrolling.html][Scrolling and the view]] -- what else shares the sign column.

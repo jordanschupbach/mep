@@ -1,0 +1,138 @@
+#+TITLE: The git panel
+#+HTML_HEAD: <meta name="help-section" content="Git">
+#+HTML_HEAD: <meta name="help-order" content="30">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Opening it
+
+| Key / command       | Opens                                      |
+|---------------------+--------------------------------------------|
+| =<leader>gG=        | the panel, docked                          |
+| =<leader>gg=        | the panel, popped out with a preview column |
+| =<leader>gt=        | status as a pane, stacking with the file tree |
+| =:MepGitStatus=     | the same as =<leader>gG=                   |
+| the Git tab-bar button | the same                                |
+
+* Five views, one panel
+
+=Tab= and =Shift-Tab= move between views, as do the keys =1= to =5= and a
+click on a view's name.
+
+| Key | View     | Shows                                        |
+|-----+----------+----------------------------------------------|
+| =1= | Status   | staged, changed and untracked files          |
+| =2= | Log      | =git log=, the latest 300 commits            |
+| =3= | Graph    | =git log --graph --all=, the latest 500      |
+| =4= | Branches | local and remote, newest commit first        |
+| =5= | Stash    | =git stash list=                             |
+
+Every view's head section says how far the branch is ahead of and behind its
+upstream, or that it has none -- so unpushed commits stay in sight whichever
+view you are in.
+
+=mod1+m= pops the panel out with a preview column beside the list.
+
+* Keys that work everywhere
+
+| Key     | Does                                           |
+|---------+------------------------------------------------|
+| =c=     | commit -- the message opens in a float         |
+| =C=     | amend the last commit                          |
+| =P= =p= | push                                           |
+| =l=     | pull                                           |
+| =f=     | fetch, =--all --prune=                         |
+| =R=     | re-read and refresh                            |
+| =?=     | list the keys for the current view             |
+
+Every action reports its result as a toast and refreshes the view.
+
+* Status
+
+The preview is =git diff --cached= or =git diff= for the row, and the file
+itself for an untracked one.
+
+| Key     | Does                                        |
+|---------+---------------------------------------------|
+| =Enter= | open the file                               |
+| =s=     | stage this row                              |
+| =u=     | unstage this row                            |
+| =S=     | stage everything                            |
+| =U=     | unstage everything                          |
+| =d=     | discard changes, or delete an untracked file |
+
+=d= asks first. It is the one destructive key in the panel.
+
+* Log and Graph
+
+The preview is =git show= for the commit under the cursor.
+
+| Key     | Does                       |
+|---------+----------------------------|
+| =Enter= | show the commit, popped out |
+| =y=     | copy the commit hash       |
+
+Graph draws every branch's history as coloured lanes with the refs on their
+commits, which is the view to reach for when working out how two branches
+relate.
+
+* Branches
+
+The preview is that branch's =git log --oneline=. Rows show ahead/behind
+counts and the upstream.
+
+| Key         | Does                                            |
+|-------------+-------------------------------------------------|
+| =Enter= =o= | check out (a remote one as a tracking branch)   |
+| =n=         | new branch from HEAD                            |
+| =x= =D=     | delete -- a remote one via =git push --delete=  |
+| =m=         | merge it into the current branch                |
+| =r=         | rebase the current branch onto it               |
+
+Both delete forms confirm first.
+
+* Stash
+
+The preview is =git stash show -p=.
+
+| Key         | Does                                        |
+|-------------+---------------------------------------------|
+| =n=         | stash the working tree, untracked included  |
+| =Enter= =a= | apply                                       |
+| =o=         | pop                                         |
+| =x=         | drop, after a confirm                       |
+
+=n= offers a message.
+
+* Committing
+
+=c= opens the repository's own =COMMIT_EDITMSG= in a floating editable pane,
+with the usual =#= status comment block below the message.
+
+| Key                             | Does                        |
+|---------------------------------+-----------------------------|
+| =ZZ= in Normal mode             | commit                      |
+| =Escape=, =:q=, or a click away | abort and discard the message |
+
+It is a real pane over a real buffer, so every editing mode, motion and
+operator works while you write the message.
+
+* Commands and popped-out shortcuts
+
+| Key          | Command           | Opens                    |
+|--------------+-------------------+--------------------------|
+| =<leader>gl= | =:MepGitLog=      | Log, popped out          |
+| =<leader>gL= | =:MepGitGraph=    | Graph, popped out        |
+| =<leader>gb= | =:MepGitBranches= | Branches, popped out     |
+| =<leader>gs= | =:MepGitStash=    | Stash, popped out        |
+| =<leader>gc= | =:MepGitCommit=   | the commit editor        |
+| =<leader>gp= | =:MepGitPush=     | push                     |
+|              | =:MepGitPull=     | pull                     |
+|              | =:MepGitFetch=    | fetch                    |
+
+Pushing a branch with no upstream offers to set one.
+
+* See also
+
+- [[file:git-hunks.html][Working with hunks]] -- staging a change smaller than a file.
+- [[file:git-workspaces.html][Branch-per-workspace]] -- several branches checked out at once.
+- [[file:sidebars.html][Sidebars]] -- the panel's own docking and popout behaviour.

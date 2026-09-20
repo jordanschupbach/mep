@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Branch-per-workspace</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Git">
+<meta name="help-order" content="40">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Branch-per-workspace</h1>
+<h1>The idea</h1>
+<p>Instead of switching branches in one checkout, give each branch its own
+<a href="workspaces.html">workspace</a> -- a real git worktree, with its own open files, terminals and
+language servers. Switching branches becomes switching workspaces, which is
+instant and loses no state.</p>
+<p>The usual reason to want this: a review or a hotfix arrives while you are
+mid-change. You do not have to stash, and you do not have to wait for a
+rebuild, because the other branch is already checked out somewhere else.</p>
+<h1>Start a branch</h1>
+<pre>:wsnew fix-crash</pre>
+<p>Creates the branch, the worktree and the workspace together. The tab-bar
+label shows <code>[fix-crash...]</code> while git works, then becomes a normal label.</p>
+<p>To pick up a branch that already exists -- a colleague's, or one you pushed
+earlier:</p>
+<pre>:wsnew! their-feature</pre>
+<h1>See where everything stands</h1>
+<p><code>&lt;leader&gt;gw</code> (<code>:MepGitWorkspaces</code>) lists every workspace with its branch and
+its ahead/behind counts against its upstream. It is the one view that
+answers "what have I got going, and what have I not pushed" across all of
+them at once.</p>
+<p>The git panel's head section does the same for the workspace you are in,
+whichever of its five views is showing.</p>
+<h1>Merge and rebase from the panel</h1>
+<p>Both live in the Branches view (<code>&lt;leader&gt;gb</code>), and both act on the <b>current</b>
+branch:</p>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>m</code></td><td>merge the highlighted branch into the current one</td></tr>
+<tr><td><code>r</code></td><td>rebase the current branch onto the highlighted one</td></tr>
+</table>
+<p>So to merge <code>fix-crash</code> into <code>main</code>: switch to the <code>main</code> workspace, open
+Branches, put the cursor on <code>fix-crash</code>, press <code>m</code>.</p>
+<h1>Finishing up</h1>
+<pre>:wsdelete fix-crash</pre>
+<p>Removes the worktree and closes the workspace. <b>The branch is kept</b> -- mep
+says so in the confirmation -- so this is safe to run as soon as you are
+done with the checkout, whether or not the work has been merged.</p>
+<p>Without <code>!</code>, git refuses on a dirty tree and mep shows git's own message.
+<code>:wsprune</code> cleans up workspaces whose directory has vanished, which is what
+you want after removing a worktree outside mep.</p>
+<h1>Things that follow the workspace</h1>
+<p>Because the working directory tracks the active workspace, each branch gets
+its own:</p>
+<ul>
+<li>file search and live grep results;</li>
+<li>language server, one per language per workspace root;</li>
+<li>terminals, opened in that worktree;</li>
+<li>buffer list.</li>
+</ul>
+<p><code>:wa</code> and the <code>:qa</code> unsaved-changes guard stay global, so nothing in another
+branch's workspace is lost silently.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="workspaces.html">Workspaces</a> -- creating, switching and deleting, in full.</li>
+<li><a href="git-panel.html">The git panel</a> -- the Branches view.</li>
+<li><a href="sessions.html">Sessions</a> -- how the set of workspaces survives a restart.</li>
+</ul>
+</body>
+</html>

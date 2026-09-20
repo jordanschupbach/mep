@@ -1,0 +1,46 @@
+#+TITLE: Tests
+#+HTML_HEAD: <meta name="help-section" content="Running code">
+#+HTML_HEAD: <meta name="help-order" content="50">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Run this file's tests
+
+=gt= (=:MepLangTest=) works out how to test the file you are looking at and
+runs it in this tab's terminal.
+
+It saves the buffer first when it is modified -- a test run against a stale
+copy on disk is worse than useless -- and reports the command it chose as a
+toast, which is the only feedback when the terminal is off screen.
+
+| Filetype        | Runs                             |
+|-----------------+----------------------------------|
+| =.go=           | Go's test runner                 |
+| =.py=           | the configured Python test runner |
+| =.r=, =.R=      | R's test tooling                 |
+| =.c=, =.cpp=, headers | the project's build-directory test target |
+| =.rs=           | Cargo's test runner              |
+
+#+begin_src lua
+mep.opt.lang_test_python = {'pytest', '-q'}
+mep.opt.lang_test_build_dirs = {'build', 'build/native'}
+#+end_src
+
+If mep cannot work out a runner for the filetype, it says so in one line
+rather than guessing.
+
+* The Tests panel
+
+=<leader>tT= (=:MepActivityTestPanel=) opens the test sidebar;
+=:MepActivityTestRun= runs from it.
+
+A failing test's location is a row you can press Enter on to jump straight
+to the line, so the loop is: run, read the failure, jump, fix.
+
+=mep.activity_test_failure_lines()= exposes the parsed failure locations to
+Lua.
+
+* See also
+
+- [[file:run-button.html][Running the current file]] -- =gr=, the sibling of =gt=.
+- [[file:runners.html][The command runner]] -- for a project-wide test target.
+- [[file:debugging.html][Debugging]] -- when reading the failure is not enough.

@@ -1,0 +1,63 @@
+#+TITLE: Running the current file
+#+HTML_HEAD: <meta name="help-section" content="Running code">
+#+HTML_HEAD: <meta name="help-order" content="20">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Run what you are looking at
+
+| Key          | Does                                        |
+|--------------+---------------------------------------------|
+| =<leader>rr= | run or compile the current file             |
+| =gr=         | the same                                    |
+| =<leader>rs= | configure the interpreter or compiler for this filetype |
+
+The command runs in this tab's terminal, so its output appears where you
+would expect and stays there.
+
+Note =gr= is *run* in mep, not LSP references.
+
+* What it does per filetype
+
+| Filetype | Default                                  |
+|----------+------------------------------------------|
+| =.py=    | =python3 <file>=                         |
+| =.r=     | =Rscript <file>=                         |
+| =.c=     | =cc <file> -o <tmp> && <tmp>=            |
+| =.cpp=   | =c++ <file> -o <tmp> && <tmp>=           |
+
+A compiled language gets a real two-step build-then-run. The binary lands
+outside the project tree, in a temporary file, so repeated runs never race a
+half-written executable and nothing needs cleaning up.
+
+* Setup
+
+=<leader>rs= (=:MepRunButtonSetup=) prompts for the interpreter or compiler
+and the flags to use for the current filetype, and saves them *per project*.
+So one checkout can use =python3.12= and another =python3.9= without either
+knowing about the other.
+
+#+begin_src lua
+-- change the defaults for every project
+mep.opt.run_button_defaults.py = {interpreter = 'python3.12', flags = ''}
+mep.opt.run_button_defaults.cpp = {compiler = 'clang++', flags = '-std=c++20 -Wall'}
+#+end_src
+
+* Where flags go
+
+For a compiled language the flags are placed *after* the source file:
+
+#+begin_example
+c++ main.cpp `pkg-config --cflags --libs gtk+-3.0` -o /tmp/xyz && /tmp/xyz
+#+end_example
+
+That is not cosmetic. A =pkg-config= line mixes =-I=/=-D= flags, which are
+order-independent, with =-l= link flags, which GNU ld resolves left to right
+against whatever object files came *before* them. Put the flags first and
+the link silently drops symbols -- an "undefined reference" that looks like
+your code's fault.
+
+* See also
+
+- [[file:runners.html][The command runner]] -- for build systems rather than single files.
+- [[file:repl.html][REPL and send-to-terminal]] -- for running a piece of a file.
+- [[file:tests.html][Tests]] -- =gt= runs this file's tests.

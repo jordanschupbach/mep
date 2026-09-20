@@ -1,0 +1,94 @@
+#+TITLE: Terminals
+#+HTML_HEAD: <meta name="help-section" content="Running code">
+#+HTML_HEAD: <meta name="help-order" content="10">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Three kinds
+
+*A plain terminal.* =:terminal= (=:term=) opens a shell in a horizontal
+split below the current pane.
+
+*The per-tab terminal.* =<leader><CR>= toggles one shell per tab along the
+bottom, spanning the tab's full width. This is the one you want most of the
+time.
+
+*The AI terminal.* =<leader>a<CR>= runs Claude Code in a pane below, wired
+to drive this editor.
+
+* The per-tab terminal
+
+| Key / command        | Does                            |
+|----------------------+---------------------------------|
+| =<leader><CR>=       | toggle it                       |
+| =:tabterminal=       | the same                        |
+| =:tabterm=           | the same                        |
+| =:MepTabTerminal=    | the same                        |
+
+The first press opens a fresh shell and focuses it. Pressing it again while
+it is showing closes the *pane* but leaves the shell running, so the next
+press brings the same session back with its history and its working
+directory intact. A shell that has exited is replaced by a fresh one.
+
+Hiding it from inside the terminal returns focus to the pane you opened it
+from. Hiding it from elsewhere leaves focus where it is.
+
+#+begin_src lua
+mep.opt.tab_terminal_share = 0.4   -- its share of the tab's height (default 0.3)
+#+end_src
+
+* Terminal mode
+
+While a terminal pane is focused, *every* key goes to the shell -- including
+=Esc=, which is why leaving takes the two-key =Ctrl-\ Ctrl-n=. After that
+you are in Normal mode in a terminal buffer and the usual navigation works.
+
+=Ctrl-Shift-V= pastes the clipboard into the terminal.
+
+* What terminals inherit
+
+Every =:terminal= mep opens starts in the active workspace's root, with:
+
+| Variable              | Is                                        |
+|-----------------------+-------------------------------------------|
+| =$MEP_WORKSPACE_NAME= | the active workspace's name               |
+| =$MEP_PROJECT_NAME=   | the active project's name                 |
+| =$MEP_AGENT_SOCKET=   | this window's agent socket                |
+| =$MEP_TERMINAL_BUFFER= | that terminal's own buffer id            |
+
+The last two are what let an AI agent launched in a terminal find and drive
+the exact window it was started from, even with several open.
+
+If the project has an =.envrc=, its environment is loaded too -- see the
+direnv chip on the [[file:status-line.html][status line]].
+
+* Sending text to one
+
+Rather than retyping a command, send it from a buffer:
+
+| Command                 | Sends                           |
+|-------------------------+---------------------------------|
+| =:MepTermSendLine=      | the current line                |
+| =:MepTermSendRegister=  | a register's contents           |
+| =:MepTermJump=          | jump to the target terminal     |
+
+The first send from a buffer asks which terminal to target, pre-filled with
+the first terminal found in the active tab -- so accepting it is one more
+Enter. Each source buffer remembers its own target, so several buffers can
+each drive a different terminal.
+
+* From Lua
+
+#+begin_src lua
+mep.terminal_here()                  -- turn this pane into a terminal
+mep.terminal_here('make test')       -- ...running a shell command
+mep.terminal_here_argv({'python3'})  -- ...running argv directly, no shell
+mep.terminal_info(buffer_id)         -- {title=, exited=, exit_code=}
+#+end_src
+
+=terminal_here_argv= avoids shell quoting entirely, which matters for
+arguments like a multi-line prompt.
+
+* See also
+
+- [[file:repl.html][REPL and send-to-terminal]] -- the line-oriented alternative.
+- [[file:runners.html][The command runner]] -- running build targets.

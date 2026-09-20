@@ -280,30 +280,30 @@ These block the page work, or make it much worse if skipped. Do them first.
 
 ## Part 10 — Running, testing, debugging (6 pages)
 
-- [ ] **10.1 `terminals` — Terminals.** `:terminal`/`:term` below the
+- [x] **10.1 `terminals` — Terminals.** `:terminal`/`:term` below the
   current pane; the per-tab terminal (`<leader><CR>`, `:tabterminal`,
   `mep.opt.tab_terminal_share`) and its hide/restore/respawn behaviour;
   Terminal mode and `Ctrl-\ Ctrl-n`; `Ctrl-Shift-V`; the exported
   `$MEP_WORKSPACE_NAME`, `$MEP_PROJECT_NAME`, `$MEP_AGENT_SOCKET`,
   `$MEP_TERMINAL_BUFFER`; `mep.terminal_here`/`terminal_here_argv`/
   `terminal_info`.
-- [ ] **10.2 `run-button` — Run the current file.** `<leader>rr` /
+- [x] **10.2 `run-button` — Run the current file.** `<leader>rr` /
   `<leader>rs`, `mep.opt.run_button_defaults` (py/r/c/cpp and the R/cc/cxx
   aliases), per-project overrides and where they are stored, why flags go
   after the source file for compiled languages.
-- [ ] **10.3 `runners` — Command runner.** `<leader><Space>` / `:Runner`;
+- [x] **10.3 `runners` — Command runner.** `<leader><Space>` / `:Runner`;
   just → make → ninja → cmake precedence (`mep.opt.runner_order`); the
   preview column with the dependency tree; the Workspaces and Variables tabs
   (`<leader>jw`, `<leader>jv`); async invocation.
-- [ ] **10.4 `repl` — REPL and send-to-terminal.** `:MepReplStart`,
+- [x] **10.4 `repl` — REPL and send-to-terminal.** `:MepReplStart`,
   `:MepReplSendLine`/`SendBuffer`, `<leader>rj` jump to/from the Run pane,
   the vim-slime-style `:MepTermSendLine`/`SendRegister` with per-buffer
   terminal targets; the documented limits (line-oriented, SGR colors only,
   no TUI, no raw keystroke forwarding).
-- [ ] **10.5 `tests` — The Tests panel.** `<leader>tT`,
+- [x] **10.5 `tests` — The Tests panel.** `<leader>tT`,
   `:MepActivityTestPanel`/`TestRun`, `gt` / `:MepLangTest` per-filetype test
   runners, `mep.opt.lang_test_*`, failure-line jumping.
-- [ ] **10.6 `debugging` — DAP debugging.** The `<leader>d` group (`dd`
+- [x] **10.6 `debugging` — DAP debugging.** The `<leader>d` group (`dd`
   start/continue, `db` breakpoint, `dc` clear, `di`/`dn`/`do` step,
   `dr` restart, `dt` terminate, `du` toggle UI, `dv` evaluate), the Debug
   sidebar (Call Stack / Variables / Breakpoints), the Debug Console pane,
@@ -584,7 +584,8 @@ too).
 - [ ] **Cross-linking.** Pages written early could not link forward to pages
   that did not exist yet, because `check_help` (rightly) fails on a dangling
   link. Several "See also" entries were dropped for this reason: completion →
-  copilot, folding → org-basics, spell → writing, lsp → org-babel. Once every
+  copilot, folding → org-basics, spell → writing, lsp → org-babel,
+  repl → notebooks, terminals → ai-terminal. Once every
   page exists, do one pass adding the links back.
 
 ## Open questions

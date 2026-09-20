@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>REPL and send-to-terminal</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Running code">
+<meta name="help-order" content="40">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>REPL and send-to-terminal</h1>
+<h1>Two different things</h1>
+<p><b>The Run/REPL pane</b> is mep's own output buffer: it starts an interpreter and
+renders its output into a pane, with ANSI colours.</p>
+<p><b>Send-to-terminal</b> is the vim-slime approach: you keep a real <code>:terminal</code>
+running whatever you like, and send lines to it from a buffer.</p>
+<p>Use the second when you want a real shell; use the first when you want
+output you can search and scroll like any other buffer.</p>
+<h1>The Run/REPL pane</h1>
+<table>
+<tr><th>Command</th><th>Does</th></tr>
+<tr><td><code>:MepReplStart</code></td><td>start a REPL for this filetype</td></tr>
+<tr><td><code>:MepReplSendLine</code></td><td>send the current line</td></tr>
+<tr><td><code>:MepReplSendBuffer</code></td><td>send the whole buffer</td></tr>
+<tr><td><code>:MepRun</code></td><td>run the current file into the pane</td></tr>
+<tr><td><code>&lt;leader&gt;rj</code></td><td>jump to the pane, or back out of it</td></tr>
+</table>
+<p><code>&lt;leader&gt;rj</code> is a toggle: from a source buffer it moves you to the pane,
+and from inside the pane it moves you back.</p>
+<h1>What the pane is, and is not</h1>
+<p>It parses ANSI colour codes into real decorations, so coloured output looks
+right. Every <b>other</b> escape sequence -- cursor movement, clear-screen -- is
+discarded rather than interpreted.</p>
+<p>So this is genuinely "run code and read the output", not a terminal
+emulator. A full-screen program -- <code>vim</code>, <code>htop</code>, an interactive Python
+prompt with a fancy banner -- renders as garbled scrolling text. Run those
+in a real <a href="terminals.html">terminal</a> instead.</p>
+<p>Interaction is line-oriented: there is no keystroke-by-keystroke forwarding.
+You send lines, selections or buffers; you do not type into it.</p>
+<h1>Send-to-terminal</h1>
+<table>
+<tr><th>Command</th><th>Sends</th></tr>
+<tr><td><code>:MepTermSendLine</code></td><td>the current line</td></tr>
+<tr><td><code>:MepTermSendRegister</code></td><td>a register</td></tr>
+<tr><td><code>:MepTermJump</code></td><td>jump to the target terminal</td></tr>
+</table>
+<p>The first send from a buffer asks which terminal to target, pre-filled with
+the first one in the active tab. Each buffer remembers its own target, so
+several source files can drive several terminals at once.</p>
+<p>"Terminal" here means a real <code>:terminal</code>. The Run/REPL pane above is a plain
+buffer mep renders into, not a terminal, so it is not a valid target.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="terminals.html">Terminals</a> -- the real thing.</li>
+<li><a href="run-button.html">Running the current file</a> -- one key, no pane to manage.</li>
+</ul>
+</body>
+</html>

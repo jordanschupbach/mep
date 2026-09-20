@@ -1,4 +1,7 @@
 #+TITLE: Keyboard shortcuts
+#+HTML_HEAD: <meta name="help-section" content="Reference">
+#+HTML_HEAD: <meta name="help-order" content="10">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
 
 * Help
 

@@ -91,6 +91,38 @@ run: build-native
 run-wasm: build-web
     LD_LIBRARY_PATH="${MEP_WEBVIEW_LD_LIBRARY_PATH:-}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" deno task launch
 
+# Re-render the built-in help workspace: every help/*.org through mep's own
+# Org exporter (`mep --export-org`, src/main.cpp's RunHeadlessOrgExport) to
+# the help/*.html the Help sidebar actually lists and ships. Needs no
+# display -- the export path branches off before InitWindow -- so this is
+# equally usable from CI and over ssh. The .html files are checked in
+# (CMakeLists.txt installs help/ wholesale), so run this and commit the
+# result whenever a help source changes; `mep-help-test` fails when they
+# have drifted apart.
+help: build-native
+    #!/usr/bin/env bash
+    set -euo pipefail
+    shopt -s nullglob
+    for src in help/*.org; do
+        # _-prefixed sources are not pages: help/_template.org is the
+        # starting point a new page is copied from, and would otherwise
+        # export to a _template.html the Help sidebar would then list.
+        case "$(basename "$src")" in _*) continue ;; esac
+        out="${src%.org}.html"
+        ./{{native_build_dir}}/mep --export-org "$src" "$out"
+        echo "  $src -> $out"
+    done
+
+# Check the built-in help workspace: that every help/*.html is exactly what
+# its .org source exports today (re-exported and compared, not an mtime
+# check -- git does not preserve mtimes), that every page declares the title
+# and section the sidebar places it by, that internal links resolve, and how
+# much of mep's command/<leader> surface the manual actually mentions.
+# Coverage is reported but only enforced with --strict, since the manual is
+# being written incrementally (plans/HELP_DOCS_PLAN.md).
+help-check *ARGS: build-native
+    python3 scripts/check_help.py {{native_build_dir}}/mep {{ARGS}}
+
 # Remove all build output.
 clean:
     rm -rf build
@@ -116,6 +148,11 @@ test: build-native
             "./{{native_build_dir}}/$t"
         fi
     done
+    # Not a C++ binary, but the same kind of gate: it fails when help/*.html
+    # has drifted from its Org source, a page is missing its sidebar
+    # metadata, or an internal link is broken. Needs no display.
+    echo "== check_help"
+    python3 scripts/check_help.py {{native_build_dir}}/mep
 
 # CRDT_PERFORMANCE_PLAN.md Phase 1: run the persistent text-editing
 # benchmarks (mep-crdt-bench, mep-buffer-bench, mep-lua-frame-hook-bench)

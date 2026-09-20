@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The start screen</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Getting started">
+<meta name="help-order" content="30">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>The start screen</h1>
+<h1>What you are looking at</h1>
+<p>Start mep with nothing to open and you get the dashboard: the mep logo, a
+short about block, two actions, and a hint line. It is deliberately almost
+empty -- it is a starting point, not a control panel.</p>
+<h1>The actions</h1>
+<table>
+<tr><th>Key</th><th>Action</th><th>What it does</th></tr>
+<tr><td><code>p</code></td><td>Projects</td><td>opens the project picker (<code>:MepProjects</code>)</td></tr>
+<tr><td><code>h</code></td><td>Help</td><td>opens this manual (<code>:MepHelp</code>)</td></tr>
+<tr><td><code>j</code> / <code>k</code></td><td>--</td><td>move between the two rows</td></tr>
+<tr><td><code>Enter</code></td><td>--</td><td>activate the selected row</td></tr>
+</table>
+<p>The letter keys work directly, so <code>h</code> gets you here without selecting first.</p>
+<h1>The hint line</h1>
+<p>Below the actions:</p>
+<p>i to start typing  :e to open a file  &lt;Space&gt; for keys  :q to quit</p>
+<p>Those four cover everything you can do from a standing start: begin editing
+the empty buffer, open a file, discover the key bindings, or leave.</p>
+<h1>When it appears, and when it does not</h1>
+<p>The dashboard is not a screen you navigate to -- it is what mep draws when
+there is genuinely nothing else to show. It requires all of:</p>
+<ul>
+<li>exactly one project loaded, and that project untouched;</li>
+<li>every buffer pristine -- unmodified, unnamed, not a scratch buffer, and empty.</li>
+</ul>
+<p>Start typing, open a file, or restore a session and it is gone, because one
+of those conditions no longer holds. There is no command to bring it back.</p>
+<p>The "every buffer" condition matters more than it looks. mep adopts existing
+git worktrees as extra workspaces shortly after startup, each with its own
+fresh empty buffer, so a check on the number of workspaces or buffers would
+make the dashboard vanish a frame after it appeared in any repository that
+has worktrees. Asking instead whether everything is <b>untouched</b> is what keeps
+it on screen.</p>
+<h1>Opening a project instead</h1>
+<p>Most sessions do not start here at all: <code>mep --project &lt;dir&gt;</code>, or launching
+mep inside a directory, opens that directory as a project. A project opened
+for the first time gets a default layout -- its README in the main pane, a
+terminal below, the file tree at the left -- and one that has been opened
+before is restored exactly as you left it.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="installing.html">Installing and running</a> -- the command line and startup options.</li>
+<li><a href="first-steps.html">Your first ten minutes</a> -- what to do once you are past this screen.</li>
+</ul>
+</body>
+</html>

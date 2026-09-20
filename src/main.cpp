@@ -15606,6 +15606,77 @@ const char *kBuiltinOrgExport =
     // mep_org_html_escape ported to OrgHtmlEscape (editor.cpp) --
     // bound as mep.org_html_escape.
     "local function mep_org_html_escape(s) return mep.org_html_escape(s) end\n"
+    // Org's emphasis markers are NOT simply "text between two of the same
+    // character" -- taking them that way (which a plain
+    // `text:gsub('/([^/\n]+)/', ...)` per marker does) turns every ordinary
+    // path, identifier and arithmetic expression in a technical document
+    // into emphasis: `/usr/bin/env` italicizes `usr`, `mep_org_export`
+    // underlines `org`, `5+3+2` strikes `3`, and `~/.config/x and ~/.local`
+    // renders the span between the two tildes as code. Real org-mode
+    // resolves this with org-emphasis-regexp-components, reproduced here:
+    //
+    //   pre     the character BEFORE the opening marker must be the start
+    //           of the line or one of  space tab ( ' " {
+    //   border  the characters immediately INSIDE both markers must not be
+    //           whitespace, a comma or a quote
+    //   post    the character AFTER the closing marker must be the end of
+    //           the line or one of  - space tab . , : ! ? ; ' " ) } [
+    //
+    // That needs lookbehind/lookahead, which Lua patterns have no way to
+    // express, so this is a left-to-right scan rather than five gsubs.
+    // Marker sets are built from byte values purely to keep the quote and
+    // backslash characters in them out of a Lua literal nested inside a C
+    // string literal.
+    //
+    // Body text is emitted literally, so emphasis does not nest -- matching
+    // the behavior of the gsub chain this replaces (which stashed each
+    // match whole, hiding any inner marker from the later patterns), and
+    // correct on its own terms for the two verbatim markers, = and ~.
+    "local function mep_org_emph_set(bytes)\n"
+    "  local t = {}\n"
+    "  for _, b in ipairs(bytes) do t[string.char(b)] = true end\n"
+    "  return t\n"
+    "end\n"
+    "local MEP_ORG_EMPH_PRE = mep_org_emph_set{32, 9, 40, 39, 34, 123}\n"
+    "local MEP_ORG_EMPH_POST = mep_org_emph_set{45, 32, 9, 46, 44, 58, 33, 63, 59, 39, 34, 41, 125, 91}\n"
+    "local MEP_ORG_EMPH_BORDER = mep_org_emph_set{32, 9, 13, 10, 44, 34, 39}\n"
+    "function mep_org_convert_emphasis(text, marks, stash_out)\n"
+    "  local pairs_for = {\n"
+    "    ['*'] = {marks.bold_open, marks.bold_close},\n"
+    "    ['/'] = {marks.italic_open, marks.italic_close},\n"
+    "    ['_'] = {marks.underline_open, marks.underline_close},\n"
+    "    ['+'] = {marks.strike_open, marks.strike_close},\n"
+    "    ['='] = {marks.code_open, marks.code_close},\n"
+    "    ['~'] = {marks.code_open, marks.code_close},\n"
+    "  }\n"
+    "  local out, i, n = {}, 1, #text\n"
+    "  while i <= n do\n"
+    "    local ch = text:sub(i, i)\n"
+    "    local m = pairs_for[ch]\n"
+    "    local matched = false\n"
+    "    if m and (i == 1 or MEP_ORG_EMPH_PRE[text:sub(i - 1, i - 1)]) then\n"
+    "      local first = text:sub(i + 1, i + 1)\n"
+    "      if first ~= '' and not MEP_ORG_EMPH_BORDER[first] then\n"
+    "        local k = i + 2\n"
+    "        while k <= n do\n"
+    "          if text:sub(k, k) == ch and not MEP_ORG_EMPH_BORDER[text:sub(k - 1, k - 1)]\n"
+    "             and (k == n or MEP_ORG_EMPH_POST[text:sub(k + 1, k + 1)]) then\n"
+    "            out[#out + 1] = stash_out(m[1] .. text:sub(i + 1, k - 1) .. m[2])\n"
+    "            i = k + 1\n"
+    "            matched = true\n"
+    "            break\n"
+    "          end\n"
+    "          k = k + 1\n"
+    "        end\n"
+    "      end\n"
+    "    end\n"
+    "    if not matched then\n"
+    "      out[#out + 1] = ch\n"
+    "      i = i + 1\n"
+    "    end\n"
+    "  end\n"
+    "  return table.concat(out)\n"
+    "end\n"
     // Every construct's generated markup is stashed behind a `\0M<n>\0`
     // placeholder as soon as it's produced, then all placeholders are
     // restored in one final pass -- otherwise e.g. HTML's `</b>` (which
@@ -15622,11 +15693,7 @@ const char *kBuiltinOrgExport =
     "  end\n"
     "  text = text:gsub('%[%[([^%]]+)%]%[([^%]]+)%]%]', function(u, d) return stash_out(marks.link(u, d)) end)\n"
     "  text = text:gsub('%[%[([^%]]+)%]%]', function(u) return stash_out(marks.link(u, u)) end)\n"
-    "  text = text:gsub('%*([^%*\\n]+)%*', function(t) return stash_out(marks.bold_open .. t .. marks.bold_close) end)\n"
-    "  text = text:gsub('/([^/\\n]+)/', function(t) return stash_out(marks.italic_open .. t .. marks.italic_close) end)\n"
-    "  text = text:gsub('_([^_\\n]+)_', function(t) return stash_out(marks.underline_open .. t .. marks.underline_close) end)\n"
-    "  text = text:gsub('%+([^%+\\n]+)%+', function(t) return stash_out(marks.strike_open .. t .. marks.strike_close) end)\n"
-    "  text = text:gsub('=([^=\\n]+)=', function(t) return stash_out(marks.code_open .. t .. marks.code_close) end)\n"
+    "  text = mep_org_convert_emphasis(text, marks, stash_out)\n"
     "  for idx, html in ipairs(stash) do\n"
     "    text = text:gsub('\\0M' .. idx .. '\\0', function() return html end)\n"
     "  end\n"
@@ -15888,10 +15955,26 @@ const char *kBuiltinOrgExport =
     "      list_open = nil\n"
     "    end\n"
     "  end\n"
+    // Body text is gathered into a paragraph rather than emitted line by
+    // line, and wrapped in a real <p> when the run ends. Without this,
+    // consecutive paragraphs separated by a blank line come out as bare
+    // text nodes, which collapse into one another when rendered -- HTML
+    // treats the blank line as ordinary whitespace, so the paragraph break
+    // the source clearly intended simply disappears. The source's own line
+    // breaks are kept inside the <p> (they render as spaces) so the
+    // generated markup still diffs line-for-line against its Org input.
+    "  local para = {}\n"
+    "  local function close_para()\n"
+    "    if format == 'html' and #para > 0 then\n"
+    "      out[#out + 1] = '<p>' .. table.concat(para, '\\n') .. '</p>'\n"
+    "      para = {}\n"
+    "    end\n"
+    "  end\n"
     "  while i <= n do\n"
     "    local line = lines[i]\n"
     "    local h = mep_org_parse_headline(line)\n"
     "    if h then\n"
+    "      close_para()\n"
     "      close_list()\n"
     "      if h.tags and h.tags:find('noexport', 1, true) then\n"
     "        i = mep_org_subtree_end_lines(lines, i)\n"
@@ -15901,12 +15984,17 @@ const char *kBuiltinOrgExport =
     "        i = i + 1\n"
     "      end\n"
     "    elseif line:match('^%s*#%+[Bb][Ee][Gg][Ii][Nn]_[Ss][Rr][Cc]') then\n"
+    "      close_para()\n"
     "      close_list()\n"
     "      local lang = line:match('^%s*#%+[Bb][Ee][Gg][Ii][Nn]_[Ss][Rr][Cc]%s+(%S+)') or ''\n"
     "      i = i + 1\n"
     "      local body = {}\n"
     "      while i <= n and not lines[i]:match('^%s*#%+[Ee][Nn][Dd]_[Ss][Rr][Cc]') do\n"
-    "        body[#body + 1] = lines[i]\n"
+    // Org's comma escape: inside a block, a line starting with `,*` or
+    // `,#+` has that comma stripped on export. It is how a block quotes
+    // text that would otherwise end the block or read as a headline --
+    // which any documentation showing Org syntax needs constantly.
+    "        body[#body + 1] = (lines[i]:gsub('^(%s*),([%*#])', '%1%2'))\n"
     "        i = i + 1\n"
     "      end\n"
     "      if format == 'html' then\n"
@@ -15927,8 +16015,16 @@ const char *kBuiltinOrgExport =
     "    elseif line:match('^%s*SCHEDULED:') or line:match('^%s*DEADLINE:') or line:match('^%s*#%+') then\n"
     "      i = i + 1\n"
     "    elseif line:match('^%s*$') then\n"
+    "      close_para()\n"
     "      close_list()\n"
-    "      out[#out + 1] = ''\n"
+    // A blank source line is a block separator, and for HTML the blocks it
+    // separates now carry that meaning themselves (<p>, <ul>, <table>...).
+    // Emitting it as an empty line too leaves a stray whitespace text node
+    // between every pair of blocks, which mep's own renderer lays out as
+    // real vertical space -- pages came out with large gaps between every
+    // heading and paragraph. markdown and ascii still need the blank line:
+    // there it *is* the only block separator.
+    "      if format ~= 'html' then out[#out + 1] = '' end\n"
     "      i = i + 1\n"
     // Org's own pipe-table syntax ("| a | b |", a "|---+---|" separator
     // row marking the header/body boundary) happens to already BE valid
@@ -15942,6 +16038,7 @@ const char *kBuiltinOrgExport =
     // (main.cpp's CollectTableRows/TableMaxCols) have nothing to walk
     // without a real <table>/<tr>/<td> in the HTML this produces.
     "    elseif format == 'html' and line:match('^%s*|.-|%s*$') then\n"
+    "      close_para()\n"
     "      close_list()\n"
     "      out[#out + 1] = '<table>'\n"
     "      local header_done = false\n"
@@ -15968,6 +16065,7 @@ const char *kBuiltinOrgExport =
     "      local is_bullet = line:match('^%s*[%-%*%+]%s')\n"
     "      local is_ordered = line:match('^%s*%d+[%.%)]%s')\n"
     "      if format == 'html' and (is_bullet or is_ordered) then\n"
+    "        close_para()\n"
     "        local want = is_bullet and 'ul' or 'ol'\n"
     "        if list_open and list_open ~= want then close_list() end\n"
     "        if not list_open then\n"
@@ -15976,6 +16074,18 @@ const char *kBuiltinOrgExport =
     "        end\n"
     "        local item = is_bullet and converted:gsub('^%s*[%-%*%+]%s*', '') or converted:gsub('^%s*%d+[%.%)]%s*', '')\n"
     "        out[#out + 1] = '<li>' .. item .. '</li>'\n"
+    // A hard-wrapped list item's continuation lines are indented under
+    // their own bullet. Folding them back into the <li> they belong to is
+    // what stops an ordinary wrapped list from ending its <ul> at the
+    // first wrap and spilling the rest of the item out as loose text
+    // between two lists -- the single most visible defect this exporter
+    // had on real prose, where wrapped bullets are everywhere.
+    "      elseif format == 'html' and list_open and line:match('^%s+%S')\n"
+    "             and out[#out] and out[#out]:sub(-5) == '</li>' then\n"
+    "        out[#out] = out[#out]:sub(1, -6) .. ' ' .. (converted:match('^%s*(.-)%s*$') or converted) .. '</li>'\n"
+    "      elseif format == 'html' then\n"
+    "        close_list()\n"
+    "        para[#para + 1] = converted\n"
     "      else\n"
     "        close_list()\n"
     "        out[#out + 1] = converted\n"
@@ -15983,6 +16093,7 @@ const char *kBuiltinOrgExport =
     "      i = i + 1\n"
     "    end\n"
     "  end\n"
+    "  close_para()\n"
     "  close_list()\n"
     "  return table.concat(out, '\\n')\n"
     "end\n"
@@ -16041,6 +16152,17 @@ const char *kBuiltinOrgExport =
     "    if a then meta.author = a end\n"
     "    local d = l:match('^%s*#%+[Dd][Aa][Tt][Ee]:%s*(.*)$')\n"
     "    if d then meta.date = d end\n"
+    // #+HTML_HEAD: injects its line verbatim into the exported <head>,
+    // as it does in real org-mode -- the file's own way to add a <meta>,
+    // a <link rel=stylesheet> or anything else the generated skeleton
+    // has no keyword of its own for. Repeatable: every occurrence is
+    // appended, in source order. The built-in help pages use it to carry
+    // their sidebar section and ordering (see kBuiltinHelp).
+    "    local hh = l:match('^%s*#%+[Hh][Tt][Mm][Ll]_[Hh][Ee][Aa][Dd]:%s*(.*)$')\n"
+    "    if hh then\n"
+    "      meta.html_head = meta.html_head or {}\n"
+    "      meta.html_head[#meta.html_head + 1] = hh\n"
+    "    end\n"
     "  end\n"
     "  return meta\n"
     "end\n"
@@ -16091,6 +16213,7 @@ const char *kBuiltinOrgExport =
     // included) nearly illegible against it before this line existed.
     "function mep_org_html_wrap_document(fragment, meta)\n"
     "  local title = meta.title and mep_org_html_escape(meta.title) or 'Untitled'\n"
+    "  local head_extra = meta.html_head and (table.concat(meta.html_head, '\\n') .. '\\n') or ''\n"
     "  return '<!DOCTYPE html>\\n<html lang=\"en\">\\n<head>\\n<meta charset=\"utf-8\">\\n'\n"
     "    .. '<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\\n'\n"
     "    .. '<title>' .. title .. '</title>\\n'\n"
@@ -16142,7 +16265,10 @@ const char *kBuiltinOrgExport =
     "    .. 'document.body.appendChild(ta);ta.select();'\n"
     "    .. 'try{document.execCommand(\"copy\");}catch(e){}'\n"
     "    .. 'document.body.removeChild(ta);restore();'\n"
-    "    .. '}}</script>\\n</head>\\n<body>\\n'\n"
+    // #+HTML_HEAD: lines go last, after the generated skeleton's own style
+    // and script, so a page can override the default stylesheet rather than
+    // only add to it -- the same ordering real org-mode's HTML export uses.
+    "    .. '}}</script>\\n' .. head_extra .. '</head>\\n<body>\\n'\n"
     "    .. (meta.title and ('<h1>' .. title .. '</h1>\\n') or '')\n"
     "    .. fragment .. '\\n</body>\\n</html>\\n'\n"
     "end\n"
@@ -16253,6 +16379,32 @@ const char *kBuiltinOrgExport =
     "      mep.notify('ODT export failed: ' .. (err or '?'), 'error')\n"
     "    end\n"
     "  end)\n"
+    "end\n"
+    // File-in/file-out HTML export, with no buffer and no editor window
+    // involved: what `mep --export-org in.org out.html` (main(), below)
+    // and `just help` drive to re-render help/*.org. Deliberately *not*
+    // built on mep_org_export_prepare -- that one runs the document's
+    // code blocks first (org-export-use-babel) and is asynchronous, so it
+    // needs a frame loop to pump its jobs, which a one-shot CLI export
+    // has none of. Skipping babel is also the right default here on its
+    // own terms: rendering documentation must not execute whatever the
+    // document happens to contain. #+INCLUDE: resolution and macro
+    // expansion still apply, since those are pure text operations.
+    "function mep.org_export_html_file(in_path, out_path)\n"
+    "  local lines = mep.read_lines(in_path)\n"
+    "  if not lines or #lines == 0 then return nil, 'cannot read ' .. tostring(in_path) end\n"
+    "  local base_dir = in_path:match('^(.*)/[^/]*$') or '.'\n"
+    "  local resolved = mep_org_resolve_includes_lines(lines, base_dir)\n"
+    "  local macros = mep_org_collect_macros(function(i) return resolved[i] end, #resolved)\n"
+    "  local expanded = {}\n"
+    "  for i, l in ipairs(resolved) do expanded[i] = mep_org_expand_macro_line(l, macros) end\n"
+    "  local meta = mep_org_extract_meta(expanded)\n"
+    "  local html = mep_org_html_wrap_document(mep.org_export('html', expanded), meta)\n"
+    "  local f = io.open(out_path, 'w')\n"
+    "  if not f then return nil, 'cannot write ' .. tostring(out_path) end\n"
+    "  f:write(html)\n"
+    "  f:close()\n"
+    "  return out_path\n"
     "end\n"
     "mep.command('MepOrgExportHtml', mep.org_export_html)\n"
     "mep.command('MepOrgExportMarkdown', mep.org_export_markdown)\n"
@@ -25257,6 +25409,35 @@ const char *kBuiltinHelp =
     "  end\n"
     "  return fallback:gsub('%.html?$', '')\n"
     "end\n"
+    // A page declares where it belongs with two <meta> tags its Org source
+    // writes through #+HTML_HEAD: (see mep_org_extract_meta):
+    //
+    //   #+HTML_HEAD: <meta name="help-section" content="Getting started">
+    //   #+HTML_HEAD: <meta name="help-order" content="20">
+    //
+    // Reading them from the *page* rather than a separate manifest keeps
+    // one file per topic: adding a page to the manual is still nothing but
+    // dropping it in help/, which is what `writing-help` promises. A page
+    // that declares neither still works -- it lands in the catch-all
+    // section at the bottom, ordered by title, exactly as every page did
+    // when this list was flat.
+    "local function mep_help_meta(lines, name)\n"
+    "  for _, line in ipairs(lines or {}) do\n"
+    "    local content = line:match('<[Mm][Ee][Tt][Aa]%s+name=\"' .. name .. '\"%s+content=\"(.-)\"')\n"
+    "    if content then return content end\n"
+    "  end\n"
+    "  return nil\n"
+    "end\n"
+    // The order sections are listed in. A section a page names that is not
+    // in this list still renders -- it is appended after these, so a
+    // project-local help/ can add its own without patching anything here.
+    "local MEP_HELP_SECTION_ORDER = {\n"
+    "  'Getting started', 'Editing', 'Files and windows', 'Projects', 'Interface',\n"
+    "  'Git', 'Code', 'Running code', 'Languages', 'Org mode', 'Writing',\n"
+    "  'Documents and media', 'Web', 'AI', 'Learning', 'Collaboration',\n"
+    "  'Configuration', 'Lua API', 'Reference',\n"
+    "}\n"
+    "local MEP_HELP_OTHER_SECTION = 'Other'\n"
     "function mep.help_refresh_index()\n"
     "  local workspace_help = mep_help_join(mep.workspace_root(), 'help')\n"
     "  local entries = mep.list_dir(workspace_help)\n"
@@ -25268,14 +25449,40 @@ const char *kBuiltinHelp =
     "    if not entry.is_dir and entry.name:match('%.html?$') then\n"
     "      local path = mep_help_join(mep_help_root, entry.name)\n"
     "      local lines = mep.read_lines(path) or {}\n"
-    "      mep_help_pages[#mep_help_pages + 1] = {path = path, name = entry.name, title = mep_help_title(lines, entry.name)}\n"
+    "      mep_help_pages[#mep_help_pages + 1] = {path = path, name = entry.name,\n"
+    "        title = mep_help_title(lines, entry.name),\n"
+    "        section = mep_help_meta(lines, 'help%-section') or MEP_HELP_OTHER_SECTION,\n"
+    "        order = tonumber(mep_help_meta(lines, 'help%-order') or '') or math.huge}\n"
     "    end\n"
     "  end\n"
+    // Within a section: by declared #+HTML_HEAD: help-order, then title, so
+    // a section whose pages have a natural reading order (Getting started)
+    // keeps it while one that does not (Reference) still sorts sensibly.
+    // intro.html stays pinned to the very top of the whole list regardless,
+    // as it did before -- it is the page :MepHelp itself opens.
     "  table.sort(mep_help_pages, function(a, b)\n"
     "    if a.name == 'intro.html' then return true end\n"
     "    if b.name == 'intro.html' then return false end\n"
+    "    if a.order ~= b.order then return a.order < b.order end\n"
     "    return a.title:lower() < b.title:lower()\n"
     "  end)\n"
+    "end\n"
+    // Section names in MEP_HELP_SECTION_ORDER first, in that order, then
+    // any section a page named that the list does not know about (sorted by
+    // name so the result is stable), then the catch-all last.
+    "local function mep_help_ordered_sections(present)\n"
+    "  local ordered, seen = {}, {}\n"
+    "  for _, name in ipairs(MEP_HELP_SECTION_ORDER) do\n"
+    "    if present[name] then ordered[#ordered + 1] = name seen[name] = true end\n"
+    "  end\n"
+    "  local extra = {}\n"
+    "  for name in pairs(present) do\n"
+    "    if not seen[name] and name ~= MEP_HELP_OTHER_SECTION then extra[#extra + 1] = name end\n"
+    "  end\n"
+    "  table.sort(extra)\n"
+    "  for _, name in ipairs(extra) do ordered[#ordered + 1] = name end\n"
+    "  if present[MEP_HELP_OTHER_SECTION] then ordered[#ordered + 1] = MEP_HELP_OTHER_SECTION end\n"
+    "  return ordered\n"
     "end\n"
     "function mep.help_open_page(path)\n"
     "  if not path or path == '' then return end\n"
@@ -25288,14 +25495,37 @@ const char *kBuiltinHelp =
     "  end\n"
     "  local current = mep.filename()\n"
     "  mep_help_current_path = current\n"
-    "  local widgets = {}\n"
+    // One sidebar section per help section, rather than one flat list: at
+    // this manual's size an alphabetical run of every page is unnavigable.
+    // Only the section holding the page being read is expanded, so opening
+    // Help shows the shape of the manual first and its pages second.
+    "  local by_section, present, current_section = {}, {}, nil\n"
     "  for _, page in ipairs(mep_help_pages) do\n"
-    "    local p = page\n"
-    "    widgets[#widgets + 1] = {id = p.path, text = p.title, current = current == p.path,\n"
-    "      hl = current == p.path and 'Add' or nil, on_click = function() mep.help_open_page(p.path) end}\n"
+    "    local s = page.section\n"
+    "    by_section[s] = by_section[s] or {}\n"
+    "    table.insert(by_section[s], page)\n"
+    "    present[s] = true\n"
+    "    if current == page.path then current_section = s end\n"
     "  end\n"
-    "  if #widgets == 0 then widgets[1] = {id = 'empty', text = '(no help pages in help/)'} end\n"
-    "  mep.sidebar_set_sections(mep_help_sidebar_id, {{id = 'pages', title = 'Documentation', collapsed = false, widgets = widgets}})\n"
+    "  local sections = {}\n"
+    "  for _, name in ipairs(mep_help_ordered_sections(present)) do\n"
+    "    local widgets = {}\n"
+    "    for _, page in ipairs(by_section[name]) do\n"
+    "      local p = page\n"
+    "      widgets[#widgets + 1] = {id = p.path, text = p.title, current = current == p.path,\n"
+    "        hl = current == p.path and 'Add' or nil, on_click = function() mep.help_open_page(p.path) end}\n"
+    "    end\n"
+    // Before any page has been opened there is no current section, so fall
+    // back to expanding the first one -- an all-collapsed sidebar on the
+    // very first :MepHelp would look broken.
+    "    local expanded = (current_section == nil and #sections == 0) or name == current_section\n"
+    "    sections[#sections + 1] = {id = 'sec:' .. name, title = name, collapsed = not expanded, widgets = widgets}\n"
+    "  end\n"
+    "  if #sections == 0 then\n"
+    "    sections[1] = {id = 'pages', title = 'Documentation', collapsed = false,\n"
+    "      widgets = {{id = 'empty', text = '(no help pages in help/)'}}}\n"
+    "  end\n"
+    "  mep.sidebar_set_sections(mep_help_sidebar_id, sections)\n"
     "end\n"
     "function mep.help_open()\n"
     "  mep.help_refresh_index()\n"
@@ -42046,12 +42276,86 @@ void RegisterModel3DAgentMethods() {
     });
 }
 
+#if !defined(__EMSCRIPTEN__)
+/**
+ * @brief Renders one Org file to a standalone HTML file with no window, frame loop or session.
+ * @param in_path Path of the .org source to read.
+ * @param out_path Path of the .html file to write.
+ * @return 0 on success, 1 if the export failed (the reason is written to stderr).
+ *
+ * Backs `mep --export-org <in.org> <out.html>`, which `just help` runs over
+ * every Org file under help/ so the shipped documentation can be
+ * regenerated -- and checked in CI -- without a display.
+ *
+ * Only kBuiltinOrgExport is loaded, not the whole kBuiltin* set main()
+ * normally runs: the exporter's entire dependency set (mep.org_export,
+ * mep_org_resolve_includes_lines, the macro helpers, mep_org_extract_meta,
+ * mep_org_html_wrap_document) lives in that one chunk, while the rest --
+ * file tree, git, LSP, terminals, Copilot -- would start jobs and register
+ * frame hooks that nothing here will ever pump. Nothing on this path needs
+ * the GL context either: Treesitter's grammar table is static, and code-
+ * block highlighting resolves to highlight-group *names*, not theme colors.
+ */
+int RunHeadlessOrgExport(const std::string &in_path, const std::string &out_path) {
+    // Single-quoting would be wrong for a Lua literal; escape for a double-
+    // quoted one instead. A path can legitimately contain either character.
+    auto lua_quote = [](const std::string &s) {
+        std::string out = "\"";
+        for (const char c : s) {
+            if (c == '\\' || c == '"') out += '\\';
+            out += c;
+        }
+        out += '"';
+        return out;
+    };
+    // NOLINTNEXTLINE(cppcoreguidelines-owning-memory) -- process-lifetime
+    // singleton, exactly as main()'s own LuaEnv is; this process exits below.
+    LuaEnv *lua = new LuaEnv(&g_editor);
+    g_editor.SetLuaEnv(lua);
+    // kBuiltinEditHooks defines mep.on_buffer_changed/on_buffer_saved, which
+    // kBuiltinSyntax registers against at load; kBuiltinSyntax in turn owns
+    // mep_org_babel_lang_ts_ft, the language -> Treesitter-filetype table the
+    // exporter's own code-block highlighter looks a #+begin_src block's
+    // language up in. Neither chunk's frame/edit hooks ever fire here --
+    // nothing pumps them -- so loading them costs only their table setup.
+    for (const char *chunk : {kBuiltinEditHooks, kBuiltinSyntax, kBuiltinOrgExport}) {
+        if (!lua->DoString(chunk)) {
+            std::fprintf(stderr, "mep --export-org: could not load the Org exporter\n");
+            return 1;
+        }
+    }
+    // pcall, and the detail written to stderr from Lua: DoString reports an
+    // error only through the editor's status line, which has no terminal
+    // behind it here, so an uncaught runtime error inside the exporter
+    // would otherwise surface as a bare non-zero exit with no explanation.
+    // error() at the end is what makes DoString itself return false.
+    const std::string code = "local ran, ok, err = pcall(mep.org_export_html_file, " + lua_quote(in_path) + ", " +
+                             lua_quote(out_path) + ")\n" +
+                             "if not ran then err = ok ok = nil end\n"
+                             "if not ok then io.stderr:write('mep --export-org: ' .. tostring(err) .. '\\n') "
+                             "error('export failed', 0) end\n";
+    return lua->DoString(code) ? 0 : 1;
+}
+#endif
+
 int main(int argc, char **argv) {
     // Installs the in-house GLFW/OpenGL gfx:: backend -- must run before
     // any other gfx:: call in this process (including on the background
     // font-bake thread started a few lines below), since every gfx::
     // facade function dereferences the backend pointers this sets up.
     gfx::SetBackends(gfx::ToBackends(gfx::CreateNativeBackendSet()));
+
+#if !defined(__EMSCRIPTEN__)
+    // Handled before anything else in main(): --export-org is a one-shot
+    // file-in/file-out conversion, so it must branch off ahead of the
+    // window, the font bakes and the session restore, none of which it
+    // wants and the first of which would fail outright with no display.
+    for (int i = 1; i + 2 < argc; i++) {
+        if (std::string(argv[i]) == "--export-org") {
+            return RunHeadlessOrgExport(argv[i + 1], argv[i + 2]);
+        }
+    }
+#endif
 
     // First thing of all -- StartFontBakesAsync's background thread
     // (right below) calls LoadFontData too, and its own "size is bigger
@@ -42264,9 +42568,12 @@ int main(int argc, char **argv) {
             g_editor.SetSessionPersistence(false);
         } else if (a == "-h" || a == "--help") {
             std::printf("usage: mep [--project <dir>] [--no-session] [file]\n"
+                        "       mep --export-org <in.org> <out.html>\n"
                         "  --project <dir>  open <dir> as the project (default: the current directory;\n"
                         "                   $MEP_PROJECT is honoured too)\n"
-                        "  --no-session     neither restore nor save the project's workspaces/tabs\n");
+                        "  --no-session     neither restore nor save the project's workspaces/tabs\n"
+                        "  --export-org     render one Org file to standalone HTML and exit, with no\n"
+                        "                   window (what `just help` runs over help/*.org)\n");
             return 0;
         } else if (file_arg.empty()) {
             file_arg = a;

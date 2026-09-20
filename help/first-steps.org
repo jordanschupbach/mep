@@ -1,0 +1,89 @@
+#+TITLE: Your first ten minutes
+#+HTML_HEAD: <meta name="help-section" content="Getting started">
+#+HTML_HEAD: <meta name="help-order" content="20">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Modes
+
+mep starts in *Normal* mode, where the letter keys are commands rather than
+text. This is the single thing to understand first: in Normal mode, pressing
+=d= does not type a "d", it starts a delete.
+
+| Mode        | You get there with        | You leave with |
+|-------------+---------------------------+----------------|
+| Normal      | =Esc=, from anywhere      |                |
+| Insert      | =i=, =a=, =o= and friends | =Esc=          |
+| Replace     | =R=                       | =Esc=          |
+| Visual      | =v= (=V= lines, =Ctrl-V= block) | =Esc=    |
+| Command line | =:=                      | =Esc=          |
+| Terminal    | clicking into a terminal  | =Ctrl-\ Ctrl-n= |
+
+The current mode is shown at the left of the status line along the bottom.
+
+* Moving
+
+Use =h=, =j=, =k= and =l= to move left, down, up and right. They are where
+your fingers already are, which is the whole argument for them.
+
+| Key       | Moves to                                |
+|-----------+-----------------------------------------|
+| =w= / =b= | start of the next / previous word       |
+| =0= / =$= | start / end of the line                 |
+| =^=       | first non-blank character of the line   |
+| =gg= / =G= | first / last line of the file          |
+| =5j=      | down five lines -- any motion takes a count |
+| =:42=     | line 42                                 |
+
+To get somewhere visible on screen fast, press =s= and start typing what you
+are aiming at. Every match across every visible pane gets a one-key label;
+press that key to jump. Press =Esc= to give up.
+
+* Editing
+
+Press =i= to start typing at the cursor, or =a= to start just after it. =o=
+opens a new line below and starts typing there. =Esc= gets you back to Normal
+mode.
+
+In Normal mode, an operator combines with a motion:
+
+| Keys  | Effect                            |
+|-------+-----------------------------------|
+| =dw=  | delete to the start of the next word |
+| =dd=  | delete the whole line             |
+| =3dd= | delete three lines                |
+| =cw=  | change a word (delete it, then Insert) |
+| =yy=  | yank (copy) a line                |
+| =p=   | put (paste) what you last yanked or deleted |
+| =x=   | delete the character under the cursor |
+| =u=   | undo; =Ctrl-r= redo               |
+
+Yanking and deleting put the text on the system clipboard, so =p= pastes what
+you copied in any other application too, and vice versa.
+
+* Saving and quitting
+
+Everything here starts with =:=, which opens the command line at the bottom.
+
+| Command | Effect                                              |
+|---------+-----------------------------------------------------|
+| =:w=    | write the current buffer to its file                |
+| =:e path= | open =path= -- a path that does not exist yet starts a new file |
+| =:q=    | close the current pane, quitting once it is the last |
+| =:q!=   | close it, discarding unsaved changes                |
+| =:wq=   | write, then close                                   |
+| =:qa=   | quit everything, refusing if anything is unsaved    |
+
+If =:q= refuses, something is unsaved. =:wa= writes every modified buffer.
+
+* When you forget a key
+
+Press =<Space>= and wait. The which-key popup lists every binding available
+under the leader key, grouped by what it does -- =f= for files, =g= for git,
+=o= for org, and so on. Keep pressing keys to walk into a group; press =Esc=
+to back out.
+
+* See also
+
+- [[file:vim-differences.html][What is and isn't Vim]] -- if these keys already look familiar.
+- [[file:editing.html][Editing basics]] -- buffers and panes.
+- [[file:shortcuts.html][Keyboard shortcuts]] -- a wider reference.

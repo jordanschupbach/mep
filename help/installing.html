@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Installing and running</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Getting started">
+<meta name="help-order" content="40">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Installing and running</h1>
+<h1>Getting a toolchain</h1>
+<p>mep builds with CMake and a C++20 compiler. The repository ships a Nix flake
+that provides everything -- cmake, the compiler, emscripten, deno, just --
+at the right versions:</p>
+<p>direnv allow      # or, per shell:
+nix develop</p>
+<p>Everything below assumes you are inside that shell.</p>
+<h1>Building and running</h1>
+<table>
+<tr><th>Command</th><th>What it does</th></tr>
+<tr><td><code>just run</code></td><td>build the native binary and launch it (the default)</td></tr>
+<tr><td><code>just build-native</code></td><td>build only, into <code>build/native</code></td></tr>
+<tr><td><code>just build-web</code></td><td>build the wasm target, into <code>build/web</code></td></tr>
+<tr><td><code>just run-wasm</code></td><td>build wasm and open it in a Deno-hosted window</td></tr>
+<tr><td><code>just test</code></td><td>build and run every test that needs no display</td></tr>
+<tr><td><code>just clean</code></td><td>remove all build output</td></tr>
+</table>
+<p>For a faster edit/test loop there is <code>just build-native-dev</code>, an <code>-O0</code> build
+in its own directory that never collides with the release one. Use it for
+iteration, not for anything performance-sensitive.</p>
+<h1>The command line</h1>
+<p>mep [--project &lt;dir&gt;] [--no-session] [file]
+mep --export-org &lt;in.org&gt; &lt;out.html&gt;</p>
+<table>
+<tr><th>Option</th><th>Effect</th></tr>
+<tr><td><code>--project &lt;dir&gt;</code></td><td>open <code>dir</code> as the project instead of the current directory</td></tr>
+<tr><td><code>--no-session</code></td><td>neither restore nor save this project's workspaces and tabs</td></tr>
+<tr><td><code>--export-org</code></td><td>render one Org file to HTML and exit, with no window</td></tr>
+<tr><td><code>-h</code>, <code>--help</code></td><td>print this usage and exit</td></tr>
+<tr><td><code>file</code></td><td>open <code>file</code> once the project is set up</td></tr>
+</table>
+<p><code>$MEP_PROJECT</code> does the same job as <code>--project</code>, for launchers that find
+setting an environment variable easier than building an argument list.</p>
+<h1>Configuration</h1>
+<p>On startup mep runs <code>~/.config/mep/init.lua</code> if it exists. That file is
+ordinary Lua with mep's whole scripting API available, and it runs before any
+saved session is restored, so options that affect restoring take effect in
+time.</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-comment">-- ~/.config/mep/init.lua</span>
+mep.colorscheme(<span class="tok-green">'everforest-dark'</span>)
+mep.opt.restore_workspaces = <span class="tok-cyan">false</span>
+mep.leader_map(<span class="tok-green">'xx'</span>, <span class="tok-green">'Say hello'</span>, <span class="tok-purple">function</span>() mep.<span class="tok-blue">notify</span>(<span class="tok-green">'hello'</span>) <span class="tok-purple">end</span>)</code></pre></div>
+<p><code>:source &lt;file&gt;</code> runs another Lua file, and <code>:lua &lt;code&gt;</code> runs a line
+directly -- useful for trying something before committing it to <code>init.lua</code>.</p>
+<h1>The wasm build</h1>
+<p>mep also compiles to WebAssembly. <code>just run-wasm</code> builds it and opens it in a
+native window via Deno and webview, with file reading and writing bridged to
+a loopback-only HTTP server on the host.</p>
+<p>Opening <code>build/web/mep.html</code> directly in a browser tab works too, but there
+is no server behind it: <code>:e</code>, <code>:w</code> and <code>:source</code> fail there with an ordinary
+read/write error, and there is no <code>init.lua</code> to load. Clipboard access in the
+browser is best-effort.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="dashboard.html">The start screen</a> -- what you see on first launch.</li>
+<li><a href="first-steps.html">Your first ten minutes</a> -- using the editor once it is up.</li>
+</ul>
+</body>
+</html>

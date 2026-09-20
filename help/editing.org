@@ -1,4 +1,7 @@
 #+TITLE: Editing basics
+#+HTML_HEAD: <meta name="help-section" content="Editing">
+#+HTML_HEAD: <meta name="help-order" content="10">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
 
 * Buffers and panes
 

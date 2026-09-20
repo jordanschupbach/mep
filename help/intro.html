@@ -6,33 +6,48 @@
 <title>mep Help</title>
 <style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}</style>
 <script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Getting started">
+<meta name="help-order" content="10">
+<link rel="stylesheet" href="help.css">
 </head>
 <body>
 <h1>mep Help</h1>
-
 <h1>Welcome</h1>
-
-This is the starting point for mep's built-in help workspace. Help pages
-are rendered HTML documents, generated from the Org sources maintained with
-the editor's normal Org tooling.
-
-Use the left sidebar or click a page link to move between pages.
-
-<h1>Start here</h1>
-
+<p>mep is a modal editor. It opens with an empty buffer and expects you to press
+<code>i</code> before you can type; everything else follows from that one idea.</p>
+<p>It is also, by now, a good deal more than a text editor: it renders and edits
+Org and Markdown, PDFs, Word documents, spreadsheets, Jupyter notebooks,
+images, 3D models and web pages, each in an ordinary pane, and it has its own
+browser, its own Lua scripting layer, and its own agent protocol.</p>
+<p>This is the manual. The sidebar on the left groups every page by topic; click
+a page to read it, or press <code>f</code> to label every link on screen and jump to one
+by typing its letter.</p>
+<h1>New here</h1>
+<p>Read these in order. Twenty minutes gets you from nothing to comfortable.</p>
 <ul>
-<li><a href="editing.html">Editing basics</a> explains the normal editing model.</li>
-<li><a href="shortcuts.html">Keyboard shortcuts</a> lists the initial help bindings.</li>
-<li><a href="writing-help.html">Writing help pages</a> describes the document format.</li>
+<li><a href="first-steps.html">Your first ten minutes</a> -- modes, moving, editing, saving, quitting.</li>
+<li><a href="dashboard.html">The start screen</a> -- what you are looking at before you open anything.</li>
+<li><a href="installing.html">Installing and running</a> -- building mep, the command line, <code>init.lua</code>.</li>
+<li><a href="vim-differences.html">What is and isn't Vim</a> -- read this early if you come from Vim.</li>
 </ul>
-
-<h1>Navigation</h1>
-
-From Normal mode, press <code>&lt;leader&gt;hh</code> to return here at any time.  <code>:MepHelp</code>
-does the same thing.
-
-<h1>Page navigation</h1>
-
-<a href="editing.html">&gt;</a>
+<h1>Everyday use</h1>
+<ul>
+<li><a href="editing.html">Editing basics</a> -- buffers, panes and the editing model.</li>
+<li><a href="shortcuts.html">Keyboard shortcuts</a> -- the keys you will reach for most.</li>
+</ul>
+<h1>Finding your way around</h1>
+<p>Three things will answer almost any "how do I..." question without leaving the
+editor:</p>
+<table>
+<tr><th>Key</th><th>What it gives you</th></tr>
+<tr><td><code>&lt;Space&gt;</code></td><td>the which-key popup: every leader binding, grouped and named</td></tr>
+<tr><td><code>&lt;leader&gt;hk</code></td><td>a searchable list of every key binding currently in effect</td></tr>
+<tr><td><code>:</code></td><td>the command line, with completion over every command name</td></tr>
+</table>
+<p>Press <code>&lt;leader&gt;hh</code> (or run <code>:MepHelp</code>) to come back to this page at any time.</p>
+<h1>Contributing to this manual</h1>
+<ul>
+<li><a href="writing-help.html">Writing help pages</a> -- the page format, and how to add one.</li>
+</ul>
 </body>
 </html>

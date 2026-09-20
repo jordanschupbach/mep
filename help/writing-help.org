@@ -1,21 +1,118 @@
 #+TITLE: Writing help pages
+#+HTML_HEAD: <meta name="help-section" content="Reference">
+#+HTML_HEAD: <meta name="help-order" content="90">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
 
-* Add a topic
+* How the manual is built
 
-Create an exported =.html= page in the =help/= directory. Its HTML =<title>=
-becomes the label in the Help sidebar.
+Every page in this manual is an Org file in =help/=, exported to the =.html=
+beside it. The exported HTML is what ships and what the Help sidebar lists;
+the Org file is the source you edit.
 
-* Link pages
-
-Use relative HTML links, for example:
+The export is done by mep itself, with no window involved:
 
 #+begin_example
-[[file:editing.html][Editing basics]]
+mep --export-org help/topic.org help/topic.html
 #+end_example
 
-Click a link to follow it. Link back to [[file:intro.html][mep Help]] when a
-topic needs a natural return path.
+=just help= runs that over every source in =help/=. Both the =.org= and the
+=.html= are committed, so a checkout has working documentation without
+needing to build anything first.
 
-* Page navigation
+* Adding a page
 
-[[file:shortcuts.html][<]]
+1. Copy =help/_template.org= to =help/<topic>.org=. Sources whose name starts
+   with an underscore are skipped by the exporter, which is why the template
+   never becomes a page of its own.
+2. Write it.
+3. Run =just help=.
+4. Commit both files.
+
+There is no index to update and nothing to register: the sidebar is built by
+scanning the directory.
+
+* The header
+
+Four lines, and they are the whole per-page contract:
+
+#+begin_src org
+,#+TITLE: Page title
+,#+HTML_HEAD: <meta name="help-section" content="Getting started">
+,#+HTML_HEAD: <meta name="help-order" content="20">
+,#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+#+end_src
+
+| Keyword        | What it controls                                        |
+|----------------+---------------------------------------------------------|
+| =#+TITLE:=     | the page heading, and its label in the sidebar          |
+| =help-section= | which sidebar group the page appears under              |
+| =help-order=   | position within that group, lowest first                |
+| =help.css=     | the shared stylesheet; every page links it              |
+
+A page with no =help-section= still works -- it lands in an "Other" group at
+the bottom. A page with no =help-order= sorts by title among its group.
+
+The section names, in the order the sidebar shows them, are listed in
+=MEP_HELP_SECTION_ORDER= in =src/main.cpp=. A name that is not in that list
+still renders, sorted after the ones that are, so a project shipping its own
+=help/= can invent sections without patching mep.
+
+* Writing the body
+
+Ordinary Org. Headlines become headings, =-= lists become bullet lists,
+=#+begin_src= blocks are syntax-highlighted with a copy button, and pipe
+tables become real HTML tables.
+
+Two conventions worth following:
+
+- Lead with what the reader can do, not with how it is implemented. Mention
+  the implementation only where it explains behaviour the reader would
+  otherwise find surprising.
+- Close with a *See also* section linking two or three neighbouring pages.
+  The sidebar handles navigation; See also handles *related*, which the
+  sidebar cannot express.
+
+Link to another page with a relative link to its exported name:
+
+#+begin_src org
+[[file:first-steps.html][Your first ten minutes]]
+#+end_src
+
+Press =f= while reading a page to label every link on screen and follow one
+by typing its letter.
+
+* Emphasis, and the characters that fight it
+
+Org's markers are =*bold*=, =/italic/=, =_underline_=, =+strikethrough+=,
+==verbatim== and =~code~=. The exporter implements org's real rules about
+where a marker may open and close, which is what stops =/usr/bin/env=,
+=snake_case_name= and =5+3+2= from turning into emphasis. You can write those
+in prose without escaping anything.
+
+Wrap anything the reader would type -- a key, a command, a path, an option --
+in ==verbatim== markers. It is the most common markup in this manual.
+
+* Checking your work
+
+#+begin_example
+just help-check
+#+end_example
+
+It verifies that every =.html= is exactly what its =.org= exports today, that
+every page declares a title and a section, and that every internal link
+resolves. It also reports how much of mep's command and key surface the
+manual mentions. =just test= runs it too.
+
+If it says a page is stale, you edited the Org and forgot =just help=.
+
+* Project-local help
+
+The sidebar prefers a =help/= directory in the current workspace when that
+directory contains any =.html= pages, and falls back to mep's own installed
+documentation otherwise. A project can therefore ship its own manual, and
+=<leader>hh= will show that instead of this one.
+
+* See also
+
+- [[file:intro.html][mep Help]] -- the front page of this manual.
+- [[file:installing.html][Installing and running]] -- =just= recipes and the command line.

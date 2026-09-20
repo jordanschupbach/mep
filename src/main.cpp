@@ -14476,6 +14476,25 @@ const char *kBuiltinOrgBabel =
     "function mep.org_babel_execute()\n"
     "  local blk = mep_org_src_block_at(mep.cursor())\n"
     "  if not blk then mep.notify('Not in a src block', 'warn') return end\n"
+    // Real org gates C-c C-c on the same `:eval` header arg exports
+    // honor (org-babel-check-evaluate), and until now this path didn't
+    // look at it at all -- so `:eval no` stopped an export from running
+    // a block but not a stray C-c C-c inside it, which is backwards:
+    // the reason that header is on a block is usually that its body is
+    // something nobody should run by accident (README.org's own install
+    // commands are exactly that). Checked before the mep-lua branch
+    // below so it covers in-process blocks too.
+    // Only `no`/`never`, deliberately, unlike mep.org_babel_run_for_
+    // export's own wider skip set further down: `no-export`/
+    // `never-export` mean "not during export" and `query`/
+    // `query-export` mean "ask first", and both of those still run when
+    // the user explicitly asks for this one block. Swallowing them here
+    // would be a silent no-op on a key the user just pressed.
+    "  local eval_arg = blk.args_str:match(':eval%s+(%S+)')\n"
+    "  if eval_arg == 'no' or eval_arg == 'never' then\n"
+    "    mep.notify('Babel: block is :eval ' .. eval_arg .. ', not running it', 'warn')\n"
+    "    return\n"
+    "  end\n"
     "  if blk.lang == 'mep-lua' then mep_org_babel_execute_meplua(blk) return end\n"
     "  local lang_def, exe_or_err = mep_org_babel_resolve_lang(blk.lang)\n"
     "  if not lang_def then mep.notify(exe_or_err, 'warn') return end\n"

@@ -42,7 +42,7 @@ running on whatever the one above it used. Each cell's choice is written to its
 every kernel. Runs execute one at a time in order regardless of kernel, so a
 mixed "run all" still goes top to bottom. Add or replace kernels from =init.lua=:
 
-#+begin_src lua
+#+begin_src lua :eval no
 mep.opt.notebook_kernels = {
   {name='python3', display_name='Python 3', language='py', mode='python'},
   {name='ir', display_name='R', language='r', mode='script', command={'R', '--slave', '--no-save'}},

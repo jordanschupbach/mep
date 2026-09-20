@@ -21,7 +21,7 @@ the same Lua API.
 
 ** Nix (no clone needed)
 
-#+begin_src sh
+#+begin_src sh :eval no
 nix run github:jordanschupbach/mep              # run it
 nix profile install github:jordanschupbach/mep  # install it
 #+end_src
@@ -32,7 +32,7 @@ You need CMake ≥ 3.28, a C++20 compiler, and — on the system — OpenGL,
 X11 (with =Xtst= and =Xi=), ALSA and OpenSSL. The configure step fetches
 Lua 5.4, so it needs network access the first time.
 
-#+begin_src sh
+#+begin_src sh :eval no
 git clone https://github.com/jordanschupbach/mep
 cd mep
 cmake -S . -B build/native -DCMAKE_BUILD_TYPE=Release
@@ -56,7 +56,7 @@ filesystem, so file I/O there goes through a small local bridge
 
 * Getting started
 
-#+begin_src sh
+#+begin_src sh :eval no
 mep                 # opens the dashboard on the current directory
 mep path/to/file    # opens a file
 #+end_src
@@ -131,7 +131,7 @@ mep reads =$XDG_CONFIG_HOME/mep/init.lua= (or =~/.config/mep/init.lua=)
 at startup. It is ordinary Lua against the same =mep.*= API the editor's
 own built-in configuration uses.
 
-#+begin_src lua
+#+begin_src lua :eval no
 -- One of 62 built-in themes; :MepTheme picks one interactively.
 mep.cmd('colorscheme gruvbox-dark')
 
@@ -162,7 +162,7 @@ whole surface is in [[file:docs/lua-api.org][docs/lua-api.org]].
 
 * Development
 
-#+begin_src sh
+#+begin_src sh :eval no
 just run                # build and launch
 just build-native-dev   # -O0 build in build/native-dev, for fast iteration
 just test               # windowless unit tests

@@ -8,7 +8,7 @@ structures) whose header comment documents the whole format, and
 =plans/LEARN_GAMES_PLAN.md= lists every game the format can drive, built or
 planned:
 
-#+begin_src org
+#+begin_src org :eval no
 #+LEARN_TITLE: Basic Data Structures
 #+LEARN_FACTS: ACCESS SEARCH INSERT
 

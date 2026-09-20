@@ -21,9 +21,9 @@ mep drives GitHub's own =copilot-language-server=. Install it with
 =npm i -g @github/copilot-language-server=, or let mep fall back to
 =npx=, or point =mep.copilot_server_cmd= at your own build. Then:
 
-#+begin_src
+#+begin_example
 :CopilotLogin
-#+end_src
+#+end_example
 
 which shows a device code, copies it to your clipboard, and offers to
 open =github.com/login/device= in your real browser. Enter the code

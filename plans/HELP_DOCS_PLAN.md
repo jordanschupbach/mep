@@ -530,24 +530,24 @@ too).
 
 ## Part 21 — Reference and appendices (7 pages)
 
-- [ ] **21.1 `command-index`** — Every ex command (the ~85 native ones plus
+- [x] **21.1 `command-index`** — Every ex command (the ~85 native ones plus
   all 207 `:Mep*`/other Lua-defined ones), alphabetical, one line each,
   linked to its page. Generated, not hand-maintained.
-- [ ] **21.2 `key-index`** — Every binding: Normal, Insert, Visual,
+- [x] **21.2 `key-index`** — Every binding: Normal, Insert, Visual,
   Terminal, `<leader>` sequences, `g`-prefixed, `]`/`[` pairs, `mod1`
   layer, and each sidebar's/viewer's own keys. Generated from
   `mep.mapping_descriptions`/`leader_bindings` plus a hand-written table for
   the C++-dispatched keys.
-- [ ] **21.3 `filetypes`** — Extension → syntax grammar, LSP server,
+- [x] **21.3 `filetypes`** — Extension → syntax grammar, LSP server,
   formatter, test runner, run-button entry, viewer. One big table.
-- [ ] **21.4 `troubleshooting`** — LSP not attaching, Copilot sign-in,
+- [x] **21.4 `troubleshooting`** — LSP not attaching, Copilot sign-in,
   formatter not found, notebook kernel missing, Blender conversion, wasm
   build limits, clipboard vanishing on exit, a corrupt session file,
   worktree creation failures, help pages not appearing.
-- [ ] **21.5 `platform-notes`** — Linux/X11 vs macOS vs Windows vs wasm:
+- [x] **21.5 `platform-notes`** — Linux/X11 vs macOS vs Windows vs wasm:
   what differs (clipboard ownership, native file dialog, `mod1` key,
   `xdg-open`/`open`/`start`, `/proc`-based path resolution, fonts).
-- [ ] **21.6 `architecture`** — For contributors: the `src/` layout, the
+- [x] **21.6 `architecture`** — For contributors: the `src/` layout, the
   raylib-free doc modules, the `kBuiltin*` Lua chunk system and its
   pitfalls (the 64 KB literal limit, trigraphs in Lua-in-C strings), how to
   add a feature, `just test`.
@@ -555,10 +555,10 @@ too).
   system: the Org source convention, `#+HELP_SECTION:`/`#+HELP_ORDER:`,
   the template, running `just help`, adding a page, linking, the freshness
   test, and the project-local `help/` override.
-- [ ] **21.8 `glossary`** — buffer, pane, tab, workspace, project, sidebar,
+- [x] **21.8 `glossary`** — buffer, pane, tab, workspace, project, sidebar,
   popout, float, picker, decoration, namespace, hunk, deck, card,
   language UI mode, runner, agent, participant.
-- [ ] **21.9 `credits`** — raylib, Lua, treesitter, JetBrains Mono, the
+- [x] **21.9 `credits`** — raylib, Lua, treesitter, JetBrains Mono, the
   Nerd Font icon set, and `third_party_licenses/`.
 
 ---

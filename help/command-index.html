@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Command index</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Reference">
+<meta name="help-order" content="10">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Command index</h1>
+<h1>Every command</h1>
+<p>All 309 ex commands mep defines: 103 built in and 207 registered from Lua.</p>
+<p><code>Tab</code> at the <code>:</code> prompt completes these, and <code>&lt;leader&gt;hk</code> lists the key
+bindings instead. A dash means no page covers that command yet.</p>
+<table>
+<tr><th>Command</th><th>Documented in</th></tr>
+<tr><td><code>:AgentSocket</code></td><td>--</td></tr>
+<tr><td><code>:aiagents</code></td><td><a href="ai-agents.html">The AI Agents sidebar</a></td></tr>
+<tr><td><code>:aiterm</code></td><td><a href="ai-terminal.html">Claude Code in a pane</a></td></tr>
+<tr><td><code>:aiterminal</code></td><td><a href="ai-terminal.html">Claude Code in a pane</a></td></tr>
+<tr><td><code>:bd</code></td><td><a href="collab-server.html">Running a relay</a></td></tr>
+<tr><td><code>:bd!</code></td><td><a href="files.html">Files and buffers</a></td></tr>
+<tr><td><code>:bdelete</code></td><td><a href="command-line.html">The command line</a></td></tr>
+<tr><td><code>:bdelete!</code></td><td>--</td></tr>
+<tr><td><code>:bN</code></td><td>--</td></tr>
+<tr><td><code>:bn</code></td><td><a href="command-line.html">The command line</a></td></tr>
+<tr><td><code>:bNext</code></td><td>--</td></tr>
+<tr><td><code>:bnext</code></td><td><a href="command-line.html">The command line</a></td></tr>
+<tr><td><code>:bp</code></td><td><a href="command-line.html">The command line</a></td></tr>
+<tr><td><code>:bprev</code></td><td><a href="command-line.html">The command line</a></td></tr>
+<tr><td><code>:bprevious</code></td><td><a href="command-line.html">The command line</a></td></tr>
+<tr><td><code>:Browse</code></td><td><a href="browser.html">The browser pane</a></td></tr>
+<tr><td><code>:BrowseExternal</code></td><td><a href="browser.html">The browser pane</a></td></tr>
+<tr><td><code>:close</code></td><td><a href="agent-api.html">Driving mep from an agent</a></td></tr>
+<tr><td><code>:CollabJoin</code></td><td><a href="collab.html">Collaborative editing</a></td></tr>
+<tr><td><code>:CollabLeave</code></td><td><a href="collab.html">Collaborative editing</a></td></tr>
+<tr><td><code>:CollabStatus</code></td><td><a href="collab.html">Collaborative editing</a></td></tr>
+<tr><td><code>:colo</code></td><td><a href="config.html">Configuration</a></td></tr>
+<tr><td><code>:colorscheme</code></td><td><a href="config.html">Configuration</a></td></tr>
+<tr><td><code>:Copilot</code></td><td><a href="ai-commands.html">Ask the model</a></td></tr>
+<tr><td><code>:CopilotDisable</code></td><td>--</td></tr>
+<tr><td><code>:CopilotEnable</code></td><td>--</td></tr>
+<tr><td><code>:CopilotLogin</code></td><td><a href="copilot.html">GitHub Copilot</a></td></tr>
+<tr><td><code>:CopilotLogout</code></td><td><a href="copilot.html">GitHub Copilot</a></td></tr>
+<tr><td><code>:CopilotPanel</code></td><td><a href="copilot.html">GitHub Copilot</a></td></tr>
+<tr><td><code>:CopilotStatus</code></td><td><a href="copilot.html">GitHub Copilot</a></td></tr>
+<tr><td><code>:e</code></td><td><a href="agent-api.html">Driving mep from an agent</a></td></tr>
+<tr><td><code>:e!</code></td><td><a href="files.html">Files and buffers</a></td></tr>
+<tr><td><code>:edit</code></td><td><a href="ai-commands.html">Ask the model</a></td></tr>
+<tr><td><code>:edit!</code></td><td>--</td></tr>
+<tr><td><code>:Gantt</code></td><td>--</td></tr>
+<tr><td><code>:Kanban</code></td><td>--</td></tr>
+<tr><td><code>:Learn</code></td><td><a href="architecture.html">How mep is put together</a></td></tr>
+<tr><td><code>:lua</code></td><td><a href="agent-api.html">Driving mep from an agent</a></td></tr>
+<tr><td><code>:MepActivityBar</code></td><td>--</td></tr>
+<tr><td><code>:MepActivityTestPanel</code></td><td><a href="tests.html">Tests</a></td></tr>
+<tr><td><code>:MepActivityTestRun</code></td><td><a href="tests.html">Tests</a></td></tr>
+<tr><td><code>:MepActivityTodoAdd</code></td><td>--</td></tr>
+<tr><td><code>:MepActivityTodoClearDone</code></td><td>--</td></tr>
+<tr><td><code>:MepActivityTodoOpen</code></td><td>--</td></tr>
+<tr><td><code>:MepActivityTodoPanel</code></td><td><a href="org-clock.html">Clocking and the Todo panel</a></td></tr>
+<tr><td><code>:MepAiAgent</code></td><td><a href="ai-agents.html">The AI Agents sidebar</a></td></tr>
+<tr><td><code>:MepAiAgents</code></td><td><a href="ai-agents.html">The AI Agents sidebar</a></td></tr>
+<tr><td><code>:MepAiAgentsToggle</code></td><td><a href="ai-agents.html">The AI Agents sidebar</a></td></tr>
+<tr><td><code>:MepAiCancel</code></td><td><a href="ai-commands.html">Ask the model</a></td></tr>
+<tr><td><code>:MepAiContextPicker</code></td><td><a href="ai-commands.html">Ask the model</a></td></tr>
+<tr><td><code>:MepAiReplaceSelection</code></td><td><a href="ai-commands.html">Ask the model</a></td></tr>
+<tr><td><code>:MepAiSend</code></td><td><a href="ai-commands.html">Ask the model</a></td></tr>
+<tr><td><code>:MepAiSendBuffer</code></td><td><a href="ai-commands.html">Ask the model</a></td></tr>
+<tr><td><code>:MepAiSendSelection</code></td><td><a href="ai-commands.html">Ask the model</a></td></tr>
+<tr><td><code>:MepAiTerminal</code></td><td><a href="ai-terminal.html">Claude Code in a pane</a></td></tr>
+<tr><td><code>:MepBrowse</code></td><td>--</td></tr>
+<tr><td><code>:MepBrowseExternal</code></td><td>--</td></tr>
+<tr><td><code>:MepBrowseGo</code></td><td>--</td></tr>
+<tr><td><code>:MepBrowseOpen</code></td><td>--</td></tr>
+<tr><td><code>:MepBrowseReload</code></td><td>--</td></tr>
+<tr><td><code>:MepBuffers</code></td><td>--</td></tr>
+<tr><td><code>:MepBufferSearch</code></td><td>--</td></tr>
+<tr><td><code>:MepBuffersPane</code></td><td>--</td></tr>
+<tr><td><code>:MepColorize</code></td><td><a href="syntax.html">Syntax highlighting</a></td></tr>
+<tr><td><code>:MepDapBreakpoint</code></td><td><a href="debugging.html">Debugging</a></td></tr>
+<tr><td><code>:MepDapContinue</code></td><td><a href="debugging.html">Debugging</a></td></tr>
+<tr><td><code>:MepDapTerminate</code></td><td><a href="debugging.html">Debugging</a></td></tr>
+<tr><td><code>:MepDiagShow</code></td><td><a href="lsp.html">Language servers</a></td></tr>
+<tr><td><code>:MepDocGen</code></td><td>--</td></tr>
+<tr><td><code>:MepDocLookup</code></td><td>--</td></tr>
+<tr><td><code>:MepFileTree</code></td><td><a href="file-tree.html">The file tree</a></td></tr>
+<tr><td><code>:MepFormat</code></td><td><a href="formatting.html">Formatting</a></td></tr>
+<tr><td><code>:MepGitBranches</code></td><td><a href="git-panel.html">The git panel</a></td></tr>
+<tr><td><code>:MepGitCommit</code></td><td><a href="git-panel.html">The git panel</a></td></tr>
+<tr><td><code>:MepGitFetch</code></td><td><a href="git-panel.html">The git panel</a></td></tr>
+<tr><td><code>:MepGitGraph</code></td><td><a href="git-panel.html">The git panel</a></td></tr>
+<tr><td><code>:MepGitGutter</code></td><td><a href="git-gutter.html">The git gutter</a></td></tr>
+<tr><td><code>:MepGitLog</code></td><td><a href="git-panel.html">The git panel</a></td></tr>
+<tr><td><code>:MepGitPopup</code></td><td>--</td></tr>
+<tr><td><code>:MepGitPreviewHunk</code></td><td><a href="git-hunks.html">Working with hunks</a></td></tr>
+<tr><td><code>:MepGitPull</code></td><td><a href="git-panel.html">The git panel</a></td></tr>
+<tr><td><code>:MepGitPush</code></td><td><a href="git-panel.html">The git panel</a></td></tr>
+<tr><td><code>:MepGitStash</code></td><td><a href="git-panel.html">The git panel</a></td></tr>
+<tr><td><code>:MepGitStatus</code></td><td><a href="git-panel.html">The git panel</a></td></tr>
+<tr><td><code>:MepGitStatusPane</code></td><td>--</td></tr>
+<tr><td><code>:MepGitWorkspaces</code></td><td><a href="git-workspaces.html">Branch-per-workspace</a></td></tr>
+<tr><td><code>:MepGoHelp</code></td><td><a href="language-ui.html">Language UI modes</a></td></tr>
+<tr><td><code>:MepHelp</code></td><td><a href="dashboard.html">The start screen</a></td></tr>
+<tr><td><code>:MepKeymaps</code></td><td><a href="keymaps.html">Remapping keys</a></td></tr>
+<tr><td><code>:MepLangTest</code></td><td><a href="tests.html">Tests</a></td></tr>
+<tr><td><code>:MepLanguageUi</code></td><td><a href="language-ui.html">Language UI modes</a></td></tr>
+<tr><td><code>:MepLayout</code></td><td><a href="layouts-zen.html">Layouts, zoom and zen</a></td></tr>
+<tr><td><code>:MepLeetcodeFetch</code></td><td>--</td></tr>
+<tr><td><code>:MepLeetcodePicker</code></td><td>--</td></tr>
+<tr><td><code>:MepLeetcodeRunTests</code></td><td>--</td></tr>
+<tr><td><code>:MepLeetcodeSubmit</code></td><td>--</td></tr>
+<tr><td><code>:MepLspAttach</code></td><td><a href="lsp.html">Language servers</a></td></tr>
+<tr><td><code>:MepLspCodeAction</code></td><td><a href="lsp.html">Language servers</a></td></tr>
+<tr><td><code>:MepLspDefinition</code></td><td><a href="lsp.html">Language servers</a></td></tr>
+<tr><td><code>:MepLspFormat</code></td><td><a href="lsp.html">Language servers</a></td></tr>
+<tr><td><code>:MepLspHover</code></td><td><a href="lsp.html">Language servers</a></td></tr>
+<tr><td><code>:MepLspImplementation</code></td><td><a href="lsp.html">Language servers</a></td></tr>
+<tr><td><code>:MepLspReferences</code></td><td><a href="lsp.html">Language servers</a></td></tr>
+<tr><td><code>:MepLspRename</code></td><td><a href="lsp.html">Language servers</a></td></tr>
+<tr><td><code>:MepLspSignatureHelp</code></td><td><a href="lsp.html">Language servers</a></td></tr>
+<tr><td><code>:MepLspTypeDefinition</code></td><td><a href="lsp.html">Language servers</a></td></tr>
+<tr><td><code>:MepMarkdown</code></td><td><a href="markdown.html">Markdown</a></td></tr>
+<tr><td><code>:MepMdCheckbox</code></td><td><a href="markdown.html">Markdown</a></td></tr>
+<tr><td><code>:MepMdConceal</code></td><td><a href="markdown.html">Markdown</a></td></tr>
+<tr><td><code>:MepMdTableAlign</code></td><td><a href="markdown.html">Markdown</a></td></tr>
+<tr><td><code>:MepMdTableInsertCol</code></td><td><a href="markdown.html">Markdown</a></td></tr>
+<tr><td><code>:MepMdTableInsertRow</code></td><td><a href="markdown.html">Markdown</a></td></tr>
+<tr><td><code>:MepNextSheet</code></td><td><a href="sheets.html">Spreadsheets</a></td></tr>
+<tr><td><code>:MepNotifyClear</code></td><td><a href="notifications.html">Notifications</a></td></tr>
+<tr><td><code>:MepNotifyDismiss</code></td><td><a href="notifications.html">Notifications</a></td></tr>
+<tr><td><code>:MepNotifyPanel</code></td><td><a href="notifications.html">Notifications</a></td></tr>
+<tr><td><code>:MepOil</code></td><td><a href="file-tree.html">The file tree</a></td></tr>
+<tr><td><code>:MepOpenFile</code></td><td>--</td></tr>
+<tr><td><code>:MepOrgAgendaAddFile</code></td><td><a href="org-agenda.html">Agenda</a></td></tr>
+<tr><td><code>:MepOrgAgendaOverdue</code></td><td><a href="org-agenda.html">Agenda</a></td></tr>
+<tr><td><code>:MepOrgAgendaSearch</code></td><td><a href="org-agenda.html">Agenda</a></td></tr>
+<tr><td><code>:MepOrgAgendaToday</code></td><td><a href="org-agenda.html">Agenda</a></td></tr>
+<tr><td><code>:MepOrgAgendaTodo</code></td><td><a href="org-agenda.html">Agenda</a></td></tr>
+<tr><td><code>:MepOrgAgendaWeek</code></td><td><a href="org-agenda.html">Agenda</a></td></tr>
+<tr><td><code>:MepOrgArchive</code></td><td><a href="org-todo.html">TODO keywords and tags</a></td></tr>
+<tr><td><code>:MepOrgBabelExecute</code></td><td><a href="org-babel.html">Executing code blocks</a></td></tr>
+<tr><td><code>:MepOrgBabelTangle</code></td><td><a href="org-babel.html">Executing code blocks</a></td></tr>
+<tr><td><code>:MepOrgBibCiteGoto</code></td><td><a href="org-links.html">Links, footnotes and citations</a></td></tr>
+<tr><td><code>:MepOrgBibCitePreview</code></td><td><a href="org-links.html">Links, footnotes and citations</a></td></tr>
+<tr><td><code>:MepOrgBibInsertCitation</code></td><td><a href="org-links.html">Links, footnotes and citations</a></td></tr>
+<tr><td><code>:MepOrgCapture</code></td><td><a href="org-capture.html">Capture</a></td></tr>
+<tr><td><code>:MepOrgCaptureAbort</code></td><td><a href="org-capture.html">Capture</a></td></tr>
+<tr><td><code>:MepOrgCaptureCommit</code></td><td><a href="org-capture.html">Capture</a></td></tr>
+<tr><td><code>:MepOrgCheckbox</code></td><td><a href="org-basics.html">Org files in mep</a></td></tr>
+<tr><td><code>:MepOrgClockIn</code></td><td><a href="org-clock.html">Clocking and the Todo panel</a></td></tr>
+<tr><td><code>:MepOrgClockOut</code></td><td><a href="org-clock.html">Clocking and the Todo panel</a></td></tr>
+<tr><td><code>:MepOrgClockTable</code></td><td><a href="org-clock.html">Clocking and the Todo panel</a></td></tr>
+<tr><td><code>:MepOrgCycle</code></td><td><a href="folding.html">Folds</a></td></tr>
+<tr><td><code>:MepOrgDeadline</code></td><td><a href="org-dates.html">Timestamps and scheduling</a></td></tr>
+<tr><td><code>:MepOrgDemote</code></td><td>--</td></tr>
+<tr><td><code>:MepOrgDemoteSubtree</code></td><td>--</td></tr>
+<tr><td><code>:MepOrgDrillReview</code></td><td><a href="learn-games.html">Playing</a></td></tr>
+<tr><td><code>:MepOrgExportAscii</code></td><td><a href="org-export.html">Exporting</a></td></tr>
+<tr><td><code>:MepOrgExportHtml</code></td><td><a href="org-export.html">Exporting</a></td></tr>
+<tr><td><code>:MepOrgExportMarkdown</code></td><td><a href="org-export.html">Exporting</a></td></tr>
+<tr><td><code>:MepOrgExportOdt</code></td><td><a href="office.html">Word processor documents</a></td></tr>
+<tr><td><code>:MepOrgExportPdf</code></td><td><a href="org-export.html">Exporting</a></td></tr>
+<tr><td><code>:MepOrgExportSubtreeHtml</code></td><td><a href="org-export.html">Exporting</a></td></tr>
+<tr><td><code>:MepOrgExportSubtreeMarkdown</code></td><td><a href="org-export.html">Exporting</a></td></tr>
+<tr><td><code>:MepOrgFold</code></td><td><a href="org-basics.html">Org files in mep</a></td></tr>
+<tr><td><code>:MepOrgFootnoteJump</code></td><td><a href="org-links.html">Links, footnotes and citations</a></td></tr>
+<tr><td><code>:MepOrgImageScan</code></td><td><a href="org-visuals.html">Images, LaTeX and tables</a></td></tr>
+<tr><td><code>:MepOrgImagesToggle</code></td><td><a href="org-visuals.html">Images, LaTeX and tables</a></td></tr>
+<tr><td><code>:MepOrgInsertHeading</code></td><td><a href="org-basics.html">Org files in mep</a></td></tr>
+<tr><td><code>:MepOrgInsertTodoHeading</code></td><td><a href="org-basics.html">Org files in mep</a></td></tr>
+<tr><td><code>:MepOrgLatexScan</code></td><td><a href="org-visuals.html">Images, LaTeX and tables</a></td></tr>
+<tr><td><code>:MepOrgLatexToggle</code></td><td><a href="org-visuals.html">Images, LaTeX and tables</a></td></tr>
+<tr><td><code>:MepOrgLinkFollow</code></td><td><a href="org-links.html">Links, footnotes and citations</a></td></tr>
+<tr><td><code>:MepOrgLinkInsert</code></td><td><a href="org-links.html">Links, footnotes and citations</a></td></tr>
+<tr><td><code>:MepOrgListIndent</code></td><td><a href="org-basics.html">Org files in mep</a></td></tr>
+<tr><td><code>:MepOrgListNewItem</code></td><td><a href="org-basics.html">Org files in mep</a></td></tr>
+<tr><td><code>:MepOrgListOutdent</code></td><td><a href="org-basics.html">Org files in mep</a></td></tr>
+<tr><td><code>:MepOrgListRenumber</code></td><td><a href="org-basics.html">Org files in mep</a></td></tr>
+<tr><td><code>:MepOrgMatch</code></td><td><a href="org-basics.html">Org files in mep</a></td></tr>
+<tr><td><code>:MepOrgNarrow</code></td><td><a href="org-basics.html">Org files in mep</a></td></tr>
+<tr><td><code>:MepOrgNext</code></td><td><a href="org-basics.html">Org files in mep</a></td></tr>
+<tr><td><code>:MepOrgPrev</code></td><td>--</td></tr>
+<tr><td><code>:MepOrgPriority</code></td><td><a href="org-todo.html">TODO keywords and tags</a></td></tr>
+<tr><td><code>:MepOrgPromote</code></td><td><a href="org-basics.html">Org files in mep</a></td></tr>
+<tr><td><code>:MepOrgPromoteSubtree</code></td><td><a href="org-basics.html">Org files in mep</a></td></tr>
+<tr><td><code>:MepOrgRefile</code></td><td><a href="org-todo.html">TODO keywords and tags</a></td></tr>
+<tr><td><code>:MepOrgRoamBacklinks</code></td><td><a href="org-roam.html">Org-roam</a></td></tr>
+<tr><td><code>:MepOrgRoamDaily</code></td><td><a href="org-roam.html">Org-roam</a></td></tr>
+<tr><td><code>:MepOrgRoamEnsureId</code></td><td><a href="org-roam.html">Org-roam</a></td></tr>
+<tr><td><code>:MepOrgRoamFindNotes</code></td><td><a href="org-roam.html">Org-roam</a></td></tr>
+<tr><td><code>:MepOrgRoamInsertLink</code></td><td><a href="org-roam.html">Org-roam</a></td></tr>
+<tr><td><code>:MepOrgRoamNewNote</code></td><td><a href="org-roam.html">Org-roam</a></td></tr>
+<tr><td><code>:MepOrgRoamSync</code></td><td><a href="org-roam.html">Org-roam</a></td></tr>
+<tr><td><code>:MepOrgScheduled</code></td><td><a href="org-dates.html">Timestamps and scheduling</a></td></tr>
+<tr><td><code>:MepOrgSortAlpha</code></td><td><a href="org-todo.html">TODO keywords and tags</a></td></tr>
+<tr><td><code>:MepOrgSortPriority</code></td><td><a href="org-todo.html">TODO keywords and tags</a></td></tr>
+<tr><td><code>:MepOrgSortTodo</code></td><td><a href="org-todo.html">TODO keywords and tags</a></td></tr>
+<tr><td><code>:MepOrgSparseTodo</code></td><td><a href="org-todo.html">TODO keywords and tags</a></td></tr>
+<tr><td><code>:MepOrgStoreLink</code></td><td><a href="org-capture.html">Capture</a></td></tr>
+<tr><td><code>:MepOrgTableAlign</code></td><td><a href="org-basics.html">Org files in mep</a></td></tr>
+<tr><td><code>:MepOrgTags</code></td><td><a href="org-todo.html">TODO keywords and tags</a></td></tr>
+<tr><td><code>:MepOrgTagsPicker</code></td><td><a href="org-todo.html">TODO keywords and tags</a></td></tr>
+<tr><td><code>:MepOrgTemplate</code></td><td><a href="org-capture.html">Capture</a></td></tr>
+<tr><td><code>:MepOrgTimestamp</code></td><td><a href="org-dates.html">Timestamps and scheduling</a></td></tr>
+<tr><td><code>:MepOrgTimestampDecr</code></td><td><a href="org-dates.html">Timestamps and scheduling</a></td></tr>
+<tr><td><code>:MepOrgTimestampHighlight</code></td><td><a href="org-dates.html">Timestamps and scheduling</a></td></tr>
+<tr><td><code>:MepOrgTimestampInactive</code></td><td><a href="org-dates.html">Timestamps and scheduling</a></td></tr>
+<tr><td><code>:MepOrgTimestampIncr</code></td><td><a href="org-dates.html">Timestamps and scheduling</a></td></tr>
+<tr><td><code>:MepOrgTimestampRange</code></td><td><a href="org-dates.html">Timestamps and scheduling</a></td></tr>
+<tr><td><code>:MepOrgTimestampRepeater</code></td><td><a href="org-dates.html">Timestamps and scheduling</a></td></tr>
+<tr><td><code>:MepOrgTodo</code></td><td><a href="org-todo.html">TODO keywords and tags</a></td></tr>
+<tr><td><code>:MepOrgWiden</code></td><td><a href="org-basics.html">Org files in mep</a></td></tr>
+<tr><td><code>:MepPaneZoom</code></td><td><a href="layouts-zen.html">Layouts, zoom and zen</a></td></tr>
+<tr><td><code>:MepPrevSheet</code></td><td><a href="sheets.html">Spreadsheets</a></td></tr>
+<tr><td><code>:MepProjectAdd</code></td><td><a href="projects.html">Projects</a></td></tr>
+<tr><td><code>:MepProjectClear</code></td><td>--</td></tr>
+<tr><td><code>:MepProjects</code></td><td><a href="dashboard.html">The start screen</a></td></tr>
+<tr><td><code>:MepProjectsOpen</code></td><td><a href="projects.html">Projects</a></td></tr>
+<tr><td><code>:MepReplSendBuffer</code></td><td><a href="repl.html">REPL and send-to-terminal</a></td></tr>
+<tr><td><code>:MepReplSendLine</code></td><td><a href="repl.html">REPL and send-to-terminal</a></td></tr>
+<tr><td><code>:MepReplStart</code></td><td><a href="repl.html">REPL and send-to-terminal</a></td></tr>
+<tr><td><code>:MepRoamGraph</code></td><td><a href="org-roam.html">Org-roam</a></td></tr>
+<tr><td><code>:MepRun</code></td><td><a href="repl.html">REPL and send-to-terminal</a></td></tr>
+<tr><td><code>:MepRunButtonRun</code></td><td>--</td></tr>
+<tr><td><code>:MepRunButtonSetup</code></td><td><a href="run-button.html">Running the current file</a></td></tr>
+<tr><td><code>:MepScratch</code></td><td><a href="files.html">Files and buffers</a></td></tr>
+<tr><td><code>:MepSnippetNext</code></td><td><a href="insert-mode.html">Insert and Replace</a></td></tr>
+<tr><td><code>:MepSnippetPrev</code></td><td><a href="insert-mode.html">Insert and Replace</a></td></tr>
+<tr><td><code>:MepSnippets</code></td><td><a href="snippets.html">Snippets</a></td></tr>
+<tr><td><code>:MepStructure</code></td><td><a href="structure-symbols.html">Structure and symbols</a></td></tr>
+<tr><td><code>:MepStructureSplit</code></td><td><a href="structure-symbols.html">Structure and symbols</a></td></tr>
+<tr><td><code>:MepSttToggle</code></td><td>--</td></tr>
+<tr><td><code>:MepSymbols</code></td><td><a href="sidebars.html">Sidebars</a></td></tr>
+<tr><td><code>:MepSyntax</code></td><td><a href="folding.html">Folds</a></td></tr>
+<tr><td><code>:MepSyntaxFold</code></td><td><a href="folding.html">Folds</a></td></tr>
+<tr><td><code>:MepTabTerminal</code></td><td><a href="terminals.html">Terminals</a></td></tr>
+<tr><td><code>:MepTermJump</code></td><td><a href="repl.html">REPL and send-to-terminal</a></td></tr>
+<tr><td><code>:MepTermSendLine</code></td><td><a href="repl.html">REPL and send-to-terminal</a></td></tr>
+<tr><td><code>:MepTermSendRegister</code></td><td><a href="repl.html">REPL and send-to-terminal</a></td></tr>
+<tr><td><code>:MepTheme</code></td><td>--</td></tr>
+<tr><td><code>:MepTodoMark</code></td><td>--</td></tr>
+<tr><td><code>:MepTodoScan</code></td><td>--</td></tr>
+<tr><td><code>:MepWorkspaces</code></td><td>--</td></tr>
+<tr><td><code>:MepZen</code></td><td><a href="layouts-zen.html">Layouts, zoom and zen</a></td></tr>
+<tr><td><code>:Model3DNew</code></td><td><a href="model3d.html">The 3D modeler</a></td></tr>
+<tr><td><code>:norm</code></td><td><a href="agent-api.html">Driving mep from an agent</a></td></tr>
+<tr><td><code>:norm!</code></td><td>--</td></tr>
+<tr><td><code>:normal</code></td><td><a href="agent-api.html">Driving mep from an agent</a></td></tr>
+<tr><td><code>:normal!</code></td><td>--</td></tr>
+<tr><td><code>:NotebookNew</code></td><td><a href="notebooks.html">Jupyter notebooks</a></td></tr>
+<tr><td><code>:Org</code></td><td><a href="architecture.html">How mep is put together</a></td></tr>
+<tr><td><code>:project</code></td><td><a href="agent-api.html">Driving mep from an agent</a></td></tr>
+<tr><td><code>:projectclose</code></td><td><a href="projects.html">Projects</a></td></tr>
+<tr><td><code>:projectclose!</code></td><td><a href="projects.html">Projects</a></td></tr>
+<tr><td><code>:projectn</code></td><td><a href="projects.html">Projects</a></td></tr>
+<tr><td><code>:projectnext</code></td><td><a href="projects.html">Projects</a></td></tr>
+<tr><td><code>:projectp</code></td><td><a href="projects.html">Projects</a></td></tr>
+<tr><td><code>:projectprev</code></td><td><a href="projects.html">Projects</a></td></tr>
+<tr><td><code>:projectprevious</code></td><td><a href="projects.html">Projects</a></td></tr>
+<tr><td><code>:projects</code></td><td><a href="architecture.html">How mep is put together</a></td></tr>
+<tr><td><code>:q</code></td><td><a href="agent-api.html">Driving mep from an agent</a></td></tr>
+<tr><td><code>:q!</code></td><td><a href="command-line.html">The command line</a></td></tr>
+<tr><td><code>:qa</code></td><td><a href="command-line.html">The command line</a></td></tr>
+<tr><td><code>:qa!</code></td><td><a href="command-line.html">The command line</a></td></tr>
+<tr><td><code>:qall</code></td><td>--</td></tr>
+<tr><td><code>:qall!</code></td><td>--</td></tr>
+<tr><td><code>:quit</code></td><td><a href="command-line.html">The command line</a></td></tr>
+<tr><td><code>:quit!</code></td><td>--</td></tr>
+<tr><td><code>:Runner</code></td><td><a href="glossary.html">Glossary</a></td></tr>
+<tr><td><code>:RunnerVariables</code></td><td>--</td></tr>
+<tr><td><code>:RunnerWorkspaces</code></td><td>--</td></tr>
+<tr><td><code>:Serve</code></td><td><a href="local-server.html">Serving a directory</a></td></tr>
+<tr><td><code>:Servers</code></td><td><a href="local-server.html">Serving a directory</a></td></tr>
+<tr><td><code>:ServeStop</code></td><td><a href="local-server.html">Serving a directory</a></td></tr>
+<tr><td><code>:set</code></td><td><a href="agent-api.html">Driving mep from an agent</a></td></tr>
+<tr><td><code>:source</code></td><td><a href="agent-api.html">Driving mep from an agent</a></td></tr>
+<tr><td><code>:sp</code></td><td><a href="agent-api.html">Driving mep from an agent</a></td></tr>
+<tr><td><code>:split</code></td><td><a href="agent-api.html">Driving mep from an agent</a></td></tr>
+<tr><td><code>:tabclose</code></td><td>--</td></tr>
+<tr><td><code>:tabdelete</code></td><td><a href="command-line.html">The command line</a></td></tr>
+<tr><td><code>:tabN</code></td><td>--</td></tr>
+<tr><td><code>:tabn</code></td><td><a href="command-line.html">The command line</a></td></tr>
+<tr><td><code>:tabnew</code></td><td><a href="command-line.html">The command line</a></td></tr>
+<tr><td><code>:tabnext</code></td><td><a href="panes-tabs.html">Panes and tabs</a></td></tr>
+<tr><td><code>:tabp</code></td><td><a href="panes-tabs.html">Panes and tabs</a></td></tr>
+<tr><td><code>:tabprevious</code></td><td><a href="panes-tabs.html">Panes and tabs</a></td></tr>
+<tr><td><code>:tabterm</code></td><td><a href="terminals.html">Terminals</a></td></tr>
+<tr><td><code>:tabterminal</code></td><td><a href="terminals.html">Terminals</a></td></tr>
+<tr><td><code>:term</code></td><td><a href="agent-api.html">Driving mep from an agent</a></td></tr>
+<tr><td><code>:terminal</code></td><td><a href="agent-api.html">Driving mep from an agent</a></td></tr>
+<tr><td><code>:Text</code></td><td><a href="command-line.html">The command line</a></td></tr>
+<tr><td><code>:vs</code></td><td><a href="command-line.html">The command line</a></td></tr>
+<tr><td><code>:vsplit</code></td><td><a href="command-line.html">The command line</a></td></tr>
+<tr><td><code>:w</code></td><td><a href="agent-api.html">Driving mep from an agent</a></td></tr>
+<tr><td><code>:wa</code></td><td><a href="agent-api.html">Driving mep from an agent</a></td></tr>
+<tr><td><code>:wall</code></td><td>--</td></tr>
+<tr><td><code>:WebLadder</code></td><td><a href="web-ladder.html">Measuring the engine</a></td></tr>
+<tr><td><code>:WebLadderRun</code></td><td><a href="web-ladder.html">Measuring the engine</a></td></tr>
+<tr><td><code>:workspace</code></td><td><a href="agent-api.html">Driving mep from an agent</a></td></tr>
+<tr><td><code>:workspaces</code></td><td><a href="architecture.html">How mep is put together</a></td></tr>
+<tr><td><code>:wq</code></td><td><a href="command-line.html">The command line</a></td></tr>
+<tr><td><code>:wqa</code></td><td><a href="command-line.html">The command line</a></td></tr>
+<tr><td><code>:wqall</code></td><td>--</td></tr>
+<tr><td><code>:write</code></td><td><a href="agent-api.html">Driving mep from an agent</a></td></tr>
+<tr><td><code>:ws</code></td><td><a href="agent-api.html">Driving mep from an agent</a></td></tr>
+<tr><td><code>:wsadopt</code></td><td><a href="workspaces.html">Workspaces</a></td></tr>
+<tr><td><code>:wsclose</code></td><td>--</td></tr>
+<tr><td><code>:wsclose!</code></td><td>--</td></tr>
+<tr><td><code>:wsdelete</code></td><td><a href="git-workspaces.html">Branch-per-workspace</a></td></tr>
+<tr><td><code>:wsdelete!</code></td><td><a href="troubleshooting.html">Troubleshooting</a></td></tr>
+<tr><td><code>:wslist</code></td><td><a href="workspaces.html">Workspaces</a></td></tr>
+<tr><td><code>:wsn</code></td><td><a href="git-workspaces.html">Branch-per-workspace</a></td></tr>
+<tr><td><code>:wsnew</code></td><td><a href="git-workspaces.html">Branch-per-workspace</a></td></tr>
+<tr><td><code>:wsnew!</code></td><td><a href="git-workspaces.html">Branch-per-workspace</a></td></tr>
+<tr><td><code>:wsnext</code></td><td><a href="workspaces.html">Workspaces</a></td></tr>
+<tr><td><code>:wsp</code></td><td><a href="git-workspaces.html">Branch-per-workspace</a></td></tr>
+<tr><td><code>:wsprevious</code></td><td><a href="workspaces.html">Workspaces</a></td></tr>
+<tr><td><code>:wsprune</code></td><td><a href="git-workspaces.html">Branch-per-workspace</a></td></tr>
+<tr><td><code>:wsrename</code></td><td><a href="workspaces.html">Workspaces</a></td></tr>
+<tr><td><code>:wsrestore</code></td><td><a href="layouts-zen.html">Layouts, zoom and zen</a></td></tr>
+<tr><td><code>:wssave</code></td><td><a href="layouts-zen.html">Layouts, zoom and zen</a></td></tr>
+<tr><td><code>:x</code></td><td><a href="agent-api.html">Driving mep from an agent</a></td></tr>
+<tr><td><code>:xa</code></td><td><a href="agent-api.html">Driving mep from an agent</a></td></tr>
+<tr><td><code>:xall</code></td><td>--</td></tr>
+</table>
+<h1>See also</h1>
+<ul>
+<li><a href="key-index.html">Key index</a> -- the same, for keys.</li>
+<li><a href="command-line.html">The command line</a> -- how to run one.</li>
+</ul>
+</body>
+</html>

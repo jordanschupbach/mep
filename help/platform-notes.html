@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Platform notes</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Reference">
+<meta name="help-order" content="50">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Platform notes</h1>
+<h1>Native and wasm</h1>
+<p>mep builds two ways: a native desktop binary, and WebAssembly.</p>
+<table>
+<tr><th>Capability</th><th>Native</th><th>wasm</th></tr>
+<tr><td>open and save files</td><td>yes</td><td>only through <code>just run-wasm</code>'s bridge</td></tr>
+<tr><td><code>init.lua</code></td><td>yes</td><td>no</td></tr>
+<tr><td>terminals</td><td>yes</td><td>no</td></tr>
+<tr><td>language servers</td><td>yes</td><td>no</td></tr>
+<tr><td>clipboard</td><td>yes</td><td>best-effort</td></tr>
+<tr><td>session save/restore</td><td>yes</td><td>no</td></tr>
+</table>
+<p>The wasm build has no host filesystem of its own. <code>just run-wasm</code> opens it
+in a Deno-hosted window with a loopback-only HTTP bridge doing the real
+reads and writes; a plain browser tab has no such server, so file commands
+fail there with an ordinary error.</p>
+<h1>X11 and the clipboard</h1>
+<p>On X11 the clipboard is owned by the window that set it, so what mep copied
+is gone once mep exits unless a clipboard manager is running. Every X
+application behaves this way.</p>
+<h1>Opening things with the system</h1>
+<p><code>mep.platform()</code> reports the platform, and the file tree's <code>o</code> key and URL
+opening use it to pick <code>xdg-open</code>, <code>open</code> or <code>start</code>.</p>
+<h1>The mod1 key</h1>
+<p><code>mod1</code> defaults to <code>Alt</code>, which some window managers claim for themselves.
+If the <a href="mod1-keys.html">mod1 layer</a> seems dead, the window manager is probably eating it:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.set_mod1(<span class="tok-green">'super'</span>)   <span class="tok-comment">-- or 'ctrl', 'shift', 'cmd', 'meta'</span></code></pre></div>
+<h1>Fonts</h1>
+<p>Every font is embedded, so there is nothing to install and no
+platform-specific font configuration. The trade-off is that mep uses its
+own font rather than your system's.</p>
+<h1>Finding the installed help</h1>
+<p>A packaged binary lives in <code>&lt;prefix&gt;/bin</code> and its documentation in
+<code>&lt;prefix&gt;/share/mep/help</code>. On Linux mep resolves this through <code>/proc</code>
+rather than the process working directory -- which follows the active
+workspace and would otherwise point somewhere unrelated.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="installing.html">Installing and running</a> -- building each target.</li>
+<li><a href="troubleshooting.html">Troubleshooting</a> -- when something does not work.</li>
+</ul>
+</body>
+</html>

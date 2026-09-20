@@ -108,7 +108,10 @@ def coverage(problems, strict, minimum):
     """How much of the command/binding surface the manual mentions."""
     main = (REPO / "src" / "main.cpp").read_text(errors="replace")
     commands = set(re.findall(r"mep\.command\('([A-Za-z0-9_]+)'", main))
-    leaders = set(re.findall(r"mep\.leader_map\('([^']+)'", main))
+    # Require a comma right after the closing quote: the learning games
+    # register theirs as `leader_map('og' .. g.leader, ...)`, and a looser
+    # pattern captures the bare prefix `og` as though it were a binding.
+    leaders = set(re.findall(r"mep\.leader_map\('([^']+)'\s*,", main))
     prose = "\n".join(p.read_text(errors="replace") for p in HELP.glob("*.org"))
 
     missing_cmds = sorted(c for c in commands if c not in prose)

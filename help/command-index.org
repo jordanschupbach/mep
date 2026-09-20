@@ -1,0 +1,328 @@
+#+TITLE: Command index
+#+HTML_HEAD: <meta name="help-section" content="Reference">
+#+HTML_HEAD: <meta name="help-order" content="10">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Every command
+
+All 309 ex commands mep defines: 103 built in and 207 registered from Lua.
+
+=Tab= at the =:= prompt completes these, and =<leader>hk= lists the key
+bindings instead. A dash means no page covers that command yet.
+
+| Command | Documented in |
+|---------+---------------|
+| =:AgentSocket= | -- |
+| =:aiagents= | [[file:ai-agents.html][The AI Agents sidebar]] |
+| =:aiterm= | [[file:ai-terminal.html][Claude Code in a pane]] |
+| =:aiterminal= | [[file:ai-terminal.html][Claude Code in a pane]] |
+| =:bd= | [[file:collab-server.html][Running a relay]] |
+| =:bd!= | [[file:files.html][Files and buffers]] |
+| =:bdelete= | [[file:command-line.html][The command line]] |
+| =:bdelete!= | -- |
+| =:bN= | -- |
+| =:bn= | [[file:command-line.html][The command line]] |
+| =:bNext= | -- |
+| =:bnext= | [[file:command-line.html][The command line]] |
+| =:bp= | [[file:command-line.html][The command line]] |
+| =:bprev= | [[file:command-line.html][The command line]] |
+| =:bprevious= | [[file:command-line.html][The command line]] |
+| =:Browse= | [[file:browser.html][The browser pane]] |
+| =:BrowseExternal= | [[file:browser.html][The browser pane]] |
+| =:close= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:CollabJoin= | [[file:collab.html][Collaborative editing]] |
+| =:CollabLeave= | [[file:collab.html][Collaborative editing]] |
+| =:CollabStatus= | [[file:collab.html][Collaborative editing]] |
+| =:colo= | [[file:config.html][Configuration]] |
+| =:colorscheme= | [[file:config.html][Configuration]] |
+| =:Copilot= | [[file:ai-commands.html][Ask the model]] |
+| =:CopilotDisable= | -- |
+| =:CopilotEnable= | -- |
+| =:CopilotLogin= | [[file:copilot.html][GitHub Copilot]] |
+| =:CopilotLogout= | [[file:copilot.html][GitHub Copilot]] |
+| =:CopilotPanel= | [[file:copilot.html][GitHub Copilot]] |
+| =:CopilotStatus= | [[file:copilot.html][GitHub Copilot]] |
+| =:e= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:e!= | [[file:files.html][Files and buffers]] |
+| =:edit= | [[file:ai-commands.html][Ask the model]] |
+| =:edit!= | -- |
+| =:Gantt= | -- |
+| =:Kanban= | -- |
+| =:Learn= | [[file:architecture.html][How mep is put together]] |
+| =:lua= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:MepActivityBar= | -- |
+| =:MepActivityTestPanel= | [[file:tests.html][Tests]] |
+| =:MepActivityTestRun= | [[file:tests.html][Tests]] |
+| =:MepActivityTodoAdd= | -- |
+| =:MepActivityTodoClearDone= | -- |
+| =:MepActivityTodoOpen= | -- |
+| =:MepActivityTodoPanel= | [[file:org-clock.html][Clocking and the Todo panel]] |
+| =:MepAiAgent= | [[file:ai-agents.html][The AI Agents sidebar]] |
+| =:MepAiAgents= | [[file:ai-agents.html][The AI Agents sidebar]] |
+| =:MepAiAgentsToggle= | [[file:ai-agents.html][The AI Agents sidebar]] |
+| =:MepAiCancel= | [[file:ai-commands.html][Ask the model]] |
+| =:MepAiContextPicker= | [[file:ai-commands.html][Ask the model]] |
+| =:MepAiReplaceSelection= | [[file:ai-commands.html][Ask the model]] |
+| =:MepAiSend= | [[file:ai-commands.html][Ask the model]] |
+| =:MepAiSendBuffer= | [[file:ai-commands.html][Ask the model]] |
+| =:MepAiSendSelection= | [[file:ai-commands.html][Ask the model]] |
+| =:MepAiTerminal= | [[file:ai-terminal.html][Claude Code in a pane]] |
+| =:MepBrowse= | -- |
+| =:MepBrowseExternal= | -- |
+| =:MepBrowseGo= | -- |
+| =:MepBrowseOpen= | -- |
+| =:MepBrowseReload= | -- |
+| =:MepBuffers= | -- |
+| =:MepBufferSearch= | -- |
+| =:MepBuffersPane= | -- |
+| =:MepColorize= | [[file:syntax.html][Syntax highlighting]] |
+| =:MepDapBreakpoint= | [[file:debugging.html][Debugging]] |
+| =:MepDapContinue= | [[file:debugging.html][Debugging]] |
+| =:MepDapTerminate= | [[file:debugging.html][Debugging]] |
+| =:MepDiagShow= | [[file:lsp.html][Language servers]] |
+| =:MepDocGen= | -- |
+| =:MepDocLookup= | -- |
+| =:MepFileTree= | [[file:file-tree.html][The file tree]] |
+| =:MepFormat= | [[file:formatting.html][Formatting]] |
+| =:MepGitBranches= | [[file:git-panel.html][The git panel]] |
+| =:MepGitCommit= | [[file:git-panel.html][The git panel]] |
+| =:MepGitFetch= | [[file:git-panel.html][The git panel]] |
+| =:MepGitGraph= | [[file:git-panel.html][The git panel]] |
+| =:MepGitGutter= | [[file:git-gutter.html][The git gutter]] |
+| =:MepGitLog= | [[file:git-panel.html][The git panel]] |
+| =:MepGitPopup= | -- |
+| =:MepGitPreviewHunk= | [[file:git-hunks.html][Working with hunks]] |
+| =:MepGitPull= | [[file:git-panel.html][The git panel]] |
+| =:MepGitPush= | [[file:git-panel.html][The git panel]] |
+| =:MepGitStash= | [[file:git-panel.html][The git panel]] |
+| =:MepGitStatus= | [[file:git-panel.html][The git panel]] |
+| =:MepGitStatusPane= | -- |
+| =:MepGitWorkspaces= | [[file:git-workspaces.html][Branch-per-workspace]] |
+| =:MepGoHelp= | [[file:language-ui.html][Language UI modes]] |
+| =:MepHelp= | [[file:dashboard.html][The start screen]] |
+| =:MepKeymaps= | [[file:keymaps.html][Remapping keys]] |
+| =:MepLangTest= | [[file:tests.html][Tests]] |
+| =:MepLanguageUi= | [[file:language-ui.html][Language UI modes]] |
+| =:MepLayout= | [[file:layouts-zen.html][Layouts, zoom and zen]] |
+| =:MepLeetcodeFetch= | -- |
+| =:MepLeetcodePicker= | -- |
+| =:MepLeetcodeRunTests= | -- |
+| =:MepLeetcodeSubmit= | -- |
+| =:MepLspAttach= | [[file:lsp.html][Language servers]] |
+| =:MepLspCodeAction= | [[file:lsp.html][Language servers]] |
+| =:MepLspDefinition= | [[file:lsp.html][Language servers]] |
+| =:MepLspFormat= | [[file:lsp.html][Language servers]] |
+| =:MepLspHover= | [[file:lsp.html][Language servers]] |
+| =:MepLspImplementation= | [[file:lsp.html][Language servers]] |
+| =:MepLspReferences= | [[file:lsp.html][Language servers]] |
+| =:MepLspRename= | [[file:lsp.html][Language servers]] |
+| =:MepLspSignatureHelp= | [[file:lsp.html][Language servers]] |
+| =:MepLspTypeDefinition= | [[file:lsp.html][Language servers]] |
+| =:MepMarkdown= | [[file:markdown.html][Markdown]] |
+| =:MepMdCheckbox= | [[file:markdown.html][Markdown]] |
+| =:MepMdConceal= | [[file:markdown.html][Markdown]] |
+| =:MepMdTableAlign= | [[file:markdown.html][Markdown]] |
+| =:MepMdTableInsertCol= | [[file:markdown.html][Markdown]] |
+| =:MepMdTableInsertRow= | [[file:markdown.html][Markdown]] |
+| =:MepNextSheet= | [[file:sheets.html][Spreadsheets]] |
+| =:MepNotifyClear= | [[file:notifications.html][Notifications]] |
+| =:MepNotifyDismiss= | [[file:notifications.html][Notifications]] |
+| =:MepNotifyPanel= | [[file:notifications.html][Notifications]] |
+| =:MepOil= | [[file:file-tree.html][The file tree]] |
+| =:MepOpenFile= | -- |
+| =:MepOrgAgendaAddFile= | [[file:org-agenda.html][Agenda]] |
+| =:MepOrgAgendaOverdue= | [[file:org-agenda.html][Agenda]] |
+| =:MepOrgAgendaSearch= | [[file:org-agenda.html][Agenda]] |
+| =:MepOrgAgendaToday= | [[file:org-agenda.html][Agenda]] |
+| =:MepOrgAgendaTodo= | [[file:org-agenda.html][Agenda]] |
+| =:MepOrgAgendaWeek= | [[file:org-agenda.html][Agenda]] |
+| =:MepOrgArchive= | [[file:org-todo.html][TODO keywords and tags]] |
+| =:MepOrgBabelExecute= | [[file:org-babel.html][Executing code blocks]] |
+| =:MepOrgBabelTangle= | [[file:org-babel.html][Executing code blocks]] |
+| =:MepOrgBibCiteGoto= | [[file:org-links.html][Links, footnotes and citations]] |
+| =:MepOrgBibCitePreview= | [[file:org-links.html][Links, footnotes and citations]] |
+| =:MepOrgBibInsertCitation= | [[file:org-links.html][Links, footnotes and citations]] |
+| =:MepOrgCapture= | [[file:org-capture.html][Capture]] |
+| =:MepOrgCaptureAbort= | [[file:org-capture.html][Capture]] |
+| =:MepOrgCaptureCommit= | [[file:org-capture.html][Capture]] |
+| =:MepOrgCheckbox= | [[file:org-basics.html][Org files in mep]] |
+| =:MepOrgClockIn= | [[file:org-clock.html][Clocking and the Todo panel]] |
+| =:MepOrgClockOut= | [[file:org-clock.html][Clocking and the Todo panel]] |
+| =:MepOrgClockTable= | [[file:org-clock.html][Clocking and the Todo panel]] |
+| =:MepOrgCycle= | [[file:folding.html][Folds]] |
+| =:MepOrgDeadline= | [[file:org-dates.html][Timestamps and scheduling]] |
+| =:MepOrgDemote= | -- |
+| =:MepOrgDemoteSubtree= | -- |
+| =:MepOrgDrillReview= | [[file:learn-games.html][Playing]] |
+| =:MepOrgExportAscii= | [[file:org-export.html][Exporting]] |
+| =:MepOrgExportHtml= | [[file:org-export.html][Exporting]] |
+| =:MepOrgExportMarkdown= | [[file:org-export.html][Exporting]] |
+| =:MepOrgExportOdt= | [[file:office.html][Word processor documents]] |
+| =:MepOrgExportPdf= | [[file:org-export.html][Exporting]] |
+| =:MepOrgExportSubtreeHtml= | [[file:org-export.html][Exporting]] |
+| =:MepOrgExportSubtreeMarkdown= | [[file:org-export.html][Exporting]] |
+| =:MepOrgFold= | [[file:org-basics.html][Org files in mep]] |
+| =:MepOrgFootnoteJump= | [[file:org-links.html][Links, footnotes and citations]] |
+| =:MepOrgImageScan= | [[file:org-visuals.html][Images, LaTeX and tables]] |
+| =:MepOrgImagesToggle= | [[file:org-visuals.html][Images, LaTeX and tables]] |
+| =:MepOrgInsertHeading= | [[file:org-basics.html][Org files in mep]] |
+| =:MepOrgInsertTodoHeading= | [[file:org-basics.html][Org files in mep]] |
+| =:MepOrgLatexScan= | [[file:org-visuals.html][Images, LaTeX and tables]] |
+| =:MepOrgLatexToggle= | [[file:org-visuals.html][Images, LaTeX and tables]] |
+| =:MepOrgLinkFollow= | [[file:org-links.html][Links, footnotes and citations]] |
+| =:MepOrgLinkInsert= | [[file:org-links.html][Links, footnotes and citations]] |
+| =:MepOrgListIndent= | [[file:org-basics.html][Org files in mep]] |
+| =:MepOrgListNewItem= | [[file:org-basics.html][Org files in mep]] |
+| =:MepOrgListOutdent= | [[file:org-basics.html][Org files in mep]] |
+| =:MepOrgListRenumber= | [[file:org-basics.html][Org files in mep]] |
+| =:MepOrgMatch= | [[file:org-basics.html][Org files in mep]] |
+| =:MepOrgNarrow= | [[file:org-basics.html][Org files in mep]] |
+| =:MepOrgNext= | [[file:org-basics.html][Org files in mep]] |
+| =:MepOrgPrev= | -- |
+| =:MepOrgPriority= | [[file:org-todo.html][TODO keywords and tags]] |
+| =:MepOrgPromote= | [[file:org-basics.html][Org files in mep]] |
+| =:MepOrgPromoteSubtree= | [[file:org-basics.html][Org files in mep]] |
+| =:MepOrgRefile= | [[file:org-todo.html][TODO keywords and tags]] |
+| =:MepOrgRoamBacklinks= | [[file:org-roam.html][Org-roam]] |
+| =:MepOrgRoamDaily= | [[file:org-roam.html][Org-roam]] |
+| =:MepOrgRoamEnsureId= | [[file:org-roam.html][Org-roam]] |
+| =:MepOrgRoamFindNotes= | [[file:org-roam.html][Org-roam]] |
+| =:MepOrgRoamInsertLink= | [[file:org-roam.html][Org-roam]] |
+| =:MepOrgRoamNewNote= | [[file:org-roam.html][Org-roam]] |
+| =:MepOrgRoamSync= | [[file:org-roam.html][Org-roam]] |
+| =:MepOrgScheduled= | [[file:org-dates.html][Timestamps and scheduling]] |
+| =:MepOrgSortAlpha= | [[file:org-todo.html][TODO keywords and tags]] |
+| =:MepOrgSortPriority= | [[file:org-todo.html][TODO keywords and tags]] |
+| =:MepOrgSortTodo= | [[file:org-todo.html][TODO keywords and tags]] |
+| =:MepOrgSparseTodo= | [[file:org-todo.html][TODO keywords and tags]] |
+| =:MepOrgStoreLink= | [[file:org-capture.html][Capture]] |
+| =:MepOrgTableAlign= | [[file:org-basics.html][Org files in mep]] |
+| =:MepOrgTags= | [[file:org-todo.html][TODO keywords and tags]] |
+| =:MepOrgTagsPicker= | [[file:org-todo.html][TODO keywords and tags]] |
+| =:MepOrgTemplate= | [[file:org-capture.html][Capture]] |
+| =:MepOrgTimestamp= | [[file:org-dates.html][Timestamps and scheduling]] |
+| =:MepOrgTimestampDecr= | [[file:org-dates.html][Timestamps and scheduling]] |
+| =:MepOrgTimestampHighlight= | [[file:org-dates.html][Timestamps and scheduling]] |
+| =:MepOrgTimestampInactive= | [[file:org-dates.html][Timestamps and scheduling]] |
+| =:MepOrgTimestampIncr= | [[file:org-dates.html][Timestamps and scheduling]] |
+| =:MepOrgTimestampRange= | [[file:org-dates.html][Timestamps and scheduling]] |
+| =:MepOrgTimestampRepeater= | [[file:org-dates.html][Timestamps and scheduling]] |
+| =:MepOrgTodo= | [[file:org-todo.html][TODO keywords and tags]] |
+| =:MepOrgWiden= | [[file:org-basics.html][Org files in mep]] |
+| =:MepPaneZoom= | [[file:layouts-zen.html][Layouts, zoom and zen]] |
+| =:MepPrevSheet= | [[file:sheets.html][Spreadsheets]] |
+| =:MepProjectAdd= | [[file:projects.html][Projects]] |
+| =:MepProjectClear= | -- |
+| =:MepProjects= | [[file:dashboard.html][The start screen]] |
+| =:MepProjectsOpen= | [[file:projects.html][Projects]] |
+| =:MepReplSendBuffer= | [[file:repl.html][REPL and send-to-terminal]] |
+| =:MepReplSendLine= | [[file:repl.html][REPL and send-to-terminal]] |
+| =:MepReplStart= | [[file:repl.html][REPL and send-to-terminal]] |
+| =:MepRoamGraph= | [[file:org-roam.html][Org-roam]] |
+| =:MepRun= | [[file:repl.html][REPL and send-to-terminal]] |
+| =:MepRunButtonRun= | -- |
+| =:MepRunButtonSetup= | [[file:run-button.html][Running the current file]] |
+| =:MepScratch= | [[file:files.html][Files and buffers]] |
+| =:MepSnippetNext= | [[file:insert-mode.html][Insert and Replace]] |
+| =:MepSnippetPrev= | [[file:insert-mode.html][Insert and Replace]] |
+| =:MepSnippets= | [[file:snippets.html][Snippets]] |
+| =:MepStructure= | [[file:structure-symbols.html][Structure and symbols]] |
+| =:MepStructureSplit= | [[file:structure-symbols.html][Structure and symbols]] |
+| =:MepSttToggle= | -- |
+| =:MepSymbols= | [[file:sidebars.html][Sidebars]] |
+| =:MepSyntax= | [[file:folding.html][Folds]] |
+| =:MepSyntaxFold= | [[file:folding.html][Folds]] |
+| =:MepTabTerminal= | [[file:terminals.html][Terminals]] |
+| =:MepTermJump= | [[file:repl.html][REPL and send-to-terminal]] |
+| =:MepTermSendLine= | [[file:repl.html][REPL and send-to-terminal]] |
+| =:MepTermSendRegister= | [[file:repl.html][REPL and send-to-terminal]] |
+| =:MepTheme= | -- |
+| =:MepTodoMark= | -- |
+| =:MepTodoScan= | -- |
+| =:MepWorkspaces= | -- |
+| =:MepZen= | [[file:layouts-zen.html][Layouts, zoom and zen]] |
+| =:Model3DNew= | [[file:model3d.html][The 3D modeler]] |
+| =:norm= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:norm!= | -- |
+| =:normal= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:normal!= | -- |
+| =:NotebookNew= | [[file:notebooks.html][Jupyter notebooks]] |
+| =:Org= | [[file:architecture.html][How mep is put together]] |
+| =:project= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:projectclose= | [[file:projects.html][Projects]] |
+| =:projectclose!= | [[file:projects.html][Projects]] |
+| =:projectn= | [[file:projects.html][Projects]] |
+| =:projectnext= | [[file:projects.html][Projects]] |
+| =:projectp= | [[file:projects.html][Projects]] |
+| =:projectprev= | [[file:projects.html][Projects]] |
+| =:projectprevious= | [[file:projects.html][Projects]] |
+| =:projects= | [[file:architecture.html][How mep is put together]] |
+| =:q= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:q!= | [[file:command-line.html][The command line]] |
+| =:qa= | [[file:command-line.html][The command line]] |
+| =:qa!= | [[file:command-line.html][The command line]] |
+| =:qall= | -- |
+| =:qall!= | -- |
+| =:quit= | [[file:command-line.html][The command line]] |
+| =:quit!= | -- |
+| =:Runner= | [[file:glossary.html][Glossary]] |
+| =:RunnerVariables= | -- |
+| =:RunnerWorkspaces= | -- |
+| =:Serve= | [[file:local-server.html][Serving a directory]] |
+| =:Servers= | [[file:local-server.html][Serving a directory]] |
+| =:ServeStop= | [[file:local-server.html][Serving a directory]] |
+| =:set= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:source= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:sp= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:split= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:tabclose= | -- |
+| =:tabdelete= | [[file:command-line.html][The command line]] |
+| =:tabN= | -- |
+| =:tabn= | [[file:command-line.html][The command line]] |
+| =:tabnew= | [[file:command-line.html][The command line]] |
+| =:tabnext= | [[file:panes-tabs.html][Panes and tabs]] |
+| =:tabp= | [[file:panes-tabs.html][Panes and tabs]] |
+| =:tabprevious= | [[file:panes-tabs.html][Panes and tabs]] |
+| =:tabterm= | [[file:terminals.html][Terminals]] |
+| =:tabterminal= | [[file:terminals.html][Terminals]] |
+| =:term= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:terminal= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:Text= | [[file:command-line.html][The command line]] |
+| =:vs= | [[file:command-line.html][The command line]] |
+| =:vsplit= | [[file:command-line.html][The command line]] |
+| =:w= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:wa= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:wall= | -- |
+| =:WebLadder= | [[file:web-ladder.html][Measuring the engine]] |
+| =:WebLadderRun= | [[file:web-ladder.html][Measuring the engine]] |
+| =:workspace= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:workspaces= | [[file:architecture.html][How mep is put together]] |
+| =:wq= | [[file:command-line.html][The command line]] |
+| =:wqa= | [[file:command-line.html][The command line]] |
+| =:wqall= | -- |
+| =:write= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:ws= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:wsadopt= | [[file:workspaces.html][Workspaces]] |
+| =:wsclose= | -- |
+| =:wsclose!= | -- |
+| =:wsdelete= | [[file:git-workspaces.html][Branch-per-workspace]] |
+| =:wsdelete!= | [[file:troubleshooting.html][Troubleshooting]] |
+| =:wslist= | [[file:workspaces.html][Workspaces]] |
+| =:wsn= | [[file:git-workspaces.html][Branch-per-workspace]] |
+| =:wsnew= | [[file:git-workspaces.html][Branch-per-workspace]] |
+| =:wsnew!= | [[file:git-workspaces.html][Branch-per-workspace]] |
+| =:wsnext= | [[file:workspaces.html][Workspaces]] |
+| =:wsp= | [[file:git-workspaces.html][Branch-per-workspace]] |
+| =:wsprevious= | [[file:workspaces.html][Workspaces]] |
+| =:wsprune= | [[file:git-workspaces.html][Branch-per-workspace]] |
+| =:wsrename= | [[file:workspaces.html][Workspaces]] |
+| =:wsrestore= | [[file:layouts-zen.html][Layouts, zoom and zen]] |
+| =:wssave= | [[file:layouts-zen.html][Layouts, zoom and zen]] |
+| =:x= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:xa= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:xall= | -- |
+
+* See also
+
+- [[file:key-index.html][Key index]] -- the same, for keys.
+- [[file:command-line.html][The command line]] -- how to run one.

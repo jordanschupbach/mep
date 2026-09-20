@@ -106,7 +106,7 @@ help: build-native
     # The Lua API reference is generated from src/lua_env.cpp's own binding
     # table -- ~445 entries is not something to hand-maintain -- so refresh
     # those sources before exporting anything.
-    python3 scripts/gen_api_pages.py
+    python3 scripts/gen_reference_pages.py
     for src in help/*.org; do
         # _-prefixed sources are not pages: help/_template.org is the
         # starting point a new page is copied from, and would otherwise
@@ -156,7 +156,7 @@ test: build-native
     # has drifted from its Org source, a page is missing its sidebar
     # metadata, or an internal link is broken. Needs no display.
     echo "== check_help"
-    python3 scripts/check_help.py {{native_build_dir}}/mep
+    python3 scripts/check_help.py {{native_build_dir}}/mep --strict
 
 # CRDT_PERFORMANCE_PLAN.md Phase 1: run the persistent text-editing
 # benchmarks (mep-crdt-bench, mep-buffer-bench, mep-lua-frame-hook-bench)

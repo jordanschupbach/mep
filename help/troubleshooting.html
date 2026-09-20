@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Troubleshooting</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Reference">
+<meta name="help-order" content="40">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Troubleshooting</h1>
+<h1>A key seems to do nothing</h1>
+<p>Check the right of the status line. A half-typed command -- a count, a
+pending operator, a register prefix, <code>g</code>, <code>z</code> -- waits there for its next
+key. <code>Esc</code> discards it.</p>
+<p>If the key is one you bound yourself, <code>&lt;leader&gt;hk</code> says what is actually
+bound.</p>
+<h1>No completion, no diagnostics, no <code>gd</code></h1>
+<p>The language server for that filetype is probably not installed. mep starts
+one only if its command is on <code>$PATH</code>, and a missing server is not an error
+-- the file just opens without one.</p>
+<p><code>:CopilotStatus</code> covers Copilot; for LSP, check that the command from the
+<a href="lsp.html">server table</a> runs in your shell. Remember that mep's terminals inherit your
+<b>login</b> environment, so a server installed only inside a project shell may
+not be visible.</p>
+<h1><code>gf</code> says there is no formatter</h1>
+<p>Only C/C++, Python and R have dedicated formatters. Everything else falls
+back to the language server, so with no server attached there is nothing to
+format with. See <a href="formatting.html">Formatting</a> for adding one.</p>
+<h1>The git gutter shows nothing</h1>
+<ul>
+<li>The file may not be in a repository.</li>
+<li>The gutter may be off: <code>&lt;leader&gt;gd</code> toggles it and reports which way it went.</li>
+<li>The base may be set somewhere unexpected: <code>:MepGitGutter base</code> reports it.</li>
+</ul>
+<p>If marks vanished right after staging, the base is <code>index</code>; the default
+<code>HEAD</code> is what keeps them visible. See <a href="git-gutter.html">The git gutter</a>.</p>
+<h1>A notebook cell will not run</h1>
+<p>The kernel's command has to be on <code>$PATH</code>. Python 3 is built in; R, Node,
+Ruby and Bash are offered only when found. <code>&lt;leader&gt;jK</code> shows which kernel
+a cell is set to.</p>
+<h1>A <code>.blend</code> file opens empty</h1>
+<p>It is still converting. mep runs Blender's own command line on a background
+job, so the pane switches immediately and fills in when the conversion
+finishes. If Blender is not on <code>$PATH</code>, it never will -- that is the one
+3D format that needs an external tool.</p>
+<h1>The wasm build cannot open files</h1>
+<p>Correct, and expected. Opening <code>build/web/mep.html</code> in a plain browser tab
+has no file bridge behind it, so <code>:e</code>, <code>:w</code> and <code>:source</code> fail with an
+ordinary read/write error, and no <code>init.lua</code> is loaded. Use <code>just run-wasm</code>,
+which starts the bridge, or the native build.</p>
+<h1>The clipboard is empty after mep exits</h1>
+<p>On X11 the clipboard is owned by the window that set it, so its contents go
+when mep does unless a clipboard manager is running. That is how X works.
+See <a href="registers-marks.html">Registers, marks and jumps</a>.</p>
+<h1>My session did not come back</h1>
+<ul>
+<li><code>--no-session</code> skips both saving and restoring.</li>
+<li><code>mep.opt.restore_workspaces = false</code> does the same permanently.</li>
+<li>A missing file is skipped with a message, a vanished worktree is pruned, and a corrupt state file is ignored in favour of a fresh start.</li>
+</ul>
+<p><code>:wsrestore</code> restores by hand. See <a href="sessions.html">Sessions</a>.</p>
+<h1>A workspace will not delete</h1>
+<p><code>git worktree remove</code> refuses on a dirty tree, and mep shows git's own
+message. <code>:wsdelete!</code> forces it. The branch is kept either way.</p>
+<h1>Help pages look out of date</h1>
+<p>They are generated. Run <code>just help</code> to re-export, and <code>just help-check</code> to
+find out what has drifted. See <a href="writing-help.html">Writing help pages</a>.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="installing.html">Installing and running</a> -- build and launch options.</li>
+<li><a href="platform-notes.html">Platform notes</a> -- what differs per platform.</li>
+</ul>
+</body>
+</html>

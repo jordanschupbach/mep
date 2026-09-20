@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Generate the Lua API reference pages of the help manual.
+"""Generate the reference pages of the help manual.
+
+Three kinds: the Lua API pages, the command index and the key index.
 
 mep exposes ~445 Lua bindings. Hand-writing a reference for that many, and
 then keeping it correct as they change, is not realistic -- so these six
@@ -139,11 +141,95 @@ def page(slug, title, order, intro, entries):
     return len(entries)
 
 
+MAIN = REPO / "src" / "main.cpp"
+EDITOR = REPO / "src" / "editor.cpp"
+
+
+def documented_in():
+    """command-or-key -> the page that mentions it.
+
+    Doubles the index as a coverage map: a row with no page is a thing mep
+    has that the manual has not got round to explaining.
+    """
+    where = {}
+    for src in sorted(HELP.glob("*.org")):
+        if src.name.startswith(("_", "api-", "command-index", "key-index")):
+            continue
+        title = re.search(r"#\+TITLE:\s*(.+)", src.read_text(errors="replace"))
+        where[src.stem] = (title.group(1).strip() if title else src.stem,
+                           src.read_text(errors="replace"))
+    return where
+
+
+def page_for(token, where, leader=False):
+    needle = f"<leader>{token}" if leader else token
+    for stem, (title, body) in sorted(where.items()):
+        if needle in body:
+            return f"[[file:{stem}.html][{title}]]"
+    return "--"
+
+
+def gen_command_index(where):
+    main_text = MAIN.read_text(errors="replace")
+    editor_text = EDITOR.read_text(errors="replace")
+    lua_cmds = set(re.findall(r"mep\.command\('([A-Za-z0-9_]+)'", main_text))
+    native = re.search(r"static const std::vector<std::string> kNames = \{(.*?)\};",
+                       editor_text, re.S)
+    native_cmds = set(re.findall(r'"([^"]+)"', native.group(1))) if native else set()
+    rows = []
+    for cmd in sorted(lua_cmds | native_cmds, key=str.lower):
+        rows.append(f"| =:{cmd}= | {page_for(cmd, where)} |")
+    lines = [
+        "#+TITLE: Command index",
+        '#+HTML_HEAD: <meta name="help-section" content="Reference">',
+        '#+HTML_HEAD: <meta name="help-order" content="10">',
+        '#+HTML_HEAD: <link rel="stylesheet" href="help.css">',
+        "", "* Every command", "",
+        f"All {len(lua_cmds | native_cmds)} ex commands mep defines: "
+        f"{len(native_cmds)} built in and {len(lua_cmds)} registered from Lua.",
+        "",
+        "=Tab= at the =:= prompt completes these, and =<leader>hk= lists the key",
+        "bindings instead. A dash means no page covers that command yet.",
+        "", "| Command | Documented in |", "|---------+---------------|",
+    ] + rows + ["", "* See also", "",
+                "- [[file:key-index.html][Key index]] -- the same, for keys.",
+                "- [[file:command-line.html][The command line]] -- how to run one.", ""]
+    (HELP / "command-index.org").write_text("\n".join(lines))
+    return len(rows)
+
+
+def gen_key_index(where):
+    main_text = MAIN.read_text(errors="replace")
+    rows = []
+    for seq, desc in sorted(set(re.findall(r"mep\.leader_map\('([^']+)'\s*,\s*'([^']*)'", main_text))):
+        rows.append(f"| =<leader>{seq}= | {desc} | {page_for(seq, where, leader=True)} |")
+    lines = [
+        "#+TITLE: Key index",
+        '#+HTML_HEAD: <meta name="help-section" content="Reference">',
+        '#+HTML_HEAD: <meta name="help-order" content="20">',
+        '#+HTML_HEAD: <link rel="stylesheet" href="help.css">',
+        "", "* Leader bindings", "",
+        f"All {len(rows)} =<leader>= sequences registered at startup. Press",
+        "=<Space>= for the same list as a popup, or =<leader>hk= for every",
+        "binding including your own.",
+        "",
+        "Motions, operators and the other Normal-mode keys are on the pages in",
+        "the Editing section; this index covers the leader layer, which is where",
+        "the features live.",
+        "", "| Key | Does | Documented in |", "|-----+------+---------------|",
+    ] + rows + ["", "* See also", "",
+                "- [[file:command-index.html][Command index]] -- the same, for commands.",
+                "- [[file:which-key.html][Leader and which-key]] -- the groups.",
+                "- [[file:keymaps.html][Remapping keys]] -- changing them.", ""]
+    (HELP / "key-index.org").write_text("\n".join(lines))
+    return len(rows)
+
+
 def main():
     text = SOURCE.read_text(errors="replace")
     names = sorted(set(bindings(text)))
     if not names:
-        print("gen_api_pages: found no bindings -- has lua_env.cpp changed shape?",
+        print("gen_reference_pages: found no bindings -- has lua_env.cpp changed shape?",
               file=sys.stderr)
         return 1
     desc = briefs(text)
@@ -154,8 +240,12 @@ def main():
                    for n in names if n not in claimed and re.match(pattern, n)]
         claimed.update(n for n, _ in entries)
         total += page(slug, title, order, intro, entries)
+    where = documented_in()
+    n_cmds = gen_command_index(where)
+    n_keys = gen_key_index(where)
+    print(f"gen_reference_pages: {n_cmds} commands, {n_keys} leader keys indexed")
     undocumented = sum(1 for n in names if not desc.get(n))
-    print(f"gen_api_pages: {total} bindings across {len(FAMILIES)} pages "
+    print(f"gen_reference_pages: {total} bindings across {len(FAMILIES)} pages "
           f"({undocumented} with no doc comment in lua_env.cpp)")
     return 0
 

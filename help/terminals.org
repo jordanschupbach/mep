@@ -13,7 +13,7 @@ bottom, spanning the tab's full width. This is the one you want most of the
 time.
 
 *The AI terminal.* =<leader>a<CR>= runs Claude Code in a pane below, wired
-to drive this editor.
+to drive this editor. See [[file:ai-terminal.html][Claude Code in a pane]].
 
 * The per-tab terminal
 

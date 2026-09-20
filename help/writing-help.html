@@ -77,6 +77,15 @@ every page declares a title and a section, and that every internal link
 resolves. It also reports how much of mep's command and key surface the
 manual mentions. <code>just test</code> runs it too.</p>
 <p>If it says a page is stale, you edited the Org and forgot <code>just help</code>.</p>
+<h1>Generated pages</h1>
+<p>Four pages are not written by hand. <code>scripts/gen_reference_pages.py</code> builds
+the six Lua API pages from <code>src/lua_env.cpp</code>'s binding table, and the
+command and key indexes from the command and <code>leader_map</code> registrations.</p>
+<p><code>just help</code> runs the generator before exporting, so editing those <code>.org</code>
+files directly is pointless -- the next build overwrites them. Change the
+generator instead.</p>
+<p>The indexes double as a coverage map: each row names the page documenting
+that command or key, and a dash means none does yet.</p>
 <h1>Project-local help</h1>
 <p>The sidebar prefers a <code>help/</code> directory in the current workspace when that
 directory contains any <code>.html</code> pages, and falls back to mep's own installed

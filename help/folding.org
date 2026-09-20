@@ -49,3 +49,4 @@ clears its previous set with =fold_clear_provider=.
 
 - [[file:syntax.html][Syntax highlighting]] -- where code folds come from.
 - [[file:scrolling.html][Scrolling and the view]] -- the rest of the =z= prefix.
+- [[file:org-basics.html][Org files in mep]] -- outline cycling.

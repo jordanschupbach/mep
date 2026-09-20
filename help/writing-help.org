@@ -105,6 +105,19 @@ manual mentions. =just test= runs it too.
 
 If it says a page is stale, you edited the Org and forgot =just help=.
 
+* Generated pages
+
+Four pages are not written by hand. =scripts/gen_reference_pages.py= builds
+the six Lua API pages from =src/lua_env.cpp='s binding table, and the
+command and key indexes from the command and =leader_map= registrations.
+
+=just help= runs the generator before exporting, so editing those =.org=
+files directly is pointless -- the next build overwrites them. Change the
+generator instead.
+
+The indexes double as a coverage map: each row names the page documenting
+that command or key, and a dash means none does yet.
+
 * Project-local help
 
 The sidebar prefers a =help/= directory in the current workspace when that

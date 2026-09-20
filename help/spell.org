@@ -46,4 +46,5 @@ hunspell or aspell to install.
 
 * See also
 
+- [[file:writing.html][Writing prose in mep]] -- the rest of the prose toolkit.
 - [[file:highlight-groups.html][Highlight groups]] -- how the squiggle is drawn.

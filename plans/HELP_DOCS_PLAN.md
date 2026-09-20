@@ -37,7 +37,7 @@ These block the page work, or make it much worse if skipped. Do them first.
   its placement in its own Org source via two `#+HTML_HEAD:` meta tags
   (`help-section`, `help-order`); an undeclared page falls back to an
   "Other" section, ordered by title, as before.
-- [ ] **0.2 Help search.** `mep.picker_open` over every page's title +
+- [x] **0.2 Help search.** `mep.picker_open` over every page's title +
   headings + body text, bound to `<leader>hf` and `/` inside a help pane;
   Enter opens the page. Without it an exhaustive manual is unnavigable.
 - [x] **0.3 Page template + shared stylesheet.** `help/_template.org` (the
@@ -65,10 +65,10 @@ These block the page work, or make it much worse if skipped. Do them first.
   links, and reports command/`<leader>` coverage — enforced only under
   `--strict`, since a hard gate would be permanently red until the last page
   lands. Baseline at the time of writing: 6/302 (2.0%).
-- [ ] **0.6 Contextual help.** `<leader>hh` from a pane already showing a
+- [x] **0.6 Contextual help.** `<leader>hh` from a pane already showing a
   notebook / PDF / 3D model / org file opens that feature's page rather than
   `intro`. Sidebars' own `?` help overlay gains a "full docs" row.
-- [ ] **0.7 `:help <topic>`.** A Vim-style command that jumps straight to a
+- [x] **0.7 `:help <topic>`.** A Vim-style command that jumps straight to a
   page (and, with an anchor, a heading) by name, with command-line completion
   over page names.
 
@@ -581,7 +581,7 @@ too).
 
 ## Final pass
 
-- [ ] **Cross-linking.** Pages written early could not link forward to pages
+- [x] **Cross-linking.** Pages written early could not link forward to pages
   that did not exist yet, because `check_help` (rightly) fails on a dangling
   link. Several "See also" entries were dropped for this reason: completion →
   copilot, folding → org-basics, spell → writing, lsp → org-babel,

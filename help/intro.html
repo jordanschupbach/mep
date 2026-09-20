@@ -33,18 +33,30 @@ by typing its letter.</p>
 <h1>Everyday use</h1>
 <ul>
 <li><a href="editing.html">Editing basics</a> -- buffers, panes and the editing model.</li>
-<li><a href="shortcuts.html">Keyboard shortcuts</a> -- the keys you will reach for most.</li>
+<li><a href="key-index.html">Key index</a> -- every leader binding, and where it is documented.</li>
 </ul>
 <h1>Finding your way around</h1>
-<p>Three things will answer almost any "how do I..." question without leaving the
-editor:</p>
+<p>The manual runs to a hundred pages, so there are three ways in.</p>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>&lt;leader&gt;hh</code></td><td>open the page for whatever you are looking at</td></tr>
+<tr><td><code>&lt;leader&gt;hf</code></td><td>search every page title and heading</td></tr>
+<tr><td><code>:help &lt;topic&gt;</code></td><td>jump straight to a page by name</td></tr>
+</table>
+<p><code>&lt;leader&gt;hh</code> is contextual: press it in a notebook and you get the notebook
+page, in an R file the R mode page, in a 3D scene the modeler page. With
+nothing in particular open it brings you here.</p>
+<p>Inside a page, <code>f</code> labels every visible link so you can follow one by typing
+its letter.</p>
+<h1>Answering "how do I..." without leaving the editor</h1>
 <table>
 <tr><th>Key</th><th>What it gives you</th></tr>
 <tr><td><code>&lt;Space&gt;</code></td><td>the which-key popup: every leader binding, grouped and named</td></tr>
 <tr><td><code>&lt;leader&gt;hk</code></td><td>a searchable list of every key binding currently in effect</td></tr>
 <tr><td><code>:</code></td><td>the command line, with completion over every command name</td></tr>
 </table>
-<p>Press <code>&lt;leader&gt;hh</code> (or run <code>:MepHelp</code>) to come back to this page at any time.</p>
+<p>Two generated pages list everything mep has: the <a href="command-index.html">command index</a> and the
+<a href="key-index.html">key index</a>. Each row says which page documents that command or key.</p>
 <h1>Contributing to this manual</h1>
 <ul>
 <li><a href="writing-help.html">Writing help pages</a> -- the page format, and how to add one.</li>

@@ -59,4 +59,5 @@ buffer mep renders into, not a terminal, so it is not a valid target.
 * See also
 
 - [[file:terminals.html][Terminals]] -- the real thing.
+- [[file:notebooks.html][Jupyter notebooks]] -- a persistent kernel with inline results.
 - [[file:run-button.html][Running the current file]] -- one key, no pane to manage.

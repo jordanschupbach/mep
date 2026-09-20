@@ -73,3 +73,4 @@ code files are generated from it.
 
 - [[file:org-polyglot.html][Language servers in code blocks]] -- editing support inside a block.
 - [[file:org-export.html][Exporting]] -- where blocks are executed by default.
+- [[file:learn-decks.html][Writing a deck]] -- a document that launches itself.

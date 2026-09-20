@@ -39,3 +39,4 @@ environment.
 * See also
 
 - [[file:language-ui.html][Language UI modes]] -- the shared machinery.
+- [[file:notebooks.html][Jupyter notebooks]] -- a persistent kernel with inline output instead.

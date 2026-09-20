@@ -86,4 +86,4 @@ to back out.
 
 - [[file:vim-differences.html][What is and isn't Vim]] -- if these keys already look familiar.
 - [[file:editing.html][Editing basics]] -- buffers and panes.
-- [[file:shortcuts.html][Keyboard shortcuts]] -- a wider reference.
+- [[file:key-index.html][Key index]] -- every leader binding, and where it is documented.

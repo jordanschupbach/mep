@@ -56,3 +56,4 @@ default source is built from, so a replacement can reuse them.
 
 - [[file:snippets.html][Snippets]] -- triggers appear in this list.
 - [[file:lsp.html][Language servers]] -- where the good suggestions come from.
+- [[file:copilot.html][GitHub Copilot]] -- the other thing bound to =Tab=.

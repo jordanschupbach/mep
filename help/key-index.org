@@ -5,7 +5,7 @@
 
 * Leader bindings
 
-All 94 =<leader>= sequences registered at startup. Press
+All 95 =<leader>= sequences registered at startup. Press
 =<Space>= for the same list as a popup, or =<leader>hk= for every
 binding including your own.
 
@@ -57,6 +57,7 @@ the features live.
 | =<leader>gt= | Git status (paneable, stacks with the file tree) | [[file:git-panel.html][The git panel]] |
 | =<leader>gv= | Git preview hunk at cursor | [[file:git-hunks.html][Working with hunks]] |
 | =<leader>gw= | Git workspaces | [[file:git-workspaces.html][Branch-per-workspace]] |
+| =<leader>hf= | Help: search the manual | [[file:intro.html][mep Help]] |
 | =<leader>hh= | Open help | [[file:intro.html][mep Help]] |
 | =<leader>hk= | Help: keymaps | [[file:command-line.html][The command line]] |
 | =<leader>hs= | Help: symbol under the cursor (gh) | [[file:language-ui.html][Language UI modes]] |

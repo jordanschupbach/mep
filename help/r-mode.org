@@ -47,3 +47,4 @@ mep.opt.r_ui_poll_interval = 0.5       -- how often the panels refresh
 * See also
 
 - [[file:language-ui.html][Language UI modes]] -- the shared machinery.
+- [[file:notebooks.html][Jupyter notebooks]] -- R as a notebook kernel instead.

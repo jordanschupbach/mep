@@ -91,7 +91,8 @@ If a server is missing, nothing breaks -- the file simply opens without one.
 * Inside org code blocks
 
 Code blocks in an Org file get language-server support too, through a shadow
-buffer per block, with some documented gaps around header arguments.
+buffer per block. See [[file:org-polyglot.html][Language servers in code blocks]] for what that covers
+and what it does not.
 
 * From Lua
 

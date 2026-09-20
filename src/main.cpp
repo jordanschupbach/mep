@@ -25588,6 +25588,76 @@ const char *kBuiltinHelp =
     "  local intro = mep_help_join(mep_help_root, 'intro.html')\n"
     "  mep.help_open_page(intro)\n"
     "end\n"
+    // Opening the sidebar and a page together: every entry point below
+    // wants both, and a page opened without the sidebar leaves the reader
+    // with no way to see where they are in the manual.
+    "function mep.help_show(path)\n"
+    "  mep.help_refresh_index()\n"
+    "  if #mep_help_pages == 0 then mep.notify('Built-in help files are unavailable', 'error') return end\n"
+    "  mep.help_render_sidebar()\n"
+    "  mep.sidebar_open(mep_help_sidebar_id)\n"
+    "  mep.help_open_page(path or mep_help_join(mep_help_root, 'intro.html'))\n"
+    "end\n"
+    // :help <topic>, Vim's own spelling. Matches a page's filename first,
+    // then a case-insensitive substring of its title, so both `:help
+    // motions` and `:help 'first ten'` land somewhere sensible. With no
+    // argument it behaves as :MepHelp.
+    "function mep.help_topic(name)\n"
+    "  mep.help_refresh_index()\n"
+    "  name = (name or ''):match('^%s*(.-)%s*$')\n"
+    "  if name == '' then return mep.help_show(nil) end\n"
+    "  local want = name:lower()\n"
+    "  for _, p in ipairs(mep_help_pages) do\n"
+    "    if p.name:gsub('%.html?$', ''):lower() == want then return mep.help_show(p.path) end\n"
+    "  end\n"
+    "  for _, p in ipairs(mep_help_pages) do\n"
+    "    if p.title:lower():find(want, 1, true) then return mep.help_show(p.path) end\n"
+    "  end\n"
+    "  mep.notify('No help page for ' .. name, 'warn')\n"
+    "end\n"
+    "mep.command('help', function(args) mep.help_topic(args) end)\n"
+    "mep.command('MepHelpTopic', function(args) mep.help_topic(args) end)\n"
+    // Search across every page's headings as well as its title. The
+    // exporter emits no heading ids, so a hit opens the page rather than
+    // scrolling to the heading -- still far quicker than scanning a
+    // sidebar once the manual runs to a hundred pages.
+    "function mep.help_search()\n"
+    "  mep.help_refresh_index()\n"
+    "  local items = {}\n"
+    "  for _, page in ipairs(mep_help_pages) do\n"
+    "    items[#items + 1] = {display = page.title, data = page.path}\n"
+    "    for _, line in ipairs(mep.read_lines(page.path) or {}) do\n"
+    "      local heading = line:match('^<h[1-4]>(.-)</h[1-4]>')\n"
+    "      if heading and heading ~= page.title then\n"
+    "        items[#items + 1] = {display = page.title .. '  >  ' .. heading, data = page.path}\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  if #items == 0 then mep.notify('Built-in help files are unavailable', 'error') return end\n"
+    "  mep.picker_open('Help', items, function(item) if item then mep.help_show(item) end end)\n"
+    "end\n"
+    "mep.command('MepHelpSearch', mep.help_search)\n"
+    // Contextual help: <leader>hh opens the page for whatever the current
+    // pane is showing, rather than always the front page. Keyed by bare
+    // extension; anything unknown falls through to intro.
+    "MEP_HELP_FOR_FILETYPE = {\n"
+    "  org = 'org-basics', md = 'markdown', markdown = 'markdown',\n"
+    "  ipynb = 'notebooks', pdf = 'pdf', docx = 'office', odt = 'office',\n"
+    "  xlsx = 'sheets', ods = 'sheets', csv = 'sheets',\n"
+    "  png = 'images', jpg = 'images', jpeg = 'images', bmp = 'images', gif = 'images',\n"
+    "  obj = 'model3d', gltf = 'model3d', glb = 'model3d', iqm = 'model3d',\n"
+    "  vox = 'model3d', m3d = 'model3d', blend = 'model3d',\n"
+    "  wav = 'audio-svg', svg = 'audio-svg', xml = 'audio-svg',\n"
+    "  lua = 'config', R = 'r-mode', r = 'r-mode', py = 'python-mode',\n"
+    "  c = 'c-mode', h = 'c-mode', cpp = 'c-mode', cc = 'c-mode', hpp = 'c-mode',\n"
+    "}\n"
+    "function mep.help_contextual()\n"
+    "  local fname = mep.filename() or ''\n"
+    "  local ext = fname:match('%.([%w]+)$')\n"
+    "  local topic = ext and MEP_HELP_FOR_FILETYPE[ext]\n"
+    "  if topic then return mep.help_topic(topic) end\n"
+    "  return mep.help_show(nil)\n"
+    "end\n"
     "mep.command('MepHelp', mep.help_open)\n"
     "mep.on_buffer_saved(function()\n"
     "  if mep_help_sidebar_id and mep.sidebar_is_open(mep_help_sidebar_id) then mep.help_refresh_index(); mep.help_render_sidebar() end\n"
@@ -25608,7 +25678,12 @@ const char *kBuiltinHelpKeymap =
     "mep.command('MepHelp', function()\n"
     "  if mep.help_open then mep.help_open() else mep.notify('Help workspace is unavailable', 'error') end\n"
     "end)\n"
-    "mep.leader_map('hh', 'Open help', function() mep.cmd('MepHelp') end)\n";
+    "mep.leader_map('hh', 'Open help', function()\n"
+    "  if mep.help_contextual then mep.help_contextual() else mep.cmd('MepHelp') end\n"
+    "end)\n"
+    "mep.leader_map('hf', 'Help: search the manual', function()\n"
+    "  if mep.help_search then mep.help_search() else mep.cmd('MepHelp') end\n"
+    "end)\n";
 
 const char *kBuiltinPickerSources =
     "function mep.themes()\n"

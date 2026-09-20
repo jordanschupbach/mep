@@ -29,20 +29,35 @@ Read these in order. Twenty minutes gets you from nothing to comfortable.
 * Everyday use
 
 - [[file:editing.html][Editing basics]] -- buffers, panes and the editing model.
-- [[file:shortcuts.html][Keyboard shortcuts]] -- the keys you will reach for most.
+- [[file:key-index.html][Key index]] -- every leader binding, and where it is documented.
 
 * Finding your way around
 
-Three things will answer almost any "how do I..." question without leaving the
-editor:
+The manual runs to a hundred pages, so there are three ways in.
+
+| Key            | Does                                                  |
+|----------------+-------------------------------------------------------|
+| =<leader>hh=   | open the page for whatever you are looking at         |
+| =<leader>hf=   | search every page title and heading                   |
+| =:help <topic>= | jump straight to a page by name                      |
+
+=<leader>hh= is contextual: press it in a notebook and you get the notebook
+page, in an R file the R mode page, in a 3D scene the modeler page. With
+nothing in particular open it brings you here.
+
+Inside a page, =f= labels every visible link so you can follow one by typing
+its letter.
+
+* Answering "how do I..." without leaving the editor
 
 | Key         | What it gives you                                            |
 |-------------+--------------------------------------------------------------|
 | =<Space>=   | the which-key popup: every leader binding, grouped and named |
-| =<leader>hk= | a searchable list of every key binding currently in effect   |
+| =<leader>hk= | a searchable list of every key binding currently in effect  |
 | =:=         | the command line, with completion over every command name    |
 
-Press =<leader>hh= (or run =:MepHelp=) to come back to this page at any time.
+Two generated pages list everything mep has: the [[file:command-index.html][command index]] and the
+[[file:key-index.html][key index]]. Each row says which page documents that command or key.
 
 * Contributing to this manual
 

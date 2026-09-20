@@ -45,8 +45,8 @@ between files does not break anything pointing at it.
 =:MepOrgRoamEnsureId= adds one to a heading that has none.
 
 =:MepOrgDrillReview= is a neighbour worth knowing: it reviews notes as
-spaced-repetition cards, using the same =:DRILL_*:= properties the learning
-games write.
+spaced-repetition cards, using the same =:DRILL_*:= properties the
+[[file:learn-games.html][learning games]] write.
 
 * See also
 

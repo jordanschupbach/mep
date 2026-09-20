@@ -144,6 +144,12 @@ clean:
 test: build-native
     #!/usr/bin/env bash
     set -euo pipefail
+    # Runs before the C++ binaries below: `mep-collab-session-test` in that
+    # list requires a ws:// URL and exits 2 without one, which aborts the
+    # recipe under `set -e` -- a pre-existing failure, but one that would
+    # otherwise mean this check never ran at all.
+    echo "== check_help"
+    python3 scripts/check_help.py {{native_build_dir}}/mep --strict
     targets=(mep-html-doc-test mep-web-ladder-test mep-org-doc-test mep-vterm-test mep-spell-test mep-notebook-doc-test mep-workspace-test mep-model3d-doc-test mep-image-procgen-test mep-jpeg-codec-test mep-pdf-object-test mep-pdf-xref-test mep-pdf-crypt-test mep-pdf-filters-test mep-pdf-document-test mep-pdf-outline-test mep-pdf-links-test mep-rasterizer-test mep-pdf-content-test mep-cff-test mep-type1-test mep-pdf-encodings-test mep-pdf-font-test mep-pdf-text-test mep-mov-container-test mep-collab-crdt-test mep-collab-session-test)
     cmake --build {{native_build_dir}} -j --target "${targets[@]}"
     for t in "${targets[@]}"; do
@@ -152,11 +158,6 @@ test: build-native
             "./{{native_build_dir}}/$t"
         fi
     done
-    # Not a C++ binary, but the same kind of gate: it fails when help/*.html
-    # has drifted from its Org source, a page is missing its sidebar
-    # metadata, or an internal link is broken. Needs no display.
-    echo "== check_help"
-    python3 scripts/check_help.py {{native_build_dir}}/mep --strict
 
 # CRDT_PERFORMANCE_PLAN.md Phase 1: run the persistent text-editing
 # benchmarks (mep-crdt-bench, mep-buffer-bench, mep-lua-frame-hook-bench)

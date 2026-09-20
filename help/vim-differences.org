@@ -83,4 +83,4 @@ not a mep limitation.
 * See also
 
 - [[file:first-steps.html][Your first ten minutes]] -- the basics, if you want them anyway.
-- [[file:shortcuts.html][Keyboard shortcuts]] -- what is bound out of the box.
+- [[file:key-index.html][Key index]] -- what is bound out of the box.

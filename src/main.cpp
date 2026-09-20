@@ -6847,6 +6847,72 @@ const char *kBuiltinLanguageUi =
     // muscle memory/docs may already reference it.
     "mep.leader_map('uu', 'Language UI mode (toggle)', mep.language_ui_toggle)\n";
 
+// "go help" (gh, TODO.org's own item): open the documentation for the
+// function under the cursor, in whatever surface the current language's help
+// system already has -- the R/Python modes' Help tab, `man` for C/C++, and
+// the LSP hover popup for everything else.
+//
+// Each language registers a provider here (mep.help_register_provider) rather
+// than claiming "gh" for itself, because mep.map_g -- like mep.map -- has no
+// buffer-local flavor: there is exactly one "gh" for the whole editor, so the
+// language dispatch has to happen inside that single callback. A provider
+// takes no arguments, gates on its own per-tab state, and returns true once
+// it has handled the lookup -- including the "no symbol under the cursor"
+// warning, which is that language's own answer and not a reason to fall
+// through and ask an unrelated help system. Anything false/nil means "not my
+// buffer" and the next provider gets a turn; when none claims it, the chain
+// ends at mep.lsp_hover, the generic "show me the docs for this" mep already
+// had bound to K.
+//
+// Registration order is chunk load order (R, Python, C/C++), but each
+// provider's own state check already makes them mutually exclusive -- at most
+// one language UI mode is open per tab (mep.language_ui_active) -- so the
+// order only decides who is asked first, not who wins.
+const char *kBuiltinGoHelp =
+    "mep.help_providers = mep.help_providers or {}\n"
+    // Re-registering an existing name replaces that provider in place rather
+    // than stacking a second copy, so re-running this chunk (or a user's own
+    // override of a built-in mode's provider from init.lua) doesn't leave the
+    // superseded one still ahead of it in the chain.
+    "function mep.help_register_provider(name, fn)\n"
+    "  for _, p in ipairs(mep.help_providers) do\n"
+    "    if p.name == name then p.fn = fn return end\n"
+    "  end\n"
+    "  mep.help_providers[#mep.help_providers + 1] = {name = name, fn = fn}\n"
+    "end\n"
+    // The identifier under the cursor, plus the columns it spans (1-based,
+    // inclusive -- the start is what lets a caller look at what precedes the
+    // symbol, e.g. R's `pkg::` prefix). `chars` is the Lua character class
+    // that language's identifiers are made of and defaults to [%w_.], wider
+    // than mep.lsp_word_at_cursor's [%w_] so R's na.omit and Python's
+    // os.path.join stay whole instead of splitting at the dot; C/C++ passes
+    // its own class for std::vector. nil when the cursor isn't on one.
+    "function mep.help_symbol_at_cursor(chars)\n"
+    "  chars = chars or '[%w_.]'\n"
+    "  local row, col = mep.cursor()\n"
+    "  local line = mep.get_line(row) or ''\n"
+    "  if col > #line then col = #line end\n"
+    "  local function isw(i) return i >= 1 and i <= #line and line:sub(i, i):match(chars) ~= nil end\n"
+    "  if not isw(col) then return nil end\n"
+    "  local s, e = col, col\n"
+    "  while isw(s - 1) do s = s - 1 end\n"
+    "  while isw(e + 1) do e = e + 1 end\n"
+    "  return line:sub(s, e), s, e\n"
+    "end\n"
+    "function mep.help_at_cursor()\n"
+    "  for _, p in ipairs(mep.help_providers) do\n"
+    "    if p.fn() then return true end\n"
+    "  end\n"
+    "  mep.lsp_hover()\n"
+    "  return false\n"
+    "end\n"
+    "mep.command('MepGoHelp', mep.help_at_cursor)\n"
+    "mep.map_g('h', mep.help_at_cursor)\n"
+    // mep.map_g takes no description (there is no g-mapping registry for
+    // mep.keymaps to read), so the leader spelling is what makes "go help"
+    // discoverable in the keymaps picker and the which-key overlay.
+    "mep.leader_map('hs', 'Help: symbol under the cursor (gh)', mep.help_at_cursor)\n";
+
 // R language UI mode (kBuiltinLanguageUi's first consumer): <leader>lu/uu on
 // an .R buffer lays a Console pane below the source pane, plus a right
 // column split top/bottom -- Data/Objects/Packages/History/Help tabbed
@@ -7703,31 +7769,25 @@ const char *kBuiltinLanguageUiR =
     "    end\n"
     "  end)\n"
     "end\n"
-    // gh ("go to help"): while this tab's R UI mode is open, look up the
-    // symbol under the cursor in the Help tab -- sends help('sym') (or
-    // help('sym', package = 'pkg') for a `pkg::sym` spelling) to the
-    // session's console, so it flows through exactly the same overridden
-    // help() -> pager -> help.txt -> poll path as a typed ?topic, choice
-    // list for an ambiguous topic included -- and reveals the Help tab
-    // immediately (mep.jump_to_buffer finds it even hidden behind Data/
-    // Objects/... in top_pane's tab strip, or after the user moved it
-    // elsewhere) rather than waiting on the poll tick's own jump, which
-    // only fires on a real content CHANGE and so wouldn't fire at all for
-    // a repeat lookup of the same topic. The symbol scan is R's own
-    // identifier shape ([%w_.], so na.omit/read.csv stay whole) rather
-    // than mep.lsp_word_at_cursor's [%w_], which would split at the dot.
-    // Outside an R UI mode (any language), gh falls back to the LSP hover
-    // popup, the generic "show me the docs for this" mep already has.
+    // This mode's "go help" provider (kBuiltinGoHelp's gh): while this tab's
+    // R UI mode is open, look up the symbol under the cursor in the Help tab
+    // -- sends help('sym') (or help('sym', package = 'pkg') for a `pkg::sym`
+    // spelling) to the session's console, so it flows through exactly the
+    // same overridden help() -> pager -> help.txt -> poll path as a typed
+    // ?topic, choice list for an ambiguous topic included -- and reveals the
+    // Help tab immediately (mep.jump_to_buffer finds it even hidden behind
+    // Data/Objects/... in top_pane's tab strip, or after the user moved it
+    // elsewhere) rather than waiting on the poll tick's own jump, which only
+    // fires on a real content CHANGE and so wouldn't fire at all for a
+    // repeat lookup of the same topic. The symbol scan is R's own identifier
+    // shape ([%w_.], mep.help_symbol_at_cursor's default, so na.omit/
+    // read.csv stay whole) rather than mep.lsp_word_at_cursor's [%w_], which
+    // would split at the dot; the start column it returns is what the
+    // `pkg::` prefix is read back from.
     "local function mep_r_ui_symbol_at_cursor()\n"
-    "  local row, col = mep.cursor()\n"
-    "  local line = mep.get_line(row) or ''\n"
-    "  if col > #line then col = #line end\n"
-    "  local function isw(i) return i >= 1 and i <= #line and line:sub(i, i):match('[%w_.]') ~= nil end\n"
-    "  if not isw(col) then return nil end\n"
-    "  local s, e = col, col\n"
-    "  while isw(s - 1) do s = s - 1 end\n"
-    "  while isw(e + 1) do e = e + 1 end\n"
-    "  local sym = line:sub(s, e)\n"
+    "  local sym, s = mep.help_symbol_at_cursor()\n"
+    "  if not sym then return nil end\n"
+    "  local line = mep.get_line(mep.cursor()) or ''\n"
     "  local pkg = line:sub(1, s - 1):match('([%w.]+):::?$')\n"
     "  return sym, pkg\n"
     "end\n"
@@ -7741,7 +7801,7 @@ const char *kBuiltinLanguageUiR =
     "  if st.help_buf then mep.jump_to_buffer(st.help_buf) end\n"
     "  return true\n"
     "end\n"
-    "mep.map_g('h', function() if not mep.r_ui_help_at_cursor() then mep.lsp_hover() end end)\n";
+    "mep.help_register_provider('r', mep.r_ui_help_at_cursor)\n";
 
 const char *kBuiltinLanguageUiCommon =
     // Shared plumbing for the language UI modes (kBuiltinLanguageUi): the
@@ -7991,7 +8051,10 @@ const char *kBuiltinLanguageUiPython =
     //     Data tab shows it.
     //   - help(x) is overridden (builtins.help) to write pydoc's plain-text
     //     rendering into the Help tab's file instead of paging it inside the
-    //     console; help('topic') strings work too.
+    //     console; help('topic') strings work too. gh over a name (this
+    //     mode's kBuiltinGoHelp provider, below) goes through the same path
+    //     via mep_help('name'), which evaluates the name in the console's own
+    //     namespace first and falls back to handing pydoc the string.
     //   - mep_view(x) writes x (a pandas DataFrame's head().to_string(), or
     //     pprint for anything else) to the Data tab.
     //   - Plots: MPLBACKEND is pointed at a tiny custom matplotlib backend
@@ -8158,6 +8221,13 @@ const char *kBuiltinLanguageUiPython =
     "def mep_show():\n"
     "    _mep_capture_figures(force=True, close=False)\n"
     "\n"
+    "def mep_help(name):\n"
+    "    try:\n"
+    "        obj = eval(name, _MEP_NS)\n"
+    "    except Exception:\n"
+    "        obj = name\n"
+    "    help(obj)\n"
+    "\n"
     "def mep_run(path):\n"
     "    d = os.path.dirname(os.path.abspath(path))\n"
     "    if d not in sys.path:\n"
@@ -8176,7 +8246,8 @@ const char *kBuiltinLanguageUiPython =
     "_MEP_NS['mep_view'] = mep_view\n"
     "_MEP_NS['mep_show'] = mep_show\n"
     "_MEP_NS['mep_run'] = mep_run\n"
-    "_MEP_HIDDEN.update(['mep_view', 'mep_show', 'mep_run'])\n"
+    "_MEP_NS['mep_help'] = mep_help\n"
+    "_MEP_HIDDEN.update(['mep_view', 'mep_show', 'mep_run', 'mep_help'])\n"
     "if readline is not None:\n"
     "    readline.set_completer(rlcompleter.Completer(_MEP_NS).complete)\n"
     "    readline.parse_and_bind('tab: complete')\n"
@@ -8370,6 +8441,25 @@ const char *kBuiltinLanguageUiPython =
     "  }\n"
     "end\n"
     "mep.language_ui_modes.python = {open = mep.py_ui_open}\n"
+    // This mode's "go help" provider (kBuiltinGoHelp's gh): sends
+    // mep_help('sym') -- the init script's own helper -- to the console, so
+    // the lookup lands in the Help tab through exactly the same overridden
+    // help() -> pydoc -> help.txt -> poll path as a typed help(x), and
+    // reveals the tab immediately rather than waiting on the poll tick's own
+    // jump, which only fires on a real content change (so a repeat lookup of
+    // the same symbol would never reveal it). The scan is
+    // mep.help_symbol_at_cursor's default [%w_.], so a dotted os.path.join /
+    // np.mean stays whole and resolves as one name in the console namespace.
+    "function mep.py_ui_help_at_cursor()\n"
+    "  local st = mep_py_ui_state[mep.current_tab_id()]\n"
+    "  if not st or not mep.is_terminal_buffer(st.console_buf) then return false end\n"
+    "  local sym = mep.help_symbol_at_cursor()\n"
+    "  if not sym then mep.notify('gh: no Python symbol under the cursor', 'warn') return true end\n"
+    "  mep.terminal_write(st.console_buf, string.format(\"mep_help('%s')\\n\", sym))\n"
+    "  if st.help_buf then mep.jump_to_buffer(st.help_buf) end\n"
+    "  return true\n"
+    "end\n"
+    "mep.help_register_provider('python', mep.py_ui_help_at_cursor)\n"
     // Poll loop: re-lists the figures directory and re-reads the sidebar
     // files on a timer, only while a Python mode is open on the active tab.
     "do\n"
@@ -8410,8 +8500,8 @@ const char *kBuiltinLanguageUiC =
     // C/C++ language UI mode (kBuiltinLanguageUi's third consumer, built on
     // kBuiltinLanguageUiCommon): <leader>uu on a .c/.cpp/.cc/.cxx buffer lays
     // a plain shell terminal below the source pane (where the compiled
-    // program runs), plus a right column split top/bottom -- Assembly and
-    // Build tabbed together on top, Hex alone on the bottom.
+    // program runs), plus a right column split top/bottom -- Assembly, Build
+    // and Help tabbed together on top, Hex alone on the bottom.
     //   - Assembly: a Compiler-Explorer-style view of the current file.
     //     `compiler -S -g file flags -o -` (the same compiler/flags the Run
     //     button's Setup configured for this project -- mep.run_button_
@@ -8432,6 +8522,13 @@ const char *kBuiltinLanguageUiC =
     //     jumps the source cursor to its line.
     //   - Build: the compiler's own diagnostics from the last build/asm run,
     //     one row per line, file:line:col rows clickable to jump there.
+    //   - Help: the man page for the symbol under the cursor, fetched by gh
+    //     (kBuiltinGoHelp) -- section 3 (library functions) first, then 2
+    //     (syscalls), then man's own default section order, so `gh` on
+    //     printf lands on printf(3) rather than printf(1), the shell
+    //     utility. C++ names with a `::` in them are looked up verbatim, so
+    //     std::vector resolves for anyone who has the cppreference man pages
+    //     installed and simply misses for anyone who doesn't.
     //   - Hex: a paged hex dump (mep.opt.c_ui_hex_page bytes per page, 16
     //     per row) of the compiled executable, with the ELF header decoded
     //     (class/endianness/type/machine/entry point) and the section table
@@ -8463,6 +8560,7 @@ const char *kBuiltinLanguageUiC =
     "    asm = mep.sidebar_create('Assembly', 'right', 60),\n"
     "    build = mep.sidebar_create('Build', 'right', 60),\n"
     "    hex = mep.sidebar_create('Hex', 'right', 60),\n"
+    "    help = mep.sidebar_create('Help', 'right', 60),\n"
     "  }\n"
     "  mep.sidebar_set_on_key(mep_c_ui_sidebars.hex, function(k) mep.c_ui_hex_on_key(k) end)\n"
     "  mep.sidebar_set_help(mep_c_ui_sidebars.hex, {{'n / p', 'next / previous page'}, {'r', 'reload the binary'}})\n"
@@ -8769,11 +8867,62 @@ const char *kBuiltinLanguageUiC =
     "  end\n"
     "  mep_c_ui_render_hex()\n"
     "end\n"
+    // Help tab: whatever `man` last printed for a gh lookup, one widget row
+    // per line (wrapped, like the R/Python modes' own help text).
+    "local function mep_c_ui_render_help()\n"
+    "  local sb = mep_c_ui_sidebars\n"
+    "  if not sb then return end\n"
+    "  local st = mep_c_ui_state[mep.current_tab_id()]\n"
+    "  mep.language_ui_render_textbox(sb.help, st and st.help_text,\n"
+    "    '(no man page yet -- press gh over a function name)')\n"
+    "end\n"
     "local function mep_c_ui_render_all()\n"
     "  mep_c_ui_render_asm()\n"
     "  mep_c_ui_render_build()\n"
     "  mep_c_ui_render_hex()\n"
+    "  mep_c_ui_render_help()\n"
     "end\n"
+    // This mode's "go help" provider (kBuiltinGoHelp's gh): runs `man` for
+    // the symbol under the cursor and shows what it prints in the Help tab.
+    // Section 3 then 2 then man's own default order (see the header
+    // comment); `col -bx` (when installed, same "use it if it's on PATH"
+    // shape as the Assembly tab's c++filt) flattens the overstrike
+    // bold/underline some man implementations still emit into a pipe, and
+    // expands the tabs groff leaves in NAME/SYNOPSIS lines (-x) so the
+    // widget rows line up the way the page does in a terminal.
+    // MANWIDTH is the Help tab's own width when the pane can report one, so
+    // man's indentation matches what the tab can actually show -- the widget
+    // rows wrap either way, this only avoids re-wrapping already-wrapped
+    // prose. The identifier scan takes ':' as well ([%w_:], trimmed of any
+    // leading/trailing colons a C label or a bare `case x:` would otherwise
+    // drag in) so a C++ std::vector stays one topic.
+    "function mep.c_ui_help_at_cursor()\n"
+    "  local st = mep_c_ui_state[mep.current_tab_id()]\n"
+    "  if not st then return false end\n"
+    "  local sym = mep.help_symbol_at_cursor('[%w_:]')\n"
+    "  sym = sym and sym:gsub('^:+', ''):gsub(':+$', '')\n"
+    "  if not sym or sym == '' then mep.notify('gh: no C/C++ symbol under the cursor', 'warn') return true end\n"
+    "  st.help_text = 'man ' .. sym .. ' ...'\n"
+    "  mep_c_ui_render_help()\n"
+    "  if st.help_buf then mep.jump_to_buffer(st.help_buf) end\n"
+    "  local cols = (st.help_buf and mep.buffer_text_cols(st.help_buf)) or 80\n"
+    "  if cols < 40 then cols = 40 end\n"
+    "  local q = mep.language_ui_shq(sym)\n"
+    "  local cmd = 'export MANWIDTH=' .. cols .. '; { man 3 ' .. q .. ' || man 2 ' .. q .. ' || man ' .. q\n"
+    "    .. '; } 2>/dev/null | { command -v col >/dev/null 2>&1 && col -bx || cat; }'\n"
+    "  local out = {}\n"
+    "  mep.job_start({'sh', '-c', cmd}, {\n"
+    "    cwd = st.src_dir,\n"
+    "    on_stdout = function(line) out[#out + 1] = line end,\n"
+    "    on_exit = function()\n"
+    "      st.help_text = (#out > 0) and table.concat(out, '\\n')\n"
+    "        or ('No man page for ' .. sym .. '.')\n"
+    "      if mep_c_ui_state[mep.current_tab_id()] == st then mep_c_ui_render_help() end\n"
+    "    end,\n"
+    "  })\n"
+    "  return true\n"
+    "end\n"
+    "mep.help_register_provider('c', mep.c_ui_help_at_cursor)\n"
     // The compiler/flags for this file: the Run button's own per-project
     // Setup (mep.run_button_config_for, kBuiltinRunButton -- loaded after
     // this chunk, resolved at call time) so both features agree on how the
@@ -8900,7 +9049,8 @@ const char *kBuiltinLanguageUiC =
     "    ext = mep_lsp_filetype(fname), src_buf = mep.current_buffer(), src_abs = src_abs,\n"
     "    src_dir = src_abs:match('^(.*)/[^/]*$') or '.',\n"
     "    session_dir = session_dir, prog_path = session_dir .. '/' .. base, asm_path = session_dir .. '/' .. base .. '.s',\n"
-    "    asm_rows = {}, asm_title = '', asm_status = nil, build_lines = {}, hex_data = nil, hex_elf = nil, hex_page = 1,\n"
+    "    asm_rows = {}, asm_title = '', asm_status = nil, build_lines = {}, help_text = nil,\n"
+    "    hex_data = nil, hex_elf = nil, hex_page = 1,\n"
     "    cursor_line = nil, last_save_epoch = mep.buffer_save_epoch(), extra_term_bufs = {},\n"
     "  }\n"
     "  local layout = mep.language_ui_layout({\n"
@@ -8914,13 +9064,14 @@ const char *kBuiltinLanguageUiC =
     "  local sb = mep_c_ui_sidebars\n"
     "  mep_c_ui_state[tid] = st\n"
     "  mep_c_ui_render_all()\n"
-    "  local bufs = mep.language_ui_open_tabs(layout.top_pane, {sb.asm, sb.build})\n"
+    "  local bufs = mep.language_ui_open_tabs(layout.top_pane, {sb.asm, sb.build, sb.help})\n"
     "  st.build_buf = bufs[sb.build]\n"
     "  st.asm_buf = bufs[sb.asm]\n"
+    "  st.help_buf = bufs[sb.help]\n"
     "  mep.language_ui_open_tabs(layout.bottom_pane, {sb.hex})\n"
     "  mep.pane_focus(layout.editor_pane)\n"
     "  mep.c_ui_regen_asm(st)\n"
-    "  mep.notify('C/C++ language UI: terminal below, Assembly/Build tabbed top-right, Hex bottom-right; <leader>rr builds and runs (mod1+Tab cycles tabs)')\n"
+    "  mep.notify('C/C++ language UI: terminal below, Assembly/Build/Help tabbed top-right, Hex bottom-right; <leader>rr builds and runs, gh opens a man page (mod1+Tab cycles tabs)')\n"
     "  return {\n"
     "    run_source = function(f) mep.c_ui_build_and_run(st, f) end,\n"
     "    close = function()\n"
@@ -41518,6 +41669,9 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinTodo);
     lua->DoString(kBuiltinLsp);
     lua->DoString(kBuiltinLanguageUi);
+    // After kBuiltinLsp (its fallback is mep.lsp_hover) and before every
+    // language UI mode below, each of which registers its own help provider.
+    lua->DoString(kBuiltinGoHelp);
     lua->DoString(kBuiltinLanguageUiR);
     lua->DoString(kBuiltinLanguageUiCommon);
     lua->DoString(kBuiltinLanguageUiPython);

@@ -5187,6 +5187,15 @@ int l_chdir(lua_State *L) {
 // explicitly set to null survives the round trip distinguishably from an
 // absent field -- callers that don't care can treat it as falsy.
 void *kJsonNullSentinel = reinterpret_cast<void *>(0x1);
+// The empty JSON *array*. LuaToJson below reads "array" off a table's
+// contiguous 1..n integer key run, so an empty Lua table is
+// indistinguishable from an empty object and marshals as `{}` -- leaving
+// `[]` simply unexpressible from Lua. That is not a hypothetical: the
+// Copilot language server rejects `workspace/executeCommand` outright
+// ("Schema validation failed ... Expected tuple") when its `arguments`
+// field is `{}` *or* absent, and only accepts `[]`, so a command taking
+// no arguments could not be invoked at all without this.
+void *kJsonEmptyArraySentinel = reinterpret_cast<void *>(0x2);
 
 /**
  * @brief Recursively pushes a Json value onto the Lua stack, encoding JSON null as a unique lightuserdata sentinel rather than Lua nil so an object field explicitly set to null survives the round trip distinguishably from an absent field.
@@ -5238,6 +5247,7 @@ Json LuaToJson(lua_State *L, int idx) {
     int t = lua_type(L, idx);
     if (t == LUA_TNIL) return Json();
     if (t == LUA_TLIGHTUSERDATA && lua_touserdata(L, idx) == kJsonNullSentinel) return Json();
+    if (t == LUA_TLIGHTUSERDATA && lua_touserdata(L, idx) == kJsonEmptyArraySentinel) return Json::Array();
     if (t == LUA_TBOOLEAN) return Json(static_cast<bool>(lua_toboolean(L, idx)));
     if (t == LUA_TNUMBER) return Json(lua_tonumber(L, idx));
     if (t == LUA_TSTRING) {
@@ -7956,6 +7966,75 @@ int l_set_completion_resolve_hook(lua_State *L) {
     return 0;
 }
 
+// --- Inline suggestion / "ghost text" (kBuiltinCopilot) ---------------
+// See SetInlineSuggestion's comment (editor.h). These are the whole
+// C++ surface the Copilot module needs: everything protocol-shaped
+// (which server, which request, what the response means) stays in Lua.
+
+// mep.set_inline_suggestion(text [, row, col]): show `text` dimmed at the
+// cursor, as if it were already typed. row/col (1-based row, 1-based col,
+// matching mep.cursor()) anchor it; omitted, the current cursor is used.
+// An empty/absent text clears it.
+int l_set_inline_suggestion(lua_State *L) {
+    size_t len = 0;
+    const char *text = lua_isnoneornil(L, 1) ? "" : luaL_checklstring(L, 1, &len);
+    Editor *ed = GetEditor(L);
+    int row0 = 0, col0 = 0;
+    ed->GetCursorForLua(&row0, &col0);
+    int row = row0 + 1, col = col0 + 1;
+    if (lua_isnumber(L, 2)) row = static_cast<int>(lua_tointeger(L, 2));
+    if (lua_isnumber(L, 3)) col = static_cast<int>(lua_tointeger(L, 3));
+    ed->SetInlineSuggestion(std::string(text, len), row - 1, col - 1);
+    return 0;
+}
+
+// mep.clear_inline_suggestion().
+int l_clear_inline_suggestion(lua_State *L) {
+    GetEditor(L)->ClearInlineSuggestion();
+    return 0;
+}
+
+// mep.inline_suggestion() -> text, visible. `text` is whatever is left of
+// the suggestion (a partial accept or typing through it trims the front),
+// "" if there is none; `visible` is false while it's anchored somewhere
+// the cursor no longer is.
+int l_inline_suggestion(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    const std::string &text = ed->InlineSuggestionText();
+    lua_pushlstring(L, text.data(), text.size());
+    lua_pushboolean(L, ed->InlineSuggestionVisible());
+    return 2;
+}
+
+// mep.accept_inline_suggestion([what]) -> bool. `what` is 'all' (default),
+// 'word' or 'line'. Exposed for user mappings; the built-in Tab/Alt-Right
+// keys go straight to the same Editor methods (HandleInsertInput).
+int l_accept_inline_suggestion(lua_State *L) {
+    const char *what = luaL_optstring(L, 1, "all");
+    Editor *ed = GetEditor(L);
+    bool ok = false;
+    if (std::string(what) == "word") {
+        ok = ed->AcceptInlineSuggestionPartial(/*whole_line=*/false) > 0;
+    } else if (std::string(what) == "line") {
+        ok = ed->AcceptInlineSuggestionPartial(/*whole_line=*/true) > 0;
+    } else {
+        ok = ed->AcceptInlineSuggestion();
+    }
+    lua_pushboolean(L, ok);
+    return 1;
+}
+
+// mep.set_inline_suggestion_accept_hook(fn): fn(accepted_length) -- 0 for a
+// full accept, the UTF-16 prefix length for a partial one. See
+// SetInlineSuggestionAcceptHookRef's comment (editor.h).
+int l_set_inline_suggestion_accept_hook(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TFUNCTION);
+    lua_pushvalue(L, 1);
+    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    GetEditor(L)->SetInlineSuggestionAcceptHookRef(ref);
+    return 0;
+}
+
 // mep.set_insert_tab_hook(fn): fn(shift) -> bool. Phase 23's Tab/Shift-Tab
 // tabstop cycling -- see SetInsertTabHookRef's comment (editor.h).
 int l_set_insert_tab_hook(lua_State *L) {
@@ -9897,6 +9976,11 @@ const luaL_Reg kMepFuncs[] = {
     {"set_completion_accept_hook", l_set_completion_accept_hook},
     {"set_completion_resolve_hook", l_set_completion_resolve_hook},
     {"set_insert_tab_hook", l_set_insert_tab_hook},
+    {"set_inline_suggestion", l_set_inline_suggestion},
+    {"clear_inline_suggestion", l_clear_inline_suggestion},
+    {"inline_suggestion", l_inline_suggestion},
+    {"accept_inline_suggestion", l_accept_inline_suggestion},
+    {"set_inline_suggestion_accept_hook", l_set_inline_suggestion_accept_hook},
     {"set_on_directory_open", l_set_on_directory_open},
     {"lsp_start", l_lsp_start},
     {"lsp_request", l_lsp_request},
@@ -9981,6 +10065,10 @@ LuaEnv::LuaEnv(Editor *editor) : editor_(editor) {
     // that sentinel itself.
     lua_pushlightuserdata(L_, kJsonNullSentinel);
     lua_setfield(L_, -2, "json_null");
+    // ...and one for the empty JSON array, for the same reason an empty
+    // Lua table can't stand in for it -- see kJsonEmptyArraySentinel.
+    lua_pushlightuserdata(L_, kJsonEmptyArraySentinel);
+    lua_setfield(L_, -2, "json_empty_array");
     lua_setglobal(L_, "mep");
 
     lua_pushcfunction(L_, l_print);

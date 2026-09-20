@@ -16287,6 +16287,7 @@ void Editor::HandleInsertInput() {
     bool tab_key = false, ctrl_n = false, ctrl_p = false, ctrl_o = false, ctrl_r = false, ctrl_shift_v = false;
     bool ctrl_y = false;
     bool ctrl_c = false;
+    bool ctrl_rbracket = false;
     for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
         if (key == gfx::Key::Escape) escape = true;
         else if (key == gfx::Key::Enter) enter = true;
@@ -16302,6 +16303,7 @@ void Editor::HandleInsertInput() {
         else if (key == gfx::Key::Y && ctrl) ctrl_y = true;
         else if (key == gfx::Key::V && ctrl && shift_down) ctrl_shift_v = true;
         else if (key == gfx::Key::C && ctrl) ctrl_c = true;
+        else if (key == gfx::Key::RightBracket && ctrl) ctrl_rbracket = true;
     }
     // A pending Ctrl-R only survives until the next *character*; any
     // special key in between (Escape especially) cancels it, so an
@@ -16356,6 +16358,27 @@ void Editor::HandleInsertInput() {
             return;
         }
     }
+    // Inline suggestion / "ghost text" (kBuiltinCopilot): claims Tab only
+    // on frames the completion popup above didn't already take it (that
+    // block returns), so the popup's own Tab-accepts-the-selected-word
+    // behavior is untouched. Alt-Right / Alt-Ctrl-Right take one word or
+    // one line of it, Ctrl-] throws it away -- copilot.vim's own key set,
+    // so muscle memory carries over.
+    if (InlineSuggestionVisible()) {
+        bool alt = gfx::IsKeyDown(gfx::Key::LeftAlt) || gfx::IsKeyDown(gfx::Key::RightAlt);
+        if (ctrl_rbracket) {
+            ClearInlineSuggestion();
+            return;
+        }
+        if (tab_key) {
+            AcceptInlineSuggestion();
+            return;
+        }
+        if (alt && (gfx::IsKeyPressed(gfx::Key::Right) || gfx::IsKeyPressedRepeat(gfx::Key::Right))) {
+            AcceptInlineSuggestionPartial(/*whole_line=*/ctrl);
+            return;
+        }
+    }
     // Phase 23 tabstop-cycling gap: Insert mode has no built-in Tab
     // behavior of its own (no auto-indent-on-Tab, nothing) to give up, so
     // this only ever *adds* behavior -- consulted after the completion
@@ -16369,11 +16392,19 @@ void Editor::HandleInsertInput() {
         ProcessInsertKey(kReplayEscape);
         return;
     }
+    // Ctrl-W/Ctrl-U delete backwards past the anchor and return before
+    // ReanchorInlineSuggestionAfterEdit at the bottom of this function
+    // ever runs, so the suggestion has to be dropped here. Leaving it
+    // would let it reappear later if the cursor happened to land back on
+    // its anchor column -- showing text computed from a line that has
+    // since been rewritten.
     if (ctrl_w) {
+        ClearInlineSuggestion();
         ProcessInsertKey(kReplayInsertCtrlW);
         return;
     }
     if (ctrl_u) {
+        ClearInlineSuggestion();
         ProcessInsertKey(kReplayInsertCtrlU);
         return;
     }
@@ -16401,6 +16432,7 @@ void Editor::HandleInsertInput() {
     // GLFW never delivers a char for a Ctrl-chorded key, which is what
     // keeps a bare 'r'/'v' from also landing in the buffer.
     if (ctrl_shift_v) {
+        ClearInlineSuggestion();  // same early-return reason as Ctrl-W above
         InsertTextAsTyped(RegisterTextForPaste('"'));
         return;
     }
@@ -16458,6 +16490,7 @@ void Editor::HandleInsertInput() {
     if (gfx::IsKeyPressed(gfx::Key::Down) || gfx::IsKeyPressedRepeat(gfx::Key::Down)) {
         if (cursor.row + 1 < Buf().LineCount()) { cursor.row++; ClampCursor(); }
     }
+    ReanchorInlineSuggestionAfterEdit();
     if (mode_ == Mode::Insert) UpdateCompletionPopup();
 }
 
@@ -20182,6 +20215,210 @@ void Editor::AcceptCompletion() {
     }
 }
 
+// --- Inline suggestion / "ghost text" ---------------------------------
+// See SetInlineSuggestion's own comment (editor.h) for the anchoring
+// rationale; these are deliberately dumb about *where* the text came from
+// (kBuiltinCopilot is the only producer today) so any other async
+// suggestion source can reuse them unchanged.
+
+namespace {
+
+// Length of `s` in UTF-16 code units -- what LSP counts positions and
+// (for didPartiallyAcceptCompletion) accepted lengths in. Astral-plane
+// codepoints are one Lua/UTF-8 character but two UTF-16 units, which is
+// the only reason this isn't just a codepoint count.
+int Utf16Length(const std::string &s) {
+    int units = 0;
+    for (size_t i = 0; i < s.size();) {
+        unsigned char b = static_cast<unsigned char>(s[i]);
+        size_t len = b < 0x80 ? 1 : (b & 0xE0) == 0xC0 ? 2 : (b & 0xF0) == 0xE0 ? 3 : (b & 0xF8) == 0xF0 ? 4 : 1;
+        units += len == 4 ? 2 : 1;
+        i += len;
+    }
+    return units;
+}
+
+}  // namespace
+
+void Editor::SetInlineSuggestion(const std::string &text, int row, int col) {
+    if (text.empty()) {
+        ClearInlineSuggestion();
+        return;
+    }
+    inline_suggestion_ = text;
+    inline_suggestion_row_ = row;
+    inline_suggestion_col_ = col;
+    inline_suggestion_buffer_ = CurPane().buffer_id;
+    inline_suggestion_accepted_ = 0;
+}
+
+void Editor::ClearInlineSuggestion() {
+    inline_suggestion_.clear();
+    inline_suggestion_row_ = -1;
+    inline_suggestion_col_ = -1;
+    inline_suggestion_buffer_ = -1;
+    inline_suggestion_accepted_ = 0;
+}
+
+bool Editor::InlineSuggestionVisible() const {
+    if (inline_suggestion_.empty()) return false;
+    if (mode_ != Mode::Insert) return false;
+    const Pane &pane = CurPane();
+    if (pane.buffer_id != inline_suggestion_buffer_) return false;
+    return pane.cursor.row == inline_suggestion_row_ && pane.cursor.col == inline_suggestion_col_;
+}
+
+bool Editor::AcceptInlineSuggestion() {
+    if (!InlineSuggestionVisible()) return false;
+    const std::string text = inline_suggestion_;
+    CursorPos &cursor = CurPane().cursor;
+    PushUndo();
+    // Spliced in directly rather than through InsertTextAsTyped: the
+    // suggestion already carries its own indentation (the language server
+    // computed it against the real file), so replaying it as keystrokes
+    // would run every newline through auto-indent and double it. Raw byte
+    // insertion is also what keeps non-ASCII intact -- InsertChar/
+    // ProcessInsertKey drop anything outside 32..126.
+    std::string &line = Buf().lines[static_cast<size_t>(cursor.row)];
+    const std::string tail = line.substr(static_cast<size_t>(cursor.col));
+    line.erase(static_cast<size_t>(cursor.col));
+    size_t start = 0;
+    int inserted_rows = 0;
+    for (;;) {
+        size_t nl = text.find('\n', start);
+        const std::string piece = text.substr(start, nl == std::string::npos ? std::string::npos : nl - start);
+        if (start == 0) {
+            Buf().lines[static_cast<size_t>(cursor.row)] += piece;
+            cursor.col += static_cast<int>(piece.size());
+        } else {
+            inserted_rows++;
+            Buf().lines.insert(Buf().lines.begin() + cursor.row + inserted_rows, piece);
+            cursor.col = static_cast<int>(piece.size());
+        }
+        if (nl == std::string::npos) break;
+        start = nl + 1;
+    }
+    if (inserted_rows > 0) {
+        ShiftMarksForLineEdit(cursor.row + 1, inserted_rows);
+        ShiftFoldsForLineEdit(cursor.row + 1, inserted_rows);
+        cursor.row += inserted_rows;
+    }
+    Buf().lines[static_cast<size_t>(cursor.row)] += tail;
+    Buf().modified = true;
+    ClearInlineSuggestion();
+    // The popup's own candidate list was computed against the word prefix
+    // that existed before this splice and is meaningless now -- and
+    // leaving it open would let the very next Tab "accept" a stale entry
+    // on top of what was just inserted.
+    completion_open_ = false;
+    if (inline_suggestion_accept_hook_ref_ != 0 && lua_) {
+        lua_->CallRefWithInt(inline_suggestion_accept_hook_ref_, 0);
+    }
+    return true;
+}
+
+void Editor::ReanchorInlineSuggestionAfterEdit() {
+    if (inline_suggestion_.empty()) return;
+    const Pane &pane = CurPane();
+    if (mode_ != Mode::Insert || pane.buffer_id != inline_suggestion_buffer_ ||
+        pane.cursor.row != inline_suggestion_row_) {
+        ClearInlineSuggestion();
+        return;
+    }
+    const int col = pane.cursor.col;
+    if (col == inline_suggestion_col_) return;  // no edit this frame
+    // Backspace, or a motion back over the anchor: whatever the
+    // suggestion was computed from no longer describes the line.
+    if (col < inline_suggestion_col_) {
+        ClearInlineSuggestion();
+        return;
+    }
+    const int typed_len = col - inline_suggestion_col_;
+    const std::string &line = Buf().lines[static_cast<size_t>(pane.cursor.row)];
+    if (typed_len > static_cast<int>(inline_suggestion_.size()) ||
+        inline_suggestion_col_ + typed_len > static_cast<int>(line.size())) {
+        ClearInlineSuggestion();
+        return;
+    }
+    const std::string typed = line.substr(static_cast<size_t>(inline_suggestion_col_), static_cast<size_t>(typed_len));
+    if (inline_suggestion_.compare(0, static_cast<size_t>(typed_len), typed) != 0) {
+        ClearInlineSuggestion();
+        return;
+    }
+    inline_suggestion_.erase(0, static_cast<size_t>(typed_len));
+    inline_suggestion_col_ = col;
+    // Typed-through text counts toward the server's acceptedLength the
+    // same way an explicit partial accept does -- both leave that prefix
+    // of the original insertText sitting in the buffer.
+    inline_suggestion_accepted_ += Utf16Length(typed);
+    if (inline_suggestion_.empty()) ClearInlineSuggestion();
+}
+
+int Editor::AcceptInlineSuggestionPartial(bool whole_line) {
+    if (!InlineSuggestionVisible()) return 0;
+    const std::string &text = inline_suggestion_;
+    // How much of the remaining suggestion this accept takes. A word
+    // accept steps over any leading whitespace and then one run of
+    // word-or-punctuation characters, so the very common "accept just the
+    // identifier Copilot guessed" lands where you expect; a line accept
+    // takes everything up to (but not including) the next break.
+    size_t take = 0;
+    if (whole_line) {
+        size_t nl = text.find('\n');
+        take = nl == std::string::npos ? text.size() : nl;
+        // A suggestion that *starts* with a newline (the whole thing is on
+        // following lines) would otherwise accept nothing at all and leave
+        // the key looking dead -- take the break itself plus the next line.
+        if (take == 0) {
+            size_t next = text.find('\n', 1);
+            take = next == std::string::npos ? text.size() : next;
+        }
+    } else {
+        while (take < text.size() && (text[take] == ' ' || text[take] == '\t')) take++;
+        if (take < text.size() && text[take] == '\n') {
+            take++;
+            while (take < text.size() && (text[take] == ' ' || text[take] == '\t')) take++;
+        }
+        // A byte that belongs to an identifier. Non-ASCII lead/continuation
+        // bytes count as word bytes so a UTF-8 identifier is taken whole
+        // rather than split mid-codepoint.
+        auto is_word_byte = [](char c) {
+            unsigned char u = static_cast<unsigned char>(c);
+            return u >= 0x80 || std::isalnum(u) != 0 || c == '_';
+        };
+        if (take < text.size() && text[take] != '\n') {
+            if (is_word_byte(text[take])) {
+                while (take < text.size() && is_word_byte(text[take])) take++;
+            } else {
+                take++;  // a run of punctuation is accepted one character at a time
+            }
+        }
+    }
+    if (take == 0) return 0;
+    const std::string accepted = text.substr(0, take);
+    const std::string rest = text.substr(take);
+    // Reuses the full-accept splice by temporarily making `accepted` the
+    // whole suggestion, then re-anchoring the remainder at the cursor it
+    // left behind. The accept hook is suppressed for that inner call (it
+    // reports a *full* accept, which this isn't) and fired once here with
+    // the real partial length instead.
+    int saved_hook = inline_suggestion_accept_hook_ref_;
+    int already = inline_suggestion_accepted_;
+    inline_suggestion_accept_hook_ref_ = 0;
+    inline_suggestion_ = accepted;
+    bool ok = AcceptInlineSuggestion();
+    inline_suggestion_accept_hook_ref_ = saved_hook;
+    if (!ok) return 0;
+    int accepted_len = already + Utf16Length(accepted);
+    if (!rest.empty()) {
+        const CursorPos &cursor = CurPane().cursor;
+        SetInlineSuggestion(rest, cursor.row, cursor.col);
+        inline_suggestion_accepted_ = accepted_len;
+    }
+    if (saved_hook != 0 && lua_) lua_->CallRefWithInt(saved_hook, accepted_len);
+    return accepted_len;
+}
+
 bool Editor::CompletionResolveInfo(const std::string &text, std::string *detail, std::string *doc) const {
     if (completion_resolve_hook_ref_ == 0 || !lua_) return false;
     return lua_->CallRefWithStringForDetailDoc(completion_resolve_hook_ref_, text, detail, doc);
@@ -20434,6 +20671,11 @@ void Editor::EnterNormal() {
     // coincidentally starting with the same prefix text this one ended
     // on, showing stale completions left over from a different context.
     completion_last_query_prefix_ = "\x01";
+    // Same staleness argument for the inline suggestion: it's already
+    // invisible outside Insert mode (InlineSuggestionVisible), but leaving
+    // it in place would make it reappear on re-entering Insert at the same
+    // spot in a buffer that may have changed in between.
+    ClearInlineSuggestion();
     // Remember the selection being left so `gv` can restore it later --
     // must happen before mode_ is overwritten below. Vim's `gv` also
     // restores Visual Block as a block; mep's last-visual memory only has

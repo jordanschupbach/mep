@@ -1,5 +1,6 @@
-* TODO add theme
-investigate what themes there are and add one that seems missing
+* TODO add themes
+investigate what themes there and which ones appear to be missing and then
+implement them. The more the better.
 
 * TODO todo management
 
@@ -15,8 +16,55 @@ investigate what themes there are and add one that seems missing
   to show up in (e.g. that appear when running .show() methods). Can you
   implement these?
 
+* TODO fix buffer sidebar
+  The buffer sidebar has some behavior, where, if I click on a buffer, it opens
+  that buffer within the current pane (which is the buffer sidebar). Instead,
+  I'd like that behavior on double click, except opening to a buffer to its
+  right (i.e not inside the buffer sidebar buffer). Then, I'd also like
+  click-hold and drag capabilities to drag and drop those buffers into panes
+  visible in the windows. We have this capability for the filetree, so maybe we
+  can reuse some of that logic there. Can you implement these?
 
-* TODO r help format
+* TODO fix exiting sidebar bug (specifically when exiting todo editor)
+* TODO Add a 'gf' binding for 'go format' to format the current buffer. This
+  should be language specific, and should use the language's formatter (e.g. for
+  R, it should use styler::style_file() to format the current file). Can you
+  implement this? In python it should use black, and in C/C++ it should use
+  clang-format. Can you implement these?
+
+* TODO Add a 'gh' binding for 'go help' to open the help for the current function
+  under the cursor in the help sidebar. This should be language specific, and
+  should use the language's help system (e.g. for R, it should use help() to
+  open the help for the current function). Can you implement this? In python it
+  should use pydoc, and in C/C++ it should use man pages. Can you implement
+  these?
+
+* TODO Add a 'gr' binding for 'go run' to run the current file in the language's
+  interpreter or compiler. This should be language specific, and should use the
+  language's interpreter or compiler (e.g. for R, it should use Rscript to run
+  the current file). Can you implement this? In python it should use python, and
+  in C/C++ it should use gcc or clang. Can you implement these?
+
+* TODO Add a 'gd' binding for 'go debug' to start a debugging session for the current file
+  in the language's debugger. This should be language specific, and should use
+  the language's debugger (e.g. for R, it should use R's built-in debugger to
+  start a debugging session for the current file). Can you implement this? In
+  python it should use pdb, and in C/C++ it should use gdb or lldb. Can you
+  implement these?
+
+* TODO Add a 'gt' binding for 'go test' to run the tests for the current file in the
+  language's testing framework. This should be language specific, and should use
+  the language's testing framework (e.g. for R, it should use testthat to run
+  the tests for the current file). Can you implement this? In python it should
+  use unittest or pytest, and in C/C++ it should use googletest or catch2. Can
+  you implement these?
+
+* TODO Add C++ language mode
+I'd like a C++ language mode that has a terminal for running the current file's
+executable, a compiler explorer like sidebar, and a hex exploration like sidebar. Can you implement these?
+
+
+* DONE r help format :ARCHIVE:
 
   The formatting of help documentation in R help sidebar looks off. It looks
   good when in the popup though when I press 'K' over a function name in an R
@@ -68,7 +116,7 @@ investigate what themes there are and add one that seems missing
     gh -> lines/plot (choice list), running the base choice with the
     termsend line sender, resize re-wrap, close cleanup.
 
-* TODO fix pdf rendering
+* DONE fix pdf rendering :ARCHIVE:
   While pdf rendering works, there are some pdfs it fails spectacularly on, in
   particular, ones with math. I think this used to work when we were using
   pdfium to do this. I'd like to fix it eventually, but in the short run, would
@@ -76,19 +124,10 @@ investigate what themes there are and add one that seems missing
   inhouse pdf rendering engine with the pdfium rendering engin. Maybe we need a
   bridge pattern or something so these can be swapped in and out easily.
 
-* TODO fix buffer sidebar
-  The buffer sidebar has some behavior, where, if I click on a buffer, it opens
-  that buffer within the current pane (which is the buffer sidebar). Instead,
-  I'd like that behavior on double click, except opening to a buffer to its
-  right (i.e not inside the buffer sidebar buffer). Then, I'd also like
-  click-hold and drag capabilities to drag and drop those buffers into panes
-  visible in the windows. We have this capability for the filetree, so maybe we
-  can reuse some of that logic there. Can you implement these?
 
-* TODO git sidebar binding
+* DONE git sidebar binding :ARCHIVE:
   I'd like in the status tab in the git sidebar, for pressing P to push.
   Can you implement this?
-* TODO fix exiting sidebar bug (specifically when exiting todo editor)
 * DONE add jupyter notebook mode :ARCHIVE:
   I'd like the ability to edit jupiter notebook files, much like the interface
   of standard web-based jupyter interface. CAn you add these capabilities? Add a

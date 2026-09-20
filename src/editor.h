@@ -8347,6 +8347,50 @@ public:
     // Insert mode has no other built-in Tab behavior to fall back to.
     void SetInsertTabHookRef(int lua_ref) { insert_tab_hook_ref_ = lua_ref; }
 
+    // --- Inline suggestion / "ghost text" (Copilot, kBuiltinCopilot) ---
+    // A whole multi-line completion shown *in place*, dimmed, as if it
+    // were already typed -- distinct from the completion popup above,
+    // which is a list of short candidate words in a bordered box. The two
+    // coexist: the popup owns Tab whenever it's open (unchanged), and the
+    // ghost only claims Tab on the frames it isn't.
+    //
+    // The suggestion is anchored to the exact (row, col) it was requested
+    // for. Anything that moves the cursor off that spot -- typing,
+    // arrowing, leaving Insert -- makes InlineSuggestionVisible() false
+    // without any Lua-side bookkeeping, so a stale suggestion from an
+    // in-flight request that landed two keystrokes late can never be
+    // drawn against text it wasn't computed from, and can never be
+    // accepted into the wrong place.
+    //
+    // `text` is what remains to be inserted at the anchor (the Lua side
+    // has already trimmed whatever prefix of the LSP item's insertText
+    // the user had typed by then -- see mep_copilot_ghost_for in
+    // kBuiltinCopilot); embedded '\n' are real line breaks.
+    void SetInlineSuggestion(const std::string &text, int row, int col);
+    void ClearInlineSuggestion();
+    const std::string &InlineSuggestionText() const { return inline_suggestion_; }
+    // True only when there's a suggestion, the buffer/cursor still sit
+    // exactly where it was requested, and Insert mode is active.
+    bool InlineSuggestionVisible() const;
+    // Splices the whole suggestion in at the cursor (one undo step),
+    // leaving the cursor at its end; no-op unless InlineSuggestionVisible().
+    // Returns true if something was inserted.
+    bool AcceptInlineSuggestion();
+    // Copilot's partial-accept: takes just the next word (or, for
+    // `whole_line`, up to the first line break) of the suggestion and
+    // keeps the rest showing, re-anchored at the new cursor. Returns the
+    // number of UTF-16 code units accepted so far -- what the language
+    // server's textDocument/didPartiallyAcceptCompletion wants as
+    // `acceptedLength` -- or 0 if nothing was accepted.
+    int AcceptInlineSuggestionPartial(bool whole_line);
+    // mep.set_inline_suggestion_accept_hook(fn): fn(accepted_length) once
+    // per accept, after the text has landed. accepted_length is 0 for a
+    // full accept and the UTF-16 prefix length for a partial one, which
+    // is exactly the split kBuiltinCopilot needs to pick between the
+    // server's didAcceptCompletionItem command and its
+    // didPartiallyAcceptCompletion notification.
+    void SetInlineSuggestionAcceptHookRef(int lua_ref) { inline_suggestion_accept_hook_ref_ = lua_ref; }
+
     // mep.buffer_set_on_enter(buffer_id, fn): fn() called instead of
     // whatever bare Enter/KP_Enter already does in Normal mode -- nothing,
     // today; unlike Insert mode's CR this editor has never bound Normal
@@ -10023,6 +10067,32 @@ private:
     int completion_accept_hook_ref_ = 0;
     int completion_resolve_hook_ref_ = 0;
     int insert_tab_hook_ref_ = 0;
+    // Called at the end of every Insert-mode input frame: keeps a
+    // suggestion alive while the user types the very characters it was
+    // going to insert (the "type along with the ghost" behavior every
+    // Copilot client has), trimming what was typed off its front and
+    // re-anchoring it at the new cursor; clears it the moment what was
+    // typed stops matching, or the cursor leaves the anchor row/buffer.
+    void ReanchorInlineSuggestionAfterEdit();
+    int inline_suggestion_accept_hook_ref_ = 0;
+    // --- Inline suggestion state (see SetInlineSuggestion above) ---
+    // Empty string == no suggestion; the anchor is only meaningful when
+    // it isn't.
+    std::string inline_suggestion_;
+    int inline_suggestion_row_ = -1;
+    int inline_suggestion_col_ = -1;
+    // The buffer the suggestion was computed against. Without this, a
+    // suggestion requested in one buffer would still be "visible" after a
+    // buffer switch that happened to leave the cursor on the same
+    // (row, col) -- rare, but it would splice one file's code into
+    // another's.
+    int inline_suggestion_buffer_ = -1;
+    // Running total of UTF-16 code units of inline_suggestion_'s *original*
+    // text already accepted via AcceptInlineSuggestionPartial. The language
+    // server's didPartiallyAcceptCompletion wants a length measured from
+    // the start of the original insertText, not the length of this one
+    // word, so each partial accept has to add to what came before it.
+    int inline_suggestion_accepted_ = 0;
     // buffer_id -> Lua registry ref; see SetBufferOnEnter/SetBufferOnWrite/
     // SetBufferOnImageToggle/SetBufferOnKey's own comments above.
     std::unordered_map<int, int> enter_hook_refs_;

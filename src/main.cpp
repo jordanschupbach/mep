@@ -2741,13 +2741,83 @@ struct ScopeGuide {
     int close_col = 0;
 };
 
+// Prose filetypes: their body is English text, not code, so the lexical
+// rules below are all wrong for it -- the apostrophe in "doesn't" is not a
+// quote, an em-dash `--` is not a comment start, and a `(` opened in one
+// paragraph is never really closed by an unrelated `)` pages later.  Any
+// one of those leaves a delimiter stranded on the stack, and the stray
+// close which eventually pops it draws a guide straight down the middle of
+// a section (README.org's own "=webview_run()= (the call ... it's open)"
+// spanned 51 rows of prose that way).  These files are scanned only inside
+// a fenced code block instead -- see FindScopeGuides.
+bool IsProseGuideFiletype(const std::string &filetype) {
+    static const char *const kProseFiletypes[] = {"org", "md", "markdown", "rst", "txt", "text", "adoc", "asciidoc"};
+    for (const char *ft : kProseFiletypes) {
+        if (filetype == ft) return true;
+    }
+    return false;
+}
+
+// Case-insensitive ASCII literal match at `pos` -- org's fence keywords
+// are spelled both `#+begin_src` and `#+BEGIN_SRC` in the wild.
+bool ProseMatchAt(const std::string &s, size_t pos, const char *lit) {
+    for (size_t i = 0; lit[i] != '\0'; ++i) {
+        if (pos + i >= s.size()) return false;
+        if (std::tolower(static_cast<unsigned char>(s[pos + i])) !=
+            std::tolower(static_cast<unsigned char>(lit[i])))
+            return false;
+    }
+    return true;
+}
+
+size_t ProseFenceIndent(const std::string &line) {
+    size_t i = 0;
+    while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) ++i;
+    return i;
+}
+
+// True if `line` opens an embedded code block in a prose `filetype`, with
+// `fence` set to the marker which closes it again.  Only the fence forms
+// that filetype actually uses are recognized, so a markdown-style ``` in
+// org *prose* stays prose.  A filetype with no fence form at all (plain
+// text, rst) simply never has code to guide, so it gets no guides.
+bool ProseFenceOpen(const std::string &filetype, const std::string &line, std::string *fence) {
+    const size_t i = ProseFenceIndent(line);
+    if (filetype == "org") {
+        if (ProseMatchAt(line, i, "#+begin_src")) {
+            *fence = "#+end_src";
+            return true;
+        }
+        return false;
+    }
+    if (filetype == "md" || filetype == "markdown") {
+        if (ProseMatchAt(line, i, "```")) {
+            *fence = "```";
+            return true;
+        }
+        if (ProseMatchAt(line, i, "~~~")) {
+            *fence = "~~~";
+            return true;
+        }
+    }
+    return false;
+}
+
+bool ProseFenceClose(const std::string &line, const std::string &fence) {
+    return ProseMatchAt(line, ProseFenceIndent(line), fence.c_str());
+}
+
 // Collect the multi-line (), [] and {} pairs in a buffer for the editor's
 // scope guides.  This deliberately is a small lexical pass rather than a
 // language-specific parser: delimiter guides remain useful in every text
 // language we edit, including ones without a bundled tree-sitter grammar.
 // Quotes and the common line/block comment forms are skipped so braces in a
-// C/C++ string or comment do not create a misleading guide.
-std::vector<ScopeGuide> FindScopeGuides(const std::vector<std::string> &lines) {
+// C/C++ string or comment do not create a misleading guide.  `filetype` is
+// LspFiletype(buffer.filename): in a prose one (IsProseGuideFiletype) only
+// the code inside a fenced block is scanned, and each fence boundary
+// restarts the scan so an unbalanced block cannot leak a guide into the
+// prose around it.
+std::vector<ScopeGuide> FindScopeGuides(const std::vector<std::string> &lines, const std::string &filetype) {
     struct OpenDelimiter { char character; int row; int col; };
     std::vector<OpenDelimiter> stack;
     std::vector<ScopeGuide> guides;
@@ -2759,8 +2829,30 @@ std::vector<ScopeGuide> FindScopeGuides(const std::vector<std::string> &lines) {
         if (c == '[') return ']';
         return '}';
     };
+    const bool prose = IsProseGuideFiletype(filetype);
+    std::string fence;  // prose only: the marker closing the open block, "" when outside one
+    auto restart = [&] {
+        stack.clear();
+        in_block_comment = false;
+        quote = 0;
+        escaped = false;
+    };
     for (int row = 0; row < static_cast<int>(lines.size()); ++row) {
         const std::string &line = lines[static_cast<size_t>(row)];
+        if (prose) {
+            // The fence lines themselves are markup, not code, and whatever
+            // the block left open dies with it.
+            if (fence.empty()) {
+                ProseFenceOpen(filetype, line, &fence);
+                restart();
+                continue;
+            }
+            if (ProseFenceClose(line, fence)) {
+                fence.clear();
+                restart();
+                continue;
+            }
+        }
         for (int col = 0; col < static_cast<int>(line.size()); ++col) {
             const char c = line[static_cast<size_t>(col)];
             const char next = col + 1 < static_cast<int>(line.size()) ? line[static_cast<size_t>(col + 1)] : '\0';
@@ -7742,9 +7834,27 @@ const char *kBuiltinLanguageUiCommon =
     "    self.follow_latest = (self.findex == #self.figures)\n"
     "    local cur = mep.current_pane_id()\n"
     "    if mep.pane_focus(self.pane) then\n"
+    // Read the outgoing figure's Ctrl-R viewing mode before mep.open
+    // replaces the buffer, and carry it onto the replacement. A different
+    // figure file is a different buffer id, so the image buffer this
+    // opens is a brand-new ImageSession with theme_colors back at its
+    // default -- without this, stepping with h/l silently undid the
+    // user's Ctrl-R every time, which is exactly the bug
+    // mep.image_get_theme was added for. (kBuiltinLanguageUiR's own
+    // mep_r_ui_figure_goto already did this; the behavior was simply not
+    // carried over when this shared gallery was factored out for the
+    // Python and C modes.)
+    //
+    // nil means the pane isn't showing an image at all -- the
+    // `no_figure_yet.txt` placeholder, i.e. this is the first real
+    // figure -- which starts themed, since a plot is much closer in
+    // spirit to a PDF page (white background, colored lines) than to an
+    // arbitrary photo. See ImageSession::theme_colors (editor.h) for why
+    // that has to be opt-in per buffer rather than a global default.
+    "      local theme_colors = mep.image_get_theme(mep.current_buffer())\n"
     "      mep.open(self.figures[self.findex])\n"
     "      mep.image_set_nav(mep.current_buffer(), function() self:step(-1) end, function() self:step(1) end)\n"
-    "      mep.image_set_theme(mep.current_buffer(), true)\n"
+    "      mep.image_set_theme(mep.current_buffer(), theme_colors == nil and true or theme_colors)\n"
     "      mep.pane_focus(cur)\n"
     "    end\n"
     "  end\n"
@@ -20111,6 +20221,803 @@ const char *kBuiltinActivityBar =
 // (not Phase 20's raw byte mode) is sufficient here. No JSON
 // encode/decode is exposed to Lua anywhere else in the codebase, so
 // this phase carries its own minimal hand-rolled encoder/parser.
+// GitHub Copilot (:Copilot, :CopilotLogin). Drives the official
+// `copilot-language-server` (npm @github/copilot-language-server) over
+// mep's existing LSP transport -- it is an ordinary LSP server with a
+// handful of documented custom methods (signIn, textDocument/
+// inlineCompletion, textDocument/copilotPanelCompletion), so none of
+// mep.lsp_start/lsp_request/lsp_on_notification needed changing to talk
+// to it. The genuinely new editor-side piece is the inline suggestion
+// ("ghost text") widget the completions are drawn in -- Editor::
+// SetInlineSuggestion and friends (editor.h), which the completion
+// popup's own bordered list could not stand in for: a Copilot
+// suggestion is usually a dozen lines of code shown in place, not a
+// word picked from a list.
+//
+// Credentials: mep never sees the OAuth token. `signIn` runs GitHub's
+// device flow inside the language server, which persists the result
+// under $XDG_CONFIG_HOME/github-copilot (the same directory the VS
+// Code/Neovim/JetBrains Copilot clients use, so one sign-in covers all
+// of them). Nothing about the token crosses the JSON-RPC socket in
+// either direction, nothing is written into mep's own config or
+// session state, and the log-message handler below only surfaces
+// server errors rather than echoing its (verbose) log stream. The one
+// value this file does touch is the short-lived device *pairing* code,
+// which is meant to be read off the screen and typed into github.com.
+//
+// Protocol shapes here were verified against a live
+// copilot-language-server 1.547.0: the initialize handshake, a real
+// textDocument/inlineCompletion round trip, the signIn
+// PromptUserDeviceFlow response, and the window/showDocument request
+// the server makes to get the browser opened.
+const char *kBuiltinCopilot =
+    // Whether `exe` resolves on PATH. Same `command -v` shellout as
+    // mep_org_babel_has_exe; `exe` only ever comes from this file's own
+    // hardcoded defaults or mep.copilot_server_cmd, never buffer content.
+    "local function mep_copilot_has_exe(exe)\n"
+    "  return os.execute('command -v ' .. exe .. ' >/dev/null 2>&1') == true\n"
+    "end\n"
+    "\n"
+    // User-facing configuration ------------------------------------------
+    // On by default, as requested: mep talks to the language server the
+    // moment you start typing in a supported file, and the only thing that
+    // gates it beyond this flag is whether you're signed in (:CopilotLogin).
+    "mep.copilot_enabled = true\n"
+    // Seconds the cursor must sit still before asking for a suggestion.
+    // Copilot requests are billed against a completion quota and are slow
+    // (0.3-2s), so firing one per keystroke would be both wasteful and
+    // useless -- the answer would always arrive describing a buffer two
+    // characters out of date.
+    "mep.copilot_debounce = 0.25\n"
+    // Explicit server command ({'copilot-language-server', '--stdio'}-shaped).
+    // nil means auto-detect; see mep.copilot_server_cmd_resolved below.
+    "mep.copilot_server_cmd = nil\n"
+    // Per-filetype gate: mep.copilot_filetypes['md'] = false turns Copilot
+    // off for Markdown only. Anything not listed is allowed.
+    "mep.copilot_filetypes = {}\n"
+    // Buffers whose filename matches any of these Lua patterns never get
+    // sent to the server at all. The defaults are the files whose whole
+    // point is to hold a secret -- a completion request ships the
+    // surrounding buffer text to GitHub, so "don't suggest here" and "don't
+    // transmit this" are the same setting.
+    "mep.copilot_exclude_patterns = {\n"
+    "  '%.env$', '%.env%.', '%.pem$', '%.key$', '%.p12$', '%.pfx$',\n"
+    "  'credentials$', 'id_rsa', 'id_ed25519', '%.netrc$', '%.htpasswd$',\n"
+    "  'secrets?%.ya?ml$', 'secrets?%.json$',\n"
+    "}\n"
+    "\n"
+    // Extension -> LSP languageId. The server uses this to pick prompt
+    // framing and stop sequences, so a wrong/missing id measurably degrades
+    // suggestions. mep's own mep_lsp_filetype returns the bare extension,
+    // which is already the right languageId for a good number of languages
+    // (python is the notable exception) -- this table only carries the ones
+    // where the two differ.
+    "local mep_copilot_language_ids = {\n"
+    "  py = 'python', rs = 'rust', ts = 'typescript', tsx = 'typescriptreact',\n"
+    "  js = 'javascript', jsx = 'javascriptreact', mjs = 'javascript',\n"
+    "  cjs = 'javascript', rb = 'ruby', kt = 'kotlin', kts = 'kotlin',\n"
+    "  cs = 'csharp', hs = 'haskell', ml = 'ocaml', mli = 'ocaml',\n"
+    "  ex = 'elixir', exs = 'elixir', pl = 'perl', pm = 'perl',\n"
+    "  h = 'c', hpp = 'cpp', cc = 'cpp', cxx = 'cpp', hxx = 'cpp',\n"
+    "  sh = 'shellscript', bash = 'shellscript', zsh = 'shellscript',\n"
+    "  md = 'markdown', yml = 'yaml', tf = 'terraform', jl = 'julia',\n"
+    "  clj = 'clojure', cljs = 'clojure', cljc = 'clojure',\n"
+    "  f90 = 'fortran', ['for'] = 'fortran', f = 'fortran',\n"
+    "  el = 'lisp', org = 'org', tex = 'latex', R = 'r',\n"
+    "}\n"
+    "\n"
+    // Module state --------------------------------------------------------
+    "local mep_copilot_client = nil        -- LSP client id, or nil\n"
+    "local mep_copilot_ready = false       -- initialize round trip finished\n"
+    "local mep_copilot_starting = false    -- spawn issued, initialize in flight\n"
+    "local mep_copilot_status = 'Starting' -- last didChangeStatus kind\n"
+    "local mep_copilot_message = ''        -- last didChangeStatus message\n"
+    "local mep_copilot_user = nil          -- GitHub login, once signed in\n"
+    "local mep_copilot_signed_in = false\n"
+    // fname -> {version = n, text = '...'} for the documents this client has
+    // been told about. Copilot needs the *whole* open file, not just the
+    // line being edited, which is exactly why it gives better suggestions
+    // than a word-scanning completion source.
+    "local mep_copilot_docs = {}\n"
+    // The raw InlineCompletionItem currently on screen, kept so an accept
+    // can report it back for telemetry (the server's own quota accounting
+    // depends on this). Never contains credentials -- it's the model's
+    // output plus an opaque uuid.
+    "local mep_copilot_item = nil\n"
+    "local mep_copilot_shown_uuid = nil\n"
+    // Debounce/dedupe bookkeeping for the on_frame trigger below.
+    "local mep_copilot_last_key = nil\n"
+    "local mep_copilot_key_time = 0\n"
+    "local mep_copilot_sent_key = nil\n"
+    "local mep_copilot_inflight = false\n"
+    // Resolved server argv, false for "looked and found nothing", nil for
+    // "not looked yet". Cached because the frame hook below consults it and
+    // resolving means a `command -v` fork -- once per frame would be absurd.
+    // mep.copilot_server_cmd still overrides it without a restart.
+    "local mep_copilot_cmd_cache = nil\n"
+    // Rate-limits start attempts while the server is coming up.
+    "local mep_copilot_start_attempt = 0\n"
+    "\n"
+    "local function mep_copilot_notify(msg, level)\n"
+    "  mep.notify('Copilot: ' .. msg, level)\n"
+    "end\n"
+    "\n"
+    // Runs one of the server's own Command objects via
+    // workspace/executeCommand. `arguments` must go out as a real JSON
+    // array, empty or not: the server rejects the request outright
+    // ("Schema validation failed ... Expected tuple") both when the field is
+    // an empty *object* -- which is what an empty Lua table marshals to --
+    // and when it is left out entirely. Verified against the real server
+    // both ways; it is what silently broke the sign-in device flow, whose
+    // finishDeviceFlow command takes no arguments and so hit this every
+    // single time (the browser was never opened, and the server never
+    // started polling GitHub for the authorization). mep.json_empty_array
+    // is the sentinel that makes `[]` expressible from Lua at all.
+    "local function mep_copilot_exec(command, cb)\n"
+    "  if not command or not mep_copilot_client then return end\n"
+    "  local args = command.arguments\n"
+    "  if type(args) ~= 'table' or #args == 0 then args = mep.json_empty_array end\n"
+    "  local params = {command = command.command, arguments = args}\n"
+    "  mep.lsp_request(mep_copilot_client, 'workspace/executeCommand', params, function(msg)\n"
+    "    if msg.error then\n"
+    "      mep_copilot_notify(tostring(msg.error.message or 'executeCommand failed'), 'warn')\n"
+    "    end\n"
+    "    if cb then cb(mep_lsp_result(msg)) end\n"
+    "  end)\n"
+    "end\n"
+    "\n"
+    "function mep.copilot_server_cmd_resolved()\n"
+    "  if mep.copilot_server_cmd then return mep.copilot_server_cmd end\n"
+    "  if mep_copilot_cmd_cache ~= nil then\n"
+    "    return mep_copilot_cmd_cache or nil\n"
+    "  end\n"
+    // The standalone native binary first (what the platform-specific npm
+    // packages and the GitHub release tarballs install), then the Node
+    // distribution, then npx as a last resort -- npx works with nothing
+    // pre-installed but pays a package download on first run.
+    "  if mep_copilot_has_exe('copilot-language-server') then\n"
+    "    mep_copilot_cmd_cache = {'copilot-language-server', '--stdio'}\n"
+    "  elseif mep_copilot_has_exe('npx') then\n"
+    "    mep_copilot_cmd_cache = {'npx', '--yes', '@github/copilot-language-server', '--stdio'}\n"
+    "  else\n"
+    "    mep_copilot_cmd_cache = false\n"
+    "  end\n"
+    "  return mep_copilot_cmd_cache or nil\n"
+    "end\n"
+    "\n"
+    "function mep.copilot_filetype()\n"
+    "  local fname = mep.filename()\n"
+    "  if fname == '' then return nil end\n"
+    "  return mep_lsp_filetype(fname)\n"
+    "end\n"
+    "\n"
+    "local function mep_copilot_language_id(fname)\n"
+    "  local ft = mep_lsp_filetype(fname)\n"
+    "  if not ft then return 'plaintext' end\n"
+    "  return mep_copilot_language_ids[ft] or ft\n"
+    "end\n"
+    "\n"
+    // Whether this buffer may be sent to the server at all. Deliberately
+    // fails closed: an unnamed buffer has no path to match exclusions
+    // against, so it isn't sent.
+    "local function mep_copilot_allowed(fname)\n"
+    "  if fname == '' then return false end\n"
+    "  local ft = mep_lsp_filetype(fname)\n"
+    "  if ft and mep.copilot_filetypes[ft] == false then return false end\n"
+    "  for _, pat in ipairs(mep.copilot_exclude_patterns) do\n"
+    "    if fname:match(pat) then return false end\n"
+    "  end\n"
+    "  return true\n"
+    "end\n"
+    "\n"
+    "local function mep_copilot_buffer_text()\n"
+    "  local lines = {}\n"
+    "  for i = 1, mep.line_count() do lines[i] = mep.get_line(i) end\n"
+    "  return table.concat(lines, '\\n')\n"
+    "end\n"
+    "\n"
+    // Brings the server's copy of `fname` up to date, opening it first if it
+    // has never been seen. Returns the version number the server now holds,
+    // which textDocument/inlineCompletion has to echo back.
+    "local function mep_copilot_sync(fname)\n"
+    "  local id = mep_copilot_client\n"
+    "  if not id then return nil end\n"
+    "  local text = mep_copilot_buffer_text()\n"
+    "  local doc = mep_copilot_docs[fname]\n"
+    "  if not doc then\n"
+    "    mep_copilot_docs[fname] = {version = 1, text = text}\n"
+    "    mep.lsp_notify(id, 'textDocument/didOpen', {\n"
+    "      textDocument = {uri = mep_lsp_uri(fname), languageId = mep_copilot_language_id(fname),\n"
+    "                      version = 1, text = text},\n"
+    "    })\n"
+    "    mep.lsp_notify(id, 'textDocument/didFocus', {textDocument = {uri = mep_lsp_uri(fname)}})\n"
+    "    return 1\n"
+    "  end\n"
+    "  if doc.text == text then return doc.version end\n"
+    "  doc.version = doc.version + 1\n"
+    "  doc.text = text\n"
+    // Full-text contentChanges against a server that advertises
+    // Incremental sync: verified accepted by copilot-language-server
+    // 1.547 (suggestions come back correct for the post-change text), and
+    // it's the same shape mep.lsp_did_change already uses for every other
+    // server. Worth knowing it's a tolerance, not a guarantee, if a future
+    // server version starts rejecting it.
+    "  mep.lsp_notify(id, 'textDocument/didChange', {\n"
+    "    textDocument = {uri = mep_lsp_uri(fname), version = doc.version},\n"
+    "    contentChanges = {{text = text}},\n"
+    "  })\n"
+    "  return doc.version\n"
+    "end\n"
+    "\n"
+    // Server lifecycle ----------------------------------------------------
+    "local function mep_copilot_register_handlers(id)\n"
+    // The sign-in device flow's browser hop: the server asks the client to
+    // open https://github.com/login/device, and mep hands it to whatever
+    // the OS's default browser is. `external = true` on every showDocument
+    // Copilot sends -- an internal-pane browse would be the wrong call
+    // anyway, since the user needs a session they can trust and a password
+    // manager they already have.
+    "  mep.lsp_on_request(id, 'window/showDocument', function(params)\n"
+    "    local uri = params and params.uri\n"
+    "    if uri then\n"
+    "      mep.open_url(uri)\n"
+    "      mep_copilot_notify('opened ' .. uri .. ' in your browser')\n"
+    "    end\n"
+    "    return {success = uri ~= nil}\n"
+    "  end)\n"
+    // Account/billing notices (quota exhausted, subscription lapsed) come
+    // through here and matter enough to surface; mep has no modal-with-
+    // buttons widget to offer the actions with, so the message is shown
+    // and no action is chosen.
+    "  mep.lsp_on_request(id, 'window/showMessageRequest', function(params)\n"
+    "    if params and params.message then\n"
+    "      mep_copilot_notify(params.message, (params.type or 3) <= 2 and 'warn' or nil)\n"
+    "    end\n"
+    "    return mep.json_null\n"
+    "  end)\n"
+    // Pull-based configuration: one entry per requested item, all empty,
+    // i.e. "no overrides, use your defaults". Answering properly matters
+    // because an unanswered/mis-shaped reply can leave the server waiting
+    // before it will serve completions.
+    "  mep.lsp_on_request(id, 'workspace/configuration', function(params)\n"
+    "    local n = #((params and params.items) or {})\n"
+    "    if n == 0 then return mep.json_null end\n"
+    "    local out = {}\n"
+    "    for i = 1, n do out[i] = mep.json_null end\n"
+    "    return out\n"
+    "  end)\n"
+    "  mep.lsp_on_notification(id, 'didChangeStatus', function(params)\n"
+    "    mep_copilot_status = (params and params.kind) or 'Normal'\n"
+    "    mep_copilot_message = (params and params.message) or ''\n"
+    "    if mep_copilot_status == 'Error' and mep_copilot_message ~= '' then\n"
+    "      mep_copilot_notify(mep_copilot_message, 'warn')\n"
+    "    end\n"
+    "  end)\n"
+    // The v2 status stream carries the authenticated user, which is the
+    // one piece of account state worth showing in :CopilotStatus. Note
+    // what is *not* read here: no token, no tracking id. The OAuth token
+    // never crosses this socket in either direction -- the server keeps it
+    // to itself (see mep.copilot_credentials_path).
+    "  mep.lsp_on_notification(id, 'didChangeStatus/v2', function(params)\n"
+    "    for _, s in ipairs((params and params.statuses) or {}) do\n"
+    "      if s.category == 'auth' then\n"
+    "        local r = s.result or {}\n"
+    "        mep_copilot_signed_in = r.status == 'OK'\n"
+    "        mep_copilot_user = r.user\n"
+    "        if not mep_copilot_signed_in and s.message and s.message ~= '' then\n"
+    "          mep_copilot_message = s.message\n"
+    "        end\n"
+    "      end\n"
+    "    end\n"
+    "  end)\n"
+    // Server logs are verbose and routine; only genuine errors (type 1)
+    // are worth interrupting for.
+    "  mep.lsp_on_notification(id, 'window/logMessage', function(params)\n"
+    "    if params and params.type == 1 and params.message then\n"
+    "      mep_copilot_notify(params.message, 'warn')\n"
+    "    end\n"
+    "  end)\n"
+    "end\n"
+    "\n"
+    "function mep.copilot_check_status(cb)\n"
+    "  local id = mep_copilot_client\n"
+    "  if not id then if cb then cb(false) end return end\n"
+    "  mep.lsp_request(id, 'checkStatus', {}, function(msg)\n"
+    "    local r = mep_lsp_result(msg) or {}\n"
+    "    mep_copilot_signed_in = r.status == 'OK'\n"
+    "    mep_copilot_user = r.user\n"
+    "    if cb then cb(mep_copilot_signed_in) end\n"
+    "  end)\n"
+    "end\n"
+    "\n"
+    "function mep.copilot_start(on_ready)\n"
+    "  if mep_copilot_client and mep.lsp_is_running(mep_copilot_client) then\n"
+    "    if mep_copilot_ready and on_ready then on_ready(true) end\n"
+    "    return\n"
+    "  end\n"
+    "  if mep_copilot_starting then return end\n"
+    "  local cmd = mep.copilot_server_cmd_resolved()\n"
+    "  if not cmd then\n"
+    "    mep_copilot_notify('no language server found. Install it with ' ..\n"
+    "      '`npm i -g @github/copilot-language-server`, or set mep.copilot_server_cmd', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  local id = mep.lsp_start(cmd, {cwd = mep.workspace_root()})\n"
+    "  if id <= 0 then\n"
+    "    mep_copilot_notify('failed to start ' .. cmd[1], 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  mep_copilot_client = id\n"
+    "  mep_copilot_ready = false\n"
+    "  mep_copilot_starting = true\n"
+    "  mep_copilot_docs = {}\n"
+    "  mep_copilot_register_handlers(id)\n"
+    "  local root = mep.workspace_root()\n"
+    "  mep.lsp_request(id, 'initialize', {\n"
+    "    processId = mep.platform() == 'wasm' and mep.json_null or nil,\n"
+    "    rootUri = mep_lsp_uri(root),\n"
+    "    workspaceFolders = {{uri = mep_lsp_uri(root), name = root:match('([^/]+)/?$') or root}},\n"
+    "    capabilities = {\n"
+    "      workspace = {workspaceFolders = true, configuration = true},\n"
+    "      window = {showDocument = {support = true}},\n"
+    "    },\n"
+    // The server reports these verbatim in its telemetry and uses
+    // editorPluginInfo to key feature rollouts; identifying mep honestly
+    // is both the documented contract and the reason a future Copilot
+    // change that breaks this client can be traced to it.
+    "    initializationOptions = {\n"
+    "      editorInfo = {name = 'mep', version = '0.1.0'},\n"
+    "      editorPluginInfo = {name = 'copilot.mep', version = '0.1.0'},\n"
+    "    },\n"
+    "  }, function(msg)\n"
+    "    mep_copilot_starting = false\n"
+    "    local result = mep_lsp_result(msg)\n"
+    "    if not result then\n"
+    "      mep_copilot_notify('server failed to initialize', 'warn')\n"
+    "      return\n"
+    "    end\n"
+    "    mep_copilot_ready = true\n"
+    "    mep.lsp_notify(id, 'initialized', {})\n"
+    "    mep.lsp_notify(id, 'workspace/didChangeConfiguration', {settings = {}})\n"
+    // Ask outright rather than waiting for a status notification to say
+    // so: didChangeStatus/v2 (the one carrying the auth category and the
+    // account name) only exists on newer servers -- 1.397, for one,
+    // sends only the account-less didChangeStatus -- so on those
+    // :CopilotStatus would otherwise report a signed-in user as signed
+    // out forever. checkStatus is answered the same way by both.
+    "    mep.copilot_check_status()\n"
+    "    if on_ready then on_ready(true) end\n"
+    "  end)\n"
+    "end\n"
+    "\n"
+    "function mep.copilot_stop()\n"
+    "  if mep_copilot_client then mep.lsp_stop(mep_copilot_client) end\n"
+    "  mep_copilot_client = nil\n"
+    "  mep_copilot_ready = false\n"
+    "  mep_copilot_starting = false\n"
+    "  mep_copilot_docs = {}\n"
+    "  mep_copilot_item = nil\n"
+    "  mep.clear_inline_suggestion()\n"
+    "end\n"
+    "\n"
+    // Suggestions ---------------------------------------------------------
+    // Turns one InlineCompletionItem into the text to show *after* the
+    // cursor, or nil if it can't be shown as a pure insertion there.
+    //
+    // Copilot's range routinely starts before the cursor (it re-states the
+    // indentation it is completing after, so the item is self-contained);
+    // the part of it the user has already typed has to come off the front
+    // before the rest can be drawn as ghost text. An item whose range
+    // reaches past the cursor would mean *replacing* text to the right,
+    // which the inline-suggestion widget deliberately can't do -- those are
+    // dropped rather than half-applied.
+    //
+    // Column caveat: LSP counts characters in UTF-16 code units and mep
+    // counts bytes. They agree for ASCII and diverge otherwise; this
+    // follows the same byte-for-character convention mep_lsp_position and
+    // the rest of kBuiltinLsp already use rather than diverging from it.
+    "function mep_copilot_ghost_for(item, row, col)\n"
+    "  local text = item and item.insertText\n"
+    "  if type(text) ~= 'string' or text == '' then return nil end\n"
+    "  local rng = item.range\n"
+    "  if not rng then return text end\n"
+    "  local s, e = rng.start, rng['end']\n"
+    "  if not s or not e then return text end\n"
+    "  if s.line ~= row - 1 or e.line ~= row - 1 then return nil end\n"
+    "  if s.character > col - 1 or e.character > col - 1 then return nil end\n"
+    "  local line = mep.get_line(row)\n"
+    "  local prefix = line:sub(s.character + 1, col - 1)\n"
+    "  if prefix ~= '' and text:sub(1, #prefix) ~= prefix then return nil end\n"
+    "  local ghost = text:sub(#prefix + 1)\n"
+    "  if ghost == '' then return nil end\n"
+    "  return ghost\n"
+    "end\n"
+    "\n"
+    // Asks for a suggestion at the cursor. `trigger_kind` is 1 for an
+    // explicit request (:Copilot suggest) and 2 for the automatic one.
+    // Returns true only if a request actually went out, so the frame hook
+    // below can tell "asked" from "couldn't ask yet" -- it must not record
+    // the cursor position as already-asked-about in the second case.
+    "function mep.copilot_request(trigger_kind)\n"
+    "  local fname = mep.filename()\n"
+    "  if not mep_copilot_allowed(fname) then return false end\n"
+    "  if not mep_copilot_client or not mep_copilot_ready then\n"
+    "    mep.copilot_start()\n"
+    "    return false\n"
+    "  end\n"
+    "  local row, col = mep.cursor()\n"
+    "  local version = mep_copilot_sync(fname)\n"
+    "  if not version then return false end\n"
+    "  mep_copilot_inflight = true\n"
+    "  mep.lsp_request(mep_copilot_client, 'textDocument/inlineCompletion', {\n"
+    "    textDocument = {uri = mep_lsp_uri(fname), version = version},\n"
+    "    position = {line = row - 1, character = col - 1},\n"
+    "    context = {triggerKind = trigger_kind or 2},\n"
+    // mep exposes no shiftwidth/expandtab accessor to Lua, so these are
+    // the server's own documented defaults; they only affect how it
+    // indents multi-line suggestions.
+    "    formattingOptions = {tabSize = 4, insertSpaces = true},\n"
+    "  }, function(msg)\n"
+    "    mep_copilot_inflight = false\n"
+    "    local result = mep_lsp_result(msg)\n"
+    "    local items = result and result.items\n"
+    "    if not items or #items == 0 then return end\n"
+    // The cursor may have moved while this was in flight; a suggestion
+    // computed for a position the user has left is worthless and
+    // actively misleading. (mep.set_inline_suggestion would anchor it
+    // harmlessly out of view anyway -- this just avoids the pointless
+    // didShowCompletion that would follow.)
+    "    local now_row, now_col = mep.cursor()\n"
+    "    if now_row ~= row or now_col ~= col or not mep.is_insert_mode() then return end\n"
+    "    if mep.filename() ~= fname then return end\n"
+    "    local item = items[1]\n"
+    "    local ghost = mep_copilot_ghost_for(item, row, col)\n"
+    "    if not ghost then return end\n"
+    "    mep_copilot_item = item\n"
+    "    mep.set_inline_suggestion(ghost, row, col)\n"
+    // "Shown" telemetry, once per item -- the server uses it to
+    // distinguish a suggestion the user rejected from one they never saw.
+    "    local uuid = item.command and item.command.arguments and item.command.arguments[1]\n"
+    "    if uuid and uuid ~= mep_copilot_shown_uuid then\n"
+    "      mep_copilot_shown_uuid = uuid\n"
+    "      mep.lsp_notify(mep_copilot_client, 'textDocument/didShowCompletion', {item = item})\n"
+    "    end\n"
+    "  end)\n"
+    "  return true\n"
+    "end\n"
+    "\n"
+    // Acceptance telemetry. accepted_length is 0 for a whole-suggestion
+    // accept and the UTF-16 prefix length for a word/line one -- exactly the
+    // split the two protocol messages want.
+    "mep.set_inline_suggestion_accept_hook(function(accepted_length)\n"
+    "  local item = mep_copilot_item\n"
+    "  if not item or not mep_copilot_client or not mep_copilot_ready then return end\n"
+    "  if accepted_length and accepted_length > 0 then\n"
+    "    mep.lsp_notify(mep_copilot_client, 'textDocument/didPartiallyAcceptCompletion',\n"
+    "      {item = item, acceptedLength = accepted_length})\n"
+    "    return\n"
+    "  end\n"
+    "  mep_copilot_item = nil\n"
+    "  mep_copilot_exec(item.command)\n"
+    "end)\n"
+    "\n"
+    // Automatic trigger. Runs off on_frame rather than a buffer-change hook
+    // because mep's change epoch deliberately does not tick per keystroke
+    // inside an insert session (Editor::EnterNormal's comment explains why),
+    // and because plain cursor movement inside Insert mode should re-trigger
+    // too. The dedupe key is therefore the thing that actually determines
+    // the answer: where the cursor is and what the line under it says.
+    "mep.on_frame(function()\n"
+    "  if not mep.copilot_enabled then return end\n"
+    "  if not mep.is_insert_mode() then\n"
+    "    mep_copilot_last_key = nil\n"
+    // Also forget what was already asked about, so re-entering Insert at
+    // the same spot asks again. Within one insert session the memory is
+    // what makes Ctrl-] stick (dismiss, and it stays dismissed until
+    // something actually changes); across sessions, deliberately
+    // returning to a spot is a request for a fresh look at it.
+    "    mep_copilot_sent_key = nil\n"
+    "    return\n"
+    "  end\n"
+    "  local fname = mep.filename()\n"
+    "  if not mep_copilot_allowed(fname) then return end\n"
+    // Server still coming up (the first supported file after launch):
+    // bring it up and return *without* recording this cursor position as
+    // asked-about. Getting this wrong is subtle and was a real bug -- the
+    // first request was consumed by the not-ready branch, and since the
+    // cursor hadn't moved the key never changed again, so that first file
+    // showed no suggestion at all until you moved somewhere else.
+    "  if not mep_copilot_ready then\n"
+    "    if mep.now() - mep_copilot_start_attempt >= 2 then\n"
+    "      mep_copilot_start_attempt = mep.now()\n"
+    "      mep.copilot_start()\n"
+    "    end\n"
+    "    return\n"
+    "  end\n"
+    "  local row, col = mep.cursor()\n"
+    "  local key = fname .. '\\1' .. row .. '\\1' .. col .. '\\1' .. mep.get_line(row)\n"
+    "  if key ~= mep_copilot_last_key then\n"
+    "    mep_copilot_last_key = key\n"
+    "    mep_copilot_key_time = mep.now()\n"
+    "    return\n"
+    "  end\n"
+    // Already showing the answer for this spot (including the case where
+    // the user typed straight through a suggestion and the editor
+    // re-anchored what was left of it) -- nothing to ask.
+    "  local _, visible = mep.inline_suggestion()\n"
+    "  if visible then return end\n"
+    "  if key == mep_copilot_sent_key or mep_copilot_inflight then return end\n"
+    "  if mep.now() - mep_copilot_key_time < mep.copilot_debounce then return end\n"
+    "  if mep.copilot_request(2) then mep_copilot_sent_key = key end\n"
+    "end)\n"
+    "\n"
+    // Where the OAuth token lives. mep never reads, stores, forwards or logs
+    // it: the language server performs the device flow itself and persists
+    // the result under its own standard directory -- the same one the VS
+    // Code, Neovim and JetBrains Copilot clients share, so signing in once
+    // signs you in everywhere. Nothing here is a mep-specific secret store,
+    // which is the point: there is no second copy to leak.
+    // Makes the credentials directory owner-only. The language server
+    // already creates it 0700, so this is normally a no-op -- it exists for
+    // the case where it isn't (an older server version, a restored backup,
+    // a permissive umask), because everything inside is reachable by anyone
+    // who can traverse the directory: the token store itself is a plain
+    // 0644 SQLite file and its own mode is not mep's to police. Run once
+    // after a sign-in completes rather than every start, since that is the
+    // only moment the contents change.
+    "local function mep_copilot_harden_credentials()\n"
+    "  local dir = mep.copilot_credentials_path()\n"
+    "  if dir:match('[^%w%._/%-]') then return end\n"
+    "  os.execute('chmod 700 ' .. dir .. ' 2>/dev/null')\n"
+    "end\n"
+    "\n"
+    "function mep.copilot_credentials_path()\n"
+    "  local xdg = os.getenv('XDG_CONFIG_HOME')\n"
+    "  if xdg and xdg ~= '' then return xdg .. '/github-copilot' end\n"
+    "  return (os.getenv('HOME') or '~') .. '/.config/github-copilot'\n"
+    "end\n"
+    "\n"
+    // Commands ------------------------------------------------------------
+    "function mep.copilot_login()\n"
+    "  mep.copilot_start(function()\n"
+    "    mep.lsp_request(mep_copilot_client, 'signIn', {}, function(msg)\n"
+    "      local r = mep_lsp_result(msg)\n"
+    "      if not r then mep_copilot_notify('sign-in failed', 'warn') return end\n"
+    "      if r.status == 'AlreadySignedIn' then\n"
+    "        mep_copilot_signed_in = true\n"
+    "        mep_copilot_user = r.user\n"
+    "        mep_copilot_notify('already signed in as ' .. tostring(r.user))\n"
+    "        return\n"
+    "      end\n"
+    "      local code = r.userCode\n"
+    "      if not code then\n"
+    "        mep_copilot_notify('sign-in failed: ' .. tostring(r.status), 'warn')\n"
+    "        return\n"
+    "      end\n"
+    // The code is a short-lived device-flow pairing code, not a
+    // credential -- it is meant to be read off the screen and typed
+    // into github.com, so putting it on the clipboard is the whole
+    // intended UX rather than a leak.
+    "      mep.clipboard_set(code)\n"
+    "      mep.copilot_device_flow(code, r.verificationUri or 'https://github.com/login/device', r.command)\n"
+    "    end)\n"
+    "  end)\n"
+    "end\n"
+    "\n"
+    // The device code has to stay readable long enough to type into a
+    // browser -- possibly on a phone or another machine -- which a toast is
+    // not, so it goes in a confirm overlay that stays up until answered.
+    //
+    // Answering yes runs the server's own finishDeviceFlow command, which is
+    // what starts it polling GitHub *and* what makes it ask mep to open the
+    // browser (window/showDocument, handled above). The browser is opened
+    // from that one place only: mep advertises showDocument support during
+    // initialize precisely so the server routes the URL through the editor
+    // instead of shelling out to a browser itself, and opening it here as
+    // well would put two tabs on screen for one sign-in.
+    "function mep.copilot_device_flow(code, uri, command)\n"
+    // Kept short on purpose: the confirm overlay is a single unwrapped
+    // line, and an over-long message loses its tail off the right edge of
+    // a narrow window -- which here would mean losing the URL or the code.
+    // The scheme is dropped for the same reason; the handler opens the
+    // full URI.
+    "  mep.ui_confirm('Copilot: code ' .. code .. ' (copied). Open ' ..\n"
+    "    uri:gsub('^https?://', '') .. '?', true, function(yes)\n"
+    "    if not yes then\n"
+    "      mep_copilot_notify('sign-in cancelled -- run :CopilotLogin again when ready')\n"
+    "      return\n"
+    "    end\n"
+    "    if not command then\n"
+    "      mep.open_url(uri)\n"
+    "      return\n"
+    "    end\n"
+    // Deliberately not waited on: the server only answers this once the
+    // user has finished in the browser, which can be minutes away.
+    "    mep_copilot_exec(command, function(dr)\n"
+    "      if dr and (dr.status == 'OK' or dr.status == 'AlreadySignedIn') then\n"
+    "        mep_copilot_signed_in = true\n"
+    "        mep_copilot_user = dr.user\n"
+    "        mep_copilot_harden_credentials()\n"
+    "        mep_copilot_notify('signed in as ' .. tostring(dr.user))\n"
+    "      else\n"
+    "        mep_copilot_notify('sign-in did not complete' ..\n"
+    "          (dr and dr.status and (': ' .. tostring(dr.status)) or ''), 'warn')\n"
+    "      end\n"
+    "    end)\n"
+    "  end)\n"
+    "end\n"
+    "\n"
+    "function mep.copilot_logout()\n"
+    "  mep.copilot_start(function()\n"
+    "    mep.lsp_request(mep_copilot_client, 'signOut', {}, function()\n"
+    "      mep_copilot_signed_in = false\n"
+    "      mep_copilot_user = nil\n"
+    "      mep.clear_inline_suggestion()\n"
+    "      mep_copilot_notify('signed out. Credentials removed from ' .. mep.copilot_credentials_path())\n"
+    "    end)\n"
+    "  end)\n"
+    "end\n"
+    "\n"
+    // Refreshes the account state before showing it -- asking is cheap and
+    // the cached value can be minutes stale (a subscription can lapse, or
+    // another editor can sign the shared credential store out).
+    "function mep.copilot_status()\n"
+    "  if mep_copilot_client and mep_copilot_ready then\n"
+    "    mep.copilot_check_status(function() mep.copilot_status_show() end)\n"
+    "  else\n"
+    "    mep.copilot_status_show()\n"
+    "  end\n"
+    "end\n"
+    "\n"
+    "function mep.copilot_status_show()\n"
+    "  local lines = {}\n"
+    "  lines[#lines + 1] = 'enabled: ' .. tostring(mep.copilot_enabled)\n"
+    "  local cmd = mep.copilot_server_cmd_resolved()\n"
+    "  lines[#lines + 1] = 'server: ' .. (cmd and table.concat(cmd, ' ') or 'NOT FOUND')\n"
+    "  lines[#lines + 1] = 'running: ' ..\n"
+    "    tostring(mep_copilot_client ~= nil and mep.lsp_is_running(mep_copilot_client) or false) ..\n"
+    "    (mep_copilot_ready and ' (ready)' or ' (not ready)')\n"
+    "  lines[#lines + 1] = 'signed in: ' .. tostring(mep_copilot_signed_in) ..\n"
+    "    (mep_copilot_user and (' as ' .. tostring(mep_copilot_user)) or '')\n"
+    "  lines[#lines + 1] = 'status: ' .. mep_copilot_status ..\n"
+    "    (mep_copilot_message ~= '' and (' -- ' .. mep_copilot_message) or '')\n"
+    "  local fname = mep.filename()\n"
+    "  lines[#lines + 1] = 'this buffer: ' ..\n"
+    "    (mep_copilot_allowed(fname) and ('sent as ' .. mep_copilot_language_id(fname)) or 'excluded')\n"
+    "  lines[#lines + 1] = 'credentials: ' .. mep.copilot_credentials_path()\n"
+    "  lines[#lines + 1] = '  (written and read by the language server; mep never sees the token)'\n"
+    "  mep.hover_show('Copilot', table.concat(lines, '\\n'))\n"
+    "end\n"
+    "\n"
+    // :Copilot panel / :CopilotPanel -- several alternatives at once,
+    // through mep's existing picker rather than a bespoke window. Picking
+    // one shows it as ordinary ghost text, so Tab still accepts it.
+    // Applies an InlineCompletionItem as a real buffer edit, replacing
+    // whatever its range covers. Inline (ghost-text) suggestions never need
+    // this -- their range sits on the cursor line and is handled as a pure
+    // insertion -- but a *panel* completion's range routinely spans several
+    // lines (verified: a panel item for a half-written `def f(n):` comes
+    // back with a range starting on the signature line and replacing it),
+    // so the panel cannot go through the ghost-text widget at all.
+    "function mep.copilot_apply_item(item)\n"
+    "  local text = item and item.insertText\n"
+    "  if type(text) ~= 'string' then return false end\n"
+    "  local rng = item.range\n"
+    "  if not rng or not rng.start or not rng['end'] then return false end\n"
+    "  local srow, scol = rng.start.line + 1, rng.start.character\n"
+    "  local erow, ecol = rng['end'].line + 1, rng['end'].character\n"
+    "  if srow < 1 or erow > mep.line_count() then\n"
+    "    mep_copilot_notify('suggestion no longer matches the buffer', 'warn')\n"
+    "    return false\n"
+    "  end\n"
+    "  local head = mep.get_line(srow):sub(1, scol)\n"
+    "  local tail = mep.get_line(erow):sub(ecol + 1)\n"
+    "  local lines = {}\n"
+    "  for chunk in (head .. text .. tail .. '\\n'):gmatch('(.-)\\n') do lines[#lines + 1] = chunk end\n"
+    "  mep.replace_lines(srow, erow + 1, lines)\n"
+    "  mep.set_cursor(srow + #lines - 1, #(lines[#lines] or '') + 1)\n"
+    "  mep_copilot_exec(item.command)\n"
+    "  return true\n"
+    "end\n"
+    "\n"
+    // One line of preview for a panel item. Naively showing its first line
+    // is useless here: a panel item's range starts at the line the
+    // *signature* is on, so every alternative's first line is the identical
+    // `def fib(n):` the user already typed and the list reads as five
+    // copies of the same thing. Skip as many lines as the range covers
+    // before the cursor, then show the first thing that actually differs
+    // between the alternatives.
+    "function mep_copilot_panel_label(item, row)\n"
+    "  local text = item.insertText or ''\n"
+    "  local lines = {}\n"
+    "  for chunk in (text .. '\\n'):gmatch('(.-)\\n') do lines[#lines + 1] = chunk end\n"
+    "  local skip = 0\n"
+    "  if item.range and item.range.start then skip = (row - 1) - item.range.start.line end\n"
+    "  if skip < 0 then skip = 0 end\n"
+    "  for i = skip + 1, #lines do\n"
+    "    local t = lines[i]:gsub('^%s+', '')\n"
+    "    if t ~= '' then return t end\n"
+    "  end\n"
+    "  local first = (lines[1] or ''):gsub('^%s+', '')\n"
+    "  return first ~= '' and first or '(empty)'\n"
+    "end\n"
+    "\n"
+    "function mep.copilot_panel()\n"
+    "  local fname = mep.filename()\n"
+    "  if not mep_copilot_allowed(fname) then\n"
+    "    mep_copilot_notify('this buffer is excluded', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  mep.copilot_start(function()\n"
+    "    local row, col = mep.cursor()\n"
+    "    local version = mep_copilot_sync(fname)\n"
+    "    mep.lsp_request(mep_copilot_client, 'textDocument/copilotPanelCompletion', {\n"
+    "      textDocument = {uri = mep_lsp_uri(fname), version = version},\n"
+    "      position = {line = row - 1, character = col - 1},\n"
+    "    }, function(msg)\n"
+    "      local result = mep_lsp_result(msg)\n"
+    "      local items = result and result.items\n"
+    "      if not items or #items == 0 then\n"
+    "        mep_copilot_notify('no suggestions')\n"
+    "        return\n"
+    "      end\n"
+    "      local picker_items = {}\n"
+    "      for i, item in ipairs(items) do\n"
+    "        picker_items[i] = {display = i .. '. ' .. mep_copilot_panel_label(item, row), data = tostring(i)}\n"
+    "      end\n"
+    "      mep.picker_open('Copilot suggestions', picker_items, function(pick)\n"
+    "        local item = pick and items[tonumber(pick)]\n"
+    "        if item then mep.copilot_apply_item(item) end\n"
+    "      end)\n"
+    "    end)\n"
+    "  end)\n"
+    "end\n"
+    "\n"
+    // :Copilot with no argument turns it on (and starts the server), which
+    // is what "turn it on" should do even though it already defaults to on.
+    // The subcommands cover the rest so there is one name to remember.
+    "mep.command('Copilot', function(args)\n"
+    "  local sub = (args or ''):match('^%s*(%S*)')\n"
+    "  if sub == '' or sub == 'on' or sub == 'enable' then\n"
+    "    mep.copilot_enabled = true\n"
+    "    mep.copilot_start()\n"
+    "    mep_copilot_notify('enabled')\n"
+    "  elseif sub == 'off' or sub == 'disable' then\n"
+    "    mep.copilot_enabled = false\n"
+    "    mep.clear_inline_suggestion()\n"
+    "    mep_copilot_notify('disabled')\n"
+    "  elseif sub == 'toggle' then\n"
+    "    mep.copilot_enabled = not mep.copilot_enabled\n"
+    "    if not mep.copilot_enabled then mep.clear_inline_suggestion() else mep.copilot_start() end\n"
+    "    mep_copilot_notify(mep.copilot_enabled and 'enabled' or 'disabled')\n"
+    "  elseif sub == 'status' then\n"
+    "    mep.copilot_status()\n"
+    "  elseif sub == 'panel' then\n"
+    "    mep.copilot_panel()\n"
+    "  elseif sub == 'suggest' then\n"
+    "    mep.copilot_request(1)\n"
+    "  elseif sub == 'login' or sub == 'signin' then\n"
+    "    mep.copilot_login()\n"
+    "  elseif sub == 'logout' or sub == 'signout' then\n"
+    "    mep.copilot_logout()\n"
+    "  elseif sub == 'restart' then\n"
+    "    mep.copilot_stop()\n"
+    "    mep.copilot_start(function() mep_copilot_notify('restarted') end)\n"
+    "  else\n"
+    "    mep_copilot_notify('unknown subcommand ' .. sub ..\n"
+    "      ' (on|off|toggle|status|panel|suggest|login|logout|restart)', 'warn')\n"
+    "  end\n"
+    "end)\n"
+    "mep.command('CopilotLogin', function() mep.copilot_login() end)\n"
+    "mep.command('CopilotLogout', function() mep.copilot_logout() end)\n"
+    "mep.command('CopilotStatus', function() mep.copilot_status() end)\n"
+    "mep.command('CopilotPanel', function() mep.copilot_panel() end)\n"
+    "mep.command('CopilotEnable', function() mep.copilot_enabled = true mep.copilot_start() end)\n"
+    "mep.command('CopilotDisable', function()\n"
+    "  mep.copilot_enabled = false\n"
+    "  mep.clear_inline_suggestion()\n"
+    "end)\n";
+
 const char *kBuiltinAi =
     "mep.ai_provider = 'openai'\n"
     "mep.ai_model = 'gpt-4o-mini'\n"
@@ -35635,7 +36542,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // which has no tree-sitter query).  They are painted with row
     // backgrounds, before text/selection, and their x position stays at
     // the closing delimiter's column for the full multi-line scope.
-    const std::vector<ScopeGuide> scope_guides = FindScopeGuides(buf.lines);
+    const std::vector<ScopeGuide> scope_guides = FindScopeGuides(buf.lines, LspFiletype(buf.filename));
 
     // Jupyter notebook cell cards: a rounded box behind each cell so code
     // and markdown blocks read as distinct blocks (markdown tinted apart
@@ -35832,6 +36739,26 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // drawn, fold-collapsed or not -- gives the cursor-drawing check below
     // the same visible-range bound this loop itself used, instead of the
     // stale buffer-row-based `last_line`.
+    // While an inline suggestion ("ghost text", kBuiltinCopilot) is up it
+    // occupies the cursor row from the cursor rightward plus every row
+    // under it -- exactly where end-of-line virtual text (an LSP
+    // diagnostic message) is drawn too. Two texts in the same cells is
+    // unreadable, and the suggestion routinely *causes* the diagnostic it
+    // would collide with (an empty `def f():` body is an error until the
+    // suggestion fills it in), so the suggestion wins for as long as it
+    // is showing; the diagnostic comes back the moment it is accepted or
+    // dismissed.
+    int ghost_first_row = -1, ghost_row_count = 0;
+    if (is_active && g_editor.InlineSuggestionVisible()) {
+        ghost_first_row = pane.cursor.row;
+        ghost_row_count = 1;
+        for (char gc : g_editor.InlineSuggestionText()) {
+            if (gc == '\n') ghost_row_count++;
+        }
+    }
+    auto ghost_covers_row = [&](int r) {
+        return ghost_first_row >= 0 && r >= ghost_first_row && r < ghost_first_row + ghost_row_count;
+    };
     int visual_slot = 0;  // a closed fold collapses N buffer rows into 1 of these
     int row = pane.scroll_row;
     for (; row < buf.LineCount() && visual_slot < visible_lines; row++) {
@@ -36539,7 +37466,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                         });
                 }
             }
-            if (!d.virt_text.empty()) {
+            if (!d.virt_text.empty() && !ghost_covers_row(row)) {
                 // virt_text_eol: anchored just past the row's own last
                 // character (plus one char of breathing room) rather than
                 // d.col_start, for an annotation describing the whole
@@ -36875,6 +37802,55 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                               : IsSymbolCodepoint(codepoint) ? g_symbol_font
                                                                               : g_font;
                 gfx::DrawTextEx(punch_font, ch.c_str(), gfx::Vector2{cursor_x, cursor_y}, g_font_size, 0, ResolveHlGroup("NormalBg"));
+            }
+        }
+        // Inline suggestion / "ghost text" (kBuiltinCopilot): the
+        // pending completion drawn dimmed, in place, as if already typed.
+        // Drawn here rather than in the per-row loop above because it
+        // belongs to the cursor, not to any buffer row -- its first line
+        // continues the cursor's own row from cursor_x, and the rest
+        // overlay the rows below (a suggestion is transient and usually
+        // longer than the code it sits on, so painting over is both
+        // simpler and closer to how every other editor shows this than
+        // reflowing the real text out of the way would be).
+        if (!cursor_on_image && !cursor_on_latex && g_editor.InlineSuggestionVisible()) {
+            const std::string &ghost = g_editor.InlineSuggestionText();
+            gfx::Color ghost_color = ResolveHlGroup("Comment");
+            // Distinctly dimmer than a real comment: the whole point is
+            // that it reads as not-yet-real text, and at a comment's own
+            // weight it's easy to mistake for buffer content.
+            ghost_color.a = static_cast<unsigned char>(ghost_color.a * 3 / 5);
+            const gfx::Color ghost_bg = ResolveHlGroup("NormalBg");
+            float avail_w = std::max(40.0f, w - (text_x - x) - kMarginX);
+            size_t start = 0;
+            int ghost_row = 0;
+            // Stops at the bottom of the pane: a suggestion can easily be
+            // longer than the visible area, and the rows past it would
+            // otherwise paint over the status line and the pane below.
+            // Tab still accepts the whole thing, drawn or not.
+            const float ghost_bottom = content_y + content_h;
+            while (start <= ghost.size()) {
+                size_t nl = ghost.find('\n', start);
+                std::string piece = ghost.substr(start, nl == std::string::npos ? std::string::npos : nl - start);
+                float gy = cursor_y + static_cast<float>(ghost_row * line_height);
+                if (gy + static_cast<float>(line_height) > ghost_bottom) break;
+                if (ghost_row == 0) {
+                    DrawLineFast(piece, cursor_x, gy, g_font_size, ghost_color);
+                } else {
+                    // Continuation rows sit on top of real buffer text --
+                    // clear the strip first or the two read as one
+                    // unintelligible overstrike. Drawn unwrapped (from
+                    // text_x, one buffer row per screen row) even under
+                    // :set wrap: a suggestion is transient scaffolding,
+                    // and laying it out through the wrap machinery would
+                    // make it reflow under the cursor as it arrives.
+                    gfx::DrawRectangle(static_cast<int>(text_x), static_cast<int>(gy), static_cast<int>(avail_w),
+                                  line_height, ghost_bg);
+                    DrawLineFast(piece, text_x, gy, g_font_size, ghost_color);
+                }
+                if (nl == std::string::npos) break;
+                start = nl + 1;
+                ghost_row++;
             }
         }
         // Completion popup (Phase 22): positioned just below the cursor.
@@ -40195,6 +41171,8 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinLanguageUiPython);
     lua->DoString(kBuiltinLanguageUiC);
     lua->DoString(kBuiltinCompletion);
+    // After kBuiltinLsp: reuses its mep_lsp_uri/mep_lsp_result helpers.
+    lua->DoString(kBuiltinCopilot);
     lua->DoString(kBuiltinSnippets);
     lua->DoString(kBuiltinSymbols);
     lua->DoString(kBuiltinStructure);

@@ -311,14 +311,14 @@ These block the page work, or make it much worse if skipped. Do them first.
 
 ## Part 11 — Language UI modes (4 pages)
 
-- [ ] **11.1 `language-ui` — What a language UI mode is.** `<leader>lu` /
+- [x] **11.1 `language-ui` — What a language UI mode is.** `<leader>lu` /
   `<leader>uu` / `:MepLanguageUi`, one active mode per tab, the shared
   layout, `mep.language_ui_modes` for adding your own.
-- [ ] **11.2 `r-mode` — R.** The console, environment/objects, packages and
+- [x] **11.2 `r-mode` — R.** The console, environment/objects, packages and
   plots panes; `mep.opt.r_ui_cmd` and the share options; `gh` → R `help()`.
-- [ ] **11.3 `python-mode` — Python.** The console, variables, modules;
+- [x] **11.3 `python-mode` — Python.** The console, variables, modules;
   `mep.opt.py_ui_cmd`; `gh` → pydoc.
-- [ ] **11.4 `c-mode` — C and C++.** The Assembly tab (sharing the run
+- [x] **11.4 `c-mode` — C and C++.** The Assembly tab (sharing the run
   button's compiler/flags), the Hex view (`mep.opt.c_ui_hex_page`), Data and
   Build panes, `mep.opt.c_ui_filter_directives`; `gh` → `man`.
 
@@ -585,7 +585,8 @@ too).
   that did not exist yet, because `check_help` (rightly) fails on a dangling
   link. Several "See also" entries were dropped for this reason: completion →
   copilot, folding → org-basics, spell → writing, lsp → org-babel,
-  repl → notebooks, terminals → ai-terminal. Once every
+  repl → notebooks, terminals → ai-terminal,
+  r-mode and python-mode → notebooks. Once every
   page exists, do one pass adding the links back.
 
 ## Open questions

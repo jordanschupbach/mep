@@ -1,0 +1,49 @@
+#+TITLE: R mode
+#+HTML_HEAD: <meta name="help-section" content="Languages">
+#+HTML_HEAD: <meta name="help-order" content="20">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Opening it
+
+=<leader>lu= in an =.R= or =.r= file. The tab becomes an R workspace: your
+script, a live R console, and panels tracking the session.
+
+* The panels
+
+| Panel    | Shows                                             |
+|----------+---------------------------------------------------|
+| Objects  | everything in the global environment, with type and size |
+| Data     | a data frame or matrix, as a table                |
+| Packages | what is attached, and what is installed           |
+| History  | the commands the session has run                  |
+| Help     | =help()= output for the symbol under the cursor   |
+| Plot     | figures the session draws                         |
+
+The Objects panel is the one that makes this worth opening: it answers
+"what is in my environment right now" without typing =ls()= and =str()=
+repeatedly.
+
+* Plots
+
+Figures drawn by the session appear in the Plot pane. Where several have
+been drawn, =h= and =l= step between them.
+
+* Help
+
+=gh= on a symbol opens R's own =help()= output in the Help tab, rather than
+an LSP hover. That is usually what you want in R, where the documentation is
+the reference.
+
+* Options
+
+#+begin_src lua
+mep.opt.r_ui_cmd = {'R', '--no-save', '--quiet'}
+mep.opt.r_ui_info_share = 0.3          -- the panel column's width
+mep.opt.r_ui_bottom_share = 0.35       -- the console's height
+mep.opt.r_ui_bottom_info_share = 0.4   -- the split within the bottom row
+mep.opt.r_ui_poll_interval = 0.5       -- how often the panels refresh
+#+end_src
+
+* See also
+
+- [[file:language-ui.html][Language UI modes]] -- the shared machinery.

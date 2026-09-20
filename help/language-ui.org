@@ -1,0 +1,68 @@
+#+TITLE: Language UI modes
+#+HTML_HEAD: <meta name="help-section" content="Languages">
+#+HTML_HEAD: <meta name="help-order" content="10">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* An IDE layout, per language
+
+A language UI mode rearranges the tab into a layout built for one language:
+your source, a live session, and a set of panels showing what that session
+knows -- the variables that exist, the packages loaded, the plots drawn.
+
+It is the RStudio-style idea, available per language and per tab rather
+than as a whole separate application.
+
+| Key / command       | Does                          |
+|---------------------+-------------------------------|
+| =<leader>lu=        | toggle the mode for this file |
+| =<leader>uu=        | the same                      |
+| =:MepLanguageUi=    | the same                      |
+
+At most *one* mode is active per tab, so switching languages swaps the
+layout rather than accumulating panels.
+
+* What ships
+
+| Language | Page                        |
+|----------+-----------------------------|
+| R        | [[file:r-mode.html][R mode]]                  |
+| Python   | [[file:python-mode.html][Python mode]]        |
+| C, C++   | [[file:c-mode.html][C and C++ mode]]          |
+
+Each shares the same shape: a console, a Help tab, and panels specific to
+the language.
+
+* =gh=, in context
+
+=gh= ("go help") opens documentation for the symbol under the cursor. What
+answers depends on where you are:
+
+- in a language UI mode, its own Help tab -- R's =help()=, Python's pydoc,
+  =man= for C and C++;
+- otherwise, the LSP hover popup, the same one =K= opens.
+
+=<leader>hs= and =:MepGoHelp= do the same thing.
+
+* Adding your own
+
+#+begin_src lua
+mep.language_ui_modes.js = {
+  open = function()
+    -- build the layout you want
+  end,
+}
+#+end_src
+
+=mep.language_ui_modes= is keyed by language. =mep.language_ui_active=
+tracks the open one, and =mep.language_ui_layout= is the shared layout
+helper the built-in modes use, so a new mode can match their shape without
+rebuilding it.
+
+#+begin_src lua
+mep.opt.language_ui_poll_interval = 0.5   -- how often panels refresh
+#+end_src
+
+* See also
+
+- [[file:repl.html][REPL and send-to-terminal]] -- the lighter-weight alternative.
+- [[file:sidebars.html][Sidebars]] -- what the panels are.

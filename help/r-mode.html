@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>R mode</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Languages">
+<meta name="help-order" content="20">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>R mode</h1>
+<h1>Opening it</h1>
+<p><code>&lt;leader&gt;lu</code> in an <code>.R</code> or <code>.r</code> file. The tab becomes an R workspace: your
+script, a live R console, and panels tracking the session.</p>
+<h1>The panels</h1>
+<table>
+<tr><th>Panel</th><th>Shows</th></tr>
+<tr><td>Objects</td><td>everything in the global environment, with type and size</td></tr>
+<tr><td>Data</td><td>a data frame or matrix, as a table</td></tr>
+<tr><td>Packages</td><td>what is attached, and what is installed</td></tr>
+<tr><td>History</td><td>the commands the session has run</td></tr>
+<tr><td>Help</td><td><code>help()</code> output for the symbol under the cursor</td></tr>
+<tr><td>Plot</td><td>figures the session draws</td></tr>
+</table>
+<p>The Objects panel is the one that makes this worth opening: it answers
+"what is in my environment right now" without typing <code>ls()</code> and <code>str()</code>
+repeatedly.</p>
+<h1>Plots</h1>
+<p>Figures drawn by the session appear in the Plot pane. Where several have
+been drawn, <code>h</code> and <code>l</code> step between them.</p>
+<h1>Help</h1>
+<p><code>gh</code> on a symbol opens R's own <code>help()</code> output in the Help tab, rather than
+an LSP hover. That is usually what you want in R, where the documentation is
+the reference.</p>
+<h1>Options</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.opt.r_ui_cmd = {<span class="tok-green">'R'</span>, <span class="tok-green">'--no-save'</span>, <span class="tok-green">'--quiet'</span><span class="tok-blue">}</span>
+mep.opt.r_ui_info_share = <span class="tok-cyan">0.3</span>          <span class="tok-comment">-- the panel column's width</span>
+mep.opt.r_ui_bottom_share = <span class="tok-cyan">0.35</span>       <span class="tok-comment">-- the console's height</span>
+mep.opt.r_ui_bottom_info_share = <span class="tok-cyan">0.4</span>   <span class="tok-comment">-- the split within the bottom row</span>
+mep.opt.r_ui_poll_interval = <span class="tok-cyan">0.5</span>       <span class="tok-comment">-- how often the panels refresh</span></code></pre></div>
+<h1>See also</h1>
+<ul>
+<li><a href="language-ui.html">Language UI modes</a> -- the shared machinery.</li>
+</ul>
+</body>
+</html>

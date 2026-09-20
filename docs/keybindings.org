@@ -1,0 +1,479 @@
+#+TITLE: mep keybindings and commands
+
+Every key and =:= command mep binds out of the box. This is a reference,
+not a tutorial: press =<leader>= (Space) in the editor for the live
+which-key popup, or =<leader>hk= (=:MepKeymaps=) for a searchable list of
+everything currently bound.
+
+
+* Motions
+
+Normal mode motions: =hjkl= =0= =^= =$= =gg= =G= =w= =b= =e= =ge= =W=
+=B= =E= =gE= ={= =}= =%= =H= =M= =L= =f= =F= =t= =T= =;= =,=. Any motion
+(and =dd=/=yy=/=cc=) takes a count (=3dd=, =d3w=, =5j=, =10G=); a
+half-typed count shows up in the status line, alongside any pending
+register prefix.
+
+* Insert, operators and text objects
+
+Insert: =i a I A o O= to enter it, =R= for Replace (typing overwrites;
+Backspace restores what was overwritten), =Ctrl-W=/=Ctrl-U= delete a
+word/to line-start while typing. Operators: =d y c= (also =D C Y=,
+=gu gU= case, =gq= reflow/format, =>= =<= indent, =~= toggle-case),
+composable with a motion, a text object (=iw aw i" a" i( a( ip ap= and
+friends), or doubled for the current line (=gqq= reflows the current
+paragraph). =x p P= (also countable); =r{char}= replaces without
+entering Insert; =u= / =Ctrl-r= undo/redo.
+
+* Registers, the clipboard and marks
+
+Registers: ="{a-z}= (or ="{A-Z}= to append) before an operator or
+=p=/=P= targets a named register instead of the unnamed one. The
+unnamed register *is* the system clipboard (Vim's
+=clipboard=unnamedplus=): every yank/delete lands on the clipboard, and
+=p=/=P= paste whatever was copied last, in mep or in any other app
+(text ending in a newline pastes linewise, otherwise charwise). ="+= and
+="*= are accepted as spellings of the same register. In Insert mode,
+=Ctrl-R {reg}= inserts a register's text as if typed (so ="= / =+= paste
+the clipboard, =a= register a, and so on) and =Ctrl-Shift-V= pastes the
+clipboard directly; both also work in the =:= command line and the =/=
+=?= search prompt (kept to one printable line there), and
+=Ctrl-Shift-V= pastes into a terminal buffer. Lua gets the raw
+clipboard via =mep.clipboard_get()= / =mep.clipboard_set(text)=,
+independent of the registers. In the native X11 build the clipboard is
+owned by the mep window (as with any X11 client), so it is gone once mep
+exits unless a clipboard manager is running; the wasm build's clipboard
+access is best-effort (see =mep_js_clipboard_read= in
+=src/editor.cpp=). Marks:
+=m{a-z}= sets one, =` {a-z}= jumps to it exactly, ='{a-z}= to its
+line's first non-blank (both work as operator targets too, e.g.
+=d`a=); =``= / ='''= jump back to the position before the last "big
+jump" (a mark jump, =G=, or a search); =gv= reselects the last Visual
+selection.
+
+* Search
+
+Search: =/= =?= =n= =N= =*= =#=, regex (=src/regex.cpp=; a pattern that
+doesn't compile as one falls back to a plain substring match, so a bare
+=(= still searches for itself), wrapping
+around the buffer by default (=:set nowrapscan= to disable) with a
+"search hit BOTTOM/TOP" status message like Vim's.
+
+* Quick jump
+
+Quick jump: =s= opens a typed-query jump (flash.nvim/leap-style). Keep
+typing to narrow the matches across every text pane on screen: everything
+else fades, and each match gets a one-key label drawn right after it --
+press that key to jump there, focusing that pane if it is another one
+(=Ctrl-O= / =``= come back). A label never reuses a
+character that would extend the query at some current match, so a key
+is never ambiguous; a query that narrows to a single match jumps
+immediately, =Enter= jumps to the nearest match, =Backspace= edits the
+query, =Esc= cancels. Smart-case: an all-lowercase query matches
+case-insensitively. It's a plain =mep.map('n', 's', mep.quick_jump)=
+builtin, so it can be rebound.
+
+* Repeat and macros
+
+Repeat and macros: =.= replays the last change (a count before it,
+=3.=, overrides the original count); =q{a-z}= records a macro
+(=q{A-Z}= appends, =q= again stops), =@{a-z}= replays it =[count]=
+times, =@@= replays the last-played one. (Visual-mode changes aren't
+currently =.=/macro-repeatable -- a known gap.)
+
+* Visual mode
+
+Visual: =v= / =V= / =Ctrl-V= for charwise/linewise/block selection;
+=o= swaps the cursor to the other end; text objects set the selection
+directly (=viw=, =vi(=); =>=/=<= indent and keep the selection active
+(press repeatedly to indent further, matching Vim). In Visual Block:
+=d=/=y= act on the rectangle, =I=/=A= insert/append on every row of it
+at once (=$= first makes the right edge ragged -- each row's own actual
+end -- for a block =A= that appends to every line regardless of length).
+
+* Scrolling
+
+Scrolling: =Ctrl-D=/=Ctrl-U= half a screen, =Ctrl-F=/=Ctrl-B= a full
+screen (cursor moves with the view); =zz=/=zt=/=zb= recenter/top/bottom
+the view on the cursor's line without moving it. =Ctrl-A=/=Ctrl-X=
+increment/decrement the next number on the line, with a count
+(=5<C-a>=), preserving leading-zero padding.
+
+* The command line
+
+Command line: =:w [file]= =:wa= =:q= =:q!= =:qa= =:qa!= =:wq= =:wqa= =:e
+file= =:<N>= to jump to a line, =:lua <code>= to run Lua directly,
+=:source <file>= to run a Lua script, =:normal <keys>= (=:norm=) to run
+=<keys>= as literal Normal-mode input -- the natural pairing for =:g=/
+=:v= below. Up/Down recall previous =:= commands (and =/=/=?= searches)
+the same way shell history does. =:e path= on a path that doesn't exist
+yet starts a new empty buffer named that, same as Vim -- it's how you
+create a file, not an error; it only actually appears on disk once
+written.
+
+* Substitute and global
+
+Substitute and global: =:s/pat/repl/[g]= on the current line (or a
+given range: =:5,10s/...=, =:.,+3s/...=, ='a,'bs/...=), =:%s/...= for
+the whole buffer; =:g/pat/<cmd>= runs =<cmd>= on every matching line,
+=:v/pat/<cmd>= (=:g!=) on every non-matching one -- commonly paired
+with =:normal= above. =:d= =:y= =:m<addr>= =:t<addr>= (=:co=)
+delete/yank/move/copy line ranges as ex commands, not just from Normal
+mode. The pattern is a regex, like search, so =\1=-=\9= and =&= in the
+replacement refer back to the match and its groups; a pattern that only
+compiles as a literal is substituted literally.
+
+* Options (=:set=)
+
+=:set number= (=nonumber=) shows a line-number gutter, and =:set
+relativenumber= (=norelativenumber=) makes every row but the cursor's
+own show its distance from it instead -- both on by default (the
+cursor's own line still shows its real, left-aligned line number, the
+usual Vim/Neovim "hybrid" look), so a plain =:set nonumber
+norelativenumber= is what turns them off entirely. The same gutter
+column also always carries fold markers and any git-gutter/LSP-
+diagnostic/DAP-breakpoint/TODO-scan sign for that line (one mark per
+row, highest-priority sign wins), regardless of whether either number
+option is on. =:set ignorecase= (=noignorecase=) makes search and
+=:s=/=:g= case-insensitive; =:set wrapscan= (=nowrapscan=, on by
+default) controls whether search wraps around the buffer. =:set
+textwidth=N= (=tw=N=, default 80) sets the column width =gq=/=gqq=
+wrap paragraphs to. =:set wrap= (=nowrap=, on by default) soft-wraps a
+row too wide for the pane onto extra visual rows instead of running it
+off the right edge -- the buffer still has exactly one logical line
+there, so it never gets its own line number and =j=/=k= still move by
+buffer line, not visual row.
+
+* Closing panes and quitting
+
+=:q= closes the current pane, quitting the application only if it's the
+last pane in the last tab (matching Vim); it refuses if that pane's
+buffer has unsaved changes unless forced with =:q!=. =:wq= is =:w= then
+=:q=, only proceeding if the write succeeded. =:qa= / =:qa!= /
+=:wqa= act the same way but across the whole session: =:qa= refuses if
+*any* buffer anywhere has unsaved changes, =:wa= writes every modified
+buffer that has a filename, and =:wqa= (also =:xa=) is =:wa= then =:qa=.
+
+* Splits, tabs and the tab bar
+
+Windows & tabs: =:split [file]= / =:vsplit [file]= split the current pane
+(horizontal/vertical), showing the same buffer unless a file is given;
+=:close= closes it. =Ctrl-W w= / =W= cycles focus to the next/previous
+pane; =Ctrl-W h/j/k/l= moves focus directionally instead (spatially
+left/down/up/right, same heuristic as =mod1+hjkl= below); =Ctrl-W c/s/v=
+close/split-horizontal/split-vertical the current one. =:tabnew [file]=,
+=:tabdelete=, =:tabnext=, =:tabprevious= manage tabs (=Ctrl-T= opens a
+new one, =Ctrl-Tab= / =Ctrl-Shift-Tab= step to the next / previous) --
+each tab has its own independent split-pane layout. Two panes split from the same buffer
+(no filename given) share it, including undo history. The tab bar is one
+row: =[project] [ws1] [ws2*] │ ● ○ + x= -- the project name, one text
+label per workspace (the active one highlighted, =*= when it has
+unsaved buffers, dimmed with =...= while its worktree is still being
+created), then the active workspace's tabs as circles with the
+new/close buttons; participant chips, three search buttons (fuzzy find
+in the current buffer, project-wide live grep, and the open-buffers
+picker -- the same pickers as =<leader>/=, =<leader>pr= and
+=<leader>bb=) and a row of sidebar toggle buttons (Files, Git, Symbols,
+Structure, Todo, Tests, Notifications, AI Agent -- lit while that panel
+is open, click to open or close it) dock right. Every pane header ends
+in =| _ x= buttons: split that pane vertically, split it horizontally,
+or close its visible buffer (and the pane, once empty).
+
+Clicking a workspace label switches, middle-click closes it, hovering
+shows its directory and branch; clicking the project label opens the
+loaded-projects switcher.
+
+* The buffer picker
+
+The open-buffers picker (=<leader>bb=) previews the highlighted buffer's
+live contents (unsaved edits included) around its cursor; =Enter= shows
+it in the focused pane, =C-v= / =C-s= open it in a new vertical /
+horizontal split, =C-t= in a new tab page, =C-i= as a buffer tab of the
+focused pane, and =C-d= deletes it (confirming first if it has unsaved
+changes). =mep.buffer_open_with(id, how)= is the scriptable form. Every
+picker lists its keys along its bottom edge.
+
+* Sidebars: docking, splitting and popouts
+
+Sidebars docked on the same left/right edge
+merge into one column split vertically between them (so opening Git
+Status next to the file tree stacks it below rather than beside);
+drag the divider between two, or =mod1+Shift+j/k= from inside one, to
+re-split them, =mod1+j/k= steps focus between them, and =mod1+Ctrl+j/k=
+swaps the focused one with the sidebar above/below it (it stays focused,
+so the cursor travels with it). =mod1+m= from inside a focused sidebar
+pops it out into a large centered float -- the same rows and keys (so
+=j/k=, Enter and every panel's own bindings work unchanged), plus a
+preview column: the file tree shows the file under the cursor (or a
+directory's listing), Git Status shows =git diff HEAD= for the entry,
+Todo shows the headline's org subtree, and Structure shows the
+definition's source, each syntax-highlighted where a grammar is
+available. =mod1+j/k= scroll the preview; =Esc=, =q=, =mod1+m= again or
+a click outside the box drop back to the docked panel, and anything
+that moves focus out of the sidebar ends the popout too. A Lua sidebar
+gets a preview by registering =mep.sidebar_set_on_preview(id, fn)=:
+=fn(widget_id)= runs whenever the cursor's row changes while popped out
+and answers with =mep.sidebar_set_preview(text, spans, title,
+current_row)= (=spans= as in =mep.picker_set_preview=), or through the
+=mep.sidebar_preview_code(lines, filetype, title, current_row)=,
+=mep.sidebar_preview_diff(text, title)= and
+=mep.sidebar_preview_path(path, is_dir, title)= helpers the built-in
+panels use; =mep.read_lines(path, max_lines)= reads a file for it,
+preferring an open buffer's unsaved text. =mep.sidebar_popout_toggle()=
+is what =mod1+m= calls.
+
+* The git gutter
+
+The git gutter marks every changed line in the sign column, the way
+gitsigns.nvim / vim-gitgutter do, and is *on by default*: a green bar on
+each added line, a yellow bar on each changed one, and a red stripe along
+the edge of the line a deletion happened next to (the top edge of line 1
+when the deletion ran off the top of the file; a changed line that also
+dropped lines gets both a bar and a stripe). The marks are rectangles
+rather than glyphs -- none of the embedded fonts cover the box-drawing
+block Neovim's defaults use.
+
+It diffs the buffer's *live, unsaved* text, not what's on disk, and
+recomputes on a debounce as you type, when you switch buffers, and after
+any action from the git panel; a file that isn't in a repository gets no
+marks at all, and one that's in a repository but not in the base (a new
+or untracked file) reads as all-added. The default base is =HEAD=, so
+staging a change doesn't make its marks disappear -- unlike gitsigns and
+vim-gitgutter, which both compare against the index and so go blank the
+moment you =git add=. =:MepGitGutter base index= is that stage-aware
+view if you want it, and =:MepGitGutter base <ref>= takes any other
+revision (a branch, =HEAD~1=, a SHA). =:MepGitGutter on|off|toggle= (or
+=<leader>gd=, which reports which way it went) turns it off and on,
+=:MepGitGutter= alone recomputes, and =:lua mep.git_gutter_line_hl =
+true= adds vim-gitgutter's whole-line tint on top of the sign-column
+marks.
+
+* Hunk navigation and staging
+
+=]g= / =[g= (or =]c= / =[c=, vim's own diff-mode motions) jump to the
+next/previous hunk, wrapping at either end. =<leader>gv= previews the
+hunk under the cursor as a unified diff in a dismiss-on-any-key float
+(=:MepGitPreviewHunk=; =:lua mep.git_hunk_preview_on_jump = true= pops
+it on every jump too), =<leader>ga= stages that one hunk and
+=<leader>gr= resets it back to the base. Staging re-diffs against the
+index itself rather than reusing the displayed hunks, so it stages
+exactly the change under the cursor whatever the gutter's base is set
+to. =mep.git_gutter_summary()= returns the buffer's =+a ~c -d= counts
+for a statusline.
+
+* The git panel
+
+The git panel (=<leader>gG= docked, =<leader>gg= popped out, the tab bar's Git button, or
+=:MepGitStatus=) is one sidebar with five views on a tab strip --
+=Tab=/=Shift-Tab=, the =1=-=5= keys or a click switch them, and
+=mod1+m= pops the panel out with a preview column beside the list:
+- *Status*: staged, changed and untracked files in their own sections
+  (the preview is =git diff --cached= / =git diff= for the row, the file
+  itself for an untracked one). =s=/=u= stage/unstage the row, =S=/=U=
+  everything, =d= discards it after a confirm (deletes an untracked
+  file), =Enter= opens the file.
+- *Log*: =git log= (latest 300), the preview is =git show= for the
+  commit; =y= copies its hash, =Enter= pops the panel out.
+- *Graph*: =git log --graph --all= (latest 500), every branch's history
+  drawn as colored lanes with the refs on their commits; same preview
+  and keys as *Log*.
+- *Branches*: local and remote branches, newest commit first, with
+  ahead/behind and upstream; the preview is that branch's =git log
+  --oneline=. =Enter= checks one out (a remote one as a tracking
+  branch), =n= creates a branch from HEAD, =x= or =D= deletes one (a
+  remote branch via =git push --delete=, both after a confirm), =m= merges it
+  into the current branch, =r= rebases the current branch onto it.
+- *Stash*: =git stash list=; the preview is =git stash show -p=.
+  =n= stashes the working tree (untracked included, optional message),
+  =Enter=/=a= applies, =o= pops, =x= drops after a confirm.
+In every view =c= commits and =C= amends -- the message is edited in a
+floating pane over the repository's own =COMMIT_EDITMSG=, with the
+usual =#= status comment block below; =ZZ= in Normal mode commits the
+message, while =Escape= (or =:q=, or clicking away) aborts and discards
+it -- =P= (or =p=) pushes (offering to set the upstream when the branch has
+none), =l= pulls, =f= fetches (=--all --prune=), =R= re-reads and =?=
+lists the keys. Every view's head section says how far the branch is
+ahead of / behind its upstream (or that it has none), so unpushed
+commits stay in sight. Every action reports its result as a toast and
+refreshes the view. =<leader>gl= / =gL= / =gb= / =gs= open the log, graph,
+branches or stash view popped out, =<leader>gc= / =gp= commit / push, and
+=:MepGitLog=, =:MepGitGraph=, =:MepGitBranches=, =:MepGitStash=, =:MepGitCommit=,
+=:MepGitPush=, =:MepGitPull= and =:MepGitFetch= are the command forms.
+
+* The Todo sidebar
+
+The Todo sidebar (=<leader>tt=, the tab bar's Todo button, or
+=:MepActivityTodoPanel=) lists every keyworded headline of the project's
+=TODO.org= (=mep.activity_todo_file= overrides the path) and edits it in place:
+=a= adds a todo (a new =* TODO= headline at the end of the file), =e= opens
+=TODO.org= itself in a floating pane with the cursor on that headline, so its
+body, properties and clock lines can be edited too, not just the title (=Escape=
+with nothing pending, =:q= or a click outside the box closes it, writing the
+file if it changed, and focus returns to the same sidebar row), =d= marks it
+done (or not done again), =x= deletes it and its whole subtree after a confirm,
+and =Enter= (or a click) starts or stops its clock -- an org =CLOCK:
+[start]--[end] => H:MM= time entry in a =:LOGBOOK:= drawer under the headline,
+the same lines =:MepOrgClockIn=, =:MepOrgClockOut= and =:MepOrgClockTable= use.
+Only one clock runs at a time, so starting another todo's clock stops the
+running one; marking a clocked-in todo done stops it too. The running todo's row
+shows as =[>]=, =o= opens the file, =R= re-reads it and =?= lists the keys. The
+status bar's right edge carries the active-todo chip: green with the clocked-in
+todo's title and a live elapsed timer, or a red =[No active TODO]= when nothing
+is clocked in; it follows the file (a clock started from inside =TODO.org=
+counts too) and clicking it toggles the sidebar. =mep.active_todo_set(text,
+start_unix_seconds)= / =mep.active_todo_set(nil)= is the hook behind it, for
+anyone driving the chip from their own Lua. =:bnext=/=:bn= and
+=:bprevious=/=:bprev=/=:bp= cycle the current pane through every open buffer *of
+the current workspace* (not just the ones already opened in that pane's own tab
+strip), wrapping at either end. A file row in the file tree (or the git status
+sidebar) can also be dragged straight onto a pane: the same drop-zone pinwheel
+the pane tab chips use lights up under the mouse -- drop in the centre to open
+the file in that pane, on an edge to split the pane that way and open it in the
+new half. =Ctrl-O=/=Ctrl-I= walk backward/forward through the jumplist
+(populated by searches, =gg=/=G=, and mark jumps) -- per pane, and able to span
+buffers, distinct from the single-slot =``=/='''= mechanism.
+
+* Projects and workspaces
+
+Projects & workspaces: tabs nest inside *workspaces*, which nest inside
+*projects*. A project is a directory (the one mep was started in, or
+=mep --project <dir>= / =$MEP_PROJECT= / =:project <dir>= /
+=mep.project_open(dir)=); several can be loaded at once and
+=:projects= (or clicking =[project]=, or =<leader>pp=) switches between
+them; =:projectclose[!]=, =:projectnext=, =:projectprevious=. A project
+opened for the first time gets the default layout -- its README in the
+main pane, a terminal below it and the file tree in the left sidebar;
+one with a saved session is restored exactly as it was left, with none
+of that applied on top. =:projectclear[!]= / =<leader>pc= throws away
+the active workspace's tabs, panes, buffers and terminals (refusing on
+unsaved buffers unless forced) and rebuilds that default layout. Every
+project starts with a primary =main= workspace whose root is the
+project directory. =:wsnew <name>= creates another: on a git project it
+runs =git worktree add -b <name> <parent>/<repo>.worktrees/<name> HEAD=
+(asynchronously -- the label shows =[name...]= until git finishes) so
+each workspace edits its own checkout on its own branch; =:wsnew! <name>=
+attaches to an already-existing branch instead. The process working
+directory always follows the active workspace's root, so =<leader>ff=,
+live grep, =:e=, LSP (one client per language *per workspace root*) and
+=:terminal= (which also gets =$MEP_WORKSPACE_NAME= / =$MEP_PROJECT_NAME=) all act
+on that worktree. Buffers belong to the workspace they were opened in:
+=:ls=, =<leader>bb=, =:bnext= and the agent's =buffer.list= only show
+the active workspace's, while =:wa= and the =:qa= unsaved-changes guard
+stay global so nothing hidden is ever lost. =:ws <name|N>=, =:wsnext= /
+=:wsn=, =:wsprevious= / =:wsp=, =Ctrl-Alt-]= / =Ctrl-Alt-[= switch, and
+=Alt-1= .. =Alt-9= jump straight to the Nth workspace;
+=:wslist= / =<leader>ww= picks from a list; =:wsrename <name>=;
+=:wsdelete[!] [name]= runs =git worktree remove= (the *branch is kept*)
+then closes the workspace, refusing on unsaved buffers unless forced;
+=:wsadopt <path-or-branch>= turns a hand-made worktree into a workspace,
+=:wsprune= drops workspaces whose directory vanished. =<leader>gw= lists
+workspaces with branch and ahead/behind counts. Non-git projects work
+identically minus the worktrees (every workspace shares the project
+root). =mep.opt.worktree_dir= relocates new worktrees (absolute, or
+relative to the project root); =mep.opt.workspace_git_dirty = true= adds
+a =+= label suffix from a 5-second =git status= poll. Each project's
+layout -- workspaces, tabs, split trees, open files (relative to the
+workspace root), cursors, terminals -- is saved to
+=$XDG_DATA_HOME/mep/workspaces/<name>-<hash>.json= half a second after
+any structural change and on quit, and restored when the project is
+next opened (missing files are skipped with a message, vanished
+worktrees pruned, a corrupt file ignored); =mep --no-session= or
+=mep.opt.restore_workspaces = false= skips it, =:wssave= / =:wsrestore=
+do it by hand. Lua: =mep.workspace_list/current/root/new/switch/delete/
+rename/next/previous/adopt/prune()=, =mep.on_workspace_changed(fn)=,
+=mep.project_load/current/loaded_list/switch/close/next/previous()=.
+
+* =mod1= (Alt) bindings
+
+=mod1= (=Alt= by default, any mode): =mod1+s= / =mod1+v= split
+horizontal/vertical; =mod1+h/j/k/l= move focus to the pane spatially
+left/down/up/right of the current one (picking the one with the most
+overlap along the perpendicular axis, then the closest, the same
+heuristic tmux/i3 use) -- a no-op if there isn't one that way.
+=mod1+Shift+h/j/k/l= resizes the current pane that way instead: it grows
+against a neighbor on that side if there is one, otherwise shrinks
+against whichever neighbor it does have on that axis, so opposite keys
+always do opposite things; a no-op if the pane is alone on that axis
+(mirroring mep.nvim's =mep.window.panes.resize=). =mod1+m= maximizes
+the current pane -- every other pane shrinks to the minimum size those
+resize keys stop at -- and pressed again restores the layout from
+before (pressed in another pane while one is maximized, it maximizes
+that one instead; from a focused sidebar it pops the sidebar out, see
+above; =mep.pane_maximize_toggle()= from Lua). =mod1+Ctrl+h/j/k/l=
+moves the pane's active buffer tab into the neighboring pane that way,
+closing the current pane if that was its last tab (from inside a
+sidebar, =mod1+Ctrl+j/k= instead swap that sidebar with its stack
+neighbor -- see above). =mod1+d= removes the
+active buffer tab from the current pane (closing the pane once its last
+tab is gone). These are themselves just =mep.map_mod1()= calls run at
+startup (see the Lua API below), so redefine or remove any of them from
+=init.lua= like any other mapping.
+
+* Font size
+
+Any mode: =Ctrl+Shift+== / =Ctrl+Shift+-= grow/shrink the font (the
+window opens maximized/fullscreen, and both the native window and the
+wasm canvas resize the editor to fill whatever size they're given).
+
+* The per-tab terminal
+
+Per-tab terminal: =<leader><CR>= (also =:tabterminal= / =:tabterm= /
+=:MepTabTerminal=, or =mep.tab_terminal_toggle()=) toggles one shell
+per tab along the bottom of that tab, spanning its full width. The
+first press opens a fresh =:terminal= there and focuses it; pressing
+again while it is showing closes the pane but leaves the shell running,
+and the next press brings the same shell back. A shell that has exited
+is replaced by a fresh one. Hiding it from inside the terminal returns
+focus to the pane it was opened from (leave Terminal mode first with
+=Ctrl-\ Ctrl-n=, since in Terminal mode every key goes to the shell);
+hiding it from another pane leaves focus where it was.
+=mep.opt.tab_terminal_share= (default =0.3=) is its share of the tab's
+height.
+
+* Terminals
+
+Terminal: =:terminal= (or =:term=) opens a shell in a horizontal split
+*below* the current pane.  Its grid keeps one terminal-cell of left padding.
+
+* The AI terminal
+
+AI terminal: =<leader>a<CR>= (also =:aiterminal= / =:aiterm= /
+=:MepAiTerminal=, or =mep.ai_terminal_open()=) splits the current pane
+and runs Claude Code in a =:terminal= pane *below* it, focused, with an
+appended system prompt that explains it is inside this mep window and
+how to drive it through the =mep-agent= MCP server (=src/mcp_bridge.cpp=,
+built as =mep-mcp= -- a dependency-free C++ binary, see =MEP_AGENT_API.md=
+for the full tool reference including UI automation and the image
+editor: tool names, 0-indexed/end-exclusive conventions, the virtual
+cursor, and to edit open files through mep's buffer tools rather than
+behind its back). Every =:terminal= exports =$MEP_AGENT_SOCKET= (this
+window's own agent socket), which the MCP server honors ahead of its
+directory scan, so the agent always lands on the window it was launched
+from even with several open. The server is expected to be registered
+with Claude Code already (=claude mcp add mep-agent --
+/path/to/mep/build/native/mep-mcp=); alternatively
+=mep.opt.ai_terminal_mcp_server = '/path/to/mep-mcp'= passes it inline
+via =--mcp-config=. =mep.opt.ai_terminal_cmd= (default
+={'claude'}=, e.g. ={'claude', '--model', 'opus'}=),
+=mep.opt.ai_terminal_share= (the terminal's height fraction, =0.4=) and
+=mep.opt.ai_terminal_instructions= (the prompt text; set to ='''= to send
+none) are all =init.lua=-overridable.
+
+* The AI agents sidebar
+
+AI agents sidebar: =<leader>al= (also =:aiagents= / =:MepAiAgents=, the
+=AI Agents= top-bar button, or the =Activity= picker; =<leader>aa= /
+=:MepAiAgentsToggle= toggles it open and closed) lists every AI
+agent in this window, grouped by workspace: its name, status badge
+(=thinking= / =writing= / =needs input= / =done= / =starting=) and, on
+a dimmed second row, the running task -- the terminal's live OSC
+title, which Claude Code keeps set to a summary of what it is doing.
+An agent whose terminal process has exited disappears from the list
+automatically (its pane stays open until you close it). Enter (or a click) on a row jumps to the workspace,
+tab and pane holding that agent's terminal, activating a hidden buffer
+tab if that is where it lives; =n= opens a new AI terminal, =r= forces a
+re-scan (it polls twice a second on its own while open). Agents that
+connected from a terminal mep didn't open are listed under =outside
+mep= and jump to their cursor's buffer instead. Pairing works because
+every =:terminal= exports =$MEP_TERMINAL_BUFFER= and the MCP server
+reports it as =terminal_buffer_id= in =session.identify=.

@@ -4281,6 +4281,24 @@ const char *kBuiltinFileTree =
     "  mep_tree_rows = mep_tree_build(mep_tree_root, mep_tree_expanded, mep_tree_ignored)\n"
     "  if not mep_tree_buf then\n"
     "    mep_tree_buf = mep_tree_new_buffer()\n"
+    // Row-selection cursor (Buffer::row_cursor): the tree is read-only and
+    // navigated a row at a time, so its cursor is drawn as a full-width row
+    // tint rather than a block over column 0 -- which is the row's own icon
+    // glyph for a top-level entry, and which a block cursor repaints in
+    // NormalBg (the icon appeared to change color as the cursor moved).
+    // Set here and not in mep_tree_new_buffer: the oil.nvim-style directory
+    // buffers share that helper and are genuinely editable text, so they
+    // keep an ordinary character cursor.
+    "    mep.buffer_set_row_cursor(mep_tree_buf, true)\n"
+    // Keeps the tree out of the Buffers sidebar and the <leader>bb picker
+    // (Buffer::unlisted): it is a sidebar as far as the user is concerned,
+    // and mep.buffer_set_filename below names it after the project root, so
+    // left listed it shows up among their open files as an entry called
+    // after the project itself. Set here rather than in
+    // mep_tree_new_buffer for the same reason as the row cursor above --
+    // the oil.nvim-style directory buffers share that helper and are
+    // ordinary buffers the user opened on purpose.
+    "    mep.buffer_set_unlisted(mep_tree_buf, true)\n"
     "    mep.buffer_set_on_enter(mep_tree_buf, mep_tree_on_enter)\n"
     "    mep.buffer_set_on_key(mep_tree_buf, mep_tree_on_key)\n"
     "    --! :w on the (read-only) tree just re-syncs it with disk instead of\n"
@@ -37868,7 +37886,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // wrapped row tints every one of its visual slots, not just the
         // first, so the tint doesn't look like it stops partway through
         // the cursor's own line.
-        if (is_active && g_editor.ShowCursorLine() && !IsCommandLineMode(g_editor.CurrentMode()) &&
+        // Buffer::row_cursor (kBuiltinFileTree's read-only tree) tints the
+        // cursor's row whether or not :set cursorline is on: this tint *is*
+        // that buffer's whole cursor -- the per-character block cursor is
+        // skipped for it further down -- so leaving it to a global option
+        // the user may well have turned off would leave the tree with no
+        // visible cursor at all.
+        if (is_active && (g_editor.ShowCursorLine() || buf.row_cursor) && !IsCommandLineMode(g_editor.CurrentMode()) &&
             (pane.cursor.row == row ||
              (fold_here && pane.cursor.row >= fold_here->start_row && pane.cursor.row <= fold_here->end_row))) {
             int tint_slots = (row_wraps && pane.cursor.row == row) ? row_wrap_slots : 1;
@@ -38710,7 +38734,20 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         int cursor_slots = cursor_on_image ? kOrgInlineImageSlots : (cursor_on_latex ? cursor_latex_it->second.slots : 1);
         float row_extent = (cursor_on_image || cursor_on_latex) ? static_cast<float>(line_height) * static_cast<float>(cursor_slots)
                                                                   : static_cast<float>(line_height);
-        if (cursor_on_image || cursor_on_latex) {
+        // Buffer::row_cursor (kBuiltinFileTree's read-only tree): the row's
+        // own full-width tint, drawn unconditionally with the cursorline
+        // above, *is* this buffer's cursor -- nothing is drawn per column.
+        // A block cursor repaints the glyph under it in NormalBg so a
+        // normal text cursor stays readable, but a tree row's cursor always
+        // sits at column 0, which for a top-level entry is the row's icon
+        // glyph: what that actually looked like was the icon changing color
+        // (going dark) as the cursor moved down the tree. The rest of this
+        // block still runs -- cursor_x/cursor_y feed the completion popup
+        // and hover anchor, neither of which a tree ever raises, but both
+        // of which stay correct for any other row_cursor buffer.
+        if (buf.row_cursor) {
+            // no per-column cursor: the row tint above is the whole cursor
+        } else if (cursor_on_image || cursor_on_latex) {
             float avail_w = std::max(40.0f, w - (text_x - x) - kMarginX);
             gfx::DrawRectangleLines(static_cast<int>(text_x), static_cast<int>(cursor_y), static_cast<int>(avail_w),
                                 static_cast<int>(row_extent), ResolveHlGroup("Normal"));

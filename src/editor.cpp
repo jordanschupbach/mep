@@ -5204,7 +5204,19 @@ bool Editor::ActivateDashboardShortcut(char shortcut) {
 bool Editor::BufferIsPristine(int buffer_id) const {
     if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return false;
     const Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
-    return !buf.modified && buf.filename.empty() && !buf.scratch && buf.lines.size() == 1 && buf.lines[0].empty();
+    if (buf.modified || !buf.filename.empty() || buf.scratch) return false;
+    if (buf.lines.size() != 1 || !buf.lines[0].empty()) return false;
+    // A pathless buffer is not necessarily an *untouched* one: a terminal
+    // (`:terminal`), a brand-new procedural image (mep.image_new) and a
+    // brand-new 3D scene (mep.model_new) all keep their real content in a
+    // side session and never write a line into Buffer::lines, so the text
+    // checks above would call every one of them pristine. Every other
+    // session kind is loaded from a file and so already fails on
+    // filename. Without this an agent-created image/3D buffer would both
+    // keep the dashboard up over it and, via BufferLabelForLua, stay out
+    // of the buffer lists entirely.
+    if (IsTerminalBuffer(buffer_id) || GetImageEditor(buffer_id) || IsModel3DBuffer(buffer_id)) return false;
+    return true;
 }
 
 bool Editor::WorkspaceIsPristine(const Workspace &ws) const {
@@ -25354,6 +25366,44 @@ std::string Editor::BufferLabelForLua(int buffer_id) const {
     // is what actually keeps a deleted buffer out of the Buffers picker
     // without needing a second, separate filter there.
     if (buffers_[static_cast<size_t>(buffer_id)].deleted) return "";
+    // A sidebar opened as a pane (SidebarOpenPane) backs it with a
+    // synthetic "sidebar/<Title>" buffer, purely so the pane machinery --
+    // which has no title-override concept, a buffer's filename IS its
+    // displayed name -- has something to show in the tab strip. It is not
+    // a document: there is nothing to save, nothing to edit, and "switch
+    // to it" already has its own gestures (mod1+o, the top-bar chips). It
+    // has no business in a list of the user's open files, so it comes back
+    // empty here and drops out of the Buffers sidebar and the <leader>bb
+    // picker alike -- same one-filter-serves-both-lists route the deleted
+    // check above takes. Still reachable everywhere it was: this hides it
+    // from the two buffer *lists* only, not from :bnext/:bprev or the tab
+    // strip of the pane actually showing it.
+    if (IsSidebarPaneBuffer(buffer_id)) return "";
+    // Same exclusion, self-declared: a panel that owns an ordinary buffer
+    // instead of going through mep.sidebar_open_pane (kBuiltinFileTree's
+    // tree view) has nothing about it C++ can recognise, so it marks
+    // itself. See Buffer::unlisted.
+    if (buffers_[static_cast<size_t>(buffer_id)].unlisted) return "";
+    // The empty, never-touched buffer a pane is *born* on, rather than one
+    // the user asked for: every pane must point at some buffer, so the
+    // bootstrap project (Editor::Editor, the one the dashboard renders
+    // over), every new workspace and project (MakeWorkspace -- one more
+    // per adopted git worktree), `:wsreset` and BufferDelete's
+    // last-buffer fallback each mint one. They are indistinguishable
+    // "[No Name]" rows that the user never opened, and the startup one is
+    // unscoped (workspace_id -1), so it followed them into every project
+    // and workspace they ever switched to. Nothing is lost by hiding
+    // them: an empty, unmodified, nameless buffer holds nothing to come
+    // back to, and the pane showing it names it in its own header
+    // regardless. Deliberately *not* a stored flag but a live property
+    // (BufferIsPristine, the same predicate the dashboard's own
+    // "untouched" test uses): the instant the user types into one it
+    // stops being pristine and takes its place in the list as an ordinary
+    // unsaved buffer. The scratch buffer (<leader>bs/:MepScratch) is
+    // exempt by construction -- Buffer::scratch fails BufferIsPristine --
+    // so the one pathless buffer the user creates on purpose is the one
+    // pathless buffer that shows up, labelled below.
+    if (BufferIsPristine(buffer_id)) return "";
     // Terminal buffers have no filename (they're never saved), so without
     // this they'd all show as the same indistinguishable "[No Name]" --
     // defeating the point of surfacing them here at all now that closing
@@ -25368,9 +25418,34 @@ std::string Editor::BufferLabelForLua(int buffer_id) const {
         return label;
     }
     const Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
-    std::string label = buf.filename.empty() ? "[No Name]" : buf.filename;
+    // "[Scratch]", not "[No Name]", for the session scratch buffer -- what
+    // the pane header, the status line and the pane-drag label have always
+    // called it (main.cpp), and the only way to tell it apart from a
+    // genuinely unsaved buffer now that it is the one pathless row the
+    // lists still show.
+    std::string label = buf.scratch ? "[Scratch]" : buf.filename.empty() ? "[No Name]" : DisplayPathForBuffer(buf);
     if (buf.modified) label += " [+]";
     return label;
+}
+
+std::string Editor::DisplayPathForBuffer(const Buffer &buf) const {
+    // Buffer::filename is stored exactly as the file was opened, so the
+    // same file reads as "README.org" or "/mnt/projects/mep/README.org"
+    // purely by how it was reached (`:e README.org` vs a file-tree click,
+    // an LSP/quickfix jump, an agent's buffer.open, a restored session).
+    // That inconsistency is only ever noise in a list of open buffers, so
+    // anything under the project root is shown relative to it; anything
+    // outside keeps its absolute path, which is the only thing that
+    // locates it.
+    const Workspace *ws = buf.workspace_id == -1 ? nullptr : FindWorkspace(buf.workspace_id);
+    const std::string &root = ws ? ws->root : ActiveRoot();
+    // The root directory itself, opened as a buffer (an oil.nvim-style
+    // directory buffer, mep.oil_open, names its buffer after the directory
+    // it is listing): relative would be the empty string, so use the
+    // directory's own name -- the same thing the project chip and that
+    // pane's header already call it.
+    if (!root.empty() && buf.filename == root) return BasenameOrPath(root);
+    return RelativeToRoot(buf.filename, root);
 }
 
 std::string Editor::BufferFilenameForLua(int buffer_id) const {
@@ -25398,6 +25473,16 @@ void Editor::SetBufferFooter(int buffer_id, const std::string &text, const std::
 void Editor::SetBufferNoWrap(int buffer_id, bool no_wrap) {
     if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
     buffers_[static_cast<size_t>(buffer_id)].no_wrap = no_wrap;
+}
+
+void Editor::SetBufferRowCursor(int buffer_id, bool row_cursor) {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
+    buffers_[static_cast<size_t>(buffer_id)].row_cursor = row_cursor;
+}
+
+void Editor::SetBufferUnlisted(int buffer_id, bool unlisted) {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
+    buffers_[static_cast<size_t>(buffer_id)].unlisted = unlisted;
 }
 
 bool Editor::BufferModifiedForLua(int buffer_id) const {

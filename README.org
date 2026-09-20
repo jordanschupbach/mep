@@ -1,923 +1,181 @@
-* MEP - An editor where everything is in place
+[[file:assets/logo.png]]
 
-A modal (vim-like), cross-platform text editor written in C++ with
-[[https://www.raylib.com/][raylib]], embedded [[https://www.lua.org/][Lua]]
-scripting, built with CMake, compiled to WebAssembly by default, and launched as
-a native window via [[https://deno.com/][Deno]] +
-[[https://github.com/webview/webview_deno][webview]].
+* mep
 
-Not a Vim clone in the full sense -- search and =:s=/=:g= substitution are
-plain-substring, not regex. Pane navigation via =Ctrl-W= is directional (=Ctrl-W
-hjkl=, not just cycle-order =w=/=W=), matched by =mod1+hjkl= (see below); pane
-resize (=mod1+Shift+hjkl=) is a manual two-way boundary drag rather than Vim's
-full window-layout resize algorithm. What it does have, by now, is a lot:
-Normal/Insert/Replace/ Visual/Visual-Line/Visual-Block/Command-line modes,
-counted motions and operators with text objects, registers, marks and jumps,
-search, substitute/global ex commands, =.=-repeat and macros, undo/redo,
-buffers/split-panes/tabs, real embedded Lua for scripting and configuration, and
-a mouse-driven File/Edit/Window/Help menu bar (rendered by the editor itself,
-not a native OS menu -- raylib has no such integration). See
-=VIM_PARITY_PLAN.md= for the detailed, phase-by-phase account of what's
-implemented and what's an intentional, documented gap.
+/An editor where everything is in place./
 
-** Requirements
+mep is a modal, Vim-style code editor for Linux, written from the ground
+up in C++20 with embedded Lua. There is no UI toolkit, no browser engine
+and no PDF library underneath it: the window, the renderer, the font
+rasterizer, the regex engine, the terminal emulator and the readers for
+every format it opens are all in this repository.
 
-Enter the dev shell (=direnv allow= or =nix develop=) to get cmake,
-emscripten, deno, and just on =PATH=.
+That buys the thing the name is about — one place to work. A C++ file, a
+shell, a PDF, a Jupyter notebook, a 3D scene and a live web page are all
+just panes in the same window, driven by the same keys, scripted through
+the same Lua API.
 
-** Usage
+[[file:assets/screenshot.png]]
 
-- =just run= — build the native (X11) binary and launch it directly (default).
-- =just run-wasm= — build the wasm target and open it in a window via the Deno-hosted webview.
-- =just build-web= — build the wasm target only, output in =build/web=.
-- =just build-native= — build a native desktop binary, output in =build/native=.
-- =just clean= — remove build output.
+* Install
 
-Native builds accept a file to open as the first argument
-(=build/native/mep somefile.txt=) and auto-load =~/.config/mep/init.lua=
-on startup if present. Neither is available in the wasm/browser build,
-which has no host filesystem of its own.
+** Nix (no clone needed)
 
-When launched through =just run-wasm= (the Deno-hosted webview window, not
-a plain browser tab), the wasm build's =:e=/=:w=/=:source= are wired to a
-real-file bridge: the page does a synchronous =XMLHttpRequest= to a
-loopback-only HTTP server (=launcher/serve.ts=) that does the actual
-read/write on disk, from =EM_JS= calls in =src/editor.cpp= (synchronous
-XHR rather than an awaited =fetch()=, specifically to avoid needing
-Emscripten's Asyncify linked at all -- see that file's own comment above
-=mep_js_read_file= for why). Opening =build/web/mep.html=
-directly in a plain browser tab has no such server behind it and no
-=?bridgePort=...= in its URL, so those commands just fail with an
-ordinary read/write error there, same as the native build's file I/O is
-simply unavailable in that context.
+#+begin_src sh
+nix run github:jordanschupbach/mep              # run it
+nix profile install github:jordanschupbach/mep  # install it
+#+end_src
 
-The bridge doesn't use =webview.bind()=, despite that being the more
-obvious choice: =webview_run()= (the call that pumps the window for as
-long as it's open) is a plain *synchronous* Deno FFI call, which blocks
-its entire isolate's event loop for that whole duration -- nothing async
-in that isolate, including a =bind()= callback's own
-=await Deno.writeTextFile(...)= settling and its reply being delivered
-back into the page, reliably progresses while it's running. Confirmed
-concretely: even a =curl= from outside the process to an HTTP server
-started in the *same* script as =webview.run()= hung indefinitely with
-the window open. =launcher/webview_worker.ts= isolates =webview.run()= to
-its own Deno Worker (a separate OS thread with its own V8 isolate) so
-=serve.ts='s HTTP server, on the main thread, stays completely free of
-that block; the page's =fetch()= calls reach it as an ordinary loopback
-HTTP request, unaffected by the worker being blocked in native code.
+** From source
 
-*** Keys
+You need CMake ≥ 3.28, a C++20 compiler, and — on the system — OpenGL,
+X11 (with =Xtst= and =Xi=), ALSA and OpenSSL. The configure step fetches
+Lua 5.4, so it needs network access the first time.
 
-Normal mode motions: =hjkl= =0= =^= =$= =gg= =G= =w= =b= =e= =ge= =W=
-=B= =E= =gE= ={= =}= =%= =H= =M= =L= =f= =F= =t= =T= =;= =,=. Any motion
-(and =dd=/=yy=/=cc=) takes a count (=3dd=, =d3w=, =5j=, =10G=); a
-half-typed count shows up in the status line, alongside any pending
-register prefix.
+#+begin_src sh
+git clone https://github.com/jordanschupbach/mep
+cd mep
+cmake -S . -B build/native -DCMAKE_BUILD_TYPE=Release
+cmake --build build/native -j
+sudo cmake --install build/native      # optional; installs `mep`
+#+end_src
 
-Insert: =i a I A o O= to enter it, =R= for Replace (typing overwrites;
-Backspace restores what was overwritten), =Ctrl-W=/=Ctrl-U= delete a
-word/to line-start while typing. Operators: =d y c= (also =D C Y=,
-=gu gU= case, =gq= reflow/format, =>= =<= indent, =~= toggle-case),
-composable with a motion, a text object (=iw aw i" a" i( a( ip ap= and
-friends), or doubled for the current line (=gqq= reflows the current
-paragraph). =x p P= (also countable); =r{char}= replaces without
-entering Insert; =u= / =Ctrl-r= undo/redo.
+Inside the repo, [[https://github.com/casey/just][just]] wraps the same thing: =just run= builds and
+launches, =just build-native= only builds, =just clean= removes
+=build/=. =nix develop= (or =direnv allow=) drops you in a shell with the
+whole toolchain — compiler, cmake, just, deno, emscripten, language
+servers and Tree-sitter grammars — already on =PATH=.
 
-Registers: ="{a-z}= (or ="{A-Z}= to append) before an operator or
-=p=/=P= targets a named register instead of the unnamed one. The
-unnamed register *is* the system clipboard (Vim's
-=clipboard=unnamedplus=): every yank/delete lands on the clipboard, and
-=p=/=P= paste whatever was copied last, in mep or in any other app
-(text ending in a newline pastes linewise, otherwise charwise). ="+= and
-="*= are accepted as spellings of the same register. In Insert mode,
-=Ctrl-R {reg}= inserts a register's text as if typed (so ="= / =+= paste
-the clipboard, =a= register a, and so on) and =Ctrl-Shift-V= pastes the
-clipboard directly; both also work in the =:= command line and the =/=
-=?= search prompt (kept to one printable line there), and
-=Ctrl-Shift-V= pastes into a terminal buffer. Lua gets the raw
-clipboard via =mep.clipboard_get()= / =mep.clipboard_set(text)=,
-independent of the registers. In the native X11 build the clipboard is
-owned by the mep window (as with any GLFW app), so it is gone once mep
-exits unless a clipboard manager is running; the wasm build's clipboard
-access is best-effort (see =mep_js_clipboard_read= in
-=src/editor.cpp=). Marks:
-=m{a-z}= sets one, =` {a-z}= jumps to it exactly, ='{a-z}= to its
-line's first non-blank (both work as operator targets too, e.g.
-=d`a=); =``= / ='''= jump back to the position before the last "big
-jump" (a mark jump, =G=, or a search); =gv= reselects the last Visual
-selection.
+** Platforms
 
-Search: =/= =?= =n= =N= =*= =#=, plain substring (no regex), wrapping
-around the buffer by default (=:set nowrapscan= to disable) with a
-"search hit BOTTOM/TOP" status message like Vim's.
+Native mep targets *Linux/X11*. There is also a WebAssembly build
+(=just build-web=) that runs in a browser, and =just run-wasm= opens it
+in a desktop window via Deno + webview; the wasm build has no host
+filesystem, so file I/O there goes through a small local bridge
+([[file:docs/architecture.org][details]]).
 
-Quick jump: =s= opens a typed-query jump (flash.nvim/leap-style). Keep
-typing to narrow the matches across every text pane on screen: everything
-else fades, and each match gets a one-key label drawn right after it --
-press that key to jump there, focusing that pane if it is another one
-(=Ctrl-O= / =``= come back). A label never reuses a
-character that would extend the query at some current match, so a key
-is never ambiguous; a query that narrows to a single match jumps
-immediately, =Enter= jumps to the nearest match, =Backspace= edits the
-query, =Esc= cancels. Smart-case: an all-lowercase query matches
-case-insensitively. It's a plain =mep.map('n', 's', mep.quick_jump)=
-builtin, so it can be rebound.
+* Getting started
 
-Repeat and macros: =.= replays the last change (a count before it,
-=3.=, overrides the original count); =q{a-z}= records a macro
-(=q{A-Z}= appends, =q= again stops), =@{a-z}= replays it =[count]=
-times, =@@= replays the last-played one. (Visual-mode changes aren't
-currently =.=/macro-repeatable -- a documented gap, see
-=VIM_PARITY_PLAN.md= Phase 9.)
+#+begin_src sh
+mep                 # opens the dashboard on the current directory
+mep path/to/file    # opens a file
+#+end_src
 
-Visual: =v= / =V= / =Ctrl-V= for charwise/linewise/block selection;
-=o= swaps the cursor to the other end; text objects set the selection
-directly (=viw=, =vi(=); =>=/=<= indent and keep the selection active
-(press repeatedly to indent further, matching Vim). In Visual Block:
-=d=/=y= act on the rectangle, =I=/=A= insert/append on every row of it
-at once (=$= first makes the right edge ragged -- each row's own actual
-end -- for a block =A= that appends to every line regardless of length).
+- The leader key is =Space=. Press it and wait: a which-key popup lists
+  every group and binding. =<leader>hk= searches all of them.
+- =<leader>hh= (or =:MepHelp=) opens the built-in help.
+- =<leader>ff= file tree, =<leader>/= find in buffer, =<leader>pr=
+  project-wide grep, =<leader>bb= buffer picker, =<leader><CR>= a
+  terminal for this tab.
+- Vim's own =:= commands mostly work as you'd expect — =:w=, =:e=,
+  =:split=, =:%s/pat/repl/g=, =:g/pat/d=.
 
-Scrolling: =Ctrl-D=/=Ctrl-U= half a screen, =Ctrl-F=/=Ctrl-B= a full
-screen (cursor moves with the view); =zz=/=zt=/=zb= recenter/top/bottom
-the view on the cursor's line without moving it. =Ctrl-A=/=Ctrl-X=
-increment/decrement the next number on the line, with a count
-(=5<C-a>=), preserving leading-zero padding.
+The full reference is [[file:docs/keybindings.org][docs/keybindings.org]].
 
-Command line: =:w [file]= =:wa= =:q= =:q!= =:qa= =:qa!= =:wq= =:wqa= =:e
-file= =:<N>= to jump to a line, =:lua <code>= to run Lua directly,
-=:source <file>= to run a Lua script, =:normal <keys>= (=:norm=) to run
-=<keys>= as literal Normal-mode input -- the natural pairing for =:g=/
-=:v= below. Up/Down recall previous =:= commands (and =/=/=?= searches)
-the same way shell history does. =:e path= on a path that doesn't exist
-yet starts a new empty buffer named that, same as Vim -- it's how you
-create a file, not an error; it only actually appears on disk once
-written.
+* What's in the box
 
-Substitute and global: =:s/pat/repl/[g]= on the current line (or a
-given range: =:5,10s/...=, =:.,+3s/...=, ='a,'bs/...=), =:%s/...= for
-the whole buffer; =:g/pat/<cmd>= runs =<cmd>= on every matching line,
-=:v/pat/<cmd>= (=:g!=) on every non-matching one -- commonly paired
-with =:normal= above. =:d= =:y= =:m<addr>= =:t<addr>= (=:co=)
-delete/yank/move/copy line ranges as ex commands, not just from Normal
-mode. All plain-substring, like search -- no regex, so no backreferences
-in a replacement either.
+[[file:assets/gallery.png]]
 
-=:set number= (=nonumber=) shows a line-number gutter, and =:set
-relativenumber= (=norelativenumber=) makes every row but the cursor's
-own show its distance from it instead -- both on by default (the
-cursor's own line still shows its real, left-aligned line number, the
-usual Vim/Neovim "hybrid" look), so a plain =:set nonumber
-norelativenumber= is what turns them off entirely. The same gutter
-column also always carries fold markers and any git-gutter/LSP-
-diagnostic/DAP-breakpoint/TODO-scan sign for that line (one mark per
-row, highest-priority sign wins), regardless of whether either number
-option is on. =:set ignorecase= (=noignorecase=) makes search and
-=:s=/=:g= case-insensitive; =:set wrapscan= (=nowrapscan=, on by
-default) controls whether search wraps around the buffer. =:set
-textwidth=N= (=tw=N=, default 80) sets the column width =gq=/=gqq=
-wrap paragraphs to. =:set wrap= (=nowrap=, on by default) soft-wraps a
-row too wide for the pane onto extra visual rows instead of running it
-off the right edge -- the buffer still has exactly one logical line
-there, so it never gets its own line number and =j=/=k= still move by
-buffer line, not visual row.
+*Editing.* Normal / Insert / Replace / Visual (charwise, linewise,
+blockwise) / Command-line modes. Counted motions and operators, text
+objects, registers (the unnamed register *is* the system clipboard),
+marks, the jump list, =.=-repeat, macros, per-buffer undo. Regex search
+and =:s=/=:g=, with backreferences. A flash.nvim-style quick jump (=s=)
+that labels matches across every visible pane. Tree-sitter highlighting,
+with ~49 further languages a =just fetch-grammars= away.
 
-=:q= closes the current pane, quitting the application only if it's the
-last pane in the last tab (matching Vim); it refuses if that pane's
-buffer has unsaved changes unless forced with =:q!=. =:wq= is =:w= then
-=:q=, only proceeding if the write succeeded. =:qa= / =:qa!= /
-=:wqa= act the same way but across the whole session: =:qa= refuses if
-*any* buffer anywhere has unsaved changes, =:wa= writes every modified
-buffer that has a filename, and =:wqa= (also =:xa=) is =:wa= then =:qa=.
+*Windows.* Splits and tabs with directional navigation (=Ctrl-W hjkl=,
+=mod1+hjkl=), per-pane buffer tabs, pane zoom and maximize. Projects
+contain workspaces (backed by git worktrees) contain tabs contain panes,
+and each project's layout is saved and restored.
 
-Windows & tabs: =:split [file]= / =:vsplit [file]= split the current pane
-(horizontal/vertical), showing the same buffer unless a file is given;
-=:close= closes it. =Ctrl-W w= / =W= cycles focus to the next/previous
-pane; =Ctrl-W h/j/k/l= moves focus directionally instead (spatially
-left/down/up/right, same heuristic as =mod1+hjkl= below); =Ctrl-W c/s/v=
-close/split-horizontal/split-vertical the current one. =:tabnew [file]=,
-=:tabdelete=, =:tabnext=, =:tabprevious= manage tabs (=Ctrl-T= opens a
-new one, =Ctrl-Tab= / =Ctrl-Shift-Tab= step to the next / previous) --
-each tab has its own independent split-pane layout. Two panes split from the same buffer
-(no filename given) share it, including undo history. The tab bar is one
-row: =[project] [ws1] [ws2*] │ ● ○ + x= -- the project name, one text
-label per workspace (the active one highlighted, =*= when it has
-unsaved buffers, dimmed with =...= while its worktree is still being
-created), then the active workspace's tabs as circles with the
-new/close buttons; participant chips, three search buttons (fuzzy find
-in the current buffer, project-wide live grep, and the open-buffers
-picker -- the same pickers as =<leader>/=, =<leader>pr= and
-=<leader>bb=) and a row of sidebar toggle buttons (Files, Git, Symbols,
-Structure, Todo, Tests, Notifications, AI Agent -- lit while that panel
-is open, click to open or close it) dock right. Every pane header ends
-in =| _ x= buttons: split that pane vertically, split it horizontally,
-or close its visible buffer (and the pane, once empty).
-The open-buffers picker (=<leader>bb=) previews the highlighted buffer's
-live contents (unsaved edits included) around its cursor; =Enter= shows
-it in the focused pane, =C-v= / =C-s= open it in a new vertical /
-horizontal split, =C-t= in a new tab page, =C-i= as a buffer tab of the
-focused pane, and =C-d= deletes it (confirming first if it has unsaved
-changes). =mep.buffer_open_with(id, how)= is the scriptable form. Every
-picker lists its keys along its bottom edge.
-Clicking a workspace label switches, middle-click closes it, hovering
-shows its directory and branch; clicking the project label opens the
-loaded-projects switcher. Sidebars docked on the same left/right edge
-merge into one column split vertically between them (so opening Git
-Status next to the file tree stacks it below rather than beside);
-drag the divider between two, or =mod1+Shift+j/k= from inside one, to
-re-split them, =mod1+j/k= steps focus between them, and =mod1+Ctrl+j/k=
-swaps the focused one with the sidebar above/below it (it stays focused,
-so the cursor travels with it). =mod1+m= from inside a focused sidebar
-pops it out into a large centered float -- the same rows and keys (so
-=j/k=, Enter and every panel's own bindings work unchanged), plus a
-preview column: the file tree shows the file under the cursor (or a
-directory's listing), Git Status shows =git diff HEAD= for the entry,
-Todo shows the headline's org subtree, and Structure shows the
-definition's source, each syntax-highlighted where a grammar is
-available. =mod1+j/k= scroll the preview; =Esc=, =q=, =mod1+m= again or
-a click outside the box drop back to the docked panel, and anything
-that moves focus out of the sidebar ends the popout too. A Lua sidebar
-gets a preview by registering =mep.sidebar_set_on_preview(id, fn)=:
-=fn(widget_id)= runs whenever the cursor's row changes while popped out
-and answers with =mep.sidebar_set_preview(text, spans, title,
-current_row)= (=spans= as in =mep.picker_set_preview=), or through the
-=mep.sidebar_preview_code(lines, filetype, title, current_row)=,
-=mep.sidebar_preview_diff(text, title)= and
-=mep.sidebar_preview_path(path, is_dir, title)= helpers the built-in
-panels use; =mep.read_lines(path, max_lines)= reads a file for it,
-preferring an open buffer's unsaved text. =mep.sidebar_popout_toggle()=
-is what =mod1+m= calls.
-The git gutter marks every changed line in the sign column, the way
-gitsigns.nvim / vim-gitgutter do, and is *on by default*: a green bar on
-each added line, a yellow bar on each changed one, and a red stripe along
-the edge of the line a deletion happened next to (the top edge of line 1
-when the deletion ran off the top of the file; a changed line that also
-dropped lines gets both a bar and a stripe). The marks are rectangles
-rather than glyphs -- none of the embedded fonts cover the box-drawing
-block Neovim's defaults use.
+*IDE.* LSP — completion, hover, definition, references, implementation,
+rename, code actions, diagnostics, formatting. DAP debugging. Snippets,
+spell check, a task runner that finds your =just=/=make=/=ninja=/=cmake=
+setup. GitHub Copilot inline completions ([[file:docs/copilot.org][setup]]).
 
-It diffs the buffer's *live, unsaved* text, not what's on disk, and
-recomputes on a debounce as you type, when you switch buffers, and after
-any action from the git panel; a file that isn't in a repository gets no
-marks at all, and one that's in a repository but not in the base (a new
-or untracked file) reads as all-added. The default base is =HEAD=, so
-staging a change doesn't make its marks disappear -- unlike gitsigns and
-vim-gitgutter, which both compare against the index and so go blank the
-moment you =git add=. =:MepGitGutter base index= is that stage-aware
-view if you want it, and =:MepGitGutter base <ref>= takes any other
-revision (a branch, =HEAD~1=, a SHA). =:MepGitGutter on|off|toggle= (or
-=<leader>gd=, which reports which way it went) turns it off and on,
-=:MepGitGutter= alone recomputes, and =:lua mep.git_gutter_line_hl =
-true= adds vim-gitgutter's whole-line tint on top of the sign-column
-marks.
+*Git.* Gutter signs against any base ref, hunk preview, staging and
+navigation, and a five-view panel: status, log, graph, branches, stash.
 
-=]g= / =[g= (or =]c= / =[c=, vim's own diff-mode motions) jump to the
-next/previous hunk, wrapping at either end. =<leader>gv= previews the
-hunk under the cursor as a unified diff in a dismiss-on-any-key float
-(=:MepGitPreviewHunk=; =:lua mep.git_hunk_preview_on_jump = true= pops
-it on every jump too), =<leader>ga= stages that one hunk and
-=<leader>gr= resets it back to the base. Staging re-diffs against the
-index itself rather than reusing the displayed hunks, so it stages
-exactly the change under the cursor whatever the gutter's base is set
-to. =mep.git_gutter_summary()= returns the buffer's =+a ~c -d= counts
-for a statusline.
+*Sidebars.* File tree, symbols, structure outline, git, todo, tests,
+notifications and AI agents — dockable to either edge, stacked and
+resizable, and each one pops out into a large preview float with
+=mod1+m=.
 
-The git panel (=<leader>gG= docked, =<leader>gg= popped out, the tab bar's Git button, or
-=:MepGitStatus=) is one sidebar with five views on a tab strip --
-=Tab=/=Shift-Tab=, the =1=-=5= keys or a click switch them, and
-=mod1+m= pops the panel out with a preview column beside the list:
-- *Status*: staged, changed and untracked files in their own sections
-  (the preview is =git diff --cached= / =git diff= for the row, the file
-  itself for an untracked one). =s=/=u= stage/unstage the row, =S=/=U=
-  everything, =d= discards it after a confirm (deletes an untracked
-  file), =Enter= opens the file.
-- *Log*: =git log= (latest 300), the preview is =git show= for the
-  commit; =y= copies its hash, =Enter= pops the panel out.
-- *Graph*: =git log --graph --all= (latest 500), every branch's history
-  drawn as colored lanes with the refs on their commits; same preview
-  and keys as *Log*.
-- *Branches*: local and remote branches, newest commit first, with
-  ahead/behind and upstream; the preview is that branch's =git log
-  --oneline=. =Enter= checks one out (a remote one as a tracking
-  branch), =n= creates a branch from HEAD, =x= or =D= deletes one (a
-  remote branch via =git push --delete=, both after a confirm), =m= merges it
-  into the current branch, =r= rebases the current branch onto it.
-- *Stash*: =git stash list=; the preview is =git stash show -p=.
-  =n= stashes the working tree (untracked included, optional message),
-  =Enter=/=a= applies, =o= pops, =x= drops after a confirm.
-In every view =c= commits and =C= amends -- the message is edited in a
-floating pane over the repository's own =COMMIT_EDITMSG=, with the
-usual =#= status comment block below; =ZZ= in Normal mode commits the
-message, while =Escape= (or =:q=, or clicking away) aborts and discards
-it -- =P= (or =p=) pushes (offering to set the upstream when the branch has
-none), =l= pulls, =f= fetches (=--all --prune=), =R= re-reads and =?=
-lists the keys. Every view's head section says how far the branch is
-ahead of / behind its upstream (or that it has none), so unpushed
-commits stay in sight. Every action reports its result as a toast and
-refreshes the view. =<leader>gl= / =gL= / =gb= / =gs= open the log, graph,
-branches or stash view popped out, =<leader>gc= / =gp= commit / push, and
-=:MepGitLog=, =:MepGitGraph=, =:MepGitBranches=, =:MepGitStash=, =:MepGitCommit=,
-=:MepGitPush=, =:MepGitPull= and =:MepGitFetch= are the command forms.
+*Beyond text.* Every one of these opens as a pane, from mep's own code:
 
-The Todo sidebar (=<leader>tt=, the tab bar's Todo button, or
-=:MepActivityTodoPanel=) lists every keyworded headline of the project's
-=TODO.org= (=mep.activity_todo_file= overrides the path) and edits it in place:
-=a= adds a todo (a new =* TODO= headline at the end of the file), =e= opens
-=TODO.org= itself in a floating pane with the cursor on that headline, so its
-body, properties and clock lines can be edited too, not just the title (=Escape=
-with nothing pending, =:q= or a click outside the box closes it, writing the
-file if it changed, and focus returns to the same sidebar row), =d= marks it
-done (or not done again), =x= deletes it and its whole subtree after a confirm,
-and =Enter= (or a click) starts or stops its clock -- an org =CLOCK:
-[start]--[end] => H:MM= time entry in a =:LOGBOOK:= drawer under the headline,
-the same lines =:MepOrgClockIn=, =:MepOrgClockOut= and =:MepOrgClockTable= use.
-Only one clock runs at a time, so starting another todo's clock stops the
-running one; marking a clocked-in todo done stops it too. The running todo's row
-shows as =[>]=, =o= opens the file, =R= re-reads it and =?= lists the keys. The
-status bar's right edge carries the active-todo chip: green with the clocked-in
-todo's title and a live elapsed timer, or a red =[No active TODO]= when nothing
-is clocked in; it follows the file (a clock started from inside =TODO.org=
-counts too) and clicking it toggles the sidebar. =mep.active_todo_set(text,
-start_unix_seconds)= / =mep.active_todo_set(nil)= is the hook behind it, for
-anyone driving the chip from their own Lua. =:bnext=/=:bn= and
-=:bprevious=/=:bprev=/=:bp= cycle the current pane through every open buffer *of
-the current workspace* (not just the ones already opened in that pane's own tab
-strip), wrapping at either end. A file row in the file tree (or the git status
-sidebar) can also be dragged straight onto a pane: the same drop-zone pinwheel
-the pane tab chips use lights up under the mouse -- drop in the centre to open
-the file in that pane, on an edge to split the pane that way and open it in the
-new half. =Ctrl-O=/=Ctrl-I= walk backward/forward through the jumplist
-(populated by searches, =gg=/=G=, and mark jumps) -- per pane, and able to span
-buffers, distinct from the single-slot =``=/='''= mechanism.
+| Open this | And you get |
+|-----------+-------------|
+| =.pdf= | a PDF viewer with real text extraction, outlines and links |
+| =.html= (or =:Browse <url>=) | a browser pane with mep's own HTML/CSS/JS engine; =:Serve= hosts a directory ([[file:docs/web.org][more]]) |
+| =.png=, =.jpg=, … | an image viewer, and =e= enters a layer-based editor with procedural fills ([[file:IMAGE_EDITOR.md][more]]) |
+| =.obj=, =.gltf=, =.glb=, =.iqm=, =.vox=, =.m3d= | a 3D modeler: mesh editing, materials, lights, animation, rendering (=.blend= too, via a local Blender) |
+| =.ipynb= | a Jupyter notebook with per-cell kernels, run without =jupyter_client= ([[file:docs/notebooks.org][more]]) |
+| =.org= | agenda, babel, roam, capture, clock, drill, LaTeX and image preview, export, plus =:Gantt= and =:Kanban= views |
+| =.docx=, =.odt=, =.xlsx=, =.ods=, =.csv= | office documents and spreadsheets, with formulas |
+| =.mov= | a video player |
+| =:terminal= | a real terminal emulator |
 
-Projects & workspaces: tabs nest inside *workspaces*, which nest inside
-*projects*. A project is a directory (the one mep was started in, or
-=mep --project <dir>= / =$MEP_PROJECT= / =:project <dir>= /
-=mep.project_open(dir)=); several can be loaded at once and
-=:projects= (or clicking =[project]=, or =<leader>pp=) switches between
-them; =:projectclose[!]=, =:projectnext=, =:projectprevious=. A project
-opened for the first time gets the default layout -- its README in the
-main pane, a terminal below it and the file tree in the left sidebar;
-one with a saved session is restored exactly as it was left, with none
-of that applied on top. =:projectclear[!]= / =<leader>pc= throws away
-the active workspace's tabs, panes, buffers and terminals (refusing on
-unsaved buffers unless forced) and rebuilds that default layout. Every
-project starts with a primary =main= workspace whose root is the
-project directory. =:wsnew <name>= creates another: on a git project it
-runs =git worktree add -b <name> <parent>/<repo>.worktrees/<name> HEAD=
-(asynchronously -- the label shows =[name...]= until git finishes) so
-each workspace edits its own checkout on its own branch; =:wsnew! <name>=
-attaches to an already-existing branch instead. The process working
-directory always follows the active workspace's root, so =<leader>ff=,
-live grep, =:e=, LSP (one client per language *per workspace root*) and
-=:terminal= (which also gets =$MEP_WORKSPACE_NAME= / =$MEP_PROJECT_NAME=) all act
-on that worktree. Buffers belong to the workspace they were opened in:
-=:ls=, =<leader>bb=, =:bnext= and the agent's =buffer.list= only show
-the active workspace's, while =:wa= and the =:qa= unsaved-changes guard
-stay global so nothing hidden is ever lost. =:ws <name|N>=, =:wsnext= /
-=:wsn=, =:wsprevious= / =:wsp=, =Ctrl-Alt-]= / =Ctrl-Alt-[= switch, and
-=Alt-1= .. =Alt-9= jump straight to the Nth workspace;
-=:wslist= / =<leader>ww= picks from a list; =:wsrename <name>=;
-=:wsdelete[!] [name]= runs =git worktree remove= (the *branch is kept*)
-then closes the workspace, refusing on unsaved buffers unless forced;
-=:wsadopt <path-or-branch>= turns a hand-made worktree into a workspace,
-=:wsprune= drops workspaces whose directory vanished. =<leader>gw= lists
-workspaces with branch and ahead/behind counts. Non-git projects work
-identically minus the worktrees (every workspace shares the project
-root). =mep.opt.worktree_dir= relocates new worktrees (absolute, or
-relative to the project root); =mep.opt.workspace_git_dirty = true= adds
-a =+= label suffix from a 5-second =git status= poll. Each project's
-layout -- workspaces, tabs, split trees, open files (relative to the
-workspace root), cursors, terminals -- is saved to
-=$XDG_DATA_HOME/mep/workspaces/<name>-<hash>.json= half a second after
-any structural change and on quit, and restored when the project is
-next opened (missing files are skipped with a message, vanished
-worktrees pruned, a corrupt file ignored); =mep --no-session= or
-=mep.opt.restore_workspaces = false= skips it, =:wssave= / =:wsrestore=
-do it by hand. Lua: =mep.workspace_list/current/root/new/switch/delete/
-rename/next/previous/adopt/prune()=, =mep.on_workspace_changed(fn)=,
-=mep.project_load/current/loaded_list/switch/close/next/previous()=.
+*Collaboration and agents.* CRDT-based shared editing over a
+self-hosted relay ([[file:docs/collaboration.org][docs]]). An agent-control socket, and a =mep-mcp=
+MCP server on top of it, let an AI agent drive the editor directly —
+buffers, panes, workspaces, the image editor and the 3D modeler — while
+you watch ([[file:MEP_AGENT_API.md][API]]).
 
-=mod1= (=Alt= by default, any mode): =mod1+s= / =mod1+v= split
-horizontal/vertical; =mod1+h/j/k/l= move focus to the pane spatially
-left/down/up/right of the current one (picking the one with the most
-overlap along the perpendicular axis, then the closest, the same
-heuristic tmux/i3 use) -- a no-op if there isn't one that way.
-=mod1+Shift+h/j/k/l= resizes the current pane that way instead: it grows
-against a neighbor on that side if there is one, otherwise shrinks
-against whichever neighbor it does have on that axis, so opposite keys
-always do opposite things; a no-op if the pane is alone on that axis
-(mirroring mep.nvim's =mep.window.panes.resize=). =mod1+m= maximizes
-the current pane -- every other pane shrinks to the minimum size those
-resize keys stop at -- and pressed again restores the layout from
-before (pressed in another pane while one is maximized, it maximizes
-that one instead; from a focused sidebar it pops the sidebar out, see
-above; =mep.pane_maximize_toggle()= from Lua). =mod1+Ctrl+h/j/k/l=
-moves the pane's active buffer tab into the neighboring pane that way,
-closing the current pane if that was its last tab (from inside a
-sidebar, =mod1+Ctrl+j/k= instead swap that sidebar with its stack
-neighbor -- see above). =mod1+d= removes the
-active buffer tab from the current pane (closing the pane once its last
-tab is gone). These are themselves just =mep.map_mod1()= calls run at
-startup (see the Lua API below), so redefine or remove any of them from
-=init.lua= like any other mapping.
+*Learning games.* An org file doubles as a flashcard deck, and 24 game
+modes deal sessions from it ([[file:docs/learn-games.org][docs]]).
 
-Any mode: =Ctrl+Shift+== / =Ctrl+Shift+-= grow/shrink the font (the
-window opens maximized/fullscreen, and both the native window and the
-wasm canvas resize the editor to fill whatever size they're given).
+* Configuration
 
-Per-tab terminal: =<leader><CR>= (also =:tabterminal= / =:tabterm= /
-=:MepTabTerminal=, or =mep.tab_terminal_toggle()=) toggles one shell
-per tab along the bottom of that tab, spanning its full width. The
-first press opens a fresh =:terminal= there and focuses it; pressing
-again while it is showing closes the pane but leaves the shell running,
-and the next press brings the same shell back. A shell that has exited
-is replaced by a fresh one. Hiding it from inside the terminal returns
-focus to the pane it was opened from (leave Terminal mode first with
-=Ctrl-\ Ctrl-n=, since in Terminal mode every key goes to the shell);
-hiding it from another pane leaves focus where it was.
-=mep.opt.tab_terminal_share= (default =0.3=) is its share of the tab's
-height.
-
-Terminal: =:terminal= (or =:term=) opens a shell in a horizontal split
-*below* the current pane.  Its grid keeps one terminal-cell of left padding.
-
-AI terminal: =<leader>a<CR>= (also =:aiterminal= / =:aiterm= /
-=:MepAiTerminal=, or =mep.ai_terminal_open()=) splits the current pane
-and runs Claude Code in a =:terminal= pane *below* it, focused, with an
-appended system prompt that explains it is inside this mep window and
-how to drive it through the =mep-agent= MCP server (=src/mcp_bridge.cpp=,
-built as =mep-mcp= -- a dependency-free C++ binary, see =MEP_AGENT_API.md=
-for the full tool reference including UI automation and the image
-editor: tool names, 0-indexed/end-exclusive conventions, the virtual
-cursor, and to edit open files through mep's buffer tools rather than
-behind its back). Every =:terminal= exports =$MEP_AGENT_SOCKET= (this
-window's own agent socket), which the MCP server honors ahead of its
-directory scan, so the agent always lands on the window it was launched
-from even with several open. The server is expected to be registered
-with Claude Code already (=claude mcp add mep-agent --
-/path/to/mep/build/native/mep-mcp=); alternatively
-=mep.opt.ai_terminal_mcp_server = '/path/to/mep-mcp'= passes it inline
-via =--mcp-config=. =mep.opt.ai_terminal_cmd= (default
-={'claude'}=, e.g. ={'claude', '--model', 'opus'}=),
-=mep.opt.ai_terminal_share= (the terminal's height fraction, =0.4=) and
-=mep.opt.ai_terminal_instructions= (the prompt text; set to ='''= to send
-none) are all =init.lua=-overridable.
-
-AI agents sidebar: =<leader>al= (also =:aiagents= / =:MepAiAgents=, the
-=AI Agents= top-bar button, or the =Activity= picker; =<leader>aa= /
-=:MepAiAgentsToggle= toggles it open and closed) lists every AI
-agent in this window, grouped by workspace: its name, status badge
-(=thinking= / =writing= / =needs input= / =done= / =starting=) and, on
-a dimmed second row, the running task -- the terminal's live OSC
-title, which Claude Code keeps set to a summary of what it is doing.
-An agent whose terminal process has exited disappears from the list
-automatically (its pane stays open until you close it). Enter (or a click) on a row jumps to the workspace,
-tab and pane holding that agent's terminal, activating a hidden buffer
-tab if that is where it lives; =n= opens a new AI terminal, =r= forces a
-re-scan (it polls twice a second on its own while open). Agents that
-connected from a terminal mep didn't open are listed under =outside
-mep= and jump to their cursor's buffer instead. Pairing works because
-every =:terminal= exports =$MEP_TERMINAL_BUFFER= and the MCP server
-reports it as =terminal_buffer_id= in =session.identify=.
-
-*** Lua API
-
-Available to =:lua=, =:source=, and =init.lua=:
-
-- =mep.get_line(row)= / =mep.set_line(row, text)= — 1-indexed.
-- =mep.line_count()=
-- =mep.cursor()= -> row, col / =mep.set_cursor(row, col)=
-- =mep.current_buffer()= -> the active pane's own buffer id.
-- =mep.insert_text(text)=
-- =mep.clipboard_get()= -> text / =mep.clipboard_set(text)= — the
-  system clipboard itself, bypassing the registers.
-- =mep.notify(msg)= — also what Lua's own =print()= is routed through.
-- =mep.command(name, fn)= — defines a =:name= ex-command.
-- =mep.map(mode, key, fn)= — binds a single key (mode =\"n\"= or
-  =\"v\"=/=\"V\"=), overriding the builtin for that key.
-- =mep.quick_jump(query?)= — starts the =s= quick jump, optionally
-  feeding =query= as if typed; =mep.quick_jump_matches()= -> array of
-  ={pane_id, row, col, label}= (1-indexed, active pane first) while it
-  is open; =mep.quick_jump_pick(label)= -> true if that label jumped.
-- =mep.map_mod1(key, fn)= — binds a letter under =mod1=, globally across
-  all modes: a bare letter (=\"h\"=) for =mod1+letter=, or =\"S-\"=/
-  =\"C-\"=-prefixed (=\"S-h\"=, =\"C-h\"=) for =mod1+Shift+letter= /
-  =mod1+Ctrl+letter=. Two non-letter keys also work, each their own
-  special case since neither is a letter: =\"Tab\"=/=\"S-Tab\"=, and
-  =\"CR\"=/=\"S-CR\"= (Enter). Overrides any prior mapping for that exact
-  key, including the startup defaults.
-- =mep.set_mod1(name)= — =\"alt\"= (default), =\"ctrl\"=, =\"shift\"=, or
-  =\"super\"=/=\"cmd\"=/=\"meta\"=.
-- =mep.nav_pane(direction)= — =\"left\"=/=\"down\"=/=\"up\"=/=\"right\"=;
-  what the =mod1+hjkl= defaults call.
-- =mep.resize_pane(direction, step?)= — moves the split boundary between
-  the current pane and its neighbor that way by =step= (a 0..1 fraction
-  of the split's extent, 5% if omitted); what the =mod1+Shift+hjkl=
-  defaults call.
-- =mep.pane_move_buffer(direction)= — moves the current pane's active
-  buffer tab into the neighboring pane that way, closing the current pane
-  if it was its last tab; what the =mod1+Ctrl+hjkl= defaults call.
-- =mep.pane_close_buffer()= — removes the current pane's active buffer
-  tab, closing the pane once its last tab is gone; what =mod1+d= calls.
-- =mep.cmd(str)= — runs =str= as if typed after =:= and Enter pressed
-  (e.g. =mep.cmd(\"vsplit\")=); a general escape hatch for driving any
-  ex-command from Lua.
-- =mep.leader_map(seq, desc, fn, icon?, icon_hl?)= — binds a key sequence
-  after the leader (space), shown in the which-key popup; =mep.leader_group(prefix,
-  label, icon?, icon_hl?)= names a group. In either API, =icon= is an
-  optional Nerd Font codepoint displayed before its key and =icon_hl=
-  optionally names the highlight group that colors it. =seq= is one character per key, except Enter,
-  spelled =<CR>= (=<Return>=/=<Enter>= also accepted): =mep.leader_map('a<CR>', ...)=.
-- =mep.current_tab_id()= — the active tab's stable id (unchanged by
-  =:tabdelete=/=:tabnew= around it, unlike its index); =mep.current_pane_id()=
-  the focused pane's id, and =mep.pane_focus(pane_id)= -> bool focuses a
-  pane of the active tab by id. =mep.pane_split_bottom(buffer_id?, share?)=
-  opens a new full-width pane along the bottom of the tab (vim's
-  =:botright split=) showing =buffer_id= (default: the current buffer),
-  focused, taking =share= (default =0.3=) of the tab's height. The per-tab
-  terminal is built on these.
-- =mep.terminal_here(args?)= — turns the active pane into a =:terminal=
-  in place (no split); =args= runs =$SHELL -c args=.
-- =mep.terminal_here_argv(argv, title?)= — same, but runs the =argv=
-  array directly with no shell in between (for arguments that would
-  otherwise need shell quoting, like a multi-line prompt); =title=
-  labels the buffer tab (default =argv[1]=).
-- =mep.sidebar_set_tabs(id, {name, ...}, active?)= gives a sidebar a
-  tab strip (drawn under the docked title and beside the popout's);
-  =Tab=/=Shift-Tab= while focused, a click on a name or
-  =mep.sidebar_set_active_tab(id, index)= switch, each calling the
-  =mep.sidebar_set_on_tab(id, fn(index))= callback (1-based) so the
-  consumer re-renders its sections for that view;
-  =mep.sidebar_active_tab(id)= reads it. The git panel is built on it.
-- Every sidebar's bottom row hints =?: help=: =?= swaps its rows for a
-  list of its key bindings (the footer then reads =Esc: back to ...=;
-  =Escape=, =?= or =q= return). =mep.sidebar_set_help(id, {{key,
-  description}, ...})= sets the sidebar-specific keys listed above the
-  shared navigation keys (an empty key is a sub-heading);
-  =mep.sidebar_toggle_help(id)= / =mep.sidebar_help_open(id)= drive it
-  from Lua. The file tree (=<leader>ff=, a pane rather than a sidebar)
-  works the same way.
-- A sidebar widget marked =current = true= (the Structure outline's
-  "you are here" item, the Buffers list's current buffer, ...) is scrolled
-  into view whenever it moves while the sidebar isn't focused.
-  =mep.sidebar_for_buffer(buf)= -> the sidebar id a pane-hosted sidebar
-  buffer shows (or nil); =mep.buffer_on_screen(buf)= -> whether some pane
-  in the active tab shows =buf=.
-- =mep.buffer_set_footer(id, text, hl?)= draws a one-line hint along the
-  bottom row of every pane showing buffer =id= (the pane-hosted version of
-  a sidebar's =?: help= footer); an empty =text= removes it. A buffer's
-  =mep.buffer_set_on_key= hook is also offered a bare Normal-mode Escape,
-  as ="\27"= (return false to keep its usual meaning).
-- =mep.float_open(path, line?, {save_on_close=bool}?)= -> bool opens a
-  file in a floating editable pane centered over everything -- a real
-  pane over a real buffer (every editing mode, =:w=, the wheel all work
-  inside it), closed by =Escape= with nothing pending, =:q=/=:close=, or
-  a click outside the box. =save_on_close= (default true) writes the
-  buffer on close if it changed, and =on_close=fn(saved)= runs once it
-  is gone with whether that close wrote the buffer; opened from a
-  focused sidebar, closing returns focus to that sidebar row.
-  =mep.float_close()= / =mep.float_is_open()= go with it. The Todo
-  sidebar's =e= and the git panel's commit editor are built on it.
-- =mep.terminal_info(buffer_id)= -> ={title=, exited=, exit_code=}= for
-  a =:terminal= buffer (=title= is the live OSC title, falling back to
-  the launch label), =nil= otherwise.
-- =mep.participants()= -> array of ={id=, name=, kind='human'|'agent',
-  buffer_id=, row=, col=, has_location=, status=, terminal_buffer_id=}=
-  — the same snapshot the tab-bar chips draw from.
-- =mep.buffer_workspace(buffer_id)= -> the owning workspace's id, or
-  =nil= for an unscoped buffer.
-- =mep.jump_to_buffer(buffer_id)= -> bool — switches workspace, tab and
-  pane to land on a buffer wherever it lives (=mep.pane_focus_buffer=
-  only searches the active tab).
-- =mep.quit()=
-
-** Jupyter notebooks
-
-Opening a =.ipynb= file shows the notebook as an ordinary editable buffer in
-the "percent" cell format that Jupytext/VS Code/Spyder use: every cell starts
-with a =# %%= marker (=# %% [markdown]= for markdown cells, whose bodies stay
-raw markdown), so all the usual motions, edits, undo and search apply to cell
-sources, and each cell body is syntax-highlighted in its own language. What the
-text can't carry -- outputs, execution counts, ids, metadata -- is kept
-alongside and written back as real nbformat JSON on =:w= (with Jupyter's own
-indentation, so diffs stay clean). Each code cell draws a header
-(=In [n]:= plus a clickable =Run= chip) and its outputs directly underneath:
-stdout/stderr, the last expression's value, tracebacks, and inline
-=matplotlib= figures.
-
-Cells run without =jupyter_client=: =Enter=, =Ctrl+Enter= or the Emacs-style
-=Ctrl-C Ctrl-C= chord runs the cell under the cursor (the chord works in Insert
-mode too), =Shift+Enter= runs it and moves to the next cell, and =mod1+Enter=
-runs it and inserts a new cell below. The =<leader>j= group holds the rest --
-=jA= run all, =ja=/=jb= insert above/below, =jd= delete, =jm=/=jy= to
-markdown/code, =jk=/=jj= move, =jc=/=jC= clear outputs, =ji= interrupt, =j0=
-restart the kernels, =jK= set the cell's kernel -- with =]j=/=[j= to step
-between cells and =:Notebook*= commands (and =:NotebookNew [path]=) for all of
-it. =examples/notebook_example.ipynb= is a ready-made notebook to try.
-
-Each cell is drawn as its own rounded card so code and markdown blocks read as
-distinct blocks (markdown cards are tinted apart from code, and the cell under
-the cursor is accented). A toolbar across the top of the notebook pane has
-buttons for the common structural actions -- =+ Code=, =+ Markdown=, =Run All=,
-=Interrupt=, =Restart=, =Clear= -- alongside the =<leader>j= keys.
-
-*Per-cell kernels.* Every code cell picks its own kernel, chosen from the
-dropdown at the top-right of the cell (click it, or =jK=). The list is
-=mep.opt.notebook_kernels=; out of the box it offers Python 3 plus whichever of
-R, JavaScript (Node), Ruby and Bash are found on =PATH=. Python 3 is one
-persistent process (state and inline =matplotlib= figures carry across cells,
-driven through =mep.opt.notebook_python=); the others are stateless "script"
-kernels that get each cell's code on stdin and show its output. A cell with no
-explicit choice follows the notebook default (its =kernelspec=, else the first
-kernel); a new cell inherits the previous cell's kernel, so a block keeps
-running on whatever the one above it used. Each cell's choice is written to its
-=metadata.kernel= on =:w=, and =In [n]:= counts up as one shared sequence across
-every kernel. Runs execute one at a time in order regardless of kernel, so a
-mixed "run all" still goes top to bottom. Add or replace kernels from =init.lua=:
+mep reads =$XDG_CONFIG_HOME/mep/init.lua= (or =~/.config/mep/init.lua=)
+at startup. It is ordinary Lua against the same =mep.*= API the editor's
+own built-in configuration uses.
 
 #+begin_src lua
-mep.opt.notebook_kernels = {
-  {name='python3', display_name='Python 3', language='py', mode='python'},
-  {name='ir', display_name='R', language='r', mode='script', command={'R', '--slave', '--no-save'}},
-  {name='deno', display_name='Deno', language='js', mode='script', command={'deno', 'run', '-'}},
-}
+-- One of 62 built-in themes; :MepTheme picks one interactively.
+mep.cmd('colorscheme gruvbox-dark')
+
+-- A command and a leader binding of your own.
+mep.command('Hello', function() mep.notify('hello from init.lua') end)
+mep.leader_map('xh', 'Say hello', function() mep.cmd('Hello') end)
+
+-- Rebind the mod1 modifier, and turn Copilot off.
+mep.set_mod1('super')
+mep.copilot_enabled = false
 #+end_src
 
-=mode= is =python= (the built-in persistent kernel, no =command=), =protocol=
-(your own long-lived process speaking mep's JSON-line kernel protocol), or
-=script= (a fresh process per run, code on stdin). =language= is the Treesitter
-filetype the cell body is highlighted with.
+=:lua <code>= evaluates a line, =:source <file>= loads a script. The
+whole surface is in [[file:docs/lua-api.org][docs/lua-api.org]].
 
-** Browser pane, local web server, capability ladder
+* Documentation
 
-=:Browse <url-or-path>= (=<leader>bo=) opens a page in mep's own in-pane
-browser. A page from a URL is loaded by mep itself (plain sockets for
-=http://=, =curl= for =https://=) together with its stylesheets, scripts and
-images, and its =fetch()= calls go back to the server it came from.
+| [[file:docs/keybindings.org][Keybindings and commands]] | every key and =:= command |
+| [[file:docs/lua-api.org][Lua API]] | the =mep.*= table |
+| [[file:docs/architecture.org][Architecture]] | the source tree, for contributors |
+| [[file:docs/notebooks.org][Notebooks]] | Jupyter cells and kernels |
+| [[file:docs/web.org][Browser pane]] | the web engine, =:Serve=, the capability ladder |
+| [[file:docs/copilot.org][Copilot]] | setup, commands, what gets sent |
+| [[file:docs/collaboration.org][Collaboration]] | shared editing and running your own relay |
+| [[file:docs/learn-games.org][Learning games]] | the deck format and the games |
+| [[file:MEP_AGENT_API.md][Agent API]] | driving mep from a script or an AI agent |
+| [[file:IMAGE_EDITOR.md][Image editor]] | tools and hotkeys |
 
-The pane has an omnibar across the top: back, forward and reload buttons,
-the URL, the page title. =o=, =Ctrl-L= or a click edits the URL --
-=localhost:8000=, =:8000/app=, =example.com= and file paths all work --
-=Enter= goes, =Esc= cancels; =H= / =L= / =r= are back / forward / reload from
-the keyboard, =f= shows link hints, =Ctrl-E= flips to the page source.
+* Development
 
-=:Serve [dir] [port]= (=<leader>bh=) hosts a directory on
-=http://localhost:PORT/= from inside the editor (the current file's directory
-by default, a free port if none is given) and opens it in the browser pane;
-=:ServeStop [port]= and =:Servers= manage what is running. It binds
-=127.0.0.1= only, serves GET/HEAD, never leaves the directory, and sends
-=no-store= so edits show on reload. From Lua: =mep.http_serve(dir, port)=,
-=mep.http_stop(port)=, =mep.http_servers()=, =mep.http_get(url)=.
-
-How much of a browser the engine is gets measured, not guessed:
-=examples/web/= is a ladder of twelve self-checking JavaScript sites, from a
-static page to a bundled React application, all of which pass in real
-Chromium. =:WebLadder= serves and opens it, =:WebLadderRun= scores every
-level, and =build/native/mep-web-ladder-test= does the same headlessly (plus
-=--eval file.js= to see what the engine says about one script). A failing
-level names the missing browser feature; =WEBKIT_PARITY_PLAN.md= keeps the
-current score (all twelve pass, so =--strict= is a regression gate) and what
-closing each gap took.
-
-Pages stay alive after they load: the pane pumps the page's event loop every
-frame (timers, =requestAnimationFrame=, promises, =async= functions, ES
-modules), a click lands on the DOM node under the pointer as a real =click=
-event (with checkbox/submit default actions, and a cancelled click on a link
-is not followed), and clicking a text field gives it the keyboard -- typing
-raises =input=, =Enter= submits the form, =Esc= or =Tab= leaves the field.
-
-** GitHub Copilot
-
-Inline AI completions, on by default. As you type, the suggestion appears
-dimmed in place — as if it were already written — and =Tab= accepts it.
-
-| Key            | In Insert mode, while a suggestion is showing |
-|----------------+-----------------------------------------------|
-| =Tab=          | accept the whole suggestion                   |
-| =Alt-Right=    | accept one more word of it                    |
-| =Alt-C-Right=  | accept one more line of it                    |
-| =C-]=          | dismiss it                                    |
-
-Typing the characters the suggestion was going to insert keeps it up: it
-just shrinks from the front, so you can type along with it and =Tab= out
-of it whenever you like. =Tab= still belongs to the completion popup
-whenever that popup is open, so the two never fight over the key.
-
-*** Setting it up
-
-mep drives GitHub's own =copilot-language-server=. Install it with
-=npm i -g @github/copilot-language-server=, or let mep fall back to
-=npx=, or point =mep.copilot_server_cmd= at your own build. Then:
-
-#+begin_src
-:CopilotLogin
+#+begin_src sh
+just run                # build and launch
+just build-native-dev   # -O0 build in build/native-dev, for fast iteration
+just test               # windowless unit tests
+just test-gui           # the tests that drive a real window
+just bench              # performance suite, results in bench_results/
+just lint               # clang-tidy + cppcheck + include-what-you-use
 #+end_src
 
-which shows a device code, copies it to your clipboard, and offers to
-open =github.com/login/device= in your real browser. Enter the code
-there and you're signed in.
+Tests and benchmarks are =EXCLUDE_FROM_ALL=, so an ordinary build
+produces only =mep=, =mep-mcp= and =mep-collabd=. Start at
+[[file:docs/architecture.org][docs/architecture.org]] for the layout of the source tree.
 
-mep never sees the resulting token. The language server runs the device
-flow itself and keeps the credentials in =~/.config/github-copilot= —
-the same directory the VS Code, Neovim and JetBrains Copilot clients
-share, so signing in once covers all of them. Nothing about the token
-crosses mep's socket in either direction and nothing is written into
-mep's own config.
+* License
 
-*** Commands
-
-- =:Copilot= — turn it on (and start the server). =:Copilot off=,
-  =:Copilot toggle=, =:Copilot restart=.
-- =:Copilot suggest= — ask right now, ignoring the idle delay.
-- =:CopilotStatus= — server, sign-in, account, and whether the current
-  buffer is being sent.
-- =:CopilotPanel= — several alternatives at once, in the picker.
-- =:CopilotLogin= / =:CopilotLogout=.
-
-*** What gets sent, and turning it off
-
-A completion request ships the surrounding buffer text to GitHub. Files
-whose whole point is to hold a secret are never sent at all —
-=.env=, =*.pem=, =*.key=, =id_rsa=, =.netrc=, =secrets.yaml= and
-friends; =mep.copilot_exclude_patterns= is the list.
-=mep.copilot_filetypes['md'] = false= turns it off for one filetype, and
-=mep.copilot_enabled = false= in =init.lua= turns the whole thing off
-before it ever starts a server.
-
-** Learning games
-
-An org file can double as a question bank for Duolingo-style drills: every
-headline tagged =:card:= is one entry, its title the term and its body the
-definition, and each game deals a randomized session from that deck.
-=examples/learn_basic_datastructures.org= is a ready-made deck (basic data
-structures) whose header comment documents the whole format, and
-=plans/LEARN_GAMES_PLAN.md= lists every game the format can drive, built or
-planned:
-
-#+begin_src org
-#+LEARN_TITLE: Basic Data Structures
-#+LEARN_FACTS: ACCESS SEARCH INSERT
-
-* Linear structures
-** Stack                                                     :card:
-:PROPERTIES:
-:QUESTION: Which structure returns the most recently added element first?
-:HINT: Last in, first out -- like a stack of plates.
-:ACCESS: O(n)
-:INSERT: O(1)
-:END:
-A {{last-in, first-out|LIFO}} collection supporting push and pop at one end...
-
-,#+begin_src python
-class Stack: ...
-,#+end_src
-#+end_src
-
-Deck-wide =#+LEARN_TAG:= / =#+LEARN_CHOICES:= / =#+LEARN_DIRECTION:= /
-=#+LEARN_ROUNDS:= / =#+LEARN_MATCH_SIZE:= / =#+LEARN_FACTS:= /
-=#+LEARN_TIME_LIMIT:= / =#+LEARN_MIXED:= / =#+LEARN_RANK:= / =#+LEARN_SRS:= tune
-the games; per-card
-=:CATEGORY:= (defaults to the parent headline, and wrong answers are drawn
-from the same category first), =:QUESTION:=, =:HINT:=, =:DISTRACTORS:=,
-=:ALIASES:=, =:HIDE:= and =:POINTS:= refine one entry, and any other property
-is a fact. In the body, ={{answer|hint}}= marks a blank, an ordered list is a
-sequence of steps, a 2-column table adds facts, and =#+begin_src= blocks carry
-the implementation -- plain, or tagged =:learn cloze= (code with blanks),
-=:learn bug :line N= (a buggy copy) or =:learn output= followed by
-=#+RESULTS:= (a demo); a =[[file:...]]= link on its own line is the card's
-picture. A deck with no tagged headline treats every headline that has a
-body as a card, so a plain glossary works untouched.
-
-=:Learn= (=<leader>ol=) picks a game; each is also its own =:Learn*= command
-(optional deck path), a =<leader>og?= key and a bare Lua global the deck's own
-=mep-lua= launcher blocks call. Every game opens a =Learn= pane where digits
-and letters pick, =n=/Enter moves on, =o= opens the current card in the deck,
-=r= restarts and =q= quits (each pane's last row lists its keys), and ends
-with a summary that lists the cards to review:
-
-| Game | Command | Key | Data it uses |
-|------+---------+-----+--------------|
-| Multiple-choice flashcards | =:LearnMCFlashCards= | =ogf= | cards |
-| Matching (pair a round, then submit) | =:LearnMatching= | =ogm= | cards |
-| Identify the code (names blanked out) | =:LearnCodeID= | =ogc= | src blocks |
-| True or false | =:LearnTrueFalse= | =ogt= | cards |
-| Fill in the blank | =:LearnCloze= | =ogb= | ={{blanks}}= |
-| Type the term | =:LearnTypeTerm= | =ogy= | cards, =:ALIASES:= |
-| Odd one out | =:LearnOddOneOut= | =ogo= | categories |
-| Which category | =:LearnWhichCategory= | =ogk= | categories |
-| Fact quiz | =:LearnFactQuiz= | =oga= | fact properties / tables |
-| Put in order | =:LearnPutInOrder= | =ogs= | ordered lists |
-| Jeopardy (board of point values) | =:LearnJeopardy= | =ogj= | categories, =:POINTS:= |
-| Hangman | =:LearnHangman= | =ogh= | cards |
-| Complete the code | =:LearnCompleteCode= | =ogx= | =:learn cloze= blocks |
-| Spot the bug | =:LearnSpotBug= | =ogd= | =:learn bug= blocks |
-| Predict the output | =:LearnPredictOutput= | =ogp= | =:learn output= + results |
-| Mixed practice (every type, shuffled) | =:LearnMixed= | =ogg= | whatever the deck has |
-| Timed mixed practice | =:LearnTimed [secs]= | =ogT= | =#+LEARN_TIME_LIMIT:= |
-| Which code is it (term -> snippet) | =:LearnCodeReverse= | =ogv= | src blocks |
-| Sort into buckets | =:LearnSortBuckets= | =ogu= | categories |
-| Rank by fact (lowest first) | =:LearnRank= | =ogn= | =#+LEARN_RANK:= numeric properties |
-| Survival (until the first miss) | =:LearnSurvival [game]= | =ogS= | any choice game |
-| Hot-seat two player | =:LearnHotSeat [game]= | =og2= | any game |
-| Picture quiz | =:LearnPictureQuiz= | =ogi= | =[[file:...]]= images |
-| Crossword | =:LearnCrossword= | =ogw= | terms + definitions |
-
-Choice games answer by digit or click, or by typing (=t=) where a typed
-answer makes sense (blanks, code); the typed-answer engine accepts the term
-and its aliases, ignoring case and punctuation, and forgives a one-letter slip
-on longer answers. Identify-the-code hides top-level classes as =Thing=,
-functions as =solve=, =:HIDE:= identifiers as =op1=..., and the term's own
-words as =thing= (Python keywords/builtins are left alone), restoring the real
-names after the answer; every code row is Treesitter-highlighted. Timed mode
-counts down in the header and scores a miss at zero. A game a deck can't feed
-says so in one line instead of starting. Every summary offers =g=, which
-records the session into org-drill's =:DRILL_*:= properties (SM-2: Good for a
-right answer, Again for a miss) so =#+LEARN_SRS: yes= can deal due cards first
-next time; =:MepOrgDrillReview= reads the same properties.
-
-The building blocks are reusable from Lua for further games:
-=mep.learn_parse_deck(path)=, the question generators
-(=mep.learn_mc_questions=, =learn_tf_questions=, =learn_cloze_questions=,
-=learn_fact_questions=, =learn_match_rounds=, ...),
-=mep.learn_anonymize_code(lines, card)=, =mep.learn_answer_matches(typed,
-accepted)= and the =mep.learn_games= / =mep.learn_catalog= tables.
-
-A deck can also launch itself: a =#+begin_src mep-lua= block runs inside
-mep's own Lua (org-babel's =emacs-lisp= analogue -- every other babel language
-is a subprocess without the =mep.*= API), so the example ends with one
-=Learn...()= block per game that =C-c C-c= executes. Return values become the
-block's =#+RESULTS:= unless =:results silent=; exports skip such blocks.
-
-** Layout
-
-- =src/main.cpp= — raylib init/loop/rendering; owns the embedded font
-  and recursively draws the active workspace's each tab's split-pane
-  tree (and the =[project] [workspace]= tab bar).
-- =src/editor.h= / =src/editor.cpp= — modes, motions, operators, undo
-  (per-buffer), buffers/panes/tabs/workspaces/projects (incl. the
-  per-project session save/restore), the =:= command line, and the
-  Lua-facing API surface.
-- =src/workspace_git.h= / =src/workspace_git.cpp= — pure helpers behind
-  git-worktree-backed workspaces (worktree dir derivation, =git worktree
-  list --porcelain= parsing, name validation, session-file paths);
-  unit-tested by =mep-workspace-test= (=just test=).
-- =src/lua_env.h= / =src/lua_env.cpp= — the embedded Lua state and the
-  =mep.*= C bindings.
-- =src/font_data.h= — JetBrains Mono Regular, embedded so both builds
-  load a real font with no external asset fetch/preload step (license:
-  =third_party_licenses/JetBrainsMono-OFL.txt=).
-- =CMakeLists.txt= — fetches raylib and Lua (Lua has no official CMake
-  build, so it's built as a plain static library by hand) and builds
-  =src/*.cpp= for wasm (via emscripten, when invoked with =emcmake=) or
-  natively otherwise.
-- =web/shell.html= — minimal HTML shell the wasm build is embedded into;
-  also reads the file-bridge port passed via the page's URL query string.
-- =launcher/serve.ts= — main thread: runs the loopback-only file-bridge
-  HTTP server, then hands off to =webview_worker.ts= to open
-  =build/web/mep.html= (a self-contained file, wasm and all, via
-  emscripten's =SINGLE_FILE=) through a =file://= URL.
-- =launcher/webview_worker.ts= — runs in its own Deno Worker (separate OS
-  thread) so that =webview.run()='s blocking native call can't starve
-  =serve.ts='s HTTP server on the main thread; see the file-bridge
-  explanation above for why that split exists.
-
-Note: =mep.html= is opened directly via =file://= rather than served over
-local HTTP -- the wasm is embedded into it (=-sSINGLE_FILE=1=) so there's
-no separate =.wasm= fetch a =file://= origin would need to pull off, and
-it keeps the window openable with zero server setup for the page itself.
-The file-bridge server is a separate, small HTTP server bound to
-=127.0.0.1= only, unrelated to serving the page.
-
-*** Self-hosted collaboration relay
-
-=mep-collabd= is the native C++ internet-facing relay. It has no runtime
-dependency on Deno, Node, or a WebSocket framework; the protocol framing is
-implemented in =src/collab_websocket.cpp=. It keeps transient rooms and
-presence only, forwarding opaque CRDT operations without inspecting document
-contents. Build and run it with:
-
-#+begin_src sh :eval no
-MEP_COLLAB_ADMIN_TOKEN=replace-with-a-long-secret \
-MEP_COLLAB_PUBLIC_URL=wss://collab.example.com \
-./build/native/mep-collabd --port 8787
-
-curl -X POST http://127.0.0.1:8787/v1/sessions \
-  -H "Authorization: Bearer replace-with-a-long-secret"
-#+end_src
-
-The response includes =id=, =secret=, and (when =MEP_COLLAB_PUBLIC_URL= is
-set) a ready-to-share =link=. Participants may append =?= parameters only as
-needed; MEP adds the display =name= when joining.
-For an internet deployment, terminate TLS at Caddy/nginx/Apache and proxy
-WebSocket upgrade requests to =127.0.0.1:8787=. Native MEP's transport
-validates =wss://= certificates and hostnames. Treat the capability link as
-private: anyone holding it can join that transient room.
-
-In MEP, open the same document for each participant, then run
-=:CollabJoin <link> [display-name]=. =:CollabStatus= reports the current
-roster and =:CollabLeave= disconnects. Connected participants appear as
-clickable status-line chips (for example, =Ada @12:4=); clicking a chip
-jumps to that participant's shared cursor. The relay is intentionally
-stateless: keeping the document open in at least one participant preserves
-its CRDT history, while reconnecting clients exchange operation snapshots.
+MIT. See [[file:LICENSE][LICENSE]]; bundled third-party licenses are in
+=third_party_licenses/=.

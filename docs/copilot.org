@@ -1,0 +1,57 @@
+#+TITLE: GitHub Copilot in mep
+
+Inline AI completions, on by default. As you type, the suggestion appears
+dimmed in place — as if it were already written — and =Tab= accepts it.
+
+| Key            | In Insert mode, while a suggestion is showing |
+|----------------+-----------------------------------------------|
+| =Tab=          | accept the whole suggestion                   |
+| =Alt-Right=    | accept one more word of it                    |
+| =Alt-C-Right=  | accept one more line of it                    |
+| =C-]=          | dismiss it                                    |
+
+Typing the characters the suggestion was going to insert keeps it up: it
+just shrinks from the front, so you can type along with it and =Tab= out
+of it whenever you like. =Tab= still belongs to the completion popup
+whenever that popup is open, so the two never fight over the key.
+
+** Setting it up
+
+mep drives GitHub's own =copilot-language-server=. Install it with
+=npm i -g @github/copilot-language-server=, or let mep fall back to
+=npx=, or point =mep.copilot_server_cmd= at your own build. Then:
+
+#+begin_src
+:CopilotLogin
+#+end_src
+
+which shows a device code, copies it to your clipboard, and offers to
+open =github.com/login/device= in your real browser. Enter the code
+there and you're signed in.
+
+mep never sees the resulting token. The language server runs the device
+flow itself and keeps the credentials in =~/.config/github-copilot= —
+the same directory the VS Code, Neovim and JetBrains Copilot clients
+share, so signing in once covers all of them. Nothing about the token
+crosses mep's socket in either direction and nothing is written into
+mep's own config.
+
+** Commands
+
+- =:Copilot= — turn it on (and start the server). =:Copilot off=,
+  =:Copilot toggle=, =:Copilot restart=.
+- =:Copilot suggest= — ask right now, ignoring the idle delay.
+- =:CopilotStatus= — server, sign-in, account, and whether the current
+  buffer is being sent.
+- =:CopilotPanel= — several alternatives at once, in the picker.
+- =:CopilotLogin= / =:CopilotLogout=.
+
+** What gets sent, and turning it off
+
+A completion request ships the surrounding buffer text to GitHub. Files
+whose whole point is to hold a secret are never sent at all —
+=.env=, =*.pem=, =*.key=, =id_rsa=, =.netrc=, =secrets.yaml= and
+friends; =mep.copilot_exclude_patterns= is the list.
+=mep.copilot_filetypes['md'] = false= turns it off for one filetype, and
+=mep.copilot_enabled = false= in =init.lua= turns the whole thing off
+before it ever starts a server.

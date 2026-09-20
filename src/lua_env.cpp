@@ -3943,6 +3943,30 @@ int l_buffer_set_wrap(lua_State *L) {
 }
 
 /**
+ * @brief Implements mep.buffer_set_row_cursor(id, on): makes a buffer's cursor select a whole row instead of a character.
+ * @param L Lua state; arg 1 is the buffer id, arg 2 whether the row-cursor rendering is on.
+ * @return Number of values pushed (0).
+ */
+int l_buffer_set_row_cursor(lua_State *L) {
+    int id = static_cast<int>(luaL_checkinteger(L, 1));
+    bool on = lua_toboolean(L, 2) != 0;
+    GetEditor(L)->SetBufferRowCursor(id, on);
+    return 0;
+}
+
+/**
+ * @brief Implements mep.buffer_set_unlisted(id, on): hides a buffer from the Buffers sidebar and the buffer picker.
+ * @param L Lua state; arg 1 is the buffer id, arg 2 whether the buffer is hidden from those lists.
+ * @return Number of values pushed (0).
+ */
+int l_buffer_set_unlisted(lua_State *L) {
+    int id = static_cast<int>(luaL_checkinteger(L, 1));
+    bool on = lua_toboolean(L, 2) != 0;
+    GetEditor(L)->SetBufferUnlisted(id, on);
+    return 0;
+}
+
+/**
  * @brief Implements mep.buffer_modified(id): returns whether a buffer has unsaved changes.
  * @param L Lua state; arg 1 is the buffer id.
  * @return Number of values pushed (1: true if modified).
@@ -9821,6 +9845,8 @@ const luaL_Reg kMepFuncs[] = {
     {"buffer_set_filename", l_buffer_set_filename},
     {"buffer_set_hide_line_numbers", l_buffer_set_hide_line_numbers},
     {"buffer_set_wrap", l_buffer_set_wrap},
+    {"buffer_set_row_cursor", l_buffer_set_row_cursor},
+    {"buffer_set_unlisted", l_buffer_set_unlisted},
     {"buffer_set_footer", l_buffer_set_footer},
     {"buffer_modified", l_buffer_modified},
     {"fold_create", l_fold_create},

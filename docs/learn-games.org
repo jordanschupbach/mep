@@ -1,0 +1,103 @@
+#+TITLE: Learning games
+
+An org file can double as a question bank for Duolingo-style drills: every
+headline tagged =:card:= is one entry, its title the term and its body the
+definition, and each game deals a randomized session from that deck.
+=examples/learn_basic_datastructures.org= is a ready-made deck (basic data
+structures) whose header comment documents the whole format, and
+=plans/LEARN_GAMES_PLAN.md= lists every game the format can drive, built or
+planned:
+
+#+begin_src org
+#+LEARN_TITLE: Basic Data Structures
+#+LEARN_FACTS: ACCESS SEARCH INSERT
+
+* Linear structures
+** Stack                                                     :card:
+:PROPERTIES:
+:QUESTION: Which structure returns the most recently added element first?
+:HINT: Last in, first out -- like a stack of plates.
+:ACCESS: O(n)
+:INSERT: O(1)
+:END:
+A {{last-in, first-out|LIFO}} collection supporting push and pop at one end...
+
+,#+begin_src python
+class Stack: ...
+,#+end_src
+#+end_src
+
+Deck-wide =#+LEARN_TAG:= / =#+LEARN_CHOICES:= / =#+LEARN_DIRECTION:= /
+=#+LEARN_ROUNDS:= / =#+LEARN_MATCH_SIZE:= / =#+LEARN_FACTS:= /
+=#+LEARN_TIME_LIMIT:= / =#+LEARN_MIXED:= / =#+LEARN_RANK:= / =#+LEARN_SRS:= tune
+the games; per-card
+=:CATEGORY:= (defaults to the parent headline, and wrong answers are drawn
+from the same category first), =:QUESTION:=, =:HINT:=, =:DISTRACTORS:=,
+=:ALIASES:=, =:HIDE:= and =:POINTS:= refine one entry, and any other property
+is a fact. In the body, ={{answer|hint}}= marks a blank, an ordered list is a
+sequence of steps, a 2-column table adds facts, and =#+begin_src= blocks carry
+the implementation -- plain, or tagged =:learn cloze= (code with blanks),
+=:learn bug :line N= (a buggy copy) or =:learn output= followed by
+=#+RESULTS:= (a demo); a =[[file:...]]= link on its own line is the card's
+picture. A deck with no tagged headline treats every headline that has a
+body as a card, so a plain glossary works untouched.
+
+=:Learn= (=<leader>ol=) picks a game; each is also its own =:Learn*= command
+(optional deck path), a =<leader>og?= key and a bare Lua global the deck's own
+=mep-lua= launcher blocks call. Every game opens a =Learn= pane where digits
+and letters pick, =n=/Enter moves on, =o= opens the current card in the deck,
+=r= restarts and =q= quits (each pane's last row lists its keys), and ends
+with a summary that lists the cards to review:
+
+| Game | Command | Key | Data it uses |
+|------+---------+-----+--------------|
+| Multiple-choice flashcards | =:LearnMCFlashCards= | =ogf= | cards |
+| Matching (pair a round, then submit) | =:LearnMatching= | =ogm= | cards |
+| Identify the code (names blanked out) | =:LearnCodeID= | =ogc= | src blocks |
+| True or false | =:LearnTrueFalse= | =ogt= | cards |
+| Fill in the blank | =:LearnCloze= | =ogb= | ={{blanks}}= |
+| Type the term | =:LearnTypeTerm= | =ogy= | cards, =:ALIASES:= |
+| Odd one out | =:LearnOddOneOut= | =ogo= | categories |
+| Which category | =:LearnWhichCategory= | =ogk= | categories |
+| Fact quiz | =:LearnFactQuiz= | =oga= | fact properties / tables |
+| Put in order | =:LearnPutInOrder= | =ogs= | ordered lists |
+| Jeopardy (board of point values) | =:LearnJeopardy= | =ogj= | categories, =:POINTS:= |
+| Hangman | =:LearnHangman= | =ogh= | cards |
+| Complete the code | =:LearnCompleteCode= | =ogx= | =:learn cloze= blocks |
+| Spot the bug | =:LearnSpotBug= | =ogd= | =:learn bug= blocks |
+| Predict the output | =:LearnPredictOutput= | =ogp= | =:learn output= + results |
+| Mixed practice (every type, shuffled) | =:LearnMixed= | =ogg= | whatever the deck has |
+| Timed mixed practice | =:LearnTimed [secs]= | =ogT= | =#+LEARN_TIME_LIMIT:= |
+| Which code is it (term -> snippet) | =:LearnCodeReverse= | =ogv= | src blocks |
+| Sort into buckets | =:LearnSortBuckets= | =ogu= | categories |
+| Rank by fact (lowest first) | =:LearnRank= | =ogn= | =#+LEARN_RANK:= numeric properties |
+| Survival (until the first miss) | =:LearnSurvival [game]= | =ogS= | any choice game |
+| Hot-seat two player | =:LearnHotSeat [game]= | =og2= | any game |
+| Picture quiz | =:LearnPictureQuiz= | =ogi= | =[[file:...]]= images |
+| Crossword | =:LearnCrossword= | =ogw= | terms + definitions |
+
+Choice games answer by digit or click, or by typing (=t=) where a typed
+answer makes sense (blanks, code); the typed-answer engine accepts the term
+and its aliases, ignoring case and punctuation, and forgives a one-letter slip
+on longer answers. Identify-the-code hides top-level classes as =Thing=,
+functions as =solve=, =:HIDE:= identifiers as =op1=..., and the term's own
+words as =thing= (Python keywords/builtins are left alone), restoring the real
+names after the answer; every code row is Treesitter-highlighted. Timed mode
+counts down in the header and scores a miss at zero. A game a deck can't feed
+says so in one line instead of starting. Every summary offers =g=, which
+records the session into org-drill's =:DRILL_*:= properties (SM-2: Good for a
+right answer, Again for a miss) so =#+LEARN_SRS: yes= can deal due cards first
+next time; =:MepOrgDrillReview= reads the same properties.
+
+The building blocks are reusable from Lua for further games:
+=mep.learn_parse_deck(path)=, the question generators
+(=mep.learn_mc_questions=, =learn_tf_questions=, =learn_cloze_questions=,
+=learn_fact_questions=, =learn_match_rounds=, ...),
+=mep.learn_anonymize_code(lines, card)=, =mep.learn_answer_matches(typed,
+accepted)= and the =mep.learn_games= / =mep.learn_catalog= tables.
+
+A deck can also launch itself: a =#+begin_src mep-lua= block runs inside
+mep's own Lua (org-babel's =emacs-lisp= analogue -- every other babel language
+is a subprocess without the =mep.*= API), so the example ends with one
+=Learn...()= block per game that =C-c C-c= executes. Return values become the
+block's =#+RESULTS:= unless =:results silent=; exports skip such blocks.

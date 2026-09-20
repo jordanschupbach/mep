@@ -845,6 +845,39 @@ struct Buffer {
     // first caller. Empty = no footer.
     std::string footer_hint;
     std::string footer_hint_hl;
+    // mep.buffer_set_row_cursor(id, true): this buffer's cursor selects a
+    // whole *row*, not a character within it -- so a pane showing it draws
+    // the cursor as a full-width row tint (always, regardless of the global
+    // :set cursorline) and skips the per-character block cursor entirely.
+    // Same "these rows aren't really text" family as hide_line_numbers/
+    // no_wrap above, and the same first caller: kBuiltinFileTree's
+    // read-only tree view, whose cursor always sits at column 0 -- which is
+    // the row's own icon glyph for a top-level entry. The block cursor
+    // repaints the glyph under it in NormalBg (so a normal text cursor
+    // stays readable), and on an icon that reads as the icon changing
+    // color/going dark as the cursor moves down the tree rather than as a
+    // cursor at all. Deliberately not set on the oil.nvim-style directory
+    // buffers (mep.oil_open), whose lines are genuinely editable text.
+    bool row_cursor = false;
+    // mep.buffer_set_unlisted(id, true): keeps a real, ordinary buffer out
+    // of the buffer *lists* -- the Buffers sidebar (kBuiltinBuffers) and
+    // the <leader>bb picker, both of which go through BufferLabelForLua --
+    // for a pane whose buffer is an implementation detail rather than a
+    // document the user opened. The generic counterpart of the
+    // IsSidebarPaneBuffer check in that same function: a sidebar hosted in
+    // a pane (mep.sidebar_open_pane) is recognisable from C++, but a panel
+    // that predates that machinery and just splits a pane onto a buffer of
+    // its own is not, so it says so itself. kBuiltinFileTree's tree view is
+    // the first caller -- it is a sidebar in every way that matters to the
+    // user, and listing it alongside their open files (under the project
+    // root's own name, since that is what it sets as its filename) is the
+    // same noise. Set on the tree buffer only, not in the shared
+    // mep_tree_new_buffer helper: the oil.nvim-style directory buffers
+    // (mep.oil_open) are ordinary editable buffers the user navigated to on
+    // purpose, and belong in the list like any other. Lists only, like
+    // Buffer::deleted's own note: :bnext/:bprev and the tab strip of the
+    // pane actually showing it are unaffected.
+    bool unlisted = false;
     // `:bd`/`:bdelete` (Editor::BufferDelete) -- soft-delete, not a real
     // erase from buffers_: buffer_id is treated as a stable index
     // everywhere in this codebase (panes, terminals_, agent-rpc
@@ -6256,6 +6289,12 @@ public:
      * @return The display label text.
      */
     std::string BufferLabelForLua(int buffer_id) const;
+    /**
+     * @brief Returns how a buffer's path should read in a list of open buffers: relative to its workspace root when it lives under it, absolute otherwise.
+     * @param buf The buffer to name.
+     * @return The display path (never decorated with "[+]"/"[Terminal] ").
+     */
+    std::string DisplayPathForBuffer(const Buffer &buf) const;
     // Raw filename (empty for a terminal buffer or an unsaved "[No Name]"
     // buffer) -- unlike BufferLabelForLua, no "[+]"/"[Terminal] " display
     // decoration, so callers needing the real path (e.g. LSP didClose's
@@ -6285,6 +6324,18 @@ public:
      * @param no_wrap True to disable soft-wrap for this buffer.
      */
     void SetBufferNoWrap(int buffer_id, bool no_wrap);
+    /**
+     * @brief Sets whether a buffer is hidden from the buffer lists (see Buffer::unlisted).
+     * @param buffer_id The id of the buffer to change.
+     * @param unlisted True to keep the buffer out of the Buffers sidebar and the buffer picker.
+     */
+    void SetBufferUnlisted(int buffer_id, bool unlisted);
+    /**
+     * @brief Sets whether a buffer's cursor selects a whole row rather than a character (see Buffer::row_cursor).
+     * @param buffer_id The id of the buffer to change.
+     * @param row_cursor True to draw a full-width row tint instead of the per-character block cursor.
+     */
+    void SetBufferRowCursor(int buffer_id, bool row_cursor);
     /**
      * @brief Sets the one-line key hint drawn along the bottom of every pane showing a buffer (see Buffer::footer_hint).
      * @param buffer_id The id of the buffer to change.

@@ -369,45 +369,45 @@ These block the page work, or make it much worse if skipped. Do them first.
 
 ## Part 13 — Markdown and prose (2 pages)
 
-- [ ] **13.1 `markdown` — Markdown.** `:MepMarkdown`, heading colors and
+- [x] **13.1 `markdown` — Markdown.** `:MepMarkdown`, heading colors and
   sign-column glyphs, `:MepMdCheckbox`, fenced-block shading and folding,
   `:MepMdConceal`, front-matter shading, `:MepMdTableAlign`/`TableInsertRow`/
   `TableInsertCol`, and the documented gap (no box-drawn GFM table overlay).
-- [ ] **13.2 `writing` — Writing prose in mep.** `gq`/`textwidth`, spell,
+- [x] **13.2 `writing` — Writing prose in mep.** `gq`/`textwidth`, spell,
   zen mode, soft wrap, the Pomodoro chip, todo clocking for writing sessions.
 
 ## Part 14 — Documents, images, media (9 pages)
 
-- [ ] **14.1 `viewers-overview` — What mep can open.** One table: extension
+- [x] **14.1 `viewers-overview` — What mep can open.** One table: extension
   → viewer/editor → the page that documents it. Covers text, org, markdown,
   html, xml/svg, pdf, docx/odt, xlsx/ods/csv, ipynb, png/jpg/bmp/gif,
   obj/gltf/glb/iqm/vox/m3d/blend, wav.
-- [ ] **14.2 `pdf` — The PDF viewer.** Page navigation, `mep.pdf_goto_page`/
+- [x] **14.2 `pdf` — The PDF viewer.** Page navigation, `mep.pdf_goto_page`/
   `pdf_current_page`, the outline sidebar (`mep.pdf_outline`), links, text
   extraction and search, encrypted files, `mep.pdf_reload`.
-- [ ] **14.3 `office` — Word processor documents.** `.docx` and `.odt`
+- [x] **14.3 `office` — Word processor documents.** `.docx` and `.odt`
   rendering and editing, `mep.office_reload`, export back out.
-- [ ] **14.4 `sheets` — Spreadsheets.** `.xlsx`/`.ods`/`.csv`, cell
+- [x] **14.4 `sheets` — Spreadsheets.** `.xlsx`/`.ods`/`.csv`, cell
   navigation and editing, the formula engine (`src/formula.cpp`),
   `:MepNextSheet`/`:MepPrevSheet`, `mep.sheet_next`/`sheet_prev`.
-- [ ] **14.5 `notebooks` — Jupyter notebooks.** The percent format and
+- [x] **14.5 `notebooks` — Jupyter notebooks.** The percent format and
   round-tripping to real nbformat JSON; cell cards and the toolbar; running
   (`Enter`, `Ctrl+Enter`, `C-c C-c`, `Shift+Enter`, `mod1+Enter`); the whole
   `<leader>j` group; `]j`/`[j`; the `:Notebook*` commands; per-cell kernels,
   `mep.opt.notebook_kernels`, the `python`/`protocol`/`script` modes,
   `mep.opt.notebook_python`, inline matplotlib figures, shared `In [n]`
   numbering, ordered run-all.
-- [ ] **14.6 `images` — Viewing images.** Zoom, pan, theme-aware background,
+- [x] **14.6 `images` — Viewing images.** Zoom, pan, theme-aware background,
   `mep.image_size`/`image_set_theme`/`image_set_nav`, navigating a directory
   of images, and `e` to edit.
-- [ ] **14.7 `image-editor` — The image editor.** Every tool and hotkey
+- [x] **14.7 `image-editor` — The image editor.** Every tool and hotkey
   (`b x l r c f i h`, `m o w v`, `[`/`]`, `u`/`Ctrl-R`, `+`/`-`/`=`, Shift-
   to-fill, middle-drag pan); layers panel; color swatches and the HSV
   picker; menubar; selections and `Delete`; `:w` flattening to PNG; the
   procedural generators (wood, turned wood, marble, noise, gradient,
   checkerboard, blur) and when to use them instead of drawing; `Esc` keeping
   session state. Mirror `IMAGE_EDITOR.md`'s "not yet implemented" list.
-- [ ] **14.8 `model3d` — The 3D modeler.** Opening `.obj`/`.gltf`/`.glb`/
+- [x] **14.8 `model3d` — The 3D modeler.** Opening `.obj`/`.gltf`/`.glb`/
   `.iqm`/`.vox`/`.m3d`/`.blend` (and the async Blender conversion);
   `:Model3DNew`; camera controls and gizmos; primitives and their pivots;
   lathe objects; materials and textures; lights; the vertex/face editing
@@ -416,46 +416,46 @@ These block the page work, or make it much worse if skipped. Do them first.
   list-triangles) and their documented limits; grouping and parenting;
   symmetry (mirror, radial array); animation keyframes; render to image and
   to video; saving.
-- [ ] **14.9 `audio-svg` — Audio and vector.** `.wav` waveform view; `.svg`
+- [x] **14.9 `audio-svg` — Audio and vector.** `.wav` waveform view; `.svg`
   and `.xml` rendering; what is view-only.
 
 ## Part 15 — Web (3 pages)
 
-- [ ] **15.1 `browser` — The browser pane.** `:Browse` / `<leader>bo`,
+- [x] **15.1 `browser` — The browser pane.** `:Browse` / `<leader>bo`,
   `:BrowseExternal` / `<leader>bO`; the omnibar (`o`, `Ctrl-L`, Enter, Esc);
   `H`/`L`/`r`/`f`/`Ctrl-E`; what loads (http via sockets, https via curl,
   stylesheets, scripts, images, `fetch()` back to origin); the live event
   loop (timers, rAF, promises, async, ES modules); real click and text-input
   handling.
-- [ ] **15.2 `local-server` — Serving a directory.** `:Serve` /
+- [x] **15.2 `local-server` — Serving a directory.** `:Serve` /
   `<leader>bh`, `:ServeStop`, `:Servers`, the 127.0.0.1-only / GET+HEAD /
   no-escape / `no-store` guarantees, `mep.http_serve`/`http_stop`/
   `http_servers`/`http_get`.
-- [ ] **15.3 `web-ladder` — Measuring the engine.** `:WebLadder`,
+- [x] **15.3 `web-ladder` — Measuring the engine.** `:WebLadder`,
   `:WebLadderRun`, `mep-web-ladder-test` (`--eval`, `--strict`), what each
   of the twelve levels tests, and how to read a failure.
 
 ## Part 16 — AI (5 pages)
 
-- [ ] **16.1 `copilot` — GitHub Copilot.** On by default; `Tab`,
+- [x] **16.1 `copilot` — GitHub Copilot.** On by default; `Tab`,
   `Alt-Right`, `Alt-Ctrl-Right`, `C-]`; typing-along behaviour and why it
   never fights the completion popup; `:CopilotLogin` device flow and the
   fact mep never sees the token; `:Copilot on/off/toggle/restart/suggest`,
   `:CopilotStatus`, `:CopilotPanel`, `:CopilotLogout`; `copilot_server_cmd`;
   **what gets sent**, `copilot_exclude_patterns`, per-filetype and global
   opt-out.
-- [ ] **16.2 `ai-commands` — Ask the model.** `:MepAiSend`/`SendBuffer`/
+- [x] **16.2 `ai-commands` — Ask the model.** `:MepAiSend`/`SendBuffer`/
   `SendSelection`/`ReplaceSelection`/`Cancel`, `<leader>ai` context picker,
   API-key handling (prompted, memory-only).
-- [ ] **16.3 `ai-terminal` — Claude Code in a pane.** `<leader>a<CR>` /
+- [x] **16.3 `ai-terminal` — Claude Code in a pane.** `<leader>a<CR>` /
   `:aiterminal`; the appended system prompt; `mep.opt.ai_terminal_cmd` /
   `_share` / `_instructions` / `_mcp_server`; registering `mep-mcp` with
   `claude mcp add`.
-- [ ] **16.4 `ai-agents` — The AI Agents sidebar.** `<leader>al` / `aa`,
+- [x] **16.4 `ai-agents` — The AI Agents sidebar.** `<leader>al` / `aa`,
   grouping by workspace, status badges, the OSC-title task row, Enter to
   jump across workspace/tab/pane, `n`/`r`, "outside mep" agents, and how
   pairing works via `$MEP_TERMINAL_BUFFER`.
-- [ ] **16.5 `agent-api` — Driving mep from an agent.** A user-facing
+- [x] **16.5 `agent-api` — Driving mep from an agent.** A user-facing
   summary of `MEP_AGENT_API.md`: the socket, the tool families (session,
   buffer, cursor, pane, workspace, project, file, command, UI automation,
   image, model), the 0-indexed/end-exclusive conventions, the virtual

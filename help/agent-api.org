@@ -1,0 +1,71 @@
+#+TITLE: Driving mep from an agent
+#+HTML_HEAD: <meta name="help-section" content="AI">
+#+HTML_HEAD: <meta name="help-order" content="50">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* The socket
+
+Every running mep binds a Unix socket at
+
+#+begin_example
+~/.local/share/mep/agent-sockets/<pid>.sock
+#+end_example
+
+speaking JSON-RPC 2.0 with =Content-Length= framing. No handshake: connect
+and send a request.
+
+=mep-mcp= is the MCP server in front of it -- a dependency-free C++ binary
+-- which is what an agent normally talks to. A script can speak to the
+socket directly instead.
+
+* What an agent can do
+
+| Family        | Covers                                                 |
+|---------------+--------------------------------------------------------|
+| =session.*=   | identify, info, status, participants                   |
+| =buffer.*=    | list, read, write, create, switch                      |
+| =cursor.*=    | get and set the agent's own cursor                     |
+| =pane.*=      | split, close, focus, resize                            |
+| =workspace.*= | list, create, switch, delete                           |
+| =project.*=   | list, open, switch, close                              |
+| =file.*=      | open, save                                             |
+| =command.run= | any ex command, including =lua ...=                    |
+| =ui.*=        | screenshots, synthetic mouse and keyboard              |
+| =image.*=     | headless image generation                              |
+| =model.*=     | the 3D modeler, in full                                |
+
+* Conventions
+
+- Rows and columns are *0-indexed*, and line ranges are =[start, end)= with
+  the end exclusive. This differs from the Lua API, which is 1-indexed.
+- An agent has its *own* virtual cursor, drawn in the human's panes under
+  its name. Moving it never moves the human's cursor or changes what their
+  panes show.
+- =command.run= takes =cmd=, not =command=. A wrong key silently runs an
+  empty command and returns success.
+
+* The rule that matters
+
+*Edit open files through mep's buffer tools, not by writing to disk.*
+
+mep does not watch files for external changes, so a disk write will not
+appear in an open buffer -- and when the human next saves that buffer, their
+stale copy overwrites the agent's work silently.
+
+* Being visible
+
+Agents appear as participant chips in the [[file:tab-bar.html][tab bar]] and in the
+[[file:ai-agents.html][AI Agents sidebar]], with a status they set themselves. An agent that reports
+its status is one the human can supervise without interrupting.
+
+=mep.participants()= exposes the same snapshot to Lua.
+
+* Full reference
+
+=MEP_AGENT_API.md= in mep's source tree has every method, its parameters,
+the pivot table for 3D primitives, and a worked example.
+
+* See also
+
+- [[file:ai-terminal.html][Claude Code in a pane]] -- the usual way an agent is launched.
+- [[file:model3d.html][The 3D modeler]] -- the largest scriptable surface.

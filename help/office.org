@@ -1,0 +1,30 @@
+#+TITLE: Word processor documents
+#+HTML_HEAD: <meta name="help-section" content="Documents and media">
+#+HTML_HEAD: <meta name="help-order" content="30">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Opening
+
+A =.docx= or =.odt= file opens as a laid-out page -- headings, paragraphs,
+lists, tables and images -- rather than as XML or as a plain-text dump.
+
+=mep.office_reload()= re-reads the file from disk.
+
+* Editing
+
+The document is editable, and =:w= writes it back in its original format.
+
+* Producing one
+
+From an Org file, =<leader>oeo= (=:MepOrgExportOdt=) writes an =.odt=
+directly -- no external converter involved. See [[file:org-export.html][Exporting]].
+
+* Fonts
+
+mep embeds serif, sans and monospace faces specifically for laying these
+documents out, so a page looks like a page rather than like editor text.
+
+* See also
+
+- [[file:sheets.html][Spreadsheets]] -- the other half of the office formats.
+- [[file:viewers-overview.html][What mep can open]] -- the full list.

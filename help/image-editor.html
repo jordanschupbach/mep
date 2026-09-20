@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The image editor</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Documents and media">
+<meta name="help-order" content="70">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>The image editor</h1>
+<h1>Opening it</h1>
+<p>Press <code>e</code> while viewing an image. <code>Esc</code> returns to the plain viewer.</p>
+<p>Layers and undo history are kept per buffer, so <code>Esc</code> then <code>e</code> again resumes
+exactly where you left off -- leaving the editor is not the same as closing
+it.</p>
+<h1>The layout</h1>
+<p>A two-column tool sidebar on the left, the canvas in the middle, a Layers
+panel on the right. A thin toolbar above the canvas has the brush size and
+recent colours; the foreground and background swatches sit at the bottom of
+the tool sidebar. A menubar across the top has File, Edit, Layer and View.</p>
+<h1>Tools</h1>
+<p>Pick with a key, then drag or click on the canvas.</p>
+<table>
+<tr><th>Key</th><th>Tool</th></tr>
+<tr><td><code>b</code></td><td>Pencil</td></tr>
+<tr><td><code>x</code></td><td>Eraser</td></tr>
+<tr><td><code>l</code></td><td>Line</td></tr>
+<tr><td><code>r</code></td><td>Rectangle</td></tr>
+<tr><td><code>c</code></td><td>Ellipse</td></tr>
+<tr><td><code>f</code></td><td>Bucket fill (4-connected flood fill)</td></tr>
+<tr><td><code>i</code></td><td>Eyedropper</td></tr>
+<tr><td><code>h</code></td><td>Pan</td></tr>
+<tr><td><code>m</code></td><td>Rectangle select</td></tr>
+<tr><td><code>o</code></td><td>Ellipse select</td></tr>
+<tr><td><code>w</code></td><td>Lasso select</td></tr>
+<tr><td><code>v</code></td><td>Move the selection, or the whole layer</td></tr>
+</table>
+<p>Hold <code>Shift</code> while releasing a Line, Rectangle or Ellipse drag to fill it
+instead of outlining it.</p>
+<h1>Canvas and brush</h1>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>[</code> <code>]</code></td><td>shrink / grow the brush</td></tr>
+<tr><td><code>+</code> <code>-</code></td><td>zoom in / out</td></tr>
+<tr><td><code>=</code></td><td>fit to the pane</td></tr>
+<tr><td><code>u</code> / <code>Ctrl-R</code></td><td>undo / redo</td></tr>
+<tr><td>middle-drag</td><td>pan, with any tool</td></tr>
+</table>
+<p>With a selection active, <code>Delete</code> or <code>Backspace</code> clears its pixels and
+leaves the selection in place. Edit → Deselect drops it.</p>
+<h1>Layers</h1>
+<p>The Layers panel adds, deletes, duplicates, reorders, renames and hides
+layers, and sets each one's opacity. Click an already-selected layer's name
+to rename it.</p>
+<h1>Saving</h1>
+<p><code>:w</code> flattens the visible layers and writes a real PNG.</p>
+<h1>Procedural textures</h1>
+<p>For a generated texture rather than a drawn one, the headless generators are
+far quicker than painting: wood, turned wood, marble, noise, gradients and
+checkerboards, plus a blur. They fill the active layer in one step.</p>
+<p>Turned wood is the one to use for anything wrapped around a cylinder -- a
+plain wood cross-section spirals visibly when mapped onto one.</p>
+<h1>Not implemented</h1>
+<p>Worth knowing so you do not go looking: free transform, crop, canvas
+resize/resample, flip and rotate, anti-aliased brush edges, a text tool,
+blend modes beyond Normal, layer masks and adjustment operations are all
+absent.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="images.html">Viewing images</a> -- where <code>e</code> is pressed.</li>
+<li><a href="model3d.html">The 3D modeler</a> -- textures made here can be applied there.</li>
+</ul>
+</body>
+</html>

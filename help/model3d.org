@@ -1,0 +1,90 @@
+#+TITLE: The 3D modeler
+#+HTML_HEAD: <meta name="help-section" content="Documents and media">
+#+HTML_HEAD: <meta name="help-order" content="80">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Opening a scene
+
+=.obj=, =.gltf=, =.glb=, =.iqm=, =.vox= and =.m3d= open straight in the
+modeler. =:Model3DNew= starts an empty scene.
+
+=.blend= needs a real Blender on =$PATH=: mep converts it through Blender's
+own command line, on a background job, so opening one never blocks. The pane
+shows "Converting..." until it finishes.
+
+* Building a scene
+
+Primitives are =cube=, =sphere=, =cylinder=, =cone=, =plane=, =torus= and
+=wedge=.
+
+*Check the pivot before stacking parts.* Cylinder, cone and wedge are
+base-pivoted rather than centred, so placing one at =y = 0= sits it on the
+floor while a sphere at =y = 0= is half-buried. The modeler's
+=primitive_info= reports each one's pivot and dimensions.
+
+For a turned form no primitive can express -- a bottle, a table leg, a chess
+piece -- a *lathe* revolves an ordered radius/height profile around the Y
+axis into a welded mesh with real UVs. A profile ending at radius zero needs
+no cap; it is already a point.
+
+* Materials
+
+A material is a colour plus roughness and metallic, feeding a real if
+simplified metallic-roughness model: one fixed key light, no shadows and no
+reflections, but low roughness with high metallic genuinely reads as shiny
+metal against high roughness with low metallic for matte wood or stone.
+
+Roughness and metallic are *sparse*: omitting one leaves its current value
+rather than resetting it to zero.
+
+Textures fill the albedo, normal, roughness and metallic slots. An albedo
+texture is tinted by the object's own colour.
+
+* Editing geometry
+
+Beyond transforms, the modeler does real mesh editing: move, delete and
+merge vertices, merge-by-distance, recalculate normals, subdivide, extrude,
+inset, dissolve, add vertices, make faces, flip normals, and list triangles
+to discover connectivity.
+
+Two things that save time:
+
+- =merge_by_distance= right after adding a primitive. The generators emit
+  duplicate vertices at every shared corner, and unwelded faces extrude
+  independently rather than as one surface.
+- =flip_normals= when geometry looks inside out, which is the usual result
+  of building a face with its corners in the wrong order.
+
+There is no edge or face *selection*: an operation treats "the vertices
+fully covering a triangle" as a face.
+
+* Organising
+
+Grouping and parenting are purely organisational -- a parent's transform is
+never composed into a child's. The gizmos cascade to descendants in the UI,
+but setting a transform programmatically does not.
+
+Symmetry helpers do the repetitive work: mirror a duplicate across an axis,
+or make a radial array for fins and spokes.
+
+* Animation and output
+
+Objects and the camera take keyframes, and a scene renders to a PNG or to a
+video. =render_to_image= captures just the scene, unlike a window
+screenshot.
+
+=:w= saves.
+
+* Driving it
+
+The modeler has a full scripting surface -- =mep.model_*= from Lua, and the
+same operations over the agent protocol -- so a scene can be built,
+inspected, rendered and saved without touching the mouse. That is the
+intended way to use it for anything repetitive.
+
+=MEP_AGENT_API.md= has the complete reference and a worked example.
+
+* See also
+
+- [[file:image-editor.html][The image editor]] -- making textures.
+- [[file:agent-api.html][Driving mep from an agent]] -- the other way in.

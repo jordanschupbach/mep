@@ -3132,6 +3132,7 @@ const char *kKeybindingsText =
     "  :Runner [tool] <leader><Space> command runner: just > make > ninja > cmake, runs in the tab terminal\n"
     "               <leader>jj/jm/jn/jc  just / make / ninja / cmake tab (notebook cell keys inside .ipynb)\n"
     "               <leader>jw / jv   runner workspaces / variable inspector (Tab / S-Tab switches tabs)\n"
+    "  gr           <leader>rr        run/compile the current file (same as the pane's Run button)\n"
     "  :aiterminal  <leader>a<CR>     Claude Code terminal below, driving this window via mep-agent\n"
     "  :aiagents    <leader>al        AI agents sidebar (status, task, workspace; Enter jumps to its terminal)\n"
     "               <leader>aa        toggle the AI agents sidebar\n"
@@ -22896,6 +22897,33 @@ const char *kBuiltinRunButton =
     "end\n"
     "mep.command('MepRunButtonRun', mep.run_button_run)\n"
     "mep.leader_map('rr', 'Run button: run/compile current file', mep.run_button_run)\n"
+    // "gr" ("go run", mnemonically) -- the same mep.run_button_run the
+    // pane-header Run button and <leader>rr above already trigger, reached
+    // as a plain two-key Normal-mode sequence instead: no leader prefix to
+    // hold through (and no leader-popup timeout to race) for the one action
+    // an edit/run/edit loop hits over and over. Everything downstream is
+    // shared, so whatever <leader>rr means for this particular file -- org
+    // export, tectonic, rmarkdown/knitr, run-all for a notebook, sourcing
+    // into an open language UI mode's console, or the generic interpreter/
+    // compile-then-run line in this tab's popup terminal -- "gr" means
+    // exactly the same thing, including its "no run command configured for
+    // this filetype" warning.
+    //
+    // Bound via mep.map_g, not plain mep.map: the latter only ever sees a
+    // single already-unprefixed keystroke and can't reach anything typed
+    // after a pending 'g' (see mep.map_g('d', ...) for lsp_goto_definition).
+    // "r" is free after a leading 'g' here -- mep's own built-in g-motions
+    // are gg/ge/gE/gu/gU/gJ/gv, and the Lua-registered ones are gd (goto
+    // definition), gh (R help / LSP hover) and gl (AI send buffer). Real
+    // Vim's own "gr" is virtual-replace mode, which mep doesn't implement
+    // at all, so nothing existing is shadowed by taking it.
+    //
+    // Normal mode only, deliberately: Visual mode keeps an entirely
+    // separate g-prefix table (mep.map_g_visual), and "run this file" has
+    // no selection-specific meaning worth spending "gr" there on -- a
+    // Visual-mode "gr" stays unbound rather than silently doing the
+    // whole-file thing while text is highlighted.
+    "mep.map_g('r', mep.run_button_run)\n"
     // The Setup popup main.cpp's Run-button right-click menu opens
     // ("Setup..."): asks for the interpreter/compiler, then the one
     // free-form flags string, pre-filled with whatever's already in

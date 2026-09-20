@@ -27,6 +27,9 @@ Everything on the =mep.*= table, available to =:lua=, =:source= and
   key, including the startup defaults.
 - =mep.set_mod1(name)= — =\"alt\"= (default), =\"ctrl\"=, =\"shift\"=, or
   =\"super\"=/=\"cmd\"=/=\"meta\"=.
+- =mep.mod1_name()= -> =\"Alt\"=/=\"Ctrl\"=/=\"Shift\"=/=\"Super\"= — whichever
+  modifier =mep.set_mod1= last selected, capitalised for display. For
+  naming the modifier in text the user reads rather than acting on it.
 - =mep.nav_pane(direction)= — =\"left\"=/=\"down\"=/=\"up\"=/=\"right\"=;
   what the =mod1+hjkl= defaults call.
 - =mep.resize_pane(direction, step?)= — moves the split boundary between
@@ -108,4 +111,9 @@ Everything on the =mep.*= table, available to =:lua=, =:source= and
 - =mep.jump_to_buffer(buffer_id)= -> bool — switches workspace, tab and
   pane to land on a buffer wherever it lives (=mep.pane_focus_buffer=
   only searches the active tab).
+- =mep.menubar_toggle()= / =mep.menubar_visible()= ->  bool /
+  =mep.menubar_set_visible(on)= — the top File/Edit/Window/Help bar,
+  hidden by default and summoned by tapping =mod1= on its own. Hidden,
+  its row goes to the panes below; unlike =mep.toggle_zen()= nothing
+  else about the chrome changes.
 - =mep.quit()=

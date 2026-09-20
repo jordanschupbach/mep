@@ -10769,6 +10769,17 @@ const char *kBuiltinDocs =
     "    items[#items + 1] = string.format('%-8s %-14s %s', 'Leader', '<leader>' .. w.seq, w.desc)\n"
     "  end\n"
     "  if #items == 0 then mep.notify('No described keybindings registered', 'warn') return end\n"
+    // Neither registry knows about this one: tapping mod1 on its own to
+    // show/hide the menu bar is recognised in C++ (Editor::
+    // ConsumeMod1Tap), not registered as a mapping, so it would be
+    // missing from the one list whose whole job is "what is bound right
+    // now". Named via mep.mod1_name() rather than hardcoded "Alt", since
+    // mep.set_mod1 can move it. Described from the current state, the
+    // same way the dashboard's own hint row is. Added after the guard
+    // above so that guard still means "neither registry had anything"
+    // rather than becoming unreachable.
+    "  items[#items + 1] = string.format('%-8s %-14s %s', 'Global', mep.mod1_name() .. ' (tap)',\n"
+    "    (mep.menubar_visible() and 'Hide' or 'Show') .. ' the top menu bar (tap and release, no other key)')\n"
     "  table.sort(items)\n"
     "  mep.picker_open('Keymaps', items, function() end)\n"
     "end\n"
@@ -25980,6 +25991,11 @@ bool HandleMenuInput() {
         return true;
     }
 
+    // No bar on screen (zen mode, or mod1-tapped away) means no hover, no
+    // dropdown and nothing to consume: those pixels belong to whatever
+    // moved up into them, and a click there has to reach it.
+    if (!g_editor.IsMenuBarVisible() || g_editor.IsZenMode()) return false;
+
     gfx::Vector2 mouse = gfx::GetMousePosition();
     bool clicked = gfx::IsMouseButtonPressed(gfx::MouseButton::Left);
     int bar_height = MenuBarHeight();
@@ -26447,7 +26463,10 @@ void DrawSidebars() {
     // over the menu bar/tab bar above it or the status/command bars below
     // it, the same way DrawEditor's pane_x/pane_w reservation already
     // keeps it from painting over pane content horizontally.
-    int content_top = MenuBarHeight() + TabBarHeight();
+    // Same menu-bar-may-be-hidden rule as DrawEditor's own
+    // menu_bar_height above; these two have to agree or a docked
+    // sidebar stops lining up with the pane tree beside it.
+    int content_top = (g_editor.IsMenuBarVisible() ? MenuBarHeight() : 0) + TabBarHeight();
     int content_bottom = screen_h - 2 * LineHeight();  // status bar + command bar
     // FocusedSidebarId() alone isn't enough now that mod1+hjkl can blur a
     // sidebar back into the pane tree without closing it (NavigatePane
@@ -39488,6 +39507,14 @@ void DrawDashboard(float x, float y, float w, float h) {
     std::vector<std::string> lines = SplitLines(kAboutText);
     lines.emplace_back();
     lines.emplace_back("i to start typing  :e to open a file  <Space> for keys  :q to quit");
+    // The menu bar is hidden by default (Editor::IsMenuBarVisible), so
+    // this line is the whole discovery path for File/Edit/Window/Help --
+    // without it the bar would be a feature nobody finds. Its own line
+    // rather than appended to the row above so it can't push that row
+    // (and, through max_w below, the action buttons) wider. Worded from
+    // the current state, since the dashboard is reachable again long
+    // after someone has turned the bar on.
+    lines.emplace_back(g_editor.IsMenuBarVisible() ? "tap Alt to hide the menu bar" : "tap Alt to show the menu bar");
     float font_size = g_font_size;
     int line_h = static_cast<int>(font_size) + 8;
     float max_w = 0;
@@ -39540,7 +39567,12 @@ void DrawDashboard(float x, float y, float w, float h) {
                             gfx::Rectangle{x + (w - logo_w) / 2.0f, start_y, logo_w, logo_h}, gfx::Vector2{0, 0}, 0.0f, gfx::White);
     }
     start_y += logo_h + logo_gap;
-    const size_t hint_line = lines.size() - 1;
+    // The tail of `lines` is the hint block, drawn *below* the action
+    // list rather than with the about text above it -- two rows now that
+    // the menu-bar gesture has to be spelled out here (the bar is hidden
+    // by default and this is where anyone would look for it).
+    const size_t kHintLines = 2;
+    const size_t hint_line = lines.size() - kHintLines;
     for (size_t i = 0; i < hint_line; i++) {
         float lw = gfx::MeasureTextEx(g_font, lines[i].c_str(), font_size, 0).x;
         float lx = x + std::max(0.0f, (w - lw) / 2.0f);
@@ -39575,9 +39607,14 @@ void DrawDashboard(float x, float y, float w, float h) {
         RegisterClickRegion(rect, [command = button.command] { g_editor.RunCommand(command); });
     }
     const float hint_y = buttons_y + static_cast<float>(std::size(kDashboardButtons)) * (button_h + button_gap);
-    const std::string &hint = lines[hint_line];
-    const float hint_w = gfx::MeasureTextEx(g_font, hint.c_str(), font_size, 0).x;
-    gfx::DrawTextEx(g_font, hint.c_str(), gfx::Vector2{x + std::max(0.0f, (w - hint_w) / 2.0f), hint_y}, font_size, 0, ResolveHlGroup("Comment"));
+    for (size_t i = hint_line; i < lines.size(); i++) {
+        const std::string &hint = lines[i];
+        const float hint_w = gfx::MeasureTextEx(g_font, hint.c_str(), font_size, 0).x;
+        gfx::DrawTextEx(g_font, hint.c_str(),
+                        gfx::Vector2{x + std::max(0.0f, (w - hint_w) / 2.0f),
+                                     hint_y + static_cast<float>(i - hint_line) * static_cast<float>(line_h)},
+                        font_size, 0, ResolveHlGroup("Comment"));
+    }
 }
 
 // Forward-declared: defined with the rest of the hint system
@@ -39627,7 +39664,11 @@ void DrawEditor() {
     // regardless of chrome visibility).
     int status_bar_height = zen ? 0 : line_height;
     int command_bar_height = line_height;
-    int menu_bar_height = zen ? 0 : MenuBarHeight();
+    // Hidden by zen mode, or by the user tapping mod1 (Editor::
+    // IsMenuBarVisible) -- either way the pane area below simply
+    // grows into the freed row, since content_top is derived from
+    // this.
+    int menu_bar_height = (zen || !g_editor.IsMenuBarVisible()) ? 0 : MenuBarHeight();
     // Visible by default (mep.nvim's own showtabline=2), not just once a
     // second tab exists -- Ctrl-T/the tab bar's own '+' button are the
     // discovery path for tabs at all, which a bar that only appears after
@@ -39957,7 +39998,7 @@ void DrawEditor() {
     // sidebars start at content_top, below both the menu bar and tab bar --
     // so moving the whole call has no effect on the bar's own draw order.
     // cppcheck-suppress duplicateCondition
-    if (!zen) DrawMenuBar();
+    if (!zen && g_editor.IsMenuBarVisible()) DrawMenuBar();
     // Same "drawn after sidebars/panes so it paints on top" reasoning as
     // DrawMenuBar's own dropdown just above -- a Run button lives inside a
     // pane header, so its own "Setup" dropdown needs the same treatment.
@@ -40290,7 +40331,11 @@ void CollectHintTargets() {
                                     g_open_menu = -1;
                                 }});
         }
-    } else {
+    } else if (g_editor.IsMenuBarVisible() && !g_editor.IsZenMode()) {
+        // Only when the bar is actually on screen -- hinting File/Edit/
+        // Window/Help while it's hidden would label pane content with
+        // triggers that aren't there, and firing one would open a
+        // dropdown hanging off a bar nobody can see.
         for (size_t i = 0; i < g_menus.size() && i < g_menu_starts.size(); i++) {
             int idx = static_cast<int>(i);
             targets.push_back({gfx::Vector2{g_menu_starts[i], 0.0f}, "", [idx] { g_open_menu = idx; }});
@@ -41571,6 +41616,21 @@ void UpdateDrawFrame() {
         g_editor.SetNow(gfx::GetTime());
         if (g_editor.Lua()) g_editor.Lua()->RunFrameHooks();
         HandleFontSizeShortcuts();
+        // Tapping mod1 (Alt) on its own shows/hides the top menu bar --
+        // the gesture Windows and GTK apps already use to summon a hidden
+        // menu bar, and the only one that doesn't cost a keybinding, since
+        // mod1 held with anything else keeps meaning exactly what it did.
+        // Polled here, before any other input handling, because
+        // Editor::ConsumeMod1Tap has to see this frame's key state
+        // untouched -- in particular before HandleMenuInput below, whose
+        // own dropdown handling would otherwise run against a bar that is
+        // about to disappear.
+        if (g_editor.ConsumeMod1Tap()) g_editor.ToggleMenuBar();
+        // A dropdown left open when the bar goes away (tapped mod1 with
+        // File open, or a Lua mep.menubar_set_visible(false)) would keep
+        // drawing over, and swallowing clicks meant for, the pane that
+        // just inherited those pixels.
+        if (!g_editor.IsMenuBarVisible()) g_open_menu = -1;
         // Hint-system trigger (HINT_SYSTEM.md): mod1+f (mep's own
         // configurable modifier -- Editor::IsMod1Down/mep.set_mod1,
         // defaulting to Alt), checked before the menu bar/editor even get

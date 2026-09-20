@@ -728,6 +728,20 @@ int l_set_mod1(lua_State *L) {
     return 0;
 }
 
+// mep.mod1_name() -> "Alt"/"Ctrl"/"Shift"/"Super", whichever mep.set_mod1
+// last selected. For anything that has to *name* the modifier in text the
+// user reads (the keymaps picker's bare-mod1-tap row) rather than act on
+// it -- hardcoding "Alt" there would lie to anyone who rebound it.
+/**
+ * @brief Implements mep.mod1_name(): returns the display name of whichever modifier is currently mod1.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the modifier's name).
+ */
+int l_mod1_name(lua_State *L) {
+    lua_pushstring(L, GetEditor(L)->Mod1Name().c_str());
+    return 1;
+}
+
 // mep.nav_pane(direction): moves focus to the pane best positioned
 // "left"/"down"/"up"/"right" of the active one; a no-op if there's none.
 /**
@@ -8719,6 +8733,34 @@ int l_toggle_zen(lua_State *L) {
     GetEditor(L)->ToggleZenMode();
     return 0;
 }
+
+/**
+ * @brief Implements mep.menubar_toggle(): shows/hides the top menu bar, the same thing tapping mod1 does.
+ * @param L Lua state.
+ * @return Number of values pushed (0).
+ */
+int l_menubar_toggle(lua_State *L) {
+    GetEditor(L)->ToggleMenuBar();
+    return 0;
+}
+/**
+ * @brief Implements mep.menubar_set_visible(on): shows or hides the top menu bar outright.
+ * @param L Lua state; arg 1 is whether the bar is shown.
+ * @return Number of values pushed (0).
+ */
+int l_menubar_set_visible(lua_State *L) {
+    GetEditor(L)->SetMenuBarVisible(lua_toboolean(L, 1) != 0);
+    return 0;
+}
+/**
+ * @brief Implements mep.menubar_visible(): returns whether the top menu bar is currently shown.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the visibility flag).
+ */
+int l_menubar_visible(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->IsMenuBarVisible() ? 1 : 0);
+    return 1;
+}
 // mep.sheet_next() / mep.sheet_prev() -- Lua-reachable equivalent of the
 // Ctrl-PageDown/Ctrl-PageUp keys HandleSheetNormalInput already binds
 // (spreadsheet-pane Phase 4), for whichkey/custom-mapping consumers.
@@ -9700,6 +9742,7 @@ const luaL_Reg kMepFuncs[] = {
     {"command", l_command},
     {"map", l_map},
     {"mapping_descriptions", l_mapping_descriptions},
+    {"mod1_name", l_mod1_name},
     {"leader_bindings", l_leader_bindings},
     {"map_mod1", l_map_mod1},
     {"map_g", l_map_g},
@@ -9974,6 +10017,9 @@ const luaL_Reg kMepFuncs[] = {
     {"set_winbar_click", l_set_winbar_click},
     {"scratch", l_scratch},
     {"toggle_zen", l_toggle_zen},
+    {"menubar_toggle", l_menubar_toggle},
+    {"menubar_set_visible", l_menubar_set_visible},
+    {"menubar_visible", l_menubar_visible},
     {"sheet_next", l_sheet_next},
     {"sheet_prev", l_sheet_prev},
     {"on_frame", l_on_frame},

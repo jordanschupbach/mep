@@ -385,6 +385,20 @@ rename/next/previous/adopt/prune()=, =mep.on_workspace_changed(fn)=,
 
 * =mod1= (Alt) bindings
 
+Tapping =mod1= *on its own* -- pressed and released with no other key,
+no held Ctrl/Shift and no mouse in between -- shows and hides the top
+File/Edit/Window/Help menu bar, the same gesture Windows and GTK apps
+use for a hidden menu bar. The bar is off by default -- its row goes to
+the panes below it and the tab bar takes the top edge -- and the
+dashboard names the gesture so it isn't a secret. Holding
+=mod1= as a modifier is untouched, and a press held longer than ~0.75s
+stops counting as a tap, so alt-tabbing away never toggles it. From
+Lua: =mep.menubar_toggle()=, =mep.menubar_visible()= and
+=mep.menubar_set_visible(on)= (=mep.menubar_set_visible(true)= in
+=init.lua= keeps the bar up from the start). It is listed in the
+=<leader>hk= keymaps picker too, under =Global=, worded for whichever
+way the tap will go next.
+
 =mod1= (=Alt= by default, any mode): =mod1+s= / =mod1+v= split
 horizontal/vertical; =mod1+h/j/k/l= move focus to the pane spatially
 left/down/up/right of the current one (picking the one with the most

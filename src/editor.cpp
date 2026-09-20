@@ -14798,6 +14798,123 @@ bool Editor::IsMod1Down() const {
     return false;
 }
 
+// A tap is a quick press-and-release; past this the press was a held
+// modifier (or a chord whose other key never reached us), not a gesture.
+constexpr double kMod1TapMaxSeconds = 0.75;
+
+void Editor::SetMenuBarVisible(bool visible) { menu_bar_visible_ = visible; }
+
+// The two mod1 keys, whichever physical key mod1 currently is. Returns
+// false for a mod1_ this build doesn't map to a real key pair.
+bool Editor::Mod1KeyPair(gfx::Key *left, gfx::Key *right) const {
+    switch (mod1_) {
+        case ModKey::Alt: *left = gfx::Key::LeftAlt; *right = gfx::Key::RightAlt; return true;
+        case ModKey::Control: *left = gfx::Key::LeftControl; *right = gfx::Key::RightControl; return true;
+        case ModKey::Shift: *left = gfx::Key::LeftShift; *right = gfx::Key::RightShift; return true;
+        case ModKey::Super: *left = gfx::Key::LeftSuper; *right = gfx::Key::RightSuper; return true;
+    }
+    return false;
+}
+
+std::string Editor::Mod1Name() const {
+    switch (mod1_) {
+        case ModKey::Alt: return "Alt";
+        case ModKey::Control: return "Ctrl";
+        case ModKey::Shift: return "Shift";
+        case ModKey::Super: return "Super";
+    }
+    return "mod1";
+}
+
+bool Editor::ConsumeMod1Tap() {
+    gfx::Key left = gfx::Key::None, right = gfx::Key::None;
+    if (!Mod1KeyPair(&left, &right)) return false;
+
+    // Arm on the press edge. Re-arming on every press is deliberate: a
+    // second mod1 going down while the first is still held (both Alts, a
+    // key-repeat storm) restarts the window rather than counting as the
+    // "something else happened" that disarms below -- pressing a modifier
+    // twice is still only modifier activity.
+    if (gfx::IsKeyPressed(left) || gfx::IsKeyPressed(right)) {
+        mod1_tap_armed_ = true;
+        mod1_tap_down_at_ = gfx::GetTime();
+    }
+
+    if (mod1_tap_armed_) {
+        // Anything that makes this press part of a *combination* rather
+        // than a tap on its own disarms it. Checked while mod1 is still
+        // held so the disqualifying event doesn't have to survive until
+        // the release frame.
+        //
+        // Every non-modifier key: the Key enum is small and contiguous
+        // (gfx/types.h), so a scan costs nothing and -- unlike
+        // gfx::GetKeyPressed() -- reads state without draining the event
+        // queue every other handler in this frame still needs. The four
+        // modifier pairs are skipped: mod1 itself is obviously down, and
+        // holding Ctrl/Shift alongside it is how mod1+Shift+hjkl and
+        // friends are typed, which is a combination too (handled by the
+        // explicit check after the loop).
+        bool disarm = false;
+        for (int k = static_cast<int>(gfx::Key::A); k <= static_cast<int>(gfx::Key::Up); k++) {
+            const gfx::Key key = static_cast<gfx::Key>(k);
+            if (key == gfx::Key::LeftAlt || key == gfx::Key::RightAlt || key == gfx::Key::LeftControl ||
+                key == gfx::Key::RightControl || key == gfx::Key::LeftShift || key == gfx::Key::RightShift ||
+                key == gfx::Key::LeftSuper || key == gfx::Key::RightSuper) {
+                continue;
+            }
+            if (gfx::IsKeyDown(key)) {
+                disarm = true;
+                break;
+            }
+        }
+        // A second modifier held alongside mod1 (mod1+Shift+h resize,
+        // mod1+Ctrl+h move) -- excluding whichever one mod1 itself is,
+        // since that one is down by definition here.
+        if (mod1_ != ModKey::Control &&
+            (gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl))) {
+            disarm = true;
+        }
+        if (mod1_ != ModKey::Shift &&
+            (gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift))) {
+            disarm = true;
+        }
+        if (mod1_ != ModKey::Super &&
+            (gfx::IsKeyDown(gfx::Key::LeftSuper) || gfx::IsKeyDown(gfx::Key::RightSuper))) {
+            disarm = true;
+        }
+        if (mod1_ != ModKey::Alt && (gfx::IsKeyDown(gfx::Key::LeftAlt) || gfx::IsKeyDown(gfx::Key::RightAlt))) {
+            disarm = true;
+        }
+        // Mouse activity during the press: alt-drag to move/resize a pane,
+        // alt-scroll, alt-click -- all combinations, none of them taps.
+        if (gfx::IsMouseButtonDown(gfx::MouseButton::Left) || gfx::IsMouseButtonDown(gfx::MouseButton::Right) ||
+            gfx::IsMouseButtonDown(gfx::MouseButton::Middle) || gfx::GetMouseWheelMoveV().y != 0.0f ||
+            gfx::GetMouseWheelMoveV().x != 0.0f) {
+            disarm = true;
+        }
+        // Keyboard focus left the window with mod1 still down. The backend
+        // reports every held key as released on that frame so nothing gets
+        // stuck (gfx::WindowFocusLostThisFrame), which without this looks
+        // exactly like the user letting go of a bare mod1 -- i.e. a plain
+        // alt-tab would toggle the menu bar on the way out.
+        if (gfx::WindowFocusLostThisFrame()) disarm = true;
+        // A press held longer than this stops being a tap. Guards the
+        // leftovers the checks above can't see: a chord whose other key
+        // the window manager grabbed before mep ever saw it, or mod1 simply
+        // held down and then let go with no intent behind it.
+        if (gfx::GetTime() - mod1_tap_down_at_ > kMod1TapMaxSeconds) disarm = true;
+        if (disarm) mod1_tap_armed_ = false;
+    }
+
+    if (!gfx::IsKeyReleased(left) && !gfx::IsKeyReleased(right)) return false;
+    // Only the release of the *last* held mod1 completes a tap: releasing
+    // the left Alt while the right is still down is not letting go.
+    if (gfx::IsKeyDown(left) || gfx::IsKeyDown(right)) return false;
+    const bool tapped = mod1_tap_armed_;
+    mod1_tap_armed_ = false;
+    return tapped;
+}
+
 void Editor::SetMod1(const std::string &name) {
     std::string lower = name;
     // Lowercases each character in place.

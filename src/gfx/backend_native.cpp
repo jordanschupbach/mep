@@ -187,6 +187,11 @@ struct NativeContext {
     int target_fps = 0;
     std::string clipboard_text;  // cached text we own the CLIPBOARD selection with
 
+    // Set on FocusOut, cleared at the top of the next frame's poll --
+    // see IInputBackend::WindowFocusLostThisFrame for why a caller
+    // needs to tell ReleaseAllKeys' synthetic releases from real ones.
+    bool focus_lost = false;
+
     bool key_down[kKeyCount] = {};
     bool key_pressed[kKeyCount] = {};
     bool key_repeat[kKeyCount] = {};
@@ -438,7 +443,10 @@ void ProcessEvent(NativeContext *ctx, const XEvent &event) {
     switch (event.type) {
         case KeyPress: HandleKeyPress(ctx, const_cast<XKeyEvent *>(&event.xkey)); break;
         case KeyRelease: HandleKeyRelease(ctx, const_cast<XKeyEvent *>(&event.xkey)); break;
-        case FocusOut: ReleaseAllKeys(ctx); break;
+        case FocusOut:
+            ReleaseAllKeys(ctx);
+            ctx->focus_lost = true;
+            break;
         case ButtonPress: {
             unsigned int b = event.xbutton.button;
             int idx = MouseButtonIndex(b);
@@ -636,6 +644,7 @@ public:
         for (bool &b : ctx_->key_released) b = false;
         for (bool &b : ctx_->mouse_pressed) b = false;
         for (bool &b : ctx_->mouse_released) b = false;
+        ctx_->focus_lost = false;
         ctx_->scroll_x = 0.0;
         ctx_->scroll_y = 0.0;
         while (XPending(ctx_->display) > 0) {
@@ -808,6 +817,7 @@ public:
     }
     bool IsKeyDown(gfx::Key key) override { return InRange(key) && ctx_->key_down[static_cast<int>(key)]; }
     bool IsKeyReleased(gfx::Key key) override { return InRange(key) && ctx_->key_released[static_cast<int>(key)]; }
+    bool WindowFocusLostThisFrame() override { return ctx_->focus_lost; }
     gfx::Key GetKeyPressed() override {
         if (ctx_->key_queue.empty()) return gfx::Key::None;
         int idx = ctx_->key_queue.front();

@@ -8268,6 +8268,32 @@ public:
     // otherwise creates one; switches the current pane to it either way.
     void OpenScratchBuffer();
     void ToggleZenMode() { zen_mode_ = !zen_mode_; }
+    // The top File/Edit/Window/Help bar, hidden by default and summoned
+    // by tapping mod1 (Alt) on its own -- the same gesture Windows/GTK
+    // apps use for a hidden menu bar. Unlike zen mode this is only that
+    // one row: the tab bar, sidebars and status line stay put, and the
+    // pane area simply grows into the freed pixels (main.cpp's
+    // menu_bar_height). Also reachable from Lua as mep.menubar_toggle()/
+    // mep.menubar_visible()/mep.menubar_set_visible(on), so a config that
+    // wants the bar up all the time can just say so in init.lua.
+    bool IsMenuBarVisible() const { return menu_bar_visible_; }
+    void ToggleMenuBar() { SetMenuBarVisible(!menu_bar_visible_); }
+    void SetMenuBarVisible(bool visible);
+    // The two physical keys mod1 currently maps to (both Alts by
+    // default). False if mod1_ has no key pair, in which case neither
+    // output is written.
+    bool Mod1KeyPair(gfx::Key *left, gfx::Key *right) const;
+    /**
+     * @brief Returns the display name of whichever modifier is currently mod1 ("Alt", "Ctrl", "Shift" or "Super").
+     * @return The modifier's name, capitalised for display.
+     */
+    std::string Mod1Name() const;
+    // Polled once per frame (main.cpp's input step, before anything else
+    // looks at mod1) to recognise a *bare* mod1 tap: mod1 pressed and
+    // released with nothing else in between. Returns true on the frame
+    // that completes one. See the implementation for what disqualifies a
+    // press from counting.
+    bool ConsumeMod1Tap();
     // Switches SheetSession::active_sheet by one, wrapping around at
     // either end (Ctrl-PageDown/Ctrl-PageUp -- Excel's own convention for
     // this) -- undo/redo stay per-workbook, not per-sheet, so this doesn't
@@ -10158,6 +10184,18 @@ private:
     bool direnv_active_ = false;
     int winbar_click_ref_ = 0;
     bool zen_mode_ = false;
+    // See IsMenuBarVisible. Off by default -- the editor starts with the
+    // tab bar at the top edge and the menu bar is summoned when wanted.
+    // What keeps that from being a hidden feature is the dashboard, which
+    // spells the gesture out on the empty-workspace screen every session
+    // starts on (DrawDashboard, main.cpp).
+    bool menu_bar_visible_ = false;
+    // ConsumeMod1Tap's state machine. `armed` means mod1 has gone down and
+    // nothing has disqualified the press yet; `down_at` is when, so a mod1
+    // held open as a modifier (or across an alt-tab the WM swallowed)
+    // times out instead of toggling on release.
+    bool mod1_tap_armed_ = false;
+    double mod1_tap_down_at_ = 0.0;
     int zoomed_pane_id_ = -1;  // see TogglePaneZoom/ZoomedPaneId
     // Speech-to-text recording indicator (Lua-driven, see mep.stt_toggle):
     // purely a display flag for DrawTabBar's mic icon -- the actual

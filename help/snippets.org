@@ -1,0 +1,68 @@
+#+TITLE: Snippets
+#+HTML_HEAD: <meta name="help-section" content="Code">
+#+HTML_HEAD: <meta name="help-order" content="30">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Expanding one
+
+Type a trigger and press =Tab=. Triggers also appear in the [[file:completion.html][completion]]
+popup, so you do not have to remember them -- start typing and look.
+
+=<leader>yy= (=:MepSnippets=) opens a picker of every snippet available for
+the current filetype.
+
+* Tabstops
+
+A snippet can place the cursor in several spots in turn.
+
+| Command            | Does                        |
+|--------------------+-----------------------------|
+| =:MepSnippetNext=  | jump to the next tabstop    |
+| =:MepSnippetPrev=  | jump to the previous one    |
+
+Syntax inside a snippet body:
+
+| Form            | Means                                       |
+|-----------------+---------------------------------------------|
+| =$1=, =$2=      | tabstops, visited in order                  |
+| =${1:default}=  | a tabstop pre-filled with text              |
+| =$0=            | where the cursor finishes                   |
+| =\$=            | a literal dollar sign                       |
+
+With =${1:default}= the cursor lands at the *start* of the default text, so
+typing replaces it.
+
+* A limitation worth knowing
+
+Tabstop positions are computed once, at expansion time, as fixed offsets --
+they are not tracked through later edits.
+
+In practice: jumping between tabstops immediately after expanding works
+correctly. Editing heavily *before* jumping to a later tabstop can leave
+that tabstop stale. Expand, fill in, then move on.
+
+* What ships
+
+Curated sets for =c=, =cpp=, =go=, =lua=, =py=, =rs=, =nix= and =envrc=.
+
+* Adding your own
+
+#+begin_src lua
+mep.snippets.py = mep.snippets.py or {}
+mep.snippets.py['main'] = {
+  'def main() -> None:',
+  '    ${1:pass}',
+  '',
+  'if __name__ == "__main__":',
+  '    main()',
+}
+#+end_src
+
+=mep.snippets= is keyed by bare file extension, and each entry is an array
+of lines. Because it is an ordinary table, a set can be extended, replaced
+or removed from =init.lua=.
+
+* See also
+
+- [[file:completion.html][Completion]] -- where triggers show up.
+- [[file:insert-mode.html][Insert and Replace]] -- the other keys that work while typing.

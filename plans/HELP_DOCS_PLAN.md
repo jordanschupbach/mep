@@ -242,7 +242,7 @@ These block the page work, or make it much worse if skipped. Do them first.
 
 ## Part 9 — Code intelligence (8 pages)
 
-- [ ] **9.1 `lsp` — Language servers.** Auto-attach rules, one client per
+- [x] **9.1 `lsp` — Language servers.** Auto-attach rules, one client per
   language per workspace root, the supported server table (clangd, gopls,
   pyright/basedpyright, lua-language-server, rust-analyzer, tsserver, jdtls,
   metals, elixir-ls, ocamllsp, hls, clojure-lsp, fortls, nimlsp,
@@ -250,30 +250,30 @@ These block the page work, or make it much worse if skipped. Do them first.
   `:MepLspAttach`, `K` hover, `gd`/`gr`/`<leader>li`/`<leader>lt`,
   `<leader>lk` signature help, `<leader>rn` rename, `<leader>ca` code
   action, `:MepLspFormat`, diagnostics in the sign column and `:MepDiagShow`.
-- [ ] **9.2 `completion` — Completion.** The popup, its keys, and the single
+- [x] **9.2 `completion` — Completion.** The popup, its keys, and the single
   merged source: buffer words + snippet triggers + filesystem paths + LSP
   results through one seen-set, capped and throttled;
   `mep.set_completion_source` and the accept/resolve hooks.
-- [ ] **9.3 `snippets` — Snippets.** The per-language registry (c, go,
+- [x] **9.3 `snippets` — Snippets.** The per-language registry (c, go,
   js/ts, lua, python, rust, shell), trigger expansion, `$1`/`${1:default}`/
   `\$`, `:MepSnippetNext`/`Prev`, `<leader>yy` picker, and the documented
   stale-tabstop limitation when editing before jumping.
-- [ ] **9.4 `syntax` — Syntax highlighting.** Treesitter grammars (c, cpp,
+- [x] **9.4 `syntax` — Syntax highlighting.** Treesitter grammars (c, cpp,
   javascript, lua, markdown, org, python, r) with incremental reparse, the
   hand-rolled per-line lexer fallback for everything else, `:MepSyntax`,
   `mep.syntax_auto`, `:MepSyntaxFold`, `:MepColorize` swatches.
-- [ ] **9.5 `structure-symbols` — Structure and Symbols.** `<leader>ss` /
+- [x] **9.5 `structure-symbols` — Structure and Symbols.** `<leader>ss` /
   `sS` treesitter structure pane and buffer-local split, `<CR>` to jump,
   `:MepStructure`/`:MepStructureSplit`; the LSP-backed Symbols sidebar
   (`:MepSymbols`); "you are here" tracking.
-- [ ] **9.6 `folding` — Folds.** `mep.fold_create`/`fold_toggle`/
+- [x] **9.6 `folding` — Folds.** `mep.fold_create`/`fold_toggle`/
   `fold_clear_provider`, the gutter markers, syntax folding, markdown
   heading-depth folding, org cycling.
-- [ ] **9.7 `formatting` — Formatting.** `gf` / `:MepFormat`, the per-
+- [x] **9.7 `formatting` — Formatting.** `gf` / `:MepFormat`, the per-
   filetype formatter table, filter vs file mode and the `{}` placeholder,
   why `--assume-filename`/`--stdin-filename` are passed, the `mep.lsp_format`
   fallback, format-on-save.
-- [ ] **9.8 `spell` — Spell checking.** The red squiggle, `<leader>z`
+- [x] **9.8 `spell` — Spell checking.** The red squiggle, `<leader>z`
   group (`zt` toggle, `zn`/`zp` navigate, `zs` suggestions, `zf` fix,
   `zg` add, `zw` mark wrong), the personal dictionary, Visual-mode use,
   `mep.spell_*`.
@@ -578,6 +578,14 @@ too).
 6. Parts 12, 14, 17 (the large feature areas).
 7. Parts 15, 16, 18.
 8. Parts 20, 21 (generated/reference; 0.5 should exist by now to keep them honest).
+
+## Final pass
+
+- [ ] **Cross-linking.** Pages written early could not link forward to pages
+  that did not exist yet, because `check_help` (rightly) fails on a dangling
+  link. Several "See also" entries were dropped for this reason: completion →
+  copilot, folding → org-basics, spell → writing, lsp → org-babel. Once every
+  page exists, do one pass adding the links back.
 
 ## Open questions
 

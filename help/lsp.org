@@ -1,0 +1,107 @@
+#+TITLE: Language servers
+#+HTML_HEAD: <meta name="help-section" content="Code">
+#+HTML_HEAD: <meta name="help-order" content="10">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Attaching
+
+Open a file mep has a server for, and if that server is on =$PATH= it
+starts automatically. Nothing to configure.
+
+A client runs *per language per workspace root*, so two workspaces on two
+branches each get their own -- which is what makes branch-per-workspace
+work without servers fighting over one project.
+
+=:MepLspAttach= attaches by hand; =:MepLspStop= stops a client.
+
+* The keys
+
+| Key            | Does                          |
+|----------------+-------------------------------|
+| =K=            | hover documentation           |
+| =gd=           | go to definition              |
+| =Q=            | this line's diagnostics, in a popup |
+| =<leader>li=   | go to implementation          |
+| =<leader>lt=   | go to type definition         |
+| =<leader>lk=   | signature help                |
+| =<leader>rn=   | rename the symbol             |
+| =<leader>ca=   | code action                   |
+
+Note =gd= and not =gr=: =gr= is bound to *run* in mep, not references. For
+references use =:MepLspReferences=.
+
+Every action also has a command: =:MepLspHover=, =:MepLspDefinition=,
+=:MepLspReferences=, =:MepLspImplementation=, =:MepLspTypeDefinition=,
+=:MepLspSignatureHelp=, =:MepLspRename=, =:MepLspCodeAction=,
+=:MepLspFormat=.
+
+* Diagnostics
+
+Errors, warnings and hints are underlined in the buffer and marked in the
+sign column. =Q= shows the current line's diagnostics in a popup, and
+=:MepDiagShow= lists them.
+
+Severity maps to the =Error=, =Warn=, =Info= and =Hint= [[file:highlight-groups.html][highlight groups]], so
+they follow your theme.
+
+* Servers mep knows about
+
+Thirty-six, each used when its command is on =$PATH=:
+
+| Language        | Command                            |
+|-----------------+------------------------------------|
+| C, C++          | =clangd=                           |
+| Python          | =pyright-langserver=, or =basedpyright-langserver= |
+| Lua             | =lua-language-server=              |
+| Go              | =gopls=                            |
+| Rust            | =rust-analyzer=                    |
+| TypeScript, JS  | =typescript-language-server=       |
+| Java            | =jdtls=                            |
+| Ruby            | =solargraph=                       |
+| PHP             | =intelephense=                     |
+| C#              | =OmniSharp=                        |
+| Haskell         | =haskell-language-server-wrapper=  |
+| OCaml           | =ocamllsp=                         |
+| Zig             | =zls=                              |
+| Elixir          | =elixir-ls=                        |
+| Bash            | =bash-language-server=             |
+| R               | R's =languageserver=               |
+| Perl            | Perl's =PLS=                       |
+| Fortran         | =fortls=                           |
+| Scala           | =metals=                           |
+| Nim             | =nimlsp=                           |
+| Crystal         | =crystalline=                      |
+| D               | =serve-d=                          |
+| Julia           | Julia's =LanguageServer=           |
+| Clojure         | =clojure-lsp=                      |
+| Kotlin          | =kotlin-language-server=           |
+| Svelte          | =svelteserver=                     |
+| YAML            | =yaml-language-server=             |
+| JSON            | =vscode-json-language-server=      |
+| HTML            | =vscode-html-language-server=      |
+| CSS, SCSS, Less | =vscode-css-language-server=       |
+| Dockerfile      | =docker-langserver=                |
+| Terraform       | =terraform-ls=                     |
+| Markdown        | =marksman=                         |
+| TOML            | =taplo=                            |
+| Vimscript       | =vim-language-server=              |
+
+If a server is missing, nothing breaks -- the file simply opens without one.
+
+* Inside org code blocks
+
+Code blocks in an Org file get language-server support too, through a shadow
+buffer per block, with some documented gaps around header arguments.
+
+* From Lua
+
+=mep.lsp_start=, =mep.lsp_connect=, =mep.lsp_stop=, =mep.lsp_is_running=,
+=mep.lsp_request=, =mep.lsp_notify=, =mep.lsp_on_notification=,
+=mep.lsp_on_request= are the plumbing; =mep.lsp_word_at_cursor= and
+=mep.lsp_symbols_flatten= are the helpers the built-in features use.
+
+* See also
+
+- [[file:completion.html][Completion]] -- where LSP suggestions end up.
+- [[file:formatting.html][Formatting]] -- =mep.lsp_format= as the fallback formatter.
+- [[file:structure-symbols.html][Structure and symbols]] -- the outline views.
